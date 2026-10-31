@@ -1,4 +1,6 @@
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
+import { readFileSync, statSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 export interface SpawnLineOptions {
@@ -22,6 +24,8 @@ export interface SpawnOptionsLite {
   shell: false;
   windowsHide: boolean;
   env?: NodeJS.ProcessEnv;
+  /** stdin 恒 'ignore'（防 CLI/垫片进入交互模式等待导致挂死）；stdout/stderr 按调用方需要 pipe */
+  stdio: ('ignore' | 'pipe')[];
 }
 
 export type SpawnFn = (cmd: string, args: string[], options: SpawnOptionsLite) => ChildProcess;
@@ -69,18 +73,63 @@ export async function whereCommand(cmd: string): Promise<string[]> {
   return [];
 }
 
+/** npm .cmd/.bat 垫片中 node 入口脚本 token：带引号 `"%dp0%\…js"` / `"%~dp0\…js"` */
+const SHIM_JS_ENTRY_QUOTED_RE = /"(?:%~dp0|%dp0%)[\\/]([^"\r\n]+\.js)"/i;
+/** 同上，无引号变体（行首、空白、& 或 ( 之后） */
+const SHIM_JS_ENTRY_BARE_RE = /(?:^|[\s&(])(?:%~dp0|%dp0%)[\\/]([^\s"&|(),;]+\.js)/im;
+
+/** 从垫片内容提取 node 入口相对路径；非 node 垫片（无 node 标识）或无 %dp0%/%~dp0 js 入口返回 null。 */
+function extractShimJsEntry(content: string): string | null {
+  if (!/\bnode\b/i.test(content)) return null;
+  return SHIM_JS_ENTRY_QUOTED_RE.exec(content)?.[1] ?? SHIM_JS_ENTRY_BARE_RE.exec(content)?.[1] ?? null;
+}
+
+/** 读垫片内容：utf8 解码出现替换符（非 ASCII 路径经 OEM 码页如 GBK 写入）时按 GBK 重解码。 */
+function readShimContent(shimPath: string): string {
+  const buf = readFileSync(shimPath);
+  const utf8 = buf.toString('utf8');
+  if (!utf8.includes('\uFFFD')) return utf8;
+  try {
+    return new TextDecoder('gbk').decode(buf);
+  } catch {
+    return utf8;
+  }
+}
+
 /**
- * Windows 下把逻辑命令解析为 CreateProcess 可执行形态（纯函数，消费 whereCommand 的行）：
- * npm 等安装的 CLI 仅有 .cmd/.bat 垫片（无 .exe），spawn('cmd', shell:false) 会 ENOENT；
- * Node ≥20.12 对 .cmd/.bat 直接 spawn 抛 EINVAL，必须经 cmd.exe /d /s /c 间接执行。
- * .exe 命中返回完整路径；.cmd/.bat 命中返回 cmd.exe 包装；其余返回 null（调用方原样 spawn）。
+ * 解析 .cmd/.bat 垫片为 node 直跑形态（node + 绝对 .js 入口，绕开 cmd.exe 包装丢参进交互模式）。
+ * 垫片不可读、非 node 垫片、解析不出入口、入口 js 文件不存在 → 返回 null（调用方回退 cmd.exe 包装）。
+ */
+function resolveNodeShimForm(shimPath: string): SpawnForm | null {
+  let content: string;
+  try {
+    content = readShimContent(shimPath);
+  } catch {
+    return null;
+  }
+  const rel = extractShimJsEntry(content);
+  if (!rel) return null;
+  const jsPath = resolvePath(dirname(shimPath), rel);
+  try {
+    if (!statSync(jsPath).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return { cmd: 'node', prefix: [jsPath] };
+}
+
+/**
+ * Windows 下把逻辑命令解析为 CreateProcess 可执行形态（消费 whereCommand 的行）：
+ * .exe 命中返回完整路径；.cmd/.bat 垫片先解析 node 入口直跑（npm 垫片经 cmd.exe /d /s /c
+ * 包装会丢参进交互模式；node 为 .exe，直接 spawn 不触发 Node ≥20.12 的 EINVAL）；
+ * 垫片解析失败回退 cmd.exe /d /s /c 包装；其余返回 null（调用方原样 spawn）。
  */
 export function resolveWindowsSpawnForm(whereLines: string[], cmd: string): SpawnForm | null {
   if (process.platform !== 'win32') return null;
   const exe = whereLines.find((l) => l.toLowerCase().endsWith('.exe'));
   if (exe) return { cmd: exe, prefix: [] };
   const shim = whereLines.find((l) => /\.(cmd|bat)$/i.test(l));
-  if (shim) return { cmd: 'cmd.exe', prefix: ['/d', '/s', '/c', shim] };
+  if (shim) return resolveNodeShimForm(shim) ?? { cmd: 'cmd.exe', prefix: ['/d', '/s', '/c', shim] };
   return null;
 }
 
@@ -96,7 +145,8 @@ function delay(ms: number): Promise<void> {
 }
 
 export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: SpawnLineOptions): LineChild {
-  const options: SpawnOptionsLite = { cwd, shell: false, windowsHide: true };
+  // stdin 'ignore'：CLI/垫片进入交互模式时立即收到 EOF 而不是无限等待（防派发挂死）
+  const options: SpawnOptionsLite = { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
   if (opts?.env) options.env = { ...process.env, ...opts.env };
 
   const child = spawnFn(cmd, args, options);
@@ -184,6 +234,7 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
             cwd,
             shell: false,
             windowsHide: true,
+            stdio: ['ignore', 'ignore', 'ignore'],
           });
           await new Promise<void>((resolve) => {
             tk.once('exit', () => resolve());
