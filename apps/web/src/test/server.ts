@@ -8,6 +8,10 @@ export const server = setupServer(
   http.get('/api/sessions', () => HttpResponse.json([])),
   // T14 聊天视图打开会话即拉消息：默认空列表（各测试可覆盖）
   http.get('/api/sessions/:id/messages', () => HttpResponse.json([])),
+  // panelStore 刷新恢复兜底：默认 404（各测试可覆盖）
+  http.get('/api/sessions/:id', () =>
+    HttpResponse.json({ error: { code: 'NOT_FOUND', message: '会话不存在' } }, { status: 404 }),
+  ),
   http.get('/api/clis', () =>
     HttpResponse.json([
       { id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null },

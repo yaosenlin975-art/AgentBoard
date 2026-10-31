@@ -7,7 +7,8 @@
  * - 流式渲染：WS session.event（text delta）追加本地 streaming buffer，end 清排队计数，
  *   最终 assistant 消息经 message.added 落定并清 buffer；
  * - 输入框：Enter 发送 / Shift+Enter 换行；运行中入队（queued:true）本地计数"排队中 N 条"。
- * sessionId 取 panelStore；无则显示会话选择引导空态。
+ * sessionId 取 panelStore（localStorage 持久，刷新后 chatSession 缺失时按 GET /api/sessions/:id 恢复）；
+ * 无则显示会话选择引导空态。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -28,10 +29,12 @@ export function ChatPanel() {
   const unread = usePanelStore((s) => s.unread);
   const markUnread = usePanelStore((s) => s.markUnread);
   const openChat = usePanelStore((s) => s.openChat);
+  const clearSession = usePanelStore((s) => s.clearSession);
   const appWorkspaceId = useAppStore((s) => s.workspaceId);
   const queryClient = useQueryClient();
 
   const [liveSession, setLiveSession] = useState<Session | null>(null);
+  const [fetchedSession, setFetchedSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -40,9 +43,15 @@ export function ChatPanel() {
   const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // WS session.changed 覆盖打开时携带的会话对象（状态/模型变更）
-  useEffect(() => setLiveSession(null), [sessionId]);
-  const session = liveSession ?? (storedSession !== null && storedSession.id === sessionId ? storedSession : null);
+  // WS session.changed 覆盖打开时携带的会话对象（状态/模型变更）；切会话同步清按 id 拉取的兜底
+  useEffect(() => {
+    setLiveSession(null);
+    setFetchedSession(null);
+  }, [sessionId]);
+  const session =
+    liveSession ??
+    (storedSession !== null && storedSession.id === sessionId ? storedSession : null) ??
+    (fetchedSession !== null && fetchedSession.id === sessionId ? fetchedSession : null);
 
   const workspaceId = session?.workspace_id ?? appWorkspaceId;
   const { data: sessions } = useQuery({
@@ -79,6 +88,24 @@ export function ChatPanel() {
       cancelled = true;
     };
   }, [sessionId]);
+
+  // 刷新恢复兜底：live/stored 均无时按 sessionId 拉取会话；不存在（已删除）→ 清空选择回空态
+  const storedMatches = storedSession !== null && storedSession.id === sessionId;
+  useEffect(() => {
+    if (sessionId === null || liveSession !== null || storedMatches) return;
+    let cancelled = false;
+    api
+      .get<Session>(`/api/sessions/${sessionId}`)
+      .then((s) => {
+        if (!cancelled) setFetchedSession(s);
+      })
+      .catch(() => {
+        if (!cancelled) clearSession();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, liveSession, storedMatches, clearSession]);
 
   /** 追加/去重合并；assistant 落定即清流式 buffer */
   const mergeMessages = useCallback((incoming: Message[]) => {
@@ -175,9 +202,20 @@ export function ChatPanel() {
           data-testid="chat-empty"
           className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center"
         >
-          <p className="text-sm text-neutral-400 dark:text-neutral-500">
-            {sessionId === null ? '选择一个会话开始对话，或新建自由会话' : '会话加载中…'}
-          </p>
+          {sessionId === null ? (
+            <>
+              <p className="text-sm text-neutral-400 dark:text-neutral-500">
+                选择一个会话开始对话，或新建自由会话
+              </p>
+              {sessions !== undefined && sessions.length === 0 && (
+                <p className="text-xs text-neutral-400 dark:text-neutral-500">
+                  会话归属创建时所选的工作空间，可切换左侧工作空间查找
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-sm text-neutral-400 dark:text-neutral-500">会话加载中…</p>
+          )}
           <button
             type="button"
             data-testid="empty-new-session-btn"

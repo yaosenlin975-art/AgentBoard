@@ -58,7 +58,7 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       title={claimed ? '占用中，不可拖动' : undefined}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`relative overflow-hidden rounded-md border border-neutral-200 bg-white text-left text-sm shadow-sm transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 ${
+      className={`relative shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-white text-left text-sm shadow-sm transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 ${
         claimed ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'
       } ${isDragging ? 'opacity-50' : ''}`}
     >

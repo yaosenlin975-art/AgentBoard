@@ -37,7 +37,7 @@ export function Column({
       </header>
       <div
         ref={setNodeRef}
-        className={`m-2 flex min-h-24 flex-1 flex-col gap-2 rounded-md p-1 transition-colors ${
+        className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-md p-1 transition-colors ${
           isOver ? 'bg-neutral-200/70 dark:bg-neutral-800/70' : ''
         }`}
       >

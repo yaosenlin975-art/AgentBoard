@@ -1,5 +1,13 @@
 # CHANGELOG.md
 
+## [2026-10-31] 修复看板卡片标题被裁与聊天会话刷新丢失
+
+- 看板列卡片列表容器加 `overflow-y-auto`（列内滚动），IssueCard 根加 `shrink-0`（内容超高不再被等比压缩），标题第二行与底部元信息行不再被卡片底边裁掉；空列占位与 dnd-kit 拖拽行为不变。
+- 服务端新增 `GET /api/sessions/:id`：返回完整 Session，不存在 404（复用 getSession，语义同 `/sessions/:id/messages`）。
+- panelStore 接入 zustand persist（localStorage 键 `agentboard.panel`）：持久化 view/issueId/sessionId/chatSession/rightOpen，unread 不持久化；新增 `clearSession` 动作。
+- ChatPanel 会话解析改三态：liveSession ?? 匹配的 chatSession ?? 按 sessionId 拉 `GET /api/sessions/:id`；拉取 404/失败清空 sessionId 回空态，不悬挂"会话加载中…"；当前工作空间暂无会话时空态提示"会话归属创建时所选的工作空间，可切换左侧工作空间查找"。
+- DetailPanel 持久化 issueId 失效（issue 已删除）沿用既有错误处理；新增测试：server `/api/sessions/:id` 两例（存在/404）、web panelStore 持久化一例、ChatPanel 按 id 恢复一例（404 回空态）与空态归属提示一例。
+
 ## [2026-10-31] 修复聊天区新增消息顶开整页布局
 
 - App 根容器 `min-h-screen` → `h-screen overflow-hidden`：恢复高度链（根有确定高度 → 中区 flex-1 生效），消息增长不再撑开整页滚动，各区域改为内部滚动。

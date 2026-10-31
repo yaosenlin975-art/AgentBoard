@@ -374,6 +374,30 @@ describe('sessions', () => {
     expect(adapter.calls[0]!.prompt).toBe('自由指令');
   });
 
+  it('GET /api/sessions/:id 返回完整会话', async () => {
+    const wsId = await mkSpace();
+    const created = await request(app)
+      .post('/api/sessions')
+      .send({ cli: 'codebuddy', model: 'm1', workspace_id: wsId, prompt: '恢复用' });
+    expect(created.status).toBe(200);
+    await settle();
+
+    const one = await request(app).get(`/api/sessions/${created.body.id}`);
+    expect(one.status).toBe(200);
+    expect(one.body).toMatchObject({
+      id: created.body.id,
+      workspace_id: wsId,
+      cli: 'codebuddy',
+      model: 'm1',
+    });
+  });
+
+  it('GET /api/sessions/:id 未知 id → 404', async () => {
+    const missing = await request(app).get('/api/sessions/no-such-session');
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({ error: { code: 'NOT_FOUND', message: '会话不存在' } });
+  });
+
   it('GET /api/sessions?workspace= 列表；messages after 过滤；未知会话 404', async () => {
     const wsId = await mkSpace();
     await request(app).post('/api/sessions').send({ cli: 'codebuddy', workspace_id: wsId, prompt: '一轮' });

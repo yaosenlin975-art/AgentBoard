@@ -71,7 +71,16 @@ function resetMocks(): void {
 /** ChatPanel 所需全部 REST handlers（按需在用例内再用 server.use 覆盖） */
 function mockChatApi(): void {
   server.use(
-    http.get('/api/sessions', () => HttpResponse.json(sessionsList)),
+    http.get('/api/sessions', ({ request }) => {
+      const wid = new URL(request.url).searchParams.get('workspace');
+      return HttpResponse.json(sessionsList.filter((s) => wid === null || s.workspace_id === wid));
+    }),
+    http.get('/api/sessions/:id', ({ params }) => {
+      const found = sessionsList.find((s) => s.id === params.id);
+      return found !== undefined
+        ? HttpResponse.json(found)
+        : HttpResponse.json({ error: { code: 'NOT_FOUND', message: '会话不存在' } }, { status: 404 });
+    }),
     http.get('/api/sessions/:id/messages', ({ params }) =>
       HttpResponse.json(msgStore[params.id as string] ?? []),
     ),
@@ -312,5 +321,41 @@ describe('ChatPanel 会话切换器与模型', () => {
     await screen.findByTestId('session-switcher');
     await userEvent.click(screen.getByTestId('session-switcher'));
     expect(screen.getByTestId('session-menu-empty')).toBeInTheDocument();
+  });
+
+  it('当前工作空间暂无会话：空态提示会话归属创建时工作空间', async () => {
+    sessionsList = [];
+    renderChat(null);
+    expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
+    expect(
+      await screen.findByText('会话归属创建时所选的工作空间，可切换左侧工作空间查找'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ChatPanel 刷新恢复', () => {
+  it('chatSession 缺失时按 sessionId 拉 GET /api/sessions/:id 渲染；404 → 清空回空态并提示归属', async () => {
+    // 持久化恢复场景：sessionId 在、chatSession 空；会话归属另一工作空间
+    sessionsList = [makeSession({ id: 'sx', workspace_id: 'ws-2' })];
+    usePanelStore.setState({ view: 'chat', sessionId: 'sx', chatSession: null, rightOpen: true });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RightPanel />
+      </QueryClientProvider>,
+    );
+
+    // 按 id 拉取成功 → 直接渲染会话（CLI/模型条可见）
+    expect(await screen.findByTestId('model-display')).toHaveTextContent('codebuddy · m1');
+
+    // 换成不存在的会话 id → 清空 sessionId 回空态，不悬挂"会话加载中…"，且当前工作空间无会话时提示归属
+    act(() => {
+      usePanelStore.setState({ sessionId: 'gone', chatSession: null });
+    });
+    await waitFor(() => expect(usePanelStore.getState().sessionId).toBeNull());
+    expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
+    expect(screen.queryByText('会话加载中…')).not.toBeInTheDocument();
+    expect(screen.getByText('选择一个会话开始对话，或新建自由会话')).toBeInTheDocument();
+    expect(screen.getByText('会话归属创建时所选的工作空间，可切换左侧工作空间查找')).toBeInTheDocument();
   });
 });

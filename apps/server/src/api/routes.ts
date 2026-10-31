@@ -301,6 +301,13 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(listSessionsByWorkspace(db, workspaceId));
   });
 
+  // 聊天视图刷新恢复：panelStore 持久化的 sessionId 在 chatSession 缺失时按 id 拉取
+  router.get('/sessions/:id', (req, res) => {
+    const session = getSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('会话不存在');
+    res.json(session);
+  });
+
   router.get('/sessions/:id/messages', (req, res) => {
     if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
     const raw = req.query.after;
