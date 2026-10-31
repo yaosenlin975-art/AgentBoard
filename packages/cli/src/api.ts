@@ -44,7 +44,21 @@ function isConnRefused(err: unknown): boolean {
   return false;
 }
 
-/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError，连接拒绝抛 ServerUnreachableError */
+/** fetch 抛错的原始信息：cause 链各层 message 去重拼接（undici 外层常为 "fetch failed"，真实原因在 cause） */
+function rawChainMessages(err: unknown): string {
+  const messages: string[] = [];
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur; depth += 1) {
+    const node = cur as { message?: unknown; cause?: unknown };
+    if (typeof node.message === 'string' && node.message !== '' && !messages.includes(node.message)) {
+      messages.push(node.message);
+    }
+    cur = node.cause;
+  }
+  return messages.length > 0 ? messages.join(' -> ') : String(err);
+}
+
+/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError，连接拒绝抛 ServerUnreachableError，其余网络层失败包装为看板服务不可达（含原始 message） */
 export async function request<T>(
   base: string,
   method: string,
@@ -60,7 +74,10 @@ export async function request<T>(
     });
   } catch (err) {
     if (isConnRefused(err)) throw new ServerUnreachableError(base);
-    throw err;
+    if (!(err instanceof TypeError)) throw err;
+    throw new Error(`看板服务不可达（${base}，用 --server 指定；${rawChainMessages(err)}）`, {
+      cause: err,
+    });
   }
   if (res.status === 204) return undefined as T;
   const text = await res.text();

@@ -1,5 +1,10 @@
 # CHANGELOG.md
 
+## [2026-10-31] 修复 kb CLI 网络层失败裸输出无上下文
+
+- `packages/cli/src/api.ts`：fetch 网络层失败（TypeError，非 HTTP 非 2xx）在非 ECONNREFUSED 时不再直抛裸 `fetch failed`，统一包装为 `看板服务不可达（<服务地址>，用 --server 指定；<原始 message>）`，原始 message 取 cause 链各层去重拼接（undici 外层常为 "fetch failed"，真实原因在 cause）；原错误挂 `cause` 保留。ECONNREFUSED 分支"看板服务未启动"文案与 HTTP 非 2xx 行为不变。
+- 新增测试：非法端口（99999）触发网络层失败 → 退出码 1，stderr 含友好文案、服务地址与原始 message。
+
 ## [2026-10-31] 修复 kb CLI 经 npm link 启动静默失效
 
 - CLI 入口守卫（`packages/cli/src/index.ts`）改两侧 realpath 归一比较：argv[1] 经 `realpathSync` 归一后与 `import.meta.url` 比较，npm link 装机（junction/符号链接）启动时不再因链接路径与真实路径严格不等而跳过 `main()`；argv[1] realpath 失败视为不匹配，vitest 直接导入仍不触发。

@@ -422,6 +422,19 @@ describe('服务不可达', () => {
     expect(t.err()).toContain('--server');
   });
 
+  it('非连接拒绝的网络层失败（非法端口）→ 退出码 1 + 看板服务不可达（含地址与原始 message）', async () => {
+    const t = makeIo();
+    const code = await main(
+      ['node', 'kb', '--server', 'http://127.0.0.1:99999', 'list-spaces'],
+      t.io,
+    );
+    expect(code).toBe(1);
+    expect(t.err()).toContain('看板服务不可达');
+    expect(t.err()).toContain('http://127.0.0.1:99999');
+    expect(t.err()).toContain('--server 指定');
+    expect(t.err()).toContain('Failed to parse URL');
+  });
+
   it('其他非 2xx（500）→ 退出码 1 + code/message', async () => {
     handler = (m, u) =>
       m === 'GET' && u === '/api/workspaces'
