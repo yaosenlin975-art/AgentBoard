@@ -1,5 +1,30 @@
-// 占位：Task 11 接入 React 应用
-const root = document.getElementById('root');
-if (root) root.textContent = 'AgentBoard';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import App from './App';
+import { initTheme } from './theme';
+import './index.css';
 
-export {};
+initTheme();
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      staleTime: 15_000,
+    },
+  },
+});
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="*" element={<App />} />
+        </Routes>
+      </BrowserRouter>
+    </QueryClientProvider>
+  </StrictMode>,
+);

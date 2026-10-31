@@ -1,0 +1,4 @@
+@import 'tailwindcss';
+
+/* 暗色主题用 .dark class 驱动（html 元素），而非 media query */
+@custom-variant dark (&:where(.dark, .dark *));

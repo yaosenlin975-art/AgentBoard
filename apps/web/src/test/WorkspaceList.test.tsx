@@ -1,0 +1,109 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { HttpResponse, http } from 'msw';
+import type { Issue, Workspace } from '@agentboard/shared';
+import { WorkspaceList } from '../components/workspace/WorkspaceList';
+import { useAppStore } from '../state/appStore';
+import { server } from './server';
+
+const ws1: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
+const ws2: Workspace = { id: 'ws-2', name: '副项目', path: 'D:/WorkSpaces/second', created_at: 2 };
+
+const issuesWs1: Issue[] = [
+  { id: 'i1', workspace_id: 'ws-1', title: 'a', description: '', priority: '中', labels: [], status: '待规划', sort_order: 0, claimed_by: null, claimed_at: null, session_id: null, created_at: 1, updated_at: 1 },
+  { id: 'i2', workspace_id: 'ws-1', title: 'b', description: '', priority: '低', labels: [], status: '待规划', sort_order: 1, claimed_by: null, claimed_at: null, session_id: null, created_at: 2, updated_at: 2 },
+  { id: 'i3', workspace_id: 'ws-1', title: 'c', description: '', priority: '高', labels: [], status: '进行中', sort_order: 2, claimed_by: 'agent:codex', claimed_at: 3, session_id: 's-1', created_at: 3, updated_at: 3 },
+  { id: 'i4', workspace_id: 'ws-1', title: 'd', description: '', priority: '中', labels: [], status: '已关闭', sort_order: 3, claimed_by: null, claimed_at: null, session_id: null, created_at: 4, updated_at: 4 },
+];
+
+function renderList() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <WorkspaceList />
+    </QueryClientProvider>,
+  );
+}
+
+function mockWorkspaces(list: Workspace[]) {
+  server.use(http.get('/api/workspaces', () => HttpResponse.json(list)));
+}
+
+beforeEach(() => {
+  useAppStore.setState({ workspaceId: null });
+});
+
+describe('WorkspaceList', () => {
+  it('渲染工作空间卡片与四列统计', async () => {
+    server.use(
+      http.get('/api/issues', ({ request }) => {
+        const wid = new URL(request.url).searchParams.get('workspace');
+        return HttpResponse.json(wid === 'ws-1' ? issuesWs1 : []);
+      }),
+    );
+    mockWorkspaces([ws1, ws2]);
+    renderList();
+
+    expect(await screen.findByText('主项目')).toBeInTheDocument();
+    expect(screen.getByText('副项目')).toBeInTheDocument();
+    expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
+
+    const card = screen.getByTestId('workspace-card-ws-1');
+    // 统计数字是 stat 单元格的第一个子节点；issues 查询异步返回，用 waitFor
+    await waitFor(() =>
+      expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('2'),
+    );
+    expect(within(card).getByTestId('stat-进行中').firstElementChild).toHaveTextContent('1');
+    expect(within(card).getByTestId('stat-待验收').firstElementChild).toHaveTextContent('0');
+    expect(within(card).getByTestId('stat-已关闭').firstElementChild).toHaveTextContent('1');
+  });
+
+  it('点击卡片选中并高亮', async () => {
+    mockWorkspaces([ws1, ws2]);
+    renderList();
+
+    const card = await screen.findByTestId('workspace-card-ws-2');
+    await userEvent.click(card);
+
+    await waitFor(() => expect(useAppStore.getState().workspaceId).toBe('ws-2'));
+    expect(card).toHaveAttribute('aria-pressed', 'true');
+    const other = screen.getByTestId('workspace-card-ws-1');
+    expect(other).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('新建工作空间：提交后刷新列表并携带表单体', async () => {
+    const list: Workspace[] = [ws1];
+    let created: { name: string; path: string } | null = null;
+    server.use(
+      http.get('/api/workspaces', () => HttpResponse.json(list)),
+      http.get('/api/issues', () => HttpResponse.json([])),
+      http.post('/api/workspaces', async ({ request }) => {
+        const body = (await request.json()) as { name: string; path: string };
+        created = body;
+        const next: Workspace = { id: 'ws-3', name: body.name, path: body.path, created_at: 3 };
+        list.push(next);
+        return HttpResponse.json(next, { status: 201 });
+      }),
+    );
+    renderList();
+    await screen.findByText('主项目');
+
+    await userEvent.click(screen.getByRole('button', { name: '新增工作空间' }));
+    const dialog = screen.getByRole('dialog', { name: '新增工作空间' });
+    await userEvent.type(within(dialog).getByLabelText('工作空间名称'), '新项目');
+    await userEvent.type(within(dialog).getByLabelText('工作空间路径'), 'D:/WorkSpaces/new');
+    await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
+
+    expect(await screen.findByText('新项目')).toBeInTheDocument();
+    expect(created).toEqual({ name: '新项目', path: 'D:/WorkSpaces/new' });
+  });
+
+  it('空列表显示引导文案', async () => {
+    mockWorkspaces([]);
+    renderList();
+    expect(await screen.findByText('还没有工作空间')).toBeInTheDocument();
+    expect(screen.getByText(/创建第一个工作空间/)).toBeInTheDocument();
+  });
+});

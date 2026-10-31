@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentBoard</title>
+    <script>
+      // 首屏前应用主题，避免暗色闪白（与 src/theme.ts 同一套 localStorage 键）
+      try {
+        var t = localStorage.getItem('agentboard.theme') || 'system';
+        var dark = t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (dark) document.documentElement.classList.add('dark');
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
