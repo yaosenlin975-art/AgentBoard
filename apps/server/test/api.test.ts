@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -96,6 +96,32 @@ describe('workspaces', () => {
 
     const missing = await request(app).post('/api/workspaces').send({ path: spaceDir });
     expect(missing.status).toBe(400);
+  });
+
+  it('name 留空 → 从 path basename 兜底：D:\\a\\b\\my-project → my-project', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'agentboard-wsname-'));
+    const dir = join(parent, 'my-project');
+    mkdirSync(dir);
+    try {
+      const res = await request(app).post('/api/workspaces').send({ name: '', path: dir });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ name: 'my-project', path: dir });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('name 留空且 path 带尾部反斜杠：D:\\a\\b\\my-project\\ → my-project', async () => {
+    const parent = mkdtempSync(join(tmpdir(), 'agentboard-wsname-'));
+    const dir = join(parent, 'my-project');
+    mkdirSync(dir);
+    try {
+      const res = await request(app).post('/api/workspaces').send({ name: '', path: dir + '\\' });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ name: 'my-project', path: dir + '\\' });
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
   });
 
   it('DELETE 不存在 → 404', async () => {

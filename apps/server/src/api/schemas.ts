@@ -5,8 +5,12 @@ export const prioritySchema = z.enum(['低', '中', '高']);
 export const issueStatusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
 export const reuseSessionSchema = z.enum(['last', 'new']);
 
+/**
+ * POST /api/workspaces：name 允许空串（空 → 服务端从 path basename 兜底）；
+ * name 键仍必填（缺键 → 400）。
+ */
 export const createWorkspaceSchema = z.object({
-  name: z.string().trim().min(1, 'name 不能为空'),
+  name: z.string().trim(),
   path: z.string().trim().min(1, 'path 不能为空'),
 });
 

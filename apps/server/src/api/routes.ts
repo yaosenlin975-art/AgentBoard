@@ -4,6 +4,7 @@
  * 修订点：POST /api/sessions 体增 workspace_id?——issue_id 为空时必填（400 校验）；
  * POST /api/issues/:id/claim 仅做占用登记（session_id 置 null，供 kb claim 场景），不建会话。
  */
+import { spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { Router } from 'express';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -76,6 +77,87 @@ function requireIssue(db: Db, id: string) {
   return issue;
 }
 
+/** name 留空兜底：先去尾部 / 与 \，再按 / 或 \ 分段取最后一段 */
+function workspaceNameFromPath(path: string): string {
+  const segments = path
+    .replace(/[\\/]+$/, '')
+    .split(/[\\/]+/)
+    .filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1]! : path;
+}
+
+// ---- POST /api/system/pick-folder（Windows 原生文件夹选择） ----
+
+/** pick-folder 并发守卫：同一时刻只允许一个选择窗口（finally 复位） */
+let pickFolderInFlight = false;
+
+/**
+ * PowerShell 弹 FolderBrowserDialog：单引号 PS 字符串、无双引号，-Command 参数整体
+ * 经 spawn 参数数组传递不经 shell；OK 时 stdout 只输出 SelectedPath（UTF-8，无换行）。
+ */
+const PICK_FOLDER_PS_SCRIPT = [
+  "$ErrorActionPreference='Stop'",
+  'try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}',
+  'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
+  '$d=New-Object System.Windows.Forms.FolderBrowserDialog',
+  "$d.Description='选择工作空间文件夹'",
+  '$d.ShowNewFolderButton=$true',
+  'if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($d.SelectedPath)}',
+].join('; ');
+
+function pickFolderErrorDetail(stderr: string, fallback: string): string {
+  const firstLine = stderr.trim().split(/\r?\n/, 1)[0];
+  return (firstLine && firstLine !== '' ? firstLine : fallback).slice(0, 200);
+}
+
+/** spawn powershell 弹窗；选中 → 路径，取消/无输出 → null，spawn 或脚本失败 → reject */
+function pickFolderViaPowerShell(): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-STA', '-Command', PICK_FOLDER_PS_SCRIPT],
+      { windowsHide: true },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', (err) => {
+      reject(
+        new ApiError(
+          500,
+          'PICK_FOLDER_FAILED',
+          `打开文件夹选择窗口失败: ${pickFolderErrorDetail(stderr, err.message)}`,
+        ),
+      );
+    });
+    child.on('close', (code) => {
+      const picked = stdout.trim();
+      if (picked !== '') {
+        resolve(picked);
+        return;
+      }
+      if (code !== 0) {
+        reject(
+          new ApiError(
+            500,
+            'PICK_FOLDER_FAILED',
+            `打开文件夹选择窗口失败: ${pickFolderErrorDetail(stderr, `exit code ${code}`)}`,
+          ),
+        );
+        return;
+      }
+      resolve(null); // 用户取消（无输出）
+    });
+  });
+}
+
 export function createRouter(deps: RouterDeps): Router {
   const { db, getAdapter, broadcast } = deps;
   const router = Router();
@@ -94,12 +176,28 @@ export function createRouter(deps: RouterDeps): Router {
       throw new ValidationError(`路径不存在或不是目录: ${body.path}`);
     }
     if (!stat.isDirectory()) throw new ValidationError(`路径不存在或不是目录: ${body.path}`);
-    res.json(createWorkspace(db, body));
+    // name 留空 → 从 path basename 兜底（路径存在性校验已在前，空路径不会到这里）
+    const name = body.name !== '' ? body.name : workspaceNameFromPath(body.path);
+    res.json(createWorkspace(db, { name, path: body.path }));
   });
 
   router.delete('/workspaces/:id', (req, res) => {
     deleteWorkspace(db, req.params.id!);
     res.status(204).end();
+  });
+
+  // ---- system ----
+  // 原生文件夹选择（Windows PowerShell FolderBrowserDialog）；同一时刻仅允许一个窗口
+  router.post('/system/pick-folder', async (_req, res) => {
+    if (pickFolderInFlight) {
+      throw new ApiError(409, 'PICK_FOLDER_BUSY', '已有选择窗口打开');
+    }
+    pickFolderInFlight = true;
+    try {
+      res.json({ path: await pickFolderViaPowerShell() });
+    } finally {
+      pickFolderInFlight = false;
+    }
   });
 
   // ---- issues ----

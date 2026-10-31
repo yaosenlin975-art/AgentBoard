@@ -1,5 +1,10 @@
 # CHANGELOG.md
 
+## [2026-10-31] 工作空间创建体验
+
+- 新增工作空间弹窗加"浏览…"按钮：服务端 `POST /api/system/pick-folder` 经 PowerShell（`-NoProfile -NonInteractive -STA -Command` 参数数组、不经 shell）弹 `FolderBrowserDialog`，选中返回 `{path}`、取消返回 `{path:null}`、spawn/脚本失败 500 `PICK_FOLDER_FAILED`、已有窗口打开 409 `PICK_FOLDER_BUSY`（模块级 in-flight 守卫，finally 复位）；请求中按钮禁用并提示"请在弹出的窗口中选择文件夹"。
+- 工作空间名称留空兜底：`POST /api/workspaces` name 允许空串（缺键仍 400），空 → 从 path basename（去尾部 `/`、`\` 后取最后一段）命名；弹窗内 name 未手动改过时随路径实时预填 basename，手动改过不再覆盖。
+
 ## [2026-10-31] 初版实现
 
 - 脚手架：pnpm monorepo（apps/server、apps/web、packages/adapters、packages/cli、packages/shared、Docs）。
