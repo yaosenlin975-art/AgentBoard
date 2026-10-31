@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Task 10：kb CLI 入口（commander 装配 + 退出码映射）。 */
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
 import { DEFAULT_BASE, CliHttpError, normalizeBase, ServerUnreachableError } from './api.js';
@@ -110,9 +111,15 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   }
 }
 
-/** 仅作为 bin 直接执行时自动运行（vitest 导入不触发） */
-const invoked =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+/** 仅作为 bin 直接执行时自动运行（vitest 导入不触发）；两侧按 realpath 归一（npm link 的 junction/符号链接），argv[1] realpath 失败视为不匹配 */
+const invoked = (() => {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href;
+  } catch {
+    return false;
+  }
+})();
 if (invoked) {
   void main().then((code) => {
     if (code !== 0) process.exitCode = code;

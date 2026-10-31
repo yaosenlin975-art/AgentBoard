@@ -1,5 +1,10 @@
 # CHANGELOG.md
 
+## [2026-10-31] 修复 kb CLI 经 npm link 启动静默失效
+
+- CLI 入口守卫（`packages/cli/src/index.ts`）改两侧 realpath 归一比较：argv[1] 经 `realpathSync` 归一后与 `import.meta.url` 比较，npm link 装机（junction/符号链接）启动时不再因链接路径与真实路径严格不等而跳过 `main()`；argv[1] realpath 失败视为不匹配，vitest 直接导入仍不触发。
+- 新增回归测试 `packages/cli/test/entry.test.ts`：临时目录建 dist 目录 junction（Windows junction 仅目录目标可用，文件 symlink 需特权），真实进程 `node <链接>/index.js --version` 断言输出 0.0.0、退出码 0；dist 未构建时跳过。旧守卫下该测试失败、新守卫通过（已做负向验证）。
+
 ## [2026-10-31] agentboard skill 补 kb CLI 缺失处理分支
 
 - SKILL.md 前置条件补自检命令 `kb --version`（流程第一步，输出版本号即 CLI 可用）。
