@@ -3,13 +3,19 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "kb": "./dist/index.js"
+  },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@agentboard/shared": "workspace:*"
+    "@agentboard/shared": "workspace:*",
+    "commander": "^14.0.0"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   }

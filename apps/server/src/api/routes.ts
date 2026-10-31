@@ -116,6 +116,11 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(issue);
   });
 
+  // kb show 依赖：按 id 取单个 issue（设计 §6.2；REST 全表补充，只读不改契约语义）
+  router.get('/issues/:id', (req, res) => {
+    res.json(requireIssue(db, req.params.id!));
+  });
+
   router.patch('/issues/:id', (req, res) => {
     const body = parseBody(patchIssueSchema, req.body);
     const issue = updateIssueGuarded(db, req.params.id!, body);

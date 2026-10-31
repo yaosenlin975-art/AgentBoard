@@ -125,6 +125,14 @@ describe('issues 全生命周期', () => {
     expect(list.body).toHaveLength(1);
     expect(list.body[0].id).toBe(issue.id);
 
+    // GET /api/issues/:id（kb show 依赖）：返回单条完整字段；未知 id → 404
+    const one = await request(app).get(`/api/issues/${issue.id}`);
+    expect(one.status).toBe(200);
+    expect(one.body).toMatchObject({ id: issue.id, workspace_id: wsId, title: '任务', priority: '高' });
+    const missing = await request(app).get('/api/issues/no-such-id');
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({ error: { code: 'NOT_FOUND', message: '任务不存在' } });
+
     const patched = await request(app)
       .patch(`/api/issues/${issue.id}`)
       .send({ title: '改名', labels: ['a', 'b'], sort_order: 2 });
