@@ -2,13 +2,13 @@
  * 右侧面板单实例容器（§7.4/§7.5）：
  * - view===null 不渲染；收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
  * - 展开时顶部条（视图标题 + 收起按钮），左缘拖拽调宽（320–720px，localStorage 持久）；
- * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 占位）。
+ * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 ChatPanel）。
  * 视图组件各持 react-query 缓存，收起/展开与往返切换不丢数据。
  */
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { usePanelStore } from '../../state/panelStore';
 import { DetailPanel } from '../detail/DetailPanel';
-import { ChatPanelPlaceholder } from './ChatPanelPlaceholder';
+import { ChatPanel } from '../chat/ChatPanel';
 
 const WIDTH_KEY = 'agentboard.right-panel-width';
 const MIN_WIDTH = 320;
@@ -117,7 +117,7 @@ export function RightPanel() {
         </button>
       </header>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-        {view === 'detail' ? <DetailPanel /> : <ChatPanelPlaceholder />}
+        {view === 'detail' ? <DetailPanel /> : <ChatPanel />}
       </div>
     </aside>
   );

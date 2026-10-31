@@ -328,7 +328,7 @@ export function DetailPanel() {
         </section>
 
         {/* 关联会话 */}
-        <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(id) => openChat(id)} />
+        <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(s) => openChat(s.id, s)} />
 
         {/* 评论 */}
         <CommentThread issue={issue} />

@@ -6,6 +6,8 @@ export const server = setupServer(
   http.get('/api/workspaces', () => HttpResponse.json([])),
   http.get('/api/issues', () => HttpResponse.json([])),
   http.get('/api/sessions', () => HttpResponse.json([])),
+  // T14 聊天视图打开会话即拉消息：默认空列表（各测试可覆盖）
+  http.get('/api/sessions/:id/messages', () => HttpResponse.json([])),
   http.get('/api/clis', () =>
     HttpResponse.json([
       { id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null },

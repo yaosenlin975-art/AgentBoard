@@ -66,3 +66,11 @@ export const createSessionSchema = z
 export const sendMessageSchema = z.object({
   text: z.string().min(1, 'text 不能为空'),
 });
+
+/**
+ * PATCH /api/sessions/:id：只改 model 字段（Task 14 聊天视图"修改模型，下一轮生效"）。
+ * model 必填（字符串或 null 清空）；缺键 → 400。
+ */
+export const patchSessionSchema = z.object({
+  model: z.string().trim().min(1, 'model 不能为空').nullable(),
+});

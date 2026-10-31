@@ -18,7 +18,8 @@ export function SessionList({
 }: {
   sessions: Session[];
   currentSessionId: string | null;
-  onSelect: (sessionId: string) => void;
+  /** 回调整会话对象（T14 起 openChat 携带 session 供聊天视图定位 workspace/模型） */
+  onSelect: (session: Session) => void;
 }) {
   return (
     <section data-testid="detail-sessions" aria-label="关联会话" className="space-y-2">
@@ -36,7 +37,7 @@ export function SessionList({
                 <button
                   type="button"
                   data-testid={`session-item-${s.id}`}
-                  onClick={() => onSelect(s.id)}
+                  onClick={() => onSelect(s)}
                   title="打开聊天视图"
                   className={`flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-sm transition-colors ${
                     isCurrent

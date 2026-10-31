@@ -403,10 +403,11 @@ describe('RightPanel 容器', () => {
     expect(await screen.findByTestId('detail-panel')).toBeInTheDocument();
   });
 
-  it('chat 视图渲染占位（T14 替换）', async () => {
+  it('chat 视图渲染 ChatPanel（T14：无会话时空态引导）', async () => {
     usePanelStore.setState({ view: 'chat', issueId: null, sessionId: null, rightOpen: true });
     renderDetail({ open: false });
-    expect(await screen.findByText('聊天视图将在 Task 14 实现')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat-panel')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
   });
 
   it('拖拽左缘调整宽度并写 localStorage（钳制 320–720）', async () => {

@@ -360,6 +360,58 @@ describe('sessions', () => {
   });
 });
 
+describe('PATCH /api/sessions/:id {model}', () => {
+  /** 建一个自由会话并等首轮结束 */
+  async function mkFreeSession(wsId: string): Promise<Record<string, unknown>> {
+    const res = await request(app)
+      .post('/api/sessions')
+      .send({ cli: 'codebuddy', model: 'm1', workspace_id: wsId, prompt: 'hi' });
+    expect(res.status).toBe(200);
+    await settle();
+    return res.body as Record<string, unknown>;
+  }
+
+  it('PATCH {model} → 更新 model 字段且列表可见；null 清空；未知 id → 404', async () => {
+    const wsId = await mkSpace();
+    const session = await mkFreeSession(wsId);
+
+    const patched = await request(app)
+      .patch(`/api/sessions/${session.id}`)
+      .send({ model: 'm2' });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({ id: session.id, model: 'm2' });
+
+    const list = await request(app).get(`/api/sessions?workspace=${wsId}`);
+    expect((list.body as Array<{ id: string; model: string }>)[0]).toMatchObject({
+      id: session.id,
+      model: 'm2',
+    });
+
+    // 清空模型（null 合法）
+    const cleared = await request(app)
+      .patch(`/api/sessions/${session.id}`)
+      .send({ model: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.model).toBeNull();
+
+    const missing = await request(app).patch('/api/sessions/nope').send({ model: 'm2' });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('NOT_FOUND');
+  });
+
+  it('缺 model / 空串 → 400（只允许改 model 字段）', async () => {
+    const wsId = await mkSpace();
+    const session = await mkFreeSession(wsId);
+
+    const empty = await request(app).patch(`/api/sessions/${session.id}`).send({});
+    expect(empty.status).toBe(400);
+    expect(empty.body.error.code).toBe('VALIDATION_ERROR');
+
+    const blank = await request(app).patch(`/api/sessions/${session.id}`).send({ model: '  ' });
+    expect(blank.status).toBe(400);
+  });
+});
+
 describe('clis', () => {
   it('GET /api/clis 来自启动探测缓存；models 端点；未知 CLI 404', async () => {
     const res = await request(app).get('/api/clis');

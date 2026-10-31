@@ -111,7 +111,7 @@ export function DispatchDialog({
       void queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       onClose();
-      openChat(session.id);
+      openChat(session.id, session);
     },
     onError: (e) => setError(e instanceof Error ? e.message : '派发失败'),
   });

@@ -19,7 +19,7 @@ import {
 } from '../db/repos/workspace.js';
 import { createIssue, deleteIssue, getIssue, listIssues } from '../db/repos/issue.js';
 import { listCommentsByIssue } from '../db/repos/comment.js';
-import { listSessionsByWorkspace, getSession } from '../db/repos/session.js';
+import { listSessionsByWorkspace, getSession, updateSession } from '../db/repos/session.js';
 import { listMessagesBySession } from '../db/repos/message.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded } from '../services/claim.js';
@@ -36,6 +36,7 @@ import {
   doneSchema,
   failSchema,
   patchIssueSchema,
+  patchSessionSchema,
   sendMessageSchema,
 } from './schemas.js';
 
@@ -245,6 +246,15 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.post('/sessions/:id/stop', async (req, res) => {
     res.json(await stopSession(req.params.id!));
+  });
+
+  // Task 14：修改会话模型（只改 model 字段，下一轮生效——sessionManager.runTurn 起轮时读取 session.model）
+  router.patch('/sessions/:id', (req, res) => {
+    const body = parseBody(patchSessionSchema, req.body);
+    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    const session = updateSession(db, req.params.id!, { model: body.model });
+    broadcast({ type: 'session.changed', session });
+    res.json(session);
   });
 
   return router;

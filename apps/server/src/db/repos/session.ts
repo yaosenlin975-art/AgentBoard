@@ -42,6 +42,7 @@ export function listSessionsByWorkspace(db: Db, workspaceId: string): Session[] 
 export type SessionPatch = Partial<{
   status: SessionStatus;
   adapter_session_id: string | null;
+  model: string | null;
 }>;
 
 export function updateSession(db: Db, id: string, patch: SessionPatch): Session {
@@ -54,6 +55,10 @@ export function updateSession(db: Db, id: string, patch: SessionPatch): Session 
   if (patch.adapter_session_id !== undefined) {
     sets.push('adapter_session_id = ?');
     params.push(patch.adapter_session_id);
+  }
+  if (patch.model !== undefined) {
+    sets.push('model = ?');
+    params.push(patch.model);
   }
   if (sets.length === 0) throw new NotFoundError('无可用更新字段');
   params.push(id);
