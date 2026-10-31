@@ -32,6 +32,60 @@ export function setSpawnFn(fn: SpawnFn): void {
 
 const KILL_GRACE_MS = 1000;
 
+/** where/which 探测到的命令安装路径行（去空行）。 */
+export interface SpawnForm {
+  cmd: string;
+  prefix: string[];
+}
+
+/** 起一次性子进程收集全部输出行（stdout/stderr 合并），供 detect/listModels/version 探测。 */
+export async function collectOutput(cmd: string, args: string[]): Promise<{ code: number | null; lines: string[] }> {
+  const child = spawnLineChild(cmd, args, process.cwd());
+  const lines: string[] = [];
+  child.onLine((_source, line) => {
+    lines.push(line);
+  });
+  const code = await child.exit;
+  return { code, lines };
+}
+
+/** 用 where/which 探测命令实际安装路径；win32 下 where 失败回退 which（Git Bash），都失败返回空数组。 */
+export async function whereCommand(cmd: string): Promise<string[]> {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  const primary = await collectOutput(finder, [cmd]);
+  if (primary.code === 0) {
+    const lines = primary.lines.map((l) => l.trim()).filter((l) => l !== '');
+    if (lines.length > 0) return lines;
+  }
+  if (process.platform === 'win32') {
+    const fallback = await collectOutput('which', [cmd]);
+    if (fallback.code === 0) return fallback.lines.map((l) => l.trim()).filter((l) => l !== '');
+  }
+  return [];
+}
+
+/**
+ * Windows 下把逻辑命令解析为 CreateProcess 可执行形态（纯函数，消费 whereCommand 的行）：
+ * npm 等安装的 CLI 仅有 .cmd/.bat 垫片（无 .exe），spawn('cmd', shell:false) 会 ENOENT；
+ * Node ≥20.12 对 .cmd/.bat 直接 spawn 抛 EINVAL，必须经 cmd.exe /d /s /c 间接执行。
+ * .exe 命中返回完整路径；.cmd/.bat 命中返回 cmd.exe 包装；其余返回 null（调用方原样 spawn）。
+ */
+export function resolveWindowsSpawnForm(whereLines: string[], cmd: string): SpawnForm | null {
+  if (process.platform !== 'win32') return null;
+  const exe = whereLines.find((l) => l.toLowerCase().endsWith('.exe'));
+  if (exe) return { cmd: exe, prefix: [] };
+  const shim = whereLines.find((l) => /\.(cmd|bat)$/i.test(l));
+  if (shim) return { cmd: 'cmd.exe', prefix: ['/d', '/s', '/c', shim] };
+  return null;
+}
+
+/** 解析逻辑命令的可执行形态：where 无结果或非 win32 时原样返回（ENOENT 由 close 事件归一）。 */
+export async function resolveSpawnForm(cmd: string): Promise<SpawnForm> {
+  const lines = await whereCommand(cmd);
+  if (lines.length === 0) return { cmd, prefix: [] };
+  return resolveWindowsSpawnForm(lines, cmd) ?? { cmd, prefix: [] };
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
