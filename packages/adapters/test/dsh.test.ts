@@ -124,6 +124,27 @@ describe('dsh runTurn', () => {
     expect(result).toEqual<TurnResult>({ exitCode: 0, adapterSessionId: null });
   });
 
+  it('exit 0 但零事件且无 session id、有 stderr → 发诊断 error 事件（含 stderr），TurnResult 带 stderrTail', async () => {
+    const child = makeFakeChild();
+    const calls: RecordedSpawn[] = [];
+    setSpawnFn(dshSpawnRouter(calls, [{ source: 'stdout', text: 'dsh 0.2.4\n' }], child));
+    const handle = dshAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+    const resultPromise = handle.result;
+    await vi.waitFor(() => expect(child.listenerCount('close')).toBeGreaterThan(0));
+
+    child.stderr.emit('data', Buffer.from('profile headless 不存在\n'));
+    closeChild(child, 0);
+
+    const result = await resultPromise;
+    expect(events).toEqual([
+      { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nprofile headless 不存在' },
+      { type: 'end', exitCode: 0 },
+    ]);
+    expect(result.stderrTail).toEqual(['profile headless 不存在']);
+  });
+
   it('NDJSON 全事件映射：session 提取、text 增量、thinking/tool_result 忽略、tool_call→tool、final 完整段去重', async () => {
     const child = makeFakeChild();
     const calls: RecordedSpawn[] = [];

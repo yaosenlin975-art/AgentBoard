@@ -131,6 +131,26 @@ describe('codex runTurn', () => {
     expect(result).toEqual<TurnResult>({ exitCode: 0, adapterSessionId: SESSION_ID });
   });
 
+  it('exit 0 但零事件且无 session id、有 stderr → 发诊断 error 事件（含 stderr），TurnResult 带 stderrTail', async () => {
+    const { spawned } = recordSpawns();
+    const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+    const resultPromise = handle.result;
+
+    child.stderr.emit('data', Buffer.from('stream error: unexpected EOF\n'));
+    closeChild(child, 0);
+
+    const result = await resultPromise;
+    expect(events).toEqual([
+      { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nstream error: unexpected EOF' },
+      { type: 'end', exitCode: 0 },
+    ]);
+    expect(result.stderrTail).toEqual(['stream error: unexpected EOF']);
+  });
+
   it('turn.failed → error 事件', async () => {
     const { spawned } = recordSpawns();
     const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });

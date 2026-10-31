@@ -377,6 +377,10 @@ async function executeTurn(
   if (result.adapterSessionId !== null) {
     persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
   }
+  // 适配器带回的 stderr 尾部落 error 消息（排障：真实 CLI 静默失败/异常退出时 UI 可见）
+  if (result.stderrTail && result.stderrTail.length > 0) {
+    persistMessage(sessionId, 'error', `适配器 stderr 尾部：\n${result.stderrTail.join('\n')}`);
+  }
 
   if (state.queue.length > 0) {
     const merged = state.queue.join('\n\n');

@@ -130,6 +130,31 @@ describe('opencode runTurn', () => {
     expect(result).toEqual<TurnResult>({ exitCode: 0, adapterSessionId: SESSION_ID });
   });
 
+  it('exit 0 但零事件且无 session id、有 stderr → 发诊断 error 事件（含 stderr），TurnResult 带 stderrTail', async () => {
+    const child = makeFakeChild();
+    setSpawnFn(((cmd: string, args: string[]) => {
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
+      }
+      return asChild(child);
+    }) as unknown as SpawnFn);
+    const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+    const resultPromise = handle.result;
+    await vi.waitFor(() => expect(child.listenerCount('close')).toBeGreaterThan(0));
+
+    child.stderr.emit('data', Buffer.from('config load failed: invalid json\n'));
+    closeChild(child, 0);
+
+    const result = await resultPromise;
+    expect(events).toEqual([
+      { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nconfig load failed: invalid json' },
+      { type: 'end', exitCode: 0 },
+    ]);
+    expect(result.stderrTail).toEqual(['config load failed: invalid json']);
+  });
+
   it('kill：prelude 期间 kill → 不 spawn，end(exitCode=-1)', async () => {
     const calls: RecordedSpawn[] = [];
     setSpawnFn(((cmd: string, args: string[], options: unknown) => {

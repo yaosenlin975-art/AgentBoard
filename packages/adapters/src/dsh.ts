@@ -110,6 +110,7 @@ export const dshAdapter: AgentAdapter = {
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];
     let settled = false;
     let killed = false;
+    let sawEvents = false;
     let probeChild: ReturnType<typeof spawnLineChild> | null = null;
     let mainChild: ReturnType<typeof spawnLineChild> | null = null;
     let resolveResult!: (r: TurnResult) => void;
@@ -124,8 +125,19 @@ export const dshAdapter: AgentAdapter = {
       if (settled) return;
       settled = true;
       const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
+      const tail = mainChild?.getStderrTail() ?? [];
+      // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
+      // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
+      if (
+        tail.length > 0 &&
+        (exitCode !== 0 || (!sawEvents && state.sessionId === null))
+      ) {
+        emit({ type: 'error', message: `适配器未捕获到结构化输出；stderr 尾部：\n${tail.join('\n')}` });
+      }
       emit({ type: 'end', exitCode });
-      resolveResult({ exitCode, adapterSessionId: state.sessionId });
+      const turnResult: TurnResult = { exitCode, adapterSessionId: state.sessionId };
+      if (tail.length > 0) turnResult.stderrTail = tail;
+      resolveResult(turnResult);
     };
 
     void (async () => {
@@ -153,7 +165,10 @@ export const dshAdapter: AgentAdapter = {
       }
       mainChild = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
       mainChild.onLine((_source, line) => {
-        for (const event of parseDshLine(line, state)) emit(event);
+        for (const event of parseDshLine(line, state)) {
+          sawEvents = true;
+          emit(event);
+        }
       });
       mainChild.onClose((code) => finish(code));
     })();

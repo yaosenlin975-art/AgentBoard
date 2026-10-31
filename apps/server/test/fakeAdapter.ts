@@ -12,7 +12,7 @@ export interface FakeTurnControl {
   readonly callIndex: number;
   readonly killed: boolean;
   emit(event: UnifiedEvent): void;
-  finish(exitCode?: number, adapterSessionId?: string | null): void;
+  finish(exitCode?: number, adapterSessionId?: string | null, stderrTail?: string[]): void;
 }
 
 export class FakeAdapter implements AgentAdapter {
@@ -50,9 +50,11 @@ export class FakeAdapter implements AgentAdapter {
       emit(event) {
         listener?.(event);
       },
-      finish(exitCode = 0, adapterSessionId: string | null = `fake-as-${callIndex}`) {
+      finish(exitCode = 0, adapterSessionId: string | null = `fake-as-${callIndex}`, stderrTail?: string[]) {
         listener?.({ type: 'end', exitCode }); // 仿真实适配器：结束前产出 end 事件
-        resolveResult({ exitCode, adapterSessionId });
+        const result: TurnResult = { exitCode, adapterSessionId };
+        if (stderrTail && stderrTail.length > 0) result.stderrTail = stderrTail;
+        resolveResult(result);
       },
     };
     const handle: TurnHandle = {

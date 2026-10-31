@@ -132,6 +132,7 @@ export const opencodeAdapter: AgentAdapter = {
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];
     let settled = false;
     let killed = false;
+    let sawEvents = false;
     let child: ReturnType<typeof spawnLineChild> | null = null;
     let resolveResult!: (r: TurnResult) => void;
     const result = new Promise<TurnResult>((resolve) => {
@@ -145,8 +146,19 @@ export const opencodeAdapter: AgentAdapter = {
       if (settled) return;
       settled = true;
       const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
+      const tail = child?.getStderrTail() ?? [];
+      // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
+      // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
+      if (
+        tail.length > 0 &&
+        (exitCode !== 0 || (!sawEvents && state.sessionId === null))
+      ) {
+        emit({ type: 'error', message: `适配器未捕获到结构化输出；stderr 尾部：\n${tail.join('\n')}` });
+      }
       emit({ type: 'end', exitCode });
-      resolveResult({ exitCode, adapterSessionId: state.sessionId });
+      const turnResult: TurnResult = { exitCode, adapterSessionId: state.sessionId };
+      if (tail.length > 0) turnResult.stderrTail = tail;
+      resolveResult(turnResult);
     };
 
     void (async () => {
@@ -157,7 +169,10 @@ export const opencodeAdapter: AgentAdapter = {
       }
       child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
       child.onLine((_source, line) => {
-        for (const event of parseOpencodeLine(line, state)) emit(event);
+        for (const event of parseOpencodeLine(line, state)) {
+          sawEvents = true;
+          emit(event);
+        }
       });
       child.onClose((code) => finish(code));
     })();

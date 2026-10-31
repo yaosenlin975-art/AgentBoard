@@ -115,6 +115,26 @@ describe('codebuddy runTurn', () => {
     expect(result).toEqual<TurnResult>({ exitCode: 0, adapterSessionId: 'sess-1' });
   });
 
+  it('exit 0 但零事件且无 session id、有 stderr → 发诊断 error 事件（含 stderr），TurnResult 带 stderrTail', async () => {
+    const { spawned } = recordSpawns();
+    const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+    const resultPromise = handle.result;
+
+    child.stderr.emit('data', Buffer.from('FATAL: 权限被拒绝\n第二行错误\n'));
+    closeChild(child, 0);
+
+    const result = await resultPromise;
+    expect(events).toEqual([
+      { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nFATAL: 权限被拒绝\n第二行错误' },
+      { type: 'end', exitCode: 0 },
+    ]);
+    expect(result.stderrTail).toEqual(['FATAL: 权限被拒绝', '第二行错误']);
+  });
+
   it('kill：TurnHandle.kill 停进程，close(null) 归一为 end(exitCode=-1)', async () => {
     const { spawned } = recordSpawns();
     const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });

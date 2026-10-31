@@ -58,6 +58,23 @@ describe('spawnLineChild', () => {
     ]);
   });
 
+  it('getStderrTail：stderr 尾部环形缓冲保留最近 30 行（含 close 补发的末尾行）', () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const lc = spawnLineChild('x', [], '.');
+
+    const many = Array.from({ length: 35 }, (_, i) => `e${i + 1}`);
+    child.stderr.emit('data', Buffer.from(many.join('\n') + '\n尾部残行'));
+    closeChild(child, 0);
+
+    expect(lc.getStderrTail()).toEqual([...many.slice(6), '尾部残行']);
+    expect(lc.getStderrTail()).toHaveLength(30);
+    // 返回拷贝：外部修改不影响内部缓冲
+    const tail = lc.getStderrTail();
+    tail.length = 0;
+    expect(lc.getStderrTail()).toHaveLength(30);
+  });
+
   it('正常退出：onClose 与 exit promise 收到退出码 0', async () => {
     const child = makeFakeChild();
     setSpawnFn(() => asChild(child));

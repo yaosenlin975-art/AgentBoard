@@ -241,6 +241,34 @@ describe('失败联动', () => {
     ]);
   });
 
+  it('TurnResult 带 stderrTail：以 role=error 落一条含 tail 的消息（exit 0 也落）', async () => {
+    adapter.script = (control) => {
+      control.finish(0, null, ['boom line 1', 'boom line 2']);
+    };
+    const session = await newSession({ prompt: '静默失败' });
+    await settle();
+
+    expect(getSession(t.db, session.id)!.status).toBe('已结束');
+    const messages = listMessagesBySession(t.db, session.id);
+    const tailMessages = messages.filter((m) => m.role === 'error');
+    expect(tailMessages).toHaveLength(1);
+    expect(tailMessages[0]).toMatchObject({
+      role: 'error',
+      content: '适配器 stderr 尾部：\nboom line 1\nboom line 2',
+    });
+  });
+
+  it('TurnResult 无 stderrTail / 空数组：不落额外 error 消息', async () => {
+    adapter.script = (control) => {
+      control.finish(0, 'fake-as-0');
+    };
+    const session = await newSession({ prompt: '正常轮次' });
+    await settle();
+
+    const messages = listMessagesBySession(t.db, session.id);
+    expect(messages.filter((m) => m.role === 'error')).toHaveLength(0);
+  });
+
   it('自由会话失败：只标会话，不涉及 issue', async () => {
     const other = createIssue(t.db, { workspace_id: wsId, title: '无关任务' });
     adapter.script = (control) => {

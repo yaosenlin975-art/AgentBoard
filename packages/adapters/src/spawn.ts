@@ -5,9 +5,14 @@ export interface SpawnLineOptions {
   env?: Record<string, string>;
 }
 
+/** stderr 尾部环形缓冲容量（最近 N 行），供适配器排障诊断。 */
+export const STDERR_TAIL_LIMIT = 30;
+
 export interface LineChild {
   onLine(cb: (source: 'stdout' | 'stderr', line: string) => void): void;
   onClose(cb: (code: number | null) => void): void;
+  /** 子进程 stderr 尾部（最近 30 行的拷贝；含 close 时补发的末尾无换行行） */
+  getStderrTail(): string[];
   kill(): Promise<void>;
   exit: Promise<number | null>;
 }
@@ -98,6 +103,7 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
 
   const lineCbs: Array<(source: 'stdout' | 'stderr', line: string) => void> = [];
   const closeCbs: Array<(code: number | null) => void> = [];
+  const stderrTail: string[] = [];
   const buffers: Record<'stdout' | 'stderr', string> = { stdout: '', stderr: '' };
   const decoders: Record<'stdout' | 'stderr', StringDecoder> = {
     stdout: new StringDecoder('utf8'),
@@ -111,6 +117,10 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
   });
 
   const emitLine = (source: 'stdout' | 'stderr', line: string) => {
+    if (source === 'stderr') {
+      stderrTail.push(line);
+      if (stderrTail.length > STDERR_TAIL_LIMIT) stderrTail.shift();
+    }
     for (const cb of lineCbs) cb(source, line);
   };
 
@@ -149,6 +159,9 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
     },
     onClose(cb) {
       closeCbs.push(cb);
+    },
+    getStderrTail() {
+      return [...stderrTail];
     },
     exit: exitPromise,
     async kill() {
