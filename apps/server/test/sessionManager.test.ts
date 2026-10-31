@@ -1,13 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type {
-  AgentAdapter,
-  RunTurnOptions,
-  TurnHandle,
-  TurnResult,
-  UnifiedEvent,
-} from '@agentboard/adapters';
-import type { ModelInfo, WsEvent } from '@agentboard/shared';
+import type { AgentAdapter } from '@agentboard/adapters';
+import type { WsEvent } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
+import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue, getIssue } from '../src/db/repos/issue.js';
 import { listCommentsByIssue } from '../src/db/repos/comment.js';
@@ -25,77 +20,6 @@ import {
   type CreateSessionInput,
 } from '../src/services/sessionManager.js';
 
-// ---- FakeAdapter：可编程事件 / exitCode / adapterSessionId / 挂起控制 ----
-
-interface FakeTurnControl {
-  readonly callIndex: number;
-  readonly killed: boolean;
-  emit(event: UnifiedEvent): void;
-  finish(exitCode?: number, adapterSessionId?: string | null): void;
-}
-
-class FakeAdapter implements AgentAdapter {
-  readonly id = 'codebuddy' as const;
-  readonly displayName = 'Fake CLI';
-  readonly calls: RunTurnOptions[] = [];
-  /** 每次 runTurn 的行为脚本；默认立即回复一条文本并正常结束 */
-  script: (control: FakeTurnControl) => void | Promise<void> = (control) => {
-    control.emit({ type: 'text', delta: `回复${control.callIndex}` });
-    control.finish(0, `fake-as-${control.callIndex}`);
-  };
-
-  async detect(): Promise<{ installed: boolean; version: string | null }> {
-    return { installed: true, version: 'fake-1.0' };
-  }
-
-  async listModels(): Promise<ModelInfo[]> {
-    return [];
-  }
-
-  runTurn(opts: RunTurnOptions): TurnHandle {
-    const callIndex = this.calls.length;
-    this.calls.push(opts);
-    let listener: ((event: UnifiedEvent) => void) | null = null;
-    let killed = false;
-    let resolveResult!: (result: TurnResult) => void;
-    const result = new Promise<TurnResult>((resolve) => {
-      resolveResult = resolve;
-    });
-    const control: FakeTurnControl = {
-      callIndex,
-      get killed() {
-        return killed;
-      },
-      emit(event) {
-        listener?.(event);
-      },
-      finish(exitCode = 0, adapterSessionId: string | null = `fake-as-${callIndex}`) {
-        listener?.({ type: 'end', exitCode }); // 仿真实适配器：结束前产出 end 事件
-        resolveResult({ exitCode, adapterSessionId });
-      },
-    };
-    const handle: TurnHandle = {
-      onEvent(cb) {
-        listener = cb;
-      },
-      kill: async () => {
-        killed = true;
-        resolveResult({ exitCode: 130, adapterSessionId: null });
-      },
-      result,
-    };
-    queueMicrotask(() => {
-      try {
-        const out = this.script(control);
-        if (out instanceof Promise) out.catch(() => undefined);
-      } catch {
-        // 脚本异常视为挂起，由用例自行处理
-      }
-    });
-    return handle;
-  }
-}
-
 // ---- 夹具 ----
 
 let t: TestDb;
@@ -106,9 +30,6 @@ function fakeResolver(id: string): AgentAdapter {
   if (id === 'fake') return adapter;
   throw new Error(`未知适配器 id: ${id}`);
 }
-
-/** 微任务/macrotask 全量冲刷（FakeAdapter 全链路只用微任务，一次 macrotask 边界即收敛） */
-const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 25));
 
 async function newSession(opts: Partial<CreateSessionInput> = {}) {
   return createSession({ cli: 'fake', workspace_id: wsId, ...opts });

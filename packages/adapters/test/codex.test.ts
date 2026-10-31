@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asChild, closeChild, makeAutoChild, makeFakeChild } from './helpers.js';
+import { asChild, closeChild, makeAutoChild, makeFakeChild, type FakeChild } from './helpers.js';
 import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import {
   CODEX_CMD,
@@ -22,46 +22,84 @@ const REAL_TURN_COMPLETED =
 const REAL_TURN_FAILED =
   '{"type":"turn.failed","error":{"message":"The \'gpt-5-codex\' model is not supported when using Codex with a ChatGPT account."}}';
 
+const MOCK_EXE = 'C:\\mock\\bin\\codex.exe';
+const MOCK_SHIM = 'C:\\mock\\bin\\codex.cmd';
+const SESSION_ID = '01a190bb-7347-76a0-bf51-479da1c12f63';
+
+interface RecordedSpawn {
+  cmd: string;
+  args: string[];
+  options: Record<string, unknown>;
+}
+
+function whereExeChild(): FakeChild {
+  return makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0);
+}
+
+/** runTurn 探针：拦截 where/which（返回 exe 命中行），其余命令记录并返回挂起假进程 */
+function recordSpawns(): { calls: RecordedSpawn[]; spawned: FakeChild[] } {
+  const calls: RecordedSpawn[] = [];
+  const spawned: FakeChild[] = [];
+  setSpawnFn(((cmd: string, args: string[], options: unknown) => {
+    calls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
+    if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+    const child = makeFakeChild();
+    spawned.push(child);
+    return asChild(child);
+  }) as unknown as SpawnFn);
+  return { calls, spawned };
+}
+
 describe('codex runTurn', () => {
-  it('参数拼装：首轮 exec <prompt> --json；续轮走 exec resume <id> <prompt>；--model 与 --skip-git-repo-check 按序', () => {
-    const spawnCalls: Array<{ cmd: string; args: string[]; options: Record<string, unknown> }> = [];
-    setSpawnFn(((cmd: string, args: string[], options: unknown) => {
-      spawnCalls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
-      return asChild(makeFakeChild());
-    }) as unknown as SpawnFn);
+  it('参数拼装：首轮 exec <prompt> --json；续轮走 exec resume <id> <prompt>；--model 与 --skip-git-repo-check 按序；win32 .exe 直连', async () => {
+    const { calls } = recordSpawns();
 
     codexAdapter.runTurn({ cwd: 'D:\\w', prompt: '第一轮' });
+    await vi.waitFor(() => expect(calls.filter((c) => c.args[0] === 'exec')).toHaveLength(1));
     codexAdapter.runTurn({
       cwd: 'D:\\w',
       prompt: '第二轮',
       model: 'gpt-5-codex',
-      adapterSessionId: '01a190bb-7347-76a0-bf51-479da1c12f63',
+      adapterSessionId: SESSION_ID,
     });
+    await vi.waitFor(() => expect(calls.filter((c) => c.args[0] === 'exec')).toHaveLength(2));
 
-    expect(spawnCalls[0]).toMatchObject({
-      cmd: CODEX_CMD,
+    const runs = calls.filter((c) => c.args[0] === 'exec');
+    expect(runs[0]).toMatchObject({
+      cmd: MOCK_EXE,
       args: ['exec', '第一轮', '--json', '--skip-git-repo-check'],
     });
-    expect(spawnCalls[1]).toMatchObject({
-      cmd: CODEX_CMD,
-      args: [
-        'exec',
-        'resume',
-        '01a190bb-7347-76a0-bf51-479da1c12f63',
-        '第二轮',
-        '--json',
-        '--model',
-        'gpt-5-codex',
-        '--skip-git-repo-check',
-      ],
+    expect(runs[1]).toMatchObject({
+      cmd: MOCK_EXE,
+      args: ['exec', 'resume', SESSION_ID, '第二轮', '--json', '--model', 'gpt-5-codex', '--skip-git-repo-check'],
     });
-    expect(spawnCalls[0]!.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
+    expect(runs[0]!.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
+  });
+
+  it('win32 仅有 .cmd 垫片时经 cmd.exe /d /s /c 包装', async () => {
+    const calls: RecordedSpawn[] = [];
+    setSpawnFn(((cmd: string, args: string[], options: unknown) => {
+      calls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
+      }
+      return asChild(makeFakeChild());
+    }) as unknown as SpawnFn);
+
+    codexAdapter.runTurn({ cwd: 'D:\\w', prompt: '第一轮' });
+    await vi.waitFor(() => expect(calls.some((c) => c.cmd === 'cmd.exe')).toBe(true));
+
+    const wrapped = calls.find((c) => c.cmd === 'cmd.exe')!;
+    expect(wrapped.args.slice(0, 4)).toEqual(['/d', '/s', '/c', MOCK_SHIM]);
+    expect(wrapped.args.slice(4)).toEqual(['exec', '第一轮', '--json', '--skip-git-repo-check']);
+    expect(wrapped.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
   });
 
   it('事件归一：真实事件流 → text/tool/error/end，thread_id 首次提取不被覆盖，非法 JSON 行忽略，exitCode 透传', async () => {
-    const child = makeFakeChild();
-    setSpawnFn(() => asChild(child));
+    const { spawned } = recordSpawns();
     const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
     const events: UnifiedEvent[] = [];
     handle.onEvent((e) => events.push(e));
     const resultPromise = handle.result;
@@ -90,16 +128,14 @@ describe('codex runTurn', () => {
       { type: 'text', delta: 'OK' },
       { type: 'end', exitCode: 0 },
     ]);
-    expect(result).toEqual<TurnResult>({
-      exitCode: 0,
-      adapterSessionId: '01a190bb-7347-76a0-bf51-479da1c12f63',
-    });
+    expect(result).toEqual<TurnResult>({ exitCode: 0, adapterSessionId: SESSION_ID });
   });
 
   it('turn.failed → error 事件', async () => {
-    const child = makeFakeChild();
-    setSpawnFn(() => asChild(child));
+    const { spawned } = recordSpawns();
     const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
     const events: UnifiedEvent[] = [];
     handle.onEvent((e) => events.push(e));
     const resultPromise = handle.result;
@@ -119,35 +155,32 @@ describe('codex runTurn', () => {
   });
 
   it('kill：TurnHandle.kill 停进程，close(null) 归一为 end(exitCode=-1)', async () => {
-    vi.useFakeTimers();
-    try {
-      const child = makeFakeChild();
-      child.kill = vi.fn(() => {
-        closeChild(child, null);
-        return true;
-      });
-      setSpawnFn(() => asChild(child));
-      const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });
-      const events: UnifiedEvent[] = [];
-      handle.onEvent((e) => events.push(e));
+    const { spawned } = recordSpawns();
+    const handle = codexAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
 
-      await handle.kill();
-      const result = await handle.result;
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
+    child.kill = vi.fn(() => {
+      closeChild(child, null);
+      return true;
+    });
 
-      expect(child.kill).toHaveBeenCalledOnce();
-      expect(events).toEqual([{ type: 'end', exitCode: -1 }]);
-      expect(result).toEqual({ exitCode: -1, adapterSessionId: null });
-    } finally {
-      vi.useRealTimers();
-    }
+    await handle.kill();
+    const result = await handle.result;
+
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(events).toEqual([{ type: 'end', exitCode: -1 }]);
+    expect(result).toEqual({ exitCode: -1, adapterSessionId: null });
   });
 });
 
 describe('codex detect', () => {
   it('where 命中 + --version 输出 trim 存 version', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
-      if (cmd === 'where' || cmd === 'which') return asChild(makeAutoChild([], 0));
-      if (cmd === CODEX_CMD && args.includes('--version')) {
+      if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE && args.includes('--version')) {
         return asChild(makeAutoChild([{ source: 'stdout', text: 'codex-cli 0.165.0\n' }], 0));
       }
       throw new Error(`unexpected spawn: ${cmd}`);
@@ -157,7 +190,7 @@ describe('codex detect', () => {
   });
 
   it('where/which 都失败 → installed=false version=null', async () => {
-    setSpawnFn(((cmd: string) => asChild(makeAutoChild([], 1))) as unknown as SpawnFn);
+    setSpawnFn(((cmd: string) => asChild(makeAutoChild([], cmd === 'where' ? 1 : 1))) as unknown as SpawnFn);
 
     await expect(codexAdapter.detect()).resolves.toEqual({ installed: false, version: null });
   });
@@ -166,8 +199,8 @@ describe('codex detect', () => {
 describe('codex listModels', () => {
   it('已安装 → 静态清单（source=static，至少含 gpt-5-codex）', async () => {
     setSpawnFn(((cmd: string) => {
-      if (cmd === 'where' || cmd === 'which') return asChild(makeAutoChild([], 0));
-      if (cmd === CODEX_CMD) return asChild(makeAutoChild([{ source: 'stdout', text: 'codex-cli 0.165.0\n' }], 0));
+      if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE) return asChild(makeAutoChild([{ source: 'stdout', text: 'codex-cli 0.165.0\n' }], 0));
       throw new Error(`unexpected spawn: ${cmd}`);
     }) as unknown as SpawnFn);
 
@@ -198,9 +231,9 @@ describe('parseCodexLine', () => {
   it('thread.started 的 thread_id 存入 state 且只取首次', () => {
     const state = createCodexParseState();
     expect(parseCodexLine(REAL_THREAD_STARTED, state)).toEqual([]);
-    expect(state.sessionId).toBe('01a190bb-7347-76a0-bf51-479da1c12f63');
+    expect(state.sessionId).toBe(SESSION_ID);
     parseCodexLine('{"type":"thread.started","thread_id":"second"}', state);
-    expect(state.sessionId).toBe('01a190bb-7347-76a0-bf51-479da1c12f63');
+    expect(state.sessionId).toBe(SESSION_ID);
   });
 
   it('item.completed：agent_message→text、command_execution→tool', () => {

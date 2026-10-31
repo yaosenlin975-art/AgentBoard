@@ -4,8 +4,11 @@ import { getIssue, updateIssue, type IssuePatch } from '../db/repos/issue.js';
 import { addComment } from './comments.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 
-/** 原子领取：并发领取仅一个成功；允许从"进行中"领取（覆盖用户手动拖到进行中后再派发） */
-export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: string): Issue {
+/**
+ * 原子领取：并发领取仅一个成功；允许从"进行中"领取（覆盖用户手动拖到进行中后再派发）。
+ * sessionId 传 null 即 REST/kb 的纯占用登记（不绑会话，评论不触发唤醒）。
+ */
+export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: string | null): Issue {
   const row = db.prepare(
     `UPDATE issue SET claimed_by=?, claimed_at=?, session_id=?, status='进行中', updated_at=?
      WHERE id=? AND claimed_by IS NULL AND status IN ('待规划','进行中')`

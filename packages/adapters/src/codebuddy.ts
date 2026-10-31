@@ -1,5 +1,11 @@
 import type { ModelInfo } from '@agentboard/shared';
-import { spawnLineChild } from './spawn.js';
+import {
+  collectOutput,
+  resolveSpawnForm,
+  resolveWindowsSpawnForm,
+  spawnLineChild,
+  whereCommand,
+} from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
 
 export const CODEBUDDY_CMD = 'codebuddy';
@@ -58,31 +64,11 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
   return events;
 }
 
-async function collectOutput(cmd: string, args: string[]): Promise<{ code: number | null; lines: string[] }> {
-  const child = spawnLineChild(cmd, args, process.cwd());
-  const lines: string[] = [];
-  child.onLine((_source, line) => {
-    lines.push(line);
-  });
-  const code = await child.exit;
-  return { code, lines };
-}
-
-async function commandExists(cmd: string): Promise<boolean> {
-  const finder = process.platform === 'win32' ? 'where' : 'which';
-  const primary = await collectOutput(finder, [cmd]);
-  if (primary.code === 0) return true;
-  if (process.platform === 'win32') {
-    // where 失败回退 which（Git Bash 环境）
-    const fallback = await collectOutput('which', [cmd]);
-    return fallback.code === 0;
-  }
-  return false;
-}
-
 async function detectCodebuddy(): Promise<{ installed: boolean; version: string | null }> {
-  if (!(await commandExists(CODEBUDDY_CMD))) return { installed: false, version: null };
-  const { lines } = await collectOutput(CODEBUDDY_CMD, ['--version']);
+  const whereLines = await whereCommand(CODEBUDDY_CMD);
+  if (whereLines.length === 0) return { installed: false, version: null };
+  const form = resolveWindowsSpawnForm(whereLines, CODEBUDDY_CMD) ?? { cmd: CODEBUDDY_CMD, prefix: [] as string[] };
+  const { lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
   const version = lines.map((l) => l.trim()).find((l) => l !== '') ?? '';
   return { installed: true, version: version || null };
 }
@@ -108,44 +94,60 @@ export const codebuddyAdapter: AgentAdapter = {
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodebuddy();
     if (!det.installed) return [];
-    const { lines } = await collectOutput(CODEBUDDY_CMD, ['--help']);
+    const form = await resolveSpawnForm(CODEBUDDY_CMD);
+    const { lines } = await collectOutput(form.cmd, [...form.prefix, '--help']);
     return extractStaticModels(lines.join('\n'));
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
     // 行为钉死：codebuddy -p <prompt> [--model <model>] [--resume <adapterSessionId>] --output-format json
-    // 参数数组直传不经 shell（spawnLineChild 内 shell:false）
+    // 参数数组直传不经 shell（spawnLineChild 内 shell:false）；
+    // win32 下 .cmd/.bat 垫片经 resolveSpawnForm 解析为 cmd.exe /d /s /c 包装（与 opencode/dsh 一致）。
     const args: string[] = ['-p', opts.prompt];
     if (opts.model) args.push('--model', opts.model);
     if (opts.adapterSessionId) args.push('--resume', opts.adapterSessionId);
     args.push('--output-format', 'json');
 
-    const child = spawnLineChild(CODEBUDDY_CMD, args, opts.cwd);
     const state = createParseState();
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];
     let settled = false;
+    let killed = false;
+    let child: ReturnType<typeof spawnLineChild> | null = null;
     let resolveResult!: (r: TurnResult) => void;
     const result = new Promise<TurnResult>((resolve) => {
       resolveResult = resolve;
     });
 
-    child.onLine((_source, line) => {
-      for (const event of parseCodebuddyLine(line, state)) {
-        for (const cb of eventCbs) cb(event);
-      }
-    });
-    child.onClose((code) => {
+    const finish = (code: number | null) => {
       if (settled) return;
       settled = true;
       const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
       for (const cb of eventCbs) cb({ type: 'end', exitCode });
       resolveResult({ exitCode, adapterSessionId: state.sessionId });
-    });
+    };
+
+    void (async () => {
+      const form = await resolveSpawnForm(CODEBUDDY_CMD);
+      if (killed) {
+        finish(-1);
+        return;
+      }
+      child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      child.onLine((_source, line) => {
+        for (const event of parseCodebuddyLine(line, state)) {
+          for (const cb of eventCbs) cb(event);
+        }
+      });
+      child.onClose((code) => finish(code));
+    })();
 
     return {
       onEvent(cb) {
         eventCbs.push(cb);
       },
-      kill: () => child.kill(),
+      async kill() {
+        killed = true;
+        await child?.kill();
+      },
       result,
     };
   },

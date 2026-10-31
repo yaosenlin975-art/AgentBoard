@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asChild, closeChild, makeAutoChild, makeFakeChild } from './helpers.js';
+import { asChild, closeChild, makeAutoChild, makeFakeChild, type FakeChild } from './helpers.js';
 import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import {
   CODEBUDDY_CMD,
@@ -14,34 +14,80 @@ import type { TurnResult, UnifiedEvent } from '../src/types.js';
 const REAL_MODEL_HELP_LINE =
   '  --model <model>                                  Model for the current session. Please provide the model ID. Currently supported: (hy4-preview, hy3, hy3-x, deepseek-v4.1-flash, step-5-preview, glm-5.3, glm-5.3-flash, glm-5.2, glm-5.1, glm-5v-turbo, space-bunny, minimax-m3.1-flash, minimax-m3, minimax-m2.7, kimi-k3.1-pro, kimi-k3-1, kimi-k2.8-preview, deepseek-v4-pro, mimo-v2.6-pro)';
 
+const MOCK_EXE = 'C:\\mock\\bin\\codebuddy.exe';
+const MOCK_SHIM = 'C:\\mock\\bin\\codebuddy.cmd';
+
+interface RecordedSpawn {
+  cmd: string;
+  args: string[];
+  options: Record<string, unknown>;
+}
+
+function whereExeChild(): FakeChild {
+  return makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0);
+}
+
+/** runTurn 探针：拦截 where/which（返回 exe 命中行），其余命令记录并返回挂起假进程 */
+function recordSpawns(): { calls: RecordedSpawn[]; spawned: FakeChild[] } {
+  const calls: RecordedSpawn[] = [];
+  const spawned: FakeChild[] = [];
+  setSpawnFn(((cmd: string, args: string[], options: unknown) => {
+    calls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
+    if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+    const child = makeFakeChild();
+    spawned.push(child);
+    return asChild(child);
+  }) as unknown as SpawnFn);
+  return { calls, spawned };
+}
+
 describe('codebuddy runTurn', () => {
-  it('参数拼装：首次无 --resume；续轮 --model 与 --resume 按序；--output-format json 收尾', () => {
-    const spawnCalls: Array<{ cmd: string; args: string[]; options: Record<string, unknown> }> = [];
-    setSpawnFn(((cmd: string, args: string[], options: unknown) => {
-      spawnCalls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
-      return asChild(makeFakeChild());
-    }) as unknown as SpawnFn);
+  it('参数拼装：首次无 --resume；续轮 --model 与 --resume 按序；--output-format json 收尾；win32 .exe 直连', async () => {
+    const { calls } = recordSpawns();
 
     codebuddyAdapter.runTurn({ cwd: 'D:\\w', prompt: '第一轮' });
+    await vi.waitFor(() => expect(calls.filter((c) => c.args[0] === '-p')).toHaveLength(1));
     codebuddyAdapter.runTurn({
       cwd: 'D:\\w',
       prompt: '第二轮',
       model: 'glm-5.3',
       adapterSessionId: 'sess-1',
     });
+    await vi.waitFor(() => expect(calls.filter((c) => c.args[0] === '-p')).toHaveLength(2));
 
-    expect(spawnCalls[0]).toMatchObject({ cmd: CODEBUDDY_CMD, args: ['-p', '第一轮', '--output-format', 'json'] });
-    expect(spawnCalls[1]).toMatchObject({
-      cmd: CODEBUDDY_CMD,
+    const runs = calls.filter((c) => c.args[0] === '-p');
+    expect(runs[0]).toMatchObject({ cmd: MOCK_EXE, args: ['-p', '第一轮', '--output-format', 'json'] });
+    expect(runs[1]).toMatchObject({
+      cmd: MOCK_EXE,
       args: ['-p', '第二轮', '--model', 'glm-5.3', '--resume', 'sess-1', '--output-format', 'json'],
     });
-    expect(spawnCalls[0]!.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
+    expect(runs[0]!.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
+  });
+
+  it('win32 仅有 .cmd 垫片时经 cmd.exe /d /s /c 包装', async () => {
+    const calls: RecordedSpawn[] = [];
+    setSpawnFn(((cmd: string, args: string[], options: unknown) => {
+      calls.push({ cmd, args: [...args], options: options as Record<string, unknown> });
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
+      }
+      return asChild(makeFakeChild());
+    }) as unknown as SpawnFn);
+
+    codebuddyAdapter.runTurn({ cwd: 'D:\\w', prompt: '第一轮' });
+    await vi.waitFor(() => expect(calls.some((c) => c.cmd === 'cmd.exe')).toBe(true));
+
+    const wrapped = calls.find((c) => c.cmd === 'cmd.exe')!;
+    expect(wrapped.args.slice(0, 4)).toEqual(['/d', '/s', '/c', MOCK_SHIM]);
+    expect(wrapped.args.slice(4)).toEqual(['-p', '第一轮', '--output-format', 'json']);
+    expect(wrapped.options).toMatchObject({ cwd: 'D:\\w', shell: false, windowsHide: true });
   });
 
   it('事件归一：非法 JSON 行忽略、text/tool 映射、session_id 首次提取不被覆盖、exitCode 透传', async () => {
-    const child = makeFakeChild();
-    setSpawnFn(() => asChild(child));
+    const { spawned } = recordSpawns();
     const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
     const events: UnifiedEvent[] = [];
     handle.onEvent((e) => events.push(e));
     const resultPromise = handle.result;
@@ -70,35 +116,32 @@ describe('codebuddy runTurn', () => {
   });
 
   it('kill：TurnHandle.kill 停进程，close(null) 归一为 end(exitCode=-1)', async () => {
-    vi.useFakeTimers();
-    try {
-      const child = makeFakeChild();
-      child.kill = vi.fn(() => {
-        closeChild(child, null);
-        return true;
-      });
-      setSpawnFn(() => asChild(child));
-      const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });
-      const events: UnifiedEvent[] = [];
-      handle.onEvent((e) => events.push(e));
+    const { spawned } = recordSpawns();
+    const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
 
-      await handle.kill();
-      const result = await handle.result;
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
+    child.kill = vi.fn(() => {
+      closeChild(child, null);
+      return true;
+    });
 
-      expect(child.kill).toHaveBeenCalledOnce();
-      expect(events).toEqual([{ type: 'end', exitCode: -1 }]);
-      expect(result).toEqual({ exitCode: -1, adapterSessionId: null });
-    } finally {
-      vi.useRealTimers();
-    }
+    await handle.kill();
+    const result = await handle.result;
+
+    expect(child.kill).toHaveBeenCalledOnce();
+    expect(events).toEqual([{ type: 'end', exitCode: -1 }]);
+    expect(result).toEqual({ exitCode: -1, adapterSessionId: null });
   });
 });
 
 describe('codebuddy detect', () => {
   it('where 命中 + --version 输出 trim 存 version', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
-      if (cmd === 'where' || cmd === 'which') return asChild(makeAutoChild([], 0));
-      if (cmd === CODEBUDDY_CMD && args.includes('--version')) {
+      if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE && args.includes('--version')) {
         return asChild(makeAutoChild([{ source: 'stdout', text: '2.177.0\n' }], 0));
       }
       throw new Error(`unexpected spawn: ${cmd}`);
@@ -117,11 +160,11 @@ describe('codebuddy detect', () => {
 describe('codebuddy listModels', () => {
   it('已安装 → 实跑 --help 抽取静态清单（source=static）', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
-      if (cmd === 'where' || cmd === 'which') return asChild(makeAutoChild([], 0));
-      if (cmd === CODEBUDDY_CMD && args.includes('--version')) {
+      if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE && args.includes('--version')) {
         return asChild(makeAutoChild([{ source: 'stdout', text: '2.177.0\n' }], 0));
       }
-      if (cmd === CODEBUDDY_CMD && args.includes('--help')) {
+      if (cmd === MOCK_EXE && args.includes('--help')) {
         return asChild(
           makeAutoChild(
             [
