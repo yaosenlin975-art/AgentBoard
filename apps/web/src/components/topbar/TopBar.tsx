@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useAppStore, type WsStatus } from '../../state/appStore';
+import { usePanelStore } from '../../state/panelStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { CliBadges } from './CliBadges';
 import { NewIssueDialog } from './NewIssueDialog';
@@ -23,6 +24,11 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   const wsStatus = useAppStore((s) => s.wsStatus);
   const [theme, cycleTheme] = useTheme();
+  // 未读徽标：各会话未读计数总和（Record<sessionId, number>）
+  const openChat = usePanelStore((s) => s.openChat);
+  const unreadTotal = usePanelStore((s) =>
+    Object.values(s.unread).reduce<number>((sum, n) => sum + n, 0),
+  );
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-4 border-b border-neutral-200 bg-white px-4 dark:border-neutral-800 dark:bg-neutral-900">
@@ -58,6 +64,25 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
           className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
         >
           {THEME_LABEL[theme]}
+        </button>
+
+        <button
+          type="button"
+          data-testid="topbar-chat"
+          aria-label="聊天"
+          title="打开聊天"
+          onClick={() => openChat()}
+          className="relative rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          聊天
+          {unreadTotal > 0 && (
+            <span
+              data-testid="topbar-chat-unread"
+              className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1 text-[10px] leading-4 font-medium text-white"
+            >
+              {unreadTotal}
+            </span>
+          )}
         </button>
 
         <button
