@@ -19,10 +19,10 @@ export default function App() {
   const current = (workspaces ?? []).find((w) => w.id === workspaceId) ?? null;
 
   return (
-    <div className="flex min-h-screen flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="flex h-screen flex-col overflow-hidden bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       <TopBar workspace={current} />
       <div className="flex min-h-0 flex-1">
-        <aside className="w-[260px] shrink-0 border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <aside className="w-[260px] shrink-0 overflow-y-auto border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           <WorkspaceList />
         </aside>
         <main className="min-w-0 flex-1 overflow-auto">

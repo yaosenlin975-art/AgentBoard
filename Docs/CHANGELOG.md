@@ -1,5 +1,10 @@
 # CHANGELOG.md
 
+## [2026-10-31] 修复聊天区新增消息顶开整页布局
+
+- App 根容器 `min-h-screen` → `h-screen overflow-hidden`：恢复高度链（根有确定高度 → 中区 flex-1 生效），消息增长不再撑开整页滚动，各区域改为内部滚动。
+- 左栏工作空间 aside 加 `overflow-y-auto`（列表过长自身滚动）；Board / RightPanel / ChatPanel / DetailPanel / MessageList 各级链核对无需改动（TopBar 已有 shrink-0，Board 列行与 DetailPanel/MessageList 已有 overflow 内滚结构）；新增 `App.test.tsx` 断言根容器与左栏滚动类。
+
 ## [2026-10-31] spawn 崩溃防御与模型真下拉
 
 - 适配器 spawn 崩溃防御：`spawnLineChild` 挂 child `'error'` 处理器，spawn 失败（如 ENOENT）按异常退出归一——error.message 写入 stderr 尾部环形缓冲、failure promise 以 `SpawnFailedError`（code `SPAWN_FAILED`，message 含命令名与原始原因）reject、exit/close 事件流照常触发；`collectOutput` 据此 reject，`whereCommand` 把 finder 自身 spawn 失败归一为空结果（探测不抛错）。CLI 不存在时 `GET /api/clis/:id/models` 走 detect 未安装 → 200 空数组，服务进程不再因 unhandled `'error'` 崩溃。
