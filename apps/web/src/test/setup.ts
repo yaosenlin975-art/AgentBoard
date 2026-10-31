@@ -27,3 +27,18 @@ if (typeof window.matchMedia !== 'function') {
     }),
   });
 }
+
+// jsdom 未实现 PointerEvent（fireEvent pointer* 的 clientX 需要）
+if (typeof window.PointerEvent !== 'function') {
+  class PointerEventPolyfill extends MouseEvent {
+    readonly pointerId: number;
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 0;
+    }
+  }
+  Object.defineProperty(window, 'PointerEvent', {
+    writable: true,
+    value: PointerEventPolyfill,
+  });
+}

@@ -3,6 +3,7 @@ import type { Workspace } from '@agentboard/shared';
 import { useAppStore, type WsStatus } from '../../state/appStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { CliBadges } from './CliBadges';
+import { NewIssueDialog } from './NewIssueDialog';
 import { SettingsDialog } from './SettingsDialog';
 
 const WS_DOT: Record<WsStatus, string> = {
@@ -19,6 +20,7 @@ const WS_LABEL: Record<WsStatus, string> = {
 
 export function TopBar({ workspace }: { workspace: Workspace | null }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
   const wsStatus = useAppStore((s) => s.wsStatus);
   const [theme, cycleTheme] = useTheme();
 
@@ -67,15 +69,12 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
           设置
         </button>
 
-        {/* TODO(Task 13): 打开新建 issue 弹窗；Task 11 先禁用（未选工作空间禁用） */}
         <button
           type="button"
           aria-label="新建 issue"
           disabled={!workspace}
           title={workspace ? '新建 issue' : '请先选择工作空间'}
-          onClick={() => {
-            /* Task 13 接管 */
-          }}
+          onClick={() => setNewIssueOpen(true)}
           className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
         >
           + 新建 issue
@@ -83,6 +82,9 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
       </div>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {workspace && (
+        <NewIssueDialog open={newIssueOpen} workspaceId={workspace.id} onClose={() => setNewIssueOpen(false)} />
+      )}
     </header>
   );
 }
