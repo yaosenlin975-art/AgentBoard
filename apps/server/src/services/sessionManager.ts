@@ -1,9 +1,417 @@
 /**
- * Task 8 实现完整 sessionManager（轮次编排/队列/并发/停止/重启恢复）；
- * 本文件当前仅钉注入接口，供 comments 服务与测试解耦。
+ * Task 8：会话轮次编排（Pinned Contracts · 会话轮次规则）。
  *
- * 语义（Pinned Contracts · 会话轮次规则）：
- * - 目标会话空闲：直接起轮，返回 { queued: false }
- * - 目标会话运行中：文本入内存队列，返回 { queued: true }
+ * 模块级单例（不导出类）：Task 9 启动时 initSessionManager(db, getAdapter, { maxConcurrentTurns }) 装配；
+ * comments 服务经 comments.setSessionSender(sendToSession) 接入评论唤醒。
  */
+import type { Message, Session, WsEvent } from '@agentboard/shared';
+import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
+import type { Db } from '../db/connection.js';
+import {
+  createSession as insertSessionRow,
+  getSession,
+  updateSession,
+  type SessionPatch,
+} from '../db/repos/session.js';
+import { addMessage } from '../db/repos/message.js';
+import { getWorkspace } from '../db/repos/workspace.js';
+import { getIssue } from '../db/repos/issue.js';
+import { NotFoundError, ValidationError } from '../errors.js';
+import { failIssue } from './claim.js';
+import { addComment } from './comments.js';
+
+/** comments 服务唤醒注入接口（Task 9 装配真实 sendToSession；测试注入 stub） */
 export type SessionSender = (sessionId: string, text: string) => Promise<{ queued: boolean }>;
+
+export interface SessionManagerOptions {
+  /** 全局同时运行的轮次进程上限 */
+  maxConcurrentTurns: number;
+}
+
+export interface CreateSessionInput {
+  cli: string;
+  model?: string | null;
+  issue_id?: string | null;
+  /** 自由会话（无 issue_id）必填：会话归属工作空间；绑 issue 时从 issue 推导 */
+  workspace_id?: string;
+  prompt?: string | null;
+  reuse_session?: 'last' | 'new';
+}
+
+/** 单个轮次的上下文；stop 只作用于发出时的那一轮，新轮次替换 current 后旧轮结果弃用 */
+interface TurnContext {
+  handle: TurnHandle | null;
+  stopRequested: boolean;
+}
+
+interface SessionState {
+  /** 运行中收到的待合并消息（各自已落 user 行；合并后不再重复落库） */
+  queue: string[];
+  /** 本会话有无在途轮次（含等全局槽位） */
+  turnActive: boolean;
+  current: TurnContext | null;
+}
+
+let db: Db | null = null;
+let resolveAdapter: ((cliId: string) => AgentAdapter) | null = null;
+let maxConcurrentTurns = 3;
+let activeTurns = 0;
+const slotWaiters: Array<() => void> = [];
+const states = new Map<string, SessionState>();
+let broadcaster: ((event: WsEvent) => void) | null = null;
+
+function assertAssembled(): Db {
+  if (!db) throw new Error('sessionManager 未装配');
+  return db;
+}
+
+/** Task 9 启动装配；重复调用即重建 manager（内存队列、槽位计数、广播钩子清零） */
+export function initSessionManager(
+  database: Db,
+  getAdapter: (cliId: string) => AgentAdapter,
+  opts: SessionManagerOptions,
+): void {
+  if (!Number.isInteger(opts.maxConcurrentTurns) || opts.maxConcurrentTurns < 1) {
+    throw new ValidationError('maxConcurrentTurns 必须为 ≥1 的整数');
+  }
+  db = database;
+  resolveAdapter = getAdapter;
+  maxConcurrentTurns = opts.maxConcurrentTurns;
+  states.clear();
+  activeTurns = 0;
+  slotWaiters.length = 0;
+  broadcaster = null;
+}
+
+/** 恢复未装配状态（测试隔离用） */
+export function resetSessionManager(): void {
+  db = null;
+  resolveAdapter = null;
+  maxConcurrentTurns = 3;
+  states.clear();
+  activeTurns = 0;
+  slotWaiters.length = 0;
+  broadcaster = null;
+}
+
+/** Task 9 接 WS hub：广播 session.event / message.added / session.changed */
+export function setBroadcaster(fn: (event: WsEvent) => void): void {
+  broadcaster = fn;
+}
+
+function broadcast(event: WsEvent): void {
+  broadcaster?.(event);
+}
+
+function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
+  const session = updateSession(assertAssembled(), sessionId, patch);
+  broadcast({ type: 'session.changed', session });
+  return session;
+}
+
+function persistMessage(sessionId: string, role: Message['role'], content: string): Message {
+  const message = addMessage(assertAssembled(), { session_id: sessionId, role, content });
+  broadcast({ type: 'message.added', message });
+  return message;
+}
+
+function ensureState(sessionId: string): SessionState {
+  let state = states.get(sessionId);
+  if (!state) {
+    state = { queue: [], turnActive: false, current: null };
+    states.set(sessionId, state);
+  }
+  return state;
+}
+
+// ---- 全局 FIFO 槽位 ----
+
+function acquireSlot(): Promise<void> {
+  if (slotWaiters.length === 0 && activeTurns < maxConcurrentTurns) {
+    activeTurns += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    slotWaiters.push(resolve);
+  });
+}
+
+/** 槽位释放：有等待者直接移交（先到先发，后到不抢占），否则归还计数 */
+function releaseSlot(): void {
+  const next = slotWaiters.shift();
+  if (next) {
+    next();
+  } else if (activeTurns > 0) {
+    activeTurns -= 1;
+  }
+}
+
+// ---- 对外 API ----
+
+export async function createSession(input: CreateSessionInput): Promise<Session> {
+  const database = assertAssembled();
+  const issue = input.issue_id ? getIssue(database, input.issue_id) : null;
+  if (input.issue_id && !issue) throw new NotFoundError('任务不存在');
+  const workspaceId = issue ? issue.workspace_id : input.workspace_id;
+  if (!workspaceId) throw new ValidationError('自由会话必须提供 workspace_id');
+  if (!getWorkspace(database, workspaceId)) throw new NotFoundError('工作空间不存在');
+
+  let adapterSessionId: string | null = null;
+  if (input.reuse_session === 'last' && issue) {
+    const prev = database
+      .prepare(
+        `SELECT adapter_session_id FROM session WHERE issue_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT 1`,
+      )
+      .get(issue.id) as { adapter_session_id: string | null } | undefined;
+    adapterSessionId = prev?.adapter_session_id ?? null;
+  }
+
+  const session = insertSessionRow(database, {
+    workspace_id: workspaceId,
+    issue_id: issue?.id ?? null,
+    cli: input.cli,
+    model: input.model ?? null,
+    status: '运行中',
+  });
+  if (adapterSessionId !== null) {
+    updateSession(database, session.id, { adapter_session_id: adapterSessionId });
+  }
+  ensureState(session.id);
+
+  const prompt = input.prompt ?? '';
+  if (prompt.trim() !== '') {
+    persistMessage(session.id, 'user', prompt);
+    void beginTurn(session.id, prompt);
+  }
+  return getSession(database, session.id)!;
+}
+
+export async function sendToSession(sessionId: string, text: string): Promise<{ queued: boolean }> {
+  const database = assertAssembled();
+  if (text.trim() === '') throw new ValidationError('消息内容不能为空');
+  if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
+  const state = ensureState(sessionId);
+
+  // 先落 user 行（空闲/排队都落）
+  persistMessage(sessionId, 'user', text);
+
+  if (state.turnActive) {
+    state.queue.push(text);
+    return { queued: true };
+  }
+
+  // 空闲（含停止/失败后续聊）：回运行中并立即起轮
+  state.turnActive = true;
+  if (getSession(database, sessionId)!.status !== '运行中') {
+    persistSessionPatch(sessionId, { status: '运行中' });
+  }
+  void beginTurn(sessionId, text);
+  return { queued: false };
+}
+
+export async function stopSession(sessionId: string): Promise<Session> {
+  const database = assertAssembled();
+  if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
+  const state = ensureState(sessionId);
+  state.turnActive = false;
+  const ctx = state.current;
+  if (ctx) {
+    ctx.stopRequested = true;
+    const handle = ctx.handle;
+    ctx.handle = null;
+    if (handle) {
+      try {
+        await handle.kill();
+      } catch {
+        // kill 失败不阻塞状态落库
+      }
+    }
+  }
+  return persistSessionPatch(sessionId, { status: '已结束' });
+}
+
+/**
+ * 服务重启恢复：所有 '运行中' session 置 '失败'；其占用 issue 走 fail 流程，
+ * 评论作者为 system（计划钉死"system 评论"，与 failIssue 的 agent:<cli> 评论不同，故释放 SQL 就地执行）。
+ */
+export async function recoverOnBoot(database: Db): Promise<void> {
+  const stale = database.prepare(`SELECT * FROM session WHERE status = '运行中'`).all() as Session[];
+  for (const session of stale) {
+    const updated = updateSession(database, session.id, { status: '失败' });
+    broadcast({ type: 'session.changed', session: updated });
+    if (!session.issue_id) continue;
+    const issue = getIssue(database, session.issue_id);
+    if (!issue || issue.claimed_by === null || issue.session_id !== session.id) continue;
+    const released = database
+      .prepare(
+        `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL, updated_at=?
+         WHERE id=? AND claimed_by IS NOT NULL`,
+      )
+      .run(Date.now(), issue.id);
+    if (released.changes === 1) {
+      await addComment(database, issue.id, 'system', '服务重启，会话中断');
+    }
+  }
+}
+
+// ---- 轮次执行 ----
+
+async function beginTurn(sessionId: string, prompt: string): Promise<void> {
+  const state = states.get(sessionId);
+  if (!state) return;
+  const ctx: TurnContext = { handle: null, stopRequested: false };
+  state.current = ctx;
+  state.turnActive = true;
+  try {
+    await acquireSlot();
+    if (state.current !== ctx) return; // 已被新轮次取代
+    if (ctx.stopRequested) {
+      state.turnActive = false; // 等槽位期间被 stop：放弃本轮，队列保留
+      return;
+    }
+    await executeTurn(sessionId, state, ctx, prompt);
+  } catch (err) {
+    // 兜底：未预期异常不崩进程，会话置失败
+    if (state.current === ctx) {
+      state.turnActive = false;
+      state.current = null;
+      try {
+        await startError(sessionId, err);
+      } catch {
+        // 兜底失败静默
+      }
+    }
+  } finally {
+    releaseSlot();
+  }
+}
+
+async function executeTurn(
+  sessionId: string,
+  state: SessionState,
+  ctx: TurnContext,
+  prompt: string,
+): Promise<void> {
+  const database = assertAssembled();
+  const resolve = resolveAdapter;
+  if (!resolve) return;
+
+  const session = getSession(database, sessionId);
+  if (!session) {
+    state.turnActive = false;
+    state.current = null;
+    return;
+  }
+  const workspace = getWorkspace(database, session.workspace_id);
+  if (!workspace) {
+    state.turnActive = false;
+    state.current = null;
+    await startError(sessionId, new Error(`工作空间不存在: ${session.workspace_id}`));
+    return;
+  }
+
+  let adapter: AgentAdapter;
+  try {
+    adapter = resolve(session.cli);
+  } catch (err) {
+    state.turnActive = false;
+    state.current = null;
+    await startError(sessionId, err);
+    return;
+  }
+
+  const opts: RunTurnOptions = {
+    cwd: workspace.path,
+    model: session.model ?? undefined,
+    prompt,
+    adapterSessionId: session.adapter_session_id ?? undefined,
+  };
+
+  let handle: TurnHandle;
+  try {
+    handle = adapter.runTurn(opts);
+  } catch (err) {
+    state.turnActive = false;
+    state.current = null;
+    await startError(sessionId, err);
+    return;
+  }
+  ctx.handle = handle;
+
+  // 连续 text delta 聚合为一条 assistant 消息；tool/error/end 切分
+  let textBuf = '';
+  const flushText = () => {
+    if (textBuf === '') return;
+    const content = textBuf;
+    textBuf = '';
+    persistMessage(sessionId, 'assistant', content);
+  };
+  handle.onEvent((event: UnifiedEvent) => {
+    broadcast({ type: 'session.event', session_id: sessionId, event });
+    switch (event.type) {
+      case 'text':
+        textBuf += event.delta;
+        break;
+      case 'tool':
+        flushText();
+        persistMessage(sessionId, 'event', JSON.stringify({ name: event.name, input: event.input }));
+        break;
+      case 'error':
+        flushText();
+        persistMessage(sessionId, 'error', event.message);
+        break;
+      case 'end':
+        flushText();
+        break;
+    }
+  });
+
+  const result = await handle.result;
+  ctx.handle = null;
+  flushText(); // 无 end 事件收尾（kill / 异常退出）时兜底落盘
+
+  if (state.current !== ctx) return; // 已被新轮次取代：旧结果弃用
+  if (ctx.stopRequested) return; // stop 已置 '已结束' 并保留队列
+
+  if (result.adapterSessionId !== null) {
+    persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
+  }
+
+  if (state.queue.length > 0) {
+    const merged = state.queue.join('\n\n');
+    state.queue = [];
+    void beginTurn(sessionId, merged); // turnActive 保持 true；下一轮重走全局槽位 FIFO
+    return;
+  }
+
+  state.turnActive = false;
+  state.current = null;
+  if (result.exitCode !== 0) {
+    await markSessionFailed(sessionId, '会话异常退出');
+  } else {
+    persistSessionPatch(sessionId, { status: '已结束' });
+  }
+}
+
+/** 起轮失败（未知 CLI / 适配器抛错 / 工作空间丢失）：error 消息落库 + 会话置失败，不崩进程（Review Focus 5） */
+async function startError(sessionId: string, err: unknown): Promise<void> {
+  const detail = err instanceof Error ? err.message : String(err);
+  if (db) persistMessage(sessionId, 'error', `会话启动失败：${detail}`);
+  await markSessionFailed(sessionId, '会话异常退出');
+}
+
+/** 会话置失败；issue 被本会话占用时走 fail 流程（释放占用 + agent:<cli> 失败评论） */
+async function markSessionFailed(sessionId: string, reason: string): Promise<void> {
+  const database = assertAssembled();
+  persistSessionPatch(sessionId, { status: '失败' });
+  const session = getSession(database, sessionId);
+  if (!session?.issue_id) return;
+  const issue = getIssue(database, session.issue_id);
+  if (!issue || issue.session_id !== sessionId || issue.claimed_by === null) return;
+  try {
+    await failIssue(database, session.issue_id, session.cli, reason);
+  } catch {
+    // 占用态在间隙被释放等竞态：会话失败已落库，不阻塞收尾
+  }
+}
