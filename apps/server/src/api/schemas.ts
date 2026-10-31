@@ -31,6 +31,8 @@ export const patchIssueSchema = z
 
 export const addCommentSchema = z.object({
   content: z.string().min(1, 'content 不能为空'),
+  /** agent 经 kb comment 写评论时声明身份：有 → author='agent:<agent_id>'，无 → 'user' */
+  agent_id: z.string().trim().min(1).optional(),
 });
 
 export const claimSchema = z.object({

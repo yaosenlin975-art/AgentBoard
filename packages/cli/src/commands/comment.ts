@@ -18,11 +18,12 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
   if (content === undefined || content.trim() === '') {
     throw new Error('缺少评论内容：传内容参数，或用 --stdin 从标准输入读取');
   }
+  // agent 身份声明：置 KB_AGENT → 请求体带 agent_id，服务端作者记为 agent:<KB_AGENT>；未置 → user
   const res = await request<{ comment: IssueComment; woke: boolean }>(
     ctx.base,
     'POST',
     `/api/issues/${encodeURIComponent(id)}/comments`,
-    { content },
+    { content, agent_id: process.env.KB_AGENT || undefined },
   );
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(res, null, 2)}\n`);

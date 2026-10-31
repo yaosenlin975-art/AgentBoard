@@ -299,6 +299,23 @@ describe('comment', () => {
     expect(t.out()).toContain('已唤醒占用 agent');
   });
 
+  it('KB_AGENT 置位 → POST 体带 agent_id（服务端作者记为 agent:<KB_AGENT>）', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/comments'
+        ? { status: 200, body: { comment: { ...COMMENTS[0]!, author: 'agent:coder-bot' }, woke: false } }
+        : undefined;
+    const t = makeIo();
+    process.env.KB_AGENT = 'coder-bot';
+    try {
+      const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '进展'], t.io);
+      expect(code).toBe(0);
+      expect(calls[0]?.body).toEqual({ content: '进展', agent_id: 'coder-bot' });
+      expect(t.out()).toContain('未唤醒（任务未被占用，仅留言）');
+    } finally {
+      delete process.env.KB_AGENT;
+    }
+  });
+
   it('woke=false 打印未唤醒（仅留言）', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/comments'

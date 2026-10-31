@@ -144,7 +144,9 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.post('/issues/:id/comments', async (req, res) => {
     const body = parseBody(addCommentSchema, req.body);
-    const { comment, woke } = await addComment(db, req.params.id!, 'user', body.content);
+    // 作者身份：body.agent_id 存在 → agent:<agent_id>（agent 写评论），否则 user；唤醒判定在 addComment 内不变
+    const author: string = body.agent_id ? `agent:${body.agent_id}` : 'user';
+    const { comment, woke } = await addComment(db, req.params.id!, author, body.content);
     broadcast({ type: 'comment.added', comment });
     broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
     res.json({ comment, woke });

@@ -246,6 +246,34 @@ describe('comments', () => {
     expect(missing.status).toBe(404);
   });
 
+  it('带 agent_id → author=agent:<agent_id>（agent 写评论身份）', async () => {
+    const wsId = await mkSpace();
+    const id = (await mkIssue(wsId)).id as string;
+
+    const res = await request(app)
+      .post(`/api/issues/${id}/comments`)
+      .send({ content: 'agent 进展汇报', agent_id: 'coder-bot' });
+    expect(res.status).toBe(200);
+    expect(res.body.comment).toMatchObject({ author: 'agent:coder-bot', content: 'agent 进展汇报' });
+
+    const list = await request(app).get(`/api/issues/${id}/comments`);
+    expect(list.body).toEqual([expect.objectContaining({ author: 'agent:coder-bot' })]);
+  });
+
+  it('不带 agent_id → author=user（既有行为不变）；agent_id 空串 → 400', async () => {
+    const wsId = await mkSpace();
+    const id = (await mkIssue(wsId)).id as string;
+
+    const res = await request(app).post(`/api/issues/${id}/comments`).send({ content: '用户留言' });
+    expect(res.status).toBe(200);
+    expect(res.body.comment).toMatchObject({ author: 'user', content: '用户留言' });
+
+    const bad = await request(app)
+      .post(`/api/issues/${id}/comments`)
+      .send({ content: 'x', agent_id: '   ' });
+    expect(bad.status).toBe(400);
+  });
+
   it('占用中（session 绑定）：woke=true 且首轮收到唤醒文本（真实 sendToSession 全链路）', async () => {
     const wsId = await mkSpace();
     const id = (await mkIssue(wsId)).id as string;
