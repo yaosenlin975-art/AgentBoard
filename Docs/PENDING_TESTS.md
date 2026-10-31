@@ -7,7 +7,7 @@
   - 步骤2：逐家派发最小任务（如"回复两个字：完成"），观察聊天视图流式输出与会话结束状态
   - 步骤3：确认 agent 执行 `kb done` 后 issue 进"待验收"、占用释放、notes 落评论流
   - 预期结果：四家均有 assistant 回复渲染，会话状态"已结束"，issue 占用释放
-  - 说明：codebuddy 2026-10-31 自动冒烟结论——派发→占用→进程 exit 0→会话"已结束"全链路通，但零 assistant 文本、adapter_session_id 为 null、agent 未回报（模型留空运行）；需人工带模型重跑复核
+  - 说明：codex 2026-10-31 已经服务端端到端验证通过（派发→thread.started→assistant"OK"→已结束→强制释放；本轮耗时 138s 系本机代理网络超时重连）。codebuddy 本机 401（CODEBUDDY_AUTH_TOKEN 对 CLI 直连失效，stderr 已可在会话消息中看到该诊断）——修复登录后重测；opencode 未跑端到端（run --format json 实测有 JSONL 输出）
 
 - [ ] dsh 实机派发
   - 步骤1：修复本机 dsh.cmd（当前运行即 node loader 报错；/api/clis 中 dsh 版本字段读到该报错文本）

@@ -15,3 +15,11 @@
 - 构建：server 静态托管 apps/web/dist（存在时启用 SPA fallback）。
 - Skill：`skills/agentboard/SKILL.md`（领取→执行→汇报流程、占用规则、kb 用法）。
 - 文档：DESIGNS.md / CHANGELOG.md / PENDING_TESTS.md / README.md；全链路冒烟（kb CLI 全命令、REST、web 托管、codebuddy 最小派发）。
+
+## [2026-10-31] 完成审计修复
+
+- 适配器：LineChild 增加 stderr 尾部 30 行环形缓冲；exitCode≠0 或 exit 0 零事件且无会话 ID 时，发送含 stderr 尾部的诊断 error 事件并落会话消息。
+- 适配器：.cmd/.bat 垫片改为解析 shim 内容直取 node 入口启动（替代 cmd.exe 包装；实测 cmd.exe 包装丢参数致交互模式挂死）；spawn stdin 改为 ignore，防 CLI 等待输入。
+- 评论：POST comments 支持可选 agent_id → author=`agent:<id>`；kb comment 经 `KB_AGENT` 环境变量上报作者。
+- 接口：补 `GET /api/issues/:id`（kb show 用）；`PATCH /api/sessions/:id` 支持修改 model（下一轮生效）。
+- 冒烟结论：codex 端到端闭环（派发→真实执行→assistant 内容"OK"→会话"已结束"→强制释放回收）；codebuddy 本机 401（CODEBUDDY_AUTH_TOKEN 对 CLI 直连失效），转人工项；dsh 本机 shim 损坏，转人工项。
