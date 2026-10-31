@@ -5,7 +5,7 @@ import { useWsEvents } from './api/useWsEvents';
 import { useAppStore } from './state/appStore';
 import { TopBar } from './components/topbar/TopBar';
 import { WorkspaceList } from './components/workspace/WorkspaceList';
-import { BoardPlaceholder } from './components/BoardPlaceholder';
+import { Board } from './components/board/Board';
 import { PanelPlaceholder } from './components/PanelPlaceholder';
 
 /** 三区布局：左栏 260px 工作空间 | 中央看板 | 右侧面板 */
@@ -26,7 +26,7 @@ export default function App() {
           <WorkspaceList />
         </aside>
         <main className="min-w-0 flex-1 overflow-auto">
-          <BoardPlaceholder hasWorkspace={current !== null} />
+          <Board />
         </main>
         <section className="hidden w-[420px] shrink-0 border-l border-neutral-200 bg-white xl:block dark:border-neutral-800 dark:bg-neutral-900">
           <PanelPlaceholder />

@@ -5,6 +5,7 @@ import { setupServer } from 'msw/node';
 export const server = setupServer(
   http.get('/api/workspaces', () => HttpResponse.json([])),
   http.get('/api/issues', () => HttpResponse.json([])),
+  http.get('/api/sessions', () => HttpResponse.json([])),
   http.get('/api/clis', () =>
     HttpResponse.json([
       { id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null },
