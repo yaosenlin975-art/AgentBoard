@@ -94,10 +94,10 @@ describe('updateIssueGuarded 占用守卫', () => {
 });
 
 describe('doneIssue', () => {
-  it('done→待验收 + 占用清空 + notes 落评论 author=agent:<id>', () => {
+  it('done→待验收 + 占用清空 + notes 落评论 author=agent:<id>', async () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'a1', 'session-a');
-    const done = doneIssue(t.db, issue.id, 'a1', '已完成主体功能');
+    const done = await doneIssue(t.db, issue.id, 'a1', '已完成主体功能');
     expect(done.status).toBe('待验收');
     expect(done.claimed_by).toBeNull();
     expect(done.claimed_at).toBeNull();
@@ -108,22 +108,22 @@ describe('doneIssue', () => {
     expect(comments[0]).toMatchObject({ author: 'agent:a1', content: '已完成主体功能' });
   });
 
-  it('notes 为空不写评论；重复 done 未占用→ConflictError；不存在→NotFoundError', () => {
+  it('notes 为空不写评论；重复 done 未占用→ConflictError；不存在→NotFoundError', async () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'a1', 'session-a');
-    doneIssue(t.db, issue.id, 'a1', '   ');
+    await doneIssue(t.db, issue.id, 'a1', '   ');
     expect(listCommentsByIssue(t.db, issue.id)).toHaveLength(0);
 
-    expect(() => doneIssue(t.db, issue.id, 'a1')).toThrow(ConflictError);
-    expect(() => doneIssue(t.db, 'nope', 'a1')).toThrow(NotFoundError);
+    await expect(doneIssue(t.db, issue.id, 'a1')).rejects.toThrow(ConflictError);
+    await expect(doneIssue(t.db, 'nope', 'a1')).rejects.toThrow(NotFoundError);
   });
 });
 
 describe('failIssue', () => {
-  it('fail→待规划 + 占用清空 + reason 落评论', () => {
+  it('fail→待规划 + 占用清空 + reason 落评论', async () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'a2', 'session-a');
-    const failed = failIssue(t.db, issue.id, 'a2', '依赖缺失无法继续');
+    const failed = await failIssue(t.db, issue.id, 'a2', '依赖缺失无法继续');
     expect(failed.status).toBe('待规划');
     expect(failed.claimed_by).toBeNull();
     expect(failed.session_id).toBeNull();
@@ -133,18 +133,18 @@ describe('failIssue', () => {
     expect(comments[0]).toMatchObject({ author: 'agent:a2', content: '依赖缺失无法继续' });
   });
 
-  it('reason 必填；未占用→ConflictError', () => {
+  it('reason 必填；未占用→ConflictError', async () => {
     const issue = seedIssue();
-    expect(() => failIssue(t.db, issue.id, 'a2', '  ')).toThrow(ValidationError);
-    expect(() => failIssue(t.db, issue.id, 'a2', '原因')).toThrow(ConflictError);
+    await expect(failIssue(t.db, issue.id, 'a2', '  ')).rejects.toThrow(ValidationError);
+    await expect(failIssue(t.db, issue.id, 'a2', '原因')).rejects.toThrow(ConflictError);
   });
 });
 
 describe('releaseIssue', () => {
-  it('release→待规划 + 清空占用 + system 评论', () => {
+  it('release→待规划 + 清空占用 + system 评论', async () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'a3', 'session-a');
-    const released = releaseIssue(t.db, issue.id);
+    const released = await releaseIssue(t.db, issue.id);
     expect(released.status).toBe('待规划');
     expect(released.claimed_by).toBeNull();
     expect(released.session_id).toBeNull();
@@ -154,7 +154,7 @@ describe('releaseIssue', () => {
     expect(comments[0]).toMatchObject({ author: 'system', content: '用户强制释放' });
   });
 
-  it('不存在→NotFoundError', () => {
-    expect(() => releaseIssue(t.db, 'nope')).toThrow(NotFoundError);
+  it('不存在→NotFoundError', async () => {
+    await expect(releaseIssue(t.db, 'nope')).rejects.toThrow(NotFoundError);
   });
 });

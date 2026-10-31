@@ -10,6 +10,9 @@ importers:
 
   apps/server:
     dependencies:
+      '@agentboard/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
       '@agentboard/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -39,6 +42,9 @@ importers:
         specifier: workspace:*
         version: link:../shared
     devDependencies:
+      '@types/node':
+        specifier: ^26.6.6
+        version: 26.6.6
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
