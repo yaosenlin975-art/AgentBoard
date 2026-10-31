@@ -5,11 +5,12 @@
  */
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CliInfo, ModelInfo, Session, Workspace } from '@agentboard/shared';
+import type { CliInfo, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { loadLastModel, saveLastModel } from '../../lib/dispatchTemplate';
 import { usePanelStore } from '../../state/panelStore';
 import { Modal } from '../ui/Modal';
+import { ModelField } from './ModelField';
 
 const inputCls =
   'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
@@ -36,11 +37,6 @@ export function NewSessionDialog({
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => api.get<Workspace[]>('/api/workspaces'),
-  });
-  const { data: models } = useQuery({
-    queryKey: ['clis', cliId, 'models'],
-    queryFn: () => api.get<ModelInfo[]>(`/api/clis/${cliId}/models`),
-    enabled: cliId !== '',
   });
 
   // CLI 默认第一个已安装项
@@ -101,20 +97,15 @@ export function NewSessionDialog({
 
         <label className="block text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-300">模型（可留空）</span>
-          <input
-            data-testid="ns-model"
-            aria-label="模型"
-            list="ns-model-options"
+          <ModelField
+            cliId={cliId}
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={setModel}
+            testid="ns-model"
             placeholder="输入模型 id"
-            className={inputCls}
+            ariaLabel="模型"
+            emptyOptionLabel="（留空）"
           />
-          <datalist id="ns-model-options">
-            {(models ?? []).map((m) => (
-              <option key={m.id} value={m.id} />
-            ))}
-          </datalist>
         </label>
 
         <label className="block text-sm">

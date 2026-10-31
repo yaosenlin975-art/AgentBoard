@@ -8,9 +8,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Modal } from '../ui/Modal';
-
-const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+import { ModelField } from './ModelField';
 
 export function ModelSelector({
   session,
@@ -70,13 +68,14 @@ export function ModelSelector({
           <div className="space-y-3">
             <label className="block text-sm">
               <span className="mb-1 block text-neutral-600 dark:text-neutral-300">模型（留空清除）</span>
-              <input
-                data-testid="model-input"
-                aria-label="模型 id"
+              <ModelField
+                cliId={session.cli}
                 value={value}
-                onChange={(e) => setValue(e.target.value)}
+                onChange={setValue}
+                testid="model-input"
                 placeholder="如 gpt-5-codex"
-                className={inputCls}
+                ariaLabel="模型 id"
+                emptyOptionLabel="（留空，清除）"
               />
             </label>
             <p data-testid="model-hint" className="text-xs text-neutral-400 dark:text-neutral-500">

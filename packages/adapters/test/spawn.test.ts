@@ -4,10 +4,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { asChild, closeChild, makeAutoChild, makeFakeChild, type FakeChild } from './helpers.js';
 import {
+  collectOutput,
   resolveSpawnForm,
   resolveWindowsSpawnForm,
   setSpawnFn,
   spawnLineChild,
+  SpawnFailedError,
+  whereCommand,
   type SpawnFn,
 } from '../src/spawn.js';
 
@@ -160,6 +163,88 @@ describe('spawnLineChild', () => {
     closeChild(child, 1);
     await p;
     expect(child.kill).toHaveBeenCalledOnce();
+  });
+});
+
+// ---- spawn 'error'（ENOENT 等）防御：异常退出归一，绝不留 unhandled 'error' / unhandledRejection ----
+
+describe('spawnLineChild / collectOutput spawn error（ENOENT 防御）', () => {
+  afterEach(() => {
+    setSpawnFn(((cmd: string) => {
+      throw new Error(`unexpected spawn after test: ${cmd}`);
+    }) as unknown as SpawnFn);
+  });
+
+  /** 每次被 spawn 都在下一个微任务触发 'error' 事件的假进程（每次 spawn 新建，避免复用后事件流挂起）。 */
+  function setErrorSpawningChild(message: string): void {
+    setSpawnFn((() => {
+      const c = makeFakeChild();
+      queueMicrotask(() => c.emit('error', new Error(message)));
+      return asChild(c);
+    }) as unknown as SpawnFn);
+  }
+
+  it("child 'error' 事件：error.message 写入 stderr 尾部、exit 归一 null、onClose 触发一次；迟到的 close 幂等", async () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const lc = spawnLineChild('opencode', [], '.');
+    const closeCodes: Array<number | null> = [];
+    lc.onClose((code) => closeCodes.push(code));
+
+    child.emit('error', new Error('spawn opencode ENOENT'));
+
+    await expect(lc.exit).resolves.toBeNull();
+    expect(closeCodes).toEqual([null]);
+    expect(lc.getStderrTail()).toEqual(['spawn 失败：spawn opencode ENOENT']);
+
+    closeChild(child, 0);
+    expect(closeCodes).toEqual([null]);
+  });
+
+  it('collectOutput：spawn error → 以 SpawnFailedError reject（code SPAWN_FAILED，message 含命令名与原始原因）', async () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const p = collectOutput('opencode', ['models']);
+    child.emit('error', new Error('spawn opencode ENOENT'));
+
+    await expect(p).rejects.toMatchObject({
+      name: 'SpawnFailedError',
+      code: 'SPAWN_FAILED',
+      message: 'spawn opencode 失败：spawn opencode ENOENT',
+    });
+    await expect(p).rejects.toBeInstanceOf(SpawnFailedError);
+  });
+
+  it('只等 exit/onClose、不观察 failure：spawn error 不产生 unhandledRejection（vitest 对 unhandled 默认判失败）', async () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const lc = spawnLineChild('x', [], '.');
+
+    child.emit('error', new Error('spawn x ENOENT'));
+
+    await expect(lc.exit).resolves.toBeNull();
+  });
+
+  it('whereCommand：finder 自身 spawn 失败 → 返回 []（探测不抛错契约）', async () => {
+    setErrorSpawningChild('spawn where ENOENT');
+
+    await expect(whereCommand('codex')).resolves.toEqual([]);
+  });
+
+  it('kill：spawn error 后进程已异常退出，kill 直接返回不再 taskkill', async () => {
+    const spawnCalls: Array<{ cmd: string }> = [];
+    const child = makeFakeChild();
+    setSpawnFn(((cmd: string) => {
+      spawnCalls.push({ cmd });
+      return asChild(child);
+    }) as unknown as SpawnFn);
+    const lc = spawnLineChild('sleeper', [], '.');
+
+    child.emit('error', new Error('spawn sleeper ENOENT'));
+    await lc.exit;
+    await lc.kill();
+
+    expect(spawnCalls.filter((c) => c.cmd === 'taskkill')).toHaveLength(0);
   });
 });
 

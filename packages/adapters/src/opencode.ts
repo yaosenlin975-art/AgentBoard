@@ -110,14 +110,17 @@ export const opencodeAdapter: AgentAdapter = {
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectOpencode();
     if (!det.installed) return [];
+    // 与 detectOpencode/runTurn 一致：先解析 spawn 形态再调 collectOutput
+    // （win32 .cmd/.bat 垫片必须走解析后的 cmd/prefix，裸 'opencode' 直接 spawn 必 ENOENT）。
+    const form = await resolveSpawnForm(OPENCODE_CMD);
     // 计划钉死先试 `opencode models --format json`；实测 v2.2.0 该 flag 不被 models 支持（打印 help，exit 0），
     // JSON 解析失败回退纯文本 `opencode models` 的 provider/model 行；两步都无命中返回空数组（UI 手输兜底）。
-    const jsonRes = await collectOutput(OPENCODE_CMD, ['models', '--format', 'json']);
+    const jsonRes = await collectOutput(form.cmd, [...form.prefix, 'models', '--format', 'json']);
     const fromJson = tryParseModelsJson(jsonRes.lines);
     if (fromJson && fromJson.length > 0) {
       return fromJson.map((id) => ({ id, source: 'probed' as const }));
     }
-    const plain = await collectOutput(OPENCODE_CMD, ['models']);
+    const plain = await collectOutput(form.cmd, [...form.prefix, 'models']);
     return parseModelLines(plain.lines);
   },
   runTurn(opts: RunTurnOptions): TurnHandle {

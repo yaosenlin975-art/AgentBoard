@@ -1,5 +1,11 @@
 # CHANGELOG.md
 
+## [2026-10-31] spawn 崩溃防御与模型真下拉
+
+- 适配器 spawn 崩溃防御：`spawnLineChild` 挂 child `'error'` 处理器，spawn 失败（如 ENOENT）按异常退出归一——error.message 写入 stderr 尾部环形缓冲、failure promise 以 `SpawnFailedError`（code `SPAWN_FAILED`，message 含命令名与原始原因）reject、exit/close 事件流照常触发；`collectOutput` 据此 reject，`whereCommand` 把 finder 自身 spawn 失败归一为空结果（探测不抛错）。CLI 不存在时 `GET /api/clis/:id/models` 走 detect 未安装 → 200 空数组，服务进程不再因 unhandled `'error'` 崩溃。
+- opencode `listModels`：`models` 两步探测改经 `resolveSpawnForm` 解析后的 cmd/prefix（与 detect/runTurn 一致），修复 win32 下裸 `opencode` 直 spawn 必 ENOENT。其余三家适配器核对无同类问题（codex/dsh listModels 为静态清单，codebuddy 已走解析 form）。
+- web 模型字段改真下拉：新增共享组件 `ModelField`（react-query 拉 `/api/clis/{cliId}/models`；models 非空渲染 select——空值选项 + 模型列表 + 末尾"手动输入…"，选手动切文本输入、旁有"返回列表"回下拉；models 空/查询失败/cliId 空渲染纯文本输入）。`NewSessionDialog` 与 `ModelSelector`"修改模型"弹窗接入（testid 不变；留空清除与 loadLastModel/saveLastModel 语义保留）。
+
 ## [2026-10-31] 工作空间创建体验
 
 - 新增工作空间弹窗加"浏览…"按钮：服务端 `POST /api/system/pick-folder` 经 PowerShell（`-NoProfile -NonInteractive -STA -Command` 参数数组、不经 shell）弹 `FolderBrowserDialog`，选中返回 `{path}`、取消返回 `{path:null}`、spawn/脚本失败 500 `PICK_FOLDER_FAILED`、已有窗口打开 409 `PICK_FOLDER_BUSY`（模块级 in-flight 守卫，finally 复位）；请求中按钮禁用并提示"请在弹出的窗口中选择文件夹"。

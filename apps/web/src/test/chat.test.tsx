@@ -288,8 +288,13 @@ describe('ChatPanel 会话切换器与模型', () => {
 
     await user.click(screen.getByTestId('new-session-btn'));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    // CLI 默认第一个已安装项 codebuddy；切到 codex 后模型回上次值
+    // CLI 默认第一个已安装项 codebuddy；切到 codex 后模型回上次值。
+    // models 非空 → 模型字段为真下拉：选"手动输入…"切文本输入再手输 mx。
     await user.selectOptions(screen.getByTestId('ns-cli'), 'codex');
+    await waitFor(async () => {
+      expect(screen.getByTestId('ns-model').tagName).toBe('SELECT');
+    });
+    await user.selectOptions(screen.getByTestId('ns-model'), '手动输入…');
     await user.type(screen.getByTestId('ns-model'), 'mx');
     expect(screen.getByTestId('ns-workspace')).toHaveValue('ws-1');
     await user.click(screen.getByTestId('ns-confirm'));

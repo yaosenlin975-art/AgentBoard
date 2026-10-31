@@ -155,6 +155,30 @@ describe('opencode runTurn', () => {
     expect(result.stderrTail).toEqual(['config load failed: invalid json']);
   });
 
+  it("spawn 'error'（ENOENT）：stderr 尾部含 spawn 失败信息 → 诊断 error 事件 + end(exitCode=-1)，不崩进程", async () => {
+    const child = makeFakeChild();
+    setSpawnFn(((cmd: string) => {
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
+      }
+      return asChild(child);
+    }) as unknown as SpawnFn);
+    const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+    const resultPromise = handle.result;
+    await vi.waitFor(() => expect(child.listenerCount('close')).toBeGreaterThan(0));
+
+    child.emit('error', new Error('spawn opencode ENOENT'));
+
+    const result = await resultPromise;
+    expect(events).toEqual([
+      { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nspawn 失败：spawn opencode ENOENT' },
+      { type: 'end', exitCode: -1 },
+    ]);
+    expect(result).toEqual<TurnResult>({ exitCode: -1, adapterSessionId: null, stderrTail: ['spawn 失败：spawn opencode ENOENT'] });
+  });
+
   it('kill：prelude 期间 kill → 不 spawn，end(exitCode=-1)', async () => {
     const calls: RecordedSpawn[] = [];
     setSpawnFn(((cmd: string, args: string[], options: unknown) => {
@@ -272,11 +296,43 @@ describe('opencode listModels', () => {
       if (args.includes('--version')) {
         return asChild(makeAutoChild([{ source: 'stdout', text: 'opencode v2.2.0\n' }], 0));
       }
-      if (args[0] === 'models') return asChild(makeAutoChild([{ source: 'stdout', text: 'no models here\n' }], 0));
+      if (args.includes('models')) return asChild(makeAutoChild([{ source: 'stdout', text: 'no models here\n' }], 0));
       throw new Error(`unexpected spawn: ${cmd} ${args.join(' ')}`);
     }) as unknown as SpawnFn);
 
     await expect(opencodeAdapter.listModels()).resolves.toEqual([]);
+  });
+
+  it('win32 .cmd 垫片：models 两步探测都经解析 form（cmd.exe /d /s /c 包装），不经裸 OPENCODE_CMD', async () => {
+    const calls: RecordedSpawn[] = [];
+    setSpawnFn(((cmd: string, args: string[]) => {
+      calls.push({ cmd, args: [...args], options: {} });
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
+      }
+      if (args.includes('--version')) {
+        return asChild(makeAutoChild([{ source: 'stdout', text: 'opencode v2.2.0\n' }], 0));
+      }
+      if (args.includes('models')) {
+        // --format json 不被支持（打印 help）→ 回退纯文本行
+        if (args.includes('--format')) {
+          return asChild(makeAutoChild([{ source: 'stdout', text: 'DESCRIPTION\n  List models\n' }], 0));
+        }
+        return asChild(makeAutoChild([{ source: 'stdout', text: 'opencode-go/glm-5.3-flash\n' }], 0));
+      }
+      throw new Error(`unexpected spawn: ${cmd} ${args.join(' ')}`);
+    }) as unknown as SpawnFn);
+
+    const models = await opencodeAdapter.listModels();
+    expect(models).toEqual([{ id: 'opencode-go/glm-5.3-flash', source: 'probed' }]);
+
+    const modelCalls = calls.filter((c) => c.args.includes('models'));
+    expect(modelCalls.map((c) => c.args)).toEqual([
+      ['/d', '/s', '/c', MOCK_SHIM, 'models', '--format', 'json'],
+      ['/d', '/s', '/c', MOCK_SHIM, 'models'],
+    ]);
+    // 裸 OPENCODE_CMD 直 spawn 的 models 调用不允许出现
+    expect(calls.some((c) => c.cmd === OPENCODE_CMD && c.args.includes('models'))).toBe(false);
   });
 });
 

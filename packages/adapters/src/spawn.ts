@@ -17,6 +17,18 @@ export interface LineChild {
   getStderrTail(): string[];
   kill(): Promise<void>;
   exit: Promise<number | null>;
+  /** spawn 失败（'error' 事件，如 ENOENT）时以 SpawnFailedError reject；正常退出永不安定（内部已兜底消费，无观察者也不产生 unhandledRejection） */
+  failure: Promise<Error>;
+}
+
+/** spawn 失败（'error' 事件：ENOENT/EACCES 等）归一错误：message 含命令名与原始原因。 */
+export class SpawnFailedError extends Error {
+  readonly code = 'SPAWN_FAILED';
+  constructor(cmd: string, cause: Error) {
+    super(`spawn ${cmd} 失败：${cause.message}`);
+    this.name = 'SpawnFailedError';
+    this.cause = cause;
+  }
 }
 
 export interface SpawnOptionsLite {
@@ -54,21 +66,29 @@ export async function collectOutput(cmd: string, args: string[]): Promise<{ code
   child.onLine((_source, line) => {
     lines.push(line);
   });
-  const code = await child.exit;
-  return { code, lines };
+  // child.failure 在 spawn error 时同步 reject（先于 finalize 的 exit 归一），race 直接以 SpawnFailedError 败出
+  const settled = await Promise.race([child.exit, child.failure]);
+  if (settled instanceof Error) throw settled;
+  return { code: settled, lines };
 }
 
 /** 用 where/which 探测命令实际安装路径；win32 下 where 失败回退 which（Git Bash），都失败返回空数组。 */
 export async function whereCommand(cmd: string): Promise<string[]> {
   const finder = process.platform === 'win32' ? 'where' : 'which';
-  const primary = await collectOutput(finder, [cmd]);
-  if (primary.code === 0) {
+  // finder 自身 spawn 失败（如 SpawnFailedError）视同探测无结果，不向上抛（探测不抛错契约）
+  const collectSafe = (c: string): Promise<{ code: number | null; lines: string[] } | null> =>
+    collectOutput(c, [cmd]).catch((e: unknown) => {
+      if (e instanceof SpawnFailedError) return null;
+      throw e;
+    });
+  const primary = await collectSafe(finder);
+  if (primary !== null && primary.code === 0) {
     const lines = primary.lines.map((l) => l.trim()).filter((l) => l !== '');
     if (lines.length > 0) return lines;
   }
   if (process.platform === 'win32') {
-    const fallback = await collectOutput('which', [cmd]);
-    if (fallback.code === 0) return fallback.lines.map((l) => l.trim()).filter((l) => l !== '');
+    const fallback = await collectSafe('which');
+    if (fallback !== null && fallback.code === 0) return fallback.lines.map((l) => l.trim()).filter((l) => l !== '');
   }
   return [];
 }
@@ -165,6 +185,12 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
   const exitPromise = new Promise<number | null>((resolve) => {
     resolveExit = resolve;
   });
+  let rejectFailure!: (err: Error) => void;
+  const failurePromise = new Promise<Error>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  // 兜底消费：无人观察 failure（如 runTurn 只等 exit/onClose）也不产生 unhandledRejection
+  failurePromise.catch(() => {});
 
   const emitLine = (source: 'stdout' | 'stderr', line: string) => {
     if (source === 'stderr') {
@@ -199,6 +225,17 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
     for (const cb of closeCbs) cb(code);
   };
 
+  // spawn 失败（ENOENT/EACCES 等）按"异常退出"归一：error.message 写入 stderr 尾部环形缓冲
+  // （runTurn 侧 finish() 据此发含 stderr 尾部的诊断 error 事件）、failure promise 以 SpawnFailedError reject
+  // （collectOutput 据此 reject）、exit/close 事件流照常触发，绝不留 unhandled 'error'。
+  child.on('error', (err: Error) => {
+    if (exited) return;
+    emitLine('stderr', `spawn 失败：${err.message}`);
+    // 先 reject 再 finalize：collectOutput 的 race 在 exit 归一前以 SpawnFailedError 败出
+    rejectFailure(new SpawnFailedError(cmd, err));
+    finalize(null); // 进程未启动无退出码；runTurn 侧归一为 -1
+  });
+
   child.stdout?.on('data', (chunk: Buffer) => feed('stdout', chunk));
   child.stderr?.on('data', (chunk: Buffer) => feed('stderr', chunk));
   child.on('close', (code) => finalize(code));
@@ -214,6 +251,7 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
       return [...stderrTail];
     },
     exit: exitPromise,
+    failure: failurePromise,
     async kill() {
       if (exited) return;
       try {
