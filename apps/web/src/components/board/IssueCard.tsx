@@ -1,6 +1,6 @@
 /**
  * 看板卡片（§7.3）：标题、左缘优先级色条、标签 chips、占用徽标（会话运行中加动效点）、
- * 关联会话标记、评论图标（v1 不显示数字，详情看右侧面板）；点击开任务详情。
+ * 关联会话标记、评论数徽标（0 条隐藏，详情看右侧面板）；点击开任务详情。
  * 占用中卡片禁止拖出：useSortable 仅禁 draggable，仍可作为落点；光标 not-allowed + title。
  */
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -106,7 +106,11 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
               ⚡
             </span>
           )}
-          <span title="评论（在任务详情查看）">💬</span>
+          {issue.comment_count > 0 && (
+            <span data-testid={`comment-count-${issue.id}`} title="评论（在任务详情查看）">
+              💬 {issue.comment_count}
+            </span>
+          )}
         </div>
       </div>
     </div>

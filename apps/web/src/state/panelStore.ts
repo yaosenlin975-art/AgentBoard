@@ -4,15 +4,27 @@
  * 两个视图组件各持 react-query 缓存，往返切换不丢选中 issue/session。
  * chatSession 携带打开聊天时的会话对象（ChatPanel 刷新后经 GET /api/sessions/:id 兜底恢复，
  * 以此定位 workspace 并显示 CLI/模型；后续以 WS session.changed 覆盖）。
- * unread：聊天视图本地未读计数（WS message.added 且非当前会话 +1，openChat 清零）。
- * 持久化 localStorage（键 agentboard.panel）：view/issueId/sessionId/chatSession/rightOpen；
- * unread 不持久化（每次启动为空）。
+ * unread：各会话未读新消息计数，由 unreadCollector 在 wsBus 全局层统计
+ * （message.added 且非当前会话 +1，openChat 清零，session.deleted 清对应计数），
+ * 不依赖 ChatPanel 挂载。
+ * 持久化 localStorage（键 agentboard.panel）：view/issueId/sessionId/chatSession/rightOpen/unread；
+ * unread 重水合经 sanitizeUnread 容错（非对象/非正整数条目剔除，坏结构回空对象）。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Session } from '@agentboard/shared';
 
 export type PanelView = 'detail' | 'chat';
+
+/** 未读恢复容错：非对象/数组回空对象；仅保留正整数值条目（坏值剔除，0 值视为无未读不恢复） */
+function sanitizeUnread(value: unknown): Record<string, number> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [id, n] of Object.entries(value)) {
+    if (typeof n === 'number' && Number.isInteger(n) && n > 0) out[id] = n;
+  }
+  return out;
+}
 
 interface PanelState {
   view: PanelView | null;
@@ -30,6 +42,8 @@ interface PanelState {
   openChat: (sessionId?: string, session?: Session) => void;
   /** 清空会话选择（会话按 id 恢复失败时回空态） */
   clearSession: () => void;
+  /** 会话被删（session.deleted）：清其未读计数；被删的是当前选中会话时回空态 */
+  removeSession: (sessionId: string) => void;
   /** 记一条未读（非当前聊天会话收到 message.added） */
   markUnread: (sessionId: string) => void;
   /** 清除某会话未读计数 */
@@ -61,6 +75,14 @@ export const usePanelStore = create<PanelState>()(
           };
         }),
       clearSession: () => set({ sessionId: null, chatSession: null }),
+      removeSession: (sessionId) =>
+        set((s) => {
+          const unread = { ...s.unread };
+          delete unread[sessionId];
+          return s.sessionId === sessionId
+            ? { sessionId: null, chatSession: null, unread }
+            : { unread };
+        }),
       markUnread: (sessionId) =>
         set((s) => ({ unread: { ...s.unread, [sessionId]: (s.unread[sessionId] ?? 0) + 1 } })),
       clearUnread: (sessionId) => set((s) => ({ unread: { ...s.unread, [sessionId]: 0 } })),
@@ -74,7 +96,13 @@ export const usePanelStore = create<PanelState>()(
         sessionId: state.sessionId,
         chatSession: state.chatSession,
         rightOpen: state.rightOpen,
+        unread: state.unread,
       }),
+      // 重水合容错：默认浅合并外对 unread 做结构/取值校验（脏数据回空对象，不抛错）
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<PanelState>;
+        return { ...current, ...p, unread: sanitizeUnread(p.unread) };
+      },
     },
   ),
 );

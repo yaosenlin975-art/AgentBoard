@@ -15,9 +15,16 @@ interface IssueRow {
   claimed_by: string | null;
   claimed_at: number | null;
   session_id: string | null;
+  /** 留言游标（内部状态，不进共享 Issue 类型）：NULL=无游标，consume 后=最新评论 id */
+  last_seen_comment_id: string | null;
+  /** 评论总数（查询列，非落库列） */
+  comment_count: number;
   created_at: number;
   updated_at: number;
 }
+
+const COMMENT_COUNT_COLUMN =
+  '(SELECT COUNT(*) FROM issue_comment c WHERE c.issue_id = i.id) AS comment_count';
 
 function rowToIssue(row: IssueRow): Issue {
   return {
@@ -32,6 +39,7 @@ function rowToIssue(row: IssueRow): Issue {
     claimed_by: row.claimed_by,
     claimed_at: row.claimed_at,
     session_id: row.session_id,
+    comment_count: row.comment_count,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -68,13 +76,18 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
 }
 
 export function getIssue(db: Db, id: string): Issue | null {
-  const row = db.prepare('SELECT * FROM issue WHERE id = ?').get(id) as IssueRow | undefined;
+  const row = db
+    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN} FROM issue i WHERE i.id = ?`)
+    .get(id) as IssueRow | undefined;
   return row ? rowToIssue(row) : null;
 }
 
 export function listIssues(db: Db, workspaceId: string): Issue[] {
   const rows = db
-    .prepare('SELECT * FROM issue WHERE workspace_id = ? ORDER BY sort_order, created_at, id')
+    .prepare(
+      `SELECT i.*, ${COMMENT_COUNT_COLUMN} FROM issue i
+       WHERE i.workspace_id = ? ORDER BY i.sort_order, i.created_at, i.id`,
+    )
     .all(workspaceId) as IssueRow[];
   return rows.map(rowToIssue);
 }
@@ -125,5 +138,19 @@ export function updateIssue(db: Db, id: string, patch: IssuePatch): Issue {
 
 export function deleteIssue(db: Db, id: string): void {
   const row = db.prepare('DELETE FROM issue WHERE id = ?').run(id);
+  if (row.changes !== 1) throw new NotFoundError('任务不存在');
+}
+
+/** 留言游标读取；issue 不存在返回 null */
+export function getLastSeenCommentId(db: Db, issueId: string): string | null {
+  const row = db.prepare('SELECT last_seen_comment_id FROM issue WHERE id = ?').get(issueId) as
+    | { last_seen_comment_id: string | null }
+    | undefined;
+  return row?.last_seen_comment_id ?? null;
+}
+
+/** 留言游标写入（issue 不存在抛 NotFoundError） */
+export function setLastSeenCommentId(db: Db, issueId: string, commentId: string | null): void {
+  const row = db.prepare('UPDATE issue SET last_seen_comment_id = ? WHERE id = ?').run(commentId, issueId);
   if (row.changes !== 1) throw new NotFoundError('任务不存在');
 }

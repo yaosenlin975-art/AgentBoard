@@ -10,9 +10,9 @@ import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
 import type { WsEvent } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
-import { FakeAdapter, settle } from './fakeAdapter.js';
+import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
-import { initSessionManager, resetSessionManager } from '../src/services/sessionManager.js';
+import { initSessionManager, resetSessionManager, setBroadcaster, setMaxConcurrentTurns } from '../src/services/sessionManager.js';
 
 let t: TestDb;
 let adapter: FakeAdapter;
@@ -245,6 +245,50 @@ describe('issues 全生命周期', () => {
     expect(failNoReason.status).toBe(400);
   });
 
+  it('done/fail/release 自动评论补 WS 推送：先 comment.added 后 issue.changed；done 无 notes 不广播 comment.added；响应 issue 字段 + comment 附加', async () => {
+    const wsId = await mkSpace();
+    const id = (await mkIssue(wsId)).id as string;
+
+    // done 带 notes：广播 comment.added（内容=notes）+ issue.changed，顺序与手动评论端点一致
+    await request(app).post(`/api/issues/${id}/claim`).send({ agent_id: 'a' });
+    const spy = vi.spyOn(created.hub, 'broadcast');
+    const done = await request(app)
+      .post(`/api/issues/${id}/done`)
+      .send({ agent_id: 'a', notes: '已完成主体' });
+    expect(done.status).toBe(200);
+    expect(done.body).toMatchObject({ status: '待验收', claimed_by: null });
+    expect(done.body.comment).toMatchObject({ author: 'agent:a', content: '已完成主体' });
+    const doneEvents = spy.mock.calls.map(([e]) => e);
+    expect(doneEvents.map((e) => e.type)).toEqual(['comment.added', 'issue.changed']);
+    expect(doneEvents[0]).toEqual({ type: 'comment.added', comment: done.body.comment });
+
+    // done 无 notes：只广播 issue.changed，响应 comment 为 null
+    await request(app).patch(`/api/issues/${id}`).send({ status: '待规划' });
+    await request(app).post(`/api/issues/${id}/claim`).send({ agent_id: 'b' });
+    spy.mockClear();
+    const doneSilent = await request(app).post(`/api/issues/${id}/done`).send({ agent_id: 'b' });
+    expect(doneSilent.status).toBe(200);
+    expect(doneSilent.body.comment).toBeNull();
+    expect(spy.mock.calls.map(([e]) => e.type)).toEqual(['issue.changed']);
+
+    // fail：reason 评论广播
+    await request(app).patch(`/api/issues/${id}`).send({ status: '待规划' });
+    await request(app).post(`/api/issues/${id}/claim`).send({ agent_id: 'c' });
+    spy.mockClear();
+    const fail = await request(app).post(`/api/issues/${id}/fail`).send({ agent_id: 'c', reason: '依赖缺失' });
+    expect(fail.status).toBe(200);
+    expect(fail.body.comment).toMatchObject({ author: 'agent:c', content: '依赖缺失' });
+    expect(spy.mock.calls.map(([e]) => e.type)).toEqual(['comment.added', 'issue.changed']);
+
+    // release：system 评论广播
+    await request(app).post(`/api/issues/${id}/claim`).send({ agent_id: 'd' });
+    spy.mockClear();
+    const release = await request(app).post(`/api/issues/${id}/release`);
+    expect(release.status).toBe(200);
+    expect(release.body.comment).toMatchObject({ author: 'system', content: '用户强制释放' });
+    expect(spy.mock.calls.map(([e]) => e.type)).toEqual(['comment.added', 'issue.changed']);
+  });
+
   it('DELETE 占用中 → 409', async () => {
     const wsId = await mkSpace();
     const id = (await mkIssue(wsId)).id as string;
@@ -438,6 +482,77 @@ describe('sessions', () => {
   });
 });
 
+describe('session 运行时态（队列长度/等待槽位）', () => {
+  it('GET /sessions 与 /sessions/:id 合并 queued_count/waiting_slot；入队广播 session.runtime；/queue 返回排队文本', async () => {
+    const wsId = await mkSpace();
+    const id = (await mkIssue(wsId)).id as string;
+    const session = await dispatchHeld(wsId, id);
+
+    // sessionManager 广播经 setBroadcaster 捕获（hub.broadcast 在装配时按值注入，spy hub 拦不到）
+    const runtimeEvents: WsEvent[] = [];
+    const original = created.hub.broadcast.bind(created.hub);
+    setBroadcaster((e) => {
+      runtimeEvents.push(e);
+      original(e);
+    });
+    const send = await request(app)
+      .post(`/api/sessions/${session.id}/messages`)
+      .send({ text: '排队消息' });
+    expect(send.status).toBe(200);
+    expect(send.body).toEqual({ queued: true });
+
+    expect(runtimeEvents.filter((e) => e.type === 'session.runtime')).toEqual([
+      { type: 'session.runtime', session_id: session.id, queued_count: 1, waiting_slot: false },
+    ]);
+
+    const list = await request(app).get(`/api/sessions?workspace=${wsId}`);
+    expect(list.status).toBe(200);
+    expect((list.body as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: session.id,
+      queued_count: 1,
+      waiting_slot: false,
+    });
+
+    const one = await request(app).get(`/api/sessions/${session.id}`);
+    expect(one.status).toBe(200);
+    expect(one.body).toMatchObject({ id: session.id, queued_count: 1, waiting_slot: false });
+
+    const queue = await request(app).get(`/api/sessions/${session.id}/queue`);
+    expect(queue.status).toBe(200);
+    expect(queue.body).toEqual({ texts: ['排队消息'] });
+    expect((await request(app).get('/api/sessions/nope/queue')).status).toBe(404);
+  });
+
+  it('maxConcurrentTurns=1：等槽位轮次 waiting_slot=true（响应字段可见），槽位释放后 false', async () => {
+    const wsId = await mkSpace();
+    setMaxConcurrentTurns(1);
+    const held: FakeTurnControl[] = [];
+    adapter.script = (control) => {
+      held.push(control); // 全部挂起：A 占住唯一槽位，B 等待
+    };
+
+    const id = (await mkIssue(wsId)).id as string;
+    const resA = await request(app).post('/api/sessions').send({ cli: 'codebuddy', issue_id: id });
+    expect(resA.status).toBe(200);
+    await settle();
+    const resB = await request(app)
+      .post('/api/sessions')
+      .send({ cli: 'codebuddy', workspace_id: wsId, prompt: 'B 轮' });
+    expect(resB.status).toBe(200);
+    const b = resB.body as Record<string, unknown>;
+    await settle();
+
+    const waiting = await request(app).get(`/api/sessions/${b.id}`);
+    expect(waiting.body).toMatchObject({ waiting_slot: true, queued_count: 0 });
+
+    // A 释放槽位：B 的轮次进入运行，等待标志复位
+    held[0]!.finish(0, 'as-a');
+    await settle();
+    const running = await request(app).get(`/api/sessions/${b.id}`);
+    expect(running.body).toMatchObject({ waiting_slot: false, queued_count: 0 });
+  });
+});
+
 describe('PATCH /api/sessions/:id {model}', () => {
   /** 建一个自由会话并等首轮结束 */
   async function mkFreeSession(wsId: string): Promise<Record<string, unknown>> {
@@ -494,7 +609,15 @@ describe('clis', () => {
   it('GET /api/clis 来自启动探测缓存；models 端点；未知 CLI 404', async () => {
     const res = await request(app).get('/api/clis');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 'codebuddy', displayName: 'Fake CLI', installed: true, version: 'fake-1.0' }]);
+    expect(res.body).toEqual([
+      {
+        id: 'codebuddy',
+        displayName: 'Fake CLI',
+        installed: true,
+        version: 'fake-1.0',
+        supportsModelSelection: true,
+      },
+    ]);
 
     const models = await request(app).get('/api/clis/codebuddy/models');
     expect(models.status).toBe(200);

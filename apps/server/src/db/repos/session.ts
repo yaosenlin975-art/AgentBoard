@@ -39,6 +39,13 @@ export function listSessionsByWorkspace(db: Db, workspaceId: string): Session[] 
     .all(workspaceId) as Session[];
 }
 
+/** 绑定某 issue 的全部会话（issue 删除级联清理用） */
+export function listSessionsByIssue(db: Db, issueId: string): Session[] {
+  return db
+    .prepare('SELECT * FROM session WHERE issue_id = ? ORDER BY created_at, id')
+    .all(issueId) as Session[];
+}
+
 export type SessionPatch = Partial<{
   status: SessionStatus;
   adapter_session_id: string | null;
@@ -65,4 +72,9 @@ export function updateSession(db: Db, id: string, patch: SessionPatch): Session 
   const row = db.prepare(`UPDATE session SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   if (row.changes !== 1) throw new NotFoundError('会话不存在');
   return getSession(db, id)!;
+}
+
+/** 删会话行（绑定的 message 由外层显式删，不依赖 FK CASCADE） */
+export function deleteSession(db: Db, id: string): void {
+  db.prepare('DELETE FROM session WHERE id = ?').run(id);
 }

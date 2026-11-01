@@ -1,6 +1,8 @@
 import type { ModelInfo } from '@agentboard/shared';
 export type UnifiedEvent =
   | { type: 'text'; delta: string }
+  /** 模型思考/推理内容（终值或增量），服务端聚合为「思考」折叠块，不进聊天正文 */
+  | { type: 'thinking'; delta: string }
   | { type: 'tool'; name: string; input: string }
   | { type: 'error'; message: string }
   | { type: 'end'; exitCode: number };
@@ -19,6 +21,8 @@ export interface TurnHandle {
 export interface AgentAdapter {
   id: 'codebuddy' | 'codex' | 'opencode' | 'dsh';
   displayName: string;
+  /** false=模型只读（无 CLI flag，由 CLI profile 配置决定，如 dsh）；runTurn 忽略 opts.model */
+  supportsModelSelection: boolean;
   detect(): Promise<{ installed: boolean; version: string | null }>;
   listModels(): Promise<ModelInfo[]>;
   runTurn(opts: RunTurnOptions): TurnHandle;

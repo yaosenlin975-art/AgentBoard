@@ -14,6 +14,7 @@ const issue: Issue = {
   claimed_by: null,
   claimed_at: null,
   session_id: null,
+  comment_count: 0,
   created_at: 1,
   updated_at: 1,
 };
@@ -27,12 +28,24 @@ describe('eventToQueryKeys', () => {
     ]);
   });
 
-  it('comment.added → comments+issue_id', () => {
+  it('issue.deleted → issues+workspace 与 issue+id', () => {
+    const event: WsEvent = { type: 'issue.deleted', issue_id: 'i-1', workspace_id: 'ws-1' };
+    expect(eventToQueryKeys(event)).toEqual([
+      ['issues', 'ws-1'],
+      ['issue', 'i-1'],
+    ]);
+  });
+
+  it('comment.added → comments+issue_id、issues（前缀，卡片评论数刷新）、issue+issue_id', () => {
     const event: WsEvent = {
       type: 'comment.added',
       comment: { id: 'c-1', issue_id: 'i-1', author: 'user', content: 'x', ts: 1 },
     };
-    expect(eventToQueryKeys(event)).toEqual([['comments', 'i-1']]);
+    expect(eventToQueryKeys(event)).toEqual([
+      ['comments', 'i-1'],
+      ['issues'],
+      ['issue', 'i-1'],
+    ]);
   });
 
   it('session.changed → sessions', () => {
@@ -52,6 +65,11 @@ describe('eventToQueryKeys', () => {
     expect(eventToQueryKeys(event)).toEqual([['sessions']]);
   });
 
+  it('session.deleted → sessions', () => {
+    const event: WsEvent = { type: 'session.deleted', session_id: 's-1' };
+    expect(eventToQueryKeys(event)).toEqual([['sessions']]);
+  });
+
   it('message.added → messages+session_id', () => {
     const event: WsEvent = {
       type: 'message.added',
@@ -63,13 +81,25 @@ describe('eventToQueryKeys', () => {
   it('clis.changed → clis', () => {
     const event: WsEvent = {
       type: 'clis.changed',
-      clis: [{ id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.1' }],
+      clis: [
+        { id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.1', supportsModelSelection: false },
+      ],
     };
     expect(eventToQueryKeys(event)).toEqual([['clis']]);
   });
 
   it('session.event → 空（流式事件不触发 invalidation）', () => {
     const event: WsEvent = { type: 'session.event', session_id: 's-1', event: { type: 'text' } };
+    expect(eventToQueryKeys(event)).toEqual([]);
+  });
+
+  it('session.runtime → 空（运行时态由聊天视图经 wsBus 增量校正，不触发 invalidation）', () => {
+    const event: WsEvent = {
+      type: 'session.runtime',
+      session_id: 's-1',
+      queued_count: 2,
+      waiting_slot: true,
+    };
     expect(eventToQueryKeys(event)).toEqual([]);
   });
 });

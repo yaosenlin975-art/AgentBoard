@@ -247,4 +247,15 @@ describe('parseCodebuddyLine', () => {
     ]);
     expect(state.sessionId).toBe('s1');
   });
+
+  it('行协议无 thinking/reasoning 映射：assistant thinking 内容块不发事件（仅 text/tool_use）', () => {
+    const state = createParseState();
+    expect(
+      parseCodebuddyLine(
+        '{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"内部思考"}]}}',
+        state,
+      ),
+    ).toEqual([]);
+    expect(parseCodebuddyLine('{"type":"reasoning","text":"思考"}', state)).toEqual([]);
+  });
 });

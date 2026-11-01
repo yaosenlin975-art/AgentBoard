@@ -29,6 +29,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     claimed_by: null,
     claimed_at: null,
     session_id: null,
+    comment_count: 0,
     created_at: 1,
     updated_at: 1,
     ...overrides,
@@ -50,10 +51,10 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 const clisMixed = [
-  { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0' },
-  { id: 'codex', displayName: 'Codex', installed: true, version: '1.0.0' },
-  { id: 'opencode', displayName: 'OpenCode', installed: false, version: null },
-  { id: 'dsh', displayName: 'DSH', installed: false, version: null },
+  { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0', supportsModelSelection: true },
+  { id: 'codex', displayName: 'Codex', installed: true, version: '1.0.0', supportsModelSelection: true },
+  { id: 'opencode', displayName: 'OpenCode', installed: false, version: null, supportsModelSelection: true },
+  { id: 'dsh', displayName: 'DSH', installed: false, version: null, supportsModelSelection: false },
 ];
 
 /** DetailPanel 所需的全部 GET handlers */
@@ -245,6 +246,25 @@ describe('DetailPanel 评论区', () => {
     await userEvent.click(screen.getByTestId('comment-send'));
     expect(await screen.findByTestId('comment-woke-result')).toHaveTextContent('已唤醒 codex');
   });
+
+  it('kb 自助领取占用（session_id=null）：提示"留言待 agent 下次读取"，woke=false 显示未唤醒', async () => {
+    const comments: IssueComment[] = [];
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: null }));
+    server.use(
+      http.get('/api/issues/iss-1/comments', () => HttpResponse.json(comments)),
+      http.post('/api/issues/iss-1/comments', () =>
+        HttpResponse.json({
+          comment: { id: 'c-3', issue_id: 'iss-1', author: 'user', content: '异步留言', ts: 4 },
+          woke: false,
+        }),
+      ),
+    );
+    renderDetail();
+    expect(await screen.findByTestId('comment-hint')).toHaveTextContent('留言待 agent 下次读取');
+    await userEvent.type(screen.getByTestId('comment-input'), '异步留言');
+    await userEvent.click(screen.getByTestId('comment-send'));
+    expect(await screen.findByTestId('comment-woke-result')).toHaveTextContent('未唤醒');
+  });
 });
 
 describe('DetailPanel 删除二次确认', () => {
@@ -322,7 +342,9 @@ describe('DispatchDialog', () => {
     expect(promptEl.value).toContain('工作目录：D:/ws/main');
     expect(promptEl.value).toContain('标题：测试任务');
     expect(promptEl.value).toContain('kb show iss-1');
-    expect(screen.getByTestId('history-note')).toHaveTextContent('历史备注（后端自动追加，最近10条）');
+    // 无评论：不预填历史备注段，不显示历史备注提示
+    expect(promptEl.value).not.toContain('历史备注');
+    expect(screen.queryByTestId('history-note')).not.toBeInTheDocument();
     // 未安装项禁用并标注
     const opencode = screen.getByRole('option', { name: 'OpenCode（未安装）' }) as HTMLOptionElement;
     expect(opencode).toBeDisabled();
@@ -381,6 +403,94 @@ describe('DispatchDialog', () => {
     await userEvent.click(screen.getByTestId('dispatch-confirm'));
     await waitFor(() => expect(bodies).toHaveLength(1));
     expect(bodies[0]).toMatchObject({ model: 'my-custom-model' });
+  });
+
+  it('dsh（supportsModelSelection=false）→ 模型控件禁用 + 标注，提交不带 model；切回非只读恢复可用', async () => {
+    mockDetailApi(makeIssue());
+    const bodies: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get('/api/clis', () =>
+        HttpResponse.json([
+          { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0', supportsModelSelection: true },
+          { id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.4', supportsModelSelection: false },
+        ]),
+      ),
+      http.get('/api/clis/codebuddy/models', () => HttpResponse.json([{ id: 'm1', source: 'static' }])),
+      http.get('/api/clis/dsh/models', () => HttpResponse.json([{ id: 'deepseek-v4-flash', source: 'static' }])),
+      http.post('/api/sessions', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(makeSession({ id: 'sess-new', status: '运行中' }));
+      }),
+    );
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    // 默认 CLI = codebuddy（第一个已安装）：模型正常预填可用，无只读标注
+    await waitFor(() => expect((screen.getByTestId('model-select') as HTMLSelectElement).value).toBe('m1'));
+    expect(screen.queryByTestId('model-readonly-hint')).not.toBeInTheDocument();
+
+    // 切到 dsh：select/手输切换禁用、不预填（state 为空）、标注"由 profile 配置决定"
+    await userEvent.selectOptions(screen.getByTestId('cli-select'), 'dsh');
+    await waitFor(() =>
+      expect(screen.getByTestId('model-readonly-hint')).toHaveTextContent('由 profile 配置决定'),
+    );
+    expect(screen.getByTestId('model-select')).toBeDisabled();
+    expect(screen.getByTestId('model-mode-toggle')).toBeDisabled();
+
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ cli: 'dsh', model: null });
+  });
+
+  const threeComments: IssueComment[] = [
+    { id: 'c-1', issue_id: 'iss-1', author: 'user', content: '第一条', ts: 1 },
+    { id: 'c-2', issue_id: 'iss-1', author: 'agent:codex', content: '第二条', ts: 2 },
+    { id: 'c-3', issue_id: 'iss-1', author: 'user', content: '第三条', ts: 3 },
+  ];
+
+  it('有评论：textarea 预填历史备注段（3 条 ts 升序），显示可编辑提示', async () => {
+    mockDetailApi(makeIssue(), { comments: threeComments });
+    mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const promptEl = (await screen.findByTestId('dispatch-prompt')) as HTMLTextAreaElement;
+    await waitFor(() =>
+      expect(promptEl.value).toContain('## 历史备注\n- [user] 第一条\n- [agent:codex] 第二条\n- [user] 第三条'),
+    );
+    expect(promptEl.value).toContain('任务 ID：iss-1');
+    expect(screen.getByTestId('history-note')).toHaveTextContent('可自由删改');
+  });
+
+  it('编辑历史备注内容后提交，请求体 prompt 含编辑后文本', async () => {
+    mockDetailApi(makeIssue(), { comments: threeComments });
+    const { bodies } = mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const promptEl = (await screen.findByTestId('dispatch-prompt')) as HTMLTextAreaElement;
+    await waitFor(() => expect(promptEl.value).toContain('- [agent:codex] 第二条'));
+    fireEvent.change(promptEl, {
+      target: { value: promptEl.value.replace('- [agent:codex] 第二条', '- [agent:codex] 第二条（已改）') },
+    });
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const sentPrompt = String(bodies[0]!.prompt);
+    expect(sentPrompt).toContain('- [agent:codex] 第二条（已改）');
+    expect(sentPrompt).not.toContain('- [agent:codex] 第二条\n');
+    expect(sentPrompt).toContain('任务 ID：iss-1');
+  });
+
+  it('无评论：textarea 不含历史备注，不显示历史备注提示', async () => {
+    mockDetailApi(makeIssue(), { comments: [] });
+    mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const promptEl = (await screen.findByTestId('dispatch-prompt')) as HTMLTextAreaElement;
+    await waitFor(() => expect(promptEl.value).not.toContain('历史备注'));
+    expect(screen.queryByTestId('history-note')).not.toBeInTheDocument();
   });
 });
 

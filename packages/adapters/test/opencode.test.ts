@@ -362,6 +362,12 @@ describe('parseOpencodeLine', () => {
     expect(parseOpencodeLine(REAL_STEP_FINISH, state)).toEqual([]);
   });
 
+  it('行协议无 thinking/reasoning 映射：reasoning 类事件不发事件（仅 text/tool_use/error）', () => {
+    const state = createOpencodeParseState();
+    expect(parseOpencodeLine('{"type":"reasoning","part":{"text":"思考"}}', state)).toEqual([]);
+    expect(parseOpencodeLine('{"type":"reasoning","part":{"text":""}}', state)).toEqual([]);
+  });
+
   it('tool_use → part.tool + part.state.input（对象 JSON 化）', () => {
     const state = createOpencodeParseState();
     expect(parseOpencodeLine(REAL_TOOL_USE, state)).toEqual([{ type: 'tool', name: 'shell', input: '{"command":"ls"}' }]);

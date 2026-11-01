@@ -32,3 +32,8 @@ export function listMessagesBySession(db: Db, sessionId: string, after = 0): Mes
     .prepare('SELECT * FROM message WHERE session_id = ? AND ts > ? ORDER BY ts, id')
     .all(sessionId, after) as Message[];
 }
+
+/** 删某会话全部消息（issue 删除级联清理用，显式 DELETE 不依赖 FK CASCADE） */
+export function deleteMessagesBySession(db: Db, sessionId: string): void {
+  db.prepare('DELETE FROM message WHERE session_id = ?').run(sessionId);
+}

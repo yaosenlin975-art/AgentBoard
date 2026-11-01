@@ -49,7 +49,16 @@ interface SessionState {
   queue: string[];
   /** 本会话有无在途轮次（含等全局槽位） */
   turnActive: boolean;
+  /** 当前轮次正在等全局并发槽位（beginTurn acquireSlot 窗口） */
+  waitingSlot: boolean;
   current: TurnContext | null;
+}
+
+/** 会话运行时态（内存，不入库）：队列长度/等待槽位/排队文本副本 */
+export interface SessionRuntime {
+  queuedCount: number;
+  waitingSlot: boolean;
+  queuedTexts: string[];
 }
 
 let db: Db | null = null;
@@ -94,6 +103,15 @@ export function resetSessionManager(): void {
   broadcaster = null;
 }
 
+/** 运行时调整并发上限（PATCH /api/settings）：校验同 init；未装配时按装配门槛报错 */
+export function setMaxConcurrentTurns(n: number): void {
+  if (!Number.isInteger(n) || n < 1) {
+    throw new ValidationError('maxConcurrentTurns 必须为 ≥1 的整数');
+  }
+  assertAssembled();
+  maxConcurrentTurns = n;
+}
+
 /** Task 9 接 WS hub：广播 session.event / message.added / session.changed */
 export function setBroadcaster(fn: (event: WsEvent) => void): void {
   broadcaster = fn;
@@ -118,19 +136,50 @@ function persistMessage(sessionId: string, role: Message['role'], content: strin
 function ensureState(sessionId: string): SessionState {
   let state = states.get(sessionId);
   if (!state) {
-    state = { queue: [], turnActive: false, current: null };
+    state = { queue: [], turnActive: false, waitingSlot: false, current: null };
     states.set(sessionId, state);
   }
   return state;
 }
 
+/** 读取会话运行时态（内存队列的副本；无 state 即空闲全零） */
+export function getSessionRuntime(sessionId: string): SessionRuntime {
+  const state = states.get(sessionId);
+  if (!state) return { queuedCount: 0, waitingSlot: false, queuedTexts: [] };
+  return {
+    queuedCount: state.queue.length,
+    waitingSlot: state.waitingSlot,
+    queuedTexts: [...state.queue],
+  };
+}
+
+/** 运行时变化广播 session.runtime（队列长度/等待槽位） */
+function broadcastRuntime(sessionId: string): void {
+  const runtime = getSessionRuntime(sessionId);
+  broadcast({
+    type: 'session.runtime',
+    session_id: sessionId,
+    queued_count: runtime.queuedCount,
+    waiting_slot: runtime.waitingSlot,
+  });
+}
+
+/** 等待槽位标志变更时置位并广播（值不变不广播） */
+function setWaitingSlot(sessionId: string, state: SessionState, value: boolean): void {
+  if (state.waitingSlot === value) return;
+  state.waitingSlot = value;
+  broadcastRuntime(sessionId);
+}
+
 // ---- 全局 FIFO 槽位 ----
 
-function acquireSlot(): Promise<void> {
+/** onWait：本轮确需排队等槽位时同步回调一次（用于 waiting_slot 运行时标记，语义/排队顺序不变） */
+function acquireSlot(onWait?: () => void): Promise<void> {
   if (slotWaiters.length === 0 && activeTurns < maxConcurrentTurns) {
     activeTurns += 1;
     return Promise.resolve();
   }
+  onWait?.();
   return new Promise<void>((resolve) => {
     slotWaiters.push(resolve);
   });
@@ -198,6 +247,7 @@ export async function sendToSession(sessionId: string, text: string): Promise<{ 
 
   if (state.turnActive) {
     state.queue.push(text);
+    broadcastRuntime(sessionId);
     return { queued: true };
   }
 
@@ -215,6 +265,8 @@ export async function stopSession(sessionId: string): Promise<Session> {
   if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
   const state = ensureState(sessionId);
   state.turnActive = false;
+  // 停止弃轮：等槽位中的轮次将被放弃，等待标志随之复位（队列保留，计数不变不发 runtime）
+  setWaitingSlot(sessionId, state, false);
   const ctx = state.current;
   if (ctx) {
     ctx.stopRequested = true;
@@ -264,7 +316,8 @@ async function beginTurn(sessionId: string, prompt: string): Promise<void> {
   state.current = ctx;
   state.turnActive = true;
   try {
-    await acquireSlot();
+    await acquireSlot(() => setWaitingSlot(sessionId, state, true)); // 真排队等槽位时标记
+    if (state.current === ctx) setWaitingSlot(sessionId, state, false);
     if (state.current !== ctx) return; // 已被新轮次取代
     if (ctx.stopRequested) {
       state.turnActive = false; // 等槽位期间被 stop：放弃本轮，队列保留
@@ -339,13 +392,20 @@ async function executeTurn(
   }
   ctx.handle = handle;
 
-  // 连续 text delta 聚合为一条 assistant 消息；tool/error/end 切分
+  // 连续 text delta 聚合为一条 assistant 消息；thinking delta 并列聚合为一条 kind:thinking event 消息；tool/error/end 切分
   let textBuf = '';
+  let thinkingBuf = '';
   const flushText = () => {
     if (textBuf === '') return;
     const content = textBuf;
     textBuf = '';
     persistMessage(sessionId, 'assistant', content);
+  };
+  const flushThinking = () => {
+    if (thinkingBuf === '') return;
+    const content = thinkingBuf;
+    thinkingBuf = '';
+    persistMessage(sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }));
   };
   handle.onEvent((event: UnifiedEvent) => {
     broadcast({ type: 'session.event', session_id: sessionId, event });
@@ -353,15 +413,21 @@ async function executeTurn(
       case 'text':
         textBuf += event.delta;
         break;
+      case 'thinking':
+        thinkingBuf += event.delta;
+        break;
       case 'tool':
+        flushThinking();
         flushText();
         persistMessage(sessionId, 'event', JSON.stringify({ name: event.name, input: event.input }));
         break;
       case 'error':
+        flushThinking();
         flushText();
         persistMessage(sessionId, 'error', event.message);
         break;
       case 'end':
+        flushThinking();
         flushText();
         break;
     }
@@ -369,7 +435,8 @@ async function executeTurn(
 
   const result = await handle.result;
   ctx.handle = null;
-  flushText(); // 无 end 事件收尾（kill / 异常退出）时兜底落盘
+  flushThinking(); // 无 end 事件收尾（kill / 异常退出）时兜底落盘（先于 text，保持事件时序）
+  flushText();
 
   if (state.current !== ctx) return; // 已被新轮次取代：旧结果弃用
   if (ctx.stopRequested) return; // stop 已置 '已结束' 并保留队列
@@ -385,6 +452,7 @@ async function executeTurn(
   if (state.queue.length > 0) {
     const merged = state.queue.join('\n\n');
     state.queue = [];
+    broadcastRuntime(sessionId); // 排队消息已合并起下一轮：queued_count 归零
     void beginTurn(sessionId, merged); // turnActive 保持 true；下一轮重走全局槽位 FIFO
     return;
   }

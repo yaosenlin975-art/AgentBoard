@@ -68,7 +68,7 @@ describe('dsh runTurn', () => {
     expect(calls.filter((c) => c.args[0] === '--version')).toHaveLength(2);
   });
 
-  it('model 非空 → 首条事件为提示 error，轮次照常', async () => {
+  it('model 非空 → 静默忽略（不发提示 error，不进参数），轮次照常', async () => {
     const child = makeFakeChild();
     const calls: RecordedSpawn[] = [];
     setSpawnFn(dshSpawnRouter(calls, [{ source: 'stdout', text: 'dsh 0.2.4\n' }], child));
@@ -83,7 +83,6 @@ describe('dsh runTurn', () => {
 
     const result = await resultPromise;
     expect(events).toEqual([
-      { type: 'error', message: '模型由 profile 配置决定，传入的 model 未生效' },
       { type: 'text', delta: 'OK' },
       { type: 'end', exitCode: 0 },
     ]);
@@ -145,7 +144,7 @@ describe('dsh runTurn', () => {
     expect(result.stderrTail).toEqual(['profile headless 不存在']);
   });
 
-  it('NDJSON 全事件映射：session 提取、text 增量、thinking/tool_result 忽略、tool_call→tool、final 完整段去重', async () => {
+  it('NDJSON 全事件映射：session 提取、text 增量、thinking→thinking、tool_result 忽略、tool_call→tool、final 完整段去重', async () => {
     const child = makeFakeChild();
     const calls: RecordedSpawn[] = [];
     setSpawnFn(dshSpawnRouter(calls, [{ source: 'stdout', text: 'dsh 0.2.4\n' }], child));
@@ -161,8 +160,8 @@ describe('dsh runTurn', () => {
         [
           '这行不是 JSON',
           '{"type":"session","session_id":"sess-abc"}',
+          '{"type":"thinking","text":"内部思考"}',
           '{"type":"text","text":"回答"}',
-          '{"type":"thinking","text":"内部思考不应进入聊天正文"}',
           '{"type":"tool_call","name":"read_file","input":{"path":"a.txt"}}',
           '{"type":"tool_result","name":"read_file","output":"content"}',
           '{"type":"session","session_id":"sess-later"}',
@@ -174,8 +173,10 @@ describe('dsh runTurn', () => {
     closeChild(child, 0);
 
     const result = await resultPromise;
-    // 去重策略：流里已有 text 增量，final 完整段不再发（仅提取会话 id）；session 首次生效
+    // 去重策略：流里已有 text 增量，final 完整段不再发（仅提取会话 id）；session 首次生效；
+    // thinking 归一为独立事件，不进聊天正文
     expect(events).toEqual([
+      { type: 'thinking', delta: '内部思考' },
       { type: 'text', delta: '回答' },
       { type: 'tool', name: 'read_file', input: '{"path":"a.txt"}' },
       { type: 'end', exitCode: 0 },
@@ -300,10 +301,13 @@ describe('parseDshLine', () => {
     expect(state.sessionId).toBe('s1');
   });
 
-  it('text → delta；thinking 忽略；tool_call → tool（对象 JSON 化，缺 name 回退 tool）', () => {
+  it('text → delta；thinking → thinking（缺 text 字段忽略）；tool_call → tool（对象 JSON 化，缺 name 回退 tool）', () => {
     const state = createDshParseState();
     expect(parseDshLine('{"type":"text","text":"增量"}', state)).toEqual([{ type: 'text', delta: '增量' }]);
-    expect(parseDshLine('{"type":"thinking","text":"思考"}', state)).toEqual([]);
+    expect(parseDshLine('{"type":"thinking","text":"思考"}', state)).toEqual([{ type: 'thinking', delta: '思考' }]);
+    // 无 text 字段 / 空文本：不发事件
+    expect(parseDshLine('{"type":"thinking"}', state)).toEqual([]);
+    expect(parseDshLine('{"type":"thinking","text":""}', state)).toEqual([]);
     expect(parseDshLine('{"type":"tool_call","name":"shell","input":{"command":"ls"}}', state)).toEqual([
       { type: 'tool', name: 'shell', input: '{"command":"ls"}' },
     ]);

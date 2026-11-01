@@ -20,14 +20,21 @@ import {
 } from '../db/repos/workspace.js';
 import { createIssue, deleteIssue, getIssue, listIssues } from '../db/repos/issue.js';
 import { listCommentsByIssue } from '../db/repos/comment.js';
-import { listSessionsByWorkspace, getSession, updateSession } from '../db/repos/session.js';
-import { listMessagesBySession } from '../db/repos/message.js';
+import {
+  listSessionsByWorkspace,
+  listSessionsByIssue,
+  getSession,
+  updateSession,
+  deleteSession,
+} from '../db/repos/session.js';
+import { listMessagesBySession, deleteMessagesBySession } from '../db/repos/message.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded } from '../services/claim.js';
-import { addComment } from '../services/comments.js';
+import { addComment, consumeComments } from '../services/comments.js';
 import { dispatchIssue } from '../services/dispatch.js';
-import { createSession, sendToSession, stopSession } from '../services/sessionManager.js';
+import { createSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
+import { readSettings, writeSettings } from '../config.js';
 import {
   addCommentSchema,
   claimSchema,
@@ -38,6 +45,7 @@ import {
   failSchema,
   patchIssueSchema,
   patchSessionSchema,
+  patchSettingsSchema,
   sendMessageSchema,
 } from './schemas.js';
 
@@ -200,6 +208,23 @@ export function createRouter(deps: RouterDeps): Router {
     }
   });
 
+  // ---- settings ----
+  // 读侧只反映 config.json 持久化值（环境变量覆盖不参与，见 config.readSettings 注释）
+  router.get('/settings', (_req, res) => {
+    res.json(readSettings());
+  });
+
+  // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
+  router.patch('/settings', (req, res) => {
+    const body = parseBody(patchSettingsSchema, req.body);
+    const current = readSettings();
+    const next = writeSettings(body);
+    if (body.maxConcurrentTurns !== undefined && body.maxConcurrentTurns !== current.maxConcurrentTurns) {
+      setMaxConcurrentTurns(body.maxConcurrentTurns);
+    }
+    res.json(next);
+  });
+
   // ---- issues ----
   router.get('/issues', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
@@ -227,10 +252,27 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(issue);
   });
 
-  router.delete('/issues/:id', (req, res) => {
+  // 设计 §7.4：非占用中删除，级联清理关联会话与消息。
+  // 先停各绑定会话的运行中轮次（stopSession 对无在途轮次会话幂等：不 kill、仅状态落库已结束），
+  // 再在同一事务内显式删 message → session → issue（不依赖 FK CASCADE 语义）。
+  router.delete('/issues/:id', async (req, res) => {
     const issue = requireIssue(db, req.params.id!);
     if (issue.claimed_by !== null) throw new ConflictError('占用中禁止删除');
-    deleteIssue(db, req.params.id!);
+    const bound = listSessionsByIssue(db, issue.id);
+    for (const session of bound) {
+      await stopSession(session.id);
+    }
+    db.transaction(() => {
+      for (const session of bound) {
+        deleteMessagesBySession(db, session.id);
+        deleteSession(db, session.id);
+      }
+      deleteIssue(db, issue.id);
+    })();
+    broadcast({ type: 'issue.deleted', issue_id: issue.id, workspace_id: issue.workspace_id });
+    for (const session of bound) {
+      broadcast({ type: 'session.deleted', session_id: session.id });
+    }
     res.status(204).end();
   });
 
@@ -250,6 +292,11 @@ export function createRouter(deps: RouterDeps): Router {
     res.json({ comment, woke });
   });
 
+  // 留言消费（kb 占用场景）：事务内读全部评论 + 标注新评论 + 推进游标，恰好一次
+  router.post('/issues/:id/comments/consume', (req, res) => {
+    res.json(consumeComments(db, req.params.id!));
+  });
+
   // ---- 占用事务 ----
   // REST claim 仅占用登记（session_id=null），不建会话；派发场景走 POST /api/sessions
   router.post('/issues/:id/claim', (req, res) => {
@@ -259,24 +306,28 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(issue);
   });
 
+  // 自动评论补 WS 推送：comment 非空时追加 comment.added（顺序与手动评论端点一致：先 comment.added 后 issue.changed）
   router.post('/issues/:id/release', async (req, res) => {
-    const issue = await releaseIssue(db, req.params.id!);
+    const { issue, comment } = await releaseIssue(db, req.params.id!);
+    if (comment) broadcast({ type: 'comment.added', comment });
     broadcast({ type: 'issue.changed', issue });
-    res.json(issue);
+    res.json({ ...issue, comment });
   });
 
   router.post('/issues/:id/done', async (req, res) => {
     const body = parseBody(doneSchema, req.body);
-    const issue = await doneIssue(db, req.params.id!, body.agent_id, body.notes);
+    const { issue, comment } = await doneIssue(db, req.params.id!, body.agent_id, body.notes);
+    if (comment) broadcast({ type: 'comment.added', comment });
     broadcast({ type: 'issue.changed', issue });
-    res.json(issue);
+    res.json({ ...issue, comment });
   });
 
   router.post('/issues/:id/fail', async (req, res) => {
     const body = parseBody(failSchema, req.body);
-    const issue = await failIssue(db, req.params.id!, body.agent_id, body.reason);
+    const { issue, comment } = await failIssue(db, req.params.id!, body.agent_id, body.reason);
+    if (comment) broadcast({ type: 'comment.added', comment });
     broadcast({ type: 'issue.changed', issue });
-    res.json(issue);
+    res.json({ ...issue, comment });
   });
 
   // ---- clis ----
@@ -295,17 +346,30 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   // ---- sessions ----
+  // 运行时态（队列长度/等待槽位）内存合并进响应，不入库、不回传队列文本
   router.get('/sessions', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
-    res.json(listSessionsByWorkspace(db, workspaceId));
+    res.json(
+      listSessionsByWorkspace(db, workspaceId).map((s) => {
+        const runtime = getSessionRuntime(s.id);
+        return { ...s, queued_count: runtime.queuedCount, waiting_slot: runtime.waitingSlot };
+      }),
+    );
   });
 
   // 聊天视图刷新恢复：panelStore 持久化的 sessionId 在 chatSession 缺失时按 id 拉取
   router.get('/sessions/:id', (req, res) => {
     const session = getSession(db, req.params.id!);
     if (!session) throw new NotFoundError('会话不存在');
-    res.json(session);
+    const runtime = getSessionRuntime(session.id);
+    res.json({ ...session, queued_count: runtime.queuedCount, waiting_slot: runtime.waitingSlot });
+  });
+
+  // 停止后队列查看（只读，不提供编辑）：返回当前内存排队文本
+  router.get('/sessions/:id/queue', (req, res) => {
+    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    res.json({ texts: getSessionRuntime(req.params.id!).queuedTexts });
   });
 
   router.get('/sessions/:id/messages', (req, res) => {

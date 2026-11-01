@@ -8,6 +8,15 @@ describe('registry', () => {
     expect(ADAPTERS.map((a) => a.id)).toEqual(['codebuddy', 'codex', 'opencode', 'dsh']);
   });
 
+  it('能力位 supportsModelSelection：dsh=false（模型只读），其余三家 true', () => {
+    expect(ADAPTERS.map((a) => [a.id, a.supportsModelSelection])).toEqual([
+      ['codebuddy', true],
+      ['codex', true],
+      ['opencode', true],
+      ['dsh', false],
+    ]);
+  });
+
   it('四家 detect 并行（Promise.all）：mock 命中 where + --version → 全部 installed', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
       if (cmd === 'where' || cmd === 'which') {

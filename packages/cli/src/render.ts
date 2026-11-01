@@ -27,8 +27,11 @@ export function issueLines(issue: Issue): string[] {
   ];
 }
 
-/** 评论列表（含作者），按返回序（服务端 ts 升序） */
-export function commentLines(comments: IssueComment[]): string[] {
+/** 评论列表（含作者），按返回序（服务端 ts 升序）；is_new 为真时行首加 [新] 前缀（kb show 经 consume 标注的待读留言） */
+export function commentLines(comments: ReadonlyArray<IssueComment & { is_new?: boolean }>): string[] {
   if (comments.length === 0) return ['评论（0）:（无）'];
-  return [`评论（${comments.length}）:`, ...comments.map((c) => `- [${c.author}] ${c.content}`)];
+  return [
+    `评论（${comments.length}）:`,
+    ...comments.map((c) => `${c.is_new ? '[新] ' : ''}- [${c.author}] ${c.content}`),
+  ];
 }

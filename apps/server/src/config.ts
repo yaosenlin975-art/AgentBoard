@@ -32,42 +32,58 @@ export function defaultDbPath(): string {
   return join(configDir(), 'agentboard.db');
 }
 
+export type AgentBoardSettings = AgentBoardConfig;
+
 function defaultConfig(): AgentBoardConfig {
   return { port: DEFAULT_PORT, dbPath: defaultDbPath(), maxConcurrentTurns: DEFAULT_MAX_CONCURRENT_TURNS };
+}
+
+/** 读 config.json 原始对象；缺失/损坏返回空（损坏不覆盖原文件） */
+function readPersistedFile(): Partial<AgentBoardConfig> {
+  const path = configFilePath();
+  if (!existsSync(path)) return {};
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object') {
+      return parsed as Partial<AgentBoardConfig>;
+    }
+  } catch {
+    // 损坏的配置文件按默认处理
+  }
+  return {};
+}
+
+/** 字段级容错合并：仅合法字段覆盖（非法回退默认/当前值）；loadConfig 与 settings 读写共用 */
+function mergeValidFields(
+  target: AgentBoardConfig,
+  source: Partial<AgentBoardConfig>,
+): AgentBoardConfig {
+  if (typeof source.port === 'number' && Number.isInteger(source.port) && source.port > 0) {
+    target.port = source.port;
+  }
+  if (typeof source.dbPath === 'string' && source.dbPath !== '') {
+    target.dbPath = source.dbPath;
+  }
+  if (
+    typeof source.maxConcurrentTurns === 'number' &&
+    Number.isInteger(source.maxConcurrentTurns) &&
+    source.maxConcurrentTurns >= 1
+  ) {
+    target.maxConcurrentTurns = source.maxConcurrentTurns;
+  }
+  return target;
 }
 
 /** 读取配置；文件缺失时写回默认；字段非法回退默认值；环境变量最后覆盖（测试用） */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardConfig {
   const path = configFilePath();
-  let fileConfig: Partial<AgentBoardConfig> = {};
-  if (existsSync(path)) {
-    try {
-      const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-      if (parsed !== null && typeof parsed === 'object') {
-        fileConfig = parsed as Partial<AgentBoardConfig>;
-      }
-    } catch {
-      // 损坏的配置文件按默认处理，不覆盖原文件
-    }
-  } else {
+  const fileConfig = readPersistedFile();
+  if (!existsSync(path)) {
     mkdirSync(configDir(), { recursive: true });
     writeFileSync(path, `${JSON.stringify(defaultConfig(), null, 2)}\n`, 'utf8');
   }
 
-  const config = defaultConfig();
-  if (typeof fileConfig.port === 'number' && Number.isInteger(fileConfig.port) && fileConfig.port > 0) {
-    config.port = fileConfig.port;
-  }
-  if (typeof fileConfig.dbPath === 'string' && fileConfig.dbPath !== '') {
-    config.dbPath = fileConfig.dbPath;
-  }
-  if (
-    typeof fileConfig.maxConcurrentTurns === 'number' &&
-    Number.isInteger(fileConfig.maxConcurrentTurns) &&
-    fileConfig.maxConcurrentTurns >= 1
-  ) {
-    config.maxConcurrentTurns = fileConfig.maxConcurrentTurns;
-  }
+  const config = mergeValidFields(defaultConfig(), fileConfig);
 
   if (env.AGENTBOARD_PORT !== undefined && env.AGENTBOARD_PORT !== '') {
     const port = Number(env.AGENTBOARD_PORT);
@@ -77,4 +93,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardConf
     config.dbPath = env.AGENTBOARD_DB;
   }
   return config;
+}
+
+/**
+ * 设置端点读侧：文件持久化值 + 默认合并（字段非法回退默认；文件缺失不写回，与 loadConfig 的启动写回不同）。
+ * 环境变量 AGENTBOARD_PORT / AGENTBOARD_DB 不参与：它们是启动期临时覆盖，
+ * settings 端点只反映 config.json 持久化值——PATCH 写回的目标即 GET 回显的对象，避免回显与写回不一致。
+ */
+export function readSettings(): AgentBoardSettings {
+  return mergeValidFields(defaultConfig(), readPersistedFile());
+}
+
+/** 设置端点写侧：读当前持久化值 → 合并 patch（内部字段级容错，与 routes 层 zod 校验并存）→ 写回 → 返回新持久化值 */
+export function writeSettings(patch: Partial<AgentBoardSettings>): AgentBoardSettings {
+  const merged = mergeValidFields(readSettings(), patch);
+  mkdirSync(configDir(), { recursive: true });
+  writeFileSync(configFilePath(), `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  return merged;
 }

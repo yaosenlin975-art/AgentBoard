@@ -1,7 +1,7 @@
 import type { CommentAuthor, IssueComment } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
-import { addComment as insertCommentRow } from '../db/repos/comment.js';
-import { getIssue } from '../db/repos/issue.js';
+import { addComment as insertCommentRow, listCommentsByIssue } from '../db/repos/comment.js';
+import { getLastSeenCommentId, getIssue, setLastSeenCommentId } from '../db/repos/issue.js';
 import { NotFoundError } from '../errors.js';
 import type { SessionSender } from './sessionManager.js';
 
@@ -60,4 +60,32 @@ export async function addComment(
 
   await sessionSender(wakeSessionId, content);
   return { comment: comment!, woke: true };
+}
+
+export interface ConsumeCommentsResult {
+  comments: IssueComment[];
+  /** 本次消费的新评论 id（时间序）；重复调用第二次必为空 */
+  new_comment_ids: string[];
+}
+
+/**
+ * 留言消费（kb 占用场景的恰好一次标注，§5.8）：事务内读全部评论、
+ * 计算游标之后的评论 id（游标 NULL 视为全部待读）、推进游标到最后一条评论（无评论置 NULL）。
+ * 不触碰 updated_at、不广播（内部游标状态，对其他端不可见）。
+ */
+export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult {
+  let comments: IssueComment[] = [];
+  let newCommentIds: string[] = [];
+  db.transaction(() => {
+    if (!getIssue(db, issueId)) throw new NotFoundError('任务不存在');
+    comments = listCommentsByIssue(db, issueId);
+    const cursor = getLastSeenCommentId(db, issueId);
+    const cursorIndex = cursor === null ? -1 : comments.findIndex((c) => c.id === cursor);
+    newCommentIds =
+      cursor === null || cursorIndex === -1
+        ? comments.map((c) => c.id)
+        : comments.slice(cursorIndex + 1).map((c) => c.id);
+    setLastSeenCommentId(db, issueId, comments.length > 0 ? comments[comments.length - 1]!.id : null);
+  })();
+  return { comments, new_comment_ids: newCommentIds };
 }

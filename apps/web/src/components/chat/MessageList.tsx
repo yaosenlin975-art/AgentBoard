@@ -1,7 +1,8 @@
 /**
  * 消息流渲染（设计 §7.5）：
  * - user 右侧气泡；assistant 左侧 markdown（代码高亮）；event/error 折叠块（<details>）；
- *   tool 事件摘要行显示工具名，正文 input 截断到 200 字符；
+ *   event 按 content JSON 归类：kind==='thinking' → 「思考」折叠块（纯文本正文）；
+ *   含 name/input → tool 块（摘要行显示工具名，正文 input 截断到 200 字符）；都不匹配按原文展示；
  * - 流式增量（streaming 非空）渲染为左侧临时气泡；
  * - 运行中底部三个跳动点；新内容自动滚到底。
  */
@@ -11,22 +12,31 @@ import { MarkdownView } from '../../lib/markdown';
 
 const INPUT_TRUNCATE = 200;
 
-interface ToolEvent {
+interface EventPayload {
+  kind?: unknown;
   name?: unknown;
   input?: unknown;
+  text?: unknown;
 }
 
-/** 解析 event 消息内容（服务端 JSON.stringify({name, input})），解析失败按原文展示 */
-function parseToolEvent(content: string): { name: string; input: string } | null {
+/** 解析 event 消息内容：kind==='thinking' → 思考块；name 缺失否则 → 工具块；解析失败两者皆 null（按原文展示） */
+function parseEventContent(content: string): {
+  thinking: { text: string } | null;
+  tool: { name: string; input: string } | null;
+} {
+  let thinking: { text: string } | null = null;
+  let tool: { name: string; input: string } | null = null;
   try {
-    const parsed = JSON.parse(content) as ToolEvent;
-    if (typeof parsed.name === 'string') {
-      return { name: parsed.name, input: typeof parsed.input === 'string' ? parsed.input : '' };
+    const parsed = JSON.parse(content) as EventPayload;
+    if (parsed.kind === 'thinking' && typeof parsed.text === 'string') {
+      thinking = { text: parsed.text };
+    } else if (typeof parsed.name === 'string') {
+      tool = { name: parsed.name, input: typeof parsed.input === 'string' ? parsed.input : '' };
     }
-    return null;
   } catch {
-    return null;
+    // 保留 null：调用方按原文展示
   }
+  return { thinking, tool };
 }
 
 function truncate(text: string, max = INPUT_TRUNCATE): string {
@@ -34,7 +44,19 @@ function truncate(text: string, max = INPUT_TRUNCATE): string {
 }
 
 function EventBlock({ message }: { message: Message }) {
-  const tool = parseToolEvent(message.content);
+  const { thinking, tool } = parseEventContent(message.content);
+  if (thinking !== null) {
+    return (
+      <details data-testid={`thinking-block-${message.id}`} className="my-1 max-w-full text-xs">
+        <summary className="cursor-pointer select-none text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200">
+          思考
+        </summary>
+        <pre className="mt-1 overflow-x-auto rounded border border-neutral-200 bg-neutral-50 px-2 py-1.5 text-[11px] whitespace-pre-wrap dark:border-neutral-800 dark:bg-neutral-950">
+          {thinking.text}
+        </pre>
+      </details>
+    );
+  }
   if (tool !== null) {
     return (
       <details data-testid={`event-block-${message.id}`} className="my-1 max-w-full text-xs">

@@ -9,11 +9,13 @@ function fakeAdapter(
   id: AgentAdapter['id'],
   displayName: string,
   detect: (fn: (result: DetectResult) => void) => void,
+  supportsModelSelection = true,
 ) {
   let resolveDetect: ((result: DetectResult) => void) | undefined;
   return {
     id,
     displayName,
+    supportsModelSelection,
     detect: vi.fn(
       () =>
         new Promise<DetectResult>((resolve) => {
@@ -49,8 +51,8 @@ describe('refreshClis', () => {
 
     const clis = await pending;
     expect(clis).toEqual([
-      { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '1.0.0' },
-      { id: 'codex', displayName: 'Codex', installed: true, version: '0.2.0' },
+      { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '1.0.0', supportsModelSelection: true },
+      { id: 'codex', displayName: 'Codex', installed: true, version: '0.2.0', supportsModelSelection: true },
     ]);
   });
 
@@ -64,8 +66,20 @@ describe('refreshClis', () => {
 
     const clis = await refreshClis([a, b]);
 
-    expect(clis[0]).toEqual({ id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null });
-    expect(clis[1]).toEqual({ id: 'codex', displayName: 'Codex', installed: true, version: '0.2.0' });
+    expect(clis[0]).toEqual({
+      id: 'codebuddy',
+      displayName: 'CodeBuddy',
+      installed: false,
+      version: null,
+      supportsModelSelection: true,
+    });
+    expect(clis[1]).toEqual({
+      id: 'codex',
+      displayName: 'Codex',
+      installed: true,
+      version: '0.2.0',
+      supportsModelSelection: true,
+    });
   });
 
   it('全部 false：结果与缓存一致', async () => {
@@ -83,6 +97,18 @@ describe('refreshClis', () => {
     expect(getCachedClis()).toEqual(clis);
   });
 
+  it('载荷透传 supportsModelSelection：逐适配器携带能力位（dsh 型 false 透传为 false）', async () => {
+    const a = fakeAdapter('codebuddy', 'CodeBuddy', (resolve) => resolve({ installed: true, version: '1.0.0' }), true);
+    const d = fakeAdapter('dsh', 'DSH', (resolve) => resolve({ installed: true, version: '0.2.4' }), false);
+
+    const clis = await refreshClis([a, d]);
+
+    expect(clis).toEqual([
+      { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '1.0.0', supportsModelSelection: true },
+      { id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.4', supportsModelSelection: false },
+    ]);
+  });
+
   it('detect 抛错向上传播且不写缓存', async () => {
     const ok = fakeAdapter('codebuddy', 'CodeBuddy', (resolve) =>
       resolve({ installed: true, version: '1.0.0' }),
@@ -90,6 +116,7 @@ describe('refreshClis', () => {
     const bad = {
       id: 'codex' as const,
       displayName: 'Codex',
+      supportsModelSelection: true,
       detect: vi.fn(async () => {
         throw new Error('探测崩溃');
       }),

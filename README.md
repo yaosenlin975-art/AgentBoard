@@ -41,7 +41,7 @@ kb fail <issue-id> --reason "..."  # 失败 → 待规划
 ```
 
 - 服务地址：`--server <url>` 或环境变量 `KB_SERVER`（默认 `http://127.0.0.1:8787`）。
-- agent 身份：环境变量 `KB_AGENT=<名字>`。
+- agent 身份：环境变量 `KB_AGENT=<名字>`；未设 KB_AGENT 时默认 kb-cli，agent 评论不触发唤醒。
 
 ## Skill（agent 自助领任务）
 

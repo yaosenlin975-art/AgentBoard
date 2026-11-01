@@ -79,7 +79,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('comment')
-    .description('写评论（text 与 --stdin 二选一；长文/中文建议 --stdin；置 KB_AGENT 声明 agent 身份，作者记为 agent:<KB_AGENT>，缺省 user）')
+    .description('写评论（text 与 --stdin 二选一；长文/中文建议 --stdin；agent 身份 KB_AGENT 优先，默认 kb-cli，作者记为 agent:<id>，不触发唤醒）')
     .argument('<issue-id>', '任务 id')
     .argument('[text...]', '评论内容（多词以空格合并）')
     .option('--stdin', '从标准输入读取全部内容作为评论')

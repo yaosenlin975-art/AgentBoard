@@ -3,10 +3,11 @@
  * react-query 拉 /api/clis/{cliId}/models（cliId 为空不拉）；models 非空渲染 <select>
  * （可选空值选项，末尾固定"手动输入…"，选中后切文本输入、旁有"返回列表"回下拉）；
  * models 为空 / 查询失败 / 加载中渲染纯文本输入框（现状行为）。
+ * CLI supportsModelSelection=false（如 dsh）→ 控件禁用并标注"由 profile 配置决定"（模型只读）。
  */
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { ModelInfo } from '@agentboard/shared';
+import type { CliInfo, ModelInfo } from '@agentboard/shared';
 import { api } from '../../api/client';
 
 /** "手动输入…"选项的哨兵 value（不与真实模型 id 冲突） */
@@ -39,6 +40,12 @@ export function ModelField({
     queryFn: () => api.get<ModelInfo[]>(`/api/clis/${cliId}/models`),
     enabled: cliId !== '',
   });
+  // 模型只读判定：queryKey ['clis'] 与顶栏/派发/新建会话弹窗共享缓存，命中即无额外请求
+  const { data: clis } = useQuery({
+    queryKey: ['clis'],
+    queryFn: () => api.get<CliInfo[]>('/api/clis'),
+  });
+  const modelReadOnly = clis?.find((c) => c.id === cliId)?.supportsModelSelection === false;
   // null = 自动推断（models 空、或当前值不在列表 → 输入框；否则下拉）。
   // 用户显式进入手动输入 / 在输入框键入后保持输入框视图（含清空），直至"返回列表"或下拉重新选中。
   const [view, setView] = useState<'select' | 'input' | null>(null);
@@ -50,6 +57,37 @@ export function ModelField({
   const inList = list.some((m) => m.id === value);
   const effectiveView: 'select' | 'input' =
     view ?? (list.length === 0 || (value !== '' && !inList) ? 'input' : 'select');
+
+  // 模型只读（supportsModelSelection=false）：禁用当前形态的控件并标注，不提供切换/手输入口
+  if (modelReadOnly) {
+    const disabledCls = `${fieldCls} disabled:cursor-not-allowed disabled:opacity-60`;
+    return (
+      <div>
+        {effectiveView === 'select' ? (
+          <select data-testid={testid} aria-label={ariaLabel} value={value} disabled className={disabledCls}>
+            {emptyOptionLabel !== undefined && <option value="">{emptyOptionLabel}</option>}
+            {list.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            data-testid={testid}
+            aria-label={ariaLabel}
+            value={value}
+            disabled
+            placeholder={placeholder}
+            className={disabledCls}
+          />
+        )}
+        <p data-testid={`${testid}-readonly-hint`} className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+          由 profile 配置决定
+        </p>
+      </div>
+    );
+  }
 
   if (effectiveView === 'select') {
     return (

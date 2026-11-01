@@ -1,7 +1,7 @@
 /**
  * 评论区（§7.4）：issue_comment 扁平时间线（作者徽标 user=蓝 / agent:*=紫 / system=灰，
- * markdown 渲染）+ 输入框发送。发送按钮旁按占用状态提示"将唤醒 <agent>"或"仅留言"；
- * 响应返回后按 woke 展示实际结果一行。
+ * markdown 渲染）+ 输入框发送。发送按钮旁按占用状态三态提示"将唤醒 <agent>"（绑定会话）/
+ * "留言待 agent 下次读取"（kb 自助领取）/ "仅留言"（未占用）；响应返回后按 woke 展示实际结果一行。
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -52,7 +52,13 @@ export function CommentThread({ issue }: { issue: Issue }) {
   });
 
   const claimedBy = issue.claimed_by;
-  const hint = claimedBy !== null ? `将唤醒 ${authorCli(claimedBy)}` : '仅留言';
+  // 三态：绑定会话占用 → 实时唤醒；kb 自助领取占用（session_id=null）→ 留言待读；未占用 → 仅留言
+  const hint =
+    claimedBy === null
+      ? '仅留言'
+      : issue.session_id !== null
+        ? `将唤醒 ${authorCli(claimedBy)}`
+        : '留言待 agent 下次读取';
 
   const send = useMutation({
     mutationFn: (text: string) =>

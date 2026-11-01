@@ -12,10 +12,10 @@ const ws1: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/mai
 const ws2: Workspace = { id: 'ws-2', name: '副项目', path: 'D:/WorkSpaces/second', created_at: 2 };
 
 const issuesWs1: Issue[] = [
-  { id: 'i1', workspace_id: 'ws-1', title: 'a', description: '', priority: '中', labels: [], status: '待规划', sort_order: 0, claimed_by: null, claimed_at: null, session_id: null, created_at: 1, updated_at: 1 },
-  { id: 'i2', workspace_id: 'ws-1', title: 'b', description: '', priority: '低', labels: [], status: '待规划', sort_order: 1, claimed_by: null, claimed_at: null, session_id: null, created_at: 2, updated_at: 2 },
-  { id: 'i3', workspace_id: 'ws-1', title: 'c', description: '', priority: '高', labels: [], status: '进行中', sort_order: 2, claimed_by: 'agent:codex', claimed_at: 3, session_id: 's-1', created_at: 3, updated_at: 3 },
-  { id: 'i4', workspace_id: 'ws-1', title: 'd', description: '', priority: '中', labels: [], status: '已关闭', sort_order: 3, claimed_by: null, claimed_at: null, session_id: null, created_at: 4, updated_at: 4 },
+  { id: 'i1', workspace_id: 'ws-1', title: 'a', description: '', priority: '中', labels: [], status: '待规划', sort_order: 0, claimed_by: null, claimed_at: null, session_id: null, comment_count: 0, created_at: 1, updated_at: 1 },
+  { id: 'i2', workspace_id: 'ws-1', title: 'b', description: '', priority: '低', labels: [], status: '待规划', sort_order: 1, claimed_by: null, claimed_at: null, session_id: null, comment_count: 0, created_at: 2, updated_at: 2 },
+  { id: 'i3', workspace_id: 'ws-1', title: 'c', description: '', priority: '高', labels: [], status: '进行中', sort_order: 2, claimed_by: 'agent:codex', claimed_at: 3, session_id: 's-1', comment_count: 0, created_at: 3, updated_at: 3 },
+  { id: 'i4', workspace_id: 'ws-1', title: 'd', description: '', priority: '中', labels: [], status: '已关闭', sort_order: 3, claimed_by: null, claimed_at: null, session_id: null, comment_count: 0, created_at: 4, updated_at: 4 },
 ];
 
 function renderList() {

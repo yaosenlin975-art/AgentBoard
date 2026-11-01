@@ -16,9 +16,22 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
         ['issues', event.issue.workspace_id],
         ['issue', event.issue.id],
       ];
+    case 'issue.deleted':
+      return [
+        ['issues', event.workspace_id],
+        ['issue', event.issue_id],
+      ];
     case 'comment.added':
-      return [['comments', event.comment.issue_id]];
+      // 载荷无 workspace_id，看板列表按 ['issues'] 前缀失效（与 DetailPanel 既有粒度一致）；
+      // 详情 issue 对象含 comment_count，一并精确失效
+      return [
+        ['comments', event.comment.issue_id],
+        ['issues'],
+        ['issue', event.comment.issue_id],
+      ];
     case 'session.changed':
+      return [['sessions']];
+    case 'session.deleted':
       return [['sessions']];
     case 'message.added':
       return [['messages', event.message.session_id]];
@@ -26,6 +39,9 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
       return [['clis']];
     case 'session.event':
       // 流式事件由聊天视图增量拼接（Task 14），不触发 invalidation
+      return [];
+    case 'session.runtime':
+      // 运行时态（队列/槽位）由聊天视图经 wsBus 增量校正，不触发 invalidation（避免每次发送全量刷列表）
       return [];
   }
 }

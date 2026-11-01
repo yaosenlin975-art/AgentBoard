@@ -13,10 +13,10 @@ import { server } from './server';
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
 
 const clisMixed: CliInfo[] = [
-  { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0' },
-  { id: 'codex', displayName: 'Codex', installed: false, version: null },
-  { id: 'opencode', displayName: 'OpenCode', installed: false, version: null },
-  { id: 'dsh', displayName: 'DSH', installed: false, version: null },
+  { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0', supportsModelSelection: true },
+  { id: 'codex', displayName: 'Codex', installed: false, version: null, supportsModelSelection: true },
+  { id: 'opencode', displayName: 'OpenCode', installed: false, version: null, supportsModelSelection: true },
+  { id: 'dsh', displayName: 'DSH', installed: false, version: null, supportsModelSelection: false },
 ];
 
 function renderTopBar(workspace: Workspace | null, withPanel = false) {

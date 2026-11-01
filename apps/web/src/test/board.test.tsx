@@ -3,7 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import type { Issue, Session } from '@agentboard/shared';
+import type { Issue, Session, WsEvent } from '@agentboard/shared';
+import { eventToQueryKeys } from '../api/ws';
 import { columnDroppableId, commitDrop, resolveDrop } from '../lib/dnd';
 import { Board } from '../components/board/Board';
 import { api } from '../api/client';
@@ -24,6 +25,7 @@ function makeIssue(id: string, overrides: Partial<Issue> = {}): Issue {
     claimed_by: null,
     claimed_at: null,
     session_id: null,
+    comment_count: 0,
     created_at: 1,
     updated_at: 1,
     ...overrides,
@@ -164,7 +166,7 @@ describe('commitDrop（乐观更新 + PATCH）', () => {
 });
 
 const boardIssues: Issue[] = [
-  makeIssue('i1', { title: '渲染检查', priority: '高', labels: ['前端', '性能'], sort_order: 0 }),
+  makeIssue('i1', { title: '渲染检查', priority: '高', labels: ['前端', '性能'], sort_order: 0, comment_count: 2 }),
   makeIssue('i2', { title: '低优卡片', priority: '低', sort_order: 1000 }),
   makeIssue('i3', {
     title: '占用运行中',
@@ -208,13 +210,16 @@ const boardSessions: Session[] = [
   },
 ];
 
-function renderBoard(): ReturnType<typeof render> {
+function renderBoard(): ReturnType<typeof render> & { qc: QueryClient } {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <Board />
-    </QueryClientProvider>,
-  );
+  return {
+    qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <Board />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function mockBoardData(issues: Issue[], sessions: Session[]): void {
@@ -260,9 +265,11 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('claimed-badge-i4')).toHaveTextContent('dsh');
     expect(screen.queryByTestId('session-running-i4')).not.toBeInTheDocument();
 
-    // 关联会话标记与评论图标（评论不显示数字）
+    // 关联会话标记与评论数徽标：有评论显示 💬 N，0 条整块隐藏
     expect(screen.getByTestId('session-link-i3')).toBeInTheDocument();
-    expect(screen.getByTestId('issue-card-i1')).toHaveTextContent('💬');
+    expect(screen.getByTestId('comment-count-i1')).toHaveTextContent('💬 2');
+    expect(screen.queryByTestId('comment-count-i2')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('comment-count-i3')).not.toBeInTheDocument();
 
     // 占用卡禁拖态；未占用卡不禁
     const claimedCard = screen.getByTestId('issue-card-i3');
@@ -279,6 +286,25 @@ describe('Board 组件', () => {
 
     await userEvent.click(await screen.findByTestId('issue-card-i1'));
     expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i1' });
+  });
+
+  it('WS comment.added：按 eventToQueryKeys 失效（connectWs 语义）后卡片评论数刷新', async () => {
+    mockBoardData(boardIssues, []);
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    const { qc } = renderBoard();
+    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('💬 2');
+
+    // 服务端又落一条评论：mock 数据更新，comment.added 到达 → ['issues'] 前缀失效重拉
+    mockBoardData(boardIssues.map((i) => (i.id === 'i1' ? { ...i, comment_count: 3 } : i)), []);
+    const event: WsEvent = {
+      type: 'comment.added',
+      comment: { id: 'c-new', issue_id: 'i1', author: 'user', content: 'x', ts: 2 },
+    };
+    for (const key of eventToQueryKeys(event)) {
+      await qc.invalidateQueries({ queryKey: key });
+    }
+
+    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('💬 3');
   });
 
   it('未选工作空间显示空态，不请求 issues', () => {

@@ -1,22 +1,28 @@
 /**
  * 聊天视图（设计 §7.5 / §5.5，Task 14）：
  * - 顶部工具条：会话切换器（分组下拉+徽标）+ 新建会话 + 当前 CLI/模型（可修改，下一轮生效）
- *   + 停止（运行中显示，POST stop）；
+ *   + 停止（运行中显示，POST stop）+ 标记待验收（任务会话占用中且未结束时显示，POST done）；
  * - 消息流：初次 GET /api/sessions/:id/messages 全量，此后 WS message.added 追加
  *   （会话切换/发送后经 ?after=<最后 ts> 增量补齐）；
- * - 流式渲染：WS session.event（text delta）追加本地 streaming buffer，end 清排队计数，
- *   最终 assistant 消息经 message.added 落定并清 buffer；
- * - 输入框：Enter 发送 / Shift+Enter 换行；运行中入队（queued:true）本地计数"排队中 N 条"。
+ * - 流式渲染：WS session.event（text delta）由 streamingStore 全局层按会话累积
+ *   （模块级单例，切会话/收起面板不丢，非当前会话同样收流），assistant 消息经
+ *   message.added 落定即清该会话 buffer；本组件经 useStream(sessionId) 渲染当前会话内容。
+ * - 运行时态：入队乐观 +1，队列长度/等待槽位以 WS session.runtime 与 sessions 字段
+ *   （queued_count/waiting_slot）校正；排队中可展开只读队列内容（GET /sessions/:id/queue）；
+ * - 输入框：Enter 发送 / Shift+Enter 换行；运行中入队显示"排队中 N 条"。
  * sessionId 取 panelStore（localStorage 持久，刷新后 chatSession 缺失时按 GET /api/sessions/:id 恢复）；
  * 无则显示会话选择引导空态。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Message, Session } from '@agentboard/shared';
+import type { Issue, Message, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
+import { clearStream, useStream } from '../../state/streamingStore';
+// 未读计数全局收集器：模块加载即订阅 wsBus（本组件未挂载期间同样计数，markUnread 不在此处，防双计）
+import '../../state/unreadCollector';
 import { Composer } from './Composer';
 import { MessageList } from './MessageList';
 import { ModelSelector } from './ModelSelector';
@@ -27,9 +33,9 @@ export function ChatPanel() {
   const sessionId = usePanelStore((s) => s.sessionId);
   const storedSession = usePanelStore((s) => s.chatSession);
   const unread = usePanelStore((s) => s.unread);
-  const markUnread = usePanelStore((s) => s.markUnread);
   const openChat = usePanelStore((s) => s.openChat);
   const clearSession = usePanelStore((s) => s.clearSession);
+  const removeSession = usePanelStore((s) => s.removeSession);
   const appWorkspaceId = useAppStore((s) => s.workspaceId);
   const queryClient = useQueryClient();
 
@@ -38,8 +44,11 @@ export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState('');
+  // 流式内容读全局 store：切会话即读对应累积，面板收起/组件卸载不丢
+  const streaming = useStream(sessionId);
   const [queuedCount, setQueuedCount] = useState(0);
+  const [waitingSlot, setWaitingSlot] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
   const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -54,22 +63,38 @@ export function ChatPanel() {
     (fetchedSession !== null && fetchedSession.id === sessionId ? fetchedSession : null);
 
   const workspaceId = session?.workspace_id ?? appWorkspaceId;
+  // 关联任务（DetailPanel 同款 ['issue', id] query）：占用态决定「标记待验收」显隐（issue_id 空→不拉取）
+  const issueId = session?.issue_id ?? null;
+  const { data: linkedIssue } = useQuery({
+    queryKey: ['issue', issueId],
+    queryFn: () => api.get<Issue>(`/api/issues/${issueId}`),
+    enabled: issueId !== null,
+  });
   const { data: sessions } = useQuery({
     queryKey: ['sessions', workspaceId],
     queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(workspaceId ?? '')}`),
     enabled: workspaceId !== null,
   });
 
+  // 运行时态以服务端为准：sessions 列表（含 queued_count/waiting_slot）每次拉取/重取即校正本地计数
+  useEffect(() => {
+    const s = sessions?.find((x) => x.id === sessionId);
+    if (s === undefined) return;
+    if (s.queued_count !== undefined) setQueuedCount(s.queued_count);
+    if (s.waiting_slot !== undefined) setWaitingSlot(s.waiting_slot);
+  }, [sessions, sessionId]);
+
   const messagesRef = useRef<Message[]>([]);
   messagesRef.current = messages;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
-  // 切会话：重置本地态并全量拉取
+  // 切会话：重置本地态并全量拉取（运行时计数由服务端字段/ runtime 事件回填；流式内容留 store，切回即恢复）
   useEffect(() => {
     setMessages([]);
-    setStreaming('');
     setQueuedCount(0);
+    setWaitingSlot(false);
+    setQueueOpen(false);
     setLoaded(false);
     setLoadError(null);
     if (sessionId === null) return;
@@ -107,7 +132,7 @@ export function ChatPanel() {
     };
   }, [sessionId, liveSession, storedMatches, clearSession]);
 
-  /** 追加/去重合并；assistant 落定即清流式 buffer */
+  /** 追加/去重合并；assistant 落定即清该会话流式 buffer（store 全局层同步会清，此处按消息归属兜底幂等） */
   const mergeMessages = useCallback((incoming: Message[]) => {
     if (incoming.length === 0) return;
     setMessages((prev) => {
@@ -115,7 +140,9 @@ export function ChatPanel() {
       for (const m of incoming) byId.set(m.id, m);
       return [...byId.values()].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
     });
-    if (incoming.some((m) => m.role === 'assistant')) setStreaming('');
+    for (const m of incoming) {
+      if (m.role === 'assistant') clearStream(m.session_id);
+    }
   }, []);
 
   /** 增量补齐：after= 最后一条 ts（WS 断连 / 发送后兜底） */
@@ -132,23 +159,32 @@ export function ChatPanel() {
     [mergeMessages],
   );
 
+  // 停止后队列查看（只读，不做编辑）：入口在 queuedCount>0 时展示，打开即拉当前内存排队文本
+  const queueQuery = useQuery({
+    queryKey: ['session-queue', sessionId],
+    queryFn: () => api.get<{ texts: string[] }>(`/api/sessions/${sessionId}/queue`),
+    enabled: queueOpen && sessionId !== null,
+  });
+  useEffect(() => {
+    if (queueOpen) void queryClient.invalidateQueries({ queryKey: ['session-queue', sessionId] });
+  }, [queueOpen, sessionId, queryClient]);
+
+  // text delta 累积与 assistant 落定清空由 streamingStore 全局层处理（含非当前会话），此处不再消费 session.event；
+  // 未读计数由 unreadCollector 全局层统计（本组件未挂载期间同样计数），此处不再 markUnread
   useWsEvent((event) => {
-    // 未读计数：非当前聊天会话的新消息（切换器徽标）
-    if (event.type === 'message.added' && event.message.session_id !== sessionIdRef.current) {
-      markUnread(event.message.session_id);
-    }
     const sid = sessionIdRef.current;
     if (sid === null) return;
     if (event.type === 'message.added' && event.message.session_id === sid) {
       mergeMessages([event.message]);
-    } else if (event.type === 'session.event' && event.session_id === sid) {
-      if (event.event.type === 'text' && typeof event.event.delta === 'string') {
-        setStreaming((prev) => prev + event.event.delta);
-      } else if (event.event.type === 'end') {
-        setQueuedCount(0); // 本轮 end：排队消息已合并为下一轮
-      }
+    } else if (event.type === 'session.runtime' && event.session_id === sid) {
+      // 轮 end 不本地清零：排队计数等服务端 session.runtime（合并后 queued_count=0）校正
+      setQueuedCount(event.queued_count);
+      setWaitingSlot(event.waiting_slot);
     } else if (event.type === 'session.changed' && event.session.id === sid) {
       setLiveSession(event.session);
+    } else if (event.type === 'session.deleted' && event.session_id === sid) {
+      // 当前打开的会话被删：清选中与未读回空态（切换器列表由 ['sessions'] 失效刷新剔除）
+      removeSession(sid);
     }
   });
 
@@ -174,6 +210,21 @@ export function ChatPanel() {
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
     },
     onError: (e) => setActionError(e instanceof Error ? e.message : '停止失败'),
+  });
+
+  // 标记待验收：等价 DetailPanel markDone（agent_id='user' 调 done，服务端释放占用）；
+  // 成功后占用释放 → ['issue', id] 失效重取 → 按钮自然消失；看板卡片经 WS issue.changed 失效刷新
+  const markDone = useMutation({
+    mutationFn: () => {
+      if (issueId === null) return Promise.reject(new Error('会话未关联任务'));
+      return api.post<Issue>(`/api/issues/${issueId}/done`, { agent_id: 'user' });
+    },
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: ['issue', updated.id] });
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setActionError(null);
+    },
+    onError: (e) => setActionError(e instanceof Error ? e.message : '标记待验收失败'),
   });
 
   const selectSession = useCallback(
@@ -233,6 +284,10 @@ export function ChatPanel() {
   }
 
   const running = session.status === '运行中';
+  // 标记待验收显隐：issue 关联非空 + 任务占用中 + 会话未结束/失败（无 issue 数据时 linkedIssue 为空 → 不渲染）
+  const issueClaimed = linkedIssue?.claimed_by != null;
+  const canMarkDone =
+    session.issue_id !== null && issueClaimed && session.status !== '已结束' && session.status !== '失败';
 
   return (
     <div data-testid="chat-panel" className="flex h-full min-h-0 flex-col">
@@ -250,6 +305,27 @@ export function ChatPanel() {
         </button>
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <ModelSelector session={session} onUpdated={setLiveSession} />
+          {waitingSlot && (
+            <span
+              data-testid="waiting-slot-badge"
+              title="并发槽位已满，轮次排队等待空闲槽位"
+              className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+            >
+              等待槽位
+            </span>
+          )}
+          {canMarkDone && (
+            <button
+              type="button"
+              data-testid="chat-done-btn"
+              onClick={() => markDone.mutate()}
+              disabled={markDone.isPending}
+              title="将关联任务标记为待验收并释放占用"
+              className="shrink-0 rounded border border-green-500 px-2 py-0.5 text-xs font-medium text-green-600 hover:bg-green-50 disabled:opacity-40 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-950/40"
+            >
+              标记待验收
+            </button>
+          )}
           {running && (
             <button
               type="button"
@@ -276,6 +352,34 @@ export function ChatPanel() {
         </p>
       ) : (
         <MessageList messages={messages} streaming={streaming} running={running} />
+      )}
+
+      {queuedCount > 0 && (
+        <div
+          data-testid="queue-panel"
+          className="shrink-0 border-t border-neutral-200 px-3 py-1 text-xs dark:border-neutral-800"
+        >
+          <button
+            type="button"
+            data-testid="queue-toggle"
+            onClick={() => setQueueOpen((v) => !v)}
+            className="text-amber-600 hover:underline dark:text-amber-400"
+          >
+            {queueOpen ? '收起队列 ▲' : `查看队列内容（${queuedCount} 条）▾`}
+          </button>
+          {queueOpen && (
+            <ul data-testid="queue-list" className="mt-1 max-h-32 space-y-1 overflow-y-auto">
+              {(queueQuery.data?.texts ?? []).map((t, i) => (
+                <li
+                  key={i}
+                  className="rounded bg-neutral-100 px-2 py-1 whitespace-pre-wrap dark:bg-neutral-800/60"
+                >
+                  {t}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
 
       <Composer disabled={false} running={running} queuedCount={queuedCount} onSend={handleSend} />

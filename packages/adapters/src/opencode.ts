@@ -106,6 +106,7 @@ export function tryParseModelsJson(lines: string[]): string[] | null {
 export const opencodeAdapter: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
+  supportsModelSelection: true,
   detect: detectOpencode,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectOpencode();

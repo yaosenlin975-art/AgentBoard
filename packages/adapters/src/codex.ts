@@ -34,9 +34,11 @@ function stringifyInput(value: unknown): string {
 /**
  * 逐行解析 `codex exec --json` 的 JSONL 事件流（codex-cli 0.165.0 实测形态）：
  * - `thread.started` 的 `thread_id` 即会话 id，首次取到即存，后续行不覆盖；
- * - `item.completed` 按 `item.type` 归一：agent_message→text、error→error、
+ * - `item.completed` 按 `item.type` 归一：agent_message→text、reasoning→thinking（text 摘要字段，
+ *   与 agent_message 同为终值路径，无重复风险；无文本字段不映射）、error→error、
  *   command_execution / mcp_tool_call / file_change / web_search→tool；
- * - `turn.started` / `turn.completed`、`item.started` / `item.updated`、reasoning、todo_list 忽略
+ * - `turn.started` / `turn.completed`、`item.started` / `item.updated`（含 reasoning 中间态）、
+ *   `item.completed` 的 todo_list 忽略
  *   （agent_message 终值随 item.completed 到达，若再消费 updated 会造成重复增量）；
  * - 顶层 `error`（含重连提示等瞬态消息）与 `turn.failed` 归一为 error 事件；
  * - 非法 JSON / 空行 / 非对象 JSON 返回空数组（忽略）。
@@ -84,6 +86,8 @@ export function parseCodexLine(line: string, state: CodexParseState): UnifiedEve
   const it = item as Record<string, unknown>;
   if (it.type === 'agent_message' && typeof it.text === 'string' && it.text !== '') {
     events.push({ type: 'text', delta: it.text });
+  } else if (it.type === 'reasoning' && typeof it.text === 'string' && it.text !== '') {
+    events.push({ type: 'thinking', delta: it.text });
   } else if (it.type === 'error' && typeof it.message === 'string') {
     events.push({ type: 'error', message: it.message });
   } else if (it.type === 'command_execution') {
@@ -114,6 +118,7 @@ async function detectCodex(): Promise<{ installed: boolean; version: string | nu
 export const codexAdapter: AgentAdapter = {
   id: 'codex',
   displayName: 'Codex',
+  supportsModelSelection: true,
   detect: detectCodex,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodex();

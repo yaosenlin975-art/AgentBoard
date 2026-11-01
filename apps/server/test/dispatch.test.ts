@@ -134,6 +134,34 @@ describe('模板渲染', () => {
     );
   });
 
+  it('prompt 已含历史备注段：不再追加（前端预填防双份）', async () => {
+    const issue = seedIssue();
+    await dispatchIssue(t.db, deps, {
+      issueId: issue.id,
+      cli: 'fake',
+      promptTemplate: '自定义模板 {{title}}\n## 历史备注\n- [user] 手写备注',
+    });
+    await settle();
+
+    expect(adapter.calls[0]!.prompt).toBe('自定义模板 实现登录\n## 历史备注\n- [user] 手写备注');
+    expect(adapter.calls[0]!.prompt.match(/## 历史备注/g)).toHaveLength(1);
+  });
+
+  it('prompt 已含历史备注段且 issue 有评论：仍不追加、内容原样', async () => {
+    const issue = seedIssue();
+    insertCommentRow(t.db, { issue_id: issue.id, author: 'user', content: '评论区留言' });
+    await dispatchIssue(t.db, deps, {
+      issueId: issue.id,
+      cli: 'fake',
+      promptTemplate: '自定义模板 {{title}}\n## 历史备注\n- [user] 手写备注',
+    });
+    await settle();
+
+    expect(adapter.calls[0]!.prompt).toBe('自定义模板 实现登录\n## 历史备注\n- [user] 手写备注');
+    expect(adapter.calls[0]!.prompt).not.toContain('评论区留言');
+    expect(adapter.calls[0]!.prompt.match(/## 历史备注/g)).toHaveLength(1);
+  });
+
   it('renderHistoryNotes 纯函数：无评论 null、有评论升序行', () => {
     const issue = seedIssue();
     expect(renderHistoryNotes(t.db, issue.id)).toBeNull();

@@ -32,6 +32,21 @@ export function renderDispatchPrompt(template: string, vars: DispatchPromptVars)
     .replaceAll('{{workspace_path}}', vars.workspace_path);
 }
 
+/** 历史备注段上限：与服务端 HISTORY_NOTE_LIMIT 一致（最近 10 条） */
+export const HISTORY_NOTE_LIMIT = 10;
+
+/**
+ * 历史备注段：最近 10 条评论 ts 升序，每行 `- [author] content`；无评论返回 null（整段省略）。
+ * 与服务端 dispatch.ts renderHistoryNotes 输出逐字符一致（GET comments 返回 ts 升序，slice(-10) 即最近 10 条）。
+ */
+export function renderHistoryNotes(
+  comments: Array<{ author: string; content: string; ts: number }>,
+): string | null {
+  const recent = [...comments].sort((a, b) => a.ts - b.ts).slice(-HISTORY_NOTE_LIMIT);
+  if (recent.length === 0) return null;
+  return `## 历史备注\n${recent.map((c) => `- [${c.author}] ${c.content}`).join('\n')}`;
+}
+
 /** 该 CLI 上次使用的模型（localStorage 键）；无记录返回 null */
 export function lastModelKey(cliId: string): string {
   return `agentboard.last-model.${cliId}`;

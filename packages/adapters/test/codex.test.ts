@@ -293,7 +293,7 @@ describe('parseCodexLine', () => {
     ).toEqual([{ type: 'tool', name: 'mcp_tool_call', input: 'null' }]);
   });
 
-  it('item.completed error → error 事件；item.started/item.updated/turn.completed/reasoning/todo_list 忽略', () => {
+  it('item.completed error → error 事件；reasoning 终值→thinking、中间态/无文本忽略；started/updated/turn.completed/todo_list 忽略', () => {
     const state = createCodexParseState();
     expect(parseCodexLine(REAL_ITEM_ERROR, state)).toEqual([
       { type: 'error', message: 'Codex is ignoring 1 unrecognized configuration setting.' },
@@ -306,8 +306,23 @@ describe('parseCodexLine', () => {
     expect(
       parseCodexLine('{"type":"item.updated","item":{"id":"i0","type":"agent_message","text":"部分更"}}', state),
     ).toEqual([]);
+    // reasoning 终值（item.completed）取 text 摘要 → thinking；与 agent_message 同为终值路径，无重复风险
     expect(
-      parseCodexLine('{"type":"item.completed","item":{"id":"i6","type":"reasoning","text":"思考"}}', state),
+      parseCodexLine('{"type":"item.completed","item":{"id":"i6","type":"reasoning","text":"思考摘要"}}', state),
+    ).toEqual([{ type: 'thinking', delta: '思考摘要' }]);
+    // reasoning 中间态（started/updated）忽略：终值随 item.completed 到达，再消费会重复
+    expect(
+      parseCodexLine('{"type":"item.started","item":{"id":"i6","type":"reasoning","text":"部分思考"}}', state),
+    ).toEqual([]);
+    expect(
+      parseCodexLine('{"type":"item.updated","item":{"id":"i6","type":"reasoning","text":"思考中"}}', state),
+    ).toEqual([]);
+    // reasoning 无 text 字段 / 空文本：不映射不发事件
+    expect(
+      parseCodexLine('{"type":"item.completed","item":{"id":"i8","type":"reasoning"}}', state),
+    ).toEqual([]);
+    expect(
+      parseCodexLine('{"type":"item.completed","item":{"id":"i9","type":"reasoning","text":""}}', state),
     ).toEqual([]);
     expect(
       parseCodexLine('{"type":"item.completed","item":{"id":"i7","type":"todo_list","items":[]}}', state),

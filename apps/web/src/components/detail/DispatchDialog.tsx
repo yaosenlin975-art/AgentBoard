@@ -2,19 +2,23 @@
  * 派发设置弹窗（§5.2）：
  * - CLI select：未安装项禁用标"未安装"，默认第一个已安装；
  * - 模型：select（默认该 CLI 上次使用的模型，localStorage 记录，无则第一项）+ 手输切换（datalist）；
+ *   CLI supportsModelSelection=false（如 dsh）→ 控件禁用、不预填、提交不带 model，标注"由 profile 配置决定"；
  * - 会话选择：该 issue 有历史会话时单选——新建（默认）/ 续用最近（reuse_session:'last'）；
- * - prompt textarea 预填前端渲染后的默认模板全文（历史备注段由后端 dispatch.ts 自动追加，弹窗内只读提示）；
+ * - prompt textarea 预填前端渲染后的默认模板全文；打开时拉取评论，最近 10 条 ts 升序渲染为
+ *   `## 历史备注\n- [author] content` 追加到预填末尾（与服务端 renderHistoryNotes 逐字符一致），
+ *   用户可自由删改，提交原样上传；服务端检测已含该段时跳过追加（防双份）；
  * - 确认 → POST /api/sessions {cli, model, issue_id, prompt, reuse_session} → openChat 切聊天视图。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CliInfo, Issue, ModelInfo, Session } from '@agentboard/shared';
+import type { CliInfo, Issue, IssueComment, ModelInfo, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Modal } from '../ui/Modal';
 import {
   DISPATCH_PROMPT_TEMPLATE,
   loadLastModel,
   renderDispatchPrompt,
+  renderHistoryNotes,
   saveLastModel,
 } from '../../lib/dispatchTemplate';
 import { usePanelStore } from '../../state/panelStore';
@@ -38,7 +42,7 @@ export function DispatchDialog({
   const [model, setModel] = useState('');
   const [manual, setManual] = useState(false);
   const [reuse, setReuse] = useState<'new' | 'last'>('new');
-  // 打开时预填渲染后的默认模板全文；此后用户编辑即整体替换（后端仍渲染 4 变量 + 追加历史备注）
+  // 打开时预填渲染后的默认模板全文；评论加载后追加历史备注段，此后用户编辑即整体替换（后端仍渲染 4 变量）
   const [prompt, setPrompt] = useState(() =>
     renderDispatchPrompt(DISPATCH_PROMPT_TEMPLATE, {
       issue_id: issue.id,
@@ -63,8 +67,24 @@ export function DispatchDialog({
     queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(issue.workspace_id)}`),
   });
   const issueSessions = (allSessions ?? []).filter((s) => s.issue_id === issue.id);
+  // 模型只读：所选 CLI supportsModelSelection=false（如 dsh，模型由 CLI profile 配置决定）
+  const modelReadOnly = (clis ?? []).find((c) => c.id === cliId)?.supportsModelSelection === false;
+  // 打开时拉取评论渲染历史备注段（queryKey 与 CommentThread 一致，缓存复用）
+  const { data: comments } = useQuery({
+    queryKey: ['comments', issue.id],
+    queryFn: () => api.get<IssueComment[]>(`/api/issues/${issue.id}/comments`),
+  });
+  const historyNotes = comments === undefined ? null : renderHistoryNotes(comments);
 
   const modelTouchedRef = useRef(false);
+  const historyNotesAppendedRef = useRef(false);
+
+  // 评论加载完成后一次性把历史备注段追加到预填 prompt 末尾（仅一次，保留用户已做的编辑）；无评论不追加
+  useEffect(() => {
+    if (comments === undefined || historyNotesAppendedRef.current) return;
+    historyNotesAppendedRef.current = true;
+    if (historyNotes !== null) setPrompt((p) => `${p}\n${historyNotes}`);
+  }, [comments, historyNotes]);
 
   // CLI 默认第一个已安装项
   useEffect(() => {
@@ -82,13 +102,14 @@ export function DispatchDialog({
     modelTouchedRef.current = false;
   }, [cliId]);
 
-  // 默认模型：上次使用（在清单内），否则第一项；用户已手动选择/输入则不覆盖
+  // 默认模型：上次使用（在清单内），否则第一项；用户已手动选择/输入则不覆盖；模型只读（dsh）不预填
   useEffect(() => {
     if (cliId === '' || models === undefined || modelTouchedRef.current || model !== '') return;
+    if (modelReadOnly) return;
     const last = loadLastModel(cliId);
     const restored = last !== null && models.some((m) => m.id === last) ? last : (models[0]?.id ?? '');
     if (restored !== '') setModel(restored);
-  }, [cliId, models, model]);
+  }, [cliId, models, model, modelReadOnly]);
 
   const changeModel = (value: string): void => {
     modelTouchedRef.current = true;
@@ -99,13 +120,14 @@ export function DispatchDialog({
     mutationFn: () =>
       api.post<Session>('/api/sessions', {
         cli: cliId,
-        model: model.trim() === '' ? null : model.trim(),
+        // 模型只读（dsh）：不传 model（由 CLI profile 配置决定）
+        model: modelReadOnly ? null : model.trim() === '' ? null : model.trim(),
         issue_id: issue.id,
         prompt,
         reuse_session: reuse,
       }),
     onSuccess: async (session) => {
-      const m = model.trim();
+      const m = modelReadOnly ? '' : model.trim();
       if (m !== '') saveLastModel(cliId, m);
       void queryClient.invalidateQueries({ queryKey: ['issues'] });
       void queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
@@ -161,7 +183,8 @@ export function DispatchDialog({
                 value={model}
                 onChange={(e) => changeModel(e.target.value)}
                 placeholder="输入模型 id"
-                className={inputCls}
+                disabled={modelReadOnly}
+                className={`${inputCls} disabled:cursor-not-allowed disabled:opacity-60`}
               />
             ) : (
               <select
@@ -169,8 +192,8 @@ export function DispatchDialog({
                 aria-label="模型"
                 value={model}
                 onChange={(e) => changeModel(e.target.value)}
-                disabled={cliId === '' || modelIds.length === 0}
-                className={inputCls}
+                disabled={cliId === '' || modelIds.length === 0 || modelReadOnly}
+                className={`${inputCls} disabled:cursor-not-allowed disabled:opacity-60`}
               >
                 {modelIds.length === 0 && <option value="">（无可用模型，可手输）</option>}
                 {selectOptions.map((id) => (
@@ -186,10 +209,16 @@ export function DispatchDialog({
                 data-testid="model-mode-toggle"
                 checked={manual}
                 onChange={(e) => setManual(e.target.checked)}
+                disabled={modelReadOnly}
               />
               手输
             </label>
           </div>
+          {modelReadOnly && (
+            <p data-testid="model-readonly-hint" className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+              由 profile 配置决定
+            </p>
+          )}
           <datalist id="dispatch-model-options">
             {modelIds.map((id) => (
               <option key={id} value={id} />
@@ -235,9 +264,11 @@ export function DispatchDialog({
             rows={12}
             className={`${inputCls} font-mono text-xs`}
           />
-          <span data-testid="history-note" className="mt-1 block text-xs text-neutral-400 dark:text-neutral-500">
-            历史备注（后端自动追加，最近10条）
-          </span>
+          {historyNotes !== null && (
+            <span data-testid="history-note" className="mt-1 block text-xs text-neutral-400 dark:text-neutral-500">
+              历史备注（最近10条评论，可自由删改；服务端检测到该段时不再追加）
+            </span>
+          )}
         </label>
 
         {error !== null && (

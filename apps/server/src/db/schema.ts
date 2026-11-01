@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS issue (
   labels TEXT NOT NULL DEFAULT '[]',
   status TEXT NOT NULL DEFAULT '待规划' CHECK (status IN ('待规划','进行中','待验收','已关闭')),
   sort_order INTEGER NOT NULL DEFAULT 0,
-  claimed_by TEXT, claimed_at INTEGER, session_id TEXT,
+  claimed_by TEXT, claimed_at INTEGER, session_id TEXT, last_seen_comment_id TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS issue_comment (
   id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
@@ -28,7 +28,17 @@ CREATE TABLE IF NOT EXISTS message (
   content TEXT NOT NULL, ts INTEGER NOT NULL);
 `;
 
-/** 幂等建表（全部 IF NOT EXISTS，可重复执行） */
+/** 幂等建表 + 存量库列迁移（全部幂等，可重复执行） */
 export function initSchema(db: Db): void {
   db.exec(DDL);
+  migrateIssueColumns(db);
+}
+
+/** CREATE TABLE IF NOT EXISTS 不改已有表：缺列则 ALTER TABLE ADD COLUMN 补齐 */
+function migrateIssueColumns(db: Db): void {
+  const columns = db.prepare('PRAGMA table_info(issue)').all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has('last_seen_comment_id')) {
+    db.exec('ALTER TABLE issue ADD COLUMN last_seen_comment_id TEXT');
+  }
 }

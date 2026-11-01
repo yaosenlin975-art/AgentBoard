@@ -40,7 +40,7 @@ export interface DispatchInput {
   issueId: string;
   cli: string;
   model?: string | null;
-  /** 调用方整体替换默认模板（4 变量仍渲染，历史备注段仍追加）；缺省用 DISPATCH_PROMPT_TEMPLATE */
+  /** 调用方整体替换默认模板（4 变量仍渲染；渲染结果已含 `## 历史备注` 段时跳过历史备注追加）；缺省用 DISPATCH_PROMPT_TEMPLATE */
   promptTemplate?: string;
   reuse_session?: 'last' | 'new';
 }
@@ -97,7 +97,9 @@ export async function dispatchIssue(db: Db, deps: DispatchDeps, input: DispatchI
     description: issue.description,
     workspace_path: workspace.path,
   });
-  const notes = renderHistoryNotes(db, issue.id);
+  // 历史备注契约：前端派发弹窗预填可编辑历史备注段（含 promptTemplate 整体替换路径），
+  // 渲染结果已含 `## 历史备注` 时跳过追加、原样使用（防双份）；仅缺失时由服务端补最近 10 条评论。
+  const notes = rendered.includes('## 历史备注') ? null : renderHistoryNotes(db, issue.id);
   const prompt = notes === null ? rendered : `${rendered}\n${notes}`;
 
   // 建会话（prompt 留空不起轮，claim 成功后再起首轮，保证"先占用后执行"）

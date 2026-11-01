@@ -121,6 +121,20 @@ describe('issue repo', () => {
     expect(getIssue(t.db, mine.id)).toBeNull();
     expect(() => deleteIssue(t.db, mine.id)).toThrow(NotFoundError);
   });
+
+  it('comment_count：无评论为 0，加 2 条后 getIssue/listIssues 均 2，且不串到其他任务', () => {
+    const withComments = createIssue(t.db, { workspace_id: wsId, title: '带评论' });
+    const clean = createIssue(t.db, { workspace_id: wsId, title: '无评论' });
+    expect(getIssue(t.db, withComments.id)!.comment_count).toBe(0);
+    expect(listIssues(t.db, wsId).find((i) => i.id === withComments.id)!.comment_count).toBe(0);
+
+    addComment(t.db, { issue_id: withComments.id, author: 'user', content: '第一条' });
+    addComment(t.db, { issue_id: withComments.id, author: 'agent:a1', content: '第二条' });
+    expect(getIssue(t.db, withComments.id)!.comment_count).toBe(2);
+    const list = listIssues(t.db, wsId);
+    expect(list.find((i) => i.id === withComments.id)!.comment_count).toBe(2);
+    expect(list.find((i) => i.id === clean.id)!.comment_count).toBe(0);
+  });
 });
 
 describe('comment repo', () => {

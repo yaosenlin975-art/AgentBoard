@@ -13,7 +13,13 @@ export async function refreshClis(adapters: AgentAdapter[] = ADAPTERS): Promise<
   const infos = await Promise.all(
     adapters.map(async (adapter) => {
       const { installed, version } = await adapter.detect();
-      return { id: adapter.id, displayName: adapter.displayName, installed, version };
+      return {
+        id: adapter.id,
+        displayName: adapter.displayName,
+        installed,
+        version,
+        supportsModelSelection: adapter.supportsModelSelection,
+      };
     }),
   );
   cache = infos;

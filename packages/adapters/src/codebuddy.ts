@@ -90,6 +90,7 @@ export function extractStaticModels(helpText: string): ModelInfo[] {
 export const codebuddyAdapter: AgentAdapter = {
   id: 'codebuddy',
   displayName: 'CodeBuddy',
+  supportsModelSelection: true,
   detect: detectCodebuddy,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodebuddy();

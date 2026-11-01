@@ -11,6 +11,7 @@ import { getSession } from '../src/db/repos/session.js';
 import { claimIssue } from '../src/services/claim.js';
 import {
   createSession,
+  getSessionRuntime,
   initSessionManager,
   recoverOnBoot,
   resetSessionManager,
@@ -186,6 +187,89 @@ describe('全局并发槽位', () => {
     await settle();
 
     expect(adapter.calls.map((c) => c.prompt)).toEqual(['A 轮', 'B 轮', 'B 追加']);
+    expect(getSession(t.db, a.id)!.status).toBe('已结束');
+    expect(getSession(t.db, b.id)!.status).toBe('已结束');
+  });
+});
+
+describe('运行时态可见（session.runtime）', () => {
+  it('sendToSession 入队：getSessionRuntime 计数与文本副本正确且广播；轮尾合并后 queued_count 归零广播', async () => {
+    const events: WsEvent[] = [];
+    setBroadcaster((e) => events.push(e));
+    const held: FakeTurnControl[] = [];
+    hangFirstTurn(held);
+
+    const session = await newSession({ prompt: '首轮' });
+    await settle();
+
+    expect(await sendToSession(session.id, '排队一')).toEqual({ queued: true });
+    expect(await sendToSession(session.id, '排队二')).toEqual({ queued: true });
+
+    const runtime = getSessionRuntime(session.id);
+    expect(runtime.queuedCount).toBe(2);
+    expect(runtime.waitingSlot).toBe(false);
+    expect(runtime.queuedTexts).toEqual(['排队一', '排队二']);
+    // 副本：外部改动不影响内部队列
+    runtime.queuedTexts.push('污染');
+    expect(getSessionRuntime(session.id).queuedTexts).toEqual(['排队一', '排队二']);
+
+    const runtimeEvents = events.filter((e) => e.type === 'session.runtime');
+    expect(runtimeEvents.at(-1)).toEqual({
+      type: 'session.runtime',
+      session_id: session.id,
+      queued_count: 2,
+      waiting_slot: false,
+    });
+
+    // 轮尾合并起下一轮：排队计数归零并广播（此时无新消息进入，后续不再有 runtime 事件）
+    held[0]!.finish(0, 'as-1');
+    await settle();
+    expect(getSessionRuntime(session.id).queuedCount).toBe(0);
+    expect(events.some((e) => e.type === 'session.runtime' && e.queued_count === 0)).toBe(true);
+  });
+
+  it('maxConcurrentTurns=1：等槽位轮次 waiting_slot=true 并广播，槽位释放复位；等槽位期间 stop 复位且队列保留', async () => {
+    initSessionManager(t.db, fakeResolver, { maxConcurrentTurns: 1 });
+    const events: WsEvent[] = [];
+    setBroadcaster((e) => events.push(e));
+    const held: FakeTurnControl[] = [];
+    adapter.script = (control) => {
+      held.push(control); // 全部轮次挂起：槽位始终被占
+    };
+
+    const a = await newSession({ prompt: 'A 轮' });
+    await settle();
+    const b = await newSession({ prompt: 'B 轮' });
+    await settle();
+
+    // B 等槽位：标志置位并广播
+    expect(getSessionRuntime(b.id)).toMatchObject({ queuedCount: 0, waitingSlot: true });
+    expect(events.some((e) => e.type === 'session.runtime' && e.waiting_slot === true)).toBe(true);
+
+    // 空闲会话（立即拿到槽位）不标等待
+    expect(getSessionRuntime(a.id).waitingSlot).toBe(false);
+
+    held[0]!.finish(0, 'as-a');
+    await settle();
+    expect(getSessionRuntime(b.id).waitingSlot).toBe(false);
+
+    // C 等槽位期间 stop：等待标志复位，队列保留
+    const c = await newSession({ prompt: 'C 轮' });
+    await settle();
+    expect(getSessionRuntime(c.id).waitingSlot).toBe(true);
+    expect(await sendToSession(c.id, 'C 排队')).toEqual({ queued: true });
+    await stopSession(c.id);
+    expect(getSessionRuntime(c.id)).toEqual({
+      queuedCount: 1,
+      waitingSlot: false,
+      queuedTexts: ['C 排队'],
+    });
+
+    // B 轮释放后 C 的弃轮分支走完：队列仍在、C 的轮次未起
+    held[1]!.finish(0, 'as-b');
+    await settle();
+    expect(getSessionRuntime(c.id).queuedCount).toBe(1);
+    expect(adapter.calls.map((call) => call.prompt)).toEqual(['A 轮', 'B 轮']);
     expect(getSession(t.db, a.id)!.status).toBe('已结束');
     expect(getSession(t.db, b.id)!.status).toBe('已结束');
   });
@@ -425,6 +509,48 @@ describe('事件聚合', () => {
       ['assistant', '第三段'],
       ['error', '子任务超时'],
       ['assistant', '收尾'],
+    ]);
+  });
+
+  it('thinking delta 聚合为一条 kind:thinking event 消息；tool 切分后同点位落库；session.event 照常广播', async () => {
+    const events: WsEvent[] = [];
+    setBroadcaster((e) => events.push(e));
+    adapter.script = (control) => {
+      control.emit({ type: 'thinking', delta: '先想' });
+      control.emit({ type: 'thinking', delta: '一遍' });
+      control.emit({ type: 'text', delta: '回答' });
+      control.emit({ type: 'tool', name: 'kb.show', input: '{"id":"i1"}' });
+      control.emit({ type: 'thinking', delta: '再想' });
+      control.finish(0, 'as-think');
+    };
+    const session = await newSession({ prompt: 'x' });
+    await settle();
+
+    expect(
+      listMessagesBySession(t.db, session.id).map((m) => [m.role, m.content]),
+    ).toEqual([
+      ['user', 'x'],
+      ['event', JSON.stringify({ kind: 'thinking', text: '先想一遍' })],
+      ['assistant', '回答'],
+      ['event', JSON.stringify({ name: 'kb.show', input: '{"id":"i1"}' })],
+      ['event', JSON.stringify({ kind: 'thinking', text: '再想' })],
+    ]);
+    expect(
+      events.some((e) => e.type === 'session.event' && e.event.type === 'thinking' && e.event.delta === '先想'),
+    ).toBe(true);
+  });
+
+  it('无 thinking 事件不落空 thinking 块（缓冲为空不落库）', async () => {
+    adapter.script = (control) => {
+      control.emit({ type: 'text', delta: '仅文本' });
+      control.finish(0, 'as-plain');
+    };
+    const session = await newSession({ prompt: 'x' });
+    await settle();
+
+    expect(listMessagesBySession(t.db, session.id).map((m) => [m.role, m.content])).toEqual([
+      ['user', 'x'],
+      ['assistant', '仅文本'],
     ]);
   });
 });

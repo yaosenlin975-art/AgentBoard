@@ -18,6 +18,7 @@ export interface FakeTurnControl {
 export class FakeAdapter implements AgentAdapter {
   readonly id = 'codebuddy' as const;
   readonly displayName = 'Fake CLI';
+  readonly supportsModelSelection = true;
   readonly calls: RunTurnOptions[] = [];
   /** 每次 runTurn 的行为脚本；默认立即回复一条文本并正常结束 */
   script: (control: FakeTurnControl) => void | Promise<void> = (control) => {

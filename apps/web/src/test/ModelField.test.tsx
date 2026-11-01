@@ -1,7 +1,8 @@
 /**
  * ModelField 模型选择字段（新建会话/修改模型弹窗共用）：
  * models 非空 → 真下拉（空值选项 + 模型列表 + 末尾"手动输入…"）；
- * 选手动输入切文本输入框（可"返回列表"回下拉）；models 空/查询失败/cliId 空 → 纯文本输入框。
+ * 选手动输入切文本输入框（可"返回列表"回下拉）；models 空/查询失败/cliId 空 → 纯文本输入框；
+ * CLI supportsModelSelection=false → 控件禁用 + "由 profile 配置决定"标注。
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -156,6 +157,67 @@ describe('ModelField', () => {
     expect(input.tagName).toBe('INPUT');
     await new Promise((r) => setTimeout(r, 50));
     expect(requests).toEqual([]);
+  });
+
+  it('CLI supportsModelSelection=false（dsh）→ select 禁用 + 标注"由 profile 配置决定"，无手输入口', async () => {
+    server.use(
+      http.get('/api/clis', () =>
+        HttpResponse.json([
+          { id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.4', supportsModelSelection: false },
+        ]),
+      ),
+      http.get('/api/clis/:id/models', () =>
+        HttpResponse.json([
+          { id: 'deepseek-v4-flash', source: 'static' },
+          { id: 'deepseek-v4-pro', source: 'static' },
+        ]),
+      ),
+    );
+    renderField('dsh', '（留空）');
+
+    const select = await findSelect();
+    expect(select).toBeDisabled();
+    expect(screen.getByTestId('mf-readonly-hint')).toHaveTextContent('由 profile 配置决定');
+    // 只读不提供"手动输入…"切换入口
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', 'deepseek-v4-flash', 'deepseek-v4-pro']);
+  });
+
+  it('CLI supportsModelSelection=false 且值不在清单 → 输入框禁用 + 同标注', async () => {
+    server.use(
+      http.get('/api/clis', () =>
+        HttpResponse.json([
+          { id: 'dsh', displayName: 'DSH', installed: true, version: '0.2.4', supportsModelSelection: false },
+        ]),
+      ),
+      http.get('/api/clis/:id/models', () => HttpResponse.json([])),
+    );
+    renderField('dsh');
+
+    // 等只读态生效：控件切到禁用输入框（clis 载入前先渲染可用输入框，随后被替换）
+    await waitFor(() => {
+      const el = screen.getByTestId('mf');
+      expect(el.tagName).toBe('INPUT');
+      expect(el).toBeDisabled();
+    });
+    expect(screen.getByTestId('mf-readonly-hint')).toHaveTextContent('由 profile 配置决定');
+  });
+
+  it('CLI supportsModelSelection=true → 行为不变：select 可用、无只读标注', async () => {
+    server.use(
+      http.get('/api/clis', () =>
+        HttpResponse.json([
+          { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0', supportsModelSelection: true },
+        ]),
+      ),
+      http.get('/api/clis/:id/models', () => HttpResponse.json([{ id: 'a/b', source: 'probed' }])),
+    );
+    renderField('codebuddy');
+
+    const select = await findSelect();
+    expect(select).not.toBeDisabled();
+    expect(screen.queryByTestId('mf-readonly-hint')).not.toBeInTheDocument();
+    await userEvent.selectOptions(select, 'a/b');
+    await waitFor(() => expect(select).toHaveValue('a/b'));
   });
 });
 

@@ -80,3 +80,20 @@ export const sendMessageSchema = z.object({
 export const patchSessionSchema = z.object({
   model: z.string().trim().min(1, 'model 不能为空').nullable(),
 });
+
+/**
+ * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
+ * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
+ */
+export const patchSettingsSchema = z
+  .object({
+    port: z
+      .number()
+      .int('端口必须为 1-65535 的整数')
+      .min(1, '端口必须为 1-65535 的整数')
+      .max(65535, '端口必须为 1-65535 的整数')
+      .optional(),
+    dbPath: z.string().trim().min(1, 'dbPath 不能为空').optional(),
+    maxConcurrentTurns: z.number().int('并发上限必须为 ≥1 的整数').min(1, '并发上限必须为 ≥1 的整数').optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });

@@ -30,7 +30,7 @@ function stringifyInput(value: unknown): string {
  * （接口契约：session / text / thinking / tool_call / tool_result / final）：
  * - `session` / `final` 的 `session_id` 即会话 id，首次取到即存，后续不覆盖；
  * - `text` 增量 → {type:'text', delta}；
- * - `thinking` 忽略（映射为 text 会污染聊天正文）；
+ * - `thinking` 增量 → {type:'thinking', delta}（思考内容，服务端聚合为折叠块，不进聊天正文）；
  * - `tool_call` → {type:'tool', name, input}（input 对象 JSON 化）；`tool_result` 忽略（tool 事件已由 tool_call 发出）；
  * - `final` 完整段与增量去重：流里已有 text 增量则不再发 final 完整段（final 仅用于提取会话 id），
  *   全程无增量时 final 完整段兜底为一次 {type:'text', delta}；
@@ -55,6 +55,8 @@ export function parseDshLine(line: string, state: DshParseState): UnifiedEvent[]
   if (rec.type === 'text' && typeof rec.text === 'string' && rec.text !== '') {
     state.sawTextDelta = true;
     events.push({ type: 'text', delta: rec.text });
+  } else if (rec.type === 'thinking' && typeof rec.text === 'string' && rec.text !== '') {
+    events.push({ type: 'thinking', delta: rec.text });
   } else if (rec.type === 'tool_call') {
     const name = typeof rec.name === 'string' && rec.name !== '' ? rec.name : 'tool';
     events.push({ type: 'tool', name, input: stringifyInput(rec.input) });
@@ -93,6 +95,7 @@ async function detectDsh(): Promise<{ installed: boolean; version: string | null
 export const dshAdapter: AgentAdapter = {
   id: 'dsh',
   displayName: 'DSH',
+  supportsModelSelection: false,
   detect: detectDsh,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectDsh();
@@ -101,7 +104,7 @@ export const dshAdapter: AgentAdapter = {
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
     // 行为钉死（接口契约）：dsh --profile headless <prompt> --json [--session-id <adapterSessionId>]；
-    // 模型无 CLI flag：model 非空仅发一条 error 提示事件，不改参数、不中断轮次；
+    // 模型只读：model 参数被忽略，由 profile 配置决定（UI 已禁用选择，能力位 supportsModelSelection=false）；
     // 版本门禁：先探 `dsh --version`，主次版本 ≠ 0.2 时发 error 事件并以非零（1）结束，不 spawn 主进程。
     const args: string[] = ['--profile', 'headless', opts.prompt, '--json'];
     if (opts.adapterSessionId) args.push('--session-id', opts.adapterSessionId);
@@ -142,9 +145,6 @@ export const dshAdapter: AgentAdapter = {
 
     void (async () => {
       await Promise.resolve(); // 让调用方先注册 onEvent
-      if (opts.model) {
-        emit({ type: 'error', message: '模型由 profile 配置决定，传入的 model 未生效' });
-      }
       const form = await resolveSpawnForm(DSH_CMD);
       probeChild = spawnLineChild(form.cmd, [...form.prefix, '--version'], opts.cwd);
       const vlines: string[] = [];

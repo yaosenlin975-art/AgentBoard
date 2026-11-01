@@ -26,6 +26,7 @@ const ISSUE = {
   claimed_by: null,
   claimed_at: null,
   session_id: null,
+  comment_count: 2,
   created_at: 2,
   updated_at: 3,
 };
@@ -118,8 +119,8 @@ describe('list-spaces', () => {
 
 describe('list-tasks', () => {
   const issues = [
-    { ...ISSUE },
-    { ...ISSUE, id: 'iss2', title: '已占用任务', status: '进行中', claimed_by: 'agent:codebuddy' },
+    { ...ISSUE, labels: ['p1', 'bug'] },
+    { ...ISSUE, id: 'iss2', title: '已占用任务', status: '进行中', claimed_by: 'agent:codebuddy', labels: [], comment_count: 0 },
   ];
 
   it('--workspace 按名称解析后查任务，输出含 id/状态/优先级/占用者/标题', async () => {
@@ -136,6 +137,27 @@ describe('list-tasks', () => {
     expect(t.out()).toContain('agent:codebuddy');
     expect(t.out()).toContain('待规划');
     expect(t.out()).toContain('高');
+  });
+
+  it('表格含 labels（多标签逗号连接、空为 -）与评论（comment_count）列', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: issues };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'list-tasks', '--workspace', '前端'], t.io);
+    expect(code).toBe(0);
+    const header = t.out().split('\n')[0]!;
+    expect(header).toContain('labels');
+    expect(header).toContain('评论');
+    const row = (id: string) => t.out().split('\n').find((r) => r.includes(id))!.split(/\s{2,}/);
+    const iss1 = row('iss1');
+    expect(iss1[3]).toBe('p1,bug'); // 多标签逗号连接
+    expect(iss1[5]).toBe('2'); // 评论数
+    const iss2 = row('iss2');
+    expect(iss2[3]).toBe('-'); // 空标签显示 -
+    expect(iss2[5]).toBe('0');
   });
 
   it('--workspace 传 id 同样可用', async () => {
@@ -192,15 +214,29 @@ describe('list-tasks', () => {
 });
 
 describe('show', () => {
-  it('完整字段 + 评论列表（含作者）', async () => {
+  /** show 的 handler：默认走 consume 主路径（c2 为新评论）；degrade 时 consume 404 → GET 降级 */
+  function mockShow(opts: { degrade?: boolean } = {}): void {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'POST' && u === '/api/issues/iss1/comments/consume') {
+        return opts.degrade
+          ? { status: 404, body: { error: { code: 'NOT_FOUND', message: '接口不存在' } } }
+          : { status: 200, body: { comments: COMMENTS, new_comment_ids: ['c2'] } };
+      }
       if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
       return undefined;
     };
+  }
+
+  it('POST consume 标注新评论：GET issue + POST consume；文本模式新评论行 [新] 前缀', async () => {
+    mockShow();
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'show', 'iss1'], t.io);
     expect(code).toBe(0);
+    expect(calls).toEqual([
+      { method: 'GET', url: '/api/issues/iss1', body: undefined },
+      { method: 'POST', url: '/api/issues/iss1/comments/consume', body: undefined },
+    ]);
     const out = t.out();
     expect(out).toContain('标题: 实现登录');
     expect(out).toContain('优先级: 高');
@@ -208,21 +244,38 @@ describe('show', () => {
     expect(out).toContain('占用者: （未占用）');
     expect(out).toContain('评论（2）:');
     expect(out).toContain('- [user] 开工前注意兼容旧数据');
-    expect(out).toContain('- [agent:codebuddy] 已完成解析层');
+    expect(out).toContain('[新] - [agent:codebuddy] 已完成解析层');
+    expect(out).not.toContain('[新] - [user]');
   });
 
-  it('--json：issue 响应 + comments 内嵌', async () => {
-    handler = (m, u) => {
-      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
-      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
-      return undefined;
-    };
+  it('--json：issue 响应 + comments 内嵌，每条评论带 is_new 布尔', async () => {
+    mockShow();
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1'], t.io);
     expect(code).toBe(0);
-    const parsed = JSON.parse(t.out()) as { id: string; comments: Array<{ id: string }> };
+    const parsed = JSON.parse(t.out()) as {
+      id: string;
+      comments: Array<{ id: string; is_new?: boolean }>;
+    };
     expect(parsed.id).toBe('iss1');
-    expect(parsed.comments.map((c) => c.id)).toEqual(['c1', 'c2']);
+    expect(parsed.comments).toEqual([
+      { ...COMMENTS[0], is_new: false },
+      { ...COMMENTS[1], is_new: true },
+    ]);
+  });
+
+  it('consume 端点不可用（旧服务端 404）→ 降级 GET comments，不标注 is_new', async () => {
+    mockShow({ degrade: true });
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1'], t.io);
+    expect(code).toBe(0);
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET /api/issues/iss1',
+      'POST /api/issues/iss1/comments/consume',
+      'GET /api/issues/iss1/comments',
+    ]);
+    const parsed = JSON.parse(t.out()) as { comments: Array<{ is_new?: boolean }> };
+    expect(parsed.comments).toEqual(COMMENTS);
   });
 
   it('未知 id → 404 → 退出码 1 + 服务端 message', async () => {
@@ -282,7 +335,7 @@ describe('claim', () => {
 });
 
 describe('comment', () => {
-  it('text 参数 → POST 体 {content}；woke=true 打印唤醒', async () => {
+  it('未设 KB_AGENT → POST 体 {content, agent_id: "kb-cli"}；woke=true 打印唤醒', async () => {
     handler = (m, u, body) => {
       if (m === 'POST' && u === '/api/issues/iss1/comments')
         return {
@@ -294,7 +347,7 @@ describe('comment', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '你好 世界'], t.io);
     expect(code).toBe(0);
-    expect(calls[0]).toEqual({ method: 'POST', url: '/api/issues/iss1/comments', body: { content: '你好 世界' } });
+    expect(calls[0]).toEqual({ method: 'POST', url: '/api/issues/iss1/comments', body: { content: '你好 世界', agent_id: 'kb-cli' } });
     expect(t.out()).toContain('评论已写入: c9');
     expect(t.out()).toContain('已唤醒占用 agent');
   });
@@ -336,7 +389,7 @@ describe('comment', () => {
     const t = makeIo(stdinText);
     const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '--stdin'], t.io);
     expect(code).toBe(0);
-    expect(calls[0]).toEqual({ method: 'POST', url: '/api/issues/iss1/comments', body: { content: stdinText } });
+    expect(calls[0]).toEqual({ method: 'POST', url: '/api/issues/iss1/comments', body: { content: stdinText, agent_id: 'kb-cli' } });
   });
 
   it('text 与 --stdin 同时给 → 退出码 1；两者都缺 → 退出码 1', async () => {

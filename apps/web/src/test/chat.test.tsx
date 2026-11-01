@@ -8,11 +8,12 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import type { Message, Session, Workspace } from '@agentboard/shared';
+import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
 import { RightPanel } from '../components/right/RightPanel';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
+import { useStreamingStore } from '../state/streamingStore';
 import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/ws/main', created_at: 1 };
@@ -42,6 +43,26 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
   };
 }
 
+function makeIssue(overrides: Partial<Issue> = {}): Issue {
+  return {
+    id: 'iss-1',
+    workspace_id: 'ws-1',
+    title: '测试任务',
+    description: '任务描述内容',
+    priority: '中',
+    labels: ['前端'],
+    status: '进行中',
+    sort_order: 0,
+    claimed_by: 'agent:codebuddy',
+    claimed_at: 5,
+    session_id: 's1',
+    comment_count: 0,
+    created_at: 1,
+    updated_at: 1,
+    ...overrides,
+  };
+}
+
 const clisInstalled = [
   { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.0.0' },
   { id: 'codex', displayName: 'Codex', installed: true, version: '1.0.0' },
@@ -57,6 +78,11 @@ let postResponses: Array<{ queued: boolean }> = [];
 let stopCount = 0;
 const patchBodies: Array<{ model?: string | null }> = [];
 const createBodies: Array<Record<string, unknown>> = [];
+const queueStore: Record<string, string[]> = {};
+// 任务会话「标记待验收」可观测态：GET /api/issues/:id 数据源、done 调用记录、issues GET 次数
+let issueStore: Issue | undefined;
+const doneCalls: Array<{ id: string; body: Record<string, unknown> }> = [];
+let issueGetCount = 0;
 
 function resetMocks(): void {
   for (const k of Object.keys(msgStore)) delete msgStore[k];
@@ -66,6 +92,10 @@ function resetMocks(): void {
   stopCount = 0;
   patchBodies.length = 0;
   createBodies.length = 0;
+  for (const k of Object.keys(queueStore)) delete queueStore[k];
+  issueStore = undefined;
+  doneCalls.length = 0;
+  issueGetCount = 0;
 }
 
 /** ChatPanel 所需全部 REST handlers（按需在用例内再用 server.use 覆盖） */
@@ -83,6 +113,9 @@ function mockChatApi(): void {
     }),
     http.get('/api/sessions/:id/messages', ({ params }) =>
       HttpResponse.json(msgStore[params.id as string] ?? []),
+    ),
+    http.get('/api/sessions/:id/queue', ({ params }) =>
+      HttpResponse.json({ texts: queueStore[params.id as string] ?? [] }),
     ),
     http.post('/api/sessions/:id/messages', async ({ request }) => {
       postBodies.push((await request.json()) as { text?: string });
@@ -106,6 +139,23 @@ function mockChatApi(): void {
         makeSession({ id: 's2', cli: 'codex', model: 'mx', issue_id: null }),
       );
     }),
+    http.get('/api/issues/:id', ({ params }) => {
+      issueGetCount += 1;
+      return issueStore !== undefined && issueStore.id === params.id
+        ? HttpResponse.json(issueStore)
+        : HttpResponse.json({ error: { code: 'NOT_FOUND', message: '任务不存在' } }, { status: 404 });
+    }),
+    // 模拟服务端 done 语义：置待验收并释放占用（后续 issues GET 返回未占用对象）
+    http.post('/api/issues/:id/done', async ({ params, request }) => {
+      const body = (await request.json()) as Record<string, unknown>;
+      doneCalls.push({ id: params.id as string, body });
+      if (issueStore !== undefined && issueStore.id === params.id) {
+        issueStore = { ...issueStore, status: '待验收', claimed_by: null, claimed_at: null, updated_at: 9 };
+      }
+      return HttpResponse.json(
+        issueStore ?? makeIssue({ id: params.id as string, status: '待验收', claimed_by: null, claimed_at: null }),
+      );
+    }),
     http.get('/api/workspaces', () => HttpResponse.json([ws])),
     http.get('/api/clis', () => HttpResponse.json(clisInstalled)),
     http.get('/api/clis/:id/models', () =>
@@ -114,7 +164,7 @@ function mockChatApi(): void {
   );
 }
 
-function renderChat(session: Session | null = makeSession()): void {
+function renderChat(session: Session | null = makeSession()): QueryClient {
   if (session !== null) {
     usePanelStore.setState({ view: 'chat', sessionId: session.id, chatSession: session, rightOpen: true });
   } else {
@@ -126,6 +176,7 @@ function renderChat(session: Session | null = makeSession()): void {
       <RightPanel />
     </QueryClientProvider>,
   );
+  return qc;
 }
 
 /** 灌入当前会话的流式 text delta */
@@ -152,6 +203,7 @@ beforeEach(() => {
   localStorage.clear();
   useAppStore.setState({ workspaceId: 'ws-1' });
   usePanelStore.setState({ view: null, issueId: null, sessionId: null, chatSession: null, unread: {}, rightOpen: false });
+  useStreamingStore.setState({ streams: new Map() });
   mockChatApi();
 });
 
@@ -177,6 +229,54 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(screen.getByTestId('msg-ma1')).toBeInTheDocument();
     // 运行中：三个跳动点
     expect(screen.getByTestId('running-indicator')).toBeInTheDocument();
+  });
+
+  it('运行中会话后台收流不丢：流式期间切到 B，A 的 delta 继续累积且不串显；切回 A 显示完整内容', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    renderChat(makeSession({ id: 's1' }));
+    await screen.findByTestId('model-display');
+
+    emitText('s1', '后台');
+    expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('后台');
+
+    // 切到 s2（切换器真实路径）
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-option-s2'));
+    await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · m1'));
+
+    // A 在后台继续流式：累积进 store，B 视图不显示 A 的内容
+    emitText('s1', '继续');
+    emitText('s1', '累积');
+    expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument();
+
+    // 切回 A：完整累积文本（含切走期间的 delta）
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-option-s1'));
+    const bubble = await screen.findByTestId('streaming-bubble');
+    expect(bubble).toHaveTextContent('后台继续累积');
+  });
+
+  it('收起面板再展开：进行中的流式内容不丢，收起期间 delta 继续累积', async () => {
+    sessionsList = [makeSession()];
+    renderChat();
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    emitText('s1', '收起前');
+    expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('收起前');
+
+    // 收起右侧面板 → ChatPanel 卸载
+    await user.click(screen.getByTestId('right-panel-collapse'));
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument());
+
+    // 卸载期间全局层照常收流
+    emitText('s1', '期间');
+
+    // 展开恢复 → ChatPanel 重挂载，store 内容完整呈现
+    await user.click(screen.getByTestId('right-panel-expand'));
+    const bubble = await screen.findByTestId('streaming-bubble');
+    expect(bubble).toHaveTextContent('收起前期间');
   });
 
   it('event/error 折叠块：summary 显示工具名，input 截断 200 字符；点击开合；错误块', async () => {
@@ -205,10 +305,51 @@ describe('ChatPanel 消息流与流式渲染', () => {
     await user.click(within(block).getByText('工具 · read_file'));
     expect(block).not.toHaveAttribute('open');
   });
+
+  it('thinking 折叠块：默认收起、正文纯文本、可开合', async () => {
+    sessionsList = [makeSession()];
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', content: 'hi', ts: 100 }),
+      makeMessage({
+        id: 'mt1',
+        role: 'event',
+        content: JSON.stringify({ kind: 'thinking', text: '内部推理过程' }),
+        ts: 105,
+      }),
+    ];
+    renderChat();
+
+    const block = await screen.findByTestId('thinking-block-mt1');
+    expect(within(block).getByText('思考')).toBeInTheDocument();
+    expect(block).not.toHaveAttribute('open');
+    expect(within(block).getByText('内部推理过程')).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.click(within(block).getByText('思考'));
+    expect(block).toHaveAttribute('open');
+    await user.click(within(block).getByText('思考'));
+    expect(block).not.toHaveAttribute('open');
+  });
+
+  it('无 thinking 消息不出现空思考块；旧格式 event 消息仍按工具块/原文渲染', async () => {
+    sessionsList = [makeSession()];
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', content: 'hi', ts: 100 }),
+      makeMessage({ id: 'me1', role: 'event', content: JSON.stringify({ name: 'read_file', input: 'p' }), ts: 110 }),
+      makeMessage({ id: 'mr1', role: 'event', content: '无法解析的原文', ts: 115 }),
+    ];
+    renderChat();
+
+    await screen.findByTestId('event-block-me1');
+    expect(within(screen.getByTestId('event-block-me1')).getByText('工具 · read_file')).toBeInTheDocument();
+    expect(within(screen.getByTestId('event-block-mr1')).getByText('无法解析的原文')).toBeInTheDocument();
+    expect(screen.queryByTestId('thinking-block-me1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('thinking-block-mr1')).not.toBeInTheDocument();
+  });
 });
 
 describe('ChatPanel 排队与停止', () => {
-  it('POST 返回 queued:true 计数递增；收到 end 清零；POST 体带 text', async () => {
+  it('POST 返回 queued:true 计数递增；轮 end 后等服务端 session.runtime(queued_count=0) 清零；POST 体带 text', async () => {
     sessionsList = [makeSession()];
     renderChat();
     const user = userEvent.setup();
@@ -221,8 +362,49 @@ describe('ChatPanel 排队与停止', () => {
     expect(await screen.findByTestId('queue-hint')).toHaveTextContent('排队中 2 条');
     expect(postBodies.map((b) => b.text)).toEqual(['第一条', '第二条']);
 
+    // end 事件不本地清零：排队消息在服务端合并前仍处于排队态
     act(() => emitEnd('s1'));
+    expect(screen.getByTestId('queue-hint')).toHaveTextContent('排队中 2 条');
+
+    // 服务端合并起下一轮后广播 runtime → 计数归零
+    act(() => {
+      emitWsEvent({ type: 'session.runtime', session_id: 's1', queued_count: 0, waiting_slot: false });
+    });
     await waitFor(() => expect(screen.queryByTestId('queue-hint')).not.toBeInTheDocument());
+  });
+
+  it('切换会话/刷新后计数与等待槽位取自服务端 sessions 字段；session.runtime 事件到达即校正', async () => {
+    sessionsList = [makeSession({ queued_count: 2, waiting_slot: true })];
+    renderChat();
+
+    // 初始挂载即从 sessions query 字段回填（此前纯本地计数在切换/刷新后归零的缺陷）
+    expect(await screen.findByTestId('queue-hint')).toHaveTextContent('排队中 2 条');
+    expect(screen.getByTestId('waiting-slot-badge')).toHaveTextContent('等待槽位');
+
+    act(() => {
+      emitWsEvent({ type: 'session.runtime', session_id: 's1', queued_count: 3, waiting_slot: false });
+    });
+    expect(await screen.findByTestId('queue-hint')).toHaveTextContent('排队中 3 条');
+    expect(screen.queryByTestId('waiting-slot-badge')).not.toBeInTheDocument();
+  });
+
+  it('排队中可展开只读队列内容列表（GET /sessions/:id/queue 打开即拉，含停止后场景）', async () => {
+    sessionsList = [makeSession({ queued_count: 2 })];
+    queueStore['s1'] = ['排队消息甲', '排队消息乙'];
+    renderChat();
+    const user = userEvent.setup();
+
+    expect(await screen.findByTestId('queue-hint')).toHaveTextContent('排队中 2 条');
+    expect(screen.queryByTestId('queue-list')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('queue-toggle'));
+    const list = await screen.findByTestId('queue-list');
+    expect(list).toHaveTextContent('排队消息甲');
+    expect(list).toHaveTextContent('排队消息乙');
+
+    // 收起
+    await user.click(screen.getByTestId('queue-toggle'));
+    await waitFor(() => expect(screen.queryByTestId('queue-list')).not.toBeInTheDocument());
   });
 
   it('停止按钮调用 POST stop；状态转已结束；停止后队列保留提示', async () => {
@@ -243,6 +425,37 @@ describe('ChatPanel 排队与停止', () => {
     expect(screen.queryByTestId('running-indicator')).not.toBeInTheDocument();
     // 队列保留提示（非运行中）
     expect(screen.getByTestId('queue-hint')).toHaveTextContent('已停止，排队 1 条保留');
+  });
+});
+
+describe('ChatPanel 标记待验收', () => {
+  it('任务会话占用中：顶部工具条显示「标记待验收」按钮', async () => {
+    issueStore = makeIssue({ claimed_by: 'agent:codebuddy' });
+    sessionsList = [makeSession({ issue_id: 'iss-1' })];
+    renderChat(makeSession({ issue_id: 'iss-1' }));
+
+    expect(await screen.findByTestId('chat-done-btn')).toBeInTheDocument();
+  });
+
+  it('点击标记待验收：POST /api/issues/:id/done {agent_id:user}，占用释放后按钮消失', async () => {
+    issueStore = makeIssue({ claimed_by: 'agent:codebuddy' });
+    sessionsList = [makeSession({ issue_id: 'iss-1' })];
+    renderChat(makeSession({ issue_id: 'iss-1' }));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('chat-done-btn'));
+    await waitFor(() => expect(doneCalls).toEqual([{ id: 'iss-1', body: { agent_id: 'user' } }]));
+    // done 响应释放占用 → ['issue', id] 失效重取（claimed_by null）→ 按钮自然消失
+    await waitFor(() => expect(screen.queryByTestId('chat-done-btn')).not.toBeInTheDocument());
+  });
+
+  it('自由会话：不渲染按钮且不拉取关联任务', async () => {
+    sessionsList = [makeSession({ issue_id: null })];
+    renderChat(makeSession({ issue_id: null }));
+
+    await screen.findByTestId('model-display');
+    expect(screen.queryByTestId('chat-done-btn')).not.toBeInTheDocument();
+    expect(issueGetCount).toBe(0);
   });
 });
 
@@ -287,6 +500,43 @@ describe('ChatPanel 会话切换器与模型', () => {
     await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · m1'));
     await user.click(screen.getByTestId('session-switcher'));
     expect(screen.queryByTestId('unread-s2')).not.toBeInTheDocument();
+  });
+
+  it('session.deleted：当前会话被删 → 清空回空态，切换器不再出现该会话', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    const qc = renderChat();
+    await screen.findByTestId('model-display');
+
+    // 服务端删除：['sessions'] 失效刷新剔除 s1（connectWs 事件失效语义），并广播 session.deleted
+    sessionsList = [makeSession({ id: 's2', cli: 'codex' })];
+    act(() => {
+      emitWsEvent({ type: 'session.deleted', session_id: 's1' });
+    });
+    await waitFor(() => expect(usePanelStore.getState().sessionId).toBeNull());
+    await qc.invalidateQueries({ queryKey: ['sessions'] });
+
+    expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
+    await screen.findByTestId('session-switcher');
+    await userEvent.click(screen.getByTestId('session-switcher'));
+    expect(screen.queryByTestId('session-option-s1')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-option-s2')).toBeInTheDocument();
+  });
+
+  it('session.deleted：非当前会话被删 → 仅从切换器剔除，当前会话不受影响', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    const qc = renderChat();
+    await screen.findByTestId('model-display');
+
+    sessionsList = [makeSession({ id: 's1' })];
+    act(() => {
+      emitWsEvent({ type: 'session.deleted', session_id: 's2' });
+    });
+    await qc.invalidateQueries({ queryKey: ['sessions'] });
+
+    expect(screen.getByTestId('model-display')).toHaveTextContent('codebuddy · m1');
+    await userEvent.click(screen.getByTestId('session-switcher'));
+    expect(screen.queryByTestId('session-option-s2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('session-option-s1')).toBeInTheDocument();
   });
 
   it('新建会话：弹窗提交 POST /api/sessions 并切到新会话', async () => {
