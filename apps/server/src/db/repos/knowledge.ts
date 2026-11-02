@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeRevision, KnowledgeScope, KnowledgeSource } from '@agentboard/shared';
 import type { Db } from '../connection.js';
+import { syncPageLinks } from '../../services/knowledgeLinks.js';
 import { ApiError, ValidationError } from '../../errors.js';
 import { validateKnowledgeContent, validateKnowledgeScope } from '../../services/knowledge.js';
 
@@ -41,6 +42,8 @@ export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): Kn
       db.prepare(`INSERT INTO knowledge_page (id,scope,workspace_id,slug,title,body_md,status,revision,expires_at,created_by,updated_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(page.id, page.scope, page.workspace_id, page.slug, page.title, page.body_md, page.status, page.revision, page.expires_at, page.created_by, page.updated_by, now, now);
       appendRevision(db, page, 'create', input.change_note ?? '');
+      // V2-4：写入时解析 `[[双链]]`，与该页 revision 绑定（同一事务）
+      syncPageLinks(db, page);
       return page;
     })();
   } catch (error) { return duplicate(error); }
@@ -63,6 +66,8 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
         throw new ApiError(409, 'KNOWLEDGE_REVISION_CONFLICT', '知识页已更新，请重新读取', current ? { current_revision: current.revision } : undefined);
       }
       appendRevision(db, page, kind, patch.change_note ?? '');
+      // V2-4：新 revision 重建 link 行；旧 revision 的行保留（历史不重算）
+      syncPageLinks(db, page);
       return page;
     }).immediate();
   } catch (error) { return duplicate(error); }

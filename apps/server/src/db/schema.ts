@@ -10,6 +10,7 @@ import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
 import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/issueGitBaseline.js';
 import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
 import { migrateCheckinPlatforms } from './migrations/checkinPlatforms.js';
+import { migrateKnowledgeLinks } from './migrations/knowledgeLinks.js';
 
 // DDL 逐字来自实施计划 Pinned Contracts"DB DDL"段，不得改动
 const DDL = `
@@ -48,6 +49,7 @@ export function initSchema(db: Db): void {
   pruneIssueGitBaselines(db);
   migrateTaskHierarchy(db);
   migrateKnowledge(db);
+  migrateKnowledgeLinks(db);
   migrateIdempotency(db);
   migrateAccounts(db);
   migrateAccountPlatforms(db);

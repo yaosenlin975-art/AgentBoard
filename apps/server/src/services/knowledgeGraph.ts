@@ -26,7 +26,7 @@ export interface KnowledgeGraphNode {
   id: string; title: string; scope: 'workspace' | 'common'; workspace_id: string | null;
   source_count: number; degree: number;
 }
-export interface KnowledgeGraphEdge { source: string; target: string; kind: 'source' | 'keyword'; weight: number }
+export interface KnowledgeGraphEdge { source: string; target: string; kind: 'link' | 'source' | 'keyword'; weight: number }
 export interface KnowledgeGraph {
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
@@ -84,11 +84,11 @@ export function trigrams(text: string): Set<string> {
 const pairKey = (left: string, right: string): string => (left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`);
 const TERM_DF_LIMIT = 64; // 词出现在过多页时跳过，避免 O(n²) 爆炸（这些词区分度也低）
 
-type PairState = { sourceWeight: number; termHits: number; trigramHits: number };
+type PairState = { linkWeight: number; sourceWeight: number; termHits: number; trigramHits: number };
 
 function addPair(map: Map<string, PairState>, left: string, right: string, apply: (state: PairState) => void): void {
   const key = pairKey(left, right);
-  const state = map.get(key) ?? { sourceWeight: 0, termHits: 0, trigramHits: 0 };
+  const state = map.get(key) ?? { linkWeight: 0, sourceWeight: 0, termHits: 0, trigramHits: 0 };
   apply(state);
   map.set(key, state);
 }
@@ -116,7 +116,9 @@ function indexBy(rows: KnowledgeGraphRow[], keysOf: (row: KnowledgeGraphRow) => 
 }
 
 export interface BuildGraphOptions {
-  edgeKinds: Array<'source' | 'keyword'>;
+  edgeKinds: Array<'link' | 'source' | 'keyword'>;
+  /** V2-4：显式 `[[双链]]` 边（由调用方从 knowledge_link 读出）；缺省视为无 */
+  links?: Array<{ source: string; target: string; weight: number }>;
   includeIsolated: boolean;
   limitNodes: number;
   limitEdges: number;
@@ -129,8 +131,16 @@ export interface BuildGraphOptions {
 export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGraphOptions): KnowledgeGraph {
   const byId = new Map(rows.map(row => [row.id, row]));
   const pairs = new Map<string, PairState>();
+  const wantLink = options.edgeKinds.includes('link');
   const wantSource = options.edgeKinds.includes('source');
   const wantKeyword = options.edgeKinds.includes('keyword');
+
+  if (wantLink) {
+    for (const link of options.links ?? []) {
+      if (!byId.has(link.source) || !byId.has(link.target)) continue;
+      addPair(pairs, link.source, link.target, state => { state.linkWeight += link.weight; });
+    }
+  }
 
   if (wantSource) {
     const locatorIndex = indexBy(rows, row => row.sources.map((source: KnowledgeSource) => `l:${source.locator}`));
@@ -151,6 +161,11 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
   for (const [key, state] of pairs) {
     const [left, right] = key.split('\u0000') as [string, string];
     if (!byId.has(left) || !byId.has(right)) continue;
+    // 合并优先级：显式双链 > 共享来源 > 关键词共现
+    if (state.linkWeight > 0) {
+      edges.push({ source: left, target: right, kind: 'link', weight: state.linkWeight });
+      continue;
+    }
     if (state.sourceWeight > 0) {
       edges.push({ source: left, target: right, kind: 'source', weight: state.sourceWeight });
       continue;
