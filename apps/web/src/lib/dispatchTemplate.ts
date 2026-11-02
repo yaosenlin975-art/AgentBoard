@@ -14,13 +14,15 @@ export const DISPATCH_PROMPT_TEMPLATE = `你是任务看板的执行 agent。
 1. 任务内容以 \`kb show {{issue_id}}\` 实时返回为准，开工前与关键节点重新拉取。
 2. 用户在评论区的留言视为补充指令，经 \`kb show\` 读取最新评论。
 3. 关键节点（开工、受阻、阶段性完成）用 \`kb comment {{issue_id}} "..."\` 写进展总结。
-4. 全部完成后执行 \`kb done {{issue_id}}\`；无法完成执行 \`kb fail {{issue_id}} --reason "..."。`;
+4. 全部完成后执行 \`kb done {{issue_id}}\`；无法完成执行 \`kb fail {{issue_id}} --reason "..."。
+5. 完成前必须写一条知识页（\`kb knowledge create --slug handoff-{{issue_id}} --scope workspace --workspace {{workspace_id}} --stdin\`）：正文写本次任务的目标、关键决策与取舍、验证方式与结果、未验证项与剩余风险；不写流水账、不写变更日志式条目。同 slug 已存在时更新该页，不新建重复页。`;
 
 export interface DispatchPromptVars {
   issue_id: string;
   title: string;
   description: string;
   workspace_path: string;
+  workspace_id: string;
 }
 
 /** {{var}} 渲染；description 为空给"(空)"（与服务端行为一致） */
@@ -29,7 +31,8 @@ export function renderDispatchPrompt(template: string, vars: DispatchPromptVars)
     .replaceAll('{{issue_id}}', vars.issue_id)
     .replaceAll('{{title}}', vars.title)
     .replaceAll('{{description}}', vars.description.trim() === '' ? '(空)' : vars.description)
-    .replaceAll('{{workspace_path}}', vars.workspace_path);
+    .replaceAll('{{workspace_path}}', vars.workspace_path)
+    .replaceAll('{{workspace_id}}', vars.workspace_id);
 }
 
 /** 历史备注段上限：与服务端 HISTORY_NOTE_LIMIT 一致（最近 10 条） */

@@ -10,8 +10,8 @@
  * - 确认 → POST /api/sessions {cli, model, issue_id, prompt, reuse_session} → openChat 切聊天视图。
  */
 import { useEffect, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CliInfo, Issue, IssueComment, ModelInfo, Session } from '@agentboard/shared';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { MAX_DISPATCH_IMAGE_BYTES, MAX_DISPATCH_IMAGE_COUNT, MAX_DISPATCH_SELECTED_ID_COUNT, selectDispatchBatch, type CliInfo, type DispatchAttachmentCandidate, type Issue, type IssueComment, type ModelInfo, type PageResult, type Session, type TaskKnowledge } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Modal } from '../ui/Modal';
 import {
@@ -25,6 +25,14 @@ import { usePanelStore } from '../../state/panelStore';
 
 const inputCls =
   'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+
+function createRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export function DispatchDialog({
   issue,
@@ -49,9 +57,19 @@ export function DispatchDialog({
       title: issue.title,
       description: issue.description,
       workspace_path: workspacePath,
+      workspace_id: issue.workspace_id,
     }),
   );
   const [error, setError] = useState<string | null>(null);
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState(true);
+  const [knowledgeQuery, setKnowledgeQuery] = useState('');
+  const [retryUnknownImages, setRetryUnknownImages] = useState(false);
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
+  const [selectionInitialized, setSelectionInitialized] = useState(false);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const [batchNotice, setBatchNotice] = useState<string | null>(null);
+  const [dispatched, setDispatched] = useState(false);
+  const dispatchRequestIds = useRef(new Map<string, string>());
 
   const { data: clis } = useQuery({
     queryKey: ['clis'],
@@ -75,6 +93,70 @@ export function DispatchDialog({
     queryFn: () => api.get<IssueComment[]>(`/api/issues/${issue.id}/comments`),
   });
   const historyNotes = comments === undefined ? null : renderHistoryNotes(comments);
+  const pendingAttachments = useInfiniteQuery({
+    queryKey: ['pending-attachments', issue.id],
+    queryFn: ({ pageParam }) => api.get<PageResult<DispatchAttachmentCandidate>>(
+      `/api/issues/${encodeURIComponent(issue.id)}/pending-attachments?limit=20&offset=${pageParam}`,
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
+  });
+  const candidates = pendingAttachments.data?.pages.flatMap((page) => page.items) ?? [];
+  const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const selectedIdSet = new Set(selectedAttachmentIds);
+  const selectedCandidates = candidates.filter((candidate) => selectedIdSet.has(candidate.id));
+  const selectedBatch = selectDispatchBatch(selectedCandidates);
+  const selectedBytes = selectedCandidates.reduce((total, candidate) => total + candidate.size_bytes, 0);
+  const hasUnknownImages = selectedBatch.some((candidate) => candidate.delivery_state === 'unknown');
+  const candidateIdsKey = candidates.map((candidate) => candidate.id).join('\u0000');
+
+  useEffect(() => {
+    const firstPage = pendingAttachments.data?.pages[0];
+    if (selectionInitialized || firstPage === undefined) return;
+    const defaultIds: string[] = [];
+    let totalBytes = 0;
+    for (const candidate of firstPage.items) {
+      if (defaultIds.length >= MAX_DISPATCH_IMAGE_COUNT) break;
+      if (totalBytes + candidate.size_bytes > MAX_DISPATCH_IMAGE_BYTES) continue;
+      defaultIds.push(candidate.id);
+      totalBytes += candidate.size_bytes;
+    }
+    setSelectedAttachmentIds(defaultIds);
+    setSelectionInitialized(true);
+    if (firstPage.items.length > defaultIds.length || firstPage.next_offset !== null) {
+      setSelectionNotice('默认已选最早的可发送图片；未选图片会保持待读，可加载更多并调整本批。');
+    }
+  }, [pendingAttachments.data, selectionInitialized]);
+
+  useEffect(() => {
+    if (!selectionInitialized) return;
+    setSelectedAttachmentIds((current) => {
+      const next = current.filter((id) => candidateById.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [candidateIdsKey, selectionInitialized]);
+
+  const toggleAttachment = (id: string, checked: boolean): void => {
+    setSelectionNotice(null);
+    if (!checked) {
+      setSelectedAttachmentIds((current) => current.filter((selectedId) => selectedId !== id));
+      if (candidateById.get(id)?.delivery_state === 'unknown') setRetryUnknownImages(false);
+      return;
+    }
+    const candidate = candidateById.get(id);
+    if (!candidate || selectedAttachmentIds.includes(id)) return;
+    if (selectedAttachmentIds.length >= MAX_DISPATCH_SELECTED_ID_COUNT) {
+      setSelectionNotice(`一次最多选择 ${MAX_DISPATCH_SELECTED_ID_COUNT} 张；请先取消图片后再选。`);
+      return;
+    }
+    const nextIds = [...selectedAttachmentIds, id];
+    setSelectedAttachmentIds(nextIds);
+    const nextSet = new Set(nextIds);
+    const nextCandidates = candidates.filter((item) => nextSet.has(item.id));
+    if (selectDispatchBatch(nextCandidates).length < nextCandidates.length) {
+      setSelectionNotice(`所选图片超出单批上限；派发将按最旧顺序附上最多 ${MAX_DISPATCH_IMAGE_COUNT} 张且合计不超过 20 MiB，未附图片继续待读。`);
+    }
+  };
 
   const modelTouchedRef = useRef(false);
   const historyNotesAppendedRef = useRef(false);
@@ -117,22 +199,51 @@ export function DispatchDialog({
   };
 
   const dispatch = useMutation({
-    mutationFn: () =>
-      api.post<Session>('/api/sessions', {
+    mutationFn: () => {
+      const body = {
         cli: cliId,
         // 模型只读（dsh）：不传 model（由 CLI profile 配置决定）
         model: modelReadOnly ? null : model.trim() === '' ? null : model.trim(),
         issue_id: issue.id,
         prompt,
         reuse_session: reuse,
-      }),
+        knowledge_enabled: knowledgeEnabled,
+        retry_unknown_images: retryUnknownImages,
+        selected_attachment_ids: selectedAttachmentIds,
+        ...(knowledgeQuery.trim() ? { knowledge_query: knowledgeQuery.trim() } : {}),
+      };
+      const serialized = JSON.stringify(body);
+      let requestId = dispatchRequestIds.current.get(serialized);
+      if (requestId === undefined) {
+        requestId = createRequestId();
+        dispatchRequestIds.current.set(serialized, requestId);
+      }
+      return api.post<Session & { knowledge?: TaskKnowledge; remaining_attachment_count?: number }>('/api/sessions', body, {
+        headers: reuse === 'last' ? { 'Idempotency-Key': requestId } : undefined,
+      });
+    },
     onSuccess: async (session) => {
       const m = modelReadOnly ? '' : model.trim();
       if (m !== '') saveLastModel(cliId, m);
       void queryClient.invalidateQueries({ queryKey: ['issues'] });
       void queryClient.invalidateQueries({ queryKey: ['issue', issue.id] });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      onClose();
+      const remaining = session.remaining_attachment_count ?? 0;
+      if (session.knowledge?.warning) {
+        setDispatched(true);
+        setError('任务已派发，但知识检索不可用；本次沿用原任务上下文。');
+        if (remaining > 0) setBatchNotice(`另有 ${remaining} 张未附，仍保持待读。`);
+      } else if (remaining > 0) {
+        setDispatched(true);
+        await queryClient.invalidateQueries({ queryKey: ['pending-attachments', issue.id], exact: true });
+        setSelectedAttachmentIds([]);
+        setRetryUnknownImages(false);
+        setReuse('last');
+        setSelectionInitialized(true);
+        setSelectionNotice(null);
+        setBatchNotice(`本批已派发；另有 ${remaining} 张未附，仍保持待读。可选择下一批继续派发。`);
+        setDispatched(false);
+      } else onClose();
       openChat(session.id, session);
     },
     onError: (e) => setError(e instanceof Error ? e.message : '派发失败'),
@@ -143,14 +254,47 @@ export function DispatchDialog({
     model !== '' && !modelIds.includes(model) ? [model, ...modelIds] : modelIds;
 
   const submit = (): void => {
-    if (dispatch.isPending || cliId === '') return;
+    if (dispatch.isPending || dispatched || cliId === '' || !selectionInitialized || pendingAttachments.isError ||
+        (hasUnknownImages && !retryUnknownImages) || selectedCandidates.length !== selectedAttachmentIds.length) return;
     setError(null);
     dispatch.mutate();
   };
 
   return (
-    <Modal open title="派发设置" onClose={onClose}>
+    <Modal open title="派发设置" onClose={onClose} scrollable>
       <div className="space-y-3">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" aria-label="启用知识参考" checked={knowledgeEnabled} disabled={dispatched} onChange={e => setKnowledgeEnabled(e.target.checked)} />启用当前项目＋公共知识参考</label>
+        {knowledgeEnabled && <label className="block text-sm">知识查询<input aria-label="知识查询" className={inputCls} maxLength={500} value={knowledgeQuery} disabled={dispatched} placeholder="自动使用任务标题、标签和描述；可自定义" onChange={e => setKnowledgeQuery(e.target.value)} /></label>}
+        {hasUnknownImages && <label className="flex items-start gap-2 text-sm"><input type="checkbox" aria-label="确认重试未知投递图片" checked={retryUnknownImages} disabled={dispatched} onChange={e => setRetryUnknownImages(e.target.checked)} /><span>所选图片中有投递结果未知的图片。确认后，本批会再次发送这些图片。</span></label>}
+        <fieldset className="space-y-2 rounded border border-neutral-200 p-2 text-sm dark:border-neutral-700" aria-label="历史图片派发批次">
+          <legend className="px-1">历史图片（已选 {selectedAttachmentIds.length} 张，{(selectedBytes / (1024 * 1024)).toFixed(2)} MiB）</legend>
+          {pendingAttachments.isPending && <p>正在读取待派发图片…</p>}
+          {pendingAttachments.isError && <p role="alert">待派发图片读取失败，请关闭后重试。</p>}
+          {candidates.map((candidate) => (
+            <label key={candidate.id} className="flex items-start gap-2 rounded px-1 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-800">
+              <input
+                type="checkbox"
+                aria-label={`选择图片 ${candidate.file_name}`}
+                checked={selectedAttachmentIds.includes(candidate.id)}
+                disabled={dispatched}
+                onChange={(event) => toggleAttachment(candidate.id, event.target.checked)}
+              />
+              <span className="min-w-0">
+                <span className="block break-all">{candidate.file_name} · {(candidate.size_bytes / (1024 * 1024)).toFixed(2)} MiB · {candidate.delivery_state === 'unknown' ? '结果未知' : '待读'}</span>
+                <span className="block truncate text-xs text-neutral-500">{candidate.author}: {candidate.snippet}</span>
+              </span>
+            </label>
+          ))}
+          {candidates.length === 0 && !pendingAttachments.isPending && !pendingAttachments.isError && <p className="text-neutral-500">没有待读图片。</p>}
+          {pendingAttachments.hasNextPage && (
+            <button type="button" onClick={() => void pendingAttachments.fetchNextPage()} disabled={pendingAttachments.isFetchingNextPage || dispatched} className="rounded px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950/40">
+              {pendingAttachments.isFetchingNextPage ? '加载中…' : '加载更多历史图片'}
+            </button>
+          )}
+          {selectionNotice && <p role="status" data-testid="attachment-selection-notice">{selectionNotice}</p>}
+          {batchNotice && <p role="status" data-testid="attachment-batch-notice">{batchNotice}</p>}
+          <p className="text-xs text-neutral-500">每批最多 {MAX_DISPATCH_IMAGE_COUNT} 张、合计 20 MiB；超出所选图片留待读，并在派发提示中标注剩余数。</p>
+        </fieldset>
         <label className="block text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-300">CLI</span>
           <select
@@ -289,7 +433,7 @@ export function DispatchDialog({
             type="button"
             data-testid="dispatch-confirm"
             onClick={submit}
-            disabled={cliId === '' || dispatch.isPending}
+            disabled={cliId === '' || dispatch.isPending || !selectionInitialized || pendingAttachments.isError || (hasUnknownImages && !retryUnknownImages) || selectedCandidates.length !== selectedAttachmentIds.length}
             className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             {dispatch.isPending ? '派发中…' : '确认派发'}
@@ -299,3 +443,4 @@ export function DispatchDialog({
     </Modal>
   );
 }
+
