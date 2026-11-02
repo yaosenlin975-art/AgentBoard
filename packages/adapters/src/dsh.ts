@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
 import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { assertImageInputSupported } from './imageInput.js';
 
 export const DSH_CMD = 'dsh';
 /** 已适配的主次版本系列；runTurn 前校验，不符首轮明确报错。 */
@@ -96,6 +97,7 @@ export const dshAdapter: AgentAdapter = {
   id: 'dsh',
   displayName: 'DSH',
   supportsModelSelection: false,
+  supportsImageInput(): boolean { return false; },
   detect: detectDsh,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectDsh();
@@ -103,6 +105,7 @@ export const dshAdapter: AgentAdapter = {
     return DSH_STATIC_MODELS.map((m) => ({ ...m }));
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
+    assertImageInputSupported(opts, this.supportsImageInput);
     // 行为钉死（接口契约）：dsh --profile headless <prompt> --json [--session-id <adapterSessionId>]；
     // 模型只读：model 参数被忽略，由 profile 配置决定（UI 已禁用选择，能力位 supportsModelSelection=false）；
     // 版本门禁：先探 `dsh --version`，主次版本 ≠ 0.2 时发 error 事件并以非零（1）结束，不 spawn 主进程。

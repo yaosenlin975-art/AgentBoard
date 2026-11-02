@@ -11,6 +11,7 @@ const issue: Issue = {
   labels: [],
   status: '待规划',
   sort_order: 0,
+  parent_issue_id: null,
   claimed_by: null,
   claimed_at: null,
   session_id: null,
@@ -46,6 +47,19 @@ describe('eventToQueryKeys', () => {
       ['issues'],
       ['issue', 'i-1'],
     ]);
+    const imageEvent: WsEvent = {
+      type: 'comment.added',
+      comment: {
+        id: 'c-image', issue_id: 'i-1', author: 'user', content: '', ts: 2,
+        attachments: [{ id: 'a-1', file_name: 'a.png', mime_type: 'image/png', size_bytes: 8, url: '/a', delivery_state: 'pending' }],
+      },
+    };
+    expect(eventToQueryKeys(imageEvent)).toContainEqual(['pending-attachments', 'i-1']);
+  });
+
+  it('comment.delivery.changed → comments 与待派发图片+issue_id', () => {
+    const event: WsEvent = { type: 'comment.delivery.changed', issue_id: 'i-1', comment_ids: ['c-1'] };
+    expect(eventToQueryKeys(event)).toEqual([['comments', 'i-1'], ['pending-attachments', 'i-1']]);
   });
 
   it('session.changed → sessions', () => {

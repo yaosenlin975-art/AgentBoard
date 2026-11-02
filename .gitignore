@@ -6,3 +6,13 @@ dist/
 .DS_Store
 *.tsbuildinfo
 .zcode/
+# 运行日志与测试生成物（GIT-BATCH P10；均为未跟踪文件）
+*.log
+apps/server/test/.fixture-*/
+apps/server/test/fixtures/.tmp-*
+gui-test-screenshots/
+.workbuddy/
+
+# 会话临时产物（2026-11-02 收尾提交时排除）
+preview-*.txt
+idle-task-drafts/

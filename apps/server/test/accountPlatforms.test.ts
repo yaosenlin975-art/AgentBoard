@@ -156,13 +156,11 @@ describe('account platforms migration (ACC-10)', () => {
     } finally { db.close(); }
   });
 
-  it('registersNewPlatformsWithCaptureSwitchStillOff', () => {
+  it('registersNewPlatformsWithExpectedCapabilities', () => {
     const capabilities = accountProviderCapabilities();
-    for (const appId of ['minimax', 'trae'] as const) {
-      const capability = capabilities.find(item => item.app_id === appId);
-      // ACC-12 已开启签到；capture/switch 仍等 ACC-13
-      expect(capability).toMatchObject({ app_id: appId, capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' });
-    }
+    // ACC-12 开启签到；ACC-13 开启 minimax 的 capture/switch，trae 因登录态非文件化保持关闭
+    expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: true, checkin: true });
+    expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ capture: false, switch: false, checkin: true, reason_code: 'LOGIN_STATE_NOT_FILE_BASED' });
   });
 
 
@@ -177,7 +175,8 @@ describe('account platforms migration (ACC-10)', () => {
 
       const minimax = await request(created.app).get('/api/managed-account-capabilities?app=minimax');
       expect(minimax.status).toBe(200);
-      expect((minimax.body as Array<Record<string, unknown>>)[0]).toMatchObject({ app_id: 'minimax', capture: false, switch: false });
+      // 未注入 provider 时 checkin 由注入推导为 false，这里只断言平台被接受
+      expect((minimax.body as Array<Record<string, unknown>>)[0]).toMatchObject({ app_id: 'minimax', capture: true, switch: true });
 
       const bogus = await request(created.app).get('/api/managed-account-capabilities?app=bogus');
       expect(bogus.status).toBe(400);

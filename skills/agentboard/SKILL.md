@@ -7,8 +7,8 @@ description: 通过 kb CLI 从 AgentBoard 任务看板自助领取任务、执�
 
 ## 前置条件
 
-- 本机已安装 `kb` CLI（`@agentboard/cli` 的 bin）；流程第一步先执行自检 `kb --version`，输出版本号即 CLI 可用。
-- 看板服务已启动，默认 `http://127.0.0.1:8787`。服务地址不同时：单次用 `kb --server <url>`，长期用环境变量 `KB_SERVER=<url>`。
+- 本机已安装 kb CLI（自检 `kb --version`）。
+- 看板服务已启动（自检 `kb list-spaces`；报「看板服务未启动」时执行 `pnpm --filter @agentboard/server start`，在仓库根目录，需先 `pnpm -r build`）。服务地址不同时：单次用 `kb --server <url>`，长期用环境变量 `KB_SERVER=<url>`。
 - 当前 agent 身份用环境变量 `KB_AGENT=<名字>` 声明（如 `KB_AGENT=codebuddy`）；未设置时默认 `kb-cli`。
 
 ## 看板概念
@@ -20,6 +20,8 @@ description: 通过 kb CLI 从 AgentBoard 任务看板自助领取任务、执�
 ## kb 命令速查
 
 ```
+kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
+kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签]  # 建任务；ws 用 id 或名称
 kb list-spaces                          # 列工作空间（id/name/path）
 kb list-tasks [--workspace <id|名>] [--status 待规划|进行中|待验收|已关闭]
 kb show <issue-id>                      # 任务完整字段 + 全部评论
@@ -31,11 +33,11 @@ kb fail <issue-id> --reason "..."       # 失败 → 待规划，释放占用
 
 - 全局选项：`--server <url>`（覆盖 `KB_SERVER`）、`--json`（输出原始 JSON）。
 - 退出码：0 成功；1 服务未启动或请求失败；2 任务已被占用（HTTP 409）。
-- 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（<服务地址>，用 --server 指定）`，其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
+- 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
 
 ## 故障分支
 
-命令不存在（127）→ 装 CLI；服务未启动（1）→ 查服务；已被占用（2）→ 换任务。
+命令不存在（127）→ 装 CLI；服务未启动（1）→ 执行 `pnpm --filter @agentboard/server start`（仓库根目录，需先 `pnpm -r build`）；已被占用（2）→ 换任务。
 
 - **CLI 缺失**：`kb` 命令不存在（command not found，退出码 127）。按顺序尝试 `cd <仓库>/packages/cli && npm link`（仓库指 AgentBoard 仓库根），装完用 `kb --version` 复验；复验不过才停止并报告。agent 工作空间内没有该仓库时，向用户报告"kb CLI 未安装"并给出该安装命令，不自行猜测安装来源。
 

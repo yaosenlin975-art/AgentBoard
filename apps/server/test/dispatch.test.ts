@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import express from 'express';
+import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { createTestDb, type TestDb } from './helpers.js';
@@ -6,6 +9,8 @@ import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue, getIssue } from '../src/db/repos/issue.js';
 import { addComment as insertCommentRow } from '../src/db/repos/comment.js';
 import { getSession } from '../src/db/repos/session.js';
+import { createKnowledgePage } from '../src/db/repos/knowledge.js';
+import * as knowledgeSearch from '../src/db/repos/knowledgeSearch.js';
 import { claimIssue, releaseIssue } from '../src/services/claim.js';
 import { ConflictError, ValidationError } from '../src/errors.js';
 import {
@@ -17,11 +22,50 @@ import {
   type DispatchDeps,
 } from '../src/services/dispatch.js';
 import { initSessionManager, resetSessionManager } from '../src/services/sessionManager.js';
+import { createRouter, errorHandler } from '../src/api/routes.js';
 
 let t: TestDb;
 let wsId: string;
 let adapter: FakeAdapter;
 let deps: DispatchDeps;
+
+describe('knowledge context', () => {
+  const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:evidence', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
+  function seedKnowledge(workspace: string | null, slug: string, body = '缓存失效方案') {
+    return createKnowledgePage(t.db, { scope: workspace ? 'workspace' : 'common', workspace_id: workspace, slug, title: slug, body_md: body, sources, evidence: [{ source_id: 's', locator: 'issue:evidence' }], actor: 'codex' } as any);
+  }
+  it('dispatchInjectsWorkspaceAndCommonOnly with bounded provenance', async () => {
+    const issue = seedIssue({ title: '缓存失效' });
+    seedKnowledge(wsId, 'project'); seedKnowledge(null, 'common');
+    seedKnowledge(createWorkspace(t.db, { name: 'other', path: 'other' }).id, 'forbidden');
+    const result = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_enabled: true, knowledge_query: '缓存失效' });
+    await settle(); const prompt = adapter.calls[0]!.prompt;
+    expect(prompt).toContain('issue:evidence'); expect(prompt).toContain('common'); expect(prompt).not.toContain('forbidden');
+    expect(result.knowledge.items).toHaveLength(2); expect(result.knowledge.items[0].revision).toBe(1);
+    expect(prompt.split('## 知识参考')).toHaveLength(2);
+  });
+  it('knowledgeDisabledAddsNoPromptBlock', async () => {
+    const issue = seedIssue({ title: '缓存失效' }); seedKnowledge(wsId, 'project');
+    const result = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_enabled: false }); await settle();
+    expect(adapter.calls[0]!.prompt).not.toContain('## 知识参考'); expect(result.knowledge.enabled).toBe(false);
+  });
+  it('knowledgeSearchFailureDoesNotBlockDispatch', async () => {
+    vi.spyOn(knowledgeSearch, 'searchKnowledge').mockImplementation(() => { throw Error('private-db-path'); });
+    const result = await dispatchIssue(t.db, deps, { issueId: seedIssue().id, cli: 'fake', knowledge_enabled: true }); await settle();
+    expect(adapter.calls).toHaveLength(1); expect(result.knowledge.warning).toBe('KNOWLEDGE_UNAVAILABLE');
+    expect(adapter.calls[0]!.prompt).not.toContain('private-db-path');
+  });
+  it('knowledge is bounded and prefilled custom reference is not duplicated', async () => {
+    const issue = seedIssue({ title: '缓存失效' });
+    for (let i = 0; i < 5; i++) seedKnowledge(wsId, `page-${i}`, '缓存失效'.repeat(1000));
+    await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_query: '缓存失效' }); await settle();
+    const prompt = adapter.calls[0]!.prompt;
+    expect(prompt.slice(prompt.indexOf('## 知识参考')).length).toBeLessThanOrEqual(6000);
+    const other = seedIssue({ title: '缓存失效' });
+    await dispatchIssue(t.db, deps, { issueId: other.id, cli: 'fake', knowledge_query: '缓存失效', promptTemplate: '任务\n## 知识参考\n已有引用' }); await settle();
+    expect(adapter.calls[1]!.prompt.split('## 知识参考')).toHaveLength(2);
+  });
+});
 
 function fakeResolver(id: string): AgentAdapter {
   if (id === 'fake') return adapter;
@@ -71,12 +115,16 @@ describe('模板渲染', () => {
       title: '实现登录',
       description: '支持邮箱登录',
       workspace_path: 'D:\\ws\\demo',
+      workspace_id: wsId,
     });
     expect(adapter.calls[0]!.prompt).toBe(expected);
     expect(adapter.calls[0]!.prompt).toContain(`任务 ID：${issue.id}`);
     expect(adapter.calls[0]!.prompt).toContain('标题：实现登录');
     expect(adapter.calls[0]!.prompt).toContain('支持邮箱登录');
     expect(adapter.calls[0]!.prompt).toContain('工作目录：D:\\ws\\demo');
+    expect(adapter.calls[0]!.prompt).toContain('5. 完成前必须写一条知识页');
+    expect(adapter.calls[0]!.prompt).toContain(`--slug handoff-${issue.id}`);
+    expect(adapter.calls[0]!.prompt).toContain(`--workspace ${wsId} --stdin`);
     expect(adapter.calls[0]!.prompt).not.toContain('历史备注');
 
     expect(claimed.status).toBe('进行中');
@@ -108,6 +156,7 @@ describe('模板渲染', () => {
       title: '实现登录',
       description: '支持邮箱登录',
       workspace_path: 'D:\\ws\\demo',
+      workspace_id: wsId,
     });
     const lines = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(
       (i) => `- [${i % 2 === 0 ? 'user' : 'agent:x'}] 第${i}条`,
@@ -243,5 +292,61 @@ describe('派发事务', () => {
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(2);
     // 成功者的会话存活，失败者回滚干净
     expect(sessionsOf(issue.id)).toHaveLength(1);
+  });
+
+  it('同一 Idempotency-Key 重放新建会话分支：回放首轮响应，不重复建会话/落消息/起轮', async () => {
+    const issue = seedIssue();
+    const key = randomUUID();
+    // 直接调用未传载荷哈希：走内部回退计算，重放判定与记账同源
+    const input = { issueId: issue.id, cli: 'fake', idempotency_key: key };
+
+    const first = await dispatchIssue(t.db, deps, input);
+    await settle();
+    const repeat = await dispatchIssue(t.db, deps, input);
+
+    expect(repeat.replayed).toBe(true);
+    expect(repeat.session.id).toBe(first.session.id);
+    expect(repeat.issue.session_id).toBe(first.issue.session_id);
+    expect(repeat.issue.claimed_by).toBe('fake');
+    expect(sessionsOf(issue.id)).toHaveLength(1);
+    expect(t.db.prepare("SELECT COUNT(*) AS n FROM message WHERE session_id=? AND role='user'").get(first.session.id)).toEqual({ n: 1 });
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  it('POST /api/sessions 新建会话：同一 Idempotency-Key 两次请求返回同一响应体、只起一轮', async () => {
+    const app = express();
+    app.use(express.json());
+    // 仅覆盖派发链路，附件存储未装配（该用例不涉及图片）
+    const routerDeps = { db: t.db, getAdapter: fakeResolver, broadcast: () => {} } as unknown as Parameters<typeof createRouter>[0];
+    app.use('/api', createRouter(routerDeps));
+    app.use(errorHandler);
+    const issue = seedIssue();
+    const key = randomUUID();
+    const send = () => request(app).post('/api/sessions').set('Idempotency-Key', key).send({ issue_id: issue.id, cli: 'fake' });
+
+    const first = await send();
+    await settle();
+    const repeat = await send();
+
+    expect(first.status).toBe(200);
+    expect(repeat.status).toBe(200);
+    expect(repeat.body).toEqual(first.body);
+    expect(sessionsOf(issue.id)).toHaveLength(1);
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  it('未被占用的派发失败（占用冲突）不写幂等账本：释放后重试仍可派发', async () => {
+    const issue = seedIssue();
+    claimIssue(t.db, issue.id, 'other-agent', 'session-other');
+    const key = randomUUID();
+    const input = { issueId: issue.id, cli: 'fake', idempotency_key: key, idempotency_payload_hash: 'a'.repeat(64) };
+    await expect(dispatchIssue(t.db, deps, input)).rejects.toThrow(ConflictError);
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM idempotency_record').get()).toEqual({ n: 0 });
+
+    await releaseIssue(t.db, issue.id);
+    const ok = await dispatchIssue(t.db, deps, input);
+    await settle();
+    expect(ok.session.issue_id).toBe(issue.id);
+    expect(adapter.calls).toHaveLength(1);
   });
 });

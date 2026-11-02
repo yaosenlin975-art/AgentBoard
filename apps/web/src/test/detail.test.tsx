@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Task 13 测试：操作区四态切换、评论发送两态与 woke 提示、防抖 PATCH、删除二次确认、
  * 派发弹窗提交体（cli/model/reuse_session/prompt 渲染变量）、RightPanel 容器收起/展开/拖拽宽度。
  */
@@ -26,6 +26,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     labels: ['前端'],
     status: '待规划',
     sort_order: 0,
+    parent_issue_id: null,
     claimed_by: null,
     claimed_at: null,
     session_id: null,
@@ -65,6 +66,21 @@ function mockDetailApi(
   server.use(
     http.get('/api/issues/iss-1', () => HttpResponse.json(issue)),
     http.get('/api/issues/iss-1/comments', () => HttpResponse.json(opts.comments ?? [])),
+    http.get('/api/issues/iss-1/pending-attachments', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const limit = Number(params.get('limit') ?? 20);
+      const offset = Number(params.get('offset') ?? 0);
+      const candidates = (opts.comments ?? []).flatMap((comment) => (comment.attachments ?? [])
+        .filter((attachment) => attachment.delivery_state === 'pending' || attachment.delivery_state === 'unknown')
+        .map((attachment) => ({
+          ...attachment,
+          comment_id: comment.id,
+          author: comment.author,
+          ts: comment.ts,
+          snippet: comment.content.slice(0, 500),
+        })));
+      return HttpResponse.json({ items: candidates.slice(offset, offset + limit), next_offset: offset + limit < candidates.length ? offset + limit : null });
+    }),
     http.get('/api/sessions', () => HttpResponse.json(opts.sessions ?? [])),
     http.get('/api/workspaces', () => HttpResponse.json([ws])),
   );
@@ -160,6 +176,124 @@ describe('DetailPanel 操作区四态', () => {
   });
 });
 
+describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
+  it('显示四种状态；非进行中任务改状态时 PATCH 带 workspace_id + expected_updated_at，成功后按服务端响应更新', async () => {
+    const base = makeIssue({ status: '待规划', updated_at: 7 });
+    mockDetailApi(base);
+    let current = base;
+    const patches: Array<Record<string, unknown>> = [];
+    let issuesRefetches = 0;
+    server.use(
+      http.get('/api/issues/iss-1', () => HttpResponse.json(current)),
+      http.get('/api/issues', () => {
+        issuesRefetches += 1;
+        return HttpResponse.json([current]);
+      }),
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        current = { ...base, status: '待验收', updated_at: 9 };
+        return HttpResponse.json(current);
+      }),
+    );
+    renderDetail();
+
+    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(['待规划', '进行中', '待验收', '已关闭']);
+    expect(select.value).toBe('待规划');
+    expect(select).not.toBeDisabled();
+
+    await userEvent.selectOptions(select, '待验收');
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ workspace_id: 'ws-1', expected_updated_at: 7, status: '待验收' });
+    await waitFor(() => expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('待验收'));
+    // 看板/树列表缓存被失效（重新拉 /api/issues）
+    await waitFor(() => expect(issuesRefetches).toBeGreaterThan(0));
+  });
+
+  it('「进行中」任务（含未占用）：下拉禁用并给出原因，不发 PATCH', async () => {
+    const running = makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 });
+    mockDetailApi(running);
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(running);
+      }),
+    );
+    renderDetail();
+
+    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
+    expect(select.value).toBe('进行中');
+    expect(select).toBeDisabled();
+    expect(select).toHaveAttribute('title', expect.stringContaining('进行中'));
+    expect(screen.getByTestId('status-blocked-hint')).toHaveTextContent('进行中');
+
+    // 即使强制派发 change 事件也不产生请求
+    fireEvent.change(select, { target: { value: '已关闭' } });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(patches).toHaveLength(0);
+    expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('进行中');
+  });
+
+  it('已占用任务：状态下拉禁用并提示占用原因', async () => {
+    mockDetailApi(makeIssue({ status: '待规划', claimed_by: 'agent:codex', claimed_at: 1 }));
+    renderDetail();
+
+    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
+    expect(select).toBeDisabled();
+    expect(select).toHaveAttribute('title', expect.stringContaining('占用中'));
+  });
+
+  it('409 冲突：显示服务端原因，下拉保留服务端当前状态', async () => {
+    const base = makeIssue({ status: '待规划', updated_at: 7 });
+    mockDetailApi(base);
+    server.use(
+      http.patch('/api/issues/iss-1', () =>
+        HttpResponse.json({ error: { code: 'TASK_REVISION_CONFLICT', message: '任务已更新，请重新读取' } }, { status: 409 }),
+      ),
+    );
+    renderDetail();
+
+    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
+    await userEvent.selectOptions(select, '待验收');
+    const alert = await screen.findByTestId('detail-action-error');
+    expect(alert).toHaveTextContent('任务已更新，请重新读取');
+    expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('待规划');
+  });
+
+  it('后代未关闭时「已关闭」选项禁用（与树节点下拉同规则）', async () => {
+    const base = makeIssue({ status: '待规划' });
+    mockDetailApi(base);
+    server.use(
+      http.get('/api/issues', () => HttpResponse.json([
+        base,
+        makeIssue({ id: 'iss-child', parent_issue_id: 'iss-1', status: '进行中' }),
+      ])),
+    );
+    renderDetail();
+
+    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
+    await waitFor(() => {
+      const option = [...select.options].find((o) => o.value === '已关闭');
+      expect(option?.disabled).toBe(true);
+    });
+  });
+});
+
+describe('DetailPanel 滚动区留白（RIGHT-PANEL-HEADER-01）', () => {
+  it('滚动容器右侧留白 16px（> 经典滚动条 15px），标题作为首个区块不被滚动条压', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const panel = await screen.findByTestId('detail-panel');
+    const scroller = panel.querySelector('.overflow-y-auto') as HTMLElement | null;
+    expect(scroller).not.toBeNull();
+    expect(scroller!.className).toContain('pr-4');
+    expect(scroller!.className).not.toContain('p-3');
+    expect(scroller!.className).toContain('py-3');
+    expect(scroller!.className).toContain('pl-3');
+  });
+});
+
 describe('DetailPanel 字段防抖 PATCH', () => {
   it('连续输入只发一次 PATCH，体为最终值', async () => {
     mockDetailApi(makeIssue());
@@ -228,6 +362,52 @@ describe('DetailPanel 评论区', () => {
     expect(await screen.findByTestId('comment-c-new')).toBeInTheDocument();
   });
 
+  it('评论区时间倒序：服务端升序返回时 DOM 首条为最新，同 ts 保持服务端次序（COMMENT-ORDER）', async () => {
+    const comments: IssueComment[] = [
+      { id: 'c1', issue_id: 'iss-1', author: 'user', content: '第一条', ts: 100 },
+      { id: 'c2', issue_id: 'iss-1', author: 'user', content: '第二条', ts: 200 },
+      { id: 'c3', issue_id: 'iss-1', author: 'user', content: '第三条', ts: 200 },
+      { id: 'c4', issue_id: 'iss-1', author: 'user', content: '第四条', ts: 400 },
+    ];
+    mockDetailApi(makeIssue());
+    server.use(http.get('/api/issues/iss-1/comments', () => HttpResponse.json(comments)));
+    renderDetail();
+
+    await screen.findByTestId('comment-c4');
+    const ids = [...document.querySelectorAll('[data-testid^="comment-c"]')]
+      .map((node) => node.getAttribute('data-testid'))
+      .filter((id) => id !== 'comment-count');
+    // 倒序：c4(400) → c2(200，服务端在前) → c3(200) → c1(100)
+    expect(ids).toEqual(['comment-c4', 'comment-c2', 'comment-c3', 'comment-c1']);
+  });
+
+  it('倒序下新发评论出现在顶部（不落到底部）', async () => {
+    const comments: IssueComment[] = [
+      { id: 'c-old', issue_id: 'iss-1', author: 'user', content: '旧评论', ts: 100 },
+    ];
+    mockDetailApi(makeIssue());
+    server.use(
+      http.get('/api/issues/iss-1/comments', () => HttpResponse.json(comments)),
+      http.post('/api/issues/iss-1/comments', async () => {
+        const comment: IssueComment = { id: 'c-最新', issue_id: 'iss-1', author: 'user', content: '新评论', ts: 900 };
+        comments.push(comment);
+        return HttpResponse.json({ comment, woke: false });
+      }),
+    );
+    renderDetail();
+    await screen.findByTestId('comment-c-old');
+    await userEvent.type(screen.getByTestId('comment-input'), '新评论');
+    await userEvent.click(screen.getByTestId('comment-send'));
+
+    await screen.findByTestId('comment-c-最新');
+    await waitFor(() => {
+      const ids = [...document.querySelectorAll('[data-testid^="comment-c"]')]
+        .map((node) => node.getAttribute('data-testid'))
+        .filter((id) => id !== 'comment-count');
+      expect(ids[0]).toBe('comment-c-最新');
+    });
+  });
+
   it('占用中：提示"将唤醒 <cli>"，woke=true 显示已唤醒', async () => {
     const comments: IssueComment[] = [];
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
@@ -285,6 +465,29 @@ describe('DetailPanel 删除二次确认', () => {
     await userEvent.click(screen.getByTestId('delete-confirm'));
     await waitFor(() => expect(deleted).toBe(true));
     await waitFor(() => expect(usePanelStore.getState().rightOpen).toBe(false));
+  });
+
+  it('有直接子任务时明确阻止删除并说明先处理子任务', async () => {
+    const parent = makeIssue();
+    mockDetailApi(parent);
+    let deleteCalls = 0;
+    server.use(
+      http.get('/api/issues', () => HttpResponse.json([
+        parent,
+        makeIssue({ id: 'child', title: '子任务', parent_issue_id: parent.id }),
+      ])),
+      http.delete('/api/issues/iss-1', () => {
+        deleteCalls += 1;
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderDetail();
+    await userEvent.click(await screen.findByTestId('delete-btn'));
+
+    expect(await screen.findByTestId('delete-confirm-text')).toHaveTextContent('该任务有 1 个直接子任务');
+    expect(screen.getByTestId('delete-confirm-text')).toHaveTextContent('先移动或删除子任务');
+    expect(screen.getByTestId('delete-confirm')).toBeDisabled();
+    expect(deleteCalls).toBe(0);
   });
 });
 
@@ -388,6 +591,159 @@ describe('DispatchDialog', () => {
     expect(String(bodies[0]!.prompt)).toContain('任务 ID：iss-1');
     expect(String(bodies[0]!.prompt)).toContain('描述：\n任务描述内容');
     await waitFor(() => expect(localStorage.getItem('agentboard.last-model.codebuddy')).toBe('m1'));
+  });
+
+  it('重新派发未知结果图片需显式勾选确认', async () => {
+    const imageComment: IssueComment = {
+      id: 'c-unknown', issue_id: 'iss-1', author: 'user', content: '请看图', ts: 2,
+      attachments: [{
+        id: 'att-unknown', file_name: 'proof.png', mime_type: 'image/png', size_bytes: 8,
+        url: '/api/issues/iss-1/attachments/att-unknown', delivery_state: 'unknown',
+      }],
+    };
+    mockDetailApi(makeIssue(), { comments: [imageComment] });
+    const { bodies } = mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const retry = await screen.findByLabelText('确认重试未知投递图片');
+    expect(retry).not.toBeChecked();
+    await userEvent.click(retry);
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]).toMatchObject({ retry_unknown_images: true, selected_attachment_ids: ['att-unknown'] });
+  });
+
+  it('长图片列表将派发对话框限制在视口内并提供内部滚动', async () => {
+    mockDetailApi(makeIssue());
+    const candidates = Array.from({ length: 13 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      comment_id: `comment-${index + 1}`, author: 'user', ts: index + 1, snippet: `合成评论 ${index + 1}`,
+      file_name: `synthetic-${index + 1}.png`, mime_type: 'image/png' as const, size_bytes: 1024,
+      delivery_state: (index === 0 ? 'unknown' : 'pending') as 'unknown' | 'pending',
+    }));
+    server.use(http.get('/api/issues/iss-1/pending-attachments', () => HttpResponse.json({ items: candidates, next_offset: null })));
+    mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const dialog = await screen.findByRole('dialog', { name: '派发设置' });
+
+    expect(dialog).toHaveClass('max-h-[calc(100dvh-2rem)]', 'overflow-y-auto');
+    expect(await screen.findByLabelText('确认重试未知投递图片')).toBeInTheDocument();
+    expect(screen.getByTestId('dispatch-confirm')).toBeInTheDocument();
+  });
+
+  it('默认最旧优先选择5张，加载下一页后可替换本批并提交opaque ID', async () => {
+    mockDetailApi(makeIssue());
+    const candidates = Array.from({ length: 22 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      comment_id: `comment-${index + 1}`,
+      author: 'user',
+      ts: index + 1,
+      snippet: `合成评论 ${index + 1}`,
+      file_name: `synthetic-${index + 1}.png`,
+      mime_type: 'image/png' as const,
+      size_bytes: 1024,
+      delivery_state: 'pending' as const,
+    }));
+    server.use(http.get('/api/issues/iss-1/pending-attachments', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const limit = Number(params.get('limit'));
+      const offset = Number(params.get('offset'));
+      return HttpResponse.json({ items: candidates.slice(offset, offset + limit), next_offset: offset + limit < candidates.length ? offset + limit : null });
+    }));
+    const { bodies } = mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const checkbox = (index: number) => screen.getByLabelText(`选择图片 synthetic-${index}.png`) as HTMLInputElement;
+    await waitFor(() => expect(checkbox(5)).toBeChecked());
+    expect(checkbox(1)).toBeChecked();
+    expect(checkbox(6)).not.toBeChecked();
+
+    await userEvent.click(checkbox(1));
+    await userEvent.click(checkbox(6));
+    await userEvent.click(checkbox(7));
+    expect(await screen.findByTestId('attachment-selection-notice')).toHaveTextContent('最多 5 张');
+    expect(checkbox(7)).toBeChecked();
+
+    await userEvent.click(screen.getByRole('button', { name: '加载更多历史图片' }));
+    expect(await screen.findByLabelText('选择图片 synthetic-21.png')).not.toBeChecked();
+    await userEvent.click(checkbox(2));
+    await userEvent.click(screen.getByLabelText('选择图片 synthetic-21.png'));
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]!.selected_attachment_ids).toEqual(candidates.slice(2, 7).map((candidate) => candidate.id).concat(candidates[20]!.id));
+  });
+
+  it('允许选择超出20 MiB的图片并提示服务端按有界前缀截断', async () => {
+    mockDetailApi(makeIssue());
+    const candidates = [1, 2].map((index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      comment_id: `comment-${index}`, author: 'user', ts: index, snippet: '合成评论',
+      file_name: `large-${index}.png`, mime_type: 'image/png' as const,
+      size_bytes: 12 * 1024 * 1024, delivery_state: 'pending' as const,
+    }));
+    server.use(http.get('/api/issues/iss-1/pending-attachments', () => HttpResponse.json({ items: candidates, next_offset: null })));
+    mockDispatchApi();
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    const first = await screen.findByLabelText('选择图片 large-1.png') as HTMLInputElement;
+    const second = screen.getByLabelText('选择图片 large-2.png') as HTMLInputElement;
+    await waitFor(() => expect(first).toBeChecked());
+    await userEvent.click(second);
+
+    expect(second).toBeChecked();
+    expect(await screen.findByTestId('attachment-selection-notice')).toHaveTextContent('20 MiB');
+  });
+
+  it('派发响应返回剩余数后保留弹窗并允许显式续用会话发送下一批', async () => {
+    mockDetailApi(makeIssue({ session_id: 's-old' }), { sessions: [makeSession({ id: 's-old', status: '已结束' })] });
+    const allCandidates = Array.from({ length: 7 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      comment_id: `comment-${index + 1}`, author: 'user', ts: index + 1, snippet: `合成图片 ${index + 1}`,
+      file_name: `batch-${index + 1}.png`, mime_type: 'image/png' as const, size_bytes: 1024, delivery_state: 'pending' as const,
+    }));
+    let pending = [...allCandidates];
+    const bodies: Array<Record<string, unknown>> = [];
+    mockDispatchApi();
+    server.use(
+      http.get('/api/issues/iss-1/pending-attachments', ({ request }) => {
+        const params = new URL(request.url).searchParams;
+        const limit = Number(params.get('limit'));
+        const offset = Number(params.get('offset'));
+        return HttpResponse.json({ items: pending.slice(offset, offset + limit), next_offset: offset + limit < pending.length ? offset + limit : null });
+      }),
+      http.post('/api/sessions', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>;
+        bodies.push(body);
+        const sentIds = body.selected_attachment_ids as string[];
+        pending = pending.filter((candidate) => !sentIds.includes(candidate.id));
+        return HttpResponse.json({ ...makeSession({ id: bodies.length === 1 ? 'sess-first' : 'sess-second', status: '运行中' }), remaining_attachment_count: pending.length });
+      }),
+    );
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('dispatch-btn'));
+    await waitFor(() => expect((screen.getByLabelText('选择图片 batch-5.png') as HTMLInputElement)).toBeChecked());
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(await screen.findByTestId('attachment-batch-notice')).toHaveTextContent('另有 2 张未附');
+    expect(screen.getByTestId('reuse-group')).toBeInTheDocument();
+    expect(screen.getByLabelText('续用最近会话（保留 agent 已有进度）')).toBeChecked();
+    expect(screen.queryByLabelText('选择图片 batch-1.png')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('选择图片 batch-6.png')).not.toBeChecked();
+
+    await userEvent.click(screen.getByLabelText('选择图片 batch-6.png'));
+    await userEvent.click(screen.getByLabelText('选择图片 batch-7.png'));
+    await userEvent.click(screen.getByTestId('dispatch-confirm'));
+    await waitFor(() => expect(bodies).toHaveLength(2));
+    expect(bodies[1]).toMatchObject({ reuse_session: 'last', selected_attachment_ids: allCandidates.slice(5).map((candidate) => candidate.id) });
+    await waitFor(() => expect(screen.queryByTestId('dispatch-confirm')).not.toBeInTheDocument());
   });
 
   it('手输模型走 datalist 输入框并提交手输值', async () => {
@@ -504,11 +860,12 @@ describe('RightPanel 容器', () => {
     expect(await screen.findByTestId('right-panel')).toBeInTheDocument();
     expect(await screen.findByTestId('detail-panel')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId('right-panel-collapse'));
-    expect(screen.getByTestId('right-panel-collapsed')).toBeInTheDocument();
-    // 数据保留：展开恢复 detail
-    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'iss-1' });
-    await userEvent.click(screen.getByTestId('right-panel-expand'));
+    // PANEL-ENTRY2：关闭是整块卸载（没有收起态窄条），重开由入口触发（openDetail）
+    await userEvent.click(screen.getByTestId('right-panel-close'));
+    expect(screen.queryByTestId('right-panel')).toBeNull();
+    expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
+    expect(screen.queryByTestId('right-panel-rail')).toBeNull();
+    openDetail();
     expect(await screen.findByTestId('right-panel')).toBeInTheDocument();
     expect(await screen.findByTestId('detail-panel')).toBeInTheDocument();
   });
@@ -538,3 +895,4 @@ describe('RightPanel 容器', () => {
     await waitFor(() => expect(localStorage.getItem('agentboard.right-panel-width')).toBe('720'));
   });
 });
+

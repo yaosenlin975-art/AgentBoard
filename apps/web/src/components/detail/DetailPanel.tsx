@@ -8,9 +8,16 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import Markdown from 'react-markdown';
-import type { Issue, Priority, Session, Workspace } from '@agentboard/shared';
+import { MarkdownView } from '../../lib/markdown';
+import type { Issue, IssueStatus, Priority, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
+import {
+  ISSUE_STATUSES,
+  invalidateIssueStatusCaches,
+  manualStatusBlockedReason,
+  patchIssueStatus,
+} from '../../lib/issueStatus';
+import { getIssueDescendantIds } from '../../lib/issueTree';
 import { usePanelStore } from '../../state/panelStore';
 import { CommentThread } from './CommentThread';
 import { DispatchDialog } from './DispatchDialog';
@@ -35,6 +42,11 @@ export function DetailPanel() {
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => api.get<Workspace[]>('/api/workspaces'),
+    enabled: issue !== undefined,
+  });
+  const { data: workspaceIssues } = useQuery({
+    queryKey: ['issues', issue?.workspace_id],
+    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(issue!.workspace_id)}`),
     enabled: issue !== undefined,
   });
   const { data: allSessions } = useQuery({
@@ -125,6 +137,28 @@ export function DetailPanel() {
     onError: (e) => setActionError(e instanceof Error ? e.message : '删除失败'),
   });
 
+  // 手动改状态：与树节点下拉、看板拖动同一契约（workspace_id + expected_updated_at CAS）。
+  // 不做乐观更新：失败时下拉值仍是服务端现值（issue.status），只显示原因。
+  const changeStatus = useMutation({
+    mutationFn: (nextStatus: IssueStatus) =>
+      patchIssueStatus({
+        issueId: issueId as string,
+        workspaceId: issue!.workspace_id,
+        expectedUpdatedAt: issue!.updated_at,
+        status: nextStatus,
+      }),
+    onSuccess: (updated) => {
+      setActionError(null);
+      queryClient.setQueryData(['issue', updated.id], updated);
+      invalidateIssueStatusCaches(queryClient, { workspaceId: updated.workspace_id });
+    },
+    onError: (e) => {
+      setActionError(e instanceof Error ? e.message : '修改状态失败');
+      // 冲突后回到服务端当前状态
+      void queryClient.invalidateQueries({ queryKey: ['issue', issueId] });
+    },
+  });
+
   if (issueId === null) return null;
   if (issueError !== null) {
     return (
@@ -142,6 +176,12 @@ export function DetailPanel() {
   }
 
   const claimed = issue.claimed_by !== null;
+  const statusBlocked = manualStatusBlockedReason(issue);
+  // 「已关闭」与树节点下拉同规则：后代全部关闭前不可选
+  const descendantIds = getIssueDescendantIds(workspaceIssues ?? [], issue.id);
+  const closeBlocked = issue.status !== '已关闭'
+    && [...descendantIds].some((id) => (workspaceIssues ?? []).find((candidate) => candidate.id === id)?.status !== '已关闭');
+  const directChildCount = workspaceIssues?.filter((candidate) => candidate.parent_issue_id === issue.id).length ?? 0;
   const dispatchable = !claimed && (issue.status === '待规划' || issue.status === '进行中');
   const issueSessions = (allSessions ?? []).filter((s) => s.issue_id === issue.id);
   const workspacePath = (workspaces ?? []).find((w) => w.id === issue.workspace_id)?.path ?? '';
@@ -157,7 +197,8 @@ export function DetailPanel() {
 
   return (
     <div data-testid="detail-panel" className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
+      {/* 滚动区：右侧留 16px（> 15px 经典滚动条宽度），避免滚动条压住标题与首个字段 */}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3 pl-3 pr-4">
         {/* 字段区 */}
         <section aria-label="字段" className="space-y-2">
           <label className="block text-sm">
@@ -199,11 +240,8 @@ export function DetailPanel() {
                 className={inputCls}
               />
             ) : (
-              <div
-                data-testid="desc-preview"
-                className="prose prose-sm max-w-none rounded border border-neutral-200 px-2.5 py-2 dark:border-neutral-800 dark:prose-invert"
-              >
-                <Markdown>{description.trim() === '' ? '（无描述）' : description}</Markdown>
+              <div data-testid="desc-preview">
+                <MarkdownView className="rounded border border-neutral-200 px-2.5 py-2 dark:border-neutral-800">{description.trim() === '' ? '（无描述）' : description}</MarkdownView>
               </div>
             )}
           </div>
@@ -225,6 +263,34 @@ export function DetailPanel() {
               <option value="中">中</option>
               <option value="高">高</option>
             </select>
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">状态</span>
+            <select
+              data-testid="status-select"
+              aria-label="状态"
+              value={issue.status}
+              disabled={statusBlocked !== null || changeStatus.isPending}
+              title={statusBlocked ?? undefined}
+              onChange={(e) => {
+                // 双保险：disabled 之外再拦一层，任何路径都不发手动状态更新
+                if (statusBlocked !== null) return;
+                changeStatus.mutate(e.target.value as IssueStatus);
+              }}
+              className={inputCls}
+            >
+              {ISSUE_STATUSES.map((value) => (
+                <option key={value} value={value} disabled={value === '已关闭' && closeBlocked}>
+                  {value}
+                </option>
+              ))}
+            </select>
+            {statusBlocked !== null && (
+              <span data-testid="status-blocked-hint" className="mt-1 block text-xs text-neutral-500 dark:text-neutral-400">
+                {statusBlocked}
+              </span>
+            )}
           </label>
 
           <label className="block text-sm">
@@ -289,13 +355,15 @@ export function DetailPanel() {
               (confirmingDelete ? (
                 <>
                   <span data-testid="delete-confirm-text" className="text-xs text-red-600 dark:text-red-400">
-                    确认删除？关联会话与消息将一并删除
+                    {directChildCount > 0
+                      ? `该任务有 ${directChildCount} 个直接子任务；先移动或删除子任务后才能删除此任务`
+                      : '确认删除？关联会话与消息将一并删除'}
                   </span>
                   <button
                     type="button"
                     data-testid="delete-confirm"
                     onClick={() => remove.mutate()}
-                    disabled={remove.isPending}
+                    disabled={remove.isPending || directChildCount > 0}
                     className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
                   >
                     确认删除
@@ -340,3 +408,4 @@ export function DetailPanel() {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 聊天视图（设计 §7.5 / §5.5，Task 14）：
  * - 顶部工具条：会话切换器（分组下拉+徽标）+ 新建会话 + 当前 CLI/模型（可修改，下一轮生效）
  *   + 停止（运行中显示，POST stop）+ 标记待验收（任务会话占用中且未结束时显示，POST done）；
@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, Message, Session } from '@agentboard/shared';
+import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
@@ -57,23 +57,52 @@ export function ChatPanel() {
     setLiveSession(null);
     setFetchedSession(null);
   }, [sessionId]);
-  const session =
-    liveSession ??
+  // 持久化/按 id 拉取的快照（打开时的会话对象）
+  const snapshotSession =
     (storedSession !== null && storedSession.id === sessionId ? storedSession : null) ??
     (fetchedSession !== null && fetchedSession.id === sessionId ? fetchedSession : null);
+  const workspaceId = liveSession?.workspace_id ?? snapshotSession?.workspace_id ?? appWorkspaceId;
+  const { data: sessions } = useQuery({
+    queryKey: ['sessions', workspaceId],
+    queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(workspaceId ?? '')}`),
+    enabled: workspaceId !== null,
+  });
+  // 会话对象优先级：WS session.changed（最新）→ sessions 列表（服务端权威快照）→ 持久化/按 id 拉取的快照。
+  // 持久化 chatSession 是打开时的快照，后续状态变更不回写；刷新后必须以服务端列表校正，
+  // 否则打开时处于「运行中」的会话在轮次结束后刷新仍显示运行三点与停止按钮（假忙）。
+  const listedSession = sessions?.find((x) => x.id === sessionId) ?? null;
+  const session = liveSession ?? listedSession ?? snapshotSession;
+  // 当前会话所属工作空间名称：与 TopBar/WorkspaceList 共用 ['workspaces'] 缓存（不额外请求）。
+  // 名称按 workspaceId 实时推导、不落本地 state，切会话/切工作空间不残留旧值；
+  // workspaceId 为空 → 「未选择工作空间」；列表里查不到（空间已删除/不可用）→ 「工作空间不可用」。
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => api.get<Workspace[]>('/api/workspaces'),
+  });
+  const workspaceLabel =
+    workspaceId === null
+      ? '未选择工作空间'
+      : workspaces === undefined
+        ? null
+        : (workspaces.find((w) => w.id === workspaceId)?.name ?? '工作空间不可用');
+  // 头部工作空间徽标（加载中不渲染，避免闪现错误名称）
+  const workspaceBadge =
+    workspaceLabel === null ? null : (
+      <span
+        data-testid="chat-workspace-label"
+        title="当前会话所属工作空间"
+        className="max-w-[9rem] shrink-0 truncate rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+      >
+        {workspaceLabel}
+      </span>
+    );
 
-  const workspaceId = session?.workspace_id ?? appWorkspaceId;
   // 关联任务（DetailPanel 同款 ['issue', id] query）：占用态决定「标记待验收」显隐（issue_id 空→不拉取）
   const issueId = session?.issue_id ?? null;
   const { data: linkedIssue } = useQuery({
     queryKey: ['issue', issueId],
     queryFn: () => api.get<Issue>(`/api/issues/${issueId}`),
     enabled: issueId !== null,
-  });
-  const { data: sessions } = useQuery({
-    queryKey: ['sessions', workspaceId],
-    queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(workspaceId ?? '')}`),
-    enabled: workspaceId !== null,
   });
 
   // 运行时态以服务端为准：sessions 列表（含 queued_count/waiting_slot）每次拉取/重取即校正本地计数
@@ -234,11 +263,31 @@ export function ChatPanel() {
     [openChat],
   );
 
+  // 持久删除会话：成功 → 清流式缓冲 + 清选中/未读（当前会话回空态）+ 列表失效；
+  // 失败（服务端 409：运行中/占用任务）→ 原文进 actionError，选中与列表保持不变
+  const handleDeleteSession = useCallback(
+    async (s: Session): Promise<void> => {
+      try {
+        await api.del<void>(`/api/sessions/${encodeURIComponent(s.id)}`);
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : '删除会话失败');
+        return;
+      }
+      clearStream(s.id);
+      removeSession(s.id);
+      setActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.removeQueries({ queryKey: ['session-queue', s.id] });
+    },
+    [removeSession, queryClient],
+  );
+
   if (sessionId === null || session === null) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="chat-panel">
         <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
-          <SessionSwitcher sessions={sessions ?? []} currentSession={null} unread={unread} onSelect={selectSession} />
+          <SessionSwitcher sessions={sessions ?? []} currentSession={null} unread={unread} onSelect={selectSession} onDelete={handleDeleteSession} />
+          {workspaceBadge}
           <button
             type="button"
             data-testid="new-session-btn"
@@ -293,7 +342,8 @@ export function ChatPanel() {
     <div data-testid="chat-panel" className="flex h-full min-h-0 flex-col">
       {/* 顶部工具条 */}
       <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
-        <SessionSwitcher sessions={sessions ?? []} currentSession={session} unread={unread} onSelect={selectSession} />
+        <SessionSwitcher sessions={sessions ?? []} currentSession={session} unread={unread} onSelect={selectSession} onDelete={handleDeleteSession} />
+          {workspaceBadge}
         <button
           type="button"
           data-testid="new-session-btn"
@@ -382,7 +432,7 @@ export function ChatPanel() {
         </div>
       )}
 
-      <Composer disabled={false} running={running} queuedCount={queuedCount} onSend={handleSend} />
+      <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} onSend={handleSend} />
 
       {newDialogOpen && (
         <NewSessionDialog defaultWorkspaceId={workspaceId} onClose={() => setNewDialogOpen(false)} />

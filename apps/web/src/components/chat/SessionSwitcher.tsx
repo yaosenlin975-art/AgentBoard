@@ -1,7 +1,9 @@
-/**
+﻿/**
  * 会话切换器（设计 §7.5）：下拉按"任务会话 / 自由会话"分组；
  * 徽标：运行中（绿点动效）/ 有新消息（本地未读计数）/ 失败（红点）；
  * 当前会话标"当前"。选项点击回调父级执行 openChat（内部顺带清未读）。
+ * 删除：每项右侧删除入口，点击进入行内二次确认（确认/取消），确认后由父级执行持久删除；
+ * 服务端拒绝（如运行中/占用任务）时错误由父级展示，菜单不关闭；成功后才收起菜单。
  */
 import { useState } from 'react';
 import type { Session } from '@agentboard/shared';
@@ -42,32 +44,81 @@ function SessionItem({
   unreadCount,
   onSelect,
   onClose,
+  onDelete,
 }: {
   session: Session;
   active: boolean;
   unreadCount: number;
   onSelect: (session: Session) => void;
   onClose: () => void;
+  onDelete: (session: Session) => Promise<void>;
 }) {
+  // 行内二次确认：confirming 时替换为「确认删除 / 取消」，避免误删；提交中禁用防重复
+  const [confirming, setConfirming] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   return (
-    <button
-      type="button"
-      data-testid={`session-option-${session.id}`}
-      onClick={() => {
-        onSelect(session);
-        onClose();
-      }}
-      className={`flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+    <div
+      data-testid={`session-row-${session.id}`}
+      className={`flex w-full items-center gap-1 px-2.5 py-1.5 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
         active ? 'bg-blue-50 dark:bg-blue-950/40' : ''
       }`}
     >
-      <span className="truncate">
-        {session.cli}
-        {session.model !== null ? ` · ${session.model}` : ''}
-      </span>
-      <StatusBadges session={session} unreadCount={unreadCount} />
-      {active && <span className="shrink-0 text-[10px] text-blue-600 dark:text-blue-400">当前</span>}
-    </button>
+      <button
+        type="button"
+        data-testid={`session-option-${session.id}`}
+        onClick={() => {
+          onSelect(session);
+          onClose();
+        }}
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+      >
+        <span className="truncate">
+          {session.cli}
+          {session.model !== null ? ` · ${session.model}` : ''}
+        </span>
+        <StatusBadges session={session} unreadCount={unreadCount} />
+        {active && <span className="shrink-0 text-[10px] text-blue-600 dark:text-blue-400">当前</span>}
+      </button>
+      {confirming ? (
+        <span className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            data-testid={`session-delete-confirm-${session.id}`}
+            disabled={deleting}
+            onClick={() => {
+              setDeleting(true);
+              void onDelete(session).finally(() => {
+                setDeleting(false);
+                setConfirming(false);
+              });
+            }}
+            className="rounded border border-red-400 px-1 text-[10px] text-red-600 disabled:opacity-40 dark:border-red-700 dark:text-red-400"
+          >
+            确认删除
+          </button>
+          <button
+            type="button"
+            data-testid={`session-delete-cancel-${session.id}`}
+            disabled={deleting}
+            onClick={() => setConfirming(false)}
+            className="rounded px-1 text-[10px] text-neutral-500 hover:underline disabled:opacity-40 dark:text-neutral-400"
+          >
+            取消
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          data-testid={`session-delete-${session.id}`}
+          aria-label="删除会话"
+          title="删除会话"
+          onClick={() => setConfirming(true)}
+          className="shrink-0 rounded px-1 text-[10px] text-neutral-400 hover:text-red-600 dark:text-neutral-500 dark:hover:text-red-400"
+        >
+          ✕
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -76,11 +127,13 @@ export function SessionSwitcher({
   currentSession,
   unread,
   onSelect,
+  onDelete,
 }: {
   sessions: Session[];
   currentSession: Session | null;
   unread: Record<string, number>;
   onSelect: (session: Session) => void;
+  onDelete: (session: Session) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const taskSessions = sessions.filter((s) => s.issue_id !== null);
@@ -135,6 +188,7 @@ export function SessionSwitcher({
                     unreadCount={unread[s.id] ?? 0}
                     onSelect={onSelect}
                     onClose={() => setOpen(false)}
+                    onDelete={onDelete}
                   />
                 ))}
               </>
@@ -150,6 +204,7 @@ export function SessionSwitcher({
                     unreadCount={unread[s.id] ?? 0}
                     onSelect={onSelect}
                     onClose={() => setOpen(false)}
+                    onDelete={onDelete}
                   />
                 ))}
               </>
@@ -160,3 +215,4 @@ export function SessionSwitcher({
     </div>
   );
 }
+

@@ -16,6 +16,7 @@ export function issueLines(issue: Issue): string[] {
     `标题: ${issue.title}`,
     `描述: ${issue.description === '' ? '（空）' : issue.description}`,
     `状态: ${issue.status}`,
+    `父任务: ${issue.parent_issue_id ?? '（根任务）'}`,
     `优先级: ${issue.priority}`,
     `标签: ${issue.labels.length > 0 ? issue.labels.join(', ') : '（无）'}`,
     `sort_order: ${issue.sort_order}`,
@@ -32,6 +33,9 @@ export function commentLines(comments: ReadonlyArray<IssueComment & { is_new?: b
   if (comments.length === 0) return ['评论（0）:（无）'];
   return [
     `评论（${comments.length}）:`,
-    ...comments.map((c) => `${c.is_new ? '[新] ' : ''}- [${c.author}] ${c.content}`),
+    ...comments.flatMap((c) => [
+      `${c.is_new ? '[新] ' : ''}- [${c.author}] ${c.content}`,
+      ...(c.attachments ?? []).map((attachment) => `  图片（交付未验证）: ${attachment.file_name} (${attachment.mime_type}, ${attachment.size_bytes} bytes) ${attachment.url}`),
+    ]),
   ];
 }

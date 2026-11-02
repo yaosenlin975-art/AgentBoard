@@ -418,6 +418,19 @@ describe('sessions', () => {
     expect(adapter.calls[0]!.prompt).toBe('自由指令');
   });
 
+  it('POST 自由会话不接受 issue-scoped selected_attachment_ids', async () => {
+    const wsId = await mkSpace();
+    const response = await request(app).post('/api/sessions').send({
+      cli: 'codebuddy', workspace_id: wsId, prompt: '自由指令',
+      selected_attachment_ids: ['00000000-0000-4000-8000-000000000001'],
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.message).toContain('issue_id');
+    expect((await request(app).get(`/api/sessions?workspace=${wsId}`)).body).toEqual([]);
+    expect(adapter.calls).toHaveLength(0);
+  });
+
   it('GET /api/sessions/:id 返回完整会话', async () => {
     const wsId = await mkSpace();
     const created = await request(app)

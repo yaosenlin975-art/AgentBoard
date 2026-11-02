@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
 import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { assertImageInputSupported } from './imageInput.js';
 
 export const OPENCODE_CMD = 'opencode';
 
@@ -107,6 +108,7 @@ export const opencodeAdapter: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
   supportsModelSelection: true,
+  supportsImageInput(): boolean { return false; },
   detect: detectOpencode,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectOpencode();
@@ -125,6 +127,7 @@ export const opencodeAdapter: AgentAdapter = {
     return parseModelLines(plain.lines);
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
+    assertImageInputSupported(opts, this.supportsImageInput);
     // 行为钉死（opencode v2.2.0 实测）：opencode run <prompt> --format json [-m <provider/model>] [-s <sessionId>]；
     // resume flag 以 `opencode run --help` 实测为准：--session, -s（实测 -s <id> 续接上下文有效）；
     // 模型格式 provider/model（#variant 可选）。参数数组直传不经 shell；win32 下 .cmd 垫片经 cmd.exe /d /s /c 包装。

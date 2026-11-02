@@ -19,6 +19,11 @@ export class FakeAdapter implements AgentAdapter {
   readonly id = 'codebuddy' as const;
   readonly displayName = 'Fake CLI';
   readonly supportsModelSelection = true;
+  detectedVersion: string | null = 'fake-1.0';
+  detectedInstalled = true;
+  supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean {
+    return model === 'minimax-m3.1-flash' && (cliVersion === undefined || cliVersion === '2.179.2');
+  }
   readonly calls: RunTurnOptions[] = [];
   /** 每次 runTurn 的行为脚本；默认立即回复一条文本并正常结束 */
   script: (control: FakeTurnControl) => void | Promise<void> = (control) => {
@@ -27,7 +32,7 @@ export class FakeAdapter implements AgentAdapter {
   };
 
   async detect(): Promise<{ installed: boolean; version: string | null }> {
-    return { installed: true, version: 'fake-1.0' };
+    return { installed: this.detectedInstalled, version: this.detectedVersion };
   }
 
   async listModels(): Promise<ModelInfo[]> {

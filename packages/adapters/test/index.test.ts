@@ -17,6 +17,17 @@ describe('registry', () => {
     ]);
   });
 
+  it('未验证图片输入的 CLI 显式拒绝 attachments，不降级为纯文本', () => {
+    for (const id of ['codex', 'opencode', 'dsh'] as const) {
+      const adapter = getAdapter(id);
+      expect(adapter.supportsImageInput?.('unverified')).toBe(false);
+      expect(() => adapter.runTurn({
+        cwd: '.', model: 'unverified', prompt: '保留原样',
+        attachments: [{ path: 'D:\\synthetic.png', mimeType: 'image/png' }],
+      })).toThrow('IMAGE_DELIVERY_UNVERIFIED');
+    }
+  });
+
   it('四家 detect 并行（Promise.all）：mock 命中 where + --version → 全部 installed', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
       if (cmd === 'where' || cmd === 'which') {

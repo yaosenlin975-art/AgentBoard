@@ -17,8 +17,9 @@ const CAPABILITIES: AccountProviderCapability[] = [
   { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: true, reason_code: 'CHECKIN_READY' },
   { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED' },
   // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-13）
-  { app_id: 'minimax', capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' },
-  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' },
+  // ACC-13：minimax 有明文 auth.json → 可文件级 capture/switch；trae 登录态不在可安全改写的明文文件里
+  { app_id: 'minimax', capture: true, switch: true, checkin: true, reason_code: 'CHECKIN_READY' },
+  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'LOGIN_STATE_NOT_FILE_BASED' },
 ];
 
 export function accountProviderCapabilities(): AccountProviderCapability[] {

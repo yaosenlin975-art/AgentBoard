@@ -28,6 +28,11 @@ import {
   setMaxConcurrentTurns,
 } from '../src/services/sessionManager.js';
 import { ValidationError } from '../src/errors.js';
+import {
+  DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  DEFAULT_ATTACHMENT_QUOTA_BYTES,
+  DEFAULT_ATTACHMENT_STAGED_TTL_MS,
+} from '../src/services/attachments.js';
 
 let t: TestDb;
 let adapter: FakeAdapter;
@@ -90,6 +95,9 @@ describe('GET /api/settings', () => {
       port: DEFAULT_PORT,
       dbPath: defaultDbPath(),
       maxConcurrentTurns: DEFAULT_MAX_CONCURRENT_TURNS,
+      attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
+      attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
+      attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
     });
     expect(existsSync(configFilePath())).toBe(false);
   });
@@ -98,7 +106,14 @@ describe('GET /api/settings', () => {
     writeConfigFile({ port: 9000, dbPath: 'D:\\db\\a.db', maxConcurrentTurns: 5 });
     const res = await request(app).get('/api/settings');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ port: 9000, dbPath: 'D:\\db\\a.db', maxConcurrentTurns: 5 });
+    expect(res.body).toEqual({
+      port: 9000,
+      dbPath: 'D:\\db\\a.db',
+      maxConcurrentTurns: 5,
+      attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
+      attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
+      attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+    });
   });
 
   it('环境变量 AGENTBOARD_PORT 不参与（端点只反映文件持久化值）', async () => {
@@ -118,9 +133,23 @@ describe('PATCH /api/settings', () => {
   it('合法值 → 200 返回新值并持久化（再 GET 可见、文件落盘）', async () => {
     const res = await request(app)
       .patch('/api/settings')
-      .send({ port: 9001, dbPath: 'D:\\db\\new.db', maxConcurrentTurns: 2 });
+      .send({
+        port: 9001,
+        dbPath: 'D:\\db\\new.db',
+        maxConcurrentTurns: 2,
+        attachmentQuotaBytes: 2048,
+        attachmentStagedTtlMs: 5000,
+        attachmentCleanupIntervalMs: 10000,
+      });
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ port: 9001, dbPath: 'D:\\db\\new.db', maxConcurrentTurns: 2 });
+    expect(res.body).toEqual({
+      port: 9001,
+      dbPath: 'D:\\db\\new.db',
+      maxConcurrentTurns: 2,
+      attachmentQuotaBytes: 2048,
+      attachmentStagedTtlMs: 5000,
+      attachmentCleanupIntervalMs: 10000,
+    });
 
     const again = await request(app).get('/api/settings');
     expect(again.status).toBe(200);

@@ -1,4 +1,5 @@
 import type { ModelInfo } from '@agentboard/shared';
+import { readFileSync } from 'node:fs';
 import {
   collectOutput,
   resolveSpawnForm,
@@ -7,20 +8,34 @@ import {
   whereCommand,
 } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { assertImageInputSupported } from './imageInput.js';
 
 export const CODEBUDDY_CMD = 'codebuddy';
+const VERIFIED_IMAGE_CLI_VERSION = '2.179.2';
+const VERIFIED_IMAGE_MODEL = 'minimax-m3.1-flash';
+
+function supportsCodebuddyImageInput(model: string | undefined, cliVersion?: string | null): boolean {
+  return cliVersion === VERIFIED_IMAGE_CLI_VERSION && model === VERIFIED_IMAGE_MODEL;
+}
 
 export interface CodebuddyParseState {
   sessionId: string | null;
+  /** 当前 assistant 消息是否已通过 stream_event 增量输出过正文（用于抑制末尾完整 assistant 的重复正文） */
+  sawTextDelta: boolean;
 }
 
 export function createParseState(): CodebuddyParseState {
-  return { sessionId: null };
+  return { sessionId: null, sawTextDelta: false };
 }
 
 /**
  * 逐行解析 stdout JSON 流：非法 JSON / 空行 / 无法识别的行返回空数组（忽略）；
  * session_id 首次取到即存，后续行不覆盖（vibe-kanban claude.rs extract_session_id 模式）。
+ * 两条来源：
+ * - `stream_event`（`--output-format stream-json --include-partial-messages`）：content_block_delta 的
+ *   text_delta/thinking_delta → 真增量；message_start 重置本消息的增量标记；
+ * - `assistant`：整条消息（老格式/无增量时）→ text/tool_use 块；已发过增量时跳过正文，避免同段
+ *   正文被服务端聚合两次（sessionManager 按 delta 累加成一条 assistant）。
  */
 export function parseCodebuddyLine(line: string, state: CodebuddyParseState): UnifiedEvent[] {
   const trimmed = line.trim();
@@ -38,7 +53,30 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
   }
 
   const events: UnifiedEvent[] = [];
-  if (rec.type === 'assistant') {
+  if (rec.type === 'stream_event') {
+    const raw = rec.event;
+    if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+      const ev = raw as Record<string, unknown>;
+      if (ev.type === 'message_start') {
+        state.sawTextDelta = false;
+      } else if (ev.type === 'content_block_delta') {
+        const rawDelta = ev.delta;
+        if (rawDelta !== null && typeof rawDelta === 'object' && !Array.isArray(rawDelta)) {
+          const delta = rawDelta as Record<string, unknown>;
+          if (delta.type === 'text_delta' && typeof delta.text === 'string' && delta.text !== '') {
+            state.sawTextDelta = true;
+            events.push({ type: 'text', delta: delta.text });
+          } else if (
+            delta.type === 'thinking_delta' &&
+            typeof delta.thinking === 'string' &&
+            delta.thinking !== ''
+          ) {
+            events.push({ type: 'thinking', delta: delta.thinking });
+          }
+        }
+      }
+    }
+  } else if (rec.type === 'assistant') {
     const message = rec.message;
     const content =
       message !== null && typeof message === 'object'
@@ -49,7 +87,7 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
         if (block === null || typeof block !== 'object') continue;
         const b = block as Record<string, unknown>;
         if (b.type === 'text' && typeof b.text === 'string' && b.text !== '') {
-          events.push({ type: 'text', delta: b.text });
+          if (!state.sawTextDelta) events.push({ type: 'text', delta: b.text });
         } else if (b.type === 'tool_use' && typeof b.name === 'string') {
           const input = typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? null);
           events.push({ type: 'tool', name: b.name, input });
@@ -68,7 +106,8 @@ async function detectCodebuddy(): Promise<{ installed: boolean; version: string 
   const whereLines = await whereCommand(CODEBUDDY_CMD);
   if (whereLines.length === 0) return { installed: false, version: null };
   const form = resolveWindowsSpawnForm(whereLines, CODEBUDDY_CMD) ?? { cmd: CODEBUDDY_CMD, prefix: [] as string[] };
-  const { lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
+  const { code, lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
+  if (code !== 0) return { installed: true, version: null };
   const version = lines.map((l) => l.trim()).find((l) => l !== '') ?? '';
   return { installed: true, version: version || null };
 }
@@ -91,6 +130,9 @@ export const codebuddyAdapter: AgentAdapter = {
   id: 'codebuddy',
   displayName: 'CodeBuddy',
   supportsModelSelection: true,
+  supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean {
+    return supportsCodebuddyImageInput(model, cliVersion);
+  },
   detect: detectCodebuddy,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodebuddy();
@@ -100,19 +142,50 @@ export const codebuddyAdapter: AgentAdapter = {
     return extractStaticModels(lines.join('\n'));
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
-    // 行为钉死：codebuddy -p <prompt> [--model <model>] [--resume <adapterSessionId>] --output-format json
+    // 行为钉死：codebuddy -p <prompt> [--model <model>] [--resume <adapterSessionId>]
+    //   --output-format stream-json --verbose --include-partial-messages（无图片）
+    //   --output-format stream-json --input-format stream-json --verbose（有图片，行为不变）
     // 参数数组直传不经 shell（spawnLineChild 内 shell:false）；
     // win32 下 .cmd/.bat 垫片经 resolveSpawnForm 解析为 cmd.exe /d /s /c 包装（与 opencode/dsh 一致）。
-    const args: string[] = ['-p', opts.prompt];
+    // 非图片轮次必须走 stream-json：`--output-format json` 输出的是 pretty-print 的整段 JSON 数组，
+    // 逐行解析取不到任何事件（正文静默丢失）；--include-partial-messages 提供真增量 text_delta。
+    const hasImages = (opts.attachments?.length ?? 0) > 0;
+    assertImageInputSupported(opts, supportsCodebuddyImageInput);
+    const stdinText = hasImages
+      ? `${JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'text', text: opts.prompt },
+              ...opts.attachments!.map((attachment) => ({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: attachment.mimeType,
+                  data: readFileSync(attachment.path).toString('base64'),
+                },
+              })),
+            ],
+          },
+        })}\n`
+      : undefined;
+    const args: string[] = ['-p'];
+    if (!hasImages) args.push(opts.prompt);
     if (opts.model) args.push('--model', opts.model);
     if (opts.adapterSessionId) args.push('--resume', opts.adapterSessionId);
-    args.push('--output-format', 'json');
+    if (hasImages) {
+      args.push('--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose');
+    } else {
+      args.push('--output-format', 'stream-json', '--verbose', '--include-partial-messages');
+    }
 
     const state = createParseState();
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];
     let settled = false;
     let killed = false;
     let sawEvents = false;
+    let sawAssistantText = false;
     let child: ReturnType<typeof spawnLineChild> | null = null;
     let resolveResult!: (r: TurnResult) => void;
     const result = new Promise<TurnResult>((resolve) => {
@@ -122,8 +195,12 @@ export const codebuddyAdapter: AgentAdapter = {
     const finish = (code: number | null) => {
       if (settled) return;
       settled = true;
-      const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
+      const noImageResult = hasImages && code === 0 && !sawAssistantText;
+      const exitCode = noImageResult ? -1 : code ?? -1; // 被 kill 或图片轮次无文本结果均视为失败
       const tail = child?.getStderrTail() ?? [];
+      if (noImageResult) {
+        for (const cb of eventCbs) cb({ type: 'error', message: '图片输入轮次未返回模型文本结果' });
+      }
       // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
       // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
       if (
@@ -146,10 +223,11 @@ export const codebuddyAdapter: AgentAdapter = {
         finish(-1);
         return;
       }
-      child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd, stdinText === undefined ? undefined : { stdinText });
       child.onLine((_source, line) => {
         for (const event of parseCodebuddyLine(line, state)) {
           sawEvents = true;
+          if (event.type === 'text') sawAssistantText = true;
           for (const cb of eventCbs) cb(event);
         }
       });

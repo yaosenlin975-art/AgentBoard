@@ -97,6 +97,7 @@ describe('ModelField', () => {
     const input = screen.getByTestId('mf') as HTMLInputElement;
     expect(input.tagName).toBe('INPUT');
     expect(input).toHaveValue('m1');
+    expect(screen.getByText('当前模型不在此 CLI 列表中')).toBeInTheDocument();
     // 在输入框清空/改写不弹回下拉（输入中保持输入框视图，同一 DOM 节点不被替换）
     await userEvent.clear(input);
     await userEvent.type(input, 'm2');
@@ -104,43 +105,77 @@ describe('ModelField', () => {
     expect(input).toHaveValue('m2');
 
     await userEvent.click(screen.getByTestId('mf-back'));
-    expect((await findSelect()).tagName).toBe('SELECT');
+    const select = await findSelect();
+    expect(select.tagName).toBe('SELECT');
+    expect(select).toHaveValue('m2');
+    expect(screen.getByRole('option', { name: 'm2（不在当前列表）' })).toBeInTheDocument();
   });
 
-  it('models 为空 → 纯文本输入框（无返回按钮，可输入）', async () => {
+  it('模型列表延迟时允许先手输，返回后保留输入并标出当前值不在列表', async () => {
+    let resolveResponse: (() => void) | undefined;
+    const responseReady = new Promise<void>((resolve) => { resolveResponse = resolve; });
+    server.use(
+      http.get('/api/clis/:id/models', async () => {
+        await responseReady;
+        return HttpResponse.json([{ id: 'a/b', source: 'static' }]);
+      }),
+    );
+    renderField('codebuddy');
+
+    expect(await screen.findByText('正在加载模型列表，可先手动输入')).toBeInTheDocument();
+    const input = screen.getByTestId('mf') as HTMLInputElement;
+    await userEvent.type(input, 'custom/model');
+    resolveResponse?.();
+
+    await screen.findByTestId('mf-not-in-list');
+    expect(screen.getByTestId('mf')).toBe(input);
+    expect(input).toHaveValue('custom/model');
+    expect(screen.getByText('当前模型不在此 CLI 列表中')).toBeInTheDocument();
+  });
+
+  it('models 为空 → 说明未返回模型并允许刷新与手输', async () => {
+    let requests = 0;
     let requested = false;
     server.use(
       http.get('/api/clis/:id/models', () => {
         requested = true;
-        return HttpResponse.json([]);
+        requests += 1;
+        return HttpResponse.json(requests === 1 ? [] : [{ id: 'a/b', source: 'static' }]);
       }),
     );
     renderField('codebuddy');
 
     await waitFor(() => expect(requested).toBe(true));
+    expect(screen.getByText('当前 CLI 未返回模型，可手动输入')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('mf-refresh'));
+    await findSelect();
     const input = screen.getByTestId('mf') as HTMLInputElement;
-    expect(input.tagName).toBe('INPUT');
-    expect(screen.queryByTestId('mf-back')).not.toBeInTheDocument();
-    await userEvent.type(input, 'hand-written');
-    expect(input).toHaveValue('hand-written');
+    expect(input.tagName).not.toBe('INPUT');
+    expect(requests).toBe(2);
   });
 
-  it('查询失败 → 纯文本输入框（现状行为兜底）', async () => {
-    let requested = false;
+  it('查询失败时说明错误并保留手输，刷新可恢复模型清单', async () => {
+    let requests = 0;
     server.use(
       http.get('/api/clis/:id/models', () => {
-        requested = true;
-        return HttpResponse.json({ error: { code: 'INTERNAL', message: 'boom' } }, { status: 500 });
+        requests += 1;
+        return requests === 1
+          ? HttpResponse.json({ error: { code: 'INTERNAL', message: 'boom' } }, { status: 500 })
+          : HttpResponse.json([{ id: 'a/b', source: 'static' }]);
       }),
     );
     renderField('codebuddy');
 
-    await waitFor(() => expect(requested).toBe(true));
+    expect(await screen.findByText('模型列表加载失败，可重试或手动输入')).toBeInTheDocument();
     const input = screen.getByTestId('mf') as HTMLInputElement;
     expect(input.tagName).toBe('INPUT');
-    expect(screen.queryByTestId('mf-back')).not.toBeInTheDocument();
     await userEvent.type(input, 'hand-written');
     expect(input).toHaveValue('hand-written');
+    await userEvent.click(screen.getByTestId('mf-refresh'));
+    await screen.findByTestId('mf-back');
+    const select = await userEvent.click(screen.getByTestId('mf-back')).then(findSelect);
+    expect(select).toHaveValue('hand-written');
+    expect(requests).toBe(2);
   });
 
   it('cliId 为空 → 不拉 models，渲染纯文本输入框', async () => {

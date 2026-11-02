@@ -2,12 +2,15 @@
  * 设置弹窗（设计 §7.1）：打开时拉取 GET /api/settings 展示真实持久化配置；
  * 保存 → PATCH /api/settings（端口 / DB 路径修改后需重启服务生效；并发上限即时生效）；
  * 主题三选项走 theme.ts setTheme：localStorage 持久化 + 即时切换。
+ * 底部显示服务端版本（GET /api/version，不可达/加载中显示 ?）与前端版本。
  */
 import { useEffect, useState, type FormEvent } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
+import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
+import { AccountsPanel } from '../settings/AccountsPanel';
 
 interface Settings {
   port: number;
@@ -30,6 +33,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [maxTurns, setMaxTurns] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [theme] = useTheme();
+  const serverVersion = useServerVersion().data?.version;
 
   const settingsQuery = useQuery({
     queryKey: ['settings'],
@@ -67,7 +71,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const loaded = settingsQuery.data !== undefined;
 
   return (
-    <Modal open={open} title="设置" onClose={onClose}>
+    <Modal open={open} title="设置" onClose={onClose} size="lg" scrollable>
       <form onSubmit={submit} className="space-y-3">
         <label className="block text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-300">服务端口</span>
@@ -142,6 +146,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           端口 / DB 路径修改后需重启服务生效；并发上限即时生效。
         </p>
         <div className="flex justify-end gap-2 pt-2">
+          <span data-testid="settings-version" className="mr-auto self-center text-xs text-neutral-400 dark:text-neutral-500">
+            服务端 {serverVersion ?? '?'} · 前端 {WEB_VERSION}
+          </span>
           <button
             type="button"
             onClick={onClose}
@@ -159,6 +166,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </button>
         </div>
       </form>
+      <AccountsPanel />
     </Modal>
   );
 }

@@ -3,6 +3,7 @@ import type { Db } from '../db/connection.js';
 import { addComment as insertCommentRow, listCommentsByIssue } from '../db/repos/comment.js';
 import { getLastSeenCommentId, getIssue, setLastSeenCommentId } from '../db/repos/issue.js';
 import { NotFoundError } from '../errors.js';
+import { bindAttachmentsToComment, bindCommentAttachments, hasUndeliveredCommentAttachments } from '../db/repos/attachment.js';
 import type { SessionSender } from './sessionManager.js';
 
 /** Task 9 装配真实 sendToSession 前的默认 sender：任何唤醒尝试显式失败 */
@@ -30,7 +31,7 @@ export interface AddCommentResult {
 
 /**
  * 评论单一入口（设计 §5.8）：事务内插入 issue_comment 并触碰 issue.updated_at；
- * author='user' 且 issue 占用中（claimed_by 与 session_id 均非空）→ 调 sender 唤醒占用 agent。
+ * author='user'、无附件且 issue 占用中（claimed_by 与 session_id 均非空）→ 调 sender 唤醒占用 agent。
  * sender 抛错时评论已落库、占用不变，错误向上抛。
  *
  * 所有 DB 操作在任何 await 之前同步完成，因此可安全嵌套在外层同步事务内
@@ -42,36 +43,44 @@ export async function addComment(
   author: CommentAuthor,
   content: string,
 ): Promise<AddCommentResult> {
+  const { comment, wakeSessionId } = storeComment(db, issueId, author, content);
+  if (wakeSessionId === null) return { comment, woke: false };
+  await wakeCommentSession(wakeSessionId, content);
+  return { comment, woke: true };
+}
+
+export function wakeCommentSession(sessionId: string, content: string, delivery?: Parameters<SessionSender>[2]): Promise<unknown> {
+  return delivery === undefined
+    ? sessionSender(sessionId, content)
+    : sessionSender(sessionId, content, delivery);
+}
+export function storeComment(db: Db, issueId: string, author: CommentAuthor, content: string, attachmentIds: string[] = []): { comment: IssueComment; wakeSessionId: string | null } {
   let comment: IssueComment | undefined;
   let wakeSessionId: string | null = null;
   db.transaction(() => {
     const issue = getIssue(db, issueId);
     if (!issue) throw new NotFoundError('任务不存在');
-    comment = insertCommentRow(db, { issue_id: issueId, author, content });
+    const inserted = insertCommentRow(db, { issue_id: issueId, author, content });
+    if (attachmentIds.length > 0) bindAttachmentsToComment(db, issue.workspace_id, inserted.id, attachmentIds, Date.now());
+    comment = bindCommentAttachments(db, issueId, inserted);
     db.prepare('UPDATE issue SET updated_at = ? WHERE id = ?').run(Date.now(), issueId);
     if (author === 'user' && issue.claimed_by !== null && issue.session_id !== null) {
       wakeSessionId = issue.session_id;
     }
-  })();
+  }).immediate();
 
-  if (wakeSessionId === null) {
-    return { comment: comment!, woke: false };
-  }
-
-  await sessionSender(wakeSessionId, content);
-  return { comment: comment!, woke: true };
+  return { comment: comment!, wakeSessionId };
 }
 
 export interface ConsumeCommentsResult {
   comments: IssueComment[];
-  /** 本次消费的新评论 id（时间序）；重复调用第二次必为空 */
+  /** 当前可交付的新评论 id（遇到未验证图片时停在其前面） */
   new_comment_ids: string[];
 }
 
 /**
- * 留言消费（kb 占用场景的恰好一次标注，§5.8）：事务内读全部评论、
- * 计算游标之后的评论 id（游标 NULL 视为全部待读）、推进游标到最后一条评论（无评论置 NULL）。
- * 不触碰 updated_at、不广播（内部游标状态，对其他端不可见）。
+ * 留言消费（kb 占用场景的恰好一次标注，§5.8）：事务内读取评论并推进游标。
+ * 含图片评论在图片交付能力验证前阻断游标前进，避免只传递文字后误标已读。
  */
 export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult {
   let comments: IssueComment[] = [];
@@ -81,11 +90,22 @@ export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult 
     comments = listCommentsByIssue(db, issueId);
     const cursor = getLastSeenCommentId(db, issueId);
     const cursorIndex = cursor === null ? -1 : comments.findIndex((c) => c.id === cursor);
-    newCommentIds =
+    const unread =
       cursor === null || cursorIndex === -1
         ? comments.map((c) => c.id)
         : comments.slice(cursorIndex + 1).map((c) => c.id);
-    setLastSeenCommentId(db, issueId, comments.length > 0 ? comments[comments.length - 1]!.id : null);
+    const firstPendingImage = comments.findIndex((comment) =>
+      unread.includes(comment.id) && hasUndeliveredCommentAttachments(db, issueId, comment.id),
+    );
+    if (firstPendingImage >= 0) {
+      const imageId = comments[firstPendingImage]!.id;
+      const beforeImage = unread.indexOf(imageId);
+      newCommentIds = unread.slice(0, beforeImage);
+      setLastSeenCommentId(db, issueId, firstPendingImage > 0 ? comments[firstPendingImage - 1]!.id : null);
+    } else {
+      newCommentIds = unread;
+      setLastSeenCommentId(db, issueId, unread.length > 0 ? unread[unread.length - 1]! : cursor);
+    }
   })();
   return { comments, new_comment_ids: newCommentIds };
 }

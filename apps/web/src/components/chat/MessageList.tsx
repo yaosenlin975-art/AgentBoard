@@ -1,9 +1,10 @@
 /**
  * 消息流渲染（设计 §7.5）：
- * - user 右侧气泡；assistant 左侧 markdown（代码高亮）；event/error 折叠块（<details>）；
+ * - user 右侧蓝色气泡；assistant 无泡泡正文（直接铺排 markdown：无背景/边框/圆角容器，
+ *   保留代码高亮）；event/error 折叠块（<details>）；
  *   event 按 content JSON 归类：kind==='thinking' → 「思考」折叠块（纯文本正文）；
  *   含 name/input → tool 块（摘要行显示工具名，正文 input 截断到 200 字符）；都不匹配按原文展示；
- * - 流式增量（streaming 非空）渲染为左侧临时气泡；
+ * - 流式增量（streaming 非空）与历史 assistant 共用同一套正文容器（类名一致 → 落定不闪变）；
  * - 运行中底部三个跳动点；新内容自动滚到底。
  */
 import { useEffect, useRef } from 'react';
@@ -133,8 +134,8 @@ export function MessageList({
         }
         if (m.role === 'assistant') {
           return (
-            <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-start">
-              <div className="max-w-[92%] rounded-lg rounded-bl-sm border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-xs dark:border-neutral-800 dark:bg-neutral-800/60">
+            <div key={m.id} data-testid={`msg-${m.id}`} className="flex min-w-0 justify-start">
+              <div className="min-w-0 max-w-full flex-1">
                 <MarkdownView>{m.content}</MarkdownView>
               </div>
             </div>
@@ -145,11 +146,8 @@ export function MessageList({
       })}
 
       {streaming !== '' && (
-        <div className="flex justify-start">
-          <div
-            data-testid="streaming-bubble"
-            className="max-w-[92%] rounded-lg rounded-bl-sm border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-xs dark:border-neutral-800 dark:bg-neutral-800/60"
-          >
+        <div data-testid="streaming-bubble" className="flex min-w-0 justify-start">
+          <div className="min-w-0 max-w-full flex-1">
             <MarkdownView>{streaming}</MarkdownView>
           </div>
         </div>

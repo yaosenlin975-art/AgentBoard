@@ -1,10 +1,12 @@
-import { http, HttpResponse } from 'msw';
+﻿import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 
 /** 默认 handlers：空列表；各测试按需 server.use 覆盖 */
 export const server = setupServer(
   http.get('/api/workspaces', () => HttpResponse.json([])),
   http.get('/api/issues', () => HttpResponse.json([])),
+  // 技能联想端点（CHAT-MENTION；server 线落地前默认空列表，具体用例用 server.use 覆盖）
+  http.get('/api/skills', () => HttpResponse.json({ items: [] })),
   http.get('/api/sessions', () => HttpResponse.json([])),
   // T14 聊天视图打开会话即拉消息：默认空列表（各测试可覆盖）
   http.get('/api/sessions/:id/messages', () => HttpResponse.json([])),
@@ -20,4 +22,6 @@ export const server = setupServer(
       { id: 'dsh', displayName: 'DSH', installed: false, version: null },
     ]),
   ),
+  // 顶栏/设置弹窗版本号（各测试可覆盖）
+  http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
 );

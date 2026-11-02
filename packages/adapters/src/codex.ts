@@ -7,6 +7,7 @@ import {
   whereCommand,
 } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { assertImageInputSupported } from './imageInput.js';
 
 export const CODEX_CMD = 'codex';
 
@@ -119,6 +120,7 @@ export const codexAdapter: AgentAdapter = {
   id: 'codex',
   displayName: 'Codex',
   supportsModelSelection: true,
+  supportsImageInput(): boolean { return false; },
   detect: detectCodex,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodex();
@@ -126,6 +128,7 @@ export const codexAdapter: AgentAdapter = {
     return CODEX_STATIC_MODELS.map((m) => ({ ...m }));
   },
   runTurn(opts: RunTurnOptions): TurnHandle {
+    assertImageInputSupported(opts, this.supportsImageInput);
     // 行为钉死（codex-cli 0.165.0 实测）：codex exec <prompt> --json [--model <model>]；
     // resume 走子命令 `codex exec resume <adapterSessionId> <prompt>`。
     // 追加 --skip-git-repo-check：工作空间可为任意目录，非 git 仓库时 exec 默认直接报错退出；

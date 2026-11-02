@@ -1,0 +1,2 @@
+# IMG-04 运行期产物：fixture 的隔离 DB / 附件 / 工作目录（可随时由 img04FixtureServer.mjs 重建）
+.fixture-img04/

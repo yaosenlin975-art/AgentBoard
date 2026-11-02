@@ -28,7 +28,10 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
         ['comments', event.comment.issue_id],
         ['issues'],
         ['issue', event.comment.issue_id],
+        ...(event.comment.attachments?.length ? [['pending-attachments', event.comment.issue_id]] : []),
       ];
+    case 'comment.delivery.changed':
+      return [['comments', event.issue_id], ['pending-attachments', event.issue_id]];
     case 'session.changed':
       return [['sessions']];
     case 'session.deleted':
@@ -41,7 +44,10 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
       // 流式事件由聊天视图增量拼接（Task 14），不触发 invalidation
       return [];
     case 'session.runtime':
-      // 运行时态（队列/槽位）由聊天视图经 wsBus 增量校正，不触发 invalidation（避免每次发送全量刷列表）
+      // 运行时态（queued_count/槽位）由聊天视图经 wsBus 增量校正，不触发 invalidation（避免每次发送全量刷列表）
+      return [];
+    case 'account.notice':
+      // 账号操作提示（如请求用户手动退出客户端），当前无对应查询需失效
       return [];
   }
 }

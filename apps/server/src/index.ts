@@ -14,6 +14,7 @@ import { recoverAccountOperations } from './services/accounts/operationRunner.js
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
+import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts/minimaxDesktopProvider.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -61,6 +62,8 @@ export interface CreateAppOptions {
   checkinProvider?: CheckinProviderSpec;
   /** ACC-12：三平台签到 provider（测试可注入 fake fetch / 替换 map） */
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
+  /** ACC-13：按平台的桌面 provider（capture/switch）；测试可注入 fake fs/进程 */
+  desktopProviders?: Partial<Record<ManagedAppId, MinimaxDesktopProvider>>;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -119,7 +122,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths() }) }, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

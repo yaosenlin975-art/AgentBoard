@@ -1,15 +1,16 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const distDir = fileURLToPath(new URL('../dist', import.meta.url));
+const pkgVersion = (JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as { version: string }).version;
 
 // dist 为构建产物（gitignore），未构建时跳过；已构建（pnpm --filter @agentboard/cli build）后真实执行
 describe.skipIf(!existsSync(join(distDir, 'index.js')))('入口守卫（真实进程）', () => {
-  it('经 junction/symlink 链接目录启动 dist/index.js → main 正常执行：--version 输出 0.0.0、退出码 0', () => {
+  it('经 junction/symlink 链接目录启动 dist/index.js → main 正常执行：--version 输出 package.json 版本、退出码 0', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kb-entry-guard-'));
     const link = join(dir, 'link');
     try {
@@ -19,7 +20,7 @@ describe.skipIf(!existsSync(join(distDir, 'index.js')))('入口守卫（真实�
         encoding: 'utf8',
       });
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain('0.0.0');
+      expect(result.stdout).toContain(pkgVersion);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

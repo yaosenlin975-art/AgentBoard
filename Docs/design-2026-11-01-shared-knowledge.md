@@ -1,8 +1,8 @@
 # AgentBoard 共享知识库设计
 
 - 日期：2026-11-01
-- 状态：设计稿；用户已选 AgentBoard 内建路线。数据模型、写权限和交互默认值均为提案，尚未确认、未实现。
-- 范围：AgentBoard 内本地共享知识库；本轮只记录设计，不改产品代码、不安装依赖、不提交 Git。
+- 状态：AgentBoard 内建知识库与数据库、FTS5 trigram、REST、CLI、Web 已实现；MCP 知识工具已实现。MCP 真实子进程和客户端接入仍待验收。
+- 范围：AgentBoard 本地共享知识库；工具调用复用 `/api/knowledge/*`，不建第二套存储或搜索逻辑。
 
 ## 1. 需求分析
 
@@ -68,7 +68,7 @@ server 只绑定本机回环地址；已查启动装配没有用户登录或角�
 
 ## 4. 架构与数据流提案
 
-首版知识读写共用现有 Express REST/API 和 SQLite，不开第二个数据库服务。增加一个 `knowledge` server 模块，负责 workspace/common scope 校验、FTS 查询、版本写入和状态流转。`kb` CLI 与统一 AgentBoard MCP 是 agent 客户端；本轮选定的 MCP 同时提供任务板和知识工具，知识工具调用同一 REST API，不直连数据库、不持有第二份知识内容。web 增加只读知识浏览与显式维护操作。MCP 工具范围、Workspace 绑定和错误契约见[统一 MCP 设计](./design-2026-11-01-unified-mcp.md)。MCP 及知识 API 仍未实现。
+知识读写共用 Express REST/API 和 SQLite，不开第二个数据库服务。`knowledge` server 模块负责 workspace/common scope 校验、FTS 查询、版本写入和状态流转。`kb` CLI 与统一 AgentBoard MCP 是 agent 客户端；MCP 同时提供任务板和知识工具，知识工具调用同一 REST API，不直连数据库、不持有第二份知识内容。web 提供知识浏览与显式维护操作。MCP 工具范围、Workspace 绑定、输出窗口和错误契约见[统一 MCP 设计](./design-2026-11-01-unified-mcp.md)。MCP 客户端实际接入尚未验收。
 
 实施时不得编辑既有 pinned DDL：`Docs/实施计划.md` 明确要求保留核心表契约，`schema.ts` 也标记 DDL 不得改动。知识相关表、索引、FTS 虚表通过新的幂等增量迁移函数建立，并在现有 `initSchema` / `migrateIssueColumns` 流程之后调用；不修改现有 `workspace`、`issue`、`session` 等表定义。迁移顺序应兼容现有用户数据库。[pinned contracts](./实施计划.md#L24-L111) · [schema initialization](../apps/server/src/db/schema.ts#L3-L43)
 

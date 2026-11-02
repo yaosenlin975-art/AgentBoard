@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SettingsDialog 测试（issue 65898a1b）：打开拉取接口值回填、保存发 PATCH、
  * 服务端 400 展示错误且不关闭、主题三选项即时生效（html.dark + localStorage）并同步选中态。
  */
@@ -8,13 +8,16 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import { SettingsDialog } from '../components/topbar/SettingsDialog';
+import { WEB_VERSION } from '../api/version';
 import { setTheme } from '../theme';
 import { server } from './server';
 
 const settingsPayload = { port: 9000, dbPath: 'D:\\db\\a.db', maxConcurrentTurns: 2 };
 
-function renderSettings(onClose = vi.fn()): ReturnType<typeof vi.fn> {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderSettings(
+  onClose = vi.fn(),
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+): ReturnType<typeof vi.fn> {
   render(
     <QueryClientProvider client={qc}>
       <SettingsDialog open onClose={onClose} />
@@ -27,6 +30,11 @@ beforeEach(() => {
   cleanup();
   localStorage.clear();
   setTheme('system'); // 归一主题单一状态源（同步 currentTheme + 移除 dark class）
+  // 设置页内含账号管理区（ACC-08）：默认给出空列表，避免该区的读取失败混进「无错误提示」类断言
+  server.use(http.get('/api/managed-accounts', () => HttpResponse.json([])));
+  server.use(http.get('/api/managed-account-capabilities', () => HttpResponse.json([
+    { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: false, reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', source: 'static' },
+  ])));
 });
 
 describe('SettingsDialog', () => {
@@ -104,4 +112,33 @@ describe('SettingsDialog', () => {
     // jsdom matchMedia 不命中深色 → 跟随系统无 dark class
     expect(document.documentElement).not.toHaveClass('dark');
   });
+
+  it('底部显示服务端版本（GET /api/version）与前端版本', async () => {
+    server.use(
+      http.get('/api/settings', () => HttpResponse.json(settingsPayload)),
+      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
+    );
+    renderSettings();
+
+    await waitFor(() =>
+      expect(screen.getByTestId('settings-version')).toHaveTextContent(`服务端 0.1.0 · 前端 ${WEB_VERSION}`),
+    );
+  });
+
+  it('版本接口失败 → 显示「服务端 ?」，设置照常读取且无错误提示', async () => {
+    server.use(
+      http.get('/api/settings', () => HttpResponse.json(settingsPayload)),
+      http.get('/api/version', () =>
+        HttpResponse.json({ error: { code: 'NOT_FOUND', message: '接口不存在' } }, { status: 404 }),
+      ),
+    );
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderSettings(vi.fn(), qc);
+
+    expect(await screen.findByDisplayValue('9000')).toBeInTheDocument();
+    await waitFor(() => expect(qc.getQueryState(['version'])?.status).toBe('error'));
+    expect(screen.getByTestId('settings-version')).toHaveTextContent(`服务端 ? · 前端 ${WEB_VERSION}`);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
 });
+

@@ -5,11 +5,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  DEFAULT_ATTACHMENT_QUOTA_BYTES,
+  DEFAULT_ATTACHMENT_STAGED_TTL_MS,
+} from './services/attachments.js';
 
 export interface AgentBoardConfig {
   port: number;
   dbPath: string;
   maxConcurrentTurns: number;
+  attachmentQuotaBytes: number;
+  attachmentStagedTtlMs: number;
+  attachmentCleanupIntervalMs: number;
 }
 
 export const DEFAULT_PORT = 8787;
@@ -35,7 +43,14 @@ export function defaultDbPath(): string {
 export type AgentBoardSettings = AgentBoardConfig;
 
 function defaultConfig(): AgentBoardConfig {
-  return { port: DEFAULT_PORT, dbPath: defaultDbPath(), maxConcurrentTurns: DEFAULT_MAX_CONCURRENT_TURNS };
+  return {
+    port: DEFAULT_PORT,
+    dbPath: defaultDbPath(),
+    maxConcurrentTurns: DEFAULT_MAX_CONCURRENT_TURNS,
+    attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
+    attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
+    attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  };
 }
 
 /** 读 config.json 原始对象；缺失/损坏返回空（损坏不覆盖原文件） */
@@ -70,6 +85,15 @@ function mergeValidFields(
     source.maxConcurrentTurns >= 1
   ) {
     target.maxConcurrentTurns = source.maxConcurrentTurns;
+  }
+  if (Number.isSafeInteger(source.attachmentQuotaBytes) && source.attachmentQuotaBytes! >= 1) {
+    target.attachmentQuotaBytes = source.attachmentQuotaBytes!;
+  }
+  if (Number.isSafeInteger(source.attachmentStagedTtlMs) && source.attachmentStagedTtlMs! >= 1) {
+    target.attachmentStagedTtlMs = source.attachmentStagedTtlMs!;
+  }
+  if (Number.isSafeInteger(source.attachmentCleanupIntervalMs) && source.attachmentCleanupIntervalMs! >= 1) {
+    target.attachmentCleanupIntervalMs = source.attachmentCleanupIntervalMs!;
   }
   return target;
 }

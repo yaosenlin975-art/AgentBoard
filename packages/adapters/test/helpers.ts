@@ -6,6 +6,7 @@ export interface FakeChild extends EventEmitter {
   pid: number;
   stdout: EventEmitter;
   stderr: EventEmitter;
+  stdin: { end: ReturnType<typeof vi.fn> };
   kill: ReturnType<typeof vi.fn>;
 }
 
@@ -14,6 +15,7 @@ export function makeFakeChild(pid = 4242): FakeChild {
   child.pid = pid;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
+  child.stdin = { end: vi.fn() };
   child.kill = vi.fn(() => true);
   return child;
 }

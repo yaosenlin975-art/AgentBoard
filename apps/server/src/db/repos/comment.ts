@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { CommentAuthor, IssueComment } from '@agentboard/shared';
 import type { Db } from '../connection.js';
+import type { PageResult } from '@agentboard/shared';
+import { pageResult, textWindow, validatePage } from '../pagination.js';
+import { ApiError } from '../../errors.js';
+import { bindCommentAttachments, commentAttachments } from './attachment.js';
 
 export interface AddCommentInput {
   issue_id: string;
@@ -27,7 +31,18 @@ export function addComment(db: Db, input: AddCommentInput): IssueComment {
 }
 
 export function listCommentsByIssue(db: Db, issueId: string): IssueComment[] {
-  return db
+  const rows = db
     .prepare('SELECT * FROM issue_comment WHERE issue_id = ? ORDER BY ts, id')
     .all(issueId) as IssueComment[];
+  return rows.map((row) => bindCommentAttachments(db, issueId, row));
+}
+export function listCommentsPage(db: Db, issueId: string, input: { limit: number; offset: number }): PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean; attachments?: import('@agentboard/shared').AttachmentMetadata[] }> {
+  validatePage(input.limit, input.offset);
+  const rows = db.prepare('SELECT * FROM issue_comment WHERE issue_id=? ORDER BY id ASC LIMIT ? OFFSET ?').all(issueId, input.limit + 1, input.offset) as IssueComment[];
+  return pageResult(rows.map(row => { const window = textWindow(row.content, 0, 500); const attachments = commentAttachments(db, issueId, row.id); return { id: row.id, author: row.author, ts: row.ts, snippet: window.content, has_more: window.truncated, ...(attachments.length ? { attachments } : {}) }; }), input.limit, input.offset);
+}
+export function getCommentContent(db: Db, issueId: string, commentId: string, offsetChars = 0, maxChars = 12000) {
+  const comment = db.prepare('SELECT * FROM issue_comment WHERE id=? AND issue_id=?').get(commentId, issueId) as IssueComment | undefined;
+  if (!comment) throw new ApiError(404, 'COMMENT_NOT_FOUND', '评论不存在');
+  return { ...bindCommentAttachments(db, issueId, comment), ...textWindow(comment.content, offsetChars, maxChars) };
 }

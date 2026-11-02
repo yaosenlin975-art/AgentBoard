@@ -1,9 +1,9 @@
 # AgentBoard 任务板与共享知识 MCP 设计
 
 - 日期：2026-11-01
-- 状态：设计稿；用户已选择一个 MCP 同时包含任务板与共享知识库；具体工具契约、传输和权限边界是设计提案，未实现。
+- 状态：MCP-04 任务工具和 MCP-05 知识工具已实现；MCP SDK stdio 流测试通过。真实子进程 smoke 与客户端兼容验收仍待执行。
 - 范围：Codex、DSH、WorkBuddy 等本机 LLM 工具通过 MCP 读取任务与知识，并按授权契约更新任务、知识条目。
-- 验收依据：固定工具 schema、API 契约、隔离用例、并发/CAS 用例和各 MCP 客户端实际握手；本轮只写设计，未运行服务器或客户端验证。
+- 验收依据：固定工具 schema、API 契约、隔离用例、并发/CAS 用例和各 MCP 客户端实际握手；本地工具测试/构建已通过，真实子进程和客户端握手未通过验收。
 
 ## 1. 需求与边界
 
@@ -12,7 +12,7 @@
 - 一个统一 AgentBoard MCP，功能只包括任务板与共享知识库。
 - 知识范围为当前 Workspace 项目知识及跨 Workspace 公共经验；查询任务相关知识时合并当前 Workspace 与公共范围。
 - Codex、DSH、WorkBuddy 等工具公用知识；agent 通常写入，用户查看；agent 在编写项目代码时检索复用。
-- AgentBoard 内建知识库路线已选择；本轮确定设计，不实现产品功能。
+- AgentBoard 内建知识库路线已实现；MCP 知识工具通过同一 loopback REST API 调用知识服务。
 
 ### 设计提案
 
@@ -29,21 +29,21 @@ AgentBoard 当前是 Node.js ≥20、TypeScript、Express API、SQLite；API 挂
 
 当前 API 已提供：`GET /workspaces`；任务 `GET/POST /issues`、`GET/PATCH/DELETE /issues/:id`；评论 list/add/consume；claim/release/done/fail。[routes.ts workspace](../apps/server/src/api/routes.ts#L173-L195) · [task](../apps/server/src/api/routes.ts#L228-L253) · [delete](../apps/server/src/api/routes.ts#L255-L277) · [comments](../apps/server/src/api/routes.ts#L279-L298) · [claim actions](../apps/server/src/api/routes.ts#L300-L330)
 
-`GET /issues` 必须有 workspace query；创建任务也必须有 workspace。创建字段为 title，description、priority、labels 可选；当前默认 description 为空、priority 为“中”、labels 为空数组、status 为“待规划”。列表当前全量返回，未提供分页。[issue schemas](../apps/server/src/api/schemas.ts#L17-L54) · [issue repository](../apps/server/src/db/repos/issue.ts#L57-L95)
+`GET /issues`、工作空间列表与评论列表支持 `limit` / `offset` 分页；任务详情、评论、claim、release、done、fail 都在服务端验证有效 Workspace。创建任务默认 description 为空、priority 为“中”、labels 为空数组、status 为“待规划”。任务更新使用 `expected_updated_at` CAS，评论/会话等任务修改递增 `updated_at`。[issue schemas](../apps/server/src/api/schemas.ts) · [issue repository](../apps/server/src/db/repos/issue.ts)
 
-任务领取以单条条件更新实现原子互斥；REST claim 只登记 `agent_id`、不创建 session。完成会置“待验收”并释放；失败会回“待规划”并释放。现有 done/fail 仅检查任务已有人 claim，没有检查其 `claimed_by` 等于请求 `agent_id`；现有 release 是任何调用都能强制清占用。MCP 前置 API 需在同一事务中补 owner 匹配和条件更新，不得由 MCP adapter 先 GET 再 POST 模拟授权。[claim service](../apps/server/src/services/claim.ts#L18-L111) · [claim schema](../apps/server/src/api/schemas.ts#L42-L54)
+任务领取以单条条件更新实现原子互斥；REST claim 只登记 `agent_id`、不创建 session。MCP owner 操作在服务端以同一事务的条件更新验证 `claimed_by`；人类 UI 强制操作保留独立 REST 契约，不由 MCP 暴露。[claim service](../apps/server/src/services/claim.ts) · [claim schema](../apps/server/src/api/schemas.ts)
 
 评论 GET 是只读。`POST /comments/consume` 按 issue 共享的 `last_seen_comment_id` 计算新评论并推进游标，同一事务重复调用只返回空的新评论 ID；多个客户端共用该游标。首版 MCP 仅提供不消费游标的评论读取，不暴露 consume 工具，避免一个工具替其他客户端标记已读。[comment routes](../apps/server/src/api/routes.ts#L279-L298) · [consume semantics](../apps/server/src/services/comments.ts#L65-L90)
 
 Agent identity 由请求 `agent_id` 自报；当前服务没有登录或角色授权。该字段只用于 claim owner 值和评论审计标签，不能作为安全鉴权。loopback + 本机 MCP stdio 是单机单用户假设，不构成抵御同机其他进程的安全边界。[CLI agent id](../packages/cli/src/index.ts#L34-L41) · [server bind](../apps/server/src/index.ts#L108-L119)
 
-共享知识库尚未实现。搜索、页面/revision 表、REST 和 CLI/UI 形状均是[共享知识库设计提案](./design-2026-11-01-shared-knowledge.md#4-架构与数据流提案)，不是当前可调用 API。MCP knowledge 工具必须复用该文档所列 `/api/knowledge/*` 契约及 domain service；在 API 落地前返回 `KNOWLEDGE_UNAVAILABLE`，不得直连数据库或实现第二份搜索/版本逻辑。
+共享知识库由 `knowledge_page` / `knowledge_revision`、FTS5 trigram、本地 REST、CLI 与 Web 共用 repository 实现。MCP knowledge 工具只调用现有 `/api/knowledge/*` 契约；服务不提供对应路由时返回 `KNOWLEDGE_UNAVAILABLE`，不直连数据库、不实现第二份搜索/版本逻辑。实际客户端握手仍待验收。[共享知识库设计](./design-2026-11-01-shared-knowledge.md)
 
 ## 3. 方案比较与选型
 
 | 候选 | 版本 / 许可证 / 兼容性 | 匹配与成本 | 结论 / 验证 |
 |---|---|---|---|
-| 官方 MCP TypeScript SDK | `@modelcontextprotocol/server` **2.4.0**, Apache-2.0, Node `>=20`；固定 release tag `v2.4.0`，commit `951fe56`。[release](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/v2.4.0) · [tag package metadata](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.4.0/packages/server/package.json) · [官方 v2 稳定线说明](https://github.com/modelcontextprotocol/typescript-sdk#readme) | 原生 stdio server、MCP tools 和 schema 支持；本项目 Node/TypeScript 兼容。新增一个独立 MCP package/entrypoint 和现有 API client；业务层不移植。 | **推荐。** 固定 2.4.0，按 v2 API 实现；当前只核实官方 release、包版本、license、Node engine，未安装、未运行或测客户端握手。若实施时更新版本需重新核对 v2 API 和客户端兼容。 |
+| 官方 MCP TypeScript SDK | `@modelcontextprotocol/server` **2.4.0**, Apache-2.0, Node `>=20`；固定 release tag `v2.4.0`，commit `951fe56`。[release](https://github.com/modelcontextprotocol/typescript-sdk/releases/tag/v2.4.0) · [tag package metadata](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.4.0/packages/server/package.json) · [官方 v2 稳定线说明](https://github.com/modelcontextprotocol/typescript-sdk#readme) | 原生 stdio server、MCP tools 和 Zod schema 支持；项目 Node/TypeScript 兼容。薄 MCP package 调用现有 REST；不移植 domain code。 | **已采用。** 固定 2.4.0；package LICENSE 保留，无 NOTICE 文件；SDK stdio 流测试、MCP 20/20、typecheck/build 已通过。真实子进程和客户端兼容待验收。 |
 | 官方 MCP servers reference | repo `main`；根 package metadata `0.6.2`，LICENSE 正处 MIT→Apache-2.0 过渡，部分贡献仍保留 MIT。README 说明是教育/参考实现，不是生产就绪服务器。[README](https://github.com/modelcontextprotocol/servers#readme) · [package metadata](https://github.com/modelcontextprotocol/servers/blob/main/package.json) · [LICENSE](https://github.com/modelcontextprotocol/servers/blob/main/LICENSE) | 用于观察官方 server/tool 示例；没有 AgentBoard 任务、Workspace 或共享知识 domain。复制/依赖该 repo 增加的代码范围高于直接使用 SDK。 | 只作协议参考，不作为运行依赖或代码来源；本轮未构建示例。 |
 | `nashsu/llm_wiki` | v0.6.13，commit `e08cfce65aad8b76b13546a081c1a8d4422b70c3`；root GPL-3.0，MCP package metadata MIT。[release](https://github.com/nashsu/llm_wiki/releases/tag/v0.6.13) · [固定 commit MCP package](https://github.com/nashsu/llm_wiki/blob/e08cfce65aad8b76b13546a081c1a8d4422b70c3/mcp-server/package.json) | 有本地 Wiki 搜索/读写 MCP，可参考知识工具边界；其 Tauri/Rust + React、文件型 Wiki/API 与 AgentBoard Express/SQLite、Workspace/issue 模型不同。集成需新增项目与公共 scope、CAS、任务检索和 UI/CLI 共用 API。 | 作为机制参考，不移植代码、不加入依赖；源码已静态调研，未安装或运行。[既有调研报告](../research/llmwiki/REPORT.md#r2-解剖) |
 
@@ -100,22 +100,22 @@ All schemas are strict objects; unknown fields fail validation. Defaults and lim
 | `agentboard_add_task_comment` | effective `workspace_id`, `task_id`, `content`, `request_id` | none | `{comment,woke}`; server applies existing add-comment behavior; author uses self-declared actor label |
 | `agentboard_complete_task` | effective `workspace_id`, `task_id`, `request_id` | `notes=''` | Issue in “待验收”; API atomically requires current owner=actor, clears claim, writes nonempty notes as agent comment |
 | `agentboard_fail_task` | effective `workspace_id`, `task_id`, nonempty `reason`, `request_id` | none | Issue in “待规划”; API atomically requires current owner=actor, clears claim, adds agent comment |
-| `agentboard_search_knowledge` | `query`, `scope` | effective `workspace_id` for `workspace`/`both`, `limit=5` (1–20) | ranked items `{id,scope,workspace_id,revision,title,snippet,sources,evidence}`; `both` means only current Workspace + common |
-| `agentboard_read_knowledge` | `page_id`, `scope` | `workspace_id` for `workspace` scope (bound value auto-fills), `include_history=false`, `history_offset=0`, `history_limit=20` (1–50), `offset_chars=0`, `max_chars=12000` (1–40000) | page/revision/source/evidence/status; `truncated`, `next_offset_chars`, `history_next_offset`; `common` requires omitted `workspace_id` |
-| `agentboard_create_knowledge` | explicit `scope`, `title`, `slug`, `body_md`, `sources`, `evidence`, `request_id` | effective `workspace_id` required for `workspace` (bound value auto-fills); optional `expires_at` | created page/revision. `scope='common'` must be explicit and `workspace_id` omitted |
+| `agentboard_search_knowledge` | `query`, `scope` | effective `workspace_id` for `workspace`/`both`, `limit=5` (1–20) | ranked items `{id,scope,workspace_id,revision,title,snippet,sources,evidence}`; `both` means only current Workspace + common; returns at most one source/evidence locator per result with totals |
+| `agentboard_read_knowledge` | `page_id`, `scope` | `workspace_id` for `workspace` (bound value auto-fills); `include_history=false`, `history_offset=0`, `history_limit=20` (1–50); `offset_chars=0`, `max_chars=12000` (1–40000); `sources_offset=0`, `sources_limit=10` (1–100); `evidence_offset=0`, `evidence_limit=10` (1–100); optional `history_body_offset_chars` (Unicode code points; requires history enabled and `history_limit=1`) | page/history body windows, source/evidence totals and continuation offsets; `history_next_offset` advances by returned revisions when output budget clips history; `common` requires omitted `workspace_id` |
+| `agentboard_create_knowledge` | explicit `scope`, `title`, `slug`, `body_md`, `sources`, `evidence`, `request_id` | effective `workspace_id` required for `workspace` (bound value auto-fills); optional `expires_at` | created page/revision summary with bounded body and source/evidence counts. Use `agentboard_read_knowledge` for full paged content. `scope='common'` must be explicit and `workspace_id` omitted |
 | `agentboard_revise_knowledge` | `page_id`, `scope`, `expected_revision`, `request_id` | effective `workspace_id` for `workspace` (bound value auto-fills); changed fields `title`, `body_md`, `sources`, `evidence`, `expires_at`; at least one content/lifecycle field | new revision; stale revision returns conflict with current revision metadata; `common` requires omitted `workspace_id` |
 | `agentboard_archive_knowledge` | `page_id`, `scope`, `expected_revision`, `request_id` | effective `workspace_id` for `workspace` (bound value auto-fills) | archived page with incremented revision; excluded from default search; `common` requires omitted `workspace_id` |
 | `agentboard_restore_knowledge` | `page_id`, `scope`, `expected_revision`, `request_id` | effective `workspace_id` for `workspace` (bound value auto-fills) | active page with incremented revision; `common` requires omitted `workspace_id` |
 
-`agentboard_list_workspaces`, `agentboard_list_tasks`, and `agentboard_get_task_comments` use `offset` / `next_offset`; default `limit=50`, maximum 100. Paged endpoints use deterministic `id ASC` ordering. Inserts/deletes or scope changes during a multi-call traversal may still cause repeated or skipped items; v1 does not promise a snapshot. Task descriptions and single-comment content use their corresponding `*_offset_chars` and `*_max_chars` inputs to continue a clipped body. Comment-list results contain bounded snippets (maximum 500 characters each), comment IDs, and `has_more`; `agentboard_get_task_comment` retrieves the body in bounded character windows. Every clipped body returns an offset consumable by that same tool. `agentboard_read_knowledge` uses a 40,000-character total response cap including any history; history is separately paginated with `history_offset` / `history_next_offset` and a maximum of 50 revisions per call.
+`agentboard_list_workspaces`, `agentboard_list_tasks`, and `agentboard_get_task_comments` use `offset` / `next_offset`; default `limit=50`, maximum 100. Paged endpoints use deterministic `id ASC` ordering. Inserts/deletes or scope changes during a multi-call traversal may still cause repeated or skipped items; v1 does not promise a snapshot. Task descriptions and single-comment content use their corresponding `*_offset_chars` and `*_max_chars` inputs to continue a clipped body. Comment-list results contain bounded snippets (maximum 500 characters each), comment IDs, and `has_more`; `agentboard_get_task_comment` retrieves the body in bounded character windows. Every clipped body returns an offset consumable by that same tool. `agentboard_read_knowledge` caps the serialized tool result (`content` plus `structuredContent`) at 40,000 characters, including page metadata, sources, evidence and history. Body offsets count Unicode code points; source/evidence offsets count array items and apply to page and returned revisions. If history is reduced to fit the cap, `history_next_offset` advances by the number of revisions actually returned. A single row that cannot fit returns `KNOWLEDGE_RESULT_TOO_LARGE`; no revision is silently skipped.
 
 Every knowledge page-ID operation (`read`, `revise`, `archive`, `restore`) requires explicit `scope='workspace'|'common'`. For `workspace`, use the bound `workspace_id` or require the caller to supply it when unbound; for `common`, omit `workspace_id`. The API must validate `page_id`, scope and effective Workspace together in the same operation and reject Workspace A access to a Workspace B page. It must reject `scope='common'` with a Workspace ID and reject `scope='workspace'` without an effective Workspace. A process binding cannot be overridden by a tool argument.
 
 MCP v1 does not expose issue delete, workspace delete, knowledge delete/physical purge, or `POST /comments/consume`. The shared comment consume cursor is issue-wide and can be changed by another client; keeping it out of MCP avoids hidden cross-client state changes. The existing CLI semantics remain unchanged.
 
-## 7. HTTP/domain contracts required before MCP
+## 7. HTTP/domain contracts used by MCP
 
-Current routes are the integration base, but these contract changes are prerequisites. They must be implemented once in the server API/domain services and reused by CLI/MCP:
+The server API/domain services own these contracts; CLI and MCP reuse them:
 
 1. **Workspace scope:** task detail/comment/action endpoints take effective `workspace_id` and validate it with the task in the same server handler/service operation. Return `404 TASK_NOT_FOUND` for missing or out-of-scope IDs to avoid leaking another Workspace.
 2. **Atomic owner checks:** release/done/fail services accept actor and perform `WHERE workspace_id=? AND id=? AND claimed_by=?` conditional update plus resulting state/comment in one transaction. Return `409 NOT_TASK_OWNER` on mismatch; do not adapt the current force-release route for MCP.
@@ -134,13 +134,14 @@ Current routes are the integration base, but these contract changes are prerequi
 | `WORKSPACE_REQUIRED` / `WORKSPACE_BOUND` | Supply workspace ID or use the configured workspace process. |
 | `TASK_NOT_FOUND` / `KNOWLEDGE_NOT_FOUND` | Resource absent or outside scope. |
 | `TASK_CLAIMED` / `NOT_TASK_OWNER` | Re-read task; only current claimed owner can perform owner actions. |
-| `TASK_REVISION_CONFLICT` / `KNOWLEDGE_REVISION_CONFLICT` | Read current record and decide whether to reapply. No auto-merge. |
+| `TASK_REVISION_CONFLICT` / `KNOWLEDGE_REVISION_CONFLICT` | Read current record and decide whether to reapply. Structured error returns only numeric `current_updated_at` or `current_revision`; no auto-merge. |
 | `IDEMPOTENCY_KEY_REUSED` | Reuse same request ID only for the original exact operation. |
-| `KNOWLEDGE_UNAVAILABLE` | Knowledge API/service not implemented or unavailable; do not substitute an independent search path. |
+| `KNOWLEDGE_UNAVAILABLE` | Knowledge route is missing; do not substitute an independent search path. |
+| `KNOWLEDGE_RESULT_TOO_LARGE` | Reduce text/history/source/evidence limits and continue from offsets. A single oversized row is returned as a bounded error. |
 | `SERVER_UNREACHABLE` / `OPERATION_UNKNOWN` | Restore local service or resolve mutation with the identical request ID. |
 | `UPSTREAM_ERROR` | Sanitized API error; no stack trace, path, or raw server body in MCP output. |
 
-Start command is a placeholder until package path is fixed:
+Start command for a local install:
 
 ```json
 {
@@ -171,7 +172,7 @@ No secret/token is required in this single-user loopback proposal. MCP startup m
 
 ## 10. Acceptance
 
-1. **Handshake:** Codex, DSH and WorkBuddy each discover the same named tools over stdio on the supported current client versions; client-specific compatibility must be tested separately. MCP server stdout contains protocol only; diagnostics go to stderr.
+1. **Handshake:** Codex CLI, Codex Desktop, DSH and WorkBuddy each discover the same named tools over stdio on supported current client versions; CLI/Desktop forms require separate validation. MCP server stdout contains protocol only; diagnostics go to stderr.
 2. **Workspace binding:** bound process omitting workspace ID reads/writes only its Workspace; mismatched ID fails. Unbound process without ID fails. Explicit common search works without a Workspace ID; `both` and workspace writes require a current ID.
 3. **Task lifecycle:** create → get → claim → comment → complete reaches “待验收”; fail returns to “待规划”; non-owner release/complete/fail conflicts; simultaneous claims yield one success; fields and statuses match the API contract.
 4. **Task timestamps and comment reads:** all mutating task/comment paths advance `updated_at` to `max(now,old+1)` in the same transaction; two mutations within one millisecond still produce distinct timestamps and only the caller with the current expected value updates. `get_task_comments` does not change `last_seen_comment_id`; repeated reads return the same comments. Truncated descriptions/comments continue using their returned character offset and the same read tool. No MCP tool consumes the shared cursor.
@@ -179,17 +180,14 @@ No secret/token is required in this single-user loopback proposal. MCP startup m
 6. **Knowledge revision:** create/revise/archive/restore preserve snapshots and evidence; stale expected revision returns conflict; competing updates from same revision accept one only.
 7. **Retry safety:** retry identical mutation with same `request_id` returns the original result and does not duplicate task/comment/revision; same key with altered payload fails; timeout after send is reported unknown and not auto-retried.
 8. **Pagination and limits:** limits enforce defaults/maxima; `offset`/`next_offset` use stable id ordering; concurrent list mutations may repeat or skip rows and are documented. Truncated descriptions/comments/knowledge bodies include an offset that the corresponding read tool accepts; knowledge history is capped and paginated, not unbounded.
-9. **Failure behavior:** stopped AgentBoard returns `SERVER_UNREACHABLE`; missing KB API returns `KNOWLEDGE_UNAVAILABLE`; malformed protocol calls are protocol errors, while domain conflicts use `isError:true` structured business errors.
+9. **Failure behavior:** stopped AgentBoard returns `SERVER_UNREACHABLE`; missing KB API returns `KNOWLEDGE_UNAVAILABLE`; SDK schema errors follow the SDK `tools/call` input-validation response (`isError:true`, text content, no `structuredContent`); domain errors use `isError:true` structured business errors.
 10. **Boundary:** tool listing contains only task-board and shared-knowledge tools; no session execution, arbitrary terminal, account credentials, desktop switching, or destructive delete.
 
-本轮未运行测试、MCP client、AgentBoard API 或任何真实任务/知识写入。上列均为实施验收标准。
+本地 MCP 20/20、server knowledge API 3/3、MCP typecheck/build 已通过；SDK stdio 流测试覆盖 initialize 与 18 个工具列表。该流测试没有启动 MCP 子进程。真实 `dist/index.js` stdin/stdout/EOF smoke、真实任务或知识写入和 MCP 客户端实际接入仍待验收。
 
-## 11. 实施前待核对
+## 11. 剩余验收
 
-1. Codex、DSH、WorkBuddy 当前版本对 MCP stdio 配置和返回 `structuredContent` 的实际支持情况。
-2. 当前 Node/package layout 下 `apps/mcp` 构建、发布和 Windows command/path quoting 方式。
-3. task/comment pagination cursor 的 API 形状和 issue/comment repository 索引需求。
-4. idempotency ledger retention、SQLite migration 和并发写事务的具体实现；本稿定了协议行为，未实测存储实现。
-5. KB 设计中的 SQLite FTS5 `trigram` 构建能力与中英文验收仍未验证；知识 tools 依赖该设计的实现门禁。
-6. SDK 包引入前复核 `v2.4.0` 与客户端协议版本兼容；本轮查证官方 package metadata 与 release，未安装或执行。
-7. 单机进程边界不是可信身份认证。若以后需要多用户/agent ACL、远程 MCP 或网络暴露，需另立授权与安全设计。
+1. 使用临时 CLI 参数执行只读模型握手，不改持久 MCP 配置；Codex Desktop、DSH 与 WorkBuddy GUI 分开验证。
+2. 用 child_process 启动 `apps/mcp/dist/index.js`，验证 initialize/list/call、stdout 纯 JSON-RPC 与 stdin EOF 退出。
+3. MCP 子进程和 WorkBuddy GUI 使用隔离合成 API fixture，不连正式任务/知识数据。
+4. 单机进程边界不是可信身份认证。若以后需要多用户/agent ACL、远程 MCP 或网络暴露，另立授权与安全设计。

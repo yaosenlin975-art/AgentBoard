@@ -6,6 +6,7 @@
  */
 import type { Message, Session, WsEvent } from '@agentboard/shared';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
+import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import type { Db } from '../db/connection.js';
 import {
   createSession as insertSessionRow,
@@ -14,6 +15,11 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
+import {
+  markIssueAttachmentsDelivered,
+  markIssueAttachmentsSending,
+  markIssueAttachmentsUnknown,
+} from '../db/repos/attachment.js';
 import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
 import { NotFoundError, ValidationError } from '../errors.js';
@@ -21,7 +27,15 @@ import { failIssue } from './claim.js';
 import { addComment } from './comments.js';
 
 /** comments 服务唤醒注入接口（Task 9 装配真实 sendToSession；测试注入 stub） */
-export type SessionSender = (sessionId: string, text: string) => Promise<{ queued: boolean }>;
+export interface SessionDelivery {
+  attachments?: RunTurnOptions['attachments'];
+  deliveredAttachmentIds?: string[];
+  /** Image IDs observed as unknown when the user explicitly confirmed retry. */
+  retryUnknownAttachmentIds?: string[];
+  /** Actual detected CLI version already checked by dispatchIssue before claim. */
+  verifiedCliVersion?: string;
+}
+export type SessionSender = (sessionId: string, text: string, delivery?: SessionDelivery) => Promise<{ queued: boolean }>;
 
 export interface SessionManagerOptions {
   /** 全局同时运行的轮次进程上限 */
@@ -46,12 +60,19 @@ interface TurnContext {
 
 interface SessionState {
   /** 运行中收到的待合并消息（各自已落 user 行；合并后不再重复落库） */
-  queue: string[];
+  queue: TurnInput[];
   /** 本会话有无在途轮次（含等全局槽位） */
   turnActive: boolean;
   /** 当前轮次正在等全局并发槽位（beginTurn acquireSlot 窗口） */
   waitingSlot: boolean;
   current: TurnContext | null;
+}
+
+interface TurnInput {
+  prompt: string;
+  attachments: NonNullable<RunTurnOptions['attachments']>;
+  deliveredAttachmentIds: string[];
+  retryUnknownAttachmentIds: string[];
 }
 
 /** 会话运行时态（内存，不入库）：队列长度/等待槽位/排队文本副本 */
@@ -121,6 +142,19 @@ function broadcast(event: WsEvent): void {
   broadcaster?.(event);
 }
 
+function markImageDelivery(
+  database: Db,
+  issueId: string | null,
+  attachmentIds: string[],
+  state: 'unknown' | 'delivered',
+): void {
+  if (!issueId || attachmentIds.length === 0) return;
+  const commentIds = state === 'unknown'
+    ? markIssueAttachmentsUnknown(database, issueId, attachmentIds)
+    : markIssueAttachmentsDelivered(database, issueId, attachmentIds, Date.now());
+  broadcast({ type: 'comment.delivery.changed', issue_id: issueId, comment_ids: commentIds });
+}
+
 function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
   const session = updateSession(assertAssembled(), sessionId, patch);
   broadcast({ type: 'session.changed', session });
@@ -149,7 +183,7 @@ export function getSessionRuntime(sessionId: string): SessionRuntime {
   return {
     queuedCount: state.queue.length,
     waitingSlot: state.waitingSlot,
-    queuedTexts: [...state.queue],
+    queuedTexts: state.queue.map((item) => item.prompt),
   };
 }
 
@@ -162,6 +196,14 @@ function broadcastRuntime(sessionId: string): void {
     queued_count: runtime.queuedCount,
     waiting_slot: runtime.waitingSlot,
   });
+}
+
+/**
+ * 删除会话后的内存态清理（仅供 DELETE /api/sessions/:id 调用）：清该会话的队列/槽位/轮次引用，
+ * 避免残留计数或 id 复用后串态。不 kill、不落库、不广播（拒绝运行中会话后调用，此处在途轮次必为空）。
+ */
+export function forgetSession(sessionId: string): void {
+  states.delete(sessionId);
 }
 
 /** 等待槽位标志变更时置位并广播（值不变不广播） */
@@ -216,37 +258,60 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
     adapterSessionId = prev?.adapter_session_id ?? null;
   }
 
+  const prompt = input.prompt ?? '';
+  // status 表达「当前轮次是否执行中」：用户新建的自由会话（无 prompt 即无轮次、后续由 sendToSession 起轮）
+  // 落终态「已结束」，不长期停在不实的「运行中」；派发链路（绑 issue，prompt 留空、claim 后立即起轮）仍落「运行中」。
+  const willRun = issue !== null || prompt.trim() !== '';
   const session = insertSessionRow(database, {
     workspace_id: workspaceId,
     issue_id: issue?.id ?? null,
     cli: input.cli,
     model: input.model ?? null,
-    status: '运行中',
+    status: willRun ? '运行中' : '已结束',
   });
   if (adapterSessionId !== null) {
     updateSession(database, session.id, { adapter_session_id: adapterSessionId });
   }
   ensureState(session.id);
 
-  const prompt = input.prompt ?? '';
   if (prompt.trim() !== '') {
     persistMessage(session.id, 'user', prompt);
-    void beginTurn(session.id, prompt);
+    void beginTurn(session.id, { prompt, attachments: [], deliveredAttachmentIds: [], retryUnknownAttachmentIds: [] });
   }
   return getSession(database, session.id)!;
 }
 
-export async function sendToSession(sessionId: string, text: string): Promise<{ queued: boolean }> {
+export async function sendToSession(sessionId: string, text: string, delivery: SessionDelivery = {}): Promise<{ queued: boolean }> {
   const database = assertAssembled();
-  if (text.trim() === '') throw new ValidationError('消息内容不能为空');
-  if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
+  const attachments = delivery.attachments ?? [];
+  if (text.trim() === '' && attachments.length === 0) throw new ValidationError('消息内容不能为空');
+  const session = getSession(database, sessionId);
+  if (!session) throw new NotFoundError('会话不存在');
+  if (attachments.length > 0) {
+    const adapter = resolveAdapter?.(session.cli);
+    const verifiedCliVersion = delivery.verifiedCliVersion ?? (adapter
+      ? await getVerifiedImageInputCliVersion(adapter, session.model ?? undefined)
+      : null);
+    if (!adapter || verifiedCliVersion === null || !adapter.supportsImageInput(session.model ?? undefined, verifiedCliVersion)) {
+      throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证');
+    }
+    if (!session.issue_id || (delivery.deliveredAttachmentIds?.length ?? 0) !== attachments.length) {
+      throw new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务并逐张提供 ID');
+    }
+  }
   const state = ensureState(sessionId);
+  const input: TurnInput = {
+    prompt: text,
+    attachments,
+    deliveredAttachmentIds: delivery.deliveredAttachmentIds ?? [],
+    retryUnknownAttachmentIds: delivery.retryUnknownAttachmentIds ?? [],
+  };
 
   // 先落 user 行（空闲/排队都落）
   persistMessage(sessionId, 'user', text);
 
   if (state.turnActive) {
-    state.queue.push(text);
+    state.queue.push(input);
     broadcastRuntime(sessionId);
     return { queued: true };
   }
@@ -256,7 +321,7 @@ export async function sendToSession(sessionId: string, text: string): Promise<{ 
   if (getSession(database, sessionId)!.status !== '运行中') {
     persistSessionPatch(sessionId, { status: '运行中' });
   }
-  void beginTurn(sessionId, text);
+  void beginTurn(sessionId, input);
   return { queued: false };
 }
 
@@ -309,7 +374,7 @@ export async function recoverOnBoot(database: Db): Promise<void> {
 
 // ---- 轮次执行 ----
 
-async function beginTurn(sessionId: string, prompt: string): Promise<void> {
+async function beginTurn(sessionId: string, input: TurnInput): Promise<void> {
   const state = states.get(sessionId);
   if (!state) return;
   const ctx: TurnContext = { handle: null, stopRequested: false };
@@ -323,7 +388,7 @@ async function beginTurn(sessionId: string, prompt: string): Promise<void> {
       state.turnActive = false; // 等槽位期间被 stop：放弃本轮，队列保留
       return;
     }
-    await executeTurn(sessionId, state, ctx, prompt);
+    await executeTurn(sessionId, state, ctx, input);
   } catch (err) {
     // 兜底：未预期异常不崩进程，会话置失败
     if (state.current === ctx) {
@@ -344,7 +409,7 @@ async function executeTurn(
   sessionId: string,
   state: SessionState,
   ctx: TurnContext,
-  prompt: string,
+  input: TurnInput,
 ): Promise<void> {
   const database = assertAssembled();
   const resolve = resolveAdapter;
@@ -374,17 +439,45 @@ async function executeTurn(
     return;
   }
 
+  let detectedCliVersion: string | undefined;
+  if (input.attachments.length > 0) {
+    detectedCliVersion = await getVerifiedImageInputCliVersion(adapter, session.model ?? undefined) ?? undefined;
+    if (!detectedCliVersion) {
+      state.turnActive = false;
+      state.current = null;
+      await startError(sessionId, new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证'));
+      return;
+    }
+    if (!session.issue_id) {
+      state.turnActive = false;
+      state.current = null;
+      await startError(sessionId, new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务'));
+      return;
+    }
+    const commentIds = markIssueAttachmentsSending(
+      database,
+      session.issue_id,
+      input.deliveredAttachmentIds,
+      Date.now(),
+      input.retryUnknownAttachmentIds,
+    );
+    broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
+  }
+
   const opts: RunTurnOptions = {
     cwd: workspace.path,
     model: session.model ?? undefined,
-    prompt,
+    prompt: input.prompt,
     adapterSessionId: session.adapter_session_id ?? undefined,
+    ...(detectedCliVersion ? { detectedCliVersion } : {}),
+    ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
   };
 
   let handle: TurnHandle;
   try {
     handle = adapter.runTurn(opts);
   } catch (err) {
+    if (input.attachments.length > 0) markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, 'unknown');
     state.turnActive = false;
     state.current = null;
     await startError(sessionId, err);
@@ -433,10 +526,20 @@ async function executeTurn(
     }
   });
 
-  const result = await handle.result;
+  let result: Awaited<typeof handle.result>;
+  try {
+    result = await handle.result;
+  } catch (err) {
+    markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, 'unknown');
+    throw err;
+  }
   ctx.handle = null;
   flushThinking(); // 无 end 事件收尾（kill / 异常退出）时兜底落盘（先于 text，保持事件时序）
   flushText();
+
+  if (input.attachments.length > 0) {
+    markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, result.exitCode === 0 ? 'delivered' : 'unknown');
+  }
 
   if (state.current !== ctx) return; // 已被新轮次取代：旧结果弃用
   if (ctx.stopRequested) return; // stop 已置 '已结束' 并保留队列
@@ -450,10 +553,15 @@ async function executeTurn(
   }
 
   if (state.queue.length > 0) {
-    const merged = state.queue.join('\n\n');
+    const pending = state.queue;
     state.queue = [];
     broadcastRuntime(sessionId); // 排队消息已合并起下一轮：queued_count 归零
-    void beginTurn(sessionId, merged); // turnActive 保持 true；下一轮重走全局槽位 FIFO
+    void beginTurn(sessionId, {
+      prompt: pending.map((item) => item.prompt).join('\n\n'),
+      attachments: pending.flatMap((item) => item.attachments),
+      deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
+      retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
+    }); // turnActive 保持 true；下一轮重走全局槽位 FIFO
     return;
   }
 
@@ -482,7 +590,7 @@ async function markSessionFailed(sessionId: string, reason: string): Promise<voi
   const issue = getIssue(database, session.issue_id);
   if (!issue || issue.session_id !== sessionId || issue.claimed_by === null) return;
   try {
-    await failIssue(database, session.issue_id, session.cli, reason);
+    await failIssue(database, session.issue_id, session.cli, reason, sessionId);
   } catch {
     // 占用态在间隙被释放等竞态：会话失败已落库，不阻塞收尾
   }

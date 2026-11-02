@@ -5,6 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 export interface SpawnLineOptions {
   env?: Record<string, string>;
+  stdinText?: string;
 }
 
 /** stderr 尾部环形缓冲容量（最近 N 行），供适配器排障诊断。 */
@@ -36,7 +37,7 @@ export interface SpawnOptionsLite {
   shell: false;
   windowsHide: boolean;
   env?: NodeJS.ProcessEnv;
-  /** stdin 恒 'ignore'（防 CLI/垫片进入交互模式等待导致挂死）；stdout/stderr 按调用方需要 pipe */
+  /** stdin 为 ignore 或 pipe；stdout/stderr 按调用方需要 pipe */
   stdio: ('ignore' | 'pipe')[];
 }
 
@@ -165,11 +166,16 @@ function delay(ms: number): Promise<void> {
 }
 
 export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: SpawnLineOptions): LineChild {
-  // stdin 'ignore'：CLI/垫片进入交互模式时立即收到 EOF 而不是无限等待（防派发挂死）
-  const options: SpawnOptionsLite = { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
+  const options: SpawnOptionsLite = {
+    cwd,
+    shell: false,
+    windowsHide: true,
+    stdio: [opts?.stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+  };
   if (opts?.env) options.env = { ...process.env, ...opts.env };
 
   const child = spawnFn(cmd, args, options);
+  if (opts?.stdinText !== undefined) child.stdin?.end(opts.stdinText);
 
   const lineCbs: Array<(source: 'stdout' | 'stderr', line: string) => void> = [];
   const closeCbs: Array<(code: number | null) => void> = [];

@@ -32,6 +32,8 @@ export interface AccountRouterDeps {
   checkinProvider?: CheckinProviderSpec;
   /** ACC-12：按平台注入的签到 provider（优先于单个 checkinProvider） */
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
+  /** ACC-13：minimax 等按平台的桌面 provider（capture/switch） */
+  desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>;
   vault?: CheckinVault;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
   credentialRunner?: ExportRunner;
@@ -50,14 +52,19 @@ const batchCreateSchema = z.object({
   account_ids: z.array(z.string().uuid()).min(1).max(50),
 }).strict().refine(v => new Set(v.account_ids).size === v.account_ids.length, 'account_ids 不能重复');
 
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): WorkbuddyDesktopProvider {
+type DesktopProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>;
+
+/** ACC-13：按平台解析桌面 provider；minimax 从注入表取，workbuddy 走既有字段 */
+function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): DesktopProvider {
   const capability = accountProviderCapability(app);
   if (!capability || !capability[action]) throw new ApiError(409, 'PROVIDER_UNVERIFIED', `该产品的${action === 'capture' ? '捕获' : '切换'}能力未验证`, capability ? { reason_code: capability.reason_code } : undefined);
+  const injected = deps.desktopProviders?.[app];
+  if (injected) return injected;
   if (app === 'workbuddy_desktop') {
     if (!deps.workbuddy) throw new ApiError(503, 'PROVIDER_UNAVAILABLE', 'WorkBuddy provider 未装配');
     return deps.workbuddy;
   }
-  throw new ApiError(409, 'PROVIDER_UNVERIFIED', '该产品无已验证 provider');
+  throw new ApiError(503, 'PROVIDER_UNAVAILABLE', '该产品的桌面 provider 未装配');
 }
 
 /**

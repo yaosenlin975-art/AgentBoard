@@ -15,6 +15,92 @@ export const PRIORITY_BAR: Record<Priority, string> = {
   高: 'bg-red-500 dark:bg-red-600',
 };
 
+const CARD_CLASS =
+  'relative shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-white text-left text-sm shadow-sm transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700';
+
+function IssueCardPriority({ issue }: { issue: Issue }) {
+  return (
+    <span
+      data-testid={`priority-bar-${issue.id}`}
+      title={`优先级：${issue.priority}`}
+      className={`absolute inset-y-0 left-0 w-1.5 ${PRIORITY_BAR[issue.priority]}`}
+    />
+  );
+}
+
+function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRunning: boolean }) {
+  const claimedBy = issue.claimed_by;
+  const claimed = claimedBy !== null;
+
+  return (
+    <>
+      <div className="font-medium leading-snug">{issue.title}</div>
+      {issue.labels.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {issue.labels.map((label) => (
+            <span
+              key={label}
+              data-testid={`label-${issue.id}-${label}`}
+              className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+        {claimed && (
+          <Badge
+            tone={sessionRunning ? 'green' : 'neutral'}
+            title={sessionRunning ? '占用中（会话运行中）' : '占用中'}
+          >
+            <span data-testid={`claimed-badge-${issue.id}`}>{claimedCli(claimedBy)}</span>
+            {sessionRunning && (
+              <span data-testid={`session-running-${issue.id}`} className="animate-pulse" aria-hidden>
+                ●
+              </span>
+            )}
+          </Badge>
+        )}
+        {issue.session_id !== null && (
+          <span data-testid={`session-link-${issue.id}`} title="关联会话">
+            ⚡
+          </span>
+        )}
+        {issue.comment_count > 0 && (
+          <span data-testid={`comment-count-${issue.id}`} title="评论（在任务详情查看）">
+            💬 {issue.comment_count}
+          </span>
+        )}
+      </div>
+    </>
+  );
+}
+
+export function IssueCardPreview({
+  issue,
+  sessionRunning,
+  width,
+}: {
+  issue: Issue;
+  sessionRunning: boolean;
+  width?: number;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      data-testid={`drag-overlay-${issue.id}`}
+      style={width === undefined ? undefined : { width }}
+      className={`${CARD_CLASS} cursor-grabbing shadow-lg`}
+    >
+      <IssueCardPriority issue={issue} />
+      <div className="space-y-1.5 py-2 pl-3.5 pr-2">
+        <IssueCardContents issue={issue} sessionRunning={sessionRunning} />
+      </div>
+    </div>
+  );
+}
+
 /** 'agent:codex' → 'codex' */
 function claimedCli(claimedBy: string): string {
   return claimedBy.startsWith('agent:') ? claimedBy.slice('agent:'.length) : claimedBy;
@@ -58,60 +144,18 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       title={claimed ? '占用中，不可拖动' : undefined}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`relative shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-white text-left text-sm shadow-sm transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700 ${
+      className={`${CARD_CLASS} ${
         claimed ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'
       } ${isDragging ? 'opacity-50' : ''}`}
     >
-      <span
-        data-testid={`priority-bar-${issue.id}`}
-        title={`优先级：${issue.priority}`}
-        className={`absolute inset-y-0 left-0 w-1.5 ${PRIORITY_BAR[issue.priority]}`}
-      />
+      <IssueCardPriority issue={issue} />
       <div
         ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
         className="space-y-1.5 py-2 pl-3.5 pr-2"
       >
-        <div className="font-medium leading-snug">{issue.title}</div>
-        {issue.labels.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {issue.labels.map((label) => (
-              <span
-                key={label}
-                data-testid={`label-${issue.id}-${label}`}
-                className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
-              >
-                {label}
-              </span>
-            ))}
-          </div>
-        )}
-        <div className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
-          {claimed && (
-            <Badge
-              tone={sessionRunning ? 'green' : 'neutral'}
-              title={sessionRunning ? '占用中（会话运行中）' : '占用中'}
-            >
-              <span data-testid={`claimed-badge-${issue.id}`}>{claimedCli(claimedBy)}</span>
-              {sessionRunning && (
-                <span data-testid={`session-running-${issue.id}`} className="animate-pulse" aria-hidden>
-                  ●
-                </span>
-              )}
-            </Badge>
-          )}
-          {issue.session_id !== null && (
-            <span data-testid={`session-link-${issue.id}`} title="关联会话">
-              ⚡
-            </span>
-          )}
-          {issue.comment_count > 0 && (
-            <span data-testid={`comment-count-${issue.id}`} title="评论（在任务详情查看）">
-              💬 {issue.comment_count}
-            </span>
-          )}
-        </div>
+        <IssueCardContents issue={issue} sessionRunning={sessionRunning} />
       </div>
     </div>
   );

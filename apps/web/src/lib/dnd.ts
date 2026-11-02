@@ -4,6 +4,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus } from '@agentboard/shared';
+import { statusChangeBlocked } from './issueStatus';
 
 export const BOARD_COLUMNS: IssueStatus[] = ['待规划', '进行中', '待验收', '已关闭'];
 
@@ -27,6 +28,7 @@ export interface DropPatch {
  * 结算一次拖放。
  * - 跨列：patch 带 status；列内：只带 sort_order。
  * - 源卡片占用中（claimed_by 非空）禁止拖出 → null。
+ * - 「进行中」不可手动改状态（含未占用）：拖到其他列 → null；列内排序放行。
  * - 无变化（原地放下）→ null。
  */
 export function resolveDrop(issues: Issue[], activeId: string, overId: string): DropPatch | null {
@@ -49,6 +51,8 @@ export function resolveDrop(issues: Issue[], activeId: string, overId: string): 
     targetStatus = over.status;
     beforeId = overId;
   }
+
+  if (statusChangeBlocked(active, targetStatus)) return null;
 
   const columnAll = issues
     .filter((i) => i.status === targetStatus)

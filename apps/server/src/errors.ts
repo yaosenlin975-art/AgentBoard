@@ -3,7 +3,7 @@ export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, readonly details?: Record<string, unknown>) {
     super(message);
     this.name = new.target.name;
     this.status = status;

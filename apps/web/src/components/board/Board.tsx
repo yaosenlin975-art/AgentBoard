@@ -1,30 +1,61 @@
-/**
+﻿/**
  * 中央四列看板（§7.3）：react-query 拉 issues/sessions，dnd-kit 跨列 + 列内排序。
  * 拖放经 resolveDrop 结算 → 乐观更新 → PATCH（跨列带 status，列内只带 sort_order）；
  * PATCH 失败（如 409 占用冲突）回滚缓存并提示。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   closestCorners,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import type { Issue, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { useAppStore } from '../../state/appStore';
+import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { BOARD_COLUMNS, commitDrop, groupByColumn, resolveDrop } from '../../lib/dnd';
+import { buildIssueTreeFilter } from '../../lib/issueTree';
 import { Column } from './Column';
+import { IssueCardPreview } from './IssueCard';
+import { IssueTreeView } from './IssueTreeView';
+import { LabelFilterBar } from './LabelFilterBar';
+import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 
-export function Board() {
+type ActiveDrag = { issue: Issue; width?: number };
+
+export function Board({
+  layout,
+  onLayout,
+  knowledgeOpen = false,
+  onToggleKnowledge,
+}: {
+  /** 受控时由 App 提供；未传则组件内部自持（单独渲染 Board 的场景） */
+  layout?: BoardLayout;
+  onLayout?: (layout: BoardLayout) => void;
+  knowledgeOpen?: boolean;
+  onToggleKnowledge?: () => void;
+} = {}) {
   const workspaceId = useAppStore((s) => s.workspaceId);
+  const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  // 视图（平铺看板 / 任务树）：受控时用外部 layout，否则内部自持
+  const [internalLayout, setInternalLayout] = useState<BoardLayout>('board');
+  const currentLayout: BoardLayout = layout ?? internalLayout;
+  const changeLayout = (next: BoardLayout): void => {
+    setInternalLayout(next);
+    onLayout?.(next);
+  };
+  const treeMode = currentLayout === 'tree';
+  const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
 
   const enabled = workspaceId !== null;
   const { data: issues } = useQuery({
@@ -49,6 +80,27 @@ export function Board() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // 标签筛选（多选 OR）+ 搜索：未选任何标签且查询为空 = 显示全部。
+  // 查询随工作空间隔离：切换工作空间后不残留上一空间的查询（用记录 workspaceId 的 state 派生，避免先渲染旧值）。
+  const [searchState, setSearchState] = useState<{ workspaceId: string | null; query: string }>({
+    workspaceId,
+    query: '',
+  });
+  const query = searchState.workspaceId === workspaceId ? searchState.query : '';
+  const setQuery = (value: string): void => setSearchState({ workspaceId, query: value });
+  // 注意：所有 hook 必须位于「未选工作空间」提前 return 之前，否则切换工作空间时
+  // 渲染分支的 hook 数量会变化，React 抛 “Rendered more hooks than during the previous render”。
+  const filter = useMemo(
+    () => buildIssueTreeFilter(issues ?? [], 'all', query, selectedLabels),
+    [issues, query, selectedLabels],
+  );
+  // 平铺用 matchingIds（不含祖先）；树视图用同一 filter 的 visibleIds，保证同语义
+  const visibleIssues = useMemo(() => {
+    const all = issues ?? [];
+    return filter.active ? all.filter((issue) => filter.matchingIds.has(issue.id)) : all;
+  }, [issues, filter]);
+  const grouped = groupByColumn(visibleIssues);
+
   if (workspaceId === null) {
     return (
       <div className="flex h-full items-center justify-center p-8">
@@ -63,9 +115,16 @@ export function Board() {
   const runningSessionIds = new Set(
     (sessions ?? []).filter((s) => s.status === '运行中').map((s) => s.id),
   );
-  const grouped = groupByColumn(issues ?? []);
+
+  const handleDragStart = (event: DragStartEvent): void => {
+    const issue = (issues ?? []).find((item) => item.id === String(event.active.id));
+    if (!issue) return;
+    const width = event.active.rect.current.initial?.width;
+    setActiveDrag({ issue, ...(width && width > 0 ? { width } : {}) });
+  };
 
   const handleDragEnd = (event: DragEndEvent): void => {
+    setActiveDrag(null);
     const { active, over } = event;
     if (!over || !issues) return;
     const drop = resolveDrop(issues, String(active.id), String(over.id));
@@ -92,22 +151,70 @@ export function Board() {
           </button>
         </div>
       )}
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCorners}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="flex flex-1 gap-3 overflow-auto p-3">
-          {BOARD_COLUMNS.map((status) => (
-            <Column
-              key={status}
-              status={status}
-              issues={grouped[status]}
-              runningSessionIds={runningSessionIds}
-            />
-          ))}
+      {/* 顶栏两行：第一行只放视图切换；第二行 = 搜索框（左）+ 标签 chips（右，只在自己容器内横向滚动） */}
+      <div className="flex shrink-0 flex-col gap-1 border-b border-neutral-200 bg-white px-3 py-1 dark:border-neutral-800 dark:bg-neutral-900">
+        <div data-testid="board-toolbar-controls" className="flex flex-wrap items-center gap-1">
+          <ViewSwitcher
+            layout={currentLayout}
+            onLayout={changeLayout}
+            knowledgeOpen={knowledgeOpen}
+            onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
+          />
         </div>
-      </DndContext>
+        <div data-testid="board-toolbar-filters" className="flex w-full min-w-0 items-center gap-2">
+          <input
+            aria-label="搜索任务"
+            data-testid="board-search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索标题/描述/标签"
+            className="w-32 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-800 sm:w-48"
+          />
+          <LabelFilterBar workspaceId={workspaceId} />
+        </div>
+      </div>
+      {treeMode ? (
+        <IssueTreeView
+          workspaceId={workspaceId}
+          issues={issues ?? []}
+          runningSessionIds={runningSessionIds}
+          query={query}
+        />
+      ) : (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+          onDragCancel={() => setActiveDrag(null)}
+        >
+          <div className="flex min-h-0 flex-1 gap-3 overflow-auto p-3">
+            {BOARD_COLUMNS.map((status) => (
+              <Column
+                key={status}
+                status={status}
+                issues={grouped[status]}
+                runningSessionIds={runningSessionIds}
+              />
+            ))}
+          </div>
+          {createPortal(
+            <DragOverlay zIndex={50} dropAnimation={null}>
+              {activeDrag !== null && (
+                <IssueCardPreview
+                  issue={activeDrag.issue}
+                  sessionRunning={runningSessionIds.has(activeDrag.issue.session_id ?? '')}
+                  width={activeDrag.width}
+                />
+              )}
+            </DragOverlay>,
+            document.body,
+          )}
+        </DndContext>
+      )}
     </div>
   );
 }
+
+
+

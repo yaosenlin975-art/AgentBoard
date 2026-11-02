@@ -46,7 +46,8 @@ export function useStream(sessionId: string | null): string {
   return useStreamingStore((s) => (sessionId === null ? '' : (s.streams.get(sessionId) ?? '')));
 }
 
-// 全局层收流：session.event text delta → appendDelta；assistant message.added → clearStream
+// 全局层收流：session.event text delta → appendDelta；assistant message.added → clearStream；
+// session.deleted（会话被持久删除）→ clearStream，避免已删会话的流式内容残留
 subscribeWsEvents((event) => {
   if (event.type === 'session.event') {
     if (event.event.type === 'text' && typeof event.event.delta === 'string') {
@@ -54,5 +55,7 @@ subscribeWsEvents((event) => {
     }
   } else if (event.type === 'message.added' && event.message.role === 'assistant') {
     clearStream(event.message.session_id);
+  } else if (event.type === 'session.deleted') {
+    clearStream(event.session_id);
   }
 });
