@@ -31,7 +31,8 @@ export function toExit(err: unknown, io: Io): number {
   if (err instanceof CliHttpError) {
     if (err.status === 409) {
       // 服务端已给出自解释文案的 409 原样透传（删除被占用/含子任务等），不再包装成「已被占用（…）」
-      const raw = err.code.startsWith('KNOWLEDGE_') || err.code.startsWith('CHANGELOG_') || err.code === 'CONFLICT';
+      const raw = err.code.startsWith('KNOWLEDGE_') || err.code.startsWith('CHANGELOG_')
+        || err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_KEY_REUSED';
       io.writeErr(raw ? `${err.message}\n` : err.message === '已被占用' ? '已被占用\n' : `已被占用（${err.message}）\n`);
       return 2;
     }
@@ -89,7 +90,8 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<issue-id>', '任务 id')
     .option('--no-knowledge', '关闭任务知识检索')
     .option('--knowledge-query <query>', '自定义知识查询')
-    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string }) => claim(makeCtx(program, io), id, opts));
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string }) => claim(makeCtx(program, io), id, opts));
 
   program
     .command('comment')
@@ -107,8 +109,9 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('完成任务 → 待验收（notes 落评论流）')
     .argument('<issue-id>', '任务 id')
     .option('--notes <text>', '完成备注')
-    .action(async (id: string, opts: { notes?: string }) =>
-      done(makeCtx(program, io), id, { notes: opts.notes }));
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .action(async (id: string, opts: { notes?: string; requestId?: string }) =>
+      done(makeCtx(program, io), id, { notes: opts.notes, requestId: opts.requestId }));
 
   program
     .command('delete-issue')
@@ -123,8 +126,9 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('标记失败 → 待规划（reason 落评论流）')
     .argument('<issue-id>', '任务 id')
     .requiredOption('--reason <text>', '失败原因')
-    .action(async (id: string, opts: { reason: string }) =>
-      fail(makeCtx(program, io), id, { reason: opts.reason }));
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .action(async (id: string, opts: { reason: string; requestId?: string }) =>
+      fail(makeCtx(program, io), id, { reason: opts.reason, requestId: opts.requestId }));
 
   program
     .command('create-space')

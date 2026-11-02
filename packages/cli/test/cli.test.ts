@@ -43,10 +43,13 @@ const COMMENTS = [
 let server: Server;
 let base = '';
 let calls: Recorded[] = [];
+/** 每次请求的 Idempotency-Key（'' 表示未带），与 calls 同序；不改 calls 形状以免影响既有断言 */
+let keyLog: string[] = [];
 let handler: Handler = () => undefined;
 
 beforeEach(async () => {
   calls = [];
+  keyLog = [];
   handler = () => undefined;
   server = createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -63,6 +66,7 @@ beforeEach(async () => {
       const fileName = String(req.headers['x-file-name'] ?? '');
       const requestId = String(req.headers['idempotency-key'] ?? '');
       const isCommentRequest = (req.url ?? '').includes('/comments');
+      keyLog.push(requestId);
       calls.push({
         method: req.method ?? '',
         url: req.url ?? '',
@@ -1265,5 +1269,82 @@ describe('delete-issue', () => {
     expect(code).toBe(2);
     expect(t.err()).toBe('占用中禁止删除\n');
     expect(t.err()).not.toContain('已被占用');
+  });
+});
+
+describe('幂等键透传（CLI-IDEM）', () => {
+  const KEY = '7f1d2c3b-4a5e-4f60-8b71-9c2d3e4f5a60';
+
+  it('done --request-id：透出 Idempotency-Key，并带 workspace_id（服务端幂等 owner 操作要求）', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', knowledge_hint: null } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--request-id', KEY], t.io);
+    expect(code).toBe(0);
+    expect(keyLog).toEqual(['', KEY]);
+    expect(calls[1]).toMatchObject({ method: 'POST', url: '/api/issues/iss1/done', body: { workspace_id: 'ws1', agent_id: 'kb-cli' } });
+  });
+
+  it('done 不带 --request-id：无 Key、无额外 GET、body 与既有行为一致', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '待验收' } } : undefined);
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1'], t.io);
+    expect(code).toBe(0);
+    expect(keyLog).toEqual(['']);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual({ method: 'POST', url: '/api/issues/iss1/done', body: { agent_id: 'kb-cli' } });
+  });
+
+  it('claim / fail --request-id：同样带 Key 与 workspace_id', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: [] };
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'POST' && u === '/api/issues/iss1/claim') return { status: 200, body: { ...ISSUE, status: '进行中', claimed_by: 'kb-cli' } };
+      if (m === 'POST' && u === '/api/issues/iss1/fail') return { status: 200, body: { ...ISSUE, status: '待规划' } };
+      return undefined;
+    };
+    const claimCode = await main(['node', 'kb', '--server', base, 'claim', 'iss1', '--request-id', KEY], makeIo().io);
+    expect(claimCode).toBe(0);
+    expect(keyLog[0]).toBe('');
+    expect(keyLog[1]).toBe(KEY);
+    expect(calls[1]).toMatchObject({ method: 'POST', url: '/api/issues/iss1/claim', body: { workspace_id: 'ws1', agent_id: 'kb-cli' } });
+
+    calls = [];
+    keyLog = [];
+    const failCode = await main(['node', 'kb', '--server', base, 'fail', 'iss1', '--reason', '做不了', '--request-id', KEY], makeIo().io);
+    expect(failCode).toBe(0);
+    expect(keyLog).toEqual(['', KEY]);
+    expect(calls[1]).toMatchObject({ method: 'POST', url: '/api/issues/iss1/fail', body: { workspace_id: 'ws1', agent_id: 'kb-cli', reason: '做不了' } });
+  });
+
+  it('--json 两次同 key 输出一致（服务端原样重放时）', async () => {
+    const payload = { ...ISSUE, status: '待验收', knowledge_hint: null, comment: { id: 'c9', issue_id: 'iss1', author: 'agent:kb-cli', content: '完成', ts: 9 } };
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: payload };
+      return undefined;
+    };
+    const first = makeIo();
+    const second = makeIo();
+    await main(['node', 'kb', '--json', '--server', base, 'done', 'iss1', '--request-id', KEY], first.io);
+    await main(['node', 'kb', '--json', '--server', base, 'done', 'iss1', '--request-id', KEY], second.io);
+    expect(first.out()).toBe(second.out());
+    expect(keyLog.filter(key => key === KEY)).toHaveLength(2);
+  });
+
+  it('409 IDEMPOTENCY_KEY_REUSED：原样透传、退出码 2', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 409, body: { error: { code: 'IDEMPOTENCY_KEY_REUSED', message: '该幂等键已用于不同请求' } } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--request-id', KEY], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toBe('该幂等键已用于不同请求\n');
   });
 });

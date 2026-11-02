@@ -121,7 +121,7 @@ describe('KnowledgeGraph 半径与标签渲染（KB-GRAPH-1）', () => {
     expect(root.getAttribute('data-labels-visible')).toBe('true');
 
     await userEvent.click(screen.getByTestId('graph-zoom-out'));
-    await waitFor(() => expect(root.getAttribute('data-scale')).toBe('0.6'));
+    await waitFor(() => expect(Number(root.getAttribute('data-scale'))).toBeLessThan(LABEL_SCALE_THRESHOLD));
     expect(root.getAttribute('data-labels-visible')).toBe('false');
 
     await userEvent.click(screen.getByTestId('graph-zoom-in'));
@@ -137,4 +137,5 @@ describe('KnowledgeGraph 半径与标签渲染（KB-GRAPH-1）', () => {
     await waitFor(() => expect(Number(root.getAttribute('data-scale'))).toBe(3));
   });
 });
+
 

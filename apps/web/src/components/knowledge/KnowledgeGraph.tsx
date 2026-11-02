@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -6,6 +6,11 @@ import {
   applyEdgeKinds,
   clampScale,
   composeGraph,
+  fitTransform,
+  highlightAround,
+  hitTestNode,
+  toGraphPoint,
+  zoomAt,
   graphStats,
   labelText,
   labelsVisible,
@@ -134,10 +139,66 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     return layoutGraph(graph.nodes, graph.edges, { width: CANVAS_W, height: CANVAS_H, iterations: 120 }).positions;
   }, [graph]);
 
-  // 缩放（KB-GRAPH-1）：标签在 scale < LABEL_SCALE_THRESHOLD 时隐藏；KB-GRAPH-2 会接滚轮与平移
-  const [scale, setScale] = useState(1);
+  // 视口状态（KB-GRAPH-2）：scale + pan 合在一个 state 里，滚轮以光标为中心缩放；标签在 scale < 0.8 时隐藏
+  const [view, setView] = useState<{ scale: number; pan: { x: number; y: number } }>({ scale: 1, pan: { x: 0, y: 0 } });
+  const [hovered, setHovered] = useState<string | null>(null);
+  /** 拖拽固定：节点 id → 图坐标（固定后不随布局变化，双击/右键释放） */
+  const [pinned, setPinned] = useState<Map<string, { x: number; y: number }>>(() => new Map());
+  const dragRef = useRef<{ mode: 'pan' | 'node'; id: string | null; startX: number; startY: number; startPan: { x: number; y: number }; startNode: { x: number; y: number } } | null>(null);
+  const scale = view.scale;
+  const pan = view.pan;
   const showLabels = labelsVisible(scale);
-  const zoomBy = (delta: number): void => setScale((prev) => clampScale(Math.round((prev + delta) * 100) / 100));
+  const highlight = useMemo(
+    () => (graph === null ? { nodes: new Set<string>(), edges: new Set<string>() } : highlightAround(graph, hovered)),
+    [graph, hovered],
+  );
+
+  /** 固定节点用固定坐标，其余用布局坐标 */
+  const displayPositions = useMemo(() => {
+    if (pinned.size === 0) return positions;
+    const merged = new Map(positions);
+    for (const [id, point] of pinned) merged.set(id, point);
+    return merged;
+  }, [positions, pinned]);
+
+  /** 指针事件 → 画布内屏幕坐标 */
+  const localPoint = (event: { clientX: number; clientY: number }): { x: number; y: number } => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect === undefined) return { x: 0, y: 0 };
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  };
+
+  const zoomBy = (factor: number): void => {
+    setView((prev) => zoomAt(prev.pan, prev.scale, factor, { x: CANVAS_W / 2, y: CANVAS_H / 2 }));
+  };
+
+  const fitView = (): void => {
+    setView(fitTransform(displayPositions, CANVAS_W, CANVAS_H));
+  };
+
+  const unpin = (id: string): void => {
+    setPinned((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  // 滚轮缩放：非 passive 监听才能 preventDefault 阻止页面滚动；以光标为中心
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setView((prev) => zoomAt(prev.pan, prev.scale, factor, cursor));
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, []);
 
   // canvas 绘制（jsdom 无 2d context → 跳过绘制，DOM 统计与节点列表仍可用）
   useEffect(() => {
@@ -147,14 +208,15 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     if (ctx === null) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-    // 缩放以画布中心为基准（光标为中心留给 KB-GRAPH-2）
-    ctx.translate(CANVAS_W / 2, CANVAS_H / 2);
-    ctx.scale(scale, scale);
-    ctx.translate(-CANVAS_W / 2, -CANVAS_H / 2);
+    ctx.setTransform(scale, 0, 0, scale, pan.x, pan.y);
+    const hasFocus = hovered !== null;
+    const dim = 0.18;
     for (const edge of graph.edges) {
-      const a = positions.get(edge.source);
-      const b = positions.get(edge.target);
+      const a = displayPositions.get(edge.source);
+      const b = displayPositions.get(edge.target);
       if (a === undefined || b === undefined) continue;
+      const lit = !hasFocus || highlight.edges.has(edge.key);
+      ctx.globalAlpha = lit ? 1 : dim;
       ctx.beginPath();
       ctx.strokeStyle = edge.kind === 'source' ? 'rgba(59,130,246,0.55)' : 'rgba(148,163,184,0.45)';
       ctx.lineWidth = edge.kind === 'source' ? 1.6 : 1;
@@ -163,27 +225,102 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       ctx.stroke();
     }
     for (const node of graph.nodes) {
-      const p = positions.get(node.id);
-      if (p === undefined) continue;
+      const point = displayPositions.get(node.id);
+      if (point === undefined) continue;
       const radius = nodeRadius(node.degree);
+      const lit = !hasFocus || highlight.nodes.has(node.id);
+      ctx.globalAlpha = lit ? 1 : dim;
       ctx.beginPath();
       ctx.fillStyle = node.scope === 'common' ? '#94a3b8' : '#3b82f6';
-      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
       ctx.fill();
+      // 固定态视觉：外圈琥珀色环
+      if (pinned.has(node.id)) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.arc(point.x, point.y, radius + 3, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
+    ctx.globalAlpha = 1;
     // 标签在节点下方；缩放低于阈值时整体不画（KB-GRAPH-1）
     if (showLabels) {
       ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(82,82,82,1)';
       for (const node of graph.nodes) {
-        const p = positions.get(node.id);
-        if (p === undefined) continue;
-        ctx.fillText(labelText(node.title), p.x, p.y + nodeRadius(node.degree) + 4);
+        const point = displayPositions.get(node.id);
+        if (point === undefined) continue;
+        const lit = !hasFocus || highlight.nodes.has(node.id);
+        ctx.fillStyle = lit ? 'rgba(82,82,82,1)' : 'rgba(82,82,82,0.25)';
+        ctx.fillText(labelText(node.title), point.x, point.y + nodeRadius(node.degree) + 4);
       }
     }
-  }, [graph, positions, scale, showLabels]);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+  }, [graph, displayPositions, pinned, scale, pan, showLabels, hovered, highlight]);
+
+  const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
+    const screen = localPoint(event);
+    const point = toGraphPoint(screen, pan, scale);
+    const hit = graph === null ? null : hitTestNode(graph.nodes, displayPositions, point);
+    dragRef.current = {
+      mode: hit === null ? 'pan' : 'node',
+      id: hit,
+      startX: event.clientX,
+      startY: event.clientY,
+      startPan: pan,
+      startNode: hit === null ? { x: 0, y: 0 } : (displayPositions.get(hit) ?? { x: point.x, y: point.y }),
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const onPointerMove = (event: PointerEvent<HTMLCanvasElement>): void => {
+    const screen = localPoint(event);
+    const point = toGraphPoint(screen, pan, scale);
+    const drag = dragRef.current;
+    if (drag === null) {
+      // hover 命中测试
+      const hit = graph === null ? null : hitTestNode(graph.nodes, displayPositions, point);
+      if (hit !== hovered) setHovered(hit);
+      return;
+    }
+    if (drag.mode === 'pan') {
+      setView((prev) => ({
+        scale: prev.scale,
+        pan: { x: drag.startPan.x + (event.clientX - drag.startX), y: drag.startPan.y + (event.clientY - drag.startY) },
+      }));
+      return;
+    }
+    if (drag.id !== null) {
+      // 拖动节点 → 立即固定到光标位置
+      setPinned((prev) => {
+        const next = new Map(prev);
+        next.set(drag.id as string, point);
+        return next;
+      });
+    }
+  };
+
+  const endDrag = (): void => {
+    dragRef.current = null;
+  };
+
+  const onDoubleClick = (event: MouseEvent<HTMLCanvasElement>): void => {
+    if (graph === null) return;
+    const point = toGraphPoint(localPoint(event), pan, scale);
+    const hit = hitTestNode(graph.nodes, displayPositions, point);
+    if (hit !== null) unpin(hit);
+  };
+
+  const onContextMenu = (event: MouseEvent<HTMLCanvasElement>): void => {
+    if (graph === null) return;
+    const point = toGraphPoint(localPoint(event), pan, scale);
+    const hit = hitTestNode(graph.nodes, displayPositions, point);
+    if (hit === null) return;
+    event.preventDefault();
+    unpin(hit);
+  };
 
   const pick = (node: GraphNode): void => {
     onSelect({
@@ -202,6 +339,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-testid="knowledge-graph"
       data-scale={scale}
       data-labels-visible={showLabels ? 'true' : 'false'}
+      data-hovered={hovered ?? ''}
+      data-pinned-count={pinned.size}
       className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
@@ -236,9 +375,10 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           显示孤立点
         </label>
         <span className="flex items-center gap-1" data-testid="graph-zoom-controls">
-          <button type="button" data-testid="graph-zoom-out" aria-label="缩小星图" title="缩小（0.8 倍以下隐藏标签）" onClick={() => zoomBy(-0.2)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">−</button>
-          <button type="button" data-testid="graph-zoom-in" aria-label="放大星图" title="放大" onClick={() => zoomBy(0.2)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">+</button>
+          <button type="button" data-testid="graph-zoom-out" aria-label="缩小星图" title="缩小（0.8 倍以下隐藏标签）" onClick={() => zoomBy(1 / 1.25)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">−</button>
+          <button type="button" data-testid="graph-zoom-in" aria-label="放大星图" title="放大" onClick={() => zoomBy(1.25)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">+</button>
           <span data-testid="graph-scale" className="tabular-nums">{scale.toFixed(1)}×</span>
+          <button type="button" data-testid="graph-fit" aria-label="适应视图" title="适应视图（全部节点回到视口内）" onClick={fitView} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">适应视图</button>
         </span>
         {stats !== null && (
           <span data-testid="knowledge-graph-stats" className="ml-auto tabular-nums">
@@ -285,8 +425,14 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           width={CANVAS_W}
           height={CANVAS_H}
           aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
-          className="h-[480px] w-full max-w-full"
+          className={`h-[480px] w-full max-w-full touch-none ${hovered === null ? 'cursor-grab' : 'cursor-pointer'}`}
           style={{ maxWidth: '100%' }}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={endDrag}
+          onPointerLeave={() => { endDrag(); setHovered(null); }}
+          onDoubleClick={onDoubleClick}
+          onContextMenu={onContextMenu}
         />
       )}
 
@@ -314,6 +460,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     </div>
   );
 }
+
+
 
 
 

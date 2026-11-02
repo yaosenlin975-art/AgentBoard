@@ -565,3 +565,125 @@ export function labelText(title: string, max = 12): string {
   const text = title.trim();
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
+
+/* ----------------------------------------------------------------------------
+ * 交互辅助（KB-GRAPH-2）：邻接表、以光标为中心的缩放、适应视图。
+ * 纯函数，供 canvas 交互与单测共用。
+ * -------------------------------------------------------------------------- */
+
+/** 邻接表（无向）：节点 id → 邻接节点集合。孤立节点不出现在结果里，调用方用 ?? new Set() 兜底 */
+export function buildAdjacency(edges: readonly GraphEdge[]): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  const link = (a: string, b: string): void => {
+    const set = map.get(a) ?? new Set<string>();
+    set.add(b);
+    map.set(a, set);
+  };
+  for (const edge of edges) {
+    if (edge.source === edge.target) continue;
+    link(edge.source, edge.target);
+    link(edge.target, edge.source);
+  }
+  return map;
+}
+
+/** hover/聚焦高亮需要判断的元素集合：节点集合 + 边是否与焦点节点相连 */
+export interface HighlightSet {
+  nodes: Set<string>;
+  edges: Set<string>;
+}
+
+/**
+ * 以某节点为焦点的高亮集合：焦点自身 + 1 跳邻居节点 + 触及焦点或邻居的边。
+ * 未给焦点（null）时返回空集合，调用方据此走「不高亮」分支。
+ */
+export function highlightAround(graph: GraphPayload, focusId: string | null): HighlightSet {
+  if (focusId === null) return { nodes: new Set<string>(), edges: new Set<string>() };
+  const nodes = new Set<string>([focusId]);
+  const edges = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edge.source === focusId || edge.target === focusId) {
+      edges.add(edge.key);
+      nodes.add(edge.source);
+      nodes.add(edge.target);
+    }
+  }
+  return { nodes, edges };
+}
+
+/** 以光标点 (cx, cy) 为中心缩放：返回新的 pan 与 scale（scale 先夹紧到 0.3–3） */
+export function zoomAt(
+  pan: LayoutPosition,
+  scale: number,
+  factor: number,
+  cursor: LayoutPosition,
+): { pan: LayoutPosition; scale: number } {
+  const nextScale = clampScale(scale * factor);
+  if (nextScale === scale) return { pan, scale };
+  const ratio = nextScale / scale;
+  return {
+    scale: nextScale,
+    pan: {
+      x: cursor.x - (cursor.x - pan.x) * ratio,
+      y: cursor.y - (cursor.y - pan.y) * ratio,
+    },
+  };
+}
+
+/** 屏幕坐标 → 图坐标 */
+export function toGraphPoint(point: LayoutPosition, pan: LayoutPosition, scale: number): LayoutPosition {
+  return { x: (point.x - pan.x) / scale, y: (point.y - pan.y) / scale };
+}
+
+/**
+ * 适应视图：把全部节点放进 width×height（留 padding），返回 scale 与 pan。
+ * 空坐标集返回 { scale: 1, pan: {0,0} }。
+ */
+export function fitTransform(
+  positions: ReadonlyMap<string, LayoutPosition>,
+  width: number,
+  height: number,
+  padding = 24,
+): { pan: LayoutPosition; scale: number } {
+  const points = [...positions.values()];
+  if (points.length === 0) return { pan: { x: 0, y: 0 }, scale: 1 };
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  const spanX = Math.max(1, maxX - minX);
+  const spanY = Math.max(1, maxY - minY);
+  const usableW = Math.max(1, width - padding * 2);
+  const usableH = Math.max(1, height - padding * 2);
+  const scale = clampScale(Math.min(usableW / spanX, usableH / spanY));
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  return {
+    scale,
+    pan: { x: width / 2 - centerX * scale, y: height / 2 - centerY * scale },
+  };
+}
+
+/** 命中测试：返回距点最近且落在半径内的节点 id（无命中返回 null） */
+export function hitTestNode(
+  nodes: readonly GraphNode[],
+  positions: ReadonlyMap<string, LayoutPosition>,
+  point: LayoutPosition,
+  extra = 4,
+): string | null {
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const node of nodes) {
+    const p = positions.get(node.id);
+    if (p === undefined) continue;
+    const dist = Math.hypot(p.x - point.x, p.y - point.y);
+    const limit = nodeRadius(node.degree) + extra;
+    if (dist <= limit && dist < bestDist) {
+      bestDist = dist;
+      best = node.id;
+    }
+  }
+  return best;
+}
+
