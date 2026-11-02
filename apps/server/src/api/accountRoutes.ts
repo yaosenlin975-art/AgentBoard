@@ -30,6 +30,8 @@ export interface AccountRouterDeps {
   workbuddy?: WorkbuddyDesktopProvider;
   /** ACC-07：仅注入已验证签到 provider；未注入时所有签到端点 409 PROVIDER_UNVERIFIED */
   checkinProvider?: CheckinProviderSpec;
+  /** ACC-12：按平台注入的签到 provider（优先于单个 checkinProvider） */
+  checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
   vault?: CheckinVault;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
   credentialRunner?: ExportRunner;
@@ -69,9 +71,26 @@ function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'ca
  * `reason_code` 为向后兼容的聚合值：capture 与 switch 均可用时取 `checkin_reason_code`，否则取 registry 根因码。
  * `source`：`static` = 各项均来自 registry 静态表；`derived` = 至少一项由注入 provider 推导（混合时以 `derived` 为准）。
  */
-export function mergeAccountCapabilities(checkinProvider?: CheckinProviderSpec): AccountCapability[] {
+export type CheckinProviderInput = CheckinProviderSpec | Partial<Record<ManagedAppId, CheckinProviderSpec>> | undefined;
+
+/** 支持单 provider（ACC-07 兼容）与按 app_id 的多 provider 映射（ACC-12） */
+export function resolveProviderMap(providers: CheckinProviderInput): Partial<Record<ManagedAppId, CheckinProviderSpec>> {
+  if (!providers) return {};
+  if ('app_id' in providers && typeof (providers as CheckinProviderSpec).app_id === 'string') {
+    const single = providers as CheckinProviderSpec;
+    return { [single.app_id]: single };
+  }
+  const map: Partial<Record<ManagedAppId, CheckinProviderSpec>> = {};
+  for (const [appId, provider] of Object.entries(providers as Partial<Record<ManagedAppId, CheckinProviderSpec>>)) {
+    if (provider) map[appId as ManagedAppId] = provider;
+  }
+  return map;
+}
+
+export function mergeAccountCapabilities(checkinProvider?: CheckinProviderInput): AccountCapability[] {
+  const available = resolveProviderMap(checkinProvider);
   return accountProviderCapabilities().map(capability => {
-    const derived = checkinProvider !== undefined && checkinProvider.app_id === capability.app_id;
+    const derived = available[capability.app_id] !== undefined;
     const checkinReason = derived ? 'CHECKIN_PROVIDER_AVAILABLE' : 'CHECKIN_PROVIDER_UNVERIFIED';
     const captureReason = capability.capture ? 'OK' : capability.reason_code;
     const switchReason = capability.switch ? 'OK' : capability.reason_code;
@@ -90,10 +109,12 @@ export function mergeAccountCapabilities(checkinProvider?: CheckinProviderSpec):
 }
 
 function requireCheckin(app: ManagedAppId, deps: AccountRouterDeps): { provider: CheckinProviderSpec; vault: CheckinVault } {
-  const capability = mergeAccountCapabilities(deps.checkinProvider).find(item => item.app_id === app);
-  if (!capability || !capability.checkin || !deps.checkinProvider) throw new ApiError(409, 'PROVIDER_UNVERIFIED', '该产品的签到能力未验证', { reason_code: 'CHECKIN_PROVIDER_UNVERIFIED' });
+  const providers = resolveProviderMap(deps.checkinProviders ?? deps.checkinProvider);
+  const provider = providers[app];
+  const capability = mergeAccountCapabilities(deps.checkinProviders ?? deps.checkinProvider).find(item => item.app_id === app);
+  if (!capability || !capability.checkin || !provider) throw new ApiError(409, 'PROVIDER_UNVERIFIED', '该产品的签到能力未验证', { reason_code: 'CHECKIN_PROVIDER_UNVERIFIED' });
   if (!deps.vault) throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保护未装配');
-  return { provider: deps.checkinProvider, vault: deps.vault };
+  return { provider, vault: deps.vault };
 }
 
 function idempotencyInput(req: { method: string; baseUrl: string; path: string; body?: unknown; get?: (name: string) => string | undefined }, required: boolean): IdempotencyInput | null {
@@ -166,7 +187,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.get('/managed-account-capabilities', (req, res) => {
     const app = managedAppParam.safeParse(req.query.app ?? undefined);
     if (req.query.app !== undefined && !app.success) throw new ValidationError('app 不合法');
-    const rows = mergeAccountCapabilities(deps.checkinProvider);
+    const rows = mergeAccountCapabilities(deps.checkinProviders ?? deps.checkinProvider);
     res.json(app.success ? rows.filter(row => row.app_id === app.data) : rows);
   });
 

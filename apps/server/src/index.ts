@@ -13,6 +13,8 @@ import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
+import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
+import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import express, { type Express } from 'express';
@@ -57,6 +59,8 @@ export interface CreateAppOptions {
    * 只有测试/未来契约通过后的装配才传入。
    */
   checkinProvider?: CheckinProviderSpec;
+  /** ACC-12：三平台签到 provider（测试可注入 fake fetch / 替换 map） */
+  checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -115,7 +119,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;
@@ -164,6 +168,8 @@ export async function main(): Promise<StartedServer> {
     attachmentQuotaBytes: config.attachmentQuotaBytes,
     attachmentStagedTtlMs: config.attachmentStagedTtlMs,
     attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
+    // 生产装配：三平台真实签到 provider（测试默认不注入，保持 ACC-07 的 gated 语义）
+    checkinProviders: createCheckinProviders(),
   });
 
   const server = createServer(app);

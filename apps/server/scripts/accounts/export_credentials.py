@@ -167,17 +167,18 @@ def decode_jwt_claims(token):
         return {}
 
 
-def collect_from_processes(platform):
-    hints = PLATFORM_PROCESS_HINTS.get(platform, ())
+def collect_from_processes(platform, pids=None, names=None):
+    hints = tuple(names) if names else PLATFORM_PROCESS_HINTS.get(platform, ())
     if not hints:
         return []
     if os.name != "nt":
         log("%s 需要 Windows 进程内存扫描，当前平台不支持" % platform)
         return []
     accounts = {}
-    for pid, name in _process_names():
-        if not any(hint in name for hint in hints):
-            continue
+    targets = [(pid, '') for pid in (pids or [])]
+    if not pids:
+        targets = [(pid, name) for pid, name in _process_names() if any(hint in name for hint in hints)]
+    for pid, name in targets:
         for token in _scan_process(pid):
             claims = decode_jwt_claims(token)
             subject = str(claims.get("sub") or "").strip()
@@ -235,6 +236,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="导出本机账号凭据（只读，显式触发）")
     parser.add_argument("--platform", choices=["workbuddy", "trae", "minimax", "all"], default="all")
     parser.add_argument("--json", action="store_true", help="输出单行 JSON（服务端只用这种模式）")
+    # 仅用于验证/调试：显式指定要扫描的 pid 或进程名子串（缺省按平台真实进程名）
+    parser.add_argument("--pid", action="append", type=int, default=[], help="【仅测试/调试用，生产调用不得传入】只扫描指定 pid（可重复）")
+    parser.add_argument("--process-name", action="append", default=[], help="【仅测试/调试用，生产调用不得传入】按进程名子串扫描（可重复）")
     args = parser.parse_args(argv)
 
     platforms = ["workbuddy", "trae", "minimax"] if args.platform == "all" else [args.platform]
@@ -244,7 +248,7 @@ def main(argv=None):
             if platform == "minimax":
                 found = collect_minimax()
             else:
-                found = collect_from_processes(platform)
+                found = collect_from_processes(platform, pids=args.pid, names=args.process_name)
         except Exception as error:  # noqa: BLE001
             log("%s 导出异常：%s" % (platform, error))
             found = []

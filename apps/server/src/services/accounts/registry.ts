@@ -14,11 +14,11 @@ export interface AccountProviderCapability {
  * 签到 provider 未验证 → checkin 关闭；codebuddy_desktop 契约未确认，全部关闭。
  */
 const CAPABILITIES: AccountProviderCapability[] = [
-  { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: false, reason_code: 'CHECKIN_PROVIDER_UNVERIFIED' },
+  { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: true, reason_code: 'CHECKIN_READY' },
   { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED' },
   // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-13）
-  { app_id: 'minimax', capture: false, switch: false, checkin: false, reason_code: 'CAPTURE_PROVIDER_PENDING' },
-  { app_id: 'trae', capture: false, switch: false, checkin: false, reason_code: 'CAPTURE_PROVIDER_PENDING' },
+  { app_id: 'minimax', capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' },
+  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' },
 ];
 
 export function accountProviderCapabilities(): AccountProviderCapability[] {

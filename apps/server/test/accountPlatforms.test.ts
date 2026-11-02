@@ -156,11 +156,12 @@ describe('account platforms migration (ACC-10)', () => {
     } finally { db.close(); }
   });
 
-  it('registersNewPlatformsWithAllCapabilitiesOff', () => {
+  it('registersNewPlatformsWithCaptureSwitchStillOff', () => {
     const capabilities = accountProviderCapabilities();
     for (const appId of ['minimax', 'trae'] as const) {
       const capability = capabilities.find(item => item.app_id === appId);
-      expect(capability).toMatchObject({ app_id: appId, capture: false, switch: false, checkin: false, reason_code: 'CAPTURE_PROVIDER_PENDING' });
+      // ACC-12 已开启签到；capture/switch 仍等 ACC-13
+      expect(capability).toMatchObject({ app_id: appId, capture: false, switch: false, checkin: true, reason_code: 'CHECKIN_READY' });
     }
   });
 
@@ -176,7 +177,7 @@ describe('account platforms migration (ACC-10)', () => {
 
       const minimax = await request(created.app).get('/api/managed-account-capabilities?app=minimax');
       expect(minimax.status).toBe(200);
-      expect((minimax.body as Array<Record<string, unknown>>)[0]).toMatchObject({ app_id: 'minimax', capture: false, switch: false, checkin: false, reason_code: 'CAPTURE_PROVIDER_PENDING' });
+      expect((minimax.body as Array<Record<string, unknown>>)[0]).toMatchObject({ app_id: 'minimax', capture: false, switch: false });
 
       const bogus = await request(created.app).get('/api/managed-account-capabilities?app=bogus');
       expect(bogus.status).toBe(400);

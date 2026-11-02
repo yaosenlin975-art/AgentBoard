@@ -91,13 +91,20 @@ const defaultScriptPath = (): string =>
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-/** 默认 runner：execFile（无 shell），超时与输出上限在此收口 */
+/**
+ * 脚本参数**只由平台白名单拼**：不接受任何来自 HTTP 请求的透传参数。
+ * --pid / --process-name 一类「读任意进程内存」的开关**永不进入此处**（它们只存在于离线脚本，--help 已标死仅测试/调试用）。
+ */
+export function buildExportArgs(scriptPath: string, platform: ExportPlatform): string[] {
+  return [scriptPath, '--platform', platform, '--json'];
+}
+
 function defaultRunner(options: { pythonCommand: string; scriptPath: string; timeoutMs: number }): ExportRunner {
   return (platform) => new Promise((resolve, reject) => {
     const started = Date.now();
     execFile(
       options.pythonCommand,
-      [options.scriptPath, '--platform', platform, '--json'],
+      buildExportArgs(options.scriptPath, platform),
       { timeout: options.timeoutMs, maxBuffer: MAX_STDOUT_BYTES, windowsHide: true, encoding: 'utf8' },
       (error, stdout, stderr) => {
         if (error) {

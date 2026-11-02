@@ -9,6 +9,7 @@ import { migrateCheckin } from './migrations/checkin.js';
 import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
 import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/issueGitBaseline.js';
 import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
+import { migrateCheckinPlatforms } from './migrations/checkinPlatforms.js';
 
 // DDL 逐字来自实施计划 Pinned Contracts"DB DDL"段，不得改动
 const DDL = `
@@ -53,6 +54,7 @@ export function initSchema(db: Db): void {
   migrateAttachments(db);
   migrateWorkspaceChangeLog(db);
   migrateCheckin(db);
+  migrateCheckinPlatforms(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   db.exec(`CREATE TRIGGER IF NOT EXISTS issue_monotonic_time AFTER UPDATE ON issue
     WHEN new.updated_at <= old.updated_at BEGIN

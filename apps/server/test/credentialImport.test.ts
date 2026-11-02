@@ -15,7 +15,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { SecretVault } from '../src/services/accounts/secretVault.js';
-import { createCredentialImporter, parseExportOutput, type ExportPlatform, type ExportRunner } from '../src/services/accounts/credentialImport.js';
+import { buildExportArgs, createCredentialImporter, parseExportOutput, type ExportPlatform, type ExportRunner } from '../src/services/accounts/credentialImport.js';
 
 const TOKEN_SHAPE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./;
 const TOKEN_A = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLWEiLCJleHAiOjE3OTM2MTMyNTh9.c2lnbmF0dXJlLWE';
@@ -181,6 +181,34 @@ describe('credential import (ACC-11)', () => {
     expect((await request(app).post('/api/accounts/import-credentials').send({ platforms: [] })).status).toBe(400);
   });
 
+
+  it('neverAcceptsProcessSelectionFromRequest', async () => {
+    // 1) strict body：pid / process-name 一类字段一律 400，不会被静默忽略
+    for (const body of [{ pid: 1234 }, { process_name: 'workbuddy' }, { platforms: ['workbuddy'], pid: 1234 }]) {
+      const res = await request(app).post('/api/accounts/import-credentials').send(body);
+      expect(res.status).toBe(400);
+    }
+    // 2) 服务端拼脚本参数只含平台白名单，绝无 --pid / --process-name
+    for (const platform of ['workbuddy', 'trae', 'minimax'] as const) {
+      const args = buildExportArgs('C:/scripts/export_credentials.py', platform);
+      expect(args).toEqual(['C:/scripts/export_credentials.py', '--platform', platform, '--json']);
+      expect(args.join(' ')).not.toMatch(/--pid|--process-name/);
+    }
+    // 3) 端点即使被塞入额外字段也不会把值带到 runner（runner 收到的只有平台）
+    const seen: string[] = [];
+    const adapter = new FakeAdapter();
+    const spy = await createApp({
+      db: t.db,
+      getAdapter: (id: string): AgentAdapter => { if (id === 'fake') return adapter; throw new Error(`未知适配器 id: ${id}`); },
+      adapters: [adapter],
+      refreshClisOnBoot: false,
+      secretVault: vault,
+      credentialRunner: async (platform) => { seen.push(platform); return { stdout: '[]', stderr: '', durationMs: 1 }; },
+    });
+    const ok = await request(spy.app).post('/api/accounts/import-credentials').send({ platforms: ['trae'], actor: 'user' });
+    expect(ok.status).toBe(200);
+    expect(seen).toEqual(['trae']);
+  });
   it('realScriptEmitsJsonArrayForMinimaxWithoutNetwork', () => {
     // 真实 python 冒烟：只跑 minimax（读本地文件，不扫进程、不打网络）
     const script = join(process.cwd(), 'scripts', 'accounts', 'export_credentials.py');

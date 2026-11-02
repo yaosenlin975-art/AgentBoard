@@ -17,7 +17,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { ZodType } from 'zod';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
-import type { KnowledgeHint, WsEvent } from '@agentboard/shared';
+import type { KnowledgeHint, ManagedAppId, WsEvent } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import type { SecretVault } from '../services/accounts/secretVault.js';
 import { AttachmentStore, MAX_IMAGE_BYTES } from '../services/attachments.js';
@@ -82,7 +82,7 @@ export interface RouterDeps {
   /** WS 广播钩子（index.ts 装配 hub.broadcast） */
   broadcast: (event: WsEvent) => void;
   /** 账号 provider 装配（ACC-05/ACC-07）；缺省时账号写接口返回 PROVIDER_UNAVAILABLE */
-  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; vault?: CheckinVault };
+  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -268,7 +268,7 @@ export function createRouter(deps: RouterDeps): Router {
   });
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
-  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner }));
+  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner }));
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
     if (raw !== undefined) {
