@@ -9,6 +9,7 @@ import { statSync } from 'node:fs';
 import express, { Router } from 'express';
 import { createKnowledgeRouter } from './knowledgeRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
+import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
@@ -87,6 +88,8 @@ export interface RouterDeps {
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
+  /** SYSTEM-RESTART：服务自重启依赖（生产 main() 注入；测试可注入 fake） */
+  restart?: RestartDeps;
   /** ACC-11 凭据导出 runner（仅测试注入） */
   credentialRunner?: ExportRunner;
 }
@@ -268,6 +271,7 @@ export function createRouter(deps: RouterDeps): Router {
   });
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
+  router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner }));
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;

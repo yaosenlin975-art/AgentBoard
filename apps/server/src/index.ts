@@ -15,6 +15,7 @@ import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe 
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
 import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts/minimaxDesktopProvider.js';
+import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -64,6 +65,8 @@ export interface CreateAppOptions {
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
   /** ACC-13：按平台的桌面 provider（capture/switch）；测试可注入 fake fs/进程 */
   desktopProviders?: Partial<Record<ManagedAppId, MinimaxDesktopProvider>>;
+  /** SYSTEM-RESTART：生产在 main() 注入真实 spawn/close/exit；测试注入 fake */
+  restart?: RestartDeps;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -122,7 +125,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths() }) }, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths() }) }, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;
@@ -173,13 +176,34 @@ export async function main(): Promise<StartedServer> {
     attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
     // 生产装配：三平台真实签到 provider（测试默认不注入，保持 ACC-07 的 gated 语义）
     checkinProviders: createCheckinProviders(),
+    restart: {
+      spawnChild: spawnDetached,
+      closeServer: () => new Promise<void>(resolve => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+      exit: code => process.exit(code),
+    },
   });
 
   const server = createServer(app);
   hub.attach(server);
-  await new Promise<void>((resolve) => {
-    server.listen(config.port, '127.0.0.1', resolve);
-  });
+  // SYSTEM-RESTART：新进程可能比旧进程先起来，遇到 EADDRINUSE 时重试等端口让出（最多 5s）
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: NodeJS.ErrnoException): void => { server.off('listening', onListening); reject(error); };
+        const onListening = (): void => { server.off('error', onError); resolve(); };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(config.port, '127.0.0.1');
+      });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || attempt >= 20) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
   attachments.startCleanupWorker();
   console.log(`AgentBoard listening on http://127.0.0.1:${config.port} (db: ${config.dbPath})`);
   return { server, hub, config, db };
