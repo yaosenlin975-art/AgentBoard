@@ -1,6 +1,6 @@
-/**
+﻿/**
  * unreadCollector（issue 6def6819）测试：message.added → markUnread 挂 wsBus 全局层
- * （模块加载即订阅，非组件生命周期），ChatPanel 未挂载（面板收起）期间同样计数；
+ * （模块加载即订阅，非组件生命周期），面板收起期间同样计数；
  * 当前会话消息不计；多会话计数独立互不串扰；session.deleted 清被删会话条目；
  * openChat 打开对应会话清零（TopBar 总徽标与切换器「新消息」徽标同步）。
  */
@@ -17,6 +17,7 @@ import { RightPanel } from '../components/right/RightPanel';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
+import { resetOverlays } from '../state/overlayStore';
 import { useStreamingStore } from '../state/streamingStore';
 import { server } from './server';
 
@@ -93,28 +94,33 @@ function renderShell(): void {
 }
 
 describe('unreadCollector 全局未读计数', () => {
-  it('ChatPanel 未挂载（面板收起）收到 message.added 即计数；TopBar 徽标出现；展开后切换器显示「新消息」徽标；openChat 清零', async () => {
+  it('面板收起时组件保留但不可交互，message.added 即计数；展开后切换器显示「新消息」徽标；openChat 清零', async () => {
     sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
-    // 聊天视图选中 s1，但面板收起 → ChatPanel 未挂载
+    // PANEL-VIEW-BUG：可见性真源是 overlayStore；关闭态 = view 为 null（不再是 rightOpen=false）
     usePanelStore.setState({
-      view: 'chat',
+      view: null,
       sessionId: 's1',
       chatSession: makeSession({ id: 's1' }),
-      rightOpen: false,
+      unread: { s2: 1 },
     });
+    resetOverlays();
     renderShell();
-    await waitFor(() => expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument());
+    // PANEL-ENTRY2：关闭态整块卸载（不再保留 inert 的隐藏面板），未读仍按 WS 事件累加
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
+    expect(screen.queryByTestId('right-panel')).toBeNull();
+    expect(usePanelStore.getState().unread).toEqual({ s2: 1 });
 
     emitMessageAdded(makeMessage({ id: 'mb1', session_id: 's2', content: '后台消息', ts: 300 }));
-    expect(usePanelStore.getState().unread).toEqual({ s2: 1 });
-    expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('1');
+    expect(usePanelStore.getState().unread).toEqual({ s2: 2 });
+    expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('2');
 
-    // 展开面板 → ChatPanel 重挂载，切换器该会话显示未读徽标
+    // 通过顶栏聊天入口重开浮窗 → ChatPanel 挂载，切换器该会话显示未读徽标
     const user = userEvent.setup();
-    await user.click(screen.getByTestId('right-panel-expand'));
+    await user.click(screen.getByTestId('topbar-chat'));
+    await screen.findByTestId('chat-panel');
     await screen.findByTestId('session-switcher');
     await user.click(screen.getByTestId('session-switcher'));
-    expect(screen.getByTestId('unread-s2')).toHaveTextContent('1');
+    expect(screen.getByTestId('unread-s2')).toHaveTextContent('2');
 
     // openChat（切换器选项点开 s2）→ 未读清零，徽标消失
     // （展开面板时 openChat() 已顺带清当前会话 s1 → 0，清零语义即"打开即读"）
@@ -140,7 +146,7 @@ describe('unreadCollector 全局未读计数', () => {
     expect(usePanelStore.getState().unread).toEqual({});
   });
 
-  it('session.deleted 清被删会话未读条目（ChatPanel 未挂载的非当前会话）', () => {
+  it('session.deleted 清被删会话未读条目（非当前会话）', () => {
     usePanelStore.setState({ unread: { gone: 3, keep: 1 } });
     act(() => {
       emitWsEvent({ type: 'session.deleted', session_id: 'gone' });
@@ -149,3 +155,8 @@ describe('unreadCollector 全局未读计数', () => {
     expect(usePanelStore.getState().unread).toEqual({ gone: 0, keep: 1 });
   });
 });
+
+
+
+
+

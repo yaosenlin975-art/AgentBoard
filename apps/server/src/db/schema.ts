@@ -1,4 +1,14 @@
 import type { Db } from './connection.js';
+import { migrateKnowledge } from './migrations/knowledge.js';
+import { migrateIdempotency } from './migrations/idempotency.js';
+import { migrateAccounts } from './migrations/accounts.js';
+import { migrateTaskHierarchy } from './migrations/taskHierarchy.js';
+import { migrateAttachments } from './migrations/attachments.js';
+import { migrateWorkspaceChangeLog } from './migrations/workspaceChangeLog.js';
+import { migrateCheckin } from './migrations/checkin.js';
+import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
+import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/issueGitBaseline.js';
+import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
 
 // DDL 逐字来自实施计划 Pinned Contracts"DB DDL"段，不得改动
 const DDL = `
@@ -32,6 +42,22 @@ CREATE TABLE IF NOT EXISTS message (
 export function initSchema(db: Db): void {
   db.exec(DDL);
   migrateIssueColumns(db);
+  migrateWorkspaceOrder(db);
+  migrateIssueGitBaseline(db);
+  pruneIssueGitBaselines(db);
+  migrateTaskHierarchy(db);
+  migrateKnowledge(db);
+  migrateIdempotency(db);
+  migrateAccounts(db);
+  migrateAccountPlatforms(db);
+  migrateAttachments(db);
+  migrateWorkspaceChangeLog(db);
+  migrateCheckin(db);
+  // One transactional guard covers edits, comments, claims and session recovery paths.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS issue_monotonic_time AFTER UPDATE ON issue
+    WHEN new.updated_at <= old.updated_at BEGIN
+      UPDATE issue SET updated_at=old.updated_at+1 WHERE id=new.id;
+    END;`);
 }
 
 /** CREATE TABLE IF NOT EXISTS 不改已有表：缺列则 ALTER TABLE ADD COLUMN 补齐 */

@@ -1,11 +1,12 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+﻿import { beforeEach, describe, expect, it } from 'vitest';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import type { CliInfo, Workspace } from '@agentboard/shared';
+import type { CliInfo, Workspace, WorkspaceChangeLog } from '@agentboard/shared';
 import { TopBar } from '../components/topbar/TopBar';
 import { RightPanel } from '../components/right/RightPanel';
+import { WEB_VERSION } from '../api/version';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
 import { server } from './server';
@@ -19,8 +20,11 @@ const clisMixed: CliInfo[] = [
   { id: 'dsh', displayName: 'DSH', installed: false, version: null, supportsModelSelection: false },
 ];
 
-function renderTopBar(workspace: Workspace | null, withPanel = false) {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderTopBar(
+  workspace: Workspace | null,
+  withPanel = false,
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={qc}>
       <TopBar workspace={workspace} />
@@ -45,15 +49,16 @@ beforeEach(() => {
 });
 
 describe('TopBar', () => {
-  it('CLI 徽标两态：已装绿点带版本，未装灰', async () => {
+
+  it('TOPBAR-CLEAN：不再渲染 CLI 徽标（CodeBuddy / Codex / OpenCode / DSH 都不出现）', async () => {
     server.use(http.get('/api/clis', () => HttpResponse.json(clisMixed)));
     renderTopBar(null);
-
-    const installed = await screen.findByTitle('CodeBuddy 2.0.0');
-    expect(installed.querySelector('[data-installed="true"]')).not.toBeNull();
-    const missing = screen.getByTitle('Codex 未安装');
-    expect(missing.querySelector('[data-installed="true"]')).toBeNull();
-    expect(missing.querySelector('[data-installed="false"]')).not.toBeNull();
+    await waitFor(() => expect(screen.queryByTitle('CodeBuddy 2.0.0')).toBeNull());
+    for (const cli of clisMixed) {
+      expect(screen.queryByTitle(cli.displayName)).toBeNull();
+      expect(screen.queryByText(cli.displayName)).toBeNull();
+    }
+    expect(document.querySelector('[data-installed]')).toBeNull();
   });
 
   it('主题切换按钮循环 system → light → dark 并写 localStorage', async () => {
@@ -87,13 +92,32 @@ describe('TopBar', () => {
     expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
   });
 
+  it('工作区日志入口：未选工作空间禁用并提示，选中后可用（LOG03 接线）', async () => {
+    const first = renderTopBar(null);
+    const disabledButton = screen.getByTestId('topbar-changelog');
+    expect(disabledButton).toBeDisabled();
+    expect(disabledButton).toHaveAttribute('title', '请先选择工作空间');
+    first.unmount();
+
+    renderTopBar(ws);
+    const button = screen.getByTestId('topbar-changelog');
+    expect(button).toBeEnabled();
+    expect(button).toHaveTextContent('工作区日志');
+    expect(button).toHaveAttribute('aria-label', '工作区日志');
+    expect(button).toHaveAttribute('title', '查看当前工作区的变更日志');
+  });
+
   it('WS 状态点反映连接状态', async () => {
     useAppStore.setState({ wsStatus: 'open' });
     renderTopBar(null);
-    expect(screen.getByText('已连接')).toBeInTheDocument();
+    // PANEL-VIEW-BUG：只保留圆点颜色编码，不再展示「已连接」等文案
+    const dot = screen.getByTestId('topbar-ws-status');
+    expect(dot).toHaveAttribute('data-status', 'open');
+    expect(screen.queryByText('已连接')).toBeNull();
 
     useAppStore.setState({ wsStatus: 'closed' });
-    await waitFor(() => expect(screen.getByText('已断开')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('topbar-ws-status')).toHaveAttribute('data-status', 'closed'));
+    expect(screen.queryByText('已断开')).toBeNull();
   });
 
   it('聊天按钮：未读取各会话计数总和显示徽标，点击打开聊天视图', async () => {
@@ -111,15 +135,184 @@ describe('TopBar', () => {
   it('首次加载无交互即可达聊天：右缘常驻窄条可见，顶栏按钮打开聊天视图', async () => {
     renderTopBar(null, true);
 
-    // 初始（view=null）：右侧收起窄条渲染且文字含"聊天"，展开面板不存在
-    const strip = screen.getByTestId('right-panel-collapsed');
-    expect(strip).toBeInTheDocument();
-    expect(strip).toHaveTextContent('聊天');
+    // PANEL-ENTRY2：不再有右缘常驻窄条；聊天入口就是顶栏按钮
+    expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
+    expect(screen.queryByTestId('right-panel-rail')).toBeNull();
     expect(screen.queryByTestId('right-panel')).not.toBeInTheDocument();
+    const chatEntry = screen.getByTestId('topbar-chat');
+    expect(chatEntry).toHaveAttribute('aria-expanded', 'false');
 
-    await userEvent.click(screen.getByRole('button', { name: '聊天' }));
+    await userEvent.click(chatEntry);
     expect(await screen.findByTestId('right-panel')).toBeInTheDocument();
     expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: '聊天' })).toBeInTheDocument();
   });
+
+  it('版本号：GET /api/version 0.1.0 → 标题旁显示 v0.1.0，title 含服务端名称与前端版本', async () => {
+    server.use(
+      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
+    );
+    renderTopBar(ws);
+
+    const label = await screen.findByText('v0.1.0');
+    expect(label).toHaveAttribute('title', expect.stringContaining('agentboard-server 0.1.0'));
+    expect(label).toHaveAttribute('title', expect.stringContaining(`前端 ${WEB_VERSION}`));
+  });
+
+  it('版本号：接口不可达 → 显示 v? 且顶栏正常渲染不报错', async () => {
+    server.use(http.get('/api/version', () => HttpResponse.error()));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderTopBar(ws, false, qc);
+
+    await waitFor(() => expect(qc.getQueryState(['version'])?.status).toBe('error'));
+    const label = screen.getByTestId('app-version');
+    expect(label).toHaveTextContent(/^v\?$/);
+    expect(label).toHaveAttribute('title', expect.stringContaining('服务端版本未知'));
+    expect(screen.getByText('主项目')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('版本号：与前端版本一致无警示，不一致 title 警示', async () => {
+    server.use(
+      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: WEB_VERSION })),
+    );
+    const first = renderTopBar(null);
+    const same = await screen.findByText(`v${WEB_VERSION}`);
+    expect(same.getAttribute('title')).not.toContain('不一致');
+    first.unmount();
+
+    server.use(
+      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '9.9.9' })),
+    );
+    renderTopBar(null);
+    expect(await screen.findByText('v9.9.9')).toHaveAttribute('title', expect.stringContaining('版本不一致'));
+  });
 });
+
+/** LOG03 入口接线：面板组件由 server 线提供，这里只验证挂载与交互契约 */
+function changelogEntry(workspaceId: string, title: string): WorkspaceChangeLog {
+  return {
+    id: `${workspaceId}-e1`,
+    workspace_id: workspaceId,
+    origin_workspace_id: workspaceId,
+    origin_workspace_name: '主项目',
+    origin_workspace_path: 'D:/WorkSpaces/main',
+    title,
+    body_md: '变更正文',
+    change_type: '新增',
+    occurred_at: 1_700_000_000_000,
+    created_by: 'user',
+    updated_by: 'user',
+    created_at: 1_700_000_000_000,
+    updated_at: 1_700_000_000_000,
+    revision: 1,
+    legacy_source_key: null,
+  };
+}
+
+describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
+  beforeEach(() => {
+    server.use(
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([
+        { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: false, capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', source: 'static' },
+        { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, capture_reason_code: 'TARGET_KIND_UNCONFIRMED', switch_reason_code: 'TARGET_KIND_UNCONFIRMED', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'TARGET_KIND_UNCONFIRMED', source: 'static' },
+      ])),
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+    );
+  });
+
+  it('顶栏「账号」入口可直接打开账号管理面板（两个客户端分区），Esc 可关', async () => {
+    renderTopBar(ws);
+    const entry = screen.getByTestId('topbar-accounts');
+    expect(entry).toHaveTextContent('账号');
+    expect(entry).toHaveAttribute('aria-label', '账号管理');
+
+    await userEvent.click(entry);
+    const dialog = await screen.findByRole('dialog', { name: '账号管理' });
+    expect(within(dialog).getByText('WorkBuddy Desktop')).toBeInTheDocument();
+    expect(within(dialog).getByText('CodeBuddy Desktop')).toBeInTheDocument();
+    // 与设置弹窗同一组件：能力来自服务端矩阵
+    expect(within(dialog).getByTestId('accounts-capability-codebuddy_desktop')).toHaveTextContent('TARGET_KIND_UNCONFIRMED');
+
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '账号管理' })).toBeNull());
+  });
+
+  it('未选工作空间也能打开（账号与 workspace 无关）', async () => {
+    renderTopBar(null);
+    const entry = screen.getByTestId('topbar-accounts');
+    expect(entry).toBeEnabled();
+    await userEvent.click(entry);
+    expect(await screen.findByRole('dialog', { name: '账号管理' })).toBeInTheDocument();
+  });
+});
+
+describe('工作区日志入口（LOG03 接线）', () => {
+  const ws2: Workspace = { id: 'ws-2', name: '另一个项目', path: 'D:/WorkSpaces/other', created_at: 2 };
+
+  beforeEach(() => {
+    server.use(
+      http.get('/api/workspaces/ws-1/changelog', () =>
+        HttpResponse.json({ items: [changelogEntry('ws-1', 'ws-1 的变更')], next_offset: null }),
+      ),
+      http.get('/api/workspaces/ws-2/changelog', () =>
+        HttpResponse.json({ items: [changelogEntry('ws-2', 'ws-2 的变更')], next_offset: null }),
+      ),
+      http.get('/api/changelog/archived-workspaces', () => HttpResponse.json({ items: [], next_offset: null })),
+    );
+  });
+
+  it('点入口用 Modal 打开面板，关闭按钮关闭后焦点回到入口', async () => {
+    renderTopBar(ws);
+    const entry = screen.getByTestId('topbar-changelog');
+
+    await userEvent.click(entry);
+    expect(await screen.findByRole('dialog', { name: '工作区变更日志' })).toBeInTheDocument();
+    expect(await screen.findByTestId('changelog-panel')).toBeInTheDocument();
+    expect(await screen.findByText('ws-1 的变更')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '关闭' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(entry).toHaveFocus();
+  });
+
+  it('Esc 关闭面板', async () => {
+    renderTopBar(ws);
+    await userEvent.click(screen.getByTestId('topbar-changelog'));
+    expect(await screen.findByRole('dialog', { name: '工作区变更日志' })).toBeInTheDocument();
+
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('面板内切到「历史工作区」tab 显示归档视图（只读）', async () => {
+    renderTopBar(ws);
+    await userEvent.click(screen.getByTestId('topbar-changelog'));
+    await screen.findByTestId('changelog-panel');
+
+    await userEvent.click(screen.getByTestId('changelog-tab-archived'));
+    expect(await screen.findByTestId('changelog-archived')).toBeInTheDocument();
+    expect(await screen.findByTestId('changelog-archived-empty')).toHaveTextContent('没有已移除工作区的变更日志');
+    expect(screen.getByTestId('changelog-tab-archived')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('面板打开时切换 workspace：内容随 workspace 变化且不残留旧空间条目', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (target: Workspace) => (
+      <QueryClientProvider client={qc}>
+        <TopBar workspace={target} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(ws));
+
+    await userEvent.click(screen.getByTestId('topbar-changelog'));
+    expect(await screen.findByText('ws-1 的变更')).toBeInTheDocument();
+
+    rerender(tree(ws2));
+    expect(await screen.findByText('ws-2 的变更')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('ws-1 的变更')).not.toBeInTheDocument());
+  });
+});
+
+
+

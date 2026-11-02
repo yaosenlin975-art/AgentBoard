@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 右侧面板单实例容器（§7.4/§7.5）：
  * - view===null 渲染收起窄条（固定"聊天"，点击进入聊天视图，保证首屏可达）；
  * - 收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
@@ -6,8 +6,10 @@
  * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 ChatPanel）。
  * 视图组件各持 react-query 缓存，收起/展开与往返切换不丢数据。
  */
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { usePanelStore } from '../../state/panelStore';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { usePanelStore, type PanelView } from '../../state/panelStore';
+import { useOverlayStore } from '../../state/overlayStore';
+import { useDismissable } from '../overlay/useDismissable';
 import { DetailPanel } from '../detail/DetailPanel';
 import { ChatPanel } from '../chat/ChatPanel';
 
@@ -28,47 +30,67 @@ function loadWidth(): number {
 
 export function RightPanel() {
   const view = usePanelStore((s) => s.view);
-  const rightOpen = usePanelStore((s) => s.rightOpen);
-  const issueId = usePanelStore((s) => s.issueId);
-  const openDetail = usePanelStore((s) => s.openDetail);
-  const openChat = usePanelStore((s) => s.openChat);
   const closeRight = usePanelStore((s) => s.closeRight);
+  const clearView = usePanelStore((s) => s.clearView);
 
   const [width, setWidth] = useState(loadWidth);
+  const [resizing, setResizing] = useState(false);
   const widthRef = useRef(width);
   widthRef.current = width;
+  // 单一真源（PANEL-VIEW-BUG）：可见性只看 overlayStore.right；视图只看 panelStore.view。
+  // view 为 null 表示「没有要显示的视图」→ 不渲染，绝不回退成聊天（否则点任务会偶发显示聊天）。
+  const overlayRight = useOverlayStore((s) => s.right);
+  const openRightOverlay = useOverlayStore((s) => s.openRight);
+  const closeRightOverlay = useOverlayStore((s) => s.closeRight);
+  const activeView: PanelView = view ?? 'detail';
+  const isOpen = view !== null && overlayRight;
+  const asideRef = useRef<HTMLElement>(null);
+  /** 打开前的焦点元素（任务卡 / 顶栏「聊天」按钮），关闭后焦点回它（PANEL-ENTRY2：不再有 rail 入口） */
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const panelBodyRefs = useRef<Record<PanelView, HTMLDivElement | null>>({ detail: null, chat: null });
+  const lastFocusByView = useRef<Record<PanelView, HTMLElement | null>>({ detail: null, chat: null });
+  const previousView = useRef({ isOpen, view: activeView });
 
-  const restore = (): void => {
-    if (view === 'detail' && issueId !== null) openDetail(issueId);
-    else openChat();
-  };
+  // 视图存在即可见：openDetail/openChat 设置 view 后浮窗自动出现；view 为 null 时强制关闭
+  useEffect(() => {
+    if (view !== null && !overlayRight) openRightOverlay();
+    else if (view === null && overlayRight) closeRightOverlay();
+  }, [view, overlayRight, openRightOverlay, closeRightOverlay]);
 
-  // 收起态（含 view===null 首屏）：窄条 + 展开按钮
-  if (view === null || !rightOpen) {
-    return (
-      <aside
-        data-testid="right-panel-collapsed"
-        className="flex w-10 shrink-0 flex-col items-center gap-2 border-l border-neutral-200 bg-white py-2 dark:border-neutral-800 dark:bg-neutral-900"
-      >
-        <button
-          type="button"
-          data-testid="right-panel-expand"
-          aria-label="展开右侧面板"
-          title="展开右侧面板"
-          onClick={restore}
-          className="rounded px-1.5 py-1 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          ◀
-        </button>
-        <span className="text-xs [writing-mode:vertical-rl] text-neutral-400 dark:text-neutral-600">
-          {view === 'detail' ? '任务详情' : '聊天'}
-        </span>
-      </aside>
-    );
-  }
+  // 外部点击 / Esc / 头部关闭：视图意图一并清空（否则同步 effect 会因 view 仍在而重新打开浮窗）
+  const dismiss = useCallback(() => {
+    closeRightOverlay();
+    closeRight();
+    clearView();
+  }, [closeRightOverlay, closeRight, clearView]);
+  useDismissable({ open: isOpen, onClose: dismiss, panelRef: asideRef, triggerRef: returnFocusRef });
+
+  useLayoutEffect(() => {
+    const previous = previousView.current;
+    if (previous.isOpen !== isOpen) {
+      if (isOpen) {
+        // 记录触发元素（任务卡 / 顶栏「聊天」），关闭后焦点回它
+        returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const target = lastFocusByView.current[activeView];
+        if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
+        else headingRef.current?.focus();
+      } else {
+        const back = returnFocusRef.current;
+        if (back !== null && back.isConnected) back.focus();
+      }
+    } else if (isOpen && previous.view !== activeView) {
+      const target = lastFocusByView.current[activeView];
+      if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
+      else headingRef.current?.focus();
+    }
+    previousView.current = { isOpen, view: activeView };
+  }, [activeView, isOpen]);
+
 
   const onHandlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault();
+    setResizing(true);
     const startX = e.clientX;
     const startWidth = widthRef.current;
     const onMove = (ev: PointerEvent): void => {
@@ -82,42 +104,110 @@ export function RightPanel() {
         localStorage.setItem(WIDTH_KEY, String(c));
         return c;
       });
+      setResizing(false);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
   };
 
+  const onHandleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const delta = e.key === 'ArrowLeft' ? 10 : e.key === 'ArrowRight' ? -10 : 0;
+    if (delta === 0) return;
+    e.preventDefault();
+    const nextWidth = clampWidth(widthRef.current + delta);
+    widthRef.current = nextWidth;
+    setWidth(nextWidth);
+    localStorage.setItem(WIDTH_KEY, String(nextWidth));
+  };
+
+  // PANEL-ENTRY2：取消「收起成小方块」状态；未打开时整块不渲染，入口在任务卡与顶栏「聊天」
+  if (!isOpen) return null;
+
   return (
     <aside
+      ref={asideRef}
       data-testid="right-panel"
-      style={{ width: `${width}px` }}
-      className="relative flex shrink-0 flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      aria-label="右侧面板"
+      id="right-panel-shell"
+      style={{
+        width: isOpen ? `${width}px` : '40px',
+        maxWidth: isOpen ? 'calc(100vw - 1rem)' : undefined,
+        height: isOpen ? 'calc(100dvh - 5rem)' : '2.5rem',
+      }}
+      className={`absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl ${resizing ? 'transition-none' : 'transition-[width] duration-200'} motion-reduce:transition-none dark:border-neutral-800 dark:bg-neutral-900`}
     >
       <div
-        data-testid="right-resize-handle"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整面板宽度"
-        title="拖拽调整宽度"
-        onPointerDown={onHandlePointerDown}
-        className="absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize hover:bg-blue-400/60"
-      />
-      <header className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
-        <h2 className="text-sm font-semibold">{view === 'detail' ? '任务详情' : '聊天'}</h2>
-        <button
-          type="button"
-          data-testid="right-panel-collapse"
-          aria-label="收起右侧面板"
-          title="收起右侧面板"
-          onClick={closeRight}
-          className="rounded px-2 py-0.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-        >
-          ×
-        </button>
-      </header>
-      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-        {view === 'detail' ? <DetailPanel /> : <ChatPanel />}
+        id="right-panel-content"
+        data-testid="right-panel-content"
+        aria-hidden={!isOpen}
+        inert={!isOpen}
+        style={{ width: `${width}px`, maxWidth: 'calc(100vw - 1rem)' }}
+        className={`absolute inset-y-0 right-0 flex flex-col transition-transform duration-200 motion-reduce:transition-none ${isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+      >
+        <div
+          data-testid="right-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整面板宽度"
+          aria-valuemin={MIN_WIDTH}
+          aria-valuemax={MAX_WIDTH}
+          aria-valuenow={width}
+          tabIndex={0}
+          title="拖拽调整宽度"
+          onPointerDown={onHandlePointerDown}
+          onKeyDown={onHandleKeyDown}
+          hidden={!isOpen}
+          // top-10 = 头部 h-10：手柄只在内容区，不再压住标题带（原先 inset-y-0 会盖掉头部左缘 6px 与 border）
+          className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-blue-400/60 focus-visible:outline-2 focus-visible:outline-blue-500"
+        />
+        <header className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
+          <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
+            {activeView === 'detail' ? '任务详情' : '聊天'}
+          </h2>
+          <button
+            type="button"
+            data-testid="right-panel-close"
+            aria-label="关闭右侧面板"
+            title="关闭右侧面板"
+            onClick={dismiss}
+            className="rounded px-2 py-0.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          >
+            ×
+          </button>
+        </header>
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div
+            ref={(node) => { panelBodyRefs.current.detail = node; }}
+            data-testid="detail-panel-view"
+            aria-hidden={activeView !== 'detail'}
+            inert={activeView !== 'detail'}
+            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+              if (event.target instanceof HTMLElement) lastFocusByView.current.detail = event.target;
+            }}
+            className={`absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none ${activeView === 'detail' ? 'translate-x-0' : '-translate-x-full pointer-events-none'}`}
+          >
+            <DetailPanel />
+          </div>
+          <div
+            ref={(node) => { panelBodyRefs.current.chat = node; }}
+            data-testid="chat-panel-view"
+            aria-hidden={activeView !== 'chat'}
+            inert={activeView !== 'chat'}
+            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+              if (event.target instanceof HTMLElement) lastFocusByView.current.chat = event.target;
+            }}
+            className={`absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none ${activeView === 'chat' ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+          >
+            <ChatPanel />
+          </div>
+        </div>
       </div>
     </aside>
   );
 }
+
+
+
+
+
+

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 右侧面板视图状态：detail / chat 互斥，可整体收起（rightOpen）。
  * openDetail/openChat 只切换视图并展开，不重置另一视图的数据：
  * 两个视图组件各持 react-query 缓存，往返切换不丢选中 issue/session。
@@ -7,7 +7,8 @@
  * unread：各会话未读新消息计数，由 unreadCollector 在 wsBus 全局层统计
  * （message.added 且非当前会话 +1，openChat 清零，session.deleted 清对应计数），
  * 不依赖 ChatPanel 挂载。
- * 持久化 localStorage（键 agentboard.panel）：view/issueId/sessionId/chatSession/rightOpen/unread；
+ * 持久化 localStorage（键 agentboard.panel）：sessionId/chatSession/unread；
+ * （view/issueId/rightOpen 是瞬时意图，不持久化 —— 见 PANEL-VIEW-BUG）
  * unread 重水合经 sanitizeUnread 容错（非对象/非正整数条目剔除，坏结构回空对象）。
  */
 import { create } from 'zustand';
@@ -50,6 +51,8 @@ interface PanelState {
   clearUnread: (sessionId: string) => void;
   /** 收起右侧面板（数据保留） */
   closeRight: () => void;
+  /** 关闭浮窗并清空视图意图（view/issueId 归零，聊天会话与未读保留） */
+  clearView: () => void;
 }
 
 export const usePanelStore = create<PanelState>()(
@@ -87,22 +90,35 @@ export const usePanelStore = create<PanelState>()(
         set((s) => ({ unread: { ...s.unread, [sessionId]: (s.unread[sessionId] ?? 0) + 1 } })),
       clearUnread: (sessionId) => set((s) => ({ unread: { ...s.unread, [sessionId]: 0 } })),
       closeRight: () => set({ rightOpen: false }),
+      clearView: () => set({ view: null, issueId: null, rightOpen: false }),
     }),
     {
       name: 'agentboard.panel',
+      // PANEL-VIEW-BUG：视图意图（view/issueId/rightOpen）不持久化 —— 刷新后一律「无视图」，
+      // 由用户点击入口（任务卡 / 顶栏聊天）决定显示什么，杜绝「上次停在聊天 → 刷新点任务却出聊天」。
+      // 会话选择与未读计数仍持久化（聊天恢复与未读徽标依赖它们）。
       partialize: (state) => ({
-        view: state.view,
-        issueId: state.issueId,
         sessionId: state.sessionId,
         chatSession: state.chatSession,
-        rightOpen: state.rightOpen,
         unread: state.unread,
       }),
-      // 重水合容错：默认浅合并外对 unread 做结构/取值校验（脏数据回空对象，不抛错）
+      // 重水合容错：unread 做结构/取值校验（脏数据回空对象，不抛错）；
+      // 视图意图一律丢弃 —— 旧版快照里可能残留 view:'chat'，带回来就会复现「点任务显示聊天」（PANEL-VIEW-BUG）。
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanelState>;
-        return { ...current, ...p, unread: sanitizeUnread(p.unread) };
+        return {
+          ...current,
+          sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+          chatSession: p.chatSession ?? null,
+          unread: sanitizeUnread(p.unread),
+          view: null,
+          issueId: null,
+          rightOpen: false,
+        };
       },
     },
   ),
 );
+
+
+

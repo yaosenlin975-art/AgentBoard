@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Task 14 测试：聊天视图。WS 事件经 wsBus.emitWsEvent 直接灌入（模拟 WS hook），
  * REST 走 msw。覆盖：delta 流拼接渲染落定、折叠块开合与 tool input 截断、排队计数
  * （queued:true +1 / end 清零）、停止调用与停止后队列保留、模型修改 PATCH、新建会话、未读徽标。
@@ -17,6 +17,8 @@ import { useStreamingStore } from '../state/streamingStore';
 import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/ws/main', created_at: 1 };
+// 工作空间列表可覆盖（聊天头部空间名称用例）
+let workspacesList: Workspace[] = [ws];
 
 function makeSession(overrides: Partial<Session> = {}): Session {
   return {
@@ -43,6 +45,25 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
   };
 }
 
+/** 泡泡外观类（背景/边框/圆角）：assistant 正文容器不应含任何一项 */
+const BUBBLE_CLASS = /^(rounded|bg-|border)/;
+
+/** 取元素上的泡泡外观类（用于正/反断言） */
+function bubbleClasses(el: HTMLElement): string[] {
+  return Array.from(el.classList).filter((c) => BUBBLE_CLASS.test(c));
+}
+
+function expectAssistantBody(testId: string): { row: HTMLElement; body: HTMLElement } {
+  const row = screen.getByTestId(testId);
+  const body = row.firstElementChild as HTMLElement;
+  // 行容器与正文容器都不得带泡泡外观（圆角/背景/边框）
+  expect(bubbleClasses(row)).toEqual([]);
+  expect(bubbleClasses(body)).toEqual([]);
+  // 正文容器可收缩（min-w-0）+ 撑满（flex-1/max-w-full）：长代码行在 pre 内横向滚动，不撑破消息流
+  expect(body).toHaveClass('min-w-0', 'max-w-full', 'flex-1');
+  return { row, body };
+}
+
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
     id: 'iss-1',
@@ -53,6 +74,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     labels: ['前端'],
     status: '进行中',
     sort_order: 0,
+    parent_issue_id: null,
     claimed_by: 'agent:codebuddy',
     claimed_at: 5,
     session_id: 's1',
@@ -76,6 +98,10 @@ let sessionsList: Session[] = [];
 const postBodies: Array<{ text?: string }> = [];
 let postResponses: Array<{ queued: boolean }> = [];
 let stopCount = 0;
+// workspaces 列表回落（resetMocks 复位）
+// 删除会话可观测态：调用记录 + 可覆盖响应（默认 204 并从 sessionsList 剔除）
+const deleteCalls: string[] = [];
+let deleteResponse: { status: number; body: unknown } | null = null;
 const patchBodies: Array<{ model?: string | null }> = [];
 const createBodies: Array<Record<string, unknown>> = [];
 const queueStore: Record<string, string[]> = {};
@@ -90,6 +116,9 @@ function resetMocks(): void {
   postBodies.length = 0;
   postResponses = [];
   stopCount = 0;
+  workspacesList = [ws];
+  deleteCalls.length = 0;
+  deleteResponse = null;
   patchBodies.length = 0;
   createBodies.length = 0;
   for (const k of Object.keys(queueStore)) delete queueStore[k];
@@ -120,6 +149,14 @@ function mockChatApi(): void {
     http.post('/api/sessions/:id/messages', async ({ request }) => {
       postBodies.push((await request.json()) as { text?: string });
       return HttpResponse.json(postResponses.shift() ?? { queued: false });
+    }),
+    http.delete('/api/sessions/:id', ({ params }) => {
+      deleteCalls.push(params.id as string);
+      if (deleteResponse !== null) {
+        return HttpResponse.json(deleteResponse.body as Record<string, unknown>, { status: deleteResponse.status });
+      }
+      sessionsList = sessionsList.filter((s) => s.id !== params.id);
+      return new HttpResponse(null, { status: 204 });
     }),
     http.post('/api/sessions/:id/stop', ({ params }) => {
       stopCount += 1;
@@ -156,7 +193,7 @@ function mockChatApi(): void {
         issueStore ?? makeIssue({ id: params.id as string, status: '待验收', claimed_by: null, claimed_at: null }),
       );
     }),
-    http.get('/api/workspaces', () => HttpResponse.json([ws])),
+    http.get('/api/workspaces', () => HttpResponse.json(workspacesList)),
     http.get('/api/clis', () => HttpResponse.json(clisInstalled)),
     http.get('/api/clis/:id/models', () =>
       HttpResponse.json([{ id: 'm-a', source: 'static' }]),
@@ -208,6 +245,39 @@ beforeEach(() => {
 });
 
 describe('ChatPanel 消息流与流式渲染', () => {
+  it('用户消息保留蓝色气泡，历史 assistant 消息直接显示正文', async () => {
+    sessionsList = [makeSession()];
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', role: 'user', content: '问题', ts: 100 }),
+      makeMessage({
+        id: 'ma0',
+        role: 'assistant',
+        content: '历史 **回答**\n\n- 列表项一\n- 列表项二\n\n```ts\nconst answer = 42;\n```',
+        ts: 200,
+      }),
+    ];
+    renderChat();
+
+    expect(await screen.findByTestId('msg-mu1')).toBeInTheDocument();
+    const userRow = screen.getByTestId('msg-mu1');
+    const userBubble = userRow.firstElementChild as HTMLElement;
+    expect(userBubble).toHaveClass('rounded-lg', 'rounded-br-sm', 'bg-blue-600', 'px-2.5', 'py-1.5');
+    // 反向：用户泡泡确实保留泡泡外观类，且仍右对齐
+    expect(bubbleClasses(userBubble)).toEqual(expect.arrayContaining(['rounded-lg', 'rounded-br-sm', 'bg-blue-600']));
+    expect(userRow).toHaveClass('justify-end');
+    const history = expectAssistantBody('msg-ma0');
+    // MarkdownView 懒加载：等真实结构渲染出来再断言（不固定 sleep）
+    await waitFor(() => {
+      const markdown = history.body.querySelector('.markdown-body');
+      expect(markdown?.querySelector('strong')?.textContent).toBe('回答');
+      expect(markdown?.querySelectorAll('ul li')).toHaveLength(2);
+      expect(markdown?.querySelector('pre code')?.textContent).toContain('const answer = 42;');
+    }, { timeout: 5000 });
+    const markdown = history.body.querySelector('.markdown-body');
+    // 代码高亮标记仍在（rehype-highlight 生效）
+    expect(markdown?.querySelector('pre code')?.className).toContain('hljs');
+  });
+
   it('session.event text delta 拼接进流式气泡；message.added assistant 落定并清 buffer', async () => {
     sessionsList = [makeSession()];
     msgStore['s1'] = [makeMessage({ id: 'mu1', content: 'hi', ts: 100 })];
@@ -218,17 +288,72 @@ describe('ChatPanel 消息流与流式渲染', () => {
     emitText('s1', '你好');
     emitText('s1', '，');
     emitText('s1', '世界');
-    const bubble = await screen.findByTestId('streaming-bubble');
-    expect(bubble).toHaveTextContent('你好，世界');
+    const stream = await screen.findByTestId('streaming-bubble');
+    const streamingBody = expectAssistantBody('streaming-bubble').body;
+    expect(stream).toHaveTextContent('你好，世界');
+    const streamingRowClass = stream.className;
+    const streamingBodyClass = streamingBody.className;
 
     emitMessageAdded(makeMessage({ id: 'ma1', role: 'assistant', content: '你好，世界', ts: 200 }));
     await waitFor(() => expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument());
     const list = within(screen.getByTestId('message-list'));
     // 落定后 assistant 内容只出现一次（buffer 已清，不重复渲染）
     expect(list.getAllByText('你好，世界')).toHaveLength(1);
-    expect(screen.getByTestId('msg-ma1')).toBeInTheDocument();
+    const settled = expectAssistantBody('msg-ma1');
+    expect(settled.row.className).toBe(streamingRowClass);
+    expect(settled.body.className).toBe(streamingBodyClass);
     // 运行中：三个跳动点
     expect(screen.getByTestId('running-indicator')).toBeInTheDocument();
+  });
+
+  it('流式输出为无泡泡正文容器：流式态渲染 Markdown/代码高亮，落定后容器类名完全一致（不闪变）', async () => {
+    sessionsList = [makeSession()];
+    msgStore['s1'] = [makeMessage({ id: 'mu1', content: 'hi', ts: 100 })];
+    renderChat();
+    await screen.findByTestId('msg-mu1');
+
+    const md = '**流式粗体**\n\n```ts\nconst streamed = 1;\n```';
+    emitText('s1', md);
+    const stream = await screen.findByTestId('streaming-bubble');
+    const body = expectAssistantBody('streaming-bubble').body;
+    // 流式态同样走 MarkdownView（懒加载）：等待真实渲染落地后再断言粗体/代码块/高亮
+    await waitFor(() => {
+      const streamMarkdown = body.querySelector('.markdown-body');
+      expect(streamMarkdown?.querySelector('strong')?.textContent).toBe('流式粗体');
+      expect(streamMarkdown?.querySelector('pre code')?.textContent).toContain('const streamed = 1;');
+      expect(streamMarkdown?.querySelector('pre code')?.className).toContain('hljs');
+    }, { timeout: 5000 });
+    const streamingRowClass = stream.className;
+    const streamingBodyClass = body.className;
+
+    emitMessageAdded(makeMessage({ id: 'ma2', role: 'assistant', content: md, ts: 200 }));
+    await waitFor(() => expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument());
+    const settled = expectAssistantBody('msg-ma2');
+    expect(settled.row.className).toBe(streamingRowClass);
+    expect(settled.body.className).toBe(streamingBodyClass);
+  });
+
+  it('思考/工具/错误块仍是消息流同级块，未被 assistant 正文容器吞掉', async () => {
+    sessionsList = [makeSession()];
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', content: 'hi', ts: 100 }),
+      makeMessage({ id: 'mt1', role: 'event', content: JSON.stringify({ kind: 'thinking', text: '内部推理' }), ts: 110 }),
+      makeMessage({ id: 'me1', role: 'event', content: JSON.stringify({ name: 'read_file', input: '{"a":1}' }), ts: 120 }),
+      makeMessage({ id: 'mx1', role: 'error', content: 'boom 发生了', ts: 130 }),
+      makeMessage({ id: 'ma1', role: 'assistant', content: '答复', ts: 140 }),
+    ];
+    renderChat();
+
+    const list = screen.getByTestId('message-list');
+    await screen.findByTestId('msg-ma1');
+    // 折叠块与消息行都是 message-list 的直接子节点（未被正文容器嵌套/吞掉）
+    for (const id of ['msg-mu1', 'msg-ma1', 'thinking-block-mt1', 'event-block-me1', 'error-block-mx1']) {
+      expect(screen.getByTestId(id).parentElement).toBe(list);
+    }
+    // 折叠块自身保留 summary 与 pre 正文
+    expect(within(screen.getByTestId('thinking-block-mt1')).getByText('思考')).toBeInTheDocument();
+    expect(within(screen.getByTestId('event-block-me1')).getByText('工具 · read_file')).toBeInTheDocument();
+    expect(within(screen.getByTestId('error-block-mx1')).getByText('错误')).toBeInTheDocument();
   });
 
   it('运行中会话后台收流不丢：流式期间切到 B，A 的 delta 继续累积且不串显；切回 A 显示完整内容', async () => {
@@ -266,16 +391,19 @@ describe('ChatPanel 消息流与流式渲染', () => {
     emitText('s1', '收起前');
     expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('收起前');
 
-    // 收起右侧面板 → ChatPanel 卸载
-    await user.click(screen.getByTestId('right-panel-collapse'));
-    await waitFor(() => expect(screen.queryByTestId('chat-panel')).not.toBeInTheDocument());
+    // PANEL-ENTRY2：关闭 = 整块卸载（不再有收起态窄条/inert 隐藏面板）
+    await user.click(screen.getByTestId('right-panel-close'));
+    expect(screen.queryByTestId('chat-panel')).toBeNull();
+    expect(screen.queryByTestId('right-panel')).toBeNull();
 
-    // 卸载期间全局层照常收流
+    // 关闭期间流式增量仍进 store（全局 WS 层照常收流）；PANEL-VIEW-BUG 后关闭会清 view
     emitText('s1', '期间');
+    await waitFor(() => expect(usePanelStore.getState().view).toBeNull());
 
-    // 展开恢复 → ChatPanel 重挂载，store 内容完整呈现
-    await user.click(screen.getByTestId('right-panel-expand'));
+    // 通过入口重开（顶栏聊天按钮 / openChat）→ 累积内容完整呈现
+    act(() => usePanelStore.getState().openChat());
     const bubble = await screen.findByTestId('streaming-bubble');
+    expect(screen.getByTestId('chat-panel')).toBeInTheDocument();
     expect(bubble).toHaveTextContent('收起前期间');
   });
 
@@ -478,6 +606,26 @@ describe('ChatPanel 会话切换器与模型', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
+  it('修改模型：旧会话模型不在新清单时保留并可返回列表', async () => {
+    sessionsList = [makeSession({ model: 'legacy-model' })];
+    renderChat(makeSession({ model: 'legacy-model' }));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('edit-model-btn'));
+    const input = screen.getByTestId('model-input') as HTMLInputElement;
+    expect(input).toHaveValue('legacy-model');
+    expect(await screen.findByTestId('model-input-not-in-list')).toHaveTextContent('当前模型不在此 CLI 列表中');
+
+    await user.click(screen.getByTestId('model-input-back'));
+    const select = screen.getByTestId('model-input') as HTMLSelectElement;
+    expect(select).toHaveValue('legacy-model');
+    expect(within(select).getByRole('option', { name: 'legacy-model（不在当前列表）' })).toBeInTheDocument();
+
+    await user.selectOptions(select, 'm-a');
+    await user.click(screen.getByTestId('model-confirm'));
+    await waitFor(() => expect(patchBodies).toEqual([{ model: 'm-a' }]));
+  });
+
   it('下拉分组显示任务/自由会话与徽标；非当前会话新消息未读 +1，选中后清零', async () => {
     sessionsList = [
       makeSession({ id: 's1', issue_id: 'iss-1' }),
@@ -562,6 +710,29 @@ describe('ChatPanel 会话切换器与模型', () => {
     await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · mx'));
   });
 
+  it('新建会话：CLI 切换恢复旧 localStorage 模型并显示它不在当前清单', async () => {
+    sessionsList = [makeSession()];
+    localStorage.setItem('agentboard.last-model.codex', 'old-codex-model');
+    renderChat();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('new-session-btn'));
+    await user.selectOptions(screen.getByTestId('ns-cli'), 'codex');
+
+    const notInList = await screen.findByTestId('ns-model-not-in-list');
+    expect(notInList).toHaveTextContent('当前模型不在此 CLI 列表中');
+    const input = screen.getByTestId('ns-model') as HTMLInputElement;
+    expect(input).toHaveValue('old-codex-model');
+
+    await user.click(screen.getByTestId('ns-model-back'));
+    const select = screen.getByTestId('ns-model') as HTMLSelectElement;
+    expect(select).toHaveValue('old-codex-model');
+    expect(within(select).getByRole('option', { name: 'old-codex-model（不在当前列表）' })).toBeInTheDocument();
+
+    await user.selectOptions(select, 'm-a');
+    await waitFor(() => expect(select).toHaveValue('m-a'));
+  });
+
   it('无选中会话：引导空态 + 新建入口', async () => {
     sessionsList = [];
     renderChat(null);
@@ -609,3 +780,217 @@ describe('ChatPanel 刷新恢复', () => {
     expect(screen.getByText('会话归属创建时所选的工作空间，可切换左侧工作空间查找')).toBeInTheDocument();
   });
 });
+
+describe('ChatPanel 运行态以服务端为准（会话对象优先级）', () => {
+  it('持久化快照为运行中、服务端已结束：刷新后不显示运行三点与停止按钮', async () => {
+    // 复现：会话在「运行中」时打开（持久化 chatSession=运行中），轮次结束后刷新页面，
+    // 持久化快照不回写 → 必须以 sessions 列表的服务端状态校正，否则假忙。
+    // 落定条件用正向信号：列表带回 waiting_slot=true 才渲染「等待槽位」徽标，
+    // 该徽标出现即证明列表已被采纳（不靠对「消失」的反向等待碰超时窗口）。
+    sessionsList = [makeSession({ status: '已结束', waiting_slot: true })];
+    renderChat(makeSession({ status: '运行中' }));
+    await screen.findByTestId('model-display');
+
+    expect(await screen.findByTestId('waiting-slot-badge', {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(screen.queryByTestId('running-indicator')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('stop-btn')).not.toBeInTheDocument();
+  });
+
+  it('WS session.changed 仍优先于列表：新一轮开始（运行中）后立刻显示运行三点与停止按钮', async () => {
+    sessionsList = [makeSession({ status: '已结束' })];
+    renderChat(makeSession({ status: '已结束' }));
+    await screen.findByTestId('model-display');
+
+    act(() => {
+      emitWsEvent({ type: 'session.changed', session: makeSession({ status: '运行中' }) });
+    });
+    expect(await screen.findByTestId('running-indicator')).toBeInTheDocument();
+    expect(screen.getByTestId('stop-btn')).toBeInTheDocument();
+  });
+
+  it('列表不含该会话时保留持久化快照状态，不误清显示', async () => {
+    sessionsList = [makeSession({ id: 'other', cli: 'codex' })];
+    renderChat(makeSession({ status: '运行中' }));
+    await screen.findByTestId('model-display');
+
+    expect(screen.getByTestId('running-indicator')).toBeInTheDocument();
+    expect(screen.getByTestId('stop-btn')).toBeInTheDocument();
+  });
+});
+
+describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
+  it('确认删除非当前会话：调用 DELETE，列表剔除，未读清零，当前选中不变', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    usePanelStore.setState({ unread: { s2: 3, other: 1 } });
+    renderChat(makeSession({ id: 's1' }));
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-delete-s2'));
+    // 二次确认：未确认前不调用 DELETE
+    expect(deleteCalls).toEqual([]);
+    await user.click(screen.getByTestId('session-delete-confirm-s2'));
+
+    await waitFor(() => expect(deleteCalls).toEqual(['s2']));
+    await waitFor(() => expect(screen.queryByTestId('session-option-s2')).not.toBeInTheDocument());
+    // 未读条目被清（其它会话未读保留）
+    await waitFor(() => expect(usePanelStore.getState().unread.s2).toBeUndefined());
+    expect(usePanelStore.getState().unread.other).toBe(1);
+    // 选中不变
+    expect(usePanelStore.getState().sessionId).toBe('s1');
+    expect(screen.queryByTestId('chat-action-error')).not.toBeInTheDocument();
+  });
+
+  it('删除当前会话：清选中与流式缓冲，回空态且不再显示残留消息', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChat(makeSession({ id: 's1' }));
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    emitText('s1', '流式中残留内容');
+    expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('流式中残留内容');
+
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(screen.getByTestId('session-delete-confirm-s1'));
+
+    await waitFor(() => expect(deleteCalls).toEqual(['s1']));
+    await waitFor(() => expect(usePanelStore.getState().sessionId).toBeNull());
+    expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
+    expect(useStreamingStore.getState().streams.has('s1')).toBe(false);
+    expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument();
+  });
+
+  it('运行中会话删除被服务端拒绝：展示服务端原文，选中与列表保持不变', async () => {
+    sessionsList = [makeSession({ id: 's1', status: '运行中' })];
+    deleteResponse = {
+      status: 409,
+      body: { error: { code: 'CONFLICT', message: '会话正在运行，请先停止再删除' } },
+    };
+    renderChat(makeSession({ id: 's1', status: '运行中' }));
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(screen.getByTestId('session-delete-confirm-s1'));
+
+    expect(await screen.findByTestId('chat-action-error')).toHaveTextContent('会话正在运行，请先停止再删除');
+    // 未删除：选中仍是 s1，列表仍有该项
+    expect(usePanelStore.getState().sessionId).toBe('s1');
+    expect(screen.getByTestId('session-option-s1')).toBeInTheDocument();
+  });
+
+  it('取消二次确认：不调用 DELETE，恢复删除入口', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChat(makeSession({ id: 's1' }));
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    await user.click(screen.getByTestId('session-switcher'));
+    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(screen.getByTestId('session-delete-cancel-s1'));
+
+    expect(deleteCalls).toEqual([]);
+    expect(screen.getByTestId('session-delete-s1')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-delete-confirm-s1')).not.toBeInTheDocument();
+    expect(usePanelStore.getState().sessionId).toBe('s1');
+  });
+
+  it('session.deleted 全局层清流式缓冲：已删会话不再残留增量内容', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    renderChat(makeSession({ id: 's1' }));
+    await screen.findByTestId('model-display');
+
+    emitText('s2', '后台残留');
+    expect(useStreamingStore.getState().streams.get('s2')).toBe('后台残留');
+
+    act(() => {
+      emitWsEvent({ type: 'session.deleted', session_id: 's2' });
+    });
+    expect(useStreamingStore.getState().streams.has('s2')).toBe(false);
+  });
+});
+
+describe('ChatPanel 跨端删除同步', () => {
+  it('其它视图删除当前会话：WS session.deleted → 回空态，选中/未读/流式缓冲一并清空', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
+    const qc = renderChat(makeSession({ id: 's1' }));
+    const user = userEvent.setup();
+    await screen.findByTestId('model-display');
+
+    emitText('s1', '正在输出的内容');
+    expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('正在输出的内容');
+    usePanelStore.setState({ unread: { s1: 2 } });
+
+    // 另一端删除：列表先剔除，再广播 session.deleted
+    sessionsList = [makeSession({ id: 's2', cli: 'codex' })];
+    act(() => {
+      emitWsEvent({ type: 'session.deleted', session_id: 's1' });
+    });
+    await qc.invalidateQueries({ queryKey: ['sessions'] });
+
+    await waitFor(() => expect(usePanelStore.getState().sessionId).toBeNull());
+    expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
+    expect(usePanelStore.getState().unread.s1).toBeUndefined();
+    expect(useStreamingStore.getState().streams.has('s1')).toBe(false);
+    expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('session-switcher'));
+    expect(screen.queryByTestId('session-option-s1')).not.toBeInTheDocument();
+  });
+});
+
+describe('ChatPanel 工作空间名称（CHAT-WORKSPACE-LABEL）', () => {
+  const ws2: Workspace = { id: 'ws-2', name: '第二项目', path: 'D:/ws/second', created_at: 2 };
+
+  it('显示当前会话所属工作空间名称（与顶栏共用 workspaces 缓存）', async () => {
+    sessionsList = [makeSession({ id: 's1', workspace_id: 'ws-1' })];
+    renderChat(makeSession({ id: 's1', workspace_id: 'ws-1' }));
+    expect(await screen.findByTestId('chat-workspace-label')).toHaveTextContent('主项目');
+    expect(screen.getByTestId('chat-workspace-label')).toHaveAttribute('title', '当前会话所属工作空间');
+  });
+
+  it('切换会话到另一个工作空间：名称跟随更新，不残留旧空间', async () => {
+    workspacesList = [ws, ws2];
+    sessionsList = [makeSession({ id: 's1', workspace_id: 'ws-1' })];
+    renderChat(makeSession({ id: 's1', workspace_id: 'ws-1' }));
+    expect(await screen.findByTestId('chat-workspace-label')).toHaveTextContent('主项目');
+
+    act(() => {
+      usePanelStore.setState({ sessionId: 's2', chatSession: makeSession({ id: 's2', workspace_id: 'ws-2' }) });
+    });
+    await waitFor(() => expect(screen.getByTestId('chat-workspace-label')).toHaveTextContent('第二项目'));
+    expect(screen.getByTestId('chat-workspace-label')).not.toHaveTextContent('主项目');
+  });
+
+  it('工作空间已删除（列表查不到该 id）：显示占位而非空串', async () => {
+    workspacesList = [ws];
+    sessionsList = [makeSession({ id: 's9', workspace_id: 'ws-gone' })];
+    renderChat(makeSession({ id: 's9', workspace_id: 'ws-gone' }));
+
+    const label = await screen.findByTestId('chat-workspace-label');
+    expect(label).toHaveTextContent('工作空间不可用');
+    expect(label.textContent?.trim()).not.toBe('');
+  });
+
+  it('没有选中会话且未选工作空间：显示明确的未选择占位', async () => {
+    sessionsList = [];
+    usePanelStore.setState({ view: 'chat', sessionId: null, chatSession: null, rightOpen: true });
+    useAppStore.setState({ workspaceId: null });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <RightPanel />
+      </QueryClientProvider>,
+    );
+
+    const label = await screen.findByTestId('chat-workspace-label');
+    expect(label).toHaveTextContent('未选择工作空间');
+  });
+});
+
+
+
+
+
