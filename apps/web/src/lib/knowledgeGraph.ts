@@ -403,11 +403,30 @@ export interface LayoutResult {
   maxTickMs: number;
   /** 计时 tick 的逐帧耗时（仅 measure 模式有值，已排除 5 个预热 tick） */
   tickMs: number[];
+  /** 末帧最大速度（收敛度量；< FORCE_DEFAULTS.settleSpeed 表示已静止） */
+  finalMaxSpeed: number;
 }
 
 const CELL = 120;
 const REPULSION_RADIUS = 170;
 const NEIGHBOR_SAMPLE = 20;
+
+/**
+ * 力学默认参数（KB-GRAPH-4）：面向 20–50 节点，目标「收敛后不抖、节点不重叠」。
+ * repulsion 决定最小间距；springStiffness 保证边不被拉成零长；gravity 防整体漂出画布；
+ * damping + maxStep 抑制抖震；iterations 加大到 220 让 50 节点也进入静止。
+ */
+export const FORCE_DEFAULTS = {
+  repulsion: 2000,
+  repulsionScale: 0.02,
+  springStiffness: 0.04,
+  gravity: 0.002,
+  damping: 0.7,
+  maxStep: 12,
+  iterations: 400,
+  /** 收敛判定阈值：末帧最大速度低于此值视为已静止 */
+  settleSpeed: 0.5,
+} as const;
 
 /**
  * 自研轻量力学（不引 d3-force）：网格桶近似斥力 + 弹簧 + 中心重力 + 速度阻尼。
@@ -419,11 +438,11 @@ const NEIGHBOR_SAMPLE = 20;
 export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], options: LayoutOptions = {}): LayoutResult {
   const width = options.width ?? 800;
   const height = options.height ?? 600;
-  const iterations = options.iterations ?? 120;
+  const iterations = options.iterations ?? FORCE_DEFAULTS.iterations;
   const measure = options.measure === true;
   const n = nodes.length;
   const positions = new Map<string, LayoutPosition>();
-  if (n === 0) return { positions, iterations: 0, totalMs: 0, maxTickMs: 0, tickMs: [] };
+  if (n === 0) return { positions, iterations: 0, totalMs: 0, maxTickMs: 0, tickMs: [], finalMaxSpeed: 0 };
 
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
@@ -456,10 +475,12 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], options: Lay
   // measure 模式先跑 WARMUP_TICKS 个预热 tick（JIT/分配热身）不计入统计，再计时 iterations 个 tick
   const warmup = measure ? 5 : 0;
   const totalTicks = iterations + warmup;
+  let doneTicks = 0;
 
   for (let tick = 0; tick < totalTicks; tick += 1) {
     const counted = measure && tick >= warmup;
     const started = counted ? performance.now() : 0;
+    let tickDelta = 0;
     cells.clear();
     for (let i = 0; i < n; i += 1) {
       const key = Math.floor(xs[i]! / CELL) * 10000 + Math.floor(ys[i]! / CELL);
@@ -484,7 +505,7 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], options: Lay
             const dist2 = ddx * ddx + ddy * ddy;
             if (dist2 > REPULSION_RADIUS * REPULSION_RADIUS) continue;
             const dist = Math.sqrt(dist2) || 0.01;
-            const force = (3200 / dist) * 0.02;
+            const force = (FORCE_DEFAULTS.repulsion / dist) * FORCE_DEFAULTS.repulsionScale;
             const fx = (ddx / dist) * force;
             const fy = (ddy / dist) * force;
             vx[i]! += fx; vy[i]! += fy;
@@ -497,21 +518,22 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], options: Lay
       const ddx = xs[b]! - xs[a]!;
       const ddy = ys[b]! - ys[a]!;
       const dist = Math.sqrt(ddx * ddx + ddy * ddy) || 0.01;
-      const force = ((dist - ideal) / dist) * 0.08;
+      const force = ((dist - ideal) / dist) * FORCE_DEFAULTS.springStiffness;
       const fx = ddx * force;
       const fy = ddy * force;
       vx[a]! += fx; vy[a]! += fy;
       vx[b]! -= fx; vy[b]! -= fy;
     }
     for (let i = 0; i < n; i += 1) {
-      vx[i]! += (cx - xs[i]!) * 0.002;
-      vy[i]! += (cy - ys[i]!) * 0.002;
-      vx[i]! *= 0.85;
-      vy[i]! *= 0.85;
-      const stepX = Math.max(-24, Math.min(24, vx[i]!));
-      const stepY = Math.max(-24, Math.min(24, vy[i]!));
+      vx[i]! += (cx - xs[i]!) * FORCE_DEFAULTS.gravity;
+      vy[i]! += (cy - ys[i]!) * FORCE_DEFAULTS.gravity;
+      vx[i]! *= FORCE_DEFAULTS.damping;
+      vy[i]! *= FORCE_DEFAULTS.damping;
+      const stepX = Math.max(-FORCE_DEFAULTS.maxStep, Math.min(FORCE_DEFAULTS.maxStep, vx[i]!));
+      const stepY = Math.max(-FORCE_DEFAULTS.maxStep, Math.min(FORCE_DEFAULTS.maxStep, vy[i]!));
       xs[i]! = Math.max(20, Math.min(width - 20, xs[i]! + stepX));
       ys[i]! = Math.max(20, Math.min(height - 20, ys[i]! + stepY));
+      tickDelta = Math.max(tickDelta, Math.abs(stepX), Math.abs(stepY));
     }
     if (counted) {
       const spent = performance.now() - started;
@@ -519,10 +541,41 @@ export function layoutGraph(nodes: GraphNode[], edges: GraphEdge[], options: Lay
       tickMs.push(spent);
       if (spent > maxTickMs) maxTickMs = spent;
     }
+    // 提前收敛：本 tick 最大位移低于 settleSpeed 即视为静止（iterations 只是上限）
+    if (tickDelta < FORCE_DEFAULTS.settleSpeed) {
+      doneTicks = tick + 1;
+      break;
+    }
   }
 
   nodes.forEach((node, i) => positions.set(node.id, { x: xs[i]!, y: ys[i]! }));
-  return { positions, iterations, totalMs, maxTickMs, tickMs };
+  let finalMaxSpeed = 0;
+  for (let i = 0; i < n; i += 1) {
+    finalMaxSpeed = Math.max(finalMaxSpeed, Math.abs(vx[i]!), Math.abs(vy[i]!));
+  }
+  return { positions, iterations: doneTicks > 0 ? doneTicks : iterations, totalMs, maxTickMs, tickMs, finalMaxSpeed };
+}
+
+/** 布局重叠对数：两节点中心距小于半径和即算重叠（应为 0） */
+export function countOverlaps(
+  positions: ReadonlyMap<string, LayoutPosition>,
+  nodes: readonly GraphNode[],
+): number {
+  const points: Array<{ x: number; y: number; r: number }> = [];
+  for (const node of nodes) {
+    const point = positions.get(node.id);
+    if (point === undefined) continue;
+    points.push({ x: point.x, y: point.y, r: nodeRadius(node.degree) });
+  }
+  let overlaps = 0;
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      const a = points[i]!;
+      const b = points[j]!;
+      if (Math.hypot(a.x - b.x, a.y - b.y) < a.r + b.r) overlaps += 1;
+    }
+  }
+  return overlaps;
 }
 
 /* ----------------------------------------------------------------------------
@@ -721,6 +774,33 @@ export function fitTransform(
   };
 }
 
+/** 节点按 scope 着色、边按 kind 定线型；canvas 与图例共用同一份定义 */
+export const GRAPH_PALETTE = {
+  node: {
+    workspace: { light: '#3b82f6', dark: '#60a5fa' },
+    common: { light: '#94a3b8', dark: '#cbd5e1' },
+  },
+  edge: {
+    source: { light: 'rgba(59,130,246,0.55)', dark: 'rgba(96,165,250,0.6)', width: 1.6, dash: [] as number[] },
+    keyword: { light: 'rgba(148,163,184,0.55)', dark: 'rgba(203,213,225,0.5)', width: 1, dash: [4, 3] as number[] },
+  },
+  label: { light: 'rgba(82,82,82,1)', dark: 'rgba(212,212,212,1)' },
+  pinnedRing: '#f59e0b',
+} as const;
+
+export type GraphPalette = typeof GRAPH_PALETTE;
+
+/** 按暗色与否取节点色 */
+export function nodeColor(scope: string, dark: boolean): string {
+  return scope === 'common' ? GRAPH_PALETTE.node.common[dark ? 'dark' : 'light'] : GRAPH_PALETTE.node.workspace[dark ? 'dark' : 'light'];
+}
+
+/** 按暗色与否取边样式 */
+export function edgeStyle(kind: string, dark: boolean): { color: string; width: number; dash: number[] } {
+  const entry = kind === 'source' ? GRAPH_PALETTE.edge.source : GRAPH_PALETTE.edge.keyword;
+  return { color: entry[dark ? 'dark' : 'light'], width: entry.width, dash: [...entry.dash] };
+}
+
 /** 命中测试：返回距点最近且落在半径内的节点 id（无命中返回 null） */
 export function hitTestNode(
   nodes: readonly GraphNode[],
@@ -742,5 +822,6 @@ export function hitTestNode(
   }
   return best;
 }
+
 
 

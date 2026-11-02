@@ -6,6 +6,8 @@ import {
   applyEdgeKinds,
   clampScale,
   composeGraph,
+  GRAPH_PALETTE,
+  edgeStyle,
   filterGraphForView,
   fitTransform,
   highlightAround,
@@ -18,6 +20,7 @@ import {
   layoutGraph,
   nodeRadius,
   normalizeGraph,
+  nodeColor,
   searchMatches,
   type GraphEdgeKind,
   type GraphPayload,
@@ -160,6 +163,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
 
   // 视口状态（KB-GRAPH-2）：scale + pan 合在一个 state 里，滚轮以光标为中心缩放；标签在 scale < 0.8 时隐藏
   const [view, setView] = useState<{ scale: number; pan: { x: number; y: number } }>({ scale: 1, pan: { x: 0, y: 0 } });
+  // 暗色跟随 html.dark（主题按钮会切 class；用 MutationObserver 触发重绘）
+  const [dark, setDark] = useState(() => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'));
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = (): void => setDark(root.classList.contains('dark'));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
   const [hovered, setHovered] = useState<string | null>(null);
   /** 拖拽固定：节点 id → 图坐标（固定后不随布局变化，双击/右键释放） */
   const [pinned, setPinned] = useState<Map<string, { x: number; y: number }>>(() => new Map());
@@ -235,7 +248,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     const hasFocus = hovered !== null;
     const dim = 0.18;
     // 边：按（kind × 是否高亮）分到 4 条路径，一次 stroke 画完（避免 900 次 stroke）
-    const edgeBatches = new Map<string, { path: Path2D; color: string; width: number; alpha: number }>();
+    const edgeBatches = new Map<string, { path: Path2D; color: string; width: number; alpha: number; dash: number[] }>();
     for (const edge of shown.edges) {
       const a = displayPositions.get(edge.source);
       const b = displayPositions.get(edge.target);
@@ -244,12 +257,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       const key = `${edge.kind}:${lit ? 'lit' : 'dim'}`;
       let batch = edgeBatches.get(key);
       if (batch === undefined) {
-        batch = {
-          path: new Path2D(),
-          color: edge.kind === 'source' ? 'rgba(59,130,246,0.55)' : 'rgba(148,163,184,0.45)',
-          width: edge.kind === 'source' ? 1.6 : 1,
-          alpha: lit ? 1 : dim,
-        };
+        const style = edgeStyle(edge.kind, dark);
+        batch = { path: new Path2D(), color: style.color, width: style.width, alpha: lit ? 1 : dim, dash: style.dash };
         edgeBatches.set(key, batch);
       }
       batch.path.moveTo(a.x, a.y);
@@ -259,8 +268,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       ctx.globalAlpha = batch.alpha;
       ctx.strokeStyle = batch.color;
       ctx.lineWidth = batch.width;
+      // source 实线、keyword 虚线（KB-GRAPH-4）
+      ctx.setLineDash(batch.dash);
       ctx.stroke(batch.path);
     }
+    ctx.setLineDash([]);
     // 节点：按（scope × 是否高亮）分组，同组一次 fill
     const nodeBatches = new Map<string, { path: Path2D; color: string; alpha: number }>();
     for (const node of shown.nodes) {
@@ -271,7 +283,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       const key = `${node.scope}:${lit ? 'lit' : 'dim'}`;
       let batch = nodeBatches.get(key);
       if (batch === undefined) {
-        batch = { path: new Path2D(), color: node.scope === 'common' ? '#94a3b8' : '#3b82f6', alpha: lit ? 1 : dim };
+        batch = { path: new Path2D(), color: nodeColor(node.scope, dark), alpha: lit ? 1 : dim };
         nodeBatches.set(key, batch);
       }
       batch.path.moveTo(point.x + radius, point.y);
@@ -294,7 +306,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         ring.arc(point.x, point.y, radius, 0, Math.PI * 2);
       }
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = '#f59e0b';
+      ctx.strokeStyle = GRAPH_PALETTE.pinnedRing;
       ctx.lineWidth = 2;
       ctx.stroke(ring);
     }
@@ -305,7 +317,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
       for (const pass of [true, false]) {
-        ctx.fillStyle = pass ? 'rgba(82,82,82,1)' : 'rgba(82,82,82,0.25)';
+        ctx.fillStyle = pass ? GRAPH_PALETTE.label[dark ? 'dark' : 'light'] : dark ? 'rgba(212,212,212,0.25)' : 'rgba(82,82,82,0.25)';
         for (const node of shown.nodes) {
           const lit = !hasFocus || highlight.nodes.has(node.id);
           if (lit !== pass) continue;
@@ -317,7 +329,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     }
     lastDrawMsRef.current = Math.round((performance.now() - drawStartMs) * 10) / 10;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [shown, displayPositions, pinned, scale, pan, showLabels, hovered, highlight]);
+  }, [shown, displayPositions, pinned, scale, pan, showLabels, hovered, highlight, dark]);
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
     const screen = localPoint(event);
@@ -500,6 +512,29 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       {error !== null && !loading && (
         <p role="alert" className="px-3 py-6 text-center text-sm text-red-600 dark:text-red-400">{error.message}</p>
       )}
+
+      <div data-testid="graph-legend" aria-label="星图图例" className="pointer-events-none flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-1 text-[11px] text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+        <span className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('workspace', dark) }} />
+          项目知识
+        </span>
+        <span className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('common', dark) }} />
+          公共经验
+        </span>
+        <span className="flex items-center gap-1">
+          <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('source', dark).color} strokeWidth={edgeStyle('source', dark).width} /></svg>
+          来源关联（实线）
+        </span>
+        <span className="flex items-center gap-1">
+          <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('keyword', dark).color} strokeWidth={edgeStyle('keyword', dark).width} strokeDasharray="4 3" /></svg>
+          关键词关联（虚线）
+        </span>
+        <span className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full border-2" style={{ borderColor: GRAPH_PALETTE.pinnedRing }} />
+          已固定
+        </span>
+      </div>
 
       {focusId !== null && (
         <div data-testid="graph-focus-bar" className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
