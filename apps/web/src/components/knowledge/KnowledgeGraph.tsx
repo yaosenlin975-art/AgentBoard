@@ -6,6 +6,7 @@ import {
   applyEdgeKinds,
   clampScale,
   composeGraph,
+  filterGraphForView,
   fitTransform,
   highlightAround,
   hitTestNode,
@@ -17,6 +18,7 @@ import {
   layoutGraph,
   nodeRadius,
   normalizeGraph,
+  searchMatches,
   type GraphEdgeKind,
   type GraphPayload,
   type GraphNode,
@@ -127,17 +129,34 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     [kinds],
   );
 
+  // 搜索与聚焦（KB-GRAPH-3）
+  const [search, setSearch] = useState('');
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const [focusHops, setFocusHops] = useState<1 | 2>(1);
+
   const graph = useMemo(() => {
     if (fullGraph === null) return null;
     const filtered = applyEdgeKinds(fullGraph, enabledKinds);
     return showIsolated ? filtered : { ...filtered, nodes: filtered.nodes.filter((n) => n.degree > 0) };
   }, [fullGraph, enabledKinds, showIsolated]);
 
-  const stats = graph === null ? null : graphStats(graph);
+  const matches = useMemo(() => (graph === null ? new Set<string>() : searchMatches(graph.nodes, search)), [graph, search]);
+  const activeOnlyMatches = onlyMatches && search.trim() !== '';
+  const viewFilter = useMemo(
+    () =>
+      graph === null
+        ? { graph: null, hiddenNodes: 0, hiddenEdges: 0 }
+        : filterGraphForView(graph, { focusId, hops: focusHops, matches, onlyMatches: activeOnlyMatches }),
+    [graph, focusId, focusHops, matches, activeOnlyMatches],
+  );
+  /** 实际渲染的图（聚焦/只看命中时会比 graph 小） */
+  const shown = viewFilter.graph;
+  const stats = shown === null ? null : graphStats(shown);
   const positions = useMemo(() => {
-    if (graph === null || graph.nodes.length === 0) return new Map();
-    return layoutGraph(graph.nodes, graph.edges, { width: CANVAS_W, height: CANVAS_H, iterations: 120 }).positions;
-  }, [graph]);
+    if (shown === null || shown.nodes.length === 0) return new Map();
+    return layoutGraph(shown.nodes, shown.edges, { width: CANVAS_W, height: CANVAS_H, iterations: 120 }).positions;
+  }, [shown]);
 
   // 视口状态（KB-GRAPH-2）：scale + pan 合在一个 state 里，滚轮以光标为中心缩放；标签在 scale < 0.8 时隐藏
   const [view, setView] = useState<{ scale: number; pan: { x: number; y: number } }>({ scale: 1, pan: { x: 0, y: 0 } });
@@ -152,8 +171,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const pan = view.pan;
   const showLabels = labelsVisible(scale);
   const highlight = useMemo(
-    () => (graph === null ? { nodes: new Set<string>(), edges: new Set<string>() } : highlightAround(graph, hovered)),
-    [graph, hovered],
+    () => (shown === null ? { nodes: new Set<string>(), edges: new Set<string>() } : highlightAround(shown, hovered, focusHops)),
+    [shown, hovered, focusHops],
   );
 
   /** 固定节点用固定坐标，其余用布局坐标 */
@@ -206,7 +225,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   // canvas 绘制（jsdom 无 2d context → 跳过绘制，DOM 统计与节点列表仍可用）
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (canvas === null || graph === null) return;
+    if (canvas === null || shown === null) return;
     const ctx = canvas.getContext('2d');
     if (ctx === null) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -217,7 +236,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     const dim = 0.18;
     // 边：按（kind × 是否高亮）分到 4 条路径，一次 stroke 画完（避免 900 次 stroke）
     const edgeBatches = new Map<string, { path: Path2D; color: string; width: number; alpha: number }>();
-    for (const edge of graph.edges) {
+    for (const edge of shown.edges) {
       const a = displayPositions.get(edge.source);
       const b = displayPositions.get(edge.target);
       if (a === undefined || b === undefined) continue;
@@ -244,7 +263,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     }
     // 节点：按（scope × 是否高亮）分组，同组一次 fill
     const nodeBatches = new Map<string, { path: Path2D; color: string; alpha: number }>();
-    for (const node of graph.nodes) {
+    for (const node of shown.nodes) {
       const point = displayPositions.get(node.id);
       if (point === undefined) continue;
       const radius = nodeRadius(node.degree);
@@ -266,7 +285,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     // 固定态：外圈琥珀环
     if (pinned.size > 0) {
       const ring = new Path2D();
-      for (const node of graph.nodes) {
+      for (const node of shown.nodes) {
         if (!pinned.has(node.id)) continue;
         const point = displayPositions.get(node.id);
         if (point === undefined) continue;
@@ -287,7 +306,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       ctx.textBaseline = 'top';
       for (const pass of [true, false]) {
         ctx.fillStyle = pass ? 'rgba(82,82,82,1)' : 'rgba(82,82,82,0.25)';
-        for (const node of graph.nodes) {
+        for (const node of shown.nodes) {
           const lit = !hasFocus || highlight.nodes.has(node.id);
           if (lit !== pass) continue;
           const point = displayPositions.get(node.id);
@@ -298,12 +317,12 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     }
     lastDrawMsRef.current = Math.round((performance.now() - drawStartMs) * 10) / 10;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [graph, displayPositions, pinned, scale, pan, showLabels, hovered, highlight]);
+  }, [shown, displayPositions, pinned, scale, pan, showLabels, hovered, highlight]);
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>): void => {
     const screen = localPoint(event);
     const point = toGraphPoint(screen, pan, scale);
-    const hit = graph === null ? null : hitTestNode(graph.nodes, displayPositions, point);
+    const hit = shown === null ? null : hitTestNode(shown.nodes, displayPositions, point);
     dragRef.current = {
       mode: hit === null ? 'pan' : 'node',
       id: hit,
@@ -321,7 +340,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     const drag = dragRef.current;
     if (drag === null) {
       // hover 命中测试
-      const hit = graph === null ? null : hitTestNode(graph.nodes, displayPositions, point);
+      const hit = shown === null ? null : hitTestNode(shown.nodes, displayPositions, point);
       if (hit !== hovered) setHovered(hit);
       return;
     }
@@ -350,17 +369,24 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     dragRef.current = null;
   };
 
-  const onDoubleClick = (event: MouseEvent<HTMLCanvasElement>): void => {
-    if (graph === null) return;
+  const onCanvasClick = (event: MouseEvent<HTMLCanvasElement>): void => {
+    if (shown === null) return;
     const point = toGraphPoint(localPoint(event), pan, scale);
-    const hit = hitTestNode(graph.nodes, displayPositions, point);
+    const hit = hitTestNode(shown.nodes, displayPositions, point);
+    if (hit !== null) setFocusId(hit);
+  };
+
+  const onDoubleClick = (event: MouseEvent<HTMLCanvasElement>): void => {
+    if (shown === null) return;
+    const point = toGraphPoint(localPoint(event), pan, scale);
+    const hit = hitTestNode(shown.nodes, displayPositions, point);
     if (hit !== null) unpin(hit);
   };
 
   const onContextMenu = (event: MouseEvent<HTMLCanvasElement>): void => {
-    if (graph === null) return;
+    if (shown === null) return;
     const point = toGraphPoint(localPoint(event), pan, scale);
-    const hit = hitTestNode(graph.nodes, displayPositions, point);
+    const hit = hitTestNode(shown.nodes, displayPositions, point);
     if (hit === null) return;
     event.preventDefault();
     unpin(hit);
@@ -388,6 +414,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-pan-x={Math.round(pan.x)}
       data-pan-y={Math.round(pan.y)}
       data-draw-ms={lastDrawMsRef.current}
+      data-visible-nodes={shown?.nodes.length ?? 0}
+      data-visible-edges={shown?.edges.length ?? 0}
+      data-matches={matches.size}
+      data-focus-id={focusId ?? ''}
+      data-focus-hops={focusHops}
       className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
@@ -427,6 +458,30 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           <span data-testid="graph-scale" className="tabular-nums">{scale.toFixed(1)}×</span>
           <button type="button" data-testid="graph-fit" aria-label="适应视图" title="适应视图（全部节点回到视口内）" onClick={fitView} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">适应视图</button>
         </span>
+        <label className="flex items-center gap-1">
+          <span className="sr-only">搜索节点</span>
+          <input
+            type="search"
+            data-testid="graph-search"
+            aria-label="搜索星图节点"
+            placeholder="搜索节点"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="w-28 rounded border border-neutral-300 px-1.5 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-800 sm:w-36"
+          />
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            data-testid="graph-only-matches"
+            checked={onlyMatches}
+            disabled={search.trim() === ''}
+            title={search.trim() === '' ? '先输入搜索词' : '只显示命中节点'}
+            onChange={(event) => setOnlyMatches(event.target.checked)}
+            className="size-3.5 accent-blue-600"
+          />
+          只看命中
+        </label>
         {stats !== null && (
           <span data-testid="knowledge-graph-stats" className="ml-auto tabular-nums">
             {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
@@ -446,18 +501,43 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         <p role="alert" className="px-3 py-6 text-center text-sm text-red-600 dark:text-red-400">{error.message}</p>
       )}
 
-      {!loading && error === null && graph !== null && graph.nodes.length === 0 && (
+      {focusId !== null && (
+        <div data-testid="graph-focus-bar" className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          <span>
+            聚焦中：{shown?.nodes.find((node) => node.id === focusId)?.title ?? focusId} · 可见 {shown?.nodes.length ?? 0} 个节点（原 {graph?.nodes.length ?? 0}）
+          </span>
+          <span data-testid="graph-focus-hops" role="group" aria-label="聚焦跳数" className="flex items-center gap-1">
+            {[1, 2].map((hops) => (
+              <button
+                key={hops}
+                type="button"
+                data-testid={`graph-focus-hops-${hops}`}
+                aria-pressed={focusHops === hops}
+                onClick={() => setFocusHops(hops as 1 | 2)}
+                className={`rounded px-1.5 py-0.5 ${focusHops === hops ? 'bg-amber-200 font-medium dark:bg-amber-900' : 'hover:bg-amber-100 dark:hover:bg-amber-900/60'}`}
+              >
+                {hops} 跳
+              </button>
+            ))}
+          </span>
+          <button type="button" data-testid="graph-focus-exit" onClick={() => setFocusId(null)} className="rounded px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/60">
+            回全图
+          </button>
+        </div>
+      )}
+
+      {!loading && error === null && shown !== null && shown.nodes.length === 0 && (
         <div data-testid="graph-empty-no-pages" className="px-4 py-10 text-center">
           <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">暂无可视化知识</p>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">当前范围内还没有知识页，先在左侧新建知识页</p>
         </div>
       )}
 
-      {!loading && error === null && graph !== null && graph.nodes.length > 0 && graph.edges.length === 0 && (
+      {!loading && error === null && shown !== null && shown.nodes.length > 0 && shown.edges.length === 0 && (
         <div data-testid="graph-empty-no-edges" className="px-4 py-10 text-center">
           <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">知识页之间还没有关联</p>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-            共 {graph.nodes.length} 个知识页，但彼此没有共享来源，也没有达到关键词阈值的重合
+            共 {shown.nodes.length} 个知识页，但彼此没有共享来源，也没有达到关键词阈值的重合
           </p>
           <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
             建立关联：① 给两页填同一个来源文件或 URL；② 打开上方「关键词关联」（共享实体词 ≥2 或 trigram 重叠 ≥3 才成边）；③ 正文双链后续支持
@@ -465,7 +545,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         </div>
       )}
 
-      {!loading && error === null && graph !== null && graph.nodes.length > 0 && graph.edges.length > 0 && (
+      {!loading && error === null && shown !== null && shown.nodes.length > 0 && shown.edges.length > 0 && (
         <canvas
           data-testid="knowledge-graph-canvas"
           ref={canvasRef}
@@ -478,27 +558,31 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
           onPointerLeave={() => { endDrag(); setHovered(null); }}
+          onClick={onCanvasClick}
           onDoubleClick={onDoubleClick}
           onContextMenu={onContextMenu}
         />
       )}
 
-      {!loading && error === null && graph !== null && graph.truncated_reason !== null && (
+      {!loading && error === null && shown !== null && shown.truncated_reason !== null && (
         <p data-testid="graph-truncated" className="border-t border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-          {graph.truncated_reason === 'pages'
-            ? `共 ${graph.page_total ?? graph.node_total} 页，已加载 ${graph.pages_loaded ?? graph.node_total} 页，图仅覆盖已加载部分；缩小范围可获得完整关系`
-            : graph.truncated_reason === 'nodes'
-              ? `已按关联度显示前 ${graph.nodes.length} 个节点，共 ${graph.node_total} 个`
-              : `已显示前 ${graph.edges.length} 条关联，共 ${graph.edge_total} 条`}
+          {shown.truncated_reason === 'pages'
+            ? `共 ${shown.page_total ?? shown.node_total} 页，已加载 ${shown.pages_loaded ?? shown.node_total} 页，图仅覆盖已加载部分；缩小范围可获得完整关系`
+            : shown.truncated_reason === 'nodes'
+              ? `已按关联度显示前 ${shown.nodes.length} 个节点，共 ${shown.node_total} 个`
+              : `已显示前 ${shown.edges.length} 条关联，共 ${shown.edge_total} 条`}
         </p>
       )}
 
-      {!loading && error === null && graph !== null && graph.nodes.length > 0 && (
+      {!loading && error === null && shown !== null && shown.nodes.length > 0 && (
         <ul data-testid="knowledge-graph-nodes" className="sr-only">
-          {graph.nodes.map((node) => (
+          {shown.nodes.map((node) => (
             <li key={node.id}>
               <button type="button" data-testid={`graph-node-${node.id}`} data-degree={node.degree} data-radius={nodeRadius(node.degree)} onClick={() => pick(node)}>
                 {node.title}（度 {node.degree}）
+              </button>
+              <button type="button" data-testid={`graph-focus-${node.id}`} onClick={() => setFocusId(node.id)}>
+                聚焦 {node.title}
               </button>
             </li>
           ))}

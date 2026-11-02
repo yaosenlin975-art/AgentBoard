@@ -593,22 +593,78 @@ export interface HighlightSet {
   edges: Set<string>;
 }
 
+/** 聚焦跳数上限：>2 一律夹到 2（hub 上 1→2 跳可能就是几十倍增长，UI 只暴露 1/2 两档） */
+export const MAX_FOCUS_HOPS = 2;
+
 /**
- * 以某节点为焦点的高亮集合：焦点自身 + 1 跳邻居节点 + 触及焦点或邻居的边。
+ * N 跳邻居（含自身）：BFS，depth 先夹到 [1, MAX_FOCUS_HOPS]。
+ * 返回节点 id 集合；focusId 不在图中时只返回自身。
+ */
+export function neighborsWithin(graph: GraphPayload, focusId: string, hops = 1): Set<string> {
+  const depth = Math.min(MAX_FOCUS_HOPS, Math.max(1, Math.floor(hops)));
+  const adjacency = buildAdjacency(graph.edges);
+  const found = new Set<string>([focusId]);
+  let frontier = [focusId];
+  for (let step = 0; step < depth; step += 1) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      for (const neighbor of adjacency.get(id) ?? []) {
+        if (found.has(neighbor)) continue;
+        found.add(neighbor);
+        next.push(neighbor);
+      }
+    }
+    if (next.length === 0) break;
+    frontier = next;
+  }
+  return found;
+}
+
+/**
+ * 焦点高亮集合：焦点自身 + N 跳邻居节点 + 两端都在集合内的边。
  * 未给焦点（null）时返回空集合，调用方据此走「不高亮」分支。
  */
-export function highlightAround(graph: GraphPayload, focusId: string | null): HighlightSet {
+export function highlightAround(graph: GraphPayload, focusId: string | null, hops = 1): HighlightSet {
   if (focusId === null) return { nodes: new Set<string>(), edges: new Set<string>() };
-  const nodes = new Set<string>([focusId]);
+  const nodes = neighborsWithin(graph, focusId, hops);
   const edges = new Set<string>();
   for (const edge of graph.edges) {
-    if (edge.source === focusId || edge.target === focusId) {
-      edges.add(edge.key);
-      nodes.add(edge.source);
-      nodes.add(edge.target);
-    }
+    if (nodes.has(edge.source) && nodes.has(edge.target)) edges.add(edge.key);
   }
   return { nodes, edges };
+}
+
+/** 搜索命中：标题大小写不敏感包含；空串/纯空白 → 空集合（不打高亮、不筛节点） */
+export function searchMatches(nodes: readonly GraphNode[], query: string): Set<string> {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return new Set<string>();
+  const hits = new Set<string>();
+  for (const node of nodes) {
+    if (node.title.toLowerCase().includes(needle)) hits.add(node.id);
+  }
+  return hits;
+}
+
+/** 视图过滤：聚焦集合与搜索命中集合取交集（未启用时返回 null 表示不过滤） */
+export function filterGraphForView(
+  graph: GraphPayload,
+  options: { focusId: string | null; hops: number; matches: ReadonlySet<string>; onlyMatches: boolean },
+): { graph: GraphPayload; hiddenNodes: number; hiddenEdges: number } {
+  const { focusId, hops, matches, onlyMatches } = options;
+  let allowed: Set<string> | null = null;
+  if (focusId !== null) allowed = neighborsWithin(graph, focusId, hops);
+  if (onlyMatches && matches.size > 0) {
+    allowed = allowed === null ? new Set(matches) : new Set([...allowed].filter((id) => matches.has(id)));
+  }
+  if (allowed === null) return { graph, hiddenNodes: 0, hiddenEdges: 0 };
+  const nodes = graph.nodes.filter((node) => allowed.has(node.id));
+  const keep = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges.filter((edge) => keep.has(edge.source) && keep.has(edge.target));
+  return {
+    graph: { ...graph, nodes, edges },
+    hiddenNodes: graph.nodes.length - nodes.length,
+    hiddenEdges: graph.edges.length - edges.length,
+  };
 }
 
 /** 以光标点 (cx, cy) 为中心缩放：返回新的 pan 与 scale（scale 先夹紧到 0.3–3） */
@@ -686,4 +742,5 @@ export function hitTestNode(
   }
   return best;
 }
+
 
