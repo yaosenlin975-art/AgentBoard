@@ -542,7 +542,8 @@ export const LABEL_SCALE_THRESHOLD = 0.8;
  */
 export function nodeRadius(degree: number): number {
   const safe = Number.isFinite(degree) && degree > 0 ? degree : 0;
-  return NODE_RADIUS_MIN; // mutation: 不随 degree 增长
+  const grown = NODE_RADIUS_MIN + Math.sqrt(safe) * 2.6;
+  return Math.min(NODE_RADIUS_MAX, Math.max(NODE_RADIUS_MIN, Math.round(grown * 10) / 10));
 }
 
 /** 当前缩放是否显示标签 */
@@ -564,4 +565,3 @@ export function labelText(title: string, max = 12): string {
   const text = title.trim();
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
-
