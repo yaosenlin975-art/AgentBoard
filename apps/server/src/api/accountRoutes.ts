@@ -20,6 +20,7 @@ import { accountProviderCapability, accountProviderCapabilities } from '../servi
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
 import { pollCheckinAuthorization, profileLocalDay, startCheckinAuthorization } from '../services/accounts/checkinAuthorization.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
+import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -30,11 +31,17 @@ export interface AccountRouterDeps {
   /** ACC-07：仅注入已验证签到 provider；未注入时所有签到端点 409 PROVIDER_UNVERIFIED */
   checkinProvider?: CheckinProviderSpec;
   vault?: CheckinVault;
+  /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
+  credentialRunner?: ExportRunner;
 }
 
 // ACC-10：app_id 校验扩到四值，与 managed_account 的 CHECK 及 shared ManagedAppId 保持一致
 const managedAppParam = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae']);
 const captureBodySchema = z.object({ display_name: z.string().trim().min(1).max(100).optional() }).strict();
+const importCredentialsSchema = z.object({
+  platforms: z.array(z.enum(['workbuddy', 'trae', 'minimax'])).min(1).max(3).optional(),
+  actor: z.string().trim().min(1).max(100).optional(),
+}).strict();
 const authorizationStartSchema = z.object({ account_id: z.string().uuid() }).strict();
 const batchCreateSchema = z.object({
   app_id: managedAppParam,
@@ -163,6 +170,14 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     res.json(app.success ? rows.filter(row => row.app_id === app.data) : rows);
   });
 
+  // ---- ACC-11：显式触发的本机凭据导入（唯一入口；无启动/定时扫描）----
+  router.post('/accounts/import-credentials', async (req, res) => {
+    const body = parseBody(importCredentialsSchema, req.body);
+    if (!deps.vault) throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保险库不可用');
+    const importer = createCredentialImporter({ db: deps.db, vault: deps.vault, runExport: deps.credentialRunner });
+    const result = await importer.importCredentials({ platforms: body.platforms, actor: body.actor ?? 'user' });
+    res.json(result);
+  });
   // ---- 签到授权 ----
   router.post('/checkin-authorizations/start', async (req, res) => {
     const input = idempotencyInput(req, true)!;

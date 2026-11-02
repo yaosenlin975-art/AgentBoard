@@ -50,6 +50,7 @@ import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, req
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
+import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
 import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/idempotency.js';
 import { dispatchIssue } from '../services/dispatch.js';
@@ -86,6 +87,8 @@ export interface RouterDeps {
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
+  /** ACC-11 凭据导出 runner（仅测试注入） */
+  credentialRunner?: ExportRunner;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -265,7 +268,7 @@ export function createRouter(deps: RouterDeps): Router {
   });
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
-  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, vault: deps.accounts?.vault ?? deps.secretVault }));
+  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner }));
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
     if (raw !== undefined) {
