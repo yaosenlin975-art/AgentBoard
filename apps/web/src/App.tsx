@@ -9,6 +9,7 @@ import { TopBar } from './components/topbar/TopBar';
 import { Board } from './components/board/Board';
 import { RightPanel } from './components/right/RightPanel';
 import type { BoardLayout } from './components/ui/ViewSwitcher';
+import { useRestartStore } from './state/restartStore';
 
 /**
  * 布局（PANEL-FLOAT）：TopBar + 主内容（看板 / 知识）。
@@ -18,6 +19,8 @@ import type { BoardLayout } from './components/ui/ViewSwitcher';
 export default function App() {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false);
   const [layout, setLayout] = useState<BoardLayout>('board');
+  // 重启期间用透明遮罩挡住整个应用，阻断所有写操作入口（SYSTEM-RESTART）
+  const restarting = useRestartStore((s) => s.restarting);
   useWsEvents();
   const workspaceId = useAppStore((s) => s.workspaceId);
   const { data: workspaces } = useQuery({
@@ -54,6 +57,13 @@ export default function App() {
           )}
         </main>
         <RightPanel />
+        {restarting && (
+          <div
+            data-testid="restart-blocker"
+            aria-hidden="true"
+            className="absolute inset-0 z-40 cursor-wait bg-white/40 dark:bg-neutral-950/40"
+          />
+        )}
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { AccountsPanel } from '../settings/AccountsPanel';
+import { RestartServerPanel } from '../settings/RestartServerPanel';
 
 interface Settings {
   port: number;
@@ -167,6 +168,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         </div>
       </form>
       <AccountsPanel />
+      <RestartServerPanel />
     </Modal>
   );
 }
