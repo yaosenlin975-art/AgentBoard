@@ -144,6 +144,9 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [hovered, setHovered] = useState<string | null>(null);
   /** 拖拽固定：节点 id → 图坐标（固定后不随布局变化，双击/右键释放） */
   const [pinned, setPinned] = useState<Map<string, { x: number; y: number }>>(() => new Map());
+  const lastDrawMsRef = useRef(0);
+  const hoverFrameRef = useRef<number | null>(null);
+  const pendingHoverRef = useRef<string | null>(null);
   const dragRef = useRef<{ mode: 'pan' | 'node'; id: string | null; startX: number; startY: number; startPan: { x: number; y: number }; startNode: { x: number; y: number } } | null>(null);
   const scale = view.scale;
   const pan = view.pan;
@@ -198,7 +201,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [graph]);
 
   // canvas 绘制（jsdom 无 2d context → 跳过绘制，DOM 统计与节点列表仍可用）
   useEffect(() => {
@@ -209,54 +212,91 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
     ctx.setTransform(scale, 0, 0, scale, pan.x, pan.y);
+    const drawStartMs = performance.now();
     const hasFocus = hovered !== null;
     const dim = 0.18;
+    // 边：按（kind × 是否高亮）分到 4 条路径，一次 stroke 画完（避免 900 次 stroke）
+    const edgeBatches = new Map<string, { path: Path2D; color: string; width: number; alpha: number }>();
     for (const edge of graph.edges) {
       const a = displayPositions.get(edge.source);
       const b = displayPositions.get(edge.target);
       if (a === undefined || b === undefined) continue;
       const lit = !hasFocus || highlight.edges.has(edge.key);
-      ctx.globalAlpha = lit ? 1 : dim;
-      ctx.beginPath();
-      ctx.strokeStyle = edge.kind === 'source' ? 'rgba(59,130,246,0.55)' : 'rgba(148,163,184,0.45)';
-      ctx.lineWidth = edge.kind === 'source' ? 1.6 : 1;
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
+      const key = `${edge.kind}:${lit ? 'lit' : 'dim'}`;
+      let batch = edgeBatches.get(key);
+      if (batch === undefined) {
+        batch = {
+          path: new Path2D(),
+          color: edge.kind === 'source' ? 'rgba(59,130,246,0.55)' : 'rgba(148,163,184,0.45)',
+          width: edge.kind === 'source' ? 1.6 : 1,
+          alpha: lit ? 1 : dim,
+        };
+        edgeBatches.set(key, batch);
+      }
+      batch.path.moveTo(a.x, a.y);
+      batch.path.lineTo(b.x, b.y);
     }
+    for (const batch of edgeBatches.values()) {
+      ctx.globalAlpha = batch.alpha;
+      ctx.strokeStyle = batch.color;
+      ctx.lineWidth = batch.width;
+      ctx.stroke(batch.path);
+    }
+    // 节点：按（scope × 是否高亮）分组，同组一次 fill
+    const nodeBatches = new Map<string, { path: Path2D; color: string; alpha: number }>();
     for (const node of graph.nodes) {
       const point = displayPositions.get(node.id);
       if (point === undefined) continue;
       const radius = nodeRadius(node.degree);
       const lit = !hasFocus || highlight.nodes.has(node.id);
-      ctx.globalAlpha = lit ? 1 : dim;
-      ctx.beginPath();
-      ctx.fillStyle = node.scope === 'common' ? '#94a3b8' : '#3b82f6';
-      ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      // 固定态视觉：外圈琥珀色环
-      if (pinned.has(node.id)) {
-        ctx.beginPath();
-        ctx.strokeStyle = '#f59e0b';
-        ctx.lineWidth = 2;
-        ctx.arc(point.x, point.y, radius + 3, 0, Math.PI * 2);
-        ctx.stroke();
+      const key = `${node.scope}:${lit ? 'lit' : 'dim'}`;
+      let batch = nodeBatches.get(key);
+      if (batch === undefined) {
+        batch = { path: new Path2D(), color: node.scope === 'common' ? '#94a3b8' : '#3b82f6', alpha: lit ? 1 : dim };
+        nodeBatches.set(key, batch);
       }
+      batch.path.moveTo(point.x + radius, point.y);
+      batch.path.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    }
+    for (const batch of nodeBatches.values()) {
+      ctx.globalAlpha = batch.alpha;
+      ctx.fillStyle = batch.color;
+      ctx.fill(batch.path);
+    }
+    // 固定态：外圈琥珀环
+    if (pinned.size > 0) {
+      const ring = new Path2D();
+      for (const node of graph.nodes) {
+        if (!pinned.has(node.id)) continue;
+        const point = displayPositions.get(node.id);
+        if (point === undefined) continue;
+        const radius = nodeRadius(node.degree) + 3;
+        ring.moveTo(point.x + radius, point.y);
+        ring.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      }
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.stroke(ring);
     }
     ctx.globalAlpha = 1;
-    // 标签在节点下方；缩放低于阈值时整体不画（KB-GRAPH-1）
+    // 标签：按是否高亮分两批
     if (showLabels) {
       ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      for (const node of graph.nodes) {
-        const point = displayPositions.get(node.id);
-        if (point === undefined) continue;
-        const lit = !hasFocus || highlight.nodes.has(node.id);
-        ctx.fillStyle = lit ? 'rgba(82,82,82,1)' : 'rgba(82,82,82,0.25)';
-        ctx.fillText(labelText(node.title), point.x, point.y + nodeRadius(node.degree) + 4);
+      for (const pass of [true, false]) {
+        ctx.fillStyle = pass ? 'rgba(82,82,82,1)' : 'rgba(82,82,82,0.25)';
+        for (const node of graph.nodes) {
+          const lit = !hasFocus || highlight.nodes.has(node.id);
+          if (lit !== pass) continue;
+          const point = displayPositions.get(node.id);
+          if (point === undefined) continue;
+          ctx.fillText(labelText(node.title), point.x, point.y + nodeRadius(node.degree) + 4);
+        }
       }
     }
+    lastDrawMsRef.current = Math.round((performance.now() - drawStartMs) * 10) / 10;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }, [graph, displayPositions, pinned, scale, pan, showLabels, hovered, highlight]);
 
@@ -302,6 +342,10 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     }
   };
 
+  useEffect(() => () => {
+    if (hoverFrameRef.current !== null) cancelAnimationFrame(hoverFrameRef.current);
+  }, []);
+
   const endDrag = (): void => {
     dragRef.current = null;
   };
@@ -341,6 +385,9 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-labels-visible={showLabels ? 'true' : 'false'}
       data-hovered={hovered ?? ''}
       data-pinned-count={pinned.size}
+      data-pan-x={Math.round(pan.x)}
+      data-pan-y={Math.round(pan.y)}
+      data-draw-ms={lastDrawMsRef.current}
       className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
