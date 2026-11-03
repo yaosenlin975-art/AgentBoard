@@ -109,7 +109,10 @@ export async function compressImage(file: File, deps: CompressDeps = {}): Promis
   ctx.drawImage(bitmap as unknown as CanvasImageSource, 0, 0, target.width, target.height);
   bitmap.close?.();
 
-  // 透明检测：PNG 取样左上/中央若干点
+  // 透明检测（已知限制，KB-IMG-2-VERIFY 实测记录）：
+  // 只取样左上角 ≤64×64 的像素判 alpha —— 「大面积透明但左上角不透明」的 PNG 会被判成不透明，
+  // 从而转成 webp 丢掉 alpha。全图扫描会带来 O(像素) 的 getImageData 开销（3000×3000 ≈ 36MB 内存），
+  // 当前按「图标类 PNG 通常左上角即透明」这一折衷处理；真需要严格判定时可加「四角 + 中心 5 点取样」或降采样扫描。
   let hasAlpha = false;
   if (file.type === 'image/png') {
     try {

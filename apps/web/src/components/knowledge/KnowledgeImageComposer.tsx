@@ -8,7 +8,6 @@
  * 压缩中显示「压缩中…原始 7.2MB → 3.1MB」；压缩后仍 > 5MiB 直接中止并给中文原因。
  */
 import { useRef, useState } from 'react';
-import { api } from '../../api/client';
 import { IMAGE_MAX_BYTES, compressImage, formatBytes } from '../../lib/imageCompress';
 
 interface UploadedImage {
@@ -84,9 +83,20 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
         return;
       }
       const form = new FormData();
+      // KB-IMG-2-VERIFY：服务端从 multipart **表单字段**读 scope/workspace_id（不是查询串），
+      // 只放查询串会走 requireVisiblePage(undefined) → 404 PAGE_NOT_FOUND。
+      form.append('scope', scope);
+      if (scope === 'workspace' && workspaceId !== null) form.append('workspace_id', workspaceId);
+      form.append('original_bytes', String(result.beforeBytes));
       form.append('file', result.blob, file.name || `image-${Date.now()}.${result.mime === 'image/png' ? 'png' : result.mime === 'image/webp' ? 'webp' : 'jpg'}`);
-      const params = new URLSearchParams({ scope, ...(scope === 'workspace' && workspaceId !== null ? { workspace_id: workspaceId } : {}) });
-      const uploaded = await api.post<UploadedImage>(`/api/knowledge/pages/${encodeURIComponent(pageId)}/images?${params}`, form);
+      // KB-IMG-2-VERIFY：api.post 会强制 `Content-Type: application/json` + JSON.stringify，
+      // multipart 必须直接用 fetch（让浏览器自己带 boundary），否则服务端报「请求体必须为 multipart/form-data」。
+      const response = await fetch(`/api/knowledge/pages/${encodeURIComponent(pageId)}/images`, { method: 'POST', body: form });
+      const payload = (await response.json().catch(() => null)) as (UploadedImage & { error?: { code?: string; message?: string } }) | null;
+      if (!response.ok || payload === null || payload.error !== undefined) {
+        throw new Error(payload?.error?.code ?? payload?.error?.message ?? `HTTP ${response.status}`);
+      }
+      const uploaded = payload;
       const alt = (file.name || '图片').replace(/\.[^.]+$/u, '').slice(0, 60);
       insertAtCursor(`\n![${alt}](${uploaded.url})\n`);
       const elapsed = Math.round(performance.now() - startedAt);
