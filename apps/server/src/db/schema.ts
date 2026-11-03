@@ -16,6 +16,7 @@ import { migrateIssueStatusModel } from './migrations/issueStatusModel.js';
 import { createIssueMonotonicTimeTrigger } from './migrations/taskHierarchy.js';
 import { migrateWorkspaceStatus } from './migrations/workspaceStatus.js';
 import { migrateDraftAudit } from './migrations/draftAudit.js';
+import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -66,6 +67,7 @@ export function initSchema(db: Db): void {
   migrateWorkspaceStatus(db);
   migrateIssueDependency(db);
   migrateDraftAudit(db);
+  migrateKnowledgeAttachment(db);
   migrateKnowledge(db);
   migrateKnowledgeLinks(db);
   migrateIdempotency(db);

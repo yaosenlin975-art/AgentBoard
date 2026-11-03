@@ -130,6 +130,13 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   }
 
   const app = express();
+  // KB-IMG-1：启动后后台回收没有行引用的孤儿图片文件（失败不影响启动）
+  void (async () => {
+    try {
+      const { createKnowledgeImageStore } = await import('./services/knowledgeImages.js');
+      await createKnowledgeImageStore({ db }).sweepOrphans();
+    } catch { /* 回收失败不影响服务 */ }
+  })();
   app.use(express.json());
   // 所有 /api 响应带版本头（含后续抛错路径——setHeader 在响应发出前始终生效），供 CLI 零额外请求比对
   app.use('/api', (_req, res, next) => {

@@ -189,6 +189,19 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留 | 404 会话不存在 | routes.ts:491 |
 | `PATCH /api/sessions/:id` | body：`model: 非空 string\|null`（键必填；null 清空） | `Session`；仅改 model，下一轮起轮生效；WS session.changed | 400 缺 model 键或为空串；404 会话不存在 | routes.ts:496 |
 
+### 知识页图片（KB-IMG-1，`services/knowledgeImages.ts`）
+
+存储：`<db 目录>/attachments/knowledge/<pageId>/<attachmentId>.<ext>`（`storage_key` 只由服务端生成，不接受客户端文件名 → 防路径穿越）；表 `knowledge_attachment`。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/knowledge/pages/:id/images` | `multipart/form-data`：任意文件字段（须带 filename）+ 可选文本字段 `scope` / `workspace_id` / `original_bytes` | 201 `{ id, url, bytes, width, height, mime }`；`url` = `/api/knowledge/images/<id>` | 400 body 非 multipart / 缺 boundary / 无文件；**413 `IMAGE_TOO_LARGE`** 单张 >5 MiB；**415 `IMAGE_TYPE_UNSUPPORTED`** 非 png/jpeg/webp/gif（按文件签名判定）；**409 `IMAGE_LIMIT_EXCEEDED`** 每页 >20 张或合计 >50 MiB；404 `PAGE_NOT_FOUND`；403 `KNOWLEDGE_SCOPE_FORBIDDEN` | knowledgeRoutes.ts |
+| `GET /api/knowledge/images/:attachmentId` | query：`scope`、`workspace_id`（workspace 页必填） | 图片原始字节，`Cache-Control: private, max-age=31536000, immutable` | 404 `IMAGE_NOT_FOUND`；403 跨工作区 | knowledgeRoutes.ts |
+| `DELETE /api/knowledge/images/:attachmentId` | query 同上 | 204；**不改写 `body_md`**（正文引用留给作者处理） | 404 `IMAGE_NOT_FOUND`；403 跨工作区 | knowledgeRoutes.ts |
+
+可见性：`scope=common` 的知识页图片对**任意**工作区可读；`scope=workspace` 的图片只对同工作区可读，跨区 → 403。
+回收：知识页执行 `action=delete`（软删）时同事务删掉该页 `knowledge_attachment` 行并移除图片目录；工作区级硬删由 FK `ON DELETE CASCADE` 兜底；服务启动后还会做一次孤儿文件扫描（无行引用的文件被删除）。
+
 ## 11. knowledge（`/api/knowledge`，routes.ts:188 挂载）
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

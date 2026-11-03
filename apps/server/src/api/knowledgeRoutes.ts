@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { z } from 'zod';
 import type { KnowledgeScope } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
@@ -8,6 +8,8 @@ import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph 
 import { countBacklinks, countOutgoingLinks, listBacklinks, listResolvedLinks, listUnresolvedLinks, reparseAllPages } from '../services/knowledgeLinks.js';
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
+import { createKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
+import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeScopeFields } from './schemas.js';
 
@@ -23,11 +25,29 @@ function scopeOf(raw: unknown): KnowledgeScope {
   return value;
 }
 export interface KnowledgeRouterOptions {
+  /** KB-IMG-1：知识页图片存储（仅测试注入；生产按 db 路径派生） */
+  imageStore?: KnowledgeImageStore;
   /** 单次图聚合可加载的最大页数；默认 GRAPH_MAX_PAGES（测试可调小以验证截断标志） */
   maxGraphPages?: number;
 }
 
 export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = {}): Router {
+  /** KB-IMG-1：图片存储（目录 = <db 目录>/attachments/knowledge） */
+  const images = options.imageStore ?? createKnowledgeImageStore({ db });
+
+  /** 图片可见性：common 页对所有工作区可读；workspace 页只对同工作区可读，跨区 → 403 */
+  function requireVisiblePage(pageId: string, rawScope: unknown, rawWorkspaceId: unknown) {
+    const page = getKnowledgePage(db, pageId, { scope: 'common' });
+    const workspaceId = typeof rawWorkspaceId === 'string' && rawWorkspaceId !== '' ? rawWorkspaceId : null;
+    if (page) return page; // common 页
+    if (workspaceId === null) throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
+    const scoped = getKnowledgePage(db, pageId, { scope: 'workspace', workspace_id: workspaceId });
+    if (scoped) return scoped;
+    const exists = db.prepare('SELECT workspace_id FROM knowledge_page WHERE id=?').get(pageId) as { workspace_id: string } | undefined;
+    if (exists) throw new ApiError(403, 'KNOWLEDGE_SCOPE_FORBIDDEN', '该知识页属于其它工作区，无权访问其图片');
+    throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
+  }
+
   const maxGraphPages = options.maxGraphPages ?? GRAPH_MAX_PAGES;
   const router = Router();
   router.get('/search', (req, res) => {
@@ -131,7 +151,52 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   });
   router.post('/pages/:id/actions', (req, res) => {
     const body = parse(knowledgeActionSchema, req.body);
-    res.json(httpMutation(db, req, () => setKnowledgePageStatus(db, req.params.id!, scopeOf(body), body.expected_revision, body.action, body.actor)).result);
+    const result = httpMutation(db, req, () => setKnowledgePageStatus(db, req.params.id!, scopeOf(body), body.expected_revision, body.action, body.actor)).result;
+    // KB-IMG-1：页面「删除」是软删（status='deleted'），CASCADE 不会触发，因此这里显式清掉该页图片行 + 文件。
+    // 硬删（如工作区删除时的级联）仍由 knowledge_attachment 的 ON DELETE CASCADE 兜底。
+    if (body.action === 'delete') {
+      db.prepare('DELETE FROM knowledge_attachment WHERE page_id=?').run(req.params.id!);
+      void images.removePageFiles(req.params.id!);
+    }
+    res.json(result);
   });
+  // ---- KB-IMG-1：知识页图片（设计 §3/§4）----
+  // 原始体上限留足 multipart 头部开销：真正的 5 MiB 限额由 images.save() 判，保证错误码是 IMAGE_TOO_LARGE
+  router.post('/pages/:id/images', express.raw({ type: () => true, limit: KNOWLEDGE_IMAGE_MAX_BYTES + 7 * 1024 * 1024 }), async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) throw new ValidationError('图片请求体必须为 multipart/form-data');
+    const parts = parseMultipart(req.body, req.get('Content-Type'));
+    const file = parts.files[0];
+    if (!file) throw new ValidationError('multipart 里没有图片文件（字段名任意，需带 filename）');
+    const page = requireVisiblePage(req.params.id!, parts.fields.scope, parts.fields.workspace_id);
+    const originalBytes = Number(parts.fields.original_bytes ?? '');
+    const saved = await images.save({
+      page_id: page.id,
+      bytes: file.data,
+      declared_mime: file.contentType,
+      original_bytes: Number.isSafeInteger(originalBytes) && originalBytes > 0 ? originalBytes : null,
+      created_by: 'user',
+    });
+    res.status(201).json(saved);
+  });
+
+  router.get('/images/:attachmentId', (req, res) => {
+    const found = images.locate(req.params.attachmentId!);
+    if (!found) throw new ApiError(404, 'IMAGE_NOT_FOUND', '图片不存在');
+    requireVisiblePage(found.row.page_id, req.query.scope, req.query.workspace_id);
+    res.type(found.row.mime);
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(found.path, (error) => { if (error && !res.headersSent) throw new ApiError(404, 'IMAGE_NOT_FOUND', '图片文件不存在'); });
+  });
+
+  router.delete('/images/:attachmentId', async (req, res) => {
+    const found = images.locate(req.params.attachmentId!);
+    if (!found) throw new ApiError(404, 'IMAGE_NOT_FOUND', '图片不存在');
+    requireVisiblePage(found.row.page_id, req.query.scope, req.query.workspace_id);
+    await images.remove(req.params.attachmentId!);
+    // 不自动改写 body_md：正文里的引用留给作者处理，避免误删内容
+    res.status(204).end();
+  });
+
   return router;
 }
