@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { configDir, loadConfig, type AgentBoardRuntimeConfig } from './config.js';
+import { attachmentsDirFor, loadConfig, type AgentBoardRuntimeConfig } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
@@ -172,11 +172,22 @@ export async function main(): Promise<StartedServer> {
   const here = dirname(fileURLToPath(import.meta.url));
   const webDist = join(here, '..', '..', 'web', 'dist');
 
+  // DOCKER-2：附件目录与 DB 同目录派生（容器里只挂 /data 即可）；目录不存在则创建，不可写直接报错退出
+  const attachmentStorageDir = attachmentsDirFor(config.dbPath);
+  try {
+    mkdirSync(attachmentStorageDir, { recursive: true });
+  } catch (error) {
+    throw new Error(
+      `附件目录不可用：${attachmentStorageDir}（${error instanceof Error ? error.message : String(error)}）`,
+      { cause: error },
+    );
+  }
+
   const { app, hub, attachments } = await createApp({
     db,
     maxConcurrentTurns: config.maxConcurrentTurns,
     webDist: existsSync(webDist) ? webDist : null,
-    attachmentStorageDir: join(configDir(), 'attachments'),
+    attachmentStorageDir,
     attachmentQuotaBytes: config.attachmentQuotaBytes,
     attachmentStagedTtlMs: config.attachmentStagedTtlMs,
     attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
@@ -211,7 +222,7 @@ export async function main(): Promise<StartedServer> {
     }
   }
   attachments.startCleanupWorker();
-  console.log(`AgentBoard listening on http://${config.host}:${config.port} (db: ${config.dbPath})`);
+  console.log(`AgentBoard listening on http://${config.host}:${config.port} (db: ${config.dbPath}, attachments: ${attachmentStorageDir})`);
   return { server, hub, config, db };
 }
 

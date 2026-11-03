@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
   DEFAULT_ATTACHMENT_QUOTA_BYTES,
@@ -61,6 +61,15 @@ export function configFilePath(): string {
 
 export function defaultDbPath(): string {
   return join(configDir(), 'agentboard.db');
+}
+
+/**
+ * 附件目录派生（DOCKER-2）：恒为 DB 文件所在目录下的 `attachments`。
+ * - 非容器环境 DB 在 %APPDATA%\AgentBoard\agentboard.db → 仍是 %APPDATA%\AgentBoard\attachments（老用户路径不变）；
+ * - 容器里 AGENTBOARD_DB=/data/agentboard.db → /data/attachments，只需挂一个卷。
+ */
+export function attachmentsDirFor(dbPath: string): string {
+  return join(dirname(dbPath), 'attachments');
 }
 
 export type AgentBoardSettings = AgentBoardConfig;
