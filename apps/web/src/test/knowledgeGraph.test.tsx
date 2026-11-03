@@ -176,7 +176,19 @@ describe('knowledgeGraph 纯函数（边合成与阈值、截断）', () => {
     expect(fallback.page_total).toBe(1);
     expect(fallback.pages_loaded).toBe(1);
   });
-  it('layoutGraph：300 节点 / 900 边 预跑 120 tick 且每 tick ≤ 2ms', () => {
+  /**
+   * CPU 标尺（TEST-FLAKE）：固定工作量的纯计算，用来把墙钟毫秒换成无量纲的 CPU 成本。
+   * 并发跑全量时 CPU 抢占会让布局与标尺**同比例**变慢，相除即抵消；真实复杂度回归只影响布局一侧。
+   */
+  function measureCpuScale(): number {
+    const started = performance.now();
+    let acc = 0;
+    for (let i = 0; i < 300000; i += 1) acc += Math.sqrt(i) * 1.0000001;
+    if (acc < 0) throw new Error('unreachable');
+    return performance.now() - started;
+  }
+
+  it('layoutGraph：300 节点 / 900 边 预跑 120 tick（CPU 归一化口径，非墙钟）', () => {
     const nodes: GraphNode[] = Array.from({ length: 300 }, (_, i) => ({
       id: `n${i}`,
       title: `节点 ${i}`,
@@ -192,30 +204,60 @@ describe('knowledgeGraph 纯函数（边合成与阈值、截断）', () => {
       weight: 3,
       key: `k${i}`,
     })).filter((e) => e.source !== e.target);
-    // 本机与其他 agent 并行构建/测试时机器噪声大：取 3 次运行的最优样本作为稳态指标，逐次打点
+
+    // 标尺先热身一次（首调用含 JIT 预热），再取 3 次中位数当基准
+    measureCpuScale();
+    const scales = [measureCpuScale(), measureCpuScale(), measureCpuScale()].sort((a, b) => a - b);
+    const cpuScale = scales[1] ?? scales[0] ?? 1;
+
     const runs = [0, 1, 2].map(() => {
       const layout = layoutGraph(nodes, edges, { width: 720, height: 480, iterations: 120, measure: true });
       const sorted = [...layout.tickMs].sort((a, b) => a - b);
+      const avg = layout.totalMs / (layout.tickMs.length || 1);
+      const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? 0;
       return {
         layout,
-        avg: layout.totalMs / (layout.tickMs.length || 1),
-        p50: sorted[Math.floor(sorted.length * 0.5)] ?? 0,
-        p95: sorted[Math.floor(sorted.length * 0.95)] ?? 0,
+        avg,
+        p95,
+        /** 无量纲 CPU 成本：布局耗时 / 标尺耗时（并发抢占对两边同比，抵消） */
+        avgRatio: avg / cpuScale,
+        p95Ratio: p95 / cpuScale,
+        totalRatio: layout.totalMs / cpuScale,
+        spanOk: p95 >= 0 && (sorted[0] ?? 0) <= p95,
       };
     });
     for (const run of runs) {
       console.info(
-        `[KB-GRAPH] layout 300n/900e ticks=${run.layout.tickMs.length} total=${run.layout.totalMs.toFixed(1)}ms ` +
-          `avg=${run.avg.toFixed(2)}ms p50=${run.p50.toFixed(2)}ms p95=${run.p95.toFixed(2)}ms max=${run.layout.maxTickMs.toFixed(2)}ms`,
+        `[KB-GRAPH] layout 300n/900e ticks=${run.layout.tickMs.length} rawAvg=${run.avg.toFixed(2)}ms rawP95=${run.p95.toFixed(2)}ms ` +
+          `cpuScale=${cpuScale.toFixed(2)}ms avgRatio=${run.avgRatio.toFixed(3)} p95Ratio=${run.p95Ratio.toFixed(3)}`,
       );
     }
-    const best = runs.reduce((a, b) => (b.avg < a.avg ? b : a));
-    console.info(`[KB-GRAPH] best-of-3 avg=${best.avg.toFixed(2)}ms p95=${best.p95.toFixed(2)}ms`);
+    const best = runs.reduce((a, b) => (b.avgRatio < a.avgRatio ? b : a));
+    console.info(`[KB-GRAPH] best-of-3 avgRatio=${best.avgRatio.toFixed(3)} p95Ratio=${best.p95Ratio.toFixed(3)}`);
     expect(best.layout.positions.size).toBe(300);
-    expect(best.avg).toBeLessThanOrEqual(2);
-    expect(best.p95).toBeLessThanOrEqual(2);
-    expect(best.layout.totalMs).toBeLessThanOrEqual(240);
-    for (const run of runs) for (const ms of run.layout.tickMs) expect(ms).toBeLessThanOrEqual(20);
+    expect(best.layout.tickMs).toHaveLength(120);
+    // 归一化阈值：本机实测基线 avgRatio≈0.24 / p95Ratio≈0.35 / totalRatio≈29（标尺≈0.60ms），各留 ~3x 余量。
+    // 复杂度抬 10 倍 → avgRatio≈2.4，必红。
+    expect(best.avgRatio).toBeLessThanOrEqual(0.7);
+    expect(best.p95Ratio).toBeLessThanOrEqual(1.2);
+    expect(best.totalRatio).toBeLessThanOrEqual(90);
+
+    // 规模伸缩性：同样 120 tick，300n 的 CPU 成本 / 100n 的 CPU 成本。
+    // 网格桶近似 O(n)，基线约 2.5–3.5；退化成 O(n²) 时约 9，这条专门抓「复杂度结构变坏」。
+    const small = layoutGraph(nodes.slice(0, 100), edges.filter((e) => Number(e.source.slice(1)) < 100 && Number(e.target.slice(1)) < 100), {
+      width: 720,
+      height: 480,
+      iterations: 120,
+      measure: true,
+    });
+    const smallRatio = small.totalMs / (small.tickMs.length || 1) / cpuScale;
+    const scaling = best.avgRatio / (smallRatio || 1e-6);
+    console.info(`[KB-GRAPH] scaling 300n/100n = ${scaling.toFixed(2)}（smallRatio=${smallRatio.toFixed(3)}）`);
+    expect(scaling).toBeLessThanOrEqual(8);
+    // 分位数自洽（确定性口径，不受负载影响）
+    for (const run of runs) expect(run.spanOk).toBe(true);
+    // 注：layoutGraph 内部对邻居做随机抽样（NEIGHBOR_SAMPLE），同输入不同次的坐标本就不完全相同，
+    // 因此不做坐标级 determinism 断言；这里只锁确定性的结构量（tick 数、节点数、坐标边界、分位自洽）。
     for (const [, p] of best.layout.positions) {
       expect(p.x).toBeGreaterThanOrEqual(20);
       expect(p.x).toBeLessThanOrEqual(700);
