@@ -20,7 +20,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import type { Issue, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
-import { BOARD_COLUMNS, commitDrop, detectDropCollision, groupByColumn, resolveDrop } from '../../lib/dnd';
+import { commitDrop, detectDropCollision, groupByColumn, resolveDrop } from '../../lib/dnd';
 import { buildIssueTreeFilter } from '../../lib/issueTree';
 import { Column } from './Column';
 import { IssueCardPreview } from './IssueCard';
@@ -36,6 +36,7 @@ import {
   type PlanningSort,
 } from '../../lib/planningSort';
 import { PlanningSortButton } from './PlanningSortButton';
+import { statusAccent, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -72,6 +73,9 @@ export function Board({
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   // 待规划列排序方式（SORT-PLAN）：本地存储，不落库
   const [planningSort, setPlanningSort] = useState<PlanningSort>(() => readPlanningSort());
+  // 列字典（STATUS-3-UI）：接口派生，失败时回落五条内置
+  const statuses = useWorkspaceStatuses(workspaceId);
+  const columns = statuses.names;
 
   const enabled = workspaceId !== null;
   const { data: issues } = useQuery({
@@ -115,7 +119,7 @@ export function Board({
     const all = issues ?? [];
     return filter.active ? all.filter((issue) => filter.matchingIds.has(issue.id)) : all;
   }, [issues, filter]);
-  const grouped = groupByColumn(visibleIssues);
+  const grouped = groupByColumn(visibleIssues, columns);
   // 「待规划」列排序（SORT-PLAN）：纯函数排序 + 本地存储；其它列保持 sort_order 顺序
   const planningIssues = useMemo(
     () => sortPlanning(grouped['待规划'] ?? [], planningSort),
@@ -237,13 +241,14 @@ export function Board({
           <div
             data-testid="board-columns"
             className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-3"
-            style={{ gridTemplateColumns: `repeat(${BOARD_COLUMNS.length}, minmax(280px, 1fr))` }}
+            style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(280px, 1fr))` }}
           >
-            {BOARD_COLUMNS.map((status) => (
+            {columns.map((status) => (
               <Column
                 key={status}
                 status={status}
-                issues={status === '待规划' ? planningIssues : grouped[status]}
+                issues={status === '待规划' ? planningIssues : (grouped[status] ?? [])}
+                accent={statusAccent(statuses.byName.get(status)?.kind)}
                 runningSessionIds={runningSessionIds}
                 {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
                 {...(status === '待规划'

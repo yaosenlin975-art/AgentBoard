@@ -36,10 +36,8 @@ describe('看板列容器（grid 自适应）', () => {
     renderBoard(<Board layout="board" />);
 
     const container = await screen.findByTestId('board-columns');
-    expect(container.style.gridTemplateColumns).toBe(
-      `repeat(${BOARD_COLUMNS.length}, minmax(280px, 1fr))`,
-    );
-    expect(container.style.gridTemplateColumns).toBe('repeat(4, minmax(280px, 1fr))');
+    // STATUS-3-UI：列由 workspace_status 派生，未 mock 接口时用五条内置兜底
+    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(280px, 1fr))');
     // 横向滚动能力：列多时容器自己滚，不挤压列
     expect(container.className).toContain('grid');
     expect(container.className).toContain('overflow-x-auto');

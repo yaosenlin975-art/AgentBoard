@@ -7,12 +7,16 @@ import { closestCorners, pointerWithin, type CollisionDetection } from '@dnd-kit
 import type { Issue, IssueStatus } from '@agentboard/shared';
 import { statusChangeBlocked } from './issueStatus';
 
+/** 兜底列（接口不可用时用五条内置；STATUS-3-UI 之后真实列由 workspace_status 派生） */
 export const BOARD_COLUMNS: IssueStatus[] = ['待规划', '进行中', '待验收', '已关闭'];
+
+/** UI 列兜底（STATUS-3-UI）：接口不可用时连「已废弃」一起画出来 */
+export const BOARD_COLUMN_FALLBACK: readonly string[] = [...BOARD_COLUMNS, '已废弃'];
 
 const COLUMN_PREFIX = 'column:';
 
 /** 列容器 droppable id（区别于卡片 id） */
-export function columnDroppableId(status: IssueStatus): string {
+export function columnDroppableId(status: string): string {
   return COLUMN_PREFIX + status;
 }
 
@@ -39,13 +43,13 @@ export const detectDropCollision: CollisionDetection = (args) => {
   );
 };
 
-function isIssueStatus(value: string): value is IssueStatus {
-  return (BOARD_COLUMNS as string[]).includes(value);
+function isKnownStatus(value: string, columns: readonly string[]): boolean {
+  return columns.includes(value);
 }
 
 export interface DropPatch {
   id: string;
-  patch: { status?: IssueStatus; sort_order: number };
+  patch: { status?: string; sort_order: number };
 }
 
 /**
@@ -55,18 +59,23 @@ export interface DropPatch {
  * - 「进行中」不可手动改状态（含未占用）：拖到其他列 → null；列内排序放行。
  * - 无变化（原地放下）→ null。
  */
-export function resolveDrop(issues: Issue[], activeId: string, overId: string): DropPatch | null {
+export function resolveDrop(
+  issues: Issue[],
+  activeId: string,
+  overId: string,
+  columns: readonly string[] = BOARD_COLUMNS,
+): DropPatch | null {
   const active = issues.find((i) => i.id === activeId);
   if (!active) return null;
   if (active.claimed_by !== null) return null;
   if (activeId === overId) return null;
 
-  let targetStatus: IssueStatus;
+  let targetStatus: string;
   /** 插入到该卡片之前；null 表示追加到列尾 */
   let beforeId: string | null;
   if (overId.startsWith(COLUMN_PREFIX)) {
     const status = overId.slice(COLUMN_PREFIX.length);
-    if (!isIssueStatus(status)) return null;
+    if (!isKnownStatus(status, columns)) return null;
     targetStatus = status;
     beforeId = null;
   } else {
@@ -76,7 +85,7 @@ export function resolveDrop(issues: Issue[], activeId: string, overId: string): 
     beforeId = overId;
   }
 
-  if (statusChangeBlocked(active, targetStatus)) return null;
+  if (statusChangeBlocked(active, targetStatus as IssueStatus)) return null;
 
   const columnAll = issues
     .filter((i) => i.status === targetStatus)
@@ -127,7 +136,7 @@ export interface CommitDropOptions {
 export function commitDrop({ queryClient, queryKey, drop, patchIssue, onError }: CommitDropOptions): void {
   const previous = queryClient.getQueryData<Issue[]>(queryKey);
   queryClient.setQueryData<Issue[]>(queryKey, (old) =>
-    old?.map((i) => (i.id === drop.id ? { ...i, ...drop.patch } : i)) ?? old,
+    old?.map((i) => (i.id === drop.id ? ({ ...i, ...drop.patch } as Issue) : i)) ?? old,
   );
   patchIssue(drop.id, drop.patch)
     .then((updated) => {
@@ -150,11 +159,9 @@ export function commitDrop({ queryClient, queryKey, drop, patchIssue, onError }:
  * 之前写死 4 个键时，一张 `已废弃` 卡会让 `grouped[status].push` 直接抛 TypeError。
  * 兜底建桶只保证「不崩、不丢数据」，多出来的状态不会渲染成列（列仍由 BOARD_COLUMNS 决定）。
  */
-export function groupByColumn(issues: Issue[]): Record<IssueStatus, Issue[]> {
-  const grouped = Object.fromEntries(
-    BOARD_COLUMNS.map((status) => [status, [] as Issue[]]),
-  ) as Record<IssueStatus, Issue[]>;
-  const buckets = grouped as unknown as Record<string, Issue[]>;
+export function groupByColumn(issues: Issue[], columns: readonly string[] = BOARD_COLUMNS): Record<string, Issue[]> {
+  const buckets: Record<string, Issue[]> = Object.fromEntries(columns.map((status) => [status, [] as Issue[]]));
+  const grouped = buckets;
   for (const issue of issues) {
     const key = issue.status as string;
     buckets[key] ??= [];

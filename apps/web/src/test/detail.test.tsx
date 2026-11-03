@@ -198,7 +198,8 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
     renderDetail();
 
     const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    expect([...select.options].map((o) => o.value)).toEqual(['待规划', '进行中', '待验收', '已关闭']);
+    // STATUS-3-UI：下拉走 workspace_status 字典；未 mock 状态接口时兜底为五条内置（含已废弃）
+    expect([...select.options].map((o) => o.value)).toEqual(['待规划', '进行中', '待验收', '已关闭', '已废弃']);
     expect(select.value).toBe('待规划');
     expect(select).not.toBeDisabled();
 

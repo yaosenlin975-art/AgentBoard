@@ -11,6 +11,8 @@ import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
+import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
+import { useAppStore } from '../../state/appStore';
 
 interface Settings {
   port: number;
@@ -28,6 +30,7 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
 ];
 
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const currentWorkspaceId = useAppStore((s) => s.workspaceId);
   const [port, setPort] = useState('');
   const [dbPath, setDbPath] = useState('');
   const [maxTurns, setMaxTurns] = useState('');
@@ -166,6 +169,13 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </button>
         </div>
       </form>
+      {/* STATUS-3-UI：自定义状态增删（删除必须选迁移目标）；成功后失效状态字典与任务列表 */}
+      <section data-testid="settings-statuses" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          工作区状态
+        </h3>
+        <WorkspaceStatusSettings workspaceId={currentWorkspaceId} />
+      </section>
       <RestartServerPanel />
     </Modal>
   );

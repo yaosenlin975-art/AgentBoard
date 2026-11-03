@@ -7,7 +7,7 @@
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { ReactNode } from 'react';
-import type { Issue, IssueStatus } from '@agentboard/shared';
+import type { Issue } from '@agentboard/shared';
 import { columnDroppableId } from '../../lib/dnd';
 import { IssueCard } from './IssueCard';
 
@@ -17,12 +17,16 @@ export function Column({
   runningSessionIds,
   onCreateIssue,
   sortControl,
+  accent,
 }: {
-  status: IssueStatus;
+  /** 列名（STATUS-3-UI：内置五条 + 任意自定义状态） */
+  status: string;
   issues: Issue[];
   runningSessionIds: ReadonlySet<string>;
   onCreateIssue?: () => void;
   sortControl?: ReactNode;
+  /** 列头强调色（按 workspace_status.kind：已废弃与已关闭要区分开） */
+  accent?: string;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: columnDroppableId(status),
@@ -36,7 +40,7 @@ export function Column({
     >
       <header className="flex items-center justify-between px-2.5 pt-2.5">
         <div className="flex min-w-0 items-center gap-1">
-          <h3 className="text-sm font-semibold">{status}</h3>
+          <h3 className={`text-sm font-semibold ${accent ?? ''}`}>{status}</h3>
           {onCreateIssue !== undefined && (
             <button
               type="button"

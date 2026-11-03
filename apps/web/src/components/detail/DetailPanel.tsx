@@ -17,6 +17,7 @@ import {
   manualStatusBlockedReason,
   patchIssueStatus,
 } from '../../lib/issueStatus';
+import { statusOptions, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { getIssueDescendantIds } from '../../lib/issueTree';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
@@ -178,6 +179,10 @@ export function DetailPanel() {
     },
   });
 
+  // STATUS-3-UI：状态下拉取工作区状态字典（含自定义状态）；关闭项按 kind=done 判定。
+  // hook 必须在下面所有 early return 之前调用（否则 hook 数量随加载状态变化，React 会直接崩）。
+  const statusDictionary = useWorkspaceStatuses(issue?.workspace_id ?? null);
+
   if (issueId === null) return null;
   if (issueError !== null) {
     return (
@@ -299,9 +304,9 @@ export function DetailPanel() {
               }}
               className={inputCls}
             >
-              {ISSUE_STATUSES.map((value) => (
-                <option key={value} value={value} disabled={value === '已关闭' && closeBlocked}>
-                  {value}
+              {statusOptions(statusDictionary.statuses, closeBlocked).map((option) => (
+                <option key={option.name} value={option.name} disabled={option.disabled}>
+                  {option.name}
                 </option>
               ))}
             </select>
