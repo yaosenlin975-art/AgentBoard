@@ -49,6 +49,8 @@ export function Column({
               +
             </button>
           )}
+          {/* 排序控件（SORT-ICON）：紧跟 + 号右侧 */}
+          {sortControl}
         </div>
         <span
           data-testid={`count-${status}`}
@@ -57,11 +59,6 @@ export function Column({
           {issues.length}
         </span>
       </header>
-      {sortControl !== undefined && (
-        <div data-testid={`column-sort-${status}`} className="px-2.5 pb-1 pt-1">
-          {sortControl}
-        </div>
-      )}
       <div
         ref={setNodeRef}
         className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-md p-1 transition-colors ${

@@ -3,7 +3,7 @@
  * 权重表逐值断言（≥8 组）、逾期压过高优先级无截止、同分按创建时间升序、本地存储保持、只作用于待规划列。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -209,21 +209,28 @@ describe('看板接线', () => {
     issue({ title: '进行中任务', priority: '中', sort_order: 1000, status: '进行中', created_at: 3 }),
   ];
 
-  it('排序控件只在待规划列，默认组合；切换后卡片顺序变化且写本地存储', async () => {
+  it('排序控件只在待规划列（+ 号右侧），默认组合；点击切换后写本地存储', async () => {
     renderBoard(cards);
     await screen.findByTestId('planning-sort');
     expect(await screen.findByTestId('issue-card-i-alpha')).toBeInTheDocument();
-    expect(screen.getByTestId('column-sort-待规划')).toBeInTheDocument();
-    expect(screen.queryByTestId('column-sort-进行中')).toBeNull();
-    expect(screen.getByTestId('planning-sort')).toHaveValue('combo');
+
+    // SORT-ICON：控件在待规划列头，紧跟 + 号右侧，其它列没有
+    const pendingColumn = screen.getByTestId('column-待规划');
+    const sortButton = within(pendingColumn).getByTestId('planning-sort');
+    expect(sortButton).toHaveAttribute('data-sort', 'combo');
+    expect(sortButton.parentElement).toBe(screen.getByTestId('column-create-待规划').parentElement);
+    expect(within(screen.getByTestId('column-进行中')).queryByTestId('planning-sort')).toBeNull();
 
     // 默认组合：高优先级 alpha 在前
     expect(cardOrder('待规划')).toEqual(['issue-card-i-alpha', 'issue-card-i-Bravo']);
 
-    await userEvent.selectOptions(screen.getByTestId('planning-sort'), 'az');
-    await waitFor(() => expect(cardOrder('待规划')).toEqual(['issue-card-i-alpha', 'issue-card-i-Bravo']));
-    await userEvent.selectOptions(screen.getByTestId('planning-sort'), 'priority');
+    // 组合 → 截止日期 → 优先级：点两次
+    await userEvent.click(sortButton);
+    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('due');
+    await userEvent.click(sortButton);
     expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('priority');
+    expect(sortButton).toHaveAttribute('data-sort', 'priority');
+    await waitFor(() => expect(cardOrder('待规划')).toEqual(['issue-card-i-alpha', 'issue-card-i-Bravo']));
     // 其它列不受影响
     expect(cardOrder('进行中')).toHaveLength(1);
   });
@@ -231,7 +238,7 @@ describe('看板接线', () => {
   it('刷新后保持上次选择（localStorage）', async () => {
     writePlanningSort('za');
     renderBoard(cards);
-    expect(await screen.findByTestId('planning-sort')).toHaveValue('za');
+    expect(await screen.findByTestId('planning-sort')).toHaveAttribute('data-sort', 'za');
     await screen.findByTestId('issue-card-i-Bravo');
     // Z-A：Bravo 在 alpha 之前
     expect(cardOrder('待规划')).toEqual(['issue-card-i-Bravo', 'issue-card-i-alpha']);

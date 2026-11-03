@@ -30,12 +30,12 @@ import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { NewIssueDialog } from '../topbar/NewIssueDialog';
 import {
-  PLANNING_SORT_OPTIONS,
   readPlanningSort,
   sortPlanning,
   writePlanningSort,
   type PlanningSort,
 } from '../../lib/planningSort';
+import { PlanningSortButton } from './PlanningSortButton';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -244,22 +244,7 @@ export function Board({
                 runningSessionIds={runningSessionIds}
                 {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
                 {...(status === '待规划'
-                  ? {
-                      sortControl: (
-                        <select
-                          data-testid="planning-sort"
-                          aria-label="待规划排序"
-                          title="待规划排序"
-                          value={planningSort}
-                          onChange={(event) => changePlanningSort(event.target.value as PlanningSort)}
-                          className="w-full rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
-                        >
-                          {PLANNING_SORT_OPTIONS.map((option) => (
-                            <option key={option.id} value={option.id}>{option.label}</option>
-                          ))}
-                        </select>
-                      ),
-                    }
+                  ? { sortControl: <PlanningSortButton sort={planningSort} onChange={changePlanningSort} /> }
                   : {})}
               />
             ))}
