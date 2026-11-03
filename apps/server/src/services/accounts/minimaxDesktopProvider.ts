@@ -24,8 +24,12 @@ import { ApiError, NotFoundError } from '../../errors.js';
 import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
+import { createMinimaxClientProbe, type MinimaxClientProbe } from './minimaxClientProbe.js';
 
 export const MINIMAX_APP_ID = 'minimax' as const;
+
+/** 进程级探测缓存：provider 默认使用（与能力矩阵同一套候选与原因码） */
+const cachedMinimaxClientProbe = createMinimaxClientProbe();
 
 export interface MinimaxPaths {
   /** auth.json 绝对路径 */
@@ -56,13 +60,16 @@ export interface MinimaxProviderDeps {
   fs?: MinimaxFileSystem;
   process?: MinimaxProcessControl;
   now?: () => number;
+  /** MINIMAX-PATH：客户端 exe 探测（默认用 60s 缓存的内置探测；测试可注入） */
+  clientProbe?: Pick<MinimaxClientProbe, 'get'>;
 }
 
 /** 默认路径：`~/.minimax/auth/prod/cn/mcode-public/auth.json`（本机实测） */
 export function defaultMinimaxPaths(home: string = homedir()): MinimaxPaths {
   return {
     authFile: join(home, '.minimax', 'auth', 'prod', 'cn', 'mcode-public', 'auth.json'),
-    clientExe: join(home, 'AppData', 'Local', 'Programs', 'MiniMax', 'MiniMax.exe'),
+    // MINIMAX-PATH：exe 不再写死单一路径，未显式指定时由探测结果决定（见 resolveClientExe）
+    clientExe: '',
   };
 }
 
@@ -112,6 +119,9 @@ export class MinimaxDesktopProvider {
   private readonly fs: MinimaxFileSystem;
   private readonly process: MinimaxProcessControl;
   private readonly now: () => number;
+  private readonly clientProbe: Pick<MinimaxClientProbe, 'get'>;
+  /** 探测一次后在本实例内复用（探测本身有 TTL 缓存） */
+  private resolvedClientExe: string | null = null;
 
   constructor(deps: MinimaxProviderDeps) {
     this.db = deps.db;
@@ -124,16 +134,31 @@ export class MinimaxDesktopProvider {
       start: async () => { throw new ApiError(409, 'CLIENT_START_UNAVAILABLE', '未装配客户端启动能力'); },
     };
     this.now = deps.now ?? (() => Date.now());
+    this.clientProbe = deps.clientProbe ?? cachedMinimaxClientProbe;
   }
 
   private scope(account: { identity_hash: string; client_instance_id: string }) {
     return { app_id: MINIMAX_APP_ID, client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin' as const };
   }
 
+  /**
+   * 解析客户端 exe：显式 `paths.clientExe` 优先（调用方指定/测试注入），否则用探测结果。
+   * 探测不到时按原因码报错：真未装 → `CLIENT_NOT_INSTALLED`；装在非默认位置但定位不到 → `CLIENT_PATH_UNRESOLVED`（文案指向 AGENTBOARD_MINIMAX_EXE）。
+   */
+  private async resolveClientExe(): Promise<string> {
+    if (this.paths.clientExe !== '') return this.paths.clientExe;
+    if (this.resolvedClientExe !== null) return this.resolvedClientExe;
+    const status = await this.clientProbe.get();
+    if (!status.exe) throw new ApiError(409, status.reason_code, status.message);
+    this.resolvedClientExe = status.exe;
+    return status.exe;
+  }
+
   /** cell: preflight —— 客户端路径存在且凭据文件可读 */
   async preflight(): Promise<{ authFile: string; bytes: Buffer }> {
     if (!(await this.fs.exists(this.paths.authFile))) throw new ApiError(409, 'CLIENT_PATH_MISSING', '未找到 MiniMax 客户端凭据文件');
-    if (!(await this.fs.exists(this.paths.clientExe))) throw new ApiError(409, 'CLIENT_PATH_MISSING', '未找到 MiniMax 客户端可执行文件');
+    const clientExe = await this.resolveClientExe();
+    if (!(await this.fs.exists(clientExe))) throw new ApiError(409, 'CLIENT_PATH_MISSING', `未找到 MiniMax 客户端可执行文件：${clientExe}`);
     return { authFile: this.paths.authFile, bytes: await this.fs.readFile(this.paths.authFile) };
   }
 
@@ -173,8 +198,9 @@ export class MinimaxDesktopProvider {
       { account_id: account.id, app_id: MINIMAX_APP_ID, client_instance_id: account.client_instance_id, operation: 'switch' },
       async () => {
         const preflight = await this.preflight();
+        const clientExe = await this.resolveClientExe();
         const original = preflight.bytes;
-        if (await this.process.isRunning(this.paths.clientExe)) await this.process.stop(this.paths.clientExe);
+        if (await this.process.isRunning(clientExe)) await this.process.stop(clientExe);
         const snapshotRef = await this.vault.protect(original, this.scope(account));
         this.db.prepare('UPDATE managed_account SET client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
           .run(snapshotRef, this.now(), account.id);
@@ -196,7 +222,7 @@ export class MinimaxDesktopProvider {
           await this.fs.remove(temp);
           throw new ApiError(409, 'SWITCH_WRITE_FAILED', '写入客户端凭据失败');
         }
-        await this.process.start(this.paths.clientExe);
+        await this.process.start(clientExe);
         const verified = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)));
         if (!verified || verified.token !== targetToken) {
           const restored = await this.restoreSnapshot(snapshotRef, account);
