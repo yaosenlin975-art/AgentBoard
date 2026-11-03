@@ -226,3 +226,31 @@
 ---
 
 生成方式：`kb list-tasks --workspace 任务看板 --status 待验收 --json` 取全量，逐卡 `kb show` 读评论后按上述规则判定；判定脚本与中间特征文件在 `%TEMP%\triage-*.json`（不入库）。
+
+---
+
+## 五、代码存在性核验（2026-11-03，48 张无提交归因卡）
+
+针对「提交号无法核实」40 张 + 「证据不成型」8 张：早期提交无卡号，无法用 `git log --grep` 归因，改用**代码存在性核验**——从卡面描述/标题抽可核验符号（错误码常量、`/api/` 路由、驼峰/下划线标识符、源文件路径），`git grep -F` 精确匹配 `apps/ packages/ skills/`，再区分「命中在源码」与「命中在测试」。
+
+| 结论 | 张数 | 含义 |
+| --- | --- | --- |
+| `code+test` | 42 | 符号在源码命中且有测试文件命中 → 可关闭候选 |
+| `code-only` | 2 | 源码命中但无测试覆盖 → 需人工判断 |
+| `missing` | 4 | 源码 0 命中（仅文档命中或完全无命中） |
+
+**可关闭候选（`code+test`，42 张）**
+
+`4908a07e`、`d3e137d2`、`ce182056`、`0afcf471`、`6def6819`、`6778718c`、`e5c6609c`、`a5481220`、`0699a18c`、`8de26588`、`a0550248`、`f5e2d993`、`a4cb8c1b`、`df9de099`、`aa26d495`、`72daf739`、`de475c67`、`bb1cdfe3`、`163a7b15`、`d4fb2559`、`f2c61e8c`、`17db8970`、`d9f657c7`、`2cb6f709`、`5e436026`、`660721e9`、`0c017697`、`02a0b7f2`、`7620b346`、`eefcf5ba`、`3223277a`、`558b8218`、`27304425`、`2ffd0d02`、`ca042e61`、`dcc07c92`、`a0708f1f`、`748baab7`、`188026ec`、`1c70c8d0`、`92601b5b`、`73fb6b64`
+
+**`code-only`（2 张，需人工判断）**
+
+- `4f0991cf`【TOOLBAR-LAYOUT-01】：符号仅命中源码 1 处，无测试命中。
+- `5399e104`【IMG-03】：能力核验类卡，代码存在（`packages/adapters` 中 `vision` 命中 57 文件），但本卡验收物是 `Docs/verification` 证据而非用例。
+
+**`missing`（4 张，均有合理解释）**
+
+- `925ae394`【SIDEBAR01】：卡面自述「仅规划建卡，未实施」；`App.tsx` 与 workspace 组件 grep `collapsed|Collapsed|sidebarOpen|drawer` 0 命中，代码确实缺失。\n- `73fb6b64`【DND01】：首轮判 missing，复核发现 `Board.tsx:203` 已有 `<DragOverlay zIndex={50} dropAnimation={null}>`（3 处命中）＋`dndCollision.test.ts` 覆盖，已改判 `code+test` 并在卡上补更正评论。
+- `b85889a8`【HANDOFF-RULE01】、`95546b87`【RULE-DSH02】、`af2ed71c`【RULE-CHANGE02】：规则迁移类卡，产物在技能库/规则文件与任务评论，不在本仓库 `apps/`、`packages/`。
+
+核验方法学备注：符号按卡面描述自动抽取，命中可能是「引用」而非「实现本体」（例如 `import ... from './api/routes.js'`），复核时以每条评论里的 `path:line` 为准；描述只给通配路径的 4 张（`a4cb8c1b`、`aa26d495`、`d4fb2559`、`5399e104`）已人工补验符号。
