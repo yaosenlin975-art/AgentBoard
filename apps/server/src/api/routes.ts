@@ -11,6 +11,7 @@ import { createKnowledgeRouter } from './knowledgeRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
+import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
 import type { QuotaService } from '../services/quotas/quotaService.js';
@@ -274,6 +275,8 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(listSkills({ root: deps.skillsRoot }));
   });
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
+  // STATUS-2：工作区状态字典（列表/新建/删除+强制迁移）
+  router.use('/workspaces/:workspaceId/statuses', createWorkspaceStatusRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));

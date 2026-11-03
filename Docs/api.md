@@ -122,6 +122,20 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 
 错误走 `structuredContent.error.code`：依赖码原样透传（`DEPENDENCY_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED` / `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF`），404 `NOT_FOUND` 按 `apiClient` 既有约定落成 `TASK_NOT_FOUND`；`message` 用本地安全文案，不回传服务端原文。
 
+### 状态字典（STATUS-1/2，`workspace_status` + `services/workspaceStatus.ts`）
+
+`issue.status` 落库是名字字符串，合法值 = 该卡所属工作区的 `workspace_status.name`；写入不在字典里的值 → 400 `VALIDATION_ERROR` 且文案列出可用状态（DDL 已无 CHECK 枚举，STATUS-1 迁移把校验挪到服务层）。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `GET /api/workspaces/:workspaceId/statuses` | — | `WorkspaceStatus[]`（`{ id, workspace_id, name, kind, sort_order, is_builtin }`，`sort_order`,`name`,`id` 升序）；5 条内置恒在（`is_builtin=1`，`kind` = open/started/review/done/deprecated，sort_order 0/10/20/30/40） | 404 工作空间不存在；400 body/query 的 `workspace_id` 与路径不一致 | workspaceStatusRoutes.ts |
+| `POST /api/workspaces/:workspaceId/statuses` | body：`name: string 1-50`、`kind: 'open'\|'started'\|'review'\|'done'\|'deprecated'`、`sort_order?: int`（缺省 = 当前最大值 +10）、`workspace_id?`（一致性校验） | 201 `WorkspaceStatus`（`is_builtin=0`） | 400 名空 / kind 非法 / workspace_id 与路径不一致；409 `WORKSPACE_STATUS_EXISTS` 同区重名（含内置名）；404 工作空间不存在 | workspaceStatusRoutes.ts |
+| `DELETE /api/workspaces/:workspaceId/statuses/:statusId` | query：`migrate_to`（**必填**，目标状态名）、`workspace_id?` | 200 `{ removed, migrate_to, migrated_issue_count }`；同事务把该状态下的卡全部改成 `migrate_to` 再删行 | 400 `MIGRATION_TARGET_REQUIRED` 缺 migrate_to / `MIGRATION_TARGET_INVALID` 目标不存在或等于自身 / `workspace_id` 不一致；409 `WORKSPACE_STATUS_BUILTIN` 内置不可删；404 `NOT_FOUND` 状态或工作空间不存在 | workspaceStatusRoutes.ts |
+
+**CLI**：`kb status ls <workspace>`、`kb status add <workspace> <name> [--kind …] [--sort-order N]`、`kb status rm <workspace> <name|id> --migrate-to <name>`。workspace 支持 id 或名称；409 的状态字典错误（`WORKSPACE_STATUS_*`）由子命令原样打印文案并退出 **2**（不被全局包装成「已被占用（…）」），其余失败退出 1。
+
+**MCP**：`agentboard_list_statuses` / `agentboard_add_status`（`request_id` 作幂等键） / `agentboard_remove_status`（`migrate_to` 走 query，无幂等键，与 REST 一致）；强制 `resolveWorkspaceId`，错误码透传（`WORKSPACE_STATUS_BUILTIN` / `WORKSPACE_STATUS_EXISTS` / `MIGRATION_TARGET_REQUIRED` / `MIGRATION_TARGET_INVALID`）。
+
 ## 7. comments
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

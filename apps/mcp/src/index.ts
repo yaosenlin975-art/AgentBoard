@@ -8,6 +8,7 @@ import type { McpConfig } from './config.js';
 import { loadMcpConfig } from './config.js';
 import { registerTaskTools } from './tools/tasks.js';
 import { registerDependencyTools } from './tools/dependencies.js';
+import { registerStatusTools } from './tools/statuses.js';
 import { registerKnowledgeTools } from './tools/knowledge.js';
 
 // MCP 握手版本：createRequire 按模块 URL 定位本包 package.json（src/ 与打包后 dist/ 均在其上一级）
@@ -19,6 +20,7 @@ export function createTaskMcpServer(config: McpConfig, fetcher: typeof fetch = f
   const api = new AgentBoardApiClient(config, fetcher);
   registerTaskTools(server, config, api);
   registerDependencyTools(server, config, api);
+  registerStatusTools(server, config, api);
   registerKnowledgeTools(server, config, api);
   return server;
 }

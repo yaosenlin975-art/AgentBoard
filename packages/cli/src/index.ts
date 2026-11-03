@@ -19,6 +19,7 @@ import { deleteIssue } from './commands/deleteIssue.js';
 import { fail } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
 import { depAdd, depLs, depRemove } from './commands/dep.js';
+import { statusAdd, statusList, statusRemove } from './commands/status.js';
 import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
@@ -203,6 +204,31 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<issue-id>', '被阻塞的任务 id')
     .argument('<blocker-id>', '前置任务 id')
     .action(async (id: string, blockerId: string) => depRun(ctx => depRemove(ctx, id, blockerId))());
+
+  // 状态字典（STATUS-2）：ls / add / rm --migrate-to
+  const status = program.command('status').description('工作区状态字典：ls 列出、add 新增自定义状态、rm 删除并强制迁移');
+  status.command('ls')
+    .description('列出工作区状态（名字 / kind / 排序 / 内置或自定义）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .action(async (workspace: string) => statusList(makeCtx(program, io), workspace));
+  status.command('add')
+    .description('新增自定义状态（名称在工作区内唯一；内置五状态不可复刻）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .argument('<name>', '状态名')
+    .option('--kind <kind>', '行为类别：open | started | review | done | deprecated（默认 open）')
+    .option('--sort-order <n>', '排序值（默认最大值 +10）')
+    .action(async (workspace: string, name: string, opts: { kind?: string; sortOrder?: string }) =>
+      statusAdd(makeCtx(program, io), workspace, name, {
+        kind: opts.kind,
+        sortOrder: opts.sortOrder === undefined ? undefined : Number(opts.sortOrder),
+      }));
+  status.command('rm')
+    .description('删除自定义状态；必须 --migrate-to 指定该状态下的卡迁移目标（内置状态不可删）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .argument('<status>', '状态名或状态 id')
+    .option('--migrate-to <name>', '该状态下的卡迁移到的目标状态名（必填）')
+    .action(async (workspace: string, nameOrId: string, opts: { migrateTo?: string }) =>
+      statusRemove(makeCtx(program, io), workspace, nameOrId, { migrateTo: opts.migrateTo }));
 
   const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 键经 scripts/agentboard.vbs 隐藏拉起服务，日志在 %APPDATA%\\AgentBoard\\logs）');
   autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；node/仓库/端口/日志写进 vbs）')

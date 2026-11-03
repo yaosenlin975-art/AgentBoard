@@ -1,11 +1,18 @@
 /**
- * STATUS-1：状态写入的唯一校验入口（替代已删除的 DDL CHECK 枚举）。
+ * STAT STATUS-1：状态写入的唯一校验入口（替代已删除的 DDL CHECK 枚举）。
  *
  * `issue.status` 落库是名字字符串；合法值 = 该任务所属工作区的 `workspace_status.name`
  * （内置五状态在每工作区建好，见 `migrations/workspaceStatus.ts`）。非法写入 → 400，文案列出可用状态。
+ *
+ * STATUS-2：自定义状态的增删（CRUD 的服务层），守卫与迁移规则：
+ * - 内置状态（`is_builtin=1`）不可删除、不可改名（没有改名通道，名字只能新增后迁移）；
+ * - 同工作区 name 唯一 → 409 `WORKSPACE_STATUS_EXISTS`；
+ * - 删除必须带 `migrate_to`：同事务把该状态下的卡全部改成目标状态再删行，返回迁移条数；
+ *   不带 → 400 `MIGRATION_TARGET_REQUIRED`；目标不存在或等于被删状态 → 400 `MIGRATION_TARGET_INVALID`。
  */
+import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/connection.js';
-import { ValidationError } from '../errors.js';
+import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 
 export interface WorkspaceStatusRow {
   id: string;
@@ -16,10 +23,18 @@ export interface WorkspaceStatusRow {
   is_builtin: number;
 }
 
+export const STATUS_KINDS = ['open', 'started', 'review', 'done', 'deprecated'] as const;
+
 /** 该工作区可用状态名（sort_order 升序） */
 export function listWorkspaceStatusNames(db: Db, workspaceId: string): string[] {
   return (db.prepare('SELECT name FROM workspace_status WHERE workspace_id=? ORDER BY sort_order, name')
     .all(workspaceId) as Array<{ name: string }>).map(row => row.name);
+}
+
+/** 该工作区完整状态字典（sort_order 升序，id 升序兜底） */
+export function listWorkspaceStatuses(db: Db, workspaceId: string): WorkspaceStatusRow[] {
+  return db.prepare(`SELECT id, workspace_id, name, kind, sort_order, is_builtin FROM workspace_status
+    WHERE workspace_id=? ORDER BY sort_order, name, id`).all(workspaceId) as WorkspaceStatusRow[];
 }
 
 /**
@@ -44,3 +59,83 @@ export function workspaceStatusKind(db: Db, workspaceId: string, status: string)
     .get(workspaceId, status) as { kind: WorkspaceStatusRow['kind'] } | undefined;
   return row?.kind ?? null;
 }
+
+export interface CreateWorkspaceStatusInput {
+  workspace_id: string;
+  name: string;
+  kind: WorkspaceStatusRow['kind'];
+  sort_order?: number;
+  now?: number;
+}
+
+/**
+ * 新增自定义状态。`kind` 决定行为（关闭类 = done | deprecated），名字可自定义；
+ * 重名（同工作区）→ 409。默认 `sort_order` 取当前最大值 +10（排在最后，便于后续插队）。
+ */
+export function createWorkspaceStatus(db: Db, input: CreateWorkspaceStatusInput): WorkspaceStatusRow {
+  const name = input.name.trim();
+  if (name === '') throw new ValidationError('状态名不能为空');
+  if (!STATUS_KINDS.includes(input.kind)) throw new ValidationError(`kind 必须是 ${STATUS_KINDS.join(' / ')} 之一`);
+  return db.transaction(() => {
+    const exists = db.prepare('SELECT 1 FROM workspace_status WHERE workspace_id=? AND name=?').get(input.workspace_id, name);
+    if (exists) throw new ApiError(409, 'WORKSPACE_STATUS_EXISTS', `该工作区已存在同名状态：${name}`);
+    const next = input.sort_order ?? (db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 10 AS next FROM workspace_status WHERE workspace_id=?')
+      .get(input.workspace_id) as { next: number }).next;
+    const row: WorkspaceStatusRow = {
+      id: randomUUID(),
+      workspace_id: input.workspace_id,
+      name,
+      kind: input.kind,
+      sort_order: next,
+      is_builtin: 0,
+    };
+    db.prepare(`INSERT INTO workspace_status (id, workspace_id, name, kind, sort_order, is_builtin, created_at)
+      VALUES (?,?,?,?,?,0,?)`).run(row.id, row.workspace_id, row.name, row.kind, row.sort_order, input.now ?? Date.now());
+    return row;
+  }).immediate();
+}
+
+export interface RemoveWorkspaceStatusInput {
+  workspace_id: string;
+  status_id: string;
+  /** 该状态下卡全部迁往的目标状态名（必填，设计 D3） */
+  migrate_to?: string;
+  now?: number;
+}
+
+export interface RemoveWorkspaceStatusResult {
+  removed: WorkspaceStatusRow;
+  migrate_to: string;
+  migrated_issue_count: number;
+}
+
+/**
+ * 删除自定义状态：必须带 `migrate_to`，同事务把该状态下的卡全部迁移后删行。
+ * 内置状态直接拒绝（改名前请先新增同名自定义状态再迁移）。
+ */
+export function removeWorkspaceStatus(db: Db, input: RemoveWorkspaceStatusInput): RemoveWorkspaceStatusResult {
+  const migrateTo = input.migrate_to?.trim() ?? '';
+  return db.transaction(() => {
+    const target = db.prepare('SELECT id, workspace_id, name, kind, sort_order, is_builtin FROM workspace_status WHERE id=? AND workspace_id=?')
+      .get(input.status_id, input.workspace_id) as WorkspaceStatusRow | undefined;
+    if (!target) throw new NotFoundError('状态不存在');
+    if (target.is_builtin === 1) {
+      throw new ApiError(409, 'WORKSPACE_STATUS_BUILTIN', `内置状态不可删除：${target.name}`);
+    }
+    if (migrateTo === '') {
+      throw new ApiError(400, 'MIGRATION_TARGET_REQUIRED', `删除状态 ${target.name} 前必须指定迁移目标（migrate_to），该状态下的卡会迁到目标状态`);
+    }
+    if (migrateTo === target.name) {
+      throw new ApiError(400, 'MIGRATION_TARGET_INVALID', '迁移目标不能是被删除的状态本身');
+    }
+    const targetRow = db.prepare('SELECT 1 FROM workspace_status WHERE workspace_id=? AND name=?').get(input.workspace_id, migrateTo);
+    if (!targetRow) {
+      throw new ApiError(400, 'MIGRATION_TARGET_INVALID', `迁移目标状态不存在：${migrateTo}（可用：${listWorkspaceStatusNames(db, input.workspace_id).join(' / ')}）`);
+    }
+    const migrated = db.prepare('UPDATE issue SET status=?, updated_at=MAX(?,updated_at+1) WHERE workspace_id=? AND status=?')
+      .run(migrateTo, input.now ?? Date.now(), input.workspace_id, target.name).changes;
+    db.prepare('DELETE FROM workspace_status WHERE id=? AND workspace_id=?').run(input.status_id, input.workspace_id);
+    return { removed: target, migrate_to: migrateTo, migrated_issue_count: migrated };
+  }).immediate();
+}
+

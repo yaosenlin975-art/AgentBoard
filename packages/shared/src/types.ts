@@ -13,6 +13,10 @@ export interface KnowledgePage {
   title: string; body_md: string; status: 'active' | 'archived' | 'deleted'; revision: number;
   expires_at: number | null; created_by: string; updated_by: string; created_at: number; updated_at: number;
   sources: KnowledgeSource[]; evidence: KnowledgeEvidence[];
+  /** KB-MODEL 四类内容模型；旧行/未迁移库缺省视为 legacy */
+  category?: 'design' | 'solved' | 'pinned' | 'open' | 'legacy';
+  /** design 类的落地状态（其他类为 null） */
+  landed?: 'landed' | 'partial' | 'proposed' | null;
 }
 export interface KnowledgeRevision {
   id: string; page_id: string; revision: number; title_snapshot: string; body_snapshot: string;
@@ -113,6 +117,15 @@ export interface Issue {
   blocked_by_open_count?: number;
   resolved?: boolean;
   created_at: number; updated_at: number;
+}
+/**
+ * STATUS-2：工作区状态字典（`workspace_status`）。
+ * `kind` 决定行为（关闭类 = `done` | `deprecated`），不靠名字；`is_builtin=1` 的内置状态不可删除、不可改名。
+ */
+export type WorkspaceStatusKind = 'open' | 'started' | 'review' | 'done' | 'deprecated';
+export interface WorkspaceStatus {
+  id: string; workspace_id: string; name: string; kind: WorkspaceStatusKind;
+  sort_order: number; is_builtin: number;
 }
 export interface IssueTreeItem extends Issue {
   child_count: number;
