@@ -9,6 +9,7 @@ import { TopBar } from './components/topbar/TopBar';
 import { Board } from './components/board/Board';
 import { ChangelogPanel } from './components/changelog/ChangelogPanel';
 import { RightPanel } from './components/right/RightPanel';
+import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import type { BoardLayout } from './components/ui/ViewSwitcher';
 import { useRestartStore } from './state/restartStore';
 
@@ -49,7 +50,8 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-surface-page text-ink">
-      <TopBar workspace={current} />
+      <VoiceInputProvider>
+        <TopBar workspace={current} />
       <label className="flex items-center gap-2 border-b px-4 py-2 text-sm md:hidden">工作空间
         <select aria-label="工作空间" className="min-w-0 flex-1 rounded border bg-transparent p-1" value={workspaceId ?? ''} onChange={e => useAppStore.getState().selectWorkspace(e.target.value || null)}>
           <option value="">请选择工作空间</option>{workspaces?.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
@@ -103,6 +105,7 @@ export default function App() {
           />
         )}
       </div>
+      </VoiceInputProvider>
     </div>
   );
 }
