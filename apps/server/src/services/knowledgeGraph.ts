@@ -19,8 +19,22 @@ export const GRAPH_MAX_EDGES = 500;
 export const GRAPH_SOURCE_LOCATOR_WEIGHT = 3;
 export const GRAPH_SOURCE_HASH_WEIGHT = 4;
 export const GRAPH_KEYWORD_WEIGHT = 1;
-export const GRAPH_KEYWORD_MIN_TERMS = 2;
-export const GRAPH_KEYWORD_MIN_TRIGRAMS = 3;
+/**
+ * GRAPH-EDGE-BUG：关键词共现的成边门槛。旧值 2 词 / 3 trigram 会让「通用词」把整张图连成完全图
+ * （实测 6 页无关知识 → 15 条 keyword 边 = K6），因此：
+ * - 阈值提高到 3 词 / 6 trigram；
+ * - 并且只统计「稀有项」：出现在 >40% 页面（且 ≥3 页）的词/trigram 视为通用词，不参与成边。
+ */
+export const GRAPH_KEYWORD_MIN_TERMS = 4;
+export const GRAPH_KEYWORD_MIN_TRIGRAMS = 6;
+/** 通用词判定比例：df > max(2, ceil(页数 × 0.4)) 视为区分度不足 */
+export const GRAPH_KEYWORD_DF_RATIO = 0.4;
+/**
+ * 相对重叠率门槛（GRAPH-EDGE-BUG）：长文档（handoff/状态页）即使只共享几个通用词，绝对数也能过阈值，
+ * 所以还要求「共享稀有项 / 较小文档的稀有项数」达到比例，才算同一主题。
+ */
+export const GRAPH_KEYWORD_MIN_TERM_RATIO = 0.3;
+export const GRAPH_KEYWORD_MIN_TRIGRAM_RATIO = 0.35;
 
 export interface KnowledgeGraphNode {
   id: string; title: string; scope: 'workspace' | 'common'; workspace_id: string | null;
@@ -87,11 +101,19 @@ export function trigrams(text: string): Set<string> {
 const pairKey = (left: string, right: string): string => (left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`);
 const TERM_DF_LIMIT = 64; // 词出现在过多页时跳过，避免 O(n²) 爆炸（这些词区分度也低）
 
-type PairState = { linkWeight: number; sourceWeight: number; termHits: number; trigramHits: number };
+type PairState = {
+  linkWeight: number;
+  sourceWeight: number;
+  termHits: number;
+  trigramHits: number;
+  /** 两端「稀有项」总数中较小者，用于算相对重叠率 */
+  termFloor: number;
+  gramFloor: number;
+};
 
 function addPair(map: Map<string, PairState>, left: string, right: string, apply: (state: PairState) => void): void {
   const key = pairKey(left, right);
-  const state = map.get(key) ?? { linkWeight: 0, sourceWeight: 0, termHits: 0, trigramHits: 0 };
+  const state = map.get(key) ?? { linkWeight: 0, sourceWeight: 0, termHits: 0, trigramHits: 0, termFloor: 0, gramFloor: 0 };
   apply(state);
   map.set(key, state);
 }
@@ -154,10 +176,23 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
 
   if (wantKeyword && rows.length > 1) {
     const texts = new Map(rows.map(row => [row.id, `${row.title}\n${row.body_md}`]));
-    const termIndex = indexBy(rows, row => entityTerms(`${row.title}\n${row.body_md}`));
-    sharedPairs(termIndex, (left, right) => addPair(pairs, left, right, state => { state.termHits += 1; }), TERM_DF_LIMIT);
-    const gramIndex = indexBy(rows, row => trigrams(texts.get(row.id)!));
-    sharedPairs(gramIndex, (left, right) => addPair(pairs, left, right, state => { state.trigramHits += 1; }), TERM_DF_LIMIT);
+    // GRAPH-EDGE-BUG：只让「稀有项」参与共现计数（通用词跳过），否则无关页会被连成完全图
+    const relativeDfLimit = Math.max(2, Math.ceil(rows.length * GRAPH_KEYWORD_DF_RATIO));
+    const dfLimit = Math.min(TERM_DF_LIMIT, relativeDfLimit);
+    const termsOf = new Map(rows.map(row => [row.id, [...entityTerms(`${row.title}\n${row.body_md}`)]]));
+    const gramsOf = new Map(rows.map(row => [row.id, [...trigrams(texts.get(row.id)!)]]));
+    const rareCount = (values: string[], index: Map<string, string[]>): number =>
+      values.filter(value => (index.get(value)?.length ?? 0) <= dfLimit).length;
+    const termIndex = indexBy(rows, row => termsOf.get(row.id)!);
+    sharedPairs(termIndex, (left, right) => addPair(pairs, left, right, state => {
+      state.termHits += 1;
+      state.termFloor = Math.max(state.termFloor, Math.min(rareCount(termsOf.get(left)!, termIndex), rareCount(termsOf.get(right)!, termIndex)));
+    }), dfLimit);
+    const gramIndex = indexBy(rows, row => gramsOf.get(row.id)!);
+    sharedPairs(gramIndex, (left, right) => addPair(pairs, left, right, state => {
+      state.trigramHits += 1;
+      state.gramFloor = Math.max(state.gramFloor, Math.min(rareCount(gramsOf.get(left)!, gramIndex), rareCount(gramsOf.get(right)!, gramIndex)));
+    }), dfLimit);
   }
 
   const edges: KnowledgeGraphEdge[] = [];
@@ -173,7 +208,11 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
       edges.push({ source: left, target: right, kind: 'source', weight: state.sourceWeight });
       continue;
     }
-    if (wantKeyword && (state.termHits >= GRAPH_KEYWORD_MIN_TERMS || state.trigramHits >= GRAPH_KEYWORD_MIN_TRIGRAMS)) {
+    const termRatioOk = state.termFloor > 0 && state.termHits / state.termFloor >= GRAPH_KEYWORD_MIN_TERM_RATIO;
+    const gramRatioOk = state.gramFloor > 0 && state.trigramHits / state.gramFloor >= GRAPH_KEYWORD_MIN_TRIGRAM_RATIO;
+    const termOk = state.termHits >= GRAPH_KEYWORD_MIN_TERMS && termRatioOk;
+    const gramOk = state.trigramHits >= GRAPH_KEYWORD_MIN_TRIGRAMS && gramRatioOk;
+    if (wantKeyword && (termOk || gramOk)) {
       edges.push({ source: left, target: right, kind: 'keyword', weight: GRAPH_KEYWORD_WEIGHT });
     }
   }

@@ -89,9 +89,10 @@ describe('knowledge graph', () => {
     expect(degrees).toEqual([1, 1]);
   });
 
-  it('keywordEdgeNeedsTwoTermsOrThreeTrigrams', async () => {
-    const first = page('k1', '甲类 主题 记录', '甲类 主题 记录 内容', [source('file:k1.ts', hex('h1'))]);
-    const second = page('k2', '甲类 主题 摘要', '甲类 主题 摘要 内容', [source('file:k2.ts', hex('h2'))]);
+  it('keywordEdgeNeedsRareTermsAndRatio', async () => {
+    // GRAPH-EDGE-BUG 后：需要 ≥4 个共享稀有词 + 相对重叠率，故两页共享 4 个区分词（甲类/主题/内容/降级）
+    const first = page('k1', '甲类 主题 记录 降级', '甲类 主题 记录 内容 降级', [source('file:k1.ts', hex('h1'))]);
+    const second = page('k2', '甲类 主题 摘要 降级', '甲类 主题 摘要 内容 降级', [source('file:k2.ts', hex('h2'))]);
     const third = page('k3', 'zeta quokka', 'zeta quokka note', [source('file:k3.ts', hex('h3'))]);
     const fourth = page('k4', 'omega yonder', 'omega yonder memo', [source('file:k4.ts', hex('h4'))]);
 
