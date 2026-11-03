@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 中央四列看板（§7.3）：react-query 拉 issues/sessions，dnd-kit 跨列 + 列内排序。
  * 拖放经 resolveDrop 结算 → 乐观更新 → PATCH（跨列带 status，列内只带 sort_order）；
  * PATCH 失败（如 409 占用冲突）回滚缓存并提示。
@@ -11,7 +11,6 @@ import {
   DragOverlay,
   KeyboardSensor,
   PointerSensor,
-  closestCorners,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -21,7 +20,7 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import type { Issue, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
-import { BOARD_COLUMNS, commitDrop, groupByColumn, resolveDrop } from '../../lib/dnd';
+import { BOARD_COLUMNS, commitDrop, detectDropCollision, groupByColumn, resolveDrop } from '../../lib/dnd';
 import { buildIssueTreeFilter } from '../../lib/issueTree';
 import { Column } from './Column';
 import { IssueCardPreview } from './IssueCard';
@@ -183,7 +182,7 @@ export function Board({
       ) : (
         <DndContext
           sensors={sensors}
-          collisionDetection={closestCorners}
+          collisionDetection={detectDropCollision}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveDrag(null)}

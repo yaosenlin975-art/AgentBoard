@@ -3,6 +3,7 @@
  * sort_order 策略：目标索引处取前后相邻 sort_order 中值（floor）；边界补/借 1000；空列取 0。
  */
 import type { QueryClient } from '@tanstack/react-query';
+import { closestCorners, pointerWithin, type CollisionDetection } from '@dnd-kit/core';
 import type { Issue, IssueStatus } from '@agentboard/shared';
 import { statusChangeBlocked } from './issueStatus';
 
@@ -14,6 +15,29 @@ const COLUMN_PREFIX = 'column:';
 export function columnDroppableId(status: IssueStatus): string {
   return COLUMN_PREFIX + status;
 }
+
+const isColumnDroppableId = (id: string): boolean => id.startsWith(COLUMN_PREFIX);
+
+/**
+ * 看板碰撞检测（DND-SEARCH-BUG）。
+ *
+ * 只用 `closestCorners` 时，它按「droppable 四角到拖拽浮层的距离平均值」打分：检索态下列被过滤空，
+ * 「已关闭」列的 droppable 仍是整列高（168→838），远端两个角各 ~600px 把均分拉到 ~300，
+ * 于是它输给源列里很近的一张卡（~278），`resolveDrop` 得到 `targetStatus === active.status`，
+ * 只提交 `sort_order`、不改状态 —— 表现为「卡拖不过去、回弹原位」。非检索态该列有卡片，
+ * 指针下的卡按同列语义正常命中，所以只有检索态复现。
+ *
+ * 修法：指针落在哪个可投放区内就以它为准（`pointerWithin`），指针不可用（键盘拖拽）时回落原策略。
+ * 指针同时落在卡片与其所在列上时卡片优先，保留列内排序语义。
+ */
+export const detectDropCollision: CollisionDetection = (args) => {
+  // 被拖拽卡片自身的 droppable 也随指针移动，必须先排除，否则 over 永远是自己
+  const byPointer = pointerWithin(args).filter((collision) => collision.id !== args.active.id);
+  if (byPointer.length === 0) return closestCorners(args);
+  return [...byPointer].sort(
+    (a, b) => Number(isColumnDroppableId(String(a.id))) - Number(isColumnDroppableId(String(b.id))),
+  );
+};
 
 function isIssueStatus(value: string): value is IssueStatus {
   return (BOARD_COLUMNS as string[]).includes(value);
