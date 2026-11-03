@@ -104,25 +104,33 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
       const tools = (list.result?.tools ?? []) as ListedTool[];
       const names = tools.map((t) => t.name).sort();
       expect(names.length).toBeGreaterThan(0);
-      expect(names.every((n) => n.startsWith('agentboard_'))).toBe(true);
-      // 只读面必备三项
-      expect(names).toEqual(
+      // MCP-NAMING：主名不带 agentboard_ 前缀；旧名作为 alias 同时注册（下个大版本移除）
+      const primary = names.filter((n) => !n.startsWith('agentboard_'));
+      const aliases = names.filter((n) => n.startsWith('agentboard_'));
+      expect(primary.length).toBeGreaterThan(0);
+      expect(aliases.length).toBe(primary.length);
+      // 只读面必备三项（新名）
+      expect(primary).toEqual(
         expect.arrayContaining([
-          'agentboard_list_workspaces',
-          'agentboard_get_task',
-          'agentboard_search_knowledge',
+          'list_workspaces',
+          'get_task',
+          'search_knowledge',
         ]),
+      );
+      // 旧名 alias 与主名一一对应
+      expect(aliases).toEqual(
+        expect.arrayContaining(['agentboard_list_workspaces', 'agentboard_get_task', 'agentboard_search_knowledge']),
       );
       // 不得出现会话/终端/账号一类越界工具；破坏性工具只允许逐个批准的精确名字
       // （任务删除来自 CLI-DELETE 卡，依赖删边来自 DEP-2 卡，状态删除来自 STATUS-2 卡），其余含 delete/remove 的工具一体禁止。
-      const approvedDestructive = new Set(['agentboard_delete_task', 'agentboard_remove_dependency', 'agentboard_remove_status']);
+      const approvedDestructive = new Set(['delete_task', 'remove_dependency', 'remove_status']);
       for (const forbidden of ['session', 'shell', 'exec', 'account', 'credential', 'remove', 'delete']) {
-        expect(names.filter((n) => n.includes(forbidden) && !approvedDestructive.has(n))).toEqual([]);
+        expect(primary.filter((n) => n.includes(forbidden) && !approvedDestructive.has(n))).toEqual([]);
       }
-      expect(names.filter((n) => n.includes('delete'))).toEqual(['agentboard_delete_task']);
-      expect(names.filter((n) => n.includes('remove'))).toEqual(['agentboard_remove_dependency', 'agentboard_remove_status']);
+      expect(primary.filter((n) => n.includes('delete'))).toEqual(['delete_task']);
+      expect(primary.filter((n) => n.includes('remove'))).toEqual(['remove_dependency', 'remove_status']);
       // 只读工具带 readOnlyHint（客户端据此决定是否默认放行）
-      const listWorkspaces = tools.find((t) => t.name === 'agentboard_list_workspaces');
+      const listWorkspaces = tools.find((t) => t.name === 'list_workspaces');
       expect(listWorkspaces?.annotations).toMatchObject({ readOnlyHint: true });
     } finally {
       await harness.close();
@@ -132,18 +140,18 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
   it('codexClientReadsStructuredContent：list_workspaces / get_task / search_knowledge 均返回 structuredContent', async () => {
     const { harness, call, calls } = await handshake(CLIENT_PROFILES[0]);
     try {
-      const workspaces = (await call('agentboard_list_workspaces', { limit: 20, offset: 0 })).result!;
+      const workspaces = (await call('list_workspaces', { limit: 20, offset: 0 })).result!;
       expect(workspaces.isError).toBeFalsy();
       expect(workspaces.structuredContent).toMatchObject({ ok: true });
       expect(workspaces.structuredContent!.data.items[0]).toEqual({ id: WORKSPACE_ID, name: '任务看板' });
       // 路径等敏感字段不外泄
       expect(JSON.stringify(workspaces.structuredContent)).not.toContain('WorkSpaces');
 
-      const task = (await call('agentboard_get_task', { workspace_id: WORKSPACE_ID, task_id: TASK_ID })).result!;
+      const task = (await call('get_task', { workspace_id: WORKSPACE_ID, task_id: TASK_ID })).result!;
       expect(task.isError).toBeFalsy();
       expect(task.structuredContent!.data).toMatchObject({ id: TASK_ID, title: 'MCP 只读验收' });
 
-      const knowledge = (await call('agentboard_search_knowledge', {
+      const knowledge = (await call('search_knowledge', {
         scope: 'workspace',
         workspace_id: WORKSPACE_ID,
         query: '验收',
@@ -165,11 +173,11 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
   it('dshClientReadsStructuredContent：同一 stdio 命令在 DSH profile 下结果一致，错误走 isError 安全码', async () => {
     const { harness, call } = await handshake(CLIENT_PROFILES[1]);
     try {
-      const workspaces = (await call('agentboard_list_workspaces', { limit: 5, offset: 0 })).result!;
+      const workspaces = (await call('list_workspaces', { limit: 5, offset: 0 })).result!;
       expect(workspaces.structuredContent).toMatchObject({ ok: true });
 
       // 未知任务：404 → 安全码 TASK_NOT_FOUND + isError（客户端可结构化判定，不解析裸文本）
-      const missing = (await call('agentboard_get_task', {
+      const missing = (await call('get_task', {
         workspace_id: WORKSPACE_ID,
         task_id: '5f1b2c34-0000-4000-8000-00000000ffff',
       })).result!;
@@ -187,14 +195,14 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
       expect(init.result).toMatchObject({ serverInfo: { name: 'agentboard' } });
       expect(((list.result?.tools ?? []) as ListedTool[]).length).toBeGreaterThan(0);
 
-      const task = (await call('agentboard_get_task', {
+      const task = (await call('get_task', {
         workspace_id: WORKSPACE_ID,
         task_id: TASK_ID,
         description_max_chars: 100,
       })).result!;
       expect(task.isError).toBeFalsy();
       expect(task.structuredContent).toMatchObject({ ok: true });
-      expect(task.content?.[0]?.text).toBe('agentboard_get_task succeeded.');
+      expect(task.content?.[0]?.text).toBe('get_task succeeded.');
     } finally {
       await harness.close();
     }

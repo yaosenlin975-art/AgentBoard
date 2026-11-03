@@ -23,7 +23,7 @@ describe('AgentBoard status MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
 
-    const response = await harness.request('tools/call', { name: 'agentboard_list_statuses', arguments: {} });
+    const response = await harness.request('tools/call', { name: 'list_statuses', arguments: {} });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { workspace_id: 'workspace-a', items: STATUSES } });
     const [url] = fetchMock.mock.calls[0]!;
     expect(String(url)).toBe('http://127.0.0.1:8787/api/workspaces/workspace-a/statuses');
@@ -40,7 +40,7 @@ describe('AgentBoard status MCP tools', () => {
     const requestId = '9f0d3c8a-5b1e-4a26-8c7d-1f2b3a4c5d6e';
 
     const response = await harness.request('tools/call', {
-      name: 'agentboard_add_status',
+      name: 'add_status',
       arguments: { name: '待复测', kind: 'review', request_id: requestId },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { name: '待复测', kind: 'review' } });
@@ -61,7 +61,7 @@ describe('AgentBoard status MCP tools', () => {
     await harness.start();
 
     const response = await harness.request('tools/call', {
-      name: 'agentboard_remove_status',
+      name: 'remove_status',
       arguments: { status_id: 's-custom', migrate_to: '进行中' },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { migrate_to: '进行中', migrated_issue_count: 3 } });
@@ -82,7 +82,7 @@ describe('AgentBoard status MCP tools', () => {
       harnesses.push(harness);
       await harness.start();
       const response = await harness.request('tools/call', {
-        name: 'agentboard_remove_status',
+        name: 'remove_status',
         arguments: { status_id: 's-custom', migrate_to: '进行中' },
       });
       expect(response.result?.isError).toBe(true);
@@ -97,7 +97,7 @@ describe('AgentBoard status MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_statuses',
+      name: 'list_statuses',
       arguments: { workspace_id: 'workspace-b' },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_BOUND' } });

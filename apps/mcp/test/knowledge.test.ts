@@ -31,7 +31,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const result = await harness.request('tools/call', {
-      name: 'agentboard_search_knowledge', arguments: { query: 'cache', scope: 'both' },
+      name: 'search_knowledge', arguments: { query: 'cache', scope: 'both' },
     });
     expect(result.result?.structuredContent?.data).toMatchObject({ items: [{ id: 'page-1', workspace_id: 'workspace-a' }] });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -46,7 +46,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(commonHarness);
     await commonHarness.start();
     const common = await commonHarness.request('tools/call', {
-      name: 'agentboard_search_knowledge', arguments: { query: 'cache', scope: 'common' },
+      name: 'search_knowledge', arguments: { query: 'cache', scope: 'common' },
     });
     expect(common.result?.structuredContent?.data).toEqual({ items: [] });
     expect(commonFetcher).toHaveBeenCalledTimes(1);
@@ -58,18 +58,18 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
 
-    const missingScope = await harness.request('tools/call', { name: 'agentboard_read_knowledge', arguments: { page_id: 'page-1' } });
+    const missingScope = await harness.request('tools/call', { name: 'read_knowledge', arguments: { page_id: 'page-1' } });
     expect(missingScope).toMatchObject({ jsonrpc: '2.0', result: { isError: true, content: [{ text: expect.stringContaining('Input validation error') }] } });
     const unknownField = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', ignore_scope: true },
+      name: 'read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', ignore_scope: true },
     });
     expect(unknownField).toMatchObject({ jsonrpc: '2.0', result: { isError: true, content: [{ text: expect.stringContaining('Input validation error') }] } });
     const wrongWorkspace = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', workspace_id: 'workspace-b' },
+      name: 'read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', workspace_id: 'workspace-b' },
     });
     expect(wrongWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_BOUND' } });
     const commonWithWorkspace = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: { page_id: 'page-1', scope: 'common', workspace_id: 'workspace-a' },
+      name: 'read_knowledge', arguments: { page_id: 'page-1', scope: 'common', workspace_id: 'workspace-a' },
     });
     expect(commonWithWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     expect(fetcher).not.toHaveBeenCalled();
@@ -86,12 +86,12 @@ describe('AgentBoard knowledge MCP tools', () => {
     await harness.start();
 
     const invalid = await harness.request('tools/call', {
-      name: 'agentboard_create_knowledge', arguments: { title: 'Guide', slug: 'guide', body_md: 'Body', sources: [source], evidence: [evidence], request_id: requestId },
+      name: 'create_knowledge', arguments: { title: 'Guide', slug: 'guide', body_md: 'Body', sources: [source], evidence: [evidence], request_id: requestId },
     });
     expect(invalid).toMatchObject({ jsonrpc: '2.0', result: { isError: true, content: [{ text: expect.stringContaining('Input validation error') }] } });
 
     const created = await harness.request('tools/call', {
-      name: 'agentboard_create_knowledge', arguments: { scope: 'common', title: 'Guide', slug: 'guide', body_md: 'Body', sources: [source], evidence: [evidence], request_id: requestId },
+      name: 'create_knowledge', arguments: { scope: 'common', title: 'Guide', slug: 'guide', body_md: 'Body', sources: [source], evidence: [evidence], request_id: requestId },
     });
     const body = JSON.parse(String((fetcher.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit])[1].body));
     expect(body).toMatchObject({ scope: 'common', actor: 'codex', title: 'Guide', slug: 'guide' });
@@ -106,7 +106,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_revise_knowledge',
+      name: 'revise_knowledge',
       arguments: { page_id: 'page-1', scope: 'workspace', expected_revision: 1, body_md: 'Stale body', request_id: requestId },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'KNOWLEDGE_REVISION_CONFLICT', current_revision: 3 } });
@@ -129,8 +129,8 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     for (const [name, revision, action] of [
-      ['agentboard_archive_knowledge', 2, 'archive'],
-      ['agentboard_restore_knowledge', 3, 'restore'],
+      ['archive_knowledge', 2, 'archive'],
+      ['restore_knowledge', 3, 'restore'],
     ] as const) {
       const response = await harness.request('tools/call', {
         name,
@@ -175,7 +175,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: {
+      name: 'read_knowledge', arguments: {
         page_id: 'page-1', scope: 'workspace', offset_chars: 10, max_chars: 20000,
         include_history: true, history_offset: 1, history_limit: 2,
       },
@@ -191,7 +191,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     expect(JSON.stringify(response.result).length).toBeLessThanOrEqual(40000);
 
     const continuation = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: {
+      name: 'read_knowledge', arguments: {
         page_id: 'page-1', scope: 'workspace', max_chars: 1000,
         include_history: true, history_offset: 2, history_limit: 1, history_body_offset_chars: 15000,
       },
@@ -212,7 +212,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     await harness.start();
     const readSlice = async (sourcesOffset: number, evidenceOffset: number) => {
       const response = await harness.request('tools/call', {
-        name: 'agentboard_read_knowledge', arguments: {
+        name: 'read_knowledge', arguments: {
           page_id: 'page-1', scope: 'workspace', max_chars: 10,
           sources_offset: sourcesOffset, sources_limit: 10,
           evidence_offset: evidenceOffset, evidence_limit: 10,
@@ -240,14 +240,14 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const invalid = await harness.request('tools/call', {
-      name: 'agentboard_read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', include_history: true, history_limit: 2, history_body_offset_chars: 10 },
+      name: 'read_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', include_history: true, history_limit: 2, history_body_offset_chars: 10 },
     });
     expect(invalid.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
     const noActor = createHarness({ baseUrl: config.baseUrl, workspaceId: config.workspaceId }, fetcher);
     harnesses.push(noActor);
     await noActor.start();
     const missingActor = await noActor.request('tools/call', {
-      name: 'agentboard_archive_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', expected_revision: 1, request_id: requestId },
+      name: 'archive_knowledge', arguments: { page_id: 'page-1', scope: 'workspace', expected_revision: 1, request_id: requestId },
     });
     expect(missingActor.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'AGENT_ID_REQUIRED' } });
     expect(fetcher).not.toHaveBeenCalled();
@@ -259,7 +259,7 @@ describe('AgentBoard knowledge MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_search_knowledge', arguments: { query: 'cache', scope: 'workspace' },
+      name: 'search_knowledge', arguments: { query: 'cache', scope: 'workspace' },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'KNOWLEDGE_UNAVAILABLE' } });
   });

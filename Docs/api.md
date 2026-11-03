@@ -46,7 +46,7 @@
 | --- | --- | --- | --- | --- |
 | `GET /api/workspaces` | query：`limit? offset?` | `Workspace[]`（created_at,id 升序）；带分页参数时 `PageResult<Workspace>`（id 升序） | 400 分页参数非法 | routes.ts:201 |
 | `POST /api/workspaces` | body：`name: string`（键必填，可空串）、`path: string`（非空，须为已存在目录） | `Workspace`；name 空串时取 path 去尾部 `/` `\` 后的最后一段 | 400 path 为空 / 路径不存在或不是目录；path 重复（`workspace.path` UNIQUE，`schema.ts:9`）未映射为业务错误 → 500 `INTERNAL`（以实现为准） | routes.ts:206 |
-| `DELETE /api/workspaces/:id` | — | 204；级联删除该空间 issue/comment/session/message/附件元数据，提交后回收附件文件 | 404 工作空间不存在；409 `CONFLICT` 仍存在知识页（禁删） | routes.ts |
+| `DELETE /api/workspaces/:id` | — | 204；级联删除该空间 issue/comment/session/message/附件元数据，提交后回收附件文件 | 404 工作空间不存在；409 `CONFLICT`（body `{error:{code,message}}`，message 为可读原因：`该空间仍有 <n> 个知识页及 <m> 条历史 revision，请先删除或迁移知识页后再移除` / `该空间有 <n> 个运行中会话，请先结束会话后再移除` / `该空间有 <n> 个子任务仍挂在父任务下，请先解除关联后再移除`）；CLI 用 `kb delete-space <id\|名> --yes`（缺 `--yes` 只回显，退出码 1；被阻塞退出码 2） | routes.ts:415 |
 
 ### 评论图片附件
 
@@ -120,11 +120,13 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 
 | 工具 | 入参 | 语义 |
 | --- | --- | --- |
-| `agentboard_list_dependencies` | `task_id`、`workspace_id?`（绑定工作区优先，越界 `WORKSPACE_BOUND`） | 返回 `{ blockers, blocked, workspace_id }`，`resolved` 由服务端给 |
-| `agentboard_add_dependency` | `task_id`、`blocker_task_id`、`request_id`（UUID，作 `Idempotency-Key`）、`workspace_id?` | 建边，返回同 `list` 的视图 |
-| `agentboard_remove_dependency` | `task_id`、`blocker_task_id`、`workspace_id?` | 删边，返回 `{ removed: true, task_id, blocker_task_id, workspace_id }` |
+| `list_dependencies` | `task_id`、`workspace_id?`（绑定工作区优先，越界 `WORKSPACE_BOUND`） | 返回 `{ blockers, blocked, workspace_id }`，`resolved` 由服务端给 |
+| `add_dependency` | `task_id`、`blocker_task_id`、`request_id`（UUID，作 `Idempotency-Key`）、`workspace_id?` | 建边，返回同 `list` 的视图 |
+| `remove_dependency` | `task_id`、`blocker_task_id`、`workspace_id?` | 删边，返回 `{ removed: true, task_id, blocker_task_id, workspace_id }` |
 
 错误走 `structuredContent.error.code`：依赖码原样透传（`DEPENDENCY_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED` / `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF`），404 `NOT_FOUND` 按 `apiClient` 既有约定落成 `TASK_NOT_FOUND`；`message` 用本地安全文案，不回传服务端原文。
+
+> **命名与兼容（MCP-NAMING）**：MCP server 名已是 `agentboard`，工具名不再带 `agentboard_` 前缀（客户端显示为 `mcp__agentboard__list_tasks` 这类形式）。旧名 `agentboard_<name>` 作为 alias 同时注册、指向同一 handler，**下个大版本移除**；已有客户端配置与 prompt 无需立即改。
 
 ### 状态字典（STATUS-1/2，`workspace_status` + `services/workspaceStatus.ts`）
 
@@ -140,7 +142,7 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 
 **CLI 列表口径（CLI-LIST-GUARD）**：`kb list-tasks --status <状态>` 先按该工作区（未指定 workspace 时按「任一工作区」）的状态字典校验，非法值 → 非 0 退出并列出可用状态（不再静默返回「（无任务）」）；`--json` **默认裁掉 `description` 正文**并标记 `description_omitted: true`，需要正文时显式 `--json --full`；表格模式本来就不输出正文。
 
-**MCP**：`agentboard_list_statuses` / `agentboard_add_status`（`request_id` 作幂等键） / `agentboard_remove_status`（`migrate_to` 走 query，无幂等键，与 REST 一致）；强制 `resolveWorkspaceId`，错误码透传（`WORKSPACE_STATUS_BUILTIN` / `WORKSPACE_STATUS_EXISTS` / `MIGRATION_TARGET_REQUIRED` / `MIGRATION_TARGET_INVALID`）。
+**MCP**：`list_statuses` / `add_status`（`request_id` 作幂等键） / `remove_status`（`migrate_to` 走 query，无幂等键，与 REST 一致）；强制 `resolveWorkspaceId`，错误码透传（`WORKSPACE_STATUS_BUILTIN` / `WORKSPACE_STATUS_EXISTS` / `MIGRATION_TARGET_REQUIRED` / `MIGRATION_TARGET_INVALID`）。
 
 ## 7. comments
 
@@ -167,9 +169,9 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `POST /api/issues/:id/claim` | body：`agent_id: string 非空`、`knowledge_enabled?: boolean`（默认 true）、`knowledge_query?: string 1-500` | `{ ...issue, knowledge }`。原子占用（status→进行中、session_id=null 纯登记不建会话；仅未占用且 status∈{待规划,进行中} 可领取），并发领取仅一个成功；留言游标置为领取前最新评论；存在未验证图片时停在首条图片评论之前。**依赖门禁（DEP-1）**：前置未解除时 409，文案 `存在未完成的前置任务：<title>(<short id>)…；完成后可领取`，守卫与占用更新在同一 IMMEDIATE 事务内；`services/dispatch.ts` 派发路径同样被拦 | 400 agent_id 为空；409 `CONFLICT` 已被占用 / status∉{待规划,进行中} / 前置未解除；404 `TASK_NOT_FOUND`（带 workspace_id 且任务缺失/不归属） | routes.ts |
+| `POST /api/issues/:id/claim` | body：`agent_id: string 非空`、`knowledge_enabled?: boolean`（默认 true）、`knowledge_query?: string 1-500` | `{ ...issue, knowledge }`。原子占用（status→进行中、session_id=null 纯登记不建会话；仅未占用且 status∈{待规划,进行中} 可领取），并发领取仅一个成功；留言游标置为领取前最新评论；存在未验证图片时停在首条图片评论之前。**依赖门禁（DEP-1）**：前置未解除时 409，文案 `存在未完成的前置任务：<title>(<short id>)…；完成后可领取`，守卫与占用更新在同一 IMMEDIATE 事务内；`services/dispatch.ts` 派发路径同样被拦 | 400 agent_id 为空；**409 `ISSUE_CLAIMED`** 已被占（文案 `已被 <agent> 占用；先 release 或换卡，勿重复 claim`）/ **409 `ISSUE_STATUS_NOT_CLAIMABLE`** 无人占用但 status∉{待规划,进行中}（文案 `状态不可领取（当前=<status>，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`）/ 409 前置未解除（DEP-1）；404 `TASK_NOT_FOUND`（带 workspace_id 且任务缺失/不归属） | routes.ts、`claim.ts:83-91`（CLAIM-MSG） |
 | `POST /api/issues/:id/release` | 不带 workspace_id：无需 body（用户强制释放）；带 workspace_id：body `agent_id: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用。不带 workspace_id：comment author=`system` 内容「用户强制释放」、任何状态可释放；带 workspace_id：comment author=`agent:<agent_id>` 内容「占用者释放任务」 | 不带 workspace_id：404 任务不存在。带 workspace_id：404 `TASK_NOT_FOUND`；409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id | routes.ts:398 |
-| `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`（空串等价不写评论）、`scope_paths?: string[]`（最多 200 项，提交范围声明：文件路径或目录前缀） | `{ ...issue, comment }`。状态→待验收、清空占用；notes 非空时落评论（author=`agent:<agent_id>`），否则 comment=null。GIT-ON-DONE 提交范围：同 workspace 有其它「进行中且被占用」任务时，只提交 `scope_paths` 命中的路径，其余路径不提交并以 system 评论列出清单；未声明则整批不提交（同样列清单）；无并行占用时按 claim 基线 diff 提交。**claim 前就已未提交的文件**（指纹与基线相同、不在变化集）：落在 `scope_paths` 内的会被强制提交，评论标注「claim 前就已修改、按声明范围强制提交」；不在范围内或未声明时一律不提交，改为评论列出清单 + 可直接执行的 `git add -- … && git commit -m … -- …` 补救命令（不静默跳过）。详见 `gitBaseline.ts` 头注释。**SCOPE-GUARD**：声明了 `scope_paths` 却零命中时，系统评论以「⚠ 声明范围零命中，本次未自动提交」开头，列出声明范围与未提交文件，并给出可直接执行的两条命令（`git add -- …; git commit -m … -- …`）；done 本身仍然成功（不阻塞已完成的卡）。CLI 侧 `--scope` 建议每个路径一个，不要写逗号串（PowerShell 会拆/并参数；含空格的值会给 stderr 警告）。 | 400 agent_id 为空；400 `scope_paths` 超限或空串。不带 workspace_id：404 任务不存在、409 `CONFLICT` 未被占用、409 `NOT_TASK_OWNER` 仅当 agent_id≠'user' 且≠占用者。带 workspace_id：404 `TASK_NOT_FOUND`、409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id（'user' 不豁免） | routes.ts:399 |
+| `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`（空串等价不写评论）、`scope_paths?: string[]`（最多 200 项，提交范围声明：文件路径或目录前缀） | `{ ...issue, comment }`。状态→待验收、清空占用；notes 非空时落评论（author=`agent:<agent_id>`），否则 comment=null。GIT-ON-DONE 提交范围：同 workspace 有其它「进行中且被占用」任务时，只提交 `scope_paths` 命中的路径，其余路径不提交并以 system 评论列出清单；未声明则整批不提交（同样列清单）；无并行占用时按 claim 基线 diff 提交。**claim 前就已未提交的文件**（指纹与基线相同、不在变化集）：落在 `scope_paths` 内的会被强制提交，评论标注「claim 前就已修改、按声明范围强制提交」；不在范围内或未声明时一律不提交，改为评论列出清单 + 可直接执行的 `git add -- … && git commit -m … -- …` 补救命令（不静默跳过）。详见 `gitBaseline.ts` 头注释。**SCOPE-GUARD**：声明了 `scope_paths` 却零命中时，系统评论以「⚠ 声明范围零命中，本次未自动提交」开头，列出声明范围与未提交文件，并给出可直接执行的两条命令（`git add -- …; git commit -m … -- …`）；done 本身仍然成功（不阻塞已完成的卡）。CLI 侧 `--scope` 建议每个路径一个，不要写逗号串（PowerShell 会拆/并参数；含空格的值会给 stderr 警告）。**非 git 工作区**（`isGitWorkTree` 为假，含目录不存在）：不再静默跳过，done 后落一条 system 评论 `跳过自动提交：工作区不是 git 仓库（<path>）；声明范围：<a / b | （未声明）>`，done 本身仍成功（`gitBaseline.ts:198-208`）。 | 400 agent_id 为空；400 `scope_paths` 超限或空串。不带 workspace_id：404 任务不存在、409 `CONFLICT` 未被占用、409 `NOT_TASK_OWNER` 仅当 agent_id≠'user' 且≠占用者。带 workspace_id：404 `TASK_NOT_FOUND`、409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id（'user' 不豁免） | routes.ts:399 |
 | `POST /api/issues/:id/close`（幂等） | body：`agent_id`（可选）、`workspace_id?` | `Issue`（status→`已关闭`）。只允许「待验收」→「已关闭」；已关闭再调幂等返回；占用中拒绝 | 409 `ISSUE_CLAIMED`（先 release）/ `INVALID_TRANSITION`（当前不是待验收）；404 `NOT_FOUND` | routes.ts（`services/issueTransitions.ts`） |
 | `POST /api/issues/:id/reopen`（幂等） | body：`status?`（默认 `待规划`）、`agent_id`（可选）、`workspace_id?` | `Issue`（status→目标）。只允许关闭类（kind `done`/`deprecated`）→ 目标状态；目标必须命中本工作区状态字典（含自定义状态） | 400 目标状态非法（文案列出可用状态）；409 `ISSUE_CLAIMED` / `INVALID_TRANSITION`（当前不是关闭态）；404 `NOT_FOUND` | routes.ts |
 | `POST /api/issues/:id/fail` | body：`agent_id: string 非空`、`reason: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用；reason 落评论（author=`agent:<agent_id>`） | 400 agent_id / reason 为空；其余按两条路径同 done | routes.ts:400 |
@@ -189,7 +191,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `GET /api/sessions/:id` | — | `Session` + `queued_count` `waiting_slot` | 404 会话不存在 | routes.ts:431 |
 | `GET /api/sessions/:id/queue` | — | `{ texts: string[] }`：当前内存排队文本副本（只读，无编辑接口） | 404 会话不存在 | routes.ts:439 |
 | `GET /api/sessions/:id/messages` | query：`after?: 非负整数毫秒时间戳`（默认 0） | `Message[]`（ts 升序，ts>after） | 400 after 非法；404 会话不存在 | routes.ts:444 |
-| `POST /api/sessions` | body：`cli: string 非空`、`model?: string\|null`、`issue_id?: string`、`workspace_id?: string`（**issue_id 为空时必填**）、`prompt?: string`、`reuse_session?: 'last'\|'new'`（'last' 复用该任务已绑定会话的 adapter_session_id）、`knowledge_enabled?: boolean`、`knowledge_query?: string 1-500`、`selected_attachment_ids?: UUID[]`（仅 issue-bound session 可用，最多 100 个）、`retry_unknown_images?: boolean`（实际投递前缀含 unknown 时必须为 true） | 绑 issue：派发（自动 claim + 起首轮）；按评论顺序把所选图片截断为最多 5 张、总计 ≤20 MiB 的前缀；其余图片保持待读并追加 `另有 N 张未附`，返回 `{ ...session, knowledge, remaining_attachment_count }`。图片输入能力未验证时不派发所选图片。自由会话返回 `Session`，不含剩余图片计数。WS：绑 issue 先 issue.changed，再 session.changed | 400 issue_id 为空未给 workspace_id 或图片ID未绑定 issue；400 未知 CLI、选择 ID 超过 100、`IMAGE_DELIVERY_IN_PROGRESS`、`IMAGE_DELIVERY_UNKNOWN_RETRY_REQUIRED` 或 `IMAGE_DELIVERY_UNVERIFIED`；404 任务 / 工作空间 / 图片不存在；409 `CONFLICT` 已被占用 | routes.ts:456 |
+| `POST /api/sessions` | body：`cli: string 非空`、`model?: string\|null`、`issue_id?: string`、`workspace_id?: string`（**issue_id 为空时必填**）、`prompt?: string`、`reuse_session?: 'last'\|'new'`（'last' 复用该任务已绑定会话的 adapter_session_id）、`knowledge_enabled?: boolean`、`knowledge_query?: string 1-500`、`selected_attachment_ids?: UUID[]`（仅 issue-bound session 可用，最多 100 个）、`retry_unknown_images?: boolean`（实际投递前缀含 unknown 时必须为 true） | 绑 issue：派发（自动 claim + 起首轮）；按评论顺序把所选图片截断为最多 5 张、总计 ≤20 MiB 的前缀；其余图片保持待读并追加 `另有 N 张未附`，返回 `{ ...session, knowledge, remaining_attachment_count }`。图片输入能力未验证时不派发所选图片。自由会话返回 `Session`，不含剩余图片计数。WS：绑 issue 先 issue.changed，再 session.changed | 400 issue_id 为空未给 workspace_id 或图片ID未绑定 issue；400 未知 CLI、选择 ID 超过 100、`IMAGE_DELIVERY_IN_PROGRESS`、`IMAGE_DELIVERY_UNKNOWN_RETRY_REQUIRED` 或 `IMAGE_DELIVERY_UNVERIFIED`；404 任务 / 工作空间 / 图片不存在；409 `ISSUE_CLAIMED` 已被占用（CLAIM-MSG，文案含占用者） | routes.ts:456 |
 | `POST /api/sessions/:id/messages` | body：`text: string 非空` | `{ queued: boolean }`；false=空闲立即起轮（状态回运行中），true=入队待合并（运行时变化经 WS session.runtime）。两种情况均先落 user 消息（WS message.added） | 400 text 为空；404 会话不存在 | routes.ts:485 |
 | `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留 | 404 会话不存在 | routes.ts:491 |
 | `PATCH /api/sessions/:id` | body：`model: 非空 string\|null`（键必填；null 清空） | `Session`；仅改 model，下一轮起轮生效；WS session.changed | 400 缺 model 键或为空串；404 会话不存在 | routes.ts:496 |
@@ -239,7 +241,19 @@ Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expect
 kb knowledge action <page-id> archive --scope common --expected-revision 2
 ```
 
-`--sources[].content_hash` 取文件 sha256：`(Get-FileHash README.md -Algorithm SHA256).Hash.ToLower()`；`captured_at` 取 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。退出码：0 成功、1 参数或服务端错误、2 任务占用或知识 revision 冲突。
+`--sources[].content_hash` 取文件 sha256：`(Get-FileHash README.md -Algorithm SHA256).Hash.ToLower()`；`captured_at` 取 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
+
+### 11.2 CLI 退出码表（`kb --help` 末尾同源，`index.ts` `EXIT_CODE_HELP`）
+
+| 码 | 含义 | 典型命令与实测 |
+| --- | --- | --- |
+| 0 | 成功（`--help` / `--version` 同样 0） | `kb --version` / `kb done …` |
+| 1 | 参数或用法错误、服务端非冲突错误（400/404/500）、服务看板不可达；命令未改动数据 | `kb done <不存在 id>` → `任务不存在`；`kb delete-issue <id>` 缺 `--yes` → 只回显标题/状态、不发 DELETE；`kb delete-space <空间>` 缺 `--yes` → 只回显名称/路径；`kb nope` → `unknown command` |
+| 2 | 冲突，命令未改动数据：占用（`已被 <agent> 占用`）/ `未被占用` / 非当前占用者 / 状态不可领取 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞（占用中、含子任务、仍有知识页或运行中会话） | `kb claim <已被占>`、`kb claim <待验收>`、`kb done <未占用>`、`kb delete-space <有知识页> --yes` |
+| 3 | `kb dep` 专用：依赖参数错误（自环 / 跨工作区 / `VALIDATION_ERROR`） | `kb dep add <id> <同一 id>` → `不能依赖自身…` |
+| 4 | `kb dep` 专用：任务或依赖不存在 | `kb dep add <id> <不存在 id>` → `任务或依赖不存在` |
+
+约定：原因一律单行写 stderr；`--json` 只改 stdout 结构，不改退出码。`done` 的「占用 2」与「参数 2」都以 2 上报，区别在文案（`未被占用：如需推进请先 kb claim…` vs 参数错误列表），脚本只按 2 判「当前不可完成」即可。
 
 ## 12. WebSocket 事件（`/ws`，`packages/shared/src/types.ts:73-82`）
 

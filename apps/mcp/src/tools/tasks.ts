@@ -41,22 +41,26 @@ function boundedMutationData(data: unknown): unknown {
 export function registerTaskTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   // ponytail: SDK schemas validate inputs; this wrapper keeps every tool's result and error shape identical.
   const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly } }, async (input) => {
+    const handler = async (input: any) => {
       try {
         const data = await run(input);
         return mcpToolSuccess(readOnly ? data : boundedMutationData(data), `${name} succeeded.`);
       } catch (error) {
         return mcpToolFailure(error);
       }
-    });
+    };
+    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
+    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
+    server.registerTool(name, meta, handler);
+    server.registerTool(`agentboard_${name}`, meta, handler);
   };
 
-  register('agentboard_list_workspaces', 'List workspaces by page. Local filesystem paths are omitted.', z.object(pageFields).strict(), async ({ limit, offset }) => {
+  register('list_workspaces', 'List workspaces by page. Local filesystem paths are omitted.', z.object(pageFields).strict(), async ({ limit, offset }) => {
     const page = await api.get<PageResult<Workspace>>('/workspaces', { limit, offset });
     return { items: page.items.map(({ id, name }) => ({ id, name })), next_offset: page.next_offset };
   });
 
-  register('agentboard_list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace.', z.object({
+  register('list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace.', z.object({
     ...workspaceField,
     status: statusSchema.optional(),
     tree: z.boolean().default(false),
@@ -88,7 +92,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return { ...page, workspace_id: workspaceId };
   });
 
-  register('agentboard_get_task', 'Read a task description window from one effective workspace.', z.object({
+  register('get_task', 'Read a task description window from one effective workspace.', z.object({
     ...workspaceField,
     ...taskIdField,
     description_offset_chars: z.number().int().min(0).default(0),
@@ -102,7 +106,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     });
   });
 
-  register('agentboard_get_task_comments', 'Read a paged comment list without advancing the shared unread cursor.', z.object({
+  register('get_task_comments', 'Read a paged comment list without advancing the shared unread cursor.', z.object({
     ...workspaceField,
     ...taskIdField,
     ...pageFields,
@@ -114,7 +118,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return { ...page, workspace_id: workspaceId };
   });
 
-  register('agentboard_get_task_comment', 'Read a comment body window without changing comment read state.', z.object({
+  register('get_task_comment', 'Read a comment body window without changing comment read state.', z.object({
     ...workspaceField,
     ...taskIdField,
     comment_id: z.string().trim().min(1),
@@ -138,7 +142,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     };
   });
 
-  register('agentboard_create_task', 'Create a task in one effective workspace.', z.object({
+  register('create_task', 'Create a task in one effective workspace.', z.object({
     ...workspaceField,
     title: z.string().trim().min(1),
     description: z.string().default(''),
@@ -155,7 +159,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return issue;
   }, false);
 
-  register('agentboard_update_task', 'Update task fields with the expected task timestamp.', z.object({
+  register('update_task', 'Update task fields with the expected task timestamp.', z.object({
     ...workspaceField,
     ...taskIdField,
     expected_updated_at: z.number().int().nonnegative(),
@@ -176,7 +180,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id);
   }, false);
 
-  register('agentboard_claim_task', 'Atomically claim an eligible task; the configured agent ID is an audit label.', z.object({
+  register('claim_task', 'Atomically claim an eligible task; the configured agent ID is an audit label.', z.object({
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
@@ -188,7 +192,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, 'TASK_CLAIMED');
   }, false);
 
-  register('agentboard_release_task', 'Release a task owned by the configured agent.', z.object({
+  register('release_task', 'Release a task owned by the configured agent.', z.object({
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
@@ -200,7 +204,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id);
   }, false);
 
-  register('agentboard_add_task_comment', 'Add a task comment under the configured agent audit label.', z.object({
+  register('add_task_comment', 'Add a task comment under the configured agent audit label.', z.object({
     ...workspaceField,
     ...taskIdField,
     content: z.string().min(1),
@@ -213,7 +217,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id);
   }, false);
 
-  register('agentboard_complete_task', 'Complete a task owned by the configured agent.', z.object({
+  register('complete_task', 'Complete a task owned by the configured agent.', z.object({
     ...workspaceField,
     ...taskIdField,
     notes: z.string().default(''),
@@ -226,7 +230,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id);
   }, false);
 
-  register('agentboard_delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks.', z.object({
+  register('delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks.', z.object({
     ...workspaceField,
     ...taskIdField,
   }).strict(), async ({ workspace_id, task_id }) => {
@@ -235,7 +239,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return { deleted: true, task_id };
   }, false);
 
-  register('agentboard_fail_task', 'Return a task to planning with a required failure reason.', z.object({
+  register('fail_task', 'Return a task to planning with a required failure reason.', z.object({
     ...workspaceField,
     ...taskIdField,
     reason: z.string().trim().min(1),

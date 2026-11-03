@@ -17,32 +17,37 @@ describe('AgentBoard task MCP server', () => {
     const initialized = await harness.start();
     expect(initialized.result?.protocolVersion).toBe('2025-11-25');
     const response = await harness.request('tools/list');
-    expect(response.result?.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
-      'agentboard_add_dependency',
-      'agentboard_add_status',
-      'agentboard_add_task_comment',
-      'agentboard_archive_knowledge',
-      'agentboard_claim_task',
-      'agentboard_complete_task',
-      'agentboard_create_knowledge',
-      'agentboard_create_task',
-      'agentboard_delete_task',
-      'agentboard_fail_task',
-      'agentboard_get_task',
-      'agentboard_get_task_comment',
-      'agentboard_get_task_comments',
-      'agentboard_list_dependencies',
-      'agentboard_list_statuses',
-      'agentboard_list_tasks',
-      'agentboard_list_workspaces',
-      'agentboard_read_knowledge',
-      'agentboard_release_task',
-      'agentboard_remove_dependency',
-      'agentboard_remove_status',
-      'agentboard_restore_knowledge',
-      'agentboard_revise_knowledge',
-      'agentboard_search_knowledge',
-      'agentboard_update_task',
+    // MCP-NAMING：主名不带 agentboard_ 前缀；旧名作为 alias 另注册（下个大版本移除），此处只断言主名集合
+    const primaryNames = (response.result?.tools ?? [])
+      .map((tool: { name: string }) => tool.name)
+      .filter((name: string) => !name.startsWith('agentboard_'))
+      .sort();
+    expect(primaryNames).toEqual([
+      'add_dependency',
+      'add_status',
+      'add_task_comment',
+      'archive_knowledge',
+      'claim_task',
+      'complete_task',
+      'create_knowledge',
+      'create_task',
+      'delete_task',
+      'fail_task',
+      'get_task',
+      'get_task_comment',
+      'get_task_comments',
+      'list_dependencies',
+      'list_statuses',
+      'list_tasks',
+      'list_workspaces',
+      'read_knowledge',
+      'release_task',
+      'remove_dependency',
+      'remove_status',
+      'restore_knowledge',
+      'revise_knowledge',
+      'search_knowledge',
+      'update_task',
     ]);
     expect(harness.stdoutMessages).toHaveLength(2);
     expect(harness.stdoutMessages.every((message) => message.jsonrpc === '2.0')).toBe(true);
@@ -54,7 +59,7 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_tasks',
+      name: 'list_tasks',
       arguments: { limit: 101 },
     });
     expect(response.result?.isError).toBe(true);
@@ -67,7 +72,7 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_tasks',
+      name: 'list_tasks',
       arguments: { workspace_id: 'workspace-b' },
     });
     expect(response.result?.isError).toBe(true);
@@ -82,7 +87,7 @@ describe('AgentBoard task MCP server', () => {
     await harness.start();
     const requestId = '2280a9a4-409b-44e2-a1fb-7e8f8862b1a0';
     const response = await harness.request('tools/call', {
-      name: 'agentboard_claim_task',
+      name: 'claim_task',
       arguments: { task_id: 'task-1', request_id: requestId },
     });
     expect(response.result?.isError).toBe(true);
@@ -98,7 +103,7 @@ describe('AgentBoard task MCP server', () => {
     const harness = createHarness(baseConfig, fetchMock as typeof fetch);
     harnesses.push(harness);
     await harness.start();
-    const response = await harness.request('tools/call', { name: 'agentboard_delete_task', arguments: { task_id: 'task-1' } });
+    const response = await harness.request('tools/call', { name: 'delete_task', arguments: { task_id: 'task-1' } });
     expect(response.result?.isError).not.toBe(true);
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { deleted: true, task_id: 'task-1' } });
     const [input, init] = fetchMock.mock.calls[0]!;
@@ -114,7 +119,7 @@ describe('AgentBoard task MCP server', () => {
     const harness = createHarness(baseConfig, fetchMock as typeof fetch);
     harnesses.push(harness);
     await harness.start();
-    const response = await harness.request('tools/call', { name: 'agentboard_delete_task', arguments: { task_id: 'task-1' } });
+    const response = await harness.request('tools/call', { name: 'delete_task', arguments: { task_id: 'task-1' } });
     expect(response.result?.isError).toBe(true);
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'TASK_CONFLICT' } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -129,7 +134,7 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_update_task',
+      name: 'update_task',
       arguments: { task_id: 'task-1', expected_updated_at: 1, title: 'Update', request_id: '00000000-0000-4000-8000-000000000032' },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'TASK_REVISION_CONFLICT', current_updated_at: 42 } });
@@ -148,13 +153,13 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_workspaces',
+      name: 'list_workspaces',
       arguments: {},
     });
     expect(response.result?.isError).toBe(true);
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'SERVER_UNREACHABLE' } });
     const mutation = await harness.request('tools/call', {
-      name: 'agentboard_claim_task',
+      name: 'claim_task',
       arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000001' },
     });
     expect(mutation.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'SERVER_UNREACHABLE' } });
@@ -188,17 +193,17 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
 
-    const workspaces = (await harness.request('tools/call', { name: 'agentboard_list_workspaces', arguments: {} })).result?.structuredContent;
+    const workspaces = (await harness.request('tools/call', { name: 'list_workspaces', arguments: {} })).result?.structuredContent;
     expect(workspaces?.data.items).toEqual([{ id: 'workspace-a', name: 'A' }]);
 
-    const tasks = (await harness.request('tools/call', { name: 'agentboard_list_tasks', arguments: {} })).result?.structuredContent;
+    const tasks = (await harness.request('tools/call', { name: 'list_tasks', arguments: {} })).result?.structuredContent;
     expect(tasks?.data).toMatchObject({ items: [], next_offset: null, workspace_id: 'workspace-a' });
     expect(calls[1]?.url.searchParams.get('workspace')).toBe('workspace-a');
     expect(calls[1]?.url.searchParams.get('limit')).toBe('50');
     expect(calls[1]?.url.searchParams.get('offset')).toBe('0');
 
     const task = (await harness.request('tools/call', {
-      name: 'agentboard_get_task',
+      name: 'get_task',
       arguments: { task_id: 'task-1', description_offset_chars: 12, description_max_chars: 5 },
     })).result?.structuredContent;
     expect(task?.data).toMatchObject({ description: 'window', description_truncated: true, next_description_offset_chars: 17 });
@@ -207,7 +212,7 @@ describe('AgentBoard task MCP server', () => {
     expect(calls[2]?.url.searchParams.get('description_max_chars')).toBe('5');
 
     const comments = (await harness.request('tools/call', {
-      name: 'agentboard_get_task_comments',
+      name: 'get_task_comments',
       arguments: { task_id: 'task-1', limit: 1, offset: 0 },
     })).result?.structuredContent;
     expect(comments?.data.items[0]?.has_more).toBe(true);
@@ -216,7 +221,7 @@ describe('AgentBoard task MCP server', () => {
     expect(calls.some(({ url }) => url.pathname.endsWith('/comments/consume'))).toBe(false);
 
     const comment = (await harness.request('tools/call', {
-      name: 'agentboard_get_task_comment',
+      name: 'get_task_comment',
       arguments: { task_id: 'task-1', comment_id: 'comment-1', content_offset_chars: 500, content_max_chars: 200 },
     })).result?.structuredContent;
     expect(comment?.data).toMatchObject({ content: 'body', truncated: true, next_content_offset_chars: 700 });
@@ -232,13 +237,13 @@ describe('AgentBoard task MCP server', () => {
     await harness.start();
     const requestIds = Array.from({ length: 7 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
     const calls = [
-      ['agentboard_create_task', { title: 'New task', request_id: requestIds[0] }],
-      ['agentboard_update_task', { task_id: 'task-1', expected_updated_at: 123, title: 'Updated', request_id: requestIds[1] }],
-      ['agentboard_claim_task', { task_id: 'task-1', request_id: requestIds[2] }],
-      ['agentboard_release_task', { task_id: 'task-1', request_id: requestIds[3] }],
-      ['agentboard_add_task_comment', { task_id: 'task-1', content: 'note', request_id: requestIds[4] }],
-      ['agentboard_complete_task', { task_id: 'task-1', request_id: requestIds[5] }],
-      ['agentboard_fail_task', { task_id: 'task-1', reason: 'blocked', request_id: requestIds[6] }],
+      ['create_task', { title: 'New task', request_id: requestIds[0] }],
+      ['update_task', { task_id: 'task-1', expected_updated_at: 123, title: 'Updated', request_id: requestIds[1] }],
+      ['claim_task', { task_id: 'task-1', request_id: requestIds[2] }],
+      ['release_task', { task_id: 'task-1', request_id: requestIds[3] }],
+      ['add_task_comment', { task_id: 'task-1', content: 'note', request_id: requestIds[4] }],
+      ['complete_task', { task_id: 'task-1', request_id: requestIds[5] }],
+      ['fail_task', { task_id: 'task-1', reason: 'blocked', request_id: requestIds[6] }],
     ] as const;
     for (const [name, args] of calls) {
       const response = await harness.request('tools/call', { name, arguments: args });
@@ -268,14 +273,14 @@ describe('AgentBoard task MCP server', () => {
     const unbound = createHarness({ baseUrl: 'http://127.0.0.1:8787', agentId: 'codex' }, fetcher);
     harnesses.push(unbound);
     await unbound.start();
-    const missingWorkspace = await unbound.request('tools/call', { name: 'agentboard_list_tasks', arguments: {} });
+    const missingWorkspace = await unbound.request('tools/call', { name: 'list_tasks', arguments: {} });
     expect(missingWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_REQUIRED' } });
 
     const noAgent = createHarness({ baseUrl: 'http://127.0.0.1:8787', workspaceId: 'workspace-a' }, fetcher);
     harnesses.push(noAgent);
     await noAgent.start();
     const missingAgent = await noAgent.request('tools/call', {
-      name: 'agentboard_create_task',
+      name: 'create_task',
       arguments: { title: 'No actor', request_id: '00000000-0000-4000-8000-000000000099' },
     });
     expect(missingAgent.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'AGENT_ID_REQUIRED' } });
@@ -326,21 +331,21 @@ describe('AgentBoard task MCP server', () => {
     await harness.start();
 
     const created = (await harness.request('tools/call', {
-      name: 'agentboard_create_task',
+      name: 'create_task',
       arguments: { title: 'Long', request_id: '00000000-0000-4000-8000-000000000010' },
     })).result?.structuredContent?.data;
     expect(Array.from(created.description)).toHaveLength(12000);
     expect(created).toMatchObject({ description_truncated: true, next_description_offset_chars: 12000 });
 
     const added = (await harness.request('tools/call', {
-      name: 'agentboard_add_task_comment',
+      name: 'add_task_comment',
       arguments: { task_id: 'task-1', content: longBody, request_id: '00000000-0000-4000-8000-000000000011' },
     })).result?.structuredContent?.data;
     expect(Array.from(added.comment.content)).toHaveLength(12000);
     expect(added.comment).toMatchObject({ truncated: true, next_content_offset_chars: 12000 });
 
     const completed = (await harness.request('tools/call', {
-      name: 'agentboard_complete_task',
+      name: 'complete_task',
       arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000012' },
     })).result?.structuredContent?.data;
     expect(Array.from(completed.description)).toHaveLength(12000);
@@ -360,7 +365,7 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_tasks',
+      name: 'list_tasks',
       arguments: { tree: true, parent_issue_id: 'root-1', limit: 10 },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { items: [child], next_cursor: 'next', workspace_id: 'workspace-a' } });
@@ -376,11 +381,11 @@ describe('AgentBoard task MCP server', () => {
     harnesses.push(harness);
     await harness.start();
     await harness.request('tools/call', {
-      name: 'agentboard_create_task',
+      name: 'create_task',
       arguments: { title: 'Child', parent_issue_id: 'parent-1', request_id: '00000000-0000-4000-8000-000000000101' },
     });
     await harness.request('tools/call', {
-      name: 'agentboard_update_task',
+      name: 'update_task',
       arguments: { task_id: 'child-1', expected_updated_at: 1, parent_issue_id: null, request_id: '00000000-0000-4000-8000-000000000102' },
     });
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ parent_issue_id: 'parent-1' });

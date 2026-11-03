@@ -1,5 +1,5 @@
 /**
- * DEP-2：MCP 三工具（`agentboard_list_dependencies` / `agentboard_add_dependency` / `agentboard_remove_dependency`）。
+ * DEP-2：MCP 三工具（`list_dependencies` / `add_dependency` / `remove_dependency`（旧名保留 alias））。
  * 直接走工具层（真实 MCP stdio 握手 + 注入 fetch），不依赖真实 agent 或真实服务端。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -24,7 +24,7 @@ describe('AgentBoard dependency MCP tools', () => {
     await harness.start();
 
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_dependencies',
+      name: 'list_dependencies',
       arguments: { task_id: 'iss1' },
     });
     expect(response.result?.structuredContent).toMatchObject({
@@ -43,7 +43,7 @@ describe('AgentBoard dependency MCP tools', () => {
     const requestId = '9f0d3c8a-5b1e-4a26-8c7d-1f2b3a4c5d6e';
 
     const response = await harness.request('tools/call', {
-      name: 'agentboard_add_dependency',
+      name: 'add_dependency',
       arguments: { task_id: 'iss1', blocker_task_id: 'blk1', request_id: requestId },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { workspace_id: 'workspace-a' } });
@@ -61,7 +61,7 @@ describe('AgentBoard dependency MCP tools', () => {
     await harness.start();
 
     const response = await harness.request('tools/call', {
-      name: 'agentboard_remove_dependency',
+      name: 'remove_dependency',
       arguments: { task_id: 'iss1', blocker_task_id: 'blk1' },
     });
     expect(response.result?.structuredContent).toMatchObject({
@@ -90,7 +90,7 @@ describe('AgentBoard dependency MCP tools', () => {
       harnesses.push(harness);
       await harness.start();
       const response = await harness.request('tools/call', {
-        name: 'agentboard_add_dependency',
+        name: 'add_dependency',
         arguments: { task_id: 'iss1', blocker_task_id: 'blk1', request_id: '9f0d3c8a-5b1e-4a26-8c7d-1f2b3a4c5d6e' },
       });
       expect({ code: item.code, isError: response.result?.isError }).toEqual({ code: item.code, isError: true });
@@ -106,7 +106,7 @@ describe('AgentBoard dependency MCP tools', () => {
     harnesses.push(harness);
     await harness.start();
     const response = await harness.request('tools/call', {
-      name: 'agentboard_list_dependencies',
+      name: 'list_dependencies',
       arguments: { task_id: 'iss1', workspace_id: 'workspace-b' },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_BOUND' } });

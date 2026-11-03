@@ -134,7 +134,7 @@ function mutationSummary(page: KnowledgePage): Record<string, unknown> {
       next_offset_chars: window.next_offset_chars,
       sources_count: page.sources.length,
       evidence_count: page.evidence.length,
-      read_tool: 'agentboard_read_knowledge',
+      read_tool: 'read_knowledge',
     };
     if (outputFits(mcpToolSuccess(data, 'knowledge tool succeeded.'))) {
       best = data;
@@ -265,7 +265,7 @@ async function readKnowledge(
 
 export function registerKnowledgeTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    server.registerTool(name, { description, inputSchema, annotations: { readOnlyHint: readOnly } }, async (input) => {
+    const handler = async (input: any) => {
       try {
         const data = await run(input);
         const response = mcpToolSuccess(data, `${name} succeeded.`);
@@ -274,10 +274,14 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
       } catch (error) {
         return mcpToolFailure(error);
       }
-    });
+    };
+    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
+    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
+    server.registerTool(name, meta, handler);
+    server.registerTool(`agentboard_${name}`, meta, handler);
   };
 
-  register('agentboard_search_knowledge', 'Search knowledge in common, one workspace, or that workspace plus common.', z.object({
+  register('search_knowledge', 'Search knowledge in common, one workspace, or that workspace plus common.', z.object({
     ...scopeFields,
     scope: z.enum(['common', 'workspace', 'both']),
     query: z.string().trim().min(1).max(500),
@@ -299,11 +303,11 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
     };
   });
 
-  register('agentboard_read_knowledge', 'Read one knowledge page with codepoint windows, paged sources/evidence, and optional paged history.', z.object(readFields).strict(), async (input) => {
+  register('read_knowledge', 'Read one knowledge page with codepoint windows, paged sources/evidence, and optional paged history.', z.object(readFields).strict(), async (input) => {
     return readKnowledge(input as KnowledgeReadInput, config, api);
   });
 
-  register('agentboard_create_knowledge', 'Create a knowledge page in the explicitly selected scope.', z.object({
+  register('create_knowledge', 'Create a knowledge page in the explicitly selected scope.', z.object({
     ...scopeFields,
     ...contentFields,
     slug: z.string().trim().min(1).max(200),
@@ -320,7 +324,7 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
     return mutationSummary(page);
   }, false);
 
-  register('agentboard_revise_knowledge', 'Revise a knowledge page using expected_revision compare-and-swap.', z.object({
+  register('revise_knowledge', 'Revise a knowledge page using expected_revision compare-and-swap.', z.object({
     ...scopeFields,
     ...pageIdField,
     ...z.object(contentFields).partial().shape,
@@ -338,7 +342,7 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
     return mutationSummary(page);
   }, false);
 
-  const registerAction = (name: 'agentboard_archive_knowledge' | 'agentboard_restore_knowledge', action: 'archive' | 'restore') => {
+  const registerAction = (name: 'archive_knowledge' | 'restore_knowledge', action: 'archive' | 'restore') => {
     register(name, `${action === 'archive' ? 'Archive' : 'Restore'} a knowledge page using expected_revision compare-and-swap.`, z.object({
       ...scopeFields,
       ...pageIdField,
@@ -353,6 +357,6 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
       return mutationSummary(page);
     }, false);
   };
-  registerAction('agentboard_archive_knowledge', 'archive');
-  registerAction('agentboard_restore_knowledge', 'restore');
+  registerAction('archive_knowledge', 'archive');
+  registerAction('restore_knowledge', 'restore');
 }
