@@ -18,3 +18,5 @@ preview-*.txt
 idle-task-drafts/
 # 技能文件的本地回滚备份（不入库；文件保留在磁盘）
 skills/**/SKILL.md.bak-*
+# CDP 真实浏览器验证用的 Edge profile（仓库根；REPO-CLEAN-2）
+/.tmp-edge-*
