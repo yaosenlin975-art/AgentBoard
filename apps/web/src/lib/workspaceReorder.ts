@@ -34,6 +34,62 @@ export function moveWorkspace(list: readonly Workspace[], from: number, to: numb
   return arrayMove([...list], from, to);
 }
 
+/** 置顶条目（按下态 + 置顶前的位置）；顺序本身由服务端 sort_order 承载 */
+export interface PinnedEntry {
+  id: string;
+  /** 置顶前的列表下标，取消置顶时据此还原原位置 */
+  originIndex: number;
+}
+
+export const PINNED_IDS_KEY = 'agentboard.pinned-workspaces';
+
+/** 读置顶条目；localStorage 不可用或内容损坏时按空集合处理 */
+export function readPinned(): PinnedEntry[] {
+  try {
+    const raw = window.localStorage.getItem(PINNED_IDS_KEY);
+    if (raw === null) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry): PinnedEntry[] => {
+      if (typeof entry !== 'object' || entry === null) return [];
+      const { id, originIndex } = entry as { id?: unknown; originIndex?: unknown };
+      if (typeof id !== 'string') return [];
+      return [{ id, originIndex: typeof originIndex === 'number' ? originIndex : 0 }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+export function writePinned(entries: readonly PinnedEntry[]): void {
+  try {
+    window.localStorage.setItem(PINNED_IDS_KEY, JSON.stringify(entries));
+  } catch {
+    // localStorage 不可用（隐私模式等）：仅本次会话生效
+  }
+}
+
+/**
+ * 置顶顺序：置顶 = 移到首位；取消置顶 = 还原到置顶前的位置（越界时夹到末尾）。
+ * 两种情况都保持其余项相对次序不变。
+ * @param pinned 当前的置顶条目（调用方传入，函数保持纯）
+ */
+export function pinnedOrder(
+  list: readonly Workspace[],
+  id: string,
+  pin: boolean,
+  pinned: readonly PinnedEntry[],
+): Workspace[] {
+  const from = list.findIndex((workspace) => workspace.id === id);
+  const moving = list[from];
+  if (from < 0 || moving === undefined) return [...list];
+  if (pin) return moveWorkspace(list, from, 0);
+  const originIndex = pinned.find((entry) => entry.id === id)?.originIndex ?? from;
+  const rest = list.filter((workspace) => workspace.id !== id);
+  const target = Math.min(Math.max(originIndex, 0), rest.length);
+  return [...rest.slice(0, target), moving, ...rest.slice(target)];
+}
+
 function errorCode(error: unknown): string | null {
   if (typeof error !== 'object' || error === null) return null;
   const code = (error as { code?: unknown }).code;

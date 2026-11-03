@@ -18,13 +18,14 @@ export function WorkspaceSidebarOverlay({ triggerRef }: { triggerRef: React.RefO
   const panelRef = useRef<HTMLElement | null>(null);
   useDismissable({ open, onClose: closeLeft, panelRef, triggerRef });
 
-  // 打开时焦点进入浮窗（首个可聚焦元素）
+  // 打开时焦点进入浮窗（优先搜索框，其次首个可聚焦元素）
   useEffect(() => {
     if (!open) return;
     const panel = panelRef.current;
     if (panel === null) return;
-    const focusable = panel.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
-    focusable?.focus();
+    // querySelector 的选择器列表按文档顺序匹配，不能靠列表顺序表达优先级：先找搜索框
+    const target = panel.querySelector<HTMLElement>('input') ?? panel.querySelector<HTMLElement>('button, [href], select, textarea, [tabindex]:not([tabindex="-1"])');
+    target?.focus();
   }, [open]);
 
   if (!open) return null;

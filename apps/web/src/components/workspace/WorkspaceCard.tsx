@@ -1,6 +1,7 @@
 /**
- * 工作空间卡片（WS-REORDER）：名称/路径/四列统计 + 移除入口 + 拖拽把手 + 键盘上/下移。
- * 拖拽由外层 WorkspaceList 的 DndContext 提供；键盘上/下移走同一提交路径（乐观更新 + 失败回滚）。
+ * 工作空间卡片（WS-REORDER）：名称/路径/四列统计 + 移除入口 + 拖拽把手 + 键盘上/下移 + 置顶（WS-DRAWER-01）。
+ * 拖拽由外层 WorkspaceList 的 DndContext 提供；键盘上/下移与置顶走同一提交路径（乐观更新 + 失败回滚）。
+ * 布局：卡片按钮（固定最小高度，统计文案 nowrap）+ 独立操作行（置顶 · ↑ · ↓），操作行不与统计格重叠。
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -16,12 +17,16 @@ export function WorkspaceCard({
   workspace,
   onMoveUp,
   onMoveDown,
+  onTogglePin,
+  pinned = false,
   canMoveUp = false,
   canMoveDown = false,
 }: {
   workspace: Workspace;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  onTogglePin?: () => void;
+  pinned?: boolean;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
 }) {
@@ -70,7 +75,7 @@ export function WorkspaceCard({
           data-testid={`workspace-card-${workspace.id}`}
           aria-pressed={selected}
           onClick={() => selectWorkspace(workspace.id)}
-          className={`min-w-0 flex-1 rounded-md border p-3 text-left transition ${
+          className={`min-h-[5.5rem] min-w-0 flex-1 rounded-md border p-3 text-left transition ${
             selected
               ? 'border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/40'
               : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900'
@@ -91,7 +96,7 @@ export function WorkspaceCard({
                 className="rounded bg-neutral-100 py-1 dark:bg-neutral-800"
               >
                 <div className="font-semibold">{counts.get(status) ?? 0}</div>
-                <div className="text-neutral-500 dark:text-neutral-400">{status}</div>
+                <div className="whitespace-nowrap text-neutral-500 dark:text-neutral-400">{status}</div>
               </div>
             ))}
           </div>
@@ -109,7 +114,25 @@ export function WorkspaceCard({
       </button>
 
       {onMoveUp !== undefined && onMoveDown !== undefined && (
-        <div className="absolute bottom-1 right-1.5 flex gap-0.5">
+        <div
+          data-testid={`workspace-card-actions-${workspace.id}`}
+          className="mt-1 flex min-h-6 items-center justify-end gap-1 pl-5"
+        >
+          {onTogglePin !== undefined && (
+            <button
+              type="button"
+              data-testid={`workspace-pin-${workspace.id}`}
+              aria-pressed={pinned}
+              aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
+              title={pinned ? '取消置顶' : '置顶'}
+              onClick={onTogglePin}
+              className={`rounded px-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
+                pinned ? 'text-blue-600 dark:text-blue-400' : 'text-neutral-400 dark:text-neutral-500'
+              }`}
+            >
+              📌
+            </button>
+          )}
           <button
             type="button"
             data-testid={`workspace-move-up-${workspace.id}`}
