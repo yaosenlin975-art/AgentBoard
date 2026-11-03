@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 右侧面板视图状态：detail / chat 互斥，可整体收起（rightOpen）。
  * openDetail/openChat 只切换视图并展开，不重置另一视图的数据：
  * 两个视图组件各持 react-query 缓存，往返切换不丢选中 issue/session。
@@ -15,7 +15,14 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Session } from '@agentboard/shared';
 
-export type PanelView = 'detail' | 'chat';
+export type PanelView = 'detail' | 'chat' | 'ref';
+
+/** 软链接浮窗目标（MD-LINKS）：知识页或日志详情，只带定位信息，正文由 RefPanel 自己拉取 */
+export interface RefPanelTarget {
+  kind: 'knowledge' | 'log';
+  id: string;
+  title: string;
+}
 
 /** 未读恢复容错：非对象/数组回空对象；仅保留正整数值条目（坏值剔除，0 值视为无未读不恢复） */
 function sanitizeUnread(value: unknown): Record<string, number> {
@@ -35,10 +42,14 @@ interface PanelState {
   chatSession: Session | null;
   /** 各会话未读新消息计数（会话 id → 条数） */
   unread: Record<string, number>;
+  /** 软链接浮窗目标（MD-LINKS），仅 view==='ref' 时有意义 */
+  refPanel: RefPanelTarget | null;
   /** 右侧面板是否展开（收起保留 view/issueId/sessionId，展开按钮恢复） */
   rightOpen: boolean;
   /** 打开任务详情并展开右侧 */
   openDetail: (issueId: string) => void;
+  /** 打开知识/日志软链接浮窗（MD-LINKS）并展开右侧 */
+  openRef: (target: RefPanelTarget) => void;
   /** 切到聊天视图并展开右侧；不传 sessionId 时沿用当前选中会话 */
   openChat: (sessionId?: string, session?: Session) => void;
   /** 清空会话选择（会话按 id 恢复失败时回空态） */
@@ -63,13 +74,16 @@ export const usePanelStore = create<PanelState>()(
       sessionId: null,
       chatSession: null,
       unread: {},
+      refPanel: null,
       rightOpen: false,
-      openDetail: (issueId) => set({ view: 'detail', issueId, rightOpen: true }),
+      openDetail: (issueId) => set({ view: 'detail', issueId, refPanel: null, rightOpen: true }),
+      openRef: (target) => set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true }),
       openChat: (sessionId, session) =>
         set((s) => {
           const id = sessionId ?? s.sessionId;
           return {
             view: 'chat',
+            refPanel: null,
             sessionId: id,
             // 同会话沿用已存会话对象；换会话只认新传入的
             chatSession: session ?? (id === s.sessionId ? s.chatSession : null),
@@ -90,7 +104,7 @@ export const usePanelStore = create<PanelState>()(
         set((s) => ({ unread: { ...s.unread, [sessionId]: (s.unread[sessionId] ?? 0) + 1 } })),
       clearUnread: (sessionId) => set((s) => ({ unread: { ...s.unread, [sessionId]: 0 } })),
       closeRight: () => set({ rightOpen: false }),
-      clearView: () => set({ view: null, issueId: null, rightOpen: false }),
+      clearView: () => set({ view: null, issueId: null, refPanel: null, rightOpen: false }),
     }),
     {
       name: 'agentboard.panel',

@@ -3,7 +3,8 @@
  * - view===null 渲染收起窄条（固定"聊天"，点击进入聊天视图，保证首屏可达）；
  * - 收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
  * - 展开时顶部条（视图标题 + 收起按钮），左缘拖拽调宽（320–720px，localStorage 持久）；
- * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 ChatPanel）。
+ * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 ChatPanel），
+ *   view==='ref' 渲染软链接浮窗 RefPanel（MD-LINKS：知识页 / 日志详情）。
  * 视图组件各持 react-query 缓存，收起/展开与往返切换不丢数据。
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
@@ -13,6 +14,7 @@ import { useDismissable } from '../overlay/useDismissable';
 import { panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
 import { DetailPanel } from '../detail/DetailPanel';
 import { ChatPanel } from '../chat/ChatPanel';
+import { RefPanel } from './RefPanel';
 
 const WIDTH_KEY = 'agentboard.right-panel-width';
 const MIN_WIDTH = 320;
@@ -33,6 +35,7 @@ export function RightPanel() {
   const view = usePanelStore((s) => s.view);
   const closeRight = usePanelStore((s) => s.closeRight);
   const clearView = usePanelStore((s) => s.clearView);
+  const refPanel = usePanelStore((s) => s.refPanel);
 
   const [width, setWidth] = useState(loadWidth);
   const [resizing, setResizing] = useState(false);
@@ -49,8 +52,8 @@ export function RightPanel() {
   /** 打开前的焦点元素（任务卡 / 顶栏「聊天」按钮），关闭后焦点回它（PANEL-ENTRY2：不再有 rail 入口） */
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const panelBodyRefs = useRef<Record<PanelView, HTMLDivElement | null>>({ detail: null, chat: null });
-  const lastFocusByView = useRef<Record<PanelView, HTMLElement | null>>({ detail: null, chat: null });
+  const panelBodyRefs = useRef<Partial<Record<PanelView, HTMLDivElement | null>>>({ detail: null, chat: null, ref: null });
+  const lastFocusByView = useRef<Partial<Record<PanelView, HTMLElement | null>>>({ detail: null, chat: null, ref: null });
   // PANEL-MOTION-2：进场/出场过渡（transform+opacity，两个浮窗同一 token）；关闭后保留挂载到出场结束
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = usePanelPresence(isOpen, reducedMotion);
@@ -76,7 +79,7 @@ export function RightPanel() {
       if (isOpen) {
         // 记录触发元素（任务卡 / 顶栏「聊天」），关闭后焦点回它
         returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-        const target = lastFocusByView.current[activeView];
+        const target = lastFocusByView.current[activeView] ?? null;
         if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
         else headingRef.current?.focus();
       } else {
@@ -84,12 +87,12 @@ export function RightPanel() {
         if (back !== null && back.isConnected) back.focus();
       }
     } else if (isOpen && previous.view !== activeView) {
-      const target = lastFocusByView.current[activeView];
+      const target = lastFocusByView.current[activeView] ?? null;
       if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
       else headingRef.current?.focus();
     } else if (isOpen && mounted && !previous.mounted) {
       // 进场：presence 挂载完成后补一次焦点（打开那一刻 heading 还不存在）
-      const target = lastFocusByView.current[activeView];
+      const target = lastFocusByView.current[activeView] ?? null;
       if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
       else headingRef.current?.focus();
     }
@@ -176,7 +179,7 @@ export function RightPanel() {
         />
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
           <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
-            {activeView === 'detail' ? '任务详情' : '聊天'}
+            {activeView === 'detail' ? '任务详情' : activeView === 'ref' ? (refPanel?.kind === 'log' ? '日志' : '知识') : '聊天'}
           </h2>
           <button
             type="button"
@@ -205,6 +208,20 @@ export function RightPanel() {
             className="absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none"
           >
             <DetailPanel />
+          </div>
+          {/* 软链接浮窗（MD-LINKS）：知识页 / 日志详情，和 detail 一样从左侧基准位置推入推出 */}
+          <div
+            ref={(node) => { panelBodyRefs.current.ref = node; }}
+            data-testid="ref-panel-view"
+            aria-hidden={activeView !== 'ref'}
+            inert={activeView !== 'ref'}
+            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+              if (event.target instanceof HTMLElement) lastFocusByView.current.ref = event.target;
+            }}
+            style={{ transform: activeView === 'ref' ? 'translateX(0)' : 'translateX(-100%)' }}
+            className="absolute inset-0 overflow-hidden p-3 transition-transform duration-200 motion-reduce:transition-none"
+          >
+            <RefPanel />
           </div>
           <div
             ref={(node) => { panelBodyRefs.current.chat = node; }}
