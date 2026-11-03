@@ -1,6 +1,7 @@
 /**
  * 看板单列（§7.3）：列头（名称 + 新建入口 + 计数）、可落点容器、卡片列表；空列占位提示。
  * 新建入口（NEW-ISSUE-PLUS）：只由外层对「待规划」列传入 onCreateIssue —— 新任务由服务端固定落在待规划。
+ * 列宽（BOARD-COLS）：宽高由外层 grid 的列轨道决定（minmax(280px, 1fr)），这里不再写死宽度。
  */
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -27,7 +28,7 @@ export function Column({
   return (
     <section
       data-testid={`column-${status}`}
-      className="flex w-64 shrink-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
+      className="flex min-w-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
     >
       <header className="flex items-center justify-between px-2.5 pt-2.5">
         <div className="flex min-w-0 items-center gap-1">

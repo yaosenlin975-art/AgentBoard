@@ -211,7 +211,13 @@ export function Board({
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveDrag(null)}
         >
-          <div className="flex min-h-0 flex-1 gap-3 overflow-auto p-3">
+          {/* 列容器（BOARD-COLS / design §6）：grid 自适应，列数取当前列数组长度（不写死 4）。
+              每列 minmax(280px, 1fr)：列少时 1fr 撑满容器、右侧不留白；列多时保底 280px 并横向滚动。 */}
+          <div
+            data-testid="board-columns"
+            className="grid min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden p-3"
+            style={{ gridTemplateColumns: `repeat(${BOARD_COLUMNS.length}, minmax(280px, 1fr))` }}
+          >
             {BOARD_COLUMNS.map((status) => (
               <Column
                 key={status}
