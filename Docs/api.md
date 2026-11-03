@@ -329,9 +329,9 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 
 | 方法 路径 | 请求 | 响应 | 错误 |
 | --- | --- | --- | --- |
-| `GET /api/voice/models` | — | `{ models: VoiceModelStatus[] }`；每项 `{ id, name, languages, streaming, note, dir, bytes_estimate, size_estimate, state, downloaded_bytes, total_bytes, sha256_actual, sha256_verified, error, error_message }`，`state ∈ not_downloaded / downloading / downloaded / failed` | — |
-| `POST /api/voice/models/:id/download` | 无 body | `202 { model_id, task_id, reused, state }`；同 id 重复调用**幂等复用**进行中的任务（`reused: true` 且 `task_id` 相同）；已下载完成同样 202（`state: downloaded`） | 404 未知模型；409 `VOICE_MODEL_URL_MISSING`（候选未配置官方地址——不猜地址、不跳校验） |
-| `GET /api/voice/models/:id/progress` | `?poll=1` 走一次性 JSON | SSE（`text/event-stream`）逐条 `data: { model_id, task_id, state, bytes, total, error, error_message }`，到 `downloaded` / `failed` 自动 `end`；`?poll=1` 返回同一结构 | 404 未知模型 |
+| `GET /api/voice/models` | — | `{ models: VoiceModelStatus[] }`；每项 `{ id, name, languages, streaming, note, dir, bytes_total, state, downloaded_bytes, present_files, missing_files, sha256_verified, error, error_message }`，`state ∈ not_downloaded / downloading / verifying / downloaded / failed` | — |
+| `POST /api/voice/models/:id/download` | 无 body | `202 { model_id, task_id, reused, state }`；**按文件下载**（HF `resolve/<revision>/<path>`，先写 `<file>.part` 再原子改名）；同 id 重复调用**幂等复用**进行中的任务（`reused: true`、`task_id` 相同）；已下载完成同样 202（`state: downloaded`）；重试时**只补缺失/失败的文件**（已就绪文件跳过） | 404 未知模型；409 `VOICE_MODEL_URL_MISSING`（候选未配置 HF 仓库）/ `VOICE_MODEL_INCOMPLETE`（必需文件清单为空） |
+| `GET /api/voice/models/:id/progress` | `?poll=1` 走一次性 JSON | SSE（`text/event-stream`）逐条 `data: { model_id, task_id, state, bytes, total, current_file, error, error_message }`（`bytes` 是**各文件总字节聚合**，`current_file` 为正在下载的文件），到 `downloaded` / `failed` 自动 `end`；`?poll=1` 返回同一结构 | 404 未知模型 |
 | `DELETE /api/voice/models/:id` | — | `{ deleted: true, freed_bytes }`，删掉整个 `models/<id>/` | 404 未知模型；409 `VOICE_MODEL_BUSY`（该模型正在下载） |
 
 ### 识别会话（VOICE-2，`services/voiceSessions.ts`）
@@ -346,7 +346,9 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 - 会话空转 **15s** 自动结束（`idleTimeoutMs` 可配），下行最后一条是 `final` 且 `reason: 'idle'`。
 - 原生模块 `sherpa-onnx-node` **延迟加载**：只有「模型已下载 + 真正要开流」时才 `import()`；无模型时创建会话直接 409，进程启动不碰原生模块。
 
-下载失败错误码：`VOICE_DOWNLOAD_FAILED`（网络/HTTP 错误）、`VOICE_NO_SPACE`（`statfs` 预检剩余空间不足，未发请求）、`VOICE_CHECKSUM_MISMATCH`（与候选 `sha256` 不符，`.part` 保留可续）。候选 `sha256`/`url` 为 `null` 时表示官方发布值尚未配置：不冒充校验通过（`sha256_verified: null`）。
+下载错误码：`VOICE_DOWNLOAD_FAILED`（网络/HTTP 错误）、`VOICE_NO_SPACE`（`statfs` 预检剩余空间不足，未发请求）、`VOICE_CHECKSUM_MISMATCH`（该文件 sha256 不符——**删掉该文件的 `.part`，其它已成功文件保留**，重试只补这一个）、`VOICE_MODEL_INCOMPLETE`（必需文件缺失或校验不通过，不标 `downloaded`）。
+
+校验强度：`encoder/decoder/joiner/model.int8.onnx` 按 HuggingFace LFS sha256 校验（值固定写在 `packages/shared/src/voiceModels.ts`，revision 已 pin 到具体 commit）；`tokens.txt` 上游只发 git blob、**没有 sha256**，采用**弱校验**（字节数相等 + 内容非空 + 首行含空格或 `<`，见 `weakFileLooksValid`）——弱校验只挡明显损坏/占位文件，不是密码学校验。`model.meta.json` 里逐文件记 `verified: 'sha256' | 'weak'`。
 
 ## CLI 标签规范（TAG-HYGIENE）
 

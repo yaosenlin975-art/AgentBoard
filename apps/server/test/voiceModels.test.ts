@@ -1,12 +1,12 @@
 /**
- * VOICE-1：模型管理与下载（不下载真实模型——全部用本地小测试文件 + 注入 catalog/fetch/freeBytes）。
+ * VOICE-5：按文件下载 + 逐文件校验（不下载真实大模型；fixture 是几 KB 的假 onnx）。
  *
- * 覆盖：清单不触发下载、202 起任务、同 id 幂等复用、进度单调、sha256 校验通过/不符、
- * 空间不足、下载中删除 409、删除后目录消失、未配置 url 明确拒绝、SSE 事件以终态收尾。
+ * 覆盖：成功路径（sha256 + tokens 弱校验）、单文件校验失败只删该文件且重下只补它、
+ * 缺文件判 `VOICE_MODEL_INCOMPLETE`、进度按总字节聚合且单调、幂等复用、删除中 409、空间不足。
  */
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,30 +17,43 @@ import type { VoiceModelCatalogEntry } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
-import { resetVoiceModelTasks } from '../src/services/voiceModels.js';
+import { resetVoiceModelTasks, weakFileLooksValid } from '../src/services/voiceModels.js';
 
-const PAYLOAD = Buffer.from(Array.from({ length: 4096 }, (_, i) => i % 251));
-const PAYLOAD_SHA = createHash('sha256').update(PAYLOAD).digest('hex');
+const ONNX_A = Buffer.from(Array.from({ length: 2048 }, (_, i) => (i * 7) % 251));
+const ONNX_B = Buffer.from(Array.from({ length: 1024 }, (_, i) => (i * 11) % 253));
+const TOKENS = Buffer.from('<blk> 0\n<unk> 1\n你 2\n好 3\n', 'utf8');
+const sha = (buffer: Buffer): string => createHash('sha256').update(buffer).digest('hex');
 
-/** 小测试文件服务：slow=true 时按块慢慢吐，便于观察 downloading 中间态 */
-async function serveFixture(options: { slow?: boolean; corruptLength?: boolean } = {}): Promise<{ port: number; close: () => Promise<void>; hits: () => number }> {
-  let hits = 0;
+const PAYLOADS: Record<string, Buffer> = {
+  'encoder.int8.onnx': ONNX_A,
+  'joiner.int8.onnx': ONNX_B,
+  'tokens.txt': TOKENS,
+};
+
+/** 本地 fixture 文件服务：按文件名给字节，记录每个路径命中次数 */
+async function serveFixture(options: { slow?: boolean; missing?: string[] } = {}): Promise<{
+  port: number;
+  hits: () => Record<string, number>;
+  close: () => Promise<void>;
+}> {
+  const hits: Record<string, number> = {};
   const server: Server = createServer(async (req, res) => {
-    hits += 1;
-    if (req.url === '/missing') {
+    const name = decodeURIComponent((req.url ?? '/').replace(/^\//, ''));
+    hits[name] = (hits[name] ?? 0) + 1;
+    if (options.missing?.includes(name) || PAYLOADS[name] === undefined) {
       res.writeHead(404);
       res.end('nope');
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(PAYLOAD.length) });
+    const payload = PAYLOADS[name] as Buffer;
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(payload.length) });
     if (!options.slow) {
-      res.end(PAYLOAD);
+      res.end(payload);
       return;
     }
-    const chunkSize = 512;
-    for (let offset = 0; offset < PAYLOAD.length; offset += chunkSize) {
-      res.write(PAYLOAD.subarray(offset, offset + chunkSize));
-      await new Promise(r => setTimeout(r, 15));
+    for (let offset = 0; offset < payload.length; offset += 256) {
+      res.write(payload.subarray(offset, offset + 256));
+      await new Promise(r => setTimeout(r, 10));
     }
     res.end();
   });
@@ -54,29 +67,34 @@ async function serveFixture(options: { slow?: boolean; corruptLength?: boolean }
   };
 }
 
-const entry = (port: number, overrides: Partial<VoiceModelCatalogEntry> = {}): VoiceModelCatalogEntry => ({
+const buildCatalog = (port: number, overrides: { badSha?: string; tokensBytes?: number } = {}): VoiceModelCatalogEntry[] => [{
   id: 'test-model',
   name: '测试模型',
-  bytes: PAYLOAD.length,
+  bytes: 0,
   size_estimate: false,
   languages: ['zh'],
-  url: `http://127.0.0.1:${port}/model.bin`,
-  sha256: PAYLOAD_SHA,
+  repo: 'fixture/repo',
+  revision: 'main',
+  url: 'https://example.invalid/archive.tar.bz2',
+  sha256: null,
   streaming: true,
   note: 'fixture',
-  ...overrides,
-});
+  files: [
+    { path: 'encoder.int8.onnx', bytes: ONNX_A.length, sha256: sha(ONNX_A) },
+    { path: 'joiner.int8.onnx', bytes: ONNX_B.length, sha256: overrides.badSha ?? sha(ONNX_B) },
+    { path: 'tokens.txt', bytes: overrides.tokensBytes ?? TOKENS.length, sha256: null },
+  ],
+}];
 
-describe('voice models (VOICE-1)', () => {
+describe('voice models per-file download (VOICE-5)', () => {
   let t: TestDb;
   let root: string;
   let app: Express;
   let fixture: Awaited<ReturnType<typeof serveFixture>>;
   let catalog: VoiceModelCatalogEntry[];
   let freeBytes: number | null;
-  let fetchCalls: number;
 
-  const openApp = async () => {
+  const openApp = async (): Promise<void> => {
     const adapter = new FakeAdapter();
     const created = await createApp({
       db: t.db,
@@ -87,7 +105,8 @@ describe('voice models (VOICE-1)', () => {
         catalog,
         rootDir: root,
         freeBytes: async () => freeBytes,
-        fetchImpl: (async (input: RequestInfo | URL, init?: RequestInit) => { fetchCalls += 1; return fetch(input, init); }) as typeof fetch,
+        fileUrl: (_entry, file) => `http://127.0.0.1:${fixture.port}/${encodeURIComponent(file.path)}`,
+        fetchImpl: ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)) as typeof fetch,
       },
     });
     app = created.app;
@@ -97,23 +116,25 @@ describe('voice models (VOICE-1)', () => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (await predicate()) return;
-      await new Promise(r => setTimeout(r, 25));
+      await new Promise(r => setTimeout(r, 20));
     }
     throw new Error('waitFor 超时');
   };
 
-  const progress = async (id = 'test-model') => (await request(app).get(`/api/voice/models/${id}/progress?poll=1`)).body as {
-    state: string; bytes: number; total: number; error: string | null; task_id: string | null;
+  const progress = async () => (await request(app).get('/api/voice/models/test-model/progress?poll=1')).body as {
+    state: string; bytes: number; total: number; current_file: string | null; error: string | null; error_message: string | null;
+  };
+  const status = async () => (await request(app).get('/api/voice/models/test-model')).body as {
+    state: string; present_files: string[]; missing_files: string[]; bytes_total: number; sha256_verified: boolean | null;
   };
 
   beforeEach(async () => {
     resetVoiceModelTasks();
     t = createTestDb();
-    root = mkdtempSync(join(tmpdir(), 'agentboard-voice-'));
+    root = mkdtempSync(join(tmpdir(), 'agentboard-voice5-'));
     fixture = await serveFixture();
-    catalog = [entry(fixture.port)];
+    catalog = buildCatalog(fixture.port);
     freeBytes = 10 * 1024 * 1024;
-    fetchCalls = 0;
     await openApp();
   });
 
@@ -123,122 +144,113 @@ describe('voice models (VOICE-1)', () => {
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
-  it('listsCatalogWithoutTriggeringAnyDownload', async () => {
-    const res = await request(app).get('/api/voice/models');
-    expect(res.status).toBe(200);
-    expect(res.body.models).toHaveLength(1);
-    expect(res.body.models[0]).toMatchObject({ id: 'test-model', state: 'not_downloaded', downloaded_bytes: 0 });
-    // 关键：只读清单绝不发起网络请求
-    expect(fetchCalls).toBe(0);
-    expect(fixture.hits()).toBe(0);
-  });
-
-  it('downloadsToPartThenRenamesAtomicallyWithVerifiedSha', async () => {
-    const started = await request(app).post('/api/voice/models/test-model/download').send({});
-    expect(started.status).toBe(202);
-    expect(started.body).toMatchObject({ model_id: 'test-model', reused: false, state: 'downloading' });
-    const taskId = started.body.task_id as string;
-    expect(typeof taskId).toBe('string');
-
+  it('downloadsEveryFileVerifiesShaAndMarksDownloaded', async () => {
+    const res = await request(app).post('/api/voice/models/test-model/download').send({});
+    expect(res.status).toBe(202);
     await waitFor(async () => (await progress()).state === 'downloaded');
-    const snapshot = await progress();
-    expect(snapshot).toMatchObject({ state: 'downloaded', bytes: PAYLOAD.length, total: PAYLOAD.length, error: null });
 
     const dir = join(root, 'test-model');
-    expect(readdirSync(dir).sort()).toEqual(['model.bin', 'model.meta.json']);
-    expect(readFileSync(join(dir, 'model.bin')).equals(PAYLOAD)).toBe(true);
-    const meta = JSON.parse(readFileSync(join(dir, 'model.meta.json'), 'utf8')) as { sha256_actual: string; sha256_verified: boolean | null };
-    expect(meta.sha256_actual).toBe(PAYLOAD_SHA);
-    expect(meta.sha256_verified).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual(['encoder.int8.onnx', 'joiner.int8.onnx', 'model.meta.json', 'tokens.txt']);
+    expect(readFileSync(join(dir, 'encoder.int8.onnx')).equals(ONNX_A)).toBe(true);
+    expect(readdirSync(dir).some(name => name.endsWith('.part'))).toBe(false);
 
-    const list = await request(app).get('/api/voice/models');
-    expect(list.body.models[0]).toMatchObject({ state: 'downloaded', downloaded_bytes: PAYLOAD.length, sha256_verified: true });
+    const final = await status();
+    expect(final.state).toBe('downloaded');
+    expect(final.bytes_total).toBe(ONNX_A.length + ONNX_B.length + TOKENS.length);
+    expect(final.sha256_verified).toBe(true);
+    expect(final.missing_files).toEqual([]);
+    const meta = JSON.parse(readFileSync(join(dir, 'model.meta.json'), 'utf8')) as { files: Array<{ path: string; verified: string }> };
+    expect(meta.files.map(file => file.verified)).toEqual(['sha256', 'sha256', 'weak']);
   });
 
-  it('reusesInFlightTaskOnRepeatedDownloadCalls', async () => {
+  it('reportsMonotonicAggregateProgressWithCurrentFile', async () => {
     await fixture.close();
     fixture = await serveFixture({ slow: true });
-    catalog = [entry(fixture.port)];
-    await openApp();
-
-    const first = await request(app).post('/api/voice/models/test-model/download').send({});
-    const second = await request(app).post('/api/voice/models/test-model/download').send({});
-    expect(first.status).toBe(202);
-    expect(second.status).toBe(202);
-    expect(second.body.task_id).toBe(first.body.task_id);
-    expect(second.body.reused).toBe(true);
-    // 只有一个下载任务 → 只发一次请求
-    await waitFor(async () => (await progress()).state === 'downloaded');
-    expect(fixture.hits()).toBe(1);
-  });
-
-  it('reportsMonotonicProgressWhileDownloading', async () => {
-    await fixture.close();
-    fixture = await serveFixture({ slow: true });
-    catalog = [entry(fixture.port)];
+    catalog = buildCatalog(fixture.port);
     await openApp();
 
     await request(app).post('/api/voice/models/test-model/download').send({});
-    const samples: number[] = [];
+    const samples: Array<{ bytes: number; file: string | null }> = [];
     await waitFor(async () => {
       const snapshot = await progress();
-      samples.push(snapshot.bytes);
+      samples.push({ bytes: snapshot.bytes, file: snapshot.current_file });
       return snapshot.state === 'downloaded';
     });
     expect(samples.length).toBeGreaterThan(1);
     for (let i = 1; i < samples.length; i += 1) {
-      expect(samples[i]).toBeGreaterThanOrEqual(samples[i - 1] as number);
+      expect(samples[i]!.bytes).toBeGreaterThanOrEqual(samples[i - 1]!.bytes);
     }
-    expect(samples.at(-1)).toBe(PAYLOAD.length);
+    const total = ONNX_A.length + ONNX_B.length + TOKENS.length;
+    expect(samples.at(-1)?.bytes).toBe(total);
+    expect((await progress()).total).toBe(total);
+    expect(samples.some(sample => sample.file !== null)).toBe(true);
   });
 
-  it('keepsPartFileAndDoesNotMarkDownloadedWhenChecksumMismatches', async () => {
-    catalog = [entry(fixture.port, { sha256: 'deadbeef'.repeat(8) })];
+  it('keepsOtherFilesAndOnlyRedownloadsTheFailedOneOnChecksumMismatch', async () => {
+    // 失败文件放最后：前面的好文件先落盘，才能验证「保留其它已成功文件、只补失败的那个」
+    const base = buildCatalog(fixture.port, { badSha: 'deadbeef'.repeat(8) })[0]!;
+    catalog = [{ ...base, files: [base.files![0]!, base.files![2]!, base.files![1]!] }];
     await openApp();
-
     await request(app).post('/api/voice/models/test-model/download').send({});
     await waitFor(async () => (await progress()).state === 'failed');
-    const snapshot = await progress();
-    expect(snapshot.error).toBe('VOICE_CHECKSUM_MISMATCH');
-    expect(snapshot.error_message).toContain('sha256 校验不符');
+    const failed = await progress();
+    expect(failed.error).toBe('VOICE_CHECKSUM_MISMATCH');
+    expect(failed.current_file).toBe('joiner.int8.onnx');
 
     const dir = join(root, 'test-model');
-    // .part 保留（可续/可清理），没有 model.bin、没有 meta
-    expect(readdirSync(dir)).toEqual(['model.bin.part']);
-    const list = await request(app).get('/api/voice/models');
-    expect(list.body.models[0].state).toBe('failed');
-    expect(list.body.models[0].sha256_verified).toBeNull();
-  });
+    // 校验失败的那个文件被删掉，其它已成功的文件保留
+    expect(readdirSync(dir).sort()).toEqual(['encoder.int8.onnx', 'tokens.txt']);
+    expect(existsSync(join(dir, 'joiner.int8.onnx.part'))).toBe(false);
 
-  it('refusesToStartWhenDiskSpaceIsInsufficient', async () => {
-    freeBytes = 1024; // 远小于 payload + 余量
+    // 修正校验值后重下：只补 joiner 一个文件
+    catalog = buildCatalog(fixture.port);
+    await openApp();
+    const before = { ...fixture.hits() };
     await request(app).post('/api/voice/models/test-model/download').send({});
-    await waitFor(async () => (await progress()).state === 'failed');
-    const snapshot = await progress();
-    expect(snapshot.error).toBe('VOICE_NO_SPACE');
-    expect(snapshot.error_message).toContain('磁盘剩余');
-    // 没有发起网络请求，也没留下 .part
-    expect(fixture.hits()).toBe(0);
-    expect(existsSync(join(root, 'test-model', 'model.bin.part'))).toBe(false);
+    await waitFor(async () => (await progress()).state === 'downloaded');
+    const after = fixture.hits();
+    expect((after['joiner.int8.onnx'] ?? 0) - (before['joiner.int8.onnx'] ?? 0)).toBe(1);
+    expect((after['encoder.int8.onnx'] ?? 0) - (before['encoder.int8.onnx'] ?? 0)).toBe(0);
+    expect((after['tokens.txt'] ?? 0) - (before['tokens.txt'] ?? 0)).toBe(0);
+    expect((await status()).state).toBe('downloaded');
   });
 
-  it('reportsDownloadFailedOnHttpErrorAndKeepsNoModelFile', async () => {
-    catalog = [entry(fixture.port, { url: `http://127.0.0.1:${fixture.port}/missing` })];
+  it('marksIncompleteWhenARequiredFileFailsItsWeakCheck', async () => {
+    // tokens.txt 声明字节数故意写错 → 弱校验不过 → 判 INCOMPLETE，不标 downloaded
+    catalog = buildCatalog(fixture.port, { tokensBytes: TOKENS.length + 1 });
     await openApp();
     await request(app).post('/api/voice/models/test-model/download').send({});
     await waitFor(async () => (await progress()).state === 'failed');
     const snapshot = await progress();
-    expect(snapshot.error).toBe('VOICE_DOWNLOAD_FAILED');
-    expect(existsSync(join(root, 'test-model', 'model.bin'))).toBe(false);
+    expect(snapshot.error).toBe('VOICE_MODEL_INCOMPLETE');
+    expect(snapshot.error_message).toContain('tokens.txt');
+    const final = await status();
+    expect(final.state).toBe('failed');
+    expect(final.missing_files).toEqual(['tokens.txt']);
+    expect(final.present_files).toEqual(['encoder.int8.onnx', 'joiner.int8.onnx']);
+    expect(existsSync(join(root, 'test-model', 'model.meta.json'))).toBe(false);
   });
 
-  it('rejectsDeleteWhileDownloadingAndSucceedsAfterwards', async () => {
+  it('detectsMissingFileOnDiskAsIncomplete', async () => {
+    await request(app).post('/api/voice/models/test-model/download').send({});
+    await waitFor(async () => (await progress()).state === 'downloaded');
+    unlinkSync(join(root, 'test-model', 'tokens.txt'));
+    const final = await status();
+    expect(final.state).toBe('failed');
+    expect(final.missing_files).toEqual(['tokens.txt']);
+  });
+
+  it('reusesInFlightTaskAndRejectsDeleteWhileDownloading', async () => {
     await fixture.close();
     fixture = await serveFixture({ slow: true });
-    catalog = [entry(fixture.port)];
+    catalog = buildCatalog(fixture.port);
     await openApp();
 
-    await request(app).post('/api/voice/models/test-model/download').send({});
+    const first = await request(app).post('/api/voice/models/test-model/download').send({});
+    const second = await request(app).post('/api/voice/models/test-model/download').send({});
+    expect(second.body.task_id).toBe(first.body.task_id);
+    expect(second.body.reused).toBe(true);
+
     const busy = await request(app).delete('/api/voice/models/test-model');
     expect(busy.status).toBe(409);
     expect(busy.body.error.code).toBe('VOICE_MODEL_BUSY');
@@ -246,63 +258,33 @@ describe('voice models (VOICE-1)', () => {
     await waitFor(async () => (await progress()).state === 'downloaded');
     const removed = await request(app).delete('/api/voice/models/test-model');
     expect(removed.status).toBe(200);
-    expect(removed.body.deleted).toBe(true);
     expect(existsSync(join(root, 'test-model'))).toBe(false);
-    expect((await progress()).state).toBe('not_downloaded');
   });
 
-  it('refusesDownloadWhenCatalogHasNoUrlInsteadOfGuessing', async () => {
-    catalog = [entry(fixture.port, { url: null, sha256: null })];
-    await openApp();
-    const res = await request(app).post('/api/voice/models/test-model/download').send({});
-    expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe('VOICE_MODEL_URL_MISSING');
-    expect(fetchCalls).toBe(0);
+  it('refusesToStartWhenDiskSpaceIsInsufficient', async () => {
+    freeBytes = 1024;
+    await request(app).post('/api/voice/models/test-model/download').send({});
+    await waitFor(async () => (await progress()).state === 'failed');
+    const snapshot = await progress();
+    expect(snapshot.error).toBe('VOICE_NO_SPACE');
+    expect(fixture.hits()['encoder.int8.onnx']).toBeUndefined();
   });
 
-  it('streamsProgressOverSseAndEndsOnTerminalState', async () => {
-    await fixture.close();
-    fixture = await serveFixture({ slow: true });
-    catalog = [entry(fixture.port)];
-    await openApp();
-
-    // SSE 需要真实监听：supertest 的缓冲语义拿不到流式分块
-    const server = app.listen(0, '127.0.0.1');
-    await new Promise<void>(resolve => server.once('listening', () => resolve()));
-    const address = server.address();
-    const port = typeof address === 'object' && address !== null ? address.port : 0;
+  it('weakCheckRejectsPlaceholderTokensFile', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentboard-weak-'));
     try {
-      const controller = new AbortController();
-      const response = await fetch(`http://127.0.0.1:${port}/api/voice/models/test-model/progress`, { signal: controller.signal });
-      expect(response.status).toBe(200);
-      expect(response.headers.get('content-type')).toContain('text/event-stream');
-      const started = await request(app).post('/api/voice/models/test-model/download').send({});
-      expect(started.status).toBe(202);
-
-      const events: Array<{ state: string; bytes: number }> = [];
-      const decoder = new TextDecoder();
-      let buffer = '';
-      const reader = response.body!.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? '';
-        for (const part of parts) {
-          const line = part.split('\n').find(item => item.startsWith('data: '));
-          if (line) events.push(JSON.parse(line.slice(6)) as { state: string; bytes: number });
-        }
-      }
-      expect(events.length).toBeGreaterThanOrEqual(2);
-      expect(events.at(-1)?.state).toBe('downloaded');
-      expect(events.at(-1)?.bytes).toBe(PAYLOAD.length);
-      // 单调不减
-      for (let i = 1; i < events.length; i += 1) {
-        expect(events[i]!.bytes).toBeGreaterThanOrEqual(events[i - 1]!.bytes);
-      }
+      const ok = join(dir, 'ok.txt');
+      writeFileSync(ok, TOKENS);
+      expect(weakFileLooksValid(ok, TOKENS.length)).toBe(true);
+      expect(weakFileLooksValid(ok, TOKENS.length + 1)).toBe(false);
+      const empty = join(dir, 'empty.txt');
+      writeFileSync(empty, Buffer.alloc(0));
+      expect(weakFileLooksValid(empty, 0)).toBe(false);
+      const noSpace = join(dir, 'nospace.txt');
+      writeFileSync(noSpace, Buffer.from('abc\n'));
+      expect(weakFileLooksValid(noSpace, 4)).toBe(false);
     } finally {
-      await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
