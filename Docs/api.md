@@ -62,7 +62,7 @@
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/version` | — | `{ name: 'agentboard-server', version: string }`；version 取 `apps/server/package.json`（`version.ts`）；web 顶栏与设置弹窗经 `apps/web/src/api/version.ts` 展示 | — | routes.ts:239 |
+| `GET /api/version` | — | `{ name: 'agentboard-server', version: string, pid: number }`；version 取 `apps/server/package.json`（`version.ts`）；`pid` 供重启后区分「新进程已接管」与「已回退旧进程」；web 顶栏与设置弹窗经 `apps/web/src/api/version.ts` 展示 | — | routes.ts:239 |
 | `POST /api/system/pick-folder` | — | `{ path: string\|null }`；null=用户取消；Windows 原生 FolderBrowserDialog（powershell.exe），同一时刻仅允许一个窗口 | 409 `PICK_FOLDER_BUSY` 已有选择窗口打开；500 `PICK_FOLDER_FAILED` 打开窗口失败 | routes.ts:228 |
 
 ## 5. settings
@@ -319,7 +319,7 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `POST /api/system/restart` | 无 body | `202 { restarting: true, pid, started_at }`；**先回 202**，再延迟约 200ms 关闭监听并退出旧进程 | 403 `RESTART_FORBIDDEN`（非回环）；500 `RESTART_ENTRY_MISSING`（入口脚本不存在）/ `RESTART_SPAWN_FAILED`（新进程 spawn 失败——旧进程继续服务，监听未动）；503 `RESTART_UNAVAILABLE`（当前装配未启用重启，仅测试/非生产） | systemRoutes.ts |
+| `POST /api/system/restart` | 无 body | `202 { restarting: true, old_pid, new_pid, log_path, started_at }`；新进程 stdout/stderr 重定向到 `log_path`；**先回 202**，再延迟约 200ms 关闭监听，轮询 `/api/version`（≤15s，须由 `new_pid` 应答）确认接管后才退出旧进程；不健康则重新监听并继续服务（前端据 `pid !== new_pid` 显示「已回退」） | 403 `RESTART_FORBIDDEN`（非回环）；409 `RESTART_PORT_CONFLICT`（目标端口被其它进程/另一个看板实例占用——未重启，旧进程继续服务，日志留「重启已拒绝」一行）；500 `RESTART_ENTRY_MISSING`（入口脚本不存在）/ `RESTART_SPAWN_FAILED`（新进程 spawn 失败——旧进程继续服务，监听未动）；503 `RESTART_UNAVAILABLE`（当前装配未启用重启，仅测试/非生产） | systemRoutes.ts |
 
 顺序：回环校验 → 入口存在性 → `spawn`（`detached` / `stdio: ignore` / `unref`）并等 `'spawn'` 事件 → 回 202 → 200ms 后 `server.close()` 停监听 → `process.exit(0)`。新进程启动时对 `EADDRINUSE` 以 250ms 间隔重试最多 20 次（等旧进程让出端口）。
 

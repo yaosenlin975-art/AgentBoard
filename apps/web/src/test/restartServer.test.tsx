@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SYSTEM-RESTART 前端契约测试（msw 拦端点）：
  * - 202 → 「正在重启…」→ 轮询 /api/version 恢复 → 「服务已恢复」+ invalidate 全量
  * - 超时分支（注入短 deadline）→ 「重启超时，请手动检查」+ 日志路径
@@ -37,7 +37,7 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
   it('二次确认：先点「重启服务器」不出请求，确认后才发 POST', async () => {
     let posted = 0;
     server.use(
-      http.post('/api/system/restart', () => { posted += 1; return HttpResponse.json({ restarting: true, pid: 1234, started_at: Date.now() }, { status: 202 }); }),
+      http.post('/api/system/restart', () => { posted += 1; return HttpResponse.json({ restarting: true, old_pid: 1234, new_pid: 5678, log_path: 'D:/repo/.logs/server.log', started_at: Date.now() }, { status: 202 }); }),
       http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
     );
     renderPanel({ pollIntervalMs: 10, timeoutMs: 500 });
@@ -52,11 +52,11 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
 
   it('202 → 正在重启 … 轮询恢复 → 服务已恢复 + 全量 invalidate', async () => {
     server.use(
-      http.post('/api/system/restart', () => HttpResponse.json({ restarting: true, pid: 4321, started_at: Date.now() }, { status: 202 })),
+      http.post('/api/system/restart', () => HttpResponse.json({ restarting: true, old_pid: 4321, new_pid: 8765, log_path: 'D:/repo/.logs/server.log', started_at: Date.now() }, { status: 202 })),
       // 模拟真实 0.75s 不可用：前 3 次失败（与 server 线实测「第 3 次恢复」一致），之后 200
       http.get('/api/version', () => {
         versionCalls += 1;
-        return versionCalls <= 3 ? HttpResponse.error() : HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' });
+        return versionCalls <= 3 ? HttpResponse.error() : HttpResponse.json({ name: 'agentboard-server', version: '0.1.0', pid: 8765 });
       }),
     );
     let versionCalls = 0;
@@ -69,7 +69,7 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
     expect(status).toHaveTextContent('正在重启…');
 
     await waitFor(() => expect(screen.getByTestId('restart-status')).toHaveAttribute('data-phase', 'recovered'));
-    expect(screen.getByTestId('restart-status')).toHaveTextContent('服务已恢复');
+    expect(screen.getByTestId('restart-status')).toHaveTextContent('服务已恢复（新进程 8765）');
     expect(invalidateSpy).toHaveBeenCalled();
     // 恢复后解除写操作屏蔽
     expect(useRestartStore.getState().restarting).toBe(false);
@@ -77,7 +77,7 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
 
   it('超时分支：version 一直失败 → 「重启超时，请手动检查」+ 日志路径', async () => {
     server.use(
-      http.post('/api/system/restart', () => HttpResponse.json({ restarting: true, pid: 99, started_at: Date.now() }, { status: 202 })),
+      http.post('/api/system/restart', () => HttpResponse.json({ restarting: true, old_pid: 99, new_pid: 100, log_path: 'D:/repo/.logs/server.log', started_at: Date.now() }, { status: 202 })),
       http.get('/api/version', () => HttpResponse.error()),
     );
     renderPanel({ pollIntervalMs: 10, timeoutMs: 60 });
@@ -88,7 +88,7 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
     await waitFor(() => expect(screen.getByTestId('restart-status')).toHaveAttribute('data-phase', 'timeout'));
     const text = screen.getByTestId('restart-status').textContent ?? '';
     expect(text).toContain('重启超时，请手动检查');
-    expect(text).toContain(RESTART_LOG_PATH);
+    expect(text).toContain('D:/repo/.logs/server.log');
     expect(useRestartStore.getState().restarting).toBe(false);
   });
 
@@ -120,6 +120,61 @@ describe('RestartServerPanel（SYSTEM-RESTART）', () => {
 
     expect(await screen.findByTestId('restart-error')).toHaveTextContent('新进程启动失败，旧进程继续服务');
     expect(screen.queryByTestId('restart-status')).toBeNull();
+  });
+
+  it('409 端口被占：显示服务端原因，不进入重启态、不轮询（RESTART-HARDENING）', async () => {
+    let versionCalls = 0;
+    server.use(
+      http.post('/api/system/restart', () => HttpResponse.json(
+        { error: { code: 'RESTART_PORT_CONFLICT', message: '端口 8787 由另一个看板实例（pid 9999）占用，未重启；旧进程 1234 继续服务' } },
+        { status: 409 },
+      )),
+      http.get('/api/version', () => { versionCalls += 1; return HttpResponse.json({ name: 'agentboard-server', version: '0.1.0', pid: 1234 }); }),
+    );
+    renderPanel({ pollIntervalMs: 10, timeoutMs: 500 });
+
+    await userEvent.click(screen.getByTestId('restart-open'));
+    await userEvent.click(screen.getByTestId('restart-confirm-yes'));
+
+    expect(await screen.findByTestId('restart-error')).toHaveTextContent('pid 9999');
+    expect(screen.queryByTestId('restart-status')).toBeNull();
+    expect(versionCalls).toBe(0);
+    expect(useRestartStore.getState().restarting).toBe(false);
+  });
+
+  it('pid 对不上（服务端已回退旧监听）→ 显示回退提示与日志路径（RESTART-HARDENING）', async () => {
+    server.use(
+      http.post('/api/system/restart', () => HttpResponse.json(
+        { restarting: true, old_pid: 1234, new_pid: 5678, log_path: 'D:/repo/.logs/server.log', started_at: Date.now() },
+        { status: 202 },
+      )),
+      // 新进程没接管：应答的仍是旧 pid
+      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0', pid: 1234 })),
+    );
+    renderPanel({ pollIntervalMs: 10, timeoutMs: 2000 });
+
+    await userEvent.click(screen.getByTestId('restart-open'));
+    await userEvent.click(screen.getByTestId('restart-confirm-yes'));
+
+    const rollback = await screen.findByTestId('restart-rollback');
+    expect(rollback).toHaveTextContent('重启未生效');
+    expect(rollback).toHaveTextContent('pid 1234');
+    expect(rollback).toHaveTextContent('D:/repo/.logs/server.log');
+    expect(useRestartStore.getState().restarting).toBe(false);
+  });
+
+  it('202 未带 log_path 时超时提示回落兜底路径', async () => {
+    server.use(
+      http.post('/api/system/restart', () => HttpResponse.json({ restarting: true, old_pid: 1, new_pid: 2, started_at: Date.now() }, { status: 202 })),
+      http.get('/api/version', () => HttpResponse.error()),
+    );
+    renderPanel({ pollIntervalMs: 10, timeoutMs: 60 });
+
+    await userEvent.click(screen.getByTestId('restart-open'));
+    await userEvent.click(screen.getByTestId('restart-confirm-yes'));
+
+    await waitFor(() => expect(screen.getByTestId('restart-status')).toHaveAttribute('data-phase', 'timeout'));
+    expect(screen.getByTestId('restart-status').textContent ?? '').toContain(RESTART_LOG_PATH);
   });
 });
 

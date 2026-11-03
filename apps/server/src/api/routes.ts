@@ -333,8 +333,9 @@ export function createRouter(deps: RouterDeps): Router {
     });
   }
   // ---- version ----
+  // pid：RESTART-HARDENING —— 客户端据它区分「新进程已接管」与「已回退旧进程」，端口占用检查也靠它识别自身
   router.get('/version', (_req, res) => {
-    res.json({ name: 'agentboard-server', version: SERVER_VERSION });
+    res.json({ name: 'agentboard-server', version: SERVER_VERSION, pid: process.pid });
   });
 
   router.use('/knowledge', createKnowledgeRouter(deps.db, { maxGraphPages: deps.knowledgeGraphPageLimit }));

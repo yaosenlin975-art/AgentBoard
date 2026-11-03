@@ -28,10 +28,12 @@ afterEach(() => {
 });
 
 describe('版本端点与响应头', () => {
-  it('GET /api/version 返回包版本', async () => {
+  it('GET /api/version 返回包版本与当前进程 pid', async () => {
     const res = await request(app).get('/api/version');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ name: 'agentboard-server', version: serverPkg.version });
+    // pid 是 RESTART-HARDENING 的契约：客户端据它区分「新进程已接管」与「已回退旧进程」
+    expect(res.body).toEqual({ name: 'agentboard-server', version: serverPkg.version, pid: process.pid });
+    expect(typeof res.body.pid).toBe('number');
   });
 
   it('任意 /api 响应携带 x-agentboard-version 头（正常与 404 错误路径）', async () => {

@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { attachmentsDirFor, loadConfig, type AgentBoardRuntimeConfig } from './config.js';
+import { attachmentsDirFor, loadConfig, readSettings, type AgentBoardRuntimeConfig } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
@@ -18,6 +18,7 @@ import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts
 import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
+import { appendServerLog, resolveServerLogPath } from './services/serverLog.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
 import type { QuotaService } from './services/quotas/quotaService.js';
@@ -211,7 +212,24 @@ export async function main(): Promise<StartedServer> {
         server.closeAllConnections();
         server.close(() => resolve());
       }),
-      exit: code => process.exit(code),
+      // RESTART-HARDENING：新进程没接管就回退旧监听，旧进程不退出
+      reopenServer: () => new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => { server.off('listening', onListening); reject(error); };
+        const onListening = (): void => { server.off('error', onError); resolve(); };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(config.port, config.host);
+      }),
+      // 交接完成后延迟一拍退出：closeAllConnections 之后立刻 process.exit 会在 libuv 关闭
+      // async handle 的过程中触发 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`
+      // （日志里看起来像崩溃，实际是主动退出）。100ms 让关闭回调先跑完。
+      exit: code => { setTimeout(() => process.exit(code), 100); },
+      // 前置检查的目标端口 = 子进程将绑定的端口（env 覆盖优先，其次 config.json 现值）：
+      // 设置页改过端口但还没重启时，子进程会去绑新端口，此时若新端口被别人占着就该 409，
+      // 而不是先关掉自己再失败。
+      port: () => Number(process.env.AGENTBOARD_PORT ?? readSettings().port),
+      logPath: () => resolveServerLogPath(),
+      log: (line: string) => appendServerLog(line),
     },
   });
 
@@ -234,6 +252,9 @@ export async function main(): Promise<StartedServer> {
     }
   }
   attachments.startCleanupWorker();
+  // RESTART-HARDENING：启动首行必落固定日志（stdout 在 detached/端点启动时会被丢弃）
+  const listeningLine = `listening http://${config.host}:${config.port} pid=${process.pid} db=${config.dbPath} attachments=${attachmentStorageDir}`;
+  appendServerLog(listeningLine);
   console.log(`AgentBoard listening on http://${config.host}:${config.port} (db: ${config.dbPath}, attachments: ${attachmentStorageDir})`);
   return { server, hub, config, db };
 }
@@ -242,6 +263,8 @@ export async function main(): Promise<StartedServer> {
 const invoked = process.argv[1];
 if (invoked && import.meta.url === pathToFileURL(invoked).href) {
   main().catch((err) => {
+    // 启动失败同样落盘：此前只有被丢弃的 stderr，事后无法归因
+    appendServerLog(`启动失败 pid=${process.pid}：${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
     console.error(err);
     process.exit(1);
   });
