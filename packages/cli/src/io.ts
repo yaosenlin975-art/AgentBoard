@@ -24,7 +24,8 @@ export function readAllStdin(stream: Readable): Promise<string> {
     stream.on('data', (chunk) => {
       data += chunk;
     });
-    stream.on('end', () => resolve(data));
+    // PowerShell 5.1 管道会给 stdin 加 UTF-8 BOM；剥离，避免正文/评论首字符被污染
+    stream.on('end', () => resolve(data.replace(/^\uFEFF/, '')));
     stream.on('error', reject);
   });
 }

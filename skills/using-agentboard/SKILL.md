@@ -124,6 +124,14 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **再看最近变更**：`kb changelog list --workspace <当前工作区> --limit 20`，确认最近有没有人改过你要动的同一区域；有就对齐或复用，不另起一套。
 - **区分事实与提议**：`category=open`（未决与盲区）或 `design` 且 `landed=proposed/partial` 的页**不得当成已实现的事实**；与卡面或代码冲突时先在卡评论提问，不猜、不按提议页当规格写代码。
 - **成本控制**：默认只读标题+摘要，正文按需；不要一次拉全量正文，也不要把知识页整段粘进评论。
+- **写知识页**（建/改/归档，PowerShell 复制可用；字段与三种引号写法见 `kb knowledge create --help`）：
+  ```powershell
+  Get-Content body.md -Raw | kb knowledge create --scope workspace --workspace <当前工作区> --title '标题' --slug some-slug --stdin --sources-file sources.json --evidence-file evidence.json
+  kb knowledge show <page-id> --scope workspace --workspace <当前工作区>
+  Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace <当前工作区> --expected-revision 1 --stdin
+  kb knowledge action <page-id> archive --scope workspace --workspace <当前工作区> --expected-revision 2
+  ```
+  正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
 
 ## 领任务 → 执行 → 汇报
 
@@ -244,3 +252,16 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 用户当轮说了具体做法（换工作区、跳过某步、直接改某卡），按用户说的做，并在回报里写明偏离了哪条技能条款。
 - 用户指令与「工作区边界（强制）」冲突时，先复述影响面（哪个工作区、哪些文件/数据），拿到当轮同意再执行。
 - 技能条款本身可疑或与现场证据不符时，按证据执行并说明，事后更新技能。
+
+## 收尾与维护命令（CLI-CLOSE）
+
+```
+kb close <issue-id> [--request-id <uuid>]              # 待验收 → 已关闭（占用中先 release）
+kb reopen <issue-id> [--to <状态>] [--request-id <uuid>] # 已关闭/已废弃 → 目标状态（默认待规划）
+kb update <issue-id> --title/--description/--priority/--labels/--due-date/--due-time/--parent [--clear-due|--clear-root] [--request-id <uuid>]
+kb update <issue-id> --description-stdin               # 长文本描述走 stdin
+```
+
+- `close` 只接受「待验收」；`reopen` 的目标必须是本工作区已定义状态（含自定义状态），非法会列出可用状态。
+- `update` **不含 status**：状态一律用 `claim / done / close / reopen / fail`。
+- 三条 409（占用中 / 状态不允许）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。

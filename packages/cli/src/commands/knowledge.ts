@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
@@ -5,54 +7,270 @@ import { resolveWorkspaceId } from '../workspace.js';
 
 interface ScopeOptions { scope: string; workspace?: string }
 async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{ scope: string; workspace_id?: string }> {
-  if (!(search ? ['workspace', 'common', 'both'] : ['workspace', 'common']).includes(opts.scope)) throw new Error('知识范围无效');
+  if (!(search ? ['workspace', 'common', 'both'] : ['workspace', 'common']).includes(opts.scope)) throw new Error('知识范围无效：--scope 只能是 workspace 或 common（search 另可用 both）');
   if (opts.scope === 'common') {
-    if (opts.workspace) throw new Error('common 不接受 --workspace');
+    if (opts.workspace) throw new Error('common 不接受 --workspace（公共知识不绑定工作区）');
     return { scope: 'common' };
   }
-  if (!opts.workspace) throw new Error('项目知识必须指定 --workspace');
+  if (!opts.workspace) throw new Error('项目知识必须指定 --workspace <工作区 id 或名称>');
   return { scope: opts.scope, workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) };
 }
+const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${p.snippet ? `\n${p.snippet}` : ''}`; };
 function output(ctx: Ctx, data: unknown): void {
   if (ctx.json) { ctx.io.write(`${JSON.stringify(data, null, 2)}\n`); return; }
-  if (Array.isArray(data)) {
-    ctx.io.write(data.length ? data.map(p => `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}\n${p.snippet ?? ''}`).join('\n') + '\n' : '（无知识）\n');
-  } else {
-    const p = data as Record<string, unknown>;
-    ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
+  if (Array.isArray(data)) { ctx.io.write(data.length ? data.map(pageLine).join('\n') + '\n' : '（无知识）\n'); return; }
+  const p = data as Record<string, unknown>;
+  if (Array.isArray(p.items)) {
+    const items = p.items as unknown[];
+    ctx.io.write((items.length ? items.map(pageLine).join('\n') + '\n' : '（无知识）\n') + (p.next_offset ? `下一页：--offset ${p.next_offset}\n` : ''));
+    return;
   }
+  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
 }
 const query = (params: Record<string, string | number | undefined>) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString();
+
+// ---------------- 字段级校验（中文提示，替代 zod 英文串） ----------------
+
+const SOURCE_TYPES = ['file', 'url', 'agent'];
+const SOURCE_KEYS = ['source_id', 'source_type', 'locator', 'captured_at', 'content_hash', 'snapshot'];
+const EVIDENCE_KEYS = ['source_id', 'locator', 'snapshot'];
+const HEX64 = /^[a-fA-F0-9]{64}$/;
+
+const preview = (value: unknown): string => {
+  if (typeof value === 'string') return value.length > 40 ? `"${value.slice(0, 40)}…"` : `"${value}"`;
+  if (value === undefined) return '缺失';
+  return JSON.stringify(value) ?? String(value);
+};
+function fail(message: string): never { throw new Error(message); }
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** 读 `--sources` / `--sources-file` 二选一（同时给视为用法错误，避免静默取一个） */
+function readJsonArg(flag: string, inline: string | undefined, file: string | undefined): unknown {
+  if (inline !== undefined && file !== undefined) fail(`${flag} 与 ${flag}-file 只能给一个（推荐用 ${flag}-file 避免 Windows 引号转义）`);
+  if (inline === undefined && file === undefined) fail(`缺少 ${flag}（或 ${flag}-file）：见 kb knowledge create --help 的字段说明与示例`);
+  const text = file !== undefined ? (() => {
+    const path = resolve(process.cwd(), file);
+    try { return readFileSync(path, 'utf8'); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? 'ERR';
+      return fail(`${flag}-file 读取失败：${path}（${code}）`);
+    }
+  })() : inline!;
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    fail(`${flag} 不是合法 JSON：${error instanceof Error ? error.message : String(error)}\n提示：Windows 下改用 ${flag}-file <路径> 可完全避开引号转义`);
+  }
+}
+
+function expectString(flag: string, path: string, value: unknown, max: number): void {
+  if (typeof value !== 'string' || value.length === 0) fail(`${flag}${path} 必须是 1–${max} 字符的字符串（当前：${preview(value)}）`);
+  if (value.length > max) fail(`${flag}${path} 超长：最多 ${max} 字符（当前 ${value.length}）`);
+}
+
+function validateSources(flag: string, raw: unknown): void {
+  if (!Array.isArray(raw)) fail(`${flag} 必须是数组，例如 [{"source_id":"file:README.md",...}]（当前：${preview(raw)}）`);
+  if (raw.length === 0) fail(`${flag} 至少要有 1 条来源`);
+  if (raw.length > 100) fail(`${flag} 最多 100 条（当前 ${raw.length}）`);
+  raw.forEach((item: unknown, index: number) => {
+    const at = `[${index}]`;
+    if (!isPlainObject(item)) fail(`${flag}${at} 必须是对象（当前：${preview(item)}）`);
+    for (const key of Object.keys(item)) {
+      if (!SOURCE_KEYS.includes(key)) fail(`${flag}${at}.${key} 不是允许的字段；允许：${SOURCE_KEYS.join(' / ')}`);
+    }
+    expectString(flag, `${at}.source_id`, item.source_id, 200);
+    if (!SOURCE_TYPES.includes(String(item.source_type))) {
+      fail(`${flag}${at}.source_type 必须是 ${SOURCE_TYPES.join(' | ')}（当前：${preview(item.source_type)}）`);
+    }
+    expectString(flag, `${at}.locator`, item.locator, 2000);
+    if (typeof item.captured_at !== 'number' || !Number.isInteger(item.captured_at) || item.captured_at < 0) {
+      fail(`${flag}${at}.captured_at 必须是 epoch 毫秒的非负整数（当前：${preview(item.captured_at)}）；PowerShell 取法：[DateTimeOffset]::Now.ToUnixTimeMilliseconds()）`);
+    }
+    if (typeof item.content_hash !== 'string' || !HEX64.test(item.content_hash)) {
+      fail(`${flag}${at}.content_hash 必须是 64 位十六进制 sha256（当前：${preview(item.content_hash)}）；命令行取法：Get-FileHash -Algorithm SHA256 <文件> 取 Hash`);
+    }
+    if (item.snapshot !== undefined) expectString(flag, `${at}.snapshot`, item.snapshot, 100000);
+  });
+}
+
+function validateEvidence(flag: string, raw: unknown): void {
+  if (!Array.isArray(raw)) fail(`${flag} 必须是数组，例如 [{"source_id":"file:README.md","locator":"file:1-20"}]（当前：${preview(raw)}）`);
+  if (raw.length === 0) fail(`${flag} 至少要有 1 条证据`);
+  if (raw.length > 100) fail(`${flag} 最多 100 条（当前 ${raw.length}）`);
+  raw.forEach((item: unknown, index: number) => {
+    const at = `[${index}]`;
+    if (!isPlainObject(item)) fail(`${flag}${at} 必须是对象（当前：${preview(item)}）`);
+    for (const key of Object.keys(item)) {
+      if (!EVIDENCE_KEYS.includes(key)) fail(`${flag}${at}.${key} 不是允许的字段；允许：${EVIDENCE_KEYS.join(' / ')}`);
+    }
+    expectString(flag, `${at}.source_id`, item.source_id, 200);
+    expectString(flag, `${at}.locator`, item.locator, 2000);
+    if (item.snapshot !== undefined) expectString(flag, `${at}.snapshot`, item.snapshot, 100000);
+  });
+}
+
+// ---------------- help 文案 ----------------
+
+const FIELD_HELP = `
+字段说明（--sources / --evidence；服务端要求各 ≥1 条）
+  --sources 数组，每条对象：
+    source_id    字符串 1–200        必填  来源稳定标识，如 "file:README.md" / "url:https://…" / "agent:board-server"
+    source_type  file | url | agent  必填
+    locator      字符串 1–2000       必填  定位：文件相对路径 / URL / agent 名
+    captured_at  非负整数            必填  采集时刻 epoch 毫秒（PowerShell：[DateTimeOffset]::Now.ToUnixTimeMilliseconds()）
+    content_hash 64 位十六进制       必填  来源内容 sha256（PowerShell：Get-FileHash -Algorithm SHA256 <文件> 取 .Hash）
+    snapshot     字符串 可选         快照内容（≤100000 字符）
+  --evidence 数组，每条对象：
+    source_id    字符串 1–200        必填  必须指向上面某个 source_id
+    locator      字符串 1–2000       必填  证据定位，如 "file:12-30" / "issue:<uuid>" / "cmd:npm test"
+    snapshot     字符串 可选
+  其它字段一律拒绝（服务端 .strict()），错误会指出具体字段名与期望格式。
+`;
+
+const CREATE_HELP = `${FIELD_HELP}
+示例 A（PowerShell：单引号包 JSON、反引号续行；**PowerShell 不支持 \`<\` 重定向**，正文用管道喂 --stdin；实测可直接复制）：
+  kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin \`
+    --sources '[{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"'"$((Get-FileHash README.md -Algorithm SHA256).Hash.ToLower())"'"}]' \`
+    --evidence '[{"source_id":"file:README.md","locator":"file:1-20"}]' \`
+    注：上面这种写法在 PowerShell 里需要把正文用管道送进来，完整可复制版本见示例 C。
+
+示例 B（cmd：双引号包 JSON，内部双引号写 \\"，正文用 \`<\` 重定向）：
+  kb knowledge create --scope common --title "缓存策略" --slug cache-policy --stdin ^
+    --sources "[{\\"source_id\\":\\"file:README.md\\",\\"source_type\\":\\"file\\",\\"locator\\":\\"README.md\\",\\"captured_at\\":1763000000000,\\"content_hash\\":\\"<64位hex>\\"}]" ^
+    --evidence "[{\\"source_id\\":\\"file:README.md\\",\\"locator\\":\\"file:1-20\\"}]" < body.md
+
+示例 C（**推荐**，零引号转义；把两个 JSON 存成文件后，PowerShell 可直接复制）：
+  Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin \`
+    --sources-file sources.json --evidence-file evidence.json
+
+最小文件样例 sources.json：
+  [{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"0000000000000000000000000000000000000000000000000000000000000000"}]
+最小文件样例 evidence.json：
+  [{"source_id":"file:README.md","locator":"file:1-20"}]
+
+退出码：0 成功；1 参数/服务端错误（含字段级提示）；2 任务占用或知识 revision 冲突（KNOWLEDGE_*）
+`;
+
+const REVISE_HELP = `${FIELD_HELP}
+说明：只改提供的字段（--title / --stdin / --sources / --evidence / --expires-at 均可选），但 --expected-revision 必填（CAS）。
+示例（PowerShell，正文用管道；cmd 下可换成 \`< body.md\`）：
+  Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 3 --stdin --title '新标题'
+  Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace 任务看板 --expected-revision 3 --stdin \`
+    --sources-file sources.json --evidence-file evidence.json
+退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT，stderr 给当前 revision）
+`;
+
+const ACTION_HELP = `
+合法动作（第 2 个位置参数，只能取）：
+  archive   归档（status → archived）
+  restore   恢复（status → active）
+  delete    删除（status → deleted；不可逆，服务端会保留历史）
+必填：<page-id> <action> --scope <workspace|common> [--workspace <id|名>] --expected-revision <n>（CAS）
+示例：
+  kb knowledge action <page-id> archive --scope common --expected-revision 2
+  kb knowledge action <page-id> restore --scope workspace --workspace 任务看板 --expected-revision 3
+退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT）
+`;
+
+const SHOW_HELP = `
+必填：<page-id> --scope <workspace|common>；workspace 范围还需 --workspace <id|名>
+可选：--history 同时输出全部版本历史
+输出：非 --json 时打印 id/scope/revision/title + 正文；--json 打印服务端原对象
+示例：
+  kb knowledge show <page-id> --scope common
+  kb --json knowledge show <page-id> --scope workspace --workspace 任务看板 --history
+退出码：0 成功；1 不存在或参数错误；2 不适用（本命令不返回 2）
+`;
+
+const LIST_HELP = `
+必填：--scope <workspace|common>（workspace 范围还需 --workspace <id|名>）
+可选：--status active|archived|deleted|all（默认 active）、--offset <n>（默认 0）、--limit <n>（默认 20，上限 100）、--include-expired
+输出：每页一行「<id> [scope] rev:<n> <title>」；有下一页时追加「下一页：--offset <n>」；--json 打印服务端原响应
+示例：
+  kb knowledge list --scope common --status active --limit 50
+  kb knowledge list --scope workspace --workspace 任务看板 --include-expired
+退出码：0 成功；1 参数或服务端错误
+`;
+
+const SEARCH_HELP = `
+必填：<query>（1–500 字符）
+可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope=workspace 时必填）、--limit <n>（默认 5）
+输出：命中页列表（每行 id/scope/revision/title + 摘要）；--json 打印服务端原响应
+示例：
+  kb knowledge search '缓存' --scope both --limit 5
+  kb knowledge search 'vault' --scope workspace --workspace 任务看板
+退出码：0 成功；1 参数或服务端错误
+`;
+
 export function registerKnowledgeCommands(program: Command, context: () => Ctx): void {
-  const knowledge = program.command('knowledge').description('共享知识库（项目与公共范围显式指定）');
-  knowledge.command('search <query>').option('--scope <scope>', 'workspace|common|both', 'both').option('--workspace <id|名>').option('--limit <n>', '结果数量', '5')
+  const knowledge = program.command('knowledge').description('共享知识库（项目与公共范围显式指定）')
+    .addHelpText('after', `
+常用流程：
+  1) Get-Content body.md -Raw | kb knowledge create --scope common --title '…' --slug some-slug --stdin --sources-file sources.json --evidence-file evidence.json
+  2) kb knowledge show <page-id> --scope common
+  3) Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin
+  4) kb knowledge action <page-id> archive --scope common --expected-revision 2
+字段说明：kb knowledge create --help（含 --sources/--evidence 每个字段与三种引号写法）
+`);
+  knowledge.command('search <query>').description('按文本检索知识页（默认 both）').option('--scope <scope>', 'workspace|common|both', 'both').option('--workspace <id|名>').option('--limit <n>', '结果数量', '5')
+    .addHelpText('after', SEARCH_HELP)
     .action(async (q: string, opts: ScopeOptions & { limit: string }) => { const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/search?${query({ ...await scopeFor(ctx, opts, true), q, limit: opts.limit })}`)); });
   const scoped = (command: Command) => command.requiredOption('--scope <scope>', 'workspace|common').option('--workspace <id|名>');
-  scoped(knowledge.command('show <page-id>').option('--history', '同时读取版本历史'))
+  scoped(knowledge.command('show <page-id>').description('读单个知识页（可带历史）').option('--history', '同时读取版本历史'))
+    .addHelpText('after', SHOW_HELP)
     .action(async (id: string, opts: ScopeOptions & { history?: boolean }) => {
       const ctx = context(); const suffix = query(await scopeFor(ctx, opts)); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
       if (opts.history) output(ctx, { page, history: await request(ctx.base, 'GET', `${path}/revisions?${suffix}`) }); else output(ctx, page);
     });
-  scoped(knowledge.command('list').option('--status <status>', 'active|archived|deleted|all', 'active').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量', '20').option('--include-expired', '包含过期页面'))
+  scoped(knowledge.command('list').description('列出知识页（默认只看 active）').option('--status <status>', 'active|archived|deleted|all', 'active').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量（上限 100）', '20').option('--include-expired', '包含过期页面'))
+    .addHelpText('after', LIST_HELP)
     .action(async (opts: ScopeOptions & { status: string; offset: string; limit: string; includeExpired?: boolean }) => {
       const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: opts.offset, limit: opts.limit, include_expired: String(!!opts.includeExpired) })}`));
     });
-  const contentOptions = (cmd: Command) => cmd.option('--stdin', '从 UTF-8 stdin 读取正文').option('--sources <json>', '来源数组 JSON').option('--evidence <json>', '证据数组 JSON').option('--expires-at <ms>', '过期时间，null 清除期限');
-  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; evidence?: string; expiresAt?: string }) {
-    return { ...(opts.stdin ? { body_md: await ctx.io.readStdin() } : {}), ...(opts.sources !== undefined ? { sources: JSON.parse(opts.sources) } : {}), ...(opts.evidence !== undefined ? { evidence: JSON.parse(opts.evidence) } : {}), ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}), actor: ctx.agentId };
+
+  const contentOptions = (cmd: Command) => cmd
+    .option('--stdin', '从 UTF-8 stdin 读取正文 body_md（create 必填；revise 只在改正文时用）')
+    .option('--sources <json>', '来源数组 JSON（字段见 create --help）')
+    .option('--sources-file <path>', '从 UTF-8 文件读来源数组 JSON（推荐，避免转义）')
+    .option('--evidence <json>', '证据数组 JSON（字段见 create --help）')
+    .option('--evidence-file <path>', '从 UTF-8 文件读证据数组 JSON（推荐，避免转义）')
+    .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限');
+
+  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) {
+    const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile) : undefined;
+    const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile) : undefined;
+    if (sourcesRaw !== undefined) validateSources('--sources', sourcesRaw);
+    if (evidenceRaw !== undefined) validateEvidence('--evidence', evidenceRaw);
+    return {
+      ...(opts.stdin ? { body_md: await ctx.io.readStdin() } : {}),
+      ...(sourcesRaw !== undefined ? { sources: sourcesRaw } : {}),
+      ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
+      ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),
+      actor: ctx.agentId,
+    };
   }
-  scoped(contentOptions(knowledge.command('create')).requiredOption('--title <title>').requiredOption('--slug <slug>'))
-    .action(async (opts: ScopeOptions & { title: string; slug: string; stdin?: boolean; sources?: string; evidence?: string; expiresAt?: string }) => {
-      const ctx = context(); if (!opts.stdin || !opts.sources || !opts.evidence) throw new Error('create 必须提供 --stdin、--sources 和 --evidence');
+
+  scoped(contentOptions(knowledge.command('create')).description('新建知识页（需要 --stdin/--sources/--evidence）').requiredOption('--title <title>').requiredOption('--slug <slug>'))
+    .addHelpText('after', CREATE_HELP)
+    .action(async (opts: ScopeOptions & { title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
+      const ctx = context();
+      const missing: string[] = [];
+      if (!opts.stdin) missing.push('--stdin（正文从 stdin 读，例：< body.md）');
+      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources 或 --sources-file（见 create --help 的字段说明）');
+      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence 或 --evidence-file（见 create --help 的字段说明）');
+      if (missing.length > 0) fail(`create 缺少必填项：\n  - ${missing.join('\n  - ')}\n完整示例：kb knowledge create --help`);
       output(ctx, await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug }));
     });
-  scoped(contentOptions(knowledge.command('revise <page-id>')).requiredOption('--expected-revision <n>').option('--title <title>'))
-    .action(async (id: string, opts: ScopeOptions & { expectedRevision: string; title?: string; stdin?: boolean; sources?: string; evidence?: string; expiresAt?: string }) => {
+  scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))
+    .addHelpText('after', REVISE_HELP)
+    .action(async (id: string, opts: ScopeOptions & { expectedRevision: string; title?: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
       const ctx = context(); output(ctx, await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) }));
     });
-  scoped(knowledge.command('action <page-id> <action>').requiredOption('--expected-revision <n>'))
+  scoped(knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致'))
+    .addHelpText('after', ACTION_HELP)
     .action(async (id: string, action: string, opts: ScopeOptions & { expectedRevision: string }) => {
+      const allowed = ['archive', 'restore', 'delete'];
+      if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
       const ctx = context(); output(ctx, await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId }));
     });
 }
