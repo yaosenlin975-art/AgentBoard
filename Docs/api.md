@@ -321,7 +321,20 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 | --- | --- | --- | --- | --- |
 | `POST /api/system/restart` | 无 body | `202 { restarting: true, old_pid, new_pid, log_path, started_at }`；新进程 stdout/stderr 重定向到 `log_path`；**先回 202**，再延迟约 200ms 关闭监听，轮询 `/api/version`（≤15s，须由 `new_pid` 应答）确认接管后才退出旧进程；不健康则重新监听并继续服务（前端据 `pid !== new_pid` 显示「已回退」） | 403 `RESTART_FORBIDDEN`（非回环）；409 `RESTART_PORT_CONFLICT`（目标端口被其它进程/另一个看板实例占用——未重启，旧进程继续服务，日志留「重启已拒绝」一行）；500 `RESTART_ENTRY_MISSING`（入口脚本不存在）/ `RESTART_SPAWN_FAILED`（新进程 spawn 失败——旧进程继续服务，监听未动）；503 `RESTART_UNAVAILABLE`（当前装配未启用重启，仅测试/非生产） | systemRoutes.ts |
 
-顺序：回环校验 → 入口存在性 → `spawn`（`detached` / `stdio: ignore` / `unref`）并等 `'spawn'` 事件 → 回 202 → 200ms 后 `server.close()` 停监听 → `process.exit(0)`。新进程启动时对 `EADDRINUSE` 以 250ms 间隔重试最多 20 次（等旧进程让出端口）。
+顺序：回环校验 → 目标端口前置检查（409 时不动旧进程）→ 入口存在性 → `spawn`（`detached` / stdout+stderr 重定向到 `log_path` / `unref`）并等 `'spawn'` 事件 → 回 202 → 200ms 后 `server.close()` 停监听 → 轮询 `/api/version`（≤15s，须由 `new_pid` 应答）→ 健康则 `process.exit(0)`，不健康则重新 `listen()` 继续服务并写日志。新进程启动时对 `EADDRINUSE` 以 250ms 间隔重试最多 20 次（等旧进程让出端口）。
+
+## 16. voice（`/api/voice`，voiceRoutes.ts，VOICE-1）
+
+本地语音模型管理。候选清单在 `packages/shared/src/voiceModels.ts`（前后端共用），**不预置、绝不自动下载**：只有显式 `POST .../download` 才发起网络请求。模型目录 `dirname(db)/models/<model-id>/`（容器只挂 `/data`）；下载写 `model.bin.part`，完成后写 `model.meta.json` 再原子改名 `model.bin`；`sha256` 边下边算，不符则保留 `.part`。
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `GET /api/voice/models` | — | `{ models: VoiceModelStatus[] }`；每项 `{ id, name, languages, streaming, note, dir, bytes_estimate, size_estimate, state, downloaded_bytes, total_bytes, sha256_actual, sha256_verified, error, error_message }`，`state ∈ not_downloaded / downloading / downloaded / failed` | — |
+| `POST /api/voice/models/:id/download` | 无 body | `202 { model_id, task_id, reused, state }`；同 id 重复调用**幂等复用**进行中的任务（`reused: true` 且 `task_id` 相同）；已下载完成同样 202（`state: downloaded`） | 404 未知模型；409 `VOICE_MODEL_URL_MISSING`（候选未配置官方地址——不猜地址、不跳校验） |
+| `GET /api/voice/models/:id/progress` | `?poll=1` 走一次性 JSON | SSE（`text/event-stream`）逐条 `data: { model_id, task_id, state, bytes, total, error, error_message }`，到 `downloaded` / `failed` 自动 `end`；`?poll=1` 返回同一结构 | 404 未知模型 |
+| `DELETE /api/voice/models/:id` | — | `{ deleted: true, freed_bytes }`，删掉整个 `models/<id>/` | 404 未知模型；409 `VOICE_MODEL_BUSY`（该模型正在下载） |
+
+下载失败错误码：`VOICE_DOWNLOAD_FAILED`（网络/HTTP 错误）、`VOICE_NO_SPACE`（`statfs` 预检剩余空间不足，未发请求）、`VOICE_CHECKSUM_MISMATCH`（与候选 `sha256` 不符，`.part` 保留可续）。候选 `sha256`/`url` 为 `null` 时表示官方发布值尚未配置：不冒充校验通过（`sha256_verified: null`）。
 
 ## CLI 标签规范（TAG-HYGIENE）
 

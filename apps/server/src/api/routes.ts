@@ -12,6 +12,7 @@ import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
+import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
@@ -104,6 +105,8 @@ export interface RouterDeps {
   draftRunner?: DraftRunner;
   /** SMART-CREATE：草稿生成超时（ms，仅测试注入；生产 120s） */
   draftTimeoutMs?: number;
+  /** VOICE-1：语音模型管理依赖（仅测试注入 catalog/fetch/freeBytes/rootDir；生产用默认值） */
+  voice?: VoiceRouterOptions;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -348,6 +351,7 @@ export function createRouter(deps: RouterDeps): Router {
   // STATUS-2：工作区状态字典（列表/新建/删除+强制迁移）
   router.use('/workspaces/:workspaceId/statuses', createWorkspaceStatusRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
+  router.use('/voice', createVoiceRouter(deps.db, deps.voice ?? {}));
   router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
   // ---- SMART-CREATE：智能创建草稿（不落库，设计 §4）----
