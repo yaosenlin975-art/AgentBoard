@@ -104,7 +104,8 @@ function walk(dir) {
   for (const entry of entries) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name)) continue;
+      // `.tmp-*`：临时浏览器 profile（CDP 调试产物，如 .tmp-edge-9356）等一次性目录，不是仓库源码
+      if (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.tmp-')) continue;
       walk(full);
       continue;
     }

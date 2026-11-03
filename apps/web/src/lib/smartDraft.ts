@@ -1,0 +1,135 @@
+/**
+ * 智能创建草稿（SMART-CREATE-UI）：调 `POST /api/issues/draft`（服务端不落库）+ 错误码中文化。
+ *
+ * 单独成文件的目的：请求可取消（AbortController）、错误码映射可单测，不把网络细节塞进对话框组件。
+ * 服务端契约（提交 6e70276）：
+ *   200 { title, description, labels, warnings[] }
+ *   502 DRAFT_ADAPTER_FAILED / 422 DRAFT_INVALID_OUTPUT（已自动重试 1 次）/ 504 DRAFT_TIMEOUT /
+ *   503 ADAPTER_UNAVAILABLE（前置探测，附原因）/ 400 参数 / 404 工作区
+ */
+import type { Priority } from '@agentboard/shared';
+
+export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode'] as const;
+export type DraftAdapter = (typeof DRAFT_ADAPTERS)[number];
+
+export const ADAPTER_LABEL: Record<DraftAdapter, string> = {
+  dsh: 'DSH',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+
+export interface IssueDraft {
+  title: string;
+  description: string;
+  labels: string[];
+  warnings: string[];
+}
+
+export interface DraftRequestInput {
+  workspace_id: string;
+  requirement: string;
+  adapter: DraftAdapter;
+  priority?: Priority;
+}
+
+export class DraftError extends Error {
+  /** 服务端错误码（无则 UNKNOWN） */
+  readonly code: string;
+  readonly status: number;
+  constructor(message: string, code: string, status: number) {
+    super(message);
+    this.name = 'DraftError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
+/** 取消（用户点「取消生成」）——不当失败处理，不回退手动表单 */
+export class DraftAbortError extends Error {
+  constructor() {
+    super('已取消生成');
+    this.name = 'DraftAbortError';
+  }
+}
+
+/** 错误码 → 中文文案（都带「已回退到手动创建」提示，需求原文在对话框里保留） */
+export function mapDraftError(error: unknown, adapter: DraftAdapter): string {
+  if (error instanceof DraftAbortError) return '已取消生成';
+  const status = error instanceof DraftError ? error.status : 0;
+  const code = error instanceof DraftError ? error.code : 'UNKNOWN';
+  const detail = error instanceof Error && error.message !== '' ? error.message : '未知原因';
+  const name = ADAPTER_LABEL[adapter];
+  switch (code) {
+    case 'DRAFT_ADAPTER_FAILED':
+      return `执行方式「${name}」生成失败：${detail}。已回退到手动创建，需求原文已保留。`;
+    case 'DRAFT_INVALID_OUTPUT':
+      return `执行方式「${name}」返回的草稿格式不合法（系统已自动重试一次）：${detail}。已回退到手动创建，需求原文已保留。`;
+    case 'DRAFT_TIMEOUT':
+      return `执行方式「${name}」生成超时（120 秒未完成）。已回退到手动创建，需求原文已保留。`;
+    case 'ADAPTER_UNAVAILABLE':
+      return `执行方式「${name}」当前不可用：${detail}。已回退到手动创建，需求原文已保留。`;
+    case 'NOT_FOUND':
+      return `工作空间不存在（HTTP ${status}）。请重新选择工作空间后重试。`;
+    case 'VALIDATION_ERROR':
+      return `请求参数不合法：${detail}`;
+    default:
+      return `生成草稿失败（HTTP ${status}${code === 'UNKNOWN' ? '' : ` ${code}`}）：${detail}。已回退到手动创建，需求原文已保留。`;
+  }
+}
+
+interface DraftOptions {
+  signal?: AbortSignal;
+  /** 测试注入用；默认 `/api/issues/draft` */
+  endpoint?: string;
+}
+
+/** 发起草稿生成；被 signal 取消时抛 DraftAbortError */
+export async function requestDraft(input: DraftRequestInput, options: DraftOptions = {}): Promise<IssueDraft> {
+  let res: Response;
+  try {
+    res = await postDraft(input, options);
+  } catch (e) {
+    if (options.signal?.aborted === true) throw new DraftAbortError();
+    throw new DraftError(e instanceof Error ? e.message : '网络错误', 'UNKNOWN', 0);
+  }
+  let data: unknown = null;
+  try {
+    data = await res.json();
+  } catch {
+    // 非 JSON 响应按空处理，下面统一走错误分支
+  }
+  if (!res.ok) {
+    const err = (data as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new DraftError(err?.message ?? `请求失败（HTTP ${res.status}）`, err?.code ?? 'UNKNOWN', res.status);
+  }
+  const draft = data as Partial<IssueDraft> | null;
+  return {
+    title: typeof draft?.title === 'string' ? draft.title : '',
+    description: typeof draft?.description === 'string' ? draft.description : '',
+    labels: Array.isArray(draft?.labels) ? draft!.labels.filter((l): l is string => typeof l === 'string') : [],
+    warnings: Array.isArray(draft?.warnings) ? draft!.warnings.filter((w): w is string => typeof w === 'string') : [],
+  };
+}
+
+/** 环境里的 fetch 与 AbortSignal 可能来自不同的 realm（jsdom + Node fetch），此时 signal 会被拒；
+ *  首次拒绝后记住该事实，后续不再传 signal（取消退化为「忽略迟到结果」，组件已保证 UI 取消语义）。 */
+let signalSupported: boolean | null = null;
+
+async function postDraft(input: DraftRequestInput, options: DraftOptions): Promise<Response> {
+  const body = JSON.stringify(input);
+  const init: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };
+  const withSignal = options.signal !== undefined && signalSupported !== false;
+  try {
+    const res = await fetch(options.endpoint ?? '/api/issues/draft', withSignal ? { ...init, signal: options.signal } : init);
+    if (withSignal) signalSupported = true;
+    return res;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : '';
+    // fetch 会在跨 realm signal 上抛 "Expected signal ... to be an instance of AbortSignal"
+    if (withSignal && /signal/i.test(message) && options.signal?.aborted !== true) {
+      signalSupported = false;
+      return fetch(options.endpoint ?? '/api/issues/draft', init);
+    }
+    throw e;
+  }
+}
