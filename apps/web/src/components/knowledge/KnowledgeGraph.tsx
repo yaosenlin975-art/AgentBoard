@@ -31,6 +31,7 @@ import {
 import { textAlpha, tintFromCssColor } from '../../lib/graphVisualFormulas';
 import { createForceLayoutClient, type ForceLayoutClient } from '../../lib/forceLayoutClient';
 import { localGraphSlice } from '../../lib/localGraph';
+import { GRAB_CURSOR } from '../../lib/cursor';
 import { FORCE_SLIDER_DEFAULTS, GraphControls, type ForceSliders } from './GraphControls';
 import type { PixiGraphData, PixiGraphHandle } from './pixiGraph';
 
@@ -611,9 +612,12 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             role="img"
             tabIndex={0}
             aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
-            className={`h-[480px] w-full max-w-full touch-none outline-none ${hovered === null ? 'cursor-grab' : 'cursor-pointer'} ${
+            className={`h-[480px] w-full max-w-full touch-none outline-none ${
               renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
             }`}
+            // CURSOR-WHITE/CURSOR-REUSE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
+            // 复用 lib/cursor 的双色光标（白填充 + 深描边）。悬停到节点时保持 pointer 语义不变。
+            style={{ cursor: hovered === null ? GRAB_CURSOR : 'pointer' }}
           />
           <GraphControls
             localMode={localMode}

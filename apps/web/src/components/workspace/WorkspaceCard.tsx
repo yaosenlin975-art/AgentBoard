@@ -11,6 +11,7 @@ import type { Issue, IssueStatus, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useAppStore } from '../../state/appStore';
 import { RemoveWorkspaceDialog } from './RemoveWorkspaceDialog';
+import { GRAB_CURSOR } from '../../lib/cursor';
 
 const STATUS_ORDER: IssueStatus[] = ['待规划', '进行中', '待验收', '已关闭'];
 
@@ -67,7 +68,9 @@ export function WorkspaceCard({
           ref={sortable.setActivatorNodeRef}
           {...sortable.attributes}
           {...sortable.listeners}
-          className="mt-1 shrink-0 cursor-grab rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 active:cursor-grabbing dark:text-neutral-500 dark:hover:bg-neutral-800"
+          className="mt-1 shrink-0 rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-500 dark:hover:bg-neutral-800"
+          // CURSOR-REUSE：复用 lib/cursor 的双色拖拽光标（原生 grab 在 Windows 是无描边白手掌，白底不可见）
+          style={{ cursor: GRAB_CURSOR }}
         >
           ⋮⋮
         </button>
