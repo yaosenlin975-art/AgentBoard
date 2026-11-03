@@ -11,6 +11,38 @@ import { useEffect, useRef } from 'react';
 import type { Message } from '@agentboard/shared';
 import { MarkdownView } from '../../lib/markdown';
 
+/**
+ * 用户消息里的 markdown 图片（CHAT-PASTE-IMAGE）：气泡仍按纯文本渲染，
+ * 但 `![alt](url)` 要显示成缩略图——粘贴截图上传后插入的就是这种形态。
+ */
+const IMAGE_MD = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+
+function renderUserContent(content: string): React.ReactNode {
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  IMAGE_MD.lastIndex = 0;
+  while ((match = IMAGE_MD.exec(content)) !== null) {
+    const before = content.slice(lastIndex, match.index);
+    if (before !== '') nodes.push(<span key={`t-${match.index}`}>{before}</span>);
+    const url = match[1] ?? '';
+    nodes.push(
+      <img
+        key={`img-${match.index}`}
+        data-testid="msg-image"
+        src={url}
+        alt="粘贴的图片"
+        className="max-h-40 max-w-full rounded border border-white/30 object-contain"
+      />,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex === 0) return content;
+  const tail = content.slice(lastIndex);
+  if (tail !== '') nodes.push(<span key="t-tail">{tail}</span>);
+  return nodes;
+}
+
 const INPUT_TRUNCATE = 200;
 
 interface EventPayload {
@@ -126,8 +158,8 @@ export function MessageList({
         if (m.role === 'user') {
           return (
             <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
-              <div className="max-w-[85%] rounded-lg rounded-br-sm bg-blue-600 px-2.5 py-1.5 text-xs whitespace-pre-wrap text-white">
-                {m.content}
+              <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-blue-600 px-2.5 py-1.5 text-xs whitespace-pre-wrap text-white">
+                {renderUserContent(m.content)}
               </div>
             </div>
           );

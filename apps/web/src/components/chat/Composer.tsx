@@ -9,10 +9,11 @@
  * - **浮窗打开时 Enter 只确认候选、不发送消息**；选中只插入 `/skill` 或 `@标题` 文本；
  * - IME 组合期间不触发、不刷新候选；无匹配时关闭浮窗且不阻塞输入。
  */
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
 import {
   detectMentionTrigger,
@@ -58,6 +59,8 @@ export function Composer({
   const setValue = usePanelStore((s) => s.setChatDraft);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** 正在上传的粘贴图片数（>0 时禁止发送，避免图片还没落盘就发出去） */
+  const [uploadingImages, setUploadingImages] = useState(0);
   const [mention, setMention] = useState<MentionState | null>(null);
   const composingRef = useRef(false);
   // 选中候选后插入的文本本身仍能命中查询（如插入 `/mail-report` 后 `mar` 仍匹配），
@@ -163,8 +166,59 @@ export function Composer({
     });
   };
 
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
-    const composing = e.nativeEvent.isComposing || composingRef.current;
+  /**
+   * 粘贴截图（CHAT-PASTE-IMAGE）：含 `image/*` 文件时接管粘贴——纯文本照常插入，
+   * 图片复用既有上传链路（`api.uploadAttachment`，与评论/新建任务同一条），
+   * 成功后按现有图片消息形态（markdown 图片）插到光标处；多图按顺序串行上传保持顺序；
+   * 超限/类型不支持/上传失败都落到 composer-error，不静默丢弃。
+   */
+  const insertAtCaret = (text: string): void => {
+    const el = inputRef.current;
+    // 连续插入（文本 + 多图）时闭包里的 value 会过期，取 store 的最新草稿为准
+    const current = usePanelStore.getState().chatDraft;
+    const start = el?.selectionStart ?? current.length;
+    const end = el?.selectionEnd ?? start;
+    setValue(`${current.slice(0, start)}${text}${current.slice(end)}`);
+    const caret = start + text.length;
+    requestAnimationFrame(() => {
+      const node = inputRef.current;
+      if (node === null) return;
+      node.focus();
+      node.setSelectionRange(caret, caret);
+    });
+  };
+
+  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = filesFromClipboard(event.clipboardData);
+    const images = files.filter((file) => getImageMimeType(file) !== null);
+    if (images.length === 0) return; // 纯文本/其他类型交给原生粘贴
+    event.preventDefault();
+    const plain = event.clipboardData?.getData('text/plain') ?? '';
+    if (plain !== '') insertAtCaret(plain);
+
+    if (workspaceId === undefined || workspaceId === null) {
+      setError('图片上传需要先选择工作区：在左上角选中工作区后再贴图');
+      return;
+    }
+    const { accepted, rejection } = collectDraftImages(images, 0);
+    setError(rejection);
+    if (accepted.length === 0) return;
+    setUploadingImages(accepted.length);
+    void (async () => {
+      for (const item of accepted) {
+        try {
+          const result = await api.uploadAttachment(workspaceId, item.file, item.mimeType);
+          insertAtCaret(`![图片](${result.download_url})`);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : '图片上传失败');
+        } finally {
+          setUploadingImages((n) => Math.max(0, n - 1));
+        }
+      }
+    })();
+  };
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {    const composing = e.nativeEvent.isComposing || composingRef.current;
     if (mention !== null && !composing) {
       const count = mention.candidates.length;
       if (e.key === 'ArrowDown') {
@@ -227,6 +281,7 @@ export function Composer({
             refreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
           }}
           onSelect={(e) => refreshMention(value, (e.target as HTMLTextAreaElement).selectionStart ?? value.length)}
+          onPaste={onPaste}
           onKeyDown={onKeyDown}
           onCompositionStart={() => {
             composingRef.current = true;
@@ -247,7 +302,7 @@ export function Composer({
           type="button"
           data-testid="composer-send"
           onClick={() => void submit()}
-          disabled={disabled || sending || value.trim() === ''}
+          disabled={disabled || sending || uploadingImages > 0 || value.trim() === ''}
           className="shrink-0 rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40 disabled:text-ink-3 disabled:border-hairline disabled:bg-transparent"
         >
           {sending ? '发送中…' : '发送'}
