@@ -16,3 +16,5 @@ gui-test-screenshots/
 # 会话临时产物（2026-11-02 收尾提交时排除）
 preview-*.txt
 idle-task-drafts/
+# 技能文件的本地回滚备份（不入库；文件保留在磁盘）
+skills/**/SKILL.md.bak-*
