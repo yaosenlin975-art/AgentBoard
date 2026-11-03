@@ -1,4 +1,4 @@
-﻿import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
@@ -37,13 +37,15 @@ describe('mention 纯函数（触发 / 模糊匹配 / 插入）', () => {
     expect(fuzzyScore('任意标题', 'a1b2c3', 'a1b2c3d4-5678')?.matched).toBe('id');
   });
 
-  it('排序：最多 8 条、同分按标题字典序', () => {
-    const candidates = Array.from({ length: 12 }, (_, i) => ({
+  it('排序：默认上限 50 条（CHAT-TRIGGER-8 由 8 放开）、同分按标题字典序', () => {
+    const candidates = Array.from({ length: 80 }, (_, i) => ({
       id: `c${i}`,
       label: `候选 ${i}`,
       insert: `/${i}`,
     }));
-    expect(rankMentionCandidates(candidates, '候选').length).toBe(8);
+    expect(rankMentionCandidates(candidates, '候选').length).toBe(50);
+    // 显式传 limit 时仍受该值约束（调用方能力保留）
+    expect(rankMentionCandidates(candidates, '候选', 12).length).toBe(12);
     const same = [
       { id: 'b', label: 'bbb', insert: '/b' },
       { id: 'a', label: 'aaa', insert: '/a' },

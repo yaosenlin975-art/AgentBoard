@@ -1,7 +1,9 @@
 /**
  * 联想候选浮窗（CHAT-MENTION）：纯展示 + 键盘高亮由 Composer 持有。
  * 无障碍：listbox/option，`aria-activedescendant` 由调用方设置。
+ * CHAT-TRIGGER-8：候选上限由 8 放开到 50，容器 max-h + 可滚动；键盘移动时把高亮项滚进视口。
  */
+import { useEffect, useRef } from 'react';
 import type { MentionCandidate, MentionKind } from '../../lib/mention';
 
 export function MentionPopover({
@@ -18,16 +20,28 @@ export function MentionPopover({
   onHover: (index: number) => void;
 }) {
   const title = kind === 'skill' ? '技能' : '任务';
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // 键盘上下移动时把当前高亮项滚进视口（block:'nearest' 不影响已可见项）
+  useEffect(() => {
+    const list = listRef.current;
+    if (list === null) return;
+    const active = list.querySelector<HTMLElement>(`[data-testid="mention-item-${activeIndex}"]`);
+    // jsdom 没有 scrollIntoView：存在才调用（真实浏览器负责把高亮项滚进视口）
+    if (typeof active?.scrollIntoView === 'function') active.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
   return (
     <div
+      ref={listRef}
       data-testid="mention-popover"
       data-kind={kind}
       role="listbox"
       aria-label={`${title}联想`}
-      className="absolute bottom-full left-0 z-20 mb-1 max-h-56 w-72 overflow-auto rounded-md border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-900"
+      className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-72 overflow-y-auto overscroll-contain rounded-md border border-hairline bg-surface-card py-1 shadow-lg"
     >
       <p className="px-2 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">
-        {title}（{candidates.length}）
+        {title}（共 {candidates.length} 项）
       </p>
       {candidates.map((candidate, index) => (
         <button

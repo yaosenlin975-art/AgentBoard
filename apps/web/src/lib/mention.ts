@@ -105,7 +105,7 @@ function subsequenceScore(text: string, query: string): number | null {
 export function rankMentionCandidates(
   candidates: MentionCandidate[],
   query: string,
-  limit = 8,
+  limit = 50,
 ): MentionCandidate[] {
   const scored: Array<{ candidate: MentionCandidate; score: number }> = [];
   for (const candidate of candidates) {
