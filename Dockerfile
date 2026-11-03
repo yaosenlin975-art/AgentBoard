@@ -28,6 +28,11 @@ WORKDIR /app
 RUN corepack enable
 COPY --from=build /app ./
 
+# DOCKER-CLI：镜像里已有 packages/cli/dist（build 阶段 pnpm -r build 产物），这里只补一个可执行入口，
+# 容器内 agent 可直接用 kb claim/comment/done，不必回到宿主机代为执行。
+RUN printf '#!/bin/sh\nexec node /app/packages/cli/dist/index.js "$@"\n' > /usr/local/bin/kb \
+ && chmod 0755 /usr/local/bin/kb
+
 ENV NODE_ENV=production \
     AGENTBOARD_HOST=0.0.0.0 \
     AGENTBOARD_PORT=8787 \

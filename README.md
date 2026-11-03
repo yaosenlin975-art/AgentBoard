@@ -34,6 +34,16 @@ curl -fsS http://127.0.0.1:8788/api/version
 宿主 8787 常被本机服务占用，容器冒烟请用别的宿主端口（上例 `8788`）。DB 与附件都在 `/data` 一个卷里；
 bind mount 变体、冒烟 6 步、回滚与未证实项见 `Docs/docker-2026-11-03.md`。
 
+镜像自带 `kb`（`/usr/local/bin/kb`，默认 `KB_SERVER=http://127.0.0.1:8787` 指向同容器的 server），容器内可直接操作看板：
+
+```bash
+docker run --rm agentboard:local kb --version
+docker exec agentboard kb list-spaces
+docker exec -e KB_AGENT=cagent agentboard kb create-issue docker-cli-ws 'container kb smoke'
+```
+
+镜像内没有 git，`kb done` 会提示「跳过自动提交：工作区不是 git 仓库」（自动提交仍需宿主执行或另装 git）。
+
 ### 后台常驻（Windows）
 
 前台 `node apps/server/dist/index.js` 关终端即停。当前会话后台运行：
