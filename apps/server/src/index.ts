@@ -18,7 +18,7 @@ import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts
 import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
-import type { VoiceRouterOptions } from './api/voiceRoutes.js';
+import { attachVoiceWebSocket, type VoiceRouterOptions } from './api/voiceRoutes.js';
 import { appendServerLog, resolveServerLogPath } from './services/serverLog.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
@@ -237,6 +237,8 @@ export async function main(): Promise<StartedServer> {
   });
 
   const server = createServer(app);
+  // VOICE-2：语音会话 WS 必须先于 hub 注册（hub 会 destroy 非 /ws 的 upgrade）
+  attachVoiceWebSocket(server, db);
   hub.attach(server);
   // SYSTEM-RESTART：新进程可能比旧进程先起来，遇到 EADDRINUSE 时重试等端口让出（最多 5s）
   for (let attempt = 0; ; attempt += 1) {

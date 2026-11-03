@@ -9,7 +9,15 @@
  * 绝不自动下载：本 router 只响应显式请求，启动/首次使用都不拉模型。
  */
 import { Router, type Request, type Response } from 'express';
+import type { Server as HttpServer } from 'node:http';
+import { WebSocketServer } from 'ws';
 import type { Db } from '../db/connection.js';
+import {
+  attachVoiceSocket,
+  createVoiceSession,
+  stopVoiceSession,
+  type VoiceSessionDeps,
+} from '../services/voiceSessions.js';
 import {
   deleteVoiceModel,
   getVoiceModel,
@@ -19,7 +27,7 @@ import {
   type VoiceModelDeps,
 } from '../services/voiceModels.js';
 
-export interface VoiceRouterOptions extends VoiceModelDeps {
+export interface VoiceRouterOptions extends VoiceModelDeps, VoiceSessionDeps {
   /** SSE 轮询间隔（ms），缺省 250 */
   sseIntervalMs?: number;
 }
@@ -76,9 +84,40 @@ export function createVoiceRouter(db: Db, options: VoiceRouterOptions = {}): Rou
     send();
   });
 
+  // ---- 识别会话（VOICE-2） ----
+  router.post('/session', (req, res) => {
+    const body = (req.body ?? {}) as { model_id?: unknown; language?: unknown };
+    const created = createVoiceSession(db, {
+      ...(typeof body.model_id === 'string' ? { model_id: body.model_id } : {}),
+      ...(typeof body.language === 'string' ? { language: body.language } : {}),
+    }, options);
+    res.status(201).json(created);
+  });
+
+  router.post('/session/:id/stop', (req, res) => {
+    res.json(stopVoiceSession(db, options, String(req.params.id)));
+  });
+
   router.delete('/models/:id', (req, res) => {
     res.json(deleteVoiceModel(db, String(req.params.id), options));
   });
 
   return router;
+}
+
+/**
+ * VOICE-2：把 `WS /api/voice/session/:id` 挂到 HTTP server 的 upgrade 上。
+ * 必须在 `hub.attach(server)` **之前**注册：hub 会把非 `/ws` 的 upgrade 直接 destroy。
+ */
+export function attachVoiceWebSocket(server: HttpServer, db: Db, options: VoiceRouterOptions = {}): void {
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const matched = /^\/api\/voice\/session\/([^/]+)$/.exec(url.pathname);
+    if (matched === null) return; // 非语音路径：交给 /ws hub 处理
+    const sessionId = decodeURIComponent(matched[1] as string);
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      attachVoiceSocket(db, options, sessionId, ws);
+    });
+  });
 }

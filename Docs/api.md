@@ -334,6 +334,18 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 | `GET /api/voice/models/:id/progress` | `?poll=1` 走一次性 JSON | SSE（`text/event-stream`）逐条 `data: { model_id, task_id, state, bytes, total, error, error_message }`，到 `downloaded` / `failed` 自动 `end`；`?poll=1` 返回同一结构 | 404 未知模型 |
 | `DELETE /api/voice/models/:id` | — | `{ deleted: true, freed_bytes }`，删掉整个 `models/<id>/` | 404 未知模型；409 `VOICE_MODEL_BUSY`（该模型正在下载） |
 
+### 识别会话（VOICE-2，`services/voiceSessions.ts`）
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `POST /api/voice/session` | `{ model_id?, language? }`（`language` 形如 `zh-CN`，归一成 `zh`；缺省取第一个已下载模型、语言 `zh`） | `201 { session_id, sample_rate: 16000, model_id, language, state, queue_position }` | 409 `VOICE_MODEL_MISSING`（没有已下载模型——**此时不加载原生模块**）/ `VOICE_LANGUAGE_UNSUPPORTED`（模型不支持该语言）/ `VOICE_MODEL_NOT_STREAMING`（非流式模型）/ `VOICE_MODEL_INCOMPLETE`（模型目录缺 encoder/decoder/joiner/tokens） |
+| `WS /api/voice/session/:id` | 上行**二进制帧**：16kHz 单声道 **Float32 小端**（4 字节/采样，一帧任意长度）；文本帧 `{"type":"end"}` 等价于 stop | 下行 JSON：`{ type: 'state', state }`、`{ type: 'queued', position }`、`{ type: 'partial', text }`、`{ type: 'final', text, frames, reason }`、`{ type: 'error', code, message }` | 未知会话 → `error VOICE_SESSION_NOT_FOUND` + close 1008；重复连接 → `VOICE_SESSION_BUSY` |
+| `POST /api/voice/session/:id/stop` | 无 body | `{ session_id, text, frames, state: 'ended' }`（WS 不可用时的回退路径） | 404 会话不存在 |
+
+- 识别器**串行**（并发上限 1，`maxConcurrency` 可配）：同一时刻只有一个会话在跑，其余收到 `queued` 事件并带排队位次；前一个结束后自动 `state: running`。
+- 会话空转 **15s** 自动结束（`idleTimeoutMs` 可配），下行最后一条是 `final` 且 `reason: 'idle'`。
+- 原生模块 `sherpa-onnx-node` **延迟加载**：只有「模型已下载 + 真正要开流」时才 `import()`；无模型时创建会话直接 409，进程启动不碰原生模块。
+
 下载失败错误码：`VOICE_DOWNLOAD_FAILED`（网络/HTTP 错误）、`VOICE_NO_SPACE`（`statfs` 预检剩余空间不足，未发请求）、`VOICE_CHECKSUM_MISMATCH`（与候选 `sha256` 不符，`.part` 保留可续）。候选 `sha256`/`url` 为 `null` 时表示官方发布值尚未配置：不冒充校验通过（`sha256_verified: null`）。
 
 ## CLI 标签规范（TAG-HYGIENE）
