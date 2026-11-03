@@ -1,5 +1,5 @@
-﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RightPanel } from '../components/right/RightPanel';
 import { usePanelStore } from '../state/panelStore';
 
@@ -96,14 +96,17 @@ describe('RightPanel', () => {
     fireEvent.pointerDown(handle, { button: 0, clientX: 200 });
     fireEvent.pointerMove(window, { button: 0, clientX: 180 });
     expect(panel).toHaveStyle({ width: '440px' });
-    expect(panel).toHaveClass('transition-none');
+    // PANEL-MOTION-2：宽度不再是动画属性（拖动即时响应），只保留 transform/opacity 过渡
+    expect(panel.className).not.toContain('transition-[width]');
 
     fireEvent.pointerUp(window, { button: 0, clientX: 180 });
-    expect(panel).toHaveClass('transition-[width]');
+    // 过渡声明在内联样式（transform/opacity），类里不再有宽度过渡
+    expect(panel.style.transition).toContain('transform');
+    expect(panel.style.transition).toContain('opacity');
     expect(localStorage.getItem('agentboard.right-panel-width')).toBe('440');
   });
 
-  it('slides without covering the layout and restores chat/detail drafts and focus', () => {
+  it('slides without covering the layout and restores chat/detail drafts and focus', async () => {
     render(<RightPanel />);
     const detail = screen.getByTestId('detail-draft');
     const chat = screen.getByTestId('chat-draft');
@@ -131,7 +134,9 @@ describe('RightPanel', () => {
     document.body.appendChild(trigger);
     trigger.focus();
     fireEvent.click(screen.getByTestId('right-panel-close'));
-    expect(screen.queryByTestId('right-panel')).toBeNull();
+    // PANEL-MOTION-2：关闭先进入出场相位，动画结束后才卸载
+    expect(screen.getByTestId('right-panel')).toHaveAttribute('data-panel-state', 'leaving');
+    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
     expect(screen.queryByTestId('right-panel-rail')).toBeNull();
     expect(trigger).toHaveFocus();

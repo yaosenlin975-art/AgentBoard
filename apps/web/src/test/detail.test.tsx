@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Task 13 测试：操作区四态切换、评论发送两态与 woke 提示、防抖 PATCH、删除二次确认、
  * 派发弹窗提交体（cli/model/reuse_session/prompt 渲染变量）、RightPanel 容器收起/展开/拖拽宽度。
  */
@@ -862,7 +862,8 @@ describe('RightPanel 容器', () => {
 
     // PANEL-ENTRY2：关闭是整块卸载（没有收起态窄条），重开由入口触发（openDetail）
     await userEvent.click(screen.getByTestId('right-panel-close'));
-    expect(screen.queryByTestId('right-panel')).toBeNull();
+    // PANEL-MOTION-2：关闭先走出场相位（仍挂载），动画结束后才卸载
+    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
     expect(screen.queryByTestId('right-panel-rail')).toBeNull();
     openDetail();

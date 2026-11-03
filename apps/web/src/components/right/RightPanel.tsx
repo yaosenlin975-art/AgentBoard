@@ -10,6 +10,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEv
 import { usePanelStore, type PanelView } from '../../state/panelStore';
 import { useOverlayStore } from '../../state/overlayStore';
 import { useDismissable } from '../overlay/useDismissable';
+import { panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
 import { DetailPanel } from '../detail/DetailPanel';
 import { ChatPanel } from '../chat/ChatPanel';
 
@@ -50,7 +51,10 @@ export function RightPanel() {
   const headingRef = useRef<HTMLHeadingElement>(null);
   const panelBodyRefs = useRef<Record<PanelView, HTMLDivElement | null>>({ detail: null, chat: null });
   const lastFocusByView = useRef<Record<PanelView, HTMLElement | null>>({ detail: null, chat: null });
-  const previousView = useRef({ isOpen, view: activeView });
+  // PANEL-MOTION-2：进场/出场过渡（transform+opacity，两个浮窗同一 token）；关闭后保留挂载到出场结束
+  const reducedMotion = usePrefersReducedMotion();
+  const { mounted, phase } = usePanelPresence(isOpen, reducedMotion);
+  const previousView = useRef({ isOpen, view: activeView, mounted });
 
   // 视图存在即可见：openDetail/openChat 设置 view 后浮窗自动出现；view 为 null 时强制关闭
   useEffect(() => {
@@ -83,9 +87,14 @@ export function RightPanel() {
       const target = lastFocusByView.current[activeView];
       if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
       else headingRef.current?.focus();
+    } else if (isOpen && mounted && !previous.mounted) {
+      // 进场：presence 挂载完成后补一次焦点（打开那一刻 heading 还不存在）
+      const target = lastFocusByView.current[activeView];
+      if (target !== null && panelBodyRefs.current[activeView]?.contains(target)) target.focus();
+      else headingRef.current?.focus();
     }
-    previousView.current = { isOpen, view: activeView };
-  }, [activeView, isOpen]);
+    previousView.current = { isOpen, view: activeView, mounted };
+  }, [activeView, isOpen, mounted]);
 
 
   const onHandlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
@@ -120,21 +129,26 @@ export function RightPanel() {
     localStorage.setItem(WIDTH_KEY, String(nextWidth));
   };
 
-  // PANEL-ENTRY2：取消「收起成小方块」状态；未打开时整块不渲染，入口在任务卡与顶栏「聊天」
-  if (!isOpen) return null;
+  // PANEL-ENTRY2：取消「收起成小方块」状态；未打开且出场动画结束后整块不渲染，入口在任务卡与顶栏「聊天」
+  if (!mounted) return null;
 
   return (
     <aside
       ref={asideRef}
       data-testid="right-panel"
+      data-panel-state={phase}
       aria-label="右侧面板"
       id="right-panel-shell"
+      aria-hidden={isOpen ? undefined : true}
+      inert={isOpen ? undefined : true}
       style={{
-        width: isOpen ? `${width}px` : '40px',
-        maxWidth: isOpen ? 'calc(100vw - 1rem)' : undefined,
-        height: isOpen ? 'calc(100dvh - 5rem)' : '2.5rem',
+        width: `${width}px`,
+        maxWidth: 'calc(100vw - 1rem)',
+        height: 'calc(100dvh - 5rem)',
+        // 宽度只作为静态尺寸：不用 width 过渡，避免主内容随面板动画重排（PANEL-FLOAT 语义）
+        ...panelMotionStyle('slide-right', phase, reducedMotion),
       }}
-      className={`absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl ${resizing ? 'transition-none' : 'transition-[width] duration-200'} motion-reduce:transition-none dark:border-neutral-800 dark:bg-neutral-900`}
+      className="absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
     >
       <div
         id="right-panel-content"

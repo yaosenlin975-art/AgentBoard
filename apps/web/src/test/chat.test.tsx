@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Task 14 测试：聊天视图。WS 事件经 wsBus.emitWsEvent 直接灌入（模拟 WS hook），
  * REST 走 msw。覆盖：delta 流拼接渲染落定、折叠块开合与 tool input 截断、排队计数
  * （queued:true +1 / end 清零）、停止调用与停止后队列保留、模型修改 PATCH、新建会话、未读徽标。
@@ -393,9 +393,9 @@ describe('ChatPanel 消息流与流式渲染', () => {
 
     // PANEL-ENTRY2：关闭 = 整块卸载（不再有收起态窄条/inert 隐藏面板）
     await user.click(screen.getByTestId('right-panel-close'));
+    // PANEL-MOTION-2：关闭先走出场相位（仍挂载），动画结束后才卸载
+    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryByTestId('chat-panel')).toBeNull();
-    expect(screen.queryByTestId('right-panel')).toBeNull();
-
     // 关闭期间流式增量仍进 store（全局 WS 层照常收流）；PANEL-VIEW-BUG 后关闭会清 view
     emitText('s1', '期间');
     await waitFor(() => expect(usePanelStore.getState().view).toBeNull());

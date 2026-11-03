@@ -1,4 +1,4 @@
-﻿/**
+/**
  * App 布局（PANEL-FLOAT）：根容器固定视口、主内容 flex-1、左右栏改为浮窗（不再占位）。
  * 侧栏开合 = TopBar「工作空间」按钮 + 左浮窗；SIDEBAR01 的「侧栏让位」语义由浮窗模型取代。
  */
@@ -96,7 +96,7 @@ describe('App 布局容器（PANEL-FLOAT）', () => {
     usePanelStore.getState().openDetail('issue-1');
     await waitFor(() => expect(useOverlayStore.getState().right).toBe(true));
     expect(useOverlayStore.getState().left).toBe(false);
-    expect(screen.queryByTestId('workspace-sidebar')).toBeNull();
+  await waitFor(() => expect(screen.queryByTestId('workspace-sidebar')).toBeNull()); // PANEL-MOTION-2：先出场再卸载
   });
 
   it('浮窗内工作空间卡片与标题行左右内边距一致（SIDEBAR-CARD-WIDTH）', async () => {
