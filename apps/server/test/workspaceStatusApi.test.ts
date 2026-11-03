@@ -13,6 +13,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
+import { assertMigrationCount } from '../src/services/workspaceStatus.js';
 
 describe('workspace status CRUD (STATUS-2)', () => {
   let t: TestDb;
@@ -136,10 +137,52 @@ describe('workspace status CRUD (STATUS-2)', () => {
     expect(writeBack.status).toBe(400);
   });
 
+  it('reportsZeroWhenDeletedStatusHasNoIssues', async () => {
+    const created = await createStatus({ name: '空状态', kind: 'open' });
+    const statusId = created.body.id as string;
+    const ok = await request(app).delete(`${api(`/${statusId}`)}?migrate_to=待规划`);
+    expect(ok.status).toBe(200);
+    // 该状态本来就没有卡：0 是真实计数，不是统计失败
+    expect(ok.body).toMatchObject({ migrate_to: '待规划', migrated_issue_count: 0 });
+    expect((await listStatuses()).some(row => row.name === '空状态')).toBe(false);
+  });
+
+  it('reportsExactCountWhenFiveIssuesMigrate', async () => {
+    const created = await createStatus({ name: '待复测', kind: 'review' });
+    const statusId = created.body.id as string;
+    const ids = await Promise.all([1, 2, 3, 4, 5].map(async n => mkIssue(`批量卡${n}`, '待复测')));
+    const ok = await request(app).delete(`${api(`/${statusId}`)}?migrate_to=已关闭`);
+    expect(ok.status).toBe(200);
+    expect(ok.body.migrated_issue_count).toBe(5);
+    // 与实际迁移数逐一比对
+    for (const id of ids) {
+      expect((t.db.prepare('SELECT status FROM issue WHERE id=?').get(id) as { status: string }).status).toBe('已关闭');
+    }
+    expect((t.db.prepare("SELECT COUNT(*) AS n FROM issue WHERE status='待复测'").get() as { n: number }).n).toBe(0);
+  });
+
   it('returns404ForUnknownWorkspaceOrStatus', async () => {
     const unknownWs = await request(app).get('/api/workspaces/00000000-0000-4000-8000-000000000000/statuses');
     expect(unknownWs.status).toBe(404);
     const unknownStatus = await request(app).delete(`${api('/00000000-0000-4000-8000-000000000000')}?migrate_to=进行中`);
     expect(unknownStatus.status).toBe(404);
+  });
+});
+
+describe('迁移计数守卫（STATUS-MIGRATE-COUNT）', () => {
+  it('应迁数与实际变更数一致时原样返回', () => {
+    expect(assertMigrationCount(0, 0, '空状态')).toBe(0);
+    expect(assertMigrationCount(2, 2, '待复测')).toBe(2);
+    expect(assertMigrationCount(5, 5, '待复测')).toBe(5);
+  });
+
+  it('不一致时报错而不是谎报 0（不把统计失败说成「没有卡」）', () => {
+    expect(() => assertMigrationCount(3, 0, '待复测')).toThrow(/迁移计数不一致/);
+    try {
+      assertMigrationCount(3, 0, '待复测');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('MIGRATION_COUNT_MISMATCH');
+      expect((error as { status?: number }).status).toBe(500);
+    }
   });
 });

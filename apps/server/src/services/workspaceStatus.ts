@@ -111,6 +111,24 @@ export interface RemoveWorkspaceStatusResult {
 }
 
 /**
+ * STATUS-MIGRATE-COUNT：迁移计数守卫。
+ *
+ * `migrated_issue_count` 必须是**实际被迁移的卡数**：先数该状态下的卡，再执行 UPDATE，
+ * 两者不一致说明统计口径坏了（触发器改写 changes()、并发写入等），此时宁可 500 回滚，
+ * 也不能回一个「0」让用户以为数据没迁（会把「本来没卡」和「统计失败」混为一谈）。
+ */
+export function assertMigrationCount(preCount: number, changed: number, statusName: string): number {
+  if (preCount !== changed) {
+    throw new ApiError(
+      500,
+      'MIGRATION_COUNT_MISMATCH',
+      `迁移计数不一致：应迁 ${preCount} 张，实际 ${changed} 张（状态 ${statusName}），本次已回滚、状态未删除`,
+    );
+  }
+  return changed;
+}
+
+/**
  * 删除自定义状态：必须带 `migrate_to`，同事务把该状态下的卡全部迁移后删行。
  * 内置状态直接拒绝（改名前请先新增同名自定义状态再迁移）。
  */
@@ -133,8 +151,11 @@ export function removeWorkspaceStatus(db: Db, input: RemoveWorkspaceStatusInput)
     if (!targetRow) {
       throw new ApiError(400, 'MIGRATION_TARGET_INVALID', `迁移目标状态不存在：${migrateTo}（可用：${listWorkspaceStatusNames(db, input.workspace_id).join(' / ')}）`);
     }
+    const preCount = (db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id=? AND status=?')
+      .get(input.workspace_id, target.name) as { n: number }).n;
     const migrated = db.prepare('UPDATE issue SET status=?, updated_at=MAX(?,updated_at+1) WHERE workspace_id=? AND status=?')
       .run(migrateTo, input.now ?? Date.now(), input.workspace_id, target.name).changes;
+    assertMigrationCount(preCount, migrated, target.name);
     db.prepare('DELETE FROM workspace_status WHERE id=? AND workspace_id=?').run(input.status_id, input.workspace_id);
     return { removed: target, migrate_to: migrateTo, migrated_issue_count: migrated };
   }).immediate();

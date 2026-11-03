@@ -40,6 +40,8 @@ let statuses: WorkspaceStatus[];
 let created: Array<Record<string, unknown>>;
 let deleted: string[];
 let statusCalls: number;
+/** 删除接口返回的迁移计数（STATUS-MIGRATE-COUNT：服务端字段是 migrated_issue_count） */
+let deleteCount: number | undefined;
 
 beforeEach(() => {
   statuses = [
@@ -50,6 +52,7 @@ beforeEach(() => {
   created = [];
   deleted = [];
   statusCalls = 0;
+  deleteCount = 2;
   server.use(
     http.get(`/api/workspaces/${WS}/statuses`, () => {
       statusCalls += 1;
@@ -67,7 +70,7 @@ beforeEach(() => {
       const url = new URL(request.url);
       deleted.push(`${String(params.statusId)}?migrate_to=${url.searchParams.get('migrate_to')}`);
       statuses = statuses.filter((item) => item.id !== String(params.statusId));
-      return HttpResponse.json({ migrated: 2 });
+      return HttpResponse.json({ removed: { id: String(params.statusId) }, migrate_to: url.searchParams.get('migrate_to'), migrated_issue_count: deleteCount });
     }),
   );
 });
@@ -121,5 +124,35 @@ describe('设置里的工作区状态', () => {
 
     await waitFor(() => expect(deleted).toEqual(['s-wait?migrate_to=待规划']));
     await waitFor(() => expect(screen.queryByTestId('status-row-等外部确认')).toBeNull());
+    // STATUS-MIGRATE-COUNT：按服务端真实字段显示计数，不再恒为 0
+    expect(await screen.findByTestId('status-settings-notice')).toHaveTextContent('2 张卡迁到「待规划」');
+  });
+
+  it('该状态本来没有卡：显示「本来没有卡」而不是 0 张卡迁移', async () => {
+    deleteCount = 0;
+    renderSettings();
+    await screen.findByTestId('status-row-等外部确认');
+    await userEvent.click(screen.getByTestId('status-delete-等外部确认'));
+    const confirm = await screen.findByTestId('status-delete-confirm');
+    await userEvent.selectOptions(within(confirm).getByTestId('status-migrate-target'), '待规划');
+    await userEvent.click(within(confirm).getByTestId('status-delete-confirm-yes'));
+
+    const notice = await screen.findByTestId('status-settings-notice');
+    expect(notice).toHaveTextContent('本来没有卡');
+    expect(notice).not.toHaveTextContent('0 张卡');
+  });
+
+  it('计数缺失时提示「请刷新确认」，不拿 0 冒充', async () => {
+    deleteCount = undefined;
+    renderSettings();
+    await screen.findByTestId('status-row-等外部确认');
+    await userEvent.click(screen.getByTestId('status-delete-等外部确认'));
+    const confirm = await screen.findByTestId('status-delete-confirm');
+    await userEvent.selectOptions(within(confirm).getByTestId('status-migrate-target'), '待规划');
+    await userEvent.click(within(confirm).getByTestId('status-delete-confirm-yes'));
+
+    const notice = await screen.findByTestId('status-settings-notice');
+    expect(notice).toHaveTextContent('请刷新确认');
+    expect(notice).not.toHaveTextContent('0 张卡');
   });
 });

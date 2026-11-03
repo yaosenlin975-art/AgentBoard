@@ -64,11 +64,20 @@ export function WorkspaceStatusSettings({ workspaceId }: { workspaceId: string |
 
   const remove = useMutation({
     mutationFn: (input: { status: WorkspaceStatus; migrateTo: string }) =>
-      api.del<{ migrated: number }>(
+      // STATUS-MIGRATE-COUNT：服务端字段是 migrated_issue_count（早期误读成 migrated，导致永远显示 0 张）
+      api.del<{ removed: WorkspaceStatus; migrate_to: string; migrated_issue_count: number }>(
         `/api/workspaces/${encodeURIComponent(workspaceId ?? '')}/statuses/${encodeURIComponent(input.status.id)}?migrate_to=${encodeURIComponent(input.migrateTo)}`,
       ),
     onSuccess: async (result, input) => {
-      setNotice(`已删除状态「${input.status.name}」，${result.migrated ?? 0} 张卡迁到「${input.migrateTo}」`);
+      const migrated = typeof result?.migrated_issue_count === 'number' ? result.migrated_issue_count : null;
+      setNotice(
+        migrated === null
+          // 计数缺失/不可信：明确说「已迁移，请刷新确认」，不要拿 0 冒充
+          ? `已删除状态「${input.status.name}」，该状态下的卡已迁移到「${input.migrateTo}」，请刷新确认`
+          : migrated === 0
+            ? `已删除状态「${input.status.name}」，该状态下本来没有卡`
+            : `已删除状态「${input.status.name}」，${migrated} 张卡迁到「${input.migrateTo}」`,
+      );
       setDeleteTarget(null);
       setMigrateTo('');
       await refresh();
