@@ -123,3 +123,59 @@ describe('额度卡（ACC-QUOTA-01）', () => {
     expect(formatRemaining(Date.now() + 45 * 60_000 + 5000, Date.now())).toBe('45m');
   });
 });
+
+describe('OpenCode Go 百分比窗口（ACC-QUOTA-02）', () => {
+  it('百分比窗口显示剩余/已用百分比 + 重置时刻与剩余时长', async () => {
+    const resetAt = Date.now() + (2 * 60 + 5) * 60_000 + 30_000;
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null,
+      fetched_at: Date.now(),
+      items: [
+        item({ source: 'deepseek', status: 'unsupported', balance: null, unit: null, reason_code: 'NO_CREDENTIAL', detail: null }),
+        item({
+          source: 'opencode_go',
+          status: 'ok',
+          balance: null,
+          unit: '%',
+          detail: '工作区：Default',
+          windows: [
+            { name: '5h', remaining: 81, used_percent: 19, reset_at: resetAt },
+            { name: 'weekly', remaining: 92, used_percent: 8, reset_at: null },
+            { name: 'monthly', remaining: 74, used_percent: 26, reset_at: null },
+          ],
+        }),
+        item({ source: 'codex', status: 'unsupported', balance: null, unit: null, reason_code: 'NO_PUBLIC_QUOTA_ENDPOINT', detail: null }),
+      ],
+    })));
+    renderCards();
+
+    const card = await screen.findByTestId('quota-card-opencode_go');
+    const first = within(card).getByTestId('quota-window-opencode_go-0');
+    expect(first).toHaveTextContent('5 小时窗口：剩余 81%（已用 19%');
+    expect(within(card).getByTestId('quota-reset-opencode_go-0')).toHaveTextContent(`重置 ${formatResetClock(resetAt)}`);
+    expect(within(card).getByTestId('quota-reset-opencode_go-0')).toHaveTextContent('还剩 2h 5m');
+    // 无重置时刻的窗口不渲染 reset 节点
+    expect(within(card).queryByTestId('quota-reset-opencode_go-1')).toBeNull();
+    expect(within(card).getByTestId('quota-window-opencode_go-1')).toHaveTextContent('剩余 92%（已用 8%');
+    expect(card).toHaveTextContent('工作区：Default');
+  });
+
+  it('opencode 不可用原因：未登录 / 未发现本地服务都显示中文原因，不显示裸码', async () => {
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null,
+      fetched_at: Date.now(),
+      items: [
+        item({ source: 'deepseek', status: 'unsupported', balance: null, unit: null, reason_code: 'NO_CREDENTIAL', detail: null }),
+        item({ source: 'opencode_go', status: 'unsupported', balance: null, unit: null, reason_code: 'OPENCODE_SERVER_NOT_RUNNING', detail: null }),
+        item({ source: 'codex', status: 'error', balance: null, unit: null, reason_code: 'OPENCODE_NOT_LOGGED_IN', detail: null }),
+      ],
+    })));
+    renderCards();
+
+    const go = await screen.findByTestId('quota-card-opencode_go');
+    expect(within(go).getByTestId('quota-reason-opencode_go')).toHaveTextContent('未发现本地 opencode 服务');
+    expect(within(go).getByTestId('quota-reason-opencode_go').textContent ?? '').not.toContain('OPENCODE_SERVER_NOT_RUNNING');
+    const codex = screen.getByTestId('quota-card-codex');
+    expect(within(codex).getByTestId('quota-reason-codex')).toHaveTextContent('本机未登录 OpenCode Go');
+  });
+});

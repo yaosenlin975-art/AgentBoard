@@ -230,7 +230,7 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 
 ## 14b. 额度与余额（`GET /api/managed-account-quotas`，accountRoutes.ts，ACC-QUOTA-01）
 
-账号页三来源额度/余额聚合：**逐来源独立结果**（单来源失败不影响其它来源），服务端 60s 缓存 + 失败指数退避（60s 起，上限 10min），同来源并发只打一次第三方。取证结论（2026-11-03）：只有 DeepSeek 有稳定公开端点；OpenCode Go 与 Codex 无公开配额接口，固定返回 `unsupported`（不编造数据）。响应不含 token / identity_hash / 本机路径。
+账号页三来源额度/余额聚合：**逐来源独立结果**（单来源失败不影响其它来源），服务端 60s 缓存 + 失败指数退避（60s 起，上限 10min），同来源并发只打一次第三方。取证结论（2026-11-03）：DeepSeek 走官方余额端点；OpenCode Go 走**本地 opencode 服务**的 usage 路由（ACC-QUOTA-02）；Codex 无公开窗口端点，固定 `unsupported`（不编造数据）。响应不含 token / identity_hash / 本机路径。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
@@ -239,7 +239,7 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 `QuotaResult = { source: 'deepseek'\|'opencode_go'\|'codex', status: 'ok'\|'unsupported'\|'error', balance: number\|null, unit: 'CNY'\|'USD'\|null, windows: Array<{ name: string, remaining: number, reset_at: number\|null }>, fetched_at: number, reason_code: string\|null, detail: string\|null }`
 
 - **deepseek**：`GET https://api.deepseek.com/user/balance`（Bearer；key 取 `DEEPSEEK_API_KEY` 或 `~/.deepseek/config.toml` 的 `api_key`）。`ok` 时给 `balance`/`unit`（优先 CNY）；无 key → `unsupported` `NO_CREDENTIAL`；401/403 → `error` `CREDENTIAL_INVALID`；429 → `RATE_LIMITED`；5xx → `UPSTREAM_ERROR`；网络/超时 → `NETWORK_ERROR`；结构不符 → `UPSTREAM_SHAPE_UNEXPECTED`。
-- **opencode_go**：无公开配额端点（官方只在 console 页面展示；本机探测 `/models`/`/usage`/`/me`/`/key` 全 404）→ 恒 `unsupported` `NO_PUBLIC_QUOTA_ENDPOINT`，`detail` 区分「已检测到 / 未检测到本机 API key」。不发起任何请求。
+- **opencode_go**：走本地 opencode 服务 `GET {url}/api/experimental/usage/limits`（Basic `opencode:<~/.config/opencode/service.json password>`）。响应 `data.go.{rolling,weekly,monthly}={percent,limited,resetsAt}` → 三窗口（`5h`/`weekly`/`monthly`），`remaining = 100 - percent`、`used_percent = percent`、`reset_at = resetsAt`，`unit = '%'`、`detail` 给工作区名或限额提示。服务发现：`OPENCODE_SERVER_URL` 优先，否则 `netstat -ano` LISTENING 端口 ∩ `tasklist` 中名字含 `opencode` 的 PID（Windows）。不可用码：`OPENCODE_NOT_LOGGED_IN`（无 auth.json）/ `OPENCODE_AUTH_UNAVAILABLE`（无 service.json 口令）/ `OPENCODE_SERVER_NOT_RUNNING`（未发现本地服务）/ `OPENCODE_AUTH_FAILED`（401/403）/ `OPENCODE_ROUTE_UNSUPPORTED`（404）。
 - **codex**：只有 ChatGPT OAuth 登录态（`~/.codex/auth.json`）；`/backend-api/codex/usage` 与 `/rate_limits` 均 403，本地 sqlite/global-state 无窗口数据 → 恒 `unsupported` `NO_PUBLIC_QUOTA_ENDPOINT`，`detail` 区分登录态有无。不发起任何请求。
 - `windows[].reset_at` 为该窗口重置时刻（epoch ms），前端展示为本地 `HH:mm` + 剩余时长；无窗口概念时 `windows = []`。
 ## 15. system（`/api/system`，systemRoutes.ts，SYSTEM-RESTART）

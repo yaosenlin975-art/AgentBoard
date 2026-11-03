@@ -10,9 +10,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createQuotaService,
+  discoverOpencodeUrl,
   hasCodexLogin,
   hasOpencodeGoKey,
   parseDeepseekBalance,
+  parseNetstatListeners,
+  parseTasklistPids,
   resolveDeepseekKey,
 } from '../src/services/quotas/quotaService.js';
 
@@ -87,7 +90,8 @@ describe('聚合服务（缓存 / 错误映射 / 脱敏）', () => {
     expect(first.items[0]!.status).toBe('ok');
     expect(first.items[0]!.balance).toBe(38.42);
     expect(first.items[1]!.status).toBe('unsupported');
-    expect(first.items[1]!.reason_code).toBe('NO_PUBLIC_QUOTA_ENDPOINT');
+    // 该夹具没有 opencode 登录态 → 走可解释的「未登录」分支（不再笼统 NO_PUBLIC_QUOTA_ENDPOINT）
+    expect(first.items[1]!.reason_code).toBe('OPENCODE_NOT_LOGGED_IN');
     expect(first.items[2]!.status).toBe('unsupported');
     expect(second.items[0]!.balance).toBe(38.42);
   });
@@ -149,5 +153,105 @@ describe('聚合服务（缓存 / 错误映射 / 脱敏）', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(snapshot.items[0]!.status).toBe('unsupported');
     expect(snapshot.items[0]!.reason_code).toBe('NO_CREDENTIAL');
+  });
+});
+
+describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
+  const usageBody = {
+    location: { directory: 'C:\\Users\\test' },
+    data: {
+      workspace: { id: 'wrk_x', name: 'Default', usageURL: 'https://opencode.ai/console/wrk_x/activity/overview' },
+      go: {
+        rolling: { percent: 19, limited: false, resetsAt: 1_793_680_271_000 },
+        weekly: { percent: 8, limited: false, resetsAt: 1_794_182_400_000 },
+        monthly: { percent: 26, limited: false, resetsAt: 1_796_000_751_000 },
+      },
+      budgets: [],
+    },
+  };
+
+  const homeWithOpencode = () => tempHome({
+    '.local/share/opencode/auth.json': JSON.stringify({ opencode: { type: 'api', key: 'x'.repeat(20) }, 'opencode-go': { type: 'api', key: 'y'.repeat(20) } }),
+    '.config/opencode/service.json': JSON.stringify({ password: 'z'.repeat(43) }),
+  });
+
+  function opencodeService(fetchImpl: unknown, extra: Record<string, unknown> = {}) {
+    return createQuotaService({
+      fetchImpl: fetchImpl as typeof fetch,
+      homeDir: homeWithOpencode(),
+      env: { OPENCODE_SERVER_URL: 'http://127.0.0.1:28894' },
+      now: () => 1_000,
+      ...extra,
+    });
+  }
+
+  it('三个窗口按「已用百分比」换算剩余 + 保留重置时刻', async () => {
+    const requested: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      requested.push(url);
+      return new Response(JSON.stringify(usageBody), { status: 200 });
+    });
+    const snapshot = await opencodeService(fetchImpl).get();
+    const go = snapshot.items[1]!;
+    expect(go.status).toBe('ok');
+    expect(go.unit).toBe('%');
+    expect(go.windows.map((w) => w.name)).toEqual(['5h', 'weekly', 'monthly']);
+    expect(go.windows[0]).toMatchObject({ remaining: 81, used_percent: 19, reset_at: 1_793_680_271_000 });
+    expect(go.windows[1]).toMatchObject({ remaining: 92, used_percent: 8 });
+    expect(go.windows[2]).toMatchObject({ remaining: 74, used_percent: 26 });
+    expect(go.detail).toContain('Default');
+    expect(requested.some((u) => u.endsWith('/api/experimental/usage/limits'))).toBe(true);
+  });
+
+  it('limited=true 时给出限额提示', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: { go: { rolling: { percent: 100, limited: true, resetsAt: 1 } } },
+    }), { status: 200 }));
+    const snapshot = await opencodeService(fetchImpl).get();
+    expect(snapshot.items[1]!.status).toBe('ok');
+    expect(snapshot.items[1]!.windows[0]!.remaining).toBe(0);
+    expect(snapshot.items[1]!.detail).toContain('限额');
+  });
+
+  it('未登录 / 未发现服务分别给可解释码（不再笼统 unsupported）', async () => {
+    const noLogin = createQuotaService({ fetchImpl: vi.fn() as unknown as typeof fetch, homeDir: tempHome({}), env: {}, now: () => 1 });
+    expect((await noLogin.get()).items[1]!).toMatchObject({ status: 'unsupported', reason_code: 'OPENCODE_NOT_LOGGED_IN' });
+
+    const noServer = createQuotaService({
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      homeDir: homeWithOpencode(),
+      env: {},
+      execFileImpl: async () => '',
+      now: () => 1,
+    });
+    expect((await noServer.get()).items[1]!).toMatchObject({ status: 'unsupported', reason_code: 'OPENCODE_SERVER_NOT_RUNNING' });
+  });
+
+  it('401 / 404 分别映射 OPENCODE_AUTH_FAILED / OPENCODE_ROUTE_UNSUPPORTED', async () => {
+    const unauthorized = opencodeService(vi.fn(async () => new Response('{"_tag":"UnauthorizedError"}', { status: 401 })));
+    expect((await unauthorized.get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'OPENCODE_AUTH_FAILED' });
+
+    const notFound = opencodeService(vi.fn(async () => new Response('{}', { status: 404 })));
+    expect((await notFound.get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'OPENCODE_ROUTE_UNSUPPORTED' });
+  });
+
+  it('响应缺 go 段 → UPSTREAM_SHAPE_UNEXPECTED', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: { budgets: [] } }), { status: 200 }));
+    expect((await opencodeService(fetchImpl).get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'UPSTREAM_SHAPE_UNEXPECTED' });
+  });
+
+  it('端口发现：netstat LISTENING ∩ tasklist 名字含 opencode', async () => {
+    const netstat = [
+      '  TCP    0.0.0.0:445            0.0.0.0:0              LISTENING       4',
+      '  TCP    127.0.0.1:28894        0.0.0.0:0              LISTENING       55392',
+      '  TCP    127.0.0.1:8787         0.0.0.0:0              LISTENING       11111',
+    ].join('\r\n');
+    const tasklist = ['"opencode.exe","55392","Console","1","417,780 K"', '"node.exe","11111","Console","1","100,000 K"'].join('\r\n');
+    expect(parseNetstatListeners(netstat)).toEqual([{ port: 445, pid: 4 }, { port: 28894, pid: 55392 }, { port: 8787, pid: 11111 }]);
+    expect(parseTasklistPids(tasklist).get(55392)).toBe('opencode.exe');
+    const discovered = await discoverOpencodeUrl(async (file) => (file === 'netstat' ? netstat : tasklist));
+    expect(discovered).toBe('http://127.0.0.1:28894');
+    // 没有 opencode 进程 → null
+    expect(await discoverOpencodeUrl(async (file) => (file === 'netstat' ? netstat : '"node.exe","11111","Console","1","1 K"'))).toBeNull();
   });
 });

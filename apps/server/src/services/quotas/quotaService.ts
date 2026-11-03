@@ -16,6 +16,7 @@
  * - 响应与日志不含 token / identity_hash / 文件路径（detail 里只写「已检测到/未检测到」）。
  */
 import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +30,8 @@ export interface QuotaWindow {
   remaining: number;
   /** 窗口重置时刻（epoch ms）；无窗口概念时为 null */
   reset_at: number | null;
+  /** 已用百分比（0-100）；百分比类窗口才有，其余为 null */
+  used_percent?: number | null;
 }
 
 export interface QuotaResult {
@@ -72,6 +75,8 @@ export interface QuotaServiceOptions {
   env?: Record<string, string | undefined>;
   /** 单来源请求超时，默认 8s */
   timeoutMs?: number;
+  /** 注入命令执行（测试用；默认 execFile 包装，用于发现本地 opencode 服务端口） */
+  execFileImpl?: (file: string, args: string[]) => Promise<string>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
@@ -115,8 +120,105 @@ export function hasOpencodeGoKey(homeDir: string): boolean {
   }
 }
 
-/** Codex 是否有本机 ChatGPT 登录态（`~/.codex/auth.json` 且 auth_mode=chatgpt 且有 access_token） */
-export function hasCodexLogin(homeDir: string): boolean {
+/** opencode 本地服务口令：`~/.config/opencode/service.json` 的 `password`（只读，不落日志） */
+export function readOpencodeServicePassword(homeDir: string): string | null {
+  try {
+    const json = JSON.parse(readFileSync(join(homeDir, '.config', 'opencode', 'service.json'), 'utf8')) as { password?: unknown };
+    return typeof json.password === 'string' && json.password.length > 0 ? json.password : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 从 `netstat -ano` 输出里取 LISTENING 的本地端口与 PID（导出于便于单测） */
+export function parseNetstatListeners(output: string): Array<{ port: number; pid: number }> {
+  const rows: Array<{ port: number; pid: number }> = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i.exec(line);
+    if (match) rows.push({ port: Number(match[1]), pid: Number(match[2]) });
+  }
+  return rows;
+}
+
+/** 从 `tasklist /FO CSV` 输出里取 PID→进程名（导出于便于单测） */
+export function parseTasklistPids(output: string): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const line of output.split(/\r?\n/)) {
+    const cells = line.split('","').map((cell) => cell.replace(/^"|"$/g, ''));
+    if (cells.length < 2) continue;
+    const pid = Number(cells[1]);
+    if (Number.isFinite(pid)) map.set(pid, (cells[0] ?? '').toLowerCase());
+  }
+  return map;
+}
+
+/**
+ * 发现本地 opencode 服务 URL：netstat LISTENING 端口 ∩ tasklist 里名字含 opencode 的 PID。
+ * Windows 专用（本机部署环境）；其它平台或命令失败返回 null（调用方给 OPENCODE_SERVER_NOT_RUNNING）。
+ */
+export async function discoverOpencodeUrl(
+  exec: (file: string, args: string[]) => Promise<string>,
+): Promise<string | null> {
+  try {
+    const [netstat, tasklist] = await Promise.all([exec('netstat', ['-ano', '-p', 'tcp']), exec('tasklist', ['/FO', 'CSV', '/NH'])]);
+    const pidNames = parseTasklistPids(tasklist);
+    const candidates = parseNetstatListeners(netstat)
+      .filter((row) => (pidNames.get(row.pid) ?? '').includes('opencode'))
+      .map((row) => row.port);
+    return candidates.length > 0 ? `http://127.0.0.1:${candidates[0]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+const OPENCODE_WINDOW_NAMES: Array<[key: 'rolling' | 'weekly' | 'monthly', label: string]> = [
+  ['rolling', '5h'],
+  ['weekly', 'weekly'],
+  ['monthly', 'monthly'],
+];
+
+/**
+ * 解析 `usage/limits` 响应（导出便于单测）：
+ * `data.go.{rolling,weekly,monthly} = {percent, limited, resetsAt}` → 三窗口；`percent` 是已用百分比。
+ */
+export function parseOpencodeUsage(body: unknown, fetchedAt: number): QuotaResult {
+  const record = (body && typeof body === 'object' ? body : {}) as { data?: { go?: Record<string, unknown>; workspace?: { name?: unknown } } };
+  const go = record.data?.go;
+  if (!go || typeof go !== 'object') {
+    return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_SHAPE_UNEXPECTED', '本地 opencode 服务没有返回 OpenCode Go 用量');
+  }
+  const windows: QuotaWindow[] = [];
+  let limited = false;
+  for (const [key, label] of OPENCODE_WINDOW_NAMES) {
+    const raw = (go as Record<string, unknown>)[key] as { percent?: unknown; limited?: unknown; resetsAt?: unknown } | undefined;
+    if (!raw || typeof raw !== 'object') continue;
+    const used = Number(raw.percent);
+    if (!Number.isFinite(used)) continue;
+    if (raw.limited === true) limited = true;
+    windows.push({
+      name: label,
+      remaining: Math.max(0, Math.round((100 - used) * 10) / 10),
+      used_percent: Math.min(100, Math.max(0, Math.round(used * 10) / 10)),
+      reset_at: typeof raw.resetsAt === 'number' && Number.isFinite(raw.resetsAt) ? raw.resetsAt : null,
+    });
+  }
+  if (windows.length === 0) {
+    return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_SHAPE_UNEXPECTED', '本地 opencode 服务的用量结构不在预期内');
+  }
+  const workspaceName = typeof record.data?.workspace?.name === 'string' ? record.data.workspace.name : null;
+  return {
+    source: 'opencode_go',
+    status: 'ok',
+    balance: null,
+    unit: '%',
+    windows,
+    fetched_at: fetchedAt,
+    reason_code: null,
+    detail: limited ? '已触发 OpenCode Go 限额，请求可能被降级到免费模型' : workspaceName ? `工作区：${workspaceName}` : null,
+  };
+}
+
+/** Codex 是否有本机 ChatGPT 登录态（`~/.codex/auth.json` 且 auth_mode=chatgpt 且有 access_token） */export function hasCodexLogin(homeDir: string): boolean {
   try {
     const json = JSON.parse(readFileSync(join(homeDir, '.codex', 'auth.json'), 'utf8')) as {
       auth_mode?: unknown;
@@ -158,6 +260,11 @@ export function parseDeepseekBalance(body: unknown, fetchedAt: number): QuotaRes
 
 export function createQuotaService(options: QuotaServiceOptions = {}): QuotaService {
   const fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+  const execFileImpl = options.execFileImpl ?? ((file: string, args: string[]) => new Promise<string>((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout: 5_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
+      if (error) reject(error); else resolve(String(stdout));
+    });
+  }));
   const now = options.now ?? (() => Date.now());
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
@@ -196,21 +303,63 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     }
   }
 
-  /** opencode-go / codex：只读本机痕迹，不请求第三方（无公开配额端点） */
-  async function inspectOnly(source: 'opencode_go' | 'codex'): Promise<QuotaResult> {
+  /**
+   * ACC-QUOTA-02：OpenCode Go 额度窗口走**本地 opencode 服务**
+   * `GET {url}/api/experimental/usage/limits`（Basic `opencode:<service.json password>`）。
+   * 真实响应（2026-11-03 本机实测）：
+   * `{location:{directory}, data:{workspace:{id,name,usageURL}, go:{rolling:{percent,limited,resetsAt},
+   *   weekly:{...}, monthly:{...}}, budgets:[]}}`；`percent` = 已用百分比，`resetsAt` = 重置时刻。
+   * 不新增凭据：复用本机 `~/.local/share/opencode/auth.json` 与 `~/.config/opencode/service.json`。
+   */
+  async function fetchOpencodeGo(): Promise<QuotaResult> {
     const at = now();
-    if (source === 'opencode_go') {
-      const hasKey = hasOpencodeGoKey(homeDir);
-      return empty(
-        'opencode_go',
-        'unsupported',
-        at,
-        'NO_PUBLIC_QUOTA_ENDPOINT',
-        hasKey
-          ? 'OpenCode Go 没有公开的配额接口（用量只在 console 页面查看），本机已检测到 API key'
-          : 'OpenCode Go 没有公开的配额接口（用量只在 console 页面查看），本机未检测到 API key',
-      );
+    if (!hasOpencodeGoKey(homeDir)) {
+      return empty('opencode_go', 'unsupported', at, 'OPENCODE_NOT_LOGGED_IN', '本机未检测到 OpenCode Go 登录态（~/.local/share/opencode/auth.json）');
     }
+    const password = readOpencodeServicePassword(homeDir);
+    if (!password) {
+      return empty('opencode_go', 'unsupported', at, 'OPENCODE_AUTH_UNAVAILABLE', '本机缺少 opencode 本地服务口令（~/.config/opencode/service.json）');
+    }
+    let serverUrl = env.OPENCODE_SERVER_URL?.trim() ?? '';
+    if (serverUrl === '') {
+      const discovered = await discoverOpencodeUrl(execFileImpl);
+      if (!discovered) {
+        return empty('opencode_go', 'unsupported', at, 'OPENCODE_SERVER_NOT_RUNNING', '未发现本地 opencode 服务（需在本机运行 opencode / opencode serve，或设置 OPENCODE_SERVER_URL）');
+      }
+      serverUrl = discovered;
+    }
+    const base = serverUrl.replace(/\/$/, '');
+    const auth = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(`${base}/api/experimental/usage/limits`, {
+        headers: { Authorization: auth, Accept: 'application/json' },
+        signal: controller.signal,
+      });
+      const fetchedAt = now();
+      if (response.status === 401 || response.status === 403) {
+        return empty('opencode_go', 'error', fetchedAt, 'OPENCODE_AUTH_FAILED', '本地 opencode 服务拒绝认证（service.json 口令可能已轮换）');
+      }
+      if (response.status === 404) {
+        return empty('opencode_go', 'error', fetchedAt, 'OPENCODE_ROUTE_UNSUPPORTED', '本地 opencode 服务没有 usage 路由（版本过旧）');
+      }
+      if (response.status === 429) return empty('opencode_go', 'error', fetchedAt, 'RATE_LIMITED', '本地 opencode 服务限流，稍后重试');
+      if (response.status >= 500) return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_ERROR', '本地 opencode 服务暂时不可用');
+      if (!response.ok) return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_REJECTED', `本地 opencode 服务拒绝了请求（HTTP ${response.status}）`);
+      let body: unknown = null;
+      try { body = await response.json(); } catch { body = null; }
+      return parseOpencodeUsage(body, fetchedAt);
+    } catch {
+      return empty('opencode_go', 'error', now(), 'NETWORK_ERROR', '无法连接本地 opencode 服务（网络或超时）');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** codex：只读本机痕迹，不请求第三方（无公开窗口端点） */
+  async function inspectOnly(source: 'codex'): Promise<QuotaResult> {
+    const at = now();
     const hasLogin = hasCodexLogin(homeDir);
     return empty(
       'codex',
@@ -225,7 +374,8 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
 
   function loaderFor(source: QuotaSourceId): () => Promise<QuotaResult> {
     if (source === 'deepseek') return fetchDeepseek;
-    return () => inspectOnly(source);
+    if (source === 'opencode_go') return fetchOpencodeGo;
+    return () => inspectOnly('codex');
   }
 
   async function load(source: QuotaSourceId): Promise<QuotaResult> {

@@ -18,6 +18,8 @@ export interface QuotaWindow {
   name: string;
   remaining: number;
   reset_at: number | null;
+  /** 已用百分比（0-100）；百分比类窗口（如 OpenCode Go）才有 */
+  used_percent?: number | null;
 }
 
 export interface QuotaItem {
@@ -53,6 +55,12 @@ export const QUOTA_REASON_LABEL: Record<string, string> = {
   UPSTREAM_REJECTED: '对方拒绝了请求',
   UPSTREAM_SHAPE_UNEXPECTED: '对方返回的数据结构不在预期内',
   NETWORK_ERROR: '网络不可用或超时',
+  // OpenCode Go（ACC-QUOTA-02，走本地 opencode 服务）
+  OPENCODE_NOT_LOGGED_IN: '本机未登录 OpenCode Go',
+  OPENCODE_AUTH_UNAVAILABLE: '本机缺少 opencode 本地服务口令',
+  OPENCODE_SERVER_NOT_RUNNING: '未发现本地 opencode 服务（需运行 opencode 或设置 OPENCODE_SERVER_URL）',
+  OPENCODE_AUTH_FAILED: '本地 opencode 服务拒绝认证',
+  OPENCODE_ROUTE_UNSUPPORTED: '本地 opencode 版本过旧，没有用量路由',
 };
 
 export const QUOTA_UNKNOWN_REASON_LABEL = '暂时取不到额度';
@@ -145,7 +153,14 @@ export function QuotaCards() {
                         {item.windows.map((window, index) => (
                           <li key={`${item.source}-${window.name}-${index}`} data-testid={`quota-window-${item.source}-${index}`} className="text-neutral-600 dark:text-neutral-400">
                             {WINDOW_LABEL[window.name] ?? window.name}：剩余 {window.remaining}
-                            {window.reset_at !== null && (
+                            {typeof window.used_percent === 'number' && `%（已用 ${window.used_percent}%`}
+                            {typeof window.used_percent === 'number' && window.reset_at !== null && (
+                              <span data-testid={`quota-reset-${item.source}-${index}`}>
+                                ，重置 {formatResetClock(window.reset_at)}，还剩 {formatRemaining(window.reset_at, now)}）
+                              </span>
+                            )}
+                            {typeof window.used_percent === 'number' && window.reset_at === null && '）'}
+                            {typeof window.used_percent !== 'number' && window.reset_at !== null && (
                               <span data-testid={`quota-reset-${item.source}-${index}`} className="ml-1">
                                 （重置 {formatResetClock(window.reset_at)}，还剩 {formatRemaining(window.reset_at, now)}）
                               </span>
