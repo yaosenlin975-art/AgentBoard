@@ -11,6 +11,10 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { getManagedAccount } from '../src/db/repos/managedAccount.js';
 import { SecretVault } from '../src/services/accounts/secretVault.js';
 import { MinimaxDesktopProvider, type MinimaxFileSystem, type MinimaxProcessControl } from '../src/services/accounts/minimaxDesktopProvider.js';
+import request from 'supertest';
+import type { AgentAdapter } from '@agentboard/adapters';
+import { createApp } from '../src/index.js';
+import { FakeAdapter } from './fakeAdapter.js';
 import { accountProviderCapability } from '../src/services/accounts/registry.js';
 
 const authJson = (token: string) => JSON.stringify({
@@ -119,9 +123,15 @@ describe('minimax desktop provider (ACC-13)', () => {
     expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe('token-a');
   });
 
-  it('rejectsWhenClientFilesMissing', async () => {
-    const { provider } = build({});
+  it('rejectsWhenAuthFileMissing', async () => {
+    const { provider } = build({ [EXE]: 'binary' });
     await expect(provider.captureCurrent()).rejects.toMatchObject({ code: 'CLIENT_PATH_MISSING' });
+  });
+
+  it('rejectsWhenExecutableMissingEvenIfAuthFileExists', async () => {
+    const { provider } = build({ [AUTH]: authJson('token-a') });
+    await expect(provider.captureCurrent()).rejects.toMatchObject({ code: 'CLIENT_PATH_MISSING' });
+    await expect(provider.preflight()).rejects.toMatchObject({ code: 'CLIENT_PATH_MISSING' });
   });
 
   it('rollsBackToOriginalWhenVerificationFails', async () => {
@@ -193,9 +203,56 @@ describe('minimax desktop provider (ACC-13)', () => {
   }, 30000);
 });
 
+describe('endpoint capture → switch (ACC-13)', () => {
+  let t2: TestDb;
+  let root2: string;
+  let vault2: SecretVault;
+  beforeEach(() => {
+    t2 = createTestDb();
+    root2 = mkdtempSync(join(tmpdir(), 'agentboard-acc13-route-'));
+    vault2 = new SecretVault(join(root2, 'vault'));
+  });
+  afterEach(() => { t2.cleanup(); rmSync(root2, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); });
+
+  it('capturesThenSwitchesThroughHttp', async () => {
+    const memory = memoryFs({ [AUTH]: authJson('token-a'), [EXE]: 'binary' });
+    const process = fakeProcess(false);
+    const provider = new MinimaxDesktopProvider({ db: t2.db, vault: vault2, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process });
+    const adapter = new FakeAdapter();
+    const created = await createApp({
+      db: t2.db,
+      getAdapter: (id: string): AgentAdapter => { if (id === 'fake') return adapter; throw new Error(`未知适配器 id: ${id}`); },
+      adapters: [adapter],
+      refreshClisOnBoot: false,
+      secretVault: vault2,
+      desktopProviders: { minimax: provider },
+    });
+    const captured = await request(created.app).post('/api/managed-accounts/minimax/capture-current').send({ display_name: '小号' });
+    expect(captured.status, 'capture body: ' + JSON.stringify(captured.body)).toBe(200);
+    expect(captured.body.account).toMatchObject({ app_id: 'minimax', display_name: '小号' });
+
+    const targetHash = 'f'.repeat(64);
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: targetHash, purpose: 'checkin' as const };
+    const ref = await vault2.protect(Buffer.from('token-z', 'utf8'), scope);
+    const targetId = randomUUID();
+    t2.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, targetHash, '目标', ref);
+
+    // switch 能力按本机事实关闭 → 端点必须拒绝并给出 reason_code
+    const switched = await request(created.app).post(`/api/managed-accounts/${targetId}/switch`).send({});
+    expect(switched.status).toBe(409);
+    expect(switched.body.error).toMatchObject({ code: 'PROVIDER_UNVERIFIED', details: { reason_code: 'CLIENT_NOT_INSTALLED' } });
+    // 拒绝后原文件未被改动
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe('token-a');
+
+  }, 40000);
+});
+
 describe('capability registry for switch (ACC-13)', () => {
   it('minimax switch is enabled and trae stays disabled with a reason', () => {
-    expect(accountProviderCapability('minimax')).toMatchObject({ capture: true, switch: true });
+    // 本机无 MiniMax.exe（扩展/CLI 形态）→ capture 可行、switch 不可行
+    const minimax = accountProviderCapability('minimax');
+    expect(minimax).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
     const trae = accountProviderCapability('trae');
     expect(trae.switch).toBe(false);
     expect(trae.reason_code).toBe('LOGIN_STATE_NOT_FILE_BASED');
