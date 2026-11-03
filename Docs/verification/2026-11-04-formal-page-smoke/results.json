@@ -1,0 +1,73 @@
+{
+  "1_topbar_path": {
+    "path": "D:\\WorkSpaces\\任务看板",
+    "title": "任务看板",
+    "versionInTopbar": false,
+    "pass": true
+  },
+  "2_toolbar_row": {
+    "log": {
+      "x": 220,
+      "y": 64,
+      "w": 48,
+      "h": 32,
+      "midY": 80,
+      "right": 268
+    },
+    "search": {
+      "x": 276,
+      "y": 64,
+      "w": 224,
+      "h": 32,
+      "midY": 80,
+      "right": 500
+    },
+    "label": {
+      "x": 508,
+      "midY": 80
+    },
+    "sameRow": true,
+    "rightOf": true,
+    "pass": true
+  },
+  "3_knowledge": {
+    "hasBlockTitle": false,
+    "search": {
+      "x": 188,
+      "y": 149,
+      "w": 915,
+      "h": 32,
+      "midY": 165,
+      "right": 1103
+    },
+    "scope": null,
+    "oneRow": null,
+    "pass": true
+  },
+  "4_graph_center": {
+    "pass": null,
+    "note": "无 canvas（星图未渲染）"
+  },
+  "5_log": {
+    "hasTitle": false,
+    "hasTabs": false,
+    "pass": true
+  },
+  "6_model_modal": {
+    "dark": true,
+    "title": "修改模型",
+    "titleContrast": {
+      "fg": "rgb(239,233,222)",
+      "bg": "rgb(28,26,24)",
+      "ratio": 14.36
+    },
+    "worst": {
+      "el": "button[model-confirm]",
+      "fg": "rgb(255,255,255)",
+      "bg": "rgb(21,93,252)",
+      "ratio": 5.25
+    },
+    "min": 5.25,
+    "pass": true
+  }
+}
