@@ -1,4 +1,5 @@
-﻿import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+﻿import { GRAPH_KEYWORD_RULES } from '@agentboard/shared';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -47,17 +48,23 @@ describe('knowledgeGraph 纯函数（边合成与阈值、截断）', () => {
   });
 
   it('E2：共享实体词 ≥2 成 keyword 边；仅 1 个不成边；trigram 重叠 ≥3 也成边', () => {
-    expect(KEYWORD_THRESHOLDS.sharedEntityTerms).toBe(2);
-    expect(KEYWORD_THRESHOLDS.trigramOverlap).toBe(3);
-    // 2 个共享实体词：缓存/失效
-    expect(keywordWeight('缓存 失效', '', '缓存 失效 策略', '')).toBe(1);
+    // GRAPH-KEYWORD-ALIGN：与 packages/shared/src/graphRules.ts 同源（旧 2/3 会把无关页连成完全图）
+    expect(KEYWORD_THRESHOLDS.sharedEntityTerms).toBe(GRAPH_KEYWORD_RULES.minTerms);
+    expect(KEYWORD_THRESHOLDS.trigramOverlap).toBe(GRAPH_KEYWORD_RULES.minTrigrams);
+    expect(GRAPH_KEYWORD_RULES.minTerms).toBe(4);
+    expect(GRAPH_KEYWORD_RULES.minTrigrams).toBe(6);
+    // 2 个共享实体词在新门槛下不再成边（旧规则会把无关页连成一片）
+    expect(keywordWeight('缓存 失效', '', '缓存 失效 策略', '')).toBe(0);
+    // 4 个共享稀有实体词 + 相对重叠率达标 → 成边
+    expect(keywordWeight('缓存 失效 策略 降级', '', '缓存 失效 策略 降级 说明', '')).toBe(1);
     // 1 个共享实体词 + trigram 重叠不足
     expect(keywordWeight('缓存', '', '缓存 无关词', '')).toBe(0);
     // 停用词不算实体词
     expect(keywordWeight('的 了', '', '的 了 是', '')).toBe(0);
     expect(entityTerms('的 缓存 the cache')).toEqual(new Set(['缓存', 'cache']));
-    // 长串 trigram 重叠 ≥3（实体词只有 1 个重叠）
-    expect(keywordWeight('abcdefg', '', 'abcdefg xy', '')).toBe(1);
+    // trigram 需要 ≥6 且相对比例达标
+    expect(keywordWeight('abcdefg', '', 'abcdefg xy', '')).toBe(0);
+    expect(keywordWeight('abcdefghijkl', '', 'abcdefghijkl xy', '')).toBe(1);
   });
 
   it('E2 与 E1 不重复成边：已有 source 边的两页不再加 keyword 边', () => {
@@ -334,7 +341,8 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
         const params = new URL(request.url).searchParams;
         expect(params.get('scope')).toBe('both');
         expect(params.get('workspace_id')).toBe('A');
-        expect(params.get('edge_kinds')).toBe('source,keyword');
+        // GRAPH-KEYWORD-ALIGN：默认请求必须带 link
+        expect(params.get('edge_kinds')).toBe('link,source,keyword');
         return HttpResponse.json(
           remoteGraph(
             [node('p1', '缓存策略'), node('p2', '缓存失效')],
@@ -344,7 +352,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
       }),
     );
     const onSelect = mountGraph();
-    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（来源 1 / 关键词 0）');
+    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 来源 1 / 关键词 0）');
     expect(screen.getByTestId('knowledge-graph-stage')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('graph-node-p1'));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', title: '缓存策略', scope: 'workspace' }));
@@ -435,11 +443,11 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
       ),
     );
     mountGraph();
-    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 条关联（来源 1 / 关键词 1）');
+    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 条关联（双链 0 / 来源 1 / 关键词 1）');
     expect(screen.getByTestId('graph-edge-keyword')).toBeChecked();
     fireEvent.click(screen.getByTestId('graph-edge-keyword'));
     await waitFor(() =>
-      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('1 条关联（来源 1 / 关键词 0）'),
+      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('1 条关联（双链 0 / 来源 1 / 关键词 0）'),
     );
   });
 
@@ -476,7 +484,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
     mountGraph();
     expect(await screen.findByTestId('graph-fallback-notice')).toHaveTextContent('服务端星图接口未就绪');
     await waitFor(() =>
-      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（来源 1 / 关键词 0）'),
+      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 来源 1 / 关键词 0）'),
     );
     expect(graphStats((await Promise.resolve({ nodes: [], edges: [] })) as unknown as GraphPayload).nodeCount).toBe(0);
   });

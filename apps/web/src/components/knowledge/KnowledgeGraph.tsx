@@ -70,7 +70,8 @@ function graphParams(workspaceId: string | null, scope: Props['scope']): URLSear
     scope,
     limit_nodes: '300',
     limit_edges: '900',
-    edge_kinds: 'source,keyword',
+    // GRAPH-KEYWORD-ALIGN：真实双链（link）必须默认带上，否则页间 `[[双链]]` 在星图上完全不可见
+    edge_kinds: 'link,source,keyword',
     include_isolated: 'true',
   });
   if (scope !== 'common' && workspaceId !== null) params.set('workspace_id', workspaceId);
@@ -78,7 +79,7 @@ function graphParams(workspaceId: string | null, scope: Props['scope']): URLSear
 }
 
 export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
-  const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ source: true, keyword: true });
+  const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ link: true, source: true, keyword: true });
   const [showIsolated, setShowIsolated] = useState(true);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<PixiGraphHandle | null>(null);
@@ -146,7 +147,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   }, [raw]);
 
   const enabledKinds = useMemo<GraphEdgeKind[]>(
-    () => (['source', 'keyword'] as GraphEdgeKind[]).filter((k) => kinds[k]),
+    () => (['link', 'source', 'keyword'] as GraphEdgeKind[]).filter((k) => kinds[k]),
     [kinds],
   );
 
@@ -415,6 +416,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         <label className="flex items-center gap-1">
           <input
             type="checkbox"
+            data-testid="graph-edge-link"
+            checked={kinds.link}
+            onChange={(e) => setKinds((prev) => ({ ...prev, link: e.target.checked }))}
+            className="size-3.5 accent-blue-600"
+          />
+          双链
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
             data-testid="graph-edge-source"
             checked={kinds.source}
             onChange={(e) => setKinds((prev) => ({ ...prev, source: e.target.checked }))}
@@ -486,7 +497,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         </button>
         {stats !== null && (
           <span data-testid="knowledge-graph-stats" className="ml-auto tabular-nums">
-            {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
+            {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（双链 {stats.linkEdges} / 来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
           </span>
         )}
       </div>

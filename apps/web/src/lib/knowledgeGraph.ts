@@ -1,3 +1,4 @@
+import { GRAPH_KEYWORD_RULES } from '@agentboard/shared';
 ﻿/**
  * 知识星图数据层（KB-GRAPH）：图契约归一化、边合成（来源共现 / 关键词共现）、
  * 截断与度数计算，以及自研轻量力学布局。
@@ -12,7 +13,7 @@
  * - E3 正文双链 `[[page]]` 不在本文件范围（独立卡）。
  */
 
-export type GraphEdgeKind = 'source' | 'keyword';
+export type GraphEdgeKind = 'link' | 'source' | 'keyword';
 
 export interface GraphNode {
   id: string;
@@ -63,9 +64,13 @@ export const GRAPH_LIMITS = {
 
 /** E2 阈值（写成常量便于测试与文档引用） */
 export const KEYWORD_THRESHOLDS = {
-  sharedEntityTerms: 2,
-  trigramOverlap: 3,
-} as const;
+  // 与 packages/shared/src/graphRules.ts 的 GRAPH_KEYWORD_RULES 同源（前端唯一来源）
+  sharedEntityTerms: GRAPH_KEYWORD_RULES.minTerms,
+  trigramOverlap: GRAPH_KEYWORD_RULES.minTrigrams,
+  dfRatio: GRAPH_KEYWORD_RULES.dfRatio,
+  termRatio: GRAPH_KEYWORD_RULES.termRatio,
+  gramRatio: GRAPH_KEYWORD_RULES.trigramRatio,
+};
 
 const STOPWORDS = new Set([
   // 中文高频虚词 / 代词（不含实际业务词）
@@ -105,11 +110,42 @@ function overlap(a: Set<string>, b: Set<string>): number {
 }
 
 /** E2 判定：共享实体词 ≥2 或 trigram 重叠 ≥3 → weight 1，否则 0（0 表示不成边） */
-export function keywordWeight(titleA: string, bodyA: string, titleB: string, bodyB: string): number {
-  const entityOverlap = overlap(entityTerms(`${titleA} ${bodyA}`), entityTerms(`${titleB} ${bodyB}`));
-  if (entityOverlap >= KEYWORD_THRESHOLDS.sharedEntityTerms) return 1;
-  const trigramOverlap = overlap(trigramSet(`${titleA} ${bodyA}`), trigramSet(`${titleB} ${bodyB}`));
-  return trigramOverlap >= KEYWORD_THRESHOLDS.trigramOverlap ? 1 : 0;
+export function keywordWeight(
+  titleA: string,
+  bodyA: string,
+  titleB: string,
+  bodyB: string,
+  dfLimit = Number.MAX_SAFE_INTEGER,
+  dfOf: (kind: 'term' | 'gram', value: string) => number = () => 0,
+): number {
+  const termsA = entityTerms(`${titleA} ${bodyA}`);
+  const termsB = entityTerms(`${titleB} ${bodyB}`);
+  const rareA = [...termsA].filter((term) => dfOf('term', term) <= dfLimit).length;
+  const rareB = [...termsB].filter((term) => dfOf('term', term) <= dfLimit).length;
+  let entityOverlap = 0;
+  for (const term of termsA) {
+    if (!termsB.has(term)) continue;
+    if (dfOf('term', term) > dfLimit) continue;
+    entityOverlap += 1;
+  }
+  const termFloor = Math.max(1, Math.min(rareA, rareB));
+  if (entityOverlap >= KEYWORD_THRESHOLDS.sharedEntityTerms && entityOverlap / termFloor >= KEYWORD_THRESHOLDS.termRatio) return 1;
+  const gramsA = trigramSet(`${titleA} ${bodyA}`);
+  const gramsB = trigramSet(`${titleB} ${bodyB}`);
+  const gramFloor = Math.max(
+    1,
+    Math.min(
+      [...gramsA].filter((gram) => dfOf('gram', gram) <= dfLimit).length,
+      [...gramsB].filter((gram) => dfOf('gram', gram) <= dfLimit).length,
+    ),
+  );
+  let trigramOverlap = 0;
+  for (const gram of gramsA) {
+    if (!gramsB.has(gram)) continue;
+    if (dfOf('gram', gram) > dfLimit) continue;
+    trigramOverlap += 1;
+  }
+  return trigramOverlap >= KEYWORD_THRESHOLDS.trigramOverlap && trigramOverlap / gramFloor >= KEYWORD_THRESHOLDS.gramRatio ? 1 : 0;
 }
 
 export interface ComposePageInput {
@@ -142,7 +178,8 @@ export interface ComposeResult extends GraphPayload {
  * 边按 weight 降序取前 limitEdges（默认 500，硬上限 900）；任一截断都置 truncated=true。
  */
 export function composeGraph(pages: ComposePageInput[], options: ComposeOptions = {}): ComposeResult {
-  const kinds = new Set<GraphEdgeKind>(options.edgeKinds ?? ['source', 'keyword']);
+  // GRAPH-KEYWORD-ALIGN：默认三种边全要（服务端默认也是 link,source,keyword）
+  const kinds = new Set<GraphEdgeKind>(options.edgeKinds ?? ['link', 'source', 'keyword']);
   const limitNodes = Math.min(options.limitNodes ?? GRAPH_LIMITS.defaultNodes, GRAPH_LIMITS.maxNodes);
   const limitEdges = Math.min(options.limitEdges ?? GRAPH_LIMITS.defaultEdges, GRAPH_LIMITS.maxEdges);
 
@@ -208,12 +245,23 @@ export function composeGraph(pages: ComposePageInput[], options: ComposeOptions 
   // E2：关键词共现（不与 E1 重复成边）
   if (kinds.has('keyword')) {
     const candidates = pages.filter((p) => nodes.has(p.id));
+    // GRAPH-EDGE-BUG/ALIGN：稀有项过滤，通用词（df > max(2, ceil(n×0.4))）不参与成边
+    const dfLimit = Math.max(2, Math.ceil(candidates.length * KEYWORD_THRESHOLDS.dfRatio));
+    const termDf = new Map<string, number>();
+    const gramDf = new Map<string, number>();
+    for (const page of candidates) {
+      const text = `${page.title} ${page.body_md ?? ''}`;
+      for (const term of entityTerms(text)) termDf.set(term, (termDf.get(term) ?? 0) + 1);
+      for (const gram of trigramSet(text)) gramDf.set(gram, (gramDf.get(gram) ?? 0) + 1);
+    }
+    const dfOf = (kind: 'term' | 'gram', value: string): number =>
+      kind === 'term' ? (termDf.get(value) ?? 0) : (gramDf.get(value) ?? 0);
     for (let i = 0; i < candidates.length; i += 1) {
       for (let j = i + 1; j < candidates.length; j += 1) {
         const a = candidates[i]!;
         const b = candidates[j]!;
         if (edges.has(pairKey(a.id, b.id, 'source'))) continue;
-        const weight = keywordWeight(a.title, a.body_md ?? '', b.title, b.body_md ?? '');
+        const weight = keywordWeight(a.title, a.body_md ?? '', b.title, b.body_md ?? '', dfLimit, dfOf);
         if (weight > 0) addEdge(a.id, b.id, 'keyword', weight, 'keyword');
       }
     }
@@ -309,7 +357,8 @@ export function normalizeGraph(raw: unknown, options: ComposeOptions = {}): Comp
   const edges = new Map<string, GraphEdge>();
   for (const item of rawEdges) {
     const e = (item ?? {}) as Record<string, unknown>;
-    const kind = e.kind === 'keyword' ? 'keyword' : e.kind === 'source' ? 'source' : null;
+    // GRAPH-KEYWORD-ALIGN：link（`[[双链]]`）是合法边类型，不再当畸形数据丢弃
+    const kind = e.kind === 'keyword' ? 'keyword' : e.kind === 'source' ? 'source' : e.kind === 'link' ? 'link' : null;
     if (kind === null || typeof e.source !== 'string' || typeof e.target !== 'string') { malformed += 1; continue; }
     if (!nodes.has(e.source) || !nodes.has(e.target) || e.source === e.target) { malformed += 1; continue; }
     const weight = typeof e.weight === 'number' && Number.isFinite(e.weight) && e.weight > 0 ? e.weight : 1;
@@ -389,6 +438,8 @@ export interface GraphStats {
   isolatedCount: number;
   sourceEdges: number;
   keywordEdges: number;
+  /** V2-4 显式双链边（来自 knowledge_link） */
+  linkEdges: number;
 }
 
 export function graphStats(graph: GraphPayload): GraphStats {
@@ -398,6 +449,7 @@ export function graphStats(graph: GraphPayload): GraphStats {
     isolatedCount: graph.nodes.filter((n) => n.degree === 0).length,
     sourceEdges: graph.edges.filter((e) => e.kind === 'source').length,
     keywordEdges: graph.edges.filter((e) => e.kind === 'keyword').length,
+    linkEdges: graph.edges.filter((e) => e.kind === 'link').length,
   };
 }
 
