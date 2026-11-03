@@ -175,6 +175,14 @@ export const doneSchema = z.object({
   scope_paths: z.array(z.string().trim().min(1).max(1000)).max(200).optional(),
 });
 
+/** CLI-CLOSE：reopen 的目标状态（缺省待规划；合法性由工作区状态字典判定） */
+export const reopenSchema = z.object({
+  status: z.string().trim().min(1).max(50).optional(),
+  workspace_id: z.string().trim().min(1).optional(),
+  /** CLI 会带 = 审计身份；与 PATCH/claim 同款，不参与流转判定 */
+  agent_id: z.string().trim().min(1).optional(),
+});
+
 export const failSchema = z.object({
   agent_id: z.string().trim().min(1, 'agent_id 不能为空'),
   reason: z.string().min(1, 'reason 不能为空'),

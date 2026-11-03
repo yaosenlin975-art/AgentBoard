@@ -56,6 +56,7 @@ import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import { addDependency, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { requireWorkspaceStatus } from '../services/workspaceStatus.js';
+import { closeIssue, reopenIssue } from '../services/issueTransitions.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
@@ -79,7 +80,7 @@ import {
   patchSettingsSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
-  addDependencySchema, dependencyQuerySchema, draftRequestSchema,
+  addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
 } from './schemas.js';
 
 export interface RouterDeps {
@@ -364,7 +365,7 @@ export function createRouter(deps: RouterDeps): Router {
     if (raw !== undefined) {
       if (typeof raw !== 'string' || !raw) throw new ValidationError('workspace_id 不合法');
       if (req.query.workspace_id && req.body?.workspace_id && req.query.workspace_id !== req.body.workspace_id) throw new ValidationError('workspace_id 不一致');
-      const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies'].includes(req.path)));
+      const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies', '/close', '/reopen'].includes(req.path)));
       if (!wrappedMutation) requireIssueInWorkspace(deps.db, String(req.params.id), raw);
     }
     next();
@@ -745,6 +746,21 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/issues/:id/release', (req, res) => claimAction(req, res, 'release'));
   router.post('/issues/:id/done', (req, res) => claimAction(req, res, 'done'));
   router.post('/issues/:id/fail', (req, res) => claimAction(req, res, 'fail'));
+
+  // ---- CLI-CLOSE：验收后流转（close 待验收→已关闭；reopen 已关闭/已废弃→指定状态）----
+  router.post('/issues/:id/close', (req, res) => {
+    const workspace = effectiveWorkspace(req);
+    const outcome = mutation(req, () => closeIssue(db, req.params.id!, workspace));
+    if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
+    res.json(outcome.result);
+  });
+  router.post('/issues/:id/reopen', (req, res) => {
+    const workspace = effectiveWorkspace(req);
+    const body = parseBody(reopenSchema, req.body ?? {});
+    const outcome = mutation(req, () => reopenIssue(db, req.params.id!, body.status, workspace));
+    if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
+    res.json(outcome.result);
+  });
 
   // ---- clis ----
   router.get('/clis', (_req, res) => {

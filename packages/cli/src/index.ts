@@ -20,6 +20,7 @@ import { fail } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
 import { depAdd, depLs, depRemove } from './commands/dep.js';
 import { statusAdd, statusList, statusRemove } from './commands/status.js';
+import { close, reopen, update } from './commands/lifecycle.js';
 import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
@@ -121,6 +122,46 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .action(async (id: string, opts: { notes?: string; scope?: string[]; requestId?: string }) =>
       done(makeCtx(program, io), id, { notes: opts.notes, scope: opts.scope, requestId: opts.requestId }));
+
+  program
+    .command('close')
+    .description('关闭任务：待验收 → 已关闭（占用中会 409，先 release）')
+    .argument('<issue-id>', '任务 id')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab-… --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（占用中/状态不允许）；1 其它错误（404 等）')
+    .action(async (id: string, opts: { requestId?: string }) => close(makeCtx(program, io), id, { requestId: opts.requestId }));
+
+  program
+    .command('reopen')
+    .description('重开任务：已关闭/已废弃 → 指定状态（默认「待规划」）')
+    .argument('<issue-id>', '任务 id')
+    .option('--to <状态>', '目标状态名（须是本工作区已定义状态，含自定义状态）', '待规划')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', '\n示例：\n  kb reopen 0f6ba9ab-…                  # 回到「待规划」\n  kb reopen 0f6ba9ab-… --to 进行中\n退出码：0 成功；2 冲突（占用中/当前不是关闭态）；1 其它错误（400 目标状态非法 / 404）')
+    .action(async (id: string, opts: { to?: string; requestId?: string }) => reopen(makeCtx(program, io), id, { to: opts.to, requestId: opts.requestId }));
+
+  program
+    .command('update')
+    .description('修改任务字段（不含状态；状态请用 claim/done/close/reopen/fail）')
+    .argument('<issue-id>', '任务 id')
+    .option('--title <text>', '标题')
+    .option('--description <text>', '描述（短文本）')
+    .option('--description-stdin', '从标准输入读取描述（长文本/多行）')
+    .option('--priority <低|中|高>', '优先级')
+    .option('--labels <a,b,c>', '标签（逗号分隔，整体替换）')
+    .option('--due-date <YYYY-MM-DD>', '截止日期')
+    .option('--due-time <HH:mm>', '截止时间（24h）')
+    .option('--clear-due', '清空截止日期与时间')
+    .option('--parent <issue-id>', '新父任务')
+    .option('--clear-root', '移动为根任务（清空父任务）')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab-… --title "修好的标题"\n  cat spec.md | kb update 0f6ba9ab-… --description-stdin\n  kb update 0f6ba9ab-… --priority 高 --due-date 2026-11-10 --due-time 14:30\n退出码：0 成功；1 其它错误（400 字段非法 / 404 任务不存在；占用中改状态会 409，本命令不含状态）')
+    .action(async (id: string, opts: { title?: string; description?: string; descriptionStdin?: boolean; priority?: string; labels?: string; dueDate?: string; dueTime?: string; clearDue?: boolean; parent?: string; clearRoot?: boolean; requestId?: string }) =>
+      update(makeCtx(program, io), id, {
+        title: opts.title, description: opts.description, descriptionStdin: opts.descriptionStdin,
+        priority: opts.priority, labels: opts.labels, dueDate: opts.dueDate, dueTime: opts.dueTime,
+        clearDue: opts.clearDue, parent: opts.parent, clearParent: opts.clearRoot, requestId: opts.requestId,
+      }));
 
   program
     .command('delete-issue')
