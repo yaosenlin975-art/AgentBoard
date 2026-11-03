@@ -42,7 +42,7 @@ docker exec agentboard kb list-spaces
 docker exec -e KB_AGENT=cagent agentboard kb create-issue docker-cli-ws 'container kb smoke'
 ```
 
-镜像内没有 git，`kb done` 会提示「跳过自动提交：工作区不是 git 仓库」（自动提交仍需宿主执行或另装 git）。
+镜像内没有 git，`kb done` 会提示「跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED）」（与「工作区不是 git 仓库（NOT_A_GIT_REPO）」分开报；自动提交仍需宿主执行或另装 git）。
 
 ### 后台常驻（Windows）
 

@@ -15,6 +15,7 @@
  * - 全程 `execFile('git', [...])`，标题等动态内容作为单个 `-m` 参数，不经 shell。
  */
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { Db } from '../db/connection.js';
 import { getIssue } from '../db/repos/issue.js';
@@ -42,12 +43,55 @@ async function git(cwd: string, args: string[]): Promise<{ stdout: string; stder
   return { stdout, stderr };
 }
 
-/** 只在「确实是 git 工作树」时返回 true；其它情况（目录不存在、非仓库、无权限）返回 false */
-async function isGitWorkTree(path: string): Promise<boolean> {
+/**
+ * GIT-DETECT：三种「不能自动提交」的原因必须分开报，否则容器里缺 git 会被误诊成「不是仓库」。
+ * - git-missing：`git --version` 失败（ENOENT 等）→ 环境未安装 git
+ * - not-a-repo：git 有，但 `rev-parse --is-inside-work-tree` 不成立 / 目录不存在 → 需要 git init
+ * - unhealthy：是仓库，但 `git status` 失败（HEAD/index 损坏、权限）→ 保留具体错误
+ */
+export type GitRepoKind = 'repo' | 'git-missing' | 'not-a-repo' | 'unhealthy';
+
+export interface GitRepoState {
+  kind: GitRepoKind;
+  detail?: string;
+}
+
+/** 可注入的 git 执行器（单测注入模拟结果，不真的卸载 git） */
+export type GitRunner = (cwd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
+
+const defaultGitRunner: GitRunner = (cwd, args) => git(cwd, args);
+
+/** 从 execFile 的失败里取可读原因（优先 stderr，截断避免超长评论） */
+function gitErrorText(error: unknown): string {
+  const shaped = error as { code?: string; stderr?: string; message?: string };
+  const text = (shaped?.stderr ?? '').trim() || shaped?.message || String(error);
+  return text.replace(/\s+/g, ' ').slice(0, 300);
+}
+
+export async function detectGitRepo(path: string, runner: GitRunner = defaultGitRunner): Promise<GitRepoState> {
+  if (!existsSync(path)) return { kind: 'not-a-repo', detail: `目录不存在：${path}` };
   try {
-    const { stdout } = await git(path, ['rev-parse', '--is-inside-work-tree']);
-    return stdout.trim() === 'true';
-  } catch { return false; }
+    await runner(path, ['--version']);
+  } catch (error) {
+    return { kind: 'git-missing', detail: gitErrorText(error) };
+  }
+  try {
+    const { stdout } = await runner(path, ['rev-parse', '--is-inside-work-tree']);
+    if (stdout.trim() !== 'true') return { kind: 'not-a-repo', detail: 'rev-parse --is-inside-work-tree 未返回 true' };
+  } catch (error) {
+    return { kind: 'not-a-repo', detail: gitErrorText(error) };
+  }
+  try {
+    await runner(path, ['status', '--porcelain=v1', '-uall', '-z']);
+  } catch (error) {
+    return { kind: 'unhealthy', detail: gitErrorText(error) };
+  }
+  return { kind: 'repo' };
+}
+
+/** 只在「确实是健康 git 工作树」时返回 true */
+async function isGitWorkTree(path: string): Promise<boolean> {
+  return (await detectGitRepo(path)).kind === 'repo';
 }
 
 interface StatusEntry { path: string; status: string }
@@ -190,21 +234,30 @@ function dropAndNull(db: Db, issueId: string, note: string | null = null): strin
  * - 越界或无法判定的路径一律不提交，只列清单（附可直接执行的补救命令）。
  * 非仓库 / 无基线 / 既无变化也无历史脏文件才返回 null。
  */
-export async function commitIssueChanges(db: Db, issueId: string, declaredPaths: readonly string[] = []): Promise<string | null> {
+export async function commitIssueChanges(
+  db: Db,
+  issueId: string,
+  declaredPaths: readonly string[] = [],
+  options: { git?: GitRunner } = {},
+): Promise<string | null> {
   const issue = getIssue(db, issueId);
   if (!issue) return dropAndNull(db, issueId);
   const workspace = getWorkspace(db, issue.workspace_id);
   if (!workspace) return dropAndNull(db, issueId);
   const repo = workspace.path;
-  // 非 git 工作区：不再静默跳过，落一行系统评论并回显声明范围（否则「done 成功但没提交」无从判断）
-  if (!(await isGitWorkTree(repo))) {
+  // 不能自动提交：不再静默跳过，落一行系统评论并回显声明范围（否则「done 成功但没提交」无从判断）。
+  // GIT-DETECT：三种原因分开报——容器里缺 git 与「目录没 git init」的处置方式完全不同。
+  const gitState = await detectGitRepo(repo, options.git ?? defaultGitRunner);
+  if (gitState.kind !== 'repo') {
     const declared = normalizeDeclaredPaths(declaredPaths);
-    return dropAndNull(
-      db,
-      issueId,
-      `跳过自动提交：工作区不是 git 仓库（${repo}）`
-      + `；声明范围：${declared.length > 0 ? declared.join(' / ') : '（未声明）'}`,
-    );
+    const scopeLine = `声明范围：${declared.length > 0 ? declared.join(' / ') : '（未声明）'}`;
+    const detail = gitState.detail !== undefined ? `：${gitState.detail}` : '';
+    const reason = gitState.kind === 'git-missing'
+      ? `跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED，${repo}）`
+      : gitState.kind === 'not-a-repo'
+        ? `跳过自动提交：工作区不是 git 仓库（NOT_A_GIT_REPO，${repo}），如需自动提交请在该目录 git init`
+        : `跳过自动提交：git 仓库状态异常（GIT_REPO_UNHEALTHY，${repo}）${detail}`;
+    return dropAndNull(db, issueId, `${reason}；${scopeLine}`);
   }
   const baselineRow = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
   if (!baselineRow) return dropAndNull(db, issueId);

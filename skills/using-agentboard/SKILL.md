@@ -187,6 +187,10 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - `--scope` 写实际改过的目录/文件（如 `--scope skills --scope Docs`）；改动清单与 `--scope` 不一致视为收尾未完成。
 - 未改文件的任务（纯看板操作）不写 `--scope`，`notes` 里写明「本轮无文件改动」。
 - 提交信息、分支与合并规则仍按项目 git 约定执行；GIT-ON-DONE 只解决「提交哪些路径」，不改变分支策略。
+- **不能自动提交时看原因码，别只看「没提交」**（`done` 仍成功，评论里带声明范围）：
+  - `GIT_NOT_INSTALLED` — 环境没装 git（容器镜像常见）：装 git 或改在宿主机收尾；
+  - `NOT_A_GIT_REPO` — git 有但目录不是仓库：在该目录 `git init`；
+  - `GIT_REPO_UNHEALTHY` — 是仓库但 `git status` 失败（index/HEAD 损坏、权限）：评论里带具体错误，先修仓库。
 
 ## 测试页与正式页（TEST-PAGE，强制）
 
