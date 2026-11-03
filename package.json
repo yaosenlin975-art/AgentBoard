@@ -8,6 +8,7 @@
   },
   "scripts": {
     "test": "pnpm -r test",
+    "server:ensure": "node scripts/server-detached.mjs",
     "dev:test-page": "node scripts/dev-page.mjs",
     "publish:web": "node scripts/rebuild-web-dist.mjs",
     "shortcut:test-page": "powershell -ExecutionPolicy Bypass -File scripts/create-test-page-shortcut.ps1"

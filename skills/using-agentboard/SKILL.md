@@ -52,7 +52,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 ## 前置条件
 
 - 本机已安装 kb CLI（自检 `kb --version`）。
-- 看板服务已启动（自检 `kb list-spaces`；报「看板服务未启动」时执行 `pnpm --filter @agentboard/server start`，在仓库根目录，需先 `pnpm -r build`）。服务地址不同时：单次用 `kb --server <url>`，长期用环境变量 `KB_SERVER=<url>`。
+- 看板服务已启动（自检 `kb list-spaces`；报「看板服务未启动」时在仓库根目录执行 `pnpm server:ensure`，见「服务重启」）。服务地址不同时：单次用 `kb --server <url>`，长期用环境变量 `KB_SERVER=<url>`。
 - 当前 agent 身份用环境变量 `KB_AGENT=<名字>` 声明（如 `KB_AGENT=codebuddy`）；未设置时默认 `kb-cli`。
 
 ## 看板概念
@@ -119,12 +119,22 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **`--stdin` 与 BOM**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM（首字符不会被污染）；多行中文仍建议 `cmd /c "chcp 65001>nul & kb comment <id> --stdin < file"`，避开 PowerShell 管道编码问题。
 - **`--scope` 必须逐条传**：写成 `--scope a --scope b`；PowerShell 会把 `--scope a,b` 拆错甚至合并成含空格的单参数，CLI 检测到含空格会打印 SCOPE-GUARD 警告要求重传。
 
+## 服务重启（SERVER-STABILITY，强制）
+
+要重启看板服务时**只走这一条**：仓库根目录 `pnpm server:ensure`（= `node scripts/server-detached.mjs`）。
+
+- 幂等：先探活 `/api/version`，已是健康看板 → 直接复用、**不重启进程**（pid 不变），exit 0；未监听 → 后台拉起 `apps/server/dist/index.js` 并轮询到健康（≤30s）。
+- 日志固定追加到 `.logs/server.log`；服务静默退出后先看这个文件，再谈归因。
+- 退出码：0 健康（复用或新起）／1 拉起后仍不健康或子进程提前退出／2 端口被非看板服务占用（脚本不杀进程，人工确认占用者）／3 `apps/server/dist/index.js` 缺失（先 `pnpm -r build`）。
+- **禁止**手工 `Stop-Process` + `start /b node apps\server\dist\index.js`：停止成功而启动失败会留下无人监听的空窗，且无任何日志可查（2026-11-03 两次 8787 自行下线即此模式，事后无法归因）。
+- 确实要换端口/换 DB 时用环境变量 `AGENTBOARD_PORT` / `AGENTBOARD_DB` 配合 `--port`，不要杀其它 node 进程。
+
 ## 故障分支
 
 命令不存在（127）→ 装 CLI；服务未启动（1）→ 按「前置条件」的启动命令处理；已被占用（2）→ 换任务。
 
 - **CLI 缺失**：`kb` 命令不存在（command not found，退出码 127）。按顺序尝试 `cd <仓库>/packages/cli && npm link`（仓库指 AgentBoard 仓库根），装完用 `kb --version` 复验；复验不过才停止并报告。agent 工作空间内没有该仓库时，向用户报告「kb CLI 未安装」并给出该安装命令，不自行猜测安装来源。
-- **服务未启动**：退出码 1 且报「看板服务未启动」→ 按「前置条件」的启动命令处理；不要自造端口。
+- **服务未启动**：退出码 1 且报「看板服务未启动」→ 仓库根目录跑 `pnpm server:ensure`（见「服务重启」），再复跑原命令；不要自造端口，不要手工 Stop-Process。
 - **409 已被占用**：退出码 2 → 立即换下一张卡，不等待、不重试、不释放他人占用。
 
 ## 开工前必读（项目上下文）
