@@ -98,6 +98,16 @@ describe('TopBar', () => {
     expect(screen.queryByRole('button', { name: '工作区日志' })).toBeNull();
   });
 
+  it('左上角工作区标题字号加大 3 档（text-sm → text-xl，14px → 20px）', () => {
+    renderTopBar(ws);
+    const title = screen.getByTestId('topbar-workspace');
+    // Tailwind text-sm(14px) 上调 3 档 = text-base(16) → text-lg(18) → text-xl(20px)
+    expect(title.className).toContain('text-xl');
+    expect(title.className).not.toContain('text-sm');
+    // 路径副标题不跟着放大，仍是 text-xs（12px）
+    expect(screen.getByText('D:/WorkSpaces/main').className).toContain('text-xs');
+  });
+
   it('WS 状态点反映连接状态', async () => {
     useAppStore.setState({ wsStatus: 'open' });
     renderTopBar(null);

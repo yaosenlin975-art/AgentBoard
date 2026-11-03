@@ -56,7 +56,7 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
                 if (!leftOpen) usePanelStore.getState().closeRight();
                 toggleLeft();
               }}
-              className="truncate rounded px-1 -mx-1 text-left text-sm font-semibold hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800"
+              className="truncate rounded px-1 -mx-1 text-left text-xl font-semibold hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800"
             >
               <span aria-hidden="true" className="mr-1 text-[10px] text-neutral-400">▾</span>
               {workspace ? workspace.name : '未选择工作空间'}
