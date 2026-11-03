@@ -17,6 +17,11 @@ import {
   lineWidth,
   nodeScale,
   readSemanticColors,
+  isClickGesture,
+  shouldKeepPanInertia,
+  wheelDeltaPixels,
+  zoomAnchor,
+  dampen,
   textAlpha,
   tintFromCssColor,
   zoomFactorFromWheel,
@@ -154,6 +159,46 @@ describe('公式与文档一致性守卫（防回归成自研近似值）', () =
     expect(getSize(3) - getSize(0)).not.toBeCloseTo((getSize(30) - getSize(0)) * (3 / 30), 3);
     // textAlpha 在 2 以上已被 clamp 到 1，改用未触界的 0.5 / 1 验证 log2 步长
     expect(textAlpha(1) - textAlpha(0.5)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('交互公式（C 章）：deltaMode 归一 / 锚点规则 / mQ / 点击阈值 / 惯性窗口', () => {
+  it('deltaMode：行 ×40、页 ×800，像素模式原样', () => {
+    expect(wheelDeltaPixels(3, 1)).toBe(120);
+    expect(wheelDeltaPixels(1, 2)).toBe(800);
+    expect(wheelDeltaPixels(120, 0)).toBe(120);
+    expect(wheelDeltaPixels(Number.NaN, 0)).toBe(0);
+  });
+
+  it('锚点：放大用鼠标坐标，缩小归零（= 画布中心）', () => {
+    const cursor = { x: 320, y: 210 };
+    const center = { x: 0, y: 0 };
+    expect(zoomAnchor(1, 1.5, cursor, center)).toEqual(cursor);
+    expect(zoomAnchor(1.5, 1, cursor, center)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('dampen 是「保留比例」：mQ(0,10,.9)=1（每帧 10%）、mQ(0,10,.85)=1.5（每帧 15%）', () => {
+    expect(dampen(0, 10, 0.9)).toBeCloseTo(1, 6);
+    expect(dampen(0, 10, 0.85)).toBeCloseTo(1.5, 6);
+    // 单调收敛到目标
+    let value = 0;
+    for (let i = 0; i < 200; i += 1) value = dampen(value, 10, 0.85);
+    expect(value).toBeCloseTo(10, 1);
+  });
+
+  it('点击阈值 25 平方（5px）：4px/5px 算点击，6px 不算', () => {
+    expect(isClickGesture(3, 0)).toBe(true);
+    expect(isClickGesture(3, 4)).toBe(true);
+    expect(isClickGesture(5, 0)).toBe(true);
+    expect(isClickGesture(6, 0)).toBe(false);
+    expect(isClickGesture(4, 4)).toBe(false);
+  });
+
+  it('惯性窗口 100ms：≤100ms 保留速度，>100ms 清零', () => {
+    expect(shouldKeepPanInertia(0)).toBe(true);
+    expect(shouldKeepPanInertia(100)).toBe(true);
+    expect(shouldKeepPanInertia(101)).toBe(false);
+    expect(shouldKeepPanInertia(Number.NaN)).toBe(false);
   });
 });
 

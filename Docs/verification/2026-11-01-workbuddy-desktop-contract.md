@@ -176,3 +176,31 @@ snapshot schema 草案：
   1. 用户手动演示一次托盘退出（托盘图标右键 → 退出），复测「真实退出签名 + 全进程清零」判据与启动后身份不变；或用户明确授权 provider 采用「请求用户手动退出 + 轮询退出签名」的 stop() 方案（禁止强杀）。
   2. 提供第二授权测试账号，完成一次受限捕获→写入→启动→身份核验→回滚→原身份核验闭环；全程不输出令牌原文。
   3. 实现时限定：仅支持单活跃安装实例（5.9.3+，schema v2）；检测到 v1 schema（明文 token）或 C: 陈旧实例即返回 unsupported。
+
+---
+
+# 2026-11-03 只读复核（未执行任何写入/客户端操作）
+
+- 执行者：board-web-accounts；范围：仅只读（进程/文件元数据/uid 哈希/目录清单），未读 token 原文，未启动或关闭客户端，未运行签到，未强杀进程，未改客户端文件。
+- 目的：核对 11-01 结论在今天的现场是否仍成立，为「托盘退出复测 + 第二账号闭环」准备可执行脚本（脚本见 `Docs/verification/2026-11-03-workbuddy-tray-exit-and-switch-demo.md`）。
+
+## 复核结果
+
+| 项 | 2026-11-01 结论 | 2026-11-03 现场 | 影响 |
+|---|---|---|---|
+| 活跃实例 | D:\Program Files\WorkBuddy 5.9.3.0 | 同路径；ProductVersion 5.9.3.0；exe mtime 2026-10-27 09:31:32Z；204,590,360 B | 无变化，instance_id `9cb538c4…` 复算一致 |
+| 身份 stable UID | uid sha256_8 = f5d89346 | 主凭据 `$.account.uid` 与 skeleton `primary.uid` 均为 `f5d89346`；`accounts[]` 长度 1 | 无变化，未换账号 |
+| schema | v2-wbencrypted | 仍 v2（`auth.accessToken` 为 `{$wbEncrypted:1,envelope}`） | 无变化 |
+| 主凭据文件 | 8,218 B | 9,759 B；mtime 2026-11-03 09:34:32 | 大小/哈希随启动 token 轮换变化，符合既有结论（哈希不可作身份判据） |
+| 启动检测 | 三信号 supported | 今日 `logs/startup/2026-11-03/` 2 对，当前实例 `56120-093426`；主窗口 PID 56120 标题 WorkBuddy | 沿用 supported |
+| 退出签名文件路径（订正） | 记为 `ioa-im-override.json` | 实际路径 `~/.workbuddy/ioa-im-override.json`（32 B，mtime 09:34:33），**不在** `app/` 下；`app/window-state.json` 另计（mtime 10:16:45） | 判据路径已修正，写入复测脚本 |
+| 客户端自建时间戳备份 | 05-02 / 05-06 / 08-27 三份 | 仍三份，今日无新增（未换账号） | B 段可用「新增时间戳备份」作换账号断言 |
+| 本机第二账号痕迹 | 未记录 | `~/.workbuddy-key-fallback/connector-keys/` 存在 `f5d89346*` 与 `dae15da8*` 两个 uid 派生键前缀 | 说明本机曾登录第二个账号；`dae15da8` 可作账号 2 预期锚点（非必须） |
+| 运行状态 | 11-01 由本卡启动后保持运行 | 当前运行中（8 进程，主窗口 PID 56120），用户在操作 | 托盘退出复测由用户执行，我只读采集 |
+
+## gate 影响
+
+- 只读面（实例/身份/schema/启动检测）结论不变，仍 supported；本轮未解除任何 unverified 项。
+- `完全退出检测（写盘签名）`：判据路径订正为 `.workbuddy/ioa-im-override.json` + `auth/workbuddy-desktop.info` 同刻写盘 + `app/window-state.json` 滞后 → 仍标 supported（判据），待用户 A 段演示后确认可复现。
+- `托盘退出执行`、`跨账号切换`、`跨账号回滚核验` 保持 unverified，解除条件与执行脚本见 `2026-11-03-workbuddy-tray-exit-and-switch-demo.md`。
+- ACC-05 切换路径：**仍 blocked**，未解除。

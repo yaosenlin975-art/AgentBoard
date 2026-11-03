@@ -138,6 +138,8 @@ export const claimSchema = z.object({
 export const doneSchema = z.object({
   agent_id: z.string().trim().min(1, 'agent_id 不能为空'),
   notes: z.string().optional(),
+  /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；有并行占用时只提交声明范围内的改动 */
+  scope_paths: z.array(z.string().trim().min(1).max(1000)).max(200).optional(),
 });
 
 export const failSchema = z.object({

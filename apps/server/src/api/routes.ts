@@ -577,7 +577,10 @@ export function createRouter(deps: RouterDeps): Router {
     const workspace = effectiveWorkspace(req);
     if (req.get('Idempotency-Key') && !workspace) throw new ValidationError('幂等 owner 操作必须提供 workspace_id');
     const actor = action === 'release' && !workspace ? 'user' : parseBody(claimSchema, req.body).agent_id;
-    const detail = action === 'done' ? parseBody(doneSchema, req.body).notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
+    const doneBody = action === 'done' ? parseBody(doneSchema, req.body) : undefined;
+    const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
+    // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
+    const scopePaths = doneBody?.scope_paths ?? [];
     // KB-WRITE-NUDGE：hint 必须在 done 清空 claimed_at/claimed_by 之前算，并随幂等结果一起缓存（重放响应要逐字一致）
     const outcome = workspace ? mutation(req, () => {
       if (action === 'done') {
@@ -602,7 +605,7 @@ export function createRouter(deps: RouterDeps): Router {
       broadcast({ type: 'issue.changed', issue });
       // GIT-ON-DONE：done 后按 claim 基线提交本任务改动；幂等重放不重复提交
       if (action === 'done') {
-        const gitNote = await commitIssueChanges(db, issueId);
+        const gitNote = await commitIssueChanges(db, issueId, scopePaths);
         if (gitNote) {
           const added = await addComment(db, issueId, 'system', gitNote);
           broadcast({ type: 'comment.added', comment: added.comment });

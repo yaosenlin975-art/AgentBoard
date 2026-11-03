@@ -181,6 +181,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     return () => observer.disconnect();
   }, []);
   const [hovered, setHovered] = useState<string | null>(null);
+  /** C4 右键菜单：节点 id + 触发点（client 坐标） */
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   /** 相机倍率（渲染层回调上来，只用于展示与 data-scale） */
   const [scale, setScale] = useState(1);
   const highlight = useMemo(
@@ -253,7 +255,10 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             },
             onHover: setHovered,
             onScaleChange: setScale,
+            onContextMenu: (target) => setMenu({ id: target.id, x: target.clientX, y: target.clientY }),
           });
+          // CDP 验收钩子（与 snapshot() 同一入口，只读）
+          (host as unknown as { __kbPixiGraph?: PixiGraphHandle }).__kbPixiGraph = handleRef.current;
           const initial = renderDataRef.current;
           if (initial !== null) handleRef.current.update(initial);
           setRenderer('webgl');
@@ -270,6 +275,21 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       handleRef.current = null;
     };
   }, [showStage]);
+
+  // 右键菜单：点空白或 Escape 关闭
+  useEffect(() => {
+    if (menu === null) return;
+    const close = (): void => setMenu(null);
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMenu(null);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menu]);
 
   // 数据/布局/高亮变化 → 交给渲染层（不重建 PIXI 实例）
   useEffect(() => {
@@ -462,6 +482,56 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
               renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
             }`}
           />
+          {menu !== null && (
+            <div
+              data-testid="graph-context-menu"
+              role="menu"
+              aria-label="节点操作"
+              style={{ position: 'fixed', left: menu.x, top: menu.y }}
+              className="z-50 min-w-40 rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="graph-menu-open"
+                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                onClick={() => {
+                  const node = shown.nodes.find((item) => item.id === menu.id);
+                  if (node !== undefined) pick(node);
+                  setMenu(null);
+                }}
+              >
+                打开详情
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="graph-menu-copy"
+                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                onClick={() => {
+                  // 应用无 URL 路由：复制知识页引用（kb/MCP 用得到的 id 形式）
+                  void navigator.clipboard?.writeText(`knowledge://${menu.id}`);
+                  setMenu(null);
+                }}
+              >
+                复制页链接
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="graph-menu-focus"
+                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                onClick={() => {
+                  setFocusId(menu.id);
+                  setFocusHops(1);
+                  setMenu(null);
+                }}
+              >
+                聚焦该节点的邻居
+              </button>
+            </div>
+          )}
+
           {(renderer === 'no-webgl' || renderer === 'failed') && (
             <div
               data-graph-fallback={renderer === 'no-webgl' ? 'no-webgl' : 'render-failed'}

@@ -17,8 +17,26 @@ import { AccountCard, type AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckin } from './OneClickCheckin';
-import { APP_LABEL, APP_ORDER, SOURCE_LABEL, capabilityReasonCode, isOfflineApp, reasonCodeOf, reasonLabel, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
+import { APP_LABEL, APP_ORDER, SOURCE_LABEL, capabilityReasonCode, hasReasonLabel, isOfflineApp, reasonCodeOf, reasonLabel, reasonTechnicalCode, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
+
+/**
+ * 提示条（ACC-REASON-01）：主文案=中文原因，副文案=服务端 message，
+ * 未收录的码放进可展开的「技术码」，裸码不出现在主文案里。
+ */
+interface AppNotice {
+  label: string;
+  message: string | null;
+  technicalCode: string | null;
+}
+
+function noticeOf(code: string | null, message: string | null): AppNotice {
+  return {
+    label: reasonLabel(code),
+    message,
+    technicalCode: code !== null && !hasReasonLabel(code) ? reasonTechnicalCode(code) : null,
+  };
+}
 
 export function AccountsPanel() {
   const list = useQuery({
@@ -87,7 +105,7 @@ function AppSection({
   const queryClient = useQueryClient();
   const [batchId, setBatchId] = useState<string | null>(null);
   const [conflictBatchId, setConflictBatchId] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<AppNotice | null>(null);
   /** 同一批账号重试时复用同一个 Idempotency-Key（服务端按 key 回放，不会重复建批） */
   const idempotencyRef = useRef<{ signature: string; key: string } | null>(null);
 
@@ -97,7 +115,7 @@ function AppSection({
       setNotice(null);
       void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
     },
-    onError: (e) => setNotice(`${reasonLabel(reasonCodeOf(e))}：${e instanceof Error ? e.message : '捕获失败'}`),
+    onError: (e) => setNotice(noticeOf(reasonCodeOf(e), e instanceof Error ? e.message : '捕获失败')),
   });
 
   const checkin = useMutation({
@@ -117,10 +135,10 @@ function AppSection({
       }
       if (outcome.kind === 'conflict') {
         setConflictBatchId(outcome.batchId);
-        setNotice(outcome.message);
+        setNotice(noticeOf(outcome.code, outcome.message));
         return;
       }
-      setNotice(`${reasonLabel(outcome.code)}：${outcome.message}`);
+      setNotice(noticeOf(outcome.code, outcome.message));
     },
   });
 
@@ -205,7 +223,20 @@ function AppSection({
       </div>
 
       {notice !== null && (
-        <p role="alert" data-testid={`accounts-notice-${app}`} className="mt-1 text-xs text-red-600 dark:text-red-400">{notice}</p>
+        <div role="alert" data-testid={`accounts-notice-${app}`} className="mt-1 text-xs text-red-600 dark:text-red-400">
+          <p data-testid={`accounts-notice-reason-${app}`}>
+            {notice.label}
+            {notice.message !== null && notice.message !== notice.label && (
+              <span className="ml-1 text-neutral-600 dark:text-neutral-400">{notice.message}</span>
+            )}
+          </p>
+          {notice.technicalCode !== null && (
+            <details data-testid={`accounts-notice-code-${app}`} className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <summary className="cursor-pointer select-none">技术码</summary>
+              <code className="font-mono">{notice.technicalCode}</code>
+            </details>
+          )}
+        </div>
       )}
 
       {conflictBatchId !== null && (

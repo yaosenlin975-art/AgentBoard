@@ -624,6 +624,20 @@ describe('done / fail', () => {
     expect(t.out()).not.toContain('提示:');
   });
 
+  it('done --scope：多次与逗号分隔都并入 scope_paths（提交范围声明）', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/done'
+        ? { status: 200, body: { ...ISSUE, status: '待验收' } }
+        : undefined;
+    const t = makeIo();
+    const code = await main(
+      ['node', 'kb', '--server', base, 'done', 'iss1', '--scope', 'apps/server/src', '--scope', 'packages/cli/a.ts,packages/cli/b.ts'],
+      t.io,
+    );
+    expect(code).toBe(0);
+    expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', scope_paths: ['apps/server/src', 'packages/cli/a.ts', 'packages/cli/b.ts'] });
+  });
+
   it('done 带 knowledge_hint：输出「提示:」建议行，退出码仍 0 且不出现错误字样', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/done'

@@ -4,7 +4,11 @@
  * 口径：
  * - 基线 = claim 时 `git status --porcelain -uall -z` 的 path→指纹；指纹为内容 hash 前 16 位，删除项记 `deleted`。
  *   `.gitignore` 忽略项 porcelain 默认不列，天然不入基线。
- * - done 时重取快照，`基线 ≠ 当前` 的路径即本任务改动；claim 之前就存在的改动不会进入差异集。
+ * - done 时重取快照，`基线 ≠ 当前` 的路径即「本任务期间发生变化」；claim 之前就存在的改动不会进入差异集。
+ * - 变化集默认不是提交集：同 workspace 有其它「进行中且被占用」的任务时，变化无法判定归属。
+ *   此时只提交本任务显式声明（done body 的 `scope_paths`，文件或目录前缀）范围内的路径，
+ *   越界路径一律不提交，改为系统评论列出清单交 owner 决定；未声明则不提交任何路径。
+ *   无并行占用时变化集可归属本任务，按变化集提交（保持既有行为）。
  * - 只用 `git add -A -- <paths>`（同时覆盖修改与删除），绝不 `git add -A` 全量。
  * - 提交身份：`git config user.name/email`（局部优先于全局，git 自身解析）都配好则尊重仓库身份；
  *   缺任一才用 `-c user.name=AgentBoard -c user.email=agentboard@local`，并在评论注明。
@@ -20,6 +24,8 @@ import { withAccountLock } from './accounts/locks.js';
 const run = promisify(execFile);
 const GIT_TIMEOUT_MS = 15_000;
 const MAX_LISTED_FILES = 5;
+/** 越界清单要能直接照单确认，列到 20 个后才折叠 */
+const MAX_LISTED_SCOPE_VIOLATIONS = 20;
 const DEFAULT_IDENTITY = { name: 'AgentBoard', email: 'agentboard@local' } as const;
 
 interface BaselineRow {
@@ -110,6 +116,37 @@ function changedPaths(baseline: Record<string, string>, current: Record<string, 
   return [...paths].filter(path => baseline[path] !== current[path]).sort();
 }
 
+/**
+ * 声明范围归一化：统一 `/`、去 `./` 段与尾部 `/`（`./src/` → `src`）。
+ * 绝对路径、盘符路径、含 `..` 的路径丢弃——git 输出的路径都是仓库内相对路径，这类声明不可能命中。
+ */
+function normalizeDeclaredPaths(paths: readonly string[]): string[] {
+  const normalized = new Set<string>();
+  for (const raw of paths) {
+    const slash = raw.trim().replace(/\\/g, '/');
+    if (slash === '' || slash.startsWith('/') || /^[A-Za-z]:/.test(slash)) continue;
+    const segments: string[] = [];
+    let escaped = false;
+    for (const segment of slash.split('/')) {
+      if (segment === '' || segment === '.') continue;
+      if (segment === '..') { escaped = true; break; }
+      segments.push(segment);
+    }
+    if (!escaped && segments.length > 0) normalized.add(segments.join('/'));
+  }
+  return [...normalized].sort();
+}
+
+/** 命中声明范围：同路径，或声明的目录前缀（`src` 覆盖 `src/a.ts`，不覆盖 `srcx/a.ts`） */
+function withinDeclaredScope(path: string, declared: readonly string[]): boolean {
+  return declared.some(entry => path === entry || path.startsWith(`${entry}/`));
+}
+
+function listPaths(paths: readonly string[], limit: number): string {
+  const listed = paths.slice(0, limit).join('、');
+  return paths.length > limit ? `${listed} 等 ${paths.length} 个` : listed;
+}
+
 async function identityConfigured(repo: string): Promise<boolean> {
   for (const key of ['user.name', 'user.email']) {
     try {
@@ -122,18 +159,19 @@ async function identityConfigured(repo: string): Promise<boolean> {
 
 const firstLine = (text: string): string => text.split('\n').map(line => line.trim()).filter(Boolean)[0] ?? '未知错误';
 
-/** 并行占用提示：同 workspace 还有其它「进行中且被占用」的任务 */
-function hasParallelClaims(db: Db, workspaceId: string, issueId: string): boolean {
+/** 并行占用提示：同 workspace 还有其它「进行中且被占用」的任务（>0 即改动归属不可判定） */
+function parallelClaimCount(db: Db, workspaceId: string, issueId: string): number {
   const row = db.prepare(`SELECT COUNT(*) AS n FROM issue
     WHERE workspace_id=? AND id<>? AND claimed_by IS NOT NULL AND status='进行中'`).get(workspaceId, issueId) as { n: number };
-  return row.n > 0;
+  return row.n;
 }
 
 /**
  * done 阶段：按基线 diff 提交本任务改动，返回要落地为评论的文本（null = 不写评论）。
+ * declaredPaths 为本任务显式声明的路径（done body 的 `scope_paths`），文件或目录前缀皆可。
  * 非仓库 / 无基线 / 无差异都返回 null 且不写评论。
  */
-export async function commitIssueChanges(db: Db, issueId: string): Promise<string | null> {
+export async function commitIssueChanges(db: Db, issueId: string, declaredPaths: readonly string[] = []): Promise<string | null> {
   const baselineRow = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
   if (!baselineRow) return null;
   const finish = (text: string | null): string | null => {
@@ -151,8 +189,22 @@ export async function commitIssueChanges(db: Db, issueId: string): Promise<strin
     try {
       const baseline = JSON.parse(baselineRow.paths_json) as Record<string, string>;
       const current = await snapshotWorkTree(repo);
-      const paths = changedPaths(baseline, current.files);
-      if (paths.length === 0) return finish(null);
+      const changed = changedPaths(baseline, current.files);
+      if (changed.length === 0) return finish(null);
+
+      const declared = normalizeDeclaredPaths(declaredPaths);
+      const parallel = parallelClaimCount(db, issue.workspace_id, issueId);
+      // 并行占用且未声明范围：改动归属不可判定，任何路径都不提交，只把清单交 owner
+      if (declared.length === 0 && parallel > 0) {
+        return finish(`检测到 ${parallel} 个并行占用任务，无法判定 ${changed.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(changed, MAX_LISTED_SCOPE_VIOLATIONS)}`);
+      }
+      // 无并行占用 → 变化集即本任务改动；有声明 → 只认声明范围内的路径
+      const paths = declared.length === 0 ? changed : changed.filter(path => withinDeclaredScope(path, declared));
+      const violations = declared.length === 0 ? [] : changed.filter(path => !withinDeclaredScope(path, declared));
+      const violationNote = violations.length === 0
+        ? null
+        : `未提交 ${violations.length} 个不在本任务声明范围内的改动（仍在工作树，需 owner 确认）：${listPaths(violations, MAX_LISTED_SCOPE_VIOLATIONS)}`;
+      if (paths.length === 0) return finish(violationNote);
 
       await git(repo, ['add', '-A', '--', ...paths]);
       const identityOk = await identityConfigured(repo);
@@ -168,8 +220,8 @@ export async function commitIssueChanges(db: Db, issueId: string): Promise<strin
       const more = paths.length > MAX_LISTED_FILES ? ` 等 ${paths.length} 个` : '';
       if (!identityOk) notes.push(`使用 ${DEFAULT_IDENTITY.name} 默认身份提交`);
       if (baselineRow.head_sha && current.head && baselineRow.head_sha !== current.head) notes.push('任务期间仓库 HEAD 已变化');
-      if (hasParallelClaims(db, issue.workspace_id, issueId)) notes.push('检测到并行占用任务，本次提交可能包含并行改动');
-      return finish(`已自动提交 ${paths.length} 个文件：${listed}${more}（commit ${sha.slice(0, 8)}）${notes.length > 0 ? `；${notes.join('；')}` : ''}`);
+      const commitNote = `已自动提交 ${paths.length} 个文件：${listed}${more}（commit ${sha.slice(0, 8)}）${notes.length > 0 ? `；${notes.join('；')}` : ''}`;
+      return finish(violationNote === null ? commitNote : `${commitNote}\n${violationNote}`);
     } catch (error) {
       const detail = firstLine((error as { stderr?: string; message?: string }).stderr ?? (error as Error).message ?? '');
       return finish(`自动提交失败：${detail}（不影响待验收状态）`);

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * PIXI 星图渲染骨架（KB-GRAPH-P1）——照 `Docs/Obsidian-星图渲染逆向.md` A1–A6 逐条实现。
  *
  * 这个文件必须**动态 import**：jsdom 没有 WebGL，静态引入会让整个测试套件报
@@ -19,15 +19,21 @@ import '@pixi/events';
 import {
   GRAPH_VISUAL_DEFAULTS,
   clampZoom,
+  dampen,
   duplicateEdgeKeys,
   fontSize,
   getSize,
+  CLICK_DISTANCE_SQ,
+  isClickGesture,
   labelOffsetY,
   lineWidth,
   nodeScale,
   readSemanticColors,
+  shouldKeepPanInertia,
   textAlpha,
   tintFromCssColor,
+  wheelDeltaPixels,
+  zoomAnchor,
   zoomFactorFromWheel,
   type SemanticColorKey,
 } from '../../lib/graphVisualFormulas';
@@ -43,12 +49,13 @@ const FQ = 0.2;
 const IDLE_FRAME_LIMIT = 60;
 /** 文档 A5 ⑤：每帧按「离屏幕中心最近」补建最多 50 个节点 */
 const MAX_CREATE_PER_FRAME = 50;
+/** 文档 app.js#fQ 的每帧收敛比例：mQ(cur,target,.9) = 每帧 10% */
+const FADE_RATIO = 0.9;
 /** 文档 A6 文字高亮下移量 */
 const HIGHLIGHT_TEXT_OFFSET = 15;
-/** 文档 A3：缩放插值 0.85/帧，收敛阈值 <1% */
+/** 文档 C1：mQ(scale, target, .85) = 每帧收敛 15% */
 const ZOOM_LERP = 0.85;
 /** 文档：平移动量与透明度都是每帧 10% 收敛 */
-const FADE_LERP = 0.1;
 const FONT_FAMILY =
   'ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Inter", sans-serif';
 
@@ -76,11 +83,15 @@ export interface PixiGraphData {
   highlight?: { nodes: ReadonlySet<string>; edges: ReadonlySet<string> } | null;
 }
 
-export interface PixiGraphOptions {
+export interface PixiGraphCallbacks {
   onSelect?: (id: string) => void;
   onHover?: (id: string | null) => void;
   onScaleChange?: (scale: number) => void;
+  /** C4 右键菜单：节点上右键 → 交给 React 弹菜单 */
+  onContextMenu?: (target: { id: string; clientX: number; clientY: number }) => void;
 }
+
+export type PixiGraphOptions = PixiGraphCallbacks;
 
 interface SemanticColor {
   tint: number;
@@ -116,6 +127,9 @@ export interface PixiNodeSnapshot {
   id: string;
   weight: number;
   size: number;
+  /** 节点当前图坐标（拖拽后即 pinned 坐标，CDP 换算屏幕点要用它） */
+  x: number;
+  y: number;
   /** circle.scale.x = size/100 * nodeScale */
   circleScale: number;
   fontSize: number;
@@ -124,6 +138,9 @@ export interface PixiNodeSnapshot {
   labelAlpha: number;
   labelY: number;
   circleAlpha: number;
+  fadeAlpha: number;
+  circleVisible: boolean;
+  labelVisible: boolean;
   tint: number;
 }
 
@@ -136,6 +153,8 @@ export interface PixiEdgeSnapshot {
   alpha: number;
   arrowVisible: boolean;
   arrowScale: number;
+  alphaNow: number;
+  arrowAlphaNow: number;
   tint: number;
 }
 
@@ -164,6 +183,11 @@ export interface PixiGraphSnapshot {
   createdNodes: number;
   createdEdges: number;
   hoverId: string | null;
+  dragId: string | null;
+  pinnedCount: number;
+  panVelocity: { x: number; y: number };
+  zoomCenter: { x: number; y: number };
+  clickDistanceSq: number;
   colors: Record<string, SemanticColor>;
   nodes: PixiNodeSnapshot[];
   edges: PixiEdgeSnapshot[];
@@ -185,7 +209,7 @@ export interface PixiGraphHandle {
   destroy(): void;
 }
 
-const lerp = (from: number, to: number, ratio = FADE_LERP): number => from + (to - from) * ratio;
+
 
 function cssColorToTint(color: { color: string; opacity: number } | undefined, fallback: number, fallbackAlpha: number): SemanticColor {
   if (color === undefined) return { tint: fallback, alpha: fallbackAlpha };
@@ -287,7 +311,26 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   let cssWidth = Math.max(1, Math.round(host.clientWidth || 1));
   let cssHeight = Math.max(1, Math.round(host.clientHeight || 1));
   const keys = { zoomIn: false, zoomOut: false, up: false, down: false, left: false, right: false, fast: false };
-  const pointer = { x: null as number | null, y: null as number | null, down: false, moved: false, startX: 0, startY: 0, panStartX: 0, panStartY: 0 };
+  const pointer = {
+    x: null as number | null,
+    y: null as number | null,
+    down: false,
+    dragging: false,
+    clickCancelled: false,
+    startX: 0,
+    startY: 0,
+    panStartX: 0,
+    panStartY: 0,
+    downAtMs: 0,
+    lastMoveMs: 0,
+    velocityX: 0,
+    velocityY: 0,
+    nodeId: null as string | null,
+  };
+  /** C6 拖拽后的固定坐标（图坐标）：本实现无 sim，等价为「停在松手处、不回弹」 */
+  const pinned = new Map<string, { x: number; y: number }>();
+  /** 当前正在拖的节点（文档 getHighlightNode = dragNode || highlightNode） */
+  let dragId: string | null = null;
   let viewport = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
 
   const dpr = (): number => view?.devicePixelRatio ?? 1;
@@ -324,17 +367,23 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     hanger.position.set(panX, panY);
   }
 
-  /** ④ 缩放插值（围绕 zoomCenter 收敛），并按当前 scale 更新 hanger 与视口矩形 */
+  /** ④ 缩放插值（文档 C1 updateZoom）：target 夹 [1/128,8]，每帧走 15%，相对差 <1% 停；锚点 world 坐标保持屏幕位置不动 */
   function updateZoom(): void {
-    if (scale !== targetScale) {
-      const next = scale + (targetScale - scale) * ZOOM_LERP;
-      const converged = Math.abs(targetScale - next) < 0.01 * targetScale;
-      const resolved = converged ? targetScale : next;
-      const ratio = resolved / scale;
-      panX = zoomCenterX - (zoomCenterX - panX) * ratio;
-      panY = zoomCenterY - (zoomCenterY - panY) * ratio;
-      scale = resolved;
+    targetScale = clampZoom(targetScale);
+    const ratio = scale > targetScale ? scale / targetScale : targetScale / scale;
+    // 相对差 >=1% 才继续插值（文档 C1）；差值收敛后直接落到 target，但仍然按锚点重算 pan
+    const nextScale = ratio - 1 >= 0.01 ? dampen(scale, targetScale, ZOOM_LERP) : targetScale;
+    if (nextScale !== scale) {
+      // zoomCenter 为 (0,0) 时用画布中心（文档 C1：缩小时锚点归零 → 以画布中心为锚点）
+      const centerX = zoomCenterX === 0 && zoomCenterY === 0 ? (cssWidth / 2) * dpr() : zoomCenterX;
+      const centerY = zoomCenterX === 0 && zoomCenterY === 0 ? (cssHeight / 2) * dpr() : zoomCenterY;
+      const anchorWorldX = (centerX - panX) / scale;
+      const anchorWorldY = (centerY - panY) / scale;
+      scale = nextScale;
+      panX = centerX - anchorWorldX * scale;
+      panY = centerY - anchorWorldY * scale;
       applyScale();
+      options.onScaleChange?.(scale);
     }
     const widthPx = cssWidth * dpr();
     const heightPx = cssHeight * dpr();
@@ -346,20 +395,32 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     };
   }
 
+  /** 文档 getHighlightNode：拖拽中的节点优先于 hover 节点 */
+  function highlightId(): string | null {
+    return dragId ?? hoverId;
+  }
+
+  /** 文档 A6 屏幕空间剔除：圆用节点包围盒、文字用 600x200 矩形 */
+  function intersectsViewport(left: number, right: number, top: number, bottom: number): boolean {
+    return !(right < viewport.left || left > viewport.right || bottom < viewport.top || top > viewport.bottom);
+  }
+
   function highlightActive(): boolean {
-    if (hoverId !== null) return true;
+    if (highlightId() !== null) return true;
     return (data.highlight?.nodes.size ?? 0) > 0;
   }
 
   function isNodeLit(id: string): boolean {
-    if (hoverId !== null) return id === hoverId || adjacency.get(hoverId)?.has(id) === true;
+    const focus = highlightId();
+    if (focus !== null) return id === focus || adjacency.get(focus)?.has(id) === true;
     const highlight = data.highlight;
     if (highlight === undefined || highlight === null || highlight.nodes.size === 0) return true;
     return highlight.nodes.has(id);
   }
 
   function isEdgeLit(edge: EdgeView): boolean {
-    if (hoverId !== null) return edge.source === hoverId || edge.target === hoverId;
+    const focus = highlightId();
+    if (focus !== null) return edge.source === focus || edge.target === focus;
     const highlight = data.highlight;
     if (highlight === undefined || highlight === null || highlight.nodes.size === 0) return true;
     return highlight.edges.has(edge.key);
@@ -373,7 +434,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     const centerY = (viewport.top + viewport.bottom) / 2;
     const ranked = pending
       .map((node) => {
-        const point = data.positions.get(node.id) as { x: number; y: number };
+        const point = pinned.get(node.id) ?? (data.positions.get(node.id) as { x: number; y: number });
         const dx = point.x - centerX;
         const dy = point.y - centerY;
         return { node, point, dist: dx * dx + dy * dy };
@@ -466,15 +527,17 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     }
   }
 
-  /** ⑦ 逐节点 render */
+  /** ⑦ 逐节点 render（含视口剔除） */
   function renderNodes(): void {
     const ns = nodeScale(scale);
     const active = highlightActive();
     for (const node of nodeViews.values()) {
       const lit = !active || isNodeLit(node.id);
       const fadeTarget = lit ? 1 : FQ;
-      node.alpha = lerp(node.alpha, fadeTarget);
-      node.textMove = lerp(node.textMove, lit && active ? HIGHLIGHT_TEXT_OFFSET : 0);
+      node.alpha = dampen(node.alpha, fadeTarget, FADE_RATIO);
+      node.textMove = dampen(node.textMove, lit && active ? HIGHLIGHT_TEXT_OFFSET : 0, FADE_RATIO);
+      const radius = node.size * ns;
+      node.circle.visible = intersectsViewport(node.x - radius, node.x + radius, node.y - radius, node.y + radius);
       node.circle.position.set(node.x, node.y);
       // 文档 A6：scale = getSize()/100 * nodeScale
       node.circle.scale.set((node.size / 100) * ns);
@@ -484,11 +547,12 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       let alpha = textAlpha(scale, textShowMult) * node.alpha;
       if (lit && active) alpha = 1;
       alpha *= colors.text.alpha;
-      node.label.position.set(node.x, node.y + labelOffsetY(node.size, scale, node.textMove));
+      const labelY = node.y + labelOffsetY(node.size, scale, node.textMove);
+      node.label.position.set(node.x, labelY);
       const labelScale = lit && active && scale < 1 ? 1 / scale : ns;
       node.label.scale.set(labelScale);
       node.label.alpha = alpha;
-      node.label.visible = alpha > 0.001;
+      node.label.visible = alpha > 0.001 && intersectsViewport(node.x - 300, node.x + 300, labelY, labelY + 200);
       node.label.tint = colors.text.tint;
     }
   }
@@ -505,17 +569,21 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       const lit = !active || isEdgeLit(edge);
       const targetAlpha = (lit ? 1 : FQ) * colors.line.alpha;
       const targetArrow = (lit ? 1 : FQ) * Math.max(0, Math.min(1, 2 * (scale - 0.3))) * colors.arrow.alpha;
-      edge.alpha = lerp(edge.alpha, targetAlpha);
-      edge.arrowAlpha = lerp(edge.arrowAlpha, targetArrow);
+      edge.alpha = dampen(edge.alpha, targetAlpha, FADE_RATIO);
+      edge.arrowAlpha = dampen(edge.arrowAlpha, targetArrow, FADE_RATIO);
 
       const dx = to.x - from.x;
       const dy = to.y - from.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
       const rFrom = from.size * ns;
       const rTo = to.size * ns;
-      const visible = distance > thickness;
-      const lineVisible = visible;
-      edge.line.visible = lineVisible;
+      const boundsLeft = Math.min(from.x, to.x);
+      const boundsRight = Math.max(from.x, to.x);
+      const boundsTop = Math.min(from.y, to.y);
+      const boundsBottom = Math.max(from.y, to.y);
+      const inView = intersectsViewport(boundsLeft, boundsRight, boundsTop, boundsBottom);
+      const visible = distance > thickness && inView;
+      edge.line.visible = visible;
       edge.line.alpha = edge.alpha;
       edge.arrow.visible = visible && edge.arrowAlpha > 0.001;
       edge.arrow.alpha = edge.arrowAlpha;
@@ -642,38 +710,86 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     return best?.id ?? null;
   }
 
+  /** C1 滚轮缩放：deltaMode 归一 → ×1.5^(−Δ/120)；放大锚点=鼠标，缩小锚点归零（画布中心） */
   function onWheel(event: WheelEvent): void {
     event.preventDefault();
     const rect = host.getBoundingClientRect();
-    targetScale = clampZoom(targetScale * zoomFactorFromWheel(event.deltaY));
-    zoomCenterX = (event.clientX - rect.left) * dpr();
-    zoomCenterY = (event.clientY - rect.top) * dpr();
+    const delta = wheelDeltaPixels(event.deltaY, event.deltaMode);
+    const previous = targetScale;
+    targetScale = clampZoom(previous * zoomFactorFromWheel(delta));
+    const anchor = zoomAnchor(previous, targetScale, {
+      x: (event.clientX - rect.left) * dpr(),
+      y: (event.clientY - rect.top) * dpr(),
+    }, { x: 0, y: 0 });
+    zoomCenterX = anchor.x;
+    zoomCenterY = anchor.y;
     changed();
   }
 
+  /** C2/C6 pointerdown：先判是否落在节点上（拖节点），否则拖画布 */
   function onPointerDown(event: PointerEvent): void {
+    if (event.button === 2) return; // 右键交给 contextmenu
     pointer.down = true;
-    pointer.moved = false;
+    pointer.dragging = false;
     pointer.startX = event.clientX;
     pointer.startY = event.clientY;
     pointer.panStartX = panX;
     pointer.panStartY = panY;
-    host.setPointerCapture?.(event.pointerId);
+    pointer.lastMoveMs = performance.now();
+    pointer.downAtMs = pointer.lastMoveMs;
+    pointer.velocityX = 0;
+    pointer.velocityY = 0;
+    pointer.nodeId = hitTest(event.clientX, event.clientY);
+    try {
+      host.setPointerCapture?.(event.pointerId);
+    } catch {
+      // 合成事件/无效 pointerId 时 setPointerCapture 会抛，捕获失败不影响后续交互
+    }
   }
 
   function onPointerMove(event: PointerEvent): void {
     const rect = host.getBoundingClientRect();
     pointer.x = event.clientX - rect.left;
     pointer.y = event.clientY - rect.top;
+
+    if (pointer.down && pointer.nodeId !== null) {
+      // C6 拖拽节点：hanger 局部坐标写 fx/fy（本实现无 sim，等价效果=停在松手处不回弹）
+      if (!isClickGesture(event.clientX - pointer.startX, event.clientY - pointer.startY)) {
+        pointer.dragging = true;
+        pointer.clickCancelled = true;
+      }
+      const point = worldPoint(event.clientX, event.clientY);
+      const node = nodeViews.get(pointer.nodeId);
+      if (node !== undefined) {
+        node.x = point.x;
+        node.y = point.y;
+        pinned.set(node.id, { x: point.x, y: point.y });
+        dragId = node.id;
+      }
+      idleFrames = 0;
+      changed();
+      return;
+    }
+
     if (pointer.down) {
-      if (Math.abs(event.clientX - pointer.startX) > 5 || Math.abs(event.clientY - pointer.startY) > 5) pointer.moved = true;
-      panX = pointer.panStartX + (event.clientX - pointer.startX) * dpr();
-      panY = pointer.panStartY + (event.clientY - pointer.startY) * dpr();
+      // C2 拖拽平移：采样速度（mQ 平滑），超过 5px 取消点击判定
+      if (!isClickGesture(event.clientX - pointer.startX, event.clientY - pointer.startY)) pointer.clickCancelled = true;
+      const nextPanX = pointer.panStartX + (event.clientX - pointer.startX) * dpr();
+      const nextPanY = pointer.panStartY + (event.clientY - pointer.startY) * dpr();
+      const now = performance.now();
+      const deltaMs = Math.max(1, now - pointer.lastMoveMs);
+      pointer.velocityX = dampen(pointer.velocityX, (nextPanX - panX) / deltaMs, 0.8);
+      pointer.velocityY = dampen(pointer.velocityY, (nextPanY - panY) / deltaMs, 0.8);
+      pointer.lastMoveMs = now;
+      panX = nextPanX;
+      panY = nextPanY;
       applyScale();
       idleFrames = 0;
       changed();
       return;
     }
+
+    // C5 hover：命中节点 → 高亮，自身与直接邻居 1、其余 0.2
     const hit = hitTest(event.clientX, event.clientY);
     if (hit !== hoverId) {
       hoverId = hit;
@@ -682,20 +798,53 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     }
   }
 
+  /** C2 松手：>100ms 视为停住（惯性清零），否则保留速度交给主循环衰减 */
   function onPointerUp(event: PointerEvent): void {
     const wasDown = pointer.down;
+    const draggedNode = pointer.nodeId;
+    const clickCancelled = pointer.clickCancelled;
     pointer.down = false;
-    host.releasePointerCapture?.(event.pointerId);
-    if (wasDown && !pointer.moved) {
+    pointer.nodeId = null;
+    try {
+      host.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // 同上：释放失败（从未捕获）不应中断点击判定
+    }
+
+    if (draggedNode !== null) {
+      // 节点上松手：位移 ≤5px 仍是点击（文档 C3 的 onNodeClick），超过阈值才是拖拽
+      dragId = null;
+      if (wasDown && !clickCancelled) options.onSelect?.(draggedNode);
+      changed();
+    } else if (wasDown && !clickCancelled) {
+      // C3 点击判定：位移 ≤5px 才算点击
       const hit = hitTest(event.clientX, event.clientY);
       if (hit !== null) options.onSelect?.(hit);
     }
+
+    if (wasDown && draggedNode === null) {
+      const elapsed = performance.now() - pointer.lastMoveMs;
+      if (shouldKeepPanInertia(elapsed)) {
+        panvX = pointer.velocityX * (1000 / 1000);
+        panvY = pointer.velocityY * (1000 / 1000);
+      } else {
+        panvX = 0;
+        panvY = 0;
+      }
+      if (Math.abs(panvX) > 1e-4 || Math.abs(panvY) > 1e-4) {
+        idleFrames = 0;
+        changed();
+      }
+    }
+    pointer.dragging = false;
+    pointer.clickCancelled = false;
   }
 
   function onPointerLeave(): void {
     pointer.x = null;
     pointer.y = null;
     pointer.down = false;
+    pointer.nodeId = null;
     if (hoverId !== null) {
       hoverId = null;
       options.onHover?.(null);
@@ -703,23 +852,47 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     }
   }
 
+  /** C4 右键：节点上右键 → 交给 React 弹「打开详情 / 复制页链接 / 聚焦邻居」 */
+  function onContextMenu(event: MouseEvent): void {
+    const hit = hitTest(event.clientX, event.clientY);
+    if (hit === null) return;
+    event.preventDefault();
+    options.onContextMenu?.({
+      id: hit,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  }
+
+  /** C9 键盘：仅焦点在 body 时响应；187/189 放大缩小，方向键平移，Shift 加速 */
+  function keyboardEnabled(): boolean {
+    const active = doc.activeElement;
+    if (active === null || active === doc.body) return true;
+    const tag = active.tagName.toLowerCase();
+    return tag !== 'input' && tag !== 'textarea' && tag !== 'select' && !(active as HTMLElement).isContentEditable;
+  }
+
   function onKeyDown(event: KeyboardEvent): void {
+    if (!keyboardEnabled()) return;
+    const code = event.keyCode || event.which;
     const key = event.key;
-    if (key === '+' || key === '=' || key === 'Add') keys.zoomIn = true;
-    else if (key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = true;
+    if (code === 187 || key === '+' || key === '=' || key === 'Add') keys.zoomIn = true;
+    else if (code === 189 || key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = true;
     else if (key === 'ArrowUp') keys.up = true;
     else if (key === 'ArrowDown') keys.down = true;
     else if (key === 'ArrowLeft') keys.left = true;
     else if (key === 'ArrowRight') keys.right = true;
     else return;
+    event.preventDefault();
     keys.fast = event.shiftKey;
     changed();
   }
 
   function onKeyUp(event: KeyboardEvent): void {
+    const code = event.keyCode || event.which;
     const key = event.key;
-    if (key === '+' || key === '=' || key === 'Add') keys.zoomIn = false;
-    else if (key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = false;
+    if (code === 187 || key === '+' || key === '=' || key === 'Add') keys.zoomIn = false;
+    else if (code === 189 || key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = false;
     else if (key === 'ArrowUp') keys.up = false;
     else if (key === 'ArrowDown') keys.down = false;
     else if (key === 'ArrowLeft') keys.left = false;
@@ -734,6 +907,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   host.addEventListener('pointerup', onPointerUp);
   host.addEventListener('pointercancel', onPointerUp);
   host.addEventListener('pointerleave', onPointerLeave);
+  host.addEventListener('contextmenu', onContextMenu);
   host.addEventListener('keydown', onKeyDown);
   host.addEventListener('keyup', onKeyUp);
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { resize(); changed(); }) : null;
@@ -754,7 +928,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     const keepNodes = new Set(next.nodes.map((node) => node.id));
     for (const [id, node] of [...nodeViews]) {
       if (keepNodes.has(id) && next.positions.has(id)) {
-        const point = next.positions.get(id) as { x: number; y: number };
+        const point = pinned.get(id) ?? (next.positions.get(id) as { x: number; y: number });
         node.x = point.x;
         node.y = point.y;
         node.size = getSize(node.weight, nodeSizeMultiplier);
@@ -779,14 +953,18 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       node.size = getSize(node.weight, nodeSizeMultiplier);
       node.label.style.fontSize = fontSize(node.size);
     }
-    hoverId = null;
+    // 不要无条件清 hover：React 侧 onHover → setHovered → 数据更新会再次调用 update()，
+    // 清掉会让「悬停 → 重渲染 → 高亮消失」自相矛盾。只在节点已不存在时清。
+    if (hoverId !== null && !keepNodes.has(hoverId)) hoverId = null;
     changed();
   }
 
   function zoomBy(factor: number): void {
-    targetScale = clampZoom(targetScale * factor);
-    zoomCenterX = (cssWidth / 2) * dpr();
-    zoomCenterY = (cssHeight / 2) * dpr();
+    const previous = targetScale;
+    targetScale = clampZoom(previous * factor);
+    const anchor = zoomAnchor(previous, targetScale, { x: 0, y: 0 }, { x: 0, y: 0 });
+    zoomCenterX = anchor.x;
+    zoomCenterY = anchor.y;
     changed();
   }
 
@@ -841,17 +1019,27 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       createdNodes: nodeViews.size,
       createdEdges: edgeViews.size,
       hoverId,
+      dragId,
+      pinnedCount: pinned.size,
+      panVelocity: { x: panvX, y: panvY },
+      zoomCenter: { x: zoomCenterX, y: zoomCenterY },
+      clickDistanceSq: CLICK_DISTANCE_SQ,
       colors: { ...colors },
       nodes: [...nodeViews.values()].map((node) => ({
         id: node.id,
         weight: node.weight,
         size: node.size,
+        x: node.x,
+        y: node.y,
         circleScale: node.circle.scale.x,
         fontSize: fontSize(node.size),
         labelFontSize: Number(node.label.style.fontSize),
         labelAlpha: node.label.alpha,
         labelY: node.label.position.y,
         circleAlpha: node.circle.alpha,
+        fadeAlpha: node.alpha,
+        circleVisible: node.circle.visible,
+        labelVisible: node.label.visible,
         tint: node.circle.tint,
       })),
       edges: [...edgeViews.values()].map((edge) => ({
@@ -863,6 +1051,8 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
         alpha: edge.line.alpha,
         arrowVisible: edge.arrow.visible,
         arrowScale: edge.arrow.scale.x,
+        alphaNow: edge.alpha,
+        arrowAlphaNow: edge.arrowAlpha,
         tint: edge.line.tint,
       })),
     };
@@ -880,6 +1070,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     host.removeEventListener('pointerup', onPointerUp);
     host.removeEventListener('pointercancel', onPointerUp);
     host.removeEventListener('pointerleave', onPointerLeave);
+    host.removeEventListener('contextmenu', onContextMenu);
     host.removeEventListener('keydown', onKeyDown);
     host.removeEventListener('keyup', onKeyUp);
     nodeViews.clear();

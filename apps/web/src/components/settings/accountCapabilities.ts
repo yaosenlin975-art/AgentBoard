@@ -119,6 +119,12 @@ export const REASON_LABEL: Record<string, string> = {
 /** 未知码的中性主文案：裸码不出现在主文案位置 */
 export const UNKNOWN_REASON_LABEL = '该操作暂不可用';
 
+/** 能力来源文案：derived = 由注入的已验证 provider 推导，static = registry 静态表 */
+export const SOURCE_LABEL: Record<AccountCapability['source'], string> = {
+  derived: '由已验证 provider 推导',
+  static: '静态能力表',
+};
+
 /** 该码是否有中文文案（未知码返回 false，界面据此展示可展开技术码） */
 export function hasReasonLabel(code: string | null | undefined): boolean {
   if (!code) return false;

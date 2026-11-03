@@ -169,6 +169,67 @@ describe('git on done', () => {
     expect(comments(first).join('\n')).toContain('并行占用任务');
   });
 
+  it('commitsOnlyDeclaredPathsWhenAnotherCardIsInFlight', async () => {
+    const first = await makeIssue('任务甲');
+    const second = await makeIssue('任务乙');
+    await claim(first);
+    await claim(second);
+
+    writeFileSync(join(repo, 'a-card.txt'), 'A 卡改动\n');
+    writeFileSync(join(repo, 'b-card.txt'), 'B 卡在飞改动\n');
+    const res = await done(first, { scope_paths: ['a-card.txt'] });
+
+    expect(res.status).toBe(200);
+    expect(commitCount()).toBe(2);
+    expect(lastCommitFiles()).toEqual(['a-card.txt']);
+    // 乙卡文件留在工作树，不进本卡提交
+    expect(git(repo, ['status', '--porcelain'])).toContain('b-card.txt');
+    const note = comments(first).join('\n');
+    expect(note).toContain('已自动提交 1 个文件');
+    expect(note).toContain('未提交');
+    expect(note).toContain('b-card.txt');
+  });
+
+  it('refusesAmbiguousCommitAndListsFilesWhenScopeUndeclared', async () => {
+    const first = await makeIssue('任务甲');
+    const second = await makeIssue('任务乙');
+    await claim(first);
+    await claim(second);
+
+    writeFileSync(join(repo, 'a-card.txt'), 'A\n');
+    writeFileSync(join(repo, 'b-card.txt'), 'B\n');
+    const res = await done(first);
+
+    expect(res.status).toBe(200);
+    expect(commitCount()).toBe(1);
+    const status = git(repo, ['status', '--porcelain']);
+    expect(status).toContain('a-card.txt');
+    expect(status).toContain('b-card.txt');
+    const note = comments(first).join('\n');
+    expect(note).toContain('未自动提交');
+    expect(note).toContain('a-card.txt');
+    expect(note).toContain('b-card.txt');
+    // 基线仍随 done 清理，不残留到下次占用
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM issue_git_baseline WHERE issue_id=?').get(first)).toEqual({ n: 0 });
+  });
+
+  it('commitsOnlyFilesUnderDeclaredDirectory', async () => {
+    const issueId = await makeIssue('目录范围');
+    await claim(issueId);
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    mkdirSync(join(repo, 'other'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'in.ts'), 'in\n');
+    writeFileSync(join(repo, 'other', 'out.ts'), 'out\n');
+
+    // `./src/` 同时验证归一化（去 `./` 与尾 `/`）
+    await done(issueId, { scope_paths: ['./src/'] });
+
+    expect(lastCommitFiles()).toEqual(['src/in.ts']);
+    // 未跟踪目录在 porcelain 里折叠成 `?? other/`，用 -uall 展开到文件
+    expect(git(repo, ['status', '--porcelain', '-uall'])).toContain('other/out.ts');
+    expect(comments(issueId).join('\n')).toContain('other/out.ts');
+  });
+
   it('writesNoCommentWhenNothingChanged', async () => {
     const issueId = await makeIssue('没有改动的任务');
     await claim(issueId);

@@ -3,7 +3,7 @@
  * PIXI 本体在 jsdom 里跑不起来，这里 mock 掉 `pixiGraph` 模块，只验「什么时候 import」与「传了什么数据」。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { server } from './server';
@@ -12,6 +12,12 @@ import type { GraphNode, GraphPayload } from '../lib/knowledgeGraph';
 
 interface MountRecord {
   host: HTMLElement;
+  options: {
+    onSelect?: (id: string) => void;
+    onHover?: (id: string | null) => void;
+    onScaleChange?: (scale: number) => void;
+    onContextMenu?: (target: { id: string; clientX: number; clientY: number }) => void;
+  };
   updates: PixiGraphData[];
   zoomBy: ReturnType<typeof vi.fn>;
   resetView: ReturnType<typeof vi.fn>;
@@ -22,9 +28,10 @@ interface MountRecord {
 const { mounts } = vi.hoisted(() => ({ mounts: [] as MountRecord[] }));
 
 vi.mock('../components/knowledge/pixiGraph', () => ({
-  createPixiGraph: (host: HTMLElement) => {
+  createPixiGraph: (host: HTMLElement, options: MountRecord['options']) => {
     const record: MountRecord = {
       host,
+      options,
       updates: [],
       zoomBy: vi.fn(),
       resetView: vi.fn(),
@@ -152,5 +159,44 @@ describe('星图 WebGL 前置检测与降级（KB-GRAPH-P1）', () => {
     expect(record.destroy).not.toHaveBeenCalled();
     view.unmount();
     expect(record.destroy).toHaveBeenCalled();
+  });
+});
+
+describe('右键菜单（C4）：打开详情 / 复制页链接 / 聚焦邻居（KB-GRAPH-P2）', () => {
+  beforeEach(() => {
+    mounts.length = 0;
+  });
+
+  it('三项齐全，且各自触发对应动作', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as unknown as WebGL2RenderingContext);
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    mockGraph();
+    const onSelect = vi.fn();
+    mountGraph(onSelect);
+    await waitFor(() => expect(mounts).toHaveLength(1));
+    const record = mounts[0]!;
+    await waitFor(() => expect(record.updates.length).toBeGreaterThan(0));
+
+    // 渲染层回调 → React 弹菜单
+    act(() => record.options.onContextMenu?.({ id: 'p1', clientX: 12, clientY: 34 }));
+    const menu = screen.getByTestId('graph-context-menu');
+    expect(menu).toHaveTextContent('打开详情');
+    expect(menu).toHaveTextContent('复制页链接');
+    expect(menu).toHaveTextContent('聚焦该节点的邻居');
+
+    fireEvent.click(screen.getByTestId('graph-menu-open'));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', title: '缓存策略' }));
+    expect(screen.queryByTestId('graph-context-menu')).not.toBeInTheDocument();
+
+    act(() => record.options.onContextMenu?.({ id: 'p1', clientX: 12, clientY: 34 }));
+    fireEvent.click(screen.getByTestId('graph-menu-copy'));
+    expect(writeText).toHaveBeenCalledWith('knowledge://p1');
+
+    act(() => record.options.onContextMenu?.({ id: 'p2', clientX: 12, clientY: 34 }));
+    fireEvent.click(screen.getByTestId('graph-menu-focus'));
+    const root = screen.getByTestId('knowledge-graph');
+    await waitFor(() => expect(root.getAttribute('data-focus-id')).toBe('p2'));
+    expect(root.getAttribute('data-focus-hops')).toBe('1');
   });
 });
