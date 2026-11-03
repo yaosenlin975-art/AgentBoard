@@ -32,7 +32,7 @@ export function Column({
   return (
     <section
       data-testid={`column-${status}`}
-      className="flex min-w-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
+      className="flex min-h-0 min-w-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
     >
       <header className="flex items-center justify-between px-2.5 pt-2.5">
         <div className="flex min-w-0 items-center gap-1">

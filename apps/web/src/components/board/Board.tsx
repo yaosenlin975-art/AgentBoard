@@ -230,10 +230,13 @@ export function Board({
           onDragCancel={() => setActiveDrag(null)}
         >
           {/* 列容器（BOARD-COLS / design §6）：grid 自适应，列数取当前列数组长度（不写死 4）。
-              每列 minmax(280px, 1fr)：列少时 1fr 撑满容器、右侧不留白；列多时保底 280px 并横向滚动。 */}
+              每列 minmax(280px, 1fr)：列少时 1fr 撑满容器、右侧不留白；列多时保底 280px 并横向滚动。
+              auto-rows-fr（COL-SCROLL）：把隐式行高钉成 minmax(0, 1fr)，否则默认 auto 行会按内容
+              max-content 撑到上万像素——列内 overflow-y-auto 就永远没有可滚动溢出，而外层
+              overflow-y-hidden 又把超长内容裁掉，表现为「列内滚轮失效」。 */}
           <div
             data-testid="board-columns"
-            className="grid min-h-0 flex-1 gap-3 overflow-x-auto overflow-y-hidden p-3"
+            className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-3"
             style={{ gridTemplateColumns: `repeat(${BOARD_COLUMNS.length}, minmax(280px, 1fr))` }}
           >
             {BOARD_COLUMNS.map((status) => (
