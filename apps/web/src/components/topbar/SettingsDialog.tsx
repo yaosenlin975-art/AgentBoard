@@ -12,6 +12,7 @@ import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
+import { VoiceSection } from '../settings/VoiceSection';
 import { useAppStore } from '../../state/appStore';
 
 interface Settings {
@@ -175,6 +176,11 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           工作区状态
         </h3>
         <WorkspaceStatusSettings workspaceId={currentWorkspaceId} />
+      </section>
+      {/* VOICE-4：语音输入（总开关 / 语言 / 模型下载与删除 / 占用空间 / 检测麦克风） */}
+      <section data-testid="settings-voice-wrap" className="mt-4 border-t border-hairline pt-3">
+        <h3 className="mb-2 text-xs font-medium text-ink-2">语音输入</h3>
+        <VoiceSection />
       </section>
       <RestartServerPanel />
     </Modal>
