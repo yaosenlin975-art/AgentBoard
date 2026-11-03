@@ -278,3 +278,11 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 - **重复标签自动去重**（保留首次出现顺序）。
 - **标签本身不含空格**：这是硬约定。历史上把多个词塞进一个 label（如 `调研 跨平台 文档`）会被当作带空格的单个标签，是标签体系脏掉的主因；现在一律拆分。若要表达短语概念，请用有检索价值的领域词（`跨平台`、`文档`），不要拼多词短语。
 - 标签规范（写入侧）：**≤4 个**、用领域词（`web` / `server` / `cli` / `知识库` / `账号管理` / `依赖` / `技能` / `测试` / `文档` / `调研` / `跨平台`）、**不写日期**（时间信息用 `due_date`/`created_at`）、**不写「父卡」**（层级用 `parent_issue_id`）、**不加空格**。
+
+### 服务端 labels 规范化（TAG-CLEANUP-EXEC）
+
+`POST /api/issues` 与 `PATCH /api/issues/:id` 的 `labels` 在**请求边界**统一走 `apps/server/src/services/labelNormalize.ts`：
+
+- 与 CLI `parseLabels`（`packages/cli/src/commands/createIssue.ts`）同一套规则：按 `[,，\s]+` 拆分、trim、丢空、去重（保留首次出现顺序）。
+- 直接 `PATCH {"labels":["功能  web，UI"]}` 会落库为 `["功能","web","UI"]`；`{"labels":[]}` 清空标签。
+- 规则单一来源：服务端实现文件顶注释指向 CLI 实现，改动需两处同步（本卡已收口「非 CLI 写入路径能落进带空格标签」的缺口）。

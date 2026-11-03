@@ -107,16 +107,18 @@ export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null
   return row ? rowToIssue(row) : null;
 }
 
-export function listIssues(db: Db, workspaceId: string): Issue[] {
+export function listIssues(db: Db, workspaceId: string, status?: string): Issue[] {
+  const params: unknown[] = [workspaceId];
+  if (status !== undefined) params.push(status);
   const rows = db
     .prepare(
       `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
-       WHERE i.workspace_id = ? ORDER BY i.sort_order, i.created_at, i.id`,
+       WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
     )
-    .all(workspaceId) as IssueRow[];
+    .all(...params) as IssueRow[];
   return rows.map(rowToIssue);
 }
-export function listIssuesPage(db: Db, workspaceId: string, input: { limit: number; offset: number; status?: IssueStatus }): PageResult<TaskPreview> {
+export function listIssuesPage(db: Db, workspaceId: string, input: { limit: number; offset: number; /** CLI-LIST-GUARD：任意工作区状态名 */ status?: string }): PageResult<TaskPreview> {
   validatePage(input.limit, input.offset);
   const params: unknown[] = [workspaceId];
   if (input.status) params.push(input.status);
@@ -233,7 +235,7 @@ interface TreeCursor {
   version: 1;
   workspace_id: string;
   parent_issue_id: string | null;
-  status: IssueStatus | null;
+  status: string | null;
   sort_order: number;
   created_at: number;
   id: string;
@@ -262,7 +264,7 @@ function decodeTreeCursor(value: string): TreeCursor {
 /** Keyset-paginated children. Each page carries the requested parent's full ancestor path. */
 export function listIssueTreePage(
   db: Db,
-  input: { workspace_id: string; parent_issue_id: string | null; limit: number; status?: IssueStatus; cursor?: string },
+  input: { workspace_id: string; parent_issue_id: string | null; limit: number; /** CLI-LIST-GUARD：任意工作区状态名 */ status?: string; cursor?: string },
 ): IssueTreePage {
   validatePage(input.limit, 0);
   const status = input.status ?? null;

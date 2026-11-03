@@ -30,6 +30,10 @@ describe('CLI task hierarchy', () => {
       const url = String(input);
       calls.push({ url, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.includes('/statuses')) return Response.json([
+        { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+        { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
+      ], { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json(issue('child-1', 'Child', 'parent-1'), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));
     const { ctx } = context();
@@ -45,6 +49,10 @@ describe('CLI task hierarchy', () => {
       const url = String(input);
       urls.push(url);
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.includes('/statuses')) return Response.json([
+        { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+        { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
+      ], { headers: { 'x-agentboard-version': '0.1.0' } });
       const parsed = new URL(url);
       const parentId = parsed.searchParams.get('parent_issue_id');
       const page = parentId === null
@@ -86,6 +94,10 @@ describe('CLI task hierarchy', () => {
       const url = String(input);
       calls.push({ url, init });
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.includes('/statuses')) return Response.json([
+        { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+        { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
+      ], { headers: { 'x-agentboard-version': '0.1.0' } });
       if (init?.method === 'GET') return Response.json(issue('child-1', 'Child', 'parent-1'), { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json(issue('child-1', 'Child', null), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));

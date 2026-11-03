@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { MAX_DISPATCH_SELECTED_ID_COUNT } from '@agentboard/shared';
 import { knowledgeSourceSchema, knowledgeEvidenceSchema } from '../services/knowledge.js';
+import { normalizeLabels } from '../services/labelNormalize.js';
 const offsetQuery = z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0);
 const sizeQuery = z.coerce.number().int().min(1).max(40000).default(12000);
 export const pageQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50), offset: offsetQuery });
@@ -21,8 +22,11 @@ export const knowledgeReviseSchema = z.object({ ...knowledgeScopeFields, ...z.ob
 export const knowledgeActionSchema = z.object({ ...knowledgeScopeFields, actor: knowledgeAuditFields.actor, action: z.enum(['archive', 'restore', 'delete']), expected_revision: z.number().int().positive() }).strict();
 
 export const prioritySchema = z.enum(['低', '中', '高']);
-/** 内置状态枚举：仅用于**查询过滤**的既有兼容口径（写入走 statusNameSchema + 工作区字典校验） */
-export const issueStatusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
+/**
+ * CLI-LIST-GUARD：查询过滤用的状态名不再限定四值枚举（自定义状态 / 已废弃都要能筛），
+ * 只校验「非空字符串」；是否属于该工作区由路由层查 workspace_status 判定（非法 → 400 并列出可用状态）。
+ */
+export const issueStatusSchema = z.string().trim().min(1, 'status 不能为空').max(50);
 /**
  * STATUS-1：写入用的状态名。不再是枚举（每工作区可有自定义状态），合法性由服务层
  * `requireWorkspaceStatus` 按该工作区的 workspace_status 字典判定，未命中 → 400。
@@ -120,7 +124,8 @@ export const createIssueSchema = z
     title: z.string().trim().min(1, 'title 不能为空'),
     description: z.string().optional(),
     priority: prioritySchema.optional(),
-    labels: z.array(z.string()).optional(),
+    // TAG-CLEANUP-EXEC：请求边界统一规范化（拆空格/全角逗号、trim、去重），与 CLI parseLabels 同规则
+  labels: z.array(z.string()).transform(normalizeLabels).optional(),
     parent_issue_id: z.string().min(1).nullable().optional(),
     due_date: dueDateSchema,
     due_time: dueTimeSchema,
@@ -136,7 +141,8 @@ export const patchIssueSchema = z
     title: z.string().trim().min(1, 'title 不能为空').optional(),
     description: z.string().optional(),
     priority: prioritySchema.optional(),
-    labels: z.array(z.string()).optional(),
+    // TAG-CLEANUP-EXEC：请求边界统一规范化（拆空格/全角逗号、trim、去重），与 CLI parseLabels 同规则
+  labels: z.array(z.string()).transform(normalizeLabels).optional(),
     status: statusNameSchema.optional(),
     sort_order: z.number().int().optional(),
     parent_issue_id: z.string().min(1).nullable().optional(),

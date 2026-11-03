@@ -7,15 +7,51 @@ import { matchWorkspace } from '../workspace.js';
 export interface ListTasksArgs {
   /** 工作空间 id 或名称；缺省聚合全部工作空间 */
   workspace?: string;
-  /** 按状态过滤：待规划|进行中|待验收|已关闭 */
+  /** 按状态过滤：本工作区已定义的任意状态（内置五状态 + 自定义状态） */
   status?: string;
   /** 以展开的层级视图列出全部任务 */
   tree?: boolean;
+  /** --json 时是否连 description 正文一起输出（默认裁剪，避免把大量上下文灌给 agent） */
+  full?: boolean;
 }
 
 interface VisibleTreeItem extends IssueTreeItem {
   tree_depth: number;
   tree_context: boolean;
+}
+
+interface WorkspaceStatusRow { name: string }
+
+/**
+ * CLI-LIST-GUARD：`--status` 必须是工作区已定义的状态。
+ *
+ * - 指定了 workspace → 校验该工作区的状态字典；
+ * - 未指定（聚合模式）→ 任一工作区有该状态即放行（保持既有聚合语义）。
+ * 非法值直接抛错（退出码非 0）并列出可用状态，不再静默返回「（无任务）」。
+ */
+async function requireKnownStatus(ctx: Ctx, target: Workspace[], status: string): Promise<void> {
+  const dictionaries = await Promise.all(
+    target.map(space => request<WorkspaceStatusRow[]>(ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(space.id)}/statuses`)),
+  );
+  const available = [...new Set(dictionaries.flat().map(row => row.name))];
+  if (available.includes(status)) return;
+  const where = target.length === 1 ? `工作区 ${target[0]!.name}` : `全部 ${target.length} 个工作区`;
+  throw new Error(`未知状态：${status}（${where} 可用状态：${available.length > 0 ? available.join(' / ') : '（无）'}）`);
+}
+
+/**
+ * `--json` 默认裁剪 `description`（只留元数据，并标记 `description_omitted: true`）；
+ * 需要正文时显式 `--full`。表格模式本来就不输出正文。
+ */
+function projectForJson(issues: readonly Issue[], full: boolean): Array<Record<string, unknown>> {
+  if (full) return issues as unknown as Array<Record<string, unknown>>;
+  return issues.map(issue => {
+    const { description, description_truncated, next_description_offset_chars, ...rest } = issue as Issue & {
+      description_truncated?: boolean; next_description_offset_chars?: number | null;
+    };
+    void description; void description_truncated; void next_description_offset_chars;
+    return { ...rest, description_omitted: true };
+  });
 }
 
 async function readChildren(ctx: Ctx, workspaceId: string, parentId: string | null): Promise<IssueTreeItem[]> {
@@ -84,11 +120,12 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
   if (args.tree) {
     const selected = args.workspace ? [matchWorkspace(spaces, args.workspace)] : spaces;
+    if (args.status !== undefined) await requireKnownStatus(ctx, selected, args.status);
     const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))
       .flat()
       .map((issue) => ({ ...issue, workspace_id: issue.workspace_id }));
     if (ctx.json) {
-      ctx.io.write(`${JSON.stringify(visible, null, 2)}\n`);
+      ctx.io.write(`${JSON.stringify(projectForJson(visible, args.full === true), null, 2)}\n`);
       return;
     }
     if (visible.length === 0) {
@@ -104,6 +141,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
       ]),
     ));
     return;
+  }
+  if (args.status !== undefined) {
+    await requireKnownStatus(ctx, args.workspace ? [matchWorkspace(spaces, args.workspace)] : spaces, args.status);
   }
   let issues: Issue[];
   if (args.workspace) {
@@ -124,7 +164,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   }
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(filtered, null, 2)}\n`);
+    ctx.io.write(`${JSON.stringify(projectForJson(filtered, args.full === true), null, 2)}\n`);
     return;
   }
   if (filtered.length === 0) {

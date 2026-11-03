@@ -54,7 +54,8 @@ export function getIssueTreeChildren(db: Db, input: {
   workspace_id: string;
   parent_issue_id: string | null;
   limit: number;
-  status?: IssueStatus;
+  /** CLI-LIST-GUARD：任意工作区状态名 */
+  status?: string;
   cursor?: string;
 }): IssueTreePage {
   return listIssueTreePage(db, input);

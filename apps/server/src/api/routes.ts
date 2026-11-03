@@ -55,6 +55,7 @@ import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } fro
 import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import { addDependency, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
+import { requireWorkspaceStatus } from '../services/workspaceStatus.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
@@ -477,22 +478,26 @@ export function createRouter(deps: RouterDeps): Router {
   router.get('/issues', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
+    // CLI-LIST-GUARD：status 必须是该工作区已定义的状态（内置 + 自定义），
+    // 非法 → 400 并列出可用状态；合法 → 两个分支都真的按它过滤（旧实现非分页分支直接忽略 status）。
+    const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(db, workspaceId, parseBody(issueStatusSchema, req.query.status));
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
       const page = parseBody(pageQuerySchema, req.query);
-      const status = req.query.status === undefined ? undefined : parseBody(issueStatusSchema, req.query.status);
       res.json(listIssuesPage(db, workspaceId, { ...page, status }));
-    } else res.json(listIssues(db, workspaceId));
+    } else res.json(listIssues(db, workspaceId, status));
   });
 
   router.get('/issues/tree', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
     const input = parseBody(issueTreeQuerySchema, req.query);
+    // CLI-LIST-GUARD：树视图的 status 同样按工作区字典校验，避免自定义状态被静默过滤成空树
+    const treeStatus = input.status === undefined ? undefined : requireWorkspaceStatus(db, workspaceId, input.status);
     const result = getIssueTreeChildren(db, {
       workspace_id: workspaceId,
       parent_issue_id: input.parent_issue_id ?? null,
       limit: input.limit,
-      status: input.status,
+      status: treeStatus,
       cursor: input.cursor,
     });
     res.json(result);

@@ -322,6 +322,11 @@ describe('list-tasks', () => {
   it('--status 客户端过滤（--json 下同样生效）', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      // CLI-LIST-GUARD：--status 先按工作区状态字典校验
+      if (m === 'GET' && u === '/api/workspaces/ws1/statuses') return { status: 200, body: [
+        { id: 's1', workspace_id: 'ws1', name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+        { id: 's2', workspace_id: 'ws1', name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
+      ] };
       if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: issues };
       return undefined;
     };
