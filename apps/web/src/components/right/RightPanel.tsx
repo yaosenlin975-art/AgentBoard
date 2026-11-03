@@ -193,48 +193,48 @@ export function RightPanel() {
           </button>
         </header>
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-          {/* DETAIL-PANEL-BUG：可见性用内联 transform 表达，不依赖 Tailwind 工具类是否生成/生效。
-              只靠 translate-x-* 类时，一旦该类缺失（样式未生效 / 旧构建 / 样式构建失败），两个 body
-              会同时绘制、后渲染的聊天体压住详情体 —— 于是标题仍是「任务详情」，内容却是聊天。 */}
-          <div
-            ref={(node) => { panelBodyRefs.current.detail = node; }}
-            data-testid="detail-panel-view"
-            aria-hidden={activeView !== 'detail'}
-            inert={activeView !== 'detail'}
-            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
-              if (event.target instanceof HTMLElement) lastFocusByView.current.detail = event.target;
-            }}
-            style={{ transform: activeView === 'detail' ? 'translateX(0)' : 'translateX(-100%)' }}
-            className="absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none"
-          >
-            <DetailPanel />
-          </div>
-          {/* 软链接浮窗（MD-LINKS）：知识页 / 日志详情，和 detail 一样从左侧基准位置推入推出 */}
-          <div
-            ref={(node) => { panelBodyRefs.current.ref = node; }}
-            data-testid="ref-panel-view"
-            aria-hidden={activeView !== 'ref'}
-            inert={activeView !== 'ref'}
-            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
-              if (event.target instanceof HTMLElement) lastFocusByView.current.ref = event.target;
-            }}
-            style={{ transform: activeView === 'ref' ? 'translateX(0)' : 'translateX(-100%)' }}
-            className="absolute inset-0 overflow-hidden p-3 transition-transform duration-200 motion-reduce:transition-none"
-          >
-            <RefPanel />
-          </div>
-          <div
-            ref={(node) => { panelBodyRefs.current.chat = node; }}
-            data-testid="chat-panel-view"
-            aria-hidden={activeView !== 'chat'}
-            inert={activeView !== 'chat'}
-            onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
-              if (event.target instanceof HTMLElement) lastFocusByView.current.chat = event.target;
-            }}
-            style={{ transform: activeView === 'chat' ? 'translateX(0)' : 'translateX(100%)' }}
-            className="absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none"
-          >
-            <ChatPanel />
+          {/* DETAIL-VIEW-BUG2：**同一时刻只挂载一个视图**（按 view 条件渲染）。
+              历史两次修法都是「三个 body 全挂载 + inline transform 遮蔽」，一旦 transform/样式类失效
+              或过渡被打断，后渲染的聊天体就会压住详情体（标题是「任务详情」，内容却是聊天）。
+              条件渲染从结构上排除这种可能：detail 视图下 chat 子树根本不存在。
+              过渡改成挂载时的淡入（key 变化触发），不再依赖两视图互相平移。 */}
+          <div key={activeView} className="absolute inset-0 overflow-hidden">
+            {activeView === 'detail' && (
+              <div
+                ref={(node) => { panelBodyRefs.current.detail = node; }}
+                data-testid="detail-panel-view"
+                onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+                  if (event.target instanceof HTMLElement) lastFocusByView.current.detail = event.target;
+                }}
+                className="h-full overflow-hidden"
+              >
+                <DetailPanel />
+              </div>
+            )}
+            {activeView === 'ref' && (
+              <div
+                ref={(node) => { panelBodyRefs.current.ref = node; }}
+                data-testid="ref-panel-view"
+                onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+                  if (event.target instanceof HTMLElement) lastFocusByView.current.ref = event.target;
+                }}
+                className="h-full overflow-hidden p-3"
+              >
+                <RefPanel />
+              </div>
+            )}
+            {activeView === 'chat' && (
+              <div
+                ref={(node) => { panelBodyRefs.current.chat = node; }}
+                data-testid="chat-panel-view"
+                onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
+                  if (event.target instanceof HTMLElement) lastFocusByView.current.chat = event.target;
+                }}
+                className="h-full overflow-hidden"
+              >
+                <ChatPanel />
+              </div>
+            )}
           </div>
         </div>
       </div>

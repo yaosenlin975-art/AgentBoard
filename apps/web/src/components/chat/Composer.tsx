@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 输入区（设计 §7.5）：多行 textarea，Enter 发送 / Shift+Enter 换行（IME 组合中不发送）；
  * POST /api/sessions/:id/messages 返回 queued:true 时排队计数在 ChatPanel 维护；
  * 运行中且队列 >0 显示"排队中 N 条"，停止后显示"已停止，排队 N 条保留"。
@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { usePanelStore } from '../../state/panelStore';
 import {
   detectMentionTrigger,
   insertMention,
@@ -52,7 +53,9 @@ export function Composer({
   workspaceId?: string | null;
   onSend: (text: string) => Promise<void>;
 }) {
-  const [value, setValue] = useState('');
+  // DETAIL-VIEW-BUG2：草稿存 panelStore（视图按需挂载后切回来仍保留）
+  const value = usePanelStore((s) => s.chatDraft);
+  const setValue = usePanelStore((s) => s.setChatDraft);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mention, setMention] = useState<MentionState | null>(null);

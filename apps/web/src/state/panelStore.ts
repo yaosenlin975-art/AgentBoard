@@ -44,6 +44,12 @@ interface PanelState {
   unread: Record<string, number>;
   /** 软链接浮窗目标（MD-LINKS），仅 view==='ref' 时有意义 */
   refPanel: RefPanelTarget | null;
+  /**
+   * 聊天输入草稿（DETAIL-VIEW-BUG2）：视图改成「同一时刻只挂载一个」，ChatPanel 卸载会丢组件内 state，
+   * 所以草稿提到 store —— 切到详情再回来仍保留。
+   */
+  chatDraft: string;
+  setChatDraft: (draft: string) => void;
   /** 右侧面板是否展开（收起保留 view/issueId/sessionId，展开按钮恢复） */
   rightOpen: boolean;
   /** 打开任务详情并展开右侧 */
@@ -75,7 +81,9 @@ export const usePanelStore = create<PanelState>()(
       chatSession: null,
       unread: {},
       refPanel: null,
+      chatDraft: '',
       rightOpen: false,
+      setChatDraft: (chatDraft) => set({ chatDraft }),
       openDetail: (issueId) => set({ view: 'detail', issueId, refPanel: null, rightOpen: true }),
       openRef: (target) => set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true }),
       openChat: (sessionId, session) =>

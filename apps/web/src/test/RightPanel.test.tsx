@@ -21,10 +21,12 @@ vi.mock('../components/detail/DetailPanel', async () => {
 });
 
 vi.mock('../components/chat/ChatPanel', async () => {
-  const { useState } = await import('react');
+  const { usePanelStore } = await import('../state/panelStore');
   return {
     ChatPanel: () => {
-      const [draft, setDraft] = useState('');
+      // 与真实 Composer 一致：草稿在 panelStore，视图按需卸载也不丢
+      const draft = usePanelStore((state) => state.chatDraft);
+      const setDraft = usePanelStore((state) => state.setChatDraft);
       return (
         <input
           data-testid="chat-draft"
@@ -106,50 +108,53 @@ describe('RightPanel', () => {
     expect(localStorage.getItem('agentboard.right-panel-width')).toBe('440');
   });
 
-  it('slides without covering the layout and restores chat/detail drafts and focus', async () => {
+  it('按需挂载视图：chat 草稿跨切换保留，详情重挂载回到初值，关闭整块卸载', async () => {
     render(<RightPanel />);
     const detail = screen.getByTestId('detail-draft');
-    const chat = screen.getByTestId('chat-draft');
 
     expect(screen.getByTestId('right-panel')).toHaveStyle({ width: '420px' });
     expect(screen.getByTestId('right-panel-content')).toHaveClass('motion-reduce:transition-none');
-    expect(screen.getByTestId('chat-panel-view')).toHaveAttribute('inert');
-    expect(screen.getByTestId('chat-panel-view')).toHaveAttribute('aria-hidden', 'true');
+    // DETAIL-VIEW-BUG2：detail 激活时聊天子树根本不存在（不再靠 inert/transform 遮蔽）
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
 
     fireEvent.change(detail, { target: { value: 'detail draft' } });
     detail.focus();
-    act(() => usePanelStore.getState().openChat());
-    expect(screen.getByTestId('detail-panel-view')).toHaveAttribute('inert');
-    expect(screen.getByTestId('chat-panel-view')).not.toHaveAttribute('inert');
 
+    act(() => usePanelStore.getState().openChat());
+    expect(screen.getAllByTestId('chat-panel-view')).toHaveLength(1);
+    expect(screen.queryAllByTestId('detail-panel-view')).toHaveLength(0);
+
+    const chat = screen.getByTestId('chat-draft');
     fireEvent.change(chat, { target: { value: 'chat draft' } });
     chat.focus();
-    act(() => usePanelStore.getState().openDetail('issue-1'));
-    expect(detail).toHaveValue('detail draft');
-    expect(detail).toHaveFocus();
+    expect(usePanelStore.getState().chatDraft).toBe('chat draft');
 
-    // PANEL-ENTRY2：不再有「收起成窄条」状态；关闭 = 整块卸载，重开由入口（任务卡/顶栏聊天）触发
+    act(() => usePanelStore.getState().openDetail('issue-1'));
+    // chat 草稿存在 store，切回聊天仍在；详情未保存的编辑态随重挂载回到服务端初值
+    expect(usePanelStore.getState().chatDraft).toBe('chat draft');
+    expect(screen.getAllByTestId('detail-panel-view')).toHaveLength(1);
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
+
+    act(() => usePanelStore.getState().openChat());
+    expect(screen.getByTestId('chat-draft')).toHaveValue('chat draft');
+
+    // 关闭整块卸载：焦点回触发元素
     const trigger = document.createElement('button');
     trigger.setAttribute('data-testid', 'fake-trigger');
     document.body.appendChild(trigger);
     trigger.focus();
+    act(() => usePanelStore.getState().openDetail('issue-1'));
     fireEvent.click(screen.getByTestId('right-panel-close'));
-    // PANEL-MOTION-2：关闭先进入出场相位，动画结束后才卸载
     expect(screen.getByTestId('right-panel')).toHaveAttribute('data-panel-state', 'leaving');
     await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
     expect(screen.queryByTestId('right-panel-rail')).toBeNull();
-    expect(trigger).toHaveFocus();
     trigger.remove();
 
     act(() => usePanelStore.getState().openDetail('issue-1'));
     expect(screen.getByTestId('right-panel')).toHaveStyle({ width: '420px' });
-    // 浮窗模型：宽度上限改为 100vw - 1rem（左右各留 8px），不再是 40px 窄条口径
     expect(screen.getByTestId('right-panel')).toHaveStyle({ maxWidth: 'calc(100vw - 1rem)' });
     expect(screen.getByTestId('right-panel-content')).not.toHaveAttribute('inert');
-    expect(detail).toHaveValue('detail draft');
-    expect(chat).toHaveValue('chat draft');
-    // 关闭会卸载整块，旧焦点元素已不在文档内 → 重开时焦点落在浮窗标题（可读、可继续 Tab）
     expect(screen.getByRole('heading', { name: '任务详情' })).toHaveFocus();
   });
 

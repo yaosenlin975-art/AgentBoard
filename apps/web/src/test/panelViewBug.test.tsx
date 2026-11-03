@@ -45,27 +45,25 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(await heading('任务详情')).toBeInTheDocument();
     expect(useOverlayStore.getState().right).toBe(true);
     expect(screen.queryByRole('heading', { name: '聊天' })).toBeNull();
-    expect(screen.getByTestId('detail-panel-view')).not.toHaveAttribute('inert');
-    expect(screen.getByTestId('chat-panel-view')).toHaveAttribute('inert');
+    expect(screen.getByTestId('detail-panel-view')).toBeInTheDocument();
+    // DETAIL-VIEW-BUG2：同一时刻只挂载一个视图 —— 详情激活时聊天子树计数必须为 0
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
+    expect(screen.queryAllByTestId('ref-panel-view')).toHaveLength(0);
     expect(screen.getByTestId('stub-detail-panel')).toBeInTheDocument();
   });
 
-  it('可见性由内联 transform 决定（不依赖 Tailwind 类）：标题与可见 body 永远一致', async () => {
+  it('按需挂载：detail 时只有详情子树，chat 时只有聊天子树（不再靠 CSS 遮蔽）', async () => {
     renderPanel();
     act(() => usePanelStore.getState().openDetail('iss-1'));
     await heading('任务详情');
-
-    // 详情激活：详情体在位（translateX(0)），聊天体移出（translateX(100%)）
-    expect(screen.getByTestId('detail-panel-view').style.transform).toBe('translateX(0)');
-    expect(screen.getByTestId('chat-panel-view').style.transform).toBe('translateX(100%)');
-    // 关键：可见性不再挂在 className 的 translate 工具类上（类缺失/未生效时不会两体同时绘制）
-    expect(screen.getByTestId('chat-panel-view').className).not.toMatch(/translate-x/);
-    expect(screen.getByTestId('detail-panel-view').className).not.toMatch(/translate-x/);
+    expect(screen.getAllByTestId('detail-panel-view')).toHaveLength(1);
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
 
     act(() => usePanelStore.getState().openChat());
     await heading('聊天');
-    expect(screen.getByTestId('chat-panel-view').style.transform).toBe('translateX(0)');
-    expect(screen.getByTestId('detail-panel-view').style.transform).toBe('translateX(-100%)');
+    expect(screen.getAllByTestId('chat-panel-view')).toHaveLength(1);
+    expect(screen.queryAllByTestId('detail-panel-view')).toHaveLength(0);
+    expect(screen.queryAllByTestId('ref-panel-view')).toHaveLength(0);
   });
 
   it('(b) localStorage 残留「上次停在聊天」：刷新后点任务仍是详情', async () => {
@@ -83,7 +81,7 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
 
     act(() => usePanelStore.getState().openDetail('iss-1'));
     expect(await heading('任务详情')).toBeInTheDocument();
-    expect(screen.getByTestId('chat-panel-view')).toHaveAttribute('inert');
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
   });
 
   it('(c) 浮窗已开在聊天时点另一张任务：切到详情', async () => {
@@ -96,8 +94,8 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(await heading('任务详情')).toBeInTheDocument();
     await waitFor(() => expect(usePanelStore.getState().view).toBe('detail'));
     expect(usePanelStore.getState().issueId).toBe('iss-2');
-    expect(screen.getByTestId('chat-panel-view')).toHaveAttribute('inert');
-    expect(screen.getByTestId('detail-panel-view')).not.toHaveAttribute('inert');
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
+    expect(screen.getAllByTestId('detail-panel-view')).toHaveLength(1);
   });
 
   it('view 为 null 时不渲染浮窗，即便 overlayStore.right 被打开（无隐式回退）', async () => {
