@@ -9,7 +9,6 @@ import { AccountsPanel } from '../settings/AccountsPanel';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
 import { useOverlayStore } from '../../state/overlayStore';
 import { IconChevronDown } from '../ui/Icon';
-import { VersionLabel } from './VersionLabel';
 
 const WS_DOT: Record<WsStatus, string> = {
   connecting: 'bg-yellow-500',
@@ -41,7 +40,7 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
   return (
     <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-card px-4 py-2">
       <div className="min-w-0">
-        <div className="flex min-w-0 items-baseline gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           {/* 左浮窗触发按钮（PANEL-FLOAT）：按钮即当前工作空间名，浮窗在其正下方展开 */}
           <div className="relative">
             <button
@@ -64,16 +63,16 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
             </button>
             <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />
           </div>
-          <VersionLabel />
-        </div>
-        {workspace && (
-          <div
-            className="truncate text-xs text-neutral-500 dark:text-neutral-400"
-            title={workspace.path}
+          {/* TOPBAR-WSPATH：路径顶到原版本号的位置（字号/颜色沿用版本号），版本号不再显示；
+              超长时 truncate + title 给完整路径，未选工作区时给占位文案。 */}
+          <span
+            data-testid="topbar-workspace-path"
+            title={workspace ? workspace.path : '未选择工作区'}
+            className="min-w-0 max-w-[38vw] truncate text-xs leading-none text-neutral-400 dark:text-neutral-500"
           >
-            {workspace.path}
-          </div>
-        )}
+            {workspace ? workspace.path : '未选择工作区'}
+          </span>
+        </div>
       </div>
 
       <div className="ml-auto flex flex-wrap items-center gap-2">

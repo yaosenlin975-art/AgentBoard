@@ -6,7 +6,6 @@ import { HttpResponse, http } from 'msw';
 import type { CliInfo, Workspace, WorkspaceChangeLog } from '@agentboard/shared';
 import { TopBar } from '../components/topbar/TopBar';
 import { RightPanel } from '../components/right/RightPanel';
-import { WEB_VERSION } from '../api/version';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
 import { server } from './server';
@@ -149,44 +148,31 @@ describe('TopBar', () => {
     expect(screen.getByRole('heading', { name: '聊天' })).toBeInTheDocument();
   });
 
-  it('版本号：GET /api/version 0.1.0 → 标题旁显示 v0.1.0，title 含服务端名称与前端版本', async () => {
+  it('版本号不再渲染，路径顶到原版本号位置（title 为完整路径）', async () => {
     server.use(
       http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
     );
     renderTopBar(ws);
 
-    const label = await screen.findByText('v0.1.0');
-    expect(label).toHaveAttribute('title', expect.stringContaining('agentboard-server 0.1.0'));
-    expect(label).toHaveAttribute('title', expect.stringContaining(`前端 ${WEB_VERSION}`));
+    // 版本号彻底不渲染（顶栏不再出现 v0.1.0 / app-version）
+    expect(screen.queryByText('v0.1.0')).toBeNull();
+    expect(screen.queryByTestId('app-version')).toBeNull();
+
+    const path = screen.getByTestId('topbar-workspace-path');
+    expect(path).toHaveTextContent('D:/WorkSpaces/main');
+    expect(path).toHaveAttribute('title', 'D:/WorkSpaces/main');
+    // 字号/颜色沿用原版本号（text-xs + 中性色）
+    expect(path.className).toContain('text-xs');
+    expect(path.className).toContain('text-neutral-400');
+    expect(path.className).toContain('truncate');
   });
 
-  it('版本号：接口不可达 → 显示 v? 且顶栏正常渲染不报错', async () => {
-    server.use(http.get('/api/version', () => HttpResponse.error()));
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderTopBar(ws, false, qc);
-
-    await waitFor(() => expect(qc.getQueryState(['version'])?.status).toBe('error'));
-    const label = screen.getByTestId('app-version');
-    expect(label).toHaveTextContent(/^v\?$/);
-    expect(label).toHaveAttribute('title', expect.stringContaining('服务端版本未知'));
-    expect(screen.getByText('主项目')).toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('版本号：与前端版本一致无警示，不一致 title 警示', async () => {
-    server.use(
-      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: WEB_VERSION })),
-    );
-    const first = renderTopBar(null);
-    const same = await screen.findByText(`v${WEB_VERSION}`);
-    expect(same.getAttribute('title')).not.toContain('不一致');
-    first.unmount();
-
-    server.use(
-      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '9.9.9' })),
-    );
+  it('未选工作区时路径位置显示占位文案', () => {
     renderTopBar(null);
-    expect(await screen.findByText('v9.9.9')).toHaveAttribute('title', expect.stringContaining('版本不一致'));
+    const path = screen.getByTestId('topbar-workspace-path');
+    expect(path).toHaveTextContent('未选择工作区');
+    expect(path).toHaveAttribute('title', '未选择工作区');
+    expect(screen.queryByTestId('app-version')).toBeNull();
   });
 });
 
