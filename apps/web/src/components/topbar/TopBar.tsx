@@ -112,7 +112,7 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
           {unreadTotal > 0 && (
             <span
               data-testid="topbar-chat-unread"
-              className="absolute -right-1 -top-1 rounded-full bg-red-500 px-1 text-[10px] leading-4 font-medium text-white"
+              className="absolute -right-1 -top-1 rounded-full bg-accent px-1 text-[10px] leading-4 font-medium text-accent-ink"
             >
               {unreadTotal}
             </span>

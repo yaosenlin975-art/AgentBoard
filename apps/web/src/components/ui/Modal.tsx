@@ -1,4 +1,4 @@
-﻿import { useEffect, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 export interface ModalProps {
@@ -40,7 +40,7 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full ${SIZE_CLASS[size]} rounded-lg bg-white p-5 shadow-xl dark:bg-neutral-900${scrollable ? ' max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain' : ''}`}
+        className={`w-full ${SIZE_CLASS[size]} rounded-lg border border-hairline bg-surface-card p-5 text-ink shadow-xl${scrollable ? ' max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain' : ''}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

@@ -34,7 +34,8 @@ describe('UNSLOP 全局令牌（pass 2 · color）', () => {
     expect(css).toContain('--ab-page: #f7f4ee');
     expect(css).toContain('--ab-card: #fdfbf7');
     expect(css).toContain('--ab-ink: #1f1b16');
-    expect(css).toContain('--ab-accent: #b45309');
+    // THEME-CONTRAST-AUDIT：#b45309 在 raised/tint 上只有 4.13–4.16:1，压深到 #a04a08（4.65–5.0:1，白字仍 6.4:1）
+    expect(css).toContain('--ab-accent: #a04a08');
     // 暗：暖黑台面 + 提亮琥珀 + 深字
     expect(css).toContain('--ab-page: #161513');
     expect(css).toContain('--ab-accent: #f0a01e');
