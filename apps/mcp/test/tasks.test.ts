@@ -18,6 +18,7 @@ describe('AgentBoard task MCP server', () => {
     expect(initialized.result?.protocolVersion).toBe('2025-11-25');
     const response = await harness.request('tools/list');
     expect(response.result?.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+      'agentboard_add_dependency',
       'agentboard_add_task_comment',
       'agentboard_archive_knowledge',
       'agentboard_claim_task',
@@ -29,10 +30,12 @@ describe('AgentBoard task MCP server', () => {
       'agentboard_get_task',
       'agentboard_get_task_comment',
       'agentboard_get_task_comments',
+      'agentboard_list_dependencies',
       'agentboard_list_tasks',
       'agentboard_list_workspaces',
       'agentboard_read_knowledge',
       'agentboard_release_task',
+      'agentboard_remove_dependency',
       'agentboard_restore_knowledge',
       'agentboard_revise_knowledge',
       'agentboard_search_knowledge',

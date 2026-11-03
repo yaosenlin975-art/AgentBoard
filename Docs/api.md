@@ -91,6 +91,37 @@
 
 约束：同工作区与防环由服务层先判错误码，表上另有 `BEFORE INSERT` 触发器兜底（直接写库绕不过）；自环由 `CHECK` + 服务层 400 负责；单卡前置上限 50（`MAX_DEPENDENCY_EDGES`）。`claimed_by IS NOT NULL` 的卡不得新增前置（409 `ISSUE_CLAIMED`，含"进行中但已释放"除外）。`done`/`fail`/`release` 不受依赖影响。
 
+**CLI（DEP-2，`packages/cli/src/commands/dep.ts`）**
+
+```
+kb dep ls <issue-id>                 # 前置与被阻塞者（状态 + 解除标记），--json 出原始响应
+kb dep add <issue-id> <blocker-id>   # 建边；blocker 解除后本卡才可 claim
+kb dep rm <issue-id> <blocker-id>    # 删边；缺边 404
+```
+
+workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 `kb claim` 手法），写通道因此恒带 `workspace_id`。`--json` 输出原始响应。退出码**由本子命令自带映射，不改全局 `toExit`**：0 成功；2 `DEPENDENCY_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED`；3 `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF` / `VALIDATION_ERROR`；4 `NOT_FOUND` / `TASK_NOT_FOUND`；未映射的码交回全局 `toExit`（409 → 2、其余 → 1，用服务端原文）。每个已映射码一句中文文案，不会被包装成「已被占用（…）」：
+
+| 错误码 | 退出码 | 文案 |
+| --- | --- | --- |
+| `DEPENDENCY_CYCLE` | 2 | 该依赖会让任务成环，已拒绝 |
+| `DEPENDENCY_EXISTS` | 2 | 该依赖已存在 |
+| `ISSUE_CLAIMED` | 2 | 任务已被占用，请先释放占用（release）再新增前置 |
+| `CROSS_WORKSPACE_DEPENDENCY` | 3 | 不支持跨工作区依赖 |
+| `DEPENDENCY_SELF` | 3 | 不能依赖自身：被阻塞卡与前置卡是同一张 |
+| `VALIDATION_ERROR` | 3 | 参数不合法（缺少 workspace_id 或前置 id 为空） |
+| `NOT_FOUND` | 4 | 任务或依赖不存在 |
+| `TASK_NOT_FOUND` | 4 | 任务不存在或不属于该工作区 |
+
+**MCP（DEP-2，`apps/mcp/src/tools/dependencies.ts`）**
+
+| 工具 | 入参 | 语义 |
+| --- | --- | --- |
+| `agentboard_list_dependencies` | `task_id`、`workspace_id?`（绑定工作区优先，越界 `WORKSPACE_BOUND`） | 返回 `{ blockers, blocked, workspace_id }`，`resolved` 由服务端给 |
+| `agentboard_add_dependency` | `task_id`、`blocker_task_id`、`request_id`（UUID，作 `Idempotency-Key`）、`workspace_id?` | 建边，返回同 `list` 的视图 |
+| `agentboard_remove_dependency` | `task_id`、`blocker_task_id`、`workspace_id?` | 删边，返回 `{ removed: true, task_id, blocker_task_id, workspace_id }` |
+
+错误走 `structuredContent.error.code`：依赖码原样透传（`DEPENDENCY_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED` / `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF`），404 `NOT_FOUND` 按 `apiClient` 既有约定落成 `TASK_NOT_FOUND`；`message` 用本地安全文案，不回传服务端原文。
+
 ## 7. comments
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

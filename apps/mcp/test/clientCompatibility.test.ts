@@ -113,12 +113,14 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
           'agentboard_search_knowledge',
         ]),
       );
-      // 不得出现会话/终端/账号一类越界工具；任务删除是经批准的唯一破坏性工具（CLI-DELETE 卡），
-      // 只允许这一个精确名字，其它含 delete/remove 的工具仍一体禁止。
-      for (const forbidden of ['session', 'shell', 'exec', 'account', 'credential', 'remove']) {
-        expect(names.filter((n) => n.includes(forbidden))).toEqual([]);
+      // 不得出现会话/终端/账号一类越界工具；破坏性工具只允许逐个批准的精确名字
+      // （任务删除来自 CLI-DELETE 卡，依赖删边来自 DEP-2 卡），其余含 delete/remove 的工具一体禁止。
+      const approvedDestructive = new Set(['agentboard_delete_task', 'agentboard_remove_dependency']);
+      for (const forbidden of ['session', 'shell', 'exec', 'account', 'credential', 'remove', 'delete']) {
+        expect(names.filter((n) => n.includes(forbidden) && !approvedDestructive.has(n))).toEqual([]);
       }
       expect(names.filter((n) => n.includes('delete'))).toEqual(['agentboard_delete_task']);
+      expect(names.filter((n) => n.includes('remove'))).toEqual(['agentboard_remove_dependency']);
       // 只读工具带 readOnlyHint（客户端据此决定是否默认放行）
       const listWorkspaces = tools.find((t) => t.name === 'agentboard_list_workspaces');
       expect(listWorkspaces?.annotations).toMatchObject({ readOnlyHint: true });

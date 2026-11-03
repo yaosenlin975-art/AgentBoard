@@ -18,6 +18,7 @@ import { done } from './commands/done.js';
 import { deleteIssue } from './commands/deleteIssue.js';
 import { fail } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
+import { depAdd, depLs, depRemove } from './commands/dep.js';
 import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
@@ -181,6 +182,27 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   registerKnowledgeCommands(program, () => makeCtx(program, io));
   registerChangelogCommands(program, () => makeCtx(program, io));
+
+  // 依赖（DEP-2）：退出码由 commands/dep.ts 自带映射（0/2/3/4），这里只把结果码转成进程退出码
+  const depRun = (run: (ctx: Ctx) => Promise<number>) => async () => {
+    const code = await run(makeCtx(program, io));
+    if (code !== 0) throw new CommanderError(code, 'agentboard.dep', '');
+  };
+  const dep = program.command('dep').description('任务依赖（前置 / 被阻塞）：ls 列出、add 建边、rm 删边');
+  dep.command('ls')
+    .description('列出任务的前置与被阻塞者（含状态与解除标记）')
+    .argument('<issue-id>', '任务 id')
+    .action(async (id: string) => depRun(ctx => depLs(ctx, id))());
+  dep.command('add')
+    .description('新增前置：blocker 解除（待验收/已关闭）后本卡才可 claim')
+    .argument('<issue-id>', '被阻塞的任务 id')
+    .argument('<blocker-id>', '前置任务 id')
+    .action(async (id: string, blockerId: string) => depRun(ctx => depAdd(ctx, id, blockerId))());
+  dep.command('rm')
+    .description('移除前置')
+    .argument('<issue-id>', '被阻塞的任务 id')
+    .argument('<blocker-id>', '前置任务 id')
+    .action(async (id: string, blockerId: string) => depRun(ctx => depRemove(ctx, id, blockerId))());
 
   const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 键经 scripts/agentboard.vbs 隐藏拉起服务，日志在 %APPDATA%\\AgentBoard\\logs）');
   autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；node/仓库/端口/日志写进 vbs）')
