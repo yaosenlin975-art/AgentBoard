@@ -31,7 +31,7 @@ function IssueCardPriority({ issue }: { issue: Issue }) {
     <span
       data-testid={`priority-bar-${issue.id}`}
       title={`优先级：${issue.priority}`}
-      className={`absolute inset-y-0 left-0 w-1.5 ${PRIORITY_BAR[issue.priority]}`}
+      className={`absolute inset-y-0 left-0 w-[3px] ${PRIORITY_BAR[issue.priority]}`}
     />
   );
 }
