@@ -31,6 +31,8 @@ const PRINT_STYLES = `
   body.${PRINT_BODY_CLASS} #kg-print-root th,
   body.${PRINT_BODY_CLASS} #kg-print-root td { border: 1px solid #999; padding: 2pt 4pt; text-align: left; }
   body.${PRINT_BODY_CLASS} #kg-print-root code { font-family: ui-monospace, monospace; }
+  /* KB-IMG-3：正文图片不超出页宽，避免横向溢出 */
+  body.${PRINT_BODY_CLASS} #kg-print-root img { max-width: 100% !important; height: auto !important; break-inside: avoid; page-break-inside: avoid; }
   body.${PRINT_BODY_CLASS} #kg-print-root .print-meta { font-size: 10pt; border: 1px solid #bbb; padding: 6pt; }
   body.${PRINT_BODY_CLASS} #kg-print-root .print-provenance { font-size: 10pt; }
   @page { margin: 16mm; }

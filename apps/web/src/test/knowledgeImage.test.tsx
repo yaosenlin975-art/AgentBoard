@@ -90,7 +90,8 @@ describe('图片编辑区（KB-IMG-2）', () => {
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
     const inserted = onChange.mock.calls.at(-1)?.[0] as string;
-    expect(inserted).toContain('![shot](/api/knowledge/images/img1)');
+    // KB-IMG-3：正文图片 GET 依赖 query 里的 scope/workspace_id，插入时必须带上，否则正文渲染必然回落占位。
+    expect(inserted).toContain('![shot](/api/knowledge/images/img1?scope=workspace&workspace_id=A)');
     expect(inserted.startsWith('第一行\n![shot]')).toBe(true);
     const status = await screen.findByTestId('knowledge-image-status');
     expect(status).toHaveTextContent('7.2MB → 3.1MB');

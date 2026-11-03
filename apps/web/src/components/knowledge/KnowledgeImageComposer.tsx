@@ -98,7 +98,12 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
       }
       const uploaded = payload;
       const alt = (file.name || '图片').replace(/\.[^.]+$/u, '').slice(0, 60);
-      insertAtCursor(`\n![${alt}](${uploaded.url})\n`);
+      // KB-IMG-3：GET /api/knowledge/images/:id 用 requireVisiblePage(query.scope, query.workspace_id)，
+      // 裸 URL 会 404 IMAGE_* → 正文图片变加载失败占位；插入时带上作用域参数。
+      const imageUrl = `${uploaded.url}${uploaded.url.includes('?') ? '&' : '?'}scope=${encodeURIComponent(scope)}${
+        scope === 'workspace' && workspaceId !== null ? `&workspace_id=${encodeURIComponent(workspaceId)}` : ''
+      }`;
+      insertAtCursor(`\n![${alt}](${imageUrl})\n`);
       const elapsed = Math.round(performance.now() - startedAt);
       setStatus(
         result.skipped

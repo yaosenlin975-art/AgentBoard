@@ -8,6 +8,7 @@
  * （点击开右侧浮窗、知识按 common + 当前工作区鉴权）；http(s)/mailto 保持普通外链；
  * 其它未知 scheme 渲染为纯文本，不外链也不静默变成可点内容。
  */
+import { useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -19,7 +20,44 @@ export interface MarkdownRendererProps {
   children: string;
 }
 
+/**
+ * KB-IMG-3：正文图片统一渲染 —— 最大宽度不撑破版面（max-width:100% + height:auto），
+ * 加载失败时用 alt 文本 + 占位块兜底（不做点击放大，后置）。
+ * 站内图片走 `/api/knowledge/images/:id`，与 KB-IMG-2 的插入链路同源。
+ */
+export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const [failed, setFailed] = useState(false);
+  const label = alt !== undefined && alt.trim() !== '' ? alt : '图片';
+  if (failed) {
+    return (
+      <span
+        data-testid="md-image-fallback"
+        role="img"
+        aria-label={`图片加载失败：${label}`}
+        className="my-1 inline-flex max-w-full items-center gap-1.5 rounded border border-dashed border-neutral-300 bg-neutral-50 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-400"
+      >
+        <span aria-hidden>🖼</span>
+        <span className="break-all">{label}（加载失败）</span>
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt={label}
+      loading="lazy"
+      data-testid="md-image"
+      onError={() => setFailed(true)}
+      className="my-1 h-auto max-w-full rounded"
+      style={{ maxWidth: '100%' }}
+    />
+  );
+}
+
 const components: Components = {
+  img({ src, alt }) {
+    return <MarkdownImage src={typeof src === 'string' ? src : undefined} alt={typeof alt === 'string' ? alt : undefined} />;
+  },
   a({ href, children }) {
     if (parseMarkdownRef(href) !== null) {
       return <MarkdownSmartLink href={href ?? ''}>{children}</MarkdownSmartLink>;

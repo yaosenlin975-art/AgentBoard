@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 知识页导出（KB-EXPORT）：Markdown 文本拼装 + 文件名净化 + 浏览器下载。
  * 零依赖：不引入 PDF 库；PDF 走浏览器打印路径（见 KnowledgePrintView，待批准后接线）。
  */
@@ -28,6 +28,8 @@ export function sanitizeExportFilename(title: string, pageId: string): string {
 }
 
 export interface ExportOptions {
+  /** KB-IMG-3：站内图片绝对地址的 base（缺省 window.location.origin；测试注入用） */
+  imageBaseUrl?: string;
   /** 工作空间显示名；缺省时用 workspace_id，公共知识写「公共」 */
   workspaceName?: string | null;
   /** 导出时间，默认当前时间（测试可注固定值） */
@@ -38,6 +40,25 @@ const isoDate = (ms: number | undefined | null): string =>
   typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString().replace('.000Z', 'Z') : '—';
 
 const scopeLabel = (scope: KnowledgePage['scope']): string => (scope === 'common' ? '公共经验' : '项目知识');
+
+/** 站内图片 URL 形态：`/api/knowledge/images/:id`（KB-IMG-2 上传后插入的正是这种） */
+const IMAGE_URL_TEST = /!\[[^\]]*\]\(\/api\/knowledge\/images\/[^)\s]+/u;
+const ABSOLUTE_IMAGE = /(!\[[^\]]*\]\()(\/api\/knowledge\/images\/[^)\s]+)(\))/gu;
+
+/**
+ * 站内图片是相对路径，导出到本地 Markdown 后无法渲染 → 换成绝对地址（KB-IMG-3）。
+ * `baseUrl` 缺省取 `window.location.origin`（测试/SSR 可注入）。
+ */
+export function absolutizeImageUrls(markdown: string, baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/u, '');
+  if (base === '') return markdown;
+  return markdown.replace(ABSOLUTE_IMAGE, (_match, prefix: string, path: string, suffix: string) => `${prefix}${base}${path}${suffix}`);
+}
+
+function defaultImageBaseUrl(): string {
+  if (typeof window !== 'undefined' && typeof window.location?.origin === 'string') return window.location.origin;
+  return '';
+}
 
 /**
  * 拼装导出用 Markdown：
@@ -64,7 +85,11 @@ export function buildKnowledgeMarkdown(page: KnowledgePage, options: ExportOptio
   lines.push(`exported_at: ${isoDate(exportedAt)}`);
   lines.push('---', '');
 
-  lines.push('## 正文', '', String(page.body_md ?? '').replace(/\s+$/, ''), '');
+  const body = absolutizeImageUrls(String(page.body_md ?? ''), options.imageBaseUrl ?? defaultImageBaseUrl());
+  lines.push('## 正文', '', body.replace(/\s+$/, ''), '');
+  if (IMAGE_URL_TEST.test(String(page.body_md ?? ''))) {
+    lines.push('> 说明：正文图片为站内受保护资源，需登录本看板后在同一浏览器中打开链接才能显示。', '');
+  }
 
   lines.push('## 来源', '');
   if (page.sources.length === 0) lines.push('（无）');
