@@ -97,3 +97,14 @@
 - `react-force-graph-2d` 在当前 Vite/React 19 浏览器运行环境的构建、拖动/缩放手感与 500/1000 节点表现尚未实测。
 - 当前 `better-sqlite3` 构建的 SQLite JSON1 `json_each` 支持尚未实测；若实施前置探测失败，先报告父代理，再采用 revision-keyed 派生关系索引策略。
 - 新增图视图的键盘、窄屏和实际页面体验尚未验收。
+
+## 11. 渲染层路线变更（KB-GRAPH-P1，2026-11-03）
+
+技术路线：弃用 canvas 2D 自绘与 sigma 方案，改按 `D:\WorkSpaces\REA\Docs\Obsidian-星图渲染逆向.md` A 章用 PIXI 7.2.4 分包（`@pixi/core|graphics|sprite|text|display|events|app`，无伞包）1:1 重建。
+
+- 文件：`apps/web/src/components/knowledge/pixiGraph.ts`（渲染骨架，动态 import 入口）、`apps/web/src/lib/graphVisualFormulas.ts`（10 个视觉公式 + `tintFromCssColor`）、`apps/web/src/index.css`（`.graph-view.color-*` 11 个语义色，值走 `--kb-graph-*` CSS 变量，亮/暗两套）、`apps/web/src/components/knowledge/KnowledgeGraph.tsx`（容器 div + 懒加载挂载 + 无 WebGL 降级列表）。
+- 分层：React 负责取数、边过滤、聚焦/搜索过滤、`layoutGraph` 布局、可测钩子；渲染层负责相机（scale/targetScale/pan）、节点/连线/箭头/水印、A5 每帧九步、停帧。
+- 实测（headless Edge + CDP，真实 PIXI WebGL）：rendererType=1、resolution=1；weight 8 → size 9、circleScale 0.09、fontSize 16.25；weight 1 → size 8、0.08、16；scale 1 → textAlpha 1、lineWidth 1；scale 0.5 → textAlpha 0、lineWidth 2、nodeScale 1.4142、箭头 scale 4；双向边 A↔B 只画 1 条（createdEdges 9 / edgeCount 10 / hiddenDuplicateEdges 1）；`hanger.children = 节点数×2 + 实画边数×2 = 40`；一次 `changed()` 61 帧后停；11 语义色取 CSS 变量，改变量或切 `.dark` 后 tint 跟着变（`#5c5c5c`→`#b3b3b3`）。
+- 体积：`dist/assets` 935.7 KB → 1274.9 KB，主 chunk 556.1 KB → 582.2 KB，PIXI 惰性 chunk 348.5 KB（gzip 105.8 KB）。
+- 未做（后续子卡）：节点拖拽固定、右键菜单、局部图、时间轴动画。
+

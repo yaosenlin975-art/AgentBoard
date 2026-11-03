@@ -1,33 +1,28 @@
-﻿
-﻿import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
-import type { SigmaHandle } from './sigmaGraph';
 import {
   applyEdgeKinds,
-  clampScale,
+  buildAdjacency,
   composeGraph,
   GRAPH_PALETTE,
   edgeStyle,
   filterGraphForView,
-  fitTransform,
   highlightAround,
-  hitTestNode,
-  toGraphPoint,
-  zoomAt,
   graphStats,
-  labelText,
-  labelsVisible,
   layoutGraph,
-  nodeRadius,
   normalizeGraph,
   nodeColor,
+  nodeRadius,
   searchMatches,
   type GraphEdgeKind,
-  type GraphPayload,
   type GraphNode,
+  type GraphPayload,
 } from '../../lib/knowledgeGraph';
+import { textAlpha } from '../../lib/graphVisualFormulas';
+import type { PixiGraphData, PixiGraphHandle } from './pixiGraph';
 
 export interface GraphNodeTarget {
   id: string;
@@ -48,8 +43,16 @@ interface Props {
 }
 
 const FALLBACK_PAGE_CAP = 50;
-const CANVAS_W = 720;
-const CANVAS_H = 480;
+/** 布局视口（图坐标，不是画布像素）：layoutGraph 的初始分布区域 */
+const LAYOUT_W = 720;
+const LAYOUT_H = 480;
+
+/** WebGL 前置检测：拿不到 context 就不动态 import PIXI（jsdom 里必然为 null） */
+function hasWebgl(doc: Document): boolean {
+  const probe = doc.createElement('canvas');
+  const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
+  return gl !== null;
+}
 
 /** 服务端星图接口（server 线排期在 WS-REORDER 之后）：未就绪时回落本地合成 */
 function graphParams(workspaceId: string | null, scope: Props['scope']): URLSearchParams {
@@ -67,8 +70,10 @@ function graphParams(workspaceId: string | null, scope: Props['scope']): URLSear
 export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ source: true, keyword: true });
   const [showIsolated, setShowIsolated] = useState(true);
-  const canvasRef = useRef<HTMLDivElement | null>(null);
-  const sigmaRef = useRef<SigmaHandle | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const handleRef = useRef<PixiGraphHandle | null>(null);
+  /** PIXI 挂载状态：pending 探测中 / webgl 已挂载 / no-webgl 无 WebGL / failed 创建失败 */
+  const [renderer, setRenderer] = useState<'pending' | 'webgl' | 'no-webgl' | 'failed'>('pending');
 
   const remote = useQuery({
     queryKey: ['knowledge-graph', workspaceId, scope],
@@ -161,15 +166,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const stats = shown === null ? null : graphStats(shown);
   const positions = useMemo(() => {
     if (shown === null || shown.nodes.length === 0) return new Map();
-    return layoutGraph(shown.nodes, shown.edges, { width: CANVAS_W, height: CANVAS_H, iterations: 120 }).positions;
+    return layoutGraph(shown.nodes, shown.edges, { width: LAYOUT_W, height: LAYOUT_H, iterations: 120 }).positions;
   }, [shown]);
 
-  // 视口与交互状态（KB-GRAPH-V2-1：绘制交给 sigma，这里只保留对外可测状态）
-  const [scale, setScale] = useState(1);
-  const [hovered, setHovered] = useState<string | null>(null);
-  /** 拖拽固定：节点 id → 图坐标（V2-1 保留数据结构与双击释放，拖拽交互在 V2-2） */
-  const [pinned, setPinned] = useState<Map<string, { x: number; y: number }>>(() => new Map());
-  // 暗色跟随 html.dark（主题按钮会切 class；用 MutationObserver 触发重绘）
+  // —— 渲染层：PIXI（KB-GRAPH-P1）。相机状态由渲染层自持，React 只做展示与降级 ——
+  // 暗色跟随 html.dark（主题按钮会切 class；用 MutationObserver 触发重读 CSS 语义色）
   const [dark, setDark] = useState(() => typeof document !== 'undefined' && document.documentElement.classList.contains('dark'));
   useEffect(() => {
     const root = document.documentElement;
@@ -179,90 +180,118 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     observer.observe(root, { attributes: true, attributeFilter: ['class'] });
     return () => observer.disconnect();
   }, []);
-
-  const showLabels = labelsVisible(scale);
+  const [hovered, setHovered] = useState<string | null>(null);
+  /** 相机倍率（渲染层回调上来，只用于展示与 data-scale） */
+  const [scale, setScale] = useState(1);
   const highlight = useMemo(
     () => (shown === null ? { nodes: new Set<string>(), edges: new Set<string>() } : highlightAround(shown, hovered, focusHops)),
     [shown, hovered, focusHops],
   );
+  const showStage = !loading && error === null && shown !== null && shown.nodes.length > 0 && shown.edges.length > 0;
 
-  /** 固定节点用固定坐标，其余用布局坐标 */
-  const displayPositions = useMemo(() => {
-    if (pinned.size === 0) return positions;
-    const merged = new Map(positions);
-    for (const [id, point] of pinned) merged.set(id, point);
-    return merged;
-  }, [positions, pinned]);
-
-  const visual = useMemo(
-    () => ({
-      dark,
+  /** 数据映射（A6）：weight = 正向 ∪ 反向邻居数，公式与布局都不在渲染层重算 */
+  const renderData = useMemo<PixiGraphData | null>(() => {
+    if (!showStage || shown === null) return null;
+    const adjacency = buildAdjacency(shown.edges);
+    return {
+      nodes: shown.nodes.map((node) => ({ id: node.id, title: node.title, weight: adjacency.get(node.id)?.size ?? 0 })),
+      edges: shown.edges.map((edge) => ({
+        key: edge.key,
+        source: edge.source,
+        target: edge.target,
+        kind: edge.kind,
+        weight: edge.weight,
+      })),
       positions,
-      pinned,
-      highlightedNodes: highlight.nodes,
-      highlightedEdges: highlight.edges,
-      hasHighlight: hovered !== null,
-    }),
-    [dark, positions, pinned, highlight, hovered],
-  );
+      highlight,
+    };
+  }, [showStage, shown, positions, highlight]);
 
-  // sigma 实例：图/视觉配置变化时重建。动态 import —— sigma 依赖 WebGL，jsdom 下不能静态引入
-  useEffect(() => {
-    const container = canvasRef.current;
-    if (container === null || shown === null || shown.nodes.length === 0) return;
-    let cancelled = false;
-    let handle: SigmaHandle | null = null;
-    void (async () => {
-      const { buildSigmaGraph, mountSigma } = await import('./sigmaGraph');
-      if (cancelled || container.isConnected !== true) return;
-      handle = mountSigma({
-        container,
-        graph: buildSigmaGraph(shown, visual),
-        visual,
-        onScaleChange: setScale,
-        onSelectNode: (id) => {
-          const node = shown.nodes.find((item) => item.id === id);
-          if (node !== undefined) pick(node);
-        },
-        onReleasePin: (id) => setPinned((prev) => {
-          if (!prev.has(id)) return prev;
-          const next = new Map(prev);
-          next.delete(id);
-          return next;
-        }),
+  const pick = useCallback(
+    (node: GraphNode): void => {
+      onSelect({
+        id: node.id,
+        scope: node.scope,
+        workspace_id: node.workspace_id,
+        title: node.title,
+        revision: node.revision,
+        status: 'active',
+        expires_at: null,
       });
-      sigmaRef.current = handle;
-    })();
+    },
+    [onSelect],
+  );
+  // 挂载 effect 只跑一次，回调与最新数据走 ref，避免因为 props 引用变化反复重建渲染器
+  const pickRef = useRef(pick);
+  const shownRef = useRef(shown);
+  const renderDataRef = useRef(renderData);
+  useEffect(() => {
+    pickRef.current = pick;
+    shownRef.current = shown;
+    renderDataRef.current = renderData;
+  }, [pick, shown, renderData]);
+
+  // 挂载：WebGL 前置检测 → 非 null 才动态 import PIXI（jsdom 无 WebGL，绝不静态引入）
+  useEffect(() => {
+    if (!showStage) return;
+    const host = stageRef.current;
+    if (host === null) return;
+    if (!hasWebgl(document)) {
+      setRenderer('no-webgl');
+      return;
+    }
+    let cancelled = false;
+    setRenderer('pending');
+    void import('./pixiGraph')
+      .then((module) => {
+        if (cancelled || stageRef.current === null) return;
+        try {
+          handleRef.current = module.createPixiGraph(host, {
+            onSelect: (id) => {
+              const node = shownRef.current?.nodes.find((item) => item.id === id);
+              if (node !== undefined) pickRef.current(node);
+            },
+            onHover: setHovered,
+            onScaleChange: setScale,
+          });
+          const initial = renderDataRef.current;
+          if (initial !== null) handleRef.current.update(initial);
+          setRenderer('webgl');
+        } catch {
+          setRenderer('failed');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setRenderer('failed');
+      });
     return () => {
       cancelled = true;
-      handle?.destroy();
-      sigmaRef.current = null;
+      handleRef.current?.destroy();
+      handleRef.current = null;
     };
-    // pick 是稳定闭包（只依赖 onSelect）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shown, visual]);
+  }, [showStage]);
+
+  // 数据/布局/高亮变化 → 交给渲染层（不重建 PIXI 实例）
+  useEffect(() => {
+    if (renderer !== 'webgl' || renderData === null) return;
+    handleRef.current?.update(renderData);
+  }, [renderer, renderData]);
+
+  // 主题切换 → 重新读 CSS 语义色（颜色只存在于 CSS，JS 不硬编码）
+  useEffect(() => {
+    if (renderer !== 'webgl') return;
+    handleRef.current?.refreshColors();
+  }, [renderer, dark]);
 
   const zoomBy = (factor: number): void => {
-    if (sigmaRef.current !== null) sigmaRef.current.zoom(factor);
-    else setScale((prev) => clampScale(prev * factor));
+    handleRef.current?.zoomBy(factor);
   };
 
   const fitView = (): void => {
-    if (sigmaRef.current !== null) sigmaRef.current.fit();
-    setScale(1);
+    handleRef.current?.resetView();
   };
 
-  const pick = (node: GraphNode): void => {
-    onSelect({
-      id: node.id,
-      scope: node.scope,
-      workspace_id: node.workspace_id,
-      title: node.title,
-      revision: node.revision,
-      status: 'active',
-      expires_at: null,
-    });
-  };
+  const showLabels = textAlpha(scale) > 0.001;
 
   return (
     <div
@@ -270,7 +299,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-scale={scale}
       data-labels-visible={showLabels ? 'true' : 'false'}
       data-hovered={hovered ?? ''}
-      data-pinned-count={pinned.size}
+      data-renderer={renderer}
       data-visible-nodes={shown?.nodes.length ?? 0}
       data-visible-edges={shown?.edges.length ?? 0}
       data-matches={matches.size}
@@ -375,10 +404,6 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('keyword', dark).color} strokeWidth={edgeStyle('keyword', dark).width} strokeDasharray="4 3" /></svg>
           关键词关联（虚线）
         </span>
-        <span className="flex items-center gap-1">
-          <span aria-hidden className="inline-block size-2.5 rounded-full border-2" style={{ borderColor: GRAPH_PALETTE.pinnedRing }} />
-          已固定
-        </span>
       </div>
 
       {focusId !== null && (
@@ -425,14 +450,43 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         </div>
       )}
 
-      {!loading && error === null && shown !== null && shown.nodes.length > 0 && shown.edges.length > 0 && (
-        <div
-          data-testid="knowledge-graph-canvas"
-          ref={canvasRef}
-          aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
-          className="h-[480px] w-full max-w-full"
-          style={{ maxWidth: '100%' }}
-        />
+      {showStage && shown !== null && (
+        <div className="relative">
+          <div
+            data-testid="knowledge-graph-stage"
+            ref={stageRef}
+            role="img"
+            tabIndex={0}
+            aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
+            className={`h-[480px] w-full max-w-full touch-none outline-none ${hovered === null ? 'cursor-grab' : 'cursor-pointer'} ${
+              renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
+            }`}
+          />
+          {(renderer === 'no-webgl' || renderer === 'failed') && (
+            <div
+              data-graph-fallback={renderer === 'no-webgl' ? 'no-webgl' : 'render-failed'}
+              className="max-h-[480px] overflow-auto px-3 py-3"
+            >
+              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                {renderer === 'no-webgl' ? '当前环境不支持 WebGL，已切换为列表视图' : '星图渲染器初始化失败，已切换为列表视图'}
+              </p>
+              <ul data-testid="graph-fallback-list" className="mt-2 space-y-1 text-sm">
+                {shown.nodes.map((node) => (
+                  <li key={node.id}>
+                    <button
+                      type="button"
+                      data-testid={`graph-fallback-${node.id}`}
+                      onClick={() => pick(node)}
+                      className="text-left text-blue-600 hover:underline dark:text-blue-400"
+                    >
+                      {node.title}（度 {node.degree}）
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
       )}
 
       {!loading && error === null && shown !== null && shown.truncated_reason !== null && (
@@ -462,7 +516,6 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     </div>
   );
 }
-
 
 
 

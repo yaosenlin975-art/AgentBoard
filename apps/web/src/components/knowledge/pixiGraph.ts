@@ -1,0 +1,893 @@
+/**
+ * PIXI 星图渲染骨架（KB-GRAPH-P1）——照 `Docs/Obsidian-星图渲染逆向.md` A1–A6 逐条实现。
+ *
+ * 这个文件必须**动态 import**：jsdom 没有 WebGL，静态引入会让整个测试套件报
+ * `WebGL2RenderingContext is not defined`。入口是 `createPixiGraph()`，调用方负责 WebGL 前置检测。
+ *
+ * 与 Obsidian 的差异（都是有意的）：
+ * - 布局不在渲染层：节点坐标由 `lib/knowledgeGraph.layoutGraph` 在 React 侧算好后传入（A5 ① 的 worker 结果）；
+ * - 事件不走 PIXI 的 event system，而是 DOM 监听 + 距离命中（与 A5 ⑧ 的 hover 距离校验同一套数学校验）；
+ * - 相机参数（scale/targetScale/pan）由本模块自持并回调 `onScaleChange`，React 只做展示。
+ */
+import { Texture } from '@pixi/core';
+import { Application } from '@pixi/app';
+import { Container } from '@pixi/display';
+import { Graphics } from '@pixi/graphics';
+import { Sprite } from '@pixi/sprite';
+import { Text, TextStyle } from '@pixi/text';
+import '@pixi/events';
+import {
+  GRAPH_VISUAL_DEFAULTS,
+  clampZoom,
+  duplicateEdgeKeys,
+  fontSize,
+  getSize,
+  labelOffsetY,
+  lineWidth,
+  nodeScale,
+  readSemanticColors,
+  textAlpha,
+  tintFromCssColor,
+  zoomFactorFromWheel,
+  type SemanticColorKey,
+} from '../../lib/graphVisualFormulas';
+import { buildAdjacency, type GraphEdgeKind } from '../../lib/knowledgeGraph';
+
+/** 文档 app.js#SQ：圆固定画在 (100,100) 半径 100，靠 scale 缩放（不重建 geometry） */
+const SQ = 100;
+/** 背景靶尺寸（文档：drawRect(0, 0, 1e4, 1e4)） */
+const BG_SIZE = 10000;
+/** 文档 app.js#fQ：唯一的去强调系数（无关节点/连线 0.2） */
+const FQ = 0.2;
+/** 文档 A5：idleFrames > 60 停帧 */
+const IDLE_FRAME_LIMIT = 60;
+/** 文档 A5 ⑤：每帧按「离屏幕中心最近」补建最多 50 个节点 */
+const MAX_CREATE_PER_FRAME = 50;
+/** 文档 A6 文字高亮下移量 */
+const HIGHLIGHT_TEXT_OFFSET = 15;
+/** 文档 A3：缩放插值 0.85/帧，收敛阈值 <1% */
+const ZOOM_LERP = 0.85;
+/** 文档：平移动量与透明度都是每帧 10% 收敛 */
+const FADE_LERP = 0.1;
+const FONT_FAMILY =
+  'ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, "Inter", sans-serif';
+
+export interface PixiGraphNode {
+  id: string;
+  title: string;
+  /** 文档 getSize 的 weight = 正向 ∪ 反向邻居数（由调用方用邻接表算好） */
+  weight: number;
+}
+
+export interface PixiGraphEdge {
+  key: string;
+  source: string;
+  target: string;
+  kind: GraphEdgeKind;
+  weight: number;
+}
+
+export interface PixiGraphData {
+  nodes: ReadonlyArray<PixiGraphNode>;
+  edges: ReadonlyArray<PixiGraphEdge>;
+  /** 布局坐标（图坐标，非屏幕坐标） */
+  positions: ReadonlyMap<string, { x: number; y: number }>;
+  /** 聚焦高亮集合（KB-GRAPH-3 的 focus/matches）；null 表示不高亮 */
+  highlight?: { nodes: ReadonlySet<string>; edges: ReadonlySet<string> } | null;
+}
+
+export interface PixiGraphOptions {
+  onSelect?: (id: string) => void;
+  onHover?: (id: string | null) => void;
+  onScaleChange?: (scale: number) => void;
+}
+
+interface SemanticColor {
+  tint: number;
+  alpha: number;
+}
+
+type ColorMap = Record<SemanticColorKey, SemanticColor>;
+
+interface NodeView {
+  id: string;
+  title: string;
+  weight: number;
+  size: number;
+  x: number;
+  y: number;
+  circle: Graphics;
+  label: Text;
+  alpha: number;
+  textMove: number;
+}
+
+interface EdgeView {
+  key: string;
+  source: string;
+  target: string;
+  line: Sprite;
+  arrow: Graphics;
+  alpha: number;
+  arrowAlpha: number;
+}
+
+export interface PixiNodeSnapshot {
+  id: string;
+  weight: number;
+  size: number;
+  /** circle.scale.x = size/100 * nodeScale */
+  circleScale: number;
+  fontSize: number;
+  /** label.style.fontSize */
+  labelFontSize: number;
+  labelAlpha: number;
+  labelY: number;
+  circleAlpha: number;
+  tint: number;
+}
+
+export interface PixiEdgeSnapshot {
+  key: string;
+  visible: boolean;
+  width: number;
+  height: number;
+  rotation: number;
+  alpha: number;
+  arrowVisible: boolean;
+  arrowScale: number;
+  tint: number;
+}
+
+/** CDP 校验用快照：直接读 PIXI 对象当前值，不从公式反推 */
+export interface PixiGraphSnapshot {
+  rendererType: number;
+  resolution: number;
+  dpr: number;
+  cssWidth: number;
+  cssHeight: number;
+  backingWidth: number;
+  backingHeight: number;
+  scale: number;
+  targetScale: number;
+  nodeScale: number;
+  textAlpha: number;
+  lineWidth: number;
+  pan: { x: number; y: number };
+  idleFrames: number;
+  /** 累计 renderCallback 执行次数（用来核对一次 changed() 约 62 帧） */
+  frames: number;
+  hangerChildren: number;
+  nodeCount: number;
+  edgeCount: number;
+  hiddenDuplicateEdges: number;
+  createdNodes: number;
+  createdEdges: number;
+  hoverId: string | null;
+  colors: Record<string, SemanticColor>;
+  nodes: PixiNodeSnapshot[];
+  edges: PixiEdgeSnapshot[];
+}
+
+export interface PixiGraphHandle {
+  host: HTMLElement;
+  /** 换数据/换布局：重建节点与连线（颜色缓存保留） */
+  update(data: PixiGraphData): void;
+  /** 键盘/按钮缩放：乘一个倍率（走 1.5^(-Δ/120) 同一套 clamp） */
+  zoomBy(factor: number): void;
+  /** 适应视图：scale 回 1、pan 居中 */
+  resetView(): void;
+  /** 主题/参数变化后重读 CSS 语义色 */
+  refreshColors(): void;
+  /** 主动触发一轮重绘（≈62 帧后自动停） */
+  changed(): void;
+  snapshot(): PixiGraphSnapshot;
+  destroy(): void;
+}
+
+const lerp = (from: number, to: number, ratio = FADE_LERP): number => from + (to - from) * ratio;
+
+function cssColorToTint(color: { color: string; opacity: number } | undefined, fallback: number, fallbackAlpha: number): SemanticColor {
+  if (color === undefined) return { tint: fallback, alpha: fallbackAlpha };
+  return {
+    tint: tintFromCssColor(color.color),
+    alpha: Number.isFinite(color.opacity) ? color.opacity : fallbackAlpha,
+  };
+}
+
+/** 读 11 个语义色（CSS 变量 → tint/alpha），不带 DOM 时给文档兜底色 */
+function readColorMap(): ColorMap {
+  const raw = readSemanticColors();
+  return {
+    fill: cssColorToTint(raw.fill, 0x5c5c5c, 1),
+    fillFocused: cssColorToTint(raw.fillFocused, 0x8a5cf5, 1),
+    fillTag: cssColorToTint(raw.fillTag, 0x08b94e, 1),
+    fillUnresolved: cssColorToTint(raw.fillUnresolved, 0xababab, 0.5),
+    fillAttachment: cssColorToTint(raw.fillAttachment, 0xe0ac00, 1),
+    arrow: cssColorToTint(raw.arrow, 0x222222, 0.5),
+    circle: cssColorToTint(raw.circle, 0x8a5cf5, 1),
+    line: cssColorToTint(raw.line, 0xd4d4d4, 1),
+    text: cssColorToTint(raw.text, 0x222222, 1),
+    fillHighlight: cssColorToTint(raw.fillHighlight, 0x9873f7, 1),
+    lineHighlight: cssColorToTint(raw.lineHighlight, 0x9873f7, 1),
+  };
+}
+
+/**
+ * 创建 PIXI 星图并挂到 host。host 必须有非零尺寸（调用方保证已布局）。
+ * 创建失败（拿不到 WebGL context 等）会抛错，由调用方降级。
+ */
+export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {}): PixiGraphHandle {
+  const doc = host.ownerDocument;
+  const view = doc.defaultView;
+  const raf = (callback: FrameRequestCallback): number =>
+    view?.requestAnimationFrame(callback) ?? 0;
+  const cancelRaf = (handle: number): void => view?.cancelAnimationFrame(handle);
+
+  const colors = readColorMap();
+  const nodeSizeMultiplier = GRAPH_VISUAL_DEFAULTS.nodeSizeMultiplier;
+  const lineSizeMult = GRAPH_VISUAL_DEFAULTS.lineSizeMult;
+  const textShowMult = GRAPH_VISUAL_DEFAULTS.textShowMult;
+
+  const app = new Application<HTMLCanvasElement>({
+    backgroundAlpha: 0,
+    antialias: true,
+    autoStart: false,
+    resolution: 1,
+    width: Math.max(1, Math.round(host.clientWidth || 1)),
+    height: Math.max(1, Math.round(host.clientHeight || 1)),
+  });
+  const canvas = app.view;
+  canvas.style.display = 'block';
+  canvas.style.width = '100%';
+  canvas.style.height = '100%';
+  host.appendChild(canvas);
+
+  // 三层容器（文档 A2）
+  const background = new Graphics();
+  background.beginFill(0x000000, 0);
+  background.drawRect(0, 0, BG_SIZE, BG_SIZE);
+  background.endFill();
+  background.alpha = 0;
+  background.eventMode = 'static';
+  app.stage.addChild(background);
+
+  const hanger = new Container();
+  hanger.eventMode = 'static';
+  app.stage.addChild(hanger);
+
+  const watermarkStyle = new TextStyle({ fontSize: 12, fill: colors.text.tint, fontFamily: FONT_FAMILY });
+  const watermark = new Text('Powered by AgentBoard', watermarkStyle);
+  watermark.anchor.set(1, 1);
+  watermark.alpha = 0.5;
+  watermark.zIndex = 3;
+  watermark.resolution = 2;
+  app.stage.addChild(watermark);
+
+  let data: PixiGraphData = { nodes: [], edges: [], positions: new Map(), highlight: null };
+  let adjacency = new Map<string, Set<string>>();
+  let hiddenEdges = new Set<string>();
+  const nodeViews = new Map<string, NodeView>();
+  const edgeViews = new Map<string, EdgeView>();
+  const destroyedRef = { value: false };
+
+  // 相机：pan 单位是设备像素（文档 A3）
+  let scale = 1;
+  let targetScale = 1;
+  let panX = 0;
+  let panY = 0;
+  let panvX = 0;
+  let panvY = 0;
+  let zoomCenterX = 0;
+  let zoomCenterY = 0;
+  let idleFrames = 0;
+  let frames = 0;
+  let timer: number | null = null;
+  let hoverId: string | null = null;
+  let cssWidth = Math.max(1, Math.round(host.clientWidth || 1));
+  let cssHeight = Math.max(1, Math.round(host.clientHeight || 1));
+  const keys = { zoomIn: false, zoomOut: false, up: false, down: false, left: false, right: false, fast: false };
+  const pointer = { x: null as number | null, y: null as number | null, down: false, moved: false, startX: 0, startY: 0, panStartX: 0, panStartY: 0 };
+  let viewport = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
+
+  const dpr = (): number => view?.devicePixelRatio ?? 1;
+
+  function resize(): void {
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (width <= 0 || height <= 0) return;
+    cssWidth = width;
+    cssHeight = height;
+    // A3：backing store = CSS × DPR，PIXI resolution 保持 1
+    app.renderer.resize(Math.round(width * dpr()), Math.round(height * dpr()));
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    layoutWatermark();
+  }
+
+  function layoutWatermark(): void {
+    watermark.position.set(cssWidth * dpr() - 8, cssHeight * dpr() - 6);
+  }
+
+  function changed(): void {
+    idleFrames = 0;
+    queueRender();
+  }
+
+  function queueRender(): void {
+    if (destroyedRef.value) return;
+    if (timer === null) timer = raf(renderCallback);
+  }
+
+  function applyScale(): void {
+    hanger.scale.set(scale);
+    hanger.position.set(panX, panY);
+  }
+
+  /** ④ 缩放插值（围绕 zoomCenter 收敛），并按当前 scale 更新 hanger 与视口矩形 */
+  function updateZoom(): void {
+    if (scale !== targetScale) {
+      const next = scale + (targetScale - scale) * ZOOM_LERP;
+      const converged = Math.abs(targetScale - next) < 0.01 * targetScale;
+      const resolved = converged ? targetScale : next;
+      const ratio = resolved / scale;
+      panX = zoomCenterX - (zoomCenterX - panX) * ratio;
+      panY = zoomCenterY - (zoomCenterY - panY) * ratio;
+      scale = resolved;
+      applyScale();
+    }
+    const widthPx = cssWidth * dpr();
+    const heightPx = cssHeight * dpr();
+    viewport = {
+      left: -panX / scale,
+      right: (-panX + widthPx) / scale,
+      top: -panY / scale,
+      bottom: (-panY + heightPx) / scale,
+    };
+  }
+
+  function highlightActive(): boolean {
+    if (hoverId !== null) return true;
+    return (data.highlight?.nodes.size ?? 0) > 0;
+  }
+
+  function isNodeLit(id: string): boolean {
+    if (hoverId !== null) return id === hoverId || adjacency.get(hoverId)?.has(id) === true;
+    const highlight = data.highlight;
+    if (highlight === undefined || highlight === null || highlight.nodes.size === 0) return true;
+    return highlight.nodes.has(id);
+  }
+
+  function isEdgeLit(edge: EdgeView): boolean {
+    if (hoverId !== null) return edge.source === hoverId || edge.target === hoverId;
+    const highlight = data.highlight;
+    if (highlight === undefined || highlight === null || highlight.nodes.size === 0) return true;
+    return highlight.edges.has(edge.key);
+  }
+
+  /** ⑤ 补建节点：按离视口中心最近的顺序，每帧最多 50 个 */
+  function createPendingNodes(): void {
+    const pending = data.nodes.filter((node) => !nodeViews.has(node.id) && data.positions.has(node.id));
+    if (pending.length === 0) return;
+    const centerX = (viewport.left + viewport.right) / 2;
+    const centerY = (viewport.top + viewport.bottom) / 2;
+    const ranked = pending
+      .map((node) => {
+        const point = data.positions.get(node.id) as { x: number; y: number };
+        const dx = point.x - centerX;
+        const dy = point.y - centerY;
+        return { node, point, dist: dx * dx + dy * dy };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, MAX_CREATE_PER_FRAME);
+    for (const { node, point } of ranked) createNode(node, point);
+  }
+
+  function createNode(node: PixiGraphNode, point: { x: number; y: number }): void {
+    const size = getSize(node.weight, nodeSizeMultiplier);
+    // 文档 A6：固定 drawCircle(100,100,100) + pivot(100,100)，用 scale 缩放
+    const circle = new Graphics();
+    circle.beginFill(0xffffff);
+    circle.drawCircle(SQ, SQ, SQ);
+    circle.endFill();
+    circle.pivot.set(SQ, SQ);
+    circle.zIndex = 1;
+    circle.eventMode = 'static';
+    circle.cursor = 'pointer';
+    circle.tint = colors.fill.tint;
+    circle.alpha = colors.fill.alpha;
+    hanger.addChild(circle);
+
+    const style = new TextStyle({
+      fontSize: fontSize(size),
+      fill: colors.text.tint,
+      fontFamily: FONT_FAMILY,
+      wordWrap: true,
+      wordWrapWidth: 300,
+      align: 'center',
+    });
+    const label = new Text(node.title, style);
+    label.eventMode = 'none';
+    label.resolution = 2;
+    label.anchor.set(0.5, 0);
+    label.zIndex = 2;
+    hanger.addChild(label);
+
+    nodeViews.set(node.id, {
+      id: node.id,
+      title: node.title,
+      weight: node.weight,
+      size,
+      x: point.x,
+      y: point.y,
+      circle,
+      label,
+      alpha: colors.fill.alpha,
+      textMove: 0,
+    });
+  }
+
+  /** ⑥ 补建连线：两端都已建好才建（双向边先去重） */
+  function createPendingEdges(): void {
+    for (const edge of data.edges) {
+      if (hiddenEdges.has(edge.key) || edgeViews.has(edge.key)) continue;
+      const from = nodeViews.get(edge.source);
+      const to = nodeViews.get(edge.target);
+      if (from === undefined || to === undefined) continue;
+      const line = new Sprite(Texture.WHITE);
+      line.eventMode = 'none';
+      line.alpha = FQ * colors.line.alpha;
+      line.tint = colors.line.tint;
+      hanger.addChild(line);
+
+      const arrow = new Graphics();
+      arrow.eventMode = 'none';
+      arrow.alpha = FQ * colors.arrow.alpha;
+      arrow.tint = colors.arrow.tint;
+      arrow.beginFill(0xffffff);
+      arrow.moveTo(0, 0);
+      arrow.lineTo(-4, -2);
+      arrow.lineTo(-3, 0);
+      arrow.lineTo(-4, 2);
+      arrow.lineTo(0, 0);
+      arrow.endFill();
+      arrow.zIndex = 1;
+      hanger.addChild(arrow);
+
+      edgeViews.set(edge.key, {
+        key: edge.key,
+        source: edge.source,
+        target: edge.target,
+        line,
+        arrow,
+        alpha: FQ * colors.line.alpha,
+        arrowAlpha: FQ * colors.arrow.alpha,
+      });
+    }
+  }
+
+  /** ⑦ 逐节点 render */
+  function renderNodes(): void {
+    const ns = nodeScale(scale);
+    const active = highlightActive();
+    for (const node of nodeViews.values()) {
+      const lit = !active || isNodeLit(node.id);
+      const fadeTarget = lit ? 1 : FQ;
+      node.alpha = lerp(node.alpha, fadeTarget);
+      node.textMove = lerp(node.textMove, lit && active ? HIGHLIGHT_TEXT_OFFSET : 0);
+      node.circle.position.set(node.x, node.y);
+      // 文档 A6：scale = getSize()/100 * nodeScale
+      node.circle.scale.set((node.size / 100) * ns);
+      node.circle.alpha = node.alpha * colors.fill.alpha;
+      node.circle.tint = lit && active ? colors.fillHighlight.tint : colors.fill.tint;
+
+      let alpha = textAlpha(scale, textShowMult) * node.alpha;
+      if (lit && active) alpha = 1;
+      alpha *= colors.text.alpha;
+      node.label.position.set(node.x, node.y + labelOffsetY(node.size, scale, node.textMove));
+      const labelScale = lit && active && scale < 1 ? 1 / scale : ns;
+      node.label.scale.set(labelScale);
+      node.label.alpha = alpha;
+      node.label.visible = alpha > 0.001;
+      node.label.tint = colors.text.tint;
+    }
+  }
+
+  /** ⑦ 逐连线 render（文档 A6 连线段逐行搬） */
+  function renderEdges(): void {
+    const active = highlightActive();
+    const thickness = lineWidth(scale, lineSizeMult);
+    const ns = nodeScale(scale);
+    for (const edge of edgeViews.values()) {
+      const from = nodeViews.get(edge.source);
+      const to = nodeViews.get(edge.target);
+      if (from === undefined || to === undefined) continue;
+      const lit = !active || isEdgeLit(edge);
+      const targetAlpha = (lit ? 1 : FQ) * colors.line.alpha;
+      const targetArrow = (lit ? 1 : FQ) * Math.max(0, Math.min(1, 2 * (scale - 0.3))) * colors.arrow.alpha;
+      edge.alpha = lerp(edge.alpha, targetAlpha);
+      edge.arrowAlpha = lerp(edge.arrowAlpha, targetArrow);
+
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const rFrom = from.size * ns;
+      const rTo = to.size * ns;
+      const visible = distance > thickness;
+      const lineVisible = visible;
+      edge.line.visible = lineVisible;
+      edge.line.alpha = edge.alpha;
+      edge.arrow.visible = visible && edge.arrowAlpha > 0.001;
+      edge.arrow.alpha = edge.arrowAlpha;
+      if (!visible) continue;
+      // 线：Sprite 从 A 边缘出发拉伸到 B 边缘（文档：width = |AB| - rA - rB、height = fLineSizeMult/scale）
+      edge.line.position.set(from.x + (dx * rFrom) / distance, from.y + (dy * rFrom) / distance - thickness / 2);
+      edge.line.pivot.set(0, 0);
+      edge.line.rotation = Math.atan2(dy, dx);
+      edge.line.width = Math.max(0, distance - rFrom - rTo);
+      edge.line.height = thickness;
+      edge.line.tint = lit && active ? colors.lineHighlight.tint : colors.line.tint;
+      // 箭头：目标边缘外 1px
+      const offset = rTo + 1;
+      edge.arrow.position.set(to.x - (dx * offset) / distance, to.y - (dy * offset) / distance);
+      edge.arrow.pivot.set(0, 0);
+      edge.arrow.rotation = Math.atan2(dy, dx);
+      edge.arrow.scale.set((2 * Math.sqrt(lineSizeMult)) / scale);
+      edge.arrow.tint = colors.arrow.tint;
+    }
+  }
+
+  /** A5 主循环（顺序与文档一致） */
+  function renderCallback(): void {
+    timer = null;
+    if (destroyedRef.value || idleFrames > IDLE_FRAME_LIMIT) return;
+    frames += 1;
+
+    // ① 布局结果已在 data.positions 里（Obsidian 用 worker + SharedArrayBuffer 的版本号判重）
+
+    // ② 平移惯性：panX += 1000*panv/60；方向键持续平移时重置空闲
+    let dx = 0;
+    let dy = 0;
+    if (keys.up) dy += 1;
+    if (keys.down) dy -= 1;
+    if (keys.left) dx += 1;
+    if (keys.right) dx -= 1;
+    if (dx !== 0 || dy !== 0) {
+      const boost = keys.fast ? 3 : 1;
+      panvX = dx * boost;
+      panvY = dy * boost;
+      idleFrames = 0;
+    }
+    if (Math.abs(panvX) > 1e-4 || Math.abs(panvY) > 1e-4) {
+      panX += (1000 * panvX) / 60;
+      panY += (1000 * panvY) / 60;
+      panvX *= 0.9;
+      panvY *= 0.9;
+      if (Math.abs(panvX) < 1e-4) panvX = 0;
+      if (Math.abs(panvY) < 1e-4) panvY = 0;
+      applyScale();
+      idleFrames = 0;
+    }
+
+    // ③ 键盘缩放（每帧 ×1.03，Shift 时 ×1.1）
+    const zoomStep = 1 + (keys.fast ? 0.1 : 0.03);
+    if (keys.zoomIn || keys.zoomOut) {
+      targetScale = clampZoom(keys.zoomIn ? targetScale * zoomStep : targetScale / zoomStep);
+      zoomCenterX = (cssWidth / 2) * dpr();
+      zoomCenterY = (cssHeight / 2) * dpr();
+      idleFrames = 0;
+    }
+
+    // ④ 缩放插值 + 视口矩形
+    const beforeScale = scale;
+    updateZoom();
+    if (beforeScale !== scale) idleFrames = 0;
+
+    // ⑤ 补建未渲染节点（≤50/帧） ⑥ 补建连线
+    const nodeCountBefore = nodeViews.size;
+    createPendingNodes();
+    if (nodeViews.size !== nodeCountBefore) idleFrames = 0;
+    createPendingEdges();
+
+    // ⑦ 逐节点 → 逐连线 → 水印 → 排序 → WebGL 绘制
+    renderNodes();
+    renderEdges();
+    watermark.alpha = 0.5;
+    hanger.sortChildren();
+    app.renderer.render(app.stage);
+    idleFrames += 1;
+
+    // ⑧ hover 距离校验：鼠标离开节点超过 半径+2 就撤掉高亮
+    if (hoverId !== null && pointer.x !== null && pointer.y !== null) {
+      const node = nodeViews.get(hoverId);
+      if (node === undefined) {
+        hoverId = null;
+        options.onHover?.(null);
+      } else {
+        const worldX = ((pointer.x * dpr()) - panX) / scale;
+        const worldY = ((pointer.y * dpr()) - panY) / scale;
+        const ddx = node.x - worldX;
+        const ddy = node.y - worldY;
+        const limit = node.size * nodeScale(scale) + 2;
+        if (ddx * ddx + ddy * ddy > limit * limit) {
+          hoverId = null;
+          options.onHover?.(null);
+        }
+      }
+    }
+
+    queueRender();
+  }
+
+  function worldPoint(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = host.getBoundingClientRect();
+    const x = (clientX - rect.left) * dpr();
+    const y = (clientY - rect.top) * dpr();
+    return { x: (x - panX) / scale, y: (y - panY) / scale };
+  }
+
+  function hitTest(clientX: number, clientY: number): string | null {
+    if (scale <= 0) return null;
+    const point = worldPoint(clientX, clientY);
+    const ns = nodeScale(scale);
+    let best: { id: string; area: number } | null = null;
+    for (const node of nodeViews.values()) {
+      const dx = node.x - point.x;
+      const dy = node.y - point.y;
+      const radius = node.size * ns;
+      if (dx * dx + dy * dy > radius * radius) continue;
+      const area = node.size;
+      if (best === null || area > best.area) best = { id: node.id, area };
+    }
+    return best?.id ?? null;
+  }
+
+  function onWheel(event: WheelEvent): void {
+    event.preventDefault();
+    const rect = host.getBoundingClientRect();
+    targetScale = clampZoom(targetScale * zoomFactorFromWheel(event.deltaY));
+    zoomCenterX = (event.clientX - rect.left) * dpr();
+    zoomCenterY = (event.clientY - rect.top) * dpr();
+    changed();
+  }
+
+  function onPointerDown(event: PointerEvent): void {
+    pointer.down = true;
+    pointer.moved = false;
+    pointer.startX = event.clientX;
+    pointer.startY = event.clientY;
+    pointer.panStartX = panX;
+    pointer.panStartY = panY;
+    host.setPointerCapture?.(event.pointerId);
+  }
+
+  function onPointerMove(event: PointerEvent): void {
+    const rect = host.getBoundingClientRect();
+    pointer.x = event.clientX - rect.left;
+    pointer.y = event.clientY - rect.top;
+    if (pointer.down) {
+      if (Math.abs(event.clientX - pointer.startX) > 5 || Math.abs(event.clientY - pointer.startY) > 5) pointer.moved = true;
+      panX = pointer.panStartX + (event.clientX - pointer.startX) * dpr();
+      panY = pointer.panStartY + (event.clientY - pointer.startY) * dpr();
+      applyScale();
+      idleFrames = 0;
+      changed();
+      return;
+    }
+    const hit = hitTest(event.clientX, event.clientY);
+    if (hit !== hoverId) {
+      hoverId = hit;
+      options.onHover?.(hit);
+      changed();
+    }
+  }
+
+  function onPointerUp(event: PointerEvent): void {
+    const wasDown = pointer.down;
+    pointer.down = false;
+    host.releasePointerCapture?.(event.pointerId);
+    if (wasDown && !pointer.moved) {
+      const hit = hitTest(event.clientX, event.clientY);
+      if (hit !== null) options.onSelect?.(hit);
+    }
+  }
+
+  function onPointerLeave(): void {
+    pointer.x = null;
+    pointer.y = null;
+    pointer.down = false;
+    if (hoverId !== null) {
+      hoverId = null;
+      options.onHover?.(null);
+      changed();
+    }
+  }
+
+  function onKeyDown(event: KeyboardEvent): void {
+    const key = event.key;
+    if (key === '+' || key === '=' || key === 'Add') keys.zoomIn = true;
+    else if (key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = true;
+    else if (key === 'ArrowUp') keys.up = true;
+    else if (key === 'ArrowDown') keys.down = true;
+    else if (key === 'ArrowLeft') keys.left = true;
+    else if (key === 'ArrowRight') keys.right = true;
+    else return;
+    keys.fast = event.shiftKey;
+    changed();
+  }
+
+  function onKeyUp(event: KeyboardEvent): void {
+    const key = event.key;
+    if (key === '+' || key === '=' || key === 'Add') keys.zoomIn = false;
+    else if (key === '-' || key === '_' || key === 'Subtract') keys.zoomOut = false;
+    else if (key === 'ArrowUp') keys.up = false;
+    else if (key === 'ArrowDown') keys.down = false;
+    else if (key === 'ArrowLeft') keys.left = false;
+    else if (key === 'ArrowRight') keys.right = false;
+    else return;
+    keys.fast = event.shiftKey;
+  }
+
+  host.addEventListener('wheel', onWheel, { passive: false });
+  host.addEventListener('pointerdown', onPointerDown);
+  host.addEventListener('pointermove', onPointerMove);
+  host.addEventListener('pointerup', onPointerUp);
+  host.addEventListener('pointercancel', onPointerUp);
+  host.addEventListener('pointerleave', onPointerLeave);
+  host.addEventListener('keydown', onKeyDown);
+  host.addEventListener('keyup', onKeyUp);
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(() => { resize(); changed(); }) : null;
+  observer?.observe(host);
+
+  resize();
+  applyScale();
+  layoutWatermark();
+
+  function update(next: PixiGraphData): void {
+    data = next;
+    // 双向边去重（文档 A6：A↔B 只画字典序大的那条）
+    hiddenEdges = duplicateEdgeKeys(
+      next.edges.map((edge) => ({ key: edge.key, source: edge.source, target: edge.target })),
+    );
+    adjacency = buildAdjacency(next.edges);
+    // 清掉已消失的节点/连线
+    const keepNodes = new Set(next.nodes.map((node) => node.id));
+    for (const [id, node] of [...nodeViews]) {
+      if (keepNodes.has(id) && next.positions.has(id)) {
+        const point = next.positions.get(id) as { x: number; y: number };
+        node.x = point.x;
+        node.y = point.y;
+        node.size = getSize(node.weight, nodeSizeMultiplier);
+        continue;
+      }
+      node.circle.destroy();
+      node.label.destroy();
+      nodeViews.delete(id);
+    }
+    for (const [key, edge] of [...edgeViews]) {
+      if (next.edges.some((item) => item.key === key) && keepNodes.has(edge.source) && keepNodes.has(edge.target)) continue;
+      edge.line.destroy();
+      edge.arrow.destroy();
+      edgeViews.delete(key);
+    }
+    // weight 可能变了（度数随边过滤变化）→ 重算
+    const byId = new Map(next.nodes.map((node) => [node.id, node]));
+    for (const node of nodeViews.values()) {
+      const source = byId.get(node.id);
+      if (source === undefined) continue;
+      node.weight = source.weight;
+      node.size = getSize(node.weight, nodeSizeMultiplier);
+      node.label.style.fontSize = fontSize(node.size);
+    }
+    hoverId = null;
+    changed();
+  }
+
+  function zoomBy(factor: number): void {
+    targetScale = clampZoom(targetScale * factor);
+    zoomCenterX = (cssWidth / 2) * dpr();
+    zoomCenterY = (cssHeight / 2) * dpr();
+    changed();
+  }
+
+  function resetView(): void {
+    targetScale = 1;
+    panX = 0;
+    panY = 0;
+    panvX = 0;
+    panvY = 0;
+    zoomCenterX = (cssWidth / 2) * dpr();
+    zoomCenterY = (cssHeight / 2) * dpr();
+    changed();
+  }
+
+  function refreshColors(): void {
+    const next = readColorMap();
+    for (const key of Object.keys(colors) as SemanticColorKey[]) colors[key] = next[key];
+    watermark.style.fill = colors.text.tint;
+    for (const node of nodeViews.values()) {
+      node.circle.tint = colors.fill.tint;
+      node.label.style.fill = colors.text.tint;
+    }
+    for (const edge of edgeViews.values()) {
+      edge.line.tint = colors.line.tint;
+      edge.arrow.tint = colors.arrow.tint;
+    }
+    changed();
+  }
+
+  function snapshot(): PixiGraphSnapshot {
+    const ns = nodeScale(scale);
+    return {
+      rendererType: app.renderer.type,
+      resolution: app.renderer.resolution,
+      dpr: dpr(),
+      cssWidth,
+      cssHeight,
+      backingWidth: app.renderer.width,
+      backingHeight: app.renderer.height,
+      scale,
+      targetScale,
+      nodeScale: ns,
+      textAlpha: textAlpha(scale, textShowMult),
+      lineWidth: lineWidth(scale, lineSizeMult),
+      pan: { x: panX, y: panY },
+      idleFrames,
+      frames,
+      hangerChildren: hanger.children.length,
+      nodeCount: data.nodes.length,
+      edgeCount: data.edges.length,
+      hiddenDuplicateEdges: hiddenEdges.size,
+      createdNodes: nodeViews.size,
+      createdEdges: edgeViews.size,
+      hoverId,
+      colors: { ...colors },
+      nodes: [...nodeViews.values()].map((node) => ({
+        id: node.id,
+        weight: node.weight,
+        size: node.size,
+        circleScale: node.circle.scale.x,
+        fontSize: fontSize(node.size),
+        labelFontSize: Number(node.label.style.fontSize),
+        labelAlpha: node.label.alpha,
+        labelY: node.label.position.y,
+        circleAlpha: node.circle.alpha,
+        tint: node.circle.tint,
+      })),
+      edges: [...edgeViews.values()].map((edge) => ({
+        key: edge.key,
+        visible: edge.line.visible,
+        width: edge.line.width,
+        height: edge.line.height,
+        rotation: edge.line.rotation,
+        alpha: edge.line.alpha,
+        arrowVisible: edge.arrow.visible,
+        arrowScale: edge.arrow.scale.x,
+        tint: edge.line.tint,
+      })),
+    };
+  }
+
+  function destroy(): void {
+    if (destroyedRef.value) return;
+    destroyedRef.value = true;
+    if (timer !== null) cancelRaf(timer);
+    timer = null;
+    observer?.disconnect();
+    host.removeEventListener('wheel', onWheel);
+    host.removeEventListener('pointerdown', onPointerDown);
+    host.removeEventListener('pointermove', onPointerMove);
+    host.removeEventListener('pointerup', onPointerUp);
+    host.removeEventListener('pointercancel', onPointerUp);
+    host.removeEventListener('pointerleave', onPointerLeave);
+    host.removeEventListener('keydown', onKeyDown);
+    host.removeEventListener('keyup', onKeyUp);
+    nodeViews.clear();
+    edgeViews.clear();
+    app.destroy(true, { children: true });
+  }
+
+  changed();
+
+  return { host, update, zoomBy, resetView, refreshColors, changed, snapshot, destroy };
+}

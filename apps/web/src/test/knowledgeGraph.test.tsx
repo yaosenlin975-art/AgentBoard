@@ -276,7 +276,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
     );
     const onSelect = mountGraph();
     expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（来源 1 / 关键词 0）');
-    expect(screen.getByTestId('knowledge-graph-canvas')).toBeInTheDocument();
+    expect(screen.getByTestId('knowledge-graph-stage')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('graph-node-p1'));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', title: '缓存策略', scope: 'workspace' }));
   });
@@ -299,7 +299,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
     expect(empty).toHaveTextContent('共 2 个知识页');
     expect(empty).toHaveTextContent('同一个来源文件或 URL');
     expect(empty).toHaveTextContent('关键词关联');
-    expect(screen.queryByTestId('knowledge-graph-canvas')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('knowledge-graph-stage')).not.toBeInTheDocument();
   });
 
   it('空图第三档：节点截断按 truncated_reason=nodes 提示真实总数', async () => {

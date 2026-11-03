@@ -1,4 +1,4 @@
-﻿@import 'tailwindcss';
+@import 'tailwindcss';
 
 /* 暗色主题用 .dark class 驱动（html 元素），而非 media query */
 @custom-variant dark (&:where(.dark, .dark *));
@@ -221,5 +221,67 @@
 }
 .dark .markdown-body del {
   color: rgb(255 255 255 / 0.55);
+}
+
+/*
+ * 星图语义色（KB-GRAPH-P1）：照 Obsidian `.graph-view.color-*` 的 11 个语义色。
+ * 画布取色方式是「临时插 div 读 getComputedStyle」，所以颜色只放在这里，
+ * 改这些变量（亮/暗两套）画布颜色就跟着变，JS 侧不硬编码色值。
+ */
+:root {
+  --kb-graph-node: #5c5c5c;
+  --kb-graph-node-focused: #8a5cf5;
+  --kb-graph-node-tag: #08b94e;
+  --kb-graph-node-attachment: #e0ac00;
+  --kb-graph-node-unresolved: #ababab;
+  --kb-graph-line: #d4d4d4;
+  --kb-graph-text: #222222;
+  --kb-graph-highlight: #9873f7;
+}
+.dark {
+  --kb-graph-node: #b3b3b3;
+  --kb-graph-node-focused: #a68af9;
+  --kb-graph-node-tag: #44cf6e;
+  --kb-graph-node-attachment: #e0de71;
+  --kb-graph-node-unresolved: #666666;
+  --kb-graph-line: #3f3f3f;
+  --kb-graph-text: #dadada;
+  --kb-graph-highlight: #8a5cf5;
+}
+
+.graph-view.color-fill {
+  color: var(--kb-graph-node);
+}
+.graph-view.color-fill-focused {
+  color: var(--kb-graph-node-focused);
+}
+.graph-view.color-fill-tag {
+  color: var(--kb-graph-node-tag);
+}
+.graph-view.color-fill-attachment {
+  color: var(--kb-graph-node-attachment);
+}
+.graph-view.color-fill-unresolved {
+  color: var(--kb-graph-node-unresolved);
+  opacity: 0.5;
+}
+.graph-view.color-arrow {
+  color: var(--kb-graph-text);
+  opacity: 0.5;
+}
+.graph-view.color-circle {
+  color: var(--kb-graph-node-focused);
+}
+.graph-view.color-line {
+  color: var(--kb-graph-line);
+}
+.graph-view.color-text {
+  color: var(--kb-graph-text);
+}
+.graph-view.color-fill-highlight {
+  color: var(--kb-graph-highlight);
+}
+.graph-view.color-line-highlight {
+  color: var(--kb-graph-highlight);
 }
 

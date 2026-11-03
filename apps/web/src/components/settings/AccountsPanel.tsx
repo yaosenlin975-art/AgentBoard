@@ -1,19 +1,23 @@
-﻿/**
- * 账号管理面板（ACC-08 / ACC-09）：按客户端分区展示托管账号与能力；能力一律以服务端能力矩阵为准。
+/**
+ * 账号管理面板（ACC-08 / ACC-09 / ACC-14）：按平台分区展示托管账号与能力；能力一律以服务端能力矩阵为准。
  * - 能力矩阵 `GET /api/managed-account-capabilities`：失败时不回退本地副本，全部写操作禁用并显示错误态。
+ * - ACC-14 顶部两个入口：「一键签到」（`OneClickCheckin`，三平台全部启用账号）、「读取本机账号」（`LocalAccountsImport`，ACC-11 导入端点）。
+ * - ACC-14 平台范围：只展示 WorkBuddy / MiniMax / Trae；CodeBuddy Desktop 已下线，栏位移除且历史账号在界面过滤（接口与库内数据不变）。
  * - 签到：`checkin` 为 true 才可点；发起 `POST /api/checkin-runs`（带 Idempotency-Key），批次视图见 CheckinBatchPanel。
  * - `409 CHECKIN_BATCH_IN_PROGRESS`：展示已有批次 id 并可查看该批次。
  * 数据只来自脱敏接口，不显示 identity_hash / 快照 ref / token / 路径。
  */
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
+import type { PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Badge } from '../ui/Badge';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
-import { APP_LABEL, APP_ORDER, SOURCE_LABEL, capabilityReasonCode, reasonCodeOf, reasonLabel, unavailableLabel, useAccountCapabilities, type CapabilityView } from './accountCapabilities';
+import { LocalAccountsImport } from './LocalAccountsImport';
+import { OneClickCheckin } from './OneClickCheckin';
+import { APP_LABEL, APP_ORDER, SOURCE_LABEL, capabilityReasonCode, isOfflineApp, reasonCodeOf, reasonLabel, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
 
 export function AccountsPanel() {
@@ -22,13 +26,20 @@ export function AccountsPanel() {
     queryFn: () => api.get<AccountView[]>('/api/managed-accounts'),
   });
   const caps = useAccountCapabilities();
-  const accounts: AccountView[] = list.data ?? [];
+  // ACC-14：已下线平台（CodeBuddy Desktop）的历史账号不在界面出现；其余平台全部账号都列出（同平台多账号）
+  const accounts: AccountView[] = (list.data ?? []).filter((account) => !isOfflineApp(account.app_id));
+  const capabilityKnown = !caps.isPending && !caps.isError;
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-1">
         <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">账号管理</h3>
         <p className="text-xs text-neutral-500 dark:text-neutral-400">仅展示脱敏元数据；快照、凭据与 token 不出现在界面</p>
+      </div>
+
+      <div className="flex flex-wrap items-start gap-3">
+        <OneClickCheckin accounts={accounts} capabilities={caps.capabilities} capabilityKnown={capabilityKnown} />
+        <LocalAccountsImport />
       </div>
 
       {caps.isError && (
@@ -52,7 +63,7 @@ export function AccountsPanel() {
               key={app}
               app={app}
               capability={caps.capabilities[app] ?? null}
-              capabilityKnown={!caps.isPending && !caps.isError}
+              capabilityKnown={capabilityKnown}
               accounts={accounts.filter((account) => account.app_id === app)}
             />
           ))}
@@ -68,7 +79,7 @@ function AppSection({
   capabilityKnown,
   accounts,
 }: {
-  app: ManagedAppId;
+  app: AccountsAppId;
   capability: CapabilityView | null;
   capabilityKnown: boolean;
   accounts: PublicManagedAccount[];
@@ -115,6 +126,7 @@ function AppSection({
 
   const usable = capability ? capability.capture || capability.switch : false;
   const checkinEnabled = capability?.checkin === true && accounts.length > 0 && !checkin.isPending;
+  const enabledAccounts = accounts.filter((account) => account.enabled !== false);
 
   return (
     <div
@@ -123,12 +135,13 @@ function AppSection({
     >
       <div className="flex flex-wrap items-center gap-1.5">
         <h4 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{APP_LABEL[app]}</h4>
+        <Badge tone="gray">{accounts.length} 个账号</Badge>
         {capability === null ? (
           <Badge tone="gray">{capabilityKnown ? '能力未知' : '读取中'}</Badge>
         ) : (
           <>
             <Badge tone={capability.switch ? 'green' : 'neutral'}>
-              {capability.switch ? '可用' : unavailableLabel(capability, 'switch') ?? '不可用'}
+              {capability.switch ? '切换可用' : unavailableLabel(capability, 'switch') ?? '切换不可用'}
             </Badge>
             <span data-testid={`accounts-capability-${app}`} className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
               捕获 {capability.capture ? 'OK' : capabilityReasonCode(capability, 'capture')} · 切换 {capability.switch ? 'OK' : capabilityReasonCode(capability, 'switch')} · 签到 {capability.checkin ? 'OK' : capabilityReasonCode(capability, 'checkin')}
@@ -148,19 +161,24 @@ function AppSection({
 
       {accounts.length === 0 ? (
         <p data-testid={`accounts-empty-${app}`} className="mt-2 rounded-md border border-dashed border-neutral-300 px-3 py-3 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-          尚未捕获{APP_LABEL[app]}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}
+          尚无{APP_LABEL[app]}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}。点「读取本机账号」或「捕获当前账号」后列出。
         </p>
       ) : (
-        <div className="mt-2 space-y-2">
-          {accounts.map((account) => (
-            <AccountCard
-              key={account.id}
-              account={account as AccountView}
-              capability={capability}
-              onCheckin={checkinEnabled ? () => checkin.mutate([account.id]) : undefined}
-            />
-          ))}
-        </div>
+        <>
+          <p data-testid={`accounts-summary-${app}`} className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            共 {accounts.length} 个账号，其中 {enabledAccounts.length} 个启用并参与一键签到
+          </p>
+          <div className="mt-2 space-y-2">
+            {accounts.map((account) => (
+              <AccountCard
+                key={account.id}
+                account={account as AccountView}
+                capability={capability}
+                onCheckin={checkinEnabled ? () => checkin.mutate([account.id]) : undefined}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -179,10 +197,10 @@ function AppSection({
           data-testid={`accounts-checkin-all-${app}`}
           className={BUTTON_SECONDARY}
           disabled={!checkinEnabled}
-          title={capability?.checkin === true ? '为当前产品全部账号发起签到批次' : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
-          onClick={() => checkin.mutate(accounts.map((account) => account.id))}
+          title={capability?.checkin === true ? '为本平台启用账号发起签到批次' : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
+          onClick={() => checkin.mutate(enabledAccounts.map((account) => account.id))}
         >
-          {capability?.checkin === true ? '批量签到' : `签到不可用（${unavailableLabel(capability, 'checkin') ?? '能力未知'}）`}
+          {capability?.checkin === true ? '本平台批量签到' : `签到不可用（${unavailableLabel(capability, 'checkin') ?? '能力未知'}）`}
         </button>
       </div>
 
@@ -206,5 +224,3 @@ function AppSection({
     </div>
   );
 }
-
-

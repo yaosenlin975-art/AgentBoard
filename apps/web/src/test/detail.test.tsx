@@ -362,12 +362,12 @@ describe('DetailPanel 评论区', () => {
     expect(await screen.findByTestId('comment-c-new')).toBeInTheDocument();
   });
 
-  it('评论区时间倒序：服务端升序返回时 DOM 首条为最新，同 ts 保持服务端次序（COMMENT-ORDER）', async () => {
+  it('评论区时间正序：最早在最上，同 ts 保持服务端次序（COMMENT-ORDER）', async () => {
     const comments: IssueComment[] = [
-      { id: 'c1', issue_id: 'iss-1', author: 'user', content: '第一条', ts: 100 },
-      { id: 'c2', issue_id: 'iss-1', author: 'user', content: '第二条', ts: 200 },
       { id: 'c3', issue_id: 'iss-1', author: 'user', content: '第三条', ts: 200 },
+      { id: 'c1', issue_id: 'iss-1', author: 'user', content: '第一条', ts: 100 },
       { id: 'c4', issue_id: 'iss-1', author: 'user', content: '第四条', ts: 400 },
+      { id: 'c2', issue_id: 'iss-1', author: 'user', content: '第二条', ts: 200 },
     ];
     mockDetailApi(makeIssue());
     server.use(http.get('/api/issues/iss-1/comments', () => HttpResponse.json(comments)));
@@ -377,11 +377,11 @@ describe('DetailPanel 评论区', () => {
     const ids = [...document.querySelectorAll('[data-testid^="comment-c"]')]
       .map((node) => node.getAttribute('data-testid'))
       .filter((id) => id !== 'comment-count');
-    // 倒序：c4(400) → c2(200，服务端在前) → c3(200) → c1(100)
-    expect(ids).toEqual(['comment-c4', 'comment-c2', 'comment-c3', 'comment-c1']);
+    // 正序：c1(100) → c3(200，服务端在前) → c2(200) → c4(400)
+    expect(ids).toEqual(['comment-c1', 'comment-c3', 'comment-c2', 'comment-c4']);
   });
 
-  it('倒序下新发评论出现在顶部（不落到底部）', async () => {
+  it('正序下新发评论出现在最后一行（不置顶）', async () => {
     const comments: IssueComment[] = [
       { id: 'c-old', issue_id: 'iss-1', author: 'user', content: '旧评论', ts: 100 },
     ];
@@ -404,7 +404,7 @@ describe('DetailPanel 评论区', () => {
       const ids = [...document.querySelectorAll('[data-testid^="comment-c"]')]
         .map((node) => node.getAttribute('data-testid'))
         .filter((id) => id !== 'comment-count');
-      expect(ids[0]).toBe('comment-c-最新');
+      expect(ids.at(-1)).toBe('comment-c-最新');
     });
   });
 

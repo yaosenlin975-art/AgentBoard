@@ -1,16 +1,22 @@
-﻿/**
- * 单个托管账号卡（ACC-08 / ACC-09）：展示脱敏元数据 + 切换/签到。
+/**
+ * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14）：展示脱敏元数据 + 切换/签到。
  * 能力来自服务端能力矩阵（由 AccountsPanel 传入），前端不维护能力副本。
+ *
+ * ACC-14 两个「当前」必须分开表达：
+ * - **客户端当前**（`accounts-client-current-*`）= 桌面客户端此刻登录的账号（服务端 `is_current`，来自 capture/switch 领域）；
+ * - **签到当前**（`accounts-checkin-current-*`）= 一键签到会提交的账号（app 签到能力可用 + 账号启用 + 账号签到能力非 unsupported）；
+ * 两者可以不同，不合并成一个「当前」。
+ *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  */
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import type { AccountOperation, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
+import type { AccountOperation, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Badge } from '../ui/Badge';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
-import { APP_LABEL, reasonCodeOf, reasonLabel, unavailableLabel, unavailableReason, type CapabilityView } from './accountCapabilities';
+import { checkinParticipation, reasonCodeOf, reasonLabel, unavailableLabel, unavailableReason, type CapabilityView } from './accountCapabilities';
 
 export type AccountView = PublicManagedAccount & { is_current: boolean | null };
 
@@ -30,7 +36,6 @@ export function AccountCard({
   capability: CapabilityView | null;
   onCheckin?: () => void;
 }) {
-  const app = account.app_id as ManagedAppId;
   const [confirming, setConfirming] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [frozen, setFrozen] = useState(false);
@@ -69,24 +74,35 @@ export function AccountCard({
 
   const switchBlocked = capability?.switch !== true || account.is_current === true || frozen;
   const switchTitle = capability?.switch !== true
-    ? `${APP_LABEL[app]}：${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}）`
+    ? `${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}）`
     : account.is_current === true
-      ? '该账号已是当前账号'
+      ? '该账号已是客户端当前登录账号'
       : frozen
         ? '上次切换需要恢复，已冻结该账号的切换'
-        : '切换到该账号';
+        : '切换到该账号作为桌面客户端登录账号';
   const checkinEnabled = capability?.checkin === true && onCheckin !== undefined;
+  const participation = checkinParticipation(account, capability);
 
   return (
     <div data-testid={`accounts-card-${account.id}`} className="rounded-lg border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="min-w-0 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{account.display_name}</span>
-        <span data-testid={`accounts-current-${account.id}`}>
+        {/* 客户端当前：桌面客户端里现在登录的是谁 */}
+        <span data-testid={`accounts-client-current-${account.id}`}>
           {account.is_current === true
-            ? <Badge tone="green">当前账号</Badge>
+            ? <Badge tone="green">客户端当前</Badge>
             : account.is_current === false
-              ? <Badge tone="neutral">非当前</Badge>
-              : <Badge tone="gray">当前身份未知</Badge>}
+              ? <Badge tone="neutral">客户端非当前</Badge>
+              : <Badge tone="gray">客户端当前未知</Badge>}
+        </span>
+        {/* 签到当前：一键签到会把哪些账号提交进批次（可与客户端当前不同） */}
+        <span
+          data-testid={`accounts-checkin-current-${account.id}`}
+          title={participation.participates ? '一键签到会提交该账号' : `不参与一键签到：${participation.reason ?? '签到不可用'}`}
+        >
+          {participation.participates
+            ? <Badge tone="blue">签到当前</Badge>
+            : <Badge tone="gray">不参与签到</Badge>}
         </span>
         <Badge tone="blue">{REGION_LABEL[account.service_region]}</Badge>
         <Badge tone={account.checkin_capability === 'supported' ? 'green' : account.checkin_capability === 'unsupported' ? 'neutral' : 'gray'}>
@@ -110,7 +126,7 @@ export function AccountCard({
           title={switchTitle}
           onClick={() => { setError(null); setConfirming(true); }}
         >
-          切换到此账号
+          切换为客户端登录账号
         </button>
         <button
           type="button"
@@ -127,7 +143,7 @@ export function AccountCard({
 
       {confirming && (
         <div data-testid="accounts-switch-confirm" role="group" aria-label="确认切换账号" className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-          <p>确认切换到「{account.display_name}」？切换会重启目标客户端，进行中的会话可能中断。</p>
+          <p>确认切换到「{account.display_name}」作为桌面客户端登录账号？切换会重启目标客户端，进行中的会话可能中断。</p>
           <div className="mt-1.5 flex flex-wrap gap-2">
             <button type="button" data-testid="accounts-switch-confirm-yes" className={BUTTON_PRIMARY} disabled={switchMutation.isPending} onClick={() => switchMutation.mutate()}>
               确认切换
@@ -142,5 +158,3 @@ export function AccountCard({
     </div>
   );
 }
-
-

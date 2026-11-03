@@ -98,14 +98,14 @@ export function CommentThread({ issue }: { issue: Issue }) {
   });
 
   /**
-   * 展示顺序：时间倒序（最新在最上）。只作用于渲染，不改接口与写入顺序。
-   * 同一时间戳（ts 相同）保持服务端返回顺序作为 tie-break，避免倒序后同批评论互相换位。
+   * 展示顺序：时间正序（最早在最上，按用户意见）。只作用于渲染，不改接口与写入顺序。
+   * 同一时间戳（ts 相同）用服务端返回下标升序做 tie-break，保持服务端次序稳定。
    */
   const orderedComments = useMemo(() => {
     const list = comments ?? [];
     return list
       .map((comment, index) => ({ comment, index }))
-      .sort((a, b) => (b.comment.ts - a.comment.ts) || (a.index - b.index))
+      .sort((a, b) => (a.comment.ts - b.comment.ts) || (a.index - b.index))
       .map((entry) => entry.comment);
   }, [comments]);
 

@@ -1,15 +1,17 @@
 /**
- * 签到批次视图（ACC-09）：逐账号展示 items[].state 与错误码，取消只对 queued 项生效。
+ * 签到批次视图（ACC-09 / ACC-14）：逐账号展示 items[].state 与错误码，取消只对 queued 项生效。
  * 数据源 GET /api/checkin-runs/:id（含 items[]）；批次未终态时轮询。
+ * ACC-14：额外读 `GET /api/account-operations?batch_id=`，把 workbuddy 猫猫旅行结果
+ * （`operation.recovery_ref = travel=claimed|dispatched|already_done|failed:CODE`）挂到对应账号行上。
  * 取消接口是批次级（POST /api/checkin-runs/:id/cancel）：只取消仍 queued 的项，
  * running 项服务端回传在 running[]，界面如实提示「已发出请求，无法取消」。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CheckinBatch, CheckinBatchItem, CheckinBatchStatus, PublicManagedAccount } from '@agentboard/shared';
+import type { AccountOperation, CheckinBatch, CheckinBatchItem, CheckinBatchStatus, PublicManagedAccount } from '@agentboard/shared';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_SECONDARY } from '../ui/buttonStyles';
-import { cancelCheckinBatch, fetchCheckinBatch } from './checkinApi';
-import { reasonLabel } from './accountCapabilities';
+import { cancelCheckinBatch, fetchBatchOperations, fetchCheckinBatch } from './checkinApi';
+import { reasonLabel, travelFromRecoveryRef, type TravelView } from './accountCapabilities';
 
 const ITEM_LABEL: Record<CheckinBatchItem['state'], string> = {
   queued: '排队中（未发起请求）',
@@ -77,6 +79,19 @@ export function CheckinBatchPanel({
   const queuedCount = items.filter((item) => item.state === 'queued').length;
   const runningCount = items.filter((item) => item.state === 'running').length;
 
+  // ACC-14：批次内 operation 记录（含 workbuddy 猫猫旅行的 recovery_ref）；批次未终态时随批次一起轮询
+  const operationsQuery = useQuery({
+    queryKey: ['batch-operations', batchId],
+    queryFn: () => fetchBatchOperations(batchId),
+    refetchInterval: () => (isBatchActive(batch) ? 700 : false),
+  });
+  const travelByAccount = new Map<string, TravelView>();
+  for (const operation of (operationsQuery.data ?? []) as AccountOperation[]) {
+    if (operation.operation !== 'checkin' || operation.account_id === null) continue;
+    const travel = travelFromRecoveryRef(operation.recovery_ref);
+    if (travel !== null) travelByAccount.set(operation.account_id, travel);
+  }
+
   const nameOf = (accountId: string): string =>
     accounts.find((account) => account.id === accountId)?.display_name ?? accountId.slice(0, 8);
 
@@ -106,17 +121,26 @@ export function CheckinBatchPanel({
       )}
 
       <ul className="mt-1.5 space-y-1">
-        {items.map((item) => (
-          <li key={`${item.batch_id}-${item.account_id}`} data-testid={`checkin-item-${item.account_id}`} data-state={item.state} className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="min-w-0 truncate text-neutral-800 dark:text-neutral-200">{nameOf(item.account_id)}</span>
-            <Badge tone={ITEM_TONE[item.state]}>{ITEM_LABEL[item.state]}</Badge>
-            {item.safe_error_code !== null && (
-              <span data-testid={`checkin-item-error-${item.account_id}`} className="text-red-600 dark:text-red-400">
-                {reasonLabel(item.safe_error_code)}
-              </span>
-            )}
-          </li>
-        ))}
+        {items.map((item) => {
+          const travel = travelByAccount.get(item.account_id) ?? null;
+          return (
+            <li key={`${item.batch_id}-${item.account_id}`} data-testid={`checkin-item-${item.account_id}`} data-state={item.state} className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="min-w-0 truncate text-neutral-800 dark:text-neutral-200">{nameOf(item.account_id)}</span>
+              <Badge tone={ITEM_TONE[item.state]}>{ITEM_LABEL[item.state]}</Badge>
+              {item.safe_error_code !== null && (
+                <span data-testid={`checkin-item-error-${item.account_id}`} className="text-red-600 dark:text-red-400">
+                  {reasonLabel(item.safe_error_code)}
+                </span>
+              )}
+              {travel !== null && (
+                <span data-testid={`checkin-item-travel-${item.account_id}`} data-travel={travel.status} className="text-neutral-600 dark:text-neutral-400">
+                  猫猫旅行：{travel.label}
+                  {travel.code !== null && <span className="ml-1 font-mono text-[11px] text-red-600 dark:text-red-400">{travel.code}</span>}
+                </span>
+              )}
+            </li>
+          );
+        })}
       </ul>
 
       <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">

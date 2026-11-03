@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -215,13 +215,14 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     server.use(
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([
         { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: false, capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', source: 'static' },
-        { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, capture_reason_code: 'TARGET_KIND_UNCONFIRMED', switch_reason_code: 'TARGET_KIND_UNCONFIRMED', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'TARGET_KIND_UNCONFIRMED', source: 'static' },
+        { app_id: 'minimax', capture: true, switch: false, checkin: false, capture_reason_code: 'OK', switch_reason_code: 'CLIENT_NOT_INSTALLED', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'CLIENT_NOT_INSTALLED', source: 'static' },
+        { app_id: 'trae', capture: false, switch: false, checkin: false, capture_reason_code: 'LOGIN_STATE_NOT_FILE_BASED', switch_reason_code: 'LOGIN_STATE_NOT_FILE_BASED', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', reason_code: 'LOGIN_STATE_NOT_FILE_BASED', source: 'static' },
       ])),
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
     );
   });
 
-  it('顶栏「账号」入口可直接打开账号管理面板（两个客户端分区），Esc 可关', async () => {
+  it('顶栏「账号」入口可直接打开账号管理面板（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
     renderTopBar(ws);
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toHaveTextContent('账号');
@@ -230,9 +231,14 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     await userEvent.click(entry);
     const dialog = await screen.findByRole('dialog', { name: '账号管理' });
     expect(within(dialog).getByText('WorkBuddy Desktop')).toBeInTheDocument();
-    expect(within(dialog).getByText('CodeBuddy Desktop')).toBeInTheDocument();
+    expect(within(dialog).getByText('MiniMax')).toBeInTheDocument();
+    expect(within(dialog).getByText('Trae')).toBeInTheDocument();
+    expect(within(dialog).queryByText('CodeBuddy Desktop')).toBeNull();
     // 与设置弹窗同一组件：能力来自服务端矩阵
-    expect(within(dialog).getByTestId('accounts-capability-codebuddy_desktop')).toHaveTextContent('TARGET_KIND_UNCONFIRMED');
+    expect(within(dialog).getByTestId('accounts-capability-minimax')).toHaveTextContent('CLIENT_NOT_INSTALLED');
+    // 顶部两个入口都在
+    expect(within(dialog).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
+    expect(within(dialog).getByTestId('accounts-import-local')).toBeInTheDocument();
 
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '账号管理' })).toBeNull());

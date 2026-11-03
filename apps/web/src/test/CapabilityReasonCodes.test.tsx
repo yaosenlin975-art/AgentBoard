@@ -77,12 +77,21 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
         capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE',
         reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived',
       },
-      { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED', source: 'static' },
+      {
+        app_id: 'minimax', capture: true, switch: false, checkin: true,
+        capture_reason_code: 'OK', switch_reason_code: 'CLIENT_NOT_INSTALLED', checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE',
+        reason_code: 'CLIENT_NOT_INSTALLED', source: 'derived',
+      },
+      {
+        app_id: 'trae', capture: false, switch: false, checkin: true,
+        capture_reason_code: 'LOGIN_STATE_NOT_FILE_BASED', switch_reason_code: 'LOGIN_STATE_NOT_FILE_BASED',
+        checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE', reason_code: 'LOGIN_STATE_NOT_FILE_BASED', source: 'derived',
+      },
     ] satisfies AccountCapability[])));
     renderPanel();
 
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
-    expect(within(wb).getByText('可用')).toBeInTheDocument();
+    expect(within(wb).getByText('切换可用')).toBeInTheDocument();
     expect(wb.textContent).not.toContain('不可用');
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeEnabled();
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('批量签到');

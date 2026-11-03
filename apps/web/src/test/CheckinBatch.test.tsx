@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 签到批次与能力矩阵接入（ACC-09）：
  * 能力以服务端为准、checkin=false 不发请求、批次 items 各状态、409 双开展示已有批次、取消只对 queued 生效、能力矩阵失败错误态。
  */
@@ -85,6 +85,8 @@ beforeEach(() => {
   checkinPosts.length = 0;
   server.use(
     http.get('/api/managed-accounts', () => HttpResponse.json([account(WB_ID, 'WB 账号一'), account(WB_ID2, 'WB 账号二')])),
+    // ACC-14：批次面板额外读 operation 记录（猫猫旅行结果）；这里默认无 operation
+    http.get('/api/account-operations', () => HttpResponse.json([])),
     http.post('/api/checkin-runs', async ({ request }) => {
       checkinPosts.push({ body: await request.json(), idempotencyKey: request.headers.get('Idempotency-Key') });
       return HttpResponse.json({ batch: batch([{ account_id: WB_ID, state: 'running' }, { account_id: WB_ID2, state: 'queued' }]), replayed: false }, { status: 202 });

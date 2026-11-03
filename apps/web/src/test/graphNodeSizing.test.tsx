@@ -1,4 +1,4 @@
-﻿/**
+/**
  * KB-GRAPH-1：节点半径按 degree 缩放 + 标签阈值隐藏。
  * 纯函数在 lib/knowledgeGraph.ts；组件侧断言 data-scale / data-labels-visible / data-radius。
  */
@@ -15,6 +15,7 @@ import {
   labelsVisible,
   nodeRadius,
 } from '../lib/knowledgeGraph';
+import { ZOOM_MAX, ZOOM_MIN, clampZoom, textAlpha } from '../lib/graphVisualFormulas';
 import { KnowledgeGraph } from '../components/knowledge/KnowledgeGraph';
 import { server } from './server';
 
@@ -110,31 +111,27 @@ describe('KnowledgeGraph 半径与标签渲染（KB-GRAPH-1）', () => {
     expect(r3).toBeGreaterThan(r1);
   });
 
-  it('缩放降到 0.8 以下时 data-labels-visible=false，回升后恢复 true', async () => {
+  it('相机由渲染层自持：无 WebGL 时停在缺省 1，缩放按钮不改组件层状态（KB-GRAPH-P1）', async () => {
     renderGraph();
     const root = await screen.findByTestId('knowledge-graph');
     await waitFor(() => expect(root.getAttribute('data-scale')).toBe('1'));
     expect(root.getAttribute('data-labels-visible')).toBe('true');
-
+    // jsdom 无 WebGL → 前置检测直接降级，没有渲染器接管相机
+    await waitFor(() => expect(root.getAttribute('data-renderer')).toBe('no-webgl'));
     await userEvent.click(screen.getByTestId('graph-zoom-out'));
-    await waitFor(() => expect(root.getAttribute('data-scale')).toBe('0.8'));
-    expect(root.getAttribute('data-labels-visible')).toBe('true');
-
     await userEvent.click(screen.getByTestId('graph-zoom-out'));
-    await waitFor(() => expect(Number(root.getAttribute('data-scale'))).toBeLessThan(LABEL_SCALE_THRESHOLD));
-    expect(root.getAttribute('data-labels-visible')).toBe('false');
-
-    await userEvent.click(screen.getByTestId('graph-zoom-in'));
-    await waitFor(() => expect(root.getAttribute('data-labels-visible')).toBe('true'));
+    // 缩放不再由组件层维护（旧 canvas 实现的 data-scale 会被按钮改掉，这条就是回归锁）
+    expect(root.getAttribute('data-scale')).toBe('1');
   });
 
-  it('缩放被夹在 0.3–3 之间（连续点击不越界）', async () => {
-    renderGraph();
-    const root = await screen.findByTestId('knowledge-graph');
-    for (let i = 0; i < 12; i += 1) await userEvent.click(screen.getByTestId('graph-zoom-out'));
-    await waitFor(() => expect(Number(root.getAttribute('data-scale'))).toBe(0.3));
-    for (let i = 0; i < 20; i += 1) await userEvent.click(screen.getByTestId('graph-zoom-in'));
-    await waitFor(() => expect(Number(root.getAttribute('data-scale'))).toBe(3));
+  it('缩放上下限与标签淡出改由文档公式决定（1/128–8、log2 阈值）', async () => {
+    // 旧实现自持相机并夹在 0.3–3、标签阈值 0.8；文档 A6 是 clampZoom 1/128–8 + textAlpha=log2(scale)+1
+    expect(clampZoom(0.0001)).toBe(ZOOM_MIN);
+    expect(clampZoom(100)).toBe(ZOOM_MAX);
+    expect(textAlpha(1)).toBe(1);
+    expect(textAlpha(0.5)).toBe(0);
+    expect(ZOOM_MIN).toBe(1 / 128);
+    expect(ZOOM_MAX).toBe(8);
   });
 });
 
