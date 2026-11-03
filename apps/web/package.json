@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "pretest": "node ../../scripts/check-bom.mjs",
     "test": "vitest run"
   },
   "dependencies": {

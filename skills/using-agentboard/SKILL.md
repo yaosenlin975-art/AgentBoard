@@ -162,6 +162,16 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 卡收尾时若改过 `apps/web` 源码，`kb done --notes` 必须显式声明一句：**「dist 未重建（测试页已验证）」** 或 **「dist 已重建」**；缺失视为收尾未完成。
 - 重建失败（类型/构建错误）不要强行 done：正式页会停在旧产物，写清「dist 未重建 + 失败原因」。
 
+## 文件编码纪律（BOM，强制）
+
+写仓库内任何文本文件（`*.json` / `*.jsonc` / `*.ts` / `*.tsx` / `*.md` / `*.yaml` / `*.css` …）都必须是 **UTF-8 无 BOM**。
+
+- **禁止**用 PowerShell 5.1 的 `Set-Content -Encoding UTF8`、`Out-File`、`>` 重定向写仓库文件：PS 5.1 的 `UTF8` 默认带 BOM（`EF BB BF`）。
+- 用编辑器 `write` 工具写文件；需要命令行写入时用 `-Encoding utf8NoBOM`（PS 7+）或 `[System.IO.File]::WriteAllText($p, $s, (New-Object System.Text.UTF8Encoding($false)))`；`node fs.writeFileSync` 默认无 BOM。
+- 为什么强制：`package.json` 带 BOM 时 Vite 会把它当 PostCSS 配置加载，Node JSON 解析抛 `Unexpected token '﻿'`，web 测试与 build 直接打挂，报错点离真凶很远。
+- 自动检查：`node scripts/check-bom.mjs`（`apps/web` 的 `pretest` 已挂载，`pnpm --filter @agentboard/web test` 会先跑它）。命中**新增** BOM 即 exit 1；存量历史文件在 `scripts/bom-baseline.txt` 里豁免（清一个删一行，`--strict` 可全量阻断）。
+- 发现 BOM 不要用「顺手全仓去 BOM」掩盖：清理要单独提交，并在卡里说明范围。
+
 ## Skill Priority
 
 流程类技能先于实现类技能；看板动作按下列路由表选技能，选错技能等于没加载。
@@ -192,6 +202,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
 | 「这是别人的卡，我帮他改改」 | 不操作他人占用的卡；需要改动就回报父代理或用户。 |
 | 「技能和用户当轮指令冲突，按技能来」 | 用户当轮明确指令 > 技能 > 默认行为。 |
+| 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token '﻿'`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
 
 ## Platform Adaptation
 

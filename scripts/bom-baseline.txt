@@ -1,0 +1,30 @@
+# BOM 存量豁免清单（REPO-BOM-GUARD）
+#
+# 这些文件在守卫上线前就带 UTF-8 BOM，只警告不失败，避免新增检查当天把全仓测试打红。
+# 清理一个就从这里删一行；清空后 `node scripts/check-bom.mjs` 进入全量阻断模式（`--strict` 可强制全量阻断）。
+# 清理要单独提交（改字节 + 回读校验），不要和功能改动混在一起。
+apps/web/src/components/changelog/ChangelogTimeline.tsx
+apps/web/src/components/chat/ChatPanel.tsx
+apps/web/src/components/chat/Composer.tsx
+apps/web/src/components/chat/SessionSwitcher.tsx
+apps/web/src/components/detail/CommentThread.tsx
+apps/web/src/components/knowledge/KnowledgePageDetail.tsx
+apps/web/src/components/knowledge/KnowledgePrintView.tsx
+apps/web/src/components/knowledge/pixiGraph.ts
+apps/web/src/components/ui/Modal.tsx
+apps/web/src/components/workspace/RemoveWorkspaceDialog.tsx
+apps/web/src/lib/knowledgeExport.ts
+apps/web/src/lib/knowledgeGraph.ts
+apps/web/src/state/panelStore.ts
+apps/web/src/test/board.test.tsx
+apps/web/src/test/changelogMarkdown.test.tsx
+apps/web/src/test/dispatchTemplate.test.ts
+apps/web/src/test/graphInteraction.test.ts
+apps/web/src/test/graphVisualForce.test.ts
+apps/web/src/test/knowledgeGraph.test.tsx
+apps/web/src/test/markdown.test.tsx
+apps/web/src/test/mention.test.tsx
+apps/web/src/test/panelOverlay.test.tsx
+apps/web/src/test/panelStore.test.ts
+apps/web/src/test/restartServer.test.tsx
+apps/web/src/test/unreadCollector.test.tsx
