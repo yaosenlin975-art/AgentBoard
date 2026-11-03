@@ -13,6 +13,7 @@ import type { KnowledgePage } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
 import { MarkdownView } from '../../lib/markdown';
+import { fetchKnowledgePage } from '../../lib/knowledgeRef';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 
@@ -25,11 +26,7 @@ function KnowledgeRef({ id }: { id: string }) {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const query = useQuery({
     queryKey: ['knowledge-page', id, workspaceId],
-    queryFn: () => {
-      const params = new URLSearchParams({ scope: 'both' });
-      if (workspaceId !== null) params.set('workspace_id', workspaceId);
-      return api.get<KnowledgePage>(`/api/knowledge/pages/${encodeURIComponent(id)}?${params.toString()}`);
-    },
+    queryFn: () => fetchKnowledgePage(id, workspaceId),
   });
 
   if (query.isPending) return <p className="text-xs text-neutral-500" role="status">加载知识页…</p>;
