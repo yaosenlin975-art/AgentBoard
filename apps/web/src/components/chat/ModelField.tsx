@@ -14,7 +14,8 @@ import { api } from '../../api/client';
 const MANUAL_OPTION = '__manual__';
 
 const fieldCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  // THEME-CONTRAST-AUDIT：显式前景色 + 主题令牌（原先只有 dark:bg，暗色下靠继承 → 弹窗里黑底黑字）
+  'w-full rounded-md border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none focus:border-accent';
 
 export function ModelField({
   cliId,
