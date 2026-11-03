@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SettingsDialog 测试（issue 65898a1b）：打开拉取接口值回填、保存发 PATCH、
  * 服务端 400 展示错误且不关闭、主题三选项即时生效（html.dark + localStorage）并同步选中态。
  */
@@ -140,5 +140,18 @@ describe('SettingsDialog', () => {
     expect(screen.getByTestId('settings-version')).toHaveTextContent(`服务端 ? · 前端 ${WEB_VERSION}`);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
-});
+it('设置里不再混入账号管理内容（SETTINGS-CLEAN）：无 accounts-* 节点', async () => {
+    server.use(http.get('/api/settings', () => HttpResponse.json(settingsPayload)));
+    renderSettings();
+    await screen.findByDisplayValue('9000');
 
+    // 账号管理的唯一入口是顶栏「账号」按钮（TopBar ACCOUNT-ENTRY 用例覆盖）；
+    // 设置弹窗内不得出现账号管理面板的任何节点
+    expect(document.querySelectorAll('[data-testid^="accounts-"]').length).toBe(0);
+    expect(screen.queryByTestId('accounts-one-click-checkin')).toBeNull();
+    expect(screen.queryByTestId('accounts-import-local')).toBeNull();
+    // 设置自身内容仍在（不是靠整块卸载来「清理」）
+    expect(screen.getByTestId('settings-save')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-version')).toBeInTheDocument();
+  });
+});

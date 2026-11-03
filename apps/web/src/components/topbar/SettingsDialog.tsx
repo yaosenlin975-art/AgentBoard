@@ -10,7 +10,6 @@ import { api } from '../../api/client';
 import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
-import { AccountsPanel } from '../settings/AccountsPanel';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 
 interface Settings {
@@ -167,7 +166,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </button>
         </div>
       </form>
-      <AccountsPanel />
       <RestartServerPanel />
     </Modal>
   );
