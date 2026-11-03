@@ -36,12 +36,16 @@ export function Board({
   onLayout,
   knowledgeOpen = false,
   onToggleKnowledge,
+  logOpen = false,
+  onToggleLog,
 }: {
   /** 受控时由 App 提供；未传则组件内部自持（单独渲染 Board 的场景） */
   layout?: BoardLayout;
   onLayout?: (layout: BoardLayout) => void;
   knowledgeOpen?: boolean;
   onToggleKnowledge?: () => void;
+  logOpen?: boolean;
+  onToggleLog?: () => void;
 } = {}) {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
@@ -160,6 +164,7 @@ export function Board({
             onLayout={changeLayout}
             knowledgeOpen={knowledgeOpen}
             onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
+            {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
           />
         </div>
         <div data-testid="board-toolbar-filters" className="flex w-full min-w-0 items-center gap-2">

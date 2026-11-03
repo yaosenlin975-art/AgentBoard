@@ -1,11 +1,9 @@
-﻿import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useAppStore, type WsStatus } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { THEME_LABEL, useTheme } from '../../theme';
-import { ChangelogPanel } from '../changelog/ChangelogPanel';
 import { Modal } from '../ui/Modal';
-import { BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { NewIssueDialog } from './NewIssueDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { AccountsPanel } from '../settings/AccountsPanel';
@@ -24,19 +22,11 @@ const WS_DOT: Record<WsStatus, string> = {
 export function TopBar({ workspace }: { workspace: Workspace | null }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newIssueOpen, setNewIssueOpen] = useState(false);
-  const [changelogOpen, setChangelogOpen] = useState(false);
   const [accountsOpen, setAccountsOpen] = useState(false);
   // 左浮窗（工作空间列表）：PANEL-FLOAT，浮窗在触发按钮正下方展开
   const leftOpen = useOverlayStore((s) => s.left);
   const toggleLeft = useOverlayStore((s) => s.toggleLeft);
   const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
-  // 关闭日志面板后焦点回到入口（键盘可达性）
-  const changelogButtonRef = useRef<HTMLButtonElement>(null);
-  const changelogWasOpen = useRef(false);
-  useEffect(() => {
-    if (changelogWasOpen.current && !changelogOpen) changelogButtonRef.current?.focus();
-    changelogWasOpen.current = changelogOpen;
-  }, [changelogOpen]);
   const wsStatus = useAppStore((s) => s.wsStatus);
   const [theme, cycleTheme] = useTheme();
   // 未读徽标：各会话未读计数总和（Record<sessionId, number>）
@@ -133,24 +123,11 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
 
         <button
           type="button"
-          ref={changelogButtonRef}
-          data-testid="topbar-changelog"
-          aria-label="工作区日志"
-          disabled={!workspace}
-          title={workspace ? '查看当前工作区的变更日志' : '请先选择工作空间'}
-          onClick={() => setChangelogOpen(true)}
-          className={BUTTON_SECONDARY}
-        >
-          工作区日志
-        </button>
-
-        <button
-          type="button"
           data-testid="topbar-accounts"
           aria-label="账号管理"
           title="管理 WorkBuddy / CodeBuddy 账号"
           onClick={() => setAccountsOpen(true)}
-          className={BUTTON_SECONDARY}
+          className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
         >
           账号
         </button>
@@ -177,17 +154,6 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
       </div>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {workspace && (
-        <Modal
-          open={changelogOpen}
-          title="工作区变更日志"
-          onClose={() => setChangelogOpen(false)}
-          scrollable
-        >
-          {/* 面板只渲染内容：标题 / 关闭 / Esc / 遮罩由 Modal 提供 */}
-          <ChangelogPanel workspaceId={workspace.id} onClose={() => setChangelogOpen(false)} />
-        </Modal>
-      )}
       {workspace && (
         <NewIssueDialog open={newIssueOpen} workspaceId={workspace.id} onClose={() => setNewIssueOpen(false)} />
       )}

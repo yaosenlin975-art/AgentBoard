@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -91,7 +91,7 @@ afterEach(() => {
 });
 
 describe('变更日志面板', () => {
-  it('时间轴：按 occurred_at DESC,id DESC 排序并本地日期分组，展开渲染 Markdown 正文', async () => {
+  it('左列表：按 occurred_at DESC,id DESC 排序并本地日期分组；详情渲染 Markdown 正文', async () => {
     const older = entry({ id: 'log-old', title: '较早一条', occurred_at: BASE_TS - DAY, body_md: '## 小标题\n\n- 列表项' });
     const sameDayFirst = entry({ id: 'log-b', title: '同日 B', occurred_at: BASE_TS });
     const sameDaySecond = entry({ id: 'log-a', title: '同日 A', occurred_at: BASE_TS });
@@ -99,14 +99,16 @@ describe('变更日志面板', () => {
 
     renderPanel();
 
-    const timeline = await screen.findByTestId('changelog-timeline');
-    const titles = within(timeline).getAllByRole('button', { expanded: false }).map((node) => node.textContent);
-    expect(titles).toEqual(['同日 B', '同日 A', '较早一条']);
+    const list = await screen.findByTestId('changelog-list');
+    const ids = within(list).getAllByRole('button').map((node) => node.getAttribute('data-testid'));
+    expect(ids).toEqual(['changelog-entry-log-b', 'changelog-entry-log-a', 'changelog-entry-log-old']);
     // 两个日期分组
-    expect(timeline.querySelectorAll('[data-testid^="changelog-day-"]')).toHaveLength(2);
+    expect(list.querySelectorAll('[data-testid^="changelog-day-"]')).toHaveLength(2);
+    // 默认选中最新一条
+    expect(screen.getByTestId('changelog-detail-title')).toHaveTextContent('同日 B');
 
-    await userEvent.click(screen.getByTestId('changelog-toggle-log-old'));
-    const body = await screen.findByTestId('changelog-body-log-old');
+    await userEvent.click(screen.getByTestId('changelog-entry-log-old'));
+    const body = await screen.findByTestId('changelog-detail-body');
     // MarkdownView 懒加载：等真实标题元素渲染出来（不固定 sleep）
     expect(await within(body).findByRole('heading', { level: 2 }, { timeout: 5000 })).toHaveTextContent('小标题');
     expect(within(body).getByRole('listitem')).toHaveTextContent('列表项');

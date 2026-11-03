@@ -20,11 +20,15 @@ export function KnowledgePanel({
   layout,
   onLayout,
   onToggleKnowledge,
+  logOpen = false,
+  onToggleLog,
 }: {
   workspaceId: string | null;
   layout?: BoardLayout;
   onLayout?: (layout: BoardLayout) => void;
   onToggleKnowledge?: () => void;
+  logOpen?: boolean;
+  onToggleLog?: () => void;
 }) {
   const [internalLayout, setInternalLayout] = useState<BoardLayout>(layout ?? 'board');
   const currentLayout: BoardLayout = layout ?? internalLayout;
@@ -64,6 +68,7 @@ export function KnowledgePanel({
           onLayout={changeLayout}
           knowledgeOpen
           onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
+          {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
         />
       </div>
     </ViewToolbarShell>

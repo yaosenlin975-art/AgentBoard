@@ -92,19 +92,10 @@ describe('TopBar', () => {
     expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
   });
 
-  it('工作区日志入口：未选工作空间禁用并提示，选中后可用（LOG03 接线）', async () => {
-    const first = renderTopBar(null);
-    const disabledButton = screen.getByTestId('topbar-changelog');
-    expect(disabledButton).toBeDisabled();
-    expect(disabledButton).toHaveAttribute('title', '请先选择工作空间');
-    first.unmount();
-
+  it('顶栏不再有「工作区日志」入口（LOG-VIEW 已改为知识库右侧的视图入口）', () => {
     renderTopBar(ws);
-    const button = screen.getByTestId('topbar-changelog');
-    expect(button).toBeEnabled();
-    expect(button).toHaveTextContent('工作区日志');
-    expect(button).toHaveAttribute('aria-label', '工作区日志');
-    expect(button).toHaveAttribute('title', '查看当前工作区的变更日志');
+    expect(screen.queryByTestId('topbar-changelog')).toBeNull();
+    expect(screen.queryByRole('button', { name: '工作区日志' })).toBeNull();
   });
 
   it('WS 状态点反映连接状态', async () => {
@@ -189,27 +180,6 @@ describe('TopBar', () => {
   });
 });
 
-/** LOG03 入口接线：面板组件由 server 线提供，这里只验证挂载与交互契约 */
-function changelogEntry(workspaceId: string, title: string): WorkspaceChangeLog {
-  return {
-    id: `${workspaceId}-e1`,
-    workspace_id: workspaceId,
-    origin_workspace_id: workspaceId,
-    origin_workspace_name: '主项目',
-    origin_workspace_path: 'D:/WorkSpaces/main',
-    title,
-    body_md: '变更正文',
-    change_type: '新增',
-    occurred_at: 1_700_000_000_000,
-    created_by: 'user',
-    updated_by: 'user',
-    created_at: 1_700_000_000_000,
-    updated_at: 1_700_000_000_000,
-    revision: 1,
-    legacy_source_key: null,
-  };
-}
-
 describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
   beforeEach(() => {
     server.use(
@@ -252,73 +222,3 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     expect(await screen.findByRole('dialog', { name: '账号管理' })).toBeInTheDocument();
   });
 });
-
-describe('工作区日志入口（LOG03 接线）', () => {
-  const ws2: Workspace = { id: 'ws-2', name: '另一个项目', path: 'D:/WorkSpaces/other', created_at: 2 };
-
-  beforeEach(() => {
-    server.use(
-      http.get('/api/workspaces/ws-1/changelog', () =>
-        HttpResponse.json({ items: [changelogEntry('ws-1', 'ws-1 的变更')], next_offset: null }),
-      ),
-      http.get('/api/workspaces/ws-2/changelog', () =>
-        HttpResponse.json({ items: [changelogEntry('ws-2', 'ws-2 的变更')], next_offset: null }),
-      ),
-      http.get('/api/changelog/archived-workspaces', () => HttpResponse.json({ items: [], next_offset: null })),
-    );
-  });
-
-  it('点入口用 Modal 打开面板，关闭按钮关闭后焦点回到入口', async () => {
-    renderTopBar(ws);
-    const entry = screen.getByTestId('topbar-changelog');
-
-    await userEvent.click(entry);
-    expect(await screen.findByRole('dialog', { name: '工作区变更日志' })).toBeInTheDocument();
-    expect(await screen.findByTestId('changelog-panel')).toBeInTheDocument();
-    expect(await screen.findByText('ws-1 的变更')).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: '关闭' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(entry).toHaveFocus();
-  });
-
-  it('Esc 关闭面板', async () => {
-    renderTopBar(ws);
-    await userEvent.click(screen.getByTestId('topbar-changelog'));
-    expect(await screen.findByRole('dialog', { name: '工作区变更日志' })).toBeInTheDocument();
-
-    await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  });
-
-  it('面板内切到「历史工作区」tab 显示归档视图（只读）', async () => {
-    renderTopBar(ws);
-    await userEvent.click(screen.getByTestId('topbar-changelog'));
-    await screen.findByTestId('changelog-panel');
-
-    await userEvent.click(screen.getByTestId('changelog-tab-archived'));
-    expect(await screen.findByTestId('changelog-archived')).toBeInTheDocument();
-    expect(await screen.findByTestId('changelog-archived-empty')).toHaveTextContent('没有已移除工作区的变更日志');
-    expect(screen.getByTestId('changelog-tab-archived')).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('面板打开时切换 workspace：内容随 workspace 变化且不残留旧空间条目', async () => {
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const tree = (target: Workspace) => (
-      <QueryClientProvider client={qc}>
-        <TopBar workspace={target} />
-      </QueryClientProvider>
-    );
-    const { rerender } = render(tree(ws));
-
-    await userEvent.click(screen.getByTestId('topbar-changelog'));
-    expect(await screen.findByText('ws-1 的变更')).toBeInTheDocument();
-
-    rerender(tree(ws2));
-    expect(await screen.findByText('ws-2 的变更')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText('ws-1 的变更')).not.toBeInTheDocument());
-  });
-});
-
-
-

@@ -1,24 +1,37 @@
 /**
- * 工作区变更日志面板（LOG03）。
+ * 工作区日志视图（LOG03 / LOG-VIEW）。
  *
- * 供入口接线方以 `<ChangelogPanel workspaceId={id} onClose={...} />` 挂到任意容器（board-ui 用 Modal 包裹）：
- * - 只渲染内容，不自带标题栏/关闭按钮（标题、Esc、遮罩由外层容器负责）；
- * - 不读全局 store，切 workspace 只依赖 props，内部复位查询/筛选/草稿/编辑态；
- * - 活动区：时间轴（occurred_at DESC,id DESC 最新在顶、按本地日期分组）+ 字面搜索 + 类型筛选 + 分页 + 新增/编辑/删除（CAS）；
- * - 归档区：已移除工作区快照 → 只读时间轴，不与活动日志混排、无任何写入口。
+ * 原为浮窗内容（`<ChangelogPanel workspaceId onClose />` 由 Modal 包裹）；现在作为与平铺看板/任务树/知识库同级的
+ * 主区域视图挂载：顶部与其它视图共用 ViewToolbarShell + ViewSwitcher（含「日志」按钮），主体左右两栏 ——
+ * 左栏是按 `occurred_at DESC, id DESC` 倒序、按本地日期分组的日志列表，右栏是选中日志的详情（Markdown 正文 + 编辑/删除），
+ * 默认选中最新一条；≤900px 由 `min-[901px]:` 断点退化为上下堆叠（列表在上、详情在下）。
+ *
+ * 保留既有能力：新建/编辑/删除（CAS）、搜索与类型筛选、分页、归档只读区、空态。
+ * 查询状态只依赖 props（workspaceId），切 workspace 会复位筛选/分页/编辑态。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WorkspaceChangeLog, WorkspaceChangeType } from '@agentboard/shared';
 import { ApiError } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
+import { MarkdownView } from '../../lib/markdown';
+import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
-import { ChangelogTimeline } from './ChangelogTimeline';
+import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
+import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
+import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTimeline';
 import { ArchivedChangelogPanel } from './ArchivedChangelogPanel';
 
 const PAGE = 20;
 const TYPES: WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
+
+const TYPE_TONE: Record<string, BadgeTone> = {
+  新增: 'green',
+  修复: 'blue',
+  调整: 'neutral',
+  历史: 'purple',
+};
 
 type EditorState =
   | { mode: 'create' }
@@ -32,43 +45,92 @@ function isRevisionConflict(error: unknown): error is ApiError {
   return error instanceof ApiError && error.status === 409 && error.code === 'CHANGELOG_REVISION_CONFLICT';
 }
 
-export function ChangelogPanel({ workspaceId, onClose }: { workspaceId: string; onClose?: () => void }) {
+export interface ChangelogPanelProps {
+  workspaceId: string;
+  /** 删除成功后回调（兼容原先浮窗开合；视图形态下可省略） */
+  onClose?: () => void;
+  layout?: BoardLayout;
+  onLayout?: (layout: BoardLayout) => void;
+  onToggleKnowledge?: () => void;
+  logOpen?: boolean;
+  onToggleLog?: () => void;
+}
+
+export function ChangelogPanel({
+  workspaceId,
+  onClose,
+  layout,
+  onLayout,
+  onToggleKnowledge,
+  logOpen = true,
+  onToggleLog,
+}: ChangelogPanelProps) {
   const [tab, setTab] = useState<'active' | 'archived'>('active');
+  const [internalLayout, setInternalLayout] = useState<BoardLayout>(layout ?? 'board');
+  const currentLayout: BoardLayout = layout ?? internalLayout;
+  const changeLayout = (next: BoardLayout): void => {
+    setInternalLayout(next);
+    onLayout?.(next);
+  };
 
   useEffect(() => {
     setTab('active');
   }, [workspaceId]);
 
   return (
-    <div data-testid="changelog-panel" className="flex min-h-0 flex-col gap-2">
-      <div role="tablist" aria-label="变更日志范围" className="flex shrink-0 gap-1.5">
-        <button
-          type="button"
-          role="tab"
-          data-testid="changelog-tab-active"
-          aria-selected={tab === 'active'}
-          onClick={() => setTab('active')}
-          className={tab === 'active' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
-        >
-          当前工作区
-        </button>
-        <button
-          type="button"
-          role="tab"
-          data-testid="changelog-tab-archived"
-          aria-selected={tab === 'archived'}
-          onClick={() => setTab('archived')}
-          className={tab === 'archived' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
-        >
-          历史工作区
-        </button>
+    <section
+      aria-label="工作区日志"
+      data-testid="changelog-panel"
+      className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
+    >
+      {/* 与平铺看板 / 知识库共用同一外壳，保证切视图时 tab 组位置恒定（TOPBAR-TABS） */}
+      <ViewToolbarShell>
+        <div data-testid="log-toolbar-controls" className="flex flex-wrap items-center gap-1">
+          <ViewSwitcher
+            layout={currentLayout}
+            onLayout={changeLayout}
+            knowledgeOpen={false}
+            onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
+            {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
+          />
+        </div>
+      </ViewToolbarShell>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <h1 className="text-sm font-semibold">工作区日志</h1>
+          <div role="tablist" aria-label="变更日志范围" className="flex gap-1.5">
+            <button
+              type="button"
+              role="tab"
+              data-testid="changelog-tab-active"
+              aria-selected={tab === 'active'}
+              onClick={() => setTab('active')}
+              className={tab === 'active' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
+            >
+              当前工作区
+            </button>
+            <button
+              type="button"
+              role="tab"
+              data-testid="changelog-tab-archived"
+              aria-selected={tab === 'archived'}
+              onClick={() => setTab('archived')}
+              className={tab === 'archived' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
+            >
+              历史工作区
+            </button>
+          </div>
+        </div>
+        {tab === 'active' ? (
+          <ActiveChangelog workspaceId={workspaceId} onClose={onClose} />
+        ) : (
+          <div data-testid="changelog-archived-scroll" className="min-h-0 flex-1 overflow-auto">
+            <ArchivedChangelogPanel />
+          </div>
+        )}
       </div>
-      {tab === 'active' ? (
-        <ActiveChangelog workspaceId={workspaceId} onClose={onClose} />
-      ) : (
-        <ArchivedChangelogPanel />
-      )}
-    </div>
+    </section>
   );
 }
 
@@ -84,8 +146,9 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
   const [reloading, setReloading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<WorkspaceChangeLog | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // 切 workspace：清空筛选、分页、编辑草稿与待删目标，避免跨 workspace 串数据
+  // 切 workspace：清空筛选、分页、编辑草稿、选中项与待删目标，避免跨 workspace 串数据
   useEffect(() => {
     setDraft('');
     setQuery('');
@@ -96,6 +159,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     setConflict(null);
     setDeleteTarget(null);
     setDeleteError(null);
+    setSelectedId(null);
   }, [workspaceId]);
 
   const list = useQuery({
@@ -152,6 +216,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     onSuccess: async () => {
       setDeleteTarget(null);
       setDeleteError(null);
+      setSelectedId(null);
       await refresh();
       onClose?.();
     },
@@ -174,9 +239,14 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
   };
 
   const items = list.data?.items ?? [];
+  const sorted = useMemo(() => sortChangelog(items), [items]);
+  const groups = useMemo(() => groupChangelogByDay(sorted), [sorted]);
+  // 默认选中最新一条；选中项被筛选掉或删除后自动回落到最新
+  const selected = sorted.find((item) => item.id === selectedId) ?? sorted[0] ?? null;
+  const emptyText = query === '' && typeFilter === 'all' ? '这个工作区还没有变更日志' : '没有匹配的变更日志';
 
   return (
-    <div className="flex min-h-0 flex-col gap-2" data-testid="changelog-active">
+    <div className="flex min-h-0 flex-1 flex-col gap-2" data-testid="changelog-active">
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
@@ -298,39 +368,133 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
         </p>
       )}
       {list.data !== undefined && (
-        <>
-          <ChangelogTimeline
-            entries={items}
-            emptyText={query === '' && typeFilter === 'all' ? '这个工作区还没有变更日志' : '没有匹配的变更日志'}
-            onEdit={(entry) => {
-              setEditor({ mode: 'edit', entry });
-              setFormError(null);
-              setConflict(null);
-            }}
-            onDelete={(entry) => {
-              setDeleteTarget(entry);
-              setDeleteError(null);
-            }}
-          />
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className={BUTTON_SECONDARY}
-              disabled={offset === 0}
-              onClick={() => setOffset(Math.max(0, offset - PAGE))}
-            >
-              上一页
-            </button>
-            <button
-              type="button"
-              className={BUTTON_SECONDARY}
-              disabled={list.data.next_offset == null}
-              onClick={() => setOffset(list.data?.next_offset ?? offset)}
-            >
-              下一页
-            </button>
+        <div
+          data-testid="changelog-split"
+          className="grid min-h-0 flex-1 grid-cols-1 gap-2 min-[901px]:grid-cols-[minmax(200px,300px)_minmax(0,1fr)] min-[901px]:overflow-hidden"
+        >
+          <div
+            data-testid="changelog-list-pane"
+            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-md border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            {sorted.length === 0 ? (
+              <p
+                data-testid="changelog-empty"
+                className="rounded-md border border-dashed border-neutral-300 px-3 py-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400"
+              >
+                {emptyText}
+              </p>
+            ) : (
+              <ol data-testid="changelog-list" aria-label="日志列表" className="min-h-0 space-y-3">
+                {groups.map((group) => (
+                  <li key={group.day} data-testid={`changelog-day-${group.day}`}>
+                    <h3 className="mb-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">{group.day}</h3>
+                    <ul className="space-y-1">
+                      {group.entries.map((item) => {
+                        const isSelected = selected?.id === item.id;
+                        return (
+                          <li key={item.id}>
+                            <button
+                              type="button"
+                              data-testid={`changelog-entry-${item.id}`}
+                              aria-current={isSelected ? 'true' : undefined}
+                              onClick={() => setSelectedId(item.id)}
+                              className={`block w-full rounded px-1.5 py-1 text-left text-xs transition ${
+                                isSelected
+                                  ? 'bg-blue-50 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200'
+                                  : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                              }`}
+                            >
+                              <span className="flex items-center gap-1">
+                                <Badge tone={TYPE_TONE[item.change_type] ?? 'neutral'}>{item.change_type}</Badge>
+                                <span className="truncate">{item.title}</span>
+                              </span>
+                              <span className="mt-0.5 block text-[11px] text-neutral-500 dark:text-neutral-400">
+                                {localDateTime(item.occurred_at)}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </li>
+                ))}
+              </ol>
+            )}
+            <div className="mt-auto flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                className={BUTTON_SECONDARY}
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - PAGE))}
+              >
+                上一页
+              </button>
+              <button
+                type="button"
+                className={BUTTON_SECONDARY}
+                disabled={list.data.next_offset == null}
+                onClick={() => setOffset(list.data?.next_offset ?? offset)}
+              >
+                下一页
+              </button>
+            </div>
           </div>
-        </>
+
+          <div
+            data-testid="changelog-detail-pane"
+            className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+          >
+            {selected === null ? (
+              <p data-testid="changelog-detail-empty" className="text-xs text-neutral-500 dark:text-neutral-400">
+                {sorted.length === 0 ? '（暂无变更日志）' : '选择左侧日志查看详情'}
+              </p>
+            ) : (
+              <article data-testid="changelog-detail" className="flex flex-col gap-2">
+                <header className="flex flex-wrap items-center gap-1.5">
+                  <Badge tone={TYPE_TONE[selected.change_type] ?? 'neutral'}>{selected.change_type}</Badge>
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400">{localDateTime(selected.occurred_at)}</span>
+                  <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500">rev:{selected.revision}</span>
+                </header>
+                <h2 data-testid="changelog-detail-title" className="break-words text-sm font-semibold">{selected.title}</h2>
+                <div
+                  data-testid="changelog-detail-body"
+                  className="break-words rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-800"
+                >
+                  <MarkdownView compact>{selected.body_md}</MarkdownView>
+                </div>
+                <footer className="flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+                  <span>{selected.updated_by === 'user' ? '用户' : selected.updated_by}</span>
+                  <span>更新 {localDateTime(selected.updated_at)}</span>
+                  <span className="ml-auto flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      aria-label={`编辑日志：${selected.title}`}
+                      onClick={() => {
+                        setEditor({ mode: 'edit', entry: selected });
+                        setFormError(null);
+                        setConflict(null);
+                      }}
+                      className={BUTTON_SECONDARY}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`删除日志：${selected.title}`}
+                      onClick={() => {
+                        setDeleteTarget(selected);
+                        setDeleteError(null);
+                      }}
+                      className={BUTTON_DANGER}
+                    >
+                      删除
+                    </button>
+                  </span>
+                </footer>
+              </article>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
