@@ -167,9 +167,23 @@ function parallelClaimCount(db: Db, workspaceId: string, issueId: string): numbe
 }
 
 /**
+ * 基线内且当前仍未提交的路径 = claim 之前就已修改的文件。
+ * 这类路径指纹在基线与当前快照里相同，`changedPaths` 天然看不见（GIT-BASELINE-BLIND）。
+ */
+function preexistingDirtyPaths(baseline: Record<string, string>, current: Record<string, string>): string[] {
+  return Object.keys(baseline).filter(path => current[path] !== undefined).sort();
+}
+
+/**
  * done 阶段：按基线 diff 提交本任务改动，返回要落地为评论的文本（null = 不写评论）。
  * declaredPaths 为本任务显式声明的路径（done body 的 `scope_paths`），文件或目录前缀皆可。
- * 非仓库 / 无基线 / 无差异都返回 null 且不写评论。
+ *
+ * 三类路径分开处理：
+ * - `changed`：claim 以来指纹变化 → 本任务改动；
+ * - `preexisting`：claim 前就已未提交、现在仍未提交 → 指纹相同；只有**声明范围内**的才强制提交
+ *   （否则「接手遗留脏文件并收口」的卡会静默丢提交），评论里标注为强制提交；
+ * - 越界或无法判定的路径一律不提交，只列清单（附可直接执行的补救命令）。
+ * 非仓库 / 无基线 / 既无变化也无历史脏文件才返回 null。
  */
 export async function commitIssueChanges(db: Db, issueId: string, declaredPaths: readonly string[] = []): Promise<string | null> {
   const baselineRow = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
@@ -190,25 +204,46 @@ export async function commitIssueChanges(db: Db, issueId: string, declaredPaths:
       const baseline = JSON.parse(baselineRow.paths_json) as Record<string, string>;
       const current = await snapshotWorkTree(repo);
       const changed = changedPaths(baseline, current.files);
-      if (changed.length === 0) return finish(null);
-
       const declared = normalizeDeclaredPaths(declaredPaths);
       const parallel = parallelClaimCount(db, issue.workspace_id, issueId);
+      const preexisting = preexistingDirtyPaths(baseline, current.files);
+      const forced = declared.length === 0 ? [] : preexisting.filter(path => withinDeclaredScope(path, declared));
+      const shortId = issueId.slice(0, 8);
+
+      /** 未声明范围时的补救提示：给可直接执行的命令，不再静默 */
+      const undeclaredNote = (paths: readonly string[]): string => {
+        const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
+        return `未提交 ${paths.length} 个 claim 前就已修改的文件（指纹未变、不在本次变化集，且未声明范围；仍在工作树）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}\n`
+          + `如需入库：git add -- ${listed.join(' ')} && git commit -m "[${shortId}] ${issue.title}" -- ${listed.join(' ')}`
+          + '；或重新 done 时用 scope_paths 声明这些路径';
+      };
+
       // 并行占用且未声明范围：改动归属不可判定，任何路径都不提交，只把清单交 owner
       if (declared.length === 0 && parallel > 0) {
-        return finish(`检测到 ${parallel} 个并行占用任务，无法判定 ${changed.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(changed, MAX_LISTED_SCOPE_VIOLATIONS)}`);
+        const pending = [...new Set([...changed, ...preexisting])].sort();
+        if (pending.length === 0) return finish(null);
+        return finish(`检测到 ${parallel} 个并行占用任务，无法判定 ${pending.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`);
       }
+
       // 无并行占用 → 变化集即本任务改动；有声明 → 只认声明范围内的路径
-      const paths = declared.length === 0 ? changed : changed.filter(path => withinDeclaredScope(path, declared));
+      const inScope = declared.length === 0 ? changed : changed.filter(path => withinDeclaredScope(path, declared));
       const violations = declared.length === 0 ? [] : changed.filter(path => !withinDeclaredScope(path, declared));
       const violationNote = violations.length === 0
         ? null
         : `未提交 ${violations.length} 个不在本任务声明范围内的改动（仍在工作树，需 owner 确认）：${listPaths(violations, MAX_LISTED_SCOPE_VIOLATIONS)}`;
-      if (paths.length === 0) return finish(violationNote);
+      const paths = [...new Set([...inScope, ...forced])].sort();
+
+      if (paths.length === 0) {
+        // 没有可提交路径时也必须开口：基线内未提交文件不得再静默跳过
+        if (declared.length === 0) return finish(preexisting.length > 0 ? undeclaredNote(preexisting) : null);
+        const outOfScopePreexisting = preexisting.filter(path => !withinDeclaredScope(path, declared));
+        const pending = [...new Set([...violations, ...outOfScopePreexisting])].sort();
+        return finish(pending.length > 0 ? `未提交 ${pending.length} 个不在本任务声明范围内的改动（仍在工作树，需 owner 确认）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}` : violationNote);
+      }
 
       await git(repo, ['add', '-A', '--', ...paths]);
       const identityOk = await identityConfigured(repo);
-      const message = `[${issueId.slice(0, 8)}] ${issue.title}`;
+      const message = `[${shortId}] ${issue.title}`;
       const commitArgs = identityOk
         ? ['commit', '-m', message]
         : ['-c', `user.name=${DEFAULT_IDENTITY.name}`, '-c', `user.email=${DEFAULT_IDENTITY.email}`, 'commit', '-m', message];
@@ -221,7 +256,10 @@ export async function commitIssueChanges(db: Db, issueId: string, declaredPaths:
       if (!identityOk) notes.push(`使用 ${DEFAULT_IDENTITY.name} 默认身份提交`);
       if (baselineRow.head_sha && current.head && baselineRow.head_sha !== current.head) notes.push('任务期间仓库 HEAD 已变化');
       const commitNote = `已自动提交 ${paths.length} 个文件：${listed}${more}（commit ${sha.slice(0, 8)}）${notes.length > 0 ? `；${notes.join('；')}` : ''}`;
-      return finish(violationNote === null ? commitNote : `${commitNote}\n${violationNote}`);
+      const forcedNote = forced.length === 0
+        ? null
+        : `其中 ${forced.length} 个是 claim 前就已修改（基线内未提交）、按声明范围强制提交：${listPaths(forced, MAX_LISTED_SCOPE_VIOLATIONS)}`;
+      return finish([commitNote, forcedNote, violationNote].filter(Boolean).join('\n'));
     } catch (error) {
       const detail = firstLine((error as { stderr?: string; message?: string }).stderr ?? (error as Error).message ?? '');
       return finish(`自动提交失败：${detail}（不影响待验收状态）`);
