@@ -9,6 +9,7 @@ import type { Issue, Priority } from '@agentboard/shared';
 import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
 import { Badge } from '../ui/Badge';
 import { dependencyBadge } from '../../lib/dependency';
+import { GRAB_CURSOR, GRABBING_CURSOR } from '../../lib/cursor';
 import { usePanelStore } from '../../state/panelStore';
 
 export const PRIORITY_BAR: Record<Priority, string> = {
@@ -127,8 +128,8 @@ export function IssueCardPreview({
     <div
       aria-hidden="true"
       data-testid={`drag-overlay-${issue.id}`}
-      style={width === undefined ? undefined : { width }}
-      className={`${CARD_CLASS} cursor-grabbing shadow-lg`}
+      style={{ cursor: GRABBING_CURSOR, ...(width === undefined ? {} : { width }) }}
+      className={`${CARD_CLASS} shadow-lg`}
     >
       <IssueCardPriority issue={issue} />
       <div className="space-y-1.5 py-2 pl-3.5 pr-2">
@@ -160,6 +161,9 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
   const style: CSSProperties = {
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
     transition: transition ?? undefined,
+    // CURSOR-WHITE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
+    // 换成双色自定义光标（白填充 + 深色描边），浅/深主题都可见。占用中仍用禁止符。
+    cursor: claimed ? 'not-allowed' : GRAB_CURSOR,
   };
 
   const onPointerDown = (e: ReactPointerEvent): void => {
@@ -181,9 +185,7 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       title={claimed ? '占用中，不可拖动' : undefined}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`${CARD_CLASS} ${
-        claimed ? 'cursor-not-allowed' : 'cursor-grab active:cursor-grabbing'
-      } ${isDragging ? 'opacity-50' : ''}`}
+      className={`${CARD_CLASS} ${isDragging ? 'opacity-50' : ''}`}
     >
       <IssueCardPriority issue={issue} />
       <div

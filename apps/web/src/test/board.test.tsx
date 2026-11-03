@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -293,7 +293,8 @@ describe('Board 组件', () => {
     // 占用卡禁拖态；未占用卡不禁
     const claimedCard = screen.getByTestId('issue-card-i3');
     expect(claimedCard).toHaveAttribute('aria-disabled', 'true');
-    expect(claimedCard).toHaveClass('cursor-not-allowed');
+    // CURSOR-WHITE：占用态光标由内联 style 接管（不再用 cursor-not-allowed 类）
+    expect(claimedCard.style.cursor).toBe('not-allowed');
     expect(claimedCard).toHaveAttribute('title', '占用中，不可拖动');
     expect(screen.getByTestId('issue-card-i1')).not.toHaveAttribute('aria-disabled');
   });
