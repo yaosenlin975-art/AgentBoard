@@ -13,6 +13,7 @@ import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
+import type { QuotaService } from '../services/quotas/quotaService.js';
 import { getTaskKnowledge } from '../services/taskKnowledge.js';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { ZodType } from 'zod';
@@ -50,6 +51,7 @@ import { SERVER_VERSION } from '../version.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
+import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import { addDependency, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
@@ -85,7 +87,7 @@ export interface RouterDeps {
   /** WS 广播钩子（index.ts 装配 hub.broadcast） */
   broadcast: (event: WsEvent) => void;
   /** 账号 provider 装配（ACC-05/ACC-07）；缺省时账号写接口返回 PROVIDER_UNAVAILABLE */
-  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>> };
+  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -274,7 +276,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use(createSystemRouter({ restart: deps.restart }));
-  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner }));
+  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
     if (raw !== undefined) {

@@ -17,6 +17,7 @@ import { AccountCard, type AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckin } from './OneClickCheckin';
+import { QuotaCards } from './QuotaCards';
 import { APP_LABEL, APP_ORDER, SOURCE_LABEL, capabilityReasonCode, hasReasonLabel, isOfflineApp, reasonCodeOf, reasonLabel, reasonTechnicalCode, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
 
@@ -54,6 +55,8 @@ export function AccountsPanel() {
         <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">账号管理</h3>
         <p className="text-xs text-neutral-500 dark:text-neutral-400">仅展示脱敏元数据；快照、凭据与 token 不出现在界面</p>
       </div>
+
+      <QuotaCards />
 
       <div className="flex flex-wrap items-start gap-3">
         <OneClickCheckin accounts={accounts} capabilities={caps.capabilities} capabilityKnown={capabilityKnown} />

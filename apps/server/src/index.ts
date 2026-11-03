@@ -15,9 +15,11 @@ import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe 
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
 import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts/minimaxDesktopProvider.js';
+import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
+import type { QuotaService } from './services/quotas/quotaService.js';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import express, { type Express } from 'express';
 import { ADAPTERS, getAdapter as defaultGetAdapter, type AgentAdapter } from '@agentboard/adapters';
@@ -73,6 +75,10 @@ export interface CreateAppOptions {
   skillsRoot?: string;
   /** ACC-11 凭据导出 runner（仅测试注入） */
   credentialRunner?: ExportRunner;
+  /** ACC-QUOTA-01 额度聚合（仅测试注入；生产用内置 60s 缓存实现） */
+  quotas?: Pick<QuotaService, 'get'>;
+  /** MINIMAX-PATH 客户端探测（仅测试注入；生产用内置 60s 缓存实现） */
+  minimaxClientProbe?: MinimaxClientProbe;
   /** Private image storage directory; production defaults under AgentBoard config dir. */
   attachmentStorageDir?: string;
   attachmentQuotaBytes?: number;
@@ -125,7 +131,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths() }) }, vault: secretVault }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) }) }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

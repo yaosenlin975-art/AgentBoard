@@ -17,10 +17,12 @@ import {
 } from '../db/repos/checkin.js';
 import { getManagedAccount, publicManagedAccount } from '../db/repos/managedAccount.js';
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
+import { createMinimaxClientProbe, type MinimaxClientProbe, type MinimaxClientStatus } from '../services/accounts/minimaxClientProbe.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
 import { pollCheckinAuthorization, profileLocalDay, startCheckinAuthorization } from '../services/accounts/checkinAuthorization.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
+import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -37,6 +39,10 @@ export interface AccountRouterDeps {
   vault?: CheckinVault;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
   credentialRunner?: ExportRunner;
+  /** ACC-QUOTA-01：额度聚合（仅测试注入；生产用 60s 缓存的内置实现） */
+  quotas?: Pick<QuotaService, 'get'>;
+  /** MINIMAX-PATH：minimax 客户端探测（仅测试注入；生产用 60s 缓存的内置实现） */
+  minimaxClientProbe?: MinimaxClientProbe;
 }
 
 // ACC-10：app_id 校验扩到四值，与 managed_account 的 CHECK 及 shared ManagedAppId 保持一致
@@ -94,9 +100,9 @@ export function resolveProviderMap(providers: CheckinProviderInput): Partial<Rec
   return map;
 }
 
-export function mergeAccountCapabilities(checkinProvider?: CheckinProviderInput): AccountCapability[] {
+export function mergeAccountCapabilities(checkinProvider?: CheckinProviderInput, minimaxClient?: MinimaxClientStatus): AccountCapability[] {
   const available = resolveProviderMap(checkinProvider);
-  return accountProviderCapabilities().map(capability => {
+  return accountProviderCapabilities(minimaxClient).map(capability => {
     const derived = available[capability.app_id] !== undefined;
     const checkinReason = derived ? 'CHECKIN_PROVIDER_AVAILABLE' : 'CHECKIN_PROVIDER_UNVERIFIED';
     const captureReason = capability.capture ? 'OK' : capability.reason_code;
@@ -147,6 +153,18 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
 export function createAccountRouter(deps: AccountRouterDeps): Router {
   const router = Router();
   const { db } = deps;
+  /** ACC-QUOTA-01：单实例缓存（60s TTL + 失败退避），每次服务装配只建一次 */
+  const quotas = deps.quotas ?? createQuotaService();
+  /** MINIMAX-PATH：客户端探测单实例缓存（60s TTL），每次装配只建一次 */
+  const minimaxProbe = deps.minimaxClientProbe ?? createMinimaxClientProbe();
+
+  // ---- ACC-QUOTA-01：账号页额度/余额聚合（逐来源独立结果） ----
+  router.get('/managed-account-quotas', async (req, res) => {
+    const workspace = z.string().uuid().safeParse(req.query.workspace_id ?? undefined);
+    if (req.query.workspace_id !== undefined && !workspace.success) throw new ValidationError('workspace_id 不合法');
+    const snapshot = await quotas.get();
+    res.json({ ...snapshot, workspace_id: workspace.success ? workspace.data : null });
+  });
 
   // ---- managed-accounts ----
   router.get('/managed-accounts', async (req, res) => {
@@ -191,10 +209,12 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   });
 
   // ---- 能力矩阵（ACC-07；board-ui 缺口：前端不再维护副本） ----
-  router.get('/managed-account-capabilities', (req, res) => {
+  router.get('/managed-account-capabilities', async (req, res) => {
     const app = managedAppParam.safeParse(req.query.app ?? undefined);
     if (req.query.app !== undefined && !app.success) throw new ValidationError('app 不合法');
-    const rows = mergeAccountCapabilities(deps.checkinProviders ?? deps.checkinProvider);
+    // MINIMAX-PATH：能力矩阵带上 minimax 客户端探测结果（多候选位置 + 卸载注册表，60s 缓存）
+    const minimaxClient = await minimaxProbe.get();
+    const rows = mergeAccountCapabilities(deps.checkinProviders ?? deps.checkinProvider, minimaxClient);
     res.json(app.success ? rows.filter(row => row.app_id === app.data) : rows);
   });
 

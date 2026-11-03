@@ -228,6 +228,20 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 切换终态：`succeeded`；`failed`+`safe_error_code`=`EXIT_NOT_CONFIRMED`（未确认完全退出，未写任何数据）/ `TARGET_INSTANCE_MISMATCH` `TARGET_IDENTITY_MISMATCH` `SNAPSHOT_VERSION_MISMATCH` `TARGET_SNAPSHOT_INVALID` `SNAPSHOT_MISSING`（validate 拒绝，未写）/ `SWITCH_ROLLED_BACK`（写后失败已回滚并核验原账号）/ `VAULT_READ_FAILED`；`recovery_required`（写后失败且回滚未能核验恢复——实例冻结，同实例后续 capture/switch 409）。safe-exit 降级：UIA 托盘退出失败时广播 WS `account.notice` 请求用户手动退出并轮询退出签名（进程清零 + window-state mtime ≥ auth 写盘）；绝不强杀进程。
 
 
+## 14b. 额度与余额（`GET /api/managed-account-quotas`，accountRoutes.ts，ACC-QUOTA-01）
+
+账号页三来源额度/余额聚合：**逐来源独立结果**（单来源失败不影响其它来源），服务端 60s 缓存 + 失败指数退避（60s 起，上限 10min），同来源并发只打一次第三方。取证结论（2026-11-03）：只有 DeepSeek 有稳定公开端点；OpenCode Go 与 Codex 无公开配额接口，固定返回 `unsupported`（不编造数据）。响应不含 token / identity_hash / 本机路径。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `GET /api/managed-account-quotas` | query：`workspace_id?`（uuid；额度不按工作区切分，仅回显） | `{ items: QuotaResult[], fetched_at: number, workspace_id: string\|null }` | 400 `VALIDATION_ERROR`（workspace_id 非 uuid） | `services/quotas/quotaService.ts` |
+
+`QuotaResult = { source: 'deepseek'\|'opencode_go'\|'codex', status: 'ok'\|'unsupported'\|'error', balance: number\|null, unit: 'CNY'\|'USD'\|null, windows: Array<{ name: string, remaining: number, reset_at: number\|null }>, fetched_at: number, reason_code: string\|null, detail: string\|null }`
+
+- **deepseek**：`GET https://api.deepseek.com/user/balance`（Bearer；key 取 `DEEPSEEK_API_KEY` 或 `~/.deepseek/config.toml` 的 `api_key`）。`ok` 时给 `balance`/`unit`（优先 CNY）；无 key → `unsupported` `NO_CREDENTIAL`；401/403 → `error` `CREDENTIAL_INVALID`；429 → `RATE_LIMITED`；5xx → `UPSTREAM_ERROR`；网络/超时 → `NETWORK_ERROR`；结构不符 → `UPSTREAM_SHAPE_UNEXPECTED`。
+- **opencode_go**：无公开配额端点（官方只在 console 页面展示；本机探测 `/models`/`/usage`/`/me`/`/key` 全 404）→ 恒 `unsupported` `NO_PUBLIC_QUOTA_ENDPOINT`，`detail` 区分「已检测到 / 未检测到本机 API key」。不发起任何请求。
+- **codex**：只有 ChatGPT OAuth 登录态（`~/.codex/auth.json`）；`/backend-api/codex/usage` 与 `/rate_limits` 均 403，本地 sqlite/global-state 无窗口数据 → 恒 `unsupported` `NO_PUBLIC_QUOTA_ENDPOINT`，`detail` 区分登录态有无。不发起任何请求。
+- `windows[].reset_at` 为该窗口重置时刻（epoch ms），前端展示为本地 `HH:mm` + 剩余时长；无窗口概念时 `windows = []`。
 ## 15. system（`/api/system`，systemRoutes.ts，SYSTEM-RESTART）
 
 服务自重启，供设置页「重启服务器」按钮调用。**无鉴权**，因此只允许本机回环地址触发（`req.ip` ∈ `127.0.0.1` / `::1` / `::ffff:127.0.0.1`，本项目无反向代理，不读 `X-Forwarded-For`）。

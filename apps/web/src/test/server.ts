@@ -26,4 +26,14 @@ export const server = setupServer(
   ),
   // 顶栏/设置弹窗版本号（各测试可覆盖）
   http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
+  // ACC-QUOTA-01：账号页额度卡默认夹具（ok / unsupported / error 三态各一条，避免走真实 fetch）
+  http.get('/api/managed-account-quotas', () => HttpResponse.json({
+    workspace_id: null,
+    fetched_at: 1_700_000_000_000,
+    items: [
+      { source: 'deepseek', status: 'ok', balance: 12.34, unit: 'CNY', windows: [], fetched_at: 1_700_000_000_000, reason_code: null, detail: null },
+      { source: 'opencode_go', status: 'unsupported', balance: null, unit: null, windows: [], fetched_at: 1_700_000_000_000, reason_code: 'NO_PUBLIC_QUOTA_ENDPOINT', detail: null },
+      { source: 'codex', status: 'error', balance: null, unit: null, windows: [], fetched_at: 1_700_000_000_000, reason_code: 'NETWORK_ERROR', detail: null },
+    ],
+  })),
 );
