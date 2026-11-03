@@ -23,6 +23,7 @@ import { usePanelStore } from '../../state/panelStore';
 import { CommentThread } from './CommentThread';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
+import { isOverdue, overdueDays } from '../../lib/planningSort';
 import { SessionList } from './SessionList';
 
 const inputCls =
@@ -72,6 +73,9 @@ export function DetailPanel() {
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<Priority>('中');
   const [labelsInput, setLabelsInput] = useState('');
+  /** DUE-DATE：日期与时间分别可空，各自走防抖 PATCH */
+  const [dueDate, setDueDate] = useState('');
+  const [dueTime, setDueTime] = useState('');
   const [descEditing, setDescEditing] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [claimBlocked, setClaimBlocked] = useState(false);
@@ -84,6 +88,8 @@ export function DetailPanel() {
     setDescription(issue.description);
     setPriority(issue.priority);
     setLabelsInput(issue.labels.join(','));
+    setDueDate(issue.due_date ?? '');
+    setDueTime(issue.due_time ?? '');
     setDescEditing(false);
     setConfirmingDelete(false);
     setClaimBlocked(false);
@@ -304,6 +310,60 @@ export function DetailPanel() {
                 {statusBlocked}
               </span>
             )}
+          </label>
+
+          <label className="block text-sm">
+            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">
+              截止日期（可选；不填 = 不设截止）
+              {dueDate !== '' && isOverdue({ due_date: dueDate, due_time: dueTime === '' ? null : dueTime }, Date.now()) && (
+                <span data-testid="detail-due-overdue" className="ml-2 rounded bg-red-100 px-1 text-xs font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300">
+                  已逾期 {overdueDays({ due_date: dueDate, due_time: dueTime === '' ? null : dueTime }, Date.now())} 天
+                </span>
+              )}
+            </span>
+            <span className="flex items-center gap-2">
+              <input
+                type="date"
+                data-testid="detail-due-date"
+                aria-label="截止日期"
+                value={dueDate}
+                onChange={(e) => {
+                  setDueDate(e.target.value);
+                  schedulePatch('due_date', e.target.value === '' ? null : e.target.value);
+                  if (e.target.value === '') {
+                    setDueTime('');
+                    schedulePatch('due_time', null);
+                  }
+                }}
+                className={inputCls}
+              />
+              <input
+                type="time"
+                data-testid="detail-due-time"
+                aria-label="截止时间"
+                value={dueTime}
+                disabled={dueDate === ''}
+                onChange={(e) => {
+                  setDueTime(e.target.value);
+                  schedulePatch('due_time', e.target.value === '' ? null : e.target.value);
+                }}
+                className={inputCls}
+              />
+              <button
+                type="button"
+                data-testid="detail-due-clear"
+                disabled={dueDate === '' && dueTime === ''}
+                onClick={() => {
+                  setDueDate('');
+                  setDueTime('');
+                  schedulePatch('due_date', null);
+                  schedulePatch('due_time', null);
+                }}
+                className="rounded border border-neutral-300 px-2 py-1 text-xs text-neutral-600 disabled:opacity-40 dark:border-neutral-600 dark:text-neutral-300"
+              >
+                清除
+              </button>
+            </span>
           </label>
 
           <label className="block text-sm">

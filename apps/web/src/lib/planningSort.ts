@@ -85,6 +85,31 @@ export function isOverdue(issue: Pick<Issue, 'due_date' | 'due_time'>, now: numb
 }
 
 /** 紧迫度分：逾期 50 / ≤3天 30 / ≤7天 15 / >7天 5 / 无截止 0 */
+/**
+ * 截止展示（DUE-DATE）：卡片用短格式 `11-10` / `11-10 14:30`；无截止返回 null。
+ * 缺失字段按「无截止」处理（服务端未上线时的可选读取）。
+ */
+export function formatDueShort(issue: Pick<Issue, 'due_date' | 'due_time'>): string | null {
+  const date = issue.due_date;
+  if (typeof date !== 'string' || date.length < 10) return null;
+  const short = `${date.slice(5, 7)}-${date.slice(8, 10)}`;
+  const time = issue.due_time;
+  return typeof time === 'string' && time !== '' ? `${short} ${time}` : short;
+}
+
+/**
+ * 逾期天数（DUE-DATE）：未逾期返回 0；逾期返回至少 1（当天时间已过 = 1 天）。
+ * 与 `isOverdue` 同源（含「有 time 比到分钟、无 time 比到当天 24:00」的口径）。
+ */
+export function overdueDays(issue: Pick<Issue, 'due_date' | 'due_time'>, now: number): number {
+  if (!isOverdue(issue, now)) return 0;
+  const stamp = dueTimestamp(issue);
+  if (stamp === null) return 0;
+  // 无时间时当天 24:00 才失效，所以逾期天数从「有效截止时刻」起算
+  const deadline = typeof issue.due_time === 'string' && issue.due_time !== '' ? stamp : stamp + DAY;
+  return Math.max(1, Math.ceil((now - deadline) / DAY));
+}
+
 export function urgencyScore(issue: Pick<Issue, 'due_date' | 'due_time'>, now: number): number {
   const stamp = dueTimestamp(issue);
   if (stamp === null) return URGENCY_SCORE.none;

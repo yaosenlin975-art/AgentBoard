@@ -154,8 +154,9 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签（逗号拆分）')
     .option('--parent <issue-id>', '父任务 id')
+    .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
-    .action(async (workspace: string, title: string, opts: { description?: string; priority?: string; labels?: string; parent?: string; requestId?: string }) =>
+    .action(async (workspace: string, title: string, opts: { description?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, io), {
         workspace,
         title,
@@ -163,6 +164,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
         priority: opts.priority,
         labels: opts.labels,
         parentIssueId: opts.parent,
+        due: opts.due,
         requestId: opts.requestId,
       }));
 

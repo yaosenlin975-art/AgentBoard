@@ -6,6 +6,7 @@
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import type { Issue, Priority } from '@agentboard/shared';
+import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
 import { Badge } from '../ui/Badge';
 import { dependencyBadge } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
@@ -37,6 +38,22 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
   return (
     <>
       <div className="font-medium leading-snug">{issue.title}</div>
+      {(() => {
+        const due = formatDueShort(issue);
+        if (due === null) return null;
+        const late = isOverdue(issue, Date.now());
+        const days = overdueDays(issue, Date.now());
+        return (
+          <span
+            data-testid={`due-badge-${issue.id}`}
+            data-overdue={late ? 'true' : 'false'}
+            title={late ? `已逾期 ${days} 天（截止 ${due}）` : `截止 ${due}`}
+            className={`w-fit rounded px-1.5 py-0.5 text-xs ${late ? 'bg-red-100 font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}
+          >
+            {late ? `逾期 ${days} 天 · ${due}` : `截止 ${due}`}
+          </span>
+        );
+      })()}
       {issue.labels.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {issue.labels.map((label) => (

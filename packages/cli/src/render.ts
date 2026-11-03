@@ -19,6 +19,7 @@ export function issueLines(issue: Issue): string[] {
     `父任务: ${issue.parent_issue_id ?? '（根任务）'}`,
     `优先级: ${issue.priority}`,
     `标签: ${issue.labels.length > 0 ? issue.labels.join(', ') : '（无）'}`,
+    `截止: ${issue.due_date === null || issue.due_date === undefined ? '（未设置）' : `${issue.due_date}${issue.due_time === null || issue.due_time === undefined ? '' : ` ${issue.due_time}`}`}`,
     `sort_order: ${issue.sort_order}`,
     `占用者: ${issue.claimed_by ?? '（未占用）'}`,
     `claimed_at: ${issue.claimed_at ?? '-'}`,
