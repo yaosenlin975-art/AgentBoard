@@ -1,4 +1,4 @@
-﻿// 正式页（8787）六项冒烟：真实浏览器 + 计算样式/几何断言，逐项出证据与截图。
+// 正式页（8787）六项冒烟：真实浏览器 + 计算样式/几何断言，逐项出证据与截图。
 const PORT = 9333;
 const BASE = 'http://127.0.0.1:8787/';
 const OUT = 'D:\\WorkSpaces\\任务看板\\Docs\\verification\\2026-11-04-formal-page-smoke';

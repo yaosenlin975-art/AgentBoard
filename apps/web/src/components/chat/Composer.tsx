@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactC
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
+import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
 import {
   detectMentionTrigger,
@@ -52,7 +52,8 @@ export function Composer({
   queuedCount: number;
   /** 当前会话所属工作区；`@` 只匹配该工作区任务 */
   workspaceId?: string | null;
-  onSend: (text: string) => Promise<void>;
+  /** CHAT-IMG-DELIVERY：第二参数为草稿中实际保留的粘贴图片附件 id（按出现顺序去重） */
+  onSend: (text: string, attachmentIds: string[]) => Promise<void>;
 }) {
   // DETAIL-VIEW-BUG2：草稿存 panelStore（视图按需挂载后切回来仍保留）
   const value = usePanelStore((s) => s.chatDraft);
@@ -146,9 +147,15 @@ export function Composer({
       return;
     }
     setError(null);
+    // CHAT-IMG-DELIVERY：只投递草稿里仍保留 markdown 的图片（用户手删即不投递），与消息文本一致
+    const attachmentIds = attachmentIdsFromText(text);
+    if (attachmentIds.length > 5) {
+      setError('一条消息最多附带 5 张图片，请删除多余的图再发送');
+      return;
+    }
     setSending(true);
     try {
-      await onSend(text);
+      await onSend(text, attachmentIds);
       setValue('');
       setMention(null);
     } catch (e) {

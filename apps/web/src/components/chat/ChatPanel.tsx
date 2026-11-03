@@ -218,10 +218,14 @@ export function ChatPanel() {
   });
 
   const handleSend = useCallback(
-    async (text: string): Promise<void> => {
+    async (text: string, attachmentIds: string[]): Promise<void> => {
       const sid = sessionId;
       if (sid === null) return;
-      const res = await api.post<{ queued: boolean }>(`/api/sessions/${sid}/messages`, { text });
+      // CHAT-IMG-DELIVERY：无附件时不带键（保持既有请求体）；有附件时服务端绑定 session_attachment 并以图片字节投递
+      const res = await api.post<{ queued: boolean }>(`/api/sessions/${sid}/messages`, {
+        text,
+        ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+      });
       if (res.queued) setQueuedCount((c) => c + 1);
       await catchUp(sid);
     },

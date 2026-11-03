@@ -1,4 +1,4 @@
-﻿const PORT = 9333;
+const PORT = 9333;
 const OUT = 'D:\\WorkSpaces\\任务看板\\Docs\\verification\\2026-11-04-formal-page-smoke';
 import { writeFileSync } from 'node:fs';
 const sleep = ms => new Promise(r => setTimeout(r, ms));

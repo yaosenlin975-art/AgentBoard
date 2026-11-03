@@ -141,7 +141,7 @@ describe('Composer 联想输入（CHAT-MENTION）', () => {
     fireEvent.change(input(), { target: { value: '普通消息' } });
     expect(screen.queryByTestId('mention-popover')).not.toBeInTheDocument();
     fireEvent.keyDown(input(), { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('普通消息'));
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('普通消息', []));
   });
 
   it('无匹配时浮窗关闭且不阻塞输入', async () => {

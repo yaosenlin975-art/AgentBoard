@@ -80,3 +80,18 @@ export function collectDraftImages(
   }
   return { accepted, rejection };
 }
+
+/**
+ * CHAT-IMG-DELIVERY：从草稿文本提取粘贴上传的附件 id（按出现顺序去重）。
+ * 只认指向本服务附件端点的图片 markdown（`![…](/api/workspaces/{ws}/attachments/{id})`）；
+ * 用户手删了某张图的 markdown 即视为不投递该图。超 5 张由调用方提示。
+ */
+export function attachmentIdsFromText(text: string): string[] {
+  const pattern = /!\[[^\]]*\]\(\/api\/workspaces\/[^/)]+\/attachments\/([^/)]+)\)/g;
+  const ids: string[] = [];
+  for (const match of text.matchAll(pattern)) {
+    const id = match[1];
+    if (id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
