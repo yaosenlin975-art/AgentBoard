@@ -375,7 +375,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
         >
           <div
             data-testid="changelog-list-pane"
-            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-md border border-hairline bg-surface-card p-2"
+            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-xl border border-hairline bg-surface-card p-2"
           >
             {sorted.length === 0 ? (
               <p
@@ -444,7 +444,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
           <div
             ref={scrollRef}
             data-testid="changelog-scroll"
-            className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+            className="min-h-0 overflow-auto rounded-xl border border-hairline bg-surface-card"
           >
             {sorted.length === 0 ? (
               <p data-testid="changelog-empty-doc" className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">

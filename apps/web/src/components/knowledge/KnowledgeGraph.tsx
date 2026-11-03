@@ -30,6 +30,7 @@ import { textAlpha, tintFromCssColor } from '../../lib/graphVisualFormulas';
 import { createForceLayoutClient, type ForceLayoutClient } from '../../lib/forceLayoutClient';
 import { localGraphSlice } from '../../lib/localGraph';
 import { GRAB_CURSOR } from '../../lib/cursor';
+import { Kbd } from '../ui/Kbd';
 import { FORCE_SLIDER_DEFAULTS, GraphControls, type ForceSliders } from './GraphControls';
 import type { PixiGraphData, PixiGraphHandle } from './pixiGraph';
 
@@ -409,7 +410,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-matches={matches.size}
       data-focus-id={focusId ?? ''}
       data-focus-hops={focusHops}
-      className="flex min-h-0 flex-col rounded-lg border border-hairline bg-surface-card"
+      className="flex min-h-0 flex-col rounded-2xl border border-hairline bg-surface-card"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-2 text-xs text-ink-2">
         <label className="flex items-center gap-1">
@@ -550,6 +551,19 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('keyword', dark).color} strokeWidth={edgeStyle('keyword', dark).width} strokeDasharray="4 3" /></svg>
           关键词关联（虚线）
         </span>
+        {/* UNSLOP-5：画布真实支持的快捷键（pixiGraph keydown：方向键平移、+/- 缩放、Esc 关右键菜单）用键帽呈现 */}
+        <span data-testid="graph-keyboard-hints" className="ml-auto flex items-center gap-1">
+          <Kbd>方向键</Kbd>
+          <span>平移</span>
+          <span aria-hidden>·</span>
+          <Kbd>+</Kbd>
+          <span aria-hidden>/</span>
+          <Kbd>−</Kbd>
+          <span>缩放</span>
+          <span aria-hidden>·</span>
+          <Kbd>Esc</Kbd>
+          <span>关菜单</span>
+        </span>
       </div>
 
       {focusId !== null && (
@@ -650,7 +664,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
               role="menu"
               aria-label="节点操作"
               style={{ position: 'fixed', left: menu.x, top: menu.y }}
-              className="z-50 min-w-40 rounded-md border border-hairline bg-surface-card py-1 text-xs"
+              className="z-50 min-w-40 rounded-lg border border-hairline bg-surface-card py-1 text-xs"
             >
               <button
                 type="button"

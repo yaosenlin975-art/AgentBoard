@@ -14,6 +14,7 @@ import { KnowledgePageDetail } from './KnowledgePageDetail';
 import { KnowledgeGraph } from './KnowledgeGraph';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
+import { Kbd } from '../ui/Kbd';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -111,15 +112,20 @@ export function KnowledgePanel({
 
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
       <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">范围
-        <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className="h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+        <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
       </label>
-      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={"h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-w-24 flex-1"} />
-      <button className="inline-flex h-8 shrink-0 items-center rounded-md border border-accent bg-accent-soft px-3 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="submit">搜索</button>
+      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={"h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-w-24 flex-1"} />
+      <button className="inline-flex h-8 shrink-0 items-center rounded-lg border border-accent bg-accent-soft px-3 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="submit">搜索</button>
+      {/* UNSLOP-5：表单内回车即提交（真实快捷键），用键帽呈现 */}
+      <span data-testid="knowledge-search-hint" className="hidden items-center gap-1 text-xs text-ink-3 sm:inline-flex">
+        <Kbd>Enter</Kbd>
+        <span>搜索</span>
+      </span>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
       {!query && <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">状态
-        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
       </label>}
@@ -139,7 +145,9 @@ export function KnowledgePanel({
         </div>
       ) : (
       <div className="min-w-0 lg:w-80 lg:flex-none">
-        {list.isPending && <ul data-testid="knowledge-skeleton" aria-hidden className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+        {list.isPending && <ul data-testid="knowledge-skeleton" aria-hidden className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
+          {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），
+              数据到位即卸载，不是装饰性循环动画 → 保留，不要搬到其它非实时状态。 */}
           {[0, 1, 2].map(i => <li key={i} className="animate-pulse px-3 py-3">
             <div className="h-3.5 w-2/3 rounded bg-neutral-200 dark:bg-neutral-800" />
             <div className="mt-2 h-3 w-full rounded bg-neutral-100 dark:bg-neutral-800/70" />
@@ -148,12 +156,12 @@ export function KnowledgePanel({
         </ul>}
         {list.isPending && <p className="sr-only">加载中…</p>}
 
-        {!list.isPending && !list.isError && items.length === 0 && <div data-testid="knowledge-empty" className="rounded-lg border border-dashed border-neutral-300 px-4 py-10 text-center dark:border-neutral-700">
+        {!list.isPending && !list.isError && items.length === 0 && <div data-testid="knowledge-empty" className="rounded-xl border border-dashed border-hairline px-4 py-10 text-center">
           <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{query ? '没有匹配的知识' : '暂无知识'}</p>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'}</p>
         </div>}
 
-        {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface-card">
+        {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
           {items.map(page => {
             const isSelected = selected?.id === page.id && selected?.scope === page.scope;
             const isExpired = page.expires_at !== null && page.expires_at !== undefined && page.expires_at <= Date.now();
