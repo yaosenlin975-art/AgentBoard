@@ -25,7 +25,20 @@ import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
 
-/** 错误 → (stderr, 退出码)：连接拒绝 1；409 已被占用 2；其余 1 */
+/** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
+const EXIT_CODE_HELP = `
+退出码：
+  0  成功（--help / --version 同样 0）
+  1  参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动任何数据
+  2  冲突：占用（已被 <agent> 占用 / 未被占用 / 非当前占用者）、状态不可领取、知识页 revision 冲突、
+     幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）；命令未改动数据，按提示处置后重试
+  3  kb dep 专用：依赖参数错误（自环 / 跨工作区 / VALIDATION_ERROR）
+  4  kb dep 专用：任务或依赖不存在
+约定：原因一律写 stderr（单行可读）；--json 只改 stdout 结构，不改退出码。
+`;
+
+
+/** 错误 → (stderr, 退出码)：连接拒绝 1；409 冲突 2；其余 1 */
 export function toExit(err: unknown, io: Io): number {
   if (err instanceof ServerUnreachableError) {
     io.writeErr(`${err.message}\n`);
@@ -35,8 +48,14 @@ export function toExit(err: unknown, io: Io): number {
     if (err.status === 409) {
       // 服务端已给出自解释文案的 409 原样透传（删除被占用/含子任务等），不再包装成「已被占用（…）」
       const raw = err.code.startsWith('KNOWLEDGE_') || err.code.startsWith('CHANGELOG_')
-        || err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_KEY_REUSED';
-      io.writeErr(raw ? `${err.message}\n` : err.message === '已被占用' ? '已被占用\n' : `已被占用（${err.message}）\n`);
+        || err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_KEY_REUSED'
+        // CLAIM-MSG：占用冲突与「状态不可领取」自带自解释文案，原样透传
+        || err.code === 'ISSUE_CLAIMED' || err.code === 'ISSUE_STATUS_NOT_CLAIMABLE' || err.code === 'NOT_TASK_OWNER';
+      // CLI-CRASH：done/fail 报「未被占用」时给可操作下一步，而不是让人卡在最后一步
+      const hint = err.message === '未被占用'
+        ? '未被占用：如需推进请先 kb claim，或使用 kb close（待验收 → 已关闭）\n'
+        : raw ? `${err.message}\n` : err.message === '已被占用' ? '已被占用\n' : `已被占用（${err.message}）\n`;
+      io.writeErr(hint);
       return 2;
     }
     io.writeErr(`${err.message}\n`);
