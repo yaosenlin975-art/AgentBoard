@@ -139,6 +139,12 @@ export function Composer({
   const submit = async (): Promise<void> => {
     const text = value.trim();
     if (text === '' || sending || disabled) return;
+    // CHAT-USER-IMAGE：图片仍在上传时不许发送。否则消息先发出去（不含图片 markdown），
+    // 上传完成后 markdown 只会落回已清空的输入框 → 用户看到「气泡里没有图」。
+    if (uploadingImages > 0) {
+      setError('图片还在上传，请稍候再发送');
+      return;
+    }
     setError(null);
     setSending(true);
     try {
@@ -308,7 +314,11 @@ export function Composer({
           {sending ? '发送中…' : '发送'}
         </button>
       </div>
-      {error !== null && (
+      {uploadingImages > 0 && (
+        <p data-testid="composer-uploading" role="status" className="text-xs text-ink-3">
+          图片上传中…（完成后会自动插入到光标处，再发送）
+        </p>
+      )}      {error !== null && (
         <p data-testid="composer-error" role="alert" className="text-xs text-red-600 dark:text-red-400">
           {error}
         </p>

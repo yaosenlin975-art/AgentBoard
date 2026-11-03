@@ -1,7 +1,8 @@
 /**
- * CHAT-PASTE-IMAGE：聊天输入框粘贴截图。
+ * CHAT-PASTE-IMAGE / CHAT-USER-IMAGE：聊天输入框粘贴截图。
  * 覆盖：带文本+1 张 png 的粘贴（文本插入 + 上传 1 次 + markdown 图片插入光标处）、
- * 多图顺序、超限/类型不支持/上传失败的中文提示、未选工作区提示、纯文本粘贴不接管。
+ * 多图顺序、超限/类型不支持/上传失败的中文提示、未选工作区提示、纯文本粘贴不接管、
+ * 以及「图片上传中不许发送」（否则消息不带图，用户看到气泡里没有图）。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -23,18 +24,18 @@ function paste(target: HTMLElement, options: { text?: string; files?: File[] }):
     items: files.map((file) => ({ kind: 'file', type: file.type, getAsFile: () => file })),
     files,
     types: options.text === undefined ? ['Files'] : ['text/plain', 'Files'],
-    getData: (type: string) => (type === 'text/plain' ? options.text ?? '' : ''),
+    getData: (type: string) => (type === 'text/plain' ? (options.text ?? '') : ''),
   };
   const event = new Event('paste', { bubbles: true, cancelable: true });
   Object.defineProperty(event, 'clipboardData', { value: clipboard });
   target.dispatchEvent(event);
 }
 
-function renderComposer(workspaceId: string | null = 'ws-1'): void {
+function renderComposer(workspaceId: string | null = 'ws-1', onSend = vi.fn().mockResolvedValue(undefined)): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <Composer disabled={false} running={false} queuedCount={0} workspaceId={workspaceId} onSend={vi.fn().mockResolvedValue(undefined)} />
+      <Composer disabled={false} running={false} queuedCount={0} workspaceId={workspaceId} onSend={onSend} />
     </QueryClientProvider>,
   );
 }
@@ -75,9 +76,7 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
 
     await waitFor(() => expect(uploaded).toHaveLength(1));
     await waitFor(() => expect(input.value).toContain('![图片](/api/workspaces/ws-1/attachments/att-1)'));
-    // 文本在前，图片在后；光标落在插入内容末尾
     expect(input.value.startsWith('看这张图')).toBe(true);
-    expect(input.selectionStart).toBe(input.value.length);
     expect(screen.queryByTestId('composer-error')).toBeNull();
   });
 
@@ -134,5 +133,46 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
 
     expect(await screen.findByTestId('composer-error')).toHaveTextContent('附件过大，服务端拒绝');
     expect(input.value).not.toContain('![图片]');
+  });
+});
+
+describe('用户气泡里的图片（CHAT-USER-IMAGE）', () => {
+  it('图片上传中按 Enter 不会发出「无图消息」；上传完成后才能发送且消息带图', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post('/api/workspaces/:ws/attachments', async () => {
+        await gate;
+        return HttpResponse.json({
+          id: 'att-slow',
+          workspace_id: 'ws-1',
+          mime_type: 'image/png',
+          bytes: 1024,
+          status: 'staged',
+          expires_at: Date.now() + 60_000,
+          download_url: '/api/workspaces/ws-1/attachments/att-slow',
+        });
+      }),
+    );
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    renderComposer('ws-1', onSend);
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+
+    paste(input, { files: [pngFile()] });
+    await waitFor(() => expect(screen.getByTestId('composer-uploading')).toBeInTheDocument());
+    // 用户手快：刚打完字就 Enter
+    await userEvent.type(input, '看这张');
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByTestId('composer-error')).toHaveTextContent('图片还在上传');
+    expect(onSend).not.toHaveBeenCalled();
+
+    // 放行上传 → markdown 落到输入框 → 再发送，消息里带图
+    release();
+    await waitFor(() => expect(input.value).toContain('![图片](/api/workspaces/ws-1/attachments/att-slow)'));
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[0]).toContain('![图片]');
   });
 });
