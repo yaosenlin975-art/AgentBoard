@@ -132,6 +132,27 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
     expect(note).toContain('git commit -m');
   });
 
+  it('loudlyReportsZeroHitScopeWithCopyPasteRemedy', async () => {
+    // SCOPE-GUARD：声明了 scope 但一个都没命中 → 显眼标题 + 可直接执行的补救命令，done 仍成功
+    writeFileSync(join(repo, 'dirty.txt'), 'claim 后改动\n');
+    const issueId = await makeIssue('零命中卡');
+    await claim(issueId);
+
+    const res = await done(issueId, ['nomatch/']);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('待验收');
+    expect(commitCount()).toBe(1); // 没有产生提交
+
+    const note = comments(issueId).join('\n');
+    expect(note).toContain('⚠ 声明范围零命中，本次未自动提交');
+    expect(note).toContain('声明范围：nomatch');
+    expect(note).toContain('未提交的改动（1 个）：dirty.txt');
+    expect(note).toContain('git add -- dirty.txt; git commit -m');
+    expect(note).toContain('--scope a --scope b');
+    // 文件仍在工作树
+    expect(git(repo, ['status', '--porcelain'])).toContain('dirty.txt');
+  });
+
   it('keepsPreExistingOutsideDeclaredScopeUncommittedAndListsIt', async () => {
     writeFileSync(join(repo, 'mine.txt'), 'mine\n');
     writeFileSync(join(repo, 'theirs.txt'), 'theirs\n');

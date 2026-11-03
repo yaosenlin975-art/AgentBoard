@@ -113,9 +113,9 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<issue-id>', '任务 id')
     .option('--notes <text>', '完成备注')
     .option(
-      '--scope <path>',
-      '声明本任务改动的路径（文件或目录前缀，可多次/逗号分隔）；有并行占用时只提交声明范围内的改动',
-      (value: string, previous: string[] = []) => [...previous, ...value.split(',')],
+      '--scope <paths...>',
+      '声明本任务改动的路径（文件或目录前缀）。**必须重复传参**：--scope a --scope b；逗号串在 PowerShell 下会被拆成多个参数（已兼容吞下，但不保证顺序与语义）',
+      (value: string, previous: string[] = []) => [...previous, ...value.split(',').map(item => item.trim()).filter(Boolean)],
       [],
     )
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')

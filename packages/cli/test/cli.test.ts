@@ -643,6 +643,16 @@ describe('done / fail', () => {
     expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', scope_paths: ['apps/server/src', 'packages/cli/a.ts', 'packages/cli/b.ts'] });
   });
 
+  it('done --scope 值含空格：stderr 警告提示改重复传参（PowerShell 逗号串陷阱）', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '待验收' } } : undefined);
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--scope', 'a.txt b.txt'], t.io);
+    expect(code).toBe(0);
+    expect(t.err()).toContain('--scope 值含空格');
+    expect(t.err()).toContain('重复传参');
+    expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', scope_paths: ['a.txt b.txt'] });
+  });
+
   it('done 带 knowledge_hint：输出「提示:」建议行，退出码仍 0 且不出现错误字样', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/done'

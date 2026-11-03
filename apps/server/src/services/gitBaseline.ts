@@ -210,6 +210,27 @@ export async function commitIssueChanges(db: Db, issueId: string, declaredPaths:
       const forced = declared.length === 0 ? [] : preexisting.filter(path => withinDeclaredScope(path, declared));
       const shortId = issueId.slice(0, 8);
 
+      /** 可复制的补救命令（PowerShell / bash 都能直接粘贴执行，不使用行连接符） */
+      const remedyCommand = (paths: readonly string[]): string => {
+        const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
+        const quoted = listed.map(path => (/\s|["']/.test(path) ? JSON.stringify(path) : path));
+        const title = `[${shortId}] ${issue.title.replace(/"/g, '\\"')}`;
+        // 用 `;` 连接：PowerShell 5.1 不支持 `&&`，bash 里 `;` 同样可用
+        return `git add -- ${quoted.join(' ')}; git commit -m "${title}" -- ${quoted.join(' ')}`;
+      };
+
+      /**
+       * SCOPE-GUARD：声明了 scope 但一个路径都没命中——最容易「看着 done、其实没提交」的场景。
+       * 评论升级成显眼标题 + 可直接执行的补救命令；done 本身仍然成功（不把已完成的工作卡住）。
+       */
+      const zeroHitNote = (declaredScopes: readonly string[], pending: readonly string[]): string => [
+        '⚠ 声明范围零命中，本次未自动提交（done 已生效，工作树未改动）',
+        `- 声明范围：${declaredScopes.join(' / ')}`,
+        `- 未提交的改动（${pending.length} 个）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`,
+        `- 补救（可直接复制执行）：${pending.length > 0 ? remedyCommand(pending) : '（无待提交文件）'}`,
+        '- 常见原因：`--scope` 用逗号串被 PowerShell 拆成多个参数、只识别到其中一段；请改成重复传参（`--scope a --scope b`）',
+      ].join('\n');
+
       /** 未声明范围时的补救提示：给可直接执行的命令，不再静默 */
       const undeclaredNote = (paths: readonly string[]): string => {
         const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
@@ -236,9 +257,10 @@ export async function commitIssueChanges(db: Db, issueId: string, declaredPaths:
       if (paths.length === 0) {
         // 没有可提交路径时也必须开口：基线内未提交文件不得再静默跳过
         if (declared.length === 0) return finish(preexisting.length > 0 ? undeclaredNote(preexisting) : null);
+        // SCOPE-GUARD：声明了范围却零命中 → 显眼标题 + 可复制的补救命令
         const outOfScopePreexisting = preexisting.filter(path => !withinDeclaredScope(path, declared));
         const pending = [...new Set([...violations, ...outOfScopePreexisting])].sort();
-        return finish(pending.length > 0 ? `未提交 ${pending.length} 个不在本任务声明范围内的改动（仍在工作树，需 owner 确认）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}` : violationNote);
+        return finish(zeroHitNote(declared, pending));
       }
 
       await git(repo, ['add', '-A', '--', ...paths]);

@@ -7,6 +7,13 @@ description: AgentBoard 看板技能族入口：何时加载 writing-task / exec
 
 AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI 读写。本技能是看板技能族的入口与唯一权威来源；`writing-task`、`executing-task`、`handoff` 只承载各自流程，冲突时以本技能为准。
 
+## --scope 传参（SCOPE-GUARD，2026-11-03）
+
+- `kb done` 的 `--scope` **必须为每个路径重复传一次**：`kb done <id> --scope a --scope b`。
+- **不要用逗号串**：PowerShell 会把 `--scope a,b` 拆开/合并成别的参数，出现 `too many arguments for 'done'`，或只识别到其中一段；结果就是「done 成功但零命中、没有提交」。
+- 服务端在「声明了范围却零命中」时会写一条 `⚠ 声明范围零命中，本次未自动提交` 的系统评论，并给出可直接复制执行的 `git add -- <paths>; git commit -m "..." -- <paths>` 补救命令；照抄执行即可。
+- 看到这条评论＝你的改动没进 git，不要当成已完成；先执行补救命令，再看 `git log -1`。
+
 ## 权威来源解析（强制）
 
 本文件就是族内权威文档。凡引用「权威来源 / AgentBoard operating guide / 工作区边界（强制）」的地方，文档路径一律按本节解析；本节是族内唯一解析规则，`writing-task`、`executing-task`、`handoff` 只指回本节，不复制解析表。

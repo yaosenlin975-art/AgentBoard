@@ -13,7 +13,20 @@ export interface DoneArgs {
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
   const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string } = { agent_id: ctx.agentId };
   if (args.notes !== undefined) body.notes = args.notes;
-  if (args.scope !== undefined && args.scope.length > 0) body.scope_paths = args.scope;
+  if (args.scope !== undefined && args.scope.length > 0) {
+    /**
+     * SCOPE-GUARD：PowerShell 会把 `--scope a,b` 的逗号串拆开、甚至合并成一个含空格的参数（"a b"）。
+     * 含空格的值既可能是真实文件名、也可能是被拆坏的多个路径，静默再拆一次有风险 → 只报警不猜。
+     */
+    const suspicious = args.scope.filter(item => /\s/.test(item));
+    if (suspicious.length > 0) {
+      ctx.io.writeErr(
+        `警告：--scope 值含空格（${suspicious.map(item => JSON.stringify(item)).join('、')}），` +
+        '可能是 PowerShell 把逗号串拆开/合并了。请为每个路径重复传参：--scope a --scope b\n',
+      );
+    }
+    body.scope_paths = args.scope;
+  }
   if (args.requestId !== undefined) {
     // 服务端要求幂等 owner 操作提供 workspace_id；只在显式传 --request-id 时才多这一次解析
     const target = await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(id)}`);
