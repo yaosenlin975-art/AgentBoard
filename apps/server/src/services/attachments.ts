@@ -9,7 +9,9 @@ import {
   deleteExpiredStagedAttachments,
   finishAttachmentUpload,
   getIssueAttachment,
+  getSessionAttachment,
   getStagedAttachment,
+  getWorkspaceAttachment,
   listAttachmentCleanup,
   listStaleAttachmentReservations,
   releaseAttachmentReservation,
@@ -131,6 +133,28 @@ export class AttachmentStore {
 
   issuePath(issueId: string, id: string): string {
     return this.storagePath(getIssueAttachment(this.db, issueId, id).storage_key);
+  }
+
+  /** CHAT-IMG-DELIVERY：会话级附件（绑定到聊天会话后投递用） */
+  sessionPath(sessionId: string, id: string): string {
+    return this.storagePath(getSessionAttachment(this.db, sessionId, id).storage_key);
+  }
+
+  sessionMime(sessionId: string, id: string): string {
+    return getSessionAttachment(this.db, sessionId, id).mime_type;
+  }
+
+  /** CHAT-IMG-DELIVERY：workspace 内读取（staged/attached 均可）——聊天 markdown URL 绑定后仍能显示 */
+  workspacePath(workspaceId: string, id: string): string {
+    return this.storagePath(getWorkspaceAttachment(this.db, workspaceId, id).storage_key);
+  }
+
+  workspaceMime(workspaceId: string, id: string): string {
+    return getWorkspaceAttachment(this.db, workspaceId, id).mime_type;
+  }
+
+  workspaceName(workspaceId: string, id: string): string {
+    return getWorkspaceAttachment(this.db, workspaceId, id).file_name;
   }
 
   stagedMime(workspaceId: string, id: string): string {

@@ -226,9 +226,12 @@ export const createSessionSchema = z
     path: ['selected_attachment_ids'],
   });
 
+/** CHAT-IMG-DELIVERY：聊天发消息可携带附件（与 addCommentSchema 同款校验；文字与图片至少一项非空） */
 export const sendMessageSchema = z.object({
-  text: z.string().min(1, 'text 不能为空'),
-});
+  text: z.string().default(''),
+  attachment_ids: z.array(z.string().uuid()).max(5, 'attachment_ids 最多 5 张').optional(),
+}).refine((value) => value.text.trim() !== '' || (value.attachment_ids?.length ?? 0) > 0, { message: '消息文字与图片不能同时为空' })
+  .refine((value) => new Set(value.attachment_ids ?? []).size === (value.attachment_ids ?? []).length, { message: 'attachment_ids 不能重复' });
 
 /**
  * PATCH /api/sessions/:id：只改 model 字段（Task 14 聊天视图"修改模型，下一轮生效"）。

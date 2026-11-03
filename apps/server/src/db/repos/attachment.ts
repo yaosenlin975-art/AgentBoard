@@ -62,6 +62,21 @@ export function getIssueAttachment(db: Db, issueId: string, id: string): Attachm
   return row;
 }
 
+/** CHAT-IMG-DELIVERY：workspace 内附件读取（staged 与 attached 均可；staged 过期仍 410）——聊天消息里的 markdown URL 在绑定会话后仍可显示 */
+export function getWorkspaceAttachment(db: Db, workspaceId: string, id: string): AttachmentRecord {
+  const row = db.prepare('SELECT * FROM attachment WHERE id=? AND workspace_id=?').get(id, workspaceId) as AttachmentRecord | undefined;
+  if (!row) throw new NotFoundError('图片不存在');
+  if (row.status === 'staged' && row.expires_at <= Date.now()) throw new ApiError(410, 'ATTACHMENT_EXPIRED', '图片暂存已过期，请重新上传');
+  return row;
+}
+
+export function getSessionAttachment(db: Db, sessionId: string, id: string): AttachmentRecord {
+  const row = db.prepare(`SELECT a.* FROM attachment a JOIN session_attachment sa ON sa.attachment_id=a.id
+    WHERE sa.session_id=? AND a.id=? AND a.status='attached'`).get(sessionId, id) as AttachmentRecord | undefined;
+  if (!row) throw new NotFoundError('图片不存在');
+  return row;
+}
+
 export function bindAttachmentsToComment(db: Db, workspaceId: string, commentId: string, ids: string[], now: number): void {
   if (ids.length === 0) return;
   const placeholders = ids.map(() => '?').join(',');
@@ -82,6 +97,30 @@ export function bindAttachmentsToComment(db: Db, workspaceId: string, commentId:
     const row = byId.get(id)!;
     insert.run(commentId, row.id, position);
     if (update.run(row.id).changes !== 1) throw new ApiError(409, 'ATTACHMENT_ALREADY_BOUND', '图片已关联到其他评论');
+  }
+}
+
+/** CHAT-IMG-DELIVERY：会话级绑定——聊天发消息携带附件时把 staged 附件归属到会话 */
+export function bindAttachmentsToSession(db: Db, workspaceId: string, sessionId: string, ids: string[], now: number): void {
+  if (ids.length === 0) return;
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM attachment WHERE id IN (${placeholders})`).all(...ids) as AttachmentRecord[];
+  if (rows.length !== ids.length || rows.some((row) => row.workspace_id !== workspaceId)) {
+    throw new NotFoundError('图片不存在');
+  }
+  if (rows.some((row) => row.status !== 'staged')) {
+    throw new ApiError(409, 'ATTACHMENT_ALREADY_BOUND', '图片已关联到其他消息');
+  }
+  if (rows.some((row) => row.expires_at <= now)) {
+    throw new ApiError(410, 'ATTACHMENT_EXPIRED', '图片暂存已过期，请重新上传');
+  }
+  const insert = db.prepare('INSERT INTO session_attachment(session_id,attachment_id,position) VALUES (?,?,?)');
+  const update = db.prepare("UPDATE attachment SET status='attached' WHERE id=? AND status='staged'");
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const [position, id] of ids.entries()) {
+    const row = byId.get(id)!;
+    insert.run(sessionId, row.id, position);
+    if (update.run(row.id).changes !== 1) throw new ApiError(409, 'ATTACHMENT_ALREADY_BOUND', '图片已关联到其他消息');
   }
 }
 
@@ -231,6 +270,52 @@ export function markIssueAttachmentsUnknown(db: Db, issueId: string, attachmentI
 
 export function markIssueAttachmentsDelivered(db: Db, issueId: string, attachmentIds: string[], deliveredAt: number): string[] {
   return markIssueAttachments(db, issueId, attachmentIds, ['sending'], 'delivered', deliveredAt);
+}
+
+// ---- CHAT-IMG-DELIVERY：会话级投递状态推进（issue 通道的会话版，无评论广播语义） ----
+
+export function markSessionAttachmentsSending(db: Db, sessionId: string, attachmentIds: string[], attemptedAt: number): void {
+  if (attachmentIds.length === 0) return;
+  const placeholders = attachmentIds.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT a.id,a.status,sa.delivery_state,sa.delivered_at
+    FROM attachment a JOIN session_attachment sa ON sa.attachment_id=a.id
+    WHERE sa.session_id=? AND a.id IN (${placeholders})`).all(sessionId, ...attachmentIds) as Array<{
+      id: string;
+      status: string;
+      delivery_state: 'pending' | 'sending' | 'unknown' | 'delivered';
+      delivered_at: number | null;
+    }>;
+  if (rows.length !== attachmentIds.length) throw new NotFoundError('所选图片不存在');
+  for (const row of rows) {
+    if (row.status !== 'attached' || row.delivered_at !== null || row.delivery_state === 'delivered') {
+      throw new ValidationError('IMAGE_ATTACHMENT_NOT_PENDING:所选图片已交付或不可派发');
+    }
+  }
+  db.transaction(() => {
+    const update = db.prepare(`UPDATE session_attachment SET delivery_state='sending',attempted_at=COALESCE(attempted_at,?)
+      WHERE session_id=? AND attachment_id=? AND delivery_state='pending'`);
+    for (const row of rows) update.run(attemptedAt, sessionId, row.id);
+  }).immediate();
+}
+
+function markSessionAttachments(db: Db, sessionId: string, attachmentIds: string[], toState: 'unknown' | 'delivered', at?: number): void {
+  if (attachmentIds.length === 0) return;
+  const placeholders = attachmentIds.map(() => '?').join(',');
+  const query = toState === 'delivered'
+    ? `UPDATE session_attachment SET delivered_at=COALESCE(delivered_at,?),delivery_state='delivered'
+       WHERE session_id=? AND attachment_id IN (${placeholders}) AND delivery_state='sending'`
+    : `UPDATE session_attachment SET delivery_state='unknown'
+       WHERE session_id=? AND attachment_id IN (${placeholders}) AND delivery_state='sending'`;
+  const args = toState === 'delivered' ? [at!, sessionId, ...attachmentIds] : [sessionId, ...attachmentIds];
+  db.prepare(query).run(...args);
+}
+
+export function markSessionAttachmentsUnknown(db: Db, sessionId: string, attachmentIds: string[]): void {
+  markSessionAttachments(db, sessionId, attachmentIds, 'unknown');
+}
+
+export function markSessionAttachmentsDelivered(db: Db, sessionId: string, attachmentIds: string[], deliveredAt: number): void {
+  markSessionAttachments(db, sessionId, attachmentIds, 'delivered', deliveredAt);
 }
 
 export function bindCommentAttachments(db: Db, issueId: string, comment: { id: string; issue_id: string; author: string; content: string; ts: number }): typeof comment & { attachments?: AttachmentMetadata[] } {

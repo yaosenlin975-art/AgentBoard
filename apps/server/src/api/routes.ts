@@ -39,7 +39,7 @@ import {
 import { deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../db/repos/issue.js';
 import { createIssueInHierarchy, getIssueTreeChildren } from '../services/taskHierarchy.js';
 import { listCommentsByIssue, listCommentsPage, getCommentContent } from '../db/repos/comment.js';
-import { listPendingIssueAttachments } from '../db/repos/attachment.js';
+import { bindAttachmentsToSession, listPendingIssueAttachments } from '../db/repos/attachment.js';
 import { textWindow } from '../db/pagination.js';
 import {
   listSessionsByWorkspace,
@@ -470,11 +470,12 @@ export function createRouter(deps: RouterDeps): Router {
     const workspaceId = req.params.workspaceId!;
     if (!getWorkspace(db, workspaceId)) throw new NotFoundError('工作空间不存在');
     const id = req.params.attachmentId!;
-    const filePath = attachments.stagedPath(workspaceId, id);
-    res.type(attachments.stagedMime(workspaceId, id));
+    // CHAT-IMG-DELIVERY：workspace 内 staged/attached 均可读——聊天消息里的 markdown URL 绑定会话后仍能显示
+    const filePath = attachments.workspacePath(workspaceId, id);
+    res.type(attachments.workspaceMime(workspaceId, id));
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(attachments.stagedName(workspaceId, id))}`);
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(attachments.workspaceName(workspaceId, id))}`);
     res.sendFile(filePath, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) next(error); });
   });
 
@@ -887,8 +888,33 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.post('/sessions/:id/messages', async (req, res) => {
     const body = parseBody(sendMessageSchema, req.body);
-    const result = await sendToSession(req.params.id!, body.text);
-    res.json(result);
+    const attachmentIds = body.attachment_ids ?? [];
+    if (attachmentIds.length === 0) {
+      res.json(await sendToSession(req.params.id!, body.text));
+      return;
+    }
+    // CHAT-IMG-DELIVERY：聊天发消息携带附件——先验 CLI 图片输入（失败不绑定，附件保持 staged 可重发），
+    // 再绑定到会话（session_attachment），经既有 RunTurnOptions.attachments → adapter base64 通道投递
+    const session = getSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('会话不存在');
+    let adapter: AgentAdapter;
+    try { adapter = getAdapter(session.cli); }
+    catch { throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证'); }
+    const verifiedCliVersion = await getVerifiedImageInputCliVersion(adapter, session.model ?? undefined);
+    if (verifiedCliVersion === null || !adapter.supportsImageInput(session.model ?? undefined, verifiedCliVersion)) {
+      throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证');
+    }
+    bindAttachmentsToSession(db, session.workspace_id, session.id, attachmentIds, Date.now());
+    const imageAttachments = attachmentIds.map((id) => ({
+      path: attachments.sessionPath(session.id, id),
+      mimeType: attachments.sessionMime(session.id, id) as 'image/png' | 'image/jpeg' | 'image/webp',
+    }));
+    res.json(await sendToSession(session.id, body.text, {
+      attachments: imageAttachments,
+      deliveredAttachmentIds: attachmentIds,
+      verifiedCliVersion,
+      sessionAttachment: true,
+    }));
   });
 
   router.post('/sessions/:id/stop', async (req, res) => {

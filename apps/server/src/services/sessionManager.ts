@@ -19,6 +19,9 @@ import {
   markIssueAttachmentsDelivered,
   markIssueAttachmentsSending,
   markIssueAttachmentsUnknown,
+  markSessionAttachmentsDelivered,
+  markSessionAttachmentsSending,
+  markSessionAttachmentsUnknown,
 } from '../db/repos/attachment.js';
 import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
@@ -34,6 +37,8 @@ export interface SessionDelivery {
   retryUnknownAttachmentIds?: string[];
   /** Actual detected CLI version already checked by dispatchIssue before claim. */
   verifiedCliVersion?: string;
+  /** CHAT-IMG-DELIVERY：聊天通道标记——附件已绑定 session_attachment（自由会话的合法投递路径） */
+  sessionAttachment?: boolean;
 }
 export type SessionSender = (sessionId: string, text: string, delivery?: SessionDelivery) => Promise<{ queued: boolean }>;
 
@@ -73,6 +78,8 @@ interface TurnInput {
   attachments: NonNullable<RunTurnOptions['attachments']>;
   deliveredAttachmentIds: string[];
   retryUnknownAttachmentIds: string[];
+  /** CHAT-IMG-DELIVERY：附件绑定在 session_attachment（聊天入口），投递状态走会话版 */
+  sessionAttachment: boolean;
 }
 
 /** 会话运行时态（内存，不入库）：队列长度/等待槽位/排队文本副本 */
@@ -144,15 +151,22 @@ function broadcast(event: WsEvent): void {
 
 function markImageDelivery(
   database: Db,
-  issueId: string | null,
+  session: Session,
   attachmentIds: string[],
   state: 'unknown' | 'delivered',
+  sessionAttachment = false,
 ): void {
-  if (!issueId || attachmentIds.length === 0) return;
+  if (attachmentIds.length === 0) return;
+  // CHAT-IMG-DELIVERY：按绑定路径分派——聊天入口绑 session_attachment；评论/派发绑 comment_attachment
+  if (sessionAttachment || session.issue_id === null) {
+    if (state === 'unknown') markSessionAttachmentsUnknown(database, session.id, attachmentIds);
+    else markSessionAttachmentsDelivered(database, session.id, attachmentIds, Date.now());
+    return;
+  }
   const commentIds = state === 'unknown'
-    ? markIssueAttachmentsUnknown(database, issueId, attachmentIds)
-    : markIssueAttachmentsDelivered(database, issueId, attachmentIds, Date.now());
-  broadcast({ type: 'comment.delivery.changed', issue_id: issueId, comment_ids: commentIds });
+    ? markIssueAttachmentsUnknown(database, session.issue_id, attachmentIds)
+    : markIssueAttachmentsDelivered(database, session.issue_id, attachmentIds, Date.now());
+  broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
 }
 
 function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
@@ -276,7 +290,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
 
   if (prompt.trim() !== '') {
     persistMessage(session.id, 'user', prompt);
-    void beginTurn(session.id, { prompt, attachments: [], deliveredAttachmentIds: [], retryUnknownAttachmentIds: [] });
+    void beginTurn(session.id, { prompt, attachments: [], deliveredAttachmentIds: [], retryUnknownAttachmentIds: [], sessionAttachment: false });
   }
   return getSession(database, session.id)!;
 }
@@ -295,8 +309,13 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
     if (!adapter || verifiedCliVersion === null || !adapter.supportsImageInput(session.model ?? undefined, verifiedCliVersion)) {
       throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证');
     }
-    if (!session.issue_id || (delivery.deliveredAttachmentIds?.length ?? 0) !== attachments.length) {
-      throw new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务并逐张提供 ID');
+    // CHAT-IMG-DELIVERY：issue 会话要求绑定任务；自由聊天会话（issue_id=NULL）走会话级附件，
+    // 仍要求逐张提供 ID（deliveredAttachmentIds 与 attachments 等长）
+    if ((delivery.deliveredAttachmentIds?.length ?? 0) !== attachments.length) {
+      throw new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须逐张提供 ID');
+    }
+    if (session.issue_id === null && attachments.length > 0 && !delivery.sessionAttachment) {
+      throw new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:聊天图片必须绑定到会话（session_attachment）');
     }
   }
   const state = ensureState(sessionId);
@@ -305,6 +324,7 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
     attachments,
     deliveredAttachmentIds: delivery.deliveredAttachmentIds ?? [],
     retryUnknownAttachmentIds: delivery.retryUnknownAttachmentIds ?? [],
+    sessionAttachment: delivery.sessionAttachment === true,
   };
 
   // 先落 user 行（空闲/排队都落）
@@ -448,20 +468,32 @@ async function executeTurn(
       await startError(sessionId, new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证'));
       return;
     }
-    if (!session.issue_id) {
-      state.turnActive = false;
-      state.current = null;
-      await startError(sessionId, new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务'));
-      return;
+    // CHAT-IMG-DELIVERY：聊天入口绑定 session_attachment；评论/派发链路要求 issue 绑定（原语义）
+    if (input.sessionAttachment) {
+      try {
+        markSessionAttachmentsSending(database, sessionId, input.deliveredAttachmentIds, Date.now());
+      } catch (err) {
+        state.turnActive = false;
+        state.current = null;
+        await startError(sessionId, err);
+        return;
+      }
+    } else {
+      if (!session.issue_id) {
+        state.turnActive = false;
+        state.current = null;
+        await startError(sessionId, new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务'));
+        return;
+      }
+      const commentIds = markIssueAttachmentsSending(
+        database,
+        session.issue_id,
+        input.deliveredAttachmentIds,
+        Date.now(),
+        input.retryUnknownAttachmentIds,
+      );
+      broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
     }
-    const commentIds = markIssueAttachmentsSending(
-      database,
-      session.issue_id,
-      input.deliveredAttachmentIds,
-      Date.now(),
-      input.retryUnknownAttachmentIds,
-    );
-    broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
   }
 
   const opts: RunTurnOptions = {
@@ -477,7 +509,7 @@ async function executeTurn(
   try {
     handle = adapter.runTurn(opts);
   } catch (err) {
-    if (input.attachments.length > 0) markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, 'unknown');
+    if (input.attachments.length > 0) markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
     state.turnActive = false;
     state.current = null;
     await startError(sessionId, err);
@@ -530,7 +562,7 @@ async function executeTurn(
   try {
     result = await handle.result;
   } catch (err) {
-    markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, 'unknown');
+    markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
     throw err;
   }
   ctx.handle = null;
@@ -538,7 +570,7 @@ async function executeTurn(
   flushText();
 
   if (input.attachments.length > 0) {
-    markImageDelivery(database, session.issue_id, input.deliveredAttachmentIds, result.exitCode === 0 ? 'delivered' : 'unknown');
+    markImageDelivery(database, session, input.deliveredAttachmentIds, result.exitCode === 0 ? 'delivered' : 'unknown', input.sessionAttachment);
   }
 
   if (state.current !== ctx) return; // 已被新轮次取代：旧结果弃用
@@ -561,6 +593,7 @@ async function executeTurn(
       attachments: pending.flatMap((item) => item.attachments),
       deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
       retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
+      sessionAttachment: pending.some((item) => item.sessionAttachment),
     }); // turnActive 保持 true；下一轮重走全局槽位 FIFO
     return;
   }

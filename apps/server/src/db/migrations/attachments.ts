@@ -47,6 +47,23 @@ export function migrateAttachments(db: Db): void {
       BEGIN
         DELETE FROM attachment WHERE id=old.attachment_id;
       END;
+    -- CHAT-IMG-DELIVERY：会话级附件（自由聊天会话 issue_id=NULL 的图片投递记录），
+    -- 状态机与 comment_attachment 平行（pending → sending → delivered/unknown）。
+    CREATE TABLE IF NOT EXISTS session_attachment (
+      session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+      attachment_id TEXT NOT NULL UNIQUE REFERENCES attachment(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL DEFAULT 0 CHECK (position >= 0),
+      delivered_at INTEGER,
+      delivery_state TEXT NOT NULL DEFAULT 'pending' CHECK (delivery_state IN ('pending','sending','unknown','delivered')),
+      attempted_at INTEGER,
+      PRIMARY KEY(session_id,attachment_id),
+      UNIQUE(session_id,position)
+    );
+    CREATE TRIGGER IF NOT EXISTS session_attachment_delete_image
+      AFTER DELETE ON session_attachment
+      BEGIN
+        DELETE FROM attachment WHERE id=old.attachment_id;
+      END;
   `);
   const columns = db.prepare('PRAGMA table_info(comment_attachment)').all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'delivered_at')) {
