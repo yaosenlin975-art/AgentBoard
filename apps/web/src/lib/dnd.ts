@@ -142,15 +142,24 @@ export function commitDrop({ queryClient, queryKey, drop, patchIssue, onError }:
     });
 }
 
-/** 按 status 分组并在组内按 sort_order 升序（渲染用，容忍缓存数组乱序） */
+/**
+ * 按 status 分组并在组内按 sort_order 升序（渲染用，容忍缓存数组乱序）。
+ *
+ * STATUS-1 之后 `issue.status` 不再受四值枚举约束（数据层已允许 `已废弃` 与后续自定义状态），
+ * 所以分组键必须**按 BOARD_COLUMNS 动态生成**，并对不在列里的状态兜底建桶：
+ * 之前写死 4 个键时，一张 `已废弃` 卡会让 `grouped[status].push` 直接抛 TypeError。
+ * 兜底建桶只保证「不崩、不丢数据」，多出来的状态不会渲染成列（列仍由 BOARD_COLUMNS 决定）。
+ */
 export function groupByColumn(issues: Issue[]): Record<IssueStatus, Issue[]> {
-  const grouped: Record<IssueStatus, Issue[]> = {
-    待规划: [],
-    进行中: [],
-    待验收: [],
-    已关闭: [],
-  };
-  for (const issue of issues) grouped[issue.status].push(issue);
-  for (const list of Object.values(grouped)) list.sort((a, b) => a.sort_order - b.sort_order);
+  const grouped = Object.fromEntries(
+    BOARD_COLUMNS.map((status) => [status, [] as Issue[]]),
+  ) as Record<IssueStatus, Issue[]>;
+  const buckets = grouped as unknown as Record<string, Issue[]>;
+  for (const issue of issues) {
+    const key = issue.status as string;
+    buckets[key] ??= [];
+    buckets[key]!.push(issue);
+  }
+  for (const list of Object.values(buckets)) list.sort((a, b) => a.sort_order - b.sort_order);
   return grouped;
 }
