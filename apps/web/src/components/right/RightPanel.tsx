@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 右侧面板单实例容器（§7.4/§7.5）：
  * - view===null 渲染收起窄条（固定"聊天"，点击进入聊天视图，保证首屏可达）；
  * - 收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
@@ -176,6 +176,9 @@ export function RightPanel() {
           </button>
         </header>
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          {/* DETAIL-PANEL-BUG：可见性用内联 transform 表达，不依赖 Tailwind 工具类是否生成/生效。
+              只靠 translate-x-* 类时，一旦该类缺失（样式未生效 / 旧构建 / 样式构建失败），两个 body
+              会同时绘制、后渲染的聊天体压住详情体 —— 于是标题仍是「任务详情」，内容却是聊天。 */}
           <div
             ref={(node) => { panelBodyRefs.current.detail = node; }}
             data-testid="detail-panel-view"
@@ -184,7 +187,8 @@ export function RightPanel() {
             onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
               if (event.target instanceof HTMLElement) lastFocusByView.current.detail = event.target;
             }}
-            className={`absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none ${activeView === 'detail' ? 'translate-x-0' : '-translate-x-full pointer-events-none'}`}
+            style={{ transform: activeView === 'detail' ? 'translateX(0)' : 'translateX(-100%)' }}
+            className="absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none"
           >
             <DetailPanel />
           </div>
@@ -196,7 +200,8 @@ export function RightPanel() {
             onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
               if (event.target instanceof HTMLElement) lastFocusByView.current.chat = event.target;
             }}
-            className={`absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none ${activeView === 'chat' ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
+            style={{ transform: activeView === 'chat' ? 'translateX(0)' : 'translateX(100%)' }}
+            className="absolute inset-0 overflow-hidden transition-transform duration-200 motion-reduce:transition-none"
           >
             <ChatPanel />
           </div>

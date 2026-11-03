@@ -50,6 +50,24 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(screen.getByTestId('stub-detail-panel')).toBeInTheDocument();
   });
 
+  it('可见性由内联 transform 决定（不依赖 Tailwind 类）：标题与可见 body 永远一致', async () => {
+    renderPanel();
+    act(() => usePanelStore.getState().openDetail('iss-1'));
+    await heading('任务详情');
+
+    // 详情激活：详情体在位（translateX(0)），聊天体移出（translateX(100%)）
+    expect(screen.getByTestId('detail-panel-view').style.transform).toBe('translateX(0)');
+    expect(screen.getByTestId('chat-panel-view').style.transform).toBe('translateX(100%)');
+    // 关键：可见性不再挂在 className 的 translate 工具类上（类缺失/未生效时不会两体同时绘制）
+    expect(screen.getByTestId('chat-panel-view').className).not.toMatch(/translate-x/);
+    expect(screen.getByTestId('detail-panel-view').className).not.toMatch(/translate-x/);
+
+    act(() => usePanelStore.getState().openChat());
+    await heading('聊天');
+    expect(screen.getByTestId('chat-panel-view').style.transform).toBe('translateX(0)');
+    expect(screen.getByTestId('detail-panel-view').style.transform).toBe('translateX(-100%)');
+  });
+
   it('(b) localStorage 残留「上次停在聊天」：刷新后点任务仍是详情', async () => {
     localStorage.setItem('agentboard.panel', JSON.stringify({
       state: { view: 'chat', issueId: null, sessionId: 's1', chatSession: null, rightOpen: true, unread: {} },
