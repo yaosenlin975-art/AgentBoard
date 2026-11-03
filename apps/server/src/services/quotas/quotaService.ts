@@ -101,12 +101,58 @@ export function readTomlString(file: string, key: string): string | null {
   }
 }
 
-/** DeepSeek API key 来源：`DEEPSEEK_API_KEY` 优先，其次 `~/.deepseek/config.toml` 的 `api_key` */
+/**
+ * DeepSeek key 候选（ACC-QUOTA-03），按优先级：
+ * 1. `DEEPSEEK_API_KEY`（env，用户显式配置，最高优先级）
+ * 2. `~/.deepseek/config.toml` 的 `api_key`（DeepSeek CLI 的官方配置位）
+ * 3. `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（**最低优先级的兼容来源**：
+ *    本机 DSH 把新 key 放在这里，而 `~/.deepseek/config.toml` 可能残留旧 key；
+ *    该文件是别的工具的私有格式，不是官方约定，解析失败一律静默跳过）
+ */
+export type DeepseekKeySource = 'env' | 'deepseek_config' | 'dsh_credentials';
+
+export interface DeepseekKeyCandidate {
+  source: DeepseekKeySource;
+  key: string;
+}
+
+/** 只读解析 `~/.dsh/.credentials.yaml` 的 `refs.DEEPSEEK_API_KEY`（不做完整 YAML 解析，失败返回 null） */
+export function readDshCredentialsDeepseekKey(file: string): string | null {
+  try {
+    const text = readFileSync(file, 'utf8');
+    const refsStart = /^refs:\s*$/m.exec(text);
+    if (!refsStart) return null;
+    const afterRefs = text.slice(refsStart.index + refsStart[0].length);
+    const sectionMatch = /^\s{2}DEEPSEEK_API_KEY\s*:\s*["']?([^"'\r\n]+)["']?\s*$/m.exec(afterRefs);
+    if (!sectionMatch) return null;
+    // 只取 `refs:` 之后、下一个顶级键之前的部分，避免命中 `records:` 里的同名字段
+    const nextTopLevel = /^[A-Za-z_][A-Za-z0-9_]*\s*:/m.exec(afterRefs);
+    if (nextTopLevel && sectionMatch.index > nextTopLevel.index) return null;
+    const value = sectionMatch[1]!.trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 收集 DeepSeek key 候选（不去重时按优先级去重） */
+export function collectDeepseekKeyCandidates(homeDir: string, env: Record<string, string | undefined>): DeepseekKeyCandidate[] {
+  const candidates: DeepseekKeyCandidate[] = [];
+  const push = (source: DeepseekKeySource, value: string | null | undefined): void => {
+    const key = typeof value === 'string' ? value.trim() : '';
+    if (key.length === 0) return;
+    if (candidates.some((item) => item.key === key)) return;
+    candidates.push({ source, key });
+  };
+  push('env', env.DEEPSEEK_API_KEY);
+  push('deepseek_config', readTomlString(join(homeDir, '.deepseek', 'config.toml'), 'api_key'));
+  push('dsh_credentials', readDshCredentialsDeepseekKey(join(homeDir, '.dsh', '.credentials.yaml')));
+  return candidates;
+}
+
+/** 兼容旧调用：返回最高优先级候选（不探测有效性；探测见 fetchDeepseek 的逐个试） */
 export function resolveDeepseekKey(homeDir: string, env: Record<string, string | undefined>): string | null {
-  const fromEnv = env.DEEPSEEK_API_KEY?.trim();
-  if (fromEnv) return fromEnv;
-  const fromFile = readTomlString(join(homeDir, '.deepseek', 'config.toml'), 'api_key');
-  return fromFile && fromFile.trim().length > 0 ? fromFile.trim() : null;
+  return collectDeepseekKeyCandidates(homeDir, env)[0]?.key ?? null;
 }
 
 /** OpenCode Go 是否有本机 API key（`~/.local/share/opencode/auth.json` 的 `opencode-go` 条目） */
@@ -275,10 +321,10 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   const cache = new Map<QuotaSourceId, Cached>();
   const inFlight = new Map<QuotaSourceId, Promise<QuotaResult>>();
 
-  async function fetchDeepseek(): Promise<QuotaResult> {
-    const at = now();
-    const key = resolveDeepseekKey(homeDir, env);
-    if (!key) return empty('deepseek', 'unsupported', at, 'NO_CREDENTIAL', '未检测到 DeepSeek API key（~/.deepseek/config.toml 或 DEEPSEEK_API_KEY）');
+  /** 上次命中的 DeepSeek key 来源：命中后在同一缓存生命周期内复用，避免每次把 N 个候选全试一遍 */
+  let deepseekSuccessSource: DeepseekKeySource | null = null;
+
+  async function queryDeepseekBalance(key: string): Promise<{ kind: 'ok'; body: unknown } | { kind: 'status'; status: number } | { kind: 'network' }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -286,21 +332,57 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
         headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' },
         signal: controller.signal,
       });
-      const fetchedAt = now();
-      if (response.status === 401 || response.status === 403) {
-        return empty('deepseek', 'error', fetchedAt, 'CREDENTIAL_INVALID', 'DeepSeek API key 已失效，请更新后重试');
-      }
-      if (response.status === 429) return empty('deepseek', 'error', fetchedAt, 'RATE_LIMITED', 'DeepSeek 限流，稍后重试');
-      if (response.status >= 500) return empty('deepseek', 'error', fetchedAt, 'UPSTREAM_ERROR', 'DeepSeek 服务暂时不可用');
-      if (!response.ok) return empty('deepseek', 'error', fetchedAt, 'UPSTREAM_REJECTED', `DeepSeek 拒绝了请求（HTTP ${response.status}）`);
+      if (!response.ok) return { kind: 'status', status: response.status };
       let body: unknown = null;
       try { body = await response.json(); } catch { body = null; }
-      return parseDeepseekBalance(body, fetchedAt);
+      return { kind: 'ok', body };
     } catch {
-      return empty('deepseek', 'error', now(), 'NETWORK_ERROR', '无法连接 DeepSeek（网络或超时）');
+      return { kind: 'network' };
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * ACC-QUOTA-03：多候选 + 逐个试。
+   * 优先级 env → `~/.deepseek/config.toml` → `~/.dsh/.credentials.yaml`；依次打余额端点，用第一个 200 的。
+   * 已知成功来源优先排在前面（同一缓存生命周期内不再逐个试）。
+   */
+  async function fetchDeepseek(): Promise<QuotaResult> {
+    const at = now();
+    const candidates = collectDeepseekKeyCandidates(homeDir, env);
+    if (candidates.length === 0) {
+      return empty('deepseek', 'unsupported', at, 'CREDENTIAL_MISSING', '未检测到 DeepSeek API key（DEEPSEEK_API_KEY / ~/.deepseek/config.toml / ~/.dsh/.credentials.yaml）');
+    }
+    const ordered = deepseekSuccessSource === null
+      ? candidates
+      : [...candidates.filter((item) => item.source === deepseekSuccessSource), ...candidates.filter((item) => item.source !== deepseekSuccessSource)];
+
+    let lastStatus: number | null = null;
+    let networkFailure = false;
+    for (const candidate of ordered) {
+      const outcome = await queryDeepseekBalance(candidate.key);
+      if (outcome.kind === 'ok') {
+        deepseekSuccessSource = candidate.source;
+        return parseDeepseekBalance(outcome.body, now());
+      }
+      if (outcome.kind === 'network') { networkFailure = true; continue; }
+      lastStatus = outcome.status;
+    }
+    const fetchedAt = now();
+    const tried = `（尝试过 ${ordered.length} 个凭据来源）`;
+    if (networkFailure && lastStatus === null) {
+      return empty('deepseek', 'error', fetchedAt, 'NETWORK_ERROR', `无法连接 DeepSeek（网络或超时）${tried}`);
+    }
+    if (lastStatus === 429) return empty('deepseek', 'error', fetchedAt, 'RATE_LIMITED', `DeepSeek 限流，稍后重试${tried}`);
+    if (lastStatus !== null && lastStatus >= 500) {
+      return empty('deepseek', 'error', fetchedAt, 'UPSTREAM_ERROR', `DeepSeek 服务暂时不可用${tried}`);
+    }
+    if (lastStatus === 401 || lastStatus === 403) {
+      return empty('deepseek', 'error', fetchedAt, 'CREDENTIAL_INVALID', `DeepSeek API key 已失效，请更新后重试${tried}`);
+    }
+    if (networkFailure) return empty('deepseek', 'error', fetchedAt, 'NETWORK_ERROR', `无法连接 DeepSeek（网络或超时）${tried}`);
+    return empty('deepseek', 'error', fetchedAt, 'UPSTREAM_REJECTED', `DeepSeek 拒绝了请求（HTTP ${lastStatus ?? 'unknown'}）${tried}`);
   }
 
   /**

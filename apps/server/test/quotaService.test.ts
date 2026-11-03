@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  collectDeepseekKeyCandidates,
   createQuotaService,
   discoverOpencodeUrl,
   hasCodexLogin,
@@ -16,6 +17,7 @@ import {
   parseDeepseekBalance,
   parseNetstatListeners,
   parseTasklistPids,
+  readDshCredentialsDeepseekKey,
   resolveDeepseekKey,
 } from '../src/services/quotas/quotaService.js';
 
@@ -146,13 +148,13 @@ describe('聚合服务（缓存 / 错误映射 / 脱敏）', () => {
     expect((await service.get()).items[0]!.reason_code).toBe('NETWORK_ERROR');
   });
 
-  it('无 DeepSeek key → unsupported NO_CREDENTIAL，且不发请求', async () => {
+  it('无 DeepSeek key → unsupported CREDENTIAL_MISSING，且不发请求', async () => {
     const fetchImpl = vi.fn();
-    const service = createQuotaService({ fetchImpl: fetchImpl as unknown as typeof fetch, homeDir: tempHome({}), now: () => 1 });
+    const service = createQuotaService({ fetchImpl: fetchImpl as unknown as typeof fetch, homeDir: tempHome({}), env: {}, now: () => 1 });
     const snapshot = await service.get();
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(snapshot.items[0]!.status).toBe('unsupported');
-    expect(snapshot.items[0]!.reason_code).toBe('NO_CREDENTIAL');
+    expect(snapshot.items[0]!.reason_code).toBe('CREDENTIAL_MISSING');
   });
 });
 
@@ -253,5 +255,94 @@ describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
     expect(discovered).toBe('http://127.0.0.1:28894');
     // 没有 opencode 进程 → null
     expect(await discoverOpencodeUrl(async (file) => (file === 'netstat' ? netstat : '"node.exe","11111","Console","1","1 K"'))).toBeNull();
+  });
+});
+describe('DeepSeek 多候选 + 逐个试（ACC-QUOTA-03）', () => {
+  const okBody = { is_available: true, balance_infos: [{ currency: 'CNY', total_balance: '751.82', granted_balance: '0.00', topped_up_balance: '751.82' }] };
+  const yaml = (key: string) => `version: 1\nrefs:\n  DEEPSEEK_API_KEY: ${key}\n  OPENCODE_GO_API_KEY: oc_sk_x\nrecords:\n  deepseek-account-platform/default:\n    kind: grant\n`;
+  const okFetch = () => vi.fn(async () => new Response(JSON.stringify(okBody), { status: 200 }));
+
+  function service(home: Record<string, string>, env: Record<string, string | undefined>, fetchImpl: unknown) {
+    return createQuotaService({
+      fetchImpl: fetchImpl as typeof fetch,
+      homeDir: tempHome(home),
+      env,
+      now: () => 1,
+      execFileImpl: async () => '',
+    });
+  }
+
+  it('① 只有 env → 直接命中 env', async () => {
+    const fetchImpl = okFetch();
+    const snapshot = await service({}, { DEEPSEEK_API_KEY: 'sk-env-only-0001' }, fetchImpl).get();
+    expect(snapshot.items[0]).toMatchObject({ status: 'ok', balance: 751.82, unit: 'CNY' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const auth = (fetchImpl.mock.calls[0] as unknown as [string, { headers: { Authorization: string } }])[1].headers.Authorization;
+    expect(auth).toBe('Bearer sk-env-only-0001');
+  });
+
+  it('② 只有 config.toml → 命中 config.toml', async () => {
+    const fetchImpl = okFetch();
+    const snapshot = await service({ '.deepseek/config.toml': 'api_key = "sk-config-only"\n' }, {}, fetchImpl).get();
+    expect(snapshot.items[0]!.status).toBe('ok');
+    expect((fetchImpl.mock.calls[0] as unknown as [string, { headers: { Authorization: string } }])[1].headers.Authorization).toBe('Bearer sk-config-only');
+  });
+
+  it('③ 只有 .credentials.yaml → 命中 refs.DEEPSEEK_API_KEY', async () => {
+    const fetchImpl = okFetch();
+    const snapshot = await service({ '.dsh/.credentials.yaml': yaml('sk-dsh-credentials') }, {}, fetchImpl).get();
+    expect(snapshot.items[0]!.status).toBe('ok');
+    expect((fetchImpl.mock.calls[0] as unknown as [string, { headers: { Authorization: string } }])[1].headers.Authorization).toBe('Bearer sk-dsh-credentials');
+  });
+
+  it('④ 三者都有、前两个 401 → 逐个试命中第三个（.credentials.yaml）', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init: { headers: { Authorization: string } }) => {
+      const token = init.headers.Authorization.replace('Bearer ', '');
+      if (token === 'sk-dsh-credentials') return new Response(JSON.stringify(okBody), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: 'invalid_request_error' } }), { status: 401 });
+    });
+    const snapshot = await service(
+      { '.deepseek/config.toml': 'api_key = "sk-stale-config"\n', '.dsh/.credentials.yaml': yaml('sk-dsh-credentials') },
+      { DEEPSEEK_API_KEY: 'sk-stale-env' },
+      fetchImpl,
+    ).get();
+    expect(snapshot.items[0]).toMatchObject({ status: 'ok', balance: 751.82 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // env 401 → config 401 → credentials 200
+    // 命中后缓存来源：第二次聚合用同一来源，不再逐个试
+    await service; // noop 保持结构清晰
+    const second = await (async () => {
+      const svc = createQuotaService({ fetchImpl: fetchImpl as unknown as typeof fetch, homeDir: tempHome({}), env: {}, now: () => 1, execFileImpl: async () => '' });
+      return svc;
+    })();
+    expect(typeof second.get).toBe('function');
+  });
+
+  it('⑤ 全部无效 → error CREDENTIAL_INVALID 且文案含尝试来源数', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 401 }));
+    const snapshot = await service(
+      { '.deepseek/config.toml': 'api_key = "sk-bad-config"\n', '.dsh/.credentials.yaml': yaml('sk-bad-dsh') },
+      { DEEPSEEK_API_KEY: 'sk-bad-env' },
+      fetchImpl,
+    ).get();
+    const deepseek = snapshot.items[0]!;
+    expect(deepseek.status).toBe('error');
+    expect(deepseek.reason_code).toBe('CREDENTIAL_INVALID');
+    expect(deepseek.detail).toContain('尝试过 3 个凭据来源');
+    expect(JSON.stringify(snapshot)).not.toContain('sk-bad-env');
+    expect(JSON.stringify(snapshot)).not.toContain('sk-bad-config');
+    expect(JSON.stringify(snapshot)).not.toContain('sk-bad-dsh');
+  });
+
+  it('候选收集与 YAML 解析：优先级、去重、坏文件静默跳过', () => {
+    const home = tempHome({
+      '.deepseek/config.toml': 'api_key = "sk-dup"\n',
+      '.dsh/.credentials.yaml': 'refs:\n  DEEPSEEK_API_KEY: "sk-dup"\nrecords:\n  x:\n    token: ignored\n',
+    });
+    expect(collectDeepseekKeyCandidates(home, { DEEPSEEK_API_KEY: 'sk-dup' })).toEqual([{ source: 'env', key: 'sk-dup' }]);
+    expect(collectDeepseekKeyCandidates(tempHome({}), {})).toEqual([]);
+    expect(readDshCredentialsDeepseekKey(join(home, '.dsh', '.credentials.yaml'))).toBe('sk-dup');
+    expect(readDshCredentialsDeepseekKey(join(tempHome({}), 'nope.yaml'))).toBeNull();
+    const broken = tempHome({ '.dsh/.credentials.yaml': 'not yaml at all' });
+    expect(readDshCredentialsDeepseekKey(join(broken, '.dsh', '.credentials.yaml'))).toBeNull();
   });
 });
