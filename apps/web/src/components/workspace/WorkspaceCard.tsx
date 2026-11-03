@@ -1,7 +1,8 @@
 /**
  * 工作空间卡片（WS-REORDER）：名称/路径/四列统计 + 移除入口 + 拖拽把手 + 键盘上/下移 + 置顶（WS-DRAWER-01）。
  * 拖拽由外层 WorkspaceList 的 DndContext 提供；键盘上/下移与置顶走同一提交路径（乐观更新 + 失败回滚）。
- * 布局：卡片按钮（固定最小高度，统计文案 nowrap）+ 独立操作行（置顶 · ↑ · ↓），操作行不与统计格重叠。
+ * 布局：卡片容器（边框 + 最小高度）内含内容按钮（名称/路径/统计，文案 nowrap）与操作行（置顶文本胶囊 · ↑ · ↓），
+ * 操作行在卡片边框内、统计行下方的正常流里，不 absolute、不加负 margin，因此不与「已关闭」等文案重叠。
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -70,93 +71,100 @@ export function WorkspaceCard({
         >
           ⋮⋮
         </button>
-        <button
-          type="button"
-          data-testid={`workspace-card-${workspace.id}`}
-          aria-pressed={selected}
-          onClick={() => selectWorkspace(workspace.id)}
-          className={`min-h-[5.5rem] min-w-0 flex-1 rounded-md border p-3 text-left transition ${
+        <div
+          data-workspace-card={workspace.id}
+          className={`relative min-h-[6.5rem] min-w-0 flex-1 rounded-md border transition ${
             selected
               ? 'border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/40'
               : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900'
           }`}
         >
-          <div className="truncate pr-6 text-sm font-medium">{workspace.name}</div>
-          <div
-            className="truncate text-xs text-neutral-500 dark:text-neutral-400"
-            title={workspace.path}
+          <button
+            type="button"
+            data-testid={`workspace-card-${workspace.id}`}
+            aria-pressed={selected}
+            onClick={() => selectWorkspace(workspace.id)}
+            className="block w-full rounded-md px-3 pb-2 pt-3 text-left focus-visible:outline-2 focus-visible:outline-blue-500"
           >
-            {workspace.path}
-          </div>
-          <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[11px]">
-            {STATUS_ORDER.map((status) => (
-              <div
-                key={status}
-                data-testid={`stat-${status}`}
-                className="rounded bg-neutral-100 py-1 dark:bg-neutral-800"
-              >
-                <div className="font-semibold">{counts.get(status) ?? 0}</div>
-                <div className="whitespace-nowrap text-neutral-500 dark:text-neutral-400">{status}</div>
-              </div>
-            ))}
-          </div>
-        </button>
-      </div>
-
-      <button
-        type="button"
-        aria-label={`移除工作空间 ${workspace.name}`}
-        title="移除工作空间"
-        onClick={() => setRemoveOpen(true)}
-        className="absolute right-1.5 top-1.5 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600 dark:text-neutral-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
-      >
-        ✕
-      </button>
-
-      {onMoveUp !== undefined && onMoveDown !== undefined && (
-        <div
-          data-testid={`workspace-card-actions-${workspace.id}`}
-          className="mt-1 flex min-h-6 items-center justify-end gap-1 pl-5"
-        >
-          {onTogglePin !== undefined && (
-            <button
-              type="button"
-              data-testid={`workspace-pin-${workspace.id}`}
-              aria-pressed={pinned}
-              aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
-              title={pinned ? '取消置顶' : '置顶'}
-              onClick={onTogglePin}
-              className={`rounded px-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${
-                pinned ? 'text-blue-600 dark:text-blue-400' : 'text-neutral-400 dark:text-neutral-500'
-              }`}
+            <div className="truncate pr-6 text-sm font-medium">{workspace.name}</div>
+            <div
+              className="truncate text-xs text-neutral-500 dark:text-neutral-400"
+              title={workspace.path}
             >
-              📌
-            </button>
+              {workspace.path}
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[11px]">
+              {STATUS_ORDER.map((status) => (
+                <div
+                  key={status}
+                  data-testid={`stat-${status}`}
+                  className="rounded bg-neutral-100 py-1 dark:bg-neutral-800"
+                >
+                  <div className="font-semibold">{counts.get(status) ?? 0}</div>
+                  <div className="whitespace-nowrap text-neutral-500 dark:text-neutral-400">{status}</div>
+                </div>
+              ))}
+            </div>
+          </button>
+
+          <button
+            type="button"
+            aria-label={`移除工作空间 ${workspace.name}`}
+            title="移除工作空间"
+            onClick={() => setRemoveOpen(true)}
+            className="absolute right-1 top-1 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600 dark:text-neutral-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+          >
+            ✕
+          </button>
+
+          {onMoveUp !== undefined && onMoveDown !== undefined && (
+            <div
+              data-testid={`workspace-card-actions-${workspace.id}`}
+              className="flex min-h-6 items-center justify-end gap-1 px-3 pb-2"
+            >
+              {onTogglePin !== undefined && (
+                <button
+                  type="button"
+                  data-testid={`workspace-pin-${workspace.id}`}
+                  aria-pressed={pinned}
+                  aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
+                  title={pinned ? '取消置顶' : '置顶'}
+                  onClick={onTogglePin}
+                  className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] transition ${
+                    pinned
+                      ? 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700 dark:border-blue-500 dark:bg-blue-500 dark:hover:bg-blue-400'
+                      : 'border-neutral-300 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800'
+                  }`}
+                >
+                  {pinned ? '已置顶' : '置顶'}
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid={`workspace-move-up-${workspace.id}`}
+                aria-label={`上移 ${workspace.name}`}
+                title={canMoveUp ? '上移' : '已在最前'}
+                disabled={!canMoveUp}
+                onClick={onMoveUp}
+                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                data-testid={`workspace-move-down-${workspace.id}`}
+                aria-label={`下移 ${workspace.name}`}
+                title={canMoveDown ? '下移' : '已在最后'}
+                disabled={!canMoveDown}
+                onClick={onMoveDown}
+                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
+              >
+                ↓
+              </button>
+            </div>
           )}
-          <button
-            type="button"
-            data-testid={`workspace-move-up-${workspace.id}`}
-            aria-label={`上移 ${workspace.name}`}
-            title={canMoveUp ? '上移' : '已在最前'}
-            disabled={!canMoveUp}
-            onClick={onMoveUp}
-            className="rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            data-testid={`workspace-move-down-${workspace.id}`}
-            aria-label={`下移 ${workspace.name}`}
-            title={canMoveDown ? '下移' : '已在最后'}
-            disabled={!canMoveDown}
-            onClick={onMoveDown}
-            className="rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
-          >
-            ↓
-          </button>
         </div>
-      )}
+      </div>
 
       <RemoveWorkspaceDialog
         workspace={workspace}

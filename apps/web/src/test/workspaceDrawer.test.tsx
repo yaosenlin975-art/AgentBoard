@@ -189,8 +189,8 @@ describe('WorkspaceList 置顶', () => {
   });
 });
 
-describe('WorkspaceCard 布局（防重叠结构）', () => {
-  it('操作行是独立一行：内置顶 · 上移 · 下移，均不在统计格内', async () => {
+describe('WorkspaceCard 布局（操作行在卡片内、防重叠）', () => {
+  it('置顶 · 上移 · 下移 三个按钮都被卡片容器包裹，且在统计行下方、不在统计格内', async () => {
     mockBase([wsA]);
     renderList();
     const row = await screen.findByTestId('workspace-row-a1');
@@ -199,19 +199,69 @@ describe('WorkspaceCard 布局（防重叠结构）', () => {
     const pin = within(actions).getByTestId('workspace-pin-a1');
     const up = within(actions).getByTestId('workspace-move-up-a1');
     const down = within(actions).getByTestId('workspace-move-down-a1');
+    const card = within(row).getByTestId('workspace-card-a1').closest('[data-workspace-card]');
 
-    // 置顶按钮在 ↑ 左侧
+    // 卡片容器存在，三个按钮的父链都落在它里面（不是卡片外的兄弟节点）
+    expect(card).not.toBeNull();
+    expect(card).toBe(row.querySelector('[data-workspace-card="a1"]'));
+    for (const button of [pin, up, down]) {
+      expect(button.closest('[data-workspace-card]')).toBe(card);
+      expect(card?.contains(button)).toBe(true);
+    }
+    // 操作行是普通流布局，不靠 absolute 浮出卡片
+    expect(actions.className).not.toContain('absolute');
+    // 操作行排在卡片内容按钮之后（统计行下方）
+    const content = within(row).getByTestId('workspace-card-a1');
+    expect(content.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // 置顶按钮在 ↑ 左侧，三者同间距（同一 flex 容器的 gap-1）
     expect(pin.compareDocumentPosition(up) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(up.compareDocumentPosition(down) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(actions.className).toContain('gap-1');
 
-    // 操作行与统计格互不包含（不同行 → 不会像绝对定位那样压在「已关闭」上）
+    // 操作行与统计格互不包含（不同行 → 不会压在「已关闭」上）
     const closed = within(row).getByTestId('stat-已关闭');
     expect(closed.contains(up)).toBe(false);
     expect(actions.contains(closed)).toBe(false);
-    expect(actions.className).not.toContain('absolute');
 
-    // 统计文案 nowrap + 卡片最小高度，窄宽度不折行挤压
+    // 统计文案 nowrap + 卡片容器最小高度，窄宽度不折行挤压
     expect(within(closed).getByText('已关闭').className).toContain('whitespace-nowrap');
-    expect(within(row).getByTestId('workspace-card-a1').className).toContain('min-h-[5.5rem]');
+    expect(card?.className).toContain('min-h-[6.5rem]');
+  });
+
+  it('置顶按钮是文本胶囊：未置顶「置顶」，按下后「已置顶」且有填充底色类名', async () => {
+    mockBase([wsA, wsB]);
+    renderList();
+    const row = await screen.findByTestId('workspace-row-b2');
+    const pin = within(row).getByTestId('workspace-pin-b2');
+
+    expect(pin).toHaveTextContent('置顶');
+    expect(pin).toHaveAttribute('aria-pressed', 'false');
+    expect(pin.className).toContain('border-neutral-300');
+    expect(pin.className).not.toContain('bg-blue-600');
+
+    await userEvent.click(pin);
+
+    await waitFor(() => expect(pin).toHaveTextContent('已置顶'));
+    expect(pin).toHaveAttribute('aria-pressed', 'true');
+    expect(pin.className).toContain('bg-blue-600');
+    expect(pin.className).toContain('text-white');
+    // 与 ↑↓ 同一套尺寸/圆角/hover
+    const up = within(row).getByTestId('workspace-move-up-b2');
+    for (const cls of ['inline-flex', 'h-5', 'rounded', 'text-[11px]']) {
+      expect(pin.className).toContain(cls);
+      expect(up.className).toContain(cls);
+    }
+    expect(up.className).toContain('hover:bg-neutral-100');
+    expect(pin.className).not.toContain('hover:bg-neutral-100');
+  });
+
+  it('抽屉内没有 emoji 字符（置顶按钮不再是 📌）', async () => {
+    mockBase([wsA, wsB]);
+    renderList();
+    await screen.findByTestId('workspace-row-a1');
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/\p{Extended_Pictographic}/u);
+    expect(text).not.toContain('📌');
   });
 });
