@@ -406,28 +406,31 @@ const labelIssues: Issue[] = [
 ];
 
 describe('顶栏标签筛选（UI-FILTER01）', () => {
-  it('顶栏两行结构：第一行=视图切换，第二行=搜索框+标签条（TOOLBAR-LAYOUT-01 / SEARCH-MOVE）', async () => {
+  it('工具条同一行：视图切换 + 搜索框 + 标签条（TOPBAR-INLINE），chips 可横滚', async () => {
     mockBoardData(labelIssues, []);
     useAppStore.setState({ workspaceId: 'ws-1' });
     renderBoard();
 
-    const filtersRow = (await screen.findByTestId('label-filter-bar')).parentElement as HTMLElement;
-    expect(filtersRow).toHaveAttribute('data-testid', 'board-toolbar-filters');
-    expect(filtersRow.className).toContain('w-full');
-    const controlsRow = filtersRow.previousElementSibling as HTMLElement;
-    expect(controlsRow).toHaveAttribute('data-testid', 'board-toolbar-controls');
+    const row = await screen.findByTestId('board-toolbar-row');
+    const controls = within(row).getByTestId('board-toolbar-controls');
+    const filters = within(row).getByTestId('board-toolbar-filters');
+    // 三者同一行：tab 组与搜索框在同一个 row 容器内，且 tab 组在搜索框之前（右侧）
+    expect(row.contains(controls)).toBe(true);
+    expect(row.contains(filters)).toBe(true);
+    expect(controls.compareDocumentPosition(filters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(controls).getByRole('button', { name: '平铺看板' })).toBeInTheDocument();
+    expect(within(controls).queryByTestId('board-search')).not.toBeInTheDocument();
 
-    // 第一行：只有视图切换（TOOLBAR-SEARCH-MOVE 后搜索框已挪到第二行）
-    expect(within(controlsRow).getByRole('button', { name: '平铺看板' })).toBeInTheDocument();
-    expect(within(controlsRow).getByRole('button', { name: '任务树' })).toBeInTheDocument();
-    expect(within(controlsRow).queryByTestId('board-search')).not.toBeInTheDocument();
-    expect(within(controlsRow).queryByTestId('label-filter-bar')).not.toBeInTheDocument();
-    // 第二行：搜索框在左、标签条在其右
-    const search = within(filtersRow).getByTestId('board-search');
-    const bar = within(filtersRow).getByTestId('label-filter-bar');
-    expect(search.compareDocumentPosition(bar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(filtersRow).queryByRole('button', { name: '任务树' })).not.toBeInTheDocument();
-    expect(filtersRow.className).toContain('items-center');
+    // 搜索框在 chips 之前；chips 容器负责横向滚动（空间不足优先压缩 chips）
+    const search = within(filters).getByTestId('board-search');
+    const chips = within(filters).getByTestId('board-toolbar-chips');
+    expect(search.compareDocumentPosition(chips) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(chips.className).toContain('overflow-x-auto');
+    expect(chips.className).toContain('min-w-0');
+    expect(within(chips).getByTestId('label-filter-bar')).toBeInTheDocument();
+    // tab 组与搜索框都不允许被压缩（shrink-0）
+    expect(controls.className).toContain('shrink-0');
+    expect(search.className).toContain('shrink-0');
   });
 
   it('标签集合覆盖整个 workspace：请求不带分页参数，尾部 issue 的标签也进入筛选条', async () => {

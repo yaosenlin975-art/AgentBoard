@@ -180,42 +180,48 @@ export function Board({
           </button>
         </div>
       )}
-      {/* 顶栏两行：第一行只放视图切换；第二行 = 搜索框（左）+ 标签 chips（右，只在自己容器内横向滚动）。
+      {/* TOPBAR-INLINE：视图切换（平铺看板/任务树/知识库/日志）+ 搜索框 + 标签 chips 同在一行。
+          tab 组 `shrink-0` 不被压缩；搜索框 `shrink-0`；chips 容器 `min-w-0 flex-1 overflow-x-auto`
+          空间不足时优先压缩/横滚 chips；≤900 允许 chips 换第二行（wrap），但 tab 与搜索框仍在同一行。
           外壳与知识库视图共用 ViewToolbarShell，保证三视图下 tab 组位置恒定（TOPBAR-TABS）。 */}
       <ViewToolbarShell>
-        <div data-testid="board-toolbar-controls" className="flex flex-wrap items-center gap-1">
-          <ViewSwitcher
-            layout={currentLayout}
-            onLayout={changeLayout}
-            knowledgeOpen={knowledgeOpen}
-            onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
-            {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
-          />
-        </div>
-        <div data-testid="board-toolbar-filters" className="flex w-full min-w-0 items-center gap-2">
-          <input
-            aria-label="搜索任务"
-            data-testid="board-search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索标题/描述/标签"
-            className="h-8 w-40 shrink-0 rounded-lg border border-hairline bg-surface-raised px-2.5 text-xs text-ink outline-none focus:border-accent sm:w-56"
-          />
-          <LabelFilterBar workspaceId={workspaceId} />
-          {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
-          {treeMode && (
-            <button
-              type="button"
-              data-testid="tree-create-issue"
-              aria-label="新建任务"
-              title="新建任务（待规划）"
-              disabled={workspaceId === null}
-              onClick={() => setNewIssueOpen(true)}
-              className="ml-auto shrink-0 rounded bg-blue-600 px-2 py-0.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              + 新建
-            </button>
-          )}
+        <div data-testid="board-toolbar-row" className="flex min-w-0 flex-wrap items-center gap-2 max-[900px]:items-start">
+          <div data-testid="board-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
+            <ViewSwitcher
+              layout={currentLayout}
+              onLayout={changeLayout}
+              knowledgeOpen={knowledgeOpen}
+              onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
+              {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
+            />
+          </div>
+          <div data-testid="board-toolbar-filters" className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <input
+              aria-label="搜索任务"
+              data-testid="board-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索标题/描述/标签"
+              className="h-8 w-40 shrink-0 rounded-lg border border-hairline bg-surface-raised px-2.5 text-xs text-ink outline-none focus:border-accent sm:w-56"
+            />
+            <div data-testid="board-toolbar-chips" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto max-[900px]:basis-full">
+              <LabelFilterBar workspaceId={workspaceId} />
+            </div>
+            {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
+            {treeMode && (
+              <button
+                type="button"
+                data-testid="tree-create-issue"
+                aria-label="新建任务"
+                title="新建任务（待规划）"
+                disabled={workspaceId === null}
+                onClick={() => setNewIssueOpen(true)}
+                className="shrink-0 rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                + 新建
+              </button>
+            )}
+          </div>
         </div>
       </ViewToolbarShell>
       {treeMode ? (

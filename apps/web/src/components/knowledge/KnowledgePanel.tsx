@@ -9,7 +9,6 @@ import {
   type KnowledgeCategory,
   type KnowledgeLanded,
 } from '../../lib/knowledgeGraph';
-import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { KnowledgePageDetail } from './KnowledgePageDetail';
 import { KnowledgeGraph } from './KnowledgeGraph';
@@ -20,15 +19,6 @@ type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 
 interface SearchItem extends PageItem { page_id: string; snippet: string }
 
 const STATUS_LABEL: Record<string, string> = { active: '有效', archived: '归档', deleted: '已删除' };
-const STATUS_TONE: Record<string, BadgeTone> = { active: 'green', archived: 'neutral', deleted: 'red' };
-/** KB-MODEL：五类固定 tone（legacy 用 gray，与星图灰显一致） */
-const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
-  design: 'blue',
-  solved: 'green',
-  pinned: 'purple',
-  open: 'red',
-  legacy: 'gray',
-};
 const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', partial: '部分落地', proposed: '未落地' };
 const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
   design: CATEGORY_STYLES.design.label,
@@ -85,7 +75,7 @@ export function KnowledgePanel({
   return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
     {/* 视图切换与平铺看板共用同一外壳（TOPBAR-TABS）：切视图时 tab 组 left/top 不变 */}
     <ViewToolbarShell>
-      <div data-testid="knowledge-toolbar-controls" className="flex flex-wrap items-center gap-1">
+      <div data-testid="knowledge-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
         <ViewSwitcher
           layout={currentLayout}
           onLayout={changeLayout}
@@ -163,27 +153,29 @@ export function KnowledgePanel({
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'}</p>
         </div>}
 
-        {items.length > 0 && <ul className="divide-y divide-neutral-200 overflow-hidden rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+        {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline bg-surface-card">
           {items.map(page => {
             const isSelected = selected?.id === page.id && selected?.scope === page.scope;
             const isExpired = page.expires_at !== null && page.expires_at !== undefined && page.expires_at <= Date.now();
+            const category = normalizeCategory((page as { category?: unknown }).category);
+            const landed = normalizeLanded((page as { landed?: unknown }).landed);
             return <li key={page.id} data-testid={`knowledge-item-${page.id}`} className={`relative px-3 py-2.5 transition-colors ${isSelected ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}>
               {isSelected && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-accent" />}
               <button type="button" aria-current={isSelected ? 'true' : undefined} className="block w-full text-left" onClick={() => setSelected(page)}>
-                <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{page.title}</span>
-                {page.snippet && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-400">{page.snippet}</span>}
-                <span className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                  <Badge tone={page.scope === 'common' ? 'neutral' : 'blue'}>{page.scope === 'common' ? '公共' : '项目'}</Badge>
-                  <Badge tone="neutral">v{page.revision}</Badge>
-                  <Badge tone={STATUS_TONE[page.status] ?? 'neutral'}>{STATUS_LABEL[page.status] ?? page.status}</Badge>
-                  <Badge tone={CATEGORY_TONE[normalizeCategory((page as { category?: unknown }).category)]}>
-                    {CATEGORY_LABEL[normalizeCategory((page as { category?: unknown }).category)]}
-                  </Badge>
-                  {(() => {
-                    const landed = normalizeLanded((page as { landed?: unknown }).landed);
-                    return landed === null ? null : <Badge tone={landed === 'landed' ? 'green' : landed === 'partial' ? 'blue' : 'neutral'}>{LANDED_LABEL[landed]}</Badge>;
-                  })()}
-                  {isExpired && <Badge tone="red">已过期</Badge>}
+                <span className="block truncate text-sm font-medium text-ink">{page.title}</span>
+                {page.snippet && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-ink-3">{page.snippet}</span>}
+                {/* UNSLOP-4：每行只有一种字号、一种元信息色；类别是唯一有颜色的信息（小圆点），其余用「·」分隔的静默文本 */}
+                <span data-testid="knowledge-meta" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+                  <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: `var(${CATEGORY_STYLES[category].cssVar})` }} />
+                  <span className="text-ink-2">{CATEGORY_LABEL[category]}</span>
+                  <span aria-hidden>·</span>
+                  <span>{page.scope === 'common' ? '公共' : '项目'}</span>
+                  <span aria-hidden>·</span>
+                  <span className="tabular-nums">v{page.revision}</span>
+                  <span aria-hidden>·</span>
+                  <span>{STATUS_LABEL[page.status] ?? page.status}</span>
+                  {landed !== null && <><span aria-hidden>·</span><span>{LANDED_LABEL[landed]}</span></>}
+                  {isExpired && <><span aria-hidden>·</span><span>已过期</span></>}
                 </span>
               </button>
             </li>;

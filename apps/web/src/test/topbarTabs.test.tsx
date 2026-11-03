@@ -27,9 +27,16 @@ function paddingClasses(element: Element): string[] {
 
 interface TabShell { wrapper: Element; shell: Element; viewRoot: Element }
 
+/** 向上找到 ViewToolbarShell（TOPBAR-INLINE 之后 tab 组与其外层之间多了一层同行容器） */
+function shellOf(wrapper: Element): Element | null {
+  let node: Element | null = wrapper.parentElement;
+  while (node !== null && !node.className.includes('flex-col')) node = node.parentElement;
+  return node ?? wrapper.parentElement;
+}
+
 function tabShell(wrapperTestId: string): TabShell {
   const wrapper = screen.getByTestId(wrapperTestId);
-  const shell = wrapper.parentElement;
+  const shell = shellOf(wrapper);
   const viewRoot = shell?.parentElement;
   if (!shell || !viewRoot) throw new Error(`tab 组包裹层/外壳缺失：${wrapperTestId}`);
   return { wrapper, shell, viewRoot };
