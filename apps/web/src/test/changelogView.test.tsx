@@ -360,7 +360,7 @@ describe('日志视图：左列表 + 右侧连续滚动区', () => {
     expect(screen.getByTestId('changelog-doc-title-log-ws-2')).toHaveTextContent('ws-2 日志');
   });
 
-  it('归档 tab 仍是只读区（无新增入口、无活动条目）', async () => {
+  it('LOG-HEAD-REMOVE：日志视图只有内容，没有标题与归档入口', async () => {
     mockList([entry()]);
     server.use(
       http.get('/api/changelog/archived-workspaces', () => HttpResponse.json({ items: [], next_offset: null })),
@@ -368,10 +368,11 @@ describe('日志视图：左列表 + 右侧连续滚动区', () => {
     withClient(<ChangelogPanel workspaceId="ws-1" />);
     await screen.findByTestId('changelog-split');
 
-    await userEvent.click(screen.getByTestId('changelog-tab-archived'));
-
-    expect(await screen.findByTestId('changelog-archived')).toBeInTheDocument();
-    expect(screen.queryByTestId('changelog-create')).toBeNull();
-    expect(screen.queryByTestId('changelog-split')).toBeNull();
+    expect(screen.queryByTestId('changelog-tab-active')).toBeNull();
+    expect(screen.queryByTestId('changelog-tab-archived')).toBeNull();
+    expect(screen.queryByTestId('changelog-archived')).toBeNull();
+    expect(screen.queryByText('工作区日志')).toBeNull();
+    // 日志内容与「按日分组 + 左侧跳转」的外壳仍在
+    expect(screen.getByTestId('changelog-split')).toBeInTheDocument();
   });
 });

@@ -22,7 +22,6 @@ import { usePrefersReducedMotion } from '../overlay/panelMotion';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
 import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTimeline';
 import { ChangelogTypeTag } from './ChangelogTypeTag';
-import { ArchivedChangelogPanel } from './ArchivedChangelogPanel';
 
 const PAGE = 20;
 const TYPES: WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
@@ -59,17 +58,12 @@ export function ChangelogPanel({
   logOpen = true,
   onToggleLog,
 }: ChangelogPanelProps) {
-  const [tab, setTab] = useState<'active' | 'archived'>('active');
   const [internalLayout, setInternalLayout] = useState<BoardLayout>(layout ?? 'board');
   const currentLayout: BoardLayout = layout ?? internalLayout;
   const changeLayout = (next: BoardLayout): void => {
     setInternalLayout(next);
     onLayout?.(next);
   };
-
-  useEffect(() => {
-    setTab('active');
-  }, [workspaceId]);
 
   return (
     <section
@@ -91,38 +85,8 @@ export function ChangelogPanel({
       </ViewToolbarShell>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <h1 className="text-sm font-semibold">工作区日志</h1>
-          <div role="tablist" aria-label="变更日志范围" className="flex gap-1.5">
-            <button
-              type="button"
-              role="tab"
-              data-testid="changelog-tab-active"
-              aria-selected={tab === 'active'}
-              onClick={() => setTab('active')}
-              className={tab === 'active' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
-            >
-              当前工作区
-            </button>
-            <button
-              type="button"
-              role="tab"
-              data-testid="changelog-tab-archived"
-              aria-selected={tab === 'archived'}
-              onClick={() => setTab('archived')}
-              className={tab === 'archived' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
-            >
-              历史工作区
-            </button>
-          </div>
-        </div>
-        {tab === 'active' ? (
-          <ActiveChangelog workspaceId={workspaceId} onClose={onClose} />
-        ) : (
-          <div data-testid="changelog-archived-scroll" className="min-h-0 flex-1 overflow-auto">
-            <ArchivedChangelogPanel />
-          </div>
-        )}
+        {/* LOG-HEAD-REMOVE：标题与「当前/历史工作区」切换已移除，直接给日志内容（首个元素不再留大片空白） */}
+        <ActiveChangelog workspaceId={workspaceId} onClose={onClose} />
       </div>
     </section>
   );

@@ -250,7 +250,7 @@ describe('变更日志面板', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
-  it('归档只读：归档列表无写入口，选中后时间轴无编辑/删除按钮，且不混入活动列表', async () => {
+  it('LOG-HEAD-REMOVE：不再渲染「工作区日志」标题与「当前/历史工作区」切换，直接给当前工作区日志', async () => {
     mockActiveList([entry({ id: 'log-active', title: '活动日志' })]);
     server.use(
       http.get('/api/changelog/archived-workspaces', () =>
@@ -261,27 +261,21 @@ describe('变更日志面板', () => {
           next_offset: null,
         }),
       ),
-      http.get('/api/changelog/archived-workspaces/:origin/entries', ({ params }) =>
-        HttpResponse.json({
-          items: [entry({ id: 'arch-1', workspace_id: null, origin_workspace_id: String(params.origin), title: '归档日志', change_type: '历史' })],
-          next_offset: null,
-        }),
-      ),
     );
     renderPanel();
     await screen.findByTestId('changelog-entry-log-active');
 
-    await userEvent.click(screen.getByTestId('changelog-tab-archived'));
-    await screen.findByTestId('changelog-archived-workspace-ws-old');
-    // 归档区没有新增入口，活动中也不显示归档条目
-    expect(screen.queryByTestId('changelog-create')).toBeNull();
-    expect(screen.queryByTestId('changelog-entry-log-active')).toBeNull();
-
-    await userEvent.click(screen.getByTestId('changelog-archived-workspace-ws-old'));
-    await screen.findByTestId('changelog-entry-arch-1');
-    expect(screen.queryByRole('button', { name: /编辑日志：归档日志/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /删除日志：归档日志/ })).toBeNull();
-    expect(screen.getByTestId('changelog-archived-entries')).toHaveTextContent('只读');
+    // 标题与切换按钮都不再存在（历史工作区日志因此没有前端入口，服务端接口保留）
+    expect(screen.queryByRole('heading', { name: '工作区日志' })).toBeNull();
+    expect(screen.queryByTestId('changelog-tab-active')).toBeNull();
+    expect(screen.queryByTestId('changelog-tab-archived')).toBeNull();
+    expect(screen.queryByText('当前工作区')).toBeNull();
+    expect(screen.queryByText('历史工作区')).toBeNull();
+    // 归档区不会被渲染，也不会去拉归档列表
+    expect(screen.queryByTestId('changelog-archived')).toBeNull();
+    expect(screen.queryByTestId('changelog-archived-workspace-ws-old')).toBeNull();
+    // 当前工作区日志照常可见
+    expect(screen.getByTestId('changelog-split')).toBeInTheDocument();
   });
 
   it('切换 workspace：请求带新 id，编辑草稿与筛选复位，不显示旧 workspace 数据', async () => {
