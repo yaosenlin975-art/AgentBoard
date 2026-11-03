@@ -58,7 +58,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 ## 看板概念
 
 - **工作空间**：一个代码目录对应一个工作空间，任务挂在工作空间下。
-- **任务四状态**：待规划 → 进行中 → 待验收 → 已关闭。`done` 后进「待验收」等人工确认，人工拖动到「已关闭」或退回「待规划」。
+- **任务五状态**：待规划(open) → 进行中(started) → 待验收(review) → 已关闭(done)，另有 **已废弃(deprecated)**。`kb status ls <工作区>` 列全部状态（内置五状态 + 自定义）；`kb done` 进「待验收」，`kb close` 转「已关闭」，`kb reopen` 退回「待规划」或指定状态。
 - **任务树**：父卡只承载汇总与顺序，不承载实现；子卡用 `--parent <父卡 id>` 挂层级，子卡全部 done 后父卡才 done。
 - **依赖**：卡间先后关系以结构化边表为准（`kb dep add <卡> <前置卡>` 建边、`kb dep ls` 查看）；描述里的 plain issue id（如 `前置：876、877`）仅供人阅读。
 - **占用**：`kb claim` 原子领取后任务被你独占（字段仍允许用户编辑），其他人 claim 会收到 409。解除占用仅两条路：你执行 `done`/`fail`，或用户强制释放。任务未被占用时其他 agent 不可见占用徽标。
@@ -92,12 +92,18 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
 kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--parent <父卡 id>]  # 建任务；ws 用 id 或名称
 kb list-spaces                          # 列工作空间（id/name/path）
-kb list-tasks --workspace <id|名> [--status 待规划|进行中|待验收|已关闭]  # 必须指定当前工作区；不带过滤的全局列表仅限跨工作区只读盘点，不得 claim / done / fail。
+kb list-tasks --workspace <id|名> [--status 待规划|进行中|待验收|已关闭|已废弃]  # 必须指定当前工作区；不带过滤的全局列表仅限跨工作区只读盘点，不得 claim / done / fail。
 kb show <issue-id>                      # 任务完整字段 + 全部评论
 kb claim <issue-id>                     # 原子领取；输出任务详情+评论+工作空间路径
 kb comment <issue-id> "内容"            # 写评论；中文/长文用 --stdin
 kb done <issue-id> [--notes "..."] [--scope <path>]  # 完成 → 待验收，释放占用，按 --scope 提交
 kb fail <issue-id> --reason "..."       # 失败 → 待规划，释放占用
+kb close <issue-id>                     # 待验收 → 已关闭（占用中 409，先 release）
+kb reopen <issue-id> [--to <状态>]      # 已关闭/已废弃 → 目标状态（默认「待规划」，须是本工作区已定义状态）
+kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--parent <id>|--clear-root]  # 改字段，不含状态
+kb status ls <workspace>                # 工作区状态字典（名字 / kind / 排序 / 内置或自定义）
+kb status add <workspace> <name>        # 新增自定义状态（内置五状态不可复刻）
+kb status rm <workspace> <status> --migrate-to <目标状态>  # 删除自定义状态并强制迁移其下卡（内置不可删）
 kb dep ls <issue-id>                    # 列前置与被阻塞者（含状态与「解除」标记）
 kb dep add <issue-id> <blocker-id>      # 新增前置：blocker 解除（待验收/已关闭）后本卡才可 claim
 kb dep rm <issue-id> <blocker-id>       # 移除前置
@@ -107,6 +113,11 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 退出码：0 成功；1 服务未启动或请求失败；2 任务已被占用（HTTP 409）。
 - `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不用 release 抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
+- **claim 状态门禁**：`kb claim` 只对「待规划」有效；状态是进行中/待验收/已关闭/已废弃时会被拒（退出码 2），但当前 CLI 文案仍显示「已被占用」——**不要据此判定为他人占用**，先 `kb show <id>` 看真实 `status`。
+- **知识页 `category`/`landed` 当前无 CLI 入口**：`kb knowledge create/revise` 没有 `--category` / `--landed` 参数，新页恒为 `legacy` / `null`；要设置只能走 REST（`POST /api/knowledge/pages`、`PATCH …/pages/:id`），别把「能写 category」当成可用能力。
+- **slug 冲突的实际表现**：服务端返回 409 `KNOWLEDGE_EXISTS`，CLI 显示服务端中文 message「范围内已存在该 slug」并 **退出码 2**（`KNOWLEDGE_REVISION_CONFLICT` 同为 2）。处理方式：同 slug 改走 `kb knowledge revise`，不新建重复页。
+- **`--stdin` 与 BOM**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM（首字符不会被污染）；多行中文仍建议 `cmd /c "chcp 65001>nul & kb comment <id> --stdin < file"`，避开 PowerShell 管道编码问题。
+- **`--scope` 必须逐条传**：写成 `--scope a --scope b`；PowerShell 会把 `--scope a,b` 拆错甚至合并成含空格的单参数，CLI 检测到含空格会打印 SCOPE-GUARD 警告要求重传。
 
 ## 故障分支
 
