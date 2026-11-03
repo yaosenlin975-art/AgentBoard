@@ -1,3 +1,12 @@
+# 归档：agentboard 技能原文（2026-11-03 删除前快照）
+
+- 原路径：`D:\WorkSpaces\任务看板\skills\agentboard\SKILL.md`
+- 归档原因：技能族重构，agentboard 内容已并入 `skills/using-agentboard/SKILL.md` 并删除原技能。
+- 替代权威来源：`D:\WorkSpaces\任务看板\skills\using-agentboard\SKILL.md`
+- 归档时间：2026-11-03
+- 说明：以下为删除前原文逐字节副本（含 frontmatter），供回溯。
+
+---
 ---
 name: agentboard
 description: 通过 kb CLI 从 AgentBoard 任务看板自助领取任务、执行并回报进度。当用户要求从看板领任务、查任务、汇报进展、标记完成或失败时使用。
