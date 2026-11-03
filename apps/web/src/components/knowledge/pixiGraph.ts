@@ -1066,8 +1066,11 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     const next = readColorMap();
     for (const key of Object.keys(colors) as SemanticColorKey[]) colors[key] = next[key];
     watermark.style.fill = colors.text.tint;
+    // UNSLOP-4：主题切换只换中性色，不能把按内容类型算好的 tint 抹成统一底灰
+    const tints = new Map(data.nodes.map((node) => [node.id, node.tint]));
     for (const node of nodeViews.values()) {
-      node.circle.tint = colors.fill.tint;
+      node.tint = tints.get(node.id);
+      node.circle.tint = node.tint ?? colors.fill.tint;
       node.label.style.fill = colors.text.tint;
     }
     for (const edge of edgeViews.values()) {

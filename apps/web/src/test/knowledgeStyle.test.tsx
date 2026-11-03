@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { server } from './server';
@@ -80,6 +80,28 @@ describe('知识库页面结构（KB-STYLE01）', () => {
     expect(common).toHaveTextContent('公共');
     expect(common).toHaveTextContent('v2');
     expect(common).toHaveTextContent('归档');
+  });
+
+  it('UNSLOP-4：元信息收敛成一行静默文本，只有类别是小圆点（不再每行 5 个 pill）', async () => {
+    mockPages([{ ...pageOne, category: 'design', landed: 'landed', expires_at: 1 }]);
+    mount();
+
+    const item = await screen.findByTestId('knowledge-item-p1');
+    const meta = within(item).getByTestId('knowledge-meta');
+    // 单一字号（text-xs）承载整行元信息
+    expect(meta.className).toContain('text-xs');
+    expect(meta.className).toContain('text-ink-3');
+    // 全行只允许一个小圆点（类别色），pill 标签全部消失
+    expect(item.querySelectorAll('[class*="rounded-full"]').length).toBe(1);
+    const dot = item.querySelector('[class*="rounded-full"]') as HTMLElement;
+    expect(dot.getAttribute('style')).toContain('var(--kb-cat-design)');
+    // 元信息文本仍完整（收敛样式不丢信息）
+    expect(meta).toHaveTextContent('设计方案');
+    expect(meta).toHaveTextContent('项目');
+    expect(meta).toHaveTextContent('v1');
+    expect(meta).toHaveTextContent('有效');
+    expect(meta).toHaveTextContent('已落地');
+    expect(meta).toHaveTextContent('已过期');
   });
 
   it('加载中显示骨架，空结果显示空态文案（搜索无命中给出清除提示）', async () => {

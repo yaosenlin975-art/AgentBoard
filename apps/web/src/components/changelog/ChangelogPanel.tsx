@@ -375,7 +375,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
         >
           <div
             data-testid="changelog-list-pane"
-            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-md border border-neutral-200 bg-white p-2 dark:border-neutral-800 dark:bg-neutral-900"
+            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-md border border-hairline bg-surface-card p-2"
           >
             {sorted.length === 0 ? (
               <p
@@ -401,7 +401,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                               onClick={() => scrollToEntry(item.id)}
                               className={`block w-full rounded px-1.5 py-1 text-left text-xs ab-transition ${
                                 isSelected
-                                  ? 'bg-blue-50 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200'
+                                  ? 'bg-accent-soft font-medium text-ink'
                                   : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
                               }`}
                             >
@@ -455,9 +455,9 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                 <section
                   key={group.day}
                   data-testid={`changelog-doc-group-${group.day}`}
-                  className="border-b border-neutral-200 last:border-b-0 dark:border-neutral-800"
+                  className="border-b border-hairline last:border-b-0"
                 >
-                  <h3 className="sticky top-0 z-10 border-b border-neutral-200 bg-white/95 px-3 py-1 text-[11px] font-semibold text-neutral-500 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 dark:text-neutral-400">
+                  <h3 className="sticky top-0 z-10 border-b border-hairline bg-surface-card/95 px-3 py-1 text-[11px] font-semibold text-ink-3 backdrop-blur">
                     {group.day}
                   </h3>
                   {group.entries.map((item) => {
@@ -468,8 +468,8 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                         data-testid={`changelog-doc-${item.id}`}
                         data-changelog-id={item.id}
                         aria-current={isSelected ? 'true' : undefined}
-                        className={`flex flex-col gap-1.5 border-t border-neutral-200 px-3 py-2 transition-colors first:border-t-0 dark:border-neutral-800 ${
-                          isSelected ? 'bg-blue-50/70 dark:bg-blue-950/20' : ''
+                        className={`flex flex-col gap-1.5 border-t border-hairline px-3 py-2 transition-colors first:border-t-0 ${
+                          isSelected ? 'bg-accent-soft' : ''
                         }`}
                       >
                         <header className="flex flex-wrap items-center gap-1.5">

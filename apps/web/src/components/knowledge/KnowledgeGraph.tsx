@@ -7,7 +7,6 @@ import {
   applyEdgeKinds,
   buildAdjacency,
   composeGraph,
-  GRAPH_PALETTE,
   edgeStyle,
   filterGraphForView,
   highlightAround,
@@ -17,7 +16,6 @@ import {
   categoryColor,
   CATEGORY_STYLES,
   KNOWLEDGE_CATEGORIES,
-  nodeColor,
   nodeRadius,
   nodeWeights,
   normalizeCategory,
@@ -411,16 +409,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       data-matches={matches.size}
       data-focus-id={focusId ?? ''}
       data-focus-hops={focusHops}
-      className="flex min-h-0 flex-col rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+      className="flex min-h-0 flex-col rounded-lg border border-hairline bg-surface-card"
     >
-      <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+      <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-2 text-xs text-ink-2">
         <label className="flex items-center gap-1">
           <input
             type="checkbox"
             data-testid="graph-edge-link"
             checked={kinds.link}
             onChange={(e) => setKinds((prev) => ({ ...prev, link: e.target.checked }))}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           双链
         </label>
@@ -430,7 +428,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             data-testid="graph-edge-source"
             checked={kinds.source}
             onChange={(e) => setKinds((prev) => ({ ...prev, source: e.target.checked }))}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           来源关联
         </label>
@@ -440,7 +438,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             data-testid="graph-edge-keyword"
             checked={kinds.keyword}
             onChange={(e) => setKinds((prev) => ({ ...prev, keyword: e.target.checked }))}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           关键词关联
         </label>
@@ -450,15 +448,15 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             data-testid="graph-isolated"
             checked={showIsolated}
             onChange={(e) => setShowIsolated(e.target.checked)}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           显示孤立点
         </label>
         <span className="flex items-center gap-1" data-testid="graph-zoom-controls">
-          <button type="button" data-testid="graph-zoom-out" aria-label="缩小星图" title="缩小（0.8 倍以下隐藏标签）" onClick={() => zoomBy(1 / 1.25)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">−</button>
-          <button type="button" data-testid="graph-zoom-in" aria-label="放大星图" title="放大" onClick={() => zoomBy(1.25)} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">+</button>
+          <button type="button" data-testid="graph-zoom-out" aria-label="缩小星图" title="缩小（0.8 倍以下隐藏标签）" onClick={() => zoomBy(1 / 1.25)} className="rounded border border-hairline px-1.5 text-xs text-ink-2">−</button>
+          <button type="button" data-testid="graph-zoom-in" aria-label="放大星图" title="放大" onClick={() => zoomBy(1.25)} className="rounded border border-hairline px-1.5 text-xs text-ink-2">+</button>
           <span data-testid="graph-scale" className="tabular-nums">{scale.toFixed(1)}×</span>
-          <button type="button" data-testid="graph-fit" aria-label="适应视图" title="适应视图（全部节点回到视口内）" onClick={fitView} className="rounded border border-neutral-300 px-1.5 text-xs dark:border-neutral-700">适应视图</button>
+          <button type="button" data-testid="graph-fit" aria-label="适应视图" title="适应视图（全部节点回到视口内）" onClick={fitView} className="rounded border border-hairline px-1.5 text-xs text-ink-2">适应视图</button>
         </span>
         <label className="flex items-center gap-1">
           <span className="sr-only">搜索节点</span>
@@ -469,7 +467,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             placeholder="搜索节点"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-28 rounded border border-neutral-300 px-1.5 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-800 sm:w-36"
+            className="w-28 rounded border border-hairline bg-surface-card px-1.5 py-0.5 text-xs sm:w-36"
           />
         </label>
         <label className="flex items-center gap-1">
@@ -480,7 +478,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             disabled={search.trim() === ''}
             title={search.trim() === '' ? '先输入搜索词' : '只显示命中节点'}
             onChange={(event) => setOnlyMatches(event.target.checked)}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           只看命中
         </label>
@@ -492,7 +490,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             setSearch(PRESET_UNLANDED_DESIGN);
             setOnlyMatches(true);
           }}
-          className="pointer-events-auto rounded border border-neutral-300 px-1.5 text-[10px] dark:border-neutral-700"
+          className="pointer-events-auto rounded border border-hairline px-1.5 text-[10px] text-ink-2"
         >
           只看未落地设计
         </button>
@@ -504,18 +502,18 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       </div>
 
       {usingFallback && (
-        <p data-testid="graph-fallback-notice" className="border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300">
+        <p data-testid="graph-fallback-notice" className="border-b border-hairline bg-surface-raised px-3 py-1.5 text-xs text-ink-2">
           服务端星图接口未就绪，已按本地规则合成（来源共现 + 关键词共现，最多 {FALLBACK_PAGE_CAP} 页）
         </p>
       )}
 
-      {loading && <p data-testid="knowledge-graph-loading" className="px-3 py-6 text-center text-sm text-neutral-400">星图加载中…</p>}
+      {loading && <p data-testid="knowledge-graph-loading" className="px-3 py-6 text-center text-sm text-ink-3">星图加载中…</p>}
 
       {error !== null && !loading && (
         <p role="alert" className="px-3 py-6 text-center text-sm text-red-600 dark:text-red-400">{error.message}</p>
       )}
 
-      <div data-testid="graph-legend" aria-label="星图图例" className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-1 text-[11px] text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+      <div data-testid="graph-legend" aria-label="星图图例" className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-1 text-[11px] text-ink-3">
         <button
           type="button"
           data-testid="graph-color-scheme"
@@ -523,7 +521,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           aria-label="切换着色维度"
           title={colorScheme === 'category' ? '当前：按内容类型；点击切到按作用域' : '当前：按作用域；点击切到按内容类型'}
           onClick={() => setColorScheme((prev) => (prev === 'category' ? 'scope' : 'category'))}
-          className="pointer-events-auto rounded border border-neutral-300 px-1.5 text-[10px] dark:border-neutral-700"
+          className="pointer-events-auto rounded border border-hairline px-1.5 text-[10px] text-ink-2"
         >
           {colorScheme === 'category' ? '内容类型' : '作用域'}
         </button>
@@ -536,11 +534,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             ))
           : [
               <span key="workspace" data-testid="graph-legend-scope-workspace" className="flex items-center gap-1">
-                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('workspace', dark) }} />
+                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: 'var(--ab-ink-2)' }} />
                 项目知识
               </span>,
               <span key="common" data-testid="graph-legend-scope-common" className="flex items-center gap-1">
-                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('common', dark) }} />
+                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: 'var(--ab-ink-3)' }} />
                 公共经验
               </span>,
             ]}
@@ -555,7 +553,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       </div>
 
       {focusId !== null && (
-        <div data-testid="graph-focus-bar" className="flex flex-wrap items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+        <div data-testid="graph-focus-bar" className="flex flex-wrap items-center gap-2 border-b border-hairline bg-surface-raised px-3 py-1.5 text-xs text-ink-2">
           <span>
             聚焦中：{shown?.nodes.find((node) => node.id === focusId)?.title ?? focusId} · 可见 {shown?.nodes.length ?? 0} 个节点（原 {graph?.nodes.length ?? 0}）
           </span>
@@ -567,38 +565,38 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
                 data-testid={`graph-focus-hops-${hops}`}
                 aria-pressed={focusHops === hops}
                 onClick={() => setFocusHops(hops as 1 | 2)}
-                className={`rounded px-1.5 py-0.5 ${focusHops === hops ? 'bg-amber-200 font-medium dark:bg-amber-900' : 'hover:bg-amber-100 dark:hover:bg-amber-900/60'}`}
+                className={`rounded px-1.5 py-0.5 ${focusHops === hops ? 'bg-accent-soft font-medium text-ink' : 'hover:bg-surface-card'}`}
               >
                 {hops} 跳
               </button>
             ))}
           </span>
-          <button type="button" data-testid="graph-focus-exit" onClick={() => setFocusId(null)} className="rounded px-1.5 py-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/60">
+          <button type="button" data-testid="graph-focus-exit" onClick={() => setFocusId(null)} className="rounded px-1.5 py-0.5 hover:bg-surface-card">
             回全图
           </button>
         </div>
       )}
 
       {!loading && error === null && activeOnlyMatches && matches.size === 0 && graph !== null && graph.nodes.length > 0 && (
-        <p data-testid="graph-empty-filter" className="px-3 py-2 text-xs text-neutral-500 dark:text-neutral-400">
+        <p data-testid="graph-empty-filter" className="px-3 py-2 text-xs text-ink-3">
           当前筛选没有匹配节点（{search.trim()}）
         </p>
       )}
 
       {!loading && error === null && shown !== null && shown.nodes.length === 0 && (
         <div data-testid="graph-empty-no-pages" className="px-4 py-10 text-center">
-          <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">暂无可视化知识</p>
-          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">当前范围内还没有知识页，先在左侧新建知识页</p>
+          <p className="text-sm font-medium text-ink">暂无可视化知识</p>
+          <p className="mt-1 text-xs text-ink-3">当前范围内还没有知识页，先在左侧新建知识页</p>
         </div>
       )}
 
       {!loading && error === null && shown !== null && shown.nodes.length > 0 && shown.edges.length === 0 && (
         <div data-testid="graph-empty-no-edges" className="px-4 py-10 text-center">
-          <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">知识页之间还没有关联</p>
-          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="text-sm font-medium text-ink">知识页之间还没有关联</p>
+          <p className="mt-1 text-xs text-ink-3">
             共 {shown.nodes.length} 个知识页，但彼此没有共享来源，也没有达到关键词阈值的重合
           </p>
-          <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mt-2 text-xs text-ink-3">
             建立关联：① 给两页填同一个来源文件或 URL；② 打开上方「关键词关联」（共享实体词 ≥2 或 trigram 重叠 ≥3 才成边）；③ 正文双链后续支持
           </p>
         </div>
@@ -652,13 +650,13 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
               role="menu"
               aria-label="节点操作"
               style={{ position: 'fixed', left: menu.x, top: menu.y }}
-              className="z-50 min-w-40 rounded-md border border-neutral-200 bg-white py-1 text-xs shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+              className="z-50 min-w-40 rounded-md border border-hairline bg-surface-card py-1 text-xs"
             >
               <button
                 type="button"
                 role="menuitem"
                 data-testid="graph-menu-open"
-                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                className="block w-full px-3 py-1.5 text-left text-ink-2 hover:bg-surface-raised"
                 onClick={() => {
                   const node = shown.nodes.find((item) => item.id === menu.id);
                   if (node !== undefined) pick(node);
@@ -671,7 +669,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
                 type="button"
                 role="menuitem"
                 data-testid="graph-menu-copy"
-                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                className="block w-full px-3 py-1.5 text-left text-ink-2 hover:bg-surface-raised"
                 onClick={() => {
                   // 应用无 URL 路由：复制知识页引用（kb/MCP 用得到的 id 形式）
                   void navigator.clipboard?.writeText(`knowledge://${menu.id}`);
@@ -684,7 +682,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
                 type="button"
                 role="menuitem"
                 data-testid="graph-menu-focus"
-                className="block w-full px-3 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-700"
+                className="block w-full px-3 py-1.5 text-left text-ink-2 hover:bg-surface-raised"
                 onClick={() => {
                   setFocusId(menu.id);
                   setFocusHops(1);
@@ -701,7 +699,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
               data-graph-fallback={renderer === 'no-webgl' ? 'no-webgl' : 'render-failed'}
               className="max-h-[480px] overflow-auto px-3 py-3"
             >
-              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
+              <p className="text-sm font-medium text-ink">
                 {renderer === 'no-webgl' ? '当前环境不支持 WebGL，已切换为列表视图' : '星图渲染器初始化失败，已切换为列表视图'}
               </p>
               <ul data-testid="graph-fallback-list" className="mt-2 space-y-1 text-sm">
@@ -711,7 +709,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
                       type="button"
                       data-testid={`graph-fallback-${node.id}`}
                       onClick={() => pick(node)}
-                      className="text-left text-blue-600 hover:underline dark:text-blue-400"
+                      className="text-left text-accent hover:underline"
                     >
                       {node.title}（度 {node.degree}）
                     </button>
@@ -724,7 +722,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       )}
 
       {!loading && error === null && shown !== null && shown.truncated_reason !== null && (
-        <p data-testid="graph-truncated" className="border-t border-neutral-200 px-3 py-1.5 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+        <p data-testid="graph-truncated" className="border-t border-hairline px-3 py-1.5 text-xs text-ink-3">
           {shown.truncated_reason === 'pages'
             ? `共 ${shown.page_total ?? shown.node_total} 页，已加载 ${shown.pages_loaded ?? shown.node_total} 页，图仅覆盖已加载部分；缩小范围可获得完整关系`
             : shown.truncated_reason === 'nodes'

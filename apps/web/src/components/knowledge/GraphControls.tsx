@@ -50,14 +50,14 @@ const SLIDER_FIELDS: Array<{ key: keyof ForceSliders; label: string; min: number
 ];
 
 const buttonClass =
-  'rounded px-1.5 py-0.5 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-700';
+  'rounded px-1.5 py-0.5 text-xs text-ink-2 hover:bg-surface-raised';
 
 /** 折叠区：原生 <details> 默认收起（与文档 setCollapsed(!0) 一致），键盘可达 */
 function Section({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <details data-testid={`graph-section-${id}`} className="border-t border-[var(--kb-graph-menu-border)] px-2 py-1">
-      <summary className="cursor-pointer select-none py-1 text-xs font-medium text-neutral-700 dark:text-neutral-200">{title}</summary>
-      <div className="pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">{children}</div>
+      <summary className="cursor-pointer select-none py-1 text-xs font-medium text-ink-2">{title}</summary>
+      <div className="pb-2 pt-1 text-xs text-ink-3">{children}</div>
     </details>
   );
 }
@@ -85,7 +85,7 @@ export function GraphControls(props: GraphControlsProps) {
   return (
     <div data-testid="graph-controls" data-state="open" className="ab-graph-controls" role="group" aria-label="星图设置">
       <div className="flex items-center gap-1 px-2 pt-1.5">
-        <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200">星图设置</span>
+        <span className="text-xs font-semibold text-ink-2">星图设置</span>
         <span className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -128,7 +128,7 @@ export function GraphControls(props: GraphControlsProps) {
             data-testid="graph-local-mode"
             checked={props.localMode}
             onChange={(event) => props.onLocalMode(event.target.checked)}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           局部图（跟随聚焦节点）
         </label>
@@ -140,7 +140,7 @@ export function GraphControls(props: GraphControlsProps) {
             value={props.localJumps}
             disabled={!props.localMode}
             onChange={(event) => props.onLocalJumps(Number(event.target.value))}
-            className="rounded border border-neutral-300 bg-transparent px-1 py-0.5 text-xs dark:border-neutral-600"
+            className="rounded border border-hairline bg-transparent px-1 py-0.5 text-xs text-ink-2"
           >
             {Array.from({ length: LOCAL_JUMPS_MAX - LOCAL_JUMPS_MIN + 1 }, (_, i) => LOCAL_JUMPS_MIN + i).map((jumps) => (
               <option key={jumps} value={jumps}>
@@ -162,7 +162,7 @@ export function GraphControls(props: GraphControlsProps) {
               checked={Boolean(checked)}
               disabled={!props.localMode}
               onChange={(event) => (onChange as (value: boolean) => void)(event.target.checked)}
-              className="size-3.5 accent-blue-600"
+              className="size-3.5 accent-accent"
             />
             {String(label)}
           </label>
@@ -170,7 +170,7 @@ export function GraphControls(props: GraphControlsProps) {
       </Section>
 
       <Section id="color-groups" title="颜色组">
-        <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
+        <p className="text-[11px] text-ink-3">
           颜色取自 `.graph-view.color-*` 语义色（CSS 变量，亮/暗两套）。本图固定「项目知识 / 公共经验」两组，暂不支持自定义颜色组（文档里的拖拽排序也跳过）。
         </p>
       </Section>
@@ -182,7 +182,7 @@ export function GraphControls(props: GraphControlsProps) {
             data-testid="graph-controls-isolated"
             checked={props.showIsolated}
             onChange={(event) => props.onShowIsolated(event.target.checked)}
-            className="size-3.5 accent-blue-600"
+            className="size-3.5 accent-accent"
           />
           显示孤立点
         </label>
