@@ -29,6 +29,13 @@ import { LabelFilterBar } from './LabelFilterBar';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { NewIssueDialog } from '../topbar/NewIssueDialog';
+import {
+  PLANNING_SORT_OPTIONS,
+  readPlanningSort,
+  sortPlanning,
+  writePlanningSort,
+  type PlanningSort,
+} from '../../lib/planningSort';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -63,6 +70,8 @@ export function Board({
   const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
   // 新建任务弹窗（NEW-ISSUE-PLUS）：入口只在待规划列头 / 任务树工具条，不再放顶栏
   const [newIssueOpen, setNewIssueOpen] = useState(false);
+  // 待规划列排序方式（SORT-PLAN）：本地存储，不落库
+  const [planningSort, setPlanningSort] = useState<PlanningSort>(() => readPlanningSort());
 
   const enabled = workspaceId !== null;
   const { data: issues } = useQuery({
@@ -107,6 +116,15 @@ export function Board({
     return filter.active ? all.filter((issue) => filter.matchingIds.has(issue.id)) : all;
   }, [issues, filter]);
   const grouped = groupByColumn(visibleIssues);
+  // 「待规划」列排序（SORT-PLAN）：纯函数排序 + 本地存储；其它列保持 sort_order 顺序
+  const planningIssues = useMemo(
+    () => sortPlanning(grouped['待规划'] ?? [], planningSort),
+    [grouped, planningSort],
+  );
+  const changePlanningSort = (next: PlanningSort): void => {
+    setPlanningSort(next);
+    writePlanningSort(next);
+  };
 
   if (workspaceId === null) {
     return (
@@ -222,9 +240,27 @@ export function Board({
               <Column
                 key={status}
                 status={status}
-                issues={grouped[status]}
+                issues={status === '待规划' ? planningIssues : grouped[status]}
                 runningSessionIds={runningSessionIds}
                 {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
+                {...(status === '待规划'
+                  ? {
+                      sortControl: (
+                        <select
+                          data-testid="planning-sort"
+                          aria-label="待规划排序"
+                          title="待规划排序"
+                          value={planningSort}
+                          onChange={(event) => changePlanningSort(event.target.value as PlanningSort)}
+                          className="w-full rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-xs text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                        >
+                          {PLANNING_SORT_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>{option.label}</option>
+                          ))}
+                        </select>
+                      ),
+                    }
+                  : {})}
               />
             ))}
           </div>

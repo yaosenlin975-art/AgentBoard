@@ -2,9 +2,11 @@
  * 看板单列（§7.3）：列头（名称 + 新建入口 + 计数）、可落点容器、卡片列表；空列占位提示。
  * 新建入口（NEW-ISSUE-PLUS）：只由外层对「待规划」列传入 onCreateIssue —— 新任务由服务端固定落在待规划。
  * 列宽（BOARD-COLS）：宽高由外层 grid 的列轨道决定（minmax(280px, 1fr)），这里不再写死宽度。
+ * 排序控件（SORT-PLAN）：只由外层对「待规划」列传入 sortControl，渲染在列头下方；其它列没有。
  */
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import type { ReactNode } from 'react';
 import type { Issue, IssueStatus } from '@agentboard/shared';
 import { columnDroppableId } from '../../lib/dnd';
 import { IssueCard } from './IssueCard';
@@ -14,11 +16,13 @@ export function Column({
   issues,
   runningSessionIds,
   onCreateIssue,
+  sortControl,
 }: {
   status: IssueStatus;
   issues: Issue[];
   runningSessionIds: ReadonlySet<string>;
   onCreateIssue?: () => void;
+  sortControl?: ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: columnDroppableId(status),
@@ -53,6 +57,11 @@ export function Column({
           {issues.length}
         </span>
       </header>
+      {sortControl !== undefined && (
+        <div data-testid={`column-sort-${status}`} className="px-2.5 pb-1 pt-1">
+          {sortControl}
+        </div>
+      )}
       <div
         ref={setNodeRef}
         className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-md p-1 transition-colors ${
