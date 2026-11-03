@@ -1,12 +1,13 @@
 /**
- * 一键签到（ACC-14）：顶部一个按钮，对三个平台的全部启用账号发起签到。
+ * 一键签到（ACC-14 / ACC-HEADER）：按钮放在账号管理最上方标题行右端，结果在额度区下方展示。
  *
  * 服务端 `POST /api/checkin-runs` 的批次边界是 `app_id`（`checkin_batch.app_id`，409 `CHECKIN_BATCH_IN_PROGRESS`
  * 也按 app 判定），因此「一键」= 一次点击为每个可签到的平台各建一个批次，并把各批次逐账号结果聚合在同一处展示；
  * 不新增端点、不改服务端契约。
  *
- * 后台执行时，workbuddy 批次还会带猫猫旅行结果（`CheckinBatchPanel` 读 operation.recovery_ref）。
- * 幂等：同一批账号的重试复用同一个 `Idempotency-Key`（服务端按 key 回放，不重复建批）。
+ * ACC-HEADER 拆成三块以便按钮上移：`useOneClickCheckin`（状态/动作）、`OneClickCheckinButton`（标题行按钮）、
+ * `OneClickCheckinResults`（结果与批次面板）；`OneClickCheckin` 保留为组合用法（等价旧 DOM 结构）。
+ * 页面只保留一份状态，按钮与结果共用同一个 hook 返回值。
  */
 import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -33,7 +34,17 @@ const KIND_LABEL: Record<OneClickOutcome['kind'], string> = {
   skipped: '跳过',
 };
 
-export function OneClickCheckin({
+export interface OneClickCheckinController {
+  accounts: AccountView[];
+  pending: boolean;
+  runnableCount: number;
+  totalAccounts: number;
+  runnableLabels: string[];
+  outcomes: OneClickOutcome[] | null;
+  run: () => void;
+}
+
+export function useOneClickCheckin({
   accounts,
   capabilities,
   capabilityKnown,
@@ -41,7 +52,7 @@ export function OneClickCheckin({
   accounts: AccountView[];
   capabilities: Partial<Record<ManagedAppId, CapabilityView>>;
   capabilityKnown: boolean;
-}) {
+}): OneClickCheckinController {
   const queryClient = useQueryClient();
   const [outcomes, setOutcomes] = useState<OneClickOutcome[] | null>(null);
   const [pending, setPending] = useState(false);
@@ -99,61 +110,101 @@ export function OneClickCheckin({
     void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
   };
 
-  const createdCount = (outcomes ?? []).filter((outcome) => outcome.kind === 'created').length;
-  const conflictCount = (outcomes ?? []).filter((outcome) => outcome.kind === 'conflict').length;
-  const visibleBatches = (outcomes ?? []).filter((outcome) => outcome.batchId !== null);
+  return {
+    accounts,
+    pending,
+    runnableCount: runnable.length,
+    totalAccounts,
+    runnableLabels: runnable.map((item) => APP_LABEL[item.app]),
+    outcomes,
+    run: () => { void run(); },
+  };
+}
 
+/** 标题行右端的「一键签到」按钮（`accounts-one-click-checkin` testid 保持不变） */
+export function OneClickCheckinButton({ controller }: { controller: OneClickCheckinController }) {
+  const { pending, runnableCount, totalAccounts, run } = controller;
   return (
-    <div className="mb-2 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid="accounts-one-click-checkin"
-          className={BUTTON_PRIMARY}
-          disabled={pending || runnable.length === 0}
-          title={runnable.length === 0
-            ? '没有可签到的平台：能力矩阵未就绪或全部平台签到不可用'
-            : `为 ${runnable.length} 个平台共 ${totalAccounts} 个启用账号发起签到`}
-          onClick={() => { void run(); }}
-        >
-          {pending ? '签到中…' : '一键签到'}
-        </button>
-        <span data-testid="accounts-one-click-plan" className="text-xs text-neutral-500 dark:text-neutral-400">
-          {runnable.length === 0
-            ? '当前没有可签到的平台'
-            : `${runnable.length} 个平台 / ${totalAccounts} 个启用账号：${runnable.map((item) => APP_LABEL[item.app]).join('、')}`}
-        </span>
-      </div>
+    <button
+      type="button"
+      data-testid="accounts-one-click-checkin"
+      className={BUTTON_PRIMARY}
+      disabled={pending || runnableCount === 0}
+      title={runnableCount === 0
+        ? '没有可签到的平台：能力矩阵未就绪或全部平台签到不可用'
+        : `为 ${runnableCount} 个平台共 ${totalAccounts} 个启用账号发起签到`}
+      onClick={run}
+    >
+      {pending ? '签到中…' : '一键签到'}
+    </button>
+  );
+}
 
-      {outcomes !== null && (
-        <div data-testid="accounts-one-click-result" className="mt-2 space-y-1.5">
-          <p data-testid="accounts-one-click-summary" className="text-xs text-neutral-700 dark:text-neutral-300">
-            已发起 {createdCount} 个批次
-            {conflictCount > 0 && `；${conflictCount} 个平台已有进行中的批次（未重复发起）`}
-          </p>
-          <ul className="space-y-1">
-            {outcomes.map((outcome) => (
-              <li key={outcome.app} data-testid={`accounts-one-click-outcome-${outcome.app}`} className="flex flex-wrap items-center gap-1.5 text-xs">
-                <span className="text-neutral-800 dark:text-neutral-200">{APP_LABEL[outcome.app]}</span>
-                <Badge tone={outcome.kind === 'created' ? 'green' : outcome.kind === 'conflict' ? 'blue' : outcome.kind === 'skipped' ? 'gray' : 'red'}>
-                  {KIND_LABEL[outcome.kind]}
-                </Badge>
-                {outcome.code !== null && <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">{outcome.code}</span>}
-                {outcome.message !== null && <span className="text-neutral-500 dark:text-neutral-400">{outcome.message}</span>}
-                {outcome.batchId !== null && (
-                  <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">批次 {outcome.batchId.slice(0, 8)}…</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+/** 计划摘要（`accounts-one-click-plan`） */
+export function OneClickCheckinPlan({ controller }: { controller: OneClickCheckinController }) {
+  const { runnableCount, totalAccounts, runnableLabels } = controller;
+  return (
+    <span data-testid="accounts-one-click-plan" className="text-xs text-neutral-500 dark:text-neutral-400">
+      {runnableCount === 0
+        ? '当前没有可签到的平台'
+        : `${runnableCount} 个平台 / ${totalAccounts} 个启用账号：${runnableLabels.join('、')}`}
+    </span>
+  );
+}
 
+/** 逐平台结果与批次面板（`accounts-one-click-*` testid 全部保持不变） */
+export function OneClickCheckinResults({ controller }: { controller: OneClickCheckinController }) {
+  const { outcomes, accounts } = controller;
+  if (outcomes === null) return null;
+  const createdCount = outcomes.filter((outcome) => outcome.kind === 'created').length;
+  const conflictCount = outcomes.filter((outcome) => outcome.kind === 'conflict').length;
+  const visibleBatches = outcomes.filter((outcome) => outcome.batchId !== null);
+  return (
+    <div data-testid="accounts-one-click-result" className="space-y-1.5">
+      <p data-testid="accounts-one-click-summary" className="text-xs text-neutral-700 dark:text-neutral-300">
+        已发起 {createdCount} 个批次
+        {conflictCount > 0 && `；${conflictCount} 个平台已有进行中的批次（未重复发起）`}
+      </p>
+      <ul className="space-y-1">
+        {outcomes.map((outcome) => (
+          <li key={outcome.app} data-testid={`accounts-one-click-outcome-${outcome.app}`} className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-neutral-800 dark:text-neutral-200">{APP_LABEL[outcome.app]}</span>
+            <Badge tone={outcome.kind === 'created' ? 'green' : outcome.kind === 'conflict' ? 'blue' : outcome.kind === 'skipped' ? 'gray' : 'red'}>
+              {KIND_LABEL[outcome.kind]}
+            </Badge>
+            {outcome.code !== null && <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">{outcome.code}</span>}
+            {outcome.message !== null && <span className="text-neutral-500 dark:text-neutral-400">{outcome.message}</span>}
+            {outcome.batchId !== null && (
+              <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">批次 {outcome.batchId.slice(0, 8)}…</span>
+            )}
+          </li>
+        ))}
+      </ul>
       {visibleBatches.map((outcome) => (
         <div key={`${outcome.app}-${outcome.batchId}`} data-testid={`accounts-one-click-batch-${outcome.app}`}>
           {outcome.batchId !== null && <CheckinBatchPanel batchId={outcome.batchId} accounts={accounts} />}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** 组合用法（等价 ACC-14 的旧 DOM 结构）：按钮 + 计划 + 结果放在一个带边框的块里 */
+export function OneClickCheckin(props: {
+  accounts: AccountView[];
+  capabilities: Partial<Record<ManagedAppId, CapabilityView>>;
+  capabilityKnown: boolean;
+}) {
+  const controller = useOneClickCheckin(props);
+  return (
+    <div className="mb-2 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
+      <div className="flex flex-wrap items-center gap-2">
+        <OneClickCheckinButton controller={controller} />
+        <OneClickCheckinPlan controller={controller} />
+      </div>
+      <div className="mt-2">
+        <OneClickCheckinResults controller={controller} />
+      </div>
     </div>
   );
 }

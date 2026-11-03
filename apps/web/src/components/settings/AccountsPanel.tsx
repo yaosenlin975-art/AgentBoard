@@ -22,7 +22,7 @@ import { AccountCard, type AccountView } from './AccountCard';
 import { CapabilityBadges } from './CapabilityBadges';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
-import { OneClickCheckin } from './OneClickCheckin';
+import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaCards } from './QuotaCards';
 import { APP_LABEL, APP_ORDER, hasReasonLabel, isOfflineApp, reasonCodeOf, reasonLabel, reasonTechnicalCode, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
@@ -56,18 +56,30 @@ export function AccountsPanel() {
   const capabilityKnown = !caps.isPending && !caps.isError;
   /** 折叠状态：默认第一个平台展开，其余折叠；不持久化（设计 D1） */
   const [openApps, setOpenApps] = useState<Partial<Record<AccountsAppId, boolean>>>({ [APP_ORDER[0]!]: true });
+  /** ACC-HEADER：一键签到按钮上移到标题行，状态与结果分离渲染 */
+  const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-1">
-        <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">账号管理</h3>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">仅展示脱敏元数据；快照、凭据与 token 不出现在界面</p>
+      {/*
+        ACC-HEADER：面板内不再重复「账号管理」标题（弹窗头部已有），只保留一行工具栏：
+        左侧脱敏说明（小字）+ 右侧「一键签到」；窄屏（375）允许换行，不破版。
+      */}
+      <div data-testid="accounts-toolbar" className="mb-2 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
+        <p data-testid="accounts-desensitize-note" className="mr-auto text-[11px] leading-tight text-neutral-500 dark:text-neutral-400">
+          仅展示脱敏元数据；快照、凭据与 token 不出现在界面
+        </p>
+        <OneClickCheckinPlan controller={oneClick} />
+        <OneClickCheckinButton controller={oneClick} />
       </div>
 
       <QuotaCards />
 
+      <div data-testid="accounts-one-click-results" className="mt-2 empty:hidden">
+        <OneClickCheckinResults controller={oneClick} />
+      </div>
+
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <OneClickCheckin accounts={accounts} capabilities={caps.capabilities} capabilityKnown={capabilityKnown} />
         <LocalAccountsImport />
       </div>
 
