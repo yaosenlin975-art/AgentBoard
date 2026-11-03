@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus, IssueTreeItem, IssueTreePage } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
 import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, type IssueTreeFilter } from '../../lib/issueTree';
+import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
   ISSUE_STATUSES as STATUSES,
   invalidateIssueStatusCaches,
@@ -336,6 +337,9 @@ function TaskTreeRow({
   const [statusError, setStatusError] = useState<string | null>(null);
   const ancestors = getIssueAncestors(issues, item.id);
   const descendantIds = useMemo(() => getIssueDescendantIds(issues, item.id), [issues, item.id]);
+  // 依赖锁标与子树汇总只用服务端投影（blocked_by_open_count），不按状态本地推断
+  const openBlockerTotal = openBlockerCount(item);
+  const subtreeOpenBlockers = useMemo(() => countSubtreeOpenBlockers(issues, item.id), [issues, item.id]);
   const blockedClose = item.status !== '已关闭' && item.descendant_count > item.descendants_closed_count;
   const statusBlockedReason = manualStatusBlockedReason(item);
   const visibleChildren = filter.visibleChildrenByParent.get(item.id);
@@ -402,6 +406,16 @@ function TaskTreeRow({
         </button>
         <div className="min-w-0 sm:flex-1">
           <button type="button" onClick={onOpenDetail} className="block max-w-full truncate text-left text-sm font-medium text-neutral-900 hover:text-blue-700 dark:text-neutral-100 dark:hover:text-blue-300" title={item.title}>
+            {openBlockerTotal > 0 && (
+              <span
+                data-testid={`tree-lock-${item.id}`}
+                title={`存在 ${openBlockerTotal} 项未解除的前置任务`}
+                aria-label="存在未解除前置"
+                className="mr-1 text-amber-700 dark:text-amber-300"
+              >
+                🔒
+              </span>
+            )}
             {item.title}
           </button>
           {ancestors.length > 0 && (
@@ -413,6 +427,11 @@ function TaskTreeRow({
             <p className={`mt-1 text-xs ${blockedClose ? 'text-amber-700 dark:text-amber-300' : 'text-neutral-500 dark:text-neutral-400'}`}>
               后代进度：{item.descendants_closed_count}/{item.descendant_count} 已关闭
               {blockedClose ? `；仍有 ${item.descendant_count - item.descendants_closed_count} 项未关闭` : ''}
+            </p>
+          )}
+          {subtreeOpenBlockers > 0 && (
+            <p data-testid={`tree-subtree-deps-${item.id}`} className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              子树待解除依赖 {subtreeOpenBlockers} 项
             </p>
           )}
         </div>

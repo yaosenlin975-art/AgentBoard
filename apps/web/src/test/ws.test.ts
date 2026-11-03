@@ -21,19 +21,21 @@ const issue: Issue = {
 };
 
 describe('eventToQueryKeys', () => {
-  it('issue.changed → issues+workspace 与 issue+id', () => {
+  it('issue.changed → issues+workspace、issue+id 与依赖前缀', () => {
     const event: WsEvent = { type: 'issue.changed', issue };
     expect(eventToQueryKeys(event)).toEqual([
       ['issues', 'ws-1'],
       ['issue', 'i-1'],
+      ['dependencies'],
     ]);
   });
 
-  it('issue.deleted → issues+workspace 与 issue+id', () => {
+  it('issue.deleted → issues+workspace、issue+id 与依赖前缀', () => {
     const event: WsEvent = { type: 'issue.deleted', issue_id: 'i-1', workspace_id: 'ws-1' };
     expect(eventToQueryKeys(event)).toEqual([
       ['issues', 'ws-1'],
       ['issue', 'i-1'],
+      ['dependencies'],
     ]);
   });
 

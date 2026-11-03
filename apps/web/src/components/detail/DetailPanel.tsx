@@ -18,8 +18,10 @@ import {
   patchIssueStatus,
 } from '../../lib/issueStatus';
 import { getIssueDescendantIds } from '../../lib/issueTree';
+import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 import { CommentThread } from './CommentThread';
+import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
 import { SessionList } from './SessionList';
 
@@ -55,6 +57,15 @@ export function DetailPanel() {
       api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(issue!.workspace_id)}`),
     enabled: issue !== undefined,
   });
+  // 依赖清单：与详情「依赖」区共用同一 queryKey（同一份缓存），claim/派发前用来列 blocker
+  const { data: dependencies } = useQuery({
+    queryKey: ['dependencies', issueId],
+    queryFn: () =>
+      api.get<DependencyView>(
+        `/api/issues/${issueId}/dependencies?workspace_id=${encodeURIComponent(issue!.workspace_id)}`,
+      ),
+    enabled: issueId !== null && issue !== undefined,
+  });
 
   // ---- 字段本地态 + 防抖 PATCH ----
   const [title, setTitle] = useState('');
@@ -63,6 +74,7 @@ export function DetailPanel() {
   const [labelsInput, setLabelsInput] = useState('');
   const [descEditing, setDescEditing] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [claimBlocked, setClaimBlocked] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -74,6 +86,7 @@ export function DetailPanel() {
     setLabelsInput(issue.labels.join(','));
     setDescEditing(false);
     setConfirmingDelete(false);
+    setClaimBlocked(false);
     // 仅在切换 issue 时重置本地编辑
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue?.id]);
@@ -314,7 +327,14 @@ export function DetailPanel() {
               <button
                 type="button"
                 data-testid="dispatch-btn"
-                onClick={() => setDispatchOpen(true)}
+                onClick={() => {
+                  // claim 入口前端先拦：有未解除前置时列出 blocker 清单，不开派发弹窗（服务端 409 仍是唯一防线）
+                  if (openBlockerCount(issue) > 0) {
+                    setClaimBlocked(true);
+                    return;
+                  }
+                  setDispatchOpen(true);
+                }}
                 className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
                 派发
@@ -393,7 +413,38 @@ export function DetailPanel() {
               {actionError}
             </p>
           )}
+          {claimBlocked && (
+            <div
+              data-testid="claim-blocked-panel"
+              className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+            >
+              <p className="font-medium">存在 {openBlockerCount(issue)} 项未解除的前置任务，已拦住本次领取（派发）：</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                {(dependencies?.blockers ?? [])
+                  .filter((blocker) => !blocker.resolved)
+                  .map((blocker) => (
+                    <li key={blocker.issue_id} data-testid={`claim-blocked-${blocker.issue_id}`}>
+                      {blocker.title}（{blocker.status}）
+                    </li>
+                  ))}
+              </ul>
+              {dependencies === undefined && (
+                <p data-testid="claim-blocked-loading" className="mt-1">正在加载前置清单…</p>
+              )}
+              <button
+                type="button"
+                data-testid="claim-blocked-dismiss"
+                onClick={() => setClaimBlocked(false)}
+                className="mt-2 rounded border border-amber-400 px-2 py-0.5 text-xs hover:bg-amber-100 dark:border-amber-600 dark:hover:bg-amber-900/40"
+              >
+                知道了
+              </button>
+            </div>
+          )}
         </section>
+
+        {/* 依赖 */}
+        <DependencySection issue={issue} />
 
         {/* 关联会话 */}
         <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(s) => openChat(s.id, s)} />

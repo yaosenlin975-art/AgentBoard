@@ -7,6 +7,7 @@ import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, typ
 import { useSortable } from '@dnd-kit/sortable';
 import type { Issue, Priority } from '@agentboard/shared';
 import { Badge } from '../ui/Badge';
+import { dependencyBadge } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 
 export const PRIORITY_BAR: Record<Priority, string> = {
@@ -31,6 +32,7 @@ function IssueCardPriority({ issue }: { issue: Issue }) {
 function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRunning: boolean }) {
   const claimedBy = issue.claimed_by;
   const claimed = claimedBy !== null;
+  const depBadge = dependencyBadge(issue);
 
   return (
     <>
@@ -70,6 +72,24 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
         {issue.comment_count > 0 && (
           <span data-testid={`comment-count-${issue.id}`} title="评论（在任务详情查看）">
             💬 {issue.comment_count}
+          </span>
+        )}
+        {depBadge?.kind === 'blocked' && (
+          <span
+            data-testid={`dependency-badge-${issue.id}`}
+            title={`存在 ${depBadge.open} 项未解除的前置任务`}
+            className="text-amber-700 dark:text-amber-300"
+          >
+            🔒 等 {depBadge.open} 项
+          </span>
+        )}
+        {depBadge?.kind === 'cleared' && (
+          <span
+            data-testid={`dependency-cleared-${issue.id}`}
+            title={`${depBadge.total} 项前置已全部解除`}
+            className="text-neutral-400 dark:text-neutral-500"
+          >
+            依赖已清
           </span>
         )}
       </div>

@@ -15,11 +15,14 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
       return [
         ['issues', event.issue.workspace_id],
         ['issue', event.issue.id],
+        // 依赖区（blocker 状态、被阻塞者增减）按前缀失效；不新增 WS 事件类型（设计 §17 末条）
+        ['dependencies'],
       ];
     case 'issue.deleted':
       return [
         ['issues', event.workspace_id],
         ['issue', event.issue_id],
+        ['dependencies'],
       ];
     case 'comment.added':
       // 载荷无 workspace_id，看板列表按 ['issues'] 前缀失效（与 DetailPanel 既有粒度一致）；
