@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PIXI 星图渲染骨架（KB-GRAPH-P1）——照 `Docs/Obsidian-星图渲染逆向.md` A1–A6 逐条实现。
  *
  * 这个文件必须**动态 import**：jsdom 没有 WebGL，静态引入会让整个测试套件报
@@ -37,7 +37,7 @@ import {
   zoomFactorFromWheel,
   type SemanticColorKey,
 } from '../../lib/graphVisualFormulas';
-import { buildAdjacency, type GraphEdgeKind } from '../../lib/knowledgeGraph';
+import { buildAdjacency, panCenteredOn, positionsCenter, type GraphEdgeKind } from '../../lib/knowledgeGraph';
 
 /** 文档 app.js#SQ：圆固定画在 (100,100) 半径 100，靠 scale 缩放（不重建 geometry） */
 const SQ = 100;
@@ -350,6 +350,11 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   let objectSeq = 0;
   const objectStats = { created: 0, reused: 0, destroyed: 0 };
   let viewport = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
+  /** KB-PANEL-POLISH：用户还没手动平移/缩放时，坐标更新一律跟随内容居中（力导向 tick 会挪质心） */
+  let userAdjusted = false;
+  const markUserAdjusted = (): void => {
+    userAdjusted = true;
+  };
 
   const dpr = (): number => view?.devicePixelRatio ?? 1;
 
@@ -357,13 +362,36 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     const width = host.clientWidth;
     const height = host.clientHeight;
     if (width <= 0 || height <= 0) return;
+    // KB-PANEL-POLISH：尺寸变化时保持「视口中心的图坐标点」不动（首帧/居中后都不跳）
+    const before = dpr();
+    const centerWorld = {
+      x: ((cssWidth / 2) * before - panX) / scale,
+      y: ((cssHeight / 2) * before - panY) / scale,
+    };
     cssWidth = width;
     cssHeight = height;
     // A3：backing store = CSS × DPR，PIXI resolution 保持 1
     app.renderer.resize(Math.round(width * dpr()), Math.round(height * dpr()));
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
+    const after = panCenteredOn(centerWorld, cssWidth * dpr(), cssHeight * dpr(), scale);
+    panX = after.x;
+    panY = after.y;
+    applyScale();
     layoutWatermark();
+  }
+
+  /** 把内容包围盒中心放到视口中心（不改缩放）；无坐标时不动 */
+  function centerOnContent(): void {
+    const center = positionsCenter(data.positions);
+    if (center === null) return;
+    const next = panCenteredOn(center, cssWidth * dpr(), cssHeight * dpr(), scale);
+    panX = next.x;
+    panY = next.y;
+    panvX = 0;
+    panvY = 0;
+    applyScale();
+    changed();
   }
 
   function layoutWatermark(): void {
@@ -663,6 +691,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     // ③ 键盘缩放（每帧 ×1.03，Shift 时 ×1.1）
     const zoomStep = 1 + (keys.fast ? 0.1 : 0.03);
     if (keys.zoomIn || keys.zoomOut) {
+      markUserAdjusted();
       targetScale = clampZoom(keys.zoomIn ? targetScale * zoomStep : targetScale / zoomStep);
       zoomCenterX = (cssWidth / 2) * dpr();
       zoomCenterY = (cssHeight / 2) * dpr();
@@ -746,6 +775,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     }, { x: 0, y: 0 });
     zoomCenterX = anchor.x;
     zoomCenterY = anchor.y;
+    markUserAdjusted();
     changed();
   }
 
@@ -812,6 +842,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       pointer.lastMoveMs = now;
       panX = nextPanX;
       panY = nextPanY;
+      markUserAdjusted();
       applyScale();
       idleFrames = 0;
       changed();
@@ -993,11 +1024,17 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     // 不要无条件清 hover：React 侧 onHover → setHovered → 数据更新会再次调用 update()，
     // 清掉会让「悬停 → 重渲染 → 高亮消失」自相矛盾。只在节点已不存在时清。
     if (hoverId !== null && !keepNodes.has(hoverId)) hoverId = null;
+    // KB-PANEL-POLISH：未被用户平移/缩放前，坐标变化（含力导向 tick 挪动质心）都保持内容居中
+    if (!userAdjusted) {
+      centerOnContent();
+      return;
+    }
     changed();
   }
 
   function zoomBy(factor: number): void {
     const previous = targetScale;
+    markUserAdjusted();
     targetScale = clampZoom(previous * factor);
     const anchor = zoomAnchor(previous, targetScale, { x: 0, y: 0 }, { x: 0, y: 0 });
     zoomCenterX = anchor.x;
@@ -1006,13 +1043,22 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   }
 
   function resetView(): void {
+    userAdjusted = false;
+    scale = 1;
     targetScale = 1;
-    panX = 0;
-    panY = 0;
     panvX = 0;
     panvY = 0;
     zoomCenterX = (cssWidth / 2) * dpr();
     zoomCenterY = (cssHeight / 2) * dpr();
+    // KB-PANEL-POLISH：复位回「内容居中」，不是图坐标原点（pan=0 会把图推到左上角）
+    const center = positionsCenter(data.positions);
+    const next = center === null
+      ? { x: 0, y: 0 }
+      : panCenteredOn(center, cssWidth * dpr(), cssHeight * dpr(), scale);
+    panX = next.x;
+    panY = next.y;
+    applyScale();
+    options.onScaleChange?.(scale);
     changed();
   }
 

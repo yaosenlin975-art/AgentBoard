@@ -968,6 +968,26 @@ export function fitTransform(
   };
 }
 
+/**
+ * 坐标集合的包围盒中心（图坐标）。空集返回 null。
+ * KB-PANEL-POLISH：力导向把节点铺在 [0,width]×[0,height] 里，中心在 (w/2, h/2)，
+ * 视图中心必须按这个中心摆，否则 pan=0 会把图挤到画布左上角。
+ */
+export function positionsCenter(positions: ReadonlyMap<string, LayoutPosition>): LayoutPosition | null {
+  if (positions.size === 0) return null;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of positions.values()) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
+
+/** 让图坐标 point 落在 width×height 中心的 pan（不改缩放；与 toGraphPoint 互逆） */
+export function panCenteredOn(point: LayoutPosition, width: number, height: number, scale = 1): LayoutPosition {
+  return { x: width / 2 - point.x * scale, y: height / 2 - point.y * scale };
+}
+
 /** 节点按 scope 着色、边按 kind 定线型；canvas 与图例共用同一份定义 */
 export const GRAPH_PALETTE = {
   node: {

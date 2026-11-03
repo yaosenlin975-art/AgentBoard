@@ -96,17 +96,14 @@ export function KnowledgePanel({
       </div>
     </ViewToolbarShell>
     <div className="flex min-h-0 flex-1 flex-col p-4">
-    <header className="mb-3 shrink-0">
-      <h1 className="text-base font-semibold">共享知识库</h1>
-      <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">当前项目与公共经验：标题、正文与标签都可搜索</p>
-      <div className="mt-2 flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
+    <header className="mb-2 flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
         <button
           type="button"
           role="tab"
           aria-selected={view === 'list'}
           data-testid="knowledge-view-list"
           onClick={() => setView('list')}
-          className={`rounded px-2 py-0.5 ${view === 'list' ? 'bg-blue-50 font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+          className={`rounded px-2 py-0.5 ${view === 'list' ? 'bg-accent-soft font-medium text-accent-ink' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
         >
           列表
         </button>
@@ -116,11 +113,10 @@ export function KnowledgePanel({
           aria-selected={view === 'graph'}
           data-testid="knowledge-view-graph"
           onClick={() => setView('graph')}
-          className={`rounded px-2 py-0.5 ${view === 'graph' ? 'bg-blue-50 font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+          className={`rounded px-2 py-0.5 ${view === 'graph' ? 'bg-accent-soft font-medium text-accent-ink' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
         >
           星图
         </button>
-      </div>
     </header>
 
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
@@ -132,16 +128,13 @@ export function KnowledgePanel({
       <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={`${FIELD_CLASS} min-w-24 flex-1`} />
       <button className={BUTTON_PRIMARY} type="submit">搜索</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
-    </form>
-
-    {!query && <div className="mt-2 flex shrink-0 flex-wrap items-center gap-3 text-xs text-neutral-600 dark:text-neutral-300">
-      <label className="flex items-center gap-1">状态
+      {!query && <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">状态
         <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className={FIELD_CLASS}>
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
-      </label>
-      <label className="flex items-center gap-1"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-blue-600" /> 包含过期</label>
-    </div>}
+      </label>}
+      {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
+    </form>
 
     {list.isError && <p role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{list.error.message}</p>}
 
@@ -174,8 +167,8 @@ export function KnowledgePanel({
           {items.map(page => {
             const isSelected = selected?.id === page.id && selected?.scope === page.scope;
             const isExpired = page.expires_at !== null && page.expires_at !== undefined && page.expires_at <= Date.now();
-            return <li key={page.id} data-testid={`knowledge-item-${page.id}`} className={`relative px-3 py-2.5 transition-colors ${isSelected ? 'bg-blue-50 dark:bg-blue-950/30' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/60'}`}>
-              {isSelected && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-blue-500" />}
+            return <li key={page.id} data-testid={`knowledge-item-${page.id}`} className={`relative px-3 py-2.5 transition-colors ${isSelected ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}>
+              {isSelected && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-accent" />}
               <button type="button" aria-current={isSelected ? 'true' : undefined} className="block w-full text-left" onClick={() => setSelected(page)}>
                 <span className="block truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{page.title}</span>
                 {page.snippet && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-neutral-600 dark:text-neutral-400">{page.snippet}</span>}

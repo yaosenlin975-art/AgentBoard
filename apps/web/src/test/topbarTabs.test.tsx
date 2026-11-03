@@ -82,7 +82,8 @@ describe('顶栏 tab 组跨视图位置恒定（TOPBAR-TABS）', () => {
     expect(content).not.toBeNull();
     expect(content!.className).toContain('p-4');
     expect(content!.className).toContain('flex-1');
-    // 标题仍在内容区里（没有被搬到工具条外壳中）
-    expect(within(content!).getByText('共享知识库')).toBeInTheDocument();
+    // 标题块按用户要求移除（KB-PANEL-POLISH）；区域语义保留在 section 的 aria-label 上
+    expect(within(content!).queryByText('共享知识库')).toBeNull();
+    expect(screen.getByRole('region', { name: '共享知识库' })).toBeInTheDocument();
   });
 });
