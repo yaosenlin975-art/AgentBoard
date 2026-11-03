@@ -103,6 +103,17 @@ export const reorderWorkspacesSchema = z.object({
   ordered_ids: z.array(z.string().uuid()).min(1).max(500),
 }).strict().refine(value => new Set(value.ordered_ids).size === value.ordered_ids.length, 'ordered_ids 不能重复');
 
+/**
+ * SMART-CREATE：草稿生成请求（不落库）。adapter 只允许本机已装的三家；requirement 上限 4000 字，
+ * 原文不进审计（只记 adapter/耗时/成败/warning 数）。
+ */
+export const draftRequestSchema = z.object({
+  workspace_id: z.string().min(1),
+  requirement: z.string().trim().min(1, 'requirement 不能为空').max(4000),
+  adapter: z.enum(['dsh', 'codex', 'opencode']),
+  priority: prioritySchema.optional(),
+}).strict();
+
 export const createIssueSchema = z
   .object({
     workspace_id: z.string().min(1),

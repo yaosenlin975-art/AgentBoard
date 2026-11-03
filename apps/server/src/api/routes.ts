@@ -12,6 +12,7 @@ import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
+import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
 import type { QuotaService } from '../services/quotas/quotaService.js';
@@ -77,7 +78,7 @@ import {
   patchSettingsSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
-  addDependencySchema, dependencyQuerySchema,
+  addDependencySchema, dependencyQuerySchema, draftRequestSchema,
 } from './schemas.js';
 
 export interface RouterDeps {
@@ -97,6 +98,10 @@ export interface RouterDeps {
   restart?: RestartDeps;
   /** ACC-11 凭据导出 runner（仅测试注入） */
   credentialRunner?: ExportRunner;
+  /** SMART-CREATE：一次性适配器调用（仅测试注入；生产用 getAdapter().runTurn） */
+  draftRunner?: DraftRunner;
+  /** SMART-CREATE：草稿生成超时（ms，仅测试注入；生产 120s） */
+  draftTimeoutMs?: number;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -252,6 +257,42 @@ function pickFolderViaPowerShell(): Promise<string | null> {
   });
 }
 
+/**
+ * 默认草稿 runner：直接调适配器的 runTurn（一次性进程），只收集 text 事件。
+ * 不建 session 行、不占 claim 槽位；超时由 smartCreateDraft 的 AbortSignal 触发 kill。
+ */
+function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftRunner {
+  return ({ adapter, prompt, cwd, signal }) => new Promise<string>((resolve, reject) => {
+    let handle: ReturnType<AgentAdapter['runTurn']>;
+    try {
+      handle = getAdapter(adapter).runTurn({ cwd, prompt });
+    } catch (error) {
+      reject(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    let text = '';
+    handle.onEvent((event) => {
+      if (event.type === 'text') text += event.delta;
+    });
+    const onAbort = (): void => { void handle.kill().catch(() => {}); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    handle.result.then((result) => {
+      signal.removeEventListener('abort', onAbort);
+      if (signal.aborted) return;
+      if (result.exitCode !== 0) {
+        // stderr 尾部最后一行常是 Node 版本横幅，取最后 3 行非空内容更可解释
+        const tail = (result.stderrTail ?? []).map(line => line.trim()).filter(line => line !== '').slice(-3).join(' | ');
+        reject(new Error(tail === '' ? `适配器退出码 ${result.exitCode}` : `适配器退出码 ${result.exitCode}：${tail}`));
+        return;
+      }
+      resolve(text);
+    }, (error: unknown) => {
+      signal.removeEventListener('abort', onAbort);
+      if (!signal.aborted) reject(error instanceof Error ? error : new Error(String(error)));
+    });
+  });
+}
+
 export function createRouter(deps: RouterDeps): Router {
   const { db, getAdapter, broadcast, attachments } = deps;
   const router = Router();
@@ -280,6 +321,35 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
+  // ---- SMART-CREATE：智能创建草稿（不落库，设计 §4）----
+  // 必须在 /issues/:id 中间件之前注册：否则 'draft' 会被当成 issue id 去查库并 404。
+  const draftService = createDraftService({
+    db,
+    run: deps.draftRunner ?? defaultDraftRunner(getAdapter),
+    existingLabels: (workspaceId) => {
+      const rows = db.prepare('SELECT labels FROM issue WHERE workspace_id=?').all(workspaceId) as Array<{ labels: string }>;
+      const set = new Set<string>();
+      for (const row of rows) {
+        try { for (const label of JSON.parse(row.labels) as unknown[]) if (typeof label === 'string' && label.trim() !== '') set.add(label); } catch { /* 脏数据忽略 */ }
+      }
+      return [...set].sort();
+    },
+    workspacePath: (workspaceId) => getWorkspace(db, workspaceId)?.path ?? process.cwd(),
+    ...(deps.draftTimeoutMs === undefined ? {} : { timeoutMs: deps.draftTimeoutMs }),
+  });
+  router.post('/issues/draft', async (req, res) => {
+    const body = parseBody(draftRequestSchema, req.body);
+    const workspace = getWorkspace(db, body.workspace_id);
+    if (!workspace) throw new NotFoundError('工作空间不存在');
+    const draft = await draftService.generate({
+      workspace_id: body.workspace_id,
+      requirement: body.requirement,
+      adapter: body.adapter,
+      ...(body.priority === undefined ? {} : { priority: body.priority }),
+    });
+    res.json(draft);
+  });
+
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
     if (raw !== undefined) {
