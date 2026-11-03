@@ -11,7 +11,7 @@ import {
   releaseIssue,
   updateIssueGuarded,
 } from '../src/services/claim.js';
-import { ConflictError, NotFoundError, ValidationError } from '../src/errors.js';
+import { ApiError, ConflictError, NotFoundError, ValidationError } from '../src/errors.js';
 
 let t: TestDb;
 let wsId: string;
@@ -42,8 +42,11 @@ describe('claimIssue 并发领取', () => {
     expect(ok).toHaveLength(1);
     expect(failed).toHaveLength(7);
     for (const r of failed) {
-      expect(r.reason).toBeInstanceOf(ConflictError);
-      expect((r.reason as ConflictError).message).toBe('已被占用');
+      // CLAIM-MSG：并发失败者都是「被别人占了」，不能再和「状态不可领取」混成一句话
+      expect(r.reason).toBeInstanceOf(ApiError);
+      expect((r.reason as ApiError).status).toBe(409);
+      expect((r.reason as ApiError).code).toBe('ISSUE_CLAIMED');
+      expect((r.reason as ApiError).message).toMatch(/^已被 .+ 占用/);
     }
 
     const winner = ok[0]!.value;
@@ -54,16 +57,40 @@ describe('claimIssue 并发领取', () => {
     expect(after.status).toBe('进行中');
   });
 
-  it('待验收 issue 不可领取（状态白名单外）', () => {
+  it('待验收 issue 不可领取：文案是「状态不可领取」而不是「已被占用」（无人占用）', () => {
     const issue = seedIssue();
     updateIssue(t.db, issue.id, { status: '待验收' });
-    expect(() => claimIssue(t.db, issue.id, 'a', 's')).toThrow(ConflictError);
+    try {
+      claimIssue(t.db, issue.id, 'a', 's');
+      throw new Error('应当抛出 409');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      const api = error as ApiError;
+      expect(api.status).toBe(409);
+      expect(api.code).toBe('ISSUE_STATUS_NOT_CLAIMABLE');
+      expect(api.message).toContain('状态不可领取（当前=待验收，需=待规划 或 进行中）');
+      expect(api.message).not.toContain('已被');
+    }
+  });
+
+  it('已占用 issue 领取：文案带占用者名（换成别的 agent 也知道是谁在占）', () => {
+    const issue = seedIssue();
+    claimIssue(t.db, issue.id, 'board-web-accounts', 's');
+    try {
+      claimIssue(t.db, issue.id, 'another', 's2');
+      throw new Error('应当抛出 409');
+    } catch (error) {
+      const api = error as ApiError;
+      expect(api.code).toBe('ISSUE_CLAIMED');
+      expect(api.message).toBe('已被 board-web-accounts 占用；先 release 或换卡，勿重复 claim');
+      expect(api.message).not.toContain('状态不可领取');
+    }
   });
 
   it('已占用 issue 不可被第二个领取', () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'agent-a', 'session-a');
-    expect(() => claimIssue(t.db, issue.id, 'agent-b', 'session-b')).toThrow(ConflictError);
+    expect(() => claimIssue(t.db, issue.id, 'agent-b', 'session-b')).toThrow(ApiError);
   });
 });
 

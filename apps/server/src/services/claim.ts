@@ -78,7 +78,17 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
          last_seen_comment_id=?, updated_at=?
        WHERE id=? AND claimed_by IS NULL AND status IN ('待规划','进行中')`
     ).run(agentId, now, sessionId, lastSeenCommentId, now, issueId);
-    if (row.changes !== 1) throw new ConflictError('已被占用');
+    if (row.changes !== 1) {
+      // CLAIM-MSG：占用冲突与「状态不可领取」是两件事，文案必须分开（同报「已被占用」会让执行者误以为撞卡而放弃）
+      const current = db.prepare('SELECT status, claimed_by FROM issue WHERE id=?').get(issueId) as
+        { status: string; claimed_by: string | null } | undefined;
+      if (!current) throw new NotFoundError('任务不存在');
+      if (current.claimed_by !== null) {
+        throw new ApiError(409, 'ISSUE_CLAIMED', `已被 ${current.claimed_by} 占用；先 release 或换卡，勿重复 claim`);
+      }
+      throw new ApiError(409, 'ISSUE_STATUS_NOT_CLAIMABLE',
+        `状态不可领取（当前=${current.status}，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`);
+    }
     return getIssue(db, issueId)!;
   }).immediate();
 }

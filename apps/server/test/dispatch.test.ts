@@ -12,7 +12,7 @@ import { getSession } from '../src/db/repos/session.js';
 import { createKnowledgePage } from '../src/db/repos/knowledge.js';
 import * as knowledgeSearch from '../src/db/repos/knowledgeSearch.js';
 import { claimIssue, releaseIssue } from '../src/services/claim.js';
-import { ConflictError, ValidationError } from '../src/errors.js';
+import { ApiError, ConflictError, ValidationError } from '../src/errors.js';
 import {
   DISPATCH_PROMPT_TEMPLATE,
   HISTORY_NOTE_LIMIT,
@@ -250,12 +250,20 @@ describe('派发事务', () => {
     expect(adapter.calls[1]!.adapterSessionId).toBeUndefined();
   });
 
-  it('占用冲突：ConflictError 向上抛、回滚新建会话行、不起轮', async () => {
+  it('占用冲突：409 向上抛、回滚新建会话行、不起轮', async () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'other-agent', 'session-other');
     const callsBefore = adapter.calls.length;
 
-    await expect(dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake' })).rejects.toThrow(ConflictError);
+    // CLAIM-MSG：占用冲突现在是 409 + ISSUE_CLAIMED（文案带占用者），不再是笼统 ConflictError
+    const rejected = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake' }).then(
+      () => { throw new Error('应当抛出 409'); },
+      (error: unknown) => error,
+    );
+    expect(rejected).toBeInstanceOf(ApiError);
+    expect((rejected as ApiError).status).toBe(409);
+    expect((rejected as ApiError).code).toBe('ISSUE_CLAIMED');
+    expect((rejected as ApiError).message).toContain('已被 other-agent 占用');
     await settle();
 
     expect(sessionsOf(issue.id)).toHaveLength(0); // 冲突派发的会话行已回滚
@@ -340,7 +348,7 @@ describe('派发事务', () => {
     claimIssue(t.db, issue.id, 'other-agent', 'session-other');
     const key = randomUUID();
     const input = { issueId: issue.id, cli: 'fake', idempotency_key: key, idempotency_payload_hash: 'a'.repeat(64) };
-    await expect(dispatchIssue(t.db, deps, input)).rejects.toThrow(ConflictError);
+    await expect(dispatchIssue(t.db, deps, input)).rejects.toThrow(ApiError);
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM idempotency_record').get()).toEqual({ n: 0 });
 
     await releaseIssue(t.db, issue.id);

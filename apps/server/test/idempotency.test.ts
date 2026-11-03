@@ -60,7 +60,9 @@ describe('idempotent mutations', () => {
     const claimed = await claim(); expect(claimed.status).toBe(200); expect((await claim()).body).toEqual(claimed.body);
     const doneKey = randomUUID(); const done = () => request(app).post(`/api/issues/${issue.id}/done`).set('Idempotency-Key', doneKey).send({ workspace_id: a, agent_id: 'codex', notes: 'done' });
     const completed = await done(); expect(completed.status).toBe(200); expect((await done()).body).toEqual(completed.body);
-    expect(t.db.prepare('SELECT count(*) AS n FROM issue_comment WHERE issue_id=?').get(issue.id)).toEqual({ n: 1 });
+    // notes 评论 1 条 + GIT-ON-DONE 非 git 工作区跳过提示 1 条；幂等重放不重复写
+    expect(t.db.prepare("SELECT COUNT(*) AS n FROM issue_comment WHERE issue_id=? AND content='done'").get(issue.id)).toEqual({ n: 1 });
+    expect(t.db.prepare("SELECT COUNT(*) AS n FROM issue_comment WHERE issue_id=? AND content LIKE '跳过自动提交%'").get(issue.id)).toEqual({ n: 1 });
   });
   it('retains results for 24h and reclaims expired records', () => {
     vi.spyOn(Date, 'now').mockReturnValue(1000);

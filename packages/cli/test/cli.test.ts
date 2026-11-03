@@ -492,6 +492,29 @@ describe('claim', () => {
     expect(code).toBe(2);
     expect(t.err()).toContain('已被占用');
   });
+
+  it('CLAIM-MSG 占用冲突：原样输出「已被 <agent> 占用」，不再包一层「已被占用（…）」', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/claim'
+        ? { status: 409, body: { error: { code: 'ISSUE_CLAIMED', message: '已被 board-web-accounts 占用；先 release 或换卡，勿重复 claim' } } }
+        : undefined;
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'claim', 'iss1'], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toBe('已被 board-web-accounts 占用；先 release 或换卡，勿重复 claim\n');
+  });
+
+  it('CLAIM-MSG 状态不可领取：点明无人占用与当前状态，退出码 2', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/claim'
+        ? { status: 409, body: { error: { code: 'ISSUE_STATUS_NOT_CLAIMABLE', message: '状态不可领取（当前=待验收，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划' } } }
+        : undefined;
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'claim', 'iss1'], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toContain('状态不可领取（当前=待验收');
+    expect(t.err()).not.toContain('已被占用（');
+  });
 });
 
 describe('comment', () => {
@@ -1298,6 +1321,80 @@ describe('delete-issue', () => {
     expect(code).toBe(2);
     expect(t.err()).toBe('占用中禁止删除\n');
     expect(t.err()).not.toContain('已被占用');
+  });
+});
+
+describe('delete-space', () => {
+  const SPACES = [{ id: 'ws1', name: 'kb-docs-sandbox', path: 'D:\\tmp\\kb-docs-sandbox', created_at: 1, sort_order: 0 }];
+
+  it('缺 --yes：回显名称/路径、退出码 1、不发 DELETE', async () => {
+    handler = (m, u) => (m === 'GET' && u === '/api/workspaces' ? { status: 200, body: SPACES } : undefined);
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'delete-space', 'ws1'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('kb-docs-sandbox');
+    expect(t.err()).toContain('--yes');
+    expect(calls.filter(call => call.method === 'DELETE')).toHaveLength(0);
+  });
+
+  it('--yes：按名称解析 id 后发 DELETE，退出码 0', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: SPACES };
+      if (m === 'DELETE' && u === '/api/workspaces/ws1') return { status: 204, body: undefined };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'delete-space', 'kb-docs-sandbox', '--yes'], t.io);
+    expect(code).toBe(0);
+    expect(calls.filter(call => call.method === 'DELETE')[0]).toMatchObject({ url: '/api/workspaces/ws1' });
+    expect(t.out()).toContain('已删除工作空间: ws1 kb-docs-sandbox');
+  });
+
+  it('被阻塞 409：服务端原因原样透传（非空可读），退出码 2', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: SPACES };
+      if (m === 'DELETE' && u === '/api/workspaces/ws1')
+        return { status: 409, body: { error: { code: 'CONFLICT', message: '该空间仍有 1 个知识页及 1 条历史 revision，请先删除或迁移知识页后再移除' } } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'delete-space', 'ws1', '--yes'], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toBe('该空间仍有 1 个知识页及 1 条历史 revision，请先删除或迁移知识页后再移除\n');
+  });
+});
+
+describe('退出码表（help）', () => {
+  /** commander 的 help 直接写 process.stdout，不走注入的 io → 这里拦 stdout */
+  const help = async (argv: string[]): Promise<{ code: number; text: string }> => {
+    const chunks: string[] = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      const code = await main(argv, makeIo().io);
+      return { code, text: chunks.join('') };
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  it('kb --help 带退出码表：0/1/2 与 dep 专用 3/4', async () => {
+    const { code, text } = await help(['node', 'kb', '--help']);
+    expect(code).toBe(0);
+    expect(text).toContain('退出码：');
+    expect(text).toContain('2  冲突：占用');
+    expect(text).toContain('3  kb dep 专用');
+    expect(text).toContain('4  kb dep 专用');
+  });
+
+  it('done / delete-issue / delete-space 各自 --help 写明退出码', async () => {
+    for (const cmd of ['done', 'delete-issue', 'delete-space']) {
+      const { code, text } = await help(['node', 'kb', cmd, '--help']);
+      expect(code).toBe(0);
+      expect(text).toContain('退出码：');
+    }
   });
 });
 

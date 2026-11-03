@@ -128,7 +128,7 @@ describe('git on done', () => {
     expect(git(repo, ['show', '--name-status', '--pretty=format:', '-1']).trim()).toBe('D\tto-delete.md');
   });
 
-  it('silentlySkipsWhenWorkspaceIsNotAGitRepo', async () => {
+  it('nonGitWorkspaceReportsSkipInsteadOfSilence', async () => {
     const plain = join(root, 'plain');
     mkdirSync(plain, { recursive: true });
     const plainWorkspace = createWorkspace(t.db, { name: '非仓库', path: plain }).id;
@@ -136,10 +136,15 @@ describe('git on done', () => {
     const issueId = created.body.id as string;
     await request(app).post(`/api/issues/${issueId}/claim`).send({ agent_id: 'fake' });
     writeFileSync(join(plain, 'a.txt'), 'x\n');
-    const res = await request(app).post(`/api/issues/${issueId}/done`).send({ workspace_id: plainWorkspace, agent_id: 'fake' });
+    const res = await request(app).post(`/api/issues/${issueId}/done`)
+      .send({ workspace_id: plainWorkspace, agent_id: 'fake', scope_paths: ['src/a.ts'] });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('待验收');
-    expect(comments(issueId).join('\n')).not.toContain('自动提交');
+    // 非 git 工作区不再静默：留一行跳过提示，并回显本次实际声明的 scope
+    const note = comments(issueId).join('\n');
+    expect(note).toContain('跳过自动提交：工作区不是 git 仓库');
+    expect(note).toContain('声明范围：src/a.ts');
+    expect(readFileSync(join(plain, 'a.txt'), 'utf8')).toBe('x\n'); // 磁盘未动
   });
 
   it('reportsCommitFailureWithoutBlockingDone', async () => {

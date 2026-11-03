@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { execFileSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,8 @@ beforeEach(async () => {
   t = createTestDb();
   adapter = new FakeAdapter();
   spaceDir = mkdtempSync(join(tmpdir(), 'agentboard-space-'));
+  // 夹具空间做成真 git 仓库：否则每个 done 都会按 GIT-ON-DONE 落「跳过自动提交」系统评论，污染评论/WS 断言
+  execFileSync('git', ['init', '-q'], { cwd: spaceDir, windowsHide: true });
   created = await createApp({
     db: t.db,
     getAdapter: fakeResolver,
@@ -200,7 +203,8 @@ describe('issues 全生命周期', () => {
 
     const dup = await request(app).post(`/api/issues/${id}/claim`).send({ agent_id: 'another' });
     expect(dup.status).toBe(409);
-    expect(dup.body.error).toMatchObject({ code: 'CONFLICT', message: '已被占用' });
+    expect(dup.body.error).toMatchObject({ code: 'ISSUE_CLAIMED' });
+    expect(dup.body.error.message).toContain('已被 kb-agent 占用');
 
     const patchStatus = await request(app).patch(`/api/issues/${id}`).send({ status: '待验收' });
     expect(patchStatus.status).toBe(409);
@@ -398,7 +402,9 @@ describe('sessions', () => {
       .post('/api/sessions')
       .send({ cli: 'codebuddy', model: 'm1', issue_id: id });
     expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe('CONFLICT');
+    // CLAIM-MSG：占用冲突用 ISSUE_CLAIMED（文案含占用者），不再是笼统 CONFLICT
+    expect(res.body.error.code).toBe('ISSUE_CLAIMED');
+    expect(res.body.error.message).toContain('占用');
     const sessions = await request(app).get(`/api/sessions?workspace=${wsId}`);
     expect(sessions.body).toHaveLength(1); // 仅最初那个派发会话
   });

@@ -174,6 +174,11 @@ function preexistingDirtyPaths(baseline: Record<string, string>, current: Record
   return Object.keys(baseline).filter(path => current[path] !== undefined).sort();
 }
 
+/** 本任务 git 处理收尾：清基线（不存在时 DELETE 为 no-op），返回要落评论的文本（null = 不写评论） */
+function dropAndNull(db: Db, issueId: string, note: string | null = null): string | null {
+  db.prepare('DELETE FROM issue_git_baseline WHERE issue_id=?').run(issueId);
+  return note;
+}
 /**
  * done 阶段：按基线 diff 提交本任务改动，返回要落地为评论的文本（null = 不写评论）。
  * declaredPaths 为本任务显式声明的路径（done body 的 `scope_paths`），文件或目录前缀皆可。
@@ -186,18 +191,27 @@ function preexistingDirtyPaths(baseline: Record<string, string>, current: Record
  * 非仓库 / 无基线 / 既无变化也无历史脏文件才返回 null。
  */
 export async function commitIssueChanges(db: Db, issueId: string, declaredPaths: readonly string[] = []): Promise<string | null> {
+  const issue = getIssue(db, issueId);
+  if (!issue) return dropAndNull(db, issueId);
+  const workspace = getWorkspace(db, issue.workspace_id);
+  if (!workspace) return dropAndNull(db, issueId);
+  const repo = workspace.path;
+  // 非 git 工作区：不再静默跳过，落一行系统评论并回显声明范围（否则「done 成功但没提交」无从判断）
+  if (!(await isGitWorkTree(repo))) {
+    const declared = normalizeDeclaredPaths(declaredPaths);
+    return dropAndNull(
+      db,
+      issueId,
+      `跳过自动提交：工作区不是 git 仓库（${repo}）`
+      + `；声明范围：${declared.length > 0 ? declared.join(' / ') : '（未声明）'}`,
+    );
+  }
   const baselineRow = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
-  if (!baselineRow) return null;
+  if (!baselineRow) return dropAndNull(db, issueId);
   const finish = (text: string | null): string | null => {
     db.prepare('DELETE FROM issue_git_baseline WHERE issue_id=?').run(issueId);
     return text;
   };
-  const issue = getIssue(db, issueId);
-  if (!issue) return finish(null);
-  const workspace = getWorkspace(db, issue.workspace_id);
-  if (!workspace) return finish(null);
-  const repo = workspace.path;
-  if (!(await isGitWorkTree(repo))) return finish(null);
 
   return withAccountLock('git-commit', repo, async () => {
     try {
