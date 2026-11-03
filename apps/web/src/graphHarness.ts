@@ -8,6 +8,8 @@ import './index.css';
 import { createPixiGraph, type PixiGraphEdge, type PixiGraphNode } from './components/knowledge/pixiGraph';
 import { ForceSimulation, diffGraphData } from './lib/forceLayout';
 import { localGraphSlice } from './lib/localGraph';
+import { CATEGORY_STYLES, KNOWLEDGE_CATEGORIES, categoryColor } from './lib/knowledgeGraph';
+import { tintFromCssColor } from './lib/graphVisualFormulas';
 
 const host = document.getElementById('stage') as HTMLDivElement;
 const CENTER = { x: 450, y: 300 };
@@ -193,5 +195,32 @@ const ring = (count: number): Array<[string, string]> => {
       weights: Object.fromEntries([...slice.weights].map(([id, weight]) => [id, Number(weight.toFixed(3))])),
       edgeCount: slice.graph.edges.length,
     };
+  },
+};
+
+
+// ── KB-MODEL：五类着色演示（CDP 用）：五个节点各带一个 category 的 tint ──
+(globalThis as unknown as { __catDemo: unknown }).__catDemo = {
+  expected: Object.fromEntries(
+    KNOWLEDGE_CATEGORIES.map((category) => [category, {
+      tint: tintFromCssColor(categoryColor(category, false)),
+      hex: CATEGORY_STYLES[category].light,
+      label: CATEGORY_STYLES[category].label,
+    }]),
+  ),
+  run() {
+    const ids = [...KNOWLEDGE_CATEGORIES];
+    const categories = ids.map((id) => {
+      const nodes = ids.map((nodeId) => ({
+        id: nodeId,
+        title: nodeId,
+        weight: 1,
+        tint: tintFromCssColor(categoryColor(nodeId, false)),
+      }));
+      return nodes;
+    })[0]!;
+    const positions = new Map(ids.map((id, index) => [id, { x: index * 140, y: 0 }]));
+    graph.update({ nodes: categories, edges: [], positions, highlight: null });
+    return true;
   },
 };

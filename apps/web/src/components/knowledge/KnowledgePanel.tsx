@@ -2,6 +2,13 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
+import {
+  CATEGORY_STYLES,
+  normalizeCategory,
+  normalizeLanded,
+  type KnowledgeCategory,
+  type KnowledgeLanded,
+} from '../../lib/knowledgeGraph';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { KnowledgePageDetail } from './KnowledgePageDetail';
@@ -14,6 +21,22 @@ interface SearchItem extends PageItem { page_id: string; snippet: string }
 
 const STATUS_LABEL: Record<string, string> = { active: '有效', archived: '归档', deleted: '已删除' };
 const STATUS_TONE: Record<string, BadgeTone> = { active: 'green', archived: 'neutral', deleted: 'red' };
+/** KB-MODEL：五类固定 tone（legacy 用 gray，与星图灰显一致） */
+const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
+  design: 'blue',
+  solved: 'green',
+  pinned: 'purple',
+  open: 'red',
+  legacy: 'gray',
+};
+const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', partial: '部分落地', proposed: '未落地' };
+const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
+  design: CATEGORY_STYLES.design.label,
+  solved: CATEGORY_STYLES.solved.label,
+  pinned: CATEGORY_STYLES.pinned.label,
+  open: CATEGORY_STYLES.open.label,
+  legacy: CATEGORY_STYLES.legacy.label,
+};
 
 export function KnowledgePanel({
   workspaceId,
@@ -160,6 +183,13 @@ export function KnowledgePanel({
                   <Badge tone={page.scope === 'common' ? 'neutral' : 'blue'}>{page.scope === 'common' ? '公共' : '项目'}</Badge>
                   <Badge tone="neutral">v{page.revision}</Badge>
                   <Badge tone={STATUS_TONE[page.status] ?? 'neutral'}>{STATUS_LABEL[page.status] ?? page.status}</Badge>
+                  <Badge tone={CATEGORY_TONE[normalizeCategory((page as { category?: unknown }).category)]}>
+                    {CATEGORY_LABEL[normalizeCategory((page as { category?: unknown }).category)]}
+                  </Badge>
+                  {(() => {
+                    const landed = normalizeLanded((page as { landed?: unknown }).landed);
+                    return landed === null ? null : <Badge tone={landed === 'landed' ? 'green' : landed === 'partial' ? 'blue' : 'neutral'}>{LANDED_LABEL[landed]}</Badge>;
+                  })()}
                   {isExpired && <Badge tone="red">已过期</Badge>}
                 </span>
               </button>

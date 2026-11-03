@@ -237,6 +237,11 @@
   --kb-graph-line: #d4d4d4;
   --kb-graph-text: #222222;
   --kb-graph-highlight: #9873f7;
+  --kb-cat-design: #6366f1;
+  --kb-cat-solved: #16a34a;
+  --kb-cat-pinned: #d97706;
+  --kb-cat-open: #dc2626;
+  --kb-cat-legacy: #9ca3af;
   --kb-graph-menu-bg: #ffffff;
   --kb-graph-menu-border: #d4d4d4;
   --kb-graph-menu-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
@@ -250,6 +255,11 @@
   --kb-graph-line: #3f3f3f;
   --kb-graph-text: #dadada;
   --kb-graph-highlight: #8a5cf5;
+  --kb-cat-design: #a5b4fc;
+  --kb-cat-solved: #4ade80;
+  --kb-cat-pinned: #fbbf24;
+  --kb-cat-open: #f87171;
+  --kb-cat-legacy: #6b7280;
   --kb-graph-menu-bg: #262626;
   --kb-graph-menu-border: #3f3f3f;
   --kb-graph-menu-shadow: 0 2px 8px rgb(0 0 0 / 0.5);

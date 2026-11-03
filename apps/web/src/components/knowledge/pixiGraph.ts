@@ -62,6 +62,8 @@ const FONT_FAMILY =
 export interface PixiGraphNode {
   id: string;
   title: string;
+  /** KB-MODEL：按 category 算好的 tint（0xRRGGBB）；缺省时用语义色 color-fill */
+  tint?: number;
   /** 文档 getSize 的 weight = 正向 ∪ 反向邻居数（由调用方用邻接表算好） */
   weight: number;
 }
@@ -110,6 +112,8 @@ interface NodeView {
   /** PIXI 对象身份序号：增量更新应复用同一个序号 */
   objId: number;
   title: string;
+  /** 按 category 的固定色（undefined → 语义色） */
+  tint?: number;
   weight: number;
   size: number;
   x: number;
@@ -469,7 +473,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     circle.zIndex = 1;
     circle.eventMode = 'static';
     circle.cursor = 'pointer';
-    circle.tint = colors.fill.tint;
+    circle.tint = node.tint ?? colors.fill.tint;
     circle.alpha = colors.fill.alpha;
     hanger.addChild(circle);
 
@@ -494,6 +498,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       id: node.id,
       objId: objectSeq,
       title: node.title,
+      tint: node.tint,
       weight: node.weight,
       size,
       x: point.x,
@@ -560,7 +565,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       // 文档 A6：scale = getSize()/100 * nodeScale
       node.circle.scale.set((node.size / 100) * ns);
       node.circle.alpha = node.alpha * colors.fill.alpha;
-      node.circle.tint = lit && active ? colors.fillHighlight.tint : colors.fill.tint;
+      node.circle.tint = lit && active ? colors.fillHighlight.tint : node.tint ?? colors.fill.tint;
 
       let alpha = textAlpha(scale, textShowMult) * node.alpha;
       if (lit && active) alpha = 1;
@@ -980,6 +985,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     for (const node of nodeViews.values()) {
       const source = byId.get(node.id);
       if (source === undefined) continue;
+      node.tint = source.tint;
       node.weight = source.weight;
       node.size = getSize(node.weight, nodeSizeMultiplier);
       node.label.style.fontSize = fontSize(node.size);

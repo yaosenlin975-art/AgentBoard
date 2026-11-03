@@ -22,6 +22,10 @@ export interface GraphNode {
   revision: number;
   degree: number;
   updated_at?: number;
+  /** KB-MODEL 四类内容模型（服务端 STATUS-2 落库前可能缺失 → 一律按 legacy 处理） */
+  category?: string;
+  /** design 类的落地状态 */
+  landed?: string;
 }
 
 export interface GraphEdge {
@@ -153,6 +157,13 @@ export function composeGraph(pages: ComposePageInput[], options: ComposeOptions 
       revision: page.revision,
       degree: 0,
       ...(page.updated_at !== undefined ? { updated_at: page.updated_at } : {}),
+      // KB-MODEL：服务端未落库时保持 undefined（读取方统一按 legacy 处理）
+      ...(typeof (page as unknown as { category?: unknown }).category === 'string'
+        ? { category: (page as unknown as { category: string }).category }
+        : {}),
+      ...(typeof (page as unknown as { landed?: unknown }).landed === 'string'
+        ? { landed: (page as unknown as { landed: string }).landed }
+        : {}),
     });
   }
 
@@ -289,6 +300,9 @@ export function normalizeGraph(raw: unknown, options: ComposeOptions = {}): Comp
       degree: hasDegree ? (n.degree as number) : 0,
       ...(typeof n.source_count === 'number' ? { source_count: n.source_count } : {}),
       ...(typeof n.updated_at === 'number' ? { updated_at: n.updated_at } : {}),
+      // KB-MODEL：服务端返回则透传，缺失一律 undefined（读取方按 legacy 灰显）
+      ...(typeof n.category === 'string' ? { category: n.category } : {}),
+      ...(typeof n.landed === 'string' ? { landed: n.landed } : {}),
     });
   }
 
@@ -620,6 +634,110 @@ export function labelText(title: string, max = 12): string {
 }
 
 /* ----------------------------------------------------------------------------
+ * KB-MODEL：四类内容模型（design / solved / pinned / open，缺省 legacy）
+ * 服务端字段未落地时全部按「可选读取 + 归一化」处理，缺失即 legacy，不抛错。
+ * -------------------------------------------------------------------------- */
+
+export type KnowledgeCategory = 'design' | 'solved' | 'pinned' | 'open' | 'legacy';
+export type KnowledgeLanded = 'landed' | 'partial' | 'proposed';
+
+export const KNOWLEDGE_CATEGORIES: readonly KnowledgeCategory[] = ['design', 'solved', 'pinned', 'open', 'legacy'];
+export const KNOWLEDGE_LANDED: readonly KnowledgeLanded[] = ['landed', 'partial', 'proposed'];
+
+const CATEGORY_SET = new Set<string>(KNOWLEDGE_CATEGORIES);
+const LANDED_SET = new Set<string>(KNOWLEDGE_LANDED);
+
+/** 缺失/未知/非字符串 → `legacy`（设计文档 §2：旧页不阻断，星图灰显） */
+export function normalizeCategory(value: unknown): KnowledgeCategory {
+  if (typeof value !== 'string') return 'legacy';
+  const normalized = value.trim().toLowerCase();
+  return (CATEGORY_SET.has(normalized) ? normalized : 'legacy') as KnowledgeCategory;
+}
+
+/** 缺失/未知 → null（legacy 类没有落地状态） */
+export function normalizeLanded(value: unknown): KnowledgeLanded | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return LANDED_SET.has(normalized) ? (normalized as KnowledgeLanded) : null;
+}
+
+/** 五类固定配色（与 index.css 的 --kb-cat-* 变量同值，图例与画布共用） */
+export const CATEGORY_STYLES: Record<KnowledgeCategory, { label: string; light: string; dark: string; cssVar: string }> = {
+  design: { label: '设计方案', light: '#6366f1', dark: '#a5b4fc', cssVar: '--kb-cat-design' },
+  solved: { label: '已解决', light: '#16a34a', dark: '#4ade80', cssVar: '--kb-cat-solved' },
+  pinned: { label: '用户指定', light: '#d97706', dark: '#fbbf24', cssVar: '--kb-cat-pinned' },
+  open: { label: '待决/盲区', light: '#dc2626', dark: '#f87171', cssVar: '--kb-cat-open' },
+  legacy: { label: '旧页（未分类）', light: '#9ca3af', dark: '#6b7280', cssVar: '--kb-cat-legacy' },
+};
+
+/** 节点按 category 着色（缺失 → legacy 灰） */
+export function categoryColor(category: unknown, dark: boolean): string {
+  const style = CATEGORY_STYLES[normalizeCategory(category)];
+  return dark ? style.dark : style.light;
+}
+
+/** 常用预设：只看未落地的设计方案（design 文档 §4） */
+export const PRESET_UNLANDED_DESIGN = 'category:design landed:proposed|partial';
+
+export interface ParsedQuery {
+  /** 去掉前缀 token 后的自由文本（按标题子串匹配） */
+  text: string;
+  categories: Set<KnowledgeCategory>;
+  landed: Set<KnowledgeLanded>;
+  tags: Set<string>;
+  /** 是否用了任意前缀语法 */
+  hasFilters: boolean;
+}
+
+/** 解析 `category:` / `landed:`（`a|b` 多值）/ `tag:` 前缀，其余按自由文本 */
+export function parseSearchQuery(query: string): ParsedQuery {
+  const categories = new Set<KnowledgeCategory>();
+  const landed = new Set<KnowledgeLanded>();
+  const tags = new Set<string>();
+  const words: string[] = [];
+  for (const raw of query.trim().split(/\s+/)) {
+    if (raw === '') continue;
+    const match = /^(category|landed|tag):(.*)$/i.exec(raw);
+    if (match === null) {
+      words.push(raw);
+      continue;
+    }
+    const [, key, value] = match as unknown as [string, string, string];
+    for (const part of value.split('|')) {
+      const token = part.trim().toLowerCase();
+      if (token === '') continue;
+      if (key.toLowerCase() === 'category') categories.add(normalizeCategory(token));
+      else if (key.toLowerCase() === 'landed') {
+        const normalized = normalizeLanded(token);
+        if (normalized !== null) landed.add(normalized);
+      } else tags.add(token);
+    }
+  }
+  return {
+    text: words.join(' '),
+    categories,
+    landed,
+    tags,
+    hasFilters: categories.size > 0 || landed.size > 0 || tags.size > 0,
+  };
+}
+
+/** 单节点是否命中解析后的查询：文本 + 类别 + 落地状态（tag 暂以标题包含近似） */
+export function matchesQuery(node: GraphNode, parsed: ParsedQuery): boolean {
+  if (parsed.text !== '' && !node.title.toLowerCase().includes(parsed.text.toLowerCase())) return false;
+  if (parsed.categories.size > 0 && !parsed.categories.has(normalizeCategory(node.category))) return false;
+  if (parsed.landed.size > 0) {
+    const landed = normalizeLanded(node.landed);
+    if (landed === null || !parsed.landed.has(landed)) return false;
+  }
+  if (parsed.tags.size > 0) {
+    const haystack = node.title.toLowerCase();
+    if (![...parsed.tags].every((tag) => haystack.includes(tag))) return false;
+  }
+  return true;
+}
+
+/* ----------------------------------------------------------------------------
  * 交互辅助（KB-GRAPH-2）：邻接表、以光标为中心的缩放、适应视图。
  * 纯函数，供 canvas 交互与单测共用。
  * -------------------------------------------------------------------------- */
@@ -713,12 +831,11 @@ export function highlightAround(graph: GraphPayload, focusId: string | null, hop
 
 /** 搜索命中：标题大小写不敏感包含；空串/纯空白 → 空集合（不打高亮、不筛节点） */
 export function searchMatches(nodes: readonly GraphNode[], query: string): Set<string> {
-  const needle = query.trim().toLowerCase();
-  if (needle === '') return new Set<string>();
+  if (query.trim() === '') return new Set<string>();
+  const parsed = parseSearchQuery(query);
+  if (parsed.text === '' && !parsed.hasFilters) return new Set<string>();
   const hits = new Set<string>();
-  for (const node of nodes) {
-    if (node.title.toLowerCase().includes(needle)) hits.add(node.id);
-  }
+  for (const node of nodes) if (matchesQuery(node, parsed)) hits.add(node.id);
   return hits;
 }
 
@@ -730,7 +847,8 @@ export function filterGraphForView(
   const { focusId, hops, matches, onlyMatches } = options;
   let allowed: Set<string> | null = null;
   if (focusId !== null) allowed = neighborsWithin(graph, focusId, hops);
-  if (onlyMatches && matches.size > 0) {
+  if (onlyMatches) {
+    // 0 命中也要筛成空集：否则「只看未落地设计方案」这类预设在没有命中时会看起来没生效
     allowed = allowed === null ? new Set(matches) : new Set([...allowed].filter((id) => matches.has(id)));
   }
   if (allowed === null) return { graph, hiddenNodes: 0, hiddenEdges: 0 };

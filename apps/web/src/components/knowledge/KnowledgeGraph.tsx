@@ -14,15 +14,21 @@ import {
   graphStats,
   layoutGraph,
   normalizeGraph,
+  categoryColor,
+  CATEGORY_STYLES,
+  KNOWLEDGE_CATEGORIES,
   nodeColor,
   nodeRadius,
   nodeWeights,
+  normalizeCategory,
+  normalizeLanded,
+  PRESET_UNLANDED_DESIGN,
   searchMatches,
   type GraphEdgeKind,
   type GraphNode,
   type GraphPayload,
 } from '../../lib/knowledgeGraph';
-import { textAlpha } from '../../lib/graphVisualFormulas';
+import { textAlpha, tintFromCssColor } from '../../lib/graphVisualFormulas';
 import { createForceLayoutClient, type ForceLayoutClient } from '../../lib/forceLayoutClient';
 import { localGraphSlice } from '../../lib/localGraph';
 import { FORCE_SLIDER_DEFAULTS, GraphControls, type ForceSliders } from './GraphControls';
@@ -157,6 +163,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [interlinks, setInterlinks] = useState(true);
   const [hideOrphans, setHideOrphans] = useState(false);
   const [forces, setForces] = useState<ForceSliders>(FORCE_SLIDER_DEFAULTS);
+  /** KB-MODEL：默认按 category 着色；可切回按 scope（既有次级维度） */
+  const [colorScheme, setColorScheme] = useState<'category' | 'scope'>('category');
 
   const graph = useMemo(() => {
     if (fullGraph === null) return null;
@@ -254,6 +262,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         id: node.id,
         title: node.title,
         weight: local?.weights.get(node.id) ?? weights.get(node.id) ?? 0,
+        // KB-MODEL：category 固定五色；缺失一律 legacy 灰。scope 方案时退回语义色（不传 tint）
+        ...(colorScheme === 'category' ? { tint: tintFromCssColor(categoryColor(node.category, dark)) } : {}),
       })),
       edges: shown.edges.map((edge) => ({
         key: edge.key,
@@ -265,7 +275,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       positions,
       highlight,
     };
-  }, [showStage, shown, positions, highlight, local]);
+  }, [showStage, shown, positions, highlight, local, colorScheme, dark]);
 
   const pick = useCallback(
     (node: GraphNode): void => {
@@ -462,6 +472,18 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           />
           只看命中
         </label>
+        <button
+          type="button"
+          data-testid="graph-preset-unlanded-design"
+          title="预设：只看未落地的设计方案（category:design + landed:proposed|partial）"
+          onClick={() => {
+            setSearch(PRESET_UNLANDED_DESIGN);
+            setOnlyMatches(true);
+          }}
+          className="pointer-events-auto rounded border border-neutral-300 px-1.5 text-[10px] dark:border-neutral-700"
+        >
+          只看未落地设计
+        </button>
         {stats !== null && (
           <span data-testid="knowledge-graph-stats" className="ml-auto tabular-nums">
             {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
@@ -481,15 +503,35 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         <p role="alert" className="px-3 py-6 text-center text-sm text-red-600 dark:text-red-400">{error.message}</p>
       )}
 
-      <div data-testid="graph-legend" aria-label="星图图例" className="pointer-events-none flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-1 text-[11px] text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
-        <span className="flex items-center gap-1">
-          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('workspace', dark) }} />
-          项目知识
-        </span>
-        <span className="flex items-center gap-1">
-          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('common', dark) }} />
-          公共经验
-        </span>
+      <div data-testid="graph-legend" aria-label="星图图例" className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-3 py-1 text-[11px] text-neutral-600 dark:border-neutral-800 dark:text-neutral-300">
+        <button
+          type="button"
+          data-testid="graph-color-scheme"
+          data-scheme={colorScheme}
+          aria-label="切换着色维度"
+          title={colorScheme === 'category' ? '当前：按内容类型；点击切到按作用域' : '当前：按作用域；点击切到按内容类型'}
+          onClick={() => setColorScheme((prev) => (prev === 'category' ? 'scope' : 'category'))}
+          className="pointer-events-auto rounded border border-neutral-300 px-1.5 text-[10px] dark:border-neutral-700"
+        >
+          {colorScheme === 'category' ? '内容类型' : '作用域'}
+        </button>
+        {colorScheme === 'category'
+          ? KNOWLEDGE_CATEGORIES.map((category) => (
+              <span key={category} data-testid={`graph-legend-${category}`} className="flex items-center gap-1">
+                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: categoryColor(category, dark) }} />
+                {CATEGORY_STYLES[category].label}
+              </span>
+            ))
+          : [
+              <span key="workspace" data-testid="graph-legend-scope-workspace" className="flex items-center gap-1">
+                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('workspace', dark) }} />
+                项目知识
+              </span>,
+              <span key="common" data-testid="graph-legend-scope-common" className="flex items-center gap-1">
+                <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: nodeColor('common', dark) }} />
+                公共经验
+              </span>,
+            ]}
         <span className="flex items-center gap-1">
           <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('source', dark).color} strokeWidth={edgeStyle('source', dark).width} /></svg>
           来源关联（实线）
@@ -523,6 +565,12 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             回全图
           </button>
         </div>
+      )}
+
+      {!loading && error === null && activeOnlyMatches && matches.size === 0 && graph !== null && graph.nodes.length > 0 && (
+        <p data-testid="graph-empty-filter" className="px-3 py-2 text-xs text-neutral-500 dark:text-neutral-400">
+          当前筛选没有匹配节点（{search.trim()}）
+        </p>
       )}
 
       {!loading && error === null && shown !== null && shown.nodes.length === 0 && (

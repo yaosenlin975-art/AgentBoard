@@ -6,10 +6,26 @@ import { MarkdownView } from '../../lib/markdown';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { downloadKnowledgeMarkdown } from '../../lib/knowledgeExport';
+import {
+  CATEGORY_STYLES,
+  normalizeCategory,
+  normalizeLanded,
+  type KnowledgeCategory,
+  type KnowledgeLanded,
+} from '../../lib/knowledgeGraph';
 import { KnowledgePrintView } from './KnowledgePrintView';
 
 const STATUS_LABEL: Record<string, string> = { active: '有效', archived: '归档', deleted: '已删除' };
 const STATUS_TONE: Record<string, BadgeTone> = { active: 'green', archived: 'neutral', deleted: 'red' };
+/** KB-MODEL：五类固定 tone（缺失 → legacy 灰，不报错） */
+const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
+  design: 'blue',
+  solved: 'green',
+  pinned: 'purple',
+  open: 'red',
+  legacy: 'gray',
+};
+const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', partial: '部分落地', proposed: '未落地' };
 
 function Provenance({ sources, evidence }: Pick<KnowledgePage, 'sources' | 'evidence'>) {
   return <>
@@ -53,6 +69,13 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
         <Badge tone={scope === 'common' ? 'neutral' : 'blue'}>{scope === 'common' ? '公共经验' : '项目知识'}</Badge>
         <Badge tone="neutral">v{p.revision}</Badge>
         <Badge tone={STATUS_TONE[p.status] ?? 'neutral'}>{STATUS_LABEL[p.status] ?? p.status}</Badge>
+        <Badge tone={CATEGORY_TONE[normalizeCategory((p as { category?: unknown }).category)]}>
+          {CATEGORY_STYLES[normalizeCategory((p as { category?: unknown }).category)].label}
+        </Badge>
+        {(() => {
+          const landed = normalizeLanded((p as { landed?: unknown }).landed);
+          return landed === null ? null : <Badge tone={landed === 'landed' ? 'green' : landed === 'partial' ? 'blue' : 'neutral'}>{LANDED_LABEL[landed]}</Badge>;
+        })()}
         {p.expires_at !== null && p.expires_at !== undefined && <Badge tone={isExpired ? 'red' : 'neutral'}>{isExpired ? '已过期 ' : '有效期 '}{new Date(p.expires_at).toLocaleDateString()}</Badge>}
       </div>
     </header>
