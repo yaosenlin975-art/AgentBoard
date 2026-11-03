@@ -89,6 +89,11 @@ export interface PixiGraphCallbacks {
   onScaleChange?: (scale: number) => void;
   /** C4 右键菜单：节点上右键 → 交给 React 弹菜单 */
   onContextMenu?: (target: { id: string; clientX: number; clientY: number }) => void;
+  /**
+   * C6 拖拽节点（GRAPH-WEIGHT-DRAG）：start/move/end 交给布局层，
+   * 由布局层写 fx/fy 并**持续 simulate**，其它节点才会被力牵动（与 Obsidian 行为对齐）。
+   */
+  onNodeDrag?: (id: string, position: { x: number; y: number }, phase: 'start' | 'move' | 'end') => void;
 }
 
 export type PixiGraphOptions = PixiGraphCallbacks;
@@ -753,6 +758,10 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     pointer.velocityX = 0;
     pointer.velocityY = 0;
     pointer.nodeId = hitTest(event.clientX, event.clientY);
+    if (pointer.nodeId !== null) {
+      const point = worldPoint(event.clientX, event.clientY);
+      options.onNodeDrag?.(pointer.nodeId, point, 'start');
+    }
     try {
       host.setPointerCapture?.(event.pointerId);
     } catch {
@@ -778,6 +787,8 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
         node.y = point.y;
         pinned.set(node.id, { x: point.x, y: point.y });
         dragId = node.id;
+        // 持续把 fx/fy 发给布局层：其它节点被力牵动（文档 C6）
+        options.onNodeDrag?.(node.id, point, 'move');
       }
       idleFrames = 0;
       changed();
@@ -827,6 +838,10 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     if (draggedNode !== null) {
       // 节点上松手：位移 ≤5px 仍是点击（文档 C3 的 onNodeClick），超过阈值才是拖拽
       dragId = null;
+      // 松手：清 pin（位置由布局层 tick 回传接管；文档：fx/fy 置 undefined）并通知布局层
+      const released = pinned.get(draggedNode);
+      pinned.delete(draggedNode);
+      options.onNodeDrag?.(draggedNode, released ?? { x: 0, y: 0 }, 'end');
       if (wasDown && !clickCancelled) options.onSelect?.(draggedNode);
       changed();
     } else if (wasDown && !clickCancelled) {

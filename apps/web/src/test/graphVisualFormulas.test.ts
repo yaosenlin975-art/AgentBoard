@@ -16,6 +16,7 @@ import {
   labelOffsetY,
   lineWidth,
   nodeScale,
+  GRAPH_VISUAL_DEFAULTS,
   readSemanticColors,
   isClickGesture,
   shouldKeepPanInertia,
@@ -44,6 +45,38 @@ describe('getSize（weight → 半径）', () => {
     expect(getSize(8, 2)).toBeCloseTo(18, 4);
     expect(getSize(Number.NaN)).toBe(NODE_SIZE_MIN);
     expect(getSize(-5)).toBe(NODE_SIZE_MIN);
+  });
+});
+
+describe('GRAPH-WEIGHT-DRAG 任务4：weight → radius 对照表（文档 A6 实测值）', () => {
+  it('逐值：8→9、7→8.4853、6→8、5..0→8、99→30（默认 nodeSizeMultiplier=1）', () => {
+    const table = [
+      [8, 9],
+      [7, 8.4853],
+      [6, 8],
+      [5, 8],
+      [1, 8],
+      [0, 8],
+      [99, 30],
+      [200, 30],
+    ] as const;
+    for (const [weight, radius] of table) {
+      expect(getSize(weight)).toBeCloseTo(radius, 3);
+    }
+    // 默认倍率必须是 1，否则整张图的星会整体变大/变小
+    expect(GRAPH_VISUAL_DEFAULTS.nodeSizeMultiplier).toBe(1);
+  });
+
+  it('weight ≤ 6 全被下限 8 吃掉：只有 weight ≥ 7 才能看出差别（用户「大小不明显」的根因）', () => {
+    expect(getSize(0)).toBe(getSize(1));
+    expect(getSize(1)).toBe(getSize(2));
+    expect(getSize(2)).toBe(getSize(3));
+    expect(getSize(3)).toBe(getSize(4));
+    expect(getSize(4)).toBe(getSize(5));
+    expect(getSize(5)).toBe(getSize(6));
+    // 7 开始脱离下限
+    expect(getSize(7)).toBeGreaterThan(getSize(6));
+    expect(getSize(8)).toBeGreaterThan(getSize(7));
   });
 });
 

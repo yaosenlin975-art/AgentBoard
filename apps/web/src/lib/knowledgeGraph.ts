@@ -640,6 +640,17 @@ export function buildAdjacency(edges: readonly GraphEdge[]): Map<string, Set<str
   return map;
 }
 
+/**
+ * 节点权重 = **正向与反向邻居的并集**大小（文档 A6 / GRAPH-WEIGHT-DRAG）：
+ * 双向边（A→B 且 B→A）只算一个邻居；孤立节点权重 0。这是 `getSize()` 的入参，不是服务端的 degree。
+ */
+export function nodeWeights(nodes: readonly GraphNode[], edges: readonly GraphEdge[]): Map<string, number> {
+  const adjacency = buildAdjacency(edges);
+  const weights = new Map<string, number>();
+  for (const node of nodes) weights.set(node.id, adjacency.get(node.id)?.size ?? 0);
+  return weights;
+}
+
 /** hover/聚焦高亮需要判断的元素集合：节点集合 + 边是否与焦点节点相连 */
 export interface HighlightSet {
   nodes: Set<string>;

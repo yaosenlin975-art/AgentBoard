@@ -12,6 +12,7 @@ import {
   graphStats,
   keywordWeight,
   layoutGraph,
+  nodeWeights,
   normalizeGraph,
   type GraphNode,
   type GraphPayload,
@@ -81,6 +82,32 @@ describe('knowledgeGraph 纯函数（边合成与阈值、截断）', () => {
     expect(graph.node_total).toBe(4);
     expect(graph.truncated).toBe(true);
     expect(graph.droppedNodes).toBe(2);
+  });
+
+  it('GRAPH-WEIGHT-DRAG：weight = 正向 ∪ 反向邻居数（双向边只算一个，孤立 0）', () => {
+    const nodes: GraphNode[] = ['a', 'b', 'c', 'hub', 'solo'].map((id) => ({
+      id,
+      title: id,
+      scope: 'workspace',
+      workspace_id: 'A',
+      revision: 1,
+      degree: 0,
+    }));
+    const edges = [
+      // a ↔ b 双向（count 1 而不是 2）
+      { source: 'a', target: 'b', kind: 'source' as const, weight: 3, key: 'a-b' },
+      { source: 'b', target: 'a', kind: 'source' as const, weight: 3, key: 'b-a' },
+      // hub 三条出边
+      { source: 'hub', target: 'a', kind: 'source' as const, weight: 3, key: 'hub-a' },
+      { source: 'hub', target: 'b', kind: 'source' as const, weight: 3, key: 'hub-b' },
+      { source: 'hub', target: 'c', kind: 'source' as const, weight: 3, key: 'hub-c' },
+    ];
+    const weights = nodeWeights(nodes, edges);
+    expect(weights.get('a')).toBe(2); // b + hub
+    expect(weights.get('b')).toBe(2); // a + hub
+    expect(weights.get('hub')).toBe(3);
+    expect(weights.get('c')).toBe(1);
+    expect(weights.get('solo')).toBe(0);
   });
 
   it('applyEdgeKinds：本地开关只过滤可见边并按可见边重算度数', () => {

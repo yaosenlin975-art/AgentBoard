@@ -110,3 +110,51 @@ describe('D6 报文与 re-alpha 条件', () => {
     client.destroy();
   });
 });
+
+describe('GRAPH-WEIGHT-DRAG 任务5：拖拽期间持续 simulate', () => {
+  it('dragStart 发 fx/fy + alpha .3 + alphaTarget .3 + run；dragMove 续发；dragEnd 清 fx/fy', () => {
+    const worker = new FakeWorker();
+    const client = createForceLayoutClient({ workerFactory: () => worker as unknown as Worker, onPositions: vi.fn() });
+    client.apply({ ids: ['a', 'b'], neighbours: new Map(), links: [['a', 'b']] }, initial);
+    worker.reply([['a', 0, 0], ['b', 100, 0]], true, 248);
+    worker.messages.length = 0;
+
+    client.dragStart('a', { x: 10, y: 20 });
+    const start = worker.messages.at(-1)!;
+    expect(start.forceNode).toEqual({ id: 'a', x: 10, y: 20 });
+    expect(start.alpha).toBe(0.3);
+    expect(start.alphaTarget).toBe(0.3);
+    expect(start.run).toBe(true);
+    expect(client.dragging()).toBe('a');
+    expect(client.running()).toBe(true);
+
+    client.dragMove('a', { x: 40, y: 60 });
+    const move = worker.messages.at(-1)!;
+    expect(move.forceNode).toEqual({ id: 'a', x: 40, y: 60 });
+    expect(move.alphaTarget).toBe(0.3);
+
+    client.dragEnd('a');
+    const end = worker.messages.at(-1)!;
+    expect(end.forceNode).toEqual({ id: 'a', x: null, y: null });
+    expect(end.alphaTarget).toBe(0);
+    expect(client.dragging()).toBe(null);
+  });
+
+  it('拖拽期间 worker 每 tick 回传位置 → 布局不冻结（其它节点坐标会变）', () => {
+    const worker = new FakeWorker();
+    const seen: Array<Map<string, { x: number; y: number }>> = [];
+    const client = createForceLayoutClient({
+      workerFactory: () => worker as unknown as Worker,
+      onPositions: (positions) => seen.push(positions),
+    });
+    client.apply({ ids: ['a', 'b'], neighbours: new Map(), links: [['a', 'b']] }, initial);
+    worker.reply([['a', 0, 0], ['b', 100, 0]], true, 248);
+    client.dragStart('a', { x: 0, y: 0 });
+    // 模拟拖拽期间 worker 连续 tick 回传：b 被牵动
+    worker.reply([['a', 0, 0], ['b', 140, 30]], false, 10);
+    worker.reply([['a', 0, 0], ['b', 170, 55]], false, 20);
+    const last = seen.at(-1)!;
+    expect(last.get('b')).toEqual({ x: 170, y: 55 });
+    expect(client.ticks()).toBe(20);
+  });
+});

@@ -16,6 +16,7 @@ import {
   normalizeGraph,
   nodeColor,
   nodeRadius,
+  nodeWeights,
   searchMatches,
   type GraphEdgeKind,
   type GraphNode,
@@ -246,12 +247,13 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   /** 数据映射（A6）：weight = 正向 ∪ 反向邻居数，公式与布局都不在渲染层重算 */
   const renderData = useMemo<PixiGraphData | null>(() => {
     if (!showStage || shown === null) return null;
-    const adjacency = buildAdjacency(shown.edges);
+    // weight = 正向 ∪ 反向邻居数（`nodeWeights`）；局部图模式下改用逐跳权重（文档 C10）
+    const weights = nodeWeights(shown.nodes, shown.edges);
     return {
       nodes: shown.nodes.map((node) => ({
         id: node.id,
         title: node.title,
-        weight: local?.weights.get(node.id) ?? adjacency.get(node.id)?.size ?? 0,
+        weight: local?.weights.get(node.id) ?? weights.get(node.id) ?? 0,
       })),
       edges: shown.edges.map((edge) => ({
         key: edge.key,
@@ -312,6 +314,14 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             onHover: setHovered,
             onScaleChange: setScale,
             onContextMenu: (target) => setMenu({ id: target.id, x: target.clientX, y: target.clientY }),
+            // 拖拽期间持续 simulate：其它星被力牵动（GRAPH-WEIGHT-DRAG）
+            onNodeDrag: (id, position, phase) => {
+              const client = layoutClientRef.current;
+              if (client === null) return;
+              if (phase === 'start') client.dragStart(id, position);
+              else if (phase === 'move') client.dragMove(id, position);
+              else client.dragEnd(id);
+            },
           });
           // CDP 验收钩子（与 snapshot() 同一入口，只读）
           (host as unknown as { __kbPixiGraph?: PixiGraphHandle }).__kbPixiGraph = handleRef.current;

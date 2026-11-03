@@ -39,6 +39,15 @@ export interface ForceLayoutClient {
   apply(graph: LayoutGraph, initialPositions: ReadonlyMap<string, { x: number; y: number }>): ApplyResult;
   /** 控件面板滑杆：改力参数并重新激活一次布局（文档：只有力/结构变化才重跑） */
   applyForces(patch: { centerStrength?: number; linkStrength?: number; linkDistance?: number; repelStrength?: number }): void;
+  /**
+   * 拖拽节点（文档 C6 / GRAPH-WEIGHT-DRAG）：写入 fx/fy 并**持续发消息跑 simulate**，
+   * 让其它节点被力牵动；`alphaTarget = .3` 保持模拟活跃，松手后清 fx/fy 并 alphaTarget = 0。
+   */
+  dragStart(id: string, position: { x: number; y: number }): void;
+  dragMove(id: string, position: { x: number; y: number }): void;
+  dragEnd(id: string): void;
+  /** 是否处于拖拽中（CDP/单测可读） */
+  dragging(): string | null;
   /** 当前是否还有 tick 在跑 */
   running(): boolean;
   stop(): void;
@@ -64,6 +73,7 @@ export function createForceLayoutClient(options: ForceLayoutClientOptions): Forc
   let running = false;
   let tickCount = 0;
   let destroyed = false;
+  let dragNodeId: string | null = null;
 
   // 每 N 个 tick 才推一次位置（248 tick 全推会给 React 造成 248 次渲染）；收敛时强制推一次
   const EMIT_EVERY = 4;
@@ -165,6 +175,45 @@ export function createForceLayoutClient(options: ForceLayoutClientOptions): Forc
         scheduler(runInlineTick);
       }
     },
+    dragStart(id, position) {
+      dragNodeId = id;
+      const message: SimMessage = {
+        forceNode: { id, x: position.x, y: position.y },
+        alpha: FORCE_SIM_DEFAULTS.alphaInitial,
+        alphaTarget: FORCE_SIM_DEFAULTS.alphaInitial,
+        run: true,
+      };
+      tickCount = 0;
+      running = true;
+      if (worker !== null) {
+        worker.postMessage(message);
+      } else {
+        sim.ingest(message);
+        scheduler(runInlineTick);
+      }
+    },
+    dragMove(id, position) {
+      if (dragNodeId !== id) return;
+      const message: SimMessage = {
+        forceNode: { id, x: position.x, y: position.y },
+        alphaTarget: FORCE_SIM_DEFAULTS.alphaInitial,
+        run: true,
+      };
+      if (worker !== null) worker.postMessage(message);
+      else sim.ingest(message);
+      if (!running) {
+        running = true;
+        if (worker === null) scheduler(runInlineTick);
+      }
+    },
+    dragEnd(id) {
+      if (dragNodeId !== id) return;
+      dragNodeId = null;
+      const message: SimMessage = { forceNode: { id, x: null, y: null }, alphaTarget: 0, run: true };
+      if (worker !== null) worker.postMessage(message);
+      else sim.ingest(message);
+    },
+    dragging: () => dragNodeId,
     running: () => running,
     ticks: () => tickCount,
     stop() {
