@@ -5,7 +5,7 @@
  * - 401/429/5xx/网络分别映射固定 reason_code，响应不含 token。
  */
 import { describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,10 +15,12 @@ import {
   hasCodexLogin,
   hasOpencodeGoKey,
   parseDeepseekBalance,
+  parseCodexRateLimits,
   parseNetstatListeners,
   parseTasklistPids,
   readDshCredentialsDeepseekKey,
   resolveDeepseekKey,
+  scanCodexRollout,
 } from '../src/services/quotas/quotaService.js';
 
 function tempHome(files: Record<string, string>): string {
@@ -344,5 +346,93 @@ describe('DeepSeek 多候选 + 逐个试（ACC-QUOTA-03）', () => {
     expect(readDshCredentialsDeepseekKey(join(tempHome({}), 'nope.yaml'))).toBeNull();
     const broken = tempHome({ '.dsh/.credentials.yaml': 'not yaml at all' });
     expect(readDshCredentialsDeepseekKey(join(broken, '.dsh', '.credentials.yaml'))).toBeNull();
+  });
+});
+describe('Codex 本地 rollout 快照（ACC-CODEX-QUOTA-IMPL）', () => {
+  const rateLimits = (usedPrimary: number, usedSecondary: number, balance = '0') => JSON.stringify({
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      rate_limits: {
+        limit_id: 'codex',
+        primary: { used_percent: usedPrimary, window_minutes: 300, resets_at: 1_793_703_146 },
+        secondary: { used_percent: usedSecondary, window_minutes: 10_080, resets_at: 1_794_108_823 },
+        credits: { has_credits: false, unlimited: false, balance },
+        plan_type: 'plus',
+        rate_limit_reached_type: null,
+      },
+    },
+  });
+
+  function homeWithRollouts(files: Record<string, { content: string; mtimeMs: number }>): string {
+    const home = tempHome({});
+    for (const [relative, spec] of Object.entries(files)) {
+      const target = join(home, relative);
+      mkdirSync(join(target, '..'), { recursive: true });
+      writeFileSync(target, `${spec.content}\n`, 'utf8');
+      const date = new Date(spec.mtimeMs);
+      utimesSync(target, date, date);
+    }
+    return home;
+  }
+
+  it('取 mtime 最新的 rollout，映射 5h/weekly 两个窗口 + 余额', async () => {
+    const home = homeWithRollouts({
+      '.codex/sessions/2026/11/02/rollout-old.jsonl': { content: rateLimits(80, 90), mtimeMs: 1_760_000_000_000 },
+      '.codex/sessions/2026/11/03/rollout-new.jsonl': { content: rateLimits(2, 77), mtimeMs: 1_761_000_000_000 },
+    });
+    const result = await scanCodexRollout(home, () => 1_000);
+    expect(result.status).toBe('ok');
+    expect(result.windows.map((w) => w.name)).toEqual(['5h', 'weekly']);
+    expect(result.windows[0]).toMatchObject({ used_percent: 2, remaining: 98, reset_at: 1_793_703_146_000 });
+    expect(result.windows[1]).toMatchObject({ used_percent: 77, remaining: 23, reset_at: 1_794_108_823_000 });
+    expect(result.balance).toBe(0);
+    expect(result.unit).toBe('USD');
+    expect(result.detail).toBe('额度内');
+  });
+
+  it('没有 sessions 目录 / 没有 rollout / 没有 rate_limits 都给可解释 unsupported', async () => {
+    const emptyHome = tempHome({});
+    expect(await scanCodexRollout(emptyHome, () => 1)).toMatchObject({ status: 'unsupported', reason_code: 'NO_CODEX_SESSIONS' });
+
+    const noFiles = homeWithRollouts({ '.codex/sessions/2026/11/03/keep.txt': { content: 'x', mtimeMs: 1 } });
+    expect(await scanCodexRollout(noFiles, () => 1)).toMatchObject({ status: 'unsupported', reason_code: 'NO_CODEX_SESSIONS' });
+
+    const noLimits = homeWithRollouts({
+      '.codex/sessions/2026/11/03/rollout-1.jsonl': { content: JSON.stringify({ type: 'event_msg', payload: { type: 'token_count' } }), mtimeMs: 1 },
+    });
+    expect(await scanCodexRollout(noLimits, () => 1)).toMatchObject({ status: 'unsupported', reason_code: 'NO_CODEX_RATE_LIMITS' });
+  });
+
+  it('只认 300/10080 分钟窗口：月度窗口（43800）被忽略', () => {
+    const result = parseCodexRateLimits({
+      primary: { used_percent: 10, window_minutes: 43_800, resets_at: 1 },
+      secondary: { used_percent: 20, window_minutes: 10_080, resets_at: 2 },
+      credits: { balance: '1.5' },
+    }, 999);
+    expect(result.windows.map((w) => w.name)).toEqual(['weekly']);
+    expect(result.balance).toBe(1.5);
+    // 无 plan_type 且余额非 0 → detail 为 null
+    expect(result.detail).toBeNull();
+  });
+
+  it('缓存：TTL 内两次聚合只扫一次 Codex 本地文件', async () => {
+    let scans = 0;
+    const service = createQuotaService({
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      homeDir: tempHome({}),
+      env: {},
+      now: () => 1,
+      execFileImpl: async () => '',
+      codexScan: async () => {
+        scans += 1;
+        return parseCodexRateLimits({ primary: { used_percent: 5, window_minutes: 300, resets_at: 10 }, credits: { balance: '0' } }, 1);
+      },
+    });
+    const first = await service.get();
+    const second = await service.get();
+    expect(scans).toBe(1);
+    expect(first.items[2]!.status).toBe('ok');
+    expect(second.items[2]!.windows[0]!.used_percent).toBe(5);
   });
 });

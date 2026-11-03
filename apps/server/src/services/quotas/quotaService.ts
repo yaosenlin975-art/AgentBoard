@@ -15,7 +15,7 @@
  * - 60s 缓存 + 失败指数退避（60s → 2× → … 上限 10min），同来源并发只发一次请求；
  * - 响应与日志不含 token / identity_hash / 文件路径（detail 里只写「已检测到/未检测到」）。
  */
-import { readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -77,6 +77,8 @@ export interface QuotaServiceOptions {
   timeoutMs?: number;
   /** 注入命令执行（测试用；默认 execFile 包装，用于发现本地 opencode 服务端口） */
   execFileImpl?: (file: string, args: string[]) => Promise<string>;
+  /** ACC-CODEX-QUOTA-IMPL：注入 Codex 扫描（测试用；默认读 ~/.codex/sessions 最新 rollout） */
+  codexScan?: () => Promise<QuotaResult>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
@@ -264,6 +266,146 @@ export function parseOpencodeUsage(body: unknown, fetchedAt: number): QuotaResul
   };
 }
 
+/** Codex 窗口分钟数 → 我们的窗口名（用户要求只展示 5h 与 weekly，不显示 Monthly） */
+export const CODEX_WINDOW_MINUTES: Record<number, '5h' | 'weekly'> = { 300: '5h', 10080: 'weekly' };
+
+/**
+ * 解析 rollout 里的一条 `payload.rate_limits`（导出便于单测）：
+ * `primary{used_percent, window_minutes, resets_at}`、`secondary{…}`、`credits.balance`、`plan_type`。
+ * - 只保留 `window_minutes` ∈ {300, 10080} 的窗口（300 → 5h，10080 → weekly）；
+ * - `resets_at` 是**秒**级 epoch → ×1000 转毫秒；
+ * - `credits.balance` 为字符串金额，0 时 `detail` 给「额度内」（避免被误读成欠费）。
+ */
+export function parseCodexRateLimits(raw: unknown, fetchedAt: number): QuotaResult {
+  const limits = (raw && typeof raw === 'object' ? raw : null) as {
+    primary?: { used_percent?: unknown; window_minutes?: unknown; resets_at?: unknown };
+    secondary?: { used_percent?: unknown; window_minutes?: unknown; resets_at?: unknown };
+    credits?: { balance?: unknown; has_credits?: unknown; unlimited?: unknown };
+    plan_type?: unknown;
+  } | null;
+  if (!limits) return empty('codex', 'unsupported', fetchedAt, 'NO_CODEX_RATE_LIMITS', '本机 Codex 会话里没有额度快照（rate_limits）');
+  const windows: QuotaWindow[] = [];
+  for (const slot of [limits.primary, limits.secondary]) {
+    if (!slot || typeof slot !== 'object') continue;
+    const minutes = Number(slot.window_minutes);
+    const name = CODEX_WINDOW_MINUTES[minutes];
+    if (!name) continue;
+    const used = Number(slot.used_percent);
+    if (!Number.isFinite(used)) continue;
+    const resetsAt = Number(slot.resets_at);
+    windows.push({
+      name,
+      remaining: Math.max(0, Math.round((100 - used) * 10) / 10),
+      used_percent: Math.min(100, Math.max(0, Math.round(used * 10) / 10)),
+      reset_at: Number.isFinite(resetsAt) ? resetsAt * 1000 : null,
+    });
+  }
+  if (windows.length === 0) {
+    return empty('codex', 'unsupported', fetchedAt, 'NO_CODEX_RATE_LIMITS', '本机 Codex 会话里没有可用的 5 小时/周窗口');
+  }
+  // 展示顺序固定 5h → weekly
+  windows.sort((a, b) => (a.name === '5h' ? -1 : 1) - (b.name === '5h' ? -1 : 1));
+  const balanceRaw = limits.credits?.balance;
+  const balance = typeof balanceRaw === 'string' && balanceRaw.trim() !== '' && Number.isFinite(Number(balanceRaw)) ? Number(balanceRaw) : null;
+  const plan = typeof limits.plan_type === 'string' && limits.plan_type.length > 0 ? limits.plan_type : null;
+  const zeroBalance = balance !== null && balance === 0;
+  return {
+    source: 'codex',
+    status: 'ok',
+    balance,
+    unit: balance === null ? null : 'USD',
+    windows,
+    fetched_at: fetchedAt,
+    reason_code: null,
+    detail: zeroBalance ? '额度内' : plan ? `套餐：${plan}` : null,
+  };
+}
+
+/** 找 `~/.codex/sessions` 下 mtime 最新的 rollout 文件（按年月日目录倒序 + 目录内按 mtime 倒序，命中第一条即返回） */
+export function findLatestCodexRollout(sessionsRoot: string): { file: string; mtime: number } | null {
+  const listDirs = (dir: string): string[] => {
+    try {
+      return readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const listRollouts = (dir: string): Array<{ file: string; mtime: number }> => {
+    try {
+      return readdirSync(dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.jsonl'))
+        .map((entry) => {
+          const file = join(dir, entry.name);
+          try { return { file, mtime: statSync(file).mtimeMs }; } catch { return null; }
+        })
+        .filter((item): item is { file: string; mtime: number } => item !== null)
+        .sort((a, b) => b.mtime - a.mtime);
+    } catch {
+      return [];
+    }
+  };
+  let best: { file: string; mtime: number } | null = null;
+  // 目录层级：sessions/YYYY/MM/DD/*.jsonl（也兼容直接放文件的扁平结构）
+  const direct = listRollouts(sessionsRoot);
+  if (direct.length > 0) best = direct[0]!;
+  for (const year of listDirs(sessionsRoot)) {
+    for (const month of listDirs(join(sessionsRoot, year))) {
+      for (const day of listDirs(join(sessionsRoot, year, month))) {
+        const files = listRollouts(join(sessionsRoot, year, month, day));
+        if (files.length > 0 && (best === null || files[0]!.mtime > best.mtime)) best = files[0]!;
+      }
+    }
+  }
+  return best;
+}
+
+/** 从 rollout 文件尾部找最后一条含 `rate_limits` 的行并返回该对象（只读，不解析其它内容） */
+export function readLatestRateLimits(file: string, maxTailBytes = 512 * 1024): unknown | null {
+  let fd: number | null = null;
+  try {
+    const size = statSync(file).size;
+    const start = Math.max(0, size - maxTailBytes);
+    fd = openSync(file, 'r');
+    const buffer = Buffer.alloc(Math.min(size, maxTailBytes));
+    readSync(fd, buffer, 0, buffer.length, start);
+    const lines = buffer.toString('utf8').split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!.trim();
+      if (!line.includes('"rate_limits"')) continue;
+      try {
+        const parsed = JSON.parse(line) as { payload?: { rate_limits?: unknown } };
+        const limits = parsed.payload?.rate_limits ?? null;
+        if (limits) return limits;
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) { try { closeSync(fd); } catch { /* noop */ } }
+  }
+}
+
+/** 扫描本机 Codex 会话并产出额度结果（文件/字段缺失都给可解释的 unsupported） */
+export function scanCodexRollout(homeDir: string, nowFn: () => number): Promise<QuotaResult> {
+  const fetchedAt = nowFn();
+  const sessionsRoot = join(homeDir, '.codex', 'sessions');
+  if (!existsSync(sessionsRoot)) {
+    return Promise.resolve(empty('codex', 'unsupported', fetchedAt, 'NO_CODEX_SESSIONS', '未发现本机 Codex 会话记录（~/.codex/sessions 不存在）'));
+  }
+  const latest = findLatestCodexRollout(sessionsRoot);
+  if (latest === null) {
+    return Promise.resolve(empty('codex', 'unsupported', fetchedAt, 'NO_CODEX_SESSIONS', '未发现本机 Codex 会话记录（sessions 目录下没有 rollout 文件）'));
+  }
+  const limits = readLatestRateLimits(latest.file);
+  if (limits === null) {
+    return Promise.resolve(empty('codex', 'unsupported', fetchedAt, 'NO_CODEX_RATE_LIMITS', '本机 Codex 会话里没有额度快照（该会话未返回 rate_limits）'));
+  }
+  return Promise.resolve(parseCodexRateLimits(limits, fetchedAt));
+}
+
 /** Codex 是否有本机 ChatGPT 登录态（`~/.codex/auth.json` 且 auth_mode=chatgpt 且有 access_token） */export function hasCodexLogin(homeDir: string): boolean {
   try {
     const json = JSON.parse(readFileSync(join(homeDir, '.codex', 'auth.json'), 'utf8')) as {
@@ -439,25 +581,21 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     }
   }
 
-  /** codex：只读本机痕迹，不请求第三方（无公开窗口端点） */
-  async function inspectOnly(source: 'codex'): Promise<QuotaResult> {
-    const at = now();
-    const hasLogin = hasCodexLogin(homeDir);
-    return empty(
-      'codex',
-      'unsupported',
-      at,
-      'NO_PUBLIC_QUOTA_ENDPOINT',
-      hasLogin
-        ? 'Codex 额度窗口没有公开接口（内部接口返回 403），本机 ChatGPT 登录态可用'
-        : 'Codex 额度窗口没有公开接口（内部接口返回 403），本机未检测到登录态',
-    );
+  /**
+   * ACC-CODEX-QUOTA-IMPL：Codex 额度走**本地 rollout 快照**（零网络、零凭据）。
+   * 读 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` 里 mtime 最新的一份，取 `event_msg -> payload.rate_limits`：
+   * `primary{used_percent, window_minutes, resets_at}` / `secondary{…}` / `credits.balance` / `plan_type`。
+   * 只映射 `window_minutes=300 → 5h`、`10080 → weekly`（用户要求不显示 Monthly）；不读 token 原文。
+   */
+  async function fetchCodexFromRollout(): Promise<QuotaResult> {
+    const scan = options.codexScan ?? (() => scanCodexRollout(homeDir, now));
+    return scan();
   }
 
   function loaderFor(source: QuotaSourceId): () => Promise<QuotaResult> {
     if (source === 'deepseek') return fetchDeepseek;
     if (source === 'opencode_go') return fetchOpencodeGo;
-    return () => inspectOnly('codex');
+    return fetchCodexFromRollout;
   }
 
   async function load(source: QuotaSourceId): Promise<QuotaResult> {

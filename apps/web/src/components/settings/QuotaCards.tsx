@@ -200,14 +200,23 @@ export function QuotaCards() {
           <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
             {query.data.items.filter((item) => item.source !== 'deepseek').map((item) => {
               const windows = windowsOf(item);
+              const amount = quotaAmountText(item);
               const { text, technical } = reasonOf(item);
               return (
                 <div key={item.source} data-testid={`quota-card-${item.source}`} className="rounded-lg border border-neutral-200 p-2 text-xs dark:border-neutral-800">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
                     <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
-                    {item.status === 'ok' && item.detail !== null && <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{item.detail}</span>}
+                    {item.status === 'ok' && item.detail !== null && item.detail !== '额度内' && <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{item.detail}</span>}
                   </div>
+
+                  {/* ACC-CODEX-QUOTA-IMPL：有余额口径时展示（0 显示「额度内」，避免被误读成欠费） */}
+                  {item.status === 'ok' && item.balance !== null && (
+                    <p data-testid={`quota-balance-${item.source}`} className="mt-1 text-neutral-800 dark:text-neutral-200">
+                      {item.balance === 0 ? <span className="text-[11px] text-neutral-500 dark:text-neutral-400">额度内</span> : amount}
+                      {item.balance !== 0 && item.unit && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">{item.unit}</span>}
+                    </p>
+                  )}
 
                   {item.status === 'ok' && windows.length > 0 && (
                     <ul data-testid={`quota-windows-${item.source}`} className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">

@@ -177,3 +177,35 @@ describe('额度卡（ACC-QUOTA-01）', () => {
 });
 
 
+
+describe('Codex 本地额度（ACC-CODEX-QUOTA-IMPL）', () => {
+  it('两行窗口 + 余额为 0 时显示「额度内」而不是 0', async () => {
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null,
+      fetched_at: Date.now(),
+      items: [
+        item({ source: 'deepseek', status: 'ok', balance: 751.81, unit: 'CNY', windows: [] }),
+        item({ source: 'opencode_go', status: 'ok', balance: null, unit: '%', windows: [{ name: 'rolling', remaining: 50, used_percent: 50, reset_at: null }] }),
+        item({
+          source: 'codex', status: 'ok', balance: 0, unit: 'USD', detail: '额度内',
+          windows: [
+            { name: '5h', remaining: 98, used_percent: 2, reset_at: Date.now() + 3600_000 },
+            { name: 'weekly', remaining: 23, used_percent: 77, reset_at: Date.now() + 7 * 86400_000 },
+          ],
+        }),
+      ],
+    })));
+    renderCards();
+
+    const codex = await screen.findByTestId('quota-card-codex');
+    expect(within(codex).getByTestId('quota-balance-codex')).toHaveTextContent('额度内');
+    expect(within(codex).getByTestId('quota-balance-codex').textContent ?? '').not.toMatch(/\$0/);
+    expect(within(codex).getAllByTestId(/quota-window-codex-/)).toHaveLength(2);
+    expect(within(codex).getByTestId('quota-window-codex-0')).toHaveTextContent('5-hour window');
+    expect(within(codex).getByTestId('quota-window-codex-1')).toHaveTextContent('Weekly');
+    expect(within(codex).getByTestId('quota-window-used-codex-0')).toHaveTextContent('2% used');
+    expect(within(codex).getByTestId('quota-bar-codex-1')).toHaveAttribute('data-width', '77');
+    // 「额度内」不再作为琥珀色 detail 重复出现
+    expect(codex.textContent?.match(/额度内/g)?.length).toBe(1);
+  });
+});
