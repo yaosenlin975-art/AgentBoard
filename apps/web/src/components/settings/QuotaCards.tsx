@@ -101,6 +101,31 @@ export function quotaAmountText(item: QuotaItem): string | null {
   return symbol ? `${symbol}${amount}` : `${amount}${item.unit ? ` ${item.unit}` : ''}`;
 }
 
+/** 窗口名 → 参考图用词（rolling/5h → 5-hour window） */
+export function quotaWindowTitle(name: string): string {
+  if (name === 'rolling' || name === '5h') return '5-hour window';
+  if (name === 'weekly') return 'Weekly';
+  if (name === 'monthly') return 'Monthly';
+  return name;
+}
+
+/** 「Resets in Xd Yh / Xh Ym」：向下取整到分钟；无重置时刻或已过期 → `Resets soon` */
+export function formatResets(resetAt: number | null, nowMs: number): string {
+  if (resetAt === null) return 'Resets soon';
+  const diff = resetAt - nowMs;
+  if (diff <= 0) return 'Resets soon';
+  const totalMinutes = Math.floor(diff / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  return days > 0 ? `Resets in ${days}d ${hours}h` : `Resets in ${hours}h ${minutes}m`;
+}
+
+/** 进度条宽度：已用百分比截断到 0–100（缺省 0） */
+export function windowBarWidth(usedPercent: number | null | undefined): number {
+  if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return 0;
+  return Math.min(100, Math.max(0, usedPercent));
+}
 export function QuotaCards() {
   const query = useQuery({
     queryKey: ['managed-account-quotas'],
@@ -109,8 +134,21 @@ export function QuotaCards() {
   });
   const now = Date.now();
 
+  const reasonOf = (item: QuotaItem): { text: string | null; technical: string | null } => {
+    const mapped = item.reason_code !== null ? QUOTA_REASON_LABEL[item.reason_code] ?? null : null;
+    return {
+      text: mapped ?? (item.status === 'ok' ? null : item.detail ?? QUOTA_UNKNOWN_REASON_LABEL),
+      technical: item.status !== 'ok' && mapped === null ? reasonTechnicalCode(item.reason_code) : null,
+    };
+  };
+
+  /** Codex 只有 5-hour 与 Weekly（参考图定版）；其它来源显示全部窗口 */
+  const windowsOf = (item: QuotaItem): QuotaWindow[] => (
+    item.source === 'codex' ? item.windows.filter((window) => quotaWindowTitle(window.name) !== 'Monthly') : item.windows
+  );
+
   return (
-    <div data-testid="quota-cards" className="mb-2 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
+    <div data-testid="quota-cards" className="mb-1 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
       <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
         <h4 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">额度与余额</h4>
         {query.data && (
@@ -128,59 +166,28 @@ export function QuotaCards() {
       )}
 
       {query.data && (
-        <div className="grid gap-2 sm:grid-cols-3">
-          {query.data.items.map((item) => {
+        <>
+          {/* D3：DeepSeek 压成一行（label + 状态 + 金额/原因），不再单独占一张卡 */}
+          {query.data.items.filter((item) => item.source === 'deepseek').map((item) => {
             const amount = quotaAmountText(item);
-            const mapped = item.reason_code !== null ? QUOTA_REASON_LABEL[item.reason_code] ?? null : null;
-            const reasonText = mapped ?? (item.status === 'ok' ? null : item.detail ?? QUOTA_UNKNOWN_REASON_LABEL);
-            const technical = item.status !== 'ok' && mapped === null ? reasonTechnicalCode(item.reason_code) : null;
+            const { text, technical } = reasonOf(item);
             return (
-              <div key={item.source} data-testid={`quota-card-${item.source}`} className="rounded-lg border border-neutral-200 p-2 text-xs dark:border-neutral-800">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
-                  <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
-                </div>
-
-                {item.status === 'ok' && (
-                  <>
-                    <p data-testid={`quota-balance-${item.source}`} className="mt-1 text-neutral-800 dark:text-neutral-200">
-                      {amount ?? '—'}
-                      {item.unit && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">{item.unit}</span>}
-                    </p>
-                    {item.detail !== null && <p className="mt-0.5 text-amber-600 dark:text-amber-400">{item.detail}</p>}
-                    {item.windows.length > 0 && (
-                      <ul className="mt-1 space-y-0.5">
-                        {item.windows.map((window, index) => (
-                          <li key={`${item.source}-${window.name}-${index}`} data-testid={`quota-window-${item.source}-${index}`} className="text-neutral-600 dark:text-neutral-400">
-                            {WINDOW_LABEL[window.name] ?? window.name}：剩余 {window.remaining}
-                            {typeof window.used_percent === 'number' && `%（已用 ${window.used_percent}%`}
-                            {typeof window.used_percent === 'number' && window.reset_at !== null && (
-                              <span data-testid={`quota-reset-${item.source}-${index}`}>
-                                ，重置 {formatResetClock(window.reset_at)}，还剩 {formatRemaining(window.reset_at, now)}）
-                              </span>
-                            )}
-                            {typeof window.used_percent === 'number' && window.reset_at === null && '）'}
-                            {typeof window.used_percent !== 'number' && window.reset_at !== null && (
-                              <span data-testid={`quota-reset-${item.source}-${index}`} className="ml-1">
-                                （重置 {formatResetClock(window.reset_at)}，还剩 {formatRemaining(window.reset_at, now)}）
-                              </span>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </>
+              <div key={item.source} data-testid={`quota-card-${item.source}`} data-layout="inline" className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
+                <span className="font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
+                <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
+                {item.status === 'ok' ? (
+                  <span data-testid={`quota-balance-${item.source}`} className="tabular-nums text-neutral-800 dark:text-neutral-200">
+                    {amount ?? '—'}
+                    {item.unit && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">{item.unit}</span>}
+                  </span>
+                ) : (
+                  <span data-testid={`quota-reason-${item.source}`} className="text-neutral-600 dark:text-neutral-400">{text}</span>
                 )}
-
-                {item.status !== 'ok' && (
-                  <p data-testid={`quota-reason-${item.source}`} className="mt-1 text-neutral-600 dark:text-neutral-400">
-                    {reasonText}
-                    {item.detail !== null && item.detail !== reasonText && <span className="ml-1 text-neutral-500 dark:text-neutral-500">{item.detail}</span>}
-                  </p>
+                {item.status !== 'ok' && item.detail !== null && item.detail !== text && (
+                  <span className="text-neutral-500 dark:text-neutral-500">{item.detail}</span>
                 )}
-
                 {technical !== null && (
-                  <details data-testid={`quota-code-${item.source}`} className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <details data-testid={`quota-code-${item.source}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
                     <summary className="cursor-pointer select-none">技术码</summary>
                     <code className="font-mono">{technical}</code>
                   </details>
@@ -188,7 +195,66 @@ export function QuotaCards() {
               </div>
             );
           })}
-        </div>
+
+          {/* opencode-go / Codex：参考图版式（每窗口一行 + 进度条；窗口间 1px 分隔线；整块一张卡） */}
+          <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+            {query.data.items.filter((item) => item.source !== 'deepseek').map((item) => {
+              const windows = windowsOf(item);
+              const { text, technical } = reasonOf(item);
+              return (
+                <div key={item.source} data-testid={`quota-card-${item.source}`} className="rounded-lg border border-neutral-200 p-2 text-xs dark:border-neutral-800">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
+                    <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
+                    {item.status === 'ok' && item.detail !== null && <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{item.detail}</span>}
+                  </div>
+
+                  {item.status === 'ok' && windows.length > 0 && (
+                    <ul data-testid={`quota-windows-${item.source}`} className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
+                      {windows.map((window, index) => {
+                        const limited = window.name === 'limited' || (window.used_percent ?? 0) >= 100;
+                        const pct = windowBarWidth(window.used_percent);
+                        return (
+                          <li key={`${item.source}-${window.name}-${index}`} data-testid={`quota-window-${item.source}-${index}`} className="py-1.5 first:pt-0 last:pb-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span className="min-w-[5.5rem] text-neutral-800 dark:text-neutral-200">{quotaWindowTitle(window.name)}</span>
+                              <span
+                                data-testid={`quota-window-used-${item.source}-${index}`}
+                                className={`rounded-full px-1.5 py-0.5 text-[11px] tabular-nums ${limited ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300' : 'bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'}`}
+                              >
+                                {limited ? '已限额' : `${Math.round(window.used_percent ?? 0)}% used`}
+                              </span>
+                              <span data-testid={`quota-reset-${item.source}-${index}`} className="ml-auto tabular-nums text-[11px] text-neutral-500 dark:text-neutral-400">
+                                {formatResets(window.reset_at, now)}
+                              </span>
+                            </div>
+                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
+                              <div data-testid={`quota-bar-${item.source}-${index}`} data-width={pct} style={{ width: `${pct}%` }} className={`h-full rounded-full ${limited ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+
+                  {item.status !== 'ok' && (
+                    <p data-testid={`quota-reason-${item.source}`} className="mt-1 text-neutral-600 dark:text-neutral-400">
+                      {text}
+                      {item.detail !== null && item.detail !== text && <span className="ml-1 text-neutral-500 dark:text-neutral-500">{item.detail}</span>}
+                    </p>
+                  )}
+
+                  {technical !== null && (
+                    <details data-testid={`quota-code-${item.source}`} className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                      <summary className="cursor-pointer select-none">技术码</summary>
+                      <code className="font-mono">{technical}</code>
+                    </details>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
@@ -197,4 +263,3 @@ export function QuotaCards() {
     </div>
   );
 }
-

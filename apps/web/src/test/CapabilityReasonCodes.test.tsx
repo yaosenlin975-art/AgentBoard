@@ -91,10 +91,12 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     renderPanel();
 
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
-    expect(within(wb).getByText('切换可用')).toBeInTheDocument();
+    // ACC-UI-01 D2：能力改用三图标徽标，不再有「切换可用」这类文字徽章（原因码只进 tooltip/details）
+    expect(within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch')).toHaveAttribute('data-state', 'available');
+    expect(within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch')).toHaveTextContent('✓');
     expect(wb.textContent).not.toContain('不可用');
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeEnabled();
-    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('批量签到');
+    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('仅此平台签到');
   });
 
   it('旧结构兜底：缺少分维度字段时按顶层 reason_code 补齐，不把签到码当成捕获/切换原因', () => {

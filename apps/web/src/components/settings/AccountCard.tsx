@@ -84,7 +84,7 @@ export function AccountCard({
   const participation = checkinParticipation(account, capability);
 
   return (
-    <div data-testid={`accounts-card-${account.id}`} className="rounded-lg border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
+    <div data-testid={`accounts-card-${account.id}`} className="py-2">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="min-w-0 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{account.display_name}</span>
         {/* 客户端当前：桌面客户端里现在登录的是谁 */}
