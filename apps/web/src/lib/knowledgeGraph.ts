@@ -650,27 +650,40 @@ export interface HighlightSet {
 export const MAX_FOCUS_HOPS = 2;
 
 /**
- * N 跳邻居（含自身）：BFS，depth 先夹到 [1, MAX_FOCUS_HOPS]。
- * 返回节点 id 集合；focusId 不在图中时只返回自身。
+ * 无向 BFS 的跳数表（id → 跳数，起点 0）：**唯一**一份邻接扩展实现，
+ * 供 `neighborsWithin`（hover/聚焦高亮）与 `lib/localGraph` 的局部图共用。
  */
-export function neighborsWithin(graph: GraphPayload, focusId: string, hops = 1): Set<string> {
-  const depth = Math.min(MAX_FOCUS_HOPS, Math.max(1, Math.floor(hops)));
-  const adjacency = buildAdjacency(graph.edges);
-  const found = new Set<string>([focusId]);
-  let frontier = [focusId];
-  for (let step = 0; step < depth; step += 1) {
+export function bfsDepths(
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+  startId: string,
+  hops: number,
+): Map<string, number> {
+  // 跳数由调用方决定上下界：聚焦高亮夹到 MAX_FOCUS_HOPS，局部图放行到 5 跳
+  const depth = Math.max(1, Math.floor(hops));
+  const found = new Map<string, number>([[startId, 0]]);
+  let frontier = [startId];
+  for (let step = 1; step <= depth; step += 1) {
     const next: string[] = [];
     for (const id of frontier) {
-      for (const neighbor of adjacency.get(id) ?? []) {
-        if (found.has(neighbor)) continue;
-        found.add(neighbor);
-        next.push(neighbor);
+      for (const neighbour of adjacency.get(id) ?? []) {
+        if (found.has(neighbour)) continue;
+        found.set(neighbour, step);
+        next.push(neighbour);
       }
     }
     if (next.length === 0) break;
     frontier = next;
   }
   return found;
+}
+
+/**
+ * N 跳邻居（含自身）：BFS，depth 先夹到 [1, MAX_FOCUS_HOPS]。
+ * 返回节点 id 集合；focusId 不在图中时只返回自身。
+ */
+export function neighborsWithin(graph: GraphPayload, focusId: string, hops = 1): Set<string> {
+  const depth = Math.min(MAX_FOCUS_HOPS, Math.max(1, Math.floor(hops)));
+  return new Set(bfsDepths(buildAdjacency(graph.edges), focusId, depth).keys());
 }
 
 /**

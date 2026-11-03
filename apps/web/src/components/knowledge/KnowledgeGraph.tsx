@@ -23,6 +23,8 @@ import {
 } from '../../lib/knowledgeGraph';
 import { textAlpha } from '../../lib/graphVisualFormulas';
 import { createForceLayoutClient, type ForceLayoutClient } from '../../lib/forceLayoutClient';
+import { localGraphSlice } from '../../lib/localGraph';
+import { FORCE_SLIDER_DEFAULTS, GraphControls, type ForceSliders } from './GraphControls';
 import type { PixiGraphData, PixiGraphHandle } from './pixiGraph';
 
 export interface GraphNodeTarget {
@@ -146,6 +148,14 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [onlyMatches, setOnlyMatches] = useState(false);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [focusHops, setFocusHops] = useState<1 | 2>(1);
+  // KB-GRAPH-P4：局部图（C10）+ 控件面板（B2）
+  const [localMode, setLocalMode] = useState(false);
+  const [localJumps, setLocalJumps] = useState(1);
+  const [forelinks, setForelinks] = useState(true);
+  const [backlinks, setBacklinks] = useState(true);
+  const [interlinks, setInterlinks] = useState(true);
+  const [hideOrphans, setHideOrphans] = useState(false);
+  const [forces, setForces] = useState<ForceSliders>(FORCE_SLIDER_DEFAULTS);
 
   const graph = useMemo(() => {
     if (fullGraph === null) return null;
@@ -162,8 +172,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
         : filterGraphForView(graph, { focusId, hops: focusHops, matches, onlyMatches: activeOnlyMatches }),
     [graph, focusId, focusHops, matches, activeOnlyMatches],
   );
-  /** 实际渲染的图（聚焦/只看命中时会比 graph 小） */
-  const shown = viewFilter.graph;
+  /** 局部图（C10）：中心 = 聚焦节点，逐跳 BFS + 权重，只影响半径 */
+  const local = useMemo(
+    () =>
+      localMode && focusId !== null && graph !== null
+        ? localGraphSlice(graph, { centerId: focusId, jumps: localJumps, forelinks, backlinks, interlinks, hideOrphans })
+        : null,
+    [localMode, focusId, graph, localJumps, forelinks, backlinks, interlinks, hideOrphans],
+  );
+  /** 实际渲染的图（局部图 > 聚焦/只看命中过滤） */
+  const shown = local?.graph ?? viewFilter.graph;
   const stats = shown === null ? null : graphStats(shown);
   // 布局（KB-GRAPH-P3）：首次用既有自研力学出初始坐标，之后走 D6 差量 + 力导向 tick（Worker，收敛即停）
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(() => new Map());
@@ -230,7 +248,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     if (!showStage || shown === null) return null;
     const adjacency = buildAdjacency(shown.edges);
     return {
-      nodes: shown.nodes.map((node) => ({ id: node.id, title: node.title, weight: adjacency.get(node.id)?.size ?? 0 })),
+      nodes: shown.nodes.map((node) => ({
+        id: node.id,
+        title: node.title,
+        weight: local?.weights.get(node.id) ?? adjacency.get(node.id)?.size ?? 0,
+      })),
       edges: shown.edges.map((edge) => ({
         key: edge.key,
         source: edge.source,
@@ -241,7 +263,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       positions,
       highlight,
     };
-  }, [showStage, shown, positions, highlight]);
+  }, [showStage, shown, positions, highlight, local]);
 
   const pick = useCallback(
     (node: GraphNode): void => {
@@ -336,6 +358,14 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     if (renderer !== 'webgl') return;
     handleRef.current?.refreshColors();
   }, [renderer, dark]);
+
+  useEffect(() => {
+    layoutClientRef.current?.applyForces(forces);
+  }, [forces]);
+
+  useEffect(() => {
+    handleRef.current?.resetView();
+  }, [localMode, localJumps, focusId]);
 
   const zoomBy = (factor: number): void => {
     handleRef.current?.zoomBy(factor);
@@ -516,6 +546,33 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
               renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
             }`}
           />
+          <GraphControls
+            localMode={localMode}
+            localJumps={localJumps}
+            forelinks={forelinks}
+            backlinks={backlinks}
+            interlinks={interlinks}
+            hideOrphans={hideOrphans}
+            showIsolated={showIsolated}
+            forces={forces}
+            onLocalMode={setLocalMode}
+            onLocalJumps={setLocalJumps}
+            onForelinks={setForelinks}
+            onBacklinks={setBacklinks}
+            onInterlinks={setInterlinks}
+            onHideOrphans={setHideOrphans}
+            onShowIsolated={setShowIsolated}
+            onForces={(patch) => setForces((prev) => ({ ...prev, ...patch }))}
+            onReset={() => {
+              setForces(FORCE_SLIDER_DEFAULTS);
+              setLocalJumps(1);
+              setForelinks(true);
+              setBacklinks(true);
+              setInterlinks(true);
+              setHideOrphans(false);
+            }}
+          />
+
           {menu !== null && (
             <div
               data-testid="graph-context-menu"

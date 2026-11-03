@@ -37,6 +37,8 @@ export interface ForceLayoutClientOptions {
 
 export interface ForceLayoutClient {
   apply(graph: LayoutGraph, initialPositions: ReadonlyMap<string, { x: number; y: number }>): ApplyResult;
+  /** 控件面板滑杆：改力参数并重新激活一次布局（文档：只有力/结构变化才重跑） */
+  applyForces(patch: { centerStrength?: number; linkStrength?: number; linkDistance?: number; repelStrength?: number }): void;
   /** 当前是否还有 tick 在跑 */
   running(): boolean;
   stop(): void;
@@ -152,6 +154,16 @@ export function createForceLayoutClient(options: ForceLayoutClientOptions): Forc
         seeded: result.seeded,
         positions: merged,
       };
+    },
+    applyForces(patch) {
+      if (worker !== null) {
+        worker.postMessage({ forces: patch, alpha: FORCE_SIM_DEFAULTS.alphaInitial, run: true });
+      } else {
+        sim.ingest({ forces: patch, alpha: FORCE_SIM_DEFAULTS.alphaInitial, run: true });
+        running = true;
+        tickCount = 0;
+        scheduler(runInlineTick);
+      }
     },
     running: () => running,
     ticks: () => tickCount,

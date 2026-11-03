@@ -237,6 +237,9 @@
   --kb-graph-line: #d4d4d4;
   --kb-graph-text: #222222;
   --kb-graph-highlight: #9873f7;
+  --kb-graph-menu-bg: #ffffff;
+  --kb-graph-menu-border: #d4d4d4;
+  --kb-graph-menu-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
 }
 .dark {
   --kb-graph-node: #b3b3b3;
@@ -247,6 +250,9 @@
   --kb-graph-line: #3f3f3f;
   --kb-graph-text: #dadada;
   --kb-graph-highlight: #8a5cf5;
+  --kb-graph-menu-bg: #262626;
+  --kb-graph-menu-border: #3f3f3f;
+  --kb-graph-menu-shadow: 0 2px 8px rgb(0 0 0 / 0.5);
 }
 
 .graph-view.color-fill {
@@ -285,3 +291,30 @@
   color: var(--kb-graph-highlight);
 }
 
+
+/*
+ * 星图控件面板（KB-GRAPH-P4，文档 B.2）：240px、右上角、可滚动且隐藏滚动条。
+ * 颜色/边框/阴影全部走 --kb-graph-menu-* 变量（亮/暗两套），组件里不写死色值。
+ */
+.ab-graph-controls {
+  position: absolute;
+  inset-inline-end: 0.75rem;
+  top: 0.75rem;
+  z-index: 10;
+  width: 240px;
+  max-height: calc(100% - 1.5rem);
+  overflow: auto;
+  border-radius: 8px;
+  background-color: var(--kb-graph-menu-bg);
+  border: 1px solid var(--kb-graph-menu-border);
+  box-shadow: var(--kb-graph-menu-shadow);
+  scrollbar-width: none;
+}
+.ab-graph-controls::-webkit-scrollbar,
+.ab-graph-controls::-webkit-scrollbar-thumb {
+  display: none;
+}
+.ab-graph-controls.is-close {
+  width: auto;
+  padding: 0.25rem;
+}

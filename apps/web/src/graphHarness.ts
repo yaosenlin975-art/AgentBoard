@@ -7,6 +7,7 @@
 import './index.css';
 import { createPixiGraph, type PixiGraphEdge, type PixiGraphNode } from './components/knowledge/pixiGraph';
 import { ForceSimulation, diffGraphData } from './lib/forceLayout';
+import { localGraphSlice } from './lib/localGraph';
 
 const host = document.getElementById('stage') as HTMLDivElement;
 const CENTER = { x: 450, y: 300 };
@@ -170,4 +171,27 @@ const ring = (count: number): Array<[string, string]> => {
   setData,
   ring,
   ids: (count: number) => Array.from({ length: count }, (_, i) => `n${i}`),
+};
+
+
+// ── KB-GRAPH-P4：局部图逐跳核算（CDP 用）──
+(globalThis as unknown as { __p4: unknown }).__p4 = {
+  local(jumps: number, options: { center?: string; forelinks?: boolean; backlinks?: boolean; interlinks?: boolean; hideOrphans?: boolean } = {}) {
+    const payload = {
+      nodes: prevIds.map((id) => ({ id, title: id, scope: 'workspace' as const, workspace_id: null, revision: 1, degree: 0 })),
+      edges: prevLinks.map(([source, target]) => ({ key: `${source}-${target}`, source, target, kind: 'source' as const, weight: 3 })),
+      truncated: false,
+      truncated_reason: null,
+      pages_truncated: false,
+      node_total: prevIds.length,
+      edge_total: prevLinks.length,
+    };
+    const slice = localGraphSlice(payload, { centerId: options.center ?? prevIds[0]!, jumps, ...options });
+    return {
+      center: options.center ?? prevIds[0],
+      ids: slice.graph.nodes.map((node) => node.id),
+      weights: Object.fromEntries([...slice.weights].map(([id, weight]) => [id, Number(weight.toFixed(3))])),
+      edgeCount: slice.graph.edges.length,
+    };
+  },
 };
