@@ -6,6 +6,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { ApiError } from '../errors.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
 import { updateIssueInHierarchy } from './taskHierarchy.js';
+import { blockedClaimMessage, unresolvedBlockers } from './dependency.js';
 
 export function requireIssueInWorkspace(db: Db, issueId: string, workspaceId: string): Issue {
   const issue = getIssue(db, issueId, workspaceId);
@@ -51,9 +52,12 @@ export interface ClaimActionResult {
  * 原子领取：并发领取仅一个成功；允许从"进行中"领取（覆盖用户手动拖到进行中后再派发）。
  * sessionId 传 null 即 REST/kb 的纯占用登记（不绑会话，评论不触发唤醒）。
  * 留言游标同步置为领取前最新评论；有未验证图片时停在首条图片评论之前，保持图片及其后续评论待读。
+ * DEP-1 依赖门禁：前置未解除 → 409（守卫在同一个 IMMEDIATE 事务内，与占用更新原子）；`done`/`fail`/`release` 不受依赖影响。
  */
 export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: string | null): Issue {
   return db.transaction(() => {
+    const blockers = unresolvedBlockers(db, issueId);
+    if (blockers.length > 0) throw new ConflictError(blockedClaimMessage(blockers));
     const now = Date.now();
     const firstImage = db.prepare(`SELECT c.id,c.ts FROM issue_comment c
       JOIN comment_attachment ca ON ca.comment_id=c.id

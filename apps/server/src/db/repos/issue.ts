@@ -4,6 +4,7 @@ import type { Db } from '../connection.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../../errors.js';
 import type { PageResult, TaskPreview } from '@agentboard/shared';
 import { pageResult, textWindow, validatePage } from '../pagination.js';
+import { blockedByAggregateJoin, dependencyCountsFrom } from '../../services/dependency.js';
 
 interface IssueRow {
   id: string;
@@ -22,12 +23,19 @@ interface IssueRow {
   last_seen_comment_id: string | null;
   /** 评论总数（查询列，非落库列） */
   comment_count: number;
+  /** 前置卡数（查询期聚合，非落库列） */
+  blocked_by_count: number | null;
+  /** 未解除的前置卡数（查询期聚合，非落库列） */
+  blocked_by_open_count: number | null;
   created_at: number;
   updated_at: number;
 }
 
 const COMMENT_COUNT_COLUMN =
   '(SELECT COUNT(*) FROM issue_comment c WHERE c.issue_id = i.id) AS comment_count';
+/** GET /issues 与树/分页共用：一条预聚合 LEFT JOIN 供全部行，不做 N+1 */
+const DEPENDENCY_JOIN = blockedByAggregateJoin();
+const DEPENDENCY_COLUMNS = 'dep.blocked_by_count, dep.blocked_by_open_count';
 
 function rowToIssue(row: IssueRow): Issue {
   return {
@@ -44,6 +52,7 @@ function rowToIssue(row: IssueRow): Issue {
     session_id: row.session_id,
     parent_issue_id: row.parent_issue_id,
     comment_count: row.comment_count,
+    ...dependencyCountsFrom(row),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -83,7 +92,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
 
 export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null {
   const row = db
-    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN} FROM issue i WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
+    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
     .get(...(workspaceId ? [id, workspaceId] : [id])) as IssueRow | undefined;
   return row ? rowToIssue(row) : null;
 }
@@ -91,7 +100,7 @@ export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null
 export function listIssues(db: Db, workspaceId: string): Issue[] {
   const rows = db
     .prepare(
-      `SELECT i.*, ${COMMENT_COUNT_COLUMN} FROM issue i
+      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
        WHERE i.workspace_id = ? ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(workspaceId) as IssueRow[];
@@ -102,7 +111,7 @@ export function listIssuesPage(db: Db, workspaceId: string, input: { limit: numb
   const params: unknown[] = [workspaceId];
   if (input.status) params.push(input.status);
   params.push(input.limit + 1, input.offset);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN} FROM issue i WHERE workspace_id=?${input.status ? ' AND status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
   return pageResult(rows.map(row => {
     const issue = rowToIssue(row); const window = textWindow(issue.description);
     return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
@@ -247,9 +256,9 @@ export function listIssueTreePage(
     params.push(cursor.sort_order, cursor.sort_order, cursor.created_at, cursor.created_at, cursor.id);
   }
   params.push(input.limit + 1);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},
       (SELECT COUNT(*) FROM issue child WHERE child.parent_issue_id=i.id) AS child_count
-    FROM issue i WHERE ${filters.join(' AND ')} ORDER BY i.sort_order,i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
+    FROM issue i ${DEPENDENCY_JOIN} WHERE ${filters.join(' AND ')} ORDER BY i.sort_order,i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
   const hasMore = rows.length > input.limit;
   const visibleRows = hasMore ? rows.slice(0, input.limit) : rows;
   const stats = descendantStats(db, visibleRows.map((row) => row.id));

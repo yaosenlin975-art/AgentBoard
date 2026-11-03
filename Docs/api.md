@@ -28,7 +28,7 @@
 | 对象 | 字段 |
 | --- | --- |
 | Workspace | `id, name, path, created_at` |
-| Issue | `id, workspace_id, title, description, priority, labels: string[], status, sort_order: int, claimed_by: string\|null, claimed_at: number\|null, session_id: string\|null, comment_count: int, created_at, updated_at`；`comment_count` 查询时由 issue_comment 计数，非落库列 |
+| Issue | `id, workspace_id, title, description, priority, labels: string[], status, sort_order: int, claimed_by: string\|null, claimed_at: number\|null, session_id: string\|null, comment_count: int, blocked_by_count: int, blocked_by_open_count: int, resolved: boolean, created_at, updated_at`；`comment_count` 查询时由 issue_comment 计数，`blocked_by_count`/`blocked_by_open_count` 由 issue_dependency 单次预聚合、`resolved` 由 `isBlockerResolved` 推出（无前置时 0/0/true），三者都不是落库列（`issue.ts:29-40`、`dependency.ts:86-105`） |
 | IssueComment | `id, issue_id, author, content, ts, attachments?: AttachmentMetadata[]`；author 取值 `'user' \| 'agent:<id>' \| 'system'` |
 | AttachmentMetadata | `id, file_name, mime_type: 'image/png'\|'image/jpeg'\|'image/webp', size_bytes, url`；不包含服务器存储路径 |
 | Session | `id, workspace_id, issue_id: string\|null, cli, model: string\|null, status, adapter_session_id: string\|null, created_at`；运行时合并字段 `queued_count?: int`（内存队列中待合并消息数）、`waiting_slot?: boolean`（当前轮在等全局并发槽位）——不入库，仅 GET /api/sessions 与 GET /api/sessions/:id 返回时由 sessionManager 内存态合并（`routes.ts:418-435`）；WS `session.changed` 不携带 |
@@ -77,7 +77,19 @@
 | `POST /api/issues`（幂等） | body：`workspace_id: string`、`title: string 非空`、`description?: string`、`priority?: '低'\|'中'\|'高'`（缺省 中）、`labels?: string[]`（缺省 []） | `Issue`（status=待规划、sort_order=0）；WS issue.changed | 400 校验失败；404 工作空间不存在 | routes.ts:268 |
 | `GET /api/issues/:id` | query：`description_offset_chars?` `description_max_chars?` | `Issue`；带窗口参数时 description 为窗口内容并附 `description_truncated` `next_description_offset_chars` | 404 任务不存在（归属不匹配同为 404） | routes.ts:276 |
 | `PATCH /api/issues/:id`（幂等） | body：`title? description? priority? labels? status? sort_order?: int`（至少一个）；`workspace_id?`；`expected_updated_at?: int ≥0`（CAS，须同时提供 workspace_id） | `Issue`（`updated_at` 单调递增：`MAX(now, 旧值+1)`，`issue.ts:145` + `schema.ts:42` 触发器，CAS 调用方依赖）；WS issue.changed | 400 未提供更新字段 / CAS 缺 workspace_id / 参数非法；404 任务不存在；409 `CONFLICT` 占用中禁改 status；409 `TASK_REVISION_CONFLICT` CAS 过期（details `current_updated_at`） | routes.ts:284 |
-| `DELETE /api/issues/:id` | — | 204；先停各绑定会话在途轮次，再同事务级联删除消息+会话+任务；WS issue.deleted + 每会话 session.deleted | 404 任务不存在；409 `CONFLICT` 占用中禁止删除；含子任务时 409 `CONFLICT`（子任务先处理） | routes.ts:447；CLI `kb delete-issue <id> --yes`（缺 `--yes` 只打印标题/状态、非 0 退出、不发请求）；MCP `agentboard_delete_task` |
+| `DELETE /api/issues/:id` | — | 204；先停各绑定会话在途轮次，再同事务级联删除消息+会话+任务；同事务内对每个被本卡阻塞的卡追加 system 评论「前置 X(short id) 已删除，依赖自动解除」；WS issue.deleted + 每会话 session.deleted + 每条解锁评论 comment.added | 404 任务不存在；409 `CONFLICT` 占用中禁止删除；含子任务时 409 `CONFLICT`（子任务先处理） | routes.ts:447；CLI `kb delete-issue <id> --yes`（缺 `--yes` 只打印标题/状态、非 0 退出、不发请求）；MCP `agentboard_delete_task` |
+
+### 依赖（DEP-1，`services/dependency.ts`）
+
+边方向：`blocked_issue_id` ← `blocker_issue_id`（blocker 完成后 blocked 才可开工）。解除判定唯一口径：blocker 状态 ∈ {`待验收`, `已关闭`}；`resolved` 由服务端算好，消费端不再判断。写通道强制 `workspace_id`（POST 走 body、DELETE 走 query，缺省 400），用 `requireIssueInWorkspace` 校验，不按 issue 自身工作区放行。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `GET /api/issues/:id/dependencies` | query：`workspace_id`（必填） | `{ blockers: DependencyRef[], blocked: DependencyRef[] }`，`DependencyRef = { issue_id, title, status, resolved }` | 400 缺 `workspace_id`；404 `TASK_NOT_FOUND` | routes.ts |
+| `POST /api/issues/:id/dependencies`（幂等） | body：`workspace_id: string`、`blocker_issue_id: string` | 201 `{ blockers, blocked }`；WS issue.changed（被阻塞卡与前置卡各一条） | 400 缺 `workspace_id` / `DEPENDENCY_SELF` 自环 / `CROSS_WORKSPACE_DEPENDENCY` 跨区；404 `TASK_NOT_FOUND` / `NOT_FOUND`（blocker 不存在）；409 `DEPENDENCY_EXISTS` 重复 / `DEPENDENCY_CYCLE` 成环 / `ISSUE_CLAIMED` 被阻塞卡已占用须先 release | routes.ts |
+| `DELETE /api/issues/:id/dependencies/:blockerId` | query：`workspace_id`（必填） | 204；WS issue.changed | 400 缺 `workspace_id`；404 `TASK_NOT_FOUND` / `NOT_FOUND`（边不存在） | routes.ts |
+
+约束：同工作区与防环由服务层先判错误码，表上另有 `BEFORE INSERT` 触发器兜底（直接写库绕不过）；自环由 `CHECK` + 服务层 400 负责；单卡前置上限 50（`MAX_DEPENDENCY_EDGES`）。`claimed_by IS NOT NULL` 的卡不得新增前置（409 `ISSUE_CLAIMED`，含"进行中但已释放"除外）。`done`/`fail`/`release` 不受依赖影响。
 
 ## 7. comments
 
@@ -104,7 +116,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `POST /api/issues/:id/claim` | body：`agent_id: string 非空`、`knowledge_enabled?: boolean`（默认 true）、`knowledge_query?: string 1-500` | `{ ...issue, knowledge }`。原子占用（status→进行中、session_id=null 纯登记不建会话；仅未占用且 status∈{待规划,进行中} 可领取），并发领取仅一个成功；留言游标置为领取前最新评论；存在未验证图片时停在首条图片评论之前 | 400 agent_id 为空；409 `CONFLICT` 已被占用或 status∉{待规划,进行中}；404 `TASK_NOT_FOUND`（带 workspace_id 且任务缺失/不归属） | routes.ts |
+| `POST /api/issues/:id/claim` | body：`agent_id: string 非空`、`knowledge_enabled?: boolean`（默认 true）、`knowledge_query?: string 1-500` | `{ ...issue, knowledge }`。原子占用（status→进行中、session_id=null 纯登记不建会话；仅未占用且 status∈{待规划,进行中} 可领取），并发领取仅一个成功；留言游标置为领取前最新评论；存在未验证图片时停在首条图片评论之前。**依赖门禁（DEP-1）**：前置未解除时 409，文案 `存在未完成的前置任务：<title>(<short id>)…；完成后可领取`，守卫与占用更新在同一 IMMEDIATE 事务内；`services/dispatch.ts` 派发路径同样被拦 | 400 agent_id 为空；409 `CONFLICT` 已被占用 / status∉{待规划,进行中} / 前置未解除；404 `TASK_NOT_FOUND`（带 workspace_id 且任务缺失/不归属） | routes.ts |
 | `POST /api/issues/:id/release` | 不带 workspace_id：无需 body（用户强制释放）；带 workspace_id：body `agent_id: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用。不带 workspace_id：comment author=`system` 内容「用户强制释放」、任何状态可释放；带 workspace_id：comment author=`agent:<agent_id>` 内容「占用者释放任务」 | 不带 workspace_id：404 任务不存在。带 workspace_id：404 `TASK_NOT_FOUND`；409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id | routes.ts:398 |
 | `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`（空串等价不写评论）、`scope_paths?: string[]`（最多 200 项，提交范围声明：文件路径或目录前缀） | `{ ...issue, comment }`。状态→待验收、清空占用；notes 非空时落评论（author=`agent:<agent_id>`），否则 comment=null。GIT-ON-DONE 提交范围：同 workspace 有其它「进行中且被占用」任务时，只提交 `scope_paths` 命中的路径，其余路径不提交并以 system 评论列出清单；未声明则整批不提交（同样列清单）；无并行占用时按 claim 基线 diff 提交（详见 `gitBaseline.ts` 头注释） | 400 agent_id 为空；400 `scope_paths` 超限或空串。不带 workspace_id：404 任务不存在、409 `CONFLICT` 未被占用、409 `NOT_TASK_OWNER` 仅当 agent_id≠'user' 且≠占用者。带 workspace_id：404 `TASK_NOT_FOUND`、409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id（'user' 不豁免） | routes.ts:399 |
 | `POST /api/issues/:id/fail` | body：`agent_id: string 非空`、`reason: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用；reason 落评论（author=`agent:<agent_id>`） | 400 agent_id / reason 为空；其余按两条路径同 done | routes.ts:400 |

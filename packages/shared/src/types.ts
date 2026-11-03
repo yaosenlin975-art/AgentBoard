@@ -100,6 +100,14 @@ export interface Issue {
   claimed_by: string | null; claimed_at: number | null; session_id: string | null;
   /** 评论总数（查询时由 issue_comment 计数，非落库列） */
   comment_count: number;
+  /**
+   * 依赖计数（查询期由 issue_dependency 聚合，非落库列；服务端恒填）。
+   * 声明为可选：既有测试夹具与旧消费者构造 `Issue` 时不带该字段仍可编译，消费端按 0/true 兜底。
+   * `resolved` = 无未解除前置（无前置时为 true），与 `apps/server/src/services/dependency.ts` 的唯一口径一致。
+   */
+  blocked_by_count?: number;
+  blocked_by_open_count?: number;
+  resolved?: boolean;
   created_at: number; updated_at: number;
 }
 export interface IssueTreeItem extends Issue {

@@ -148,6 +148,19 @@ export const failSchema = z.object({
 });
 
 /**
+ * DEP-1 依赖写通道：POST 走 body，DELETE 走 query；`workspace_id` 都必填（设计 §17-B1），
+ * 服务端用 `requireIssueInWorkspace` 校验，不按 issue 自身工作区放行。
+ */
+export const addDependencySchema = z.object({
+  workspace_id: z.string().trim().min(1, '缺少 workspace_id'),
+  blocker_issue_id: z.string().trim().min(1, 'blocker_issue_id 不能为空'),
+});
+
+export const dependencyQuerySchema = z.object({
+  workspace_id: z.string().trim().min(1, '缺少 workspace_id'),
+});
+
+/**
  * POST /api/sessions（契约修订）：issue_id 为空时 workspace_id 必填（自由会话归属工作空间）。
  */
 export const createSessionSchema = z

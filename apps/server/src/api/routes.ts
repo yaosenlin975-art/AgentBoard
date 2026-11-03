@@ -50,6 +50,7 @@ import { SERVER_VERSION } from '../version.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
+import { addDependency, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
@@ -73,6 +74,7 @@ import {
   patchSettingsSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
+  addDependencySchema, dependencyQuerySchema,
 } from './schemas.js';
 
 export interface RouterDeps {
@@ -278,7 +280,7 @@ export function createRouter(deps: RouterDeps): Router {
     if (raw !== undefined) {
       if (typeof raw !== 'string' || !raw) throw new ValidationError('workspace_id 不合法');
       if (req.query.workspace_id && req.body?.workspace_id && req.query.workspace_id !== req.body.workspace_id) throw new ValidationError('workspace_id 不一致');
-      const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments'].includes(req.path)));
+      const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies'].includes(req.path)));
       if (!wrappedMutation) requireIssueInWorkspace(deps.db, String(req.params.id), raw);
     }
     next();
@@ -459,17 +461,53 @@ export function createRouter(deps: RouterDeps): Router {
     for (const session of bound) {
       await stopSession(session.id);
     }
+    let unlockComments: ReturnType<typeof unlockCommentsForDeletedBlocker> = [];
     db.transaction(() => {
       for (const session of bound) {
         deleteMessagesBySession(db, session.id);
         deleteSession(db, session.id);
       }
+      // DEP-1 §17-B4：删掉 blocker 卡时，同事务给每个被阻塞卡留解锁痕迹
+      unlockComments = unlockCommentsForDeletedBlocker(db, issue.id);
       deleteIssue(db, issue.id);
     })();
     await attachments.processCleanup();
     broadcast({ type: 'issue.deleted', issue_id: issue.id, workspace_id: issue.workspace_id });
+    for (const comment of unlockComments) broadcast({ type: 'comment.added', comment });
     for (const session of bound) {
       broadcast({ type: 'session.deleted', session_id: session.id });
+    }
+    res.status(204).end();
+  });
+
+  // ---- 依赖（DEP-1）----
+  // 读写都锁定工作区（§17-B1）：GET/DELETE 走 query，POST 走 body；跨区依赖在服务层与服务端触发器双重拒绝。
+  router.get('/issues/:id/dependencies', (req, res) => {
+    const { workspace_id: workspaceId } = parseBody(dependencyQuerySchema, req.query);
+    requireIssueInWorkspace(db, req.params.id!, workspaceId);
+    res.json(listDependencies(db, req.params.id!));
+  });
+
+  router.post('/issues/:id/dependencies', (req, res) => {
+    const body = parseBody(addDependencySchema, req.body);
+    const outcome = mutation(req, () => addDependency(db, {
+      blocked_issue_id: req.params.id!, blocker_issue_id: body.blocker_issue_id, workspace_id: body.workspace_id,
+    }));
+    if (!outcome.replayed) {
+      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(db, body.blocker_issue_id)! });
+    }
+    res.status(201).json(outcome.result);
+  });
+
+  router.delete('/issues/:id/dependencies/:blockerId', (req, res) => {
+    const { workspace_id: workspaceId } = parseBody(dependencyQuerySchema, req.query);
+    const outcome = mutation(req, () => removeDependency(db, {
+      blocked_issue_id: req.params.id!, blocker_issue_id: req.params.blockerId!, workspace_id: workspaceId,
+    }));
+    if (!outcome.replayed) {
+      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.blockerId!)! });
     }
     res.status(204).end();
   });
