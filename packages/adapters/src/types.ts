@@ -33,7 +33,11 @@ export interface AgentAdapter {
   supportsModelSelection: boolean;
   /** 仅返回当前已用合成图验证过的 CLI/model 图片输入组合 */
   supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean;
-  detect(): Promise<{ installed: boolean; version: string | null }>;
+  /**
+   * 探测 CLI 是否可用。**不可用时必须给可解释原因**（`message`）：
+   * 例如 shim 指向的入口缺失、版本输出不是版本号时，不要把报错文本当成 version 回传。
+   */
+  detect(): Promise<{ installed: boolean; version: string | null; message?: string }>;
   listModels(): Promise<ModelInfo[]>;
   runTurn(opts: RunTurnOptions): TurnHandle;
 }

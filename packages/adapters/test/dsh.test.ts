@@ -239,24 +239,50 @@ describe('dsh detect', () => {
     await expect(dshAdapter.detect()).resolves.toEqual({ installed: true, version: '0.2.4' });
   });
 
-  it('version 输出无语义化版本（如垫片损坏的报错文本）→ version 取首个非空行', async () => {
+  it('version 输出不是版本号（垫片指向的入口缺失）→ installed=false + 可解释原因，不再把报错当版本', async () => {
     setSpawnFn(((cmd: string, args: string[]) => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
       }
       if (args.includes('--version')) {
-        return asChild(makeAutoChild([{ source: 'stderr', text: 'Error: Cannot find module bin.js\n' }], 1));
+        return asChild(makeAutoChild([
+          { source: 'stderr', text: 'node:internal/modules/cjs/loader:1424\n' },
+          { source: 'stderr', text: "Error: Cannot find module 'D:\\app\\dsh\\lib\\bin.js'\n" },
+        ], 1));
       }
       throw new Error(`unexpected spawn: ${cmd} ${args.join(' ')}`);
     }) as unknown as SpawnFn);
 
-    await expect(dshAdapter.detect()).resolves.toEqual({ installed: true, version: 'Error: Cannot find module bin.js' });
+    const result = await dshAdapter.detect();
+    expect(result.installed).toBe(false);
+    expect(result.version).toBeNull();
+    expect(result.message).toContain('dsh CLI 不可用');
+    expect(result.message).toContain('loader:1424');
+    expect(result.message).toContain('exit 1');
+    // 原因里的输出片段有上限，避免整段堆栈进 UI
+    expect((result.message ?? '').length).toBeLessThan(300);
   });
 
-  it('where/which 都失败 → installed=false version=null', async () => {
+  it('--version 无任何输出 → installed=false + 原因说明「无输出」', async () => {
+    setSpawnFn(((cmd: string, args: string[]) => {
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
+      }
+      if (args.includes('--version')) return asChild(makeAutoChild([], 1));
+      throw new Error(`unexpected spawn: ${cmd} ${args.join(' ')}`);
+    }) as unknown as SpawnFn);
+
+    const result = await dshAdapter.detect();
+    expect(result).toMatchObject({ installed: false, version: null });
+    expect(result.message).toContain('无输出');
+  });
+
+  it('where/which 都失败 → installed=false version=null + 未找到命令的原因', async () => {
     setSpawnFn(((cmd: string) => asChild(makeAutoChild([], 1))) as unknown as SpawnFn);
 
-    await expect(dshAdapter.detect()).resolves.toEqual({ installed: false, version: null });
+    const result = await dshAdapter.detect();
+    expect(result).toMatchObject({ installed: false, version: null });
+    expect(result.message).toContain('未找到 dsh 命令');
   });
 });
 

@@ -132,6 +132,29 @@ describe('smart create draft (SMART-CREATE)', () => {
     expect(calls).toBe(2);
   });
 
+  it('reportsAdapterUnavailableWithReasonBeforeTouchingTheAdapter', async () => {
+    // DSH-ADAPTER-BUG：适配器探测说不可用（shim 坏的）→ 503 ADAPTER_UNAVAILABLE + 原因，且不调 runTurn
+    let ran = false;
+    const created = await createApp({
+      db: t.db,
+      getAdapter: (): AgentAdapter => ({
+        ...new FakeAdapter(),
+        detect: async () => ({ installed: false, version: null, message: 'dsh CLI 不可用：输出异常（node:internal/modules/cjs/loader:1424），exit 1' }),
+      }) as AgentAdapter,
+      adapters: [new FakeAdapter()],
+      refreshClisOnBoot: false,
+      draftRunner: async () => { ran = true; return modelJson(); },
+    });
+    const res = await request(created.app).post('/api/issues/draft').send({ workspace_id: ws, requirement: '适配器不可用', adapter: 'dsh' });
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('ADAPTER_UNAVAILABLE');
+    expect(res.body.error.message).toContain('loader:1424');
+    expect(res.body.error.message).toContain('手动创建');
+    expect(ran).toBe(false);
+    const audit = t.db.prepare('SELECT ok, error_code FROM issue_draft_audit ORDER BY created_at DESC LIMIT 1').all() as Array<Record<string, unknown>>;
+    expect(audit[0]).toMatchObject({ ok: 0, error_code: 'ADAPTER_UNAVAILABLE' });
+  });
+
   it('surfacesAdapterFailureAs502', async () => {
     runner = async () => { throw new Error('适配器未安装'); };
     const res = await postDraft({ workspace_id: ws, requirement: '适配器坏掉', adapter: 'codex' });

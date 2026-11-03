@@ -327,6 +327,14 @@ export function createRouter(deps: RouterDeps): Router {
   const draftService = createDraftService({
     db,
     run: deps.draftRunner ?? defaultDraftRunner(getAdapter),
+    detectAdapter: async (cliId) => {
+      try {
+        const detected = await deps.getAdapter(cliId).detect();
+        return { installed: detected.installed, version: detected.version, ...(detected.message === undefined ? {} : { message: detected.message }) };
+      } catch (error) {
+        return { installed: false, version: null, message: `适配器 ${cliId} 探测失败：${error instanceof Error ? error.message : String(error)}` };
+      }
+    },
     existingLabels: (workspaceId) => {
       const rows = db.prepare('SELECT labels FROM issue WHERE workspace_id=?').all(workspaceId) as Array<{ labels: string }>;
       const set = new Set<string>();

@@ -96,6 +96,11 @@ export type DraftRunner = (args: { adapter: DraftAdapterId; prompt: string; cwd:
 
 export interface DraftServiceDeps {
   db: Db;
+  /**
+   * 适配器可用性探测（adapter.detect）。不可用时直接 503 ADAPTER_UNAVAILABLE 并附原因，
+   * 不再等到 runTurn 抛错再包成 502（DSH-ADAPTER-BUG：shim 坏掉时曾把 loader 报错当版本回传）。
+   */
+  detectAdapter?(adapter: DraftAdapterId): Promise<{ installed: boolean; version: string | null; message?: string }>;
   /** 拉起适配器并收集文本输出（一次性） */
   run: DraftRunner;
   /** 工作区已有标签（用于约束 labels） */
@@ -142,6 +147,19 @@ export function createDraftService(deps: DraftServiceDeps): DraftService {
         throw new ApiError(status, code, message);
       };
 
+      if (deps.detectAdapter) {
+        const detected = await deps.detectAdapter(input.adapter);
+        if (!detected.installed) {
+          const reason = detected.message?.trim() !== undefined && detected.message!.trim() !== ''
+            ? detected.message!.trim()
+            : `适配器 ${input.adapter} 不可用`;
+          audit(deps.db, {
+            workspace_id: input.workspace_id, adapter: input.adapter, duration_ms: now() - started,
+            ok: 0, warning_count: 0, error_code: 'ADAPTER_UNAVAILABLE', created_at: now(),
+          });
+          throw new ApiError(503, 'ADAPTER_UNAVAILABLE', `${reason}；可以改用手动创建，或换一个可用的执行方式`);
+        }
+      }
       let lastError = '输出不是合法 JSON';
       let text = '';
       for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {

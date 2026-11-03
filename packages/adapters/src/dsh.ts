@@ -82,15 +82,25 @@ export function isSupportedDshVersion(version: string): boolean {
   return version.startsWith(`${DSH_SUPPORTED_SERIES}.`);
 }
 
-async function detectDsh(): Promise<{ installed: boolean; version: string | null }> {
+/** 不可用原因里的输出片段上限（避免把整段 loader 堆栈灌进 UI/日志） */
+export const DSH_DETECT_REASON_LIMIT = 120;
+
+async function detectDsh(): Promise<{ installed: boolean; version: string | null; message?: string }> {
   const whereLines = await whereCommand(DSH_CMD);
-  if (whereLines.length === 0) return { installed: false, version: null };
+  if (whereLines.length === 0) return { installed: false, version: null, message: '未找到 dsh 命令（where/which 均无结果）' };
   const form = resolveWindowsSpawnForm(whereLines, DSH_CMD) ?? { cmd: DSH_CMD, prefix: [] as string[] };
-  const { lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
+  const { code, lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
+  // 形状校验：只认 `dsh 0.2.x` 这类版本行；loader 报错/空输出一律判不可用，绝不把报错当版本回传
   const version = parseDshVersion(lines);
   if (version) return { installed: true, version };
-  const raw = lines.map((l) => l.trim()).find((l) => l !== '') ?? '';
-  return { installed: true, version: raw || null };
+  const raw = lines.map((l) => l.trim()).filter((l) => l !== '').join(' ').slice(0, DSH_DETECT_REASON_LIMIT);
+  const exit = code === null ? '无退出码' : `exit ${code}`;
+  const detail = raw === '' ? '无输出' : `输出异常（${raw}）`;
+  return {
+    installed: false,
+    version: null,
+    message: `dsh CLI 不可用：${detail}，${exit}；命令 ${[form.cmd, ...form.prefix, '--version'].join(' ')}`,
+  };
 }
 
 export const dshAdapter: AgentAdapter = {
