@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { configDir, loadConfig, type AgentBoardConfig } from './config.js';
+import { configDir, loadConfig, type AgentBoardRuntimeConfig } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
@@ -156,7 +156,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
 export interface StartedServer {
   server: ReturnType<typeof createServer>;
   hub: WsHub;
-  config: AgentBoardConfig;
+  config: AgentBoardRuntimeConfig;
   db: Db;
 }
 
@@ -202,7 +202,7 @@ export async function main(): Promise<StartedServer> {
         const onListening = (): void => { server.off('error', onError); resolve(); };
         server.once('error', onError);
         server.once('listening', onListening);
-        server.listen(config.port, '127.0.0.1');
+        server.listen(config.port, config.host);
       });
       break;
     } catch (error) {
@@ -211,7 +211,7 @@ export async function main(): Promise<StartedServer> {
     }
   }
   attachments.startCleanupWorker();
-  console.log(`AgentBoard listening on http://127.0.0.1:${config.port} (db: ${config.dbPath})`);
+  console.log(`AgentBoard listening on http://${config.host}:${config.port} (db: ${config.dbPath})`);
   return { server, hub, config, db };
 }
 

@@ -1,8 +1,10 @@
 /**
  * Task 9：配置加载（默认 %APPDATA%\AgentBoard\config.json，不存在用默认并写回；
- * 环境变量 AGENTBOARD_PORT / AGENTBOARD_DB 覆盖，不写回）。
+ * 环境变量 AGENTBOARD_PORT / AGENTBOARD_DB / AGENTBOARD_HOST 覆盖，不写回）。
+ * DOCKER-1：监听地址由 AGENTBOARD_HOST 提供，缺省仍为 127.0.0.1（安全口径不变）；非法值启动即报错。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -20,8 +22,29 @@ export interface AgentBoardConfig {
   attachmentCleanupIntervalMs: number;
 }
 
+/** 运行期配置：持久化设置 + 启动期 env 覆盖项（host 不落 config.json，settings 端点不暴露） */
+export interface AgentBoardRuntimeConfig extends AgentBoardConfig {
+  host: string;
+}
+
 export const DEFAULT_PORT = 8787;
+/** 只监听回环：保持既有安全口径，容器里才通过 env 显式放宽到 0.0.0.0 */
+export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_MAX_CONCURRENT_TURNS = 3;
+
+/** 校验监听地址：IPv4/IPv6 字面量或主机名；空值/非法返回 null */
+export function parseHost(raw: string): string | null {
+  const value = raw.trim();
+  if (value === '') return null;
+  // 纯数字点样式只接受合法 IPv4（999.1.1.1 这类必须拒绝，不能被当成主机名）
+  if (/^[0-9.]+$/.test(value)) return isIP(value) === 4 ? value : null;
+  // 含冒号只接受合法 IPv6
+  if (value.includes(':')) return isIP(value) === 6 ? value : null;
+  if (isIP(value) !== 0) return value;
+  // 主机名：字母数字与 '-'，点分段，段首尾不能是 '-'
+  const hostname = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
+  return hostname.test(value) ? value : null;
+}
 
 /** Windows 用 %APPDATA%，非 Windows 回退 ~/.config */
 export function appDataDir(): string {
@@ -99,7 +122,7 @@ function mergeValidFields(
 }
 
 /** 读取配置；文件缺失时写回默认；字段非法回退默认值；环境变量最后覆盖（测试用） */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRuntimeConfig {
   const path = configFilePath();
   const fileConfig = readPersistedFile();
   if (!existsSync(path)) {
@@ -116,7 +139,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardConf
   if (env.AGENTBOARD_DB !== undefined && env.AGENTBOARD_DB !== '') {
     config.dbPath = env.AGENTBOARD_DB;
   }
-  return config;
+  // DOCKER-1：监听地址只由 env 提供（不写回 config.json）；非法值直接抛错，启动即退出，不静默回落
+  let host = DEFAULT_HOST;
+  const rawHost = env.AGENTBOARD_HOST;
+  if (rawHost !== undefined && rawHost.trim() !== '') {
+    const parsed = parseHost(rawHost);
+    if (parsed === null) {
+      throw new Error(`AGENTBOARD_HOST 非法：${rawHost}（需 IPv4/IPv6 字面量或主机名，缺省为 ${DEFAULT_HOST}）`);
+    }
+    host = parsed;
+  }
+  return { ...config, host };
 }
 
 /**
