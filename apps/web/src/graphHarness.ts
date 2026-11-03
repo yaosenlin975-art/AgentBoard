@@ -4,12 +4,12 @@
  * 生产构建不引用这个文件（入口是 index.html）。
  */
 import './index.css';
-import { createPixiGraph, type PixiGraphData } from './components/knowledge/pixiGraph';
+import { createPixiGraph, type PixiGraphData, type PixiGraphEdge, type PixiGraphNode } from './components/knowledge/pixiGraph';
 
 const host = document.getElementById('stage') as HTMLDivElement;
 
-const nodes: PixiGraphData['nodes'] = [];
-const edges: PixiGraphData['edges'] = [];
+const nodes: PixiGraphNode[] = [];
+const edges: PixiGraphEdge[] = [];
 const positions = new Map<string, { x: number; y: number }>();
 
 // hub 连 8 个叶子 → weight 8 → getSize = 9 → fontSize 16.25（文档实测值）
