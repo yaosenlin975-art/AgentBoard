@@ -27,6 +27,7 @@ import { IssueCardPreview } from './IssueCard';
 import { IssueTreeView } from './IssueTreeView';
 import { LabelFilterBar } from './LabelFilterBar';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
+import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -150,8 +151,9 @@ export function Board({
           </button>
         </div>
       )}
-      {/* 顶栏两行：第一行只放视图切换；第二行 = 搜索框（左）+ 标签 chips（右，只在自己容器内横向滚动） */}
-      <div className="flex shrink-0 flex-col gap-1 border-b border-neutral-200 bg-white px-3 py-1 dark:border-neutral-800 dark:bg-neutral-900">
+      {/* 顶栏两行：第一行只放视图切换；第二行 = 搜索框（左）+ 标签 chips（右，只在自己容器内横向滚动）。
+          外壳与知识库视图共用 ViewToolbarShell，保证三视图下 tab 组位置恒定（TOPBAR-TABS）。 */}
+      <ViewToolbarShell>
         <div data-testid="board-toolbar-controls" className="flex flex-wrap items-center gap-1">
           <ViewSwitcher
             layout={currentLayout}
@@ -171,7 +173,7 @@ export function Board({
           />
           <LabelFilterBar workspaceId={workspaceId} />
         </div>
-      </div>
+      </ViewToolbarShell>
       {treeMode ? (
         <IssueTreeView
           workspaceId={workspaceId}

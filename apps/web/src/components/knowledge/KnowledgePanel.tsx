@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -7,6 +7,7 @@ import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyle
 import { KnowledgePageDetail } from './KnowledgePageDetail';
 import { KnowledgeGraph } from './KnowledgeGraph';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
+import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -54,10 +55,10 @@ export function KnowledgePanel({
   });
   const items = list.data?.items ?? [];
 
-  return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-neutral-50 p-4 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-    <header className="mb-3 shrink-0">
-      {/* 知识库视图也保留视图切换，否则切进来后没有返回任务板的入口（TOPBAR-CLEAN） */}
-      <div data-testid="knowledge-toolbar-controls" className="mb-2 flex flex-wrap items-center gap-1 border-b border-neutral-200 pb-2 dark:border-neutral-800">
+  return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    {/* 视图切换与平铺看板共用同一外壳（TOPBAR-TABS）：切视图时 tab 组 left/top 不变 */}
+    <ViewToolbarShell>
+      <div data-testid="knowledge-toolbar-controls" className="flex flex-wrap items-center gap-1">
         <ViewSwitcher
           layout={currentLayout}
           onLayout={changeLayout}
@@ -65,6 +66,9 @@ export function KnowledgePanel({
           onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
         />
       </div>
+    </ViewToolbarShell>
+    <div className="flex min-h-0 flex-1 flex-col p-4">
+    <header className="mb-3 shrink-0">
       <h1 className="text-base font-semibold">共享知识库</h1>
       <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">当前项目与公共经验：标题、正文与标签都可搜索</p>
       <div className="mt-2 flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
@@ -166,6 +170,7 @@ export function KnowledgePanel({
       )}
 
       {selected && <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} />}
+    </div>
     </div>
   </section>;
 }
