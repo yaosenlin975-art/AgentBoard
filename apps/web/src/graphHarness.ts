@@ -6,6 +6,7 @@
  */
 import './index.css';
 import { createPixiGraph, type PixiGraphEdge, type PixiGraphNode } from './components/knowledge/pixiGraph';
+import { ForceSimulation, diffGraphData } from './lib/forceLayout';
 
 const host = document.getElementById('stage') as HTMLDivElement;
 const CENTER = { x: 450, y: 300 };
@@ -105,3 +106,68 @@ const drive = {
 };
 (globalThis as unknown as { __drive: unknown }).__drive = drive;
 (globalThis as unknown as { __harnessReady: boolean }).__harnessReady = true;
+
+
+// ── KB-GRAPH-P3：增量 setData 驱动（D6 差量 + 力导向收敛），供 CDP 断对象身份与位置稳定性 ──
+const sim = new ForceSimulation();
+let prevIds: string[] = [];
+let prevPositions = new Map<string, { x: number; y: number }>();
+let prevLinks: Array<[string, string]> = [];
+
+function setData(ids: string[], links: Array<[string, string]>, relax = false): {
+  structural: boolean;
+  added: string[];
+  removed: string[];
+} {
+  const neighbours = new Map<string, string[]>(ids.map((id) => [id, []]));
+  for (const [source, target] of links) {
+    neighbours.get(source)?.push(target);
+    neighbours.get(target)?.push(source);
+  }
+  const diff = diffGraphData(
+    { ids: prevIds, positions: prevPositions, links: prevLinks },
+    { ids, neighbours, links },
+  );
+  const merged = new Map(prevPositions);
+  for (const [id, point] of diff.seeded) merged.set(id, point);
+  for (const id of [...merged.keys()]) if (!ids.includes(id)) merged.delete(id);
+
+  const simMessage = { nodes: diff.payload, links, ...(diff.structural ? { alpha: 0.3, run: true } : {}) };
+  if (diff.structural) {
+    sim.ingest(simMessage);
+    if (relax) for (let i = 0; i < 248; i += 1) sim.tick();
+  }
+  const positions = diff.structural && relax ? sim.positions() : merged;
+
+  const adjacency = new Map<string, Set<string>>(ids.map((id) => [id, new Set<string>()]));
+  for (const [source, target] of links) {
+    adjacency.get(source)?.add(target);
+    adjacency.get(target)?.add(source);
+  }
+  const graphNodes: PixiGraphNode[] = ids.map((id) => ({ id, title: `节点 ${id}`, weight: adjacency.get(id)?.size ?? 0 }));
+  const graphEdges: PixiGraphEdge[] = links.map(([source, target]) => ({
+    key: `${source}-${target}`,
+    source,
+    target,
+    kind: 'source' as const,
+    weight: 3,
+  }));
+  graph.update({ nodes: graphNodes, edges: graphEdges, positions, highlight: null });
+
+  prevIds = ids;
+  prevPositions = new Map(positions);
+  prevLinks = links;
+  return { structural: diff.structural, added: [...diff.addedIds], removed: [...diff.removedIds] };
+}
+
+const ring = (count: number): Array<[string, string]> => {
+  const links: Array<[string, string]> = [];
+  for (let i = 0; i < count; i += 1) links.push([`n${i}`, `n${(i + 1) % count}`]);
+  return links;
+};
+
+(globalThis as unknown as { __gap: unknown }).__gap = {
+  setData,
+  ring,
+  ids: (count: number) => Array.from({ length: count }, (_, i) => `n${i}`),
+};

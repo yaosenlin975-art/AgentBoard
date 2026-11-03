@@ -102,6 +102,8 @@ type ColorMap = Record<SemanticColorKey, SemanticColor>;
 
 interface NodeView {
   id: string;
+  /** PIXI 对象身份序号：增量更新应复用同一个序号 */
+  objId: number;
   title: string;
   weight: number;
   size: number;
@@ -125,6 +127,8 @@ interface EdgeView {
 
 export interface PixiNodeSnapshot {
   id: string;
+  /** PIXI 对象身份序号：同一 id 在增量更新前后必须相同 */
+  objId: number;
   weight: number;
   size: number;
   /** 节点当前图坐标（拖拽后即 pinned 坐标，CDP 换算屏幕点要用它） */
@@ -185,6 +189,8 @@ export interface PixiGraphSnapshot {
   hoverId: string | null;
   dragId: string | null;
   pinnedCount: number;
+  /** 增量更新证据：PIXI 对象创建/复用/回收计数与序号上界 */
+  objects: { created: number; reused: number; destroyed: number; seq: number };
   panVelocity: { x: number; y: number };
   zoomCenter: { x: number; y: number };
   clickDistanceSq: number;
@@ -331,6 +337,9 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   const pinned = new Map<string, { x: number; y: number }>();
   /** 当前正在拖的节点（文档 getHighlightNode = dragNode || highlightNode） */
   let dragId: string | null = null;
+  /** 增量更新证据：PIXI 对象身份与复用/回收计数（CDP 与单测都读它） */
+  let objectSeq = 0;
+  const objectStats = { created: 0, reused: 0, destroyed: 0 };
   let viewport = { left: -Infinity, right: Infinity, top: -Infinity, bottom: Infinity };
 
   const dpr = (): number => view?.devicePixelRatio ?? 1;
@@ -474,8 +483,11 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     label.zIndex = 2;
     hanger.addChild(label);
 
+    objectSeq += 1;
+    objectStats.created += 1;
     nodeViews.set(node.id, {
       id: node.id,
+      objId: objectSeq,
       title: node.title,
       weight: node.weight,
       size,
@@ -515,6 +527,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       arrow.zIndex = 1;
       hanger.addChild(arrow);
 
+      objectStats.created += 2;
       edgeViews.set(edge.key, {
         key: edge.key,
         source: edge.source,
@@ -928,6 +941,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     const keepNodes = new Set(next.nodes.map((node) => node.id));
     for (const [id, node] of [...nodeViews]) {
       if (keepNodes.has(id) && next.positions.has(id)) {
+        objectStats.reused += 1;
         const point = pinned.get(id) ?? (next.positions.get(id) as { x: number; y: number });
         node.x = point.x;
         node.y = point.y;
@@ -936,12 +950,14 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       }
       node.circle.destroy();
       node.label.destroy();
+      objectStats.destroyed += 1;
       nodeViews.delete(id);
     }
     for (const [key, edge] of [...edgeViews]) {
       if (next.edges.some((item) => item.key === key) && keepNodes.has(edge.source) && keepNodes.has(edge.target)) continue;
       edge.line.destroy();
       edge.arrow.destroy();
+      objectStats.destroyed += 2;
       edgeViews.delete(key);
     }
     // weight 可能变了（度数随边过滤变化）→ 重算
@@ -1021,12 +1037,14 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       hoverId,
       dragId,
       pinnedCount: pinned.size,
+      objects: { ...objectStats, seq: objectSeq },
       panVelocity: { x: panvX, y: panvY },
       zoomCenter: { x: zoomCenterX, y: zoomCenterY },
       clickDistanceSq: CLICK_DISTANCE_SQ,
       colors: { ...colors },
       nodes: [...nodeViews.values()].map((node) => ({
         id: node.id,
+        objId: node.objId,
         weight: node.weight,
         size: node.size,
         x: node.x,

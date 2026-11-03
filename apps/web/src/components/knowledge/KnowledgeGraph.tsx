@@ -22,6 +22,7 @@ import {
   type GraphPayload,
 } from '../../lib/knowledgeGraph';
 import { textAlpha } from '../../lib/graphVisualFormulas';
+import { createForceLayoutClient, type ForceLayoutClient } from '../../lib/forceLayoutClient';
 import type { PixiGraphData, PixiGraphHandle } from './pixiGraph';
 
 export interface GraphNodeTarget {
@@ -164,10 +165,43 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   /** 实际渲染的图（聚焦/只看命中时会比 graph 小） */
   const shown = viewFilter.graph;
   const stats = shown === null ? null : graphStats(shown);
-  const positions = useMemo(() => {
-    if (shown === null || shown.nodes.length === 0) return new Map();
-    return layoutGraph(shown.nodes, shown.edges, { width: LAYOUT_W, height: LAYOUT_H, iterations: 120 }).positions;
+  // 布局（KB-GRAPH-P3）：首次用既有自研力学出初始坐标，之后走 D6 差量 + 力导向 tick（Worker，收敛即停）
+  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(() => new Map());
+  const layoutClientRef = useRef<ForceLayoutClient | null>(null);
+  useEffect(() => {
+    if (shown === null || shown.nodes.length === 0) return;
+    if (layoutClientRef.current === null) {
+      layoutClientRef.current = createForceLayoutClient({
+        workerFactory: () =>
+          typeof Worker === 'undefined'
+            ? null
+            : new Worker(new URL('../../lib/forceLayoutWorker.ts', import.meta.url), { type: 'module' }),
+        onPositions: (next) => setPositions(new Map(next)),
+      });
+    }
+    const neighbours = buildAdjacency(shown.edges);
+    const initial = layoutGraph(shown.nodes, shown.edges, { width: LAYOUT_W, height: LAYOUT_H, iterations: 120 }).positions;
+    const result = layoutClientRef.current.apply(
+      {
+        ids: shown.nodes.map((node) => node.id),
+        neighbours,
+        links: shown.edges
+          .filter((edge) => edge.source !== edge.target)
+          .map((edge) => [edge.source, edge.target] as [string, string]),
+      },
+      initial,
+    );
+    // 结构变化：已存在节点保持原坐标 + 新节点落点立刻上屏，随后 tick 回传覆盖
+    if (result.structural) setPositions(new Map(result.positions));
   }, [shown]);
+
+  useEffect(
+    () => () => {
+      layoutClientRef.current?.destroy();
+      layoutClientRef.current = null;
+    },
+    [],
+  );
 
   // —— 渲染层：PIXI（KB-GRAPH-P1）。相机状态由渲染层自持，React 只做展示与降级 ——
   // 暗色跟随 html.dark（主题按钮会切 class；用 MutationObserver 触发重读 CSS 语义色）
