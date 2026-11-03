@@ -22,7 +22,7 @@ description: 通过 kb CLI 从 AgentBoard 任务看板自助领取任务、执�
 
 本节优先于本技能其余条款，冲突时以本节为准；用户当轮另有明确指示时按用户指示执行。
 
-- **调用即绑定**：技能启动第一步绑定当前工作区。跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区；把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。cwd 不属于任何已注册工作空间、或同时命中多个（cwd 是多个工作空间的公共父目录）时，先问用户，不猜、不按名称猜。
+- **调用即绑定**：技能启动第一步绑定当前工作区。跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；路径先解成实体路径（junction/软链接按 target 解析）再比对；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区；把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。cwd 落在某工作区根之下（未命中任何根的等值项）时，取最长前缀命中的那个根作为当前工作区；仅当同时命中多个不同根（公共父目录 / 嵌套工作区）才停下来问用户。cwd 不属于任何已注册工作空间时同样停下问用户；不猜、不按名称猜。
 - **默认只查、只领、只写当前工作区**：`kb list-tasks` 一律带 `--workspace <当前工作区 id>`；不带过滤的全局列表只用于跨工作区只读盘点，不得据它 claim。`kb create-issue` 的 workspace 必须是当前工作区。工作区外的路径默认只读：可读、可引用，不得写。
 - **跨工作区一律要用户显式授权**：对非当前工作区的任何写入（改文件、建/改任务卡、claim/done/fail 别人的卡、写知识、写变更日志、起服务、改 DB、切分支）先说明「影响哪个工作区、哪些文件/数据」，取得当轮同意后再做；授权只覆盖当轮描述的范围。
 - **越界自检三问**（每次写前过一遍）：① 这个路径/任务卡属于哪个工作区？② 跟当前工作区是同一个吗？③ 若不是，用户当轮是否明确授权过？三问答不全即停手。
@@ -35,7 +35,7 @@ description: 通过 kb CLI 从 AgentBoard 任务看板自助领取任务、执�
 kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
 kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签]  # 建任务；ws 用 id 或名称
 kb list-spaces                          # 列工作空间（id/name/path）
-kb list-tasks --workspace <id|名> [--status 待规划|进行中|待验收|已关闭]  # 必须指定当前工作区；不带则聚合全部工作空间
+kb list-tasks --workspace <id|名> [--status 待规划|进行中|待验收|已关闭]  # 必须指定当前工作区；不带过滤的全局列表仅限跨工作区只读盘点，不得 claim / done / fail。
 kb show <issue-id>                      # 任务完整字段 + 全部评论
 kb claim <issue-id>                     # 原子领取；输出任务详情+评论+工作空间路径
 kb comment <issue-id> "内容"            # 写评论；中文/长文用 --stdin

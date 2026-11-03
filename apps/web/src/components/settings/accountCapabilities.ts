@@ -46,6 +46,8 @@ export const REASON_LABEL: Record<string, string> = {
   CHECKIN_BATCH_IN_PROGRESS: '该产品已有进行中的签到批次',
   CHECKIN_BATCH_FINISHED: '批次已结束，无法取消',
   ACCOUNT_BUSY: '账号正忙，本轮未发起',
+  ACCOUNT_OPERATION_FAILED: '操作执行失败（未归类错误）',
+  ACCOUNT_APP_MISMATCH: '账号与操作平台不匹配',
   ACCOUNT_DISABLED: '账号已停用，本轮未发起',
   ACCOUNT_NOT_FOUND: '账号不存在',
   CHECKIN_CREDENTIAL_MISSING: '该账号没有签到凭据，未发起',
