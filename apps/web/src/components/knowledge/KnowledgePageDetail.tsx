@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import type { KnowledgePage, KnowledgeRevision } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { MarkdownView } from '../../lib/markdown';
+import { KnowledgeImageComposer } from './KnowledgeImageComposer';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { downloadKnowledgeMarkdown } from '../../lib/knowledgeExport';
@@ -48,6 +49,9 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   /** 恢复确认：选中待恢复的 revision（二次确认后才发 PUT） */
   const [restoreTarget, setRestoreTarget] = useState<KnowledgeRevision | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
+  /** KB-IMG-2：正文编辑（含图片上传）——折叠块，保存时才 PUT body_md */
+  const [bodyEditing, setBodyEditing] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState('');
   const [historyOffset, setHistoryOffset] = useState(0);
   const [confirm, setConfirm] = useState<'archive' | 'restore' | 'delete' | null>(null);
   const [expiryDraft, setExpiryDraft] = useState<string | null>(null);
@@ -119,6 +123,54 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     <div className="mt-3 max-w-[70ch] text-sm text-neutral-800 dark:text-neutral-200">
       <MarkdownView>{p.body_md}</MarkdownView>
     </div>
+
+    {/* KB-IMG-2：正文编辑 + 图片（粘贴/拖拽/按钮）压缩上传，插入到光标处 */}
+    <section className="mt-3" data-testid="knowledge-body-section">
+      <button
+        type="button"
+        data-testid="knowledge-body-edit-toggle"
+        className={BUTTON_SECONDARY}
+        onClick={() => {
+          setBodyEditing(!bodyEditing);
+          setBodyDraft(p.body_md);
+        }}
+      >
+        {bodyEditing ? '收起正文编辑' : '编辑正文（含图片）'}
+      </button>
+      {bodyEditing && (
+        <div className="mt-2 space-y-2">
+          <KnowledgeImageComposer
+            scope={scope}
+            workspaceId={workspaceId}
+            pageId={pageId}
+            value={bodyDraft}
+            onChange={setBodyDraft}
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="knowledge-body-save"
+              className={BUTTON_PRIMARY}
+              onClick={() => {
+                api
+                  .put<KnowledgePage>(`${path}`, { ...scopeData, body_md: bodyDraft, expected_revision: p.revision, actor: 'user', change_note: '编辑正文（含图片）' })
+                  .then(() => {
+                    setBodyEditing(false);
+                    void page.refetch();
+                    onChanged();
+                  })
+                  .catch((cause: unknown) => setRestoreError(cause instanceof Error ? cause.message : String(cause)));
+              }}
+            >
+              保存正文
+            </button>
+            <button type="button" data-testid="knowledge-body-cancel" className={BUTTON_SECONDARY} onClick={() => setBodyEditing(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
 
     <details data-testid="provenance" className="mt-4 rounded-md border border-neutral-200 dark:border-neutral-800">
       <summary className="cursor-pointer px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
