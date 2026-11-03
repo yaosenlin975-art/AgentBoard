@@ -37,17 +37,21 @@ export function statusNames(statuses: readonly WorkspaceStatus[]): string[] {
 
 /** 列头强调色：已废弃与已关闭要能一眼区分 */
 export function statusAccent(kind: WorkspaceStatusKind | undefined): string {
+  // UNSLOP：chrome 里只有一个强调色（琥珀）。状态用暖石墨台阶 + 琥珀区分「需要我处理」，
+  // 不再给每个状态一个人造色相（紫/蓝/绿）。
   switch (kind) {
-    case 'done':
-      return 'text-green-700 dark:text-green-400';
-    case 'deprecated':
-      return 'text-amber-700 dark:text-amber-400';
-    case 'started':
-      return 'text-blue-700 dark:text-blue-400';
     case 'review':
-      return 'text-purple-700 dark:text-purple-400';
+      // 待验收＝需要人处理 → 唯一使用强调色的地方
+      return 'text-accent';
+    case 'started':
+      return 'text-ink';
+    case 'deprecated':
+      // 已废弃要与已关闭区分：给一档更实的石墨，不再借用琥珀（琥珀只留给待验收）
+      return 'text-ink-2';
+    case 'done':
+      return 'text-ink-3';
     default:
-      return 'text-neutral-600 dark:text-neutral-300';
+      return 'text-ink-2';
   }
 }
 

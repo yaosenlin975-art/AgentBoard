@@ -269,10 +269,10 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('count-已关闭')).toHaveTextContent('1');
     expect(screen.getByTestId('empty-待验收')).toBeInTheDocument();
 
-    // 优先级色条：高=红 / 低=灰 / 中=黄
-    expect(screen.getByTestId('priority-bar-i1')).toHaveClass('bg-red-500');
-    expect(screen.getByTestId('priority-bar-i2')).toHaveClass('bg-neutral-400');
-    expect(screen.getByTestId('priority-bar-i3')).toHaveClass('bg-amber-400');
+    // UNSLOP：左缘 3px 轨道——高=琥珀强调 / 中=ink-2 / 低=ink-3
+    expect(screen.getByTestId('priority-bar-i1')).toHaveClass('bg-accent');
+    expect(screen.getByTestId('priority-bar-i2')).toHaveClass('bg-ink-3');
+    expect(screen.getByTestId('priority-bar-i3')).toHaveClass('bg-ink-2');
 
     // 标签 chips
     expect(screen.getByTestId('label-i1-前端')).toBeInTheDocument();
@@ -284,9 +284,9 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('claimed-badge-i4')).toHaveTextContent('dsh');
     expect(screen.queryByTestId('session-running-i4')).not.toBeInTheDocument();
 
-    // 关联会话标记与评论数徽标：有评论显示 💬 N，0 条整块隐藏
+    // 关联会话标记与评论数：有评论显示线性图标 + N，0 条整块隐藏（UNSLOP：去 emoji）
     expect(screen.getByTestId('session-link-i3')).toBeInTheDocument();
-    expect(screen.getByTestId('comment-count-i1')).toHaveTextContent('💬 2');
+    expect(screen.getByTestId('comment-count-i1')).toHaveTextContent('2');
     expect(screen.queryByTestId('comment-count-i2')).not.toBeInTheDocument();
     expect(screen.queryByTestId('comment-count-i3')).not.toBeInTheDocument();
 
@@ -353,7 +353,7 @@ describe('Board 组件', () => {
     mockBoardData(boardIssues, []);
     useAppStore.setState({ workspaceId: 'ws-1' });
     const { qc } = renderBoard();
-    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('💬 2');
+    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('2');
 
     // 服务端又落一条评论：mock 数据更新，comment.added 到达 → ['issues'] 前缀失效重拉
     mockBoardData(boardIssues.map((i) => (i.id === 'i1' ? { ...i, comment_count: 3 } : i)), []);
@@ -365,7 +365,7 @@ describe('Board 组件', () => {
       await qc.invalidateQueries({ queryKey: key });
     }
 
-    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('💬 3');
+    expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('3');
   });
 
   it('未选工作空间显示空态，不请求 issues', () => {

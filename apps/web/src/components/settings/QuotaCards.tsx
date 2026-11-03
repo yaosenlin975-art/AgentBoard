@@ -229,7 +229,7 @@ export function QuotaCards() {
                               <span className="min-w-[5.5rem] text-neutral-800 dark:text-neutral-200">{quotaWindowTitle(window.name)}</span>
                               <span
                                 data-testid={`quota-window-used-${item.source}-${index}`}
-                                className={`rounded-full px-1.5 py-0.5 text-[11px] tabular-nums ${limited ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300' : 'bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300'}`}
+                                className={`rounded-md px-1.5 py-0.5 text-xs tabular-nums ${limited ? 'bg-accent-soft text-accent' : 'bg-surface-raised text-ink-2'}`}
                               >
                                 {limited ? '已限额' : `${Math.round(window.used_percent ?? 0)}% used`}
                               </span>
@@ -237,8 +237,8 @@ export function QuotaCards() {
                                 {formatResets(window.reset_at, now)}
                               </span>
                             </div>
-                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
-                              <div data-testid={`quota-bar-${item.source}-${index}`} data-width={pct} style={{ width: `${pct}%` }} className={`h-full rounded-full ${limited ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-raised">
+                              <div data-testid={`quota-bar-${item.source}-${index}`} data-width={pct} style={{ width: `${pct}%` }} className={`h-full rounded-full ${limited ? 'bg-accent' : 'bg-ink-2'}`} />
                             </div>
                           </li>
                         );

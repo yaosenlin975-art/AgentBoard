@@ -93,7 +93,10 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
     // ACC-UI-01 D2：能力改用三图标徽标，不再有「切换可用」这类文字徽章（原因码只进 tooltip/details）
     expect(within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch')).toHaveAttribute('data-state', 'available');
-    expect(within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch')).toHaveTextContent('✓');
+    // UNSLOP：三态改线性图标，状态由 data-state + 图标 + aria-label 表达
+    const switchBadge = within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch');
+    expect(switchBadge.querySelector('svg')).not.toBeNull();
+    expect(switchBadge.getAttribute('aria-label')).toContain('可用');
     expect(wb.textContent).not.toContain('不可用');
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeEnabled();
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('仅此平台签到');

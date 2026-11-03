@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 聊天视图（设计 §7.5 / §5.5，Task 14）：
  * - 顶部工具条：会话切换器（分组下拉+徽标）+ 新建会话 + 当前 CLI/模型（可修改，下一轮生效）
  *   + 停止（运行中显示，POST stop）+ 标记待验收（任务会话占用中且未结束时显示，POST done）；
@@ -413,9 +413,9 @@ export function ChatPanel() {
             type="button"
             data-testid="queue-toggle"
             onClick={() => setQueueOpen((v) => !v)}
-            className="text-amber-600 hover:underline dark:text-amber-400"
+            className="text-accent hover:underline"
           >
-            {queueOpen ? '收起队列 ▲' : `查看队列内容（${queuedCount} 条）▾`}
+            {queueOpen ? '收起队列' : `查看队列（${queuedCount} 条）`}
           </button>
           {queueOpen && (
             <ul data-testid="queue-list" className="mt-1 max-h-32 space-y-1 overflow-y-auto">

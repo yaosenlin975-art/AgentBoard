@@ -70,8 +70,8 @@ describe('顶栏 tab 组跨视图位置恒定（TOPBAR-TABS）', () => {
     expect(knowledge.shell.className).toBe(board.shell.className);
     expect(knowledge.wrapper.className).toBe(board.wrapper.className);
     // 外壳自带 px-3 py-1；视图根节点不得再带内边距（否则整体位移）
-    expect(board.shell.className).toContain('px-3');
-    expect(board.shell.className).toContain('py-1');
+    expect(board.shell.className).toContain('px-4');
+    expect(board.shell.className).toContain('py-2');
     expect(paddingClasses(board.viewRoot)).toEqual([]);
     expect(paddingClasses(knowledge.viewRoot)).toEqual([]);
   });

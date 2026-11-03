@@ -89,14 +89,17 @@ describe('账号页重设计（ACC-UI-01）', () => {
     for (const action of ['capture', 'switch', 'checkin']) {
       const badge = screen.getByTestId(`accounts-badge-workbuddy_desktop-${action}`);
       expect(badge).toHaveAttribute('data-state', 'available');
-      expect(badge).toHaveTextContent('✓');
+      // UNSLOP：三态改为线性图标，状态由 data-state + 图标 + aria-label 三重表达（不再用 ✓ 字形）
+      expect(badge.querySelector('svg')).not.toBeNull();
+      expect(badge.getAttribute('aria-label')).toContain('可用');
       expect(badge.textContent ?? '').not.toContain('OK');
     }
 
     // minimax：capture ✓ switch ✗（CLIENT_NOT_INSTALLED 原因只进 tooltip）
     const mmSwitch = screen.getByTestId('accounts-badge-minimax-switch');
     expect(mmSwitch).toHaveAttribute('data-state', 'unavailable');
-    expect(mmSwitch).toHaveTextContent('✗');
+    expect(mmSwitch.querySelector('svg')).not.toBeNull();
+    expect(mmSwitch.getAttribute('aria-label')).toContain('不可用');
     expect(mmSwitch.getAttribute('title')).toContain('本机未安装该客户端');
     expect(mmSwitch.getAttribute('title')).toContain('CLIENT_NOT_INSTALLED');
     expect(mmSwitch.textContent ?? '').not.toContain('CLIENT_NOT_INSTALLED');
@@ -113,7 +116,8 @@ describe('账号页重设计（ACC-UI-01）', () => {
 
     const badge = await screen.findByTestId('accounts-badge-workbuddy_desktop-capture');
     expect(badge).toHaveAttribute('data-state', 'unknown');
-    expect(badge).toHaveTextContent('?');
+    expect(badge.querySelector('svg')).not.toBeNull();
+    expect(badge.getAttribute('aria-label')).toContain('能力未知');
     expect(badge.getAttribute('title')).toContain('能力未知');
     expect(await screen.findByTestId('accounts-capabilities-error')).toBeInTheDocument();
   });

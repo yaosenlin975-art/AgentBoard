@@ -5,9 +5,9 @@
  */
 
 export type BoardLayout = 'board' | 'tree';
-const ACTIVE = 'bg-blue-100 font-medium text-blue-800 dark:bg-blue-950 dark:text-blue-200';
-const IDLE = 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800';
-const BASE = 'shrink-0 whitespace-nowrap rounded px-2.5 py-1 text-xs';
+const ACTIVE = 'bg-accent-soft font-medium text-accent dark:bg-accent-soft';
+const IDLE = 'text-ink-2 hover:bg-surface-raised';
+const BASE = 'shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs';
 
 export interface ViewSwitcherProps {
   layout: BoardLayout;

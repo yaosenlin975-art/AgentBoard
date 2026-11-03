@@ -8,6 +8,7 @@
  */
 import type { AccountCapability } from '@agentboard/shared';
 import { SOURCE_LABEL, capabilityReasonCode, unavailableLabel, unavailableReason, type CapabilityAction, type CapabilityView } from './accountCapabilities';
+import { IconCheck, IconCross, IconQuestion } from '../ui/Icon';
 
 const ACTIONS: CapabilityAction[] = ['capture', 'switch', 'checkin'];
 const ACTION_LABEL: Record<CapabilityAction, string> = { capture: '捕获', switch: '切换', checkin: '签到' };
@@ -24,7 +25,7 @@ export function CapabilityIcon({
 }) {
   const known = capability !== null;
   const available = capability ? capability[action] === true : false;
-  const icon = !known ? '?' : available ? '✓' : '✗';
+  // UNSLOP pass 3/8：三态用线性图标 + ink 分级，不再用彩色 ✓/✗/? 字形
   const reason = capability ? unavailableReason(capability, action) : null;
   const code = capability ? capabilityReasonCode(capability, action) : null;
   const title = !known
@@ -32,7 +33,7 @@ export function CapabilityIcon({
     : available
       ? `${ACTION_LABEL[action]}：可用`
       : `${ACTION_LABEL[action]}：不可用（${unavailableLabel(capability, action) ?? reason ?? '原因未知'}${code !== null && code !== 'OK' ? ` / ${code}` : ''}）`;
-  const tone = !known ? 'text-neutral-400' : available ? 'text-emerald-600 dark:text-emerald-400' : 'text-neutral-400 dark:text-neutral-500';
+  const tone = !known ? 'text-ink-3' : available ? 'text-ink' : 'text-ink-3';
   return (
     <span
       data-testid={`accounts-badge-${app}-${action}`}
@@ -40,9 +41,9 @@ export function CapabilityIcon({
       role="img"
       aria-label={title}
       title={title}
-      className={`inline-flex w-4 justify-center text-xs font-semibold leading-none ${tone}`}
+      className={`inline-flex w-4 justify-center leading-none ${tone}`}
     >
-      {icon}
+      {!known ? <IconQuestion /> : available ? <IconCheck /> : <IconCross />}
     </span>
   );
 }

@@ -8,6 +8,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { AccountsPanel } from '../settings/AccountsPanel';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
 import { useOverlayStore } from '../../state/overlayStore';
+import { IconChevronDown } from '../ui/Icon';
 import { VersionLabel } from './VersionLabel';
 
 const WS_DOT: Record<WsStatus, string> = {
@@ -38,7 +39,7 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
   );
 
   return (
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-neutral-200 bg-white px-4 py-1 dark:border-neutral-800 dark:bg-neutral-900">
+    <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-surface-card px-4 py-2">
       <div className="min-w-0">
         <div className="flex min-w-0 items-baseline gap-1.5">
           {/* 左浮窗触发按钮（PANEL-FLOAT）：按钮即当前工作空间名，浮窗在其正下方展开 */}
@@ -58,7 +59,7 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
               }}
               className="truncate rounded px-1 -mx-1 text-left text-xl font-semibold hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:hover:bg-neutral-800"
             >
-              <span aria-hidden="true" className="mr-1 text-[10px] text-neutral-400">▾</span>
+              <span aria-hidden="true" className="mr-1 inline-flex text-ink-3"><IconChevronDown size={12} /></span>
               {workspace ? workspace.name : '未选择工作空间'}
             </button>
             <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />

@@ -63,7 +63,7 @@ export function SessionList({
                     <Badge tone={STATUS_TONE[s.status]} title={`会话状态：${s.status}`}>
                       {s.status}
                       {s.status === '运行中' && (
-                        <span data-testid={`session-running-${s.id}`} className="animate-pulse" aria-hidden>
+                        <span data-testid={`session-running-${s.id}`} aria-hidden>
                           ●
                         </span>
                       )}

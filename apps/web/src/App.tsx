@@ -48,7 +48,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div className="flex h-screen flex-col overflow-hidden bg-surface-page text-ink">
       <TopBar workspace={current} />
       <label className="flex items-center gap-2 border-b px-4 py-2 text-sm md:hidden">工作空间
         <select aria-label="工作空间" className="min-w-0 flex-1 rounded border bg-transparent p-1" value={workspaceId ?? ''} onChange={e => useAppStore.getState().selectWorkspace(e.target.value || null)}>

@@ -105,8 +105,9 @@ describe('列字典纯函数', () => {
 
   it('已废弃与已关闭的颜色不同', () => {
     expect(statusAccent('deprecated')).not.toBe(statusAccent('done'));
-    expect(statusAccent('deprecated')).toContain('amber');
-    expect(statusAccent('done')).toContain('green');
+    // UNSLOP：不再按状态给色相，靠石墨台阶区分（琥珀只留给「待验收」）
+    expect(statusAccent('deprecated')).toBe('text-ink-2');
+    expect(statusAccent('done')).toBe('text-ink-3');
   });
 });
 
@@ -120,7 +121,8 @@ describe('看板列派生', () => {
     expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(280px, 1fr))');
     // 已废弃列头颜色区别于已关闭
     const deprecatedHeader = within(screen.getByTestId('column-已废弃')).getByRole('heading', { level: 3 });
-    expect(deprecatedHeader.className).toContain('amber');
+    // UNSLOP：已废弃用更深一档石墨与已关闭区分（不再借琥珀）
+    expect(deprecatedHeader.className).toContain('text-ink-2');
   });
 
   it('自定义状态列出现在 sort_order 指定的位置', async () => {

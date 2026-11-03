@@ -435,7 +435,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                               data-testid={`changelog-entry-${item.id}`}
                               aria-current={isSelected ? 'true' : undefined}
                               onClick={() => scrollToEntry(item.id)}
-                              className={`block w-full rounded px-1.5 py-1 text-left text-xs transition ${
+                              className={`block w-full rounded px-1.5 py-1 text-left text-xs ab-transition ${
                                 isSelected
                                   ? 'bg-blue-50 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200'
                                   : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'

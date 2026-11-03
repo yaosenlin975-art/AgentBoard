@@ -178,3 +178,24 @@ node D:\tools\tmp\acc01\state.cjs
 | 跨账号切换 | **unverified → 待 B 段** | 当前 `accounts[]` 长度 1，本机历史第二账号键前缀 `dae15da8` |
 | 跨账号回滚核验 | **unverified → 待 B 段** | 需 B3 后回落 `f5d89346` |
 | 多实例共享认证位置 | unsupported（限定单活跃实例） | auth 为固定每用户路径 |
+
+---
+
+## A2 判据订正（2026-11-03 14:05 用户实测后，只追加）
+
+上面 A2 表格里把 `~/.workbuddy/ioa-im-override.json` 当「退出签名」是**错的**：用户 14:05 的真实退出里，它 mtime 为 **14:05:20**（启动期写入），与退出无关。以下为订正后的可执行判据（与 `2026-11-01-workbuddy-desktop-contract.md` 的「2026-11-03 14:05 托盘退出复测」节一致）。
+
+### A2'（订正版·按此判 PASS）
+
+| # | 证据 | 采集方式 | 通过判据 | 实测（14:05 那次） |
+|---|---|---|---|---|
+| A2-1 | 进程表清空 | `Get-Process WorkBuddy` | `WorkBuddy` 进程数 = 0 | 14:12:54 采集 → **0** ✅ |
+| A2-2 | 启动日志退出事件 | `~/.workbuddy/logs/startup/<日期>/<pid>-<HHMMSS>.log` 尾部 | 出现 `before-quit (… isQuitting=true, userConfirmed=true …)` 且随后 `finishQuit called (quitCleanupTimedOut=false)` | 14:05:39.408/.415 → 14:05:44.029 ✅ |
+| A2-3 | 退出同刻写盘 | `~/.workbuddy/app/window-state.json` 的 mtime | 与 A2-2 的 `before-quit` **同秒**（±2s） | 14:05:39.417 ✅ |
+| A2-4 | 端口消失 | `Get-NetTCPConnection -LocalPort 18488` | 无监听 | 辅助判据 |
+| A2-5 | 身份未变 | `node D:\tools\tmp\acc01\state.cjs` | `accountUid8` 仍 `f5d89346`、`accountsLen=1`、schema `v2-wbencrypted`、`skeletonUid8=f5d89346` | 全部一致 ✅ |
+| A2-6 | 反例排除 | 上面三个文件的 mtime | `workbuddy-desktop.info` / `ioa-im-override.json` / `account-snapshot.json` 的 mtime 落在**启动窗口**（本例 14:05:17–14:05:21），**不得**当作退出证据 | info 14:05:17.895、ioa 14:05:20.600、skeleton 14:05:21.849 ✅ |
+
+**PASS 结论（已成立）**：A 段通过 → `完全退出检测` supported（可只读识别）、`托盘退出执行` supported（用户手动退出、无强杀）。`写入式跨账号切换 / 回滚核验` 仍 unverified，等 B 段。
+
+**B 段待用户执行**（同上文 B1/B3）：登录第二个授权账号 → 我在卡里核验 `uid8 ≠ f5d89346`（若等于历史第二账号 `dae15da8` 则注明）→ 用户用客户端自身切回账号 1 → 我核验 `uid8` 回到 `f5d89346`、instance id `9cb538c4…` 与 exe 版本 `5.9.3.0` 不变。

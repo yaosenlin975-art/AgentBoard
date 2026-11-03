@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 会话切换器（设计 §7.5）：下拉按"任务会话 / 自由会话"分组；
  * 徽标：运行中（绿点动效）/ 有新消息（本地未读计数）/ 失败（红点）；
  * 当前会话标"当前"。选项点击回调父级执行 openChat（内部顺带清未读）。
@@ -6,6 +6,7 @@
  * 服务端拒绝（如运行中/占用任务）时错误由父级展示，菜单不关闭；成功后才收起菜单。
  */
 import { useState } from 'react';
+import { IconChevronDown } from '../ui/Icon';
 import type { Session } from '@agentboard/shared';
 
 function StatusBadges({ session, unreadCount }: { session: Session; unreadCount: number }) {
@@ -13,7 +14,7 @@ function StatusBadges({ session, unreadCount }: { session: Session; unreadCount:
     <span className="ml-auto flex shrink-0 items-center gap-1">
       {session.status === '运行中' && (
         <span data-testid={`option-running-${session.id}`} title="运行中" className="flex items-center gap-0.5 text-[10px] text-green-600 dark:text-green-400">
-          <span className="animate-pulse" aria-hidden>
+          <span aria-hidden>
             ●
           </span>
           运行中
@@ -154,12 +155,12 @@ export function SessionSwitcher({
       >
         <span className="truncate">{label}</span>
         {currentSession?.status === '运行中' && (
-          <span data-testid="switcher-running" className="animate-pulse text-green-600 dark:text-green-400" aria-hidden>
+          <span data-testid="switcher-running" className="text-accent" aria-hidden>
             ●
           </span>
         )}
-        <span className="ml-auto shrink-0 text-neutral-400" aria-hidden>
-          ▾
+        <span className="ml-auto shrink-0 text-ink-3" aria-hidden>
+          <IconChevronDown />
         </span>
       </button>
 

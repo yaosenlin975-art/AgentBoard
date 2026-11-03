@@ -8,18 +8,23 @@ import { useSortable } from '@dnd-kit/sortable';
 import type { Issue, Priority } from '@agentboard/shared';
 import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
 import { Badge } from '../ui/Badge';
+import { IconBolt, IconComment, IconLock } from '../ui/Icon';
 import { dependencyBadge } from '../../lib/dependency';
 import { GRAB_CURSOR, GRABBING_CURSOR } from '../../lib/cursor';
 import { usePanelStore } from '../../state/panelStore';
 
+/**
+ * UNSLOP：左缘 3px 是「状态轨」（签名细节），优先级退到文本层。
+ * chrome 里只有一个强调色（琥珀），所以低/中走暖石墨台阶，高优先级才用琥珀。
+ */
 export const PRIORITY_BAR: Record<Priority, string> = {
-  低: 'bg-neutral-400 dark:bg-neutral-600',
-  中: 'bg-amber-400 dark:bg-amber-500',
-  高: 'bg-red-500 dark:bg-red-600',
+  低: 'bg-ink-3',
+  中: 'bg-ink-2',
+  高: 'bg-accent',
 };
 
 const CARD_CLASS =
-  'relative shrink-0 overflow-hidden rounded-md border border-neutral-200 bg-white text-left text-sm shadow-sm transition-colors hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900 dark:hover:border-neutral-700';
+  'relative shrink-0 overflow-hidden rounded-xl border border-hairline bg-surface-card text-left text-sm transition-colors hover:border-ink-3';
 
 function IssueCardPriority({ issue }: { issue: Issue }) {
   return (
@@ -38,7 +43,7 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
 
   return (
     <>
-      <div className="font-medium leading-snug">{issue.title}</div>
+      <div className="font-medium leading-snug text-ink">{issue.title}</div>
       {(() => {
         const due = formatDueShort(issue);
         if (due === null) return null;
@@ -76,36 +81,40 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
           >
             <span data-testid={`claimed-badge-${issue.id}`}>{claimedCli(claimedBy)}</span>
             {sessionRunning && (
-              <span data-testid={`session-running-${issue.id}`} className="animate-pulse" aria-hidden>
+              <span data-testid={`session-running-${issue.id}`} className="" aria-hidden>
                 ●
               </span>
             )}
           </Badge>
         )}
         {issue.session_id !== null && (
-          <span data-testid={`session-link-${issue.id}`} title="关联会话">
-            ⚡
+          <span data-testid={`session-link-${issue.id}`} title="关联会话" className="inline-flex text-ink-3">
+            <IconBolt />
           </span>
         )}
         {issue.comment_count > 0 && (
-          <span data-testid={`comment-count-${issue.id}`} title="评论（在任务详情查看）">
-            💬 {issue.comment_count}
+          <span
+            data-testid={`comment-count-${issue.id}`}
+            title="评论（在任务详情查看）"
+            className="inline-flex items-center gap-1 tabular-nums text-ink-3"
+          >
+            <IconComment />{issue.comment_count}
           </span>
         )}
         {depBadge?.kind === 'blocked' && (
           <span
             data-testid={`dependency-badge-${issue.id}`}
             title={`存在 ${depBadge.open} 项未解除的前置任务`}
-            className="text-amber-700 dark:text-amber-300"
+            className="inline-flex items-center gap-1 tabular-nums text-accent"
           >
-            🔒 等 {depBadge.open} 项
+            <IconLock />等 {depBadge.open} 项
           </span>
         )}
         {depBadge?.kind === 'cleared' && (
           <span
             data-testid={`dependency-cleared-${issue.id}`}
             title={`${depBadge.total} 项前置已全部解除`}
-            className="text-neutral-400 dark:text-neutral-500"
+            className="text-ink-3"
           >
             依赖已清
           </span>
@@ -132,7 +141,7 @@ export function IssueCardPreview({
       className={`${CARD_CLASS} shadow-lg`}
     >
       <IssueCardPriority issue={issue} />
-      <div className="space-y-1.5 py-2 pl-3.5 pr-2">
+      <div className="space-y-2 p-3 pl-4">
         <IssueCardContents issue={issue} sessionRunning={sessionRunning} />
       </div>
     </div>

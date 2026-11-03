@@ -155,9 +155,9 @@ export function MessageList({
 
       {running && (
         <div data-testid="running-indicator" role="status" aria-label="会话运行中" className="flex items-center gap-1 px-1 py-0.5">
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 [animation-delay:0ms]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 [animation-delay:150ms]" />
-          <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-neutral-400 [animation-delay:300ms]" />
+          <span className="h-1.5 w-1.5 rounded-full bg-ink-3/70" />
+          <span className="h-1.5 w-1.5 rounded-full bg-ink-3/45" />
+          <span className="h-1.5 w-1.5 rounded-full bg-ink-3/25" />
         </div>
       )}
       <div ref={bottomRef} />

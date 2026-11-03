@@ -12,6 +12,7 @@ import {
 } from '../../lib/issueStatus';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
+import { IconLock } from '../ui/Icon';
 
 const PAGE_SIZE = 50;
 const emptyIds: ReadonlySet<string> = new Set();
@@ -405,15 +406,15 @@ function TaskTreeRow({
           {canExpand ? (expanded ? '−' : '+') : '·'}
         </button>
         <div className="min-w-0 sm:flex-1">
-          <button type="button" onClick={onOpenDetail} className="block max-w-full truncate text-left text-sm font-medium text-neutral-900 hover:text-blue-700 dark:text-neutral-100 dark:hover:text-blue-300" title={item.title}>
+          <button type="button" onClick={onOpenDetail} className="block max-w-full truncate text-left text-sm font-medium text-ink hover:text-accent" title={item.title}>
             {openBlockerTotal > 0 && (
               <span
                 data-testid={`tree-lock-${item.id}`}
                 title={`存在 ${openBlockerTotal} 项未解除的前置任务`}
                 aria-label="存在未解除前置"
-                className="mr-1 text-amber-700 dark:text-amber-300"
+                className="mr-1 inline-flex align-[-2px] text-accent"
               >
-                🔒
+                <IconLock />
               </span>
             )}
             {item.title}

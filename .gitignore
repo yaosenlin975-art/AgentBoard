@@ -20,3 +20,7 @@ idle-task-drafts/
 skills/**/SKILL.md.bak-*
 # CDP 真实浏览器验证用的 Edge profile（仓库根；REPO-CLEAN-2）
 /.tmp-edge-*
+
+# UNSLOP 前后对比截图（约 2MB，不入库；AUDIT.md 入库）
+unslop/original/
+unslop/after/

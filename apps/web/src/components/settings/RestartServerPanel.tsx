@@ -183,7 +183,7 @@ export function RestartServerPanel({
           role="status"
           data-testid="restart-status"
           data-phase={phase}
-          className={`mt-2 text-xs ${phase === 'recovered' ? 'text-green-700 dark:text-green-400' : phase === 'timeout' ? 'text-red-600 dark:text-red-400' : 'text-neutral-600 dark:text-neutral-300'}`}
+          className={`mt-2 text-xs ${phase === 'recovered' ? 'text-ink' : phase === 'timeout' ? 'text-red-600 dark:text-red-400' : 'text-neutral-600 dark:text-neutral-300'}`}
         >
           {message}
           {busy && (oldPid !== null || newPid !== null)

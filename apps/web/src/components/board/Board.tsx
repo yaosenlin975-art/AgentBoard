@@ -199,7 +199,7 @@ export function Board({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜索标题/描述/标签"
-            className="w-32 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-800 sm:w-48"
+            className="h-8 w-40 shrink-0 rounded-lg border border-hairline bg-surface-raised px-2.5 text-xs text-ink outline-none focus:border-accent sm:w-56"
           />
           <LabelFilterBar workspaceId={workspaceId} />
           {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
@@ -240,7 +240,7 @@ export function Board({
               overflow-y-hidden 又把超长内容裁掉，表现为「列内滚轮失效」。 */}
           <div
             data-testid="board-columns"
-            className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-3"
+            className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-4"
             style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(280px, 1fr))` }}
           >
             {columns.map((status) => (

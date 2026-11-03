@@ -4,6 +4,60 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
+ * UNSLOP 全局令牌（方向见 Docs/design-2026-11-03-unslop-direction.md）：
+ * 值班台/控制面板世界 —— 偏暖石墨中性 ramp + 单一琥珀强调色。
+ * - 表面/发丝线/三级文字全部来自同一套暖石墨，chrome 里不出现第二个人造色相；
+ * - 强调色只用于主行动、选中态与真正需要注意的数字（等 N 项、逾期）；
+ * - 语义色（red/green）只表达含义且压低饱和度；
+ * - 亮/暗两套：暗色层次靠 surface step + 发丝线，不用彩色阴影。
+ * 用法：bg-surface-page / bg-surface-card / bg-surface-raised / border-hairline /
+ *       text-ink / text-ink-2 / text-ink-3 / text-accent / bg-accent / text-accent-ink
+ */
+@theme inline {
+  --color-surface-page: var(--ab-page);
+  --color-surface-card: var(--ab-card);
+  --color-surface-raised: var(--ab-raised);
+  --color-hairline: var(--ab-hairline);
+  --color-ink: var(--ab-ink);
+  --color-ink-2: var(--ab-ink-2);
+  --color-ink-3: var(--ab-ink-3);
+  --color-accent: var(--ab-accent);
+  --color-accent-ink: var(--ab-accent-ink);
+  /* 强调底（拖拽悬停 / 选中 tab / 已限额 chip）：必须映射成 --color-* 才会生成 bg-accent-soft 工具类 */
+  --color-accent-soft: var(--ab-accent-soft);
+}
+
+:root {
+  /* 亮色：暖石墨（纸面 + 石墨线），强调琥珀偏深保证白字 4.5:1 */
+  --ab-page: #f7f4ee;
+  --ab-card: #fdfbf7;
+  --ab-raised: #efe9df;
+  --ab-hairline: rgba(31, 27, 22, 0.1);
+  --ab-ink: #1f1b16;
+  --ab-ink-2: #5e554a;
+  --ab-ink-3: #7b7266;
+  --ab-accent: #b45309;
+  --ab-accent-ink: #ffffff;
+  --ab-accent-soft: rgba(180, 83, 9, 0.12);
+  /* UNSLOP pass 9：全站唯一缓动曲线 */
+  --ab-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark {
+  /* 暗色：暖黑台面，强调琥珀提亮，深字 */
+  --ab-page: #161513;
+  --ab-card: #1c1a18;
+  --ab-raised: #262421;
+  --ab-hairline: rgba(239, 233, 222, 0.12);
+  --ab-ink: #efe9de;
+  --ab-ink-2: #aaa398;
+  --ab-ink-3: #8a847a;
+  --ab-accent: #f0a01e;
+  --ab-accent-ink: #1c1a18;
+  --ab-accent-soft: rgba(240, 160, 30, 0.16);
+}
+
+/*
  * 滚动条主题化（SCROLLBAR-DARK）：亮/暗各一套变量。
  * 覆盖：主内容、左浮窗工作空间列表、右浮窗（聊天流/详情）、知识库列表、变更日志时间轴、Modal 内容。
  * 只用 CSS（变量 + 伪元素），不改组件结构、不加依赖、不动 overflow 行为。
@@ -327,4 +381,12 @@
 .ab-graph-controls.is-close {
   width: auto;
   padding: 0.25rem;
+}
+
+/* UNSLOP pass 9（motion）：具名过渡 —— 只动 color/background-color/border-color/opacity，
+ * 全站一条缓动曲线；不用 transition-all，不动 width/height/top/left。 */
+.ab-transition {
+  transition-property: color, background-color, border-color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: var(--ab-ease);
 }

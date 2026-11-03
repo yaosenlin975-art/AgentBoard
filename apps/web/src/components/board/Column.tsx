@@ -36,9 +36,9 @@ export function Column({
   return (
     <section
       data-testid={`column-${status}`}
-      className="flex min-h-0 min-w-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
+      className="flex min-h-0 min-w-0 flex-col rounded-xl border border-hairline bg-surface-raised"
     >
-      <header className="flex items-center justify-between px-2.5 pt-2.5">
+      <header className="flex items-center justify-between px-3 pb-1 pt-3">
         <div className="flex min-w-0 items-center gap-1">
           <h3 className={`text-sm font-semibold ${accent ?? ''}`}>{status}</h3>
           {onCreateIssue !== undefined && (
@@ -48,7 +48,7 @@ export function Column({
               aria-label={`新建任务（${status}）`}
               title={`新建任务（${status}）`}
               onClick={onCreateIssue}
-              className="rounded px-1.5 text-sm leading-5 text-neutral-500 hover:bg-white hover:text-blue-600 focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-blue-400"
+              className="rounded px-1.5 text-sm leading-5 text-ink-3 hover:bg-surface-card hover:text-accent focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-blue-400"
             >
               +
             </button>
@@ -58,15 +58,15 @@ export function Column({
         </div>
         <span
           data-testid={`count-${status}`}
-          className="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+          className="tabular-nums text-xs font-medium text-ink-3"
         >
           {issues.length}
         </span>
       </header>
       <div
         ref={setNodeRef}
-        className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-md p-1 transition-colors ${
-          isOver ? 'bg-neutral-200/70 dark:bg-neutral-800/70' : ''
+        className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-lg p-1 transition-colors ${
+          isOver ? 'bg-accent-soft' : ''
         }`}
       >
         <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
@@ -77,7 +77,7 @@ export function Column({
         {issues.length === 0 && (
           <div
             data-testid={`empty-${status}`}
-            className="flex flex-1 items-center justify-center py-4 text-xs text-neutral-400 dark:text-neutral-600"
+            className="flex flex-1 items-center justify-center py-4 text-xs text-ink-3"
           >
             暂无任务
           </div>

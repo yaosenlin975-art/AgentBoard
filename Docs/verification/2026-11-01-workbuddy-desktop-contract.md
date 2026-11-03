@@ -204,3 +204,64 @@ snapshot schema 草案：
 - `完全退出检测（写盘签名）`：判据路径订正为 `.workbuddy/ioa-im-override.json` + `auth/workbuddy-desktop.info` 同刻写盘 + `app/window-state.json` 滞后 → 仍标 supported（判据），待用户 A 段演示后确认可复现。
 - `托盘退出执行`、`跨账号切换`、`跨账号回滚核验` 保持 unverified，解除条件与执行脚本见 `2026-11-03-workbuddy-tray-exit-and-switch-demo.md`。
 - ACC-05 切换路径：**仍 blocked**，未解除。
+
+---
+
+# 2026-11-03 14:05 托盘退出复测结果（A 段 PASS）+ 退出签名判据订正
+
+- 执行者：用户（客户端操作）；采集：board-web-accounts（只读）；采集时刻 2026-11-03 14:12:54。
+- 本节**只追加**：上方「授权观测」与「2026-11-03 只读复核」两节的 supported/unverified 结论按本节订正，其余不变。
+- 约束遵守：未读 token 原文、未启停客户端、未签到、无强杀进程。
+
+## 1. 现场时间线（本地时间；来源 `~/.workbuddy/logs/startup/2026-11-03/28968-140500.log`，7,710 B，mtime 14:05:44.030）
+
+| 时刻 | 事件（日志原文关键字段） |
+|---|---|
+| 14:05:00 | 启动新实例，PID **28968**（启动日志对 `28968-140500.log/.jsonl`） |
+| 14:05:17.122 | `Phase: bootstrap complete - STARTUP COMPLETE`（renderer:ready 早于 attach） |
+| 14:05:21 | renderer ready 完成，身份骨架 `account-snapshot.json` 写盘（14:05:21.849） |
+| 14:05:39.320 | `Event: before-quit (isQuitting=false, isQuittingForUpdate=false, userConfirmed=false, crashRecovery=false)`（首个 WM_CLOSE 性质的尝试） |
+| 14:05:39.408 / .415 | `Event: before-quit (isQuitting=true, isQuittingForUpdate=false, userConfirmed=true, …)` ← **用户确认退出的判定信号** |
+| 14:05:44.029 | `finishQuit called (isQuittingForUpdate=false, quitCleanupTimedOut=false)`；日志文件 mtime 14:05:44.030 |
+| 14:12:54（采集） | `Get-Process WorkBuddy` → **零进程**（自然退净，无强杀） |
+
+## 2. 判据订正：`ioa-im-override.json` 不是退出签名
+
+| 文件 | 本次 mtime | 结论 |
+|---|---|---|
+| `workbuddy-desktop.info` | 14:05:17.895 | **启动期**写（token 轮换） |
+| `~/.workbuddy/ioa-im-override.json` | **14:05:20.600** | **启动期**写 —— 历史记录把它当「退出签名」是**错的** |
+| `~/.workbuddy/storage/skeleton/account-snapshot.json` | 14:05:21.849 | 启动期写（savedAt 刷新） |
+| `~/.workbuddy/app/window-state.json` | **14:05:39.417** | 与 `before-quit(userConfirmed=true)` **同秒** → **这才是退出写盘的同刻证据** |
+
+**正确的「完全退出」只读判据（本节起生效，覆盖旧判据）**：
+1. `Get-Process WorkBuddy` = 0；
+2. 启动日志尾部出现 `before-quit (... isQuitting=true, userConfirmed=true ...)` 且随后有 `finishQuit called (quitCleanupTimedOut=false)`；
+3. `app/window-state.json` 的 mtime 与上述 `before-quit` 同秒（±2s）；
+4. 主进程监听端口 `127.0.0.1:18488` 消失；
+5. 身份未变：`accountUid8` 仍 `f5d89346`、`accounts[]` 长度 1、schema 仍 `v2-wbencrypted`、`skeleton.uid` 哈希同为 `f5d89346`。
+6. 反例排除：`ioa-im-override.json` / `workbuddy-desktop.info` / `account-snapshot.json` 的 mtime 落在**启动窗口**（本例 14:05:17–14:05:21），不能当退出证据。
+
+## 3. 身份与状态（未变）
+
+- `accountUid8 = f5d89346`（主凭据 `$.account.uid`）、`accountsLen = 1`、schema `v2-wbencrypted`、`skeletonUid8 = f5d89346` → 退出前后同一账号，无换号痕迹。
+- 客户端当前不运行（零进程），等待 B 段（第二授权账号）操作。
+
+## 4. gate 更新
+
+| 字段 | 旧状态 | 新状态 | 依据 |
+|---|---|---|---|
+| 完全退出检测（只读识别） | supported（判据待验证） | **supported（已现场复现）** | §1 + §2 五条判据全部满足 |
+| 托盘退出执行（人工路径） | unverified | **supported（用户手动退出可只读确认，无需强杀）** | §1 全程无 taskkill；`finishQuit` 正常收尾 |
+| `ioa-im-override.json` 作为退出签名 | 曾记为退出证据 | **unsupported（判据错误，改为启动期写入）** | §2 表格 |
+| busy/unsaved 判定 | unsupported（本机不可得） | 不变 | 仍无法从文件/进程判定 |
+| 写入式跨账号切换 | unverified | **仍 unverified（等 B 段）** | B 段未执行 |
+| 跨账号回滚核验 | unverified | **仍 unverified（等 B 段）** | B 段未执行 |
+
+## 5. B 段还差什么
+
+1. 用户用**第二个授权测试账号**登录 WorkBuddy（客户端内退出登录 → 登录账号 2）；
+2. 采集：`accountUid8` 应 **≠ `f5d89346`**（若等于 `dae15da8` 说明命中本机历史第二账号，`~/.workbuddy-key-fallback/connector-keys/dae15da8*` 为旁证）；`skeleton.uid` 同步变化；schema 应仍 `v2-wbencrypted`；auth 目录应新增一份 `workbuddy-desktop.<TIMESTAMPZ>.info` 备份；
+3. 用户用**客户端自身**切回账号 1；
+4. 采集：`accountUid8` 回到 `f5d89346`、`skeleton.uid` 同步回落、instance id（`9cb538c4…`）与 exe 版本（5.9.3.0）不变；
+5. 任一步骤失败（uid 不变/回不去/出现第二安装实例）→ 写入式切换与回滚保持 unverified，ACC-05 切换路径继续 blocked。

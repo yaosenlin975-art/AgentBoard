@@ -76,7 +76,7 @@ export function WorkspaceCard({
         </button>
         <div
           data-workspace-card={workspace.id}
-          className={`relative min-h-[6.5rem] min-w-0 flex-1 rounded-md border transition ${
+          className={`relative min-h-[6.5rem] min-w-0 flex-1 rounded-md border ab-transition ${
             selected
               ? 'border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/40'
               : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900'
@@ -133,7 +133,7 @@ export function WorkspaceCard({
                   aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
                   title={pinned ? '取消置顶' : '置顶'}
                   onClick={onTogglePin}
-                  className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] transition ${
+                  className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] ab-transition ${
                     pinned
                       ? 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700 dark:border-blue-500 dark:bg-blue-500 dark:hover:bg-blue-400'
                       : 'border-neutral-300 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800'
