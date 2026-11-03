@@ -1,0 +1,21 @@
+# 只送构建必需的源码进镜像
+.git
+.gitignore
+.dockerignore
+Dockerfile
+node_modules
+**/node_modules
+**/dist
+apps/*/dist
+apps/*/coverage
+**/*.log
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+Docs
+skills
+tests-e2e
+.pnpm-store
+dsh-*.log

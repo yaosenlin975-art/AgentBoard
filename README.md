@@ -19,7 +19,19 @@ node apps/server/dist/index.js
 打开 http://127.0.0.1:8787 （web 已随 server 静态托管；未构建 web 时仅 API 可用）。
 
 - 数据库默认 `%APPDATA%\AgentBoard\agentboard.db`，配置 `config.json` 同目录。
-- 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`。
+- 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
+- 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
+
+### Docker（单容器）
+
+```bash
+docker build -t agentboard:local .
+docker run -d --name agentboard --restart unless-stopped -p 8788:8787 -v agentboard-data:/data agentboard:local
+curl -fsS http://127.0.0.1:8788/api/version
+```
+
+宿主 8787 常被本机服务占用，容器冒烟请用别的宿主端口（上例 `8788`）。DB 与附件都在 `/data` 一个卷里；
+bind mount 变体、冒烟 6 步、回滚与未证实项见 `Docs/docker-2026-11-03.md`。
 
 ### 后台常驻（Windows）
 
