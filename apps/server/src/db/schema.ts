@@ -12,8 +12,16 @@ import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
 import { migrateCheckinPlatforms } from './migrations/checkinPlatforms.js';
 import { migrateKnowledgeLinks } from './migrations/knowledgeLinks.js';
 import { migrateIssueDependency } from './migrations/issueDependency.js';
+import { migrateIssueStatusModel } from './migrations/issueStatusModel.js';
+import { createIssueMonotonicTimeTrigger } from './migrations/taskHierarchy.js';
+import { migrateWorkspaceStatus } from './migrations/workspaceStatus.js';
 
-// DDL 逐字来自实施计划 Pinned Contracts"DB DDL"段，不得改动
+/**
+ * DDL：新库直接按最新结构建表。
+ * 历史注记（STATUS-1）：`issue.status` 原为 CHECK 枚举（4 值）；状态模型扩展后改为纯文本，
+ * 合法性由 `workspace_status`（每工作区字典）+ 服务层校验保证。DDL 变了，存量库靠
+ * `migrateIssueStatusModel` 重建表（SQLite 删不掉 CHECK）。
+ */
 const DDL = `
 CREATE TABLE IF NOT EXISTS workspace (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
@@ -22,9 +30,11 @@ CREATE TABLE IF NOT EXISTS issue (
   title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
   priority TEXT NOT NULL DEFAULT '中' CHECK (priority IN ('低','中','高')),
   labels TEXT NOT NULL DEFAULT '[]',
-  status TEXT NOT NULL DEFAULT '待规划' CHECK (status IN ('待规划','进行中','待验收','已关闭')),
+  status TEXT NOT NULL DEFAULT '待规划',
   sort_order INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT, claimed_at INTEGER, session_id TEXT, last_seen_comment_id TEXT,
+  parent_issue_id TEXT REFERENCES issue(id) ON DELETE RESTRICT,
+  due_date TEXT, due_time TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS issue_comment (
   id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
@@ -49,6 +59,10 @@ export function initSchema(db: Db): void {
   migrateIssueGitBaseline(db);
   pruneIssueGitBaselines(db);
   migrateTaskHierarchy(db);
+  // STATUS-1：重建 issue（去 status CHECK + 加 due 列）必须在添加 parent_issue_id 之后，
+  // 这样重建时能一并搬运该列；重建会带走表上的触发器，rename 后由迁移内部重建。
+  migrateIssueStatusModel(db);
+  migrateWorkspaceStatus(db);
   migrateIssueDependency(db);
   migrateKnowledge(db);
   migrateKnowledgeLinks(db);
@@ -60,10 +74,7 @@ export function initSchema(db: Db): void {
   migrateCheckin(db);
   migrateCheckinPlatforms(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
-  db.exec(`CREATE TRIGGER IF NOT EXISTS issue_monotonic_time AFTER UPDATE ON issue
-    WHEN new.updated_at <= old.updated_at BEGIN
-      UPDATE issue SET updated_at=old.updated_at+1 WHERE id=new.id;
-    END;`);
+  createIssueMonotonicTimeTrigger(db);
 }
 
 /** CREATE TABLE IF NOT EXISTS 不改已有表：缺列则 ALTER TABLE ADD COLUMN 补齐 */

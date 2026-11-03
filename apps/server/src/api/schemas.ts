@@ -18,7 +18,16 @@ export const knowledgeReviseSchema = z.object({ ...knowledgeScopeFields, ...z.ob
 export const knowledgeActionSchema = z.object({ ...knowledgeScopeFields, actor: knowledgeAuditFields.actor, action: z.enum(['archive', 'restore', 'delete']), expected_revision: z.number().int().positive() }).strict();
 
 export const prioritySchema = z.enum(['低', '中', '高']);
+/** 内置状态枚举：仅用于**查询过滤**的既有兼容口径（写入走 statusNameSchema + 工作区字典校验） */
 export const issueStatusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
+/**
+ * STATUS-1：写入用的状态名。不再是枚举（每工作区可有自定义状态），合法性由服务层
+ * `requireWorkspaceStatus` 按该工作区的 workspace_status 字典判定，未命中 → 400。
+ */
+export const statusNameSchema = z.string().trim().min(1, 'status 不能为空').max(50);
+/** 截止日期 `YYYY-MM-DD` / 截止时间 `HH:mm`（24h）；null 表示清除 */
+export const dueDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'due_date 需为 YYYY-MM-DD').nullable().optional();
+export const dueTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'due_time 需为 HH:mm（24 小时制）').nullable().optional();
 export const issueTreeQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   parent_issue_id: z.string().trim().min(1).optional(),
@@ -99,6 +108,8 @@ export const createIssueSchema = z
     priority: prioritySchema.optional(),
     labels: z.array(z.string()).optional(),
     parent_issue_id: z.string().min(1).nullable().optional(),
+    due_date: dueDateSchema,
+    due_time: dueTimeSchema,
     // 新建任务附图（NEW-ISSUE-IMAGE）：只接受已 staged 的附件 id，创建事务内绑定，最多 5 张
     attachment_ids: z.array(z.string().uuid()).max(5).optional(),
   })
@@ -112,13 +123,15 @@ export const patchIssueSchema = z
     description: z.string().optional(),
     priority: prioritySchema.optional(),
     labels: z.array(z.string()).optional(),
-    status: issueStatusSchema.optional(),
+    status: statusNameSchema.optional(),
     sort_order: z.number().int().optional(),
     parent_issue_id: z.string().min(1).nullable().optional(),
+    due_date: dueDateSchema,
+    due_time: dueTimeSchema,
     workspace_id: z.string().min(1).optional(),
     expected_updated_at: z.number().int().nonnegative().optional(),
   })
-  .refine((v) => ['title','description','priority','labels','status','sort_order','parent_issue_id'].some(k => Object.hasOwn(v, k)), { message: '至少提供一个更新字段' });
+  .refine((v) => ['title','description','priority','labels','status','sort_order','parent_issue_id','due_date','due_time'].some(k => Object.hasOwn(v, k)), { message: '至少提供一个更新字段' });
 
 export const addCommentSchema = z.object({
   content: z.string(),

@@ -19,6 +19,9 @@ interface IssueRow {
   claimed_at: number | null;
   session_id: string | null;
   parent_issue_id: string | null;
+  /** 截止日期 / 时间（STATUS-1 新增列，可空） */
+  due_date: string | null;
+  due_time: string | null;
   /** 留言游标（内部状态，不进共享 Issue 类型）：NULL=无游标，consume 后=最新评论 id */
   last_seen_comment_id: string | null;
   /** 评论总数（查询列，非落库列） */
@@ -51,6 +54,8 @@ function rowToIssue(row: IssueRow): Issue {
     claimed_at: row.claimed_at,
     session_id: row.session_id,
     parent_issue_id: row.parent_issue_id,
+    due_date: row.due_date,
+    due_time: row.due_time,
     comment_count: row.comment_count,
     ...dependencyCountsFrom(row),
     created_at: row.created_at,
@@ -66,6 +71,8 @@ export interface CreateIssueInput {
   labels?: string[];
   sort_order?: number;
   parent_issue_id?: string | null;
+  due_date?: string | null;
+  due_time?: string | null;
 }
 
 export function createIssue(db: Db, input: CreateIssueInput): Issue {
@@ -73,8 +80,8 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
   const now = Date.now();
   db.prepare(
     `INSERT INTO issue (id, workspace_id, title, description, priority, labels, status, sort_order,
-       claimed_by, claimed_at, session_id, parent_issue_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, '待规划', ?, NULL, NULL, NULL, ?, ?, ?)`,
+       claimed_by, claimed_at, session_id, parent_issue_id, due_date, due_time, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, '待规划', ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.workspace_id,
@@ -84,6 +91,8 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
     JSON.stringify(input.labels ?? []),
     input.sort_order ?? 0,
     input.parent_issue_id ?? null,
+    input.due_date ?? null,
+    input.due_time ?? null,
     now,
     now,
   );
@@ -123,9 +132,12 @@ export type IssuePatch = Partial<{
   description: string;
   priority: Priority;
   labels: string[];
-  status: IssueStatus;
+  /** STATUS-1：状态名不再受枚举限制，合法性由服务层按工作区字典校验 */
+  status: string;
   sort_order: number;
   parent_issue_id: string | null;
+  due_date: string | null;
+  due_time: string | null;
 }>;
 
 /** 任意字段子集更新；labels 转 JSON 字符串落库；总是刷新 updated_at */
@@ -160,6 +172,14 @@ export function updateIssue(db: Db, id: string, patch: IssuePatch, guard?: { wor
   if (patch.parent_issue_id !== undefined) {
     sets.push('parent_issue_id = ?');
     params.push(patch.parent_issue_id);
+  }
+  if (patch.due_date !== undefined) {
+    sets.push('due_date = ?');
+    params.push(patch.due_date);
+  }
+  if (patch.due_time !== undefined) {
+    sets.push('due_time = ?');
+    params.push(patch.due_time);
   }
   sets.push('updated_at = MAX(?,updated_at+1)');
   params.push(Date.now(), id);

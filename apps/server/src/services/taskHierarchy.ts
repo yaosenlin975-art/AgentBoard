@@ -4,6 +4,7 @@ import { createIssue, getIssue, listIssueTreePage, updateIssue, type CreateIssue
 import { addComment } from '../db/repos/comment.js';
 import { bindAttachmentsToComment } from '../db/repos/attachment.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
+import { requireWorkspaceStatus } from './workspaceStatus.js';
 
 /** 新建任务附图：staged 附件在创建事务内绑定到该任务的「附件评论」，失败整体回滚 */
 export interface CreateIssueWithAttachmentsInput extends CreateIssueInput {
@@ -43,6 +44,8 @@ export function updateIssueInHierarchy(
         throw new ValidationError('父任务不能是自身或其后代');
       }
     }
+    // STATUS-1：status 已无 DDL CHECK，写入前必须命中本工作区状态字典（非法值 → 400 且列出可用状态）
+    if (patch.status !== undefined) requireWorkspaceStatus(db, current.workspace_id, patch.status);
     return updateIssue(db, issueId, patch, guard);
   }).immediate();
 }

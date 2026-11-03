@@ -98,6 +98,10 @@ export interface Issue {
   priority: Priority; labels: string[]; status: IssueStatus; sort_order: number;
   parent_issue_id: string | null;
   claimed_by: string | null; claimed_at: number | null; session_id: string | null;
+  /** 截止日期 `YYYY-MM-DD`；无截止为 null（STATUS-1 新增列，服务端恒填） */
+  due_date?: string | null;
+  /** 截止时间 `HH:mm`（24h）；与 due_date 独立，无时间为 null */
+  due_time?: string | null;
   /** 评论总数（查询时由 issue_comment 计数，非落库列） */
   comment_count: number;
   /**
