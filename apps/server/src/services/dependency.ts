@@ -1,7 +1,8 @@
 /**
  * DEP-1：任务依赖的**唯一判定口径与全部读写入口**。
  *
- * 口径（设计 §7）：blocker 状态 ∈ `RESOLVED_STATUSES` 即「已解除」。
+ * 口径（设计 §7，STATUS-3 起按 kind）：blocker 的 kind ∈ ('review','done','deprecated') 即「已解除」，
+ * 判定唯一权威在 services/workspaceStatus.ts 的 `isBlockerResolvedKind` / `RESOLVED_KIND_SQL`。
  * claim 守卫、REST 投影、计数聚合都从这里取，禁止各处复制判断。
  * 方向（§5-D5）：`blocked_issue_id` ← `blocker_issue_id`，blocker 完成后 blocked 才可开工。
  */
@@ -10,14 +11,14 @@ import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { getIssue } from '../db/repos/issue.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
+import { RESOLVED_KIND_SQL, isBlockerResolvedKind } from './workspaceStatus.js';
 
-/** 解除判定的状态集合；SQL 聚合与 TS 判定共用这一份字面量 */
-export const RESOLVED_STATUSES: readonly IssueStatus[] = ['待验收', '已关闭'];
-
-/** 唯一口径：blocker 是否已解除（`待验收` 也算解除，避免人工验收堵死流水线 §5-D2） */
-export function isBlockerResolved(status: IssueStatus): boolean {
-  return RESOLVED_STATUSES.includes(status);
-}
+/**
+ * 依赖解除的唯一口径（STATUS-3 起按 kind）：blocker 的 kind ∈ ('review','done','deprecated') 即已解除。
+ * 具体判定在 services/workspaceStatus.ts 的 `isBlockerResolvedKind`，这里只做转出与 SQL 拼装，
+ * 不再维护「状态名 → 是否解除」的第二份清单。
+ */
+export { isBlockerResolvedKind } from './workspaceStatus.js';
 
 /** 依赖列表项：`resolved` 由唯一口径算出，前端/CLI 不再自行判断 */
 export interface DependencyRef {
@@ -32,32 +33,35 @@ export interface DependencyView {
   blocked: DependencyRef[];
 }
 
-const refToView = (row: { id: string; title: string; status: string }): DependencyRef => ({
+/** 行里带 kind（由 workspace_status 反查），resolved 只看 kind，不看状态名 */
+const refToView = (row: { id: string; title: string; status: string; kind: string | null }): DependencyRef => ({
   issue_id: row.id,
   title: row.title,
   status: row.status as IssueStatus,
-  resolved: isBlockerResolved(row.status as IssueStatus),
+  resolved: isBlockerResolvedKind(row.kind),
 });
+
+/** 依赖视图的三段查询共用：连同该状态在当前工作区的 kind 一起取出来 */
+const DEPENDENCY_ROW_SQL = (where: string): string => `SELECT i.id, i.title, i.status, ws.kind AS kind
+    FROM issue_dependency d
+    JOIN issue i ON i.id = ${where === 'blocked' ? 'd.blocker_issue_id' : 'd.blocked_issue_id'}
+    LEFT JOIN workspace_status ws ON ws.workspace_id = i.workspace_id AND ws.name = i.status
+   WHERE d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
 
 /** 单个任务的双向依赖视图（GET /dependencies；CLI/MCP 复用） */
 export function listDependencies(db: Db, issueId: string): DependencyView {
-  const blockers = db.prepare(`SELECT i.id, i.title, i.status FROM issue_dependency d
-      JOIN issue i ON i.id = d.blocker_issue_id
-    WHERE d.blocked_issue_id = ? ORDER BY i.created_at, i.id`).all(issueId) as Array<{ id: string; title: string; status: string }>;
-  const blocked = db.prepare(`SELECT i.id, i.title, i.status FROM issue_dependency d
-      JOIN issue i ON i.id = d.blocked_issue_id
-    WHERE d.blocker_issue_id = ? ORDER BY i.created_at, i.id`).all(issueId) as Array<{ id: string; title: string; status: string }>;
+  type Row = { id: string; title: string; status: string; kind: string | null };
+  const blockers = db.prepare(DEPENDENCY_ROW_SQL('blocked')).all(issueId) as Row[];
+  const blocked = db.prepare(DEPENDENCY_ROW_SQL('blocker')).all(issueId) as Row[];
   return { blockers: blockers.map(refToView), blocked: blocked.map(refToView) };
 }
 
-export interface BlockerRow { id: string; title: string; status: IssueStatus }
+export interface BlockerRow { id: string; title: string; status: IssueStatus; kind?: string | null }
 
-/** 未解除的前置任务（claim 守卫与测试共用；判定走 isBlockerResolved） */
+/** 未解除的前置任务（claim 守卫与测试共用；判定走 isBlockerResolvedKind） */
 export function unresolvedBlockers(db: Db, issueId: string): BlockerRow[] {
-  const rows = db.prepare(`SELECT i.id, i.title, i.status FROM issue_dependency d
-      JOIN issue i ON i.id = d.blocker_issue_id
-    WHERE d.blocked_issue_id = ? ORDER BY i.created_at, i.id`).all(issueId) as BlockerRow[];
-  return rows.filter(row => !isBlockerResolved(row.status));
+  const rows = db.prepare(DEPENDENCY_ROW_SQL('blocked')).all(issueId) as BlockerRow[];
+  return rows.filter(row => !isBlockerResolvedKind(row.kind));
 }
 
 export const shortIssueId = (id: string): string => id.slice(0, 8);
@@ -75,12 +79,13 @@ export function blockedClaimMessage(blockers: readonly BlockerRow[]): string {
  * 调用方按 `blockedByCounts` 归零补默认值。
  */
 export function blockedByAggregateJoin(): string {
-  const resolved = RESOLVED_STATUSES.map(status => `'${status}'`).join(',');
   return `LEFT JOIN (
       SELECT d.blocked_issue_id AS dep_issue_id,
              COUNT(*) AS blocked_by_count,
-             SUM(CASE WHEN b.status IN (${resolved}) THEN 0 ELSE 1 END) AS blocked_by_open_count
-        FROM issue_dependency d JOIN issue b ON b.id = d.blocker_issue_id
+             SUM(CASE WHEN ws.kind IN (${RESOLVED_KIND_SQL}) THEN 0 ELSE 1 END) AS blocked_by_open_count
+        FROM issue_dependency d
+        JOIN issue b ON b.id = d.blocker_issue_id
+        LEFT JOIN workspace_status ws ON ws.workspace_id = b.workspace_id AND ws.name = b.status
        GROUP BY d.blocked_issue_id
     ) dep ON dep.dep_issue_id = i.id`;
 }

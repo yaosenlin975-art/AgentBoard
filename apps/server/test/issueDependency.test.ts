@@ -14,7 +14,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { initSchema } from '../src/db/schema.js';
-import { isBlockerResolved, unresolvedBlockers } from '../src/services/dependency.js';
+import { unresolvedBlockers, isBlockerResolvedKind } from '../src/services/dependency.js';
 
 describe('issue dependency (DEP-1)', () => {
   let t: TestDb;
@@ -309,10 +309,13 @@ describe('issue dependency (DEP-1)', () => {
   });
 
   it('sharesOneResolutionRuleBetweenServiceAndQueryProjection', () => {
-    expect(isBlockerResolved('待验收')).toBe(true);
-    expect(isBlockerResolved('已关闭')).toBe(true);
-    expect(isBlockerResolved('待规划')).toBe(false);
-    expect(isBlockerResolved('进行中')).toBe(false);
+    // STATUS-3：解除判定按 kind（review / done / deprecated），不再比对状态名
+    expect(isBlockerResolvedKind('review')).toBe(true);
+    expect(isBlockerResolvedKind('done')).toBe(true);
+    expect(isBlockerResolvedKind('deprecated')).toBe(true);
+    expect(isBlockerResolvedKind('open')).toBe(false);
+    expect(isBlockerResolvedKind('started')).toBe(false);
+    expect(isBlockerResolvedKind(null)).toBe(false);
     expect(unresolvedBlockers(t.db, 'no-such-issue')).toEqual([]);
   });
 });

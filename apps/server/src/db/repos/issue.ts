@@ -5,6 +5,7 @@ import { ApiError, ConflictError, NotFoundError, ValidationError } from '../../e
 import type { PageResult, TaskPreview } from '@agentboard/shared';
 import { pageResult, textWindow, validatePage } from '../pagination.js';
 import { blockedByAggregateJoin, dependencyCountsFrom } from '../../services/dependency.js';
+import { CLOSED_KIND_SQL, isClosedStatusName } from '../../services/workspaceStatus.js';
 
 interface IssueRow {
   id: string;
@@ -161,7 +162,9 @@ export function updateIssue(db: Db, id: string, patch: IssuePatch, guard?: { wor
     params.push(JSON.stringify(patch.labels));
   }
   if (patch.status !== undefined) {
-    if (patch.status === '已关闭') requireAllDescendantsClosed(db, id);
+    // STATUS-3：关闭类按 kind 判（done | deprecated），不再比较状态名
+    const workspaceId = (db.prepare('SELECT workspace_id FROM issue WHERE id=?').get(id) as { workspace_id: string } | undefined)?.workspace_id;
+    if (workspaceId && isClosedStatusName(db, workspaceId, patch.status)) requireAllDescendantsClosed(db, id);
     sets.push('status = ?');
     params.push(patch.status);
   }
@@ -246,7 +249,8 @@ function decodeTreeCursor(value: string): TreeCursor {
     if (
       parsed.version === 1 && typeof parsed.workspace_id === 'string' &&
       (parsed.parent_issue_id === null || typeof parsed.parent_issue_id === 'string') &&
-      (parsed.status === null || parsed.status === '待规划' || parsed.status === '进行中' || parsed.status === '待验收' || parsed.status === '已关闭') &&
+      // STATUS-3：状态名不再受四值枚举约束（自定义状态 / 已废弃 都能作为筛选值），只校验类型
+      (parsed.status === null || typeof parsed.status === 'string') &&
       Number.isSafeInteger(parsed.sort_order) && Number.isSafeInteger(parsed.created_at) && typeof parsed.id === 'string'
     ) return parsed as TreeCursor;
   } catch {
@@ -318,17 +322,22 @@ function descendantStats(db: Db, rootIds: string[]): Map<string, { descendant_co
   const result = new Map<string, { descendant_count: number; descendants_closed_count: number }>();
   if (rootIds.length === 0) return result;
   const placeholders = rootIds.map(() => '?').join(',');
-  const rows = db.prepare(`WITH RECURSIVE descendants(root_id,id,status,path,cycle) AS (
-      SELECT root.id,child.id,child.status,':'||hex(root.id)||':'||hex(child.id)||':',child.id=root.id
+  // STATUS-3：关闭类判定按 workspace_status.kind ∈ ('done','deprecated')，不再按状态名 '已关闭'
+  const rows = db.prepare(`WITH RECURSIVE descendants(root_id,id,workspace_id,status,path,cycle) AS (
+      SELECT root.id,child.id,child.workspace_id,child.status,':'||hex(root.id)||':'||hex(child.id)||':',child.id=root.id
       FROM issue root JOIN issue child ON child.parent_issue_id=root.id WHERE root.id IN (${placeholders})
       UNION ALL
-      SELECT d.root_id,child.id,child.status,
+      SELECT d.root_id,child.id,child.workspace_id,child.status,
         CASE WHEN instr(d.path,':'||hex(child.id)||':')>0 THEN d.path ELSE d.path||hex(child.id)||':' END,
         instr(d.path,':'||hex(child.id)||':')>0
       FROM descendants d JOIN issue child ON child.parent_issue_id=d.id WHERE d.cycle=0
     )
-    SELECT root_id,COUNT(*) AS descendant_count,SUM(CASE WHEN status='已关闭' THEN 1 ELSE 0 END) AS descendants_closed_count,
-      MAX(cycle) AS has_cycle FROM descendants GROUP BY root_id`).all(...rootIds) as Array<{
+    SELECT d.root_id,COUNT(*) AS descendant_count,
+      SUM(CASE WHEN ws.kind IS NOT NULL THEN 1 ELSE 0 END) AS descendants_closed_count,
+      MAX(d.cycle) AS has_cycle
+    FROM descendants d
+    LEFT JOIN workspace_status ws ON ws.workspace_id=d.workspace_id AND ws.name=d.status AND ws.kind IN (${CLOSED_KIND_SQL})
+    GROUP BY d.root_id`).all(...rootIds) as Array<{
       root_id: string; descendant_count: number; descendants_closed_count: number; has_cycle: number;
     }>;
   for (const row of rows) {

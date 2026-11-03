@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
+import { CLOSED_KINDS } from '../db/migrations/workspaceStatus.js';
 
 export interface WorkspaceStatusRow {
   id: string;
@@ -139,3 +140,41 @@ export function removeWorkspaceStatus(db: Db, input: RemoveWorkspaceStatusInput)
   }).immediate();
 }
 
+
+/**
+ * STATUS-3：kind 语义的**唯一权威**。
+ *
+ * - `isClosedKind`：「关闭类」判定（`done` | `deprecated`）。后代替关闭计数、父卡关闭校验、
+ *   详情里的关闭阻塞判断都只认它，**不再比较状态名字符串**。
+ * - `isBlockerResolvedKind`：依赖解除判定 = 关闭类 ∪ `review`（待验收也放行，避免人工验收堵死流水线 §5-D2）。
+ * - `CLOSED_KIND_SQL` / `RESOLVED_KIND_SQL`：同样的清单给 SQL 用，保证 TS 与 SQL 不会各写一份。
+ */
+export function isClosedKind(kind: string | null | undefined): boolean {
+  return kind !== null && kind !== undefined && (CLOSED_KINDS as readonly string[]).includes(kind);
+}
+
+export function isBlockerResolvedKind(kind: string | null | undefined): boolean {
+  return kind === 'review' || isClosedKind(kind);
+}
+
+const quoteKinds = (kinds: readonly string[]): string => kinds.map(kind => `'${kind}'`).join(',');
+export const CLOSED_KIND_SQL = quoteKinds(CLOSED_KINDS);
+export const RESOLVED_KIND_SQL = quoteKinds(['review', ...CLOSED_KINDS]);
+
+/** 该工作区里属于关闭类的状态名（按 kind 反查，供按名字判断的调用点使用） */
+export function closedStatusNames(db: Db, workspaceId: string): string[] {
+  return (db.prepare(`SELECT name FROM workspace_status WHERE workspace_id=? AND kind IN (${CLOSED_KIND_SQL}) ORDER BY sort_order, name`)
+    .all(workspaceId) as Array<{ name: string }>).map(row => row.name);
+}
+
+/** 单个状态名是否关闭类（走 kind 反查，名字可自定义） */
+export function isClosedStatusName(db: Db, workspaceId: string, status: string | null | undefined): boolean {
+  if (!status) return false;
+  return isClosedKind(workspaceStatusKind(db, workspaceId, status));
+}
+
+/** 单个状态名是否满足「依赖已解除」（关闭类 ∪ 待验收对应 kind） */
+export function isBlockerResolvedStatusName(db: Db, workspaceId: string, status: string | null | undefined): boolean {
+  if (!status) return false;
+  return isBlockerResolvedKind(workspaceStatusKind(db, workspaceId, status));
+}
