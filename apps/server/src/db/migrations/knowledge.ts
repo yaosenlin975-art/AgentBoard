@@ -35,4 +35,15 @@ export function migrateKnowledge(db: Db): void {
     INSERT INTO knowledge_fts(page_id,title,body_md) SELECT id,title,body_md FROM knowledge_page p
       WHERE NOT EXISTS(SELECT 1 FROM knowledge_fts f WHERE f.page_id=p.id);
   `);
+  // KB-MODEL：四类内容模型。幂等加列（PRAGMA 判断后 ALTER），只动 knowledge_page
+  ensureColumn(db, 'knowledge_page', 'category', "category TEXT NOT NULL DEFAULT 'legacy' CHECK(category IN ('design','solved','pinned','open','legacy'))");
+  ensureColumn(db, 'knowledge_page', 'landed', "landed TEXT CHECK(landed IS NULL OR landed IN ('landed','partial','proposed'))");
+  db.exec("CREATE INDEX IF NOT EXISTS knowledge_category ON knowledge_page(category,status)");
+}
+
+/** SQLite 的 ALTER TABLE ADD COLUMN 不可重复执行：先查 PRAGMA table_info 再决定是否加 */
+function ensureColumn(db: Db, table: string, column: string, ddl: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some((item) => item.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }

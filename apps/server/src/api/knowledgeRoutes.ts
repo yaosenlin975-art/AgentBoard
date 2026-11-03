@@ -80,7 +80,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     if (input.scope !== 'common') params.workspace = input.workspace_id!;
     if (input.status !== 'all') params.status = input.status;
     if (input.include_expired === 'false') params.now = Date.now();
-    const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params);
+    const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params);
     res.json({ items: rows.slice(0, input.limit), next_offset: rows.length > input.limit ? input.offset + input.limit : null });
   });
   router.get('/pages/:id/revisions', (req, res) => {

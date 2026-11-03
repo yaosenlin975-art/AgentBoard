@@ -11,7 +11,10 @@ export const commentQuerySchema = z.object({ content_offset_chars: offsetQuery, 
 export const knowledgeScopeFields = { scope: z.enum(['workspace', 'common']), workspace_id: z.string().min(1).optional() };
 const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_md: z.string().min(1).max(100000),
   sources: z.array(knowledgeSourceSchema).min(1).max(100), evidence: z.array(knowledgeEvidenceSchema).min(1).max(100),
-  expires_at: z.number().int().nonnegative().nullable().optional() };
+  expires_at: z.number().int().nonnegative().nullable().optional(),
+  // KB-MODEL：非法 category/landed 一律 400（zod enum）；缺省由 repo 归一到 legacy
+  category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
+  landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional() };
 const knowledgeAuditFields = { actor: z.string().trim().min(1).max(100), change_note: z.string().max(2000).optional() };
 export const knowledgeCreateSchema = z.object({ ...knowledgeScopeFields, ...knowledgeContentFields, ...knowledgeAuditFields, slug: z.string().min(1).max(200) }).strict();
 export const knowledgeReviseSchema = z.object({ ...knowledgeScopeFields, ...z.object(knowledgeContentFields).partial().shape, ...knowledgeAuditFields, expected_revision: z.number().int().positive() }).strict();

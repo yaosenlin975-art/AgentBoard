@@ -24,6 +24,9 @@ export const GRAPH_KEYWORD_MIN_TRIGRAMS = 3;
 
 export interface KnowledgeGraphNode {
   id: string; title: string; scope: 'workspace' | 'common'; workspace_id: string | null;
+  /** KB-MODEL：前端按 category 着色（缺省 legacy） */
+  category?: string | null;
+  landed?: string | null;
   source_count: number; degree: number;
 }
 export interface KnowledgeGraphEdge { source: string; target: string; kind: 'link' | 'source' | 'keyword'; weight: number }
@@ -185,6 +188,8 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
       id: row.id,
       title: row.title,
       scope: row.scope,
+      category: row.category ?? 'legacy',
+      landed: row.landed ?? null,
       workspace_id: row.workspace_id,
       source_count: new Set(row.sources.map((source: KnowledgeSource) => source.locator)).size,
       degree: degree.get(row.id) ?? 0,
