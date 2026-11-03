@@ -80,6 +80,43 @@ export function zoomFactorFromWheel(deltaY: number): number {
   return Math.pow(1.5, -safe / 120);
 }
 
+/** 文档 C1：`deltaMode` 1（行）→ ×40、2（页）→ ×800，换成像素再算倍率 */
+export function wheelDeltaPixels(delta: number, deltaMode = 0): number {
+  const safe = Number.isFinite(delta) ? delta : 0;
+  if (deltaMode === 1) return safe * 40;
+  if (deltaMode === 2) return safe * 800;
+  return safe;
+}
+
+/**
+ * 文档 C1 的锚点规则：**放大锚点 = 鼠标（设备像素坐标），缩小锚点 = 画布中心**。
+ * 传 (0,0) 表示「锚点归零 → 用画布中心」，与文档 `zoomCenterX/Y = 0` 的语义一致。
+ */
+export function zoomAnchor(
+  previousTarget: number,
+  nextTarget: number,
+  cursorDevice: { x: number; y: number },
+  canvasCenterDevice: { x: number; y: number },
+): { x: number; y: number } {
+  return nextTarget < previousTarget ? { x: 0, y: 0 } : { x: cursorDevice.x, y: cursorDevice.y };
+}
+
+/**
+ * 文档的 `mQ(cur, target, ratio)`：`ratio` 是「保留比例」，每帧只向目标走 `1 - ratio`。
+ * 即 `mQ(a, b, .9)` = 每帧 10%（透明度/平移速度），`mQ(a, b, .85)` = 每帧 15%（缩放）。
+ */
+export function dampen(from: number, to: number, ratio = 0.9): number {
+  const safeRatio = Number.isFinite(ratio) ? ratio : 0.9;
+  return from + (to - from) * (1 - safeRatio);
+}
+
+/** 文档 C3：按下到抬起的位移平方 > 25（即 > 5px）就不算点击 */
+export const CLICK_DISTANCE_SQ = 25;
+
+export function isClickGesture(dx: number, dy: number): boolean {
+  return dx * dx + dy * dy <= CLICK_DISTANCE_SQ;
+}
+
 /** 缩放上下限（文档：上限 8 / 下限 1/128） */
 export const ZOOM_MAX = 8;
 export const ZOOM_MIN = 1 / 128;
@@ -87,6 +124,13 @@ export const ZOOM_MIN = 1 / 128;
 export function clampZoom(scale: number): number {
   if (!Number.isFinite(scale) || scale <= 0) return 1;
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scale));
+}
+
+/** 文档 C2：松手超过 100ms 视为「停住」，惯性速度清零 */
+export const PAN_INERTIA_WINDOW_MS = 100;
+
+export function shouldKeepPanInertia(elapsedMs: number): boolean {
+  return Number.isFinite(elapsedMs) && elapsedMs <= PAN_INERTIA_WINDOW_MS;
 }
 
 /**
