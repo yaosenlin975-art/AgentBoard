@@ -25,6 +25,7 @@ export const GRAPH_KEYWORD_WEIGHT = 1;
  * - 阈值提高到 3 词 / 6 trigram；
  * - 并且只统计「稀有项」：出现在 >40% 页面（且 ≥3 页）的词/trigram 视为通用词，不参与成边。
  */
+// 取值与 `packages/shared/src/graphRules.ts` 的 GRAPH_KEYWORD_RULES 保持一致（前端直接 import 那份）
 export const GRAPH_KEYWORD_MIN_TERMS = 4;
 export const GRAPH_KEYWORD_MIN_TRIGRAMS = 6;
 /** 通用词判定比例：df > max(2, ceil(页数 × 0.4)) 视为区分度不足 */
