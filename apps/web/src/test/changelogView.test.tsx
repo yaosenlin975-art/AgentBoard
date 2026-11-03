@@ -1,9 +1,11 @@
 /**
- * LOG-VIEW：工作区日志从浮窗改为「知识库右侧的日志视图」。
- * 覆盖：入口位置与文案、进入视图而非浮窗、左右两栏、默认选中最新、点列表切详情（Markdown）、窄屏退化、空态、归档只读。
+ * LOG-VIEW + LOG-SCROLL：日志是「知识库右侧的日志视图」，主体左列表 + 右侧连续滚动区。
+ * 覆盖：入口位置与文案、进入视图而非浮窗、左右两栏、连续渲染与 1px 分割线、类型标签定宽、点击跳转、
+ * 选中随滚动更新（IntersectionObserver）、reduced-motion 即时跳转、窄屏退化、空态、归档只读、切 workspace。
+ * 几何（真实矩形 / 滚动位置）由 CDP 在浏览器验证；这里锁 DOM 结构与交互契约。
  */
 import { useState } from 'react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -51,6 +53,67 @@ function mockList(items: WorkspaceChangeLog[], nextOffset: number | null = null)
   );
 }
 
+/** jsdom 没有 IntersectionObserver / scrollIntoView：由测试注入并手动触发 */
+interface FakeObserver {
+  callback: IntersectionObserverCallback;
+  elements: Element[];
+}
+let observers: FakeObserver[] = [];
+let scrollSpy: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  observers = [];
+  scrollSpy = vi.fn();
+  Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollSpy, writable: true, configurable: true });
+  class FakeIntersectionObserver {
+    callback: IntersectionObserverCallback;
+    elements: Element[] = [];
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback;
+      observers.push(this as unknown as FakeObserver);
+    }
+    observe(element: Element): void {
+      this.elements.push(element);
+      // 日志条目由测试用手动 fireIntersect 驱动；其它观察者（MarkdownView 的懒加载门控）立即视为可见，
+      // 否则 Markdown 永远停在水合前的 fallback，正文断言取不到真实元素。
+      if (!(element instanceof Element) || !element.hasAttribute('data-changelog-id')) {
+        setTimeout(() => {
+          this.callback(
+            [{ isIntersecting: true, target: element } as unknown as IntersectionObserverEntry],
+            this as unknown as IntersectionObserver,
+          );
+        }, 0);
+      }
+    }
+    unobserve(): void {}
+    disconnect(): void {}
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+  Object.defineProperty(window, 'IntersectionObserver', {
+    value: FakeIntersectionObserver,
+    writable: true,
+    configurable: true,
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+/** 模拟某条日志滚入视口：触发所有观察器的回调 */
+function fireIntersect(id: string): void {
+  const target = document.querySelector(`[data-changelog-id="${id}"]`);
+  expect(target).not.toBeNull();
+  for (const observer of observers) {
+    observer.callback(
+      [{ isIntersecting: true, target } as unknown as IntersectionObserverEntry],
+      observer as unknown as IntersectionObserver,
+    );
+  }
+}
+
 /** 模拟 App 的接线：视图互斥 + 日志作为主区域视图渲染 */
 function Harness() {
   const [logOpen, setLogOpen] = useState(false);
@@ -91,10 +154,6 @@ function Harness() {
   );
 }
 
-beforeEach(() => {
-  mockList([entry()]);
-});
-
 describe('日志入口（知识库右侧）', () => {
   it('「日志」按钮紧挨「知识库」右侧，四个视图按钮顺序固定', () => {
     withClient(
@@ -115,6 +174,7 @@ describe('日志入口（知识库右侧）', () => {
   });
 
   it('点「日志」进入主区域视图而不是浮窗', async () => {
+    mockList([entry()]);
     withClient(<Harness />);
     expect(screen.getByTestId('board-stub')).toBeInTheDocument();
     const entryButton = within(screen.getByTestId('harness-switcher')).getByTestId('view-log');
@@ -123,80 +183,161 @@ describe('日志入口（知识库右侧）', () => {
 
     const panel = await screen.findByTestId('changelog-panel');
     expect(panel.tagName).toBe('SECTION');
-    // 不是浮窗：没有 dialog 角色
     expect(screen.queryByRole('dialog')).toBeNull();
-    // 与平铺看板/知识库同级：视图切换器仍在视图内部
     expect(within(panel).getByTestId('view-switcher')).toBeInTheDocument();
     expect(screen.queryByTestId('board-stub')).toBeNull();
     expect(within(screen.getByTestId('harness-switcher')).getByTestId('view-log')).toHaveAttribute('aria-pressed', 'true');
   });
 });
 
-describe('日志视图：左右两栏', () => {
-  it('左列表 + 右详情在同一分行容器内，默认选中最新一条', async () => {
-    const latest = entry({ id: 'log-latest', title: '最新一条', occurred_at: BASE_TS });
-    const older = entry({ id: 'log-old', title: '较早一条', occurred_at: BASE_TS - DAY });
+describe('日志视图：左列表 + 右侧连续滚动区', () => {
+  const latest = entry({ id: 'log-latest', title: '最新一条', body_md: '最新正文' });
+  const older = entry({ id: 'log-old', title: '较早一条', occurred_at: BASE_TS - DAY, body_md: '## 小节标题\n\n- 列表项' });
+
+  it('右侧全量连续渲染（不折叠、不卡片堆叠），默认选中最新一条', async () => {
     mockList([older, latest]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
 
     const split = await screen.findByTestId('changelog-split');
     const listPane = within(split).getByTestId('changelog-list-pane');
-    const detailPane = within(split).getByTestId('changelog-detail-pane');
-    expect(listPane).toBeInTheDocument();
-    expect(detailPane).toBeInTheDocument();
+    const scroll = within(split).getByTestId('changelog-scroll');
 
-    // 列表按时间倒序：最新在顶，且默认选中最新
     const listItems = within(listPane).getAllByRole('button', { name: /最新一条|较早一条/ });
     expect(listItems.map((node) => node.getAttribute('data-testid'))).toEqual([
       'changelog-entry-log-latest',
       'changelog-entry-log-old',
     ]);
+
+    // 右侧：两条都在同一滚动区内，顺序与左列表一致
+    const docIds = [...scroll.querySelectorAll('[data-changelog-id]')].map((n) => n.getAttribute('data-changelog-id'));
+    expect(docIds).toEqual(['log-latest', 'log-old']);
     expect(within(listPane).getByTestId('changelog-entry-log-latest')).toHaveAttribute('aria-current', 'true');
-    expect(within(listPane).getByTestId('changelog-entry-log-old')).not.toHaveAttribute('aria-current');
-    expect(within(detailPane).getByTestId('changelog-detail-title')).toHaveTextContent('最新一条');
+    expect(within(scroll).getByTestId('changelog-doc-log-latest')).toHaveAttribute('aria-current', 'true');
+    expect(within(scroll).getByTestId('changelog-doc-log-old')).not.toHaveAttribute('aria-current');
+
+    // 正文全部直接渲染（不需要展开）
+    expect(within(scroll).getByTestId('changelog-doc-body-log-old')).toBeInTheDocument();
   });
 
-  it('点左侧条目切换右侧详情并渲染 Markdown', async () => {
-    const latest = entry({ id: 'log-latest', title: '最新一条', body_md: '最新正文' });
-    const older = entry({
-      id: 'log-old',
-      title: '较早一条',
-      occurred_at: BASE_TS - DAY,
-      body_md: '## 小节标题\n\n- 列表项',
-    });
+  it('右侧正文是真实 Markdown（折叠已取消，全部直接渲染）', { timeout: 20000 }, async () => {
     mockList([older, latest]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
+    const scroll = await screen.findByTestId('changelog-scroll');
+    const body = within(scroll).getByTestId('changelog-doc-body-log-old');
+    expect(await within(body).findByRole('heading', { level: 2 }, { timeout: 15000 })).toHaveTextContent('小节标题');
+    expect(within(body).getByRole('listitem')).toHaveTextContent('列表项');
+  });
 
-    const detailPane = await screen.findByTestId('changelog-detail-pane');
-    expect(within(detailPane).getByTestId('changelog-detail-title')).toHaveTextContent('最新一条');
+  it('条间 / 组间用 1px 分割线，不是卡片边框', async () => {
+    mockList([older, latest]);
+    withClient(<ChangelogPanel workspaceId="ws-1" />);
+    const scroll = await screen.findByTestId('changelog-scroll');
+
+    const articles = [...scroll.querySelectorAll('article[data-changelog-id]')];
+    expect(articles.length).toBe(2);
+    for (const article of articles) {
+      expect(article.className).toContain('border-t');
+      expect(article.className).not.toContain('rounded-md border border');
+    }
+    const groups = [...scroll.querySelectorAll('[data-testid^="changelog-doc-group-"]')];
+    expect(groups.length).toBeGreaterThanOrEqual(2);
+    for (const group of groups) expect(group.className).toContain('border-b');
+  });
+
+  it('类型标签定宽 44px 且文字居中（三种类型同宽）', async () => {
+    mockList([
+      entry({ id: 'log-new', title: '新增的', change_type: '新增' }),
+      entry({ id: 'log-fix', title: '修复的', change_type: '修复', occurred_at: BASE_TS - DAY }),
+      entry({ id: 'log-tune', title: '调整的', change_type: '调整', occurred_at: BASE_TS - 2 * DAY }),
+    ]);
+    withClient(<ChangelogPanel workspaceId="ws-1" />);
+    const scroll = await screen.findByTestId('changelog-scroll');
+
+    for (const type of ['新增', '修复', '调整']) {
+      const tags = within(scroll).getAllByTestId(`changelog-type-${type}`);
+      expect(tags.length).toBeGreaterThan(0);
+      const tag = tags[0]!;
+      expect(tag.className).toContain('w-11');
+      expect(tag.className).toContain('justify-center');
+      expect(tag.className).toContain('shrink-0');
+      expect(tag.className).not.toContain('min-w-');
+    }
+    const listTag = within(await screen.findByTestId('changelog-list-pane')).getAllByTestId('changelog-type-修复')[0]!;
+    expect(listTag.className).toContain('w-11');
+  });
+
+  it('点左侧列表项 → 右侧对应日志滚入视口并同步选中', async () => {
+    mockList([older, latest]);
+    withClient(<ChangelogPanel workspaceId="ws-1" />);
+    await screen.findByTestId('changelog-scroll');
 
     await userEvent.click(screen.getByTestId('changelog-entry-log-old'));
 
-    await waitFor(() =>
-      expect(within(detailPane).getByTestId('changelog-detail-title')).toHaveTextContent('较早一条'),
-    );
-    const body = within(detailPane).getByTestId('changelog-detail-body');
-    expect(await within(body).findByRole('heading', { level: 2 }, { timeout: 5000 })).toHaveTextContent('小节标题');
-    expect(within(body).getByRole('listitem')).toHaveTextContent('列表项');
+    expect(scrollSpy).toHaveBeenCalledTimes(1);
+    expect(scrollSpy.mock.calls[0]?.[0] as ScrollIntoViewOptions).toMatchObject({ behavior: 'smooth', block: 'start' });
+    await waitFor(() => expect(screen.getByTestId('changelog-doc-log-old')).toHaveAttribute('aria-current', 'true'));
     expect(screen.getByTestId('changelog-entry-log-old')).toHaveAttribute('aria-current', 'true');
   });
 
+  it('prefers-reduced-motion: reduce 时改为即时跳转（behavior=auto）', async () => {
+    const original = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      configurable: true,
+      value: (query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => false,
+      }),
+    });
+    try {
+      mockList([older, latest]);
+      withClient(<ChangelogPanel workspaceId="ws-1" />);
+      await screen.findByTestId('changelog-scroll');
+
+      await userEvent.click(screen.getByTestId('changelog-entry-log-old'));
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+      expect(scrollSpy.mock.calls[0]?.[0] as ScrollIntoViewOptions).toMatchObject({ behavior: 'auto' });
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { writable: true, configurable: true, value: original });
+    }
+  });
+
+  it('滚动位置变化时选中项跟着更新（IntersectionObserver）', async () => {
+    mockList([older, latest]);
+    withClient(<ChangelogPanel workspaceId="ws-1" />);
+    await screen.findByTestId('changelog-scroll');
+    expect(screen.getByTestId('changelog-doc-log-latest')).toHaveAttribute('aria-current', 'true');
+
+    fireIntersect('log-old');
+
+    await waitFor(() => expect(screen.getByTestId('changelog-doc-log-old')).toHaveAttribute('aria-current', 'true'));
+    expect(screen.getByTestId('changelog-entry-log-old')).toHaveAttribute('aria-current', 'true');
+    expect(screen.getByTestId('changelog-doc-log-latest')).not.toHaveAttribute('aria-current');
+  });
+
   it('≤900px 退化为上下堆叠（单列），≥901px 才是左右两栏', async () => {
+    mockList([entry()]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
     const split = await screen.findByTestId('changelog-split');
     expect(split.className).toContain('grid-cols-1');
     expect(split.className).toContain('min-[901px]:grid-cols-[minmax(200px,300px)_minmax(0,1fr)]');
   });
 
-  it('空态：左栏给出空提示，右栏提示无详情', async () => {
+  it('空态：左栏与右侧滚动区各给提示', async () => {
     mockList([]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
     expect(await screen.findByTestId('changelog-empty')).toHaveTextContent('这个工作区还没有变更日志');
-    expect(screen.getByTestId('changelog-detail-empty')).toHaveTextContent('（暂无变更日志）');
+    expect(screen.getByTestId('changelog-empty-doc')).toHaveTextContent('这个工作区还没有变更日志');
     expect(screen.queryByTestId('changelog-list')).toBeNull();
   });
 
-  it('切 workspace：列表与详情都换成新工作区，不残留旧条目', async () => {
+  it('切 workspace：列表与滚动区都换成新工作区，不残留旧条目', async () => {
     server.use(
       http.get('/api/workspaces/:workspaceId/changelog', ({ params }) => {
         const id = String(params.workspaceId);
@@ -216,10 +357,11 @@ describe('日志视图：左右两栏', () => {
     );
     await screen.findByTestId('changelog-entry-log-ws-2');
     expect(screen.queryByTestId('changelog-entry-log-ws-1')).toBeNull();
-    expect(screen.getByTestId('changelog-detail-title')).toHaveTextContent('ws-2 日志');
+    expect(screen.getByTestId('changelog-doc-title-log-ws-2')).toHaveTextContent('ws-2 日志');
   });
 
   it('归档 tab 仍是只读区（无新增入口、无活动条目）', async () => {
+    mockList([entry()]);
     server.use(
       http.get('/api/changelog/archived-workspaces', () => HttpResponse.json({ items: [], next_offset: null })),
     );

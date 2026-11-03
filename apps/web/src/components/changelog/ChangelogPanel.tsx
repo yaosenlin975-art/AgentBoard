@@ -9,29 +9,23 @@
  * 保留既有能力：新建/编辑/删除（CAS）、搜索与类型筛选、分页、归档只读区、空态。
  * 查询状态只依赖 props（workspaceId），切 workspace 会复位筛选/分页/编辑态。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { WorkspaceChangeLog, WorkspaceChangeType } from '@agentboard/shared';
 import { ApiError } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
 import { MarkdownView } from '../../lib/markdown';
-import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
+import { usePrefersReducedMotion } from '../overlay/panelMotion';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
 import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTimeline';
+import { ChangelogTypeTag } from './ChangelogTypeTag';
 import { ArchivedChangelogPanel } from './ArchivedChangelogPanel';
 
 const PAGE = 20;
 const TYPES: WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
-
-const TYPE_TONE: Record<string, BadgeTone> = {
-  新增: 'green',
-  修复: 'blue',
-  调整: 'neutral',
-  历史: 'purple',
-};
 
 type EditorState =
   | { mode: 'create' }
@@ -245,6 +239,49 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
   const selected = sorted.find((item) => item.id === selectedId) ?? sorted[0] ?? null;
   const emptyText = query === '' && typeFilter === 'all' ? '这个工作区还没有变更日志' : '没有匹配的变更日志';
 
+  /** 右侧滚动容器（LOG-SCROLL）：全部日志连续渲染，点击左列表滚动定位 */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const reducedMotion = usePrefersReducedMotion();
+  /** 点击跳转后短暂锁定选中：平滑滚动途中 observer 会把"视口顶部那条"设成选中，点了 A 却高亮 B 很别扭 */
+  const selectionLockUntil = useRef(0);
+
+  const scrollToEntry = (id: string): void => {
+    setSelectedId(id);
+    selectionLockUntil.current = Date.now() + 800;
+    const target = scrollRef.current?.querySelector<HTMLElement>(`[data-changelog-id="${id}"]`) ?? null;
+    if (target === null) return;
+    // reduced-motion 命中时即时跳转，不做平滑滚动
+    target.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+  };
+
+  /**
+   * 选中项随滚动位置更新：用 IntersectionObserver 而不是监听 scroll 手算偏移。
+   * 理由：①不需要节流/防抖就能拿到「哪几条在视口内」；②不与平滑滚动打架（scroll 事件在平滑滚动期间高频但位置一直在变）；
+   * ③列表重排时观察器随 effect 重建即可，逻辑比手写 offsetTop 比较更短。rootMargin 下沿留 60%，让视口顶部那条稳定胜出。
+   */
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (container === null || typeof IntersectionObserver === 'undefined') return;
+    const nodes = [...container.querySelectorAll<HTMLElement>('[data-changelog-id]')];
+    if (nodes.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (Date.now() < selectionLockUntil.current) return;
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .map((entry) => entry.target.getAttribute('data-changelog-id'))
+          .filter((id): id is string => id !== null);
+        if (visible.length === 0) return;
+        // 文档顺序最靠前的那条 = 当前视口顶部可见的日志
+        const next = sorted.find((item) => visible.includes(item.id));
+        if (next !== undefined) setSelectedId(next.id);
+      },
+      { root: container, rootMargin: '0px 0px -60% 0px', threshold: 0 },
+    );
+    for (const node of nodes) observer.observe(node);
+    return () => observer.disconnect();
+  }, [sorted]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2" data-testid="changelog-active">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -397,7 +434,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                               type="button"
                               data-testid={`changelog-entry-${item.id}`}
                               aria-current={isSelected ? 'true' : undefined}
-                              onClick={() => setSelectedId(item.id)}
+                              onClick={() => scrollToEntry(item.id)}
                               className={`block w-full rounded px-1.5 py-1 text-left text-xs transition ${
                                 isSelected
                                   ? 'bg-blue-50 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200'
@@ -405,7 +442,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                               }`}
                             >
                               <span className="flex items-center gap-1">
-                                <Badge tone={TYPE_TONE[item.change_type] ?? 'neutral'}>{item.change_type}</Badge>
+                                <ChangelogTypeTag type={item.change_type} />
                                 <span className="truncate">{item.title}</span>
                               </span>
                               <span className="mt-0.5 block text-[11px] text-neutral-500 dark:text-neutral-400">
@@ -441,57 +478,81 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
           </div>
 
           <div
-            data-testid="changelog-detail-pane"
-            className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+            ref={scrollRef}
+            data-testid="changelog-scroll"
+            className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
           >
-            {selected === null ? (
-              <p data-testid="changelog-detail-empty" className="text-xs text-neutral-500 dark:text-neutral-400">
-                {sorted.length === 0 ? '（暂无变更日志）' : '选择左侧日志查看详情'}
+            {sorted.length === 0 ? (
+              <p data-testid="changelog-empty-doc" className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                {emptyText}
               </p>
             ) : (
-              <article data-testid="changelog-detail" className="flex flex-col gap-2">
-                <header className="flex flex-wrap items-center gap-1.5">
-                  <Badge tone={TYPE_TONE[selected.change_type] ?? 'neutral'}>{selected.change_type}</Badge>
-                  <span className="text-xs text-neutral-500 dark:text-neutral-400">{localDateTime(selected.occurred_at)}</span>
-                  <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500">rev:{selected.revision}</span>
-                </header>
-                <h2 data-testid="changelog-detail-title" className="break-words text-sm font-semibold">{selected.title}</h2>
-                <div
-                  data-testid="changelog-detail-body"
-                  className="break-words rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-800"
+              groups.map((group) => (
+                <section
+                  key={group.day}
+                  data-testid={`changelog-doc-group-${group.day}`}
+                  className="border-b border-neutral-200 last:border-b-0 dark:border-neutral-800"
                 >
-                  <MarkdownView compact>{selected.body_md}</MarkdownView>
-                </div>
-                <footer className="flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
-                  <span>{selected.updated_by === 'user' ? '用户' : selected.updated_by}</span>
-                  <span>更新 {localDateTime(selected.updated_at)}</span>
-                  <span className="ml-auto flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      aria-label={`编辑日志：${selected.title}`}
-                      onClick={() => {
-                        setEditor({ mode: 'edit', entry: selected });
-                        setFormError(null);
-                        setConflict(null);
-                      }}
-                      className={BUTTON_SECONDARY}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`删除日志：${selected.title}`}
-                      onClick={() => {
-                        setDeleteTarget(selected);
-                        setDeleteError(null);
-                      }}
-                      className={BUTTON_DANGER}
-                    >
-                      删除
-                    </button>
-                  </span>
-                </footer>
-              </article>
+                  <h3 className="sticky top-0 z-10 border-b border-neutral-200 bg-white/95 px-3 py-1 text-[11px] font-semibold text-neutral-500 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95 dark:text-neutral-400">
+                    {group.day}
+                  </h3>
+                  {group.entries.map((item) => {
+                    const isSelected = selected?.id === item.id;
+                    return (
+                      <article
+                        key={item.id}
+                        data-testid={`changelog-doc-${item.id}`}
+                        data-changelog-id={item.id}
+                        aria-current={isSelected ? 'true' : undefined}
+                        className={`flex flex-col gap-1.5 border-t border-neutral-200 px-3 py-2 transition-colors first:border-t-0 dark:border-neutral-800 ${
+                          isSelected ? 'bg-blue-50/70 dark:bg-blue-950/20' : ''
+                        }`}
+                      >
+                        <header className="flex flex-wrap items-center gap-1.5">
+                          <ChangelogTypeTag type={item.change_type} />
+                          <span className="text-xs text-neutral-500 dark:text-neutral-400">{localDateTime(item.occurred_at)}</span>
+                          <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500">rev:{item.revision}</span>
+                        </header>
+                        <h2 data-testid={`changelog-doc-title-${item.id}`} className="break-words text-sm font-semibold">
+                          {item.title}
+                        </h2>
+                        <div data-testid={`changelog-doc-body-${item.id}`} className="break-words">
+                          <MarkdownView compact>{item.body_md}</MarkdownView>
+                        </div>
+                        <footer className="flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+                          <span>{item.updated_by === 'user' ? '用户' : item.updated_by}</span>
+                          <span>更新 {localDateTime(item.updated_at)}</span>
+                          <span className="ml-auto flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              aria-label={`编辑日志：${item.title}`}
+                              onClick={() => {
+                                setEditor({ mode: 'edit', entry: item });
+                                setFormError(null);
+                                setConflict(null);
+                              }}
+                              className={BUTTON_SECONDARY}
+                            >
+                              编辑
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`删除日志：${item.title}`}
+                              onClick={() => {
+                                setDeleteTarget(item);
+                                setDeleteError(null);
+                              }}
+                              className={BUTTON_DANGER}
+                            >
+                              删除
+                            </button>
+                          </span>
+                        </footer>
+                      </article>
+                    );
+                  })}
+                </section>
+              ))
             )}
           </div>
         </div>
