@@ -73,7 +73,7 @@
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/issues` | query：`workspace`（必填）、`status?`（枚举，仅分页模式生效）、`limit? offset?` | `Issue[]`（sort_order,created_at,id 升序）；分页模式 `PageResult<TaskPreview>`（id 升序；description 截取默认 12000 字符并附 `description_truncated` `next_description_offset_chars`） | 400 缺 workspace / 分页或 status 非法；404 工作空间不存在 | routes.ts:258 |
+| `GET /api/issues` | query：`workspace`（必填）、`status?`（**该工作区已定义的任意状态名**：内置五状态 + 自定义；分页与非分页都生效）、`limit? offset?` | `Issue[]`（sort_order,created_at,id 升序）；分页模式 `PageResult<TaskPreview>`（id 升序；description 截取默认 12000 字符并附 `description_truncated` `next_description_offset_chars`） | 400 缺 workspace / 分页非法 / `status` 不属于该工作区（文案列出可用状态）；404 工作空间不存在 | routes.ts |
 | `POST /api/issues`（幂等） | body：`workspace_id: string`、`title: string 非空`、`description?: string`、`priority?: '低'\|'中'\|'高'`（缺省 中）、`labels?: string[]`（缺省 []） | `Issue`（status=待规划、sort_order=0）；WS issue.changed | 400 校验失败；404 工作空间不存在 | routes.ts:268 |
 | `POST /api/issues/draft` | body：`workspace_id`、`requirement: string 1-4000`、`adapter: 'dsh'\|'codex'\|'opencode'`、`priority?: '低'\|'中'\|'高'` | **不落库**：`{ title, description, labels, warnings: string[] }`。`description` 固定三段（`## 背景` / `## 要求` / `## 验收`），模型没给的段落写「未提供」，**不补需求、不编验收条件**；`labels` 只保留工作区已有标签，自造的丢弃并进 `warnings`；一次性适配器调用（不建会话/不占 claim），超时 120s；审计写 `issue_draft_audit`（只记 adapter/耗时/成败/warning 数，不记需求原文） | 400 参数非法（adapter 不在三家内、requirement 空/超长）；404 工作空间不存在；422 `DRAFT_INVALID_OUTPUT`（JSON 不合法，已重试 1 次）；502 `DRAFT_ADAPTER_FAILED`；504 `DRAFT_TIMEOUT` | routes.ts（`services/smartCreateDraft.ts`） |
 | `GET /api/issues/:id` | query：`description_offset_chars?` `description_max_chars?` | `Issue`；带窗口参数时 description 为窗口内容并附 `description_truncated` `next_description_offset_chars` | 404 任务不存在（归属不匹配同为 404） | routes.ts:276 |
@@ -134,6 +134,8 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 | `DELETE /api/workspaces/:workspaceId/statuses/:statusId` | query：`migrate_to`（**必填**，目标状态名）、`workspace_id?` | 200 `{ removed, migrate_to, migrated_issue_count }`；同事务把该状态下的卡全部改成 `migrate_to` 再删行 | 400 `MIGRATION_TARGET_REQUIRED` 缺 migrate_to / `MIGRATION_TARGET_INVALID` 目标不存在或等于自身 / `workspace_id` 不一致；409 `WORKSPACE_STATUS_BUILTIN` 内置不可删；404 `NOT_FOUND` 状态或工作空间不存在 | workspaceStatusRoutes.ts |
 
 **CLI**：`kb status ls <workspace>`、`kb status add <workspace> <name> [--kind …] [--sort-order N]`、`kb status rm <workspace> <name|id> --migrate-to <name>`。workspace 支持 id 或名称；409 的状态字典错误（`WORKSPACE_STATUS_*`）由子命令原样打印文案并退出 **2**（不被全局包装成「已被占用（…）」），其余失败退出 1。
+
+**CLI 列表口径（CLI-LIST-GUARD）**：`kb list-tasks --status <状态>` 先按该工作区（未指定 workspace 时按「任一工作区」）的状态字典校验，非法值 → 非 0 退出并列出可用状态（不再静默返回「（无任务）」）；`--json` **默认裁掉 `description` 正文**并标记 `description_omitted: true`，需要正文时显式 `--json --full`；表格模式本来就不输出正文。
 
 **MCP**：`agentboard_list_statuses` / `agentboard_add_status`（`request_id` 作幂等键） / `agentboard_remove_status`（`migrate_to` 走 query，无幂等键，与 REST 一致）；强制 `resolveWorkspaceId`，错误码透传（`WORKSPACE_STATUS_BUILTIN` / `WORKSPACE_STATUS_EXISTS` / `MIGRATION_TARGET_REQUIRED` / `MIGRATION_TARGET_INVALID`）。
 
@@ -267,3 +269,12 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 
 顺序：回环校验 → 入口存在性 → `spawn`（`detached` / `stdio: ignore` / `unref`）并等 `'spawn'` 事件 → 回 202 → 200ms 后 `server.close()` 停监听 → `process.exit(0)`。新进程启动时对 `EADDRINUSE` 以 250ms 间隔重试最多 20 次（等旧进程让出端口）。
 
+## CLI 标签规范（TAG-HYGIENE）
+
+`kb create-issue -l` 的标签分隔规则：
+
+- **逗号与空白都是分隔符**：`-l "调研 跨平台 文档"` 会拆成 `调研` / `跨平台` / `文档` 三个标签；`-l "web,server"` 与 `-l "web server"` 等价。
+- **全角逗号 `，` 视同半角**；连续分隔符与首尾空白会被丢掉（`-l "  测试 ,,  测试  ,文档  "` → `测试` / `文档`）。
+- **重复标签自动去重**（保留首次出现顺序）。
+- **标签本身不含空格**：这是硬约定。历史上把多个词塞进一个 label（如 `调研 跨平台 文档`）会被当作带空格的单个标签，是标签体系脏掉的主因；现在一律拆分。若要表达短语概念，请用有检索价值的领域词（`跨平台`、`文档`），不要拼多词短语。
+- 标签规范（写入侧）：**≤4 个**、用领域词（`web` / `server` / `cli` / `知识库` / `账号管理` / `依赖` / `技能` / `测试` / `文档` / `调研` / `跨平台`）、**不写日期**（时间信息用 `due_date`/`created_at`）、**不写「父卡」**（层级用 `parent_issue_id`）、**不加空格**。

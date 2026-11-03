@@ -75,10 +75,11 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .command('list-tasks')
     .description('列任务（--workspace 支持 id 或名称；缺省聚合全部工作空间）')
     .option('--workspace <id|名>', '工作空间 id 或名称')
-    .option('--status <状态>', '按状态过滤: 待规划|进行中|待验收|已关闭')
+    .option('--status <状态>', '按状态过滤：本工作区已定义的任意状态（内置五状态 + 自定义状态）；非法值会报错并列出可用状态')
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
-    .action(async (opts: { workspace?: string; status?: string; tree?: boolean }) =>
-      listTasks(makeCtx(program, io), { workspace: opts.workspace, status: opts.status, tree: opts.tree }));
+    .option('--full', '--json 时一并输出 description 正文（默认裁剪，只输出元数据）')
+    .action(async (opts: { workspace?: string; status?: string; tree?: boolean; full?: boolean }) =>
+      listTasks(makeCtx(program, io), { workspace: opts.workspace, status: opts.status, tree: opts.tree, full: opts.full === true }));
 
   program
     .command('show')
@@ -152,7 +153,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<title>', '任务标题')
     .option('-d, --description <text>', '任务描述（含空格用引号；多行走 UI 或 API）')
     .option('-p, --priority <低|中|高>', '优先级')
-    .option('-l, --labels <a,b,c>', '标签（逗号拆分）')
+    .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
     .option('--parent <issue-id>', '父任务 id')
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')

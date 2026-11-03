@@ -4,6 +4,19 @@ import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
 
+/**
+ * 标签解析（TAG-HYGIENE）：逗号（半角/全角）与**任意空白**都当分隔符，逐段 trim、丢空、去重。
+ * 约定：标签不含空格 —— 想表达「跨平台 文档」这种短语，请用两个标签 `跨平台,文档`。
+ * 兼容：旧用法 `-l a,b` 行为不变；新用法 `-l "调研 跨平台 文档"` 会拆成三个标签（此前会被当成一个带空格的标签）。
+ */
+export function parseLabels(raw: string): string[] {
+  const parts = raw
+    .split(/[,，\s]+/u)
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
+  return [...new Set(parts)];
+}
+
 export interface CreateIssueArgs {
   /** 工作空间 id 或名称（先解析为 id） */
   workspace: string;
@@ -59,7 +72,7 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   if (args.description !== undefined) body.description = args.description;
   if (args.priority !== undefined) body.priority = args.priority;
   if (args.labels !== undefined) {
-    body.labels = args.labels.split(',').map((s) => s.trim()).filter((s) => s !== '');
+    body.labels = parseLabels(args.labels);
   }
   if (args.parentIssueId !== undefined) body.parent_issue_id = args.parentIssueId;
   if (args.due !== undefined) {
