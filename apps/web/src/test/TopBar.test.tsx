@@ -81,13 +81,13 @@ describe('TopBar', () => {
     expect(btn).toHaveTextContent('主题：跟随系统');
   });
 
-  it('未选工作空间时新建 issue 禁用，选中后可用', async () => {
+  it('顶栏不再有「新建 issue」按钮（NEW-ISSUE-PLUS 已移到待规划列头）', () => {
     const first = renderTopBar(null);
-    expect(screen.getByRole('button', { name: '新建 issue' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '新建 issue' })).toBeNull();
     first.unmount();
 
     renderTopBar(ws);
-    expect(screen.getByRole('button', { name: '新建 issue' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '新建 issue' })).toBeNull();
     expect(screen.getByText('主项目')).toBeInTheDocument();
     expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
   });

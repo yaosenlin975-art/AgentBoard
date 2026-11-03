@@ -28,6 +28,7 @@ import { IssueTreeView } from './IssueTreeView';
 import { LabelFilterBar } from './LabelFilterBar';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
+import { NewIssueDialog } from '../topbar/NewIssueDialog';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -60,6 +61,8 @@ export function Board({
   };
   const treeMode = currentLayout === 'tree';
   const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
+  // 新建任务弹窗（NEW-ISSUE-PLUS）：入口只在待规划列头 / 任务树工具条，不再放顶栏
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
 
   const enabled = workspaceId !== null;
   const { data: issues } = useQuery({
@@ -177,6 +180,20 @@ export function Board({
             className="w-32 shrink-0 rounded border border-neutral-300 px-2 py-0.5 text-xs dark:border-neutral-700 dark:bg-neutral-800 sm:w-48"
           />
           <LabelFilterBar workspaceId={workspaceId} />
+          {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
+          {treeMode && (
+            <button
+              type="button"
+              data-testid="tree-create-issue"
+              aria-label="新建任务"
+              title="新建任务（待规划）"
+              disabled={workspaceId === null}
+              onClick={() => setNewIssueOpen(true)}
+              className="ml-auto shrink-0 rounded bg-blue-600 px-2 py-0.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              + 新建
+            </button>
+          )}
         </div>
       </ViewToolbarShell>
       {treeMode ? (
@@ -201,6 +218,7 @@ export function Board({
                 status={status}
                 issues={grouped[status]}
                 runningSessionIds={runningSessionIds}
+                {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
               />
             ))}
           </div>
@@ -217,6 +235,10 @@ export function Board({
             document.body,
           )}
         </DndContext>
+      )}
+      {/* 新建任务入口（NEW-ISSUE-PLUS）：平铺看板在「待规划」列头，任务树在工具条（树没有列） */}
+      {workspaceId !== null && (
+        <NewIssueDialog open={newIssueOpen} workspaceId={workspaceId} onClose={() => setNewIssueOpen(false)} />
       )}
     </div>
   );

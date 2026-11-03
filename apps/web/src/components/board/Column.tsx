@@ -1,5 +1,6 @@
 /**
- * 看板单列（§7.3）：列头（名称 + 计数）、可落点容器、卡片列表；空列占位提示。
+ * 看板单列（§7.3）：列头（名称 + 新建入口 + 计数）、可落点容器、卡片列表；空列占位提示。
+ * 新建入口（NEW-ISSUE-PLUS）：只由外层对「待规划」列传入 onCreateIssue —— 新任务由服务端固定落在待规划。
  */
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -11,10 +12,12 @@ export function Column({
   status,
   issues,
   runningSessionIds,
+  onCreateIssue,
 }: {
   status: IssueStatus;
   issues: Issue[];
   runningSessionIds: ReadonlySet<string>;
+  onCreateIssue?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: columnDroppableId(status),
@@ -27,7 +30,21 @@ export function Column({
       className="flex w-64 shrink-0 flex-col rounded-lg bg-neutral-100 dark:bg-neutral-900"
     >
       <header className="flex items-center justify-between px-2.5 pt-2.5">
-        <h3 className="text-sm font-semibold">{status}</h3>
+        <div className="flex min-w-0 items-center gap-1">
+          <h3 className="text-sm font-semibold">{status}</h3>
+          {onCreateIssue !== undefined && (
+            <button
+              type="button"
+              data-testid={`column-create-${status}`}
+              aria-label={`新建任务（${status}）`}
+              title={`新建任务（${status}）`}
+              onClick={onCreateIssue}
+              className="rounded px-1.5 text-sm leading-5 text-neutral-500 hover:bg-white hover:text-blue-600 focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-blue-400"
+            >
+              +
+            </button>
+          )}
+        </div>
         <span
           data-testid={`count-${status}`}
           className="rounded-full bg-white px-2 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"

@@ -4,7 +4,6 @@ import { useAppStore, type WsStatus } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { Modal } from '../ui/Modal';
-import { NewIssueDialog } from './NewIssueDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { AccountsPanel } from '../settings/AccountsPanel';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
@@ -21,7 +20,6 @@ const WS_DOT: Record<WsStatus, string> = {
 
 export function TopBar({ workspace }: { workspace: Workspace | null }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [newIssueOpen, setNewIssueOpen] = useState(false);
   const [accountsOpen, setAccountsOpen] = useState(false);
   // 左浮窗（工作空间列表）：PANEL-FLOAT，浮窗在触发按钮正下方展开
   const leftOpen = useOverlayStore((s) => s.left);
@@ -140,23 +138,9 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
         >
           设置
         </button>
-
-        <button
-          type="button"
-          aria-label="新建 issue"
-          disabled={!workspace}
-          title={workspace ? '新建 issue' : '请先选择工作空间'}
-          onClick={() => setNewIssueOpen(true)}
-          className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          + 新建 issue
-        </button>
       </div>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {workspace && (
-        <NewIssueDialog open={newIssueOpen} workspaceId={workspace.id} onClose={() => setNewIssueOpen(false)} />
-      )}
       {/* 账号管理独立入口：与设置弹窗内区块共用同一个 AccountsPanel，账号与 workspace 无关故不依赖 workspace */}
       <Modal open={accountsOpen} title="账号管理" onClose={() => setAccountsOpen(false)} size="lg" scrollable>
         <AccountsPanel />

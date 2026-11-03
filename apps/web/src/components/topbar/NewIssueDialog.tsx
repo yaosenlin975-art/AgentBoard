@@ -171,6 +171,17 @@ export function NewIssueDialog({
   return (
     <Modal open={open} title="新建 issue" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3" data-testid="new-issue-form" onPaste={onPaste}>
+        {/* 状态预填（NEW-ISSUE-PLUS）：服务端创建时固定落「待规划」，这里只展示，不可改 */}
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-neutral-600 dark:text-neutral-300">状态</span>
+          <span
+            data-testid="new-issue-status"
+            className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300"
+          >
+            待规划
+          </span>
+          <span className="text-xs text-neutral-500 dark:text-neutral-400">新建任务固定进入待规划</span>
+        </div>
         <label className="block text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-300">标题</span>
           <input
