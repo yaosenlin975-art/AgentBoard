@@ -199,7 +199,7 @@ export function Composer({
   return (
     <div data-testid="composer" className="shrink-0 space-y-1 border-t border-neutral-200 p-2 dark:border-neutral-800">
       {queueHint !== null && (
-        <p data-testid="queue-hint" className="text-xs text-amber-600 dark:text-amber-400" role="status">
+        <p data-testid="queue-hint" className="text-xs text-ink-3" role="status">
           {queueHint}
         </p>
       )}
@@ -241,14 +241,14 @@ export function Composer({
           disabled={disabled}
           rows={2}
           placeholder={disabled ? '选择会话后输入' : '输入消息，Enter 发送，Shift+Enter 换行；/ 选技能，@ 选任务'}
-          className="min-h-0 w-full resize-none rounded border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-blue-500 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800"
+          className="min-h-0 w-full resize-none rounded border border-hairline bg-surface-card px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50"
         />
         <button
           type="button"
           data-testid="composer-send"
           onClick={() => void submit()}
           disabled={disabled || sending || value.trim() === ''}
-          className="shrink-0 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+          className="shrink-0 rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40 disabled:text-ink-3 disabled:border-hairline disabled:bg-transparent"
         >
           {sending ? '发送中…' : '发送'}
         </button>

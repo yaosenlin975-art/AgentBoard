@@ -103,7 +103,7 @@ export function KnowledgePanel({
           aria-selected={view === 'list'}
           data-testid="knowledge-view-list"
           onClick={() => setView('list')}
-          className={`rounded px-2 py-0.5 ${view === 'list' ? 'bg-accent-soft font-medium text-accent-ink' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
+          className={`rounded px-2 py-0.5 ${view === 'list' ? 'bg-accent-soft font-medium text-accent' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
         >
           列表
         </button>
@@ -113,7 +113,7 @@ export function KnowledgePanel({
           aria-selected={view === 'graph'}
           data-testid="knowledge-view-graph"
           onClick={() => setView('graph')}
-          className={`rounded px-2 py-0.5 ${view === 'graph' ? 'bg-accent-soft font-medium text-accent-ink' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
+          className={`rounded px-2 py-0.5 ${view === 'graph' ? 'bg-accent-soft font-medium text-accent' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
         >
           星图
         </button>
@@ -121,19 +121,19 @@ export function KnowledgePanel({
 
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
       <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">范围
-        <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className={FIELD_CLASS}>
+        <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className="h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
       </label>
-      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={`${FIELD_CLASS} min-w-24 flex-1`} />
-      <button className={BUTTON_PRIMARY} type="submit">搜索</button>
+      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={"h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-w-24 flex-1"} />
+      <button className="inline-flex h-8 shrink-0 items-center rounded-md border border-accent bg-accent-soft px-3 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="submit">搜索</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
       {!query && <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">状态
-        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className={FIELD_CLASS}>
+        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-md border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
       </label>}
-      {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
+      {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-ink-2"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
     </form>
 
     {list.isError && <p role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{list.error.message}</p>}

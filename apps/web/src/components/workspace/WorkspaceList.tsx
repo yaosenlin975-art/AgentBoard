@@ -102,14 +102,14 @@ export function WorkspaceList() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-10 shrink-0 items-center justify-between px-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink-3">
           工作空间
         </h2>
         <button
           type="button"
           aria-label="新增工作空间"
           onClick={() => setDialogOpen(true)}
-          className="rounded px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
+          className="rounded px-2 py-1 text-xs text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
         >
           + 新增
         </button>
@@ -123,26 +123,26 @@ export function WorkspaceList() {
           placeholder="搜索名称或路径…"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          className="w-full rounded border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-800 outline-none placeholder:text-neutral-400 focus-visible:border-blue-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
+          className="w-full rounded border border-hairline bg-surface-card px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         />
       </div>
 
       {notice !== null && (
-        <p role="alert" data-testid="workspace-order-notice" className="mx-2 mb-1 rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <p role="alert" data-testid="workspace-order-notice" className="mx-2 mb-1 rounded border border-hairline bg-accent-soft px-2 py-1 text-xs text-accent">
           {notice}
         </p>
       )}
 
       <div className="flex-1 overflow-y-auto px-2 pb-2" role="list" aria-label="工作空间列表">
-        {isLoading && <p className="py-6 text-center text-sm text-neutral-400">加载中…</p>}
+        {isLoading && <p className="py-6 text-center text-sm text-ink-3">加载中…</p>}
         {!isLoading && list.length === 0 && (
-          <div className="mt-8 rounded-md border border-dashed border-neutral-300 p-6 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+          <div className="mt-8 rounded-md border border-dashed border-hairline p-6 text-center text-sm text-ink-2">
             <p>还没有工作空间</p>
             <p className="mt-1 text-xs">点击右上角「+ 新增」创建第一个工作空间</p>
           </div>
         )}
         {!isLoading && list.length > 0 && entries.length === 0 && (
-          <p data-testid="workspace-search-empty" className="py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
+          <p data-testid="workspace-search-empty" className="py-6 text-center text-sm text-ink-2">
             没有匹配的工作空间
           </p>
         )}

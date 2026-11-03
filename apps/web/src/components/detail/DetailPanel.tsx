@@ -28,7 +28,7 @@ import { isOverdue, overdueDays } from '../../lib/planningSort';
 import { SessionList } from './SessionList';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
 
 const DEBOUNCE_MS = 500;
 
@@ -246,7 +246,7 @@ export function DetailPanel() {
                 type="button"
                 data-testid="desc-toggle"
                 onClick={() => setDescEditing((v) => !v)}
-                className="rounded px-1.5 py-0.5 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
+                className="rounded px-1.5 py-0.5 text-xs text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
               >
                 {descEditing ? '预览' : '编辑'}
               </button>
@@ -400,7 +400,7 @@ export function DetailPanel() {
                   }
                   setDispatchOpen(true);
                 }}
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                className="rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70"
               >
                 派发
               </button>
@@ -421,7 +421,7 @@ export function DetailPanel() {
                   data-testid="release-btn"
                   onClick={() => release.mutate()}
                   disabled={release.isPending}
-                  className="rounded border border-amber-400 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-600 dark:text-amber-400 dark:hover:bg-amber-950/40"
+                  className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
                 >
                   强制释放
                 </button>
@@ -481,7 +481,7 @@ export function DetailPanel() {
           {claimBlocked && (
             <div
               data-testid="claim-blocked-panel"
-              className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+              className="rounded border border-hairline bg-surface-raised p-2 text-xs text-ink-2"
             >
               <p className="font-medium">存在 {openBlockerCount(issue)} 项未解除的前置任务，已拦住本次领取（派发）：</p>
               <ul className="mt-1 list-disc space-y-0.5 pl-4">
@@ -500,7 +500,7 @@ export function DetailPanel() {
                 type="button"
                 data-testid="claim-blocked-dismiss"
                 onClick={() => setClaimBlocked(false)}
-                className="mt-2 rounded border border-amber-400 px-2 py-0.5 text-xs hover:bg-amber-100 dark:border-amber-600 dark:hover:bg-amber-900/40"
+                className="mt-2 rounded border border-hairline px-2 py-0.5 text-xs text-ink-2 transition-colors hover:bg-accent-soft"
               >
                 知道了
               </button>

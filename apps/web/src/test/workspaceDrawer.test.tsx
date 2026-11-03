@@ -237,23 +237,24 @@ describe('WorkspaceCard 布局（操作行在卡片内、防重叠）', () => {
 
     expect(pin).toHaveTextContent('置顶');
     expect(pin).toHaveAttribute('aria-pressed', 'false');
-    expect(pin.className).toContain('border-neutral-300');
-    expect(pin.className).not.toContain('bg-blue-600');
+    expect(pin.className).toContain('border-hairline');
+    expect(pin.className).toContain('text-ink-2');
+    expect(pin.className).not.toContain('text-accent ');
+    expect(pin.className).toContain('text-ink-2');
 
     await userEvent.click(pin);
 
     await waitFor(() => expect(pin).toHaveTextContent('已置顶'));
     expect(pin).toHaveAttribute('aria-pressed', 'true');
-    expect(pin.className).toContain('bg-blue-600');
-    expect(pin.className).toContain('text-white');
+    expect(pin.className).toContain('bg-accent-soft');
+    expect(pin.className).toContain('text-accent');
     // 与 ↑↓ 同一套尺寸/圆角/hover
     const up = within(row).getByTestId('workspace-move-up-b2');
     for (const cls of ['inline-flex', 'h-5', 'rounded', 'text-[11px]']) {
       expect(pin.className).toContain(cls);
       expect(up.className).toContain(cls);
     }
-    expect(up.className).toContain('hover:bg-neutral-100');
-    expect(pin.className).not.toContain('hover:bg-neutral-100');
+    expect(up.className).toContain('hover:bg-accent-soft');
   });
 
   it('抽屉内没有 emoji 字符（置顶按钮不再是 📌）', async () => {

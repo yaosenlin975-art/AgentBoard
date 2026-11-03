@@ -68,7 +68,7 @@ export function WorkspaceCard({
           ref={sortable.setActivatorNodeRef}
           {...sortable.attributes}
           {...sortable.listeners}
-          className="mt-1 shrink-0 rounded px-1 text-xs text-neutral-400 hover:bg-neutral-100 focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-500 dark:hover:bg-neutral-800"
+          className="mt-1 shrink-0 rounded px-1 text-xs text-ink-3 transition-colors hover:bg-accent-soft hover:text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           // CURSOR-REUSE：复用 lib/cursor 的双色拖拽光标（原生 grab 在 Windows 是无描边白手掌，白底不可见）
           style={{ cursor: GRAB_CURSOR }}
         >
@@ -78,8 +78,8 @@ export function WorkspaceCard({
           data-workspace-card={workspace.id}
           className={`relative min-h-[6.5rem] min-w-0 flex-1 rounded-md border ab-transition ${
             selected
-              ? 'border-blue-500 bg-blue-50 dark:border-blue-500 dark:bg-blue-950/40'
-              : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900'
+              ? 'border-accent bg-accent-soft'
+              : 'border-hairline hover:bg-surface-raised'
           }`}
         >
           <button
@@ -87,11 +87,11 @@ export function WorkspaceCard({
             data-testid={`workspace-card-${workspace.id}`}
             aria-pressed={selected}
             onClick={() => selectWorkspace(workspace.id)}
-            className="block w-full rounded-md px-3 pb-2 pt-3 text-left focus-visible:outline-2 focus-visible:outline-blue-500"
+            className="block w-full rounded-md px-3 pb-2 pt-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <div className="truncate pr-6 text-sm font-medium">{workspace.name}</div>
             <div
-              className="truncate text-xs text-neutral-500 dark:text-neutral-400"
+              className="truncate text-xs text-ink-3"
               title={workspace.path}
             >
               {workspace.path}
@@ -101,10 +101,10 @@ export function WorkspaceCard({
                 <div
                   key={status}
                   data-testid={`stat-${status}`}
-                  className="rounded bg-neutral-100 py-1 dark:bg-neutral-800"
+                  className="rounded bg-surface-raised py-1"
                 >
                   <div className="font-semibold">{counts.get(status) ?? 0}</div>
-                  <div className="whitespace-nowrap text-neutral-500 dark:text-neutral-400">{status}</div>
+                  <div className="whitespace-nowrap text-ink-3">{status}</div>
                 </div>
               ))}
             </div>
@@ -115,7 +115,7 @@ export function WorkspaceCard({
             aria-label={`移除工作空间 ${workspace.name}`}
             title="移除工作空间"
             onClick={() => setRemoveOpen(true)}
-            className="absolute right-1 top-1 rounded px-1.5 py-0.5 text-xs text-neutral-400 hover:bg-red-50 hover:text-red-600 dark:text-neutral-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+            className="absolute right-1 top-1 rounded px-1.5 py-0.5 text-xs text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink"
           >
             ✕
           </button>
@@ -135,8 +135,8 @@ export function WorkspaceCard({
                   onClick={onTogglePin}
                   className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] ab-transition ${
                     pinned
-                      ? 'border-blue-600 bg-blue-600 text-white hover:bg-blue-700 dark:border-blue-500 dark:bg-blue-500 dark:hover:bg-blue-400'
-                      : 'border-neutral-300 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800'
+                      ? 'border-accent bg-accent-soft text-accent hover:bg-accent-soft/70'
+                      : 'border-hairline text-ink-2 hover:bg-accent-soft'
                   }`}
                 >
                   {pinned ? '已置顶' : '置顶'}
@@ -149,7 +149,7 @@ export function WorkspaceCard({
                 title={canMoveUp ? '上移' : '已在最前'}
                 disabled={!canMoveUp}
                 onClick={onMoveUp}
-                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
+                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
               >
                 ↑
               </button>
@@ -160,7 +160,7 @@ export function WorkspaceCard({
                 title={canMoveDown ? '下移' : '已在最后'}
                 disabled={!canMoveDown}
                 onClick={onMoveDown}
-                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-neutral-400 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-30 dark:text-neutral-500 dark:hover:bg-neutral-800"
+                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
               >
                 ↓
               </button>
