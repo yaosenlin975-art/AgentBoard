@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { KnowledgePage, KnowledgeRevision } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -43,6 +43,11 @@ function Provenance({ sources, evidence }: Pick<KnowledgePage, 'sources' | 'evid
 
 export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: { pageId: string; scope: 'workspace' | 'common'; workspaceId: string | null; onChanged: () => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  /** KB-HIST-UI：抽屉里选中的快照（点一条 → 只读预览） */
+  const [previewRevision, setPreviewRevision] = useState<number | null>(null);
+  /** 恢复确认：选中待恢复的 revision（二次确认后才发 PUT） */
+  const [restoreTarget, setRestoreTarget] = useState<KnowledgeRevision | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const [historyOffset, setHistoryOffset] = useState(0);
   const [confirm, setConfirm] = useState<'archive' | 'restore' | 'delete' | null>(null);
   const [expiryDraft, setExpiryDraft] = useState<string | null>(null);
@@ -57,6 +62,37 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     onSuccess: () => { setConfirm(null); void page.refetch(); onChanged(); }, onError: () => { setConfirm(null); void page.refetch(); } });
   const expiry = useMutation({ mutationFn: (expiresAt: number | null) => api.put<KnowledgePage>(path, { ...scopeData, expires_at: expiresAt, expected_revision: page.data!.revision, actor: 'user' }),
     onSuccess: () => { setExpiryDraft(null); void page.refetch(); onChanged(); }, onError: () => { void page.refetch(); } });
+  /**
+   * 恢复此版本（KB-HIST-UI）：用快照的 title+body 产生**新** revision（历史不删）。
+   * CAS：expected_revision 用当前 revision；409 说明他人已更新。
+   */
+  const restore = useMutation({
+    mutationFn: async (target: KnowledgeRevision) =>
+      api.put<KnowledgePage>(path, {
+        ...scopeData,
+        title: target.title_snapshot,
+        body_md: target.body_snapshot,
+        change_note: `恢复自 r${target.revision}`,
+        expected_revision: page.data!.revision,
+        actor: 'user',
+      }),
+    onSuccess: () => {
+      setRestoreTarget(null);
+      setRestoreError(null);
+      setPreviewRevision(null);
+      void page.refetch();
+      void history.refetch();
+      onChanged();
+    },
+    onError: (error) => {
+      // 409 = 他人已更新（CAS 冲突）
+      const message = error instanceof Error ? error.message : String(error);
+      setRestoreError(/409|已更新|冲突|CONFLICT/i.test(message) ? '他人已更新，请刷新后再试' : message);
+      setRestoreTarget(null);
+      void page.refetch();
+    },
+  });
+
   if (page.isPending) return <p className="min-w-0 flex-1 px-1 py-3 text-sm text-neutral-500 dark:text-neutral-400">加载详情…</p>;
   if (page.isError) return <p role="alert" className="min-w-0 flex-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{page.error.message}</p>;
   const p = page.data;
@@ -97,7 +133,20 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       {p.status === 'active' && <button type="button" className={BUTTON_SECONDARY} onClick={() => setConfirm('archive')}>归档</button>}
       {p.status === 'archived' && <button type="button" className={BUTTON_SECONDARY} onClick={() => setConfirm('restore')}>恢复</button>}
       {p.status !== 'deleted' && <button type="button" className={BUTTON_DANGER} onClick={() => setConfirm('delete')}>软删除</button>}
-      <button type="button" className={BUTTON_SECONDARY} onClick={() => setHistoryOpen(!historyOpen)}>版本历史</button>
+      <button
+        type="button"
+        data-testid="knowledge-history-toggle"
+        aria-expanded={historyOpen}
+        className={BUTTON_SECONDARY}
+        onClick={() => {
+          setHistoryOpen(!historyOpen);
+          setPreviewRevision(null);
+          setRestoreTarget(null);
+          setRestoreError(null);
+        }}
+      >
+        历史（{p.revision}）
+      </button>
       <button
         type="button"
         data-testid="export-markdown"
@@ -136,19 +185,88 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     </div>}
     {expiry.isError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{expiry.error.message}</p>}
 
-    {historyOpen && <section aria-label="版本历史" className="mt-2 space-y-2">
-      {history.isPending && <p className="text-sm text-neutral-500 dark:text-neutral-400">读取历史…</p>}
-      {history.isError && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{history.error.message}</p>}
-      {history.data?.items.map(r => <details key={r.revision} open className="rounded-md border border-neutral-200 px-2.5 py-1.5 dark:border-neutral-800">
-        <summary className="cursor-pointer text-xs font-medium text-neutral-700 dark:text-neutral-300">v{r.revision} · {r.title_snapshot} · {r.change_kind}</summary>
-        <div className="mt-1 max-w-[70ch]"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
-        <h4 className="mt-2 text-xs font-semibold text-neutral-700 dark:text-neutral-300">此版本来源与证据</h4>
-        <Provenance sources={r.sources} evidence={r.evidence} />
-      </details>)}
-      <div className="flex items-center gap-2">
-        <button type="button" className={BUTTON_SECONDARY} disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 20))}>历史上一页</button>
-        <button type="button" className={BUTTON_SECONDARY} disabled={history.data?.next_offset == null} onClick={() => setHistoryOffset(history.data?.next_offset ?? historyOffset)}>历史下一页</button>
-      </div>
-    </section>}
+    {/* KB-HIST-UI：右侧抽屉（不碰 panelStore——那属并行线在改的文件），列表 rev 降序 + 点一条只读预览 */}
+    {historyOpen && (
+      <aside
+        data-testid="knowledge-history-drawer"
+        aria-label="版本历史抽屉"
+        className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <header className="flex items-center gap-2 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+          <span className="text-sm font-semibold">版本历史（{p.revision} 个版本）</span>
+          <button type="button" data-testid="knowledge-history-close" className={`${BUTTON_SECONDARY} ml-auto`} onClick={() => { setHistoryOpen(false); setPreviewRevision(null); setRestoreTarget(null); setRestoreError(null); }}>
+            关闭
+          </button>
+        </header>
+        {restoreError !== null && (
+          <p role="alert" data-testid="knowledge-restore-error" className="mx-3 mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+            {restoreError}
+          </p>
+        )}
+        {history.isPending && <p className="px-3 py-3 text-sm text-neutral-500 dark:text-neutral-400">读取历史…</p>}
+        {history.isError && <p role="alert" className="px-3 py-3 text-sm text-red-600 dark:text-red-400">{history.error.message}</p>}
+        <ul data-testid="knowledge-history-list" className="min-h-0 flex-1 overflow-auto px-3 py-2 text-xs">
+          {history.data?.items.map((r) => (
+            <li key={r.revision} data-testid={`knowledge-revision-${r.revision}`} className="border-b border-neutral-100 py-1.5 last:border-0 dark:border-neutral-800">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  data-testid={`knowledge-revision-preview-${r.revision}`}
+                  aria-pressed={previewRevision === r.revision}
+                  onClick={() => setPreviewRevision(previewRevision === r.revision ? null : r.revision)}
+                  className="rounded px-1 text-left font-medium text-blue-700 hover:underline dark:text-blue-300"
+                >
+                  r{r.revision}
+                </button>
+                <span data-testid={`knowledge-revision-kind-${r.revision}`} className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{r.change_kind}</span>
+                <span data-testid={`knowledge-revision-actor-${r.revision}`} className="text-neutral-600 dark:text-neutral-400">{r.actor}</span>
+                <span data-testid={`knowledge-revision-time-${r.revision}`} className="text-neutral-500 dark:text-neutral-500">{new Date(r.created_at).toLocaleString()}</span>
+                {r.change_note !== '' && <span data-testid={`knowledge-revision-note-${r.revision}`} className="text-neutral-500 dark:text-neutral-400">· {r.change_note}</span>}
+                {r.revision !== p.revision && (
+                  <button
+                    type="button"
+                    data-testid={`knowledge-revision-restore-${r.revision}`}
+                    className={`${BUTTON_SECONDARY} ml-auto`}
+                    onClick={() => { setRestoreTarget(r); setRestoreError(null); }}
+                  >
+                    恢复此版本
+                  </button>
+                )}
+                {r.revision === p.revision && <span className="ml-auto text-neutral-400">当前版本</span>}
+              </div>
+              {restoreTarget?.revision === r.revision && (
+                <div data-testid={`knowledge-restore-confirm-${r.revision}`} className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                  用 r{r.revision} 的标题与正文恢复到当前页？会生成**新**版本（r{p.revision + 1}），历史不删。
+                  <div className="mt-1 flex gap-1.5">
+                    <button
+                      type="button"
+                      data-testid={`knowledge-restore-confirm-yes-${r.revision}`}
+                      className={BUTTON_PRIMARY}
+                      disabled={restore.isPending}
+                      onClick={() => restore.mutate(r)}
+                    >
+                      确认恢复
+                    </button>
+                    <button type="button" data-testid={`knowledge-restore-confirm-no-${r.revision}`} className={BUTTON_SECONDARY} onClick={() => setRestoreTarget(null)}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+              {previewRevision === r.revision && (
+                <div data-testid={`knowledge-revision-body-${r.revision}`} className="mt-1.5 rounded-md bg-neutral-50 px-2 py-1.5 dark:bg-neutral-800/60">
+                  <div className="mb-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300">{r.title_snapshot}（只读快照）</div>
+                  <div className="max-w-[70ch] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+        <footer className="flex items-center gap-2 border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
+          <button type="button" className={BUTTON_SECONDARY} disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 20))}>历史上一页</button>
+          <button type="button" className={BUTTON_SECONDARY} disabled={history.data?.next_offset == null} onClick={() => setHistoryOffset(history.data?.next_offset ?? historyOffset)}>历史下一页</button>
+        </footer>
+      </aside>
+    )}
   </article>;
 }

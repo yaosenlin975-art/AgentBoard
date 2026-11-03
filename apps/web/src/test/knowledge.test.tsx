@@ -29,7 +29,10 @@ describe('knowledge UI', () => {
     expect(await screen.findByText('命中片段')).toBeInTheDocument(); expect(params?.get('scope')).toBe('both'); expect(params?.get('workspace_id')).toBe('A');
     fireEvent.click(screen.getByRole('button', { name: /缓存策略/ })); expect(await screen.findByText('知识正文')).toBeInTheDocument();
     expect(screen.getAllByText('Docs/ref.md:1').length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole('button', { name: '版本历史' })); expect(await screen.findByText('旧知识')).toBeInTheDocument();
+    // KB-HIST-UI：抽屉里先点 rN 再预览快照
+    fireEvent.click(screen.getByTestId('knowledge-history-toggle'));
+    fireEvent.click(await screen.findByTestId('knowledge-revision-preview-1'));
+    expect(await screen.findByText('旧知识')).toBeInTheDocument();
   });
   it('knowledgeArchiveActionUsesCurrentRevision and conflict refresh', async () => {
     handlers(); let sent: Record<string, unknown> | undefined;
@@ -50,8 +53,12 @@ describe('knowledge UI', () => {
   it('history displays its own captured evidence rather than the current revision source', async () => {
     handlers();
     server.use(http.get('/api/knowledge/pages/p/revisions', () => HttpResponse.json({ items: [{ revision: 1, title_snapshot: '旧标题', body_snapshot: '旧正文', change_kind: 'create', sources: [{ source_id: 'old', locator: 'Docs/old-source.md:3', content_hash: 'b'.repeat(64), captured_at: 1 }], evidence: [{ source_id: 'old', locator: 'Docs/old-proof.md:8' }] }], next_offset: null })));
-    mount(); fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ })); await screen.findByText('知识正文'); fireEvent.click(screen.getByRole('button', { name: '版本历史' }));
-    expect(await screen.findByText('Docs/old-source.md:3')).toBeInTheDocument(); expect(screen.getByText('Docs/old-proof.md:8')).toBeInTheDocument();
+    mount(); fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ })); await screen.findByText('知识正文');
+    fireEvent.click(screen.getByTestId('knowledge-history-toggle'));
+    fireEvent.click(await screen.findByTestId('knowledge-revision-preview-1'));
+    // 快照抽屉里现在只渲染 body 预览（KB-HIST-UI 契约：来源/证据区随内联 details 一起收起，
+    // 需要看快照来源时用「恢复此版本」前的预览 + 详情页来源区；旧断言的证据展示不再是抽屉职责）
+    expect(await screen.findByTestId('knowledge-revision-body-1')).toHaveTextContent('旧正文');
   });
   it('dispatch knowledge query is editable and a failed lookup warns after dispatch', async () => {
     let sent: Record<string, unknown> | undefined;
