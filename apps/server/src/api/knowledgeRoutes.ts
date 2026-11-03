@@ -13,9 +13,37 @@ import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeScopeFields } from './schemas.js';
 
+/**
+ * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
+ * 例：invalid_value → 「取值必须是：a / b」；too_small → 「不能小于 N」。
+ */
+function zhZodIssue(rawIssue: unknown): string {
+  const issue = (rawIssue ?? {}) as { code?: string; path?: Array<string | number>; message?: string; minimum?: unknown; maximum?: unknown; options?: unknown[]; expected?: unknown };
+  const where = issue.path && issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+  const raw = (issue as { options?: unknown[]; values?: unknown[] });
+  const list = Array.isArray(raw.options) ? raw.options : Array.isArray(raw.values) ? raw.values : [];
+  const options = list.map(String);
+  switch (issue.code) {
+    case 'invalid_value':
+    case 'invalid_enum_value':
+      return options.length > 0 ? `${where}取值必须是：${options.join(' / ')}` : `${where}${issue.message ?? '取值不合法'}`;
+    case 'too_small':
+      return `${where}不能小于 ${String(issue.minimum ?? '')}`.trim();
+    case 'too_big':
+      return `${where}不能大于 ${String(issue.maximum ?? '')}`.trim();
+    case 'invalid_type':
+      return `${where}类型不对（期望 ${String(issue.expected ?? '')}）`;
+    case 'unrecognized_keys':
+    case 'custom':
+      return `${where}${issue.message ?? '参数不合法'}`;
+    default:
+      return `${where}${issue.message ?? '参数不合法'}`;
+  }
+}
+
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
   const result = schema.safeParse(raw);
-  if (!result.success) throw new ValidationError(result.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join('; '));
+  if (!result.success) throw new ValidationError(result.error.issues.map(issue => zhZodIssue(issue)).join('; '));
   return result.data;
 }
 const integerQuery = (fallback: number, max: number) => z.coerce.number().int().min(0).max(max).default(fallback);

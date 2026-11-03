@@ -276,3 +276,10 @@ kb update <issue-id> --description-stdin               # 长文本描述走 stdi
 - `close` 只接受「待验收」；`reopen` 的目标必须是本工作区已定义状态（含自定义状态），非法会列出可用状态。
 - `update` **不含 status**：状态一律用 `claim / done / close / reopen / fail`。
 - 三条 409（占用中 / 状态不允许）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。
+
+## CLI-UX 变更（2026-11-03）
+
+- 多行 `--notes` / 以 `- ` 开头的行会被 shell 拆成额外参数（实测 `too many arguments for 'done'`）：改用 `kb done <id> --notes-stdin`（从标准输入读，多行安全）。
+- `kb list-tasks --full` 只对 `--json` 生效；表格模式带 `--full` 会打提示并忽略。
+- `kb changelog` 的时间按**本地时区**展示（存储仍是 UTC 毫秒）。
+- 服务端参数校验错误已中文化并附可用值，例如 `priority: 取值必须是：低 / 中 / 高`。

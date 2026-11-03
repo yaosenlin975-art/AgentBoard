@@ -4,6 +4,8 @@ import type { Ctx } from '../io.js';
 
 export interface DoneArgs {
   notes?: string;
+  /** 从 stdin 读取 notes（多行、或含 `- ` 开头的行时更安全；与 --notes 二选一，stdin 优先） */
+  notesStdin?: boolean;
   /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；有并行占用时只提交声明范围内的改动 */
   scope?: string[];
   /** 幂等请求 id：与 workspace_id 一起才能命中服务端的 owner 幂等包装；重试必须复用同一 uuid */
@@ -12,7 +14,16 @@ export interface DoneArgs {
 
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
   const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string } = { agent_id: ctx.agentId };
-  if (args.notes !== undefined) body.notes = args.notes;
+  if (args.notesStdin === true) {
+    const text = (await ctx.io.readStdin()).replace(/\r\n/g, '\n');
+    body.notes = text.endsWith('\n') ? text.slice(0, -1) : text;
+  } else if (args.notes !== undefined) {
+    // CLI-UX：多行 notes 里以 "- " 开头的行会被 shell 当成额外参数（实测 `too many arguments for 'done'`）
+    if (/\n\s*- /.test(args.notes)) {
+      ctx.io.writeErr('警告：--notes 含以 "- " 开头的行，可能被 shell 拆成额外参数；建议改用 --notes-stdin（从标准输入读取）\n');
+    }
+    body.notes = args.notes;
+  }
   if (args.scope !== undefined && args.scope.length > 0) {
     /**
      * SCOPE-GUARD：PowerShell 会把 `--scope a,b` 的逗号串拆开、甚至合并成一个含空格的参数（"a b"）。

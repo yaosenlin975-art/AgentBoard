@@ -8,6 +8,7 @@ import { processIo, type Ctx, type Io } from './io.js';
 import { CLI_VERSION } from './version.js';
 import { listSpaces } from './commands/listSpaces.js';
 import { createSpace } from './commands/createSpace.js';
+import { deleteSpace } from './commands/deleteSpace.js';
 import { createIssue } from './commands/createIssue.js';
 import { moveIssue } from './commands/moveIssue.js';
 import { listTasks } from './commands/listTasks.js';
@@ -84,7 +85,8 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .version(CLI_VERSION)
     .exitOverride()
     .option('--server <url>', '看板服务基址（默认取 KB_SERVER，再默认 http://127.0.0.1:8787）', process.env.KB_SERVER)
-    .option('--json', '输出原始 JSON 响应');
+    .option('--json', '输出原始 JSON 响应')
+    .addHelpText('after', EXIT_CODE_HELP);
 
   program
     .command('list-spaces')
@@ -114,6 +116,13 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--no-knowledge', '关闭任务知识检索')
     .option('--knowledge-query <query>', '自定义知识查询')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', `
+说明：占用冲突（已被 <agent> 占用）与状态不可领取（无人占用但状态不是待规划/进行中，如待验收）是两条不同文案。
+示例：
+  kb claim 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
+  kb claim 0f6ba9ab-… --no-knowledge
+退出码：0 成功；2 已被 <agent> 占用 / 状态不可领取（当前=待验收…）/ 前置未解除（DEP-1）；1 任务不存在或参数错误
+`)
     .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string }) => claim(makeCtx(program, io), id, opts));
 
   program
@@ -131,7 +140,8 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .command('done')
     .description('完成任务 → 待验收（notes 落评论流）')
     .argument('<issue-id>', '任务 id')
-    .option('--notes <text>', '完成备注')
+    .option('--notes <text>', '完成备注（单行；多行或含 "- " 开头的行请用 --notes-stdin）')
+    .option('--notes-stdin', '从标准输入读取完成备注（多行安全）')
     .option(
       '--scope <paths...>',
       '声明本任务改动的路径（文件或目录前缀）。**必须重复传参**：--scope a --scope b；逗号串在 PowerShell 下会被拆成多个参数（已兼容吞下，但不保证顺序与语义）',
@@ -139,8 +149,15 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
       [],
     )
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .action(async (id: string, opts: { notes?: string; scope?: string[]; requestId?: string }) =>
-      done(makeCtx(program, io), id, { notes: opts.notes, scope: opts.scope, requestId: opts.requestId }));
+    .addHelpText('after', `
+示例：
+  kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
+  kb done 0f6ba9ab-… --scope packages/cli/src/index.ts --scope Docs/api.md
+退出码：0 成功（状态 → 待验收）；2 未被占用 / 非当前占用者 / 占用已改变；1 参数错误或任务不存在
+GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
+`)
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; requestId?: string }) =>
+      done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, requestId: opts.requestId }));
 
   program
     .command('close')
@@ -187,6 +204,12 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('删除任务（不可逆；占用中或含子任务会被拒；必须显式 --yes）')
     .argument('<issue-id>', '任务 id')
     .option('--yes', '确认删除；缺省时只打印标题/状态并以非 0 退出，不发请求')
+    .addHelpText('after', `
+示例：
+  kb delete-issue 0f6ba9ab-996d-4af5-b0cd-d9208c44936f            # 只回显标题/状态，exit 1
+  kb delete-issue 0f6ba9ab-… --yes                                 # 真删（不可恢复）
+退出码：0 成功；1 缺 --yes（仅回显，不发请求）/ 参数错误 / 任务不存在；2 占用中 / 含子任务
+`)
     .action(async (id: string, opts: { yes?: boolean }) =>
       deleteIssue(makeCtx(program, io), id, { yes: opts.yes === true }));
 
@@ -205,6 +228,21 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<name>', '工作空间名称')
     .argument('<path>', '工作空间目录路径')
     .action(async (name: string, path: string) => createSpace(makeCtx(program, io), { name, path }));
+
+  program
+    .command('delete-space')
+    .description('删除工作空间登记（不可逆；不动磁盘目录；占用校验由服务端拒绝）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .option('--yes', '确认删除；缺省时只回显名称/路径并以非 0 退出，不发请求')
+    .addHelpText('after', `
+示例：
+  kb delete-space kb-docs-sandbox          # 只回显，exit 1
+  kb delete-space 37b6faf0-abd2-47e9-8764-eabb9d355c31 --yes
+退出码：0 成功；1 缺 --yes（仅回显）/ 工作空间不存在 / 参数错误；2 被阻塞（仍有知识页 / 运行中会话 / 未解除子任务）
+说明：409 原因由服务端给出（例：该空间仍有 1 个知识页及 1 条历史 revision，请先删除或迁移知识页后再移除）。
+`)
+    .action(async (workspace: string, opts: { yes?: boolean }) =>
+      deleteSpace(makeCtx(program, io), workspace, { yes: opts.yes === true }));
 
   program
     .command('create-issue')
@@ -278,7 +316,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('新增自定义状态（名称在工作区内唯一；内置五状态不可复刻）')
     .argument('<workspace>', '工作空间 id 或名称')
     .argument('<name>', '状态名')
-    .option('--kind <kind>', '行为类别：open | started | review | done | deprecated（默认 open）')
+    .option('--kind <kind>', '行为类别（默认 open）：open=未开始 / started=进行中 / review=待验收 / done=完成（关闭类）/ deprecated=废弃（关闭类，与 done 同级）')
     .option('--sort-order <n>', '排序值（默认最大值 +10）')
     .action(async (workspace: string, name: string, opts: { kind?: string; sortOrder?: string }) =>
       statusAdd(makeCtx(program, io), workspace, name, {

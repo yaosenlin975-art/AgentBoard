@@ -14,6 +14,9 @@
 
 ## 2. 通用约定
 
+> CLI-UX（2026-11-03）：`400 VALIDATION_ERROR` 的 message 已中文化并附可用值（如 `priority: 取值必须是：低 / 中 / 高`）；`kb done` 支持 `--notes-stdin`，`kb list-tasks --full` 只对 `--json` 生效，`kb changelog` 时间按本地时区展示。
+
+
 - 请求/响应均为 JSON；时间戳为 Unix 毫秒整数。错误信封统一为 `{ "error": { "code", "message", "details"? } }`（`routes.ts:508`）。
 - 状态码：`ValidationError`→400（code `VALIDATION_ERROR`）、`NotFoundError`→404（`NOT_FOUND`）、`ConflictError`→409（`CONFLICT`）、未处理→500（`INTERNAL`）（`errors.ts:14-30`）。端点专属 code 见各行：`TASK_NOT_FOUND` 404、`TASK_REVISION_CONFLICT` 409、`NOT_TASK_OWNER` 409、`COMMENT_NOT_FOUND` 404、`PICK_FOLDER_BUSY` 409、`PICK_FOLDER_FAILED` 500、`IDEMPOTENCY_KEY_REUSED` 409、`OPERATION_UNKNOWN` 409、`KNOWLEDGE_*` 404/409。
 - `/api` 未匹配路由 → 404 `NOT_FOUND`（`routes.ts:522`）；请求体非法 JSON → 400 `INVALID_JSON`（`routes.ts:513`）。

@@ -58,7 +58,11 @@ interface RetireVerdict {
   unparsable: { line: number; text: string }[];
 }
 
-const TIME = (ms: number): string => new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
+const TIME = (ms: number): string => {
+  const date = new Date(ms);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
 const query = (params: Record<string, string | number | undefined>): string =>
   new URLSearchParams(
     Object.entries(params)

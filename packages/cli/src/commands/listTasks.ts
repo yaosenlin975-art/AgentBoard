@@ -117,6 +117,10 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string)
 }
 
 export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
+  // CLI-UX：--full 只影响 --json 输出；表格模式本来就没有 description，别静默无效
+  if (args.full === true && ctx.json !== true) {
+    ctx.io.writeErr('提示：--full 只对 --json 输出生效（表格模式本来就不含 description），本次已忽略\n');
+  }
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
   if (args.tree) {
     const selected = args.workspace ? [matchWorkspace(spaces, args.workspace)] : spaces;
