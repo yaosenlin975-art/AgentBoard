@@ -14,6 +14,7 @@
  *
  * 不下载 tar.bz2：上游归档 `digest` 为 null（无 sha256），而 HF 每个文件都有 LFS sha256，校验强度更高。
  */
+import { ensureProxyEnv, resolveProxyEnv } from '@agentboard/shared';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
@@ -268,27 +269,14 @@ export interface VoiceDownloadEnv {
   no_proxy: string | null;
 }
 
-function maskProxy(raw: string | undefined): string | null {
-  if (raw === undefined || raw.trim() === '') return null;
-  try {
-    const url = new URL(raw.includes('://') ? raw : `http://${raw}`);
-    return url.port === '' ? url.hostname : `${url.hostname}:${url.port}`;
-  } catch {
-    return '<无法解析的代理地址>';
-  }
-}
-
 export function voiceDownloadEnv(env: NodeJS.ProcessEnv = process.env): VoiceDownloadEnv {
-  const candidates: Array<[string, string | undefined]> = [
-    ['HTTPS_PROXY', env.HTTPS_PROXY ?? env.https_proxy],
-    ['HTTP_PROXY', env.HTTP_PROXY ?? env.http_proxy],
-  ];
-  const hit = candidates.find(([, value]) => value !== undefined && value.trim() !== '');
+  // PROXY-ENV：解析/脱敏只有一份实现（`@agentboard/shared` 的 resolveProxyEnv）
+  const info = resolveProxyEnv(env);
   return {
-    proxy_detected: hit !== undefined,
-    proxy_var: hit?.[0] ?? null,
-    proxy_host: maskProxy(hit?.[1]),
-    node_env_proxy: (env.NODE_USE_ENV_PROXY ?? '') !== '',
+    proxy_detected: info.proxy_var !== null,
+    proxy_var: info.proxy_var,
+    proxy_host: info.proxy_host,
+    node_env_proxy: info.node_env_proxy !== null,
     no_proxy: env.NO_PROXY ?? env.no_proxy ?? null,
   };
 }
@@ -300,11 +288,10 @@ export function voiceDownloadEnv(env: NodeJS.ProcessEnv = process.env): VoiceDow
  * 返回是否最终处于开启状态。
  */
 export function ensureVoiceProxySupport(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.NODE_USE_ENV_PROXY === '0') return false;
-  if (env.NODE_USE_ENV_PROXY === undefined || env.NODE_USE_ENV_PROXY === '') {
-    env.NODE_USE_ENV_PROXY = '1';
-  }
-  return env.NODE_USE_ENV_PROXY !== '0';
+  // PROXY-ENV：启动器（`pnpm server:ensure`）已在子进程环境注入过，这里只是**兜底**
+  // （手工 `node dist/index.js` 也能用）；实现唯一一份在 shared。
+  const info = ensureProxyEnv(env);
+  return info.node_env_proxy !== '0' && info.proxy_var !== null;
 }
 
 /** undici 外层错误的原因码 → 可读中文（不再让用户只看到 fetch failed） */
@@ -344,6 +331,9 @@ export function describeVoiceDownloadError(
 ): { code: string; message: string } {
   const err = error as { code?: string; message?: string; name?: string; cause?: { code?: string; message?: string; name?: string } } | undefined;
   const code = err?.code ?? 'VOICE_DOWNLOAD_FAILED';
+  // 已带业务码的错误保持原码（校验不符/主动中止不该被翻成通用下载失败）
+  if (code === 'VOICE_CHECKSUM_MISMATCH') return { code, message: err?.message ?? `下载 ${ctx.file} 后 sha256 校验不符` };
+  if (code === 'VOICE_DOWNLOAD_ABORTED') return { code, message: `下载 ${ctx.file} 被中断（用户取消）` };
   if (code === 'VOICE_DOWNLOAD_IDLE_TIMEOUT') {
     return { code, message: `下载 ${ctx.file} 时 ${Math.round(VOICE_DOWNLOAD_IDLE_MS / 1000)} 秒没有收到数据，已中断；已下载 ${formatBytesText(ctx.downloadedBytes)}/${formatBytesText(ctx.fileBytes)}，重试会从这里续传` };
   }

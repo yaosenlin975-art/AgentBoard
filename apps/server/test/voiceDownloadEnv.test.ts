@@ -26,14 +26,21 @@ describe('VOICE-DL-FAIL 下载环境与错误可读性', () => {
     expect(voiceDownloadEnv({} as NodeJS.ProcessEnv)).toMatchObject({ proxy_detected: false, proxy_var: null, proxy_host: null });
   });
 
-  it('ensureVoiceProxySupport：未设置则开启；显式 0 尊重用户；已为 1 保持', () => {
-    const env: NodeJS.ProcessEnv = {};
-    expect(ensureVoiceProxySupport(env)).toBe(true);
-    expect(env.NODE_USE_ENV_PROXY).toBe('1');
-    const off: NodeJS.ProcessEnv = { NODE_USE_ENV_PROXY: '0' };
+  it('ensureVoiceProxySupport：有代理才开启；显式 0 尊重用户；已为 1 保持；无代理不动 env', () => {
+    // 无代理变量：不注入（避免无意义地改全局行为）
+    const none: NodeJS.ProcessEnv = {};
+    expect(ensureVoiceProxySupport(none)).toBe(false);
+    expect(none.NODE_USE_ENV_PROXY).toBeUndefined();
+    // 有代理变量且未设置 → 开启
+    const withProxy: NodeJS.ProcessEnv = { HTTPS_PROXY: 'http://127.0.0.1:7897' };
+    expect(ensureVoiceProxySupport(withProxy)).toBe(true);
+    expect(withProxy.NODE_USE_ENV_PROXY).toBe('1');
+    // 显式 0 → 不覆盖（尊重用户关闭）
+    const off: NodeJS.ProcessEnv = { HTTPS_PROXY: 'http://127.0.0.1:7897', NODE_USE_ENV_PROXY: '0' };
     expect(ensureVoiceProxySupport(off)).toBe(false);
     expect(off.NODE_USE_ENV_PROXY).toBe('0');
-    const on: NodeJS.ProcessEnv = { NODE_USE_ENV_PROXY: '1' };
+    // 已为 1 → 保持
+    const on: NodeJS.ProcessEnv = { HTTPS_PROXY: 'http://127.0.0.1:7897', NODE_USE_ENV_PROXY: '1' };
     expect(ensureVoiceProxySupport(on)).toBe(true);
   });
 

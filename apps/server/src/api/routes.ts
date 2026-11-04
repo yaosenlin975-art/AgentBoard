@@ -54,6 +54,7 @@ import {
 import { listMessagesBySession, deleteMessagesBySession } from '../db/repos/message.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { SERVER_VERSION } from '../version.js';
+import { resolveProxyEnv } from '@agentboard/shared';
 import {
   describeMigrationError,
   getMigrationStatus,
@@ -399,7 +400,14 @@ export function createRouter(deps: RouterDeps): Router {
   // ---- version ----
   // pid：RESTART-HARDENING —— 客户端据它区分「新进程已接管」与「已回退旧进程」，端口占用检查也靠它识别自身
   router.get('/version', (_req, res) => {
-    res.json({ name: 'agentboard-server', version: SERVER_VERSION, pid: process.pid });
+    // PROXY-ENV：出站代理是否生效（只读、脱敏）。客户端/诊断脚本据此判断「为什么外网请求超时」
+    const proxy = resolveProxyEnv(process.env);
+    res.json({
+      name: 'agentboard-server',
+      version: SERVER_VERSION,
+      pid: process.pid,
+      proxy_env: { enabled: proxy.enabled, proxy_var: proxy.proxy_var, proxy_host: proxy.proxy_host, node_env_proxy: proxy.node_env_proxy },
+    });
   });
 
   router.use('/knowledge', createKnowledgeRouter(deps.db, { maxGraphPages: deps.knowledgeGraphPageLimit }));
@@ -1133,6 +1141,12 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
       return;
     }
     res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单张图片不能超过 10 MiB' } });
+    return;
+  }
+  // CLAIM-RACE：SQLite 忙等超时（busy_timeout=5000）不是内部错误——而是「别的进程/请求正握着写锁」，
+  // 映射成 409 让调用方（agent / kb CLI）知道「重试即可」，而不是当成 500 崩掉。
+  if (typeof err === 'object' && err !== null && (err as { code?: string }).code === 'SQLITE_BUSY') {
+    res.status(409).json({ error: { code: 'DB_BUSY', message: '数据库正被其它操作占用（写锁等待超时），请稍后重试' } });
     return;
   }
   console.error('[agentboard] 未处理错误:', err);

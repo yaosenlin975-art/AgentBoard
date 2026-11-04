@@ -103,6 +103,31 @@ if (!existsSync(ENTRY)) {
   process.exit(3);
 }
 
+/**
+ * PROXY-ENV：Node 24 的内置 fetch 默认不读 `HTTPS_PROXY`，必须 `NODE_USE_ENV_PROXY=1`。
+ * 子进程继承本进程环境，所以**在这里注入**（唯一入口），服务端只需只读暴露状态。
+ * 规则：宿主有 HTTPS_PROXY/HTTP_PROXY 且未显式设 `NODE_USE_ENV_PROXY=0` 才注入；
+ * 日志只打 host:port（丢 userinfo，不打印凭据）。
+ * 实现复用 `packages/shared`（`ensureProxyEnv`），不在脚本里另写一份。
+ */
+async function applyProxyEnv() {
+  try {
+    const mod = await import(new URL('../packages/shared/dist/proxyEnv.js', import.meta.url).href);
+    const info = mod.ensureProxyEnv(process.env);
+    if (info.proxy_var === null) {
+      console.log('[server] proxy_env=off（未检测到 HTTP(S)_PROXY，出站直连）');
+    } else if (info.node_env_proxy === '0') {
+      console.log(`[server] proxy_env=off（NODE_USE_ENV_PROXY=0，用户显式关闭；代理 ${info.proxy_var}=${info.proxy_host ?? ''}）`);
+    } else {
+      console.log(`[server] proxy_env=on host=${info.proxy_host ?? '?'}（源 ${info.proxy_var}，已注入 NODE_USE_ENV_PROXY=1）`);
+    }
+  } catch (error) {
+    // shared 未构建时不影响启动；服务端自己还有一份兜底
+    console.log(`[server] proxy_env=unknown（读取 shared/proxyEnv 失败：${error instanceof Error ? error.message : String(error)}）`);
+  }
+}
+await applyProxyEnv();
+
 mkdirSync(LOG_DIR, { recursive: true });
 const fd = openSync(LOG_FILE, 'a');
 const stamp = new Date().toISOString();
