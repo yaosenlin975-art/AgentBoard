@@ -122,6 +122,21 @@
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
+### DB-3B-S 存储位置汇总（`GET /api/settings/storage`，只读）
+
+只读端点：不改配置、不触发迁移。所有数字由服务端算，前端只格式化（不许前后端各算一套）。
+
+| 字段 | 含义 |
+| --- | --- |
+| `db_path` | 本进程实际打开的库（= 启动日志 `db=`） |
+| `db_path_source` | `env`（`AGENTBOARD_DB`）｜`settings`（config.json 的 `dbPath`）｜`default`；**取启动期解析值**（= 启动日志 `db_source=`）。请求期再 `loadConfig` 会把 `default` 误判成 `settings`：首次启动会把默认值（含 `dbPath`）写回 config.json |
+| `attachments_dir` | 附件目录（与 `AttachmentStore.storageDir` 同值） |
+| `usage` | `{ db_bytes, wal_bytes, shm_bytes, attachments_bytes, attachments_files, total_bytes }`；附件目录不存在按 0；`total_bytes = db + -wal + -shm + 附件` |
+| `migration_estimate` | `{ issue_count, attachment_count, estimated_bytes, required_bytes }`；`estimated_bytes` 与 `preflightMigration` 的 `plan.totalBytes` **同源同值**（db + sidecar + 附件字节），`required_bytes = ceil(estimated_bytes × 1.2)`（与前置检查同一个 `DB_MIGRATION_SPACE_MARGIN`） |
+| `truncated` | 附件遍历达到 `STORAGE_SCAN_MAX_FILES`（50000）即停；此时 `attachments_files`/`attachments_bytes`/`total_bytes`/`attachment_count`/`estimated_bytes`/`required_bytes` 全为 `null`，`truncated: true`（宁可报未知，也不长时间占着请求） |
+
+错误：503 `DB_STORAGE_UNAVAILABLE`（最小装配拿不到库路径）。
+
 ## 6. issues
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

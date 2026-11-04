@@ -61,6 +61,7 @@ import {
   orchestrateMigration,
   runBootSelfCheck,
 } from '../services/dbMigration.js';
+import { collectStorageInfo } from '../services/storageInfo.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
@@ -75,7 +76,7 @@ import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/i
 import { dispatchIssue } from '../services/dispatch.js';
 import { createSession, forgetSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
-import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
+import { attachmentsDirFor, configDir, loadConfig, readSettings, writeSettings, type DbPathSource } from '../config.js';
 import {
   addCommentSchema,
   claimSchema,
@@ -357,7 +358,16 @@ export function createRouter(deps: RouterDeps): Router {
   // db 可能是最小装配的替身（无 name）：此时迁移端点明确 503，不在构造期抛错
   const currentDbPath: string | null = deps.dbPath ?? (typeof db.name === 'string' && db.name !== '' ? db.name : null);
   const attachmentsDirOf = (dbPath: string): string => deps.attachmentStorageDir ?? attachmentsDirFor(dbPath);
-  const dbPathSource: DbPathSource = deps.dbPathSource ?? ((process.env.AGENTBOARD_DB ?? '') !== '' ? 'env' : 'settings');
+  // 来源三态（env / settings / default）：缺省按启动同一套规则解析（loadConfig），
+  // 解析失败（例如 AGENTBOARD_HOST 非法）时退化为 env-否则-settings 两态，不让只读端点 500。
+  const resolveDbPathSource = (): DbPathSource => {
+    if (deps.dbPathSource !== undefined) return deps.dbPathSource;
+    try {
+      return loadConfig(process.env).dbPathSource;
+    } catch {
+      return (process.env.AGENTBOARD_DB ?? '') !== '' ? 'env' : 'settings';
+    }
+  };
   const triggerRestart = async (): Promise<void> => {
     if (!deps.restart) throw new Error('当前装配未启用服务重启');
     const outcome = await performRestart(deps.restart);
@@ -580,12 +590,27 @@ export function createRouter(deps: RouterDeps): Router {
     res.json({ ...next, db_path: next.dbPath });
   });
 
+  // ---- DB-3B-S：存储位置只读汇总 ----
+  // 只读：不改配置、不触发迁移。数字全部服务端算（含 ×1.2 空间门槛），前端只格式化。
+  router.get('/settings/storage', (_req, res) => {
+    if (currentDbPath === null) {
+      throw new ApiError(503, 'DB_STORAGE_UNAVAILABLE', '当前装配拿不到数据库路径，存储统计不可用');
+    }
+    const attachmentsDir = attachmentsDirOf(currentDbPath);
+    res.json(collectStorageInfo({
+      dbPath: currentDbPath,
+      attachmentsDir,
+      dbPathSource: resolveDbPathSource(),
+      countIssues: () => Number((db.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n),
+    }));
+  });
+
   // ---- DB-2B：数据库位置迁移编排 ----
   // 顺序：preflight → snapshot → verify → switch → restart（旧进程）→ selfcheck → cleanup | rolled_back（新进程）。
   // 自检在新进程启动时跑，故本端点只保证「已切换 + 已拉起新进程」；结果用 GET 状态查询。
   router.post('/settings/db-path/migrate', async (req, res) => {
     const body = parseBody(dbMigrateSchema, req.body);
-    if (dbPathSource === 'env') {
+    if (resolveDbPathSource() === 'env') {
       const text = describeMigrationError('DB_MIGRATION_ENV_OVERRIDDEN');
       throw new ApiError(409, text.code, text.message);
     }

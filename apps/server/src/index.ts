@@ -93,6 +93,8 @@ export interface CreateAppOptions {
   draftTimeoutMs?: number;
   /** VOICE-1：语音模型管理依赖（仅测试注入；生产走默认 catalog/目录/fetch） */
   voice?: VoiceRouterOptions;
+  /** 启动期解析出的 db 路径来源（存储统计/迁移端点按它报，不在请求期重新解析） */
+  dbPathSource?: DbPathSource;
   /** DB-2B：迁移编排注入（生产全部走默认值；测试注入临时状态目录/退出 spy） */
   dbMigration?: {
     stateDir?: string;
@@ -150,9 +152,13 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
   const migration = options.dbMigration ?? {};
   const migrationDeps = {
+    // 附件目录与 AttachmentStore 用同一个值（存储统计/迁移都按它算，不各自推导）
+    attachmentStorageDir: migration.attachmentStorageDir ?? attachments.storageDir,
+    // 来源取启动期解析结果：readSettings 首读会把默认值写回 config.json（含 dbPath），
+    // 请求期再 loadConfig 会把 default 误判成 settings。
+    ...(options.dbPathSource !== undefined ? { dbPathSource: options.dbPathSource } : {}),
     ...(migration.stateDir !== undefined ? { dbMigrationStateDir: migration.stateDir } : {}),
     ...(migration.dbPath !== undefined ? { dbPath: migration.dbPath } : {}),
-    ...(migration.attachmentStorageDir !== undefined ? { attachmentStorageDir: migration.attachmentStorageDir } : {}),
     ...(migration.dbPathSource !== undefined ? { dbPathSource: migration.dbPathSource } : {}),
     ...(migration.exit !== undefined ? { dbMigrationExit: migration.exit } : {}),
     ...(migration.schedule !== undefined ? { dbMigrationSchedule: migration.schedule } : {}),
@@ -234,6 +240,7 @@ export async function main(): Promise<StartedServer> {
 
   const { app, hub, attachments } = await createApp({
     db,
+    dbPathSource: config.dbPathSource,
     maxConcurrentTurns: config.maxConcurrentTurns,
     webDist: existsSync(webDist) ? webDist : null,
     attachmentStorageDir,
