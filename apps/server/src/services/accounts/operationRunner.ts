@@ -14,7 +14,9 @@ const SAFE_ERROR_CODES = new Set(['RECOVERY_REQUIRED','OPERATION_UNKNOWN','VAULT
   // ACC-13 minimax 桌面切换：固定码，不含 token/路径原文
   'CLIENT_PATH_MISSING','CLIENT_STATE_UNREADABLE','CLIENT_NOT_LOGGED_IN','TARGET_CREDENTIAL_MISSING','SWITCH_WRITE_FAILED','CLIENT_STOP_UNAVAILABLE','CLIENT_START_UNAVAILABLE','ACCOUNT_APP_MISMATCH',
   // ACC-KB-A3 restore 解冻：RESTORED 记在被解冻的原操作上（正常收尾码），RECOVERY_NOT_REQUIRED 由 restore 端点抛出
-  'RESTORED','RECOVERY_NOT_REQUIRED']);
+  'RESTORED','RECOVERY_NOT_REQUIRED',
+  // ACC-KB-B1S：新登记平台（qoder_cn / zcode）尚未实现 provider，能力矩阵用这个固定码说明原因
+  'PROVIDER_NOT_IMPLEMENTED']);
 export interface AccountOperationHooks { onOperationCreated?: (id: string) => void }
 /** tryLock：同账号已被占用时立即失败（ACCOUNT_BUSY），不排队——批量签到逐账号独立结果用 */
 export interface AccountOperationOptions { tryLock?: boolean }

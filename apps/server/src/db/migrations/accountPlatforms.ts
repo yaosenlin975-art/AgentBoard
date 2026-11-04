@@ -27,7 +27,7 @@ import type { Db } from '../connection.js';
  */
 
 const LEGACY_APP_IDS = "'workbuddy_desktop','codebuddy_desktop'";
-const APP_IDS = "'workbuddy_desktop','codebuddy_desktop','minimax','trae'";
+const APP_IDS = "'workbuddy_desktop','codebuddy_desktop','minimax','trae','qoder_cn','zcode'";
 
 const managedAccountDdl = (table: string): string => `CREATE TABLE ${table} (
   id TEXT PRIMARY KEY, app_id TEXT NOT NULL CHECK(app_id IN (${APP_IDS})),
@@ -56,7 +56,7 @@ function tableSql(db: Db, name: string): string | undefined {
 export function migrateAccountPlatforms(db: Db): void {
   const managedSql = tableSql(db, 'managed_account');
   // 幂等：已扩展过（建表 SQL 里出现 minimax）就跳过
-  if (!managedSql || managedSql.includes("'minimax'")) return;
+  if (!managedSql || managedSql.includes("'qoder_cn'")) return;
 
   const previousForeignKeys = db.pragma('foreign_keys', { simple: true }) as number;
   const previousLegacyAlter = db.pragma('legacy_alter_table', { simple: true }) as number;

@@ -1,7 +1,7 @@
 import type { Db } from '../connection.js';
 export function migrateAccounts(db: Db): void {
   db.exec(`CREATE TABLE IF NOT EXISTS managed_account (
-    id TEXT PRIMARY KEY, app_id TEXT NOT NULL CHECK(app_id IN ('workbuddy_desktop','codebuddy_desktop')),
+    id TEXT PRIMARY KEY, app_id TEXT NOT NULL CHECK(app_id IN ('workbuddy_desktop','codebuddy_desktop','minimax','trae','qoder_cn','zcode')),
     client_instance_id TEXT NOT NULL, service_region TEXT NOT NULL CHECK(service_region IN ('cn','global','unknown')),
     identity_hash TEXT NOT NULL, display_name TEXT NOT NULL, identity_hint TEXT,
     client_snapshot_ref TEXT, checkin_credential_ref TEXT, client_snapshot_version INTEGER NOT NULL DEFAULT 1,
@@ -10,7 +10,7 @@ export function migrateAccounts(db: Db): void {
     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, UNIQUE(app_id,client_instance_id,identity_hash));
     CREATE TABLE IF NOT EXISTS account_operation (
       id TEXT PRIMARY KEY, batch_id TEXT, account_id TEXT REFERENCES managed_account(id) ON DELETE SET NULL,
-      app_id TEXT NOT NULL CHECK(app_id IN ('workbuddy_desktop','codebuddy_desktop')), client_instance_id TEXT NOT NULL,
+      app_id TEXT NOT NULL CHECK(app_id IN ('workbuddy_desktop','codebuddy_desktop','minimax','trae','qoder_cn','zcode')), client_instance_id TEXT NOT NULL,
       operation TEXT NOT NULL CHECK(operation IN ('capture','switch','checkin','restore')),
       state TEXT NOT NULL CHECK(state IN ('queued','running','succeeded','already_done','failed','unknown','recovery_required')),
       stage TEXT NOT NULL CHECK(stage IN ('preflight','stop','snapshot','validate_target','write','start','verify','rollback')),

@@ -19,7 +19,7 @@ import type { Db } from '../connection.js';
  *   然后按同样「建新表 → 拷数据 → 删旧表 → 改名」把两表 CHECK 改回两值，并重建
  *   `checkin_authorization_open`（唯一部分索引）与 `checkin_batch_app_state`。
  */
-const APP_IDS = "'workbuddy_desktop','codebuddy_desktop','minimax','trae'";
+const APP_IDS = "'workbuddy_desktop','codebuddy_desktop','minimax','trae','qoder_cn','zcode'";
 
 const authorizationDdl = (table: string): string => `CREATE TABLE ${table} (
   id TEXT PRIMARY KEY,
@@ -45,7 +45,7 @@ const tableSql = (db: Db, name: string): string | undefined =>
 
 export function migrateCheckinPlatforms(db: Db): void {
   const batchSql = tableSql(db, 'checkin_batch');
-  if (!batchSql || batchSql.includes("'minimax'")) return;
+  if (!batchSql || batchSql.includes("'qoder_cn'")) return;
 
   const previousForeignKeys = db.pragma('foreign_keys', { simple: true }) as number;
   const previousLegacyAlter = db.pragma('legacy_alter_table', { simple: true }) as number;

@@ -100,6 +100,36 @@ describe('account platforms migration (ACC-10)', () => {
     } finally { t.cleanup(); }
   });
 
+  it('ACC-KB-B1S：四值库里也能直接升到六值（qoder_cn / zcode 可写、合法值仍拒非法值）', () => {
+    // 先按「四值」状态建库（模拟 B1S 之前的老库），再跑 initSchema 让它升到六值
+    const dir = mkdtempSync(join(tmpdir(), 'agentboard-b1s-'));
+    const db = openDb(join(dir, 'board.db'));
+    try {
+      db.exec(legacyAccountsDdl.replace(/'workbuddy_desktop','codebuddy_desktop'\)/g, "'workbuddy_desktop','codebuddy_desktop','minimax','trae')"));
+      const before = { accounts: 1 };
+      insertRow(db, 'managed_account', accountRow({ app_id: 'trae', identity_hash: 'h-legacy' }));
+      initSchema(db);
+      // 老数据不动
+      expect((db.prepare("SELECT COUNT(*) AS n FROM managed_account WHERE app_id='trae'").get() as { n: number }).n).toBe(before.accounts);
+      // 新值可写
+      insertRow(db, 'managed_account', accountRow({ app_id: 'qoder_cn', identity_hash: 'h-qoder' }));
+      insertRow(db, 'managed_account', accountRow({ app_id: 'zcode', identity_hash: 'h-zcode' }));
+      insertRow(db, 'account_operation', operationRow({ app_id: 'qoder_cn' }));
+      // 非法值仍拒
+      expect(() => insertRow(db, 'managed_account', accountRow({ app_id: 'qoder', identity_hash: 'h-bad' }))).toThrow(/CHECK/i);
+      // 幂等：再跑一次结构不变
+      const dump = (): string => (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name IN ('managed_account','account_operation') ORDER BY name").all() as Array<{ sql: string }>).map(r => r.sql).join('\n');
+      const first = dump();
+      initSchema(db);
+      initSchema(db);
+      expect(dump()).toBe(first);
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+    } finally {
+      db.close();
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
+  });
+
   it('keepsMultiAccountUniquePerAppInstanceIdentity', () => {
     const t = createTestDb();
     try {
@@ -171,7 +201,12 @@ describe('account platforms migration (ACC-10)', () => {
     try {
       const all = await request(created.app).get('/api/managed-account-capabilities');
       expect(all.status).toBe(200);
-      expect((all.body as Array<{ app_id: string }>).map(row => row.app_id)).toEqual(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae']);
+      // ACC-KB-B1S 起平台清单是六值（新增 qoder_cn / zcode，能力全关）
+      expect((all.body as Array<{ app_id: string }>).map(row => row.app_id)).toEqual([
+        'workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode',
+      ]);
+      const newPlatform = (all.body as Array<Record<string, unknown>>).find(row => row.app_id === 'qoder_cn');
+      expect(newPlatform).toMatchObject({ capture: false, switch: false, checkin: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
 
       const minimax = await request(created.app).get('/api/managed-account-capabilities?app=minimax');
       expect(minimax.status).toBe(200);

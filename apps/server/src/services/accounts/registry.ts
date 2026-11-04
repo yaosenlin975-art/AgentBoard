@@ -27,6 +27,10 @@ const CAPABILITIES: AccountProviderCapability[] = [
   // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-13）
   { app_id: 'minimax', capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' },
   { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'LOGIN_STATE_NOT_FILE_BASED' },
+  // ACC-KB-B1S：先登记平台 id，provider 行为分别由 B1S2 / B4S / B5S 落地；在此之前一律全关，
+  // 用固定码 PROVIDER_NOT_IMPLEMENTED 说明「不是不可用，是还没实现」，避免与 CLIENT_NOT_INSTALLED 混淆。
+  { app_id: 'qoder_cn', capture: false, switch: false, checkin: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
+  { app_id: 'zcode', capture: false, switch: false, checkin: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
 ];
 
 /**

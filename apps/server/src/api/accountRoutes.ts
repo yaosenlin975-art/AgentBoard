@@ -50,7 +50,7 @@ export interface AccountRouterDeps {
 }
 
 // ACC-10：app_id 校验扩到四值，与 managed_account 的 CHECK 及 shared ManagedAppId 保持一致
-const managedAppParam = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae']);
+const managedAppParam = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
 const captureBodySchema = z.object({ display_name: z.string().trim().min(1).max(100).optional() }).strict();
 const importCredentialsSchema = z.object({
   platforms: z.array(z.enum(['workbuddy', 'trae', 'minimax'])).min(1).max(3).optional(),

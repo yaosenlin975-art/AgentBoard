@@ -41,7 +41,7 @@ export interface KnowledgeHint {
 export interface PageResult<T> { items: T[]; next_offset: number | null }
 export interface TextWindow { content: string; truncated: boolean; next_offset_chars: number | null }
 export interface TaskPreview extends Issue { description_truncated: boolean; next_description_offset_chars: number | null }
-export type ManagedAppId = 'workbuddy_desktop' | 'codebuddy_desktop' | 'minimax' | 'trae';
+export type ManagedAppId = 'workbuddy_desktop' | 'codebuddy_desktop' | 'minimax' | 'trae' | 'qoder_cn' | 'zcode';
 export interface ManagedAccount {
   id: string; app_id: ManagedAppId; client_instance_id: string; service_region: 'cn' | 'global' | 'unknown';
   identity_hash: string; display_name: string; identity_hint: string | null;

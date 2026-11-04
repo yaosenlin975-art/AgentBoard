@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { ApiError, ValidationError } from '../../errors.js';
 
 /** 支持的后台应用；ACC-10 起含 minimax / trae（vault scope 随 ManagedAppId 一起扩展） */
-export const managedAppSchema = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae']);
+export const managedAppSchema = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
 const scopeSchema = z.object({ app_id: managedAppSchema, client_instance_id: z.string().min(1).max(300), identity_hash: z.string().regex(/^[a-f0-9]{64}$/), purpose: z.enum(['client_snapshot', 'checkin']) }).strict();
 export type VaultScope = z.infer<typeof scopeSchema>;
 const reference = z.string().uuid();
