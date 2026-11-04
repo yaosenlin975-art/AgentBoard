@@ -10,7 +10,7 @@ import { ApiError, api } from '../../api/client';
 import type { DependencyRef, DependencyView } from '../../lib/dependency';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
 
 const MAX_VISIBLE_CANDIDATES = 30;
 
@@ -192,7 +192,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
             onClick={() => addBlockers.mutate(selectedId)}
             disabled={selectedId === '' || addBlockers.isPending}
             title={issue.claimed_by !== null ? '占用中新增前置会被服务端拒绝（需先 release）' : undefined}
-            className="rounded bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+            className="rounded bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
           >
             添加前置
           </button>

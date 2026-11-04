@@ -75,7 +75,7 @@ function renderAttachment(attachment: AttachmentMetadata, key: string) {
 }
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
 
 export function CommentThread({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
@@ -316,7 +316,7 @@ export function CommentThread({ issue }: { issue: Issue }) {
                 {item.error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{item.error}</p>}
                 <div className="mt-1 flex flex-wrap gap-1">
                   {item.status === 'error' && (
-                    <button type="button" aria-label={`重试上传 ${item.file.name}`} onClick={() => upload(item)} className="text-xs text-blue-700 underline dark:text-blue-300">
+                    <button type="button" aria-label={`重试上传 ${item.file.name}`} onClick={() => upload(item)} className="text-xs text-accent underline dark:text-blue-300">
                       重试
                     </button>
                   )}
@@ -346,7 +346,7 @@ export function CommentThread({ issue }: { issue: Issue }) {
             data-testid="comment-send"
             onClick={submit}
             disabled={!canSend}
-            className="rounded bg-blue-600 px-3 py-1 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1 text-xs font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             发送
           </button>

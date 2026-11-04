@@ -24,7 +24,7 @@ import {
 import { usePanelStore } from '../../state/panelStore';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
 
 function createRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -434,7 +434,7 @@ export function DispatchDialog({
             data-testid="dispatch-confirm"
             onClick={submit}
             disabled={cliId === '' || dispatch.isPending || !selectionInitialized || pendingAttachments.isError || (hasUnknownImages && !retryUnknownImages) || selectedCandidates.length !== selectedAttachmentIds.length}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {dispatch.isPending ? '派发中…' : '确认派发'}
           </button>

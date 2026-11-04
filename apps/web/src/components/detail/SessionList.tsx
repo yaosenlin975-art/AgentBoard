@@ -41,7 +41,7 @@ export function SessionList({
                   title="打开聊天视图"
                   className={`flex w-full items-center gap-2 rounded border px-2.5 py-1.5 text-left text-sm transition-colors ${
                     isCurrent
-                      ? 'border-blue-400 bg-blue-50 dark:border-blue-700 dark:bg-blue-950/40'
+                      ? 'border-accent bg-accent-soft'
                       : 'border-neutral-200 hover:border-neutral-300 dark:border-neutral-800 dark:hover:border-neutral-700'
                   }`}
                 >
@@ -55,7 +55,7 @@ export function SessionList({
                     {isCurrent && (
                       <span
                         data-testid={`session-current-${s.id}`}
-                        className="rounded-full bg-blue-600 px-1.5 py-0.5 text-xs font-medium text-white"
+                        className="rounded-full bg-accent px-1.5 py-0.5 text-xs font-medium text-accent-ink"
                       >
                         当前
                       </span>

@@ -13,7 +13,7 @@ import { Modal } from '../ui/Modal';
 import { ModelField } from './ModelField';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
 
 export function NewSessionDialog({
   defaultWorkspaceId,
@@ -150,7 +150,7 @@ export function NewSessionDialog({
               create.mutate();
             }}
             disabled={!canSubmit}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {create.isPending ? '创建中…' : '创建'}
           </button>

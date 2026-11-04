@@ -441,7 +441,7 @@ export function DetailPanel() {
                   data-testid="done-btn"
                   onClick={() => markDone.mutate()}
                   disabled={markDone.isPending}
-                  className="rounded bg-green-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-green-700 disabled:opacity-40"
+                  className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
                 >
                   标记待验收
                 </button>

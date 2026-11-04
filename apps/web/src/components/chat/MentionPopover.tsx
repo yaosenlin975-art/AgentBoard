@@ -59,7 +59,7 @@ export function MentionPopover({
           }}
           className={`block w-full px-2 py-1 text-left text-xs ${
             index === activeIndex
-              ? 'bg-blue-50 text-blue-800 dark:bg-blue-950/50 dark:text-blue-200'
+              ? 'bg-accent-soft text-accent'
               : 'text-neutral-700 dark:text-neutral-200'
           }`}
         >

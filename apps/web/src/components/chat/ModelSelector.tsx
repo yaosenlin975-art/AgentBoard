@@ -58,7 +58,7 @@ export function ModelSelector({
         data-testid="edit-model-btn"
         onClick={() => setOpen(true)}
         title="修改模型（下一轮生效）"
-        className="shrink-0 rounded px-1 py-0.5 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
+        className="shrink-0 rounded px-1 py-0.5 text-xs text-accent hover:bg-accent-soft/40"
       >
         修改
       </button>
@@ -99,7 +99,7 @@ export function ModelSelector({
                 data-testid="model-confirm"
                 onClick={() => save.mutate()}
                 disabled={save.isPending}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+                className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
               >
                 {save.isPending ? '保存中…' : '保存'}
               </button>

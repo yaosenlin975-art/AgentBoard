@@ -251,7 +251,7 @@ beforeEach(() => {
 });
 
 describe('ChatPanel 消息流与流式渲染', () => {
-  it('用户消息保留蓝色气泡，历史 assistant 消息直接显示正文', async () => {
+  it('用户消息用 unslop 强调令牌气泡（不再是旧蓝色），历史 assistant 消息直接显示正文', async () => {
     sessionsList = [makeSession()];
     msgStore['s1'] = [
       makeMessage({ id: 'mu1', role: 'user', content: '问题', ts: 100 }),
@@ -267,9 +267,11 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(await screen.findByTestId('msg-mu1')).toBeInTheDocument();
     const userRow = screen.getByTestId('msg-mu1');
     const userBubble = userRow.firstElementChild as HTMLElement;
-    expect(userBubble).toHaveClass('rounded-lg', 'rounded-br-sm', 'bg-blue-600', 'px-2.5', 'py-1.5');
+    expect(userBubble).toHaveClass('rounded-lg', 'rounded-br-sm', 'bg-accent-soft', 'text-ink', 'px-2.5', 'py-1.5');
+    // PALETTE-CHAT-DETAIL：旧 blue 色板必须消失
+    expect(userBubble.className).not.toMatch(/bg-blue-\d|text-blue-\d/);
     // 反向：用户泡泡确实保留泡泡外观类，且仍右对齐
-    expect(bubbleClasses(userBubble)).toEqual(expect.arrayContaining(['rounded-lg', 'rounded-br-sm', 'bg-blue-600']));
+    expect(bubbleClasses(userBubble)).toEqual(expect.arrayContaining(['rounded-lg', 'rounded-br-sm', 'bg-accent-soft']));
     expect(userRow).toHaveClass('justify-end');
     const history = expectAssistantBody('msg-ma0');
     // MarkdownView 懒加载：等真实结构渲染出来再断言（不固定 sleep）

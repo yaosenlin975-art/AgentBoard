@@ -158,7 +158,7 @@ export function MessageList({
         if (m.role === 'user') {
           return (
             <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
-              <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-blue-600 px-2.5 py-1.5 text-xs whitespace-pre-wrap text-white">
+              <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-accent-soft px-2.5 py-1.5 text-xs text-ink whitespace-pre-wrap">
                 {renderUserContent(m.content)}
               </div>
             </div>

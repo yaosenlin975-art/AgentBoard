@@ -346,7 +346,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
               onClick={() => markDone.mutate()}
               disabled={markDone.isPending}
               title="将关联任务标记为待验收并释放占用"
-              className="shrink-0 rounded border border-green-500 px-2 py-0.5 text-xs font-medium text-green-600 hover:bg-green-50 disabled:opacity-40 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-950/40"
+              className="shrink-0 rounded border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90 disabled:opacity-40"
             >
               标记待验收
             </button>
