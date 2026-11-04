@@ -27,6 +27,13 @@ export interface OneClickOutcome {
   message: string | null;
 }
 
+/** UNSLOP（ACC-UI-05）：批次结果只用 ink 分级 + 一处 accent（需要关注） */
+const KIND_TONE: Record<OneClickOutcome['kind'], string> = {
+  created: 'text-ink',
+  conflict: 'text-ink-2',
+  skipped: 'text-ink-3',
+  error: 'bg-accent-soft font-medium text-accent',
+};
 const KIND_LABEL: Record<OneClickOutcome['kind'], string> = {
   created: '已发起批次',
   conflict: '已有进行中的批次',
@@ -144,7 +151,7 @@ export function OneClickCheckinButton({ controller }: { controller: OneClickChec
 export function OneClickCheckinPlan({ controller }: { controller: OneClickCheckinController }) {
   const { runnableCount, totalAccounts, runnableLabels } = controller;
   return (
-    <span data-testid="accounts-one-click-plan" className="text-xs text-neutral-500 dark:text-neutral-400">
+    <span data-testid="accounts-one-click-plan" className="tabular-nums text-xs text-ink-3">
       {runnableCount === 0
         ? '当前没有可签到的平台'
         : `${runnableCount} 个平台 / ${totalAccounts} 个启用账号：${runnableLabels.join('、')}`}
@@ -160,22 +167,21 @@ export function OneClickCheckinResults({ controller }: { controller: OneClickChe
   const conflictCount = outcomes.filter((outcome) => outcome.kind === 'conflict').length;
   const visibleBatches = outcomes.filter((outcome) => outcome.batchId !== null);
   return (
-    <div data-testid="accounts-one-click-result" className="space-y-1.5">
-      <p data-testid="accounts-one-click-summary" className="text-xs text-neutral-700 dark:text-neutral-300">
+    <div data-testid="accounts-one-click-result" className="space-y-2">
+      <p data-testid="accounts-one-click-summary" className="text-xs text-ink-2">
         已发起 {createdCount} 个批次
         {conflictCount > 0 && `；${conflictCount} 个平台已有进行中的批次（未重复发起）`}
       </p>
-      <ul className="space-y-1">
+      <ul className="space-y-1.5">
         {outcomes.map((outcome) => (
-          <li key={outcome.app} data-testid={`accounts-one-click-outcome-${outcome.app}`} className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-neutral-800 dark:text-neutral-200">{appLabel(outcome.app)}</span>
-            <Badge tone={outcome.kind === 'created' ? 'green' : outcome.kind === 'conflict' ? 'blue' : outcome.kind === 'skipped' ? 'gray' : 'red'}>
-              {KIND_LABEL[outcome.kind]}
-            </Badge>
-            {outcome.code !== null && <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">{outcome.code}</span>}
-            {outcome.message !== null && <span className="text-neutral-500 dark:text-neutral-400">{outcome.message}</span>}
+          <li key={outcome.app} data-testid={`accounts-one-click-outcome-${outcome.app}`} className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="min-w-0 truncate text-ink">{appLabel(outcome.app)}</span>
+            {/* 单色相状态：created=ink / conflict=ink-2 / skipped=ink-3 / error=accent（只是需要关注，不是另一种色相） */}
+            <span className={`rounded-md px-1.5 py-0.5 text-xs ${KIND_TONE[outcome.kind]}`}>{KIND_LABEL[outcome.kind]}</span>
+            {outcome.code !== null && <span className="font-mono text-xs text-ink-3">{outcome.code}</span>}
+            {outcome.message !== null && <span className="text-ink-3">{outcome.message}</span>}
             {outcome.batchId !== null && (
-              <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400">批次 {outcome.batchId.slice(0, 8)}…</span>
+              <span className="font-mono text-xs tabular-nums text-ink-3">批次 {outcome.batchId.slice(0, 8)}…</span>
             )}
           </li>
         ))}
@@ -197,7 +203,7 @@ export function OneClickCheckin(props: {
 }) {
   const controller = useOneClickCheckin(props);
   return (
-    <div className="mb-2 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
+    <div className="mb-3 rounded-2xl border border-hairline bg-surface-raised p-3">
       <div className="flex flex-wrap items-center gap-2">
         <OneClickCheckinButton controller={controller} />
         <OneClickCheckinPlan controller={controller} />

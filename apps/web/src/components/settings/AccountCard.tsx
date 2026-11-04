@@ -17,8 +17,13 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AccountOperation, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { Badge } from '../ui/Badge';
-import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
+/** UNSLOP（ACC-UI-05）：本卡片内的按钮统一走令牌，chrome 只有一个强调色 */
+const BTN_BASE =
+  'rounded-lg border border-transparent px-2.5 py-1 text-xs font-medium ab-transition disabled:cursor-not-allowed disabled:opacity-40';
+const BTN_QUIET =
+  'rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs text-ink ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40';
+const BTN_DANGER =
+  'rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs font-medium text-red-600 ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
 import { checkinParticipation, reasonCodeOf, reasonLabel, unavailableLabel, unavailableReason, type CapabilityView } from './accountCapabilities';
 
@@ -125,16 +130,16 @@ export function AccountCard({
   const participation = checkinParticipation(account, capability);
 
   return (
-    <div data-testid={`accounts-card-${account.id}`} className="py-2">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="min-w-0 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{account.display_name}</span>
+    <div data-testid={`accounts-card-${account.id}`} className="rounded-xl border border-hairline bg-surface-card px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 truncate text-sm font-medium text-ink">{account.display_name}</span>
         {/* 客户端当前：桌面客户端里现在登录的是谁 */}
         <span data-testid={`accounts-client-current-${account.id}`}>
           {account.is_current === true
-            ? <Badge tone="green">客户端当前</Badge>
+            ? <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">客户端当前</span>
             : account.is_current === false
-              ? <Badge tone="neutral">客户端非当前</Badge>
-              : <Badge tone="gray">客户端当前未知</Badge>}
+              ? <span className="text-xs text-ink-2">客户端非当前</span>
+              : <span className="text-xs text-ink-3">客户端当前未知</span>}
         </span>
         {/* 签到当前：一键签到会把哪些账号提交进批次（可与客户端当前不同） */}
         <span
@@ -142,27 +147,25 @@ export function AccountCard({
           title={participation.participates ? '一键签到会提交该账号' : `不参与一键签到：${participation.reason ?? '签到不可用'}`}
         >
           {participation.participates
-            ? <Badge tone="blue">签到当前</Badge>
-            : <Badge tone="gray">不参与签到</Badge>}
+            ? <span className="rounded-md border border-hairline px-1.5 py-0.5 text-xs text-ink">签到当前</span>
+            : <span className="text-xs text-ink-3">不参与签到</span>}
         </span>
-        <Badge tone="blue">{REGION_LABEL[account.service_region]}</Badge>
-        <Badge tone={account.checkin_capability === 'supported' ? 'green' : account.checkin_capability === 'unsupported' ? 'neutral' : 'gray'}>
-          {CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}
-        </Badge>
+        <span className="text-xs text-ink-3">{REGION_LABEL[account.service_region]}</span>
+        <span className="text-xs text-ink-3">{CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}</span>
       </div>
 
-      <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-xs text-neutral-600 dark:text-neutral-400">
+      <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs text-ink-2">
         <dt>标识</dt><dd data-testid={`accounts-hint-${account.id}`} className="truncate font-mono">{account.identity_hint ?? '未提供'}</dd>
         <dt>实例</dt><dd className="truncate">{`${account.client_instance_id ?? '未提供'}`.slice(0, 12)}…</dd>
         <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
         <dt>最近签到</dt><dd>{account.last_checkin_day ?? '—'}{account.last_checkin_status ? ` · ${account.last_checkin_status}` : ''}</dd>
       </dl>
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
           data-testid={`accounts-switch-${account.id}`}
-          className={BUTTON_PRIMARY}
+          className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
           disabled={switchBlocked || switchMutation.isPending}
           title={switchTitle}
           onClick={() => { setError(null); setConfirming(true); }}
@@ -172,18 +175,18 @@ export function AccountCard({
         <button
           type="button"
           data-testid={`accounts-checkin-${account.id}`}
-          className={BUTTON_SECONDARY}
+          className={BTN_QUIET}
           disabled={!checkinEnabled}
           title={checkinEnabled ? '为该账号发起签到' : `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`}
           onClick={() => { if (checkinEnabled) onCheckin?.(); }}
         >
           签到
         </button>
-        {account.enabled === false && <Badge tone="red">已停用（只读）</Badge>}
+        {account.enabled === false && <span className="text-xs font-medium text-accent">已停用（只读）</span>}
         <button
           type="button"
           data-testid={`accounts-delete-${account.id}`}
-          className={BUTTON_SECONDARY}
+          className={BTN_QUIET}
           disabled={muted || deleteMutation.isPending}
           title={
             muted
@@ -201,7 +204,7 @@ export function AccountCard({
           data-testid={`accounts-delete-confirm-${account.id}`}
           role="group"
           aria-label="确认删除账号记录"
-          className="mt-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200"
+          className="mt-2 rounded-lg border border-hairline bg-surface-raised p-2.5 text-xs text-ink"
         >
           <p>
             确认删除「{account.display_name}」的记录？只清除 AgentBoard 保存的元数据与本机 DPAPI 快照，不会退出桌面客户端里的登录。
@@ -211,18 +214,18 @@ export function AccountCard({
               该账号是当前客户端登录账号；删除记录不会退出客户端登录
             </p>
           )}
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
               type="button"
               data-testid={`accounts-delete-confirm-yes-${account.id}`}
-              className={BUTTON_DANGER}
+              className={BTN_DANGER}
               disabled={deleteMutation.isPending}
               onClick={() => deleteMutation.mutate()}
             >
               {deleteMutation.isPending ? '删除中…' : '确认删除'}
             </button>
-            <button type="button" className={BUTTON_SECONDARY} onClick={() => setDeleteConfirming(false)}>取消</button>
-            <span className="text-[11px] text-red-700 dark:text-red-300">3 秒内未确认会自动收回</span>
+            <button type="button" className={BTN_QUIET} onClick={() => setDeleteConfirming(false)}>取消</button>
+            <span className="text-xs text-ink-3">3 秒内未确认会自动收回</span>
           </div>
         </div>
       )}
@@ -234,13 +237,13 @@ export function AccountCard({
       )}
 
       {confirming && (
-        <div data-testid="accounts-switch-confirm" role="group" aria-label="确认切换账号" className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+        <div data-testid="accounts-switch-confirm" role="group" aria-label="确认切换账号" className="mt-2 rounded-lg border border-hairline bg-surface-raised p-2.5 text-xs text-ink">
           <p>确认切换到「{account.display_name}」作为桌面客户端登录账号？切换会重启目标客户端，进行中的会话可能中断。</p>
-          <div className="mt-1.5 flex flex-wrap gap-2">
-            <button type="button" data-testid="accounts-switch-confirm-yes" className={BUTTON_PRIMARY} disabled={switchMutation.isPending} onClick={() => switchMutation.mutate()}>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" data-testid="accounts-switch-confirm-yes" className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`} disabled={switchMutation.isPending} onClick={() => switchMutation.mutate()}>
               确认切换
             </button>
-            <button type="button" className={BUTTON_SECONDARY} onClick={() => setConfirming(false)}>取消</button>
+            <button type="button" className={BTN_QUIET} onClick={() => setConfirming(false)}>取消</button>
           </div>
         </div>
       )}

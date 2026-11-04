@@ -8,7 +8,6 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AccountOperation, CheckinBatch, CheckinBatchItem, CheckinBatchStatus, PublicManagedAccount } from '@agentboard/shared';
-import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { cancelCheckinBatch, fetchBatchOperations, fetchCheckinBatch } from './checkinApi';
 import { reasonLabel, travelFromRecoveryRef, type TravelView } from './accountCapabilities';
@@ -23,14 +22,15 @@ const ITEM_LABEL: Record<CheckinBatchItem['state'], string> = {
   cancelled: '已取消',
 };
 
-const ITEM_TONE: Record<CheckinBatchItem['state'], BadgeTone> = {
-  queued: 'neutral',
-  running: 'blue',
-  succeeded: 'green',
-  already_done: 'green',
-  failed: 'red',
-  unknown: 'gray',
-  cancelled: 'gray',
+/** UNSLOP（ACC-UI-05）：批次条目状态只用 ink 分级 + accent 表示需要关注 */
+const ITEM_TONE: Record<CheckinBatchItem['state'], string> = {
+  queued: 'text-ink-3',
+  running: 'text-ink-2',
+  succeeded: 'text-ink',
+  already_done: 'text-ink-3',
+  failed: 'bg-accent-soft font-medium text-accent',
+  unknown: 'text-ink-3',
+  cancelled: 'text-ink-3',
 };
 
 const BATCH_LABEL: Record<CheckinBatchStatus, string> = {
@@ -42,13 +42,14 @@ const BATCH_LABEL: Record<CheckinBatchStatus, string> = {
   cancelled: '已取消',
 };
 
-const BATCH_TONE: Record<CheckinBatchStatus, BadgeTone> = {
-  queued: 'neutral',
-  running: 'blue',
-  succeeded: 'green',
-  partial: 'blue',
-  failed: 'red',
-  cancelled: 'gray',
+/** UNSLOP（ACC-UI-05）：批次状态同样只用 ink 分级 + accent */
+const BATCH_TONE: Record<CheckinBatchStatus, string> = {
+  queued: 'text-ink-3',
+  running: 'text-ink',
+  succeeded: 'text-ink-2',
+  partial: 'text-ink-2',
+  failed: 'bg-accent-soft font-medium text-accent',
+  cancelled: 'text-ink-3',
 };
 
 const ACTIVE_STATES: CheckinBatchItem['state'][] = ['queued', 'running'];
@@ -101,14 +102,14 @@ export function CheckinBatchPanel({
   });
 
   return (
-    <div data-testid="checkin-batch-panel" className="mt-2 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
-      <div className="flex flex-wrap items-center gap-1.5 text-xs">
-        <span className="font-medium text-neutral-900 dark:text-neutral-100">签到批次</span>
-        {batch && <Badge tone={BATCH_TONE[batch.status]}>{BATCH_LABEL[batch.status]}</Badge>}
-        <span className="font-mono text-[11px] text-neutral-500 dark:text-neutral-400" data-testid="checkin-batch-id">{batchId.slice(0, 8)}…</span>
-        {batch?.profile_local_day && <span className="text-neutral-500 dark:text-neutral-400">本地日 {batch.profile_local_day}</span>}
+    <div data-testid="checkin-batch-panel" className="mt-2 rounded-xl border border-hairline bg-surface-card p-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="font-medium text-ink">签到批次</span>
+        {batch && <span className={`rounded-md px-1.5 py-0.5 text-xs ${BATCH_TONE[batch.status]}`}>{BATCH_LABEL[batch.status]}</span>}
+        <span className="font-mono text-xs tabular-nums text-ink-3" data-testid="checkin-batch-id">{batchId.slice(0, 8)}…</span>
+        {batch?.profile_local_day && <span className="tabular-nums text-xs text-ink-3">本地日 {batch.profile_local_day}</span>}
         {onClose && (
-          <button type="button" className="ml-auto text-xs text-neutral-500 hover:underline dark:text-neutral-400" onClick={onClose}>
+          <button type="button" className="ml-auto text-xs text-ink-3 hover:text-ink hover:underline" onClick={onClose}>
             收起
           </button>
         )}
@@ -120,20 +121,20 @@ export function CheckinBatchPanel({
         </p>
       )}
 
-      <ul className="mt-1.5 space-y-1">
+      <ul className="mt-2 space-y-1.5">
         {items.map((item) => {
           const travel = travelByAccount.get(item.account_id) ?? null;
           return (
-            <li key={`${item.batch_id}-${item.account_id}`} data-testid={`checkin-item-${item.account_id}`} data-state={item.state} className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="min-w-0 truncate text-neutral-800 dark:text-neutral-200">{nameOf(item.account_id)}</span>
-              <Badge tone={ITEM_TONE[item.state]}>{ITEM_LABEL[item.state]}</Badge>
+            <li key={`${item.batch_id}-${item.account_id}`} data-testid={`checkin-item-${item.account_id}`} data-state={item.state} className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="min-w-0 truncate text-ink">{nameOf(item.account_id)}</span>
+              <span className={`rounded-md px-1.5 py-0.5 text-xs tabular-nums ${ITEM_TONE[item.state]}`}>{ITEM_LABEL[item.state]}</span>
               {item.safe_error_code !== null && (
                 <span data-testid={`checkin-item-error-${item.account_id}`} className="text-red-600 dark:text-red-400">
                   {reasonLabel(item.safe_error_code)}
                 </span>
               )}
               {travel !== null && (
-                <span data-testid={`checkin-item-travel-${item.account_id}`} data-travel={travel.status} className="text-neutral-600 dark:text-neutral-400">
+                <span data-testid={`checkin-item-travel-${item.account_id}`} data-travel={travel.status} className="text-xs text-ink-2">
                   猫猫旅行：{travel.label}
                   {travel.code !== null && <span className="ml-1 font-mono text-[11px] text-red-600 dark:text-red-400">{travel.code}</span>}
                 </span>
@@ -143,7 +144,7 @@ export function CheckinBatchPanel({
         })}
       </ul>
 
-      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
         <button
           type="button"
           data-testid="checkin-cancel"
