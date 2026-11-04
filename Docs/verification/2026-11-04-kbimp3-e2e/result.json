@@ -1,0 +1,157 @@
+[
+  {
+    "label": "md",
+    "preview": {
+      "meta": "Markdown · 0.1 KB · 识别到 1 页",
+      "title": "KBIMP-3 Markdown 样例",
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": false,
+      "result": null
+    },
+    "after": {
+      "meta": "",
+      "title": null,
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": null,
+      "result": "已导入 1 页：28c37f99-c897-4d72-ab6b-e65ef1990a1d"
+    }
+  },
+  {
+    "label": "txt",
+    "preview": {
+      "meta": "纯文本 · 0.1 KB · 识别到 1 页",
+      "title": "纯文本样例：第一行作为标题",
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 1 页：28c37f99-c897-4d72-ab6b-e65ef1990a1d"
+    },
+    "after": {
+      "meta": "纯文本 · 0.1 KB · 识别到 1 页",
+      "title": "纯文本样例：第一行作为标题",
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": true,
+      "result": "已导入 1 页：28c37f99-c897-4d72-ab6b-e65ef1990a1d"
+    }
+  },
+  {
+    "label": "json-single",
+    "preview": {
+      "meta": "JSON · 0.1 KB · 识别到 1 页",
+      "title": null,
+      "items": [
+        {
+          "id": "kb-import-item-draft-0",
+          "text": "KBIMP-3 单对象样例取消11 字符",
+          "cancelled": "false"
+        }
+      ],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": true,
+      "result": "已导入 1 页：28c37f99-c897-4d72-ab6b-e65ef1990a1d"
+    },
+    "after": {
+      "meta": "",
+      "title": null,
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": null,
+      "result": "已导入 1 页：edb00f59-c28e-45ac-aee0-ea70a191a900"
+    }
+  },
+  {
+    "label": "json-array",
+    "preview": {
+      "meta": "JSON · 0.2 KB · 识别到 2 页",
+      "title": null,
+      "items": [
+        {
+          "id": "kb-import-item-draft-0",
+          "text": "KBIMP-3 数组样例 A取消7 字符",
+          "cancelled": "false"
+        },
+        {
+          "id": "kb-import-item-draft-1",
+          "text": "KBIMP-3 数组样例 B取消7 字符",
+          "cancelled": "false"
+        }
+      ],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 1 页：edb00f59-c28e-45ac-aee0-ea70a191a900"
+    },
+    "after": {
+      "meta": "",
+      "title": null,
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": null,
+      "result": "已导入 2 页：bb0e9127-d9d4-413b-815b-461987527082, 87842a47-218a-44fc-b2f3-473703d69cbb"
+    }
+  },
+  {
+    "label": "conflict",
+    "preview": {
+      "meta": "Markdown · 0.1 KB · 识别到 1 页",
+      "title": "KBIMP-3 Markdown 样例",
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 2 页：bb0e9127-d9d4-413b-815b-461987527082, 87842a47-218a-44fc-b2f3-473703d69cbb"
+    },
+    "after": {
+      "meta": "Markdown · 0.1 KB · 识别到 1 页",
+      "title": "KBIMP-3 Markdown 样例",
+      "items": [],
+      "failure": null,
+      "error": "同范围内已存在相同标题/别名的知识页，导入被拒（409）改标题后再导：标题不同即生成不同别名加后缀再导：例如在标题后拼接日期或 ID",
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 2 页：bb0e9127-d9d4-413b-815b-461987527082, 87842a47-218a-44fc-b2f3-473703d69cbb"
+    }
+  },
+  {
+    "label": "oversize-blocked",
+    "preview": {
+      "meta": "Markdown · 586.0 KB · 识别到 1 页",
+      "title": "KBIMP-3 500KB 样例",
+      "items": [],
+      "failure": null,
+      "error": null,
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 2 页：bb0e9127-d9d4-413b-815b-461987527082, 87842a47-218a-44fc-b2f3-473703d69cbb"
+    },
+    "after": {
+      "meta": "Markdown · 586.0 KB · 识别到 1 页",
+      "title": "KBIMP-3 500KB 样例",
+      "items": [],
+      "failure": null,
+      "error": "内容超过服务端上限（正文 ≤100000 字符 / 请求 ≤2MB）拆分成多页后再导入",
+      "warnings": null,
+      "submitDisabled": false,
+      "result": "已导入 2 页：bb0e9127-d9d4-413b-815b-461987527082, 87842a47-218a-44fc-b2f3-473703d69cbb"
+    }
+  }
+]
