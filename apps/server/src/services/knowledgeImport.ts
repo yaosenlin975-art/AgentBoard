@@ -11,7 +11,7 @@
  * - 限额：单文件/请求正文 ≤1MB（UTF-8 字节），`body_md` ≤100000 字符（与知识页存量一致）。
  */
 import { createHash } from 'node:crypto';
-import { KNOWLEDGE_DOMAINS, type KnowledgeDomain } from '@agentboard/shared';
+import { KNOWLEDGE_DOMAINS, KNOWLEDGE_SHORT_ID_LEN, type KnowledgeDomain } from '@agentboard/shared';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeSource } from '@agentboard/shared';
 import { ApiError, ValidationError } from '../errors.js';
 import { createKnowledgePage, requireKnowledgeDomain } from '../db/repos/knowledge.js';
@@ -69,7 +69,7 @@ export function slugifyTitle(title: string, fallbackSeed?: string): string {
     .replace(/^[-._/]+|[-._/]+$/gu, '')
     .slice(0, 120);
   if (SLUG_ALLOWED.test(base)) return base;
-  const seed = createHash('sha256').update(fallbackSeed ?? title).digest('hex').slice(0, 8);
+  const seed = createHash('sha256').update(fallbackSeed ?? title).digest('hex').slice(0, KNOWLEDGE_SHORT_ID_LEN);
   return `import-${seed}`;
 }
 

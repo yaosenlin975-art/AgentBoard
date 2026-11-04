@@ -45,3 +45,17 @@ export const QUOTA_SOURCE_LABEL: Record<QuotaSourceId, string> = {
   qoder_cn: 'Qoder CN 额度',
   zcode: 'ZCode 额度',
 };
+
+// ---- 跨端契约冻结常量（BORROW-0.1 单一事实源：租约/fence/依赖关系/知识短 ID 全部引用这里，各端禁止手写字面量）----
+
+/** claim 租约时长（毫秒）：BORROW-0.2 原子领取的过期窗口。 */
+export const CLAIM_LEASE_MS = 900000;
+
+/** claim fence 头名：BORROW-0.2 原子领取的乐观并发控制头。 */
+export const CLAIM_FENCE_HEADER = 'x-claim-fence';
+
+/** 任务依赖关系全集（kb dep 语义；服务端校验与 CLI 展示共用）。 */
+export const DEPENDENCY_RELATIONS = ['blocks', 'related', 'duplicate'] as const;
+
+/** 知识页短 ID 长度（resolve 查询与导出回退展示共用）。 */
+export const KNOWLEDGE_SHORT_ID_LEN = 8;

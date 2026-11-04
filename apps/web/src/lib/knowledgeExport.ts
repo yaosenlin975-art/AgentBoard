@@ -3,7 +3,7 @@
  * 零依赖：不引入 PDF 库；PDF 走浏览器打印路径（见 KnowledgePrintView，待批准后接线）。
  */
 
-import type { KnowledgePage } from '@agentboard/shared';
+import { KNOWLEDGE_SHORT_ID_LEN, type KnowledgePage } from '@agentboard/shared';
 
 /** 文件名非法字符（Windows 最严）：\ / : * ? " < > | 与控制字符 */
 const ILLEGAL_FILENAME = /[\\/:*?"<>|\u0000-\u001f\u007f]/g;
@@ -23,7 +23,7 @@ export function sanitizeExportFilename(title: string, pageId: string): string {
     .slice(0, MAX_FILENAME_LENGTH)
     .replace(/[-\s]+$/, '');
   if (cleaned !== '') return cleaned;
-  const fallbackId = String(pageId ?? '').slice(0, 8);
+  const fallbackId = String(pageId ?? '').slice(0, KNOWLEDGE_SHORT_ID_LEN);
   return fallbackId === '' ? 'knowledge-page' : `knowledge-${fallbackId}`;
 }
 

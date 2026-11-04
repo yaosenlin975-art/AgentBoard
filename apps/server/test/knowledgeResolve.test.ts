@@ -14,6 +14,7 @@ import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createKnowledgePage } from '../src/db/repos/knowledge.js';
+import { KNOWLEDGE_SHORT_ID_LEN } from '@agentboard/shared';
 
 describe('KB-PAGE-2 统一 resolve', () => {
   let t: TestDb;
@@ -94,7 +95,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
 
   it('8 位 id 前缀：唯一命中解析到同一页；多命中 → 409（不猜）', async () => {
     const page = mk({ scope: 'common' }, 'pfx', '前缀页');
-    const hit = await request(app).get('/api/knowledge/resolve').query({ ref: page.id.slice(0, 8), scope: 'common' });
+    const hit = await request(app).get('/api/knowledge/resolve').query({ ref: page.id.slice(0, KNOWLEDGE_SHORT_ID_LEN), scope: 'common' });
     expect(hit.status).toBe(200);
     expect(hit.body.id).toBe(page.id);
 
