@@ -54,7 +54,6 @@ const SKIP_DIRS = new Set([
   'coverage',
   'refs',
   'gui-test-screenshots',
-  'idle-task-drafts',
 ]);
 
 const args = process.argv.slice(2);

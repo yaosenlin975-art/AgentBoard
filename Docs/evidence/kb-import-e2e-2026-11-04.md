@@ -46,7 +46,7 @@ status=409
 - `e2e-import.mjs`：可复现脚本（CDP 塞文件 + 走 UI 提交）
 - `md.png` / `txt.png` / `json-single.png` / `json-array.png` / `conflict.png` / `oversize-blocked.png`
 - `result.json`：脚本原始输出（含每步预览字段）
-- 样例：`Docs/verification/samples/{sample.md,sample.txt,sample.json,sample-array.json,sample-500kb.md}`
+- 样例：`apps/server/test/fixtures/knowledge-import/{sample.md,sample.txt,sample.json,sample-array.json,sample-500kb.md}`（KB-DOC-1 已从 `Docs/verification/samples/` 移入测试夹具目录）
 
 ## 6. 清理
 

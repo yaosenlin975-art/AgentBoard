@@ -1,0 +1,45 @@
+/* 共享基座：重置、焦点、滚动条、动效降级、通用小工具 */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+input, select { font: inherit; }
+
+:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; border-radius: 2px; }
+
+.mono {
+  font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.no-select { user-select: none; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(120, 118, 112, 0.28); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(120, 118, 112, 0.45); }
+
+/* 动效降级：系统要求减少动态效果时，所有过渡/动画瞬时完成 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
