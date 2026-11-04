@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { RightPanel } from '../components/right/RightPanel';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 
 vi.mock('../components/detail/DetailPanel', async () => {
   const { useState } = await import('react');
@@ -108,7 +109,7 @@ describe('RightPanel', () => {
     expect(localStorage.getItem('agentboard.right-panel-width')).toBe('440');
   });
 
-  it('按需挂载视图：chat 草稿跨切换保留，详情重挂载回到初值，关闭整块卸载', async () => {
+  it('按需挂载视图：detail 时只有详情子树；openChat 后面板无任何视图（S2b 整屏化）', async () => {
     render(<RightPanel />);
     const detail = screen.getByTestId('detail-draft');
 
@@ -121,22 +122,18 @@ describe('RightPanel', () => {
     detail.focus();
 
     act(() => usePanelStore.getState().openChat());
-    expect(screen.getAllByTestId('chat-panel-view')).toHaveLength(1);
+    // S2b：聊天整屏化 —— 面板不再渲染 chat，openChat 清空面板并切 navStore
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
+    expect(useNavStore.getState().view).toBe('chat');
+    // 面板走退出过渡后整块卸载：子树（含 detail）随之消失
+    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryAllByTestId('detail-panel-view')).toHaveLength(0);
 
-    const chat = screen.getByTestId('chat-draft');
-    fireEvent.change(chat, { target: { value: 'chat draft' } });
-    chat.focus();
-    expect(usePanelStore.getState().chatDraft).toBe('chat draft');
-
+    // 详情未保存的编辑态随重挂载回到服务端初值；openDetail 会顺手把主区切回看板
     act(() => usePanelStore.getState().openDetail('issue-1'));
-    // chat 草稿存在 store，切回聊天仍在；详情未保存的编辑态随重挂载回到服务端初值
-    expect(usePanelStore.getState().chatDraft).toBe('chat draft');
     expect(screen.getAllByTestId('detail-panel-view')).toHaveLength(1);
     expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
-
-    act(() => usePanelStore.getState().openChat());
-    expect(screen.getByTestId('chat-draft')).toHaveValue('chat draft');
+    expect(useNavStore.getState().view).toBe('board');
 
     // 关闭整块卸载：焦点回触发元素
     const trigger = document.createElement('button');

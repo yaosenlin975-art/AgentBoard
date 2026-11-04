@@ -11,6 +11,7 @@ import { RefPanel } from '../components/right/RefPanel';
 import { RightPanel } from '../components/right/RightPanel';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 import { resetOverlays, useOverlayStore } from '../state/overlayStore';
 import { server } from './server';
 
@@ -104,7 +105,9 @@ describe('panelStore：ref 视图', () => {
 
     usePanelStore.getState().openRef({ kind: 'log', id: 'log-1', title: '日志标题' });
     usePanelStore.getState().openChat('s-1');
-    expect(usePanelStore.getState()).toMatchObject({ view: 'chat', refPanel: null });
+    // S2b：聊天整屏化 —— openChat 只切 navStore，面板视图清空收起（ref 浮窗计数 0）
+    expect(usePanelStore.getState()).toMatchObject({ view: null, refPanel: null, rightOpen: false });
+    expect(useNavStore.getState().view).toBe('chat');
 
     usePanelStore.getState().openRef({ kind: 'log', id: 'log-1', title: '日志标题' });
     usePanelStore.getState().clearView();

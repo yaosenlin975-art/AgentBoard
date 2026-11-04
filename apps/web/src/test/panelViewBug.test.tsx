@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { resetOverlays, useOverlayStore } from '../state/overlayStore';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 
 vi.mock('../components/detail/DetailPanel', () => ({
   DetailPanel: () => <div data-testid="stub-detail-panel">detail-body</div>,
@@ -52,7 +53,7 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(screen.getByTestId('stub-detail-panel')).toBeInTheDocument();
   });
 
-  it('按需挂载：detail 时只有详情子树，chat 时只有聊天子树（不再靠 CSS 遮蔽）', async () => {
+  it('按需挂载：detail 时只有详情子树；openChat 后面板无 chat 子树（S2b 整屏化）', async () => {
     renderPanel();
     act(() => usePanelStore.getState().openDetail('iss-1'));
     await heading('任务详情');
@@ -60,15 +61,19 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
 
     act(() => usePanelStore.getState().openChat());
-    await heading('聊天');
-    expect(screen.getAllByTestId('chat-panel-view')).toHaveLength(1);
+    // S2b：聊天整屏化 —— 面板里不再有 chat 视图，openChat 只切 navStore 并清空面板
+    expect(useNavStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState().view).toBeNull();
+    expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
+    // 面板走退出过渡后整块卸载，detail 子树随之消失
+    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
     expect(screen.queryAllByTestId('detail-panel-view')).toHaveLength(0);
     expect(screen.queryAllByTestId('ref-panel-view')).toHaveLength(0);
   });
 
   it('(b) localStorage 残留「上次停在聊天」：刷新后点任务仍是详情', async () => {
     localStorage.setItem('agentboard.panel', JSON.stringify({
-      state: { view: 'chat', issueId: null, sessionId: 's1', chatSession: null, rightOpen: true, unread: {} },
+      state: { view: null, issueId: null, sessionId: 's1', chatSession: null, rightOpen: false, unread: {} },
       version: 0,
     }));
     await act(async () => { await usePanelStore.persist.rehydrate(); });
@@ -84,16 +89,18 @@ describe('点击任务进入详情（PANEL-VIEW-BUG）', () => {
     expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
   });
 
-  it('(c) 浮窗已开在聊天时点另一张任务：切到详情', async () => {
+  it('(c) 整屏聊天时点另一张任务：主区切回看板并进详情', async () => {
     renderPanel();
     act(() => usePanelStore.getState().openChat());
-    expect(await heading('聊天')).toBeInTheDocument();
-    expect(usePanelStore.getState().view).toBe('chat');
+    expect(useNavStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState().view).toBeNull();
 
     act(() => usePanelStore.getState().openDetail('iss-2'));
     expect(await heading('任务详情')).toBeInTheDocument();
     await waitFor(() => expect(usePanelStore.getState().view).toBe('detail'));
     expect(usePanelStore.getState().issueId).toBe('iss-2');
+    // S2b：从整屏聊天点任务 → 主区切回看板，详情浮窗不会盖在整屏聊天上
+    expect(useNavStore.getState().view).toBe('board');
     expect(screen.queryAllByTestId('chat-panel-view')).toHaveLength(0);
     expect(screen.getAllByTestId('detail-panel-view')).toHaveLength(1);
   });

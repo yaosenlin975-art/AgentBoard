@@ -1,7 +1,9 @@
 /**
- * 右侧面板视图状态：detail / chat 互斥，可整体收起（rightOpen）。
- * openDetail/openChat 只切换视图并展开，不重置另一视图的数据：
- * 两个视图组件各持 react-query 缓存，往返切换不丢选中 issue/session。
+ * 右侧面板视图状态：detail / ref 互斥，可整体收起（rightOpen）。
+ * S2b（聊天整屏化）：聊天不再是右侧面板的一种视图，而是主区第五视图（`navStore.view === 'chat'`）；
+ * `openChat` 只切 `navStore`，并把面板视图清空收起，保证「整屏聊天 + detail/ref 浮窗计数 0」。
+ * openDetail/openRef 只切换视图并展开，不重置另一视图的数据：
+ * 视图组件各持 react-query 缓存，往返切换不丢选中 issue。
  * chatSession 携带打开聊天时的会话对象（ChatPanel 刷新后经 GET /api/sessions/:id 兜底恢复，
  * 以此定位 workspace 并显示 CLI/模型；后续以 WS session.changed 覆盖）。
  * unread：各会话未读新消息计数，由 unreadCollector 在 wsBus 全局层统计
@@ -16,7 +18,8 @@ import { useNavStore } from './navStore';
 import { persist } from 'zustand/middleware';
 import type { Session } from '@agentboard/shared';
 
-export type PanelView = 'detail' | 'chat' | 'ref';
+/** S2b：聊天已从面板视图移除（整屏由 navStore.view === 'chat' 表达） */
+export type PanelView = 'detail' | 'ref';
 
 /** 软链接浮窗目标（MD-LINKS）：知识页或日志详情，只带定位信息，正文由 RefPanel 自己拉取 */
 export interface RefPanelTarget {
@@ -85,24 +88,31 @@ export const usePanelStore = create<PanelState>()(
       chatDraft: '',
       rightOpen: false,
       setChatDraft: (chatDraft) => set({ chatDraft }),
-      openDetail: (issueId) => set({ view: 'detail', issueId, refPanel: null, rightOpen: true }),
-      openRef: (target) => set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true }),
+      openDetail: (issueId) => {
+        // S2b：从「整屏聊天」点任务卡时先把主区切回看板，否则详情浮窗会盖在整屏聊天上（切换不串）
+        if (useNavStore.getState().view === 'chat') useNavStore.getState().setView('board');
+        set({ view: 'detail', issueId, refPanel: null, rightOpen: true });
+      },
+      openRef: (target) => {
+        if (useNavStore.getState().view === 'chat') useNavStore.getState().setView('board');
+        set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true });
+      },
       openChat: (sessionId, session) => {
-        // S1 联动（设计稿 §4「跳转联动」）：聊天升为主区第五视图 → 先切 view 到 chat；
-        // 下面把 panelStore.view 置为 'chat' 即关闭详情/引用浮窗（浮窗 absolute 覆盖，不能与整屏叠）。
+        // S2b：聊天是主区第五视图 → 只切 navStore；panelStore 只负责「把右侧浮窗清空收起」，
+        // 不再写 `view`（'chat' 已不是 PanelView 的取值），保证整屏聊天时 detail/ref 浮窗计数为 0。
         useNavStore.getState().setView('chat');
         set((s) => {
           const id = sessionId ?? s.sessionId;
           return {
-            view: 'chat',
-            // 关闭详情/引用浮窗：两者都是 absolute 覆盖层，不能与整屏聊天并存
+            view: null,
+            // 关闭详情/引用浮窗：两者都是绝对定位覆盖层，不能与整屏聊天并存
             issueId: null,
             refPanel: null,
             sessionId: id,
             // 同会话沿用已存会话对象；换会话只认新传入的
             chatSession: session ?? (id === s.sessionId ? s.chatSession : null),
             unread: id !== null ? { ...s.unread, [id]: 0 } : s.unread,
-            rightOpen: true,
+            rightOpen: false,
           };
         });
       },
@@ -132,7 +142,8 @@ export const usePanelStore = create<PanelState>()(
         unread: state.unread,
       }),
       // 重水合容错：unread 做结构/取值校验（脏数据回空对象，不抛错）；
-      // 视图意图一律丢弃 —— 旧版快照里可能残留 view:'chat'，带回来就会复现「点任务显示聊天」（PANEL-VIEW-BUG）。
+      // 视图意图一律丢弃 —— 旧版快照里可能残留 `view:'chat'`（S2b 前聊天曾是面板视图），
+      // 该值已不是合法 PanelView，带回来就是脏状态，统一落 null（PANEL-VIEW-BUG / S2b）。
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<PanelState>;
         return {

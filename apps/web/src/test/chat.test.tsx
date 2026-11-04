@@ -4,15 +4,16 @@
  * （queued:true +1 / end 清零）、停止调用与停止后队列保留、模型修改 PATCH、新建会话、未读徽标。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
-import { RightPanel } from '../components/right/RightPanel';
+import { ChatPanel } from '../components/chat/ChatPanel';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 import { useStreamingStore } from '../state/streamingStore';
 import { server } from './server';
 
@@ -203,18 +204,21 @@ function mockChatApi(): void {
 
 function renderChat(session: Session | null = makeSession()): QueryClient {
   if (session !== null) {
-    usePanelStore.setState({ view: 'chat', sessionId: session.id, chatSession: session, rightOpen: true });
+    usePanelStore.setState({ view: null, sessionId: session.id, chatSession: session, rightOpen: false });
+    useNavStore.setState({ view: 'chat' });
   } else {
-    usePanelStore.setState({ view: 'chat', sessionId: null, chatSession: null, rightOpen: true });
+    usePanelStore.setState({ view: null, sessionId: null, chatSession: null, rightOpen: false });
+    useNavStore.setState({ view: 'chat' });
   }
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <RightPanel />
+      <ChatPanel />
     </QueryClientProvider>,
   );
   return qc;
 }
+
 
 /** 灌入当前会话的流式 text delta */
 function emitText(sid: string, delta: string): void {
@@ -382,26 +386,24 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(bubble).toHaveTextContent('后台继续累积');
   });
 
-  it('收起面板再展开：进行中的流式内容不丢，收起期间 delta 继续累积', async () => {
+  it('切走再切回聊天：进行中的流式内容不丢，卸载期间 delta 继续累积', async () => {
     sessionsList = [makeSession()];
-    renderChat();
-    const user = userEvent.setup();
+    const first = renderChat();
     await screen.findByTestId('model-display');
 
     emitText('s1', '收起前');
     expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('收起前');
 
-    // PANEL-ENTRY2：关闭 = 整块卸载（不再有收起态窄条/inert 隐藏面板）
-    await user.click(screen.getByTestId('right-panel-close'));
-    // PANEL-MOTION-2：关闭先走出场相位（仍挂载），动画结束后才卸载
-    await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
+    // S2b：聊天整屏化 —— ChatPanel 随主区视图切换整块卸载（不再有右侧面板收起态）
+    cleanup();
+    act(() => useNavStore.getState().setView('board'));
     expect(screen.queryByTestId('chat-panel')).toBeNull();
-    // 关闭期间流式增量仍进 store（全局 WS 层照常收流）；PANEL-VIEW-BUG 后关闭会清 view
+    // 卸载期间流式增量仍进 store（全局 WS 层照常收流）
     emitText('s1', '期间');
-    await waitFor(() => expect(usePanelStore.getState().view).toBeNull());
+    expect(usePanelStore.getState().view).toBeNull();
 
-    // 通过入口重开（顶栏聊天按钮 / openChat）→ 累积内容完整呈现
-    act(() => usePanelStore.getState().openChat());
+    // 切回聊天 → 累积内容完整呈现
+    renderChat();
     const bubble = await screen.findByTestId('streaming-bubble');
     expect(screen.getByTestId('chat-panel')).toBeInTheDocument();
     expect(bubble).toHaveTextContent('收起前期间');
@@ -758,11 +760,12 @@ describe('ChatPanel 刷新恢复', () => {
   it('chatSession 缺失时按 sessionId 拉 GET /api/sessions/:id 渲染；404 → 清空回空态并提示归属', async () => {
     // 持久化恢复场景：sessionId 在、chatSession 空；会话归属另一工作空间
     sessionsList = [makeSession({ id: 'sx', workspace_id: 'ws-2' })];
-    usePanelStore.setState({ view: 'chat', sessionId: 'sx', chatSession: null, rightOpen: true });
+    usePanelStore.setState({ view: null, sessionId: 'sx', chatSession: null, rightOpen: false });
+    useNavStore.setState({ view: 'chat' });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <RightPanel />
+        <ChatPanel />
       </QueryClientProvider>,
     );
 
@@ -976,12 +979,13 @@ describe('ChatPanel 工作空间名称（CHAT-WORKSPACE-LABEL）', () => {
 
   it('没有选中会话且未选工作空间：显示明确的未选择占位', async () => {
     sessionsList = [];
-    usePanelStore.setState({ view: 'chat', sessionId: null, chatSession: null, rightOpen: true });
+    usePanelStore.setState({ view: null, sessionId: null, chatSession: null, rightOpen: false });
+    useNavStore.setState({ view: 'chat' });
     useAppStore.setState({ workspaceId: null });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <RightPanel />
+        <ChatPanel />
       </QueryClientProvider>,
     );
 

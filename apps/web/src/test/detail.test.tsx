@@ -3,7 +3,7 @@
  * 派发弹窗提交体（cli/model/reuse_session/prompt 渲染变量）、RightPanel 容器收起/展开/拖拽宽度。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -12,6 +12,7 @@ import { DetailPanel } from '../components/detail/DetailPanel';
 import { RightPanel } from '../components/right/RightPanel';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/ws/main', created_at: 1 };
@@ -506,7 +507,9 @@ describe('关联会话列表', () => {
     expect(screen.queryByTestId('session-running-s-old')).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId('session-item-s-old'));
-    expect(usePanelStore.getState()).toMatchObject({ view: 'chat', sessionId: 's-old', rightOpen: true });
+    // S2b：聊天整屏化 —— openChat 只切 navStore，面板视图清空收起
+    expect(usePanelStore.getState()).toMatchObject({ view: null, sessionId: 's-old', rightOpen: false });
+    expect(useNavStore.getState().view).toBe('chat');
   });
 });
 
@@ -562,7 +565,8 @@ describe('DispatchDialog', () => {
     await userEvent.click(screen.getByLabelText('续用最近会话（保留 agent 已有进度）'));
     await userEvent.click(screen.getByTestId('dispatch-confirm'));
 
-    await waitFor(() => expect(usePanelStore.getState()).toMatchObject({ view: 'chat', sessionId: 'sess-new', rightOpen: true }));
+    await waitFor(() => expect(usePanelStore.getState()).toMatchObject({ view: null, sessionId: 'sess-new', rightOpen: false }));
+    expect(useNavStore.getState().view).toBe('chat');
     await waitFor(() => {
       expect(screen.queryByTestId('dispatch-confirm')).not.toBeInTheDocument();
     });
@@ -872,11 +876,14 @@ describe('RightPanel 容器', () => {
     expect(await screen.findByTestId('detail-panel')).toBeInTheDocument();
   });
 
-  it('chat 视图渲染 ChatPanel（T14：无会话时空态引导）', async () => {
-    usePanelStore.setState({ view: 'chat', issueId: null, sessionId: null, rightOpen: true });
+  it('openChat 走 navStore：面板不再渲染 chat 视图（S2b 整屏化，detail/ref 浮窗计数 0）', async () => {
     renderDetail({ open: false });
-    expect(await screen.findByTestId('chat-panel')).toBeInTheDocument();
-    expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
+    act(() => usePanelStore.getState().openChat());
+    expect(useNavStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState().view).toBeNull();
+    expect(screen.queryByTestId('chat-panel-view')).toBeNull();
+    expect(screen.queryByTestId('detail-panel-view')).toBeNull();
+    expect(screen.queryByTestId('right-panel')).toBeNull();
   });
 
   it('拖拽左缘调整宽度并写 localStorage（钳制 320–720）', async () => {

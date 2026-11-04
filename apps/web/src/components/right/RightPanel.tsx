@@ -3,8 +3,8 @@
  * - view===null 渲染收起窄条（固定"聊天"，点击进入聊天视图，保证首屏可达）；
  * - 收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
  * - 展开时顶部条（视图标题 + 收起按钮），左缘拖拽调宽（320–720px，localStorage 持久）；
- * - view==='detail' 渲染 DetailPanel（T13），view==='chat' 渲染聊天视图（T14 ChatPanel），
- *   view==='ref' 渲染软链接浮窗 RefPanel（MD-LINKS：知识页 / 日志详情）。
+ * - view==='detail' 渲染 DetailPanel（T13），view==='ref' 渲染软链接浮窗 RefPanel（MD-LINKS：知识页 / 日志详情）。
+ *   S2b：聊天已整屏化（`navStore.view === 'chat'` 时由 App 整屏渲染 ChatPanel），这里不再有 chat 分支。
  * 视图组件各持 react-query 缓存，收起/展开与往返切换不丢数据。
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
@@ -13,7 +13,6 @@ import { useOverlayStore } from '../../state/overlayStore';
 import { useDismissable } from '../overlay/useDismissable';
 import { panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
 import { DetailPanel } from '../detail/DetailPanel';
-import { ChatPanel } from '../chat/ChatPanel';
 import { RefPanel } from './RefPanel';
 
 const WIDTH_KEY = 'agentboard.right-panel-width';
@@ -52,14 +51,15 @@ export function RightPanel() {
   /** 打开前的焦点元素（任务卡 / 顶栏「聊天」按钮），关闭后焦点回它（PANEL-ENTRY2：不再有 rail 入口） */
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const panelBodyRefs = useRef<Partial<Record<PanelView, HTMLDivElement | null>>>({ detail: null, chat: null, ref: null });
-  const lastFocusByView = useRef<Partial<Record<PanelView, HTMLElement | null>>>({ detail: null, chat: null, ref: null });
+  const panelBodyRefs = useRef<Partial<Record<PanelView, HTMLDivElement | null>>>({ detail: null, ref: null });
+  const lastFocusByView = useRef<Partial<Record<PanelView, HTMLElement | null>>>({ detail: null, ref: null });
   // PANEL-MOTION-2：进场/出场过渡（transform+opacity，两个浮窗同一 token）；关闭后保留挂载到出场结束
   const reducedMotion = usePrefersReducedMotion();
   const { mounted, phase } = usePanelPresence(isOpen, reducedMotion);
   const previousView = useRef({ isOpen, view: activeView, mounted });
 
-  // 视图存在即可见：openDetail/openChat 设置 view 后浮窗自动出现；view 为 null 时强制关闭
+  // 视图存在即可见：openDetail/openRef 设置 view 后浮窗自动出现；view 为 null 时强制关闭
+  // （S2b：openChat 不再设置 view —— 它只切 navStore 并清空面板，见 panelStore.openChat）
   useEffect(() => {
     if (view !== null && !overlayRight) openRightOverlay();
     else if (view === null && overlayRight) closeRightOverlay();
@@ -179,7 +179,7 @@ export function RightPanel() {
         />
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
           <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
-            {activeView === 'detail' ? '任务详情' : activeView === 'ref' ? (refPanel?.kind === 'log' ? '日志' : '知识') : '聊天'}
+            {activeView === 'detail' ? '任务详情' : refPanel?.kind === 'log' ? '日志' : '知识'}
           </h2>
           <button
             type="button"
@@ -221,18 +221,6 @@ export function RightPanel() {
                 className="h-full overflow-hidden p-3"
               >
                 <RefPanel />
-              </div>
-            )}
-            {activeView === 'chat' && (
-              <div
-                ref={(node) => { panelBodyRefs.current.chat = node; }}
-                data-testid="chat-panel-view"
-                onFocusCapture={(event: ReactFocusEvent<HTMLDivElement>) => {
-                  if (event.target instanceof HTMLElement) lastFocusByView.current.chat = event.target;
-                }}
-                className="h-full overflow-hidden"
-              >
-                <ChatPanel />
               </div>
             )}
           </div>

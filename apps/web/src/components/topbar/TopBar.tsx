@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useAppStore, type WsStatus } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
+import { useNavStore } from '../../state/navStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { SettingsDialog } from './SettingsDialog';
@@ -29,10 +30,10 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
   const [theme, cycleTheme] = useTheme();
   // 未读徽标：各会话未读计数总和（Record<sessionId, number>）
   const openChat = usePanelStore((s) => s.openChat);
-  // 聊天浮窗是否已打开（PANEL-ENTRY2：顶栏按钮的 aria-expanded）
-  const panelView = usePanelStore((s) => s.view);
-  const rightOverlayOpen = useOverlayStore((s) => s.right);
-  const chatOpen = rightOverlayOpen && panelView === 'chat';
+  // 聊天是否已打开（PANEL-ENTRY2：顶栏按钮的 aria-expanded）
+  // S2b：聊天已整屏化 —— 读 navStore（主区第五视图），不再看右侧面板视图（PanelView 已无 'chat'）
+  const navView = useNavStore((s) => s.view);
+  const chatOpen = navView === 'chat';
   const unreadTotal = usePanelStore((s) =>
     Object.values(s.unread).reduce<number>((sum, n) => sum + n, 0),
   );

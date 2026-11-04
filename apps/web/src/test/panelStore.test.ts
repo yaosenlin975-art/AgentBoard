@@ -33,7 +33,7 @@ beforeEach(() => {
 describe('panelStore 持久化', () => {
   it('只持久化 sessionId/chatSession/unread；视图意图（view/issueId/rightOpen）不落盘（PANEL-VIEW-BUG）', async () => {
     usePanelStore.setState({
-      view: 'chat',
+      view: null,
       issueId: 'iss-1',
       sessionId: 's1',
       chatSession: session,
@@ -98,7 +98,7 @@ describe('panelStore 持久化', () => {
 describe('removeSession（session.deleted 级联）', () => {
   it('被删的是当前选中会话：清 sessionId/chatSession 回空态，并清其未读计数', () => {
     usePanelStore.setState({
-      view: 'chat',
+      view: null,
       sessionId: 's1',
       chatSession: session,
       unread: { s1: 2, s2: 1 },
@@ -115,7 +115,7 @@ describe('removeSession（session.deleted 级联）', () => {
 
   it('被删的是非当前会话：仅清其未读计数，当前选中不变', () => {
     usePanelStore.setState({
-      view: 'chat',
+      view: null,
       sessionId: 's1',
       chatSession: session,
       unread: { s1: 2, s2: 3 },

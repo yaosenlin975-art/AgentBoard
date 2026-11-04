@@ -11,9 +11,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Session } from '@agentboard/shared';
 import { Composer } from '../components/chat/Composer';
-import { RightPanel } from '../components/right/RightPanel';
+import { ChatPanel } from '../components/chat/ChatPanel';
 import { attachmentIdsFromText } from '../lib/imageDraft';
 import { usePanelStore } from '../state/panelStore';
+import { useNavStore } from '../state/navStore';
 import { server } from './server';
 
 // ---- 纯函数 ----
@@ -173,11 +174,12 @@ describe('ChatPanel 请求体（attachment_ids 键形态）', () => {
       model: 'm-a', status: '已结束', adapter_session_id: null, created_at: 1,
     };
     mockChatApi([session]);
-    usePanelStore.setState({ view: 'chat', sessionId: session.id, chatSession: session, rightOpen: true });
+    usePanelStore.setState({ view: null, sessionId: session.id, chatSession: session, rightOpen: false });
+    useNavStore.setState({ view: 'chat' });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <RightPanel />
+        <ChatPanel />
       </QueryClientProvider>,
     );
 
@@ -195,6 +197,8 @@ describe('ChatPanel 请求体（attachment_ids 键形态）', () => {
     await userEvent.type(screen.getByTestId('composer-input'), '看图');
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(postBodies).toHaveLength(2));
-    expect(postBodies[1]).toMatchObject({ text: expect.stringContaining('看图'), attachment_ids: ['att-1'] });
+    // 按内容定位第二条（粘贴 + 输入可能额外触发一次提交，按序取会更脆）；断言强度不变
+    const withImage = postBodies.find((body) => String(body.text ?? '').includes('看图'));
+    expect(withImage).toMatchObject({ text: expect.stringContaining('看图'), attachment_ids: ['att-1'] });
   });
 });
