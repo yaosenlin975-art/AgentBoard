@@ -348,6 +348,18 @@ runSwitchFlow
 
 Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_IMPLEMENTED`，不接入骨架。
 
+**B4S 骨架验收对照（父卡 ACC-KB-B4S）**：
+
+| 父卡范围项 | 落在哪 | 证据 |
+| --- | --- | --- |
+| 客户端在跑时拦住切换（不静默覆盖文件） | B4S-1 `clientProcess.ts` + `minimaxClientProbe` | `test/minimaxPreflightBlock.test.ts`（阻断时 auth.json 一字节不变） |
+| 快照完整性（文件清单 + sha256 + 成对 `-wal`/`-shm`/`-journal`）、Trae 明文残留清理 | B4S-2 `clientSnapshot.ts` | 快照集合与 sha256 校验、缺 `-wal` 时拒绝 |
+| 共用 S3 目标校验 / S5 服务端身份校验 | B4S-3 `switchStages.ts` | `test/switchStages.test.ts`（固定失败码清单、服务端身份比对） |
+| 回滚失败落 A3 restore 解冻通道（不留永久冻结） | B4S-3 `restore.ts` 的 `RestoreHandler` | `recovery_ref` + restore 重放 + `replayed=true` 幂等 |
+| S0–S5 收敛为一份共用流程 | B4S-4 `switchFlow.ts` | `test/switchFlow.test.ts`（步序、每步失败可定位、两平台全链路 dry-run） |
+
+**已知缺口（如实记录，勿当作已达成）**：WorkBuddy 的 S5 仍是读本地 `.info` 的 `$.account.uid` 比对，**未触发需鉴权的服务端调用**（MiniMax 已按「服务端为准」实现）；WorkBuddy 的 restore 未注册 `RestoreHandler`，其解冻仍是「人工确认已恢复/放弃恢复」语义（可解冻，但不自动写回快照）。
+
 
 ## 14b. 额度与余额（`GET /api/managed-account-quotas`，accountRoutes.ts，ACC-QUOTA-01）
 
