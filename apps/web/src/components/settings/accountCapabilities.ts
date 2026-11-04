@@ -258,6 +258,67 @@ export function importErrorLabel(code: string | null | undefined): string | null
   return IMPORT_ERROR_LABEL[code] ?? `读取失败（${code}）`;
 }
 
+/** 「今日已完成」计入分子的状态（设计 §5 拍板口径） */
+const CHECKIN_DONE_STATUSES: readonly string[] = ['succeeded', 'already_done'];
+
+/** 本地日期键（YYYY-MM-DD，按浏览器时区），与批次 `profile_local_day` 同口径 */
+export function localDayKey(ms: number): string {
+  const date = new Date(ms);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+export type CheckinChipTone = 'done' | 'partial' | 'unavailable';
+
+export interface CheckinTodaySummary {
+  /** 分母 = 可参与签到账号数（checkinParticipation 口径） */
+  total: number;
+  /** 分子 = 今日已完成（last_checkin_day=今天 且 status ∈ {succeeded, already_done}） */
+  done: number;
+  /** 今日结果未知：不计入分子，芯片加 ? 角标 */
+  unknown: number;
+  chip: { tone: CheckinChipTone; text: string; title: string };
+}
+
+/**
+ * 平台签到芯片（ACC-PANEL-03，设计 §5/§6）：
+ * 全完成→绿 `✓ n/n`；部分→琥珀 `n/m`；平台签到能力不可用→灰「签到不可用」。
+ * `m = 0`（能力可用但没有可参与账号）归灰档显示「未纳入签到」，不虚报完成。
+ */
+export function summarizeCheckinToday(
+  accounts: Array<Pick<PublicManagedAccount, 'enabled' | 'checkin_capability' | 'last_checkin_day' | 'last_checkin_status'>>,
+  capability: CapabilityView | null,
+  today: string,
+): CheckinTodaySummary {
+  const participating = accounts.filter((account) => checkinParticipation(account, capability).participates);
+  const total = participating.length;
+  const done = participating.filter((account) =>
+    account.last_checkin_day === today && (CHECKIN_DONE_STATUSES.includes(account.last_checkin_status ?? ''))).length;
+  const unknown = participating.filter((account) => account.last_checkin_day === today && account.last_checkin_status === 'unknown').length;
+
+  if (capability === null) {
+    return { total, done, unknown, chip: { tone: 'unavailable', text: '签到能力未知', title: '能力矩阵尚未取到该平台签到能力' } };
+  }
+  if (!capability.checkin) {
+    const label = unavailableLabel(capability, 'checkin') ?? '该平台签到能力不可用';
+    const code = capabilityReasonCode(capability, 'checkin');
+    return { total, done, unknown, chip: { tone: 'unavailable', text: '签到不可用', title: `${label}（${code ?? '原因未知'}）` } };
+  }
+  if (total === 0) {
+    return { total, done, unknown, chip: { tone: 'unavailable', text: '未纳入签到', title: '该平台没有启用且支持签到的账号' } };
+  }
+  const badge = unknown > 0 ? ' ?' : '';
+  if (done === total) {
+    return { total, done, unknown, chip: { tone: 'done', text: `✓ ${done}/${total}${badge}`, title: todayLabelTitle(unknown) } };
+  }
+  return { total, done, unknown, chip: { tone: 'partial', text: `${done}/${total}${badge}`, title: todayLabelTitle(unknown) } };
+}
+
+function todayLabelTitle(unknown: number): string {
+  const base = '今日已完成/可参与（本地记录，非平台官方状态）';
+  return unknown > 0 ? `${base}；? = 结果未知，未自动重发` : base;
+}
+
 export interface AccountCapabilitiesState {
   capabilities: Partial<Record<ManagedAppId, CapabilityView>>;
   isPending: boolean;

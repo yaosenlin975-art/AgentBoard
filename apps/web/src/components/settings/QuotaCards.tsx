@@ -1,14 +1,15 @@
 /**
- * 账号页额度/余额卡（ACC-QUOTA-01）。
+ * 账号页额度/余额行（ACC-QUOTA-01 数据口径 + ACC-QUOTA-02 行内绘制 + ACC-PANEL-03 行组）。
  *
  * 数据源 `GET /api/managed-account-quotas`：逐来源 `{source,status,balance,unit,windows,fetched_at,reason_code,detail}`。
- * - `ok`：显示余额/余量 + 各窗口「重置 HH:mm（还剩 Xh Ym）」；
+ * - `ok`：余额显示 `{金额} {单位}`，窗口显示迷你进度条（宽 = `used_percent`），重置时间只进 tooltip；
  * - `unsupported` / `error`：显示可解释中文原因（沿用 ACC-REASON-01 口径：裸码不作主文案，未知码进可展开技术码）；
  * - 不显示 token / 本机路径；服务端 60s 缓存，界面只展示 fetched_at。
+ *
+ * 三行嵌在账号管理六行总览的后三行（设计 §5），仅额度、不可展开、无账号操作。
  */
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
-import { Badge } from '../ui/Badge';
 import { reasonTechnicalCode } from './accountCapabilities';
 
 export type QuotaSourceId = 'deepseek' | 'opencode_go' | 'codex';
@@ -67,15 +68,6 @@ export const QUOTA_UNKNOWN_REASON_LABEL = '暂时取不到额度';
 
 /** 「已限额」芯片文案（设计 §5） */
 export const QUOTA_LIMITED_LABEL = '已限额';
-
-const STATUS_LABEL: Record<QuotaStatus, string> = { ok: '正常', unsupported: '不支持', error: '取数失败' };
-const STATUS_TONE: Record<QuotaStatus, 'green' | 'gray' | 'red'> = { ok: 'green', unsupported: 'gray', error: 'red' };
-
-const WINDOW_LABEL: Record<string, string> = {
-  '5h': '5 小时窗口',
-  weekly: '周窗口',
-  monthly: '月窗口',
-};
 
 const pad = (value: number): string => String(value).padStart(2, '0');
 
@@ -178,7 +170,8 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
       {balance !== null && (
         <span data-testid={`quota-row-balance-${item.source}`} className="tabular-nums text-neutral-800 dark:text-neutral-200">
           {balance}
-          <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">余额</span>
+          {/* 「额度内」本身已是完整读法，再加「余额」注会读成「额度内余额」 */}
+          {balance !== '额度内' && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">余额</span>}
         </span>
       )}
 
@@ -238,141 +231,53 @@ export function QuotaCreditChip({ label = '积分 未接入', testId = 'quota-cr
     </span>
   );
 }
+/** 额度行在总览里的顺序（设计 §5：仅额度平台在后，组内维持来源顺序） */
+export const QUOTA_ROW_ORDER: QuotaSourceId[] = ['deepseek', 'opencode_go', 'codex'];
 
-export function QuotaCards() {
+/**
+ * 额度来源行组（ACC-PANEL-03 嵌入六行总览的后三行）：逐来源一行，不可展开、无账号操作。
+ * 加载中/失败各占一行提示；来源缺失（服务端未返回）按 ORDER 补成同栏位的 `quota-row-<source>` 行，
+ * 因此「每个来源恰有一行」在总览里恒成立。
+ */
+export function QuotaRows() {
   const query = useQuery({
     queryKey: ['managed-account-quotas'],
     queryFn: () => api.get<QuotaSnapshot>('/api/managed-account-quotas'),
     staleTime: 30_000,
   });
   const now = Date.now();
-
-  // 行内组件与卡片块共用同一套分支口径（ACC-QUOTA-02）
-  const reasonOf = quotaReasonView;
-  const windowsOf = quotaWindowsOf;
+  const bySource = new Map((query.data?.items ?? []).map((item) => [item.source, item]));
+  const items = QUOTA_ROW_ORDER.map((source) => bySource.get(source));
 
   return (
-    <div data-testid="quota-cards" className="mb-1 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
-      <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
-        <h4 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">额度与余额</h4>
-        {query.data && (
-          <span data-testid="quota-updated" className="text-[11px] text-neutral-400 dark:text-neutral-500">
-            更新于 {formatResetClock(query.data.fetched_at)}（服务端 60s 缓存）
-          </span>
-        )}
-      </div>
-
-      {query.isPending && <p className="text-xs text-neutral-500 dark:text-neutral-400">读取额度…</p>}
+    <div data-testid="quota-rows" className="divide-y divide-neutral-100 dark:divide-neutral-800">
+      {query.isPending && <p data-testid="quota-loading" className="py-2 text-xs text-neutral-500 dark:text-neutral-400">读取额度…</p>}
       {query.isError && (
-        <p role="alert" data-testid="quota-load-error" className="text-xs text-red-600 dark:text-red-400">
+        <p role="alert" data-testid="quota-load-error" className="py-2 text-xs text-red-600 dark:text-red-400">
           额度读取失败：{query.error instanceof Error ? query.error.message : '未知错误'}
         </p>
       )}
-
+      {query.data && items.map((item, index) => (
+        item !== undefined
+          ? <div key={item.source} className="py-2"><QuotaRow item={item} now={now} /></div>
+          : (
+            <div
+              key={`quota-missing-${QUOTA_ROW_ORDER[index]}`}
+              data-testid={`quota-row-${QUOTA_ROW_ORDER[index]}`}
+              data-source={QUOTA_ROW_ORDER[index]}
+              data-status="missing"
+              className="flex flex-wrap items-center gap-x-2 py-2 text-xs"
+            >
+              <span className="font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[QUOTA_ROW_ORDER[index]!]}</span>
+              <span data-testid={`quota-row-reason-${QUOTA_ROW_ORDER[index]}`} className="text-neutral-500 dark:text-neutral-400">{QUOTA_UNKNOWN_REASON_LABEL}</span>
+            </div>
+          )
+      ))}
       {query.data && (
-        <>
-          {/* D3：DeepSeek 压成一行（label + 状态 + 金额/原因），不再单独占一张卡 */}
-          {query.data.items.filter((item) => item.source === 'deepseek').map((item) => {
-            const amount = quotaAmountText(item);
-            const { text, technical } = reasonOf(item);
-            return (
-              <div key={item.source} data-testid={`quota-card-${item.source}`} data-layout="inline" className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                <span className="font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
-                <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
-                {item.status === 'ok' ? (
-                  <span data-testid={`quota-balance-${item.source}`} className="tabular-nums text-neutral-800 dark:text-neutral-200">
-                    {amount ?? '—'}
-                    {item.unit && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">{item.unit}</span>}
-                  </span>
-                ) : (
-                  <span data-testid={`quota-reason-${item.source}`} className="text-neutral-600 dark:text-neutral-400">{text}</span>
-                )}
-                {item.status !== 'ok' && item.detail !== null && item.detail !== text && (
-                  <span className="text-neutral-500 dark:text-neutral-500">{item.detail}</span>
-                )}
-                {technical !== null && (
-                  <details data-testid={`quota-code-${item.source}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                    <summary className="cursor-pointer select-none">技术码</summary>
-                    <code className="font-mono">{technical}</code>
-                  </details>
-                )}
-              </div>
-            );
-          })}
-
-          {/* opencode-go / Codex：参考图版式（每窗口一行 + 进度条；窗口间 1px 分隔线；整块一张卡） */}
-          <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
-            {query.data.items.filter((item) => item.source !== 'deepseek').map((item) => {
-              const windows = windowsOf(item);
-              const amount = quotaAmountText(item);
-              const { text, technical } = reasonOf(item);
-              return (
-                <div key={item.source} data-testid={`quota-card-${item.source}`} className="rounded-lg border border-neutral-200 p-2 text-xs dark:border-neutral-800">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
-                    <Badge tone={STATUS_TONE[item.status]}>{STATUS_LABEL[item.status]}</Badge>
-                    {item.status === 'ok' && item.detail !== null && item.detail !== '额度内' && <span className="text-[11px] text-neutral-400 dark:text-neutral-500">{item.detail}</span>}
-                  </div>
-
-                  {/* ACC-CODEX-QUOTA-IMPL：有余额口径时展示（0 显示「额度内」，避免被误读成欠费） */}
-                  {item.status === 'ok' && item.balance !== null && (
-                    <p data-testid={`quota-balance-${item.source}`} className="mt-1 text-neutral-800 dark:text-neutral-200">
-                      {item.balance === 0 ? <span className="text-[11px] text-neutral-500 dark:text-neutral-400">额度内</span> : amount}
-                      {item.balance !== 0 && item.unit && <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">{item.unit}</span>}
-                    </p>
-                  )}
-
-                  {item.status === 'ok' && windows.length > 0 && (
-                    <ul data-testid={`quota-windows-${item.source}`} className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
-                      {windows.map((window, index) => {
-                        const limited = isWindowLimited(window);
-                        const pct = windowBarWidth(window.used_percent);
-                        return (
-                          <li key={`${item.source}-${window.name}-${index}`} data-testid={`quota-window-${item.source}-${index}`} className="py-1.5 first:pt-0 last:pb-0">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                              <span className="min-w-[5.5rem] text-neutral-800 dark:text-neutral-200">{quotaWindowTitle(window.name)}</span>
-                              <span
-                                data-testid={`quota-window-used-${item.source}-${index}`}
-                                className={`rounded-md px-1.5 py-0.5 text-xs tabular-nums ${limited ? 'bg-accent-soft text-accent' : 'bg-surface-raised text-ink-2'}`}
-                              >
-                                {limited ? '已限额' : `${Math.round(window.used_percent ?? 0)}% used`}
-                              </span>
-                              <span data-testid={`quota-reset-${item.source}-${index}`} className="ml-auto tabular-nums text-[11px] text-neutral-500 dark:text-neutral-400">
-                                {formatResets(window.reset_at, now)}
-                              </span>
-                            </div>
-                            <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-raised">
-                              <div data-testid={`quota-bar-${item.source}-${index}`} data-width={pct} style={{ width: `${pct}%` }} className={`h-full rounded-full ${limited ? 'bg-accent' : 'bg-ink-2'}`} />
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-
-                  {item.status !== 'ok' && (
-                    <p data-testid={`quota-reason-${item.source}`} className="mt-1 text-neutral-600 dark:text-neutral-400">
-                      {text}
-                      {item.detail !== null && item.detail !== text && <span className="ml-1 text-neutral-500 dark:text-neutral-500">{item.detail}</span>}
-                    </p>
-                  )}
-
-                  {technical !== null && (
-                    <details data-testid={`quota-code-${item.source}`} className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-                      <summary className="cursor-pointer select-none">技术码</summary>
-                      <code className="font-mono">{technical}</code>
-                    </details>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </>
+        <p data-testid="quota-updated" className="py-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">
+          服务端 60s 缓存 · 更新于 {formatResetClock(query.data.fetched_at)}
+        </p>
       )}
-
-      <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-        只展示可解释来源：有公开接口的显示真实余额，没有公开接口的显示原因，不编造数据
-      </p>
     </div>
   );
 }

@@ -108,6 +108,8 @@ describe('签到批次（ACC-09）', () => {
     expect(single).toBeDisabled();
     expect(batchBtn).toBeDisabled();
     expect(batchBtn).toHaveTextContent('签到能力未验证');
+    // ACC-PANEL-03：默认全折叠，展开后再点展开层内的单账号签到
+    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(single);
     await userEvent.click(batchBtn);
     expect(checkinPosts).toHaveLength(0);

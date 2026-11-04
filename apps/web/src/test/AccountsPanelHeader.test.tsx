@@ -59,17 +59,19 @@ describe('账号页头部（ACC-HEADER）', () => {
     expect(button).toHaveTextContent('一键签到');
     expect(note).toHaveTextContent('仅展示脱敏元数据');
 
-    // 工具栏在额度区之前（DOM 顺序即视觉顺序）
-    const quota = screen.getByTestId('quota-cards');
+    // 工具栏在额度区之前（DOM 顺序即视觉顺序）；ACC-PANEL-03 起额度区是行组 `quota-rows`
+    const quota = screen.getByTestId('quota-rows');
     expect(toolbar.compareDocumentPosition(quota) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // 按钮在 toolbar 内靠右（说明占 mr-auto，按钮排在其后）
     expect(note.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('平台分区的「仅此平台签到」保持不动', async () => {
+  it('平台分区的「签到」保持不动（与顶部一键签到是两个不同按钮）', async () => {
     renderPanel();
     const wbButton = await screen.findByTestId('accounts-checkin-all-workbuddy_desktop');
-    expect(wbButton).toHaveTextContent('仅此平台签到');
+    // ACC-PANEL-03：行上按钮文案由「仅此平台签到」收敛为「签到」
+    expect(wbButton).toHaveTextContent('签到');
+    expect(wbButton).not.toHaveTextContent('一键签到');
     // 与顶部一键签到是两个不同按钮
     expect(screen.getByTestId('accounts-one-click-checkin')).not.toBe(wbButton);
   });

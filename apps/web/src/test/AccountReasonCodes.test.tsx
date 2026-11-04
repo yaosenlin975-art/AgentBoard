@@ -139,6 +139,8 @@ describe('原因码文案（ACC-REASON-01）', () => {
     }, { status: 409 })));
     renderPanel();
 
+    // ACC-PANEL-03：捕获入口在展开层内，先展开该平台行
+    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
     const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
     expect(reason).toHaveTextContent('客户端未在运行');
@@ -154,6 +156,7 @@ describe('原因码文案（ACC-REASON-01）', () => {
     }, { status: 409 })));
     renderPanel();
 
+    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
     const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
     expect(reason).toHaveTextContent(UNKNOWN_REASON_LABEL);

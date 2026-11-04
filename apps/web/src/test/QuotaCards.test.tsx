@@ -1,10 +1,14 @@
 /**
- * ACC-QUOTA-01：账号页三张额度卡。
+ * ACC-QUOTA-01：额度来源取数口径（逐来源 ok / unsupported / error）。
  * - deepseek ok：显示余额与币种；
- * - 有窗口时显示「重置 HH:mm（还剩 Xh Ym）」；
  * - opencode_go / codex unsupported：显示可解释中文原因，裸码只在「技术码」里；
  * - 接口失败：整体错误态，不白屏；
  * - 不显示 token / 文件路径。
+ *
+ * ACC-PANEL-03 起三来源由「卡片」改为总览行（`QuotaRows`），本组用例随之行式 testid：
+ * `quota-card-*`→`quota-row-*`、`quota-balance-*`→`quota-row-balance-*`、`quota-reason-*`→`quota-row-reason-*`、
+ * `quota-code-*`→`quota-row-code-*`、`quota-window-*`→`quota-row-window-*`；状态徽标改为 `data-status` 属性；
+ * 重置时间按设计 §5 只进 tooltip，不再断言行内文案。
  *
  * ACC-QUOTA-02：`QuotaRow` 行内绘制（设计 §5），三种资源类型各一条分支——余额 / 窗口迷你进度条 / 积分占位。
  */
@@ -12,7 +16,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import { QuotaCards, QuotaCreditChip, QuotaRow, formatRemaining, formatResetClock, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
+import { QuotaCreditChip, QuotaRow, QuotaRows, formatRemaining, formatResetClock, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
 import { server } from './server';
 
 function item(overrides: Partial<QuotaItem> = {}): QuotaItem {
@@ -31,7 +35,7 @@ function item(overrides: Partial<QuotaItem> = {}): QuotaItem {
 
 function renderCards() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><QuotaCards /></QueryClientProvider>);
+  return render(<QueryClientProvider client={qc}><QuotaRows /></QueryClientProvider>);
 }
 
 const okSnapshot = {
@@ -46,27 +50,43 @@ const okSnapshot = {
 
 beforeEach(() => server.resetHandlers());
 
-describe('额度卡（ACC-QUOTA-01）', () => {
-  it('三张卡：DeepSeek 显示真实余额，其余两来源显示可解释中文原因（不显示裸码）', async () => {
+describe('额度来源行（ACC-QUOTA-01）', () => {
+  it('三行：DeepSeek 显示真实余额，其余两来源显示可解释中文原因（不显示裸码）', async () => {
     server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json(okSnapshot)));
     renderCards();
 
-    const deepseek = await screen.findByTestId('quota-card-deepseek');
-    expect(within(deepseek).getByTestId('quota-balance-deepseek')).toHaveTextContent('¥38.42');
-    expect(within(deepseek).getByText('正常')).toBeInTheDocument();
+    const deepseek = await screen.findByTestId('quota-row-deepseek');
+    expect(deepseek).toHaveAttribute('data-status', 'ok');
+    expect(within(deepseek).getByTestId('quota-row-balance-deepseek')).toHaveTextContent('¥38.42');
 
-    const go = screen.getByTestId('quota-card-opencode_go');
-    expect(within(go).getByTestId('quota-reason-opencode_go')).toHaveTextContent('该来源没有公开的额度接口');
-    expect(within(go).getByTestId('quota-reason-opencode_go').textContent ?? '').not.toContain('NO_PUBLIC_QUOTA_ENDPOINT');
-    expect(within(go).getByText('不支持')).toBeInTheDocument();
+    const go = screen.getByTestId('quota-row-opencode_go');
+    expect(go).toHaveAttribute('data-status', 'unsupported');
+    expect(within(go).getByTestId('quota-row-reason-opencode_go')).toHaveTextContent('该来源没有公开的额度接口');
+    expect(within(go).getByTestId('quota-row-reason-opencode_go').textContent ?? '').not.toContain('NO_PUBLIC_QUOTA_ENDPOINT');
 
-    const codex = screen.getByTestId('quota-card-codex');
-    expect(within(codex).getByTestId('quota-reason-codex')).toHaveTextContent('该来源没有公开的额度接口');
+    const codex = screen.getByTestId('quota-row-codex');
+    expect(within(codex).getByTestId('quota-row-reason-codex')).toHaveTextContent('该来源没有公开的额度接口');
 
     expect(screen.getByTestId('quota-updated')).toHaveTextContent('更新于 11:00');
   });
 
-  it('窗口版式（参考图）：每窗口一行 = 名称 + 「N% used」+「Resets in …」+ 进度条', async () => {
+  it('来源顺序按 QUOTA_ROW_ORDER，服务端漏返回的来源补成「暂时取不到额度」行', async () => {
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null,
+      fetched_at: Date.now(),
+      items: [item({ source: 'codex', status: 'unsupported', balance: null, unit: null, reason_code: 'NO_PUBLIC_QUOTA_ENDPOINT', detail: null })],
+    })));
+    renderCards();
+
+    const rows = await screen.findAllByTestId(/quota-row-(deepseek|opencode_go|codex)$/);
+    expect(rows.map((row) => row.getAttribute('data-source'))).toEqual(['deepseek', 'opencode_go', 'codex']);
+    // 补齐行：无余额、无进度条，只有中文原因
+    expect(rows[0]).toHaveAttribute('data-status', 'missing');
+    expect(screen.getByTestId('quota-row-reason-deepseek')).toHaveTextContent('暂时取不到额度');
+    expect(screen.queryByTestId('quota-row-windows-codex')).toBeNull();
+  });
+
+  it('窗口版式：迷你进度条（宽=used_percent）+ 百分比，重置时间只进 tooltip', async () => {
     const resetAt = Date.now() + (1 * 60 + 20) * 60_000 + 30_000;
     server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
       workspace_id: null,
@@ -85,20 +105,20 @@ describe('额度卡（ACC-QUOTA-01）', () => {
     })));
     renderCards();
 
-    const card = await screen.findByTestId('quota-card-opencode_go');
-    const first = within(card).getByTestId('quota-window-opencode_go-0');
-    expect(first).toHaveTextContent('5-hour window');
-    expect(within(card).getByTestId('quota-window-used-opencode_go-0')).toHaveTextContent('19% used');
-    expect(within(card).getByTestId('quota-reset-opencode_go-0')).toHaveTextContent('Resets in 1h 20m');
+    const row = await screen.findByTestId('quota-row-opencode_go');
+    const first = within(row).getByTestId('quota-row-window-opencode_go-0');
+    expect(first).toHaveTextContent('5h');
+    expect(within(row).getByTestId('quota-row-used-opencode_go-0')).toHaveTextContent('19%');
     // 进度条宽度 = used_percent
-    expect(within(card).getByTestId('quota-bar-opencode_go-0')).toHaveAttribute('data-width', '19');
-    expect(within(card).getByTestId('quota-bar-opencode_go-0')).toHaveStyle({ width: '19%' });
-    // 无重置时刻 → Resets soon
-    expect(within(card).getByTestId('quota-reset-opencode_go-1')).toHaveTextContent('Resets soon');
-    expect(within(card).getByTestId('quota-window-opencode_go-1')).toHaveTextContent('Weekly');
+    expect(within(row).getByTestId('quota-row-bar-opencode_go-0')).toHaveAttribute('data-width', '19');
+    expect(within(row).getByTestId('quota-row-bar-opencode_go-0')).toHaveStyle({ width: '19%' });
+    // 重置时间进 tooltip；无重置时刻 → Resets soon
+    expect(first.getAttribute('title') ?? '').toContain('Resets in 1h 20m');
+    expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Resets soon');
+    expect(within(row).getByTestId('quota-row-window-opencode_go-1')).toHaveTextContent('周');
   });
 
-  it('Codex 只显示 5-hour 与 Weekly（不渲染 Monthly）；unsupported 时不渲染空进度条', async () => {
+  it('Codex 只显示 5h 与 周（不渲染 monthly）；unsupported 时不渲染空进度条', async () => {
     server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
       workspace_id: null,
       fetched_at: Date.now(),
@@ -117,12 +137,11 @@ describe('额度卡（ACC-QUOTA-01）', () => {
     })));
     renderCards();
 
-    const codex = await screen.findByTestId('quota-card-codex');
-    expect(within(codex).getAllByTestId(/quota-window-codex-/)).toHaveLength(2);
-    expect(within(codex).getByTestId('quota-window-codex-0')).toHaveTextContent('5-hour window');
-    expect(within(codex).getByTestId('quota-window-codex-1')).toHaveTextContent('Weekly');
+    const codex = await screen.findByTestId('quota-row-codex');
+    expect(within(codex).getAllByTestId(/quota-row-window-codex-/)).toHaveLength(2);
+    expect(within(codex).getByTestId('quota-row-window-codex-0')).toHaveTextContent('5h');
+    expect(within(codex).getByTestId('quota-row-window-codex-1')).toHaveTextContent('周');
     expect(codex.textContent ?? '').not.toContain('Monthly');
-
   });
 
   it('Codex unsupported 时只显示原因，不渲染空进度条', async () => {
@@ -136,10 +155,13 @@ describe('额度卡（ACC-QUOTA-01）', () => {
       ],
     })));
     renderCards();
-    await waitFor(() => expect(screen.getByTestId('quota-reason-codex')).toHaveTextContent('该来源没有公开的额度接口'));
-    expect(screen.queryByTestId('quota-windows-codex')).toBeNull();
-    expect(screen.queryByTestId('quota-bar-codex-0')).toBeNull();
+
+    const codex = await screen.findByTestId('quota-row-codex');
+    expect(within(codex).getByTestId('quota-row-reason-codex')).toHaveTextContent('该来源没有公开的额度接口');
+    expect(within(codex).queryByTestId('quota-row-windows-codex')).toBeNull();
+    expect(within(codex).queryByTestId('quota-row-bar-codex-0')).toBeNull();
   });
+
   it('失败态：error 显示中文原因，未知码显示中性文案 + 可展开技术码', async () => {
     server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
       workspace_id: null,
@@ -152,14 +174,16 @@ describe('额度卡（ACC-QUOTA-01）', () => {
     })));
     renderCards();
 
-    const deepseek = await screen.findByTestId('quota-card-deepseek');
-    expect(within(deepseek).getByTestId('quota-reason-deepseek')).toHaveTextContent('凭据已失效');
-    expect(within(deepseek).getByText('取数失败')).toBeInTheDocument();
+    const deepseek = await screen.findByTestId('quota-row-deepseek');
+    expect(deepseek).toHaveAttribute('data-status', 'error');
+    expect(within(deepseek).getByTestId('quota-row-reason-deepseek')).toHaveTextContent('凭据已失效');
 
-    const go = screen.getByTestId('quota-card-opencode_go');
-    expect(within(go).getByTestId('quota-reason-opencode_go')).toHaveTextContent('暂时取不到额度');
-    expect(within(go).getByTestId('quota-reason-opencode_go').textContent ?? '').not.toContain('SOMETHING_NEW');
-    expect(within(go).getByTestId('quota-code-opencode_go').textContent).toContain('SOMETHING_NEW');
+    const go = screen.getByTestId('quota-row-opencode_go');
+    expect(within(go).getByTestId('quota-row-reason-opencode_go')).toHaveTextContent('暂时取不到额度');
+    expect(within(go).getByTestId('quota-row-reason-opencode_go').textContent ?? '').not.toContain('SOMETHING_NEW');
+    expect(within(go).getByTestId('quota-row-code-opencode_go').textContent).toContain('SOMETHING_NEW');
+    // 空进度条不渲染
+    expect(within(go).queryByTestId('quota-row-windows-opencode_go')).toBeNull();
   });
 
   it('接口整体失败：显示错误态而不是白屏', async () => {
@@ -199,15 +223,15 @@ describe('Codex 本地额度（ACC-CODEX-QUOTA-IMPL）', () => {
     })));
     renderCards();
 
-    const codex = await screen.findByTestId('quota-card-codex');
-    expect(within(codex).getByTestId('quota-balance-codex')).toHaveTextContent('额度内');
-    expect(within(codex).getByTestId('quota-balance-codex').textContent ?? '').not.toMatch(/\$0/);
-    expect(within(codex).getAllByTestId(/quota-window-codex-/)).toHaveLength(2);
-    expect(within(codex).getByTestId('quota-window-codex-0')).toHaveTextContent('5-hour window');
-    expect(within(codex).getByTestId('quota-window-codex-1')).toHaveTextContent('Weekly');
-    expect(within(codex).getByTestId('quota-window-used-codex-0')).toHaveTextContent('2% used');
-    expect(within(codex).getByTestId('quota-bar-codex-1')).toHaveAttribute('data-width', '77');
-    // 「额度内」不再作为琥珀色 detail 重复出现
+    const codex = await screen.findByTestId('quota-row-codex');
+    expect(within(codex).getByTestId('quota-row-balance-codex')).toHaveTextContent('额度内');
+    expect(within(codex).getByTestId('quota-row-balance-codex').textContent ?? '').not.toMatch(/\$0/);
+    expect(within(codex).getAllByTestId(/quota-row-window-codex-/)).toHaveLength(2);
+    expect(within(codex).getByTestId('quota-row-window-codex-0')).toHaveTextContent('5h');
+    expect(within(codex).getByTestId('quota-row-window-codex-1')).toHaveTextContent('周');
+    expect(within(codex).getByTestId('quota-row-used-codex-0')).toHaveTextContent('2%');
+    expect(within(codex).getByTestId('quota-row-bar-codex-1')).toHaveAttribute('data-width', '77');
+    // 「额度内」不再作为 detail 重复出现
     expect(codex.textContent?.match(/额度内/g)?.length).toBe(1);
   });
 });
@@ -237,6 +261,10 @@ describe('额度行内绘制（ACC-QUOTA-02）', () => {
     render(<QuotaRow item={item({ source: 'codex', balance: 0, unit: 'USD', windows: [] })} now={NOW} />);
     expect(screen.getByTestId('quota-row-balance-codex')).toHaveTextContent('额度内');
     expect(screen.getByTestId('quota-row-balance-codex').textContent ?? '').not.toMatch(/\$0/);
+    // 「额度内」不再追加「余额」注（否则读成「额度内余额」），有金额时才带注
+    expect(screen.getByTestId('quota-row-balance-codex').textContent ?? '').not.toContain('余额');
+    render(<QuotaRow item={item({ source: 'deepseek', balance: 12.5, unit: 'CNY', windows: [] })} now={NOW} />);
+    expect(screen.getByTestId('quota-row-balance-deepseek')).toHaveTextContent('余额');
   });
 
   it('窗口分支：迷你进度条宽 = used_percent，% 标注同行，重置时间只进 tooltip', () => {

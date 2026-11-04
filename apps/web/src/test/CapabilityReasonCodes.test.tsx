@@ -99,7 +99,8 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     expect(switchBadge.getAttribute('aria-label')).toContain('可用');
     expect(wb.textContent).not.toContain('不可用');
     expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeEnabled();
-    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('仅此平台签到');
+    // ACC-PANEL-03：行上按钮文案收敛为「签到」（长说明交给 tooltip / 芯片）
+    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('签到');
   });
 
   it('旧结构兜底：缺少分维度字段时按顶层 reason_code 补齐，不把签到码当成捕获/切换原因', () => {

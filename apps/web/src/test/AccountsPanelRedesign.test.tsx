@@ -1,6 +1,7 @@
 /**
- * ACC-UI-01 账号管理页重设计：平台折叠分区 + 能力图标徽标 + DeepSeek 一行 + 平台级签到。
- * 设计：Docs/design-2026-11-03-accounts-panel-redesign.md（D1/D2/D3/D4/D5）。
+ * ACC-UI-01 账号管理页重设计（能力图标徽标 + 平台级签到 + 折叠语义）。
+ * 设计：Docs/design-2026-11-03-accounts-panel-redesign.md（D1/D2/D3/D4/D5）；
+ * 折叠默认态与额度区版式自 ACC-PANEL-03（design-2026-11-04 §5 方案 C）起改为**六行总览 + 默认全折叠 + 额度行组**。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -59,26 +60,28 @@ beforeEach(() => {
 });
 
 describe('账号页重设计（ACC-UI-01）', () => {
-  it('平台分区可折叠：默认第一个展开、其余折叠；点头部可展开/收起', async () => {
+  it('平台行可折叠：默认全折叠（六行总览），点头部可展开/收起', async () => {
     renderPanel();
 
     const wbBody = await screen.findByTestId('accounts-body-workbuddy_desktop');
     const mmBody = screen.getByTestId('accounts-body-minimax');
     const trBody = screen.getByTestId('accounts-body-trae');
-    expect(wbBody).not.toHaveAttribute('hidden');
+    expect(wbBody).toHaveAttribute('hidden');
     expect(mmBody).toHaveAttribute('hidden');
     expect(trBody).toHaveAttribute('hidden');
 
     // 头部 toggle 的 aria-expanded 与 body 的 hidden 一致
-    expect(screen.getByTestId('accounts-toggle-workbuddy_desktop')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('accounts-toggle-workbuddy_desktop')).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByTestId('accounts-toggle-minimax')).toHaveAttribute('aria-expanded', 'false');
 
     await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
     expect(screen.getByTestId('accounts-body-minimax')).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('accounts-toggle-minimax')).toHaveAttribute('aria-expanded', 'true');
-
-    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
+    // 折叠状态互相独立：展开 MiniMax 不影响别的平台行
     expect(screen.getByTestId('accounts-body-workbuddy_desktop')).toHaveAttribute('hidden');
+
+    await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
+    expect(screen.getByTestId('accounts-body-minimax')).toHaveAttribute('hidden');
   });
 
   it('能力徽标三态：✓ / ✗ / ?，徽标文本不含原因码，原因只进 tooltip', async () => {
@@ -122,22 +125,26 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toBeInTheDocument();
   });
 
-  it('DeepSeek 压成一行：inline 布局且不出窗口列表；opencode-go / Codex 仍是卡片', async () => {
+  it('额度区改为行组：三来源各一行嵌在总览里，不再有卡片边框与状态徽标', async () => {
     renderPanel();
 
-    const deepseek = await screen.findByTestId('quota-card-deepseek');
-    expect(deepseek).toHaveAttribute('data-layout', 'inline');
-    expect(within(deepseek).getByTestId('quota-balance-deepseek')).toHaveTextContent('¥751.81');
-    expect(within(deepseek).queryByTestId('quota-window-deepseek-0')).toBeNull();
-    // DeepSeek 行不套卡片边框（只保留其他两块的卡片）
+    const deepseek = await screen.findByTestId('quota-row-deepseek');
+    expect(deepseek).toHaveAttribute('data-status', 'ok');
+    expect(within(deepseek).getByTestId('quota-row-balance-deepseek')).toHaveTextContent('¥751.81');
+    expect(within(deepseek).queryByTestId('quota-row-window-deepseek-0')).toBeNull();
+    // 行不套卡片边框（六行同级，一屏可见）
     expect(deepseek.className).not.toContain('rounded-lg');
+    expect(screen.queryByTestId('quota-cards')).toBeNull();
 
-    const go = screen.getByTestId('quota-card-opencode_go');
-    expect(go.className).toContain('rounded-lg');
-    expect(within(go).getByTestId('quota-window-opencode_go-0')).toBeInTheDocument();
+    const go = screen.getByTestId('quota-row-opencode_go');
+    expect(go.className).not.toContain('rounded-lg');
+    expect(within(go).getByTestId('quota-row-window-opencode_go-0')).toBeInTheDocument();
+    // 仅额度行没有展开控件与账号操作
+    expect(within(go).queryByTestId(/accounts-toggle/)).toBeNull();
+    expect(screen.getByTestId('quota-rows')).toBeInTheDocument();
   });
 
-  it('平台头部「仅此平台签到」：只提交该平台启用账号', async () => {
+  it('平台头部「签到」：只提交该平台启用账号', async () => {
     const posts: Array<{ body: { app_id: string; account_ids: string[] }; key: string | null }> = [];
     server.use(
       http.post('/api/checkin-runs', async ({ request }) => {
@@ -156,7 +163,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     renderPanel();
 
     const wbButton = await screen.findByTestId('accounts-checkin-all-workbuddy_desktop');
-    expect(wbButton).toHaveTextContent('仅此平台签到');
+    expect(wbButton).toHaveTextContent('签到');
     await userEvent.click(wbButton);
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.body).toEqual({ app_id: 'workbuddy_desktop', account_ids: ['wb-1'] });

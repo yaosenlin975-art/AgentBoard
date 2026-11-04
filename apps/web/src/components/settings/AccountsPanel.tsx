@@ -1,17 +1,20 @@
 /**
- * 账号管理面板（ACC-08 / ACC-09 / ACC-14 / ACC-UI-01）：按平台折叠分区展示托管账号与能力。
- * 能力一律以服务端能力矩阵为准。
+ * 账号管理六行总览（ACC-PANEL-03，布局方案 C，`Docs/design-2026-11-04-accounts-unified-panel.md` §5/§6）。
+ * 能力一律以服务端能力矩阵为准；数据只来自脱敏接口，不显示 identity_hash / 快照 ref / token / 路径。
  *
- * 结构（设计 D1/D4，`Docs/design-2026-11-03-accounts-panel-redesign.md`）：
- *   标题 → 额度区（DeepSeek 一行；opencode-go / Codex 本轮保持原样）→ 全局操作（一键签到 / 读取本机账号）
- *   → 平台分区（头部：平台名 + 三个能力图标徽标 + 「仅此平台签到」；默认第一个展开、其余折叠，不持久化）
+ * 结构：工具栏（一键签到 / 读取本机账号 / 今日 n/m）→ 六行总览（三个可签到平台 + 三个仅额度来源）。
+ * 排序与默认态（§5 拍板）：可签到平台在前、仅额度平台在后；组内维持 `APP_ORDER` / `QUOTA_ROW_ORDER`；默认全折叠。
+ * 可签到行头部：平台名 + 「积分 未接入」灰芯片 + 签到芯片三态 + [签到]；账号管理（能力徽标 / AccountCard / 捕获 / 批次面板）收进展开层。
+ * 仅额度行：嵌 C2 的 `QuotaRows`，不可展开、无账号操作。
  *
- * 能力展示（D2）：图标三态 `true → ✓`、`false → ✗`、未知 → `?`；**reason_code 只进 tooltip 与「技术信息」details**，
- * 不进徽标文本。既有 testid 映射：`accounts-capability-${app}` / `accounts-capability-source-${app}` 收进该 details（保留原名），
- * `accounts-summary-*` / `accounts-notice-*` / `accounts-empty-*` / `accounts-capture-*` 位置不变（平台体内部）。
+ * testid 口径（映射写进卡评论）：`accounts-app-*` / `accounts-toggle-*` / `accounts-body-*` / `accounts-count-*` /
+ * `accounts-summary-*` / `accounts-empty-*` / `accounts-capture-*` / `accounts-checkin-all-*` / `accounts-notice-*` /
+ * `accounts-conflict-batch-*` / `accounts-view-batch-*` / `accounts-capability-*` 全部保留；`accounts-checkin-all-*`
+ * 文本由「仅此平台签到」改为「签到」；新增 `accounts-credit-<app>`（积分占位）、`accounts-checkin-chip-<app>`（签到芯片）、
+ * `accounts-today-summary`（今日合计）、`accounts-overview`（六行容器）；额度侧 `quota-cards`/`quota-card-*` → `quota-rows`/`quota-row-*`。
  *
- * 行为不变：能力矩阵失败不回退本地副本；`checkin` 为 true 才可点；`POST /api/checkin-runs`（带 Idempotency-Key）；
- * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看。数据只来自脱敏接口，不显示 identity_hash / 快照 ref / token / 路径。
+ * 行为不变：能力矩阵失败不回退本地副本、全部写操作禁用；`POST /api/checkin-runs` 带 Idempotency-Key；
+ * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看。折叠行点 [签到] 自动展开（批次面板/通知都在展开层内）。
  */
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,9 +26,32 @@ import { CapabilityBadges } from './CapabilityBadges';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
-import { QuotaCards } from './QuotaCards';
-import { APP_LABEL, APP_ORDER, hasReasonLabel, isOfflineApp, reasonCodeOf, reasonLabel, reasonTechnicalCode, unavailableLabel, useAccountCapabilities, type AccountsAppId, type CapabilityView } from './accountCapabilities';
+import { QuotaCreditChip, QuotaRows } from './QuotaCards';
+import {
+  APP_LABEL,
+  APP_ORDER,
+  hasReasonLabel,
+  isOfflineApp,
+  localDayKey,
+  reasonCodeOf,
+  reasonLabel,
+  reasonTechnicalCode,
+  summarizeCheckinToday,
+  unavailableLabel,
+  useAccountCapabilities,
+  type AccountsAppId,
+  type CapabilityView,
+  type CheckinChipTone,
+  type CheckinTodaySummary,
+} from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
+
+/** 签到芯片三态配色（§5：绿=全完成、琥珀=部分、灰=不可用/未纳入） */
+const CHIP_TONE_CLASS: Record<CheckinChipTone, string> = {
+  done: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  partial: 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
+  unavailable: 'bg-surface-raised text-ink-3',
+};
 
 /**
  * 提示条（ACC-REASON-01）：主文案=中文原因，副文案=服务端 message，
@@ -54,85 +80,100 @@ export function AccountsPanel() {
   // ACC-14：已下线平台（CodeBuddy Desktop）的历史账号不在界面出现；其余平台全部账号都列出（同平台多账号）
   const accounts: AccountView[] = (list.data ?? []).filter((account) => !isOfflineApp(account.app_id));
   const capabilityKnown = !caps.isPending && !caps.isError;
-  /** 折叠状态：默认第一个平台展开，其余折叠；不持久化（设计 D1） */
-  const [openApps, setOpenApps] = useState<Partial<Record<AccountsAppId, boolean>>>({ [APP_ORDER[0]!]: true });
-  /** ACC-HEADER：一键签到按钮上移到标题行，状态与结果分离渲染 */
+  /** 默认全折叠（§5 拍板）：展开是低频账号管理动作，不抢首屏。会话内状态，不持久化 */
+  const [openApps, setOpenApps] = useState<Partial<Record<AccountsAppId, boolean>>>({});
+  /** ACC-HEADER：一键签到按钮在工具栏，状态与结果分离渲染 */
   const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
+
+  const today = localDayKey(Date.now());
+  const accountsByApp = APP_ORDER.map((app) => accounts.filter((account) => account.app_id === app));
+  const summaries = APP_ORDER.map((app, index) => summarizeCheckinToday(accountsByApp[index]!, caps.capabilities[app] ?? null, today));
+  const todayTotal = summaries.reduce((sum, item) => sum + item.total, 0);
+  const todayDone = summaries.reduce((sum, item) => sum + item.done, 0);
+
+  const setAppOpen = (app: AccountsAppId, open: boolean) => setOpenApps((previous) => ({ ...previous, [app]: open }));
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-      {/*
-        ACC-HEADER：面板内不再重复「账号管理」标题（弹窗头部已有），只保留一行工具栏：
-        左侧脱敏说明（小字）+ 右侧「一键签到」；窄屏（375）允许换行，不破版。
-      */}
-      <div data-testid="accounts-toolbar" className="mb-2 flex flex-wrap items-center justify-end gap-x-2 gap-y-1.5">
+      {/* 工具栏（§5）：脱敏说明靠左，一键签到 / 读取本机账号 / 今日 n/m 靠右；窄屏换行不破版 */}
+      <div data-testid="accounts-toolbar" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <p data-testid="accounts-desensitize-note" className="mr-auto text-[11px] leading-tight text-neutral-500 dark:text-neutral-400">
           仅展示脱敏元数据；快照、凭据与 token 不出现在界面
         </p>
         <OneClickCheckinPlan controller={oneClick} />
         <OneClickCheckinButton controller={oneClick} />
+        <LocalAccountsImport />
+        <span
+          data-testid="accounts-today-summary"
+          title="今日已完成/可参与账号（本地记录，非平台官方当日状态）"
+          className="shrink-0 text-[11px] tabular-nums text-neutral-500 dark:text-neutral-400"
+        >
+          今日 {todayDone}/{todayTotal}
+        </span>
       </div>
 
-      <QuotaCards />
-
-      <div data-testid="accounts-one-click-results" className="mt-2 empty:hidden">
+      <div data-testid="accounts-one-click-results" className="mb-2 empty:hidden">
         <OneClickCheckinResults controller={oneClick} />
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <LocalAccountsImport />
-      </div>
-
       {caps.isError && (
-        <p role="alert" data-testid="accounts-capabilities-error" className="mb-2 mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+        <p role="alert" data-testid="accounts-capabilities-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           能力矩阵读取失败：{caps.errorMessage ?? '未知错误'}；为避免误操作，捕获/切换/签到均已禁用
         </p>
       )}
-      {caps.isPending && <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">读取能力矩阵…</p>}
+      {caps.isPending && <p data-testid="accounts-capabilities-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取能力矩阵…</p>}
 
-      {list.isPending && <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">读取托管账号…</p>}
+      {list.isPending && <p data-testid="accounts-list-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取托管账号…</p>}
       {list.isError && (
-        <p role="alert" className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+        <p role="alert" data-testid="accounts-list-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           {list.error instanceof Error ? list.error.message : '读取托管账号失败'}
         </p>
       )}
 
       {!list.isPending && !list.isError && (
-        <div className="mt-3 divide-y divide-neutral-200 border-t border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+        <div data-testid="accounts-overview" className="divide-y divide-neutral-200 border-y border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
           {APP_ORDER.map((app, index) => (
-            <AppSection
+            <PlatformRow
               key={app}
               app={app}
               open={openApps[app] === true}
-              onToggle={() => setOpenApps((previous) => ({ ...previous, [app]: previous[app] !== true }))}
+              onToggle={() => setAppOpen(app, openApps[app] !== true)}
+              onOpen={() => setAppOpen(app, true)}
               capability={caps.capabilities[app] ?? null}
               capabilityKnown={capabilityKnown}
-              accounts={accounts.filter((account) => account.app_id === app)}
-              isFirst={index === 0}
+              accounts={accountsByApp[index]!}
+              summary={summaries[index]!}
+              today={today}
             />
           ))}
+          {/* 后三行：仅额度来源，不可展开、无账号操作 */}
+          <div className="py-1"><QuotaRows /></div>
         </div>
       )}
     </section>
   );
 }
 
-function AppSection({
+function PlatformRow({
   app,
   open,
   onToggle,
+  onOpen,
   capability,
   capabilityKnown,
   accounts,
-  isFirst,
+  summary,
+  today,
 }: {
   app: AccountsAppId;
   open: boolean;
   onToggle: () => void;
+  onOpen: () => void;
   capability: CapabilityView | null;
   capabilityKnown: boolean;
   accounts: PublicManagedAccount[];
-  isFirst: boolean;
+  summary: CheckinTodaySummary;
+  today: string;
 }) {
   const queryClient = useQueryClient();
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -179,9 +220,15 @@ function AppSection({
   const checkinEnabled = capability?.checkin === true && enabledAccounts.length > 0 && !checkin.isPending;
   const bodyId = `accounts-body-${app}`;
 
+  /** 折叠行点 [签到] 自动展开（§6 拍板）：批次面板、通知、冲突「查看该批次」都在展开层内 */
+  const startCheckin = () => {
+    onOpen();
+    checkin.mutate(enabledAccounts.map((account) => account.id));
+  };
+
   return (
-    <div data-testid={`accounts-app-${app}`} data-open={open ? 'true' : 'false'} className={isFirst ? '' : ''}>
-      {/* 头部：平台名 + 三能力图标 + 主操作（仅该平台签到） */}
+    <div data-testid={`accounts-app-${app}`} data-open={open ? 'true' : 'false'}>
+      {/* 行头部：平台名 + 积分占位芯片 + 签到芯片 + [签到] */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2">
         <button
           type="button"
@@ -196,7 +243,16 @@ function AppSection({
           <span data-testid={`accounts-count-${app}`} className="text-[11px] font-normal text-neutral-400 dark:text-neutral-500">{accounts.length} 个</span>
         </button>
 
-        <CapabilityBadges app={app} capability={capability} />
+        <QuotaCreditChip testId={`accounts-credit-${app}`} />
+
+        <span
+          data-testid={`accounts-checkin-chip-${app}`}
+          data-tone={summary.chip.tone}
+          title={summary.chip.title}
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums ${CHIP_TONE_CLASS[summary.chip.tone]}`}
+        >
+          {summary.chip.text}
+        </span>
 
         {capability === null && capabilityKnown && (
           <span data-testid={`accounts-capability-unknown-${app}`} className="text-[11px] text-neutral-400 dark:text-neutral-500">能力未知</span>
@@ -207,17 +263,19 @@ function AppSection({
           data-testid={`accounts-checkin-all-${app}`}
           className={`ml-auto ${BUTTON_SECONDARY}`}
           disabled={!checkinEnabled}
-          title={capability?.checkin === true ? '仅为本平台启用账号发起签到批次' : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
-          onClick={() => checkin.mutate(enabledAccounts.map((account) => account.id))}
+          title={capability?.checkin === true ? '为本平台启用账号发起签到批次' : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
+          onClick={startCheckin}
         >
-          {capability?.checkin === true ? '仅此平台签到' : `签到不可用（${unavailableLabel(capability, 'checkin') ?? '能力未知'}）`}
+          {capability?.checkin === true ? '签到' : `签到不可用（${unavailableLabel(capability, 'checkin') ?? '能力未知'}）`}
         </button>
       </div>
 
-      {/* 平台体：默认第一个展开，其余折叠（用 hidden 保持可访问性，不做高度动画） */}
+      {/* 展开层：账号管理（默认折叠；用 hidden 保持可访问性，不做高度动画） */}
       <div id={bodyId} data-testid={bodyId} hidden={!open} className="pb-3">
+        <CapabilityBadges app={app} capability={capability} />
+
         {capability !== null && !usable && (
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
             该客户端目标未确认：捕获/切换能力未验证，只读展示已有记录。
           </p>
         )}
@@ -230,6 +288,7 @@ function AppSection({
           <>
             <p data-testid={`accounts-summary-${app}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
               共 {accounts.length} 个账号，其中 {enabledAccounts.length} 个启用并参与一键签到
+              <span className="ml-1">· 今日已完成 {summary.done}/{summary.total}（本地记录，{today}）</span>
             </p>
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {accounts.map((account) => (

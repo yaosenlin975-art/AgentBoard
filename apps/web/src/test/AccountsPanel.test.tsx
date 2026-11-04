@@ -182,6 +182,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await userEvent.click(mmSwitch);
     expect(posts).toHaveLength(0);
 
+    // ACC-PANEL-03：账号卡在展开层内，先展开 WorkBuddy 行再点切换
+    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
     const wbCard = screen.getByTestId('accounts-card-acc-wb-2');
     await userEvent.click(within(wbCard).getByTestId('accounts-switch-acc-wb-2'));
     expect(posts).toHaveLength(0);
@@ -209,6 +211,7 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     renderPanel();
 
     const card = await screen.findByTestId('accounts-card-acc-wb-3');
+    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(within(card).getByTestId('accounts-switch-acc-wb-3'));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
