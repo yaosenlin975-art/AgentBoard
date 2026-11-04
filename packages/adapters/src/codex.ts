@@ -7,6 +7,7 @@ import {
   whereCommand,
 } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { cachedImageFlag, helpMentionsFlag, imageFlagKey, rememberImageFlag } from './imageFlags.js';
 import { assertImageInputSupported } from './imageInput.js';
 
 export const CODEX_CMD = 'codex';
@@ -113,6 +114,14 @@ async function detectCodex(): Promise<{ installed: boolean; version: string | nu
   const form = resolveWindowsSpawnForm(whereLines, CODEX_CMD) ?? { cmd: CODEX_CMD, prefix: [] as string[] };
   const { lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
   const version = lines.map((l) => l.trim()).find((l) => l !== '') ?? '';
+  // CHAT-IMG-ADAPTER：图片能力靠 `codex exec --help` 实测（本机 0.166.0 有 `-i, --image <FILE>...`），
+  // 探测不到 `--image` 就按不支持处理——不写死 true，也不猜版本区间。
+  try {
+    const help = await collectOutput(form.cmd, [...form.prefix, 'exec', '--help']);
+    rememberImageFlag(imageFlagKey('codex', version || null), helpMentionsFlag(help.lines.join('\n'), '--image'));
+  } catch {
+    rememberImageFlag(imageFlagKey('codex', version || null), false);
+  }
   return { installed: true, version: version || null };
 }
 
@@ -120,7 +129,10 @@ export const codexAdapter: AgentAdapter = {
   id: 'codex',
   displayName: 'Codex',
   supportsModelSelection: true,
-  supportsImageInput(): boolean { return false; },
+  /** 只有 `codex exec --help` 实测到 `--image` 才为真（见 detectCodex 的探测与缓存） */
+  supportsImageInput(_model: string | undefined, cliVersion?: string | null): boolean {
+    return cachedImageFlag(imageFlagKey('codex', cliVersion));
+  },
   detect: detectCodex,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodex();
@@ -138,6 +150,8 @@ export const codexAdapter: AgentAdapter = {
     args.push(opts.prompt, '--json');
     if (opts.model) args.push('--model', opts.model);
     args.push('--skip-git-repo-check');
+    // CHAT-IMG-ADAPTER：图片走 `-i <FILE>`（`codex exec --help` 实测），每张一个 -i
+    for (const attachment of opts.attachments ?? []) args.push('-i', attachment.path);
 
     const state = createCodexParseState();
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];

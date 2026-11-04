@@ -74,3 +74,16 @@ node verify-delivery-exact.mjs         # HTTP + DB 行 + 磁盘字节
 node verify-ui-real-screenshot.mjs     # 测试页真实截图粘贴 → 发送
 node probe-live-vs-fresh.mjs           # 8787 旧库 vs 当前构建库对比
 ```
+
+## CHAT-IMG-ADAPTER：适配器图片能力逐项核实（2026-11-04）
+
+| 适配器 | 结论 | 依据命令 | 实测输出 |
+| --- | --- | --- | --- |
+| codex | **支持**（`supportsImageInput` 由 `codex exec --help` 探测决定，不写死） | `codex exec --help` / `codex exec "Reply with just OK" --json --skip-git-repo-check -i tiny.png` | help 含 `-i, --image <FILE>...`；真机运行接受 `-i`（`thread.started`/`turn.started` 正常，随后因账号用量上限 429 结束，与图片无关） |
+| opencode | **支持**（由 `opencode run --help` 探测决定） | `opencode run --help` / `opencode run "Reply with just OK" --format json --file tiny.png` | help 含 `--file, -f string`；真机运行接受 `--file`（建会话并 step_start，随后 `provider.free-limit` 429 结束，与图片无关） |
+| codebuddy | **支持但需 2.179.2 + model=minimax-m3.1-flash**（本机现为 2.179.2，实测通过门槛） | `codebuddy --version` | `2.179.2`；2.170.0 会被拒（路由 400 且文案要求升级） |
+| dsh | **不支持**（保持 false） | 本机入口为 asar 形态（shim 指向 `.../app.asar/dsh/lib/bin.js`，文件不存在） | 拿不到稳定 `--help`，无法实测图片入参 → 按不支持处理并在代码注释写明阻塞原因 |
+
+**payload 级证据**（`packages/adapters/test/imageCapability.test.ts`，9 例）：用 303 字节真实 PNG 跑 `runTurn`，断言 argv 里出现 `-i <pngPath>`（codex）/ `--file <pngPath>`（opencode），并核对磁盘文件 sha256 与 fixture 一致；`--help` 缺 flag 时 `supportsImageInput` 必须为 false，且带附件调用抛 `IMAGE_DELIVERY_UNVERIFIED`。
+
+**未验证**：真实模型侧「看到图并描述内容」——本机 codex 账号用量上限、opencode 免费额度耗尽，均在请求图片之后才 429，图片入参本身已被 CLI 接受。

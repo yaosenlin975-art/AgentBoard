@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
 import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import { cachedImageFlag, helpMentionsFlag, imageFlagKey, rememberImageFlag } from './imageFlags.js';
 import { assertImageInputSupported } from './imageInput.js';
 
 export const OPENCODE_CMD = 'opencode';
@@ -79,6 +80,14 @@ async function detectOpencode(): Promise<{ installed: boolean; version: string |
   const form = resolveWindowsSpawnForm(whereLines, OPENCODE_CMD) ?? { cmd: OPENCODE_CMD, prefix: [] as string[] };
   const { lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
   const version = lines.map((l) => l.trim()).find((l) => l !== '') ?? '';
+  // CHAT-IMG-ADAPTER：图片能力靠 `opencode run --help` 实测（本机 v2.2.5 有 `--file, -f string`），
+  // 探测不到 `--file` 就按不支持处理。
+  try {
+    const help = await collectOutput(form.cmd, [...form.prefix, 'run', '--help']);
+    rememberImageFlag(imageFlagKey('opencode', version || null), helpMentionsFlag(help.lines.join('\n'), '--file'));
+  } catch {
+    rememberImageFlag(imageFlagKey('opencode', version || null), false);
+  }
   return { installed: true, version: version || null };
 }
 
@@ -108,7 +117,10 @@ export const opencodeAdapter: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
   supportsModelSelection: true,
-  supportsImageInput(): boolean { return false; },
+  /** 只有 `opencode run --help` 实测到 `--file` 才为真（见 detectOpencode 的探测与缓存） */
+  supportsImageInput(_model: string | undefined, cliVersion?: string | null): boolean {
+    return cachedImageFlag(imageFlagKey('opencode', cliVersion));
+  },
   detect: detectOpencode,
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectOpencode();
@@ -134,6 +146,8 @@ export const opencodeAdapter: AgentAdapter = {
     const args: string[] = ['run', opts.prompt, '--format', 'json'];
     if (opts.model) args.push('-m', opts.model);
     if (opts.adapterSessionId) args.push('-s', opts.adapterSessionId);
+    // CHAT-IMG-ADAPTER：图片走 `--file <path>`（`opencode run --help` 实测 `--file, -f string`），每张一个
+    for (const attachment of opts.attachments ?? []) args.push('--file', attachment.path);
 
     const state = createOpencodeParseState();
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];

@@ -107,6 +107,11 @@ export const dshAdapter: AgentAdapter = {
   id: 'dsh',
   displayName: 'DSH',
   supportsModelSelection: false,
+  /**
+   * CHAT-IMG-ADAPTER：**保持 false**。本机 `dsh` 只有 asar 打包形态（入口在
+   * `.../app.asar/dsh/lib/bin.js`，shim 指向的文件不存在），`--help` 拿不到稳定输出，
+   * 无法实测是否存在图片入参；按「探测不到就当不支持」处理，等 dsh 提供可执行的 CLI 入口再开。
+   */
   supportsImageInput(): boolean { return false; },
   detect: detectDsh,
   async listModels(): Promise<ModelInfo[]> {

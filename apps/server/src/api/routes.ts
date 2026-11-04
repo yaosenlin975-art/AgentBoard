@@ -22,6 +22,7 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { ZodType } from 'zod';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
+import { imageDeliveryHint } from '../services/imageDeliveryHint.js';
 import type { KnowledgeHint, ManagedAppId, WsEvent } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import type { SecretVault } from '../services/accounts/secretVault.js';
@@ -899,10 +900,24 @@ export function createRouter(deps: RouterDeps): Router {
     if (!session) throw new NotFoundError('会话不存在');
     let adapter: AgentAdapter;
     try { adapter = getAdapter(session.cli); }
-    catch { throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证'); }
+    catch {
+      // 取不到适配器（未知 cli id）：给「换执行方式」的通用指路
+      throw new ValidationError(`IMAGE_DELIVERY_UNVERIFIED:${imageDeliveryHint({
+        cliId: 'unknown',
+        displayName: session.cli,
+        detectedVersion: null,
+        ...(session.model ? { model: session.model } : {}),
+      })}`);
+    }
     const verifiedCliVersion = await getVerifiedImageInputCliVersion(adapter, session.model ?? undefined);
     if (verifiedCliVersion === null || !adapter.supportsImageInput(session.model ?? undefined, verifiedCliVersion)) {
-      throw new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证');
+      const detected = await adapter.detect().catch(() => ({ installed: false, version: null as string | null }));
+      throw new ValidationError(`IMAGE_DELIVERY_UNVERIFIED:${imageDeliveryHint({
+        cliId: adapter.id,
+        displayName: adapter.displayName,
+        detectedVersion: detected.version,
+        ...(session.model ? { model: session.model } : {}),
+      })}`);
     }
     bindAttachmentsToSession(db, session.workspace_id, session.id, attachmentIds, Date.now());
     const imageAttachments = attachmentIds.map((id) => ({

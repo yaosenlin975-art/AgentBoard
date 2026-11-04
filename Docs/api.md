@@ -336,6 +336,19 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 | `GET /api/voice/models/:id/progress` | `?poll=1` 走一次性 JSON | SSE（`text/event-stream`）逐条 `data: { model_id, task_id, state, bytes, total, current_file, error, error_message }`（`bytes` 是**各文件总字节聚合**，`current_file` 为正在下载的文件），到 `downloaded` / `failed` 自动 `end`；`?poll=1` 返回同一结构 | 404 未知模型 |
 | `DELETE /api/voice/models/:id` | — | `{ deleted: true, freed_bytes }`，删掉整个 `models/<id>/` | 404 未知模型；409 `VOICE_MODEL_BUSY`（该模型正在下载） |
 
+### 聊天图片投递的适配器支持矩阵（CHAT-IMG-ADAPTER）
+
+`POST /api/sessions/:id/messages` 带附件时先验「当前 CLI 是否真的支持图片入参」，不通过 → 400 `IMAGE_DELIVERY_UNVERIFIED`，**文案按适配器给可执行指路**（`services/imageDeliveryHint.ts`）：
+
+| 适配器 | 判定依据 | 支持 |
+| --- | --- | --- |
+| codex | `codex exec --help` 是否含 `--image`（本机 0.166.0 含 `-i, --image <FILE>...`） | 是 → 每张图一个 `-i <path>` |
+| opencode | `opencode run --help` 是否含 `--file`（本机 v2.2.5 含 `--file, -f string`） | 是 → 每张图一个 `--file <path>` |
+| codebuddy | `--version === 2.179.2` 且 `model === minimax-m3.1-flash` | 是（其余组合 400，文案提示升级） |
+| dsh | 本机只有 asar 形态、无法实测入参 | 否 → 文案建议换 codex / opencode / codebuddy |
+
+400 文案示例（codebuddy 2.170.0）：「当前执行方式是 CodeBuddy 2.170.0（model=…）：图片输入要求 codebuddy 2.179.2 且 model=minimax-m3.1-flash，请升级 codebuddy 或换用 codex / opencode」。
+
 ### 识别会话（VOICE-2，`services/voiceSessions.ts`）
 
 | 方法 路径 | 请求 | 响应 | 错误 |
