@@ -236,7 +236,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 用编辑器 `write` 工具写文件；需要命令行写入时用 `-Encoding utf8NoBOM`（PS 7+）或 `[System.IO.File]::WriteAllText($p, $s, (New-Object System.Text.UTF8Encoding($false)))`；`node fs.writeFileSync` 默认无 BOM。
 - 为什么强制：`package.json` 带 BOM 时 Vite 会把它当 PostCSS 配置加载，Node JSON 解析抛 `Unexpected token '﻿'`，web 测试与 build 直接打挂，报错点离真凶很远。
 - 自动检查：`node scripts/check-bom.mjs`（`apps/web` 的 `pretest` 已挂载，`pnpm --filter @agentboard/web test` 会先跑它）。命中**新增** BOM 即 exit 1；存量历史文件在 `scripts/bom-baseline.txt` 里豁免（清一个删一行，`--strict` 可全量阻断）。
-- 门禁位置：**根 `package.json` 的 `prebuild` = `node scripts/check-bom.mjs`**，因此 **`pnpm build`（根脚本）会先查 BOM，命中新增 BOM 直接构建失败（exit 1）**；实测 `prebuild` 在根只跑 **1 次**。注意 **`pnpm -r build` 不触发根 `prebuild`**（pnpm 默认跳过根包）——收尾请用 `pnpm build`；确需递归构建时先单独跑 `node scripts/check-bom.mjs`。改 `apps/web/**` 的卡在 `kb done` 的 notes 注明「已自查 check-bom OK」。
+- 门禁位置（实测）：**根 `prebuild` + `apps/web` 的 `prebuild`** 都挂 `scripts/check-bom.mjs`。`pnpm build` 跑 **2 次**扫描（根 prebuild + web prebuild），`pnpm -r build` 跑 **1 次**（只命中 `apps/web` 的 prebuild，pnpm 递归跳过根包）；两条入口命中新增 BOM 都会 **EXIT≠0** 并报出文件路径。改 `apps/web/**` 的卡在 `kb done` 的 notes 注明「已自查 check-bom OK」（notes 含 `- ` 开头行须用 `--notes-stdin`）。
 - 发现 BOM 不要用「顺手全仓去 BOM」掩盖：清理要单独提交，并在卡里说明范围。
 
 ## Skill Priority

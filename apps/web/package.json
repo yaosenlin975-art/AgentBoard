@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node ../../scripts/check-bom.mjs",
     "build": "tsc --noEmit && vite build",
     "pretest": "node ../../scripts/check-bom.mjs",
     "test": "vitest run"
