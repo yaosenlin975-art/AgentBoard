@@ -45,6 +45,7 @@ import {
   type CheckinTodaySummary,
 } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
+import { AddAccountEntry } from './AddAccountWizard';
 
 /** 签到芯片三态配色（§5：绿=全完成、琥珀=部分、灰=不可用/未纳入） */
 const CHIP_TONE_CLASS: Record<CheckinChipTone, string> = {
@@ -358,6 +359,8 @@ function PlatformRow({
           >
             {capability?.capture ? '捕获当前账号' : `捕获不可用（${unavailableLabel(capability, 'capture') ?? '能力未知'}）`}
           </button>
+          {/* ACC-KB-B2W：协议级「添加账号」（与捕获并列；未装配协议的平台只给 reason 文案，不给按钮） */}
+          <AddAccountEntry app={app as ManagedAppId} />
         </div>
 
         {notice !== null && (
