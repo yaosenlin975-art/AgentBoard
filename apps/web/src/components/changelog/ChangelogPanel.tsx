@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 工作区日志视图（LOG03 / LOG-VIEW）。
  *
  * 原为浮窗内容（`<ChangelogPanel workspaceId onClose />` 由 Modal 包裹）；现在作为与平铺看板/任务树/知识库同级的
@@ -351,7 +351,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
         >
           <div
             data-testid="changelog-list-pane"
-            className="flex min-h-0 flex-col gap-2 overflow-auto rounded-xl border border-hairline bg-surface-card p-2"
+            className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-xl border border-hairline bg-surface-card p-2"
           >
             {sorted.length === 0 ? (
               <p
@@ -361,7 +361,9 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                 {emptyText}
               </p>
             ) : (
-              <ol data-testid="changelog-list" aria-label="日志列表" className="min-h-0 space-y-3">
+              /* LOG-PAGER：列表自己是唯一滚动容器，分页条留在滚动区外（否则 mt-auto 只把它推到内容末尾，
+                 滚动时漂到条目中间）。 */
+              <ol data-testid="changelog-list" aria-label="日志列表" className="min-h-0 flex-1 space-y-3 overflow-auto">
                 {groups.map((group) => (
                   <li key={group.day} data-testid={`changelog-day-${group.day}`}>
                     <h3 className="mb-1 text-[11px] font-semibold text-ink-3">{group.day}</h3>
@@ -397,7 +399,13 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                 ))}
               </ol>
             )}
-            <div className="mt-auto flex items-center gap-2 pt-1">
+            {/* LOG-PAGER：分页条是 pane 的最后一个子元素（滚动区之外）+ shrink-0，滚动时位置不变；
+                空态（sorted.length === 0）不渲染分页条，避免悬空按钮。 */}
+            {sorted.length > 0 && (
+              <div
+                data-testid="changelog-pager"
+                className="flex shrink-0 items-center gap-2 border-t border-hairline pt-2"
+              >
               <button
                 type="button"
                 className={BUTTON_SECONDARY}
@@ -414,7 +422,8 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
               >
                 下一页
               </button>
-            </div>
+              </div>
+            )}
           </div>
 
           <div
@@ -500,3 +509,5 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     </div>
   );
 }
+
+
