@@ -26,6 +26,12 @@ const BTN_DANGER =
   'rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs font-medium text-red-600 ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
 import {
+  RECOVERY_ACTION_LABEL,
+  RECOVERY_FAIL_LABEL,
+  RECOVERY_HINT_BODY,
+  RECOVERY_HINT_TITLE,
+} from './accountRecovery';
+import {
   ACCOUNT_BUSY_REASON,
   canToggleEnabled,
   capabilityBadge,
@@ -74,7 +80,23 @@ export function AccountCard({
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirming, setDeleteConfirming] = useState(false);
   const [deleteErrorCode, setDeleteErrorCode] = useState<string | null>(null);
+  const [restoreErrorCode, setRestoreErrorCode] = useState<string | null>(null);
   const queryClient = useQueryClient();
+
+  /**
+   * ACC-KB-B4W：恢复入口（`POST /api/managed-accounts/:id/restore`）。
+   * recovery_required 不再只是「失败」——服务端会把客户端写回切换前的快照再解冻。
+   */
+  const restoreMutation = useMutation({
+    mutationFn: () => api.post<{ operation_id: string; operation: AccountOperation; replayed: boolean }>(`/api/managed-accounts/${account.id}/restore`, {}),
+    onSuccess: () => {
+      setRestoreErrorCode(null);
+      setFrozen(false);
+      setOperationId(null);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+    },
+    onError: (e) => { setRestoreErrorCode(reasonCodeOf(e)); },
+  });
 
   const switchMutation = useMutation({
     mutationFn: () => api.post<{ operation_id: string; operation: AccountOperation }>(`/api/managed-accounts/${account.id}/switch`, {}),
@@ -323,7 +345,49 @@ export function AccountCard({
       )}
 
       {error !== null && <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
-      {operationId !== null && <AccountOperationStatus testId={`accounts-op-${account.id}`} operation={operation} />}
+
+      {/* ACC-KB-B4W：recovery_required 给出可操作的下一步（指向 restore），而不是只显示失败 */}
+      {needsRecovery && (
+        <div
+          data-testid={`accounts-recovery-${account.id}`}
+          role="group"
+          aria-label="恢复客户端状态"
+          className="mt-2 rounded-lg border border-hairline bg-surface-raised p-2.5 text-xs text-ink"
+        >
+          <p className="font-medium">{RECOVERY_HINT_TITLE}</p>
+          <p className="mt-1 text-ink-2">{RECOVERY_HINT_BODY}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid={`accounts-recovery-action-${account.id}`}
+              className={BTN_BASE}
+              disabled={restoreMutation.isPending}
+              title="让服务端把客户端写回切换前的快照并解冻该账号"
+              onClick={() => { setRestoreErrorCode(null); restoreMutation.mutate(); }}
+            >
+              {restoreMutation.isPending ? '恢复中…' : RECOVERY_ACTION_LABEL}
+            </button>
+          </div>
+          {restoreErrorCode !== null && (
+            <p
+              role="alert"
+              data-testid={`accounts-recovery-error-${account.id}`}
+              title={restoreErrorCode}
+              className="mt-1 text-red-600 dark:text-red-400"
+            >
+              {RECOVERY_FAIL_LABEL[restoreErrorCode] ?? reasonLabel(restoreErrorCode)}
+            </p>
+          )}
+        </div>
+      )}
+
+      {operationId !== null && (
+        <AccountOperationStatus
+          testId={`accounts-op-${account.id}`}
+          operation={operation}
+          safeErrorLabel={operation?.safe_error_code ? reasonLabel(operation.safe_error_code) : null}
+        />
+      )}
     </div>
   );
 }

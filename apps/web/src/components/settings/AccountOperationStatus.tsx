@@ -4,6 +4,7 @@
  */
 import type { AccountOperation } from '@agentboard/shared';
 import { Badge, type BadgeTone } from '../ui/Badge';
+import { RECOVERY_HINT_TITLE } from './accountRecovery';
 
 const STATE_LABEL: Record<AccountOperation['state'], string> = {
   queued: '排队中',
@@ -41,7 +42,16 @@ export function isTerminalState(state: AccountOperation['state']): boolean {
   return state === 'succeeded' || state === 'already_done' || state === 'failed' || state === 'unknown' || state === 'recovery_required';
 }
 
-export function AccountOperationStatus({ operation, testId }: { operation: AccountOperation | null; testId: string }) {
+export function AccountOperationStatus({
+  operation,
+  testId,
+  safeErrorLabel,
+}: {
+  operation: AccountOperation | null;
+  testId: string;
+  /** 安全错误码的中文文案（ACC-KB-B4W：主文案用中文，裸码只进 title） */
+  safeErrorLabel?: string | null;
+}) {
   if (operation === null) return null;
   const frozen = operation.state === 'recovery_required';
   return (
@@ -49,11 +59,15 @@ export function AccountOperationStatus({ operation, testId }: { operation: Accou
       <div className="flex flex-wrap items-center gap-1.5">
         <Badge tone={STATE_TONE[operation.state]}>{STATE_LABEL[operation.state]}</Badge>
         <span>阶段：{STAGE_LABEL[operation.stage]}</span>
-        {operation.safe_error_code !== null && <span className="text-red-600 dark:text-red-400">错误码：{operation.safe_error_code}</span>}
+        {operation.safe_error_code !== null && (
+          <span className="text-red-600 dark:text-red-400" title={operation.safe_error_code}>
+            原因：{safeErrorLabel ?? operation.safe_error_code}
+          </span>
+        )}
       </div>
       {frozen && (
         <p className="mt-1 text-amber-700 dark:text-amber-300">
-          切换中断，需要人工恢复；恢复引用：{operation.recovery_ref ?? '（未提供）'}
+          {RECOVERY_HINT_TITLE}；请在下方点「恢复客户端状态」完成恢复；恢复引用：{operation.recovery_ref ?? '（未提供）'}
         </p>
       )}
     </div>
