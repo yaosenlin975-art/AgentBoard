@@ -125,7 +125,9 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       </div>
     </header>
 
-    <div className="mt-3 max-w-[70ch] text-sm text-neutral-800 dark:text-neutral-200">
+    {/* KB-DETAIL-W：正文按可用宽度自适应，但保留可读上限（≈88 字符/行）并居中，
+        避免宽屏下右侧堆一大片空白（原 max-w-[70ch] 左对齐） */}
+    <div data-testid="knowledge-body" className="mx-auto mt-3 w-full max-w-[min(88ch,100%)] text-sm text-neutral-800 dark:text-neutral-200">
       <MarkdownView>{p.body_md}</MarkdownView>
     </div>
 
@@ -313,7 +315,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
               {previewRevision === r.revision && (
                 <div data-testid={`knowledge-revision-body-${r.revision}`} className="mt-1.5 rounded-md bg-neutral-50 px-2 py-1.5 dark:bg-neutral-800/60">
                   <div className="mb-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300">{r.title_snapshot}（只读快照）</div>
-                  <div className="max-w-[70ch] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
+                  <div className="mx-auto max-w-[min(88ch,100%)] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
                 </div>
               )}
             </li>
