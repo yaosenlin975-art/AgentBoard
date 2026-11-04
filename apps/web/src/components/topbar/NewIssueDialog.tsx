@@ -665,7 +665,7 @@ export function NewIssueDialog({
               data-testid="mode-manual"
               aria-selected={mode === 'manual'}
               onClick={() => setMode('manual')}
-              className={`rounded px-2 py-1 text-xs ${mode === 'manual' ? 'bg-blue-100 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+              className={`rounded px-2 py-1 text-xs ${mode === 'manual' ? 'bg-accent-soft font-medium text-accent dark:bg-accent-soft dark:text-accent' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
             >
               手动创建
             </button>
@@ -675,7 +675,7 @@ export function NewIssueDialog({
               data-testid="mode-smart"
               aria-selected={mode === 'smart'}
               onClick={() => setMode('smart')}
-              className={`rounded px-2 py-1 text-xs ${mode === 'smart' ? 'bg-blue-100 font-medium text-blue-800 dark:bg-blue-950/40 dark:text-blue-200' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
+              className={`rounded px-2 py-1 text-xs ${mode === 'smart' ? 'bg-accent-soft font-medium text-accent dark:bg-accent-soft dark:text-accent' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'}`}
             >
               智能创建
             </button>

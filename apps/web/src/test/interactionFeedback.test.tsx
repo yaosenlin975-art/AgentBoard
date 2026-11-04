@@ -93,7 +93,10 @@ describe('A2 标签 chip 点击反馈（LabelFilterBar）', () => {
     expect(chip).toHaveAttribute('data-active', 'true');
     expect(idleChip).toHaveAttribute('aria-pressed', 'false');
     expect(idleChip).toHaveAttribute('data-active', 'false');
-    expect(chip.className).toContain('bg-blue-100');
+    // CHIP-PALETTE：选中态改用 unslop 强调令牌（accent-soft / accent），不再用旧 blue 色板
+    expect(chip.className).toContain('bg-accent-soft');
+    expect(chip.className).toContain('text-accent');
+    expect(chip.className).not.toMatch(/bg-blue-/);
     // 清除筛选按钮也补了同样的反馈
     const clear = screen.getByTestId('label-filter-clear');
     expect(clear.className).toContain('transition-colors');
