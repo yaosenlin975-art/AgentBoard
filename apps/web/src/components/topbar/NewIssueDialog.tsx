@@ -15,6 +15,7 @@ import {
   ADAPTER_LABEL,
   DRAFT_ADAPTERS,
   DraftAbortError,
+  composeRequirementWithImages,
   mapDraftError,
   requestDraft,
   type DraftAdapter,
@@ -29,7 +30,6 @@ interface PendingImage {
   localId: number;
   file: File;
   mimeType: ImageMimeType;
-  previewUrl: string;
   status: 'uploading' | 'ready' | 'error';
   attachmentId?: string;
   error?: string;
@@ -63,7 +63,6 @@ export function NewIssueDialog({
   const [labelsInput, setLabelsInput] = useState('');
   const [images, setImages] = useState<PendingImage[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const nextLocalId = useRef(0);
   const imagesRef = useRef<PendingImage[]>([]);
   imagesRef.current = images;
@@ -90,17 +89,12 @@ export function NewIssueDialog({
     enabled: open,
   });
 
-  const revokeAll = (items: PendingImage[]): void => {
-    for (const item of items) URL.revokeObjectURL(item.previewUrl);
-  };
-
   const clearImages = (): void => {
-    revokeAll(imagesRef.current);
     imagesRef.current = [];
     setImages([]);
   };
 
-  useEffect(() => () => revokeAll(imagesRef.current), []);
+  useEffect(() => () => clearImages(), []);
 
   // 关闭或切换 workspace：图片草稿属于旧 workspace，立即丢弃（不发删除请求，staged 附件按 TTL 过期）
   useEffect(() => {
@@ -150,7 +144,6 @@ export function NewIssueDialog({
         localId: ++nextLocalId.current,
         file,
         mimeType,
-        previewUrl: URL.createObjectURL(file),
         status: 'uploading' as const,
       }));
       const next = [...imagesRef.current, ...created];
@@ -162,7 +155,6 @@ export function NewIssueDialog({
   };
 
   const removeImage = (item: PendingImage): void => {
-    URL.revokeObjectURL(item.previewUrl);
     const next = imagesRef.current.filter((candidate) => candidate.localId !== item.localId);
     imagesRef.current = next;
     setImages(next);
@@ -222,10 +214,20 @@ export function NewIssueDialog({
     cancelRef.current = false;
     setGenerating(true);
     try {
+      // KB-SMART-IMG：已粘贴的图片随需求一起交给草稿服务（服务端只收文本 → 前端拼「需求 + 图片说明块」）
+      const draftRequirement = composeRequirementWithImages(
+        text,
+        imagesRef.current.map((item) => ({
+          name: item.file.name,
+          mimeType: item.mimeType,
+          ...(item.attachmentId === undefined ? {} : { attachmentId: item.attachmentId }),
+          uploaded: item.status === 'ready',
+        })),
+      );
       const result = await requestDraft(
         {
           workspace_id: workspaceId,
-          requirement: text,
+          requirement: draftRequirement,
           adapter,
           ...(draftPriority === '' ? {} : { priority: draftPriority }),
         },
@@ -435,79 +437,58 @@ export function NewIssueDialog({
           </>
         )}
 
-        {/* 图片草稿：选择 / 拖拽 / 粘贴三入口共用同一上传与预览流程 */}
+        {/* 图片草稿：粘贴 / 拖拽两入口共用同一上传与预览流程（SMART-CREATE-IMG：去掉「添加图片」按钮，
+            图片以 tag/附件条呈现，可逐条删除） */}
         <div
           data-testid="new-issue-dropzone"
           aria-label="新建任务图片草稿"
-          className="space-y-2 rounded border border-dashed border-neutral-300 p-2 dark:border-neutral-700"
+          className="space-y-2 rounded-lg border border-hairline bg-surface-card p-2"
           onDragOver={(event) => event.preventDefault()}
           onDrop={onDrop}
         >
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              ref={fileInputRef}
-              data-testid="new-issue-image-input"
-              aria-label="选择图片"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              multiple
-              className="sr-only"
-              tabIndex={-1}
-              onChange={(event) => {
-                if (event.currentTarget.files) addFiles(Array.from(event.currentTarget.files));
-                event.currentTarget.value = '';
-              }}
-            />
-            <button
-              type="button"
-              data-testid="new-issue-image-picker"
-              onClick={() => fileInputRef.current?.click()}
-              className="rounded border border-neutral-300 px-2.5 py-1.5 text-xs dark:border-neutral-700"
-            >
-              添加图片
-            </button>
-            <span className="text-xs text-neutral-500 dark:text-neutral-400">
-              支持 PNG、JPEG、WebP；单张不超过 10 MiB，最多 {MAX_DRAFT_IMAGES} 张（单张上限 {fileSize(MAX_IMAGE_BYTES)}）。也可拖入或粘贴。
-            </span>
-          </div>
+          <p className="text-xs text-ink-3">
+            在需求框粘贴或拖入图片（PNG / JPEG / WebP，单张 ≤ {fileSize(MAX_IMAGE_BYTES)}，最多 {MAX_DRAFT_IMAGES} 张）
+          </p>
 
           {images.length > 0 && (
-            <ul aria-label="待创建任务的图片" className="flex flex-wrap gap-3">
+            <ul aria-label="待创建任务的图片" data-testid="new-issue-image-tags" className="flex flex-wrap items-center gap-1.5">
               {images.map((item) => (
                 <li
                   key={item.localId}
                   data-testid={`new-issue-image-${item.localId}`}
-                  className="w-28 max-w-full rounded border border-neutral-200 p-2 dark:border-neutral-700"
+                  title={`${item.file.name} · ${fileSize(item.file.size)}`}
+                  className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                    item.status === 'error' ? 'border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300' : 'border-hairline bg-surface-raised text-ink-2'
+                  }`}
                 >
-                  <img src={item.previewUrl} alt={item.file.name} className="h-20 w-full rounded object-cover" />
-                  <p className="mt-1 truncate text-xs" title={item.file.name}>{item.file.name}</p>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                  <span aria-hidden className="text-[10px] text-ink-3">{item.mimeType === 'image/png' ? 'PNG' : item.mimeType === 'image/webp' ? 'WebP' : 'JPEG'}</span>
+                  <span className="max-w-[12rem] truncate">{item.file.name}</span>
+                  <span className="text-ink-3" data-testid={`new-issue-image-status-${item.localId}`}>
                     {item.status === 'uploading' ? '上传中…' : item.status === 'ready' ? '已上传' : '上传失败'}
-                  </p>
-                  {item.error && (
-                    <p role="alert" className="text-xs text-red-600 dark:text-red-400">{item.error}</p>
-                  )}
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {item.status === 'error' && (
-                      <button
-                        type="button"
-                        aria-label={`重试上传 ${item.file.name}`}
-                        onClick={() => uploadImage(item)}
-                        className="text-xs text-blue-700 underline dark:text-blue-300"
-                      >
-                        重试
-                      </button>
-                    )}
+                  </span>
+                  {item.status === 'error' && (
                     <button
                       type="button"
-                      aria-label={`移除图片 ${item.file.name}`}
-                      disabled={item.status === 'uploading'}
-                      onClick={() => removeImage(item)}
-                      className="text-xs text-neutral-600 underline disabled:opacity-40 dark:text-neutral-300"
+                      aria-label={`重试上传 ${item.file.name}`}
+                      onClick={() => uploadImage(item)}
+                      className="underline"
                     >
-                      移除
+                      重试
                     </button>
-                  </div>
+                  )}
+                  <button
+                    type="button"
+                    data-testid={`new-issue-image-remove-${item.localId}`}
+                    aria-label={`移除图片 ${item.file.name}`}
+                    disabled={item.status === 'uploading'}
+                    onClick={() => removeImage(item)}
+                    className="rounded px-1 leading-none text-ink-3 hover:bg-surface-card hover:text-ink disabled:opacity-40"
+                  >
+                    ×
+                  </button>
+                  {item.error && (
+                    <span role="alert" className="text-[11px]">{item.error}</span>
+                  )}
                 </li>
               ))}
             </ul>

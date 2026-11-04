@@ -144,17 +144,29 @@ describe('新建任务附图', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 
-  it('拖拽与文件选择走同一流程', async () => {
+  it('拖拽与粘贴走同一上传流程，图片以 tag 呈现且可删除', async () => {
     setupHandlers();
-    renderDialog();
+    const { onClose } = renderDialog();
 
     dropImage(pngFile('dropped.png'));
     await waitFor(() => expect(uploads).toHaveLength(1));
     await screen.findByText('已上传');
 
-    await userEvent.upload(screen.getByTestId('new-issue-image-input'), pngFile('picked.png'));
+    // SMART-CREATE-IMG：入口只剩粘贴/拖拽（「添加图片」按钮与 file input 已移除）
+    expect(screen.queryByTestId('new-issue-image-picker')).toBeNull();
+    expect(screen.queryByTestId('new-issue-image-input')).toBeNull();
+    pasteImage(pngFile('pasted.png'));
     await waitFor(() => expect(uploads).toHaveLength(2));
     expect(screen.getAllByText('已上传')).toHaveLength(2);
+
+    const tags = screen.getByTestId('new-issue-image-tags');
+    const tag = within(tags).getAllByRole('listitem')[0]!;
+    // tag 里是文件名 + 类型 + 状态 + ×，不是缩略图卡片
+    expect(tag.textContent).toContain('dropped.png');
+    expect(tag.querySelector('img')).toBeNull();
+    fireEvent.click(within(tag).getByRole('button', { name: /移除图片/ }));
+    expect(within(tags).getAllByRole('listitem')).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('非法格式与超限：给出与评论一致的拒绝文案，且不上传', async () => {
@@ -197,7 +209,7 @@ describe('新建任务附图', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
-  it('移除草稿后不再提交该附件，并回收预览 URL', async () => {
+  it('移除 tag 后不再提交该附件', async () => {
     setupHandlers();
     renderDialog();
 
@@ -206,14 +218,13 @@ describe('新建任务附图', () => {
     await userEvent.type(screen.getByTestId('new-issue-title'), '删除草稿');
     await userEvent.click(screen.getByRole('button', { name: '移除图片 shot.png' }));
     expect(screen.queryByText('已上传')).toBeNull();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview');
 
     await userEvent.click(screen.getByTestId('new-issue-submit'));
     await waitFor(() => expect(issueCalls).toHaveLength(1));
     expect(issueCalls[0]!.body.attachment_ids).toEqual([]);
   });
 
-  it('切换 workspace 后图片草稿清空，不跨空间引用', async () => {
+  it('切换 workspace 后图片 tag 清空，不跨空间引用', async () => {
     setupHandlers();
     const { rerenderWith } = renderDialog('ws-1');
 
@@ -223,7 +234,7 @@ describe('新建任务附图', () => {
 
     rerenderWith('ws-2');
     await waitFor(() => expect(screen.queryByText('已上传')).toBeNull());
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+    expect(screen.queryByTestId('new-issue-image-tags')).toBeNull();
   });
 
   it('上传未完成或失败时禁止提交', async () => {
