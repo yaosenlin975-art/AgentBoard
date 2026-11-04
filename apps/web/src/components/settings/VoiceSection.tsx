@@ -20,10 +20,10 @@ interface VoiceModelState {
   languages: string[];
   streaming: boolean;
   note: string;
-  bytes_estimate: number;
+
   state: 'not_downloaded' | 'downloading' | 'downloaded' | 'failed';
   downloaded_bytes: number;
-  total_bytes: number;
+  bytes_total: number;
   error_message: string | null;
 }
 
@@ -68,7 +68,7 @@ export function VoiceSection() {
 
   const models = modelsQuery.data?.models ?? [];
   const downloaded = models.filter((m) => m.state === 'downloaded');
-  const usedBytes = downloaded.reduce((sum, m) => sum + (m.total_bytes || m.bytes_estimate), 0);
+  const usedBytes = downloaded.reduce((sum, m) => sum + (m.bytes_total || 0), 0);
   const anyDownloaded = downloaded.length > 0;
 
   // 未下载模型时总开关不可用；已下载但所选模型被删 → 回落第一个已下载模型
@@ -184,7 +184,7 @@ export function VoiceSection() {
         <ul className="space-y-2">
           {models.map((model) => {
             const selected = settings.modelId === model.id;
-            const percent = model.total_bytes > 0 ? Math.min(100, Math.round((model.downloaded_bytes / model.total_bytes) * 100)) : 0;
+            const percent = model.bytes_total > 0 ? Math.min(100, Math.round((model.downloaded_bytes / model.bytes_total) * 100)) : 0;
             return (
               <li key={model.id} data-testid={`voice-model-${model.id}`} className="rounded-md border border-hairline p-2">
                 <div className="flex items-start justify-between gap-2">
@@ -202,7 +202,7 @@ export function VoiceSection() {
                     <span className="min-w-0">
                       <span className="block truncate text-sm text-ink">{model.name}</span>
                       <span className="block text-xs text-ink-3">
-                        {model.languages.join('/')} · {model.streaming ? '流式' : '非流式'} · 约 {formatBytes(model.bytes_estimate)} · {STATE_LABEL[model.state]}
+                        {model.languages.join('/')} · {model.streaming ? '流式' : '非流式'} · 约 {formatBytes(model.bytes_total)} · {STATE_LABEL[model.state]}
                       </span>
                     </span>
                   </label>
@@ -238,7 +238,7 @@ export function VoiceSection() {
                       <div data-testid={`voice-progress-${model.id}`} data-width={percent} style={{ width: `${percent}%` }} className="h-full rounded-full bg-accent" />
                     </div>
                     <p className="mt-1 tabular-nums text-xs text-ink-3">
-                      {formatBytes(model.downloaded_bytes)} / {formatBytes(model.total_bytes)}（{percent}%）
+                      {formatBytes(model.downloaded_bytes)} / {formatBytes(model.bytes_total)}（{percent}%）
                     </p>
                   </div>
                 )}
