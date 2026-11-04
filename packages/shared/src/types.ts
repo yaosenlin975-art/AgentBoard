@@ -17,6 +17,8 @@ export interface KnowledgePage {
   category?: 'design' | 'solved' | 'pinned' | 'open' | 'legacy';
   /** design 类的落地状态（其他类为 null） */
   landed?: 'landed' | 'partial' | 'proposed' | null;
+  /** KB-PAGE-3：主题域（NULL=未归类）。读取路径尚未全部回填，故可选 */
+  domain?: string | null;
 }
 export interface KnowledgeRevision {
   id: string; page_id: string; revision: number; title_snapshot: string; body_snapshot: string;
