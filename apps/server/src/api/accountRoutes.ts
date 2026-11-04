@@ -30,6 +30,7 @@ import {
 import type { AddAccountProviderSpec, AddAccountVault } from '../services/accounts/addAccountProtocol.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
 import { startAccountRestore } from '../services/accounts/restore.js';
+import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
@@ -50,6 +51,8 @@ export interface AccountRouterDeps {
   addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>;
   /** ACC-KB-B2S：加号用的 vault（需支持 pending_credential purpose）；生产复用 SecretVault */
   addAccountVault?: AddAccountVault;
+  /** B4S-3：按平台的回滚处理器（restore 端点据此把快照写回客户端；缺省则按人工确认语义收尾） */
+  restoreHandlers?: Partial<Record<ManagedAppId, RestoreHandler>>;
   /** ACC-DEL-01：删除账号时清理其 DPAPI 快照/凭据文件（生产为 SecretVault 实例） */
   secretVault?: Pick<SecretVault, 'delete'>;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
@@ -240,7 +243,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.post('/managed-accounts/:id/restore', async (req, res) => {
     const parsed = z.string().uuid().safeParse(req.params.id);
     if (!parsed.success) throw new ValidationError('id 必须为 UUID');
-    const result = await startAccountRestore(db, parsed.data);
+    const result = await startAccountRestore(db, parsed.data, deps.restoreHandlers);
     res.status(202).json({
       operation_id: result.operation.id,
       operation: result.operation,

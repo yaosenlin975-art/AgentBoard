@@ -15,8 +15,9 @@ import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe 
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
 import { createAddAccountProviders } from './services/accounts/addAccountProvider.js';
+import { ApiError } from './errors.js';
 import type { AddAccountProviderSpec } from './services/accounts/addAccountProtocol.js';
-import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts/minimaxDesktopProvider.js';
+import { MinimaxDesktopProvider, defaultMinimaxPaths, createMinimaxServerIdentityProbe } from './services/accounts/minimaxDesktopProvider.js';
 import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
@@ -132,6 +133,11 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
       ? new WorkbuddyDesktopProvider({ db, vault: secretVault, paths: defaultWorkbuddyPaths(), probe: defaultWorkbuddyProbe, broadcast: event => hub.broadcast(event) })
       : undefined;
 
+  // MiniMax 桌面 provider（B4S-3：restore 端点的回滚处理器要用同一个实例，故先建好再装配）
+  // S5 的服务端身份校验能力也在这里装配（provider 本身默认不装配 → PROVIDER_NOT_IMPLEMENTED）
+  const minimaxProvider = options.desktopProviders?.minimax
+    ?? new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), serverIdentityProbe: createMinimaxServerIdentityProbe(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) });
+
   if (options.refreshClisOnBoot !== false) {
     await refreshClis(options.adapters ?? ADAPTERS);
     hub.broadcast({ type: 'clis.changed', clis: getCachedClis() });
@@ -151,7 +157,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) }) }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders() }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: minimaxProvider }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

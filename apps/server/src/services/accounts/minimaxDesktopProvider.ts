@@ -20,17 +20,65 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { AccountOperation, ManagedAccount } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
+import { updateAccountOperation } from '../../db/repos/accountOperation.js';
 import { ApiError, NotFoundError } from '../../errors.js';
 import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProcessControl } from './clientProcess.js';
 import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe } from './minimaxClientProbe.js';
+import { credentialUid, validateTarget, verifyByServerUid, type ServerIdentityProbe } from './switchStages.js';
 
 export const MINIMAX_APP_ID = 'minimax' as const;
 
 /** 进程级探测缓存：provider 默认使用（与能力矩阵同一套候选与原因码） */
 const cachedMinimaxClientProbe = createMinimaxClientProbe();
+
+/** agent 云端 API（与签到 provider 同一套服务端） */
+const MINIMAX_AGENT_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  (value && typeof value === 'object' ? value as Record<string, unknown> : {});
+const str = (value: unknown): string | null =>
+  (typeof value === 'string' && value.trim() !== '' ? value : null);
+
+/**
+ * B4S-3：MiniMax 的服务端身份探针。
+ *
+ * 用客户端此刻持有的凭据调一次**需鉴权**的 agent 云端接口：服务端认这份凭据才算数
+ * （200 = 认；401/403 = 不认 → `SERVER_CREDENTIAL_REJECTED`）。
+ * 服务端若在响应里带出身份标识就用它比对；没带时退到凭据里 **服务端签名** 的 JWT `sub`
+ * （仍是服务端签发的身份，不是本地文件里的自说自话）。
+ */
+export function createMinimaxServerIdentityProbe(options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}): ServerIdentityProbe {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  return {
+    async probe(token: string): Promise<{ uid: string | null }> {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
+      try {
+        const response = await fetchImpl(`${MINIMAX_AGENT_BASE}/signin/status`, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+          signal: controller.signal,
+        });
+        if (response.status === 401 || response.status === 403) {
+          throw new ApiError(409, 'SERVER_CREDENTIAL_REJECTED', '服务端不认这份凭据');
+        }
+        if (!response.ok) {
+          throw new ApiError(409, 'SERVER_CREDENTIAL_REJECTED', `服务端身份校验请求失败（HTTP ${response.status}）`);
+        }
+        let body: unknown = null;
+        try { body = await response.json(); } catch { body = null; }
+        const data = asRecord(asRecord(body).data);
+        const uid = str(data.user_id) ?? str(data.uid) ?? str(data.account_id) ?? str(asRecord(body).user_id) ?? null;
+        return { uid: uid ?? credentialUid(token) };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
 
 export interface MinimaxPaths {
   /** auth.json 绝对路径 */
@@ -63,6 +111,14 @@ export interface MinimaxProviderDeps {
   now?: () => number;
   /** MINIMAX-PATH：客户端 exe 探测（默认用 60s 缓存的内置探测；测试可注入） */
   clientProbe?: Pick<MinimaxClientProbe, 'get'>;
+  /**
+   * B4S-3：S5 服务端身份校验探针。
+   *
+   * **默认不装配**（= 该 provider 没有服务端校验能力 → S5 如实报 `PROVIDER_NOT_IMPLEMENTED`）；
+   * 生产由装配根（`index.ts`）显式注入 `createMinimaxServerIdentityProbe()`。
+   * 这样「能力是否具备」由装配决定，测试也不会意外发起真实网络请求。
+   */
+  serverIdentityProbe?: ServerIdentityProbe | null;
 }
 
 /** 默认路径：`~/.minimax/auth/prod/cn/mcode-public/auth.json`（本机实测） */
@@ -121,6 +177,7 @@ export class MinimaxDesktopProvider {
   private readonly process: MinimaxProcessControl;
   private readonly now: () => number;
   private readonly clientProbe: Pick<MinimaxClientProbe, 'get'>;
+  private readonly serverIdentityProbe: ServerIdentityProbe | null;
   /** 探测一次后在本实例内复用（探测本身有 TTL 缓存） */
   private resolvedClientExe: string | null = null;
 
@@ -138,6 +195,7 @@ export class MinimaxDesktopProvider {
     };
     this.now = deps.now ?? (() => Date.now());
     this.clientProbe = deps.clientProbe ?? cachedMinimaxClientProbe;
+    this.serverIdentityProbe = deps.serverIdentityProbe ?? null;
   }
 
   private scope(account: { identity_hash: string; client_instance_id: string }) {
@@ -191,7 +249,7 @@ export class MinimaxDesktopProvider {
     return getManagedAccount(this.db, id)!;
   }
 
-  /** switch：停客户端 → 快照 → 写目标 token → 启动 → 校验；失败回滚 */
+  /** switch：停客户端 → 快照 → S3 目标校验 → 写目标凭据 → 启动 → S5 服务端身份校验；失败回滚 */
   async switchAccount(accountId: string, hooks: { onOperationCreated?: (id: string) => void } = {}): Promise<AccountOperation> {
     const account = getManagedAccount(this.db, accountId);
     if (!account) throw new NotFoundError('账号不存在');
@@ -199,7 +257,8 @@ export class MinimaxDesktopProvider {
     return runAccountOperation(
       this.db,
       { account_id: account.id, app_id: MINIMAX_APP_ID, client_instance_id: account.client_instance_id, operation: 'switch' },
-      async () => {
+      async op => {
+        if (hooks.onOperationCreated) hooks.onOperationCreated(op.id);
         const preflight = await this.preflight();
         const clientExe = await this.resolveClientExe();
         const original = preflight.bytes;
@@ -217,12 +276,21 @@ export class MinimaxDesktopProvider {
             throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.stopTimeout, 'MiniMax 客户端仍在运行，已中止切换（未改动 auth.json）');
           }
         }
+        this.setStage(op, 'snapshot');
         const snapshotRef = await this.vault.protect(original, this.scope(account));
         this.db.prepare('UPDATE managed_account SET client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
           .run(snapshotRef, this.now(), account.id);
+        // S3：共用目标校验（账号在 / 属于本产品 / 凭据可解 / 身份可确定）
+        this.setStage(op, 'validate_target');
         if (!account.checkin_credential_ref) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号没有可用凭据');
-        const targetToken = (await this.vault.unprotect(account.checkin_credential_ref, this.scope(account))).toString('utf8').trim();
-        if (!targetToken) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号凭据为空');
+        const targetCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
+        const target = validateTarget({
+          app_id: MINIMAX_APP_ID,
+          account,
+          credential: targetCredential,
+          uid: credentialUid(targetCredential),
+        });
+        const targetToken = target.credential.toString('utf8').trim();
         const file = parseAuth(original);
         const entries = recordEntries(file);
         if (entries.length === 0) throw new ApiError(409, 'CLIENT_STATE_UNREADABLE', '客户端凭据文件没有记录');
@@ -230,26 +298,70 @@ export class MinimaxDesktopProvider {
           ...file,
           records: Object.fromEntries(entries.map(([key, record]) => [key, { ...record, accessToken: targetToken }])),
         };
+        // S4：临时文件 + rename 原子替换
+        this.setStage(op, 'write');
         const temp = `${this.paths.authFile}.agentboard-${randomUUID()}.tmp`;
         try {
           await this.fs.writeFile(temp, Buffer.from(JSON.stringify(rewritten), 'utf8'), 0o600);
           await this.fs.rename(temp, this.paths.authFile);
         } catch {
           await this.fs.remove(temp);
+          // 写盘失败 = 客户端文件**未被改动**（临时文件已删，rename 是原子的）：
+          // stage 退回 write 之前，避免 operationRunner 按「可能已写客户端」把实例误冻成 recovery_required。
+          this.setStage(op, 'validate_target');
           throw new ApiError(409, 'SWITCH_WRITE_FAILED', '写入客户端凭据失败');
         }
+        this.setStage(op, 'start');
         await this.process.start(clientExe);
-        const verified = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)));
-        if (!verified || verified.token !== targetToken) {
-          const restored = await this.restoreSnapshot(snapshotRef, account);
-          if (!restored) throw new ApiError(409, 'RECOVERY_REQUIRED', '切换校验失败且回滚未成功');
-          throw new ApiError(409, 'SWITCH_ROLLED_BACK', '切换后校验失败，已回滚到原账号');
+        // S5：服务端身份校验——本地 token 比对只作辅助信号，最终以服务端认可的身份为准
+        this.setStage(op, 'verify');
+        const liveToken = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)))?.token ?? '';
+        try {
+          if (liveToken !== targetToken) {
+            throw new ApiError(409, 'TARGET_IDENTITY_MISMATCH', '客户端当前凭据与目标不一致');
+          }
+          await verifyByServerUid({
+            app_id: MINIMAX_APP_ID,
+            token: liveToken,
+            expectedUid: target.uid,
+            probe: this.serverIdentityProbe,
+          });
+        } catch (error) {
+          // S5 失败 → 回滚到快照（回滚成功 = SWITCH_ROLLED_BACK；回滚失败 = RECOVERY_REQUIRED + recovery_ref）
+          const cause = error instanceof ApiError ? error.code : 'S5_FAILED';
+          await this.rollbackToSnapshot(op, snapshotRef, account, cause);
         }
         return 'succeeded';
       },
       hooks,
       { tryLock: true },
     );
+  }
+
+  private setStage(op: AccountOperation, stage: AccountOperation['stage']): void {
+    updateAccountOperation(this.db, op.id, { stage });
+  }
+
+  /**
+   * 回滚：把快照写回客户端。
+   * - 回滚成功 → 抛 `SWITCH_ROLLED_BACK`（原账号已恢复，实例不冻结）；
+   * - 回滚失败 → 落 `recovery_ref`（快照 = 恢复依据）并抛 `RECOVERY_REQUIRED`，实例冻结，
+   *   由 A3 的 restore 端点重放回滚（不再另造一条恢复通道）。
+   */
+  private async rollbackToSnapshot(op: AccountOperation, snapshotRef: string, account: ManagedAccount, cause: string): Promise<never> {
+    this.setStage(op, 'rollback');
+    const restored = await this.restoreSnapshot(snapshotRef, account);
+    if (!restored) {
+      updateAccountOperation(this.db, op.id, { recovery_ref: snapshotRef });
+      throw new ApiError(409, 'RECOVERY_REQUIRED', '切换校验失败且回滚未成功，该实例已冻结，需经 restore 端点解冻');
+    }
+    throw new ApiError(409, 'SWITCH_ROLLED_BACK', `切换失败已回滚并核验原账号（失败原因: ${cause}）`);
+  }
+
+  /** A3 restore 通道：把快照写回客户端（回滚重放）；失败抛错，实例保持冻结，可再次触发 */
+  async restoreFromSnapshot(input: { account: ManagedAccount; snapshotRef: string }): Promise<void> {
+    const restored = await this.restoreSnapshot(input.snapshotRef, input.account);
+    if (!restored) throw new ApiError(409, 'SNAPSHOT_WRITE_FAILED', '恢复快照失败');
   }
 
   /** 把快照写回磁盘；返回是否成功 */

@@ -16,7 +16,10 @@ const SAFE_ERROR_CODES = new Set(['RECOVERY_REQUIRED','OPERATION_UNKNOWN','VAULT
   // ACC-KB-A3 restore 解冻：RESTORED 记在被解冻的原操作上（正常收尾码），RECOVERY_NOT_REQUIRED 由 restore 端点抛出
   'RESTORED','RECOVERY_NOT_REQUIRED',
   // ACC-KB-B1S：新登记平台（qoder_cn / zcode）尚未实现 provider，能力矩阵用这个固定码说明原因
-  'PROVIDER_NOT_IMPLEMENTED']);
+  'PROVIDER_NOT_IMPLEMENTED',
+  // B4S-3：共用 S3（validate_target）/ S5（服务端身份校验）的固定失败码
+  'TARGET_ACCOUNT_NOT_FOUND','TARGET_IDENTITY_UNKNOWN','TARGET_IDENTITY_MISMATCH','TARGET_INSTANCE_MISMATCH','SNAPSHOT_MISSING',
+  'SERVER_CREDENTIAL_REJECTED','SERVER_IDENTITY_UNAVAILABLE','SERVER_IDENTITY_MISMATCH']);
 export interface AccountOperationHooks { onOperationCreated?: (id: string) => void }
 /** tryLock：同账号已被占用时立即失败（ACCOUNT_BUSY），不排队——批量签到逐账号独立结果用 */
 export interface AccountOperationOptions { tryLock?: boolean }
