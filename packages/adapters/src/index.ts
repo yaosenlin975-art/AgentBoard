@@ -19,3 +19,5 @@ export function getAdapter(id: AgentAdapter['id']): AgentAdapter {
   if (!adapter) throw new Error(`未知适配器 id: ${id}`);
   return adapter;
 }
+export { JG, KG, traePepper } from './trae/pepper.js';
+export { decryptTcEnvelope, encryptTcEnvelope, deriveKeyIv, TraeEnvelopeError, type TraeEnvelopeErrorCode } from './trae/tcEnvelope.js';

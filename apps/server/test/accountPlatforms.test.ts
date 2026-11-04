@@ -12,6 +12,7 @@ import Database from 'better-sqlite3';
 import { createTestDb, type TestDb } from './helpers.js';
 import { initSchema } from '../src/db/schema.js';
 import { openDb } from '../src/db/connection.js';
+import { traeStorageAvailable } from '../src/services/accounts/traeProvider.js';
 import { accountProviderCapabilities } from '../src/services/accounts/registry.js';
 import request from 'supertest';
 import { createApp } from '../src/index.js';
@@ -188,9 +189,13 @@ describe('account platforms migration (ACC-10)', () => {
 
   it('registersNewPlatformsWithExpectedCapabilities', () => {
     const capabilities = accountProviderCapabilities();
-    // ACC-12 开启签到；ACC-13 开启 minimax 的 capture/switch，trae 因登录态非文件化保持关闭
+    // ACC-12 开启签到；ACC-13 开启 minimax 的 capture/switch
     expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
-    expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ capture: false, switch: false, checkin: true, reason_code: 'LOGIN_STATE_NOT_FILE_BASED' });
+    // ACC-KB-B3：trae 的 capture 由「本机是否存在 storage.json」动态推导（switch 仍关闭）
+    const trae = capabilities.find(item => item.app_id === 'trae');
+    const traeStorage = traeStorageAvailable();
+    expect(trae).toMatchObject({ capture: traeStorage, switch: false, checkin: true });
+    expect(trae?.reason_code).toBe(traeStorage ? 'CAPTURE_OK' : 'TRAE_STORAGE_MISSING');
   });
 
 

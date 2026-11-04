@@ -1,5 +1,6 @@
 import type { ManagedAppId } from '@agentboard/shared';
 import type { MinimaxClientStatus } from './minimaxClientProbe.js';
+import { traeStorageAvailable } from './traeProvider.js';
 
 export interface AccountProviderCapability {
   app_id: ManagedAppId;
@@ -44,8 +45,16 @@ function withMinimaxClient(capability: AccountProviderCapability, minimaxClient?
   return { ...capability, capture: false, switch: false, reason_code: minimaxClient.reason_code };
 }
 
+/** trae 行按「本机是否真的有可读 storage.json」改写：有 → capture 可用；没有 → 保持关闭并给 TRAE_STORAGE_MISSING */
+function withTraeStorage(capability: AccountProviderCapability): AccountProviderCapability {
+  if (capability.app_id !== 'trae') return capability;
+  return traeStorageAvailable()
+    ? { ...capability, capture: true, reason_code: 'CAPTURE_OK' }
+    : { ...capability, capture: false, reason_code: 'TRAE_STORAGE_MISSING' };
+}
+
 export function accountProviderCapabilities(minimaxClient?: MinimaxClientStatus): AccountProviderCapability[] {
-  return CAPABILITIES.map(capability => ({ ...withMinimaxClient(capability, minimaxClient) }));
+  return CAPABILITIES.map(capability => ({ ...withTraeStorage(withMinimaxClient(capability, minimaxClient)) }));
 }
 
 export function accountProviderCapability(app: ManagedAppId, minimaxClient?: MinimaxClientStatus): AccountProviderCapability | undefined {
