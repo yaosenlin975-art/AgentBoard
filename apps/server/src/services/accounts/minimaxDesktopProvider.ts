@@ -27,7 +27,8 @@ import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe } from './minimaxClientProbe.js';
-import { credentialUid, validateTarget, verifyByServerUid, type ServerIdentityProbe } from './switchStages.js';
+import { runSwitchFlow } from './switchFlow.js';
+import { credentialUid, validateTarget, verifyByServerUid, type ServerIdentityProbe, type ValidatedTarget } from './switchStages.js';
 
 export const MINIMAX_APP_ID = 'minimax' as const;
 
@@ -249,7 +250,10 @@ export class MinimaxDesktopProvider {
     return getManagedAccount(this.db, id)!;
   }
 
-  /** switch：停客户端 → 快照 → S3 目标校验 → 写目标凭据 → 启动 → S5 服务端身份校验；失败回滚 */
+  /**
+   * switch：走**共用骨架**（B4S-4），本类只提供各步回调。
+   * 步序：preflight（含「客户端在跑则阻断」）→ stop → snapshot → validate_target → write → start → verify →（失败）rollback。
+   */
   async switchAccount(accountId: string, hooks: { onOperationCreated?: (id: string) => void } = {}): Promise<AccountOperation> {
     const account = getManagedAccount(this.db, accountId);
     if (!account) throw new NotFoundError('账号不存在');
@@ -259,78 +263,103 @@ export class MinimaxDesktopProvider {
       { account_id: account.id, app_id: MINIMAX_APP_ID, client_instance_id: account.client_instance_id, operation: 'switch' },
       async op => {
         if (hooks.onOperationCreated) hooks.onOperationCreated(op.id);
-        const preflight = await this.preflight();
-        const clientExe = await this.resolveClientExe();
-        const original = preflight.bytes;
-        // B4S-1 preflight：客户端在跑必须先停掉并确认退出；探测/停止失败一律中止（绝不在客户端运行时覆盖 auth.json）
-        let running: boolean;
-        try {
-          running = await this.process.isRunning(clientExe);
-        } catch (error) {
-          if (error instanceof ApiError) throw error;
-          throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.probeFailed, '无法确认 MiniMax 客户端是否在运行，已中止切换');
-        }
-        if (running) {
-          await this.process.stop(clientExe);
-          if (await this.process.isRunning(clientExe)) {
-            throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.stopTimeout, 'MiniMax 客户端仍在运行，已中止切换（未改动 auth.json）');
-          }
-        }
-        this.setStage(op, 'snapshot');
-        const snapshotRef = await this.vault.protect(original, this.scope(account));
-        this.db.prepare('UPDATE managed_account SET client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
-          .run(snapshotRef, this.now(), account.id);
-        // S3：共用目标校验（账号在 / 属于本产品 / 凭据可解 / 身份可确定）
-        this.setStage(op, 'validate_target');
-        if (!account.checkin_credential_ref) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号没有可用凭据');
-        const targetCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
-        const target = validateTarget({
-          app_id: MINIMAX_APP_ID,
-          account,
-          credential: targetCredential,
-          uid: credentialUid(targetCredential),
+        // 骨架回调之间要传递的中间产物
+        let original: Buffer | null = null;
+        let clientExe = '';
+        let target: ValidatedTarget | null = null;
+
+        await runSwitchFlow({
+          setStage: stage => this.setStage(op, stage),
+          callbacks: {
+            // S0：读客户端凭据文件 + 定位客户端 exe
+            preflight: async () => {
+              const pre = await this.preflight();
+              clientExe = await this.resolveClientExe();
+              original = pre.bytes;
+            },
+            // S1：客户端在跑必须先停掉并确认退出；探测/停止失败一律中止（绝不在客户端运行时覆盖 auth.json）
+            stop: async () => {
+              let running: boolean;
+              try {
+                running = await this.process.isRunning(clientExe);
+              } catch (error) {
+                // B4S-1：阻断点在 preflight 语义内（未改动 auth.json），stage 留在 preflight
+                this.setStage(op, 'preflight');
+                if (error instanceof ApiError) throw error;
+                throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.probeFailed, '无法确认 MiniMax 客户端是否在运行，已中止切换');
+              }
+              if (!running) return;
+              try {
+                await this.process.stop(clientExe);
+              } catch (error) {
+                this.setStage(op, 'preflight');
+                throw error;
+              }
+              if (await this.process.isRunning(clientExe)) {
+                this.setStage(op, 'preflight');
+                throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.stopTimeout, 'MiniMax 客户端仍在运行，已中止切换（未改动 auth.json）');
+              }
+            },
+            // S2：快照当前凭据进 vault（回滚依据）
+            snapshot: async () => {
+              const snapshotRef = await this.vault.protect(original!, this.scope(account));
+              this.db.prepare('UPDATE managed_account SET client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
+                .run(snapshotRef, this.now(), account.id);
+              return snapshotRef;
+            },
+            // S3：共用目标校验（账号在 / 属于本产品 / 凭据可解 / 身份可确定）
+            validateTarget: async () => {
+              if (!account.checkin_credential_ref) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号没有可用凭据');
+              const targetCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
+              target = validateTarget({
+                app_id: MINIMAX_APP_ID,
+                account,
+                credential: targetCredential,
+                uid: credentialUid(targetCredential),
+              });
+              return target;
+            },
+            // S4：临时文件 + rename 原子替换
+            write: async (value) => {
+              const file = parseAuth(original!);
+              const entries = recordEntries(file);
+              if (entries.length === 0) throw new ApiError(409, 'CLIENT_STATE_UNREADABLE', '客户端凭据文件没有记录');
+              const targetToken = value.credential.toString('utf8').trim();
+              const rewritten: AuthFile = {
+                ...file,
+                records: Object.fromEntries(entries.map(([key, record]) => [key, { ...record, accessToken: targetToken }])),
+              };
+              const temp = `${this.paths.authFile}.agentboard-${randomUUID()}.tmp`;
+              try {
+                await this.fs.writeFile(temp, Buffer.from(JSON.stringify(rewritten), 'utf8'), 0o600);
+                await this.fs.rename(temp, this.paths.authFile);
+              } catch {
+                await this.fs.remove(temp);
+                // 写盘失败 = 客户端文件**未被改动**（临时文件已删，rename 是原子的）：
+                // stage 退回 write 之前，避免 operationRunner 按「可能已写客户端」把实例误冻成 recovery_required。
+                this.setStage(op, 'validate_target');
+                throw new ApiError(409, 'SWITCH_WRITE_FAILED', '写入客户端凭据失败');
+              }
+            },
+            // S5：启动客户端
+            start: async () => { await this.process.start(clientExe); },
+            // S5：服务端身份校验——本地 token 比对只作辅助信号，最终以服务端认可的身份为准
+            verify: async () => {
+              const liveToken = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)))?.token ?? '';
+              if (liveToken !== target!.credential.toString('utf8').trim()) {
+                throw new ApiError(409, 'TARGET_IDENTITY_MISMATCH', '客户端当前凭据与目标不一致');
+              }
+              await verifyByServerUid({
+                app_id: MINIMAX_APP_ID,
+                token: liveToken,
+                expectedUid: target!.uid,
+                probe: this.serverIdentityProbe,
+              });
+            },
+            // 回滚：写回快照（失败 → recovery_ref → 由 A3 restore 通道重放）
+            rollback: async (snapshotRef, cause) => { await this.rollbackToSnapshot(op, snapshotRef, account, cause); },
+          },
         });
-        const targetToken = target.credential.toString('utf8').trim();
-        const file = parseAuth(original);
-        const entries = recordEntries(file);
-        if (entries.length === 0) throw new ApiError(409, 'CLIENT_STATE_UNREADABLE', '客户端凭据文件没有记录');
-        const rewritten: AuthFile = {
-          ...file,
-          records: Object.fromEntries(entries.map(([key, record]) => [key, { ...record, accessToken: targetToken }])),
-        };
-        // S4：临时文件 + rename 原子替换
-        this.setStage(op, 'write');
-        const temp = `${this.paths.authFile}.agentboard-${randomUUID()}.tmp`;
-        try {
-          await this.fs.writeFile(temp, Buffer.from(JSON.stringify(rewritten), 'utf8'), 0o600);
-          await this.fs.rename(temp, this.paths.authFile);
-        } catch {
-          await this.fs.remove(temp);
-          // 写盘失败 = 客户端文件**未被改动**（临时文件已删，rename 是原子的）：
-          // stage 退回 write 之前，避免 operationRunner 按「可能已写客户端」把实例误冻成 recovery_required。
-          this.setStage(op, 'validate_target');
-          throw new ApiError(409, 'SWITCH_WRITE_FAILED', '写入客户端凭据失败');
-        }
-        this.setStage(op, 'start');
-        await this.process.start(clientExe);
-        // S5：服务端身份校验——本地 token 比对只作辅助信号，最终以服务端认可的身份为准
-        this.setStage(op, 'verify');
-        const liveToken = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)))?.token ?? '';
-        try {
-          if (liveToken !== targetToken) {
-            throw new ApiError(409, 'TARGET_IDENTITY_MISMATCH', '客户端当前凭据与目标不一致');
-          }
-          await verifyByServerUid({
-            app_id: MINIMAX_APP_ID,
-            token: liveToken,
-            expectedUid: target.uid,
-            probe: this.serverIdentityProbe,
-          });
-        } catch (error) {
-          // S5 失败 → 回滚到快照（回滚成功 = SWITCH_ROLLED_BACK；回滚失败 = RECOVERY_REQUIRED + recovery_ref）
-          const cause = error instanceof ApiError ? error.code : 'S5_FAILED';
-          await this.rollbackToSnapshot(op, snapshotRef, account, cause);
-        }
         return 'succeeded';
       },
       hooks,
@@ -349,7 +378,6 @@ export class MinimaxDesktopProvider {
    *   由 A3 的 restore 端点重放回滚（不再另造一条恢复通道）。
    */
   private async rollbackToSnapshot(op: AccountOperation, snapshotRef: string, account: ManagedAccount, cause: string): Promise<never> {
-    this.setStage(op, 'rollback');
     const restored = await this.restoreSnapshot(snapshotRef, account);
     if (!restored) {
       updateAccountOperation(this.db, op.id, { recovery_ref: snapshotRef });

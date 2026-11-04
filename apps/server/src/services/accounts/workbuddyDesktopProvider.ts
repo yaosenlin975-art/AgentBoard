@@ -20,6 +20,7 @@ import { z } from 'zod';
 import type { AccountOperation, ManagedAccount, WsEvent } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
 import { runAccountOperation } from './operationRunner.js';
+import { runSwitchFlow } from './switchFlow.js';
 import { updateAccountOperation } from '../../db/repos/accountOperation.js';
 import { attachClientSnapshot, createManagedAccount, findManagedAccountByIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
 import type { SecretVault } from './secretVault.js';
@@ -225,6 +226,10 @@ export class WorkbuddyDesktopProvider {
 
   // ---- 切换 ----
 
+  /**
+   * 切换：走**共用骨架**（B4S-4），本类只提供各步回调。
+   * 步序与既有行为一一对应：preflight → stop → snapshot → validate_target → write → start → verify →（失败）rollback。
+   */
   async switchAccount(accountId: string, hooks: { onOperationCreated?: (id: string) => void } = {}): Promise<AccountOperation> {
     return runAccountOperation(this.db, {
       account_id: accountId, app_id: WORKBUDDY_APP_ID, client_instance_id: this.instanceId, operation: 'switch',
@@ -232,41 +237,48 @@ export class WorkbuddyDesktopProvider {
       if (hooks.onOperationCreated) hooks.onOperationCreated(op.id);
       const account = getManagedAccount(this.db, accountId);
       if (!account || account.app_id !== WORKBUDDY_APP_ID) throw new ApiError(404, 'ACCOUNT_NOT_FOUND', '目标账号不存在');
-      const pre = await this.preflight();
-      if (account.client_instance_id !== pre.instanceId) throw new ApiError(409, 'TARGET_INSTANCE_MISMATCH', '目标快照与当前安装实例不一致，拒绝写入');
-      if (!account.client_snapshot_ref) throw new ApiError(409, 'SNAPSHOT_MISSING', '目标账号没有客户端快照');
-      const currentIdentity = await this.requireV2Identity();
 
-      // safe-exit（两段式）：UIA 托盘退出 → 失败降级 WS 提示手动退出 + 轮询退出签名；绝不强杀
-      this.setStage(op, 'stop');
-      await this.ensureExited('stop');
+      // 骨架回调之间要传递的中间产物（各自步产出、后续步消费）
+      let pre: { exePath: string; version: string; instanceId: string; pids: number[] } | null = null;
+      let currentIdentity: ClientIdentity | null = null;
 
-      // backup（真实退出后读盘——退出时客户端会重写 .info）
-      this.setStage(op, 'snapshot');
-      const backup = await this.readBackup(currentIdentity);
-
-      // validate-target：解密目标快照，app/instance/identity 三元组匹配本机，不符不写
-      this.setStage(op, 'validate_target');
-      const target = await this.loadValidatedSnapshot(account, pre);
-
-      // atomic-write：临时文件 + rename；仅进程确认退出后执行
-      this.setStage(op, 'write');
-      await this.writeSnapshotFiles(target);
-
-      // restart：启动并等三信号任一
-      this.setStage(op, 'start');
-      const startedAt = this.now();
-      await this.probe.launchApp(pre.exePath);
-      if (!(await this.probe.waitForStartupSignal(this.paths, startedAt, this.startupTimeoutMs))) {
-        await this.rollbackAndRestore(op, backup, 'STARTUP_TIMEOUT');
-      }
-
-      // identity-verify：读回 uid == 目标
-      this.setStage(op, 'verify');
-      const actual = await readWorkbuddyIdentity(this.paths);
-      if (!actual || actual.identity_hash !== account.identity_hash) {
-        await this.rollbackAndRestore(op, backup, 'IDENTITY_VERIFY_FAILED');
-      }
+      await runSwitchFlow({
+        setStage: stage => this.setStage(op, stage),
+        callbacks: {
+          // S0：实例/版本 + 目标快照的三元组前置检查（不符 → 未触碰客户端）
+          preflight: async () => {
+            pre = await this.preflight();
+            if (account.client_instance_id !== pre.instanceId) throw new ApiError(409, 'TARGET_INSTANCE_MISMATCH', '目标快照与当前安装实例不一致，拒绝写入');
+            if (!account.client_snapshot_ref) throw new ApiError(409, 'SNAPSHOT_MISSING', '目标账号没有客户端快照');
+            currentIdentity = await this.requireV2Identity();
+          },
+          // S1：safe-exit（两段式）：UIA 托盘退出 → 失败降级 WS 提示手动退出 + 轮询退出签名；绝不强杀
+          stop: async () => { await this.ensureExited('stop'); },
+          // S2：backup（真实退出后读盘——退出时客户端会重写 .info）；这就是回滚依据
+          snapshot: async () => await this.readBackup(currentIdentity!),
+          // S3：解密目标快照，app/instance/identity 三元组匹配本机，不符不写
+          validateTarget: async () => await this.loadValidatedSnapshot(account, pre!),
+          // S4：atomic-write（临时文件 + rename）；仅进程确认退出后执行
+          write: async (target) => { await this.writeSnapshotFiles(target); },
+          // S5：启动并等三信号任一
+          start: async () => {
+            const startedAt = this.now();
+            await this.probe.launchApp(pre!.exePath);
+            if (!(await this.probe.waitForStartupSignal(this.paths, startedAt, this.startupTimeoutMs))) {
+              throw new ApiError(409, 'STARTUP_TIMEOUT', 'WorkBuddy 启动未就绪');
+            }
+          },
+          // S5：identity-verify —— 读回 uid == 目标
+          verify: async () => {
+            const actual = await readWorkbuddyIdentity(this.paths);
+            if (!actual || actual.identity_hash !== account.identity_hash) {
+              throw new ApiError(409, 'IDENTITY_VERIFY_FAILED', '切换后身份核验失败');
+            }
+          },
+          // 回滚：写回 backup + 重启 + 核验原账号（以抛错收尾：SWITCH_ROLLED_BACK / RECOVERY_REQUIRED）
+          rollback: async (backup, cause) => { await this.rollbackAndRestore(backup, cause); },
+        },
+      });
       return 'succeeded';
     });
   }
@@ -374,8 +386,7 @@ export class WorkbuddyDesktopProvider {
     }
   }
 
-  private async rollbackAndRestore(op: AccountOperation, backup: BackupBundle, causeCode: string): Promise<never> {
-    this.setStage(op, 'rollback');
+  private async rollbackAndRestore(backup: BackupBundle, causeCode: string): Promise<never> {
     try {
       await this.ensureExited('rollback');
       for (const file of backup.files) {

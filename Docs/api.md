@@ -317,6 +317,37 @@ MiniMax 的 S5 探针：拿客户端当前凭据调 `GET https://agent.minimaxi.
 
 **回滚接入 A3 restore（B4S-3）**：S5 失败 → 回滚到切换前的快照。回滚成功 → `failed` + `SWITCH_ROLLED_BACK`（原账号已恢复，实例不冻结）；回滚失败 → 把**快照 vault ref** 写进原操作的 `recovery_ref`、落 `recovery_required` 冻结实例，随后由 `POST /api/managed-accounts/:id/restore` 调平台 `RestoreHandler` 重放回滚（不另造恢复路径）；处理器失败则保持冻结、可再次触发。写盘失败（客户端文件**未被改动**，rename 原子替换）时 stage 退回 `validate_target`，实例不会被误冻成 `recovery_required`。
 
+**共用切换骨架 S0–S5（B4S-4）**：`apps/server/src/services/accounts/switchFlow.ts` 的 `runSwitchFlow()` 是**一份流程**，provider 只提供各步回调（`SwitchFlowCallbacks`）。骨架负责：按固定步序调用并在每步开始前落 stage、**start/verify 失败必走回滚**、回滚收尾约定（provider 的 rollback 回调以抛错收尾：`SWITCH_ROLLED_BACK` = 已核验恢复、`RECOVERY_REQUIRED` = 未能恢复且实例冻结）。骨架**不判定**目标可用性（S3）、**不判定**切换结果（S5）、**不写**客户端（S4）。
+
+调用图：
+
+```
+runSwitchFlow
+  ├─ S0 preflight      → callbacks.preflight()        失败即中止（未触碰客户端）
+  ├─ S1 stop           → callbacks.stop()             失败即中止（未触碰客户端）
+  ├─ S2 snapshot       → callbacks.snapshot()         产出「回滚依据」
+  ├─ S3 validate_target→ callbacks.validateTarget()   产出「要写的内容」；失败即中止（未写）
+  ├─ S4 write          → callbacks.write(target)      失败即中止（文件未被改动，**不回滚**）
+  ├─ S5 start          → callbacks.start()            失败 → 回滚
+  ├─ S5 verify         → callbacks.verify()           失败 → 回滚
+  └─ rollback          → callbacks.rollback(依据, cause)  以 SWITCH_ROLLED_BACK / RECOVERY_REQUIRED 收尾
+```
+
+两 provider 的回调表：
+
+| 步 | WorkBuddy Desktop（`workbuddyDesktopProvider.ts`） | MiniMax（`minimaxDesktopProvider.ts`） |
+| --- | --- | --- |
+| S0 preflight | 版本/实例检查 + 目标快照三元组前置（`TARGET_INSTANCE_MISMATCH` / `SNAPSHOT_MISSING`） | 读 auth.json + 定位客户端 exe |
+| S1 stop | UIA 托盘退出 → 降级 WS 提示手动退出 + 退出签名轮询（`EXIT_NOT_CONFIRMED`） | 客户端在跑则停掉并确认退出（`CLIENT_STOP_TIMEOUT` / `CLIENT_PROCESS_CONTROL_UNAVAILABLE`）；**阻断点归 preflight 语义**，stage 留在 `preflight` |
+| S2 snapshot | 读盘 backup（回滚依据） | `vault.protect` 当前凭据（回滚依据 = 快照 ref） |
+| S3 validate_target | 解密快照 + instance/identity/version 三元组 + 每文件 sha256（`TARGET_SNAPSHOT_INVALID` 等） | 共用 `validateTarget`（`TARGET_CREDENTIAL_MISSING` 等） |
+| S4 write | 临时文件 + rename 原子替换（`SNAPSHOT_WRITE_FAILED`） | 临时文件 + rename 原子替换（`SWITCH_WRITE_FAILED`，stage 退回 `validate_target`） |
+| S5 start | 启动 + 等三信号（启动日志 / 18488 监听 / 主窗口）任一（`STARTUP_TIMEOUT`） | 启动客户端进程 |
+| S5 verify | 读回本地 uid 比对（`IDENTITY_VERIFY_FAILED`） | 本地 token 比对 + **服务端身份校验**（`SERVER_*`，见上） |
+| rollback | 写回 backup + 重启 + 核验原账号（`SWITCH_ROLLED_BACK` / `RECOVERY_REQUIRED`） | 写回快照；失败则写 `recovery_ref` 并落 `RECOVERY_REQUIRED`（由 A3 restore 重放） |
+
+Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_IMPLEMENTED`，不接入骨架。
+
 
 ## 14b. 额度与余额（`GET /api/managed-account-quotas`，accountRoutes.ts，ACC-QUOTA-01）
 
