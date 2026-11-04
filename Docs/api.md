@@ -375,6 +375,32 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 
 校验强度：`encoder/decoder/joiner/model.int8.onnx` 按 HuggingFace LFS sha256 校验（值固定写在 `packages/shared/src/voiceModels.ts`，revision 已 pin 到具体 commit）；`tokens.txt` 上游只发 git blob、**没有 sha256**，采用**弱校验**（字节数相等 + 内容非空 + 首行含空格或 `<`，见 `weakFileLooksValid`）——弱校验只挡明显损坏/占位文件，不是密码学校验。`model.meta.json` 里逐文件记 `verified: 'sha256' | 'weak'`。
 
+## 17. 设备身份与安全快照（ACC-KB-B6，`services/accounts/deviceIdentity.ts`）
+
+方案 B：`managed_account` 增设备身份字段 + 一次性回填 + 校验。**字段可回滚，数据不可逆**——回填只写新 `device_identity_ref`，绝不覆盖旧 `client_snapshot_ref`。
+
+| 列 | 含义 |
+| --- | --- |
+| `device_identity_ref` | 设备身份快照引用（`security/<account-id>`）；`NULL` = 未回填/不适用 |
+| `device_identity_status` | `pending`（待回填或回填失败，可重试）/ `ok` / `not_applicable` |
+| `device_identity_error` | 固定错误码（见下表），成功时清空 |
+| `device_identity_updated_at` | 最后一次尝试回填的时间（epoch ms） |
+
+固定错误码：`DEVICE_IDENTITY_PENDING`（未回填/待重试）、`DEVICE_IDENTITY_CAPTURE_FAILED`（客户端设备字段读不到）、`DEVICE_IDENTITY_SNAPSHOT_FAILED`（写安全快照失败）、`DEVICE_IDENTITY_VERIFY_FAILED`（回读校验不符）、`DEVICE_IDENTITY_NOT_APPLICABLE`（该平台无设备字段，如 MiniMax）。回填失败**不阻断、不回滚**，只写 `pending` + 错误码，后续可重试。
+
+安全快照目录：`<dirname(db)>/security/<account-id>/`，含 `files/…` 与 `manifest.json`：
+
+```json
+{
+  "schema": "agentboard.device-identity.snapshot/1",
+  "account_id": "<uuid>",
+  "created_at": 1793000000000,
+  "files": [{ "path": "device-id", "bytes": 10, "sha8": "1a2b3c4d" }]
+}
+```
+
+`sha8` = 该文件 sha256 的前 8 位。**写客户端登录文件前必须先落这份快照并 `verifySecuritySnapshot` 通过**（禁止无备份直改真实文件）；`writeSecuritySnapshot` 拒绝写空快照。
+
 ## CLI 标签规范（TAG-HYGIENE）
 
 `kb create-issue -l` 的标签分隔规则：

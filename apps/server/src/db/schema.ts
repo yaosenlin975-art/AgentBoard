@@ -2,6 +2,7 @@ import type { Db } from './connection.js';
 import { migrateKnowledge } from './migrations/knowledge.js';
 import { migrateIdempotency } from './migrations/idempotency.js';
 import { migrateAccounts } from './migrations/accounts.js';
+import { migrateDeviceIdentity } from './migrations/deviceIdentity.js';
 import { migrateTaskHierarchy } from './migrations/taskHierarchy.js';
 import { migrateAttachments } from './migrations/attachments.js';
 import { migrateWorkspaceChangeLog } from './migrations/workspaceChangeLog.js';
@@ -72,6 +73,8 @@ export function initSchema(db: Db): void {
   migrateKnowledgeLinks(db);
   migrateIdempotency(db);
   migrateAccounts(db);
+  // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）
+  migrateDeviceIdentity(db);
   migrateAccountPlatforms(db);
   migrateAttachments(db);
   migrateWorkspaceChangeLog(db);
