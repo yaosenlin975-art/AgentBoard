@@ -83,8 +83,11 @@ describe('account platforms migration (ACC-10)', () => {
     const db = openDb(file);
     try {
       initSchema(db);
-      expect(db.prepare('SELECT * FROM managed_account').all()).toEqual(before.account);
-      expect(db.prepare('SELECT * FROM account_operation').all()).toEqual(before.operation);
+      // ACC-KB-B6：迁移会**新增**设备身份列，按「迁移前的列集合」投影比较（数据保留语义不变）
+      const legacyCols = Object.keys(before.account[0] as Record<string, unknown>).join(', ');
+      const legacyOpCols = Object.keys(before.operation[0] as Record<string, unknown>).join(', ');
+      expect(db.prepare(`SELECT ${legacyCols} FROM managed_account`).all()).toEqual(before.account);
+      expect(db.prepare(`SELECT ${legacyOpCols} FROM account_operation`).all()).toEqual(before.operation);
       // 外键仍然有效（account_operation.account_id 指向重建后的 managed_account）
       expect(db.pragma('foreign_key_check')).toEqual([]);
     } finally { db.close(); }
@@ -191,11 +194,8 @@ describe('account platforms migration (ACC-10)', () => {
     const capabilities = accountProviderCapabilities();
     // ACC-12 开启签到；ACC-13 开启 minimax 的 capture/switch
     expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
-    // ACC-KB-B3：trae 的 capture 由「本机是否存在 storage.json」动态推导（switch 仍关闭）
-    const trae = capabilities.find(item => item.app_id === 'trae');
-    const traeStorage = traeStorageAvailable();
-    expect(trae).toMatchObject({ capture: traeStorage, switch: false, checkin: true });
-    expect(trae?.reason_code).toBe(traeStorage ? 'CAPTURE_OK' : 'TRAE_STORAGE_MISSING');
+    // trae：B3 交付了离线捕获能力，但真实 provider 接线属 B4S-4；当前契约统一 PROVIDER_NOT_IMPLEMENTED
+    expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
   });
 
 

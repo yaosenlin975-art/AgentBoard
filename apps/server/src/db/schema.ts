@@ -73,13 +73,14 @@ export function initSchema(db: Db): void {
   migrateKnowledgeLinks(db);
   migrateIdempotency(db);
   migrateAccounts(db);
-  // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）
-  migrateDeviceIdentity(db);
   migrateAccountPlatforms(db);
   migrateAttachments(db);
   migrateWorkspaceChangeLog(db);
   migrateCheckin(db);
   migrateCheckinPlatforms(db);
+  // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）。**必须放在所有「重建 managed_account」的迁移之后**，
+  // 否则重建表会把这 4 列丢掉（accountPlatforms / checkinPlatforms 都是 DROP+CREATE 重建）。
+  migrateDeviceIdentity(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

@@ -27,7 +27,8 @@ const CAPABILITIES: AccountProviderCapability[] = [
   { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED' },
   // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-13）
   { app_id: 'minimax', capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' },
-  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'LOGIN_STATE_NOT_FILE_BASED' },
+  // B4S-1：Trae 没有进程概念（无 preflight/stop/start），switch 明确声明未实现，不伪造能力
+  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
   // ACC-KB-B1S：先登记平台 id，provider 行为分别由 B1S2 / B4S / B5S 落地；在此之前一律全关，
   // 用固定码 PROVIDER_NOT_IMPLEMENTED 说明「不是不可用，是还没实现」，避免与 CLIENT_NOT_INSTALLED 混淆。
   { app_id: 'qoder_cn', capture: false, switch: false, checkin: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
@@ -49,8 +50,8 @@ function withMinimaxClient(capability: AccountProviderCapability, minimaxClient?
 function withTraeStorage(capability: AccountProviderCapability): AccountProviderCapability {
   if (capability.app_id !== 'trae') return capability;
   return traeStorageAvailable()
-    ? { ...capability, capture: true, reason_code: 'CAPTURE_OK' }
-    : { ...capability, capture: false, reason_code: 'TRAE_STORAGE_MISSING' };
+    ? { ...capability, capture: true, switch: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' }
+    : { ...capability, capture: false, switch: false, reason_code: 'TRAE_STORAGE_MISSING' };
 }
 
 export function accountProviderCapabilities(minimaxClient?: MinimaxClientStatus): AccountProviderCapability[] {
