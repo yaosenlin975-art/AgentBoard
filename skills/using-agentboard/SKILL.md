@@ -117,6 +117,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **claim 状态门禁**：`kb claim` 只对「待规划」有效；状态是进行中/待验收/已关闭/已废弃时会被拒（退出码 2），但当前 CLI 文案仍显示「已被占用」——**不要据此判定为他人占用**，先 `kb show <id>` 看真实 `status`。
 - **知识页 `category`/`landed` 有 CLI 入口**（C 段 `57d1ab4c` 已落地）：`kb knowledge create/revise` 支持 `--category design|solved|pinned|open` 与 `--landed landed|partial|proposed`；`design` 缺 `--landed` 时服务端默认 `proposed`（实测 create 不传 `--landed` → `landed: proposed`）。改已有页必须带 `--expected-revision`（CAS；实测旧 revision 被拒，退出码 2「知识页已更新，请重新读取」），`--scope workspace` 仍必填。REST 只在需要 CLI 未暴露的字段时使用。
 - **slug 冲突的实际表现**：服务端返回 409 `KNOWLEDGE_EXISTS`，CLI 显示服务端中文 message「范围内已存在该 slug」并 **退出码 2**（`KNOWLEDGE_REVISION_CONFLICT` 同为 2）。处理方式：同 slug 改走 `kb knowledge revise`，不新建重复页。
+- **写什么、不写什么**：内容口径见「知识页写什么（内容口径）」节（本节只讲命令与参数）。
 - **`--stdin` 与 BOM**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM（首字符不会被污染）；多行中文仍建议 `cmd /c "chcp 65001>nul & kb comment <id> --stdin < file"`，避开 PowerShell 管道编码问题。
 - **`--scope` 必须逐条传**：写成 `--scope a --scope b`；PowerShell 会把 `--scope a,b` 拆错甚至合并成含空格的单参数，CLI 检测到含空格会打印 SCOPE-GUARD 警告要求重传。
 
@@ -155,6 +156,18 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
   ```
   正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
 - **命令细节与实测坑**：完整示例（知识页建/读/改/归档、变更日志、任务全生命周期）、`--sources-file` 的 JSON 路径必须用正斜杠、`knowledge action` 必须带 `--expected-revision`、以及 `1cb07910` 三阶段（A 已落地 / B、C 未落地）的现状对照，见 `Docs/guide-2026-11-04-cli-knowledge-tasks.md`；本文只写口径，不复述命令。
+
+## 知识页写什么（内容口径）
+
+知识库承载**可复用的设计、技术与坑**，不是进度日志。写前过本节清单；与 `handoff` 的「二、项目知识页」同口径，两处冲突时以本节为准。
+
+- **写**：架构与模块边界；关键契约与状态机；数据/迁移/存储口径；验证套路与坑（含「为什么这样修」「怎么验才算验过」）；已知不可行路径。
+- **不写**：完成情况（今天做完了什么）、关掉了哪些卡、剩余待办、个人进度、按日期或按人组织的日志——这些属于任务卡评论与看板状态。
+- **粒度按领域分页**：服务端与数据 / 前端与交互 / 测试与门禁 / 坑与注意点；不按日期、不按人分页；同主题优先修订（`--expected-revision`），不新建同义页。
+- **slug 语义化且稳定**：如 `agentboard-server-data`、`agentboard-frontend-ux`、`agentboard-testing-gates`、`agentboard-pitfalls`；**禁用** `handoff-<issue-uuid>` 命名，**不新建**「交接文档」类页。
+- **复用与冲突**：写前 `kb knowledge list --scope workspace --workspace <当前工作区> --status all --include-expired` 找同主题页；存在则 `kb knowledge revise <page-id> --expected-revision <n>`；`KNOWLEDGE_EXISTS`(409) 按 slug 回落（命令细节见「kb 命令速查」的 `kb knowledge` 段）。
+- **分类**：`design` 必须带 `--landed landed|partial|proposed`（缺 `--landed` 时服务端记 `proposed`）；未决与盲区用 `--category open`；不要留 `legacy`。
+- **写完回读**：`kb knowledge show <page-id> --scope workspace --workspace <当前工作区>` 确认 id / scope / revision / 内容；回读失败如实报「未保存」，不得声称已保存。
 
 ## 领任务 → 执行 → 汇报
 
@@ -251,6 +264,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 「用 claim 时的描述就行」 | 关键节点重拉 `kb show`；用户可能在期间改过描述、优先级或留了 `[新]` 留言。 |
 | 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
 | 「没写知识页/变更日志就想 done」 | 先写再 done；确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」/「无变更日志」，沉默视为收尾未完成。 |
+| 「这次做完顺手记一笔知识页」 | 进度不进知识库；有可复用的设计/技术/坑才写，否则写卡评论（口径见「知识页写什么（内容口径）」）。 |
 | 「这是别人的卡，我帮他改改」 | 不操作他人占用的卡；需要改动就回报父代理或用户。 |
 | 「技能和用户当轮指令冲突，按技能来」 | 用户当轮明确指令 > 技能 > 默认行为。 |
 | 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token '﻿'`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
