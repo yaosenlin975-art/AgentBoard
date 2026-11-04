@@ -489,7 +489,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--category <category>', 'design|solved|pinned|open')
     .option('--landed <landed>', 'landed|partial|proposed')
     .option('--domain <domain>', `域（必填，json 条目内可逐条覆盖）：${KNOWLEDGE_DOMAIN_HINT}`)
-    .option('--labels <csv>', '逗号分隔标签'))
+    .option('--labels <csv>', '逗号分隔标签')
     .addHelpText('after', IMPORT_HELP)
     .action(async (file: string, opts: ScopeOptions & {
       format?: string; title?: string; slug?: string; category?: string; landed?: string; labels?: string; domain?: string;
@@ -507,7 +507,12 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       if (bytes > IMPORT_MAX_BYTES) {
         fail(`文件过大：当前 ${(bytes / 1024 / 1024).toFixed(2)} MB / 上限 ${IMPORT_MAX_BYTES / 1024 / 1024} MB（单文件上限 10 MB，正文上限 200 万字符）`);
       }
-      const content = raw.toString('utf8');
+      // IMPORT-BOM（N-02）：先按字节剥掉 UTF-8 BOM 再解码。带 BOM 时正文首字符是 U+FEFF：
+      // md 的 `# 标题` 会被顶掉导致标题解析失败、Markdown 首行渲染异常、diff/搜索整体偏移；带 BOM 的 JSON 直接 parse 失败。
+      // 落点选 CLI：它是本地文件的唯一读入口；服务端还服务前端导入对话框与 MCP，不该替调用方改内容。
+      const hasBom = raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf;
+      const content = (hasBom ? raw.subarray(3) : raw).toString('utf8');
+      if (hasBom) process.stderr.write('提示：检测到 UTF-8 BOM，已在导入前剥离（正文首字符不会是 U+FEFF）\n');
       if (content.length > IMPORT_MAX_CHARS) {
         fail(`正文超长：当前 ${content.length} 字符 / 上限 ${IMPORT_MAX_CHARS} 字符`);
       }
@@ -546,6 +551,6 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         }
       }
       for (const warning of result.warnings ?? []) ctx.io.writeErr(`warning: ${warning}\n`);
-    });
+    }));
 }
 

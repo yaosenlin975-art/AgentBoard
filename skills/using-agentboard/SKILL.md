@@ -126,6 +126,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - `kb knowledge resolve <ref>`：按 id / ≥8 位 id 前缀 / slug 解析知识页（默认跨 common + 当前工作区）；歧义 409（不猜第一条）、已删 410、不存在 404。退出码 0 / 1(404,410) / 2(409,403)。
   - **服务端进程陈旧时会报 `接口不存在: GET /knowledge/resolve`**（路由晚于服务进程启动；CLI 报告 §0.1）。此时不是命令写错：先 `kb knowledge show <全 id>` / `kb knowledge list` 顶替，再由用户决定 `POST /api/system/restart` 或重启服务；`pnpm server:ensure` 只探活复用，不会自动换新构建。
 - 文档转知识卡：`kb knowledge import <file>`（md/txt/json 自动推断，--format 可覆盖；sources 自动构造 file+sha256；单文件 ≤10MB、正文 ≤200 万字符；409 冲突退出码 2，用 --title/--slug 换值）——kb knowledge import --help 有完整口径。
+- **`kb knowledge import` 会自动剥离 UTF-8 BOM**（N-02）：文件前三字节是 `EF BB BF` 就先剥再解码，正文首字符不会是 `U+FEFF`，标题解析与 diff/搜索不受影响；命中时 stderr 会提示一行。
 - `kb knowledge link <id|slug> [--format token|markdown|plain]`：产出引用串；**agent 输出一律用 `knowledge:<uuid>`**（slug 只作输入别名）。`--json` 可用。
 - **`--json` 不改变失败形态**：失败仍是纯文本 stderr，不带 JSON / 错误码；404/400/500 都塌成退出码 1（CLI-04）。分支只看退出码 + stderr 文本，不要写“解析 `--json` 的 error.code”。
 

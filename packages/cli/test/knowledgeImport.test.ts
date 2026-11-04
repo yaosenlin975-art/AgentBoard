@@ -116,3 +116,28 @@ describe('kb knowledge import --help', () => {
     expect(text).toContain('KNOWLEDGE_EXISTS');
   });
 });
+describe('IMPORT-BOM（N-02）：导入前剥离 UTF-8 BOM', () => {
+  it('带 BOM 的 md：请求体 content 不以 \\uFEFF 开头，标题行仍是首行', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pages: [{ id: 'p-bom', scope: 'common', slug: 'bom-md', body_md: '# 标题\n正文', revision: 1 }] })));
+    vi.stubGlobal('fetch', fetch);
+    const path = join(dir, 'bom.md');
+    writeFileSync(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('# 标题\n正文', 'utf8')]));
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
+    expect(body.content.startsWith('\uFEFF')).toBe(false);
+    expect(body.content.split('\n')[0]).toBe('# 标题');
+  });
+
+  it('带 BOM 的 json：能正常 parse（content 首字符不是 U+FEFF）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pages: [{ id: 'p-bom-json', scope: 'common', slug: 'bom-json', body_md: 'x', revision: 1 }] })));
+    vi.stubGlobal('fetch', fetch);
+    const path = join(dir, 'bom.json');
+    writeFileSync(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(JSON.stringify([{ title: 'BOM 数组', body_md: '正文' }]), 'utf8')]));
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
+    expect(body.content.charCodeAt(0)).not.toBe(0xfeff);
+    expect(() => JSON.parse(body.content)).not.toThrow();
+  });
+});
