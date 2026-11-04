@@ -182,17 +182,23 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
     const dfLimit = Math.min(TERM_DF_LIMIT, relativeDfLimit);
     const termsOf = new Map(rows.map(row => [row.id, [...entityTerms(`${row.title}\n${row.body_md}`)]]));
     const gramsOf = new Map(rows.map(row => [row.id, [...trigrams(texts.get(row.id)!)]]));
-    const rareCount = (values: string[], index: Map<string, string[]>): number =>
-      values.filter(value => (index.get(value)?.length ?? 0) <= dfLimit).length;
     const termIndex = indexBy(rows, row => termsOf.get(row.id)!);
+    const gramIndex = indexBy(rows, row => gramsOf.get(row.id)!);
+    // 稀有项数量按页预计算一次：放在成对回调里会对每个共享项重扫两端全量词表（O(pairs × terms)）。
+    const rareTotal = (values: Iterable<string>, index: Map<string, string[]>): number => {
+      let count = 0;
+      for (const value of values) if ((index.get(value)?.length ?? 0) <= dfLimit) count += 1;
+      return count;
+    };
+    const termFloor = new Map(rows.map(row => [row.id, rareTotal(termsOf.get(row.id)!, termIndex)]));
+    const gramFloor = new Map(rows.map(row => [row.id, rareTotal(gramsOf.get(row.id)!, gramIndex)]));
     sharedPairs(termIndex, (left, right) => addPair(pairs, left, right, state => {
       state.termHits += 1;
-      state.termFloor = Math.max(state.termFloor, Math.min(rareCount(termsOf.get(left)!, termIndex), rareCount(termsOf.get(right)!, termIndex)));
+      state.termFloor = Math.max(state.termFloor, Math.min(termFloor.get(left)!, termFloor.get(right)!));
     }), dfLimit);
-    const gramIndex = indexBy(rows, row => gramsOf.get(row.id)!);
     sharedPairs(gramIndex, (left, right) => addPair(pairs, left, right, state => {
       state.trigramHits += 1;
-      state.gramFloor = Math.max(state.gramFloor, Math.min(rareCount(gramsOf.get(left)!, gramIndex), rareCount(gramsOf.get(right)!, gramIndex)));
+      state.gramFloor = Math.max(state.gramFloor, Math.min(gramFloor.get(left)!, gramFloor.get(right)!));
     }), dfLimit);
   }
 
