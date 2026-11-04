@@ -73,3 +73,15 @@ describe('令牌一致性（CHIP-PALETTE）', () => {
     expect(badge).not.toContain('bg-accent-soft');
   });
 });
+
+  it('NewIssueDialog：状态徽标/草稿提示/主按钮都落到令牌，文件内 0 处 blue', () => {
+    const dialog = read('components/topbar/NewIssueDialog.tsx');
+    // ① 状态徽标（待规划）：中性信息，不是强调色
+    expect(dialog).toMatch(/data-testid="new-issue-status"[\s\S]{0,160}bg-surface-raised[\s\S]{0,80}text-ink-2/);
+    // ② 草稿提示：强调令牌表达「草稿待确认」
+    expect(dialog).toMatch(/data-testid="draft-status"[\s\S]{0,120}text-accent/);
+    // ③ 主按钮：accent + accent-ink（与全站主按钮一致）
+    expect(dialog).toMatch(/data-testid="new-issue-submit"[\s\S]{0,220}bg-accent[\s\S]{0,80}text-accent-ink/);
+    // 整文件不再出现旧 blue 色板
+    expect(dialog, 'NewIssueDialog 仍有 bg-blue-/text-blue-').not.toMatch(/bg-blue-\d|text-blue-\d/);
+  });

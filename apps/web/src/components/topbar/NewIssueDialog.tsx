@@ -492,7 +492,7 @@ export function NewIssueDialog({
           <span className="text-neutral-600 dark:text-neutral-300">状态</span>
           <span
             data-testid="new-issue-status"
-            className="rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300"
+            className="rounded-full bg-surface-raised px-2 py-0.5 text-xs font-medium text-ink-2"
           >
             待规划
           </span>
@@ -574,7 +574,7 @@ export function NewIssueDialog({
         {mode === 'smart' ? smartPanel : (
           <>
             {draft !== null && (
-              <p data-testid="draft-status" role="status" className="text-xs text-blue-700 dark:text-blue-300">
+              <p data-testid="draft-status" role="status" className="text-xs text-accent">
                 以下为智能生成的草稿，可直接编辑；确认无误后点「创建任务」才真正落库。
               </p>
             )}
@@ -714,7 +714,7 @@ export function NewIssueDialog({
                 type="submit"
                 data-testid="new-issue-submit"
                 disabled={!canSubmit}
-                className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink ab-transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {draft !== null ? '创建任务' : '创建'}
               </button>
