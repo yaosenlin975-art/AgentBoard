@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 export interface ModalProps {
@@ -21,15 +21,69 @@ const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
   lg: 'max-w-2xl',
 };
 
+/** dialog 内可 Tab 到达的元素（排除 disabled / tabindex=-1 / hidden input） */
+const TABBABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [contenteditable="true"]:not([disabled]), [tabindex]:not([tabindex="-1"]):not([disabled])';
+
+function tabbablesIn(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR));
+}
+
 export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal' }: ModalProps) {
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  // 最新 onClose 放 ref：避免父级每次渲染换新函数时重跑 effect（会重新抢焦点）
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
-    if (!open) return;
+    if (!open || variant !== 'modal') return;
+    // 打开瞬间记住触发元素，关闭后归还（抽屉不持有触发按钮 ref 时同样成立）
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const dialog = dialogRef.current;
+    if (dialog !== null) {
+      // 首字段优先：跳过头部「关闭」按钮，聚焦内容区第一个可 Tab 元素
+      const items = tabbablesIn(dialog);
+      const target = items.find((el) => !el.hasAttribute('data-modal-close')) ?? items[0];
+      target?.focus();
+    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const root = dialogRef.current;
+      if (root === null) return;
+      const items = tabbablesIn(root);
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const active = document.activeElement;
+      // 焦点不在本层（例如内层 Modal 已接管）→ 不处理，避免把焦点抢回外层
+      if (!(active instanceof HTMLElement) || !root.contains(active)) return;
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, [open, variant]);
+
+  // 关闭后焦点回到触发元素；触发元素已卸载则放弃，不做隐式转移
+  useEffect(() => {
+    if (open) return;
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (target !== null && document.contains(target) && target !== document.activeElement) target.focus();
+  }, [open]);
 
   // S2c：inline 模式不 portal、不加遮罩，标题与关闭由抽屉负责（放在 hooks 之后，保证 hooks 顺序稳定）
   if (variant === 'inline') return <div data-testid="modal-inline">{children}</div>;
@@ -44,6 +98,7 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
       onMouseDown={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -55,6 +110,7 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
           <button
             type="button"
             aria-label="关闭"
+            data-modal-close
             onClick={onClose}
             className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
