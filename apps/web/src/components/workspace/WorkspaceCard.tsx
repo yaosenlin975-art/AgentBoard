@@ -1,8 +1,11 @@
 /**
  * 工作空间卡片（WS-REORDER）：名称/路径/四列统计 + 移除入口 + 拖拽把手 + 键盘上/下移 + 置顶（WS-DRAWER-01）。
  * 拖拽由外层 WorkspaceList 的 DndContext 提供；键盘上/下移与置顶走同一提交路径（乐观更新 + 失败回滚）。
- * 布局：卡片容器（边框 + 最小高度）内含内容按钮（名称/路径/统计，文案 nowrap）与操作行（置顶文本胶囊 · ↑ · ↓），
- * 操作行在卡片边框内、统计行下方的正常流里，不 absolute、不加负 margin，因此不与「已关闭」等文案重叠。
+ * 布局：卡片容器（边框 + 最小高度）内含内容按钮（名称/路径/统计，文案 nowrap）与头部控件行；
+ * 控件行 absolute 锚在卡片右上角，从左到右为 置顶 · ↑ · ↓ · ✕（控件都是卡片外层内容按钮的兄弟节点，
+ * 因为内容本身是 <button>，按钮不可嵌套）；
+ * 名称行用右侧留白（pr-32 = 128px，实测最宽的「已置顶」态控件行 107px + 右边距）让位，
+ * 因此不与「已关闭」等文案或标题重叠；标题被截短时由 title 属性兜住完整名称。
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -89,7 +92,7 @@ export function WorkspaceCard({
             onClick={() => selectWorkspace(workspace.id)}
             className="block w-full rounded-md px-3 pb-2 pt-3 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
-            <div className="truncate pr-6 text-sm font-medium">{workspace.name}</div>
+            <div className="truncate pr-32 text-sm font-medium" title={workspace.name}>{workspace.name}</div>
             <div
               className="truncate text-xs text-ink-3"
               title={workspace.path}
@@ -110,62 +113,63 @@ export function WorkspaceCard({
             </div>
           </button>
 
-          <button
-            type="button"
-            aria-label={`移除工作空间 ${workspace.name}`}
-            title="移除工作空间"
-            onClick={() => setRemoveOpen(true)}
-            className="absolute right-1 top-1 rounded px-1.5 py-0.5 text-xs text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink"
+          <div
+            data-testid={`workspace-card-actions-${workspace.id}`}
+            className="absolute right-1 top-1 flex items-center gap-1"
           >
-            ✕
-          </button>
-
-          {onMoveUp !== undefined && onMoveDown !== undefined && (
-            <div
-              data-testid={`workspace-card-actions-${workspace.id}`}
-              className="flex min-h-6 items-center justify-end gap-1 px-3 pb-2"
-            >
-              {onTogglePin !== undefined && (
+            {onTogglePin !== undefined && (
+              <button
+                type="button"
+                data-testid={`workspace-pin-${workspace.id}`}
+                aria-pressed={pinned}
+                aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
+                title={pinned ? '取消置顶' : '置顶'}
+                onClick={onTogglePin}
+                className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] ab-transition ${
+                  pinned
+                    ? 'border-accent bg-accent-soft text-accent hover:bg-accent-soft/70'
+                    : 'border-hairline text-ink-2 hover:bg-accent-soft'
+                }`}
+              >
+                {pinned ? '已置顶' : '置顶'}
+              </button>
+            )}
+            {onMoveUp !== undefined && onMoveDown !== undefined && (
+              <>
                 <button
                   type="button"
-                  data-testid={`workspace-pin-${workspace.id}`}
-                  aria-pressed={pinned}
-                  aria-label={`${pinned ? '取消置顶' : '置顶'} ${workspace.name}`}
-                  title={pinned ? '取消置顶' : '置顶'}
-                  onClick={onTogglePin}
-                  className={`inline-flex h-5 items-center rounded border px-1.5 text-[11px] ab-transition ${
-                    pinned
-                      ? 'border-accent bg-accent-soft text-accent hover:bg-accent-soft/70'
-                      : 'border-hairline text-ink-2 hover:bg-accent-soft'
-                  }`}
+                  data-testid={`workspace-move-up-${workspace.id}`}
+                  aria-label={`上移 ${workspace.name}`}
+                  title={canMoveUp ? '上移' : '已在最前'}
+                  disabled={!canMoveUp}
+                  onClick={onMoveUp}
+                  className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
                 >
-                  {pinned ? '已置顶' : '置顶'}
+                  ↑
                 </button>
-              )}
-              <button
-                type="button"
-                data-testid={`workspace-move-up-${workspace.id}`}
-                aria-label={`上移 ${workspace.name}`}
-                title={canMoveUp ? '上移' : '已在最前'}
-                disabled={!canMoveUp}
-                onClick={onMoveUp}
-                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
-              >
-                ↑
-              </button>
-              <button
-                type="button"
-                data-testid={`workspace-move-down-${workspace.id}`}
-                aria-label={`下移 ${workspace.name}`}
-                title={canMoveDown ? '下移' : '已在最后'}
-                disabled={!canMoveDown}
-                onClick={onMoveDown}
-                className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
-              >
-                ↓
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  data-testid={`workspace-move-down-${workspace.id}`}
+                  aria-label={`下移 ${workspace.name}`}
+                  title={canMoveDown ? '下移' : '已在最后'}
+                  disabled={!canMoveDown}
+                  onClick={onMoveDown}
+                  className="inline-flex h-5 items-center rounded px-1 text-[11px] text-ink-3 transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  ↓
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              aria-label={`移除工作空间 ${workspace.name}`}
+              title="移除工作空间"
+              onClick={() => setRemoveOpen(true)}
+              className="inline-flex h-5 items-center rounded px-1.5 text-xs text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       </div>
 

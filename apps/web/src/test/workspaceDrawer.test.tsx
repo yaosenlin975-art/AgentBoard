@@ -189,8 +189,8 @@ describe('WorkspaceList 置顶', () => {
   });
 });
 
-describe('WorkspaceCard 布局（操作行在卡片内、防重叠）', () => {
-  it('置顶 · 上移 · 下移 三个按钮都被卡片容器包裹，且在统计行下方、不在统计格内', async () => {
+describe('WorkspaceCard 布局（控件行在卡片头部、防重叠）', () => {
+  it('置顶 · 上移 · 下移 · 移除 四个控件同在头部一行，从左到右依次排列', async () => {
     mockBase([wsA]);
     renderList();
     const row = await screen.findByTestId('workspace-row-a1');
@@ -199,27 +199,31 @@ describe('WorkspaceCard 布局（操作行在卡片内、防重叠）', () => {
     const pin = within(actions).getByTestId('workspace-pin-a1');
     const up = within(actions).getByTestId('workspace-move-up-a1');
     const down = within(actions).getByTestId('workspace-move-down-a1');
+    const remove = within(actions).getByRole('button', { name: '移除工作空间 甲项目' });
     const card = within(row).getByTestId('workspace-card-a1').closest('[data-workspace-card]');
 
-    // 卡片容器存在，三个按钮的父链都落在它里面（不是卡片外的兄弟节点）
+    // 卡片容器存在，四个控件的父链都落在它里面（不是卡片外的兄弟节点）
     expect(card).not.toBeNull();
     expect(card).toBe(row.querySelector('[data-workspace-card="a1"]'));
-    for (const button of [pin, up, down]) {
+    for (const button of [pin, up, down, remove]) {
       expect(button.closest('[data-workspace-card]')).toBe(card);
       expect(card?.contains(button)).toBe(true);
     }
-    // 操作行是普通流布局，不靠 absolute 浮出卡片
-    expect(actions.className).not.toContain('absolute');
-    // 操作行排在卡片内容按钮之后（统计行下方）
-    const content = within(row).getByTestId('workspace-card-a1');
-    expect(content.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    // 置顶按钮在 ↑ 左侧，三者同间距（同一 flex 容器的 gap-1）
-    expect(pin.compareDocumentPosition(up) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(up.compareDocumentPosition(down) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(actions.className).toContain('gap-1');
-
-    // 操作行与统计格互不包含（不同行 → 不会压在「已关闭」上）
+    // 控件行锚在卡片右上角头部（5de50623：置顶/↑/↓ 移入 ✕ 左侧同行）
+    expect(actions.className).toContain('absolute');
+    expect(actions.className).toContain('top-1');
+    expect(actions.className).toContain('right-1');
+    // 同一 flex 容器 → 同行、同间距
+    for (const cls of ['flex', 'items-center', 'gap-1']) expect(actions.className).toContain(cls);
+    // 顺序：置顶 → ↑ → ↓ → ✕（✕ 保持最右）
+    for (const [left, right] of [[pin, up], [up, down], [down, remove]] as const) {
+      expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // 名称行为控件行让出右侧空间（128px ≥ 「已置顶」态控件行 + 边距），完整名称由 title 属性兜住
+    const title = within(row).getByTestId('workspace-card-a1').querySelector('.truncate');
+    expect(title?.className).toContain('pr-32');
+    expect(title).toHaveAttribute('title', '甲项目');
+    // 控件行与统计格互不包含
     const closed = within(row).getByTestId('stat-已关闭');
     expect(closed.contains(up)).toBe(false);
     expect(actions.contains(closed)).toBe(false);
