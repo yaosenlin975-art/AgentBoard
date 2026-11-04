@@ -196,8 +196,20 @@ const REVISE_HELP = `${FIELD_HELP}
 ${GUIDE_POINTER}
 `;
 
-const ACTION_HELP = `
-合法动作（第 2 个位置参数，只能取）：
+/** KB-CLI-IMPORT：与服务端一致的上限 */
+const IMPORT_MAX_BYTES = 10 * 1024 * 1024;
+const IMPORT_MAX_CHARS = 2_000_000;
+const IMPORT_FORMATS = ['md', 'txt', 'json'];
+/** 扩展名 → format；不支持返回 'unknown'（由调用方给中文提示） */
+function detectImportFormat(file: string): string {
+  const lower = file.toLowerCase();
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'md';
+  if (lower.endsWith('.txt')) return 'txt';
+  if (lower.endsWith('.json')) return 'json';
+  return 'unknown';
+}
+
+const ACTION_HELP = `合法动作（第 2 个位置参数，只能取）：
   archive   归档（status → archived）
   restore   恢复（status → active）
   delete    删除（status → deleted；不可逆，服务端会保留历史）
@@ -206,6 +218,35 @@ const ACTION_HELP = `
   kb knowledge action <page-id> archive --scope common --expected-revision 2
   kb knowledge action <page-id> restore --scope workspace --workspace 任务看板 --expected-revision 3
 退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT）
+`;
+
+/** KB-CLI-IMPORT：导入本地文件为知识页（服务端 KBIMP-1 已支持 md/txt/json） */
+const IMPORT_HELP = `
+支持格式：
+  md / markdown  → format=md（标题取第一个 # 标题，兜底文件名）
+  txt            → format=txt（标题取首行，兜底文件名）
+  json           → format=json（单对象或数组 ≤100 条，数组逐条建页）
+  --format 可覆盖扩展名推断（md|txt|json）。
+
+上限（与服务端一致）：
+  单文件 ≤ 10 MB（UTF-8 字节，超了本地就拦，不会发请求）
+  单页正文 ≤ 200 万字符
+
+sources 自动构造：
+  CLI 把文件的**绝对路径**作为 filename 传给服务端，服务端据此生成
+  { source_type: 'file', locator: <路径>, content_hash: <sha256>, captured_at }，
+  file 来源不带 snapshot（带了会被拒）。所以这里没有 --sources 参数。
+
+slug 冲突（409 KNOWLEDGE_EXISTS）怎么办：
+  - 传 --title 换标题（标题不同即生成不同 slug）
+  - 或传 --slug 显式指定一个未被占用的 slug
+  - 或先 ` + '`kb knowledge show <slug> --scope ...`' + ` 看已有页要不要直接 revise
+
+示例：
+  kb knowledge import Docs/写时复制.md
+  kb knowledge import notes.json --scope common --category design --landed proposed
+  kb knowledge import a.txt --format md --title 自定义标题 --labels 设计,缓存
+退出码：0 成功；1 参数/文件/服务端错误（含 413 IMPORT_TOO_LARGE / IMPORT_BODY_TOO_LONG）；2 slug 冲突（KNOWLEDGE_EXISTS）
 `;
 
 const SHOW_HELP = `
@@ -437,4 +478,71 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
       const ctx = context(); output(ctx, await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId }));
     });
+
+  // KB-CLI-IMPORT：把本地文件导入为知识页（服务端 KBIMP-1 已有能力，这里只做 CLI 封装）
+  scoped(knowledge.command('import <file>')
+    .description('导入本地 md/txt/json 文件为知识页（sources 自动构造，支持 json 数组）')
+    .option('--format <fmt>', 'md|txt|json（默认按扩展名推断）')
+    .option('--title <title>', '标题（默认取 md 首个标题 / txt 首行 / 文件名）')
+    .option('--slug <slug>', '显式 slug（默认由标题派生；冲突时给未占用的值）')
+    .option('--category <category>', 'design|solved|pinned|open')
+    .option('--landed <landed>', 'landed|partial|proposed')
+    .option('--labels <csv>', '逗号分隔标签'))
+    .addHelpText('after', IMPORT_HELP)
+    .action(async (file: string, opts: ScopeOptions & {
+      format?: string; title?: string; slug?: string; category?: string; landed?: string; labels?: string;
+    }) => {
+      validateCategory(opts.category);
+      validateLanded(opts.landed);
+      const absolute = resolve(file);
+      let raw: Buffer;
+      try {
+        raw = readFileSync(absolute);
+      } catch {
+        fail(`读不到文件：${absolute}（检查路径是否存在、是否有读权限）`);
+      }
+      const bytes = raw.length;
+      if (bytes > IMPORT_MAX_BYTES) {
+        fail(`文件过大：当前 ${(bytes / 1024 / 1024).toFixed(2)} MB / 上限 ${IMPORT_MAX_BYTES / 1024 / 1024} MB（单文件上限 10 MB，正文上限 200 万字符）`);
+      }
+      const content = raw.toString('utf8');
+      if (content.length > IMPORT_MAX_CHARS) {
+        fail(`正文超长：当前 ${content.length} 字符 / 上限 ${IMPORT_MAX_CHARS} 字符`);
+      }
+      const format = opts.format ?? detectImportFormat(absolute);
+      if (!IMPORT_FORMATS.includes(format)) {
+        fail(`--format 只能是 ${IMPORT_FORMATS.join(' | ')}（当前：${preview(opts.format)}）；也可用 .md/.txt/.json 扩展名自动推断`);
+      }
+      const ctx = context();
+      // sources 由服务端依 filename 构造（source_type=file、locator=路径、content_hash=sha256、无 snapshot）
+      const body = {
+        ...await scopeFor(ctx, opts),
+        format,
+        content,
+        filename: absolute,
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
+        ...(opts.category !== undefined ? { category: opts.category } : {}),
+        ...(opts.landed !== undefined ? { landed: opts.landed } : {}),
+        ...(opts.labels !== undefined ? { labels: opts.labels.split(',').map((label) => label.trim()).filter((label) => label !== '') } : {}),
+        actor: ctx.agentId,
+      };
+      const result = await request<{ pages?: unknown[]; warnings?: string[] }>(ctx.base, 'POST', '/api/knowledge/pages/import', body);
+      if (ctx.json) {
+        ctx.io.write(`${JSON.stringify(result, null, 2)}\n`);
+        return;
+      }
+      const pages = Array.isArray(result.pages) ? result.pages : [];
+      if (pages.length === 0) {
+        ctx.io.write('（没有新建知识页）\n');
+      } else {
+        for (const raw of pages) {
+          const page = raw as Record<string, unknown>;
+          const body = String(page.body_md ?? '');
+          ctx.io.write(`${page.id} [${page.scope}] ${page.slug} ${body.length} 字符  rev:${page.revision}\n`);
+        }
+      }
+      for (const warning of result.warnings ?? []) ctx.io.writeErr(`warning: ${warning}\n`);
+    });
 }
+

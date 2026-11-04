@@ -1,6 +1,6 @@
 ---
 name: using-agentboard
-description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff，以及 kb CLI 完整用法、工作区边界强制规则、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定。
+description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff / swing-dev / brainstorming，以及 kb CLI 完整用法、工作区边界强制规则、全 UUID 任务 id 口径、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定。
 ---
 
 # Using AgentBoard
@@ -18,7 +18,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 ## 权威来源解析（强制）
 
-本文件就是族内权威文档。凡引用「权威来源 / AgentBoard operating guide / 工作区边界（强制）」的地方，文档路径一律按本节解析；本节是族内唯一解析规则，`writing-task`、`executing-task`、`handoff` 只指回本节，不复制解析表。
+本文件就是族内权威文档。凡引用「权威来源 / AgentBoard operating guide / 工作区边界（强制）」的地方，文档路径一律按本节解析；本节是族内唯一解析规则，`writing-task`、`executing-task`、`handoff`、`swing-dev`、`brainstorming` 只指回本节，不复制解析表。
 
 按下列顺序取第一个可读命中，命中即停：
 
@@ -63,7 +63,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 - **工作空间**：一个代码目录对应一个工作空间，任务挂在工作空间下。
 - **任务五状态**：待规划(open) → 进行中(started) → 待验收(review) → 已关闭(done)，另有 **已废弃(deprecated)**。`kb status ls <工作区>` 列全部状态（内置五状态 + 自定义）；`kb done` 进「待验收」，`kb close` 转「已关闭」，`kb reopen` 退回「待规划」或指定状态。
 - **任务树**：父卡只承载汇总与顺序，不承载实现；子卡用 `--parent <父卡 id>` 挂层级。子卡全部 done 只代表进入待验收，父卡可以 `done` 汇总；但 `kb close` 要求所有后代已关闭，否则 409「存在未关闭的后代任务」——先逐张 close 子卡，再 close 父卡。
-- **依赖**：卡间先后关系以结构化边表为准（`kb dep add <卡> <前置卡>` 建边、`kb dep ls` 查看）；描述里的 plain issue id（如 `前置：876、877`）仅供人阅读。
+- **依赖**：卡间先后关系以结构化边表为准（`kb dep add <卡> <前置卡>` 建边、`kb dep ls` 查看）；描述里的 plain issue id（如 `前置：<前置卡完整 UUID>`）仅供人阅读。
 - **占用**：`kb claim` 原子领取后任务被你独占（字段仍允许用户编辑），其他人 claim 会收到 409。解除占用仅两条路：你执行 `done`/`fail`，或用户强制释放。任务未被占用时其他 agent 不可见占用徽标。
 
 ## 标签口径（TAG-HYGIENE）
@@ -125,6 +125,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **`--stdin`、BOM 与 PowerShell 引号**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM；多行中文用 `Get-Content -Raw file.md | kb comment <id> --stdin`（PowerShell 不支持 `<` 重定向）。标题/描述/评论含 `"`、`&`、`|`、`\` 时，PowerShell 会把后续参数一起吞进字符串并**静默 exit 0**（CLI-01）：一律用单引号包裹（内部单引号写成 `''`），或改走 `--description-stdin` / `--notes-stdin` / `--stdin`；不要把含引号的文本拼进双引号参数。
 - `kb knowledge resolve <ref>`：按 id / ≥8 位 id 前缀 / slug 解析知识页（默认跨 common + 当前工作区）；歧义 409（不猜第一条）、已删 410、不存在 404。退出码 0 / 1(404,410) / 2(409,403)。
   - **服务端进程陈旧时会报 `接口不存在: GET /knowledge/resolve`**（路由晚于服务进程启动；CLI 报告 §0.1）。此时不是命令写错：先 `kb knowledge show <全 id>` / `kb knowledge list` 顶替，再由用户决定 `POST /api/system/restart` 或重启服务；`pnpm server:ensure` 只探活复用，不会自动换新构建。
+- 文档转知识卡：`kb knowledge import <file>`（md/txt/json 自动推断，--format 可覆盖；sources 自动构造 file+sha256；单文件 ≤10MB、正文 ≤200 万字符；409 冲突退出码 2，用 --title/--slug 换值）——kb knowledge import --help 有完整口径。
 - `kb knowledge link <id|slug> [--format token|markdown|plain]`：产出引用串；**agent 输出一律用 `knowledge:<uuid>`**（slug 只作输入别名）。`--json` 可用。
 - **`--json` 不改变失败形态**：失败仍是纯文本 stderr，不带 JSON / 错误码；404/400/500 都塌成退出码 1（CLI-04）。分支只看退出码 + stderr 文本，不要写“解析 `--json` 的 error.code”。
 
@@ -165,7 +166,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace <当前工作区> --expected-revision 1 --stdin
   kb knowledge action <page-id> archive --scope workspace --workspace <当前工作区> --expected-revision 2
   ```
-  正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。**`create` 必须显式带 `--category`（design/solved/pinned/open），否则落成 `legacy`**（CLI-08）；`design` 用 `--landed proposed|partial|landed`。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
+  正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。**`create` 必须有正文 `--stdin` 且 `--sources`/`--evidence` 各 ≥1（缺任一实测退出 1「create 缺少必填项」）**；一次性把已有的 md/txt 建成页可用更短的 `kb knowledge import <file> --scope workspace --workspace <当前工作区> --category … --landed …`（sources 自动构造，无需手写 JSON；文本输出只回一行 id/大小，不会倾倒正文）。**`import` 不剥文件 BOM**（实测 UTF-8 BOM 文件导入后正文以 U+FEFF 开头，属 CLI 待修）：导入前把文件存成 UTF-8 无 BOM。**`create` 必须显式带 `--category`（design/solved/pinned/open），否则落成 `legacy`**（CLI-08）；`design` 用 `--landed proposed|partial|landed`。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
 - **不要用 `kb knowledge show --history` 做交接阅读**：文本模式会倾倒整段 JSON（本次约 46KB，CLI-06）。要看历史用 `--json` 并只取需要的 revision。
 - **命令细节与实测坑**：完整示例（知识页建/读/改/归档、变更日志、任务全生命周期）、`--sources-file` 的 JSON 路径必须用正斜杠、`knowledge action` 必须带 `--expected-revision`、以及 `1cb07910` 三阶段（A 已落地 / B、C 未落地）的现状对照，见 `Docs/guide-2026-11-04-cli-knowledge-tasks.md`；本文只写口径，不复述命令。
 
@@ -208,11 +209,12 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
    （多行中文总结）
    EOF
    ```
+   这是 bash 写法；PowerShell 用 `Get-Content -Raw notes.md | kb comment <id> --stdin`（`<` 重定向不可用，见「Platform Adaptation」）。
    注意：CLI 领取（kb claim）无实时唤醒；用户留言会被标记为待读，你的下一次 `kb show` 会以 `[新]` 标注返回——关键节点重拉 `kb show` 并响应。
 4. **收尾**：
-   - **done 前置（CLOSE-RECORD，强制）**：`kb done` 之前先落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`；② 一律写变更结论：`kb changelog create --workspace <当前工作区> --title "…" --type 新增|修复|调整`（正文走 `--stdin`）。任一项不做时 `done` 的 `--notes` 必须显式声明「未沉淀知识页：<原因>」或「无变更日志」；两项都做了则在 notes 里带上知识页 id 与变更日志 id。沉默不声明视为收尾未完成。
-   - 完成且自验通过 → `kb done <id> --notes "完成说明" --scope <本次改动的路径>`，状态进「待验收」，释放占用。之后不要继续动该任务。
-   - 无法完成或自验失败 → `kb fail <id> --reason "失败原因"`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
+   - **done 前置（CLOSE-RECORD，强制）**：`kb done` 之前先落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`，**新建必须带 `--category`，且 create 还必须有正文 `--stdin` 与 `--sources`/`--evidence` 各 ≥1**（否则退出 1；字段与完整示例见「写知识页」）；无可复用结论则在 notes 显式声明「未沉淀知识页：<原因>」；② **变更日志一律写**：`kb changelog create --workspace <当前工作区> --title '…' --type 新增|修复|调整`（正文走 `--stdin`；无用户可见变更时正文写「本轮无用户可见变更」）。notes 带上知识页 id（未写则带声明）与变更日志 id。沉默不声明、或拿「无变更日志」跳过，视为收尾未完成。
+   - 完成且自验通过 → `Get-Content -Raw notes.md | kb done <id> --notes-stdin --scope <路径> --scope <路径>`，状态进「待验收」，释放占用。之后不要继续动该任务。`--scope` 逐条传，只声明真正改动的路径；无文件改动则不传并在 notes 写明。
+   - 无法完成或自验失败 → `kb fail <id> --reason '<失败原因>'`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
    - 拿不准/需用户决策 → 先 `kb comment` 说明问题后保持占用继续等；只有确定失败才 `fail`。
 
 ## 占用
@@ -222,7 +224,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 同一时刻你只能占用 claim 成功的那些任务；claim 是排他的，第二个 claimer 得到 409。
 - 占用期间任务不可被拖拽流转（服务端 409 兜底），但字段与评论可被用户编辑。
 - `done`/`fail` 之后占用即释放；释放前确认 notes/reason 已写清楚，避免人工验收缺少上下文。
-- **CLI 没有 `kb release` 子命令**（帮助/提示里的 “release” 是概念，不是命令，CLI-05）。正常释放只有 `done`/`fail`；强制释放由用户当轮明确说「可以释放/接手」时，先 `kb comment` 写明范围与交接内容，再 `POST /api/issues/<id>/release`（不带 workspace_id = 用户强制释放，置回待规划）。`swing-dev` 父代理回收本班次僵尸 worker 的卡是该规则唯一例外，须按 `swing-dev` §7.5 留证据并列入报告。
+- **CLI 没有 `kb release` 子命令**（帮助/提示里的 “release” 是概念，不是命令，CLI-05）。正常释放只有 `done`/`fail`；强制释放由用户当轮明确说「可以释放/接手」时，先 `kb comment` 写明范围与交接内容，再 `POST /api/issues/<id>/release`（不带 workspace_id = 用户强制释放，置回待规划）。`swing-dev` 父代理回收本班次僵尸 worker 的卡是该规则唯一例外：必须**在班次启动确认时得到用户显式授权**（用户说「可以自动释放」），默认不自动释放；未获授权就只标记「遗留占用卡」并停线。
 - **已占用的卡不得新增 blocker**：`kb dep add` 打到已被占用的卡时服务端 409 `ISSUE_CLAIMED`（CLI 退出码 2，文案会提示先释放占用）。要加前置先按上面的释放口径处理（先 `done`/`fail`，或按用户授权强制释放），不要自行抢他人占用。
 
 ## 收尾与提交（GIT-ON-DONE）
@@ -259,7 +261,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 
 - **禁止**用 PowerShell 5.1 的 `Set-Content -Encoding UTF8`、`Out-File`、`>` 重定向写仓库文件：PS 5.1 的 `UTF8` 默认带 BOM（`EF BB BF`）。
 - 用编辑器 `write` 工具写文件；需要命令行写入时用 `-Encoding utf8NoBOM`（PS 7+）或 `[System.IO.File]::WriteAllText($p, $s, (New-Object System.Text.UTF8Encoding($false)))`；`node fs.writeFileSync` 默认无 BOM。
-- 为什么强制：`package.json` 带 BOM 时 Vite 会把它当 PostCSS 配置加载，Node JSON 解析抛 `Unexpected token '﻿'`，web 测试与 build 直接打挂，报错点离真凶很远。
+- 为什么强制：`package.json` 带 BOM 时 Vite 会把它当 PostCSS 配置加载，Node JSON 解析抛 `Unexpected token ''`，web 测试与 build 直接打挂，报错点离真凶很远。
 - 自动检查：`node scripts/check-bom.mjs`（`apps/web` 的 `pretest` 已挂载，`pnpm --filter @agentboard/web test` 会先跑它）。命中**新增** BOM 即 exit 1；存量历史文件在 `scripts/bom-baseline.txt` 里豁免（清一个删一行，`--strict` 可全量阻断）。
 - 门禁位置（实测）：**根 `prebuild` + `apps/web` 的 `prebuild`** 都挂 `scripts/check-bom.mjs`。`pnpm build` 跑 **2 次**扫描（根 prebuild + web prebuild），`pnpm -r build` 跑 **1 次**（只命中 `apps/web` 的 prebuild，pnpm 递归跳过根包）；两条入口命中新增 BOM 都会 **EXIT≠0** 并报出文件路径。改 `apps/web/**` 的卡在 `kb done` 的 notes 注明「已自查 check-bom OK」（notes 含 `- ` 开头行须用 `--notes-stdin`）。
 - 发现 BOM 不要用「顺手全仓去 BOM」掩盖：清理要单独提交，并在卡里说明范围。
@@ -297,11 +299,11 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 「先 `kb release` 再 claim」 | CLI 没有 `kb release`；释放只有 `done`/`fail`，或用户授权后走 REST release。 |
 | 「用 claim 时的描述就行」 | 关键节点重拉 `kb show`；用户可能在期间改过描述、优先级或留了 `[新]` 留言。 |
 | 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
-| 「没写知识页/变更日志就想 done」 | 先写再 done；确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」/「无变更日志」，沉默视为收尾未完成。 |
+| 「没写知识页/变更日志就想 done」 | 先写再 done；知识页确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」，变更日志一律写（无用户可见变更时正文写「本轮无用户可见变更」）。沉默视为收尾未完成。 |
 | 「这次做完顺手记一笔知识页」 | 进度不进知识库；有可复用的设计/技术/坑才写，否则写卡评论（口径见「知识页写什么（内容口径）」）。 |
 | 「这是别人的卡，我帮他改改」 | 不操作他人占用的卡；需要改动就回报父代理或用户。 |
 | 「技能和用户当轮指令冲突，按技能来」 | 用户当轮明确指令 > 技能 > 默认行为。 |
-| 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token '﻿'`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
+| 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token ''`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
 
 ## Platform Adaptation
 
@@ -345,7 +347,7 @@ kb update <issue-id> --description-stdin               # 长文本描述走 stdi
 
 - `close` 只接受「待验收」；`reopen` 的目标必须是本工作区已定义状态（含自定义状态），非法会列出可用状态。
 - `update` **不含 status**：状态一律用 `claim / done / close / reopen / fail`。
-- 三条 409（占用中 / 状态不允许）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。
+- 三条 409（占用中 / 状态不允许 / 有未关闭后代或未完成前置）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。
 
 ## CLI-UX 变更（2026-11-03）
 
