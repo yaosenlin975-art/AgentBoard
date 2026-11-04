@@ -181,6 +181,9 @@ export function NewIssueDialog({
     onError: (e) => setError(e instanceof Error ? e.message : '创建失败'),
   });
 
+  /** 当前所选执行方式在本机是否可用（按 /api/clis 实时判断；列表未回来时不判不可用） */
+  const selectedCli = (clis ?? []).find((c) => c.id === adapter);
+  const adapterUnavailable = selectedCli !== undefined && selectedCli.installed === false;
   const uploading = images.some((item) => item.status === 'uploading');
   const uploadFailed = images.some((item) => item.status === 'error');
   const attachmentIds = images.filter((item) => item.attachmentId !== undefined).map((item) => item.attachmentId!);
@@ -358,9 +361,10 @@ export function NewIssueDialog({
         >
           {DRAFT_ADAPTERS.map((id) => {
             const info = (clis ?? []).find((c) => c.id === id);
+            // 可用性按 /api/clis 实时判断：明确 installed=false 才禁用（列表还没回来时不误伤）
             const unavailable = info !== undefined && info.installed === false;
             return (
-              <option key={id} value={id}>
+              <option key={id} value={id} disabled={unavailable}>
                 {ADAPTER_LABEL[id]}{unavailable ? '（本机不可用）' : ''}
               </option>
             );
@@ -371,7 +375,7 @@ export function NewIssueDialog({
           if (info === undefined || info.installed !== false) return null;
           return (
             <span data-testid="smart-adapter-hint" className="mt-1 block text-xs text-amber-700 dark:text-amber-300">
-              {ADAPTER_LABEL[adapter]} 在本机不可用：生成会失败并自动回退到手动创建（需求原文保留）。
+              {ADAPTER_LABEL[adapter]} 在本机不可用：请先在设置里安装/登录该 CLI，或换一个执行方式。
             </span>
           );
         })()}
@@ -557,7 +561,7 @@ export function NewIssueDialog({
                 type="button"
                 data-testid="smart-generate"
                 onClick={() => void generate()}
-                disabled={requirement.trim() === ''}
+                disabled={requirement.trim() === '' || adapterUnavailable}
                 className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 生成草稿

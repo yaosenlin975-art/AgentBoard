@@ -9,13 +9,14 @@
  */
 import type { Priority } from '@agentboard/shared';
 
-export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode'] as const;
+export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode', 'codebuddy'] as const;
 export type DraftAdapter = (typeof DRAFT_ADAPTERS)[number];
 
 export const ADAPTER_LABEL: Record<DraftAdapter, string> = {
   dsh: 'DSH',
   codex: 'Codex',
   opencode: 'OpenCode',
+  codebuddy: 'CodeBuddy',
 };
 
 export interface IssueDraft {

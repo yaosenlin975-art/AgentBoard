@@ -58,7 +58,12 @@ describe('智能创建（SMART-CREATE-UI）', () => {
     await userEvent.click(screen.getByTestId('mode-smart'));
     await waitFor(() => expect(screen.getByTestId('smart-adapter')).toHaveValue('codex'));
     expect(screen.queryByTestId('smart-adapter-hint')).toBeNull();
-    await userEvent.selectOptions(screen.getByTestId('smart-adapter'), 'dsh');
+    // CHAT-…→c9505527：不可用的执行方式直接在 option 上禁用（点都点不到），并给出原因
+    const dshOption = Array.from((screen.getByTestId('smart-adapter') as HTMLSelectElement).options).find((o) => o.value === 'dsh');
+    expect(dshOption?.disabled).toBe(true);
+    expect(dshOption?.textContent).toContain('本机不可用');
+    // 历史状态（已选中不可用项）时仍要给出提示 + 禁用生成
+    fireEvent.change(screen.getByTestId('smart-adapter'), { target: { value: 'dsh' } });
     expect(await screen.findByTestId('smart-adapter-hint')).toHaveTextContent('在本机不可用');
   });
 
@@ -152,15 +157,22 @@ describe('智能创建（SMART-CREATE-UI）', () => {
       { code: 'DRAFT_TIMEOUT', status: 504, expect: /生成超时/ },
     ];
     for (const item of cases) {
+      // 先注册 msw 再 render：/api/clis 必须在首帧查询前就返回可用列表，否则生成按钮被禁
+      server.use(
+        http.get('/api/clis', () => HttpResponse.json([
+          { id: 'dsh', displayName: 'DSH', installed: false, version: null },
+          { id: 'codex', displayName: 'Codex', installed: true, version: '1.0.0' },
+          { id: 'opencode', displayName: 'OpenCode', installed: true, version: '1.0.0' },
+          { id: 'codebuddy', displayName: 'CodeBuddy', installed: true, version: '2.179.2' },
+        ])),
+        http.post('/api/issues/draft', () =>
+          HttpResponse.json({ error: { code: item.code, message: '适配器进程退出' } }, { status: item.status }),
+        ),
+      );
       const { unmount } = render(
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
           <NewIssueDialog open workspaceId="ws-1" onClose={() => undefined} />
         </QueryClientProvider>,
-      );
-      server.use(
-        http.post('/api/issues/draft', () =>
-          HttpResponse.json({ error: { code: item.code, message: '适配器进程退出' } }, { status: item.status }),
-        ),
       );
       await userEvent.click(screen.getByTestId('mode-smart'));
       await userEvent.type(screen.getByTestId('smart-requirement'), '原始需求文本');
@@ -174,6 +186,33 @@ describe('智能创建（SMART-CREATE-UI）', () => {
       expect(screen.getByTestId('new-issue-description')).toHaveValue('原始需求文本');
       unmount();
     }
+  });
+
+it('执行方式含 CodeBuddy，且按 /api/clis 实时判断可用性（不可用禁用 + 给原因）', async () => {
+    renderDialog();
+    await userEvent.click(screen.getByTestId('mode-smart'));
+    const select = screen.getByTestId('smart-adapter') as HTMLSelectElement;
+    await waitFor(() => expect(select).toHaveValue('codex'));
+    // 选项里出现 CodeBuddy（/api/clis 里 installed=true）
+    const options = Array.from(select.options).map((o) => ({ value: o.value, text: o.textContent, disabled: o.disabled }));
+    expect(options.find((o) => o.value === 'codebuddy')).toMatchObject({ disabled: false });
+    expect(options.find((o) => o.value === 'codebuddy')?.text).toContain('CodeBuddy');
+    // dsh 在 mock 里 installed=false → 选项禁用
+    expect(options.find((o) => o.value === 'dsh')).toMatchObject({ disabled: true });
+  });
+
+  it('所选执行方式不可用：生成按钮禁用并显示原因', async () => {
+    renderDialog();
+    await userEvent.click(screen.getByTestId('mode-smart'));
+    const select = screen.getByTestId('smart-adapter') as HTMLSelectElement;
+    await waitFor(() => expect(select).toHaveValue('codex'));
+    // 强制选中不可用的 dsh（option 禁用时用户点不到，这里直接派发 change 模拟历史状态）
+    const dshOption = Array.from(select.options).find((o) => o.value === 'dsh');
+    expect(dshOption?.disabled).toBe(true);
+    fireEvent.change(select, { target: { value: 'dsh' } });
+    await userEvent.type(screen.getByTestId('smart-requirement'), '把列滚动修好');
+    expect(await screen.findByTestId('smart-adapter-hint')).toHaveTextContent('本机不可用');
+    expect(screen.getByTestId('smart-generate')).toBeDisabled();
   });
 
   it('取消生成：不按失败回退，需求原文留在智能面板', async () => {
