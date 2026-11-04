@@ -2,8 +2,8 @@
  * S2c：右侧滑出面板（drawer 两态）。
  *
  * 两态由视口宽度决定（不靠 JS 断点以外的魔法）：
- * - **挤压（squeeze，≥1280px）**：drawer 是主区的 flex 兄弟，宽度固定，主内容区被压缩；
- * - **覆盖（overlay，<1280px）**：drawer 绝对定位盖住主区，带半透明遮罩，**锁 body 滚动**。
+ * - **挤压（squeeze，≥768px）**：drawer 是主区的 flex 兄弟，宽度固定，主内容区被压缩；
+ * - **覆盖（overlay，<768px）**：drawer 绝对定位盖住主区，带半透明遮罩，**锁 body 滚动**。
  *
  * 与 `navStore.drawer`（`accounts | settings | null`）对接：开合只走 store（`openDrawer`/`closeDrawer`），
  * 刷新不自动弹出（store 里 drawer 不持久化，`merge` 口径见 navStore 注释）。
@@ -18,9 +18,9 @@ import { AccountsPanel } from '../settings/AccountsPanel';
 import { SettingsDialog } from '../topbar/SettingsDialog';
 
 /** 挤压态的最小视口宽度（窄于此改为覆盖态） */
-export const DRAWER_SQUEEZE_MIN_WIDTH = 1280;
+export const DRAWER_SQUEEZE_MIN_WIDTH = 768;
 /** drawer 固定宽度（挤压态占位、覆盖态面板宽度） */
-export const DRAWER_WIDTH_PX = 420;
+export const DRAWER_WIDTH_PX = 400;
 
 const QUERY = `(min-width: ${DRAWER_SQUEEZE_MIN_WIDTH}px)`;
 
@@ -92,10 +92,11 @@ export function DrawerPanel() {
   }, [open]);
 
   const hidden = !open;
-  // 挤压态：只在打开时占位（关闭时宽度归零，避免主区右侧留一条 420px 空槽）；动画仍只走 transform/opacity
+  // 宽度只在 style 里定（DRAWER_WIDTH_PX 单点）：挤压态关闭时归零，主区右侧不留空槽；覆盖态不超过视口。
+  // 动画仍只走 transform/opacity，这行不参与过渡。
   const widthClass = squeeze
-    ? `${open ? 'w-[420px]' : 'w-0'} shrink-0 overflow-hidden`
-    : 'absolute inset-y-0 right-0 z-40 w-[min(420px,100vw)] shadow-xl';
+    ? `${open ? 'shrink-0' : 'w-0'} overflow-hidden`
+    : 'absolute inset-y-0 right-0 z-40 shadow-xl';
   return (
     <>
       {!squeeze && rendered && (
@@ -118,7 +119,7 @@ export function DrawerPanel() {
         data-drawer={drawer ?? 'none'}
         data-mode={mode}
         data-state={open ? 'open' : 'closed'}
-        style={{ width: squeeze && open ? DRAWER_WIDTH_PX : undefined }}
+        style={{ width: squeeze ? (open ? DRAWER_WIDTH_PX : 0) : DRAWER_WIDTH_PX, maxWidth: squeeze ? undefined : '100vw' }}
         className={`${widthClass} flex min-h-0 flex-col overflow-hidden border-l border-hairline bg-surface-card ab-transition transition-[transform,opacity] duration-200 ease-[var(--ab-ease)] motion-reduce:transition-none focus:outline-none ${open ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'} ${hidden ? 'pointer-events-none' : ''}`}
       >
         <header className="flex shrink-0 items-center justify-between gap-2 border-b border-hairline px-3 py-2">

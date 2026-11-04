@@ -68,6 +68,19 @@ describe('drawer 两态', () => {
     expect(document.body.style.overflow).toBe('');
   });
 
+  it('中屏 800px：仍是挤压态（本次改动核心，阈值 768）', () => {
+    stubViewport(800);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+    const panel = screen.getByTestId('drawer-panel');
+    expect(panel.getAttribute('data-mode')).toBe('squeeze');
+    expect(screen.queryByTestId('drawer-backdrop')).toBeNull();
+    expect(document.body.style.overflow).toBe('');
+    // 宽度单点 400，关闭后归零（主区不留空槽）
+    expect(panel.style.width).toBe('400px');
+    act(() => useNavStore.getState().closeDrawer());
+    expect(screen.getByTestId('drawer-panel').style.width).toBe('0px');
+  });
   it('窄屏覆盖：data-mode=overlay、有遮罩、锁 body 滚动，关闭后解锁', () => {
     stubViewport(375);
     renderDrawer();
