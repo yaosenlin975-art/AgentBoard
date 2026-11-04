@@ -30,7 +30,7 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
   { value: 'system', label: '跟随系统' },
 ];
 
-export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boolean; onClose: () => void; /** S2c：drawer 内联渲染时不再自带 Modal 壳（标题由 DrawerPanel 提供） */ variant?: 'modal' | 'inline' }) {
   const currentWorkspaceId = useAppStore((s) => s.workspaceId);
   const [port, setPort] = useState('');
   const [dbPath, setDbPath] = useState('');
@@ -75,7 +75,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const loaded = settingsQuery.data !== undefined;
 
   return (
-    <Modal open={open} title="设置" onClose={onClose} size="lg" scrollable>
+    <Modal open={open} title="设置" onClose={onClose} size="lg" scrollable variant={variant}>
       <form onSubmit={submit} className="space-y-3">
         <label className="block text-sm">
           <span className="mb-1 block text-neutral-600 dark:text-neutral-300">服务端口</span>

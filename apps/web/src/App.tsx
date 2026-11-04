@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { KnowledgePanel } from './components/knowledge/KnowledgePanel';
 import type { Workspace } from '@agentboard/shared';
@@ -7,6 +8,7 @@ import { useAppStore } from './state/appStore';
 import { useNavStore, type NavView } from './state/navStore';
 import { TopBar } from './components/topbar/TopBar';
 import { SideBar } from './components/shell/SideBar';
+import { DrawerPanel } from './components/drawer/DrawerPanel';
 import { Board } from './components/board/Board';
 import { ChangelogPanel } from './components/changelog/ChangelogPanel';
 import { ChatPanel } from './components/chat/ChatPanel';
@@ -96,6 +98,8 @@ export default function App() {
                 />
               )}
             </main>
+            {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}
+            <DrawerPanel />
             <RightPanel />
             {restarting && (
               <div

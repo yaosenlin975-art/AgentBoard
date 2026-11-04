@@ -9,6 +9,11 @@ export interface ModalProps {
   scrollable?: boolean;
   /** 宽度档位：md=28rem（默认，既有调用方不变），lg=42rem（设置页账号管理这类多列内容） */
   size?: 'md' | 'lg';
+  /**
+   * S2c：modal（默认）= 原来的 portal 弹窗；inline = 不套遮罩/弹窗壳，直接把内容渲染进调用方的容器
+   * （右侧滑出 drawer 用；抽屉自己提供标题、关闭按钮与滚动容器）。
+   */
+  variant?: 'modal' | 'inline';
 }
 
 const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
@@ -16,7 +21,7 @@ const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
   lg: 'max-w-2xl',
 };
 
-export function Modal({ open, title, onClose, children, scrollable = false, size = 'md' }: ModalProps) {
+export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal' }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -26,6 +31,8 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // S2c：inline 模式不 portal、不加遮罩，标题与关闭由抽屉负责（放在 hooks 之后，保证 hooks 顺序稳定）
+  if (variant === 'inline') return <div data-testid="modal-inline">{children}</div>;
   if (!open) return null;
 
   // 挂到 document.body：祖先若有 transform/filter（如侧栏 #workspace-sidebar-content 的 translate-x-0），
