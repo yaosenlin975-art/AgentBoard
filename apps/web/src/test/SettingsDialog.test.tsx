@@ -128,6 +128,12 @@ describe('SettingsDialog', () => {
   it('版本接口失败 → 显示「服务端 ?」，设置照常读取且无错误提示', async () => {
     server.use(
       http.get('/api/settings', () => HttpResponse.json(settingsPayload)),
+      // DB-3B-W：设置里新增了「数据存储」分区，它读 /api/settings/storage；
+      // 这里给一个正常响应，避免该分区的错误 alert 干扰「版本失败不应报错」的断言
+      http.get('/api/settings/storage', () => HttpResponse.json({
+        db_path: 'C:\\x\\agentboard.db', db_path_source: 'default', attachments_dir: 'C:\\x\\attachments',
+        usage: null, migration_estimate: null, truncated: false,
+      })),
       http.get('/api/version', () =>
         HttpResponse.json({ error: { code: 'NOT_FOUND', message: '接口不存在' } }, { status: 404 }),
       ),

@@ -110,6 +110,8 @@ function walk(dir) {
       continue;
     }
     if (!entry.isFile()) continue;
+    // `.tmp-*` 临时文件（kb list / CDP 抓取脚本等一次性产物）同样不扫：它们不是仓库源码
+    if (entry.name.startsWith('.tmp-')) continue;
     const dot = entry.name.lastIndexOf('.');
     if (dot <= 0) continue;
     if (!EXTENSIONS.has(entry.name.slice(dot).toLowerCase())) continue;
