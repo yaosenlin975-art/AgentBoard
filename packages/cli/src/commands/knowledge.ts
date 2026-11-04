@@ -438,12 +438,20 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--landed <状态>', 'landed|partial|proposed（design 缺省时服务端记 proposed）');
 
   async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string }) {
+      // KB-CLI-1：--stdin 读到空正文 → 本地中文报错（先于 sources 校验：空正文是更早的失败点），不再把空串发给服务端吃「body_md 不能小于 1」
+    let bodyMd: string | undefined;
+    if (opts.stdin) {
+      bodyMd = await ctx.io.readStdin();
+      if (bodyMd.trim() === '') {
+        fail('--stdin 读到的正文为空：PowerShell 用「Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create … --stdin」喂入正文，或检查文件是否为空');
+      }
+    }
     const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile) : undefined;
     const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile) : undefined;
     if (sourcesRaw !== undefined) validateSources('--sources', sourcesRaw);
     if (evidenceRaw !== undefined) validateEvidence('--evidence', evidenceRaw);
     return {
-      ...(opts.stdin ? { body_md: await ctx.io.readStdin() } : {}),
+      ...(opts.stdin ? { body_md: bodyMd } : {}),
       ...(sourcesRaw !== undefined ? { sources: sourcesRaw } : {}),
       ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
       ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),

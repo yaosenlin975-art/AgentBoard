@@ -148,7 +148,8 @@ export const draftRequestSchema = z.object({
 export const createIssueSchema = z
   .object({
     workspace_id: z.string().min(1),
-    title: z.string().trim().min(1, 'title 不能为空'),
+    // KB-CLI-1：标题 200 字上限（API 直调同样受限；CLI 本地先行报错）
+    title: z.string().trim().min(1, 'title 不能为空').max(200, '标题超长：上限 200 字'),
     description: z.string().optional(),
     priority: prioritySchema.optional(),
     // TAG-CLEANUP-EXEC：请求边界统一规范化（拆空格/全角逗号、trim、去重），与 CLI parseLabels 同规则

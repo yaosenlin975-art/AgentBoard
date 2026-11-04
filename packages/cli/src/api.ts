@@ -106,6 +106,27 @@ function warnVersionMismatch(serverHeader: string | null): void {
   process.stderr.write(`版本不匹配：CLI ${CLI_VERSION} / ${serverText}，可能出现字段不兼容\n`);
 }
 
+/** KB-CLI-1：幂等重放标记响应头（服务端命中 idempotency_record 时置 1） */
+export const REPLAYED_HEADER = 'x-agentboard-replayed';
+
+/** KB-CLI-1：带元数据的请求——replayed=true 表示该 request-id 命中幂等缓存（服务端原样回放） */
+export async function requestWithMeta<T>(
+  base: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  requestId?: string,
+): Promise<{ data: T; replayed: boolean }> {
+  const headers = body === undefined && requestId === undefined ? undefined : {
+    ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    ...(requestId === undefined ? {} : { 'Idempotency-Key': requestId }),
+  };
+  const response = await fetchResponse(base, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
+  const replayed = response.headers.get(REPLAYED_HEADER) === '1';
+  const data = await decodeResponse<T>(base, response);
+  return { data, replayed };
+}
+
 /** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError，连接拒绝抛 ServerUnreachableError，其余网络层失败包装为看板服务不可达（含原始 message）。响应带 x-agentboard-version 时与 CLI 版本比对，不匹配 stderr 警告（每进程最多一次） */
 async function fetchResponse(base: string, method: string, path: string, headers?: Record<string, string>, body?: BodyInit): Promise<Response> {
   let res: Response;

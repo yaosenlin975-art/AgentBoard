@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Issue } from '@agentboard/shared';
-import { request } from '../api.js';
+import { request, requestWithMeta } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
 
@@ -20,7 +20,10 @@ export function parseLabels(raw: string): string[] {
 export interface CreateIssueArgs {
   /** 工作空间 id 或名称（先解析为 id） */
   workspace: string;
-  title: string;
+  /** 标题（与 titleStdin 二选一；含引号/选项样式的标题会被本地拒绝） */
+  title?: string;
+  /** KB-CLI-1：标题走 stdin（PowerShell 引号吞参的绕行通道） */
+  titleStdin?: boolean;
   description?: string;
   /** 低|中|高（非法值由服务端 400） */
   priority?: string;
@@ -66,9 +69,45 @@ export function parseDue(value: string): { due_date: string; due_time?: string }
   return withTime === null ? { due_date: trimmed } : { due_date: `${year}-${month}-${day}`, due_time: `${hour}:${minute}` };
 }
 
+/**
+ * KB-CLI-1：标题本地校验（全部不发请求）。
+ * 1) 引号/选项样式拒绝——PowerShell 引号吞参会静默写错数据（审查 01 P0）；
+ * 2) 200 字上限。
+ */
+export const ISSUE_TITLE_MAX = 200;
+export function assertIssueTitle(title: string): void {
+  if (title.length > ISSUE_TITLE_MAX) {
+    throw new Error(`标题超长：${title.length} 字符，上限 ${ISSUE_TITLE_MAX}。请精简标题，长内容放描述（-d）`);
+  }
+  if (/[\"'“”‘’]/.test(title)) {
+    throw new Error(`标题含引号（" ' “ ” 等），PowerShell 可能吞参静默写错数据；请改用 --title-stdin 通道，或修正引号后重试`);
+  }
+  if (/^-{1,2}[A-Za-z]/.test(title)) {
+    throw new Error(`标题以「-」开头疑似命令选项被吞参（收到「${title.slice(0, 20)}…」）；请用 --title-stdin 或给标题加引号`);
+  }
+}
+
 export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void> {
+  // KB-CLI-1：标题双通道互斥校验
+  if (args.titleStdin === true && args.title !== undefined) {
+    throw new Error('--title-stdin 与位置参数 <title> 互斥，请二选一');
+  }
+  let title: string;
+  if (args.titleStdin === true) {
+    const raw = await ctx.io.readStdin();
+    title = raw.replace(/\r?\n$/, '');
+    if (title.trim() === '') {
+      throw new Error('--title-stdin 读到的标题为空；PowerShell：Get-Content title.txt -Raw | kb create-issue <workspace> --title-stdin');
+    }
+  } else {
+    if (args.title === undefined || args.title.trim() === '') {
+      throw new Error('缺少标题：传位置参数 <title>，或改用 --title-stdin（PowerShell 引号吞参时）');
+    }
+    title = args.title;
+  }
+  assertIssueTitle(title);
   const workspaceId = await resolveWorkspaceId(ctx.base, args.workspace);
-  const body: CreateIssueBody = { workspace_id: workspaceId, title: args.title };
+  const body: CreateIssueBody = { workspace_id: workspaceId, title };
   if (args.description !== undefined) body.description = args.description;
   if (args.priority !== undefined) body.priority = args.priority;
   if (args.labels !== undefined) {
@@ -80,13 +119,14 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
     body.due_date = due.due_date;
     if (due.due_time !== undefined) body.due_time = due.due_time;
   }
-  const issue = await request<Issue>(ctx.base, 'POST', '/api/issues', body, args.requestId ?? randomUUID());
+  // KB-CLI-1：幂等重放回显——文本标「（幂等重放）」，JSON 增 replayed 字段
+  const { data: issue, replayed } = await requestWithMeta<Issue>(ctx.base, 'POST', '/api/issues', body, args.requestId ?? randomUUID());
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
+    ctx.io.write(`${JSON.stringify({ ...issue, replayed }, null, 2)}\n`);
     return;
   }
   const dueLine = issue.due_date === null || issue.due_date === undefined
     ? '截止: （未设置）'
     : `截止: ${issue.due_date}${issue.due_time === null || issue.due_time === undefined ? '' : ` ${issue.due_time}`}`;
-  ctx.io.write(`已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n${dueLine}\n`);
+  ctx.io.write(`${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n${dueLine}\n`);
 }

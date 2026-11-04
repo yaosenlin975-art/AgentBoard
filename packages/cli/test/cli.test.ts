@@ -802,7 +802,8 @@ describe('create-space / create-issue', () => {
     const code = await main(['node', 'kb', '--server', base, '--json', 'create-issue', 'ws1', '实现导出'], t.io);
     expect(code).toBe(0);
     expect(calls[1]?.body).toEqual({ workspace_id: 'ws1', title: '实现导出' });
-    expect(JSON.parse(t.out())).toEqual(ISSUE);
+    // KB-CLI-1：JSON 模式输出带 replayed 字段（非重放 = false）
+    expect(JSON.parse(t.out())).toEqual({ ...ISSUE, replayed: false });
   });
 
   it('create-issue 未命中 → 退出码 1 + stderr 工作空间不存在，不发 POST', async () => {

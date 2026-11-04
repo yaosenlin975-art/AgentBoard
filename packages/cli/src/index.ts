@@ -253,19 +253,21 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
 
   program
     .command('create-issue')
-    .description('创建任务（workspace 支持 id 或名称）')
+    .description('创建任务（workspace 支持 id 或名称；标题含引号被拒时改用 --title-stdin）')
     .argument('<workspace>', '工作空间 id 或名称')
-    .argument('<title>', '任务标题')
+    .argument('[title]', '任务标题（与 --title-stdin 二选一）')
+    .option('--title-stdin', '从 UTF-8 stdin 读标题（PowerShell 引号吞参时用：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（含空格用引号；多行走 UI 或 API）')
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
     .option('--parent <issue-id>', '父任务 id')
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
-    .action(async (workspace: string, title: string, opts: { description?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
+    .action(async (workspace: string, title: string | undefined, opts: { titleStdin?: boolean; description?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, io), {
         workspace,
         title,
+        titleStdin: opts.titleStdin,
         description: opts.description,
         priority: opts.priority,
         labels: opts.labels,
