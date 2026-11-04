@@ -20,7 +20,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
-import { NOT_PROVIDED, buildDraftPrompt, extractJsonObject, renderDraftDescription } from '../src/services/smartCreateDraft.js';
+import { NOT_PROVIDED, buildDraftPrompt, extractJsonObject, renderDraftDescription, resetDraftSessions } from '../src/services/smartCreateDraft.js';
 
 const modelJson = (over: Record<string, unknown> = {}): string => JSON.stringify({
   title: '支持按标题搜索',
@@ -43,6 +43,48 @@ describe('smart create draft (SMART-CREATE)', () => {
   let runner: (args: { adapter: string; prompt: string; cwd: string; signal: AbortSignal }) => Promise<string>;
 
   const postDraft = (body: Record<string, unknown>) => request(app).post('/api/issues/draft').send(body);
+  // ---- SMART-CREATE-SESSION（0fce2f7b）：会话按 workspace_id + adapter 复用 ----
+  it('同工作区同 adapter 连点两次 → 同一 session_id，轮次递增', async () => {
+    resetDraftSessions();
+    const first = await postDraft({ workspace_id: ws, requirement: '第一版需求：加排序开关', adapter: 'codex' });
+    const second = await postDraft({ workspace_id: ws, requirement: '再补一条：默认关闭', adapter: 'codex' });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(first.body.session_id).toBeTruthy();
+    expect(second.body.session_id).toBe(first.body.session_id);
+    expect(first.body.session_turn).toBe(1);
+    expect(second.body.session_turn).toBe(2);
+    expect(first.body.session_reused).toBe(false);
+    expect(second.body.session_reused).toBe(true);
+    // 第二轮 prompt 带上第一轮需求作为只读上下文
+    expect(prompts[1]).toContain('第一版需求：加排序开关');
+  });
+
+  it('换 adapter → 新 session_id；换工作区 → 新 session_id', async () => {
+    resetDraftSessions();
+    const codex = await postDraft({ workspace_id: ws, requirement: '需求 A', adapter: 'codex' });
+    const opencode = await postDraft({ workspace_id: ws, requirement: '需求 A', adapter: 'opencode' });
+    const otherDir = mkdtempSync(join(tmpdir(), 'agentboard-draft2-'));
+    const otherWs = createWorkspace(t.db, { name: '第二空间', path: otherDir });
+    const other = await postDraft({ workspace_id: otherWs.id, requirement: '需求 A', adapter: 'codex' });
+    expect(codex.body.session_id).not.toBe(opencode.body.session_id);
+    expect(codex.body.session_id).not.toBe(other.body.session_id);
+    expect(opencode.body.session_reused).toBe(false);
+    expect(other.body.session_reused).toBe(false);
+  });
+
+  it('失败不吃脏上下文：422 后再成功，轮次仍从 1 开始且 prompt 不含失败需求', async () => {
+    resetDraftSessions();
+    runner = async () => '不是 JSON';
+    const failed = await postDraft({ workspace_id: ws, requirement: '这条会失败的需求', adapter: 'codex' });
+    expect(failed.status).toBe(422);
+    runner = async ({ prompt }) => { prompts.push(prompt); return modelJson(); };
+    prompts = [];
+    const ok = await postDraft({ workspace_id: ws, requirement: '重试后的新需求', adapter: 'codex' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.session_turn).toBe(1);
+    expect(prompts[0]).not.toContain('这条会失败的需求');
+  });
   const issueCount = (): number => (t.db.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n;
 
   beforeEach(async () => {

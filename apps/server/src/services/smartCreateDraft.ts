@@ -33,6 +33,33 @@ export interface DraftResult {
   description: string;
   labels: string[];
   warnings: string[];
+  /** 草稿会话 id（= workspace_id + adapter 维度，同一维度连续生成复用同一个） */
+  session_id: string;
+  /** 该会话的第几轮生成（首次为 1） */
+  session_turn: number;
+  /** 本次是否为复用已有会话（false = 新建） */
+  session_reused: boolean;
+}
+
+/** 会话上限：超过后按 lastUsedAt 淘汰最旧的（防泄漏） */
+export const MAX_DRAFT_SESSIONS = 32;
+/** 单个会话最多带入多少条历史需求作为上下文 */
+const MAX_CONTEXT_TURNS = 5;
+
+interface DraftSession {
+  id: string;
+  key: string;
+  workspace_id: string;
+  adapter: DraftAdapterId;
+  turns: number;
+  createdAt: number;
+  lastUsedAt: number;
+  /** 成功生成的历次需求（失败不入，避免污染上下文） */
+  requirements: string[];
+}
+
+export function draftSessionKey(workspaceId: string, adapter: DraftAdapterId): string {
+  return `${workspaceId}::${adapter}`;
 }
 
 /** 模型必须返回的结构；`null` 表示「用户没提这一段」，不是「空字符串」 */
@@ -130,6 +157,77 @@ function audit(db: Db, row: {
   );
 }
 
+/**
+ * 草稿会话注册表（进程内）：key = `${workspace_id}::${adapter}`。
+ *
+ * 为什么不直接复用 agent 的常驻会话：本路径的 `run` 是一次性 runTurn（不建 session 行、不占 claim 槽位），
+ * 适配器侧没有 resume 句柄；因此「会话」实现在草稿层——同一 key 连续生成复用同一个会话 id，
+ * 并把该会话此前**成功**的需求作为只读上下文拼进 prompt（多轮追加需求能延续）。
+ * 换 workspace 或换 adapter → key 不同 → 新会话；旧会话按 lastUsedAt 淘汰（MAX_DRAFT_SESSIONS）。
+ * 失败（502/422/504/503）不写入 requirements，因此不会把半截需求留进上下文。
+ */
+const sessions = new Map<string, DraftSession>();
+let sessionSeq = 0;
+
+function evictIfNeeded(): void {
+  if (sessions.size <= MAX_DRAFT_SESSIONS) return;
+  const sorted = [...sessions.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt);
+  while (sessions.size > MAX_DRAFT_SESSIONS && sorted.length > 0) {
+    const victim = sorted.shift();
+    if (victim !== undefined) sessions.delete(victim.key);
+  }
+}
+
+/** 取（或新建）会话；返回是否复用 */
+export function acquireDraftSession(workspaceId: string, adapter: DraftAdapterId, now: number): { session: DraftSession; reused: boolean } {
+  const key = draftSessionKey(workspaceId, adapter);
+  const existing = sessions.get(key);
+  if (existing !== undefined) {
+    existing.lastUsedAt = now;
+    return { session: existing, reused: true };
+  }
+  sessionSeq += 1;
+  const created: DraftSession = {
+    id: `draft-session-${now}-${sessionSeq}`,
+    key,
+    workspace_id: workspaceId,
+    adapter,
+    turns: 0,
+    createdAt: now,
+    lastUsedAt: now,
+    requirements: [],
+  };
+  sessions.set(key, created);
+  evictIfNeeded();
+  return { session: created, reused: false };
+}
+
+/** 成功一轮：轮次 +1 并记录需求（供下一轮上下文） */
+export function recordDraftTurn(session: DraftSession, requirement: string, now: number): void {
+  session.turns += 1;
+  session.lastUsedAt = now;
+  session.requirements.push(requirement);
+  if (session.requirements.length > MAX_CONTEXT_TURNS) session.requirements.splice(0, session.requirements.length - MAX_CONTEXT_TURNS);
+}
+
+/** 测试/诊断用：当前会话快照与清空 */
+export function draftSessionSnapshot(): Array<{ id: string; key: string; turns: number }> {
+  return [...sessions.values()].map((s) => ({ id: s.id, key: s.key, turns: s.turns }));
+}
+export function resetDraftSessions(): void {
+  sessions.clear();
+  sessionSeq = 0;
+}
+
+/** 把会话里此前的需求拼成只读上下文（首轮为空） */
+export function sessionContextBlock(requirements: readonly string[]): string {
+  if (requirements.length === 0) return '';
+  return [
+    '以下是本草稿会话此前已确认的需求（只读上下文，用于保持同一话题；本次请按最后一段新增需求更新草稿）：',
+    ...requirements.map((item, index) => `${index + 1}. ${item}`),
+    '',
+  ].join('\n');
+}
 export function createDraftService(deps: DraftServiceDeps): DraftService {
   const timeoutMs = deps.timeoutMs ?? DRAFT_TIMEOUT_MS;
   const now = deps.now ?? (() => Date.now());
@@ -139,7 +237,12 @@ export function createDraftService(deps: DraftServiceDeps): DraftService {
       const started = now();
       const cwd = deps.workspacePath(input.workspace_id);
       const existing = deps.existingLabels(input.workspace_id);
-      const prompt = buildDraftPrompt(input.requirement, existing);
+      // SMART-CREATE-SESSION：同一 workspace+adapter 复用同一个草稿会话；失败不记轮次（不污染上下文）
+      const acquired = acquireDraftSession(input.workspace_id, input.adapter, started);
+      const context = sessionContextBlock(acquired.session.requirements);
+      const prompt = context === ''
+        ? buildDraftPrompt(input.requirement, existing)
+        : `${context}\n${buildDraftPrompt(input.requirement, existing)}`;
 
       /** 失败出口：按错误码给 HTTP 状态（可解释、非 500），并落审计 */
       const finishFailure = (status: number, code: string, message: string, warnings: string[] = []): never => {
@@ -191,11 +294,15 @@ export function createDraftService(deps: DraftServiceDeps): DraftService {
           const labels = parsed.labels.filter(label => existing.includes(label));
           const warnings = [...parsed.warnings];
           if (invented.length > 0) warnings.push(`已忽略模型自造的标签：${invented.join('、')}（只允许使用工作区已有标签）`);
+          recordDraftTurn(acquired.session, input.requirement, now());
           const result: DraftResult = {
             title: parsed.title,
             description: renderDraftDescription(parsed),
             labels,
             warnings,
+            session_id: acquired.session.id,
+            session_turn: acquired.session.turns,
+            session_reused: acquired.reused,
           };
           audit(deps.db, {
             workspace_id: input.workspace_id, adapter: input.adapter, duration_ms: now() - started,

@@ -24,6 +24,12 @@ export interface IssueDraft {
   description: string;
   labels: string[];
   warnings: string[];
+  /** 草稿会话 id（服务端按 workspace_id + adapter 复用；同会话多轮生成时相同） */
+  sessionId: string | null;
+  /** 该会话第几轮（首次 1） */
+  sessionTurn: number | null;
+  /** 本次是否复用已有草稿会话 */
+  sessionReused: boolean;
 }
 
 export interface DraftRequestInput {
@@ -103,12 +109,15 @@ export async function requestDraft(input: DraftRequestInput, options: DraftOptio
     const err = (data as { error?: { code?: string; message?: string } } | null)?.error;
     throw new DraftError(err?.message ?? `请求失败（HTTP ${res.status}）`, err?.code ?? 'UNKNOWN', res.status);
   }
-  const draft = data as Partial<IssueDraft> | null;
+  const draft = data as Partial<IssueDraft> & { session_id?: unknown; session_turn?: unknown; session_reused?: unknown } | null;
   return {
     title: typeof draft?.title === 'string' ? draft.title : '',
     description: typeof draft?.description === 'string' ? draft.description : '',
     labels: Array.isArray(draft?.labels) ? draft!.labels.filter((l): l is string => typeof l === 'string') : [],
     warnings: Array.isArray(draft?.warnings) ? draft!.warnings.filter((w): w is string => typeof w === 'string') : [],
+    sessionId: typeof draft?.session_id === 'string' ? draft.session_id : null,
+    sessionTurn: typeof draft?.session_turn === 'number' ? draft.session_turn : null,
+    sessionReused: draft?.session_reused === true,
   };
 }
 

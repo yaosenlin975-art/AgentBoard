@@ -244,7 +244,11 @@ export function NewIssueDialog({
       setLabelsInput(result.labels.join(','));
       if (draftPriority !== '') setPriority(draftPriority);
       setMode('manual');
-      setSmartMessage('草稿已生成，可编辑后创建任务');
+      setSmartMessage(
+        result.sessionReused && result.sessionTurn !== null
+          ? `草稿已生成（同一草稿会话 · 第 ${result.sessionTurn} 轮；换工作区或执行方式会开新会话），可编辑后创建任务`
+          : '草稿已生成，可编辑后创建任务',
+      );
     } catch (e) {
       if (cancelRef.current || e instanceof DraftAbortError) return; // 取消不走失败回退
       setDraft(null);
