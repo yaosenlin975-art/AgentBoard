@@ -81,6 +81,7 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
   if (res.warning === 'IMAGE_DELIVERY_UNVERIFIED') {
     ctx.io.write('图片已保存；图片交付能力未验证，评论保留为待读\n');
   } else {
-    ctx.io.write(res.woke ? '已唤醒占用 agent\n' : '未唤醒（任务未被占用，仅留言）\n');
+    // KB-SRVMSG N-05：不暗示「评论等于通知」——已写入、下次读取可见
+    ctx.io.write(res.woke ? '已唤醒占用 agent\n' : '评论已写入，对方下次读取时可见\n');
   }
 }

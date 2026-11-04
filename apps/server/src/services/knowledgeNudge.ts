@@ -13,9 +13,22 @@ import type { Db } from '../db/connection.js';
 
 const TITLE_MAX = 40;
 
+/**
+ * KB-SRVMSG N-04：主题 slug——标题词段（字母/数字连续段）连字拼接 + 当天日期。
+ * 合法（符合 createKnowledgePage 的 slug 规则）且非一次性；同一主题多日多页由日期区分。
+ */
+function themeSlug(title: string): string {
+  const words = (title.match(/[\p{L}\p{N}]+/gu) ?? []).join('-').slice(0, 40).replace(/^-+|-+$/g, '');
+  const base = words !== '' ? words : 'task';
+  const now = new Date();
+  const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  return `handoff-${base}-${day}`;
+}
+
 export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
   if (!issue.claimed_by || issue.claimed_at === null) return null;
-  const suggestedSlug = `handoff-${issue.id}`;
+  // 检测口径兼容两种写法：旧 handoff-<issue-id> 前缀页，或本次占用期间由占用者更新过的任意页（主题 slug 场景）
+  const suggestedSlug = themeSlug(issue.title);
   const hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
     WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
       AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))
@@ -26,12 +39,17 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
     issue.claimed_at,
   ) as { hit: number } | undefined;
   if (hit) return null;
-  const title = issue.title.length > TITLE_MAX ? `${issue.title.slice(0, TITLE_MAX)}…` : issue.title;
+  // 展示用标题去引号（照抄不破命令）
+  const title = (issue.title.length > TITLE_MAX ? `${issue.title.slice(0, TITLE_MAX)}…` : issue.title)
+    .replace(/["'“”‘’]/g, '');
   return {
     suggested_slug: suggestedSlug,
     scope: 'workspace',
+    // N-04：带 --category（不落 legacy）与来源/证据要求，照抄即可执行
     message: `本任务还没有写知识页。建议：kb knowledge create --scope workspace --workspace ${issue.workspace_id} `
-      + `--slug ${suggestedSlug} --title "${title}" --domain knowledge（必填：accounts|knowledge|board|chat|ui|infra，按任务所属域替换）`
-      + `（正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`,
+      + `--slug ${suggestedSlug} --title "${title}" --category solved --domain knowledge `
+      + `--sources-file sources.json --evidence-file evidence.json --stdin`
+      + `（sources/evidence 各 ≥1 条，字段见 kb knowledge create --help；`
+      + `正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`,
   };
 }

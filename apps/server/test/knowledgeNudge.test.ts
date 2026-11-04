@@ -77,9 +77,33 @@ describe('knowledge nudge on done', () => {
     await claim(issueId);
     const body = await done(issueId);
     expect(body.status).toBe('待验收');
-    expect(body.knowledge_hint).toMatchObject({ suggested_slug: `handoff-${issueId}`, scope: 'workspace' });
+    // KB-SRVMSG N-04：主题 slug（handoff-<主题>-<日期>），不再是一次性 handoff-<uuid>
+    expect(body.knowledge_hint).toMatchObject({ scope: 'workspace' });
+    expect(body.knowledge_hint!.suggested_slug).toMatch(/^handoff-[\p{L}\p{N}-]+-\d{4}-\d{2}-\d{2}$/u);
+    expect(body.knowledge_hint!.suggested_slug).not.toBe(`handoff-${issueId}`);
     expect(body.knowledge_hint!.message).toContain('kb knowledge create');
-    expect(body.knowledge_hint!.message).toContain(`handoff-${issueId}`);
+    expect(body.knowledge_hint!.message).toContain(body.knowledge_hint!.suggested_slug);
+  });
+
+  it('suggestedSlugIsLegalAndCategorySupplied', async () => {
+    const issueId = await makeIssue('缓存失效方案（B/S 两端）');
+    await claim(issueId);
+    const body = await done(issueId);
+    const hint = body.knowledge_hint!;
+    // 照抄即可执行：slug 合法、--category solved 明示（不落 legacy）、来源/证据要求在场
+    expect(hint.message).toContain(`--slug ${hint.suggested_slug}`);
+    expect(hint.message).toContain('--category solved');
+    expect(hint.message).toContain('--domain knowledge');
+    expect(hint.message).toContain('--sources-file');
+    expect(hint.message).toContain('--evidence-file');
+    const page = createKnowledgePage(t.db, { domain: 'knowledge',
+      scope: 'workspace', workspace_id: workspaceId, slug: hint.suggested_slug,
+      title: '照抄建页验证', body_md: '正文', category: 'solved',
+      sources: [{ source_id: 's1', source_type: 'file', locator: 'file:x.ts', captured_at: 1, content_hash: hex('x') }],
+      evidence: [{ source_id: 's1', locator: 'file:x.ts' }], actor: 'agent:fake',
+    });
+    expect(page.slug).toBe(hint.suggested_slug);
+    expect(page.category).toBe('solved');
   });
 
   it('isSilentWhenHandoffPageExists', async () => {

@@ -604,13 +604,13 @@ describe('comment', () => {
       const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '进展'], t.io);
       expect(code).toBe(0);
       expect(calls[0]?.body).toEqual({ content: '进展', agent_id: 'coder-bot' });
-      expect(t.out()).toContain('未唤醒（任务未被占用，仅留言）');
+      expect(t.out()).toContain('评论已写入，对方下次读取时可见');
     } finally {
       delete process.env.KB_AGENT;
     }
   });
 
-  it('woke=false 打印未唤醒（仅留言）', async () => {
+  it('woke=false 提示已写入下次读取可见（KB-SRVMSG N-05）', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/comments'
         ? { status: 200, body: { comment: { ...COMMENTS[0]!, id: 'c8' }, woke: false } }
@@ -618,7 +618,8 @@ describe('comment', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '进展'], t.io);
     expect(code).toBe(0);
-    expect(t.out()).toContain('未唤醒（任务未被占用，仅留言）');
+    expect(t.out()).toContain('评论已写入，对方下次读取时可见');
+    expect(t.out()).not.toContain('未唤醒');
   });
 
   it('图片评论先上传原始字节，再以幂等键绑定附件并保留未验证提示', async () => {
