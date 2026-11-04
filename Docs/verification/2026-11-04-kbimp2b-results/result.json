@@ -1,6 +1,16 @@
 {
- "summary": "",
- "detail1": "",
- "msg1": "",
- "sug1": ""
+ "resultsPresent": true,
+ "dataOk": "1",
+ "dataFailed": "1",
+ "summary": "成功 1 / 失败 1",
+ "row0Status": "ok",
+ "row1Status": "failed",
+ "detail1": "KBIMP-2B 同 slug 演练 202611040821 失败KNOWLEDGE_EXISTS同范围内已存在相同标题/别名的知识页，导入被拒（409）改标题后再导：标题不同即生成不同别名加后缀再导：例如在标题后拼接日期或 ID",
+ "message1": "同范围内已存在相同标题/别名的知识页，导入被拒（409）",
+ "suggestions1": "改标题后再导：标题不同即生成不同别名加后缀再导：例如在标题后拼接日期或 ID",
+ "parsedOk": true,
+ "resultsOk": true,
+ "previewMeta": "JSON · 0.2 KB · 识别到 2 页",
+ "submitDisabledBefore": false,
+ "fileName": "sample-dup.json"
 }

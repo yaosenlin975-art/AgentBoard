@@ -209,7 +209,7 @@ export function KnowledgePanel({
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onImported={(ids) => {
-          setImportOpen(false);
+          // KBIMP-2B：不在这里关窗——部分失败时用户要看逐条状态，关闭由对话框自己决定
           setHighlightIds(ids);
           void queryClient.invalidateQueries({ queryKey: ['knowledge'] });
         }}
