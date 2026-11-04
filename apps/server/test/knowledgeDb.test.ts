@@ -28,8 +28,8 @@ describe('knowledge storage', () => {
     const page = createKnowledgePage(t.db, input());
     expect(reviseKnowledgePage(t.db, page.id, scope(), 1, { body_md: '新内容', actor: 'dsh' }).revision).toBe(2);
     expect(() => reviseKnowledgePage(t.db, page.id, scope(), 1, { body_md: '旧写入', actor: 'codex' })).toThrowError(expect.objectContaining({ status: 409, code: 'KNOWLEDGE_REVISION_CONFLICT' }));
-    const revisions = listKnowledgeRevisions(t.db, page.id, scope());
-    expect(revisions.map(r => r.body_snapshot)).toEqual(['新内容', '知识内容']);
+    // KB-DIFF-S：列表默认不带正文，正文要用 include_body=true 显式索取（或走单条详情端点）
+    const revisions = listKnowledgeRevisions(t.db, page.id, scope(), 20, 0, true);
     expect(revisions[1].sources[0]).toEqual(source);
     expect(() => t.db.prepare('UPDATE knowledge_revision SET body_snapshot=? WHERE page_id=?').run('tamper', page.id)).toThrow();
   });

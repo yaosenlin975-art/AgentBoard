@@ -104,13 +104,42 @@ export function setKnowledgePageStatus(db: Db, pageId: string, scope: KnowledgeS
   if (!['archive', 'restore', 'delete'].includes(action)) throw new ValidationError('未知状态操作');
   return changePage(db, pageId, scope, expectedRevision, { actor }, action);
 }
-export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeScope, limit = 20, offset = 0): KnowledgeRevision[] {
+/** KB-DIFF-S：列表项**不再带正文**，只给体积/字符数摘要（正文上限已到 200 万字符，20 条全文可达几十 MB） */
+export type KnowledgeRevisionSummary = Omit<KnowledgeRevision, 'body_snapshot'> & { body_bytes: number; body_chars: number };
+
+/**
+ * 历史列表。
+ * 默认 **不返回** `body_snapshot`（只给 `body_bytes` / `body_chars`），避免一次拉 20 份全文；
+ * `includeBody=true` 保留旧行为，供兼容调用方显式索取。
+ */
+export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeScope, limit = 20, offset = 0, includeBody = false): Array<KnowledgeRevision | KnowledgeRevisionSummary> {
   if (!getKnowledgePage(db, pageId, scope)) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
   if (!Number.isInteger(limit) || limit < 1 || limit > 50 || !Number.isInteger(offset) || offset < 0) throw new ValidationError('历史分页参数不合法');
-  return (db.prepare('SELECT * FROM knowledge_revision WHERE page_id=? ORDER BY revision DESC LIMIT ? OFFSET ?').all(pageId, limit, offset) as Array<Omit<KnowledgeRevision, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string }>).map(row => {
-    const { sources_json, evidence_json, ...revision } = row;
-    return { ...revision, sources: JSON.parse(sources_json), evidence: JSON.parse(evidence_json) };
+  // 字节数按 UTF-8 计（CAST 成 BLOB 再 length），字符数按 UTF-16 码点近似（SQLite length 对 TEXT 即字符数）
+  const columns = includeBody
+    ? '*, length(CAST(body_snapshot AS BLOB)) AS body_bytes, length(body_snapshot) AS body_chars'
+    : 'id, page_id, revision, title_snapshot, change_kind, status_snapshot, expires_at_snapshot, change_note, actor, created_at, sources_json, evidence_json, length(CAST(body_snapshot AS BLOB)) AS body_bytes, length(body_snapshot) AS body_chars';
+  return (db.prepare(`SELECT ${columns} FROM knowledge_revision WHERE page_id=? ORDER BY revision DESC LIMIT ? OFFSET ?`).all(pageId, limit, offset) as Array<Record<string, unknown>>).map(row => {
+    const { sources_json, evidence_json, body_bytes, body_chars, ...rest } = row as Record<string, unknown> & { sources_json: string; evidence_json: string; body_bytes: number; body_chars: number };
+    return {
+      ...rest,
+      ...(includeBody ? {} : {}),
+      body_bytes,
+      body_chars,
+      sources: JSON.parse(sources_json),
+      evidence: JSON.parse(evidence_json),
+    } as unknown as KnowledgeRevision | KnowledgeRevisionSummary;
   });
+}
+
+/** KB-DIFF-S：单条 revision 全文快照（「点某版本看 diff」按需取，不进列表） */
+export function getKnowledgeRevision(db: Db, pageId: string, revision: number, scope: KnowledgeScope): KnowledgeRevision {
+  if (!getKnowledgePage(db, pageId, scope)) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+  if (!Number.isInteger(revision) || revision < 1) throw new ValidationError('revision 不合法');
+  const row = db.prepare('SELECT * FROM knowledge_revision WHERE page_id=? AND revision=?').get(pageId, revision) as (Omit<KnowledgeRevision, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string }) | undefined;
+  if (row === undefined) throw new ApiError(404, 'KNOWLEDGE_REVISION_NOT_FOUND', `版本 ${revision} 不存在`);
+  const { sources_json, evidence_json, ...revisionRow } = row;
+  return { ...revisionRow, sources: JSON.parse(sources_json), evidence: JSON.parse(evidence_json) };
 }
 
 /** KB-GRAPH：一次查询取「活跃页 + 最新 revision 的 sources」，供图聚合使用（只读，不做 N+1） */

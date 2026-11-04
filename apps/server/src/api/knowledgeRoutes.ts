@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { KnowledgeScope } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { ApiError, ValidationError } from '../errors.js';
-import { createKnowledgePage, getKnowledgePage, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
+import { createKnowledgePage, getKnowledgePage, getKnowledgeRevision, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
 import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph } from '../services/knowledgeGraph.js';
 import { countBacklinks, countOutgoingLinks, listBacklinks, listResolvedLinks, listUnresolvedLinks, reparseAllPages } from '../services/knowledgeLinks.js';
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
@@ -132,11 +132,23 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params);
     res.json({ items: rows.slice(0, input.limit), next_offset: rows.length > input.limit ? input.offset + input.limit : null });
   });
+  // KB-DIFF-S：列表默认**不带正文**（只给 body_bytes / body_chars 摘要）；include_body=true 保留旧行为。
   router.get('/pages/:id/revisions', (req, res) => {
     const scope = scopeOf(req.query);
-    const { limit, offset } = parse(z.object({ limit: integerQuery(20, 50).refine(n => n > 0), offset: integerQuery(0, Number.MAX_SAFE_INTEGER) }), req.query);
-    const items = listKnowledgeRevisions(db, req.params.id!, scope, limit, offset);
+    const { limit, offset, include_body } = parse(z.object({
+      limit: integerQuery(20, 50).refine(n => n > 0),
+      offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
+      include_body: z.enum(['true', 'false']).optional(),
+    }), req.query);
+    const items = listKnowledgeRevisions(db, req.params.id!, scope, limit, offset, include_body === 'true');
     res.json({ items, next_offset: items.length === limit ? offset + limit : null });
+  });
+
+  // KB-DIFF-S：单条 revision 全文快照（点某版本看 diff 时按需取，必在 /pages/:id 之前注册以免歧义）
+  router.get('/pages/:id/revisions/:revision', (req, res) => {
+    const scope = scopeOf(req.query);
+    const revision = Number(req.params.revision);
+    res.json(getKnowledgeRevision(db, req.params.id!, revision, scope));
   });
   router.get('/pages/:id', (req, res) => {
     const page = getKnowledgePage(db, req.params.id!, scopeOf(req.query));

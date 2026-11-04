@@ -1,0 +1,26 @@
+{
+ "revisions": 20,
+ "body_chars_each": 2000000,
+ "slim_list_bytes": 11588,
+ "full_list_bytes": 40011968,
+ "ratio_full_over_slim": 3452.9,
+ "single_revision_bytes": 2000554,
+ "single_revision_number": 7,
+ "first_item_keys": [
+  "id",
+  "page_id",
+  "revision",
+  "title_snapshot",
+  "change_kind",
+  "status_snapshot",
+  "expires_at_snapshot",
+  "change_note",
+  "actor",
+  "created_at",
+  "body_bytes",
+  "body_chars",
+  "sources",
+  "evidence"
+ ],
+ "first_item_has_body": false
+}
