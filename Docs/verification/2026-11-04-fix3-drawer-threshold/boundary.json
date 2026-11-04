@@ -1,0 +1,38 @@
+[
+ {
+  "width": 767,
+  "mode": "overlay",
+  "mainW": 591,
+  "panelX": 367,
+  "panelW": 400,
+  "bodyOverflow": "hidden",
+  "backdrop": true,
+  "mq": false,
+  "scrollW": 767,
+  "clientW": 767
+ },
+ {
+  "width": 768,
+  "mode": "squeeze",
+  "mainW": 192,
+  "panelX": 368,
+  "panelW": 400,
+  "bodyOverflow": "",
+  "backdrop": false,
+  "mq": true,
+  "scrollW": 768,
+  "clientW": 768
+ },
+ {
+  "width": 769,
+  "mode": "squeeze",
+  "mainW": 193,
+  "panelX": 369,
+  "panelW": 400,
+  "bodyOverflow": "",
+  "backdrop": false,
+  "mq": true,
+  "scrollW": 769,
+  "clientW": 769
+ }
+]
