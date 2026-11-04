@@ -1,4 +1,8 @@
 # 知识页图片上传 + 修改历史界面
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：待批准。用户已确认四项决策。
 

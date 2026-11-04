@@ -1,4 +1,8 @@
 # 新建任务的「智能创建」（AgentBoard）
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：待用户批准。参考 Multica 的实现，按 AgentBoard 既有结构裁剪。
 

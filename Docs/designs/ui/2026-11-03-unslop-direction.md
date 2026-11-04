@@ -1,4 +1,8 @@
 # Unslop 方向（AgentBoard 前端）
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 按 unslop（Damir Sokolovsky，CC BY 4.0）流程：先定方向，再九道 pass。
 

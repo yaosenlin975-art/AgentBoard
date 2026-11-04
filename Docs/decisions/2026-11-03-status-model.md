@@ -1,4 +1,8 @@
 # STATUS-1 状态模型迁移：操作与回滚
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 适用版本：`[STATUS-1]` 及之后（`issue.status` 去掉 CHECK 枚举、新增 `due_date`/`due_time`、新增 `workspace_status`）
 落地点：`apps/server/src/db/migrations/issueStatusModel.ts`、`apps/server/src/db/migrations/workspaceStatus.ts`（由 `initSchema` 在服务启动时执行）

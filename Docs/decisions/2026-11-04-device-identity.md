@@ -1,4 +1,8 @@
 # 设备身份字段成套搬迁 —— 裁决说明
+- status: proposed
+- date: 2026-11-04
+- card: -
+- supersedes: -
 
 - 卡：`ea7cd703` ACC-KB-B6（父卡 `2a4a8c4a`）
 - 工作区：任务看板 `e41eb0fb-c367-43cf-a99d-6dc5239a5694` / `D:\WorkSpaces\任务看板`

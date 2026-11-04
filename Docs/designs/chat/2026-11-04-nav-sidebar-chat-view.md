@@ -1,4 +1,8 @@
 # 导航重构：左侧纵向栏 + 聊天整屏视图（2026-11-04）
+- status: proposed
+- date: 2026-11-04
+- card: -
+- supersedes: -
 
 状态：设计稿。原型经用户三轮走查确认（`.superpowers/brainstorm/win-20261104/content/nav-proto.html`，服务器 http://localhost:65220 可复看）。标注「（拍板）」的条目是我的决策，用户过目时可推翻。
 

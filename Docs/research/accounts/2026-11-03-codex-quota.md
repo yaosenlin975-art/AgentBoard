@@ -1,4 +1,8 @@
 # Codex 余额/额度查询可行性调研（2026-11-03）
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 - 任务：`ffb32a37-5b4f-4e04-8a38-e4d3e932ca64`【CODEX-QUOTA】
 - 执行者：board-web-accounts；**只读**调研（未读 token 原文、未落盘凭据、未改代码）

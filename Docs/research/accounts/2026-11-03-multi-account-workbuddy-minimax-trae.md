@@ -1,4 +1,8 @@
 # WorkBuddy / MiniMax / TRAE 多账号管理与新增账号方式调研
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 - 日期：2026-11-03
 - 任务：ACC-RESEARCH-01（`1c70c8d0-2114-4b7e-8c8d-c3352aa25ae5`）

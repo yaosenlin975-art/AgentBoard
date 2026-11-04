@@ -1,4 +1,8 @@
 # 任务依赖关系（issue dependency）设计
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：待用户批准（2026-11-03）
 范围：`apps/server` + `packages/cli` + `apps/mcp` + `apps/web` + 四份技能文档

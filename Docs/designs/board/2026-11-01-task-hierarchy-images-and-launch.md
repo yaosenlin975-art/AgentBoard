@@ -1,4 +1,8 @@
 # 递归子任务、评论图片与启动体验设计
+- status: proposed
+- date: 2026-11-01
+- card: -
+- supersedes: -
 
 日期：2026-11-01
 

@@ -1,4 +1,8 @@
 # 工作区变更日志设计
+- status: proposed
+- date: 2026-11-02
+- card: -
+- supersedes: -
 
 ## 状态
 

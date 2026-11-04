@@ -1,4 +1,8 @@
 # 账号管理页重设计（2026-11-03）
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：已与用户确认三项决策；额度区第二、三段（opencode-go / Codex）版式**待用户发图后定**。
 

@@ -1,4 +1,8 @@
 # 本地语音输入（长按说话）
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：已定方案（B：本地服务端跑模型），待实现。
 

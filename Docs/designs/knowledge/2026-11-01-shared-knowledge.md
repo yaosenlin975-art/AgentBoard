@@ -1,4 +1,8 @@
 # AgentBoard 共享知识库设计
+- status: proposed
+- date: 2026-11-01
+- card: -
+- supersedes: -
 
 - 日期：2026-11-01
 - 状态：AgentBoard 内建知识库与数据库、FTS5 trigram、REST、CLI、Web 已实现；MCP 知识工具已实现。MCP 真实子进程和客户端接入仍待验收。

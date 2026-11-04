@@ -1,4 +1,8 @@
 # macOS + Docker 支持：平台耦合点调研与分层方案
+- status: proposed
+- date: 2026-11-03
+- card: -
+- supersedes: -
 
 状态：调研完成（2026-11-03，只读，未改任何代码）
 范围：`apps/server`、`apps/mcp`、`packages/*`、`apps/web` 构建与运行形态

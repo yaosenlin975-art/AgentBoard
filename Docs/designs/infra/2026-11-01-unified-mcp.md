@@ -1,4 +1,8 @@
 # AgentBoard 任务板与共享知识 MCP 设计
+- status: proposed
+- date: 2026-11-01
+- card: -
+- supersedes: -
 
 - 日期：2026-11-01
 - 状态：MCP-04 任务工具和 MCP-05 知识工具已实现；MCP SDK stdio 流测试通过。真实子进程 smoke 与客户端兼容验收仍待执行。

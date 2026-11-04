@@ -1,4 +1,8 @@
 # WorkBuddy / CodeBuddy 多账号签到与本机登录切换设计
+- status: proposed
+- date: 2026-11-01
+- card: -
+- supersedes: -
 
 - 日期：2026-11-01
 - 状态：设计稿。用户已确认多账号批量签到、本机 WorkBuddy 与 CodeBuddy 登录账号切换，并排除 workbuddy2api；AgentBoard 内部接口、凭据路径与提供方能力均为提案或待验证。
