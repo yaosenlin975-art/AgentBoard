@@ -115,7 +115,7 @@ export function DetailPanel() {
           .patch<Issue>(`/api/issues/${issueId}`, body)
           .then((updated) => {
             queryClient.setQueryData(['issue', issueId], updated);
-            void queryClient.invalidateQueries({ queryKey: ['issues'] });
+            // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
           })
           .catch((e: unknown) => setActionError(e instanceof Error ? e.message : '保存失败'));
       }, DEBOUNCE_MS);
@@ -130,9 +130,20 @@ export function DetailPanel() {
     [],
   );
 
-  const refreshIssue = (updated: Issue): void => {
-    queryClient.setQueryData(['issue', updated.id], updated);
-    void queryClient.invalidateQueries({ queryKey: ['issues'] });
+  /**
+   * RELEASE-REFRESH：release/done 的响应体是 `{ ...issue, comment }`。
+   * 修复两点：
+   * 1. 详情缓存只写 issue 字段（不再把 `comment` 混进去）；
+   * 2. **就地把列表缓存里该项换掉**——卡片立刻离开「进行中」、占用徽标立刻消失；
+   *    之前只 `invalidateQueries(['issues'])`，在 WS 帧丢失（重连窗口）时要等下一次 refetch 才归位。
+   */
+  const refreshIssue = (updated: Issue & { comment?: unknown }): void => {
+    const { comment: _comment, ...issue } = updated;
+    queryClient.setQueryData(['issue', issue.id], issue);
+    queryClient.setQueryData<Issue[]>(['issues', issue.workspace_id], (list) =>
+      list === undefined ? list : list.map((item) => (item.id === issue.id ? issue : item)),
+    );
+    // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
   };
 
   const release = useMutation({
@@ -150,7 +161,7 @@ export function DetailPanel() {
   const remove = useMutation({
     mutationFn: () => api.del<void>(`/api/issues/${issueId}`),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['issues'] });
+      // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
       closeRight();
     },
