@@ -21,6 +21,7 @@ import { dirname, join, resolve } from 'node:path';
 import type { AccountOperation, ManagedAccount } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
 import { ApiError, NotFoundError } from '../../errors.js';
+import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProcessControl } from './clientProcess.js';
 import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
@@ -128,9 +129,11 @@ export class MinimaxDesktopProvider {
     this.vault = deps.vault;
     this.paths = deps.paths ?? defaultMinimaxPaths();
     this.fs = deps.fs ?? defaultFs;
+    // B4S-1：默认接真实进程探测/停止（之前 isRunning 恒 false，等于在跑时也会覆盖 auth.json）
+    const realProcess = createClientProcessControl();
     this.process = deps.process ?? {
-      isRunning: async () => false,
-      stop: async () => { throw new ApiError(409, 'CLIENT_STOP_UNAVAILABLE', '未装配客户端停止能力'); },
+      isRunning: (exePath: string) => realProcess.isRunning(exePath),
+      stop: (exePath: string) => realProcess.stop(exePath),
       start: async () => { throw new ApiError(409, 'CLIENT_START_UNAVAILABLE', '未装配客户端启动能力'); },
     };
     this.now = deps.now ?? (() => Date.now());
@@ -200,7 +203,20 @@ export class MinimaxDesktopProvider {
         const preflight = await this.preflight();
         const clientExe = await this.resolveClientExe();
         const original = preflight.bytes;
-        if (await this.process.isRunning(clientExe)) await this.process.stop(clientExe);
+        // B4S-1 preflight：客户端在跑必须先停掉并确认退出；探测/停止失败一律中止（绝不在客户端运行时覆盖 auth.json）
+        let running: boolean;
+        try {
+          running = await this.process.isRunning(clientExe);
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.probeFailed, '无法确认 MiniMax 客户端是否在运行，已中止切换');
+        }
+        if (running) {
+          await this.process.stop(clientExe);
+          if (await this.process.isRunning(clientExe)) {
+            throw new ApiError(409, CLIENT_PROCESS_ERROR_CODES.stopTimeout, 'MiniMax 客户端仍在运行，已中止切换（未改动 auth.json）');
+          }
+        }
         const snapshotRef = await this.vault.protect(original, this.scope(account));
         this.db.prepare('UPDATE managed_account SET client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
           .run(snapshotRef, this.now(), account.id);

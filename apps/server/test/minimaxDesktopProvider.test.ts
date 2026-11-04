@@ -254,7 +254,8 @@ describe('capability registry for switch (ACC-13)', () => {
     const minimax = accountProviderCapability('minimax');
     expect(minimax).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
     const trae = accountProviderCapability('trae');
-    expect(trae.switch).toBe(false);
-    expect(trae.reason_code).toBe('LOGIN_STATE_NOT_FILE_BASED');
+    // B4S-1：Trae 没有进程概念（无 preflight/stop），switch 明确声明未实现，不再用 LOGIN_STATE_NOT_FILE_BASED 混淆
+    expect(trae?.switch).toBe(false);
+    expect(trae?.reason_code).toBe('PROVIDER_NOT_IMPLEMENTED');
   });
 });
