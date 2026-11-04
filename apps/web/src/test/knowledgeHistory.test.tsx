@@ -2,7 +2,7 @@
  * KB-HIST-UI：知识页历史抽屉 —— 列表字段、只读预览、恢复此版本（产生新 revision）、409 并发提示。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 import { server } from './server';
@@ -165,3 +165,89 @@ describe('知识页创建/最后修改时间展示', () => {
     expect(screen.getByTestId('knowledge-page-updated-at')).toHaveTextContent(`最后修改时间 ${new Date(updated).toLocaleString()}`);
   });
 });
+
+describe('KB-DIFF-W 版本 diff 展开', () => {
+  const openHistory = async (): Promise<void> => {
+    fireEvent.click(await screen.findByTestId('knowledge-history-toggle'));
+    await screen.findByTestId('knowledge-history-drawer');
+  };
+
+  it('点「查看 diff」展开 r2→当前：aria-expanded 翻转、行首 +/- 与 3 行上下文、折叠行文案', async () => {
+    const body = (lines: string[]): string => lines.join('\n');
+    const base = Array.from({ length: 12 }, (_, i) => `line-${i}`);
+    const r2Body = body(base);
+    const currentBody = body([...base.slice(0, 5), 'line-CHANGED', ...base.slice(6)]);
+    server.use(
+      http.get('/api/knowledge/pages/p1', () => HttpResponse.json(page(3, '当前标题', currentBody))),
+      http.get('/api/knowledge/pages/p1/revisions', () =>
+        HttpResponse.json({ items: [revision(3, '当前标题', currentBody), revision(2, '旧标题', r2Body), revision(1, '初版', r2Body)], next_offset: null })),
+      http.get('/api/knowledge/pages/p1/revisions/2', () => HttpResponse.json({ revision: 2, body_md: r2Body })),
+      http.get('/api/knowledge/pages/p1/revisions/1', () => HttpResponse.json({ revision: 1, body_md: r2Body })),
+    );
+    mount();
+    await openHistory();
+
+    const toggle = await screen.findByTestId('knowledge-revision-diff-toggle-2');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-expanded', 'true'));
+    const panel = await screen.findByTestId('revision-diff-2');
+    expect(panel).toBeInTheDocument();
+    // 行首 +/- 与统计
+    expect(screen.getByTestId('revision-diff-stats-2')).toHaveTextContent('+1 / −1 行');
+    expect(panel.querySelector('[data-kind="del"]')?.textContent).toBe('-line-5');
+    expect(panel.querySelector('[data-kind="add"]')?.textContent).toBe('+line-CHANGED');
+    // 3 行上下文 + 折叠行（变更在第 6 行，前面 5 行未变 → 折叠 2 行）
+    expect(panel.textContent).toContain('… 共 2 行未变 …');
+    const sameLines = panel.querySelectorAll('[data-kind="same"]');
+    expect(sameLines.length).toBeGreaterThanOrEqual(6);
+    // 再点收起
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.queryByTestId('revision-diff-2')).toBeNull());
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('当前版本那行不给展开；两版内容相同显示「无差异」', async () => {
+    const same = 'a\nb\nc';
+    server.use(
+      http.get('/api/knowledge/pages/p1', () => HttpResponse.json(page(3, '当前标题', same))),
+      http.get('/api/knowledge/pages/p1/revisions', () =>
+        HttpResponse.json({ items: [revision(3, '当前标题', same), revision(2, '旧标题', same)], next_offset: null })),
+      http.get('/api/knowledge/pages/p1/revisions/2', () => HttpResponse.json({ revision: 2, body_md: same })),
+    );
+    mount();
+    await openHistory();
+    await screen.findByTestId('knowledge-revision-diff-toggle-2');
+    expect(screen.queryByTestId('knowledge-revision-diff-toggle-3')).toBeNull();
+    expect(within(screen.getByTestId('knowledge-revision-3')).getByText('当前版本')).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId('knowledge-revision-diff-toggle-2'));
+    await waitFor(() => expect(screen.getByTestId('revision-diff-empty-2')).toHaveTextContent('两版内容相同'));
+  });
+
+  it('切「与上一版对比」→ diff 目标变为 r1→r2（内容随基准变化）', async () => {
+    const v1 = 'x\ny';
+    const v2 = 'x\nz';
+    const v3 = 'x\nz\nw';
+    server.use(
+      http.get('/api/knowledge/pages/p1', () => HttpResponse.json(page(3, '当前标题', v3))),
+      http.get('/api/knowledge/pages/p1/revisions', () =>
+        HttpResponse.json({ items: [revision(3, '当前标题', v3), revision(2, '第二版', v2), revision(1, '初版', v1)], next_offset: null })),
+      http.get('/api/knowledge/pages/p1/revisions/2', () => HttpResponse.json({ revision: 2, body_md: v2 })),
+      http.get('/api/knowledge/pages/p1/revisions/1', () => HttpResponse.json({ revision: 1, body_md: v1 })),
+    );
+    mount();
+    await openHistory();
+    fireEvent.click(await screen.findByTestId('knowledge-revision-diff-toggle-2'));
+    await waitFor(() => expect(screen.getByTestId('revision-diff-stats-2')).toHaveTextContent('+1 / −0 行'));
+    const switchBtn = screen.getByTestId('revision-diff-baseline-2');
+    expect(switchBtn).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(switchBtn);
+    await waitFor(() => expect(screen.getByTestId('revision-diff-baseline-2')).toHaveAttribute('aria-pressed', 'true'));
+    // r1→r2 的差异：y → z
+    await waitFor(() => expect(screen.getByTestId('revision-diff-stats-2')).toHaveTextContent('+1 / −1 行'));
+  });
+});
+
+
+
+

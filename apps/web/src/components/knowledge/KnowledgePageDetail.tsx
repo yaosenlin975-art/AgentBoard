@@ -7,6 +7,7 @@ import { KnowledgeImageComposer } from './KnowledgeImageComposer';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { downloadKnowledgeMarkdown } from '../../lib/knowledgeExport';
+import { diffLines, DIFF_LARGE_CHARS } from '../../lib/textDiff';
 import {
   CATEGORY_STYLES,
   normalizeCategory,
@@ -53,6 +54,11 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   const [bodyEditing, setBodyEditing] = useState(false);
   const [bodyDraft, setBodyDraft] = useState('');
   const [historyOffset, setHistoryOffset] = useState(0);
+  /** KB-DIFF-W：展开 diff 的 revision（再点收起）；基准 = 当前版本 / 上一版 */
+  const [diffRevision, setDiffRevision] = useState<number | null>(null);
+  const [diffBaseline, setDiffBaseline] = useState<'current' | 'previous'>('current');
+  /** 大正文降级后，用户显式点「打开全文对比」的 revision */
+  const [diffForced, setDiffForced] = useState<number | null>(null);
   const [confirm, setConfirm] = useState<'archive' | 'restore' | 'delete' | null>(null);
   const [expiryDraft, setExpiryDraft] = useState<string | null>(null);
   const [printing, setPrinting] = useState(false);
@@ -62,6 +68,20 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   const page = useQuery({ queryKey: ['knowledge-page', pageId, scope, workspaceId], queryFn: () => api.get<KnowledgePage>(`${path}?${query}`) });
   const history = useQuery({ queryKey: ['knowledge-history', pageId, scope, workspaceId, historyOffset, page.data?.revision], enabled: historyOpen,
     queryFn: () => api.get<{ items: KnowledgeRevision[]; next_offset: number | null }>(`${path}/revisions?${query}&offset=${historyOffset}&limit=20`) });
+  // KB-DIFF-W：展开 diff 时才按需拉单条 revision 全文（列表已瘦身，不批量拉）
+  const revisionBody = useQuery({
+    queryKey: ['knowledge-revision-body', pageId, scope, workspaceId, diffRevision],
+    enabled: diffRevision !== null,
+    queryFn: () => api.get<{ body_md?: string; body_snapshot?: string; title_snapshot?: string }>(`${path}/revisions/${diffRevision}?${query}`),
+  });
+  /** 基准 = 上一版时，再按需拉 r{n-1} 的正文 */
+  const baselineBody = useQuery({
+    queryKey: ['knowledge-revision-body', pageId, scope, workspaceId, diffBaseline === 'previous' ? (diffRevision ?? 0) - 1 : 0],
+    enabled: diffRevision !== null && diffBaseline === 'previous' && (diffRevision ?? 0) > 1,
+    queryFn: () => api.get<{ body_md?: string; body_snapshot?: string }>(`${path}/revisions/${(diffRevision ?? 1) - 1}?${query}`),
+  });
+  const bodyOf = (payload: { body_md?: string; body_snapshot?: string } | undefined): string =>
+    payload?.body_md ?? payload?.body_snapshot ?? '';
   const action = useMutation({ mutationFn: async (kind: 'archive' | 'restore' | 'delete') => api.post<KnowledgePage>(`${path}/actions`, { ...scopeData, action: kind, expected_revision: page.data!.revision, actor: 'user' }),
     onSuccess: () => { setConfirm(null); void page.refetch(); onChanged(); }, onError: () => { setConfirm(null); void page.refetch(); } });
   const expiry = useMutation({ mutationFn: (expiresAt: number | null) => api.put<KnowledgePage>(path, { ...scopeData, expires_at: expiresAt, expected_revision: page.data!.revision, actor: 'user' }),
@@ -277,6 +297,27 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
                 >
                   r{r.revision}
                 </button>
+                {/* KB-DIFF-W：点这一行展开/收起 diff（Enter/Space 由 button 原生支持）；当前版本行不给展开 */}
+                {r.revision !== p.revision && (
+                  <button
+                    type="button"
+                    data-testid={`knowledge-revision-diff-toggle-${r.revision}`}
+                    aria-expanded={diffRevision === r.revision}
+                    aria-controls={`revision-diff-${r.revision}`}
+                    onClick={() => {
+                      if (diffRevision === r.revision) {
+                        setDiffRevision(null);
+                        return;
+                      }
+                      setDiffRevision(r.revision);
+                      setDiffBaseline('current');
+                      setDiffForced(null);
+                    }}
+                    className="rounded px-1 text-left text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                  >
+                    {diffRevision === r.revision ? '收起 diff' : '查看 diff'}
+                  </button>
+                )}
                 <span data-testid={`knowledge-revision-kind-${r.revision}`} className="rounded bg-surface-raised px-1">{r.change_kind}</span>
                 <span data-testid={`knowledge-revision-actor-${r.revision}`} className="text-ink-2">{r.actor}</span>
                 <span data-testid={`knowledge-revision-time-${r.revision}`} className="text-ink-3">{new Date(r.created_at).toLocaleString()}</span>
@@ -318,6 +359,87 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
                   <div className="mx-auto max-w-[min(88ch,100%)] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
                 </div>
               )}
+              {diffRevision === r.revision && (() => {
+                const before = diffBaseline === 'current' ? bodyOf(revisionBody.data) : bodyOf(baselineBody.data);
+                const after = diffBaseline === 'current' ? String(p.body_md ?? '') : bodyOf(revisionBody.data);
+                const loading = revisionBody.isPending || (diffBaseline === 'previous' && baselineBody.isPending);
+                const failed = revisionBody.isError || (diffBaseline === 'previous' && baselineBody.isError);
+                const force = diffForced === r.revision;
+                const result = diffLines(before, after, { force });
+                const oldLabel = diffBaseline === 'current' ? `r${r.revision}` : `r${r.revision - 1}`;
+                const newLabel = diffBaseline === 'current' ? `r${p.revision}（当前）` : `r${r.revision}`;
+                return (
+                  <div
+                    id={`revision-diff-${r.revision}`}
+                    data-testid={`revision-diff-${r.revision}`}
+                    className="mt-1.5 rounded-md border border-hairline bg-surface-page px-2 py-1.5"
+                  >
+                    <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-2">
+                      <span>{oldLabel} → {newLabel}</span>
+                      <span data-testid={`revision-diff-stats-${r.revision}`} className="text-ink-3">
+                        +{result.added} / −{result.removed} 行
+                        {result.truncated && `（大正文 ${result.oldLines} → ${result.newLines} 行，已降级）`}
+                      </span>
+                      <button
+                        type="button"
+                        data-testid={`revision-diff-baseline-${r.revision}`}
+                        aria-pressed={diffBaseline === 'previous'}
+                        onClick={() => setDiffBaseline(diffBaseline === 'current' ? 'previous' : 'current')}
+                        className={`${BUTTON_SECONDARY} ml-auto`}
+                      >
+                        {diffBaseline === 'current' ? '与上一版对比' : '与当前版本对比'}
+                      </button>
+                    </div>
+                    {loading && <p className="text-[11px] text-ink-3">读取版本正文…</p>}
+                    {failed && <p role="alert" className="text-[11px] text-ink-2">读取该版本正文失败，稍后重试</p>}
+                    {!loading && !failed && result.hunks.length === 0 && (
+                      <p data-testid={`revision-diff-empty-${r.revision}`} className="text-[11px] text-ink-3">两版内容相同</p>
+                    )}
+                    {!loading && !failed && result.hunks.map((hunk, hunkIndex) => (
+                      <div key={hunkIndex}>
+                        {hunk.skippedBefore > 0 && (
+                          <p data-testid={`revision-diff-collapsed-${r.revision}-${hunkIndex}`} className="my-0.5 text-[11px] text-ink-3">
+                            … 共 {hunk.skippedBefore} 行未变 …
+                          </p>
+                        )}
+                        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5">
+                          {hunk.lines.map((line, lineIndex) => (
+                            <div
+                              key={lineIndex}
+                              data-kind={line.kind}
+                              className={
+                                line.kind === 'add'
+                                  ? 'border-l-2 border-accent bg-accent-soft pl-1 text-ink'
+                                  : line.kind === 'del'
+                                    ? 'border-l-2 border-transparent pl-1 text-ink-3 line-through'
+                                    : 'border-l-2 border-transparent pl-1 text-ink-2'
+                              }
+                            >
+                              {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '}
+                              {line.text}
+                            </div>
+                          ))}
+                        </pre>
+                      </div>
+                    ))}
+                    {result.truncated && !force && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] text-ink-3">
+                          正文超过 {Math.round(DIFF_LARGE_CHARS / 1000)} 千字符，已只显示变更块首尾（+{result.added} / −{result.removed} 行）
+                        </span>
+                        <button
+                          type="button"
+                          data-testid={`revision-diff-force-${r.revision}`}
+                          className={BUTTON_SECONDARY}
+                          onClick={() => setDiffForced(r.revision)}
+                        >
+                          在下方打开全文对比（可能卡顿）
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </li>
           ))}
         </ul>
@@ -329,3 +451,5 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     )}
   </article>;
 }
+
+
