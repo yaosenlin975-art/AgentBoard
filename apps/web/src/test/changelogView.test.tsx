@@ -1,4 +1,4 @@
-﻿/**
+/**
  * LOG-VIEW + LOG-SCROLL：日志是「知识库右侧的日志视图」，主体左列表 + 右侧连续滚动区。
  * 覆盖：入口位置与文案、进入视图而非浮窗、左右两栏、连续渲染与 1px 分割线、类型标签定宽、点击跳转、
  * 选中随滚动更新（IntersectionObserver）、reduced-motion 即时跳转、窄屏退化、空态、归档只读、切 workspace。

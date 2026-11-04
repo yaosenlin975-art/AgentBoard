@@ -1,4 +1,4 @@
-﻿/**
+/**
  * KBIMP-2：知识库导入的**纯前端解析层**（不触 DOM、不触网络，便于单测）。
  *
  * 契约来自服务端 `POST /api/knowledge/pages/import`（KBIMP-1，`9a4e06a`）：

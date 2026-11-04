@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 设置弹窗（设计 §7.1）：打开时拉取 GET /api/settings 展示真实持久化配置；
  * 保存 → PATCH /api/settings（端口 / DB 路径修改后需重启服务生效；并发上限即时生效）；
  * 主题三选项走 theme.ts setTheme：localStorage 持久化 + 即时切换。

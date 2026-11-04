@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 工作区日志视图（LOG03 / LOG-VIEW）。
  *
  * 原为浮窗内容（`<ChangelogPanel workspaceId onClose />` 由 Modal 包裹）；现在作为与平铺看板/任务树/知识库同级的
