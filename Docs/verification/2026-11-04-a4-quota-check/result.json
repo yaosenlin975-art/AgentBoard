@@ -1,0 +1,95 @@
+{
+  "count": 16,
+  "rows": [
+    {
+      "testid": "quota-row-deepseek",
+      "source": "deepseek",
+      "text": "DeepSeek 余额¥745.85余额"
+    },
+    {
+      "testid": "quota-row-balance-deepseek",
+      "source": null,
+      "text": "¥745.85余额"
+    },
+    {
+      "testid": "quota-row-opencode_go",
+      "source": "opencode_go",
+      "text": "OpenCode Go 套餐余量5h18%周55%月50%"
+    },
+    {
+      "testid": "quota-row-windows-opencode_go",
+      "source": null,
+      "text": "5h18%周55%月50%"
+    },
+    {
+      "testid": "quota-row-window-opencode_go-0",
+      "source": null,
+      "text": "5h18%"
+    },
+    {
+      "testid": "quota-row-bar-opencode_go-0",
+      "source": null,
+      "text": ""
+    },
+    {
+      "testid": "quota-row-used-opencode_go-0",
+      "source": null,
+      "text": "18%"
+    },
+    {
+      "testid": "quota-row-window-opencode_go-1",
+      "source": null,
+      "text": "周55%"
+    },
+    {
+      "testid": "quota-row-bar-opencode_go-1",
+      "source": null,
+      "text": ""
+    },
+    {
+      "testid": "quota-row-used-opencode_go-1",
+      "source": null,
+      "text": "55%"
+    },
+    {
+      "testid": "quota-row-window-opencode_go-2",
+      "source": null,
+      "text": "月50%"
+    },
+    {
+      "testid": "quota-row-bar-opencode_go-2",
+      "source": null,
+      "text": ""
+    },
+    {
+      "testid": "quota-row-used-opencode_go-2",
+      "source": null,
+      "text": "50%"
+    },
+    {
+      "testid": "quota-row-codex",
+      "source": "codex",
+      "text": "Codex 额度窗口本机 Codex 会话里没有可用的 5 小时/周窗口技术码NO_CODEX_RATE_LIMITS"
+    },
+    {
+      "testid": "quota-row-reason-codex",
+      "source": null,
+      "text": "本机 Codex 会话里没有可用的 5 小时/周窗口"
+    },
+    {
+      "testid": "quota-row-code-codex",
+      "source": null,
+      "text": "技术码NO_CODEX_RATE_LIMITS"
+    }
+  ],
+  "labels": [
+    "DeepSeek 余额",
+    "¥745.85余额",
+    "余额",
+    "OpenCode Go 套餐余量",
+    "5h18%周55%月50%",
+    "5h18%",
+    "5h",
+    "18%"
+  ]
+}

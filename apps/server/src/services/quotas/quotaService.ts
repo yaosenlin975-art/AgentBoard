@@ -19,40 +19,13 @@ import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, s
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
 
-export type QuotaSourceId = 'deepseek' | 'opencode_go' | 'codex';
-export type QuotaStatus = 'ok' | 'unsupported' | 'error';
+// ACC-KB-A4：额度类型收敛到 packages/shared（此前 server 与 web 各抄一份字面量 union）。
+// 这里 re-export 保持既有 import 路径可用（`accountQuotas.test.ts` 等仍从本模块取类型）。
+import type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow } from '@agentboard/shared';
+export type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow };
 
-export interface QuotaWindow {
-  /** 窗口名，例如 `5h` / `weekly` / `monthly` */
-  name: string;
-  /** 剩余额度（与 balance 同单位） */
-  remaining: number;
-  /** 窗口重置时刻（epoch ms）；无窗口概念时为 null */
-  reset_at: number | null;
-  /** 已用百分比（0-100）；百分比类窗口才有，其余为 null */
-  used_percent?: number | null;
-}
-
-export interface QuotaResult {
-  source: QuotaSourceId;
-  status: QuotaStatus;
-  /** 余额/剩余额度；unsupported 或 error 时为 null */
-  balance: number | null;
-  /** 币种或单位：`CNY` / `USD` / null */
-  unit: string | null;
-  windows: QuotaWindow[];
-  fetched_at: number;
-  /** 机器码（前端负责中文文案；未知码进「技术码」） */
-  reason_code: string | null;
-  /** 服务端给出的中文短说明（不含 token/路径） */
-  detail: string | null;
-}
-
-export interface QuotaSnapshot {
-  items: QuotaResult[];
-  fetched_at: number;
-}
 
 export interface QuotaService {
   get(): Promise<QuotaSnapshot>;
@@ -624,7 +597,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
 
   return {
     async get(): Promise<QuotaSnapshot> {
-      const sources: QuotaSourceId[] = ['deepseek', 'opencode_go', 'codex'];
+      const sources: QuotaSourceId[] = [...QUOTA_SOURCE_IDS];
       const items = await Promise.all(sources.map((source) => load(source)));
       return { items, fetched_at: now() };
     },

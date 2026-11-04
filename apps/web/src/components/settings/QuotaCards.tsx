@@ -12,39 +12,14 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { reasonTechnicalCode } from './accountCapabilities';
 
-export type QuotaSourceId = 'deepseek' | 'opencode_go' | 'codex';
-export type QuotaStatus = 'ok' | 'unsupported' | 'error';
+// ACC-KB-A4：额度类型与来源标签统一来自 packages/shared（此前前端另抄一份 union，靠人肉与服务端同步）。
+// `QuotaItem` 是本文件的历史命名，等价于 shared 的 `QuotaResult`，保留别名以免大面积改调用点。
+import type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaWindow } from '@agentboard/shared';
+import { QUOTA_SOURCE_IDS, QUOTA_SOURCE_LABEL } from '@agentboard/shared';
+export { QUOTA_SOURCE_LABEL };
+export type { QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow } from '@agentboard/shared';
+export type QuotaItem = QuotaResult;
 
-export interface QuotaWindow {
-  name: string;
-  remaining: number;
-  reset_at: number | null;
-  /** 已用百分比（0-100）；百分比类窗口（如 OpenCode Go）才有 */
-  used_percent?: number | null;
-}
-
-export interface QuotaItem {
-  source: QuotaSourceId;
-  status: QuotaStatus;
-  balance: number | null;
-  unit: string | null;
-  windows: QuotaWindow[];
-  fetched_at: number;
-  reason_code: string | null;
-  detail: string | null;
-}
-
-export interface QuotaSnapshot {
-  items: QuotaItem[];
-  fetched_at: number;
-  workspace_id: string | null;
-}
-
-export const QUOTA_SOURCE_LABEL: Record<QuotaSourceId, string> = {
-  deepseek: 'DeepSeek 余额',
-  opencode_go: 'OpenCode Go 套餐余量',
-  codex: 'Codex 额度窗口',
-};
 
 /** 额度来源的原因码文案（服务端口径）；未收录码走中性文案 + 技术码 */
 export const QUOTA_REASON_LABEL: Record<string, string> = {
@@ -232,7 +207,7 @@ export function QuotaCreditChip({ label = '积分 未接入', testId = 'quota-cr
   );
 }
 /** 额度行在总览里的顺序（设计 §5：仅额度平台在后，组内维持来源顺序） */
-export const QUOTA_ROW_ORDER: QuotaSourceId[] = ['deepseek', 'opencode_go', 'codex'];
+export const QUOTA_ROW_ORDER: readonly QuotaSourceId[] = QUOTA_SOURCE_IDS;
 
 /**
  * 额度来源行组（ACC-PANEL-03 嵌入六行总览的后三行）：逐来源一行，不可展开、无账号操作。

@@ -203,3 +203,49 @@ export interface ArchivedWorkspaceChangeLogSummary {
   last_occurred_at: number;
 }
 
+
+// ---------------- 额度 / 余额（ACC-KB-A4：单一事实源） ----------------
+// 服务端 `services/quotas/quotaService.ts` 与前端 `components/settings/QuotaCards.tsx` 都从这里取，
+// 不再各抄一份字面量 union。新增来源（ACC-KB-B5）时同步更新 `QUOTA_SOURCE_IDS` / `QUOTA_SOURCE_LABEL`。
+
+/** 额度来源 id */
+export type QuotaSourceId = 'deepseek' | 'opencode_go' | 'codex';
+
+/** 逐来源结果状态：ok 有数据、unsupported 该来源没有可用额度接口、error 本次取数失败 */
+export type QuotaStatus = 'ok' | 'unsupported' | 'error';
+
+/** 一个额度窗口（如 5h / weekly / monthly） */
+export interface QuotaWindow {
+  /** 窗口名，例如 `5h` / `weekly` / `monthly` */
+  name: string;
+  /** 剩余额度（与 balance 同单位） */
+  remaining: number;
+  /** 窗口重置时刻（epoch ms）；无窗口概念时为 null */
+  reset_at: number | null;
+  /** 已用百分比（0-100）；百分比类窗口才有，其余为 null */
+  used_percent?: number | null;
+}
+
+/** 单个来源的额度/余额结果 */
+export interface QuotaResult {
+  source: QuotaSourceId;
+  status: QuotaStatus;
+  /** 余额/剩余额度；unsupported 或 error 时为 null */
+  balance: number | null;
+  /** 币种或单位：`CNY` / `USD` / null */
+  unit: string | null;
+  windows: QuotaWindow[];
+  fetched_at: number;
+  /** 机器码（前端负责中文文案；未知码进「技术码」） */
+  reason_code: string | null;
+  /** 服务端给出的中文短说明（不含 token/路径） */
+  detail: string | null;
+}
+
+/** `GET /api/managed-account-quotas` 的响应体 */
+export interface QuotaSnapshot {
+  items: QuotaResult[];
+  fetched_at: number;
+  /** 前端带上工作区时会回显；其余情况缺省 */
+  workspace_id?: string | null;
+}
