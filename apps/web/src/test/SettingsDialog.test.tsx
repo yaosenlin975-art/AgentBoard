@@ -38,13 +38,16 @@ beforeEach(() => {
 });
 
 describe('SettingsDialog', () => {
-  it('打开拉取 GET /api/settings 并回填端口/并发上限/DB 路径', async () => {
+  it('打开拉取 GET /api/settings 并回填端口/并发上限；数据库路径不再重复给输入框', async () => {
     server.use(http.get('/api/settings', () => HttpResponse.json(settingsPayload)));
     renderSettings();
 
     expect(await screen.findByDisplayValue('9000')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('D:\\db\\a.db')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2')).toBeInTheDocument();
+    // SETTINGS-DB-DEDUP：重复的「数据库路径」输入框已删除，改为指引小字（路径在「数据存储」分区维护）
+    expect(screen.queryByLabelText('数据库路径')).toBeNull();
+    expect(screen.queryByTestId('settings-db-path')).toBeNull();
+    expect(screen.getByTestId('settings-db-path-hint')).toHaveTextContent('数据库位置与迁移见下方「数据存储」分区');
   });
 
   it('保存发送 PATCH 请求体并静默关闭', async () => {
@@ -64,8 +67,10 @@ describe('SettingsDialog', () => {
     await userEvent.click(screen.getByTestId('settings-save'));
 
     await waitFor(() =>
-      expect(patched).toEqual({ port: 9000, dbPath: 'D:\\db\\a.db', maxConcurrentTurns: 1 }),
+      // SETTINGS-DB-DEDUP：保存体只含 port / maxConcurrentTurns，**不再带 dbPath**（路径唯一写入口是迁移端点）
+      expect(patched).toEqual({ port: 9000, maxConcurrentTurns: 1 }),
     );
+    expect(patched).not.toHaveProperty('dbPath');
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 

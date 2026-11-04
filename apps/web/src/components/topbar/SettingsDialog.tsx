@@ -18,6 +18,7 @@ import { useAppStore } from '../../state/appStore';
 
 interface Settings {
   port: number;
+  /** SETTINGS-DB-DEDUP：响应仍带 dbPath（只读展示用），但保存体不再发送 */
   dbPath: string;
   maxConcurrentTurns: number;
 }
@@ -34,7 +35,6 @@ const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
 export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boolean; onClose: () => void; /** S2c：drawer 内联渲染时不再自带 Modal 壳（标题由 DrawerPanel 提供） */ variant?: 'modal' | 'inline' }) {
   const currentWorkspaceId = useAppStore((s) => s.workspaceId);
   const [port, setPort] = useState('');
-  const [dbPath, setDbPath] = useState('');
   const [maxTurns, setMaxTurns] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [theme] = useTheme();
@@ -51,14 +51,14 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
     const data = settingsQuery.data;
     if (data) {
       setPort(String(data.port));
-      setDbPath(data.dbPath);
       setMaxTurns(String(data.maxConcurrentTurns));
       setError(null);
     }
   }, [settingsQuery.data]);
 
   const save = useMutation({
-    mutationFn: (body: Settings) => api.patch<Settings>('/api/settings', body),
+    // SETTINGS-DB-DEDUP：只发 port / maxConcurrentTurns，不发 dbPath（路径唯一写入口是迁移端点）
+    mutationFn: (body: { port: number; maxConcurrentTurns: number }) => api.patch<Settings>('/api/settings', body),
     // 成功静默关闭（跟随新建 issue 弹窗惯例）
     onSuccess: () => onClose(),
     onError: (e) => setError(e instanceof Error ? e.message : '保存失败'),
@@ -70,7 +70,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
     if (save.isPending || !data) return;
     setError(null);
     // 输入为空/非数字时按当前输入直发，由服务端 zod 校验并返回 400 错误信息
-    save.mutate({ port: Number(port), dbPath, maxConcurrentTurns: Number(maxTurns) });
+    save.mutate({ port: Number(port), maxConcurrentTurns: Number(maxTurns) });
   };
 
   const loaded = settingsQuery.data !== undefined;
@@ -102,17 +102,11 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
             className={inputCls}
           />
         </label>
-        <label className="block text-sm">
-          <span className="mb-1 block text-ink-2">数据库路径</span>
-          <input
-            data-testid="settings-db-path"
-            aria-label="数据库路径"
-            value={dbPath}
-            onChange={(e) => setDbPath(e.target.value)}
-            disabled={!loaded}
-            className={inputCls}
-          />
-        </label>
+        {/* SETTINGS-DB-DEDUP：数据库位置只在「数据存储」分区维护（含迁移），这里不再重复输入框；
+            保存不再发 dbPath —— 路径的唯一写入口是迁移端点，避免绕过迁移直接改路径。 */}
+        <p data-testid="settings-db-path-hint" className="text-xs text-ink-3">
+          数据库位置与迁移见下方「数据存储」分区
+        </p>
         <div className="text-sm">
           <span className="mb-1 block text-ink-2">主题</span>
           <div className="flex gap-2">
@@ -189,6 +183,9 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
     </Modal>
   );
 }
+
+
+
 
 
 
