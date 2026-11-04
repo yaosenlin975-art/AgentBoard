@@ -18,6 +18,7 @@ import { fetchKnowledgePage } from '../../lib/knowledgeRef';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { PANEL_MOTION_MS, panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
+import { ErrorState } from '../ui/ErrorState';
 
 function messageOf(error: unknown): string {
   if (error instanceof ApiError && (error.status === 404 || error.status === 403)) return '无权限或不存在';
@@ -33,7 +34,7 @@ function KnowledgeRef({ id }: { id: string }) {
 
   if (query.isPending) return <p className="text-xs text-ink-3" role="status">加载知识页…</p>;
   if (query.isError) {
-    return <p data-testid="ref-panel-error" className="text-xs text-red-600 dark:text-red-400">{messageOf(query.error)}</p>;
+    return <ErrorState message={messageOf(query.error)} testId="ref-panel-error" className="text-xs" />;
   }
   const page = query.data;
   return (
@@ -62,7 +63,7 @@ function LogRef({ id }: { id: string }) {
   }
   if (query.isPending) return <p className="text-xs text-ink-3" role="status">加载日志…</p>;
   if (query.isError) {
-    return <p data-testid="ref-panel-error" className="text-xs text-red-600 dark:text-red-400">{messageOf(query.error)}</p>;
+    return <ErrorState message={messageOf(query.error)} testId="ref-panel-error" className="text-xs" />;
   }
   const entry = query.data;
   return (

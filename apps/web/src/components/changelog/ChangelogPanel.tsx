@@ -21,6 +21,7 @@ import { usePrefersReducedMotion } from '../overlay/panelMotion';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
 import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTimeline';
 import { ChangelogTypeTag } from './ChangelogTypeTag';
+import { ErrorState } from '../ui/ErrorState';
 
 const PAGE = 20;
 const TYPES: WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
@@ -339,11 +340,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
       )}
 
       {list.isPending && <p className="text-xs text-ink-3" role="status">加载变更日志…</p>}
-      {list.isError && (
-        <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-          {list.error.message}
-        </p>
-      )}
+      {list.isError && <ErrorState error={list.error} className="text-xs" />}
       {list.data !== undefined && (
         <div
           data-testid="changelog-split"

@@ -51,6 +51,7 @@ import {
   type SelectionScope,
 } from '../../lib/selection';
 import { SelectionBar } from './SelectionBar';
+import { ErrorState } from '../ui/ErrorState';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -221,15 +222,7 @@ export function Board({
   return (
     <div className="flex h-full flex-col">
       {error !== null && (
-        <div
-          role="alert"
-          className="flex items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-300"
-        >
-          <span>{error}</span>
-          <button type="button" onClick={() => setError(null)} className="px-1 text-red-500" aria-label="关闭提示">
-            ×
-          </button>
-        </div>
+        <ErrorState error={error} onDismiss={() => setError(null)} className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-sm" />
       )}
       {/* TOPBAR-INLINE：视图切换（平铺看板/任务树/知识库/日志）+ 搜索框 + 标签 chips 同在一行。
           tab 组 `shrink-0` 不被压缩；搜索框 `shrink-0`；chips 容器 `min-w-0 flex-1 overflow-x-auto`

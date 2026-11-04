@@ -19,6 +19,8 @@ import type { Issue, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { usePanelStore } from '../../state/panelStore';
 import { clearStream } from '../../state/streamingStore';
+import { EmptyState } from '../ui/EmptyState';
+import { Skeleton } from '../ui/Skeleton';
 
 /** 「无任务会话」分组键（不与工作空间 id 冲突） */
 const FREE_GROUP = 'free';
@@ -150,13 +152,9 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {loading && groups.length === 0 ? (
-          <p data-testid="chat-session-list-loading" className="px-2.5 py-2 text-xs text-ink-3">
-            会话加载中…
-          </p>
+          <Skeleton testId="chat-session-list-loading" rows={2} className="mx-2 mt-2" />
         ) : groups.length === 0 ? (
-          <p data-testid="chat-session-list-empty" className="px-2.5 py-2 text-xs text-ink-3">
-            暂无会话
-          </p>
+          <EmptyState testId="chat-session-list-empty" compact className="mx-2 mt-2" title="暂无会话" hint="新建会话后在此展示" />
         ) : (
           groups.map((group) => (
             <div key={group.key} data-testid={`chat-session-group-${group.key}`}>

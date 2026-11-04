@@ -85,6 +85,8 @@ optgroup {
   --ab-ink-2: #5e554a;
   --ab-ink-3: #6b6257; /* THEME-CONTRAST-AUDIT：原 #7b7266 在 raised(#efe9df) 上 3.92:1，提到 4.95:1 */
   --ab-accent: #a04a08; /* THEME-CONTRAST-AUDIT：原 #b45309 在 raised/tint 上 4.13-4.16:1，提到 4.65-5.0:1（白字仍 6.4:1） */
+  /* V-02：Markdown 链接独立 token（不再硬编码蓝）；错误正文不做链接化，长 URL 不抢眼 */
+  --ab-link: #2563eb;
   --ab-accent-ink: #ffffff;
   --ab-accent-soft: rgba(180, 83, 9, 0.12);
   /* UNSLOP pass 9：全站唯一缓动曲线 */
@@ -105,6 +107,7 @@ optgroup {
   --ab-accent: #f0a01e;
   --ab-accent-ink: #1c1a18;
   --ab-accent-soft: rgba(240, 160, 30, 0.16);
+  --ab-link: #60a5fa;
 }
 
 /*
@@ -227,7 +230,7 @@ optgroup {
   color: rgb(0 0 0 / 0.6);
 }
 .markdown-body a {
-  color: #2563eb;
+  color: var(--ab-link);
   text-decoration: underline;
 }
 /* 表格：宽表不撑破容器（横向滚动由外层包裹），斑马纹 + 表头底色 */
@@ -309,9 +312,6 @@ optgroup {
 .dark .markdown-body blockquote {
   border-left-color: rgb(255 255 255 / 0.25);
   color: rgb(255 255 255 / 0.6);
-}
-.dark .markdown-body a {
-  color: #60a5fa;
 }
 .dark .markdown-body th,
 .dark .markdown-body td {

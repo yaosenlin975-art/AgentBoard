@@ -15,6 +15,8 @@ import { KnowledgeGraph, prefetchGraphChunk } from './KnowledgeGraph';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { Kbd } from '../ui/Kbd';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
+import { EmptyState } from '../ui/EmptyState';
+import { Skeleton } from '../ui/Skeleton';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -132,21 +134,11 @@ export function KnowledgePanel({
         </div>
       ) : (
       <div className="min-w-0 lg:w-80 lg:flex-none">
-        {list.isPending && <ul data-testid="knowledge-skeleton" aria-hidden className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
-          {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），
-              数据到位即卸载，不是装饰性循环动画 → 保留，不要搬到其它非实时状态。 */}
-          {[0, 1, 2].map(i => <li key={i} className="animate-pulse px-3 py-3">
-            <div className="h-3.5 w-2/3 rounded bg-surface-raised" />
-            <div className="mt-2 h-3 w-full rounded bg-surface-raised" />
-            <div className="mt-2 h-3 w-1/3 rounded bg-surface-raised" />
-          </li>)}
-        </ul>}
+        {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），数据到位即卸载；画法统一走 Skeleton 基元 */}
+        {list.isPending && <Skeleton testId="knowledge-skeleton" rows={3} />}
         {list.isPending && <p className="sr-only">加载中…</p>}
 
-        {!list.isPending && !list.isError && items.length === 0 && <div data-testid="knowledge-empty" className="rounded-xl border border-dashed border-hairline px-4 py-10 text-center">
-          <p className="text-sm font-medium text-ink-2">{query ? '没有匹配的知识' : '暂无知识'}</p>
-          <p className="mt-1 text-xs text-ink-3">{query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'}</p>
-        </div>}
+        {!list.isPending && !list.isError && items.length === 0 && <EmptyState testId="knowledge-empty" title={query ? '没有匹配的知识' : '暂无知识'} hint={query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'} />}
 
         {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
           {items.map(page => {

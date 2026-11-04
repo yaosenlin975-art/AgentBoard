@@ -12,6 +12,7 @@ import { columnDroppableId } from '../../lib/dnd';
 import { groupIssuesForDisplay, type BoardDensity, type BoardGrouping } from '../../lib/displayOptions';
 import { issueInScope, type SelectionScope } from '../../lib/selection';
 import { IssueCard } from './IssueCard';
+import { EmptyState } from '../ui/EmptyState';
 
 export function Column({
   status,
@@ -112,12 +113,13 @@ export function Column({
               ))}
         </SortableContext>
         {issues.length === 0 && (
-          <div
-            data-testid={`empty-${status}`}
-            className="flex flex-1 items-center justify-center py-4 text-xs text-ink-3"
-          >
-            暂无任务
-          </div>
+          <EmptyState
+            compact
+            testId={`empty-${status}`}
+            title="暂无任务"
+            hint="把卡片拖到本列，或点列头「+」新建"
+            className="flex-1 justify-center"
+          />
         )}
       </div>
     </section>

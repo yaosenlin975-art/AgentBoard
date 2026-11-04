@@ -23,6 +23,8 @@ import {
 } from '../../lib/workspaceReorder';
 import { WorkspaceCard } from './WorkspaceCard';
 import { NewWorkspaceDialog } from './NewWorkspaceDialog';
+import { EmptyState } from '../ui/EmptyState';
+import { Skeleton } from '../ui/Skeleton';
 
 export function WorkspaceList() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -134,17 +136,12 @@ export function WorkspaceList() {
       )}
 
       <div className="flex-1 overflow-y-auto px-2 pb-2" role="list" aria-label="工作空间列表">
-        {isLoading && <p className="py-6 text-center text-sm text-ink-3">加载中…</p>}
+        {isLoading && <Skeleton testId="workspace-list-loading" rows={2} className="mt-4" />}
         {!isLoading && list.length === 0 && (
-          <div className="mt-8 rounded-md border border-dashed border-hairline p-6 text-center text-sm text-ink-2">
-            <p>还没有工作空间</p>
-            <p className="mt-1 text-xs">点击右上角「+ 新增」创建第一个工作空间</p>
-          </div>
+          <EmptyState className="mt-8" title="还没有工作空间" hint="点击右上角「+ 新增」创建第一个工作空间" />
         )}
         {!isLoading && list.length > 0 && entries.length === 0 && (
-          <p data-testid="workspace-search-empty" className="py-6 text-center text-sm text-ink-2">
-            没有匹配的工作空间
-          </p>
+          <EmptyState testId="workspace-search-empty" compact className="mt-4" title="没有匹配的工作空间" hint="换个关键词，或清空搜索框" />
         )}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext items={entries.map(({ workspace }) => workspace.id)} strategy={verticalListSortingStrategy}>

@@ -8,6 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
 import type { DependencyRef, DependencyView } from '../../lib/dependency';
+import { EmptyState } from '../ui/EmptyState';
 
 const inputCls =
   'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
@@ -145,7 +146,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
           ))}
         </ul>
         {dependencies !== undefined && blockers.length === 0 && (
-          <p data-testid="dep-blockers-empty" className="text-xs text-neutral-400 dark:text-neutral-500">无前置任务</p>
+          <EmptyState testId="dep-blockers-empty" compact title="无前置任务" hint="在下方「添加前置」里选择阻塞本卡的任务" />
         )}
       </div>
 
@@ -157,7 +158,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
           ))}
         </ul>
         {dependencies !== undefined && blocked.length === 0 && (
-          <p data-testid="dep-blocked-empty" className="text-xs text-neutral-400 dark:text-neutral-500">没有阻塞其他任务</p>
+          <EmptyState testId="dep-blocked-empty" compact title="没有阻塞其他任务" hint="其他任务把本卡设为前置后会出现在这里" />
         )}
       </div>
 

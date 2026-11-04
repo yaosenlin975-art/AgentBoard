@@ -13,6 +13,7 @@ import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { IconLock } from '../ui/Icon';
+import { ErrorState } from '../ui/ErrorState';
 
 const PAGE_SIZE = 50;
 const emptyIds: ReadonlySet<string> = new Set();
@@ -226,7 +227,7 @@ function TaskTreeChildren({
     return <p className="px-2 py-3 text-sm text-ink-3" role="status">{depth === 0 ? '加载任务树…' : '加载子任务…'}</p>;
   }
   if (query.isError) {
-    return <p className="px-2 py-3 text-sm text-red-600 dark:text-red-400" role="alert">加载{depth === 0 ? '任务树' : '子任务'}失败：{query.error.message}</p>;
+    return <ErrorState error={query.error} prefix={depth === 0 ? '加载任务树失败' : '加载子任务失败'} className="mx-2 my-3 text-sm" />;
   }
   if (visibleItems.length === 0 && query.isFetchingNextPage) {
     return <p className="px-2 py-3 text-sm text-ink-3" role="status">正在查找匹配任务…</p>;
