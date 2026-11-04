@@ -18,6 +18,7 @@ import {
   type VoiceSettings,
 } from '../../lib/voice/contract';
 import { IDLE_GESTURE, gestureDown, gestureEnd, gestureMove, gestureTick, type GestureState } from '../../lib/voice/gesture';
+import { VoiceHint, VoiceMicWave } from './VoiceFeedback';
 import { insertVoiceText } from '../../lib/voice/insertText';
 import { startVoiceSession, VoiceInputError, type VoiceSessionHandle } from '../../lib/voice/recorder';
 import { loadVoiceSettings, saveVoiceSettings } from '../../lib/voice/settings';
@@ -103,6 +104,12 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
   const [status, setStatus] = useState<Status>('idle');
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // VOICE-UI-3：音波用 rAF 逐帧读最新电平（不依赖每次 setState 的节奏）
+  const levelRef = useRef(0);
+  levelRef.current = level;
+  const readLevel = useCallback(() => levelRef.current, []);
+  /** STT 开启且已选到模型才给聚焦提示（关闭/无模型 → 不显示） */
+  const hintEnabled = settings.enabled && settings.modelId !== null;
 
   const clearTimer = (): void => {
     if (timerRef.current !== null) {
@@ -265,12 +272,15 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
           className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-lg border border-hairline bg-surface-card px-3 py-2 text-xs text-ink shadow-lg"
         >
           <span className="font-medium">正在听…</span>
+          <VoiceMicWave active={status === 'listening'} getLevel={readLevel} />
           <span data-testid="voice-level" className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-raised">
             <span className="block h-full rounded-full bg-accent transition-[width] duration-100" style={{ width: `${Math.round(level * 100)}%` }} />
           </span>
           <span className="text-ink-3">松手结束</span>
         </div>
       )}
+      {/* VOICE-UI-3：聚焦提示（STT 开启且模型可用时） */}
+      <VoiceHint enabled={hintEnabled} />
       {error !== null && (
         <div
           data-testid="voice-error"
