@@ -39,7 +39,16 @@ export function migrateKnowledge(db: Db): void {
   ensureColumn(db, 'knowledge_page', 'category', "category TEXT NOT NULL DEFAULT 'legacy' CHECK(category IN ('design','solved','pinned','open','legacy'))");
   ensureColumn(db, 'knowledge_page', 'landed', "landed TEXT CHECK(landed IS NULL OR landed IN ('landed','partial','proposed'))");
   db.exec("CREATE INDEX IF NOT EXISTS knowledge_category ON knowledge_page(category,status)");
+  // KB-PAGE-3：域词表落到表字段（NULL = 未归类，不默认 legacy，也不加 CHECK——词表校验放服务层）
+  ensureColumn(db, 'knowledge_page', 'domain', 'domain TEXT');
 }
+
+/**
+ * KB-PAGE-3 的域词表（与仓库文档同一套词表）。校验在服务层做（不加 schema CHECK），
+ * 这样后续扩展词表不需要重建表。
+ */
+export const KNOWLEDGE_DOMAINS = ['accounts', 'knowledge', 'board', 'chat', 'ui', 'infra'] as const;
+export type KnowledgeDomain = (typeof KNOWLEDGE_DOMAINS)[number];
 
 /** SQLite 的 ALTER TABLE ADD COLUMN 不可重复执行：先查 PRAGMA table_info 再决定是否加 */
 function ensureColumn(db: Db, table: string, column: string, ddl: string): void {

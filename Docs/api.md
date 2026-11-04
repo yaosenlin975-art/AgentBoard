@@ -162,7 +162,17 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
-﻿### KB-PAGE-2 统一 resolve 与 link
+﻿﻿### KB-PAGE-3 `domain`（域词表）与回填状态
+
+| 项 | 口径 |
+| --- | --- |
+| 列 | `knowledge_page.domain TEXT`（**幂等 ADD COLUMN**，NULL = 未归类；不加 CHECK，词表校验在服务层，便于扩展） |
+| 词表 | `accounts / knowledge / board / chat / ui / infra`（`db/migrations/knowledge.ts` 的 `KNOWLEDGE_DOMAINS`，单一来源） |
+| 写入 | `POST /pages`（create）与 `PUT /pages/:id`（revise）都接受 `domain`；非法值 → **400** `domain 只能是：accounts / knowledge / board / chat / ui / infra（当前：xxx）`；revise 未传则保持原值 |
+| 读取 | 页面响应与列表/搜索**新增** `domain` 字段（加法，既有字段语义不变） |
+| CLI | `kb knowledge create|revise --domain <域>`；`list` 输出含 domain |
+
+### KB-PAGE-2 统一 resolve 与 link
 
 | 端点 | 请求 | 响应 | 错误 |
 | --- | --- | --- | --- |

@@ -3,6 +3,7 @@ import type { KnowledgeEvidence, KnowledgePage, KnowledgeRevision, KnowledgeScop
 import type { Db } from '../connection.js';
 import { syncPageLinks } from '../../services/knowledgeLinks.js';
 import { ApiError, ValidationError } from '../../errors.js';
+import { KNOWLEDGE_DOMAINS } from '../migrations/knowledge.js';
 import { validateKnowledgeContent, validateKnowledgeScope } from '../../services/knowledge.js';
 
 export type CreateKnowledgePageInput = KnowledgeScope & {
@@ -12,7 +13,7 @@ export type CreateKnowledgePageInput = KnowledgeScope & {
   category?: KnowledgePage['category'];
   landed?: KnowledgePage['landed'];
 };
-export type KnowledgePagePatch = Partial<Pick<KnowledgePage, 'title' | 'body_md' | 'sources' | 'evidence' | 'expires_at' | 'category' | 'landed'>> & { actor: string; change_note?: string };
+export type KnowledgePagePatch = Partial<Pick<KnowledgePage, 'title' | 'body_md' | 'sources' | 'evidence' | 'expires_at' | 'category' | 'landed'>> & { actor: string; change_note?: string; domain?: string | null };
 
 /**
  * KB-MODEL 落库规则（与前端 `normalizeCategory` 同语义）：
@@ -21,6 +22,15 @@ export type KnowledgePagePatch = Partial<Pick<KnowledgePage, 'title' | 'body_md'
  *   并在响应里回显，避免被误读成已落地）；
  * - 非 design 类一律把 landed 置 null（solved/pinned/open/legacy 没有落地状态）。
  */
+/** KB-PAGE-3：domain 词表校验（空/undefined → null=未归；非法 → 中文报错并列出词表） */
+export function normalizeKnowledgeDomain(domain?: string | null): string | null {
+  if (domain === undefined || domain === null || domain === '') return null;
+  if (!(KNOWLEDGE_DOMAINS as readonly string[]).includes(domain)) {
+    throw new ValidationError(`domain 只能是：${KNOWLEDGE_DOMAINS.join(' / ')}（当前：${domain}）`);
+  }
+  return domain;
+}
+
 export function normalizePageCategory(category?: string | null, landed?: string | null): { category: NonNullable<KnowledgePage['category']>; landed: KnowledgePage['landed'] } {
   const allowed = ['design', 'solved', 'pinned', 'open', 'legacy'] as const;
   const normalized = (allowed as readonly string[]).includes(category ?? '') ? (category as (typeof allowed)[number]) : 'legacy';
@@ -107,11 +117,13 @@ export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): Kn
   if (input.scope === 'workspace' && !db.prepare('SELECT 1 FROM workspace WHERE id=?').get(input.workspace_id)) throw new ValidationError('工作空间不存在');
   const now = Date.now();
   const taxonomy = normalizePageCategory(input.category, input.landed);
-  const page: KnowledgePage = { id: randomUUID(), scope: input.scope, workspace_id: input.workspace_id ?? null, slug: input.slug, title: input.title, body_md: input.body_md, sources: input.sources, evidence: input.evidence, status: 'active', revision: 1, expires_at: input.expires_at ?? null, created_by: input.actor, updated_by: input.actor, created_at: now, updated_at: now, ...taxonomy };
+  // KB-PAGE-3：domain 单独校验（NULL=未归；非法 → 中文报错并列词表）
+  const domain = normalizeKnowledgeDomain((input as { domain?: string | null }).domain);
+  const page: KnowledgePage = { id: randomUUID(), scope: input.scope, workspace_id: input.workspace_id ?? null, slug: input.slug, title: input.title, body_md: input.body_md, sources: input.sources, evidence: input.evidence, status: 'active', revision: 1, expires_at: input.expires_at ?? null, created_by: input.actor, updated_by: input.actor, created_at: now, updated_at: now, ...taxonomy, domain } as KnowledgePage & { domain: string | null };
   try {
     return db.transaction(() => {
-      db.prepare(`INSERT INTO knowledge_page (id,scope,workspace_id,slug,title,body_md,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(page.id, page.scope, page.workspace_id, page.slug, page.title, page.body_md, page.status, page.revision, page.expires_at, page.created_by, page.updated_by, now, now, page.category, page.landed);
+      db.prepare(`INSERT INTO knowledge_page (id,scope,workspace_id,slug,title,body_md,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(page.id, page.scope, page.workspace_id, page.slug, page.title, page.body_md, page.status, page.revision, page.expires_at, page.created_by, page.updated_by, now, now, page.category, page.landed, domain);
       appendRevision(db, page, 'create', input.change_note ?? '');
       // V2-4：写入时解析 `[[双链]]`，与该页 revision 绑定（同一事务）
       syncPageLinks(db, page);
@@ -134,8 +146,12 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
       );
       const page: KnowledgePage = { ...old, title: patch.title ?? old.title, body_md: patch.body_md ?? old.body_md, sources: patch.sources ?? old.sources, evidence: patch.evidence ?? old.evidence, expires_at: patch.expires_at === undefined ? old.expires_at : patch.expires_at, updated_by: patch.actor, updated_at: Math.max(Date.now(), old.updated_at + 1), revision: old.revision + 1, status: kind === 'archive' ? 'archived' : kind === 'restore' ? 'active' : kind === 'delete' ? 'deleted' : old.status, ...taxonomy };
       validateKnowledgeContent({ ...page, actor: patch.actor });
-      const result = db.prepare(`UPDATE knowledge_page SET title=?,body_md=?,status=?,revision=?,expires_at=?,updated_by=?,updated_at=?,category=?,landed=? WHERE id=? AND scope=? AND workspace_id IS ? AND revision=?`)
-        .run(page.title, page.body_md, page.status, page.revision, page.expires_at, page.updated_by, page.updated_at, page.category, page.landed, pageId, scope.scope, scope.workspace_id ?? null, expectedRevision);
+      // KB-PAGE-3：domain 也走 CAS 更新（未传则保持原值）
+      const nextDomain = patch.domain === undefined ? (old as { domain?: string | null }).domain ?? null : normalizeKnowledgeDomain(patch.domain);
+      const result = db.prepare(`UPDATE knowledge_page SET title=?,body_md=?,status=?,revision=?,expires_at=?,updated_by=?,updated_at=?,category=?,landed=?,domain=? WHERE id=? AND scope=? AND workspace_id IS ? AND revision=?`)
+        .run(page.title, page.body_md, page.status, page.revision, page.expires_at, page.updated_by, page.updated_at, page.category, page.landed, nextDomain, pageId, scope.scope, scope.workspace_id ?? null, expectedRevision);
+      // 响应要反映本次写入的 domain（page 由 ...old 展开，需回填）
+      (page as unknown as { domain: string | null }).domain = nextDomain;
       if (result.changes !== 1) {
         const current = db.prepare('SELECT revision FROM knowledge_page WHERE id=? AND scope=? AND workspace_id IS ?').get(pageId, scope.scope, scope.workspace_id ?? null) as { revision: number } | undefined;
         throw new ApiError(409, 'KNOWLEDGE_REVISION_CONFLICT', '知识页已更新，请重新读取', current ? { current_revision: current.revision } : undefined);
@@ -148,7 +164,8 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
   } catch (error) { return duplicate(error); }
 }
 export function reviseKnowledgePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevision: number, patch: KnowledgePagePatch): KnowledgePage {
-  if (!['title', 'body_md', 'sources', 'evidence', 'expires_at', 'category', 'landed'].some(k => Object.hasOwn(patch, k))) throw new ValidationError('修订必须包含改动字段');
+  // KB-PAGE-3：domain 也是可修订字段
+    if (!['title', 'body_md', 'sources', 'evidence', 'expires_at', 'category', 'landed', 'domain'].some(k => Object.hasOwn(patch, k))) throw new ValidationError('修订必须包含改动字段');
   return changePage(db, pageId, scope, expectedRevision, patch, 'update');
 }
 export function setKnowledgePageStatus(db: Db, pageId: string, scope: KnowledgeScope, expectedRevision: number, action: 'archive' | 'restore' | 'delete', actor: string): KnowledgePage {

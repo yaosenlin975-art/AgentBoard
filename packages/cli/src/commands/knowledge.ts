@@ -336,9 +336,10 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--evidence-file <path>', '从 UTF-8 文件读证据数组 JSON（推荐，避免转义）')
     .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限')
     .option('--category <分类>', 'design|solved|pinned|open（缺省由服务端归一）')
+  .option('--domain <域>', 'accounts|knowledge|board|chat|ui|infra（KB-PAGE-3；缺省=未归类）')
     .option('--landed <状态>', 'landed|partial|proposed（design 缺省时服务端记 proposed）');
 
-  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string }) {
+  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string }) {
     const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile) : undefined;
     const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile) : undefined;
     if (sourcesRaw !== undefined) validateSources('--sources', sourcesRaw);
@@ -349,6 +350,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
       ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),
       ...(validateCategory(opts.category) !== undefined ? { category: validateCategory(opts.category) } : {}),
+    ...(opts.domain !== undefined && opts.domain !== '' ? { domain: opts.domain } : {}),
       ...(validateLanded(opts.landed) !== undefined ? { landed: validateLanded(opts.landed) } : {}),
       actor: ctx.agentId,
     };
@@ -356,7 +358,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
 
   scoped(contentOptions(knowledge.command('create')).description('新建知识页（需要 --stdin/--sources/--evidence）').requiredOption('--title <title>').requiredOption('--slug <slug>'))
     .addHelpText('after', CREATE_HELP)
-    .action(async (opts: ScopeOptions & { category?: string; landed?: string; title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
+    .action(async (opts: ScopeOptions & { category?: string; landed?: string; domain?: string; title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
       // C：先做客户端校验，非法值不发请求
       validateCategory(opts.category); validateLanded(opts.landed);
       const ctx = context();

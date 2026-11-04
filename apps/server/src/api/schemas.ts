@@ -17,7 +17,9 @@ const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_
   expires_at: z.number().int().nonnegative().nullable().optional(),
   // KB-MODEL：非法 category/landed 一律 400（zod enum）；缺省由 repo 归一到 legacy
   category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
-  landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional() };
+  landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional(),
+  // KB-PAGE-3：域词表校验放服务层（此处只收字符串，便于后续扩词表不重建 schema）
+  domain: z.string().optional() };
 const knowledgeAuditFields = { actor: z.string().trim().min(1).max(100), change_note: z.string().max(2000).optional() };
 /**
  * KBIMP-1：知识页文本导入。`content` 就是文件原文（前端读文件后原样上传）；
