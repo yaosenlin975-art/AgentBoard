@@ -15,7 +15,7 @@ import { reasonTechnicalCode } from './accountCapabilities';
 // ACC-KB-A4：额度类型与来源标签统一来自 packages/shared（此前前端另抄一份 union，靠人肉与服务端同步）。
 // `QuotaItem` 是本文件的历史命名，等价于 shared 的 `QuotaResult`，保留别名以免大面积改调用点。
 import type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaWindow } from '@agentboard/shared';
-import { QUOTA_SOURCE_IDS, QUOTA_SOURCE_LABEL } from '@agentboard/shared';
+import { QUOTA_GROUPS, QUOTA_SOURCE_IDS, QUOTA_SOURCE_LABEL } from '@agentboard/shared';
 export { QUOTA_SOURCE_LABEL };
 export type { QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow } from '@agentboard/shared';
 export type QuotaItem = QuotaResult;
@@ -23,7 +23,8 @@ export type QuotaItem = QuotaResult;
 
 /** 额度来源的原因码文案（服务端口径）；未收录码走中性文案 + 技术码 */
 export const QUOTA_REASON_LABEL: Record<string, string> = {
-  NO_CREDENTIAL: '本机未找到该来源的凭据',
+  // ACC-KB-B5W：无凭据一律显示「未接入」，不显示 0 / 0% / 假进度条
+  NO_CREDENTIAL: '未接入（本机没有该来源的凭据）',
   NO_PUBLIC_QUOTA_ENDPOINT: '该来源没有公开的额度接口',
   CREDENTIAL_INVALID: '凭据已失效，请更新后重试',
   RATE_LIMITED: '对方限流，稍后自动重试',
@@ -105,6 +106,19 @@ export function quotaWindowShortLabel(name: string): string {
   return name;
 }
 
+/**
+ * ACC-KB-B5W：窗口标签优先用 `kind`（rolling/weekly/monthly/credit），
+ * 老数据没有 `kind` 时回落到窗口名（`quotaWindowShortLabel`），不崩、不改旧读法。
+ */
+export function quotaWindowKindLabel(window: QuotaWindow): string {
+  switch (window.kind) {
+    case 'rolling': return quotaWindowShortLabel(window.name);
+    case 'weekly': return '周';
+    case 'monthly': return '月';
+    case 'credit': return '积分';
+    default: return quotaWindowShortLabel(window.name);
+  }
+}
 /** 「已限额」判定：名为 limited 的窗口或已用满 100% */
 export function isWindowLimited(window: QuotaWindow): boolean {
   return window.name === 'limited' || (window.used_percent ?? 0) >= 100;
@@ -159,10 +173,13 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
               <span
                 key={`${item.source}-${window.name}-${index}`}
                 data-testid={`quota-row-window-${item.source}-${index}`}
-                title={`${quotaWindowShortLabel(window.name)} · ${formatResets(window.reset_at, now)}`}
+                data-kind={window.kind ?? 'legacy'}
+                data-total={window.total ?? ''}
+                data-used={window.used ?? ''}
+                title={`${quotaWindowKindLabel(window)} · ${formatResets(window.reset_at, now)}`}
                 className="inline-flex items-center gap-1.5"
               >
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{quotaWindowShortLabel(window.name)}</span>
+                <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{quotaWindowKindLabel(window)}</span>
                 <span aria-hidden="true" className="h-1.5 w-14 overflow-hidden rounded-full bg-surface-raised">
                   <span
                     data-testid={`quota-row-bar-${item.source}-${index}`}
@@ -176,7 +193,12 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
                     {QUOTA_LIMITED_LABEL}
                   </span>
                 ) : (
-                  <span data-testid={`quota-row-used-${item.source}-${index}`} className="tabular-nums text-[11px] text-neutral-700 dark:text-neutral-300">{pct}%</span>
+                  // ACC-KB-B5W：窗口有 total/used 就显示「已用/总量」，否则回落百分比；老数据没有 kind/total/used 也不崩
+                  <span data-testid={`quota-row-used-${item.source}-${index}`} className="tabular-nums text-[11px] text-neutral-700 dark:text-neutral-300">
+                    {window.total !== undefined && window.total !== null && window.used !== undefined && window.used !== null
+                      ? `${Math.round(window.used)}/${Math.round(window.total)}`
+                      : `${pct}%`}
+                  </span>
                 )}
               </span>
             );
@@ -206,6 +228,25 @@ export function QuotaCreditChip({ label = '积分 未接入', testId = 'quota-cr
     </span>
   );
 }
+/**
+ * ACC-KB-B5W：把来源按 `QUOTA_GROUPS`（CLI 额度 / 平台账号）分组，组内顺序 = 该组 sources。
+ * 服务端没返回的来源补成 `undefined` 占位（渲染为「暂时取不到额度」行），保证「每个来源恰有一行」。
+ */
+export function quotaGroupedRows(items: readonly QuotaItem[]): {
+  id: 'cli' | 'platform';
+  label: string;
+  sources: readonly QuotaSourceId[];
+  rows: (QuotaItem | undefined)[];
+}[] {
+  const bySource = new Map(items.map((item) => [item.source, item]));
+  return QUOTA_GROUPS.map((group) => ({
+    id: group.id,
+    label: group.label,
+    sources: group.sources,
+    rows: group.sources.map((source) => bySource.get(source)),
+  }));
+}
+
 /** 额度行在总览里的顺序（设计 §5：仅额度平台在后，组内维持来源顺序） */
 export const QUOTA_ROW_ORDER: readonly QuotaSourceId[] = QUOTA_SOURCE_IDS;
 
@@ -232,21 +273,26 @@ export function QuotaRows() {
           额度读取失败：{query.error instanceof Error ? query.error.message : '未知错误'}
         </p>
       )}
-      {query.data && items.map((item, index) => (
-        item !== undefined
-          ? <div key={item.source} className="py-2"><QuotaRow item={item} now={now} /></div>
-          : (
-            <div
-              key={`quota-missing-${QUOTA_ROW_ORDER[index]}`}
-              data-testid={`quota-row-${QUOTA_ROW_ORDER[index]}`}
-              data-source={QUOTA_ROW_ORDER[index]}
-              data-status="missing"
-              className="flex flex-wrap items-center gap-x-2 py-2 text-xs"
-            >
-              <span className="font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[QUOTA_ROW_ORDER[index]!]}</span>
-              <span data-testid={`quota-row-reason-${QUOTA_ROW_ORDER[index]}`} className="text-neutral-500 dark:text-neutral-400">{QUOTA_UNKNOWN_REASON_LABEL}</span>
-            </div>
-          )
+      {query.data && quotaGroupedRows(query.data.items).map((group) => (
+        <div key={group.id} data-testid={`quota-group-block-${group.id}`} className="py-1">
+          <h4 data-testid={`quota-group-${group.id}`} className="pt-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3">{group.label}</h4>
+          {group.rows.map((item, index) => (
+            item !== undefined
+              ? <div key={item.source} className="py-1.5"><QuotaRow item={item} now={now} /></div>
+              : (
+                <div
+                  key={`quota-missing-${group.sources[index]}`}
+                  data-testid={`quota-row-${group.sources[index]}`}
+                  data-source={group.sources[index]}
+                  data-status="missing"
+                  className="flex flex-wrap items-center gap-x-2 py-1.5 text-xs"
+                >
+                  <span className="font-medium text-ink">{QUOTA_SOURCE_LABEL[group.sources[index]!]}</span>
+                  <span data-testid={`quota-row-reason-${group.sources[index]}`} className="text-ink-3">{QUOTA_UNKNOWN_REASON_LABEL}</span>
+                </div>
+              )
+          ))}
+        </div>
       ))}
       {query.data && (
         <p data-testid="quota-updated" className="py-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">
