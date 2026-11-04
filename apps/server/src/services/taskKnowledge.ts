@@ -1,4 +1,5 @@
 import type { Issue, TaskKnowledge } from '@agentboard/shared';
+import { KnowledgeErrorCode } from '../api/knowledgeCodes.js';
 import type { Db } from '../db/connection.js';
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
 
@@ -23,7 +24,7 @@ export function getTaskKnowledge(db: Db, issue: Issue, enabled = true, customQue
     }
     return { enabled: true, query, items };
   } catch {
-    return { enabled: true, query, items: [], warning: 'KNOWLEDGE_UNAVAILABLE' };
+    return { enabled: true, query, items: [], warning: KnowledgeErrorCode.UNAVAILABLE };
   }
 }
 export function renderTaskKnowledge(context: TaskKnowledge): string {

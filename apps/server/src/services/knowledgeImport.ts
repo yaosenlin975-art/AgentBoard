@@ -11,6 +11,7 @@
  * - 限额：单文件/请求正文 ≤1MB（UTF-8 字节），`body_md` ≤100000 字符（与知识页存量一致）。
  */
 import { createHash } from 'node:crypto';
+import { KnowledgeErrorCode } from '../api/knowledgeCodes.js';
 import { KNOWLEDGE_DOMAINS, KNOWLEDGE_SHORT_ID_LEN, type KnowledgeDomain } from '@agentboard/shared';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeSource } from '@agentboard/shared';
 import { ApiError, ValidationError } from '../errors.js';
@@ -312,11 +313,11 @@ export function importKnowledgePages(
         ...(input.change_note === undefined ? {} : { change_note: input.change_note }),
       }));
     } catch (error) {
-      if (error instanceof ApiError && error.code === 'KNOWLEDGE_EXISTS') {
+      if (error instanceof ApiError && error.code === KnowledgeErrorCode.EXISTS) {
         const suggestion = suggestSlug(db, { scope: scope.scope, workspaceId: scope.scope === 'workspace' ? scope.workspace_id : null }, slug);
         throw new ApiError(
           409,
-          'KNOWLEDGE_EXISTS',
+          KnowledgeErrorCode.EXISTS,
           `范围内已存在 slug「${slug}」（${scope.scope === 'workspace' ? `工作区 ${scope.workspace_id}` : '公共库'}）`
             + (suggestion === null ? '；请换一个 slug' : `；可改用「${suggestion}」或先归档同 slug 的旧页`),
         );

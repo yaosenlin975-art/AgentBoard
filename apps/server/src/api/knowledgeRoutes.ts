@@ -1,4 +1,7 @@
 import express, { Router } from 'express';
+import { knowledgeScopeWhere, type KnowledgeScopeFilter } from '../db/repos/knowledgeScope.js';
+import { KnowledgeErrorCode } from './knowledgeCodes.js';
+import { zhZodIssue } from './zod.js';
 import { z } from 'zod';
 import type { KnowledgeScope } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
@@ -19,29 +22,6 @@ import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, kn
  * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
  * 例：invalid_value → 「取值必须是：a / b」；too_small → 「不能小于 N」。
  */
-function zhZodIssue(rawIssue: unknown): string {
-  const issue = (rawIssue ?? {}) as { code?: string; path?: Array<string | number>; message?: string; minimum?: unknown; maximum?: unknown; options?: unknown[]; expected?: unknown };
-  const where = issue.path && issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
-  const raw = (issue as { options?: unknown[]; values?: unknown[] });
-  const list = Array.isArray(raw.options) ? raw.options : Array.isArray(raw.values) ? raw.values : [];
-  const options = list.map(String);
-  switch (issue.code) {
-    case 'invalid_value':
-    case 'invalid_enum_value':
-      return options.length > 0 ? `${where}取值必须是：${options.join(' / ')}` : `${where}${issue.message ?? '取值不合法'}`;
-    case 'too_small':
-      return `${where}不能小于 ${String(issue.minimum ?? '')}`.trim();
-    case 'too_big':
-      return `${where}不能大于 ${String(issue.maximum ?? '')}`.trim();
-    case 'invalid_type':
-      return `${where}类型不对（期望 ${String(issue.expected ?? '')}）`;
-    case 'unrecognized_keys':
-    case 'custom':
-      return `${where}${issue.message ?? '参数不合法'}`;
-    default:
-      return `${where}${issue.message ?? '参数不合法'}`;
-  }
-}
 
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
   const result = schema.safeParse(raw);
@@ -74,7 +54,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const scoped = getKnowledgePage(db, pageId, { scope: 'workspace', workspace_id: workspaceId });
     if (scoped) return scoped;
     const exists = db.prepare('SELECT workspace_id FROM knowledge_page WHERE id=?').get(pageId) as { workspace_id: string } | undefined;
-    if (exists) throw new ApiError(403, 'KNOWLEDGE_SCOPE_FORBIDDEN', '该知识页属于其它工作区，无权访问其图片');
+    if (exists) throw new ApiError(403, KnowledgeErrorCode.SCOPE_FORBIDDEN, '该知识页属于其它工作区，无权访问其图片');
     throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
   }
 
@@ -129,7 +109,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }).strict(), req.query);
     if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
     else if (!input.workspace_id) throw new ValidationError('both 必须提供 workspace_id');
-    const scopeSql = input.scope === 'common' ? "scope='common'" : input.scope === 'workspace' ? "(scope='workspace' AND workspace_id=@workspace)" : "(scope='common' OR (scope='workspace' AND workspace_id=@workspace))";
+    const scopeSql = knowledgeScopeWhere(input as KnowledgeScopeFilter);
     const params: Record<string, number | string> = { limit: input.limit + 1, offset: input.offset };
     if (input.scope !== 'common') params.workspace = input.workspace_id!;
     if (input.status !== 'all') params.status = input.status;
@@ -188,20 +168,20 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
 
     const result = resolveKnowledgeRef(db, { ref, scope });
     if (result.state === 'resolved') { res.json(result); return; }
-    if (result.state === 'deleted') throw new ApiError(410, 'KNOWLEDGE_DELETED', result.message);
+    if (result.state === 'deleted') throw new ApiError(410, KnowledgeErrorCode.DELETED, result.message);
     if (result.state === 'ambiguous') {
-      throw new ApiError(409, 'KNOWLEDGE_REF_AMBIGUOUS', result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
+      throw new ApiError(409, KnowledgeErrorCode.REF_AMBIGUOUS, result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
     }
     // not_found：若该 id 存在但属于别的范围/别的工作区 → 403（**不回显标题**）
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim())) {
       const owner = findKnowledgePageOwner(db, ref.trim());
       if (owner !== null) {
-        throw new ApiError(403, 'KNOWLEDGE_SCOPE_FORBIDDEN', owner.scope === 'common'
+        throw new ApiError(403, KnowledgeErrorCode.SCOPE_FORBIDDEN, owner.scope === 'common'
           ? '该知识页属于 common 范围，请用 --scope common 解析'
           : '该知识页属于另一个工作区，当前范围无权读取');
       }
     }
-    throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', result.message);
+    throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, result.message);
   });
 
   /**
@@ -227,9 +207,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       // KB-PAGE-1：软删页与「不存在」分开——deleted → 410（前端显示「已删除 + 可看历史」），其它 → 404
       const deleted = getKnowledgePage(db, req.params.id!, scope, { includeDeleted: true });
       if (deleted !== null && deleted.status === 'deleted') {
-        throw new ApiError(410, 'KNOWLEDGE_DELETED', '知识页已删除（可查看历史版本）', { revision: deleted.revision });
+        throw new ApiError(410, KnowledgeErrorCode.DELETED, '知识页已删除（可查看历史版本）', { revision: deleted.revision });
       }
-      throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+      throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
     }
     // V2-4：只加字段，不删既有字段；KB-PAGE-2：再加 link（引用串由服务端产出）
     res.json({
@@ -244,7 +224,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   /** V2-4 反链：指向该页的当前 revision 链接；排序键固定 (created_at, id) 保证翻页稳定 */
   router.get('/pages/:id/backlinks', (req, res) => {
     const page = getKnowledgePage(db, req.params.id!, scopeOf(req.query));
-    if (!page) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+    if (!page) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
     const input = parse(z.object({
       scope: z.enum(['common', 'workspace', 'both']).optional(),
       workspace_id: z.string().min(1).optional(),

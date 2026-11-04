@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { KnowledgeErrorCode } from '../../api/knowledgeCodes.js';
+import { knowledgeScopeWhere, type KnowledgeScopeFilter } from './knowledgeScope.js';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeRevision, KnowledgeScope, KnowledgeSource } from '@agentboard/shared';
 import type { Db } from '../connection.js';
 import { syncPageLinks } from '../../services/knowledgeLinks.js';
@@ -69,7 +71,7 @@ function appendRevision(db: Db, page: KnowledgePage, kind: KnowledgeRevision['ch
     .run(randomUUID(), page.id, page.revision, page.title, page.body_md, JSON.stringify(page.sources), JSON.stringify(page.evidence), kind, page.status, page.expires_at, note, page.updated_by, page.updated_at);
 }
 function duplicate(error: unknown): never {
-  if ((error as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT_UNIQUE')) throw new ApiError(409, 'KNOWLEDGE_EXISTS', '范围内已存在该 slug');
+  if ((error as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT_UNIQUE')) throw new ApiError(409, KnowledgeErrorCode.EXISTS, '范围内已存在该 slug');
   throw error;
 }
 /**
@@ -98,11 +100,7 @@ export function listKnowledgePageRowsByPrefix(
   prefix: string,
   scope: { scope: 'common' | 'workspace' } | { scope: 'both'; workspace_id: string },
 ): Array<{ id: string; status: string; slug: string; scope: 'common' | 'workspace'; workspace_id: string | null }> {
-  const where = scope.scope === 'common'
-    ? "scope='common'"
-    : scope.scope === 'workspace'
-      ? "(scope='workspace' AND workspace_id=@workspace)"
-      : "(scope='common' OR (scope='workspace' AND workspace_id=@workspace))";
+  const where = knowledgeScopeWhere(scope);
   const params: Record<string, string> = { prefix: `${prefix.toLowerCase()}%` };
   if (scope.scope !== 'common') params.workspace = (scope as { workspace_id: string }).workspace_id;
   return db.prepare(`SELECT id,status,slug,scope,workspace_id FROM knowledge_page WHERE lower(id) LIKE @prefix AND ${where}`)
@@ -115,11 +113,7 @@ export function findKnowledgePageIdsBySlug(
   slug: string,
   scope: { scope: 'common' | 'workspace' } | { scope: 'both'; workspace_id: string },
 ): string[] {
-  const where = scope.scope === 'common'
-    ? "scope='common'"
-    : scope.scope === 'workspace'
-      ? "(scope='workspace' AND workspace_id=@workspace)"
-      : "(scope='common' OR (scope='workspace' AND workspace_id=@workspace))";
+  const where = knowledgeScopeWhere(scope);
   const params: Record<string, string> = { slug };
   if (scope.scope !== 'common') params.workspace = (scope as { workspace_id: string }).workspace_id;
   const live = db.prepare(`SELECT id FROM knowledge_page WHERE slug=@slug AND status<>'deleted' AND ${where}`).all(params) as Array<{ id: string }>;
@@ -155,9 +149,9 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
   try {
     return db.transaction(() => {
       const old = getKnowledgePage(db, pageId, scope, { includeDeleted: true });
-      if (!old) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
-      if (old.revision !== expectedRevision) throw new ApiError(409, 'KNOWLEDGE_REVISION_CONFLICT', '知识页已更新，请重新读取', { current_revision: old.revision });
-      if (old.status === 'deleted' || (kind === 'restore' && old.status !== 'archived') || (kind === 'archive' && old.status !== 'active')) throw new ApiError(409, 'KNOWLEDGE_STATE_CONFLICT', '当前状态不允许此操作');
+      if (!old) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
+      if (old.revision !== expectedRevision) throw new ApiError(409, KnowledgeErrorCode.REVISION_CONFLICT, '知识页已更新，请重新读取', { current_revision: old.revision });
+      if (old.status === 'deleted' || (kind === 'restore' && old.status !== 'archived') || (kind === 'archive' && old.status !== 'active')) throw new ApiError(409, KnowledgeErrorCode.STATE_CONFLICT, '当前状态不允许此操作');
       const taxonomy = normalizePageCategory(
         patch.category !== undefined ? patch.category : old.category,
         patch.landed !== undefined ? patch.landed : old.landed,
@@ -172,7 +166,7 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
       (page as unknown as { domain: string | null }).domain = nextDomain;
       if (result.changes !== 1) {
         const current = db.prepare('SELECT revision FROM knowledge_page WHERE id=? AND scope=? AND workspace_id IS ?').get(pageId, scope.scope, scope.workspace_id ?? null) as { revision: number } | undefined;
-        throw new ApiError(409, 'KNOWLEDGE_REVISION_CONFLICT', '知识页已更新，请重新读取', current ? { current_revision: current.revision } : undefined);
+        throw new ApiError(409, KnowledgeErrorCode.REVISION_CONFLICT, '知识页已更新，请重新读取', current ? { current_revision: current.revision } : undefined);
       }
       appendRevision(db, page, kind, patch.change_note ?? '');
       // V2-4：新 revision 重建 link 行；旧 revision 的行保留（历史不重算）
@@ -199,7 +193,7 @@ export type KnowledgeRevisionSummary = Omit<KnowledgeRevision, 'body_snapshot'> 
  * `includeBody=true` 保留旧行为，供兼容调用方显式索取。
  */
 export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeScope, limit = 20, offset = 0, includeBody = false): Array<KnowledgeRevision | KnowledgeRevisionSummary> {
-  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
   if (!Number.isInteger(limit) || limit < 1 || limit > 50 || !Number.isInteger(offset) || offset < 0) throw new ValidationError('历史分页参数不合法');
   // 字节数按 UTF-8 计（CAST 成 BLOB 再 length），字符数按 UTF-16 码点近似（SQLite length 对 TEXT 即字符数）
   const columns = includeBody
@@ -220,10 +214,10 @@ export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeS
 
 /** KB-DIFF-S：单条 revision 全文快照（「点某版本看 diff」按需取，不进列表） */
 export function getKnowledgeRevision(db: Db, pageId: string, revision: number, scope: KnowledgeScope): KnowledgeRevision {
-  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
   if (!Number.isInteger(revision) || revision < 1) throw new ValidationError('revision 不合法');
   const row = db.prepare('SELECT * FROM knowledge_revision WHERE page_id=? AND revision=?').get(pageId, revision) as (Omit<KnowledgeRevision, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string }) | undefined;
-  if (row === undefined) throw new ApiError(404, 'KNOWLEDGE_REVISION_NOT_FOUND', `版本 ${revision} 不存在`);
+  if (row === undefined) throw new ApiError(404, KnowledgeErrorCode.REVISION_NOT_FOUND, `版本 ${revision} 不存在`);
   const { sources_json, evidence_json, ...revisionRow } = row;
   return { ...revisionRow, sources: JSON.parse(sources_json), evidence: JSON.parse(evidence_json) };
 }
@@ -263,11 +257,7 @@ export function listKnowledgeGraphRows(
   filter: { scope: 'workspace' | 'common' | 'both'; workspace_id?: string | null },
   maxPages = 5000,
 ): KnowledgeGraphRowsResult {
-  const scopeSql = filter.scope === 'common'
-    ? "p.scope='common'"
-    : filter.scope === 'workspace'
-      ? "(p.scope='workspace' AND p.workspace_id=@workspace)"
-      : "(p.scope='common' OR (p.scope='workspace' AND p.workspace_id=@workspace))";
+  const scopeSql = knowledgeScopeWhere(filter as KnowledgeScopeFilter, 'p.');
   // 统计与取行共用同一段 WHERE，避免「一条查全库、一条查本空间」的口径不一致
   const where = `p.status='active' AND ${scopeSql}`;
   const scopeParams: Record<string, string> = {};
@@ -317,11 +307,7 @@ export function findKnowledgePagesBySource(
 ): KnowledgeSourceHit[] {
   const term = input.term.trim();
   if (term === '') throw new ValidationError('path 不能为空');
-  const scopeSql = input.scope === 'common'
-    ? "p.scope='common'"
-    : input.scope === 'workspace'
-      ? "(p.scope='workspace' AND p.workspace_id=@workspace)"
-      : "(p.scope='common' OR (p.scope='workspace' AND p.workspace_id=@workspace))";
+  const scopeSql = knowledgeScopeWhere(input as KnowledgeScopeFilter, 'p.');
   const params: Record<string, string> = { needle: `%${term.replace(/[\\%_]/g, ch => `\\${ch}`)}%` };
   if (input.scope !== 'common') {
     if (!input.workspace_id) throw new ValidationError('该 scope 必须提供 workspace_id');

@@ -1,4 +1,5 @@
 import type { Db } from '../connection.js';
+import { knowledgeScopeWhere, type KnowledgeScopeFilter } from './knowledgeScope.js';
 import type { KnowledgePage } from '@agentboard/shared';
 import { getKnowledgePage } from './knowledge.js';
 import { ValidationError } from '../../errors.js';
@@ -21,9 +22,7 @@ export function searchKnowledge(db: Db, input: KnowledgeSearchInput): KnowledgeS
     || !['workspace', 'common', 'both'].includes(input.scope)
     || (input.scope === 'common' ? input.workspace_id != null : !input.workspace_id)
     || (input.now !== undefined && !Number.isSafeInteger(input.now))) throw new ValidationError('知识查询参数不合法');
-  const scopeSql = input.scope === 'common' ? "p.scope='common'"
-    : input.scope === 'workspace' ? "(p.scope='workspace' AND p.workspace_id=@workspace)"
-      : "(p.scope='common' OR (p.scope='workspace' AND p.workspace_id=@workspace))";
+  const scopeSql = knowledgeScopeWhere(input as KnowledgeScopeFilter, 'p.');
   const params: Record<string, string | number> = { now: input.now ?? Date.now(), limit };
   if (input.scope !== 'common') params.workspace = input.workspace_id!;
   const long = Array.from(query).length >= 3;
