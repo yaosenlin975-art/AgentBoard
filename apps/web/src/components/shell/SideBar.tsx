@@ -120,9 +120,13 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 aria-current={active ? 'page' : undefined}
                 aria-label={entry.label}
                 aria-expanded={entry.view === 'chat' ? view === 'chat' : undefined}
+                data-active={active ? 'true' : 'false'}
                 onClick={() => setView(entry.view)}
-                className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-                  active ? 'bg-accent-soft font-medium text-accent' : 'text-ink-2 hover:bg-surface-raised'
+                // A2：入口点击反馈只走颜色过渡（≤150ms）+ data-active 供断言；reduced-motion 下即时
+                className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                  active
+                    ? 'bg-accent-soft font-medium text-accent active:bg-accent-soft'
+                    : 'text-ink-2 hover:bg-surface-raised active:bg-surface-raised'
                 }`}
               >
                 <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -206,3 +210,5 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
     </nav>
   );
 }
+
+

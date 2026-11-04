@@ -193,7 +193,8 @@ export function Board({
                 title="新建任务（待规划）"
                 disabled={workspaceId === null}
                 onClick={() => setNewIssueOpen(true)}
-                className="shrink-0 rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                // A2：点击反馈只走颜色过渡（≤150ms），reduced-motion 下即时
+                className="shrink-0 rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink active:bg-accent active:text-accent-ink motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40"
               >
                 + 新建
               </button>
