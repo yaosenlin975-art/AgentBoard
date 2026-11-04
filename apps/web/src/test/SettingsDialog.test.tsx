@@ -71,7 +71,9 @@ describe('SettingsDialog', () => {
       expect(patched).toEqual({ port: 9000, maxConcurrentTurns: 1 }),
     );
     expect(patched).not.toHaveProperty('dbPath');
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    // AUDIT-SETTINGS（F-12）：保存成功后不再静默关闭，而是给一次可见提示并说明生效时机
+    expect(await screen.findByTestId('settings-saved')).toHaveTextContent('并发上限立即生效');
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('服务端 400 → 展示服务端错误信息且不关闭', async () => {

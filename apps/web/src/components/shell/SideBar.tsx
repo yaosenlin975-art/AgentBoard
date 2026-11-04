@@ -196,16 +196,16 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         </span>
         <span className="truncate">{WS_LABEL[wsStatus]}</span>
         <span aria-hidden="true" className="shrink-0 text-ink-3">·</span>
-        <button
-          type="button"
+        {/* AUDIT-SETTINGS（F-13）：主题的唯一权威入口是「设置 → 主题」三选一；这里只**只读显示**当前主题，不再可点（两处可点 = 多入口） */}
+        <span
           data-testid="topbar-theme"
-          onClick={cycleTheme}
-          aria-label="切换主题"
-          title={`主题：${THEME_LABEL[theme]}（点击切换）`}
-          className="shrink-0 rounded px-0.5 text-[11px] text-ink-2 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          data-readonly="true"
+          aria-label={`当前${THEME_LABEL[theme]}（在设置里切换）`}
+          title={`主题：${THEME_LABEL[theme]}（在「设置 → 主题」里切换）`}
+          className="shrink-0 text-[11px] text-ink-3"
         >
           {THEME_SHORT[theme] ?? THEME_LABEL[theme]}
-        </button>
+        </span>
       </div>
     </nav>
   );

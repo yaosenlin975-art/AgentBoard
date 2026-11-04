@@ -37,6 +37,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
   const [port, setPort] = useState('');
   const [maxTurns, setMaxTurns] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // AUDIT-SETTINGS：保存成功的一次可见提示（对话框保留，让用户看到「哪些改动何时生效」）
+  const [saved, setSaved] = useState<string | null>(null);
   const [theme] = useTheme();
   const serverVersion = useServerVersion().data?.version;
 
@@ -59,8 +61,11 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
   const save = useMutation({
     // SETTINGS-DB-DEDUP：只发 port / maxConcurrentTurns，不发 dbPath（路径唯一写入口是迁移端点）
     mutationFn: (body: { port: number; maxConcurrentTurns: number }) => api.patch<Settings>('/api/settings', body),
-    // 成功静默关闭（跟随新建 issue 弹窗惯例）
-    onSuccess: () => onClose(),
+    // AUDIT-SETTINGS（F-12）：保存成功给一次可见提示，并说明生效时机；不再静默关闭，用户看完再手动关
+    onSuccess: () => {
+      setError(null);
+      setSaved('已保存：并发上限立即生效；端口改动需重启服务后生效。');
+    },
     onError: (e) => setError(e instanceof Error ? e.message : '保存失败'),
   });
 
@@ -74,41 +79,66 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
   };
 
   const loaded = settingsQuery.data !== undefined;
+  // AUDIT-SETTINGS（F-12）：端口/并发有未保存改动时，关闭前确认一次，避免「改完直接点关闭」丢改动
+  const dirty = loaded
+    && settingsQuery.data !== undefined
+    && (port !== String(settingsQuery.data.port) || maxTurns !== String(settingsQuery.data.maxConcurrentTurns));
+  const requestClose = (): void => {
+    if (dirty && typeof window !== 'undefined' && !window.confirm('有未保存的修改（端口 / 并发上限），确定关闭？')) return;
+    onClose();
+  };
 
   return (
-    <Modal open={open} title="设置" onClose={onClose} size="lg" scrollable variant={variant}>
+    <Modal open={open} title="设置" onClose={requestClose} size="lg" scrollable variant={variant}>
       <form onSubmit={submit} className="space-y-3">
-        <label className="block text-sm">
-          <span className="mb-1 block text-ink-2">服务端口</span>
-          <input
-            data-testid="settings-port"
-            aria-label="服务端口"
-            type="number"
-            value={port}
-            onChange={(e) => setPort(e.target.value)}
-            disabled={!loaded}
-            className={inputCls}
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="mb-1 block text-ink-2">并发上限</span>
-          <input
-            data-testid="settings-max-turns"
-            aria-label="并发上限"
-            type="number"
-            value={maxTurns}
-            onChange={(e) => setMaxTurns(e.target.value)}
-            disabled={!loaded}
-            className={inputCls}
-          />
-        </label>
+        {/* AUDIT-SETTINGS（F-12/V-08）：分组标注「需保存 / 即时生效」，让用户先知道改动何时生效 */}
+        <section data-testid="settings-section-server" aria-labelledby="settings-section-server-title" className="space-y-3">
+          <h3 id="settings-section-server-title" className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-ink-3">
+            服务与并发
+            <span data-testid="settings-badge-save" className="rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] font-medium normal-case text-ink-3">需保存</span>
+          </h3>
+          <label className="block text-sm">
+            <span className="mb-1 flex items-center gap-2 text-ink-2">
+              服务端口
+              <span data-testid="settings-effect-port" className="rounded-full bg-surface-raised px-1.5 py-0.5 text-[10px] text-ink-3">保存后需重启服务生效</span>
+            </span>
+            <input
+              data-testid="settings-port"
+              aria-label="服务端口"
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              disabled={!loaded}
+              className={inputCls}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="mb-1 flex items-center gap-2 text-ink-2">
+              并发上限
+              <span data-testid="settings-effect-max-turns" className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent">保存后立即生效</span>
+            </span>
+            <input
+              data-testid="settings-max-turns"
+              aria-label="并发上限"
+              type="number"
+              value={maxTurns}
+              onChange={(e) => setMaxTurns(e.target.value)}
+              disabled={!loaded}
+              className={inputCls}
+            />
+          </label>
+        </section>
         {/* SETTINGS-DB-DEDUP：数据库位置只在「数据存储」分区维护（含迁移），这里不再重复输入框；
             保存不再发 dbPath —— 路径的唯一写入口是迁移端点，避免绕过迁移直接改路径。 */}
         <p data-testid="settings-db-path-hint" className="text-xs text-ink-3">
           数据库位置与迁移见下方「数据存储」分区
         </p>
-        <div className="text-sm">
-          <span className="mb-1 block text-ink-2">主题</span>
+        <section data-testid="settings-section-theme" aria-labelledby="settings-section-theme-title" className="text-sm">
+          <span id="settings-section-theme-title" className="mb-1 flex items-center gap-2 text-ink-2">
+            主题
+            {/* AUDIT-SETTINGS（F-13）：主题的唯一权威入口就在这里；切换即生效，不需要保存 */}
+            <span data-testid="settings-effect-theme" className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent">即时生效，无需保存</span>
+          </span>
           <div className="flex gap-2">
             {THEME_OPTIONS.map((opt) => {
               const selected = theme === opt.value;
@@ -130,7 +160,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
               );
             })}
           </div>
-        </div>
+        </section>
         {settingsQuery.isError && (
           <p role="alert" className="text-sm text-red-600 dark:text-red-400">
             读取设置失败
@@ -141,8 +171,13 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
             {error}
           </p>
         )}
-        <p className="text-xs text-ink-3">
-          端口 / DB 路径修改后需重启服务生效；并发上限即时生效。
+        {saved !== null && (
+          <p role="status" data-testid="settings-saved" className="text-sm text-accent">{saved}</p>
+        )}
+        {/* AUDIT-SETTINGS（F-12）：DB 路径已不在保存体内（SETTINGS-DB-DEDUP），文案只说端口与并发，
+            避免「DB 路径修改后需重启」这种已无对应输入的说法 */}
+        <p data-testid="settings-save-hint" className="text-xs text-ink-3">
+          端口：保存后需重启服务生效；并发上限：保存后立即生效；主题：点击即时生效，无需保存。
         </p>
         <div className="flex justify-end gap-2 pt-2">
           <span data-testid="settings-version" className="mr-auto self-center text-xs text-ink-3">
@@ -150,7 +185,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           </span>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             className="rounded border border-hairline bg-surface-card px-3 py-1.5 text-sm text-ink transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
           >
             取消

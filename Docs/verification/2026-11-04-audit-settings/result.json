@@ -1,0 +1,41 @@
+{
+ "themeEntries": {
+  "sidebarTheme": {
+   "tag": "SPAN",
+   "readonly": "true",
+   "label": "当前主题：主题：亮色（在设置里切换）"
+  },
+  "clickableToggleCount": 0
+ },
+ "sections": {
+  "saveBadge": "需保存",
+  "effectPort": "保存后需重启服务生效",
+  "effectMaxTurns": "保存后立即生效",
+  "effectTheme": "即时生效，无需保存",
+  "saveHint": "端口：保存后需重启服务生效；并发上限：保存后立即生效；主题：点击即时生效，无需保存。",
+  "sections": [
+   "settings-section-server",
+   "settings-section-theme",
+   "settings-statuses",
+   "settings-storage"
+  ],
+  "storageMigrateVisible": true
+ },
+ "tabOrderFromPort": [
+  "settings-port",
+  "settings-max-turns",
+  "theme-light",
+  "theme-dark",
+  "theme-system",
+  "BUTTON",
+  "settings-save",
+  "status-create-name",
+  "status-create-kind",
+  "voice-enabled",
+  "voice-language-system",
+  "voice-language-zh",
+  "voice-language-en",
+  "voice-model-select-sherpa-onnx-streaming-zipformer-bilingual-zh-en-int8",
+  "voice-delete-sherpa-onnx-streaming-zipformer-bilingual-zh-en-int8"
+ ]
+}

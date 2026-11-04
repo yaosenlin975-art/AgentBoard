@@ -122,27 +122,18 @@ describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
     expect(path).toHaveAttribute('title', '未选择工作区');
   });
 
-  it('FIX-1 状态行：主题小字循环 system → light → dark 并写 localStorage', async () => {
+  it('AUDIT-SETTINGS（F-13）：状态行主题只读显示，不再是切换入口', async () => {
     renderSideBar(ws);
-    const btn = screen.getByRole('button', { name: '切换主题' });
-    expect(btn).toHaveTextContent('跟随系统');
-    expect(btn).toHaveAttribute('title', expect.stringContaining('主题：跟随系统'));
-    // 主题小字在状态行里（与 WS 圆点同一行）
-    expect(screen.getByTestId('sidebar-status').contains(btn)).toBe(true);
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('light');
-    expect(btn).toHaveTextContent('浅色');
-    expect(document.documentElement).not.toHaveClass('dark');
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('dark');
-    expect(btn).toHaveTextContent('深色');
-    expect(document.documentElement).toHaveClass('dark');
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('system');
-    expect(btn).toHaveTextContent('跟随系统');
+    const themeLabel = within(screen.getByTestId('sidebar-status')).getByTestId('topbar-theme');
+    // 只读：不是 button、不可点、aria 说明「在设置里切换」
+    expect(themeLabel.tagName).toBe('SPAN');
+    expect(themeLabel).toHaveAttribute('data-readonly', 'true');
+    expect(themeLabel).toHaveAttribute('aria-label', expect.stringContaining('在设置里切换'));
+    expect(screen.queryByRole('button', { name: '切换主题' })).toBeNull();
+    // 点击不再改主题（唯一入口在设置）
+    const before = localStorage.getItem('agentboard.theme');
+    await userEvent.click(themeLabel);
+    expect(localStorage.getItem('agentboard.theme')).toBe(before);
   });
 
   it('不再渲染 CLI 徽标（CodeBuddy / Codex / OpenCode / DSH 都不出现）', async () => {
