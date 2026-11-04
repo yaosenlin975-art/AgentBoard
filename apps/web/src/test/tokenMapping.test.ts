@@ -102,3 +102,44 @@ describe('令牌一致性（CHIP-PALETTE）', () => {
     // 源码级复核：整个文件里没有 blue 工具类
     expect(read('components/ui/buttonStyles.ts')).not.toMatch(/bg-blue-\d|text-blue-\d/);
   });
+
+describe('半径刻度（RADIUS-HALF）', () => {
+  it('`@theme inline` 覆盖了 Tailwind 半径刻度，取值为 1/2/3/4/6/8/12px', () => {
+    const css = read('index.css');
+    const themeBlock = /@theme inline \{([\s\S]*?)\n\}/.exec(css);
+    expect(themeBlock).not.toBeNull();
+    const body = themeBlock![1]!;
+    const scale: Record<string, number> = {};
+    for (const m of body.matchAll(/--radius-([A-Za-z0-9-]+)\s*:\s*([0-9.]+)px/g)) {
+      scale[m[1]!] = Number(m[2]);
+    }
+    // 断言的是**取值**（不是只断言类名存在）
+    expect(scale).toMatchObject({
+      sm: 1,
+      DEFAULT: 2,
+      md: 3,
+      lg: 4,
+      xl: 6,
+      '2xl': 8,
+      '3xl': 12,
+    });
+    // 全站圆角必须整体减半：没有任何刻度回到旧值（8/12/16/24）
+    expect(scale.lg).toBeLessThan(8);
+    expect(scale.xl).toBeLessThan(12);
+    expect(scale['2xl']).toBeLessThan(16);
+    expect(scale['3xl']).toBeLessThan(24);
+  });
+
+  it('index.css 的字面量 border-radius 也已减半，胶囊（9999px）不动', () => {
+    const css = read('index.css');
+    expect(css).toMatch(/\.markdown-body code \{\n\s*border-radius: 0\.125rem;/);
+    expect(css).toMatch(/border-radius: 0\.1875rem;/);
+    expect(css).toMatch(/border-radius: 4px;/);
+    // 胶囊保留
+    expect((css.match(/border-radius: 9999px;/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    // 旧值不再出现
+    expect(css).not.toMatch(/border-radius: 0\.25rem;/);
+    expect(css).not.toMatch(/border-radius: 0\.375rem;/);
+    expect(css).not.toMatch(/border-radius: 8px;/);
+  });
+});
