@@ -83,9 +83,9 @@ export function ChangelogEntryForm({
       data-testid="changelog-form"
       aria-label={mode === 'create' ? '新增变更日志' : '编辑变更日志'}
       onSubmit={submit}
-      className="space-y-2 rounded-md border border-neutral-300 bg-white p-3 dark:border-neutral-700 dark:bg-neutral-900"
+      className="space-y-2 rounded-md border border-hairline bg-surface-card p-3"
     >
-      <label className="block text-xs text-neutral-600 dark:text-neutral-300">
+      <label className="block text-xs text-ink-2">
         <span className="mb-1 block">标题</span>
         <input
           data-testid="changelog-form-title"
@@ -97,7 +97,7 @@ export function ChangelogEntryForm({
         />
       </label>
       <div className="flex flex-wrap items-end gap-2">
-        <label className="text-xs text-neutral-600 dark:text-neutral-300">
+        <label className="text-xs text-ink-2">
           <span className="mb-1 block">类型</span>
           <select
             data-testid="changelog-form-type"
@@ -111,7 +111,7 @@ export function ChangelogEntryForm({
             ))}
           </select>
         </label>
-        <label className="min-w-0 flex-1 text-xs text-neutral-600 dark:text-neutral-300">
+        <label className="min-w-0 flex-1 text-xs text-ink-2">
           <span className="mb-1 block">发生时间</span>
           <input
             data-testid="changelog-form-occurred"
@@ -123,7 +123,7 @@ export function ChangelogEntryForm({
           />
         </label>
       </div>
-      <label className="block text-xs text-neutral-600 dark:text-neutral-300">
+      <label className="block text-xs text-ink-2">
         <span className="mb-1 block">正文（Markdown）</span>
         <textarea
           data-testid="changelog-form-body"
@@ -131,7 +131,7 @@ export function ChangelogEntryForm({
           value={bodyMd}
           onChange={(event) => setBodyMd(event.target.value)}
           rows={5}
-          className="w-full rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-900 outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          className="w-full rounded-md border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none focus:border-accent"
         />
       </label>
 

@@ -1,0 +1,25 @@
+{
+ "tree": {
+  "claimBadge": null,
+  "submitBtn": null
+ },
+ "createBtn": {
+  "color": "rgb(255, 255, 255)",
+  "bg": "rgb(160, 74, 8)"
+ },
+ "log": {
+  "typeTag": {
+   "text": "新增",
+   "bg": "oklch(0.962 0.044 156.743)",
+   "color": "oklch(0.448 0.119 151.328)"
+  },
+  "hasTitles": false
+ },
+ "kb": {
+  "importBtn": {
+   "bg": "rgb(253, 251, 247)",
+   "color": "rgb(31, 27, 22)",
+   "border": "rgba(31, 27, 22, 0.1)"
+  }
+ }
+}

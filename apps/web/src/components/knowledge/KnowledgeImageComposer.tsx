@@ -134,7 +134,7 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
   return (
     <div
       data-testid="knowledge-image-composer"
-      className="rounded-md border border-neutral-200 dark:border-neutral-800"
+      className="rounded-md border border-hairline"
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = 'copy';
@@ -144,11 +144,11 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
         handleFiles(event.dataTransfer.files);
       }}
     >
-      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-2 py-1.5 text-xs dark:border-neutral-800">
+      <div className="flex flex-wrap items-center gap-2 border-b border-hairline px-2 py-1.5 text-xs">
         <button
           type="button"
           data-testid="knowledge-image-pick"
-          className="rounded border border-neutral-300 px-2 py-0.5 dark:border-neutral-700"
+          className="rounded border border-hairline px-2 py-0.5"
           disabled={busy}
           onClick={() => fileInputRef.current?.click()}
         >
@@ -165,9 +165,9 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
             event.target.value = '';
           }}
         />
-        <span className="text-neutral-500 dark:text-neutral-400">也可直接粘贴或拖入图片</span>
-        {busy && <span data-testid="knowledge-image-busy" className="text-blue-600 dark:text-blue-300">处理中…</span>}
-        {status !== '' && <span data-testid="knowledge-image-status" className="text-neutral-600 dark:text-neutral-300">{status}</span>}
+        <span className="text-ink-3">也可直接粘贴或拖入图片</span>
+        {busy && <span data-testid="knowledge-image-busy" className="text-accent">处理中…</span>}
+        {status !== '' && <span data-testid="knowledge-image-status" className="text-ink-2">{status}</span>}
         {error !== null && (
           <span role="alert" data-testid="knowledge-image-error" className="text-red-600 dark:text-red-400">{error}</span>
         )}

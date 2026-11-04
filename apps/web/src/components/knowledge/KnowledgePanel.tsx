@@ -63,7 +63,7 @@ export function KnowledgePanel({
   });
   const items = list.data?.items ?? [];
 
-  return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+  return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-surface-page text-ink">
     {/* TOOLBAR-BLANK：FIX-2 删掉 ViewSwitcher 后壳内已无控件，空壳会渲染约 40px 空白带 →
         这里不再挂 ViewToolbarShell（它在无可见内容时会自己返回 null），
         knowledge-toolbar-controls 锚点迁到内容区顶部，测试仍可按 testid 定位。 */}
@@ -93,7 +93,7 @@ export function KnowledgePanel({
     </header>
 
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
-      <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">范围
+      <label className="flex items-center gap-1 text-xs text-ink-2">范围
         <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
@@ -108,7 +108,7 @@ export function KnowledgePanel({
       {/* KBIMP-2：导入入口（md/txt/json；json 数组逐条可取消） */}
       <button type="button" data-testid="knowledge-import-open" className={BUTTON_SECONDARY} onClick={() => setImportOpen(true)}>添加</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
-      {!query && <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">状态
+      {!query && <label className="flex items-center gap-1 text-xs text-ink-2">状态
         <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
@@ -133,16 +133,16 @@ export function KnowledgePanel({
           {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），
               数据到位即卸载，不是装饰性循环动画 → 保留，不要搬到其它非实时状态。 */}
           {[0, 1, 2].map(i => <li key={i} className="animate-pulse px-3 py-3">
-            <div className="h-3.5 w-2/3 rounded bg-neutral-200 dark:bg-neutral-800" />
-            <div className="mt-2 h-3 w-full rounded bg-neutral-100 dark:bg-neutral-800/70" />
-            <div className="mt-2 h-3 w-1/3 rounded bg-neutral-100 dark:bg-neutral-800/70" />
+            <div className="h-3.5 w-2/3 rounded bg-surface-raised" />
+            <div className="mt-2 h-3 w-full rounded bg-surface-raised" />
+            <div className="mt-2 h-3 w-1/3 rounded bg-surface-raised" />
           </li>)}
         </ul>}
         {list.isPending && <p className="sr-only">加载中…</p>}
 
         {!list.isPending && !list.isError && items.length === 0 && <div data-testid="knowledge-empty" className="rounded-xl border border-dashed border-hairline px-4 py-10 text-center">
-          <p className="text-sm font-medium text-neutral-700 dark:text-neutral-300">{query ? '没有匹配的知识' : '暂无知识'}</p>
-          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'}</p>
+          <p className="text-sm font-medium text-ink-2">{query ? '没有匹配的知识' : '暂无知识'}</p>
+          <p className="mt-1 text-xs text-ink-3">{query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'}</p>
         </div>}
 
         {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">

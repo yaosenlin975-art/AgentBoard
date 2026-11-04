@@ -31,7 +31,7 @@ function KnowledgeRef({ id }: { id: string }) {
     queryFn: () => fetchKnowledgePage(id, workspaceId),
   });
 
-  if (query.isPending) return <p className="text-xs text-neutral-500" role="status">加载知识页…</p>;
+  if (query.isPending) return <p className="text-xs text-ink-3" role="status">加载知识页…</p>;
   if (query.isError) {
     return <p data-testid="ref-panel-error" className="text-xs text-red-600 dark:text-red-400">{messageOf(query.error)}</p>;
   }
@@ -39,10 +39,10 @@ function KnowledgeRef({ id }: { id: string }) {
   return (
     <article data-testid="ref-panel-knowledge" className="flex min-h-0 flex-col gap-2">
       <h2 className="break-words text-sm font-semibold">{page.title}</h2>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-ink-3">
         {page.scope === 'common' ? '公共知识' : '当前工作区'} · {page.slug}
       </p>
-      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-neutral-200 p-2 dark:border-neutral-800">
+      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-hairline p-2">
         <MarkdownView compact>{page.body_md ?? ''}</MarkdownView>
       </div>
     </article>
@@ -58,9 +58,9 @@ function LogRef({ id }: { id: string }) {
   });
 
   if (workspaceId === null) {
-    return <p data-testid="ref-panel-error" className="text-xs text-neutral-500">请先选择工作空间</p>;
+    return <p data-testid="ref-panel-error" className="text-xs text-ink-3">请先选择工作空间</p>;
   }
-  if (query.isPending) return <p className="text-xs text-neutral-500" role="status">加载日志…</p>;
+  if (query.isPending) return <p className="text-xs text-ink-3" role="status">加载日志…</p>;
   if (query.isError) {
     return <p data-testid="ref-panel-error" className="text-xs text-red-600 dark:text-red-400">{messageOf(query.error)}</p>;
   }
@@ -68,10 +68,10 @@ function LogRef({ id }: { id: string }) {
   return (
     <article data-testid="ref-panel-log" className="flex min-h-0 flex-col gap-2">
       <h2 className="break-words text-sm font-semibold">{entry.title}</h2>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-ink-3">
         {entry.change_type} · rev:{entry.revision}
       </p>
-      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-neutral-200 p-2 dark:border-neutral-800">
+      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-hairline p-2">
         <MarkdownView compact>{entry.body_md}</MarkdownView>
       </div>
     </article>
@@ -99,7 +99,7 @@ export function RefPanel() {
   }, [key, shownKey]);
 
   if (target === null) {
-    return <p data-testid="ref-panel-empty" className="text-xs text-neutral-500 dark:text-neutral-400">没有可显示的内容</p>;
+    return <p data-testid="ref-panel-empty" className="text-xs text-ink-3">没有可显示的内容</p>;
   }
   return (
     <div

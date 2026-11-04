@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -6,7 +6,7 @@ import { useAppStore } from '../../state/appStore';
 import { Modal } from '../ui/Modal';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline px-2 py-1.5 text-sm outline-none focus:border-accent  ';
 
 /**
  * 移除工作空间二次确认（WORKSPACE-REMOVE）：
@@ -46,14 +46,14 @@ export function RemoveWorkspaceDialog({
   return (
     <Modal open={open} title="移除工作空间" scrollable onClose={() => { if (!remove.isPending) onClose(); }}>
       <div className="space-y-3">
-        <p className="text-sm text-neutral-700 dark:text-neutral-200">
+        <p className="text-sm text-ink-2">
           将移除「{workspace.name}」及其在该空间的全部任务、评论、会话与消息（附件一并回收）。磁盘上的项目目录不受影响。
         </p>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        <p className="text-xs text-ink-3">
           空间内存在知识页、运行中会话或父子任务关联时会被拒绝，并给出处理方式。
         </p>
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">
+          <span className="mb-1 block text-ink-2">
             输入空间名称「{workspace.name}」确认
           </span>
           <input
@@ -74,7 +74,7 @@ export function RemoveWorkspaceDialog({
             type="button"
             disabled={remove.isPending}
             onClick={onClose}
-            className="min-w-[4.5rem] whitespace-nowrap rounded px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="min-w-[4.5rem] whitespace-nowrap rounded px-3 py-1.5 text-sm text-ink-2 hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
           >
             取消
           </button>

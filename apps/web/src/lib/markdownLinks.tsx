@@ -48,7 +48,7 @@ export function isExternalLink(href: string | undefined): boolean {
 const DENIED = '无权限或不存在';
 
 const KIND_STYLE: Record<MarkdownRefKind, { icon: string; className: string; label: string }> = {
-  issue: { icon: '◆', className: 'text-blue-600 dark:text-blue-400', label: '任务' },
+  issue: { icon: '◆', className: 'text-accent ', label: '任务' },
   knowledge: { icon: '▤', className: 'text-emerald-700 dark:text-emerald-400', label: '知识' },
   log: { icon: '▦', className: 'text-amber-700 dark:text-amber-400', label: '日志' },
 };
@@ -153,7 +153,7 @@ export function MarkdownSmartLink({ href, children }: { href: string; children: 
         data-link-state={state.phase}
         title={state.phase === 'denied' ? DENIED : '解析中…'}
         aria-disabled="true"
-        className="cursor-not-allowed text-neutral-400 underline decoration-dotted dark:text-neutral-500"
+        className="cursor-not-allowed text-ink-3 underline decoration-dotted "
       >
         <span aria-hidden="true" className="mr-0.5">{style.icon}</span>
         {children}
@@ -168,7 +168,7 @@ export function MarkdownSmartLink({ href, children }: { href: string; children: 
       data-link-state="ok"
       title={state.title}
       onClick={state.open}
-      className={`inline-flex items-center gap-0.5 rounded underline decoration-dotted hover:decoration-solid focus-visible:outline-2 focus-visible:outline-blue-500 ${style.className}`}
+      className={`inline-flex items-center gap-0.5 rounded underline decoration-dotted hover:decoration-solid focus-visible:outline-2 focus-visible:outline-accent ${style.className}`}
     >
       <span aria-hidden="true">{style.icon}</span>
       {children}

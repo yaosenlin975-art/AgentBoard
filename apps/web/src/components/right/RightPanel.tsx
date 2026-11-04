@@ -151,7 +151,7 @@ export function RightPanel() {
         // 宽度只作为静态尺寸：不用 width 过渡，避免主内容随面板动画重排（PANEL-FLOAT 语义）
         ...panelMotionStyle('slide-right', phase, reducedMotion),
       }}
-      className="absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
+      className="absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-hairline bg-surface-card shadow-xl"
     >
       <div
         id="right-panel-content"
@@ -175,9 +175,9 @@ export function RightPanel() {
           onKeyDown={onHandleKeyDown}
           hidden={!isOpen}
           // top-10 = 头部 h-10：手柄只在内容区，不再压住标题带（原先 inset-y-0 会盖掉头部左缘 6px 与 border）
-          className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-blue-400/60 focus-visible:outline-2 focus-visible:outline-blue-500"
+          className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent"
         />
-        <header className="flex h-10 shrink-0 items-center justify-between border-b border-neutral-200 px-3 dark:border-neutral-800">
+        <header className="flex h-10 shrink-0 items-center justify-between border-b border-hairline px-3">
           <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
             {activeView === 'detail' ? '任务详情' : refPanel?.kind === 'log' ? '日志' : '知识'}
           </h2>
@@ -187,7 +187,7 @@ export function RightPanel() {
             aria-label="关闭右侧面板"
             title="关闭右侧面板"
             onClick={dismiss}
-            className="rounded px-2 py-0.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+            className="rounded px-2 py-0.5 text-sm text-ink-3 hover:bg-surface-raised"
           >
             ×
           </button>

@@ -54,7 +54,7 @@ export function ChangelogPanel({
     <section
       aria-label="工作区日志"
       data-testid="changelog-panel"
-      className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
+      className="flex h-full min-h-0 flex-col bg-surface-page text-ink"
     >
       {/* TOOLBAR-BLANK：壳内已无控件，空壳会渲染约 40px 空白带 → 不再挂 ViewToolbarShell；
           log-toolbar-controls 锚点迁到内容区顶部（sr-only 零高，测试仍可定位）。 */}
@@ -338,7 +338,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
         </div>
       )}
 
-      {list.isPending && <p className="text-xs text-neutral-500 dark:text-neutral-400" role="status">加载变更日志…</p>}
+      {list.isPending && <p className="text-xs text-ink-3" role="status">加载变更日志…</p>}
       {list.isError && (
         <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           {list.error.message}
@@ -356,7 +356,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
             {sorted.length === 0 ? (
               <p
                 data-testid="changelog-empty"
-                className="rounded-md border border-dashed border-neutral-300 px-3 py-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400"
+                className="rounded-md border border-dashed border-hairline px-3 py-8 text-center text-sm text-ink-3"
               >
                 {emptyText}
               </p>
@@ -364,7 +364,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
               <ol data-testid="changelog-list" aria-label="日志列表" className="min-h-0 space-y-3">
                 {groups.map((group) => (
                   <li key={group.day} data-testid={`changelog-day-${group.day}`}>
-                    <h3 className="mb-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">{group.day}</h3>
+                    <h3 className="mb-1 text-[11px] font-semibold text-ink-3">{group.day}</h3>
                     <ul className="space-y-1">
                       {group.entries.map((item) => {
                         const isSelected = selected?.id === item.id;
@@ -378,14 +378,14 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                               className={`block w-full rounded px-1.5 py-1 text-left text-xs ab-transition ${
                                 isSelected
                                   ? 'bg-accent-soft font-medium text-ink'
-                                  : 'text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                                  : 'text-ink-2 hover:bg-surface-raised  '
                               }`}
                             >
                               <span className="flex items-center gap-1">
                                 <ChangelogTypeTag type={item.change_type} />
                                 <span className="truncate">{item.title}</span>
                               </span>
-                              <span className="mt-0.5 block text-[11px] text-neutral-500 dark:text-neutral-400">
+                              <span className="mt-0.5 block text-[11px] text-ink-3">
                                 {localDateTime(item.occurred_at)}
                               </span>
                             </button>
@@ -423,7 +423,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
             className="min-h-0 overflow-auto rounded-xl border border-hairline bg-surface-card"
           >
             {sorted.length === 0 ? (
-              <p data-testid="changelog-empty-doc" className="px-3 py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              <p data-testid="changelog-empty-doc" className="px-3 py-8 text-center text-sm text-ink-3">
                 {emptyText}
               </p>
             ) : (
@@ -450,8 +450,8 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                       >
                         <header className="flex flex-wrap items-center gap-1.5">
                           <ChangelogTypeTag type={item.change_type} />
-                          <span className="text-xs text-neutral-500 dark:text-neutral-400">{localDateTime(item.occurred_at)}</span>
-                          <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500">rev:{item.revision}</span>
+                          <span className="text-xs text-ink-3">{localDateTime(item.occurred_at)}</span>
+                          <span className="ml-auto text-xs text-ink-3">rev:{item.revision}</span>
                         </header>
                         <h2 data-testid={`changelog-doc-title-${item.id}`} className="break-words text-sm font-semibold">
                           {item.title}
@@ -459,7 +459,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                         <div data-testid={`changelog-doc-body-${item.id}`} className="break-words">
                           <MarkdownView compact>{item.body_md}</MarkdownView>
                         </div>
-                        <footer className="flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+                        <footer className="flex flex-wrap items-center gap-2 text-xs text-ink-3">
                           <span>{item.updated_by === 'user' ? '用户' : item.updated_by}</span>
                           <span>更新 {localDateTime(item.updated_at)}</span>
                           <span className="ml-auto flex items-center gap-1.5">

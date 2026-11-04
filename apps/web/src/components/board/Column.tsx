@@ -48,7 +48,7 @@ export function Column({
               aria-label={`新建任务（${status}）`}
               title={`新建任务（${status}）`}
               onClick={onCreateIssue}
-              className="rounded px-1.5 text-sm leading-5 text-ink-3 hover:bg-surface-card hover:text-accent focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-blue-400"
+              className="rounded px-1.5 text-sm leading-5 text-ink-3 hover:bg-surface-card hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
             >
               +
             </button>

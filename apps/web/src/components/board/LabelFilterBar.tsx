@@ -33,7 +33,7 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
               // A2：点击反馈只走颜色过渡（无位移/缩放），reduced-motion 下即时
               className={`shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-xs transition-colors duration-150 motion-reduce:transition-none ${active
                 ? 'bg-accent-soft font-medium text-accent active:bg-accent-soft dark:bg-accent-soft dark:text-accent dark:active:bg-accent-soft'
-                : 'border border-neutral-200 text-neutral-600 hover:bg-neutral-100 active:bg-neutral-200 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:active:bg-neutral-700'}`}
+                : 'border border-hairline text-ink-2 hover:bg-surface-raised active:bg-neutral-200    '}`}
             >
               {label}
             </button>
@@ -44,7 +44,7 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
             type="button"
             data-testid="label-filter-clear"
             onClick={() => clearLabels(workspaceId)}
-            className="shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-xs text-neutral-500 transition-colors duration-150 hover:bg-neutral-100 active:bg-neutral-200 motion-reduce:transition-none dark:text-neutral-400 dark:hover:bg-neutral-800 dark:active:bg-neutral-700"
+            className="shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-xs text-ink-3 transition-colors duration-150 hover:bg-surface-raised active:bg-neutral-200 motion-reduce:transition-none"
           >
             清除筛选
           </button>

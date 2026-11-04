@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 变更日志时间轴（LOG03）：活动与归档共用的只读渲染层。
  * 排序恒为 `occurred_at DESC, id DESC`（最新在顶），按浏览器本地日期分组，条目折叠标题行、展开渲染 Markdown 正文。
  * `readonly` 时不渲染任何写操作（归档区据此保证只读）。
@@ -84,7 +84,7 @@ export function ChangelogTimeline({ entries, readonly = false, emptyText = '（�
 
   if (entries.length === 0) {
     return (
-      <p data-testid="changelog-empty" className="rounded-md border border-dashed border-neutral-300 px-3 py-8 text-center text-sm text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+      <p data-testid="changelog-empty" className="rounded-md border border-dashed border-hairline px-3 py-8 text-center text-sm text-ink-3">
         {emptyText}
       </p>
     );
@@ -94,20 +94,20 @@ export function ChangelogTimeline({ entries, readonly = false, emptyText = '（�
     <ol aria-label="变更日志时间轴" className="space-y-4" data-testid="changelog-timeline">
       {groups.map((group) => (
         <li key={group.day} data-testid={`changelog-day-${group.day}`}>
-          <h3 className="mb-1.5 text-xs font-semibold text-neutral-500 dark:text-neutral-400">{group.day}</h3>
-          <ul className="space-y-2 border-l border-neutral-200 pl-3 dark:border-neutral-700">
+          <h3 className="mb-1.5 text-xs font-semibold text-ink-3">{group.day}</h3>
+          <ul className="space-y-2 border-l border-hairline pl-3">
             {group.entries.map((entry) => {
               const isOpen = expanded.has(entry.id);
               return (
                 <li
                   key={entry.id}
                   data-testid={`changelog-entry-${entry.id}`}
-                  className="rounded-md border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900"
+                  className="rounded-md border border-hairline bg-surface-card p-2.5"
                 >
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge tone={TYPE_TONE[entry.change_type] ?? 'neutral'}>{entry.change_type}</Badge>
-                    <span className="text-xs text-neutral-500 dark:text-neutral-400">{localDateTime(entry.occurred_at)}</span>
-                    <span className="ml-auto text-xs text-neutral-400 dark:text-neutral-500">rev:{entry.revision}</span>
+                    <span className="text-xs text-ink-3">{localDateTime(entry.occurred_at)}</span>
+                    <span className="ml-auto text-xs text-ink-3">rev:{entry.revision}</span>
                   </div>
                   <button
                     type="button"
@@ -115,7 +115,7 @@ export function ChangelogTimeline({ entries, readonly = false, emptyText = '（�
                     aria-expanded={isOpen}
                     aria-label={`${isOpen ? '收起' : '展开'}日志：${entry.title}`}
                     onClick={() => toggle(entry.id)}
-                    className="mt-1 block w-full break-words text-left text-sm font-medium text-neutral-900 hover:text-blue-700 dark:text-neutral-100 dark:hover:text-blue-300"
+                    className="mt-1 block w-full break-words text-left text-sm font-medium text-ink hover:text-accent"
                   >
                     {entry.title}
                   </button>
@@ -123,13 +123,13 @@ export function ChangelogTimeline({ entries, readonly = false, emptyText = '（�
                     <div data-testid={`changelog-body-${entry.id}`}>
                       <MarkdownView
                         compact
-                        className="mt-2 break-words rounded border border-neutral-200 px-2 py-1.5 dark:border-neutral-800"
+                        className="mt-2 break-words rounded border border-hairline px-2 py-1.5"
                       >
                         {entry.body_md}
                       </MarkdownView>
                     </div>
                   )}
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-neutral-400 dark:text-neutral-500">
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-ink-3">
                     <span>{entry.updated_by === 'user' ? '用户' : entry.updated_by}</span>
                     <span>更新 {localDateTime(entry.updated_at)}</span>
                     {!readonly && (

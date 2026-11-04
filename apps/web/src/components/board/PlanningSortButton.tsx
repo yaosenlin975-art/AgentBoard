@@ -77,7 +77,7 @@ export function PlanningSortButton({
       aria-label={`待规划排序：${label}（点击切换为${nextLabel}）`}
       title={`排序：${label}`}
       onClick={() => onChange(next)}
-      className="inline-flex h-5 items-center rounded px-1 text-neutral-500 hover:bg-white hover:text-blue-600 focus-visible:outline-2 focus-visible:outline-blue-500 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-blue-400"
+      className="inline-flex h-5 items-center rounded px-1 text-ink-3 hover:bg-surface-card hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
     >
       <SortIcon sort={sort} />
     </button>

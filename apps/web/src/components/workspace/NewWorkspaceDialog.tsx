@@ -5,7 +5,7 @@ import { api } from '../../api/client';
 import { Modal } from '../ui/Modal';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline px-2 py-1.5 text-sm outline-none focus:border-accent  ';
 
 /** 与服务端兜底一致的 basename：去尾部 / 与 \，按 / 或 \ 取最后一段 */
 function pathBasename(p: string): string {
@@ -69,7 +69,7 @@ export function NewWorkspaceDialog({ open, onClose }: { open: boolean; onClose: 
     <Modal open={open} title="新增工作空间" onClose={close}>
       <form onSubmit={submit} className="space-y-3">
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">名称</span>
+          <span className="mb-1 block text-ink-2">名称</span>
           <input
             value={name}
             onChange={(e) => {
@@ -82,7 +82,7 @@ export function NewWorkspaceDialog({ open, onClose }: { open: boolean; onClose: 
           />
         </label>
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">路径</span>
+          <span className="mb-1 block text-ink-2">路径</span>
           <div className="flex gap-2">
             <input
               value={path}
@@ -100,17 +100,17 @@ export function NewWorkspaceDialog({ open, onClose }: { open: boolean; onClose: 
                 setError(null);
                 browse.mutate();
               }}
-              className="shrink-0 rounded border border-neutral-300 px-2 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className="shrink-0 rounded border border-hairline px-2 py-1.5 text-sm text-ink-2 hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
             >
               {browse.isPending ? '等待选择…' : '浏览…'}
             </button>
           </div>
           {browse.isPending && (
-            <span className="mt-1 block text-xs text-blue-600 dark:text-blue-400">
+            <span className="mt-1 block text-xs text-accent">
               请在弹出的窗口中选择文件夹
             </span>
           )}
-          <span className="mt-1 block text-xs text-neutral-400 dark:text-neutral-500">
+          <span className="mt-1 block text-xs text-ink-3">
             必须是已存在的绝对路径目录
           </span>
         </label>
@@ -123,14 +123,14 @@ export function NewWorkspaceDialog({ open, onClose }: { open: boolean; onClose: 
           <button
             type="button"
             onClick={close}
-            className="rounded px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded px-3 py-1.5 text-sm text-ink-2 hover:bg-surface-raised"
           >
             取消
           </button>
           <button
             type="submit"
             disabled={create.isPending || path.trim() === ''}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
           >
             创建
           </button>

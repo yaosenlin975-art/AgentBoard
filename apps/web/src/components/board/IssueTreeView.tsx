@@ -128,14 +128,14 @@ export function IssueTreeView({
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="issue-tree-view">
-      <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-neutral-200 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-900">
-        <label className="min-w-0 text-xs text-neutral-600 dark:text-neutral-300">
+      <div className="flex shrink-0 flex-wrap items-end gap-2 border-b border-hairline bg-surface-card px-3 py-2">
+        <label className="min-w-0 text-xs text-ink-2">
           <span className="mb-1 block">按状态筛选</span>
           <select
             aria-label="按状态筛选"
             value={status}
             onChange={(event) => setStatus(event.target.value as IssueStatus | 'all')}
-            className="max-w-full rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            className="max-w-full rounded border border-hairline bg-surface-card px-2 py-1 text-sm"
           >
             <option value="all">全部状态</option>
             {STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -221,16 +221,16 @@ function TaskTreeChildren({
   }, [filter.active, autoPageTargetsLoaded, query.hasNextPage, query.isFetchingNextPage, query.fetchNextPage]);
 
   if (query.isPending) {
-    return <p className="px-2 py-3 text-sm text-neutral-500" role="status">{depth === 0 ? '加载任务树…' : '加载子任务…'}</p>;
+    return <p className="px-2 py-3 text-sm text-ink-3" role="status">{depth === 0 ? '加载任务树…' : '加载子任务…'}</p>;
   }
   if (query.isError) {
     return <p className="px-2 py-3 text-sm text-red-600 dark:text-red-400" role="alert">加载{depth === 0 ? '任务树' : '子任务'}失败：{query.error.message}</p>;
   }
   if (visibleItems.length === 0 && query.isFetchingNextPage) {
-    return <p className="px-2 py-3 text-sm text-neutral-500" role="status">正在查找匹配任务…</p>;
+    return <p className="px-2 py-3 text-sm text-ink-3" role="status">正在查找匹配任务…</p>;
   }
   if (visibleItems.length === 0 && (!filter.active || autoPageTargetsLoaded)) {
-    return <p className="px-2 py-3 text-sm text-neutral-500">{depth === 0 ? (filter.active ? '没有匹配的任务' : '暂无任务') : '没有可显示的子任务'}</p>;
+    return <p className="px-2 py-3 text-sm text-ink-3">{depth === 0 ? (filter.active ? '没有匹配的任务' : '暂无任务') : '没有可显示的子任务'}</p>;
   }
 
   return (
@@ -259,7 +259,7 @@ function TaskTreeChildren({
               onOpenDetail={() => onOpenDetail(item.id)}
             />
             {expanded && canExpand && (
-              <div className="ml-3 min-w-0 border-l border-neutral-200 pl-2 dark:border-neutral-700 sm:ml-5 sm:pl-3">
+              <div className="ml-3 min-w-0 border-l border-hairline pl-2 sm:ml-5 sm:pl-3">
                 <TaskTreeChildren
                   workspaceId={workspaceId}
                   parentId={item.id}
@@ -289,7 +289,7 @@ function TaskTreeChildren({
             onClick={() => void query.fetchNextPage()}
             disabled={query.isFetchingNextPage}
             aria-label={parentId === null ? '加载更多根任务' : `加载更多子任务：${issues.find((issue) => issue.id === parentId)?.title ?? ''}`}
-            className="my-1 rounded px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950/40"
+            className="my-1 rounded px-2 py-1 text-xs text-accent hover:bg-accent-soft disabled:opacity-50"
           >
             {query.isFetchingNextPage ? '加载中…' : '加载更多'}
           </button>
@@ -392,7 +392,7 @@ function TaskTreeRow({
   return (
     <article
       data-testid={`tree-node-${item.id}`}
-      className="min-w-0 rounded-md border border-neutral-200 bg-white p-2 shadow-sm dark:border-neutral-800 dark:bg-neutral-900 sm:p-2.5"
+      className="min-w-0 rounded-md border border-hairline bg-surface-card p-2 shadow-sm sm:p-2.5"
     >
       <div className="grid min-w-0 grid-cols-[1.75rem_minmax(0,1fr)] items-start gap-x-2 gap-y-2 sm:flex sm:flex-wrap">
         <button
@@ -401,7 +401,7 @@ function TaskTreeRow({
           aria-expanded={expanded}
           disabled={!canExpand}
           onClick={onToggle}
-          className="mt-0.5 h-7 w-7 shrink-0 rounded text-sm text-neutral-600 hover:bg-neutral-100 disabled:cursor-default disabled:opacity-30 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          className="mt-0.5 h-7 w-7 shrink-0 rounded text-sm text-ink-2 hover:bg-surface-raised disabled:cursor-default disabled:opacity-30"
         >
           {canExpand ? (expanded ? '−' : '+') : '·'}
         </button>
@@ -420,12 +420,12 @@ function TaskTreeRow({
             {item.title}
           </button>
           {ancestors.length > 0 && (
-            <p aria-label={`祖先路径：${item.title}`} className="mt-0.5 truncate text-xs text-neutral-500 dark:text-neutral-400">
+            <p aria-label={`祖先路径：${item.title}`} className="mt-0.5 truncate text-xs text-ink-3">
               {ancestors.map((ancestor) => ancestor.title).join(' › ')}
             </p>
           )}
           {item.descendant_count > 0 && (
-            <p className={`mt-1 text-xs ${blockedClose ? 'text-amber-700 dark:text-amber-300' : 'text-neutral-500 dark:text-neutral-400'}`}>
+            <p className={`mt-1 text-xs ${blockedClose ? 'text-amber-700 dark:text-amber-300' : 'text-ink-3 '}`}>
               后代进度：{item.descendants_closed_count}/{item.descendant_count} 已关闭
               {blockedClose ? `；仍有 ${item.descendant_count - item.descendants_closed_count} 项未关闭` : ''}
             </p>
@@ -437,9 +437,9 @@ function TaskTreeRow({
           )}
         </div>
         <div className="col-start-2 flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-auto sm:col-auto">
-          <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">{item.status}</span>
+          <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs text-ink-2">{item.status}</span>
           {item.claimed_by !== null && (
-            <span data-testid={`tree-claim-${item.id}`} className={`rounded px-1.5 py-0.5 text-xs ${runningSession ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}>
+            <span data-testid={`tree-claim-${item.id}`} className={`rounded px-1.5 py-0.5 text-xs ${runningSession ? 'bg-accent-soft text-accent  ' : 'bg-surface-raised text-ink-2  '}`}>
               {item.claimed_by.replace(/^agent:/, '')}{runningSession ? ' · 运行中' : ' · 占用中'}
             </span>
           )}
@@ -452,13 +452,13 @@ function TaskTreeRow({
               disabled={statusBlockedReason !== null}
               title={statusBlockedReason ?? undefined}
               onChange={(event) => void changeStatus(event.target.value as IssueStatus)}
-              className="max-w-full rounded border border-neutral-300 bg-white px-1.5 py-1 text-xs disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800"
+              className="max-w-full rounded border border-hairline bg-surface-card px-1.5 py-1 text-xs disabled:opacity-50"
             >
               {STATUSES.map((value) => (
                 <option key={value} value={value} disabled={value === '已关闭' && blockedClose}>{value}</option>
               ))}
             </select>
-            <button type="button" aria-label={`新建子任务：${item.title}`} onClick={() => { setCreateOpen((open) => !open); setCreateError(null); }} className="rounded px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/40">
+            <button type="button" aria-label={`新建子任务：${item.title}`} onClick={() => { setCreateOpen((open) => !open); setCreateError(null); }} className="rounded px-2 py-1 text-xs text-accent hover:bg-accent-soft">
               + 子任务
             </button>
             <button
@@ -467,7 +467,7 @@ function TaskTreeRow({
               disabled={item.claimed_by !== null || (moveEditor?.saving ?? false)}
               title={item.claimed_by !== null ? '占用中不能移动父级' : '更改父级'}
               onClick={() => moveOpen ? onCloseMove() : onOpenMove()}
-              className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className="rounded px-2 py-1 text-xs text-ink-2 hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
             >
               移动
             </button>
@@ -484,24 +484,24 @@ function TaskTreeRow({
         <form onSubmit={(event) => void createChild(event)} className="ml-9 mt-2 flex min-w-0 flex-wrap gap-2">
           <label className="min-w-0 flex-1 text-xs">
             <span className="sr-only">子任务标题：{item.title}</span>
-            <input aria-label={`子任务标题：${item.title}`} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="子任务标题" required className="w-full rounded border border-neutral-300 px-2 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800" />
+            <input aria-label={`子任务标题：${item.title}`} value={newTitle} onChange={(event) => setNewTitle(event.target.value)} placeholder="子任务标题" required className="w-full rounded border border-hairline px-2 py-1.5 text-sm" />
           </label>
-          <button type="submit" disabled={savingCreate || newTitle.trim() === ''} className="rounded bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-40">创建子任务</button>
-          <button type="button" onClick={() => setCreateOpen(false)} className="rounded px-2 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800">取消</button>
+          <button type="submit" disabled={savingCreate || newTitle.trim() === ''} className="rounded bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-ink disabled:opacity-40">创建子任务</button>
+          <button type="button" onClick={() => setCreateOpen(false)} className="rounded px-2 py-1.5 text-xs text-ink-3 hover:bg-surface-raised">取消</button>
           {createError && <p role="alert" className="basis-full text-xs text-red-600 dark:text-red-400">{createError}</p>}
         </form>
       )}
 
       {moveOpen && (
         <form onSubmit={(event) => void onSubmitMove(event)} className="ml-9 mt-2 flex min-w-0 flex-wrap items-center gap-2">
-          <label className="min-w-0 flex-1 text-xs text-neutral-600 dark:text-neutral-300">
+          <label className="min-w-0 flex-1 text-xs text-ink-2">
             <span className="sr-only">新父任务：{item.title}</span>
             <select
               aria-label={`新父任务：${item.title}`}
               value={moveEditor.selectedParentId}
               disabled={moveEditor.conflict}
               onChange={(event) => onSelectMoveParent(event.target.value)}
-              className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-sm disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-800"
+              className="w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm disabled:opacity-60"
             >
               <option value="">移至根任务</option>
               {moveEditor.selectedParentId !== '' && !parentChoices.some((candidate) => candidate.id === moveEditor.selectedParentId) && (
@@ -510,8 +510,8 @@ function TaskTreeRow({
               {parentChoices.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.title}</option>)}
             </select>
           </label>
-          <button type="submit" disabled={moveEditor.saving || moveEditor.conflict || moveEditor.selectedParentId === (moveEditor.originalParentId ?? '')} className="rounded bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white disabled:opacity-40">保存父级</button>
-          <button type="button" disabled={moveEditor.saving} onClick={onCloseMove} className="rounded px-2 py-1.5 text-xs text-neutral-500 hover:bg-neutral-100 disabled:opacity-40 dark:hover:bg-neutral-800">取消</button>
+          <button type="submit" disabled={moveEditor.saving || moveEditor.conflict || moveEditor.selectedParentId === (moveEditor.originalParentId ?? '')} className="rounded bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-ink disabled:opacity-40">保存父级</button>
+          <button type="button" disabled={moveEditor.saving} onClick={onCloseMove} className="rounded px-2 py-1.5 text-xs text-ink-3 hover:bg-surface-raised disabled:opacity-40">取消</button>
           {moveEditor.error !== null && (
             <p role="alert" className="basis-full text-xs text-red-600 dark:text-red-400">
               {moveEditor.conflict

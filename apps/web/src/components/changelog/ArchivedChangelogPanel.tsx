@@ -50,24 +50,24 @@ export function ArchivedChangelogPanel() {
 
   return (
     <div data-testid="changelog-archived" className="space-y-3">
-      <p className="text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="text-xs text-ink-3">
         已移除工作区仍保留变更日志（只读），工作区名称与路径为移除时的快照。
       </p>
 
-      {workspaces.isPending && <p className="text-xs text-neutral-500" role="status">加载归档工作区…</p>}
+      {workspaces.isPending && <p className="text-xs text-ink-3" role="status">加载归档工作区…</p>}
       {workspaces.isError && (
         <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           {workspaces.error.message}
         </p>
       )}
       {!workspaces.isPending && !workspaces.isError && items.length === 0 && (
-        <p data-testid="changelog-archived-empty" className="rounded-md border border-dashed border-neutral-300 px-3 py-6 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
+        <p data-testid="changelog-archived-empty" className="rounded-md border border-dashed border-hairline px-3 py-6 text-center text-xs text-ink-3">
           没有已移除工作区的变更日志
         </p>
       )}
 
       {items.length > 0 && (
-        <ul className="divide-y divide-neutral-200 overflow-hidden rounded-md border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+        <ul className="divide-y divide-hairline overflow-hidden rounded-md border border-hairline">
           {items.map((workspace) => {
             const isSelected = selected?.origin_workspace_id === workspace.origin_workspace_id;
             return (
@@ -77,11 +77,11 @@ export function ArchivedChangelogPanel() {
                   data-testid={`changelog-archived-workspace-${workspace.origin_workspace_id}`}
                   aria-current={isSelected ? 'true' : undefined}
                   onClick={() => setSelected(workspace)}
-                  className={`block w-full px-3 py-2 text-left text-sm ${isSelected ? 'bg-blue-50 dark:bg-blue-950/30' : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/60'}`}
+                  className={`block w-full px-3 py-2 text-left text-sm ${isSelected ? 'bg-accent-soft ' : 'hover:bg-surface-page '}`}
                 >
-                  <span className="block truncate font-medium text-neutral-900 dark:text-neutral-100">{workspace.origin_workspace_name}</span>
-                  <span className="block truncate text-xs text-neutral-500 dark:text-neutral-400">{workspace.origin_workspace_path}</span>
-                  <span className="mt-0.5 block text-xs text-neutral-400 dark:text-neutral-500">
+                  <span className="block truncate font-medium text-ink">{workspace.origin_workspace_name}</span>
+                  <span className="block truncate text-xs text-ink-3">{workspace.origin_workspace_path}</span>
+                  <span className="mt-0.5 block text-xs text-ink-3">
                     {workspace.entry_count} 条 · 最近 {localDateTime(workspace.last_occurred_at)}
                   </span>
                 </button>
@@ -106,8 +106,8 @@ export function ArchivedChangelogPanel() {
       </div>
 
       {selected !== null && (
-        <section data-testid="changelog-archived-entries" className="space-y-2 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-          <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+        <section data-testid="changelog-archived-entries" className="space-y-2 border-t border-hairline pt-3">
+          <h3 className="text-sm font-semibold text-ink">
             {selected.origin_workspace_name}（只读）
           </h3>
           <form
@@ -142,7 +142,7 @@ export function ArchivedChangelogPanel() {
             <button type="submit" className={BUTTON_SECONDARY}>筛选</button>
           </form>
 
-          {entries.isPending && <p className="text-xs text-neutral-500" role="status">加载归档日志…</p>}
+          {entries.isPending && <p className="text-xs text-ink-3" role="status">加载归档日志…</p>}
           {entries.isError && (
             <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
               {entries.error.message}

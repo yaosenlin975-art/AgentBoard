@@ -30,14 +30,14 @@ const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', par
 
 function Provenance({ sources, evidence }: Pick<KnowledgePage, 'sources' | 'evidence'>) {
   return <>
-    <ul className="space-y-2 text-sm">{sources.map(s => <li key={s.source_id} className="rounded-md bg-neutral-50 px-2 py-1.5 dark:bg-neutral-800/60">
-      <code className="break-all text-xs text-neutral-800 dark:text-neutral-200">{s.locator}</code>
-      <div className="mt-0.5 break-all text-xs text-neutral-500 dark:text-neutral-400">SHA-256 {s.content_hash} · {new Date(s.captured_at).toLocaleString()}</div>
-      {s.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-neutral-300 pl-2 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-400">{s.snapshot}</blockquote>}
+    <ul className="space-y-2 text-sm">{sources.map(s => <li key={s.source_id} className="rounded-md bg-surface-page px-2 py-1.5">
+      <code className="break-all text-xs text-ink">{s.locator}</code>
+      <div className="mt-0.5 break-all text-xs text-ink-3">SHA-256 {s.content_hash} · {new Date(s.captured_at).toLocaleString()}</div>
+      {s.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-hairline pl-2 text-xs text-ink-2">{s.snapshot}</blockquote>}
     </li>)}</ul>
-    {evidence.length > 0 && <ul className="mt-2 space-y-2 text-sm">{evidence.map((e, i) => <li key={i} className="rounded-md bg-neutral-50 px-2 py-1.5 dark:bg-neutral-800/60">
-      <code className="break-all text-xs text-neutral-800 dark:text-neutral-200">{e.locator}</code>
-      {e.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-neutral-300 pl-2 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-400">{e.snapshot}</blockquote>}
+    {evidence.length > 0 && <ul className="mt-2 space-y-2 text-sm">{evidence.map((e, i) => <li key={i} className="rounded-md bg-surface-page px-2 py-1.5">
+      <code className="break-all text-xs text-ink">{e.locator}</code>
+      {e.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-hairline pl-2 text-xs text-ink-2">{e.snapshot}</blockquote>}
     </li>)}</ul>}
   </>;
 }
@@ -97,12 +97,12 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     },
   });
 
-  if (page.isPending) return <p className="min-w-0 flex-1 px-1 py-3 text-sm text-neutral-500 dark:text-neutral-400">加载详情…</p>;
+  if (page.isPending) return <p className="min-w-0 flex-1 px-1 py-3 text-sm text-ink-3">加载详情…</p>;
   if (page.isError) return <p role="alert" className="min-w-0 flex-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{page.error.message}</p>;
   const p = page.data;
   const labels = { archive: '归档', restore: '恢复', delete: '软删除' };
   const isExpired = p.expires_at !== null && p.expires_at !== undefined && p.expires_at <= Date.now();
-  return <article aria-label="知识详情" className="min-w-0 flex-1 overflow-auto rounded-lg border border-neutral-200 bg-white p-4 text-neutral-900 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100">
+  return <article aria-label="知识详情" className="min-w-0 flex-1 overflow-auto rounded-lg border border-hairline bg-surface-card p-4 text-ink">
     <header>
       <h2 className="text-base font-semibold leading-snug">{p.title}</h2>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -118,7 +118,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
         })()}
         {p.expires_at !== null && p.expires_at !== undefined && <Badge tone={isExpired ? 'red' : 'neutral'}>{isExpired ? '已过期 ' : '有效期 '}{new Date(p.expires_at).toLocaleDateString()}</Badge>}
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-3">
         <span data-testid="knowledge-page-created-at">创建时间 {new Date(p.created_at).toLocaleString()}</span>
         <span aria-hidden="true">·</span>
         <span data-testid="knowledge-page-updated-at">最后修改时间 {new Date(p.updated_at).toLocaleString()}</span>
@@ -127,7 +127,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
 
     {/* KB-DETAIL-W：正文按可用宽度自适应，但保留可读上限（≈88 字符/行）并居中，
         避免宽屏下右侧堆一大片空白（原 max-w-[70ch] 左对齐） */}
-    <div data-testid="knowledge-body" className="mx-auto mt-3 w-full max-w-[min(88ch,100%)] text-sm text-neutral-800 dark:text-neutral-200">
+    <div data-testid="knowledge-body" className="mx-auto mt-3 w-full max-w-[min(88ch,100%)] text-sm text-ink">
       <MarkdownView>{p.body_md}</MarkdownView>
     </div>
 
@@ -179,8 +179,8 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       )}
     </section>
 
-    <details data-testid="provenance" className="mt-4 rounded-md border border-neutral-200 dark:border-neutral-800">
-      <summary className="cursor-pointer px-2.5 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+    <details data-testid="provenance" className="mt-4 rounded-md border border-hairline">
+      <summary className="cursor-pointer px-2.5 py-1.5 text-xs font-medium text-ink-2">
         来源与证据（{p.sources.length + p.evidence.length} 条）
       </summary>
       <div className="px-2.5 pb-2.5">
@@ -227,8 +227,8 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       renderBody={(md) => <MarkdownView>{md}</MarkdownView>}
     />
 
-    {confirm && <div className="rounded-md border border-neutral-200 bg-neutral-50 p-2.5 dark:border-neutral-800 dark:bg-neutral-800/60">
-      <p className="text-sm text-neutral-800 dark:text-neutral-200">确认{labels[confirm]}此{scope === 'common' ? '公共' : '项目'}知识？历史仍保留。</p>
+    {confirm && <div className="rounded-md border border-hairline bg-surface-page p-2.5">
+      <p className="text-sm text-ink">确认{labels[confirm]}此{scope === 'common' ? '公共' : '项目'}知识？历史仍保留。</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button type="button" className={BUTTON_SECONDARY} disabled={action.isPending} onClick={() => action.mutate(confirm)}>确认{labels[confirm]}</button>
         <button type="button" className={BUTTON_SECONDARY} onClick={() => setConfirm(null)}>取消</button>
@@ -236,7 +236,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     </div>}
     {action.isError && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{action.error.message}</p>}
 
-    {p.status !== 'deleted' && <div className="my-3 flex flex-wrap items-end gap-2 text-xs text-neutral-600 dark:text-neutral-300">
+    {p.status !== 'deleted' && <div className="my-3 flex flex-wrap items-end gap-2 text-xs text-ink-2">
       <label>有效期（本机时间，留空清除）
         <input aria-label="知识有效期" type="datetime-local" className={`${FIELD_CLASS} mt-1 block`} value={expiryDraft ?? (p.expires_at ? new Date(p.expires_at - new Date(p.expires_at).getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '')} onChange={e => setExpiryDraft(e.target.value)} />
       </label>
@@ -249,9 +249,9 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       <aside
         data-testid="knowledge-history-drawer"
         aria-label="版本历史抽屉"
-        className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-neutral-200 bg-white shadow-xl dark:border-neutral-800 dark:bg-neutral-900"
+        className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-hairline bg-surface-card shadow-xl"
       >
-        <header className="flex items-center gap-2 border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <header className="flex items-center gap-2 border-b border-hairline px-3 py-2">
           <span className="text-sm font-semibold">版本历史（{p.revision} 个版本）</span>
           <button type="button" data-testid="knowledge-history-close" className={`${BUTTON_SECONDARY} ml-auto`} onClick={() => { setHistoryOpen(false); setPreviewRevision(null); setRestoreTarget(null); setRestoreError(null); }}>
             关闭
@@ -262,25 +262,25 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
             {restoreError}
           </p>
         )}
-        {history.isPending && <p className="px-3 py-3 text-sm text-neutral-500 dark:text-neutral-400">读取历史…</p>}
+        {history.isPending && <p className="px-3 py-3 text-sm text-ink-3">读取历史…</p>}
         {history.isError && <p role="alert" className="px-3 py-3 text-sm text-red-600 dark:text-red-400">{history.error.message}</p>}
         <ul data-testid="knowledge-history-list" className="min-h-0 flex-1 overflow-auto px-3 py-2 text-xs">
           {history.data?.items.map((r) => (
-            <li key={r.revision} data-testid={`knowledge-revision-${r.revision}`} className="border-b border-neutral-100 py-1.5 last:border-0 dark:border-neutral-800">
+            <li key={r.revision} data-testid={`knowledge-revision-${r.revision}`} className="border-b border-hairline py-1.5 last:border-0">
               <div className="flex flex-wrap items-center gap-1.5">
                 <button
                   type="button"
                   data-testid={`knowledge-revision-preview-${r.revision}`}
                   aria-pressed={previewRevision === r.revision}
                   onClick={() => setPreviewRevision(previewRevision === r.revision ? null : r.revision)}
-                  className="rounded px-1 text-left font-medium text-blue-700 hover:underline dark:text-blue-300"
+                  className="rounded px-1 text-left font-medium text-accent hover:underline"
                 >
                   r{r.revision}
                 </button>
-                <span data-testid={`knowledge-revision-kind-${r.revision}`} className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{r.change_kind}</span>
-                <span data-testid={`knowledge-revision-actor-${r.revision}`} className="text-neutral-600 dark:text-neutral-400">{r.actor}</span>
-                <span data-testid={`knowledge-revision-time-${r.revision}`} className="text-neutral-500 dark:text-neutral-500">{new Date(r.created_at).toLocaleString()}</span>
-                {r.change_note !== '' && <span data-testid={`knowledge-revision-note-${r.revision}`} className="text-neutral-500 dark:text-neutral-400">· {r.change_note}</span>}
+                <span data-testid={`knowledge-revision-kind-${r.revision}`} className="rounded bg-surface-raised px-1">{r.change_kind}</span>
+                <span data-testid={`knowledge-revision-actor-${r.revision}`} className="text-ink-2">{r.actor}</span>
+                <span data-testid={`knowledge-revision-time-${r.revision}`} className="text-ink-3">{new Date(r.created_at).toLocaleString()}</span>
+                {r.change_note !== '' && <span data-testid={`knowledge-revision-note-${r.revision}`} className="text-ink-3">· {r.change_note}</span>}
                 {r.revision !== p.revision && (
                   <button
                     type="button"
@@ -291,7 +291,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
                     恢复此版本
                   </button>
                 )}
-                {r.revision === p.revision && <span className="ml-auto text-neutral-400">当前版本</span>}
+                {r.revision === p.revision && <span className="ml-auto text-ink-3">当前版本</span>}
               </div>
               {restoreTarget?.revision === r.revision && (
                 <div data-testid={`knowledge-restore-confirm-${r.revision}`} className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
@@ -313,15 +313,15 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
                 </div>
               )}
               {previewRevision === r.revision && (
-                <div data-testid={`knowledge-revision-body-${r.revision}`} className="mt-1.5 rounded-md bg-neutral-50 px-2 py-1.5 dark:bg-neutral-800/60">
-                  <div className="mb-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300">{r.title_snapshot}（只读快照）</div>
+                <div data-testid={`knowledge-revision-body-${r.revision}`} className="mt-1.5 rounded-md bg-surface-page px-2 py-1.5">
+                  <div className="mb-1 text-[11px] font-medium text-ink-2">{r.title_snapshot}（只读快照）</div>
                   <div className="mx-auto max-w-[min(88ch,100%)] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
                 </div>
               )}
             </li>
           ))}
         </ul>
-        <footer className="flex items-center gap-2 border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <footer className="flex items-center gap-2 border-t border-hairline px-3 py-2">
           <button type="button" className={BUTTON_SECONDARY} disabled={!historyOffset} onClick={() => setHistoryOffset(Math.max(0, historyOffset - 20))}>历史上一页</button>
           <button type="button" className={BUTTON_SECONDARY} disabled={history.data?.next_offset == null} onClick={() => setHistoryOffset(history.data?.next_offset ?? historyOffset)}>历史下一页</button>
         </footer>

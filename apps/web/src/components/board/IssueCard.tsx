@@ -54,7 +54,7 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
             data-testid={`due-badge-${issue.id}`}
             data-overdue={late ? 'true' : 'false'}
             title={late ? `已逾期 ${days} 天（截止 ${due}）` : `截止 ${due}`}
-            className={`w-fit rounded px-1.5 py-0.5 text-xs ${late ? 'bg-red-100 font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300' : 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300'}`}
+            className={`w-fit rounded px-1.5 py-0.5 text-xs ${late ? 'bg-red-100 font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300' : 'bg-surface-raised text-ink-2  '}`}
           >
             {late ? `逾期 ${days} 天 · ${due}` : `截止 ${due}`}
           </span>
@@ -66,14 +66,14 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
             <span
               key={label}
               data-testid={`label-${issue.id}-${label}`}
-              className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"
+              className="rounded bg-surface-raised px-1.5 py-0.5 text-xs text-ink-2"
             >
               {label}
             </span>
           ))}
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+      <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
         {claimed && (
           <Badge
             tone={sessionRunning ? 'green' : 'neutral'}

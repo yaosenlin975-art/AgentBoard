@@ -117,8 +117,8 @@ export function Board({
   if (workspaceId === null) {
     return (
       <div className="flex h-full items-center justify-center p-8">
-        <div className="text-center text-sm text-neutral-400 dark:text-neutral-500">
-          <p className="text-base font-medium text-neutral-500 dark:text-neutral-400">看板</p>
+        <div className="text-center text-sm text-ink-3">
+          <p className="text-base font-medium text-ink-3">看板</p>
           <p className="mt-1">请先在左侧选择或创建工作空间</p>
         </div>
       </div>
