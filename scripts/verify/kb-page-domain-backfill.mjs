@@ -15,6 +15,7 @@
  *   node scripts/verify/kb-page-domain-backfill.mjs --dry-run   # 只打印将要写入的映射
  *   node scripts/verify/kb-page-domain-backfill.mjs --apply     # 实际执行
  *   node scripts/verify/kb-page-domain-backfill.mjs --stats     # 只打印分布与自证指标
+ *   node scripts/verify/kb-page-domain-backfill.mjs --legacy-triage [--apply]  # KB-PAGE-3 收口轮：legacy → pinned/solved
  */
 
 import { createRequire } from 'node:module';
@@ -68,6 +69,14 @@ const RULES = [
   { domain: 'ui', id: 'U5', why: '时间轴双语浏览器验证口径', re: /^timeline-bilingual-/ },
   { domain: 'ui', id: 'U6', why: 'UI-FILTER01 标签 toggle 筛选', re: /ui-filter/i },
 
+  // ---- KB-PAGE-3 收口轮：3b 留 NULL 的 21 页按设计 §5.4 逐页补域（非按 scope 批量） ----
+  { domain: 'accounts', id: 'A7', why: '平台添加账号 / 凭据落点 / 积分接口（3b 未覆盖的 common 页）', re: /^platform-(add-account|credential-storage|credits-api)$/ },
+  { domain: 'knowledge', id: 'K8', why: '知识卡引用落地面（KB-PAGE-2b）', re: /^agentboard-knowledge-links-implementation$/ },
+  { domain: 'knowledge', id: 'K9', why: '纯文本导入样例页', re: /^纯文本样例/i },
+  { domain: 'knowledge', id: 'K10', why: '图片演练页', re: /^img-3edebe$/ },
+  { domain: 'knowledge', id: 'K11', why: '知识页分类回填口径（KB-PAGE-3 收口）', re: /^agentboard-knowledge-taxonomy-rollout$/ },
+  { domain: 'board', id: 'B5', why: 'AgentBoard 测试与门禁', re: /^agentboard-testing-gates$/ },
+
   // ---- infra：服务端数据层 / 分布式存储 / DSH 工具链 / 打包通道 ----
   { domain: 'infra', id: 'I1', why: 'AgentBoard 服务端与数据层', re: /^agentboard-server-data$/ },
   { domain: 'infra', id: 'I2', why: '工作区自治数据库（分布式存储）设计', re: /^workspace-distributed-storage-/ },
@@ -75,6 +84,36 @@ const RULES = [
   { domain: 'infra', id: 'I4', why: 'MSI 打包通道与再发布', re: /msi 打包|msi-/i },
   { domain: 'infra', id: 'I5', why: 'P0 清缓存验证状态行（工具链）', re: /p0 清缓存/i },
 ];
+
+/**
+ * KB-PAGE-3 收口轮：`legacy` 逐页分流白名单（设计 §5.2/§5.4：legacy 是迁移期临时态，验收清零）。
+ * 只写 category 一列；pinned=稳定操作口径，solved=可复用踩坑/结论。禁止按 scope 一把梭。
+ */
+const LEGACY_TRIAGE = new Map([
+  // common：平台账号/凭据/切换/积分 → pinned（稳定操作口径）
+  ['platform-account-ops-overview', 'pinned'],
+  ['platform-account-switch', 'pinned'],
+  ['platform-add-account', 'pinned'],
+  ['platform-credential-storage', 'pinned'],
+  ['platform-credits-api', 'pinned'],
+  ['zcode-deep-dive', 'pinned'],
+  // common：导入演练 / UI 修复结论 → solved
+  ['KBIMP-2B-同-slug-演练', 'solved'],
+  ['KBIMP-2B-同-slug-演练-202611040819', 'solved'],
+  ['KBIMP-2B-同-slug-演练-202611040821', 'solved'],
+  ['KBIMP-3-Markdown-样例', 'solved'],
+  ['KBIMP-3-数组样例-B', 'solved'],
+  ['纯文本样例-第一行作为标题', 'solved'],
+  ['dsh-hide-archived-sessions', 'solved'],
+  // workspace：归档/软删的历史交接与验证页 → solved
+  ['guide-selftest-20261104', 'solved'],
+  ['handoff-077ece77-75d3-40cf-adcc-c8b08b731e84', 'solved'],
+  ['handoff-2044dcb4-e422-4ce3-af83-cb1b55cb63ad', 'solved'],
+  ['handoff-72daf739-fa1d-4847-aaef-5fd4d9e87959', 'solved'],
+  ['img-3edebe', 'solved'],
+  ['page-time-verify', 'solved'],
+  ['project-status-2026-11-03', 'solved'],
+]);
 
 function pickDomain(row) {
   const slug = row.slug ?? '';
@@ -108,7 +147,13 @@ if (!existsSync(dbPath)) {
   process.exit(1);
 }
 const db = new Database(dbPath);
-const mode = process.argv.includes('--apply') ? 'apply' : process.argv.includes('--stats') ? 'stats' : 'dry-run';
+const triage = process.argv.includes('--legacy-triage');
+const apply = process.argv.includes('--apply');
+// 收口轮按工作区收窄（common 页共享，按主题归域仍写；workspace 页只动自己的）
+const wsIndex = process.argv.indexOf('--workspace');
+const onlyWs = wsIndex === -1 ? null : process.argv[wsIndex + 1];
+const inScope = (row) => !onlyWs || row.scope === 'common' || row.workspace_id === onlyWs;
+const mode = apply ? 'apply' : process.argv.includes('--stats') ? 'stats' : 'dry-run';
 
 if (mode === 'stats') {
   stats(db, 'stats');
@@ -116,8 +161,51 @@ if (mode === 'stats') {
   process.exit(0);
 }
 
+if (triage) {
+  // 收口轮：只写 category（legacy → design/solved/pinned/open），逐页白名单，幂等（WHERE category='legacy'）
+  const before = stats(db, 'before');
+  const rowList = db.prepare("SELECT id, scope, workspace_id, slug, category FROM knowledge_page WHERE category='legacy' ORDER BY scope, slug").all().filter(inScope);
+  const hits = [];
+  const misses = [];
+  for (const row of rowList) {
+    const to = LEGACY_TRIAGE.get(row.slug);
+    if (to) hits.push({ row, to });
+    else misses.push(row);
+  }
+  console.log(`\nlegacy 待分流 ${hits.length} 页，无白名单 ${misses.length} 页（共 ${rowList.length}）`);
+  for (const { row, to } of hits) console.log(`  ${row.slug} legacy → ${to}`);
+  if (misses.length) {
+    console.error('存在未在白名单的 legacy 页，已中止：' + misses.map(r => r.slug).join(', '));
+    db.close();
+    process.exit(1);
+  }
+  if (apply) {
+    const stmt = db.prepare("UPDATE knowledge_page SET category = ? WHERE id = ? AND category='legacy'");
+    const changed = db.transaction(() => hits.reduce((n, { row, to }) => n + stmt.run(to, row.id).changes, 0))();
+    console.log(`\n已更新 ${changed} 行`);
+    const after = stats(db, 'after');
+    // 收窄到本次范围：别的 workspace 的 legacy 不归本卡负责，不得顺手改
+    const legacyLeft = onlyWs
+      ? db.prepare("SELECT count(*) c FROM knowledge_page WHERE (scope='common' OR workspace_id=?) AND category='legacy'").get(onlyWs).c
+      : db.prepare("SELECT count(*) c FROM knowledge_page WHERE category='legacy'").get().c;
+    const invariants = {
+      'total 不变': before.total === after.total,
+      'revision 不变': before.rev === after.rev,
+      'body_len 不变': before.bodyLen === after.bodyLen,
+      'distinct_slug 不变': before.slugs === after.slugs,
+      'legacy=0': legacyLeft === 0,
+    };
+    console.log('自证：' + Object.entries(invariants).map(([k, v]) => `${k}=${v ? '✅' : '❌'}`).join(' '));
+    if (!Object.values(invariants).every(Boolean)) { db.close(); process.exit(1); }
+  } else {
+    console.log('\n（dry-run：未写库，加 --apply 执行）');
+  }
+  db.close();
+  process.exit(0);
+}
+
 const before = stats(db, 'before');
-const rows = db.prepare('SELECT id, scope, slug, title, category, domain FROM knowledge_page ORDER BY scope, slug').all();
+const rows = db.prepare('SELECT id, scope, workspace_id, slug, title, category, domain FROM knowledge_page ORDER BY scope, slug').all().filter(inScope);
 
 const hits = [];
 const misses = [];
