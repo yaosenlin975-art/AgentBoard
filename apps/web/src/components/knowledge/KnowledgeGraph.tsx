@@ -56,6 +56,12 @@ const FALLBACK_PAGE_CAP = 50;
 /** 布局视口（图坐标，不是画布像素）：layoutGraph 的初始分布区域 */
 const LAYOUT_W = 720;
 const LAYOUT_H = 480;
+/**
+ * KB-GRAPH-H：绘制区高度随浏览器视口自适应。
+ * 视口高度 − 顶栏/视图 tab/知识库工具条/搜索行/星图工具条/图例等固定占用（≈320px），
+ * 再夹在 360–900 之间：1280×720 → 400px，1440×900 → 580px，1920×1080 → 760px。
+ */
+const STAGE_HEIGHT = 'clamp(360px, calc(100dvh - 320px), 900px)';
 
 /** WebGL 前置检测：拿不到 context 就不动态 import PIXI（jsdom 里必然为 null） */
 function hasWebgl(doc: Document): boolean {
@@ -624,12 +630,14 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             role="img"
             tabIndex={0}
             aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
-            className={`h-[480px] w-full max-w-full touch-none outline-none ${
+            className={`w-full max-w-full touch-none outline-none ${
               renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
             }`}
             // CURSOR-WHITE/CURSOR-REUSE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
             // 复用 lib/cursor 的双色光标（白填充 + 深描边）。悬停到节点时保持 pointer 语义不变。
-            style={{ cursor: hovered === null ? GRAB_CURSOR : 'pointer' }}
+            // KB-GRAPH-H：绘制区高度随视口自适应（扣除顶栏/工具条/搜索行/图例等固定占用），夹在 360–900；
+            // 尺寸变化由 pixiGraph 的 ResizeObserver 接住，并按 panCenteredOn 保持内容居中。
+            style={{ height: STAGE_HEIGHT, cursor: hovered === null ? GRAB_CURSOR : 'pointer' }}
           />
           <GraphControls
             localMode={localMode}
@@ -711,7 +719,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
           {(renderer === 'no-webgl' || renderer === 'failed') && (
             <div
               data-graph-fallback={renderer === 'no-webgl' ? 'no-webgl' : 'render-failed'}
-              className="max-h-[480px] overflow-auto px-3 py-3"
+              className="overflow-auto px-3 py-3"
+              style={{ maxHeight: STAGE_HEIGHT }}
             >
               <p className="text-sm font-medium text-ink">
                 {renderer === 'no-webgl' ? '当前环境不支持 WebGL，已切换为列表视图' : '星图渲染器初始化失败，已切换为列表视图'}
