@@ -123,6 +123,33 @@ export function buildSources(content: string, filename: string | undefined, form
   };
 }
 
+/** KBIMP-1B2：json 逐条允许的分类与落地状态（与 zod 顶层枚举、repos 的归一规则同一套值） */
+export const IMPORT_CATEGORY_VALUES = ['design', 'solved', 'pinned', 'open', 'legacy'] as const;
+export const IMPORT_LANDED_VALUES = ['landed', 'partial', 'proposed'] as const;
+
+/**
+ * 逐条取值（KBIMP-1B2）：
+ * - 键存在 → 用本条的值（**逐条优先于请求顶层**）；`null`/`''` 表示本条未指定（不继承顶层）；
+ * - 键不存在 → 继承顶层；
+ * - 值非法 → 400，且 message 指明第几条与可选值（不静默归一成 legacy/proposed）。
+ */
+function pickPerItem<T extends string>(
+  record: Record<string, unknown>,
+  key: 'category' | 'landed',
+  allowed: readonly T[],
+  index: number,
+  fallback: T | null | undefined,
+): T | null | undefined {
+  if (!Object.prototype.hasOwnProperty.call(record, key)) return fallback;
+  const raw = record[key];
+  if (raw === null || raw === '') return key === 'landed' ? null : undefined;
+  if (typeof raw === 'string' && (allowed as readonly string[]).includes(raw)) return raw as T;
+  const shown = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  throw new ValidationError(
+    `第 ${index + 1} 条 ${key} 非法：${shown}（可选 ${allowed.join(' / ')}${key === 'landed' ? '；null 表示未落地' : ''}）`,
+  );
+}
+
 /**
  * json 映射：支持
  * 1) 单个对象 `{ title?, body|body_md, labels?, category?, landed?, slug? }`
@@ -154,8 +181,9 @@ export function mapJsonPages(content: string, overrides: { title?: string; categ
     const labels = Array.isArray(record.labels) ? record.labels.filter((l): l is string => typeof l === 'string') : [];
     const extra = Object.keys(record).filter((key) => !['title', 'body', 'body_md', 'labels', 'category', 'landed', 'slug'].includes(key));
     if (extra.length > 0) warnings.push(`第 ${index + 1} 条忽略了不支持的字段：${extra.join('、')}`);
-    const category = (typeof record.category === 'string' ? record.category : overrides.category) as KnowledgePage['category'] | undefined;
-    const landed = (typeof record.landed === 'string' ? record.landed : overrides.landed) as KnowledgePage['landed'] | undefined;
+    // KBIMP-1B2：逐条优先于顶层——键出现即生效（显式 null 也算「本条未指定」，不继承顶层）
+    const category = pickPerItem(record, 'category', IMPORT_CATEGORY_VALUES, index, overrides.category) ?? undefined;
+    const landed = pickPerItem(record, 'landed', IMPORT_LANDED_VALUES, index, overrides.landed);
     drafts.push({
       title: (titleRaw !== '' ? titleRaw : (overrides.title ?? txtTitle(body) ?? '导入的知识页')).slice(0, IMPORT_TITLE_MAX),
       body_md: body,

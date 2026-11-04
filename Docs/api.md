@@ -122,6 +122,20 @@
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
+### KBIMP-1B2 json 数组逐条 `category` / `landed`
+
+`format: 'json'` 的数组逐条取值，**逐条字段优先于请求顶层**：
+
+| 情形 | 结果 |
+| --- | --- |
+| 本条有 `category` / `landed` | 用本条的值 |
+| 本条 `category: null` / `''` | 本条未指定（不继承顶层）→ 归一为 `legacy` |
+| 本条 `landed: null` / `''` | 本条「未落地」（不继承顶层）→ `design` 归一为 `proposed`，其它分类 `null` |
+| 本条没有这两个键 | 继承请求顶层的 `category` / `landed` |
+| 本条值非法 | **400** `VALIDATION_ERROR`，message 指明第几条与可选值（例：`第 2 条 landed 非法：done（可选 landed / partial / proposed；null 表示未落地）`） |
+
+缺省归一规则不变：缺失/未知 `category` → `legacy`；`design` 缺 `landed` → `proposed`；非 `design` 类 `landed` 恒为 `null`。
+
 ### DB-3B-S 存储位置汇总（`GET /api/settings/storage`，只读）
 
 只读端点：不改配置、不触发迁移。所有数字由服务端算，前端只格式化（不许前后端各算一套）。

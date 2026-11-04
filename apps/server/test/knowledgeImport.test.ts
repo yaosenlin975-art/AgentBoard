@@ -123,6 +123,88 @@ describe('knowledge import (KBIMP-1)', () => {
     expect(common.body.pages[0].workspace_id).toBeNull();
   });
 
+  // ---- KBIMP-1B2：json 数组逐条 category/landed ----
+
+  it('逐条 category/landed 生效（design/proposed + solved）', async () => {
+    const content = JSON.stringify([
+      { title: '设计页', body_md: '设计正文', category: 'design', landed: 'proposed' },
+      { title: '解决页', body_md: '解决正文', category: 'solved' },
+    ]);
+    const res = await post({ scope: 'common', format: 'json', content });
+    expect(res.status).toBe(200);
+    expect(res.body.warnings).toEqual([]);
+    expect(res.body.pages.map((p: { category: string; landed: string | null }) => ({ category: p.category, landed: p.landed })))
+      .toEqual([{ category: 'design', landed: 'proposed' }, { category: 'solved', landed: null }]);
+  });
+
+  it('逐条优先于顶层：顶层 solved + 逐条 design/partial；逐条缺省才继承顶层', async () => {
+    const content = JSON.stringify([
+      { title: '逐条设计', body_md: '正文一', category: 'design', landed: 'partial' },
+      { title: '继承顶层', body_md: '正文二' },
+    ]);
+    const res = await post({ scope: 'common', format: 'json', content, category: 'solved', landed: 'landed' });
+    expect(res.status).toBe(200);
+    expect(res.body.pages.map((p: { category: string; landed: string | null }) => ({ category: p.category, landed: p.landed })))
+      .toEqual([{ category: 'design', landed: 'partial' }, { category: 'solved', landed: null }]);
+  });
+
+  it('逐条显式 null 表示「未落地」，不继承顶层 landed', async () => {
+    const content = JSON.stringify([{ title: '显式空', body_md: '正文', category: 'design', landed: null }]);
+    const res = await post({ scope: 'common', format: 'json', content, landed: 'landed' });
+    expect(res.status).toBe(200);
+    expect(res.body.pages[0]).toMatchObject({ category: 'design', landed: 'proposed' });
+  });
+
+  it('design 缺 landed → proposed；非 design 类 landed 恒为 null', async () => {
+    const content = JSON.stringify([
+      { title: '设计无落地', body_md: '正文', category: 'design' },
+      { title: '解决类带落地', body_md: '正文', category: 'solved', landed: 'landed' },
+    ]);
+    const res = await post({ scope: 'common', format: 'json', content });
+    expect(res.status).toBe(200);
+    expect(res.body.pages[0]).toMatchObject({ category: 'design', landed: 'proposed' });
+    expect(res.body.pages[1]).toMatchObject({ category: 'solved', landed: null });
+  });
+
+  it('逐条非法 category / landed → 400 且指明条序号与可选值', async () => {
+    const badCategory = await post({
+      scope: 'common',
+      format: 'json',
+      content: JSON.stringify([
+        { title: '正常', body_md: '正文一', category: 'design' },
+        { title: '越界', body_md: '正文二', category: 'bogus' },
+      ]),
+    });
+    expect(badCategory.status).toBe(400);
+    expect(badCategory.body.error.message).toContain('第 2 条');
+    expect(badCategory.body.error.message).toContain('bogus');
+    expect(badCategory.body.error.message).toContain('design / solved / pinned / open / legacy');
+
+    const badLanded = await post({
+      scope: 'common',
+      format: 'json',
+      content: JSON.stringify([{ title: '落地越界', body_md: '正文', category: 'design', landed: 'done' }]),
+    });
+    expect(badLanded.status).toBe(400);
+    expect(badLanded.body.error.message).toContain('第 1 条');
+    expect(badLanded.body.error.message).toContain('done');
+    expect(badLanded.body.error.message).toContain('landed / partial / proposed');
+  });
+
+  it('纯函数：planImport 保留逐条字段（不经过 HTTP 也一样）', async () => {
+    const { planImport } = await import('../src/services/knowledgeImport.js');
+    const planned = planImport({
+      scope: 'common',
+      format: 'json',
+      content: JSON.stringify([
+        { title: 'A', body_md: 'a', category: 'design', landed: 'partial' },
+        { title: 'B', body_md: 'b', category: 'solved' },
+      ]),
+    });
+    expect(planned.drafts.map((d) => ({ category: d.category, landed: d.landed })))
+      .toEqual([{ category: 'design', landed: 'partial' }, { category: 'solved', landed: undefined }]);
+  });
+
   it('纯函数：slugifyTitle / mdTitle / txtTitle 的边界', () => {
     expect(slugifyTitle('缓存 策略/v2')).toBe('缓存-策略/v2');
     expect(slugifyTitle('   ')).toMatch(/^import-[0-9a-f]{8}$/);
