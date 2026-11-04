@@ -151,8 +151,16 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     res.json(getKnowledgeRevision(db, req.params.id!, revision, scope));
   });
   router.get('/pages/:id', (req, res) => {
-    const page = getKnowledgePage(db, req.params.id!, scopeOf(req.query));
-    if (!page) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+    const scope = scopeOf(req.query);
+    const page = getKnowledgePage(db, req.params.id!, scope);
+    if (!page) {
+      // KB-PAGE-1：软删页与「不存在」分开——deleted → 410（前端显示「已删除 + 可看历史」），其它 → 404
+      const deleted = getKnowledgePage(db, req.params.id!, scope, { includeDeleted: true });
+      if (deleted !== null && deleted.status === 'deleted') {
+        throw new ApiError(410, 'KNOWLEDGE_DELETED', '知识页已删除（可查看历史版本）', { revision: deleted.revision });
+      }
+      throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+    }
     // V2-4：只加字段，不删既有字段
     res.json({
       ...page,

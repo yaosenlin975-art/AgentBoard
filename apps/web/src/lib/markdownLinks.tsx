@@ -63,9 +63,12 @@ async function resolveKnowledgePage(ref: string, workspaceId: string | null): Pr
     const search = new URLSearchParams({ scope: 'both', q: ref, limit: '10' });
     if (workspaceId !== null) search.set('workspace_id', workspaceId);
     const rows = await api.get<Array<{ page_id: string; slug?: string }>>(`/api/knowledge/search?${search.toString()}`);
-    const hit = rows.find((row) => row.slug === ref) ?? rows[0];
-    if (hit === undefined) throw error;
-    return fetchPage(hit.page_id, workspaceId);
+    // KB-PAGE-1 缺陷 1：**不得**用 `?? rows[0]` 兜底——搜索是子串匹配，取第一条会静默打开错页
+    // （典型：workspace 与 common 同 slug 时第一条未必是引用想指的那页）。
+    // 只接受 slug **完全相等**的命中；无命中或多条歧义时保持原错误，由渲染层降级为灰文本。
+    const exact = rows.filter((row) => row.slug === ref);
+    if (exact.length !== 1) throw error;
+    return fetchPage(exact[0]!.page_id, workspaceId);
   }
 }
 

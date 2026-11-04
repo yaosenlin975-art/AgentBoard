@@ -44,9 +44,20 @@ function duplicate(error: unknown): never {
   if ((error as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT_UNIQUE')) throw new ApiError(409, 'KNOWLEDGE_EXISTS', '范围内已存在该 slug');
   throw error;
 }
-export function getKnowledgePage(db: Db, pageId: string, scope: KnowledgeScope): KnowledgePage | null {
+/**
+ * KB-PAGE-1 缺陷 2：默认**不返回软删页**（`status='deleted'` 不再被当正常页读出来）。
+ * 需要区分「不存在」与「已删除」的调用方（`GET /pages/:id` 要回 410）显式传 `includeDeleted`。
+ */
+export function getKnowledgePage(
+  db: Db,
+  pageId: string,
+  scope: KnowledgeScope,
+  options: { includeDeleted?: boolean } = {},
+): KnowledgePage | null {
   validateKnowledgeScope(scope);
-  const row = db.prepare(`${selectPage} WHERE p.id=? AND p.scope=? AND p.workspace_id IS ?`).get(pageId, scope.scope, scope.workspace_id ?? null) as PageRow | undefined;
+  const statusFilter = options.includeDeleted === true ? '' : " AND p.status<>'deleted'";
+  const row = db.prepare(`${selectPage} WHERE p.id=? AND p.scope=? AND p.workspace_id IS ?${statusFilter}`)
+    .get(pageId, scope.scope, scope.workspace_id ?? null) as PageRow | undefined;
   return row ? parsePage(row) : null;
 }
 export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): KnowledgePage {
@@ -73,7 +84,7 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new ValidationError('expected_revision 必须为正整数');
   try {
     return db.transaction(() => {
-      const old = getKnowledgePage(db, pageId, scope);
+      const old = getKnowledgePage(db, pageId, scope, { includeDeleted: true });
       if (!old) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
       if (old.revision !== expectedRevision) throw new ApiError(409, 'KNOWLEDGE_REVISION_CONFLICT', '知识页已更新，请重新读取', { current_revision: old.revision });
       if (old.status === 'deleted' || (kind === 'restore' && old.status !== 'archived') || (kind === 'archive' && old.status !== 'active')) throw new ApiError(409, 'KNOWLEDGE_STATE_CONFLICT', '当前状态不允许此操作');
@@ -113,7 +124,7 @@ export type KnowledgeRevisionSummary = Omit<KnowledgeRevision, 'body_snapshot'> 
  * `includeBody=true` 保留旧行为，供兼容调用方显式索取。
  */
 export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeScope, limit = 20, offset = 0, includeBody = false): Array<KnowledgeRevision | KnowledgeRevisionSummary> {
-  if (!getKnowledgePage(db, pageId, scope)) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
   if (!Number.isInteger(limit) || limit < 1 || limit > 50 || !Number.isInteger(offset) || offset < 0) throw new ValidationError('历史分页参数不合法');
   // 字节数按 UTF-8 计（CAST 成 BLOB 再 length），字符数按 UTF-16 码点近似（SQLite length 对 TEXT 即字符数）
   const columns = includeBody
@@ -134,7 +145,7 @@ export function listKnowledgeRevisions(db: Db, pageId: string, scope: KnowledgeS
 
 /** KB-DIFF-S：单条 revision 全文快照（「点某版本看 diff」按需取，不进列表） */
 export function getKnowledgeRevision(db: Db, pageId: string, revision: number, scope: KnowledgeScope): KnowledgeRevision {
-  if (!getKnowledgePage(db, pageId, scope)) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
+  if (!getKnowledgePage(db, pageId, scope, { includeDeleted: true })) throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
   if (!Number.isInteger(revision) || revision < 1) throw new ValidationError('revision 不合法');
   const row = db.prepare('SELECT * FROM knowledge_revision WHERE page_id=? AND revision=?').get(pageId, revision) as (Omit<KnowledgeRevision, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string }) | undefined;
   if (row === undefined) throw new ApiError(404, 'KNOWLEDGE_REVISION_NOT_FOUND', `版本 ${revision} 不存在`);

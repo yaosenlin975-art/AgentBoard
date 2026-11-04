@@ -162,6 +162,15 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
+### KB-PAGE-1 知识页读语义与 slug 解析（缺陷修复）
+
+﻿| 项 | 变化 |
+| --- | --- |
+| `GET /api/knowledge/pages/:id` | 软删页（`status='deleted'`）→ **410 `KNOWLEDGE_DELETED`**（附 `details.revision`，提示可看历史）；不存在 → 仍 404 `KNOWLEDGE_NOT_FOUND`；归档页 → 200 且响应带 `status='archived'` |
+| `GET /api/knowledge/search` | 每条结果**新增** `slug` 与 `status`（只加字段，既有 `page_id/scope/revision/title/snippet/sources/evidence/score` 不变）；当前 SQL 仍只返回 `active` 页 |
+| 仓储 `getKnowledgePage` | 默认**不再返回软删页**（`options.includeDeleted: true` 才返回）；`GET /pages/:id` 用它区分 404 与 410 |
+| 前端 `knowledge:<slug>` 解析 | 不再用 `?? rows[0]` 兜底：只接受 **slug 完全相等且唯一**的搜索结果；无命中/歧义一律降级为灰文本（`data-link-state="denied"`），不再静默打开错页 |
+
 ### IMPORT-LIMIT-S 导入上限（单文件 10MB / 单页正文 200 万字符）
 
 ﻿| 项 | 口径 |

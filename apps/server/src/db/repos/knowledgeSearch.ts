@@ -8,6 +8,10 @@ export interface KnowledgeSearchInput {
 }
 export interface KnowledgeSearchResult {
   page_id: string; scope: KnowledgePage['scope']; workspace_id: string | null; revision: number; title: string;
+  /** KB-PAGE-1：调用方按 slug 精确命中要用它（此前只能模糊匹配标题/slug 子串） */
+  slug: string;
+  /** KB-PAGE-1：搜索结果的状态（当前 SQL 只出 active，字段为将来放宽留口） */
+  status: KnowledgePage['status'];
   snippet: string; sources: KnowledgePage['sources']; evidence: KnowledgePage['evidence']; score: number;
 }
 export function searchKnowledge(db: Db, input: KnowledgeSearchInput): KnowledgeSearchResult[] {
@@ -41,6 +45,7 @@ export function searchKnowledge(db: Db, input: KnowledgeSearchInput): KnowledgeS
     const position = page.body_md.toLowerCase().indexOf(query.toLowerCase());
     const start = Math.max(0, position - 100);
     return { page_id: page.id, scope: page.scope, workspace_id: page.workspace_id, revision: page.revision, title: page.title,
+      slug: page.slug, status: page.status,
       snippet: page.body_md.slice(start, start + 1200), sources: page.sources, evidence: page.evidence, score: row.score };
   });
 }
