@@ -208,7 +208,7 @@ export async function main(): Promise<StartedServer> {
     attachmentStagedTtlMs: config.attachmentStagedTtlMs,
     attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
     // 生产装配：三平台真实签到 provider（测试默认不注入，保持 ACC-07 的 gated 语义）
-    checkinProviders: createCheckinProviders(),
+    checkinProviders: createCheckinProviders({ region: config.workbuddyRegion }),
     restart: {
       spawnChild: spawnDetached,
       closeServer: () => new Promise<void>(resolve => {

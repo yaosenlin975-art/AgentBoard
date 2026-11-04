@@ -22,15 +22,27 @@ export interface AgentBoardConfig {
   attachmentCleanupIntervalMs: number;
 }
 
-/** 运行期配置：持久化设置 + 启动期 env 覆盖项（host 不落 config.json，settings 端点不暴露） */
+/** WorkBuddy 计费区域（ACC-KB-A1）：决定签到/额度打哪个计费域 */
+export type WorkbuddyRegion = 'cn' | 'global';
+
+/** 运行期配置：持久化设置 + 启动期 env 覆盖项（host / workbuddyRegion 不落 config.json，settings 端点不暴露） */
 export interface AgentBoardRuntimeConfig extends AgentBoardConfig {
   host: string;
+  workbuddyRegion: WorkbuddyRegion;
 }
 
 export const DEFAULT_PORT = 8787;
 /** 只监听回环：保持既有安全口径，容器里才通过 env 显式放宽到 0.0.0.0 */
 export const DEFAULT_HOST = '127.0.0.1';
 export const DEFAULT_MAX_CONCURRENT_TURNS = 3;
+/** 默认区域固定 cn：三份独立证据（知识实测 / verification 文档 / refs 脚本）都指向 CN 计费域 */
+export const DEFAULT_WORKBUDDY_REGION: WorkbuddyRegion = 'cn';
+
+/** 校验区域取值：只接受 cn / global；空值/非法返回 null（调用方决定报错还是取默认） */
+export function parseWorkbuddyRegion(raw: string): WorkbuddyRegion | null {
+  const value = raw.trim().toLowerCase();
+  return value === 'cn' || value === 'global' ? value : null;
+}
 
 /** 校验监听地址：IPv4/IPv6 字面量或主机名；空值/非法返回 null */
 export function parseHost(raw: string): string | null {
@@ -158,7 +170,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
     }
     host = parsed;
   }
-  return { ...config, host };
+  // ACC-KB-A1：计费区域 env 覆盖（不落 config.json；非法值启动即报错，避免静默打到错误域）
+  let workbuddyRegion = DEFAULT_WORKBUDDY_REGION;
+  const rawRegion = env.AGENTBOARD_WORKBUDDY_REGION;
+  if (rawRegion !== undefined && rawRegion.trim() !== '') {
+    const parsedRegion = parseWorkbuddyRegion(rawRegion);
+    if (parsedRegion === null) {
+      throw new Error(`AGENTBOARD_WORKBUDDY_REGION 非法：${rawRegion}（可选 cn / global，缺省为 ${DEFAULT_WORKBUDDY_REGION}）`);
+    }
+    workbuddyRegion = parsedRegion;
+  }
+  return { ...config, host, workbuddyRegion };
 }
 
 /**

@@ -20,8 +20,8 @@ import type {
   CheckinSubmission,
 } from './checkinProvider.js';
 import type { ManagedAppId } from '@agentboard/shared';
+import { workbuddyBillingUrl } from './platformHosts.js';
 
-const WORKBUDDY_DOMAIN = 'api.workbuddy.cn';
 const MINIMAX_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
 const TRAE_BASE = 'https://api.trae.cn/trae/api/v2/ug';
 
@@ -92,7 +92,7 @@ function baseSpec(config: HttpCheckinConfig, parts: {
 
 /** workbuddy：签到 + 猫猫旅行 */
 export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
-  const base = `https://${WORKBUDDY_DOMAIN}`;
+  const base = workbuddyBillingUrl(config.region, '');
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
     requestJson(config, `${base}${path}`, { token, ...init });
 

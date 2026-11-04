@@ -10,6 +10,7 @@
 - 端口误判：DSH 桌面端插件经 DSH web server 暴露独立数据源，对其请求返回 401 时见 `README.md`「与 DSH 任务看板插件的边界」。
 - 配置文件 `%APPDATA%\AgentBoard\config.json`（非 Windows 回退 `~/.config/AgentBoard/`），字段 `port` / `dbPath` / `maxConcurrentTurns` / `attachmentQuotaBytes` / `attachmentStagedTtlMs` / `attachmentCleanupIntervalMs`；首次启动写回默认值，文件损坏按默认处理且不覆盖原文件（`config.ts`）。
 - 环境变量 `AGENTBOARD_PORT`（正整数）、`AGENTBOARD_DB`（非空路径）：仅启动期覆盖，不写回 config.json；`GET /api/settings` 不回显 env 覆盖值（`config.ts:88-95, 98-105`）。
+- 环境变量 `AGENTBOARD_WORKBUDDY_REGION`（`cn` / `global`，缺省 `cn`；非法值启动即报错）：决定 WorkBuddy 签到与额度请求的计费域，同样仅启动期生效、不写回 config.json、`/api/settings` 不回显（`config.ts`、`services/accounts/platformHosts.ts`）。CN = `https://www.codebuddy.cn`（有业务成功证据），Global = `https://www.workbuddy.cn`（区域备用线路）；`unknown` 区域在装配期直接抛 `CHECKIN_REGION_UNSUPPORTED`，不回落默认域。
 - `PATCH /api/settings` 写回 config.json：`maxConcurrentTurns` 与附件设置即时生效，`port` / `dbPath` 重启生效（`routes.ts`）。
 
 ## 2. 通用约定

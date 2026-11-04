@@ -21,6 +21,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
 import { MINIMAX_UNSUPPORTED_DETAIL, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
+import { workbuddyQuotaUrl } from '../accounts/platformHosts.js';
 
 // ACC-KB-A4：额度类型收敛到 packages/shared（此前 server 与 web 各抄一份字面量 union）。
 // 这里 re-export 保持既有 import 路径可用（`accountQuotas.test.ts` 等仍从本模块取类型）。
@@ -585,7 +586,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     }
     const endpoints: Partial<Record<QuotaSourceId, { url: string; init: RequestInit }>> = {
       trae: { url: 'https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage', init: { method: 'POST', headers: { 'Cloud-IDE-JWT': token, 'content-type': 'application/json' }, body: '{}' } },
-      workbuddy: { url: 'https://www.codebuddy.cn/billing/meter/get-user-resource-summary', init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' } },
+      workbuddy: { url: workbuddyQuotaUrl(), init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' } },
       qoder_cn: { url: 'https://openapi.qoder.com.cn/api/v2/quota/usage', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
       zcode: { url: 'https://bigmodel.cn/api/monitor/usage/quota/limit', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
     };
