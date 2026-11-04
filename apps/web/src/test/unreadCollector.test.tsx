@@ -12,7 +12,7 @@ import { HttpResponse, http } from 'msw';
 import type { Message, Session, Workspace } from '@agentboard/shared';
 // 模块加载即订阅 wsBus（与 App 启动经 ChatPanel 静态 import 同路径）
 import '../state/unreadCollector';
-import { TopBar } from '../components/topbar/TopBar';
+import { SideBar } from '../components/shell/SideBar';
 import { ChatView } from '../components/chat/ChatView';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
@@ -89,7 +89,7 @@ function renderShell(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <TopBar workspace={ws} />
+      <SideBar workspace={ws} />
     </QueryClientProvider>,
   );
 }

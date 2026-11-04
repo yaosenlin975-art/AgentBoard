@@ -1,15 +1,25 @@
+/**
+ * 左栏品牌位与控件（NAV-TOPBAR-01：顶栏工作区名/路径移除，主题/聊天/账号/设置迁入左栏）。
+ *
+ * 迁移自原 `TopBar.test.tsx`（断言逐条保留，只改锚点与形态）：
+ * - 无 CLI 徽标 / 无「新建 issue」按钮 / 无「工作区日志」入口；
+ * - 工作区名 `text-xl`、路径 `text-xs + truncate + title 全路径`（顶栏不再有路径）；
+ * - WS 状态圆点反映连接状态（不再展示文字）；
+ * - 聊天入口徽标 = 未读合计，点击切 navStore 到 chat；
+ * - 账号/设置入口走 drawer，Esc 可关。
+ */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import type { CliInfo, Workspace, WorkspaceChangeLog } from '@agentboard/shared';
-import { TopBar } from '../components/topbar/TopBar';
-import { RightPanel } from '../components/right/RightPanel';
+import type { CliInfo, Workspace } from '@agentboard/shared';
+import { SideBar } from '../components/shell/SideBar';
 import { DrawerPanel } from '../components/drawer/DrawerPanel';
 import { useAppStore } from '../state/appStore';
 import { useNavStore } from '../state/navStore';
 import { usePanelStore } from '../state/panelStore';
+import { resetOverlays } from '../state/overlayStore';
 import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
@@ -21,17 +31,13 @@ const clisMixed: CliInfo[] = [
   { id: 'dsh', displayName: 'DSH', installed: false, version: null, supportsModelSelection: false },
 ];
 
-function renderTopBar(
-  workspace: Workspace | null,
-  withPanel = false,
-  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-) {
-  return render(
+function renderSideBar(workspace: Workspace | null = ws): void {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
     <QueryClientProvider client={qc}>
-      <TopBar workspace={workspace} />
-      {/* S4：账号/设置面板由 DrawerPanel 渲染（顶栏只负责触发） */}
+      <SideBar workspace={workspace} />
+      {/* 账号/设置面板由 DrawerPanel 渲染（左栏只负责触发） */}
       <DrawerPanel />
-      {withPanel && <RightPanel />}
     </QueryClientProvider>,
   );
 }
@@ -41,23 +47,71 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove('dark');
   useAppStore.setState({ wsStatus: 'connecting' });
-  // S4：导航/抽屉状态也要复位（顶栏的 aria-expanded 现在读 navStore）
   useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null });
-  usePanelStore.setState({
-    view: null,
-    issueId: null,
-    sessionId: null,
-    chatSession: null,
-    unread: {},
-    rightOpen: false,
-  });
+  usePanelStore.setState({ view: null, issueId: null, sessionId: null, chatSession: null, unread: {}, rightOpen: false });
+  resetOverlays();
 });
 
-describe('TopBar', () => {
+describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
+  it('NAV-TOPBAR-01：左栏自带工作区名与路径；顶栏路径锚点已随顶栏移除', () => {
+    renderSideBar(ws);
+    expect(screen.getByTestId('topbar-workspace')).toHaveTextContent('主项目');
+    const path = screen.getByTestId('sidebar-workspace-path');
+    expect(path).toHaveTextContent('D:/WorkSpaces/main');
+    // 路径完整值进 title（窄屏截断但不丢信息）
+    expect(path).toHaveAttribute('title', 'D:/WorkSpaces/main');
+    expect(path.className).toContain('truncate');
+    expect(path.className).toContain('text-xs');
+    // 旧的顶栏专属锚点不应再存在（不允许「锚点还在元素已删」的反向残留）
+    expect(screen.queryByTestId('topbar-workspace-path')).toBeNull();
+    // 四组控件都在左栏控件区
+    const controls = screen.getByTestId('sidebar-controls');
+    for (const id of ['topbar-theme', 'topbar-chat', 'topbar-accounts', 'topbar-settings']) {
+      expect(within(controls).getByTestId(id)).toBeInTheDocument();
+    }
+  });
 
-  it('TOPBAR-CLEAN：不再渲染 CLI 徽标（CodeBuddy / Codex / OpenCode / DSH 都不出现）', async () => {
+  it('工作区标题字号加大 3 档（text-sm → text-xl，14px → 20px）', () => {
+    renderSideBar(ws);
+    const title = screen.getByTestId('topbar-workspace');
+    expect(title.className).toContain('text-xl');
+    expect(title.className).not.toContain('text-sm');
+    // 路径副标题不跟着放大
+    expect(screen.getByTestId('sidebar-workspace-path').className).toContain('text-xs');
+  });
+
+  it('未选工作区时显示占位文案（名称与路径都占位）', () => {
+    renderSideBar(null);
+    expect(screen.getByTestId('topbar-workspace')).toHaveTextContent('未选择工作区');
+    const path = screen.getByTestId('sidebar-workspace-path');
+    expect(path).toHaveTextContent('未选择工作区');
+    expect(path).toHaveAttribute('title', '未选择工作区');
+  });
+
+  it('主题切换按钮循环 system → light → dark 并写 localStorage', async () => {
+    renderSideBar(ws);
+    const btn = screen.getByRole('button', { name: '切换主题' });
+    expect(btn).toHaveTextContent('跟随系统');
+    expect(btn).toHaveAttribute('title', expect.stringContaining('主题：跟随系统'));
+
+    await userEvent.click(btn);
+    expect(localStorage.getItem('agentboard.theme')).toBe('light');
+    expect(btn).toHaveTextContent('亮色');
+    expect(document.documentElement).not.toHaveClass('dark');
+
+    await userEvent.click(btn);
+    expect(localStorage.getItem('agentboard.theme')).toBe('dark');
+    expect(btn).toHaveTextContent('暗色');
+    expect(document.documentElement).toHaveClass('dark');
+
+    await userEvent.click(btn);
+    expect(localStorage.getItem('agentboard.theme')).toBe('system');
+    expect(btn).toHaveTextContent('跟随系统');
+  });
+
+  it('不再渲染 CLI 徽标（CodeBuddy / Codex / OpenCode / DSH 都不出现）', async () => {
     server.use(http.get('/api/clis', () => HttpResponse.json(clisMixed)));
-    renderTopBar(null);
+    renderSideBar(null);
     await waitFor(() => expect(screen.queryByTitle('CodeBuddy 2.0.0')).toBeNull());
     for (const cli of clisMixed) {
       expect(screen.queryByTitle(cli.displayName)).toBeNull();
@@ -66,57 +120,17 @@ describe('TopBar', () => {
     expect(document.querySelector('[data-installed]')).toBeNull();
   });
 
-  it('主题切换按钮循环 system → light → dark 并写 localStorage', async () => {
-    renderTopBar(null);
-    const btn = screen.getByRole('button', { name: '切换主题' });
-    expect(btn).toHaveTextContent('主题：跟随系统');
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('light');
-    expect(btn).toHaveTextContent('主题：亮色');
-    expect(document.documentElement).not.toHaveClass('dark');
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('dark');
-    expect(btn).toHaveTextContent('主题：暗色');
-    expect(document.documentElement).toHaveClass('dark');
-
-    await userEvent.click(btn);
-    expect(localStorage.getItem('agentboard.theme')).toBe('system');
-    expect(btn).toHaveTextContent('主题：跟随系统');
-  });
-
-  it('顶栏不再有「新建 issue」按钮（NEW-ISSUE-PLUS 已移到待规划列头）', () => {
-    const first = renderTopBar(null);
+  it('不再有「新建 issue」与「工作区日志」入口', () => {
+    renderSideBar(ws);
     expect(screen.queryByRole('button', { name: '新建 issue' })).toBeNull();
-    first.unmount();
-
-    renderTopBar(ws);
-    expect(screen.queryByRole('button', { name: '新建 issue' })).toBeNull();
-    expect(screen.getByText('主项目')).toBeInTheDocument();
-    expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
-  });
-
-  it('顶栏不再有「工作区日志」入口（LOG-VIEW 已改为知识库右侧的视图入口）', () => {
-    renderTopBar(ws);
     expect(screen.queryByTestId('topbar-changelog')).toBeNull();
     expect(screen.queryByRole('button', { name: '工作区日志' })).toBeNull();
+    expect(screen.queryByTestId('app-version')).toBeNull();
   });
 
-  it('左上角工作区标题字号加大 3 档（text-sm → text-xl，14px → 20px）', () => {
-    renderTopBar(ws);
-    const title = screen.getByTestId('topbar-workspace');
-    // Tailwind text-sm(14px) 上调 3 档 = text-base(16) → text-lg(18) → text-xl(20px)
-    expect(title.className).toContain('text-xl');
-    expect(title.className).not.toContain('text-sm');
-    // 路径副标题不跟着放大，仍是 text-xs（12px）
-    expect(screen.getByText('D:/WorkSpaces/main').className).toContain('text-xs');
-  });
-
-  it('WS 状态点反映连接状态', async () => {
+  it('WS 状态点反映连接状态（只保留圆点，无文字）', async () => {
     useAppStore.setState({ wsStatus: 'open' });
-    renderTopBar(null);
-    // PANEL-VIEW-BUG：只保留圆点颜色编码，不再展示「已连接」等文案
+    renderSideBar(null);
     const dot = screen.getByTestId('topbar-ws-status');
     expect(dot).toHaveAttribute('data-status', 'open');
     expect(screen.queryByText('已连接')).toBeNull();
@@ -126,66 +140,23 @@ describe('TopBar', () => {
     expect(screen.queryByText('已断开')).toBeNull();
   });
 
-  it('聊天按钮：未读取各会话计数总和显示徽标，点击打开聊天视图', async () => {
-    renderTopBar(null);
-    // 无未读：不渲染徽标
+  it('聊天入口：徽标 = 未读合计，点击把 navStore 切到 chat（整屏聊天）', async () => {
+    renderSideBar(null);
     expect(screen.queryByTestId('topbar-chat-unread')).not.toBeInTheDocument();
 
     act(() => usePanelStore.setState({ unread: { s1: 2, s2: 3 } }));
     expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('5');
 
-    await userEvent.click(screen.getByRole('button', { name: '聊天' }));
-    // S2b：聊天整屏化 —— 顶栏聊天按钮切 navStore，右侧面板不再承载聊天
-    expect(useNavStore.getState().view).toBe('chat');
-    expect(usePanelStore.getState()).toMatchObject({ view: null, rightOpen: false });
-  });
-
-  it('首次加载无交互即可达聊天：顶栏按钮打开整屏聊天', async () => {
-    renderTopBar(null, true);
-
-    // PANEL-ENTRY2：不再有右缘常驻窄条；聊天入口就是顶栏按钮
-    expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
-    expect(screen.queryByTestId('right-panel-rail')).toBeNull();
-    expect(screen.queryByTestId('right-panel')).not.toBeInTheDocument();
     const chatEntry = screen.getByTestId('topbar-chat');
     expect(chatEntry).toHaveAttribute('aria-expanded', 'false');
-
     await userEvent.click(chatEntry);
-    // S2b：整屏聊天由主区渲染（顶栏自身不渲染 chat-view，故按 store 断言）
     expect(useNavStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState()).toMatchObject({ view: null, rightOpen: false });
     expect(chatEntry).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.queryByTestId('right-panel')).not.toBeInTheDocument();
-  });
-
-  it('版本号不再渲染，路径顶到原版本号位置（title 为完整路径）', async () => {
-    server.use(
-      http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
-    );
-    renderTopBar(ws);
-
-    // 版本号彻底不渲染（顶栏不再出现 v0.1.0 / app-version）
-    expect(screen.queryByText('v0.1.0')).toBeNull();
-    expect(screen.queryByTestId('app-version')).toBeNull();
-
-    const path = screen.getByTestId('topbar-workspace-path');
-    expect(path).toHaveTextContent('D:/WorkSpaces/main');
-    expect(path).toHaveAttribute('title', 'D:/WorkSpaces/main');
-    // 字号/颜色沿用原版本号（text-xs + 中性色）
-    expect(path.className).toContain('text-xs');
-    expect(path.className).toContain('text-neutral-400');
-    expect(path.className).toContain('truncate');
-  });
-
-  it('未选工作区时路径位置显示占位文案', () => {
-    renderTopBar(null);
-    const path = screen.getByTestId('topbar-workspace-path');
-    expect(path).toHaveTextContent('未选择工作区');
-    expect(path).toHaveAttribute('title', '未选择工作区');
-    expect(screen.queryByTestId('app-version')).toBeNull();
   });
 });
 
-describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
+describe('账号管理入口（ACCOUNT-ENTRY，迁到左栏）', () => {
   beforeEach(() => {
     server.use(
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([
@@ -197,14 +168,13 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     );
   });
 
-  it('顶栏「账号」入口打开账号抽屉（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
-    renderTopBar(ws);
+  it('「账号」入口打开账号抽屉（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
+    renderSideBar(ws);
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toHaveTextContent('账号');
     expect(entry).toHaveAttribute('aria-label', '账号管理');
 
     await userEvent.click(entry);
-    // S4：账号面板改由右滑出抽屉承载（挤压态 role=region，不再自带 Modal）
     const drawer = await screen.findByTestId('drawer-panel');
     expect(drawer).toHaveAttribute('data-drawer', 'accounts');
     expect(entry).toHaveAttribute('aria-expanded', 'true');
@@ -212,9 +182,7 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     expect(within(drawer).getByText('MiniMax')).toBeInTheDocument();
     expect(within(drawer).getByText('Trae')).toBeInTheDocument();
     expect(within(drawer).queryByText('CodeBuddy Desktop')).toBeNull();
-    // 与设置面板同一组件：能力来自服务端矩阵
     expect(within(drawer).getByTestId('accounts-capability-minimax')).toHaveTextContent('CLIENT_NOT_INSTALLED');
-    // 顶部两个入口都在
     expect(within(drawer).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
     expect(within(drawer).getByTestId('accounts-import-local')).toBeInTheDocument();
 
@@ -224,7 +192,7 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
   });
 
   it('未选工作空间也能打开（账号与 workspace 无关）', async () => {
-    renderTopBar(null);
+    renderSideBar(null);
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toBeEnabled();
     await userEvent.click(entry);

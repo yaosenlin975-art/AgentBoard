@@ -7,7 +7,6 @@ import { useWsEvents } from './api/useWsEvents';
 import { useAppStore } from './state/appStore';
 import { useNavStore, type NavView } from './state/navStore';
 import { isChatExitKey } from './state/navStore';
-import { TopBar } from './components/topbar/TopBar';
 import { SideBar } from './components/shell/SideBar';
 import { DrawerPanel } from './components/drawer/DrawerPanel';
 import { Board } from './components/board/Board';
@@ -76,7 +75,7 @@ export default function App() {
       <VoiceInputProvider>
         <SideBar workspace={current} />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          <TopBar workspace={current} />
+          {/* NAV-TOPBAR-01：顶栏已移除（工作区名/路径与四组控件迁入左栏品牌位），主区直接铺满 */}
           <label className="flex items-center gap-2 border-b px-4 py-2 text-sm md:hidden">工作空间
             <select aria-label="工作空间" className="min-w-0 flex-1 rounded border bg-transparent p-1" value={workspaceId ?? ''} onChange={e => useAppStore.getState().selectWorkspace(e.target.value || null)}>
               <option value="">请选择工作空间</option>{workspaces?.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}

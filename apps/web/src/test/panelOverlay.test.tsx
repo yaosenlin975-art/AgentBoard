@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import { TopBar } from '../components/topbar/TopBar';
+import { SideBar } from '../components/shell/SideBar';
 import { RightPanel } from '../components/right/RightPanel';
 import { resetOverlays, useOverlayStore } from '../state/overlayStore';
 import { usePanelStore } from '../state/panelStore';
@@ -20,7 +20,7 @@ function renderShell() {
     <QueryClientProvider client={qc}>
       <div className="flex min-h-0 flex-1">
         <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto" />
-        <TopBar workspace={ws} />
+        <SideBar workspace={ws} />
         <RightPanel />
       </div>
     </QueryClientProvider>,
