@@ -268,7 +268,8 @@ export async function main(): Promise<StartedServer> {
   }
   attachments.startCleanupWorker();
   // RESTART-HARDENING：启动首行必落固定日志（stdout 在 detached/端点启动时会被丢弃）
-  const listeningLine = `listening http://${config.host}:${config.port} pid=${process.pid} db=${config.dbPath} attachments=${attachmentStorageDir}`;
+  // DB-1：首行必须打印「实际生效的库路径 + 来源」，否则「为什么用的是这个库」无从判断
+  const listeningLine = `listening http://${config.host}:${config.port} pid=${process.pid} db=${config.dbPath} db_source=${config.dbPathSource} attachments=${attachmentStorageDir}`;
   appendServerLog(listeningLine);
   console.log(`AgentBoard listening on http://${config.host}:${config.port} (db: ${config.dbPath}, attachments: ${attachmentStorageDir})`);
   return { server, hub, config, db };

@@ -19,7 +19,7 @@ node apps/server/dist/index.js
 打开 http://127.0.0.1:8787 （web 已随 server 静态托管；未构建 web 时仅 API 可用）。
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
-- 数据库默认 `%APPDATA%\AgentBoard\agentboard.db`，配置 `config.json` 同目录。
+- 数据库默认 `%APPDATA%\AgentBoard\agentboard.db`，配置 `config.json` 同目录。生效顺序：`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项 / `PATCH /api/settings` 的 `db_path`）→ 默认路径；启动首行日志会打印实际生效路径与 `db_source=<env|settings|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
 - 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
 

@@ -256,6 +256,8 @@ export const patchSettingsSchema = z
       .max(65535, '端口必须为 1-65535 的整数')
       .optional(),
     dbPath: z.string().trim().min(1, 'dbPath 不能为空').optional(),
+    // DB-1：对外规范名 db_path（与 dbPath 等价；两个都传且不一致 → 400，避免静默取一个）
+    db_path: z.string().trim().min(1, 'db_path 不能为空').optional(),
     maxConcurrentTurns: z.number().int('并发上限必须为 ≥1 的整数').min(1, '并发上限必须为 ≥1 的整数').optional(),
     attachmentQuotaBytes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     attachmentStagedTtlMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),

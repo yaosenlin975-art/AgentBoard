@@ -499,14 +499,22 @@ export function createRouter(deps: RouterDeps): Router {
   // ---- settings ----
   // 读侧只反映 config.json 持久化值（环境变量覆盖不参与，见 config.readSettings 注释）
   router.get('/settings', (_req, res) => {
-    res.json(readSettings());
+    const settings = readSettings();
+    // DB-1：对外规范名是 db_path；dbPath 保留给既有前端字段（同值，避免破坏已有设置界面）
+    res.json({ ...settings, db_path: settings.dbPath });
   });
 
   // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
   router.patch('/settings', (req, res) => {
     const body = parseBody(patchSettingsSchema, req.body);
+    // DB-1：db_path 是对外规范名；与 dbPath 同时出现且不一致时明确报错（不静默取一个）
+    if (body.db_path !== undefined && body.dbPath !== undefined && body.db_path !== body.dbPath) {
+      throw new ValidationError('db_path 与 dbPath 同时出现且不一致：请只传 db_path');
+    }
+    const patch: Partial<typeof body> = { ...body, ...(body.db_path !== undefined ? { dbPath: body.db_path } : {}) };
+    delete (patch as { db_path?: string }).db_path;
     const current = readSettings();
-    const next = writeSettings(body);
+    const next = writeSettings(patch);
     if (body.maxConcurrentTurns !== undefined && body.maxConcurrentTurns !== current.maxConcurrentTurns) {
       setMaxConcurrentTurns(body.maxConcurrentTurns);
     }

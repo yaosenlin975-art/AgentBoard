@@ -26,7 +26,12 @@ export interface AgentBoardConfig {
 export type WorkbuddyRegion = 'cn' | 'global';
 
 /** 运行期配置：持久化设置 + 启动期 env 覆盖项（host / workbuddyRegion 不落 config.json，settings 端点不暴露） */
+/** DB-1：dbPath 的实际来源（启动日志要打印，便于排障「为什么用的是这个库」） */
+export type DbPathSource = 'env' | 'settings' | 'default';
+
 export interface AgentBoardRuntimeConfig extends AgentBoardConfig {
+  /** dbPath 来源：env（AGENTBOARD_DB）/ settings（config.json 的 dbPath）/ default（%APPDATA%） */
+  dbPathSource: DbPathSource;
   host: string;
   workbuddyRegion: WorkbuddyRegion;
 }
@@ -152,6 +157,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
   }
 
   const config = mergeValidFields(defaultConfig(), fileConfig);
+  // DB-1：来源判定顺序 = env（下面覆盖）→ settings（config.json 有 dbPath）→ default
+  let dbPathSource: DbPathSource = typeof fileConfig.dbPath === 'string' && fileConfig.dbPath !== '' ? 'settings' : 'default';
 
   if (env.AGENTBOARD_PORT !== undefined && env.AGENTBOARD_PORT !== '') {
     const port = Number(env.AGENTBOARD_PORT);
@@ -159,6 +166,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
   }
   if (env.AGENTBOARD_DB !== undefined && env.AGENTBOARD_DB !== '') {
     config.dbPath = env.AGENTBOARD_DB;
+    // DB-1：env 优先于设置项（设置项仍保留在 config.json 里，只是本次启动不生效）
+    dbPathSource = 'env';
   }
   // DOCKER-1：监听地址只由 env 提供（不写回 config.json）；非法值直接抛错，启动即退出，不静默回落
   let host = DEFAULT_HOST;
@@ -180,7 +189,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
     }
     workbuddyRegion = parsedRegion;
   }
-  return { ...config, host, workbuddyRegion };
+  return { ...config, host, workbuddyRegion, dbPathSource };
 }
 
 /**

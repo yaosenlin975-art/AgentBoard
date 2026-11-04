@@ -73,6 +73,17 @@
 | `GET /api/settings` | — | `{ port, dbPath, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`dbPath?: string 非空`、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 新的持久化 settings；并发和附件设置即时生效 | 400 未提供字段 / 取值非法 | routes.ts |
 
+## 5b. 数据库位置（DB-1，`config.ts` + `GET/PATCH /api/settings`）
+
+生效顺序：**`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项）→ 默认 `%APPDATA%\AgentBoard\agentboard.db`**。env 存在时设置项被忽略（但仍留在 config.json，env 去掉后自动回到设置值）。
+
+| 端点 | 请求 | 响应 |
+| --- | --- | --- |
+| `GET /api/settings` | — | 配置快照；除既有字段外新增 `db_path`（对外规范名，与 `dbPath` 同值，保留 `dbPath` 兼容既有前端） |
+| `PATCH /api/settings` | `{ db_path?: string, ... }`（`db_path` 与 `dbPath` 二选一；同时出现且不一致 → 400） | 写回 config.json 后的完整配置；**只改配置，不搬数据**（搬迁属 DB-2）；DB 路径变更需重启生效 |
+
+启动首行日志会打印实际生效的库路径与来源：`listening http://… db=<path> db_source=<env|settings|default> attachments=<dir>`；附件目录恒为 `dirname(db)/attachments`，DB 路径一变自动跟随。
+
 ## 6. issues
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
