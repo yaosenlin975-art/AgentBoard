@@ -559,7 +559,7 @@ describe('claim', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'claim', 'iss1'], t.io);
     expect(code).toBe(2);
-    expect(t.err()).toBe('已被 board-web-accounts 占用；由占用者 done/fail 释放后重试，勿重复 claim\n');
+    expect(t.err()).toBe('已被 board-web-accounts 占用；先 kb release <issue-id> 或换卡，勿重复 claim\n');
   });
 
   it('CLAIM-MSG 状态不可领取：点明无人占用与当前状态，退出码 2', async () => {

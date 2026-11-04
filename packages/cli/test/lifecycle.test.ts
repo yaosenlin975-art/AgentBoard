@@ -61,7 +61,8 @@ describe('kb close / reopen / update', () => {
       : undefined);
     const result = await run(['close', 'iss1']);
     expect(result.code).toBe(2);
-    expect(result.err).toContain('请先 release 再关闭');
+    expect(result.err).toContain('请先 kb release <issue-id> 再关闭');
+    expect(result.err).not.toMatch(/(?<!kb )release/);
     expect(result.err).not.toContain('已被占用（');
   });
 

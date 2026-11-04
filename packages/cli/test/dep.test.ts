@@ -176,8 +176,8 @@ describe('kb dep', () => {
       // DEP-GUARD：子卡依赖父/祖先卡（流程死锁）——必须自带文案，别落到通用「已被占用（…）」前缀
       { code: 'DEPENDENCY_PARENT_CYCLE', status: 409, exit: 2, text: '流程死锁' },
       { code: 'DEPENDENCY_EXISTS', status: 409, exit: 2, text: '已存在' },
-      // CLI-05：文案不再推荐不存在的 `kb release`，改为可执行的 done/fail 指引
-      { code: 'ISSUE_CLAIMED', status: 409, exit: 2, text: '由占用者 done/fail 释放后再新增前置' },
+      // REL-3：裸 release 已补成可执行的 `kb release <issue-id>`
+      { code: 'ISSUE_CLAIMED', status: 409, exit: 2, text: '请先 kb release <issue-id> 再新增前置' },
       { code: 'CROSS_WORKSPACE_DEPENDENCY', status: 400, exit: 3, text: '不支持跨工作区依赖' },
       { code: 'DEPENDENCY_SELF', status: 400, exit: 3, text: '不能依赖自身' },
       { code: 'VALIDATION_ERROR', status: 400, exit: 3, text: '参数不合法' },

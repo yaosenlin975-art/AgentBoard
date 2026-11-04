@@ -15,6 +15,7 @@ import { moveIssue } from './commands/moveIssue.js';
 import { listTasks } from './commands/listTasks.js';
 import { show } from './commands/show.js';
 import { claim } from './commands/claim.js';
+import { release } from './commands/release.js';
 import { comment } from './commands/comment.js';
 import { done } from './commands/done.js';
 import { deleteIssue } from './commands/deleteIssue.js';
@@ -105,12 +106,27 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .addHelpText('after', `
 说明：占用冲突（已被 <agent> 占用）与状态不可领取（无人占用但状态不是待规划/进行中，如待验收）是两条不同文案。
+占用冲突时由占用者 kb release <issue-id> 或 done/fail 释放后再重试。
 示例：
   kb claim 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
   kb claim 0f6ba9ab --no-knowledge
 退出码：0 成功；2 已被 <agent> 占用 / 状态不可领取（当前=待验收…）/ 前置未解除（DEP-1）；1 任务不存在或参数错误
 `)
     .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string }) => claim(makeCtx(program, io), id, opts));
+
+  program
+    .command('release')
+    .description('释放占用 → 待规划（不是失败；只有当前占用者可执行；一次只释放一张卡）')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', `
+说明：与 fail（需写失败原因）不同，release 只退回待规划并清空占用，释放后他人可重新 claim。
+示例：
+  kb release 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
+  kb release 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111
+退出码：0 成功（状态 → 待规划）；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误或任务不存在
+`)
+    .action(async (id: string, opts: { requestId?: string }) => release(makeCtx(program, io), id, { requestId: opts.requestId }));
 
   program
     .command('comment')
@@ -148,7 +164,7 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
 
   program
     .command('close')
-    .description('关闭任务：待验收 → 已关闭（占用中会 409：由占用者 done/fail 释放后再关）')
+    .description('关闭任务：待验收 → 已关闭（占用中会 409：占用者先 kb release <issue-id> 或 done/fail 后再关）')
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（占用中/状态不允许）；1 其它错误（404 等）')
@@ -165,7 +181,7 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
 
   program
     .command('update')
-    .description('修改任务字段（不含状态；状态请用 claim/done/close/reopen/fail）')
+    .description('修改任务字段（不含状态；状态请用 claim/done/release/close/reopen/fail）')
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--title <text>', '标题')
     .option('--description <text>', '描述（短文本）')

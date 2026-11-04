@@ -1,7 +1,7 @@
 /**
  * CLI-CLOSE：`kb close` / `kb reopen` / `kb update` 三条收尾命令。
  *
- * - close：待验收 → 已关闭（占用中 409：由占用者 done/fail 释放后再关；已关闭幂等返回）。
+ * - close：待验收 → 已关闭（占用中 409：占用者先 kb release 或 done/fail 再关；已关闭幂等返回）。
  * - reopen：已关闭/已废弃 → `--to`（默认待规划）；目标必须是本工作区已定义状态。
  * - update：改 title/description/priority/labels/due_date/due_time/parent；**不含 status**（流转走 close/reopen/done/fail）。
  *
@@ -10,6 +10,7 @@
 import type { Issue } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { CliHttpError, request } from '../api.js';
+import { releaseAdvice } from '../errors.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg, normalizeIssueRef } from '../issueRef.js';
 import { issueLines } from '../render.js';
@@ -22,7 +23,7 @@ export interface RequestIdArg { requestId?: string }
  */
 const mapConflict = (ctx: Ctx, error: unknown): never => {
   if (error instanceof CliHttpError && error.status === 409) {
-    ctx.io.writeErr(`${error.message}\n`);
+    ctx.io.writeErr(`${releaseAdvice(error.message)}\n`);
     throw new CommanderError(2, 'agentboard.lifecycle', '');
   }
   throw error;

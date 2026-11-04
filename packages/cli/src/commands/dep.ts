@@ -39,7 +39,7 @@ const MESSAGES: Record<string, string> = {
   DEPENDENCY_CYCLE: '该依赖会让任务成环，已拒绝',
   DEPENDENCY_PARENT_CYCLE: '子卡不能依赖其父/祖先卡：父卡要等子卡全完才 done，会形成流程死锁',
   DEPENDENCY_EXISTS: '该依赖已存在',
-  ISSUE_CLAIMED: '任务已被占用：由占用者 done/fail 释放后再新增前置',
+  ISSUE_CLAIMED: '任务已被占用：请先 kb release <issue-id> 再新增前置',
   CROSS_WORKSPACE_DEPENDENCY: '不支持跨工作区依赖（依赖边两端必须属于同一工作区）',
   DEPENDENCY_SELF: '不能依赖自身：被阻塞卡与前置卡是同一张',
   VALIDATION_ERROR: '参数不合法（缺少 workspace_id 或前置 id 为空）',

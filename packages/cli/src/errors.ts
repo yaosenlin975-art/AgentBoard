@@ -3,11 +3,11 @@ import { CliHttpError, ServerUnreachableError } from './api.js';
 import type { Io } from './io.js';
 import { AmbiguousIssueRefError } from './issueRef.js';
 
-/** CLI-05：服务端仍会给出 "release" 建议，但 `kb release` 子命令不存在 —— CLI 侧统一改写成可执行的下一步 */
+/** CLI-05：服务端文案里的裸 "release" 统一补成可执行的 `kb release <issue-id>`（REL-3 起该子命令存在） */
 export function releaseAdvice(message: string): string {
   return message
-    .replace(/；先 release 或换卡，勿重复 claim/g, '；由占用者 done/fail 释放后重试，勿重复 claim')
-    .replace(/请先 release 再/g, '请由占用者 done/fail 后再');
+    .replace(/；先 release 或换卡，勿重复 claim/g, '；先 kb release <issue-id> 或换卡，勿重复 claim')
+    .replace(/请先 release 再/g, '请先 kb release <issue-id> 再');
 }
 
 export interface DescribedError {
