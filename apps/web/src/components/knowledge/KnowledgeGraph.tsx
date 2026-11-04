@@ -860,6 +860,17 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
                   原因（{graphError.code}）：{graphError.message}
                 </p>
               )}
+              {/* CHUNK-RECOVER-W：import-failed 多为「旧页面引用已不存在的 chunk」，重试无意义，给刷新入口 */}
+              {renderer === 'import-failed' && (
+                <button
+                  type="button"
+                  data-testid="graph-reload"
+                  onClick={() => window.location.reload()}
+                  className="mt-2 mr-2 rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs text-ink transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
+                >
+                  刷新页面
+                </button>
+              )}
               {(renderer === 'import-failed' || renderer === 'create-failed') && (
                 <button
                   type="button"
