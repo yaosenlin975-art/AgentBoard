@@ -141,3 +141,46 @@ describe('knowledge CLI：B 缺省 cwd 解析', () => {
     expect(stream.err.join('')).toContain('--workspace');
   });
 });
+
+describe('knowledge CLI：C category/landed', () => {
+  const page = { id: 'p1', scope: 'workspace', revision: 1, title: 't', body_md: 'b', category: 'design', landed: 'proposed' };
+  const ws = { id: 'w1', name: '项目', path: 'D:/project', created_at: 1 };
+
+  it('create 传 --category/--landed 时进请求体', async () => {
+    const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(String(url).includes('/api/workspaces') ? [ws] : page)));
+    vi.stubGlobal('fetch', fetch);
+    const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'workspace', '--workspace', 'w1', '--slug', 's', '--title', 't', '--stdin', '--sources', JSON.stringify([{ source_id: 'a', source_type: 'file', locator: 'x', captured_at: 1, content_hash: 'a'.repeat(64) }]), '--evidence', JSON.stringify([{ source_id: 'a', locator: 'x' }]), '--category', 'design', '--landed', 'partial'], stream);
+    expect(code).toBe(0);
+    const body = JSON.parse(String(fetch.mock.calls.at(-1)![1].body)) as Record<string, unknown>;
+    expect(body.category).toBe('design');
+    expect(body.landed).toBe('partial');
+  });
+
+  it('非法 --category 在客户端失败并列出可用值（不发请求）', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'workspace', '--workspace', 'w1', '--slug', 's', '--title', 't', '--stdin', '--sources', JSON.stringify([{ source_id: 'a', source_type: 'file', locator: 'x', captured_at: 1, content_hash: 'a'.repeat(64) }]), '--evidence', JSON.stringify([{ source_id: 'a', locator: 'x' }]), '--category', 'nope'], stream);
+    expect(code).toBe(1);
+    expect(stream.err.join('')).toContain('design | solved | pinned | open');
+  });
+
+  it('非法 --landed 同样客户端失败并列出可用值', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'workspace', '--workspace', 'w1', '--slug', 's', '--title', 't', '--stdin', '--sources', JSON.stringify([{ source_id: 'a', source_type: 'file', locator: 'x', captured_at: 1, content_hash: 'a'.repeat(64) }]), '--evidence', JSON.stringify([{ source_id: 'a', locator: 'x' }]), '--landed', 'maybe'], stream);
+    expect(code).toBe(1);
+    expect(stream.err.join('')).toContain('landed | partial | proposed');
+  });
+
+  it('show 带出 category 与 landed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(page))));
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'p1', '--scope', 'common'], stream)).toBe(0);
+    const out = stream.out.join('');
+    expect(out).toContain('category: design');
+    expect(out).toContain('landed: proposed');
+  });
+});

@@ -25,7 +25,8 @@ function output(ctx: Ctx, data: unknown): void {
     ctx.io.write((items.length ? items.map(pageLine).join('\n') + '\n' : '（无知识）\n') + (p.next_offset ? `下一页：--offset ${p.next_offset}\n` : ''));
     return;
   }
-  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
+  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${String(p.landed)}` : ''].filter(Boolean).join(' · ');
+  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
 }
 const query = (params: Record<string, string | number | undefined>) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString();
 
@@ -42,6 +43,19 @@ const preview = (value: unknown): string => {
   return JSON.stringify(value) ?? String(value);
 };
 function fail(message: string): never { throw new Error(message); }
+// C：知识页分类与落地状态（服务端 KB-MODEL 已支持；legacy 只由历史数据产生，不接受 CLI 写入）
+const CATEGORIES = ['design', 'solved', 'pinned', 'open'] as const;
+const LANDED_STATES = ['landed', 'partial', 'proposed'] as const;
+function validateCategory(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!(CATEGORIES as readonly string[]).includes(value)) fail(`--category 只能是 ${CATEGORIES.join(" | ")}（当前：${preview(value)}）`);
+  return value;
+}
+function validateLanded(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (!(LANDED_STATES as readonly string[]).includes(value)) fail(`--landed 只能是 ${LANDED_STATES.join(" | ")}（当前：${preview(value)}）`);
+  return value;
+}
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** 读 `--sources` / `--sources-file` 二选一（同时给视为用法错误，避免静默取一个） */
@@ -234,9 +248,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--sources-file <path>', '从 UTF-8 文件读来源数组 JSON（推荐，避免转义）')
     .option('--evidence <json>', '证据数组 JSON（字段见 create --help）')
     .option('--evidence-file <path>', '从 UTF-8 文件读证据数组 JSON（推荐，避免转义）')
-    .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限');
+    .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限')
+    .option('--category <分类>', 'design|solved|pinned|open（缺省由服务端归一）')
+    .option('--landed <状态>', 'landed|partial|proposed（design 缺省时服务端记 proposed）');
 
-  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) {
+  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string }) {
     const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile) : undefined;
     const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile) : undefined;
     if (sourcesRaw !== undefined) validateSources('--sources', sourcesRaw);
@@ -246,13 +262,17 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       ...(sourcesRaw !== undefined ? { sources: sourcesRaw } : {}),
       ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
       ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),
+      ...(validateCategory(opts.category) !== undefined ? { category: validateCategory(opts.category) } : {}),
+      ...(validateLanded(opts.landed) !== undefined ? { landed: validateLanded(opts.landed) } : {}),
       actor: ctx.agentId,
     };
   }
 
   scoped(contentOptions(knowledge.command('create')).description('新建知识页（需要 --stdin/--sources/--evidence）').requiredOption('--title <title>').requiredOption('--slug <slug>'))
     .addHelpText('after', CREATE_HELP)
-    .action(async (opts: ScopeOptions & { title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
+    .action(async (opts: ScopeOptions & { category?: string; landed?: string; title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
+      // C：先做客户端校验，非法值不发请求
+      validateCategory(opts.category); validateLanded(opts.landed);
       const ctx = context();
       const missing: string[] = [];
       if (!opts.stdin) missing.push('--stdin（正文从 stdin 读，例：< body.md）');
