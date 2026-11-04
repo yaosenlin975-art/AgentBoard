@@ -82,6 +82,13 @@ export class FakeCheckinVault implements CheckinVault {
   }
   get size(): number { return this.entries.size; }
   values(): Buffer[] { return [...this.entries.values()].map(entry => entry.data); }
+  /** ACC-DEL-01：删除账号时清理引用（记录被删 ref，便于断言凭据文件确实消失） */
+  readonly deletedRefs: string[] = [];
+  delete(ref: string): Promise<void> {
+    this.entries.delete(ref);
+    this.deletedRefs.push(ref);
+    return Promise.resolve();
+  }
 }
 
 export function credentialIdentity(uid = CHECKIN_UID): CheckinIdentity {

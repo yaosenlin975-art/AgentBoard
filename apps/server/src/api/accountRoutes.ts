@@ -19,6 +19,7 @@ import { getManagedAccount, publicManagedAccount } from '../db/repos/managedAcco
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe, type MinimaxClientStatus } from '../services/accounts/minimaxClientProbe.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
+import type { SecretVault } from '../services/accounts/secretVault.js';
 import { pollCheckinAuthorization, profileLocalDay, startCheckinAuthorization } from '../services/accounts/checkinAuthorization.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
@@ -37,6 +38,8 @@ export interface AccountRouterDeps {
   /** ACC-13：minimax 等按平台的桌面 provider（capture/switch） */
   desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>;
   vault?: CheckinVault;
+  /** ACC-DEL-01：删除账号时清理其 DPAPI 快照/凭据文件（生产为 SecretVault 实例） */
+  secretVault?: Pick<SecretVault, 'delete'>;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
   credentialRunner?: ExportRunner;
   /** ACC-QUOTA-01：额度聚合（仅测试注入；生产用 60s 缓存的内置实现） */
@@ -206,6 +209,34 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     }
     const operation = getAccountOperation(db, operationId);
     res.status(202).json({ operation_id: operationId, operation });
+  });
+
+  // ---- ACC-DEL-01：删除账号元数据与其 DPAPI 文件（设计 §7；不触碰客户端自身登录文件） ----
+  router.delete('/managed-accounts/:id', async (req, res) => {
+    const parsed = z.string().uuid().safeParse(req.params.id);
+    if (!parsed.success) throw new ValidationError('id 必须为 UUID');
+    const id = parsed.data;
+    const account = getManagedAccount(db, id);
+    if (!account) throw new NotFoundError('账号不存在');
+    // 阻塞条件按安全优先顺序判定（设计 §7 拍板）
+    if (db.prepare("SELECT 1 FROM account_operation WHERE account_id=? AND state IN ('queued','running') LIMIT 1").get(id)) {
+      throw new ApiError(409, 'ACCOUNT_BUSY', '账号有排队或进行中的操作', { reason_code: 'ACCOUNT_BUSY' });
+    }
+    if (db.prepare("SELECT 1 FROM checkin_authorization WHERE account_id=? AND status='pending' AND expires_at>? LIMIT 1").get(id, Date.now())) {
+      throw new ApiError(409, 'CHECKIN_AUTHORIZATION_EXISTS', '账号有未过期的签到授权', { reason_code: 'CHECKIN_AUTHORIZATION_EXISTS' });
+    }
+    const lastSwitch = db.prepare("SELECT state FROM account_operation WHERE account_id=? AND operation='switch' ORDER BY created_at DESC, id DESC LIMIT 1")
+      .get(id) as { state: string } | undefined;
+    if (lastSwitch?.state === 'recovery_required') {
+      throw new ApiError(409, 'RECOVERY_REQUIRED', '最近一次切换仍需恢复，快照是恢复依据', { reason_code: 'RECOVERY_REQUIRED' });
+    }
+    const refs = [account.client_snapshot_ref, account.checkin_credential_ref].filter((ref): ref is string => ref !== null);
+    if (refs.length > 0 && !deps.secretVault) throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保护未装配');
+    // 先清凭据文件（delete 走 rm force，幂等），再删元数据行：中途异常时重试仍能删净，且不会留下无人引用的凭据
+    for (const ref of refs) await deps.secretVault!.delete(ref);
+    // 历史关联行交 schema 已声明的 FK：account_operation → SET NULL，checkin_* → CASCADE（见开工评论口径）
+    db.prepare('DELETE FROM managed_account WHERE id=?').run(id);
+    res.json({ deleted: true, id });
   });
 
   // ---- 能力矩阵（ACC-07；board-ui 缺口：前端不再维护副本） ----

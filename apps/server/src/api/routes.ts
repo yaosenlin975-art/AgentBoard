@@ -353,7 +353,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use('/voice', createVoiceRouter(deps.db, deps.voice ?? {}));
   router.use(createSystemRouter({ restart: deps.restart }));
-  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
+  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, secretVault: deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
   // ---- SMART-CREATE：智能创建草稿（不落库，设计 §4）----
   // 必须在 /issues/:id 中间件之前注册：否则 'draft' 会被当成 issue id 去查库并 404。
   const draftService = createDraftService({

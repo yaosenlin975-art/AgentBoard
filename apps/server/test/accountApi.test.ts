@@ -8,14 +8,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import express from 'express';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
+import { createAccountRouter } from '../src/api/accountRoutes.js';
+import { errorHandler } from '../src/api/routes.js';
 import type { SecretVault } from '../src/services/accounts/secretVault.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
-import { createManagedAccount } from '../src/db/repos/managedAccount.js';
+import { attachClientSnapshot, createManagedAccount, getManagedAccount } from '../src/db/repos/managedAccount.js';
+import { createAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
 
@@ -332,4 +336,158 @@ describe('account api (managed-accounts / account-operations)', () => {
     expect(afterFinished.body.error.code).toBe('CHECKIN_BATCH_FINISHED');
     expect((await request(app).get(`/api/checkin-runs/${randomUUID()}`)).status).toBe(404);
   }, 30000);
+
+  // ---------------- ACC-DEL-01：DELETE /api/managed-accounts/:id ----------------
+
+  /** 账号 + 快照引用（快照与签到凭据两类 DPAPI 文件都要被清掉） */
+  async function deletableAccount(vault: FakeCheckinVault, name: string): Promise<string> {
+    const account = createManagedAccount(t.db, {
+      app_id: 'workbuddy_desktop',
+      client_instance_id: `inst-${name}`,
+      service_region: 'cn',
+      identity_hash: sha256(CHECKIN_UID),
+      display_name: name,
+    });
+    const credential = await vault.protect(Buffer.from(CREDENTIAL_MARK), {
+      app_id: account.app_id, client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin',
+    });
+    attachCheckinCredential(t.db, account.id, credential);
+    const snapshot = await vault.protect(Buffer.from(ENVELOPE_MARK), {
+      app_id: account.app_id, client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin',
+    });
+    attachClientSnapshot(t.db, account.id, { client_snapshot_ref: snapshot, client_snapshot_version: 2 });
+    return account.id;
+  }
+
+  function seedOperation(accountId: string, name: string): string {
+    return createAccountOperation(t.db, {
+      account_id: accountId, app_id: 'workbuddy_desktop', client_instance_id: `inst-${name}`, operation: 'switch',
+    }).id;
+  }
+
+  it('delete removes the account row and both DPAPI references, and answers with no credential data', async () => {
+    const { vault } = await bootCheckin();
+    const accountId = await deletableAccount(vault, 'del-basic');
+    expect(vault.size).toBe(2);
+
+    const res = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ deleted: true, id: accountId });
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain('identity_hash');
+    expect(body).not.toContain('client_snapshot_ref');
+    expect(body).not.toContain('checkin_credential_ref');
+    expect(body).not.toContain(CREDENTIAL_MARK);
+    expect(body).not.toContain(ENVELOPE_MARK);
+
+    expect(getManagedAccount(t.db, accountId)).toBeNull();
+    expect((await request(app).get('/api/managed-accounts')).body).toEqual([]);
+    expect(vault.size).toBe(0);
+    expect(vault.deletedRefs).toHaveLength(2);
+
+    const again = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(again.status).toBe(404);
+  });
+
+  it('delete rejects a non-uuid id with 400 and an unknown uuid with 404', async () => {
+    await bootCheckin();
+    expect((await request(app).delete('/api/managed-accounts/not-a-uuid')).status).toBe(400);
+    expect((await request(app).delete(`/api/managed-accounts/${randomUUID()}`)).status).toBe(404);
+  });
+
+  it('delete blocks while an operation is queued or running, and passes once it is terminal', async () => {
+    const { vault } = await bootCheckin();
+    const name = 'del-busy';
+    const accountId = await deletableAccount(vault, name);
+    const operationId = seedOperation(accountId, name);
+
+    const blocked = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('ACCOUNT_BUSY');
+    expect(blocked.body.error.details).toEqual({ reason_code: 'ACCOUNT_BUSY' });
+    expect(getManagedAccount(t.db, accountId)).not.toBeNull();
+
+    updateAccountOperation(t.db, operationId, { state: 'running' });
+    expect((await request(app).delete(`/api/managed-accounts/${accountId}`)).status).toBe(409);
+
+    updateAccountOperation(t.db, operationId, { state: 'succeeded' });
+    const done = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(done.status).toBe(200);
+    // 历史操作保留但解除关联（account_operation.account_id 的 ON DELETE SET NULL 口径）
+    const kept = await request(app).get(`/api/account-operations/${operationId}`);
+    expect(kept.status).toBe(200);
+    expect(kept.body.account_id).toBeNull();
+    expect(kept.body.state).toBe('succeeded');
+  });
+
+  it('delete blocks only on an unexpired pending checkin authorization', async () => {
+    const { vault } = await bootCheckin();
+    const accountId = await deletableAccount(vault, 'del-auth');
+    const started = await request(app).post('/api/checkin-authorizations/start')
+      .set('Idempotency-Key', randomUUID()).send({ account_id: accountId });
+    expect(started.status).toBe(202);
+    const authorizationId = started.body.authorization.id as string;
+
+    const blocked = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('CHECKIN_AUTHORIZATION_EXISTS');
+    expect(getManagedAccount(t.db, accountId)).not.toBeNull();
+
+    // 授权过期后不再阻塞（不静默销毁活跃会话由上面这条保证；终态/过期历史随账号级联清除）
+    t.db.prepare('UPDATE checkin_authorization SET expires_at=? WHERE id=?').run(Date.now() - 1, authorizationId);
+    const removed = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(removed.status).toBe(200);
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM checkin_authorization WHERE id=?').get(authorizationId)).toEqual({ n: 0 });
+  });
+
+  it('delete blocks while the latest switch still requires recovery, and passes after recovery is given up', async () => {
+    const { vault } = await bootCheckin();
+    const name = 'del-recovery';
+    const accountId = await deletableAccount(vault, name);
+    const operationId = seedOperation(accountId, name);
+    updateAccountOperation(t.db, operationId, { state: 'running' });
+    updateAccountOperation(t.db, operationId, { state: 'recovery_required' });
+
+    const blocked = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('RECOVERY_REQUIRED');
+    expect(vault.size).toBe(2);
+
+    updateAccountOperation(t.db, operationId, { state: 'failed' });
+    expect((await request(app).delete(`/api/managed-accounts/${accountId}`)).status).toBe(200);
+    expect(vault.size).toBe(0);
+  });
+
+  it('delete answers VAULT_UNAVAILABLE instead of orphaning credential files when the vault is not assembled', async () => {
+    const accountId = createManagedAccount(t.db, {
+      app_id: 'workbuddy_desktop', client_instance_id: 'inst-no-vault', service_region: 'cn',
+      identity_hash: sha256(CHECKIN_UID), display_name: 'del-no-vault', checkin_credential_ref: randomUUID(),
+    }).id;
+    // 直接挂 accountRoutes（不经 createApp 的 SecretVault 兜底装配）才是「未装配」的真实形态
+    const scoped = express();
+    scoped.use(express.json());
+    scoped.use('/api', createAccountRouter({ db: t.db }));
+    scoped.use(errorHandler);
+
+    const res = await request(scoped).delete(`/api/managed-accounts/${accountId}`);
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe('VAULT_UNAVAILABLE');
+    expect(getManagedAccount(t.db, accountId)).not.toBeNull();
+  });
+
+  it('delete keeps the account row when the vault refuses to drop a credential, so the call can be retried', async () => {
+    const { vault } = await bootCheckin();
+    const accountId = await deletableAccount(vault, 'del-vault-error');
+    vault.delete = () => Promise.reject(new Error('locked'));
+
+    const failed = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(failed.status).toBe(500);
+    expect(failed.body.error.code).toBe('INTERNAL');
+    expect(getManagedAccount(t.db, accountId)).not.toBeNull();
+
+    vault.delete = (ref: string) => { vault.deletedRefs.push(ref); return Promise.resolve(); };
+    const retried = await request(app).delete(`/api/managed-accounts/${accountId}`);
+    expect(retried.status).toBe(200);
+    expect(getManagedAccount(t.db, accountId)).toBeNull();
+  });
 });
