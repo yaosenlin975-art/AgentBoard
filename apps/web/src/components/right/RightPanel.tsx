@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { usePanelStore, type PanelView } from '../../state/panelStore';
+import { useNavStore } from '../../state/navStore';
 import { useOverlayStore } from '../../state/overlayStore';
 import { useDismissable } from '../overlay/useDismissable';
 import { panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
@@ -64,6 +65,22 @@ export function RightPanel() {
     if (view !== null && !overlayRight) openRightOverlay();
     else if (view === null && overlayRight) closeRightOverlay();
   }, [view, overlayRight, openRightOverlay, closeRightOverlay]);
+
+  // SYS1（I-02/I-09）：详情浮窗属于看板/任务树主区，切到知识库/日志/会话时统一收起，
+  // 不再以 420px 覆盖层常驻遮挡主区；收起后 view 归零，回看板不会强行重开。
+  // 反向场景（知识页里的任务软链接）：详情在非看板视图里被点开时把主区切回看板，浮窗跟随详情，
+  // 避免「刚开就被收起」的死链。
+  const navView = useNavStore((s) => s.view);
+  const setNavView = useNavStore((s) => s.setView);
+  const previousNavView = useRef(navView);
+  useEffect(() => {
+    const previous = previousNavView.current;
+    previousNavView.current = navView;
+    if (view !== 'detail') return;
+    if (navView === 'board' || navView === 'tree') return;
+    if (previous === navView) setNavView('board');
+    else clearView();
+  }, [navView, view, setNavView, clearView]);
 
   // 外部点击 / Esc / 头部关闭：视图意图一并清空（否则同步 effect 会因 view 仍在而重新打开浮窗）
   const dismiss = useCallback(() => {
