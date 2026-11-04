@@ -9,7 +9,7 @@
  * - 账号/设置入口走 drawer，Esc 可关。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -64,11 +64,45 @@ describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
     expect(path.className).toContain('text-xs');
     // 旧的顶栏专属锚点不应再存在（不允许「锚点还在元素已删」的反向残留）
     expect(screen.queryByTestId('topbar-workspace-path')).toBeNull();
-    // 四组控件都在左栏控件区
-    const controls = screen.getByTestId('sidebar-controls');
-    for (const id of ['topbar-theme', 'topbar-chat', 'topbar-accounts', 'topbar-settings']) {
-      expect(within(controls).getByTestId(id)).toBeInTheDocument();
-    }
+    // FIX-1：NAV-TOPBAR-01 的四宫格已删除，账号/设置下沉到底部，主题并入状态行
+    expect(screen.queryByTestId('sidebar-controls')).toBeNull();
+    const bottom = screen.getByTestId('sidebar-account-settings');
+    expect(within(bottom).getByTestId('topbar-accounts')).toBeInTheDocument();
+    expect(within(bottom).getByTestId('topbar-settings')).toBeInTheDocument();
+    expect(within(screen.getByTestId('sidebar-status')).getByTestId('topbar-theme')).toBeInTheDocument();
+  });
+
+  it('FIX-1 结构顺序：工作空间 → 五入口 → 账号/设置 → 状态行', () => {
+    renderSideBar(ws);
+    const sidebar = screen.getByTestId('sidebar');
+    const testids = [...sidebar.querySelectorAll('[data-testid]')].map((el) => el.getAttribute('data-testid'));
+    const idx = (id: string): number => testids.indexOf(id);
+    const workspace = idx('sidebar-workspace');
+    const firstEntry = idx('sidebar-entry-board');
+    const lastEntry = idx('sidebar-entry-chat');
+    const bottom = idx('sidebar-account-settings');
+    const status = idx('sidebar-status');
+    expect(workspace).toBeGreaterThanOrEqual(0);
+    expect(workspace).toBeLessThan(firstEntry);
+    expect(firstEntry).toBeLessThan(lastEntry);
+    expect(lastEntry).toBeLessThan(bottom);
+    expect(bottom).toBeLessThan(status);
+    // 聊天入口全树唯一：没有第二个聊天按钮（四宫格里的重复入口已删）
+    expect(screen.queryByTestId('topbar-chat')).toBeNull();
+    expect(screen.getAllByTestId('sidebar-entry-chat')).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: '聊天' })).toHaveLength(1);
+  });
+
+  it('FIX-1 工作区浮窗锚定：品牌位容器 relative + 浮窗 absolute top-full', async () => {
+    renderSideBar(ws);
+    const brand = screen.getByTestId('sidebar-workspace');
+    expect(brand.className).toContain('relative');
+    fireEvent.click(screen.getByTestId('topbar-workspace'));
+    const panel = await screen.findByTestId('workspace-sidebar');
+    expect(panel.className).toContain('absolute');
+    expect(panel.className).toContain('top-full');
+    // 浮窗必须是品牌位的后代（相对自身定位，而不是按视口飞走）
+    expect(brand.contains(panel)).toBe(true);
   });
 
   it('工作区标题字号加大 3 档（text-sm → text-xl，14px → 20px）', () => {
@@ -88,20 +122,22 @@ describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
     expect(path).toHaveAttribute('title', '未选择工作区');
   });
 
-  it('主题切换按钮循环 system → light → dark 并写 localStorage', async () => {
+  it('FIX-1 状态行：主题小字循环 system → light → dark 并写 localStorage', async () => {
     renderSideBar(ws);
     const btn = screen.getByRole('button', { name: '切换主题' });
     expect(btn).toHaveTextContent('跟随系统');
     expect(btn).toHaveAttribute('title', expect.stringContaining('主题：跟随系统'));
+    // 主题小字在状态行里（与 WS 圆点同一行）
+    expect(screen.getByTestId('sidebar-status').contains(btn)).toBe(true);
 
     await userEvent.click(btn);
     expect(localStorage.getItem('agentboard.theme')).toBe('light');
-    expect(btn).toHaveTextContent('亮色');
+    expect(btn).toHaveTextContent('浅色');
     expect(document.documentElement).not.toHaveClass('dark');
 
     await userEvent.click(btn);
     expect(localStorage.getItem('agentboard.theme')).toBe('dark');
-    expect(btn).toHaveTextContent('暗色');
+    expect(btn).toHaveTextContent('深色');
     expect(document.documentElement).toHaveClass('dark');
 
     await userEvent.click(btn);
@@ -142,12 +178,12 @@ describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
 
   it('聊天入口：徽标 = 未读合计，点击把 navStore 切到 chat（整屏聊天）', async () => {
     renderSideBar(null);
-    expect(screen.queryByTestId('topbar-chat-unread')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-chat-unread')).not.toBeInTheDocument();
 
     act(() => usePanelStore.setState({ unread: { s1: 2, s2: 3 } }));
-    expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('5');
+    expect(screen.getByTestId('sidebar-chat-unread')).toHaveTextContent('5');
 
-    const chatEntry = screen.getByTestId('topbar-chat');
+    const chatEntry = screen.getByTestId('sidebar-entry-chat');
     expect(chatEntry).toHaveAttribute('aria-expanded', 'false');
     await userEvent.click(chatEntry);
     expect(useNavStore.getState().view).toBe('chat');

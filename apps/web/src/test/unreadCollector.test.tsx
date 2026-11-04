@@ -122,7 +122,7 @@ describe('unreadCollector 全局未读计数', () => {
 
     emitMessageAdded(makeMessage({ id: 'mb1', session_id: 's2', content: '后台消息', ts: 300 }));
     expect(usePanelStore.getState().unread).toEqual({ s2: 2 });
-    expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('2');
+    expect(screen.getByTestId('sidebar-chat-unread')).toHaveTextContent('2');
 
     // 进入整屏聊天（S3：主区渲染 ChatView）→ 左会话列表该会话显示未读徽标
     renderChatPanel();
@@ -135,7 +135,7 @@ describe('unreadCollector 全局未读计数', () => {
     // 打开即读：该会话计数归 0（s1 从未计数，故不出现条目）
     await waitFor(() => expect(usePanelStore.getState().unread).toEqual({ s2: 0 }));
     await waitFor(() => expect(screen.queryByTestId('unread-s2')).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.queryByTestId('topbar-chat-unread')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('sidebar-chat-unread')).not.toBeInTheDocument());
   });
 
   it('多会话并行计数独立互不串扰', () => {

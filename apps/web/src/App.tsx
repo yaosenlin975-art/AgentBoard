@@ -75,12 +75,7 @@ export default function App() {
       <VoiceInputProvider>
         <SideBar workspace={current} />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* NAV-TOPBAR-01：顶栏已移除（工作区名/路径与四组控件迁入左栏品牌位），主区直接铺满 */}
-          <label className="flex items-center gap-2 border-b px-4 py-2 text-sm md:hidden">工作空间
-            <select aria-label="工作空间" className="min-w-0 flex-1 rounded border bg-transparent p-1" value={workspaceId ?? ''} onChange={e => useAppStore.getState().selectWorkspace(e.target.value || null)}>
-              <option value="">请选择工作空间</option>{workspaces?.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-            </select>
-          </label>
+          {/* NAV-TOPBAR-01：顶栏已移除；FIX-1：窄屏也不再保留工作空间 select（由左栏承担） */}
           <div className="relative flex min-h-0 flex-1">
             <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
               {view === 'log' ? (

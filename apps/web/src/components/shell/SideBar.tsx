@@ -1,13 +1,17 @@
 /**
  * 左栏（S2a，设计稿 `Docs/design-2026-11-04-nav-sidebar-chat-view.md` §3/§7）。
  *
- * NAV-TOPBAR-01：顶栏不再承载工作区名/路径与右侧控件 —— 全部并入本栏顶部品牌位：
- * - 品牌位 = 工作区切换按钮（`LEFT_TRIGGER_ID` + 名称 + 路径；路径 truncate 且 title 给全路径）；
- * - 品牌位下方 = 主题 / 聊天 / 账号 / 设置 四宫格（行为与顶栏时期一致：`cycleTheme`、
- *   `openChat()`、`toggleDrawer('accounts'|'settings')`），可 Tab 聚焦、保留 aria-label；
- * - 底部状态行 = WS 状态圆点 + 导航说明（顶栏删除后状态圆点落在这里，不留空条）。
- *
- * 状态权威是 `useNavStore.view`（S1 已落地）：点入口只调 `setView`，不做本地 state。
+ * FIX-1（导航重构纠偏，父卡 3c8d0a34）：结构回归设计稿顺序
+ *   工作空间 → 五入口 → 账号/设置（纵向两项）→ 状态行
+ * - 删掉 NAV-TOPBAR-01 迁入的 `sidebar-controls` 四宫格：聊天不再有重复入口（只作五入口之一，
+ *   未读徽标挂在 `sidebar-entry-chat`）；账号/设置下沉到底部；主题并入状态行小字（点字切主题）。
+ * - 品牌位容器加 `relative`：`WorkspaceSidebarOverlay` 的 `absolute top-full` 才能真正锚定在触发按钮正下方
+ *   （此前无定位祖先，浮窗按视口飞到屏幕外）。
+ * testid 映射（兼容旧锚点，测试同步更新）：
+ *   `topbar-workspace`（品牌按钮）· `sidebar-workspace-path`（路径）· `sidebar-entry-chat`（唯一聊天入口）
+ *   `sidebar-chat-unread`（未读徽标）· `topbar-accounts` / `topbar-settings`（底部两项）
+ *   `topbar-theme`（状态行里的主题小字）· `topbar-ws-status`（状态圆点）
+ *   已删除：`sidebar-controls`、`topbar-chat`、`topbar-chat-unread`（聊天入口与徽标合并到五入口）。
  */
 import { useRef } from 'react';
 import type { Workspace } from '@agentboard/shared';
@@ -40,25 +44,31 @@ const WS_DOT: Record<WsStatus, string> = {
   closed: 'bg-red-500',
 };
 
-/** 176px 栏内放不下「主题：跟随系统」，按钮只显示短词，全称进 title / aria-label */
-const THEME_SHORT: Record<string, string> = {
-  system: '跟随系统',
-  light: '亮色',
-  dark: '暗色',
+/** 状态行里的服务状态：只给短词（顶部状态圆点同步用 WS_DOT） */
+const WS_LABEL: Record<WsStatus, string> = {
+  connecting: '连接中',
+  open: '服务运行中',
+  closed: '服务已断开',
 };
 
-const CONTROL_BTN =
-  'flex h-8 min-w-0 items-center justify-center gap-1 rounded-md border border-hairline bg-surface-card px-1.5 text-xs text-ink-2 transition-colors hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+/** 主题短标签：点状态行的字切主题，全称进 title / aria-label */
+const THEME_SHORT: Record<string, string> = {
+  system: '跟随系统',
+  light: '浅色',
+  dark: '深色',
+};
+
+const BOTTOM_BTN =
+  'flex h-8 w-full items-center gap-2 rounded-md border border-hairline bg-surface-card px-2 text-xs text-ink-2 transition-colors hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
 
 export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const view = useNavStore((state) => state.view);
   const setView = useNavStore((state) => state.setView);
   const drawer = useNavStore((state) => state.drawer);
   const toggleDrawer = useNavStore((state) => state.toggleDrawer);
-  // 聊天入口徽标 = 全部会话未读合计（设计 §5；与左会话列表的单项徽标同一份 panelStore.unread）
+  // 未读徽标 = 全部会话未读合计（设计 §5；只挂在五入口的聊天项上）
   const unread = usePanelStore((state) => state.unread);
   const chatUnread = Object.values(unread).reduce((sum, n) => sum + (n > 0 ? n : 0), 0);
-  const openChat = usePanelStore((state) => state.openChat);
   const leftOpen = useOverlayStore((state) => state.left);
   const toggleLeft = useOverlayStore((state) => state.toggleLeft);
   const wsStatus = useAppStore((state) => state.wsStatus);
@@ -71,8 +81,8 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
       aria-label="主导航"
       className="flex w-[176px] shrink-0 flex-col border-r border-hairline bg-surface-card"
     >
-      {/* 品牌位（NAV-TOPBAR-01）：工作区名 + 路径 + 切换浮层触发 */}
-      <div data-testid="sidebar-workspace" className="border-b border-hairline px-3 py-3">
+      {/* ① 工作空间（FIX-1：容器 relative，浮窗锚定在触发按钮正下方） */}
+      <div data-testid="sidebar-workspace" className="relative border-b border-hairline px-3 py-3">
         <button
           type="button"
           id={LEFT_TRIGGER_ID}
@@ -98,64 +108,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />
       </div>
 
-      {/* 顶栏迁入的四组控件（NAV-TOPBAR-01）：两列网格，176px 栏内不溢出 */}
-      <div data-testid="sidebar-controls" className="grid grid-cols-2 gap-1.5 border-b border-hairline p-2">
-        <button
-          type="button"
-          data-testid="topbar-theme"
-          onClick={cycleTheme}
-          aria-label="切换主题"
-          title={`主题：${THEME_LABEL[theme]}（点击切换）`}
-          className={CONTROL_BTN}
-        >
-          <span className="truncate">{THEME_SHORT[theme] ?? THEME_LABEL[theme]}</span>
-        </button>
-
-        <button
-          type="button"
-          data-testid="topbar-chat"
-          aria-label="聊天"
-          aria-expanded={view === 'chat'}
-          aria-controls="right-panel-content"
-          title="打开聊天（主区整屏）"
-          onClick={() => openChat()}
-          className={`relative ${CONTROL_BTN}`}
-        >
-          聊天
-          {chatUnread > 0 && (
-            <span
-              data-testid="topbar-chat-unread"
-              className="absolute -right-1 -top-1 rounded-full bg-accent px-1 text-[10px] font-medium leading-4 text-accent-ink"
-            >
-              {chatUnread > 99 ? '99+' : chatUnread}
-            </span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          data-testid="topbar-accounts"
-          aria-label="账号管理"
-          aria-expanded={drawer === 'accounts'}
-          title="管理 WorkBuddy / CodeBuddy 账号"
-          onClick={() => toggleDrawer('accounts')}
-          className={CONTROL_BTN}
-        >
-          账号
-        </button>
-
-        <button
-          type="button"
-          data-testid="topbar-settings"
-          aria-label="设置"
-          aria-expanded={drawer === 'settings'}
-          onClick={() => toggleDrawer('settings')}
-          className={CONTROL_BTN}
-        >
-          设置
-        </button>
-      </div>
-
+      {/* ② 五入口（聊天只在这里出现一次，未读徽标挂本项） */}
       <ul className="flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;
@@ -166,6 +119,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 data-testid={`sidebar-entry-${entry.view}`}
                 aria-current={active ? 'page' : undefined}
                 aria-label={entry.label}
+                aria-expanded={entry.view === 'chat' ? view === 'chat' : undefined}
                 onClick={() => setView(entry.view)}
                 className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   active ? 'bg-accent-soft font-medium text-accent' : 'text-ink-2 hover:bg-surface-raised'
@@ -190,18 +144,64 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         })}
       </ul>
 
-      <div className="mt-auto flex items-center gap-1.5 border-t border-hairline px-3 py-2 text-[11px] text-ink-3" data-testid="sidebar-status">
-        {/* PANEL-VIEW-BUG 口径：只保留状态圆点（颜色编码），不展示「已连接/已断开」文案 */}
+      {/* ③ 账号 / 设置（FIX-1：从四宫格下沉到底部，纵向两项） */}
+      <div data-testid="sidebar-account-settings" className="mt-auto flex flex-col gap-1 px-2 pb-1">
+        <button
+          type="button"
+          data-testid="topbar-accounts"
+          aria-label="账号管理"
+          aria-expanded={drawer === 'accounts'}
+          title="管理 WorkBuddy / CodeBuddy 账号"
+          onClick={() => toggleDrawer('accounts')}
+          className={BOTTOM_BTN}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6" />
+          </svg>
+          <span className="truncate">账号</span>
+        </button>
+        <button
+          type="button"
+          data-testid="topbar-settings"
+          aria-label="设置"
+          aria-expanded={drawer === 'settings'}
+          onClick={() => toggleDrawer('settings')}
+          className={BOTTOM_BTN}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 15a3 3 0 100-6 3 3 0 000 6M4 12h2M18 12h2M12 4v2M12 18v2M6.5 6.5l1.4 1.4M16.1 16.1l1.4 1.4M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4" />
+          </svg>
+          <span className="truncate">设置</span>
+        </button>
+      </div>
+
+      {/* ④ 状态行：服务状态圆点 + 主题小字（点字切主题） */}
+      <div
+        className="flex items-center gap-1 border-t border-hairline px-2 py-2 text-[11px] text-ink-3"
+        data-testid="sidebar-status"
+      >
+        {/* PANEL-VIEW-BUG 口径：只保留状态圆点（颜色编码），文案用短词跟在后面 */}
         <span
           data-testid="topbar-ws-status"
           data-status={wsStatus}
           title="服务连接状态"
           aria-label="服务连接状态"
-          className="inline-flex items-center"
+          className="inline-flex shrink-0 items-center"
         >
           <span className={`inline-block h-2 w-2 rounded-full ${WS_DOT[wsStatus]}`} aria-hidden="true" />
         </span>
-        <span>左栏导航</span>
+        <span className="truncate">{WS_LABEL[wsStatus]}</span>
+        <span aria-hidden="true" className="shrink-0 text-ink-3">·</span>
+        <button
+          type="button"
+          data-testid="topbar-theme"
+          onClick={cycleTheme}
+          aria-label="切换主题"
+          title={`主题：${THEME_LABEL[theme]}（点击切换）`}
+          className="shrink-0 rounded px-0.5 text-[11px] text-ink-2 underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          {THEME_SHORT[theme] ?? THEME_LABEL[theme]}
+        </button>
       </div>
     </nav>
   );
