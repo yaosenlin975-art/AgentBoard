@@ -12,7 +12,10 @@ import { z } from 'zod';
 import type { Db } from '../db/connection.js';
 import { ApiError } from '../errors.js';
 
-export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode'] as const;
+// SMART-CREATE-CB：这里是草稿可用适配器的**唯一来源**；api/schemas.ts 的 zod 枚举从它派生（不再各写一份）。
+// 为什么不直接从 ADAPTERS 注册表推导：注册表会随新增适配器自动变大，而草稿要求「一次性 runTurn + 严格 JSON」，
+// 新适配器未必满足；改为「显式清单 + 防漂移断言」（测试里断言每个 id 都在注册表与 /api/clis 中）。
+export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode', 'codebuddy'] as const;
 export type DraftAdapterId = (typeof DRAFT_ADAPTERS)[number];
 export const DRAFT_TIMEOUT_MS = 120_000;
 /** 生成失败后最多再试 1 次（设计 §4「不合法重试 1 次」） */

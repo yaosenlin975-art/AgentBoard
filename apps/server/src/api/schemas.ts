@@ -1,5 +1,6 @@
 /** Task 9：REST 请求体 zod 校验 schema（Pinned Contracts REST 全表 + 契约修订项） */
 import { z } from 'zod';
+import { DRAFT_ADAPTERS } from '../services/smartCreateDraft.js';
 import { MAX_DISPATCH_SELECTED_ID_COUNT } from '@agentboard/shared';
 import { knowledgeSourceSchema, knowledgeEvidenceSchema } from '../services/knowledge.js';
 import { normalizeLabels } from '../services/labelNormalize.js';
@@ -114,7 +115,8 @@ export const reorderWorkspacesSchema = z.object({
 export const draftRequestSchema = z.object({
   workspace_id: z.string().min(1),
   requirement: z.string().trim().min(1, 'requirement 不能为空').max(4000),
-  adapter: z.enum(['dsh', 'codex', 'opencode']),
+  // SMART-CREATE-CB：枚举从 DRAFT_ADAPTERS 派生（单一来源，避免以后再漏 codebuddy）
+  adapter: z.enum(DRAFT_ADAPTERS),
   priority: prioritySchema.optional(),
 }).strict();
 

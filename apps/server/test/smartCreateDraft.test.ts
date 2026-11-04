@@ -54,7 +54,7 @@ describe('smart create draft (SMART-CREATE)', () => {
     const created = await createApp({
       db: t.db,
       getAdapter: (id: string): AgentAdapter => {
-        if (id === 'dsh' || id === 'codex' || id === 'opencode' || id === 'fake') return adapter;
+        if (id === 'dsh' || id === 'codex' || id === 'opencode' || id === 'codebuddy' || id === 'fake') return adapter;
         throw new Error(`未知适配器 id: ${id}`);
       },
       adapters: [adapter],
@@ -181,12 +181,21 @@ describe('smart create draft (SMART-CREATE)', () => {
   });
 
   it('rejectsUnknownAdapterAndEmptyRequirementWith400', async () => {
-    const unknown = await postDraft({ workspace_id: ws, requirement: 'x', adapter: 'codebuddy' });
+    // SMART-CREATE-CB：codebuddy 现在是合法值，未知值改用 cursor
+    const unknown = await postDraft({ workspace_id: ws, requirement: 'x', adapter: 'cursor' });
     expect(unknown.status).toBe(400);
+    expect(JSON.stringify(unknown.body)).toContain('codebuddy');
     const empty = await postDraft({ workspace_id: ws, requirement: '   ', adapter: 'dsh' });
     expect(empty.status).toBe(400);
     const missingWs = await postDraft({ workspace_id: '00000000-0000-4000-8000-000000000000', requirement: 'x', adapter: 'dsh' });
     expect(missingWs.status).toBe(404);
+  });
+
+  it('acceptsCodebuddyAdapterAfterAllowlistExtension', async () => {
+    runner = async () => JSON.stringify({ title: '支持 codebuddy 草稿', background: 'b', requirements: null, acceptance: null, labels: [], warnings: [] });
+    const res = await postDraft({ workspace_id: ws, requirement: '用 codebuddy 生成草稿', adapter: 'codebuddy' });
+    expect(res.status).toBe(200);
+    expect(res.body.title).toContain('codebuddy');
   });
 
   it('promptForbidsInventingRequirementsAndAcceptsFencedJson', () => {
@@ -200,5 +209,27 @@ describe('smart create draft (SMART-CREATE)', () => {
     // 三段渲染：空值 → 未提供
     expect(renderDraftDescription({ title: 't', background: null, requirements: 'r', acceptance: null, labels: [], warnings: [] }))
       .toBe(`## 背景\n${NOT_PROVIDED}\n\n## 要求\nr\n\n## 验收\n${NOT_PROVIDED}`);
+  });
+});
+
+describe('draft adapter allowlist (SMART-CREATE-CB)', () => {
+  it('DRAFT_ADAPTERS 是唯一来源：zod 枚举与它完全一致，且包含 codebuddy', async () => {
+    const { DRAFT_ADAPTERS } = await import('../src/services/smartCreateDraft.js');
+    const { draftRequestSchema } = await import('../src/api/schemas.js');
+    expect([...DRAFT_ADAPTERS]).toEqual(['dsh', 'codex', 'opencode', 'codebuddy']);
+    // 逐个 id 都能过校验（含 codebuddy）
+    for (const id of DRAFT_ADAPTERS) {
+      expect(draftRequestSchema.safeParse({ workspace_id: 'w', requirement: 'r', adapter: id }).success).toBe(true);
+    }
+    // 不在清单里的必须被拒，且错误里列出可用值（中文文案来自 zhZodIssue，由路由层负责）
+    const rejected = draftRequestSchema.safeParse({ workspace_id: 'w', requirement: 'r', adapter: 'cursor' });
+    expect(rejected.success).toBe(false);
+  });
+
+  it('防漂移：DRAFT_ADAPTERS 里每个 id 都必须在适配器注册表与 /api/clis 里', async () => {
+    const { DRAFT_ADAPTERS } = await import('../src/services/smartCreateDraft.js');
+    const { ADAPTERS } = await import('@agentboard/adapters');
+    const registryIds = new Set(ADAPTERS.map(adapter => adapter.id));
+    for (const id of DRAFT_ADAPTERS) expect(registryIds.has(id)).toBe(true);
   });
 });
