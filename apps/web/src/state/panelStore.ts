@@ -12,6 +12,7 @@
  * unread 重水合经 sanitizeUnread 容错（非对象/非正整数条目剔除，坏结构回空对象）。
  */
 import { create } from 'zustand';
+import { useNavStore } from './navStore';
 import { persist } from 'zustand/middleware';
 import type { Session } from '@agentboard/shared';
 
@@ -86,11 +87,16 @@ export const usePanelStore = create<PanelState>()(
       setChatDraft: (chatDraft) => set({ chatDraft }),
       openDetail: (issueId) => set({ view: 'detail', issueId, refPanel: null, rightOpen: true }),
       openRef: (target) => set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true }),
-      openChat: (sessionId, session) =>
+      openChat: (sessionId, session) => {
+        // S1 联动（设计稿 §4「跳转联动」）：聊天升为主区第五视图 → 先切 view 到 chat；
+        // 下面把 panelStore.view 置为 'chat' 即关闭详情/引用浮窗（浮窗 absolute 覆盖，不能与整屏叠）。
+        useNavStore.getState().setView('chat');
         set((s) => {
           const id = sessionId ?? s.sessionId;
           return {
             view: 'chat',
+            // 关闭详情/引用浮窗：两者都是 absolute 覆盖层，不能与整屏聊天并存
+            issueId: null,
             refPanel: null,
             sessionId: id,
             // 同会话沿用已存会话对象；换会话只认新传入的
@@ -98,7 +104,8 @@ export const usePanelStore = create<PanelState>()(
             unread: id !== null ? { ...s.unread, [id]: 0 } : s.unread,
             rightOpen: true,
           };
-        }),
+        });
+      },
       clearSession: () => set({ sessionId: null, chatSession: null }),
       removeSession: (sessionId) =>
         set((s) => {
