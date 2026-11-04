@@ -11,7 +11,7 @@ import {
 } from '../../lib/knowledgeGraph';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { KnowledgePageDetail } from './KnowledgePageDetail';
-import { KnowledgeGraph } from './KnowledgeGraph';
+import { KnowledgeGraph, prefetchGraphChunk } from './KnowledgeGraph';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { Kbd } from '../ui/Kbd';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
@@ -85,6 +85,9 @@ export function KnowledgePanel({
           role="tab"
           aria-selected={view === 'graph'}
           data-testid="knowledge-view-graph"
+          // GRAPH-PERF：悬停/聚焦即预取 PIXI chunk，切 tab 时省掉下载+解析
+          onMouseEnter={() => prefetchGraphChunk()}
+          onFocus={() => prefetchGraphChunk()}
           onClick={() => setView('graph')}
           className={`rounded px-2 py-0.5 ${view === 'graph' ? 'bg-accent-soft font-medium text-accent' : 'text-ink-2 transition-colors hover:bg-accent-soft'}`}
         >
@@ -200,5 +203,6 @@ export function KnowledgePanel({
     </div>
   </section>;
 }
+
 
 

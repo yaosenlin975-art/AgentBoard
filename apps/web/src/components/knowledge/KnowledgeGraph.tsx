@@ -110,6 +110,14 @@ function graphParams(workspaceId: string | null, scope: Props['scope']): URLSear
   return params;
 }
 
+/** GRAPH-PERF：节点上限（超过则按连接度取 top-N） */
+export const GRAPH_MAX_NODES = 300;
+
+/** GRAPH-PERF：悬停/聚焦星图 tab 时预取 PIXI chunk（命中后切 tab 不再等下载+解析） */
+export function prefetchGraphChunk(): void {
+  void import('./pixiGraph');
+}
+
 export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ link: true, source: true, keyword: true });
   const [showIsolated, setShowIsolated] = useState(true);
@@ -305,21 +313,29 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     if (!showStage || shown === null) return null;
     // weight = 正向 ∪ 反向邻居数（`nodeWeights`）；局部图模式下改用逐跳权重（文档 C10）
     const weights = nodeWeights(shown.nodes, shown.edges);
+    // GRAPH-PERF：节点超过 300 时按连接度取 top-N（避免一次给 PIXI 灌上千节点拖慢首帧），
+    // 并在图例区提示「显示前 300 个，共 N 个」（见 TopNNotice）。
+    const capped = shown.nodes.length > GRAPH_MAX_NODES
+      ? [...shown.nodes].sort((a, b) => (weights.get(b.id) ?? 0) - (weights.get(a.id) ?? 0)).slice(0, GRAPH_MAX_NODES)
+      : shown.nodes;
+    const keep = new Set(capped.map((node) => node.id));
     return {
-      nodes: shown.nodes.map((node) => ({
+      nodes: capped.map((node) => ({
         id: node.id,
         title: node.title,
         weight: local?.weights.get(node.id) ?? weights.get(node.id) ?? 0,
         // KB-MODEL：category 固定五色；缺失一律 legacy 灰。scope 方案时退回语义色（不传 tint）
         ...(colorScheme === 'category' ? { tint: tintFromCssColor(categoryColor(node.category, dark)) } : {}),
       })),
-      edges: shown.edges.map((edge) => ({
-        key: edge.key,
-        source: edge.source,
-        target: edge.target,
-        kind: edge.kind,
-        weight: edge.weight,
-      })),
+      edges: shown.edges
+        .filter((edge) => keep.has(edge.source) && keep.has(edge.target))
+        .map((edge) => ({
+          key: edge.key,
+          source: edge.source,
+          target: edge.target,
+          kind: edge.kind,
+          weight: edge.weight,
+        })),
       positions,
       highlight,
     };
@@ -650,6 +666,12 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       )}
 
       <div data-testid="graph-legend" aria-label="星图图例" className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-1 text-[11px] text-ink-3">
+        {/* GRAPH-PERF：超过上限时如实说明只画了前 N 个（按连接度） */}
+        {shown !== null && shown.nodes.length > GRAPH_MAX_NODES && (
+          <span data-testid="graph-topn-notice" className="text-ink-2">
+            显示前 {GRAPH_MAX_NODES} 个（按连接度），共 {shown.nodes.length} 个
+          </span>
+        )}
         <button
           type="button"
           data-testid="graph-color-scheme"
@@ -934,6 +956,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     </div>
   );
 }
+
+
+
+
+
 
 
 
