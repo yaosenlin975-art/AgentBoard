@@ -12,7 +12,7 @@ async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{
     if (opts.workspace) throw new Error('common 不接受 --workspace（公共知识不绑定工作区）');
     return { scope: 'common' };
   }
-  if (!opts.workspace) throw new Error('项目知识必须指定 --workspace <工作区 id 或名称>');
+  // B：缺省按 cwd 解析当前工作区（与 list-tasks 同一解析器）；显式 --workspace 仍覆盖
   return { scope: opts.scope, workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) };
 }
 const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${p.snippet ? `\n${p.snippet}` : ''}`; };
@@ -172,7 +172,7 @@ const ACTION_HELP = `
 `;
 
 const SHOW_HELP = `
-必填：<page-id> --scope <workspace|common>；workspace 范围还需 --workspace <id|名>
+必填：<page-id> --scope <workspace|common>；workspace 范围缺省按 cwd 解析，可用 --workspace <id|名> 覆盖
 可选：--history 同时输出全部版本历史
 输出：非 --json 时打印 id/scope/revision/title + 正文；--json 打印服务端原对象
 示例：
@@ -182,7 +182,7 @@ const SHOW_HELP = `
 `;
 
 const LIST_HELP = `
-必填：--scope <workspace|common>（workspace 范围还需 --workspace <id|名>）
+必填：--scope <workspace|common>（workspace 范围缺省按 cwd 解析，可用 --workspace 覆盖）
 可选：--status active|archived|deleted|all（默认 active）、--offset <n>（默认 0）、--limit <n>（默认 20，上限 100）、--include-expired
 输出：每页一行「<id> [scope] rev:<n> <title>」；有下一页时追加「下一页：--offset <n>」；--json 打印服务端原响应
 示例：
@@ -193,7 +193,7 @@ const LIST_HELP = `
 
 const SEARCH_HELP = `
 必填：<query>（1–500 字符）
-可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope=workspace 时必填）、--limit <n>（默认 5）
+可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope=workspace 时缺省按 cwd 解析）、--limit <n>（默认 5）
 输出：命中页列表（每行 id/scope/revision/title + 摘要）；--json 打印服务端原响应
 示例：
   kb knowledge search '缓存' --scope both --limit 5

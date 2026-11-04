@@ -89,12 +89,11 @@ function printPage(ctx: Ctx, page: PageResponse<ChangeLogRecord>): void {
 }
 
 export function registerChangelogCommands(program: Command, context: () => Ctx): void {
-  const changelog = program.command('changelog').description('工作区变更日志（活动工作区需显式 --workspace；归档读取需 --origin-workspace-id）');
+  const changelog = program.command('changelog').description('工作区变更日志（活动工作区缺省按 cwd 解析，可用 --workspace 覆盖；归档读取需 --origin-workspace-id）');
 
-  /** 活动命令统一要求 --workspace（id 或名称），解析成 id 后拼路径 */
+  /** B：活动命令的 --workspace 可省略——缺省按 cwd 解析（与 list-tasks 同一解析器），显式值仍覆盖 */
   async function activeWorkspace(ctx: Ctx, value: string | undefined): Promise<string> {
-    if (value === undefined || value.trim() === '') throw new Error('必须指定 --workspace <id|名>');
-    return resolveWorkspaceId(ctx.base, value);
+    return resolveWorkspaceId(ctx.base, value === undefined || value.trim() === '' ? undefined : value);
   }
   const entriesPath = (workspaceId: string): string => `/api/workspaces/${encodeURIComponent(workspaceId)}/changelog`;
   const normalizeType = (value: string | undefined): string | undefined => {
@@ -113,7 +112,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
   changelog
     .command('list')
     .description('列出当前工作区变更日志（按发生时间倒序）')
-    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .option('--type <类型>', '新增|修复|调整|历史')
     .option('--query <text>', '标题/正文字面子串搜索')
     .option('--offset <n>', '分页偏移', '0')
@@ -130,7 +129,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
   changelog
     .command('show <id>')
     .description('查看单条变更日志')
-    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .action(async (id: string, opts: { workspace: string }) => {
       const ctx = context();
       const workspaceId = await activeWorkspace(ctx, opts.workspace);
@@ -142,7 +141,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
   changelog
     .command('create')
     .description('新增变更日志（正文用 --body 或 --stdin；历史类型仅供导入）')
-    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .requiredOption('--title <title>', '标题')
     .requiredOption('--type <类型>', '新增|修复|调整')
     .option('--body <text>', '正文（Markdown）')
@@ -174,7 +173,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
   changelog
     .command('update <id>')
     .description('修改变更日志（CAS：必须带当前 --expected-revision）')
-    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .requiredOption('--expected-revision <n>', '当前 revision（服务端 CAS）')
     .option('--title <title>', '新标题')
     .option('--type <类型>', '新类型：新增|修复|调整')
@@ -203,7 +202,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
   changelog
     .command('delete <id>')
     .description('删除单条变更日志（CAS：必须带当前 --expected-revision）')
-    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .requiredOption('--expected-revision <n>', '当前 revision（服务端 CAS）')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .action(async (id: string, opts: { workspace: string; expectedRevision: string; requestId?: string }) => {

@@ -117,3 +117,27 @@ describe('knowledge CLI', () => {
     expect(await readAllStdin(Readable.from(['# 标题']))).toBe('# 标题');
   });
 });
+
+describe('knowledge CLI：B 缺省 cwd 解析', () => {
+  it('workspace 范围缺省按 cwd 解析当前工作区', async () => {
+    const ws = { id: 'w1', name: '项目', path: process.cwd(), created_at: 1 };
+    // 按 URL 回包（不依赖调用次数）：/api/workspaces → [ws]，其余（知识页列表）→ []
+    const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(String(url).includes('/api/workspaces') ? [ws] : [])));
+    vi.stubGlobal('fetch', fetch);
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'workspace'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls[0]).toContain('/api/workspaces');
+    const pagesUrl = urls.find(url => url.includes('/api/knowledge/pages'));
+    expect(pagesUrl).toBeDefined();
+    expect(pagesUrl).toContain('workspace_id=w1');
+  });
+
+  it('cwd 解析不到工作区时报可读错误（不静默空列表）', async () => {
+    const ws = { id: 'w1', name: '项目', path: 'Z:/not-here', created_at: 1 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify([ws]))));
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'workspace'], stream)).toBe(1);
+    expect(stream.err.join('')).toContain('--workspace');
+  });
+});

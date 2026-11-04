@@ -92,11 +92,20 @@ describe('kb changelog 活动日志', () => {
     expect(JSON.parse(stream.out.join('')).items[0]).toMatchObject({ id: 'log-1', revision: 1 });
   });
 
-  it('缺少 --workspace 时不发请求且非零退出', async () => {
-    stubFetch([]);
+  it('B：缺省按 cwd 解析当前工作区（不再强制 --workspace）', async () => {
+    // cwd 命中：WS.path 换成真实目录，解析器等值优先命中 w1
+    stubFetch([{ body: [{ ...WS, path: process.cwd() }] }, { body: { items: [], total: 0, offset: 0, limit: 50 } }]);
+    const stream = io();
+    expect(await main(['node', 'kb', 'changelog', 'list'], stream)).toBe(0);
+    expect(calls[0]!.url).toContain('/api/workspaces');
+    expect(calls[1]!.url).toContain('/api/workspaces/w1/changelog');
+  });
+
+  it('B：cwd 解析不到工作区时报可读错误（不静默空列表）', async () => {
+    stubFetch([{ body: [WS] }]);
     const stream = io();
     expect(await main(['node', 'kb', 'changelog', 'list'], stream)).not.toBe(0);
-    expect(calls).toHaveLength(0);
+    expect(stream.err.join('')).toContain('--workspace');
   });
 
   it('show 打单条路径；非 --json 输出含标题与正文', async () => {
