@@ -1,6 +1,10 @@
 /**
- * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14）：展示脱敏元数据 + 切换/签到。
+ * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14 / ACC-DEL-02）：展示脱敏元数据 + 切换/签到/删除。
  * 能力来自服务端能力矩阵（由 AccountsPanel 传入），前端不维护能力副本。
+ *
+ * ACC-DEL-02 删除是两步流：点「删除」→ 行内「确认删除」（3 秒未确认自动收回）→ `DELETE /api/managed-accounts/:id`
+ * → 成功失效重拉列表；失败只给中文主文案，裸码进 title。删除只清 AgentBoard 记录与本机 DPAPI 快照，
+ * 不退出客户端登录，所以 `is_current=true` 不阻塞删除，仅在确认行追加警示。
  *
  * ACC-14 两个「当前」必须分开表达：
  * - **客户端当前**（`accounts-client-current-*`）= 桌面客户端此刻登录的账号（服务端 `is_current`，来自 capture/switch 领域）；
@@ -10,15 +14,25 @@
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  */
 import { useEffect, useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AccountOperation, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { Badge } from '../ui/Badge';
-import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
+import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
 import { checkinParticipation, reasonCodeOf, reasonLabel, unavailableLabel, unavailableReason, type CapabilityView } from './accountCapabilities';
 
 export type AccountView = PublicManagedAccount & { is_current: boolean | null };
+
+/** 删除二次确认的窗口：3 秒内不点「确认删除」就自动收回（设计 §7） */
+const DELETE_CONFIRM_WINDOW_MS = 3_000;
+
+/** 删除失败的中文口径；裸码不进主文案，只进 title（ACC-REASON-01） */
+const DELETE_FAIL_LABEL: Record<string, string> = {
+  ACCOUNT_BUSY: '账号正忙，暂时无法删除',
+  CHECKIN_AUTHORIZATION_EXISTS: '该账号已有进行中的签到授权，暂时无法删除',
+  RECOVERY_REQUIRED: '上次切换仍需恢复，恢复完成前不能删除',
+};
 
 const REGION_LABEL: Record<AccountView['service_region'], string> = { cn: '国内', global: '国际', unknown: '区域未知' };
 const CHECKIN_CAPABILITY_LABEL: Record<AccountView['checkin_capability'], string> = {
@@ -31,15 +45,21 @@ export function AccountCard({
   account,
   capability,
   onCheckin,
+  muted = false,
 }: {
   account: AccountView;
   capability: CapabilityView | null;
   onCheckin?: () => void;
+  /** 能力矩阵未就绪（加载中或失败）：删除这类写操作一并禁用，与其余写操作同口径 */
+  muted?: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+  const [deleteErrorCode, setDeleteErrorCode] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const switchMutation = useMutation({
     mutationFn: () => api.post<{ operation_id: string; operation: AccountOperation }>(`/api/managed-accounts/${account.id}/switch`, {}),
@@ -54,6 +74,27 @@ export function AccountCard({
       setOperationId(null);
     },
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.del<void>(`/api/managed-accounts/${account.id}`),
+    onSuccess: () => {
+      // 删除成功只重拉列表：行由服务端结果自然消失，不做本地乐观移除
+      setDeleteConfirming(false);
+      setDeleteErrorCode(null);
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+    },
+    onError: (e) => {
+      setDeleteConfirming(false);
+      setDeleteErrorCode(reasonCodeOf(e));
+    },
+  });
+
+  useEffect(() => {
+    if (!deleteConfirming || deleteMutation.isPending) return;
+    const timer = setTimeout(() => setDeleteConfirming(false), DELETE_CONFIRM_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [deleteConfirming, deleteMutation.isPending]);
 
   const operationQuery = useQuery({
     queryKey: ['account-operation', operationId],
@@ -139,7 +180,58 @@ export function AccountCard({
           签到
         </button>
         {account.enabled === false && <Badge tone="red">已停用（只读）</Badge>}
+        <button
+          type="button"
+          data-testid={`accounts-delete-${account.id}`}
+          className={BUTTON_SECONDARY}
+          disabled={muted || deleteMutation.isPending}
+          title={
+            muted
+              ? '能力矩阵未就绪，暂时不能删除账号'
+              : '删除 AgentBoard 里的这条账号记录（不清除客户端登录态）'
+          }
+          onClick={() => { setDeleteErrorCode(null); setDeleteConfirming(true); }}
+        >
+          删除
+        </button>
       </div>
+
+      {deleteConfirming && (
+        <div
+          data-testid={`accounts-delete-confirm-${account.id}`}
+          role="group"
+          aria-label="确认删除账号记录"
+          className="mt-2 rounded-md border border-red-300 bg-red-50 p-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200"
+        >
+          <p>
+            确认删除「{account.display_name}」的记录？只清除 AgentBoard 保存的元数据与本机 DPAPI 快照，不会退出桌面客户端里的登录。
+          </p>
+          {account.is_current === true && (
+            <p data-testid={`accounts-delete-current-warning-${account.id}`} className="mt-1 font-medium">
+              该账号是当前客户端登录账号；删除记录不会退出客户端登录
+            </p>
+          )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid={`accounts-delete-confirm-yes-${account.id}`}
+              className={BUTTON_DANGER}
+              disabled={deleteMutation.isPending}
+              onClick={() => deleteMutation.mutate()}
+            >
+              {deleteMutation.isPending ? '删除中…' : '确认删除'}
+            </button>
+            <button type="button" className={BUTTON_SECONDARY} onClick={() => setDeleteConfirming(false)}>取消</button>
+            <span className="text-[11px] text-red-700 dark:text-red-300">3 秒内未确认会自动收回</span>
+          </div>
+        </div>
+      )}
+
+      {deleteErrorCode !== null && (
+        <p role="alert" data-testid={`accounts-delete-error-${account.id}`} title={deleteErrorCode} className="mt-1 text-xs text-red-600 dark:text-red-400">
+          {DELETE_FAIL_LABEL[deleteErrorCode] ?? reasonLabel(deleteErrorCode)}
+        </p>
+      )}
 
       {confirming && (
         <div data-testid="accounts-switch-confirm" role="group" aria-label="确认切换账号" className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">

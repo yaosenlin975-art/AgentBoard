@@ -296,6 +296,7 @@ function PlatformRow({
                   key={account.id}
                   account={account as AccountView}
                   capability={capability}
+                  muted={!capabilityKnown}
                   onCheckin={checkinEnabled ? () => checkin.mutate([account.id]) : undefined}
                 />
               ))}
