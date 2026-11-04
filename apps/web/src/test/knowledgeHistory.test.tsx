@@ -152,3 +152,16 @@ describe('KB-HIST-UI 历史抽屉', () => {
     expect(alert).toHaveTextContent('他人已更新，请刷新后再试');
   });
 });
+
+describe('知识页创建/最后修改时间展示', () => {
+  it('头部元信息显示两个时间，格式与 revision 历史一致（toLocaleString）', async () => {
+    const created = 1_700_000_000_000;
+    const updated = 1_700_000_006_000;
+    server.use(
+      http.get('/api/knowledge/pages/p1', () => HttpResponse.json({ ...page(3, '当前标题', '当前正文'), created_at: created, updated_at: updated })),
+    );
+    mount();
+    expect(await screen.findByTestId('knowledge-page-created-at')).toHaveTextContent(`创建时间 ${new Date(created).toLocaleString()}`);
+    expect(screen.getByTestId('knowledge-page-updated-at')).toHaveTextContent(`最后修改时间 ${new Date(updated).toLocaleString()}`);
+  });
+});

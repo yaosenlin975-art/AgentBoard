@@ -118,6 +118,11 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
         })()}
         {p.expires_at !== null && p.expires_at !== undefined && <Badge tone={isExpired ? 'red' : 'neutral'}>{isExpired ? '已过期 ' : '有效期 '}{new Date(p.expires_at).toLocaleDateString()}</Badge>}
       </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+        <span data-testid="knowledge-page-created-at">创建时间 {new Date(p.created_at).toLocaleString()}</span>
+        <span aria-hidden="true">·</span>
+        <span data-testid="knowledge-page-updated-at">最后修改时间 {new Date(p.updated_at).toLocaleString()}</span>
+      </div>
     </header>
 
     <div className="mt-3 max-w-[70ch] text-sm text-neutral-800 dark:text-neutral-200">
