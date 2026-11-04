@@ -19,7 +19,7 @@ node apps/server/dist/index.js
 打开 http://127.0.0.1:8787 （web 已随 server 静态托管；未构建 web 时仅 API 可用）。
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
-- 数据库默认 `%APPDATA%\AgentBoard\agentboard.db`，配置 `config.json` 同目录。生效顺序：`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项 / `PATCH /api/settings` 的 `db_path`）→ 默认路径；启动首行日志会打印实际生效路径与 `db_source=<env|settings|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
+- 中心库默认 `%APPDATA%\AgentBoard\agentboard.db`；工作区库见 `.agentboard/`（STORE 线落地后才会存在）。配置 `config.json` 同目录。生效顺序：`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项 / `PATCH /api/settings` 的 `db_path`）→ 默认路径；启动首行日志会打印实际生效路径与 `db_source=<env|settings|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
 - 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
 
@@ -128,10 +128,11 @@ kb fail <issue-id> --reason "..."  # 失败 → 待规划
 
 ## Skill（agent 自助领任务）
 
-把 `skills/agentboard/` 目录复制或链接到 agent 生态的 skills 目录（如 `~/.agents/skills/agentboard`），或随工作空间提供。SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。
+把 `skills/using-agentboard/` 目录复制或链接到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供。SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。
 
 ## 文档
 
+- [Docs/INDEX.md](Docs/INDEX.md)：唯一入口（现行文档 / 设计 / 调研 / 决策 / 证据 / 知识页索引）
 - `Docs/设计文档.md`：需求、方案、接口、UI 布局
 - `Docs/api.md`：REST + WebSocket 完整接口参考（端点、请求/响应字段、错误码、WS 事件、枚举；启动与 env 见上文「启动」节）
 - `Docs/DESIGNS.md`：落地架构与数据流
