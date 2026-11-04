@@ -24,3 +24,5 @@ skills/**/SKILL.md.bak-*
 # UNSLOP 前后对比截图（约 2MB，不入库；AUDIT.md 入库）
 unslop/original/
 unslop/after/
+# Trae HTML 分享包的解包残留（外部工具产物，可随时再生）
+.trae-html-share-packages/
