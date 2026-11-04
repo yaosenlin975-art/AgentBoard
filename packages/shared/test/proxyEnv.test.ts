@@ -10,8 +10,11 @@ describe('proxyEnv（PROXY-ENV）', () => {
   });
 
   it('resolveProxyEnv：大/小写变量都认，host:port 脱敏且不含 userinfo', () => {
-    expect(resolveProxyEnv({ HTTPS_PROXY: 'http://u:p@10.0.0.1:8080' })).toMatchObject({ enabled: true, proxy_var: 'HTTPS_PROXY', proxy_host: '10.0.0.1:8080' });
-    expect(resolveProxyEnv({ http_proxy: '10.0.0.1:1080' })).toMatchObject({ enabled: true, proxy_var: 'HTTP_PROXY', proxy_host: '10.0.0.1:1080' });
+    // enabled 要求 NODE_USE_ENV_PROXY=1（Node 缺省不读 HTTPS_PROXY）
+    expect(resolveProxyEnv({ HTTPS_PROXY: 'http://u:p@10.0.0.1:8080', NODE_USE_ENV_PROXY: '1' })).toMatchObject({ enabled: true, proxy_var: 'HTTPS_PROXY', proxy_host: '10.0.0.1:8080' });
+    expect(resolveProxyEnv({ http_proxy: '10.0.0.1:1080', NODE_USE_ENV_PROXY: '1' })).toMatchObject({ enabled: true, proxy_var: 'HTTP_PROXY', proxy_host: '10.0.0.1:1080' });
+    // 有代理但没有开关 → 不会真的走代理
+    expect(resolveProxyEnv({ HTTPS_PROXY: 'http://10.0.0.1:8080' })).toMatchObject({ enabled: false, node_env_proxy: null });
     expect(JSON.stringify(resolveProxyEnv({ HTTPS_PROXY: 'http://u:p@10.0.0.1:8080' }))).not.toContain('u:p@');
   });
 

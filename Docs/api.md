@@ -73,6 +73,16 @@
 | `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
+﻿### 后端改动上线口径（源码新 ≠ 运行新）
+
+后端改动必须 **重建 dist + 重启服务**，否则端口上跑的仍是旧代码（RESTART-PROXY 的起因就是 8787 上跑旧 dist，`/api/version` 连 `instance_id` / `proxy_env` 都没有）。
+
+| 步骤 | 命令 |
+| --- | --- |
+| 构建 | `pnpm --filter @agentboard/server build`（或 `pnpm -r build`） |
+| 重启 | `pnpm server:ensure`（未监听会拉起；已监听会复用，**不会**换代码）→ 需要换代时用 `POST /api/system/restart` |
+
+可复核判据（三项都变才算真的换上新代码）：`GET /api/version` 的 `instance_id` 变化、`started_at` 变化、`pid` 变化；字段本身的出现/取值（如 `proxy_env.enabled`）用来确认这版行为已生效。
 ## 5aa. 后台服务单例（SERVER-SINGLETON）
 
 `pnpm server:ensure` 原来是「probe → spawn」，没有锁：两个 ensure 同时跑会都 spawn，其中一个子进程 `EADDRINUSE` 崩掉，脚本只看到健康超时。
@@ -98,7 +108,9 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | 关闭 | 宿主设 `NODE_USE_ENV_PROXY=0` → **不覆盖**（尊重显式关闭） |
 | 日志 | `[server] proxy_env=on host=127.0.0.1:7897（源 HTTPS_PROXY，已注入 NODE_USE_ENV_PROXY=1）`；只打 host:port，**丢 userinfo、不打印凭据** |
 | `GET /api/version` | 新增只读 `proxy_env: { enabled, proxy_var, proxy_host, node_env_proxy }`；`proxy_host` 已脱敏 |
-| 手工启动 | 直接 `node apps/server/dist/index.js` 起的实例**不会**带该变量（启动器才注入）；服务端下载路径有一次兜底（`ensureProxyEnv`），但其它出站请求仍需手工导出 `NODE_USE_ENV_PROXY=1` |
+﻿﻿| 两条拉起路径 | `pnpm server:ensure`（启动器）与 `POST /api/system/restart`（服务内 `performRestart` → `spawnDetached` → `restartChildEnv`）**共用 `@agentboard/shared` 的 `ensureProxyEnv`**：宿主有代理变量且未显式设 `NODE_USE_ENV_PROXY=0` → 子进程 env 注入 `=1`。RESTART-PROXY（`8d0bb480`）之前只有启动器注入，任何一次 restart 都会丢代理 |
+| `enabled` 语义 | `proxy_env.enabled` 只有 `NODE_USE_ENV_PROXY=1` 且存在代理变量时才为 true（Node 缺省/为 0 都直连，实测三态）；每次请求实时解析，**不是启动快照** |
+| 手工启动 | 直接 `node apps/server/dist/index.js` 起的实例**不会**带该变量（启动器才注入；此时 `/api/version.proxy_env.enabled=false`）；该实例**经 `POST /api/system/restart` 换代后**，新进程会被注入 `=1`（RESTART-PROXY）。其它出站请求（额度等）同样受益于这次注入 |
 | 唯一实现 | `packages/shared/src/proxyEnv.ts`（`resolveProxyEnv` / `ensureProxyEnv` / `maskProxyHost`）：启动器与服务端共用，不各写一份 |
 
 ## 5b. 数据库位置（DB-1，`config.ts` + `GET/PATCH /api/settings`）

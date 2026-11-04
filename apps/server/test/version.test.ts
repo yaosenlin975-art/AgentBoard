@@ -97,3 +97,24 @@ describe('SERVER-SINGLETON 实例标识', () => {
     expect(res.body).toMatchObject({ instance_id: 'inst-test', db_path: 'D:/tmp/agentboard.db', started_at: 1_700_000_000_000 });
   });
 });
+
+describe('RESTART-PROXY：proxy_env 反映当前进程实际环境', () => {
+  it('同一进程内改环境变量后，两次请求的 proxy_env 不同（不是启动快照缓存）', async () => {
+    const saved = { HTTPS_PROXY: process.env.HTTPS_PROXY, HTTP_PROXY: process.env.HTTP_PROXY, NODE_USE_ENV_PROXY: process.env.NODE_USE_ENV_PROXY };
+    try {
+      delete process.env.HTTP_PROXY;
+      process.env.HTTPS_PROXY = 'http://127.0.0.1:7897';
+      process.env.NODE_USE_ENV_PROXY = '1';
+      const on = await request(app).get('/api/version');
+      expect(on.body.proxy_env).toMatchObject({ enabled: true, proxy_host: '127.0.0.1:7897' });
+
+      process.env.NODE_USE_ENV_PROXY = '0';
+      const off = await request(app).get('/api/version');
+      expect(off.body.proxy_env).toMatchObject({ enabled: false, node_env_proxy: '0' });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+});

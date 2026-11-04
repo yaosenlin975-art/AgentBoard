@@ -51,7 +51,9 @@ export function resolveProxyEnv(env: ProxyEnvSource = processProxyEnv()): ProxyE
   const hit = candidates.find(([, value]) => value !== undefined && value.trim() !== '');
   const raw = env.NODE_USE_ENV_PROXY;
   return {
-    enabled: hit !== undefined && raw !== '0',
+    // Node 24 只有 `NODE_USE_ENV_PROXY=1` 才会按环境代理出站（缺省/0 都直连，已实测三态）；
+    // 因此 `enabled` 必须要求开关为 1，不能只看「有没有代理变量」。
+    enabled: hit !== undefined && raw === '1',
     proxy_var: hit?.[0] ?? null,
     proxy_host: maskProxyHost(hit?.[1]),
     node_env_proxy: raw === undefined || raw === '' ? null : raw,

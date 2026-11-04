@@ -23,6 +23,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
 import { connect } from 'node:net';
 import { appendServerLog, resolveServerLogPath } from '../services/serverLog.js';
+import { ensureProxyEnv } from '@agentboard/shared';
 
 /** 端口占用判定：free=没人监听 / self=本进程 / foreign=别的进程（含另一个看板实例） */
 export interface PortProbe {
@@ -71,6 +72,22 @@ const defaultEntry = (): { command: string; args: string[]; exists: boolean } =>
   return { command: process.execPath, args: process.argv.slice(1), exists: entry !== '' && existsSync(entry) };
 };
 
+/**
+ * RESTART-PROXY：重启子进程的环境。
+ * 启动器（`pnpm server:ensure`）与服务内重启**共用 `@agentboard/shared` 的 `ensureProxyEnv`**，
+ * 不再两条路径各写一套代理判定。
+ * 规则：宿主有 HTTPS_PROXY/HTTP_PROXY 且 `NODE_USE_ENV_PROXY` 未显式设 0 → 注入 1；显式 0 尊重用户。
+ */
+export function restartChildEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+  const info = ensureProxyEnv(baseEnv);
+  const env: NodeJS.ProcessEnv = { ...baseEnv, ...extraEnv };
+  if (info.node_env_proxy !== null) env.NODE_USE_ENV_PROXY = info.node_env_proxy;
+  return env;
+}
+
 /** 真实 spawn：detached + stdio 重定向到固定日志（不再 ignore）+ unref；等 'spawn' 事件确认进程已创建 */
 export function spawnDetached(command: string, args: string[], logPath: string = resolveServerLogPath(), extraEnv: Record<string, string> = {}): Promise<{ pid: number | null }> {
   return new Promise((resolve, reject) => {
@@ -83,7 +100,8 @@ export function spawnDetached(command: string, args: string[], logPath: string =
     const child = spawn(command, args, {
       detached: true,
       stdio: fd === null ? 'ignore' : ['ignore', fd, fd],
-      env: { ...process.env, ...extraEnv },
+      // RESTART-PROXY：代理注入与启动器同一份语义（ensureProxyEnv）
+      env: restartChildEnv(process.env, extraEnv),
       cwd: process.cwd(),
       windowsHide: true,
     });

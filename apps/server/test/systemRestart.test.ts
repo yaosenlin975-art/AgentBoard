@@ -14,7 +14,7 @@ import type { Request, Response } from 'express';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
-import { createRestartHandler, isLoopbackAddress, type RestartDeps } from '../src/api/systemRoutes.js';
+import { createRestartHandler, isLoopbackAddress, restartChildEnv, type RestartDeps } from '../src/api/systemRoutes.js';
 
 const fakeReq = (ip: string | undefined) => ({ ip } as unknown as Request);
 
@@ -292,5 +292,41 @@ describe('system restart endpoint (SYSTEM-RESTART)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ name: 'agentboard-server' });
     expect(typeof res.body.pid).toBe('number');
+  });
+});
+
+/**
+ * RESTART-PROXY：服务内重启派生子进程时的环境（与启动器共用 shared 的 ensureProxyEnv）。
+ * 背景：注入原本只写在 `scripts/server-detached.mjs`，任何一次 `POST /api/system/restart` 都会把代理丢掉，
+ * 重启后出站全直连（语音下载、额度接口都受影响）。
+ */
+describe('RESTART-PROXY 重启子进程环境', () => {
+  it('宿主有 HTTPS_PROXY 且未设置开关 → 子进程 env 注入 NODE_USE_ENV_PROXY=1', () => {
+    const env = restartChildEnv({ HTTPS_PROXY: 'http://127.0.0.1:7897', PATH: '/usr/bin' } as NodeJS.ProcessEnv);
+    expect(env.NODE_USE_ENV_PROXY).toBe('1');
+    expect(env.HTTPS_PROXY).toBe('http://127.0.0.1:7897');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('宿主显式 NODE_USE_ENV_PROXY=0 → 不覆盖（尊重用户主动关闭）', () => {
+    const env = restartChildEnv({ HTTPS_PROXY: 'http://127.0.0.1:7897', NODE_USE_ENV_PROXY: '0' } as NodeJS.ProcessEnv);
+    expect(env.NODE_USE_ENV_PROXY).toBe('0');
+  });
+
+  it('宿主无代理变量 → 不注入（不误开全局代理行为）', () => {
+    const env = restartChildEnv({ PATH: '/usr/bin' } as NodeJS.ProcessEnv);
+    expect(env.NODE_USE_ENV_PROXY).toBeUndefined();
+  });
+
+  it('extraEnv 优先（AGENTBOARD_RESTART_FROM 与代理注入互不覆盖）', () => {
+    const env = restartChildEnv({ HTTPS_PROXY: 'http://127.0.0.1:7897' } as NodeJS.ProcessEnv, { AGENTBOARD_RESTART_FROM: '4242' });
+    expect(env.AGENTBOARD_RESTART_FROM).toBe('4242');
+    expect(env.NODE_USE_ENV_PROXY).toBe('1');
+  });
+
+  it('不修改调用方传入的 baseEnv（避免污染当前进程环境）', () => {
+    const base = { HTTPS_PROXY: 'http://127.0.0.1:7897' } as NodeJS.ProcessEnv;
+    restartChildEnv(base);
+    expect(base.NODE_USE_ENV_PROXY).toBe('1'); // ensureProxyEnv 就地注入是既有语义
   });
 });
