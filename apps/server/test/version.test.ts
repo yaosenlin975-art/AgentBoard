@@ -35,7 +35,9 @@ describe('版本端点与响应头', () => {
     // PROXY-ENV：proxy_env 是只读脱敏快照（按当前进程环境计算，测试机上是否有代理都可断言形状）
     expect(res.body).toMatchObject({ name: 'agentboard-server', version: serverPkg.version, pid: process.pid });
     expect(typeof res.body.proxy_env.enabled).toBe('boolean');
-    expect(Object.keys(res.body).sort()).toEqual(['db_path', 'instance_id', 'name', 'pid', 'proxy_env', 'started_at', 'version']);
+    // STORE-1（M1）：新增 db_scope（本实例服务的库范围）
+    expect(Object.keys(res.body).sort()).toEqual(['db_path', 'db_scope', 'instance_id', 'name', 'pid', 'proxy_env', 'started_at', 'version']);
+    expect(res.body.db_scope).toMatchObject({ localized_open: [] });
     // SERVER-SINGLETON：未注入时缺省为 null（测试直连 createApp，不经 main()）
     expect(res.body.instance_id).toBeNull();
     expect(res.body.started_at).toBeNull();

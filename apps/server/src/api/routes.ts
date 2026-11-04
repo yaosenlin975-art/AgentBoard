@@ -63,6 +63,7 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs } from '../db/resolver.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
@@ -118,6 +119,8 @@ export interface RouterDeps {
   draftRunner?: DraftRunner;
   /** SMART-CREATE：草稿生成超时（ms，仅测试注入；生产 120s） */
   draftTimeoutMs?: number;
+  /** STORE-1：按工作区选库的解析层（缺省自动装配：中心库=当前 db、instanceId 取 instance、port 取设置） */
+  workspaceDbResolver?: boolean;
   /** SERVER-SINGLETON：实例标识（`/api/version` 输出；测试可注入） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
   /** DB-2B：迁移编排的固定状态目录（缺省 configDir()；测试注入临时目录） */
@@ -355,6 +358,23 @@ export function createRouter(deps: RouterDeps): Router {
   const { db, getAdapter, broadcast, attachments } = deps;
   const router = Router();
 
+  // STORE-1（M1）：解析层装配（中心库=当前 db；每工作区锁用与 server.lock 同一实现）
+  const workspaceResolverDeps = {
+    centerDb: db,
+    instanceId: deps.instance?.instanceId ?? 'inst-unset',
+    port: readSettings().port,
+  };
+  /** 读中心库 workspace.db_mode（缺列为老库 → center，行为与现状一致） */
+  const workspaceRowMode = (workspaceId: string): 'center' | 'localizing' | 'localized' | 'failed' => {
+    try {
+      const row = db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(workspaceId) as { db_mode?: string } | undefined;
+      const raw = row?.db_mode ?? 'center';
+      return (WORKSPACE_DB_MODES as readonly string[]).includes(raw) ? (raw as 'center' | 'localizing' | 'localized' | 'failed') : 'center';
+    } catch {
+      return 'center';
+    }
+  };
+
   // ---- DB-2B：迁移编排上下文 ----
   // 状态目录固定（configDir），不随库路径漂移：新进程靠它读到旧进程写的待自检意图。
   const migrationStateDir = deps.dbMigrationStateDir ?? configDir();
@@ -413,6 +433,8 @@ export function createRouter(deps: RouterDeps): Router {
       db_path: deps.instance?.dbPath ?? currentDbPath,
       started_at: deps.instance?.startedAt ?? null,
       proxy_env: { enabled: proxy.enabled, proxy_var: proxy.proxy_var, proxy_host: proxy.proxy_host, node_env_proxy: proxy.node_env_proxy },
+      // STORE-1（M1）：排障要能看出「本实例服务哪些库」——中心库 + 当前已打开的工作区库
+      db_scope: { center_db_path: deps.instance?.dbPath ?? currentDbPath, localized_open: listOpenWorkspaceDbs() },
     });
   });
 
@@ -474,13 +496,31 @@ export function createRouter(deps: RouterDeps): Router {
       const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies', '/close', '/reopen'].includes(req.path)));
       if (!wrappedMutation) requireIssueInWorkspace(deps.db, String(req.params.id), raw);
     }
+    // STORE-1（M1）写入门禁：中间态/缺失/id 不匹配/被锁 → 409 或 500，读路径不受影响
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const issue = getIssue(deps.db, String(req.params.id));
+      if (issue !== null) assertWorkspaceDbWritable(workspaceResolverDeps, { id: issue.workspace_id, path: getWorkspace(deps.db, issue.workspace_id)?.path ?? '', dbMode: workspaceRowMode(issue.workspace_id) });
+    }
     next();
   });
 
   // ---- workspaces ----
+  /**
+   * STORE-1（M1）：工作区行带上「服务端判定结果」——`db_mode`（中心期望状态）、`db_path`（判定后实际会用的库）、
+   * `db_target`/`db_reason`（排障用）。判定输入只有「中心行 + 文件 + 库内 meta」，**不接受客户端传参决定走库**。
+   */
+  const withWorkspaceDb = <T extends { id: string; path: string }>(row: T) => {
+    const dbModeRaw = (row as T & { db_mode?: string | null }).db_mode ?? 'center';
+    const centerDbMode = (WORKSPACE_DB_MODES as readonly string[]).includes(dbModeRaw) ? (dbModeRaw as (typeof WORKSPACE_DB_MODES)[number]) : 'center';
+    const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name });
+    return { ...row, db_mode: centerDbMode, db_path: decision.dbPath, db_target: decision.target, db_reason: decision.reason };
+  };
   router.get('/workspaces', (req, res) => {
-    if (req.query.limit !== undefined || req.query.offset !== undefined) { const page = parseBody(pageQuerySchema, req.query); res.json(listWorkspacesPage(db, page.limit, page.offset)); }
-    else res.json(listWorkspaces(db));
+    if (req.query.limit !== undefined || req.query.offset !== undefined) {
+      const page = parseBody(pageQuerySchema, req.query);
+      const result = listWorkspacesPage(db, page.limit, page.offset);
+      res.json({ ...result, items: result.items.map(withWorkspaceDb) });
+    } else res.json(listWorkspaces(db).map(withWorkspaceDb));
   });
 
   /**
@@ -699,6 +739,10 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   router.post('/issues', (req, res) => {
+    // STORE-1（M1）：该工作区库不可写时不允许新建卡（与 /issues/:id 写操作同一门禁）
+    if (typeof req.body?.workspace_id === 'string') {
+      assertWorkspaceDbWritable(workspaceResolverDeps, { id: req.body.workspace_id, path: getWorkspace(deps.db, req.body.workspace_id)?.path ?? '', dbMode: workspaceRowMode(req.body.workspace_id) });
+    }
     const body = parseBody(createIssueSchema, req.body);
     const outcome = mutation(req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(db, body); });
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
