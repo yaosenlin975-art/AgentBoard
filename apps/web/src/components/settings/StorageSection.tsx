@@ -29,6 +29,9 @@ export function StorageSection() {
   const [confirming, setConfirming] = useState(false);
   const [migration, setMigration] = useState<StorageMigration | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // FOLDER-PICK：原生目录选择在途（端点有单例守卫，请求期间必须禁用按钮）
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef(false);
 
@@ -127,17 +130,41 @@ export function StorageSection() {
 
       {data && (
         <div className="mt-3 space-y-1.5">
-          <label className="block text-xs text-ink-2">
-            新的数据库位置
+          <div className="text-xs text-ink-2">
+            <label htmlFor="settings-storage-target">新的数据库位置</label>
+            {/* FOLDER-PICK：窄屏（375）下按钮换行到输入框下方，不与输入框重叠 */}
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <input
+              id="settings-storage-target"
               data-testid="settings-storage-target"
               value={target}
               onChange={(event) => setTarget(event.target.value)}
               disabled={envLocked || migrating}
               placeholder="D:\\AgentBoard\\agentboard.db"
-              className="mt-1 w-full rounded-md border border-hairline bg-surface-card px-2 py-1 text-xs text-ink outline-none focus:border-accent disabled:opacity-60"
+              className="min-w-0 flex-1 basis-48 rounded-md border border-hairline bg-surface-card px-2 py-1 text-xs text-ink outline-none focus:border-accent disabled:opacity-60"
             />
-          </label>
+            <button
+              type="button"
+              data-testid="settings-storage-pick"
+              disabled={envLocked || migrating || picking}
+              aria-busy={picking}
+              onClick={() => {
+                setPickError(null);
+                setPicking(true);
+                void storageContract.pickFolder()
+                  .then((picked) => { if (picked !== null) setTarget(picked); })
+                  .catch((error: unknown) => setPickError(error instanceof Error ? error.message : '选择文件夹失败'))
+                  .finally(() => setPicking(false));
+              }}
+              className="shrink-0 rounded-md border border-hairline px-2 py-1 text-xs text-ink disabled:opacity-40"
+            >
+              {picking ? '选择中…' : '选择…'}
+            </button>
+            </div>
+            {pickError !== null && (
+              <p role="alert" data-testid="settings-storage-pick-error" className="mt-1 text-xs text-red-600 dark:text-red-400">{pickError}</p>
+            )}
+          </div>
           {envLocked && (
             <p data-testid="settings-storage-env-lock" className="text-xs text-accent">
               数据库位置由环境变量 <span className="font-mono">AGENTBOARD_DB</span> 指定，无法在此修改（改环境变量后重启服务）。
