@@ -96,6 +96,8 @@ export interface PixiGraphCallbacks {
    * 由布局层写 fx/fy 并**持续 simulate**，其它节点才会被力牵动（与 Obsidian 行为对齐）。
    */
   onNodeDrag?: (id: string, position: { x: number; y: number }, phase: 'start' | 'move' | 'end') => void;
+  /** GRAPH-INIT-FAIL：WebGL 上下文丢失（驱动/资源上限/GPU 重置）时通知调用方重建一次 */
+  onContextLost?: () => void;
 }
 
 export type PixiGraphOptions = PixiGraphCallbacks;
@@ -281,6 +283,14 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
   canvas.style.width = '100%';
   canvas.style.height = '100%';
   host.appendChild(canvas);
+
+  // GRAPH-INIT-FAIL：上下文丢失（GPU 重置/驱动/资源上限）→ 交回调用方重建一次。
+  // 只通知、不在这里自我重建，避免与 React 侧的挂载/卸载竞态。
+  const onContextLost = (event: Event): void => {
+    event.preventDefault();
+    options.onContextLost?.();
+  };
+  canvas.addEventListener('webglcontextlost', onContextLost, false);
 
   // 三层容器（文档 A2）
   const background = new Graphics();
@@ -1161,8 +1171,25 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     host.removeEventListener('contextmenu', onContextMenu);
     host.removeEventListener('keydown', onKeyDown);
     host.removeEventListener('keyup', onKeyUp);
+    canvas.removeEventListener('webglcontextlost', onContextLost);
     nodeViews.clear();
     edgeViews.clear();
+    // GRAPH-INIT-FAIL：显式释放 WebGL 上下文。只 destroy 不释放时浏览器要等 GC，
+    // 反复进出知识库会累积到每页上下文上限（实测 10 次切换创建 25 个、仅 8 个 lost），
+    // 后续 createPixiGraph 就会失败 → render-failed。
+    // 两条路都试：PIXI 自带 forceContextLoss（版本差异可能没有）+ WEBGL_lose_context 扩展（标准做法）。
+    const renderer = app.renderer as unknown as { gl?: WebGLRenderingContext; forceContextLoss?: () => void };
+    try {
+      renderer.forceContextLoss?.();
+    } catch {
+      /* 已丢失/已销毁时个别实现会抛，忽略 */
+    }
+    try {
+      const gl = renderer.gl ?? (canvas.getContext('webgl2') as WebGL2RenderingContext | null) ?? (canvas.getContext('webgl') as WebGLRenderingContext | null);
+      gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      /* 上下文已丢失 */
+    }
     app.destroy(true, { children: true });
   }
 

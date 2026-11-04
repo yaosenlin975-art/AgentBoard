@@ -63,11 +63,37 @@ const LAYOUT_H = 480;
  */
 const STAGE_HEIGHT = 'clamp(360px, calc(100dvh - 320px), 900px)';
 
-/** WebGL 前置检测：拿不到 context 就不动态 import PIXI（jsdom 里必然为 null） */
+/** GRAPH-INIT-FAIL：四类失败原因分开（各自文案 + data-graph-fallback 取值） */
+type FallbackRenderer = 'no-webgl' | 'no-size' | 'import-failed' | 'create-failed';
+const FALLBACK_RENDERERS: readonly string[] = ['no-webgl', 'no-size', 'import-failed', 'create-failed'];
+const FALLBACK_TITLE: Record<FallbackRenderer, string> = {
+  'no-webgl': '当前环境不支持 WebGL，已切换为列表视图',
+  'no-size': '星图区域暂时没有尺寸，已先切换到列表视图（区域恢复后会自动重试）',
+  'import-failed': '星图渲染器加载失败，已切换到列表视图',
+  'create-failed': '星图渲染器初始化失败，已切换到列表视图',
+};
+
+/** WebGL 前置检测：拿不到 context 就不动态 import PIXI（jsdom 里必然为 null）。
+ *  GRAPH-INIT-FAIL：探测本身也会占用一个 WebGL 上下文 → 探完立即用 WEBGL_lose_context 释放，
+ *  且同一 document 只探一次（反复进出知识库不再累积探测上下文）。 */
+let webglProbeCache: { doc: Document; ok: boolean } | null = null;
 function hasWebgl(doc: Document): boolean {
+  if (webglProbeCache !== null && webglProbeCache.doc === doc) return webglProbeCache.ok;
   const probe = doc.createElement('canvas');
   const gl = probe.getContext('webgl2') ?? probe.getContext('webgl');
-  return gl !== null;
+  try {
+    (gl as WebGLRenderingContext | null)?.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch {
+    /* 忽略 */
+  }
+  const ok = gl !== null;
+  webglProbeCache = { doc, ok };
+  return ok;
+}
+
+/** 仅供测试：清掉探测缓存（同一 document 只探一次，单测里需要按用例切换 WebGL 可用性） */
+export function __resetWebglProbeCache(): void {
+  webglProbeCache = null;
 }
 
 /** 服务端星图接口（server 线排期在 WS-REORDER 之后）：未就绪时回落本地合成 */
@@ -89,8 +115,23 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   const [showIsolated, setShowIsolated] = useState(true);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<PixiGraphHandle | null>(null);
-  /** PIXI 挂载状态：pending 探测中 / webgl 已挂载 / no-webgl 无 WebGL / failed 创建失败 */
-  const [renderer, setRenderer] = useState<'pending' | 'webgl' | 'no-webgl' | 'failed'>('pending');
+  /**
+   * PIXI 挂载状态（GRAPH-INIT-FAIL 五态）：
+   * pending 探测中 / webgl 已挂载 / no-webgl 环境不支持 / no-size 容器暂无尺寸 / import-failed 模块加载失败 / create-failed 创建失败
+   */
+  const [renderer, setRenderer] = useState<'pending' | 'webgl' | 'no-webgl' | 'no-size' | 'import-failed' | 'create-failed'>('pending');
+  /** 失败原因（可诊断用，只进 DOM/console，不外发） */
+  const [graphError, setGraphError] = useState<{ code: string; message: string; stackTop: string | null } | null>(null);
+  /** 尝试次数：自动 1 次 + 手动最多 2 次（合计上限 3） */
+  const [attempts, setAttempts] = useState(0);
+  /** 手动重试触发器：变化即重跑挂载 effect */
+  const [retryToken, setRetryToken] = useState(0);
+
+  const describeError = (code: string, error: unknown): { code: string; message: string; stackTop: string | null } => {
+    const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '未知错误';
+    const stack = error instanceof Error && typeof error.stack === 'string' ? error.stack.split('\n').slice(0, 2).join(' | ') : null;
+    return { code, message: message.slice(0, 300), stackTop: stack === null ? null : stack.slice(0, 300) };
+  };
 
   const remote = useQuery({
     queryKey: ['knowledge-graph', workspaceId, scope],
@@ -308,56 +349,144 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
     renderDataRef.current = renderData;
   }, [pick, shown, renderData]);
 
-  // 挂载：WebGL 前置检测 → 非 null 才动态 import PIXI（jsdom 无 WebGL，绝不静态引入）
+  // 挂载：WebGL 前置检测 → 尺寸守卫 → 动态 import PIXI（jsdom 无 WebGL，绝不静态引入）
+  // GRAPH-INIT-FAIL：① 先等容器非零尺寸（≤500ms，超时归 no-size，尺寸恢复后自动重试）
+  //                   ② 失败分类（import-failed / create-failed）+ 记录真实原因
+  //                   ③ 自动重试 1 次（≥300ms，先 destroy 旧 handle），仍失败落兜底并给手动重试
   useEffect(() => {
     if (!showStage) return;
     const host = stageRef.current;
     if (host === null) return;
     if (!hasWebgl(document)) {
       setRenderer('no-webgl');
+      setGraphError(null);
       return;
     }
     let cancelled = false;
+    let sizeWaitFrame = 0;
+    let sizeWaitTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let observer: ResizeObserver | null = null;
     setRenderer('pending');
-    void import('./pixiGraph')
-      .then((module) => {
-        if (cancelled || stageRef.current === null) return;
-        try {
-          handleRef.current = module.createPixiGraph(host, {
-            onSelect: (id) => {
-              const node = shownRef.current?.nodes.find((item) => item.id === id);
-              if (node !== undefined) pickRef.current(node);
-            },
-            onHover: setHovered,
-            onScaleChange: setScale,
-            onContextMenu: (target) => setMenu({ id: target.id, x: target.clientX, y: target.clientY }),
-            // 拖拽期间持续 simulate：其它星被力牵动（GRAPH-WEIGHT-DRAG）
-            onNodeDrag: (id, position, phase) => {
-              const client = layoutClientRef.current;
-              if (client === null) return;
-              if (phase === 'start') client.dragStart(id, position);
-              else if (phase === 'move') client.dragMove(id, position);
-              else client.dragEnd(id);
-            },
-          });
-          // CDP 验收钩子（与 snapshot() 同一入口，只读）
-          (host as unknown as { __kbPixiGraph?: PixiGraphHandle }).__kbPixiGraph = handleRef.current;
-          const initial = renderDataRef.current;
-          if (initial !== null) handleRef.current.update(initial);
-          setRenderer('webgl');
-        } catch {
-          setRenderer('failed');
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setRenderer('failed');
-      });
-    return () => {
-      cancelled = true;
+
+    const cleanupHandle = (): void => {
       handleRef.current?.destroy();
       handleRef.current = null;
+      const stage = stageRef.current as (HTMLDivElement & { __kbPixiGraph?: PixiGraphHandle }) | null;
+      if (stage !== null && stage !== undefined) delete stage.__kbPixiGraph;
     };
-  }, [showStage]);
+
+    const fail = (code: 'import-failed' | 'create-failed', error: unknown): void => {
+      const info = describeError(code, error);
+      setGraphError(info);
+      console.error('[graph] init failed', info);
+      setRenderer(code);
+      // 自动重试一次：仅在还没用掉自动重试额度时
+      setAttempts((used) => {
+        if (used >= 1) return used;
+        retryTimer = setTimeout(() => {
+          if (cancelled) return;
+          cleanupHandle();
+          setRetryToken((token) => token + 1);
+        }, 320);
+        return used + 1;
+      });
+    };
+
+    const start = (): void => {
+      void import('./pixiGraph')
+        .then((module) => {
+          if (cancelled || stageRef.current === null) return;
+          try {
+            cleanupHandle();
+            handleRef.current = module.createPixiGraph(host, {
+              onSelect: (id) => {
+                const node = shownRef.current?.nodes.find((item) => item.id === id);
+                if (node !== undefined) pickRef.current(node);
+              },
+              onHover: setHovered,
+              onScaleChange: setScale,
+              onContextMenu: (target) => setMenu({ id: target.id, x: target.clientX, y: target.clientY }),
+              // 拖拽期间持续 simulate：其它星被力牵动（GRAPH-WEIGHT-DRAG）
+              onNodeDrag: (id, position, phase) => {
+                const client = layoutClientRef.current;
+                if (client === null) return;
+                if (phase === 'start') client.dragStart(id, position);
+                else if (phase === 'move') client.dragMove(id, position);
+                else client.dragEnd(id);
+              },
+              // 上下文丢失（GPU 重置/资源上限）：销毁后重建一次
+              onContextLost: () => {
+                if (cancelled) return;
+                console.warn('[graph] webgl context lost, rebuilding once');
+                cleanupHandle();
+                setRetryToken((token) => token + 1);
+              },
+            });
+            // CDP 验收钩子（与 snapshot() 同一入口，只读）
+            (host as unknown as { __kbPixiGraph?: PixiGraphHandle }).__kbPixiGraph = handleRef.current;
+            const initial = renderDataRef.current;
+            if (initial !== null) handleRef.current.update(initial);
+            setGraphError(null);
+            setRenderer('webgl');
+          } catch (error) {
+            fail('create-failed', error);
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) fail('import-failed', error);
+        });
+    };
+
+    // 尺寸守卫：宽高都 ≥1 才初始化；≤500ms 内等不到 → no-size（并监听尺寸，恢复后自动重试一次）
+    const sizeOk = (): boolean => host.clientWidth >= 1 && host.clientHeight >= 1;
+    if (sizeOk()) {
+      start();
+    } else {
+      const deadline = performance.now() + 500;
+      const waitSize = (): void => {
+        if (cancelled) return;
+        if (sizeOk()) {
+          if (sizeWaitTimer !== null) clearTimeout(sizeWaitTimer);
+          setGraphError(null);
+          start();
+          return;
+        }
+        if (performance.now() >= deadline) {
+          setRenderer('no-size');
+          setGraphError({ code: 'no-size', message: '容器宽高为 0，暂不初始化星图', stackTop: null });
+          const retryWhenSized = (): void => {
+            if (cancelled) return;
+            if (!sizeOk()) return;
+            observer?.disconnect();
+            observer = null;
+            window.removeEventListener('resize', retryWhenSized);
+            setRenderer('pending');
+            start();
+          };
+          if (typeof ResizeObserver === 'function') {
+            observer = new ResizeObserver(retryWhenSized);
+            observer.observe(host);
+          }
+          // 没有 RO 的环境（老浏览器/jsdom）与整窗变化也兜一手
+          window.addEventListener('resize', retryWhenSized);
+          return;
+        }
+        sizeWaitFrame = requestAnimationFrame(waitSize);
+      };
+      sizeWaitFrame = requestAnimationFrame(waitSize);
+      sizeWaitTimer = setTimeout(() => { if (!cancelled && !sizeOk()) { /* 由 waitSize 收口 */ } }, 520);
+    }
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(sizeWaitFrame);
+      if (sizeWaitTimer !== null) clearTimeout(sizeWaitTimer);
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      observer?.disconnect();
+      cleanupHandle();
+    };
+  }, [showStage, retryToken]);
 
   // 右键菜单：点空白或 Escape 关闭
   useEffect(() => {
@@ -631,7 +760,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             tabIndex={0}
             aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
             className={`w-full max-w-full touch-none outline-none ${
-              renderer === 'no-webgl' || renderer === 'failed' ? 'hidden' : ''
+              FALLBACK_RENDERERS.includes(renderer) ? 'hidden' : ''
             }`}
             // CURSOR-WHITE/CURSOR-REUSE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
             // 复用 lib/cursor 的双色光标（白填充 + 深描边）。悬停到节点时保持 pointer 语义不变。
@@ -716,15 +845,38 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
             </div>
           )}
 
-          {(renderer === 'no-webgl' || renderer === 'failed') && (
+          {FALLBACK_RENDERERS.includes(renderer) && (
             <div
-              data-graph-fallback={renderer === 'no-webgl' ? 'no-webgl' : 'render-failed'}
+              data-graph-fallback={renderer}
+              data-graph-error={graphError === null ? '' : `${graphError.code}: ${graphError.message}`}
               className="overflow-auto px-3 py-3"
               style={{ maxHeight: STAGE_HEIGHT }}
             >
               <p className="text-sm font-medium text-ink">
-                {renderer === 'no-webgl' ? '当前环境不支持 WebGL，已切换为列表视图' : '星图渲染器初始化失败，已切换为列表视图'}
+                {FALLBACK_TITLE[renderer as FallbackRenderer]}
               </p>
+              {graphError !== null && (
+                <p data-testid="graph-error-detail" className="mt-1 text-xs text-ink-3">
+                  原因（{graphError.code}）：{graphError.message}
+                </p>
+              )}
+              {(renderer === 'import-failed' || renderer === 'create-failed') && (
+                <button
+                  type="button"
+                  data-testid="graph-retry"
+                  disabled={attempts >= 2}
+                  title={attempts >= 2 ? '重试次数已达上限（3 次）' : '重新初始化星图渲染器'}
+                  onClick={() => {
+                    if (attempts >= 2) return;
+                    setAttempts((used) => used + 1);
+                    setRenderer('pending');
+                    setRetryToken((token) => token + 1);
+                  }}
+                  className="mt-2 rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs text-ink hover:bg-surface-raised disabled:opacity-40"
+                >
+                  重试（{attempts}/2）
+                </button>
+              )}
               <ul data-testid="graph-fallback-list" className="mt-2 space-y-1 text-sm">
                 {shown.nodes.map((node) => (
                   <li key={node.id}>

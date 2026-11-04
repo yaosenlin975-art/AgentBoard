@@ -52,7 +52,7 @@ vi.mock('../components/knowledge/pixiGraph', () => ({
   },
 }));
 
-const { KnowledgeGraph } = await import('../components/knowledge/KnowledgeGraph');
+const { KnowledgeGraph, __resetWebglProbeCache } = await import('../components/knowledge/KnowledgeGraph');
 
 const node = (id: string, title: string, degree = 1): GraphNode => ({
   id,
@@ -98,6 +98,12 @@ function mountGraph(onSelect = vi.fn()) {
 describe('星图 WebGL 前置检测与降级（KB-GRAPH-P1）', () => {
   beforeEach(() => {
     mounts.length = 0;
+    // WebGL 探测按 document 缓存（GRAPH-INIT-FAIL），单测要按用例切换可用性 → 先清缓存
+    __resetWebglProbeCache();
+    // GRAPH-INIT-FAIL：新增尺寸守卫（宽高 ≥1 才初始化），jsdom 的 clientWidth/Height 恒为 0，
+    // 这里把舞台容器伪装成有尺寸（真实尺寸由真机 CDP 覆盖）。
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 900 });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 520 });
   });
 
   it('拿不到 WebGL context ⇒ 不 import PIXI，降级列表带 data-graph-fallback="no-webgl"', async () => {
