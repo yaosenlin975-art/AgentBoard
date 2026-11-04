@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { KnowledgePage, KnowledgeRevision } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -82,6 +82,16 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   });
   const bodyOf = (payload: { body_md?: string; body_snapshot?: string } | undefined): string =>
     payload?.body_md ?? payload?.body_snapshot ?? '';
+  /**
+   * KB-HIST-PREVIEW：列表瘦身后不再带正文，旧「点行 → 只读快照」恒空。
+   * 修法选「复用单条端点」（而非并入 diff 展开）：预览是独立的只读能力（只看内容、不比对），
+   * 并入 diff 会让纯预览也走 diff 逻辑；复用 `/revisions/:rev` 零新契约、列表继续瘦身。
+   */
+  const previewBody = useQuery({
+    queryKey: ['knowledge-revision-body', pageId, scope, workspaceId, previewRevision],
+    enabled: previewRevision !== null,
+    queryFn: () => api.get<{ body_md?: string; body_snapshot?: string; title_snapshot?: string }>(`${path}/revisions/${previewRevision}?${query}`),
+  });
   const action = useMutation({ mutationFn: async (kind: 'archive' | 'restore' | 'delete') => api.post<KnowledgePage>(`${path}/actions`, { ...scopeData, action: kind, expected_revision: page.data!.revision, actor: 'user' }),
     onSuccess: () => { setConfirm(null); void page.refetch(); onChanged(); }, onError: () => { setConfirm(null); void page.refetch(); } });
   const expiry = useMutation({ mutationFn: (expiresAt: number | null) => api.put<KnowledgePage>(path, { ...scopeData, expires_at: expiresAt, expected_revision: page.data!.revision, actor: 'user' }),
@@ -91,15 +101,19 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
    * CAS：expected_revision 用当前 revision；409 说明他人已更新。
    */
   const restore = useMutation({
-    mutationFn: async (target: KnowledgeRevision) =>
-      api.put<KnowledgePage>(path, {
+    // KB-HIST-PREVIEW：列表已瘦身（无 body），恢复前必须按需拉该 revision 的完整快照，
+    // 否则会把「空白正文」写回页面（数据丢失）。同一端点 `/revisions/:rev`。
+    mutationFn: async (target: KnowledgeRevision) => {
+      const detail = await api.get<{ body_md?: string; body_snapshot?: string }>(`${path}/revisions/${target.revision}?${query}`);
+      return api.put<KnowledgePage>(path, {
         ...scopeData,
         title: target.title_snapshot,
-        body_md: target.body_snapshot,
+        body_md: detail.body_md ?? detail.body_snapshot ?? '',
         change_note: `恢复自 r${target.revision}`,
         expected_revision: page.data!.revision,
         actor: 'user',
-      }),
+      });
+    },
     onSuccess: () => {
       setRestoreTarget(null);
       setRestoreError(null);
@@ -355,8 +369,18 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
               )}
               {previewRevision === r.revision && (
                 <div data-testid={`knowledge-revision-body-${r.revision}`} className="mt-1.5 rounded-md bg-surface-page px-2 py-1.5">
-                  <div className="mb-1 text-[11px] font-medium text-ink-2">{r.title_snapshot}（只读快照）</div>
-                  <div className="mx-auto max-w-[min(88ch,100%)] text-sm"><MarkdownView>{r.body_snapshot}</MarkdownView></div>
+                  <div className="mb-1 text-[11px] font-medium text-ink-2">{previewBody.data?.title_snapshot ?? r.title_snapshot}（只读快照）</div>
+                  {previewBody.isPending && <p data-testid={`knowledge-revision-preview-loading-${r.revision}`} className="text-[11px] text-ink-3">读取版本正文…</p>}
+                  {previewBody.isError && (
+                    <p role="alert" data-testid={`knowledge-revision-preview-error-${r.revision}`} className="text-[11px] text-ink-2">
+                      读取该版本正文失败，稍后重试
+                    </p>
+                  )}
+                  {!previewBody.isPending && !previewBody.isError && (
+                    <div className="mx-auto max-w-[min(88ch,100%)] text-sm">
+                      <MarkdownView>{bodyOf(previewBody.data)}</MarkdownView>
+                    </div>
+                  )}
                 </div>
               )}
               {diffRevision === r.revision && (() => {
@@ -451,5 +475,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     )}
   </article>;
 }
+
+
 
 

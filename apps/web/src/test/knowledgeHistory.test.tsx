@@ -28,23 +28,47 @@ const page = (revision: number, title: string, body: string) => ({
   evidence: [],
 });
 
-const revision = (rev: number, title: string, body: string, note = '') => ({
-  id: `r${rev}`,
-  page_id: 'p1',
-  revision: rev,
-  title_snapshot: title,
-  body_snapshot: body,
-  sources: [],
-  evidence: [],
-  change_kind: rev === 1 ? 'create' : 'update',
-  status_snapshot: 'active',
-  expires_at_snapshot: null,
-  change_note: note,
-  actor: rev === 1 ? 'creator' : 'editor',
-  created_at: 1_700_000_000_000 + rev * 1000,
-});
+/** 各 revision 的**完整正文**只经由单条端点返回（KB-DIFF-S 之后列表不再带 body） */
+const REV_BODIES = new Map<number, string>();
+/** 单条端点被请求的次数（守卫用：证明预览/diff 走按需端点，而不是读列表里不存在的 body） */
+let DETAIL_CALLS = 0;
+
+/**
+ * 夹具铁律：字段名从**真实响应**粘贴，禁止自造。
+ * 真实 `GET /api/knowledge/pages/:id/revisions` 的列表项**不含 body**（只有 `body_bytes` / `body_chars`）；
+ * 历史上两次「mock 镜像 bug」（额度 `total_bytes` vs `bytes_total`、此处 `body_snapshot`）都是
+ * 夹具凭记忆多写了字段，导致测试全绿而线上空白。
+ */
+const revision = (rev: number, title: string, body: string, note = '') => {
+  REV_BODIES.set(rev, body);
+  return {
+    id: `r${rev}`,
+    page_id: 'p1',
+    revision: rev,
+    title_snapshot: title,
+    body_bytes: new TextEncoder().encode(body).length,
+    body_chars: body.length,
+    sources: [],
+    evidence: [],
+    change_kind: rev === 1 ? 'create' : 'update',
+    status_snapshot: 'active',
+    expires_at_snapshot: null,
+    change_note: note,
+    actor: rev === 1 ? 'creator' : 'editor',
+    created_at: 1_700_000_000_000 + rev * 1000,
+  };
+};
 
 function mount() {
+  DETAIL_CALLS = 0;
+  // 单条端点：正文只从这里出（列表已瘦身）。放在 mount 里，确保覆盖各用例自己的 server.use。
+  server.use(
+    http.get('/api/knowledge/pages/p1/revisions/:rev', ({ params }) => {
+      const rev = Number(params.rev);
+      DETAIL_CALLS += 1;
+      return HttpResponse.json({ revision: rev, body_snapshot: REV_BODIES.get(rev) ?? '' });
+    }),
+  );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -90,19 +114,29 @@ describe('KB-HIST-UI 历史抽屉', () => {
     expect(screen.getByTestId('knowledge-revision-restore-1')).toBeInTheDocument();
   });
 
-  it('点一条 → 只读预览内容等于该快照', async () => {
+  it('点一条 → 按需请求单条端点并渲染该快照正文（列表本身不含 body）', async () => {
+    let detailCalls = 0;
+    const items = [revision(3, '当前标题', '当前正文'), revision(1, '第一版', '第一版正文内容')];
+    // 守卫①：夹具与真实响应同形 —— 列表项不得含 body 字段
+    for (const item of items) {
+      expect(item).not.toHaveProperty('body_snapshot');
+      expect(item).not.toHaveProperty('body_md');
+      expect(item).toHaveProperty('body_chars');
+    }
     server.use(
       http.get('/api/knowledge/pages/p1', () => HttpResponse.json(page(3, '当前标题', '当前正文'))),
-      http.get('/api/knowledge/pages/p1/revisions', () =>
-        HttpResponse.json({ items: [revision(3, '当前标题', '当前正文'), revision(1, '第一版', '第一版正文内容')], next_offset: null }),
-      ),
+      http.get('/api/knowledge/pages/p1/revisions', () => HttpResponse.json({ items, next_offset: null })),
+      http.get('/api/knowledge/pages/p1/revisions/1', () => {
+        detailCalls += 1;
+        return HttpResponse.json({ revision: 1, body_snapshot: '第一版正文内容' });
+      }),
     );
     mount();
     fireEvent.click(await screen.findByTestId('knowledge-history-toggle'));
     fireEvent.click(await screen.findByTestId('knowledge-revision-preview-1'));
-    const preview = screen.getByTestId('knowledge-revision-body-1');
-    expect(preview).toHaveTextContent('第一版');
-    expect(preview).toHaveTextContent('第一版正文内容');
+    await waitFor(() => expect(screen.getByTestId('knowledge-revision-body-1')).toHaveTextContent('第一版正文内容'));
+    // 守卫②：预览确实走单条端点（而不是读列表里不存在的 body）
+    expect(DETAIL_CALLS).toBeGreaterThan(0);
   });
 
   it('恢复此版本：二次确认后才 PUT，带 change_note「恢复自 rN」与当前 expected_revision', async () => {
@@ -247,6 +281,8 @@ describe('KB-DIFF-W 版本 diff 展开', () => {
     await waitFor(() => expect(screen.getByTestId('revision-diff-stats-2')).toHaveTextContent('+1 / −1 行'));
   });
 });
+
+
 
 
 
