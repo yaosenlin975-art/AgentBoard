@@ -40,6 +40,7 @@ import {
   setBroadcaster,
 } from './services/sessionManager.js';
 import { setSessionSender } from './services/comments.js';
+import { sweepExpiredLeases } from './services/claim.js';
 import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
@@ -251,6 +252,9 @@ export async function main(): Promise<StartedServer> {
   mkdirSync(dirname(config.dbPath), { recursive: true });
   const db = openDb(config.dbPath);
   initSchema(db);
+  // BORROW-0.2：启动清租——上次进程异常退出遗留的占用租约统一过闸（只清占用、任务保留「进行中」、system 评论留痕）
+  const sweptLeases = sweepExpiredLeases(db);
+  if (sweptLeases > 0) appendServerLog(`启动清理过期占用租约：${sweptLeases} 个任务释放占用`);
   await recoverOnBoot(db);
 
   // apps/server/{src,dist}/../../web/dist

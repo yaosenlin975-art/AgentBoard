@@ -1,4 +1,5 @@
 import type { Issue, IssueComment } from '@agentboard/shared';
+import { CLAIM_LEASE_MS } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { getIssue, type IssuePatch } from '../db/repos/issue.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
@@ -6,6 +7,7 @@ import { ApiError } from '../errors.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
 import { updateIssueInHierarchy } from './taskHierarchy.js';
 import { blockedClaimMessage, unresolvedBlockers } from './dependency.js';
+import { dropIssueGitBaseline } from './gitBaseline.js';
 
 export function requireIssueInWorkspace(db: Db, issueId: string, workspaceId: string): Issue {
   const issue = getIssue(db, issueId, workspaceId);
@@ -26,7 +28,7 @@ function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: str
   return db.transaction(() => {
     const issue = requireIssueInWorkspace(db, issueId, workspaceId);
     if (issue.claimed_by !== actorId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
-    const result = db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
+    const result = db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
       .run(action === 'done' ? '待验收' : '待规划', Date.now(), issueId, workspaceId, actorId);
     if (result.changes !== 1) throw new ApiError(409, 'NOT_TASK_OWNER', '任务占用已改变');
     const content = action === 'release' ? '占用者释放任务' : detail?.trim();
@@ -72,11 +74,16 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
         .get(issueId) as { id: string } | undefined;
       lastSeenCommentId = latest?.id ?? null;
     }
+    const leaseUntil = now + CLAIM_LEASE_MS;
+    // BORROW-0.2：租约抢占——占用者的 claim_lease_until 已过期视同无主，可直接抢占；
+    // 租约 NULL（存量占用/老版本写入）无法判定新旧，保守不抢（交给 sweep/zombie 流程）。
+    // fence 每次领取（含抢占）自增，代次供 B03 校验；last_heartbeat_at 与领取时刻同值起算。
     const row = db.prepare(
-      `UPDATE issue SET claimed_by=?, claimed_at=?, session_id=?, status='进行中',
-         last_seen_comment_id=?, updated_at=?
-       WHERE id=? AND claimed_by IS NULL AND status IN ('待规划','进行中')`
-    ).run(agentId, now, sessionId, lastSeenCommentId, now, issueId);
+      `UPDATE issue SET claimed_by=?, claimed_at=?, claim_lease_until=?, claim_fence=COALESCE(claim_fence,0)+1,
+         last_heartbeat_at=?, session_id=?, status='进行中', last_seen_comment_id=?, updated_at=?
+       WHERE id=? AND status IN ('待规划','进行中')
+         AND (claimed_by IS NULL OR (claim_lease_until IS NOT NULL AND claim_lease_until < ?))`
+    ).run(agentId, now, leaseUntil, now, sessionId, lastSeenCommentId, now, issueId, now);
     if (row.changes !== 1) {
       // CLAIM-MSG：占用冲突与「状态不可领取」是两件事，文案必须分开（同报「已被占用」会让执行者误以为撞卡而放弃）
       const current = db.prepare('SELECT status, claimed_by FROM issue WHERE id=?').get(issueId) as
@@ -89,6 +96,69 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
         `状态不可领取（当前=${current.status}，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`);
     }
     return getIssue(db, issueId)!;
+  }).immediate();
+}
+
+/** heartbeat 续租返回的租约快照 */
+export interface ClaimLeaseInfo {
+  claimed_by: string;
+  claim_fence: number;
+  claim_lease_until: number;
+  last_heartbeat_at: number;
+}
+
+/**
+ * BORROW-0.2：占用续租。只有当前占用者可续；不 bump 任务内容（不触发 CAS 冲突面），
+ * updated_at 由 issue_monotonic_time 触发器兜底推进。fence 只读返回，校验属 B03。
+ */
+export function heartbeatClaim(db: Db, issueId: string, agentId: string): ClaimLeaseInfo {
+  if (!agentId?.trim()) throw new ValidationError('agent_id 不能为空');
+  return db.transaction(() => {
+    const row = db.prepare('SELECT claimed_by, claim_fence, claim_lease_until FROM issue WHERE id=?')
+      .get(issueId) as { claimed_by: string | null; claim_fence: number; claim_lease_until: number | null } | undefined;
+    if (!row) throw new NotFoundError('任务不存在');
+    if (row.claimed_by === null) throw new ConflictError('未被占用，无需续租');
+    if (row.claimed_by !== agentId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可续租');
+    const now = Date.now();
+    const leaseUntil = now + CLAIM_LEASE_MS;
+    db.prepare('UPDATE issue SET claim_lease_until=?, last_heartbeat_at=? WHERE id=?')
+      .run(leaseUntil, now, issueId);
+    return { claimed_by: agentId, claim_fence: row.claim_fence, claim_lease_until: leaseUntil, last_heartbeat_at: now };
+  }).immediate();
+}
+
+/**
+ * BORROW-0.2：启动清扫过期占用租约。只清占用（claimed_by/claimed_at/租约/心跳/会话/游标），
+ * 任务状态原样保留（领取即「进行中」，清扫不动状态=保留「进行中」）；写 system 评论留痕；
+ * 基线（GIT-ON-DONE）随之作废。租约 NULL 的占用不在清扫范围（无法判定新旧）。
+ * 返回清扫数（启动日志与用例断言用）。
+ */
+export function sweepExpiredLeases(db: Db, now: number = Date.now()): number {
+  const expired = db.prepare(
+    `SELECT id, claimed_by, claim_lease_until FROM issue
+     WHERE claimed_by IS NOT NULL AND claim_lease_until IS NOT NULL AND claim_lease_until < ?`,
+  ).all(now) as Array<{ id: string; claimed_by: string; claim_lease_until: number }>;
+  if (expired.length === 0) return 0;
+  const leaseMinutes = Math.round(CLAIM_LEASE_MS / 60000);
+  return db.transaction(() => {
+    let swept = 0;
+    for (const row of expired) {
+      // 条件带 claimed_by + 旧租约值：并发续租/释放后本行不重复清
+      const changed = db.prepare(
+        `UPDATE issue SET claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL,
+           session_id=NULL, last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+         WHERE id=? AND claimed_by=? AND claim_lease_until=?`,
+      ).run(now, row.id, row.claimed_by, row.claim_lease_until);
+      if (changed.changes !== 1) continue;
+      insertCommentRow(db, {
+        issue_id: row.id,
+        author: 'system',
+        content: `占用租约过期（超过 ${leaseMinutes} 分钟无心跳），系统自动释放占用；任务保留「进行中」，可直接重新领取`,
+      });
+      dropIssueGitBaseline(db, row.id);
+      swept += 1;
+    }
+    return swept;
   }).immediate();
 }
 
@@ -116,7 +186,7 @@ export async function doneIssue(
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
     }
     const changed = db.prepare(
-      `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
+      `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
        WHERE id=? AND claimed_by=?`,
     ).run(now, issueId, agentId === 'user' ? issue.claimed_by : agentId);
@@ -149,7 +219,7 @@ export async function failIssue(
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可回报失败');
     }
     const changed = db.prepare(
-      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
+      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
        WHERE id=? AND claimed_by=? AND session_id IS ?`,
     ).run(now, issueId, issue.claimed_by, issue.session_id);
@@ -165,7 +235,7 @@ export async function releaseIssue(db: Db, issueId: string): Promise<ClaimAction
   const now = Date.now();
   return db.transaction(() => {
     const changed = db.prepare(
-      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
+      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
        WHERE id=?`,
     ).run(now, issueId);

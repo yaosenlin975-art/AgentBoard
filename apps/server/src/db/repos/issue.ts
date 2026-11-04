@@ -25,6 +25,12 @@ interface IssueRow {
   due_time: string | null;
   /** 留言游标（内部状态，不进共享 Issue 类型）：NULL=无游标，consume 后=最新评论 id */
   last_seen_comment_id: string | null;
+  /** BORROW-0.2 占用租约（内部状态，不进共享 Issue 类型）：NULL=无租约语义不可抢占 */
+  claim_lease_until: number | null;
+  /** 占用代次，每次 claim（含抢占）自增；校验属 B03 */
+  claim_fence: number;
+  /** 最后一次心跳续租时刻 */
+  last_heartbeat_at: number | null;
   /** 评论总数（查询列，非落库列） */
   comment_count: number;
   /** 前置卡数（查询期聚合，非落库列） */
