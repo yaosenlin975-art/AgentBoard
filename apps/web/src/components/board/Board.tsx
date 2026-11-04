@@ -37,6 +37,20 @@ import {
 } from '../../lib/planningSort';
 import { PlanningSortButton } from './PlanningSortButton';
 import { statusAccent, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
+import {
+  readDisplayOptions,
+  writeDisplayOptions,
+  type DisplayOptions,
+} from '../../lib/displayOptions';
+import {
+  idsInScope,
+  issueInScope,
+  pruneSelection,
+  toggleSelectAll,
+  toggleSelected,
+  type SelectionScope,
+} from '../../lib/selection';
+import { SelectionBar } from './SelectionBar';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -57,6 +71,12 @@ export function Board({
   const [newIssueOpen, setNewIssueOpen] = useState(false);
   // 待规划列排序方式（SORT-PLAN）：本地存储，不落库
   const [planningSort, setPlanningSort] = useState<PlanningSort>(() => readPlanningSort());
+  // BORROW-1.1：显示偏好（密度/分组）本地持久化；两段式选择状态
+  const [displayOptions, setDisplayOptions] = useState<DisplayOptions>(() => readDisplayOptions());
+  const [selectionActive, setSelectionActive] = useState(false);
+  const [selectionScope, setSelectionScope] = useState<SelectionScope | null>(null);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
   // 列字典（STATUS-3-UI）：接口派生，失败时回落五条内置
   const statuses = useWorkspaceStatuses(workspaceId);
   const columns = statuses.names;
@@ -112,6 +132,53 @@ export function Board({
   const changePlanningSort = (next: PlanningSort): void => {
     setPlanningSort(next);
     writePlanningSort(next);
+  };
+  // BORROW-1.1：显示偏好即时生效并写 localStorage（刷新后保持）
+  const changeDisplayOptions = (next: DisplayOptions): void => {
+    setDisplayOptions(next);
+    writeDisplayOptions(next);
+  };
+  const startSelection = (): void => {
+    setSelectionActive(true);
+    setSelectionScope(null);
+    setSelectedIds(new Set());
+  };
+  const exitSelection = (): void => {
+    setSelectionActive(false);
+    setSelectionScope(null);
+    setSelectedIds(new Set());
+  };
+  const pickSelectionScope = (scope: SelectionScope): void => {
+    setSelectionScope(scope);
+    setSelectedIds(new Set());
+  };
+  // 两段式第二段：只有范围内卡片可勾选
+  const toggleCardSelection = (id: string): void => {
+    const issue = (issues ?? []).find((item) => item.id === id);
+    setSelectedIds((prev) => toggleSelected(prev, id, issue !== undefined && issueInScope(selectionScope, issue)));
+  };
+  const scopeIds = idsInScope(visibleIssues, selectionScope);
+  // 数据刷新后剔除已删除卡片，避免批量 PATCH 打到幽灵 id
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = pruneSelection(prev, issues ?? []);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [issues]);
+  const applyBatchStatus = async (status: string): Promise<void> => {
+    if (workspaceId === null || selectedIds.size === 0) return;
+    setBatchBusy(true);
+    try {
+      await Promise.all(
+        [...selectedIds].map((id) => api.patch<Issue>(`/api/issues/${id}`, { status })),
+      );
+      await queryClient.invalidateQueries({ queryKey: ['issues', workspaceId] });
+      setSelectedIds(new Set());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量修改状态失败，请重试');
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   if (workspaceId === null) {
@@ -171,6 +238,37 @@ export function Board({
       <ViewToolbarShell>
         <div data-testid="board-toolbar-row" className="flex min-w-0 flex-wrap items-center gap-2 max-[900px]:items-start">
           <div data-testid="board-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
+            {/* BORROW-1.1：显示偏好（本地持久化） */}
+            <select
+              aria-label="显示密度"
+              data-testid="display-density"
+              value={displayOptions.density}
+              onChange={(event) => changeDisplayOptions({ ...displayOptions, density: event.target.value === 'compact' ? 'compact' : 'comfortable' })}
+              className="h-8 shrink-0 rounded-lg border border-hairline bg-surface-raised px-1.5 text-xs text-ink-2"
+            >
+              <option value="comfortable">舒适密度</option>
+              <option value="compact">紧凑密度</option>
+            </select>
+            <select
+              aria-label="分组方式"
+              data-testid="display-grouping"
+              title={displayOptions.grouping === 'label' ? '按标签分组显示时禁用拖拽排序' : undefined}
+              value={displayOptions.grouping}
+              onChange={(event) => changeDisplayOptions({ ...displayOptions, grouping: event.target.value === 'label' ? 'label' : 'none' })}
+              className="h-8 shrink-0 rounded-lg border border-hairline bg-surface-raised px-1.5 text-xs text-ink-2"
+            >
+              <option value="none">不分组</option>
+              <option value="label">按标签分组</option>
+            </select>
+            <button
+              type="button"
+              data-testid="board-select-toggle"
+              aria-pressed={selectionActive}
+              onClick={() => (selectionActive ? exitSelection() : startSelection())}
+              className="h-8 shrink-0 rounded-lg border border-hairline px-2 text-xs text-ink-2 hover:bg-surface-card"
+            >
+              选择
+            </button>
           </div>
           <div data-testid="board-toolbar-filters" className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <input
@@ -202,6 +300,21 @@ export function Board({
           </div>
         </div>
       </ViewToolbarShell>
+      {selectionActive && !treeMode && (
+        <SelectionBar
+          columns={columns}
+          scope={selectionScope}
+          scopeCount={scopeIds.length}
+          selectedCount={selectedIds.size}
+          statusNames={columns}
+          busy={batchBusy}
+          onPickScope={pickSelectionScope}
+          onSelectAll={() => setSelectedIds((prev) => toggleSelectAll(prev, scopeIds))}
+          onClearSelection={() => setSelectedIds(new Set())}
+          onBatchStatus={(status) => void applyBatchStatus(status)}
+          onClose={exitSelection}
+        />
+      )}
       {treeMode ? (
         <IssueTreeView
           workspaceId={workspaceId}
@@ -234,6 +347,12 @@ export function Board({
                 issues={status === '待规划' ? planningIssues : (grouped[status] ?? [])}
                 accent={statusAccent(statuses.byName.get(status)?.kind)}
                 runningSessionIds={runningSessionIds}
+                density={displayOptions.density}
+                grouping={displayOptions.grouping}
+                selectionActive={selectionActive}
+                selectionScope={selectionScope}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleCardSelection}
                 {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
                 {...(status === '待规划'
                   ? { sortControl: <PlanningSortButton sort={planningSort} onChange={changePlanningSort} /> }

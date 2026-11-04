@@ -153,7 +153,26 @@ function claimedCli(claimedBy: string): string {
   return claimedBy.startsWith('agent:') ? claimedBy.slice('agent:'.length) : claimedBy;
 }
 
-export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunning: boolean }) {
+export function IssueCard({
+  issue,
+  sessionRunning,
+  density = 'comfortable',
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+  dragDisabled = false,
+}: {
+  issue: Issue;
+  sessionRunning: boolean;
+  /** BORROW-1.1：紧凑密度减小内边距/行距（仅显示层，不影响排序） */
+  density?: 'comfortable' | 'compact';
+  /** 两段式选择的第二段：选中范围内卡片可勾选；此时点击不再打开详情 */
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
+  /** 分组显示时视觉顺序不等于 sort_order，禁用拖拽避免写出错误顺序 */
+  dragDisabled?: boolean;
+}) {
   const claimedBy = issue.claimed_by;
   const claimed = claimedBy !== null;
   const openDetail = usePanelStore((s) => s.openDetail);
@@ -163,7 +182,8 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
     useSortable({
       id: issue.id,
-      disabled: claimed ? { draggable: true } : false,
+      // 选择模式或分组显示时禁用拖拽：点击语义改为勾选 / 视觉顺序不等于 sort_order
+      disabled: claimed || selectable || dragDisabled ? { draggable: true } : false,
       data: { type: 'issue', status: issue.status },
     });
 
@@ -172,7 +192,7 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
     transition: transition ?? undefined,
     // CURSOR-WHITE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
     // 换成双色自定义光标（白填充 + 深色描边），浅/深主题都可见。占用中仍用禁止符。
-    cursor: claimed ? 'not-allowed' : GRAB_CURSOR,
+    cursor: selectable ? 'pointer' : claimed ? 'not-allowed' : GRAB_CURSOR,
   };
 
   const onPointerDown = (e: ReactPointerEvent): void => {
@@ -182,6 +202,10 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
     const d = downPos.current;
     downPos.current = null;
     if (d && Math.hypot(e.clientX - d.x, e.clientY - d.y) > 5) return;
+    if (selectable) {
+      onToggleSelect?.(issue.id);
+      return;
+    }
     openDetail(issue.id);
   };
 
@@ -190,14 +214,23 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       ref={setNodeRef}
       style={style}
       data-testid={`issue-card-${issue.id}`}
+      data-selected={selectable ? (selected ? 'true' : 'false') : undefined}
       aria-disabled={claimed || undefined}
       title={claimed ? '占用中，不可拖动' : undefined}
       // AUDIT-P0（I-01）：卡片本身可 Tab 聚焦、可 Enter/Space 打开详情，并且 focus-visible 有可见描边。
       // Space 的归属见 onKeyDown 注释：未占用卡片的 Space 留给 dnd-kit 键盘抓取，不抢。
       role="button"
       tabIndex={0}
-      aria-label={`打开任务：${issue.title}`}
+      aria-label={selectable ? `${selected ? '取消选择' : '选择'}任务：${issue.title}` : `打开任务：${issue.title}`}
+      aria-pressed={selectable ? selected : undefined}
       onKeyDown={(event) => {
+        if (selectable) {
+          if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+            event.preventDefault();
+            onToggleSelect?.(issue.id);
+          }
+          return;
+        }
         if (event.key === 'Enter') {
           event.preventDefault();
           openDetail(issue.id);
@@ -214,14 +247,23 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       }}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`${CARD_CLASS} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isDragging ? 'opacity-50' : ''}`}
+      className={`${CARD_CLASS} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isDragging ? 'opacity-50' : ''} ${selectable && selected ? 'border-accent bg-accent-soft/40' : ''}`}
     >
       <IssueCardPriority issue={issue} />
+      {selectable && (
+        <span
+          data-testid={`card-select-${issue.id}`}
+          aria-hidden
+          className={`absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded border text-[10px] leading-none ${selected ? 'border-accent bg-accent text-accent-ink' : 'border-hairline bg-surface-card text-transparent'}`}
+        >
+          ✓
+        </span>
+      )}
       <div
         ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
-        className="space-y-1.5 py-2 pl-3.5 pr-2"
+        className={density === 'compact' ? 'space-y-1 py-1.5 pl-3 pr-2' : 'space-y-1.5 py-2 pl-3.5 pr-2'}
       >
         <IssueCardContents issue={issue} sessionRunning={sessionRunning} />
       </div>

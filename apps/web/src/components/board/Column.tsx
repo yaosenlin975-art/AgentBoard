@@ -9,6 +9,8 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type { ReactNode } from 'react';
 import type { Issue } from '@agentboard/shared';
 import { columnDroppableId } from '../../lib/dnd';
+import { groupIssuesForDisplay, type BoardDensity, type BoardGrouping } from '../../lib/displayOptions';
+import { issueInScope, type SelectionScope } from '../../lib/selection';
 import { IssueCard } from './IssueCard';
 
 export function Column({
@@ -18,6 +20,12 @@ export function Column({
   onCreateIssue,
   sortControl,
   accent,
+  density = 'comfortable',
+  grouping = 'none',
+  selectionActive = false,
+  selectionScope = null,
+  selectedIds,
+  onToggleSelect,
 }: {
   /** 列名（STATUS-3-UI：内置五条 + 任意自定义状态） */
   status: string;
@@ -27,11 +35,32 @@ export function Column({
   sortControl?: ReactNode;
   /** 列头强调色（按 workspace_status.kind：已废弃与已关闭要区分开） */
   accent?: string;
+  /** BORROW-1.1 显示偏好 */
+  density?: BoardDensity;
+  grouping?: BoardGrouping;
+  /** 两段式选择：仅范围内卡片可勾选 */
+  selectionActive?: boolean;
+  selectionScope?: SelectionScope | null;
+  selectedIds?: ReadonlySet<string>;
+  onToggleSelect?: (id: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: columnDroppableId(status),
     data: { type: 'column', status },
   });
+  const groups = groupIssuesForDisplay(issues, grouping);
+  const renderCard = (issue: Issue) => (
+    <IssueCard
+      key={issue.id}
+      issue={issue}
+      sessionRunning={runningSessionIds.has(issue.session_id ?? '')}
+      density={density}
+      selectable={selectionActive && issueInScope(selectionScope, issue)}
+      selected={selectedIds?.has(issue.id) ?? false}
+      onToggleSelect={onToggleSelect}
+      dragDisabled={grouping !== 'none'}
+    />
+  );
 
   return (
     <section
@@ -65,14 +94,22 @@ export function Column({
       </header>
       <div
         ref={setNodeRef}
-        className={`m-2 flex min-h-24 flex-1 flex-col gap-2 overflow-y-auto rounded-lg p-1 transition-colors ${
+        className={`m-2 flex min-h-24 flex-1 flex-col ${density === 'compact' ? 'gap-1' : 'gap-2'} overflow-y-auto rounded-lg p-1 transition-colors ${
           isOver ? 'bg-accent-soft' : ''
         }`}
       >
         <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-          {issues.map((issue) => (
-            <IssueCard key={issue.id} issue={issue} sessionRunning={runningSessionIds.has(issue.session_id ?? '')} />
-          ))}
+          {groups === null
+            ? issues.map(renderCard)
+            : groups.map((group) => (
+                <section key={group.key} data-testid={`board-group-${status}-${group.key}`} className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between px-1 pt-1 text-[11px] font-medium text-ink-3">
+                    <span>{group.label}</span>
+                    <span className="tabular-nums">{group.issues.length}</span>
+                  </div>
+                  {group.issues.map(renderCard)}
+                </section>
+              ))}
         </SortableContext>
         {issues.length === 0 && (
           <div
