@@ -41,6 +41,9 @@ export function migrateKnowledge(db: Db): void {
   db.exec("CREATE INDEX IF NOT EXISTS knowledge_category ON knowledge_page(category,status)");
   // KB-PAGE-3：域词表落到表字段（NULL = 未归类，不默认 legacy，也不加 CHECK——词表校验放服务层）
   ensureColumn(db, 'knowledge_page', 'domain', 'domain TEXT');
+  // GRAPH-API-PERF：图查询按 status+scope 过滤并按 id 排序；(status,scope,id) 让 ORDER BY 走索引、
+  // 免掉 TEMP B-TREE（EXPLAIN 前后对照见 scripts/verify/graph-explain.ts）
+  db.exec('CREATE INDEX IF NOT EXISTS idx_knowledge_page_status_scope_id ON knowledge_page(status,scope,id)');
 }
 
 /**

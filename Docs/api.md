@@ -775,3 +775,9 @@ app.use(express.json());
 - **多实例/多进程**：`busy_timeout = 5000`（`db/connection.ts`）；写锁等待超时不再是 500，映射为 **409 `DB_BUSY`**「数据库正被其它操作占用（写锁等待超时），请稍后重试」。
 - **测试证据**：`apps/server/test/claimRace.test.ts` —— 同进程 10 路 claim（1×200 + 9×409）、2 路 done（1+1）、done↔release（1+1）、**双进程同 DB** claim（仍 1 成功）、close/reopen（close 幂等、reopen 1×200+1×409），每类跑 3 次结果一致。
 - **给 agent 的约定**：并发 claim 由服务端原子保证；遇 409 直接换卡或等释放，不要重试同一张卡的 claim。
+## 附：知识图接口的正文摘要口径（GRAPH-API-PERF，2026-11-04）
+
+`GET /api/knowledge/graph` 的节点里，`body_md` **不再是整篇正文**，而是正文前 **2000 字符**的摘要（常量 `GRAPH_TEXT_EXCERPT`，`db/repos/knowledge.ts`）；另外新增 `body_chars` 给全文长度。
+关键词边只按此摘要计算（标题 + 前 2000 字符），全文不参与。
+
+原因（实测）：库里存在 200 万字符级页面时，原实现把全文取回再对每页做 `entityTerms` + `trigrams`，24 节点的图接口耗时 **22–23 秒**；改为摘要 + `(status,scope,id)` 索引后同规模 **22ms**（夹具实测，200 页 78ms）。

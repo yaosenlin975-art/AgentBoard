@@ -216,13 +216,22 @@ export interface KnowledgeGraphRow {
   scope: 'workspace' | 'common';
   workspace_id: string | null;
   title: string;
+  /** GRAPH-API-PERF：正文**摘要**（前 GRAPH_TEXT_EXCERPT 字符），不是全文 */
   body_md: string;
+  /** 正文全文的字符数（展示「正文长度」用，不必取全文） */
+  body_chars: number;
   sources: KnowledgeSource[];
   /** KB-MODEL：星图着色用（旧行缺失 → legacy） */
   category?: string | null;
   landed?: string | null;
 }
 
+/**
+ * GRAPH-API-PERF：图节点关键词/三元组只用正文**前 N 字符**参与，不把整篇正文拉进内存。
+ * 依据：24 页里只要有 1 页 200 万字符，三元组抽取就会吃掉数百毫秒到数十秒（线上实测接口 22s）；
+ * 图谱边只表达「主题相近」，标题 + 前 2000 字符已足够，全文不带来额外边质量。
+ */
+export const GRAPH_TEXT_EXCERPT = 2000;
 export interface KnowledgeGraphRowsResult {
   rows: KnowledgeGraphRow[];
   /** 命中 maxPages 上限且可能还有更多页：调用方必须把「页面集合被截断」暴露出来，不得静默 */
@@ -250,10 +259,10 @@ export function listKnowledgeGraphRows(
   }
   const pageTotal = (db.prepare(`SELECT COUNT(*) AS n FROM knowledge_page p WHERE ${where}`).get(scopeParams) as { n: number }).n;
   const rows = db.prepare(
-    `SELECT p.id,p.scope,p.workspace_id,p.title,p.body_md,r.sources_json,p.category,p.landed
+    `SELECT p.id,p.scope,p.workspace_id,p.title,substr(p.body_md,1,@excerpt) AS body_md,length(p.body_md) AS body_chars,r.sources_json,p.category,p.landed
      FROM knowledge_page p JOIN knowledge_revision r ON r.page_id=p.id AND r.revision=p.revision
      WHERE ${where} ORDER BY p.id LIMIT @limit`,
-  ).all({ ...scopeParams, limit: maxPages + 1 }) as Array<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null; title: string; body_md: string; sources_json: string; category: string | null; landed: string | null }>;
+  ).all({ ...scopeParams, limit: maxPages + 1, excerpt: GRAPH_TEXT_EXCERPT }) as Array<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null; title: string; body_md: string; body_chars: number; sources_json: string; category: string | null; landed: string | null }>;
   const pagesTruncated = rows.length > maxPages;
   return {
     pagesTruncated,
@@ -266,6 +275,8 @@ export function listKnowledgeGraphRows(
       category: row.category,
       landed: row.landed,
       body_md: row.body_md,
+      // GRAPH-API-PERF：body_md 是截断摘要（≤ GRAPH_TEXT_EXCERPT），body_chars 才是全文长度
+      body_chars: row.body_chars,
       sources: JSON.parse(row.sources_json) as KnowledgeSource[],
     })),
   };

@@ -1,0 +1,26 @@
+[
+ {
+  "label": "24 页（含 1 页 200 万字符）",
+  "pages": 24,
+  "bigBodyChars": 2000000,
+  "rows_ms": 9.3,
+  "graph_ms": 12.7,
+  "serialize_ms": 0,
+  "total_ms": 22.1,
+  "nodes": 24,
+  "edges": 22,
+  "payload_bytes": 6855
+ },
+ {
+  "label": "200 页（含 1 页 200 万字符）",
+  "pages": 200,
+  "bigBodyChars": 2000000,
+  "rows_ms": 11.5,
+  "graph_ms": 63.4,
+  "serialize_ms": 2.8,
+  "total_ms": 77.8,
+  "nodes": 200,
+  "edges": 3074,
+  "payload_bytes": 418660
+ }
+]
