@@ -22,6 +22,16 @@ export function attachClientSnapshot(db: Db, id: string, snapshot: { client_snap
     .run(snapshot.client_snapshot_ref, snapshot.client_snapshot_version, Date.now(), id);
   return getManagedAccount(db, id)!;
 }
+/**
+ * ACC-KB-A2：`enabled` 的写入路径（此前只有读取——签到授权/签到执行/前端参与判定都在用，却没有端点能改）。
+ * 语义：停用 = 该账号不参与一键签到与签到授权（服务端以 ACCOUNT_DISABLED 拒绝）。
+ */
+export function setManagedAccountEnabled(db: Db, id: string, enabled: boolean): ManagedAccount {
+  if (!getManagedAccount(db, id)) throw new ApiError(404, 'ACCOUNT_NOT_FOUND', '账号不存在');
+  db.prepare('UPDATE managed_account SET enabled=?, updated_at=MAX(?,updated_at+1) WHERE id=?').run(enabled ? 1 : 0, Date.now(), id);
+  return getManagedAccount(db, id)!;
+}
+
 export function publicManagedAccount(account: ManagedAccount): PublicManagedAccount {
   const { identity_hash: _hash, client_snapshot_ref: _snapshot, checkin_credential_ref: _checkin, ...safe } = account;
   return safe;

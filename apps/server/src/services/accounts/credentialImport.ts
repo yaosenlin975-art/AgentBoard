@@ -16,11 +16,24 @@ import { z } from 'zod';
 import type { Db } from '../../db/connection.js';
 import { findManagedAccountByIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
 import type { CheckinVault } from './checkinProvider.js';
+import { createCheckinProviders } from './httpCheckinProviders.js';
 
 export type ExportPlatform = 'workbuddy' | 'trae' | 'minimax';
 export type ImportedAppId = 'workbuddy_desktop' | 'trae' | 'minimax';
 
 export const EXPORT_PLATFORMS: ExportPlatform[] = ['workbuddy', 'trae', 'minimax'];
+
+/**
+ * ACC-KB-A2：导入即回填 checkin_capability，口径见卡上定稿评论。
+ * - 平台已注册 checkin provider 且导入写入了签到凭据 → supported（可发起签到）；
+ * - 平台未注册 provider → unsupported（将来新增平台时自动生效，不另维护清单）；
+ * - 其余（provider 存在但没凭据）→ unknown，本函数只在「凭据已写入」后调用，故不产生该分支。
+ */
+const CHECKIN_PROVIDER_APPS = new Set<string>(Object.keys(createCheckinProviders()));
+
+function importedCheckinCapability(appId: ImportedAppId): 'supported' | 'unsupported' {
+  return CHECKIN_PROVIDER_APPS.has(appId) ? 'supported' : 'unsupported';
+}
 
 const APP_ID_BY_PLATFORM: Record<ExportPlatform, ImportedAppId> = {
   workbuddy: 'workbuddy_desktop',
@@ -187,9 +200,10 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
             continue;
           }
           const timestamp = now();
+          const capability = importedCheckinCapability(appId);
           if (existing) {
-            deps.db.prepare('UPDATE managed_account SET display_name=?, checkin_credential_ref=?, updated_at=? WHERE id=?')
-              .run(displayName, credentialRef, timestamp, existing.id);
+            deps.db.prepare('UPDATE managed_account SET display_name=?, checkin_credential_ref=?, checkin_capability=?, updated_at=? WHERE id=?')
+              .run(displayName, credentialRef, capability, timestamp, existing.id);
             // 旧密文引用作废即删，避免重复导入让 vault 里堆孤儿文件（失败不影响导入结果）
             const previousRef = existing.checkin_credential_ref;
             if (previousRef && previousRef !== credentialRef) {
@@ -201,9 +215,9 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
           } else {
             const id = randomUUID();
             deps.db.prepare(`INSERT INTO managed_account
-              (id, app_id, client_instance_id, service_region, identity_hash, display_name, identity_hint, client_snapshot_ref, checkin_credential_ref, client_snapshot_version, created_at, updated_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-              .run(id, appId, IMPORT_CLIENT_INSTANCE, 'unknown', identityHash, displayName, null, null, credentialRef, 1, timestamp, timestamp);
+              (id, app_id, client_instance_id, service_region, identity_hash, display_name, identity_hint, client_snapshot_ref, checkin_credential_ref, client_snapshot_version, checkin_capability, created_at, updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+              .run(id, appId, IMPORT_CLIENT_INSTANCE, 'unknown', identityHash, displayName, null, null, credentialRef, 1, capability, timestamp, timestamp);
             summary.created += 1;
             accounts.push({ account_id: getManagedAccount(deps.db, id)!.id, app_id: appId, display_name: displayName, action: 'created', expires_at: entry.expires_at ?? null });
           }

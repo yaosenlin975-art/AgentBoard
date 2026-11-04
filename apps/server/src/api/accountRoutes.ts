@@ -15,7 +15,7 @@ import {
   getCheckinBatch,
   operationsForBatch,
 } from '../db/repos/checkin.js';
-import { getManagedAccount, publicManagedAccount } from '../db/repos/managedAccount.js';
+import { getManagedAccount, publicManagedAccount, setManagedAccountEnabled } from '../db/repos/managedAccount.js';
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe, type MinimaxClientStatus } from '../services/accounts/minimaxClientProbe.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
@@ -209,6 +209,21 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     }
     const operation = getAccountOperation(db, operationId);
     res.status(202).json({ operation_id: operationId, operation });
+  });
+
+  // ---- ACC-KB-A2：enabled 写入路径（此前只有读取，界面上「已停用」徽标永远不可达） ----
+  router.patch('/managed-accounts/:id', (req, res) => {
+    const parsed = z.string().uuid().safeParse(req.params.id);
+    if (!parsed.success) throw new ValidationError('id 必须为 UUID');
+    const body = z.object({ enabled: z.boolean() }).strict().safeParse(req.body);
+    if (!body.success) throw new ValidationError('body 只能是 {enabled: boolean}');
+    const id = parsed.data;
+    if (!getManagedAccount(db, id)) throw new NotFoundError('账号不存在');
+    // 有排队/进行中的操作时禁止改状态：避免「操作跑到一半账号被停用」造成的语义歧义
+    if (db.prepare("SELECT 1 FROM account_operation WHERE account_id=? AND state IN ('queued','running') LIMIT 1").get(id)) {
+      throw new ApiError(409, 'ACCOUNT_BUSY', '账号有排队或进行中的操作，稍后再改启用状态', { reason_code: 'ACCOUNT_BUSY' });
+    }
+    res.json(publicManagedAccount(setManagedAccountEnabled(db, id, body.data.enabled)));
   });
 
   // ---- ACC-DEL-01：删除账号元数据与其 DPAPI 文件（设计 §7；不触碰客户端自身登录文件） ----

@@ -365,6 +365,38 @@ describe('account api (managed-accounts / account-operations)', () => {
     }).id;
   }
 
+  it('ACC-KB-A2 PATCH enabled：停用/启用可写、响应脱敏、非法与占用被拒', async () => {
+    const { vault } = await bootCheckin();
+    const accountId = await deletableAccount(vault, 'toggle-basic');
+    expect(getManagedAccount(t.db, accountId)!.enabled).toBe(true);
+
+    const off = await request(app).patch(`/api/managed-accounts/${accountId}`).send({ enabled: false });
+    expect(off.status).toBe(200);
+    expect(off.body.enabled).toBe(false);
+    expect(getManagedAccount(t.db, accountId)!.enabled).toBe(false);
+    // 响应仍是脱敏体
+    for (const forbidden of ['identity_hash', 'client_snapshot_ref', 'checkin_credential_ref', CREDENTIAL_MARK]) {
+      expect(JSON.stringify(off.body)).not.toContain(forbidden);
+    }
+
+    const on = await request(app).patch(`/api/managed-accounts/${accountId}`).send({ enabled: true });
+    expect(on.status).toBe(200);
+    expect(getManagedAccount(t.db, accountId)!.enabled).toBe(true);
+
+    // 参数校验：非 UUID / body 形状不对 / 未知 id
+    expect((await request(app).patch('/api/managed-accounts/not-a-uuid').send({ enabled: false })).status).toBe(400);
+    expect((await request(app).patch(`/api/managed-accounts/${accountId}`).send({ enabled: 'no' })).status).toBe(400);
+    expect((await request(app).patch(`/api/managed-accounts/${accountId}`).send({ enabled: false, extra: 1 })).status).toBe(400);
+    expect((await request(app).patch(`/api/managed-accounts/${randomUUID()}`).send({ enabled: false })).status).toBe(404);
+
+    // 有排队/进行中的操作时禁止停用
+    const operationId = seedOperation(accountId, 'toggle-basic');
+    const blocked = await request(app).patch(`/api/managed-accounts/${accountId}`).send({ enabled: false });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('ACCOUNT_BUSY');
+    expect(operationId).not.toBe('');
+  });
+
   it('delete removes the account row and both DPAPI references, and answers with no credential data', async () => {
     const { vault } = await bootCheckin();
     const accountId = await deletableAccount(vault, 'del-basic');
