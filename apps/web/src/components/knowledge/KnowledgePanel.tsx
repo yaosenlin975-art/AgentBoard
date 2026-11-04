@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
 import {
@@ -15,6 +15,7 @@ import { KnowledgeGraph } from './KnowledgeGraph';
 import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { Kbd } from '../ui/Kbd';
+import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -58,6 +59,10 @@ export function KnowledgePanel({
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<PageItem | null>(null);
   const [view, setView] = useState<'list' | 'graph'>('list');
+  // KBIMP-2：导入对话框开关 + 刚导入页高亮（成功后刷新列表并把新建页标出来）
+  const [importOpen, setImportOpen] = useState(false);
+  const [highlightIds, setHighlightIds] = useState<string[]>([]);
+  const queryClient = useQueryClient();
   const params = new URLSearchParams({ scope, ...(scope !== 'common' && workspaceId ? { workspace_id: workspaceId } : {}) });
   const list = useQuery({
     queryKey: ['knowledge', workspaceId, scope, query, status, expired, offset],
@@ -123,6 +128,8 @@ export function KnowledgePanel({
         <Kbd>Enter</Kbd>
         <span>搜索</span>
       </span>
+      {/* KBIMP-2：导入入口（md/txt/json；json 数组逐条可取消） */}
+      <button type="button" data-testid="knowledge-import-open" className={BUTTON_SECONDARY} onClick={() => setImportOpen(true)}>添加</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
       {!query && <label className="flex items-center gap-1 text-xs text-neutral-600 dark:text-neutral-300">状态
         <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
@@ -198,6 +205,20 @@ export function KnowledgePanel({
       )}
 
       {selected && <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} />}
+      <KnowledgeImportDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(ids) => {
+          setImportOpen(false);
+          setHighlightIds(ids);
+          void queryClient.invalidateQueries({ queryKey: ['knowledge'] });
+        }}
+      />
+      {highlightIds.length > 0 && (
+        <p data-testid="knowledge-import-result" className="mt-2 rounded-md border border-hairline bg-accent-soft px-2 py-1 text-xs text-accent">
+          已导入 {highlightIds.length} 页：<span className="font-mono">{highlightIds.join(', ')}</span>
+        </p>
+      )}
     </div>
     </div>
   </section>;
