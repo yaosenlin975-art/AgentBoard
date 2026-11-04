@@ -84,6 +84,24 @@ kb knowledge action <page-id> archive --scope workspace --workspace "$WS"
 
 > 为什么优先 `--sources-file`：`--sources` 要传一整段 JSON 字符串，PowerShell 会把双引号吃掉或把 `\` 当转义，实际几乎不可用。
 
+## 2.5 知识卡链接与反查（KB-PAGE-2 / 2b / 4 真跑口径）
+
+对外引用知识页一律发 **`knowledge:<page.id>`**，不发 `Docs/*.md` 文件路径（文件会迁移，路径链接必然过期）。
+
+```bash
+# 解析 / 取引用串（权威标识是 page.id；slug 只作输入别名）
+kb knowledge resolve cache-policy --scope both --workspace <工作区>
+kb knowledge link <page-id> --scope common --format markdown
+# 读页可省略 --scope（内部 resolve；显式给出时行为不变）
+kb knowledge show <page-id>
+# 反查哪些知识页引用了某文件（只扫当前 revision，历史版本不参与）
+kb knowledge find-source Docs/api.md
+```
+
+- Markdown：`[知识卡：{title}](knowledge:{id})`；纯文本：`知识卡《{title}》 knowledge:{id} · rev:{n}`。
+- 禁止 `knowledge:<slug>` / 裸 token / `file:///Docs/*.md` 充当知识引用；文件路径只用于“改这个文件”的定位。
+- `link` 在 show/search/resolve/list/create/revise 六处同源产出；列表接口同时给 `domain`。
+
 ## 3. 变更日志：写与读（真跑过 list，create 格式已实测）
 
 ```bash

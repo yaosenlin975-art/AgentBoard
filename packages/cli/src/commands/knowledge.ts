@@ -250,6 +250,8 @@ const SEARCH_HELP = `
 示例：
   kb knowledge search '缓存' --scope both --limit 5
   kb knowledge search 'vault' --scope workspace --workspace 任务看板
+引用命中页时用 id 拼卡链接（每条结果都带 link）：[知识卡：{title}](knowledge:{id})；
+纯文本降级：知识卡《{title}》 knowledge:{id} · rev:{n}。不要用 slug 或文件路径对外引用。
 退出码：0 成功；1 参数或服务端错误
 `;
 
@@ -269,9 +271,14 @@ const LINK_HELP = `
 KB-PAGE-2：产出知识页的引用串（权威标识是 page.id，slug 只作输入别名）。
 必填：<page-id|slug> --scope <workspace|common>；--format token|markdown|plain（默认 token）
 输出：token = knowledge:<uuid>；markdown = [标题](knowledge:<uuid>)；plain = 标题 + 空格 + token
+agent 对外约定（A8）：
+  Markdown：[知识卡：{title}](knowledge:{id})
+  纯文本：知识卡《{title}》 knowledge:{id} · rev:{n}
+  禁止用 knowledge:<slug> 或 Docs 文件路径当知识引用；slug 只作输入别名。
 示例：
   kb knowledge link 3f8da34e-… --scope common
   kb knowledge link cache-policy --scope workspace --format markdown
+  kb knowledge link 缓存策略 --scope workspace --format plain
 `;
 
 export function registerKnowledgeCommands(program: Command, context: () => Ctx): void {
