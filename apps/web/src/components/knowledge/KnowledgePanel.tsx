@@ -64,11 +64,10 @@ export function KnowledgePanel({
   const items = list.data?.items ?? [];
 
   return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
-    {/* 视图切换与平铺看板共用同一外壳（TOPBAR-TABS）：切视图时 tab 组 left/top 不变 */}
-    <ViewToolbarShell>
-      <div data-testid="knowledge-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
-      </div>
-    </ViewToolbarShell>
+    {/* TOOLBAR-BLANK：FIX-2 删掉 ViewSwitcher 后壳内已无控件，空壳会渲染约 40px 空白带 →
+        这里不再挂 ViewToolbarShell（它在无可见内容时会自己返回 null），
+        knowledge-toolbar-controls 锚点迁到内容区顶部，测试仍可按 testid 定位。 */}
+    <span data-testid="knowledge-toolbar-controls" aria-hidden="true" className="sr-only" />
     <div className="flex min-h-0 flex-1 flex-col p-4">
     <header className="mb-2 flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
         <button

@@ -56,11 +56,9 @@ export function ChangelogPanel({
       data-testid="changelog-panel"
       className="flex h-full min-h-0 flex-col bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100"
     >
-      {/* 与平铺看板 / 知识库共用同一外壳，保证切视图时 tab 组位置恒定（TOPBAR-TABS） */}
-      <ViewToolbarShell>
-        <div data-testid="log-toolbar-controls" className="flex flex-wrap items-center gap-1">
-        </div>
-      </ViewToolbarShell>
+      {/* TOOLBAR-BLANK：壳内已无控件，空壳会渲染约 40px 空白带 → 不再挂 ViewToolbarShell；
+          log-toolbar-controls 锚点迁到内容区顶部（sr-only 零高，测试仍可定位）。 */}
+      <span data-testid="log-toolbar-controls" aria-hidden="true" className="sr-only" />
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
         {/* LOG-HEAD-REMOVE：标题与「当前/历史工作区」切换已移除，直接给日志内容（首个元素不再留大片空白） */}
