@@ -65,6 +65,9 @@ export const QUOTA_REASON_LABEL: Record<string, string> = {
 
 export const QUOTA_UNKNOWN_REASON_LABEL = '暂时取不到额度';
 
+/** 「已限额」芯片文案（设计 §5） */
+export const QUOTA_LIMITED_LABEL = '已限额';
+
 const STATUS_LABEL: Record<QuotaStatus, string> = { ok: '正常', unsupported: '不支持', error: '取数失败' };
 const STATUS_TONE: Record<QuotaStatus, 'green' | 'gray' | 'red'> = { ok: 'green', unsupported: 'gray', error: 'red' };
 
@@ -126,6 +129,116 @@ export function windowBarWidth(usedPercent: number | null | undefined): number {
   if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent)) return 0;
   return Math.min(100, Math.max(0, usedPercent));
 }
+
+/** 行内窗口短标签（设计 §5：5h / 周 / 月） */
+export function quotaWindowShortLabel(name: string): string {
+  if (name === 'rolling' || name === '5h') return '5h';
+  if (name === 'weekly') return '周';
+  if (name === 'monthly') return '月';
+  return name;
+}
+
+/** 「已限额」判定：名为 limited 的窗口或已用满 100% */
+export function isWindowLimited(window: QuotaWindow): boolean {
+  return window.name === 'limited' || (window.used_percent ?? 0) >= 100;
+}
+
+/** 主文案 = 中文原因，裸码只进可展开技术码（ACC-REASON-01 口径） */
+export function quotaReasonView(item: QuotaItem): { text: string | null; technical: string | null } {
+  const mapped = item.reason_code !== null ? QUOTA_REASON_LABEL[item.reason_code] ?? null : null;
+  return {
+    text: mapped ?? (item.status === 'ok' ? null : item.detail ?? QUOTA_UNKNOWN_REASON_LABEL),
+    technical: item.status !== 'ok' && mapped === null ? reasonTechnicalCode(item.reason_code) : null,
+  };
+}
+
+/** Codex 只有 5-hour 与 Weekly（design-2026-11-03 D3 不变）；其它来源显示全部窗口 */
+export function quotaWindowsOf(item: QuotaItem): QuotaWindow[] {
+  return item.source === 'codex' ? item.windows.filter((window) => quotaWindowTitle(window.name) !== 'Monthly') : item.windows;
+}
+
+/** 行内余额文案；有符号时不再重复单位，0 读作「额度内」以免被误认为欠费 */
+export function quotaRowBalance(item: QuotaItem): string | null {
+  if (item.balance === null) return null;
+  return item.balance === 0 ? '额度内' : quotaAmountText(item);
+}
+
+/**
+ * ACC-QUOTA-02：单个额度来源的行内绘制（设计 §5），供 C3 总览面板嵌入行栏。
+ * 三种分支同栏位互斥：余额 / 窗口迷你进度条 / 原因（+ 可展开技术码）。
+ */
+export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: number }) {
+  const windows = quotaWindowsOf(item);
+  const balance = item.status === 'ok' ? quotaRowBalance(item) : null;
+  const { text, technical } = quotaReasonView(item);
+  return (
+    <div data-testid={`quota-row-${item.source}`} data-source={item.source} data-status={item.status} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+      <span className="font-medium text-neutral-900 dark:text-neutral-100">{QUOTA_SOURCE_LABEL[item.source]}</span>
+
+      {balance !== null && (
+        <span data-testid={`quota-row-balance-${item.source}`} className="tabular-nums text-neutral-800 dark:text-neutral-200">
+          {balance}
+          <span className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">余额</span>
+        </span>
+      )}
+
+      {item.status === 'ok' && windows.length > 0 && (
+        <span data-testid={`quota-row-windows-${item.source}`} className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+          {windows.map((window, index) => {
+            const limited = isWindowLimited(window);
+            const pct = windowBarWidth(window.used_percent);
+            return (
+              <span
+                key={`${item.source}-${window.name}-${index}`}
+                data-testid={`quota-row-window-${item.source}-${index}`}
+                title={`${quotaWindowShortLabel(window.name)} · ${formatResets(window.reset_at, now)}`}
+                className="inline-flex items-center gap-1.5"
+              >
+                <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{quotaWindowShortLabel(window.name)}</span>
+                <span aria-hidden="true" className="h-1.5 w-14 overflow-hidden rounded-full bg-surface-raised">
+                  <span
+                    data-testid={`quota-row-bar-${item.source}-${index}`}
+                    data-width={pct}
+                    style={{ width: `${pct}%` }}
+                    className={`block h-full rounded-full transition-[width] duration-200 motion-reduce:transition-none ${limited ? 'bg-accent' : 'bg-ink-2'}`}
+                  />
+                </span>
+                {limited ? (
+                  <span data-testid={`quota-row-limited-${item.source}-${index}`} className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium text-accent">
+                    {QUOTA_LIMITED_LABEL}
+                  </span>
+                ) : (
+                  <span data-testid={`quota-row-used-${item.source}-${index}`} className="tabular-nums text-[11px] text-neutral-700 dark:text-neutral-300">{pct}%</span>
+                )}
+              </span>
+            );
+          })}
+        </span>
+      )}
+
+      {item.status !== 'ok' && (
+        <span data-testid={`quota-row-reason-${item.source}`} className="text-neutral-600 dark:text-neutral-400">{text}</span>
+      )}
+
+      {technical !== null && (
+        <details data-testid={`quota-row-code-${item.source}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
+          <summary className="cursor-pointer select-none">技术码</summary>
+          <code className="font-mono">{technical}</code>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** 积分占位芯片（设计 §5）：与余额/进度条同栏位，WorkBuddy / MiniMax / Trae 行复用；未来接入只换绘制分支 */
+export function QuotaCreditChip({ label = '积分 未接入', testId = 'quota-credit-chip' }: { label?: string; testId?: string } = {}) {
+  return (
+    <span data-testid={testId} title="积分体系未接入，暂无数据" className="inline-flex items-center rounded-full bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-ink-3">
+      {label}
+    </span>
+  );
+}
+
 export function QuotaCards() {
   const query = useQuery({
     queryKey: ['managed-account-quotas'],
@@ -134,18 +247,9 @@ export function QuotaCards() {
   });
   const now = Date.now();
 
-  const reasonOf = (item: QuotaItem): { text: string | null; technical: string | null } => {
-    const mapped = item.reason_code !== null ? QUOTA_REASON_LABEL[item.reason_code] ?? null : null;
-    return {
-      text: mapped ?? (item.status === 'ok' ? null : item.detail ?? QUOTA_UNKNOWN_REASON_LABEL),
-      technical: item.status !== 'ok' && mapped === null ? reasonTechnicalCode(item.reason_code) : null,
-    };
-  };
-
-  /** Codex 只有 5-hour 与 Weekly（参考图定版）；其它来源显示全部窗口 */
-  const windowsOf = (item: QuotaItem): QuotaWindow[] => (
-    item.source === 'codex' ? item.windows.filter((window) => quotaWindowTitle(window.name) !== 'Monthly') : item.windows
-  );
+  // 行内组件与卡片块共用同一套分支口径（ACC-QUOTA-02）
+  const reasonOf = quotaReasonView;
+  const windowsOf = quotaWindowsOf;
 
   return (
     <div data-testid="quota-cards" className="mb-1 rounded-lg border border-neutral-200 p-2.5 dark:border-neutral-800">
@@ -221,7 +325,7 @@ export function QuotaCards() {
                   {item.status === 'ok' && windows.length > 0 && (
                     <ul data-testid={`quota-windows-${item.source}`} className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
                       {windows.map((window, index) => {
-                        const limited = window.name === 'limited' || (window.used_percent ?? 0) >= 100;
+                        const limited = isWindowLimited(window);
                         const pct = windowBarWidth(window.used_percent);
                         return (
                           <li key={`${item.source}-${window.name}-${index}`} data-testid={`quota-window-${item.source}-${index}`} className="py-1.5 first:pt-0 last:pb-0">
