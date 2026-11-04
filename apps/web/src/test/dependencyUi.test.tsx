@@ -175,6 +175,31 @@ describe('详情「依赖」区', () => {
     expect(screen.getByTestId('dep-blocked-down-1')).toHaveTextContent('后续任务');
   });
 
+  it('BORROW-2.2：related/duplicate 分组展示（顺序：前置→被阻塞→关联→重复），空组显示占位', async () => {
+    server.use(
+      http.get('/api/issues/iss-1/dependencies', () =>
+        HttpResponse.json({
+          blockers: [blocker],
+          blocked: [],
+          related: [{ issue_id: 'rel-1', title: '关联任务', status: '进行中' as const, resolved: false, relation: 'related' }],
+          duplicate: [{ issue_id: 'dup-1', title: '重复任务', status: '待规划' as const, resolved: false, relation: 'duplicate' }],
+        }),
+      ),
+      http.get('/api/issues', () => HttpResponse.json([base])),
+    );
+    render(withClient(<DependencySection issue={base} />));
+
+    expect(await screen.findByTestId('dep-related-rel-1')).toHaveTextContent('关联任务');
+    expect(screen.getByTestId('dep-duplicate-dup-1')).toHaveTextContent('重复任务');
+    // 分组顺序：related 组在 duplicate 组之前，且都在「被阻塞的任务」之后
+    const section = screen.getByTestId('detail-dependencies');
+    const blockedPos = section.textContent!.indexOf('被阻塞的任务');
+    const relatedPos = section.textContent!.indexOf('关联任务');
+    const dupPos = section.textContent!.indexOf('重复任务');
+    expect(relatedPos).toBeGreaterThan(blockedPos);
+    expect(dupPos).toBeGreaterThan(relatedPos);
+  });
+
   it('添加前置：提交 workspace_id + blocker_issue_id，成功后刷新列表', async () => {
     const posts: unknown[] = [];
     let blockers: DependencyRef[] = [];

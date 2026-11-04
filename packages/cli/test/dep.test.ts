@@ -80,6 +80,48 @@ const run = async (args: string[]) => {
 };
 
 describe('kb dep', () => {
+  // BORROW-2.2：--type 透传、白名单中文报错、ls 分组输出
+  it('depAddWithTypePostsRelation', async () => {
+    handler = withIssue((method, url) => {
+      if (method === 'POST' && url === '/api/issues/iss1/dependencies') return { status: 201, body: VIEW };
+      return undefined;
+    });
+    const result = await run(['dep', 'add', 'iss1', 'blk9', '--type', 'related']);
+    expect(result.code).toBe(0);
+    const post = calls.find(c => c.method === 'POST' && c.url === '/api/issues/iss1/dependencies');
+    expect((post!.body as { relation?: string }).relation).toBe('related');
+    expect(result.out).toContain('已建立依赖（related）');
+  });
+
+  it('depAddWithBogusTypeFailsWithWhitelistAndNoRequest', async () => {
+    handler = withIssue(() => undefined);
+    const result = await run(['dep', 'add', 'iss1', 'blk9', '--type', 'sibling']);
+    expect(result.code).toBe(3);
+    expect(result.err).toContain('--type 取值不合法');
+    expect(result.err).toContain('blocks / related / duplicate');
+    // 未发起任何写请求（白名单校验在请求前）
+    expect(calls.filter(c => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('depLsPrintsRelatedAndDuplicateGroupsWhenPresent', async () => {
+    const grouped = {
+      blockers: [{ issue_id: 'blk1', title: '前置卡', status: '待规划', resolved: false, relation: 'blocks' }],
+      blocked: [],
+      related: [{ issue_id: 'rel1', title: '关联卡', status: '进行中', resolved: false, relation: 'related' }],
+      duplicate: [{ issue_id: 'dup1', title: '重复卡', status: '待规划', resolved: false, relation: 'duplicate' }],
+    };
+    handler = withIssue((method, url) => {
+      if (method === 'GET' && url.startsWith('/api/issues/iss1/dependencies')) return { status: 200, body: grouped };
+      return undefined;
+    });
+    const result = await run(['dep', 'ls', 'iss1']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('关联（related，不阻塞领取）：1 个');
+    expect(result.out).toContain('重复（duplicate，不阻塞领取）：1 个');
+    expect(result.out).toContain('关联卡');
+    expect(result.out).toContain('重复卡');
+  });
+
   it('depLsPrintsBlockersAndBlockedWithResolution', async () => {
     handler = withIssue((method, url) => (
       method === 'GET' && url === '/api/issues/iss1/dependencies?workspace_id=ws1' ? { status: 200, body: VIEW } : undefined
@@ -114,7 +156,7 @@ describe('kb dep', () => {
     ));
     const result = await run(['dep', 'add', 'iss1', 'blk1']);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('已建立依赖：iss1 ← blk1');
+    expect(result.out).toContain('已建立依赖（blocks）：iss1 ← blk1');
     expect(calls[1]).toEqual({ method: 'POST', url: '/api/issues/iss1/dependencies', body: { workspace_id: 'ws1', blocker_issue_id: 'blk1' } });
   });
 

@@ -12,11 +12,16 @@ export interface DependencyRef {
   title: string;
   status: IssueStatus;
   resolved: boolean;
+  /** BORROW-2.1：边类型（服务端随行返回） */
+  relation?: 'blocks' | 'related' | 'duplicate';
 }
 
 export interface DependencyView {
   blockers: DependencyRef[];
   blocked: DependencyRef[];
+  /** BORROW-2.2：标注边分组（空集时服务端省略字段） */
+  related?: DependencyRef[];
+  duplicate?: DependencyRef[];
 }
 
 export function openBlockerCount(issue: Pick<Issue, 'blocked_by_open_count'>): number {

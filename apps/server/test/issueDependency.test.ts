@@ -71,7 +71,7 @@ describe('issue dependency (DEP-1)', () => {
     const created = await addDep(blocked, blocker);
     expect(created.status).toBe(201);
     expect(created.body.blockers).toEqual([
-      { issue_id: blocker, title: '前置卡', status: '待规划', resolved: false },
+      { issue_id: blocker, title: '前置卡', status: '待规划', resolved: false, relation: 'blocks' },
     ]);
 
     const blockedView = await lsDep(blocked);

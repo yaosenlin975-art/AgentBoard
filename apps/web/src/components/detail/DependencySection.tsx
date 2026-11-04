@@ -162,6 +162,41 @@ export function DependencySection({ issue }: { issue: Issue }) {
         )}
       </div>
 
+      {(['related', 'duplicate'] as const).map((group) => {
+        const items = dependencies?.[group] ?? [];
+        const label = group === 'related' ? '关联任务（related，不阻塞领取）' : '重复任务（duplicate，不阻塞领取）';
+        const emptyHint = group === 'related' ? '把任务标为关联后会出现在这里' : '把任务标为重复后会出现在这里';
+        return (
+          <div key={group} className="space-y-1 text-sm" data-testid={`dep-${group}-group`}>
+            <p className="text-xs text-neutral-600 dark:text-neutral-300">{label}</p>
+            <ul data-testid={`dep-${group}`} className="space-y-1">
+              {items.map((item) => (
+                <DependencyRow
+                  key={item.issue_id}
+                  item={item}
+                  testId={`dep-${group}-${item.issue_id}`}
+                  action={(
+                    <button
+                      type="button"
+                      data-testid={`dep-remove-${group}-${item.issue_id}`}
+                      aria-label={`移除${group === 'related' ? '关联' : '重复'} ${item.title}`}
+                      disabled={removeBlocker.isPending}
+                      onClick={() => removeBlocker.mutate(item.issue_id)}
+                      className="rounded border border-neutral-300 px-1.5 py-0.5 text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                    >
+                      移除
+                    </button>
+                  )}
+                />
+              ))}
+            </ul>
+            {dependencies !== undefined && items.length === 0 && (
+              <p data-testid={`dep-${group}-empty`} className="text-xs text-ink-3">{emptyHint}</p>
+            )}
+          </div>
+        );
+      })}
+
       <div className="space-y-1 rounded border border-dashed border-neutral-300 p-2 dark:border-neutral-700">
         <label className="block text-xs text-neutral-600 dark:text-neutral-300">
           <span className="mb-1 block">添加前置（当前工作区内搜索）</span>

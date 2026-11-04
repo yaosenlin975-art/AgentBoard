@@ -13,8 +13,11 @@ import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
 
-export interface DependencyRef { issue_id: string; title: string; status: string; resolved: boolean }
-export interface DependencyView { blockers: DependencyRef[]; blocked: DependencyRef[] }
+export interface DependencyRef { issue_id: string; title: string; status: string; resolved: boolean; relation?: string }
+export interface DependencyView { blockers: DependencyRef[]; blocked: DependencyRef[]; related?: DependencyRef[]; duplicate?: DependencyRef[] }
+
+/** BORROW-2.2：--type 白名单（与服务端 addRelation 同口径） */
+export const DEP_TYPES: readonly string[] = ['blocks', 'related', 'duplicate'];
 
 const EXIT_CODES: Record<string, number> = {
   DEPENDENCY_CYCLE: 2,
@@ -78,6 +81,13 @@ const dependencyLines = (view: DependencyView): string[] => {
   if (view.blockers.length > 0) lines.push(...table(['状态', '解除', 'id', '标题'], rows(view.blockers)).trimEnd().split('\n'));
   lines.push(`被阻塞者（blocked，${view.blocked.length} 个）${view.blocked.length === 0 ? '：（无）' : ''}`);
   if (view.blocked.length > 0) lines.push(...table(['状态', '解除', 'id', '标题'], rows(view.blocked)).trimEnd().split('\n'));
+  // BORROW-2.2：标注边分组（服务端空集省略字段，旧输出零变化）
+  for (const [group, label] of [['related', '关联（related，不阻塞领取）'], ['duplicate', '重复（duplicate，不阻塞领取）']] as const) {
+    const items = view[group];
+    if (items === undefined) continue;
+    lines.push(`${label}：${items.length} 个`);
+    if (items.length > 0) lines.push(...table(['状态', '解除', 'id', '标题'], rows(items)).trimEnd().split('\n'));
+  }
   return lines;
 };
 
@@ -101,19 +111,28 @@ export async function depLs(ctx: Ctx, issueId: string): Promise<number> {
 }
 
 /** kb dep add <issue-id> <blocker-id>：建边（blocker 完成后被阻塞卡才可 claim） */
-export async function depAdd(ctx: Ctx, issueId: string, blockerId: string): Promise<number> {
+export async function depAdd(ctx: Ctx, issueId: string, blockerId: string, opts: { type?: string } = {}): Promise<number> {
+  // BORROW-2.2：--type 校验（白名单外中文报错，不发起请求）；缺省 blocks（服务端同口径）
+  let relation: string | undefined;
+  if (opts.type !== undefined) {
+    if (!DEP_TYPES.includes(opts.type)) {
+      ctx.io.writeErr(`--type 取值不合法：${JSON.stringify(opts.type)}。可用类型：${DEP_TYPES.join(' / ')}` + "\n");
+      return 3;
+    }
+    relation = opts.type;
+  }
   try {
     const workspaceId = await issueWorkspaceId(ctx, issueId);
     const view = await request<DependencyView>(
       ctx.base, 'POST',
       `/api/issues/${encodeURIComponent(issueId)}/dependencies`,
-      { workspace_id: workspaceId, blocker_issue_id: blockerId },
+      { workspace_id: workspaceId, blocker_issue_id: blockerId, ...(relation === undefined ? {} : { relation }) },
     );
     if (ctx.json) {
       ctx.io.write(`${JSON.stringify(view, null, 2)}\n`);
       return 0;
     }
-    ctx.io.write(`已建立依赖：${issueId} ← ${blockerId}\n`);
+    ctx.io.write(`已建立依赖（${relation ?? 'blocks'}）：${issueId} ← ${blockerId}\n`);
     ctx.io.write(`${dependencyLines(view).join('\n')}\n`);
     return 0;
   } catch (error) {

@@ -37,12 +37,30 @@ interface IssueRow {
   blocked_by_count: number | null;
   /** 未解除的前置卡数（查询期聚合，非落库列） */
   blocked_by_open_count: number | null;
+  /** BORROW-2.2 依赖违规标记（0/1，查询期检测，非落库列） */
+  dep_violation: number;
   created_at: number;
   updated_at: number;
 }
 
 const COMMENT_COUNT_COLUMN =
   '(SELECT COUNT(*) FROM issue_comment c WHERE c.issue_id = i.id) AS comment_count';
+/**
+ * BORROW-2.2 依赖违规检测（查询期投影，report-only）：blocks 前置中有本卡的祖先卡 → 死锁风险。
+ * 正常路径 addRelation 已拒（DEPENDENCY_PARENT_CYCLE），违规只可能来自历史数据/直写库。
+ */
+const DEPENDENCY_VIOLATION_COLUMN = `EXISTS (
+    SELECT 1 FROM issue_dependency v
+    WHERE v.blocked_issue_id = i.id AND v.relation = 'blocks'
+      AND EXISTS (
+        WITH RECURSIVE descendants(id) AS (
+          SELECT id FROM issue WHERE parent_issue_id = v.blocker_issue_id
+          UNION
+          SELECT child.id FROM issue child JOIN descendants d ON child.parent_issue_id = d.id
+        )
+        SELECT 1 FROM descendants WHERE id = i.id
+      )
+  ) AS dep_violation`;
 /** GET /issues 与树/分页共用：一条预聚合 LEFT JOIN 供全部行，不做 N+1 */
 const DEPENDENCY_JOIN = blockedByAggregateJoin();
 const DEPENDENCY_COLUMNS = 'dep.blocked_by_count, dep.blocked_by_open_count';
@@ -64,6 +82,7 @@ function rowToIssue(row: IssueRow): Issue {
     due_date: row.due_date,
     due_time: row.due_time,
     comment_count: row.comment_count,
+    dependency_violation: row.dep_violation === 1 ? 'blocked-by-ancestor' : null,
     ...dependencyCountsFrom(row),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -108,7 +127,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
 
 export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null {
   const row = db
-    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
+    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
     .get(...(workspaceId ? [id, workspaceId] : [id])) as IssueRow | undefined;
   return row ? rowToIssue(row) : null;
 }
@@ -118,7 +137,7 @@ export function listIssues(db: Db, workspaceId: string, status?: string): Issue[
   if (status !== undefined) params.push(status);
   const rows = db
     .prepare(
-      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
+      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN}
        WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(...params) as IssueRow[];
@@ -129,7 +148,7 @@ export function listIssuesPage(db: Db, workspaceId: string, input: { limit: numb
   const params: unknown[] = [workspaceId];
   if (input.status) params.push(input.status);
   params.push(input.limit + 1, input.offset);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
   return pageResult(rows.map(row => {
     const issue = rowToIssue(row); const window = textWindow(issue.description);
     return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
@@ -288,7 +307,7 @@ export function listIssueTreePage(
     params.push(cursor.sort_order, cursor.sort_order, cursor.created_at, cursor.created_at, cursor.id);
   }
   params.push(input.limit + 1);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},
       (SELECT COUNT(*) FROM issue child WHERE child.parent_issue_id=i.id) AS child_count
     FROM issue i ${DEPENDENCY_JOIN} WHERE ${filters.join(' AND ')} ORDER BY i.sort_order,i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
   const hasMore = rows.length > input.limit;

@@ -22,46 +22,67 @@ import { RESOLVED_KIND_SQL, isBlockerResolvedKind } from './workspaceStatus.js';
 export { isBlockerResolvedKind } from './workspaceStatus.js';
 
 /** 依赖列表项：`resolved` 由唯一口径算出，前端/CLI 不再自行判断 */
+/** BORROW-2.1：依赖边类型——blocks 参与门禁/计数/环检测；related/duplicate 是纯标注边 */
+export type DependencyRelation = 'blocks' | 'related' | 'duplicate';
+export const DEPENDENCY_RELATIONS: readonly DependencyRelation[] = ['blocks', 'related', 'duplicate'];
+
 export interface DependencyRef {
   issue_id: string;
   title: string;
   status: IssueStatus;
   resolved: boolean;
+  /** BORROW-2.1：边类型（随行返回；blocks 边恒为 'blocks'） */
+  relation?: DependencyRelation;
 }
 
 export interface DependencyView {
   blockers: DependencyRef[];
   blocked: DependencyRef[];
+  /** BORROW-2.2：标注边分组（空集省略；related 的 resolved 与 blocks 同口径反查 kind） */
+  related?: DependencyRef[];
+  duplicate?: DependencyRef[];
 }
 
 /** 行里带 kind（由 workspace_status 反查），resolved 只看 kind，不看状态名 */
-const refToView = (row: { id: string; title: string; status: string; kind: string | null }): DependencyRef => ({
+const refToView = (row: { id: string; title: string; status: string; kind: string | null; relation: string }): DependencyRef => ({
   issue_id: row.id,
   title: row.title,
   status: row.status as IssueStatus,
   resolved: isBlockerResolvedKind(row.kind),
+  relation: row.relation as DependencyRef['relation'],
 });
 
-/** 依赖视图的三段查询共用：连同该状态在当前工作区的 kind 一起取出来 */
-const DEPENDENCY_ROW_SQL = (where: string): string => `SELECT i.id, i.title, i.status, ws.kind AS kind
+/** 依赖视图查询共用：按边类型过滤；连同该状态在当前工作区的 kind 一起取出来 */
+const DEPENDENCY_ROW_SQL = (where: string, relation: DependencyRelation): string => `SELECT i.id, i.title, i.status, ws.kind AS kind, d.relation AS relation
     FROM issue_dependency d
     JOIN issue i ON i.id = ${where === 'blocked' ? 'd.blocker_issue_id' : 'd.blocked_issue_id'}
     LEFT JOIN workspace_status ws ON ws.workspace_id = i.workspace_id AND ws.name = i.status
-   WHERE d.relation = 'blocks' AND d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
+   WHERE d.relation = '${relation}' AND d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
 
-/** 单个任务的双向依赖视图（GET /dependencies；CLI/MCP 复用） */
+type DependencyRow = { id: string; title: string; status: string; kind: string | null; relation: string };
+const rowsToRefs = (rows: DependencyRow[]): DependencyRef[] => rows.map(refToView);
+
+/**
+ * 单个任务的依赖视图（GET /dependencies；CLI/MCP 复用）。
+ * BORROW-2.2：blockers/blocked 仍是 blocks 边语义（kb dep 原口径）；related/duplicate 作标注边
+ * 追加为可选数组（空集省略字段，旧消费者零改动）。分组顺序固定：前置 → 被阻塞 → 关联 → 重复。
+ */
 export function listDependencies(db: Db, issueId: string): DependencyView {
-  type Row = { id: string; title: string; status: string; kind: string | null };
-  const blockers = db.prepare(DEPENDENCY_ROW_SQL('blocked')).all(issueId) as Row[];
-  const blocked = db.prepare(DEPENDENCY_ROW_SQL('blocker')).all(issueId) as Row[];
-  return { blockers: blockers.map(refToView), blocked: blocked.map(refToView) };
+  const blockers = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'blocks')).all(issueId) as DependencyRow[];
+  const blocked = db.prepare(DEPENDENCY_ROW_SQL('blocker', 'blocks')).all(issueId) as DependencyRow[];
+  const related = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'related')).all(issueId) as DependencyRow[];
+  const duplicate = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'duplicate')).all(issueId) as DependencyRow[];
+  const view: DependencyView = { blockers: rowsToRefs(blockers), blocked: rowsToRefs(blocked) };
+  if (related.length > 0) view.related = rowsToRefs(related);
+  if (duplicate.length > 0) view.duplicate = rowsToRefs(duplicate);
+  return view;
 }
 
 export interface BlockerRow { id: string; title: string; status: IssueStatus; kind?: string | null }
 
 /** 未解除的前置任务（claim 守卫与测试共用；判定走 isBlockerResolvedKind） */
 export function unresolvedBlockers(db: Db, issueId: string): BlockerRow[] {
-  const rows = db.prepare(DEPENDENCY_ROW_SQL('blocked')).all(issueId) as BlockerRow[];
+  const rows = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'blocks')).all(issueId) as BlockerRow[];
   return rows.filter(row => !isBlockerResolvedKind(row.kind));
 }
 
@@ -121,10 +142,6 @@ function wouldCreateCycle(db: Db, blockedIssueId: string, blockerIssueId: string
 }
 
 export interface AddDependencyInput { blocked_issue_id: string; blocker_issue_id: string; workspace_id: string }
-
-/** BORROW-2.1：依赖边类型——blocks 参与门禁/计数/环检测；related/duplicate 是纯标注边 */
-export type DependencyRelation = 'blocks' | 'related' | 'duplicate';
-export const DEPENDENCY_RELATIONS: readonly DependencyRelation[] = ['blocks', 'related', 'duplicate'];
 
 /**
  * 建边（BORROW-2.1 泛化）：服务层先判全部错误码（跨区/自环/重复），触发器只兜底。

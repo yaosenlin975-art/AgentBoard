@@ -97,6 +97,43 @@ describe('依赖边类型（BORROW-2.1，REST）', () => {
     expect(n.n).toBe(2);
   });
 
+  it('BORROW-2.2：分组视图——related/duplicate 追加为数组且 refs 带 relation；顺序稳定', async () => {
+    const a = await mkIssue('A');
+    const b = await mkIssue('B');
+    const c = await mkIssue('C');
+    const d = await mkIssue('D');
+    expect((await addDep(a, b)).status).toBe(201);            // blocks（blocked 视图）
+    expect((await addDep(a, c, 'related')).status).toBe(201);
+    // 同对 (blocked,blocker) 是主键，同向只能持一条边：duplicate 用另一对
+    expect((await addDep(a, d, 'duplicate')).status).toBe(201);
+    const view = (await lsDep(a)).body as {
+      blockers: Array<{ issue_id: string; relation?: string }>;
+      blocked: Array<{ issue_id: string }>;
+      related?: Array<{ issue_id: string; relation?: string }>;
+      duplicate?: Array<{ issue_id: string; relation?: string }>;
+    };
+    expect(view.blockers.map(x => x.issue_id)).toEqual([b]);
+    expect(view.blocked).toHaveLength(0);
+    expect(view.related?.map(x => x.issue_id)).toEqual([c]);
+    expect(view.related?.[0]?.relation).toBe('related');
+    expect(view.duplicate?.map(x => x.issue_id)).toEqual([d]);
+    expect(view.duplicate?.[0]?.relation).toBe('duplicate');
+  });
+
+  it('BORROW-2.2：违规检测——祖先卡为 blocks 前置（历史/直写库）→ 列表 dependency_violation 标记；正常卡为 null', async () => {
+    // 父子结构：parent ← child（parent_issue_id）；绕过 API 守卫直插「child 以 parent 为 blocks 前置」→ 违规
+    const parentRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '父卡', description: '' });
+    const parent = parentRes.body.id as string;
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', description: '', parent_issue_id: parent });
+    const child = childRes.body.id as string;
+    t.db.prepare("INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?, 'blocks', ?)")
+      .run(child, parent, Date.now());
+    const list = await request(app).get('/api/issues').query({ workspace: ws });
+    const byId = new Map<string, { dependency_violation?: string | null }>(list.body.map((i: { id: string }) => [i.id, i]));
+    expect(byId.get(child)?.dependency_violation).toBe('blocked-by-ancestor');
+    expect(byId.get(parent)?.dependency_violation ?? null).toBeNull();
+  });
+
   it('非法 relation 400；related/duplicate 不受 blocks 独有守卫限制（占用卡可加标注边）', async () => {
     const a = await mkIssue('A');
     const b = await mkIssue('B');

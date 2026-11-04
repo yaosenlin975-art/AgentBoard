@@ -119,6 +119,15 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
             依赖已清
           </span>
         )}
+        {issue.dependency_violation !== undefined && issue.dependency_violation !== null && (
+          <span
+            data-testid={`dependency-violation-${issue.id}`}
+            title="依赖违规：祖先卡被声明为前置（父卡等子卡、子卡又等祖先卡 → 流程死锁）。请检查并移除该前置。"
+            className="inline-flex items-center gap-1 font-medium text-red-600 dark:text-red-400"
+          >
+            ⚠ 祖先阻塞
+          </span>
+        )}
       </div>
     </>
   );

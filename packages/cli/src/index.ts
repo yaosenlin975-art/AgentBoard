@@ -303,10 +303,11 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
     .argument('<issue-id>', '任务 id')
     .action(async (id: string) => depRun(ctx => depLs(ctx, id))());
   dep.command('add')
-    .description('新增前置：blocker 解除（待验收/已关闭）后本卡才可 claim')
+    .description('新增前置：blocker 解除（待验收/已关闭）后本卡才可 claim；--type 建标注边（related/duplicate 不阻塞领取）')
     .argument('<issue-id>', '被阻塞的任务 id')
     .argument('<blocker-id>', '前置任务 id')
-    .action(async (id: string, blockerId: string) => depRun(ctx => depAdd(ctx, id, blockerId))());
+    .option('--type <type>', '依赖类型：blocks（缺省，阻塞）| related | duplicate')
+    .action(async (id: string, blockerId: string, opts: { type?: string }) => depRun(ctx => depAdd(ctx, id, blockerId, opts))());
   dep.command('rm')
     .description('移除前置')
     .argument('<issue-id>', '被阻塞的任务 id')
