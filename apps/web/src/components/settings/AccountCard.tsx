@@ -153,7 +153,7 @@ export function AccountCard({
 
       <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-xs text-neutral-600 dark:text-neutral-400">
         <dt>标识</dt><dd data-testid={`accounts-hint-${account.id}`} className="truncate font-mono">{account.identity_hint ?? '未提供'}</dd>
-        <dt>实例</dt><dd className="truncate">{account.client_instance_id.slice(0, 12)}…</dd>
+        <dt>实例</dt><dd className="truncate">{`${account.client_instance_id ?? '未提供'}`.slice(0, 12)}…</dd>
         <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
         <dt>最近签到</dt><dd>{account.last_checkin_day ?? '—'}{account.last_checkin_status ? ` · ${account.last_checkin_status}` : ''}</dd>
       </dl>

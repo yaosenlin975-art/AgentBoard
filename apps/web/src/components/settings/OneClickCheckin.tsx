@@ -16,7 +16,7 @@ import { Badge } from '../ui/Badge';
 import { BUTTON_PRIMARY } from '../ui/buttonStyles';
 import type { AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
-import { APP_LABEL, APP_ORDER, reasonLabel, unavailableLabel, type AccountsAppId, type CapabilityView } from './accountCapabilities';
+import { APP_LABEL, APP_ORDER, appLabel, reasonLabel, unavailableLabel, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
 
 export interface OneClickOutcome {
@@ -115,7 +115,7 @@ export function useOneClickCheckin({
     pending,
     runnableCount: runnable.length,
     totalAccounts,
-    runnableLabels: runnable.map((item) => APP_LABEL[item.app]),
+    runnableLabels: runnable.map((item) => appLabel(item.app)),
     outcomes,
     run: () => { void run(); },
   };
@@ -168,7 +168,7 @@ export function OneClickCheckinResults({ controller }: { controller: OneClickChe
       <ul className="space-y-1">
         {outcomes.map((outcome) => (
           <li key={outcome.app} data-testid={`accounts-one-click-outcome-${outcome.app}`} className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-neutral-800 dark:text-neutral-200">{APP_LABEL[outcome.app]}</span>
+            <span className="text-neutral-800 dark:text-neutral-200">{appLabel(outcome.app)}</span>
             <Badge tone={outcome.kind === 'created' ? 'green' : outcome.kind === 'conflict' ? 'blue' : outcome.kind === 'skipped' ? 'gray' : 'red'}>
               {KIND_LABEL[outcome.kind]}
             </Badge>

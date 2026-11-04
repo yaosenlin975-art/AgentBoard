@@ -13,6 +13,41 @@ import { api } from '../../api/client';
 /** 界面上按平台分区的 app（CodeBuddy Desktop 已下线，不在其中） */
 export type AccountsAppId = 'workbuddy_desktop' | 'minimax' | 'trae';
 
+/**
+ * 平台展示元信息（ACC-KB-B1W）：**唯一**的显示名/图标/色调来源。
+ * 服务端 `ManagedAppId` 已是六值（含 `qoder_cn` / `zcode`），但 B1S 的能力矩阵与路由还没落，
+ * 所以这里不把它们塞进 `APP_ORDER`（版式不动，仍三栏），只保证：
+ * - 已知平台 → 稳定的显示名 + 图标字形 + 中性色调；
+ * - 未知/未来平台 → `platformMeta` 兜底出「未识别平台」，绝不把裸 id 抛到界面上。
+ */
+export interface PlatformMeta {
+  app: ManagedAppId;
+  label: string;
+  /** 文字图标（单字符/双字符字形，走中性色，不引入新色相） */
+  glyph: string;
+  /** 是否已下线（下线平台不进分区，历史账号由 AccountsPanel 过滤） */
+  offline: boolean;
+}
+
+const PLATFORM_META: Record<string, Omit<PlatformMeta, 'app'>> = {
+  workbuddy_desktop: { label: 'WorkBuddy Desktop', glyph: 'W', offline: false },
+  codebuddy_desktop: { label: 'CodeBuddy Desktop', glyph: 'C', offline: true },
+  minimax: { label: 'MiniMax', glyph: 'M', offline: false },
+  trae: { label: 'Trae', glyph: 'T', offline: false },
+  qoder_cn: { label: 'Qoder CN', glyph: 'Q', offline: false },
+  zcode: { label: 'ZCode', glyph: 'Z', offline: false },
+};
+
+/** 未知平台的兜底展示名（不含裸 id） */
+export const UNKNOWN_PLATFORM_LABEL = '未识别平台';
+
+/** 平台元信息（未知 id 走兜底，永不返回裸 id 作为显示名） */
+export function platformMeta(app: string): PlatformMeta {
+  const known = PLATFORM_META[app];
+  if (known !== undefined) return { app: app as ManagedAppId, ...known };
+  return { app: app as ManagedAppId, label: UNKNOWN_PLATFORM_LABEL, glyph: '?', offline: false };
+}
+
 export const APP_ORDER: AccountsAppId[] = ['workbuddy_desktop', 'minimax', 'trae'];
 
 export const APP_LABEL: Record<AccountsAppId, string> = {
@@ -28,9 +63,9 @@ export function isOfflineApp(app: ManagedAppId): boolean {
   return OFFLINE_APP_IDS.includes(app);
 }
 
-/** 平台名（已下线平台返回原 id，不抛错） */
-export function appLabel(app: ManagedAppId): string {
-  return APP_LABEL[app as AccountsAppId] ?? app;
+/** 平台名（已下线平台与未知平台都走映射表，未知给「未识别平台」而不是裸 id） */
+export function appLabel(app: ManagedAppId | string): string {
+  return platformMeta(String(app)).label;
 }
 
 /**
@@ -60,6 +95,8 @@ export const REASON_LABEL: Record<string, string> = {
   LOGIN_STATE_NOT_FILE_BASED: '登录态不在可改写的明文文件里',
   PROVIDER_UNAVAILABLE: '客户端 provider 未装配',
   PROVIDER_UNVERIFIED: '该能力未验证',
+  // ACC-KB-B1W：新增平台（qoder_cn / zcode）只有 id、provider 还没实现，如实展示「尚未接入」
+  PROVIDER_NOT_IMPLEMENTED: '该平台尚未接入（provider 未实现）',
   VAULT_UNAVAILABLE: '凭据保护未装配',
   VAULT_READ_FAILED: '凭据读取失败，请重新读取本机账号',
   // 桌面客户端捕获 / 切换

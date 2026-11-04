@@ -16,9 +16,9 @@
  * 行为不变：能力矩阵失败不回退本地副本、全部写操作禁用；`POST /api/checkin-runs` 带 Idempotency-Key；
  * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看。折叠行点 [签到] 自动展开（批次面板/通知都在展开层内）。
  */
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { PublicManagedAccount } from '@agentboard/shared';
+import type { ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
@@ -28,18 +28,18 @@ import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaCreditChip, QuotaRows } from './QuotaCards';
 import {
-  APP_LABEL,
   APP_ORDER,
+  appLabel,
   hasReasonLabel,
   isOfflineApp,
   localDayKey,
+  platformMeta,
   reasonCodeOf,
   reasonLabel,
   reasonTechnicalCode,
   summarizeCheckinToday,
   unavailableLabel,
   useAccountCapabilities,
-  type AccountsAppId,
   type CapabilityView,
   type CheckinChipTone,
   type CheckinTodaySummary,
@@ -81,7 +81,7 @@ export function AccountsPanel() {
   const accounts: AccountView[] = (list.data ?? []).filter((account) => !isOfflineApp(account.app_id));
   const capabilityKnown = !caps.isPending && !caps.isError;
   /** 默认全折叠（§5 拍板）：展开是低频账号管理动作，不抢首屏。会话内状态，不持久化 */
-  const [openApps, setOpenApps] = useState<Partial<Record<AccountsAppId, boolean>>>({});
+  const [openApps, setOpenApps] = useState<Partial<Record<string, boolean>>>({});
   /** ACC-HEADER：一键签到按钮在工具栏，状态与结果分离渲染 */
   const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
 
@@ -91,7 +91,22 @@ export function AccountsPanel() {
   const todayTotal = summaries.reduce((sum, item) => sum + item.total, 0);
   const todayDone = summaries.reduce((sum, item) => sum + item.done, 0);
 
-  const setAppOpen = (app: AccountsAppId, open: boolean) => setOpenApps((previous) => ({ ...previous, [app]: open }));
+  /**
+   * ACC-KB-B1W：`APP_ORDER` 之外的平台（新增的 qoder_cn / zcode，以及未来未知 id）
+   * 一律进「其它平台」分区，按 id 字典序；来源 = 账号里出现的 app_id ∪ 能力矩阵里出现的 app_id。
+   * 目的：**不允许静默丢卡**——未知平台账号必须可见，显示名/图标走 `platformMeta()` 兜底。
+   */
+  const extraApps = useMemo(() => {
+    const known = new Set<string>(APP_ORDER);
+    const ids = new Set<string>();
+    for (const account of accounts) ids.add(String(account.app_id));
+    for (const id of Object.keys(caps.capabilities)) {
+      if (!isOfflineApp(id as ManagedAppId)) ids.add(id);
+    }
+    return [...ids].filter((id) => !known.has(id)).sort((left, right) => left.localeCompare(right));
+  }, [accounts, caps.capabilities]);
+
+  const setAppOpen = (app: string, open: boolean) => setOpenApps((previous) => ({ ...previous, [app]: open }));
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
@@ -150,6 +165,32 @@ export function AccountsPanel() {
           <div className="py-1"><QuotaRows /></div>
         </div>
       )}
+
+      {/* ACC-KB-B1W：APP_ORDER 之外的平台（qoder_cn / zcode / 未来未知 id）——不静默丢卡 */}
+      {!list.isPending && !list.isError && extraApps.length > 0 && (
+        <div data-testid="accounts-extra-platforms" className="mt-2 divide-y divide-neutral-200 border-y border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+          <p className="py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            其它平台（未接入上方分区，按 id 排序；能力以服务端能力矩阵为准）
+          </p>
+          {extraApps.map((app) => {
+            const appAccounts = accounts.filter((account) => account.app_id === app);
+            return (
+              <PlatformRow
+                key={app}
+                app={app}
+                open={openApps[app] === true}
+                onToggle={() => setAppOpen(app, openApps[app] !== true)}
+                onOpen={() => setAppOpen(app, true)}
+                capability={caps.capabilities[app as ManagedAppId] ?? null}
+                capabilityKnown={capabilityKnown}
+                accounts={appAccounts}
+                summary={summarizeCheckinToday(appAccounts, caps.capabilities[app as ManagedAppId] ?? null, today)}
+                today={today}
+              />
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -165,7 +206,7 @@ function PlatformRow({
   summary,
   today,
 }: {
-  app: AccountsAppId;
+  app: string;
   open: boolean;
   onToggle: () => void;
   onOpen: () => void;
@@ -197,7 +238,7 @@ function PlatformRow({
       if (idempotencyRef.current === null || idempotencyRef.current.signature !== signature) {
         idempotencyRef.current = { signature, key: crypto.randomUUID() };
       }
-      return createCheckinBatch({ app_id: app, account_ids: accountIds }, idempotencyRef.current.key);
+      return createCheckinBatch({ app_id: app as ManagedAppId, account_ids: accountIds }, idempotencyRef.current.key);
     },
     onSuccess: (outcome) => {
       if (outcome.kind === 'created') {
@@ -239,7 +280,9 @@ function PlatformRow({
           className="flex min-w-0 items-center gap-1.5 text-left text-sm font-medium text-neutral-900 hover:text-neutral-700 dark:text-neutral-100 dark:hover:text-neutral-300"
         >
           <span aria-hidden="true" className={`inline-block w-3 text-center text-neutral-400 transition-transform motion-reduce:transition-none ${open ? 'rotate-90' : ''}`}>▸</span>
-          <span className="truncate">{APP_LABEL[app]}</span>
+          {/* ACC-KB-B1W：平台名/图标走 platformMeta()（未知 id → 「未识别平台」+ ?，不出现裸 id） */}
+          <span aria-hidden="true" data-testid={`accounts-glyph-${app}`} className="inline-flex size-4 shrink-0 items-center justify-center rounded border border-neutral-300 text-[10px] leading-none text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">{platformMeta(app).glyph}</span>
+          <span className="truncate">{appLabel(app)}</span>
           <span data-testid={`accounts-count-${app}`} className="text-[11px] font-normal text-neutral-400 dark:text-neutral-500">{accounts.length} 个</span>
         </button>
 
@@ -282,7 +325,7 @@ function PlatformRow({
 
         {accounts.length === 0 ? (
           <p data-testid={`accounts-empty-${app}`} className="mt-1 rounded-md border border-dashed border-neutral-300 px-3 py-3 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-            尚无{APP_LABEL[app]}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}。点「读取本机账号」或「捕获当前账号」后列出。
+            尚无{appLabel(app)}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}。点「读取本机账号」或「捕获当前账号」后列出。
           </p>
         ) : (
           <>
