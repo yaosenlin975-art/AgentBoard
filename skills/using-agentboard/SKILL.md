@@ -78,8 +78,8 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 本节优先于本技能其余条款，冲突时以本节为准；用户当轮另有明确指示时按用户指示执行。
 
-- **调用即绑定**：技能启动第一步绑定当前工作区。跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；路径先解成实体路径（junction/软链接按 target 解析）再比对；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区；把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。cwd 落在某工作区根之下（未命中任何根的等值项）时，取最长前缀命中的那个根作为当前工作区；仅当同时命中多个不同根（公共父目录 / 嵌套工作区）才停下来问用户。cwd 不属于任何已注册工作空间时同样停下问用户；不猜、不按名称猜。
-- **默认只查、只领、只写当前工作区**：`kb list-tasks` 一律带 `--workspace <当前工作区 id>`；不带过滤的全局列表只用于跨工作区只读盘点，不得据它 claim。`kb create-issue` 的 workspace 必须是当前工作区。工作区外的路径默认只读：可读、可引用，不得写。
+- **调用即绑定**：技能启动第一步绑定当前工作区。主路径：`kb list-spaces --current` 直接输出 cwd 解析到的当前工作区（exit 0，JSON 仍为单元素数组），把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。兜底（`--current` 报歧义、无匹配或连不上服务时）：跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；路径先解成实体路径（junction/软链接按 target 解析）再比对；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区。cwd 落在某工作区根之下（未命中任何根的等值项）时，取最长前缀命中的那个根作为当前工作区；仅当同时命中多个不同根（公共父目录 / 嵌套工作区）才停下来问用户。cwd 不属于任何已注册工作空间时同样停下问用户；不猜、不按名称猜。
+- **默认只查、只领、只写当前工作区**：`kb list-tasks` 缺省按 cwd 解析当前工作区，只查/只领当前工作区时可不带 `--workspace`；`--all` 聚合全部工作空间，仅用于跨工作区只读盘点（与 `--workspace` 互斥，禁止用它跑写入命令，不得据它 claim）。`kb create-issue` 的 workspace 必须是当前工作区。工作区外的路径默认只读：可读、可引用，不得写。
 - **跨工作区一律要用户显式授权**：对非当前工作区的任何写入（改文件、建/改任务卡、claim/done/fail 别人的卡、写知识、写变更日志、起服务、改 DB、切分支）先说明「影响哪个工作区、哪些文件/数据」，取得当轮同意后再做；授权只覆盖当轮描述的范围。
 - **越界自检三问**（每次写前过一遍）：① 这个路径/任务卡属于哪个工作区？② 跟当前工作区是同一个吗？③ 若不是，用户当轮是否明确授权过？三问答不全即停手。
 - **卡归属校验**：`kb show` 返回的 `workspace_id` 与本轮绑定的工作区不一致时，停止写入与状态流转，把两个 id/路径一起回报父代理或用户，由他们决定是否授权跨区。
@@ -92,7 +92,8 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
 kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--parent <父卡 id>]  # 建任务；ws 用 id 或名称
 kb list-spaces                          # 列工作空间（id/name/path）
-kb list-tasks --workspace <id|名> [--status 待规划|进行中|待验收|已关闭|已废弃]  # 必须指定当前工作区；不带过滤的全局列表仅限跨工作区只读盘点，不得 claim / done / fail。
+kb list-spaces --current                # 只输出 cwd 解析到的当前工作区（绑定工作区主路径；JSON 仍为单元素数组）
+kb list-tasks [--workspace <id|名>] [--status 待规划|进行中|待验收|已关闭|已废弃]  # 缺省按 cwd 解析当前工作区；--all 聚合全部工作空间，仅限跨工作区只读盘点（与 --workspace 互斥），不得据它 claim / done / fail。
 kb show <issue-id>                      # 任务完整字段 + 全部评论
 kb claim <issue-id>                     # 原子领取；输出任务详情+评论+工作空间路径
 kb comment <issue-id> "内容"            # 写评论；中文/长文用 --stdin
@@ -114,7 +115,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不用 release 抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
 - **claim 状态门禁**：`kb claim` 只对「待规划」有效；状态是进行中/待验收/已关闭/已废弃时会被拒（退出码 2），但当前 CLI 文案仍显示「已被占用」——**不要据此判定为他人占用**，先 `kb show <id>` 看真实 `status`。
-- **知识页 `category`/`landed` 当前无 CLI 入口**：`kb knowledge create/revise` 没有 `--category` / `--landed` 参数，新页恒为 `legacy` / `null`；要设置只能走 REST（`POST /api/knowledge/pages`、`PATCH …/pages/:id`），别把「能写 category」当成可用能力。
+- **知识页 `category`/`landed` 当前无 CLI 入口**：`kb knowledge create/revise` 没有 `--category` / `--landed` 参数，新页恒为 `legacy` / `null`；要设置只能走 REST（`POST /api/knowledge/pages`、`PATCH …/pages/:id`），别把「能写 category」当成可用能力。CLI 入口待 `57d1ab4c`（`1cb07910` 的 C 段）落地后按该卡口径更新本条。
 - **slug 冲突的实际表现**：服务端返回 409 `KNOWLEDGE_EXISTS`，CLI 显示服务端中文 message「范围内已存在该 slug」并 **退出码 2**（`KNOWLEDGE_REVISION_CONFLICT` 同为 2）。处理方式：同 slug 改走 `kb knowledge revise`，不新建重复页。
 - **`--stdin` 与 BOM**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM（首字符不会被污染）；多行中文仍建议 `cmd /c "chcp 65001>nul & kb comment <id> --stdin < file"`，避开 PowerShell 管道编码问题。
 - **`--scope` 必须逐条传**：写成 `--scope a --scope b`；PowerShell 会把 `--scope a,b` 拆错甚至合并成含空格的单参数，CLI 检测到含空格会打印 SCOPE-GUARD 警告要求重传。
@@ -142,7 +143,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 开工（建卡或领卡）前先做 1–2 次只读查询了解项目，避免重复造轮子、重复踩坑。只读不需要额外授权，但仍须先完成「工作区边界（强制）」的绑定。
 
 - **先看工作区知识**：`kb knowledge list --scope workspace --workspace <当前工作区> --limit 20` 只看标题与摘要；与本次任务主题相关的，再 `kb knowledge show <id> --scope workspace --workspace <当前工作区>` 读正文。
-- **再看最近变更**：`kb changelog list --workspace <当前工作区> --limit 20`，确认最近有没有人改过你要动的同一区域；有就对齐或复用，不另起一套。
+- **再看最近变更**：`kb changelog list --limit 20`（`--workspace` 可省，缺省按 cwd 解析当前工作区；跨工作区只读盘点时才显式指定），确认最近有没有人改过你要动的同一区域；有就对齐或复用，不另起一套。
 - **区分事实与提议**：`category=open`（未决与盲区）或 `design` 且 `landed=proposed/partial` 的页**不得当成已实现的事实**；与卡面或代码冲突时先在卡评论提问，不猜、不按提议页当规格写代码。
 - **成本控制**：默认只读标题+摘要，正文按需；不要一次拉全量正文，也不要把知识页整段粘进评论。
 - **写知识页**（建/改/归档，PowerShell 复制可用；字段与三种引号写法见 `kb knowledge create --help`）：
@@ -157,7 +158,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 
 ## 领任务 → 执行 → 汇报
 
-1. **领任务**：`kb list-tasks --workspace <当前工作区> --status 待规划` 选一个，先 `kb dep ls <id>` 查前置——有未解除 blocker 时 409（退出码 2），处置见「kb 命令速查」`kb dep` 第 ③ 条；无 blocker 再 `kb claim <id>`。
+1. **领任务**：`kb list-tasks --status 待规划` 选一个（缺省按 cwd 解析当前工作区，也可显式带 `--workspace <当前工作区>`；不要用 `--all`），先 `kb dep ls <id>` 查前置——有未解除 blocker 时 409（退出码 2），处置见「kb 命令速查」`kb dep` 第 ③ 条；无 blocker 再 `kb claim <id>`。
    - 退出码 2 或报「已被占用」→ 换卡，处置见「故障分支」。
    - 退出码 2 且报「存在未完成的前置任务」→ 被依赖门禁挡住：按「kb 命令速查」`kb dep` 第 ③ 条处理。
    - 领取输出含任务详情、评论与工作空间路径；工作目录切到该路径下干活。
@@ -241,7 +242,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | --- | --- |
 | 「这张卡很小，不用拆」 | 拆卡判据是硬的：跨 ≥2 包/端、≥3 独立可验收步骤、>8 文件或 >400 行、验收条目 ≥5 且彼此独立、功能新增与重构混在一卡。任一条命中就必须父卡 + 子卡。 |
 | 「先 `kb claim` 再说」 | claim 前先 `kb show` 读最新描述、状态、占用者；被他人占用就换卡，不抢不释放。 |
-| 「全局列表里挑一张就行」 | `kb list-tasks` 必须带 `--workspace <当前工作区>`；不带过滤的全局列表只读盘点，不得据它 claim。 |
+| 「全局列表里挑一张就行」 | `kb list-tasks` 缺省即当前工作区；`--all` 才是全局聚合，仅只读盘点（与 `--workspace` 互斥），不得据它 claim。 |
 | 「卡被占用但看起来停了很久，我接手吧」 | 被占用 ≠ 可释放。只有用户当轮明确授权才 release，且先写评论说明范围与交接内容。 |
 | 「build 红但不是我的锅，先 done」 | 验收不通过就不 done：要么修，要么 `fail --reason` 写清卡点；未跑的检查写「未验证」。 |
 | 「路径看着在当前工作区，直接写」 | 写前过越界三问；junction/软链接按实体路径判定，逻辑路径会骗人。 |
