@@ -60,28 +60,24 @@ beforeEach(() => {
 });
 
 describe('账号页重设计（ACC-UI-01）', () => {
-  it('平台行可折叠：默认全折叠（六行总览），点头部可展开/收起', async () => {
+  it('主从布局：默认选中第一个平台且右栏展开；切平台后只渲染该平台（再无六行折叠）', async () => {
     renderPanel();
 
+    // 默认选中第一个平台，右栏 body 直接可见（不再是「全折叠」）
     const wbBody = await screen.findByTestId('accounts-body-workbuddy_desktop');
-    const mmBody = screen.getByTestId('accounts-body-minimax');
-    const trBody = screen.getByTestId('accounts-body-trae');
-    expect(wbBody).toHaveAttribute('hidden');
-    expect(mmBody).toHaveAttribute('hidden');
-    expect(trBody).toHaveAttribute('hidden');
+    expect(wbBody).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
+    // 未选中的平台整体不渲染（结构上消除六平台同屏）
+    expect(screen.queryByTestId('accounts-body-minimax')).toBeNull();
+    expect(screen.queryByTestId('accounts-body-trae')).toBeNull();
 
-    // 头部 toggle 的 aria-expanded 与 body 的 hidden 一致
-    expect(screen.getByTestId('accounts-toggle-workbuddy_desktop')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('accounts-toggle-minimax')).toHaveAttribute('aria-expanded', 'false');
-
-    await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
-    expect(screen.getByTestId('accounts-body-minimax')).not.toHaveAttribute('hidden');
-    expect(screen.getByTestId('accounts-toggle-minimax')).toHaveAttribute('aria-expanded', 'true');
-    // 折叠状态互相独立：展开 MiniMax 不影响别的平台行
-    expect(screen.getByTestId('accounts-body-workbuddy_desktop')).toHaveAttribute('hidden');
-
-    await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
-    expect(screen.getByTestId('accounts-body-minimax')).toHaveAttribute('hidden');
+    // 切到 MiniMax：左栏选中态切换，右栏换成 MiniMax 且 WorkBuddy 消失
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
+    const mmBody = await screen.findByTestId('accounts-body-minimax');
+    expect(mmBody).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('accounts-index-item-minimax')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.queryByTestId('accounts-body-workbuddy_desktop')).toBeNull();
   });
 
   it('能力徽标三态：✓ / ✗ / ?，徽标文本不含原因码，原因只进 tooltip', async () => {
@@ -90,7 +86,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
 
     // workbuddy：capture ✓ switch ✓ checkin ✓（derived）
     for (const action of ['capture', 'switch', 'checkin']) {
-      const badge = screen.getByTestId(`accounts-badge-workbuddy_desktop-${action}`);
+      const badge = await screen.findByTestId(`accounts-badge-workbuddy_desktop-${action}`);
       expect(badge).toHaveAttribute('data-state', 'available');
       // UNSLOP：三态改为线性图标，状态由 data-state + 图标 + aria-label 三重表达（不再用 ✓ 字形）
       expect(badge.querySelector('svg')).not.toBeNull();
@@ -99,7 +95,9 @@ describe('账号页重设计（ACC-UI-01）', () => {
     }
 
     // minimax：capture ✓ switch ✗（CLIENT_NOT_INSTALLED 原因只进 tooltip）
-    const mmSwitch = screen.getByTestId('accounts-badge-minimax-switch');
+    // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
+    const mmSwitch = await screen.findByTestId('accounts-badge-minimax-switch');
     expect(mmSwitch).toHaveAttribute('data-state', 'unavailable');
     expect(mmSwitch.querySelector('svg')).not.toBeNull();
     expect(mmSwitch.getAttribute('aria-label')).toContain('不可用');
@@ -107,8 +105,9 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(mmSwitch.getAttribute('title')).toContain('CLIENT_NOT_INSTALLED');
     expect(mmSwitch.textContent ?? '').not.toContain('CLIENT_NOT_INSTALLED');
 
-    // trae：capture ✗ 原因在 tooltip
-    const trCapture = screen.getByTestId('accounts-badge-trae-capture');
+    // trae：capture ✗ 原因在 tooltip → 先切到 Trae
+    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
+    const trCapture = await screen.findByTestId('accounts-badge-trae-capture');
     expect(trCapture).toHaveAttribute('data-state', 'unavailable');
     expect(trCapture.getAttribute('title')).toContain('LOGIN_STATE_NOT_FILE_BASED');
   });

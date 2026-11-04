@@ -7,7 +7,8 @@
  * 3. 已知三平台分区（APP_ORDER）与六行总览不受影响。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { AccountCapability, PublicManagedAccount } from '@agentboard/shared';
@@ -70,15 +71,17 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
       account({ id: 'acc-qoder', app_id: 'qoder_cn', display_name: 'Qoder 账号' }),
       account({ id: 'acc-zcode', app_id: 'zcode', display_name: 'ZCode 账号' }),
     ]);
-    const extra = await screen.findByTestId('accounts-extra-platforms');
+    // ACC-B1：其它平台并入左栏索引（不再有独立 accounts-extra-platforms 分区）
+    const extra = await screen.findByTestId('accounts-index');
     // 按 id 字典序：qoder_cn < zcode
-    const rows = [...extra.querySelectorAll('[data-testid^="accounts-app-"]')].map((el) => el.getAttribute('data-testid'));
-    expect(rows).toEqual(['accounts-app-qoder_cn', 'accounts-app-zcode']);
+    const apps = [...extra.querySelectorAll('[data-testid^="accounts-index-item-"]')].map((el) => el.getAttribute('data-app'));
+    // 六平台（APP_ORDER）之后按 id 字典序追加其它平台
+    expect(apps.slice(-2)).toEqual(['qoder_cn', 'zcode']);
     expect(within(extra).getByText('Qoder CN')).toBeInTheDocument();
     expect(within(extra).getByText('ZCode')).toBeInTheDocument();
     // 图标字形来自 platformMeta
-    expect(within(extra).getByTestId('accounts-glyph-qoder_cn')).toHaveTextContent('Q');
-    expect(within(extra).getByTestId('accounts-glyph-zcode')).toHaveTextContent('Z');
+    expect(within(extra).getByTestId('accounts-index-glyph-qoder_cn')).toHaveTextContent('Q');
+    expect(within(extra).getByTestId('accounts-index-glyph-zcode')).toHaveTextContent('Z');
     // 已知平台仍在 APP_ORDER 分区里
     expect(screen.getByTestId('accounts-app-workbuddy_desktop')).toBeInTheDocument();
   });
@@ -88,10 +91,15 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
       account({ id: 'acc-wb', app_id: 'workbuddy_desktop' }),
       account({ id: 'acc-fixture', app_id: 'some_future_app' as PublicManagedAccount['app_id'], display_name: '夹具账号' }),
     ]);
-    const extra = await screen.findByTestId('accounts-extra-platforms');
-    expect(within(extra).getByTestId('accounts-app-some_future_app')).toBeInTheDocument();
-    expect(within(extra).getByTestId('accounts-glyph-some_future_app')).toHaveTextContent('?');
-    expect(within(extra).getByText('未识别平台')).toBeInTheDocument();
+    await screen.findByTestId('accounts-index');
+    // ACC-B1：未知平台也进左栏索引（不静默丢卡），图标走 platformMeta 兜底
+    const unknownItem = await screen.findByTestId('accounts-index-item-some_future_app');
+    expect(unknownItem).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-index-glyph-some_future_app')).toHaveTextContent('?');
+    expect(within(unknownItem).getByText('未识别平台')).toBeInTheDocument();
+    // 点击后右栏渲染该平台
+    await userEvent.click(unknownItem);
+    await waitFor(() => expect(screen.getByTestId('accounts-index-item-some_future_app')).toHaveAttribute('aria-selected', 'true'));
     // 账号本身可见（不再静默丢卡）
     expect(screen.getByText('夹具账号')).toBeInTheDocument();
     expect(document.body.textContent ?? '').not.toContain('some_future_app');

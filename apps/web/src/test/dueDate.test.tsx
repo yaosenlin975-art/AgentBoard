@@ -74,7 +74,10 @@ describe('卡片徽标', () => {
     expect(badge.getAttribute('data-overdue')).toBe('false');
     unmount();
 
-    const past = new Date(Date.now() - 5 * DAY).toISOString().slice(0, 10);
+    // 用本地日期回退（toISOString 按 UTC 切片，UTC+8 零点到八点会偏移一天，导致逾期天数差 1）
+    const pastDate = new Date();
+    pastDate.setDate(pastDate.getDate() - 5);
+    const past = `${pastDate.getFullYear()}-${String(pastDate.getMonth() + 1).padStart(2, '0')}-${String(pastDate.getDate()).padStart(2, '0')}`;
     render(<IssueCard issue={issue({ id: 'past', due_date: past })} sessionRunning={false} />);
     const overdueBadge = screen.getByTestId('due-badge-past');
     expect(overdueBadge).toHaveTextContent('逾期 5 天');

@@ -74,7 +74,8 @@ function renderPanel() {
 
 /** 打开某平台的「添加账号」向导（入口在平台行展开层内，先展开再点） */
 async function openWizard(app: string) {
-  await userEvent.click(await screen.findByTestId(`accounts-toggle-${app}`));
+  // ACC-B1：主从布局下点左栏索引项即切换平台（右栏默认展开）
+  await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
   await userEvent.click(await screen.findByTestId(`accounts-add-${app}`));
   await screen.findByTestId(`accounts-add-panel-${app}`);
 }
@@ -96,16 +97,18 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
     })));
     renderPanel();
 
-    await screen.findByTestId('accounts-overview');
+    await screen.findByTestId('accounts-index');
     // workbuddy 装配了协议 → 有入口按钮
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
+    await userEvent.click(await screen.findByTestId('accounts-index-item-workbuddy_desktop'));
     expect(screen.getByTestId('accounts-add-workbuddy_desktop')).toBeInTheDocument();
-    // minimax / trae 没装配 → 只有 reason 文案，**没有按钮**（不出现点了必然失败的入口）
-    await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
-    await userEvent.click(screen.getByTestId('accounts-toggle-trae'));
-    expect(screen.getByTestId('accounts-add-unsupported-minimax')).toHaveTextContent('该平台不支持协议级添加账号');
-    expect(screen.getByTestId('accounts-add-unsupported-trae')).toHaveTextContent('该平台不支持协议级添加账号');
+    // minimax / trae 没装配 → 只有 reason 文案，**没有按钮**
+    // ACC-B1：右栏只渲染选中平台 → 切一个断一个
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
+    expect(await screen.findByTestId('accounts-add-unsupported-minimax')).toHaveTextContent('该平台不支持协议级添加账号');
     expect(screen.queryByTestId('accounts-add-minimax')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
+    expect(await screen.findByTestId('accounts-add-unsupported-trae')).toHaveTextContent('该平台不支持协议级添加账号');
     expect(screen.queryByTestId('accounts-add-trae')).not.toBeInTheDocument();
   });
 
@@ -114,8 +117,8 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
       HttpResponse.json({ error: { code: 'INTERNAL', message: '协议清单读取失败' } }, { status: 500 })));
     renderPanel();
 
-    await screen.findByTestId('accounts-overview');
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
+    await screen.findByTestId('accounts-index');
+    await userEvent.click(await screen.findByTestId('accounts-index-item-workbuddy_desktop'));
     expect(screen.getByTestId('accounts-add-unsupported-workbuddy_desktop')).toHaveTextContent('添加账号能力读取失败');
     expect(screen.queryByTestId('accounts-add-workbuddy_desktop')).not.toBeInTheDocument();
   });
@@ -132,22 +135,27 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
     })));
     renderPanel();
 
-    await screen.findByTestId('accounts-overview');
-    // qoder_cn / zcode 在「其它平台」分区里（不在 APP_ORDER），同样要有入口
-    await userEvent.click(await screen.findByTestId('accounts-toggle-minimax'));
-    expect(screen.getByTestId('accounts-add-flow-minimax')).toHaveTextContent('设备码');
-    await userEvent.click(screen.getByTestId('accounts-toggle-trae'));
-    expect(screen.getByTestId('accounts-add-flow-trae')).toHaveTextContent('本地回调');
+    await screen.findByTestId('accounts-index');
+    // qoder_cn / zcode 现在并入左栏索引（不在 APP_ORDER），同样要有入口
+    // ACC-B1：右栏只渲染选中平台 → 每个平台「切换后 await 自身元素再断言」
+    await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
+    expect(await screen.findByTestId('accounts-add-flow-minimax')).toHaveTextContent('设备码');
 
-    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
-    expect(screen.getByTestId('accounts-add-flow-workbuddy_desktop')).toHaveTextContent('浏览器登录');
-    await userEvent.click(screen.getByTestId('accounts-toggle-qoder_cn'));
-    expect(screen.getByTestId('accounts-add-flow-qoder_cn')).toHaveTextContent('设备授权');
-    await userEvent.click(screen.getByTestId('accounts-toggle-zcode'));
-    expect(screen.getByTestId('accounts-add-flow-zcode')).toHaveTextContent('CLI 授权');
+    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
+    expect(await screen.findByTestId('accounts-add-flow-trae')).toHaveTextContent('本地回调');
 
-    // 引导文案在展开的向导里（Trae 强调「同一台机器的浏览器」）
-    await userEvent.click(screen.getByTestId('accounts-add-trae'));
+    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
+    expect(await screen.findByTestId('accounts-add-flow-workbuddy_desktop')).toHaveTextContent('浏览器登录');
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-qoder_cn'));
+    expect(await screen.findByTestId('accounts-add-flow-qoder_cn')).toHaveTextContent('设备授权');
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-zcode'));
+    expect(await screen.findByTestId('accounts-add-flow-zcode')).toHaveTextContent('CLI 授权');
+
+    // 引导文案在展开的向导里（Trae 强调「同一台机器的浏览器」）→ 切回 Trae 再打开
+    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
+    await userEvent.click(await screen.findByTestId('accounts-add-trae'));
     expect(await screen.findByTestId('accounts-add-instruction-trae')).toHaveTextContent('同一台机器');
   });
 
@@ -159,15 +167,15 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
       ],
     })));
     renderPanel();
-    await screen.findByTestId('accounts-overview');
+    await screen.findByTestId('accounts-index');
 
-    await userEvent.click(await screen.findByTestId('accounts-toggle-trae'));
+    await userEvent.click(await screen.findByTestId('accounts-index-item-trae'));
     await userEvent.click(await screen.findByTestId('accounts-add-trae'));
     // trae 只有中国区 → 不给区域选择
     expect(screen.queryByTestId('accounts-add-region-trae-cn')).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId('accounts-add-close-trae'));
-    await userEvent.click(screen.getByTestId('accounts-toggle-minimax'));
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
     await userEvent.click(await screen.findByTestId('accounts-add-minimax'));
     expect(screen.getByTestId('accounts-add-region-minimax-cn')).toBeInTheDocument();
     expect(screen.getByTestId('accounts-add-region-minimax-global')).toBeInTheDocument();
@@ -194,8 +202,8 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
       })),
     );
     renderPanel();
-    await screen.findByTestId('accounts-overview');
-    await userEvent.click(await screen.findByTestId('accounts-toggle-minimax'));
+    await screen.findByTestId('accounts-index');
+    await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
     await userEvent.click(await screen.findByTestId('accounts-add-minimax'));
 
     // 发起授权：请求体带 app_id + region
@@ -211,7 +219,10 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     // 轮询 → authorized → 账号列表重新拉取，新账号出现
     await userEvent.click(await screen.findByTestId('accounts-add-check-minimax'));
     await waitFor(() => expect(accountLists).toBeGreaterThan(1));
-    expect(await screen.findByText('新加的账号')).toBeInTheDocument();
+    // ACC-B1：右栏只渲染选中平台；该 fixture 的新账号 app_id 是 workbuddy → 切过去再看
+    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
+    const detail = await screen.findByTestId('accounts-detail');
+    expect(await within(detail).findByText('新加的账号')).toBeInTheDocument();
   });
 
   it('轮询失败（平台拒绝授权）给中文原因，裸码只进可展开技术码', async () => {
@@ -223,7 +234,7 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
       })),
     );
     renderPanel();
-    await screen.findByTestId('accounts-overview');
+    await screen.findByTestId('accounts-index');
     await openWizard('workbuddy_desktop');
 
     await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
@@ -245,7 +256,7 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
       }, { status: 503 })),
     );
     renderPanel();
-    await screen.findByTestId('accounts-overview');
+    await screen.findByTestId('accounts-index');
     await openWizard('trae');
 
     await userEvent.click(await screen.findByTestId('accounts-add-start-trae'));
@@ -269,7 +280,7 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
       }),
     );
     renderPanel();
-    await screen.findByTestId('accounts-overview');
+    await screen.findByTestId('accounts-index');
     await openWizard('workbuddy_desktop');
 
     await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
@@ -282,11 +293,14 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
 
   it('向导在平台行的展开层内：折叠时不可见', async () => {
     renderPanel();
-    await screen.findByTestId('accounts-overview');
-    expect(screen.getByTestId('accounts-body-workbuddy_desktop')).toHaveAttribute('hidden');
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
-    const body = screen.getByTestId('accounts-body-workbuddy_desktop');
+    await screen.findByTestId('accounts-index');
+    // ACC-B1：默认选中第一个平台（workbuddy）→ 右栏已展开；切走后该平台整体不渲染
+    const body = await screen.findByTestId('accounts-body-workbuddy_desktop');
     expect(body).not.toHaveAttribute('hidden');
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
+    await screen.findByTestId('accounts-body-minimax');
+    expect(screen.queryByTestId('accounts-body-workbuddy_desktop')).toBeNull();
+    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
     expect(within(body).getByTestId('accounts-add-workbuddy_desktop')).toBeInTheDocument();
   });
 });

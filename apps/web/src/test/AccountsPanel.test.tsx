@@ -111,14 +111,19 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     ]);
     renderPanel();
 
+    // ACC-B1 主从布局：右栏只渲染选中平台，逐个切换后断言
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
     expect(within(wb).getByText('WB 账号一')).toBeInTheDocument();
     expect(within(wb).getByText('WB 账号二')).toBeInTheDocument();
     expect(within(wb).getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('共 2 个账号');
-    const mm = screen.getByTestId('accounts-app-minimax');
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
+    const mm = await screen.findByTestId('accounts-app-minimax');
     expect(within(mm).getByText('MM 账号')).toBeInTheDocument();
-    expect(within(mm).queryByText('WB 账号一')).not.toBeInTheDocument();
-    const tr = screen.getByTestId('accounts-app-trae');
+    expect(screen.queryByText('WB 账号一')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
+    const tr = await screen.findByTestId('accounts-app-trae');
     expect(within(tr).getByText('TRAE 账号')).toBeInTheDocument();
     // CodeBuddy Desktop 栏位移除：无分区，且历史账号不渲染
     expect(screen.queryByTestId('accounts-app-codebuddy_desktop')).not.toBeInTheDocument();
@@ -154,6 +159,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
   it('is_current=null 时显示「客户端当前未知」，不假装非当前', async () => {
     mockList([account({ id: 'acc-mm-unk', app_id: 'minimax', display_name: '未知账号', is_current: null })]);
     renderPanel();
+    // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
+    await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
     const card = await screen.findByTestId('accounts-card-acc-mm-unk');
     expect(within(card).getByTestId('accounts-client-current-acc-mm-unk')).toHaveTextContent('客户端当前未知');
   });
@@ -173,6 +180,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     );
     renderPanel();
 
+    // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
+    await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
     const mmCard = await screen.findByTestId('accounts-card-acc-mm-1');
     const mmSwitch = within(mmCard).getByTestId('accounts-switch-acc-mm-1');
     expect(mmSwitch).toBeDisabled();
@@ -182,9 +191,9 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await userEvent.click(mmSwitch);
     expect(posts).toHaveLength(0);
 
-    // ACC-PANEL-03：账号卡在展开层内，先展开 WorkBuddy 行再点切换
-    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
-    const wbCard = screen.getByTestId('accounts-card-acc-wb-2');
+    // ACC-B1：切回 WorkBuddy，右栏默认展开
+    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
+    const wbCard = await screen.findByTestId('accounts-card-acc-wb-2');
     await userEvent.click(within(wbCard).getByTestId('accounts-switch-acc-wb-2'));
     expect(posts).toHaveLength(0);
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
@@ -211,7 +220,6 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     renderPanel();
 
     const card = await screen.findByTestId('accounts-card-acc-wb-3');
-    await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(within(card).getByTestId('accounts-switch-acc-wb-3'));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
@@ -224,6 +232,7 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     mockList([]);
     renderPanel();
     for (const app of ['workbuddy_desktop', 'minimax', 'trae']) {
+      await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
       const section = await screen.findByTestId(`accounts-app-${app}`);
       expect(within(section).getByTestId(`accounts-empty-${app}`)).toHaveTextContent('尚无');
     }

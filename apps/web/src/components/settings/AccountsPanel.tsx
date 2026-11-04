@@ -46,6 +46,7 @@ import {
 } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
 import { AddAccountEntry } from './AddAccountWizard';
+import { AccountsMasterDetail, type PlatformIndexItem } from './AccountsMasterDetail';
 
 /** 签到芯片三态配色（§5：绿=全完成、琥珀=部分、灰=不可用/未纳入） */
 const CHIP_TONE_CLASS: Record<CheckinChipTone, string> = {
@@ -109,6 +110,47 @@ export function AccountsPanel() {
 
   const setAppOpen = (app: string, open: boolean) => setOpenApps((previous) => ({ ...previous, [app]: open }));
 
+  /**
+   * ACC-B1：左栏平台索引项 = APP_ORDER（六平台）+ 「其它平台」（不静默丢卡）。
+   * 右栏只渲染选中平台的 PlatformRow —— 从结构上消除六平台同屏堆叠。
+   */
+  const indexItems: PlatformIndexItem[] = useMemo(() => {
+    const build = (app: string, appAccounts: AccountView[], summary: CheckinTodaySummary): PlatformIndexItem => {
+      const meta = platformMeta(app as ManagedAppId);
+      // 当前账号：is_current === true（服务端标记的当前客户端登录账号）
+      const current = appAccounts.find((account) => account.is_current === true) ?? null;
+      return {
+        app,
+        label: meta.label,
+        glyph: meta.glyph,
+        currentLabel: current === null ? null : (current.display_name ?? null),
+        accountCount: appAccounts.length,
+        done: summary.done,
+        total: summary.total,
+        render: () => (
+          <PlatformRow
+            app={app}
+            open
+            onToggle={() => setAppOpen(app, true)}
+            onOpen={() => setAppOpen(app, true)}
+            capability={caps.capabilities[app as ManagedAppId] ?? null}
+            capabilityKnown={capabilityKnown}
+            accounts={appAccounts}
+            summary={summary}
+            today={today}
+          />
+        ),
+      };
+    };
+
+    const known = APP_ORDER.map((app, index) => build(app, accountsByApp[index]!, summaries[index]!));
+    const extras = extraApps.map((app) => {
+      const appAccounts = accounts.filter((account) => account.app_id === app);
+      return build(app, appAccounts, summarizeCheckinToday(appAccounts, caps.capabilities[app as ManagedAppId] ?? null, today));
+    });
+    return [...known, ...extras];
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today]);
+
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
       {/* 工具栏（§5）：脱敏说明靠左，一键签到 / 读取本机账号 / 今日 n/m 靠右；窄屏换行不破版 */}
@@ -147,50 +189,14 @@ export function AccountsPanel() {
       )}
 
       {!list.isPending && !list.isError && (
-        <div data-testid="accounts-overview" className="divide-y divide-neutral-200 border-y border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-          {APP_ORDER.map((app, index) => (
-            <PlatformRow
-              key={app}
-              app={app}
-              open={openApps[app] === true}
-              onToggle={() => setAppOpen(app, openApps[app] !== true)}
-              onOpen={() => setAppOpen(app, true)}
-              capability={caps.capabilities[app] ?? null}
-              capabilityKnown={capabilityKnown}
-              accounts={accountsByApp[index]!}
-              summary={summaries[index]!}
-              today={today}
-            />
-          ))}
-          {/* 后三行：仅额度来源，不可展开、无账号操作 */}
-          <div className="py-1"><QuotaRows /></div>
-        </div>
-      )}
-
-      {/* ACC-KB-B1W：APP_ORDER 之外的平台（qoder_cn / zcode / 未来未知 id）——不静默丢卡 */}
-      {!list.isPending && !list.isError && extraApps.length > 0 && (
-        <div data-testid="accounts-extra-platforms" className="mt-2 divide-y divide-neutral-200 border-y border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-          <p className="py-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-            其它平台（未接入上方分区，按 id 排序；能力以服务端能力矩阵为准）
-          </p>
-          {extraApps.map((app) => {
-            const appAccounts = accounts.filter((account) => account.app_id === app);
-            return (
-              <PlatformRow
-                key={app}
-                app={app}
-                open={openApps[app] === true}
-                onToggle={() => setAppOpen(app, openApps[app] !== true)}
-                onOpen={() => setAppOpen(app, true)}
-                capability={caps.capabilities[app as ManagedAppId] ?? null}
-                capabilityKnown={capabilityKnown}
-                accounts={appAccounts}
-                summary={summarizeCheckinToday(appAccounts, caps.capabilities[app as ManagedAppId] ?? null, today)}
-                today={today}
-              />
-            );
-          })}
-        </div>
+        <AccountsMasterDetail
+          items={indexItems}
+          footer={
+            <div data-testid="accounts-quota-rows" className="min-[920px]:block">
+              <QuotaRows />
+            </div>
+          }
+        />
       )}
     </section>
   );

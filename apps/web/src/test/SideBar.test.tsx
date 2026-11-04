@@ -205,10 +205,13 @@ describe('账号管理入口（ACCOUNT-ENTRY，迁到左栏）', () => {
     const drawer = await screen.findByTestId('drawer-panel');
     expect(drawer).toHaveAttribute('data-drawer', 'accounts');
     expect(entry).toHaveAttribute('aria-expanded', 'true');
-    expect(within(drawer).getByText('WorkBuddy Desktop')).toBeInTheDocument();
-    expect(within(drawer).getByText('MiniMax')).toBeInTheDocument();
-    expect(within(drawer).getByText('Trae')).toBeInTheDocument();
+    // 主从布局：平台可见性按左栏索引项断言（平台名同时出现在左栏与右栏标题，getByText 会多命中）
+    expect(within(drawer).getByTestId('accounts-index-item-workbuddy_desktop')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('accounts-index-item-minimax')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('accounts-index-item-trae')).toBeInTheDocument();
     expect(within(drawer).queryByText('CodeBuddy Desktop')).toBeNull();
+    // 能力串只渲染在右栏选中平台内：切到 minimax 再断言
+    await userEvent.click(within(drawer).getByTestId('accounts-index-item-minimax'));
     expect(within(drawer).getByTestId('accounts-capability-minimax')).toHaveTextContent('CLIENT_NOT_INSTALLED');
     expect(within(drawer).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
     expect(within(drawer).getByTestId('accounts-import-local')).toBeInTheDocument();
