@@ -46,10 +46,12 @@ export default function App() {
   };
 
   // NAV-CHAT-EXIT：整屏聊天下 Esc / Ctrl(Cmd)+[ 退出回来源视图；有弹窗时让弹窗先处理
+  // S4：drawer 打开时 Esc 先关抽屉（挤压态 drawer 是 role="region" 不是 dialog，必须显式避让）
   useEffect(() => {
     if (view !== 'chat') return undefined;
     const onKey = (event: KeyboardEvent): void => {
       if (!isChatExitKey(event)) return;
+      if (useNavStore.getState().drawer !== null) return;
       if (document.querySelector('[role="dialog"]') !== null) return;
       event.preventDefault();
       exitChat();

@@ -6,7 +6,9 @@ import { HttpResponse, http } from 'msw';
 import type { CliInfo, Workspace, WorkspaceChangeLog } from '@agentboard/shared';
 import { TopBar } from '../components/topbar/TopBar';
 import { RightPanel } from '../components/right/RightPanel';
+import { DrawerPanel } from '../components/drawer/DrawerPanel';
 import { useAppStore } from '../state/appStore';
+import { useNavStore } from '../state/navStore';
 import { usePanelStore } from '../state/panelStore';
 import { server } from './server';
 
@@ -27,6 +29,8 @@ function renderTopBar(
   return render(
     <QueryClientProvider client={qc}>
       <TopBar workspace={workspace} />
+      {/* S4：账号/设置面板由 DrawerPanel 渲染（顶栏只负责触发） */}
+      <DrawerPanel />
       {withPanel && <RightPanel />}
     </QueryClientProvider>,
   );
@@ -37,6 +41,8 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove('dark');
   useAppStore.setState({ wsStatus: 'connecting' });
+  // S4：导航/抽屉状态也要复位（顶栏的 aria-expanded 现在读 navStore）
+  useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null });
   usePanelStore.setState({
     view: null,
     issueId: null,
@@ -129,10 +135,12 @@ describe('TopBar', () => {
     expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('5');
 
     await userEvent.click(screen.getByRole('button', { name: '聊天' }));
-    expect(usePanelStore.getState()).toMatchObject({ view: 'chat', rightOpen: true });
+    // S2b：聊天整屏化 —— 顶栏聊天按钮切 navStore，右侧面板不再承载聊天
+    expect(useNavStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState()).toMatchObject({ view: null, rightOpen: false });
   });
 
-  it('首次加载无交互即可达聊天：右缘常驻窄条可见，顶栏按钮打开聊天视图', async () => {
+  it('首次加载无交互即可达聊天：顶栏按钮打开整屏聊天', async () => {
     renderTopBar(null, true);
 
     // PANEL-ENTRY2：不再有右缘常驻窄条；聊天入口就是顶栏按钮
@@ -143,9 +151,10 @@ describe('TopBar', () => {
     expect(chatEntry).toHaveAttribute('aria-expanded', 'false');
 
     await userEvent.click(chatEntry);
-    expect(await screen.findByTestId('right-panel')).toBeInTheDocument();
-    expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: '聊天' })).toBeInTheDocument();
+    // S2b：整屏聊天由主区渲染（顶栏自身不渲染 chat-view，故按 store 断言）
+    expect(useNavStore.getState().view).toBe('chat');
+    expect(chatEntry).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByTestId('right-panel')).not.toBeInTheDocument();
   });
 
   it('版本号不再渲染，路径顶到原版本号位置（title 为完整路径）', async () => {
@@ -188,26 +197,30 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     );
   });
 
-  it('顶栏「账号」入口可直接打开账号管理面板（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
+  it('顶栏「账号」入口打开账号抽屉（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
     renderTopBar(ws);
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toHaveTextContent('账号');
     expect(entry).toHaveAttribute('aria-label', '账号管理');
 
     await userEvent.click(entry);
-    const dialog = await screen.findByRole('dialog', { name: '账号管理' });
-    expect(within(dialog).getByText('WorkBuddy Desktop')).toBeInTheDocument();
-    expect(within(dialog).getByText('MiniMax')).toBeInTheDocument();
-    expect(within(dialog).getByText('Trae')).toBeInTheDocument();
-    expect(within(dialog).queryByText('CodeBuddy Desktop')).toBeNull();
-    // 与设置弹窗同一组件：能力来自服务端矩阵
-    expect(within(dialog).getByTestId('accounts-capability-minimax')).toHaveTextContent('CLIENT_NOT_INSTALLED');
+    // S4：账号面板改由右滑出抽屉承载（挤压态 role=region，不再自带 Modal）
+    const drawer = await screen.findByTestId('drawer-panel');
+    expect(drawer).toHaveAttribute('data-drawer', 'accounts');
+    expect(entry).toHaveAttribute('aria-expanded', 'true');
+    expect(within(drawer).getByText('WorkBuddy Desktop')).toBeInTheDocument();
+    expect(within(drawer).getByText('MiniMax')).toBeInTheDocument();
+    expect(within(drawer).getByText('Trae')).toBeInTheDocument();
+    expect(within(drawer).queryByText('CodeBuddy Desktop')).toBeNull();
+    // 与设置面板同一组件：能力来自服务端矩阵
+    expect(within(drawer).getByTestId('accounts-capability-minimax')).toHaveTextContent('CLIENT_NOT_INSTALLED');
     // 顶部两个入口都在
-    expect(within(dialog).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
-    expect(within(dialog).getByTestId('accounts-import-local')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
+    expect(within(drawer).getByTestId('accounts-import-local')).toBeInTheDocument();
 
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '账号管理' })).toBeNull());
+    await waitFor(() => expect(useNavStore.getState().drawer).toBeNull());
+    expect(entry).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('未选工作空间也能打开（账号与 workspace 无关）', async () => {
@@ -215,6 +228,6 @@ describe('账号管理独立入口（ACCOUNT-ENTRY）', () => {
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toBeEnabled();
     await userEvent.click(entry);
-    expect(await screen.findByRole('dialog', { name: '账号管理' })).toBeInTheDocument();
+    expect(await screen.findByTestId('drawer-panel')).toHaveAttribute('data-drawer', 'accounts');
   });
 });

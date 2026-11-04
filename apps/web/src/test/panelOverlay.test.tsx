@@ -1,4 +1,4 @@
-﻿/**
+/**
  * PANEL-FLOAT 浮窗行为：互斥、三种关闭方式、焦点回收、主内容宽度不变（契约级）。
  * 几何（浮窗在按钮下方、主内容像素宽度）由 CDP 在真实浏览器验证。
  */
@@ -105,7 +105,7 @@ describe('PANEL-FLOAT 浮窗', () => {
 });
 
 describe('PANEL-ENTRY2 入口（无收起按钮 / 无 rail 胶囊）', () => {
-  it('两个入口分别落在详情与聊天视图，且都不产生收起态', async () => {
+  it('两个入口分别落在详情与广播整屏聊天，且都不产生收起态', async () => {
     renderShell();
     usePanelStore.getState().openDetail('issue-1');
     expect(await screen.findByRole('heading', { name: '任务详情' })).toBeInTheDocument();
@@ -114,8 +114,11 @@ describe('PANEL-ENTRY2 入口（无收起按钮 / 无 rail 胶囊）', () => {
     fireEvent.click(screen.getByTestId('right-panel-close'));
     await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
 
+    // S2b：聊天整屏化 —— openChat 只切 navStore 并清空面板，右侧面板不出现聊天视图
     usePanelStore.getState().openChat();
-    expect(await screen.findByRole('heading', { name: '聊天' })).toBeInTheDocument();
+    expect(usePanelStore.getState().view).toBeNull();
+    expect(screen.queryByTestId('chat-panel-view')).toBeNull();
+    expect(screen.queryByTestId('right-panel')).toBeNull();
     expect(screen.queryByTestId('right-panel-collapsed')).toBeNull();
   });
 });

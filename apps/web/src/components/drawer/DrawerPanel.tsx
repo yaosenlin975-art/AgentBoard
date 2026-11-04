@@ -67,8 +67,11 @@ export function DrawerPanel() {
   }, [open, mode]);
 
   // 打开时把焦点移到面板（键盘用户不会被留在被遮住的内容区）；Escape 关闭
+  // S4：打开瞬间记住触发元素，关闭后把焦点还回去（抽屉不持有触发按钮 ref，记 activeElement 对任何触发点都成立）
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!open) return;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     panelRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -79,6 +82,14 @@ export function DrawerPanel() {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [open, closeDrawer]);
+
+  // S4：关闭后焦点回到触发元素（元素已卸载则放弃，不做隐式转移）
+  useEffect(() => {
+    if (open) return;
+    const target = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (target !== null && document.contains(target)) target.focus();
+  }, [open]);
 
   const hidden = !open;
   // 挤压态：只在打开时占位（关闭时宽度归零，避免主区右侧留一条 420px 空槽）；动画仍只走 transform/opacity

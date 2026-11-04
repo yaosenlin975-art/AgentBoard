@@ -1,12 +1,9 @@
-import { useRef, useState } from 'react';
+import { useRef } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useAppStore, type WsStatus } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { useNavStore } from '../../state/navStore';
 import { THEME_LABEL, useTheme } from '../../theme';
-import { Modal } from '../ui/Modal';
-import { SettingsDialog } from './SettingsDialog';
-import { AccountsPanel } from '../settings/AccountsPanel';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
 import { useOverlayStore } from '../../state/overlayStore';
 import { IconChevronDown } from '../ui/Icon';
@@ -20,8 +17,13 @@ const WS_DOT: Record<WsStatus, string> = {
 /** 连接状态只用于圆点颜色与 data 属性（PANEL-VIEW-BUG：顶栏不再展示「已连接」等文案） */
 
 export function TopBar({ workspace }: { workspace: Workspace | null }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [accountsOpen, setAccountsOpen] = useState(false);
+  // S4：账号/设置不再是本地弹窗状态，统一走 navStore.drawer（容器由 DrawerPanel 渲染）
+  const drawer = useNavStore((s) => s.drawer);
+  const openDrawer = useNavStore((s) => s.openDrawer);
+  const toggleDrawer = useNavStore((s) => s.toggleDrawer);
+  // 焦点回归：关闭抽屉后把焦点还给触发按钮（DrawerPanel 侧记 activeElement 兜底，这里再显式一把）
+  const accountsTriggerRef = useRef<HTMLButtonElement>(null);
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   // 左浮窗（工作空间列表）：PANEL-FLOAT，浮窗在触发按钮正下方展开
   const leftOpen = useOverlayStore((s) => s.left);
   const toggleLeft = useOverlayStore((s) => s.toggleLeft);
@@ -121,31 +123,30 @@ export function TopBar({ workspace }: { workspace: Workspace | null }) {
         </button>
 
         <button
+          ref={accountsTriggerRef}
           type="button"
           data-testid="topbar-accounts"
           aria-label="账号管理"
+          aria-expanded={drawer === 'accounts'}
           title="管理 WorkBuddy / CodeBuddy 账号"
-          onClick={() => setAccountsOpen(true)}
+          onClick={() => toggleDrawer('accounts')}
           className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
         >
           账号
         </button>
 
         <button
+          ref={settingsTriggerRef}
           type="button"
+          data-testid="topbar-settings"
           aria-label="设置"
-          onClick={() => setSettingsOpen(true)}
+          aria-expanded={drawer === 'settings'}
+          onClick={() => toggleDrawer('settings')}
           className="rounded px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
         >
           设置
         </button>
       </div>
-
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      {/* 账号管理独立入口：与设置弹窗内区块共用同一个 AccountsPanel，账号与 workspace 无关故不依赖 workspace */}
-      <Modal open={accountsOpen} title="账号管理" onClose={() => setAccountsOpen(false)} size="lg" scrollable>
-        <AccountsPanel />
-      </Modal>
     </header>
   );
 }
