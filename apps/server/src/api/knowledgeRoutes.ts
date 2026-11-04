@@ -173,7 +173,12 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
    * 单条（md/txt/json 对象）或批量（json 数组）都返回 `{ pages, warnings }`；
    * 来源与证据自动构造（file 来源只存路径 + sha256，不写 snapshot），落库走既有事务路径。
    */
-  router.post('/pages/import', (req, res) => {
+  /**
+   * KBIMP-1B：导入端点**路由级** json parser（2mb），不动全局 `express.json()` 的 100kb。
+   * 注意：parser 是幂等的（req.body 已解析时跳过），但「超限拒绝」发生在**先执行的那个 parser**；
+   * 全局 parser 挂在 app 层（index.ts:154）且先于本路由运行，因此 >100kb 仍会被它先拒——见卡评论的实测与结论。
+   */
+  router.post('/pages/import', express.json({ limit: '2mb' }), (req, res) => {
     const body = parse(knowledgeImportSchema, req.body);
     const result = importKnowledgePages(db, body, { actor: body.actor });
     res.json(result);

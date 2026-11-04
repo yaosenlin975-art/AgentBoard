@@ -70,8 +70,8 @@
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/settings` | — | `{ port, dbPath, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值） | — | routes.ts |
-| `PATCH /api/settings` | body：`port?: int 1-65535`、`dbPath?: string 非空`、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 新的持久化 settings；并发和附件设置即时生效 | 400 未提供字段 / 取值非法 | routes.ts |
+| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出） | — | routes.ts |
+| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
 ## 5b. 数据库位置（DB-1，`config.ts` + `GET/PATCH /api/settings`）
 
@@ -98,6 +98,29 @@
 | 成功 | 生成 `<newDbPath>.bak-<ts>.json` 标记；旧文件由 `cleanupOldDbFiles` 移入 `<bak>.old/`（保留供回滚），**自检通过后才清理** | — |
 
 命名边界：`.bak-<ts>` / 本文件的迁移快照属**数据库迁移域**；`security/<uuid>`（B6）属设备身份域；`ClientSnapshotManifest`（B4S-2）属客户端账号域，三者不复用类型。
+
+### DB-2B 迁移编排端点（`POST/GET /api/settings/db-path/migrate`，`services/dbMigration.ts` 编排段）
+
+自检必须跑在**新进程**里（旧进程没有新库的句柄），所以编排拆成两段：旧进程跑到 `restart` 为止，`selfcheck → cleanup | rolled_back` 由新进程启动钩子完成。
+
+| 阶段 | 谁执行 | 行为 | 失败处理 |
+| --- | --- | --- | --- |
+| `preflight` | 旧进程 | 采集期望值（表数/卡数/附件数/附件字节/附件抽样 sha256）+ 引擎前置检查 | 直接失败，不动源数据 |
+| `snapshot` | 旧进程 | `VACUUM INTO` 一致性快照 + 附件整目录复制 | 目标侧半成品清掉 |
+| `verify` | 旧进程 | 附件逐文件 sha256、文件数、总字节 | `DB_MIGRATION_VERIFY_FAILED` |
+| `switch` | 旧进程 | 写意图文件（`<configDir>/db-migration-pending.json`）+ 写设置 `dbPath` | — |
+| `restart` | 旧进程 | 内部调用 `performRestart`（与 `POST /api/system/restart` 同一实现） | 重启失败 → 设置回滚旧路径 + `DB_MIGRATION_ROLLED_BACK` |
+| `selfcheck` | **新进程** | 读意图 → 比对表数/卡数/附件数/字节/抽样 sha256 | 不过 → 设置回滚旧库 + 清意图 + 本进程退出（旧进程健康判定失败后重新监听旧库）→ `DB_MIGRATION_ROLLED_BACK` |
+| `cleanup` | 新进程 | 自检通过才把旧库 + sidecar 移入 `<bak>.old/`（旧进程可能仍占用，失败延迟 3s 重试一次） | 清理失败只影响归档，迁移仍算成功 |
+| `done` | 新进程 | 终态 | — |
+
+| 端点 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `POST /api/settings/db-path/migrate` | `{ target_db_path: string 非空, overwrite?: boolean }`（严格模式，未知键 400） | **202** `{ migration_id, backup_dir, stages, stage, message }`（此时只到 `restart`，自检结果用 GET 查） | 400 参数非法；409 `DB_MIGRATION_BUSY`（已有迁移或待自检意图）/ `DB_MIGRATION_ENV_OVERRIDDEN`（`AGENTBOARD_DB` 生效时改设置无效）/ `DB_MIGRATION_NO_SPACE` / `DB_MIGRATION_TARGET_EXISTS` / `DB_MIGRATION_ROLLED_BACK`；500 `DB_MIGRATION_VERIFY_FAILED` / `DB_MIGRATION_COPY_FAILED`；503 `DB_MIGRATION_RESTART_UNAVAILABLE` |
+| `GET /api/settings/db-path/migrate/:migrationId` | — | `{ migration_id, stage, stages: [{stage, at, detail?}], ok: boolean\|null, code, message, retryable, backup_dir, from_db_path, to_db_path }`；`ok=null` 表示已切换、等新进程自检；**状态落盘**（`<configDir>/db-migration-status-<id>.json`），重启后仍可查 | 404 迁移记录不存在 |
+
+- 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
+- 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
 ## 6. issues
 
@@ -574,4 +597,17 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 
 落库：逐条复用 `createKnowledgePage`（页面行 + 首发修订 + 双链同步在同一事务内），失败不留半成品。
 
-**已知限制（需 index.ts 一行改动，属 board-server 范围）**：全局 `express.json()` 用默认 100kb 上限，因此「单文件 ≤1MB」目前被它先拒（错误码沿用既有 `ATTACHMENT_TOO_LARGE` 映射）。要达到 1MB 需把 index.ts 的 `express.json()` 改为 `express.json({ limit: '2mb' })`；本接口自身的 1MB 与 100k 校验已就位（`assertContentLimits` / `planImport`）。
+**已知限制（KBIMP-1B 实测）**：本路由已挂**路由级** `express.json({ limit: '2mb' })`，但 >100kb 仍会被**先执行的全局 parser** 拒：
+
+- 挂载顺序 `app.use(express.json())`（`index.ts:154`，默认 100kb）→ 之后才 `/api` 路由（`:160`）；
+- `express.json()` 对已解析请求会跳过，但**超限拒绝发生在先执行的那个 parser**，所以路由级 parser 放不大上限；
+- 实测：导入端点 50kb → 200；**500kb → 413**（全局，码 `ATTACHMENT_TOO_LARGE`、文案「单张图片不能超过 10 MiB」）；>1MB → 同样 413；对照 `POST /api/issues/draft` 200kb → 413（全局 100kb 未放宽）。
+
+要真正支持 1MB，需在 `index.ts` 里把该路径 parser 挂在全局之前（board-server 的文件，未改）：
+
+```ts
+app.use('/api/knowledge/pages/import', express.json({ limit: '2mb' }));
+app.use(express.json());
+```
+
+替代：把导入上限调成 100kb，并把全局 `entity.too.large` 的文案改成中性描述。本接口自身的 `assertContentLimits`（>1MB → `IMPORT_TOO_LARGE`）与 `planImport`（>100k 字符 → `IMPORT_BODY_TOO_LONG`）已就位，只有在请求体能到达 handler 时才触发。
