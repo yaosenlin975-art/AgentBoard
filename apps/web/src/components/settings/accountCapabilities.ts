@@ -7,8 +7,9 @@
  * 栏位从 `APP_ORDER` / `APP_LABEL` 移除，历史账号在 `AccountsPanel` 过滤掉（库内数据与接口不变）。
  */
 import { useQuery } from '@tanstack/react-query';
-import type { AccountCapability, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
+import type { AccountCapability, AccountOperation, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { isTerminalState } from './AccountOperationStatus';
 
 /** 界面上按平台分区的 app（CodeBuddy Desktop 已下线，不在其中） */
 export type AccountsAppId = 'workbuddy_desktop' | 'minimax' | 'trae';
@@ -361,6 +362,88 @@ export interface AccountCapabilitiesState {
   isPending: boolean;
   isError: boolean;
   errorMessage: string | null;
+}
+
+/* ────────────────────────────── ACC-KB-A2W ────────────────────────────── */
+
+/** 能力徽标三态（互斥口径的唯一来源） */
+export type CapabilityBadgeState = 'supported' | 'unknown' | 'unsupported';
+
+export interface CapabilityBadgeModel {
+  state: CapabilityBadgeState;
+  /** 蓝标（能力可用）/ 灰标（未知或不可用）——二者互斥，永远只有一个为 true */
+  tone: 'blue' | 'gray';
+  showBlue: boolean;
+  showGray: boolean;
+  label: string;
+  /** 可读说明：hover title / aria-label 用，含逐维度原因码，不把裸码放到主文案 */
+  title: string;
+}
+
+const DIMENSION_ORDER: CapabilityAction[] = ['capture', 'switch', 'checkin'];
+const DIMENSION_NAME: Record<CapabilityAction, string> = { capture: '捕获', switch: '切换', checkin: '签到' };
+
+function dimensionSummary(capability: CapabilityView): string {
+  return DIMENSION_ORDER.map((action) => {
+    if (capability[action] === true) return `${DIMENSION_NAME[action]}可用`;
+    const code = capabilityReasonCode(capability, action);
+    const label = unavailableLabel(capability, action) ?? '原因未知';
+    return `${DIMENSION_NAME[action]}不可用（${label}${code !== null && code !== 'OK' ? ` / ${code}` : ''}）`;
+  }).join(' · ');
+}
+
+/**
+ * 能力徽标模型（ACC-KB-A2W）：**蓝标与灰标互斥**。
+ * - 能力未取到（`capability === null`）→ 只有灰标「能力未知」；
+ * - 任一维度可用 → 只有蓝标「能力可用」；
+ * - 全部维度不可用 → 只有灰标「能力不可用」。
+ * 任何输入下 `showBlue && showGray` 永远为 false（单测钉死）。
+ */
+export function capabilityBadge(capability: CapabilityView | null): CapabilityBadgeModel {
+  if (capability === null) {
+    return {
+      state: 'unknown',
+      tone: 'gray',
+      showBlue: false,
+      showGray: true,
+      label: '能力未知',
+      title: '能力矩阵未取到该平台：捕获/切换/签到均未确认',
+    };
+  }
+  const anyAvailable = DIMENSION_ORDER.some((action) => capability[action] === true);
+  const summary = dimensionSummary(capability);
+  if (anyAvailable) {
+    return { state: 'supported', tone: 'blue', showBlue: true, showGray: false, label: '能力可用', title: summary };
+  }
+  return { state: 'unsupported', tone: 'gray', showBlue: false, showGray: true, label: '能力不可用', title: summary };
+}
+
+export interface ToggleEnabledVerdict {
+  /** 现在能否点「启用/停用」 */
+  allowed: boolean;
+  /** 不能点时与服务端 409 同口径的错误码 */
+  code: 'ACCOUNT_BUSY' | null;
+  /** 不能点时的可读原因（与服务端 message 同口径） */
+  reason: string | null;
+  /** 点下去之后的目标状态（按钮文案用） */
+  nextEnabled: boolean;
+}
+
+/** 与服务端 409 ACCOUNT_BUSY 一致的文案（`apps/server/src/api/accountRoutes.ts`） */
+export const ACCOUNT_BUSY_REASON = '账号有排队或进行中的操作，稍后再改启用状态';
+
+/**
+ * 启用/停用是否可点（ACC-KB-A2W）：该账号存在非终态操作（排队/进行中）时不可点，
+ * 与服务端 `PATCH /api/managed-accounts/:id` 的 409 `ACCOUNT_BUSY` 完全同口径，避免「点了才报错」。
+ */
+export function canToggleEnabled(
+  account: Pick<PublicManagedAccount, 'id' | 'enabled'>,
+  operations: readonly Pick<AccountOperation, 'account_id' | 'state'>[],
+): ToggleEnabledVerdict {
+  const nextEnabled = account.enabled === false;
+  const busy = operations.some((operation) => operation.account_id === account.id && !isTerminalState(operation.state));
+  if (busy) return { allowed: false, code: 'ACCOUNT_BUSY', reason: ACCOUNT_BUSY_REASON, nextEnabled };
+  return { allowed: true, code: null, reason: null, nextEnabled };
 }
 
 /** 能力矩阵查询：失败时不回退到本地副本，界面据此禁用全部写操作 */

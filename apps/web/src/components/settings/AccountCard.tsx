@@ -25,7 +25,17 @@ const BTN_QUIET =
 const BTN_DANGER =
   'rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs font-medium text-red-600 ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
-import { checkinParticipation, reasonCodeOf, reasonLabel, unavailableLabel, unavailableReason, type CapabilityView } from './accountCapabilities';
+import {
+  ACCOUNT_BUSY_REASON,
+  canToggleEnabled,
+  capabilityBadge,
+  checkinParticipation,
+  reasonCodeOf,
+  reasonLabel,
+  unavailableLabel,
+  unavailableReason,
+  type CapabilityView,
+} from './accountCapabilities';
 
 export type AccountView = PublicManagedAccount & { is_current: boolean | null };
 
@@ -118,6 +128,28 @@ export function AccountCard({
     if (needsRecovery) setFrozen(true);
   }, [needsRecovery]);
 
+  // ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出）
+  const badge = capabilityBadge(capability);
+  // 启停可点判定：本卡已知的操作（切换进行中）与服务端 409 ACCOUNT_BUSY 同口径
+  const toggle = canToggleEnabled(account, operation === null ? [] : [operation]);
+  const [enabledError, setEnabledError] = useState<string | null>(null);
+  const [enabledCode, setEnabledCode] = useState<string | null>(null);
+  const toggleEnabledMutation = useMutation({
+    // 服务端契约：`PATCH /api/managed-accounts/:id` body 严格为 `{enabled: boolean}`
+    mutationFn: (nextEnabled: boolean) => api.patch<PublicManagedAccount>(`/api/managed-accounts/${account.id}`, { enabled: nextEnabled }),
+    onSuccess: () => {
+      setEnabledError(null);
+      setEnabledCode(null);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+    },
+    onError: (e) => {
+      const code = reasonCodeOf(e);
+      setEnabledCode(code);
+      // 排队/进行中：与服务端 409 文案一致；其余错误给服务端 message，不静默
+      setEnabledError(code === 'ACCOUNT_BUSY' ? ACCOUNT_BUSY_REASON : e instanceof Error ? e.message : '修改启用状态失败');
+    },
+  });
+
   const switchBlocked = capability?.switch !== true || account.is_current === true || frozen;
   const switchTitle = capability?.switch !== true
     ? `${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}）`
@@ -149,6 +181,18 @@ export function AccountCard({
           {participation.participates
             ? <span className="rounded-md border border-hairline px-1.5 py-0.5 text-xs text-ink">签到当前</span>
             : <span className="text-xs text-ink-3">不参与签到</span>}
+        </span>
+        {/* 能力徽标（ACC-KB-A2W）：蓝标与灰标互斥，只按 capabilityBadge 的两个布尔渲染 */}
+        <span
+          data-testid={`accounts-capability-badge-${account.id}`}
+          data-state={badge.state}
+          title={badge.title}
+          aria-label={badge.title}
+        >
+          {badge.showBlue && (
+            <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">{badge.label}</span>
+          )}
+          {badge.showGray && <span className="text-xs text-ink-3">{badge.label}</span>}
         </span>
         <span className="text-xs text-ink-3">{REGION_LABEL[account.service_region]}</span>
         <span className="text-xs text-ink-3">{CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}</span>
@@ -183,6 +227,23 @@ export function AccountCard({
           签到
         </button>
         {account.enabled === false && <span className="text-xs font-medium text-accent">已停用（只读）</span>}
+        {/* ACC-KB-A2W：启用/停用插在「签到」与「删除」之间；排队/进行中由 canToggleEnabled 预判，服务端 409 另有可读提示 */}
+        <button
+          type="button"
+          data-testid={`accounts-enabled-toggle-${account.id}`}
+          className={BTN_QUIET}
+          disabled={!toggle.allowed || toggleEnabledMutation.isPending}
+          title={
+            toggle.allowed
+              ? toggle.nextEnabled
+                ? '重新启用该账号（恢复参与一键签到）'
+                : '停用该账号（保留记录，不再参与一键签到）'
+              : toggle.reason ?? ACCOUNT_BUSY_REASON
+          }
+          onClick={() => { if (toggle.allowed) toggleEnabledMutation.mutate(toggle.nextEnabled); }}
+        >
+          {toggle.nextEnabled ? '启用' : '停用'}
+        </button>
         <button
           type="button"
           data-testid={`accounts-delete-${account.id}`}
@@ -198,6 +259,19 @@ export function AccountCard({
           删除
         </button>
       </div>
+
+      {/* ACC-KB-A2W：启停失败不静默——ACCOUNT_BUSY 给与服务端一致的可读文案，裸码只进 title */}
+      {enabledError !== null && (
+        <p
+          role="alert"
+          data-testid={`accounts-enabled-error-${account.id}`}
+          data-code={enabledCode ?? undefined}
+          title={enabledCode ?? undefined}
+          className="mt-1 text-xs text-red-600 dark:text-red-400"
+        >
+          {enabledError}
+        </p>
+      )}
 
       {deleteConfirming && (
         <div
