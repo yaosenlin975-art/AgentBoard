@@ -80,6 +80,40 @@ const run = async (args: string[]) => {
 };
 
 describe('kb list-tasks status guard', () => {
+  it('defaults to the cwd workspace and aggregates only with --all', async () => {
+    const cwdSpace = { ...WS, path: process.cwd() };
+    const remoteSpace = { ...WS, id: 'ws2', name: '远端', path: 'Z:/remote/workspace' };
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [cwdSpace, remoteSpace] };
+      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: [ISSUES[0]] };
+      if (method === 'GET' && url === '/api/issues?workspace=ws2') {
+        return { status: 200, body: [{ ...ISSUES[1], workspace_id: 'ws2' }] };
+      }
+      return undefined;
+    };
+
+    const current = await run(['--json', 'list-tasks']);
+    expect(current.code).toBe(0);
+    expect((JSON.parse(current.out) as Array<{ id: string }>).map(item => item.id)).toEqual(['i1']);
+    expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
+      { method: 'GET', url: '/api/issues?workspace=ws1' },
+    ]);
+
+    calls = [];
+    const all = await run(['--json', 'list-tasks', '--all']);
+    expect(all.code).toBe(0);
+    expect((JSON.parse(all.out) as Array<{ id: string }>).map(item => item.id)).toEqual(['i1', 'i2']);
+    expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toHaveLength(2);
+  });
+
+  it('rejects --all with --workspace before fetching workspaces', async () => {
+    handler = baseHandler;
+    const result = await run(['list-tasks', '--workspace', 'ws1', '--all']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('--all 与 --workspace 不能同时使用');
+    expect(calls).toHaveLength(0);
+  });
+
   it('rejectsUnkNownStatusWithAvailableListAndNonZeroExit', async () => {
     handler = baseHandler;
     const result = await run(['list-tasks', '--workspace', 'ws1', '--status', '不存在的状态']);

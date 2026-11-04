@@ -2,11 +2,13 @@ import type { Issue, IssueTreeItem, IssueTreePage, Workspace } from '@agentboard
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
-import { matchWorkspace } from '../workspace.js';
+import { matchCurrentWorkspace, matchWorkspace } from '../workspace.js';
 
 export interface ListTasksArgs {
-  /** 工作空间 id 或名称；缺省聚合全部工作空间 */
+  /** 工作空间 id 或名称；缺省按 cwd 解析 */
   workspace?: string;
+  /** 聚合全部工作空间（与 workspace 互斥） */
+  all?: boolean;
   /** 按状态过滤：本工作区已定义的任意状态（内置五状态 + 自定义状态） */
   status?: string;
   /** 以展开的层级视图列出全部任务 */
@@ -117,13 +119,18 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string)
 }
 
 export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
+  if (args.all === true && args.workspace !== undefined) {
+    throw new Error('--all 与 --workspace 不能同时使用');
+  }
   // CLI-UX：--full 只影响 --json 输出；表格模式本来就没有 description，别静默无效
   if (args.full === true && ctx.json !== true) {
     ctx.io.writeErr('提示：--full 只对 --json 输出生效（表格模式本来就不含 description），本次已忽略\n');
   }
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
+  const selected = args.all === true
+    ? spaces
+    : [args.workspace === undefined ? matchCurrentWorkspace(spaces) : matchWorkspace(spaces, args.workspace)];
   if (args.tree) {
-    const selected = args.workspace ? [matchWorkspace(spaces, args.workspace)] : spaces;
     if (args.status !== undefined) await requireKnownStatus(ctx, selected, args.status);
     const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))
       .flat()
@@ -147,25 +154,11 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     return;
   }
   if (args.status !== undefined) {
-    await requireKnownStatus(ctx, args.workspace ? [matchWorkspace(spaces, args.workspace)] : spaces, args.status);
+    await requireKnownStatus(ctx, selected, args.status);
   }
-  let issues: Issue[];
-  if (args.workspace) {
-    const ws = matchWorkspace(spaces, args.workspace);
-    issues = await request<Issue[]>(
-      ctx.base,
-      'GET',
-      `/api/issues?workspace=${encodeURIComponent(ws.id)}`,
-    );
-  } else {
-    issues = (
-      await Promise.all(
-        spaces.map((s) =>
-          request<Issue[]>(ctx.base, 'GET', `/api/issues?workspace=${encodeURIComponent(s.id)}`),
-        ),
-      )
-    ).flat();
-  }
+  const issues = (await Promise.all(
+    selected.map(space => request<Issue[]>(ctx.base, 'GET', '/api/issues?workspace=' + encodeURIComponent(space.id))),
+  )).flat();
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(projectForJson(filtered, args.full === true), null, 2)}\n`);

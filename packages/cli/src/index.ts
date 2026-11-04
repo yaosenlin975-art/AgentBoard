@@ -90,18 +90,20 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('list-spaces')
-    .description('列出全部工作空间（id / name / path）')
-    .action(async () => listSpaces(makeCtx(program, io)));
+    .description('列出全部工作空间（id / name / path）；--current 只列 cwd 解析到的当前工作区')
+    .option('--current', '只输出当前工作区（按 cwd 实体路径解析，JSON 仍为单元素数组）')
+    .action(async (opts: { current?: boolean }) => listSpaces(makeCtx(program, io), { current: opts.current === true }));
 
   program
     .command('list-tasks')
-    .description('列任务（--workspace 支持 id 或名称；缺省聚合全部工作空间）')
+    .description('列任务（缺省按 cwd 解析当前工作区；跨区盘点用 --all）')
     .option('--workspace <id|名>', '工作空间 id 或名称')
-    .option('--status <状态>', '按状态过滤：本工作区已定义的任意状态（内置五状态 + 自定义状态）；非法值会报错并列出可用状态')
+    .option('--all', '聚合全部工作空间；只读盘点，与 --workspace 互斥')
+    .option('--status <状态>', '按当前筛选范围已定义的状态过滤；非法值会列出可用状态')
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
     .option('--full', '--json 时一并输出 description 正文（默认裁剪，只输出元数据）')
-    .action(async (opts: { workspace?: string; status?: string; tree?: boolean; full?: boolean }) =>
-      listTasks(makeCtx(program, io), { workspace: opts.workspace, status: opts.status, tree: opts.tree, full: opts.full === true }));
+    .action(async (opts: { workspace?: string; all?: boolean; status?: string; tree?: boolean; full?: boolean }) =>
+      listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, tree: opts.tree, full: opts.full === true }));
 
   program
     .command('show')

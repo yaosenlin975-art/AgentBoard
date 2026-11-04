@@ -176,6 +176,35 @@ describe('版本', () => {
     expect(JSON.parse(t.out())).toEqual([WS]);
   });
 
+  it('list-spaces --current 只输出 cwd 命中的工作区，JSON 仍为单元素数组', async () => {
+    // A：--current 复用 matchCurrentWorkspace；这里让 WS.path 等于 process.cwd()，等值优先命中
+    const cwdWs = { ...WS, path: process.cwd() };
+    const other = { ...WS, id: 'ws-other', name: '别处', path: 'Z:/not-here' };
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [cwdWs, other] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'list-spaces', '--current'], t.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(t.out()) as Array<{ id: string }>;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]!.id).toBe(WS.id);
+  });
+
+  it('list-spaces --current 在无匹配时报可读错误（不静默空列表、不回退全量）', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ ...WS, path: 'Z:/nowhere' }] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'list-spaces', '--current'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('--workspace');
+    expect(t.out()).toBe('');
+  });
+
   it('0.x minor 不同 → 警告；major 不同 → 警告', async () => {
     spacesHandler({ [SERVER_VERSION_HEADER]: '0.2.0' });
     const t1 = makeIo();
@@ -332,7 +361,7 @@ describe('list-tasks', () => {
     };
     const t = makeIo();
     const code = await main(
-      ['node', 'kb', '--server', base, '--json', 'list-tasks', '--status', '待规划'],
+      ['node', 'kb', '--server', base, '--json', 'list-tasks', '--workspace', '前端', '--status', '待规划'],
       t.io,
     );
     expect(code).toBe(0);
@@ -340,7 +369,7 @@ describe('list-tasks', () => {
     expect(parsed.map((i) => i.id)).toEqual(['iss1']);
   });
 
-  it('缺省 --workspace 时聚合全部工作空间', async () => {
+  it('--all 时显式聚合全部工作空间', async () => {
     const ws2 = { ...WS, id: 'ws2', name: '后端' };
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS, ws2] };
@@ -350,7 +379,7 @@ describe('list-tasks', () => {
       return undefined;
     };
     const t = makeIo();
-    const code = await main(['node', 'kb', '--server', base, '--json', 'list-tasks'], t.io);
+    const code = await main(['node', 'kb', '--server', base, '--json', 'list-tasks', '--all'], t.io);
     expect(code).toBe(0);
     const parsed = JSON.parse(t.out()) as Array<{ id: string }>;
     expect(parsed.map((i) => i.id)).toEqual(['iss1', 'iss9']);
