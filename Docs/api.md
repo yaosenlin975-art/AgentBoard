@@ -151,6 +151,17 @@
 
 错误：503 `DB_STORAGE_UNAVAILABLE`（最小装配拿不到库路径）。
 
+### VOICE-DL-FAIL 语音模型下载：代理 / 可读错误 / 断点续传
+
+| 项 | 口径 |
+| --- | --- |
+| 代理 | Node 24 只在 `NODE_USE_ENV_PROXY=1` 时让内置 `fetch` 走 `HTTPS_PROXY`/`HTTP_PROXY`；直连 HuggingFace 多数网络会在 10000ms 连接超时（对外只看到裸 `fetch failed`）。服务端在**首次下载请求前**开启该支持（已显式设 `NODE_USE_ENV_PROXY=0` 时尊重用户，不改） |
+| `GET /api/voice/models` / `/models/:id` | 新增只读 `download_env: { proxy_detected, proxy_var, proxy_host, node_env_proxy, no_proxy }`；`proxy_host` **只留 host:port，丢弃 userinfo**（不打印凭据） |
+| 错误文案 | `cause.code` 映射成中文（`ECONNRESET`→连接被重置、`ENOTFOUND`→域名解析失败、`UND_ERR_CONNECT_TIMEOUT`→连接超时（多为没走代理）等），并附「已下载 X/Y」与代理提示；不再是裸 `fetch failed` |
+| 断点续传 | 失败**保留** `.part`；下次带 `Range: bytes=<size>-`，响应 206 追加写、200 表示服务端不支持则从头写；完成后再验 sha256（校验的是整份文件） |
+| 空闲超时 / 重试 | 单文件 `VOICE_DOWNLOAD_IDLE_MS = 60000` 内无数据即中断（`VOICE_DOWNLOAD_IDLE_TIMEOUT`）；单文件最多 `VOICE_DOWNLOAD_RETRIES = 2` 次退避重试，每次从 `.part` 续传；sha256 不符与主动中断不重试 |
+| 失败态 | 只重下未就绪的文件（`fileReady` 过滤），重试即「只补失败文件」 |
+
 ## 6. issues
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

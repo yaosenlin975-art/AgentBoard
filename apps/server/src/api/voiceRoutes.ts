@@ -23,6 +23,7 @@ import {
   getVoiceModel,
   listVoiceModels,
   startVoiceModelDownload,
+  voiceDownloadEnv,
   voiceModelProgress,
   type VoiceModelDeps,
 } from '../services/voiceModels.js';
@@ -38,12 +39,13 @@ export function createVoiceRouter(db: Db, options: VoiceRouterOptions = {}): Rou
   const router = Router();
   const sseIntervalMs = options.sseIntervalMs ?? 250;
 
+  // VOICE-DL-FAIL：只读下载环境（是否检测到代理 / 代理主机，绝不含凭据），供前端给代理提示
   router.get('/models', (_req, res) => {
-    res.json({ models: listVoiceModels(db, options) });
+    res.json({ models: listVoiceModels(db, options), download_env: voiceDownloadEnv() });
   });
 
   router.get('/models/:id', (req, res) => {
-    res.json(getVoiceModel(db, String(req.params.id), options));
+    res.json({ ...getVoiceModel(db, String(req.params.id), options), download_env: voiceDownloadEnv() });
   });
 
   router.post('/models/:id/download', (req, res) => {

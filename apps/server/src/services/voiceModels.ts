@@ -15,7 +15,7 @@
  * 不下载 tar.bz2：上游归档 `digest` 为 null（无 sha256），而 HF 每个文件都有 LFS sha256，校验强度更高。
  */
 import { createHash } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -256,7 +256,203 @@ export function voiceModelProgress(db: Db, id: string, deps: VoiceModelDeps = {}
   };
 }
 
-/** 下载单个文件：写 .part → 校验 → 原子改名；失败删掉该文件的半成品并抛出带 code 的错误 */
+/**
+ * VOICE-DL-FAIL：代理探测（只读）。
+ * 只报「有没有代理、代理主机」，**不打印凭据**（userinfo 一律丢弃）。
+ */
+export interface VoiceDownloadEnv {
+  proxy_detected: boolean;
+  proxy_var: string | null;
+  proxy_host: string | null;
+  node_env_proxy: boolean;
+  no_proxy: string | null;
+}
+
+function maskProxy(raw: string | undefined): string | null {
+  if (raw === undefined || raw.trim() === '') return null;
+  try {
+    const url = new URL(raw.includes('://') ? raw : `http://${raw}`);
+    return url.port === '' ? url.hostname : `${url.hostname}:${url.port}`;
+  } catch {
+    return '<无法解析的代理地址>';
+  }
+}
+
+export function voiceDownloadEnv(env: NodeJS.ProcessEnv = process.env): VoiceDownloadEnv {
+  const candidates: Array<[string, string | undefined]> = [
+    ['HTTPS_PROXY', env.HTTPS_PROXY ?? env.https_proxy],
+    ['HTTP_PROXY', env.HTTP_PROXY ?? env.http_proxy],
+  ];
+  const hit = candidates.find(([, value]) => value !== undefined && value.trim() !== '');
+  return {
+    proxy_detected: hit !== undefined,
+    proxy_var: hit?.[0] ?? null,
+    proxy_host: maskProxy(hit?.[1]),
+    node_env_proxy: (env.NODE_USE_ENV_PROXY ?? '') !== '',
+    no_proxy: env.NO_PROXY ?? env.no_proxy ?? null,
+  };
+}
+
+/**
+ * VOICE-DL-FAIL：让 Node 内置 fetch 认 `HTTPS_PROXY`。
+ * Node 24 只在 `NODE_USE_ENV_PROXY=1` 时按环境代理走（直连多数网络到 HuggingFace 会 10000ms 连接超时，
+ * 对外只看到裸 `fetch failed`）。这里在首次请求前开启：已显式设为 `0` 时尊重用户不改。
+ * 返回是否最终处于开启状态。
+ */
+export function ensureVoiceProxySupport(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.NODE_USE_ENV_PROXY === '0') return false;
+  if (env.NODE_USE_ENV_PROXY === undefined || env.NODE_USE_ENV_PROXY === '') {
+    env.NODE_USE_ENV_PROXY = '1';
+  }
+  return env.NODE_USE_ENV_PROXY !== '0';
+}
+
+/** undici 外层错误的原因码 → 可读中文（不再让用户只看到 fetch failed） */
+const DOWNLOAD_CAUSE_TEXT: Record<string, string> = {
+  ECONNRESET: '连接被重置',
+  ECONNREFUSED: '连接被拒绝（代理或目标端口不通）',
+  ENOTFOUND: '域名解析失败',
+  EAI_AGAIN: '域名解析暂时失败',
+  ETIMEDOUT: '连接超时',
+  EPIPE: '连接被对端关闭',
+  UND_ERR_CONNECT_TIMEOUT: '连接超时（常见原因：没有走代理，或代理不可用）',
+  UND_ERR_HEADERS_TIMEOUT: '等待响应超时',
+  UND_ERR_BODY_TIMEOUT: '接收数据超时',
+  UND_ERR_SOCKET: '连接被中断',
+  CERT_HAS_EXPIRED: 'TLS 证书已过期',
+  DEPTH_ZERO_SELF_SIGNED_CERT: 'TLS 证书不受信任（可能被代理替换）',
+  UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'TLS 证书校验失败（可能被代理替换）',
+  ERR_TLS_CERT_ALTNAME_INVALID: 'TLS 证书域名不匹配（可能被代理替换）',
+};
+
+export const VOICE_DOWNLOAD_IDLE_MS = 60_000;
+export const VOICE_DOWNLOAD_RETRIES = 2;
+
+function formatBytesText(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${bytes}B`;
+}
+
+/**
+ * 把下载错误翻译成「哪个文件、什么原因、已经下了多少」。
+ * `cause.code` 是 undici 的真实原因（外层只是 `fetch failed`）。
+ */
+export function describeVoiceDownloadError(
+  error: unknown,
+  ctx: { file: string; downloadedBytes: number; fileBytes: number; env?: NodeJS.ProcessEnv },
+): { code: string; message: string } {
+  const err = error as { code?: string; message?: string; name?: string; cause?: { code?: string; message?: string; name?: string } } | undefined;
+  const code = err?.code ?? 'VOICE_DOWNLOAD_FAILED';
+  if (code === 'VOICE_DOWNLOAD_IDLE_TIMEOUT') {
+    return { code, message: `下载 ${ctx.file} 时 ${Math.round(VOICE_DOWNLOAD_IDLE_MS / 1000)} 秒没有收到数据，已中断；已下载 ${formatBytesText(ctx.downloadedBytes)}/${formatBytesText(ctx.fileBytes)}，重试会从这里续传` };
+  }
+  const causeCode = err?.cause?.code ?? '';
+  const reason = DOWNLOAD_CAUSE_TEXT[causeCode]
+    ?? (err?.cause?.message ?? err?.message ?? err?.name ?? '未知错误');
+  const env = voiceDownloadEnv(ctx.env ?? process.env);
+  const proxyHint = env.proxy_detected
+    ? `当前检测到代理（${env.proxy_var}=${env.proxy_host ?? ''}），若代理已关闭请同步取消该环境变量`
+    : '当前未检测到 HTTP(S)_PROXY：访问 HuggingFace 通常需要代理，配置后重试';
+  const causeText = causeCode === '' ? '' : `（${causeCode}）`;
+  return {
+    code: 'VOICE_DOWNLOAD_FAILED',
+    message: `下载 ${ctx.file} 失败：${reason}${causeText}，已下载 ${formatBytesText(ctx.downloadedBytes)}/${formatBytesText(ctx.fileBytes)}；${proxyHint}`,
+  };
+}
+
+/**
+ * 下载单个文件（VOICE-DL-FAIL）：
+ * - **断点续传**：`.part` 已存在就带 `Range: bytes=<size>-`，206 才续传，200 说明服务端不支持就从头重下；
+ * - **空闲超时**：`idleMs` 内没有新数据就中断（`VOICE_DOWNLOAD_IDLE_TIMEOUT`）；
+ * - **失败保留 .part**（下次续传），只有 sha256 不符才删；
+ * - 完成后校验 sha256 再原子改名。
+ */
+async function downloadFileOnce(
+  dir: string,
+  file: VoiceModelFile,
+  url: string,
+  fetchImpl: typeof fetch,
+  onBytes: (delta: number) => void,
+  signal: AbortSignal,
+  idleMs: number,
+): Promise<'sha256' | 'weak'> {
+  const finalPath = join(dir, file.path);
+  const partPath = `${finalPath}${PART_SUFFIX}`;
+  mkdirSync(dirname(finalPath), { recursive: true });
+  let resumed = existsSync(partPath) ? fileSize(partPath) : 0;
+  if (resumed >= file.bytes) resumed = 0; // 半成品反而比目标大：视为脏文件，从头下
+  const hash = createHash('sha256');
+  if (resumed > 0) {
+    // 续传前先把已有字节喂进哈希（保持最终 sha256 校验的是整份文件）
+    await new Promise<void>((resolve, reject) => {
+      const reader = createReadStream(partPath);
+      reader.on('data', (chunk: Buffer | string) => hash.update(chunk));
+      reader.on('end', () => resolve());
+      reader.on('error', (error: Error) => reject(error));
+    });
+  }
+  const controller = new AbortController();
+  const onOuterAbort = (): void => controller.abort();
+  signal.addEventListener('abort', onOuterAbort, { once: true });
+  let idleTimer: NodeJS.Timeout | undefined;
+  const armIdle = (): void => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => controller.abort(Object.assign(new Error('idle'), { code: 'VOICE_DOWNLOAD_IDLE_TIMEOUT' })), idleMs);
+  };
+  let bytes = resumed;
+  try {
+    armIdle();
+    const response = await fetchImpl(url, {
+      signal: controller.signal,
+      ...(resumed > 0 ? { headers: { range: `bytes=${resumed}-` } } : {}),
+    });
+    if (!response.ok || response.body === null) {
+      throw Object.assign(new Error(`HTTP ${response.status}`), { code: 'VOICE_DOWNLOAD_FAILED' });
+    }
+    const append = resumed > 0 && response.status === 206;
+    if (resumed > 0 && !append) {
+      // 服务端没按 Range 返回 → 从头写
+      resumed = 0;
+      bytes = 0;
+    }
+    const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+    source.on('data', (chunk: Buffer) => {
+      armIdle();
+      bytes += chunk.length;
+      hash.update(chunk);
+      onBytes(chunk.length);
+    });
+    await pipeline(source, createWriteStream(partPath, { flags: append ? 'a' : 'w' }));
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (file.sha256 !== null) {
+      const actual = hash.digest('hex');
+      if (actual !== file.sha256.toLowerCase()) {
+        try { unlinkSync(partPath); } catch { /* 忽略 */ }
+        throw Object.assign(
+          new Error(`sha256 校验不符（${file.path}）：期望 ${file.sha256}，实际 ${actual}`),
+          { code: 'VOICE_CHECKSUM_MISMATCH' },
+        );
+      }
+      renameSync(partPath, finalPath);
+      return 'sha256';
+    }
+    renameSync(partPath, finalPath);
+    return 'weak';
+  } catch (error) {
+    // 失败保留 .part（下次续传）；只有中断/网络类错误保留
+    const code = (error as { code?: string }).code;
+    if (code === undefined && (error as { name?: string }).name === 'AbortError') {
+      throw Object.assign(new Error('下载被中断'), { code: 'VOICE_DOWNLOAD_ABORTED' });
+    }
+    throw error;
+  } finally {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    signal.removeEventListener('abort', onOuterAbort);
+  }
+}
+
+/** 单文件下载 + 退避重试（`VOICE_DOWNLOAD_RETRIES` 次）；每次重试都从 `.part` 续传 */
 async function downloadFile(
   dir: string,
   file: VoiceModelFile,
@@ -264,43 +460,32 @@ async function downloadFile(
   fetchImpl: typeof fetch,
   onBytes: (delta: number) => void,
   signal: AbortSignal,
+  options: { idleMs?: number; retries?: number; retryDelayMs?: (attempt: number) => number } = {},
 ): Promise<'sha256' | 'weak'> {
-  const finalPath = join(dir, file.path);
-  const partPath = `${finalPath}${PART_SUFFIX}`;
-  mkdirSync(dirname(finalPath), { recursive: true });
-  const response = await fetchImpl(url, { signal });
-  if (!response.ok || response.body === null) {
-    throw Object.assign(new Error(`下载 ${file.path} 失败：HTTP ${response.status}`), { code: 'VOICE_DOWNLOAD_FAILED' });
-  }
-  const hash = createHash('sha256');
-  const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
-  let bytes = 0;
-  source.on('data', (chunk: Buffer) => {
-    bytes += chunk.length;
-    hash.update(chunk);
-    onBytes(chunk.length);
-  });
-  await pipeline(source, createWriteStream(partPath));
-  if (file.sha256 !== null) {
-    const actual = hash.digest('hex');
-    if (actual !== file.sha256.toLowerCase()) {
-      try { unlinkSync(partPath); } catch { /* 忽略 */ }
-      throw Object.assign(
-        new Error(`sha256 校验不符（${file.path}）：期望 ${file.sha256}，实际 ${actual}`),
-        { code: 'VOICE_CHECKSUM_MISMATCH' },
-      );
+  const idleMs = options.idleMs ?? VOICE_DOWNLOAD_IDLE_MS;
+  const retries = options.retries ?? VOICE_DOWNLOAD_RETRIES;
+  const delay = options.retryDelayMs ?? ((attempt: number) => 1000 * (attempt + 1));
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await downloadFileOnce(dir, file, url, fetchImpl, onBytes, signal, idleMs);
+    } catch (error) {
+      lastError = error;
+      const code = (error as { code?: string }).code;
+      if (code === 'VOICE_CHECKSUM_MISMATCH' || code === 'VOICE_DOWNLOAD_ABORTED' || signal.aborted) break;
+      if (attempt === retries) break;
+      await new Promise((resolve) => setTimeout(resolve, delay(attempt)));
     }
-    renameSync(partPath, finalPath);
-    return 'sha256';
   }
-  renameSync(partPath, finalPath);
-  return 'weak';
+  throw lastError;
 }
 
 async function runDownload(db: Db, entry: VoiceModelCatalogEntry, task: DownloadTask, deps: VoiceModelDeps): Promise<void> {
   const root = resolveModelsRoot(db, deps);
   const dir = modelDir(root, entry.id);
   const files = requiredFiles(entry);
+  // VOICE-DL-FAIL：首次请求前开启环境代理支持（未设代理时无副作用）
+  if (deps.fetchImpl === undefined) ensureVoiceProxySupport();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const weakVerify = deps.weakVerify ?? true;
   const fail = (code: string, message: string, failedFile: string | null = null): void => {
@@ -331,8 +516,14 @@ async function runDownload(db: Db, entry: VoiceModelCatalogEntry, task: Download
       try {
         await downloadFile(dir, file, url, fetchImpl, (delta) => { task.bytes += delta; }, task.controller.signal);
       } catch (error) {
-        const code = (error as { code?: string }).code ?? 'VOICE_DOWNLOAD_FAILED';
-        fail(code, errorMessageOf(error), file.path);
+        // 已下载字节 = 目标文件字节 - .part 剩余待下字节（续传后仍准确）
+        const partBytes = fileSize(`${join(dir, file.path)}${PART_SUFFIX}`);
+        const described = describeVoiceDownloadError(error, {
+          file: file.path,
+          downloadedBytes: partBytes,
+          fileBytes: file.bytes,
+        });
+        fail(described.code, described.message, file.path);
         return;
       }
     }

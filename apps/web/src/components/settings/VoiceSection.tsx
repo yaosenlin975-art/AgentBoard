@@ -29,6 +29,8 @@ interface VoiceModelState {
 
 interface VoiceModelsResponse {
   models: VoiceModelState[];
+  /** VOICE-DL-FAIL：服务端只读探测结果（是否检测到代理，绝不含凭据） */
+  download_env?: { proxy_detected: boolean; proxy_var: string | null; proxy_host: string | null };
 }
 
 function formatBytes(bytes: number): string {
@@ -213,7 +215,8 @@ export function VoiceSection() {
                         disabled={download.isPending}
                         className={`${chip} text-ink hover:bg-surface-raised disabled:opacity-40`}
                       >
-                        下载
+                        {/* 失败后重试只补没下完的文件（服务端按 .part 续传，已就绪的文件跳过） */}
+                        {model.state === 'failed' ? '重试' : '下载'}
                       </button>
                     )}
                     {model.state === 'downloaded' && (
@@ -239,7 +242,17 @@ export function VoiceSection() {
                     </p>
                   </div>
                 )}
-                {model.error_message !== null && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{model.error_message}</p>}
+                {model.error_message !== null && (
+                  <div className="mt-1 space-y-1">
+                    <p data-testid={`voice-error-${model.id}`} className="text-xs text-red-600 dark:text-red-400">{model.error_message}</p>
+                    {/* VOICE-DL-FAIL：只在确实没检测到代理时提示，不猜用户网络 */}
+                    {modelsQuery.data?.download_env !== undefined && !modelsQuery.data.download_env.proxy_detected && (
+                      <p data-testid="voice-proxy-hint" className="text-xs text-ink-3">
+                        未检测到 HTTP(S)_PROXY：访问 HuggingFace 通常需要代理；配好代理并重启服务后点「重试」，会从已下载的位置续传。
+                      </p>
+                    )}
+                  </div>
+                )}
               </li>
             );
           })}
