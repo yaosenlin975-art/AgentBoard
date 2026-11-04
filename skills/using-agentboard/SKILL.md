@@ -11,7 +11,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 - `--scope` 首选**逐条重复传参**：`kb done <id> --scope a --scope b`。
 - 逗号串 `--scope "a,b"` 当前 CLI 会吞下并按逗号拆分（2026-11-04 实测提交成功），但不要依赖它：含空格的参数仍会触发 SCOPE-GUARD 警告；声明范围与实际改动不一致时仍会零命中、不提交。脚本里一律逐条传。
-- **issue id 必须完整 36 位 UUID**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 全部只认全长 id，不支持前缀。实测 `kb show 4908a07e` → 「任务不存在」（退出 1）；`kb dep add <前缀>` → 「任务或依赖不存在」（退出 4）。帮助里的 `0f6ba9ab-…` 是截断示例，照抄必失败；从列表输出复制的全长 id 可直接用。
+- **issue id 必须完整 36 字符 UUID（8-4-4-4-12）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 全部只认全长 id，不支持前缀。实测 `kb show 4908a07e` → 「任务不存在」（退出 1）；`kb dep add <前缀>` → 「任务或依赖不存在」（退出 4）。帮助里的 `0f6ba9ab-…` 是截断示例，照抄必失败；从列表输出复制的全长 id 可直接用。
 - 只有 `kb knowledge resolve` / `kb knowledge link` 支持知识页 id 的 ≥8 位前缀，**不要类推到任务 id**。
 - 服务端在「声明了范围却零命中」时会写一条 `⚠ 声明范围零命中，本次未自动提交` 的系统评论，并给出可直接复制执行的 `git add -- <paths>; git commit -m "..." -- <paths>` 补救命令；照抄执行即可（该评论里「逗号串被拆」只是常见原因之一，不是唯一原因，先核对你声明的路径是否真的改过）。
 - 看到这条评论＝你的改动没进 git，不要当成已完成；先执行补救命令，再看 `git log -1`。
