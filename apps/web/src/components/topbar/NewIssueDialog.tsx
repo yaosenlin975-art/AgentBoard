@@ -19,6 +19,7 @@ import {
   mapDraftError,
   requestDraft,
   type DraftAdapter,
+  type DraftCard,
   type IssueDraft,
 } from '../../lib/smartDraft';
 import { Modal } from '../ui/Modal';
@@ -82,6 +83,11 @@ export function NewIssueDialog({
   const abortRef = useRef<AbortController | null>(null);
   /** 用户已取消：迟到结果直接丢弃，不按失败回退 */
   const cancelRef = useRef(false);
+  // ---- MULTI-DRAFT（6a59ef60）：多条需求 → 多张可编辑卡，逐张取消/创建 ----
+  const [multiCards, setMultiCards] = useState<DraftCard[] | null>(null);
+  const [canceledCards, setCanceledCards] = useState<string[]>([]);
+  const [cardResults, setCardResults] = useState<{ ok: number; fail: number; rows: Array<{ localId: string; title: string; ok: boolean; error?: string }> } | null>(null);
+  const [creatingCards, setCreatingCards] = useState(false);
 
   const { data: clis } = useQuery({
     queryKey: ['clis'],
@@ -238,6 +244,15 @@ export function NewIssueDialog({
       );
       if (cancelRef.current) return; // 用户已取消：丢弃迟到结果
       setDraft(result);
+      // MULTI-DRAFT：≥2 张卡时不进单卡表单，改为多卡编辑器（1 条需求 1 张，可逐张取消）
+      if (result.cards.length >= 2) {
+        setMultiCards(result.cards.map((card) => ({ ...card })));
+        setCanceledCards([]);
+        setCardResults(null);
+        setSmartMessage(`已按需求分条生成 ${result.cards.length} 张草稿卡，可逐张编辑或取消后创建`);
+        return;
+      }
+      setMultiCards(null);
       // 草稿进共用字段，用户可直接编辑；优先级只按用户所选（不推断）
       setTitle(result.title);
       setDescription(result.description);
@@ -262,9 +277,60 @@ export function NewIssueDialog({
     }
   };
 
+  /** MULTI-DRAFT：逐张创建；单张失败不影响其余，结果区给「成功 N / 失败 M」 */
+  const createCards = async (): Promise<void> => {
+    if (multiCards === null || creatingCards) return;
+    const chosen = multiCards.filter((card) => !canceledCards.includes(card.localId) && card.title.trim() !== '');
+    if (chosen.length === 0) {
+      setSmartMessage('没有可创建的卡（已全部取消或标题为空）');
+      return;
+    }
+    setCreatingCards(true);
+    const rows: Array<{ localId: string; title: string; ok: boolean; error?: string }> = [];
+    for (const card of chosen) {
+      try {
+        await api.post<Issue>(
+          '/api/issues',
+          {
+            workspace_id: workspaceId,
+            title: card.title.trim(),
+            description: card.description,
+            priority: draftPriority === '' ? priority : draftPriority,
+            labels: card.labels,
+            attachment_ids: [],
+          },
+          { headers: { 'Idempotency-Key': crypto.randomUUID() } },
+        );
+        rows.push({ localId: card.localId, title: card.title.trim(), ok: true });
+      } catch (e) {
+        rows.push({ localId: card.localId, title: card.title.trim(), ok: false, error: e instanceof Error ? e.message : '创建失败' });
+      }
+    }
+    const okCount = rows.filter((row) => row.ok).length;
+    const failCount = rows.length - okCount;
+    setCardResults({ ok: okCount, fail: failCount, rows });
+    setCreatingCards(false);
+    await queryClient.invalidateQueries({ queryKey: ['issues', workspaceId] });
+    // 成功的卡从编辑器移除；失败的保留以便重试
+    const okIds = rows.filter((row) => row.ok).map((row) => row.localId);
+    const rest = (multiCards ?? []).filter((card) => !okIds.includes(card.localId));
+    setMultiCards(rest.length > 0 ? rest : null);
+    if (failCount === 0) {
+      setTitle('');
+      setDescription('');
+      setRequirement('');
+      setDraft(null);
+      setDraftPriority('');
+      setSmartMessage(null);
+      clearImages();
+      draftKeyRef.current = crypto.randomUUID();
+      setError(null);
+      onClose();
+    }
+  };
+
   /** 取消：立刻收起进度，迟到结果由 cancelRef 丢弃（不触发失败回退） */
-  const cancelGenerate = (): void => {
-    cancelRef.current = true;
+  const cancelGenerate = (): void => {    cancelRef.current = true;
     abortRef.current?.abort();
     abortRef.current = null;
     setGenerating(false);
@@ -432,6 +498,78 @@ export function NewIssueDialog({
           </span>
           <span className="text-xs text-neutral-500 dark:text-neutral-400">新建任务固定进入待规划</span>
         </div>
+
+        {multiCards !== null && (
+          <div data-testid="draft-cards" className="space-y-2 rounded-lg border border-hairline bg-surface-card p-2">
+            <p className="text-xs text-ink-3">
+              已按需求分条生成 {multiCards.length} 张草稿卡（1 条需求 1 张）：可逐张改标题/正文，勾「不创建」可跳过。
+            </p>
+            {multiCards.map((card, index) => {
+              const canceled = canceledCards.includes(card.localId);
+              return (
+                <div
+                  key={card.localId}
+                  data-testid={`draft-card-${card.localId}`}
+                  data-canceled={canceled ? 'true' : 'false'}
+                  className={`space-y-1 rounded-md border border-hairline p-2 ${canceled ? 'opacity-50' : ''}`}
+                >
+                  <input
+                    data-testid={`draft-card-title-${card.localId}`}
+                    aria-label={`第 ${index + 1} 张卡片标题`}
+                    value={card.title}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setMultiCards((prev) => prev === null ? prev : prev.map((item) => item.localId === card.localId ? { ...item, title: value } : item));
+                    }}
+                    className={inputCls}
+                  />
+                  <textarea
+                    data-testid={`draft-card-description-${card.localId}`}
+                    aria-label={`第 ${index + 1} 张卡片描述`}
+                    rows={3}
+                    value={card.description}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setMultiCards((prev) => prev === null ? prev : prev.map((item) => item.localId === card.localId ? { ...item, description: value } : item));
+                    }}
+                    className={inputCls}
+                  />
+                  <label className="flex items-center gap-1.5 text-xs text-ink-2">
+                    <input
+                      type="checkbox"
+                      data-testid={`draft-card-cancel-${card.localId}`}
+                      checked={canceled}
+                      onChange={() => {
+                        setCanceledCards((prev) => prev.includes(card.localId) ? prev.filter((id) => id !== card.localId) : [...prev, card.localId]);
+                      }}
+                    />
+                    不创建这张
+                  </label>
+                  {card.warnings.length > 0 && (
+                    <p className="text-[11px] text-ink-3">{card.warnings.join('；')}</p>
+                  )}
+                </div>
+              );
+            })}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-testid="draft-cards-create"
+                onClick={() => void createCards()}
+                disabled={creatingCards}
+                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              >
+                创建 {multiCards.filter((card) => !canceledCards.includes(card.localId) && card.title.trim() !== '').length} 张
+              </button>
+              {cardResults !== null && (
+                <p data-testid="draft-cards-result" role="status" className="text-xs text-ink-2">
+                  成功 {cardResults.ok} / 失败 {cardResults.fail}
+                  {cardResults.fail > 0 && `（${cardResults.rows.filter((row) => !row.ok).map((row) => `${row.title}：${row.error ?? '失败'}`).join('；')}）`}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {mode === 'smart' ? smartPanel : (
           <>

@@ -73,6 +73,19 @@
 | `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
+## 5a. 出站代理（PROXY-ENV）
+
+Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_PROXY=1` 才会按环境代理出站。缺这个变量时访问 HuggingFace 等外网会 10000ms 连接超时，对外只看到裸 `fetch failed`。
+
+| 项 | 口径 |
+| --- | --- |
+| 谁注入 | `scripts/server-detached.mjs`（`pnpm server:ensure`）拉起子进程前：宿主有 `HTTPS_PROXY`/`HTTP_PROXY`（含小写）且 `NODE_USE_ENV_PROXY` 未显式设为 `0` → 注入 `NODE_USE_ENV_PROXY=1` |
+| 关闭 | 宿主设 `NODE_USE_ENV_PROXY=0` → **不覆盖**（尊重显式关闭） |
+| 日志 | `[server] proxy_env=on host=127.0.0.1:7897（源 HTTPS_PROXY，已注入 NODE_USE_ENV_PROXY=1）`；只打 host:port，**丢 userinfo、不打印凭据** |
+| `GET /api/version` | 新增只读 `proxy_env: { enabled, proxy_var, proxy_host, node_env_proxy }`；`proxy_host` 已脱敏 |
+| 手工启动 | 直接 `node apps/server/dist/index.js` 起的实例**不会**带该变量（启动器才注入）；服务端下载路径有一次兜底（`ensureProxyEnv`），但其它出站请求仍需手工导出 `NODE_USE_ENV_PROXY=1` |
+| 唯一实现 | `packages/shared/src/proxyEnv.ts`（`resolveProxyEnv` / `ensureProxyEnv` / `maskProxyHost`）：启动器与服务端共用，不各写一份 |
+
 ## 5b. 数据库位置（DB-1，`config.ts` + `GET/PATCH /api/settings`）
 
 生效顺序：**`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项）→ 默认 `%APPDATA%\AgentBoard\agentboard.db`**。env 存在时设置项被忽略（但仍留在 config.json，env 去掉后自动回到设置值）。
@@ -168,7 +181,7 @@
 | --- | --- | --- | --- | --- |
 | `GET /api/issues` | query：`workspace`（必填）、`status?`（**该工作区已定义的任意状态名**：内置五状态 + 自定义；分页与非分页都生效）、`limit? offset?` | `Issue[]`（sort_order,created_at,id 升序）；分页模式 `PageResult<TaskPreview>`（id 升序；description 截取默认 12000 字符并附 `description_truncated` `next_description_offset_chars`） | 400 缺 workspace / 分页非法 / `status` 不属于该工作区（文案列出可用状态）；404 工作空间不存在 | routes.ts |
 | `POST /api/issues`（幂等） | body：`workspace_id: string`、`title: string 非空`、`description?: string`、`priority?: '低'\|'中'\|'高'`（缺省 中）、`labels?: string[]`（缺省 []） | `Issue`（status=待规划、sort_order=0）；WS issue.changed | 400 校验失败；404 工作空间不存在 | routes.ts:268 |
-| `POST /api/issues/draft` | body：`workspace_id`、`requirement: string 1-4000`、`adapter: 'dsh'\|'codex'\|'opencode'`、`priority?: '低'\|'中'\|'高'` | **不落库**：`{ title, description, labels, warnings: string[] }`。`description` 固定三段（`## 背景` / `## 要求` / `## 验收`），模型没给的段落写「未提供」，**不补需求、不编验收条件**；`labels` 只保留工作区已有标签，自造的丢弃并进 `warnings`；一次性适配器调用（不建会话/不占 claim），超时 120s；审计写 `issue_draft_audit`（只记 adapter/耗时/成败/warning 数，不记需求原文） | 400 参数非法（adapter 不在三家内、requirement 空/超长）；404 工作空间不存在；422 `DRAFT_INVALID_OUTPUT`（JSON 不合法，已重试 1 次）；502 `DRAFT_ADAPTER_FAILED`；504 `DRAFT_TIMEOUT` | routes.ts（`services/smartCreateDraft.ts`） |
+| `POST /api/issues/draft` | body：`workspace_id`、`requirement: string 1-4000`、`adapter: 'dsh'\|'codex'\|'opencode'`、`priority?: '低'\|'中'\|'高'` | **不落库**：`{ cards: [{ local_id, title, description, labels, warnings }], title, description, labels, warnings }`（MULTI-DRAFT：多条需求按原话分条，1 条 1 张卡，最多 10 张；顶层字段镜像 `cards[0]` 以兼容旧单读法；`splitRequirementItems` 只切分不推断，模型条数不符时按原文逐条兜底）。`description` 固定三段（`## 背景` / `## 要求` / `## 验收`），模型没给的段落写「未提供」，**不补需求、不编验收条件**；`labels` 只保留工作区已有标签，自造的丢弃并进 `warnings`；一次性适配器调用（不建会话/不占 claim），超时 120s；审计写 `issue_draft_audit`（只记 adapter/耗时/成败/warning 数，不记需求原文） | 400 参数非法（adapter 不在三家内、requirement 空/超长）；404 工作空间不存在；422 `DRAFT_INVALID_OUTPUT`（JSON 不合法，已重试 1 次）；502 `DRAFT_ADAPTER_FAILED`；504 `DRAFT_TIMEOUT` | routes.ts（`services/smartCreateDraft.ts`） |
 | `GET /api/issues/:id` | query：`description_offset_chars?` `description_max_chars?` | `Issue`；带窗口参数时 description 为窗口内容并附 `description_truncated` `next_description_offset_chars` | 404 任务不存在（归属不匹配同为 404） | routes.ts:276 |
 | `PATCH /api/issues/:id`（幂等） | body：`title? description? priority? labels? status? sort_order?: int`（至少一个）；`workspace_id?`；`expected_updated_at?: int ≥0`（CAS，须同时提供 workspace_id） | `Issue`（`updated_at` 单调递增：`MAX(now, 旧值+1)`，`issue.ts:145` + `schema.ts:42` 触发器，CAS 调用方依赖）；WS issue.changed | 400 未提供更新字段 / CAS 缺 workspace_id / 参数非法；404 任务不存在；409 `CONFLICT` 占用中禁改 status；409 `TASK_REVISION_CONFLICT` CAS 过期（details `current_updated_at`） | routes.ts:284 |
 | `DELETE /api/issues/:id` | — | 204；先停各绑定会话在途轮次，再同事务级联删除消息+会话+任务；同事务内对每个被本卡阻塞的卡追加 system 评论「前置 X(short id) 已删除，依赖自动解除」；WS issue.deleted + 每会话 session.deleted + 每条解锁评论 comment.added | 404 任务不存在；409 `CONFLICT` 占用中禁止删除；含子任务时 409 `CONFLICT`（子任务先处理） | routes.ts:447；CLI `kb delete-issue <id> --yes`（缺 `--yes` 只打印标题/状态、非 0 退出、不发请求）；MCP `agentboard_delete_task` |

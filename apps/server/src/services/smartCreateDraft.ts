@@ -29,6 +29,8 @@ export interface DraftInput {
 }
 
 export interface DraftResult {
+  /** MULTI-DRAFT：本次生成的草稿卡（≥1 张；1 条需求 = 1 张；顶层字段镜像 cards[0]，兼容旧读取方式） */
+  cards: DraftCard[];
   title: string;
   description: string;
   labels: string[];
@@ -73,6 +75,77 @@ const draftModelSchema = z.object({
 }).strict();
 
 type DraftModelOutput = z.infer<typeof draftModelSchema>;
+
+/** 一次生成最多拆多少张卡（防跑飞；超出保留前 N 条并给 warning） */
+export const MAX_DRAFT_CARDS = 10;
+
+/** 批量模式：模型必须返回与用户条数一一对应的卡片数组（不得合并、不得新增） */
+const draftCardsSchema = z.object({
+  cards: z.array(draftModelSchema).min(1).max(MAX_DRAFT_CARDS),
+}).strict();
+
+/** MULTI-DRAFT：单张草稿卡（1 条需求 1 张卡） */
+export interface DraftCard {
+  /** 前端本地标识（稳定、不落库） */
+  local_id: string;
+  title: string;
+  description: string;
+  labels: string[];
+  warnings: string[];
+}
+
+/**
+ * MULTI-DRAFT：把用户需求原文按**原话**分条（确定性，不做任何推断）。
+ *
+ * 规则顺序：
+ * 1. 归一化换行；
+ * 2. 命中列表标记（`1.` `1、` `1)` `-` `*` `•`）→ 每条一卡，缩进/非标记行并入当前条，空行结束当前条；
+ * 3. 无标记但含 `；`/`;` 且分段 ≥2 → 按分号切；
+ * 4. 否则按行切。
+ *
+ * 只做「切分」：不合并、不改写、不去重语义（完全相同的重复文本只保留一份）。
+ */
+export function splitRequirementItems(text: string): string[] {
+  const normalized = text.replace(/\r\n?/g, '\n');
+  const lines = normalized.split('\n');
+  const marker = /^\s*(?:(\d+)[.、)]|[-*•])\s+(.*)$/;
+  const hasMarker = lines.some((line) => marker.test(line));
+  const items: string[] = [];
+  const push = (value: string): void => {
+    const trimmed = value.trim();
+    if (trimmed !== '') items.push(trimmed);
+  };
+
+  if (hasMarker) {
+    let current: string[] = [];
+    const flush = (): void => {
+      if (current.length > 0) push(current.join(' '));
+      current = [];
+    };
+    for (const line of lines) {
+      const matched = marker.exec(line);
+      if (matched !== null) {
+        flush();
+        current.push(matched[2] ?? '');
+      } else if (line.trim() === '') {
+        flush();
+      } else if (current.length > 0) {
+        current.push(line.trim());
+      } else {
+        push(line);
+      }
+    }
+    flush();
+  } else if (/[；;]/.test(normalized) && normalized.split(/[；;]/).filter((part) => part.trim() !== '').length >= 2) {
+    for (const part of normalized.split(/[；;]/)) push(part);
+  } else {
+    for (const line of lines) push(line);
+  }
+
+  const unique: string[] = [];
+  for (const item of items) if (!unique.includes(item)) unique.push(item);
+  return unique;
+}
 
 /** 未提供段落占位（断言用固定文案） */
 export const NOT_PROVIDED = '未提供';
@@ -119,6 +192,59 @@ export function buildDraftPrompt(requirement: string, existingLabels: readonly s
     requirement.trim(),
     '"""',
   ].join('\n');
+}
+
+/** MULTI-DRAFT：多需求批量提示词。条数必须与用户条目一致，禁止合并/新增 */
+export function buildMultiDraftPrompt(items: readonly string[], existingLabels: readonly string[]): string {
+  const labels = existingLabels.length > 0 ? existingLabels.join('、') : '（无）';
+  return [
+    '你是任务看板的任务草稿生成器。用户这次给了多条彼此独立的需求，请**每条需求各产出一张卡片**。',
+    '',
+    '硬性规则：',
+    '1. 只输出一个 JSON 对象，不要任何解释文字；结构为：',
+    '   {"cards": [{"title": string, "background": string|null, "requirements": string|null, "acceptance": string|null, "labels": string[], "warnings": string[]}]}',
+    `2. cards 必须**恰好 ${items.length} 张**，顺序与下面条目一一对应；不得把多条合并成一张，也不得凭空增加卡片。`,
+    '3. 每张卡只写该条目提到的内容；用户没提到的段落一律给 null，不要补需求、不要推断验收条件、不要编造负责人或优先级。',
+    '4. title 用一句话概括该条目（≤60 字）。',
+    `5. labels 只能从这些已有标签里选：[${labels}]；没有合适的就返回空数组。`,
+    '6. warnings 只写「该条目本身存在歧义或缺口」的提示，不要写建议方案。',
+    '',
+    '需求条目（按顺序，一条一卡）：',
+    ...items.map((item, index) => `${index + 1}. """${item.trim()}"""`),
+  ].join('\n');
+}
+
+/** 模型输出单卡的结构（prompt 用），便于把解析结果映射成 DraftCard */
+function toCard(output: DraftModelOutput, existingLabels: readonly string[], index: number): DraftCard {
+  const invented = output.labels.filter((label) => !existingLabels.includes(label));
+  const labels = output.labels.filter((label) => existingLabels.includes(label));
+  const warnings = [...output.warnings];
+  if (invented.length > 0) warnings.push(`已忽略模型自造的标签：${invented.join('、')}（只允许使用工作区已有标签）`);
+  return {
+    local_id: `c${index + 1}`,
+    title: output.title,
+    description: renderDraftDescription(output),
+    labels,
+    warnings,
+  };
+}
+
+/**
+ * MULTI-DRAFT 兜底：模型没按条拆分（条数不符 / JSON 不合法）时，用**原文**逐条生成卡。
+ * 不编造内容：background/acceptance 给 null（渲染为「未提供」），requirements 就是该条原文。
+ */
+export function fallbackCards(items: readonly string[]): DraftCard[] {
+  return items.map((item, index) => {
+    const firstLine = item.split('\n')[0]!.trim();
+    const title = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+    return {
+      local_id: `c${index + 1}`,
+      title,
+      description: renderDraftDescription({ title, background: null, requirements: item.trim(), acceptance: null, labels: [], warnings: [] }),
+      labels: [],
+      warnings: ['模型未按条拆分，已按需求原文逐条生成（内容未做改写）'],
+    };
+  });
 }
 
 /** 一次适配器调用的抽象：生产用 runTurn，测试注入 fake */
@@ -240,9 +366,17 @@ export function createDraftService(deps: DraftServiceDeps): DraftService {
       // SMART-CREATE-SESSION：同一 workspace+adapter 复用同一个草稿会话；失败不记轮次（不污染上下文）
       const acquired = acquireDraftSession(input.workspace_id, input.adapter, started);
       const context = sessionContextBlock(acquired.session.requirements);
-      const prompt = context === ''
-        ? buildDraftPrompt(input.requirement, existing)
-        : `${context}\n${buildDraftPrompt(input.requirement, existing)}`;
+      // MULTI-DRAFT：先按原文分条（确定性），1 条走单卡老路径，≥2 条走批量路径
+      const splitAll = splitRequirementItems(input.requirement);
+      const items = splitAll.slice(0, MAX_DRAFT_CARDS);
+      const truncatedWarning = splitAll.length > items.length
+        ? [`需求条数 ${splitAll.length} 超过上限 ${MAX_DRAFT_CARDS}，已只处理前 ${MAX_DRAFT_CARDS} 条`]
+        : [];
+      const multi = items.length >= 2;
+      const basePrompt = multi
+        ? buildMultiDraftPrompt(items, existing)
+        : buildDraftPrompt(input.requirement, existing);
+      const prompt = context === '' ? basePrompt : `${context}\n${basePrompt}`;
 
       /** 失败出口：按错误码给 HTTP 状态（可解释、非 500），并落审计 */
       const finishFailure = (status: number, code: string, message: string, warnings: string[] = []): never => {
@@ -288,30 +422,59 @@ export function createDraftService(deps: DraftServiceDeps): DraftService {
           clearTimeout(timer);
         }
         try {
-          const parsed = draftModelSchema.parse(extractJsonObject(text));
-          // 标签只保留工作区已有值；模型自造的丢弃并记 warning
-          const invented = parsed.labels.filter(label => !existing.includes(label));
-          const labels = parsed.labels.filter(label => existing.includes(label));
-          const warnings = [...parsed.warnings];
-          if (invented.length > 0) warnings.push(`已忽略模型自造的标签：${invented.join('、')}（只允许使用工作区已有标签）`);
+          const raw = extractJsonObject(text);
+          // MULTI-DRAFT：≥2 条时要求模型返回等长 cards；单条沿用单卡结构
+          const cards: DraftCard[] = multi
+            ? (() => {
+                const parsed = draftCardsSchema.parse(raw);
+                if (parsed.cards.length !== items.length) {
+                  throw new Error(`卡片条数与需求条数不一致（${parsed.cards.length} ≠ ${items.length}）`);
+                }
+                return parsed.cards.map((card, index) => toCard(card, existing, index));
+              })()
+            : [toCard(draftModelSchema.parse(raw), existing, 0)];
           recordDraftTurn(acquired.session, input.requirement, now());
+          const first = cards[0]!;
+          const allWarnings = [...truncatedWarning, ...cards.flatMap((card) => card.warnings)];
           const result: DraftResult = {
-            title: parsed.title,
-            description: renderDraftDescription(parsed),
-            labels,
-            warnings,
+            cards,
+            // 兼容旧读取方式：顶层字段镜像第一张卡
+            title: first.title,
+            description: first.description,
+            labels: first.labels,
+            warnings: allWarnings,
             session_id: acquired.session.id,
             session_turn: acquired.session.turns,
             session_reused: acquired.reused,
           };
           audit(deps.db, {
             workspace_id: input.workspace_id, adapter: input.adapter, duration_ms: now() - started,
-            ok: 1, warning_count: warnings.length, error_code: null, created_at: now(),
+            ok: 1, warning_count: allWarnings.length, error_code: null, created_at: now(),
           });
           return result;
         } catch (error) {
           lastError = error instanceof Error ? error.message.split('\n')[0]! : String(error);
         }
+      }
+      // MULTI-DRAFT：多条需求时不让模型抖动破坏契约 —— 用原文逐条兜底（1 张也照建）
+      if (multi) {
+        const cards = fallbackCards(items);
+        recordDraftTurn(acquired.session, input.requirement, now());
+        const allWarnings = [...truncatedWarning, ...cards.flatMap((card) => card.warnings)];
+        audit(deps.db, {
+          workspace_id: input.workspace_id, adapter: input.adapter, duration_ms: now() - started,
+          ok: 1, warning_count: allWarnings.length, error_code: null, created_at: now(),
+        });
+        return {
+          cards,
+          title: cards[0]!.title,
+          description: cards[0]!.description,
+          labels: cards[0]!.labels,
+          warnings: allWarnings,
+          session_id: acquired.session.id,
+          session_turn: acquired.session.turns,
+          session_reused: acquired.reused,
+        };
       }
       return finishFailure(422, 'DRAFT_INVALID_OUTPUT', `适配器输出的草稿不是合法的 JSON（${lastError}），可以改用手动创建`);
     },

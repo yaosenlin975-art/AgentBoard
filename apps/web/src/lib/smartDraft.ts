@@ -19,7 +19,18 @@ export const ADAPTER_LABEL: Record<DraftAdapter, string> = {
   codebuddy: 'CodeBuddy',
 };
 
+/** MULTI-DRAFT：一张草稿卡（1 条需求 1 张） */
+export interface DraftCard {
+  localId: string;
+  title: string;
+  description: string;
+  labels: string[];
+  warnings: string[];
+}
+
 export interface IssueDraft {
+  /** MULTI-DRAFT：草稿卡（≥1；单条需求时长度 1） */
+  cards: DraftCard[];
   title: string;
   description: string;
   labels: string[];
@@ -109,12 +120,44 @@ export async function requestDraft(input: DraftRequestInput, options: DraftOptio
     const err = (data as { error?: { code?: string; message?: string } } | null)?.error;
     throw new DraftError(err?.message ?? `请求失败（HTTP ${res.status}）`, err?.code ?? 'UNKNOWN', res.status);
   }
-  const draft = data as Partial<IssueDraft> & { session_id?: unknown; session_turn?: unknown; session_reused?: unknown } | null;
-  return {
+  const draft = data as
+    | (Partial<IssueDraft> & { session_id?: unknown; session_turn?: unknown; session_reused?: unknown; cards?: unknown })
+    | null;
+  const topLevelLabels = Array.isArray(draft?.labels) ? draft!.labels.filter((l): l is string => typeof l === 'string') : [];
+  const topLevelWarnings = Array.isArray(draft?.warnings) ? draft!.warnings.filter((w): w is string => typeof w === 'string') : [];
+  // MULTI-DRAFT：优先读 cards[]；服务端没给（旧响应）时按单卡合成，调用方无感
+  const rawCards = Array.isArray(draft?.cards) ? (draft!.cards as unknown[]) : [];
+  const cards: DraftCard[] = rawCards
+    .map((raw, index) => {
+      const card = raw as Partial<DraftCard> | null;
+      const title = typeof card?.title === 'string' ? card.title : '';
+      if (title.trim() === '') return null;
+      return {
+        localId: typeof card?.localId === 'string'
+          ? card.localId
+          : typeof (card as { local_id?: unknown } | null)?.local_id === 'string'
+            ? String((card as { local_id?: string }).local_id)
+            : `c${index + 1}`,
+        title,
+        description: typeof card?.description === 'string' ? card.description : '',
+        labels: Array.isArray(card?.labels) ? card!.labels.filter((l): l is string => typeof l === 'string') : [],
+        warnings: Array.isArray(card?.warnings) ? card!.warnings.filter((w): w is string => typeof w === 'string') : [],
+      } satisfies DraftCard;
+    })
+    .filter((card): card is DraftCard => card !== null);
+  const fallbackCard: DraftCard = {
+    localId: 'c1',
     title: typeof draft?.title === 'string' ? draft.title : '',
     description: typeof draft?.description === 'string' ? draft.description : '',
-    labels: Array.isArray(draft?.labels) ? draft!.labels.filter((l): l is string => typeof l === 'string') : [],
-    warnings: Array.isArray(draft?.warnings) ? draft!.warnings.filter((w): w is string => typeof w === 'string') : [],
+    labels: topLevelLabels,
+    warnings: topLevelWarnings,
+  };
+  return {
+    cards: cards.length > 0 ? cards : [fallbackCard],
+    title: typeof draft?.title === 'string' ? draft.title : fallbackCard.title,
+    description: typeof draft?.description === 'string' ? draft.description : fallbackCard.description,
+    labels: topLevelLabels,
+    warnings: topLevelWarnings,
     sessionId: typeof draft?.session_id === 'string' ? draft.session_id : null,
     sessionTurn: typeof draft?.session_turn === 'number' ? draft.session_turn : null,
     sessionReused: draft?.session_reused === true,

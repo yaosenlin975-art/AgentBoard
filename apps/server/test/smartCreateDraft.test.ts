@@ -275,3 +275,91 @@ describe('draft adapter allowlist (SMART-CREATE-CB)', () => {
     for (const id of DRAFT_ADAPTERS) expect(registryIds.has(id)).toBe(true);
   });
 });
+
+describe('MULTI-DRAFT：多条需求拆多卡（6a59ef60）', () => {
+  let t: TestDb;
+  let app: Express;
+  let spaceDir: string;
+  let ws: string;
+  let prompts: string[];
+  let runner: (args: { adapter: string; prompt: string; cwd: string; signal: AbortSignal }) => Promise<string>;
+
+  const postDraft = (body: Record<string, unknown>) => request(app).post('/api/issues/draft').send(body);
+  const cardJson = (title: string, requirements: string | null, over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    title, background: null, requirements, acceptance: null, labels: [], warnings: [], ...over,
+  });
+
+  beforeEach(async () => {
+    t = createTestDb();
+    spaceDir = mkdtempSync(join(tmpdir(), 'agentboard-multi-'));
+    prompts = [];
+    const adapter = new FakeAdapter();
+    const created = await createApp({
+      db: t.db,
+      getAdapter: (id: string): AgentAdapter => {
+        if (['dsh', 'codex', 'opencode', 'codebuddy', 'fake'].includes(id)) return adapter;
+        throw new Error(`未知适配器 id: ${id}`);
+      },
+      adapters: [adapter],
+      refreshClisOnBoot: false,
+      draftRunner: args => runner(args),
+    });
+    app = created.app;
+    ws = createWorkspace(t.db, { name: '多卡空间', path: spaceDir }).id;
+  });
+  afterEach(() => {
+    t.cleanup();
+    rmSync(spaceDir, { recursive: true, force: true });
+  });
+
+  it('3 条需求 → 3 张卡；顶层字段镜像第一张（兼容旧读取）', async () => {
+    resetDraftSessions();
+    runner = async ({ prompt }) => {
+      prompts.push(prompt);
+      return JSON.stringify({ cards: [
+        cardJson('加排序开关', '看板加排序开关'),
+        cardJson('按标题搜索', '支持按标题搜索'),
+        cardJson('导出 CSV', '导出为 CSV'),
+      ] });
+    };
+    const res = await postDraft({ workspace_id: ws, requirement: '1. 加排序开关\n2. 按标题搜索\n3. 导出 CSV', adapter: 'codex' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.cards).toHaveLength(3);
+    expect(res.body.cards.map((c: { title: string }) => c.title)).toEqual(['加排序开关', '按标题搜索', '导出 CSV']);
+    expect(res.body.cards[0].local_id).toBe('c1');
+    // 兼容：顶层镜像第一张卡
+    expect(res.body.title).toBe('加排序开关');
+    expect(res.body.description).toBe(res.body.cards[0].description);
+    // 批量 prompt 要求条数与条目一一对应
+    expect(prompts[0]).toContain('恰好 3 张');
+  });
+
+  it('单条需求不拆：cards 长度 1，且走单卡 prompt（不含批量措辞）', async () => {
+    resetDraftSessions();
+    runner = async ({ prompt }) => { prompts.push(prompt); return modelJson(); };
+    const res = await postDraft({ workspace_id: ws, requirement: '看板要能按标题搜索', adapter: 'codex' });
+    expect(res.status).toBe(200);
+    expect(res.body.cards).toHaveLength(1);
+    expect(res.body.title).toBe('支持按标题搜索');
+    expect(prompts[0]).not.toContain('一条一卡');
+  });
+
+  it('模型条数与需求条数不符 → 确定性兜底：按原文逐条出卡，不丢需求', async () => {
+    resetDraftSessions();
+    runner = async () => JSON.stringify({ cards: [cardJson('只有一张', '合并了')] });
+    const res = await postDraft({ workspace_id: ws, requirement: '1. 甲\n2. 乙\n3. 丙', adapter: 'codex' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.cards).toHaveLength(3);
+    expect(res.body.cards.map((c: { title: string }) => c.title)).toEqual(['甲', '乙', '丙']);
+    expect(res.body.cards[0].description).toContain('## 验收\n未提供');
+    expect((res.body.warnings as string[]).join('\n')).toContain('按需求原文逐条生成');
+  });
+
+  it('模型输出非 JSON 且是多条需求 → 仍兜底出卡（不 422）', async () => {
+    resetDraftSessions();
+    runner = async () => '完全不是 JSON';
+    const res = await postDraft({ workspace_id: ws, requirement: '加导出；修暗色对比度', adapter: 'codex' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.cards).toHaveLength(2);
+  });
+});
