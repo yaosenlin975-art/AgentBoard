@@ -60,6 +60,35 @@ function noteDebug(patch: Partial<VoiceDebug>): void {
   };
 }
 
+/**
+ * VOICE-UI-2：可铺开到文本控件上的 props 工厂。
+ *
+ * 默认路径是 `VoiceInputProvider` 在 document 上做 capture 委托（`input[type=text|search]`、
+ * `textarea`、`contenteditable` 全自动生效，聊天输入框 / 新建任务标题描述 / 知识库搜索 /
+ * 详情评论框都在其中）。工厂用于两类场景：
+ * 1. 需要**显式声明**「这个控件支持长按语音」的组件（可读性/测试锚点）；
+ * 2. 将来出现委托覆盖不到的控件（例如 shadow DOM / 富文本编辑器）。
+ *
+ * 只做「标记 + 阻止长按期间弹右键菜单」，不抢点击/聚焦/拖选/IME：
+ * - 不调 `preventDefault`（否则会破坏聚焦与文本拖选）；
+ * - 仅在已进入 recording/pending 阶段时对 `contextmenu` 做一次 `preventDefault`。
+ */
+export interface VoiceLongPressProps {
+  'data-voice-input': 'true';
+  onContextMenu: (event: React.MouseEvent) => void;
+}
+
+export function voiceLongPressProps(): VoiceLongPressProps {
+  return {
+    'data-voice-input': 'true',
+    onContextMenu: (event: React.MouseEvent) => {
+      // 长按录音期间浏览器会弹右键菜单：只在这种状态下拦一次，正常右键不受影响
+      const debug = (window as unknown as { __voiceDebug?: VoiceDebug }).__voiceDebug;
+      if (debug?.lastText !== undefined && (debug.lastError === null || debug.lastError === undefined)) return;
+      event.preventDefault();
+    },
+  };
+}
 export function VoiceInputProvider({ children }: { children?: React.ReactNode }) {
   const { settings } = useVoiceSettings();
   const settingsRef = useRef(settings);
@@ -192,12 +221,27 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
     document.addEventListener('pointermove', onPointerMove, true);
     document.addEventListener('pointerup', onPointerUp, true);
     document.addEventListener('pointercancel', onPointerUp, true);
+    // VOICE-UI-2：指针移出可拖动范围也要取消（否则「拖出去再松手」会残留 pending 计时）
+    const onPointerLeave = (event: PointerEvent): void => {
+      if (gestureRef.current.phase === 'idle') return;
+      const related = event.relatedTarget;
+      if (related instanceof Node && related.nodeType === Node.TEXT_NODE) return;
+      const wasRecording = gestureRef.current.phase === 'recording';
+      gestureRef.current = IDLE_GESTURE;
+      clearTimer();
+      if (wasRecording) {
+        stopLevelTimer();
+        void finish();
+      }
+    };
+    document.addEventListener('pointerleave', onPointerLeave, true);
     document.addEventListener('keydown', onKeyDown, true);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('pointermove', onPointerMove, true);
       document.removeEventListener('pointerup', onPointerUp, true);
       document.removeEventListener('pointercancel', onPointerUp, true);
+      document.removeEventListener('pointerleave', onPointerLeave, true);
       document.removeEventListener('keydown', onKeyDown, true);
       clearTimer();
       stopLevelTimer();
