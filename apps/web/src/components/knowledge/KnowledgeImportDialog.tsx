@@ -36,6 +36,15 @@ const LANDED_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'proposed', label: '提议中' },
 ];
 
+/** KBIMP-2B：单条导入结果（成功/失败都保留，失败不静默丢弃） */
+export interface ImportRowResult {
+  key: string;
+  title: string;
+  status: 'ok' | 'failed';
+  pageId: string | null;
+  code: string | null;
+  message: string | null;
+}
 export function KnowledgeImportDialog({
   open,
   onClose,
@@ -55,6 +64,8 @@ export function KnowledgeImportDialog({
   const [landed, setLanded] = useState('');
   const [title, setTitle] = useState('');
   const [dragging, setDragging] = useState(false);
+  // KBIMP-2B：逐条导入结果（成功带页 id / 失败带 error_code 与服务端 message）
+  const [results, setResults] = useState<ImportRowResult[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const activeDrafts = useMemo(
@@ -63,7 +74,7 @@ export function KnowledgeImportDialog({
   );
 
   const reset = (): void => {
-    setParsed(null); setCancelled([]); setFailure(null); setErrorView(null); setTitle(''); setCategory(''); setLanded('');
+    setParsed(null); setCancelled([]); setFailure(null); setErrorView(null); setTitle(''); setCategory(''); setLanded(''); setResults([]);
   };
 
   const readFile = async (file: File): Promise<void> => {
@@ -78,41 +89,60 @@ export function KnowledgeImportDialog({
     setTitle(result.value.drafts[0]?.title ?? '');
   };
 
+  /**
+   * KBIMP-2B：逐条提交以获得**逐条状态**。
+   * 服务端 `ImportResult` 只有 `{ pages, warnings }`，没有逐条失败信息（KBIMP-1B2 那条也归 server），
+   * 所以前端按条发请求：每条的成功/失败与其错误码都能归属到自己，失败不会被静默吞掉，
+   * 也不做整批回滚（服务端本来就是逐条建页）。DB-2B 之外若服务端补上 `failures[]`，只需把这里换回单请求。
+   */
   const submit = async (): Promise<void> => {
     if (parsed === null || activeDrafts.length === 0) return;
     setBusy(true);
     setErrorView(null);
     setFailure(null);
-    try {
-      const drafts = activeDrafts.map((draft) => ({
-        ...draft,
-        ...(title.trim() !== '' && parsed.format !== 'json' ? { title: title.trim() } : {}),
-        ...(category === '' ? {} : { category }),
-        ...(landed === '' ? {} : { landed }),
-      })) as ImportDraft[];
-      const content = rebuildContent(parsed, drafts);
-      const response = await api.post<{ pages?: Array<{ id: string }>; id?: string; warnings?: string[] }>(
-        '/api/knowledge/pages/import',
-        {
-          scope: 'common',
-          format: parsed.format,
-          content,
-          filename: parsed.filename,
-          ...(title.trim() !== '' && parsed.format !== 'json' ? { title: title.trim() } : {}),
-          ...(category === '' ? {} : { category }),
-          ...(landed === '' ? {} : { landed }),
-        },
-      );
-      const ids = (response.pages ?? (response.id === undefined ? [] : [{ id: response.id }])).map((page) => page.id);
-      onImported(ids);
-      reset();
-      onClose();
-    } catch (error) {
-      const code = (error as { code?: string }).code ?? null;
-      setErrorView(importErrorView(code, error instanceof Error ? error.message : '导入失败'));
-    } finally {
-      setBusy(false);
+    setResults([]);
+    const drafts = activeDrafts.map((draft) => ({
+      ...draft,
+      ...(title.trim() !== '' && parsed.format !== 'json' ? { title: title.trim() } : {}),
+      ...(category === '' ? {} : { category }),
+      ...(landed === '' ? {} : { landed }),
+    })) as ImportDraft[];
+
+    const collected: ImportRowResult[] = [];
+    for (const draft of drafts) {
+      try {
+        const content = rebuildContent(parsed, [draft]);
+        const response = await api.post<{ pages?: Array<{ id: string }>; id?: string; warnings?: string[] }>(
+          '/api/knowledge/pages/import',
+          {
+            scope: 'common',
+            format: parsed.format,
+            content,
+            filename: parsed.filename,
+            ...(title.trim() !== '' && parsed.format !== 'json' ? { title: title.trim() } : {}),
+            ...(category === '' ? {} : { category }),
+            ...(landed === '' ? {} : { landed }),
+          },
+        );
+        const pageId = response.pages?.[0]?.id ?? response.id ?? null;
+        collected.push({ key: draft.key, title: draft.title, status: 'ok', pageId, code: null, message: null });
+      } catch (error) {
+        collected.push({
+          key: draft.key,
+          title: draft.title,
+          status: 'failed',
+          pageId: null,
+          code: (error as { code?: string }).code ?? null,
+          message: error instanceof Error ? error.message : '导入失败',
+        });
+      }
+      setResults([...collected]);
     }
+    setBusy(false);
+
+    const okIds = collected.filter((row) => row.status === 'ok' && row.pageId !== null).map((row) => row.pageId!);
+    if (okIds.length > 0) onImported(okIds);
+    // KBIMP-2B：全成功也不自动关闭——结果区要留给用户看逐条状态，关闭由用户点「关闭」
   };
 
   return (
@@ -221,6 +251,39 @@ export function KnowledgeImportDialog({
           </div>
         )}
 
+        {results.length > 0 && (
+          <div data-testid="kb-import-results" data-ok={results.filter((row) => row.status === 'ok').length} data-failed={results.filter((row) => row.status === 'failed').length} className="rounded-md border border-hairline p-2 text-xs">
+            <p data-testid="kb-import-summary" className="text-ink-2">
+              成功 <span className="tabular-nums text-ink">{results.filter((row) => row.status === 'ok').length}</span> / 失败{' '}
+              <span className={`tabular-nums ${results.some((row) => row.status === 'failed') ? 'text-accent' : 'text-ink'}`}>{results.filter((row) => row.status === 'failed').length}</span>
+            </p>
+            <ul className="mt-1 space-y-1">
+              {results.map((row) => {
+                const view = row.status === 'failed' ? importErrorView(row.code, row.message ?? '导入失败') : null;
+                return (
+                  <li key={row.key} data-testid={`kb-import-result-row-${row.key}`} data-status={row.status}>
+                    {row.status === 'ok' ? (
+                      <span className="text-ink">{row.title} <span className="text-ink-3">已建页 </span><span className="font-mono text-ink-3">{row.pageId ?? '—'}</span></span>
+                    ) : (
+                      <details data-testid={`kb-import-result-detail-${row.key}`} className="text-red-600 dark:text-red-400">
+                        <summary className="cursor-pointer select-none">
+                          {row.title} <span className="text-ink-3">失败</span>
+                          {row.code !== null && <code className="ml-1 rounded bg-surface-raised px-1 font-mono text-[10px] text-ink-3">{row.code}</code>}
+                        </summary>
+                        <p data-testid={`kb-import-result-message-${row.key}`} className="mt-1 text-ink-2">{view?.text ?? row.message}</p>
+                        {view !== null && view.suggestions.length > 0 && (
+                          <ul data-testid={`kb-import-result-suggestions-${row.key}`} className="mt-1 list-disc pl-4 text-ink-3">
+                            {view.suggestions.map((suggestion) => <li key={suggestion}>{suggestion}</li>)}
+                          </ul>
+                        )}
+                      </details>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
         {errorView !== null && (
           <div role="alert" data-testid="kb-import-error" className="rounded-md border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
             <p>{errorView.text}</p>

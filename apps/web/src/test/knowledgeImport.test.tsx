@@ -121,6 +121,45 @@ describe('对话框行为', () => {
     expect(JSON.parse(body.content)).toHaveLength(1);
   });
 
+  it('KBIMP-2B 逐条状态：2 成功 1 失败 → 汇总「成功 2 / 失败 1」且失败条目带 409 码与建议', async () => {
+    const post = vi.spyOn(client.api, 'post' as never)
+      .mockResolvedValueOnce({ pages: [{ id: 'p-a' }] } as never)
+      .mockRejectedValueOnce(Object.assign(new Error('范围内已存在 slug'), { code: 'KNOWLEDGE_EXISTS' }) as never)
+      .mockResolvedValueOnce({ pages: [{ id: 'p-c' }] } as never);
+    render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
+    upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }, { title: 'C', body_md: '3' }]), 'x.json');
+    await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('kb-import-submit'));
+
+    const results = await screen.findByTestId('kb-import-results');
+    expect(results.getAttribute('data-ok')).toBe('2');
+    expect(results.getAttribute('data-failed')).toBe('1');
+    expect(screen.getByTestId('kb-import-summary')).toHaveTextContent('成功 2 / 失败 1');
+    expect(screen.getByTestId('kb-import-result-row-draft-1').getAttribute('data-status')).toBe('failed');
+    const detail = screen.getByTestId('kb-import-result-detail-draft-1');
+    expect(detail).toHaveTextContent('KNOWLEDGE_EXISTS');
+    expect(screen.getByTestId('kb-import-result-suggestions-draft-1')).toHaveTextContent('改标题');
+    expect(post).toHaveBeenCalledTimes(3);
+  });
+
+  it('KBIMP-2B 全成功：只显示成功行、汇总失败为 0', async () => {
+    vi.spyOn(client.api, 'post' as never).mockResolvedValue({ pages: [{ id: 'p-x' }] } as never);
+    render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
+    upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }]), 'x.json');
+    await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('kb-import-submit'));
+    expect(await screen.findByTestId('kb-import-summary')).toHaveTextContent('成功 2 / 失败 0');
+  });
+
+  it('KBIMP-2B 全失败：汇总成功 0，每条都能展开看到原因', async () => {
+    vi.spyOn(client.api, 'post' as never).mockRejectedValue(Object.assign(new Error('范围为公共库已有同名页'), { code: 'KNOWLEDGE_EXISTS' }) as never);
+    render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
+    upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }]), 'x.json');
+    await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('kb-import-submit'));
+    expect(await screen.findByTestId('kb-import-summary')).toHaveTextContent('成功 0 / 失败 2');
+    expect(screen.getByTestId('kb-import-result-row-draft-0').getAttribute('data-status')).toBe('failed');
+  });
   it('不支持的类型与超限都有可读失败提示', async () => {
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
     upload('x', 'a.pdf');
@@ -133,8 +172,11 @@ describe('对话框行为', () => {
     upload('# dup\nbody');
     await waitFor(() => expect(screen.getByTestId('kb-import-title')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('kb-import-submit'));
-    const error = await screen.findByTestId('kb-import-error');
-    expect(error).toHaveTextContent('改标题');
-    expect(error).toHaveTextContent('后缀');
+    // KBIMP-2B 起失败按条呈现（不再是整批 errorView）：提醒行仍带两条建议
+    const message = await screen.findByTestId('kb-import-result-message-draft-0');
+    expect(message).toHaveTextContent('已存在相同标题/别名的知识页');
+    const suggestions = screen.getByTestId('kb-import-result-suggestions-draft-0');
+    expect(suggestions).toHaveTextContent('改标题');
+    expect(suggestions).toHaveTextContent('后缀');
   });
 });
