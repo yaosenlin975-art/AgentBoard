@@ -22,6 +22,7 @@ import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/che
 import type { SecretVault } from '../services/accounts/secretVault.js';
 import { pollCheckinAuthorization, profileLocalDay, startCheckinAuthorization } from '../services/accounts/checkinAuthorization.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
+import { startAccountRestore } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
@@ -209,6 +210,19 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     }
     const operation = getAccountOperation(db, operationId);
     res.status(202).json({ operation_id: operationId, operation });
+  });
+
+  // ---- ACC-KB-A3：restore 端点——解掉 recovery_required 死锁（幂等，重放不新建行） ----
+  router.post('/managed-accounts/:id/restore', async (req, res) => {
+    const parsed = z.string().uuid().safeParse(req.params.id);
+    if (!parsed.success) throw new ValidationError('id 必须为 UUID');
+    const result = await startAccountRestore(db, parsed.data);
+    res.status(202).json({
+      operation_id: result.operation.id,
+      operation: result.operation,
+      recovered_operation_id: result.recovered_operation_id,
+      replayed: result.replayed,
+    });
   });
 
   // ---- ACC-KB-A2：enabled 写入路径（此前只有读取，界面上「已停用」徽标永远不可达） ----

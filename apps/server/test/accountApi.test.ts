@@ -19,7 +19,7 @@ import { errorHandler } from '../src/api/routes.js';
 import type { SecretVault } from '../src/services/accounts/secretVault.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
 import { attachClientSnapshot, createManagedAccount, getManagedAccount } from '../src/db/repos/managedAccount.js';
-import { createAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
+import { createAccountOperation, getAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
 
@@ -364,6 +364,46 @@ describe('account api (managed-accounts / account-operations)', () => {
       account_id: accountId, app_id: 'workbuddy_desktop', client_instance_id: `inst-${name}`, operation: 'switch',
     }).id;
   }
+
+  it('ACC-KB-A3 restore：解冻 recovery_required、写请求不再恒 409、重复调用幂等不新建行', async () => {
+    const { vault } = await bootCheckin();
+    const name = 'restore-basic';
+    const accountId = await deletableAccount(vault, name);
+    const operationId = seedOperation(accountId, name);
+    updateAccountOperation(t.db, operationId, { state: 'running', stage: 'write' });
+    updateAccountOperation(t.db, operationId, { state: 'recovery_required', safe_error_code: 'RECOVERY_REQUIRED' });
+
+    const res = await request(app).post(`/api/managed-accounts/${accountId}/restore`).send({});
+    expect(res.status).toBe(202);
+    expect(res.body.replayed).toBe(false);
+    expect(res.body.recovered_operation_id).toBe(operationId);
+    expect(res.body.operation).toMatchObject({ operation: 'restore', state: 'succeeded', recovers_operation_id: operationId });
+    expect(getAccountOperation(t.db, operationId)).toMatchObject({ state: 'failed', safe_error_code: 'RESTORED' });
+
+    // 门禁解除：同实例再发起写类操作不再拿到 RECOVERY_REQUIRED（其它拒绝码与本卡无关）
+    const afterWrite = await request(app).post(`/api/managed-accounts/${accountId}/switch`).send({});
+    expect(afterWrite.body?.error?.code).not.toBe('RECOVERY_REQUIRED');
+
+    // 幂等：再调一次返回同一条 restore 操作，且不新增行
+    const countRestores = (): number => (t.db.prepare("SELECT COUNT(*) AS n FROM account_operation WHERE operation='restore'").get() as { n: number }).n;
+    const before = countRestores();
+    const again = await request(app).post(`/api/managed-accounts/${accountId}/restore`).send({});
+    expect(again.status).toBe(202);
+    expect(again.body.replayed).toBe(true);
+    expect(again.body.operation_id).toBe(res.body.operation_id);
+    expect(countRestores()).toBe(before);
+    // 已恢复的实例不会被二次置为 failed
+    expect(getAccountOperation(t.db, operationId)).toMatchObject({ state: 'failed', safe_error_code: 'RESTORED' });
+
+    // 参数与前置条件
+    expect((await request(app).post('/api/managed-accounts/not-a-uuid/restore').send({})).status).toBe(400);
+    expect((await request(app).post(`/api/managed-accounts/${randomUUID()}/restore`).send({})).status).toBe(404);
+    const freshName = 'restore-none';
+    const freshAccount = await deletableAccount(vault, freshName);
+    const none = await request(app).post(`/api/managed-accounts/${freshAccount}/restore`).send({});
+    expect(none.status).toBe(409);
+    expect(none.body.error.code).toBe('RECOVERY_NOT_REQUIRED');
+  });
 
   it('ACC-KB-A2 PATCH enabled：停用/启用可写、响应脱敏、非法与占用被拒', async () => {
     const { vault } = await bootCheckin();
