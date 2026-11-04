@@ -9,8 +9,15 @@ export const knowledgeSourceSchema = z.object({
   captured_at: z.number().int().nonnegative(), content_hash: z.string().regex(/^[a-fA-F0-9]{64}$/), snapshot: snapshot.optional(),
 }).strict();
 export const knowledgeEvidenceSchema = z.object({ source_id: shortText, locator: shortText, snapshot: snapshot.optional() }).strict();
+/**
+ * IMPORT-LIMIT-S：知识页正文上限（唯一来源）。
+ * create / revise / 导入三条写入路径都经过 `validateKnowledgeContent`，改这一处即三处生效。
+ * 导入侧 `IMPORT_MAX_BODY_CHARS` 直接引用本常量，不另立数字。
+ */
+export const KNOWLEDGE_BODY_MAX_CHARS = 2_000_000;
+
 const contentSchema = z.object({
-  title: z.string().trim().min(1).max(300), body_md: z.string().min(1).max(100000),
+  title: z.string().trim().min(1).max(300), body_md: z.string().min(1).max(KNOWLEDGE_BODY_MAX_CHARS),
   sources: z.array(knowledgeSourceSchema).min(1).max(100), evidence: z.array(knowledgeEvidenceSchema).min(1).max(100),
   actor: z.string().trim().min(1).max(100), expires_at: z.number().int().nonnegative().nullable(),
 });

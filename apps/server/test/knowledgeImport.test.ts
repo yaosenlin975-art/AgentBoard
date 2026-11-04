@@ -205,6 +205,50 @@ describe('knowledge import (KBIMP-1)', () => {
       .toEqual([{ category: 'design', landed: 'partial' }, { category: 'solved', landed: undefined }]);
   });
 
+  // ---- IMPORT-LIMIT-S：单文件 10MB / 正文 200 万字符 ----
+
+  it('9MB 文件（json 多页，每页 <200 万字符）导入通过：验证单文件 10MB 放行', async () => {
+    const perPage = 1_870_000; // 5 页 ≈ 9.35M 字符 ≈ 8.9MB 请求体
+    const pages = Array.from({ length: 5 }, (_, i) => ({ title: `9MB 页 ${i + 1}`, body_md: 'x'.repeat(perPage), slug: `limit-9mb-${i + 1}` }));
+    const res = await post({ scope: 'common', format: 'json', content: JSON.stringify(pages), filename: 'ok-9mb.json' });
+    expect(res.status).toBe(200);
+    expect(res.body.pages).toHaveLength(5);
+    for (const page of res.body.pages) expect(page.body_md.length).toBe(perPage);
+  }, 120_000);
+
+  it('200 万字符正文通过，且 GET 回读长度一致（不截断）', async () => {
+    const body = 'y'.repeat(2_000_000);
+    const res = await post({ scope: 'common', format: 'txt', content: body, title: '两百万页', slug: 'limit-2m' });
+    expect(res.status).toBe(200);
+    const id = res.body.pages[0].id as string;
+    const read = await request(app).get(`/api/knowledge/pages/${id}`).query({ scope: 'common' });
+    expect(read.status).toBe(200);
+    expect(read.body.body_md.length).toBe(2_000_000);
+    expect(read.body.body_md).toBe(body);
+  }, 60_000);
+
+  it('200 万零 1 字符 → 413 IMPORT_BODY_TOO_LONG，文案给「当前 N / 上限 2,000,000」', async () => {
+    const res = await post({ scope: 'common', format: 'txt', content: 'z'.repeat(2_000_001), title: '超一字', slug: 'limit-2m-plus' });
+    expect(res.status).toBe(413);
+    expect(res.body.error.code).toBe('IMPORT_BODY_TOO_LONG');
+    expect(res.body.error.message).toContain('2000001');
+    expect(res.body.error.message).toContain('2,000,000');
+  }, 60_000);
+
+  it('超过 10MB 内容 → 413 IMPORT_TOO_LARGE（业务层，文案写明 10MB）', async () => {
+    // 11MB：先过 12MB parser，再由业务层 assertContentLimits 拒（不走 parser）
+    const res = await post({ scope: 'common', format: 'txt', content: 'w'.repeat(11 * 1024 * 1024), title: '11MB 页', slug: 'limit-11mb' });
+    expect(res.status).toBe(413);
+    expect(res.body.error.code).toBe('IMPORT_TOO_LARGE');
+    expect(res.body.error.message).toContain('10MB');
+  }, 120_000);
+
+  it('常量口径：单文件 10MB / 正文 2,000,000', async () => {
+    const mod = await import('../src/services/knowledgeImport.js');
+    expect(mod.IMPORT_MAX_BYTES).toBe(10 * 1024 * 1024);
+    expect(mod.IMPORT_MAX_BODY_CHARS).toBe(2_000_000);
+  });
+
   it('纯函数：slugifyTitle / mdTitle / txtTitle 的边界', () => {
     expect(slugifyTitle('缓存 策略/v2')).toBe('缓存-策略/v2');
     expect(slugifyTitle('   ')).toMatch(/^import-[0-9a-f]{8}$/);

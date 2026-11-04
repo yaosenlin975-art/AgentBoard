@@ -162,6 +162,16 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
+### IMPORT-LIMIT-S 导入上限（单文件 10MB / 单页正文 200 万字符）
+
+﻿| 项 | 口径 |
+| --- | --- |
+| 请求体上限（导入路径） | `12 MiB`（`apps/server/src/index.ts` 的路径级 parser + `knowledgeRoutes.ts` 路由级 parser 同一值）；10MB 文件经 JSON 转义膨胀 1.1–1.4 倍留余量。其余端点仍 100kb |
+| 单文件上限 | `10MB`（`services/knowledgeImport.ts` 的 `IMPORT_MAX_BYTES`）→ 超限 `413 IMPORT_TOO_LARGE`，文案写明「10MB」 |
+| 单页正文上限 | `2,000,000` 字符（唯一来源 `services/knowledge.ts` 的 `KNOWLEDGE_BODY_MAX_CHARS`；`IMPORT_MAX_BODY_CHARS` 引用它，create/revise 的 zod 上限也引用它）→ 超限 `413 IMPORT_BODY_TOO_LONG`，文案给「当前 N 字符 / 上限 2,000,000 字符」 |
+| 超限语义 | parser 层（请求体超 12MiB）→ `413 IMPORT_TOO_LARGE`（不落到 `ATTACHMENT_TOO_LARGE`）；业务层（文件 >10MB / 单页 >200 万字符）→ 各自的 413 |
+| 大正文读回 | `GET /api/knowledge/pages/:id` 整篇返回；实测 2,000,000 字符页响应 2,000,661 字节、`body_md.length` 一致（不截断）。超大页建议前端分窗渲染 |
+
 ### KBIMP-1B2 json 数组逐条 `category` / `landed`
 
 `format: 'json'` 的数组逐条取值，**逐条字段优先于请求顶层**：

@@ -1,5 +1,6 @@
 /** Task 9：REST 请求体 zod 校验 schema（Pinned Contracts REST 全表 + 契约修订项） */
 import { z } from 'zod';
+import { KNOWLEDGE_BODY_MAX_CHARS } from '../services/knowledge.js';
 import { DRAFT_ADAPTERS } from '../services/smartCreateDraft.js';
 import { MAX_DISPATCH_SELECTED_ID_COUNT } from '@agentboard/shared';
 import { knowledgeSourceSchema, knowledgeEvidenceSchema } from '../services/knowledge.js';
@@ -11,7 +12,7 @@ export const descriptionQuerySchema = z.object({ description_offset_chars: offse
 export const commentQuerySchema = z.object({ content_offset_chars: offsetQuery, content_max_chars: sizeQuery });
 
 export const knowledgeScopeFields = { scope: z.enum(['workspace', 'common']), workspace_id: z.string().min(1).optional() };
-const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_md: z.string().min(1).max(100000),
+const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_md: z.string().min(1).max(KNOWLEDGE_BODY_MAX_CHARS),
   sources: z.array(knowledgeSourceSchema).min(1).max(100), evidence: z.array(knowledgeEvidenceSchema).min(1).max(100),
   expires_at: z.number().int().nonnegative().nullable().optional(),
   // KB-MODEL：非法 category/landed 一律 400（zod enum）；缺省由 repo 归一到 legacy
@@ -26,7 +27,8 @@ export const knowledgeImportSchema = z.object({
   scope: z.enum(['workspace', 'common']),
   workspace_id: z.string().min(1).optional(),
   format: z.enum(['md', 'txt', 'json']),
-  content: z.string().max(2 * 1024 * 1024),
+  // IMPORT-LIMIT-S：与 index.ts 的导入 parser 上限一致（12MB）；单文件 10MB 的语义在 services/knowledgeImport.ts 校验
+  content: z.string().max(12 * 1024 * 1024),
   filename: z.string().max(300).optional(),
   title: z.string().trim().min(1).max(300).optional(),
   slug: z.string().min(1).max(200).optional(),

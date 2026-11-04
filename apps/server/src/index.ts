@@ -183,7 +183,8 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   })();
   // KBIMP-1B：导入端点单独放宽请求体上限。全局 parser 在路由之前执行，100kb 会先把
   // 「单次 ≤1MB / 单页 ≤100000 字符」的导入判成 413，路由级 parser 永远拿不到 body。
-  app.use('/api/knowledge/pages/import', express.json({ limit: '2mb' }));
+  // IMPORT-LIMIT-S：单文件上限 10MB，JSON 转义膨胀约 1.1–1.4 倍 → 请求体上限 12MB（其余端点仍 100kb）
+  app.use('/api/knowledge/pages/import', express.json({ limit: '12mb' }));
   app.use(express.json());
   // 所有 /api 响应带版本头（含后续抛错路径——setHeader 在响应发出前始终生效），供 CLI 零额外请求比对
   app.use('/api', (_req, res, next) => {

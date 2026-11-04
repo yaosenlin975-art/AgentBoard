@@ -1143,7 +1143,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   if (typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.too.large') {
     // KBIMP-1B：导入端点的上限是 2 MiB 请求体，文案不能套用「单张图片」
     if (req.path.startsWith('/api/knowledge/pages/import')) {
-      res.status(413).json({ error: { code: 'IMPORT_BODY_TOO_LARGE', message: '导入请求体过大（单次 ≤2 MiB）；单页正文上限 100000 字符' } });
+      res.status(413).json({ error: { code: 'IMPORT_TOO_LARGE', message: '导入请求体过大（上限 12 MiB）；单文件上限 10MB、单页正文上限 2,000,000 字符' } });
       return;
     }
     res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单张图片不能超过 10 MiB' } });

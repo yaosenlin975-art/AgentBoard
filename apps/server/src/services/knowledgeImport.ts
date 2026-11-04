@@ -14,10 +14,13 @@ import { createHash } from 'node:crypto';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeSource } from '@agentboard/shared';
 import { ApiError, ValidationError } from '../errors.js';
 import { createKnowledgePage } from '../db/repos/knowledge.js';
+import { KNOWLEDGE_BODY_MAX_CHARS } from './knowledge.js';
 import type { Db } from '../db/connection.js';
 
-export const IMPORT_MAX_BYTES = 1024 * 1024;
-export const IMPORT_MAX_BODY_CHARS = 100_000;
+/** IMPORT-LIMIT-S：单次导入内容上限 10MB（与前端预检 10MB 同口径；请求体上限见 index.ts 的 12MB parser） */
+export const IMPORT_MAX_BYTES = 10 * 1024 * 1024;
+/** IMPORT-LIMIT-S：单页正文上限（引用领域常量，不另立数字） */
+export const IMPORT_MAX_BODY_CHARS = KNOWLEDGE_BODY_MAX_CHARS;
 export const IMPORT_TITLE_MAX = 300;
 /** title 兜底上限（txt 首行） */
 const TXT_TITLE_MAX = 80;
@@ -99,7 +102,7 @@ export function baseName(filename: string | undefined): string | null {
 export function assertContentLimits(content: string): void {
   const bytes = Buffer.byteLength(content, 'utf8');
   if (bytes > IMPORT_MAX_BYTES) {
-    throw new ApiError(413, 'IMPORT_TOO_LARGE', `导入内容 ${bytes} 字节，超过单次上限 ${IMPORT_MAX_BYTES} 字节（1MB）`);
+    throw new ApiError(413, 'IMPORT_TOO_LARGE', `导入内容 ${bytes} 字节，超过单次上限 ${IMPORT_MAX_BYTES} 字节（10MB）`);
   }
   if (content.trim() === '') throw new ValidationError('导入内容不能为空');
 }
@@ -229,7 +232,7 @@ export function planImport(input: ImportRequestInput): { drafts: ImportPageDraft
     : mapTextPage(input);
   for (const draft of planned.drafts) {
     if (draft.body_md.length > IMPORT_MAX_BODY_CHARS) {
-      throw new ApiError(413, 'IMPORT_BODY_TOO_LONG', `正文 ${draft.body_md.length} 字符，超过单页上限 ${IMPORT_MAX_BODY_CHARS} 字符`);
+      throw new ApiError(413, 'IMPORT_BODY_TOO_LONG', `正文 ${draft.body_md.length} 字符，超过单页上限 ${IMPORT_MAX_BODY_CHARS.toLocaleString('en-US')} 字符`);
     }
   }
   return planned;
