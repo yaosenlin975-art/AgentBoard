@@ -51,7 +51,9 @@ export function toExit(err: unknown, io: Io): number {
       const raw = err.code.startsWith('KNOWLEDGE_') || err.code.startsWith('CHANGELOG_')
         || err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_KEY_REUSED'
         // CLAIM-MSG：占用冲突与「状态不可领取」自带自解释文案，原样透传
-        || err.code === 'ISSUE_CLAIMED' || err.code === 'ISSUE_STATUS_NOT_CLAIMABLE' || err.code === 'NOT_TASK_OWNER';
+        || err.code === 'ISSUE_CLAIMED' || err.code === 'ISSUE_STATUS_NOT_CLAIMABLE' || err.code === 'NOT_TASK_OWNER'
+        // BORROW-0.3：fence 过期自带「重新 claim」指引，原样透传
+        || err.code === 'STALE_FENCE';
       // CLI-CRASH：done/fail 报「未被占用」时给可操作下一步，而不是让人卡在最后一步
       const hint = err.message === '未被占用'
         ? '未被占用：如需推进请先 kb claim，或使用 kb close（待验收 → 已关闭）\n'

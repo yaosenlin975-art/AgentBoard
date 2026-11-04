@@ -1,5 +1,6 @@
 import type { Issue, IssueComment, Workspace, TaskKnowledge } from '@agentboard/shared';
 import { request } from '../api.js';
+import { saveClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
 import { commentLines, issueLines } from '../render.js';
 
@@ -19,9 +20,17 @@ export async function claim(
     const target = await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(id)}`);
     body.workspace_id = target.workspace_id;
   }
-  const issue = await request<Issue & { knowledge?: TaskKnowledge }>(
+  const issue = await request<Issue & { knowledge?: TaskKnowledge; claim_fence?: number }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(id)}/claim`, body, opts.requestId,
   );
+  // BORROW-0.3：领取成功即持久化 fence，done/fail 自动携带；失败仅告警不影响领取
+  if (typeof issue.claim_fence === 'number') {
+    try {
+      saveClaimedFence({ issue_id: issue.id, fence: issue.claim_fence, agent_id: ctx.agentId, claimed_at: issue.claimed_at, base: ctx.base });
+    } catch (error) {
+      ctx.io.writeErr(`警告：fence 本地持久化失败（${error instanceof Error ? error.message : String(error)}）；done/fail 将按软模式不带 fence\n`);
+    }
+  }
   if (issue.knowledge?.warning) ctx.io.writeErr('警告：知识检索不可用，任务领取已成功。\n');
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);

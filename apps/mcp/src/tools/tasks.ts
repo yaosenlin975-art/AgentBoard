@@ -163,6 +163,8 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
     expected_updated_at: z.number().int().nonnegative(),
+    // BORROW-0.3：占用代次软校验（缺席放行；旧 fence → 409 STALE_FENCE）
+    fence: z.number().int().min(0).optional(),
     title: z.string().trim().min(1).optional(),
     description: z.string().optional(),
     priority: prioritySchema.optional(),
@@ -172,12 +174,12 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
   }).strict().refine((input) => ['title', 'description', 'priority', 'labels', 'sort_order', 'parent_issue_id'].some((key) => input[key as keyof typeof input] !== undefined), {
     message: 'At least one task field must be provided.',
-  }), async ({ workspace_id, task_id, expected_updated_at, request_id, ...patch }) => {
+  }), async ({ workspace_id, task_id, expected_updated_at, request_id, fence, ...patch }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue>('PATCH', `/issues/${encodeURIComponent(task_id)}`, {
       workspace_id: workspaceId, agent_id: agentId, expected_updated_at, ...patch,
-    }, request_id);
+    }, request_id, undefined, undefined, fence);
   }, false);
 
   register('claim_task', 'Atomically claim an eligible task; the configured agent ID is an audit label.', z.object({
@@ -196,12 +198,13 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
-  }).strict(), async ({ workspace_id, task_id, request_id }) => {
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(task_id)}/release`, {
       workspace_id: workspaceId, agent_id: agentId,
-    }, request_id);
+    }, request_id, undefined, undefined, fence);
   }, false);
 
   register('add_task_comment', 'Add a task comment under the configured agent audit label.', z.object({
@@ -209,12 +212,13 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...taskIdField,
     content: z.string().min(1),
     ...requestIdField,
-  }).strict(), async ({ workspace_id, task_id, content, request_id }) => {
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, content, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(task_id)}/comments`, {
       workspace_id: workspaceId, content, agent_id: agentId,
-    }, request_id);
+    }, request_id, undefined, undefined, fence);
   }, false);
 
   register('complete_task', 'Complete a task owned by the configured agent.', z.object({
@@ -222,12 +226,13 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...taskIdField,
     notes: z.string().default(''),
     ...requestIdField,
-  }).strict(), async ({ workspace_id, task_id, notes, request_id }) => {
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, notes, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(task_id)}/done`, {
       workspace_id: workspaceId, agent_id: agentId, notes,
-    }, request_id);
+    }, request_id, undefined, undefined, fence);
   }, false);
 
   register('delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks.', z.object({
@@ -244,11 +249,12 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...taskIdField,
     reason: z.string().trim().min(1),
     ...requestIdField,
-  }).strict(), async ({ workspace_id, task_id, reason, request_id }) => {
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, reason, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(task_id)}/fail`, {
       workspace_id: workspaceId, agent_id: agentId, reason,
-    }, request_id);
+    }, request_id, undefined, undefined, fence);
   }, false);
 }

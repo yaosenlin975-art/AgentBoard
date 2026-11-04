@@ -1,5 +1,6 @@
 import type { Issue, KnowledgeHint } from '@agentboard/shared';
 import { request } from '../api.js';
+import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
 
 export interface DoneArgs {
@@ -13,7 +14,10 @@ export interface DoneArgs {
 }
 
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
-  const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string } = { agent_id: ctx.agentId };
+  const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number } = { agent_id: ctx.agentId };
+  // BORROW-0.3：本地有 claim 记录就自动带 fence（软模式：无记录不带，服务端放行）
+  const storedFence = loadClaimedFence(id);
+  if (storedFence !== undefined) body.fence = storedFence;
   if (args.notesStdin === true) {
     const text = (await ctx.io.readStdin()).replace(/\r\n/g, '\n');
     body.notes = text.endsWith('\n') ? text.slice(0, -1) : text;
@@ -46,6 +50,7 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(id)}/done`, body, args.requestId,
   );
+  clearClaimedFence(id);
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;

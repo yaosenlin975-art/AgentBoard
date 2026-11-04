@@ -25,6 +25,7 @@ const SAFE_MESSAGES: Record<string, string> = {
   SERVER_UNREACHABLE: 'The local AgentBoard API is unavailable.',
   OPERATION_UNKNOWN: 'The request timed out after sending; inspect or retry with the same request_id.',
   UPSTREAM_ERROR: 'The local AgentBoard API request failed.',
+  STALE_FENCE: 'The occupancy fence is stale; claim the task again to get a fresh fence before finishing.',
 };
 
 function safeCode(code: unknown, status: number, conflictCode?: string, notFoundCode?: string): string {
@@ -63,8 +64,8 @@ export class AgentBoardApiClient {
     return this.request<T>('GET', path, query, undefined, undefined, undefined, notFoundCode);
   }
 
-  mutate<T>(method: 'POST' | 'PUT' | 'PATCH', path: string, body: unknown, requestId: string, conflictCode?: string, notFoundCode?: string): Promise<T> {
-    return this.request<T>(method, path, {}, body, requestId, conflictCode, notFoundCode);
+  mutate<T>(method: 'POST' | 'PUT' | 'PATCH', path: string, body: unknown, requestId: string, conflictCode?: string, notFoundCode?: string, fence?: number): Promise<T> {
+    return this.request<T>(method, path, {}, body, requestId, conflictCode, notFoundCode, fence);
   }
 
   /** DELETE（无 body、无幂等键）：204 返回 undefined */
@@ -72,7 +73,7 @@ export class AgentBoardApiClient {
     return this.request<T>('DELETE', path, {}, undefined, undefined, conflictCode, notFoundCode);
   }
 
-  private async request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, query: Query = {}, body?: unknown, requestId?: string, conflictCode?: string, notFoundCode?: string): Promise<T> {
+  private async request<T>(method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE', path: string, query: Query = {}, body?: unknown, requestId?: string, conflictCode?: string, notFoundCode?: string, fence?: number): Promise<T> {
     const url = new URL(`/api${path}`, `${this.config.baseUrl}/`);
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined) url.searchParams.set(key, String(value));
@@ -80,6 +81,8 @@ export class AgentBoardApiClient {
     const headers = new Headers();
     if (body !== undefined) headers.set('Content-Type', 'application/json');
     if (requestId) headers.set('Idempotency-Key', requestId);
+    // BORROW-0.3：占用代次走 x-claim-fence 头（服务端 body.fence 优先、头回退，两通道等价）
+    if (fence !== undefined) headers.set('x-claim-fence', String(fence));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
     try {

@@ -391,4 +391,47 @@ describe('AgentBoard task MCP server', () => {
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ parent_issue_id: 'parent-1' });
     expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body))).toMatchObject({ parent_issue_id: null });
   });
+
+  // BORROW-0.3：收尾工具的 fence 走 x-claim-fence 头透传；旧 fence 错误映射 STALE_FENCE 安全文案
+  it('passes the occupancy fence as the x-claim-fence header and maps STALE_FENCE', async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', request_id: '00000000-0000-4000-8000-000000000201', fence: 5 },
+    });
+    expect(response.result?.structuredContent).toMatchObject({ ok: true });
+    const headers = new Headers((fetcher.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
+    expect(headers.get('x-claim-fence')).toBe('5');
+  });
+
+  it('omits the x-claim-fence header when fence is absent (soft mode)', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', request_id: '00000000-0000-4000-8000-000000000202' },
+    });
+    const headers = new Headers((fetcher.mock.calls[0]?.[1] as RequestInit | undefined)?.headers);
+    expect(headers.get('x-claim-fence')).toBeNull();
+  });
+
+  it('maps a stale fence rejection to the safe STALE_FENCE message', async () => {
+    const fetcher = vi.fn(async () => Response.json({ error: { code: 'STALE_FENCE', message: '占用代次已过期（请求 fence=1，当前=2）' } }, { status: 409 }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'fail_task',
+      arguments: { task_id: 'task-1', reason: 'blocked', request_id: '00000000-0000-4000-8000-000000000203', fence: 1 },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'STALE_FENCE' } });
+    expect(JSON.stringify(response.result)).toContain('claim the task again');
+    expect(JSON.stringify(response.result)).not.toContain('请求 fence=1');
+  });
 });

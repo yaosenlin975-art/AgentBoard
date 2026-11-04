@@ -177,6 +177,8 @@ export const patchIssueSchema = z
     due_time: dueTimeSchema,
     workspace_id: z.string().min(1).optional(),
     expected_updated_at: z.number().int().nonnegative().optional(),
+    // BORROW-0.3：占用代次软校验（缺席放行）；不参与「至少一个更新字段」判定
+    fence: z.number().int().min(0).optional(),
   })
   .refine((v) => ['title','description','priority','labels','status','sort_order','parent_issue_id','due_date','due_time'].some(k => Object.hasOwn(v, k)), { message: '至少提供一个更新字段' });
 
@@ -186,6 +188,8 @@ export const addCommentSchema = z.object({
   workspace_id: z.string().min(1).optional(),
   /** agent 经 kb comment 写评论时声明身份：有 → author='agent:<agent_id>'，无 → 'user' */
   agent_id: z.string().trim().min(1).optional(),
+  // BORROW-0.3：占用代次软校验（缺席放行）
+  fence: z.number().int().min(0).optional(),
 }).refine((value) => value.content.trim() !== '' || (value.attachment_ids?.length ?? 0) > 0, { message: '评论文字与图片不能同时为空' })
   .refine((value) => new Set(value.attachment_ids ?? []).size === (value.attachment_ids ?? []).length, { message: 'attachment_ids 不能重复' });
 
@@ -193,6 +197,8 @@ export const claimSchema = z.object({
   agent_id: z.string().trim().min(1, 'agent_id 不能为空'),
   knowledge_enabled: z.boolean().optional(),
   knowledge_query: z.string().trim().min(1).max(500).optional(),
+  // BORROW-0.3：占用代次（软模式：缺席放行；旧 fence → 409 STALE_FENCE）；也可走 x-claim-fence 头
+  fence: z.number().int().min(0).optional(),
 });
 
 export const doneSchema = z.object({

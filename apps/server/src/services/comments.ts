@@ -3,6 +3,7 @@ import type { Db } from '../db/connection.js';
 import { addComment as insertCommentRow, listCommentsByIssue } from '../db/repos/comment.js';
 import { getLastSeenCommentId, getIssue, setLastSeenCommentId } from '../db/repos/issue.js';
 import { NotFoundError } from '../errors.js';
+import { assertFenceCurrent } from './claim.js';
 import { bindAttachmentsToComment, bindCommentAttachments, hasUndeliveredCommentAttachments } from '../db/repos/attachment.js';
 import type { SessionSender } from './sessionManager.js';
 
@@ -54,12 +55,14 @@ export function wakeCommentSession(sessionId: string, content: string, delivery?
     ? sessionSender(sessionId, content)
     : sessionSender(sessionId, content, delivery);
 }
-export function storeComment(db: Db, issueId: string, author: CommentAuthor, content: string, attachmentIds: string[] = []): { comment: IssueComment; wakeSessionId: string | null } {
+export function storeComment(db: Db, issueId: string, author: CommentAuthor, content: string, attachmentIds: string[] = [], fence?: number): { comment: IssueComment; wakeSessionId: string | null } {
   let comment: IssueComment | undefined;
   let wakeSessionId: string | null = null;
   db.transaction(() => {
     const issue = getIssue(db, issueId);
     if (!issue) throw new NotFoundError('任务不存在');
+    // BORROW-0.3：fence 软校验（缺席放行）；断言先于任何写入，旧 fence 409 STALE_FENCE 零写入
+    assertFenceCurrent(db, issueId, fence);
     const inserted = insertCommentRow(db, { issue_id: issueId, author, content });
     if (attachmentIds.length > 0) bindAttachmentsToComment(db, issue.workspace_id, inserted.id, attachmentIds, Date.now());
     comment = bindCommentAttachments(db, issueId, inserted);

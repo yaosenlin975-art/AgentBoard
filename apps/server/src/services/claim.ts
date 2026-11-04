@@ -14,6 +14,21 @@ export function requireIssueInWorkspace(db: Db, issueId: string, workspaceId: st
   if (!issue) throw new ApiError(404, 'TASK_NOT_FOUND', '任务不存在');
   return issue;
 }
+
+/**
+ * BORROW-0.3：fence 软校验。fence 缺席（undefined/null）= 软模式直接放行（旧调用方零改动）；
+ * 传了就必须等于当前占用代次，旧 fence → 409 STALE_FENCE。
+ * 调用点必须放在事务内、任何写 UPDATE 之前，保证零写入。
+ */
+export function assertFenceCurrent(db: Db, issueId: string, fence: number | null | undefined): void {
+  if (fence === undefined || fence === null) return;
+  if (!Number.isSafeInteger(fence) || fence < 0) throw new ValidationError('fence 不合法（需 ≥0 整数）');
+  const row = db.prepare('SELECT claim_fence FROM issue WHERE id=?').get(issueId) as { claim_fence: number } | undefined;
+  if (!row) throw new NotFoundError('任务不存在');
+  if (row.claim_fence !== fence) {
+    throw new ApiError(409, 'STALE_FENCE', `占用代次已过期（请求 fence=${fence}，当前=${row.claim_fence}）；重新 kb claim 获取新 fence 后再收尾`);
+  }
+}
 export function updateIssueWithCAS(db: Db, issueId: string, workspaceId: string, expectedUpdatedAt: number, patch: IssuePatch): Issue {
   if (!Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) throw new ValidationError('expected_updated_at 不合法');
   return db.transaction(() => {
@@ -22,12 +37,13 @@ export function updateIssueWithCAS(db: Db, issueId: string, workspaceId: string,
     return updateIssueInHierarchy(db, issueId, patch, { workspaceId, expectedUpdatedAt });
   }).immediate();
 }
-function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: string, action: 'done' | 'fail' | 'release', detail?: string): ClaimActionResult {
+function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: string, action: 'done' | 'fail' | 'release', detail?: string, fence?: number): ClaimActionResult {
   if (!actorId?.trim()) throw new ValidationError('agent_id 不能为空');
   if (action === 'fail' && !detail?.trim()) throw new ValidationError('失败原因不能为空');
   return db.transaction(() => {
     const issue = requireIssueInWorkspace(db, issueId, workspaceId);
     if (issue.claimed_by !== actorId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
+    assertFenceCurrent(db, issueId, fence);
     const result = db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
       .run(action === 'done' ? '待验收' : '待规划', Date.now(), issueId, workspaceId, actorId);
     if (result.changes !== 1) throw new ApiError(409, 'NOT_TASK_OWNER', '任务占用已改变');
@@ -36,11 +52,11 @@ function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: str
     return { issue: getIssue(db, issueId)!, comment };
   }).immediate();
 }
-export function releaseClaimedIssue(db: Db, issueId: string, workspaceId: string, actorId: string): ClaimActionResult {
-  return scopedFinish(db, issueId, workspaceId, actorId, 'release');
+export function releaseClaimedIssue(db: Db, issueId: string, workspaceId: string, actorId: string, fence?: number): ClaimActionResult {
+  return scopedFinish(db, issueId, workspaceId, actorId, 'release', undefined, fence);
 }
-export function finishClaimedIssue(db: Db, issueId: string, workspaceId: string, actorId: string, action: 'done' | 'fail', detail?: string): ClaimActionResult {
-  return scopedFinish(db, issueId, workspaceId, actorId, action, detail);
+export function finishClaimedIssue(db: Db, issueId: string, workspaceId: string, actorId: string, action: 'done' | 'fail', detail?: string, fence?: number): ClaimActionResult {
+  return scopedFinish(db, issueId, workspaceId, actorId, action, detail, fence);
 }
 
 /** done/fail/release 返回：流转后的 issue + 本次自动评论（done 无 notes 时 comment 为 null） */
@@ -54,8 +70,9 @@ export interface ClaimActionResult {
  * sessionId 传 null 即 REST/kb 的纯占用登记（不绑会话，评论不触发唤醒）。
  * 留言游标同步置为领取前最新评论；有未验证图片时停在首条图片评论之前，保持图片及其后续评论待读。
  * DEP-1 依赖门禁：前置未解除 → 409（守卫在同一个 IMMEDIATE 事务内，与占用更新原子）；`done`/`fail`/`release` 不受依赖影响。
+ * BORROW-0.3：事务内读回新 fence，随返回值透出（调用方持久化后供收尾写入口校验）。
  */
-export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: string | null): Issue {
+export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: string | null): Issue & { claim_fence: number } {
   return db.transaction(() => {
     const blockers = unresolvedBlockers(db, issueId);
     if (blockers.length > 0) throw new ConflictError(blockedClaimMessage(blockers));
@@ -95,7 +112,8 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
       throw new ApiError(409, 'ISSUE_STATUS_NOT_CLAIMABLE',
         `状态不可领取（当前=${current.status}，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`);
     }
-    return getIssue(db, issueId)!;
+    const fenceRow = db.prepare('SELECT claim_fence FROM issue WHERE id=?').get(issueId) as { claim_fence: number };
+    return { ...getIssue(db, issueId)!, claim_fence: fenceRow.claim_fence };
   }).immediate();
 }
 
@@ -109,9 +127,10 @@ export interface ClaimLeaseInfo {
 
 /**
  * BORROW-0.2：占用续租。只有当前占用者可续；不 bump 任务内容（不触发 CAS 冲突面），
- * updated_at 由 issue_monotonic_time 触发器兜底推进。fence 只读返回，校验属 B03。
+ * updated_at 由 issue_monotonic_time 触发器兜底推进。
+ * BORROW-0.3：fence 软校验——旧代次持有者的心跳不得覆盖新占用者的租约（0.2 已知缺口在此闭合）。
  */
-export function heartbeatClaim(db: Db, issueId: string, agentId: string): ClaimLeaseInfo {
+export function heartbeatClaim(db: Db, issueId: string, agentId: string, fence?: number): ClaimLeaseInfo {
   if (!agentId?.trim()) throw new ValidationError('agent_id 不能为空');
   return db.transaction(() => {
     const row = db.prepare('SELECT claimed_by, claim_fence, claim_lease_until FROM issue WHERE id=?')
@@ -119,6 +138,7 @@ export function heartbeatClaim(db: Db, issueId: string, agentId: string): ClaimL
     if (!row) throw new NotFoundError('任务不存在');
     if (row.claimed_by === null) throw new ConflictError('未被占用，无需续租');
     if (row.claimed_by !== agentId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可续租');
+    assertFenceCurrent(db, issueId, fence);
     const now = Date.now();
     const leaseUntil = now + CLAIM_LEASE_MS;
     db.prepare('UPDATE issue SET claim_lease_until=?, last_heartbeat_at=? WHERE id=?')
@@ -172,6 +192,7 @@ export async function doneIssue(
   issueId: string,
   agentId: string,
   notes?: string,
+  fence?: number,
 ): Promise<ClaimActionResult> {
   // CLAIM-RACE：读与写在**同一个 IMMEDIATE 事务**内完成（不再先读后写），
   // 条件 UPDATE 的 changes!==1 已是并发下的唯一真相；评论也用同步 insertCommentRow 落库，
@@ -185,6 +206,7 @@ export async function doneIssue(
     if (agentId !== 'user' && issue.claimed_by !== agentId) {
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
     }
+    assertFenceCurrent(db, issueId, fence);
     const changed = db.prepare(
       `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
@@ -204,6 +226,7 @@ export async function failIssue(
   agentId: string,
   reason: string,
   expectedSessionId?: string,
+  fence?: number,
 ): Promise<ClaimActionResult> {
   if (reason === undefined || reason === null || reason.trim() === '') {
     throw new ValidationError('失败原因不能为空');
@@ -218,6 +241,7 @@ export async function failIssue(
     if (agentId !== 'user' && issue.claimed_by !== agentId && !boundSessionFailure) {
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可回报失败');
     }
+    assertFenceCurrent(db, issueId, fence);
     const changed = db.prepare(
       `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
@@ -230,10 +254,11 @@ export async function failIssue(
 }
 
 /** 用户强制释放：回待规划 + 清空占用 + 经 comments.addComment 落 system 评论 */
-export async function releaseIssue(db: Db, issueId: string): Promise<ClaimActionResult> {
+export async function releaseIssue(db: Db, issueId: string, fence?: number): Promise<ClaimActionResult> {
   // CLAIM-RACE：单事务内「存在性校验 + 条件 UPDATE(changes) + system 评论」；用户强制释放不要求占用者匹配
   const now = Date.now();
   return db.transaction(() => {
+    assertFenceCurrent(db, issueId, fence);
     const changed = db.prepare(
       `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
@@ -245,14 +270,15 @@ export async function releaseIssue(db: Db, issueId: string): Promise<ClaimAction
   }).immediate();
 }
 
-/** 服务层守卫：占用中的 issue 拒绝 status 变更，其余字段放行 */
-export function updateIssueGuarded(db: Db, id: string, patch: IssuePatch): Issue {
+/** 服务层守卫：占用中的 issue 拒绝 status 变更，其余字段放行；BORROW-0.3 增 fence 软校验（写前断言，零写入） */
+export function updateIssueGuarded(db: Db, id: string, patch: IssuePatch, fence?: number): Issue {
   return db.transaction(() => {
     const issue = getIssue(db, id);
     if (!issue) throw new NotFoundError('任务不存在');
     if (issue.claimed_by !== null && patch.status !== undefined) {
       throw new ConflictError('占用中禁止修改状态');
     }
+    assertFenceCurrent(db, id, fence);
     return updateIssueInHierarchy(db, id, patch);
   }).immediate();
 }
