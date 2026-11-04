@@ -2,6 +2,11 @@
 
 本文件是 REST + WebSocket 接口的完整参考，以 `apps/server/src/api/routes.ts`（及其中挂载的 `knowledgeRoutes.ts`、`accountRoutes.ts`）当前实现为准；表内 `routes.ts:n` / `knowledgeRoutes.ts:n` 为行号锚点。设计概要见 `Docs/设计文档.md` §6.1。
 
+## 0b. 静态资源缓存口径（CHUNK-CACHE）
+
+- `/assets/<带 hash 的构建产物>`：`Cache-Control: public, max-age=31536000, immutable`（内容寻址，重建后文件名变）；保留 `ETag`。
+- `/assets/*` 未命中：**真 404 + `Content-Type: text/plain`**，响应体 `Asset not found`，**不会被 SPA fallback 兜成 index.html**（否则浏览器把 HTML 当 JS 解析，报错形态误导）。
+- `/`、`/index.html` 及其它非 hash 静态资源与 SPA 路由：`Cache-Control: no-cache`（允许 304），避免旧页面长期引用已被重建替换的旧 chunk。
 ## 1. 服务与配置
 
 - 启动命令、后台常驻：见 `README.md`「启动」节。

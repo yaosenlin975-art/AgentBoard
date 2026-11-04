@@ -7,7 +7,7 @@
  */
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { attachmentsDirFor, configDir, loadConfig, readSettings, type AgentBoardRuntimeConfig, type DbPathSource } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
@@ -196,13 +196,38 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
 
   const webDist = options.webDist ?? null;
   if (webDist && existsSync(webDist)) {
-    app.use(express.static(webDist));
-    // SPA fallback：非 /api 的 GET 落 index.html
+    // CHUNK-CACHE：带 hash 的构建产物（chunk/字体/图标）可长缓存；HTML 必须 no-cache，
+    // 否则旧页面会继续引用已被重建替换掉的旧 hash chunk（浏览器报 Failed to fetch dynamically imported module）。
+    const HASHED_ASSET = /-[A-Za-z0-9_-]{8,}\.(?:js|css|mjs|woff2?|ttf|png|jpe?g|gif|svg|webp|avif|ico)$/;
+    const assetsDir = join(webDist, 'assets');
+    if (existsSync(assetsDir)) {
+      app.use('/assets', express.static(assetsDir, { index: false, immutable: true, maxAge: '365d', fallthrough: true }));
+      // 未命中的 /assets/* 必须真 404（text/plain），不能被下面的 SPA fallback 兜成 HTML 200：
+      // 浏览器把 HTML 当 JS 解析时报的是语法/模块错误，掩盖「chunk 不存在」这个真实原因。
+      app.use('/assets', (_req, res) => {
+        res.status(404).type('text/plain').send('Asset not found');
+      });
+    }
+    app.use(express.static(webDist, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        res.setHeader('Cache-Control', HASHED_ASSET.test(basename(filePath)) ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    }));
+    // SPA fallback：非 /api 的 GET 落 index.html（HTML 一律 no-cache，允许 304）
+    // 根路径显式给 index.html：serve-static 关掉 index 后 `/` 不进 fallback（实测 404），这里补一条
+    app.get('/', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
+      res.sendFile(join(webDist, 'index.html'), (err) => {
+        if (err) res.status(404).type('text/plain').send('index.html missing');
+      });
+    });
     app.use((req, res, next) => {
       if (req.method !== 'GET' || req.path.startsWith('/api')) {
         next();
         return;
       }
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(join(webDist, 'index.html'), (err) => {
         if (err) next(err);
       });
