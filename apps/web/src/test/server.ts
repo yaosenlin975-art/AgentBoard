@@ -26,6 +26,17 @@ export const server = setupServer(
   ),
   // 顶栏/设置弹窗版本号（各测试可覆盖）
   http.get('/api/version', () => HttpResponse.json({ name: 'agentboard-server', version: '0.1.0' })),
+  // ACC-KB-B2W：协议级「添加账号」的协议清单默认夹具。
+  // 与生产一致（createAddAccountProviders 装配的五平台）；各用例可用 server.use 覆盖。
+  http.get('/api/add-account-protocols', () => HttpResponse.json({
+    items: [
+      { app_id: 'minimax', protocol: 'minimax_device', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn', 'global'] },
+      { app_id: 'zcode', protocol: 'zcode_cli', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn', 'global'] },
+      { app_id: 'qoder_cn', protocol: 'qoder_device', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn'] },
+      { app_id: 'workbuddy_desktop', protocol: 'workbuddy_oneid', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn', 'global'] },
+      { app_id: 'trae', protocol: 'trae_oauth', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn'] },
+    ],
+  })),
   // ACC-QUOTA-01：账号页额度卡默认夹具（ok / unsupported / error 三态各一条，避免走真实 fetch）
   http.get('/api/managed-account-quotas', () => HttpResponse.json({
     workspace_id: null,
