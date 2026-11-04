@@ -160,3 +160,82 @@ B/C 落地后，本文档 §2、§3 里的 `--workspace`/`--scope` 可省略；�
 - 技能条款：`skills/using-agentboard/SKILL.md`（工作区边界、开工前必读、收尾与提交）
 - 接口细节：`Docs/api.md`
 - 标签治理：`Docs/governance-2026-11-04-labeling.md`
+
+---
+
+## 8. 实测输出与必踩坑（2026-11-04 真跑记录）
+
+以下命令均在 `D:\WorkSpaces\任务看板`（工作区 `e41eb0fb-c367-43cf-a99d-6dc5239a5694`）真实执行过。
+
+### 8.1 知识页全链路（create → show → revise → archive）
+
+```
+$ kb knowledge create --scope workspace --workspace <ws> \
+    --title "CLI knowledge selftest page" --slug guide-selftest-20261104 \
+    --sources-file g-src.json --evidence-file g-ev.json --stdin < body.md
+d37befc0-bdac-41b3-b0e2-b87d39f77678 [workspace] rev:1 CLI knowledge selftest page
+
+$ kb knowledge show d37befc0-… --scope workspace --workspace <ws>
+d37befc0-… [workspace] rev:1 CLI knowledge selftest page
+
+$ kb knowledge revise d37befc0-… --scope workspace --workspace <ws> \
+    --expected-revision 1 --stdin < body-v2.md
+d37befc0-… [workspace] rev:2 CLI knowledge selftest page
+
+$ kb knowledge action d37befc0-… archive --scope workspace --workspace <ws> --expected-revision 2
+d37befc0-… [workspace] rev:3 CLI knowledge selftest page
+```
+
+### 8.2 变更日志读取
+
+```
+$ kb changelog list --workspace <ws> --limit 3
+34d66803-… [新增] 2026-11-04 11:31:43 rev:1 账号管理：删除账号改为两步确认
+a57d3577-… [调整] 2026-11-04 11:02:46 rev:1 swing-dev 技能经 darwin-skill 三轮配对评审优化
+85a7eda6-… [调整] 2026-11-04 10:47:43 rev:1 账号管理页改为六行总览（ACC-PANEL-03）
+下一页：--offset 3
+```
+
+### 8.3 任务全生命周期（create → claim → comment → done → close → delete）
+
+```
+$ kb create-issue <ws> "[SELFTEST] 指引示例卡" -p 低 -l 测试,文档
+已创建任务: 0ae9aad0-4f0f-4e5a-8d9a-e6260a6306b5 [SELFTEST] 指引示例卡
+状态: 待规划
+
+$ kb claim 0ae9aad0-…
+领取成功（agent: board-doc-ops）
+
+$ kb comment 0ae9aad0-… --stdin < cmt.md
+评论已写入: 56b94b76-…
+
+$ kb done 0ae9aad0-… --notes "Selftest done" --scope Docs
+已完成: 0ae9aad0-…  状态: 待验收（占用已释放）
+
+$ kb close 0ae9aad0-…
+已关闭: 0ae9aad0-…  状态: 已关闭
+
+$ kb delete-issue 0ae9aad0-… --yes
+已删除任务: 0ae9aad0-…（不可恢复）
+
+$ kb show 0ae9aad0-…
+任务不存在
+```
+
+### 8.4 必踩坑（按踩到顺序）
+
+| # | 坑 | 报错原文 | 处理 |
+| --- | --- | --- | --- |
+| 1 | `knowledge action` 缺 CAS | `error: required option '--expected-revision <n>' not specified` | 补 `--expected-revision <当前 revision>` |
+| 2 | `--sources-file` 的 JSON 里用反斜杠路径 | `--sources 不是合法 JSON：Bad escaped character in JSON at position 34` | JSON 内路径用正斜杠（`Docs/guide-x.md`）或双反斜杠 |
+| 3 | PowerShell 传 `--sources-file` 时被 shim 误解析 | 同上（被当成 `--sources` 的值） | 用 `node <cli dist>/index.js …` 直调，或 cmd 上下文调用 |
+| 4 | 中文正文经 PowerShell 管道传给 `--stdin` 变乱码 | 正文首字符/整段变成 `?` | 用 `cmd /c "chcp 65001>nul & kb … --stdin < file.md"`（文件为 UTF-8 无 BOM） |
+| 5 | `kb knowledge list` / `kb changelog list` 省略 `--workspace` | `required option '--scope <scope>'` / `required option '--workspace <id|名>'` | B 阶段未落地，必须显式传（见 §5） |
+
+### 8.5 关于 `1cb07910` 三阶段的实测对照
+
+| 阶段 | 声明 | 实测 |
+| --- | --- | --- |
+| A | `list-spaces --current`、`list-tasks` 缺省按 cwd、`--all` 只读 | **已落地**：`kb list-spaces --current` 返回本工作区；`kb list-tasks` 不带 `--workspace` 直接输出本工作区任务 |
+| B | knowledge/changelog 复用当前工作区 | **未落地**：两条命令仍报 `required option` |
+| C | 知识页 `--category`/`--landed` | **未落地**：`kb knowledge create --help` 无这两个参数；只能走 REST |
