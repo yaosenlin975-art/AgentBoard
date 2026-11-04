@@ -85,7 +85,8 @@
 | 步骤 | 命令 |
 | --- | --- |
 | 构建 | `pnpm --filter @agentboard/server build`（或 `pnpm -r build`） |
-| 重启 | `pnpm server:ensure`（未监听会拉起；已监听会复用，**不会**换代码）→ 需要换代时用 `POST /api/system/restart` |
+| 自检 | `pnpm check:stale`：5 条 `--help` 冒烟（含 `knowledge`）+ 各包 `dist` 与 `src` 的 mtime 比对；陈旧或冒烟失败 → exit 1 并给出重建命令 |
+| 重启 | `pnpm server:ensure`（未监听会拉起；已监听但 dist 早于 src、或运行进程早于 dist／未上报 `started_at` → 打印「需重启（dist 陈旧）」并 exit 4；其余情况复用，**不会**自动换代码）→ 需要换代时用 `POST /api/system/restart` |
 
 可复核判据（三项都变才算真的换上新代码）：`GET /api/version` 的 `instance_id` 变化、`started_at` 变化、`pid` 变化；字段本身的出现/取值（如 `proxy_env.enabled`）用来确认这版行为已生效。
 ## 5aa. 后台服务单例（SERVER-SINGLETON）

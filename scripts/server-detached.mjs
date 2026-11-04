@@ -8,20 +8,25 @@
  *  - 端口上已是健康的看板服务 → 直接复用，**不重启进程**（pid 不变），exit 0；
  *  - 端口被别的东西占着（探活不是 agentboard-server）→ 明确报错，不杀任何进程，exit 2；
  *  - 未监听 → 后台拉起 `apps/server/dist/index.js`，轮询到健康（默认 ≤30s），失败 exit 1；
+ *  - 探活成功但产物/进程陈旧（dist 早于 src，或 dist 晚于进程启动/进程未上报 started_at）
+ *    → 明确返回「需重启（dist 陈旧）」，exit 4（不自动重启，避免杀掉别人正在用的实例）；
  *  - 全程日志落 `.logs/server.log`（追加），下次服务静默退出至少有迹可循。
  *
  * 用法：node scripts/server-detached.mjs [--port 8787] [--timeout 30000]
  *      pnpm server:ensure
  * 退出码：0 健康（复用或新起） / 1 拉起后仍不健康或子进程提前退出 / 2 端口被非看板服务占用 / 3 dist 缺失
+ *        / 4 已健康但需重启（dist 陈旧；先 pnpm -r build，再按「服务重启」口径换新进程）
  */
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, closeSync, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkBuildFreshness, formatDateTime } from './build-freshness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = join(ROOT, 'apps', 'server', 'dist', 'index.js');
+const SERVER_BUILD = { srcDir: join(ROOT, 'apps', 'server', 'src'), distEntry: ENTRY };
 const LOG_DIR = join(ROOT, '.logs');
 const LOG_FILE = join(LOG_DIR, 'server.log');
 const DEFAULT_PORT = 8787;
@@ -70,12 +75,42 @@ async function probe(port, timeoutMs = 2000) {
     if (body?.name !== 'agentboard-server') {
       return { ok: false, status: res.status, reason: `不是看板服务（name=${JSON.stringify(body?.name)}）` };
     }
-    return { ok: true, version: body.version };
+    return {
+      ok: true,
+      version: body.version,
+      pid: body.pid,
+      // STALE-PROCESS：进程启动时间；老构建没有这个字段，正是「运行实例比 dist 旧」的证据
+      startedAt: typeof body.started_at === 'number' ? body.started_at : null,
+      hasStartedAt: Object.prototype.hasOwnProperty.call(body, 'started_at'),
+    };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * STALE-PROCESS：探活成功 ≠ 跑的是最新构建。两类证据：
+ *  1. 构建陈旧：src 比 dist 新（或 dist 缺失）；
+ *  2. 进程陈旧：dist 晚于进程启动，或进程根本没上报 started_at（跑的是更早的代码）。
+ * 返回 null 表示没有陈旧证据；只判定不重启（重启可能打断别人正在用的实例）。
+ */
+function staleReason(hit) {
+  const build = checkBuildFreshness(SERVER_BUILD);
+  if (!build.ok) return `${build.detail}（需先 pnpm -r build）`;
+  if (!hit.hasStartedAt) {
+    return `运行进程（pid ${hit.pid}）未上报 started_at，其代码早于当前产物 ${formatDateTime(build.distMtime)}`;
+  }
+  if (hit.startedAt !== null && build.distMtime > hit.startedAt) {
+    return `产物 ${formatDateTime(build.distMtime)} 晚于服务进程启动时间 ${formatDateTime(hit.startedAt)}（pid ${hit.pid}）`;
+  }
+  return null;
+}
+
+function reportStale(reason) {
+  console.error(`[server] 需重启（dist 陈旧）：${reason}`);
+  console.error('[server] 本次未重启、未终止任何进程。确认后按「服务重启」口径：先 pnpm -r build，再 POST /api/system/restart（或停旧实例后重新 pnpm server:ensure）。');
 }
 
 function readLogTail(lines = 10) {
@@ -106,6 +141,11 @@ const { port, timeoutMs } = parseArgs(process.argv.slice(2));
 
 const existing = await probe(port);
 if (existing?.ok === true) {
+  const stale = staleReason(existing);
+  if (stale !== null) {
+    reportStale(stale);
+    process.exit(4);
+  }
   console.log(`[server] 已在运行，复用：${versionUrl(port)}（version ${existing.version}，未重启进程）`);
   console.log(`[server] 日志：${LOG_FILE}`);
   process.exit(0);
@@ -118,6 +158,12 @@ if (existing !== null && existing.ok === false) {
 if (!existsSync(ENTRY)) {
   console.error(`[server] 找不到服务入口：${ENTRY}\n先构建：pnpm --filter @agentboard/server build（或 pnpm -r build）`);
   process.exit(3);
+}
+
+// STALE-PROCESS：未监听时仍用旧产物拉起（可用优先），但必须把陈旧原因说出来
+const pendingBuild = checkBuildFreshness(SERVER_BUILD);
+if (!pendingBuild.ok) {
+  console.log(`[server] 注意：${pendingBuild.detail}；本次将用旧产物启动，建议先 pnpm -r build 再换新进程`);
 }
 
 // SERVER-SINGLETON：有活着的持有者就**不再 spawn**——等它健康（可能正在启动），或按持有者信息失败
@@ -136,6 +182,11 @@ if (lockState !== null && lockState.lock !== null) {
     while (Date.now() < waitUntil) {
       const hit = await probe(port, 1500);
       if (hit?.ok === true) {
+        const stale = staleReason(hit);
+        if (stale !== null) {
+          reportStale(stale);
+          process.exit(4);
+        }
         console.log(`[server] 已在运行，复用：${versionUrl(port)}（version ${hit.version}，pid ${holder.pid}，未重启进程）`);
         console.log(`[server] 日志：${LOG_FILE}`);
         process.exit(0);
