@@ -1,7 +1,6 @@
 import type { Issue, IssueComment } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { getIssue, type IssuePatch } from '../db/repos/issue.js';
-import { addComment, type AddCommentResult } from './comments.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { ApiError } from '../errors.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
@@ -104,27 +103,28 @@ export async function doneIssue(
   agentId: string,
   notes?: string,
 ): Promise<ClaimActionResult> {
-  const issue = getIssue(db, issueId);
-  if (!issue) throw new NotFoundError('任务不存在');
-  if (issue.claimed_by === null) throw new ConflictError('未被占用');
-  if (agentId !== 'user' && issue.claimed_by !== agentId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
+  // CLAIM-RACE：读与写在**同一个 IMMEDIATE 事务**内完成（不再先读后写），
+  // 条件 UPDATE 的 changes!==1 已是并发下的唯一真相；评论也用同步 insertCommentRow 落库，
+  // 因此事务里没有任何 await（agent/system 作者不触发唤醒，无需 addComment 的异步段）。
   const now = Date.now();
-  const release = db.prepare(
-    `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
-       last_seen_comment_id=NULL, updated_at=?
-     WHERE id=? AND claimed_by=?`,
-  );
   const writeNote = notes !== undefined && notes.trim() !== '';
-  let write: Promise<AddCommentResult> | undefined;
-  let comment: IssueComment | null = null;
-  db.transaction(() => {
-    if (release.run(now, issueId, issue.claimed_by).changes !== 1) throw new ConflictError('占用已改变');
-    if (writeNote) {
-      write = addComment(db, issueId, `agent:${agentId}`, notes);
+  const result = db.transaction(() => {
+    const issue = getIssue(db, issueId);
+    if (!issue) throw new NotFoundError('任务不存在');
+    if (issue.claimed_by === null) throw new ConflictError('未被占用');
+    if (agentId !== 'user' && issue.claimed_by !== agentId) {
+      throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
     }
-  })();
-  if (write) comment = (await write).comment;
-  return { issue: getIssue(db, issueId)!, comment };
+    const changed = db.prepare(
+      `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
+         last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+       WHERE id=? AND claimed_by=?`,
+    ).run(now, issueId, agentId === 'user' ? issue.claimed_by : agentId);
+    if (changed.changes !== 1) throw new ConflictError('占用已改变（并发完成/释放），未产生任何写入');
+    const comment = writeNote ? insertCommentRow(db, { issue_id: issueId, author: `agent:${agentId}`, content: notes!.trim() }) : null;
+    return { issue: getIssue(db, issueId)!, comment };
+  }).immediate();
+  return result;
 }
 
 /** 失败回报：回待规划 + 释放占用；reason 必填，经 comments.addComment 落评论(author=agent:<id>) */
@@ -138,44 +138,41 @@ export async function failIssue(
   if (reason === undefined || reason === null || reason.trim() === '') {
     throw new ValidationError('失败原因不能为空');
   }
-  const issue = getIssue(db, issueId);
-  if (!issue) throw new NotFoundError('任务不存在');
-  if (issue.claimed_by === null) throw new ConflictError('未被占用');
-  const boundSessionFailure = expectedSessionId !== undefined && issue.session_id === expectedSessionId;
-  if (agentId !== 'user' && issue.claimed_by !== agentId && !boundSessionFailure) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可回报失败');
+  // CLAIM-RACE：同 doneIssue——读与写同事务、条件 UPDATE + changes 校验、评论同步落库、事务内无 await
   const now = Date.now();
-  const release = db.prepare(
-    `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
-       last_seen_comment_id=NULL, updated_at=?
-     WHERE id=? AND claimed_by=? AND session_id IS ?`,
-  );
-  let write: Promise<AddCommentResult> | undefined;
-  let comment: IssueComment | null = null;
-  db.transaction(() => {
-    if (release.run(now, issueId, issue.claimed_by, issue.session_id).changes !== 1) throw new ConflictError('占用已改变');
-    write = addComment(db, issueId, `agent:${agentId}`, reason);
-  })();
-  if (write) comment = (await write).comment;
-  return { issue: getIssue(db, issueId)!, comment };
+  return db.transaction(() => {
+    const issue = getIssue(db, issueId);
+    if (!issue) throw new NotFoundError('任务不存在');
+    if (issue.claimed_by === null) throw new ConflictError('未被占用');
+    const boundSessionFailure = expectedSessionId !== undefined && issue.session_id === expectedSessionId;
+    if (agentId !== 'user' && issue.claimed_by !== agentId && !boundSessionFailure) {
+      throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可回报失败');
+    }
+    const changed = db.prepare(
+      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
+         last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+       WHERE id=? AND claimed_by=? AND session_id IS ?`,
+    ).run(now, issueId, issue.claimed_by, issue.session_id);
+    if (changed.changes !== 1) throw new ConflictError('占用已改变（并发完成/释放），未产生任何写入');
+    const comment = insertCommentRow(db, { issue_id: issueId, author: `agent:${agentId}`, content: reason.trim() });
+    return { issue: getIssue(db, issueId)!, comment };
+  }).immediate();
 }
 
 /** 用户强制释放：回待规划 + 清空占用 + 经 comments.addComment 落 system 评论 */
 export async function releaseIssue(db: Db, issueId: string): Promise<ClaimActionResult> {
-  const issue = getIssue(db, issueId);
-  if (!issue) throw new NotFoundError('任务不存在');
+  // CLAIM-RACE：单事务内「存在性校验 + 条件 UPDATE(changes) + system 评论」；用户强制释放不要求占用者匹配
   const now = Date.now();
-  let write: Promise<AddCommentResult> | undefined;
-  let comment: IssueComment | null = null;
-  db.transaction(() => {
-    db.prepare(
+  return db.transaction(() => {
+    const changed = db.prepare(
       `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, session_id=NULL,
-         last_seen_comment_id=NULL, updated_at=?
+         last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
        WHERE id=?`,
     ).run(now, issueId);
-    write = addComment(db, issueId, 'system', '用户强制释放');
-  })();
-  if (write) comment = (await write).comment;
-  return { issue: getIssue(db, issueId)!, comment };
+    if (changed.changes !== 1) throw new NotFoundError('任务不存在');
+    const comment = insertCommentRow(db, { issue_id: issueId, author: 'system', content: '用户强制释放' });
+    return { issue: getIssue(db, issueId)!, comment };
+  }).immediate();
 }
 
 /** 服务层守卫：占用中的 issue 拒绝 status 变更，其余字段放行 */

@@ -118,6 +118,8 @@ export interface RouterDeps {
   draftRunner?: DraftRunner;
   /** SMART-CREATE：草稿生成超时（ms，仅测试注入；生产 120s） */
   draftTimeoutMs?: number;
+  /** SERVER-SINGLETON：实例标识（`/api/version` 输出；测试可注入） */
+  instance?: { instanceId: string; dbPath: string; startedAt: number };
   /** DB-2B：迁移编排的固定状态目录（缺省 configDir()；测试注入临时目录） */
   dbMigrationStateDir?: string;
   /** DB-2B：当前进程实际使用的库路径（缺省 db.name；测试注入） */
@@ -406,6 +408,10 @@ export function createRouter(deps: RouterDeps): Router {
       name: 'agentboard-server',
       version: SERVER_VERSION,
       pid: process.pid,
+      // SERVER-SINGLETON：判定「端口上的实例是不是同一个 DB 的同一个进程」
+      instance_id: deps.instance?.instanceId ?? null,
+      db_path: deps.instance?.dbPath ?? currentDbPath,
+      started_at: deps.instance?.startedAt ?? null,
       proxy_env: { enabled: proxy.enabled, proxy_var: proxy.proxy_var, proxy_host: proxy.proxy_host, node_env_proxy: proxy.node_env_proxy },
     });
   });

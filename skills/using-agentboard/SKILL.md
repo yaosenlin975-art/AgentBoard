@@ -189,7 +189,9 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
    - 无法完成或自验失败 → `kb fail <id> --reason "失败原因"`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
    - 拿不准/需用户决策 → 先 `kb comment` 说明问题后保持占用继续等；只有确定失败才 `fail`。
 
-## 占用规则
+## 占用
+
+> 并发 claim 由服务端原子保证（单个 IMMEDIATE 事务 + changes 校验）：多 agent 同时抢同一张卡只会有一个成功，其余收 409 ISSUE_CLAIMED；**遇 409 直接换卡**，不要重试同一张卡的 claim。规则
 
 - 同一时刻你只能占用 claim 成功的那些任务；claim 是排他的，第二个 claimer 得到 409。
 - 占用期间任务不可被拖拽流转（服务端 409 兜底），但字段与评论可被用户编辑。

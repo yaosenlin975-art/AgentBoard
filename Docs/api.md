@@ -664,3 +664,20 @@ app.use(express.json());
 ```
 
 替代：把导入上限调成 100kb，并把全局 `entity.too.large` 的文案改成中性描述。本接口自身的 `assertContentLimits`（>1MB → `IMPORT_TOO_LARGE`）与 `planImport`（>100k 字符 → `IMPORT_BODY_TOO_LONG`）已就位，只有在请求体能到达 handler 时才触发。
+
+## 19. 并发语义（CLAIM-RACE）
+
+**占用/流转全部是「单个 `IMMEDIATE` 事务内的条件 UPDATE」，并发安全由 SQLite 写锁 + `changes===1` 判定保证**：
+
+| 操作 | 事务 | 条件 | 冲突返回 |
+|---|---|---|---|
+| `POST /api/issues/:id/claim` | `IMMEDIATE` | `WHERE id=? AND claimed_by IS NULL AND status IN ('待规划','进行中')` | 409 `ISSUE_CLAIMED`（已被占用，文案带占用者）/ `ISSUE_STATUS_NOT_CLAIMABLE`（状态不可领取） |
+| `POST /api/issues/:id/done` | `IMMEDIATE`（读+写+评论同一事务，**事务内无 await**） | `WHERE id=? AND claimed_by=?` | 409 `NOT_TASK_OWNER`（占用已改变） |
+| `POST /api/issues/:id/fail` | 同上 | `WHERE id=? AND claimed_by=? AND session_id IS ?` | 409 `NOT_TASK_OWNER` |
+| `POST /api/issues/:id/release` | 同上 | `WHERE id=?`（用户强制释放） | 404（任务不存在） |
+| `POST /api/issues/:id/close` / `reopen` | `IMMEDIATE` | 状态机前置判断 + `updateIssueInHierarchy` 的 CAS | 409 `ISSUE_CLAIMED` / `INVALID_TRANSITION` |
+
+- **评论原子性**：done/fail/release 的自动评论用同步 `insertCommentRow` 在**同一事务**内落库（不再串 `addComment` 的异步段），因此「状态流转 + 评论」要么都成功要么都不写。
+- **多实例/多进程**：`busy_timeout = 5000`（`db/connection.ts`）；写锁等待超时不再是 500，映射为 **409 `DB_BUSY`**「数据库正被其它操作占用（写锁等待超时），请稍后重试」。
+- **测试证据**：`apps/server/test/claimRace.test.ts` —— 同进程 10 路 claim（1×200 + 9×409）、2 路 done（1+1）、done↔release（1+1）、**双进程同 DB** claim（仍 1 成功）、close/reopen（close 幂等、reopen 1×200+1×409），每类跑 3 次结果一致。
+- **给 agent 的约定**：并发 claim 由服务端原子保证；遇 409 直接换卡或等释放，不要重试同一张卡的 claim。
