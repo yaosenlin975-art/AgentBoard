@@ -12,7 +12,7 @@ describe('knowledge REST', () => {
     app = express(); app.use(express.json()); app.use('/api', createRouter({ db: t.db, getAdapter: () => { throw Error('unused'); }, broadcast: () => {} })); app.use(errorHandler);
   });
   afterEach(() => t.cleanup());
-  const body = () => ({ scope: 'workspace', workspace_id: a, slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }] });
+  const body = () => ({ domain: 'knowledge', scope: 'workspace', workspace_id: a, slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }] });
   it('knowledgePageRouteRejectsOtherWorkspace and explicit scope validation', async () => {
     const created = await request(app).post('/api/knowledge/pages').send(body()); expect(created.status).toBe(200);
     expect((await request(app).get(`/api/knowledge/pages/${created.body.id}`).query({ scope: 'workspace', workspace_id: b })).status).toBe(404);

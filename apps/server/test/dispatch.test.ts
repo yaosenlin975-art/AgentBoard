@@ -32,7 +32,7 @@ let deps: DispatchDeps;
 describe('knowledge context', () => {
   const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:evidence', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
   function seedKnowledge(workspace: string | null, slug: string, body = '缓存失效方案') {
-    return createKnowledgePage(t.db, { scope: workspace ? 'workspace' : 'common', workspace_id: workspace, slug, title: slug, body_md: body, sources, evidence: [{ source_id: 's', locator: 'issue:evidence' }], actor: 'codex' } as any);
+    return createKnowledgePage(t.db, { domain: 'knowledge', scope: workspace ? 'workspace' : 'common', workspace_id: workspace, slug, title: slug, body_md: body, sources, evidence: [{ source_id: 's', locator: 'issue:evidence' }], actor: 'codex' } as any);
   }
   it('dispatchInjectsWorkspaceAndCommonOnly with bounded provenance', async () => {
     const issue = seedIssue({ title: '缓存失效' });

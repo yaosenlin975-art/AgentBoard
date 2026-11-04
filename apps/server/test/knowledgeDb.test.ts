@@ -10,7 +10,7 @@ describe('knowledge storage', () => {
   const source = { source_id: 'design', source_type: 'file' as const, locator: 'Docs/design.md:1', captured_at: 1, content_hash: 'a'.repeat(64) };
   const evidence = [{ source_id: 'design', locator: 'Docs/design.md:1' }];
   const scope = () => ({ scope: 'workspace' as const, workspace_id: workspaceId });
-  const input = () => ({ ...scope(), slug: 'design', title: '设计', body_md: '知识内容', sources: [source], evidence, actor: 'codex' });
+  const input = () => ({ domain: 'knowledge', ...scope(), slug: 'design', title: '设计', body_md: '知识内容', sources: [source], evidence, actor: 'codex' });
   beforeEach(() => { t = createTestDb(); workspaceId = createWorkspace(t.db, { name: 'A', path: 'A' }).id; });
   afterEach(() => t.cleanup());
 

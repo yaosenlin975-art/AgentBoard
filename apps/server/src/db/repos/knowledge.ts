@@ -3,7 +3,7 @@ import type { KnowledgeEvidence, KnowledgePage, KnowledgeRevision, KnowledgeScop
 import type { Db } from '../connection.js';
 import { syncPageLinks } from '../../services/knowledgeLinks.js';
 import { ApiError, ValidationError } from '../../errors.js';
-import { KNOWLEDGE_DOMAINS } from '../migrations/knowledge.js';
+import { KNOWLEDGE_DOMAINS, KNOWLEDGE_DOMAIN_HINT, isKnowledgeDomain, type KnowledgeDomain } from '@agentboard/shared';
 import { validateKnowledgeContent, validateKnowledgeScope } from '../../services/knowledge.js';
 
 export type CreateKnowledgePageInput = KnowledgeScope & {
@@ -12,28 +12,46 @@ export type CreateKnowledgePageInput = KnowledgeScope & {
   /** KB-MODEL：四类内容模型；缺省 legacy */
   category?: KnowledgePage['category'];
   landed?: KnowledgePage['landed'];
+  /** KB-CR-1（P5/P7）：创建时必填（运行时由 requireKnowledgeDomain 校验并收窄为词表值） */
+  domain?: string | null;
 };
 export type KnowledgePagePatch = Partial<Pick<KnowledgePage, 'title' | 'body_md' | 'sources' | 'evidence' | 'expires_at' | 'category' | 'landed'>> & { actor: string; change_note?: string; domain?: string | null };
 
 /**
  * KB-MODEL 落库规则（与前端 `normalizeCategory` 同语义）：
- * - 缺失/未知 category → `legacy`；
+ * - 缺失/未知 category → `open`（KB-CR-1：不再落 legacy，新页必须有明确归属）；
  * - `design` 缺 `landed` → 落 `proposed`（fail-open：字段刚上线，老客户端不传不该 400；「未声明落地」按未落地算，
  *   并在响应里回显，避免被误读成已落地）；
  * - 非 design 类一律把 landed 置 null（solved/pinned/open/legacy 没有落地状态）。
  */
-/** KB-PAGE-3：domain 词表校验（空/undefined → null=未归；非法 → 中文报错并列出词表） */
-export function normalizeKnowledgeDomain(domain?: string | null): string | null {
-  if (domain === undefined || domain === null || domain === '') return null;
-  if (!(KNOWLEDGE_DOMAINS as readonly string[]).includes(domain)) {
-    throw new ValidationError(`domain 只能是：${KNOWLEDGE_DOMAINS.join(' / ')}（当前：${domain}）`);
+/**
+ * KB-CR-1（P5/P7）：domain 强制归域。
+ * - 创建：缺省/空/非法一律中文 4xx 并列出词表（禁止新页再落 NULL）；
+ * - 修订：不传表示「不改」（返回 undefined），传 null/空串表示显式清空（保留给既有页）。
+ */
+export function requireKnowledgeDomain(domain: unknown): KnowledgeDomain {
+  if (domain === undefined || domain === null || domain === '') {
+    throw new ValidationError(`创建知识页必须指定 domain，可选：${KNOWLEDGE_DOMAIN_HINT}`);
+  }
+  if (!isKnowledgeDomain(domain)) {
+    throw new ValidationError(`domain 只能是：${KNOWLEDGE_DOMAIN_HINT}（当前：${String(domain)}）`);
+  }
+  return domain;
+}
+
+/** 修订路径：undefined = 不改；null/空串 = 显式清空；非法 = 4xx */
+export function normalizeKnowledgeDomain(domain?: string | null): string | null | undefined {
+  if (domain === undefined) return undefined;
+  if (domain === null || domain === '') return null;
+  if (!isKnowledgeDomain(domain)) {
+    throw new ValidationError(`domain 只能是：${KNOWLEDGE_DOMAIN_HINT}（当前：${domain}）`);
   }
   return domain;
 }
 
 export function normalizePageCategory(category?: string | null, landed?: string | null): { category: NonNullable<KnowledgePage['category']>; landed: KnowledgePage['landed'] } {
   const allowed = ['design', 'solved', 'pinned', 'open', 'legacy'] as const;
-  const normalized = (allowed as readonly string[]).includes(category ?? '') ? (category as (typeof allowed)[number]) : 'legacy';
+  const normalized = (allowed as readonly string[]).includes(category ?? '') ? (category as (typeof allowed)[number]) : 'open';
   if (normalized !== 'design') return { category: normalized, landed: null };
   const landedAllowed = ['landed', 'partial', 'proposed'] as const;
   const nextLanded = (landedAllowed as readonly string[]).includes(landed ?? '') ? (landed as (typeof landedAllowed)[number]) : 'proposed';
@@ -117,8 +135,8 @@ export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): Kn
   if (input.scope === 'workspace' && !db.prepare('SELECT 1 FROM workspace WHERE id=?').get(input.workspace_id)) throw new ValidationError('工作空间不存在');
   const now = Date.now();
   const taxonomy = normalizePageCategory(input.category, input.landed);
-  // KB-PAGE-3：domain 单独校验（NULL=未归；非法 → 中文报错并列词表）
-  const domain = normalizeKnowledgeDomain((input as { domain?: string | null }).domain);
+  // KB-CR-1（P5/P7）：创建强制归域（不再强转 input，domain 已在 CreateKnowledgePageInput 声明）
+  const domain = requireKnowledgeDomain(input.domain);
   const page: KnowledgePage = { id: randomUUID(), scope: input.scope, workspace_id: input.workspace_id ?? null, slug: input.slug, title: input.title, body_md: input.body_md, sources: input.sources, evidence: input.evidence, status: 'active', revision: 1, expires_at: input.expires_at ?? null, created_by: input.actor, updated_by: input.actor, created_at: now, updated_at: now, ...taxonomy, domain } as KnowledgePage & { domain: string | null };
   try {
     return db.transaction(() => {
@@ -147,7 +165,7 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
       const page: KnowledgePage = { ...old, title: patch.title ?? old.title, body_md: patch.body_md ?? old.body_md, sources: patch.sources ?? old.sources, evidence: patch.evidence ?? old.evidence, expires_at: patch.expires_at === undefined ? old.expires_at : patch.expires_at, updated_by: patch.actor, updated_at: Math.max(Date.now(), old.updated_at + 1), revision: old.revision + 1, status: kind === 'archive' ? 'archived' : kind === 'restore' ? 'active' : kind === 'delete' ? 'deleted' : old.status, ...taxonomy };
       validateKnowledgeContent({ ...page, actor: patch.actor });
       // KB-PAGE-3：domain 也走 CAS 更新（未传则保持原值）
-      const nextDomain = patch.domain === undefined ? (old as { domain?: string | null }).domain ?? null : normalizeKnowledgeDomain(patch.domain);
+      const nextDomain: string | null = patch.domain === undefined ? ((old as { domain?: string | null }).domain ?? null) : (normalizeKnowledgeDomain(patch.domain) ?? null);
       const result = db.prepare(`UPDATE knowledge_page SET title=?,body_md=?,status=?,revision=?,expires_at=?,updated_by=?,updated_at=?,category=?,landed=?,domain=? WHERE id=? AND scope=? AND workspace_id IS ? AND revision=?`)
         .run(page.title, page.body_md, page.status, page.revision, page.expires_at, page.updated_by, page.updated_at, page.category, page.landed, nextDomain, pageId, scope.scope, scope.workspace_id ?? null, expectedRevision);
       // 响应要反映本次写入的 domain（page 由 ...old 展开，需回填）

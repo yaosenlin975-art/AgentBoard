@@ -45,7 +45,7 @@ describe('idempotent mutations', () => {
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM issue_comment WHERE issue_id=?').get(issue.id)).toEqual({ n: 1 });
   });
   it('knowledge create/revise replays without a duplicate revision', async () => {
-    const body = { scope: 'common', slug: 'cache', title: 'cache', body_md: 'body', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'captured fixture evidence' }], evidence: [{ source_id: 's', locator: 'issue:1' }] };
+    const body = { domain: 'knowledge', scope: 'common', slug: 'cache', title: 'cache', body_md: 'body', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'captured fixture evidence' }], evidence: [{ source_id: 's', locator: 'issue:1' }] };
     const key = randomUUID(); const create = () => request(app).post('/api/knowledge/pages').set('Idempotency-Key', key).send(body);
     const first = await create(); expect(first.status).toBe(200); expect((await create()).body).toEqual(first.body);
     const editKey = randomUUID(); const edit = () => request(app).put(`/api/knowledge/pages/${first.body.id}`).set('Idempotency-Key', editKey).send({ scope: 'common', expected_revision: 1, actor: 'codex', title: 'changed' });

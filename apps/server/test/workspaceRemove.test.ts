@@ -80,6 +80,7 @@ function counts(workspaceId: string) {
 }
 
 const knowledgeBody = (workspaceId: string) => ({
+  domain: 'knowledge',
   scope: 'workspace',
   workspace_id: workspaceId,
   slug: 'cache',

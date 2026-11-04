@@ -54,6 +54,7 @@ describe('knowledge images (KB-IMG-1)', () => {
 
   const mkPage = async (scope: 'workspace' | 'common', slug: string): Promise<string> => {
     const res = await request(app).post('/api/knowledge/pages').send({
+      domain: 'knowledge',
       scope,
       ...(scope === 'workspace' ? { workspace_id: wsA } : {}),
       slug, title: `页-${slug}`, body_md: '正文', actor: 'tester',

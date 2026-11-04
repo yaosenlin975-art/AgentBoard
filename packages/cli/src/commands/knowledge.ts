@@ -4,6 +4,7 @@ import { CommanderError, type Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
+import { KNOWLEDGE_DOMAIN_HINT } from '@agentboard/shared';
 
 interface ScopeOptions { scope: string; workspace?: string }
 async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{ scope: string; workspace_id?: string }> {
@@ -26,7 +27,7 @@ function output(ctx: Ctx, data: unknown): void {
     ctx.io.write((items.length ? items.map(pageLine).join('\n') + '\n' : '（无知识）\n') + (p.next_offset ? `下一页：--offset ${p.next_offset}\n` : ''));
     return;
   }
-  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${String(p.landed)}` : '', p.domain !== undefined ? `domain: ${String(p.domain ?? '未归类')}` : ''].filter(Boolean).join(' · ');
+  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${p.landed === null ? '（未定）' : String(p.landed)}` : '', p.domain !== undefined ? `domain: ${String(p.domain ?? '未归类')}` : ''].filter(Boolean).join(' · ');
   const link = linkRef(data);
   ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}${link ? `\nlink: ${link}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
 }
@@ -155,18 +156,18 @@ const CONTENT_GUIDE = `内容口径（写什么 / 不写什么）：
 const GUIDE_POINTER = '详见 skills/using-agentboard 的「知识页写什么（内容口径）」';
 const CREATE_HELP = `${FIELD_HELP}
 示例 A（PowerShell：单引号包 JSON、反引号续行；**PowerShell 不支持 \`<\` 重定向**，正文用管道喂 --stdin；实测可直接复制）：
-  kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin \`
+  kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin \`
     --sources '[{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"'"$((Get-FileHash README.md -Algorithm SHA256).Hash.ToLower())"'"}]' \`
     --evidence '[{"source_id":"file:README.md","locator":"file:1-20"}]' \`
     注：上面这种写法在 PowerShell 里需要把正文用管道送进来，完整可复制版本见示例 C。
 
 示例 B（cmd：双引号包 JSON，内部双引号写 \\"，正文用 \`<\` 重定向）：
-  kb knowledge create --scope common --title "缓存策略" --slug cache-policy --stdin ^
+  kb knowledge create --scope common --title "缓存策略" --slug cache-policy --domain knowledge --stdin ^
     --sources "[{\\"source_id\\":\\"file:README.md\\",\\"source_type\\":\\"file\\",\\"locator\\":\\"README.md\\",\\"captured_at\\":1763000000000,\\"content_hash\\":\\"<64位hex>\\"}]" ^
     --evidence "[{\\"source_id\\":\\"file:README.md\\",\\"locator\\":\\"file:1-20\\"}]" < body.md
 
 示例 C（**推荐**，零引号转义；把两个 JSON 存成文件后，PowerShell 可直接复制）：
-  Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin \`
+  Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin \`
     --sources-file sources.json --evidence-file evidence.json
 
 最小文件样例 sources.json：
@@ -326,7 +327,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
   const knowledge = program.command('knowledge').description('共享知识库（项目与公共范围显式指定）')
     .addHelpText('after', `
 常用流程：
-  1) Get-Content body.md -Raw | kb knowledge create --scope common --title '…' --slug some-slug --stdin --sources-file sources.json --evidence-file evidence.json
+  1) Get-Content body.md -Raw | kb knowledge create --scope common --title '…' --slug some-slug --domain knowledge --stdin --sources-file sources.json --evidence-file evidence.json
   2) kb knowledge show <page-id> --scope common
   3) Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin
   4) kb knowledge action <page-id> archive --scope common --expected-revision 2
@@ -433,7 +434,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--evidence-file <path>', '从 UTF-8 文件读证据数组 JSON（推荐，避免转义）')
     .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限')
     .option('--category <分类>', 'design|solved|pinned|open（缺省由服务端归一）')
-  .option('--domain <域>', 'accounts|knowledge|board|chat|ui|infra（KB-PAGE-3；缺省=未归类）')
+    .option('--domain <域>', `${KNOWLEDGE_DOMAIN_HINT}（KB-CR-1：创建必填；修订缺省=不改）`)
     .option('--landed <状态>', 'landed|partial|proposed（design 缺省时服务端记 proposed）');
 
   async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string }) {
@@ -447,7 +448,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
       ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),
       ...(validateCategory(opts.category) !== undefined ? { category: validateCategory(opts.category) } : {}),
-    ...(opts.domain !== undefined && opts.domain !== '' ? { domain: opts.domain } : {}),
+      ...(opts.domain !== undefined && opts.domain !== '' ? { domain: opts.domain } : {}),
       ...(validateLanded(opts.landed) !== undefined ? { landed: validateLanded(opts.landed) } : {}),
       actor: ctx.agentId,
     };
@@ -487,10 +488,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--slug <slug>', '显式 slug（默认由标题派生；冲突时给未占用的值）')
     .option('--category <category>', 'design|solved|pinned|open')
     .option('--landed <landed>', 'landed|partial|proposed')
+    .option('--domain <domain>', `域（必填，json 条目内可逐条覆盖）：${KNOWLEDGE_DOMAIN_HINT}`)
     .option('--labels <csv>', '逗号分隔标签'))
     .addHelpText('after', IMPORT_HELP)
     .action(async (file: string, opts: ScopeOptions & {
-      format?: string; title?: string; slug?: string; category?: string; landed?: string; labels?: string;
+      format?: string; title?: string; slug?: string; category?: string; landed?: string; labels?: string; domain?: string;
     }) => {
       validateCategory(opts.category);
       validateLanded(opts.landed);
@@ -524,6 +526,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
         ...(opts.category !== undefined ? { category: opts.category } : {}),
         ...(opts.landed !== undefined ? { landed: opts.landed } : {}),
+        ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
         ...(opts.labels !== undefined ? { labels: opts.labels.split(',').map((label) => label.trim()).filter((label) => label !== '') } : {}),
         actor: ctx.agentId,
       };

@@ -425,14 +425,14 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `GET /api/knowledge/search` | `kb knowledge search <query>` | `<query>` | `--scope both` 默认；`--limit` 1-20 |
 | `GET /api/knowledge/pages` | `kb knowledge list` | `--scope` | 非 `--json` 每页一行，有下一页时打印 `下一页：--offset <n>` |
 | `GET /api/knowledge/pages/:id` | `kb knowledge show <page-id>` | `--scope` | `--history` 追加版本历史 |
-| `POST /api/knowledge/pages` | `kb knowledge create` | `--scope`、`--title`、`--slug`、`--stdin`、`--sources`/`--sources-file`、`--evidence`/`--evidence-file` | 缺项一次列全；字段级中文报错 |
+| `POST /api/knowledge/pages` | `kb knowledge create` | `--scope`、`--title`、`--slug`、`--domain`（必填）、`--stdin`、`--sources`/`--sources-file`、`--evidence`/`--evidence-file` | 缺项一次列全；字段级中文报错 |
 | `PUT /api/knowledge/pages/:id` | `kb knowledge revise <page-id>` | `--scope`、`--expected-revision`、至少一个改动字段 | revision 冲突退出码 2 |
 | `POST /api/knowledge/pages/:id/actions` | `kb knowledge action <page-id> <action>` | `--scope`、`--expected-revision` | `action` ∈ `archive\|restore\|delete` |
 
 create 最小用法（PowerShell 复制可用；`sources.json`/`evidence.json` 见 `kb knowledge create --help`）：
 
 ```powershell
-Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin --sources-file sources.json --evidence-file evidence.json
+Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin --sources-file sources.json --evidence-file evidence.json
 kb knowledge show <page-id> --scope common
 Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin --title '缓存策略 v2'
 kb knowledge action <page-id> archive --scope common --expected-revision 2

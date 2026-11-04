@@ -23,7 +23,7 @@ describe('KB-PAGE-3 domain 列与词表', () => {
   let app: Express;
   let root: string;
 
-  const page = (over: Record<string, unknown> = {}) => createKnowledgePage(t.db, {
+  const page = (over: Record<string, unknown> = {}) => createKnowledgePage(t.db, { domain: 'knowledge',
     scope: 'common',
     slug: `slug-${Math.random().toString(36).slice(2, 8)}`,
     title: '标题',
@@ -69,12 +69,25 @@ describe('KB-PAGE-3 domain 列与词表', () => {
     expect(afterSecond.counts).toEqual(before.counts);
   });
 
-  it('domain 词表：合法值落库，NULL 表示未归', () => {
+  // KB-CR-1：创建强制归域（KB-PAGE-3 时只校验非空，现在缺省即 400）
+  it('KB-CR-1：创建必填 domain——缺省 / null / 空串 → 中文 400 并列出词表；合法值原样落库', async () => {
     const withDomain = page({ domain: 'accounts' }) as unknown as { domain: string | null };
     expect(withDomain.domain).toBe('accounts');
-    const withoutDomain = page() as unknown as { domain: string | null };
-    expect(withoutDomain.domain).toBeNull();
     expect(KNOWLEDGE_DOMAINS).toEqual(['accounts', 'knowledge', 'board', 'chat', 'ui', 'infra']);
+
+    const body = {
+      scope: 'common', slug: 'no-domain', title: '标题', body_md: '正文',
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
+    };
+    for (const patch of [{}, { domain: null }, { domain: '' }]) {
+      const res = await request(app).post('/api/knowledge/pages').send({ ...body, ...patch });
+      expect(res.status, JSON.stringify(patch)).toBe(400);
+      expect(res.body.error.message).toContain('创建知识页必须指定 domain');
+      expect(res.body.error.message).toContain('infra');
+    }
+    // 落库断言：三条都被拒，没留下半成品
+    expect(t.db.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE slug='no-domain'").get()).toEqual({ n: 0 });
   });
 
   it('domain 非法 → 中文报错并列出词表（服务层校验，不加 schema CHECK）', async () => {

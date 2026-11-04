@@ -25,6 +25,7 @@ describe('knowledge category / landed（KB-MODEL）', () => {
   afterEach(() => t.cleanup());
 
   const base = (slug: string, extra: Record<string, unknown> = {}) => ({
+    domain: 'knowledge',
     scope: 'workspace',
     workspace_id: workspaceId,
     slug,
@@ -56,10 +57,10 @@ describe('knowledge category / landed（KB-MODEL）', () => {
     expect(node).toMatchObject({ category: 'design', landed: 'partial' });
   });
 
-  it('缺省 category → legacy + landed=null（不阻断写入）', async () => {
+  it('缺省 category → open + landed=null（不阻断写入；KB-CR-1 起不再兜底 legacy）', async () => {
     const created = await request(app).post('/api/knowledge/pages').send(base('legacy-page'));
     expect(created.status).toBe(200);
-    expect(created.body.category).toBe('legacy');
+    expect(created.body.category).toBe('open');
     expect(created.body.landed).toBeNull();
   });
 
@@ -97,9 +98,9 @@ describe('knowledge category / landed（KB-MODEL）', () => {
     expect((await request(app).put(`/api/knowledge/pages/${id}`).send({ ...scope(), expected_revision: 3, category: 'nope', actor: 'dsh' })).status).toBe(400);
   });
 
-  it('normalizePageCategory：纯函数逐值（legacy 兜底 / design 默认 proposed）', () => {
-    expect(normalizePageCategory(undefined, undefined)).toEqual({ category: 'legacy', landed: null });
-    expect(normalizePageCategory('weird', 'landed')).toEqual({ category: 'legacy', landed: null });
+  it('normalizePageCategory：纯函数逐值（缺省/非法兜底 open / design 默认 proposed）', () => {
+    expect(normalizePageCategory(undefined, undefined)).toEqual({ category: 'open', landed: null });
+    expect(normalizePageCategory('weird', 'landed')).toEqual({ category: 'open', landed: null });
     expect(normalizePageCategory('design', undefined)).toEqual({ category: 'design', landed: 'proposed' });
     expect(normalizePageCategory('design', 'weird')).toEqual({ category: 'design', landed: 'proposed' });
     expect(normalizePageCategory('design', 'landed')).toEqual({ category: 'design', landed: 'landed' });

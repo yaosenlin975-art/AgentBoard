@@ -11,9 +11,10 @@
  * - 限额：单文件/请求正文 ≤1MB（UTF-8 字节），`body_md` ≤100000 字符（与知识页存量一致）。
  */
 import { createHash } from 'node:crypto';
+import { KNOWLEDGE_DOMAINS, type KnowledgeDomain } from '@agentboard/shared';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeSource } from '@agentboard/shared';
 import { ApiError, ValidationError } from '../errors.js';
-import { createKnowledgePage } from '../db/repos/knowledge.js';
+import { createKnowledgePage, requireKnowledgeDomain } from '../db/repos/knowledge.js';
 import { KNOWLEDGE_BODY_MAX_CHARS } from './knowledge.js';
 import type { Db } from '../db/connection.js';
 
@@ -38,6 +39,8 @@ export interface ImportRequestInput {
   slug?: string;
   category?: KnowledgePage['category'];
   landed?: KnowledgePage['landed'];
+  /** KB-CR-1：导入即建页，domain 必填（json 条目内可逐条覆盖）；null 与缺省同义，由 requireKnowledgeDomain 拒 */
+  domain?: string | null;
   labels?: string[];
   actor?: string;
   change_note?: string;
@@ -47,6 +50,7 @@ export interface ImportRequestInput {
 export interface ImportPageDraft {
   title: string;
   body_md: string;
+  domain: KnowledgeDomain;
   category?: KnowledgePage['category'];
   landed?: KnowledgePage['landed'];
   slug?: string;
@@ -154,12 +158,25 @@ function pickPerItem<T extends string>(
 }
 
 /**
+ * KB-CR-1：json 逐条 domain（词表来自 `@agentboard/shared`）。
+ * 键不存在 / `null` / `''` → 继承请求顶层（domain 必填，顶层已校验过）；非法值 → 400 并指明第几条。
+ */
+function pickDomain(record: Record<string, unknown>, index: number, fallback: KnowledgeDomain): KnowledgeDomain {
+  if (!Object.prototype.hasOwnProperty.call(record, 'domain')) return fallback;
+  const raw = record.domain;
+  if (raw === null || raw === '') return fallback;
+  if (typeof raw === 'string' && (KNOWLEDGE_DOMAINS as readonly string[]).includes(raw)) return raw as KnowledgeDomain;
+  const shown = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  throw new ValidationError(`第 ${index + 1} 条 domain 非法：${shown}（可选 ${KNOWLEDGE_DOMAINS.join(' / ')}）`);
+}
+
+/**
  * json 映射：支持
- * 1) 单个对象 `{ title?, body|body_md, labels?, category?, landed?, slug? }`
+ * 1) 单个对象 `{ title?, body|body_md, labels?, category?, landed?, slug?, domain? }`
  * 2) 对象数组（逐条建页）
  * 其它形态（字符串/数字/嵌套数组）一律 400，绝不把整个 json 塞进正文。
  */
-export function mapJsonPages(content: string, overrides: { title?: string; category?: KnowledgePage['category']; landed?: KnowledgePage['landed'] }): { drafts: ImportPageDraft[]; warnings: string[] } {
+export function mapJsonPages(content: string, overrides: { title?: string; category?: KnowledgePage['category']; landed?: KnowledgePage['landed']; domain: KnowledgeDomain }): { drafts: ImportPageDraft[]; warnings: string[] } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -182,7 +199,7 @@ export function mapJsonPages(content: string, overrides: { title?: string; categ
     }
     const titleRaw = typeof record.title === 'string' ? record.title.trim() : '';
     const labels = Array.isArray(record.labels) ? record.labels.filter((l): l is string => typeof l === 'string') : [];
-    const extra = Object.keys(record).filter((key) => !['title', 'body', 'body_md', 'labels', 'category', 'landed', 'slug'].includes(key));
+    const extra = Object.keys(record).filter((key) => !['title', 'body', 'body_md', 'labels', 'category', 'landed', 'slug', 'domain'].includes(key));
     if (extra.length > 0) warnings.push(`第 ${index + 1} 条忽略了不支持的字段：${extra.join('、')}`);
     // KBIMP-1B2：逐条优先于顶层——键出现即生效（显式 null 也算「本条未指定」，不继承顶层）
     const category = pickPerItem(record, 'category', IMPORT_CATEGORY_VALUES, index, overrides.category) ?? undefined;
@@ -190,6 +207,7 @@ export function mapJsonPages(content: string, overrides: { title?: string; categ
     drafts.push({
       title: (titleRaw !== '' ? titleRaw : (overrides.title ?? txtTitle(body) ?? '导入的知识页')).slice(0, IMPORT_TITLE_MAX),
       body_md: body,
+      domain: pickDomain(record, index, overrides.domain),
       ...(category === undefined ? {} : { category }),
       ...(landed === undefined ? {} : { landed }),
       ...(typeof record.slug === 'string' && record.slug.trim() !== '' ? { slug: record.slug.trim() } : {}),
@@ -200,7 +218,7 @@ export function mapJsonPages(content: string, overrides: { title?: string; categ
 }
 
 /** md / txt 单页草稿 */
-export function mapTextPage(input: ImportRequestInput): { drafts: ImportPageDraft[]; warnings: string[] } {
+export function mapTextPage(input: ImportRequestInput, domain: KnowledgeDomain): { drafts: ImportPageDraft[]; warnings: string[] } {
   const warnings: string[] = [];
   const fromFile = baseName(input.filename);
   let title: string | null = input.title?.trim() || null;
@@ -215,6 +233,7 @@ export function mapTextPage(input: ImportRequestInput): { drafts: ImportPageDraf
     drafts: [{
       title: title.slice(0, IMPORT_TITLE_MAX),
       body_md: input.content,
+      domain,
       ...(input.category === undefined ? {} : { category: input.category }),
       ...(input.landed === undefined ? {} : { landed: input.landed }),
       ...(input.slug === undefined || input.slug.trim() === '' ? {} : { slug: input.slug.trim() }),
@@ -227,9 +246,11 @@ export function mapTextPage(input: ImportRequestInput): { drafts: ImportPageDraf
 /** 纯函数入口：把一次导入请求映射成 N 份草稿（不落库，便于单测） */
 export function planImport(input: ImportRequestInput): { drafts: ImportPageDraft[]; warnings: string[] } {
   assertContentLimits(input.content);
+  // KB-CR-1：导入即建页，domain 必填（缺省 / null / '' / 非法词表 → 中文 4xx）
+  const domain = requireKnowledgeDomain(input.domain);
   const planned = input.format === 'json'
-    ? mapJsonPages(input.content, { ...(input.title === undefined ? {} : { title: input.title }), ...(input.category === undefined ? {} : { category: input.category }), ...(input.landed === undefined ? {} : { landed: input.landed }) })
-    : mapTextPage(input);
+    ? mapJsonPages(input.content, { ...(input.title === undefined ? {} : { title: input.title }), ...(input.category === undefined ? {} : { category: input.category }), ...(input.landed === undefined ? {} : { landed: input.landed }), domain })
+    : mapTextPage(input, domain);
   for (const draft of planned.drafts) {
     if (draft.body_md.length > IMPORT_MAX_BODY_CHARS) {
       throw new ApiError(413, 'IMPORT_BODY_TOO_LONG', `正文 ${draft.body_md.length} 字符，超过单页上限 ${IMPORT_MAX_BODY_CHARS.toLocaleString('en-US')} 字符`);
@@ -282,6 +303,7 @@ export function importKnowledgePages(
         slug,
         title: draft.title,
         body_md: draft.body_md,
+        domain: draft.domain,
         sources,
         evidence,
         actor,

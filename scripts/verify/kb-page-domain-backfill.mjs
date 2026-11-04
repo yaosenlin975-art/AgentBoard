@@ -19,14 +19,21 @@
  */
 
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 // better-sqlite3 是 apps/server 的依赖（pnpm workspace 不 hoist 到根），从 server 包解析
 const serverRequire = createRequire(new URL('../../apps/server/package.json', import.meta.url));
 const Database = serverRequire('better-sqlite3');
 
-/** 与 migrations/knowledge.ts 的 KNOWLEDGE_DOMAINS 同一套词表（此处复制一份供脚本自检，值必须一致） */
-const KNOWLEDGE_DOMAINS = ['accounts', 'knowledge', 'board', 'chat', 'ui', 'infra'];
+/** 域词表唯一来源：packages/shared/src/domain.ts（脚本不复制值，改词表只改那一处） */
+function loadKnowledgeDomains() {
+  const file = new URL('../../packages/shared/src/domain.ts', import.meta.url);
+  const source = readFileSync(file, 'utf8');
+  const match = /export const KNOWLEDGE_DOMAINS = \[([^\]]+)\] as const/.exec(source);
+  if (match === null) throw new Error(`未在 ${file.pathname} 找到 KNOWLEDGE_DOMAINS 定义`);
+  return match[1].split(',').map((part) => part.trim().replace(/^'|'$/g, '')).filter((part) => part !== '');
+}
+const KNOWLEDGE_DOMAINS = loadKnowledgeDomains();
 
 /**
  * 显式白名单规则表：命中即写，未命中留 NULL。

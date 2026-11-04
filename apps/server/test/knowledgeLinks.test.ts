@@ -91,7 +91,7 @@ describe('link persistence, backlinks and revision binding (V2-4)', () => {
   const source = [{ source_id: 'doc.md', source_type: 'file' as const, locator: 'doc.md', captured_at: 1_700_000_000_000, content_hash: 'a'.repeat(64) }];
   const evidence = [{ source_id: 'doc.md', locator: 'doc.md#L1' }];
   const page = (t: TestDb, workspaceId: string, slug: string, body_md: string, title = slug) =>
-    createKnowledgePage(t.db, { scope: 'workspace', workspace_id: workspaceId, slug, title, body_md, sources: source, evidence, actor: 'agent:test' });
+    createKnowledgePage(t.db, { domain: 'knowledge', scope: 'workspace', workspace_id: workspaceId, slug, title, body_md, sources: source, evidence, actor: 'agent:test' });
 
   it('writesLinksOnCreateAndResolvesTargetPage', () => {
     const { t, workspaceId } = setup();
@@ -181,14 +181,14 @@ describe('knowledge link HTTP surface (V2-4)', () => {
       const workspace = createWorkspace(t.db, { name: 'ws', path: 'C:/ws-v24-http' });
       const { app } = await openApp(t);
       const target = await request(app).post('/api/knowledge/pages').send({
-        scope: 'workspace', workspace_id: workspace.id, slug: 'target-page', title: 'target',
+        domain: 'knowledge', scope: 'workspace', workspace_id: workspace.id, slug: 'target-page', title: 'target',
         body_md: 'target body', actor: 'agent:test', sources: [{ source_id: 'a.md', source_type: 'file', locator: 'a.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
         evidence: [{ source_id: 'a.md', locator: 'a.md#L1' }],
       });
       if (target.status !== 200) throw new Error('CREATE_BODY ' + JSON.stringify(target.body));
       expect(target.status).toBe(200);
       const sourcePage = await request(app).post('/api/knowledge/pages').send({
-        scope: 'workspace', workspace_id: workspace.id, slug: 'source-page', title: 'source',
+        domain: 'knowledge', scope: 'workspace', workspace_id: workspace.id, slug: 'source-page', title: 'source',
         body_md: 'see [[target-page]] and [[missing-page]]', actor: 'agent:test',
         sources: [{ source_id: 'b.md', source_type: 'file', locator: 'b.md', captured_at: 1, content_hash: 'b'.repeat(64) }],
         evidence: [{ source_id: 'b.md', locator: 'b.md#L1' }],

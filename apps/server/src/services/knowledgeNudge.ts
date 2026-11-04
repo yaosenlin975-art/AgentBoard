@@ -31,6 +31,7 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
     suggested_slug: suggestedSlug,
     scope: 'workspace',
     message: `本任务还没有写知识页。建议：kb knowledge create --scope workspace --workspace ${issue.workspace_id} `
-      + `--slug ${suggestedSlug} --title "${title}"（正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`,
+      + `--slug ${suggestedSlug} --title "${title}" --domain knowledge（必填：accounts|knowledge|board|chat|ui|infra，按任务所属域替换）`
+      + `（正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`,
   };
 }

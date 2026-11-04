@@ -27,6 +27,7 @@ describe('GRAPH-EDGE-BUG：4 页 fixture（A↔B 互链，C/D 孤立）', () => 
 
   const createPage = (slug: string, title: string, body: string) =>
     request(app).post('/api/knowledge/pages').send({
+      domain: 'knowledge',
       scope: 'workspace',
       workspace_id: workspaceId,
       slug,

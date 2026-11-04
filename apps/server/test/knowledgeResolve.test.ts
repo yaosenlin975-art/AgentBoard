@@ -21,7 +21,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
   let root: string;
   let ws: string;
 
-  const mk = (input: { scope: 'common' } | { scope: 'workspace'; workspace_id: string }, slug: string, title: string) => createKnowledgePage(t.db, {
+  const mk = (input: { scope: 'common' } | { scope: 'workspace'; workspace_id: string }, slug: string, title: string) => createKnowledgePage(t.db, { domain: 'knowledge',
     ...input,
     slug,
     title,
@@ -124,7 +124,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
     expect(list.body.items[0].link.ref).toBe(`knowledge:${page.id}`);
 
     const created = await request(app).post('/api/knowledge/pages').send({
-      scope: 'common', slug: 'created-link', title: '新建页', body_md: '正文',
+      domain: 'knowledge', scope: 'common', slug: 'created-link', title: '新建页', body_md: '正文',
       sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     });

@@ -30,7 +30,7 @@ describe('knowledge graph', () => {
     source_id: randomUUID(), source_type: 'file', locator, captured_at: 1_700_000_000_000, content_hash: contentHash,
   });
 
-  const page = (slug: string, title: string, body: string, sources: KnowledgeSource[], target = workspaceId) => createKnowledgePage(t.db, {
+  const page = (slug: string, title: string, body: string, sources: KnowledgeSource[], target = workspaceId) => createKnowledgePage(t.db, { domain: 'knowledge',
     scope: 'workspace', workspace_id: target, slug, title, body_md: body, sources, evidence: sources.map(item => ({ source_id: item.source_id, locator: item.locator })), actor: 'user',
   });
 
@@ -119,7 +119,7 @@ describe('knowledge graph', () => {
       page('mine', '我的页', '共享来源 alpha beta', [source('file:shared.ts')]);
       page('other', '别人页', '共享来源 alpha beta', [source('file:shared.ts')], otherWorkspace);
       const commonSource = source('file:shared.ts');
-      createKnowledgePage(t.db, {
+      createKnowledgePage(t.db, { domain: 'knowledge',
         scope: 'common', workspace_id: null, slug: 'common', title: '公共页', body_md: '共享来源 alpha beta',
         sources: [commonSource], evidence: [{ source_id: commonSource.source_id, locator: commonSource.locator }], actor: 'user',
       });
@@ -220,7 +220,7 @@ describe('knowledge graph', () => {
     const single = await createWorkspace(t.db, { name: '小空间', path: mkdtempSync(join(tmpdir(), 'agentboard-graph3-')) });
     for (const name of ['一', '二']) {
       const smallSource = source('file:small.ts');
-      createKnowledgePage(t.db, {
+      createKnowledgePage(t.db, { domain: 'knowledge',
         scope: 'workspace', workspace_id: single.id, slug: `s-${name}`, title: `页${name}`, body_md: '共享 主题 内容',
         sources: [smallSource], evidence: [{ source_id: smallSource.source_id, locator: smallSource.locator }], actor: 'user',
       });

@@ -19,7 +19,8 @@ describe('knowledge import (KBIMP-1)', () => {
   let app: Express;
   let ws: string;
 
-  const post = (body: Record<string, unknown>) => request(app).post('/api/knowledge/pages/import').send(body);
+  // KB-CR-1：导入即建页，domain 必填；这里统一给默认域，缺省/非法域由下方专门用例覆盖
+  const post = (body: Record<string, unknown>) => request(app).post('/api/knowledge/pages/import').send({ domain: 'knowledge', ...body });
 
   beforeEach(async () => {
     t = createTestDb();
@@ -39,7 +40,7 @@ describe('knowledge import (KBIMP-1)', () => {
     expect(page.title).toBe('缓存策略');
     expect(page.body_md).toBe(content);
     expect(page.slug).toBe('缓存策略');
-    expect(page.category).toBe('legacy');
+    expect(page.category).toBe('open');
     expect(page.sources).toHaveLength(1);
     expect(page.sources[0]).toMatchObject({ source_type: 'file', locator: 'cache.md' });
     expect(page.sources[0].snapshot).toBeUndefined();
@@ -196,6 +197,7 @@ describe('knowledge import (KBIMP-1)', () => {
     const planned = planImport({
       scope: 'common',
       format: 'json',
+      domain: 'knowledge',
       content: JSON.stringify([
         { title: 'A', body_md: 'a', category: 'design', landed: 'partial' },
         { title: 'B', body_md: 'b', category: 'solved' },
@@ -257,5 +259,33 @@ describe('knowledge import (KBIMP-1)', () => {
     expect(mdTitle('没有标题\n正文')).toBeNull();
     expect(txtTitle('\n\n首行\n第二行')).toBe('首行');
     expect(txtTitle('a'.repeat(200))?.length).toBe(80);
+  });
+
+  // KB-CR-1：导入路径与创建同口径（domain 必填）
+  it('KB-CR-1：缺 domain / 空串 / 非法词表 → 400 且文案列出可选域', async () => {
+    const missing = await request(app).post('/api/knowledge/pages/import')
+      .send({ scope: 'common', format: 'txt', content: '正文', title: '无域页', slug: 'no-domain-import' });
+    expect(missing.status).toBe(400);
+    expect(missing.body.error.message).toContain('domain');
+    expect(missing.body.error.message).toContain('knowledge');
+
+    const empty = await post({ scope: 'common', format: 'txt', content: '正文', title: '空域页', slug: 'empty-domain-import', domain: '' });
+    expect(empty.status).toBe(400);
+
+    const bogus = await post({ scope: 'common', format: 'txt', content: '正文', title: '错域页', slug: 'bogus-domain-import', domain: 'bogus' });
+    expect(bogus.status).toBe(400);
+    expect(bogus.body.error.message).toContain('domain 只能是');
+  });
+
+  it('KB-CR-1：domain 落库；json 条目内 domain 覆盖顶层，缺省条目继承顶层', async () => {
+    const res = await post({
+      scope: 'workspace', workspace_id: ws, format: 'json', domain: 'board', filename: 'multi.json',
+      content: JSON.stringify([
+        { title: '顶层域页', body: '继承 board', slug: 'import-domain-top' },
+        { title: '条目域页', body: '覆盖 infra', slug: 'import-domain-item', domain: 'infra' },
+      ]),
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.pages.map((p: { domain: string }) => p.domain)).toEqual(['board', 'infra']);
   });
 });

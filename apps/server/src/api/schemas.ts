@@ -19,7 +19,8 @@ const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_
   category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
   landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional(),
   // KB-PAGE-3：域词表校验放服务层（此处只收字符串，便于后续扩词表不重建 schema）
-  domain: z.string().optional() };
+  // KB-CR-1：null 一并放行给服务层判（创建=缺省即 400，修订=显式清空），避免 zod 先报通用类型错
+  domain: z.string().nullish() };
 const knowledgeAuditFields = { actor: z.string().trim().min(1).max(100), change_note: z.string().max(2000).optional() };
 /**
  * KBIMP-1：知识页文本导入。`content` 就是文件原文（前端读文件后原样上传）；
@@ -36,6 +37,8 @@ export const knowledgeImportSchema = z.object({
   slug: z.string().min(1).max(200).optional(),
   category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
   landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional(),
+  // KB-CR-1：导入即建页，domain 必填；词表校验在服务层（requireKnowledgeDomain）
+  domain: z.string().nullish(),
   labels: z.array(z.string().min(1).max(50)).max(20).optional(),
   actor: z.string().trim().min(1).max(100).optional(),
   change_note: z.string().max(2000).optional(),

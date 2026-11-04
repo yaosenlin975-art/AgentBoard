@@ -21,7 +21,7 @@ function seed(db: ReturnType<typeof createTestDb>['db'], pages: number, bigChars
     const body = i === 0 && bigChars > 0
       ? '知识图谱性能测试语料'.repeat(Math.ceil(bigChars / 10)).slice(0, bigChars)
       : `# 页 ${i}\n内容 ${i} alpha${i % 7} beta${i % 5}`;
-    createKnowledgePage(db, { ...scope, title: `图页 ${i}`, body_md: body, slug: `graph-perf-test-${i}`, sources: [SOURCE], evidence: [{ source_id: 'src-1', locator: 'samples/g.md:1' }], actor: 'test' });
+    createKnowledgePage(db, { domain: 'knowledge', ...scope, title: `图页 ${i}`, body_md: body, slug: `graph-perf-test-${i}`, sources: [SOURCE], evidence: [{ source_id: 'src-1', locator: 'samples/g.md:1' }], actor: 'test' });
   }
 }
 

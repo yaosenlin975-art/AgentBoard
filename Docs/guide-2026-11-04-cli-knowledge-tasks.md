@@ -52,7 +52,7 @@ WS=e41eb0fb-c367-43cf-a99d-6dc5239a5694
 # ① 建页：正文走 --stdin，sources/evidence 走 --sources-file/--evidence-file（避开 Windows 引号地狱）
 kb knowledge create --scope workspace --workspace "$WS" \
   --title "CLI 知识任务指引自测页" --slug guide-selftest-20261104 \
-  --sources-file sources.json --evidence-file evidence.json \
+  --domain knowledge --sources-file sources.json --evidence-file evidence.json \
   --stdin < body.md
 
 # ② 回读（确认 page id 与 revision）
@@ -190,7 +190,7 @@ B/C 落地后，本文档 §2、§3 里的 `--workspace`/`--scope` 可省略；�
 ```
 $ kb knowledge create --scope workspace --workspace <ws> \
     --title "CLI knowledge selftest page" --slug guide-selftest-20261104 \
-    --sources-file g-src.json --evidence-file g-ev.json --stdin < body.md
+    --domain knowledge --sources-file g-src.json --evidence-file g-ev.json --stdin < body.md
 d37befc0-bdac-41b3-b0e2-b87d39f77678 [workspace] rev:1 CLI knowledge selftest page
 
 $ kb knowledge show d37befc0-… --scope workspace --workspace <ws>

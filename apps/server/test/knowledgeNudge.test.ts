@@ -43,7 +43,7 @@ describe('knowledge nudge on done', () => {
   };
   const writePage = (scope: KnowledgeScope, slug: string, title: string, actor = 'agent:fake'): string => {
     const source = { source_id: randomUUID(), source_type: 'file' as const, locator: `file:${slug}.ts`, captured_at: 1, content_hash: hex(slug) };
-    const page = createKnowledgePage(t.db, {
+    const page = createKnowledgePage(t.db, { domain: 'knowledge',
       scope: scope.scope, workspace_id: scope.scope === 'workspace' ? scope.workspace_id : null,
       slug, title, body_md: '正文',
       sources: [source], evidence: [{ source_id: source.source_id, locator: source.locator }], actor,

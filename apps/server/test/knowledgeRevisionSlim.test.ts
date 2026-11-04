@@ -17,7 +17,7 @@ const SOURCE = { source_id: 'kb-diff-s', source_type: 'file' as const, locator: 
 const EVIDENCE = [{ source_id: 'kb-diff-s', locator: 'samples/kb-diff-s.md:1' }];
 
 function seedPage(db: TestDb, bodyChars: number, revisions: number) {
-  const page = createKnowledgePage(db, {
+  const page = createKnowledgePage(db, { domain: 'knowledge',
     scope: 'common',
     title: 'KB-DIFF-S 样本页',
     body_md: 'A'.repeat(bodyChars),

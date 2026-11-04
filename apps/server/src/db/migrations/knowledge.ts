@@ -47,11 +47,11 @@ export function migrateKnowledge(db: Db): void {
 }
 
 /**
- * KB-PAGE-3 的域词表（与仓库文档同一套词表）。校验在服务层做（不加 schema CHECK），
- * 这样后续扩展词表不需要重建表。
+/**
+ * KB-CR-1（P5）：词表唯一定义在 `packages/shared/src/domain.ts`。
+ * 这里只做 re-export 保持既有 import 路径可用，**不再手抄字面量**。
  */
-export const KNOWLEDGE_DOMAINS = ['accounts', 'knowledge', 'board', 'chat', 'ui', 'infra'] as const;
-export type KnowledgeDomain = (typeof KNOWLEDGE_DOMAINS)[number];
+export { KNOWLEDGE_DOMAINS, KNOWLEDGE_DOMAIN_HINT, isKnowledgeDomain, type KnowledgeDomain } from '@agentboard/shared';
 
 /** SQLite 的 ALTER TABLE ADD COLUMN 不可重复执行：先查 PRAGMA table_info 再决定是否加 */
 function ensureColumn(db: Db, table: string, column: string, ddl: string): void {

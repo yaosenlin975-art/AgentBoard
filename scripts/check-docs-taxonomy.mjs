@@ -26,8 +26,15 @@ const args = process.argv.slice(2);
 const strict = args.includes('--strict');
 const emitSection5 = args.includes('--emit-section5');
 
-/** 域词表（封闭集合，见分类体系 §4.2 第 5 条） */
-const DOMAINS = new Set(['accounts', 'knowledge', 'board', 'chat', 'ui', 'infra']);
+/** 域词表（封闭集合，唯一来源：packages/shared/src/domain.ts；脚本不复制值） */
+function loadKnowledgeDomains() {
+  const file = new URL('../packages/shared/src/domain.ts', import.meta.url);
+  const source = readFileSync(file, 'utf8');
+  const match = /export const KNOWLEDGE_DOMAINS = \[([^\]]+)\] as const/.exec(source);
+  if (match === null) throw new Error(`未在 ${file.pathname} 找到 KNOWLEDGE_DOMAINS 定义`);
+  return match[1].split(',').map((part) => part.trim().replace(/^'|'$/g, '')).filter((part) => part !== '');
+}
+const DOMAINS = new Set(loadKnowledgeDomains());
 /** 内容类型（legacy 是待分流的历史值，不合法） */
 const CATEGORIES = new Set(['design', 'solved', 'pinned', 'open']);
 

@@ -22,7 +22,7 @@ describe('KB-PAGE-1 缺陷 2/3：deleted 读语义与 search 字段', () => {
   let app: Express;
   let root: string;
 
-  const mkPage = (slug: string, body = '正文内容 cache 关键词') => createKnowledgePage(t.db, {
+  const mkPage = (slug: string, body = '正文内容 cache 关键词') => createKnowledgePage(t.db, { domain: 'knowledge',
     scope: 'common',
     slug,
     title: `标题 ${slug}`,
