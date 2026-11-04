@@ -169,6 +169,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
    ```
    注意：CLI 领取（kb claim）无实时唤醒；用户留言会被标记为待读，你的下一次 `kb show` 会以 `[新]` 标注返回——关键节点重拉 `kb show` 并响应。
 4. **收尾**：
+   - **done 前置（CLOSE-RECORD，强制）**：`kb done` 之前先落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`；② 一律写变更结论：`kb changelog create --workspace <当前工作区> --title "…" --type 新增|修复|调整`（正文走 `--stdin`）。任一项不做时 `done` 的 `--notes` 必须显式声明「未沉淀知识页：<原因>」或「无变更日志」；两项都做了则在 notes 里带上知识页 id 与变更日志 id。沉默不声明视为收尾未完成。
    - 完成且自验通过 → `kb done <id> --notes "完成说明" --scope <本次改动的路径>`，状态进「待验收」，释放占用。之后不要继续动该任务。
    - 无法完成或自验失败 → `kb fail <id> --reason "失败原因"`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
    - 拿不准/需用户决策 → 先 `kb comment` 说明问题后保持占用继续等；只有确定失败才 `fail`。
@@ -186,6 +187,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - `kb done --scope <path>` 声明本任务改动的路径（文件或目录前缀，可多次或逗号分隔）。`done` 按 GIT-ON-DONE 提交，**只提交声明范围内的路径**；有并行占用时尤其必须写 `--scope`，否则可能把别人的改动卷进你的提交。
 - `--scope` 写实际改过的目录/文件（如 `--scope skills --scope Docs`）；改动清单与 `--scope` 不一致视为收尾未完成。
 - 未改文件的任务（纯看板操作）不写 `--scope`，`notes` 里写明「本轮无文件改动」。
+- **`--scope` 与知识页/变更日志是两件事**：GIT-ON-DONE 只管提交哪些路径，不替代「领任务 → 执行 → 汇报」第 4 步的 done 前置记录；纯看板操作同样要写变更日志，知识页按「有可复用结论才写」判定，不写就在 notes 声明原因。
 - 提交信息、分支与合并规则仍按项目 git 约定执行；GIT-ON-DONE 只解决「提交哪些路径」，不改变分支策略。
 - **不能自动提交时看原因码，别只看「没提交」**（`done` 仍成功，评论里带声明范围）：
   - `GIT_NOT_INSTALLED` — 环境没装 git（容器镜像常见）：装 git 或改在宿主机收尾；
@@ -246,6 +248,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 「comment 随便两句就行」 | 收尾回报必须含工作区 id + 路径、改动文件清单、是否跨工作区；缺一项视为未完成。 |
 | 「用 claim 时的描述就行」 | 关键节点重拉 `kb show`；用户可能在期间改过描述、优先级或留了 `[新]` 留言。 |
 | 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
+| 「没写知识页/变更日志就想 done」 | 先写再 done；确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」/「无变更日志」，沉默视为收尾未完成。 |
 | 「这是别人的卡，我帮他改改」 | 不操作他人占用的卡；需要改动就回报父代理或用户。 |
 | 「技能和用户当轮指令冲突，按技能来」 | 用户当轮明确指令 > 技能 > 默认行为。 |
 | 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token '﻿'`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
