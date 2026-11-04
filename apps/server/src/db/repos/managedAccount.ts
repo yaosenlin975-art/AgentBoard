@@ -15,6 +15,15 @@ export function findManagedAccountByIdentity(db: Db, app_id: string, client_inst
   const row = db.prepare('SELECT id FROM managed_account WHERE app_id=? AND client_instance_id=? AND identity_hash=?').get(app_id, client_instance_id, identity_hash) as { id: string } | undefined;
   return row ? getManagedAccount(db, row.id) : null;
 }
+/**
+ * 按 (app_id, identity_hash) 定位账号（**忽略 client_instance_id**）。
+ * 用途：跨来源识别同一账号——凭据导入（client_instance_id='imported'）与协议级加号（'protocol'）
+ * 用的是同一套 identity_hash 口径（sha256(app_id + NUL + uid)），不该在库里留两条同号账号。
+ */
+export function findManagedAccountByAppIdentity(db: Db, app_id: string, identity_hash: string): ManagedAccount | null {
+  const row = db.prepare('SELECT id FROM managed_account WHERE app_id=? AND identity_hash=? LIMIT 1').get(app_id, identity_hash) as { id: string } | undefined;
+  return row ? getManagedAccount(db, row.id) : null;
+}
 /** 同一身份重新捕获后替换快照引用（token 轮换会改快照字节，身份不变） */
 export function attachClientSnapshot(db: Db, id: string, snapshot: { client_snapshot_ref: string; client_snapshot_version: number }): ManagedAccount {
   if (!getManagedAccount(db, id)) throw new ApiError(404, 'ACCOUNT_NOT_FOUND', '账号不存在');

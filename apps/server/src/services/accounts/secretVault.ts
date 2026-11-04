@@ -7,7 +7,17 @@ import { ApiError, ValidationError } from '../../errors.js';
 
 /** 支持的后台应用；ACC-10 起含 minimax / trae（vault scope 随 ManagedAppId 一起扩展） */
 export const managedAppSchema = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
-const scopeSchema = z.object({ app_id: managedAppSchema, client_instance_id: z.string().min(1).max(300), identity_hash: z.string().regex(/^[a-f0-9]{64}$/), purpose: z.enum(['client_snapshot', 'checkin']) }).strict();
+/**
+ * 凭据 scope。
+ *
+ * purpose 三值：
+ * - `client_snapshot`：客户端登录态快照（切号写回用）；
+ * - `checkin`：已激活的签到凭据（绑在已建成的 managed_account 上）；
+ * - `pending_credential`（ACC-KB-B2S）：**待激活凭据**——协议级加号在授权完成前握着的中间态
+ *   （device_code / PKCE verifier / poll token 等）。此时账号身份还没拿到，identity_hash 用
+ *   会话 id 的 sha256 占位；授权成功即转存为 `checkin`，失败/放弃/超时就删掉，不留孤儿文件。
+ */
+const scopeSchema = z.object({ app_id: managedAppSchema, client_instance_id: z.string().min(1).max(300), identity_hash: z.string().regex(/^[a-f0-9]{64}$/), purpose: z.enum(['client_snapshot', 'checkin', 'pending_credential']) }).strict();
 export type VaultScope = z.infer<typeof scopeSchema>;
 const reference = z.string().uuid();
 const script = `$ErrorActionPreference='Stop'; try {

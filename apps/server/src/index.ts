@@ -14,6 +14,8 @@ import { recoverAccountOperations } from './services/accounts/operationRunner.js
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
+import { createAddAccountProviders } from './services/accounts/addAccountProvider.js';
+import type { AddAccountProviderSpec } from './services/accounts/addAccountProtocol.js';
 import { MinimaxDesktopProvider, defaultMinimaxPaths } from './services/accounts/minimaxDesktopProvider.js';
 import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import type { DraftRunner } from './services/smartCreateDraft.js';
@@ -70,6 +72,8 @@ export interface CreateAppOptions {
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
   /** ACC-13：按平台的桌面 provider（capture/switch）；测试可注入 fake fs/进程 */
   desktopProviders?: Partial<Record<ManagedAppId, MinimaxDesktopProvider>>;
+  /** ACC-KB-B2S：协议级加号的 provider（默认按五平台协议装配；测试可注入替身） */
+  addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>;
   /** SYSTEM-RESTART：生产在 main() 注入真实 spawn/close/exit；测试注入 fake */
   restart?: RestartDeps;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
@@ -147,7 +151,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) }) }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) }) }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders() }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

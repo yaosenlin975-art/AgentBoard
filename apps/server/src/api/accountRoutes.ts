@@ -16,11 +16,18 @@ import {
   operationsForBatch,
 } from '../db/repos/checkin.js';
 import { getManagedAccount, publicManagedAccount, setManagedAccountEnabled } from '../db/repos/managedAccount.js';
+import { getAddAccountSession, listAddAccountSessions, publicAddAccountSession } from '../db/repos/addAccount.js';
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe, type MinimaxClientStatus } from '../services/accounts/minimaxClientProbe.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
 import type { SecretVault } from '../services/accounts/secretVault.js';
 import { pollCheckinAuthorization, profileLocalDay, startCheckinAuthorization } from '../services/accounts/checkinAuthorization.js';
+import {
+  cancelAddAccountAuthorization,
+  pollAddAccountAuthorization,
+  startAddAccountAuthorization,
+} from '../services/accounts/addAccountAuthorization.js';
+import type { AddAccountProviderSpec, AddAccountVault } from '../services/accounts/addAccountProtocol.js';
 import { startCheckinBatchInBackground } from '../services/accounts/checkinRunner.js';
 import { startAccountRestore } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
@@ -39,6 +46,10 @@ export interface AccountRouterDeps {
   /** ACC-13：minimax 等按平台的桌面 provider（capture/switch） */
   desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>;
   vault?: CheckinVault;
+  /** ACC-KB-B2S：协议级「添加账号」的 provider（按平台注入；未注入时加号端点 409 PROVIDER_UNVERIFIED） */
+  addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>;
+  /** ACC-KB-B2S：加号用的 vault（需支持 pending_credential purpose）；生产复用 SecretVault */
+  addAccountVault?: AddAccountVault;
   /** ACC-DEL-01：删除账号时清理其 DPAPI 快照/凭据文件（生产为 SecretVault 实例） */
   secretVault?: Pick<SecretVault, 'delete'>;
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
@@ -57,6 +68,11 @@ const importCredentialsSchema = z.object({
   actor: z.string().trim().min(1).max(100).optional(),
 }).strict();
 const authorizationStartSchema = z.object({ account_id: z.string().uuid() }).strict();
+/** ACC-KB-B2S：发起协议级加号 */
+const addAccountStartSchema = z.object({
+  app_id: managedAppParam,
+  region: z.enum(['cn', 'global']).optional(),
+}).strict();
 const batchCreateSchema = z.object({
   app_id: managedAppParam,
   account_ids: z.array(z.string().uuid()).min(1).max(50),
@@ -132,6 +148,14 @@ function requireCheckin(app: ManagedAppId, deps: AccountRouterDeps): { provider:
   if (!capability || !capability.checkin || !provider) throw new ApiError(409, 'PROVIDER_UNVERIFIED', '该产品的签到能力未验证', { reason_code: 'CHECKIN_PROVIDER_UNVERIFIED' });
   if (!deps.vault) throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保护未装配');
   return { provider, vault: deps.vault };
+}
+
+/** ACC-KB-B2S：加号 provider + vault；缺 provider → 409，缺 vault → 503 */
+function requireAddAccount(app: ManagedAppId, deps: AccountRouterDeps): { provider: AddAccountProviderSpec; vault: AddAccountVault } {
+  const provider = deps.addAccountProviders?.[app];
+  if (!provider) throw new ApiError(409, 'PROVIDER_UNVERIFIED', '该产品暂不支持协议级添加账号', { reason_code: 'ADD_ACCOUNT_PROTOCOL_UNSUPPORTED' });
+  if (!deps.addAccountVault) throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保护未装配');
+  return { provider, vault: deps.addAccountVault };
 }
 
 function idempotencyInput(req: { method: string; baseUrl: string; path: string; body?: unknown; get?: (name: string) => string | undefined }, required: boolean): IdempotencyInput | null {
@@ -309,6 +333,60 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const { provider, vault } = requireCheckin(account.app_id, deps);
     const result = await pollCheckinAuthorization({ db, vault, provider }, req.params.id!);
     res.json({ authorization: result.authorization, account: result.account });
+  });
+
+  // ---- ACC-KB-B2S：协议级「添加账号」（不依赖客户端在跑）----
+  // 发起 → 用户在浏览器确认一次 → 轮询 → 凭据落 vault → 建 managed_account。
+  // 凭据只在授权成功后才落库；放弃/超时会删掉待激活凭据，不留半条账号、不留孤儿 vault 文件。
+  router.get('/add-account-protocols', (_req, res) => {
+    const providers = deps.addAccountProviders ?? {};
+    res.json({
+      items: Object.values(providers).map(provider => ({
+        app_id: provider.app_id,
+        protocol: provider.protocol,
+        provider_version: provider.provider_version,
+        requires_browser: true as const,
+        regions: provider.regions,
+      })),
+    });
+  });
+
+  router.post('/add-account-sessions', async (req, res) => {
+    const body = parseBody(addAccountStartSchema, req.body);
+    const { vault } = requireAddAccount(body.app_id, deps);
+    const session = await startAddAccountAuthorization({ db, vault, providers: deps.addAccountProviders ?? {} }, {
+      app_id: body.app_id,
+      region: body.region,
+    });
+    res.status(202).json({ session: publicAddAccountSession(session) });
+  });
+
+  router.get('/add-account-sessions', (req, res) => {
+    const app = managedAppParam.safeParse(req.query.app ?? undefined);
+    if (req.query.app !== undefined && !app.success) throw new ValidationError('app 不合法');
+    res.json({ items: listAddAccountSessions(db, app.success ? app.data : undefined).map(publicAddAccountSession) });
+  });
+
+  router.get('/add-account-sessions/:id', (req, res) => {
+    const session = getAddAccountSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('添加账号会话不存在');
+    res.json({ session: publicAddAccountSession(session) });
+  });
+
+  router.post('/add-account-sessions/:id/poll', async (req, res) => {
+    const row = db.prepare('SELECT app_id FROM add_account_session WHERE id=?').get(req.params.id!) as { app_id: string } | undefined;
+    if (!row) throw new NotFoundError('添加账号会话不存在');
+    const { vault } = requireAddAccount(row.app_id as ManagedAppId, deps);
+    const result = await pollAddAccountAuthorization({ db, vault, providers: deps.addAccountProviders ?? {} }, req.params.id!);
+    res.json({ session: publicAddAccountSession(result.session), account: result.account });
+  });
+
+  router.delete('/add-account-sessions/:id', async (req, res) => {
+    const row = db.prepare('SELECT app_id FROM add_account_session WHERE id=?').get(req.params.id!) as { app_id: string } | undefined;
+    if (!row) throw new NotFoundError('添加账号会话不存在');
+    const { vault } = requireAddAccount(row.app_id as ManagedAppId, deps);
+    const session = await cancelAddAccountAuthorization({ db, vault, providers: deps.addAccountProviders ?? {} }, req.params.id!);
+    res.json({ session: publicAddAccountSession(session) });
   });
 
   // ---- 批量签到 ----

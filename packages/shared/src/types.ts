@@ -66,6 +66,30 @@ export interface CheckinAuthorization {
   authorization_url: string | null; safe_error_code: string | null;
   created_at: number; updated_at: number; expires_at: number;
 }
+/**
+ * ACC-KB-B2S：协议级「添加账号」的授权会话（不依赖客户端在跑）。
+ *
+ * 三段式与签到授权同构：发起 → 轮询/回调 → 落库。
+ * - `authorization_url` 是要交给用户打开的授权地址；`user_code` 是需要用户手工输入的码（没有则 null）；
+ * - 中间态凭据（device_code / PKCE verifier / poll token 等）只在 vault 里，**永不出现在响应与库里**；
+ * - `account_id` 只有在授权成功、凭据落库并建成 managed_account 之后才有值。
+ */
+export type AddAccountProtocol = 'minimax_device' | 'zcode_cli' | 'qoder_device' | 'workbuddy_oneid' | 'trae_oauth';
+export type AddAccountSessionStatus = 'pending' | 'authorized' | 'failed' | 'expired' | 'cancelled';
+export interface AddAccountSession {
+  id: string; app_id: ManagedAppId; protocol: AddAccountProtocol; status: AddAccountSessionStatus;
+  service_region: 'cn' | 'global' | 'unknown';
+  authorization_url: string | null; user_code: string | null;
+  account_id: string | null; safe_error_code: string | null;
+  created_at: number; updated_at: number; expires_at: number;
+}
+/** ACC-KB-B2S：某平台是否支持协议级加号（供前端向导渲染用；不含任何凭据） */
+export interface AddAccountProtocolInfo {
+  app_id: ManagedAppId; protocol: AddAccountProtocol; provider_version: string;
+  /** 全部平台都需要用户在浏览器完成一次授权确认 */
+  requires_browser: true;
+  regions: Array<'cn' | 'global'>;
+}
 /** ACC-07：批次状态；profile_local_day 为本地时区日，明确不是官方服务日 */
 export type CheckinBatchStatus = 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled';
 /** ACC-07：逐账号结果；cancelled 表示未发起请求的排队项 */

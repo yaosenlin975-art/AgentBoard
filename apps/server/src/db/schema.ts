@@ -11,6 +11,7 @@ import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
 import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/issueGitBaseline.js';
 import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
 import { migrateCheckinPlatforms } from './migrations/checkinPlatforms.js';
+import { migrateAddAccount } from './migrations/addAccount.js';
 import { migrateKnowledgeLinks } from './migrations/knowledgeLinks.js';
 import { migrateIssueDependency } from './migrations/issueDependency.js';
 import { migrateIssueStatusModel } from './migrations/issueStatusModel.js';
@@ -78,6 +79,8 @@ export function initSchema(db: Db): void {
   migrateWorkspaceChangeLog(db);
   migrateCheckin(db);
   migrateCheckinPlatforms(db);
+  // ACC-KB-B2S：协议级「添加账号」的授权会话表（纯追加表）
+  migrateAddAccount(db);
   // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）。**必须放在所有「重建 managed_account」的迁移之后**，
   // 否则重建表会把这 4 列丢掉（accountPlatforms / checkinPlatforms 都是 DROP+CREATE 重建）。
   migrateDeviceIdentity(db);

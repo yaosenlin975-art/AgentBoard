@@ -325,6 +325,37 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 - **opencode_go**：走本地 opencode 服务 `GET {url}/api/experimental/usage/limits`（Basic `opencode:<~/.config/opencode/service.json password>`）。响应 `data.go.{rolling,weekly,monthly}={percent,limited,resetsAt}` → 三窗口（`5h`/`weekly`/`monthly`），`remaining = 100 - percent`、`used_percent = percent`、`reset_at = resetsAt`，`unit = '%'`、`detail` 给工作区名或限额提示。服务发现：`OPENCODE_SERVER_URL` 优先，否则 `netstat -ano` LISTENING 端口 ∩ `tasklist` 中名字含 `opencode` 的 PID（Windows）。不可用码：`OPENCODE_NOT_LOGGED_IN`（无 auth.json）/ `OPENCODE_AUTH_UNAVAILABLE`（无 service.json 口令）/ `OPENCODE_SERVER_NOT_RUNNING`（未发现本地服务）/ `OPENCODE_AUTH_FAILED`（401/403）/ `OPENCODE_ROUTE_UNSUPPORTED`（404）。
 - **codex**（ACC-CODEX-QUOTA-IMPL）：只读**本机 rollout 快照**（零网络、零凭据）——扫描 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` 取 mtime 最新一份，读 `event_msg → payload.rate_limits`：`primary{used_percent, window_minutes:300, resets_at}` → `5h`、`secondary{window_minutes:10080}` → `weekly`（**只映射这两种窗口，Monthly 不展示**）；`resets_at` 为秒级 epoch（×1000 转毫秒）；`credits.balance` → `balance`/`unit=USD`，余额为 0 时 `detail="额度内"`（避免误读成欠费）。不可用码：`NO_CODEX_SESSIONS`（无 `~/.codex/sessions` 或无 rollout 文件）/ `NO_CODEX_RATE_LIMITS`（最新会话里没有 `rate_limits` 或窗口不可用）。不读 token 原文、不写 `.codex`、不请求 ChatGPT 后端（`/backend-api/codex/usage` 需浏览器 UA 才 200，本卡不启用，见 `Docs/research-2026-11-03-codex-quota.md`）。
 - `windows[].reset_at` 为该窗口重置时刻（epoch ms），前端展示为本地 `HH:mm` + 剩余时长；无窗口概念时 `windows = []`。
+## 14c. 添加账号（协议级加号，`/api/add-account-*`，ACC-KB-B2S）
+
+**不再依赖客户端进程在跑**：走平台自己的授权协议 —— 发起 → 用户在浏览器确认一次 → 轮询/回调 → 凭据落 vault → 建 `managed_account`。授权成功后新账号直接出现在 `GET /api/managed-accounts` 列表，**不需要重启客户端**。
+
+凭据只在授权成功后落库：授权完成前握着的中间态（device_code / PKCE verifier / poll token / flow_id）只在 vault 的 `pending_credential` purpose 里，库里只留 sha256 与 ref；**放弃 / 超时 / 被拒**一律把待激活凭据删掉，不留孤儿 vault 文件、不留半条账号。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `GET /api/add-account-protocols` | — | `{ items: AddAccountProtocolInfo[] }`（`app_id` / `protocol` / `provider_version` / `requires_browser` / `regions`；供前端向导渲染，**不含任何凭据**） | — | accountRoutes.ts |
+| `POST /api/add-account-sessions` | body：`{ app_id: ManagedAppId, region?: 'cn'\|'global' }`（strict） | 202 `{ session: AddAccountSession }`；`session.authorization_url` 是要交给用户打开的授权地址，`user_code` 是需手工输入的码（没有则 null）。响应**不含**待激活凭据或 vault 引用 | 400 body 非法；409 `PROVIDER_UNVERIFIED`（该产品无协议 provider）/ `ADD_ACCOUNT_SESSION_EXISTS`（同产品已有进行中的加号会话）；503 `VAULT_UNAVAILABLE` / `TRAE_DEVICE_IDENTITY_UNAVAILABLE` / `TRAE_CALLBACK_PORT_UNAVAILABLE` | accountRoutes.ts、`services/accounts/addAccountAuthorization.ts` |
+| `GET /api/add-account-sessions` | query：`app?` | `{ items: AddAccountSession[] }`（脱敏：剥离 pending secret 的 hash 与 vault 引用） | 400 app 非法 | accountRoutes.ts |
+| `GET /api/add-account-sessions/:id` | — | `{ session: AddAccountSession }`（脱敏） | 404 会话不存在 | accountRoutes.ts |
+| `POST /api/add-account-sessions/:id/poll` | — | `{ session, account }`；`pending` 时 `account` 为 null 且不产生任何落库副作用；`authorized` 时凭据按 `checkin` purpose 落库并建/更新账号（同一 app + 同一 uid 命中既有行，不产生重复账号） | 404 会话不存在；409 `AUTHORIZATION_NOT_PENDING` / `AUTHORIZATION_EXPIRED` / `PROVIDER_UNVERIFIED` | accountRoutes.ts |
+| `DELETE /api/add-account-sessions/:id` | — | `{ session }`；会话置 `cancelled`，待激活凭据删除，**不建账号** | 404 会话不存在；409 `PROVIDER_UNVERIFIED` | accountRoutes.ts |
+
+会话状态：`pending` → `authorized` / `failed` / `expired` / `cancelled`（状态 CAS，终态不可再轮询）。`safe_error_code` 记平台侧原因码（如 `MINIMAX_ACCESS_DENIED` / `ZCODE_FLOW_FAILED` / `QODER_IDENTITY_MISSING` / `WORKBUDDY_IDENTITY_MISSING` / `TRAE_CALLBACK_HOST_REJECTED`）。
+
+**五平台协议**（端点形状取自本机产品源码与线上实测，见各实现的注释）：
+
+| 平台 | 协议 | 发起 | 轮询 |
+| --- | --- | --- | --- |
+| `minimax` | RFC 8628 device grant + PKCE S256 | `POST {origin}/oauth2/device/code`（cn=`account.minimax.cn`，global=`account.minimax.io`；`client_id=mcode-public`、`scope=agent.default`、`audience=agent-backend`） | `POST {origin}/oauth2/token`（`grant_type=urn:ietf:params:oauth:grant-type:device_code`）；`pending`/`slow_down` 继续，`denied` 终止，`expired` 过期；token 响应须含 `access_token`+`refresh_token`+`token_type=bearer`+`expires_in`+`agent.default` scope，账号 uid 取 JWT `sub` |
+| `zcode` | CLI 轮询流 | `POST https://zcode.z.ai/api/v1/oauth/cli/init`（头 `Authorization: Bearer <32B hex>`，body `{provider:'bigmodel'\|'zai'}`） | `GET /api/v1/oauth/cli/poll/{flow_id}`；`ready` 时取该区 `access_token` 与 `user.user_id` |
+| `qoder_cn` | 自研设备授权 | 授权页 `https://qoder.com.cn/device/selectAccounts?challenge&challenge_method=S256&nonce&machine_id&client_id` | `GET https://openapi.qoder.com.cn/api/v1/deviceToken/poll?nonce&verifier&challenge_method=S256`（404/202 = 未授权）；再 `GET /api/v1/userinfo` 取 uid |
+| `workbuddy_desktop` | OneID 插件式 state | `POST {origin}/v2/plugin/auth/state?platform=workbuddy`（cn=`www.codebuddy.cn`，global=`www.workbuddy.ai`） | `GET /v2/plugin/auth/token?state=`（code `11217` = 未授权）；再 `GET /v2/plugin/login/account?state=`（Bearer + `X-Domain`），code `12151` = 未授权 |
+| `trae` | OAuth 授权码 + PKCE S256 + 固定本地回调 | 授权页 `{login_host}/authorization`（22 参数，含 `code_challenge`、`auth_callback_url=http://127.0.0.1:17388/authorize`、`login_trace_id`、设备字段）；服务端在 127.0.0.1:17388 起回调监听（跨源探活回 200 + CORS） | 回调带 `authCodeInfo` + `userInfo` + `host` + `loginTraceID`；`loginTraceID` 必须等于发起时的 trace id；再 `POST {host}/trae/api/v3/oauth/ExchangeToken` |
+
+**与共享知识页 `89c72721` 的两处差异（以源码/实测为准）**：① MiniMax `interval` 单位 —— 知识页写「毫秒需 /1000」，官方 CLI 源码只在 legacy `user_code` 轮询分支才除 1000，`device_code` 分支直接按秒用，线上实测 `interval=3` 亦为秒；② Qoder `client_id` —— 知识页写 `1c5e33e1-…`，本机 SDK 解出的 CN 实测值是 `e883ade2-e6e3-4d6d-adf7-f92ceff5fdcb`。
+
+**边界**：Trae 的 `device_id` 必须与客户端设备凭证同源（自造会被服务端 20403/20405 拒），故只从本机已装客户端**只读**取得（`product.json` 的 `iCubeApp.authConfig.TRAE[quality]` / `bootConfig.consoleHost`、`state.vscdb` 的 `storage.serviceMachineId`、`aha/TinyStorage` 的 `aha.device.device_id`），读不到即报 `TRAE_DEVICE_IDENTITY_UNAVAILABLE`，不自造。
+
 ## 15. system（`/api/system`，systemRoutes.ts，SYSTEM-RESTART）
 
 服务自重启，供设置页「重启服务器」按钮调用。**无鉴权**，因此只允许本机回环地址触发（`req.ip` ∈ `127.0.0.1` / `::1` / `::ffff:127.0.0.1`，本项目无反向代理，不读 `X-Forwarded-For`）。

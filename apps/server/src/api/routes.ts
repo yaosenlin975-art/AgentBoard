@@ -16,6 +16,7 @@ import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
+import type { AddAccountProviderSpec } from '../services/accounts/addAccountProtocol.js';
 import type { QuotaService } from '../services/quotas/quotaService.js';
 import { getTaskKnowledge } from '../services/taskKnowledge.js';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
@@ -93,7 +94,7 @@ export interface RouterDeps {
   /** WS 广播钩子（index.ts 装配 hub.broadcast） */
   broadcast: (event: WsEvent) => void;
   /** 账号 provider 装配（ACC-05/ACC-07）；缺省时账号写接口返回 PROVIDER_UNAVAILABLE */
-  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe };
+  accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe; addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>> };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
   knowledgeGraphPageLimit?: number;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
@@ -354,7 +355,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use('/voice', createVoiceRouter(deps.db, deps.voice ?? {}));
   router.use(createSystemRouter({ restart: deps.restart }));
-  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, secretVault: deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe }));
+  router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, secretVault: deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe, addAccountProviders: deps.accounts?.addAccountProviders, addAccountVault: deps.secretVault }));
   // ---- SMART-CREATE：智能创建草稿（不落库，设计 §4）----
   // 必须在 /issues/:id 中间件之前注册：否则 'draft' 会被当成 issue id 去查库并 404。
   const draftService = createDraftService({
