@@ -85,3 +85,20 @@ describe('令牌一致性（CHIP-PALETTE）', () => {
     // 整文件不再出现旧 blue 色板
     expect(dialog, 'NewIssueDialog 仍有 bg-blue-/text-blue-').not.toMatch(/bg-blue-\d|text-blue-\d/);
   });
+
+  it('BUTTON_PRIMARY 走 accent 令牌，不再含旧 blue（一改全站跟随）', async () => {
+    const mod = await import('../components/ui/buttonStyles');
+    expect(mod.BUTTON_PRIMARY).toContain('bg-accent');
+    expect(mod.BUTTON_PRIMARY).toContain('text-accent-ink');
+    expect(mod.BUTTON_PRIMARY).not.toMatch(/bg-blue-|text-blue-/);
+    // 焦点环也不应再是 blue
+    expect(mod.BUTTON_PRIMARY).toContain('focus-visible:outline-accent');
+    // 危险按钮保留语义红（不被强调色抹平）
+    expect(mod.BUTTON_DANGER).toMatch(/text-red-600/);
+    expect(mod.BUTTON_DANGER).not.toMatch(/bg-accent/);
+    // 安静按钮走发丝线 + 表面/墨色令牌
+    expect(mod.BUTTON_SECONDARY).toContain('border-hairline');
+    expect(mod.BUTTON_SECONDARY).toContain('hover:bg-surface-raised');
+    // 源码级复核：整个文件里没有 blue 工具类
+    expect(read('components/ui/buttonStyles.ts')).not.toMatch(/bg-blue-\d|text-blue-\d/);
+  });
