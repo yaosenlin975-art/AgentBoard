@@ -12,7 +12,6 @@ import {
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { KnowledgePageDetail } from './KnowledgePageDetail';
 import { KnowledgeGraph } from './KnowledgeGraph';
-import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { Kbd } from '../ui/Kbd';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
@@ -32,25 +31,11 @@ const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
 
 export function KnowledgePanel({
   workspaceId,
-  layout,
-  onLayout,
-  onToggleKnowledge,
-  logOpen = false,
-  onToggleLog,
+
 }: {
   workspaceId: string | null;
-  layout?: BoardLayout;
-  onLayout?: (layout: BoardLayout) => void;
-  onToggleKnowledge?: () => void;
-  logOpen?: boolean;
-  onToggleLog?: () => void;
+
 }) {
-  const [internalLayout, setInternalLayout] = useState<BoardLayout>(layout ?? 'board');
-  const currentLayout: BoardLayout = layout ?? internalLayout;
-  const changeLayout = (next: BoardLayout): void => {
-    setInternalLayout(next);
-    onLayout?.(next);
-  };
   const [scope, setScope] = useState<'both' | 'workspace' | 'common'>(workspaceId ? 'both' : 'common');
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -82,13 +67,6 @@ export function KnowledgePanel({
     {/* 视图切换与平铺看板共用同一外壳（TOPBAR-TABS）：切视图时 tab 组 left/top 不变 */}
     <ViewToolbarShell>
       <div data-testid="knowledge-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
-        <ViewSwitcher
-          layout={currentLayout}
-          onLayout={changeLayout}
-          knowledgeOpen
-          onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
-          {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
-        />
       </div>
     </ViewToolbarShell>
     <div className="flex min-h-0 flex-1 flex-col p-4">

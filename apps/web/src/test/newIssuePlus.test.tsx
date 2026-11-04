@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Issue, Session } from '@agentboard/shared';
 import { Board } from '../components/board/Board';
+import { useNavStore } from '../state/navStore';
 import { useAppStore } from '../state/appStore';
 import { server } from './server';
 
@@ -31,10 +32,12 @@ const existing: Issue = {
 };
 
 function renderBoard(layout: 'board' | 'tree' = 'board') {
+  // FIX-2：Board 不再接收 layout prop，视图由 navStore 决定
+  useNavStore.setState({ view: layout });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <Board layout={layout} />
+      <Board />
     </QueryClientProvider>,
   );
 }

@@ -84,7 +84,7 @@ describe('详情正文宽度自适应且有可读上限（KB-DETAIL-W）', () =>
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
-        <KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />
+        <KnowledgePanel workspaceId="ws-1" />
       </QueryClientProvider>,
     );
     const item = await screen.findByTestId('knowledge-item-p1');

@@ -14,7 +14,6 @@ import { ChangelogPanel } from './components/changelog/ChangelogPanel';
 import { ChatView } from './components/chat/ChatView';
 import { RightPanel } from './components/right/RightPanel';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
-import type { BoardLayout } from './components/ui/ViewSwitcher';
 import { useRestartStore } from './state/restartStore';
 
 /**
@@ -34,8 +33,6 @@ export default function App() {
   const setView = useNavStore((s) => s.setView);
   const chatOrigin = useNavStore((s) => s.chatOrigin);
   const exitChat = useNavStore((s) => s.exitChat);
-  /** NAV-CHAT-EXIT：退出聊天的出口文案用来源视图名（来源缺失 → 看板） */
-  const chatExitTarget: NavView = chatOrigin ?? 'board';
   const CHAT_EXIT_LABEL: Record<NavView, string> = {
     board: '看板',
     tree: '任务树',
@@ -64,11 +61,6 @@ export default function App() {
   });
   const current = (workspaces ?? []).find((w) => w.id === workspaceId) ?? null;
 
-  // 工具条（S2c 会移除）仍接收旧 props：值从 navStore 派生，保证两处入口同一份状态
-  const layout: BoardLayout = view === 'tree' ? 'tree' : 'board';
-  const knowledgeOpen = view === 'knowledge';
-  const logOpen = view === 'log';
-  const toggleView = (target: NavView): void => setView(view === target ? 'board' : target);
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface-page text-ink">
@@ -87,52 +79,23 @@ export default function App() {
                   <ChangelogPanel
                     key={workspaceId}
                     workspaceId={workspaceId}
-                    layout={layout}
-                    onLayout={setView}
-                    onToggleKnowledge={() => toggleView('knowledge')}
-                    logOpen
-                    onToggleLog={() => toggleView('log')}
                   />
                 )
               ) : view === 'knowledge' ? (
                 <KnowledgePanel
                   key={workspaceId ?? 'common'}
                   workspaceId={workspaceId}
-                  layout={layout}
-                  onLayout={setView}
-                  onToggleKnowledge={() => toggleView('knowledge')}
-                  logOpen={logOpen}
-                  onToggleLog={() => toggleView('log')}
                 />
               ) : view === 'chat' ? (
+                // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
+                // 快捷键 Esc / Ctrl(Cmd)+[ 仍保留（lead 裁定：只删可视出口，保留键盘出口）。
                 <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
-                  {/* NAV-CHAT-EXIT：整屏聊天的退出出口（先记来源视图，退出回它；来源缺失回看板） */}
-                  <div className="flex shrink-0 items-center justify-between gap-2 border-b border-hairline bg-surface-card px-3 py-1.5">
-                    <button
-                      type="button"
-                      data-testid="chat-exit"
-                      aria-label={`退出聊天，返回${CHAT_EXIT_LABEL[chatExitTarget]}`}
-                      title={`返回${CHAT_EXIT_LABEL[chatExitTarget]}（Esc 或 Ctrl/⌘ + [）`}
-                      onClick={exitChat}
-                      className="inline-flex items-center gap-1 rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                    >
-                      <span aria-hidden="true">←</span>
-                      返回{CHAT_EXIT_LABEL[chatExitTarget]}
-                    </button>
-                    <span className="text-[11px] text-ink-3">Esc 或 Ctrl/⌘ + [ 退出聊天</span>
-                  </div>
                   <div className="min-h-0 flex-1">
                     <ChatView />
                   </div>
                 </div>
               ) : (
                 <Board
-                  layout={layout}
-                  onLayout={setView}
-                  knowledgeOpen={knowledgeOpen}
-                  onToggleKnowledge={() => toggleView('knowledge')}
-                  logOpen={logOpen}
-                  onToggleLog={() => toggleView('log')}
                 />
               )}
             </main>

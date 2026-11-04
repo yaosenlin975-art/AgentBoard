@@ -78,7 +78,7 @@ function renderBoard() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={qc}>
-      <Board layout="board" />
+      <Board />
     </QueryClientProvider>,
   );
   return { ...view, qc };

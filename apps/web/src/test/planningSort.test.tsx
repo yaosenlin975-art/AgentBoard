@@ -193,7 +193,7 @@ describe('看板接线', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return render(
       <QueryClientProvider client={qc}>
-        <Board layout="board" />
+        <Board />
       </QueryClientProvider>,
     );
   }

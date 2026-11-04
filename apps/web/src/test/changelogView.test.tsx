@@ -12,7 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { WorkspaceChangeLog } from '@agentboard/shared';
 import { ChangelogPanel } from '../components/changelog/ChangelogPanel';
-import { ViewSwitcher } from '../components/ui/ViewSwitcher';
+import { useNavStore } from '../state/navStore';
 import { server } from './server';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -62,6 +62,8 @@ let observers: FakeObserver[] = [];
 let scrollSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  // FIX-2：Harness 依赖 navStore.view，用例间必须重置
+  useNavStore.setState({ view: 'board', chatOrigin: null });
   observers = [];
   scrollSpy = vi.fn();
   Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scrollSpy, writable: true, configurable: true });
@@ -114,39 +116,21 @@ function fireIntersect(id: string): void {
   }
 }
 
-/** 模拟 App 的接线：视图互斥 + 日志作为主区域视图渲染 */
+/**
+ * 模拟 App 的接线（FIX-2 后）：视图由 navStore 单一决定，工具条不再有 ViewSwitcher；
+ * 切视图靠左栏入口（这里用两个等价按钮代替 SideBar，避免依赖 FIX-1 的实现）。
+ */
 function Harness() {
-  const [logOpen, setLogOpen] = useState(false);
-  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
-  const toggleLog = (): void => {
-    setKnowledgeOpen(false);
-    setLogOpen((open) => !open);
-  };
+  const view = useNavStore((s) => s.view);
+  const setView = useNavStore((s) => s.setView);
   return (
     <div>
-      <div data-testid="harness-switcher">
-        <ViewSwitcher
-          layout="board"
-          onLayout={() => undefined}
-          knowledgeOpen={knowledgeOpen}
-          onToggleKnowledge={() => {
-            setLogOpen(false);
-            setKnowledgeOpen((open) => !open);
-          }}
-          logOpen={logOpen}
-          onToggleLog={toggleLog}
-        />
+      <div data-testid="harness-nav">
+        <button type="button" data-testid="sidebar-entry-log" onClick={() => setView('log')}>日志</button>
+        <button type="button" data-testid="sidebar-entry-board" onClick={() => setView('board')}>平铺看板</button>
       </div>
-      {logOpen ? (
-        <ChangelogPanel
-          workspaceId="ws-1"
-          logOpen
-          onToggleLog={toggleLog}
-          onToggleKnowledge={() => {
-            setLogOpen(false);
-            setKnowledgeOpen(true);
-          }}
-        />
+      {view === 'log' ? (
+        <ChangelogPanel workspaceId="ws-1" />
       ) : (
         <p data-testid="board-stub">平铺看板内容</p>
       )}
@@ -155,38 +139,30 @@ function Harness() {
 }
 
 describe('日志入口（知识库右侧）', () => {
-  it('「日志」按钮紧挨「知识库」右侧，四个视图按钮顺序固定', () => {
-    withClient(
-      <ViewSwitcher
-        layout="board"
-        onLayout={() => undefined}
-        knowledgeOpen={false}
-        onToggleKnowledge={() => undefined}
-        logOpen={false}
-        onToggleLog={() => undefined}
-      />,
-    );
-    const switcher = screen.getByTestId('view-switcher');
-    const labels = within(switcher).getAllByRole('button').map((node) => node.textContent);
-    expect(labels).toEqual(['平铺看板', '任务树', '知识库', '日志']);
-    expect(labels.indexOf('日志')).toBe(labels.indexOf('知识库') + 1);
-    expect(screen.getByTestId('view-log')).toHaveAttribute('aria-pressed', 'false');
+  it('FIX-2：工具条不再有 ViewSwitcher；日志视图由左栏入口切入', async () => {
+    mockList([entry()]);
+    withClient(<Harness />);
+    expect(screen.getByTestId('board-stub')).toBeInTheDocument();
+    expect(screen.queryByTestId('view-switcher')).toBeNull();
+    await userEvent.click(screen.getByTestId('sidebar-entry-log'));
+    expect(await screen.findByTestId('changelog-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('view-switcher')).toBeNull();
   });
 
   it('点「日志」进入主区域视图而不是浮窗', async () => {
     mockList([entry()]);
     withClient(<Harness />);
     expect(screen.getByTestId('board-stub')).toBeInTheDocument();
-    const entryButton = within(screen.getByTestId('harness-switcher')).getByTestId('view-log');
+    const entryButton = screen.getByTestId('sidebar-entry-log');
 
     await userEvent.click(entryButton);
 
     const panel = await screen.findByTestId('changelog-panel');
     expect(panel.tagName).toBe('SECTION');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(within(panel).getByTestId('view-switcher')).toBeInTheDocument();
+    expect(within(panel).queryByTestId('view-switcher')).toBeNull();
     expect(screen.queryByTestId('board-stub')).toBeNull();
-    expect(within(screen.getByTestId('harness-switcher')).getByTestId('view-log')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('changelog-panel')).toBeInTheDocument();
   });
 });
 

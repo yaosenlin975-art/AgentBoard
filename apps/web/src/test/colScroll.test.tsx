@@ -42,7 +42,7 @@ function renderBoard(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <Board layout="board" onLayout={() => undefined} knowledgeOpen={false} onToggleKnowledge={() => undefined} />
+      <Board />
     </QueryClientProvider>,
   );
 }

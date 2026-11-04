@@ -25,8 +25,8 @@ import { buildIssueTreeFilter } from '../../lib/issueTree';
 import { Column } from './Column';
 import { IssueCardPreview } from './IssueCard';
 import { IssueTreeView } from './IssueTreeView';
+import { useNavStore } from '../../state/navStore';
 import { LabelFilterBar } from './LabelFilterBar';
-import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { NewIssueDialog } from '../topbar/NewIssueDialog';
 import {
@@ -41,33 +41,17 @@ import { statusAccent, useWorkspaceStatuses } from '../../lib/workspaceStatuses'
 type ActiveDrag = { issue: Issue; width?: number };
 
 export function Board({
-  layout,
-  onLayout,
-  knowledgeOpen = false,
-  onToggleKnowledge,
-  logOpen = false,
-  onToggleLog,
+
 }: {
   /** 受控时由 App 提供；未传则组件内部自持（单独渲染 Board 的场景） */
-  layout?: BoardLayout;
-  onLayout?: (layout: BoardLayout) => void;
-  knowledgeOpen?: boolean;
-  onToggleKnowledge?: () => void;
-  logOpen?: boolean;
-  onToggleLog?: () => void;
+
 } = {}) {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  // 视图（平铺看板 / 任务树）：受控时用外部 layout，否则内部自持
-  const [internalLayout, setInternalLayout] = useState<BoardLayout>('board');
-  const currentLayout: BoardLayout = layout ?? internalLayout;
-  const changeLayout = (next: BoardLayout): void => {
-    setInternalLayout(next);
-    onLayout?.(next);
-  };
-  const treeMode = currentLayout === 'tree';
+  // FIX-2：视图（平铺看板 / 任务树）由 navStore（左栏五入口）单一决定，工具条不再有 ViewSwitcher
+  const treeMode = useNavStore((s) => s.view === 'tree');
   const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
   // 新建任务弹窗（NEW-ISSUE-PLUS）：入口只在待规划列头 / 任务树工具条，不再放顶栏
   const [newIssueOpen, setNewIssueOpen] = useState(false);
@@ -187,13 +171,6 @@ export function Board({
       <ViewToolbarShell>
         <div data-testid="board-toolbar-row" className="flex min-w-0 flex-wrap items-center gap-2 max-[900px]:items-start">
           <div data-testid="board-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
-            <ViewSwitcher
-              layout={currentLayout}
-              onLayout={changeLayout}
-              knowledgeOpen={knowledgeOpen}
-              onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
-              {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
-            />
           </div>
           <div data-testid="board-toolbar-filters" className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             <input

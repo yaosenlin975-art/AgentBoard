@@ -18,7 +18,7 @@ function renderPanel(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />
+      <KnowledgePanel workspaceId="ws-1" />
     </QueryClientProvider>,
   );
 }

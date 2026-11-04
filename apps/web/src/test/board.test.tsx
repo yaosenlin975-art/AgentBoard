@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useNavStore } from '../state/navStore';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -254,6 +255,8 @@ function mockBoardData(issues: Issue[], sessions: Session[]): void {
 beforeEach(() => {
   useAppStore.setState({ workspaceId: null, selectedLabelsByWorkspace: {} });
   usePanelStore.setState({ view: null, issueId: null, sessionId: null });
+  // FIX-2：视图状态在 navStore，用例间必须重置，否则前一个用例切到 tree/log 会串味
+  useNavStore.setState({ view: 'board', chatOrigin: null });
 });
 
 describe('Board 组件', () => {
@@ -340,11 +343,12 @@ describe('Board 组件', () => {
     renderBoard();
 
     expect(await screen.findByTestId('issue-card-i1')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: '任务树' }));
+    act(() => useNavStore.setState({ view: 'tree' }));
     expect(await screen.findByTestId('tree-node-i1')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '任务树' })).toHaveAttribute('aria-pressed', 'true');
+    // FIX-2：工具条已无 ViewSwitcher，没有任何「任务树」按钮
+    expect(screen.queryByRole('button', { name: '任务树' })).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: '平铺看板' }));
+    act(() => useNavStore.setState({ view: 'board' }));
     expect(await screen.findByTestId('issue-card-i1')).toBeInTheDocument();
     expect(screen.getByTestId('count-待规划')).toHaveTextContent('1');
   });
@@ -418,7 +422,8 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(row.contains(controls)).toBe(true);
     expect(row.contains(filters)).toBe(true);
     expect(controls.compareDocumentPosition(filters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(controls).getByRole('button', { name: '平铺看板' })).toBeInTheDocument();
+    expect(within(controls).queryByRole('button', { name: '平铺看板' })).toBeNull();
+    expect(within(controls).queryByTestId('view-switcher')).toBeNull();
     expect(within(controls).queryByTestId('board-search')).not.toBeInTheDocument();
 
     // 搜索框在 chips 之前；chips 容器负责横向滚动（空间不足优先压缩 chips）
@@ -556,7 +561,7 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     renderBoard();
 
     await userEvent.click(await screen.findByTestId('label-filter-前端'));
-    await userEvent.click(screen.getByRole('button', { name: '任务树' }));
+    act(() => useNavStore.setState({ view: 'tree' }));
     expect(await screen.findByTestId('tree-node-l1')).toBeInTheDocument();
     expect(screen.queryByTestId('tree-node-l2')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tree-node-l3')).not.toBeInTheDocument();
@@ -701,7 +706,7 @@ describe('顶栏搜索（BOARD-SEARCH）', () => {
     expect(screen.queryByTestId('issue-card-p1')).not.toBeInTheDocument();
     expect(screen.getByTestId('count-待规划')).toHaveTextContent('1');
 
-    await userEvent.click(screen.getByRole('button', { name: '任务树' }));
+    act(() => useNavStore.setState({ view: 'tree' }));
     // 任务树：命中项 + 未命中的祖先上下文
     expect(await screen.findByTestId('tree-node-p2')).toBeInTheDocument();
     expect(screen.getByTestId('tree-node-p1')).toBeInTheDocument();
@@ -712,25 +717,19 @@ describe('顶栏搜索（BOARD-SEARCH）', () => {
 
 
 describe('视图切换（TOPBAR-CLEAN）', () => {
-  it('任务树右侧有「知识库」，三视图互斥且顺序为 平铺看板 / 任务树 / 知识库', async () => {
-    let opened = 0;
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    server.use(http.get('/api/issues', () => HttpResponse.json([])), http.get('/api/sessions', () => HttpResponse.json([])));
+  it('FIX-2：工具条不再有 ViewSwitcher（视图切换只走左栏五入口）', async () => {
+    mockBoardData([boardIssues[0]!], []);
     useAppStore.setState({ workspaceId: 'ws-1' });
-    render(<QueryClientProvider client={client}><Board knowledgeOpen={false} onToggleKnowledge={() => { opened += 1; }} /></QueryClientProvider>);
-    const switcher = await screen.findByTestId('view-switcher');
-    const labels = [...switcher.querySelectorAll('button')].map((b) => b.textContent?.trim());
-    expect(labels).toEqual(['平铺看板', '任务树', '知识库']);
-    // 知识库在任务树右侧（DOM 顺序即视觉顺序，均为同一行内联按钮）
-    expect(labels.indexOf('知识库')).toBe(labels.indexOf('任务树') + 1);
-    // 平铺/任务树互斥
-    await userEvent.click(screen.getByTestId('view-tree'));
-    expect(screen.getByTestId('view-tree')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('view-board')).toHaveAttribute('aria-pressed', 'false');
-    await userEvent.click(screen.getByTestId('view-board'));
-    expect(screen.getByTestId('view-board')).toHaveAttribute('aria-pressed', 'true');
-    await userEvent.click(screen.getByTestId('view-knowledge'));
-    expect(opened).toBe(1);
+    renderBoard();
+    expect(await screen.findByTestId('count-待规划')).toBeInTheDocument();
+    // 工具条容器里既没有 switcher，也没有「平铺看板 / 任务树 / 知识库」三个按钮
+    expect(screen.queryByTestId('view-switcher')).toBeNull();
+    expect(screen.queryByRole('button', { name: '任务树' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '平铺看板' })).toBeNull();
+    // 视图仍由 navStore 决定：切到 tree 后平铺列不再渲染（树由 navStore 驱动，工具条不参与）
+    expect(screen.getByTestId('count-待规划')).toBeInTheDocument();
+    act(() => useNavStore.setState({ view: 'tree' }));
+    await waitFor(() => expect(screen.queryByTestId('count-待规划')).toBeNull());
   });
 });
 

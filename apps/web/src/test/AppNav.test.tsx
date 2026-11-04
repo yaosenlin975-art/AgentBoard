@@ -1,5 +1,5 @@
 /**
- * S2a：左栏是唯一导航，App 的视图切换全部由 navStore 驱动（不再有 layout/knowledgeOpen/logOpen 三态）。
+ * S2a：左栏是唯一导航，App 的视图切换全部由 navStore 驱动（不再有/knowledgeOpen/logOpen 三态）。
  * 覆盖：五视图逐一点切、选中态、幂等、刷新后保持、工具条入口与左栏写同一份 store。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -121,13 +121,13 @@ describe('S2a 左栏导航（navStore 驱动）', () => {
     await waitFor(() => expect(screen.getByRole('region', { name: '共享知识库' })).toBeInTheDocument());
   });
 
-  it('工具条入口与左栏写同一份 store（无双层状态）', async () => {
+  it('FIX-2 后视图切换只走左栏入口（工具条不再有 ViewSwitcher）', async () => {
     renderApp();
-    // 平铺看板工具条里的 ViewSwitcher「任务树」入口
-    // 左栏与工具条各有一个「任务树」入口：这里取工具条里的那个（限定在 main 内）
+    // 工具条已无 ViewSwitcher：main 里不再有「任务树」按钮
     const main = screen.getByTestId('main-content');
-    const toolbarEntry = within(main).getByRole('button', { name: '任务树' });
-    fireEvent.click(toolbarEntry);
+    expect(within(main).queryByRole('button', { name: '任务树' })).toBeNull();
+    // 左栏入口负责切换，状态写同一份 navStore
+    fireEvent.click(screen.getByTestId('sidebar-entry-tree'));
     expect(useNavStore.getState().view).toBe('tree');
     expect(screen.getByTestId('sidebar-entry-tree')).toHaveAttribute('aria-current', 'page');
   });

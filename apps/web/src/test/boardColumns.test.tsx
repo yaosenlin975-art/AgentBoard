@@ -33,7 +33,7 @@ describe('看板列容器（grid 自适应）', () => {
   it('列数取当前列数组长度：4 列 → repeat(4, minmax(280px, 1fr))', async () => {
     useAppStore.setState({ workspaceId: 'ws-1', selectedLabelsByWorkspace: {} });
     mockBoardData();
-    renderBoard(<Board layout="board" />);
+    renderBoard(<Board />);
 
     const container = await screen.findByTestId('board-columns');
     // STATUS-3-UI：列由 workspace_status 派生，未 mock 接口时用五条内置兜底
@@ -50,7 +50,7 @@ describe('看板列容器（grid 自适应）', () => {
   it('列不再写死宽度（无 w-64 / shrink-0），宽度由 grid 轨道决定', async () => {
     useAppStore.setState({ workspaceId: 'ws-1', selectedLabelsByWorkspace: {} });
     mockBoardData();
-    renderBoard(<Board layout="board" />);
+    renderBoard(<Board />);
 
     const column = await screen.findByTestId('column-待规划');
     expect(column.className).not.toContain('w-64');

@@ -41,7 +41,7 @@ describe('keycap（UNSLOP-5）', () => {
   });
 
   it('知识库搜索：回车提示用键帽（不再混排进文案）', () => {
-    render(withClient(<KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />));
+    render(withClient(<KnowledgePanel workspaceId="ws-1" />));
     const hint = screen.getByTestId('knowledge-search-hint');
     const kbd = hint.querySelector('kbd');
     expect(kbd).not.toBeNull();
@@ -63,7 +63,7 @@ describe('keycap（UNSLOP-5）', () => {
 
 describe('嵌套圆角（UNSLOP-5：内 = 外 − 间距，且 ≥4）', () => {
   it('面板 16px / 控件 8px 分层（列表容器 rounded-2xl，输入与按钮 rounded-lg）', () => {
-    render(withClient(<KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />));
+    render(withClient(<KnowledgePanel workspaceId="ws-1" />));
     const list = screen.getByTestId('knowledge-skeleton').closest('ul');
     expect(list?.className).toContain('rounded-2xl');
     expect(screen.getByLabelText('搜索知识').className).toContain('rounded-lg');
@@ -81,7 +81,7 @@ describe('嵌套圆角（UNSLOP-5：内 = 外 − 间距，且 ≥4）', () => {
 describe('骨架屏动画定性（UNSLOP-5）', () => {
   it('animate-pulse 只用于真实加载中的骨架屏', () => {
     server.use(http.get('/api/knowledge/pages', () => new Promise(() => {})));
-    render(withClient(<KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />));
+    render(withClient(<KnowledgePanel workspaceId="ws-1" />));
     const skeleton = screen.getByTestId('knowledge-skeleton');
     expect(skeleton.querySelectorAll('.animate-pulse')).toHaveLength(3);
     // 页面其它位置不得再有循环动画

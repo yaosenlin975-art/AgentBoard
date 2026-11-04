@@ -2,7 +2,7 @@
  * 工作区日志视图（LOG03 / LOG-VIEW）。
  *
  * 原为浮窗内容（`<ChangelogPanel workspaceId onClose />` 由 Modal 包裹）；现在作为与平铺看板/任务树/知识库同级的
- * 主区域视图挂载：顶部与其它视图共用 ViewToolbarShell + ViewSwitcher（含「日志」按钮），主体左右两栏 ——
+ * 主区域视图挂载：顶部 ViewToolbarShell（FIX-2 后不再有 ViewSwitcher，视图切换只走左栏五入口），主体左右两栏 ——
  * 左栏是按 `occurred_at DESC, id DESC` 倒序、按本地日期分组的日志列表，右栏是选中日志的详情（Markdown 正文 + 编辑/删除），
  * 默认选中最新一条；≤900px 由 `min-[901px]:` 断点退化为上下堆叠（列表在上、详情在下）。
  *
@@ -16,7 +16,6 @@ import { ApiError } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
 import { MarkdownView } from '../../lib/markdown';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
-import { ViewSwitcher, type BoardLayout } from '../ui/ViewSwitcher';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { usePrefersReducedMotion } from '../overlay/panelMotion';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
@@ -42,28 +41,14 @@ export interface ChangelogPanelProps {
   workspaceId: string;
   /** 删除成功后回调（兼容原先浮窗开合；视图形态下可省略） */
   onClose?: () => void;
-  layout?: BoardLayout;
-  onLayout?: (layout: BoardLayout) => void;
-  onToggleKnowledge?: () => void;
-  logOpen?: boolean;
-  onToggleLog?: () => void;
+
 }
 
 export function ChangelogPanel({
   workspaceId,
   onClose,
-  layout,
-  onLayout,
-  onToggleKnowledge,
-  logOpen = true,
-  onToggleLog,
+
 }: ChangelogPanelProps) {
-  const [internalLayout, setInternalLayout] = useState<BoardLayout>(layout ?? 'board');
-  const currentLayout: BoardLayout = layout ?? internalLayout;
-  const changeLayout = (next: BoardLayout): void => {
-    setInternalLayout(next);
-    onLayout?.(next);
-  };
 
   return (
     <section
@@ -74,13 +59,6 @@ export function ChangelogPanel({
       {/* 与平铺看板 / 知识库共用同一外壳，保证切视图时 tab 组位置恒定（TOPBAR-TABS） */}
       <ViewToolbarShell>
         <div data-testid="log-toolbar-controls" className="flex flex-wrap items-center gap-1">
-          <ViewSwitcher
-            layout={currentLayout}
-            onLayout={changeLayout}
-            knowledgeOpen={false}
-            onToggleKnowledge={onToggleKnowledge ?? (() => undefined)}
-            {...(onToggleLog === undefined ? {} : { logOpen, onToggleLog })}
-          />
         </div>
       </ViewToolbarShell>
 

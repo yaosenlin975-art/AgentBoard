@@ -44,14 +44,14 @@ function tabShell(wrapperTestId: string): TabShell {
 
 function renderBoard(): TabShell {
   render(withClient(
-    <Board layout="board" onLayout={() => undefined} knowledgeOpen={false} onToggleKnowledge={() => undefined} />,
+    <Board />,
   ));
   return tabShell('board-toolbar-controls');
 }
 
 function renderKnowledge(): TabShell {
   render(withClient(
-    <KnowledgePanel workspaceId="ws-1" layout="board" onLayout={() => undefined} onToggleKnowledge={() => undefined} />,
+    <KnowledgePanel workspaceId="ws-1" />,
   ));
   return tabShell('knowledge-toolbar-controls');
 }

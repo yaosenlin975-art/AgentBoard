@@ -38,7 +38,7 @@ describe('看板列容器（5 列）', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <Board layout="board" />
+        <Board />
       </QueryClientProvider>,
     );
 
