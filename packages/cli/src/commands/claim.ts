@@ -2,6 +2,7 @@ import type { Issue, IssueComment, Workspace, TaskKnowledge } from '@agentboard/
 import { request } from '../api.js';
 import { saveClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
+import { normalizeIssueRef } from '../issueRef.js';
 import { commentLines, issueLines } from '../render.js';
 
 /** 原子领取；409（已被占用）由 index.ts 统一映射退出码 2 */
@@ -10,6 +11,9 @@ export async function claim(
   id: string,
   opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string } = {},
 ): Promise<void> {
+  // CLI-02：允许 ≥8 位前缀（完整 id 零成本透传）
+  const target = await normalizeIssueRef(ctx, id);
+  const issueId = target.id;
   const body: { agent_id: string; knowledge_enabled?: false; knowledge_query?: string; workspace_id?: string } = {
     agent_id: ctx.agentId,
   };
@@ -17,11 +21,11 @@ export async function claim(
   if (opts.knowledgeQuery) body.knowledge_query = opts.knowledgeQuery;
   if (opts.requestId !== undefined) {
     // 服务端要求幂等 owner 操作提供 workspace_id；只在显式传 --request-id 时才多这一次解析
-    const target = await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(id)}`);
-    body.workspace_id = target.workspace_id;
+    body.workspace_id = target.issue?.workspace_id
+      ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
   }
   const issue = await request<Issue & { knowledge?: TaskKnowledge; claim_fence?: number }>(
-    ctx.base, 'POST', `/api/issues/${encodeURIComponent(id)}/claim`, body, opts.requestId,
+    ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/claim`, body, opts.requestId,
   );
   // BORROW-0.3：领取成功即持久化 fence，done/fail 自动携带；失败仅告警不影响领取
   if (typeof issue.claim_fence === 'number') {
@@ -39,7 +43,7 @@ export async function claim(
   const comments = await request<IssueComment[]>(
     ctx.base,
     'GET',
-    `/api/issues/${encodeURIComponent(id)}/comments`,
+    `/api/issues/${encodeURIComponent(issueId)}/comments`,
   );
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
   const ws = spaces.find((s) => s.id === issue.workspace_id);

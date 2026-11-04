@@ -201,8 +201,10 @@ describe('版本', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'list-spaces', '--current'], t.io);
     expect(code).toBe(1);
-    expect(t.err()).toContain('--workspace');
-    expect(t.out()).toBe('');
+    // CLI-04：--json 时错误写 stdout 的 {error:{code,message}}，stderr 保持空
+    const errBody = JSON.parse(t.out()) as { error: { code: string; message: string } };
+    expect(errBody.error.message).toContain('--workspace');
+    expect(t.err()).toBe('');
   });
 
   it('0.x minor 不同 → 警告；major 不同 → 警告', async () => {
@@ -387,7 +389,7 @@ describe('list-tasks', () => {
 });
 
 describe('show', () => {
-  /** show 的 handler：默认走 consume 主路径（c2 为新评论）；degrade 时 consume 404 → GET 降级 */
+  /** show 的 handler：默认 GET comments；--mark-read 才 POST consume（c2 为新评论）；degrade 时 consume 404 → GET 降级 */
   function mockShow(opts: { degrade?: boolean } = {}): void {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
@@ -401,14 +403,14 @@ describe('show', () => {
     };
   }
 
-  it('POST consume 标注新评论：GET issue + POST consume；文本模式新评论行 [新] 前缀', async () => {
+  it('默认纯读：GET issue + GET comments，不推进已读游标、无 [新] 前缀', async () => {
     mockShow();
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'show', 'iss1'], t.io);
     expect(code).toBe(0);
     expect(calls).toEqual([
       { method: 'GET', url: '/api/issues/iss1', body: undefined },
-      { method: 'POST', url: '/api/issues/iss1/comments/consume', body: undefined },
+      { method: 'GET', url: '/api/issues/iss1/comments', body: undefined },
     ]);
     const out = t.out();
     expect(out).toContain('标题: 实现登录');
@@ -417,6 +419,20 @@ describe('show', () => {
     expect(out).toContain('占用者: （未占用）');
     expect(out).toContain('评论（2）:');
     expect(out).toContain('- [user] 开工前注意兼容旧数据');
+    expect(out).toContain('- [agent:codebuddy] 已完成解析层');
+    expect(out).not.toContain('[新]');
+  });
+
+  it('--mark-read：POST consume 标注新评论，文本模式 [新] 前缀', async () => {
+    mockShow();
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'show', 'iss1', '--mark-read'], t.io);
+    expect(code).toBe(0);
+    expect(calls).toEqual([
+      { method: 'GET', url: '/api/issues/iss1', body: undefined },
+      { method: 'POST', url: '/api/issues/iss1/comments/consume', body: undefined },
+    ]);
+    const out = t.out();
     expect(out).toContain('[新] - [agent:codebuddy] 已完成解析层');
     expect(out).not.toContain('[新] - [user]');
   });
@@ -428,7 +444,7 @@ describe('show', () => {
     };
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
-      if (m === 'POST' && u === '/api/issues/iss1/comments/consume') return { status: 200, body: { comments: [withImage], new_comment_ids: [] } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: [withImage] };
       return undefined;
     };
     const t = makeIo();
@@ -437,10 +453,23 @@ describe('show', () => {
     expect(t.out()).toContain('图片（交付未验证）: screen.png (image/png, 123 bytes) /api/issues/iss1/attachments/a1');
   });
 
-  it('--json：issue 响应 + comments 内嵌，每条评论带 is_new 布尔', async () => {
+  it('--json 默认纯读：issue 响应 + comments 内嵌，不带 is_new', async () => {
     mockShow();
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1'], t.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(t.out()) as {
+      id: string;
+      comments: Array<{ id: string; is_new?: boolean }>;
+    };
+    expect(parsed.id).toBe('iss1');
+    expect(parsed.comments).toEqual(COMMENTS);
+  });
+
+  it('--json --mark-read：每条评论带 is_new 布尔', async () => {
+    mockShow();
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1', '--mark-read'], t.io);
     expect(code).toBe(0);
     const parsed = JSON.parse(t.out()) as {
       id: string;
@@ -453,10 +482,10 @@ describe('show', () => {
     ]);
   });
 
-  it('consume 端点不可用（旧服务端 404）→ 降级 GET comments，不标注 is_new', async () => {
+  it('--mark-read + consume 端点不可用（旧服务端 404）→ 降级 GET comments，不标注 is_new', async () => {
     mockShow({ degrade: true });
     const t = makeIo();
-    const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1'], t.io);
+    const code = await main(['node', 'kb', '--server', base, '--json', 'show', 'iss1', '--mark-read'], t.io);
     expect(code).toBe(0);
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
       'GET /api/issues/iss1',
@@ -530,7 +559,7 @@ describe('claim', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'claim', 'iss1'], t.io);
     expect(code).toBe(2);
-    expect(t.err()).toBe('已被 board-web-accounts 占用；先 release 或换卡，勿重复 claim\n');
+    expect(t.err()).toBe('已被 board-web-accounts 占用；由占用者 done/fail 释放后重试，勿重复 claim\n');
   });
 
   it('CLAIM-MSG 状态不可领取：点明无人占用与当前状态，退出码 2', async () => {

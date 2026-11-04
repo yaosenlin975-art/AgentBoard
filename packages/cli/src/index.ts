@@ -3,7 +3,8 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
-import { DEFAULT_BASE, CliHttpError, normalizeBase, ServerUnreachableError } from './api.js';
+import { normalizeBase } from './api.js';
+import { toExit } from './errors.js';
 import { processIo, type Ctx, type Io } from './io.js';
 import { CLI_VERSION } from './version.js';
 import { listSpaces } from './commands/listSpaces.js';
@@ -32,41 +33,12 @@ const EXIT_CODE_HELP = `
   0  成功（--help / --version 同样 0）
   1  参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动任何数据
   2  冲突：占用（已被 <agent> 占用 / 未被占用 / 非当前占用者）、状态不可领取、知识页 revision 冲突、
-     幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）；命令未改动数据，按提示处置后重试
+     幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）、任务 id 前缀多命中；命令未改动数据，按提示处置后重试
   3  kb dep 专用：依赖参数错误（自环 / 跨工作区 / VALIDATION_ERROR）
-  4  kb dep 专用：任务或依赖不存在
-约定：原因一律写 stderr（单行可读）；--json 只改 stdout 结构，不改退出码。
+  4  kb dep 专用：依赖边不存在
+约定：原因一律写 stderr（单行可读）；--json 时错误写 stdout 的 {"error":{"code","message","details"}}，退出码不变。
 `;
 
-
-/** 错误 → (stderr, 退出码)：连接拒绝 1；409 冲突 2；其余 1 */
-export function toExit(err: unknown, io: Io): number {
-  if (err instanceof ServerUnreachableError) {
-    io.writeErr(`${err.message}\n`);
-    return 1;
-  }
-  if (err instanceof CliHttpError) {
-    if (err.status === 409) {
-      // 服务端已给出自解释文案的 409 原样透传（删除被占用/含子任务等），不再包装成「已被占用（…）」
-      const raw = err.code.startsWith('KNOWLEDGE_') || err.code.startsWith('CHANGELOG_')
-        || err.code === 'CONFLICT' || err.code === 'IDEMPOTENCY_KEY_REUSED'
-        // CLAIM-MSG：占用冲突与「状态不可领取」自带自解释文案，原样透传
-        || err.code === 'ISSUE_CLAIMED' || err.code === 'ISSUE_STATUS_NOT_CLAIMABLE' || err.code === 'NOT_TASK_OWNER'
-        // BORROW-0.3：fence 过期自带「重新 claim」指引，原样透传
-        || err.code === 'STALE_FENCE';
-      // CLI-CRASH：done/fail 报「未被占用」时给可操作下一步，而不是让人卡在最后一步
-      const hint = err.message === '未被占用'
-        ? '未被占用：如需推进请先 kb claim，或使用 kb close（待验收 → 已关闭）\n'
-        : raw ? `${err.message}\n` : err.message === '已被占用' ? '已被占用\n' : `已被占用（${err.message}）\n`;
-      io.writeErr(hint);
-      return 2;
-    }
-    io.writeErr(`${err.message}\n`);
-    return 1;
-  }
-  io.writeErr(`${err instanceof Error ? err.message : String(err)}\n`);
-  return 1;
-}
 
 function makeCtx(program: Command, io: Io): Ctx {
   const opts = program.opts<{ server?: string; json?: boolean }>();
@@ -112,14 +84,22 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('show')
-    .description('任务完整字段 + 评论列表（含作者）')
-    .argument('<issue-id>', '任务 id')
-    .action(async (id: string) => show(makeCtx(program, io), id));
+    .description('任务完整字段 + 评论列表（含作者）；默认只读，不推进评论已读游标')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--mark-read', '把本次读到的评论标为已读（推进本 agent 的已读游标）；缺省不推进')
+    .addHelpText('after', `
+示例：
+  kb show 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
+  kb show 0f6ba9ab                      # ≥8 位前缀（唯一命中时解析为完整 id）
+  kb show 0f6ba9ab --mark-read          # 明确要求推进评论已读游标
+退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位；2 前缀命中多张卡（会列出候选 id）
+`)
+    .action(async (id: string, opts: { markRead?: boolean }) => show(makeCtx(program, io), id, { markRead: opts.markRead === true }));
 
   program
     .command('claim')
     .description('原子领取任务（409 → 已被占用，退出码 2）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--no-knowledge', '关闭任务知识检索')
     .option('--knowledge-query <query>', '自定义知识查询')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
@@ -127,7 +107,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 说明：占用冲突（已被 <agent> 占用）与状态不可领取（无人占用但状态不是待规划/进行中，如待验收）是两条不同文案。
 示例：
   kb claim 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
-  kb claim 0f6ba9ab-… --no-knowledge
+  kb claim 0f6ba9ab --no-knowledge
 退出码：0 成功；2 已被 <agent> 占用 / 状态不可领取（当前=待验收…）/ 前置未解除（DEP-1）；1 任务不存在或参数错误
 `)
     .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string }) => claim(makeCtx(program, io), id, opts));
@@ -135,7 +115,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   program
     .command('comment')
     .description('写评论，可附最多 5 张 PNG/JPEG/WebP 图片（agent 身份 KB_AGENT 优先，作者记为 agent:<id>）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .argument('[text...]', '评论内容（多词以空格合并）')
     .option('--stdin', '从标准输入读取全部内容作为评论')
     .option('--image <path>', '附加图片文件（最多 5 次）', (value: string, previous: string[] = []) => [...previous, value], [])
@@ -146,7 +126,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   program
     .command('done')
     .description('完成任务 → 待验收（notes 落评论流）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--notes <text>', '完成备注（单行；多行或含 "- " 开头的行请用 --notes-stdin）')
     .option('--notes-stdin', '从标准输入读取完成备注（多行安全）')
     .option(
@@ -159,7 +139,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .addHelpText('after', `
 示例：
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
-  kb done 0f6ba9ab-… --scope packages/cli/src/index.ts --scope Docs/api.md
+  kb done 0f6ba9ab --scope packages/cli/src/index.ts --scope Docs/api.md
 退出码：0 成功（状态 → 待验收）；2 未被占用 / 非当前占用者 / 占用已改变；1 参数错误或任务不存在
 GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
 `)
@@ -168,25 +148,25 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
 
   program
     .command('close')
-    .description('关闭任务：待验收 → 已关闭（占用中会 409，先 release）')
-    .argument('<issue-id>', '任务 id')
+    .description('关闭任务：待验收 → 已关闭（占用中会 409：由占用者 done/fail 释放后再关）')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab-… --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（占用中/状态不允许）；1 其它错误（404 等）')
+    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（占用中/状态不允许）；1 其它错误（404 等）')
     .action(async (id: string, opts: { requestId?: string }) => close(makeCtx(program, io), id, { requestId: opts.requestId }));
 
   program
     .command('reopen')
     .description('重开任务：已关闭/已废弃 → 指定状态（默认「待规划」）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--to <状态>', '目标状态名（须是本工作区已定义状态，含自定义状态）', '待规划')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb reopen 0f6ba9ab-…                  # 回到「待规划」\n  kb reopen 0f6ba9ab-… --to 进行中\n退出码：0 成功；2 冲突（占用中/当前不是关闭态）；1 其它错误（400 目标状态非法 / 404）')
+    .addHelpText('after', '\n示例：\n  kb reopen 0f6ba9ab                  # 回到「待规划」\n  kb reopen 0f6ba9ab --to 进行中\n退出码：0 成功；2 冲突（占用中/当前不是关闭态）；1 其它错误（400 目标状态非法 / 404）')
     .action(async (id: string, opts: { to?: string; requestId?: string }) => reopen(makeCtx(program, io), id, { to: opts.to, requestId: opts.requestId }));
 
   program
     .command('update')
     .description('修改任务字段（不含状态；状态请用 claim/done/close/reopen/fail）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--title <text>', '标题')
     .option('--description <text>', '描述（短文本）')
     .option('--description-stdin', '从标准输入读取描述（长文本/多行）')
@@ -195,10 +175,10 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
     .option('--due-date <YYYY-MM-DD>', '截止日期')
     .option('--due-time <HH:mm>', '截止时间（24h）')
     .option('--clear-due', '清空截止日期与时间')
-    .option('--parent <issue-id>', '新父任务')
+    .option('--parent <issue-id>', '新父任务：完整 UUID，或 ≥8 位唯一前缀')
     .option('--clear-root', '移动为根任务（清空父任务）')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab-… --title "修好的标题"\n  cat spec.md | kb update 0f6ba9ab-… --description-stdin\n  kb update 0f6ba9ab-… --priority 高 --due-date 2026-11-10 --due-time 14:30\n退出码：0 成功；1 其它错误（400 字段非法 / 404 任务不存在；占用中改状态会 409，本命令不含状态）')
+    .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab --title "修好的标题"\n  Get-Content spec.md -Raw | kb update 0f6ba9ab --description-stdin\n  kb update 0f6ba9ab --priority 高 --due-date 2026-11-10 --due-time 14:30\n退出码：0 成功；1 其它错误（400 字段非法 / 404 任务不存在；占用中改状态会 409，本命令不含状态）')
     .action(async (id: string, opts: { title?: string; description?: string; descriptionStdin?: boolean; priority?: string; labels?: string; dueDate?: string; dueTime?: string; clearDue?: boolean; parent?: string; clearRoot?: boolean; requestId?: string }) =>
       update(makeCtx(program, io), id, {
         title: opts.title, description: opts.description, descriptionStdin: opts.descriptionStdin,
@@ -209,12 +189,12 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
   program
     .command('delete-issue')
     .description('删除任务（不可逆；占用中或含子任务会被拒；必须显式 --yes）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--yes', '确认删除；缺省时只打印标题/状态并以非 0 退出，不发请求')
     .addHelpText('after', `
 示例：
   kb delete-issue 0f6ba9ab-996d-4af5-b0cd-d9208c44936f            # 只回显标题/状态，exit 1
-  kb delete-issue 0f6ba9ab-… --yes                                 # 真删（不可恢复）
+  kb delete-issue 0f6ba9ab --yes                                 # 真删（不可恢复）
 退出码：0 成功；1 缺 --yes（仅回显，不发请求）/ 参数错误 / 任务不存在；2 占用中 / 含子任务
 `)
     .action(async (id: string, opts: { yes?: boolean }) =>
@@ -223,7 +203,7 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
   program
     .command('fail')
     .description('标记失败 → 待规划（reason 落评论流）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .requiredOption('--reason <text>', '失败原因')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .action(async (id: string, opts: { reason: string; requestId?: string }) =>
@@ -260,7 +240,7 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
     .option('-d, --description <text>', '任务描述（含空格用引号；多行走 UI 或 API）')
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
-    .option('--parent <issue-id>', '父任务 id')
+    .option('--parent <issue-id>', '父任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .action(async (workspace: string, title: string | undefined, opts: { titleStdin?: boolean; description?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
@@ -279,8 +259,8 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
   program
     .command('move-issue')
     .description('移动任务到父任务或恢复为根任务')
-    .argument('<issue-id>', '任务 id')
-    .option('--parent <issue-id>', '新父任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--parent <issue-id>', '新父任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--root', '移动为根任务')
     .option('--expected-updated-at <timestamp>', 'CAS 版本；重试时复用原值')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
@@ -302,18 +282,18 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
   const dep = program.command('dep').description('任务依赖（前置 / 被阻塞）：ls 列出、add 建边、rm 删边');
   dep.command('ls')
     .description('列出任务的前置与被阻塞者（含状态与解除标记）')
-    .argument('<issue-id>', '任务 id')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .action(async (id: string) => depRun(ctx => depLs(ctx, id))());
   dep.command('add')
     .description('新增前置：blocker 解除（待验收/已关闭）后本卡才可 claim；--type 建标注边（related/duplicate 不阻塞领取）')
-    .argument('<issue-id>', '被阻塞的任务 id')
-    .argument('<blocker-id>', '前置任务 id')
+    .argument('<issue-id>', '被阻塞的任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .argument('<blocker-id>', '前置任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--type <type>', '依赖类型：blocks（缺省，阻塞）| related | duplicate')
     .action(async (id: string, blockerId: string, opts: { type?: string }) => depRun(ctx => depAdd(ctx, id, blockerId, opts))());
   dep.command('rm')
     .description('移除前置')
-    .argument('<issue-id>', '被阻塞的任务 id')
-    .argument('<blocker-id>', '前置任务 id')
+    .argument('<issue-id>', '被阻塞的任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .argument('<blocker-id>', '前置任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .action(async (id: string, blockerId: string) => depRun(ctx => depRemove(ctx, id, blockerId))());
 
   // 状态字典（STATUS-2）：ls / add / rm --migrate-to
@@ -360,7 +340,7 @@ GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不�
     return 0;
   } catch (err) {
     if (err instanceof CommanderError) return err.exitCode;
-    return toExit(err, io);
+    return toExit(err, io, program.opts<{ json?: boolean }>().json === true);
   }
 }
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Issue } from '@agentboard/shared';
 import { request, requestWithMeta } from '../api.js';
 import type { Ctx } from '../io.js';
+import { normalizeIssueIdArg } from '../issueRef.js';
 import { resolveWorkspaceId } from '../workspace.js';
 
 /**
@@ -113,7 +114,7 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   if (args.labels !== undefined) {
     body.labels = parseLabels(args.labels);
   }
-  if (args.parentIssueId !== undefined) body.parent_issue_id = args.parentIssueId;
+  if (args.parentIssueId !== undefined) body.parent_issue_id = await normalizeIssueIdArg(ctx, args.parentIssueId);
   if (args.due !== undefined) {
     const due = parseDue(args.due);
     body.due_date = due.due_date;

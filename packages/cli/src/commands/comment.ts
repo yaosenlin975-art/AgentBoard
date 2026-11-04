@@ -4,6 +4,7 @@ import { basename } from 'node:path';
 import type { IssueComment } from '@agentboard/shared';
 import { request, requestBinary } from '../api.js';
 import type { Ctx } from '../io.js';
+import { normalizeIssueRef } from '../issueRef.js';
 
 export interface CommentArgs {
   /** 位置参数收集的评论文本片段（多词以空格合并） */
@@ -40,9 +41,12 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
   }
   const attachments: string[] = [];
   let workspaceId: string | undefined;
+  // CLI-02：允许 ≥8 位前缀；后续接口都用解析后的真实 id
+  const target = await normalizeIssueRef(ctx, id);
+  const issueId = target.id;
   if (imagePaths.length > 0) {
-    const issue = await request<IssueWorkspace>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(id)}`);
-    workspaceId = issue.workspace_id;
+    workspaceId = target.issue?.workspace_id
+      ?? (await request<IssueWorkspace>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
     for (const path of imagePaths) {
       const bytes = await readFile(path);
       if (bytes.length > 10 * 1024 * 1024) throw new Error(`图片超过 10 MiB：${basename(path)}`);
@@ -61,7 +65,7 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
   const res = await request<CommentResult>(
     ctx.base,
     'POST',
-    `/api/issues/${encodeURIComponent(id)}/comments`,
+    `/api/issues/${encodeURIComponent(issueId)}/comments`,
     {
       content: content ?? '',
       agent_id: ctx.agentId,

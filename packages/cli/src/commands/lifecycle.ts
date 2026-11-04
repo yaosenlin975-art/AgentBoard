@@ -1,7 +1,7 @@
 /**
  * CLI-CLOSE：`kb close` / `kb reopen` / `kb update` 三条收尾命令。
  *
- * - close：待验收 → 已关闭（占用中 409，先 release；已关闭幂等返回）。
+ * - close：待验收 → 已关闭（占用中 409：由占用者 done/fail 释放后再关；已关闭幂等返回）。
  * - reopen：已关闭/已废弃 → `--to`（默认待规划）；目标必须是本工作区已定义状态。
  * - update：改 title/description/priority/labels/due_date/due_time/parent；**不含 status**（流转走 close/reopen/done/fail）。
  *
@@ -11,6 +11,7 @@ import type { Issue } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
+import { normalizeIssueIdArg, normalizeIssueRef } from '../issueRef.js';
 import { issueLines } from '../render.js';
 
 export interface RequestIdArg { requestId?: string }
@@ -28,7 +29,9 @@ const mapConflict = (ctx: Ctx, error: unknown): never => {
 };
 
 export async function close(ctx: Ctx, id: string, args: RequestIdArg = {}): Promise<void> {
-  const issue = await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(id)}/close`, { agent_id: ctx.agentId }, args.requestId)
+  // CLI-02：允许 ≥8 位前缀
+  const target = await normalizeIssueRef(ctx, id);
+  const issue = await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(target.id)}/close`, { agent_id: ctx.agentId }, args.requestId)
     .catch(error => mapConflict(ctx, error));
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
@@ -40,9 +43,11 @@ export async function close(ctx: Ctx, id: string, args: RequestIdArg = {}): Prom
 export interface ReopenArgs extends RequestIdArg { to?: string }
 
 export async function reopen(ctx: Ctx, id: string, args: ReopenArgs = {}): Promise<void> {
+  // CLI-02：允许 ≥8 位前缀
+  const target = await normalizeIssueRef(ctx, id);
   const body: { agent_id: string; status?: string } = { agent_id: ctx.agentId };
   if (args.to !== undefined) body.status = args.to;
-  const issue = await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(id)}/reopen`, body, args.requestId)
+  const issue = await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(target.id)}/reopen`, body, args.requestId)
     .catch(error => mapConflict(ctx, error));
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
@@ -67,6 +72,8 @@ export interface UpdateArgs extends RequestIdArg {
 }
 
 export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promise<void> {
+  // CLI-02：允许 ≥8 位前缀（位置参数与 --parent 都解析）
+  const target = await normalizeIssueRef(ctx, id);
   const patch: Record<string, unknown> = {};
   if (args.title !== undefined) patch.title = args.title;
   if (args.descriptionStdin === true) {
@@ -86,12 +93,12 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
     if (args.dueTime !== undefined) patch.due_time = args.dueTime;
   }
   if (args.clearParent === true) patch.parent_issue_id = null;
-  else if (args.parent !== undefined) patch.parent_issue_id = args.parent;
+  else if (args.parent !== undefined) patch.parent_issue_id = await normalizeIssueIdArg(ctx, args.parent);
 
   if (Object.keys(patch).length === 0) {
     throw new Error('至少提供一个要修改的字段：--title / --description / --description-stdin / --priority / --labels / --due-date / --due-time / --parent / --clear-due / --clear-root');
   }
-  const issue = await request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId)
+  const issue = await request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(target.id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId)
     .catch(error => mapConflict(ctx, error));
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);

@@ -49,6 +49,26 @@ function fail(message: string): never { throw new Error(message); }
 // C：知识页分类与落地状态（服务端 KB-MODEL 已支持；legacy 只由历史数据产生，不接受 CLI 写入）
 const CATEGORIES = ['design', 'solved', 'pinned', 'open'] as const;
 const LANDED_STATES = ['landed', 'partial', 'proposed'] as const;
+const LINK_FORMATS = ['token', 'markdown', 'plain'] as const;
+
+function validateLimit(value: string, max = 100): string {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > max) {
+    fail(`--limit 必须是 1–${max} 的整数（当前：${preview(value)}）`);
+  }
+  return String(n);
+}
+function validateOffset(value: string): string {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) fail(`--offset 必须是 ≥0 的整数（当前：${preview(value)}）`);
+  return String(n);
+}
+function validateFormat(value: string): string {
+  if (!(LINK_FORMATS as readonly string[]).includes(value)) {
+    fail(`--format 只能是 ${LINK_FORMATS.join(' | ')}（当前：${preview(value)}）；省略时为 token`);
+  }
+  return value;
+}
 function validateCategory(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (!(CATEGORIES as readonly string[]).includes(value)) fail(`--category 只能是 ${CATEGORIES.join(" | ")}（当前：${preview(value)}）`);
@@ -274,7 +294,7 @@ KB-PAGE-2b：只读反查「哪些知识页的 sources 引用了这个文件」�
 
 const LIST_HELP = `
 必填：--scope <workspace|common>（workspace 范围缺省按 cwd 解析，可用 --workspace 覆盖）
-可选：--status active|archived|deleted|all（默认 active）、--offset <n>（默认 0）、--limit <n>（默认 20，上限 100）、--include-expired
+可选：--status active|archived|deleted|all（默认 active）、--offset <n>（默认 0，≥0 整数）、--limit <n>（默认 20，1–100 整数）、--include-expired
 输出：每页一行「<id> [scope] rev:<n> <title>」；有下一页时追加「下一页：--offset <n>」；--json 打印服务端原响应
 示例：
   kb knowledge list --scope common --status active --limit 50
@@ -287,7 +307,7 @@ ${GUIDE_POINTER}
 
 const SEARCH_HELP = `
 必填：<query>（1–500 字符）
-可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope=workspace 时缺省按 cwd 解析）、--limit <n>（默认 5）
+可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope=workspace 时缺省按 cwd 解析）、--limit <n>（默认 5，1–100 整数）
 输出：命中页列表（每行 id/scope/revision/title + 摘要）；--json 打印服务端原响应
 示例：
   kb knowledge search '缓存' --scope both --limit 5
@@ -311,14 +331,14 @@ KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 re
 
 const LINK_HELP = `
 KB-PAGE-2：产出知识页的引用串（权威标识是 page.id，slug 只作输入别名）。
-必填：<page-id|slug> --scope <workspace|common>；--format token|markdown|plain（默认 token）
+必填：<page-id|slug> --scope <workspace|common>；--format token|markdown|plain（默认 token，其它值本地报错不请求）
 输出：token = knowledge:<uuid>；markdown = [标题](knowledge:<uuid>)；plain = 标题 + 空格 + token
 agent 对外约定（A8）：
   Markdown：[知识卡：{title}](knowledge:{id})
   纯文本：知识卡《{title}》 knowledge:{id} · rev:{n}
   禁止用 knowledge:<slug> 或 Docs 文件路径当知识引用；slug 只作输入别名。
 示例：
-  kb knowledge link 3f8da34e-… --scope common
+  kb knowledge link 3f8da34e --scope common
   kb knowledge link cache-policy --scope workspace --format markdown
   kb knowledge link 缓存策略 --scope workspace --format plain
 `;
@@ -337,7 +357,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
 `);
   knowledge.command('search <query>').description('按文本检索知识页（默认 both）').option('--scope <scope>', 'workspace|common|both', 'both').option('--workspace <id|名>').option('--limit <n>', '结果数量', '5')
     .addHelpText('after', SEARCH_HELP)
-    .action(async (q: string, opts: ScopeOptions & { limit: string }) => { const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/search?${query({ ...await scopeFor(ctx, opts, true), q, limit: opts.limit })}`)); });
+    .action(async (q: string, opts: ScopeOptions & { limit: string }) => { const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/search?${query({ ...await scopeFor(ctx, opts, true), q, limit: validateLimit(opts.limit) })}`)); });
   const scoped = (command: Command) => command.requiredOption('--scope <scope>', 'workspace|common').option('--workspace <id|名>');
   // KB-PAGE-2：统一 resolve（四态退出码固定：0 / 1(404,410) / 2(409,403)）
   const resolveExit = (error: unknown): number => {
@@ -371,11 +391,12 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .addHelpText('after', LINK_HELP)
     .action(async (refOrId: string, opts: ScopeOptions & { format: string }) => {
       const ctx = context();
+      const format = validateFormat(opts.format);
       try {
         const scope = await scopeFor(ctx, opts, true);
         const res = await request<{ id: string; title: string; link: { ref: string; markdown: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
         if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
-        const text = opts.format === 'markdown' ? res.link.markdown : opts.format === 'plain' ? `${res.title} ${res.link.ref}` : res.link.ref;
+        const text = format === 'markdown' ? res.link.markdown : format === 'plain' ? `${res.title} ${res.link.ref}` : res.link.ref;
         ctx.io.write(`${text}\n`);
       } catch (error) {
         ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -423,7 +444,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
   scoped(knowledge.command('list').description('列出知识页（默认只看 active）').option('--status <status>', 'active|archived|deleted|all', 'active').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量（上限 100）', '20').option('--include-expired', '包含过期页面'))
     .addHelpText('after', LIST_HELP)
     .action(async (opts: ScopeOptions & { status: string; offset: string; limit: string; includeExpired?: boolean }) => {
-      const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: opts.offset, limit: opts.limit, include_expired: String(!!opts.includeExpired) })}`));
+      const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: validateOffset(opts.offset), limit: validateLimit(opts.limit), include_expired: String(!!opts.includeExpired) })}`));
     });
 
   const contentOptions = (cmd: Command) => cmd
@@ -469,10 +490,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       validateCategory(opts.category); validateLanded(opts.landed);
       const ctx = context();
       const missing: string[] = [];
-      if (!opts.stdin) missing.push('--stdin（正文从 stdin 读，例：< body.md）');
-      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources 或 --sources-file（见 create --help 的字段说明）');
-      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence 或 --evidence-file（见 create --help 的字段说明）');
-      if (missing.length > 0) fail(`create 缺少必填项：\n  - ${missing.join('\n  - ')}\n完整示例：kb knowledge create --help`);
+      if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain design --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md#L1-L20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
       output(ctx, await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug }));
     });
   scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))

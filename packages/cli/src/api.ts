@@ -12,6 +12,8 @@ export class CliHttpError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /** CLI-04：服务端 error.details（如 resolve 的 candidates），供 --json 错误体透出 */
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = 'CliHttpError';
@@ -157,8 +159,9 @@ async function decodeResponse<T>(base: string, res: Response): Promise<T> {
     data = text;
   }
   if (!res.ok) {
-    const payload = data as { error?: { code?: unknown; message?: unknown } } | undefined;
+    const payload = data as { error?: { code?: unknown; message?: unknown; details?: unknown } } | undefined;
     const code = typeof payload?.error?.code === 'string' ? payload.error.code : 'UNKNOWN';
+    const details = payload?.error?.details;
     let message =
       typeof payload?.error?.message === 'string'
         ? payload.error.message
@@ -166,7 +169,7 @@ async function decodeResponse<T>(base: string, res: Response): Promise<T> {
           ? data
           : res.statusText;
     if (res.status === 401 && base !== DEFAULT_BASE) message = `${message}\n${DSH_SERVER_HINT}`;
-    throw new CliHttpError(res.status, code, message);
+    throw new CliHttpError(res.status, code, message, details);
   }
   return data as T;
 }
