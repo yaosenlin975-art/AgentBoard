@@ -41,8 +41,12 @@ export function normalizeNavView(value: unknown): NavView {
 export interface NavState {
   view: NavView;
   drawer: NavDrawer | null;
-  /** 切视图（五入口互斥）；非法值回落默认视图 */
+  /** NAV-CHAT-EXIT：进入整屏聊天前所在的视图（退出时回到它；null = 无来源 → board） */
+  chatOrigin: NavView | null;
+  /** 切视图（五入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
   setView: (view: NavView) => void;
+  /** NAV-CHAT-EXIT：退出整屏聊天，回到来源视图（来源缺失/非法 → board） */
+  exitChat: () => void;
   /** 打开滑出面板（与另一个面板互斥，不影响 view） */
   openDrawer: (drawer: NavDrawer) => void;
   closeDrawer: () => void;
@@ -50,12 +54,37 @@ export interface NavState {
   toggleDrawer: (drawer: NavDrawer) => void;
 }
 
+/** 退出聊天的合法来源：必须是 chat 之外的已知视图 */
+function normalizeChatOrigin(value: unknown): NavView | null {
+  return isNavView(value) && value !== 'chat' ? value : null;
+}
+
+/**
+ * NAV-CHAT-EXIT：是否「退出聊天」的快捷键。
+ * 绑定：`Esc` 与 `Ctrl/Cmd + [`（与浏览器「后退」同键位，符合整屏视图的直觉）；带 Alt 一律不算。
+ */
+export function isChatExitKey(event: { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean }): boolean {
+  if (event.altKey === true) return false;
+  if (event.key === 'Escape') return true;
+  return event.key === '[' && (event.ctrlKey === true || event.metaKey === true);
+}
+
 export const useNavStore = create<NavState>()(
   persist(
     (set) => ({
       view: DEFAULT_NAV_VIEW,
       drawer: null,
-      setView: (view) => set({ view: normalizeNavView(view) }),
+      chatOrigin: null,
+      setView: (view) =>
+        set((state) => {
+          const next = normalizeNavView(view);
+          if (next === 'chat') {
+            // 已在聊天里重复进入：保留最初的来源视图
+            return { view: next, chatOrigin: state.view === 'chat' ? state.chatOrigin : state.view };
+          }
+          return { view: next, chatOrigin: null };
+        }),
+      exitChat: () => set((state) => ({ view: normalizeChatOrigin(state.chatOrigin) ?? DEFAULT_NAV_VIEW, chatOrigin: null })),
       openDrawer: (drawer) => set({ drawer }),
       closeDrawer: () => set({ drawer: null }),
       toggleDrawer: (drawer) => set((state) => ({ drawer: state.drawer === drawer ? null : drawer })),
@@ -63,13 +92,14 @@ export const useNavStore = create<NavState>()(
     {
       name: NAV_STORAGE_KEY,
       version: 0,
-      // drawer 不持久化：刷新后不该自动弹出面板
+      // drawer / chatOrigin 都不持久化：刷新后不该自动弹出面板，从聊天退出也回 board
       partialize: (state) => ({ view: state.view }),
       merge: (persisted, current) => ({
         ...current,
         view: normalizeNavView((persisted as { view?: unknown } | undefined)?.view),
         // drawer 不持久化：恢复时一律收起（否则刷新会自动弹出面板）
         drawer: null,
+        chatOrigin: null,
       }),
     },
   ),

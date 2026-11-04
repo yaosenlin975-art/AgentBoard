@@ -6,6 +6,7 @@ import { api } from './api/client';
 import { useWsEvents } from './api/useWsEvents';
 import { useAppStore } from './state/appStore';
 import { useNavStore, type NavView } from './state/navStore';
+import { isChatExitKey } from './state/navStore';
 import { TopBar } from './components/topbar/TopBar';
 import { SideBar } from './components/shell/SideBar';
 import { DrawerPanel } from './components/drawer/DrawerPanel';
@@ -32,6 +33,30 @@ export default function App() {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const view = useNavStore((s) => s.view);
   const setView = useNavStore((s) => s.setView);
+  const chatOrigin = useNavStore((s) => s.chatOrigin);
+  const exitChat = useNavStore((s) => s.exitChat);
+  /** NAV-CHAT-EXIT：退出聊天的出口文案用来源视图名（来源缺失 → 看板） */
+  const chatExitTarget: NavView = chatOrigin ?? 'board';
+  const CHAT_EXIT_LABEL: Record<NavView, string> = {
+    board: '看板',
+    tree: '任务树',
+    knowledge: '知识库',
+    log: '日志',
+    chat: '聊天',
+  };
+
+  // NAV-CHAT-EXIT：整屏聊天下 Esc / Ctrl(Cmd)+[ 退出回来源视图；有弹窗时让弹窗先处理
+  useEffect(() => {
+    if (view !== 'chat') return undefined;
+    const onKey = (event: KeyboardEvent): void => {
+      if (!isChatExitKey(event)) return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      exitChat();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view, exitChat]);
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
     queryFn: () => api.get<Workspace[]>('/api/workspaces'),
@@ -84,8 +109,25 @@ export default function App() {
                   onToggleLog={() => toggleView('log')}
                 />
               ) : view === 'chat' ? (
-                <div data-testid="chat-view" className="h-full min-h-0">
-                  <ChatPanel />
+                <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
+                  {/* NAV-CHAT-EXIT：整屏聊天的退出出口（先记来源视图，退出回它；来源缺失回看板） */}
+                  <div className="flex shrink-0 items-center justify-between gap-2 border-b border-hairline bg-surface-card px-3 py-1.5">
+                    <button
+                      type="button"
+                      data-testid="chat-exit"
+                      aria-label={`退出聊天，返回${CHAT_EXIT_LABEL[chatExitTarget]}`}
+                      title={`返回${CHAT_EXIT_LABEL[chatExitTarget]}（Esc 或 Ctrl/⌘ + [）`}
+                      onClick={exitChat}
+                      className="inline-flex items-center gap-1 rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs text-ink transition-colors hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                    >
+                      <span aria-hidden="true">←</span>
+                      返回{CHAT_EXIT_LABEL[chatExitTarget]}
+                    </button>
+                    <span className="text-[11px] text-ink-3">Esc 或 Ctrl/⌘ + [ 退出聊天</span>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <ChatPanel />
+                  </div>
                 </div>
               ) : (
                 <Board

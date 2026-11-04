@@ -152,7 +152,7 @@ describe('持久化与兜底', () => {
 });
 
 describe('openChat 跨 store 联动（设计稿 §4 跳转联动）', () => {
-  it('[16] openChat：切 view=chat + 选中会话 + 关闭详情浮窗', () => {
+  it('[16] openChat：切 navStore 到 chat + 选中会话 + 关闭详情浮窗（S2b 整屏化）', () => {
     useNavStore.getState().setView('board');
     usePanelStore.getState().openDetail('issue-1');
     expect(usePanelStore.getState().view).toBe('detail');
@@ -160,11 +160,15 @@ describe('openChat 跨 store 联动（设计稿 §4 跳转联动）', () => {
     usePanelStore.getState().openChat('sess-1');
 
     expect(useNavStore.getState().view).toBe('chat');
+    // NAV-CHAT-EXIT：记住来源视图，退出聊天回看板
+    expect(useNavStore.getState().chatOrigin).toBe('board');
     expect(usePanelStore.getState()).toMatchObject({
-      view: 'chat',
+      // S2b：聊天整屏化 —— 面板视图清空收起，detail/ref 浮窗计数 0
+      view: null,
       sessionId: 'sess-1',
-      issueId: null, // 详情浮窗被关闭
+      issueId: null,
       refPanel: null,
+      rightOpen: false,
     });
   });
 
@@ -176,7 +180,11 @@ describe('openChat 跨 store 联动（设计稿 §4 跳转联动）', () => {
 
     expect(useNavStore.getState().view).toBe('chat');
     expect(usePanelStore.getState().refPanel).toBeNull();
-    expect(usePanelStore.getState().view).toBe('chat');
+    expect(usePanelStore.getState().view).toBeNull();
+    expect(usePanelStore.getState().rightOpen).toBe(false);
+    // 来源是知识库：退出聊天应回知识库
+    useNavStore.getState().exitChat();
+    expect(useNavStore.getState().view).toBe('knowledge');
   });
 
   it('[17] openDetail 不改导航视图（详情仍是浮窗）', () => {
