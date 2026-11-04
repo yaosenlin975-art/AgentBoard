@@ -20,6 +20,7 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
+import { MINIMAX_UNSUPPORTED_DETAIL, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
 
 // ACC-KB-A4：额度类型收敛到 packages/shared（此前 server 与 web 各抄一份字面量 union）。
 // 这里 re-export 保持既有 import 路径可用（`accountQuotas.test.ts` 等仍从本模块取类型）。
@@ -52,6 +53,11 @@ export interface QuotaServiceOptions {
   execFileImpl?: (file: string, args: string[]) => Promise<string>;
   /** ACC-CODEX-QUOTA-IMPL：注入 Codex 扫描（测试用；默认读 ~/.codex/sessions 最新 rollout） */
   codexScan?: () => Promise<QuotaResult>;
+  /**
+   * ACC-KB-B5S：平台账号侧五个来源（workbuddy / minimax / trae / qoder_cn / zcode）的凭据。
+   * 缺省或值为 null → 该来源如实返回 `unsupported` + `NO_CREDENTIAL`，绝不编造额度。
+   */
+  platformTokens?: Partial<Record<QuotaSourceId, string | null>>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
@@ -565,10 +571,60 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     return scan();
   }
 
+  /**
+   * ACC-KB-B5S S2/S3：平台账号侧五个来源。
+   * - 凭据由 `options.platformTokens` 注入；默认空 → 如实 `unsupported` + `NO_CREDENTIAL`，绝不编造额度；
+   * - MiniMax 需要会员签名头（yy / x-timestamp / x-signature），本机无材料 → 同样 `unsupported`；
+   * - 单来源失败不影响其它来源（沿用 load() 的逐来源缓存与退避）。
+   */
+  async function fetchPlatform(source: QuotaSourceId): Promise<QuotaResult> {
+    const token = options.platformTokens?.[source] ?? null;
+    if (token === null) {
+      const detail = source === 'minimax' ? MINIMAX_UNSUPPORTED_DETAIL : `本机未找到 ${source} 的额度凭据`;
+      return empty(source, 'unsupported', now(), 'NO_CREDENTIAL', detail);
+    }
+    const endpoints: Partial<Record<QuotaSourceId, { url: string; init: RequestInit }>> = {
+      trae: { url: 'https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage', init: { method: 'POST', headers: { 'Cloud-IDE-JWT': token, 'content-type': 'application/json' }, body: '{}' } },
+      workbuddy: { url: 'https://www.codebuddy.cn/billing/meter/get-user-resource-summary', init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' } },
+      qoder_cn: { url: 'https://openapi.qoder.com.cn/api/v2/quota/usage', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
+      zcode: { url: 'https://bigmodel.cn/api/monitor/usage/quota/limit', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
+    };
+    const target = endpoints[source];
+    if (!target) return empty(source, 'unsupported', now(), 'NO_PUBLIC_QUOTA_ENDPOINT', `${source} 暂无余额端点`);
+    const doFetch = options.fetchImpl ?? fetch;
+    try {
+      const response = await doFetch(target.url, target.init);
+      if (!response.ok) {
+        const code = response.status === 429 ? 'RATE_LIMITED'
+          : response.status === 401 || response.status === 403 ? 'CREDENTIAL_INVALID' : 'UPSTREAM_ERROR';
+        return empty(source, 'error', now(), code, `对方返回 ${response.status}`);
+      }
+      const body: unknown = await response.json();
+      const parsed = source === 'trae' ? parseTraeUsage(body)
+        : source === 'workbuddy' ? parseWorkbuddyCredits(body)
+          : source === 'qoder_cn' ? parseQoderQuota(body)
+            : parseZcodeQuota(body);
+      const parsedOk = parsed.balance !== null || parsed.windows.length > 0;
+      return {
+        source,
+        status: parsedOk ? 'ok' : 'unsupported',
+        balance: parsed.balance,
+        unit: parsed.unit,
+        windows: parsed.windows,
+        fetched_at: now(),
+        reason_code: parsedOk ? null : 'UPSTREAM_SHAPE_UNEXPECTED',
+        detail: parsedOk ? null : '对方返回的数据结构不在预期内',
+      };
+    } catch {
+      return empty(source, 'error', now(), 'NETWORK_ERROR', '网络不可用或超时');
+    }
+  }
+
   function loaderFor(source: QuotaSourceId): () => Promise<QuotaResult> {
     if (source === 'deepseek') return fetchDeepseek;
     if (source === 'opencode_go') return fetchOpencodeGo;
-    return fetchCodexFromRollout;
+    if (source === 'codex') return fetchCodexFromRollout;
+    return () => fetchPlatform(source);
   }
 
   async function load(source: QuotaSourceId): Promise<QuotaResult> {

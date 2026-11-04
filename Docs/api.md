@@ -316,6 +316,7 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/design-2026-11-01-workbu
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
 | `GET /api/managed-account-quotas` | query：`workspace_id?`（uuid；额度不按工作区切分，仅回显） | `{ items: QuotaResult[], fetched_at: number, workspace_id: string\|null }` | 400 `VALIDATION_ERROR`（workspace_id 非 uuid） | `services/quotas/quotaService.ts` |
+**来源与分组（ACC-KB-B5S）**：来源从 3 个扩到 **8 个，分两组** —— `cli`（`deepseek` / `opencode_go` / `codex`，读本机 CLI 余额或本地额度快照）与 `platform`（`workbuddy` / `minimax` / `trae` / `qoder_cn` / `zcode`，读账号侧积分/套餐余量）。分组元数据在 `packages/shared` 的 `QUOTA_GROUPS` / `QUOTA_SOURCE_GROUP`，UI 必须分组展示（两套不同源、不同单位）。`QuotaWindow` 新增 optional `kind`（`rolling`/`weekly`/`monthly`/`credit`）与 `total`/`used`，`remaining` 语义不变。平台来源无凭据时如实返回 `status:'unsupported'` + `reason_code:'NO_CREDENTIAL'`（MiniMax 另注明缺少 `yy`/`x-timestamp`/`x-signature` 签名材料，待 B5S2），**不编造余额**。节流先取保守值：每来源并发 1、全局并发 2、成功结果 60s 缓存、429 走既有指数退避（60s 起 ×2，上限 10min），实测后再回写。
 
 `QuotaResult`（ACC-KB-A4 起类型与来源清单只有一份，定义在 packages/shared/src/types.ts 与 constants.ts 的 QUOTA_SOURCE_IDS/QUOTA_SOURCE_LABEL；服务端 quotaService.ts 仅再导出）= { source: 'deepseek'\|'opencode_go'\|'codex', status: 'ok'\|'unsupported'\|'error', balance: number\|null, unit: 'CNY'\|'USD'\|null, windows: Array<{ name: string, remaining: number, reset_at: number\|null }>, fetched_at: number, reason_code: string\|null, detail: string\|null }`
 

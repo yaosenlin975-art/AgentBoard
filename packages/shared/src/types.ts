@@ -209,7 +209,11 @@ export interface ArchivedWorkspaceChangeLogSummary {
 // 不再各抄一份字面量 union。新增来源（ACC-KB-B5）时同步更新 `QUOTA_SOURCE_IDS` / `QUOTA_SOURCE_LABEL`。
 
 /** 额度来源 id */
-export type QuotaSourceId = 'deepseek' | 'opencode_go' | 'codex';
+export type QuotaSourceId =
+  // CLI 侧额度（3）：本机 CLI 的余额/窗口
+  | 'deepseek' | 'opencode_go' | 'codex'
+  // 平台账号额度（5）：桌面/网页账号侧的积分或套餐余量（ACC-KB-B5S）
+  | 'workbuddy' | 'minimax' | 'trae' | 'qoder_cn' | 'zcode';
 
 /** 逐来源结果状态：ok 有数据、unsupported 该来源没有可用额度接口、error 本次取数失败 */
 export type QuotaStatus = 'ok' | 'unsupported' | 'error';
@@ -224,6 +228,14 @@ export interface QuotaWindow {
   reset_at: number | null;
   /** 已用百分比（0-100）；百分比类窗口才有，其余为 null */
   used_percent?: number | null;
+  /**
+   * ACC-KB-B5S 增量字段（全部 optional，旧消费者无感）：
+   * - `kind`：窗口类型（滚动/周/月/积分包），用于 UI 分组与文案
+   * - `total` / `used`：窗口总量与已用量（`remaining` 语义不变，继续是"剩余"）
+   */
+  kind?: 'rolling' | 'weekly' | 'monthly' | 'credit';
+  total?: number | null;
+  used?: number | null;
 }
 
 /** 单个来源的额度/余额结果 */

@@ -89,8 +89,12 @@ describe('聚合服务（缓存 / 错误映射 / 脱敏）', () => {
     const first = await service.get();
     const second = await service.get();
 
+    // 只有 CLI 组的 deepseek 需要联网（opencode/codex 走本地探测/本地快照）；平台组无凭据 → 不请求
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(first.items.map((item) => item.source)).toEqual(['deepseek', 'opencode_go', 'codex']);
+    // ACC-KB-B5S：来源 8 个分两组，顺序 = QUOTA_SOURCE_IDS（CLI 3 + 平台 5）
+    expect(first.items.map((item) => item.source)).toEqual([
+      'deepseek', 'opencode_go', 'codex', 'workbuddy', 'minimax', 'trae', 'qoder_cn', 'zcode',
+    ]);
     expect(first.items[0]!.status).toBe('ok');
     expect(first.items[0]!.balance).toBe(38.42);
     expect(first.items[1]!.status).toBe('unsupported');
