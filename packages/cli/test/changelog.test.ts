@@ -77,6 +77,36 @@ afterEach(() => {
   delete process.env.KB_AGENT;
 });
 
+describe('kb changelog help 与 create 回归（卡 881f3824）', () => {
+  it('help 冒烟：changelog 与 create 的 --help 退 0 且含可复制示例（含 PowerShell）', async () => {
+    const stream = io();
+    expect(await main(['node', 'kb', 'changelog', '--help'], stream)).toBe(0);
+    expect(stream.out.join('')).toContain('示例（Git Bash）');
+    expect(stream.out.join('')).toContain('PowerShell');
+
+    const stream2 = io();
+    expect(await main(['node', 'kb', 'changelog', 'create', '--help'], stream2)).toBe(0);
+    expect(stream2.out.join('')).toContain('Get-Content body.md');
+    expect(stream2.out.join('')).toContain('--request-id');
+  });
+
+  it('create 成功路径回归：stdin 正文 + actor + 幂等键全链可用（修复前 dist 抛 ReferenceError）', async () => {
+    stubFetch(withWorkspaces([{ body: RECORD }]));
+    const stream = io('正文内容');
+    const code = await main(
+      ['node', 'kb', 'changelog', 'create', '--workspace', 'w1', '--title', '标题', '--type', '修复', '--stdin', '--request-id', 'uuid-1'],
+      stream,
+    );
+    expect(code).toBe(0);
+    expect(calls[1]!.init.method).toBe('POST');
+    expect(calls[1]!.url).toContain('/api/workspaces/w1/changelog');
+    const body = JSON.parse(calls[1]!.init.body as string);
+    expect(body).toMatchObject({ title: '标题', change_type: '修复', body_md: '正文内容', actor: 'codex-test' });
+    expect(calls[1]!.init.headers?.['Idempotency-Key']).toBe('uuid-1');
+    expect(stream.out.join('')).toContain('log-1');
+  });
+});
+
 describe('kb changelog 活动日志', () => {
   it('list 解析 workspace 名称并带类型/搜索/分页参数，--json 原样输出', async () => {
     stubFetch(withWorkspaces([{ body: { items: [RECORD], next_offset: 50 } }]));

@@ -109,7 +109,18 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
     return opts.body;
   }
 
+  const CHANGELOG_EXAMPLES = [
+    "示例（Git Bash）：",
+    "  printf '正文' | kb changelog create --workspace <id|名> --title \"标题\" --type 新增 --stdin",
+    "  kb changelog create --workspace <id|名> --title \"标题\" --type 修复 --body \"改动结论列表\"",
+    "示例（PowerShell）：",
+    "  Get-Content body.md -Raw -Encoding UTF8 | kb changelog create --workspace <id|名> --title \"标题\" --type 新增 --stdin",
+    "  kb changelog create --workspace <id|名> --title \"标题\" --type 调整 --body \"结论\"",
+    "查看：kb changelog list --workspace <id|名> --type 修复；kb changelog show <id> --workspace <id|名>",
+  ].join("\n");;
+
   changelog
+    .addHelpText('after', CHANGELOG_EXAMPLES)
     .command('list')
     .description('列出当前工作区变更日志（按发生时间倒序）')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
@@ -148,6 +159,16 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
     .option('--stdin', '从 UTF-8 stdin 读取正文')
     .option('--occurred-at <ms>', '发生时间（Unix 毫秒，缺省当前时间）')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
+    .addHelpText('after', [
+      '示例（Git Bash，heredoc 正文）：',
+      "  kb changelog create --workspace <id|名> --title \"标题\" --type 修复 --stdin <<EOF",
+      '  - 改动结论一',
+      '  - 改动结论二',
+      '  EOF',
+      '示例（PowerShell）：',
+      '  Get-Content body.md -Raw -Encoding UTF8 | kb changelog create --workspace <id|名> --title "标题" --type 新增 --stdin',
+      '重试幂等：加 --request-id <uuid>，重试复用同一 uuid。',
+    ].join('\n'))
     .action(async (opts: { workspace: string; title: string; type: string; body?: string; stdin?: boolean; occurredAt?: string; requestId?: string }) => {
       const ctx = context();
       const workspaceId = await activeWorkspace(ctx, opts.workspace);
