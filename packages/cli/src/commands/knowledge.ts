@@ -140,6 +140,17 @@ const FIELD_HELP = `
   其它字段一律拒绝（服务端 .strict()），错误会指出具体字段名与期望格式。
 `;
 
+/**
+ * KBGUIDE：知识页「内容口径」。CLI help 是多数人唯一的入口，口径必须写在这里，
+ * 并与 skills/using-agentboard 的「知识页写什么（内容口径）」保持同一份说法。
+ */
+const CONTENT_GUIDE = `内容口径（写什么 / 不写什么）：
+  写：设计点、技术点、注意点——结论、约束、坑、取舍与理由、可复用的做法
+  不写：完成情况、剩余待办、个人进度、日报式「今天做了什么」（这些属任务评论与变更日志，不属知识页）
+  按领域分页：一个领域一页（如「知识库导入」「DB 迁移」），不要把多个主题塞进一页
+  slug 语义化：用主题词（cache-policy / db-migration）；**禁用 handoff-<uuid>** 这类一次性流水号
+  已有同主题页用 revise 演进，不新建重复页（先 kb knowledge list --status all --include-expired 找同主题）`;
+const GUIDE_POINTER = '详见 skills/using-agentboard 的「知识页写什么（内容口径）」';
 const CREATE_HELP = `${FIELD_HELP}
 示例 A（PowerShell：单引号包 JSON、反引号续行；**PowerShell 不支持 \`<\` 重定向**，正文用管道喂 --stdin；实测可直接复制）：
   kb knowledge create --scope common --title '缓存策略' --slug cache-policy --stdin \`
@@ -162,6 +173,9 @@ const CREATE_HELP = `${FIELD_HELP}
   [{"source_id":"file:README.md","locator":"file:1-20"}]
 
 退出码：0 成功；1 参数/服务端错误（含字段级提示）；2 任务占用或知识 revision 冲突（KNOWLEDGE_*）
+
+${CONTENT_GUIDE}
+${GUIDE_POINTER}
 `;
 
 const REVISE_HELP = `${FIELD_HELP}
@@ -170,7 +184,11 @@ const REVISE_HELP = `${FIELD_HELP}
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 3 --stdin --title '新标题'
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace 任务看板 --expected-revision 3 --stdin \`
     --sources-file sources.json --evidence-file evidence.json
-退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT，stderr 给当前 revision）
+同主题内容演进用 revise（同一 page-id 累加 revision），不要为「更新版内容」新建页。
+--expected-revision 是 CAS：必须与库内 revision 一致，旧值以退出码 2 退出并提示「知识页已更新，请重新读取」。
+退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT，stderr 给当前 revision 与「知识页已更新，请重新读取」）
+
+${GUIDE_POINTER}
 `;
 
 const ACTION_HELP = `
@@ -202,7 +220,10 @@ const LIST_HELP = `
 示例：
   kb knowledge list --scope common --status active --limit 50
   kb knowledge list --scope workspace --workspace 任务看板 --include-expired
+找同主题的既有页（含已归档/软删/过期，决定 revise 还是 create）：--status all --include-expired
 退出码：0 成功；1 参数或服务端错误
+
+${GUIDE_POINTER}
 `;
 
 const SEARCH_HELP = `

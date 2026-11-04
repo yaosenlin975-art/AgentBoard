@@ -84,6 +84,9 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('AgentBoard 任务看板 CLI（走本地 HTTP API）')
     .version(CLI_VERSION)
     .exitOverride()
+    // KBGUIDE：把 commander 的 help/version 输出也接到注入的 io 上（生产 io 就是 process 流，行为不变；
+    // 进程内调用可捕获 --help，help 文案才可被单测覆盖）
+    .configureOutput({ writeOut: (text: string) => io.write(text), writeErr: (text: string) => io.writeErr(text) })
     .option('--server <url>', '看板服务基址（默认取 KB_SERVER，再默认 http://127.0.0.1:8787）', process.env.KB_SERVER)
     .option('--json', '输出原始 JSON 响应')
     .addHelpText('after', EXIT_CODE_HELP);

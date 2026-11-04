@@ -6,6 +6,52 @@ import { main } from '../src/index.js';
 const page = { id: 'p', scope: 'common', revision: 1, title: '缓存', body_md: '正文', sources: [{ source_id: 's' }], evidence: [{ locator: 'issue:1' }] };
 function io(stdin = '正文') { const out: string[] = []; const err: string[] = []; return { out, err, write: (s: string) => out.push(s), writeErr: (s: string) => err.push(s), readStdin: async () => stdin }; }
 afterEach(() => vi.unstubAllGlobals());
+
+/**
+ * KBGUIDE：--help 的内容口径必须存在（多数人只看 --help；只有技能文档写口径会写出状态页）。
+ */
+describe('knowledge CLI：help 内容口径（KBGUIDE）', () => {
+  const helpOf = async (...args: string[]): Promise<{ code: number; text: string }> => {
+    const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', ...args, '--help'], stream);
+    return { code, text: stream.out.join('') };
+  };
+
+  it('create --help：内容口径（写什么 / 不写什么 / 按领域分页 / slug 语义化 / 禁用 handoff-<uuid> / 用 revise）', async () => {
+    const { code, text } = await helpOf('create');
+    expect(code).toBe(0);
+    expect(text).toContain('内容口径（写什么 / 不写什么）');
+    expect(text).toContain('设计点、技术点、注意点');
+    expect(text).toContain('不写：完成情况、剩余待办、个人进度');
+    expect(text).toContain('按领域分页');
+    expect(text).toContain('slug 语义化');
+    expect(text).toContain('禁用 handoff-<uuid>');
+    expect(text).toContain('用 revise 演进');
+  });
+
+  it('revise --help：同主题演进 + CAS 旧值提示 + 指回技能', async () => {
+    const { code, text } = await helpOf('revise');
+    expect(code).toBe(0);
+    expect(text).toContain('同主题内容演进用 revise');
+    expect(text).toContain('--expected-revision 是 CAS');
+    expect(text).toContain('知识页已更新，请重新读取');
+  });
+
+  it('list --help：--status all --include-expired 找同主题页 + 指回技能', async () => {
+    const { code, text } = await helpOf('list');
+    expect(code).toBe(0);
+    expect(text).toContain('--status all --include-expired');
+    expect(text).toContain('找同主题的既有页');
+  });
+
+  it('三处 help 末尾统一指回 skills/using-agentboard 的内容口径', async () => {
+    const pointer = '详见 skills/using-agentboard 的「知识页写什么（内容口径）」';
+    for (const command of ['create', 'revise', 'list']) {
+      const { text } = await helpOf(command);
+      expect(text, `${command} --help 缺少指回`).toContain(pointer);
+    }
+  });
+});
 describe('knowledge CLI', () => {
   it('knowledgeCliJsonIncludesEvidence', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify([page]))); vi.stubGlobal('fetch', fetch); const stream = io();

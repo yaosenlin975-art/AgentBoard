@@ -1394,19 +1394,11 @@ describe('delete-space', () => {
 });
 
 describe('退出码表（help）', () => {
-  /** commander 的 help 直接写 process.stdout，不走注入的 io → 这里拦 stdout */
+  /** KBGUIDE：`main` 里 configureOutput 已把 help 接到注入的 io 上，直接读 io 输出（不再拦 process.stdout） */
   const help = async (argv: string[]): Promise<{ code: number; text: string }> => {
-    const chunks: string[] = [];
-    const spy = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
-      chunks.push(String(chunk));
-      return true;
-    }) as typeof process.stdout.write);
-    try {
-      const code = await main(argv, makeIo().io);
-      return { code, text: chunks.join('') };
-    } finally {
-      spy.mockRestore();
-    }
+    const stream = makeIo();
+    const code = await main(argv, stream.io);
+    return { code, text: stream.out() };
   };
 
   it('kb --help 带退出码表：0/1/2 与 dep 专用 3/4', async () => {
