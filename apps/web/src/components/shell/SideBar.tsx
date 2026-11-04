@@ -9,6 +9,7 @@
  */
 import type { Workspace } from '@agentboard/shared';
 import { useNavStore, type NavView } from '../../state/navStore';
+import { usePanelStore } from '../../state/panelStore';
 
 const ENTRY_ICON: Record<NavView, string> = {
   board: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
@@ -29,6 +30,9 @@ const ENTRIES: Array<{ view: NavView; label: string }> = [
 export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const view = useNavStore((state) => state.view);
   const setView = useNavStore((state) => state.setView);
+  // 聊天入口徽标 = 全部会话未读合计（设计 §5；与左会话列表的单项徽标同一份 panelStore.unread）
+  const unread = usePanelStore((state) => state.unread);
+  const chatUnread = Object.values(unread).reduce((sum, n) => sum + (n > 0 ? n : 0), 0);
 
   return (
     <nav
@@ -64,6 +68,15 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                   <path d={ENTRY_ICON[entry.view]} />
                 </svg>
                 <span className="truncate">{entry.label}</span>
+                {entry.view === 'chat' && chatUnread > 0 && (
+                  <span
+                    data-testid="sidebar-chat-unread"
+                    title={`${chatUnread} 条未读消息`}
+                    className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
+                  >
+                    {chatUnread > 99 ? '99+' : chatUnread}
+                  </span>
+                )}
               </button>
             </li>
           );

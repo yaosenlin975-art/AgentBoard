@@ -13,7 +13,7 @@ import type { Message, Session, Workspace } from '@agentboard/shared';
 // 模块加载即订阅 wsBus（与 App 启动经 ChatPanel 静态 import 同路径）
 import '../state/unreadCollector';
 import { TopBar } from '../components/topbar/TopBar';
-import { ChatPanel } from '../components/chat/ChatPanel';
+import { ChatView } from '../components/chat/ChatView';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
@@ -70,6 +70,8 @@ beforeEach(() => {
   });
   useStreamingStore.setState({ streams: new Map() });
   server.use(
+    // S3：聊天视图左栏按工作空间拉会话，需要工作区列表
+    http.get('/api/workspaces', () => HttpResponse.json([ws])),
     http.get('/api/clis', () => HttpResponse.json([])),
     http.get('/api/clis/:id/models', () => HttpResponse.json([{ id: 'm-a', source: 'static' }])),
     http.get('/api/sessions', () => HttpResponse.json(sessionsList)),
@@ -92,12 +94,12 @@ function renderShell(): void {
   );
 }
 
-/** S2b：聊天整屏化后，ChatPanel 由主区渲染；这里直接挂它以取得切换器/未读徽标锚点。 */
+/** S3：聊天整屏化后主区渲染 ChatView；左会话列表承载单会话未读徽标。 */
 function renderChatPanel(): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <ChatPanel />
+      <ChatView />
     </QueryClientProvider>,
   );
 }
@@ -122,12 +124,11 @@ describe('unreadCollector 全局未读计数', () => {
     expect(usePanelStore.getState().unread).toEqual({ s2: 2 });
     expect(screen.getByTestId('topbar-chat-unread')).toHaveTextContent('2');
 
-    // 进入整屏聊天（S2b：主区渲染 ChatPanel）→ 切换器该会话显示未读徽标
+    // 进入整屏聊天（S3：主区渲染 ChatView）→ 左会话列表该会话显示未读徽标
     renderChatPanel();
     await screen.findByTestId('chat-panel');
     const user = userEvent.setup();
-    await user.click(await screen.findByTestId('session-switcher'));
-    expect(screen.getByTestId('unread-s2')).toHaveTextContent('2');
+    expect(await screen.findByTestId('unread-s2')).toHaveTextContent('2');
 
     // 打开 s2 → 未读清零（打开即读），徽标与顶栏未读数都消失
     await user.click(screen.getByTestId('session-option-s2'));

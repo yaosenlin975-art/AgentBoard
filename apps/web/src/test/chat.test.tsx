@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
+import { ChatView } from '../components/chat/ChatView';
 import { ChatPanel } from '../components/chat/ChatPanel';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
@@ -213,7 +214,8 @@ function renderChat(session: Session | null = makeSession()): QueryClient {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <ChatPanel />
+      {/* S3：聊天视图 = 左会话列表 + 右消息区，会话选择改由左栏列表提供 */}
+      <ChatView />
     </QueryClientProvider>,
   );
   return qc;
@@ -370,7 +372,6 @@ describe('ChatPanel 消息流与流式渲染', () => {
 
     // 切到 s2（切换器真实路径）
     const user = userEvent.setup();
-    await user.click(screen.getByTestId('session-switcher'));
     await user.click(screen.getByTestId('session-option-s2'));
     await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · m1'));
 
@@ -380,7 +381,6 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument();
 
     // 切回 A：完整累积文本（含切走期间的 delta）
-    await user.click(screen.getByTestId('session-switcher'));
     await user.click(screen.getByTestId('session-option-s1'));
     const bubble = await screen.findByTestId('streaming-bubble');
     expect(bubble).toHaveTextContent('后台继续累积');
@@ -628,7 +628,7 @@ describe('ChatPanel 会话切换器与模型', () => {
     await waitFor(() => expect(patchBodies).toEqual([{ model: 'm-a' }]));
   });
 
-  it('下拉分组显示任务/自由会话与徽标；非当前会话新消息未读 +1，选中后清零', async () => {
+  it('左栏分组显示任务/自由会话与徽标；非当前会话新消息未读 +1，选中后清零', async () => {
     sessionsList = [
       makeSession({ id: 's1', issue_id: 'iss-1' }),
       makeSession({ id: 's2', issue_id: null, cli: 'codex', status: '失败' }),
@@ -638,17 +638,16 @@ describe('ChatPanel 会话切换器与模型', () => {
     await screen.findByTestId('model-display');
 
     emitMessageAdded(makeMessage({ id: 'mo1', session_id: 's2', content: '后台消息', ts: 300 }));
-    await user.click(screen.getByTestId('session-switcher'));
-    const menu = screen.getByTestId('session-menu');
-    expect(within(menu).getByText('任务会话')).toBeInTheDocument();
-    expect(within(menu).getByText('自由会话')).toBeInTheDocument();
+    // S3：会话列表常驻左栏（不再是下拉菜单）——按工作空间分组 + 无任务会话分组
+    const list = screen.getByTestId('chat-session-list');
+    expect(within(list).getByText('主项目')).toBeInTheDocument();
+    expect(within(list).getByText('无任务会话')).toBeInTheDocument();
     expect(screen.getByTestId('unread-s2')).toHaveTextContent('1');
     expect(screen.getByTestId('option-failed-s2')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('session-option-s2'));
     // 切到 s2：消息流按 s2 拉取，未读清零
     await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · m1'));
-    await user.click(screen.getByTestId('session-switcher'));
     expect(screen.queryByTestId('unread-s2')).not.toBeInTheDocument();
   });
 
@@ -656,6 +655,8 @@ describe('ChatPanel 会话切换器与模型', () => {
     sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', cli: 'codex' })];
     const qc = renderChat();
     await screen.findByTestId('model-display');
+    // 等左列表就位（默认选中已发生，后续删除不应触发重新选中）
+    await screen.findByTestId('session-option-s1');
 
     // 服务端删除：['sessions'] 失效刷新剔除 s1（connectWs 事件失效语义），并广播 session.deleted
     sessionsList = [makeSession({ id: 's2', cli: 'codex' })];
@@ -666,9 +667,7 @@ describe('ChatPanel 会话切换器与模型', () => {
     await qc.invalidateQueries({ queryKey: ['sessions'] });
 
     expect(screen.getByTestId('chat-empty')).toBeInTheDocument();
-    await screen.findByTestId('session-switcher');
-    await userEvent.click(screen.getByTestId('session-switcher'));
-    expect(screen.queryByTestId('session-option-s1')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('session-option-s1')).not.toBeInTheDocument());
     expect(screen.getByTestId('session-option-s2')).toBeInTheDocument();
   });
 
@@ -677,6 +676,7 @@ describe('ChatPanel 会话切换器与模型', () => {
     const qc = renderChat();
     await screen.findByTestId('model-display');
 
+    await screen.findByTestId('session-option-s2');
     sessionsList = [makeSession({ id: 's1' })];
     act(() => {
       emitWsEvent({ type: 'session.deleted', session_id: 's2' });
@@ -684,8 +684,7 @@ describe('ChatPanel 会话切换器与模型', () => {
     await qc.invalidateQueries({ queryKey: ['sessions'] });
 
     expect(screen.getByTestId('model-display')).toHaveTextContent('codebuddy · m1');
-    await userEvent.click(screen.getByTestId('session-switcher'));
-    expect(screen.queryByTestId('session-option-s2')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('session-option-s2')).not.toBeInTheDocument());
     expect(screen.getByTestId('session-option-s1')).toBeInTheDocument();
   });
 
@@ -741,9 +740,7 @@ describe('ChatPanel 会话切换器与模型', () => {
     expect(await screen.findByTestId('chat-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('composer')).not.toBeInTheDocument();
     expect(screen.getByTestId('empty-new-session-btn')).toBeInTheDocument();
-    await screen.findByTestId('session-switcher');
-    await userEvent.click(screen.getByTestId('session-switcher'));
-    expect(screen.getByTestId('session-menu-empty')).toBeInTheDocument();
+    expect(await screen.findByTestId('chat-session-list-empty')).toBeInTheDocument();
   });
 
   it('当前工作空间暂无会话：空态提示会话归属创建时工作空间', async () => {
@@ -829,8 +826,7 @@ describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
     const user = userEvent.setup();
     await screen.findByTestId('model-display');
 
-    await user.click(screen.getByTestId('session-switcher'));
-    await user.click(screen.getByTestId('session-delete-s2'));
+    await user.click(await screen.findByTestId('session-delete-s2'));
     // 二次确认：未确认前不调用 DELETE
     expect(deleteCalls).toEqual([]);
     await user.click(screen.getByTestId('session-delete-confirm-s2'));
@@ -842,7 +838,7 @@ describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
     expect(usePanelStore.getState().unread.other).toBe(1);
     // 选中不变
     expect(usePanelStore.getState().sessionId).toBe('s1');
-    expect(screen.queryByTestId('chat-action-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-session-error')).not.toBeInTheDocument();
   });
 
   it('删除当前会话：清选中与流式缓冲，回空态且不再显示残留消息', async () => {
@@ -854,8 +850,7 @@ describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
     emitText('s1', '流式中残留内容');
     expect(await screen.findByTestId('streaming-bubble')).toHaveTextContent('流式中残留内容');
 
-    await user.click(screen.getByTestId('session-switcher'));
-    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(await screen.findByTestId('session-delete-s1'));
     await user.click(screen.getByTestId('session-delete-confirm-s1'));
 
     await waitFor(() => expect(deleteCalls).toEqual(['s1']));
@@ -875,11 +870,10 @@ describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
     const user = userEvent.setup();
     await screen.findByTestId('model-display');
 
-    await user.click(screen.getByTestId('session-switcher'));
-    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(await screen.findByTestId('session-delete-s1'));
     await user.click(screen.getByTestId('session-delete-confirm-s1'));
 
-    expect(await screen.findByTestId('chat-action-error')).toHaveTextContent('会话正在运行，请先停止再删除');
+    expect(await screen.findByTestId('chat-session-error')).toHaveTextContent('会话正在运行，请先停止再删除');
     // 未删除：选中仍是 s1，列表仍有该项
     expect(usePanelStore.getState().sessionId).toBe('s1');
     expect(screen.getByTestId('session-option-s1')).toBeInTheDocument();
@@ -891,8 +885,7 @@ describe('ChatPanel 删除会话（持久删除 + 安全回退）', () => {
     const user = userEvent.setup();
     await screen.findByTestId('model-display');
 
-    await user.click(screen.getByTestId('session-switcher'));
-    await user.click(screen.getByTestId('session-delete-s1'));
+    await user.click(await screen.findByTestId('session-delete-s1'));
     await user.click(screen.getByTestId('session-delete-cancel-s1'));
 
     expect(deleteCalls).toEqual([]);
@@ -939,7 +932,6 @@ describe('ChatPanel 跨端删除同步', () => {
     expect(usePanelStore.getState().unread.s1).toBeUndefined();
     expect(useStreamingStore.getState().streams.has('s1')).toBe(false);
     expect(screen.queryByTestId('streaming-bubble')).not.toBeInTheDocument();
-    await user.click(screen.getByTestId('session-switcher'));
     expect(screen.queryByTestId('session-option-s1')).not.toBeInTheDocument();
   });
 });

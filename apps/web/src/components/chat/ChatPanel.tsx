@@ -26,14 +26,10 @@ import '../../state/unreadCollector';
 import { Composer } from './Composer';
 import { MessageList } from './MessageList';
 import { ModelSelector } from './ModelSelector';
-import { NewSessionDialog } from './NewSessionDialog';
-import { SessionSwitcher } from './SessionSwitcher';
 
-export function ChatPanel() {
+export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) {
   const sessionId = usePanelStore((s) => s.sessionId);
   const storedSession = usePanelStore((s) => s.chatSession);
-  const unread = usePanelStore((s) => s.unread);
-  const openChat = usePanelStore((s) => s.openChat);
   const clearSession = usePanelStore((s) => s.clearSession);
   const removeSession = usePanelStore((s) => s.removeSession);
   const appWorkspaceId = useAppStore((s) => s.workspaceId);
@@ -49,7 +45,6 @@ export function ChatPanel() {
   const [queuedCount, setQueuedCount] = useState(0);
   const [waitingSlot, setWaitingSlot] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
-  const [newDialogOpen, setNewDialogOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // WS session.changed 覆盖打开时携带的会话对象（状态/模型变更）；切会话同步清按 id 拉取的兜底
@@ -260,47 +255,11 @@ export function ChatPanel() {
     onError: (e) => setActionError(e instanceof Error ? e.message : '标记待验收失败'),
   });
 
-  const selectSession = useCallback(
-    (s: Session) => {
-      openChat(s.id, s);
-    },
-    [openChat],
-  );
-
-  // 持久删除会话：成功 → 清流式缓冲 + 清选中/未读（当前会话回空态）+ 列表失效；
-  // 失败（服务端 409：运行中/占用任务）→ 原文进 actionError，选中与列表保持不变
-  const handleDeleteSession = useCallback(
-    async (s: Session): Promise<void> => {
-      try {
-        await api.del<void>(`/api/sessions/${encodeURIComponent(s.id)}`);
-      } catch (e) {
-        setActionError(e instanceof Error ? e.message : '删除会话失败');
-        return;
-      }
-      clearStream(s.id);
-      removeSession(s.id);
-      setActionError(null);
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      queryClient.removeQueries({ queryKey: ['session-queue', s.id] });
-    },
-    [removeSession, queryClient],
-  );
-
   if (sessionId === null || session === null) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="chat-panel">
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
-          <SessionSwitcher sessions={sessions ?? []} currentSession={null} unread={unread} onSelect={selectSession} onDelete={handleDeleteSession} />
+        <div className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-3 py-1.5">
           {workspaceBadge}
-          <button
-            type="button"
-            data-testid="new-session-btn"
-            onClick={() => setNewDialogOpen(true)}
-            title="新建会话"
-            className="shrink-0 rounded px-1.5 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
-          >
-            ＋ 新建会话
-          </button>
         </div>
         <div
           data-testid="chat-empty"
@@ -323,19 +282,21 @@ export function ChatPanel() {
           <button
             type="button"
             data-testid="empty-new-session-btn"
-            onClick={() => setNewDialogOpen(true)}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            onClick={() => onNewSession?.()}
+            className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
           >
             ＋ 新建会话
           </button>
         </div>
-        {newDialogOpen && (
-          <NewSessionDialog defaultWorkspaceId={workspaceId} onClose={() => setNewDialogOpen(false)} />
-        )}
       </div>
     );
   }
 
+  // 头部标题口径（设计 §5）：任务会话取 issue 标题（与左列表同源缓存），自由会话显示 cli·model
+  const sessionTitle =
+    session.issue_id !== null
+      ? (linkedIssue?.title ?? `#${session.issue_id.slice(0, 8)}`)
+      : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
   const running = session.status === '运行中';
   // 标记待验收显隐：issue 关联非空 + 任务占用中 + 会话未结束/失败（无 issue 数据时 linkedIssue 为空 → 不渲染）
   const issueClaimed = linkedIssue?.claimed_by != null;
@@ -344,19 +305,29 @@ export function ChatPanel() {
 
   return (
     <div data-testid="chat-panel" className="flex h-full min-h-0 flex-col">
-      {/* 顶部工具条 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200 px-2 py-1.5 dark:border-neutral-800">
-        <SessionSwitcher sessions={sessions ?? []} currentSession={session} unread={unread} onSelect={selectSession} onDelete={handleDeleteSession} />
-          {workspaceBadge}
-        <button
-          type="button"
-          data-testid="new-session-btn"
-          onClick={() => setNewDialogOpen(true)}
-          title="新建会话"
-          className="shrink-0 rounded px-1.5 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/40"
+      {/* 头部（设计 §5）：会话标题 · issue 号 · CLI/模型徽标 + 工作空间；右侧保留模型选择与轮次动作 */}
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-3 py-1.5">
+        <span
+          data-testid="chat-session-title"
+          title={sessionTitle}
+          className="min-w-0 truncate text-sm font-medium text-ink"
         >
-          ＋ 新建
-        </button>
+          {sessionTitle}
+        </span>
+        {session.issue_id !== null && (
+          <span data-testid="chat-issue-ref" title={`任务 ${session.issue_id}`} className="shrink-0 text-[10px] text-ink-3">
+            · #{session.issue_id.slice(0, 8)}
+          </span>
+        )}
+        <span
+          data-testid="chat-cli-badge"
+          title="当前会话 CLI / 模型"
+          className="shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-ink-2"
+        >
+          {session.cli}
+          {session.model !== null ? ` · ${session.model}` : ''}
+        </span>
+        {workspaceBadge}
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <ModelSelector session={session} onUpdated={setLiveSession} />
           {waitingSlot && (
@@ -437,10 +408,6 @@ export function ChatPanel() {
       )}
 
       <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} onSend={handleSend} />
-
-      {newDialogOpen && (
-        <NewSessionDialog defaultWorkspaceId={workspaceId} onClose={() => setNewDialogOpen(false)} />
-      )}
     </div>
   );
 }

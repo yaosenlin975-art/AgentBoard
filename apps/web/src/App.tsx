@@ -12,7 +12,7 @@ import { SideBar } from './components/shell/SideBar';
 import { DrawerPanel } from './components/drawer/DrawerPanel';
 import { Board } from './components/board/Board';
 import { ChangelogPanel } from './components/changelog/ChangelogPanel';
-import { ChatPanel } from './components/chat/ChatPanel';
+import { ChatView } from './components/chat/ChatView';
 import { RightPanel } from './components/right/RightPanel';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import type { BoardLayout } from './components/ui/ViewSwitcher';
@@ -128,7 +128,7 @@ export default function App() {
                     <span className="text-[11px] text-ink-3">Esc 或 Ctrl/⌘ + [ 退出聊天</span>
                   </div>
                   <div className="min-h-0 flex-1">
-                    <ChatPanel />
+                    <ChatView />
                   </div>
                 </div>
               ) : (
