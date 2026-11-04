@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 设置弹窗（设计 §7.1）：打开时拉取 GET /api/settings 展示真实持久化配置；
  * 保存 → PATCH /api/settings（端口 / DB 路径修改后需重启服务生效；并发上限即时生效）；
  * 主题三选项走 theme.ts setTheme：localStorage 持久化 + 即时切换。
@@ -23,7 +23,7 @@ interface Settings {
 }
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none transition-colors duration-150 focus:border-accent motion-reduce:transition-none';
 
 const THEME_OPTIONS: Array<{ value: Theme; label: string }> = [
   { value: 'light', label: '浅色' },
@@ -79,7 +79,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
     <Modal open={open} title="设置" onClose={onClose} size="lg" scrollable variant={variant}>
       <form onSubmit={submit} className="space-y-3">
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">服务端口</span>
+          <span className="mb-1 block text-ink-2">服务端口</span>
           <input
             data-testid="settings-port"
             aria-label="服务端口"
@@ -91,7 +91,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           />
         </label>
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">并发上限</span>
+          <span className="mb-1 block text-ink-2">并发上限</span>
           <input
             data-testid="settings-max-turns"
             aria-label="并发上限"
@@ -103,7 +103,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           />
         </label>
         <label className="block text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">数据库路径</span>
+          <span className="mb-1 block text-ink-2">数据库路径</span>
           <input
             data-testid="settings-db-path"
             aria-label="数据库路径"
@@ -114,7 +114,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           />
         </label>
         <div className="text-sm">
-          <span className="mb-1 block text-neutral-600 dark:text-neutral-300">主题</span>
+          <span className="mb-1 block text-ink-2">主题</span>
           <div className="flex gap-2">
             {THEME_OPTIONS.map((opt) => {
               const selected = theme === opt.value;
@@ -127,8 +127,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
                   onClick={() => setTheme(opt.value)}
                   className={
                     selected
-                      ? 'rounded border border-blue-500 bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700 dark:border-blue-500 dark:bg-blue-950 dark:text-blue-300'
-                      : 'rounded border border-neutral-300 px-3 py-1 text-sm text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
+                      ? 'rounded border border-accent bg-accent-soft px-3 py-1 text-sm font-medium text-accent'
+                      : 'rounded border border-hairline px-3 py-1 text-sm text-ink-2 transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none'
                   }
                 >
                   {opt.label}
@@ -147,17 +147,17 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
             {error}
           </p>
         )}
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+        <p className="text-xs text-ink-3">
           端口 / DB 路径修改后需重启服务生效；并发上限即时生效。
         </p>
         <div className="flex justify-end gap-2 pt-2">
-          <span data-testid="settings-version" className="mr-auto self-center text-xs text-neutral-400 dark:text-neutral-500">
+          <span data-testid="settings-version" className="mr-auto self-center text-xs text-ink-3">
             服务端 {serverVersion ?? '?'} · 前端 {WEB_VERSION}
           </span>
           <button
             type="button"
             onClick={onClose}
-            className="rounded px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded border border-hairline bg-surface-card px-3 py-1.5 text-sm text-ink transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
           >
             取消
           </button>
@@ -165,15 +165,15 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
             type="submit"
             data-testid="settings-save"
             disabled={!loaded || save.isPending}
-            className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink transition-colors duration-150 hover:border-accent hover:bg-accent-soft hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none"
           >
             保存
           </button>
         </div>
       </form>
       {/* STATUS-3-UI：自定义状态增删（删除必须选迁移目标）；成功后失效状态字典与任务列表 */}
-      <section data-testid="settings-statuses" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+      <section data-testid="settings-statuses" className="mt-4 border-t border-hairline pt-3">
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">
           工作区状态
         </h3>
         <WorkspaceStatusSettings workspaceId={currentWorkspaceId} />
@@ -189,3 +189,6 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
     </Modal>
   );
 }
+
+
+

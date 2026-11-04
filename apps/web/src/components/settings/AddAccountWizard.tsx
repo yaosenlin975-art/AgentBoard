@@ -258,7 +258,7 @@ function AddAccountWizard({
                 href={session.authorization_url}
                 target="_blank"
                 rel="noreferrer"
-                className="break-all text-blue-600 underline dark:text-blue-300"
+                className="break-all text-accent underline underline-offset-2"
               >
                 {session.authorization_url}
               </a>

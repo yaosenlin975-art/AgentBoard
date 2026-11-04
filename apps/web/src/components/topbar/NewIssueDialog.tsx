@@ -25,7 +25,7 @@ import {
 import { Modal } from '../ui/Modal';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none transition-colors duration-150 focus:border-accent motion-reduce:transition-none';
 
 interface PendingImage {
   localId: number;
