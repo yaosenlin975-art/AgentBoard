@@ -7,7 +7,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import type { KnowledgePage, WorkspaceChangeLog } from '@agentboard/shared';
+import type { WorkspaceChangeLog } from '@agentboard/shared';
 import MarkdownRenderer from '../lib/markdownRenderer';
 import { isExternalLink, parseMarkdownRef } from '../lib/markdownLinks';
 import { useAppStore } from '../state/appStore';
@@ -16,23 +16,13 @@ import { server } from './server';
 
 const wsId = 'ws-current';
 
-function knowledgePage(overrides: Partial<KnowledgePage> = {}): KnowledgePage {
-  return {
-    id: 'kp-common',
-    scope: 'common',
-    workspace_id: null,
-    slug: 'bom-guard',
-    title: 'BOM 守卫',
-    body_md: '正文',
-    status: 'active',
-    revision: 1,
-    created_by: 'user',
-    updated_by: 'user',
-    created_at: 1,
-    updated_at: 1,
-    expires_at: null,
-    ...overrides,
-  } as KnowledgePage;
+/** KB-PAGE-2 resolve 响应（渲染层只读这五个字段 + status） */
+function resolvedRef(overrides: Partial<{
+  id: string; title: string; scope: 'common' | 'workspace'; workspace_id: string | null; status: 'active' | 'archived'; revision: number;
+}> = {}) {
+  const base = { id: 'kp-common', title: 'BOM 守卫', scope: 'common' as const, workspace_id: null, status: 'active' as const, revision: 1 };
+  const page = { ...base, ...overrides };
+  return { ...page, link: { ref: `knowledge:${page.id}`, markdown: `[${page.title}](knowledge:${page.id})` } };
 }
 
 function changeLog(): WorkspaceChangeLog {
@@ -106,9 +96,9 @@ describe('任务链接', () => {
   });
 });
 
-describe('知识链接与权限', () => {
+describe('知识链接与权限（统一走 /api/knowledge/resolve）', () => {
   it('common 知识可点，点击打开知识浮窗', async () => {
-    server.use(http.get('/api/knowledge/pages/kp-common', () => HttpResponse.json(knowledgePage())));
+    server.use(http.get('/api/knowledge/resolve', () => HttpResponse.json(resolvedRef())));
     renderMarkdown(`见 [BOM 守卫](knowledge:kp-common)`);
     await screen.findByTestId('md-link-knowledge-kp-common');
     await waitFor(() => expect(screen.getByTestId('md-link-knowledge-kp-common')).toHaveAttribute('data-link-state', 'ok'));
@@ -120,21 +110,20 @@ describe('知识链接与权限', () => {
     });
   });
 
-  it('当前工作区的知识可点', async () => {
+  it('当前工作区的知识可点；归档页可点并标注「已归档」', async () => {
     server.use(
-      http.get('/api/knowledge/pages/kp-mine', () =>
-        HttpResponse.json(knowledgePage({ id: 'kp-mine', scope: 'workspace', workspace_id: wsId, title: '本区知识' })),
-      ),
+      http.get('/api/knowledge/resolve', () => HttpResponse.json(resolvedRef({ id: 'kp-mine', scope: 'workspace', workspace_id: wsId, title: '本区知识', status: 'archived' }))),
     );
     renderMarkdown(`[本区知识](knowledge:kp-mine)`);
     await screen.findByTestId('md-link-knowledge-kp-mine');
     await waitFor(() => expect(screen.getByTestId('md-link-knowledge-kp-mine')).toHaveAttribute('data-link-state', 'ok'));
+    expect(screen.getByTestId('md-link-knowledge-kp-mine')).toHaveAttribute('title', '知识：本区知识（已归档）');
   });
 
-  it('其它工作区的知识 → 不可点 + tooltip「无权限或不存在」', async () => {
+  it('其它工作区的知识 → 403 → 不可点 + tooltip「无权限或不存在」', async () => {
     server.use(
-      http.get('/api/knowledge/pages/kp-other', () =>
-        HttpResponse.json(knowledgePage({ id: 'kp-other', scope: 'workspace', workspace_id: 'ws-other', title: '别人的' })),
+      http.get('/api/knowledge/resolve', () =>
+        HttpResponse.json({ error: { code: 'KNOWLEDGE_SCOPE_FORBIDDEN', message: '无权访问' } }, { status: 403 }),
       ),
     );
     renderMarkdown(`[别人的](knowledge:kp-other)`);
@@ -146,10 +135,10 @@ describe('知识链接与权限', () => {
     expect(usePanelStore.getState().view).toBeNull();
   });
 
-  it('不存在的知识 → 不可点 + 同一文案（不静默变外链）', async () => {
+  it('不存在 → 404 → 不可点 + 同一文案（不静默变外链）', async () => {
     server.use(
-      http.get('/api/knowledge/pages/missing', () =>
-        HttpResponse.json({ error: { code: 'NOT_FOUND', message: '不存在' } }, { status: 404 }),
+      http.get('/api/knowledge/resolve', () =>
+        HttpResponse.json({ error: { code: 'KNOWLEDGE_NOT_FOUND', message: '不存在' } }, { status: 404 }),
       ),
     );
     renderMarkdown(`[缺失](knowledge:missing)`);
@@ -157,6 +146,31 @@ describe('知识链接与权限', () => {
     await waitFor(() => expect(link).toHaveAttribute('data-link-state', 'denied'));
     expect(link).toHaveAttribute('title', '无权限或不存在');
     expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('同 slug 歧义 → 409 → 不可点 + 「链接有歧义」', async () => {
+    server.use(
+      http.get('/api/knowledge/resolve', () =>
+        HttpResponse.json({ error: { code: 'KNOWLEDGE_REF_AMBIGUOUS', message: '有歧义' } }, { status: 409 }),
+      ),
+    );
+    renderMarkdown(`[歧义](knowledge:dup-slug)`);
+    const link = await screen.findByTestId('md-link-knowledge-dup-slug');
+    await waitFor(() => expect(link).toHaveAttribute('data-link-state', 'ambiguous'));
+    expect(link).toHaveAttribute('title', '链接有歧义，请用完整 id');
+  });
+
+  it('软删页 → 410 → 不可点 + 「已删除（可查看历史版本）」，不冒充正常卡片', async () => {
+    server.use(
+      http.get('/api/knowledge/resolve', () =>
+        HttpResponse.json({ error: { code: 'KNOWLEDGE_DELETED', message: '已删除' } }, { status: 410 }),
+      ),
+    );
+    renderMarkdown(`[已删](knowledge:gone)`);
+    const link = await screen.findByTestId('md-link-knowledge-gone');
+    await waitFor(() => expect(link).toHaveAttribute('data-link-state', 'deleted'));
+    expect(link).toHaveAttribute('title', '已删除（可查看历史版本）');
+    expect(link.tagName).not.toBe('BUTTON');
   });
 });
 
@@ -206,7 +220,7 @@ describe('未知 scheme 与普通外链', () => {
 
   it('三种软链接同时出现时各自独立渲染', async () => {
     server.use(
-      http.get('/api/knowledge/pages/kp-common', () => HttpResponse.json(knowledgePage())),
+      http.get('/api/knowledge/resolve', () => HttpResponse.json(resolvedRef())),
       http.get(`/api/workspaces/${wsId}/changelog/log-1`, () => HttpResponse.json(changeLog())),
     );
     renderMarkdown('- [任务](issue:i-1)\n- [知识](knowledge:kp-common)\n- [日志](log:log-1)\n');
