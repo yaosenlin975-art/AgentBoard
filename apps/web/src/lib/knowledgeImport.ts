@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KBIMP-2：知识库导入的**纯前端解析层**（不触 DOM、不触网络，便于单测）。
  *
  * 契约来自服务端 `POST /api/knowledge/pages/import`（KBIMP-1，`9a4e06a`）：
@@ -10,8 +10,12 @@
  * **不替服务端做业务校验**（slug 冲突、正文长度上限都以服务端返回为准）。
  */
 
-/** 前端预检上限：与服务端路由级 2MB 相比留一半余量，按卡片要求取 1MB */
-export const MAX_IMPORT_BYTES = 1024 * 1024;
+/** 前端预检上限：与服务端单文件上限一致（10MB，UTF-8 字节） */
+export const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+/** 服务端单页正文上限（字符）；前端只用于提示文案与预检提前拦截 */
+export const MAX_IMPORT_BODY_CHARS = 2_000_000;
+/** 双上限的统一文案（前端预检与服务端错误码共用同一句话） */
+export const IMPORT_LIMIT_HINT = '文件上限 10 MB，正文上限 200 万字符';
 /** json 数组最多条数（与服务端一致） */
 export const MAX_IMPORT_ITEMS = 100;
 /** 预览里展示的正文行数 */
@@ -124,7 +128,14 @@ export function parseImportFile(filename: string, content: string): ParseResult 
   }
   const bytes = utf8Bytes(content);
   if (bytes > MAX_IMPORT_BYTES) {
-    return { ok: false, failure: { error: 'TOO_LARGE', message: `文件过大：${(bytes / 1024 / 1024).toFixed(2)} MB，上限 ${MAX_IMPORT_BYTES / 1024 / 1024} MB` } };
+    // IMPORT-LIMIT-W：给出当前值/上限，不只说「太大」；与 413 IMPORT_TOO_LARGE 同一口径
+    return {
+      ok: false,
+      failure: {
+        error: 'TOO_LARGE',
+        message: `文件过大：当前 ${(bytes / 1024 / 1024).toFixed(2)} MB / 上限 ${MAX_IMPORT_BYTES / 1024 / 1024} MB（${IMPORT_LIMIT_HINT}）`,
+      },
+    };
   }
   if (content.trim() === '') {
     return { ok: false, failure: { error: 'EMPTY', message: '文件是空的' } };
@@ -176,7 +187,17 @@ export function importErrorView(code: string | null, message: string): { text: s
     };
   }
   if (code === 'IMPORT_BODY_TOO_LONG') {
-    return { text: '内容超过服务端上限（正文 ≤100000 字符 / 请求 ≤2MB）', suggestions: ['拆分成多页后再导入'] };
+    return {
+      text: `单页正文超过服务端上限（200 万字符）—— 服务端会给出当前值/上限（${IMPORT_LIMIT_HINT}）`,
+      suggestions: ['按标题/章节拆分成多页后再导入', '删掉正文里的重复历史或日志片段'],
+    };
+  }
+  if (code === 'IMPORT_TOO_LARGE') {
+    return {
+      text: `文件或请求体超过服务端上限（${IMPORT_LIMIT_HINT}）`,
+      suggestions: ['拆分成多个更小的文件分批导入', '删掉正文里的重复历史或日志片段'],
+    };
   }
   return { text: message || '导入失败', suggestions: [] };
 }
+

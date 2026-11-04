@@ -1,4 +1,4 @@
-/**
+﻿/**
  * KBIMP-2：知识库导入的解析层与对话框行为断言（端点契约来自 KBIMP-1 `9a4e06a`）。
  *
  * 覆盖：格式识别 / 1MB 预检 / md 标题猜测 / 前 20 行预览 / json 单对象与数组（≤100）/
@@ -31,11 +31,21 @@ describe('解析层（纯函数）', () => {
     if (!bad.ok) expect(bad.failure.error).toBe('UNSUPPORTED_FORMAT');
   });
 
-  it('1MB 上限与空文件', () => {
+  it('10MB 上限（UTF-8 字节）与空文件；超限文案给当前值/上限', () => {
+    // IMPORT-LIMIT-W：上限从 1MB 提到 10MB —— 9MB 必须通过、10MB+1 字节必须被拦
+    const nineMb = 'a'.repeat(9 * 1024 * 1024);
+    const okNine = parseImportFile('nine.md', nineMb);
+    expect(okNine.ok, okNine.ok ? '' : okNine.failure.message).toBe(true);
+
     const big = 'a'.repeat(MAX_IMPORT_BYTES + 1);
     const tooBig = parseImportFile('big.md', big);
     expect(tooBig.ok).toBe(false);
-    if (!tooBig.ok) expect(tooBig.failure.error).toBe('TOO_LARGE');
+    if (!tooBig.ok) {
+      expect(tooBig.failure.error).toBe('TOO_LARGE');
+      // 文案：当前值 / 上限 / 双上限提示
+      expect(tooBig.failure.message).toContain('当前 10.00 MB / 上限 10 MB');
+      expect(tooBig.failure.message).toContain('文件上限 10 MB，正文上限 200 万字符');
+    }
     const empty = parseImportFile('e.md', '   ');
     expect(empty.ok).toBe(false);
     if (!empty.ok) expect(empty.failure.error).toBe('EMPTY');
@@ -83,6 +93,11 @@ describe('解析层（纯函数）', () => {
     expect(view.suggestions.join(' ')).toContain('改标题');
     expect(view.suggestions.join(' ')).toContain('后缀');
     expect(importErrorView('IMPORT_BODY_TOO_LONG', '').text).toContain('上限');
+    // IMPORT-LIMIT-W：与服务端两码对齐，文案带双上限
+    expect(importErrorView('IMPORT_BODY_TOO_LONG', '').text).toContain('200 万字符');
+    const tooLarge = importErrorView('IMPORT_TOO_LARGE', '');
+    expect(tooLarge.text).toContain('文件上限 10 MB，正文上限 200 万字符');
+    expect(tooLarge.suggestions.length).toBeGreaterThan(0);
   });
 });
 
@@ -108,6 +123,20 @@ describe('对话框行为', () => {
     expect(post).toHaveBeenCalledWith('/api/knowledge/pages/import', expect.objectContaining({ format: 'md' }));
   });
 
+  it('IMPORT-LIMIT-W：大文件（>2MB）先显示「解析中…」，解析完成后进入预览', async () => {
+    const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      cb(0);
+      return 1 as unknown as number;
+    });
+    render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
+    const big = `# 大文件\n${'行内容\n'.repeat(400_000)}`;
+    upload(big, 'big.md');
+    // 解析中态出现过（rAF 让出一帧后才解析）
+    await waitFor(() => expect(screen.getByTestId('kb-import-parsing')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('kb-import-meta')).toBeInTheDocument());
+    expect((screen.getByTestId('kb-import-title') as HTMLInputElement).value).toBe('大文件');
+    rafSpy.mockRestore();
+  });
   it('json 数组逐条列出，取消一条后只提交剩余条目', async () => {
     const post = vi.spyOn(client.api, 'post' as never).mockResolvedValue({ pages: [{ id: 'p1' }] } as never);
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
@@ -180,3 +209,4 @@ describe('对话框行为', () => {
     expect(suggestions).toHaveTextContent('后缀');
   });
 });
+

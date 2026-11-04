@@ -64,6 +64,8 @@ export function KnowledgeImportDialog({
   const [landed, setLanded] = useState('');
   const [title, setTitle] = useState('');
   const [dragging, setDragging] = useState(false);
+  /** IMPORT-LIMIT-W：大文件（>2MB）解析前先亮「解析中…」，避免主线程被同步解析占满时界面像卡死 */
+  const [parsing, setParsing] = useState(false);
   // KBIMP-2B：逐条导入结果（成功带页 id / 失败带 error_code 与服务端 message）
   const [results, setResults] = useState<ImportRowResult[]>([]);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -79,8 +81,17 @@ export function KnowledgeImportDialog({
 
   const readFile = async (file: File): Promise<void> => {
     reset();
+    // IMPORT-LIMIT-W：大文件先亮「解析中…」并让出一帧再解析。
+    // 选 rAF 而非 startTransition：parseImportFile 是同步 CPU 工作，startTransition 只能降低
+    // React 状态更新的优先级、无法在解析中途让出主线程；rAF 能保证「解析中…」先真正绘制一帧。
+    const heavy = file.size > 2 * 1024 * 1024;
+    if (heavy) {
+      setParsing(true);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
     const content = await file.text();
     const result = parseImportFile(file.name, content);
+    if (heavy) setParsing(false);
     if (!result.ok) {
       setFailure(result.failure.message);
       return;
@@ -171,8 +182,14 @@ export function KnowledgeImportDialog({
             className="hidden"
             onChange={(event) => { const file = event.target.files?.[0]; if (file) void readFile(file); }}
           />
-          <p className="mt-1">单文件上限 1 MB；JSON 支持单对象或数组（≤100 条）</p>
+          <p className="mt-1">文件上限 10 MB，正文上限 200 万字符；JSON 支持单对象或数组（≤100 条）</p>
         </div>
+
+        {parsing && (
+          <p role="status" data-testid="kb-import-parsing" className="rounded-md border border-hairline bg-surface-card px-2 py-1.5 text-xs text-ink-2">
+            解析中…（大文件需要几秒，请不要重复选择文件）
+          </p>
+        )}
 
         {failure !== null && (
           <p role="alert" data-testid="kb-import-failure" className="rounded-md border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
