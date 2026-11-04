@@ -10,13 +10,12 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSortable } from '@dnd-kit/sortable';
-import type { Issue, IssueStatus, Workspace } from '@agentboard/shared';
+import type { Issue, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useAppStore } from '../../state/appStore';
 import { RemoveWorkspaceDialog } from './RemoveWorkspaceDialog';
 import { GRAB_CURSOR } from '../../lib/cursor';
-
-const STATUS_ORDER: IssueStatus[] = ['待规划', '进行中', '待验收', '已关闭'];
+import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 
 export function WorkspaceCard({
   workspace,
@@ -49,10 +48,20 @@ export function WorkspaceCard({
     transition: sortable.transition,
   };
 
-  const counts = new Map<IssueStatus, number>(STATUS_ORDER.map((s) => [s, 0]));
+  // SYS2：统计格读工作区状态字典（含「已废弃」与自定义状态），不再写死四列；
+  // 字典外的历史状态归「其他」，保证统计加总 = 该工作区任务总数。
+  const { names: statusNames } = useWorkspaceStatuses(workspace.id);
+  const counts = new Map<string, number>(statusNames.map((s) => [s, 0]));
+  let otherCount = 0;
   for (const issue of issues ?? []) {
-    counts.set(issue.status, (counts.get(issue.status) ?? 0) + 1);
+    const key = issue.status as string;
+    if (counts.has(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
+    else otherCount += 1;
   }
+  const statCells = statusNames.map((name) => ({ key: name, label: name, count: counts.get(name) ?? 0 }));
+  if (otherCount > 0) statCells.push({ key: '其他', label: '其他', count: otherCount });
+  // 超过 4 格换行（3 列两行），不横向溢出
+  const statColumnClass = statCells.length <= 4 ? 'grid-cols-4' : 'grid-cols-3';
 
   return (
     <div
@@ -99,15 +108,15 @@ export function WorkspaceCard({
             >
               {workspace.path}
             </div>
-            <div className="mt-2 grid grid-cols-4 gap-1 text-center text-[11px]">
-              {STATUS_ORDER.map((status) => (
+            <div className={`mt-2 grid ${statColumnClass} gap-1 text-center text-[11px]`}>
+              {statCells.map((cell) => (
                 <div
-                  key={status}
-                  data-testid={`stat-${status}`}
+                  key={cell.key}
+                  data-testid={`stat-${cell.key}`}
                   className="rounded bg-surface-raised py-1"
                 >
-                  <div className="font-semibold">{counts.get(status) ?? 0}</div>
-                  <div className="whitespace-nowrap text-ink-3">{status}</div>
+                  <div className="font-semibold">{cell.count}</div>
+                  <div className="whitespace-nowrap text-ink-3">{cell.label}</div>
                 </div>
               ))}
             </div>

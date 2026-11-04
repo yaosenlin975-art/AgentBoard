@@ -5,11 +5,11 @@ import { ApiError, api } from '../../api/client';
 import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, type IssueTreeFilter } from '../../lib/issueTree';
 import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
-  ISSUE_STATUSES as STATUSES,
   invalidateIssueStatusCaches,
   manualStatusBlockedReason,
   patchIssueStatus,
 } from '../../lib/issueStatus';
+import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { IconLock } from '../ui/Icon';
@@ -42,14 +42,16 @@ export function IssueTreeView({
   query: string;
 }) {
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState<IssueStatus | 'all'>('all');
+  // SYS2：状态筛选读工作区状态字典（含「已废弃」与自定义状态），不再走写死的四值列表
+  const { names: statusNames } = useWorkspaceStatuses(workspaceId);
+  const [status, setStatus] = useState<string>('all');
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const [moveEditor, setMoveEditor] = useState<MoveEditorState | null>(null);
   // 标签筛选（多选 OR）与平铺看板共用同一份选择：按工作空间隔离
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId] ?? NO_SELECTED_LABELS);
   const filter = useMemo(
-    () => buildIssueTreeFilter(issues, status, query, selectedLabels),
+    () => buildIssueTreeFilter(issues, status as IssueStatus | 'all', query, selectedLabels),
     [issues, status, query, selectedLabels],
   );
   const openDetail = usePanelStore((state) => state.openDetail);
@@ -134,11 +136,11 @@ export function IssueTreeView({
           <select
             aria-label="按状态筛选"
             value={status}
-            onChange={(event) => setStatus(event.target.value as IssueStatus | 'all')}
+            onChange={(event) => setStatus(event.target.value as string)}
             className="max-w-full rounded border border-hairline bg-surface-card px-2 py-1 text-sm"
           >
             <option value="all">全部状态</option>
-            {STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
+            {statusNames.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
       </div>
@@ -331,6 +333,7 @@ function TaskTreeRow({
   onOpenDetail: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { names: statusOptions } = useWorkspaceStatuses(workspaceId);
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [savingCreate, setSavingCreate] = useState(false);
@@ -437,24 +440,24 @@ function TaskTreeRow({
           )}
         </div>
         <div className="col-start-2 flex min-w-0 flex-wrap items-center gap-1.5 sm:ml-auto sm:col-auto">
-          <span className="rounded bg-surface-raised px-1.5 py-0.5 text-xs text-ink-2">{item.status}</span>
           {item.claimed_by !== null && (
             <span data-testid={`tree-claim-${item.id}`} className={`rounded px-1.5 py-0.5 text-xs ${runningSession ? 'bg-accent-soft text-accent  ' : 'bg-surface-raised text-ink-2  '}`}>
               {item.claimed_by.replace(/^agent:/, '')}{runningSession ? ' · 运行中' : ' · 占用中'}
             </span>
           )}
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            <label className="sr-only" htmlFor={`tree-status-${item.id}`}>状态：{item.title}</label>
+            {/* V-04：状态徽标与下拉合并为一个可编辑胶囊，同一行状态只出现一次 */}
             <select
               id={`tree-status-${item.id}`}
               aria-label={`状态：${item.title}`}
               value={item.status}
               disabled={statusBlockedReason !== null}
-              title={statusBlockedReason ?? undefined}
+              title={statusBlockedReason ?? `状态：${item.status}`}
               onChange={(event) => void changeStatus(event.target.value as IssueStatus)}
-              className="max-w-full rounded border border-hairline bg-surface-card px-1.5 py-1 text-xs disabled:opacity-50"
+              className="max-w-full rounded-full border border-hairline bg-surface-raised px-2 py-0.5 text-xs text-ink-2 disabled:opacity-50"
             >
-              {STATUSES.map((value) => (
+              {!statusOptions.includes(item.status) && <option value={item.status}>{item.status}</option>}
+              {statusOptions.map((value) => (
                 <option key={value} value={value} disabled={value === '已关闭' && blockedClose}>{value}</option>
               ))}
             </select>

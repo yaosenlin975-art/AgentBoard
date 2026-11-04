@@ -7,8 +7,13 @@
 import type { QueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus } from '@agentboard/shared';
 import { api } from '../api/client';
+import { BUILTIN_STATUS_NAMES } from './workspaceStatuses';
 
-export const ISSUE_STATUSES: readonly IssueStatus[] = ['待规划', '进行中', '待验收', '已关闭'];
+/**
+ * SYS2：状态名唯一来源是工作区状态字典（`workspaceStatuses.ts` 的 `BUILTIN_STATUS_NAMES`）。
+ * 这里只保留兼容导出（旧调用点仍可 import），不再维护独立列表。
+ */
+export const ISSUE_STATUSES: readonly string[] = BUILTIN_STATUS_NAMES;
 
 /** 只有 agent 流程能离开的状态 */
 const FLOW_ONLY_STATUS: IssueStatus = '进行中';
