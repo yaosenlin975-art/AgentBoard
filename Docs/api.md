@@ -84,6 +84,21 @@
 
 启动首行日志会打印实际生效的库路径与来源：`listening http://… db=<path> db_source=<env|settings|default> attachments=<dir>`；附件目录恒为 `dirname(db)/attachments`，DB 路径一变自动跟随。
 
+### DB-2 迁移引擎（`services/dbMigration.ts`，服务层；无新增端点）
+
+把「当前库 + 附件目录」整体搬到新位置：**前置检查 → 一致性快照 → 附件逐文件校验 → 写设置 → 重启 → 自检**。
+
+| 阶段 | 行为 | 失败码 |
+| --- | --- | --- |
+| 前置检查 | 目标目录可写（写探针）、剩余空间 ≥ (db + `-wal` + `-shm` + attachments) × **1.2**、目标已有同名库必须显式 `overwrite=true` | `DB_MIGRATION_TARGET_UNWRITABLE` / `DB_MIGRATION_NO_SPACE` / `DB_MIGRATION_TARGET_EXISTS` |
+| 一致性快照 | SQLite 用 **`VACUUM INTO`**（带 WAL 未 checkpoint 内容，不改源库）；无句柄时退化为 copy + `-wal`/`-shm` **成对复制**（绝不只拷主文件） | `DB_MIGRATION_COPY_FAILED` |
+| 附件 | 整目录复制 + **逐文件 sha256**，文件数与总字节都要对上 | `DB_MIGRATION_VERIFY_FAILED` |
+| 切换 | 写设置（持久化键 `dbPath`，对外 `db_path`）→ `POST /api/system/restart` → 启动后自检（表数/卡数/附件数） | 自检不过 → 回滚到旧路径 |
+| 失败 | **旧路径不变**：目标侧半成品（库 + sidecar + 目标附件目录）被清掉，`.bak-<ts>.json` 不生成；全部失败态 `retryable: true` | 上述固定码 |
+| 成功 | 生成 `<newDbPath>.bak-<ts>.json` 标记；旧文件由 `cleanupOldDbFiles` 移入 `<bak>.old/`（保留供回滚），**自检通过后才清理** | — |
+
+命名边界：`.bak-<ts>` / 本文件的迁移快照属**数据库迁移域**；`security/<uuid>`（B6）属设备身份域；`ClientSnapshotManifest`（B4S-2）属客户端账号域，三者不复用类型。
+
 ## 6. issues
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
