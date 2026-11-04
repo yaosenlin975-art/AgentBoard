@@ -228,6 +228,8 @@ export const failSchema = z.object({
 export const addDependencySchema = z.object({
   workspace_id: z.string().trim().min(1, '缺少 workspace_id'),
   blocker_issue_id: z.string().trim().min(1, 'blocker_issue_id 不能为空'),
+  // BORROW-2.1：依赖边类型；缺省 blocks（原 DEP-1 语义不变）；related/duplicate 不参与环检测
+  relation: z.enum(['blocks', 'related', 'duplicate']).optional(),
 });
 
 export const dependencyQuerySchema = z.object({

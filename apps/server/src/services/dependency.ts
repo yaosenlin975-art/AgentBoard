@@ -47,7 +47,7 @@ const DEPENDENCY_ROW_SQL = (where: string): string => `SELECT i.id, i.title, i.s
     FROM issue_dependency d
     JOIN issue i ON i.id = ${where === 'blocked' ? 'd.blocker_issue_id' : 'd.blocked_issue_id'}
     LEFT JOIN workspace_status ws ON ws.workspace_id = i.workspace_id AND ws.name = i.status
-   WHERE d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
+   WHERE d.relation = 'blocks' AND d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
 
 /** 单个任务的双向依赖视图（GET /dependencies；CLI/MCP 复用） */
 export function listDependencies(db: Db, issueId: string): DependencyView {
@@ -87,6 +87,7 @@ export function blockedByAggregateJoin(): string {
         FROM issue_dependency d
         JOIN issue b ON b.id = d.blocker_issue_id
         LEFT JOIN workspace_status ws ON ws.workspace_id = b.workspace_id AND ws.name = b.status
+       WHERE d.relation = 'blocks'
        GROUP BY d.blocked_issue_id
     ) dep ON dep.dep_issue_id = i.id`;
 }
@@ -111,21 +112,27 @@ function assertEdgeBudget(db: Db, issueId: string): void {
 /** 插入后会成环？从 blocker 沿「前置的前置」上溯，能到达 blocked 即成环（与触发器同一条 CTE） */
 function wouldCreateCycle(db: Db, blockedIssueId: string, blockerIssueId: string): boolean {
   const hit = db.prepare(`WITH RECURSIVE ancestors(id) AS (
-      SELECT blocker_issue_id FROM issue_dependency WHERE blocked_issue_id = ?
+      SELECT blocker_issue_id FROM issue_dependency WHERE blocked_issue_id = ? AND relation = 'blocks'
       UNION
       SELECT d.blocker_issue_id FROM issue_dependency d JOIN ancestors a ON d.blocked_issue_id = a.id
+      WHERE d.relation = 'blocks'
     ) SELECT 1 AS hit FROM ancestors WHERE id = ? LIMIT 1`).get(blockerIssueId, blockedIssueId);
   return hit !== undefined;
 }
 
 export interface AddDependencyInput { blocked_issue_id: string; blocker_issue_id: string; workspace_id: string }
 
+/** BORROW-2.1：依赖边类型——blocks 参与门禁/计数/环检测；related/duplicate 是纯标注边 */
+export type DependencyRelation = 'blocks' | 'related' | 'duplicate';
+export const DEPENDENCY_RELATIONS: readonly DependencyRelation[] = ['blocks', 'related', 'duplicate'];
+
 /**
- * 建边：服务层先判全部错误码（跨区/自环/重复/成环/占用），触发器只兜底。
- * 已占用的卡不得新增前置（§17-B4，文案要求先 release）。
+ * 建边（BORROW-2.1 泛化）：服务层先判全部错误码（跨区/自环/重复），触发器只兜底。
+ * blocks 独有守卫：占用中禁新增前置（§17-B4）、父子反向死锁、成环、前置数上限——
+ * related/duplicate 不参与环检测与流程门禁，一律放行（除基础校验外）。
  */
-export function addDependency(db: Db, input: AddDependencyInput): DependencyView {
-  const { blocked_issue_id: blockedId, blocker_issue_id: blockerId, workspace_id: workspaceId } = input;
+export function addRelation(db: Db, input: AddDependencyInput & { relation: DependencyRelation }): DependencyView {
+  const { blocked_issue_id: blockedId, blocker_issue_id: blockerId, workspace_id: workspaceId, relation } = input;
   return db.transaction(() => {
     const blocked = getIssue(db, blockedId, workspaceId);
     if (!blocked) throw new NotFoundError('任务不存在');
@@ -133,20 +140,28 @@ export function addDependency(db: Db, input: AddDependencyInput): DependencyView
     const blocker = getIssue(db, blockerId);
     if (!blocker) throw new NotFoundError('前置任务不存在');
     if (blocker.workspace_id !== workspaceId) throw new ApiError(400, 'CROSS_WORKSPACE_DEPENDENCY', '不支持跨工作区依赖');
-    if (blocked.claimed_by !== null) throw new ApiError(409, 'ISSUE_CLAIMED', '任务已被占用，请先 release 再新增前置');
+    // 重复边判定先于 blocks 专属守卫（原顺序：重复报 DEPENDENCY_EXISTS，不得被「成环」文案遮蔽）
     const exists = db.prepare('SELECT 1 FROM issue_dependency WHERE blocked_issue_id=? AND blocker_issue_id=?').get(blockedId, blockerId);
     if (exists) throw new ApiError(409, 'DEPENDENCY_EXISTS', '该依赖已存在');
-    // DEP-GUARD：父子反向依赖的流程死锁——blocker 是 blocked 的祖先（父卡等子卡全完才 done），
-    // 再让子卡把父卡设为前置 → 双向互等，整条链锁死。反向（父卡依赖子卡）语义合理，放行。
-    if (isIssueDescendant(db, blockerId, blockedId)) {
-      throw new ApiError(409, 'DEPENDENCY_PARENT_CYCLE', '子卡不能依赖其父/祖先卡（父卡需等子卡完成，会形成流程死锁）');
+    if (relation === 'blocks') {
+      if (blocked.claimed_by !== null) throw new ApiError(409, 'ISSUE_CLAIMED', '任务已被占用，请先 release 再新增前置');
+      // DEP-GUARD：父子反向依赖的流程死锁——blocker 是 blocked 的祖先（父卡等子卡全完才 done），
+      // 再让子卡把父卡设为前置 → 双向互等，整条链锁死。反向（父卡依赖子卡）语义合理，放行。
+      if (isIssueDescendant(db, blockerId, blockedId)) {
+        throw new ApiError(409, 'DEPENDENCY_PARENT_CYCLE', '子卡不能依赖其父/祖先卡（父卡需等子卡完成，会形成流程死锁）');
+      }
+      if (wouldCreateCycle(db, blockedId, blockerId)) throw new ApiError(409, 'DEPENDENCY_CYCLE', '依赖会成环，已拒绝');
+      assertEdgeBudget(db, blockedId);
     }
-    if (wouldCreateCycle(db, blockedId, blockerId)) throw new ApiError(409, 'DEPENDENCY_CYCLE', '依赖会成环，已拒绝');
-    assertEdgeBudget(db, blockedId);
-    db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, created_at) VALUES (?,?,?)')
-      .run(blockedId, blockerId, Date.now());
+    db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?,?,?)')
+      .run(blockedId, blockerId, relation, Date.now());
     return listDependencies(db, blockedId);
   }).immediate();
+}
+
+/** 兼容入口：默认建 blocks 边（原 DEP-1 语义不变） */
+export function addDependency(db: Db, input: AddDependencyInput): DependencyView {
+  return addRelation(db, { ...input, relation: 'blocks' });
 }
 
 /** 删边：不存在 → 404 */
@@ -167,7 +182,7 @@ export function removeDependency(db: Db, input: { blocked_issue_id: string; bloc
  */
 export function unlockCommentsForDeletedBlocker(db: Db, blockerId: string) {
   const title = getIssue(db, blockerId)?.title ?? '前置任务';
-  const rows = db.prepare('SELECT blocked_issue_id FROM issue_dependency WHERE blocker_issue_id=?').all(blockerId) as Array<{ blocked_issue_id: string }>;
+  const rows = db.prepare("SELECT blocked_issue_id FROM issue_dependency WHERE blocker_issue_id=? AND relation='blocks'").all(blockerId) as Array<{ blocked_issue_id: string }>;
   const content = `前置 ${title}(${shortIssueId(blockerId)}) 已删除，依赖自动解除`;
   return rows.map(({ blocked_issue_id: blockedId }) => {
     const comment = insertCommentRow(db, { issue_id: blockedId, author: 'system', content });
