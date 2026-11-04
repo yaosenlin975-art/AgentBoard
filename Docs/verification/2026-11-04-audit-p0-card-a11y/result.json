@@ -1,0 +1,41 @@
+{
+ "tabOrder": [
+  "sidebar-entry-board",
+  "sidebar-entry-tree",
+  "sidebar-entry-knowledge",
+  "sidebar-entry-log",
+  "sidebar-entry-chat",
+  "topbar-accounts",
+  "topbar-settings",
+  "topbar-theme",
+  "board-search",
+  "label-filter-安全",
+  "label-filter-编码",
+  "label-filter-并发"
+ ],
+ "focusCard": {
+  "testid": "issue-card-6549eb8d-d38b-444f-882c-3e5b5663c992",
+  "role": "button",
+  "tabIndex": 0,
+  "outlineWidth": "2px",
+  "outlineColor": "rgb(31, 27, 22)",
+  "outlineStyle": "solid",
+  "visible": true,
+  "ariaHiddenAncestor": false
+ },
+ "detail": {
+  "before": "closed",
+  "afterEnter": "open",
+  "spaceOpen": "closed"
+ },
+ "dragPath": "maybe",
+ "darkRing": {
+  "outlineWidth": "2px",
+  "outlineColor": "rgb(239, 233, 222)"
+ },
+ "reducedRing": {
+  "outlineWidth": "2px",
+  "outlineColor": "rgb(240, 161, 31)",
+  "transition": "0.15s"
+ }
+}

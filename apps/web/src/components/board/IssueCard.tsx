@@ -192,9 +192,29 @@ export function IssueCard({ issue, sessionRunning }: { issue: Issue; sessionRunn
       data-testid={`issue-card-${issue.id}`}
       aria-disabled={claimed || undefined}
       title={claimed ? '占用中，不可拖动' : undefined}
+      // AUDIT-P0（I-01）：卡片本身可 Tab 聚焦、可 Enter/Space 打开详情，并且 focus-visible 有可见描边。
+      // Space 的归属见 onKeyDown 注释：未占用卡片的 Space 留给 dnd-kit 键盘抓取，不抢。
+      role="button"
+      tabIndex={0}
+      aria-label={`打开任务：${issue.title}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          openDetail(issue.id);
+          return;
+        }
+        // Space：dnd-kit 的 KeyboardSensor 用 Space 抓取（未占用卡片）。占用中卡片不可拖，
+        // 此时 Space 没有拖拽语义，按「打开详情」处理，避免键盘用户按 Space 无反应。
+        if (event.key === ' ' || event.key === 'Spacebar') {
+          if (claimed) {
+            event.preventDefault();
+            openDetail(issue.id);
+          }
+        }
+      }}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`${CARD_CLASS} ${isDragging ? 'opacity-50' : ''}`}
+      className={`${CARD_CLASS} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isDragging ? 'opacity-50' : ''}`}
     >
       <IssueCardPriority issue={issue} />
       <div
