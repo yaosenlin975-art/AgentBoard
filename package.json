@@ -7,6 +7,8 @@
     "node": ">=20"
   },
   "scripts": {
+    "prebuild": "node scripts/check-bom.mjs",
+    "build": "pnpm -r build",
     "test": "pnpm -r test",
     "server:ensure": "node scripts/server-detached.mjs",
     "dev:test-page": "node scripts/dev-page.mjs",
