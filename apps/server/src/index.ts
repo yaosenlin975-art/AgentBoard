@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { attachmentsDirFor, loadConfig, readSettings, type AgentBoardRuntimeConfig } from './config.js';
+import { attachmentsDirFor, loadConfig, readSettings, type AgentBoardRuntimeConfig, type DbPathSource } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
@@ -93,6 +93,15 @@ export interface CreateAppOptions {
   draftTimeoutMs?: number;
   /** VOICE-1：语音模型管理依赖（仅测试注入；生产走默认 catalog/目录/fetch） */
   voice?: VoiceRouterOptions;
+  /** DB-2B：迁移编排注入（生产全部走默认值；测试注入临时状态目录/退出 spy） */
+  dbMigration?: {
+    stateDir?: string;
+    dbPath?: string;
+    attachmentStorageDir?: string;
+    dbPathSource?: DbPathSource;
+    exit?: (code: number) => void;
+    schedule?: (fn: () => void, ms: number) => void;
+  };
   /** Private image storage directory; production defaults under AgentBoard config dir. */
   attachmentStorageDir?: string;
   attachmentQuotaBytes?: number;
@@ -138,6 +147,17 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   const minimaxProvider = options.desktopProviders?.minimax
     ?? new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), serverIdentityProbe: createMinimaxServerIdentityProbe(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) });
 
+  // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
+  const migration = options.dbMigration ?? {};
+  const migrationDeps = {
+    ...(migration.stateDir !== undefined ? { dbMigrationStateDir: migration.stateDir } : {}),
+    ...(migration.dbPath !== undefined ? { dbPath: migration.dbPath } : {}),
+    ...(migration.attachmentStorageDir !== undefined ? { attachmentStorageDir: migration.attachmentStorageDir } : {}),
+    ...(migration.dbPathSource !== undefined ? { dbPathSource: migration.dbPathSource } : {}),
+    ...(migration.exit !== undefined ? { dbMigrationExit: migration.exit } : {}),
+    ...(migration.schedule !== undefined ? { dbMigrationSchedule: migration.schedule } : {}),
+  };
+
   if (options.refreshClisOnBoot !== false) {
     await refreshClis(options.adapters ?? ADAPTERS);
     hub.broadcast({ type: 'clis.changed', clis: getCachedClis() });
@@ -151,13 +171,16 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
       await createKnowledgeImageStore({ db }).sweepOrphans();
     } catch { /* 回收失败不影响服务 */ }
   })();
+  // KBIMP-1B：导入端点单独放宽请求体上限。全局 parser 在路由之前执行，100kb 会先把
+  // 「单次 ≤1MB / 单页 ≤100000 字符」的导入判成 413，路由级 parser 永远拿不到 body。
+  app.use('/api/knowledge/pages/import', express.json({ limit: '2mb' }));
   app.use(express.json());
   // 所有 /api 响应带版本头（含后续抛错路径——setHeader 在响应发出前始终生效），供 CLI 零额外请求比对
   app.use('/api', (_req, res, next) => {
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: minimaxProvider }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: minimaxProvider }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

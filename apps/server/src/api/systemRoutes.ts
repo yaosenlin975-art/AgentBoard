@@ -152,67 +152,85 @@ async function defaultWaitForHealth(port: number, newPid: number | null, timeout
   return false;
 }
 
+/** 重启结果：ok=false 时调用方决定 HTTP 状态（内部调用方据 code 判定） */
+export type RestartOutcome =
+  | { ok: true; old_pid: number; new_pid: number | null; log_path: string; started_at: number }
+  | { ok: false; status: number; code: 'RESTART_ENTRY_MISSING' | 'RESTART_PORT_CONFLICT' | 'RESTART_SPAWN_FAILED'; message: string };
+
+/**
+ * 执行一次自重启（不含 HTTP 与回环校验，供路由与内部编排共用）。
+ * ok=true 表示新进程已拉起、202 该发了；真正的交接（关监听 → 健康判定 → 退出/回退）在 200ms 后开始。
+ */
+export async function performRestart(deps: RestartDeps): Promise<RestartOutcome> {
+  const selfPid = (deps.pid ?? (() => process.pid))();
+  const logPath = (deps.logPath ?? resolveServerLogPath)();
+  const log = deps.log ?? ((line: string) => appendServerLog(line, logPath));
+  const port = (deps.port ?? (() => Number(process.env.AGENTBOARD_PORT ?? 8787)))();
+
+  const entry = (deps.entry ?? defaultEntry)();
+  if (!entry.exists) {
+    return { ok: false, status: 500, code: 'RESTART_ENTRY_MISSING', message: '未找到服务入口脚本，服务未重启' };
+  }
+
+  // 1) 端口前置检查：被别的进程占着就别先杀自己
+  const probe = await (deps.probePort ?? (() => defaultProbePort(port, selfPid)))();
+  if (probe.kind === 'foreign') {
+    const detail = probe.detail ?? ('端口 ' + port + ' 被其它进程占用');
+    log('重启已拒绝：' + detail + '；旧进程 ' + selfPid + ' 继续服务');
+    return { ok: false, status: 409, code: 'RESTART_PORT_CONFLICT', message: detail + '，未重启；旧进程 ' + selfPid + ' 继续服务' };
+  }
+
+  // 2) 拉起新进程（stdio 已重定向到固定日志）
+  let newPid: number | null = null;
+  try {
+    newPid = (await (deps.spawnChild ?? ((command, args) => spawnDetached(command, args, logPath)))(entry.command, entry.args)).pid;
+  } catch {
+    return { ok: false, status: 500, code: 'RESTART_SPAWN_FAILED', message: '新进程启动失败，旧进程继续服务' };
+  }
+
+  // 3) 交接：先让调用方回 202（closeAllConnections 会掐断在途响应），200ms 后关监听并判定
+  const startedAt = (deps.now ?? Date.now)();
+  log('即将重启：旧进程 ' + selfPid + ' → 新进程 ' + (newPid ?? '未知') + '，日志 ' + logPath);
+  const timeoutMs = deps.healthTimeoutMs ?? 15_000;
+  (deps.schedule ?? ((fn, ms) => { setTimeout(fn, ms); }))(() => {
+    void (async () => {
+      try { await deps.closeServer?.(); } catch { /* 关闭失败也要继续判定，交给新进程 */ }
+      const healthy = await (deps.waitForHealth ?? ((pid, ms) => defaultWaitForHealth(port, pid, ms)))(newPid, timeoutMs);
+      if (healthy) {
+        log('重启完成：新进程 ' + (newPid ?? '未知') + ' 已接管端口 ' + port);
+        (deps.exit ?? (code => process.exit(code)))(0);
+        return;
+      }
+      log('重启失败：新进程 ' + (newPid ?? '未知') + ' 未在 ' + timeoutMs + 'ms 内接管端口 ' + port + '，回退旧进程 ' + selfPid + ' 监听（日志 ' + logPath + '）');
+      try {
+        await deps.reopenServer?.();
+        log('已回退：旧进程 ' + selfPid + ' 重新监听端口 ' + port);
+      } catch (error) {
+        log('回退失败：旧进程 ' + selfPid + ' 无法重新监听端口 ' + port + '（' + (error instanceof Error ? error.message : String(error)) + '），服务不可用');
+      }
+    })();
+  }, 200);
+  return { ok: true, old_pid: selfPid, new_pid: newPid, log_path: logPath, started_at: startedAt };
+}
+
 export function createRestartHandler(deps: RestartDeps) {
   return async (req: Request, res: Response): Promise<void> => {
     if (!isLoopbackAddress(req.ip)) {
       res.status(403).json({ error: { code: 'RESTART_FORBIDDEN', message: '仅允许本机回环地址触发重启' } });
       return;
     }
-    const selfPid = (deps.pid ?? (() => process.pid))();
-    const logPath = (deps.logPath ?? resolveServerLogPath)();
-    const log = deps.log ?? ((line: string) => appendServerLog(line, logPath));
-    const port = (deps.port ?? (() => Number(process.env.AGENTBOARD_PORT ?? 8787)))();
-
-    const entry = (deps.entry ?? defaultEntry)();
-    if (!entry.exists) {
-      res.status(500).json({ error: { code: 'RESTART_ENTRY_MISSING', message: '未找到服务入口脚本，服务未重启' } });
+    const outcome = await performRestart(deps);
+    if (!outcome.ok) {
+      res.status(outcome.status).json({ error: { code: outcome.code, message: outcome.message } });
       return;
     }
-
-    // 1) 端口前置检查：被别的进程占着就别先杀自己
-    const probe = await (deps.probePort ?? (() => defaultProbePort(port, selfPid)))();
-    if (probe.kind === 'foreign') {
-      const detail = probe.detail ?? `端口 ${port} 被其它进程占用`;
-      log(`重启已拒绝：${detail}；旧进程 ${selfPid} 继续服务`);
-      res.status(409).json({
-        error: { code: 'RESTART_PORT_CONFLICT', message: `${detail}，未重启；旧进程 ${selfPid} 继续服务` },
-      });
-      return;
-    }
-
-    // 2) 拉起新进程（stdio 已重定向到固定日志）
-    let newPid: number | null = null;
-    try {
-      newPid = (await (deps.spawnChild ?? ((command, args) => spawnDetached(command, args, logPath)))(entry.command, entry.args)).pid;
-    } catch {
-      res.status(500).json({ error: { code: 'RESTART_SPAWN_FAILED', message: '新进程启动失败，旧进程继续服务' } });
-      return;
-    }
-
-    // 3) 先回 202（closeAllConnections 会掐断在途响应），再交接
-    const startedAt = (deps.now ?? Date.now)();
-    log(`即将重启：旧进程 ${selfPid} → 新进程 ${newPid ?? '未知'}，日志 ${logPath}`);
-    res.status(202).json({ restarting: true, old_pid: selfPid, new_pid: newPid, log_path: logPath, started_at: startedAt });
-
-    const timeoutMs = deps.healthTimeoutMs ?? 15_000;
-    (deps.schedule ?? ((fn, ms) => { setTimeout(fn, ms); }))(() => {
-      void (async () => {
-        try { await deps.closeServer?.(); } catch { /* 关闭失败也要继续判定，交给新进程 */ }
-        const healthy = await (deps.waitForHealth ?? ((pid, ms) => defaultWaitForHealth(port, pid, ms)))(newPid, timeoutMs);
-        if (healthy) {
-          log(`重启完成：新进程 ${newPid ?? '未知'} 已接管端口 ${port}`);
-          (deps.exit ?? (code => process.exit(code)))(0);
-          return;
-        }
-        log(`重启失败：新进程 ${newPid ?? '未知'} 未在 ${timeoutMs}ms 内接管端口 ${port}，回退旧进程 ${selfPid} 监听（日志 ${logPath}）`);
-        try {
-          await deps.reopenServer?.();
-          log(`已回退：旧进程 ${selfPid} 重新监听端口 ${port}`);
-        } catch (error) {
-          log(`回退失败：旧进程 ${selfPid} 无法重新监听端口 ${port}（${error instanceof Error ? error.message : String(error)}），服务不可用`);
-        }
-      })();
-    }, 200);
+    res.status(202).json({
+      restarting: true,
+      old_pid: outcome.old_pid,
+      new_pid: outcome.new_pid,
+      log_path: outcome.log_path,
+      started_at: outcome.started_at,
+    });
   };
 }
 

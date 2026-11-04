@@ -91,14 +91,18 @@ describe('GET /api/settings', () => {
   it('文件缺失 → 默认值，且不写回文件', async () => {
     const res = await request(app).get('/api/settings');
     expect(res.status).toBe(200);
+    // DB-1：对外规范名 db_path 与既有 dbPath 同值共存（两者都在，语义一致）
     expect(res.body).toEqual({
       port: DEFAULT_PORT,
       dbPath: defaultDbPath(),
+      db_path: defaultDbPath(),
       maxConcurrentTurns: DEFAULT_MAX_CONCURRENT_TURNS,
       attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
     });
+    expect(res.body.db_path).toBe(res.body.dbPath);
+    // 落盘只写持久化键 dbPath，不写对外别名
     expect(existsSync(configFilePath())).toBe(false);
   });
 
@@ -109,11 +113,13 @@ describe('GET /api/settings', () => {
     expect(res.body).toEqual({
       port: 9000,
       dbPath: 'D:\\db\\a.db',
+      db_path: 'D:\\db\\a.db',
       maxConcurrentTurns: 5,
       attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
     });
+    expect(res.body.db_path).toBe(res.body.dbPath);
   });
 
   it('环境变量 AGENTBOARD_PORT 不参与（端点只反映文件持久化值）', async () => {
@@ -142,9 +148,11 @@ describe('PATCH /api/settings', () => {
         attachmentCleanupIntervalMs: 10000,
       });
     expect(res.status).toBe(200);
+    // PATCH 响应与 GET 同形（含对外 db_path），二者可直接比较
     expect(res.body).toEqual({
       port: 9001,
       dbPath: 'D:\\db\\new.db',
+      db_path: 'D:\\db\\new.db',
       maxConcurrentTurns: 2,
       attachmentQuotaBytes: 2048,
       attachmentStagedTtlMs: 5000,
@@ -154,7 +162,10 @@ describe('PATCH /api/settings', () => {
     const again = await request(app).get('/api/settings');
     expect(again.status).toBe(200);
     expect(again.body).toEqual(res.body);
-    expect(JSON.parse(readFileSync(configFilePath(), 'utf8'))).toEqual(res.body);
+    // 文件里只落持久化键 dbPath（db_path 是纯对外别名）
+    const persisted = JSON.parse(readFileSync(configFilePath(), 'utf8')) as Record<string, unknown>;
+    expect(persisted).toEqual({ ...res.body, db_path: undefined });
+    expect(persisted.db_path).toBeUndefined();
   });
 
   it('port=0 / port=70000 / maxConcurrentTurns=0 / 空体 → 400 且文件不变', async () => {

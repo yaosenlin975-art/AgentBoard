@@ -9,7 +9,7 @@ import { statSync } from 'node:fs';
 import express, { Router } from 'express';
 import { createKnowledgeRouter } from './knowledgeRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
-import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
+import { createSystemRouter, performRestart, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
@@ -54,6 +54,13 @@ import {
 import { listMessagesBySession, deleteMessagesBySession } from '../db/repos/message.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { SERVER_VERSION } from '../version.js';
+import {
+  describeMigrationError,
+  getMigrationStatus,
+  isMigrationActive,
+  orchestrateMigration,
+  runBootSelfCheck,
+} from '../services/dbMigration.js';
 import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
@@ -68,7 +75,7 @@ import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/i
 import { dispatchIssue } from '../services/dispatch.js';
 import { createSession, forgetSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
-import { readSettings, writeSettings } from '../config.js';
+import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
 import {
   addCommentSchema,
   claimSchema,
@@ -82,6 +89,7 @@ import {
   patchIssueSchema,
   patchSessionSchema,
   patchSettingsSchema,
+  dbMigrateSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
   addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
@@ -108,6 +116,18 @@ export interface RouterDeps {
   draftRunner?: DraftRunner;
   /** SMART-CREATE：草稿生成超时（ms，仅测试注入；生产 120s） */
   draftTimeoutMs?: number;
+  /** DB-2B：迁移编排的固定状态目录（缺省 configDir()；测试注入临时目录） */
+  dbMigrationStateDir?: string;
+  /** DB-2B：当前进程实际使用的库路径（缺省 db.name；测试注入） */
+  dbPath?: string;
+  /** DB-2B：当前进程的附件目录（缺省 attachmentsDirFor(dbPath)） */
+  attachmentStorageDir?: string;
+  /** DB-2B：dbPath 来源（缺省按 AGENTBOARD_DB 是否设置推断） */
+  dbPathSource?: DbPathSource;
+  /** DB-2B：自检失败时的进程退出（缺省 process.exit；测试注入 spy） */
+  dbMigrationExit?: (code: number) => void;
+  /** DB-2B：自检通过后旧文件清理的重试调度（缺省 setTimeout；测试注入） */
+  dbMigrationSchedule?: (fn: () => void, ms: number) => void;
   /** VOICE-1：语音模型管理依赖（仅测试注入 catalog/fetch/freeBytes/rootDir；生产用默认值） */
   voice?: VoiceRouterOptions;
 }
@@ -330,6 +350,34 @@ function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftR
 export function createRouter(deps: RouterDeps): Router {
   const { db, getAdapter, broadcast, attachments } = deps;
   const router = Router();
+
+  // ---- DB-2B：迁移编排上下文 ----
+  // 状态目录固定（configDir），不随库路径漂移：新进程靠它读到旧进程写的待自检意图。
+  const migrationStateDir = deps.dbMigrationStateDir ?? configDir();
+  // db 可能是最小装配的替身（无 name）：此时迁移端点明确 503，不在构造期抛错
+  const currentDbPath: string | null = deps.dbPath ?? (typeof db.name === 'string' && db.name !== '' ? db.name : null);
+  const attachmentsDirOf = (dbPath: string): string => deps.attachmentStorageDir ?? attachmentsDirFor(dbPath);
+  const dbPathSource: DbPathSource = deps.dbPathSource ?? ((process.env.AGENTBOARD_DB ?? '') !== '' ? 'env' : 'settings');
+  const triggerRestart = async (): Promise<void> => {
+    if (!deps.restart) throw new Error('当前装配未启用服务重启');
+    const outcome = await performRestart(deps.restart);
+    if (!outcome.ok) throw new Error(outcome.message);
+  };
+
+  // 新进程启动钩子：有 pending 意图就自检；失败则回滚设置并退出本进程
+  // （旧进程健康判定会失败 → 重新监听旧库继续服务，即「重启回旧库」）。
+  if (currentDbPath !== null && isMigrationActive(migrationStateDir)) {
+    const boot = runBootSelfCheck({
+      stateDir: migrationStateDir,
+      currentDbPath,
+      sourceDb: db,
+      applySettings: (path) => { writeSettings({ dbPath: path }); },
+      ...(deps.dbMigrationSchedule !== undefined ? { schedule: deps.dbMigrationSchedule } : {}),
+    });
+    if (boot.handled && !boot.ok && boot.needsRestartToOldDb) {
+      (deps.dbMigrationExit ?? ((code: number) => process.exit(code)))(1);
+    }
+  }
   const effectiveWorkspace = (req: Request): string | undefined => req.body?.workspace_id ?? req.query.workspace_id;
   function mutation<T>(req: Request, perform: () => T) {
     return httpMutation(db, req, () => {
@@ -507,6 +555,11 @@ export function createRouter(deps: RouterDeps): Router {
   // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
   router.patch('/settings', (req, res) => {
     const body = parseBody(patchSettingsSchema, req.body);
+    // DB-2B：迁移进行中不接受直接改 db 路径（否则与新库切换打架）
+    if ((body.db_path !== undefined || body.dbPath !== undefined) && isMigrationActive(migrationStateDir)) {
+      const text = describeMigrationError('DB_MIGRATION_BUSY');
+      throw new ApiError(409, text.code, '迁移进行中，暂不接受直接修改 db 路径；请等迁移结束：' + text.message);
+    }
     // DB-1：db_path 是对外规范名；与 dbPath 同时出现且不一致时明确报错（不静默取一个）
     if (body.db_path !== undefined && body.dbPath !== undefined && body.db_path !== body.dbPath) {
       throw new ValidationError('db_path 与 dbPath 同时出现且不一致：请只传 db_path');
@@ -523,7 +576,58 @@ export function createRouter(deps: RouterDeps): Router {
       attachmentStagedTtlMs: next.attachmentStagedTtlMs,
       attachmentCleanupIntervalMs: next.attachmentCleanupIntervalMs,
     });
-    res.json(next);
+    // DB-1：响应与 GET /settings 同形（都带对外 db_path），避免同一资源两种形状
+    res.json({ ...next, db_path: next.dbPath });
+  });
+
+  // ---- DB-2B：数据库位置迁移编排 ----
+  // 顺序：preflight → snapshot → verify → switch → restart（旧进程）→ selfcheck → cleanup | rolled_back（新进程）。
+  // 自检在新进程启动时跑，故本端点只保证「已切换 + 已拉起新进程」；结果用 GET 状态查询。
+  router.post('/settings/db-path/migrate', async (req, res) => {
+    const body = parseBody(dbMigrateSchema, req.body);
+    if (dbPathSource === 'env') {
+      const text = describeMigrationError('DB_MIGRATION_ENV_OVERRIDDEN');
+      throw new ApiError(409, text.code, text.message);
+    }
+    if (isMigrationActive(migrationStateDir)) {
+      const text = describeMigrationError('DB_MIGRATION_BUSY');
+      throw new ApiError(409, text.code, text.message);
+    }
+    if (!deps.restart) {
+      const text = describeMigrationError('DB_MIGRATION_RESTART_UNAVAILABLE');
+      throw new ApiError(503, text.code, text.message);
+    }
+    if (currentDbPath === null) {
+      throw new ApiError(503, 'DB_MIGRATION_UNAVAILABLE', '当前装配拿不到数据库路径，迁移不可用');
+    }
+    const status = await orchestrateMigration({
+      fromDbPath: currentDbPath,
+      toDbPath: body.target_db_path,
+      fromAttachmentsDir: attachmentsDirOf(currentDbPath),
+      toAttachmentsDir: attachmentsDirFor(body.target_db_path),
+      ...(body.overwrite !== undefined ? { overwrite: body.overwrite } : {}),
+      stateDir: migrationStateDir,
+      sourceDb: db,
+      applySettings: (path) => { writeSettings({ dbPath: path }); },
+      triggerRestart,
+    });
+    if (status.ok === false) {
+      throw new ApiError(status.retryable ? 409 : 500, status.code ?? 'DB_MIGRATION_COPY_FAILED', status.message);
+    }
+    res.status(202).json({
+      migration_id: status.migration_id,
+      backup_dir: status.backup_dir,
+      stages: status.stages,
+      stage: status.stage,
+      message: status.message,
+    });
+  });
+
+  // 迁移状态：重启后由新进程读盘返回（内存表在重启时丢失）
+  router.get('/settings/db-path/migrate/:migrationId', (req, res) => {
+    const status = getMigrationStatus(migrationStateDir, req.params.migrationId);
+    if (status === null) throw new NotFoundError('迁移记录不存在');
+    res.json(status);
   });
 
   // ---- issues ----
@@ -988,21 +1092,26 @@ export function createRouter(deps: RouterDeps): Router {
 }
 
 /** 统一错误响应 {error:{code,message}}（ValidationError→400/NotFoundError→404/ConflictError→409/其余→500） */
-export function errorHandler(err: unknown, _req: Request, _res: Response, _next: NextFunction): void {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
   if (err instanceof ApiError) {
-    _res.status(err.status).json({ error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } });
+    res.status(err.status).json({ error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } });
     return;
   }
   if (err instanceof SyntaxError && (err as { status?: number }).status === 400) {
-    _res.status(400).json({ error: { code: 'INVALID_JSON', message: '请求体不是合法 JSON' } });
+    res.status(400).json({ error: { code: 'INVALID_JSON', message: '请求体不是合法 JSON' } });
     return;
   }
   if (typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.too.large') {
-    _res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单张图片不能超过 10 MiB' } });
+    // KBIMP-1B：导入端点的上限是 2 MiB 请求体，文案不能套用「单张图片」
+    if (req.path.startsWith('/api/knowledge/pages/import')) {
+      res.status(413).json({ error: { code: 'IMPORT_BODY_TOO_LARGE', message: '导入请求体过大（单次 ≤2 MiB）；单页正文上限 100000 字符' } });
+      return;
+    }
+    res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单张图片不能超过 10 MiB' } });
     return;
   }
   console.error('[agentboard] 未处理错误:', err);
-  _res.status(500).json({ error: { code: 'INTERNAL', message: '内部错误' } });
+  res.status(500).json({ error: { code: 'INTERNAL', message: '内部错误' } });
 }
 
 /** 未匹配的 /api 路由 → 404 JSON（避免落到静态托管） */
