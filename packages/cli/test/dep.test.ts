@@ -131,6 +131,8 @@ describe('kb dep', () => {
   it('mapsDependencyErrorCodesToOwnExitCodesAndMessages', async () => {
     const cases: Array<{ code: string; status: number; exit: number; text: string }> = [
       { code: 'DEPENDENCY_CYCLE', status: 409, exit: 2, text: '成环' },
+      // DEP-GUARD：子卡依赖父/祖先卡（流程死锁）——必须自带文案，别落到通用「已被占用（…）」前缀
+      { code: 'DEPENDENCY_PARENT_CYCLE', status: 409, exit: 2, text: '流程死锁' },
       { code: 'DEPENDENCY_EXISTS', status: 409, exit: 2, text: '已存在' },
       { code: 'ISSUE_CLAIMED', status: 409, exit: 2, text: '请先释放占用' },
       { code: 'CROSS_WORKSPACE_DEPENDENCY', status: 400, exit: 3, text: '不支持跨工作区依赖' },

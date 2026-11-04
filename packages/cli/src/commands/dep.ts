@@ -18,6 +18,8 @@ export interface DependencyView { blockers: DependencyRef[]; blocked: Dependency
 
 const EXIT_CODES: Record<string, number> = {
   DEPENDENCY_CYCLE: 2,
+  // DEP-GUARD：子卡依赖父/祖先卡（流程死锁）——与成环同为 409 语义冲突，退出码对齐
+  DEPENDENCY_PARENT_CYCLE: 2,
   DEPENDENCY_EXISTS: 2,
   ISSUE_CLAIMED: 2,
   CROSS_WORKSPACE_DEPENDENCY: 3,
@@ -29,6 +31,7 @@ const EXIT_CODES: Record<string, number> = {
 
 const MESSAGES: Record<string, string> = {
   DEPENDENCY_CYCLE: '该依赖会让任务成环，已拒绝',
+  DEPENDENCY_PARENT_CYCLE: '子卡不能依赖其父/祖先卡：父卡要等子卡全完才 done，会形成流程死锁',
   DEPENDENCY_EXISTS: '该依赖已存在',
   ISSUE_CLAIMED: '任务已被占用，请先释放占用（release）再新增前置',
   CROSS_WORKSPACE_DEPENDENCY: '不支持跨工作区依赖',

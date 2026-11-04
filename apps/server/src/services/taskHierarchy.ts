@@ -40,7 +40,7 @@ export function updateIssueInHierarchy(
     }
     if (patch.parent_issue_id !== undefined && patch.parent_issue_id !== null) {
       requireParentInWorkspace(db, patch.parent_issue_id, current.workspace_id);
-      if (patch.parent_issue_id === issueId || isDescendant(db, issueId, patch.parent_issue_id)) {
+      if (patch.parent_issue_id === issueId || isIssueDescendant(db, issueId, patch.parent_issue_id)) {
         throw new ValidationError('父任务不能是自身或其后代');
       }
     }
@@ -68,7 +68,11 @@ function requireParentInWorkspace(db: Db, parentId: string, workspaceId: string)
   return parent;
 }
 
-function isDescendant(db: Db, issueId: string, candidateId: string): boolean {
+/**
+ * 候选是否是 issue 的子孙（同一条递归 CTE，父链/依赖环两处共用）。
+ * DEP-GUARD：`dependency.ts` 也用它判「子卡依赖祖卡」的流程死锁。
+ */
+export function isIssueDescendant(db: Db, issueId: string, candidateId: string): boolean {
   const row = db.prepare(`WITH RECURSIVE descendants(id) AS (
       SELECT id FROM issue WHERE parent_issue_id=?
       UNION

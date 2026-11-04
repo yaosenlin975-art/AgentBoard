@@ -10,6 +10,7 @@ import type { IssueStatus } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { getIssue } from '../db/repos/issue.js';
+import { isIssueDescendant } from './taskHierarchy.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
 import { RESOLVED_KIND_SQL, isBlockerResolvedKind } from './workspaceStatus.js';
 
@@ -135,6 +136,11 @@ export function addDependency(db: Db, input: AddDependencyInput): DependencyView
     if (blocked.claimed_by !== null) throw new ApiError(409, 'ISSUE_CLAIMED', '任务已被占用，请先 release 再新增前置');
     const exists = db.prepare('SELECT 1 FROM issue_dependency WHERE blocked_issue_id=? AND blocker_issue_id=?').get(blockedId, blockerId);
     if (exists) throw new ApiError(409, 'DEPENDENCY_EXISTS', '该依赖已存在');
+    // DEP-GUARD：父子反向依赖的流程死锁——blocker 是 blocked 的祖先（父卡等子卡全完才 done），
+    // 再让子卡把父卡设为前置 → 双向互等，整条链锁死。反向（父卡依赖子卡）语义合理，放行。
+    if (isIssueDescendant(db, blockerId, blockedId)) {
+      throw new ApiError(409, 'DEPENDENCY_PARENT_CYCLE', '子卡不能依赖其父/祖先卡（父卡需等子卡完成，会形成流程死锁）');
+    }
     if (wouldCreateCycle(db, blockedId, blockerId)) throw new ApiError(409, 'DEPENDENCY_CYCLE', '依赖会成环，已拒绝');
     assertEdgeBudget(db, blockedId);
     db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, created_at) VALUES (?,?,?)')

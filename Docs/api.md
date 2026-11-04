@@ -225,6 +225,13 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 
 ### 依赖（DEP-1，`services/dependency.ts`）
 
+﻿| `POST /api/issues/:id/dependencies` | — | — | 400 `DEPENDENCY_SELF`（依赖自身）/ `CROSS_WORKSPACE_DEPENDENCY`（跨工作区）；409 `DEPENDENCY_EXISTS`（重复）/ `ISSUE_CLAIMED`（被阻塞卡占用中）/ **`DEPENDENCY_PARENT_CYCLE`**（被阻塞卡是前置卡的**子孙**：父卡要等子卡全完才 done，再让子卡依赖父卡会双向互等 → 流程死锁）/ `DEPENDENCY_CYCLE`（依赖环，含多跳与长链） |
+
+- **允许方向**：**父卡依赖子卡**（`blocked` 是 `blocker` 的祖先）语义合理，放行；只有「子卡依赖父/祖先卡」被拒（`DEPENDENCY_PARENT_CYCLE`）。
+- 祖先判定与父子改挂共用同一实现：`services/taskHierarchy.ts` 的 `isIssueDescendant`（递归 CTE），不在依赖模块里另写一份。
+- 多跳/长链成环：`wouldCreateCycle` 从 blocker 沿「前置的前置」上溯，A→B→C→A 与 5 跳以上同样拒绝（`DEPENDENCY_CYCLE`），DB 触发器兜底直接写库。
+
+
 边方向：`blocked_issue_id` ← `blocker_issue_id`（blocker 完成后 blocked 才可开工）。解除判定唯一口径：blocker 状态 ∈ {`待验收`, `已关闭`}；`resolved` 由服务端算好，消费端不再判断。写通道强制 `workspace_id`（POST 走 body、DELETE 走 query，缺省 400），用 `requireIssueInWorkspace` 校验，不按 issue 自身工作区放行。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

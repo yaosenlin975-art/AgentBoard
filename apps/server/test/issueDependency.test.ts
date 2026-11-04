@@ -121,6 +121,58 @@ describe('issue dependency (DEP-1)', () => {
     expect(dependencyRows()).toBe(2);
   });
 
+  // ---- DEP-GUARD：父子反向依赖的流程死锁 ----
+
+  it('子卡依赖父卡 → 409 DEPENDENCY_PARENT_CYCLE（父卡需等子卡完成，会互等死锁）', async () => {
+    const parent = await mkIssue('父卡');
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', parent_issue_id: parent });
+    expect(childRes.status).toBe(200);
+    const child = childRes.body.id as string;
+    const res = await addDep(child, parent);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('DEPENDENCY_PARENT_CYCLE');
+    expect(res.body.error.message).toContain('会形成流程死锁');
+    // 边没落库
+    const ls = await lsDep(child);
+    expect(ls.body.blockers).toHaveLength(0);
+  });
+
+  it('子卡依赖祖父卡（跨两代）也拒绝', async () => {
+    const grand = await mkIssue('祖父卡');
+    const midRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '中间卡', parent_issue_id: grand });
+    const leafRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '叶子卡', parent_issue_id: midRes.body.id });
+    const res = await addDep(leafRes.body.id, grand);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('DEPENDENCY_PARENT_CYCLE');
+  });
+
+  it('反向（父卡依赖子卡）允许——语义合理的允许方向', async () => {
+    const parent = await mkIssue('父卡允许方向');
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡允许方向', parent_issue_id: parent });
+    const child = childRes.body.id as string;
+    const res = await addDep(parent, child);
+    expect(res.status).toBe(201);
+    const ls = await lsDep(parent);
+    expect(ls.body.blockers.map((b: { issue_id: string }) => b.issue_id)).toContain(child);
+  });
+
+  it('五跳长链成环也拒绝（A→B→C→D→E→A 的依赖环）', async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1) ids.push(await mkIssue(`长链卡 ${i}`));
+    for (let i = 0; i < 4; i += 1) {
+      const res = await addDep(ids[i]!, ids[i + 1]!); // i 依赖 i+1
+      expect(res.status).toBe(201);
+    }
+    // 收口：最后一环让它成环（ids[4] 依赖 ids[0] → 0←1←2←3←4←0）
+    const closing = await addDep(ids[4]!, ids[0]!);
+    expect(closing.status).toBe(409);
+    expect(closing.body.error.code).toBe('DEPENDENCY_CYCLE');
+    // 长链上任意非相邻补边也成环
+    const skip = await addDep(ids[4]!, ids[2]!);
+    expect(skip.status).toBe(409);
+    expect(skip.body.error.code).toBe('DEPENDENCY_CYCLE');
+  });
+
   it('rejectsDuplicateEdge', async () => {
     const blocked = await mkIssue('重复卡');
     const blocker = await mkIssue('前置卡');
