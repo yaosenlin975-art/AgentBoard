@@ -526,3 +526,52 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 - 与 CLI `parseLabels`（`packages/cli/src/commands/createIssue.ts`）同一套规则：按 `[,，\s]+` 拆分、trim、丢空、去重（保留首次出现顺序）。
 - 直接 `PATCH {"labels":["功能  web，UI"]}` 会落库为 `["功能","web","UI"]`；`{"labels":[]}` 清空标签。
 - 规则单一来源：服务端实现文件顶注释指向 CLI 实现，改动需两处同步（本卡已收口「非 CLI 写入路径能落进带空格标签」的缺口）。
+
+## 18. 知识页文本导入（`/api/knowledge/pages/import`，`services/knowledgeImport.ts`，KBIMP-1）
+
+`POST /api/knowledge/pages/import`
+
+请求体（`application/json`，`strict`，多余字段 400）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `scope` | `workspace` \| `common` | 必填 |
+| `workspace_id` | string | `scope=workspace` 时必填 |
+| `format` | `md` \| `txt` \| `json` | 必填 |
+| `content` | string | 文件原文（前端读文件后原样上传） |
+| `filename` | string? | 作为 `sources[0].locator` 与标题兜底 |
+| `title` / `slug` | string? | 显式指定，优先于自动推导 |
+| `category` / `landed` | enum? | 与知识页同一套枚举 |
+| `labels` | string[]? | 知识页无 labels 字段，导入时忽略并回 `warnings` |
+| `actor` / `change_note` | string? | 审计字段 |
+
+响应：`{ pages: KnowledgePage[], warnings: string[] }`（json 数组会返回多条）。
+
+推导规则：
+
+- `md`：`body_md` = 原文；标题取**首个 `# ` 一级标题**（首个非空行不是标题则不继续找），再退 `filename`（去扩展名），最后 `导入的 Markdown 页`；
+- `txt`：`body_md` = 原文；标题取**首个非空行（≤80 字符）**，再退 `filename`；
+- `json`：支持**单个对象**或**对象数组**（≤100 条）。每条映射 `{ title?, body|body_md, slug?, labels?, category?, landed? }`；
+  缺 `title` 时用首行/`导入的知识页`；多余字段不写入正文，只进 `warnings`；**绝不把整段 JSON 当正文**。
+- `slug`：未显式给出时由标题推导（保留 Unicode 字母数字，空白→`-`，非法字符折叠；空则 `import-<hash8>`）。
+
+来源与证据（服务端必填，自动构造）：
+
+- `sources: [{ source_id: 'import:<sha256 前 12 位>', source_type: 'file', locator: filename ?? '<import:{format}>', captured_at, content_hash: <sha256 hex 64> }]`
+- `evidence: [{ source_id, locator }]`
+- **`file` 来源不写 `snapshot`**（`validateKnowledgeContent` 会拒：本地代码来源只保存路径和 hash）；`content_hash` 必须是纯 64 位 hex（不能带 `sha256:` 前缀）。
+
+限额与错误：
+
+| 场景 | 状态码 | 错误码 |
+|---|---|---|
+| 正文 > 100000 字符 | 413 | `IMPORT_BODY_TOO_LONG` |
+| 内容为空 | 400 | `VALIDATION_ERROR` |
+| `scope=workspace` 缺 `workspace_id` | 400 | `VALIDATION_ERROR` |
+| json 非对象/缺 body/数组空/超 100 条 | 400 | `VALIDATION_ERROR` |
+| slug 冲突 | 409 | `KNOWLEDGE_EXISTS`（消息里给 `slug-2` 之类建议） |
+| 请求体超过全局 JSON 上限 | 413 | 由 `express.json()` 默认 100kb 先拒（见下「已知限制」） |
+
+落库：逐条复用 `createKnowledgePage`（页面行 + 首发修订 + 双链同步在同一事务内），失败不留半成品。
+
+**已知限制（需 index.ts 一行改动，属 board-server 范围）**：全局 `express.json()` 用默认 100kb 上限，因此「单文件 ≤1MB」目前被它先拒（错误码沿用既有 `ATTACHMENT_TOO_LARGE` 映射）。要达到 1MB 需把 index.ts 的 `express.json()` 改为 `express.json({ limit: '2mb' })`；本接口自身的 1MB 与 100k 校验已就位（`assertContentLimits` / `planImport`）。

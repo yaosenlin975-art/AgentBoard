@@ -18,6 +18,24 @@ const knowledgeContentFields = { title: z.string().trim().min(1).max(300), body_
   category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
   landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional() };
 const knowledgeAuditFields = { actor: z.string().trim().min(1).max(100), change_note: z.string().max(2000).optional() };
+/**
+ * KBIMP-1：知识页文本导入。`content` 就是文件原文（前端读文件后原样上传）；
+ * 单次 ≤1MB 由服务层按 UTF-8 字节判（zod 这里只挡明显超限的 2MB，避免把大字符串搬来搬去）。
+ */
+export const knowledgeImportSchema = z.object({
+  scope: z.enum(['workspace', 'common']),
+  workspace_id: z.string().min(1).optional(),
+  format: z.enum(['md', 'txt', 'json']),
+  content: z.string().max(2 * 1024 * 1024),
+  filename: z.string().max(300).optional(),
+  title: z.string().trim().min(1).max(300).optional(),
+  slug: z.string().min(1).max(200).optional(),
+  category: z.enum(['design', 'solved', 'pinned', 'open', 'legacy']).optional(),
+  landed: z.enum(['landed', 'partial', 'proposed']).nullable().optional(),
+  labels: z.array(z.string().min(1).max(50)).max(20).optional(),
+  actor: z.string().trim().min(1).max(100).optional(),
+  change_note: z.string().max(2000).optional(),
+}).strict();
 export const knowledgeCreateSchema = z.object({ ...knowledgeScopeFields, ...knowledgeContentFields, ...knowledgeAuditFields, slug: z.string().min(1).max(200) }).strict();
 export const knowledgeReviseSchema = z.object({ ...knowledgeScopeFields, ...z.object(knowledgeContentFields).partial().shape, ...knowledgeAuditFields, expected_revision: z.number().int().positive() }).strict();
 export const knowledgeActionSchema = z.object({ ...knowledgeScopeFields, actor: knowledgeAuditFields.actor, action: z.enum(['archive', 'restore', 'delete']), expected_revision: z.number().int().positive() }).strict();
@@ -247,6 +265,17 @@ export const patchSessionSchema = z.object({
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
  * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
  */
+/**
+ * DB-2B：迁移编排请求体。
+ * target_db_path 是目标库文件全路径（目录不存在会创建）；overwrite 覆盖同名目标库。
+ */
+export const dbMigrateSchema = z
+  .object({
+    target_db_path: z.string().trim().min(1, 'target_db_path 不能为空'),
+    overwrite: z.boolean().optional(),
+  })
+  .strict();
+
 export const patchSettingsSchema = z
   .object({
     port: z

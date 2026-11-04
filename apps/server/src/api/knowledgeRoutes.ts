@@ -9,9 +9,10 @@ import { countBacklinks, countOutgoingLinks, listBacklinks, listResolvedLinks, l
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
 import { createKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
+import { importKnowledgePages } from '../services/knowledgeImport.js';
 import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
-import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeScopeFields } from './schemas.js';
+import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeImportSchema, knowledgeScopeFields } from './schemas.js';
 
 /**
  * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
@@ -167,7 +168,16 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const body = parse(z.object({ batch_size: z.number().int().min(1).max(2000).optional() }).strict(), req.body ?? {});
     res.json(reparseAllPages(db, { batchSize: body.batch_size }));
   });
-  router.post('/pages', (req, res) => {
+  /**
+   * KBIMP-1：从 md / txt / json 文本导入知识页。
+   * 单条（md/txt/json 对象）或批量（json 数组）都返回 `{ pages, warnings }`；
+   * 来源与证据自动构造（file 来源只存路径 + sha256，不写 snapshot），落库走既有事务路径。
+   */
+  router.post('/pages/import', (req, res) => {
+    const body = parse(knowledgeImportSchema, req.body);
+    const result = importKnowledgePages(db, body, { actor: body.actor });
+    res.json(result);
+  });  router.post('/pages', (req, res) => {
     const body = parse(knowledgeCreateSchema, req.body);
     const scope = scopeOf(body);
     const { scope: _scope, workspace_id: _workspace, ...content } = body;
