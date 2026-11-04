@@ -60,6 +60,46 @@ export function getKnowledgePage(
     .get(pageId, scope.scope, scope.workspace_id ?? null) as PageRow | undefined;
   return row ? parsePage(row) : null;
 }
+/**
+ * KB-PAGE-2：resolve 用的候选查询。
+ * - 前缀查询只回 id/status/slug/scope/workspace_id（歧义判定不需要正文）；
+ * - scope 传 'both' 时同时看 common 与当前工作区。
+ */
+export function listKnowledgePageRowsByPrefix(
+  db: Db,
+  prefix: string,
+  scope: { scope: 'common' | 'workspace' } | { scope: 'both'; workspace_id: string },
+): Array<{ id: string; status: string; slug: string; scope: 'common' | 'workspace'; workspace_id: string | null }> {
+  const where = scope.scope === 'common'
+    ? "scope='common'"
+    : scope.scope === 'workspace'
+      ? "(scope='workspace' AND workspace_id=@workspace)"
+      : "(scope='common' OR (scope='workspace' AND workspace_id=@workspace))";
+  const params: Record<string, string> = { prefix: `${prefix.toLowerCase()}%` };
+  if (scope.scope !== 'common') params.workspace = (scope as { workspace_id: string }).workspace_id;
+  return db.prepare(`SELECT id,status,slug,scope,workspace_id FROM knowledge_page WHERE lower(id) LIKE @prefix AND ${where}`)
+    .all(params) as Array<{ id: string; status: string; slug: string; scope: 'common' | 'workspace'; workspace_id: string | null }>;
+}
+
+/** KB-PAGE-2：同 slug 的候选 id（resolve 判定歧义用；不含已删除，除非只有已删除） */
+export function findKnowledgePageIdsBySlug(
+  db: Db,
+  slug: string,
+  scope: { scope: 'common' | 'workspace' } | { scope: 'both'; workspace_id: string },
+): string[] {
+  const where = scope.scope === 'common'
+    ? "scope='common'"
+    : scope.scope === 'workspace'
+      ? "(scope='workspace' AND workspace_id=@workspace)"
+      : "(scope='common' OR (scope='workspace' AND workspace_id=@workspace))";
+  const params: Record<string, string> = { slug };
+  if (scope.scope !== 'common') params.workspace = (scope as { workspace_id: string }).workspace_id;
+  const live = db.prepare(`SELECT id FROM knowledge_page WHERE slug=@slug AND status<>'deleted' AND ${where}`).all(params) as Array<{ id: string }>;
+  if (live.length > 0) return live.map((row) => row.id);
+  const all = db.prepare(`SELECT id FROM knowledge_page WHERE slug=@slug AND ${where}`).all(params) as Array<{ id: string }>;
+  return all.map((row) => row.id);
+}
+
 export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): KnowledgePage {
   validateKnowledgeScope(input);
   validateKnowledgeContent({ ...input, expires_at: input.expires_at ?? null });

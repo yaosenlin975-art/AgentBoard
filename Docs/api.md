@@ -162,6 +162,20 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
+﻿### KB-PAGE-2 统一 resolve 与 link
+
+| 端点 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `GET /api/knowledge/resolve` | `ref`（**完整 id / ≥8 位 id 前缀 / slug**）、`scope?`=`workspace\|common\|both`（**缺省 both**，需 `workspace_id`） | 200 `{ state:'resolved', id, title, scope, workspace_id, status, revision, link, redirect_to:null }` | 404 `KNOWLEDGE_NOT_FOUND` / 403 `KNOWLEDGE_SCOPE_FORBIDDEN`（跨范围/跨工作区，**不回显标题**）/ 409 `KNOWLEDGE_REF_AMBIGUOUS`（附 `details.candidates`，**不猜第一条**）/ 410 `KNOWLEDGE_DELETED` |
+
+- **权威标识是 page.id**；slug 与前缀只是输入别名，agent 输出一律用 `link.ref = knowledge:<uuid>`。
+- `link` 形状（show / search / resolve 三处同源产出，前端与 CLI 不再拼串）：
+  ```json
+  { "id": "<uuid>", "scope": "common|workspace", "workspace_id": null, "slug": "cache-policy",
+    "ref": "knowledge:<uuid>", "markdown": "[标题](knowledge:<uuid>)" }
+  ```
+- CLI：`kb knowledge resolve <ref>`（默认 both）/ `kb knowledge link <id|slug> --format token|markdown|plain`；退出码沿用既有约定 **404→1、409/403→2**（实现走 `CommanderError`，与 `kb dep` 同一套）。
+
 ### KB-PAGE-1 知识页读语义与 slug 解析（缺陷修复）
 
 ﻿| 项 | 变化 |

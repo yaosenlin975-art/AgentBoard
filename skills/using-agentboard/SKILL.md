@@ -121,6 +121,9 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **`--stdin` 与 BOM**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM（首字符不会被污染）；多行中文仍建议 `cmd /c "chcp 65001>nul & kb comment <id> --stdin < file"`，避开 PowerShell 管道编码问题。
 - **`--scope` 必须逐条传**：写成 `--scope a --scope b`；PowerShell 会把 `--scope a,b` 拆错甚至合并成含空格的单参数，CLI 检测到含空格会打印 SCOPE-GUARD 警告要求重传。
 
+﻿- `kb knowledge resolve <ref>`：按 id / ≥8 位 id 前缀 / slug 解析知识页（默认跨 common + 当前工作区）；歧义 409（不猜第一条）、已删 410、不存在 404。退出码 0 / 1(404,410) / 2(409,403)。
+- `kb knowledge link <id|slug> [--format token|markdown|plain]`：产出引用串；**agent 输出一律用 `knowledge:<uuid>`**（slug 只作输入别名）。`--json` 可用。
+
 ## 服务重启（SERVER-STABILITY，强制）
 
 要重启看板服务时**只走这一条**：仓库根目录 `pnpm server:ensure`（= `node scripts/server-detached.mjs`）。

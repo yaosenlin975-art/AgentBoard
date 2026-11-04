@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { Command } from 'commander';
+import { CommanderError, type Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
@@ -236,6 +236,27 @@ const SEARCH_HELP = `
 退出码：0 成功；1 参数或服务端错误
 `;
 
+
+const RESOLVE_HELP = `
+KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 resolve，四态固定）。
+必填：<ref> --scope <workspace|common>（workspace 缺省按 cwd 解析，可用 --workspace 覆盖）
+输出：解析成功 → id/title/scope/revision + link（knowledge:<uuid>）；--json 打印服务端原对象
+错误码与退出码：404 KNOWLEDGE_NOT_FOUND → 1；409 KNOWLEDGE_REF_AMBIGUOUS → 2（不猜第一条，给候选 id）；
+             410 KNOWLEDGE_DELETED → 1（已删除，可看历史）；403 KNOWLEDGE_SCOPE_FORBIDDEN → 2（不回显标题）
+示例：
+  kb knowledge resolve 3f8da34e --scope common
+  kb --json knowledge resolve cache-policy --scope workspace --workspace 任务看板
+`;
+
+const LINK_HELP = `
+KB-PAGE-2：产出知识页的引用串（权威标识是 page.id，slug 只作输入别名）。
+必填：<page-id|slug> --scope <workspace|common>；--format token|markdown|plain（默认 token）
+输出：token = knowledge:<uuid>；markdown = [标题](knowledge:<uuid>)；plain = 标题 + 空格 + token
+示例：
+  kb knowledge link 3f8da34e-… --scope common
+  kb knowledge link cache-policy --scope workspace --format markdown
+`;
+
 export function registerKnowledgeCommands(program: Command, context: () => Ctx): void {
   const knowledge = program.command('knowledge').description('共享知识库（项目与公共范围显式指定）')
     .addHelpText('after', `
@@ -250,6 +271,50 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .addHelpText('after', SEARCH_HELP)
     .action(async (q: string, opts: ScopeOptions & { limit: string }) => { const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/search?${query({ ...await scopeFor(ctx, opts, true), q, limit: opts.limit })}`)); });
   const scoped = (command: Command) => command.requiredOption('--scope <scope>', 'workspace|common').option('--workspace <id|名>');
+  // KB-PAGE-2：统一 resolve（四态退出码固定：0 / 1(404,410) / 2(409,403)）
+  const resolveExit = (error: unknown): number => {
+    const status = (error as { status?: number }).status;
+    return status === 409 || status === 403 ? 2 : 1;
+  };
+  // 注意：resolve/link 的 --scope 可省略（默认 both）——只在单 scope 里找会漏掉「同 slug 两份」的歧义
+  knowledge.command('resolve <ref>').description('按 id / ≥8 位 id 前缀 / slug 解析知识页引用（默认跨 common + 当前工作区）')
+    .option('--scope <scope>', 'workspace|common|both', 'both')
+    .option('--workspace <id|名>')
+    .addHelpText('after', RESOLVE_HELP)
+    .action(async (ref: string, opts: ScopeOptions) => {
+      const ctx = context();
+      try {
+        const scope = await scopeFor(ctx, opts, true);
+        const res = await request<{ id: string; title: string; scope: string; revision: number; status: string; link: { ref: string; markdown: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref })}`);
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
+        ctx.io.write(`${res.id} [${res.scope}] rev:${res.revision} ${res.title}\n`);
+        ctx.io.write(`link: ${res.link.ref}\n`);
+      } catch (error) {
+        ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        throw new CommanderError(resolveExit(error), 'agentboard.knowledge.resolve', '');
+      }
+    });
+
+  // KB-PAGE-2：产出引用串（token / markdown / plain）——不手拼串，统一由服务端给 link
+  knowledge.command('link <page-id>').description('产出知识页引用串（token / markdown / plain，默认跨 common + 当前工作区）')
+    .option('--scope <scope>', 'workspace|common|both', 'both')
+    .option('--workspace <id|名>')
+    .option('--format <fmt>', 'token|markdown|plain', 'token')
+    .addHelpText('after', LINK_HELP)
+    .action(async (refOrId: string, opts: ScopeOptions & { format: string }) => {
+      const ctx = context();
+      try {
+        const scope = await scopeFor(ctx, opts, true);
+        const res = await request<{ id: string; title: string; link: { ref: string; markdown: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
+        const text = opts.format === 'markdown' ? res.link.markdown : opts.format === 'plain' ? `${res.title} ${res.link.ref}` : res.link.ref;
+        ctx.io.write(`${text}\n`);
+      } catch (error) {
+        ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        throw new CommanderError(resolveExit(error), 'agentboard.knowledge.resolve', '');
+      }
+    });
+
   scoped(knowledge.command('show <page-id>').description('读单个知识页（可带历史）').option('--history', '同时读取版本历史'))
     .addHelpText('after', SHOW_HELP)
     .action(async (id: string, opts: ScopeOptions & { history?: boolean }) => {

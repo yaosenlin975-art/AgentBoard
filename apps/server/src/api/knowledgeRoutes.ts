@@ -10,6 +10,7 @@ import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
 import { createKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
 import { importKnowledgePages } from '../services/knowledgeImport.js';
+import { findKnowledgePageOwner, knowledgeLink, resolveKnowledgeRef } from '../services/knowledgeResolve.js';
 import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeImportSchema, knowledgeScopeFields } from './schemas.js';
@@ -81,7 +82,11 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   const router = Router();
   router.get('/search', (req, res) => {
     const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }).strict(), req.query);
-    res.json(searchKnowledge(db, { ...input, query: input.q }));
+    // KB-PAGE-2：每条结果附 link（服务端产出，前端/CLI 不再拼串）
+    res.json(searchKnowledge(db, { ...input, query: input.q }).map((row) => ({
+      ...row,
+      link: knowledgeLink({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope, workspace_id: row.workspace_id }),
+    })));
   });
   /**
    * KB-GRAPH 图聚合（只读）。
@@ -150,6 +155,47 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const revision = Number(req.params.revision);
     res.json(getKnowledgeRevision(db, req.params.id!, revision, scope));
   });
+  /**
+   * KB-PAGE-2：统一引用解析。四态固定为 200(resolved) / 404(not_found) / 409(ambiguous) / 410(deleted)。
+   * 鉴权在取标题之前：跨 scope 的 workspace 页 → 403 且**不回显标题**。
+   */
+  router.get('/resolve', (req, res) => {
+    const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
+    if (ref.trim() === '') throw new ValidationError('ref 不能为空');
+    // scope 可选：缺省 both（跨 common + 当前工作区），这样才能发现「同 slug 两份」的歧义（A5）。
+    const rawScope = typeof req.query.scope === 'string' ? req.query.scope : 'both';
+    if (!['common', 'workspace', 'both'].includes(rawScope)) throw new ValidationError('scope 取值必须是：workspace / common / both');
+    const workspaceId = typeof req.query.workspace_id === 'string' ? req.query.workspace_id : undefined;
+    if (rawScope === 'workspace' || rawScope === 'both') {
+      if (workspaceId === undefined || workspaceId === '') throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
+      if (db.prepare('SELECT 1 AS hit FROM workspace WHERE id=?').get(workspaceId) === undefined) {
+        throw new ApiError(404, 'WORKSPACE_NOT_FOUND', '工作空间不存在');
+      }
+    }
+    const scope = rawScope === 'common'
+      ? ({ scope: 'common' } as const)
+      : rawScope === 'workspace'
+        ? ({ scope: 'workspace', workspace_id: workspaceId! } as const)
+        : ({ scope: 'both', workspace_id: workspaceId! } as const);
+
+    const result = resolveKnowledgeRef(db, { ref, scope });
+    if (result.state === 'resolved') { res.json(result); return; }
+    if (result.state === 'deleted') throw new ApiError(410, 'KNOWLEDGE_DELETED', result.message);
+    if (result.state === 'ambiguous') {
+      throw new ApiError(409, 'KNOWLEDGE_REF_AMBIGUOUS', result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
+    }
+    // not_found：若该 id 存在但属于别的范围/别的工作区 → 403（**不回显标题**）
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim())) {
+      const owner = findKnowledgePageOwner(db, ref.trim());
+      if (owner !== null) {
+        throw new ApiError(403, 'KNOWLEDGE_SCOPE_FORBIDDEN', owner.scope === 'common'
+          ? '该知识页属于 common 范围，请用 --scope common 解析'
+          : '该知识页属于另一个工作区，当前范围无权读取');
+      }
+    }
+    throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', result.message);
+  });
+
   router.get('/pages/:id', (req, res) => {
     const scope = scopeOf(req.query);
     const page = getKnowledgePage(db, req.params.id!, scope);
@@ -161,9 +207,10 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       }
       throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', '知识页不存在');
     }
-    // V2-4：只加字段，不删既有字段
+    // V2-4：只加字段，不删既有字段；KB-PAGE-2：再加 link（引用串由服务端产出）
     res.json({
       ...page,
+      link: knowledgeLink(page),
       backlinks_count: countBacklinks(db, page.id),
       links_out_count: countOutgoingLinks(db, page.id),
       unresolved_links: listUnresolvedLinks(db, page.id),
