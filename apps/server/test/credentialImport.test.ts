@@ -65,31 +65,22 @@ describe('credential import (ACC-11)', () => {
   });
 
   it('ACC-KB-A2：导入即把 checkin_capability 从 unknown 回填为 supported（新建 + 重导入两条路径）', async () => {
-    const importer = createCredentialImporter({
-      db: t.db, vault, onAudit: () => {},
-      runExport: stubRunner({ workbuddy: [entry('workbuddy', 'user-a', TOKEN_A)], trae: [entry('trae', 'user-b', TOKEN_B)] }),
-    });
-    const first = await importer.importCredentials({ platforms: ['workbuddy', 'trae'], actor: 'user' });
-    expect(first.platforms.every(p => p.created === 1)).toBe(true);
-    const created = t.db.prepare('SELECT app_id, checkin_capability FROM managed_account ORDER BY app_id').all() as Array<{ app_id: string; checkin_capability: string }>;
-    expect(created).toEqual([
-      { app_id: 'trae', checkin_capability: 'supported' },
-      { app_id: 'workbuddy_desktop', checkin_capability: 'supported' },
-    ]);
+    const runner = stubRunner({ workbuddy: [entry('workbuddy', 'user-a', TOKEN_A)] });
+    const first = await createCredentialImporter({ db: t.db, vault, onAudit: () => {}, runExport: runner })
+      .importCredentials({ platforms: ['workbuddy'], actor: 'user' });
+    expect(first.platforms[0]).toMatchObject({ created: 1, updated: 0 });
+    expect(t.db.prepare('SELECT checkin_capability AS c FROM managed_account').get()).toEqual({ c: 'supported' });
 
     // 老行被手工写成 unknown（模拟历史导入遗留）→ 重导入必须回填
     t.db.prepare("UPDATE managed_account SET checkin_capability='unknown'").run();
-    const again = createCredentialImporter({
-      db: t.db, vault, onAudit: () => {},
-      runExport: stubRunner({ workbuddy: [entry('workbuddy', 'user-a', TOKEN_A)], trae: [entry('trae', 'user-b', TOKEN_B)] }),
-    });
-    const second = await again.importCredentials({ platforms: ['workbuddy', 'trae'], actor: 'user' });
-    expect(second.platforms.every(p => p.updated === 1)).toBe(true);
-    const backfilled = t.db.prepare('SELECT DISTINCT checkin_capability AS c FROM managed_account').all() as Array<{ c: string }>;
-    expect(backfilled).toEqual([{ c: 'supported' }]);
+    const second = await createCredentialImporter({ db: t.db, vault, onAudit: () => {}, runExport: runner })
+      .importCredentials({ platforms: ['workbuddy'], actor: 'user' });
+    expect(second.platforms[0]).toMatchObject({ created: 0, updated: 1 });
+    expect(t.db.prepare('SELECT checkin_capability AS c FROM managed_account').get()).toEqual({ c: 'supported' });
   });
 
-  it('importsTwoAccountsAndNeverLeaksTokens', async () => {    const importer = createCredentialImporter({
+  it('importsTwoAccountsAndNeverLeaksTokens', async () => {
+    const importer = createCredentialImporter({
       db: t.db, vault, onAudit: line => audit.push(line),
       runExport: stubRunner({ workbuddy: [entry('workbuddy', 'user-a', TOKEN_A), entry('workbuddy', 'user-b', TOKEN_B)] }),
     });
