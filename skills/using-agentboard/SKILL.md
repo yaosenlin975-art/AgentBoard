@@ -130,6 +130,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 退出码：0 健康（复用或新起）／1 拉起后仍不健康或子进程提前退出／2 端口被非看板服务占用（脚本不杀进程，人工确认占用者）／3 `apps/server/dist/index.js` 缺失（先 `pnpm -r build`）。
 - **禁止**手工 `Stop-Process` + `start /b node apps\server\dist\index.js`：停止成功而启动失败会留下无人监听的空窗，且无任何日志可查（2026-11-03 两次 8787 自行下线即此模式，事后无法归因）。
 - 确实要换端口/换 DB 时用环境变量 `AGENTBOARD_PORT` / `AGENTBOARD_DB` 配合 `--port`，不要杀其它 node 进程。
+- **同 DB 单例由 `<configDir>/server.lock` 保证**（原子创建，服务进程持有，退出时释放）：锁被活实例持有时 `server:ensure` 直接复用或拒绝启动（exit 2），同 DB 换端口再起也会被拒绝并打印持有者。**不要用不同 `AGENTBOARD_DB` / 不同 `APPDATA`（configDir）起第二个实例**（重启交棒由 `POST /api/system/restart` 自动带 `AGENTBOARD_RESTART_FROM`；硬杀残留的锁会被下一次 `server:ensure` 接管，不必手工删 `server.lock`）——那会打开两个库、产生两份数据；确需多开必须同时换 `APPDATA` 与 `AGENTBOARD_DB` 并监听不同端口。
 
 ## 故障分支
 

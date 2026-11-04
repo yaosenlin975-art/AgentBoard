@@ -35,7 +35,10 @@ describe('版本端点与响应头', () => {
     // PROXY-ENV：proxy_env 是只读脱敏快照（按当前进程环境计算，测试机上是否有代理都可断言形状）
     expect(res.body).toMatchObject({ name: 'agentboard-server', version: serverPkg.version, pid: process.pid });
     expect(typeof res.body.proxy_env.enabled).toBe('boolean');
-    expect(Object.keys(res.body).sort()).toEqual(['name', 'pid', 'proxy_env', 'version']);
+    expect(Object.keys(res.body).sort()).toEqual(['db_path', 'instance_id', 'name', 'pid', 'proxy_env', 'started_at', 'version']);
+    // SERVER-SINGLETON：未注入时缺省为 null（测试直连 createApp，不经 main()）
+    expect(res.body.instance_id).toBeNull();
+    expect(res.body.started_at).toBeNull();
     expect(typeof res.body.pid).toBe('number');
   });
 
@@ -80,5 +83,17 @@ describe('PROXY-ENV 暴露', () => {
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
     }
+  });
+});
+
+describe('SERVER-SINGLETON 实例标识', () => {
+  it('注入 instance 后 /api/version 给出 instance_id / db_path / started_at', async () => {
+    const injected = await createApp({
+      db: t.db,
+      refreshClisOnBoot: false,
+      instance: { instanceId: 'inst-test', dbPath: 'D:/tmp/agentboard.db', startedAt: 1_700_000_000_000 },
+    });
+    const res = await request(injected.app).get('/api/version');
+    expect(res.body).toMatchObject({ instance_id: 'inst-test', db_path: 'D:/tmp/agentboard.db', started_at: 1_700_000_000_000 });
   });
 });

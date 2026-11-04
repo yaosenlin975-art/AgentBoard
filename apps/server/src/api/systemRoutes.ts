@@ -72,7 +72,7 @@ const defaultEntry = (): { command: string; args: string[]; exists: boolean } =>
 };
 
 /** 真实 spawn：detached + stdio 重定向到固定日志（不再 ignore）+ unref；等 'spawn' 事件确认进程已创建 */
-export function spawnDetached(command: string, args: string[], logPath: string = resolveServerLogPath()): Promise<{ pid: number | null }> {
+export function spawnDetached(command: string, args: string[], logPath: string = resolveServerLogPath(), extraEnv: Record<string, string> = {}): Promise<{ pid: number | null }> {
   return new Promise((resolve, reject) => {
     let fd: number | null = null;
     try {
@@ -83,7 +83,7 @@ export function spawnDetached(command: string, args: string[], logPath: string =
     const child = spawn(command, args, {
       detached: true,
       stdio: fd === null ? 'ignore' : ['ignore', fd, fd],
-      env: process.env,
+      env: { ...process.env, ...extraEnv },
       cwd: process.cwd(),
       windowsHide: true,
     });
@@ -183,7 +183,8 @@ export async function performRestart(deps: RestartDeps): Promise<RestartOutcome>
   // 2) 拉起新进程（stdio 已重定向到固定日志）
   let newPid: number | null = null;
   try {
-    newPid = (await (deps.spawnChild ?? ((command, args) => spawnDetached(command, args, logPath)))(entry.command, entry.args)).pid;
+    // SERVER-SINGLETON：告诉接班进程「你是 pid X 的接班人」，允许它受让还活着的旧锁（旧进程正在交棒）
+    newPid = (await (deps.spawnChild ?? ((command, args) => spawnDetached(command, args, logPath, { AGENTBOARD_RESTART_FROM: String(selfPid) })))(entry.command, entry.args)).pid;
   } catch {
     return { ok: false, status: 500, code: 'RESTART_SPAWN_FAILED', message: '新进程启动失败，旧进程继续服务' };
   }

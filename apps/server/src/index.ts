@@ -8,7 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { attachmentsDirFor, loadConfig, readSettings, type AgentBoardRuntimeConfig, type DbPathSource } from './config.js';
+import { attachmentsDirFor, configDir, loadConfig, readSettings, type AgentBoardRuntimeConfig, type DbPathSource } from './config.js';
 import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
@@ -31,6 +31,7 @@ import express, { type Express } from 'express';
 import { ADAPTERS, getAdapter as defaultGetAdapter, type AgentAdapter } from '@agentboard/adapters';
 import type { Db } from './db/connection.js';
 import { openDb } from './db/connection.js';
+import { acquireServerLock, describeLockHolder, releaseServerLock } from './services/serverLock.js';
 import { initSchema } from './db/schema.js';
 import {
   initSessionManager,
@@ -93,6 +94,8 @@ export interface CreateAppOptions {
   draftTimeoutMs?: number;
   /** VOICE-1：语音模型管理依赖（仅测试注入；生产走默认 catalog/目录/fetch） */
   voice?: VoiceRouterOptions;
+  /** SERVER-SINGLETON：实例标识（`/api/version` 的 instance_id / db_path / started_at） */
+  instance?: { instanceId: string; dbPath: string; startedAt: number };
   /** 启动期解析出的 db 路径来源（存储统计/迁移端点按它报，不在请求期重新解析） */
   dbPathSource?: DbPathSource;
   /** DB-2B：迁移编排注入（生产全部走默认值；测试注入临时状态目录/退出 spy） */
@@ -157,6 +160,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     // 来源取启动期解析结果：readSettings 首读会把默认值写回 config.json（含 dbPath），
     // 请求期再 loadConfig 会把 default 误判成 settings。
     ...(options.dbPathSource !== undefined ? { dbPathSource: options.dbPathSource } : {}),
+    ...(options.instance !== undefined ? { instance: options.instance } : {}),
     ...(migration.stateDir !== undefined ? { dbMigrationStateDir: migration.stateDir } : {}),
     ...(migration.dbPath !== undefined ? { dbPath: migration.dbPath } : {}),
     ...(migration.dbPathSource !== undefined ? { dbPathSource: migration.dbPathSource } : {}),
@@ -238,9 +242,46 @@ export async function main(): Promise<StartedServer> {
     );
   }
 
+  // SERVER-SINGLETON：单例锁。**必须先于 openDb**——同一个 DB 被两个进程打开会互相踩 WAL。
+  const instanceId = `inst-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+  const startedAt = Date.now();
+  // SERVER-SINGLETON：`POST /api/system/restart` 的接班进程带 AGENTBOARD_RESTART_FROM（前任 pid），
+  // 允许受让「前任还活着但正在退出」的那把锁；普通 `server:ensure` 不带，仍然拒绝双开。
+  const restartFrom = Number(process.env.AGENTBOARD_RESTART_FROM ?? '');
+  const lock = acquireServerLock({
+    configDir: configDir(),
+    dbPath: config.dbPath,
+    port: config.port,
+    instanceId,
+    now: () => startedAt,
+    ...(Number.isInteger(restartFrom) && restartFrom > 0 ? { takeoverFrom: [restartFrom] } : {}),
+  });
+  if (!lock.ok) {
+    const holderText = lock.holder === null ? '未知持有者' : describeLockHolder(lock.holder);
+    const reasonText = lock.reason === 'held-by-live'
+      ? '同一 configDir 已有活着的看板实例'
+      : '无法写入单例锁文件（检查目录权限）';
+    console.error(`[agentboard] 拒绝启动：${reasonText}。持有者：${holderText}`);
+    console.error('[agentboard] 单例口径：同 DB / 同 configDir 只能有一个实例；需要多开请换 APPDATA（configDir）与 AGENTBOARD_DB 并监听不同端口');
+    process.exit(4);
+  }
+  if (lock.tookOver !== null) {
+    appendServerLog(`单例锁接管：旧持有者 ${describeLockHolder(lock.tookOver)} 已不存在，由 pid ${process.pid} 接管`);
+  }
+  process.on('exit', () => { releaseServerLock(configDir(), { instanceId }); });
+  // SIGINT/SIGTERM 是能捕获的退出（Windows 的 Stop-Process -Force 走 TerminateProcess，捕获不到 →
+  // 靠下一次启动时「陈旧锁接管」兜底）。
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      releaseServerLock(configDir(), { instanceId });
+      process.exit(0);
+    });
+  }
+
   const { app, hub, attachments } = await createApp({
     db,
     dbPathSource: config.dbPathSource,
+    instance: { instanceId, dbPath: config.dbPath, startedAt },
     maxConcurrentTurns: config.maxConcurrentTurns,
     webDist: existsSync(webDist) ? webDist : null,
     attachmentStorageDir,
@@ -250,7 +291,8 @@ export async function main(): Promise<StartedServer> {
     // 生产装配：三平台真实签到 provider（测试默认不注入，保持 ACC-07 的 gated 语义）
     checkinProviders: createCheckinProviders({ region: config.workbuddyRegion }),
     restart: {
-      spawnChild: spawnDetached,
+      // SERVER-SINGLETON：接班进程带上前任 pid，才允许受让「前任还活着但正在退出」的锁
+      spawnChild: (command, args) => spawnDetached(command, args, undefined, { AGENTBOARD_RESTART_FROM: String(process.pid) }),
       closeServer: () => new Promise<void>(resolve => {
         server.closeAllConnections();
         server.close(() => resolve());

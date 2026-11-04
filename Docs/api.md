@@ -73,6 +73,21 @@
 | `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
+## 5aa. 后台服务单例（SERVER-SINGLETON）
+
+`pnpm server:ensure` 原来是「probe → spawn」，没有锁：两个 ensure 同时跑会都 spawn，其中一个子进程 `EADDRINUSE` 崩掉，脚本只看到健康超时。
+
+| 项 | 口径 |
+| --- | --- |
+| 锁文件 | `<configDir>/server.lock`，内容 `{ pid, port, dbPath, startedAt, instanceId }`；**由服务进程持有**（生命周期 = 服务生命周期），不是启动器 |
+| 获取 | `open(lock, 'wx')` 原子创建；已有活持有者 → 拒绝启动并打印持有者（`pid / 端口 / 库 / 起始时间 / 实例`），**不静默双开**；持有者 pid 已死或文件损坏 → 接管并写一行日志 |
+| 释放 | `process.on('exit')` 里删锁，且只有 `pid + instanceId` 都对上才删（不误删接管者的锁） |
+| 启动器行为 | 端口健康 → 复用 exit 0；锁被活实例持有且端口不同 → **拒绝** exit 2；自家子进程因锁退出（code 4）→ 继续等已有实例健康，健康则 exit 0（并发 ensure 不再误报失败） |
+| `GET /api/version` | 增 `instance_id` / `db_path` / `started_at`（未注入时 null） |
+| 重启交棒 | `POST /api/system/restart` 的接班进程带 `AGENTBOARD_RESTART_FROM=<旧 pid>`，其 `acquireServerLock({ takeoverFrom })` 允许受让「前任还活着但正在退出」的锁；普通 `server:ensure` 不带该变量，仍拒绝双开 |
+| 终止与释放 | `process.on('exit')` + `SIGINT`/`SIGTERM` 里释放（`pid + instanceId` 都对上才删）。Windows 的 `Stop-Process -Force` 走 TerminateProcess，JS 捕获不到 → 锁残留，由**下一次启动的陈旧锁接管**兜底（残留不会导致起不来） |
+| 多开 | 同 DB / 同 configDir 只能一个实例；需要多开请换 `APPDATA`（configDir）**和** `AGENTBOARD_DB`，并监听不同端口 |
+
 ## 5a. 出站代理（PROXY-ENV）
 
 Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_PROXY=1` 才会按环境代理出站。缺这个变量时访问 HuggingFace 等外网会 10000ms 连接超时，对外只看到裸 `fetch failed`。

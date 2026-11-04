@@ -16,6 +16,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdirSync, openSync, closeSync, existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -85,6 +86,22 @@ function readLogTail(lines = 10) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * SERVER-SINGLETON：读单例锁（复用 apps/server 的 `serverLock` 实现，不另写一份判定）。
+ * 返回 null 表示没有锁 / 读不到（服务未构建等情况按「无锁」处理，不阻断启动）。
+ */
+async function readLock() {
+  try {
+    const mod = await import(new URL('../apps/server/dist/services/serverLock.js', import.meta.url).href);
+    const configDir = process.env.APPDATA && process.env.APPDATA !== ''
+      ? join(process.env.APPDATA, 'AgentBoard')
+      : join(homedir(), '.config', 'AgentBoard');
+    return { mod, lock: mod.readServerLock(configDir) };
+  } catch {
+    return null;
+  }
+}
+
 const { port, timeoutMs } = parseArgs(process.argv.slice(2));
 
 const existing = await probe(port);
@@ -101,6 +118,34 @@ if (existing !== null && existing.ok === false) {
 if (!existsSync(ENTRY)) {
   console.error(`[server] 找不到服务入口：${ENTRY}\n先构建：pnpm --filter @agentboard/server build（或 pnpm -r build）`);
   process.exit(3);
+}
+
+// SERVER-SINGLETON：有活着的持有者就**不再 spawn**——等它健康（可能正在启动），或按持有者信息失败
+const lockState = await readLock();
+if (lockState !== null && lockState.lock !== null) {
+  const { mod, lock: holder } = lockState;
+  if (mod.isProcessAlive(holder.pid) && holder.port !== port) {
+    // 同 configDir/同 DB 想再起一个到别的端口：明确拒绝，不静默双开
+    console.error(`[server] 拒绝启动：单例锁已被活实例持有（${mod.describeLockHolder(holder)}）。`);
+    console.error('[server] 同 DB / 同 configDir 只能有一个实例；需要多开请换 APPDATA（configDir）与 AGENTBOARD_DB，并监听不同端口。');
+    process.exit(2);
+  }
+  if (mod.isProcessAlive(holder.pid)) {
+    console.log(`[server] 单例锁已被活实例持有：${mod.describeLockHolder(holder)}；不重复拉起，等待其健康`);
+    const waitUntil = Date.now() + timeoutMs;
+    while (Date.now() < waitUntil) {
+      const hit = await probe(port, 1500);
+      if (hit?.ok === true) {
+        console.log(`[server] 已在运行，复用：${versionUrl(port)}（version ${hit.version}，pid ${holder.pid}，未重启进程）`);
+        console.log(`[server] 日志：${LOG_FILE}`);
+        process.exit(0);
+      }
+      await sleep(300);
+    }
+    console.error(`[server] 持有者 ${holder.pid} 未在 ${timeoutMs}ms 内健康：${mod.describeLockHolder(holder)}`);
+    process.exit(1);
+  }
+  console.log(`[server] 陈旧单例锁（pid ${holder.pid} 已不存在），接管：${mod.describeLockHolder(holder)}`);
 }
 
 /**
@@ -148,21 +193,40 @@ child.once('exit', (code, signal) => {
   exited = { code, signal };
 });
 
+/**
+ * SERVER-SINGLETON：并发 ensure 竞争时，落败的子进程会因单例锁退出（exit 4，或 Windows 上报 code=null）。
+ * 这类退出**不代表失败**：另一个实例可能还在启动。所以子进程一退出也继续等端口健康（直到 timeout），
+ * 只有整个超时窗口内都没健康才报失败——避免「两个 ensure 只成功一个」的误报。
+ */
 const started = Date.now();
+let sawExit = false;
 while (Date.now() - started < timeoutMs) {
   const hit = await probe(port, 1500);
   if (hit?.ok === true) {
-    console.log(`[server] 就绪：${versionUrl(port)}（version ${hit.version}，pid ${child.pid}，耗时 ${Date.now() - started}ms）`);
+    if (sawExit) {
+      console.log(`[server] 另一实例已接管端口 ${port}（version ${hit.version}），本次不重复拉起`);
+    } else {
+      console.log(`[server] 就绪：${versionUrl(port)}（version ${hit.version}，pid ${child.pid}，耗时 ${Date.now() - started}ms）`);
+    }
     process.exit(0);
   }
-  if (exited !== null) {
-    console.error(
-      `[server] 新进程已退出（code ${exited.code}，signal ${exited.signal ?? '无'}），端口 ${port} 无监听。日志尾部：\n${readLogTail()}`,
-    );
-    process.exit(1);
+  if (exited !== null && !sawExit) {
+    sawExit = true;
+    console.log(`[server] 子进程已退出（code ${exited.code}，signal ${exited.signal ?? '无'}）；继续等待端口 ${port} 上可能已接管的实例`);
   }
   await sleep(400);
 }
 
+const late = await probe(port, 1500);
+if (late?.ok === true) {
+  console.log(`[server] 另一实例已接管端口 ${port}（version ${late.version}），本次不重复拉起`);
+  process.exit(0);
+}
+if (exited !== null) {
+  console.error(
+    `[server] 新进程已退出（code ${exited.code}，signal ${exited.signal ?? '无'}），端口 ${port} 无监听。日志尾部：\n${readLogTail()}`,
+  );
+  process.exit(1);
+}
 console.error(`[server] 等待健康超时（${timeoutMs}ms，pid ${child.pid} 仍在跑）。日志尾部：\n${readLogTail()}`);
 process.exit(1);
