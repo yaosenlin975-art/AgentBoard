@@ -186,6 +186,17 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
   ```
 - CLI：`kb knowledge resolve <ref>`（默认 both）/ `kb knowledge link <id|slug> --format token|markdown|plain`；退出码沿用既有约定 **404→1、409/403→2**（实现走 `CommanderError`，与 `kb dep` 同一套）。
 
+### KB-PAGE-2b link 全覆盖 / find-source / show 省略 --scope
+
+| 端点 | 请求 | 响应 | 说明 |
+| --- | --- | --- | --- |
+| `GET /api/knowledge/pages` | 同列表 | 每个列表项**新增** `link`（形状同上） | 列表文本与 `--json` 都能直接拿到引用串 |
+| `POST /api/knowledge/pages`、`PUT /api/knowledge/pages/:id` | 同创建/修订 | 响应新增 `link` | CLI 文本输出在标题后补一行 `link: knowledge:<uuid>` |
+| `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`=`workspace\|common\|both`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | **只读**：只扫页面**当前 revision** 的 `sources_json`（历史版本不参与），软删页排除；不建表、不做全表反序列化 |
+
+- CLI：`kb knowledge find-source <path>`（默认 both）；`kb knowledge show <page-id>` 的 `--scope` **可省略**——省略时先调 `resolve`（both + 当前工作区）再按解析结果取页，显式给出 `--scope` 时行为与旧版逐字一致。
+- `show` 省略 scope 的退出码沿用 resolve 约定：404→1、409 歧义/403 跨范围→2。
+
 ### KB-PAGE-1 知识页读语义与 slug 解析（缺陷修复）
 
 ﻿| 项 | 变化 |

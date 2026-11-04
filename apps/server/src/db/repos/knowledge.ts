@@ -270,3 +270,45 @@ export function listKnowledgeGraphRows(
     })),
   };
 }
+
+/** KB-PAGE-2b：按 sources 的 locator / content_hash / source_id 反查引用文件的知识页（只读，不建表、不扫历史 revision） */
+export interface KnowledgeSourceHit {
+  id: string;
+  slug: string;
+  title: string;
+  scope: 'workspace' | 'common';
+  workspace_id: string | null;
+  revision: number;
+  status: KnowledgePage['status'];
+}
+
+export function findKnowledgePagesBySource(
+  db: Db,
+  input: { term: string; scope: 'common' | 'workspace' | 'both'; workspace_id?: string | null },
+): KnowledgeSourceHit[] {
+  const term = input.term.trim();
+  if (term === '') throw new ValidationError('path 不能为空');
+  const scopeSql = input.scope === 'common'
+    ? "p.scope='common'"
+    : input.scope === 'workspace'
+      ? "(p.scope='workspace' AND p.workspace_id=@workspace)"
+      : "(p.scope='common' OR (p.scope='workspace' AND p.workspace_id=@workspace))";
+  const params: Record<string, string> = { needle: `%${term.replace(/[\\%_]/g, ch => `\\${ch}`)}%` };
+  if (input.scope !== 'common') {
+    if (!input.workspace_id) throw new ValidationError('该 scope 必须提供 workspace_id');
+    params.workspace = input.workspace_id;
+  }
+  // 先用 LIKE 缩小候选（只扫页面当前 revision，历史版本不参与），再按 sources 精确匹配，避免反序列化全表
+  const rows = db.prepare(
+    `SELECT p.id,p.slug,p.title,p.scope,p.workspace_id,p.revision,p.status,r.sources_json
+     FROM knowledge_page p JOIN knowledge_revision r ON r.page_id=p.id AND r.revision=p.revision
+     WHERE p.status<>'deleted' AND ${scopeSql} AND r.sources_json LIKE @needle ESCAPE '\\'
+     ORDER BY p.updated_at DESC,p.id`,
+  ).all(params) as Array<KnowledgeSourceHit & { sources_json: string }>;
+  return rows
+    .filter(row => {
+      const sources = JSON.parse(row.sources_json) as KnowledgeSource[];
+      return Array.isArray(sources) && sources.some(source => source.locator === term || source.content_hash === term || source.source_id === term);
+    })
+    .map(({ sources_json: _sourcesJson, ...hit }) => hit);
+}

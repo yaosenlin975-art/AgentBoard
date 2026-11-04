@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { KnowledgeScope } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { ApiError, ValidationError } from '../errors.js';
-import { createKnowledgePage, getKnowledgePage, getKnowledgeRevision, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
+import { createKnowledgePage, findKnowledgePagesBySource, getKnowledgePage, getKnowledgeRevision, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
 import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph } from '../services/knowledgeGraph.js';
 import { countBacklinks, countOutgoingLinks, listBacklinks, listResolvedLinks, listUnresolvedLinks, reparseAllPages } from '../services/knowledgeLinks.js';
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
@@ -134,8 +134,16 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     if (input.scope !== 'common') params.workspace = input.workspace_id!;
     if (input.status !== 'all') params.status = input.status;
     if (input.include_expired === 'false') params.now = Date.now();
-    const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params);
-    res.json({ items: rows.slice(0, input.limit), next_offset: rows.length > input.limit ? input.offset + input.limit : null });
+    const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params) as Array<{
+      id: string; scope: 'common' | 'workspace'; workspace_id: string | null; slug: string; title: string;
+      status: string; revision: number; expires_at: number | null; created_by: string; updated_by: string;
+      created_at: number; updated_at: number; category: string; landed: string | null; domain: string | null;
+    }>;
+    // KB-PAGE-2b（A7）：列表项同样带 link，CLI/前端不再自己拼串
+    res.json({
+      items: rows.slice(0, input.limit).map(row => ({ ...row, link: knowledgeLink(row) })),
+      next_offset: rows.length > input.limit ? input.offset + input.limit : null,
+    });
   });
   // KB-DIFF-S：列表默认**不带正文**（只给 body_bytes / body_chars 摘要）；include_body=true 保留旧行为。
   router.get('/pages/:id/revisions', (req, res) => {
@@ -196,6 +204,22 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     throw new ApiError(404, 'KNOWLEDGE_NOT_FOUND', result.message);
   });
 
+  /**
+   * KB-PAGE-2b：只读反查「哪些知识页的 sources 引用了这个文件」。
+   * 按当前 revision 的 sources_json 扫描（不建表、不反序列化历史版本），term 精确匹配 locator / content_hash / source_id。
+   */
+  router.get('/find-source', (req, res) => {
+    const input = parse(z.object({
+      path: z.string().min(1),
+      scope: z.enum(['common', 'workspace', 'both']).default('both'),
+      workspace_id: z.string().min(1).optional(),
+    }).strict(), req.query);
+    if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
+    const items = findKnowledgePagesBySource(db, { term: input.path, scope: input.scope, workspace_id: input.workspace_id ?? null })
+      .map(item => ({ ...item, link: knowledgeLink(item) }));
+    res.json({ path: input.path, items });
+  });
+
   router.get('/pages/:id', (req, res) => {
     const scope = scopeOf(req.query);
     const page = getKnowledgePage(db, req.params.id!, scope);
@@ -249,15 +273,19 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const body = parse(knowledgeImportSchema, req.body);
     const result = importKnowledgePages(db, body, { actor: body.actor });
     res.json(result);
-  });  router.post('/pages', (req, res) => {
+  });
+  router.post('/pages', (req, res) => {
     const body = parse(knowledgeCreateSchema, req.body);
     const scope = scopeOf(body);
     const { scope: _scope, workspace_id: _workspace, ...content } = body;
-    res.json(httpMutation(db, req, () => createKnowledgePage(db, { ...content, ...scope })).result);
+    // KB-PAGE-2b：create/revise 响应同样带 link（A7），CLI 文本输出补一行 link
+    const result = httpMutation(db, req, () => createKnowledgePage(db, { ...content, ...scope })).result;
+    res.json({ ...result, link: knowledgeLink(result) });
   });
   router.put('/pages/:id', (req, res) => {
     const { expected_revision, scope: _scope, workspace_id: _workspace, ...patch } = parse(knowledgeReviseSchema, req.body);
-    res.json(httpMutation(db, req, () => reviseKnowledgePage(db, req.params.id!, scopeOf(req.body), expected_revision, patch)).result);
+    const result = httpMutation(db, req, () => reviseKnowledgePage(db, req.params.id!, scopeOf(req.body), expected_revision, patch)).result;
+    res.json({ ...result, link: knowledgeLink(result) });
   });
   router.post('/pages/:id/actions', (req, res) => {
     const body = parse(knowledgeActionSchema, req.body);

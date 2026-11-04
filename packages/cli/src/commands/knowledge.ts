@@ -15,7 +15,8 @@ async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{
   // B：缺省按 cwd 解析当前工作区（与 list-tasks 同一解析器）；显式 --workspace 仍覆盖
   return { scope: opts.scope, workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) };
 }
-const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${p.snippet ? `\n${p.snippet}` : ''}`; };
+const linkRef = (raw: unknown): string | undefined => (raw as { link?: { ref?: string } }).link?.ref;
+const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; const link = linkRef(raw); return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${link ? `  link: ${link}` : ''}${p.snippet ? `\n${p.snippet}` : ''}`; };
 function output(ctx: Ctx, data: unknown): void {
   if (ctx.json) { ctx.io.write(`${JSON.stringify(data, null, 2)}\n`); return; }
   if (Array.isArray(data)) { ctx.io.write(data.length ? data.map(pageLine).join('\n') + '\n' : '（无知识）\n'); return; }
@@ -25,8 +26,9 @@ function output(ctx: Ctx, data: unknown): void {
     ctx.io.write((items.length ? items.map(pageLine).join('\n') + '\n' : '（无知识）\n') + (p.next_offset ? `下一页：--offset ${p.next_offset}\n` : ''));
     return;
   }
-  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${String(p.landed)}` : ''].filter(Boolean).join(' · ');
-  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
+  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${String(p.landed)}` : '', p.domain !== undefined ? `domain: ${String(p.domain ?? '未归类')}` : ''].filter(Boolean).join(' · ');
+  const link = linkRef(data);
+  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}${link ? `\nlink: ${link}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
 }
 const query = (params: Record<string, string | number | undefined>) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString();
 
@@ -172,6 +174,8 @@ const CREATE_HELP = `${FIELD_HELP}
 最小文件样例 evidence.json：
   [{"source_id":"file:README.md","locator":"file:1-20"}]
 
+输出：文本模式在标题后补一行 link: knowledge:<uuid>（--json 中为 link 对象，可直接发给别人打开）；
+      引用串也可单独用 kb knowledge link <page-id> 生成。
 退出码：0 成功；1 参数/服务端错误（含字段级提示）；2 任务占用或知识 revision 冲突（KNOWLEDGE_*）
 
 ${CONTENT_GUIDE}
@@ -186,6 +190,7 @@ const REVISE_HELP = `${FIELD_HELP}
     --sources-file sources.json --evidence-file evidence.json
 同主题内容演进用 revise（同一 page-id 累加 revision），不要为「更新版内容」新建页。
 --expected-revision 是 CAS：必须与库内 revision 一致，旧值以退出码 2 退出并提示「知识页已更新，请重新读取」。
+输出：文本模式在标题后补一行 link: knowledge:<uuid>（--json 中为 link 对象）。
 退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT，stderr 给当前 revision 与「知识页已更新，请重新读取」）
 
 ${GUIDE_POINTER}
@@ -204,13 +209,25 @@ const ACTION_HELP = `
 `;
 
 const SHOW_HELP = `
-必填：<page-id> --scope <workspace|common>；workspace 范围缺省按 cwd 解析，可用 --workspace <id|名> 覆盖
-可选：--history 同时输出全部版本历史
-输出：非 --json 时打印 id/scope/revision/title + 正文；--json 打印服务端原对象
+必填：<page-id>
+可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 先解析 id / ≥8 位前缀 / slug，歧义 409 不猜；
+      显式给出 --scope 时行为与旧版一致）；--workspace <id|名>、--history 同时输出全部版本历史
+输出：非 --json 时打印 id/scope/revision/title + link: knowledge:<uuid> + 正文；--json 打印服务端原对象
 示例：
+  kb knowledge show <page-id>
   kb knowledge show <page-id> --scope common
   kb --json knowledge show <page-id> --scope workspace --workspace 任务看板 --history
-退出码：0 成功；1 不存在或参数错误；2 不适用（本命令不返回 2）
+退出码：0 成功；1 不存在或参数错误；2 resolve 歧义或跨范围（仅省略 --scope 时会返回 2）
+`;
+
+const FIND_SOURCE_HELP = `
+KB-PAGE-2b：只读反查「哪些知识页的 sources 引用了这个文件」——改完代码想知道哪些知识页要同步时用。
+必填：<path>（精确匹配 sources[].locator / content_hash / source_id，如 Docs/api.md）
+可选：--scope workspace|common|both（默认 both）、--workspace <id|名>（scope 含 workspace 时缺省按 cwd 解析）
+输出：每页一行 id/scope/revision/slug/title + link；--json 打印 { path, items }
+示例：
+  kb knowledge find-source Docs/api.md
+  kb knowledge find-source docs/design-2026-11-04-knowledge-taxonomy.md --scope common
 `;
 
 const LIST_HELP = `
@@ -265,6 +282,8 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
   2) kb knowledge show <page-id> --scope common
   3) Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin
   4) kb knowledge action <page-id> archive --scope common --expected-revision 2
+  5) kb knowledge show <page-id>（可省 --scope，自动 resolve）；引用串用 kb knowledge link <page-id>
+  6) kb knowledge find-source Docs/api.md（反查哪些知识页引用了该文件）
 字段说明：kb knowledge create --help（含 --sources/--evidence 每个字段与三种引号写法）
 `);
   knowledge.command('search <query>').description('按文本检索知识页（默认 both）').option('--scope <scope>', 'workspace|common|both', 'both').option('--workspace <id|名>').option('--limit <n>', '结果数量', '5')
@@ -315,10 +334,40 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       }
     });
 
-  scoped(knowledge.command('show <page-id>').description('读单个知识页（可带历史）').option('--history', '同时读取版本历史'))
+  // KB-PAGE-2b：只读反查 sources 引用（不建表；改完代码想知道哪些知识页要同步）
+  knowledge.command('find-source <path>').description('反查哪些知识页的 sources 引用了该文件（只读）')
+    .option('--scope <scope>', 'workspace|common|both', 'both')
+    .option('--workspace <id|名>')
+    .addHelpText('after', FIND_SOURCE_HELP)
+    .action(async (pathArg: string, opts: ScopeOptions) => {
+      const ctx = context();
+      const res = await request<{ path: string; items: Array<{ id: string; slug: string; title: string; scope: string; revision: number; status: string; link: { ref: string } }> }>(ctx.base, 'GET', `/api/knowledge/find-source?${query({ ...await scopeFor(ctx, opts, true), path: pathArg })}`);
+      if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
+      if (res.items.length === 0) { ctx.io.write('（无引用该文件的知识页）\n'); return; }
+      for (const item of res.items) ctx.io.write(`${item.id} [${item.scope}] rev:${item.revision} ${item.slug}  ${item.title}  link: ${item.link.ref}\n`);
+    });
+
+  // KB-PAGE-2b：--scope 可省略——省略时先 resolve（both + 当前工作区），再按解析出的 scope 取页；显式给出时与旧版逐字一致
+  knowledge.command('show <page-id>').description('读单个知识页（--scope 可省略，自动 resolve）')
+    .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
+    .option('--workspace <id|名>')
+    .option('--history', '同时读取版本历史')
     .addHelpText('after', SHOW_HELP)
-    .action(async (id: string, opts: ScopeOptions & { history?: boolean }) => {
-      const ctx = context(); const suffix = query(await scopeFor(ctx, opts)); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
+    .action(async (id: string, opts: { scope?: string; workspace?: string; history?: boolean }) => {
+      const ctx = context();
+      let scope: { scope: string; workspace_id?: string };
+      if (opts.scope === undefined) {
+        try {
+          const resolved = await request<{ scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
+          scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
+        } catch (error) {
+          ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+          throw new CommanderError(resolveExit(error), 'agentboard.knowledge.show', '');
+        }
+      } else {
+        scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+      }
+      const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
       if (opts.history) output(ctx, { page, history: await request(ctx.base, 'GET', `${path}/revisions?${suffix}`) }); else output(ctx, page);
     });
