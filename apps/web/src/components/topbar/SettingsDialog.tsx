@@ -11,6 +11,7 @@ import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
+import { StorageSection } from '../settings/StorageSection';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
 import { VoiceSection } from '../settings/VoiceSection';
 import { useAppStore } from '../../state/appStore';
@@ -182,6 +183,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
         <h3 className="mb-2 text-xs font-medium text-ink-2">语音输入</h3>
         <VoiceSection />
       </section>
+      {/* DB-3：数据存储（当前路径/来源/占用/附件目录 + 迁移确认与阶段进度；端点待 DB-2B） */}
+      <StorageSection />
       <RestartServerPanel />
     </Modal>
   );
