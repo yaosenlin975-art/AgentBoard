@@ -4,7 +4,7 @@ import type { ManagedAccount, ManagedAppId } from '@agentboard/shared';
  * ACC-07 签到 provider 契约（每产品一份实现，只有 ACC-03 契约通过的产品才允许落地）。
  *
  * 现状：WorkBuddy / CodeBuddy 两产品的真实签到授权与签到请求 gate 均为 `unverified`
- * （Docs/verification/2026-11-01-checkin-provider-contracts.md），因此生产装配**不注入**任何
+ * （Docs/evidence/checkin-provider-contracts-2026-11-01.md），因此生产装配**不注入**任何
  * CheckinProviderSpec，端点一律 `409 PROVIDER_UNVERIFIED`，不创建授权会话、不发任何请求。
  * 测试用 `apps/server/test/fakeCheckinProvider.ts` 实现本接口，只验证编排与状态机。
  */

@@ -32,7 +32,7 @@ curl -fsS http://127.0.0.1:8788/api/version
 ```
 
 宿主 8787 常被本机服务占用，容器冒烟请用别的宿主端口（上例 `8788`）。DB 与附件都在 `/data` 一个卷里；
-bind mount 变体、冒烟 6 步、回滚与未证实项见 `Docs/docker-2026-11-03.md`。
+bind mount 变体、冒烟 6 步、回滚与未证实项见 `Docs/decisions/2026-11-03-docker.md`。
 
 镜像自带 `kb`（`/usr/local/bin/kb`，默认 `KB_SERVER=http://127.0.0.1:8787` 指向同容器的 server），容器内可直接操作看板：
 

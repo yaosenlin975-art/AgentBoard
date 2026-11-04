@@ -1,6 +1,6 @@
 /**
  * DEP-1：依赖边存储、校验与 claim 门禁。
- * 设计口径：`Docs/design-2026-11-03-issue-dependencies.md` §6/§7/§8/§12/§13/§17。
+ * 设计口径：`Docs/designs/board/2026-11-03-issue-dependencies.md` §6/§7/§8/§12/§13/§17。
  * 用真实 HTTP（supertest）+ 真实临时 SQLite，不 mock 仓储层。
  */
 import { mkdtempSync, rmSync } from 'node:fs';

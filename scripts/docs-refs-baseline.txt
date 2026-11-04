@@ -1,0 +1,23 @@
+# Docs 引用基线（存量悬空引用，只告警不阻断）
+#
+# 格式：`来源文件|目标路径`，一行一条；修掉后删除对应行。
+# 判定顺序：校验脚本 FAKE_PATHS（假路径/文字示例）中的目标优先豁免，不进本文件。
+# 本文件只承载「该修但本轮受边界或时序限制没修」的条目，每条都必须有分组原因。
+#
+# ── 1. 已知丢失文件：Docs/Obsidian-星图渲染逆向.md
+#    该文件从未入库（git log --all 无记录），无法恢复；仓库内 7 处引用是算法溯源注释，
+#    删除会丢失「公式出自哪份逆向笔记」的线索，故保留，并在 Docs/INDEX.md 记为已删除。
+apps/web/src/components/knowledge/GraphControls.tsx|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/components/knowledge/pixiGraph.ts|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/lib/forceLayout.ts|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/lib/graphVisualFormulas.ts|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/lib/localGraph.ts|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/test/forceLayout.test.ts|Docs/Obsidian-星图渲染逆向.md
+apps/web/src/test/graphVisualFormulas.test.ts|Docs/Obsidian-星图渲染逆向.md
+#
+# ── 2. 他线在飞，避免把别线未提交改动卷进本卡提交（其收口后补路径并删行）
+apps/web/src/components/settings/AccountsPanel.tsx|Docs/design-2026-11-04-accounts-unified-panel.md
+apps/web/src/test/AccountsPanelRedesign.test.tsx|Docs/design-2026-11-03-accounts-panel-redesign.md
+#
+# ── 3. 历史快照不改写：CHANGELOG 是历史记录，改写条目等于篡改记录
+Docs/CHANGELOG.md|Docs/verification/2026-11-01-workbuddy-desktop-contract.md

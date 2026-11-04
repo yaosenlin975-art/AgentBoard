@@ -246,7 +246,7 @@
 **`code-only`（2 张，需人工判断）**
 
 - `4f0991cf`【TOOLBAR-LAYOUT-01】：符号仅命中源码 1 处，无测试命中。
-- `5399e104`【IMG-03】：能力核验类卡，代码存在（`packages/adapters` 中 `vision` 命中 57 文件），但本卡验收物是 `Docs/verification` 证据而非用例。
+- `5399e104`【IMG-03】：能力核验类卡，代码存在（`packages/adapters` 中 `vision` 命中 57 文件），但本卡验收物是 `Docs/evidence` 证据而非用例。
 
 **`missing`（4 张，均有合理解释）**
 

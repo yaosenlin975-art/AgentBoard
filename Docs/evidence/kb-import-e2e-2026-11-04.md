@@ -1,7 +1,7 @@
 # KBIMP-3 三格式端到端导入验收（2026-11-04）
 
 环境：5174 dev（vite，proxy `/api` → 8787）+ Edge 156 headless（CDP 9333）+ 8787 重启后（`POST /api/system/restart`）。
-方法：CDP `DOM.setFileInputFiles` 把 **真实文件**塞进 `input[data-testid="kb-import-file"]`，点「确认导入」走完整 UI 链路（`Docs/verification/2026-11-04-kbimp3-e2e/e2e-import.mjs`）。
+方法：CDP `DOM.setFileInputFiles` 把 **真实文件**塞进 `input[data-testid="kb-import-file"]`，点「确认导入」走完整 UI 链路（`Docs/evidence/kbimp3-e2e-2026-11-04/e2e-import.mjs`）。
 
 ## 1. 四种样例的实际导入结果（`kb knowledge show` 复核）
 

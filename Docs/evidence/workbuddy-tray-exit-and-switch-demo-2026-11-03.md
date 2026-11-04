@@ -3,7 +3,7 @@
 - 日期：2026-11-03
 - 任务：ACC-01（`9c1174b6-c4cf-4cef-972f-fbad52189438`）
 - 执行者：board-web-accounts（准备与复测）；用户执行 A/B 两段的客户端操作
-- 前置记录：`Docs/verification/2026-11-01-workbuddy-desktop-contract.md`「授权观测」节（本文件只追加，不覆盖既有结论）
+- 前置记录：`Docs/evidence/workbuddy-desktop-contract-2026-11-01.md`「授权观测」节（本文件只追加，不覆盖既有结论）
 - 目的：把 ACC-05 的「切换路径 blocked」解除条件跑到可复验：①用户演示一次真实托盘退出 ②提供第二个授权测试账号完成 捕获→切换→回滚→核验 闭环
 - 本轮约束：只读观测；不读 vault / token 原文（字符串值一律 sha256 前 8 位）；不运行签到/登录；不强杀进程；不改客户端文件；不代用户启动或关闭客户端
 

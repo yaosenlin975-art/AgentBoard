@@ -1,5 +1,5 @@
 /**
- * 聊天整屏视图 · 左会话列表（S3，设计稿 `Docs/design-2026-11-04-nav-sidebar-chat-view.md` §5）。
+ * 聊天整屏视图 · 左会话列表（S3，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §5）。
  *
  * 口径：
  * - 250px 固定宽，顶部「+ 新建会话」；下拉会话切换器（SessionSwitcher）由本列表取代；

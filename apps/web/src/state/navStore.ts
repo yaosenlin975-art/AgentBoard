@@ -1,5 +1,5 @@
 /**
- * 导航状态（S1，设计稿 `Docs/design-2026-11-04-nav-sidebar-chat-view.md` §4）。
+ * 导航状态（S1，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §4）。
  *
  * 单一视图枚举替代 App 的 `layout + knowledgeOpen + logOpen` 三态组合：
  *   view ∈ { board, tree, knowledge, log, chat }  —— 五入口互斥（单值即互斥）

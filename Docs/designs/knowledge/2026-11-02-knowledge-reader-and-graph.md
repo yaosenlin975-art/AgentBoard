@@ -22,7 +22,7 @@
 | `apps/web/src/components/knowledge/KnowledgePanel.tsx`、`KnowledgePageDetail.tsx`、`apps/web/src/lib/markdown.tsx` | 现有 Web 是搜索/筛选列表加正文详情；详情有来源、证据、版本历史、归档/恢复/软删除与有效期；Markdown 使用 react-markdown 和代码高亮，无知识页链接语法或编辑器。 | 在现有面板内增加文档/关系图视图；不重建 Markdown 渲染。 |
 | `apps/server/src/db/repos/knowledge.ts`、`apps/server/src/db/migrations/knowledge.ts`、`apps/server/src/api/knowledgeRoutes.ts` | `knowledge_page` 保存当前正文；`knowledge_revision` 保存完整快照且由触发器禁止更新/删除。修订、状态变更在 immediate transaction 内校验 `expected_revision` 并追加 revision。现有 REST 有 search/pages/page/revisions/CRUD/actions，无关系或图谱查询。 | 关系随知识 revision 原子提交；图查询新增 REST 读接口。 |
 | `packages/shared/src/types.ts`、`apps/mcp/src/tools/knowledge.ts`、`packages/cli/src/commands/knowledge.ts` | shared types 定义页与 revision；CLI/MCP 经 REST 操作知识。MCP page read 使用分段正文/历史，序列化结果上限 40,000 字符，页操作显式传 scope。 | 新字段需在 shared、REST、CLI、MCP 同名；不新增 MCP 图工具。 |
-| `Docs/design-2026-11-01-shared-knowledge.md`、`Docs/design-2026-11-01-unified-mcp.md` | 已确定 Workspace + common、单一 REST/SQLite 真源和页面 CAS；当前设计中的知识库与 MCP 已实现，真实客户端接入另有验收边界。 | 沿用现有契约，旧客户端省略新增字段时保持原语义。 |
+| `Docs/designs/knowledge/2026-11-01-shared-knowledge.md`、`Docs/designs/infra/2026-11-01-unified-mcp.md` | 已确定 Workspace + common、单一 REST/SQLite 真源和页面 CAS；当前设计中的知识库与 MCP 已实现，真实客户端接入另有验收边界。 | 沿用现有契约，旧客户端省略新增字段时保持原语义。 |
 
 源码检索使用 `rg` 定向覆盖 UI、knowledge repository/routes/migration、shared types、CLI/MCP 和上述两份设计稿；没有全仓扫描。GitHub 研究读取上游 release、package manifest 和 README。没有安装依赖、运行代码或做浏览器验收；候选兼容性仅按官方包声明核对。
 

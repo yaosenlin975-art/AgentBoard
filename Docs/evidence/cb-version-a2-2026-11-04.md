@@ -55,7 +55,7 @@ D:\tools\bin\codebuddy.cmd
 | 注册表 `HKCU\…\Run` / `App Paths` | 无 codebuddy 项 |
 | `D:\tools\multica\run-daemon.cmd:14` | 用的是 `D:\tools\codebuddy-cli\codebuddy.exe`（**另一份，存在且未动**）→ 不受影响 |
 | `%APPDATA%\npm\node_modules\@tencent-ai\codebuddy-code\builtin\remote-host\cbc-discovery-windows.ps1:149` | 按**文件名**发现 `codebuddy.exe/.cmd`，不写死路径 → 仍能发现 npm 版本 |
-| 仓库内引用 `tools\bin\codebuddy.exe` | 仅两处历史验证文档（`Docs/verification/2026-11-01-checkin-provider-contracts.md:47`、`2026-11-01-codebuddy-desktop-contract.md:54`）→ 非运行路径 |
+| 仓库内引用 `tools\bin\codebuddy.exe` | 仅两处历史验证文档（`Docs/evidence/checkin-provider-contracts-2026-11-01.md:47`、`Docs/evidence/codebuddy-desktop-contract-2026-11-01.md:54`）→ 非运行路径 |
 | OpenViking 记忆 / DSH 会话缓存 | 描述性文本，无运行耦合 |
 
 ## 回滚（一条命令量级）

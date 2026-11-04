@@ -4,7 +4,7 @@
  * 手势：`pointerdown` 起 400ms 计时；期间位移 > 6px 或提前 `pointerup` → 取消（原生文字选择照常）。
  * 录音：AudioWorklet → 16kHz 单声道 Int16 分块，二进制帧上行 WS。
  * 下行：JSON `{ type: 'partial' | 'final' | 'error' | 'queued', ... }`（契约见
- *       Docs/design-2026-11-03-local-voice-input.md §识别会话，服务端 VOICE-2 未就绪时用 mock）。
+ *       Docs/designs/ui/2026-11-03-local-voice-input.md §识别会话，服务端 VOICE-2 未就绪时用 mock）。
  */
 
 /** 长按阈值：按住多久开始录音（ms） */

@@ -159,7 +159,7 @@ B/C 落地后，本文档 §2、§3 里的 `--workspace`/`--scope` 可省略；�
 
 - 技能条款：`skills/using-agentboard/SKILL.md`（工作区边界、开工前必读、收尾与提交）
 - 接口细节：`Docs/api.md`
-- 标签治理：`Docs/governance-2026-11-04-labeling.md`
+- 标签治理：`Docs/decisions/2026-11-04-labeling.md`
 
 ---
 

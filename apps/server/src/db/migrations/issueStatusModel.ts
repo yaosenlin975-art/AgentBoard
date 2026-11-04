@@ -14,7 +14,7 @@ import { createIssueHierarchyObjects, createIssueMonotonicTimeTrigger } from './
  * 触发器：`DROP TABLE issue` 会带走表上的全部触发器，rename 后用 taskHierarchy 里的同一份 DDL 重建
  * （`issue_parent_*` 三个 + `issue_monotonic_time`），索引 `issue_parent_order` 一并重建。
  *
- * 回滚：见 `Docs/migration-2026-11-03-status-model.md`（靠备份文件还原，不自动回滚）。
+ * 回滚：见 `Docs/decisions/2026-11-03-status-model.md`（靠备份文件还原，不自动回滚）。
  */
 export interface StatusModelMigrationResult {
   migrated: boolean;

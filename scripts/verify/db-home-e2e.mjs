@@ -8,7 +8,7 @@
  * - 独立 `APPDATA`（临时目录）+ 独立端口 → `GET /api/settings/storage` 的 `db_path_source` 为 `default`；
  * - **子进程必须继承完整环境**：最小 env 会让启动期 `defaultWorkbuddyPaths()` 抛
  *   `ApiError: 无法解析本机 WorkBuddy 契约路径` → 进程 exit 1、端口从未监听 → 首次请求 ECONNREFUSED
- *   （DB-4 前任卡点的真实原因，见 Docs/verification/2026-11-04-db-home-e2e.md）；
+ *   （DB-4 前任卡点的真实原因，见 Docs/evidence/db-home-e2e-2026-11-04.md）；
  * - 循环回请求不走代理：给子进程与自身都显式设置 `NO_PROXY=127.0.0.1,localhost`；
  * - 跑前清掉临时 APPDATA 里的 `server.lock` 与 `db-migration-status-*.json`（陈旧锁会导致 exit 4）。
  *

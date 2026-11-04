@@ -1,7 +1,7 @@
 /**
  * VOICE-1/VOICE-5：本地语音模型的下载与管理（服务层）。
  *
- * 口径（Docs/design-2026-11-03-local-voice-input.md §服务端-模型管理；VOICE-5 决策=方案 A）：
+ * 口径（Docs/designs/ui/2026-11-03-local-voice-input.md §服务端-模型管理；VOICE-5 决策=方案 A）：
  * - 目录 `dirname(db)/models/<model-id>/`（与 DOCKER-2 派生约定一致：容器只挂 /data）；
  * - **按文件下载**（HuggingFace `resolve` 直链），每个文件先写 `<file>.part` 再原子改名；
  * - 每个文件独立校验：有上游 sha256 的按 sha256 校验；`tokens.txt` 这类上游只发 git blob 的文件

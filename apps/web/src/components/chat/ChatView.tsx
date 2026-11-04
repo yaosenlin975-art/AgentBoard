@@ -1,5 +1,5 @@
 /**
- * 聊天整屏视图容器（S3，设计稿 `Docs/design-2026-11-04-nav-sidebar-chat-view.md` §5）。
+ * 聊天整屏视图容器（S3，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §5）。
  *
  * 结构：左会话列表 250px（ChatSessionList）+ 右消息区（ChatPanel）。
  * 设计 §11 把拆法留给实施者：会话列表独立成组件，ChatPanel 保持消息渲染与发送职责不变，

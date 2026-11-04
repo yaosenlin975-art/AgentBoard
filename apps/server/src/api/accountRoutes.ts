@@ -2,7 +2,7 @@
  * 账号管理路由（ACC-05 / ACC-07）：managed-accounts 捕获/切换、能力矩阵、签到授权与批量签到、操作查询。
  * 响应仅含脱敏元数据（PublicManagedAccount / AccountOperation / CheckinAuthorization / CheckinBatch），
  * 不返回快照字节、信封、凭据 ref、remote state 原文。
- * 设计：Docs/design-2026-11-01-workbuddy-accounts.md §8。
+ * 设计：Docs/designs/accounts/2026-11-01-workbuddy-accounts.md §8。
  */
 import { Router } from 'express';
 import { z } from 'zod';

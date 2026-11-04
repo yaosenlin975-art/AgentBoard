@@ -1,6 +1,6 @@
 /**
  * UNSLOP 全局令牌与方向的机器可验证部分。
- * 方向：Docs/design-2026-11-03-unslop-direction.md（暖石墨 + 单一琥珀强调）。
+ * 方向：Docs/designs/ui/2026-11-03-unslop-direction.md（暖石墨 + 单一琥珀强调）。
  * 这里钉两类东西：
  *  1) 令牌取值（十六进制字面量）——避免被随手改回蓝/紫 slop；
  *  2) `@theme inline` 的映射键——Tailwind v4 只有登记成 `--color-*` 才会生成对应工具类，

@@ -1,5 +1,5 @@
 /**
- * 左栏（S2a，设计稿 `Docs/design-2026-11-04-nav-sidebar-chat-view.md` §3/§7）。
+ * 左栏（S2a，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §3/§7）。
  *
  * FIX-1（导航重构纠偏，父卡 3c8d0a34）：结构回归设计稿顺序
  *   工作空间 → 五入口 → 账号/设置（纵向两项）→ 状态行

@@ -2,7 +2,7 @@
 
 > 截图在本地 `unslop/{original,after}/`，**不入库**（`.gitignore` 已忽略，约 2MB）；本文件入库。
 
-方向：`Docs/design-2026-11-03-unslop-direction.md`（暖石墨中性 ramp + 单一琥珀强调；值班台世界）。
+方向：`Docs/designs/ui/2026-11-03-unslop-direction.md`（暖石墨中性 ramp + 单一琥珀强调；值班台世界）。
 原图：`unslop/original/*.png`（1440×900，测试页 5174 真实数据）；实施后：`unslop/after/*.png`。
 
 ## 审计（按 references/signs.md 分组，每条一行）

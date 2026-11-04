@@ -25,7 +25,7 @@ optgroup {
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * UNSLOP 全局令牌（方向见 Docs/design-2026-11-03-unslop-direction.md）：
+ * UNSLOP 全局令牌（方向见 Docs/designs/ui/2026-11-03-unslop-direction.md）：
  * 值班台/控制面板世界 —— 偏暖石墨中性 ramp + 单一琥珀强调色。
  * - 表面/发丝线/三级文字全部来自同一套暖石墨，chrome 里不出现第二个人造色相；
  * - 强调色只用于主行动、选中态与真正需要注意的数字（等 N 项、逾期）；

@@ -4,7 +4,7 @@
  * 636: 之前 `httpCheckinProviders.ts` 里写死 `api.workbuddy.cn`，而该域名在本机 **NXDOMAIN**（探活 GET/POST 均 000，连接失败），
  * 全仓也只出现那一次、没有任何测试断言。同期三份独立证据都指向 `www.codebuddy.cn`：
  * - 公共知识 §1：实测 `POST https://www.codebuddy.cn/billing/meter/get-user-resource-summary` → 200 / code 0；
- * - `Docs/verification/2026-11-01-checkin-provider-contracts.md`：CN billing origin = `www.codebuddy.cn`（桌面 failover `www.workbuddy.cn` / `copilot.tencent.com`）；
+ * - `Docs/evidence/checkin-provider-contracts-2026-11-01.md`：CN billing origin = `www.codebuddy.cn`（桌面 failover `www.workbuddy.cn` / `copilot.tencent.com`）；
  * - `refs/checkin_scripts_workbuddy_trae_minimax/workbuddy_checkin.py`：默认 `www.codebuddy.cn`。
  *
  * 探活复核（2026-11-04，只读、不带凭据）：

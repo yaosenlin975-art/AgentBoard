@@ -15,7 +15,7 @@ export const MINIMAX_SWITCH_UNAVAILABLE = 'CLIENT_PROCESS_CONTROL_UNAVAILABLE';
 
 /**
  * 账号 provider 注册表（ACC-05）。
- * workbuddy_desktop：捕获/切换已按验证契约实现（Docs/verification/2026-11-01-workbuddy-desktop-contract.md），
+ * workbuddy_desktop：捕获/切换已按验证契约实现（Docs/evidence/workbuddy-desktop-contract-2026-11-01.md），
  * 签到 provider 未验证 → checkin 关闭；codebuddy_desktop 契约未确认，全部关闭。
  *
  * MINIMAX-PATH：minimax 的 capture 与根因码由客户端探测结果推导（`minimaxClientProbe.ts`）——

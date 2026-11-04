@@ -1,6 +1,6 @@
 /**
  * ACC-05 WorkBuddy Desktop provider 契约测试（fake 客户端环境：注入路径与探针）。
- * 契约依据：Docs/verification/2026-11-01-workbuddy-desktop-contract.md「2026-11-01 授权观测」。
+ * 契约依据：Docs/evidence/workbuddy-desktop-contract-2026-11-01.md「2026-11-01 授权观测」。
  */
 import { readdirSync, writeFileSync } from 'node:fs';
 import { SecretVault } from '../src/services/accounts/secretVault.js';

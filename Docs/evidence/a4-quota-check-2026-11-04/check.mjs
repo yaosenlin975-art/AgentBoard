@@ -1,5 +1,5 @@
 // ACC-KB-A4 视觉/断言核对：额度行在收敛到 packages/shared 后渲染是否与之前一致。
-// 用法：node Docs/verification/2026-11-04-a4-quota-check/check.mjs（需 5174 dev + CDP 9333）
+// 用法：node Docs/evidence/a4-quota-check-2026-11-04/check.mjs（需 5174 dev + CDP 9333）
 const PORT = 9333;
 const BASE = 'http://127.0.0.1:5174/';
 const OUT = 'D:\\WorkSpaces\\任务看板\\Docs\\verification\\2026-11-04-a4-quota-check';

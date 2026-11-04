@@ -1,7 +1,7 @@
 /**
  * VOICE-2：识别会话（WS 流式 + 串行识别器 + 空转回收）。
  *
- * 口径（Docs/design-2026-11-03-local-voice-input.md §服务端-识别会话）：
+ * 口径（Docs/designs/ui/2026-11-03-local-voice-input.md §服务端-识别会话）：
  * - 上行：二进制帧，**16kHz 单声道 Float32（小端）**；一帧任意长度，按帧累加进流。
  * - 下行：JSON `{ type: 'state' | 'queued' | 'partial' | 'final' | 'error' }`。
  * - 识别器**串行**（并发上限 1，可配）：同时只有一个会话在跑，其它排队并收到 `queued` 事件。

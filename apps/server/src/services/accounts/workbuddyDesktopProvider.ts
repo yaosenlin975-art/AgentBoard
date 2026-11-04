@@ -1,7 +1,7 @@
 /**
  * WorkBuddy Desktop 账号 provider（ACC-05）。
  *
- * 契约唯一依据：Docs/verification/2026-11-01-workbuddy-desktop-contract.md「2026-11-01 授权观测」。
+ * 契约唯一依据：Docs/evidence/workbuddy-desktop-contract-2026-11-01.md「2026-11-01 授权观测」。
  * 目标实例：D:\Program Files\WorkBuddy\WorkBuddy.exe 5.9.3.0（HKCU 卸载项绑定）；
  * instance_id = sha256("workbuddy_desktop" + NUL + 小写规范 exe 路径)；
  * auth 根 = %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info（固定每用户路径 → 每产品单活跃实例）；

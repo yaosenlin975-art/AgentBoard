@@ -1,7 +1,7 @@
 /**
  * VOICE-1：本地语音模型的候选清单（前后端共用的一份常量）。
  *
- * 口径（Docs/design-2026-11-03-local-voice-input.md §服务端-模型管理）：
+ * 口径（Docs/designs/ui/2026-11-03-local-voice-input.md §服务端-模型管理）：
  * - **不预置、不自动下载**：这里只描述候选，用户必须在设置里主动点下载；
  * - `url` / `sha256` 为 `null` 表示「尚未配置官方发布值」——下载接口会以
  *   `VOICE_MODEL_URL_MISSING` 明确拒绝，而不是去猜地址或跳过校验；

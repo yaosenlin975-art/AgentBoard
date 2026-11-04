@@ -14,7 +14,7 @@
 | 侧 | 主张 | 出处 |
 |:--|:--|:--|
 | 知识 | 设备字段必须与令牌同代搬，漏搬 = 回弹（切完又回旧号）/ 权益静默变少 / 多号自我关联 | 知识页 `cc06032d` §3 |
-| 代码边界 | 不触碰客户端自身登录文件 | `apps/server/src/api/accountRoutes.ts:243`、`Docs/design-2026-11-04-accounts-unified-panel.md:99`、`Docs/design-2026-11-01-workbuddy-accounts.md:126` |
+| 代码边界 | 不触碰客户端自身登录文件 | `apps/server/src/api/accountRoutes.ts:243`、`Docs/designs/accounts/2026-11-04-accounts-unified-panel.md:99`、`Docs/designs/accounts/2026-11-01-workbuddy-accounts.md:126` |
 
 两者只能由用户取舍。**裁决项一句话**：是否放开「不触碰客户端自身登录文件」，把客户端设备身份文件纳入 AgentBoard 的快照/写回链路；若放开，放开到哪些文件、哪些平台。
 

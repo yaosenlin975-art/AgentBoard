@@ -182,7 +182,7 @@ snapshot schema 草案：
 # 2026-11-03 只读复核（未执行任何写入/客户端操作）
 
 - 执行者：board-web-accounts；范围：仅只读（进程/文件元数据/uid 哈希/目录清单），未读 token 原文，未启动或关闭客户端，未运行签到，未强杀进程，未改客户端文件。
-- 目的：核对 11-01 结论在今天的现场是否仍成立，为「托盘退出复测 + 第二账号闭环」准备可执行脚本（脚本见 `Docs/verification/2026-11-03-workbuddy-tray-exit-and-switch-demo.md`）。
+- 目的：核对 11-01 结论在今天的现场是否仍成立，为「托盘退出复测 + 第二账号闭环」准备可执行脚本（脚本见 `Docs/evidence/workbuddy-tray-exit-and-switch-demo-2026-11-03.md`）。
 
 ## 复核结果
 

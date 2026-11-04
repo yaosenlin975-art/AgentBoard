@@ -1,6 +1,6 @@
 /**
  * ACC-DEL-02 展开层删除账号两步流（接 DELETE /api/managed-accounts/:id）。
- * 设计依据 §7/§8：Docs/design-2026-11-04-accounts-unified-panel.md。
+ * 设计依据 §7/§8：Docs/designs/accounts/2026-11-04-accounts-unified-panel.md。
  *
  * 覆盖：两步确认（未确认不发请求）→ 调用 → 失效重拉；3 秒未确认自动收回；取消收回；
  * 409 走中文主文案（裸码只进 title）；is_current=true 追加「不会退出客户端登录」警示；

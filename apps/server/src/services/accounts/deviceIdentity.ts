@@ -1,7 +1,7 @@
 /**
  * ACC-KB-B6：设备身份（方案 B）——字段读写、一次性回填、`pending` 标记与重试、安全快照。
  *
- * 设计要点（Docs/decision-2026-11-04-device-identity.md §3 方案 B）：
+ * 设计要点（Docs/decisions/2026-11-04-device-identity.md §3 方案 B）：
  * - 新增 `device_identity_ref` 指向**新快照**，**绝不覆盖** `client_snapshot_ref`（数据级可回滚）；
  * - 回填失败不阻断、不回滚：写 `device_identity_status='pending'` + 固定错误码，后续可重试；
  * - 写客户端登录文件前必须先落 `security/<uuid>` 快照（文件清单 + 每个文件 sha256 前 8 位），

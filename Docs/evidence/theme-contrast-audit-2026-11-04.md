@@ -85,7 +85,7 @@
 - 强调文字：亮 `rgb(160,74,8)` on `rgb(239,233,223)` = **5.00:1**
 - 最小项：暗色日志条目 `rgb(239,233,222)` on 选中条 `rgb(52,46,26)` = **4.58:1**（amber-soft 叠加后的实测值）
 
-截图（12 张，暗/亮 × 6 屏）：`Docs/verification/2026-11-04-contrast/{dark,light}-{board,knowledge,log,settings,accounts,model}.png`
+截图（12 张，暗/亮 × 6 屏）：`Docs/evidence/contrast-2026-11-04/{dark,light}-{board,knowledge,log,settings,accounts,model}.png`
 
 ## 4. 门禁
 

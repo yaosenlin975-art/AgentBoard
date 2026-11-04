@@ -1,6 +1,6 @@
 # 账号管理重设计 · 设计说明
 
-基线：`Docs/design-2026-11-04-accounts-unified-panel.md`（方案 C 六行总览）、`Docs/prototypes/accounts-redesign-2026-11-04/` 原型、本会话优化任务卡。
+基线：`Docs/designs/accounts/2026-11-04-accounts-unified-panel.md`（方案 C 六行总览）、`Docs/prototypes/accounts-redesign-2026-11-04/` 原型、本会话优化任务卡。
 
 本轮不改业务规则，只重做视觉与信息结构。两个方向共用 `assets/mock.js`、`assets/api.js`、`assets/engine.js`、`assets/base.css`，只替换视图层与样式层，因此数据、状态机、签到口径、409 判定完全一致，差别只在于「同样的信息怎么摆」。
 

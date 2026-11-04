@@ -1,6 +1,6 @@
 # CLI 图片输入与模型视觉能力复核（IMG-03，2026-11-03）
 
-- 任务：`5399e104-bebf-4a70-a1d9-e8ab16242095`【IMG-03】。前次记录：`Docs/verification/2026-11-02-image-cli-contracts.md`（codex/opencode/dsh 首轮记录）。本文件**只追加本轮复核**，用于把「视觉 / resume unknown」逐项收敛为 supported / unverified / unsupported。
+- 任务：`5399e104-bebf-4a70-a1d9-e8ab16242095`【IMG-03】。前次记录：`Docs/evidence/image-cli-contracts-2026-11-02.md`（codex/opencode/dsh 首轮记录）。本文件**只追加本轮复核**，用于把「视觉 / resume unknown」逐项收敛为 supported / unverified / unsupported。
 - 方法：只读探测 CLI 版本与 help、本机模型能力清单、真实合成标记图实测（本地生成，不含任何真实凭据）、本地会话落库结构核查。**未读任何 token/凭据，未启停客户端，未切换账号。**
 
 ## 0. 环境（2026-11-03 17:2x）

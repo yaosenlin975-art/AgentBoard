@@ -16,7 +16,7 @@
 
 | 产品 | 本机安装 | 账号数据位置（实测） | 备注 |
 |---|---|---|---|
-| WorkBuddy Desktop | `D:\Program Files\WorkBuddy\WorkBuddy.exe` 5.9.3.0（另有 C: 4.22.5.0 陈旧残留，已排除） | 主凭据 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`；身份骨架 `~/.workbuddy/storage/skeleton/account-snapshot.json`；数据根 `~/.workbuddy` | 沿用 `Docs/verification/2026-11-01-workbuddy-desktop-contract.md`，今日复核无变化（uid 哈希 `f5d89346`） |
+| WorkBuddy Desktop | `D:\Program Files\WorkBuddy\WorkBuddy.exe` 5.9.3.0（另有 C: 4.22.5.0 陈旧残留，已排除） | 主凭据 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`；身份骨架 `~/.workbuddy/storage/skeleton/account-snapshot.json`；数据根 `~/.workbuddy` | 沿用 `Docs/evidence/workbuddy-desktop-contract-2026-11-01.md`，今日复核无变化（uid 哈希 `f5d89346`） |
 | MiniMax Code | `D:\Program Files\MiniMax Code\MiniMax Code.exe`（235,418,560 B，mtime 2026-11-01）；CLI 于 `~/.minimax-code`（含 `current`/`releases`/`.mcode-active`/`.mcode-update.lock`） | `~/.minimax/auth/prod/cn/mcode-public/{auth.json, auth-state.json, auth.lock, refresh/}`；CLI 配置 `~/.minimax/config.yaml` | 桌面端进程当前未运行；auth 按 `<buildEnv>/<region>/<clientId>` 分层 |
 | TRAE CN | `D:\Program Files\Trae CN\Trae CN.exe` 3.4.13（FileVersion 2.3.99396，Beijing Yinli Catapult）；进程当前运行 | 活跃用户数据 `%APPDATA%\Trae CN`（`User/globalStorage/state.vscdb` 1,560,576 B，mtime 今日）；登录态 `~/.trae-cn/trae-jwt-token`（925 B）；旧国际构建数据 `%APPDATA%\Trae`（2026-07 后无活动） | 另有 `~/.trae`、`~/.trae-cn` 两个用户级目录 |
 
@@ -172,7 +172,7 @@ token / refreshToken / jwt 明文、`$wbEncrypted` 信封值、DPAPI vault、coo
 
 | 建议 | 类型 | 归属 |
 |---|---|---|
-| 把「账号存储形态 = 单活动槽位 + 客户端保留历史备份」写进设计文档与 UI 说明：**同一产品同一时刻只有一个活动账号，我们不支持并行在线** | 改文档 | `Docs/design-2026-11-01-workbuddy-accounts.md` 增补一节（由账号域后续卡执行） |
+| 把「账号存储形态 = 单活动槽位 + 客户端保留历史备份」写进设计文档与 UI 说明：**同一产品同一时刻只有一个活动账号，我们不支持并行在线** | 改文档 | `Docs/designs/accounts/2026-11-01-workbuddy-accounts.md` 增补一节（由账号域后续卡执行） |
 | WorkBuddy 增加「从客户端时间戳备份只读枚举历史账号」的导入通道（替代/补充进程内存扫描），并把 `connector-keys` 的 uid 派生前缀作为账号存在性提示 | 改代码 | 新卡（账号域，需只读 + vault 复用） |
 | `minimaxDesktopProvider` 支持候选 exe 路径（`D:\Program Files\MiniMax Code\MiniMax Code.exe` 等）并把「安装目录名≠产品名」写成显式 reason_code，避免误报 `CLIENT_NOT_INSTALLED` | 改代码 | 新卡（ACC-13 续） |
 | TRAE 保持"不做文件级切换"，补「只读识别当前账号（用户 id/租户）」到界面，明确提示需用户手动切换 | 改代码 + 改文档 | 新卡（账号域） |

@@ -127,7 +127,7 @@ IMG-02 已落地并通过隔离浏览器验收：文件选择、剪贴板与拖�
 
 [OpenCode CLI 文档](https://dev.opencode.ai/v2/docs/cli/commands/)列出 run --file；[附件文档](https://dev.opencode.ai/v2/docs/attachments/)要求图像输入模型。不支持的附件可能仅得到说明。本机参数、续会话和截图所选模型的视觉能力尚未验证；把路径写入 prompt 不构成图片交付验收。
 
-IMG-03 核验结果见 `Docs/verification/2026-11-02-image-cli-contracts.md`。Codex CLI 0.166.0 的 `exec --image` 与 `exec resume --image`、CodeBuddy Code 2.179.2 的 stream-json image block 均完成合成图首轮/续会话识图；CodeBuddy 当前模型为 MiniMax-M3.1-Flash。OpenCode CLI v2.2.0 的 `run --file` 首轮调用未返回 assistant 内容，续会话未验证；DSH 0.2.1-rc.5 命令入口因缺失模块不能运行。模型标签未返回的会话不推断具体模型；上述结果只代表本次 CLI 与当前选中模型，不代表同产品所有模型或桌面客户端。
+IMG-03 核验结果见 `Docs/evidence/image-cli-contracts-2026-11-02.md`。Codex CLI 0.166.0 的 `exec --image` 与 `exec resume --image`、CodeBuddy Code 2.179.2 的 stream-json image block 均完成合成图首轮/续会话识图；CodeBuddy 当前模型为 MiniMax-M3.1-Flash。OpenCode CLI v2.2.0 的 `run --file` 首轮调用未返回 assistant 内容，续会话未验证；DSH 0.2.1-rc.5 命令入口因缺失模块不能运行。模型标签未返回的会话不推断具体模型；上述结果只代表本次 CLI 与当前选中模型，不代表同产品所有模型或桌面客户端。
 
 IMG-04 将 CodeBuddy verified model gate、首轮/续会话 stream-json 输入、服务端派发/唤醒/排队、投递状态、consume 游标、显式旧图分批选择和 retry_unknown_images 接入 AgentBoard。适配器和 server/web 定向测试覆盖失败保留和幂等评论行为；未通过真实 AgentBoard CodeBuddy 模型调用复验。
 

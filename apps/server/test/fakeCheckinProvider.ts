@@ -1,6 +1,6 @@
 /**
  * ACC-07 签到 provider 替身：只用于验证编排、状态机与脱敏，**不代表任何真实产品契约**。
- * 真实 WorkBuddy / CodeBuddy 签到 gate 仍为 unverified（Docs/verification/2026-11-01-checkin-provider-contracts.md）。
+ * 真实 WorkBuddy / CodeBuddy 签到 gate 仍为 unverified（Docs/evidence/checkin-provider-contracts-2026-11-01.md）。
  */
 import { createHash } from 'node:crypto';
 import type { ManagedAccount, ManagedAppId } from '@agentboard/shared';
