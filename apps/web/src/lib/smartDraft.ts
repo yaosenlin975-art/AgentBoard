@@ -111,10 +111,38 @@ export async function requestDraft(input: DraftRequestInput, options: DraftOptio
   };
 }
 
+/** 智能创建随需求提交的图片引用（KB-SMART-IMG：服务端 draft 契约只收文本，前端负责整理成说明块） */
+export interface DraftImageRef {
+  name: string;
+  mimeType: string;
+  /** 上传成功后拿到的附件 id；未成功时为空 */
+  attachmentId?: string;
+  uploaded: boolean;
+}
+
+/**
+ * 把图片整理成需求末尾的说明块一起发给草稿服务。
+ * 服务端 `DraftInput` 只有 `requirement`（无图片字段），因此这里只传**图片说明**：
+ * 明确写「模型无法读取像素」，只提供文件名/类型/附件 id 作为上下文，不伪造视觉理解能力。
+ */
+export function composeRequirementWithImages(requirement: string, images: readonly DraftImageRef[]): string {
+  if (images.length === 0) return requirement;
+  const lines = images.map((image, index) => {
+    const upload = image.uploaded && image.attachmentId !== undefined ? `attachment_id=${image.attachmentId}` : '未上传完成';
+    return `${index + 1}. ${image.name} · ${image.mimeType} · ${upload}`;
+  });
+  return [
+    requirement,
+    '',
+    '---',
+    `[需求图片 ${images.length} 张] 草稿服务当前只接收文本，模型无法读取图片像素，只能依据下列图片说明推断意图：`,
+    ...lines,
+  ].join('\n');
+}
+
 /** 环境里的 fetch 与 AbortSignal 可能来自不同的 realm（jsdom + Node fetch），此时 signal 会被拒；
  *  首次拒绝后记住该事实，后续不再传 signal（取消退化为「忽略迟到结果」，组件已保证 UI 取消语义）。 */
 let signalSupported: boolean | null = null;
-
 async function postDraft(input: DraftRequestInput, options: DraftOptions): Promise<Response> {
   const body = JSON.stringify(input);
   const init: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };

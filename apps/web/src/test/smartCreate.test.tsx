@@ -3,7 +3,7 @@
  * 三种错误码回退手动表单并保留需求原文、warnings 清单展示。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -102,6 +102,47 @@ describe('智能创建（SMART-CREATE-UI）', () => {
     await userEvent.click(screen.getByTestId('new-issue-submit'));
     await waitFor(() => expect(created).toHaveLength(1));
     expect(created[0]).toMatchObject({ title: '改后的标题', labels: ['web', '缺陷'] });
+  });
+
+  it('已粘贴的图片随需求进入草稿请求（payload 带图片说明块，且不伪造视觉能力）', async () => {
+    const drafts: Array<Record<string, unknown>> = [];
+    renderDialog();
+    server.use(
+      http.post('/api/workspaces/:workspaceId/attachments', () =>
+        HttpResponse.json({
+          id: 'att-9',
+          workspace_id: 'ws-1',
+          file_name: 'shot.png',
+          mime_type: 'image/png',
+          size_bytes: 12,
+          status: 'staged',
+          expires_at: Date.now() + 60_000,
+          download_url: '/api/workspaces/ws-1/attachments/att-9',
+        }, { status: 201 }),
+      ),
+      http.post('/api/issues/draft', async ({ request }) => {
+        drafts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ title: '草稿', description: '正文', labels: [], warnings: [] });
+      }),
+    );
+
+    await userEvent.click(screen.getByTestId('mode-smart'));
+    await userEvent.type(screen.getByTestId('smart-requirement'), '把列滚动修好');
+    fireEvent.paste(screen.getByTestId('smart-requirement'), {
+      clipboardData: { items: [{ kind: 'file', getAsFile: () => new File([new Uint8Array(12)], 'shot.png', { type: 'image/png' }) }] },
+    });
+    await screen.findByText('已上传');
+    await userEvent.click(screen.getByTestId('smart-generate'));
+
+    await waitFor(() => expect(drafts).toHaveLength(1));
+    const requirement = String(drafts[0]!.requirement);
+    // 原始需求在前，图片说明块在后
+    expect(requirement.startsWith('把列滚动修好')).toBe(true);
+    expect(requirement).toContain('[需求图片 1 张]');
+    expect(requirement).toContain('模型无法读取图片像素');
+    expect(requirement).toContain('1. shot.png · image/png · attachment_id=att-9');
+    // 不把二进制/base64 塞进文本
+    expect(requirement).not.toContain('data:image');
   });
 
   it('三种错误码 → 中文文案 + 回退手动表单 + 需求原文保留', async () => {
