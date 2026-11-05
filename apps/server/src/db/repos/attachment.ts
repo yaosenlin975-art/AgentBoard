@@ -3,12 +3,17 @@ import type { Db } from '../connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../../errors.js';
 import { pageResult, textWindow, validatePage } from '../pagination.js';
 
+/** D7：附件类别——image 走图片签名校验且内联展示，file 为任意通用文件（强制下载） */
+export type AttachmentKind = 'image' | 'file';
+
 export interface AttachmentRecord {
   id: string;
   workspace_id: string;
   storage_key: string;
   file_name: string;
-  mime_type: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** D7 起不再限于三图片 MIME：白名单校验上移到 upload 的签名环节，这里存声明值 */
+  mime_type: string;
+  kind: AttachmentKind;
   size_bytes: number;
   status: 'staged' | 'attached';
   created_at: number;
@@ -38,8 +43,8 @@ export function reserveAttachmentUpload(db: Db, storageKey: string, sizeBytes: n
 
 export function finishAttachmentUpload(db: Db, input: AttachmentRecord): void {
   db.transaction(() => {
-    db.prepare(`INSERT INTO attachment(id,workspace_id,storage_key,file_name,mime_type,size_bytes,status,created_at,expires_at)
-      VALUES (@id,@workspace_id,@storage_key,@file_name,@mime_type,@size_bytes,'staged',@created_at,@expires_at)`).run(input);
+    db.prepare(`INSERT INTO attachment(id,workspace_id,storage_key,file_name,mime_type,kind,size_bytes,status,created_at,expires_at)
+      VALUES (@id,@workspace_id,@storage_key,@file_name,@mime_type,@kind,@size_bytes,'staged',@created_at,@expires_at)`).run(input);
     db.prepare('DELETE FROM attachment_upload_reservation WHERE storage_key=?').run(input.storage_key);
   }).immediate();
 }
@@ -131,7 +136,8 @@ export function commentAttachments(db: Db, issueId: string, commentId: string): 
   return rows.map((row) => ({
     id: row.id,
     file_name: row.file_name,
-    mime_type: row.mime_type,
+    // D7：库里的 mime 已放开为任意字符串；shared 契约的窄类型仅覆盖评论图片通道，超出时按原值透传
+    mime_type: row.mime_type as AttachmentMetadata['mime_type'],
     size_bytes: row.size_bytes,
     url: `/api/issues/${issueId}/attachments/${row.id}`,
     delivery_state: row.delivery_state,
@@ -170,6 +176,37 @@ export function countPendingIssueAttachments(db: Db, issueId: string): number {
     JOIN issue_comment c ON c.id=ca.comment_id
     WHERE c.issue_id=? AND a.status='attached' AND ca.delivered_at IS NULL AND ca.delivery_state IN ('pending','unknown')`).get(issueId) as { count: number };
   return row.count;
+}
+
+/** D7：详情路径索引行（不携带 workspace_id，固定 URL 由路由层按 issue.workspace_id 拼） */
+export interface IssueAttachmentListItem {
+  id: string;
+  file_name: string;
+  kind: AttachmentKind;
+  size_bytes: number;
+  created_at: number;
+}
+
+/**
+ * D7：该 issue 全部 attached 附件——评论（comment_attachment→issue_comment）与会话
+ * （session_attachment→session.issue_id）两条关联通道取并集；两表的 attachment_id 均 UNIQUE
+ * 且绑定即 attached，单附件只会落在其中一条通道，UNION 天然去重。created_at DESC 供详情折叠区
+ * 「新附件在前」，id 作同毫秒的稳定 tie-break。
+ */
+export function listIssueAttachments(db: Db, issueId: string, input: { limit: number; offset: number }): PageResult<IssueAttachmentListItem> {
+  validatePage(input.limit, input.offset);
+  const rows = db.prepare(`SELECT a.id,a.file_name,a.kind,a.size_bytes,a.created_at
+    FROM attachment a
+    WHERE a.status='attached' AND a.id IN (
+      SELECT ca.attachment_id FROM comment_attachment ca
+        JOIN issue_comment c ON c.id=ca.comment_id WHERE c.issue_id=?
+      UNION
+      SELECT sa.attachment_id FROM session_attachment sa
+        JOIN session s ON s.id=sa.session_id WHERE s.issue_id=?
+    )
+    ORDER BY a.created_at DESC, a.id
+    LIMIT ? OFFSET ?`).all(issueId, issueId, input.limit + 1, input.offset) as IssueAttachmentListItem[];
+  return pageResult(rows, input.limit, input.offset);
 }
 
 export function getIssueDispatchAttachments(db: Db, issueId: string, attachmentIds: string[]): DispatchAttachmentRecord[] {

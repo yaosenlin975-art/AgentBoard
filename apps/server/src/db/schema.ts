@@ -5,7 +5,7 @@ import { migrateAccounts } from './migrations/accounts.js';
 import { migrateDeviceIdentity } from './migrations/deviceIdentity.js';
 import { migrateWorkspaceDbMode } from './migrations/workspaceDbMode.js';
 import { migrateTaskHierarchy } from './migrations/taskHierarchy.js';
-import { migrateAttachments } from './migrations/attachments.js';
+import { migrateAttachments, migrateAttachmentKind } from './migrations/attachments.js';
 import { migrateWorkspaceChangeLog } from './migrations/workspaceChangeLog.js';
 import { migrateCheckin } from './migrations/checkin.js';
 import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
@@ -98,6 +98,8 @@ export function initSchema(db: Db): void {
   migrateAccounts(db);
   migrateAccountPlatforms(db);
   migrateAttachments(db);
+  // D7：附件 kind 列（image/file）——重建 attachment 表去掉 mime 白名单 CHECK；可重入
+  migrateAttachmentKind(db);
   migrateWorkspaceChangeLog(db);
   migrateCheckin(db);
   migrateCheckinPlatforms(db);

@@ -24,10 +24,26 @@ export interface AttachmentUploadResult {
   workspace_id: string;
   file_name: string;
   mime_type: 'image/png' | 'image/jpeg' | 'image/webp';
+  /** D7：服务端返回附件类别（web 上传通道仍只发图片）；可选以兼容旧快照/测试夹具 */
+  kind?: 'image' | 'file';
   size_bytes: number;
   status: 'staged';
   expires_at: number;
   download_url: string;
+}
+
+/** D7：详情附件路径索引行——固定 URL 指向 workspace 下载端点，不新增 markdown scheme */
+export interface IssueAttachmentListItem {
+  id: string;
+  file_name: string;
+  kind: 'image' | 'file';
+  size_bytes: number;
+  url: string;
+}
+
+export interface IssueAttachmentListPage {
+  items: IssueAttachmentListItem[];
+  next_offset: number | null;
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';

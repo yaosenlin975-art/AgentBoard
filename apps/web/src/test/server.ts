@@ -10,6 +10,8 @@ export const server = setupServer(
   http.get('/api/sessions', () => HttpResponse.json([])),
   // 任务详情「依赖」区默认无依赖（DEP-3；各测试可覆盖）
   http.get('/api/issues/:id/dependencies', () => HttpResponse.json({ blockers: [], blocked: [] })),
+  // D7：详情附件路径索引默认空列表（各测试可覆盖）
+  http.get('/api/issues/:id/attachments', () => HttpResponse.json({ items: [], next_offset: null })),
   // T14 聊天视图打开会话即拉消息：默认空列表（各测试可覆盖）
   http.get('/api/sessions/:id/messages', () => HttpResponse.json([])),
   // panelStore 刷新恢复兜底：默认 404（各测试可覆盖）

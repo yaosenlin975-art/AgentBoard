@@ -22,6 +22,7 @@ import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFro
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 import { ActionBar } from './ActionBar';
+import { AttachmentsSection } from './AttachmentsSection';
 import { CommentThread } from './CommentThread';
 import { LabelChipsEditor } from './LabelChipsEditor';
 import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
@@ -500,10 +501,9 @@ export function DetailPanel() {
           </div>
         </FoldSection>
 
+        {/* D7：附件路径索引——该卡全部附件（文件名+完整路径），复制路径/置灰的 reveal 占位 */}
         <FoldSection title="附件" testId="fold-attachments">
-          <p data-testid="fold-attachments-empty" className="text-[11px] text-ink-3">
-            暂无附件索引；粘贴截图会随评论一起上传（DETAIL-D6），路径索引在 DETAIL-D7 接入。
-          </p>
+          <AttachmentsSection issueId={issue.id} />
         </FoldSection>
 
         <FoldSection title="原始 JSON" testId="fold-raw-json">

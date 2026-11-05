@@ -16,6 +16,7 @@ import {
   listStaleAttachmentReservations,
   releaseAttachmentReservation,
   reserveAttachmentUpload,
+  type AttachmentKind,
   type AttachmentRecord,
 } from '../db/repos/attachment.js';
 import { ApiError } from '../errors.js';
@@ -35,18 +36,30 @@ export interface StagedAttachment {
   id: string;
   workspace_id: string;
   file_name: string;
-  mime_type: AttachmentRecord['mime_type'];
+  mime_type: string;
+  kind: AttachmentKind;
   size_bytes: number;
   status: 'staged';
   expires_at: number;
   download_url: string;
 }
 
-const signatures: Record<AttachmentRecord['mime_type'], (bytes: Buffer) => boolean> = {
+/** D7：图片白名单三 MIME——声明白名单内走签名校验并落 kind='image'，其余 MIME 不校验签名落 kind='file' */
+type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp';
+
+const signatures: Record<ImageMime, (bytes: Buffer) => boolean> = {
   'image/png': (bytes) => bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
   'image/jpeg': (bytes) => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
   'image/webp': (bytes) => bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP',
 };
+
+/**
+ * D7：下载建议（Content-Disposition）按 kind——image 内联展示，file 强制下载（防止 HTML/SVG 等
+ * 在浏览器上下文内联执行）；文件名统一 RFC 5987 UTF-8 编码，兼容非 ASCII 名。
+ */
+export function attachmentContentDisposition(kind: AttachmentKind, fileName: string): string {
+  return `${kind === 'image' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
 
 function safeFileName(value: string | undefined): string {
   const normalized = (value ?? 'image').replace(/[\x00-\x1f\x7f]/g, '').replace(/\\/g, '/');
@@ -83,11 +96,14 @@ export class AttachmentStore {
 
   async upload(workspaceId: string, declaredMime: string, filename: string | undefined, bytes: Buffer): Promise<StagedAttachment> {
     const mimeType = declaredMime.split(';', 1)[0]!.trim().toLowerCase();
-    if (!Object.hasOwn(signatures, mimeType) || !signatures[mimeType as AttachmentRecord['mime_type']](bytes)) {
+    // D7：声明白名单内的三图片 MIME 仍做签名校验（kind='image'）；其余任意 MIME 不校验签名
+    //（kind='file'）——两类同样受 10 MiB 上限与工作区配额约束
+    const isImage = Object.hasOwn(signatures, mimeType);
+    if (isImage && !signatures[mimeType as ImageMime](bytes)) {
       throw new ApiError(400, 'ATTACHMENT_INVALID_IMAGE', '图片格式与文件签名不匹配');
     }
     if (bytes.length > MAX_IMAGE_BYTES) {
-      throw new ApiError(413, 'ATTACHMENT_TOO_LARGE', '单张图片不能超过 10 MiB');
+      throw new ApiError(413, 'ATTACHMENT_TOO_LARGE', '单个附件不能超过 10 MiB');
     }
     const id = randomUUID();
     const storageKey = randomUUID();
@@ -108,7 +124,8 @@ export class AttachmentStore {
       workspace_id: workspaceId,
       storage_key: storageKey,
       file_name: safeFileName(filename),
-      mime_type: mimeType as AttachmentRecord['mime_type'],
+      mime_type: mimeType,
+      kind: isImage ? 'image' : 'file',
       size_bytes: bytes.length,
       status: 'staged',
       created_at: now,
@@ -120,6 +137,7 @@ export class AttachmentStore {
       workspace_id: workspaceId,
       file_name: row.file_name,
       mime_type: row.mime_type,
+      kind: row.kind,
       size_bytes: row.size_bytes,
       status: 'staged',
       expires_at: row.expires_at,
@@ -157,6 +175,11 @@ export class AttachmentStore {
     return getWorkspaceAttachment(this.db, workspaceId, id).file_name;
   }
 
+  /** D7：下载端点按 kind 决定 Content-Disposition（image→inline，file→attachment） */
+  workspaceKind(workspaceId: string, id: string): AttachmentKind {
+    return getWorkspaceAttachment(this.db, workspaceId, id).kind;
+  }
+
   stagedMime(workspaceId: string, id: string): string {
     return getStagedAttachment(this.db, workspaceId, id).mime_type;
   }
@@ -171,6 +194,11 @@ export class AttachmentStore {
 
   issueName(issueId: string, id: string): string {
     return getIssueAttachment(this.db, issueId, id).file_name;
+  }
+
+  /** D7：issue 级下载端点同 workspace 端点按 kind 决定 Content-Disposition */
+  issueKind(issueId: string, id: string): AttachmentKind {
+    return getIssueAttachment(this.db, issueId, id).kind;
   }
 
   startCleanupWorker(): void {

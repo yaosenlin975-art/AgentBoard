@@ -30,7 +30,7 @@ import { imageDeliveryHint } from '../services/imageDeliveryHint.js';
 import type { KnowledgeHint, ManagedAppId, ServerWsEvent } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import type { SecretVault } from '../services/accounts/secretVault.js';
-import { AttachmentStore, MAX_IMAGE_BYTES } from '../services/attachments.js';
+import { AttachmentStore, MAX_IMAGE_BYTES, attachmentContentDisposition } from '../services/attachments.js';
 import {
   createWorkspace,
   getWorkspace,
@@ -43,7 +43,7 @@ import {
 import { deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../db/repos/issue.js';
 import { createIssueInHierarchy, getIssueTreeChildren } from '../services/taskHierarchy.js';
 import { listCommentsByIssue, listCommentsPage, getCommentContent } from '../db/repos/comment.js';
-import { bindAttachmentsToSession, listPendingIssueAttachments } from '../db/repos/attachment.js';
+import { bindAttachmentsToSession, listIssueAttachments, listPendingIssueAttachments } from '../db/repos/attachment.js';
 import { textWindow } from '../db/pagination.js';
 import {
   listSessionsByWorkspace,
@@ -699,7 +699,8 @@ export function createRouter(deps: RouterDeps): Router {
     res.type(attachments.workspaceMime(workspaceId, id));
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(attachments.workspaceName(workspaceId, id))}`);
+    // D7：按 kind 决定下载建议——image 内联，通用文件强制下载
+    res.setHeader('Content-Disposition', attachmentContentDisposition(attachments.workspaceKind(workspaceId, id), attachments.workspaceName(workspaceId, id)));
     res.sendFile(filePath, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) next(error); });
   });
 
@@ -1056,6 +1057,24 @@ export function createRouter(deps: RouterDeps): Router {
     const input = parseBody(pageQuerySchema, req.query);
     res.json(listPendingIssueAttachments(rdb, req.params.id!, input));
   });
+  // D7：详情折叠区附件路径索引——该卡全部 attached 附件（评论/会话关联去重，created_at DESC），
+  // 固定 URL 仍指向 workspace 下载端点，不新增 markdown scheme
+  router.get('/issues/:id/attachments', (req, res) => {
+    const routed = requireIssueRouted(req.params.id!);
+    const input = parseBody(pageQuerySchema, req.query);
+    const page = listIssueAttachments(routed.db, req.params.id!, input);
+    const workspaceId = routed.value.workspace_id;
+    res.json({
+      items: page.items.map((item) => ({
+        id: item.id,
+        file_name: item.file_name,
+        kind: item.kind,
+        size_bytes: item.size_bytes,
+        url: `/api/workspaces/${workspaceId}/attachments/${item.id}`,
+      })),
+      next_offset: page.next_offset,
+    });
+  });
   router.get('/issues/:id/comments/:commentId', (req, res) => {
     const rdb = requireIssueRouted(req.params.id!).db;
     const input = parseBody(commentQuerySchema, req.query);
@@ -1071,7 +1090,8 @@ export function createRouter(deps: RouterDeps): Router {
     res.type(attachments.issueMime(issueId, attachmentId));
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(attachments.issueName(issueId, attachmentId))}`);
+    // D7：按 kind 决定下载建议——image 内联，通用文件强制下载
+    res.setHeader('Content-Disposition', attachmentContentDisposition(attachments.issueKind(issueId, attachmentId), attachments.issueName(issueId, attachmentId)));
     res.sendFile(filePath, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) next(error); });
   });
 
@@ -1583,7 +1603,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
       res.status(413).json({ error: { code: 'IMPORT_TOO_LARGE', message: '导入请求体过大（上限 12 MiB）；单文件上限 10MB、单页正文上限 2,000,000 字符' } });
       return;
     }
-    res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单张图片不能超过 10 MiB' } });
+    res.status(413).json({ error: { code: 'ATTACHMENT_TOO_LARGE', message: '单个附件不能超过 10 MiB' } });
     return;
   }
   // CLAIM-RACE：SQLite 忙等超时（busy_timeout=5000）不是内部错误——而是「别的进程/请求正握着写锁」，
