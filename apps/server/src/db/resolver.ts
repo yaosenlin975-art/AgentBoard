@@ -8,7 +8,7 @@
  *
  * 设计依据：知识页 `9548444c-3356-4af6-9221-7581dd2b2063` §5.1–§5.4。
  */
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Db } from './connection.js';
@@ -44,6 +44,28 @@ export function workspaceDbPath(workspacePath: string): string {
   return join(workspaceStateDir(workspacePath), 'agentboard.db');
 }
 
+/**
+ * STORE-3a：紧急开关 `AGENTBOARD_WORKSPACE_DB=disabled`。
+ * 生效时已下沉工作区直接回中心库（不打开工作区库、不自动搬回）；已下沉与否由 status 显式暴露。
+ */
+export function isWorkspaceDbDisabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENTBOARD_WORKSPACE_DB === 'disabled';
+}
+
+/**
+ * STORE-3a（目标 5）：读 localize.json 里迁移前中心库快照路径，拼进 UNREADABLE 的排障话术。
+ * 刻意不 import workspaceLocalize（那里 import 了本文件的 workspaceStateDir，反向依赖会成环）；
+ * 解析失败静默返回 null——提示只是排障增强，不影响 D3 判定本身。
+ */
+function localizeBackupHint(workspacePath: string): string | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(workspaceStateDir(workspacePath), 'localize.json'), 'utf8')) as { backup_path?: unknown };
+    return typeof raw.backup_path === 'string' && raw.backup_path !== '' ? raw.backup_path : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 工作区库内 `meta` 的只读快照（`null` = 打不开或没有该表） */
 export interface WorkspaceDbMeta {
   localized: boolean;
@@ -56,6 +78,8 @@ export interface DecideWorkspaceDbInput {
   /** 中心 `workspace.db_mode`（缺省/老数据按 center） */
   centerDbMode: WorkspaceDbMode;
   centerDbPath: string;
+  /** STORE-3a：AGENTBOARD_WORKSPACE_DB=disabled 紧急开关生效（缺省 false） */
+  disabled?: boolean;
   /** 文件存在性探测（缺省走 fs；测试注入） */
   fileExists?: (path: string) => boolean;
   /** 读工作区库 meta（缺省真实只读打开；测试注入） */
@@ -83,6 +107,7 @@ const defaultFileExists = (path: string): boolean => {
 /**
  * 纯判定：把「中心期望 + 文件实际」映射到「用哪个库 / 是否报错」。
  * 判定顺序：中心 localizing/failed → 迁移态（读中心库、写阻断，绝不打开工作区库）；
+ * disabled 紧急开关 + 已下沉 → 直接回中心库（error=null，靠 status 显式暴露）；
  * 中心说已下沉但文件没了 → 缺失；文件在但打不开 → UNREADABLE（不静默回退中心库）；
  * 未下沉 → 中间态；id 不一致/缺失 → 拒绝打开；`meta.localized=1` 且自洽 → 用工作区库；无文件 → 中心库（现状）。
  */
@@ -104,6 +129,13 @@ export function decideWorkspaceDb(input: DecideWorkspaceDbInput): WorkspaceDbDec
   if (input.centerDbMode === 'localized' && !exists) {
     return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MISSING', reason: '中心=localized 但工作区库文件不存在（不回退中心库）' };
   }
+  // STORE-3a：紧急开关。已下沉区临时回中心库（读、写都放中心），但必须显式暴露——
+  // status 的 disabled/needsRevert 让「已 localized 但当前被 disabled」可见，不静默回退。
+  // 放在 localizing/failed 之后：迁移中间态的写冻结优先于紧急开关（否则 disabled 期间的
+  // 中心写入会被 switch 事务删掉）。
+  if (input.disabled === true && input.centerDbMode === 'localized') {
+    return { target: 'center', dbPath: input.centerDbPath, error: null, reason: 'AGENTBOARD_WORKSPACE_DB=disabled：已下沉工作区临时回中心库（不打开工作区库、不自动搬回；恢复请执行 revert）' };
+  }
   if (!exists) {
     return { target: 'center', dbPath: input.centerDbPath, error: null, reason: `未下沉（无 .agentboard/agentboard.db，中心 db_mode=${input.centerDbMode}）` };
   }
@@ -111,7 +143,15 @@ export function decideWorkspaceDb(input: DecideWorkspaceDbInput): WorkspaceDbDec
   if (meta === null) {
     // STORE-2a（D3）：打不开 ≠ 迁移中间态。损坏库报 UNREADABLE；getDbForWorkspace 对非
     // MIGRATING 错误直接抛——读路径不得静默回退中心库（中心数据可能已过期或缺失）。
-    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_UNREADABLE', reason: '工作区库存在但打不开（损坏或非 SQLite 文件）：不回退中心库，请修复或恢复该文件' };
+    // STORE-3a（目标 5）：switch 后打开失败时话术指向迁移前中心库快照（localize.json backup_path）。
+    const hint = localizeBackupHint(input.workspacePath);
+    return {
+      target: 'center',
+      dbPath: input.centerDbPath,
+      error: 'WORKSPACE_DB_UNREADABLE',
+      reason: '工作区库存在但打不开（损坏或非 SQLite 文件）：不回退中心库，请修复或恢复该文件'
+        + (hint === null ? '' : `；迁移前中心库快照可用于恢复：${hint}`),
+    };
   }
   if (!meta.localized) {
     return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MIGRATING', reason: 'meta.localized=0（迁移中间态：读走中心库、写被阻断）' };
@@ -184,6 +224,8 @@ export interface ResolverDeps {
   /** 实例标识：每工作区锁与 `server.lock` 用同一实现（pid + instanceId + O_EXCL） */
   instanceId: string;
   port: number;
+  /** STORE-3a：AGENTBOARD_WORKSPACE_DB=disabled 紧急开关生效（缺省按 false） */
+  disabled?: boolean;
   /** 测试注入 */
   fileExists?: (path: string) => boolean;
   readMeta?: (dbPath: string) => WorkspaceDbMeta | null;
@@ -212,11 +254,22 @@ export function getDbForWorkspace(deps: ResolverDeps, workspace: WorkspaceLike, 
     workspacePath: workspace.path,
     centerDbMode: workspace.dbMode,
     centerDbPath: deps.centerDb.name,
+    ...(deps.disabled === true ? { disabled: true } : {}),
     ...(deps.fileExists !== undefined ? { fileExists: deps.fileExists } : {}),
     ...(deps.readMeta !== undefined ? { readMeta: deps.readMeta } : {}),
   });
   // 中间态：读走中心库（返回），写由 assertWorkspaceDbWritable 拦
-  if (decision.error !== null && decision.error !== 'WORKSPACE_DB_MIGRATING') throw workspaceDbError(decision.error);
+  if (decision.error !== null && decision.error !== 'WORKSPACE_DB_MIGRATING') {
+    const error = workspaceDbError(decision.error);
+    // STORE-3a（目标 5）：switch 后打开失败，错误话术指向迁移前中心库快照（localize.json backup_path）
+    if (decision.error === 'WORKSPACE_DB_UNREADABLE') {
+      const hint = localizeBackupHint(workspace.path);
+      if (hint !== null) {
+        throw new ApiError(error.status, error.code, `${error.message}；迁移前中心库快照可用于恢复：${hint}（或执行 revert/cleanup 恢复流程）`, { backupPath: hint });
+      }
+    }
+    throw error;
+  }
   if (decision.target === 'center') return { db: deps.centerDb, decision };
   // M1：判定为「已下沉」也不切库（数据未搬），返回中心库并把判定带出去
   if (deps.openWorkspaceDbs !== true) return { db: deps.centerDb, decision };

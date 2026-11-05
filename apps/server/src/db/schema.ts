@@ -32,6 +32,8 @@ import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
 // DEC-1：待决策区三表（纯追加表 + 部分唯一索引；workspace 纯加列）
 import { migratePendingDecision } from './migrations/pendingDecision.js';
+// STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
+import { migrateIssueParentIndex } from './migrations/issueParentIndex.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -127,6 +129,8 @@ export function initSchema(db: Db): void {
   migratePendingDecision(db);
   // ACC-CLI-MULTI：CLI 三来源的本机凭据登记表（纯追加，幂等；与 managed_account 无关）
   migrateCliAccounts(db);
+  // STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
+  migrateIssueParentIndex(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

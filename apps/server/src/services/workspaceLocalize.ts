@@ -56,7 +56,7 @@ export function clearLocalizeState(workspacePath: string): void {
   rmSync(localizeStatePath(workspacePath), { force: true });
 }
 
-/** 六条硬拒绝的错误码（设计 §6.2） */
+/** 六条硬拒绝的错误码（设计 §6.2）；STORE-3a 追加 resume 专用两条 */
 export const LOCALIZE_PREFLIGHT_ERRORS = {
   WORKSPACE_PATH_NOT_LOCAL: { status: 409, message: '工作区目录不在本机磁盘（网络盘/可移动盘不支持下沉）' },
   MIGRATION_BUSY: { status: 409, message: '已有迁移在进行中（同一时间只允许一个）' },
@@ -66,6 +66,10 @@ export const LOCALIZE_PREFLIGHT_ERRORS = {
   WORKSPACE_BUSY: { status: 409, message: '该工作区有运行中的会话，请先结束后再迁移' },
   WORKSPACE_NOT_FOUND: { status: 404, message: '工作空间不存在' },
   ALREADY_LOCALIZED: { status: 409, message: '该工作区已下沉（db_mode=localized），无需再次 enable' },
+  /** STORE-3a：resume 但没有 localize.json（无可恢复中间态） */
+  NO_LOCALIZE_STATE: { status: 409, message: '没有可恢复的迁移中间态（localize.json 不存在）；全新迁移请去掉 resume' },
+  /** STORE-3a：localize.json 存在但不属于该工作区/中心库，或 stage 不在词表 */
+  LOCALIZE_STATE_INVALID: { status: 409, message: 'localize.json 与当前工作区/中心库不一致或阶段非法，请执行 cleanup 后重来' },
 } as const;
 
 export type LocalizeErrorCode = keyof typeof LOCALIZE_PREFLIGHT_ERRORS;
@@ -156,6 +160,8 @@ export function isLocalWorkspacePath(path: string): boolean {
 export interface PreflightLocalizeInput {
   workspaceId: string;
   overwrite?: boolean;
+  /** STORE-3a：resume 语义——放行 localize.json 中间态与已存在的目标库（残留由状态机先清理） */
+  resume?: boolean;
   /** 测试注入 */
   freeBytes?: (dir: string) => Promise<number | null>;
   integrityCheck?: (db: Db) => string;
@@ -173,11 +179,11 @@ export async function preflightLocalize(centerDb: Db, input: PreflightLocalizeIn
   if ((workspace.db_mode ?? 'center') === 'localized') throw localizeError('ALREADY_LOCALIZED');
 
   if (!isLocalWorkspacePath(workspace.path)) throw localizeError('WORKSPACE_PATH_NOT_LOCAL', workspace.path);
-  // 已有中间态（localize.json）→ 视为迁移进行中（同一时间只允许一个）
-  if (readLocalizeState(workspace.path) !== null) throw localizeError('MIGRATION_BUSY', localizeStatePath(workspace.path));
+  // 已有中间态（localize.json）→ 视为迁移进行中（同一时间只允许一个）；resume 语义放行（残留由状态机清理）
+  if (input.resume !== true && readLocalizeState(workspace.path) !== null) throw localizeError('MIGRATION_BUSY', localizeStatePath(workspace.path));
 
   const targetDbPath = join(workspaceStateDir(workspace.path), 'agentboard.db');
-  if (existsSyncSafe(targetDbPath) && input.overwrite !== true) throw localizeError('TARGET_DB_EXISTS', targetDbPath);
+  if (input.resume !== true && existsSyncSafe(targetDbPath) && input.overwrite !== true) throw localizeError('TARGET_DB_EXISTS', targetDbPath);
 
   const integrity = (input.integrityCheck ?? defaultIntegrityCheck)(centerDb);
   if (integrity !== 'ok') throw localizeError('CENTER_DB_UNHEALTHY', integrity);

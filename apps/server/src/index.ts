@@ -34,6 +34,7 @@ import { ADAPTERS, getAdapter as defaultGetAdapter, type AgentAdapter } from '@a
 import type { Db } from './db/connection.js';
 import { openDb } from './db/connection.js';
 import { closeWorkspaceDbs } from './db/resolver.js';
+import { recoverLocalizeGates } from './services/workspaceDbOps.js';
 import { acquireServerLock, describeLockHolder, releaseServerLock } from './services/serverLock.js';
 import { initSchema } from './db/schema.js';
 import {
@@ -136,6 +137,9 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     attachmentCleanupIntervalMs: options.attachmentCleanupIntervalMs ?? DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
   });
   recoverAccountOperations(db);
+  // STORE-3a：启动塌缩——上次进程死在迁移中的 localizing 一律落 failed（写闸门生命周期跨进程兜底）；
+  // job 表只在内存，启动时不可能有活任务，塌缩恒安全。恢复路径：resume / cleanup。
+  recoverLocalizeGates(db);
   const getAdapter: (cliId: string) => AgentAdapter =
     options.getAdapter ?? ((id) => defaultGetAdapter(id as AgentAdapter['id']));
 

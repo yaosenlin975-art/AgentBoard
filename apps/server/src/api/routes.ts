@@ -70,8 +70,9 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs, type WorkspaceDbMode } from '../db/resolver.js';
-import { getLocalizeJob, startLocalizeJob } from '../services/workspaceLocalizeJob.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, isWorkspaceDbDisabled, listOpenWorkspaceDbs, type WorkspaceDbMode } from '../db/resolver.js';
+import { getActiveWorkspaceDbJob, getLocalizeJob, startLocalizeJob, startWorkspaceDbOpJob } from '../services/workspaceLocalizeJob.js';
+import { buildWorkspaceDbStatus } from '../services/workspaceDbStatus.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
@@ -109,6 +110,7 @@ import {
   patchSettingsSchema,
   dbMigrateSchema,
   workspaceLocalizeSchema,
+  workspaceDbOpSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
   addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
@@ -353,10 +355,12 @@ export function createRouter(deps: RouterDeps): Router {
   const router = Router();
 
   // STORE-1（M1）：解析层装配（中心库=当前 db；每工作区锁用与 server.lock 同一实现）
+  // STORE-3a：disabled 紧急开关在装配期解析一次（生产改 env 必然伴随重启重建路由，无需逐请求读）
   const workspaceResolverDeps = {
     centerDb: db,
     instanceId: deps.instance?.instanceId ?? 'inst-unset',
     port: readSettings().port,
+    ...(isWorkspaceDbDisabled() ? { disabled: true } : {}),
   };
   /** 读中心库 workspace.db_mode（缺列为老库 → center，行为与现状一致） */
   const workspaceRowMode = (workspaceId: string): WorkspaceDbMode => {
@@ -516,7 +520,7 @@ export function createRouter(deps: RouterDeps): Router {
   const withWorkspaceDb = <T extends { id: string; path: string }>(row: T) => {
     const dbModeRaw = (row as T & { db_mode?: string | null }).db_mode ?? 'center';
     const centerDbMode = (WORKSPACE_DB_MODES as readonly string[]).includes(dbModeRaw) ? (dbModeRaw as (typeof WORKSPACE_DB_MODES)[number]) : 'center';
-    const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name });
+    const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name, ...(isWorkspaceDbDisabled() ? { disabled: true } : {}) });
     return { ...row, db_mode: centerDbMode, db_path: decision.dbPath, db_target: decision.target, db_reason: decision.reason };
   };
   router.get('/workspaces', (req, res) => {
@@ -633,11 +637,13 @@ export function createRouter(deps: RouterDeps): Router {
     res.sendFile(filePath, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) next(error); });
   });
 
-  // ---- STORE-2a：工作区库下沉（localize）——八阶段状态机的 REST 入口（2b CLI 消费）----
+  // ---- STORE-2a/3a：工作区库下沉（localize）——八阶段状态机的 REST 入口（2b CLI 消费）----
   /**
-   * POST /api/workspaces/:id/db/localize：body { dryRun?, overwrite? } → 202 { jobId, ... }。
+   * POST /api/workspaces/:id/db/localize：body { dryRun?, overwrite?, resume? } → 202 { jobId, ... }。
    * dry-run 与真实迁移统一走 jobId 模型；真实迁移开跑即置中心 db_mode=localizing，
    * 该工作区写闸门随之 409 WORKSPACE_DB_MIGRATING、读继续走中心库、其它工作区无感。
+   * STORE-3a：resume=true 从 `<ws>/.agentboard/localize.json` 记录的阶段续跑（崩溃矩阵见
+   * workspaceLocalizeRun.localizeWorkspace）；dryRun=true 时忽略 resume，resume=true 时忽略 overwrite。
    */
   router.post('/workspaces/:id/db/localize', async (req, res) => {
     const workspaceId = req.params.id!;
@@ -647,6 +653,7 @@ export function createRouter(deps: RouterDeps): Router {
       workspaceId,
       dryRun: body.dryRun === true,
       overwrite: body.overwrite === true,
+      resume: body.resume === true,
       ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
     });
     res.status(202).json(job);
@@ -657,6 +664,57 @@ export function createRouter(deps: RouterDeps): Router {
     const job = getLocalizeJob(String(req.params.id), String(req.params.jobId));
     if (job === null) throw new NotFoundError('迁移任务不存在');
     res.json(job);
+  });
+
+  /**
+   * STORE-3a：POST /api/workspaces/:id/db/localize/cleanup → 202 { jobId, kind: 'cleanup', ... }。
+   * 只清失败半成品（工作区侧目标库 / -wal / -shm / 附件目录 / 残留快照 / localize.json），
+   * 中心库数据不动；failed/localizing 的中心 db_mode 落回 center（写闸门释放）。
+   * db_mode=localized（活库）或工作区库是唯一数据副本时 409 拒绝。
+   */
+  router.post('/workspaces/:id/db/localize/cleanup', (req, res) => {
+    const workspaceId = req.params.id!;
+    requireWorkspaceRow(workspaceId);
+    parseBody(workspaceDbOpSchema, req.body ?? {});
+    const job = startWorkspaceDbOpJob(db, {
+      workspaceId,
+      kind: 'cleanup',
+      ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
+    });
+    res.status(202).json(job);
+  });
+
+  /**
+   * STORE-3a：POST /api/workspaces/:id/db/localize/revert → 202 { jobId, kind: 'revert', ... }。
+   * 反向迁移：附件回拷（sha256）+ 单事务反向插行（逐表行数守恒，复用 verify 守恒语义）+
+   * db_mode=center；提交后工作区库移入 `<ws>/.agentboard/backup/`。中心已有该区行（disabled
+   * 期间回写等分叉）时 409 拒绝，不静默覆盖。
+   */
+  router.post('/workspaces/:id/db/localize/revert', (req, res) => {
+    const workspaceId = req.params.id!;
+    requireWorkspaceRow(workspaceId);
+    parseBody(workspaceDbOpSchema, req.body ?? {});
+    const job = startWorkspaceDbOpJob(db, {
+      workspaceId,
+      kind: 'revert',
+      ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
+    });
+    res.status(202).json(job);
+  });
+
+  /**
+   * STORE-3a：GET /api/workspaces/:id/db → 工作区库状态只读汇总（db_mode / 闸门 / db 路径 /
+   * 数据归属侧行数与附件 / 快照落后条数 / localize.json 中间态 / disabled+needsRevert）。
+   */
+  router.get('/workspaces/:id/db', (req, res) => {
+    const workspaceId = req.params.id!;
+    requireWorkspaceRow(workspaceId);
+    const active = getActiveWorkspaceDbJob(workspaceId);
+    res.json(buildWorkspaceDbStatus(db, { workspaceId }, {
+      centerDbPath: currentDbPath ?? db.name,
+      ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
+      ...(active === null ? {} : { activeJob: { jobId: active.jobId, kind: active.kind ?? 'localize', status: active.status, stage: active.stage } }),
+    }));
   });
 
   // ---- system ----

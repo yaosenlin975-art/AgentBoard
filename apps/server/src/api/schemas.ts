@@ -347,13 +347,18 @@ export const dbMigrateSchema = z
   })
   .strict();
 
-/** STORE-2a：工作区库下沉（localize）请求体；字段名与 packages/shared 的 WorkspaceLocalizeRequest 同源 */
+/** STORE-2a/3a：工作区库下沉（localize）请求体；字段名与 packages/shared 的 WorkspaceLocalizeRequest 同源 */
 export const workspaceLocalizeSchema = z
   .object({
     dryRun: z.boolean().optional(),
     overwrite: z.boolean().optional(),
+    /** STORE-3a：从 localize.json 记录的阶段续跑（dryRun=true 时忽略；resume=true 时忽略 overwrite） */
+    resume: z.boolean().optional(),
   })
   .strict();
+
+/** STORE-3a：cleanup / revert 请求体（当前无参数；保留 strict 空对象以便后续扩展不破坏契约） */
+export const workspaceDbOpSchema = z.object({}).strict();
 
 export const patchSettingsSchema = z
   .object({
