@@ -10,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AccountOperation, CheckinBatch, CheckinBatchItem, CheckinBatchStatus, PublicManagedAccount } from '@agentboard/shared';
 import { BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { cancelCheckinBatch, fetchBatchOperations, fetchCheckinBatch } from './checkinApi';
-import { reasonLabel, travelFromRecoveryRef, type TravelView } from './accountCapabilities';
+import { hasReasonLabel, reasonLabel, travelFromRecoveryRef, type TravelView } from './accountCapabilities';
 
 const ITEM_LABEL: Record<CheckinBatchItem['state'], string> = {
   queued: '排队中（未发起请求）',
@@ -128,9 +128,15 @@ export function CheckinBatchPanel({
             <li key={`${item.batch_id}-${item.account_id}`} data-testid={`checkin-item-${item.account_id}`} data-state={item.state} className="flex flex-wrap items-center gap-2 text-xs">
               <span className="min-w-0 truncate text-ink">{nameOf(item.account_id)}</span>
               <span className={`rounded-md px-1.5 py-0.5 text-xs tabular-nums ${ITEM_TONE[item.state]}`}>{ITEM_LABEL[item.state]}</span>
+              {/* 失败但没有留安全错误码时也要有人话，不能只剩一个「失败」 */}
+              {item.state === 'failed' && item.safe_error_code === null && (
+                <span data-testid={`checkin-item-error-${item.account_id}`} className="text-red-600 dark:text-red-400">原因未记录，请重试</span>
+              )}
               {item.safe_error_code !== null && (
                 <span data-testid={`checkin-item-error-${item.account_id}`} className="text-red-600 dark:text-red-400">
                   {reasonLabel(item.safe_error_code)}
+                  {/* 未收录的码给中性文案，同时补一个技术码，便于排障；码本身不含凭据/请求 */}
+                  {!hasReasonLabel(item.safe_error_code) && <span className="ml-1 font-mono text-[11px]">{item.safe_error_code}</span>}
                 </span>
               )}
               {travel !== null && (

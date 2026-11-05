@@ -139,6 +139,26 @@ describe('签到批次（ACC-09）', () => {
     expect(within(panel).getByTestId(`checkin-item-error-${WB_ID2}`)).toHaveTextContent('账号正忙，本轮未发起');
   });
 
+  it('失败原因可读：无安全码给兜底文案，已知码给中文原因（不出现裸码）', async () => {
+    server.use(
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([
+        capability({ checkin: true, reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived' }),
+        capability({ app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false }),
+      ])),
+      http.get('/api/checkin-runs/:id', () => HttpResponse.json(batch([
+        { account_id: WB_ID, state: 'failed', safe_error_code: null },
+        { account_id: WB_ID2, state: 'failed', safe_error_code: 'CHECKIN_CREDENTIAL_INVALID' },
+      ]))),
+    );
+    renderPanel();
+    await userEvent.click(await screen.findByTestId('accounts-checkin-all-workbuddy_desktop'));
+
+    const panel = await screen.findByTestId('checkin-batch-panel');
+    await waitFor(() => expect(within(panel).getByTestId(`checkin-item-error-${WB_ID}`)).toHaveTextContent('原因未记录，请重试'));
+    // 已知码转中文文案，不把裸码当主文案抛给用户
+    expect(within(panel).getByTestId(`checkin-item-error-${WB_ID2}`)).toHaveTextContent('凭据已失效，请重新读取本机账号');
+  });
+
   it('重试复用同一 Idempotency-Key（同批账号），换批次换 key', async () => {
     let attempt = 0;
     server.use(

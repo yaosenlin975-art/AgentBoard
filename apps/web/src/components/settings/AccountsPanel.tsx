@@ -37,6 +37,7 @@ import {
   reasonCodeOf,
   reasonLabel,
   reasonTechnicalCode,
+  checkinParticipation,
   summarizeCheckinToday,
   unavailableLabel,
   useAccountCapabilities,
@@ -277,13 +278,16 @@ function PlatformRow({
 
   const usable = capability ? capability.capture || capability.switch : false;
   const enabledAccounts = accounts.filter((account) => account.enabled !== false);
-  const checkinEnabled = capability?.checkin === true && enabledAccounts.length > 0 && !checkin.isPending;
+  // ACC-CHECKIN：平台级签到也只提交可参与账号（缺凭据/不支持签到的账号跳过，不再整批失败）
+  const checkinAccounts = enabledAccounts.filter((account) => checkinParticipation(account, capability).participates);
+  const skippedCheckinCount = enabledAccounts.length - checkinAccounts.length;
+  const checkinEnabled = capability?.checkin === true && checkinAccounts.length > 0 && !checkin.isPending;
   const bodyId = `accounts-body-${app}`;
 
   /** 折叠行点 [签到] 自动展开（§6 拍板）：批次面板、通知、冲突「查看该批次」都在展开层内 */
   const startCheckin = () => {
     onOpen();
-    checkin.mutate(enabledAccounts.map((account) => account.id));
+    checkin.mutate(checkinAccounts.map((account) => account.id));
   };
 
   return (
@@ -325,7 +329,11 @@ function PlatformRow({
           data-testid={`accounts-checkin-all-${app}`}
           className={`ml-auto ${BUTTON_SECONDARY}`}
           disabled={!checkinEnabled}
-          title={capability?.checkin === true ? '为本平台启用账号发起签到批次' : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
+          title={capability?.checkin === true
+            ? (skippedCheckinCount > 0
+                ? `为本平台 ${checkinAccounts.length} 个可签到账号发起批次；跳过 ${skippedCheckinCount} 个（缺少签到凭据或不可签到）`
+                : '为本平台启用账号发起签到批次')
+            : unavailableLabel(capability, 'checkin') ?? '签到不可用'}
           onClick={startCheckin}
         >
           {capability?.checkin === true ? '签到' : `签到不可用（${unavailableLabel(capability, 'checkin') ?? '能力未知'}）`}
@@ -349,7 +357,7 @@ function PlatformRow({
         ) : (
           <>
             <p data-testid={`accounts-summary-${app}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              共 {accounts.length} 个账号，其中 {enabledAccounts.length} 个启用并参与一键签到
+              共 {accounts.length} 个账号，其中 {checkinAccounts.length} 个启用并参与一键签到
               <span className="ml-1">· 今日已完成 {summary.done}/{summary.total}（本地记录，{today}）</span>
             </p>
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800">

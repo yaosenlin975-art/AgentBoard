@@ -304,15 +304,16 @@ export function travelFromRecoveryRef(ref: string | null | undefined): TravelVie
 
 /**
  * 「签到当前」判定（ACC-14）：一键签到会把该账号提交进批次。
- * 可判定条件 = 该平台签到能力可用 + 账号启用 + 账号签到能力非 unsupported。
- * 服务端不暴露 `checkin_credential_ref`，是否真有凭据以批次逐账号结果（CHECKIN_CREDENTIAL_MISSING）为准。
+ * 可判定条件 = 该平台签到能力可用 + 账号启用 + 账号签到能力非 unsupported + 已有签到凭据。
+ * 服务端只暴露布尔 `has_checkin_credential`（不暴露 ref）；缺凭据的账号不再提交进批次。
  */
 export function checkinParticipation(
-  account: Pick<PublicManagedAccount, 'enabled' | 'checkin_capability'>,
+  account: Pick<PublicManagedAccount, 'enabled' | 'checkin_capability' | 'has_checkin_credential'>,
   capability: CapabilityView | null,
 ): { participates: boolean; reason: string | null } {
   if (account.enabled === false) return { participates: false, reason: '账号已停用' };
   if (account.checkin_capability === 'unsupported') return { participates: false, reason: '该账号不支持签到' };
+  if (account.has_checkin_credential === false) return { participates: false, reason: '缺少签到凭据，请先刷新或重新获取' };
   if (capability === null) return { participates: false, reason: '能力未知' };
   if (!capability.checkin) {
     return { participates: false, reason: unavailableLabel(capability, 'checkin') ?? '签到能力未验证' };
@@ -362,7 +363,7 @@ export interface CheckinTodaySummary {
  * `m = 0`（能力可用但没有可参与账号）归灰档显示「未纳入签到」，不虚报完成。
  */
 export function summarizeCheckinToday(
-  accounts: Array<Pick<PublicManagedAccount, 'enabled' | 'checkin_capability' | 'last_checkin_day' | 'last_checkin_status'>>,
+  accounts: Array<Pick<PublicManagedAccount, 'enabled' | 'checkin_capability' | 'has_checkin_credential' | 'last_checkin_day' | 'last_checkin_status'>>,
   capability: CapabilityView | null,
   today: string,
 ): CheckinTodaySummary {

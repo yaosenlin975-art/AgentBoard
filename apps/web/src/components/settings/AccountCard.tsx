@@ -205,8 +205,12 @@ export function AccountCard({
       : frozen
         ? '上次切换需要恢复，已冻结该账号的切换'
         : '切换到该账号作为桌面客户端登录账号';
-  const checkinEnabled = capability?.checkin === true && onCheckin !== undefined;
   const participation = checkinParticipation(account, capability);
+  // ACC-CHECKIN：缺签到凭据 / 平台能力不可用 / 账号停用时按钮直接禁用，原因进 title
+  const checkinEnabled = participation.participates && onCheckin !== undefined;
+  const checkinTitle = checkinEnabled
+    ? '为该账号发起签到'
+    : (participation.reason ?? `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`);
 
   // ACC-B2 一级：identity_hint 恒为前 8 位（服务端超长也截断），缺失保留「未提供」兜底
   const hint = (account.identity_hint ?? '').slice(0, 8);
@@ -280,7 +284,7 @@ export function AccountCard({
             data-testid={`accounts-checkin-${account.id}`}
             className={BTN_QUIET}
             disabled={!checkinEnabled}
-            title={checkinEnabled ? '为该账号发起签到' : `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`}
+            title={checkinTitle}
             onClick={() => { if (checkinEnabled) onCheckin?.(); }}
           >
             签到

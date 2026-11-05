@@ -42,8 +42,9 @@ export function setManagedAccountEnabled(db: Db, id: string, enabled: boolean): 
 }
 
 export function publicManagedAccount(account: ManagedAccount): PublicManagedAccount {
-  const { identity_hash: _hash, client_snapshot_ref: _snapshot, checkin_credential_ref: _checkin, ...safe } = account;
-  return safe;
+  const { identity_hash: _hash, client_snapshot_ref: _snapshot, checkin_credential_ref: checkinRef, ...safe } = account;
+  // ACC-CHECKIN：前端据此禁用「缺凭据」账号的签到按钮；只给布尔，不给 ref
+  return { ...safe, has_checkin_credential: checkinRef !== null };
 }
 export function listManagedAccounts(db: Db): PublicManagedAccount[] {
   return (db.prepare('SELECT id FROM managed_account ORDER BY created_at,id').all() as Array<{ id: string }>).map(r => publicManagedAccount(getManagedAccount(db, r.id)!));

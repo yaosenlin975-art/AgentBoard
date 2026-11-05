@@ -438,6 +438,26 @@ describe('account api (managed-accounts / account-operations)', () => {
     expect(operationId).not.toBe('');
   });
 
+  it('ACC-CHECKIN 列表只暴露 has_checkin_credential 布尔，缺凭据账号为 false 且不回传 ref', async () => {
+    const { vault } = await bootCheckin();
+    const boundId = await deletableAccount(vault, 'cred-present');
+    const missingId = seedAccount('cred-missing');
+
+    const list = await request(app).get('/api/managed-accounts');
+    expect(list.status).toBe(200);
+    const byId = new Map<string, { has_checkin_credential?: boolean }>(
+      (list.body as Array<{ id: string; has_checkin_credential?: boolean }>).map(row => [row.id, row]),
+    );
+    // 有签到凭据 → true；没绑定 → false（前端据此禁用按钮并跳过一键签到）
+    expect(byId.get(boundId)?.has_checkin_credential).toBe(true);
+    expect(byId.get(missingId)?.has_checkin_credential).toBe(false);
+
+    const body = JSON.stringify(list.body);
+    expect(body).not.toContain('checkin_credential_ref');
+    expect(body).not.toContain(CREDENTIAL_MARK);
+    expect(body).not.toContain(ENVELOPE_MARK);
+  });
+
   it('delete removes the account row and both DPAPI references, and answers with no credential data', async () => {
     const { vault } = await bootCheckin();
     const accountId = await deletableAccount(vault, 'del-basic');

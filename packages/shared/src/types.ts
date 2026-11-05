@@ -52,7 +52,13 @@ export interface ManagedAccount {
   last_checkin_day: string | null; last_checkin_status: string | null; last_checkin_at: number | null;
   created_at: number; updated_at: number;
 }
-export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'client_snapshot_ref' | 'checkin_credential_ref'>;
+export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'client_snapshot_ref' | 'checkin_credential_ref'> & {
+  /**
+   * ACC-CHECKIN：是否已有签到凭据（只暴露布尔，不返回凭据 ref/明文）。
+   * 服务端恒填；声明为可选是为了让既有测试 fixture 不必逐处补齐，界面只在显式 `false` 时禁用。
+   */
+  has_checkin_credential?: boolean;
+};
 export interface AccountOperation {
   id: string; batch_id: string | null; account_id: string | null; app_id: ManagedAppId; client_instance_id: string;
   operation: 'capture' | 'switch' | 'checkin' | 'restore';

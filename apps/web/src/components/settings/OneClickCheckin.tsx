@@ -16,8 +16,15 @@ import { Badge } from '../ui/Badge';
 import { BUTTON_PRIMARY } from '../ui/buttonStyles';
 import type { AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
-import { APP_LABEL, APP_ORDER, appLabel, reasonLabel, unavailableLabel, type AccountsAppId, type CapabilityView } from './accountCapabilities';
+import { APP_LABEL, APP_ORDER, appLabel, checkinParticipation, reasonLabel, unavailableLabel, type AccountsAppId, type CapabilityView } from './accountCapabilities';
 import { createCheckinBatch } from './checkinApi';
+
+/** ACC-CHECKIN：一键签到跳过的账号（缺凭据/不支持签到/已停用），需在结果里逐条列出 */
+export interface OneClickSkippedAccount {
+  id: string;
+  name: string;
+  reason: string;
+}
 
 export interface OneClickOutcome {
   app: AccountsAppId;
@@ -25,6 +32,9 @@ export interface OneClickOutcome {
   batchId: string | null;
   code: string | null;
   message: string | null;
+  skippedAccounts: OneClickSkippedAccount[];
+  /** 该平台发起时被跳过的账号总数（无论批次是否成功） */
+  skippedAccountCount: number;
 }
 
 /** UNSLOP（ACC-UI-05）：批次结果只用 ink 分级 + 一处 accent（需要关注） */
@@ -47,6 +57,8 @@ export interface OneClickCheckinController {
   runnableCount: number;
   totalAccounts: number;
   runnableLabels: string[];
+  /** 因缺少签到凭据/不可签到被跳过的账号数（含无可用平台的账号） */
+  skippedAccountCount: number;
   outcomes: OneClickOutcome[] | null;
   run: () => void;
 }
@@ -69,19 +81,31 @@ export function useOneClickCheckin({
   const plan = APP_ORDER.map((app) => {
     const appAccounts = accounts.filter((account) => account.app_id === app && account.enabled !== false);
     const capability = capabilities[app] ?? null;
-    const skipReason = !capabilityKnown
+    const platformSkip = !capabilityKnown
       ? '能力矩阵读取中'
       : capability === null
         ? '能力未知'
         : !capability.checkin
           ? (unavailableLabel(capability, 'checkin') ?? reasonLabel(capability.checkin_reason_code))
-          : appAccounts.length === 0
-            ? '该平台没有启用的账号'
-            : null;
-    return { app, accountIds: appAccounts.map((account) => account.id), skipReason };
+          : null;
+    if (platformSkip !== null) return { app, accountIds: [] as string[], skippedAccounts: [] as OneClickSkippedAccount[], skipReason: platformSkip };
+    // 平台可用时再按账号判定：缺签到凭据/不支持签到的账号不提交进批次
+    const evaluated = appAccounts.map((account) => ({ account, participation: checkinParticipation(account, capability) }));
+    const skippedAccounts = evaluated
+      .filter(({ participation }) => !participation.participates)
+      .map(({ account, participation }) => ({ id: account.id, name: account.display_name, reason: participation.reason ?? '不可签到' }));
+    const accountIds = evaluated.filter(({ participation }) => participation.participates).map(({ account }) => account.id);
+    const onlySkipped = skippedAccounts.length === 1 ? skippedAccounts[0] : undefined;
+    const skipReason = appAccounts.length === 0
+      ? '该平台没有启用的账号'
+      : accountIds.length === 0
+        ? (onlySkipped?.reason ?? '该平台没有可签到的账号')
+        : null;
+    return { app, accountIds, skippedAccounts, skipReason };
   });
   const runnable = plan.filter((item) => item.skipReason === null);
   const totalAccounts = runnable.reduce((sum, item) => sum + item.accountIds.length, 0);
+  const skippedAccountCount = plan.reduce((sum, item) => sum + item.skippedAccounts.length, 0);
 
   const run = async (): Promise<void> => {
     setPending(true);
@@ -89,9 +113,13 @@ export function useOneClickCheckin({
     const results: OneClickOutcome[] = [];
     for (const item of plan) {
       if (item.skipReason !== null) {
-        results.push({ app: item.app, kind: 'skipped', batchId: null, code: null, message: item.skipReason });
+        results.push({
+          app: item.app, kind: 'skipped', batchId: null, code: null, message: item.skipReason,
+          skippedAccounts: item.skippedAccounts, skippedAccountCount: item.skippedAccounts.length,
+        });
         continue;
       }
+      const skippedMeta = { skippedAccounts: item.skippedAccounts, skippedAccountCount: item.skippedAccounts.length };
       const signature = `${item.app}:${[...item.accountIds].sort().join(',')}`;
       let key = idempotency.current.get(signature);
       if (key === undefined) {
@@ -101,15 +129,15 @@ export function useOneClickCheckin({
       try {
         const outcome = await createCheckinBatch({ app_id: item.app, account_ids: item.accountIds }, key);
         if (outcome.kind === 'created') {
-          results.push({ app: item.app, kind: 'created', batchId: outcome.batch.id, code: null, message: null });
+          results.push({ app: item.app, kind: 'created', batchId: outcome.batch.id, code: null, message: null, ...skippedMeta });
         } else if (outcome.kind === 'conflict') {
-          results.push({ app: item.app, kind: 'conflict', batchId: outcome.batchId, code: outcome.code, message: outcome.message });
+          results.push({ app: item.app, kind: 'conflict', batchId: outcome.batchId, code: outcome.code, message: outcome.message, ...skippedMeta });
         } else {
-          results.push({ app: item.app, kind: 'error', batchId: null, code: outcome.code, message: outcome.message });
+          results.push({ app: item.app, kind: 'error', batchId: null, code: outcome.code, message: outcome.message, ...skippedMeta });
         }
       } catch (error) {
         const code = typeof (error as { code?: unknown } | null)?.code === 'string' ? (error as { code: string }).code : 'NETWORK';
-        results.push({ app: item.app, kind: 'error', batchId: null, code, message: error instanceof Error ? error.message : '网络错误' });
+        results.push({ app: item.app, kind: 'error', batchId: null, code, message: error instanceof Error ? error.message : '网络错误', ...skippedMeta });
       }
     }
     setOutcomes(results);
@@ -123,6 +151,7 @@ export function useOneClickCheckin({
     runnableCount: runnable.length,
     totalAccounts,
     runnableLabels: runnable.map((item) => appLabel(item.app)),
+    skippedAccountCount,
     outcomes,
     run: () => { void run(); },
   };
@@ -130,7 +159,7 @@ export function useOneClickCheckin({
 
 /** 标题行右端的「一键签到」按钮（`accounts-one-click-checkin` testid 保持不变） */
 export function OneClickCheckinButton({ controller }: { controller: OneClickCheckinController }) {
-  const { pending, runnableCount, totalAccounts, run } = controller;
+  const { pending, runnableCount, totalAccounts, skippedAccountCount, run } = controller;
   return (
     <button
       type="button"
@@ -138,8 +167,10 @@ export function OneClickCheckinButton({ controller }: { controller: OneClickChec
       className={BUTTON_PRIMARY}
       disabled={pending || runnableCount === 0}
       title={runnableCount === 0
-        ? '没有可签到的平台：能力矩阵未就绪或全部平台签到不可用'
-        : `为 ${runnableCount} 个平台共 ${totalAccounts} 个启用账号发起签到`}
+        ? (skippedAccountCount > 0
+            ? `没有可签到的平台：${skippedAccountCount} 个账号缺少签到凭据或不可签到`
+            : '没有可签到的平台：能力矩阵未就绪或全部平台签到不可用')
+        : `为 ${runnableCount} 个平台共 ${totalAccounts} 个启用账号发起签到${skippedAccountCount > 0 ? `（跳过 ${skippedAccountCount} 个）` : ''}`}
       onClick={run}
     >
       {pending ? '签到中…' : '一键签到'}
@@ -149,12 +180,13 @@ export function OneClickCheckinButton({ controller }: { controller: OneClickChec
 
 /** 计划摘要（`accounts-one-click-plan`） */
 export function OneClickCheckinPlan({ controller }: { controller: OneClickCheckinController }) {
-  const { runnableCount, totalAccounts, runnableLabels } = controller;
+  const { runnableCount, totalAccounts, runnableLabels, skippedAccountCount } = controller;
   return (
     <span data-testid="accounts-one-click-plan" className="tabular-nums text-xs text-ink-3">
       {runnableCount === 0
         ? '当前没有可签到的平台'
-        : `${runnableCount} 个平台 / ${totalAccounts} 个启用账号：${runnableLabels.join('、')}`}
+        : `${runnableCount} 个平台 / ${totalAccounts} 个可签到账号：${runnableLabels.join('、')}`}
+      {skippedAccountCount > 0 && `；跳过 ${skippedAccountCount} 个账号（缺少签到凭据或不可签到）`}
     </span>
   );
 }
@@ -180,6 +212,11 @@ export function OneClickCheckinResults({ controller }: { controller: OneClickChe
             <span className={`rounded-md px-1.5 py-0.5 text-xs ${KIND_TONE[outcome.kind]}`}>{KIND_LABEL[outcome.kind]}</span>
             {outcome.code !== null && <span className="font-mono text-xs text-ink-3">{outcome.code}</span>}
             {outcome.message !== null && <span className="text-ink-3">{outcome.message}</span>}
+            {outcome.skippedAccounts.length > 0 && (
+              <span data-testid={`accounts-one-click-skipped-${outcome.app}`} className="text-ink-3">
+                跳过 {outcome.skippedAccounts.length} 个账号：{outcome.skippedAccounts.map(item => `${item.name}（${item.reason}）`).join('、')}
+              </span>
+            )}
             {outcome.batchId !== null && (
               <span className="font-mono text-xs tabular-nums text-ink-3">批次 {outcome.batchId.slice(0, 8)}…</span>
             )}

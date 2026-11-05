@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { AccountCapability, AccountOperation, CheckinBatch, PublicManagedAccount } from '@agentboard/shared';
 import { AccountsPanel } from '../components/settings/AccountsPanel';
+import { localDayKey } from '../components/settings/accountCapabilities';
 import { server } from './server';
 
 type AccountView = PublicManagedAccount & { is_current: boolean | null };
@@ -255,6 +256,71 @@ describe('一键签到（ACC-14）', () => {
     const skipped = await screen.findByTestId('accounts-one-click-outcome-minimax');
     expect(skipped).toHaveTextContent('跳过');
     expect(skipped).toHaveTextContent('签到能力未验证');
+  });
+
+  it('缺签到凭据：单账号按钮禁用并给出原因，一键签到跳过该账号并在结果里列出', async () => {
+    const accounts: AccountView[] = [
+      account(WB_1, 'workbuddy_desktop', 'WB 主号', { is_current: true }),
+      account(WB_2, 'workbuddy_desktop', 'WB 副号', { has_checkin_credential: false }),
+      account(MM_1, 'minimax', 'MM 账号', { is_current: null }),
+      account(TR_1, 'trae', 'TRAE 账号', { is_current: null }),
+    ];
+    const batches: Record<string, CheckinBatch> = {
+      workbuddy_desktop: batchFor(WB_BATCH, 'workbuddy_desktop', [{ account_id: WB_1, state: 'succeeded' }]),
+      minimax: batchFor(MM_BATCH, 'minimax', [{ account_id: MM_1, state: 'succeeded' }]),
+      trae: batchFor(TR_BATCH, 'trae', [{ account_id: TR_1, state: 'succeeded' }]),
+    };
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json(accounts)),
+      http.post('/api/checkin-runs', async ({ request }) => {
+        const body = await request.json() as CheckinPostBody;
+        checkinPosts.push({ body, key: request.headers.get('Idempotency-Key') });
+        return HttpResponse.json({ batch: batches[body.app_id]!, replayed: false }, { status: 202 });
+      }),
+      http.get('/api/checkin-runs/:id', ({ params }) => {
+        const found = Object.values(batches).find((item) => item.id === params.id);
+        return found ? HttpResponse.json(found) : HttpResponse.json({ error: { code: 'NOT_FOUND', message: '无此批次' } }, { status: 404 });
+      }),
+    );
+    renderPanel();
+
+    // 账号级前置判定：缺凭据 → 按钮禁用 + 可见原因（不是点了才失败）
+    const missing = await screen.findByTestId(`accounts-checkin-${WB_2}`);
+    expect(missing).toBeDisabled();
+    expect(missing).toHaveAttribute('title', '缺少签到凭据，请先刷新或重新获取');
+    expect(screen.getByTestId(`accounts-checkin-${WB_1}`)).toBeEnabled();
+    // 平台级按钮提示会跳过几个
+    expect(screen.getByTestId('accounts-checkin-all-workbuddy_desktop'))
+      .toHaveAttribute('title', '为本平台 1 个可签到账号发起批次；跳过 1 个（缺少签到凭据或不可签到）');
+
+    await userEvent.click(screen.getByTestId('accounts-one-click-checkin'));
+    await waitFor(() => expect(checkinPosts).toHaveLength(3));
+    // 缺凭据账号不进批次请求，其余照常发起（不整批静默失败）
+    expect(checkinPosts[0]!.body.account_ids).toEqual([WB_1]);
+    const skipped = await screen.findByTestId('accounts-one-click-skipped-workbuddy_desktop');
+    expect(skipped).toHaveTextContent('跳过 1 个账号：WB 副号（缺少签到凭据，请先刷新或重新获取）');
+  });
+
+  it('今日 x/y 口径：succeeded/already_done 计入；unknown 不计入并带 ?；failed/authorized/缺凭据不计入分母', async () => {
+    const today = localDayKey(Date.now());
+    const accounts: AccountView[] = [
+      account(WB_1, 'workbuddy_desktop', 'WB 成功', { last_checkin_day: today, last_checkin_status: 'succeeded' }),
+      account(WB_2, 'workbuddy_desktop', 'WB 已完成', { last_checkin_day: today, last_checkin_status: 'already_done' }),
+      account('66666666-6666-4666-8666-666666666666', 'workbuddy_desktop', 'WB 未知', { last_checkin_day: today, last_checkin_status: 'unknown' }),
+      account('77777777-7777-4777-8777-777777777777', 'workbuddy_desktop', 'WB 失败', { last_checkin_day: today, last_checkin_status: 'failed' }),
+      account('88888888-8888-4888-8888-888888888888', 'workbuddy_desktop', 'WB 授权中', { last_checkin_day: today, last_checkin_status: 'authorized' }),
+      account('99999999-9999-4999-8999-999999999999', 'workbuddy_desktop', 'WB 缺凭据', { last_checkin_day: today, last_checkin_status: 'succeeded', has_checkin_credential: false }),
+    ];
+    server.use(http.get('/api/managed-accounts', () => HttpResponse.json(accounts)));
+    renderPanel();
+
+    // 分母 5（缺凭据被排除）；分子 2（succeeded + already_done）；1 个 unknown 加 ? 角标
+    const chip = await screen.findByTestId('accounts-checkin-chip-workbuddy_desktop');
+    expect(chip).toHaveTextContent('2/5 ?');
+    expect(chip).toHaveAttribute('title', expect.stringContaining('结果未知'));
+    // 列表摘要与芯片同口径
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('今日已完成 2/5');
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 5 个启用并参与一键签到');
   });
 });
 
