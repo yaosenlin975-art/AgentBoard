@@ -13,9 +13,12 @@ import { ModelField } from './ModelField';
 export function ModelSelector({
   session,
   onUpdated,
+  openSignal,
 }: {
   session: Session;
   onUpdated: (session: Session) => void;
+  /** AUDIT-SRV：外部（如错误卡片「切换模型」）递增该值即打开弹窗；弹窗开合仍由本组件持有 */
+  openSignal?: number;
 }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -29,6 +32,11 @@ export function ModelSelector({
       setError(null);
     }
   }, [open, session.id, session.model]);
+
+  // 外部请求打开（0 为初值，首次挂载不触发）
+  useEffect(() => {
+    if (openSignal !== undefined && openSignal > 0) setOpen(true);
+  }, [openSignal]);
 
   const save = useMutation({
     mutationFn: () =>

@@ -40,8 +40,8 @@
 | Issue | `id, workspace_id, title, description, priority, labels: string[], status, sort_order: int, claimed_by: string\|null, claimed_at: number\|null, session_id: string\|null, comment_count: int, blocked_by_count: int, blocked_by_open_count: int, resolved: boolean, created_at, updated_at`；`comment_count` 查询时由 issue_comment 计数，`blocked_by_count`/`blocked_by_open_count` 由 issue_dependency 单次预聚合、`resolved` 由 `isBlockerResolved` 推出（无前置时 0/0/true），三者都不是落库列（`issue.ts:29-40`、`dependency.ts:86-105`） |
 | IssueComment | `id, issue_id, author, content, ts, attachments?: AttachmentMetadata[]`；author 取值 `'user' \| 'agent:<id>' \| 'system'` |
 | AttachmentMetadata | `id, file_name, mime_type: 'image/png'\|'image/jpeg'\|'image/webp', size_bytes, url`；不包含服务器存储路径 |
-| Session | `id, workspace_id, issue_id: string\|null, cli, model: string\|null, status, adapter_session_id: string\|null, created_at`；运行时合并字段 `queued_count?: int`（内存队列中待合并消息数）、`waiting_slot?: boolean`（当前轮在等全局并发槽位）——不入库，仅 GET /api/sessions 与 GET /api/sessions/:id 返回时由 sessionManager 内存态合并（`routes.ts:418-435`）；WS `session.changed` 不携带 |
-| Message | `id, session_id, role: 'user'\|'assistant'\|'event'\|'error', content, ts` |
+| Session | `id, workspace_id, issue_id: string\|null, cli, model: string\|null, status, adapter_session_id: string\|null, created_at`；列表派生字段 `preview: string`（首条 user 消息压缩空白后截断 ≤80 字，markdown 图片折叠为 `[图片]`，无消息为空串）、`source: 'dispatch'\|'chat'`（`issue_id` 非空为 dispatch，否则 chat）——仅 GET /api/sessions 返回（`messageSignals.ts`）；运行时合并字段 `queued_count?: int`（内存队列中待合并消息数）、`waiting_slot?: boolean`（当前轮在等全局并发槽位）——不入库，仅 GET /api/sessions 与 GET /api/sessions/:id 返回时由 sessionManager 内存态合并（`routes.ts:418-435`）；WS `session.changed` 不携带 |
+| Message | `id, session_id, role: 'user'\|'assistant'\|'event'\|'error', content, ts`；AUDIT-SRV 追加字段：`error_code?: 'QUOTA_EXCEEDED'\|'RATE_LIMITED'\|'AUTH_FAILED'\|'CONTEXT_OVERFLOW'\|'UNKNOWN_ERROR'\|null`（error 消息的错误归类，非 error 为 null）、`retryable?: boolean`（该错误是否值得重试：额度/鉴权/上下文超限为 false，限流与未知为 true）、`encoding_lost?: boolean`（正文含 U+FFFD 或连续 `?...` → 「原始编码不可用」，读取时派生、不落库） |
 | CliInfo | `id, displayName, installed: boolean, version: string\|null, supportsModelSelection: boolean` |
 | ModelInfo | `id, source: 'probed'\|'static'\|'manual'` |
 | TaskKnowledge | `enabled: boolean, query: string, warning?: 'KNOWLEDGE_UNAVAILABLE', items: Array<{ id, scope, workspace_id, revision, title, sources, evidence, snippet }>`（`taskKnowledge.ts:5`） |
@@ -384,7 +384,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/sessions` | query：`workspace`（必填） | `Session[]`（created_at,id 升序），合并运行时字段 `queued_count` `waiting_slot`（来源：sessionManager 内存态，不入库） | 400 缺 workspace；404 工作空间不存在 | routes.ts:419 |
+| `GET /api/sessions` | query：`workspace`（必填） | `Session[]`（created_at,id 升序），合并运行时字段 `queued_count` `waiting_slot`（来源：sessionManager 内存态，不入库）与列表派生字段 `preview` `source`（一次查回首条 user 消息，避免 N+1；旧会话无消息时 `preview` 为空串，不报错） | 400 缺 workspace；404 工作空间不存在 | routes.ts:1014 |
 | `GET /api/sessions/:id` | — | `Session` + `queued_count` `waiting_slot` | 404 会话不存在 | routes.ts:431 |
 | `GET /api/sessions/:id/queue` | — | `{ texts: string[] }`：当前内存排队文本副本（只读，无编辑接口） | 404 会话不存在 | routes.ts:439 |
 | `GET /api/sessions/:id/messages` | query：`after?: 非负整数毫秒时间戳`（默认 0） | `Message[]`（ts 升序，ts>after） | 400 after 非法；404 会话不存在 | routes.ts:444 |

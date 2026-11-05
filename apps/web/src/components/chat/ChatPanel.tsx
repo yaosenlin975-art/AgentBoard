@@ -20,6 +20,7 @@ import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
+import { useNavStore } from '../../state/navStore';
 import { clearStream, useStream } from '../../state/streamingStore';
 // 未读计数全局收集器：模块加载即订阅 wsBus（本组件未挂载期间同样计数，markUnread 不在此处，防双计）
 import '../../state/unreadCollector';
@@ -46,6 +47,8 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [waitingSlot, setWaitingSlot] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // AUDIT-SRV：错误卡片的「切换模型」入口——递增即让 ModelSelector 打开弹窗（弹窗开合仍归它自己）
+  const [modelOpenSignal, setModelOpenSignal] = useState(0);
 
   // WS session.changed 覆盖打开时携带的会话对象（状态/模型变更）；切会话同步清按 id 拉取的兜底
   useEffect(() => {
@@ -329,7 +332,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         </span>
         {workspaceBadge}
         <span className="ml-auto flex shrink-0 items-center gap-1">
-          <ModelSelector session={session} onUpdated={setLiveSession} />
+          <ModelSelector session={session} onUpdated={setLiveSession} openSignal={modelOpenSignal} />
           {waitingSlot && (
             <span
               data-testid="waiting-slot-badge"
@@ -376,7 +379,14 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
           {loadError}
         </p>
       ) : (
-        <MessageList messages={messages} streaming={streaming} running={running} />
+        <MessageList
+          messages={messages}
+          streaming={streaming}
+          running={running}
+          onRetry={(text) => void handleSend(text, [])}
+          onOpenModel={() => setModelOpenSignal((n) => n + 1)}
+          onOpenUsage={() => useNavStore.getState().openDrawer('accounts')}
+        />
       )}
 
       {queuedCount > 0 && (

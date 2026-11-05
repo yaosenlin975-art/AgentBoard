@@ -112,14 +112,120 @@ function EventBlock({ message }: { message: Message }) {
   );
 }
 
-function ErrorBlock({ message }: { message: Message }) {
+/** AUDIT-SRV（F-04）：错误码 → 中文原因（服务端归类，前端只做展示映射） */
+const ERROR_LABELS: Record<string, string> = {
+  QUOTA_EXCEEDED: '额度已用尽',
+  RATE_LIMITED: '请求被限流',
+  AUTH_FAILED: '鉴权失败',
+  CONTEXT_OVERFLOW: '上下文超限',
+  UNKNOWN_ERROR: '未知错误',
+};
+
+/** 链接过长时截断显示（完整地址留在 title 悬浮层，避免把一段 OAuth/日志 URL 铺满卡片） */
+const URL_RE = /https?:\/\/[^\s<>"'）)\]]+/g;
+
+function truncateUrls(text: string, max = 64): string {
+  return text.replace(URL_RE, (url) =>
+    url.length <= max ? url : `${url.slice(0, max - 14)}…${url.slice(-12)}`,
+  );
+}
+
+/** 重试文案：取该错误之前最近的一条 user 消息（原样再发一次） */
+function findRetryText(messages: Message[], index: number): string | null {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const prev = messages[i]!;
+    if (prev.role === 'user') return prev.content;
+  }
+  return null;
+}
+
+interface ErrorBlockProps {
+  message: Message;
+  retryText: string | null;
+  onRetry?: (text: string) => void;
+  onOpenModel?: () => void;
+  onOpenUsage?: () => void;
+}
+
+function ErrorBlock({ message, retryText, onRetry, onOpenModel, onOpenUsage }: ErrorBlockProps) {
+  const code = message.error_code ?? 'UNKNOWN_ERROR';
+  const label = ERROR_LABELS[code] ?? ERROR_LABELS.UNKNOWN_ERROR!;
+  const retryable = message.retryable === true;
+  const isQuota = code === 'QUOTA_EXCEEDED';
+  // 额度/限流/未知才给「换模型」入口；用量入口只对额度类有意义（其余错误看用量无帮助）
+  const showModel = isQuota || code === 'RATE_LIMITED' || code === 'UNKNOWN_ERROR';
   return (
-    <details data-testid={`error-block-${message.id}`} className="my-1 max-w-full text-xs">
-      <summary className="cursor-pointer select-none text-red-600 dark:text-red-400">错误</summary>
-      <pre className="mt-1 overflow-x-auto rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] whitespace-pre-wrap text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-        {message.content}
+    <div
+      data-testid={`error-block-${message.id}`}
+      className="my-1 max-w-full rounded border border-red-200 bg-red-50 px-2 py-1.5 text-xs dark:border-red-900 dark:bg-red-950/40"
+    >
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="rounded bg-red-600 px-1 py-0.5 text-[10px] font-medium text-white dark:bg-red-700">错误</span>
+        <span data-testid={`error-code-${message.id}`} className="font-medium text-red-700 dark:text-red-300">
+          {label}
+        </span>
+        {!retryable && (
+          <span className="text-[10px] text-red-600/80 dark:text-red-400/80">重试前需先处理（额度/鉴权/上下文）</span>
+        )}
+      </div>
+      <pre
+        data-testid={`error-body-${message.id}`}
+        title={message.content}
+        className="mt-1 overflow-x-auto text-[11px] whitespace-pre-wrap text-red-700 dark:text-red-300"
+      >
+        {truncateUrls(message.content)}
       </pre>
-    </details>
+      {(retryable || showModel || isQuota) && (
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+          {retryable && retryText !== null && onRetry !== undefined && (
+            <button
+              type="button"
+              data-testid={`error-retry-${message.id}`}
+              onClick={() => onRetry(retryText)}
+              title="重新发送上一条消息"
+              className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
+            >
+              重试
+            </button>
+          )}
+          {showModel && onOpenModel !== undefined && (
+            <button
+              type="button"
+              data-testid="error-switch-model"
+              onClick={onOpenModel}
+              title="修改当前会话模型（下一轮生效）"
+              className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
+            >
+              切换模型
+            </button>
+          )}
+          {isQuota && onOpenUsage !== undefined && (
+            <button
+              type="button"
+              data-testid="error-open-usage"
+              onClick={onOpenUsage}
+              title="打开账号面板查看额度/用量"
+              className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
+            >
+              查看用量
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** AUDIT-SRV（F-06）：原始编码在写入前就已损坏（U+FFFD / 连续 ???），清洗不可逆，只做标记 */
+function EncodingLostBadge({ messageId }: { messageId: string }) {
+  return (
+    <span
+      data-testid={`encoding-lost-${messageId}`}
+      title="正文含替换字符或连续问号，原始编码在入库前已不可用，无法还原"
+      className="inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+    >
+      原始编码不可用
+    </span>
   );
 }
 
@@ -127,10 +233,17 @@ export function MessageList({
   messages,
   streaming,
   running,
+  onRetry,
+  onOpenModel,
+  onOpenUsage,
 }: {
   messages: Message[];
   streaming: string;
   running: boolean;
+  /** AUDIT-SRV：错误卡片动作——重发上一条 user 消息 / 打开模型修改 / 打开账号用量面板 */
+  onRetry?: (text: string) => void;
+  onOpenModel?: () => void;
+  onOpenUsage?: () => void;
 }) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
@@ -154,11 +267,12 @@ export function MessageList({
           发送第一条消息开始对话
         </p>
       )}
-      {messages.map((m) => {
+      {messages.map((m, index) => {
         if (m.role === 'user') {
           return (
             <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
               <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-accent-soft px-2.5 py-1.5 text-xs text-ink whitespace-pre-wrap">
+                {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
                 {renderUserContent(m.content)}
               </div>
             </div>
@@ -168,13 +282,23 @@ export function MessageList({
           return (
             <div key={m.id} data-testid={`msg-${m.id}`} className="flex min-w-0 justify-start">
               <div className="min-w-0 max-w-full flex-1">
+                {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
                 <MarkdownView>{m.content}</MarkdownView>
               </div>
             </div>
           );
         }
         if (m.role === 'event') return <EventBlock key={m.id} message={m} />;
-        return <ErrorBlock key={m.id} message={m} />;
+        return (
+          <ErrorBlock
+            key={m.id}
+            message={m}
+            retryText={findRetryText(messages, index)}
+            onRetry={onRetry}
+            onOpenModel={onOpenModel}
+            onOpenUsage={onOpenUsage}
+          />
+        );
       })}
 
       {streaming !== '' && (
