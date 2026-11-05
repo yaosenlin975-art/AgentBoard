@@ -120,7 +120,8 @@ describe('WorkspaceList 排序交互', () => {
 
     const rowB = await screen.findByTestId('workspace-row-b2');
     expect(rowB).toBeInTheDocument();
-    // 乙上移到第一位
+    // 乙上移到第一位（I-11：上移/下移在卡面 ⋮ 菜单里）
+    await userEvent.click(within(rowB).getByTestId('workspace-card-menu-b2'));
     await userEvent.click(within(rowB).getByTestId('workspace-move-up-b2'));
     await waitFor(() => expect(body).toEqual({ ordered_ids: ['b2', 'a1', 'c3'] }));
     expect(key).toBeTruthy();
@@ -139,9 +140,13 @@ describe('WorkspaceList 排序交互', () => {
       </QueryClientProvider>,
     );
     await screen.findByTestId('workspace-row-a1');
+    // I-11：菜单是每卡独立浮层，逐张开菜单再断言禁用态
+    await userEvent.click(screen.getByTestId('workspace-card-menu-a1'));
     expect(screen.getByTestId('workspace-move-up-a1')).toBeDisabled();
-    expect(screen.getByTestId('workspace-move-down-c3')).toBeDisabled();
     expect(screen.getByTestId('workspace-move-down-a1')).toBeEnabled();
+    await userEvent.click(screen.getByTestId('workspace-card-menu-a1'));
+    await userEvent.click(screen.getByTestId('workspace-card-menu-c3'));
+    expect(screen.getByTestId('workspace-move-down-c3')).toBeDisabled();
     expect(screen.getByTestId('workspace-move-up-c3')).toBeEnabled();
   });
 
@@ -157,6 +162,7 @@ describe('WorkspaceList 排序交互', () => {
       </QueryClientProvider>,
     );
     await screen.findByTestId('workspace-row-b2');
+    await userEvent.click(screen.getByTestId('workspace-card-menu-b2'));
     await userEvent.click(screen.getByTestId('workspace-move-up-b2'));
     expect(await screen.findByTestId('workspace-order-notice')).toHaveTextContent('写库失败');
     await waitFor(() => {

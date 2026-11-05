@@ -119,7 +119,9 @@ describe('WorkspaceList', () => {
       mockWorkspaces([ws1]);
       renderList();
 
-      await userEvent.click(await screen.findByRole('button', { name: '移除工作空间 主项目' }));
+      // I-11：移除入口在卡面 ⋮ 菜单里
+      await userEvent.click(await screen.findByTestId('workspace-card-menu-ws-1'));
+      await userEvent.click(screen.getByRole('menuitem', { name: '移除工作空间 主项目' }));
       const dialog = screen.getByRole('dialog', { name: '移除工作空间' });
       expect(within(dialog).getByText(/将移除「主项目」/)).toBeInTheDocument();
       // 未输入空间名 → 提交按钮禁用，防止误删
@@ -150,7 +152,8 @@ describe('WorkspaceList', () => {
       await userEvent.click(await screen.findByTestId('workspace-card-ws-1'));
       await waitFor(() => expect(useAppStore.getState().workspaceId).toBe('ws-1'));
 
-      await userEvent.click(screen.getByRole('button', { name: '移除工作空间 主项目' }));
+      await userEvent.click(screen.getByTestId('workspace-card-menu-ws-1'));
+      await userEvent.click(screen.getByRole('menuitem', { name: '移除工作空间 主项目' }));
       const dialog = screen.getByRole('dialog', { name: '移除工作空间' });
       await userEvent.type(within(dialog).getByLabelText('确认空间名称'), '主项目');
       await userEvent.click(within(dialog).getByRole('button', { name: '移除工作空间' }));
@@ -174,7 +177,8 @@ describe('WorkspaceList', () => {
       mockWorkspaces([ws1]);
       renderList();
 
-      await userEvent.click(await screen.findByRole('button', { name: '移除工作空间 主项目' }));
+      await userEvent.click(await screen.findByTestId('workspace-card-menu-ws-1'));
+      await userEvent.click(screen.getByRole('menuitem', { name: '移除工作空间 主项目' }));
       const dialog = screen.getByRole('dialog', { name: '移除工作空间' });
       await userEvent.type(within(dialog).getByLabelText('确认空间名称'), '主项目');
       await userEvent.click(within(dialog).getByRole('button', { name: '移除工作空间' }));

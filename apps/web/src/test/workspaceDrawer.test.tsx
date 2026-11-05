@@ -1,5 +1,6 @@
 /**
- * WS-DRAWER-01：工作空间抽屉的搜索框、置顶按钮（↑↓ 左侧）、卡片操作行与统计格不重叠的结构断言。
+ * WS-DRAWER-01 + AUDIT-WS I-11：工作空间抽屉的搜索框、kebab 菜单（置顶/上移/下移/移除，命中区 ≥28px）
+ * 与卡片名称/路径的可读性结构断言。
  * 几何不重叠（真实矩形）由 CDP 在浏览器验证，这里只锁 DOM 结构与行为。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -17,6 +18,12 @@ import { server } from './server';
 const wsA: Workspace = { id: 'a1', name: '甲项目', path: 'D:\\WorkSpaces\\Alpha', created_at: 3, sort_order: 0 };
 const wsB: Workspace = { id: 'b2', name: '乙项目', path: 'D:\\WorkSpaces\\beta', created_at: 1, sort_order: 1 };
 const wsC: Workspace = { id: 'c3', name: '丙项目', path: 'D:\\WorkSpaces\\gamma', created_at: 2, sort_order: 2 };
+
+/** I-11：行内控件收进 kebab 菜单，测试口径 = 先点 ⋮ 打开面板，再点面板里的菜单项 */
+async function openCardMenu(id: string): Promise<HTMLElement> {
+  await userEvent.click(screen.getByTestId(`workspace-card-menu-${id}`));
+  return await screen.findByTestId(`workspace-card-menu-panel-${id}`);
+}
 
 function newClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -109,11 +116,15 @@ describe('WorkspaceList 置顶', () => {
     renderList();
     const rowC = await screen.findByTestId('workspace-row-c3');
 
+    await openCardMenu('c3');
     await userEvent.click(within(rowC).getByTestId('workspace-pin-c3'));
 
     await waitFor(() => expect(sent).toEqual([['c3', 'a1', 'b2']]));
     await waitFor(() => expect(rowIds()).toEqual(['workspace-row-c3', 'workspace-row-a1', 'workspace-row-b2']));
-    expect(screen.getByTestId('workspace-pin-c3')).toHaveAttribute('aria-pressed', 'true');
+    // 置顶态在卡面有徽标；菜单项是 menuitemcheckbox，选中态用 aria-checked
+    expect(within(rowC).getByTestId('workspace-pinned-badge-c3')).toBeInTheDocument();
+    await openCardMenu('c3');
+    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-checked', 'true');
     expect(window.localStorage.getItem(PINNED_IDS_KEY)).toBe(JSON.stringify([{ id: 'c3', originIndex: 2 }]));
   });
 
@@ -127,7 +138,9 @@ describe('WorkspaceList 置顶', () => {
     renderList();
 
     const rowC = await screen.findByTestId('workspace-row-c3');
-    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-pressed', 'true');
+    expect(within(rowC).getByTestId('workspace-pinned-badge-c3')).toBeInTheDocument();
+    await openCardMenu('c3');
+    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-checked', 'true');
     expect(rowIds()[0]).toBe('workspace-row-c3');
   });
 
@@ -151,13 +164,16 @@ describe('WorkspaceList 置顶', () => {
     );
     renderList();
     const rowC = await screen.findByTestId('workspace-row-c3');
-    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-pressed', 'true');
+    expect(within(rowC).getByTestId('workspace-pinned-badge-c3')).toBeInTheDocument();
 
+    await openCardMenu('c3');
     await userEvent.click(within(rowC).getByTestId('workspace-pin-c3'));
 
     await waitFor(() => expect(sent).toEqual([['a1', 'b2', 'c3']]));
     await waitFor(() => expect(rowIds()).toEqual(['workspace-row-a1', 'workspace-row-b2', 'workspace-row-c3']));
-    expect(screen.getByTestId('workspace-pin-c3')).toHaveAttribute('aria-pressed', 'false');
+    await openCardMenu('c3');
+    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-checked', 'false');
+    expect(within(rowC).queryByTestId('workspace-pinned-badge-c3')).toBeNull();
     expect(window.localStorage.getItem(PINNED_IDS_KEY)).toBe(JSON.stringify([{ id: 'a1', originIndex: 0 }]));
   });
 
@@ -172,11 +188,14 @@ describe('WorkspaceList 置顶', () => {
     renderList();
     const rowC = await screen.findByTestId('workspace-row-c3');
 
+    await openCardMenu('c3');
     await userEvent.click(within(rowC).getByTestId('workspace-pin-c3'));
 
     expect(await screen.findByTestId('workspace-order-notice')).toHaveTextContent('写库失败');
     await waitFor(() => expect(rowIds()).toEqual(['workspace-row-a1', 'workspace-row-b2', 'workspace-row-c3']));
-    expect(screen.getByTestId('workspace-pin-c3')).toHaveAttribute('aria-pressed', 'false');
+    await openCardMenu('c3');
+    expect(within(rowC).getByTestId('workspace-pin-c3')).toHaveAttribute('aria-checked', 'false');
+    expect(within(rowC).queryByTestId('workspace-pinned-badge-c3')).toBeNull();
     expect(window.localStorage.getItem(PINNED_IDS_KEY)).toBe(JSON.stringify([]));
   });
 
@@ -189,73 +208,143 @@ describe('WorkspaceList 置顶', () => {
   });
 });
 
-describe('WorkspaceCard 布局（控件行在卡片头部、防重叠）', () => {
-  it('置顶 · 上移 · 下移 · 移除 四个控件同在头部一行，从左到右依次排列', async () => {
+describe('WorkspaceCard 布局（I-11：操作收进 kebab 菜单，命中区 ≥28px）', () => {
+  it('置顶 · 上移 · 下移 · 移除 收进 ⋮ 菜单：默认收起，打开后面板在卡片内、顺序不变', async () => {
     mockBase([wsA]);
     renderList();
     const row = await screen.findByTestId('workspace-row-a1');
 
     const actions = within(row).getByTestId('workspace-card-actions-a1');
-    const pin = within(actions).getByTestId('workspace-pin-a1');
-    const up = within(actions).getByTestId('workspace-move-up-a1');
-    const down = within(actions).getByTestId('workspace-move-down-a1');
-    const remove = within(actions).getByRole('button', { name: '移除工作空间 甲项目' });
+    const trigger = within(actions).getByTestId('workspace-card-menu-a1');
     const card = within(row).getByTestId('workspace-card-a1').closest('[data-workspace-card]');
 
-    // 卡片容器存在，四个控件的父链都落在它里面（不是卡片外的兄弟节点）
+    // 默认收起：面板不在 DOM 里，卡面右上角只留一个 ⋮
+    expect(within(row).queryByTestId('workspace-card-menu-panel-a1')).toBeNull();
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    // 命中区 28×28（h-7 / w-7 = 28px），拖拽把手同样抬到 28px 高
+    for (const cls of ['inline-flex', 'h-7', 'w-7']) expect(trigger.className).toContain(cls);
+    expect(within(row).getByTestId('workspace-drag-a1').className).toContain('h-7');
+    // 控件容器仍 absolute 锚在卡片右上角头部
+    for (const cls of ['absolute', 'top-1', 'right-1', 'flex', 'items-center']) {
+      expect(actions.className).toContain(cls);
+    }
+
+    await openCardMenu('a1');
+    const panel = within(row).getByTestId('workspace-card-menu-panel-a1');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(panel).toHaveAttribute('role', 'menu');
+    const pin = within(panel).getByTestId('workspace-pin-a1');
+    const up = within(panel).getByTestId('workspace-move-up-a1');
+    const down = within(panel).getByTestId('workspace-move-down-a1');
+    const remove = within(panel).getByRole('menuitem', { name: '移除工作空间 甲项目' });
+
+    // 卡片容器存在，四个菜单项的父链都落在它里面（面板/触发器都是内容按钮的兄弟节点，按钮不嵌套按钮）
     expect(card).not.toBeNull();
     expect(card).toBe(row.querySelector('[data-workspace-card="a1"]'));
-    for (const button of [pin, up, down, remove]) {
-      expect(button.closest('[data-workspace-card]')).toBe(card);
-      expect(card?.contains(button)).toBe(true);
+    expect(panel.closest('button')).toBeNull();
+    expect(actions.closest('button')).toBeNull();
+    for (const item of [pin, up, down, remove]) {
+      expect(item.closest('[data-workspace-card]')).toBe(card);
+      expect(card?.contains(item)).toBe(true);
+      // 菜单项命中区 ≥28px（min-h-7），角色是 menuitem / menuitemcheckbox
+      expect(item.className).toContain('min-h-7');
+      expect(item.getAttribute('role')).toMatch(/^menuitem/);
     }
-    // 控件行锚在卡片右上角头部（5de50623：置顶/↑/↓ 移入 ✕ 左侧同行）
-    expect(actions.className).toContain('absolute');
-    expect(actions.className).toContain('top-1');
-    expect(actions.className).toContain('right-1');
-    // 同一 flex 容器 → 同行、同间距
-    for (const cls of ['flex', 'items-center', 'gap-1']) expect(actions.className).toContain(cls);
-    // 顺序：置顶 → ↑ → ↓ → ✕（✕ 保持最右）
+    // 顺序：置顶 → 上移 → 下移 → 移除
     for (const [left, right] of [[pin, up], [up, down], [down, remove]] as const) {
       expect(left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    // 名称行为控件行让出右侧空间（128px ≥ 「已置顶」态控件行 + 边距），完整名称由 title 属性兜住
-    const title = within(row).getByTestId('workspace-card-a1').querySelector('.truncate');
-    expect(title?.className).toContain('pr-32');
-    expect(title).toHaveAttribute('title', '甲项目');
-    // 控件行与统计格互不包含
+    // 菜单与统计格互不包含
     const closed = within(row).getByTestId('stat-已关闭');
     expect(closed.contains(up)).toBe(false);
-    expect(actions.contains(closed)).toBe(false);
+    expect(panel.contains(closed)).toBe(false);
 
     // 统计文案 nowrap + 卡片容器最小高度，窄宽度不折行挤压
     expect(within(closed).getByText('已关闭').className).toContain('whitespace-nowrap');
     expect(card?.className).toContain('min-h-[6.5rem]');
   });
 
-  it('置顶按钮是文本胶囊：未置顶「置顶」，按下后「已置顶」且有填充底色类名', async () => {
+  it('点外部关闭菜单，Esc 关闭并把焦点还给 ⋮（键盘可达）', async () => {
+    mockBase([wsA]);
+    renderList();
+    const row = await screen.findByTestId('workspace-row-a1');
+    const trigger = within(row).getByTestId('workspace-card-menu-a1');
+
+    await openCardMenu('a1');
+    expect(within(row).getByTestId('workspace-card-menu-panel-a1')).toBeInTheDocument();
+    await userEvent.click(document.body);
+    await waitFor(() =>
+      expect(within(row).queryByTestId('workspace-card-menu-panel-a1')).toBeNull(),
+    );
+
+    await openCardMenu('a1');
+    // 打开即把焦点送进第一个菜单项
+    await waitFor(() => expect(within(row).getByTestId('workspace-pin-a1')).toHaveFocus());
+    // 单卡列表：上移/下移禁用，↑↓ 漫游跳过禁用项（置顶 → 移除）
+    expect(within(row).getByTestId('workspace-move-up-a1')).toBeDisabled();
+    expect(within(row).getByTestId('workspace-move-down-a1')).toBeDisabled();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(within(row).getByTestId('workspace-remove-a1')).toHaveFocus();
+    await userEvent.keyboard('{ArrowUp}');
+    expect(within(row).getByTestId('workspace-pin-a1')).toHaveFocus();
+    await userEvent.keyboard('{End}');
+    expect(within(row).getByTestId('workspace-remove-a1')).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(within(row).queryByTestId('workspace-card-menu-panel-a1')).toBeNull());
+    expect(trigger).toHaveFocus();
+  });
+
+  it('相似仓库名可分辨：名称 flex-1 + min-w-0 + truncate 优先，行内只为 ⋮ 让出 pr-10（旧版 pr-32 已移除）', async () => {
+    const net: Workspace = { id: 'n1', name: 'Networks-Toolkit', path: 'D:\\WorkSpaces\\Networks-Toolkit', created_at: 1, sort_order: 0 };
+    const frame: Workspace = { id: 'f1', name: 'Frameworks-Core', path: 'D:\\WorkSpaces\\Frameworks-Core', created_at: 2, sort_order: 1 };
+    mockBase([net, frame]);
+    renderList();
+    await screen.findByTestId('workspace-row-n1');
+
+    for (const [id, ws] of [['n1', net], ['f1', frame]] as const) {
+      const name = screen.getByTestId(`workspace-card-name-${id}`);
+      // flex-1 + min-w-0 才让 truncate 真正生效：名称先拿满剩余宽度
+      for (const cls of ['min-w-0', 'flex-1', 'truncate']) expect(name.className).toContain(cls);
+      expect(name).toHaveAttribute('title', ws.name);
+      expect(name).toHaveTextContent(ws.name);
+      // 右侧让位从 128px 收到 40px（一个 28px 触发器 + 边距）
+      expect(name.parentElement?.className).toContain('pr-10');
+      expect(name.parentElement?.className).not.toContain('pr-32');
+      // 路径整行截断，完整路径由 title 兜住
+      const path = screen.getByTestId(`workspace-card-path-${id}`);
+      expect(path.className).toContain('truncate');
+      expect(path).toHaveAttribute('title', ws.path);
+    }
+  });
+
+  it('置顶菜单项是开关项：未置顶「置顶」，点后「取消置顶」并带强调色；卡面同步出徽标', async () => {
     mockBase([wsA, wsB]);
     renderList();
     const row = await screen.findByTestId('workspace-row-b2');
+
+    await openCardMenu('b2');
     const pin = within(row).getByTestId('workspace-pin-b2');
 
     expect(pin).toHaveTextContent('置顶');
-    expect(pin).toHaveAttribute('aria-pressed', 'false');
-    expect(pin.className).toContain('border-hairline');
+    expect(pin).toHaveAttribute('role', 'menuitemcheckbox');
+    expect(pin).toHaveAttribute('aria-checked', 'false');
     expect(pin.className).toContain('text-ink-2');
-    expect(pin.className).not.toContain('text-accent ');
-    expect(pin.className).toContain('text-ink-2');
+    expect(within(row).queryByTestId('workspace-pinned-badge-b2')).toBeNull();
 
     await userEvent.click(pin);
 
-    await waitFor(() => expect(pin).toHaveTextContent('已置顶'));
-    expect(pin).toHaveAttribute('aria-pressed', 'true');
-    expect(pin.className).toContain('bg-accent-soft');
-    expect(pin.className).toContain('text-accent');
-    // 与 ↑↓ 同一套尺寸/圆角/hover
+    // 动作后菜单收起，置顶态改由卡面徽标呈现
+    await waitFor(() => expect(within(row).getByTestId('workspace-pinned-badge-b2')).toBeInTheDocument());
+    await openCardMenu('b2');
+    const pinnedItem = within(row).getByTestId('workspace-pin-b2');
+    expect(pinnedItem).toHaveTextContent('取消置顶');
+    expect(pinnedItem).toHaveAttribute('aria-checked', 'true');
+    expect(pinnedItem.className).toContain('text-accent');
+    // 与 上移/下移 同一套菜单项尺寸与 hover
     const up = within(row).getByTestId('workspace-move-up-b2');
-    for (const cls of ['inline-flex', 'h-5', 'rounded', 'text-[11px]']) {
-      expect(pin.className).toContain(cls);
+    for (const cls of ['flex', 'min-h-7', 'rounded-none', 'text-xs']) {
+      expect(pinnedItem.className).toContain(cls);
       expect(up.className).toContain(cls);
     }
     expect(up.className).toContain('hover:bg-accent-soft');

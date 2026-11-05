@@ -4,6 +4,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
@@ -69,7 +70,8 @@ describe('双色拖拽光标复用（CURSOR-REUSE）', () => {
     await waitFor(() => expect(handle.style.cursor).toBe(GRAB_CURSOR));
     expect(handle.style.cursor).toContain('%23111111');
     expect(handle.className).not.toContain('cursor-grab');
-    // 置顶按钮仍是普通按钮语义（不被光标改动波及）
+    // 置顶入口收进 ⋮ 菜单（I-11）：先开菜单，置顶项仍是普通按钮语义（不被光标改动波及）
+    await userEvent.click(screen.getByTestId('workspace-card-menu-ws-1'));
     expect(await screen.findByTestId('workspace-pin-ws-1')).toBeInTheDocument();
   });
 });
