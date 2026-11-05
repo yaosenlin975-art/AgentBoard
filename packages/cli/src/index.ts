@@ -28,6 +28,7 @@ import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
 import { accountSwitch, accountsCapabilities, accountsList } from './commands/accounts.js';
+import { workspaceDbEnable } from './commands/workspaceDb.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
 const EXIT_CODE_HELP = `
@@ -369,6 +370,23 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .action(async () => createShortcut(makeCtx(program, io)));
   shortcut.command('remove').description('移除桌面快捷方式')
     .action(async () => removeShortcut(makeCtx(program, io)));
+
+  // STORE-2b：工作区库下沉（localize）——服务端八阶段状态机的 CLI 编排（jobId 轮询模型），迁移逻辑全在服务端
+  const workspaceDb = program.command('workspace-db').description('工作区库下沉：把工作区数据从中心库迁到工作区目录独享库（<工作区>/.agentboard/workspace.db）');
+  workspaceDb.command('enable')
+    .description('启用工作区库：迁移该工作区的卡/评论/会话/知识页等（默认真实迁移；--dry-run 只统计不动数据）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .option('--dry-run', '只统计将迁移的行数/附件/预计字节，不产生任何变更')
+    .option('--overwrite', '目标库已存在或上次迁移未收尾时，清理后重来')
+    .addHelpText('after', `
+示例：
+  kb workspace-db enable 任务看板 --dry-run    # 预览将迁移的数据量（无任何变更）
+  kb workspace-db enable 任务看板              # 真实迁移（预检→备份→…→收尾，进度逐阶段打印）
+退出码：0 成功（含 dry-run / already_localized 幂等回显）；2 冲突（迁移进行中 / 已下沉 / 目标库已存在等 409）；
+1 失败（failed job 含 lastError、工作区不存在、轮询超时——超时会保留 jobId 供重查、400 参数类）
+`)
+    .action(async (workspace: string, opts: { dryRun?: boolean; overwrite?: boolean }) =>
+      workspaceDbEnable(makeCtx(program, io), workspace, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true }));
 
   try {
     await program.parseAsync(argv);
