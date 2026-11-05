@@ -29,6 +29,7 @@ import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
 import { isOverdue, overdueDays } from '../../lib/planningSort';
 import { SessionList } from './SessionList';
+import { TitleInlineEditor } from './TitleInlineEditor';
 
 const inputCls =
   'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
@@ -73,7 +74,6 @@ export function DetailPanel() {
   });
 
   // ---- 字段本地态 + 防抖 PATCH ----
-  const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<Priority>('中');
   const [labels, setLabels] = useState<string[]>([]);
@@ -92,7 +92,6 @@ export function DetailPanel() {
 
   useEffect(() => {
     if (!issue) return;
-    setTitle(issue.title);
     setDescription(issue.description);
     setPriority(issue.priority);
     setLabels(issue.labels);
@@ -203,6 +202,25 @@ export function DetailPanel() {
   // hook 必须在下面所有 early return 之前调用（否则 hook 数量随加载状态变化，React 会直接崩）。
   const statusDictionary = useWorkspaceStatuses(issue?.workspace_id ?? null);
 
+  /**
+   * D1：标题就地编辑提交。
+   * - 默认带 workspace_id + expected_updated_at（CAS），409 交给 TitleInlineEditor 展示并提供「仍然保存」；
+   * - force=true 表示冲突后仍要写入：不带 CAS 字段（服务端允许无 CAS 的普通 PATCH）。
+   */
+  const saveTitle = useCallback(
+    async (value: string, options: { force: boolean }): Promise<void> => {
+      if (issueId === null || issue === undefined) return;
+      const body: Record<string, unknown> = { title: value };
+      if (!options.force) {
+        body.workspace_id = issue.workspace_id;
+        body.expected_updated_at = issue.updated_at;
+      }
+      const updated = await api.patch<Issue>(`/api/issues/${issueId}`, body);
+      queryClient.setQueryData(['issue', issueId], updated);
+    },
+    [issueId, issue, queryClient],
+  );
+
   if (issueId === null) return null;
   if (issueError !== null) {
     return (
@@ -253,19 +271,8 @@ export function DetailPanel() {
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3 pl-3 pr-4">
         {/* 字段区 */}
         <section aria-label="字段" className="space-y-2">
-          <label className="block text-sm">
-            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">标题</span>
-            <input
-              data-testid="title-input"
-              aria-label="标题"
-              value={title}
-              onChange={(e) => {
-                setTitle(e.target.value);
-                schedulePatch('title', e.target.value);
-              }}
-              className={inputCls}
-            />
-          </label>
+          {/* D1：标题顶掉「任务详情」标题行；阅读态 + ✎ 就地编辑 */}
+          <TitleInlineEditor title={issue.title} onSave={saveTitle} />
 
           <div className="text-sm">
             <div className="mb-1 flex items-center justify-between">

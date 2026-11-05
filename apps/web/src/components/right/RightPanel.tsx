@@ -262,8 +262,15 @@ export function RightPanel() {
           className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent"
         />
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-hairline px-3">
-          <h2 ref={headingRef} tabIndex={-1} className="text-sm font-semibold">
-            {activeView === 'detail' ? '任务详情' : refPanel?.kind === 'log' ? '日志' : '知识'}
+          {/* D1：detail 视图不再渲染可见的「任务详情」文案（任务标题顶替其位置），
+              aria-label 保留语义与焦点兜底；h-10 头部高度契约不变。 */}
+          <h2
+            ref={headingRef}
+            tabIndex={-1}
+            aria-label={activeView === 'detail' ? '任务详情' : undefined}
+            className="text-sm font-semibold"
+          >
+            {activeView === 'detail' ? null : refPanel?.kind === 'log' ? '日志' : '知识'}
           </h2>
           <button
             type="button"

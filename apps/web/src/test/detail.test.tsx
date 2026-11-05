@@ -2,7 +2,7 @@
  * Task 13 测试：操作区四态切换、评论发送两态与 woke 提示、防抖 PATCH、删除二次确认、
  * 派发弹窗提交体（cli/model/reuse_session/prompt 渲染变量）、RightPanel 容器收起/展开/拖拽宽度。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -300,23 +300,232 @@ describe('DetailPanel 滚动区留白（RIGHT-PANEL-HEADER-01）', () => {
   });
 });
 
-describe('DetailPanel 字段防抖 PATCH', () => {
-  it('连续输入只发一次 PATCH，体为最终值', async () => {
+describe('DetailPanel 标题就地编辑（D1）', () => {
+  async function openTitleEditor(): Promise<HTMLInputElement> {
+    await userEvent.click(await screen.findByTestId('title-edit-btn'));
+    return (await screen.findByTestId('title-input')) as HTMLInputElement;
+  }
+
+  it('点 ✎ 进入编辑：原文本让位、只显示输入框，预填原文且光标在末尾；取消后恢复，连续 3 次成立', async () => {
     mockDetailApi(makeIssue());
+    renderDetail();
+
+    for (let round = 0; round < 3; round += 1) {
+      const input = await openTitleEditor();
+      expect(screen.queryByTestId('title-display')).not.toBeInTheDocument();
+      expect(input).toHaveValue('测试任务');
+      expect(document.activeElement).toBe(input);
+      expect(input.selectionStart).toBe('测试任务'.length);
+      expect(input.selectionEnd).toBe('测试任务'.length);
+
+      await userEvent.click(screen.getByTestId('title-cancel'));
+      expect(screen.queryByTestId('title-input')).not.toBeInTheDocument();
+      expect(await screen.findByTestId('title-display')).toHaveTextContent('测试任务');
+      expect(screen.getByTestId('title-edit-btn')).toHaveFocus();
+    }
+  });
+
+  it('Enter 提交：PATCH 带 workspace_id + expected_updated_at，成功后退出编辑并展示新标题', async () => {
+    const base = makeIssue({ updated_at: 7 });
+    mockDetailApi(base);
+    let current = base;
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.get('/api/issues/iss-1', () => HttpResponse.json(current)),
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        current = { ...base, title: '测试任务-新', updated_at: 8 };
+        return HttpResponse.json(current);
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    await userEvent.type(input, '-新{Enter}');
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ title: '测试任务-新', workspace_id: 'ws-1', expected_updated_at: 7 });
+    expect(await screen.findByTestId('title-display')).toHaveTextContent('测试任务-新');
+    expect(screen.queryByTestId('title-input')).not.toBeInTheDocument();
+  });
+
+  it('Esc 取消：标题不变且不提交；有改动时下次进入恢复草稿并提示一次', async () => {
+    mockDetailApi(makeIssue());
+    let patchCount = 0;
+    server.use(
+      http.patch('/api/issues/iss-1', () => {
+        patchCount += 1;
+        return HttpResponse.json(makeIssue());
+      }),
+    );
+    renderDetail();
+
+    let input = await openTitleEditor();
+    await userEvent.clear(input);
+    await userEvent.type(input, '临时标题');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('title-input')).not.toBeInTheDocument();
+    expect(screen.getByTestId('title-display')).toHaveTextContent('测试任务');
+    expect(patchCount).toBe(0);
+
+    input = await openTitleEditor();
+    expect(input).toHaveValue('临时标题');
+    expect(screen.getByTestId('title-draft-hint')).toHaveTextContent('已恢复上次未保存的草稿');
+
+    // 改回原文再 Esc：视为无改动，不再保留草稿
+    await userEvent.clear(input);
+    await userEvent.type(input, '测试任务');
+    await userEvent.keyboard('{Escape}');
+    input = await openTitleEditor();
+    expect(input).toHaveValue('测试任务');
+    expect(screen.queryByTestId('title-draft-hint')).not.toBeInTheDocument();
+    expect(patchCount).toBe(0);
+  });
+
+  it('点击编辑区外部：保持编辑态，不自动提交也不自动取消', async () => {
+    mockDetailApi(makeIssue());
+    let patchCount = 0;
+    server.use(
+      http.patch('/api/issues/iss-1', () => {
+        patchCount += 1;
+        return HttpResponse.json(makeIssue());
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    await userEvent.type(input, 'X');
+    fireEvent.click(screen.getByTestId('desc-preview'));
+
+    expect(screen.getByTestId('title-input')).toBeInTheDocument();
+    expect(input).toHaveValue('测试任务X');
+    expect(patchCount).toBe(0);
+  });
+
+  it('空值 Enter：行内红字且不提交，输入保留', async () => {
+    mockDetailApi(makeIssue());
+    let patchCount = 0;
+    server.use(
+      http.patch('/api/issues/iss-1', () => {
+        patchCount += 1;
+        return HttpResponse.json(makeIssue());
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    await userEvent.clear(input);
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByTestId('title-error')).toHaveTextContent('标题不能为空，请填写后再保存。');
+    expect(patchCount).toBe(0);
+    expect(screen.getByTestId('title-input')).toBeInTheDocument();
+  });
+
+  it('超过 200 字：>160 显示计数，超限红字阻止提交且输入保留', async () => {
+    mockDetailApi(makeIssue());
+    let patchCount = 0;
+    server.use(
+      http.patch('/api/issues/iss-1', () => {
+        patchCount += 1;
+        return HttpResponse.json(makeIssue());
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    fireEvent.change(input, { target: { value: 'a'.repeat(161) } });
+    expect(screen.getByTestId('title-counter')).toHaveTextContent('161 / 200');
+
+    fireEvent.change(input, { target: { value: 'a'.repeat(201) } });
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByTestId('title-error')).toHaveTextContent('标题最多 200 字，当前 201 字');
+    expect(input).toHaveValue('a'.repeat(201));
+    expect(patchCount).toBe(0);
+  });
+
+  it('保存失败：可读错误 + 输入不丢 + 仍在编辑态', async () => {
+    mockDetailApi(makeIssue());
+    server.use(
+      http.patch('/api/issues/iss-1', () =>
+        HttpResponse.json({ error: { code: 'INTERNAL', message: '服务暂时不可用' } }, { status: 500 }),
+      ),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    await userEvent.type(input, 'X{Enter}');
+    const alert = await screen.findByTestId('title-error');
+    expect(alert).toHaveTextContent('保存失败');
+    expect(alert).toHaveTextContent('服务暂时不可用');
+    expect(screen.getByTestId('title-input')).toHaveValue('测试任务X');
+  });
+
+  it('409 冲突：保留输入并可「仍然保存」（强制提交不带 CAS）', async () => {
+    const base = makeIssue({ updated_at: 7 });
+    mockDetailApi(base);
     const patches: Array<Record<string, unknown>> = [];
     server.use(
       http.patch('/api/issues/iss-1', async ({ request }) => {
         patches.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(makeIssue({ title: '测试任务ab', updated_at: 99 }));
+        if (patches.length === 1) {
+          return HttpResponse.json(
+            { error: { code: 'TASK_REVISION_CONFLICT', message: '任务已更新，请重新读取' } },
+            { status: 409 },
+          );
+        }
+        return HttpResponse.json({ ...base, title: '测试任务X', updated_at: 9 });
       }),
     );
     renderDetail();
-    const input = await screen.findByTestId('title-input');
-    await userEvent.type(input, 'ab');
-    await waitFor(() => expect(patches).toHaveLength(1), { timeout: 2000 });
-    expect(patches[0]).toEqual({ title: '测试任务ab' });
+
+    const input = await openTitleEditor();
+    await userEvent.type(input, 'X{Enter}');
+    expect(await screen.findByTestId('title-error')).toHaveTextContent('保存冲突');
+    expect(screen.getByTestId('title-input')).toHaveValue('测试任务X');
+
+    await userEvent.click(screen.getByTestId('title-force-save'));
+    await waitFor(() => expect(patches).toHaveLength(2));
+    expect(patches[1]).toEqual({ title: '测试任务X' });
+    expect(await screen.findByTestId('title-display')).toHaveTextContent('测试任务X');
   });
 
+  it('输入法组词中的 Enter 不提交（isComposing）', async () => {
+    mockDetailApi(makeIssue());
+    let patchCount = 0;
+    server.use(
+      http.patch('/api/issues/iss-1', () => {
+        patchCount += 1;
+        return HttpResponse.json(makeIssue());
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    fireEvent.change(input, { target: { value: '测试任务组词' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+
+    expect(screen.getByTestId('title-input')).toBeInTheDocument();
+    expect(patchCount).toBe(0);
+  });
+
+  it('进入编辑时锁住阅读态高度（标题行不跳变）', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    await screen.findByTestId('title-display');
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const height = this.dataset.testid === 'title-display' ? 42.59 : 0;
+      return { x: 0, y: 0, width: 0, height, top: 0, right: 0, bottom: height, left: 0, toJSON: () => ({}) } as DOMRect;
+    });
+    try {
+      await userEvent.click(screen.getByTestId('title-edit-btn'));
+      const wrap = await screen.findByTestId('title-edit-wrap');
+      expect(wrap).toHaveStyle({ height: '42.59px' });
+    } finally {
+      rectSpy.mockRestore();
+    }
+  });
+});
+
+describe('DetailPanel 字段防抖 PATCH', () => {
   it('标签逗号分隔编辑 → PATCH labels 数组；优先级 select → PATCH priority', async () => {
     mockDetailApi(makeIssue());
     const patches: Array<Record<string, unknown>> = [];

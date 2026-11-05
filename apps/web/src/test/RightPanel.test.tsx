@@ -76,6 +76,15 @@ describe('RightPanel', () => {
     expect(handle).toHaveAttribute('aria-valuenow', '420');
   });
 
+  it('D1：detail 视图头部不再渲染可见「任务详情」文案，仅保留 aria-label 语义与关闭按钮', () => {
+    render(<RightPanel />);
+    const heading = screen.getByRole('heading', { name: '任务详情' });
+    expect(heading.textContent).toBe('');
+    expect(heading).toHaveAttribute('aria-label', '任务详情');
+    expect(heading).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByTestId('right-panel-close')).toBeInTheDocument();
+  });
+
   it('键盘调整宽度限制在最小值和最大值之间', () => {
     localStorage.setItem('agentboard.right-panel-width', '320');
     render(<RightPanel />);
