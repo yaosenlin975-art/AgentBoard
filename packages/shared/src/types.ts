@@ -439,7 +439,36 @@ export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | Sessio
  * CHAT-VIS1 已按计划把两个事件加入 `WsEvent` 并补 case（返回 `[]`），于是二者等价；
  * 保留别名是为了不动服务端签名，也给「服务端广播、前端暂未消费」的后续事件留位置。
  */
-export type ServerWsEvent = WsEvent | TurnObservationEvent;
+/**
+ * DEC-3 定稿的决策 WS 事件（设计 v3 §5.3，事件名不得另起）。
+ *
+ * 刻意**不并入 `WsEvent`**：`apps/web/src/api/ws.ts` 的 `eventToQueryKeys` 是无 default 的穷尽 switch，
+ * 并入会让 `apps/web` 立刻编译失败，而 DEC-3 禁改 `apps/web/**`；前端消费（待决策视图/通知）归 DEC-6/DEC-7，
+ * 届时再把事件加进 `WsEvent` 并补 case。服务端广播侧已可通过 `ServerWsEvent` 发出。
+ * 卡面锁标识仍走既有 `issue.changed`（已在前端消费），不需要并入本类型。
+ */
+export interface DecisionEvent {
+  type:
+    | 'decision.grace_started'
+    | 'decision.answered'
+    | 'decision.expired'
+    | 'decision.revised'
+    | 'decision.withdrawn'
+    | 'issue.stop_requested';
+  workspace_id: string;
+  issue_id: string;
+  decision_id: string;
+  state: 'grace' | 'open' | 'answered' | 'withdrawn';
+  /** 回答/修订后的 revision；其余事件缺省 */
+  revision?: number;
+  /** grace 事件的宽限截止毫秒；非 grace 缺省 */
+  grace_until?: number | null;
+  /** issue.stop_requested 的原因（grace_zero / grace_expired） */
+  reason?: string;
+}
+
+/** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 */
+export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent;
 
 /** 工作区变更日志类型；`历史` 仅由旧 CHANGELOG 导入写入，普通 UI/CLI 新增不可选 */
 export type WorkspaceChangeType = '新增' | '修复' | '调整' | '历史';
