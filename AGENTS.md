@@ -10,6 +10,10 @@
 
 派工前先 `kb show <全长 UUID>` 核对 `status` 与 `claimed_by`；他人已 claim 的卡不派工、不抢改，只能 `kb comment` 协调，收尾前再复核占用未被覆盖。同一文件/组件同时只允许一个 owner：文件级串行优先于「目标文件集不相交」的估算，与别人在飞的卡撞文件时必须建 `blocks` 边或排队，跨 agent 同样适用。细则见 `skills/using-agentboard/SKILL.md` 的「The Rule」。
 
+## 硬规矩：实现必须有接线（RULE-3）
+
+新增 REST 路由、WS 事件、定时器/ticker、CLI 命令或数据库迁移的卡，收尾前必须证明外部能调到：要么起真实 app（如 `createApp`）断言端点非 404 / 事件真发出 / ticker 真跑，要么在卡面写明「接线由哪张卡负责」并建 `blocks` 边。只写实现不接线、又没交代接手方的，不算完成，不能 `kb done`。细则见 `skills/executing-task/SKILL.md` 的「收尾必须证明外部可触达（RULE-3）」。
+
 1. `skills/using-agentboard/SKILL.md` —— 看板工作流唯一权威：工作区边界（强制）、kb 命令口径、故障分支、收尾提交。
 2. `skills/writing-task/SKILL.md` —— 拆卡 / 建卡流程。
 3. `skills/executing-task/SKILL.md` —— 执行已派卡流程。

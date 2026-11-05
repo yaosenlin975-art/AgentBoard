@@ -100,6 +100,15 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 
 不得把超出判据的工作塞进单张卡硬做完，也不得未经拆分直接 done。
 
+## 收尾必须证明外部可触达（RULE-3）
+
+卡里新增了 REST 路由、WS 事件、定时器/ticker、CLI 命令或数据库迁移时，`kb done` 之前必须给出**外部能调到**的证据，二选一：
+
+- **自证接线**：起真实 app（如 `createApp`）打真实请求/事件，断言端点非 404、事件真发出、ticker 真跑；把命令与结果写进 notes。
+- **交代接手方**：卡面写明「接线由哪张卡负责」，并用 `kb dep add <接线卡> <本卡>` 建 `blocks` 边；只写一句「后续接线」不算交代。
+
+只写实现不接线、又没交代接手方的，不算完成，**不能 `kb done`**。典型反例：DEC-3 的 REST 路由写完从未挂载、DEC-9 的宽限 ticker 写完从未启动，两张卡都标了完成，最后靠补卡 `aa0b9c69` 才接上线。
+
 ## Finish
 
 - When the assigned work meets its acceptance criteria and required verification, run `kb done <issue-id> --notes '<结果>' --scope <path>` (multi-line or quoted notes via `--notes-stdin`). This moves the issue to pending acceptance and releases the claim; it does not mean the issue is closed. Stop work after done and report the issue ID to the parent for acceptance.
