@@ -723,6 +723,8 @@ export function createRouter(deps: RouterDeps): Router {
     }
     const body = parseBody(createIssueSchema, req.body);
     const outcome = mutation(req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(db, body); });
+    // KB-CLI-1：幂等重放标记（CLI 文本/JSON 依此区分新建与重放）
+    if (outcome.replayed) res.setHeader('x-agentboard-replayed', '1');
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
@@ -935,6 +937,8 @@ export function createRouter(deps: RouterDeps): Router {
         })() : await failIssue(db, issueId, actor, detail!), replayed: false };
     const { issue, comment } = outcome.result;
     const knowledgeHint = (outcome.result as { knowledge_hint?: KnowledgeHint | null }).knowledge_hint ?? null;
+    // KB-CLI-1：done/fail/release 幂等重放同样回传标记
+    if (outcome.replayed) res.setHeader('x-agentboard-replayed', '1');
     if (!outcome.replayed) {
       if (comment) broadcast({ type: 'comment.added', comment });
       broadcast({ type: 'issue.changed', issue });
