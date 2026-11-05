@@ -70,7 +70,19 @@ export function eventToQueryKeys(event: ServerWsEvent): unknown[][] {
     case 'decision.withdrawn':
     case 'issue.stop_requested':
       // DEC-3：决策事件已进入 `ServerWsEvent`（服务端可广播）；前端待决策视图/通知归 DEC-6/DEC-7 消费，
-      // 当前无对应查询需失效，返回空列表。保留穷尽 switch（不加 default），新事件并入时在此显式补 case。
+      // 当前无对应查询需失效，返回空列表。
+      return [];
+    case 'session.paused':
+    case 'session.resumed':
+      // BORROW-4.3：暂停/恢复只改会话行上的 paused_at，无新增列表项。
+      // `['sessions']` 前缀覆盖会话列表与侧栏（`['sessions', wsId]` / `['sessions', wsId, 'sidebar']`）；
+      // 会话详情与 turn 列表不走 react-query（经 wsBus → turnStore 增量消费），没有可失效的 query key，
+      // 恢复后的增量拉取由消费方从 `resume_after_seq` 继续，不在这里失效。
+      return [['sessions']];
+    default:
+      // 新增 `ServerWsEvent` 类型默认不做缓存失效，确实需要刷新查询的必须在上方显式加 case。
+      // 本分支同时保证穷尽 switch 不因联合类型扩展而失去出口（TS2366 已复发两次：decision.*、session.paused/resumed）。
+      // 显式处理清单的完整性由 test/ws.test.ts 的事件夹具约束（Record<ServerWsEvent['type'], …> 缺键即编译失败）。
       return [];
   }
 }
