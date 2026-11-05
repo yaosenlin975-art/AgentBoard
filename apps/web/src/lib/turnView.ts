@@ -7,11 +7,12 @@
  * 外加前端已有的 `session.status`（`运行中 | 已结束 | 失败`）。
  *
  * 关键约束（本卡是只读投影，不与执行器双写）：
- * - `session_turn.state` **没有** HTTP/WS 出口，所以计划条的状态 chip 只按上面三样推导，
- *   且明确记「推导」而不是「读取」；`awaiting_input` / `awaiting_approval` 的权威恢复通道归 CHAT-AWAIT2；
- * - 不提供改计划、改步骤、重跑步骤的任何入口（CHAT-RETRY2 / CHAT-AWAIT2 的地盘）。
+ * - CHAT-AWAIT2 起阻塞态改为**读取**服务端 `session.turn` 事件 / 会话详情 `turns`；
+ *   计划条的 chip 推导仍保留，作为事件缺失时的兜底展示；
+ * - 不提供改计划、改步骤、重跑步骤的任何入口（CHAT-RETRY2 的地盘）。
  */
-import type { SessionStatus, TurnPlanStep, TurnUsage } from '@agentboard/shared';
+import type { SessionStatus, SessionTurnState, TurnAwaitingInfo, TurnPlanStep, TurnUsage } from '@agentboard/shared';
+import { ApiError } from '../api/client';
 
 /**
  * 计划条状态 chip：`SessionTurnState` 的前端可推导子集。
@@ -208,4 +209,135 @@ export function singleLine(text: string, max = 90): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat === '') return '';
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * CHAT-AWAIT2：阻塞态（awaiting_input / awaiting_approval）的展示口径（纯函数，不判超时）
+ *
+ * 超时的权威判定只在服务端（CHAT-AWAIT1b）：
+ *   deadline = max(awaiting_heartbeat_at, awaiting_json.at) + TURN_AWAITING_TIMEOUT_MS(15min)
+ *   绝对上限 = 进入阻塞时刻 + TURN_AWAITING_MAX_MS(2h)
+ * 心跳时间没有 WS/REST 出口，所以前端**不自行计算**空闲截止点，只展示「已等待多久」
+ * （起点取服务端字段 `awaiting.at`）与「绝对上限时刻」（可严格由 `at + 2h` 推出），
+ * 状态变化一律以 `session.turn` / 会话详情回传的 `state` 为准。
+ * ---------------------------------------------------------------------------------------------- */
+
+/** 服务端空闲超时窗口（展示口径，非前端计时依据） */
+export const AWAITING_IDLE_MINUTES = 15;
+/** 服务端绝对上限（展示口径，非前端计时依据） */
+export const AWAITING_MAX_HOURS = 2;
+
+export type AwaitingKind = 'input' | 'approval';
+
+/** 阻塞类别：只按服务端 `state` / `awaiting.approval` 判定，不靠文案猜测 */
+export function awaitingKind(
+  state: SessionTurnState | null,
+  awaiting: TurnAwaitingInfo | null,
+): AwaitingKind | null {
+  if (state === 'awaiting_approval') return 'approval';
+  if (state === 'awaiting_input') return 'input';
+  // 事件缺失时的兜底：仅有审批载荷也按审批展示（HTTP 回填路径）
+  if (awaiting?.approval != null) return 'approval';
+  return null;
+}
+
+/** 是否仍处于阻塞态（running 指示/停止按钮据此让位给等待卡片，避免双显） */
+export function isAwaitingTurn(
+  state: SessionTurnState | null,
+  awaiting: TurnAwaitingInfo | null,
+): boolean {
+  return awaitingKind(state, awaiting) !== null;
+}
+
+/** 「已等待」文案：`已等待 12 秒` / `已等待 3 分 05 秒` / `已等待 2 小时 09 分` */
+export function awaitingElapsedText(at: number | null | undefined, now: number): string {
+  if (typeof at !== 'number' || !Number.isFinite(at) || !Number.isFinite(now)) return '已等待';
+  const elapsed = Math.max(0, now - at);
+  const totalSeconds = Math.floor(elapsed / 1000);
+  if (totalSeconds < 60) return `已等待 ${totalSeconds} 秒`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    const seconds = totalSeconds % 60;
+    return `已等待 ${totalMinutes} 分 ${String(seconds).padStart(2, '0')} 秒`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `已等待 ${hours} 小时 ${String(minutes).padStart(2, '0')} 分`;
+}
+
+/** 本地时钟 `HH:MM`（绝对上限时刻展示；时区随浏览器） */
+export function formatClockTime(at: number): string {
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 服务端超时规则的一句话（只描述，不在前端触发） */
+export function awaitingRuleText(): string {
+  return `服务端空闲 ${AWAITING_IDLE_MINUTES} 分钟无心跳判超时（心跳会延长等待）；自进入等待起最长 ${AWAITING_MAX_HOURS} 小时绝对上限`;
+}
+
+/** 绝对上限时刻文案：严格由 `at + 2h` 推出；无 `at` → 不给假时刻 */
+export function awaitingCapText(at: number | null | undefined): string {
+  if (typeof at !== 'number' || !Number.isFinite(at)) return '绝对上限时刻待服务端回传';
+  return `绝对上限 ${formatClockTime(at + AWAITING_MAX_HOURS * 60 * 60 * 1000)}（自进入等待起 ${AWAITING_MAX_HOURS} 小时）`;
+}
+
+/**
+ * ask 文案解析：服务端 `formatAskMessage` 的形态是第一行问题、其余行 `- 选项：说明`。
+ * 解析失败（无匹配）时整段作为问题、选项为空 → UI 退化为纯文本回答。
+ */
+export function parseAskMessage(message: string | null | undefined): {
+  question: string;
+  options: Array<{ label: string; description: string }>;
+} {
+  const lines = (message ?? '').split('\n');
+  const questionLines: string[] = [];
+  const options: Array<{ label: string; description: string }> = [];
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (line.startsWith('- ')) {
+      const body = line.slice(2);
+      const sep = body.indexOf('：');
+      if (sep === -1) options.push({ label: body, description: '' });
+      else
+        options.push({
+          label: body.slice(0, sep).trim(),
+          description: body.slice(sep + 1).trim(),
+        });
+    } else {
+      questionLines.push(line);
+    }
+  }
+  return { question: questionLines.join('\n'), options };
+}
+
+/** 超时失败文案：只读服务端 `awaiting_json`（`awaiting_timeout`），不本地生成 */
+export function timeoutFailureText(awaiting: TurnAwaitingInfo | null): string {
+  const reason = awaiting?.message?.trim();
+  if (reason !== undefined && reason !== '') return reason;
+  return `等待超时（${awaiting?.reason ?? 'awaiting_timeout'}）：已按服务端超时收口`;
+}
+
+/** answer 提交失败的可读原因（409/404 分支可辨，不吞原始报错） */
+export function answerFailureText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 404) return '轮次不存在或已被清理，请刷新后重试';
+    if (error.status === 409) return '轮次已不在等待回答（可能已被回答或已超时），请刷新查看最新状态';
+    if (error.status === 403) return `服务端拒绝本次回答：${error.message}`;
+    return `回答提交失败：${error.message}`;
+  }
+  return error instanceof Error ? `回答提交失败：${error.message}` : '回答提交失败';
+}
+
+/** 审批决策失败的可读原因（403 明确说明缺少撤销入口，不静默） */
+export function approvalFailureText(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.status === 403)
+      return `服务端拒绝本次审批：${error.message}。本工作区档需先提供撤销入口，当前请改用「仅本次」。`;
+    if (error.status === 404) return '审批请求不存在或已失效（可能已被新的请求取代），请刷新后查看';
+    if (error.status === 409) return '该审批请求已被处理，或轮次已不在等待审批，请刷新查看最新状态';
+    return `审批提交失败：${error.message}`;
+  }
+  return error instanceof Error ? `审批提交失败：${error.message}` : '审批提交失败';
 }

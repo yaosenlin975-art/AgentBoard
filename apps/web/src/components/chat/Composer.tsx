@@ -16,7 +16,7 @@ import { api } from '../../api/client';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
 import { useSessionUsage } from '../../state/turnStore';
-import { usageFootnote } from '../../lib/turnView';
+import { singleLine, usageFootnote } from '../../lib/turnView';
 import {
   detectMentionTrigger,
   insertMention,
@@ -48,6 +48,7 @@ export function Composer({
   queuedCount,
   workspaceId,
   sessionId = null,
+  blocked = null,
   onSend,
 }: {
   disabled: boolean;
@@ -57,6 +58,11 @@ export function Composer({
   workspaceId?: string | null;
   /** CHAT-VIS1：成本脚注读该会话最近一轮的 `session.usage`；缺省（无会话）时脚注显示 0 */
   sessionId?: string | null;
+  /**
+   * CHAT-AWAIT2：轮次处于 `awaiting_input` / `awaiting_approval` 时输入区只读，
+   * 展示「在等什么」并禁用发送，避免用户以为可以继续输入、消息悄悄排队。
+   */
+  blocked?: { kind: 'input' | 'approval'; message: string } | null;
   /** CHAT-IMG-DELIVERY：第二参数为草稿中实际保留的粘贴图片附件 id（按出现顺序去重） */
   onSend: (text: string, attachmentIds: string[]) => Promise<void>;
 }) {
@@ -148,6 +154,7 @@ export function Composer({
 
   const submit = async (): Promise<void> => {
     const text = value.trim();
+    if (blocked !== null) return;
     if (text === '' || sending || disabled) return;
     // CHAT-USER-IMAGE：图片仍在上传时不许发送。否则消息先发出去（不含图片 markdown），
     // 上传完成后 markdown 只会落回已清空的输入框 → 用户看到「气泡里没有图」。
@@ -279,6 +286,12 @@ export function Composer({
           {queueHint}
         </p>
       )}
+      {blocked !== null && (
+        <p data-testid="composer-blocked" className="text-xs text-amber-700 dark:text-amber-300" role="status">
+          {blocked.kind === 'input' ? '等待回答' : '等待审批'}：{singleLine(blocked.message)}{' '}
+          —— 先在上方卡片处理，输入框暂不可编辑
+        </p>
+      )}
       <div className="relative flex items-end gap-1.5">
         {mention !== null && (
           <MentionPopover
@@ -316,15 +329,22 @@ export function Composer({
           }}
           onBlur={() => setMention(null)}
           disabled={disabled}
+          readOnly={blocked !== null}
           rows={2}
-          placeholder={disabled ? '选择会话后输入' : '输入消息，Enter 发送，Shift+Enter 换行；/ 选技能，@ 选任务'}
+          placeholder={
+            blocked !== null
+              ? '等待回答/审批中，请先处理上方卡片'
+              : disabled
+                ? '选择会话后输入'
+                : '输入消息，Enter 发送，Shift+Enter 换行；/ 选技能，@ 选任务'
+          }
           className="min-h-0 w-full resize-none rounded border border-hairline bg-surface-card px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50"
         />
         <button
           type="button"
           data-testid="composer-send"
           onClick={() => void submit()}
-          disabled={disabled || sending || uploadingImages > 0 || value.trim() === ''}
+          disabled={disabled || blocked !== null || sending || uploadingImages > 0 || value.trim() === ''}
           className="shrink-0 rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40 disabled:text-ink-3 disabled:border-hairline disabled:bg-transparent"
         >
           {sending ? '发送中…' : '发送'}

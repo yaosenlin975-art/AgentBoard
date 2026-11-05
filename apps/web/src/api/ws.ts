@@ -2,14 +2,18 @@
  * 浏览器 WebSocket 连接 /ws（dev 经 Vite 代理，prod 由 server 同源托管）。
  * 断线 2s 重连；每条消息一个 JSON 事件（容忍一行一事件的多行拼接）。
  */
-import type { WsEvent } from '@agentboard/shared';
+import type { ServerWsEvent } from '@agentboard/shared';
 import type { QueryClient } from '@tanstack/react-query';
 import type { WsStatus } from '../state/appStore';
 
 export const RECONNECT_MS = 2000;
 
-/** WsEvent → 受影响的 react-query queryKey 列表（纯函数，便于测试） */
-export function eventToQueryKeys(event: WsEvent): unknown[][] {
+/**
+ * CHAT-AWAIT2：前端按服务端实际广播的联合类型收事件（`ServerWsEvent` = `WsEvent` + 轮次观测事件）。
+ * 轮次阻塞态（`session.turn`）与审批请求（`session.approval_request`）由 turnStore 经 wsBus 增量消费，
+ * 与既有观测事件同口径：不触发 react-query invalidation。
+ */
+export function eventToQueryKeys(event: ServerWsEvent): unknown[][] {
   switch (event.type) {
     case 'issue.changed':
       return [
@@ -54,7 +58,9 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
       return [];
     case 'session.plan':
     case 'session.usage':
-      // CHAT-VIS1：轮次观测（计划条 / 成本脚注）由 turnStore 经 wsBus 增量消费，
+    case 'session.turn':
+    case 'session.approval_request':
+      // CHAT-VIS1 / CHAT-AWAIT2：轮次观测（计划条 / 成本脚注 / 阻塞态 / 审批请求）由 turnStore 经 wsBus 增量消费，
       // 不触发 invalidation——否则每个 tool 事件与每个 usage 窗口都会全量刷会话列表
       return [];
   }
@@ -62,7 +68,7 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
 
 export interface ConnectWsOptions {
   queryClient: QueryClient;
-  onEvent?: (event: WsEvent) => void;
+  onEvent?: (event: ServerWsEvent) => void;
   onStatus?: (status: WsStatus) => void;
 }
 
@@ -73,7 +79,7 @@ export function connectWs(options: ConnectWsOptions): () => void {
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  const handleEvent = (event: WsEvent): void => {
+  const handleEvent = (event: ServerWsEvent): void => {
     onEvent?.(event);
     for (const key of eventToQueryKeys(event)) {
       void queryClient.invalidateQueries({ queryKey: key });
@@ -85,7 +91,7 @@ export function connectWs(options: ConnectWsOptions): () => void {
       const text = line.trim();
       if (text === '') continue;
       try {
-        handleEvent(JSON.parse(text) as WsEvent);
+        handleEvent(JSON.parse(text) as ServerWsEvent);
       } catch {
         // 非 JSON 行忽略
       }

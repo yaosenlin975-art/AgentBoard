@@ -15,15 +15,19 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
+import type { Issue, Message, Session, SessionTurn, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { useNavStore } from '../../state/navStore';
+import { hydrateSessionTurns, useActiveTurn } from '../../state/turnStore';
 import { clearStream, useStream } from '../../state/streamingStore';
+import { attachmentIdsFromText } from '../../lib/imageDraft';
+import { awaitingKind } from '../../lib/turnView';
 // 未读计数全局收集器：模块加载即订阅 wsBus（本组件未挂载期间同样计数，markUnread 不在此处，防双计）
 import '../../state/unreadCollector';
+import { AwaitingCard, AwaitingTimeoutCard } from './AwaitingCard';
 import { Composer } from './Composer';
 import { RenameSessionDialog } from './RenameSessionDialog';
 import { MessageList } from './MessageList';
@@ -43,6 +47,8 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // CHAT-AWAIT2：当前会话最近一轮的服务端阻塞态投影（session.turn / 详情 turns 回填）
+  const activeTurn = useActiveTurn(sessionId);
   // 流式内容读全局 store：切会话即读对应累积，面板收起/组件卸载不丢
   const streaming = useStream(sessionId);
   const [queuedCount, setQueuedCount] = useState(0);
@@ -153,23 +159,32 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     };
   }, [sessionId]);
 
-  // 刷新恢复兜底：live/stored 均无时按 sessionId 拉取会话；不存在（已删除）→ 清空选择回空态
+  // 会话详情回拉：① 刷新恢复兜底（live/stored 均无时按 sessionId 取会话，不存在则清空选择）；
+  // ② CHAT-AWAIT2 恢复：把服务端 `turns` 的 state/awaiting 回填 turnStore，刷新后阻塞卡片仍在。
+  // 每个 sessionId 只拉一次（不跟随 liveSession 变化重复请求）。
   const storedMatches = storedSession !== null && storedSession.id === sessionId;
+  const liveSessionRef = useRef(liveSession);
+  liveSessionRef.current = liveSession;
+  const storedMatchesRef = useRef(storedMatches);
+  storedMatchesRef.current = storedMatches;
   useEffect(() => {
-    if (sessionId === null || liveSession !== null || storedMatches) return;
+    if (sessionId === null) return;
     let cancelled = false;
     api
-      .get<Session>(`/api/sessions/${sessionId}`)
+      .get<Session & { turns?: SessionTurn[] }>(`/api/sessions/${sessionId}`)
       .then((s) => {
-        if (!cancelled) setFetchedSession(s);
+        if (cancelled) return;
+        hydrateSessionTurns(sessionId, Array.isArray(s.turns) ? s.turns : []);
+        if (liveSessionRef.current === null && !storedMatchesRef.current) setFetchedSession(s);
       })
       .catch(() => {
-        if (!cancelled) clearSession();
+        if (cancelled) return;
+        if (liveSessionRef.current === null && !storedMatchesRef.current) clearSession();
       });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, liveSession, storedMatches, clearSession]);
+  }, [sessionId, clearSession]);
 
   /** 追加/去重合并；assistant 落定即清该会话流式 buffer（store 全局层同步会清，此处按消息归属兜底幂等） */
   const mergeMessages = useCallback((incoming: Message[]) => {
@@ -241,6 +256,14 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     },
     [sessionId, catchUp],
   );
+
+  // CHAT-AWAIT2：超时后的「重新开始此步」= 以新轮次重发最后一条用户消息（服务端没有「重置单个等待步」的端点）
+  const lastUserText =
+    [...messages].reverse().find((m) => m.role === 'user' && m.content.trim() !== '')?.content ?? null;
+  const restartAwaiting = useCallback(async (): Promise<void> => {
+    if (lastUserText === null) throw new Error('没有可重发的用户消息');
+    await handleSend(lastUserText, attachmentIdsFromText(lastUserText));
+  }, [lastUserText, handleSend]);
 
   const stop = useMutation({
     mutationFn: () => {
@@ -352,7 +375,25 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
       : session.issue_id !== null
         ? (linkedIssue?.title ?? `#${session.issue_id.slice(0, 8)}`)
         : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
-  const running = session.status === '运行中';
+  // CHAT-AWAIT2：阻塞态展示（state 只读服务端字段/事件，前端不自行判超时）
+  const awaiting = awaitingKind(activeTurn?.state ?? null, activeTurn?.awaiting ?? null);
+  const timedOut =
+    activeTurn !== null && activeTurn.state === 'failed' && activeTurn.awaiting?.reason === 'awaiting_timeout';
+  // 运行中三点/停止按钮只在「服务端运行中且当前轮未进入终态/等待态」时显示，
+  // 等待卡片替代跳动点、审批拒绝后的 stopped 也不显示，避免与真实状态错位
+  const terminalTurn =
+    activeTurn !== null &&
+    (activeTurn.state === 'done' || activeTurn.state === 'failed' || activeTurn.state === 'stopped');
+  const running = session.status === '运行中' && awaiting === null && !terminalTurn;
+  const composerBlocked =
+    awaiting !== null
+      ? {
+          kind: awaiting,
+          message:
+            activeTurn?.awaiting?.message ??
+            (awaiting === 'input' ? '等待你的回答' : '等待审批'),
+        }
+      : null;
   // CHAT-SB2：分叉来源标记（源会话标题优先，取不到退化为短 id）
   const forkSourceId = session.forked_from_session_id ?? null;
   const forkSourceLabel =
@@ -546,7 +587,22 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         </div>
       )}
 
-      <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} sessionId={sessionId} onSend={handleSend} />
+      {activeTurn !== null && awaiting !== null && (
+        <AwaitingCard sessionId={sessionId} turn={activeTurn} />
+      )}
+      {activeTurn !== null && timedOut && (
+        <AwaitingTimeoutCard turn={activeTurn} onRestart={restartAwaiting} />
+      )}
+
+      <Composer
+        disabled={false}
+        running={running}
+        queuedCount={queuedCount}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+        blocked={composerBlocked}
+        onSend={handleSend}
+      />
       {renameOpen && <RenameSessionDialog session={session} onClose={() => setRenameOpen(false)} />}
     </div>
   );

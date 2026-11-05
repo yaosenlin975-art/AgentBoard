@@ -1,17 +1,18 @@
 /**
- * WS 事件进程内总线：App 级 connectWs(onEvent) 把每个 WsEvent 灌进来，
+ * WS 事件进程内总线：App 级 connectWs(onEvent) 把每个服务端 WS 事件灌进来，
  * 需要原始事件（而非 react-query invalidation）的组件经 useWsEvent 订阅。
- * 聊天视图流式渲染（session.event / message.added）走此通道（Task 14）。
+ * 聊天视图流式渲染（session.event / message.added）走此通道（Task 14）；
+ * CHAT-AWAIT2：轮次阻塞态（session.turn / session.approval_request）也走此通道进 turnStore。
  */
 import { useEffect, useRef } from 'react';
-import type { WsEvent } from '@agentboard/shared';
+import type { ServerWsEvent } from '@agentboard/shared';
 
-type WsListener = (event: WsEvent) => void;
+type WsListener = (event: ServerWsEvent) => void;
 
 const listeners = new Set<WsListener>();
 
 /** App 级 WS 回调调用；测试也可直接调用以模拟 WS 事件 */
-export function emitWsEvent(event: WsEvent): void {
+export function emitWsEvent(event: ServerWsEvent): void {
   for (const listener of listeners) listener(event);
 }
 
