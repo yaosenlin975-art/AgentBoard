@@ -332,7 +332,7 @@ describe('Board 组件', () => {
     await waitFor(() => expect(screen.queryByTestId('drag-overlay-i1')).not.toBeInTheDocument());
   });
 
-  it('任务树与平铺看板可切换，树视图读取层级接口', async () => {
+  it('任务树与任务看板可切换，树视图读取层级接口', async () => {
     mockBoardData([boardIssues[0]!], []);
     server.use(http.get('/api/issues/tree', () => HttpResponse.json({
       items: [{ ...boardIssues[0]!, child_count: 0, descendant_count: 0, descendants_closed_count: 0 }],
@@ -422,7 +422,7 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(row.contains(controls)).toBe(true);
     expect(row.contains(filters)).toBe(true);
     expect(controls.compareDocumentPosition(filters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(controls).queryByRole('button', { name: '平铺看板' })).toBeNull();
+    expect(within(controls).queryByRole('button', { name: '任务看板' })).toBeNull();
     expect(within(controls).queryByTestId('view-switcher')).toBeNull();
     expect(within(controls).queryByTestId('board-search')).not.toBeInTheDocument();
 
@@ -545,7 +545,7 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(screen.getByTestId('issue-card-l2')).toBeInTheDocument();
   });
 
-  it('任务树与平铺看板共享同一标签选择', async () => {
+  it('任务树与任务看板共享同一标签选择', async () => {
     mockBoardData(labelIssues, []);
     server.use(http.get('/api/issues/tree', () => HttpResponse.json({
       items: labelIssues.map((issue) => ({
@@ -724,7 +724,7 @@ describe('视图切换（TOPBAR-CLEAN）', () => {
     // 工具条容器里既没有 switcher，也没有「平铺看板 / 任务树 / 知识库」三个按钮
     expect(screen.queryByTestId('view-switcher')).toBeNull();
     expect(screen.queryByRole('button', { name: '任务树' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '平铺看板' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '任务看板' })).toBeNull();
     // 视图仍由 navStore 决定：切到 tree 后平铺列不再渲染（树由 navStore 驱动，工具条不参与）
     expect(screen.getByTestId('count-待规划')).toBeInTheDocument();
     act(() => useNavStore.setState({ view: 'tree' }));

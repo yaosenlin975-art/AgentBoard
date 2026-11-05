@@ -31,7 +31,7 @@ const ENTRY_ICON: Record<NavView, string> = {
 };
 
 const ENTRIES: Array<{ view: NavView; label: string }> = [
-  { view: 'board', label: '平铺看板' },
+  { view: 'board', label: '任务看板' },
   { view: 'tree', label: '任务树' },
   { view: 'knowledge', label: '知识库' },
   { view: 'log', label: '日志' },

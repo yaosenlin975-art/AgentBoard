@@ -127,12 +127,12 @@ function Harness() {
     <div>
       <div data-testid="harness-nav">
         <button type="button" data-testid="sidebar-entry-log" onClick={() => setView('log')}>日志</button>
-        <button type="button" data-testid="sidebar-entry-board" onClick={() => setView('board')}>平铺看板</button>
+        <button type="button" data-testid="sidebar-entry-board" onClick={() => setView('board')}>任务看板</button>
       </div>
       {view === 'log' ? (
         <ChangelogPanel workspaceId="ws-1" />
       ) : (
-        <p data-testid="board-stub">平铺看板内容</p>
+        <p data-testid="board-stub">任务看板内容</p>
       )}
     </div>
   );
