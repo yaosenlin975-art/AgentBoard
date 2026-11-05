@@ -103,6 +103,19 @@ export function KnowledgePanel({
     }
     return groups;
   }, [items, display.grouping]);
+  // AUDIT-KB（I-06）：未选中详情空态的「最近更新 3 条」（无搜索/状态过滤，跟随当前范围）
+  const recent = useQuery({
+    queryKey: ['knowledge-recent', workspaceId, scope],
+    enabled: selected === null,
+    queryFn: () => {
+      const recentParams = new URLSearchParams({ scope, ...(scope !== 'common' && workspaceId ? { workspace_id: workspaceId } : {}) });
+      recentParams.set('status', 'active');
+      recentParams.set('limit', '3');
+      return api.get<{ items: PageItem[] }>(`/api/knowledge/pages?${recentParams}`);
+    },
+  });
+  // AUDIT-KB（F-14）：选中项不在当前列表页（翻页后）→ 保持旧内容并标注，不清空
+  const selectedOutside = selected !== null && !items.some(item => item.id === selected.id);
   useEffect(() => {
     if (deepLinkPageId === null || deepLinkConsumed === deepLinkPageId) return;
     setDeepLinkConsumed(deepLinkPageId);
@@ -271,13 +284,31 @@ export function KnowledgePanel({
         </ul>}
 
         {!query && items.length > 0 && <div className="mt-3 flex items-center gap-2">
-          <button type="button" className={BUTTON_SECONDARY} disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 20)); setSelected(null); }}>上一页</button>
-          <button type="button" className={BUTTON_SECONDARY} disabled={list.data?.next_offset == null} onClick={() => { setOffset(list.data?.next_offset ?? offset); setSelected(null); }}>下一页</button>
+          {/* AUDIT-KB（F-14）：翻页不清空选中——阅读中的详情保持 */}
+          <button type="button" className={BUTTON_SECONDARY} disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button>
+          <button type="button" className={BUTTON_SECONDARY} disabled={list.data?.next_offset == null} onClick={() => setOffset(list.data?.next_offset ?? offset)}>下一页</button>
         </div>}
       </div>
       )}
 
-      {selected && <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} onViewInGraph={selected.status !== 'deleted' ? () => { setGraphFocus({ id: selected.id }); setView('graph'); } : undefined} />}
+      {/* AUDIT-KB（I-06）：未选中不空白——引导 + 最近更新 3 条 + 新建入口 */}
+      {selected === null && <div data-testid="knowledge-detail-empty" className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface-card px-5 py-4">
+        <p className="text-sm font-medium text-ink">从左侧选择知识页</p>
+        <div className="mt-3">
+          <p className="text-xs text-ink-3">最近更新</p>
+          {recent.isPending && <p className="mt-2 text-xs text-ink-3">加载中…</p>}
+          {(recent.data?.items ?? []).map(item => (
+            <button key={item.id} type="button" aria-label={`最近更新：${item.title}`} className="mt-1 block w-full truncate text-left text-sm text-accent hover:underline" onClick={() => setSelected(item)}>
+              {item.title}
+            </button>
+          ))}
+        </div>
+        <button type="button" className={`${BUTTON_PRIMARY} mt-4`} onClick={() => setImportOpen(true)}>新建知识页</button>
+      </div>}
+      {selected && <div className="min-w-0 flex-1">
+        {selectedOutside && <p data-testid="knowledge-selected-stale" className="mb-1 text-xs text-ink-3">选中项来自上一页，此处仍显示其内容</p>}
+        <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} onViewInGraph={selected.status !== 'deleted' ? () => { setGraphFocus({ id: selected.id }); setView('graph'); } : undefined} />
+      </div>}
       <KnowledgeImportDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}

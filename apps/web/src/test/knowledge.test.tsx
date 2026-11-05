@@ -31,15 +31,15 @@ function handlers() {
 }
 describe('knowledge UI', () => {
   it('knowledgeWorkspaceSwitchClearsPreviousResults', async () => {
-    handlers(); const result = mount(); expect(await screen.findByText('缓存策略')).toBeInTheDocument();
-    result.rerender(result.wrap('B')); await waitFor(() => expect(screen.queryByText('缓存策略')).not.toBeInTheDocument());
+    handlers(); const result = mount(); expect(await screen.findByTestId('knowledge-item-p')).toBeInTheDocument();
+    result.rerender(result.wrap('B')); await waitFor(() => expect(screen.queryByTestId('knowledge-item-p')).not.toBeInTheDocument());
   });
   it('knowledgeSearchUsesCommonAndWorkspaceScope; detail provenance and history', async () => {
     handlers(); let params: URLSearchParams | undefined;
     server.use(http.get('/api/knowledge/search', ({ request }) => { params = new URL(request.url).searchParams; return HttpResponse.json([{ ...page, page_id: page.id, snippet: '命中片段' }]); }));
     mount(); fireEvent.change(screen.getByLabelText('搜索知识'), { target: { value: '缓存' } }); fireEvent.click(screen.getByRole('button', { name: '搜索' }));
     expect(await screen.findByText('命中片段')).toBeInTheDocument(); expect(params?.get('scope')).toBe('workspace'); expect(params?.get('workspace_id')).toBe('A');
-    fireEvent.click(screen.getByRole('button', { name: /缓存策略/ })); expect(await screen.findByText('知识正文')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('knowledge-item-p').querySelector('button')!); expect(await screen.findByText('知识正文')).toBeInTheDocument();
     expect(screen.getAllByText('Docs/ref.md:1').length).toBeGreaterThan(0);
     // KB-HIST-UI：抽屉里先点 rN 再预览快照
     fireEvent.click(screen.getByTestId('knowledge-history-toggle'));
@@ -49,7 +49,7 @@ describe('knowledge UI', () => {
   it('knowledgeArchiveActionUsesCurrentRevision and conflict refresh', async () => {
     handlers(); let sent: Record<string, unknown> | undefined;
     server.use(http.post('/api/knowledge/pages/p/actions', async ({ request }) => { sent = await request.json() as Record<string, unknown>; return HttpResponse.json({ error: { code: 'KNOWLEDGE_REVISION_CONFLICT', message: '版本冲突，请重新读取' } }, { status: 409 }); }));
-    mount(); fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ })); await screen.findByText('知识正文');
+    mount(); fireEvent.click((await screen.findByTestId('knowledge-item-p')).querySelector('button')!); await screen.findByText('知识正文');
     fireEvent.click(screen.getByRole('button', { name: '归档' })); expect(sent).toBeUndefined();
     fireEvent.click(screen.getByRole('button', { name: '确认归档' })); expect(await screen.findByRole('alert')).toHaveTextContent('版本冲突');
     expect(sent).toMatchObject({ scope: 'workspace', workspace_id: 'A', expected_revision: 1, action: 'archive' });
@@ -57,7 +57,7 @@ describe('knowledge UI', () => {
   it('expiry editing is explicit and uses current revision', async () => {
     handlers(); let sent: Record<string, unknown> | undefined;
     server.use(http.put('/api/knowledge/pages/p', async ({ request }) => { sent = await request.json() as Record<string, unknown>; return HttpResponse.json({ ...page, revision: 2, expires_at: sent.expires_at }); }));
-    mount(); fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ })); await screen.findByText('知识正文');
+    mount(); fireEvent.click((await screen.findByTestId('knowledge-item-p')).querySelector('button')!); await screen.findByText('知识正文');
     fireEvent.change(screen.getByLabelText('知识有效期'), { target: { value: '2030-01-02T12:00' } }); expect(sent).toBeUndefined();
     fireEvent.click(screen.getByRole('button', { name: '保存有效期' }));
     await waitFor(() => expect(sent).toMatchObject({ expected_revision: 1, scope: 'workspace', workspace_id: 'A', expires_at: new Date('2030-01-02T12:00').getTime() }));
@@ -68,7 +68,7 @@ describe('knowledge UI', () => {
       http.get('/api/knowledge/pages/p/revisions', () => HttpResponse.json({ items: [{ revision: 1, title_snapshot: '旧标题', body_bytes: new TextEncoder().encode('旧正文').length, body_chars: '旧正文'.length, change_kind: 'create', sources: [{ source_id: 'old', locator: 'Docs/old-source.md:3', content_hash: 'b'.repeat(64), captured_at: 1 }], evidence: [{ source_id: 'old', locator: 'Docs/old-proof.md:8' }] }], next_offset: null })),
       http.get('/api/knowledge/pages/p/revisions/1', () => HttpResponse.json({ revision: 1, title_snapshot: '旧标题', body_snapshot: '旧正文' })),
     );
-    mount(); fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ })); await screen.findByText('知识正文');
+    mount(); fireEvent.click((await screen.findByTestId('knowledge-item-p')).querySelector('button')!); await screen.findByText('知识正文');
     fireEvent.click(screen.getByTestId('knowledge-history-toggle'));
     fireEvent.click(await screen.findByTestId('knowledge-revision-preview-1'));
     // 快照抽屉里现在只渲染 body 预览（KB-HIST-UI 契约：来源/证据区随内联 details 一起收起，
@@ -84,7 +84,7 @@ describe('knowledge UI', () => {
     expect(listItem).toHaveProperty('body_chars');
 
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: /缓存策略/ }));
+    fireEvent.click((await screen.findByTestId('knowledge-item-p')).querySelector('button')!);
     await screen.findByText('知识正文');
     fireEvent.click(screen.getByTestId('knowledge-history-toggle'));
     DETAIL_CALLS = 0;
