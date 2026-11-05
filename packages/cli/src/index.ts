@@ -27,6 +27,7 @@ import { close, reopen, update } from './commands/lifecycle.js';
 import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
+import { accountSwitch, accountsCapabilities, accountsList } from './commands/accounts.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
 const EXIT_CODE_HELP = `
@@ -291,6 +292,22 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   registerKnowledgeCommands(program, () => makeCtx(program, io));
   registerChangelogCommands(program, () => makeCtx(program, io));
+
+  // CLI-SWITCH：CLI 三来源账号查看与切换（默认 dry-run，--apply 才写本机配置）
+  const accounts = program.command('accounts').description('CLI 三来源（DeepSeek / OpenCode-Go / Codex）账号与当前生效切换');
+  accounts.command('list')
+    .description('列出已登记的 CLI 账号（id / 来源 / 身份指纹 / 最近发现时间）')
+    .action(async () => accountsList(makeCtx(program, io)));
+  accounts.command('capabilities')
+    .description('列出各来源是否支持切换及不可用原因')
+    .action(async () => accountsCapabilities(makeCtx(program, io)));
+  accounts.command('switch')
+    .description('切换当前生效账号（默认 dry-run；--apply 才写入本机配置，失败自动回滚）')
+    .argument('<account-id>', 'CLI 账号 id（完整 UUID，见 kb accounts list）')
+    .option('--apply', '显式写入本机配置文件（默认只打印将写入的计划摘要）')
+    .addHelpText('after', '\n示例：\n  kb accounts switch 0f6ba9ab-996d-4af5-b0cd-d9208c44936f            # dry-run\n  kb accounts switch 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --apply    # 真正写入\n退出码：0 成功；2 不支持切换 / 预检阻断 / 已被占用 / 校验失败已回滚；1 参数或其它错误')
+    .action(async (id: string, opts: { apply?: boolean }) =>
+      accountSwitch(makeCtx(program, io), id, { apply: opts.apply === true }));
 
   // 依赖（DEP-2）：退出码由 commands/dep.ts 自带映射（0/2/3/4），这里只把结果码转成进程退出码
   const depRun = (run: (ctx: Ctx) => Promise<number>) => async () => {

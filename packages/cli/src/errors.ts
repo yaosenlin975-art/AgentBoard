@@ -42,7 +42,11 @@ export function describeError(err: unknown): DescribedError {
       // CLAIM-MSG：占用冲突与「状态不可领取」自带自解释文案，原样透传
       || err.code === 'ISSUE_CLAIMED' || err.code === 'ISSUE_STATUS_NOT_CLAIMABLE' || err.code === 'NOT_TASK_OWNER'
       // BORROW-0.3：fence 过期自带「重新 claim」指引，原样透传
-      || err.code === 'STALE_FENCE';
+      || err.code === 'STALE_FENCE'
+      // CLI-SWITCH：切换失败/不支持/预检阻断自带自解释文案，原样透传（避免被包装成「已被占用（…）」）
+      || err.code.startsWith('CLI_SWITCH_') || err.code === 'DEEPSEEK_ENV_SHADOWS'
+      || err.code === 'CLIENT_STATE_UNREADABLE' || err.code === 'CLI_CREDENTIAL_MISSING'
+      || err.code === 'ACCOUNT_BUSY';
     return {
       code: err.code,
       message: releaseAdvice(err.message),

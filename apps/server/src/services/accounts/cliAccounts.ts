@@ -29,7 +29,7 @@ export const CLI_ACCOUNT_APP_IDS = ['deepseek', 'opencode_go', 'codex'] as const
 type DiscoveredAppId = Exclude<CliAccountAppId, 'codex'>;
 /** CLI 凭据的 vault 只有写入能力需求（读取/删除随 CLI-IMPORT / CLI-SWITCH 再扩） */
 export type CliCredentialVault = Pick<SecretVault, 'protect'>;
-const CLI_CLIENT_INSTANCE_ID = 'cli-local';
+export const CLI_CLIENT_INSTANCE_ID = 'cli-local';
 
 export interface CliCredentialCandidate {
   app_id: DiscoveredAppId;

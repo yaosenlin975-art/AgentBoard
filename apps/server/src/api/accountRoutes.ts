@@ -5,6 +5,7 @@
  * 设计：Docs/designs/accounts/2026-11-01-workbuddy-accounts.md §8。
  */
 import { Router } from 'express';
+import { homedir } from 'node:os';
 import { z } from 'zod';
 import type { AccountCapability, CheckinAuthorization, ManagedAppId } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
@@ -33,6 +34,7 @@ import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
 import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
+import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
@@ -64,6 +66,8 @@ export interface AccountRouterDeps {
   minimaxClientProbe?: MinimaxClientProbe;
   /** ACC-CLI-MULTI：CLI 三来源的凭据保险库（生产复用 SecretVault；测试注入内存替身） */
   cliVault?: CliCredentialVault;
+  /** CLI-SWITCH：切换时读取凭据的 vault 视图（生产复用 SecretVault；测试注入内存替身） */
+  cliSwitchVault?: CliSwitchVault;
   /** ACC-CLI-MULTI：CLI 凭据根目录（仅测试注入；生产为 os.homedir()） */
   cliAccountHomeDir?: string;
   /** ACC-CLI-MULTI：CLI 凭据发现的 env（仅测试注入；生产为 process.env） */
@@ -239,6 +243,8 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   const minimaxProbe = deps.minimaxClientProbe ?? createMinimaxClientProbe();
   /** ACC-CLI-MULTI：生产复用注入的 SecretVault（`vault` 字段是签到侧的窄类型视图） */
   const cliVault = deps.cliVault ?? (deps.vault as unknown as CliCredentialVault | undefined);
+  /** CLI-SWITCH：生产由 routes.ts 注入完整 SecretVault（此处是窄类型视图，运行时具备 unprotect） */
+  const cliSwitchVault = deps.cliSwitchVault ?? (deps.secretVault as unknown as CliSwitchVault | undefined);
 
   // ---- ACC-CLI-MULTI：CLI 三来源的本机凭据登记（口径 A：只读发现 + 真实计数 + 持久化） ----
   // GET 触发一次幂等登记：界面首屏无需额外按钮即可拿到真实计数；已登记账号只更新 last_seen_at。
@@ -259,6 +265,27 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.post('/cli-accounts/import', async (req, res) => {
     const body = parseBody(cliImportSchema, req.body);
     const result = await importCliCredential({ db, vault: cliVault, appId: body.app_id, credential: body.credential });
+    res.json(result);
+  });
+
+  // ---- CLI-SWITCH：能力表 + 逐来源切换（默认 dry-run，显式 apply 才写本机配置） ----
+  router.get('/cli-accounts/switch-capabilities', (_req, res) => {
+    res.json({ items: CLI_SWITCH_CAPABILITIES });
+  });
+
+  const cliSwitchBodySchema = z.object({ apply: z.boolean().optional() }).strict();
+  router.post('/cli-accounts/:id/switch', async (req, res) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) throw new ValidationError('账号 id 不合法');
+    const body = parseBody(cliSwitchBodySchema, req.body);
+    const result = await switchCliAccount({
+      db,
+      vault: cliSwitchVault,
+      accountId: id.data,
+      apply: body.apply === true,
+      homeDir: deps.cliAccountHomeDir ?? homedir(),
+      env: deps.cliAccountEnv ?? process.env,
+    });
     res.json(result);
   });
 
