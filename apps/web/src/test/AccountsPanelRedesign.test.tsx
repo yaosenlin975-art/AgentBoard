@@ -134,7 +134,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(screen.queryByTestId('quota-row-deepseek')).toBeNull();
     expect(screen.queryByText(/服务端 60s 缓存/)).toBeNull();
 
-    // 三来源以与平台一致的索引行出现，点击进入右侧详情占位
+    // 三来源以与平台一致的索引行出现，点击进入右侧只读详情（ACC-CLI-MULTI 后不再是占位文案）
     for (const app of ['deepseek', 'opencode_go', 'codex']) {
       expect(screen.getByTestId(`accounts-index-item-${app}`)).toBeInTheDocument();
     }
@@ -143,7 +143,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(screen.getByTestId('accounts-index-item-codex')).toHaveTextContent('Codex');
 
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
-    expect(await screen.findByTestId('accounts-source-note-deepseek')).toBeInTheDocument();
+    expect(await screen.findByTestId('accounts-source-switch-note-deepseek')).toBeInTheDocument();
   });
 
   it('平台头部「签到」：只提交该平台启用账号', async () => {

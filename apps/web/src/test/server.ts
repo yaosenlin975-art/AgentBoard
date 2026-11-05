@@ -50,6 +50,8 @@ export const server = setupServer(
     accounts: [],
     error: null,
   })),
+  // ACC-CLI-MULTI：CLI 三来源的本机凭据登记默认空列表；具体用例用 server.use 覆盖
+  http.get('/api/cli-accounts', () => HttpResponse.json({ items: [] })),
   // ACC-QUOTA-01：账号页额度卡默认夹具（ok / unsupported / error 三态各一条，避免走真实 fetch）
   http.get('/api/managed-account-quotas', () => HttpResponse.json({
     workspace_id: null,

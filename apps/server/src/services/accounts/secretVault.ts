@@ -7,17 +7,23 @@ import { ApiError, ValidationError } from '../../errors.js';
 
 /** 支持的后台应用；ACC-10 起含 minimax / trae（vault scope 随 ManagedAppId 一起扩展） */
 export const managedAppSchema = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
+/** ACC-CLI-MULTI：CLI 额度来源（只登记本机凭据，不参与桌面客户端的快照/签到语义） */
+export const cliAppSchema = z.enum(['deepseek', 'opencode_go', 'codex']);
+/** vault 的 app_id 维度 = 桌面平台 ∪ CLI 来源 */
+const vaultAppSchema = z.union([managedAppSchema, cliAppSchema]);
 /**
  * 凭据 scope。
  *
- * purpose 三值：
+ * purpose 四值：
  * - `client_snapshot`：客户端登录态快照（切号写回用）；
  * - `checkin`：已激活的签到凭据（绑在已建成的 managed_account 上）；
  * - `pending_credential`（ACC-KB-B2S）：**待激活凭据**——协议级加号在授权完成前握着的中间态
  *   （device_code / PKCE verifier / poll token 等）。此时账号身份还没拿到，identity_hash 用
  *   会话 id 的 sha256 占位；授权成功即转存为 `checkin`，失败/放弃/超时就删掉，不留孤儿文件。
+ * - `cli_credential`（ACC-CLI-MULTI）：CLI 三来源的本机 API key。**独立 purpose**，不与签到凭据混用；
+ *   只登记、不写回客户端配置（写入/切换见 CLI-SWITCH）。
  */
-const scopeSchema = z.object({ app_id: managedAppSchema, client_instance_id: z.string().min(1).max(300), identity_hash: z.string().regex(/^[a-f0-9]{64}$/), purpose: z.enum(['client_snapshot', 'checkin', 'pending_credential']) }).strict();
+const scopeSchema = z.object({ app_id: vaultAppSchema, client_instance_id: z.string().min(1).max(300), identity_hash: z.string().regex(/^[a-f0-9]{64}$/), purpose: z.enum(['client_snapshot', 'checkin', 'pending_credential', 'cli_credential']) }).strict();
 export type VaultScope = z.infer<typeof scopeSchema>;
 const reference = z.string().uuid();
 const script = `$ErrorActionPreference='Stop'; try {

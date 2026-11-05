@@ -18,7 +18,7 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { QUOTA_GROUPS, type ManagedAppId, type PublicManagedAccount } from '@agentboard/shared';
+import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
@@ -86,6 +86,18 @@ export function AccountsPanel() {
     queryKey: ['managed-accounts'],
     queryFn: () => api.get<AccountView[]>('/api/managed-accounts'),
   });
+  /**
+   * ACC-CLI-MULTI（口径 A）：CLI 三来源的本机凭据登记。GET 幂等登记并返回脱敏列表，
+   * 界面只拿它做真实计数与只读详情；不提供导入/切换入口（见 CLI-IMPORT / CLI-SWITCH）。
+   */
+  const cliList = useQuery({
+    queryKey: ['cli-accounts'],
+    queryFn: () => api.get<{ items: PublicCliAccount[] }>('/api/cli-accounts'),
+  });
+  const cliAccounts: PublicCliAccount[] = cliList.data?.items ?? [];
+  const cliError = cliList.isError
+    ? (cliList.error instanceof Error ? cliList.error.message : '读取本机 CLI 凭据失败')
+    : null;
   const caps = useAccountCapabilities();
   // ACC-14：已下线平台（CodeBuddy Desktop）的历史账号不在界面出现；其余平台全部账号都列出（同平台多账号）
   const accounts: AccountView[] = (list.data ?? []).filter((account) => !isOfflineApp(account.app_id));
@@ -157,21 +169,24 @@ export function AccountsPanel() {
     });
     /**
      * 需求 2：CLI 额度三来源并入同一平台列表（图2 紧凑行）。
-     * 它们没有 managed_accounts 记录，账号计数在 ACC-CLI-MULTI 落地前固定为 0；
-     * 本卡只做展示与入口，不伪造账号或新增后端接口。
+     * ACC-CLI-MULTI（口径 A）：计数取 `/api/cli-accounts` 的本机登记结果（逐来源过滤），
+     * 与右栏只读详情同源；不提供导入/切换（见 CLI-IMPORT / CLI-SWITCH）。
      */
-    const sources: PlatformIndexItem[] = (QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []).map((source) => ({
-      app: source,
-      kind: 'source' as const,
-      label: CLI_SOURCE_ROW_LABEL[source] ?? source,
-      currentLabel: null,
-      accountCount: 0,
-      done: 0,
-      total: 0,
-      render: () => <QuotaSourceDetail source={source} />,
-    }));
+    const sources: PlatformIndexItem[] = (QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []).map((source) => {
+      const sourceAccounts = cliAccounts.filter((account) => account.app_id === source);
+      return {
+        app: source,
+        kind: 'source' as const,
+        label: CLI_SOURCE_ROW_LABEL[source] ?? source,
+        currentLabel: null,
+        accountCount: sourceAccounts.length,
+        done: 0,
+        total: 0,
+        render: () => <QuotaSourceDetail source={source} accounts={sourceAccounts} errorMessage={cliError} />,
+      };
+    });
     return [...known, ...extras, ...sources];
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today]);
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError]);
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
@@ -425,13 +440,48 @@ function PlatformRow({
 }
 
 /**
- * 需求 2：CLI 额度来源选中后的详情占位。
- * 三来源目前没有托管账号模型（ACC-CLI-MULTI 承接），这里只说明现状，不渲染额度面板、不提供假按钮。
+ * 需求 2 / ACC-CLI-MULTI：CLI 额度来源选中后的只读详情。
+ * 口径 A 只登记「本机可发现凭据」，因此这里只列脱敏身份指纹（哈希前缀），
+ * 不显示 key / credential_ref，也不提供切换按钮——能力未验证前给原因文案（见 CLI-IMPORT / CLI-SWITCH）。
  */
-function QuotaSourceDetail({ source }: { source: string }) {
+function QuotaSourceDetail({
+  source,
+  accounts,
+  errorMessage,
+}: {
+  source: string;
+  accounts: PublicCliAccount[];
+  errorMessage: string | null;
+}) {
   return (
-    <p data-testid={`accounts-source-note-${source}`} className="text-xs leading-relaxed text-ink-3">
-      该来源为 CLI 额度来源，账号模型尚未接入；新增与切换待多账号管理落地后提供。
-    </p>
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      {errorMessage !== null ? (
+        <p data-testid={`accounts-source-error-${source}`} role="alert" className="text-red-600 dark:text-red-400">
+          读取本机 CLI 凭据失败：{errorMessage}
+        </p>
+      ) : accounts.length === 0 ? (
+        <p data-testid={`accounts-source-empty-${source}`} className="text-ink-3">
+          本机未发现该来源的凭据（Codex 没有可枚举的凭据，恒为 0）。
+        </p>
+      ) : (
+        <ul data-testid={`accounts-source-list-${source}`} className="space-y-1">
+          {accounts.map((account) => (
+            <li
+              key={account.id}
+              data-testid={`accounts-source-item-${account.id}`}
+              className="flex flex-wrap items-center gap-x-2 rounded-md bg-surface-raised px-2 py-1"
+            >
+              <span className="font-mono text-[11px] text-ink" title="身份指纹（不可逆哈希前缀，不是 key）">
+                {account.identity_hint}
+              </span>
+              <span className="text-[11px] text-ink-3">最近发现 {new Date(account.last_seen_at).toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid={`accounts-source-switch-note-${source}`} className="text-ink-3">
+        暂不支持切换：需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）。
+      </p>
+    </div>
   );
 }

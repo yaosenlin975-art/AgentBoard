@@ -24,6 +24,7 @@ import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
 import { migrateSessionTitle } from './migrations/sessionTitle.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
+import { migrateCliAccounts } from './migrations/cliAccounts.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -103,6 +104,8 @@ export function initSchema(db: Db): void {
   // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
   // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
   migrateClaimLease(db);
+  // ACC-CLI-MULTI：CLI 三来源的本机凭据登记表（纯追加，幂等；与 managed_account 无关）
+  migrateCliAccounts(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

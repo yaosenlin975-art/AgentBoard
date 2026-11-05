@@ -59,6 +59,19 @@ export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'clien
    */
   has_checkin_credential?: boolean;
 };
+/**
+ * ACC-CLI-MULTI：CLI 额度来源（口径 A：只登记本机可发现凭据 + 真实计数 + 持久化）。
+ * 与 `ManagedAppId` 刻意分离——这三者没有桌面客户端登录态/签到/切换语义。
+ */
+export type CliAccountAppId = 'deepseek' | 'opencode_go' | 'codex';
+export interface PublicCliAccount {
+  id: string;
+  app_id: CliAccountAppId;
+  /** 身份指纹 = identity_hash 前缀（不可逆哈希，不是 key 本身） */
+  identity_hint: string;
+  created_at: number;
+  last_seen_at: number;
+}
 export interface AccountOperation {
   id: string; batch_id: string | null; account_id: string | null; app_id: ManagedAppId; client_instance_id: string;
   operation: 'capture' | 'switch' | 'checkin' | 'restore';

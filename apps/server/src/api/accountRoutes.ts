@@ -32,6 +32,7 @@ import { startCheckinBatchInBackground } from '../services/accounts/checkinRunne
 import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
+import { captureCliAccounts, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
@@ -61,6 +62,12 @@ export interface AccountRouterDeps {
   quotas?: Pick<QuotaService, 'get'>;
   /** MINIMAX-PATH：minimax 客户端探测（仅测试注入；生产用 60s 缓存的内置实现） */
   minimaxClientProbe?: MinimaxClientProbe;
+  /** ACC-CLI-MULTI：CLI 三来源的凭据保险库（生产复用 SecretVault；测试注入内存替身） */
+  cliVault?: CliCredentialVault;
+  /** ACC-CLI-MULTI：CLI 凭据根目录（仅测试注入；生产为 os.homedir()） */
+  cliAccountHomeDir?: string;
+  /** ACC-CLI-MULTI：CLI 凭据发现的 env（仅测试注入；生产为 process.env） */
+  cliAccountEnv?: Record<string, string | undefined>;
 }
 
 // ACC-10：app_id 校验扩到四值，与 managed_account 的 CHECK 及 shared ManagedAppId 保持一致
@@ -225,6 +232,20 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   const quotas = deps.quotas ?? createQuotaService();
   /** MINIMAX-PATH：客户端探测单实例缓存（60s TTL），每次装配只建一次 */
   const minimaxProbe = deps.minimaxClientProbe ?? createMinimaxClientProbe();
+  /** ACC-CLI-MULTI：生产复用注入的 SecretVault（`vault` 字段是签到侧的窄类型视图） */
+  const cliVault = deps.cliVault ?? (deps.vault as unknown as CliCredentialVault | undefined);
+
+  // ---- ACC-CLI-MULTI：CLI 三来源的本机凭据登记（口径 A：只读发现 + 真实计数 + 持久化） ----
+  // GET 触发一次幂等登记：界面首屏无需额外按钮即可拿到真实计数；已登记账号只更新 last_seen_at。
+  router.get('/cli-accounts', async (_req, res) => {
+    const items = await captureCliAccounts({
+      db,
+      vault: cliVault,
+      homeDir: deps.cliAccountHomeDir,
+      env: deps.cliAccountEnv,
+    });
+    res.json({ items });
+  });
 
   // ---- ACC-QUOTA-01：账号页额度/余额聚合（逐来源独立结果） ----
   router.get('/managed-account-quotas', async (req, res) => {
