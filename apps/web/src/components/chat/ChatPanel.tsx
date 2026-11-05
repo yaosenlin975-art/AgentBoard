@@ -436,6 +436,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
           messages={messages}
           streaming={streaming}
           running={running}
+          sessionStatus={session.status}
           onRetry={(text) => void handleSend(text, [])}
           onOpenModel={() => setModelOpenSignal((n) => n + 1)}
           onOpenUsage={() => useNavStore.getState().openDrawer('accounts')}
@@ -470,7 +471,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         </div>
       )}
 
-      <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} onSend={handleSend} />
+      <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} sessionId={sessionId} onSend={handleSend} />
       {renameOpen && <RenameSessionDialog session={session} onClose={() => setRenameOpen(false)} />}
     </div>
   );

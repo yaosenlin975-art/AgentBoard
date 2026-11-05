@@ -52,6 +52,11 @@ export function eventToQueryKeys(event: WsEvent): unknown[][] {
     case 'account.notice':
       // 账号操作提示（如请求用户手动退出客户端），当前无对应查询需失效
       return [];
+    case 'session.plan':
+    case 'session.usage':
+      // CHAT-VIS1：轮次观测（计划条 / 成本脚注）由 turnStore 经 wsBus 增量消费，
+      // 不触发 invalidation——否则每个 tool 事件与每个 usage 窗口都会全量刷会话列表
+      return [];
   }
 }
 

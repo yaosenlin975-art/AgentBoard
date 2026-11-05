@@ -46,6 +46,9 @@ optgroup {
   --color-accent-ink: var(--ab-accent-ink);
   /* 强调底（拖拽悬停 / 选中 tab / 已限额 chip）：必须映射成 --color-* 才会生成 bg-accent-soft 工具类 */
   --color-accent-soft: var(--ab-accent-soft);
+  /* CHAT-VIS1：diff 增删语义色（text-ab-add / text-ab-del 工具类由此生成） */
+  --color-ab-add: var(--ab-add);
+  --color-ab-del: var(--ab-del);
   /*
    * RADIUS-HALF：全站圆角缩到原来 50%（用户裁决）。覆盖 Tailwind 半径刻度后
    * rounded-sm/DEFAULT/md/lg/xl/2xl/3xl 全站自动跟随，组件类名一个字不用改：
@@ -91,6 +94,14 @@ optgroup {
   --ab-accent-soft: rgba(180, 83, 9, 0.12);
   /* UNSLOP pass 9：全站唯一缓动曲线 */
   --ab-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /*
+   * CHAT-VIS1：diff 增删色（纸面 #fdfbf7 上 5.8:1 / 6.2:1，压饱和度对齐本套暖石墨）。
+   * `--ab-*-soft` 是同一色的低透明度形态，只用作行底色，不单独承载语义。
+   */
+  --ab-add: #3f6d3a;
+  --ab-del: #a13d3d;
+  --ab-add-soft: rgba(63, 109, 58, 0.12);
+  --ab-del-soft: rgba(161, 61, 61, 0.12);
 }
 
 .dark {
@@ -108,6 +119,11 @@ optgroup {
   --ab-accent-ink: #1c1a18;
   --ab-accent-soft: rgba(240, 160, 30, 0.16);
   --ab-link: #60a5fa;
+  /* CHAT-VIS1：暗色（暖黑台面 #1c1a18 上 8.6:1 / 7.1:1），行底透明度略高才看得见 */
+  --ab-add: #7ec96f;
+  --ab-del: #f08a7a;
+  --ab-add-soft: rgba(126, 201, 111, 0.14);
+  --ab-del-soft: rgba(240, 138, 122, 0.14);
 }
 
 /*
@@ -439,4 +455,30 @@ optgroup {
   transition-property: color, background-color, border-color, opacity;
   transition-duration: 150ms;
   transition-timing-function: var(--ab-ease);
+}
+
+/*
+ * CHAT-VIS1：diff 行级底色。文字走 --ab-add / --ab-del（亮暗两套都定义、对比度 ≥ 4.5:1），
+ * 底色取同一色的低透明度形态 --ab-*-soft，组件里不写死色值。
+ */
+.ab-diff-add {
+  background-color: var(--ab-add-soft);
+  color: var(--ab-add);
+}
+.ab-diff-del {
+  background-color: var(--ab-del-soft);
+  color: var(--ab-del);
+}
+
+/*
+ * CHAT-VIS1：diff 行级底色。文字走 --ab-add / --ab-del（亮暗两套都已定义、对比度 ≥ 4.5:1），
+ * 底色用同一色的低透明度形态 --ab-*-soft，避免在组件里写死色值。
+ */
+.ab-diff-add {
+  background-color: var(--ab-add-soft);
+  color: var(--ab-add);
+}
+.ab-diff-del {
+  background-color: var(--ab-del-soft);
+  color: var(--ab-del);
 }

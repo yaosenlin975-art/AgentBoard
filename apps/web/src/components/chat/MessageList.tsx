@@ -8,8 +8,11 @@
  * - 运行中底部三个跳动点；新内容自动滚到底。
  */
 import { useEffect, useRef } from 'react';
-import type { Message } from '@agentboard/shared';
+import type { Message, SessionStatus } from '@agentboard/shared';
 import { MarkdownView } from '../../lib/markdown';
+import { useSessionTurns } from '../../state/turnStore';
+import { PlanBar } from './PlanBar';
+import { ToolResultCard } from './ToolResultCard';
 
 /**
  * 用户消息里的 markdown 图片（CHAT-PASTE-IMAGE）：气泡仍按纯文本渲染，
@@ -271,6 +274,7 @@ export function MessageList({
   messages,
   streaming,
   running,
+  sessionStatus = null,
   onRetry,
   onOpenModel,
   onOpenUsage,
@@ -278,6 +282,8 @@ export function MessageList({
   messages: Message[];
   streaming: string;
   running: boolean;
+  /** CHAT-VIS1：会话状态只用于推导计划条 chip（`session_turn.state` 没有前端出口） */
+  sessionStatus?: SessionStatus | null;
   /** AUDIT-SRV：错误卡片动作——重发上一条 user 消息 / 打开模型修改 / 打开账号用量面板 */
   onRetry?: (text: string) => void;
   onOpenModel?: () => void;
@@ -294,24 +300,77 @@ export function MessageList({
 
   const empty = messages.length === 0 && streaming === '';
 
-  // 连续 event 归入同一轮聚合块；user/assistant/error 仍各自独立成块（错误卡必须可一眼看到）
+  // CHAT-VIS1：轮次观测（只读投影）。只有收到过 `session.plan` 且 plan 非空的轮次才有计划条；
+  // 历史轮次 / 无 tool 事件的轮次没有条目 → 不出条（与「无 turn 行」同降级）。
+  const turns = useSessionTurns();
+
+  /**
+   * AUDIT-3（F-05）：连续 event 归入同一轮聚合块；user/assistant/error 仍各自独立成块。
+   * CHAT-VIS1 在其**上层**加「一轮容器」：同一 `turn_id` 的连续消息包进一个容器，
+   * 容器顶部挂该轮唯一的计划条（sticky 贴顶）；`turn_id` 为空或无观测条目的消息保持既有平铺结构
+   * （验收 5：老消息零结构变化）。
+   */
   const rows: React.ReactNode[] = [];
-  let eventRun: { message: Message; index: number }[] = [];
+  let eventRun: Message[] = [];
+  let turnCells: React.ReactNode[] = [];
+  let turnId: string | null = null;
+  const barRendered = new Set<string>();
+
+  const pushCell = (node: React.ReactNode): void => {
+    (turnId === null ? rows : turnCells).push(node);
+  };
   const flushEvents = (): void => {
     if (eventRun.length === 0) return;
-    rows.push(
-      <EventGroup key={`evt-${eventRun[0]!.message.id}`} messages={eventRun.map((x) => x.message)} />,
-    );
+    pushCell(<EventGroup key={`evt-${eventRun[0]!.id}`} messages={eventRun} />);
     eventRun = [];
   };
+  const closeTurn = (): void => {
+    flushEvents();
+    if (turnId !== null && turnCells.length > 0) {
+      const id = turnId;
+      const obs = turns.get(id);
+      const bar =
+        obs !== undefined && obs.plan.length > 0 && !barRendered.has(id) ? (
+          <PlanBar
+            key={`plan-${id}`}
+            turnId={id}
+            plan={obs.plan}
+            currentIndex={obs.current_index}
+            sessionStatus={sessionStatus}
+          />
+        ) : null;
+      if (bar !== null) barRendered.add(id);
+      rows.push(
+        <div key={`turn-${id}`} data-testid={`turn-group-${id}`} className="min-w-0 space-y-2">
+          {bar}
+          {turnCells}
+        </div>,
+      );
+    }
+    turnCells = [];
+  };
+
   messages.forEach((m, index) => {
+    const observed = m.turn_id !== undefined && m.turn_id !== null ? turns.get(m.turn_id) : undefined;
+    const groupKey = observed !== undefined && observed.plan.length > 0 ? (m.turn_id as string) : null;
+    if (groupKey !== turnId) {
+      closeTurn();
+      turnId = groupKey;
+    }
+
     if (m.role === 'event') {
-      eventRun.push({ message: m, index });
+      // CHAT-VIS1：带产物元信息的工具事件 → 工具结果卡；纯思考/无元信息仍归 EventGroup 折叠（验收 3/5）
+      if (m.meta_json !== undefined && m.meta_json !== null) {
+        flushEvents();
+        pushCell(<ToolResultCard key={`tool-${m.id}`} message={m} />);
+      } else {
+        eventRun.push(m);
+      }
       return;
     }
     flushEvents();
     if (m.role === 'user') {
-      rows.push(
+      pushCell(
         <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
           <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-accent-soft px-2.5 py-1.5 text-xs text-ink whitespace-pre-wrap">
             {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
@@ -322,7 +381,7 @@ export function MessageList({
       return;
     }
     if (m.role === 'assistant') {
-      rows.push(
+      pushCell(
         <div key={m.id} data-testid={`msg-${m.id}`} className="flex min-w-0 justify-start">
           <div className="min-w-0 max-w-full flex-1">
             {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
@@ -332,7 +391,7 @@ export function MessageList({
       );
       return;
     }
-    rows.push(
+    pushCell(
       <ErrorBlock
         key={m.id}
         message={m}
@@ -343,7 +402,7 @@ export function MessageList({
       />,
     );
   });
-  flushEvents();
+  closeTurn();
 
   return (
     <div

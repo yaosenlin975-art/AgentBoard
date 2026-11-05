@@ -15,6 +15,8 @@ import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
+import { useSessionUsage } from '../../state/turnStore';
+import { usageFootnote } from '../../lib/turnView';
 import {
   detectMentionTrigger,
   insertMention,
@@ -45,6 +47,7 @@ export function Composer({
   running,
   queuedCount,
   workspaceId,
+  sessionId = null,
   onSend,
 }: {
   disabled: boolean;
@@ -52,6 +55,8 @@ export function Composer({
   queuedCount: number;
   /** 当前会话所属工作区；`@` 只匹配该工作区任务 */
   workspaceId?: string | null;
+  /** CHAT-VIS1：成本脚注读该会话最近一轮的 `session.usage`；缺省（无会话）时脚注显示 0 */
+  sessionId?: string | null;
   /** CHAT-IMG-DELIVERY：第二参数为草稿中实际保留的粘贴图片附件 id（按出现顺序去重） */
   onSend: (text: string, attachmentIds: string[]) => Promise<void>;
 }) {
@@ -68,6 +73,8 @@ export function Composer({
   // 在插入后的短暂窗口内抑制刷新，避免浮窗立刻重开（100ms 只挡「同一批事件」，不影响继续输入）。
   const suppressUntilRef = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // CHAT-VIS1：成本脚注数据（本轮用量快照，随 session.usage 流式更新；无轮次 → null → 0）
+  const usage = useSessionUsage(sessionId);
 
   const queueHint =
     queuedCount > 0
@@ -330,6 +337,19 @@ export function Composer({
           {error}
         </p>
       )}
+      {/*
+        CHAT-VIS1：成本脚注（本轮 tokens / 估算成本 / 上下文占用）。
+        - 只读 `session.usage`（服务端按字符量估算、恒 estimated=true），未开始轮次显示 0；
+        - `cost_usd`/`context_limit_tokens` 无来源时显示「待接入」「未知」，不用 0 冒充；
+        - 在输入区内、消息区之外 → 不改消息区滚动高度；10px 右对齐，不抢正文。
+      */}
+      <p
+        data-testid="composer-usage"
+        role="status"
+        className="text-right text-[10px] text-ink-3"
+      >
+        {usageFootnote(usage)}
+      </p>
     </div>
   );
 }
