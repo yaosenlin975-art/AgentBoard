@@ -1,15 +1,15 @@
 /**
- * STORE-2b：`kb workspace-db enable` —— 工作区库下沉（localize）的 CLI 通道。
+ * STORE-2b/3b：`kb workspace-db enable|status|cleanup|revert` —— 工作区库下沉（localize）的 CLI 通道。
  *
- * 只编排与渲染，不自研迁移逻辑：迁移在服务端八阶段状态机（STORE-2a）里跑，CLI 走 jobId 模型——
- * POST /api/workspaces/:id/db/localize 建任务（202 回创建时快照），GET .../localize/:jobId 轮询到终态。
+ * 只编排与渲染，不自研迁移逻辑：迁移 / 清理 / 回迁都在服务端状态机里跑，CLI 走 jobId 模型——
+ * POST 建任务（202 回创建时快照），GET /api/workspaces/:id/db/localize/:jobId 轮询到终态（三类任务同一张任务表）。
  * 同步迁移会阻塞服务端事件循环，running 阶段轮询要有耐心：2s 间隔、总超时 10 分钟；
- * 超时不算失败（迁移可能仍在跑），提示保留 jobId 重查。
- * 退出码：0 成功（含 dry-run / already_localized 幂等回显）；2 冲突（409：迁移进行中 / 已下沉 / 目标库已存在等，
- * 服务端文案自解释，原样透出）；1 其余（failed job、404、超时、400 参数类——沿用全局口径，400 不单独用 3）。
+ * 超时不算失败（任务可能仍在跑），提示保留 jobId 重查。
+ * 退出码：0 成功（含 dry-run / already_localized 幂等回显、status 查询）；2 冲突（POST 409：任务进行中等，
+ * 服务端文案自解释，原样透出；cleanup 无可清理的半成品）；1 其余（failed job、404、超时、400 参数类——沿用全局口径，400 不单独用 3）。
  */
 import { CommanderError } from 'commander';
-import type { WorkspaceLocalizeJobView, WorkspaceLocalizeStage } from '@agentboard/shared';
+import type { WorkspaceDbOpJobView, WorkspaceDbStatusView, WorkspaceLocalizeJobView } from '@agentboard/shared';
 import { WORKSPACE_LOCALIZE_STAGES } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
@@ -19,23 +19,49 @@ import { resolveWorkspaceId } from '../workspace.js';
 export const DEFAULT_POLL_MS = 2000;
 export const DEFAULT_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 
-/** 服务端 WORKSPACE_LOCALIZE_STAGES 词表的中文阶段名（顺序沿用该词表） */
-const STAGE_LABELS: Record<WorkspaceLocalizeStage, string> = {
-  preflight: '预检',
-  backup: '备份中心库',
-  create: '创建工作区库',
-  copy: '复制数据',
-  copy_attachments: '复制附件',
-  verify: '校验',
-  switch: '切换读写',
-  finalize: '收尾',
+/** 一类任务的渲染口径：动作名、进度词表（[i/N]）、中文阶段名、超时后的补充指引 */
+interface JobProfile {
+  action: string;
+  stages: readonly string[];
+  labels: Readonly<Record<string, string>>;
+  timeoutHint: (workspaceId: string) => string;
+}
+
+const statusHint = (workspaceId: string): string => `完成后用 kb workspace-db status --workspace ${workspaceId} 核对模式`;
+
+/** localize：服务端 WORKSPACE_LOCALIZE_STAGES 词表的中文阶段名（顺序沿用该词表） */
+const LOCALIZE: JobProfile = {
+  action: '迁移',
+  stages: WORKSPACE_LOCALIZE_STAGES,
+  labels: {
+    preflight: '预检',
+    backup: '备份中心库',
+    create: '创建工作区库',
+    copy: '复制数据',
+    copy_attachments: '复制附件',
+    verify: '校验',
+    switch: '切换读写',
+    finalize: '收尾',
+  },
+  timeoutHint: () => '完成后重跑本命令会回显 already_localized',
 };
 
-const stageLabel = (stage: WorkspaceLocalizeStage | null): string =>
-  stage === null ? '（无）' : `${STAGE_LABELS[stage] ?? stage}（${stage}）`;
+/** revert：服务端 REVERT_STAGES 四阶段（shared 未导出该词表，按契约固定） */
+const REVERT: JobProfile = {
+  action: '回迁',
+  stages: ['preflight', 'copy_attachments_back', 'copy_back', 'finalize'],
+  labels: { preflight: '预检', copy_attachments_back: '回拷附件', copy_back: '回拷数据', finalize: '收尾' },
+  timeoutHint: statusHint,
+};
 
-const stageIndex = (stage: WorkspaceLocalizeStage | null): number =>
-  stage === null ? 0 : WORKSPACE_LOCALIZE_STAGES.indexOf(stage) + 1;
+/** cleanup：无阶段（stage 恒为 null） */
+const CLEANUP: JobProfile = { action: '清理', stages: [], labels: {}, timeoutHint: statusHint };
+
+const stageLabel = (profile: JobProfile, stage: string | null): string =>
+  stage === null ? '（无）' : `${profile.labels[stage] ?? stage}（${stage}）`;
+
+const stageIndex = (profile: JobProfile, stage: string | null): number =>
+  stage === null ? 0 : profile.stages.indexOf(stage) + 1;
 
 /** 字节人性化（B/KB/MB/GB，1 位小数截尾） */
 function formatBytes(n: number | undefined): string {
@@ -58,16 +84,21 @@ const ROW_COUNT_KEYS = [
   'workspace_status', 'change_log', 'workspace_change_log',
 ] as const;
 
-/** 汇总段：行数合计 / 主要表 / 附件 / 预计数据量；缺失的聚合键（真实迁移无 bytes/estimated）按现状省略不硬编 0 */
-function countsLines(job: WorkspaceLocalizeJobView): string[] {
-  const c = job.counts;
+/** 行数合计行：优先 rows_total，缺省按行类键求和；附主要表明细（缺键省略不硬编 0） */
+function rowsTotalLine(label: string, c: Record<string, number>): string {
   const rowsTotal = typeof c['rows_total'] === 'number'
     ? c['rows_total']
     : ROW_COUNT_KEYS.reduce((sum, key) => sum + (typeof c[key] === 'number' ? c[key]! : 0), 0);
   const parts = ([
     ['issue', '卡'], ['issue_comment', '评论'], ['session', '会话'], ['message', '消息'],
-  ] as const).flatMap(([key, label]) => (typeof c[key] === 'number' ? [`${label} ${c[key]}`] : []));
-  const lines = [`行数合计：${rowsTotal}${parts.length === 0 ? '' : `（${parts.join('、')}）`}`];
+  ] as const).flatMap(([key, name]) => (typeof c[key] === 'number' ? [`${name} ${c[key]}`] : []));
+  return `${label}：${rowsTotal}${parts.length === 0 ? '' : `（${parts.join('、')}）`}`;
+}
+
+/** 汇总段：行数合计 / 主要表 / 附件 / 预计数据量；缺失的聚合键（真实迁移无 bytes/estimated）按现状省略不硬编 0 */
+function countsLines(job: WorkspaceLocalizeJobView): string[] {
+  const c = job.counts;
+  const lines = [rowsTotalLine('行数合计', c)];
   if (typeof c['attachment_files'] === 'number') {
     lines.push(`附件：${c['attachment_files']} 个${typeof c['attachment_bytes'] === 'number' ? `（${formatBytes(c['attachment_bytes'])}）` : ''}`);
   }
@@ -76,68 +107,114 @@ function countsLines(job: WorkspaceLocalizeJobView): string[] {
   return lines;
 }
 
-export interface WorkspaceDbEnableArgs {
+/** 测试注入：轮询间隔（缺省 2s）/ 轮询总超时（缺省 10 分钟） */
+export interface WorkspaceDbPollArgs {
+  pollMs?: number;
+  timeoutMs?: number;
+}
+
+export interface WorkspaceDbEnableArgs extends WorkspaceDbPollArgs {
   dryRun?: boolean;
   overwrite?: boolean;
-  /** 测试注入：轮询间隔（缺省 2s） */
-  pollMs?: number;
-  /** 测试注入：轮询总超时（缺省 10 分钟） */
-  timeoutMs?: number;
+  /** STORE-3b：从 localize.json 记录的阶段续跑（dry-run 时服务端忽略 resume；resume 时服务端忽略 overwrite） */
+  resume?: boolean;
+}
+
+/** 三类任务视图（localize / cleanup / revert）共有的轮询面 */
+interface PolledJob {
+  jobId: string;
+  workspaceId: string;
+  status: string;
+  stage: string | null;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
-/** 轮询到终态；running 阶段逐次渲染进度行（阶段变化才打一行），超时抛错并保留 jobId */
-async function waitForTerminal(
+const dbPath = (workspaceId: string): string => `/api/workspaces/${encodeURIComponent(workspaceId)}/db`;
+
+/** 进度/提示行：文本模式写 stdout，--json 模式写 stderr（不污染 stdout 的 JSON） */
+const progressWriter = (ctx: Ctx) => (text: string): void => { (ctx.json ? ctx.io.writeErr : ctx.io.write)(`${text}\n`); };
+
+const writeJson = (ctx: Ctx, value: unknown): void => { ctx.io.write(`${JSON.stringify(value, null, 2)}\n`); };
+
+const exitWith = (code: number): void => {
+  if (code !== 0) throw new CommanderError(code, 'agentboard.workspace_db', '');
+};
+
+/** POST 建任务；文本模式下 409 冲突写 stderr 退出 2（默认原样透出服务端自解释文案），--json 交给全局出口 */
+async function postJob<T>(
   ctx: Ctx,
-  started: WorkspaceLocalizeJobView,
+  path: string,
+  body: Record<string, boolean>,
+  conflictText: (error: CliHttpError) => string = error => error.message,
+): Promise<T> {
+  try {
+    return await request<T>(ctx.base, 'POST', path, body);
+  } catch (error) {
+    if (!ctx.json && error instanceof CliHttpError && error.status === 409) {
+      ctx.io.writeErr(`${conflictText(error)}\n`);
+      throw new CommanderError(2, 'agentboard.workspace_db', '');
+    }
+    throw error;
+  }
+}
+
+/** 轮询到终态；running 阶段逐次渲染进度行（阶段变化才打一行），超时抛错并保留 jobId */
+async function waitForTerminal<T extends PolledJob>(
+  ctx: Ctx,
+  started: T,
+  profile: JobProfile,
   pollMs: number,
   timeoutMs: number,
-): Promise<WorkspaceLocalizeJobView> {
+): Promise<T> {
   let job = started;
   if (job.status !== 'running') return job;
-  const path = `/api/workspaces/${encodeURIComponent(job.workspaceId)}/db/localize/${encodeURIComponent(job.jobId)}`;
-  const progress = (text: string): void => { (ctx.json ? ctx.io.writeErr : ctx.io.write)(`${text}\n`); };
-  progress(`迁移已受理（jobId ${job.jobId}），轮询进度中（每 ${Math.round(pollMs / 100) / 10}s 一次，最长 ${Math.round(timeoutMs / 60000)} 分钟）…`);
-  let lastStage: WorkspaceLocalizeStage | null = null;
-  // 同步迁移阻塞服务端事件循环时轮询会慢；网络层偶发抖动容忍连续重试，连不上才算失败
+  const path = `${dbPath(job.workspaceId)}/localize/${encodeURIComponent(job.jobId)}`;
+  const progress = progressWriter(ctx);
+  progress(`${profile.action}已受理（jobId ${job.jobId}），轮询进度中（每 ${Math.round(pollMs / 100) / 10}s 一次，最长 ${Math.round(timeoutMs / 60000)} 分钟）…`);
+  let lastStage: string | null = null;
+  // 同步任务阻塞服务端事件循环时轮询会慢；网络层偶发抖动容忍连续重试，连不上才算失败
   let transientErrors = 0;
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (Date.now() >= deadline) {
       throw new Error(
-        `迁移超时：已等待 ${Math.round(timeoutMs / 60000)} 分钟仍未见终态（最后阶段：${stageLabel(lastStage)}）。`
-        + `迁移可能仍在服务端进行；jobId ${job.jobId} 可用 GET ${ctx.base}${path} 重查，完成后重跑本命令会回显 already_localized`,
+        `${profile.action}超时：已等待 ${Math.round(timeoutMs / 60000)} 分钟仍未见终态（最后阶段：${stageLabel(profile, lastStage)}）。`
+        + `${profile.action}可能仍在服务端进行；jobId ${job.jobId} 可用 GET ${ctx.base}${path} 重查，${profile.timeoutHint(job.workspaceId)}`,
       );
     }
     await sleep(pollMs);
     try {
-      job = await request<WorkspaceLocalizeJobView>(ctx.base, 'GET', path);
+      job = await request<T>(ctx.base, 'GET', path);
       transientErrors = 0;
     } catch (error) {
       // CliHttpError 是服务端明确应答（404 任务表丢失等）直接上抛；其余当网络抖动容忍
       if (error instanceof CliHttpError) throw error;
       transientErrors += 1;
       if (transientErrors > 15) {
-        throw new Error(`迁移进度查询连续失败（jobId ${job.jobId}）：${error instanceof Error ? error.message : String(error)}；请确认服务端存活后用 GET ${ctx.base}${path} 重查`);
+        throw new Error(`${profile.action}进度查询连续失败（jobId ${job.jobId}）：${error instanceof Error ? error.message : String(error)}；请确认服务端存活后用 GET ${ctx.base}${path} 重查`);
       }
       continue;
     }
     if (job.status !== 'running') return job;
     if (job.stage !== lastStage) {
-      progress(`迁移进行中 [${stageIndex(job.stage)}/${WORKSPACE_LOCALIZE_STAGES.length}] ${stageLabel(job.stage)}`);
+      if (job.stage !== null && profile.stages.length > 0) {
+        progress(`${profile.action}进行中 [${stageIndex(profile, job.stage)}/${profile.stages.length}] ${stageLabel(profile, job.stage)}`);
+      }
       lastStage = job.stage;
     }
   }
 }
 
-/** 终态渲染 + 退出码；--json 模式统一输出 JobView 原文 */
-function renderTerminal(ctx: Ctx, job: WorkspaceLocalizeJobView): number {
+/** localize 终态渲染 + 退出码；--json 模式统一输出 JobView 原文 */
+function renderLocalize(ctx: Ctx, job: WorkspaceLocalizeJobView): number {
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(job, null, 2)}\n`);
+    writeJson(ctx, job);
   } else if (job.status === 'failed') {
-    ctx.io.writeErr(`迁移失败（失败阶段：${stageLabel(job.stage)}）：${job.lastError ?? '服务端未给出原因'}\n`);
-    ctx.io.writeErr(`jobId ${job.jobId}；排查后重跑请评估是否需要 --overwrite\n`);
+    ctx.io.writeErr(`迁移失败（失败阶段：${stageLabel(LOCALIZE, job.stage)}）：${job.lastError ?? '服务端未给出原因'}\n`);
+    ctx.io.writeErr(job.dryRun
+      ? `jobId ${job.jobId}；dry-run 未产生任何变更，排查后可直接重跑\n`
+      : `jobId ${job.jobId}；先 kb workspace-db status --workspace ${job.workspaceId} 查看中间态，再选：enable --resume 从中断阶段继续 / cleanup --workspace ${job.workspaceId} 清理半成品 / enable --overwrite 清理后重来\n`);
   } else if (job.status === 'already_localized') {
     ctx.io.write('该工作区已启用工作区库（already_localized），未做任何变更，无需重复启用\n');
   } else if (job.dryRun) {
@@ -151,25 +228,148 @@ function renderTerminal(ctx: Ctx, job: WorkspaceLocalizeJobView): number {
   return job.status === 'failed' ? 1 : 0;
 }
 
-/** kb workspace-db enable <workspace> [--dry-run] [--overwrite] */
+/**
+ * --resume 的续跑落点：读 localize.json 中间态（GET .../db 的 localizeState.stage）。
+ * 不取 job 视图的 stage：POST 快照恒为 preflight，同步段可能在首轮轮询前已跑完；
+ * 读不到按 null（无中间态时服务端会以 NO_LOCALIZE_STATE 失败，由终态渲染透出）。
+ */
+async function readResumeStage(base: string, workspaceId: string): Promise<string | null> {
+  try {
+    const status = await request<WorkspaceDbStatusView>(base, 'GET', dbPath(workspaceId));
+    return status.localizeState?.stage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** kb workspace-db enable <workspace> [--dry-run] [--overwrite] [--resume] */
 export async function workspaceDbEnable(ctx: Ctx, workspace: string, args: WorkspaceDbEnableArgs = {}): Promise<void> {
   const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
   const body: Record<string, boolean> = {};
   if (args.dryRun === true) body.dryRun = true;
   if (args.overwrite === true) body.overwrite = true;
-  const started = await request<WorkspaceLocalizeJobView>(
-    ctx.base, 'POST', `/api/workspaces/${encodeURIComponent(workspaceId)}/db/localize`, body,
-  ).catch((error: unknown) => {
-    // 文本模式下 409 冲突原样透出退出 2（--json 交给全局出口）
-    if (!ctx.json && error instanceof CliHttpError && error.status === 409) {
-      ctx.io.writeErr(`${error.message}\n`);
-      throw new CommanderError(2, 'agentboard.workspace_db', '');
-    }
-    throw error;
-  });
-  const pollMs = args.pollMs ?? DEFAULT_POLL_MS;
-  const timeoutMs = args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
-  const final = await waitForTerminal(ctx, started, pollMs, timeoutMs);
-  const exitCode = renderTerminal(ctx, final);
-  if (exitCode !== 0) throw new CommanderError(exitCode, 'agentboard.workspace_db', '');
+  if (args.resume === true) body.resume = true;
+  // dry-run 优先于 resume（服务端忽略 resume），此时不提示续跑阶段
+  const resumeStage = args.resume === true && args.dryRun !== true ? await readResumeStage(ctx.base, workspaceId) : null;
+  const started = await postJob<WorkspaceLocalizeJobView>(ctx, `${dbPath(workspaceId)}/localize`, body);
+  if (resumeStage !== null) progressWriter(ctx)(`从${stageLabel(LOCALIZE, resumeStage)}阶段继续（localize.json 记录的中断点）`);
+  const final = await waitForTerminal(ctx, started, LOCALIZE, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
+  exitWith(renderLocalize(ctx, final));
+}
+
+const MODE_LABELS: Readonly<Record<string, string>> = { center: '中心库', localizing: '迁移中', localized: '已下沉', failed: '失败' };
+
+/** 紧急开关 + 已下沉：数据只在工作区库里，服务端不静默回退，必须 revert 收口 */
+const NEEDS_REVERT_TEXT = '紧急开关已启用：该工作区数据在工作区库中，需 revert 才能回中心库';
+
+function statusLines(s: WorkspaceDbStatusView): string[] {
+  const id = s.workspaceId;
+  const lines: string[] = [];
+  if (s.disabled && s.needsRevert) lines.push(`【警告】${NEEDS_REVERT_TEXT}（kb workspace-db revert --workspace ${id}）`);
+  lines.push(`工作区：${id}`);
+  lines.push(`模式：${MODE_LABELS[s.dbMode] ?? s.dbMode}（${s.dbMode}）`);
+  lines.push(s.writeGate === 'frozen' ? '写闸门：冻结（frozen，该区写请求返回 409 WORKSPACE_DB_MIGRATING）' : `写闸门：开放（${s.writeGate}）`);
+  if (s.disabled) lines.push('紧急开关：已启用（AGENTBOARD_WORKSPACE_DB=disabled）');
+  lines.push(`生效库：${s.effectiveDbPath}`);
+  lines.push(`中心库：${s.centerDbPath}`);
+  lines.push(s.workspaceDbPath === null
+    ? '工作区库：无（工作区目录缺失）'
+    : `工作区库：${s.workspaceDbPath}（${s.workspaceDbExists ? '存在' : '不存在'}）`);
+  lines.push(rowsTotalLine('行数合计（数据所在库）', s.counts));
+  lines.push(`附件：${s.attachments.rows} 行，文件 ${s.attachments.files} 个（${formatBytes(s.attachments.bytes)}），目录 ${s.attachments.dir}`);
+  const lag = s.snapshotLagRows;
+  if (lag === null) lines.push('快照落后：不适用（工作区库不存在或打不开）');
+  else lines.push(`快照落后：${lag} 条${s.dbMode === 'localized' && lag > 0 ? '（中心库有该区残留行，revert 会拒绝，先核对分叉）' : ''}`);
+  const state = s.localizeState;
+  if (state === null) {
+    lines.push('中间态（localize.json）：无');
+  } else {
+    lines.push(`中间态（localize.json）：阶段 ${stageLabel(LOCALIZE, state.stage)}，migrationId ${state.migrationId}`);
+    if (state.lastError !== null) lines.push(`  lastError：${state.lastError}`);
+    if (state.backupPath !== null) lines.push(`  中心库快照：${state.backupPath}`);
+  }
+  const job = s.activeJob;
+  if (job === null) {
+    lines.push('活动任务：无');
+  } else {
+    const stage = job.stage === null ? '' : `，阶段 ${stageLabel(job.kind === 'revert' ? REVERT : LOCALIZE, job.stage)}`;
+    lines.push(`活动任务：${job.jobId}（${job.kind}，${job.status}${stage}）`);
+  }
+  lines.push(`解析：${s.reason}${s.error === null ? '' : `（${s.error}）`}`);
+  if (s.dbMode === 'failed') {
+    lines.push(`提示：迁移失败待恢复——kb workspace-db enable ${id} --resume 从中断阶段继续，或 kb workspace-db cleanup --workspace ${id} 清理半成品（中心库数据不动）`);
+  }
+  return lines;
+}
+
+/** kb workspace-db status [--workspace <id|名>]（缺省按 cwd 解析） */
+export async function workspaceDbStatus(ctx: Ctx, workspace?: string): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const status = await request<WorkspaceDbStatusView>(ctx.base, 'GET', dbPath(workspaceId));
+  if (ctx.json) {
+    writeJson(ctx, status);
+    if (status.disabled && status.needsRevert) ctx.io.writeErr(`${NEEDS_REVERT_TEXT}\n`);
+    return;
+  }
+  ctx.io.write(`${statusLines(status).join('\n')}\n`);
+}
+
+/**
+ * NOTHING_TO_CLEAN 识别：服务端在 job 内判定（202 + job failed，lastError 只带标准文案、不带 code），按标准文案识别；
+ * POST 同步 409 时按 code 识别。
+ */
+const NOTHING_TO_CLEAN_TEXT = '没有可清理的迁移半成品';
+const nothingToClean = (detail: string): string => `无可清理的半成品：${detail}`;
+
+function renderCleanup(ctx: Ctx, job: WorkspaceDbOpJobView): number {
+  const nothing = job.status === 'failed' && job.lastError !== null && job.lastError.includes(NOTHING_TO_CLEAN_TEXT);
+  if (ctx.json) {
+    writeJson(ctx, job);
+  } else if (nothing) {
+    ctx.io.writeErr(`${nothingToClean(job.lastError!)}\n`);
+  } else if (job.status === 'failed') {
+    ctx.io.writeErr(`清理失败：${job.lastError ?? '服务端未给出原因'}\n`);
+    ctx.io.writeErr(`jobId ${job.jobId}；中心库数据未动，可用 kb workspace-db status --workspace ${job.workspaceId} 核对后处理\n`);
+  } else {
+    const removed = job.counts['removed'] ?? 0;
+    ctx.io.write(removed > 0
+      ? `清理完成：已删除 ${removed} 项迁移半成品（工作区侧目标库 / 附件目录 / 残留快照 / localize.json），中心库数据未动\n`
+      : '清理完成：无残留文件需删除，已释放写闸门\n');
+    ctx.io.write('该工作区回到中心库读写（db_mode=center，写闸门开放）\n');
+    if (typeof job.counts['center_rows_before'] === 'number') ctx.io.write(`中心库该区数据：${job.counts['center_rows_before']} 行（未动）\n`);
+  }
+  if (nothing) return 2;
+  return job.status === 'failed' ? 1 : 0;
+}
+
+/** kb workspace-db cleanup --workspace <id|名> */
+export async function workspaceDbCleanup(ctx: Ctx, workspace: string, args: WorkspaceDbPollArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const started = await postJob<WorkspaceDbOpJobView>(ctx, `${dbPath(workspaceId)}/localize/cleanup`, {},
+    error => (error.code.endsWith('NOTHING_TO_CLEAN') ? nothingToClean(error.message) : error.message));
+  const final = await waitForTerminal(ctx, started, CLEANUP, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
+  exitWith(renderCleanup(ctx, final));
+}
+
+function renderRevert(ctx: Ctx, job: WorkspaceDbOpJobView): number {
+  if (ctx.json) {
+    writeJson(ctx, job);
+  } else if (job.status === 'failed') {
+    const stage = job.stage === null ? '' : `（失败阶段：${stageLabel(REVERT, job.stage)}）`;
+    ctx.io.writeErr(`回迁失败${stage}：${job.lastError ?? '服务端未给出原因'}\n`);
+    ctx.io.writeErr(`jobId ${job.jobId}；回迁失败不改中心库数据，可用 kb workspace-db status --workspace ${job.workspaceId} 核对后处理\n`);
+  } else {
+    ctx.io.write('回迁完成：该工作区已回到中心库（db_mode=center），此后读写走中心库\n');
+    ctx.io.write(`${rowsTotalLine('反向拷贝行数合计', job.counts)}\n`);
+    ctx.io.write(`工作区库已移入 .agentboard/backup/${job.backupPath === null ? '' : `：${job.backupPath}`}\n`);
+  }
+  return job.status === 'failed' ? 1 : 0;
+}
+
+/** kb workspace-db revert --workspace <id|名> */
+export async function workspaceDbRevert(ctx: Ctx, workspace: string, args: WorkspaceDbPollArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const started = await postJob<WorkspaceDbOpJobView>(ctx, `${dbPath(workspaceId)}/localize/revert`, {});
+  const final = await waitForTerminal(ctx, started, REVERT, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
+  exitWith(renderRevert(ctx, final));
 }

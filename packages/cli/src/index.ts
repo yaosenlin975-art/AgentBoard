@@ -28,7 +28,7 @@ import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
 import { accountSwitch, accountsCapabilities, accountsList } from './commands/accounts.js';
-import { workspaceDbEnable } from './commands/workspaceDb.js';
+import { workspaceDbCleanup, workspaceDbEnable, workspaceDbRevert, workspaceDbStatus } from './commands/workspaceDb.js';
 import { registerDecisionCommands } from './commands/decision.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
@@ -372,22 +372,49 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   shortcut.command('remove').description('移除桌面快捷方式')
     .action(async () => removeShortcut(makeCtx(program, io)));
 
-  // STORE-2b：工作区库下沉（localize）——服务端八阶段状态机的 CLI 编排（jobId 轮询模型），迁移逻辑全在服务端
-  const workspaceDb = program.command('workspace-db').description('工作区库下沉：把工作区数据从中心库迁到工作区目录独享库（<工作区>/.agentboard/workspace.db）');
+  // STORE-2b/3b：工作区库下沉（localize）——服务端状态机的 CLI 编排（jobId 轮询模型），迁移 / 清理 / 回迁逻辑全在服务端
+  const workspaceDb = program.command('workspace-db').description('工作区库下沉：把工作区数据从中心库迁到工作区目录独享库（<工作区>/.agentboard/agentboard.db）；含状态查询、半成品清理、反向回迁');
   workspaceDb.command('enable')
     .description('启用工作区库：迁移该工作区的卡/评论/会话/知识页等（默认真实迁移；--dry-run 只统计不动数据）')
     .argument('<workspace>', '工作空间 id 或名称')
     .option('--dry-run', '只统计将迁移的行数/附件/预计字节，不产生任何变更')
     .option('--overwrite', '目标库已存在或上次迁移未收尾时，清理后重来')
+    .option('--resume', '从 localize.json 记录的中断阶段继续上次未完成的迁移（同给 --dry-run 时以 dry-run 为准；给 --resume 时忽略 --overwrite）')
     .addHelpText('after', `
 示例：
   kb workspace-db enable 任务看板 --dry-run    # 预览将迁移的数据量（无任何变更）
   kb workspace-db enable 任务看板              # 真实迁移（预检→备份→…→收尾，进度逐阶段打印）
-退出码：0 成功（含 dry-run / already_localized 幂等回显）；2 冲突（迁移进行中 / 已下沉 / 目标库已存在等 409）；
-1 失败（failed job 含 lastError、工作区不存在、轮询超时——超时会保留 jobId 供重查、400 参数类）
+  kb workspace-db enable 任务看板 --resume     # 上次迁移中断/失败后从记录的阶段继续（开头打印「从<阶段>阶段继续」）
+退出码：0 成功（含 dry-run / already_localized 幂等回显）；2 冲突（POST 409：该工作区已有迁移 / 清理 / 回迁任务在跑）；
+1 失败（failed job 含 lastError，预检拒绝如目标库已存在 / 上次迁移未收尾 / 无中间态可恢复均在此列；工作区不存在；
+轮询超时——超时会保留 jobId 供重查；400 参数类）
 `)
-    .action(async (workspace: string, opts: { dryRun?: boolean; overwrite?: boolean }) =>
-      workspaceDbEnable(makeCtx(program, io), workspace, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true }));
+    .action(async (workspace: string, opts: { dryRun?: boolean; overwrite?: boolean; resume?: boolean }) =>
+      workspaceDbEnable(makeCtx(program, io), workspace, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true, resume: opts.resume === true }));
+  workspaceDb.command('status')
+    .description('工作区库状态（只读）：模式 / 写闸门 / 生效库 / 行数与附件 / 快照落后 / localize.json 中间态 / 活动任务')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
+    .addHelpText('after', `
+紧急开关 AGENTBOARD_WORKSPACE_DB=disabled 生效且该区已下沉时，首行醒目提示需 revert 才能回中心库；failed 态末行提示 resume / cleanup。
+退出码：0 查询成功（不论模式）；1 工作区不存在 / 服务不可达
+`)
+    .action(async (opts: { workspace?: string }) => workspaceDbStatus(makeCtx(program, io), opts.workspace));
+  workspaceDb.command('cleanup')
+    .description('清理失败迁移的半成品（工作区侧目标库 / 附件目录 / 残留快照 / localize.json）；中心库数据不动，db_mode 落回 center')
+    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .addHelpText('after', `
+退出码：0 清理完成；2 无可清理的半成品 / 已有任务在跑（409）；
+1 清理被拒（已下沉的活库 / 工作区库是唯一数据副本——按提示先 revert）、工作区不存在、轮询超时
+`)
+    .action(async (opts: { workspace: string }) => workspaceDbCleanup(makeCtx(program, io), opts.workspace));
+  workspaceDb.command('revert')
+    .description('反向回迁：把已下沉工作区的数据拷回中心库（预检→回拷附件→回拷数据→收尾），工作区库移入 <工作区>/.agentboard/backup/')
+    .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
+    .addHelpText('after', `
+退出码：0 回迁完成；2 已有任务在跑（409）；
+1 回迁被拒或失败（未下沉 / 中心库已有该区数据 / 校验失败等，中心库数据不变）、工作区不存在、轮询超时
+`)
+    .action(async (opts: { workspace: string }) => workspaceDbRevert(makeCtx(program, io), opts.workspace));
 
   // DEC-4：决策命令组（ask / decisions / decision / answer / stop-check）
   registerDecisionCommands(program, io, makeCtx);

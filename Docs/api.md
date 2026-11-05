@@ -64,6 +64,70 @@
 | `GET /api/workspaces/:workspaceId/attachments/:attachmentId` | — | staged 图片原始字节；仅同 Workspace 且暂存未过期时可读取 | 404 图片/工作空间不存在；410 `ATTACHMENT_EXPIRED` | routes.ts |
 | `GET /api/issues/:id/attachments/:attachmentId` | — | attached 图片原始字节；附件必须关联此 Issue 的评论 | 404 任务或图片不存在 | routes.ts |
 
+### 工作区库下沉（STORE-2a/3a，`/api/workspaces/:id/db*`，类型 `packages/shared/src/workspaceLocalize.ts`）
+
+- jobId 模型：POST 立即 **202** 回任务创建时快照，`GET /api/workspaces/:id/db/localize/:jobId` 轮询到终态（快照 `status` 已非 `running` 时无需轮询）；localize / cleanup / revert 共用一张进程内存任务表（进程重启即失，旧 jobId → 404），每工作区同一时间只允许一个 running 任务（不分 kind）。
+- 跨进程事实源：`<ws>/.agentboard/localize.json`（中间态，resume 落点）与工作区库 `<ws>/.agentboard/agentboard.db` 的 meta。
+- POST 同步只返回 404（工作空间不存在）、400（body 非法，strict）、409 `MIGRATION_BUSY`（任务互斥）；预检拒绝与执行失败一律落在 job 终态 `status:'failed'` + `lastError`（标准文案，不带 code）。
+- 紧急开关 `AGENTBOARD_WORKSPACE_DB=disabled`：已下沉工作区的请求回中心库（不打开工作区库、不自动搬回）；`GET .../db` 以 `disabled` + `needsRevert` + `reason` 暴露，需 revert 收口。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/workspaces/:id/db/localize` | body：`dryRun?: boolean`、`overwrite?: boolean`、`resume?: boolean`（strict）；`dryRun=true` 时忽略 `resume`，`resume=true` 时忽略 `overwrite` | 202 `WorkspaceLocalizeJobView`（`kind:'localize'`、`status:'running'`、`stage:'preflight'`；resume 的续跑落点以 `GET .../db` 的 `localizeState.stage` 为准）；真实迁移开跑即置中心 `db_mode=localizing`，该区写请求 409 `WORKSPACE_DB_MIGRATING` | 404；400；409 `MIGRATION_BUSY`；job failed 见下方错误码表 | routes.ts:648 |
+| `GET /api/workspaces/:id/db/localize/:jobId` | — | 三类任务共用：`WorkspaceLocalizeJobView`（`kind` 缺省 = localize）或 `WorkspaceDbOpJobView`（`kind:'cleanup'\|'revert'`） | 404 `NOT_FOUND`（`迁移任务不存在`：jobId 不存在 / 不属于该区 / 进程已重启） | routes.ts:663 |
+| `POST /api/workspaces/:id/db/localize/cleanup` | body 严格 `{}` | 202 `WorkspaceDbOpJobView`（`kind:'cleanup'`，同步执行，快照通常已是终态）；成功 `result:'cleaned'`、`stage:null`、`counts:{ center_rows_before, removed }`；只删工作区侧半成品（目标库及 `-wal`/`-shm`、附件目录、残留 `*.center-backup-*` 快照、localize.json），中心库数据不动；db_mode failed / localizing → center（写闸门释放） | 404；400；409 `MIGRATION_BUSY`；job failed：`WORKSPACE_DB_NOTHING_TO_CLEAN` / `WORKSPACE_DB_CLEANUP_NOT_ALLOWED` / `WORKSPACE_DB_CLEANUP_UNSAFE` | routes.ts:675 |
+| `POST /api/workspaces/:id/db/localize/revert` | body 严格 `{}` | 202 `WorkspaceDbOpJobView`（`kind:'revert'`，`stage` 为当前阶段）；成功 `result:'reverted'`、`stage:'finalize'`、`counts` = 回迁到中心库的逐表行数（无 `rows_total`）、`backupPath` = `<ws>/.agentboard/backup/agentboard.db-reverted-<ts>`（工作区库移入处）；db_mode → center | 404；400；409 `MIGRATION_BUSY`；job failed（`stage` 置 null，中心库数据不变）：`WORKSPACE_DB_REVERT_NOT_LOCALIZED` / `WORKSPACE_DB_REVERT_CENTER_ROWS` / `WORKSPACE_DB_ID_MISMATCH` / `WORKSPACE_DB_UNREADABLE` / `CENTER_DB_UNHEALTHY` / `REVERT_ATTACHMENT_MISMATCH` / `REVERT_VERIFY_FAILED` | routes.ts:693 |
+| `GET /api/workspaces/:id/db` | — | `WorkspaceDbStatusView`（只读汇总） | 404 工作空间不存在 | routes.ts:709 |
+
+| 对象 | 字段 |
+| --- | --- |
+| WorkspaceLocalizeJobView | `jobId`（`loc-<8 位>`）、`workspaceId`、`kind?: 'localize'`、`dryRun`、`status: 'running'\|'done'\|'failed'\|'already_localized'`、`stage`（running = 当前阶段；done = `finalize`；failed = 失败所在阶段；already_localized / dry-run 完成 = null）、`counts: Record<string, number>`（dry-run 含 `rows_total` / `attachment_files` / `attachment_bytes` / `estimated_bytes`；真实迁移只有逐表键，copy 起逐步填充）、`lastError`、`result: 'localized'\|'already_localized'\|'dry_run'\|null`、`targetDbPath`、`backupPath`（中心库 VACUUM INTO 快照；dry-run / already_localized = null）、`startedAt`、`finishedAt` |
+| WorkspaceDbOpJobView | `jobId`（`cleanup-<8 位>` / `revert-<8 位>`）、`workspaceId`、`kind: 'cleanup'\|'revert'`、`status: 'running'\|'done'\|'failed'`、`stage: string\|null`、`counts`、`lastError`、`result: 'cleaned'\|'reverted'\|null`、`backupPath`（cleanup = null）、`startedAt`、`finishedAt` |
+| WorkspaceDbStatusView | `workspaceId`、`dbMode: 'center'\|'localizing'\|'localized'\|'failed'`、`writeGate: 'open'\|'frozen'`（frozen = 该区写请求 409 `WORKSPACE_DB_MIGRATING`）、`disabled`（紧急开关生效）、`needsRevert`（disabled 且 db_mode=localized）、`centerDbPath`、`workspaceDbPath: string\|null`（工作区 path 缺失 = null）、`workspaceDbExists`、`effectiveDbPath`（解析层判定后实际落库路径，含 disabled 语义）、`counts`（数据所在库逐表行数 + `rows_total`）、`attachments: { rows, files, bytes, dir }`、`snapshotLagRows: number\|null`（localized = 中心库该区残留行数，>0 时 revert 拒绝；localizing / failed = Σ max(0, 中心 − 工作区库)；工作区库不存在或打不开 = null）、`localizeState: { migrationId, stage, lastError, backupPath, startedAt }\|null`（localize.json）、`activeJob: { jobId, kind, status, stage }\|null`（本进程该区 running 任务）、`error: string\|null`（解析层错误码）、`reason`（解析层判定依据） |
+
+| 任务 | 阶段顺序 | 续跑 / 失败语义 |
+| --- | --- | --- |
+| localize | `preflight → backup → create → copy → copy_attachments → verify → switch → finalize` | `resume` 落点 = localize.json 的 `stage`：preflight / backup 整段重跑；create ~ copy_attachments 删半成品后从 create 重建；verify 重跑校验 → switch → finalize；switch 幂等重跑；已提交（db_mode=localized）→ `already_localized` |
+| revert | `preflight → copy_attachments_back → copy_back → finalize` | 预检通过后置 localizing 冻结该区写；copy_back 单事务（删中心残留 + 反向插行 + 逐表守恒 + db_mode=center）；之后的失败回滚并还原 localized |
+| cleanup | 无（`stage` 恒 null） | — |
+
+错误码（`状态` 为服务端 ApiError 口径；除 POST 同步的 `MIGRATION_BUSY` 外，客户端见到的是 job failed + `lastError` 标准文案）：
+
+| code | 状态 | 场景 |
+| --- | --- | --- |
+| `MIGRATION_BUSY` | 409 | POST 同步：该区已有任务在跑（`本进程已有任务 <jobId>（<kind>）在跑`）；job 内：非 resume 且已有 localize.json 中间态（上次迁移未收尾，需 `overwrite=true` 或 `resume=true`） |
+| `TARGET_DB_EXISTS` | 409 | 预检：目标库已存在（需 `overwrite=true`） |
+| `ALREADY_LOCALIZED` | 409 | 预检：db_mode 已是 localized（工作区库完好时真实迁移先幂等返回 `already_localized`，不到此码） |
+| `WORKSPACE_PATH_NOT_LOCAL` / `INSUFFICIENT_SPACE` / `WORKSPACE_BUSY` | 409 | 预检：工作区目录不在本机磁盘 / 剩余空间 < (数据 + 附件) × 1.2 或目标目录不可写 / 有运行中会话 |
+| `CENTER_DB_UNHEALTHY` | 500 | 中心库 integrity_check 未通过（localize / revert 预检） |
+| `NO_LOCALIZE_STATE` / `LOCALIZE_STATE_INVALID` | 409 | resume：localize.json 不存在 / 与工作区或中心库不一致、阶段非法（先 cleanup） |
+| `WORKSPACE_DB_NOTHING_TO_CLEAN` | 409 | cleanup：db_mode=center 且无半成品 |
+| `WORKSPACE_DB_CLEANUP_NOT_ALLOWED` / `WORKSPACE_DB_CLEANUP_UNSAFE` | 409 | cleanup：db_mode=localized（活库）/ 中心库无该区行且工作区库是唯一数据副本（先 revert） |
+| `WORKSPACE_DB_REVERT_NOT_LOCALIZED` / `WORKSPACE_DB_REVERT_CENTER_ROWS` | 409 | revert：db_mode 不在 localized / failed、工作区库缺失或未完成迁移 / 中心库已有该区数据（分叉，核对 `snapshotLagRows`） |
+| `WORKSPACE_DB_ID_MISMATCH` | 409 | 工作区库 meta 的 workspace_id 与目录绑定不一致（revert 拒绝；解析层拒绝打开） |
+| `WORKSPACE_DB_UNREADABLE` | 500 | 工作区库存在但打不开（revert 拒绝；解析层不回退中心库，文案附迁移前中心库快照路径） |
+| `REVERT_ATTACHMENT_MISMATCH` / `REVERT_VERIFY_FAILED` | 500 | revert：附件 sha256 不一致 / 逐表行数不守恒（事务回滚） |
+| `WORKSPACE_DB_MIGRATING` | 409 | 本族之外的写请求：db_mode=localizing / failed（或工作区库 meta.localized=0）期间该区写被闸门拒绝，读走中心库 |
+| `WORKSPACE_DB_MISSING` | 500 | 解析层：中心 db_mode=localized 但工作区库文件缺失（不回退中心库） |
+
+### 工作区库下沉 CLI（`kb workspace-db *`，`packages/cli/src/commands/workspaceDb.ts`）
+
+| 端点 | CLI | 必填 | 备注 |
+| --- | --- | --- | --- |
+| `POST .../db/localize` + 轮询 | `kb workspace-db enable <workspace>` | `<workspace>`（id 或名称） | `--dry-run` 只统计；`--overwrite` 清理后重来；`--resume` 透传 `resume:true`，先读 `GET .../db` 的 `localizeState.stage` 打印 `从<阶段>阶段继续`（同给 `--dry-run` 时不读不打印） |
+| `GET .../db` | `kb workspace-db status` | — | `--workspace <id\|名>`（缺省按 cwd 解析）；中文渲染模式（中心库 / 迁移中 / 已下沉 / 失败）、写闸门、生效库、行数合计与附件、快照落后、中间态、活动任务、解析依据；`disabled && needsRevert` 首行 `【警告】紧急开关已启用：该工作区数据在工作区库中，需 revert 才能回中心库`（`--json` 时该提示写 stderr）；failed 态末行提示 `enable --resume` / `cleanup` |
+| `POST .../db/localize/cleanup` + 轮询 | `kb workspace-db cleanup` | `--workspace <id\|名>` | 终态打印删除项数与中心库该区行数；`WORKSPACE_DB_NOTHING_TO_CLEAN`（job failed 或 POST 409）→ stderr `无可清理的半成品：<服务端文案>` |
+| `POST .../db/localize/revert` + 轮询 | `kb workspace-db revert` | `--workspace <id\|名>` | 进度按四阶段中文渲染（预检 / 回拷附件 / 回拷数据 / 收尾）；终态打印反向拷贝行数合计与 `工作区库已移入 .agentboard/backup/：<path>` |
+
+- 轮询：间隔 2s、总超时 10 分钟；超时退出码 1，stderr 给 jobId 与 GET 重查路径；网络抖动连续 15 次内重试，服务端明确应答（如 404）直接失败。
+- `--json`：stdout 只输出终态 JobView / StatusView 原文，进度行写 stderr；POST 409 走全局错误体，退出码不变。
+
+| 码 | 含义 |
+| --- | --- |
+| 0 | enable 完成 / dry-run / `already_localized` 幂等回显；status 查询成功（不论模式）；cleanup / revert 完成 |
+| 1 | job failed（`lastError` 原文透出，含预检拒绝：目标库已存在、上次迁移未收尾、无中间态可恢复、清理被拒、回迁被拒）；工作区不存在；400；轮询超时；cleanup / revert 缺 `--workspace` |
+| 2 | POST 409（该区已有任务在跑，服务端文案原样透出）；cleanup 无可清理的半成品 |
+
 ## 4. system
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
