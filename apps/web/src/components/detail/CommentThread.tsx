@@ -1,10 +1,11 @@
-﻿/** 评论时间线与图片附件草稿；图片交付未验证时，服务端会保留评论为待读。 */
+/** 评论时间线与图片附件草稿；图片交付未验证时，服务端会保留评论为待读。 */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarkdownView } from '../../lib/markdown';
 import type { AttachmentMetadata, Issue, IssueComment } from '@agentboard/shared';
 import { api, type AttachmentUploadResult } from '../../api/client';
 import { Badge } from '../ui/Badge';
+import { EmptyState } from '../ui/EmptyState';
 
 const MAX_ATTACHMENTS = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -241,7 +242,9 @@ export function CommentThread({ issue }: { issue: Issue }) {
           </li>
         ))}
         {orderedComments.length === 0 && (
-          <li data-testid="comments-empty" className="text-xs text-neutral-400 dark:text-neutral-600">暂无评论</li>
+          <li data-testid="comments-empty" className="list-none">
+            <EmptyState compact title="暂无评论" hint="留言会实时送达占用者与验收人" />
+          </li>
         )}
       </ol>
 
@@ -316,7 +319,7 @@ export function CommentThread({ issue }: { issue: Issue }) {
                 {item.error && <p role="alert" className="text-xs text-red-600 dark:text-red-400">{item.error}</p>}
                 <div className="mt-1 flex flex-wrap gap-1">
                   {item.status === 'error' && (
-                    <button type="button" aria-label={`重试上传 ${item.file.name}`} onClick={() => upload(item)} className="text-xs text-accent underline dark:text-blue-300">
+                    <button type="button" aria-label={`重试上传 ${item.file.name}`} onClick={() => upload(item)} className="text-xs text-accent underline">
                       重试
                     </button>
                   )}

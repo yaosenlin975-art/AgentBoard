@@ -287,7 +287,7 @@ export function DispatchDialog({
           ))}
           {candidates.length === 0 && !pendingAttachments.isPending && !pendingAttachments.isError && <p className="text-neutral-500">没有待读图片。</p>}
           {pendingAttachments.hasNextPage && (
-            <button type="button" onClick={() => void pendingAttachments.fetchNextPage()} disabled={pendingAttachments.isFetchingNextPage || dispatched} className="rounded px-2 py-1 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-300 dark:hover:bg-blue-950/40">
+            <button type="button" onClick={() => void pendingAttachments.fetchNextPage()} disabled={pendingAttachments.isFetchingNextPage || dispatched} className="rounded px-2 py-1 text-xs text-accent hover:bg-accent-soft disabled:opacity-50">
               {pendingAttachments.isFetchingNextPage ? '加载中…' : '加载更多历史图片'}
             </button>
           )}
