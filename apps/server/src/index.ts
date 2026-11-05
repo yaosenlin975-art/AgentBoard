@@ -51,6 +51,7 @@ import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
 import { startAwaitingSweeper } from './services/turnAwaiting.js';
 import { startDecisionReminderTicker } from './services/decisionReminder.js';
+import { startDecisionGraceTicker } from './services/decisionGrace.js';
 import { SERVER_VERSION } from './version.js';
 import {
   AttachmentStore,
@@ -378,6 +379,8 @@ export async function main(): Promise<StartedServer> {
 
   // CHAT-AWAIT1：阻塞态心跳 + 超时兜底（周期刷新 awaiting 心跳；超阈值收口 failed(awaiting_timeout)）
   startAwaitingSweeper(db, event => hub.broadcast(event));
+  // DEC-WIRE：宽限计时器（2 秒级；内部先做一次启动补算，grace_until 已过的立即落锁）
+  startDecisionGraceTicker(db, { broadcast: event => hub.broadcast(event) });
   // DEC-8：锁后分级提醒（4h/24h/72h，档位只前进不重复；不改决策状态、不自动解锁）
   startDecisionReminderTicker(db, {
     broadcast: event => hub.broadcast(event),

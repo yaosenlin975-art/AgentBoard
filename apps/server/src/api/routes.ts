@@ -14,6 +14,7 @@ import { createSystemRouter, performRestart, type RestartDeps } from './systemRo
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
+import { createDecisionRouter } from './decisionRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec, CheckinVault } from '../services/accounts/checkinProvider.js';
@@ -495,6 +496,9 @@ export function createRouter(deps: RouterDeps): Router {
     });
     res.json(draft);
   });
+
+  // DEC-WIRE：决策 REST（DEC-3 定稿）必须在 '/issues/:id' 中间件之前注册，否则 /issues/:id/ask 与 /issues/:id/stop 会被当作 issue 子路由
+  router.use(createDecisionRouter({ db, broadcast }));
 
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
