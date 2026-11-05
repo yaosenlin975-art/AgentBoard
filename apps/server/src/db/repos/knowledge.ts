@@ -78,6 +78,22 @@ function duplicate(error: unknown): never {
  * KB-PAGE-1 缺陷 2：默认**不返回软删页**（`status='deleted'` 不再被当正常页读出来）。
  * 需要区分「不存在」与「已删除」的调用方（`GET /pages/:id` 要回 410）显式传 `includeDeleted`。
  */
+/**
+ * PERF-2（F4）：按 id 集合批量取页（单条 IN 查询），替代检索结果逐条 getKnowledgePage 的 N+1。
+ * 行形状与 getKnowledgePage 一致（selectPage + parsePage）；不在此做 scope 校验——调用方
+ * （knowledgeSearch）已在检索 SQL 里做过 scope/状态过滤。
+ */
+export function getKnowledgePagesByIds(db: Db, ids: readonly string[]): KnowledgePage[] {
+  if (ids.length === 0) return [];
+  const params: Record<string, string> = {};
+  const placeholders = ids.map((id, i) => {
+    params[`id${i}`] = id;
+    return `@id${i}`;
+  }).join(',');
+  const rows = db.prepare(`${selectPage} WHERE p.id IN (${placeholders})`).all(params) as PageRow[];
+  return rows.map(parsePage);
+}
+
 export function getKnowledgePage(
   db: Db,
   pageId: string,

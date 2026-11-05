@@ -1,7 +1,7 @@
 import type { Db } from '../connection.js';
 import { knowledgeScopeWhere, type KnowledgeScopeFilter } from './knowledgeScope.js';
 import type { KnowledgePage } from '@agentboard/shared';
-import { getKnowledgePage } from './knowledge.js';
+import {getKnowledgePagesByIds} from './knowledge.js';
 import { ValidationError } from '../../errors.js';
 
 export interface KnowledgeSearchInput {
@@ -39,8 +39,11 @@ export function searchKnowledge(db: Db, input: KnowledgeSearchInput): KnowledgeS
       WHERE ${scopeSql} AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>@now) AND (p.title LIKE @query ESCAPE '!' OR p.body_md LIKE @query ESCAPE '!')
       ORDER BY score,p.scope='workspace' DESC,p.updated_at DESC,p.id LIMIT @limit`;
   }
-  return (db.prepare(sql).all(params) as Array<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null; score: number }>).map(row => {
-    const page = getKnowledgePage(db, row.id, row.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: row.workspace_id! })!;
+  const rows = db.prepare(sql).all(params) as Array<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null; score: number }>;
+  // PERF-2（F4）：批量取页——检索 1 条 + 批量 1 条 = 2 查询（原为 1+N）
+  const pagesById = new Map(getKnowledgePagesByIds(db, rows.map(row => row.id)).map(page => [page.id, page]));
+  return rows.map(row => {
+    const page = pagesById.get(row.id)!;
     const position = page.body_md.toLowerCase().indexOf(query.toLowerCase());
     const start = Math.max(0, position - 100);
     return { page_id: page.id, scope: page.scope, workspace_id: page.workspace_id, revision: page.revision, title: page.title,

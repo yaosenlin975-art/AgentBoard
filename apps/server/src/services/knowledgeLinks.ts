@@ -158,6 +158,38 @@ export function listUnresolvedLinks(db: Db, pageId: string): Array<{ raw_target:
     ORDER BY raw_target`).all(pageId, pageId) as Array<{ raw_target: string; alias: string | null; heading: string | null }>;
 }
 
+/**
+ * PERF-2（F6）：详情页链接统计聚合——backlinks_count / links_out_count / unresolved_links
+ * 三次独立查询合成 1 条（标量子查询 + json_group_array），返回字段与三个旧函数逐一对应。
+ */
+export interface KnowledgePageLinkStats {
+  backlinks_count: number;
+  links_out_count: number;
+  unresolved_links: Array<{ raw_target: string; alias: string | null; heading: string | null }>;
+}
+
+export function getKnowledgePageLinkStats(db: Db, pageId: string): KnowledgePageLinkStats {
+  const row = db.prepare(`SELECT
+      (SELECT COUNT(*) FROM knowledge_link l
+        JOIN knowledge_page p ON p.id = l.source_page_id AND p.revision = l.revision
+        WHERE l.target_page_id=@pageId AND l.resolved=1 AND p.status<>'deleted') AS backlinks_count,
+      (SELECT COUNT(*) FROM knowledge_link
+        WHERE source_page_id=@pageId
+          AND revision=(SELECT revision FROM knowledge_page WHERE id=@pageId)) AS links_out_count,
+      (SELECT COALESCE(json_group_array(json_object('raw_target', r.raw_target, 'alias', r.alias, 'heading', r.heading)), json_array())
+        FROM (SELECT raw_target, alias, heading FROM knowledge_link
+              WHERE source_page_id=@pageId
+                AND revision=(SELECT revision FROM knowledge_page WHERE id=@pageId)
+                AND resolved=0
+              ORDER BY raw_target) r) AS unresolved_links
+    `).get({ pageId }) as { backlinks_count: number; links_out_count: number; unresolved_links: string };
+  return {
+    backlinks_count: row.backlinks_count,
+    links_out_count: row.links_out_count,
+    unresolved_links: JSON.parse(row.unresolved_links) as KnowledgePageLinkStats['unresolved_links'],
+  };
+}
+
 /** 该页当前 revision 的出链数（去重后的目标数） */
 export function countOutgoingLinks(db: Db, pageId: string): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM knowledge_link
