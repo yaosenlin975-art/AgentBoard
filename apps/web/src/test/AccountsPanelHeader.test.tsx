@@ -48,7 +48,7 @@ describe('账号页头部（ACC-HEADER）', () => {
     expect(screen.getByLabelText('账号管理')).toBeInTheDocument();
   });
 
-  it('工具栏：一键签到按钮与脱敏说明同一行，且工具栏在面板最上方（额度区之前）', async () => {
+  it('工具栏：一键签到与脱敏说明同一行，且整排位于主从内容之后', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
@@ -59,9 +59,10 @@ describe('账号页头部（ACC-HEADER）', () => {
     expect(button).toHaveTextContent('一键签到');
     expect(note).toHaveTextContent('仅展示脱敏元数据');
 
-    // 工具栏在额度区之前（DOM 顺序即视觉顺序）；ACC-PANEL-03 起额度区是行组 `quota-rows`
-    const quota = screen.getByTestId('quota-rows');
-    expect(toolbar.compareDocumentPosition(quota) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 需求 6：工具栏移到主从内容下方；额度面板整块移除
+    const master = screen.getByTestId('accounts-master-detail');
+    expect(master.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('quota-rows')).toBeNull();
     // 按钮在 toolbar 内靠右（说明占 mr-auto，按钮排在其后）
     expect(note.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

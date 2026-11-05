@@ -18,7 +18,7 @@
  */
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
+import { QUOTA_GROUPS, type ManagedAppId, type PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
@@ -26,7 +26,7 @@ import { CapabilityBadges } from './CapabilityBadges';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
-import { QuotaCreditChip, QuotaRows } from './QuotaCards';
+import { QuotaCreditChip } from './QuotaCards';
 import {
   APP_ORDER,
   appLabel,
@@ -47,6 +47,13 @@ import {
 import { createCheckinBatch } from './checkinApi';
 import { AddAccountEntry } from './AddAccountWizard';
 import { AccountsMasterDetail, type PlatformIndexItem } from './AccountsMasterDetail';
+
+/** 需求 2：CLI 额度来源并入同一平台列表时的短标签（长标签仍用于额度详情） */
+const CLI_SOURCE_ROW_LABEL: Record<string, string> = {
+  deepseek: 'DeepSeek',
+  opencode_go: 'OpenCode-Go',
+  codex: 'Codex',
+};
 
 /** 签到芯片三态配色（§5：绿=全完成、琥珀=部分、灰=不可用/未纳入） */
 const CHIP_TONE_CLASS: Record<CheckinChipTone, string> = {
@@ -122,7 +129,6 @@ export function AccountsPanel() {
       return {
         app,
         label: meta.label,
-        glyph: meta.glyph,
         currentLabel: current === null ? null : (current.display_name ?? null),
         accountCount: appAccounts.length,
         done: summary.done,
@@ -148,13 +154,44 @@ export function AccountsPanel() {
       const appAccounts = accounts.filter((account) => account.app_id === app);
       return build(app, appAccounts, summarizeCheckinToday(appAccounts, caps.capabilities[app as ManagedAppId] ?? null, today));
     });
-    return [...known, ...extras];
+    /**
+     * 需求 2：CLI 额度三来源并入同一平台列表（图2 紧凑行）。
+     * 它们没有 managed_accounts 记录，账号计数在 ACC-CLI-MULTI 落地前固定为 0；
+     * 本卡只做展示与入口，不伪造账号或新增后端接口。
+     */
+    const sources: PlatformIndexItem[] = (QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []).map((source) => ({
+      app: source,
+      kind: 'source' as const,
+      label: CLI_SOURCE_ROW_LABEL[source] ?? source,
+      currentLabel: null,
+      accountCount: 0,
+      done: 0,
+      total: 0,
+      render: () => <QuotaSourceDetail source={source} />,
+    }));
+    return [...known, ...extras, ...sources];
   }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today]);
 
   return (
     <section aria-label="账号管理" className="mt-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-      {/* 工具栏（§5）：脱敏说明靠左，一键签到 / 读取本机账号 / 今日 n/m 靠右；窄屏换行不破版 */}
-      <div data-testid="accounts-toolbar" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      {caps.isError && (
+        <p role="alert" data-testid="accounts-capabilities-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          能力矩阵读取失败：{caps.errorMessage ?? '未知错误'}；为避免误操作，捕获/切换/签到均已禁用
+        </p>
+      )}
+      {caps.isPending && <p data-testid="accounts-capabilities-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取能力矩阵…</p>}
+
+      {list.isPending && <p data-testid="accounts-list-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取托管账号…</p>}
+      {list.isError && (
+        <p role="alert" data-testid="accounts-list-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+          {list.error instanceof Error ? list.error.message : '读取托管账号失败'}
+        </p>
+      )}
+
+      {!list.isPending && !list.isError && <AccountsMasterDetail items={indexItems} />}
+
+      {/* 需求 6：图3 工具条整体下移到主从内容之后；仍保持脱敏说明靠左、动作靠右 */}
+      <div data-testid="accounts-toolbar" className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
         <p data-testid="accounts-desensitize-note" className="mr-auto text-[11px] leading-tight text-neutral-500 dark:text-neutral-400">
           仅展示脱敏元数据；快照、凭据与 token 不出现在界面
         </p>
@@ -173,31 +210,6 @@ export function AccountsPanel() {
       <div data-testid="accounts-one-click-results" className="mb-2 empty:hidden">
         <OneClickCheckinResults controller={oneClick} />
       </div>
-
-      {caps.isError && (
-        <p role="alert" data-testid="accounts-capabilities-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-          能力矩阵读取失败：{caps.errorMessage ?? '未知错误'}；为避免误操作，捕获/切换/签到均已禁用
-        </p>
-      )}
-      {caps.isPending && <p data-testid="accounts-capabilities-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取能力矩阵…</p>}
-
-      {list.isPending && <p data-testid="accounts-list-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取托管账号…</p>}
-      {list.isError && (
-        <p role="alert" data-testid="accounts-list-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-          {list.error instanceof Error ? list.error.message : '读取托管账号失败'}
-        </p>
-      )}
-
-      {!list.isPending && !list.isError && (
-        <AccountsMasterDetail
-          items={indexItems}
-          footer={
-            <div data-testid="accounts-quota-rows" className="min-[920px]:block">
-              <QuotaRows />
-            </div>
-          }
-        />
-      )}
     </section>
   );
 }
@@ -401,5 +413,17 @@ function PlatformRow({
         {batchId !== null && <CheckinBatchPanel batchId={batchId} accounts={accounts} onClose={() => setBatchId(null)} />}
       </div>
     </div>
+  );
+}
+
+/**
+ * 需求 2：CLI 额度来源选中后的详情占位。
+ * 三来源目前没有托管账号模型（ACC-CLI-MULTI 承接），这里只说明现状，不渲染额度面板、不提供假按钮。
+ */
+function QuotaSourceDetail({ source }: { source: string }) {
+  return (
+    <p data-testid={`accounts-source-note-${source}`} className="text-xs leading-relaxed text-ink-3">
+      该来源为 CLI 额度来源，账号模型尚未接入；新增与切换待多账号管理落地后提供。
+    </p>
   );
 }

@@ -22,7 +22,8 @@ import type { CheckinTodaySummary } from './accountCapabilities';
 export interface PlatformIndexItem {
   app: string;
   label: string;
-  glyph: string;
+  /** 来源行（DeepSeek / OpenCode-Go / Codex）：不显示「当前账号」，不可签到 */
+  kind?: 'platform' | 'source';
   /** 当前账号（客户端登录账号优先，缺失则空） */
   currentLabel: string | null;
   accountCount: number;
@@ -33,14 +34,7 @@ export interface PlatformIndexItem {
   render: () => React.ReactNode;
 }
 
-export function AccountsMasterDetail({
-  items,
-  footer,
-}: {
-  items: PlatformIndexItem[];
-  /** 额度等非平台区块（放在左栏底部，不参与主从切换） */
-  footer?: React.ReactNode;
-}) {
+export function AccountsMasterDetail({ items }: { items: PlatformIndexItem[] }) {
   const [selected, setSelected] = useState<string>(items[0]?.app ?? '');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const active = items.find((item) => item.app === selected) ?? items[0] ?? null;
@@ -111,9 +105,6 @@ export function AccountsMasterDetail({
                   : 'text-ink-2 hover:bg-surface-raised'
               }`}
             >
-              <span aria-hidden="true" data-testid={`accounts-index-glyph-${item.app}`} className="inline-flex size-4 shrink-0 items-center justify-center">
-                {item.glyph}
-              </span>
               <span className="truncate">{item.label}</span>
               <span data-testid={`accounts-index-count-${item.app}`} className="tabular-nums text-[11px] text-ink-3">
                 {item.accountCount}
@@ -130,7 +121,6 @@ export function AccountsMasterDetail({
             </button>
           );
         })}
-        {footer !== undefined && <div className="shrink-0 min-[920px]:mt-2">{footer}</div>}
       </div>
 
       {/* 右栏：只渲染选中平台 */}
@@ -145,11 +135,12 @@ export function AccountsMasterDetail({
         ) : (
           <>
             <h3 data-testid="accounts-detail-title" className="mb-1 flex items-center gap-1.5 text-xs font-medium text-ink">
-              <span aria-hidden="true">{active.glyph}</span>
               {active.label}
-              <span data-testid="accounts-detail-current" className="font-normal text-ink-3">
-                {active.currentLabel === null ? '未设置当前账号' : `当前：${active.currentLabel}`}
-              </span>
+              {active.kind !== 'source' && (
+                <span data-testid="accounts-detail-current" className="font-normal text-ink-3">
+                  {active.currentLabel === null ? '未设置当前账号' : `当前：${active.currentLabel}`}
+                </span>
+              )}
             </h3>
             {active.render()}
           </>

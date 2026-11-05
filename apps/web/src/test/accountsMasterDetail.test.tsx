@@ -72,8 +72,10 @@ describe('账号面板主从布局（ACC-B1）', () => {
 
     const index = await screen.findByTestId('accounts-index');
     const items = within(index).getAllByRole('tab');
-    // 六平台 + 其它平台（qoder_cn），已下线的 codebuddy_desktop 不出现
-    expect(items.map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax', 'trae', 'qoder_cn']);
+    // 三平台 + 其它平台（qoder_cn）+ CLI 额度三来源，已下线的 codebuddy_desktop 不出现
+    expect(items.map((el) => el.dataset.app)).toEqual([
+      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'deepseek', 'opencode_go', 'codex',
+    ]);
     expect(screen.queryByTestId('accounts-index-item-codebuddy_desktop')).toBeNull();
 
     // 账号数 + 当前账号 + 健康态
@@ -84,9 +86,17 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('accounts-index-item-minimax')).toHaveAttribute('aria-selected', 'false');
 
-    // 额度行不再混进平台列表，落在左栏 footer
-    expect(screen.getByTestId('accounts-quota-rows')).toBeInTheDocument();
+    // 额度面板整块移除；CLI 三来源以平台行形态并入列表
+    expect(screen.queryByTestId('accounts-quota-rows')).toBeNull();
+    expect(screen.queryByTestId('quota-rows')).toBeNull();
     expect(screen.queryByTestId('accounts-overview')).toBeNull();
+    for (const app of ['deepseek', 'opencode_go', 'codex']) {
+      expect(screen.getByTestId(`accounts-index-item-${app}`)).toBeInTheDocument();
+    }
+    // 工具条移到主从内容之后
+    const toolbar = screen.getByTestId('accounts-toolbar');
+    const master = screen.getByTestId('accounts-master-detail');
+    expect(master.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('右栏只渲染选中平台：切平台后旧平台账号消失', async () => {
@@ -122,7 +132,8 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{End}');
-    expect(screen.getByTestId('accounts-index-item-trae')).toHaveAttribute('aria-selected', 'true');
+    // 列表末尾是 CLI 额度来源（Codex）
+    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{Home}');
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');

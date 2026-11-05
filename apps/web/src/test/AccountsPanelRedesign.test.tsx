@@ -124,23 +124,26 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toBeInTheDocument();
   });
 
-  it('额度区改为行组：三来源各一行嵌在总览里，不再有卡片边框与状态徽标', async () => {
+  it('额度面板整块移除；CLI 三来源改为紧凑平台行并入列表', async () => {
     renderPanel();
+    await screen.findByTestId('accounts-index');
 
-    const deepseek = await screen.findByTestId('quota-row-deepseek');
-    expect(deepseek).toHaveAttribute('data-status', 'ok');
-    expect(within(deepseek).getByTestId('quota-row-balance-deepseek')).toHaveTextContent('¥751.81');
-    expect(within(deepseek).queryByTestId('quota-row-window-deepseek-0')).toBeNull();
-    // 行不套卡片边框（六行同级，一屏可见）
-    expect(deepseek.className).not.toContain('rounded-lg');
-    expect(screen.queryByTestId('quota-cards')).toBeNull();
+    // 图1 的额度段（CLI 额度 / 平台账号额度 / 缓存脚注）不再渲染
+    expect(screen.queryByTestId('quota-rows')).toBeNull();
+    expect(screen.queryByTestId('accounts-quota-rows')).toBeNull();
+    expect(screen.queryByTestId('quota-row-deepseek')).toBeNull();
+    expect(screen.queryByText(/服务端 60s 缓存/)).toBeNull();
 
-    const go = screen.getByTestId('quota-row-opencode_go');
-    expect(go.className).not.toContain('rounded-lg');
-    expect(within(go).getByTestId('quota-row-window-opencode_go-0')).toBeInTheDocument();
-    // 仅额度行没有展开控件与账号操作
-    expect(within(go).queryByTestId(/accounts-toggle/)).toBeNull();
-    expect(screen.getByTestId('quota-rows')).toBeInTheDocument();
+    // 三来源以与平台一致的索引行出现，点击进入右侧详情占位
+    for (const app of ['deepseek', 'opencode_go', 'codex']) {
+      expect(screen.getByTestId(`accounts-index-item-${app}`)).toBeInTheDocument();
+    }
+    expect(screen.getByTestId('accounts-index-item-deepseek')).toHaveTextContent('DeepSeek');
+    expect(screen.getByTestId('accounts-index-item-opencode_go')).toHaveTextContent('OpenCode-Go');
+    expect(screen.getByTestId('accounts-index-item-codex')).toHaveTextContent('Codex');
+
+    await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
+    expect(await screen.findByTestId('accounts-source-note-deepseek')).toBeInTheDocument();
   });
 
   it('平台头部「签到」：只提交该平台启用账号', async () => {

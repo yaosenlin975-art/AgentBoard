@@ -31,7 +31,7 @@ export interface PlatformMeta {
 }
 
 const PLATFORM_META: Record<string, Omit<PlatformMeta, 'app'>> = {
-  workbuddy_desktop: { label: 'WorkBuddy Desktop', glyph: 'W', offline: false },
+  workbuddy_desktop: { label: 'Workbuddy', glyph: 'W', offline: false },
   codebuddy_desktop: { label: 'CodeBuddy Desktop', glyph: 'C', offline: true },
   minimax: { label: 'MiniMax', glyph: 'M', offline: false },
   trae: { label: 'Trae', glyph: 'T', offline: false },
@@ -52,7 +52,7 @@ export function platformMeta(app: string): PlatformMeta {
 export const APP_ORDER: AccountsAppId[] = ['workbuddy_desktop', 'minimax', 'trae'];
 
 export const APP_LABEL: Record<AccountsAppId, string> = {
-  workbuddy_desktop: 'WorkBuddy Desktop',
+  workbuddy_desktop: 'Workbuddy',
   minimax: 'MiniMax',
   trae: 'Trae',
 };

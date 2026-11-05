@@ -2,7 +2,7 @@
  * ACC-KB-B1W：`APP_ORDER` 之外的平台不静默丢卡。
  *
  * 覆盖三件事：
- * 1. 新增平台（qoder_cn / zcode，服务端能力矩阵已返回但 provider 未实现）进「其它平台」分区，显示名/图标走映射表；
+ * 1. 新增平台（qoder_cn / zcode，服务端能力矩阵已返回但 provider 未实现）进「其它平台」分区，显示名走映射表；
  * 2. 完全未知的 app id 也要渲染出来，显示为「未识别平台」+ `?`，页面文本里不出现裸 id；
  * 3. 已知三平台分区（APP_ORDER）与六行总览不受影响。
  */
@@ -75,13 +75,15 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
     const extra = await screen.findByTestId('accounts-index');
     // 按 id 字典序：qoder_cn < zcode
     const apps = [...extra.querySelectorAll('[data-testid^="accounts-index-item-"]')].map((el) => el.getAttribute('data-app'));
-    // 六平台（APP_ORDER）之后按 id 字典序追加其它平台
-    expect(apps.slice(-2)).toEqual(['qoder_cn', 'zcode']);
+    // APP_ORDER 之后追加其它平台（按 id 字典序），最后是 CLI 额度三来源
+    expect(apps).toEqual([
+      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'opencode_go', 'codex',
+    ]);
     expect(within(extra).getByText('Qoder CN')).toBeInTheDocument();
     expect(within(extra).getByText('ZCode')).toBeInTheDocument();
-    // 图标字形来自 platformMeta
-    expect(within(extra).getByTestId('accounts-index-glyph-qoder_cn')).toHaveTextContent('Q');
-    expect(within(extra).getByTestId('accounts-index-glyph-zcode')).toHaveTextContent('Z');
+    // 需求 4：索引行不再有首字母 glyph
+    expect(screen.queryByTestId('accounts-index-glyph-qoder_cn')).toBeNull();
+    expect(screen.queryByTestId('accounts-index-glyph-zcode')).toBeNull();
     // 已知平台仍在 APP_ORDER 分区里
     expect(screen.getByTestId('accounts-app-workbuddy_desktop')).toBeInTheDocument();
   });
@@ -95,7 +97,8 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
     // ACC-B1：未知平台也进左栏索引（不静默丢卡），图标走 platformMeta 兜底
     const unknownItem = await screen.findByTestId('accounts-index-item-some_future_app');
     expect(unknownItem).toBeInTheDocument();
-    expect(screen.getByTestId('accounts-index-glyph-some_future_app')).toHaveTextContent('?');
+    // 需求 4：索引行不再有首字母 glyph（未知平台同样）
+    expect(screen.queryByTestId('accounts-index-glyph-some_future_app')).toBeNull();
     expect(within(unknownItem).getByText('未识别平台')).toBeInTheDocument();
     // 点击后右栏渲染该平台
     await userEvent.click(unknownItem);
