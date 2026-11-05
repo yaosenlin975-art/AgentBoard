@@ -50,6 +50,8 @@
   }
 
   * { box-sizing: border-box; }
+  /* 全局兜底：许多块有 display:flex，会覆盖 UA 的 [hidden] 规则 */
+  [hidden] { display: none !important; }
   html, body { margin: 0; min-height: 100%; }
   body {
     background: var(--ab-page);
@@ -173,9 +175,10 @@
   .title-dirty { color: var(--ab-accent); font-size: 11px; line-height: 1; }
   .title-edit-wrap { flex: 1; min-width: 0; }
   .title-input {
-    width: 100%; border: 1px solid var(--ab-accent);
+    width: 100%; height: 100%; min-height: 20px;
+    border: 1px solid var(--ab-accent);
     background: var(--ab-card); border-radius: 6px;
-    padding: 4px 7px; font-size: 14px; font-weight: 600;
+    padding: 0 7px; font-size: 14px; font-weight: 600;
     box-shadow: 0 0 0 3px var(--ab-accent-soft);
   }
   .title-tools { display: flex; gap: 2px; flex: none; }
@@ -370,6 +373,55 @@
   }
   .composer-foot { display: flex; align-items: center; gap: 7px; margin-top: 5px; }
   .composer-hint { flex: 1; font-size: 9.5px; color: var(--ab-ink-3); }
+
+  /* ---------- 内联图片（评论 / 描述） ---------- */
+  .media-inline { margin: 8px 0 2px; }
+  .media-thumb {
+    display: block; width: 100%; padding: 0;
+    border: 1px solid var(--ab-hairline); border-radius: 8px;
+    overflow: hidden; background: var(--ab-raised);
+    transition: border-color var(--ab-dur) var(--ab-ease), transform var(--ab-dur) var(--ab-ease);
+  }
+  .media-thumb:hover { border-color: var(--ab-accent); }
+  .media-thumb svg { display: block; width: 100%; height: auto; }
+  .media-caption { margin-top: 4px; display: flex; align-items: center; gap: 5px; font-size: 9.5px; color: var(--ab-ink-3); }
+  .media-badge {
+    font-size: 9px; padding: 0 5px; border-radius: 999px;
+    color: var(--ab-accent); background: var(--ab-accent-soft);
+    border: 1px solid color-mix(in srgb, var(--ab-accent) 35%, transparent);
+  }
+
+  /* ---------- 附件（一切文件 · 仅路径引导） ---------- */
+  .att-row { display: flex; align-items: center; gap: 7px; padding: 5px 4px; border-bottom: 1px dashed var(--ab-hairline); }
+  .att-row:last-child { border-bottom: 0; }
+  .att-type {
+    flex: none; width: 30px; text-align: center;
+    font-size: 8.5px; font-weight: 700; letter-spacing: .03em;
+    color: var(--ab-ink-3); background: var(--ab-raised);
+    border: 1px solid var(--ab-hairline); border-radius: 4px; padding: 2px 0;
+  }
+  .att-main { flex: 1; min-width: 0; }
+  .att-name { display: block; font-size: 11px; color: var(--ab-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att-path { display: block; font-size: 9px; color: var(--ab-ink-3); font-family: Consolas, "Courier New", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .att-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+  .att-actions .linkbtn:disabled { color: var(--ab-ink-3); text-decoration: none; cursor: not-allowed; opacity: .65; }
+  .att-note { margin-top: 7px; padding: 5px 7px; border-radius: 5px; background: var(--ab-raised); font-size: 9.5px; line-height: 1.5; color: var(--ab-ink-3); }
+
+  /* ---------- 灯箱 ---------- */
+  .lightbox {
+    position: fixed; inset: 0; z-index: 70;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px;
+    padding: 26px; background: rgba(20, 17, 13, .74);
+  }
+  .lightbox-inner { width: min(920px, 94vw); padding: 10px; border-radius: 10px; background: var(--ab-card); box-shadow: var(--ab-shadow); }
+  .lightbox-inner svg { display: block; width: 100%; height: auto; }
+  .lightbox-caption { font-size: 11px; color: #f4ede2; }
+  .lightbox-close {
+    position: absolute; top: 16px; right: 18px;
+    width: 32px; height: 32px; border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, .25); background: rgba(255, 255, 255, .1);
+    color: #fff; font-size: 16px;
+  }
 
   /* ---------- 底部吸底工具条 ---------- */
   .action-bar {
@@ -614,6 +666,47 @@
               </ul>
               <h4>验收</h4>
               <p>原型可点、四个状态可切；文档含未决问题与拆卡建议；本轮不改 <code>apps/**</code> 源码。</p>
+              <div class="media-inline">
+                <button class="media-thumb" data-media="desc" data-caption="任务详情改版前后对比 · 内联渲染，可点开大图" aria-label="查看大图：任务详情改版前后对比" data-testid="desc-image">
+                  <svg viewBox="0 0 640 320" role="img" aria-label="任务详情改版前后对比示意">
+                    <rect width="640" height="320" fill="#f7f4ee"/>
+                    <g font-family="Segoe UI, PingFang SC, sans-serif">
+                      <rect x="14" y="14" width="300" height="292" rx="8" fill="#fdfbf7" stroke="#ddd2c4"/>
+                      <text x="28" y="36" font-size="11" fill="#6b6257">改版前 · 11 个块同时铺开</text>
+                      <rect x="28" y="48" width="150" height="10" rx="2" fill="#a04a08" opacity=".55"/>
+                      <rect x="28" y="66" width="270" height="26" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="100" width="270" height="26" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="134" width="270" height="26" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="168" width="270" height="26" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="202" width="270" height="26" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="236" width="78" height="18" rx="4" fill="#a04a08" opacity=".8"/>
+                      <rect x="112" y="236" width="78" height="18" rx="4" fill="#efe9df"/>
+                      <rect x="196" y="236" width="78" height="18" rx="4" fill="#efe9df"/>
+                      <rect x="28" y="264" width="270" height="30" rx="4" fill="#efe9df"/>
+
+                      <rect x="326" y="14" width="300" height="292" rx="8" fill="#fdfbf7" stroke="#a04a08"/>
+                      <text x="340" y="36" font-size="11" fill="#a04a08">改版后 · 首屏决策 / 折叠明细</text>
+                      <rect x="340" y="46" width="190" height="12" rx="2" fill="#1f1b16" opacity=".8"/>
+                      <rect x="536" y="44" width="12" height="12" rx="2" fill="#a04a08"/>
+                      <rect x="552" y="44" width="12" height="12" rx="2" fill="#efe9df"/>
+                      <rect x="340" y="66" width="58" height="16" rx="8" fill="#f5e2c8" stroke="#c99a5e"/>
+                      <rect x="404" y="66" width="52" height="16" rx="8" fill="#efe9df"/>
+                      <rect x="462" y="66" width="62" height="16" rx="8" fill="#efe9df"/>
+                      <rect x="340" y="92" width="224" height="1" fill="#ddd2c4"/>
+                      <rect x="340" y="102" width="224" height="22" rx="3" fill="#f1ece3"/>
+                      <rect x="340" y="128" width="224" height="22" rx="3" fill="#efe9df"/>
+                      <rect x="340" y="154" width="224" height="22" rx="3" fill="#efe9df"/>
+                      <rect x="340" y="180" width="180" height="10" rx="2" fill="#c9bfb0"/>
+                      <rect x="340" y="208" width="224" height="30" rx="4" fill="#f1ece3"/>
+                      <rect x="340" y="246" width="224" height="1" fill="#ddd2c4"/>
+                      <rect x="326" y="276" width="300" height="30" fill="#efe9df"/>
+                      <rect x="340" y="283" width="150" height="16" rx="4" fill="#a04a08"/>
+                      <rect x="498" y="283" width="24" height="16" rx="4" fill="#fdfbf7" stroke="#ddd2c4"/>
+                    </g>
+                  </svg>
+                </button>
+                <div class="media-caption"><span class="media-badge">内联图片</span>detail-before / after · 点击查看大图</div>
+              </div>
             </div>
             <div class="labels-row" aria-label="标签">
               <span class="block-label" style="margin-right:2px">标签</span>
@@ -668,7 +761,33 @@
                   <span class="author agent">trae-detail-redesign</span>
                   <span class="comment-time">11-05 11:42</span>
                 </div>
-                <div class="comment-body">已读现有 DetailPanel：字段区 6 项 + 操作区 6 个按钮 + 依赖 4 组 + 会话 + 评论全部同时铺开，这就是「臃肿」的来源。原型按「首屏决策 / 折叠明细」重排。</div>
+                <div class="comment-body">已读现有 DetailPanel：字段区 6 项 + 操作区 6 个按钮 + 依赖 4 组 + 会话 + 评论全部同时铺开，这就是「臃肿」的来源。原型按「首屏决策 / 折叠明细」重排。附图是窄屏态：</div>
+                <div class="media-inline">
+                  <button class="media-thumb" data-media="comment" data-caption="窄屏态（390px）· 图片直接在评论里内联渲染，点击可看大图" aria-label="查看大图：窄屏态截图" data-testid="comment-image">
+                    <svg viewBox="0 0 640 300" role="img" aria-label="窄屏态示意图">
+                      <rect width="640" height="300" fill="#f7f4ee"/>
+                      <g font-family="Segoe UI, PingFang SC, sans-serif">
+                        <rect x="190" y="10" width="260" height="280" rx="16" fill="#fdfbf7" stroke="#ddd2c4"/>
+                        <rect x="240" y="17" width="160" height="4" rx="2" fill="#efe9df"/>
+                        <rect x="204" y="34" width="200" height="12" rx="2" fill="#1f1b16" opacity=".78"/>
+                        <rect x="204" y="52" width="70" height="14" rx="7" fill="#f5e2c8" stroke="#c99a5e"/>
+                        <rect x="280" y="52" width="54" height="14" rx="7" fill="#efe9df"/>
+                        <rect x="204" y="70" width="80" height="14" rx="7" fill="#efe9df"/>
+                        <rect x="204" y="92" width="232" height="1" fill="#ddd2c4"/>
+                        <rect x="204" y="102" width="232" height="52" rx="6" fill="#efe9df"/>
+                        <rect x="216" y="112" width="150" height="8" rx="2" fill="#c9bfb0"/>
+                        <rect x="216" y="126" width="120" height="8" rx="2" fill="#c9bfb0"/>
+                        <rect x="204" y="160" width="232" height="1" fill="#ddd2c4"/>
+                        <rect x="204" y="170" width="170" height="8" rx="2" fill="#c9bfb0"/>
+                        <rect x="204" y="184" width="232" height="26" rx="4" fill="#f1ece3"/>
+                        <rect x="204" y="222" width="232" height="26" rx="4" fill="#efe9df"/>
+                        <rect x="204" y="271" width="232" height="1" fill="#ddd2c4"/>
+                        <rect x="204" y="278" width="170" height="16" rx="4" fill="#a04a08"/>
+                      </g>
+                    </svg>
+                  </button>
+                  <div class="media-caption"><span class="media-badge">内联图片</span>detail-narrow.png · 点击查看大图</div>
+                </div>
               </div>
               <div class="comment">
                 <div class="comment-head">
@@ -693,10 +812,10 @@
               </div>
             </div>
             <div class="composer">
-              <textarea rows="2" placeholder="追加评论（markdown）" aria-label="评论内容"></textarea>
+              <textarea rows="2" placeholder="追加评论（markdown，可直接粘贴截图）" aria-label="评论内容"></textarea>
               <div class="composer-foot">
-                <span class="composer-hint">将唤醒 trae-detail-redesign</span>
-                <button class="btn btn-sm">添加图片</button>
+                <span class="composer-hint">支持粘贴截图 / 拖拽图片，直接内联</span>
+                <button class="btn btn-sm">粘贴图片</button>
                 <button class="btn btn-primary btn-sm">发送</button>
               </div>
             </div>
@@ -740,14 +859,69 @@
           <section class="fold" aria-label="附件">
             <button class="fold-head" id="attachHead" aria-expanded="false" data-testid="fold-attachments">
               <span class="fold-chevron" aria-hidden="true">▸</span>
-              <span class="fold-title">附件</span>
-              <span class="fold-sum">2 张图片</span>
+              <span class="fold-title">附件（一切文件）</span>
+              <span class="fold-sum">5 个文件 · 仅路径引导</span>
               <span class="spacer"></span>
+              <span class="badge">不内联预览</span>
             </button>
             <div class="fold-body" id="attachBody">
               <div class="fold-inner"><div class="fold-content">
-                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">detail-before.png</span><span class="dep-status">820 KB · 已投递</span></div>
-                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">detail-after.png</span><span class="dep-status">640 KB · 已投递</span></div>
+                <div class="att-row" data-testid="attachment-file">
+                  <span class="att-type">PNG</span>
+                  <div class="att-main">
+                    <span class="att-name">detail-before.png</span>
+                    <span class="att-path">d:\WorkSpaces\任务看板\.attachments\b846e042\detail-before.png</span>
+                  </div>
+                  <div class="att-actions">
+                    <button class="linkbtn" data-copy-path="d:\WorkSpaces\任务看板\.attachments\b846e042\detail-before.png">复制路径</button>
+                    <button class="linkbtn" disabled title="需服务端新增 open/reveal 端点并做工作区根校验">打开所在位置</button>
+                  </div>
+                </div>
+                <div class="att-row" data-testid="attachment-file">
+                  <span class="att-type">SVG</span>
+                  <div class="att-main">
+                    <span class="att-name">detail-after.svg</span>
+                    <span class="att-path">d:\WorkSpaces\任务看板\.attachments\b846e042\detail-after.svg</span>
+                  </div>
+                  <div class="att-actions">
+                    <button class="linkbtn" data-copy-path="d:\WorkSpaces\任务看板\.attachments\b846e042\detail-after.svg">复制路径</button>
+                    <button class="linkbtn" disabled title="需服务端新增 open/reveal 端点并做工作区根校验">打开所在位置</button>
+                  </div>
+                </div>
+                <div class="att-row" data-testid="attachment-file">
+                  <span class="att-type">PDF</span>
+                  <div class="att-main">
+                    <span class="att-name">prototype-review.pdf</span>
+                    <span class="att-path">d:\WorkSpaces\任务看板\.attachments\b846e042\prototype-review.pdf</span>
+                  </div>
+                  <div class="att-actions">
+                    <button class="linkbtn" data-copy-path="d:\WorkSpaces\任务看板\.attachments\b846e042\prototype-review.pdf">复制路径</button>
+                    <button class="linkbtn" disabled title="需服务端新增 open/reveal 端点并做工作区根校验">打开所在位置</button>
+                  </div>
+                </div>
+                <div class="att-row" data-testid="attachment-file">
+                  <span class="att-type">LOG</span>
+                  <div class="att-main">
+                    <span class="att-name">server.log</span>
+                    <span class="att-path">d:\WorkSpaces\任务看板\.logs\server.log</span>
+                  </div>
+                  <div class="att-actions">
+                    <button class="linkbtn" data-copy-path="d:\WorkSpaces\任务看板\.logs\server.log">复制路径</button>
+                    <button class="linkbtn" disabled title="需服务端新增 open/reveal 端点并做工作区根校验">打开所在位置</button>
+                  </div>
+                </div>
+                <div class="att-row" data-testid="attachment-file">
+                  <span class="att-type">ZIP</span>
+                  <div class="att-main">
+                    <span class="att-name">portable-bundle.zip</span>
+                    <span class="att-path">d:\WorkSpaces\任务看板\dist\portable-bundle.zip</span>
+                  </div>
+                  <div class="att-actions">
+                    <button class="linkbtn" data-copy-path="d:\WorkSpaces\任务看板\dist\portable-bundle.zip">复制路径</button>
+                    <button class="linkbtn" disabled title="需服务端新增 open/reveal 端点并做工作区根校验">打开所在位置</button>
+                  </div>
+                </div>
+                <div class="att-note">附件仅做路径引导，不内联预览；图片请直接在评论 / 描述中内联（见上）。「打开所在位置」需服务端新增 reveal 端点并做工作区根校验（拒绝目录穿越、符号链接逃逸、工作区外路径），本原型禁用；复制路径为当前可用降级。</div>
               </div></div>
             </div>
           </section>
@@ -824,6 +998,12 @@
     </div>
   </main>
 
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="图片预览">
+    <button class="lightbox-close" id="lightboxClose" aria-label="关闭大图">×</button>
+    <div class="lightbox-inner" id="lightboxInner"></div>
+    <div class="lightbox-caption" id="lightboxCaption"></div>
+  </div>
+
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -867,6 +1047,62 @@
     $('moreBtn').setAttribute('aria-expanded', 'false');
   }
 
+  // ---------- 内联图片：点开大图（灯箱） ----------
+  function openLightbox(btn) {
+    var svg = btn.querySelector('svg');
+    if (!svg) return;
+    var inner = $('lightboxInner');
+    inner.innerHTML = '';
+    inner.appendChild(svg.cloneNode(true));
+    $('lightboxCaption').textContent = btn.getAttribute('data-caption') || '';
+    $('lightbox').hidden = false;
+  }
+  function closeLightbox() {
+    $('lightbox').hidden = true;
+    $('lightboxInner').innerHTML = '';
+  }
+
+  document.querySelectorAll('.media-thumb').forEach(function (btn) {
+    btn.addEventListener('click', function () { openLightbox(btn); });
+  });
+  $('lightboxClose').addEventListener('click', closeLightbox);
+  $('lightbox').addEventListener('click', function (e) {
+    if (e.target === this) closeLightbox();
+  });
+
+  // ---------- 附件：仅路径引导（复制路径） ----------
+  document.querySelectorAll('[data-copy-path]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var path = btn.getAttribute('data-copy-path') || '';
+      var ok = function () { toast('已复制路径：' + path); };
+      var fail = function () { toast('复制失败，请手动选择路径'); };
+      var fallback = function () {
+        try {
+          var ta = document.createElement('textarea');
+          ta.value = path;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          var copied = document.execCommand ? document.execCommand('copy') : false;
+          document.body.removeChild(ta);
+          if (copied) { ok(); } else { fail(); }
+        } catch (err) {
+          fail();
+        }
+      };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(path).then(ok).catch(fallback);
+        } else {
+          fallback();
+        }
+      } catch (err) {
+        fallback();
+      }
+    });
+  });
+
   // ---------- 标题：显示 / 编辑 ----------
   var TITLE_MAX = 200;
 
@@ -875,8 +1111,16 @@
     $('panelTitle').title = state.title;
   }
 
-  function setEditing(on) {
+  // 修改一：进入编辑态时原文本必须整体让位（只有输入框），并且两态切换不跳变。
+  // 做法：进入前量出文本态容器高度，锁给编辑容器（输入框 height:100%），退出时清空锁定。
+  function setEditing(on, lockedHeight) {
     state.editing = on;
+    if (on) {
+      if (lockedHeight === undefined) lockedHeight = $('titleDisplay').getBoundingClientRect().height;
+      $('titleEditWrap').style.height = lockedHeight + 'px';
+    } else {
+      $('titleEditWrap').style.height = '';
+    }
     $('titleDisplay').hidden = on;
     $('titleEditWrap').hidden = !on;
     $('editBar').hidden = !on;
@@ -899,8 +1143,12 @@
   function startEdit() {
     closePopovers();
     closeMore();
-    state.draft = state.editing ? $('titleInput').value : state.title;
-    setEditing(true);
+    var wasEditing = state.editing;
+    var lockedHeight = wasEditing
+      ? $('titleEditWrap').getBoundingClientRect().height
+      : $('titleDisplay').getBoundingClientRect().height;
+    state.draft = wasEditing ? $('titleInput').value : state.title;
+    setEditing(true, lockedHeight);
     var input = $('titleInput');
     input.value = state.draft;
     updateCounter();
@@ -908,6 +1156,7 @@
       showTitleError('已恢复上次未保存的草稿。');
       state.draftRestored = false;
     }
+    // 预填原文本；光标放到末尾（便于继续补充），不自动全选，避免误输入覆盖原题。
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
     markProto('edit');
@@ -1144,6 +1393,7 @@
   // 点击编辑区外部不自动提交、也不自动取消：避免误保存与丢输入（设计取舍见 DESIGN-NOTES）
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
+      if (!$('lightbox').hidden) { closeLightbox(); return; }
       if (state.editing) { cancelEdit(); }
       closePopovers(); closeMore();
     }
