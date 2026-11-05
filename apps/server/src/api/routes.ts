@@ -41,6 +41,7 @@ import {
   reorderWorkspaces,
 } from '../db/repos/workspace.js';
 import { deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../db/repos/issue.js';
+import { getStopState } from '../db/repos/decision.js';
 import { createIssueInHierarchy, getIssueTreeChildren } from '../services/taskHierarchy.js';
 import { listCommentsByIssue, listCommentsPage, getCommentContent } from '../db/repos/comment.js';
 import { bindAttachmentsToSession, listIssueAttachments, listPendingIssueAttachments } from '../db/repos/attachment.js';
@@ -1197,12 +1198,14 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   // BORROW-0.2：占用续租。不进幂等表——心跳只刷新租约，重放无意义；fence 校验属 B03。
+  // DEC-9b：心跳随租约回传 stop_requested，agent 无需额外轮询 GET /issues/:id/stop；
+  // 读库口径与 /stop 完全同源（同一个 getStopState + 同一个 db），不另写判断。
   router.post('/issues/:id/heartbeat', (req, res) => {
     const body = parseBody(claimSchema, req.body);
     const rdb = resolveRequestDb(req, String(req.params.id));
     const lease = heartbeatClaim(rdb, req.params.id!, body.agent_id, readFence(req, body));
     broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
-    res.json(lease);
+    res.json({ ...lease, stop_requested: getStopState(db, req.params.id!).stop_requested });
   });
 
   // BORROW-0.3：fence 双通道——body.fence 优先，回退 x-claim-fence 头；缺席=软模式；值非法一律 400

@@ -25,6 +25,7 @@ import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
 import { listCommentsByIssue } from '../src/db/repos/comment.js';
 import { claimIssue, doneIssue, heartbeatClaim, sweepExpiredLeases } from '../src/services/claim.js';
+import { createPendingDecision } from '../src/services/decision.js';
 import { ApiError, ConflictError, NotFoundError } from '../src/errors.js';
 
 let t: TestDb;
@@ -253,5 +254,42 @@ describe('REST POST /api/issues/:id/heartbeat', () => {
     const issue = seedIssue();
     const res = await request(app).post(`/api/issues/${issue.id}/heartbeat`).send({ agent_id: 'agent-a', workspace_id: wsId });
     expect(res.status).toBe(409);
+  });
+
+  it('DEC-9b：心跳回传 stop_requested，与 GET /issues/:id/stop 同源（未请求=false，请求后=true）', async () => {
+    const issue = seedIssue();
+    const claimRes = await request(app).post(`/api/issues/${issue.id}/claim`).send({ agent_id: 'agent-a', workspace_id: wsId });
+    expect(claimRes.status).toBe(200);
+
+    // 未请求停止：心跳与 /stop 都为 false
+    const before = await request(app).post(`/api/issues/${issue.id}/heartbeat`).send({ agent_id: 'agent-a', workspace_id: wsId });
+    expect(before.status).toBe(200);
+    expect(before.body).toMatchObject({ claimed_by: 'agent-a', claim_fence: 1, stop_requested: false });
+    const stopBefore = await request(app).get(`/api/issues/${issue.id}/stop`);
+    expect(stopBefore.status).toBe(200);
+    expect(stopBefore.body.stop_requested).toBe(false);
+
+    // 真实落锁路径：旧持有者 grace=0 落锁时占用已易主（created_by≠当前占用者），占用不被释放，但 stop_requested_at 照常写入
+    createPendingDecision(t.db, {
+      workspace_id: wsId,
+      issue_id: issue.id,
+      created_by: 'agent-old',
+      question: '是否继续？',
+      grace_seconds: 0,
+      options: [
+        { label: '继续', consequence: '继续执行' },
+        { label: '停止', consequence: '停在检查点' },
+      ],
+    });
+
+    const after = await request(app).post(`/api/issues/${issue.id}/heartbeat`).send({ agent_id: 'agent-a', workspace_id: wsId });
+    expect(after.status).toBe(200);
+    expect(after.body.stop_requested).toBe(true);
+    // 同源证据：同一状态下 /stop 读数一致
+    const stopAfter = await request(app).get(`/api/issues/${issue.id}/stop`);
+    expect(stopAfter.body.stop_requested).toBe(true);
+    expect(stopAfter.body.decision_id).toBeTypeOf('string');
+    // 向后兼容：原有租约字段不变
+    expect(after.body).toMatchObject({ claimed_by: 'agent-a', claim_fence: 1 });
   });
 });
