@@ -147,22 +147,29 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(within(cur).getByTestId('accounts-switch-acc-wb-cur')).toBeDisabled();
 
     const next = screen.getByTestId('accounts-card-acc-wb-next');
-    expect(within(next).getByTestId('accounts-client-current-acc-wb-next')).toHaveTextContent('客户端非当前');
+    // ACC-B2：负向信息不渲染——「客户端非当前」退到 title
+    expect(within(next).queryByText('客户端非当前')).toBeNull();
+    expect(within(next).getByTestId('accounts-client-current-acc-wb-next')).toBeEmptyDOMElement();
+    expect(within(next).getByTestId('accounts-client-current-acc-wb-next')).toHaveAttribute('title', '客户端非当前');
     expect(within(next).getByTestId('accounts-checkin-current-acc-wb-next')).toHaveTextContent('签到当前');
     expect(within(next).getByTestId('accounts-switch-acc-wb-next')).toBeEnabled();
 
     const off = screen.getByTestId('accounts-card-acc-wb-off');
-    expect(within(off).getByTestId('accounts-checkin-current-acc-wb-off')).toHaveTextContent('不参与签到');
+    // ACC-B2：负向信息不渲染——「不参与签到」退到 title（原因 = 账号已停用）
+    expect(within(off).queryByText('不参与签到')).toBeNull();
+    expect(within(off).getByTestId('accounts-checkin-current-acc-wb-off')).toBeEmptyDOMElement();
     expect(within(off).getByTestId('accounts-checkin-current-acc-wb-off')).toHaveAttribute('title', expect.stringContaining('账号已停用'));
   });
 
-  it('is_current=null 时显示「客户端当前未知」，不假装非当前', async () => {
+  it('is_current=null 时负向信息不渲染：「客户端当前未知」退到 title，不假装非当前', async () => {
     mockList([account({ id: 'acc-mm-unk', app_id: 'minimax', display_name: '未知账号', is_current: null })]);
     renderPanel();
     // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
     await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
     const card = await screen.findByTestId('accounts-card-acc-mm-unk');
-    expect(within(card).getByTestId('accounts-client-current-acc-mm-unk')).toHaveTextContent('客户端当前未知');
+    expect(within(card).queryByText('客户端当前未知')).toBeNull();
+    expect(within(card).getByTestId('accounts-client-current-acc-mm-unk')).toBeEmptyDOMElement();
+    expect(within(card).getByTestId('accounts-client-current-acc-mm-unk')).toHaveAttribute('title', '客户端当前未知');
   });
 
   it('切换按 switch_reason_code 决定可用性：不可用时禁用并给原因，可用时二次确认后才发请求', async () => {

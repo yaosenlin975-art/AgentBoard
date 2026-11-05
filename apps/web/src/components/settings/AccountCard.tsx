@@ -1,6 +1,14 @@
 /**
- * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14 / ACC-DEL-02）：展示脱敏元数据 + 切换/签到/删除。
+ * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14 / ACC-DEL-02；ACC-B2 重做为三级披露，口径：
+ * `Docs/prototypes/accounts-redesign-2026-11-04/b-console.html` 的 `.acard` + DESIGN-NOTES §三）。
  * 能力来自服务端能力矩阵（由 AccountsPanel 传入），前端不维护能力副本。
+ *
+ * 三级披露（ACC-B2）：
+ * - 一级（身份）：首字头像 + display_name（truncate，title 全文）+ identity_hint（等宽小字，截到前 8 位）。
+ * - 二级（状态与动作）：只渲染正向芯片「客户端当前 / 签到当前 / 已停用」；动作区 切换→签到→启停→删除，
+ *   切换是唯一主按钮。负向信息（客户端非当前 / 客户端当前未知 / 区域未知 / 签到能力未知 / 不参与签到）
+ *   一律不渲染，退到 title 或三级技术信息。
+ * - 三级（技术信息）：`<details>` 默认折叠，收纳 平台能力徽标 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照。
  *
  * ACC-DEL-02 删除是两步流：点「删除」→ 行内「确认删除」（3 秒未确认自动收回）→ `DELETE /api/managed-accounts/:id`
  * → 成功失效重拉列表；失败只给中文主文案，裸码进 title。删除只清 AgentBoard 记录与本机 DPAPI 快照，
@@ -61,6 +69,23 @@ const CHECKIN_CAPABILITY_LABEL: Record<AccountView['checkin_capability'], string
   unsupported: '签到不可用',
   unknown: '签到能力未知',
 };
+
+/** 最近签到原始枚举 → 中文化对照（ACC-B2；原始枚举与中文并列展示在技术信息里） */
+const LAST_CHECKIN_STATUS_LABEL: Record<string, string> = {
+  succeeded: '签到成功',
+  already_done: '今日已完成',
+  unknown: '结果未知',
+  failed: '签到失败',
+  authorized: '授权中',
+};
+
+/** 技术信息里的「最近签到」：日期 + 原始枚举（中文对照），未签到时不虚构状态 */
+function lastCheckinLabel(account: AccountView): string {
+  if (account.last_checkin_day === null && account.last_checkin_status === null) return '未签到';
+  const status = account.last_checkin_status;
+  if (status === null) return account.last_checkin_day ?? '未签到';
+  return `${account.last_checkin_day ?? '—'} · ${status}（${LAST_CHECKIN_STATUS_LABEL[status] ?? status}）`;
+}
 
 export function AccountCard({
   account,
@@ -183,104 +208,143 @@ export function AccountCard({
   const checkinEnabled = capability?.checkin === true && onCheckin !== undefined;
   const participation = checkinParticipation(account, capability);
 
+  // ACC-B2 一级：identity_hint 恒为前 8 位（服务端超长也截断），缺失保留「未提供」兜底
+  const hint = (account.identity_hint ?? '').slice(0, 8);
+  // ACC-B2 二级：客户端当前非正向态不渲染，负向信息退到 title
+  const clientCurrentTitle =
+    account.is_current === false
+      ? '客户端非当前'
+      : account.is_current === null
+        ? '客户端当前未知'
+        : undefined;
+  const avatarChar = account.display_name.trim().slice(0, 1) || '?';
+
   return (
-    <div data-testid={`accounts-card-${account.id}`} className="rounded-xl border border-hairline bg-surface-card px-3 py-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="min-w-0 truncate text-sm font-medium text-ink">{account.display_name}</span>
-        {/* 客户端当前：桌面客户端里现在登录的是谁 */}
-        <span data-testid={`accounts-client-current-${account.id}`}>
-          {account.is_current === true
-            ? <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">客户端当前</span>
-            : account.is_current === false
-              ? <span className="text-xs text-ink-2">客户端非当前</span>
-              : <span className="text-xs text-ink-3">客户端当前未知</span>}
-        </span>
-        {/* 签到当前：一键签到会把哪些账号提交进批次（可与客户端当前不同） */}
+    <article
+      data-testid={`accounts-card-${account.id}`}
+      className={`rounded-xl border border-hairline bg-surface-card px-3 py-3 ${account.enabled === false ? 'opacity-60' : ''}`}
+    >
+      {/* 一级 + 二级：头像 | 身份与正向芯片 | 动作区（顺序不变：切换 → 签到 → 启停 → 删除；唯一主按钮是切换） */}
+      <div data-testid={`accounts-card-face-${account.id}`} className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
         <span
-          data-testid={`accounts-checkin-current-${account.id}`}
-          title={participation.participates ? '一键签到会提交该账号' : `不参与一键签到：${participation.reason ?? '签到不可用'}`}
+          aria-hidden="true"
+          className="flex size-8 shrink-0 select-none items-center justify-center rounded-full bg-surface-raised text-xs font-semibold text-ink-2"
         >
-          {participation.participates
-            ? <span className="rounded-md border border-hairline px-1.5 py-0.5 text-xs text-ink">签到当前</span>
-            : <span className="text-xs text-ink-3">不参与签到</span>}
+          {avatarChar}
         </span>
-        {/* 能力徽标（ACC-KB-A2W）：蓝标与灰标互斥，只按 capabilityBadge 的两个布尔渲染 */}
-        <span
-          data-testid={`accounts-capability-badge-${account.id}`}
-          data-state={badge.state}
-          title={badge.title}
-          aria-label={badge.title}
-        >
-          {badge.showBlue && (
-            <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">{badge.label}</span>
-          )}
-          {badge.showGray && <span className="text-xs text-ink-3">{badge.label}</span>}
-        </span>
-        <span className="text-xs text-ink-3">{REGION_LABEL[account.service_region]}</span>
-        <span className="text-xs text-ink-3">{CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}</span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="min-w-0 truncate text-sm font-semibold text-ink" title={account.display_name}>
+              {account.display_name}
+            </span>
+            {/* 客户端当前：正向才出芯片；非当前/未知退到 title（ACC-B2 负向不渲染） */}
+            <span data-testid={`accounts-client-current-${account.id}`} title={clientCurrentTitle}>
+              {account.is_current === true && (
+                <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">客户端当前</span>
+              )}
+            </span>
+            {/* 签到当前：正向才出芯片；不参与原因退到 title（可与客户端当前不同） */}
+            <span
+              data-testid={`accounts-checkin-current-${account.id}`}
+              title={participation.participates ? '一键签到会提交该账号' : `不参与一键签到：${participation.reason ?? '签到不可用'}`}
+            >
+              {participation.participates && (
+                <span className="rounded-md border border-hairline px-1.5 py-0.5 text-xs text-ink">签到当前</span>
+              )}
+            </span>
+            {account.enabled === false && (
+              <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-ink-2">已停用</span>
+            )}
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-center">
+            <span data-testid={`accounts-hint-${account.id}`} className="truncate font-mono text-[11px] tracking-wide text-ink-3">
+              {hint === '' ? '未提供' : hint}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex flex-none items-center gap-2">
+          <button
+            type="button"
+            data-testid={`accounts-switch-${account.id}`}
+            className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
+            disabled={switchBlocked || switchMutation.isPending}
+            title={switchTitle}
+            onClick={() => { setError(null); setConfirming(true); }}
+          >
+            切换为客户端登录账号
+          </button>
+          <button
+            type="button"
+            data-testid={`accounts-checkin-${account.id}`}
+            className={BTN_QUIET}
+            disabled={!checkinEnabled}
+            title={checkinEnabled ? '为该账号发起签到' : `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`}
+            onClick={() => { if (checkinEnabled) onCheckin?.(); }}
+          >
+            签到
+          </button>
+          {/* ACC-KB-A2W：启用/停用插在「签到」与「删除」之间；排队/进行中由 canToggleEnabled 预判，服务端 409 另有可读提示 */}
+          <button
+            type="button"
+            data-testid={`accounts-enabled-toggle-${account.id}`}
+            className={BTN_QUIET}
+            disabled={!toggle.allowed || toggleEnabledMutation.isPending}
+            title={
+              toggle.allowed
+                ? toggle.nextEnabled
+                  ? '重新启用该账号（恢复参与一键签到）'
+                  : '停用该账号（保留记录，不再参与一键签到）'
+                : toggle.reason ?? ACCOUNT_BUSY_REASON
+            }
+            onClick={() => { if (toggle.allowed) toggleEnabledMutation.mutate(toggle.nextEnabled); }}
+          >
+            {toggle.nextEnabled ? '启用' : '停用'}
+          </button>
+          <button
+            type="button"
+            data-testid={`accounts-delete-${account.id}`}
+            className={BTN_QUIET}
+            disabled={muted || deleteMutation.isPending}
+            title={
+              muted
+                ? '能力矩阵未就绪，暂时不能删除账号'
+                : '删除 AgentBoard 里的这条账号记录（不清除客户端登录态）'
+            }
+            onClick={() => { setDeleteErrorCode(null); setDeleteConfirming(true); }}
+          >
+            删除
+          </button>
+        </div>
       </div>
 
-      <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs text-ink-2">
-        <dt>标识</dt><dd data-testid={`accounts-hint-${account.id}`} className="truncate font-mono">{account.identity_hint ?? '未提供'}</dd>
-        <dt>实例</dt><dd className="truncate">{`${account.client_instance_id ?? '未提供'}`.slice(0, 12)}…</dd>
-        <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
-        <dt>最近签到</dt><dd>{account.last_checkin_day ?? '—'}{account.last_checkin_status ? ` · ${account.last_checkin_status}` : ''}</dd>
-      </dl>
-
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid={`accounts-switch-${account.id}`}
-          className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
-          disabled={switchBlocked || switchMutation.isPending}
-          title={switchTitle}
-          onClick={() => { setError(null); setConfirming(true); }}
-        >
-          切换为客户端登录账号
-        </button>
-        <button
-          type="button"
-          data-testid={`accounts-checkin-${account.id}`}
-          className={BTN_QUIET}
-          disabled={!checkinEnabled}
-          title={checkinEnabled ? '为该账号发起签到' : `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`}
-          onClick={() => { if (checkinEnabled) onCheckin?.(); }}
-        >
-          签到
-        </button>
-        {account.enabled === false && <span className="text-xs font-medium text-accent">已停用（只读）</span>}
-        {/* ACC-KB-A2W：启用/停用插在「签到」与「删除」之间；排队/进行中由 canToggleEnabled 预判，服务端 409 另有可读提示 */}
-        <button
-          type="button"
-          data-testid={`accounts-enabled-toggle-${account.id}`}
-          className={BTN_QUIET}
-          disabled={!toggle.allowed || toggleEnabledMutation.isPending}
-          title={
-            toggle.allowed
-              ? toggle.nextEnabled
-                ? '重新启用该账号（恢复参与一键签到）'
-                : '停用该账号（保留记录，不再参与一键签到）'
-              : toggle.reason ?? ACCOUNT_BUSY_REASON
-          }
-          onClick={() => { if (toggle.allowed) toggleEnabledMutation.mutate(toggle.nextEnabled); }}
-        >
-          {toggle.nextEnabled ? '启用' : '停用'}
-        </button>
-        <button
-          type="button"
-          data-testid={`accounts-delete-${account.id}`}
-          className={BTN_QUIET}
-          disabled={muted || deleteMutation.isPending}
-          title={
-            muted
-              ? '能力矩阵未就绪，暂时不能删除账号'
-              : '删除 AgentBoard 里的这条账号记录（不清除客户端登录态）'
-          }
-          onClick={() => { setDeleteErrorCode(null); setDeleteConfirming(true); }}
-        >
-          删除
-        </button>
-      </div>
+      {/* 三级：技术信息（ACC-B2，默认折叠）——平台能力 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照 */}
+      <details data-testid={`accounts-tech-${account.id}`} className="mt-2 text-[11px] text-ink-3">
+        <summary className="cursor-pointer select-none ab-transition hover:text-ink-2">技术信息</summary>
+        <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+          <dt>平台能力</dt>
+          <dd>
+            {/* ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出） */}
+            <span
+              data-testid={`accounts-capability-badge-${account.id}`}
+              data-state={badge.state}
+              title={badge.title}
+              aria-label={badge.title}
+            >
+              {badge.showBlue && (
+                <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">{badge.label}</span>
+              )}
+              {badge.showGray && <span className="text-xs text-ink-3">{badge.label}</span>}
+            </span>
+          </dd>
+          <dt>区域</dt><dd>{REGION_LABEL[account.service_region]}</dd>
+          <dt>签到能力</dt><dd>{CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}</dd>
+          <dt>实例</dt><dd className="break-all font-mono">{account.client_instance_id}</dd>
+          <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
+          <dt>最近签到</dt><dd>{lastCheckinLabel(account)}</dd>
+        </dl>
+      </details>
 
       {/* ACC-KB-A2W：启停失败不静默——ACCOUNT_BUSY 给与服务端一致的可读文案，裸码只进 title */}
       {enabledError !== null && (
@@ -388,6 +452,6 @@ export function AccountCard({
           safeErrorLabel={operation?.safe_error_code ? reasonLabel(operation.safe_error_code) : null}
         />
       )}
-    </div>
+    </article>
   );
 }

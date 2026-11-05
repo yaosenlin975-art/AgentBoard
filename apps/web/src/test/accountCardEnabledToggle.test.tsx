@@ -126,7 +126,8 @@ describe('启用/停用按钮（ACC-KB-A2W）', () => {
     mount(account({ enabled: false }), capability());
     const button = screen.getByTestId('accounts-enabled-toggle-acc-1');
     expect(button).toHaveTextContent('启用');
-    expect(screen.getByText('已停用（只读）')).toBeInTheDocument();
+    // ACC-B2：「已停用（只读）」文案改为「已停用」正向芯片
+    expect(screen.getByText('已停用')).toBeInTheDocument();
     await userEvent.click(button);
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toEqual({ enabled: true });
