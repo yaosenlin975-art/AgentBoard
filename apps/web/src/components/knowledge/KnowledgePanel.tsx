@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -35,10 +35,13 @@ const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
 export function KnowledgePanel({
   workspaceId,
   workspaceName = null,
+  deepLinkPageId = null,
 }: {
   workspaceId: string | null;
   /** 当前工作区名称，仅用于空态说明「当前范围是项目 X」 */
   workspaceName?: string | null;
+  /** BORROW-3.2：深链目标页引用（/k/:id/:slug 与 ?kb=<id> 解析产物），挂载后 resolve 定位一次 */
+  deepLinkPageId?: string | null;
 }) {
   // KB-SCOPE-DEFAULT：默认落在当前项目；用户显式切范围后由 persistKnowledgeScope 记住
   const [scope, setScope] = useState<KnowledgeScope>(() => resolveKnowledgeScope(workspaceId !== null));
@@ -67,6 +70,27 @@ export function KnowledgePanel({
     },
   });
   const items = list.data?.items ?? [];
+
+  // BORROW-3.2：深链定位——resolve 拿 scope/workspace 后选中详情；失败原因显式呈现
+  // （403 文案由服务端保证不含标题）。同一引用只消费一次，避免列表交互中被重复拉起。
+  const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
+  const [deepLinkConsumed, setDeepLinkConsumed] = useState<string | null>(null);
+  useEffect(() => {
+    if (deepLinkPageId === null || deepLinkConsumed === deepLinkPageId) return;
+    setDeepLinkConsumed(deepLinkPageId);
+    void (async () => {
+      const resolveParams = new URLSearchParams({ ref: deepLinkPageId, scope: workspaceId !== null ? 'both' : 'common' });
+      if (workspaceId !== null) resolveParams.set('workspace_id', workspaceId);
+      try {
+        const res = await api.get<{ id: string; scope: 'common' | 'workspace'; workspace_id: string | null; title: string; revision: number; status: 'active' | 'archived' | 'deleted' }>(`/api/knowledge/resolve?${resolveParams}`);
+        // 深链只取定位三要素（id/scope/workspace_id）；expires_at 详情层不消费，置 null
+        setSelected({ id: res.id, scope: res.scope, workspace_id: res.workspace_id, title: res.title, revision: res.revision, status: res.status, expires_at: null });
+        setDeepLinkError(null);
+      } catch (error) {
+        setDeepLinkError(error instanceof Error ? error.message : '深链打开失败');
+      }
+    })();
+  }, [deepLinkPageId, workspaceId, deepLinkConsumed]);
 
   return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-surface-page text-ink">
     {/* TOOLBAR-BLANK：FIX-2 删掉 ViewSwitcher 后壳内已无控件，空壳会渲染约 40px 空白带 →
@@ -125,6 +149,7 @@ export function KnowledgePanel({
     </form>
 
     {list.isError && <p role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{list.error.message}</p>}
+    {deepLinkError && <p role="alert" data-testid="knowledge-deeplink-error" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{deepLinkError}</p>}
 
     <div className="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-auto lg:flex-row">
       {view === 'graph' ? (
