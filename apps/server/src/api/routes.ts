@@ -740,11 +740,11 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.patch('/issues/:id', (req, res) => {
     const body = parseBody(patchIssueSchema, req.body);
-    const { workspace_id, expected_updated_at, ...patch } = body;
+    const { workspace_id, expected_updated_at, fence, ...patch } = body;
     if (expected_updated_at !== undefined && !workspace_id) throw new ValidationError('CAS 必须提供 workspace_id');
     const outcome = mutation(req, () => expected_updated_at !== undefined
       ? updateIssueWithCAS(db, req.params.id!, workspace_id!, expected_updated_at, patch)
-      : updateIssueGuarded(db, req.params.id!, patch));
+      : updateIssueGuarded(db, req.params.id!, patch, fence));
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
@@ -854,7 +854,7 @@ export function createRouter(deps: RouterDeps): Router {
     if (key) {
       let wakeSessionId: string | null = null;
       const outcome = httpMutation(db, req, () => {
-        const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds);
+        const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
         wakeSessionId = stored.wakeSessionId;
         return {
           comment: stored.comment,
@@ -876,7 +876,7 @@ export function createRouter(deps: RouterDeps): Router {
       broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
       res.json(result); return;
     }
-    const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds);
+    const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
     let woke = false;
     let warning: string | undefined;
     if (attachmentIds.length > 0) warning = 'IMAGE_DELIVERY_UNVERIFIED';
@@ -933,6 +933,7 @@ export function createRouter(deps: RouterDeps): Router {
     const workspace = effectiveWorkspace(req);
     if (req.get('Idempotency-Key') && !workspace) throw new ValidationError('幂等 owner 操作必须提供 workspace_id');
     const actor = action === 'release' && !workspace ? 'user' : parseBody(claimSchema, req.body).agent_id;
+    const fence = readFence(req, req.body as { fence?: number } | undefined);
     const doneBody = action === 'done' ? parseBody(doneSchema, req.body) : undefined;
     const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
     // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
@@ -942,18 +943,18 @@ export function createRouter(deps: RouterDeps): Router {
       if (action === 'done') {
         const preFinish = getIssue(db, issueId);
         const hint = preFinish ? buildKnowledgeHint(db, preFinish) : null;
-        return { ...finishClaimedIssue(db, issueId, workspace, actor, 'done', detail), knowledge_hint: hint };
+        return { ...finishClaimedIssue(db, issueId, workspace, actor, 'done', detail, fence), knowledge_hint: hint };
       }
       return action === 'release'
-        ? releaseClaimedIssue(db, issueId, workspace, actor)
-        : finishClaimedIssue(db, issueId, workspace, actor, action, detail);
+        ? releaseClaimedIssue(db, issueId, workspace, actor, fence)
+        : finishClaimedIssue(db, issueId, workspace, actor, action, detail, fence);
     }) : { result: action === 'release'
-      ? await releaseIssue(db, issueId) : action === 'done'
+      ? await releaseIssue(db, issueId, fence) : action === 'done'
         ? await (async () => {
           const preFinish = getIssue(db, issueId);
           const hint = preFinish ? buildKnowledgeHint(db, preFinish) : null;
-          return { ...(await doneIssue(db, issueId, actor, detail)), knowledge_hint: hint };
-        })() : await failIssue(db, issueId, actor, detail!), replayed: false };
+          return { ...(await doneIssue(db, issueId, actor, detail, fence)), knowledge_hint: hint };
+        })() : await failIssue(db, issueId, actor, detail!, undefined, fence), replayed: false };
     const { issue, comment } = outcome.result;
     const knowledgeHint = (outcome.result as { knowledge_hint?: KnowledgeHint | null }).knowledge_hint ?? null;
     // KB-CLI-1：done/fail/release 幂等重放同样回传标记
