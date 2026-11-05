@@ -16,6 +16,14 @@ import { importKnowledgePages } from '../services/knowledgeImport.js';
 import { findKnowledgePageOwner, knowledgeLinkFields, resolveKnowledgeRef } from '../services/knowledgeResolve.js';
 import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
+import {
+  defaultFileSystemDeps,
+  defaultOpenProcessDeps,
+  openLocalFile,
+  resolveLocalFile,
+  type FileSystemDeps,
+  type OpenProcessDeps,
+} from '../services/fileOpener.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeImportSchema, knowledgeScopeFields } from './schemas.js';
 
 /**
@@ -39,7 +47,21 @@ export interface KnowledgeRouterOptions {
   imageStore?: KnowledgeImageStore;
   /** 单次图聚合可加载的最大页数；默认 GRAPH_MAX_PAGES（测试可调小以验证截断标志） */
   maxGraphPages?: number;
+  /** PROV-B：路径安全边界用到的 fs 视图（仅测试注入 fake realpath/stat，用于造 symlink 逃逸） */
+  fileSystem?: FileSystemDeps;
+  /** PROV-B：打开器用到的进程视图（仅测试注入 fake spawn，绝不在单测里真起编辑器） */
+  openProcess?: OpenProcessDeps;
 }
+
+/**
+ * PROV-B：打开本机文件的请求体（schema 内联在本文件，schemas.ts 属禁改集）。
+ * 固定三字段 + strict：没有 root/base/directory 之类的口子，也不接受 page_id 反查。
+ */
+const knowledgeFileOpenSchema = z.object({
+  workspace_id: z.string().min(1).max(64),
+  path: z.string().min(1).max(1000),
+  line: z.number().int().min(1).max(1_000_000_000).optional(),
+}).strict();
 
 export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = {}): Router {
   /** KB-IMG-1：图片存储（目录 = <db 目录>/attachments/knowledge） */
@@ -198,6 +220,20 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const items = findKnowledgePagesBySource(db, { term: input.path, scope: input.scope, workspace_id: input.workspace_id ?? null })
       .map(item => ({ ...item, ...knowledgeLinkFields(item) }));
     res.json({ path: input.path, items });
+  });
+
+  /**
+   * PROV-B：把知识页证据条目指向的**本工作区内**文件交给本机打开器（编辑器 / 资源管理器 / 默认程序）。
+   * 边界与降级见 services/fileOpener.ts 头注释；这里只负责契约：
+   *  · 根路径只能由 workspace_id 从库取（④），调用方传任何 root/base 都会被 strict schema 拒；
+   *  · 响应 { opened_with, path(工作区相对) }——不回传文件内容、不列目录，越界与 symlink 逃逸都是 4xx 结构化 JSON；
+   *  · 打开全失败 → 500 OPEN_FAILED（details.attempts），前端据此降级为「已复制路径」。
+   */
+  router.post('/files/open', async (req, res) => {
+    const input = parse(knowledgeFileOpenSchema, req.body ?? {});
+    const file = resolveLocalFile(db, input, options.fileSystem ?? defaultFileSystemDeps);
+    const opened = await openLocalFile(file, options.openProcess ?? defaultOpenProcessDeps);
+    res.json({ ok: true, opened_with: opened.opened_with, path: file.relativePath, line: input.line ?? null });
   });
 
   router.get('/pages/:id', (req, res) => {

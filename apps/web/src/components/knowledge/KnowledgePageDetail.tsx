@@ -19,6 +19,8 @@ import { KnowledgePrintView } from './KnowledgePrintView';
 
 const STATUS_LABEL: Record<string, string> = { active: '有效', archived: '归档', deleted: '已删除' };
 const STATUS_TONE: Record<string, BadgeTone> = { active: 'green', archived: 'neutral', deleted: 'red' };
+/** AUDIT-KB（V-01）：头部时间降到分钟粒度（合并为「更新于 …」） */
+const formatKnowledgeTime = (ts: number): string => new Date(ts).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
 /** KB-MODEL：五类固定 tone（缺失 → legacy 灰，不报错） */
 const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
   design: 'blue',
@@ -30,7 +32,8 @@ const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
 const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', partial: '部分落地', proposed: '未落地' };
 
 /* ============ PROV-A：来源与证据的展示口径 ============
- * 只做展示与复制：不渲染可点击跳转、不输出 file:/// 链接（跳转能力属 PROV-B）。
+ * 展示与复制由 PROV-A 负责；「打开」按钮属 PROV-B（见下方 openTarget 一节），
+ * 渲染层只有这一条来源与证据的口径链路，两张卡共用同一份行模型。
  * 取证口径（真实数据 kb knowledge show --json 核对得到）：
  *   sources[].locator 写「仓库相对路径」（apps/web/src/.../Board.tsx），
  *   evidence[].locator 常只写行号区间（file:185-193）→ 必须靠 evidence.source_id ==
@@ -105,12 +108,39 @@ function provenanceDedupKey(display: string, contentHash: string): string {
   return contentHash === '' ? display : `commit:${contentHash}`;
 }
 
+/* ============ PROV-B：把「本地文件」条目接上打开端点 ============
+ * 三条硬口径：
+ *  ① 只有 source_type='file' 的来源给「打开」——url / agent / commit 类取证指向的不是本地文件；
+ *  ② 公共页（scope='common'）没有 workspace_id，不给「打开」：服务端只认库里的根，
+ *     借别的工作区的根去开文件就是跨区写入，宁可不给；
+ *  ③ 打不开（越界拒绝 / 非 file 协议 / 本机没有可用程序）一律降级为「已复制路径」+ 可见提示，
+ *     不静默失败，也不假装打开了。
+ */
+
+/** 打开请求的定位信息：仓库相对路径 + 可选行号（行号取区间首号） */
+export type OpenTarget = { path: string; line: number | null };
+
+/** copyPath（可能带 `:125-137`）→ 请求体要的 path + line */
+export function openTargetOf(copyPath: string | null): OpenTarget | null {
+  if (copyPath === null) return null;
+  const split = splitTrailingRange(copyPath);
+  const line = /^(\d+)/.exec(split.range)?.[1];
+  return { path: split.path, line: line === undefined ? null : Number(line) };
+}
+
+/** source_id → source_type；证据行要跟着它对应来源的类型走 */
+function provenanceTypeById(sources: readonly ProvenanceSource[]): Map<string, string> {
+  return new Map(sources.map((source) => [source.source_id, String(source.source_type)]));
+}
+
 /** 折叠后的一行来源/证据 */
 export type ProvenanceRow = {
   key: string;
   kind: 'source' | 'evidence';
   display: string;
   copyPath: string | null;
+  /** PROV-B：可打开的本地文件目标；非 file 来源 / 无路径 → null（只给复制，不给打开） */
+  openTarget: OpenTarget | null;
   contentHash: string;
   capturedAt: number | null;
   snapshot: string;
@@ -131,6 +161,7 @@ export function buildProvenanceRows(
   evidence: readonly ProvenanceEvidence[],
 ): ProvenanceRow[] {
   const paths = provenancePathById(sources);
+  const types = provenanceTypeById(sources);
   const rows: ProvenanceRow[] = [];
   const position = new Map<string, number>();
   const put = (row: ProvenanceRow): void => {
@@ -153,6 +184,8 @@ export function buildProvenanceRows(
       kind: 'source',
       display: resolved.display,
       copyPath: resolved.copyPath,
+      // PROV-B ①：只有 file 来源可打开
+      openTarget: source.source_type === 'file' ? openTargetOf(resolved.copyPath) : null,
       contentHash: (source.content_hash ?? '').trim(),
       capturedAt: typeof source.captured_at === 'number' ? source.captured_at : null,
       snapshot: (source.snapshot ?? '').trim() === '' ? '' : String(source.snapshot),
@@ -165,6 +198,8 @@ export function buildProvenanceRows(
       kind: 'evidence',
       display: resolved.display,
       copyPath: resolved.copyPath,
+      // 证据行跟着它对应来源的类型走：来源不是 file（或压根没有对应来源）就不给打开
+      openTarget: types.get(item.source_id) === 'file' ? openTargetOf(resolved.copyPath) : null,
       contentHash: '',
       capturedAt: null,
       snapshot: (item.snapshot ?? '').trim() === '' ? '' : String(item.snapshot),
@@ -248,11 +283,95 @@ export function CopyPathButton({ path }: { path: string }) {
   </button>;
 }
 
-function Provenance({ rows }: { rows: ProvenanceRow[] }) {
+/** 服务端 opened_with → 中文提示（未知值兜成「本机程序」，不猜具体程序） */
+const OPENED_LABEL: Record<string, string> = { vscode: 'VS Code', explorer: '资源管理器', system_default: '默认程序' };
+
+interface OpenFileResponse {
+  ok: boolean;
+  opened_with: string;
+  path: string;
+  line: number | null;
+}
+
+type OpenState =
+  | { kind: 'idle' }
+  | { kind: 'opening' }
+  | { kind: 'opened'; via: string }
+  /** 降级：打开失败 → 已把路径写进剪贴板，带服务端原因 */
+  | { kind: 'copied'; reason: string }
+  /** 最坏形态：既打不开也复制不了，必须让用户看到原因 */
+  | { kind: 'failed'; reason: string };
+
+/**
+ * 「打开」证据路径（PROV-B）：POST /api/knowledge/files/open（根由服务端按 workspace_id 从库取）。
+ * 任何失败（越界拒绝 / 非 file 协议 / 本机没有可用程序）都降级为复制路径 + 可见提示，
+ * 提示走 role=status 的一行文字，不弹窗、不静默。
+ */
+export function OpenPathButton({ workspaceId, target, copyPath }: { workspaceId: string; target: OpenTarget; copyPath: string }) {
+  const [state, setState] = useState<OpenState>({ kind: 'idle' });
+  const resetTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (resetTimer.current !== null) window.clearTimeout(resetTimer.current); }, []);
+  const reset = (): void => {
+    if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    resetTimer.current = window.setTimeout(() => setState({ kind: 'idle' }), COPY_RESET_MS);
+  };
+  /** 降级链路：先报原因，再试剪贴板 */
+  const degrade = (reason: string): void => {
+    const clipboard = navigator.clipboard;
+    if (typeof clipboard?.writeText !== 'function') {
+      setState({ kind: 'failed', reason: `${reason}；剪贴板不可用` });
+      return;
+    }
+    clipboard.writeText(copyPath).then(
+      () => setState({ kind: 'copied', reason }),
+      () => setState({ kind: 'failed', reason: `${reason}；复制也失败了` }),
+    ).finally(reset);
+  };
+  const label = state.kind === 'opening' ? '打开中…'
+    : state.kind === 'opened' ? '已打开'
+      : state.kind === 'copied' ? '已复制路径'
+        : state.kind === 'failed' ? '打开失败' : '打开';
+  const note = state.kind === 'opened' ? `已在${state.via}打开`
+    : state.kind === 'copied' ? `已复制路径（${state.reason}）`
+      : state.kind === 'failed' ? `未能打开：${state.reason}` : '';
+  return <>
+    <button
+      type="button"
+      data-testid="provenance-open"
+      title={`打开 ${target.path}${target.line === null ? '' : `:${target.line}`}`}
+      className={`${BUTTON_SECONDARY} h-7 shrink-0 px-2`}
+      disabled={state.kind === 'opening'}
+      onClick={() => {
+        setState({ kind: 'opening' });
+        api.post<OpenFileResponse>('/api/knowledge/files/open', {
+          workspace_id: workspaceId,
+          path: target.path,
+          ...(target.line === null ? {} : { line: target.line }),
+        }).then((result) => {
+          setState({ kind: 'opened', via: OPENED_LABEL[result.opened_with] ?? '本机程序' });
+          reset();
+        }, (cause: unknown) => {
+          degrade(cause instanceof Error ? cause.message : String(cause));
+        });
+      }}
+    >
+      {label}
+    </button>
+    {note !== '' && (
+      <p role="status" data-testid="provenance-open-note" className="basis-full text-[11px] text-ink-3">{note}</p>
+    )}
+  </>;
+}
+
+function Provenance({ rows, workspaceId }: { rows: ProvenanceRow[]; workspaceId: string | null }) {
   if (rows.length === 0) return <p data-testid="provenance-empty" className="text-xs text-ink-3">（无）</p>;
   return <ul className="space-y-2 text-sm">{rows.map(row => <li key={row.key} data-testid="provenance-row" data-kind={row.kind} className="rounded-md bg-surface-page px-2 py-1.5">
     <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
       <code className="min-w-0 flex-1 break-all text-xs text-ink">{row.display}</code>
+      {/* PROV-B：有本地文件目标且当前是工作区页才给「打开」；公共页没有可依据的根，只留复制 */}
+      {row.openTarget !== null && workspaceId !== null && (
+        <OpenPathButton workspaceId={workspaceId} target={row.openTarget} copyPath={row.copyPath ?? row.openTarget.path} />
+      )}
       {row.copyPath !== null && <CopyPathButton path={row.copyPath} />}
     </div>
     {(row.contentHash !== '' || row.capturedAt !== null) && <div className="mt-0.5 break-all text-xs text-ink-3">
@@ -262,7 +381,7 @@ function Provenance({ rows }: { rows: ProvenanceRow[] }) {
   </li>)}</ul>;
 }
 
-export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: { pageId: string; scope: 'workspace' | 'common'; workspaceId: string | null; onChanged: () => void }) {
+export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged, onViewInGraph }: { pageId: string; scope: 'workspace' | 'common'; workspaceId: string | null; onChanged: () => void; onViewInGraph?: () => void }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   /** KB-HIST-UI：抽屉里选中的快照（点一条 → 只读预览） */
   const [previewRevision, setPreviewRevision] = useState<number | null>(null);
@@ -361,22 +480,34 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
     <header>
       <h2 className="text-base font-semibold leading-snug">{p.title}</h2>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Badge tone={scope === 'common' ? 'neutral' : 'blue'}>{scope === 'common' ? '公共经验' : '项目知识'}</Badge>
-        <Badge tone="neutral">v{p.revision}</Badge>
+        {/* AUDIT-KB（V-01）：头部只留 状态/分类/版本，避免头重脚轻；其余收进「更多信息」折叠 */}
         <Badge tone={STATUS_TONE[p.status] ?? 'neutral'}>{STATUS_LABEL[p.status] ?? p.status}</Badge>
         <Badge tone={CATEGORY_TONE[normalizeCategory((p as { category?: unknown }).category)]}>
           {CATEGORY_STYLES[normalizeCategory((p as { category?: unknown }).category)].label}
         </Badge>
-        {(() => {
-          const landed = normalizeLanded((p as { landed?: unknown }).landed);
-          return landed === null ? null : <Badge tone={landed === 'landed' ? 'green' : landed === 'partial' ? 'blue' : 'neutral'}>{LANDED_LABEL[landed]}</Badge>;
-        })()}
-        {p.expires_at !== null && p.expires_at !== undefined && <Badge tone={isExpired ? 'red' : 'neutral'}>{isExpired ? '已过期 ' : '有效期 '}{new Date(p.expires_at).toLocaleDateString()}</Badge>}
+        <Badge tone="neutral">v{p.revision}</Badge>
+        <details className="text-xs">
+          <summary className="cursor-pointer select-none text-accent">更多信息</summary>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            <Badge tone={scope === 'common' ? 'neutral' : 'blue'}>{scope === 'common' ? '公共经验' : '项目知识'}</Badge>
+            {/* BORROW-3.1：短 ID 徽标（可复制完整 id） */}
+            <Badge tone="neutral">
+              <span data-testid="knowledge-detail-short-id" title={`完整 id：${p.id}（可复制）`}>{p.id.slice(0, 8)}</span>
+            </Badge>
+            {(() => {
+              const landed = normalizeLanded((p as { landed?: unknown }).landed);
+              return landed === null ? null : <Badge tone={landed === 'landed' ? 'green' : landed === 'partial' ? 'blue' : 'neutral'}>{LANDED_LABEL[landed]}</Badge>;
+            })()}
+            {p.expires_at !== null && p.expires_at !== undefined && <Badge tone={isExpired ? 'red' : 'neutral'}>{isExpired ? '已过期 ' : '有效期 '}{new Date(p.expires_at).toLocaleDateString()}</Badge>}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-ink-3">
+            <span data-testid="knowledge-page-created-at">创建于 {formatKnowledgeTime(p.created_at)}</span>
+          </div>
+        </details>
       </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-3">
-        <span data-testid="knowledge-page-created-at">创建时间 {new Date(p.created_at).toLocaleString()}</span>
-        <span aria-hidden="true">·</span>
-        <span data-testid="knowledge-page-updated-at">最后修改时间 {new Date(p.updated_at).toLocaleString()}</span>
+        {/* AUDIT-KB（V-01）：时间合并为「更新于 …」，降到分钟粒度 */}
+        <span data-testid="knowledge-page-updated-at">更新于 {formatKnowledgeTime(p.updated_at)}</span>
       </div>
     </header>
 
@@ -440,7 +571,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
         来源与证据（{provenanceRows.length} 条）
       </summary>
       <div className="px-2.5 pb-2.5">
-        <Provenance rows={provenanceRows} />
+        <Provenance rows={provenanceRows} workspaceId={scope === 'workspace' ? workspaceId : null} />
       </div>
     </details>
 
@@ -462,6 +593,12 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       >
         历史（{p.revision}）
       </button>
+      {/* BORROW-3.3（局部图 IA）：详情 → 星图并聚焦本页；已删除页不进图（图不渲染 deleted 节点） */}
+      {onViewInGraph && p.status !== 'deleted' && (
+        <button type="button" data-testid="knowledge-view-in-graph" className={BUTTON_SECONDARY} onClick={onViewInGraph}>
+          在星图中查看
+        </button>
+      )}
       <button
         type="button"
         data-testid="export-markdown"
