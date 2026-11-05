@@ -65,7 +65,7 @@ function renderComposer(onSend = vi.fn().mockResolvedValue(undefined)): void {
 beforeEach(() => {
   localStorage.clear();
   uploadCount = 0;
-  usePanelStore.setState({ chatDraft: '' });
+  usePanelStore.setState({ chatDrafts: {} });
   server.use(
     http.post('/api/workspaces/:ws/attachments', async ({ params }) => {
       uploadCount += 1;
@@ -134,7 +134,8 @@ describe('Composer 发送携带附件 id', () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     renderComposer(onSend);
     const six = Array.from({ length: 6 }, (_, i) => `![图片](/api/workspaces/ws-1/attachments/att-${i + 1})`).join('\n');
-    usePanelStore.setState({ chatDraft: `${six}\n发` });
+    // Composer 无 sessionId → 草稿落在空串键（与本卡 chatDrafts 口径一致）
+    usePanelStore.setState({ chatDrafts: { '': `${six}\n发` } });
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     input.focus();
     await userEvent.keyboard('{Enter}');

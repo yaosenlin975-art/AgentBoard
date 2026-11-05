@@ -35,6 +35,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 
 let sessionsList: Session[] = [];
 let issueStore: Issue[] = [];
+let lastPatch: Record<string, unknown> | null = null;
+let forkCounter = 0;
 
 function mockApi(): void {
   server.use(
@@ -42,6 +44,47 @@ function mockApi(): void {
     http.get('/api/sessions', ({ request }) => {
       const wid = new URL(request.url).searchParams.get('workspace');
       return HttpResponse.json(sessionsList.filter((s) => s.workspace_id === wid));
+    }),
+    http.patch('/api/sessions/:id', async ({ request, params }) => {
+      const body = (await request.json()) as { title?: string | null; archived?: boolean };
+      lastPatch = body as Record<string, unknown>;
+      const target = sessionsList.find((s) => s.id === params.id);
+      if (target === undefined) {
+        return HttpResponse.json({ error: { code: 'NOT_FOUND', message: '会话不存在' } }, { status: 404 });
+      }
+      // CHAT-SB1 契约：运行中归档 409
+      if (body.archived === true && target.status === '运行中') {
+        return HttpResponse.json(
+          { error: { code: 'CONFLICT', message: '会话正在运行，请先停止再归档' } },
+          { status: 409 },
+        );
+      }
+      const updated: Session = {
+        ...target,
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.archived !== undefined ? { archived_at: body.archived ? Date.now() : null } : {}),
+      };
+      sessionsList = sessionsList.map((s) => (s.id === updated.id ? updated : s));
+      return HttpResponse.json(updated);
+    }),
+    http.post('/api/sessions/:id/fork', ({ params }) => {
+      const source = sessionsList.find((s) => s.id === params.id);
+      if (source === undefined) {
+        return HttpResponse.json({ error: { code: 'NOT_FOUND', message: '会话不存在' } }, { status: 404 });
+      }
+      forkCounter += 1;
+      const created = makeSession({
+        id: `fork-${forkCounter}`,
+        workspace_id: source.workspace_id,
+        issue_id: source.issue_id,
+        cli: source.cli,
+        model: source.model,
+        title: null,
+        forked_from_session_id: source.id,
+        created_at: Date.now() + forkCounter,
+      });
+      sessionsList = [...sessionsList, created];
+      return HttpResponse.json(created);
     }),
     http.get('/api/sessions/:id/messages', () => HttpResponse.json([])),
     http.get('/api/issues/:id', ({ params }) => {
@@ -66,6 +109,8 @@ beforeEach(() => {
   localStorage.clear();
   sessionsList = [];
   issueStore = [];
+  lastPatch = null;
+  forkCounter = 0;
   useAppStore.setState({ workspaceId: 'ws-1' });
   useNavStore.setState({ view: 'chat', drawer: null, chatOrigin: null });
   usePanelStore.setState({
@@ -75,7 +120,7 @@ beforeEach(() => {
     chatSession: null,
     unread: {},
     refPanel: null,
-    chatDraft: '',
+    chatDrafts: {},
     rightOpen: false,
   });
   mockApi();
@@ -230,5 +275,191 @@ describe('S3 左会话列表', () => {
     expect(del.className).toContain('opacity-0');
     expect(del.className).toContain('group-hover:opacity-100');
     expect(del.className).toContain('focus-visible:opacity-100');
+  });
+
+  it('AUDIT-3：行内删除二次确认仍在（点 ✕ 出现确认/取消）', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChatView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('session-delete-s1'));
+    expect(screen.getByTestId('session-delete-confirm-s1')).toBeInTheDocument();
+    await user.click(screen.getByTestId('session-delete-cancel-s1'));
+    expect(screen.queryByTestId('session-delete-confirm-s1')).toBeNull();
+  });
+});
+
+describe('CHAT-SB2 侧栏：搜索 / 行内改名 / 归档 / 分叉', () => {
+  it('搜索按标题 / 任务号 / 模型 / 分叉来源过滤，无匹配给空态，清空恢复全量', async () => {
+    issueStore = [
+      { id: 'iss-1', workspace_id: 'ws-1', title: '任务一号' } as Issue,
+      { id: 'iss-2', workspace_id: 'ws-1', title: '另一任务' } as Issue,
+    ];
+    sessionsList = [
+      makeSession({ id: 's1', issue_id: 'iss-1', created_at: 3 }),
+      makeSession({ id: 's2', issue_id: 'iss-2', cli: 'codex', model: 'm2', created_at: 2 }),
+      makeSession({
+        id: 's3',
+        issue_id: null,
+        cli: 'gemini',
+        model: 'g1',
+        forked_from_session_id: 's2',
+        created_at: 1,
+      }),
+    ];
+    renderChatView();
+    const user = userEvent.setup();
+    const search = await screen.findByTestId('chat-search-input');
+    // issue 标题异步载入后再搜标题，避免按 #id 兜底标题过滤
+    await waitFor(() => expect(screen.getByTestId('session-option-s1')).toHaveTextContent('任务一号'));
+
+    // 标题
+    await user.type(search, '任务一号');
+    await waitFor(() => expect(screen.queryByTestId('session-row-s2')).toBeNull());
+    expect(screen.getByTestId('session-row-s1')).toBeInTheDocument();
+
+    // 任务号
+    await user.clear(search);
+    await user.type(search, 'iss-2');
+    await waitFor(() => expect(screen.queryByTestId('session-row-s1')).toBeNull());
+    expect(screen.getByTestId('session-row-s2')).toBeInTheDocument();
+
+    // 模型
+    await user.clear(search);
+    await user.type(search, 'g1');
+    expect(screen.getByTestId('session-row-s3')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-row-s1')).toBeNull();
+
+    // 分叉来源 id（s2 自身不命中，只有分叉自 s2 的 s3 命中）
+    await user.clear(search);
+    await user.type(search, 's2');
+    expect(screen.getByTestId('session-row-s3')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-row-s2')).toBeNull();
+
+    // 无匹配空态
+    await user.clear(search);
+    await user.type(search, '不存在的关键词');
+    expect(await screen.findByTestId('chat-search-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-row-s1')).toBeNull();
+
+    // 清空恢复全量
+    await user.click(screen.getByTestId('chat-search-clear'));
+    await waitFor(() => expect(screen.getByTestId('session-row-s1')).toBeInTheDocument());
+    expect(screen.getByTestId('session-row-s2')).toBeInTheDocument();
+    expect(screen.getByTestId('session-row-s3')).toBeInTheDocument();
+  });
+
+  it('行内改名：Enter 提交同步列表；Esc 取消不回写；空标题拒绝并提示', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChatView();
+    const user = userEvent.setup();
+    await screen.findByTestId('session-option-s1');
+
+    // Enter 提交
+    await user.click(screen.getByTestId('session-rename-s1'));
+    const input = screen.getByTestId('session-rename-input-s1');
+    await user.clear(input);
+    await user.type(input, '新会话名');
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(lastPatch).toEqual({ title: '新会话名' }));
+    await waitFor(() => expect(screen.getByTestId('session-option-s1')).toHaveTextContent('新会话名'));
+    // 验收 #2：列表改名后聊天头部同步（两处都读同一份 sessions 数据）
+    await waitFor(() => expect(screen.getByTestId('chat-session-title')).toHaveTextContent('新会话名'));
+    expect(screen.queryByTestId('session-rename-input-s1')).toBeNull();
+
+    // Esc 取消：不回写
+    lastPatch = null;
+    await user.click(screen.getByTestId('session-rename-s1'));
+    const input2 = screen.getByTestId('session-rename-input-s1');
+    await user.clear(input2);
+    await user.type(input2, '不该保存');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByTestId('session-rename-input-s1')).toBeNull();
+    expect(screen.getByTestId('session-option-s1')).toHaveTextContent('新会话名');
+    expect(lastPatch).toBeNull();
+
+    // 空标题拒绝
+    await user.click(screen.getByTestId('session-rename-s1'));
+    const input3 = screen.getByTestId('session-rename-input-s1');
+    await user.clear(input3);
+    await user.keyboard('{Enter}');
+    expect(screen.getByTestId('session-rename-error-s1')).toHaveTextContent('会话名称不能为空');
+    expect(lastPatch).toBeNull();
+  });
+
+  it('归档：行操作归档后默认列表不可见，已归档组可展开并恢复', async () => {
+    sessionsList = [makeSession({ id: 's1' }), makeSession({ id: 's2', created_at: 2 })];
+    renderChatView();
+    const user = userEvent.setup();
+    await screen.findByTestId('session-row-s1');
+
+    await user.click(screen.getByTestId('session-archive-s1'));
+    await waitFor(() => expect(screen.queryByTestId('session-row-s1')).toBeNull());
+    expect(screen.getByTestId('archived-count')).toHaveTextContent('已归档 1');
+
+    await user.click(screen.getByTestId('archived-toggle'));
+    expect(screen.getByTestId('session-row-s1')).toBeInTheDocument();
+
+    await user.click(screen.getByTestId('session-restore-s1'));
+    await waitFor(() => expect(screen.queryByTestId('archived-group')).toBeNull());
+    expect(screen.getByTestId('session-row-s1')).toBeInTheDocument();
+  });
+
+  it('运行中归档：409 文案就地展示，不静默失败', async () => {
+    sessionsList = [makeSession({ id: 'run', status: '运行中' })];
+    renderChatView();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId('session-archive-run'));
+    expect(await screen.findByTestId('chat-session-error')).toHaveTextContent('会话正在运行，请先停止再归档');
+    expect(screen.getByTestId('session-row-run')).toBeInTheDocument();
+  });
+
+  it('分叉：新会话自动选中并带 ⎇ 分叉自 来源标记，源会话保留', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChatView();
+    const user = userEvent.setup();
+    await screen.findByTestId('session-row-s1');
+
+    await user.click(screen.getByTestId('session-fork-s1'));
+    await waitFor(() => expect(usePanelStore.getState().sessionId).toBe('fork-1'));
+    expect(await screen.findByTestId('session-forked-from-fork-1')).toHaveTextContent(
+      '⎇ 分叉自 codebuddy · m1',
+    );
+    expect(screen.getByTestId('session-row-s1')).toBeInTheDocument();
+  });
+
+  it('会话头 ⋯ 菜单也能归档（与行操作同一入口契约）', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChatView();
+    const user = userEvent.setup();
+    await screen.findByTestId('chat-header-menu-btn');
+
+    await user.click(screen.getByTestId('chat-header-menu-btn'));
+    await user.click(screen.getByTestId('archive-session-btn'));
+    await waitFor(() => expect(screen.queryByTestId('session-row-s1')).toBeNull());
+    expect(screen.getByTestId('archived-count')).toHaveTextContent('已归档 1');
+  });
+
+  it('会话头归档运行中会话：409 文案展示在聊天错误条', async () => {
+    sessionsList = [makeSession({ id: 'run', status: '运行中' })];
+    renderChatView();
+    const user = userEvent.setup();
+    await screen.findByTestId('chat-header-menu-btn');
+
+    await user.click(screen.getByTestId('chat-header-menu-btn'));
+    await user.click(screen.getByTestId('archive-session-btn'));
+    expect(await screen.findByTestId('chat-action-error')).toHaveTextContent('会话正在运行，请先停止再归档');
+  });
+
+  it('草稿按会话独立并持久化到 localStorage（切换会话互不覆盖）', () => {
+    usePanelStore.getState().setChatDraft('s1', '甲会话草稿');
+    usePanelStore.getState().setChatDraft('s2', '乙会话草稿');
+
+    expect(usePanelStore.getState().chatDrafts).toEqual({ s1: '甲会话草稿', s2: '乙会话草稿' });
+    const persisted = JSON.parse(localStorage.getItem('agentboard.panel') ?? '{}') as {
+      state?: { chatDrafts?: Record<string, string> };
+    };
+    expect(persisted.state?.chatDrafts).toEqual({ s1: '甲会话草稿', s2: '乙会话草稿' });
   });
 });

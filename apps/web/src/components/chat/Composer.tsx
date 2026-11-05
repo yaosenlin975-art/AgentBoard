@@ -60,9 +60,11 @@ export function Composer({
   /** CHAT-IMG-DELIVERY：第二参数为草稿中实际保留的粘贴图片附件 id（按出现顺序去重） */
   onSend: (text: string, attachmentIds: string[]) => Promise<void>;
 }) {
-  // DETAIL-VIEW-BUG2：草稿存 panelStore（视图按需挂载后切回来仍保留）
-  const value = usePanelStore((s) => s.chatDraft);
-  const setValue = usePanelStore((s) => s.setChatDraft);
+  // DETAIL-VIEW-BUG2 / CHAT-SB2：草稿存 panelStore，按会话独立（视图按需挂载后切回来仍保留）
+  const draftKey = sessionId ?? '';
+  const value = usePanelStore((s) => s.chatDrafts[draftKey] ?? '');
+  const setChatDraft = usePanelStore((s) => s.setChatDraft);
+  const setValue = (text: string): void => setChatDraft(draftKey, text);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 正在上传的粘贴图片数（>0 时禁止发送，避免图片还没落盘就发出去） */
@@ -195,7 +197,7 @@ export function Composer({
   const insertAtCaret = (text: string): void => {
     const el = inputRef.current;
     // 连续插入（文本 + 多图）时闭包里的 value 会过期，取 store 的最新草稿为准
-    const current = usePanelStore.getState().chatDraft;
+    const current = usePanelStore.getState().chatDrafts[draftKey] ?? '';
     const start = el?.selectionStart ?? current.length;
     const end = el?.selectionEnd ?? start;
     setValue(`${current.slice(0, start)}${text}${current.slice(end)}`);

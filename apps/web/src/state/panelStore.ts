@@ -38,6 +38,16 @@ function sanitizeUnread(value: unknown): Record<string, number> {
   return out;
 }
 
+/** 草稿恢复容错：非对象/数组回空对象；只保留字符串草稿（空串也保留，避免已清空的草稿被历史值覆盖） */
+function sanitizeDrafts(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [id, draft] of Object.entries(value)) {
+    if (typeof draft === 'string') out[id] = draft;
+  }
+  return out;
+}
+
 interface PanelState {
   view: PanelView | null;
   issueId: string | null;
@@ -49,11 +59,12 @@ interface PanelState {
   /** 软链接浮窗目标（MD-LINKS），仅 view==='ref' 时有意义 */
   refPanel: RefPanelTarget | null;
   /**
-   * 聊天输入草稿（DETAIL-VIEW-BUG2）：视图改成「同一时刻只挂载一个」，ChatPanel 卸载会丢组件内 state，
-   * 所以草稿提到 store —— 切到详情再回来仍保留。
+   * 聊天输入草稿（CHAT-SB2）：按会话独立保存（会话 id → 草稿）。
+   * DETAIL-VIEW-BUG2 的根因不变（视图同一时刻只挂载一个，ChatPanel 卸载会丢组件内 state），
+   * 只是从单值改为按会话存，切会话互不覆盖；无会话时用空串键。
    */
-  chatDraft: string;
-  setChatDraft: (draft: string) => void;
+  chatDrafts: Record<string, string>;
+  setChatDraft: (sessionId: string | null, draft: string) => void;
   /** 右侧面板是否展开（收起保留 view/issueId/sessionId，展开按钮恢复） */
   rightOpen: boolean;
   /** 打开任务详情并展开右侧 */
@@ -85,9 +96,10 @@ export const usePanelStore = create<PanelState>()(
       chatSession: null,
       unread: {},
       refPanel: null,
-      chatDraft: '',
+      chatDrafts: {},
       rightOpen: false,
-      setChatDraft: (chatDraft) => set({ chatDraft }),
+      setChatDraft: (sessionId, draft) =>
+        set((s) => ({ chatDrafts: { ...s.chatDrafts, [sessionId ?? '']: draft } })),
       openDetail: (issueId) => {
         // S2b：从「整屏聊天」点任务卡时先把主区切回看板，否则详情浮窗会盖在整屏聊天上（切换不串）
         if (useNavStore.getState().view === 'chat') useNavStore.getState().setView('board');
@@ -121,9 +133,12 @@ export const usePanelStore = create<PanelState>()(
         set((s) => {
           const unread = { ...s.unread };
           delete unread[sessionId];
+          // 会话删除后草稿一并丢弃，避免 localStorage 残留无主草稿
+          const chatDrafts = { ...s.chatDrafts };
+          delete chatDrafts[sessionId];
           return s.sessionId === sessionId
-            ? { sessionId: null, chatSession: null, unread }
-            : { unread };
+            ? { sessionId: null, chatSession: null, unread, chatDrafts }
+            : { unread, chatDrafts };
         }),
       markUnread: (sessionId) =>
         set((s) => ({ unread: { ...s.unread, [sessionId]: (s.unread[sessionId] ?? 0) + 1 } })),
@@ -140,6 +155,7 @@ export const usePanelStore = create<PanelState>()(
         sessionId: state.sessionId,
         chatSession: state.chatSession,
         unread: state.unread,
+        chatDrafts: state.chatDrafts,
       }),
       // 重水合容错：unread 做结构/取值校验（脏数据回空对象，不抛错）；
       // 视图意图一律丢弃 —— 旧版快照里可能残留 `view:'chat'`（S2b 前聊天曾是面板视图），
@@ -151,6 +167,7 @@ export const usePanelStore = create<PanelState>()(
           sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
           chatSession: p.chatSession ?? null,
           unread: sanitizeUnread(p.unread),
+          chatDrafts: sanitizeDrafts(p.chatDrafts),
           view: null,
           issueId: null,
           rightOpen: false,

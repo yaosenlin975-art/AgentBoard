@@ -92,7 +92,7 @@ beforeEach(() => {
   cleanup();
   localStorage.clear();
   useTurnStore.getState().reset();
-  usePanelStore.setState({ chatDraft: '' });
+  usePanelStore.setState({ chatDrafts: {} });
 });
 
 // ---------- 1 / 2 / 7：计划条 ----------

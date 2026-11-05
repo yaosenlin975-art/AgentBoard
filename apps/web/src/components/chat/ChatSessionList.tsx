@@ -11,7 +11,14 @@
  * - 进入聊天视图默认选中当前会话（无则最近一条），选择写 panelStore（`openChat` 清未读）；
  * - 删除沿用原切换器的行内二次确认；服务端拒绝（409 运行中/占用）原文就地展示。
  *
- * 与面板的关系：本组件只负责「显示 + 选 + 删」，消息流仍在 ChatPanel（S3 不改消息渲染）。
+ * CHAT-SB2（契约由 CHAT-SB1 提供）：
+ * - 头部搜索框：客户端过滤 标题 / 任务号 / 模型 / CLI / 分叉来源，无匹配给空态；
+ * - 行内改名：Enter 提交、Esc 取消、空标题就地拒绝（可显式「恢复默认」清空为派生标题）；
+ * - 归档：行操作与会话头 ⋯ 两处入口（后者在 ChatPanel）；默认列表不显示归档会话，
+ *   `已归档 N ▸` 折叠组内可恢复；运行中归档按服务端 409 原文提示；
+ * - 分叉：行操作 ⎇ 调 `POST /api/sessions/:id/fork`，新会话自动选中，并显示 `⎇ 分叉自 …`。
+ *
+ * 与面板的关系：本组件只负责「显示 + 选 + 删 + 改名/归档/分叉」，消息流仍在 ChatPanel。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -21,7 +28,7 @@ import { usePanelStore } from '../../state/panelStore';
 import { clearStream } from '../../state/streamingStore';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
-import { RenameSessionDialog } from './RenameSessionDialog';
+import { SESSION_TITLE_MAX } from './RenameSessionDialog';
 
 /** 「无任务会话」分组键（不与工作空间 id 冲突） */
 const FREE_GROUP = 'free';
@@ -55,6 +62,11 @@ function relativeTime(ts: number, now = Date.now()): string {
   return `${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
+/** 归档判定：archived_at 有值为归档（CHAT-SB1 契约 #2） */
+function isArchived(session: Session): boolean {
+  return session.archived_at !== null && session.archived_at !== undefined;
+}
+
 export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) {
   const sessionId = usePanelStore((s) => s.sessionId);
   const unread = usePanelStore((s) => s.unread);
@@ -62,8 +74,12 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
   const removeSession = usePanelStore((s) => s.removeSession);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  /** 正在改名的会话（列表行入口；聊天头部「⋯」菜单另有同名入口，共用 RenameSessionDialog） */
-  const [renaming, setRenaming] = useState<Session | null>(null);
+  /** 搜索词：客户端过滤，不写服务端、不进 URL */
+  const [search, setSearch] = useState('');
+  /** 「已归档 N ▸」折叠组开关（默认收起） */
+  const [archivedOpen, setArchivedOpen] = useState(false);
+  /** 正在归档/恢复/分叉的会话 id，防重复点击 */
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
@@ -71,12 +87,16 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
   });
   const wsList = workspaces ?? [];
 
-  // 逐工作空间拉会话：queryKey 与 ChatPanel 的 ['sessions', workspaceId] 同键，缓存共享，
-  // 既有 `invalidateQueries({ queryKey: ['sessions'] })` 前缀失效会一并刷新本列表。
+  // 逐工作空间拉会话（含归档，侧栏自己分离显示）。queryKey 加 'sidebar' 后缀，
+  // 避免把 include_archived 的全量结果写进 ChatPanel 的 ['sessions', workspaceId] 缓存；
+  // 既有 `invalidateQueries({ queryKey: ['sessions'] })` 前缀失效仍会一并刷新本列表。
   const sessionQueries = useQueries({
     queries: wsList.map((w) => ({
-      queryKey: ['sessions', w.id],
-      queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(w.id)}`),
+      queryKey: ['sessions', w.id, 'sidebar'],
+      queryFn: () =>
+        api.get<Session[]>(
+          `/api/sessions?workspace=${encodeURIComponent(w.id)}&include_archived=1`,
+        ),
     })),
   });
   const sessions = sessionQueries.flatMap((q) => q.data ?? []);
@@ -114,28 +134,58 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
     const base = baseTitleOf(session);
     titleCounts.set(base, (titleCounts.get(base) ?? 0) + 1);
   }
+  // 分叉来源展示名：优先源会话标题（含归档会话，列表一次拉全），取不到退化为短 id
+  const sessionById = new Map(sessions.map((s) => [s.id, s]));
+  const forkSourceLabel = (sourceId: string | null | undefined): string | null => {
+    if (sourceId === null || sourceId === undefined) return null;
+    const source = sessionById.get(sourceId);
+    return source !== undefined ? baseTitleOf(source) : `#${sourceId.slice(0, 8)}`;
+  };
 
-  // 进入聊天视图默认选中：本列表挂载后首次拿到会话时，无选中会话就取最近一条。
+  // 搜索：标题 / 任务号 / 模型 / CLI / 分叉来源（源 id 与源标题都命中）
+  const query = search.trim().toLowerCase();
+  const matchesSearch = (session: Session): boolean => {
+    if (query === '') return true;
+    const values = [
+      baseTitleOf(session),
+      session.issue_id ?? '',
+      session.model ?? '',
+      session.cli,
+      session.forked_from_session_id ?? '',
+      forkSourceLabel(session.forked_from_session_id) ?? '',
+    ];
+    return values.some((value) => value.toLowerCase().includes(query));
+  };
+
+  const activeSessions = sessions.filter((s) => !isArchived(s));
+  const archivedSessions = sessions.filter(isArchived).sort(byCreatedDesc);
+  const activeMatches = activeSessions.filter(matchesSearch);
+  const archivedMatches = archivedSessions.filter(matchesSearch);
+
+  // 进入聊天视图默认选中：本列表挂载后首次拿到会话时，无选中会话就取最近一条（只看未归档）。
   // 只做一次（autoSelected）：之后用户删光当前会话也不自动跳到别的会话，空态归 ChatPanel 处理；
   // 切走再切回聊天不重置选择（panelStore.sessionId 保留）。
-  const autoSelected = useRef(false);
-  const hasSessions = sessions.length > 0;
+  // 挂载时已有选中会话 → 视为「本轮已经选过」，之后外部删除把选中清空也不再自动跳转
+  const autoSelected = useRef(sessionId !== null);
+  const hasSessions = activeSessions.length > 0;
   useEffect(() => {
     if (autoSelected.current || !hasSessions) return;
     autoSelected.current = true;
     if (sessionId !== null) return;
-    const recent = [...sessions].sort(byCreatedDesc)[0]!;
+    const recent = [...activeSessions].sort(byCreatedDesc)[0]!;
     openChat(recent.id, recent);
-  }, [sessionId, hasSessions, sessions, openChat]);
+  }, [sessionId, hasSessions, activeSessions, openChat]);
 
   const groups: SessionGroup[] = wsList
     .map((w) => ({
       key: w.id,
       label: w.name,
-      sessions: sessions.filter((s) => s.workspace_id === w.id && s.issue_id !== null).sort(byCreatedDesc),
+      sessions: activeMatches
+        .filter((s) => s.workspace_id === w.id && s.issue_id !== null)
+        .sort(byCreatedDesc),
     }))
     .filter((g) => g.sessions.length > 0);
-  const freeSessions = sessions.filter((s) => s.issue_id === null).sort(byCreatedDesc);
+  const freeSessions = activeMatches.filter((s) => s.issue_id === null).sort(byCreatedDesc);
   if (freeSessions.length > 0) groups.push({ key: FREE_GROUP, label: '无任务会话', sessions: freeSessions });
 
   const handleSelect = (session: Session): void => {
@@ -159,13 +209,45 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
     queryClient.removeQueries({ queryKey: ['session-queue', session.id] });
   };
 
+  // 归档 / 恢复：服务端 409（运行中）原文展示，不清选中、不动列表（等用户停止后再试）
+  const handleArchive = async (session: Session, archived: boolean): Promise<void> => {
+    setError(null);
+    setBusyId(session.id);
+    try {
+      await api.patch<Session>(`/api/sessions/${encodeURIComponent(session.id)}`, { archived });
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : archived ? '归档会话失败' : '恢复会话失败');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  // 分叉（当前状态）：成功 → 新会话自动选中；源会话消息由服务端复制，前端不需要动
+  const handleFork = async (session: Session): Promise<void> => {
+    setError(null);
+    setBusyId(session.id);
+    try {
+      const created = await api.post<Session>(`/api/sessions/${encodeURIComponent(session.id)}/fork`, {});
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      openChat(created.id, created);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '分叉会话失败');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const showSearchEmpty =
+    query !== '' && groups.length === 0 && archivedMatches.length === 0 && sessions.length > 0;
+
   return (
     <div
       data-testid="chat-session-list"
       aria-label="会话列表"
       className="flex w-[250px] shrink-0 flex-col border-r border-hairline bg-surface-card"
     >
-      <div className="shrink-0 border-b border-hairline p-2">
+      <div className="shrink-0 space-y-1 border-b border-hairline p-2">
         <button
           type="button"
           data-testid="new-session-btn"
@@ -175,6 +257,28 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
         >
           ＋ 新建会话
         </button>
+        <div className="relative">
+          <input
+            data-testid="chat-search-input"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索标题 / 任务号 / 模型 / 分叉来源"
+            aria-label="搜索会话"
+            className="h-7 w-full rounded-md border border-hairline bg-surface-card px-2 pr-6 text-xs text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          />
+          {search !== '' && (
+            <button
+              type="button"
+              data-testid="chat-search-clear"
+              aria-label="清空搜索"
+              title="清空搜索"
+              onClick={() => setSearch('')}
+              className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-[11px] text-ink-3 hover:text-ink"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {error !== null && (
@@ -184,179 +288,382 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
-        {loading && groups.length === 0 ? (
+        {loading && groups.length === 0 && archivedSessions.length === 0 ? (
           <Skeleton testId="chat-session-list-loading" rows={2} className="mx-2 mt-2" />
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && archivedMatches.length === 0 && sessions.length === 0 ? (
           <EmptyState testId="chat-session-list-empty" compact className="mx-2 mt-2" title="暂无会话" hint="新建会话后在此展示" />
         ) : (
-          groups.map((group) => (
-            <div key={group.key} data-testid={`chat-session-group-${group.key}`}>
-              <p className="px-2.5 pt-1 pb-0.5 text-[10px] text-ink-3">{group.label}</p>
-              <ul role="list">
-                {group.sessions.map((session) => {
-                  const active = session.id === sessionId;
-                  const count = unread[session.id] ?? 0;
-                  const baseTitle = baseTitleOf(session);
-                  const title =
-                    (titleCounts.get(baseTitle) ?? 0) > 1
-                      ? `${baseTitle} · ${relativeTime(session.created_at)}`
-                      : baseTitle;
-                  // 任务归属 + 相对时间：同名会话靠时间区分，自由会话标明身份
-                  const meta =
-                    session.issue_id !== null
-                      ? `#${session.issue_id.slice(0, 8)} · ${relativeTime(session.created_at)}`
-                      : `自由会话 · ${relativeTime(session.created_at)}`;
-                  return (
+          <>
+            {groups.map((group) => (
+              <div key={group.key} data-testid={`chat-session-group-${group.key}`}>
+                <p className="px-2.5 pt-1 pb-0.5 text-[10px] text-ink-3">{group.label}</p>
+                <ul role="list">
+                  {group.sessions.map((session) => (
                     <SessionRow
                       key={session.id}
                       session={session}
-                      title={title}
-                      meta={meta}
-                      active={active}
-                      unreadCount={count}
+                      title={rowTitle(session)}
+                      meta={rowMeta(session, wsList)}
+                      forkedFromLabel={forkSourceLabel(session.forked_from_session_id)}
+                      active={session.id === sessionId}
+                      unreadCount={unread[session.id] ?? 0}
+                      archived={false}
+                      busy={busyId === session.id}
                       onSelect={() => handleSelect(session)}
-                      onRename={() => setRenaming(session)}
                       onDelete={() => handleDelete(session)}
+                      onArchive={() => handleArchive(session, true)}
+                      onRestore={() => handleArchive(session, false)}
+                      onFork={() => handleFork(session)}
                     />
-                  );
-                })}
-              </ul>
-            </div>
-          ))
+                  ))}
+                </ul>
+              </div>
+            ))}
+
+            {showSearchEmpty && (
+              <EmptyState
+                testId="chat-search-empty"
+                compact
+                className="mx-2 mt-2"
+                title="无匹配会话"
+                hint="换个关键词，或清空搜索恢复全部会话"
+              />
+            )}
+
+            {archivedMatches.length > 0 && (
+              <div data-testid="archived-group" className="mt-1 border-t border-hairline pt-1">
+                <button
+                  type="button"
+                  data-testid="archived-toggle"
+                  aria-expanded={archivedOpen}
+                  onClick={() => setArchivedOpen((v) => !v)}
+                  className="flex w-full items-center gap-1 px-2.5 py-1 text-[10px] text-ink-3 hover:text-ink"
+                >
+                  <span data-testid="archived-count">已归档 {archivedMatches.length}</span>
+                  <span aria-hidden="true">{archivedOpen ? '▾' : '▸'}</span>
+                </button>
+                {archivedOpen && (
+                  <ul role="list" data-testid="archived-list">
+                    {archivedMatches.map((session) => (
+                      <SessionRow
+                        key={session.id}
+                        session={session}
+                        title={rowTitle(session)}
+                        meta={rowMeta(session, wsList)}
+                        forkedFromLabel={forkSourceLabel(session.forked_from_session_id)}
+                        active={session.id === sessionId}
+                        unreadCount={unread[session.id] ?? 0}
+                        archived
+                        busy={busyId === session.id}
+                        onSelect={() => handleSelect(session)}
+                        onDelete={() => handleDelete(session)}
+                        onArchive={() => handleArchive(session, true)}
+                        onRestore={() => handleArchive(session, false)}
+                        onFork={() => handleFork(session)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
-      {/* 会话改名（列表行入口） */}
-      {renaming !== null && (
-        <RenameSessionDialog
-          session={renaming}
-          onClose={() => setRenaming(null)}
-        />
-      )}
     </div>
   );
+
+  /** 行标题（同名追加相对时间；分叉标记在副行，避免标题被截断后看不见来源） */
+  function rowTitle(session: Session): string {
+    const baseTitle = baseTitleOf(session);
+    return (titleCounts.get(baseTitle) ?? 0) > 1
+      ? `${baseTitle} · ${relativeTime(session.created_at)}`
+      : baseTitle;
+  }
+
+  /** 副行：任务归属 + 相对时间；归档行额外标工作空间名（归档组跨工作空间） */
+  function rowMeta(session: Session, list: Workspace[]): string {
+    const base =
+      session.issue_id !== null
+        ? `#${session.issue_id.slice(0, 8)} · ${relativeTime(session.created_at)}`
+        : `自由会话 · ${relativeTime(session.created_at)}`;
+    if (!isArchived(session)) return base;
+    const wsName = list.find((w) => w.id === session.workspace_id)?.name ?? '工作空间不可用';
+    return `${wsName} · ${base}`;
+  }
 }
 
 function SessionRow({
   session,
   title,
   meta,
+  forkedFromLabel,
   active,
   unreadCount,
+  archived,
+  busy,
   onSelect,
-  onRename,
   onDelete,
+  onArchive,
+  onRestore,
+  onFork,
 }: {
   session: Session;
   title: string;
   /** 任务归属 + 相对时间（AUDIT-3 I-10） */
   meta: string;
+  /** 分叉来源展示名（null = 非分叉会话） */
+  forkedFromLabel: string | null;
   active: boolean;
   unreadCount: number;
+  archived: boolean;
+  busy: boolean;
   onSelect: () => void;
-  onRename: () => void;
   onDelete: () => Promise<void>;
+  onArchive: () => Promise<void>;
+  onRestore: () => Promise<void>;
+  onFork: () => Promise<void>;
 }) {
+  const queryClient = useQueryClient();
   // 行内二次确认：confirming 时替换为「确认删除 / 取消」，避免误删；提交中禁用防重复
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  // CHAT-SB2 行内改名：editing 时标题位置换成 input（Enter 提交 / Esc 取消）
+  const [editing, setEditing] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [savingRename, setSavingRename] = useState(false);
+
+  const startRename = (): void => {
+    setRenameValue(session.title ?? '');
+    setRenameError(null);
+    setEditing(true);
+  };
+
+  const cancelRename = (): void => {
+    setEditing(false);
+    setRenameError(null);
+  };
+
+  /** `null` = 清空会话标题（服务端 PATCH title:null → 回到派生标题） */
+  const submitRename = async (next: string | null): Promise<void> => {
+    if (next !== null) {
+      const trimmed = next.trim();
+      if (trimmed === '') {
+        setRenameError('会话名称不能为空');
+        return;
+      }
+      if (trimmed.length > SESSION_TITLE_MAX) {
+        setRenameError(`会话名称最多 ${SESSION_TITLE_MAX} 字（当前 ${trimmed.length} 字）`);
+        return;
+      }
+    }
+    setSavingRename(true);
+    setRenameError(null);
+    try {
+      await api.patch<Session>(`/api/sessions/${encodeURIComponent(session.id)}`, { title: next });
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      setEditing(false);
+    } catch (e) {
+      setRenameError(e instanceof Error ? e.message : '改名失败，请重试');
+    } finally {
+      setSavingRename(false);
+    }
+  };
+
   return (
     <li
       data-testid={`session-row-${session.id}`}
-      className={`group flex items-center gap-1 pr-1 ${active ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}
+      className={`group flex items-start gap-1 pr-1 ${active ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}
     >
-      <button
-        type="button"
-        data-testid={`session-option-${session.id}`}
-        aria-current={active ? 'true' : undefined}
-        onClick={onSelect}
-        className={`flex min-w-0 flex-1 flex-col gap-0.5 px-2.5 py-1.5 text-left text-xs ${
-          active ? 'font-medium text-accent' : 'text-ink-2'
-        }`}
-      >
-        <span className="flex min-w-0 items-center gap-1">
-          <span className="truncate" title={title}>
-            {title}
-          </span>
-          {session.status === '运行中' && (
-            <span
-              data-testid={`option-running-${session.id}`}
-              title="运行中"
-              aria-label="运行中"
-              className="size-1.5 shrink-0 rounded-full bg-amber-500"
-            />
-          )}
-          {session.status === '失败' && (
-            <span
-              data-testid={`option-failed-${session.id}`}
-              title="失败"
-              aria-label="失败"
-              className="size-1.5 shrink-0 rounded-full bg-red-500"
-            />
-          )}
-          {unreadCount > 0 && (
-            <span
-              data-testid={`unread-${session.id}`}
-              title={`${unreadCount} 条新消息`}
-              className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
-            >
-              {unreadLabel(unreadCount)}
-            </span>
-          )}
-        </span>
-        <span data-testid={`session-meta-${session.id}`} className="truncate text-[10px] text-ink-3">
-          {meta}
-        </span>
-      </button>
-      {confirming ? (
-        <span className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            data-testid={`session-delete-confirm-${session.id}`}
-            disabled={deleting}
-            onClick={() => {
-              setDeleting(true);
-              void onDelete().finally(() => {
-                setDeleting(false);
-                setConfirming(false);
-              });
-            }}
-            className="rounded border border-red-400 px-1 text-[10px] text-red-600 disabled:opacity-40 dark:border-red-700 dark:text-red-400"
-          >
-            确认删除
-          </button>
-          <button
-            type="button"
-            data-testid={`session-delete-cancel-${session.id}`}
-            disabled={deleting}
-            onClick={() => setConfirming(false)}
-            className="rounded px-1 text-[10px] text-ink-3 hover:underline disabled:opacity-40"
-          >
-            取消
-          </button>
-        </span>
-      ) : (
-        <span className="flex shrink-0 items-center">
-          {/* 改名入口：与删除同一 hover 露出区 */}
-          <button
-            type="button"
-            data-testid={`session-rename-${session.id}`}
+      {editing ? (
+        <div className="min-w-0 flex-1 px-2.5 py-1.5">
+          <input
+            data-testid={`session-rename-input-${session.id}`}
+            value={renameValue}
+            maxLength={SESSION_TITLE_MAX + 10}
+            autoFocus
             aria-label="修改会话名称"
-            title="修改会话名称"
-            onClick={onRename}
-            className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
-          >
-            ✎
-          </button>
-          <button
-            type="button"
-            data-testid={`session-delete-${session.id}`}
-            aria-label="删除会话"
-            title="删除会话"
-            onClick={() => setConfirming(true)}
-            className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
-          >
-            ✕
-          </button>
+            onChange={(event) => {
+              setRenameValue(event.target.value);
+              setRenameError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                void submitRename(renameValue);
+              } else if (event.key === 'Escape') {
+                event.preventDefault();
+                cancelRename();
+              }
+            }}
+            disabled={savingRename}
+            className="w-full rounded border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50"
+          />
+          {renameError !== null ? (
+            <p data-testid={`session-rename-error-${session.id}`} role="alert" className="mt-0.5 text-[10px] text-red-600 dark:text-red-400">
+              {renameError}
+            </p>
+          ) : (
+            <p className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-3">
+              <span>
+                {renameValue.trim().length}/{SESSION_TITLE_MAX} · Enter 保存，Esc 取消
+              </span>
+              {session.title !== null && session.title !== undefined && (
+                <button
+                  type="button"
+                  data-testid={`session-rename-reset-${session.id}`}
+                  disabled={savingRename}
+                  onClick={() => void submitRename(null)}
+                  className="text-accent hover:underline disabled:opacity-40"
+                >
+                  恢复默认
+                </button>
+              )}
+            </p>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          data-testid={`session-option-${session.id}`}
+          aria-current={active ? 'true' : undefined}
+          onClick={onSelect}
+          className={`flex min-w-0 flex-1 flex-col gap-0.5 px-2.5 py-1.5 text-left text-xs ${
+            active ? 'font-medium text-accent' : 'text-ink-2'
+          }`}
+        >
+          <span className="flex min-w-0 items-center gap-1">
+            <span className="truncate" title={title}>
+              {title}
+            </span>
+            {session.status === '运行中' && (
+              <span
+                data-testid={`option-running-${session.id}`}
+                title="运行中"
+                aria-label="运行中"
+                className="size-1.5 shrink-0 rounded-full bg-amber-500"
+              />
+            )}
+            {session.status === '失败' && (
+              <span
+                data-testid={`option-failed-${session.id}`}
+                title="失败"
+                aria-label="失败"
+                className="size-1.5 shrink-0 rounded-full bg-red-500"
+              />
+            )}
+            {unreadCount > 0 && (
+              <span
+                data-testid={`unread-${session.id}`}
+                title={`${unreadCount} 条新消息`}
+                className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
+              >
+                {unreadLabel(unreadCount)}
+              </span>
+            )}
+          </span>
+          <span data-testid={`session-meta-${session.id}`} className="truncate text-[10px] text-ink-3">
+            {meta}
+            {forkedFromLabel !== null && (
+              <span data-testid={`session-forked-from-${session.id}`}> · ⎇ 分叉自 {forkedFromLabel}</span>
+            )}
+          </span>
+        </button>
+      )}
+      {!editing && (
+        <span className="flex shrink-0 items-center">
+          {confirming ? (
+            <>
+              <button
+                type="button"
+                data-testid={`session-delete-confirm-${session.id}`}
+                disabled={deleting}
+                onClick={() => {
+                  setDeleting(true);
+                  void onDelete().finally(() => {
+                    setDeleting(false);
+                    setConfirming(false);
+                  });
+                }}
+                className="rounded border border-red-400 px-1 text-[10px] text-red-600 disabled:opacity-40 dark:border-red-700 dark:text-red-400"
+              >
+                确认删除
+              </button>
+              <button
+                type="button"
+                data-testid={`session-delete-cancel-${session.id}`}
+                disabled={deleting}
+                onClick={() => setConfirming(false)}
+                className="rounded px-1 text-[10px] text-ink-3 hover:underline disabled:opacity-40"
+              >
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              {/* 行操作：改名 / 分叉 / 归档（或恢复）/ 删除，与删除同一 hover 露出区 */}
+              {!archived && (
+                <>
+                  <button
+                    type="button"
+                    data-testid={`session-rename-${session.id}`}
+                    aria-label="修改会话名称"
+                    title="修改会话名称"
+                    disabled={busy}
+                    onClick={startRename}
+                    className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                  >
+                    ✎
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`session-fork-${session.id}`}
+                    aria-label="分叉会话"
+                    title="分叉会话（复制当前对话为新会话）"
+                    disabled={busy}
+                    onClick={() => void onFork()}
+                    className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                  >
+                    ⎇
+                  </button>
+                  <button
+                    type="button"
+                    data-testid={`session-archive-${session.id}`}
+                    aria-label="归档会话"
+                    title="归档会话（默认列表隐藏，可从已归档组恢复）"
+                    disabled={busy}
+                    onClick={() => void onArchive()}
+                    className="shrink-0 rounded px-1 text-[10px] text-ink-3 opacity-0 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                  >
+                    归档
+                  </button>
+                </>
+              )}
+              {archived && (
+                <button
+                  type="button"
+                  data-testid={`session-restore-${session.id}`}
+                  aria-label="恢复会话"
+                  title="恢复到会话列表"
+                  disabled={busy}
+                  onClick={() => void onRestore()}
+                  className="shrink-0 rounded px-1 text-[10px] text-accent hover:underline disabled:opacity-40"
+                >
+                  恢复
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid={`session-delete-${session.id}`}
+                aria-label="删除会话"
+                title="删除会话"
+                onClick={() => setConfirming(true)}
+                className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
+              >
+                ✕
+              </button>
+            </>
+          )}
         </span>
       )}
     </li>

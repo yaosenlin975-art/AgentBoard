@@ -45,7 +45,7 @@ const uploaded: Array<{ name: string; mime: string }> = [];
 beforeEach(() => {
   localStorage.clear();
   uploaded.length = 0;
-  usePanelStore.setState({ chatDraft: '' });
+  usePanelStore.setState({ chatDrafts: {} });
   server.use(
     http.post('/api/workspaces/:ws/attachments', async ({ request, params }) => {
       const mime = request.headers.get('Content-Type') ?? 'image/png';

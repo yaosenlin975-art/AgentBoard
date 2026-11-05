@@ -25,15 +25,16 @@ vi.mock('../components/chat/ChatPanel', async () => {
   const { usePanelStore } = await import('../state/panelStore');
   return {
     ChatPanel: () => {
-      // 与真实 Composer 一致：草稿在 panelStore，视图按需卸载也不丢
-      const draft = usePanelStore((state) => state.chatDraft);
+      // 与真实 Composer 一致：草稿在 panelStore 按会话存，视图按需卸载也不丢
+      const sessionId = usePanelStore((state) => state.sessionId);
+      const draft = usePanelStore((state) => state.chatDrafts[sessionId ?? ''] ?? '');
       const setDraft = usePanelStore((state) => state.setChatDraft);
       return (
         <input
           data-testid="chat-draft"
           aria-label="聊天草稿"
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          onChange={(event) => setDraft(sessionId, event.target.value)}
         />
       );
     },

@@ -41,7 +41,7 @@ beforeEach(() => {
     chatSession: null,
     unread: {},
     refPanel: null,
-    chatDraft: '',
+    chatDrafts: {},
     rightOpen: false,
   });
   server.use(

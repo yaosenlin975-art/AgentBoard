@@ -34,6 +34,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const storedSession = usePanelStore((s) => s.chatSession);
   const clearSession = usePanelStore((s) => s.clearSession);
   const removeSession = usePanelStore((s) => s.removeSession);
+  const openChat = usePanelStore((s) => s.openChat);
   const appWorkspaceId = useAppStore((s) => s.workspaceId);
   const queryClient = useQueryClient();
 
@@ -254,6 +255,43 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     onError: (e) => setActionError(e instanceof Error ? e.message : '停止失败'),
   });
 
+  // CHAT-SB2：会话头 ⋯ 菜单的归档 / 恢复入口（与侧栏行操作共用同一 PATCH 契约）。
+  // 运行中归档服务端 409 → 原文落 actionError，不静默失败。
+  const archiveSession = useMutation({
+    mutationFn: (archived: boolean) => {
+      if (sessionId === null) return Promise.reject(new Error('未选择会话'));
+      return api.patch<Session>(`/api/sessions/${encodeURIComponent(sessionId)}`, { archived });
+    },
+    onSuccess: (updated) => {
+      setLiveSession(updated);
+      setHeaderMenuOpen(false);
+      setActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    },
+    onError: (e) => {
+      setHeaderMenuOpen(false);
+      setActionError(e instanceof Error ? e.message : '归档会话失败');
+    },
+  });
+
+  // CHAT-SB2：分叉入口——成功后新会话自动选中（源会话消息由服务端复制）
+  const forkSession = useMutation({
+    mutationFn: () => {
+      if (sessionId === null) return Promise.reject(new Error('未选择会话'));
+      return api.post<Session>(`/api/sessions/${encodeURIComponent(sessionId)}/fork`, {});
+    },
+    onSuccess: (created) => {
+      setHeaderMenuOpen(false);
+      setActionError(null);
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      openChat(created.id, created);
+    },
+    onError: (e) => {
+      setHeaderMenuOpen(false);
+      setActionError(e instanceof Error ? e.message : '分叉会话失败');
+    },
+  });
+
   // 标记待验收：等价 DetailPanel markDone（agent_id='user' 调 done，服务端释放占用）；
   // 成功后占用释放 → ['issue', id] 失效重取 → 按钮自然消失；看板卡片经 WS issue.changed 失效刷新
   const markDone = useMutation({
@@ -315,6 +353,14 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         ? (linkedIssue?.title ?? `#${session.issue_id.slice(0, 8)}`)
         : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
   const running = session.status === '运行中';
+  // CHAT-SB2：分叉来源标记（源会话标题优先，取不到退化为短 id）
+  const forkSourceId = session.forked_from_session_id ?? null;
+  const forkSourceLabel =
+    forkSourceId === null
+      ? null
+      : ((sessions?.find((s) => s.id === forkSourceId)?.title ?? '').trim() ||
+        `#${forkSourceId.slice(0, 8)}`);
+  const archived = session.archived_at !== null && session.archived_at !== undefined;
   // 标记待验收显隐：issue 关联非空 + 任务占用中 + 会话未结束/失败（无 issue 数据时 linkedIssue 为空 → 不渲染）
   const issueClaimed = linkedIssue?.claimed_by != null;
   const canMarkDone =
@@ -407,6 +453,26 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
                 >
                   修改名称
                 </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="archive-session-btn"
+                  disabled={archiveSession.isPending}
+                  onClick={() => archiveSession.mutate(!archived)}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+                >
+                  {archived ? '恢复会话' : '归档会话'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="fork-session-btn"
+                  disabled={forkSession.isPending}
+                  onClick={() => forkSession.mutate()}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+                >
+                  分叉会话
+                </button>
               </div>
             )}
           </span>
@@ -418,6 +484,15 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
             </span>
           )}
           {workspaceBadge}
+          {forkSourceLabel !== null && (
+            <span
+              data-testid="chat-forked-from"
+              title={`分叉自 ${forkSourceId}`}
+              className="max-w-[9rem] shrink-0 truncate text-ink-3"
+            >
+              ⎇ 分叉自 {forkSourceLabel}
+            </span>
+          )}
           <ModelSelector session={session} onUpdated={setLiveSession} openSignal={modelOpenSignal} showEditButton={false} />
         </div>
       </div>

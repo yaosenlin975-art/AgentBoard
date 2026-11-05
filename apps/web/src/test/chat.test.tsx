@@ -411,7 +411,8 @@ describe('ChatPanel 消息流与流式渲染', () => {
 
     // 切到 s2（切换器真实路径）
     const user = userEvent.setup();
-    await user.click(screen.getByTestId('session-option-s2'));
+    // 侧栏会话查询独立于 ChatPanel 的 ['sessions', workspaceId]，需等它到位
+    await user.click(await screen.findByTestId('session-option-s2'));
     await waitFor(() => expect(screen.getByTestId('model-display')).toHaveTextContent('codex · m1'));
 
     // A 在后台继续流式：累积进 store，B 视图不显示 A 的内容
@@ -734,7 +735,8 @@ describe('ChatPanel 会话切换器与模型', () => {
 
     emitMessageAdded(makeMessage({ id: 'mo1', session_id: 's2', content: '后台消息', ts: 300 }));
     // S3：会话列表常驻左栏（不再是下拉菜单）——按工作空间分组 + 无任务会话分组
-    const list = screen.getByTestId('chat-session-list');
+    const list = await screen.findByTestId('chat-session-list');
+    await screen.findByTestId('session-row-s2');
     expect(within(list).getByText('主项目')).toBeInTheDocument();
     expect(within(list).getByText('无任务会话')).toBeInTheDocument();
     expect(screen.getByTestId('unread-s2')).toHaveTextContent('1');
