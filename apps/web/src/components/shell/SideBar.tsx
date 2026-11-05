@@ -2,7 +2,7 @@
  * 左栏（S2a，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §3/§7）。
  *
  * FIX-1（导航重构纠偏，父卡 3c8d0a34）：结构回归设计稿顺序
- *   工作空间 → 五入口 → 账号/设置（纵向两项）→ 状态行
+ *   工作空间 → 入口（DEC-6 后为六入口）→ 账号/设置（纵向两项）→ 状态行
  * - 删掉 NAV-TOPBAR-01 迁入的 `sidebar-controls` 四宫格：聊天不再有重复入口（只作五入口之一，
  *   未读徽标挂在 `sidebar-entry-chat`）；账号/设置下沉到底部；主题并入状态行小字（点字切主题）。
  * - 品牌位容器加 `relative`：`WorkspaceSidebarOverlay` 的 `absolute top-full` 才能真正锚定在触发按钮正下方
@@ -21,9 +21,11 @@ import { useAppStore, type WsStatus } from '../../state/appStore';
 import { useOverlayStore } from '../../state/overlayStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
+import { useDecisionsCount } from '../decisions/useDecisions';
 
 const ENTRY_ICON: Record<NavView, string> = {
   board: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
+  decisions: 'M12 3l7 4v10l-7 4-7-4V7zM5 7l7 4 7-4M12 11v10',
   tree: 'M4 4h6v4H4zM14 10h6v4h-6zM14 16h6v4h-6zM7 8v10h7M7 10h7',
   knowledge: 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h5',
   log: 'M4 6h16M4 12h16M4 18h10',
@@ -32,6 +34,7 @@ const ENTRY_ICON: Record<NavView, string> = {
 
 const ENTRIES: Array<{ view: NavView; label: string }> = [
   { view: 'board', label: '任务看板' },
+  { view: 'decisions', label: '待决策' },
   { view: 'tree', label: '任务树' },
   { view: 'knowledge', label: '知识库' },
   { view: 'log', label: '日志' },
@@ -74,6 +77,8 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const wsStatus = useAppStore((state) => state.wsStatus);
   const [theme, cycleTheme] = useTheme();
   const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
+  // DEC-6：待决策徽标 = 当前工作区 grace + open 条数（0 时不显示数字，入口仍可见）
+  const decisionCount = useDecisionsCount(workspace?.id ?? null);
 
   return (
     <nav
@@ -108,7 +113,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />
       </div>
 
-      {/* ② 五入口（聊天只在这里出现一次，未读徽标挂本项） */}
+      {/* ② 六入口（聊天只在这里出现一次，未读徽标挂本项；待决策徽标见 DEC-6） */}
       <ul className="flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;
@@ -140,6 +145,15 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                     className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
                   >
                     {chatUnread > 99 ? '99+' : chatUnread}
+                  </span>
+                )}
+                {entry.view === 'decisions' && decisionCount > 0 && (
+                  <span
+                    data-testid="sidebar-decisions-badge"
+                    title={`${decisionCount} 条待决策`}
+                    className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-medium leading-4 text-white"
+                  >
+                    {decisionCount > 99 ? '99+' : decisionCount}
                   </span>
                 )}
               </button>

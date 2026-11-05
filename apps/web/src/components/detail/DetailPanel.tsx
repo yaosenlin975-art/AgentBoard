@@ -27,6 +27,7 @@ import { LabelChipsEditor } from './LabelChipsEditor';
 import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
+import { DecisionSection } from '../decisions/DecisionSection';
 import { FoldSection } from './FoldSection';
 import { MetaRow, type DueDraft } from './MetaRow';
 import { SessionList } from './SessionList';
@@ -365,6 +366,9 @@ export function DetailPanel() {
             }}
             onDueChange={(next) => applyDue(next)}
           />
+
+          {/* DEC-6：卡有在途/最近决策时展示问题、选项、答案时间线与断点摘要 */}
+          <DecisionSection issue={issue} />
 
           <div className="text-sm">
             <div className="mb-1 flex items-center justify-between">

@@ -16,6 +16,16 @@ export const server = setupServer(
   http.get('/api/sessions/:id', () =>
     HttpResponse.json({ error: { code: 'NOT_FOUND', message: '会话不存在' } }, { status: 404 }),
   ),
+  // DEC-6：待决策列表 / 徽标 / 详情默认空（各测试用 server.use 覆盖）
+  http.get('/api/decisions', () =>
+    HttpResponse.json({ decisions: [], counts: { grace: 0, open: 0, stale_open: 0, answered_recent: 0 } }),
+  ),
+  http.get('/api/workspaces/:id/decisions/count', () =>
+    HttpResponse.json({ grace: 0, open: 0, stale_open: 0, answered_recent: 0 }),
+  ),
+  http.get('/api/decisions/:id', () =>
+    HttpResponse.json({ error: { code: 'NOT_FOUND', message: '决策不存在' } }, { status: 404 }),
+  ),
   http.get('/api/clis', () =>
     HttpResponse.json([
       { id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null },

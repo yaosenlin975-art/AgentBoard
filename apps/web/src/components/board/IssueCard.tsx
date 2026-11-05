@@ -11,6 +11,7 @@ import { Badge } from '../ui/Badge';
 import { IconBolt, IconComment, IconLock } from '../ui/Icon';
 import { dependencyBadge } from '../../lib/dependency';
 import { GRAB_CURSOR, GRABBING_CURSOR } from '../../lib/cursor';
+import { DecisionMark } from '../decisions/DecisionMark';
 import { usePanelStore } from '../../state/panelStore';
 
 /**
@@ -74,6 +75,7 @@ function IssueCardContents({ issue, sessionRunning }: { issue: Issue; sessionRun
         </div>
       )}
       <div className="flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+        <DecisionMark issue={issue} />
         {claimed && (
           <Badge
             tone={sessionRunning ? 'green' : 'neutral'}
@@ -184,6 +186,9 @@ export function IssueCard({
 }) {
   const claimedBy = issue.claimed_by;
   const claimed = claimedBy !== null;
+  // DEC-6：open 决策把卡锁在待规划（占用已释放但不可 claim / 派工），拖拽同样冻结
+  const locked = issue.decision_locked === true;
+  const frozen = claimed || locked;
   const openDetail = usePanelStore((s) => s.openDetail);
   // 拖拽结束后浏览器仍派发 click：记录按下位置，位移超过激活阈值(5px)即视为拖拽，不打开详情
   const downPos = useRef<{ x: number; y: number } | null>(null);
@@ -192,7 +197,7 @@ export function IssueCard({
     useSortable({
       id: issue.id,
       // 选择模式或分组显示时禁用拖拽：点击语义改为勾选 / 视觉顺序不等于 sort_order
-      disabled: claimed || selectable || dragDisabled ? { draggable: true } : false,
+      disabled: frozen || selectable || dragDisabled ? { draggable: true } : false,
       data: { type: 'issue', status: issue.status },
     });
 
@@ -201,7 +206,7 @@ export function IssueCard({
     transition: transition ?? undefined,
     // CURSOR-WHITE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
     // 换成双色自定义光标（白填充 + 深色描边），浅/深主题都可见。占用中仍用禁止符。
-    cursor: selectable ? 'pointer' : claimed ? 'not-allowed' : GRAB_CURSOR,
+    cursor: selectable ? 'pointer' : frozen ? 'not-allowed' : GRAB_CURSOR,
   };
 
   const onPointerDown = (e: ReactPointerEvent): void => {
@@ -224,8 +229,8 @@ export function IssueCard({
       style={style}
       data-testid={`issue-card-${issue.id}`}
       data-selected={selectable ? (selected ? 'true' : 'false') : undefined}
-      aria-disabled={claimed || undefined}
-      title={claimed ? '占用中，不可拖动' : undefined}
+      aria-disabled={frozen || undefined}
+      title={locked ? '等待决策回答，暂不可拖动' : claimed ? '占用中，不可拖动' : undefined}
       // AUDIT-P0（I-01）：卡片本身可 Tab 聚焦、可 Enter/Space 打开详情，并且 focus-visible 有可见描边。
       // Space 的归属见 onKeyDown 注释：未占用卡片的 Space 留给 dnd-kit 键盘抓取，不抢。
       role="button"
@@ -248,7 +253,7 @@ export function IssueCard({
         // Space：dnd-kit 的 KeyboardSensor 用 Space 抓取（未占用卡片）。占用中卡片不可拖，
         // 此时 Space 没有拖拽语义，按「打开详情」处理，避免键盘用户按 Space 无反应。
         if (event.key === ' ' || event.key === 'Spacebar') {
-          if (claimed) {
+          if (frozen) {
             event.preventDefault();
             openDetail(issue.id);
           }

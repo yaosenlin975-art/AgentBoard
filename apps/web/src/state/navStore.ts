@@ -2,8 +2,11 @@
  * 导航状态（S1，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §4）。
  *
  * 单一视图枚举替代 App 的 `layout + knowledgeOpen + logOpen` 三态组合：
- *   view ∈ { board, tree, knowledge, log, chat }  —— 五入口互斥（单值即互斥）
- *   drawer ∈ { accounts, settings } | null        —— 右侧滑出面板，两者互斥
+ *   view ∈ { board, decisions, tree, knowledge, log, chat }  —— 六入口互斥（单值即互斥）
+ *   drawer ∈ { accounts, settings } | null                  —— 右侧滑出面板，两者互斥
+ *
+ * DEC-6：`decisions` 是「待决策」视图（设计 v3 §3.7 方案 A，紧随看板、与任务同域）；
+ * `decisionFocus` 仅用于深链（通知点击 / 待决策列表跳转）选中某条决策，不持久化。
  *
  * 互斥与叠放规则（S2 的布局按此实现，本卡只落状态）：
  * - `view` 与 `drawer` **正交**：滑出面板是主区右侧兄弟（宽屏挤压 / 窄屏覆盖），
@@ -17,10 +20,10 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export type NavView = 'board' | 'tree' | 'knowledge' | 'log' | 'chat';
+export type NavView = 'board' | 'decisions' | 'tree' | 'knowledge' | 'log' | 'chat';
 export type NavDrawer = 'accounts' | 'settings';
 
-export const NAV_VIEWS: readonly NavView[] = ['board', 'tree', 'knowledge', 'log', 'chat'];
+export const NAV_VIEWS: readonly NavView[] = ['board', 'decisions', 'tree', 'knowledge', 'log', 'chat'];
 export const NAV_DRAWERS: readonly NavDrawer[] = ['accounts', 'settings'];
 export const DEFAULT_NAV_VIEW: NavView = 'board';
 export const NAV_STORAGE_KEY = 'agentboard.nav';
@@ -43,8 +46,12 @@ export interface NavState {
   drawer: NavDrawer | null;
   /** NAV-CHAT-EXIT：进入整屏聊天前所在的视图（退出时回到它；null = 无来源 → board） */
   chatOrigin: NavView | null;
-  /** 切视图（五入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
+  /** DEC-6 深链：待决策视图要选中的决策 id（切走即清空；不持久化） */
+  decisionFocus: string | null;
+  /** 切视图（六入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
   setView: (view: NavView) => void;
+  /** DEC-6 深链：切到待决策视图并选中一条决策（通知点击 / 列表跳转） */
+  focusDecision: (decisionId: string | null) => void;
   /** NAV-CHAT-EXIT：退出整屏聊天，回到来源视图（来源缺失/非法 → board） */
   exitChat: () => void;
   /** 打开滑出面板（与另一个面板互斥，不影响 view） */
@@ -75,15 +82,22 @@ export const useNavStore = create<NavState>()(
       view: DEFAULT_NAV_VIEW,
       drawer: null,
       chatOrigin: null,
+      decisionFocus: null,
       setView: (view) =>
         set((state) => {
           const next = normalizeNavView(view);
           if (next === 'chat') {
             // 已在聊天里重复进入：保留最初的来源视图
-            return { view: next, chatOrigin: state.view === 'chat' ? state.chatOrigin : state.view };
+            return {
+              view: next,
+              chatOrigin: state.view === 'chat' ? state.chatOrigin : state.view,
+              decisionFocus: null,
+            };
           }
-          return { view: next, chatOrigin: null };
+          // 离开待决策视图时清空深链选中（保留焦点会让下次进入莫名高亮一条）
+          return { view: next, chatOrigin: null, decisionFocus: next === 'decisions' ? state.decisionFocus : null };
         }),
+      focusDecision: (decisionId) => set({ view: 'decisions', decisionFocus: decisionId }),
       exitChat: () => set((state) => ({ view: normalizeChatOrigin(state.chatOrigin) ?? DEFAULT_NAV_VIEW, chatOrigin: null })),
       openDrawer: (drawer) => set({ drawer }),
       closeDrawer: () => set({ drawer: null }),
@@ -92,7 +106,7 @@ export const useNavStore = create<NavState>()(
     {
       name: NAV_STORAGE_KEY,
       version: 0,
-      // drawer / chatOrigin 都不持久化：刷新后不该自动弹出面板，从聊天退出也回 board
+      // drawer / chatOrigin / decisionFocus 都不持久化：刷新后不该自动弹出面板或高亮旧决策
       partialize: (state) => ({ view: state.view }),
       merge: (persisted, current) => ({
         ...current,
@@ -100,6 +114,7 @@ export const useNavStore = create<NavState>()(
         // drawer 不持久化：恢复时一律收起（否则刷新会自动弹出面板）
         drawer: null,
         chatOrigin: null,
+        decisionFocus: null,
       }),
     },
   ),

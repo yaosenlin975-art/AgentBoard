@@ -16,7 +16,7 @@ import {
 import { usePanelStore } from '../state/panelStore';
 
 function resetNav(): void {
-  useNavStore.setState({ view: DEFAULT_NAV_VIEW, drawer: null });
+  useNavStore.setState({ view: DEFAULT_NAV_VIEW, drawer: null, chatOrigin: null, decisionFocus: null });
 }
 
 beforeEach(() => {
@@ -35,8 +35,8 @@ beforeEach(() => {
 });
 
 describe('视图枚举与守卫', () => {
-  it('[0] 五视图枚举固定，默认 board', () => {
-    expect(NAV_VIEWS).toEqual(['board', 'tree', 'knowledge', 'log', 'chat']);
+  it('[0] 六视图枚举固定，默认 board', () => {
+    expect(NAV_VIEWS).toEqual(['board', 'decisions', 'tree', 'knowledge', 'log', 'chat']);
     expect(useNavStore.getState().view).toBe('board');
     expect(DEFAULT_NAV_VIEW).toBe('board');
   });
@@ -74,6 +74,20 @@ describe('视图互斥切换（单值即互斥）', () => {
     // 运行时可能有旧值/外部写入，强制喂一个非法值
     useNavStore.getState().setView('detail' as never);
     expect(useNavStore.getState().view).toBe('board');
+  });
+
+  it('[6b] DEC-6 深链：focusDecision 切到待决策并选中；切走即清空', () => {
+    useNavStore.getState().setView('log');
+    useNavStore.getState().focusDecision('dec-1');
+    expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: 'dec-1' });
+
+    // 留在待决策视图内重复设置不会丢焦点
+    useNavStore.getState().setView('decisions');
+    expect(useNavStore.getState().decisionFocus).toBe('dec-1');
+
+    // 切走清空，避免下次进入莫名高亮
+    useNavStore.getState().setView('board');
+    expect(useNavStore.getState().decisionFocus).toBeNull();
   });
 });
 

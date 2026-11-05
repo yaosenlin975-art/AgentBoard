@@ -12,6 +12,7 @@ import { DrawerPanel } from './components/drawer/DrawerPanel';
 import { Board } from './components/board/Board';
 import { ChangelogPanel } from './components/changelog/ChangelogPanel';
 import { ChatView } from './components/chat/ChatView';
+import { DecisionsView } from './components/decisions/DecisionsView';
 import { RightPanel } from './components/right/RightPanel';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import { useRestartStore } from './state/restartStore';
@@ -35,6 +36,7 @@ export default function App() {
   const exitChat = useNavStore((s) => s.exitChat);
   const CHAT_EXIT_LABEL: Record<NavView, string> = {
     board: '看板',
+    decisions: '待决策',
     tree: '任务树',
     knowledge: '知识库',
     log: '日志',
@@ -70,7 +72,9 @@ export default function App() {
           {/* NAV-TOPBAR-01：顶栏已移除；FIX-1：窄屏也不再保留工作空间 select（由左栏承担） */}
           <div className="relative flex min-h-0 flex-1">
             <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
-              {view === 'log' ? (
+              {view === 'decisions' ? (
+                <DecisionsView />
+              ) : view === 'log' ? (
                 workspaceId === null ? (
                   <p data-testid="log-view-needs-workspace" className="p-6 text-sm text-ink-3">
                     请先选择工作空间，再查看日志
