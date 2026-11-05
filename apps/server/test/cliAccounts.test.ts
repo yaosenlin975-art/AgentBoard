@@ -24,7 +24,9 @@ import {
   captureCliAccounts,
   cliIdentityHash,
   discoverCliCredentials,
+  importCliCredential,
   listCliAccounts,
+  parseCliCredentialText,
   type CliCredentialVault,
 } from '../src/services/accounts/cliAccounts.js';
 import type { VaultScope } from '../src/services/accounts/secretVault.js';
@@ -225,5 +227,124 @@ describe('ACC-CLI-MULTI：GET /api/cli-accounts', () => {
     const second = await request(app).get('/api/cli-accounts').expect(200);
     expect(second.body.items).toHaveLength(first.body.items.length);
     expect(second.body.items).toHaveLength(1);
+  });
+});
+
+describe('CLI-IMPORT：手动导入与校验', () => {
+  let dir: string;
+  let t: TestDb;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agentboard-cli-import-'));
+    t = createTestDb();
+  });
+  afterEach(() => {
+    t.cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('导入成功：写 cli_account + vault（purpose cli_credential），响应与库行不含明文', async () => {
+    const { vault, scopes, refs } = fakeVault();
+    const result = await importCliCredential({ db: t.db, vault, appId: 'deepseek', credential: KEY_A, now: () => 1000 });
+
+    expect(result.action).toBe('created');
+    expect(result.account.identity_hint).toBe(`sha256:${cliIdentityHash('deepseek', KEY_A).slice(0, 12)}`);
+    const row = t.db.prepare('SELECT * FROM cli_account').get() as Record<string, unknown>;
+    expect(row).toMatchObject({ app_id: 'deepseek', identity_hash: cliIdentityHash('deepseek', KEY_A), created_at: 1000, last_seen_at: 1000 });
+    expect(row.credential_ref).toBe(refs[0]);
+    expect(scopes[0]!.purpose).toBe('cli_credential');
+    expect(JSON.stringify(row)).not.toContain(KEY_A);
+    expect(JSON.stringify(result)).not.toContain(KEY_A);
+    expect(Object.keys(result.account)).not.toContain('credential_ref');
+  });
+
+  it('导入两份不同 DeepSeek key → 计数 2，且关库重开后仍在', async () => {
+    const dbPath = join(dir, 'import.db');
+    const db = openDb(dbPath);
+    initSchema(db);
+    const { vault } = fakeVault();
+    await importCliCredential({ db, vault, appId: 'deepseek', credential: KEY_A, now: () => 1000 });
+    await importCliCredential({ db, vault, appId: 'deepseek', credential: KEY_B, now: () => 2000 });
+    expect(listCliAccounts(db).filter(item => item.app_id === 'deepseek')).toHaveLength(2);
+    db.close();
+
+    const reopened = openDb(dbPath);
+    initSchema(reopened);
+    expect(listCliAccounts(reopened).filter(item => item.app_id === 'deepseek')).toHaveLength(2);
+    reopened.close();
+  });
+
+  it('同 identity 二次导入不新增行：只刷新 last_seen_at，且不重复写 vault', async () => {
+    const { vault, refs } = fakeVault();
+    const first = await importCliCredential({ db: t.db, vault, appId: 'deepseek', credential: KEY_A, now: () => 1000 });
+    const second = await importCliCredential({ db: t.db, vault, appId: 'deepseek', credential: KEY_A, now: () => 5000 });
+
+    expect(second.action).toBe('updated');
+    expect(second.account.id).toBe(first.account.id);
+    expect(second.account.created_at).toBe(1000);
+    expect(second.account.last_seen_at).toBe(5000);
+    expect((t.db.prepare('SELECT COUNT(*) AS n FROM cli_account').get() as { n: number }).n).toBe(1);
+    expect(refs).toHaveLength(1);
+  });
+
+  it('格式非法被拒：可读原因且不回显输入原文', async () => {
+    const { vault } = fakeVault();
+    for (const credential of ['', '   ', 'not-a-key with spaces', 'short']) {
+      await expect(importCliCredential({ db: t.db, vault, appId: 'opencode_go', credential })).rejects.toMatchObject({
+        status: 400,
+        code: 'INVALID_CREDENTIAL',
+      });
+    }
+    // 多份 key 混在一起 → 明确拒绝（一次一份）
+    expect(parseCliCredentialText(`${KEY_A}\n${KEY_B}`)).toEqual({ error: '一次只能导入一份凭据：输入里检测到多份 key' });
+    // DeepSeek 的 sk- 前缀是硬约束
+    await expect(importCliCredential({ db: t.db, vault, appId: 'deepseek', credential: 'abc123456789' })).rejects.toMatchObject({
+      status: 400,
+      code: 'INVALID_CREDENTIAL',
+      message: expect.stringContaining('sk-'),
+    });
+    expect((t.db.prepare('SELECT COUNT(*) AS n FROM cli_account').get() as { n: number }).n).toBe(0);
+  });
+
+  it('Codex 导入对象未定 → 409，不产生任何记录', async () => {
+    const { vault, refs } = fakeVault();
+    await expect(importCliCredential({ db: t.db, vault, appId: 'codex', credential: 'abc123456789' })).rejects.toMatchObject({
+      status: 409,
+      code: 'CLI_IMPORT_UNSUPPORTED',
+    });
+    expect(refs).toHaveLength(0);
+    expect((t.db.prepare('SELECT COUNT(*) AS n FROM cli_account').get() as { n: number }).n).toBe(0);
+  });
+
+  it('从配置文件片段解析凭据（api_key / JSON / env 赋值）', () => {
+    expect(parseCliCredentialText(`api_key = "${KEY_A}"`)).toEqual({ token: KEY_A });
+    expect(parseCliCredentialText(`{"api_key": "${KEY_A}"}`)).toEqual({ token: KEY_A });
+    expect(parseCliCredentialText(`DEEPSEEK_API_KEY=${KEY_A}\n`)).toEqual({ token: KEY_A });
+    expect(parseCliCredentialText('随便一段日志文字')).toEqual({ error: '无法从输入中解析出凭据：请粘贴单个 API key，不要包含多余文字' });
+  });
+
+  it('POST /api/cli-accounts/import：成功 / 重复 / 越界 app_id / 非法格式 / Codex', async () => {
+    const { vault } = fakeVault();
+    const scoped = express();
+    scoped.use(express.json());
+    scoped.use('/api', createAccountRouter({ db: t.db, cliVault: vault }));
+    scoped.use(errorHandler);
+
+    const created = await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'deepseek', credential: KEY_A }).expect(200);
+    expect(created.body).toMatchObject({ app_id: 'deepseek', action: 'created' });
+    expect(JSON.stringify(created.body)).not.toContain(KEY_A);
+
+    const duplicate = await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'deepseek', credential: KEY_A }).expect(200);
+    expect(duplicate.body.action).toBe('updated');
+    expect((t.db.prepare('SELECT COUNT(*) AS n FROM cli_account').get() as { n: number }).n).toBe(1);
+
+    const badApp = await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'bogus', credential: KEY_A }).expect(400);
+    const badFormat = await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'opencode_go', credential: 'a b c d' }).expect(400);
+    expect(badFormat.body.error.message).toContain('无法从输入中解析出凭据');
+    // 严格 body：额外字段不被静默忽略
+    await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'deepseek', credential: KEY_A, path: 'C:/key.txt' }).expect(400);
+    const codex = await request(scoped).post('/api/cli-accounts/import').send({ app_id: 'codex', credential: KEY_A }).expect(409);
+    expect(codex.body.error.code).toBe('CLI_IMPORT_UNSUPPORTED');
+    expect(badApp.body.error.code).toBe('VALIDATION_ERROR');
   });
 });

@@ -55,7 +55,7 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     expect(detail.textContent).not.toContain('credential_ref');
   });
 
-  it('三来源都没有切换按钮，只给原因文案', async () => {
+  it('三来源都没有切换按钮；Codex 导入入口禁用并给出可见原因', async () => {
     mockCli([]);
     renderPanel();
 
@@ -65,7 +65,10 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     expect(within(detail).getByTestId('accounts-source-switch-note-codex')).toHaveTextContent(
       '需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）',
     );
-    expect(within(detail).queryByRole('button')).toBeNull();
+    expect(within(detail).getByTestId('accounts-source-import-codex')).toBeDisabled();
+    expect(within(detail).getByTestId('accounts-source-import-reason-codex')).toHaveTextContent(
+      'Codex 导入对象尚未确定',
+    );
   });
 
   it('同一个 key 只在详情出现一次（服务端已按 identity 去重，前端不重复渲染）', async () => {
@@ -76,5 +79,91 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     expect(screen.getByTestId('accounts-index-count-deepseek')).toHaveTextContent('1');
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     expect(within(screen.getByTestId('accounts-detail')).getAllByRole('listitem')).toHaveLength(1);
+  });
+});
+
+describe('CLI-IMPORT：手动导入 UI', () => {
+  function mockImport(
+    handler: (body: { app_id: string; credential: string }) => { status: number; body: Record<string, unknown> },
+  ) {
+    let requestBody: { app_id: string; credential: string } | null = null;
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [cliAccount('d-new', 'deepseek', 'dddddddddddd')] })),
+      http.post('/api/cli-accounts/import', async ({ request }) => {
+        requestBody = (await request.json()) as { app_id: string; credential: string };
+        const result = handler(requestBody);
+        return HttpResponse.json(result.body, { status: result.status });
+      }),
+    );
+    return () => requestBody;
+  }
+
+  async function openDeepseekImport() {
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
+    const detail = screen.getByTestId('accounts-detail');
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-deepseek'));
+    return detail;
+  }
+
+  it('导入成功：带 app_id + 凭据提交，成功反馈可见，成功后清空输入不回显明文', async () => {
+    const lastBody = mockImport(() => ({
+      status: 200,
+      body: { app_id: 'deepseek', action: 'created', account: cliAccount('d-new', 'deepseek', 'dddddddddddd') },
+    }));
+    const detail = await openDeepseekImport();
+    const field = within(detail).getByTestId('accounts-source-import-text-deepseek');
+    await userEvent.type(field, 'sk-manual-aaaa');
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-submit-deepseek'));
+
+    expect(await within(detail).findByTestId('accounts-source-import-success-deepseek')).toHaveTextContent('导入成功');
+    expect(field).toHaveValue('');
+    expect(detail.textContent).not.toContain('sk-manual-aaaa');
+    expect(lastBody()).toEqual({ app_id: 'deepseek', credential: 'sk-manual-aaaa' });
+  });
+
+  it('重复导入：明确反馈「已存在，已刷新最近发现时间」', async () => {
+    mockImport(() => ({
+      status: 200,
+      body: { app_id: 'deepseek', action: 'updated', account: cliAccount('d-new', 'deepseek', 'dddddddddddd') },
+    }));
+    const detail = await openDeepseekImport();
+    await userEvent.type(within(detail).getByTestId('accounts-source-import-text-deepseek'), 'sk-manual-aaaa');
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-submit-deepseek'));
+
+    expect(await within(detail).findByTestId('accounts-source-import-duplicate-deepseek')).toHaveTextContent(
+      '已存在，已刷新最近发现时间',
+    );
+  });
+
+  it('格式非法：展示服务端可读原因（脱敏），且不提示成功', async () => {
+    mockImport(() => ({
+      status: 400,
+      body: { error: { code: 'INVALID_CREDENTIAL', message: '无法从输入中解析出凭据：请粘贴单个 API key，不要包含多余文字' } },
+    }));
+    const detail = await openDeepseekImport();
+    await userEvent.type(within(detail).getByTestId('accounts-source-import-text-deepseek'), '随便一段文字');
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-submit-deepseek'));
+
+    const error = await within(detail).findByTestId('accounts-source-import-error-deepseek');
+    expect(error).toHaveAttribute('role', 'alert');
+    expect(error).toHaveTextContent('无法从输入中解析出凭据');
+    expect(within(detail).queryByTestId('accounts-source-import-success-deepseek')).toBeNull();
+  });
+
+  it('Codex 导入按钮禁用，点击不发起请求', async () => {
+    const lastBody = mockImport(() => ({ status: 200, body: { app_id: 'codex', action: 'created', account: {} } }));
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await userEvent.click(screen.getByTestId('accounts-index-item-codex'));
+    const detail = screen.getByTestId('accounts-detail');
+    const button = within(detail).getByTestId('accounts-source-import-codex');
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(within(detail).queryByTestId('accounts-source-import-form-codex')).toBeNull();
+    expect(lastBody()).toBeNull();
   });
 });

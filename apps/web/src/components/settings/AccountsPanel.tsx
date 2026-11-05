@@ -20,7 +20,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
 import { CapabilityBadges } from './CapabilityBadges';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
@@ -439,10 +439,23 @@ function PlatformRow({
   );
 }
 
+/** CLI-IMPORT：服务端只回脱敏字段（action + 身份指纹），不含 key / credential_ref */
+interface CliCredentialImportResult {
+  app_id: string;
+  action: 'created' | 'updated';
+  account: PublicCliAccount;
+}
+
+/** Codex 的导入对象（OAuth 令牌 / API key）尚未确定，入口保留但禁用并给出可见原因 */
+const CLI_IMPORT_UNSUPPORTED: Record<string, string> = {
+  codex: 'Codex 导入对象尚未确定（OAuth 令牌 / API key 待验证），暂不支持导入',
+};
+
 /**
- * 需求 2 / ACC-CLI-MULTI：CLI 额度来源选中后的只读详情。
- * 口径 A 只登记「本机可发现凭据」，因此这里只列脱敏身份指纹（哈希前缀），
- * 不显示 key / credential_ref，也不提供切换按钮——能力未验证前给原因文案（见 CLI-IMPORT / CLI-SWITCH）。
+ * 需求 2 / ACC-CLI-MULTI：CLI 额度来源选中后的详情。
+ * 只列脱敏身份指纹（哈希前缀），不显示 key / credential_ref；
+ * CLI-IMPORT 起提供「导入凭据」入口（粘贴文本或选文件，一次一份），成功/重复/失败都有可见反馈。
+ * 仍不提供切换按钮——写入校验未落地前保持能力禁用（见 CLI-SWITCH）。
  */
 function QuotaSourceDetail({
   source,
@@ -453,6 +466,35 @@ function QuotaSourceDetail({
   accounts: PublicCliAccount[];
   errorMessage: string | null;
 }) {
+  const queryClient = useQueryClient();
+  const [importOpen, setImportOpen] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; duplicate: boolean; message: string } | null>(null);
+  const unsupportedReason = CLI_IMPORT_UNSUPPORTED[source] ?? null;
+  const importMutation = useMutation({
+    mutationFn: (credential: string) =>
+      api.post<CliCredentialImportResult>('/api/cli-accounts/import', { app_id: source, credential }),
+    onSuccess: (result) => {
+      // 成功后立刻清空输入，凭据明文不留在界面上
+      setDraft('');
+      setNotice(result.action === 'updated'
+        ? { tone: 'ok', duplicate: true, message: `已存在，已刷新最近发现时间（${result.account.identity_hint}）` }
+        : { tone: 'ok', duplicate: false, message: `导入成功（${result.account.identity_hint}）` });
+      void queryClient.invalidateQueries({ queryKey: ['cli-accounts'] });
+    },
+    onError: (error) => {
+      setNotice({ tone: 'error', duplicate: false, message: error instanceof Error ? error.message : '导入失败' });
+    },
+  });
+  const readFile = async (file: File | undefined): Promise<void> => {
+    if (!file) return;
+    setNotice(null);
+    try {
+      setDraft(await file.text());
+    } catch {
+      setNotice({ tone: 'error', duplicate: false, message: '文件读取失败：请重试或直接粘贴凭据' });
+    }
+  };
   return (
     <div className="space-y-1.5 text-xs leading-relaxed">
       {errorMessage !== null ? (
@@ -479,6 +521,92 @@ function QuotaSourceDetail({
           ))}
         </ul>
       )}
+
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <button
+          type="button"
+          data-testid={`accounts-source-import-${source}`}
+          className={BUTTON_SECONDARY}
+          disabled={unsupportedReason !== null}
+          aria-expanded={importOpen}
+          onClick={() => {
+            setImportOpen((open) => !open);
+            setNotice(null);
+          }}
+        >
+          导入凭据
+        </button>
+        {unsupportedReason !== null && (
+          <span data-testid={`accounts-source-import-reason-${source}`} className="text-ink-3">
+            {unsupportedReason}
+          </span>
+        )}
+      </div>
+
+      {importOpen && unsupportedReason === null && (
+        <div
+          data-testid={`accounts-source-import-form-${source}`}
+          className="space-y-1.5 rounded-md border border-hairline bg-surface-card p-2"
+        >
+          <textarea
+            data-testid={`accounts-source-import-text-${source}`}
+            className={FIELD_CLASS + ' h-16 w-full py-1 font-mono text-[11px]'}
+            value={draft}
+            placeholder="粘贴 API key（一次一份；也可从 api_key / DEEPSEEK_API_KEY 字段中解析）"
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setNotice(null);
+            }}
+          />
+          <input
+            type="file"
+            data-testid={`accounts-source-import-file-${source}`}
+            className="block w-full text-[11px] text-ink-3"
+            accept=".txt,.toml,.json,.yaml,.yml,.env"
+            onChange={(event) => void readFile(event.target.files?.[0])}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid={`accounts-source-import-submit-${source}`}
+              className={BUTTON_PRIMARY}
+              disabled={importMutation.isPending || draft.trim().length === 0}
+              onClick={() => importMutation.mutate(draft)}
+            >
+              {importMutation.isPending ? '导入中…' : '导入'}
+            </button>
+            <button
+              type="button"
+              data-testid={`accounts-source-import-cancel-${source}`}
+              className={BUTTON_SECONDARY}
+              onClick={() => {
+                setImportOpen(false);
+                setDraft('');
+                setNotice(null);
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {notice !== null && (
+        <p
+          data-testid={
+            notice.tone === 'error'
+              ? `accounts-source-import-error-${source}`
+              : notice.duplicate
+                ? `accounts-source-import-duplicate-${source}`
+                : `accounts-source-import-success-${source}`
+          }
+          role={notice.tone === 'error' ? 'alert' : 'status'}
+          className={notice.tone === 'error' ? 'text-red-600 dark:text-red-400' : 'text-ink'}
+        >
+          {notice.message}
+        </p>
+      )}
+
       <p data-testid={`accounts-source-switch-note-${source}`} className="text-ink-3">
         暂不支持切换：需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）。
       </p>

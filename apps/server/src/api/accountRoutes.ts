@@ -32,7 +32,7 @@ import { startCheckinBatchInBackground } from '../services/accounts/checkinRunne
 import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
-import { captureCliAccounts, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
+import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
@@ -78,6 +78,11 @@ const importCredentialsSchema = z.object({
   actor: z.string().trim().min(1).max(100).optional(),
 }).strict();
 const authorizationStartSchema = z.object({ account_id: z.string().uuid() }).strict();
+/** CLI-IMPORT：手动导入只接受「一个来源 + 一份凭据文本」，字段严格（多余字段直接 400） */
+const cliImportSchema = z.object({
+  app_id: z.enum(CLI_ACCOUNT_APP_IDS),
+  credential: z.string().min(1).max(2048),
+}).strict();
 /** ACC-KB-B2S：发起协议级加号 */
 const addAccountStartSchema = z.object({
   app_id: managedAppParam,
@@ -245,6 +250,16 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       env: deps.cliAccountEnv,
     });
     res.json({ items });
+  });
+
+  /**
+   * CLI-IMPORT：手动导入一份凭据（粘贴文本或文件内容，一次一份）。
+   * 明文只在内存解析后进 vault；响应只回 action + 脱敏身份指纹，不含 key / credential_ref。
+   */
+  router.post('/cli-accounts/import', async (req, res) => {
+    const body = parseBody(cliImportSchema, req.body);
+    const result = await importCliCredential({ db, vault: cliVault, appId: body.app_id, credential: body.credential });
+    res.json(result);
   });
 
   // ---- ACC-QUOTA-01：账号页额度/余额聚合（逐来源独立结果） ----
