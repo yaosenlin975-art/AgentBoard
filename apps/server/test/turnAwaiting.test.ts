@@ -34,6 +34,7 @@ import {
   resetSessionManager,
 } from '../src/services/sessionManager.js';
 import {
+  TURN_AWAITING_MAX_MS,
   TURN_AWAITING_TIMEOUT_MS,
   markTurnAwaiting,
   sweepAwaitingTurns,
@@ -201,6 +202,81 @@ describe('验收 4：心跳幂等 + 超时终态', () => {
     expect(second.timedOut).toEqual([]);
     expect(turnEvents(spy)).toHaveLength(1);
     expect(turnRowCount(session.id)).toBe(1);
+  });
+});
+
+describe('CHAT-AWAIT1b：心跳延长 + 绝对上限', () => {
+  it('心跳延长：每次心跳把截止时间后移，超过 15min 无心跳才超时', () => {
+    const { turn, at } = mkAwaiting();
+    const spy = vi.spyOn(created.hub, 'broadcast');
+
+    // 距进入 14min 时仍有心跳 → 不超时，心跳刷新到该时刻
+    const tick = at + TURN_AWAITING_TIMEOUT_MS - 60_000;
+    const first = sweepAwaitingTurns(t.db, { broadcast: created.hub.broadcast, now: () => tick });
+    expect(first.timedOut).toEqual([]);
+    expect(first.heartbeated).toBe(1);
+    const heartbeatAfterTick = (t.db.prepare('SELECT awaiting_heartbeat_at AS h FROM session_turn WHERE id = ?')
+      .get(turn.id) as { h: number }).h;
+    expect(heartbeatAfterTick).toBe(tick);
+
+    // 距最后一次心跳刚过 15min → 判超时（基准是心跳而不是进入时刻）
+    const expired = tick + TURN_AWAITING_TIMEOUT_MS + 1;
+    const second = sweepAwaitingTurns(t.db, { broadcast: created.hub.broadcast, now: () => expired });
+    expect(second.timedOut.map((item) => item.id)).toEqual([turn.id]);
+
+    const failed = getTurn(t.db, turn.id)!;
+    expect(failed.state).toBe('failed');
+    expect(failed.awaiting_json?.reason).toBe('awaiting_timeout');
+    expect(turnEvents(spy)).toHaveLength(1);
+  });
+
+  it('绝对上限：心跳不断也强制超时（自进入阻塞起 2 小时）', () => {
+    const { turn, at } = mkAwaiting();
+    const spy = vi.spyOn(created.hub, 'broadcast');
+
+    // 模拟心跳链：最后心跳落在绝对上限前 30s
+    const justBeforeCap = at + TURN_AWAITING_MAX_MS - 30_000;
+    t.db.prepare('UPDATE session_turn SET awaiting_heartbeat_at = ? WHERE id = ?').run(justBeforeCap, turn.id);
+
+    // 上限前：心跳新鲜 → 不超时
+    const fresh = sweepAwaitingTurns(t.db, { broadcast: created.hub.broadcast, now: () => justBeforeCap });
+    expect(fresh.timedOut).toEqual([]);
+
+    // 到达绝对上限：即使 30s 前刚有心跳也强制收口
+    const cappedAt = at + TURN_AWAITING_MAX_MS + 1;
+    const capped = sweepAwaitingTurns(t.db, { broadcast: created.hub.broadcast, now: () => cappedAt });
+    expect(capped.timedOut.map((item) => item.id)).toEqual([turn.id]);
+    const failed = getTurn(t.db, turn.id)!;
+    expect(failed.state).toBe('failed');
+    expect(failed.awaiting_json?.reason).toBe('awaiting_timeout');
+    expect(turnEvents(spy)).toHaveLength(1);
+
+    // 重复 tick 不重复收口/推送
+    const replay = sweepAwaitingTurns(t.db, { broadcast: created.hub.broadcast, now: () => cappedAt + 60_000 });
+    expect(replay.timedOut).toEqual([]);
+    expect(turnEvents(spy)).toHaveLength(1);
+  });
+
+  it('awaiting_approval 同样走心跳延长与绝对上限（审批弹窗不会永久挂着）', () => {
+    const session = insertSessionRow(t.db, { workspace_id: wsId, cli: 'fake' });
+    const turn = mkTurnWithPlan(session.id);
+    const awaiting = markTurnAwaiting(t.db, session.id, turn.id, {
+      state: 'awaiting_approval',
+      reason: 'approval',
+      stepId: 's2',
+    });
+    const at = awaiting.awaiting_json?.at ?? 0;
+    t.db.prepare('UPDATE session_turn SET awaiting_heartbeat_at = ? WHERE id = ?')
+      .run(at + TURN_AWAITING_MAX_MS - 30_000, turn.id);
+
+    const result = sweepAwaitingTurns(t.db, {
+      broadcast: created.hub.broadcast,
+      now: () => at + TURN_AWAITING_MAX_MS + 1,
+    });
+    expect(result.timedOut.map((item) => item.id)).toEqual([turn.id]);
+    const failed = getTurn(t.db, turn.id)!;
+    expect(failed.state).toBe('failed');
+    expect(failed.awaiting_json?.reason).toBe('awaiting_timeout');
   });
 });
 

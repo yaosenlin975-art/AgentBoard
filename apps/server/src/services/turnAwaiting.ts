@@ -8,13 +8,22 @@ import { ConflictError, NotFoundError } from '../errors.js';
  *
  * 口径：
  * - 进入阻塞的唯一写入口是 `markTurnAwaiting`（观测层在拿到 ask_user 类信号后调用；本卡不改适配器协议）；
- * - `awaiting_json.at` 是阻塞起点，超时**只用这一个阈值** `TURN_AWAITING_TIMEOUT_MS`；
+ * - `awaiting_json.at` 是阻塞起点；超时基准 = `max(awaiting_heartbeat_at, at) + TURN_AWAITING_TIMEOUT_MS`（心跳延长），
+ *   另有 `TURN_AWAITING_MAX_MS` 绝对上限（自 `at` 起算，心跳不断也强制收口）；
  * - `awaiting_heartbeat_at` 由 `sweepAwaitingTurns` 周期刷新（幂等：同一行同一列覆盖写，不计数、不追加）；
  * - 超时/回答都走「条件 UPDATE + changes 校验」，重复 tick / 重复请求不会二次落库或二次广播。
  */
 
-/** 阻塞超时阈值（单一常量，15 分钟）：超过它仍无人回答即 failed(awaiting_timeout) */
+/**
+ * 心跳延长窗口（15 分钟）：以**最后一次心跳**为基准，超过它没有新心跳才 failed(awaiting_timeout)。
+ * 心跳每 `TURN_AWAITING_HEARTBEAT_MS` 刷新一次，因此只要心跳链不断，窗口会持续后移。
+ */
 export const TURN_AWAITING_TIMEOUT_MS = 15 * 60 * 1000;
+/**
+ * 绝对上限（2 小时，自进入阻塞时刻起算）：即使心跳不断也强制收口，
+ * 防止客户端/适配器永久挂在一个 awaiting 轮次上（建议值，可按需调整）。
+ */
+export const TURN_AWAITING_MAX_MS = 2 * 60 * 60 * 1000;
 /** 心跳间隔（对 awaiting 行刷新 awaiting_heartbeat_at） */
 export const TURN_AWAITING_HEARTBEAT_MS = 30 * 1000;
 
@@ -113,9 +122,10 @@ export interface SweepResult {
 
 /**
  * 心跳 + 超时兜底（可重复调用，幂等）：
- * - 未到期的 awaiting 行刷新 `awaiting_heartbeat_at`；
- * - 距 `awaiting_json.at` 超过 `TURN_AWAITING_TIMEOUT_MS` 的行置 `failed`，原因 `awaiting_timeout`，
- *   并用一次 `session.turn` 广播（条件 UPDATE 命中 1 行才推，避免重复推送）。
+ * - 未到期的 awaiting 行刷新 `awaiting_heartbeat_at`（心跳延长窗口）；
+ * - 距**最后一次心跳**超过 `TURN_AWAITING_TIMEOUT_MS`，或自进入阻塞起超过 `TURN_AWAITING_MAX_MS`
+ *   的行置 `failed`，原因 `awaiting_timeout`，并用一次 `session.turn` 广播
+ *   （条件 UPDATE 命中 1 行才推，避免重复推送）。
  */
 export function sweepAwaitingTurns(db: Db, deps: AwaitingDeps): SweepResult {
   const now = deps.now ? deps.now() : Date.now();
@@ -135,8 +145,10 @@ export function sweepAwaitingTurns(db: Db, deps: AwaitingDeps): SweepResult {
         return null;
       }
     })();
-    const since = typeof info?.at === 'number' ? info.at : row.started_at;
-    if (now - since >= TURN_AWAITING_TIMEOUT_MS) {
+    const enteredAt = typeof info?.at === 'number' ? info.at : row.started_at;
+    // 心跳延长：空闲基准取「最后一次心跳」与进入时刻的较大值；绝对上限只看进入时刻。
+    const lastActivity = Math.max(row.awaiting_heartbeat_at ?? 0, enteredAt);
+    if (now - lastActivity >= TURN_AWAITING_TIMEOUT_MS || now - enteredAt >= TURN_AWAITING_MAX_MS) {
       const info: TurnAwaitingInfo = { reason: 'awaiting_timeout', message: '等待回答超时', at: now };
       const updated = db
         .prepare(

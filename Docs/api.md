@@ -401,7 +401,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 - `message.turn_id` / `message.step_id` / `message.meta_json`（旧行三列恒 `NULL` → 前端沿用旧渲染，验收 5）。
 - `plan_json = [{ step_id, title, state }]`，`step_id` 轮内稳定（`s1/s2/…`，只追加不重排，供 CHAT-RETRY1 定位重跑点），步骤 `state ∈ pending | running | done | failed | awaiting`。
 - `meta_json = { status, duration_ms, output_summary, tool_call_id, diff? }`；`diff.files[].patch` 由服务端按 **400 行/文件**截断并标 `truncated`。`tool_call_id` 暂用 `step_id` 充当关联键（适配器不给调用 id）。
-- `awaiting_json = { reason, message?, at? }` 是**唯一的机器可判原因通道**：`failed` / `stopped` 必带 `reason`（本卡已落 `adapter_resolve_failed`、`adapter_run_failed`、`adapter_threw`、`adapter_exit_nonzero`、`image_delivery_unverified`、`attachment_mark_failed`、`image_attachment_selection_invalid`、`superseded`、`user_stop`、`turn_internal_error`、`server_restart`）；CHAT-AWAIT1 直接写 `awaiting_timeout` 即可，无需改表。
+- `awaiting_json = { reason, message?, at? }` 是**唯一的机器可判原因通道**：`failed` / `stopped` 必带 `reason`（本卡已落 `adapter_resolve_failed`、`adapter_run_failed`、`adapter_threw`、`adapter_exit_nonzero`、`image_delivery_unverified`、`attachment_mark_failed`、`image_attachment_selection_invalid`、`superseded`、`user_stop`、`turn_internal_error`、`server_restart`）；CHAT-AWAIT1 直接写 `awaiting_timeout` 即可，无需改表；CHAT-AWAIT1b 的超时基准是「最后一次心跳 + 15 分钟」（心跳持续延长窗口），并另有自进入阻塞起 2 小时的绝对上限（心跳不断也强制收口）。
 - **唯一写入方是服务端 `sessionManager`**（`services/turnObservation.ts` 的 tracker 只在 `executeTurn` 内被调用），客户端没有写接口；`session.status` 未新增取值（仍是 `运行中 | 已结束 | 失败`，排队/等槽位继续走 `session.runtime`），`awaiting_*` 只落在 turn 上。
 - 影响面：`GET /api/sessions/:id/messages` 返回体每条多三个字段（旧消息为 `null`），其余请求/响应形状不变。
 
