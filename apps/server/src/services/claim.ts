@@ -1,7 +1,7 @@
 import type { Issue, IssueComment } from '@agentboard/shared';
 import { CLAIM_LEASE_MS } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
-import { getIssue, type IssuePatch } from '../db/repos/issue.js';
+import { decisionLockedError, findGraceDecisionId, findOpenDecisionId, getIssue, type IssuePatch } from '../db/repos/issue.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { ApiError } from '../errors.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
@@ -101,13 +101,17 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
       `UPDATE issue SET claimed_by=?, claimed_at=?, claim_lease_until=?, claim_fence=COALESCE(claim_fence,0)+1,
          last_heartbeat_at=?, session_id=?, status='进行中', last_seen_comment_id=?, updated_at=?
        WHERE id=? AND status IN ('待规划','进行中')
-         AND (claimed_by IS NULL OR (claim_lease_until IS NOT NULL AND claim_lease_until < ?))`
+         AND (claimed_by IS NULL OR (claim_lease_until IS NOT NULL AND claim_lease_until < ?))
+         AND NOT EXISTS (SELECT 1 FROM issue_decision d WHERE d.issue_id=issue.id AND d.state='open')`
     ).run(agentId, now, leaseUntil, now, sessionId, lastSeenCommentId, now, issueId, now);
     if (row.changes !== 1) {
       // CLAIM-MSG：占用冲突与「状态不可领取」是两件事，文案必须分开（同报「已被占用」会让执行者误以为撞卡而放弃）
       const current = db.prepare('SELECT status, claimed_by FROM issue WHERE id=?').get(issueId) as
         { status: string; claimed_by: string | null } | undefined;
       if (!current) throw new NotFoundError('任务不存在');
+      // DEC-2：锁优先判定——卡可能已无人占用（被落锁时释放），此时不能误报「状态不可领取」
+      const lockedDecisionId = findOpenDecisionId(db, issueId);
+      if (lockedDecisionId) throw decisionLockedError(db, issueId, lockedDecisionId, '领取');
       if (current.claimed_by !== null) {
         throw new ApiError(409, 'ISSUE_CLAIMED', `已被 ${current.claimed_by} 占用；先 release 或换卡，勿重复 claim`);
       }
@@ -156,15 +160,20 @@ export function heartbeatClaim(db: Db, issueId: string, agentId: string, fence?:
  * 返回清扫数（启动日志与用例断言用）。
  */
 export function sweepExpiredLeases(db: Db, now: number = Date.now()): number {
+  // DEC-2：宽限期内的占用不得被清扫——agent 正在等人类回答，清掉占用会让它无法收尾/续跑。
+  // open（已落锁）的卡占用本已被落锁流程清空，这里只显式排除 grace。
   const expired = db.prepare(
     `SELECT id, claimed_by, claim_lease_until FROM issue
-     WHERE claimed_by IS NOT NULL AND claim_lease_until IS NOT NULL AND claim_lease_until < ?`,
+     WHERE claimed_by IS NOT NULL AND claim_lease_until IS NOT NULL AND claim_lease_until < ?
+       AND NOT EXISTS (SELECT 1 FROM issue_decision d WHERE d.issue_id=issue.id AND d.state='grace')`,
   ).all(now) as Array<{ id: string; claimed_by: string; claim_lease_until: number }>;
   if (expired.length === 0) return 0;
   const leaseMinutes = Math.round(CLAIM_LEASE_MS / 60000);
   return db.transaction(() => {
     let swept = 0;
     for (const row of expired) {
+      // DEC-2 二次防线：扫描后、写回前若刚建了 grace 决策，也跳过（同一 IMMEDIATE 事务内）
+      if (findGraceDecisionId(db, row.id)) continue;
       // 条件带 claimed_by + 旧租约值：并发续租/释放后本行不重复清
       const changed = db.prepare(
         `UPDATE issue SET claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL,

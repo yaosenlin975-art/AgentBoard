@@ -39,6 +39,11 @@ interface IssueRow {
   blocked_by_open_count: number | null;
   /** BORROW-2.2 依赖违规标记（0/1，查询期检测，非落库列） */
   dep_violation: number;
+  /** DEC-2 决策投影（查询期派生，非落库列） */
+  decision_state: string | null;
+  decision_id: string | null;
+  decision_grace_until: number | null;
+  decision_locked_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -64,6 +69,14 @@ const DEPENDENCY_VIOLATION_COLUMN = `EXISTS (
 /** GET /issues 与树/分页共用：一条预聚合 LEFT JOIN 供全部行，不做 N+1 */
 const DEPENDENCY_JOIN = blockedByAggregateJoin();
 const DEPENDENCY_COLUMNS = 'dep.blocked_by_count, dep.blocked_by_open_count';
+/**
+ * DEC-2 决策投影： EXISTS 相关子查询派生，**不落 issue 表**，布尔字段不是权威（权威=issue_decision 行）。
+ * 每列单独子查询，避免把 issue_decision 带进 LEFT JOIN 而破坏「一卡一行」。
+ */
+const DECISION_COLUMNS = `(SELECT d.state FROM issue_decision d WHERE d.issue_id=i.id AND d.state IN ('grace','open') ORDER BY d.created_at DESC, d.id DESC LIMIT 1) AS decision_state,
+  (SELECT d.id FROM issue_decision d WHERE d.issue_id=i.id AND d.state IN ('grace','open') ORDER BY d.created_at DESC, d.id DESC LIMIT 1) AS decision_id,
+  (SELECT d.grace_until FROM issue_decision d WHERE d.issue_id=i.id AND d.state='grace' ORDER BY d.created_at DESC LIMIT 1) AS decision_grace_until,
+  (SELECT d.locked_at FROM issue_decision d WHERE d.issue_id=i.id AND d.state='open' ORDER BY d.locked_at ASC LIMIT 1) AS decision_locked_at`;
 
 function rowToIssue(row: IssueRow): Issue {
   return {
@@ -83,10 +96,47 @@ function rowToIssue(row: IssueRow): Issue {
     due_time: row.due_time,
     comment_count: row.comment_count,
     dependency_violation: row.dep_violation === 1 ? 'blocked-by-ancestor' : null,
+    decision_locked: row.decision_state === 'open',
+    open_decision_id: row.decision_id ?? null,
+    decision_grace_until: row.decision_state === 'grace' ? (row.decision_grace_until ?? null) : null,
+    decision_waiting_seconds:
+      row.decision_state === 'open' && row.decision_locked_at !== null
+        ? Math.max(0, Math.floor((Date.now() - row.decision_locked_at) / 1000))
+        : null,
     ...dependencyCountsFrom(row),
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/**
+ * DEC-2：锁判定。权威是 issue_decision 行本身（state='open'），不是任何布尔投影字段。
+ * grace 只是宽限计时，**不算锁**：宽限内占用照常有效，可正常续租/收尾。
+ */
+export function findOpenDecisionId(db: Db, issueId: string): string | null {
+  const row = db
+    .prepare("SELECT id FROM issue_decision WHERE issue_id=? AND state='open' ORDER BY locked_at DESC, created_at DESC LIMIT 1")
+    .get(issueId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+/** 是否存在 grace（宽限内）决策；租约清扫与批量退回必须放行这类卡 */
+export function findGraceDecisionId(db: Db, issueId: string): string | null {
+  const row = db
+    .prepare("SELECT id FROM issue_decision WHERE issue_id=? AND state='grace' ORDER BY created_at DESC LIMIT 1")
+    .get(issueId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+/** 锁卡写入被拒的统一错误：409 DECISION_LOCKED，文案带决策 id 与卡标题（CLI 退出码 2） */
+export function decisionLockedError(db: Db, issueId: string, decisionId: string, action: string): ApiError {
+  const row = db.prepare('SELECT title FROM issue WHERE id=?').get(issueId) as { title: string } | undefined;
+  const title = row?.title ?? issueId;
+  return new ApiError(
+    409,
+    'DECISION_LOCKED',
+    `任务「${title}」已被待决策锁住（decision=${decisionId}），不能${action}；先 kb decision answer ${decisionId} 回答决策`,
+  );
 }
 
 export interface CreateIssueInput {
@@ -127,7 +177,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
 
 export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null {
   const row = db
-    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
+    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
     .get(...(workspaceId ? [id, workspaceId] : [id])) as IssueRow | undefined;
   return row ? rowToIssue(row) : null;
 }
@@ -137,7 +187,7 @@ export function listIssues(db: Db, workspaceId: string, status?: string): Issue[
   if (status !== undefined) params.push(status);
   const rows = db
     .prepare(
-      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN}
+      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
        WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(...params) as IssueRow[];
@@ -148,7 +198,7 @@ export function listIssuesPage(db: Db, workspaceId: string, input: { limit: numb
   const params: unknown[] = [workspaceId];
   if (input.status) params.push(input.status);
   params.push(input.limit + 1, input.offset);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
   return pageResult(rows.map(row => {
     const issue = rowToIssue(row); const window = textWindow(issue.description);
     return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
@@ -307,7 +357,7 @@ export function listIssueTreePage(
     params.push(cursor.sort_order, cursor.sort_order, cursor.created_at, cursor.created_at, cursor.id);
   }
   params.push(input.limit + 1);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},
+  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},${DECISION_COLUMNS},
       (SELECT COUNT(*) FROM issue child WHERE child.parent_issue_id=i.id) AS child_count
     FROM issue i ${DEPENDENCY_JOIN} WHERE ${filters.join(' AND ')} ORDER BY i.sort_order,i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
   const hasMore = rows.length > input.limit;

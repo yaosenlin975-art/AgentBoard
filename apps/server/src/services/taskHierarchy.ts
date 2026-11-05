@@ -1,6 +1,15 @@
 import type { Issue, IssueStatus, IssueTreePage } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
-import { createIssue, getIssue, listIssueTreePage, updateIssue, type CreateIssueInput, type IssuePatch } from '../db/repos/issue.js';
+import {
+  createIssue,
+  decisionLockedError,
+  findOpenDecisionId,
+  getIssue,
+  listIssueTreePage,
+  updateIssue,
+  type CreateIssueInput,
+  type IssuePatch,
+} from '../db/repos/issue.js';
 import { addComment } from '../db/repos/comment.js';
 import { bindAttachmentsToComment } from '../db/repos/attachment.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -43,6 +52,12 @@ export function updateIssueInHierarchy(
       if (patch.parent_issue_id === issueId || isIssueDescendant(db, issueId, patch.parent_issue_id)) {
         throw new ValidationError('父任务不能是自身或其后代');
       }
+    }
+    // DEC-2：open 决策 = 锁，统一门禁在此（claim 之外的 PATCH/拖拽/状态流转都必经这里）。
+    // 只锁 status；标题/描述/标签/截止/排序等非状态字段照常放行。grace 不是锁。
+    if (patch.status !== undefined) {
+      const lockedDecisionId = findOpenDecisionId(db, issueId);
+      if (lockedDecisionId) throw decisionLockedError(db, issueId, lockedDecisionId, '修改状态');
     }
     // STATUS-1：status 已无 DDL CHECK，写入前必须命中本工作区状态字典（非法值 → 400 且列出可用状态）
     if (patch.status !== undefined) requireWorkspaceStatus(db, current.workspace_id, patch.status);

@@ -14,6 +14,9 @@
  *   使旧代次的 done/release/heartbeat 立刻失效（否则旧 fence 与当前代次相等，校验形同虚设）。
  * - 单事务 IMMEDIATE：选卡与写回同一事务，任一失败整批回滚。
  * - dry_run 零写入（不落评论、不动行、不删基线）。
+ * - DEC-2：批量退回**不得触碰**有在途决策的卡——`grace` 卡（宽限内 agent 还在等回答）
+ *   与 `open` 卡（已落锁、占用已清）一律跳过并给出原因；mode='all' 也不例外。
+ *   否则会清掉宽限期占用 / 让锁与占用语义错位（锁仍在，但 fence 与占用者被换掉）。
  */
 import type { Issue } from '@agentboard/shared';
 import { CLAIM_LEASE_MS } from '@agentboard/shared';
@@ -23,7 +26,15 @@ import { addComment } from '../db/repos/comment.js';
 import { ConflictError } from '../errors.js';
 import { dropIssueGitBaseline } from './gitBaseline.js';
 
-export type ReleaseSkipReason = 'LEASE_ACTIVE' | 'UNDETERMINED' | 'NOT_IN_WORKSPACE' | 'NOT_RUNNING';
+export type ReleaseSkipReason =
+  | 'LEASE_ACTIVE'
+  | 'UNDETERMINED'
+  | 'NOT_IN_WORKSPACE'
+  | 'NOT_RUNNING'
+  /** DEC-2：宽限期内的卡不参与批量退回 */
+  | 'DECISION_GRACE'
+  /** DEC-2：已被决策锁住的卡不参与批量退回 */
+  | 'DECISION_LOCKED';
 
 export interface ReleaseRunningInput {
   mode?: 'expired' | 'all';
@@ -43,6 +54,8 @@ interface RunningRow {
   claim_lease_until: number | null;
   last_heartbeat_at: number | null;
   claim_fence: number | null;
+  /** DEC-2：在途决策状态（grace/open），无则 NULL */
+  decision_state: string | null;
 }
 
 function hasColumn(db: Db, table: string, column: string): boolean {
@@ -93,7 +106,9 @@ export function releaseRunning(
   const now = Date.now();
   const leaseColumn = hasColumn(db, 'issue', 'claim_lease_until');
   const heartbeatColumn = hasColumn(db, 'issue', 'last_heartbeat_at');
-  const selectSql = `SELECT id, claimed_by, claimed_at, claim_lease_until, last_heartbeat_at, claim_fence
+  const selectSql = `SELECT id, claimed_by, claimed_at, claim_lease_until, last_heartbeat_at, claim_fence,
+      (SELECT d.state FROM issue_decision d WHERE d.issue_id=issue.id AND d.state IN ('grace','open')
+        ORDER BY d.created_at DESC, d.id DESC LIMIT 1) AS decision_state
     FROM issue WHERE workspace_id=? AND status='进行中' ORDER BY created_at, id`;
 
   return db.transaction((): ReleaseRunningResult => {
@@ -115,6 +130,15 @@ export function releaseRunning(
     const released: Issue[] = [];
     for (const row of running) {
       if (requested !== undefined && !requested.includes(row.id)) continue;
+      // DEC-2：在途决策优先于 mode 过滤；只跳过、不改写、不落评论
+      if (row.decision_state === 'grace') {
+        skipped.push({ id: row.id, reason: 'DECISION_GRACE' });
+        continue;
+      }
+      if (row.decision_state === 'open') {
+        skipped.push({ id: row.id, reason: 'DECISION_LOCKED' });
+        continue;
+      }
       if (mode === 'expired') {
         const reason = expiredSkipReason(row, now, leaseColumn, heartbeatColumn);
         if (reason !== null) {

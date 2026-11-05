@@ -167,6 +167,18 @@ export interface Issue {
    * 正常路径由 addRelation 守卫拒绝，违规只可能来自历史数据/绕过 API 的直接写库。
    */
   dependency_violation?: string | null;
+  /**
+   * DEC-2 只读投影（查询期由 issue_decision 派生，非落库列；字段名冻结，DEC-4/DEC-6 依赖）：
+   * - `decision_locked`：是否存在 state='open' 决策（真锁）；grace 不算锁
+   * - `open_decision_id`：在途决策 id（grace/open 皆有），无则 null
+   * - `decision_grace_until`：宽限截止毫秒（仅 grace），其余 null
+   * - `decision_waiting_seconds`：open 决策已等待秒数（取最久一条），非 open 为 null
+   * 声明为可选，既有夹具不带这些字段仍可编译，消费端按 false/null 兜底。
+   */
+  decision_locked?: boolean;
+  open_decision_id?: string | null;
+  decision_grace_until?: number | null;
+  decision_waiting_seconds?: number | null;
   created_at: number; updated_at: number;
 }
 /**
