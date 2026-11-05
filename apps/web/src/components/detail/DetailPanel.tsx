@@ -18,6 +18,7 @@ import {
 } from '../../lib/issueStatus';
 import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { getIssueDescendantIds } from '../../lib/issueTree';
+import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFromDataTransfer } from '../../lib/imageDraft';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 import { ActionBar } from './ActionBar';
@@ -75,6 +76,16 @@ export function DetailPanel() {
 
   // ---- 字段本地态 + 防抖 PATCH ----
   const [description, setDescription] = useState('');
+  /** 描述编辑器异步插图时读取最新文本（上传期间用户可能继续输入，不能用过期闭包覆盖） */
+  const descriptionRef = useRef('');
+  const descTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const descFileInputRef = useRef<HTMLInputElement>(null);
+  const descUploadSeq = useRef(0);
+  const [descPendingImages, setDescPendingImages] = useState<
+    Array<{ id: number; name: string; status: 'uploading' | 'error'; error?: string }>
+  >([]);
+  const [descImageError, setDescImageError] = useState<string | null>(null);
+  const [descDragOver, setDescDragOver] = useState(false);
   const [priority, setPriority] = useState<Priority>('中');
   const [labels, setLabels] = useState<string[]>([]);
   /** I-04：评论草稿提到面板层，既能落 localStorage，也能被「通过验收并关闭」预填 */
@@ -92,6 +103,10 @@ export function DetailPanel() {
   useEffect(() => {
     if (!issue) return;
     setDescription(issue.description);
+    descriptionRef.current = issue.description;
+    setDescPendingImages([]);
+    setDescImageError(null);
+    setDescDragOver(false);
     setPriority(issue.priority);
     setLabels(issue.labels);
     setCommentDraft(readCommentDraft(issue.id));
@@ -272,6 +287,58 @@ export function DetailPanel() {
     changeStatus.mutate('已关闭');
   };
 
+  /**
+   * DETAIL-D6：描述编辑器的图片入口（粘贴为主、拖拽/选择为辅）。
+   * - 与评论同一套校验：PNG/JPEG/WebP、单张 ≤10 MiB、整条描述最多 5 张（复用 imageDraft，不新写规则）；
+   * - 只把上传成功的附件以固定 URL `![alt](/api/workspaces/{ws}/attachments/{id})` 插到光标处；
+   *   失败不写坏 markdown，只留可见的失败状态；
+   * - 串行 await 保证「按接收顺序插入」；插入时读 descriptionRef 的最新值，避免覆盖上传期间的新输入。
+   */
+  const addDescriptionImages = (files: File[]): void => {
+    if (files.length === 0 || issue === undefined) return;
+    const existing = attachmentIdsFromText(descriptionRef.current).length
+      + descPendingImages.filter((item) => item.status === 'uploading').length;
+    const { accepted, rejection } = collectDraftImages(files, existing);
+    setDescImageError(rejection);
+    if (accepted.length === 0) return;
+
+    const textarea = descTextareaRef.current;
+    let insertAt = textarea !== null ? textarea.selectionStart : descriptionRef.current.length;
+    void (async () => {
+      for (const { file, mimeType } of accepted) {
+        const localId = ++descUploadSeq.current;
+        setDescPendingImages((list) => [...list, { id: localId, name: file.name, status: 'uploading' }]);
+        try {
+          const result = await api.uploadAttachment(issue.workspace_id, file, mimeType);
+          const url = `/api/workspaces/${issue.workspace_id}/attachments/${result.id}`;
+          const alt = file.name.replace(/[[\]]/g, '').trim() || '图片';
+          const markdown = `![${alt}](${url})`;
+          const base = descriptionRef.current;
+          const at = Math.min(Math.max(insertAt, 0), base.length);
+          const before = base.slice(0, at);
+          const after = base.slice(at);
+          const prefix = before === '' || before.endsWith('\n') ? '' : '\n';
+          const inserted = `${prefix}${markdown}\n`;
+          const next = before + inserted + after;
+          descriptionRef.current = next;
+          insertAt = before.length + inserted.length;
+          setDescription(next);
+          schedulePatch('description', next);
+          setDescPendingImages((list) => list.filter((item) => item.id !== localId));
+        } catch (e) {
+          setDescPendingImages((list) => list.map((item) => (
+            item.id === localId
+              ? { ...item, status: 'error', error: e instanceof Error ? e.message : '上传失败' }
+              : item
+          )));
+          setDescImageError(e instanceof Error ? e.message : '上传失败');
+        }
+      }
+    })();
+  };
+
+  descriptionRef.current = description;
+
   return (
     <div data-testid="detail-panel" className="flex h-full min-h-0 flex-col">
       {/* 滚动区：右侧留 16px（> 15px 经典滚动条宽度），避免滚动条压住标题与首个字段 */}
@@ -312,17 +379,79 @@ export function DetailPanel() {
               </button>
             </div>
             {descEditing ? (
-              <textarea
-                data-testid="desc-input"
-                aria-label="描述（markdown）"
-                value={description}
-                onChange={(e) => {
-                  setDescription(e.target.value);
-                  schedulePatch('description', e.target.value);
-                }}
-                rows={6}
-                className={inputCls}
-              />
+              <div>
+                <textarea
+                  ref={descTextareaRef}
+                  data-testid="desc-input"
+                  aria-label="描述（markdown）"
+                  value={description}
+                  onChange={(e) => {
+                    setDescription(e.target.value);
+                    schedulePatch('description', e.target.value);
+                  }}
+                  onPaste={(event) => {
+                    const files = filesFromClipboard(event.clipboardData);
+                    if (files.length === 0) return;
+                    event.preventDefault();
+                    addDescriptionImages(files);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setDescDragOver(true);
+                  }}
+                  onDragLeave={() => setDescDragOver(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDescDragOver(false);
+                    addDescriptionImages(filesFromDataTransfer(event.dataTransfer));
+                  }}
+                  rows={6}
+                  className={`${inputCls} ${descDragOver ? 'ring-2 ring-accent ring-offset-1' : ''}`}
+                />
+                {/* D6：与评论一致的图片入口（粘贴为主、拖拽/选择为辅） */}
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <input
+                    ref={descFileInputRef}
+                    data-testid="desc-image-input"
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    multiple
+                    hidden
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      event.target.value = '';
+                      addDescriptionImages(files);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    data-testid="desc-image-picker"
+                    onClick={() => descFileInputRef.current?.click()}
+                    className="rounded border border-hairline px-2 py-0.5 text-xs text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
+                  >
+                    添加图片
+                  </button>
+                  <span className="text-[11px] text-ink-3">可直接粘贴或拖入；PNG / JPEG / WebP，单张 ≤10 MiB，整条描述最多 5 张</span>
+                </div>
+                {descPendingImages.length > 0 && (
+                  <ul data-testid="desc-image-uploads" className="mt-1 space-y-0.5">
+                    {descPendingImages.map((item) => (
+                      <li
+                        key={item.id}
+                        data-testid={`desc-image-upload-${item.id}`}
+                        className={item.status === 'error' ? 'text-[11px] text-red-600 dark:text-red-400' : 'text-[11px] text-ink-3'}
+                      >
+                        {item.name} · {item.status === 'uploading' ? '上传中…' : `上传失败：${item.error ?? '未知错误'}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {descImageError !== null && (
+                  <p role="alert" data-testid="desc-image-error" className="mt-1 text-xs text-red-600 dark:text-red-400">
+                    {descImageError}
+                  </p>
+                )}
+              </div>
             ) : (
               <>
                 {/* D3：去掉预览外层边框容器，正文直接铺在纸面上；长文本默认 3 行 clamp */}

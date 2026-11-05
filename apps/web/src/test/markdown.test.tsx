@@ -4,7 +4,8 @@
  * 评论、详情描述、工作区日志共用同一实现，任一处退回裸 react-markdown 都会让这些断言失败。
  */
 import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MarkdownView } from '../lib/markdown';
 
 const FULL = [
@@ -84,6 +85,40 @@ describe('MarkdownView（GFM + 高亮，懒加载）', () => {
     expect(root.className).toContain('markdown-body-compact');
     expect(root.className).toContain('rounded');
     await waitFor(() => expect(screen.getByText('文字')).toBeInTheDocument());
+  });
+});
+
+describe('DETAIL-D6 内联图统一灯箱', () => {
+  const IMG = '![图注](/api/workspaces/ws-1/attachments/att-1)';
+
+  it('正文图可点击放大，Esc 关闭并把焦点还给原图', async () => {
+    const { container } = render(<MarkdownView>{IMG}</MarkdownView>);
+    await waitFor(() => expect(container.querySelector('[data-testid="md-image"]')).not.toBeNull(), { timeout: 5000 });
+    const trigger = screen.getByTestId('md-image-button');
+    await userEvent.click(trigger);
+    expect(screen.getByTestId('image-lightbox')).toBeInTheDocument();
+    expect(screen.getByTestId('image-lightbox-caption')).toHaveTextContent('图注');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('image-lightbox')).not.toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('点图片本身不关闭，点遮罩才关闭', async () => {
+    const { container } = render(<MarkdownView>{IMG}</MarkdownView>);
+    await waitFor(() => expect(container.querySelector('[data-testid="md-image"]')).not.toBeNull(), { timeout: 5000 });
+    await userEvent.click(screen.getByTestId('md-image-button'));
+    await userEvent.click(screen.getByRole('dialog').querySelector('img') as HTMLImageElement);
+    expect(screen.getByTestId('image-lightbox')).toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByTestId('image-lightbox'));
+    expect(screen.queryByTestId('image-lightbox')).not.toBeInTheDocument();
+  });
+
+  it('图片加载失败保留 alt 占位，不出现破图', async () => {
+    const { container } = render(<MarkdownView>{IMG}</MarkdownView>);
+    await waitFor(() => expect(container.querySelector('[data-testid="md-image"]')).not.toBeNull(), { timeout: 5000 });
+    fireEvent.error(screen.getByTestId('md-image'));
+    expect(screen.getByTestId('md-image-fallback')).toHaveTextContent('图注（加载失败）');
+    expect(screen.queryByTestId('md-image')).not.toBeInTheDocument();
   });
 });
 

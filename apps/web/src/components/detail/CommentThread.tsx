@@ -6,6 +6,7 @@ import type { AttachmentMetadata, Issue, IssueComment } from '@agentboard/shared
 import { api, type AttachmentUploadResult } from '../../api/client';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
+import { ImageLightbox } from '../ui/ImageLightbox';
 
 const MAX_ATTACHMENTS = 5;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -46,7 +47,13 @@ function fileSize(size: number): string {
   return size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function renderAttachment(attachment: AttachmentMetadata, key: string) {
+/**
+ * DETAIL-D6：评论内联图 —— 点击打开统一灯箱；加载失败保留同款占位，不留破图。
+ * 上传/投递链路不动；图片只作讨论内容，不作为证据 locator。
+ */
+function CommentAttachment({ attachment }: { attachment: AttachmentMetadata }) {
+  const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
   const deliveryLabel = attachment.delivery_state === 'pending'
     ? '图片等待投递'
     : attachment.delivery_state === 'sending'
@@ -57,12 +64,33 @@ function renderAttachment(attachment: AttachmentMetadata, key: string) {
           ? '图片输入投递回执已确认'
           : null;
   return (
-    <figure key={key} className="m-0 max-w-full" data-testid={`comment-attachment-${attachment.id}`}>
-      <img
-        src={attachment.url}
-        alt={attachment.file_name}
-        className="max-h-64 max-w-full rounded border border-neutral-200 object-contain dark:border-neutral-700"
-      />
+    <figure className="m-0 max-w-full" data-testid={`comment-attachment-${attachment.id}`}>
+      {failed ? (
+        <span
+          data-testid={`comment-attachment-fallback-${attachment.id}`}
+          role="img"
+          aria-label={`图片加载失败：${attachment.file_name}`}
+          className="inline-flex max-w-full items-center gap-1.5 rounded border border-dashed border-neutral-300 bg-neutral-50 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-400"
+        >
+          <span aria-hidden>🖼</span>
+          <span className="break-all">{attachment.file_name}（加载失败）</span>
+        </span>
+      ) : (
+        <button
+          type="button"
+          data-testid={`comment-attachment-button-${attachment.id}`}
+          aria-label={`放大图片：${attachment.file_name}`}
+          onClick={() => setOpen(true)}
+          className="block max-w-full cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <img
+            src={attachment.url}
+            alt={attachment.file_name}
+            onError={() => setFailed(true)}
+            className="max-h-64 max-w-full rounded border border-neutral-200 object-contain dark:border-neutral-700"
+          />
+        </button>
+      )}
       <figcaption className="mt-1 break-all text-xs text-neutral-500 dark:text-neutral-400">
         {attachment.file_name} · {fileSize(attachment.size_bytes)}
       </figcaption>
@@ -70,6 +98,9 @@ function renderAttachment(attachment: AttachmentMetadata, key: string) {
         <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400" data-testid={`attachment-delivery-${attachment.id}`}>
           {deliveryLabel}
         </p>
+      )}
+      {open && (
+        <ImageLightbox src={attachment.url} alt={attachment.file_name} onClose={() => setOpen(false)} />
       )}
     </figure>
   );
@@ -251,7 +282,9 @@ export function CommentThread({
             {c.content !== '' && <MarkdownView compact>{c.content}</MarkdownView>}
             {c.attachments && c.attachments.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-3">
-                {c.attachments.map((attachment) => renderAttachment(attachment, attachment.id))}
+                {c.attachments.map((attachment) => (
+                  <CommentAttachment key={attachment.id} attachment={attachment} />
+                ))}
               </div>
             )}
           </li>

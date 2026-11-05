@@ -13,6 +13,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { MarkdownSmartLink, isExternalLink, parseMarkdownRef } from './markdownLinks';
+import { ImageLightbox } from '../components/ui/ImageLightbox';
 // highlight.js 主题样式（浅色）；vitest css:false 忽略，vite build 随本 chunk 打包
 import 'highlight.js/styles/github.css';
 
@@ -21,12 +22,13 @@ export interface MarkdownRendererProps {
 }
 
 /**
- * KB-IMG-3：正文图片统一渲染 —— 最大宽度不撑破版面（max-width:100% + height:auto），
- * 加载失败时用 alt 文本 + 占位块兜底（不做点击放大，后置）。
- * 站内图片走 `/api/knowledge/images/:id`，与 KB-IMG-2 的插入链路同源。
+ * KB-IMG-3 / DETAIL-D6：正文图片统一渲染 —— 最大宽度不撑破版面（max-width:100% + height:auto），
+ * 加载失败时用 alt 文本 + 占位块兜底；点击打开统一灯箱（描述与评论共用 ImageLightbox）。
+ * 站内图片走 `/api/knowledge/images/:id` 或 `/api/workspaces/{ws}/attachments/{id}`，与插入链路同源。
  */
 export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
   const label = alt !== undefined && alt.trim() !== '' ? alt : '图片';
   if (failed) {
     return (
@@ -42,15 +44,28 @@ export function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
     );
   }
   return (
-    <img
-      src={src}
-      alt={label}
-      loading="lazy"
-      data-testid="md-image"
-      onError={() => setFailed(true)}
-      className="my-1 h-auto max-w-full rounded"
-      style={{ maxWidth: '100%' }}
-    />
+    <>
+      <button
+        type="button"
+        data-testid="md-image-button"
+        aria-label={`放大图片：${label}`}
+        onClick={() => setOpen(true)}
+        className="my-1 block max-w-full cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        <img
+          src={src}
+          alt={label}
+          loading="lazy"
+          data-testid="md-image"
+          onError={() => setFailed(true)}
+          className="my-1 h-auto max-w-full rounded"
+          style={{ maxWidth: '100%' }}
+        />
+      </button>
+      {open && src !== undefined && (
+        <ImageLightbox src={src} alt={label} onClose={() => setOpen(false)} />
+      )}
+    </>
   );
 }
 

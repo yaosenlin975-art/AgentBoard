@@ -189,3 +189,39 @@ describe('CommentThread 图片附件', () => {
     expect(uploadAttempts).toBe(2);
   });
 });
+
+describe('DETAIL-D6 评论图片统一灯箱', () => {
+  function mockCommentImage(): void {
+    server.use(http.get('/api/issues/iss-1/comments', () => HttpResponse.json([{
+      id: 'c-img', issue_id: 'iss-1', author: 'user', content: '看截图', ts: 2,
+      attachments: [{
+        id: 'att-img', file_name: 'shot.png', mime_type: 'image/png', size_bytes: png.length,
+        url: '/api/workspaces/ws-1/attachments/att-img', delivery_state: 'delivered',
+      }],
+    }])));
+  }
+
+  it('点击评论图打开灯箱；Esc 关闭并把焦点还给原图', async () => {
+    mockCommentImage();
+    renderThread();
+    const trigger = await screen.findByTestId('comment-attachment-button-att-img');
+    await userEvent.click(trigger);
+    expect(screen.getByTestId('image-lightbox')).toBeInTheDocument();
+    expect(screen.getByTestId('image-lightbox-caption')).toHaveTextContent('shot.png');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('image-lightbox')).not.toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('点击遮罩关闭灯箱；图片加载失败时保留同款占位，不留破图', async () => {
+    mockCommentImage();
+    renderThread();
+    await userEvent.click(await screen.findByTestId('comment-attachment-button-att-img'));
+    fireEvent.mouseDown(screen.getByTestId('image-lightbox'));
+    expect(screen.queryByTestId('image-lightbox')).not.toBeInTheDocument();
+
+    fireEvent.error(screen.getByAltText('shot.png'));
+    expect(screen.getByTestId('comment-attachment-fallback-att-img')).toHaveTextContent('shot.png（加载失败）');
+    expect(screen.queryByAltText('shot.png')).not.toBeInTheDocument();
+  });
+});
