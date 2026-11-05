@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { LONG_PRESS_MS, MOVE_CANCEL_PX, isVoiceEligible } from '../lib/voice/contract';
 import { IDLE_GESTURE, gestureDown, gestureEnd, gestureMove, gestureTick, movedTooFar } from '../lib/voice/gesture';
-import { downsampleTo16k, frameLevel, toInt16 } from '../lib/voice/recorder';
+import { downsampleTo16k, frameLevel, startVoiceSession, toInt16 } from '../lib/voice/recorder';
 import { insertVoiceText } from '../lib/voice/insertText';
 import { DEFAULT_VOICE_SETTINGS } from '../lib/voice/contract';
 import { VOICE_SETTINGS_KEY, loadVoiceSettings, sanitizeVoiceSettings, saveVoiceSettings } from '../lib/voice/settings';
@@ -120,6 +120,76 @@ describe('采集侧纯函数（VOICE-3）', () => {
     const loud = frameLevel(new Float32Array([0.9, -0.9, 0.9, -0.9]));
     expect(loud).toBeGreaterThan(0.9);
     expect(loud).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('上行帧格式（与服务端 Float32LE 契约对齐）', () => {
+  /** 最小采集环境桩：AudioContext/AudioWorkletNode/getUserMedia/WS 全部可观察 */
+  const setupRecorder = async () => {
+    const sent: ArrayBuffer[] = [];
+    const order: string[] = [];
+    const socket = {
+      binaryType: 'arraybuffer',
+      readyState: 1,
+      addEventListener: () => undefined,
+      send: (data: ArrayBuffer) => { sent.push(data); },
+      close: () => { order.push('close'); },
+    };
+    const fetchImpl = (async (input: unknown) => {
+      order.push(`fetch:${String(input)}`);
+      return { ok: true, status: 201, json: async () => ({ session_id: 's1', sample_rate: 16000 }) };
+    }) as unknown as typeof fetch;
+    let workletNode: { port: { onmessage: ((event: { data: Float32Array }) => void) | null } } | null = null;
+    class FakeAudioWorkletNode {
+      port: { onmessage: ((event: { data: Float32Array }) => void) | null } = { onmessage: null };
+      constructor() { workletNode = this; }
+    }
+    class FakeAudioContext {
+      sampleRate = 48000;
+      audioWorklet = { addModule: async (): Promise<void> => undefined };
+      createMediaStreamSource(): { connect: () => void; disconnect: () => void } {
+        return { connect: () => undefined, disconnect: () => undefined };
+      }
+      async close(): Promise<void> { /* noop */ }
+    }
+    (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+    (globalThis as unknown as { AudioWorkletNode: unknown }).AudioWorkletNode = FakeAudioWorkletNode;
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = () => 'blob:voice-worklet';
+    URL.revokeObjectURL = () => undefined;
+
+    const session = await startVoiceSession({
+      language: 'zh',
+      modelId: null,
+      mock: false,
+      fetchImpl,
+      wsFactory: () => socket as unknown as WebSocket,
+      mediaDevices: {
+        getUserMedia: async () => ({ getTracks: () => [{ stop: () => undefined }] }),
+      } as unknown as MediaDevices,
+    });
+    // startVoiceSession 内部 new 出来的节点：通过捕获的实例触发采集回调
+    return {
+      session,
+      sent,
+      order,
+      emit: (samples: Float32Array) => { workletNode?.port.onmessage?.({ data: samples }); },
+      restore: () => { URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke; },
+    };
+  };
+
+  it('WS 上行发送的是 Float32LE 原始采样，而不是 Int16', async () => {
+    const h = await setupRecorder();
+    h.emit(new Float32Array(4800).fill(0.5));
+    expect(h.sent.length).toBe(1);
+    const buffer = h.sent[0] as ArrayBuffer;
+    // 48k → 16k：4800 采样降为 1600；每采样 4 字节 Float32
+    expect(buffer.byteLength).toBe(1600 * 4);
+    const view = new DataView(buffer);
+    expect(view.getFloat32(0, true)).toBeCloseTo(0.5, 5);
+    await h.session.stop();
+    h.restore();
   });
 });
 

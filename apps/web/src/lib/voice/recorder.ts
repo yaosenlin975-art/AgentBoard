@@ -1,5 +1,8 @@
 /**
- * 本地语音采集（VOICE-3）：AudioWorklet 取 PCM → 下采样到 16kHz 单声道 Int16 → WS 分块上行。
+ * 本地语音采集（VOICE-3）：AudioWorklet 取 PCM → 下采样到 16kHz 单声道 Float32 → WS 分块上行。
+ * 上行格式以服务端契约为准：**16kHz 单声道 Float32LE**（服务端按 `readFloatLE` 逐 4 字节解码，
+ * sherpa-onnx 的 `acceptWaveform` 也直接吃 Float32），因此这里原样发送降采样后的 Float32，
+ * 不做 Int16 转换（两边格式不一致会让识别器收到近似静音、只能出空文本）。
  * 服务端契约（VOICE-2，见设计 §识别会话）未就绪时：请求 /api/voice/session 失败 → 抛
  * VoiceInputError('VOICE_SERVER_UNAVAILABLE')；`mock` 模式不连服务端，直接给 mock final，
  * 用来验证「长按 → 录音 → 插入」全链路（不下载任何真实模型）。
@@ -140,10 +143,11 @@ export async function startVoiceSession(options: StartVoiceOptions): Promise<Voi
   }
   const context = new AudioContextCtor();
   const source = context.createMediaStreamSource(stream);
-  const frames: Int16Array[] = [];
+  const frames: Float32Array[] = [];
   let currentLevel = 0;
   let closed = false;
   let pending = '';
+  let finalFromWs: string | null = null;
   let resolveFinal: ((text: string) => void) | null = null;
   let rejectFinal: ((e: unknown) => void) | null = null;
 
@@ -186,6 +190,7 @@ export async function startVoiceSession(options: StartVoiceOptions): Promise<Voi
       if (payload.type === 'partial') pending = payload.text;
       else if (payload.type === 'final') {
         pending = payload.text;
+        finalFromWs = payload.text;
         resolveFinal?.(payload.text);
       } else if (payload.type === 'error') {
         rejectFinal?.(new VoiceInputError(payload.code, payload.message));
@@ -204,9 +209,9 @@ export async function startVoiceSession(options: StartVoiceOptions): Promise<Voi
   node.port.onmessage = (event: MessageEvent<Float32Array>) => {
     const chunk = downsampleTo16k(event.data, context.sampleRate);
     currentLevel = frameLevel(chunk);
-    const pcm = toInt16(chunk);
-    frames.push(pcm);
-    if (socket !== null && socket.readyState === WebSocket.OPEN) socket.send(pcm.buffer);
+    frames.push(chunk);
+    // 与服务端契约一致：16k mono Float32LE（服务端 readFloatLE 逐 4 字节解码）
+    if (socket !== null && socket.readyState === WebSocket.OPEN) socket.send(chunk.buffer);
   };
   source.connect(node);
 
