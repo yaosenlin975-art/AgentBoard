@@ -184,6 +184,12 @@ export const REASON_LABEL: Record<string, string> = {
   CHECKIN_BATCH_FINISHED: '批次已结束，无法取消',
   OPERATION_UNKNOWN: '结果未知，未自动重发',
   LOCAL_RECORD: '本地记录今日已完成',
+  // ACC-CC-2：Command Code（CLI 来源）能力原因码（依据 CC-1 调研文档 §4）
+  CLI_NOT_INSTALLED: '本机未安装该 CLI',
+  AUTH_FILE_MISSING: '本机没有该来源的凭据文件',
+  AUTH_SCHEMA_UNSUPPORTED: '凭据文件格式不在支持范围',
+  AUTH_WRITE_UNVERIFIED: '写回路径未验证，暂不可切换',
+  CHECKIN_NOT_APPLICABLE: '该来源没有签到功能',
   // 通用错误（errors.ts 默认码 + 前端网络错误）
   VALIDATION_ERROR: '参数不合法',
   NOT_FOUND: '对象不存在',
@@ -484,6 +490,41 @@ export function canToggleEnabled(
   if (busy) return { allowed: false, code: 'ACCOUNT_BUSY', reason: ACCOUNT_BUSY_REASON, nextEnabled };
   return { allowed: true, code: null, reason: null, nextEnabled };
 }
+
+/* ────────────────────────────── ACC-CC-2 ────────────────────────────── */
+
+/**
+ * CLI 来源的能力视图（与 ManagedAppId 的能力矩阵刻意分开：CLI 来源没有桌面客户端的
+ * capture/switch/checkin 语义，不能塞进 `AccountCapability`）。
+ */
+export interface CliSourceCapabilityView {
+  capture: boolean;
+  switch: boolean;
+  checkin: boolean;
+  capture_reason_code: string;
+  switch_reason_code: string;
+  checkin_reason_code: string;
+}
+
+/**
+ * Command Code 能力表（保守版，依据 `Docs/design-2026-11-05-commandcode-capability.md` §4）：
+ * - checkin：产品没有签到语义（硬结论）→ 不可用；
+ * - capture：本机未安装，且 `auth.json` 字段 schema 未实测 → 不可用，给 `CLI_NOT_INSTALLED`；
+ * - switch：单文件凭据 + 校验路径存在，但「写回等价于有效登录态」未实测 → 一律 `switch=false`。
+ *
+ * 硬规则：未实测的写回不得标成可用（不许出现「点了没反应」或「点了必失败」的入口）。
+ */
+export const COMMANDCODE_CAPABILITY: CliSourceCapabilityView = {
+  capture: false,
+  switch: false,
+  checkin: false,
+  capture_reason_code: 'CLI_NOT_INSTALLED',
+  switch_reason_code: 'AUTH_WRITE_UNVERIFIED',
+  checkin_reason_code: 'CHECKIN_NOT_APPLICABLE',
+};
+
+/** Command Code 的界面显示名（CLI 来源区，不引入新色相） */
+export const COMMANDCODE_SOURCE_LABEL = 'Command Code';
 
 /** 能力矩阵查询：失败时不回退到本地副本，界面据此禁用全部写操作 */
 export function useAccountCapabilities(): AccountCapabilitiesState {

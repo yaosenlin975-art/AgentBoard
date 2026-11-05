@@ -75,9 +75,9 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
     const extra = await screen.findByTestId('accounts-index');
     // 按 id 字典序：qoder_cn < zcode
     const apps = [...extra.querySelectorAll('[data-testid^="accounts-index-item-"]')].map((el) => el.getAttribute('data-app'));
-    // APP_ORDER 之后追加其它平台（按 id 字典序），最后是 CLI 额度三来源
+    // APP_ORDER 之后追加其它平台（按 id 字典序），最后是 CLI 额度三来源 + Command Code（ACC-CC-2）
     expect(apps).toEqual([
-      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'opencode_go', 'codex',
+      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'opencode_go', 'codex', 'commandcode',
     ]);
     expect(within(extra).getByText('Qoder CN')).toBeInTheDocument();
     expect(within(extra).getByText('ZCode')).toBeInTheDocument();

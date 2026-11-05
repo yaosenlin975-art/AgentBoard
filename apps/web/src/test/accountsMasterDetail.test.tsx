@@ -72,9 +72,9 @@ describe('账号面板主从布局（ACC-B1）', () => {
 
     const index = await screen.findByTestId('accounts-index');
     const items = within(index).getAllByRole('tab');
-    // 三平台 + 其它平台（qoder_cn）+ CLI 额度三来源，已下线的 codebuddy_desktop 不出现
+    // 三平台 + 其它平台（qoder_cn）+ CLI 额度三来源 + Command Code（ACC-CC-2），已下线的 codebuddy_desktop 不出现
     expect(items.map((el) => el.dataset.app)).toEqual([
-      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'deepseek', 'opencode_go', 'codex',
+      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'deepseek', 'opencode_go', 'codex', 'commandcode',
     ]);
     expect(screen.queryByTestId('accounts-index-item-codebuddy_desktop')).toBeNull();
 
@@ -132,8 +132,8 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{End}');
-    // 列表末尾是 CLI 额度来源（Codex）
-    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
+    // 列表末尾是 Command Code（ACC-CC-2 追加在 CLI 来源区最后）
+    expect(screen.getByTestId('accounts-index-item-commandcode')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{Home}');
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');

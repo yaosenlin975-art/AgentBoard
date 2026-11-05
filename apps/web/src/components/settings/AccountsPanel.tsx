@@ -32,6 +32,8 @@ import { QuotaDetail } from './QuotaDetail';
 import {
   APP_ORDER,
   appLabel,
+  COMMANDCODE_CAPABILITY,
+  COMMANDCODE_SOURCE_LABEL,
   hasReasonLabel,
   isOfflineApp,
   localDayKey,
@@ -56,6 +58,7 @@ const CLI_SOURCE_ROW_LABEL: Record<string, string> = {
   deepseek: 'DeepSeek',
   opencode_go: 'OpenCode-Go',
   codex: 'Codex',
+  commandcode: COMMANDCODE_SOURCE_LABEL,
 };
 
 /** 签到芯片三态配色（§5：绿=全完成、琥珀=部分、灰=不可用/未纳入） */
@@ -192,6 +195,22 @@ export function AccountsPanel() {
           </div>
         ),
       };
+    });
+    /**
+     * ACC-CC-2：Command Code 是 CC-1 调研确认的 **CLI 来源**（不是 ManagedAppId），
+     * 落 CLI 来源区；三项能力一律不可用（未实测的写回不标可用），只给中文原因 + 技术码。
+     * 不新增额度来源枚举：CC-1 判定其额度接口未文档化，这里不做额度行，避免凭空造数据源。
+     */
+    const commandCodeAccounts = cliAccounts.filter((account) => String(account.app_id) === 'commandcode');
+    sources.push({
+      app: 'commandcode',
+      kind: 'source',
+      label: CLI_SOURCE_ROW_LABEL.commandcode ?? COMMANDCODE_SOURCE_LABEL,
+      currentLabel: null,
+      accountCount: commandCodeAccounts.length,
+      done: 0,
+      total: 0,
+      render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
     return [...known, ...extras, ...sources];
   }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError]);
@@ -617,6 +636,70 @@ function QuotaSourceDetail({
 
       <p data-testid={`accounts-source-switch-note-${source}`} className="text-ink-3">
         暂不支持切换：需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）。
+      </p>
+    </div>
+  );
+}
+
+/**
+ * ACC-CC-2：Command Code（CLI 来源）右栏详情。
+ *
+ * 能力表保守（见 `COMMANDCODE_CAPABILITY`）：三项一律不可用，只展示中文原因 + 可展开技术码。
+ * 不渲染任何写操作按钮——「未实测的写回」不允许出现「点了没反应」或「点了必失败」的入口。
+ */
+function CommandCodeSourceDetail({ accounts }: { accounts: PublicCliAccount[] }) {
+  const dimensions = [
+    { key: 'capture', label: '读取本机', code: COMMANDCODE_CAPABILITY.capture_reason_code },
+    { key: 'switch', label: '切换账号', code: COMMANDCODE_CAPABILITY.switch_reason_code },
+    { key: 'checkin', label: '签到', code: COMMANDCODE_CAPABILITY.checkin_reason_code },
+  ] as const;
+  return (
+    <div className="space-y-1.5 text-xs leading-relaxed">
+      <p data-testid="accounts-source-note-commandcode" className="text-ink-3">
+        Command Code 属 CLI 来源（本机凭据固定在 ~/.commandcode/auth.json）。本机未安装，凭据字段与写回等价性均未实测，三项能力一律按不可用处理。
+      </p>
+      <ul data-testid="accounts-source-capabilities-commandcode" className="space-y-1">
+        {dimensions.map((dimension) => {
+          const technicalCode = reasonTechnicalCode(dimension.code);
+          return (
+            <li
+              key={dimension.key}
+              data-testid={`accounts-source-cap-commandcode-${dimension.key}`}
+              data-available="false"
+              className="flex flex-wrap items-center gap-x-2"
+            >
+              <span className="text-ink">{dimension.label}</span>
+              <span className="text-ink-3">{reasonLabel(dimension.code)}</span>
+              {technicalCode !== null && (
+                <details data-testid={`accounts-source-cap-code-commandcode-${dimension.key}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <summary className="cursor-pointer select-none">技术码</summary>
+                  <code className="font-mono">{technicalCode}</code>
+                </details>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {accounts.length === 0 ? (
+        <p data-testid="accounts-source-empty-commandcode" className="text-ink-3">本机未发现该来源的凭据。</p>
+      ) : (
+        <ul data-testid="accounts-source-list-commandcode" className="space-y-1">
+          {accounts.map((account) => (
+            <li
+              key={account.id}
+              data-testid={`accounts-source-item-${account.id}`}
+              className="flex flex-wrap items-center gap-x-2 rounded-md bg-surface-raised px-2 py-1"
+            >
+              <span className="font-mono text-[11px] text-ink" title="身份指纹（不可逆哈希前缀，不是 key）">
+                {account.identity_hint}
+              </span>
+              <span className="text-[11px] text-ink-3">最近发现 {new Date(account.last_seen_at).toLocaleString()}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="accounts-source-write-note-commandcode" className="text-ink-3">
+        导入与切换入口未开放：需先在一台已安装 Command Code 的机器上实测 auth.json 字段与写回校验（见 CC-1 §8）。
       </p>
     </div>
   );
