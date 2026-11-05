@@ -1,16 +1,16 @@
 # Tasks：CHAT-APP1（97342849）
 
-- [ ] T1 新增 `approvalRule` 迁移并在 `initSchema` 中接线（幂等 + 部分唯一索引）
-- [ ] T2 新增 `db/repos/approvalRule.ts`（创建/查询/软撤销/按档查询；UNIQUE → 409）
-- [ ] T3 shared 类型：`TurnApprovalInfo`、`ApprovalRule`、`SessionApprovalRequestEvent` 并入 `TurnObservationEvent`
-- [ ] T4 `turnAwaiting.MarkAwaitingInput` 支持 `approval` 并落库
-- [ ] T5 新增 `services/turnApproval.ts`（规则解析、request、decide；403/400/404/409 边界）
-- [ ] T6 `errors.ts` 增 `ForbiddenError`；`schemas.ts` 增 `approvalDecisionSchema`
-- [ ] T7 `routes.ts` 增审批决策 / 规则列表 / 软撤销三个端点
-- [ ] T8 新增 `test/turnApproval.test.ts` 覆盖验收 1–7 + 边界 + 审批超时
-- [ ] T9 三处 build + 定向测试 + 全量测试（红项标基线/瞬时）
-- [ ] T10 精确暂存提交 `[97342849]` + `git show --stat` 核对
-- [ ] T11 置「待验收」、释放占用、知识页 + 变更日志
+- [x] T1 新增 `approvalRule` 迁移并在 `initSchema` 中接线（幂等 + 部分唯一索引）
+- [x] T2 新增 `db/repos/approvalRule.ts`（创建/查询/软撤销/按档查询；UNIQUE → 409）
+- [x] T3 shared 类型：`TurnApprovalInfo`、`ApprovalRule`、`SessionApprovalRequestEvent` 并入 `TurnObservationEvent`
+- [x] T4 `turnAwaiting.MarkAwaitingInput` 支持 `approval` 并落库
+- [x] T5 新增 `services/turnApproval.ts`（规则解析、request、decide；403/400/404/409 边界）
+- [x] T6 `errors.ts` 增 `ForbiddenError`；`schemas.ts` 增 `approvalDecisionSchema`
+- [x] T7 `routes.ts` 增审批决策 / 规则列表 / 软撤销三个端点
+- [x] T8 新增 `test/turnApproval.test.ts` 覆盖验收 1–7 + 边界 + 审批超时
+- [x] T9 三处 build + 定向测试 + 全量测试（红项标基线/瞬时）
+- [x] T10 精确暂存提交 `[97342849]` + `git show --stat` 核对
+- [x] T11 置「待验收」、释放占用、知识页 + 变更日志
 
 ## 验收映射
 | 卡面验收 | 覆盖任务 |
