@@ -285,39 +285,41 @@ describe('AWAIT2 询问阻塞态', () => {
 });
 
 describe('AWAIT2 审批阻塞态', () => {
-  it('session.approval_request 呈现独立审批卡片（与询问卡片可区分）', async () => {
+  it('session.approval_request 打开三档确认弹窗（与询问卡片可区分）', async () => {
     renderChat();
     expect(await screen.findByTestId('composer')).toBeInTheDocument();
     emitApprovalRequest();
 
-    const card = await screen.findByTestId('awaiting-approval-card');
-    expect(card).toHaveTextContent('等待审批');
-    expect(screen.getByTestId('awaiting-approval-summary')).toHaveTextContent('Bash · rm -rf build');
-    expect(screen.getByTestId('awaiting-approval-risk')).toHaveTextContent('write');
+    const dialog = await screen.findByTestId('approval-dialog');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByTestId('approval-tool')).toHaveTextContent('Bash');
+    expect(screen.getByTestId('approval-target')).toHaveTextContent('rm -rf build');
+    expect(screen.getByTestId('approval-risk')).toHaveTextContent('write');
     expect(screen.queryByTestId('awaiting-ask-card')).not.toBeInTheDocument();
     expect(screen.queryByTestId('running-indicator')).not.toBeInTheDocument();
     expect(screen.getByTestId('composer-blocked')).toHaveTextContent('等待审批');
   });
 
-  it('允许（仅本次）提交正确请求体，成功后回到 running', async () => {
+  it('允许（默认仅本次）提交正确请求体，成功后回到 running', async () => {
     renderChat();
     expect(await screen.findByTestId('composer')).toBeInTheDocument();
     emitApprovalRequest();
-    await screen.findByTestId('awaiting-approval-card');
+    await screen.findByTestId('approval-dialog');
 
-    await userEvent.click(screen.getByTestId('awaiting-allow'));
+    await userEvent.click(screen.getByTestId('approval-allow'));
     await waitFor(() => expect(approvalCalls).toHaveLength(1));
     expect(approvalCalls[0]).toEqual({
       requestId: 'r1',
       body: { decision: 'allow', scope: 'once' },
     });
     await waitFor(() =>
-      expect(screen.queryByTestId('awaiting-approval-card')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('approval-dialog')).not.toBeInTheDocument(),
     );
     expect(screen.getByTestId('running-indicator')).toBeInTheDocument();
   });
 
-  it('拒绝后服务端置 stopped，卡片收起且不再显示运行指示', async () => {
+  it('拒绝后服务端置 stopped，弹窗关闭并显示停止提示', async () => {
     approvalResponse = {
       turn: makeTurn({
         state: 'stopped',
@@ -327,18 +329,19 @@ describe('AWAIT2 审批阻塞态', () => {
     renderChat();
     expect(await screen.findByTestId('composer')).toBeInTheDocument();
     emitApprovalRequest();
-    await screen.findByTestId('awaiting-approval-card');
+    await screen.findByTestId('approval-dialog');
 
-    await userEvent.click(screen.getByTestId('awaiting-deny'));
+    await userEvent.click(screen.getByTestId('approval-deny'));
     await waitFor(() => expect(approvalCalls).toHaveLength(1));
     expect(approvalCalls[0]?.body).toEqual({ decision: 'deny', scope: 'once' });
     await waitFor(() =>
-      expect(screen.queryByTestId('awaiting-approval-card')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('approval-dialog')).not.toBeInTheDocument(),
     );
+    expect(await screen.findByTestId('approval-denied-note')).toHaveTextContent('已拒绝执行');
     expect(screen.queryByTestId('running-indicator')).not.toBeInTheDocument();
   });
 
-  it('审批 403 显示可读原因，明确说明本工作区档缺撤销入口', async () => {
+  it('审批 403 显示可读原因（含服务端原文与撤销入口说明）', async () => {
     approvalResponse = {
       status: 403,
       body: { error: { code: 'FORBIDDEN', message: '写类工具不允许 workspace 档' } },
@@ -346,10 +349,10 @@ describe('AWAIT2 审批阻塞态', () => {
     renderChat();
     expect(await screen.findByTestId('composer')).toBeInTheDocument();
     emitApprovalRequest();
-    await screen.findByTestId('awaiting-approval-card');
+    await screen.findByTestId('approval-dialog');
 
-    await userEvent.click(screen.getByTestId('awaiting-allow'));
-    const error = await screen.findByTestId('awaiting-approval-error');
+    await userEvent.click(screen.getByTestId('approval-allow'));
+    const error = await screen.findByTestId('approval-error');
     expect(error.textContent).toContain('写类工具不允许 workspace 档');
     expect(error.textContent).toContain('撤销入口');
   });
@@ -370,7 +373,7 @@ describe('AWAIT2 刷新恢复与超时', () => {
     expect(screen.getByTestId('awaiting-elapsed').textContent).toContain('已等待 2 分');
   });
 
-  it('刷新后按详情 turns 恢复审批卡片（工具/目标来自服务端）', async () => {
+  it('刷新后按详情 turns 恢复审批弹窗（工具/目标来自服务端）', async () => {
     detailTurns = [
       makeTurn({
         state: 'awaiting_approval',
@@ -383,10 +386,11 @@ describe('AWAIT2 刷新恢复与超时', () => {
       }),
     ];
     renderChat();
-    const card = await screen.findByTestId('awaiting-approval-card');
-    expect(card).toBeInTheDocument();
-    expect(screen.getByTestId('awaiting-approval-summary')).toHaveTextContent('Bash · rm -rf build');
-    expect(screen.getByTestId('awaiting-allow')).toBeInTheDocument();
+    const dialog = await screen.findByTestId('approval-dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByTestId('approval-tool')).toHaveTextContent('Bash');
+    expect(screen.getByTestId('approval-target')).toHaveTextContent('rm -rf build');
+    expect(screen.getByTestId('approval-allow')).toBeInTheDocument();
   });
 
   it('failed(awaiting_timeout) 显示超时卡片，「重新开始此步」以新轮次重发上一条用户消息', async () => {

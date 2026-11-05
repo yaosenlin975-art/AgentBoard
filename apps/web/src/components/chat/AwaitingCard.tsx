@@ -2,7 +2,7 @@
  * CHAT-AWAIT2：阻塞态卡片（消息区与输入区之间，不改头部结构）。
  *
  * - `awaiting_input`：展示提问正文与可选项（自由文本兜底），POST answer；
- * - `awaiting_approval`：展示工具/目标/风险与允许/拒绝（仅本次档），POST approval；
+ * - `awaiting_approval` 的交互已由 CHAT-APP2 的 `ApprovalDialog` 接管（本组件不再渲染审批卡片）；
  * - `failed(awaiting_timeout)`：展示服务端超时原因与「重新开始此步」入口（整轮重发兜底）。
  *
  * 约束：
@@ -18,7 +18,6 @@ import { api } from '../../api/client';
 import { applyServerTurn, type TurnObservation } from '../../state/turnStore';
 import {
   answerFailureText,
-  approvalFailureText,
   awaitingCapText,
   awaitingElapsedText,
   awaitingKind,
@@ -73,78 +72,7 @@ export function AwaitingCard({
     onError: (e) => setError(answerFailureText(e)),
   });
 
-  const approval = turn.awaiting?.approval ?? null;
-  const decide = useMutation({
-    mutationFn: (decision: 'allow' | 'deny') => {
-      if (approval === null) return Promise.reject(new Error('审批请求缺少 request_id'));
-      return api.post<{ turn: SessionTurn }>(
-        `/api/sessions/${sessionId}/turns/${turn.turn_id}/approvals/${approval.request_id}`,
-        { decision, scope: 'once' },
-      );
-    },
-    onSuccess: (res) => {
-      setError(null);
-      applyServerTurn(res.turn);
-    },
-    onError: (e) => setError(approvalFailureText(e)),
-  });
-
-  if (kind === null) return null;
-
-  if (kind === 'approval') {
-    return (
-      <article
-        data-testid="awaiting-approval-card"
-        aria-label="等待审批"
-        className="mx-3 my-2 shrink-0 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-ink dark:border-amber-800 dark:bg-amber-950/40"
-      >
-        <p className="font-medium text-amber-700 dark:text-amber-300">等待审批</p>
-        <p className="mt-1 text-ink-2" data-testid="awaiting-approval-summary">
-          {approval === null
-            ? (turn.awaiting?.message ?? '等待审批')
-            : `${approval.tool} · ${approval.target}`}
-        </p>
-        {approval !== null && (
-          <p className="mt-0.5 text-[10px] text-ink-3" data-testid="awaiting-approval-risk">
-            风险：{approval.risk}
-          </p>
-        )}
-        <AwaitingMeta at={turn.awaiting?.at ?? null} now={now} />
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            data-testid="awaiting-allow"
-            disabled={decide.isPending}
-            onClick={() => decide.mutate('allow')}
-            className="rounded border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90 disabled:opacity-40"
-          >
-            {decide.isPending ? '提交中…' : '允许（仅本次）'}
-          </button>
-          <button
-            type="button"
-            data-testid="awaiting-deny"
-            disabled={decide.isPending}
-            onClick={() => decide.mutate('deny')}
-            className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
-          >
-            拒绝
-          </button>
-          <span className="text-[10px] text-ink-3">
-            本工作区档需先提供撤销入口（暂不可用），当前仅支持「仅本次」。
-          </span>
-        </div>
-        {error !== null && (
-          <p
-            data-testid="awaiting-approval-error"
-            role="alert"
-            className="mt-1 text-xs text-red-600 dark:text-red-400"
-          >
-            {error}
-          </p>
-        )}
-      </article>
-    );
-  }
+  if (kind === null || kind === 'approval') return null;
 
   const { question, options } = parseAskMessage(turn.awaiting?.message ?? '');
   const submitText = (): void => {

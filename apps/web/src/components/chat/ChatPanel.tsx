@@ -28,6 +28,8 @@ import { awaitingKind } from '../../lib/turnView';
 // 未读计数全局收集器：模块加载即订阅 wsBus（本组件未挂载期间同样计数，markUnread 不在此处，防双计）
 import '../../state/unreadCollector';
 import { AwaitingCard, AwaitingTimeoutCard } from './AwaitingCard';
+import { ApprovalDialog } from './ApprovalDialog';
+import { ApprovalRulesDialog } from './ApprovalRulesDialog';
 import { Composer } from './Composer';
 import { RenameSessionDialog } from './RenameSessionDialog';
 import { MessageList } from './MessageList';
@@ -61,6 +63,8 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   /** 头部改名入口（与列表行共用 RenameSessionDialog） */
   const [renameOpen, setRenameOpen] = useState(false);
+  /** CHAT-APP2：⋯ 里的「审批规则」工作表（弹层，不是新页面） */
+  const [rulesOpen, setRulesOpen] = useState(false);
   useEffect(() => {
     if (!headerMenuOpen) return;
     const close = (): void => setHeaderMenuOpen(false);
@@ -497,6 +501,24 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
                 <button
                   type="button"
                   role="menuitem"
+                  data-testid="approval-rules-btn"
+                  disabled={workspaceId === null}
+                  title={
+                    workspaceId === null
+                      ? '当前会话缺少工作空间，无法查看审批规则'
+                      : '查看并撤销本工作区生效的审批规则'
+                  }
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    setRulesOpen(true);
+                  }}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink disabled:opacity-40"
+                >
+                  审批规则
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   data-testid="archive-session-btn"
                   disabled={archiveSession.isPending}
                   onClick={() => archiveSession.mutate(!archived)}
@@ -587,11 +609,30 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         </div>
       )}
 
-      {activeTurn !== null && awaiting !== null && (
+      {activeTurn !== null && awaiting === 'input' && (
         <AwaitingCard sessionId={sessionId} turn={activeTurn} />
+      )}
+      {/* CHAT-APP2：awaiting_approval 的唯一交互出口（数据来自服务端投影，刷新后重新挂载） */}
+      {activeTurn !== null && awaiting === 'approval' && activeTurn.awaiting?.approval != null && (
+        <ApprovalDialog
+          sessionId={sessionId}
+          turnId={activeTurn.turn_id}
+          approval={activeTurn.awaiting.approval}
+          hasTaskBinding={session.issue_id !== null}
+        />
       )}
       {activeTurn !== null && timedOut && (
         <AwaitingTimeoutCard turn={activeTurn} onRestart={restartAwaiting} />
+      )}
+      {/* 拒绝后轮次被服务端置 stopped：给出可见终态提示，不静默收起 */}
+      {activeTurn !== null && activeTurn.state === 'stopped' && activeTurn.awaiting?.reason === 'approval_denied' && (
+        <p
+          data-testid="approval-denied-note"
+          role="status"
+          className="mx-3 my-2 shrink-0 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
+        >
+          已拒绝执行，本轮已停止；重新发送消息即可继续。
+        </p>
       )}
 
       <Composer
@@ -604,6 +645,9 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         onSend={handleSend}
       />
       {renameOpen && <RenameSessionDialog session={session} onClose={() => setRenameOpen(false)} />}
+      {rulesOpen && workspaceId !== null && (
+        <ApprovalRulesDialog workspaceId={workspaceId} onClose={() => setRulesOpen(false)} />
+      )}
     </div>
   );
 }
