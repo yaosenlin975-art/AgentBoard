@@ -29,6 +29,7 @@ import { installAutostart, statusAutostart, uninstallAutostart } from './command
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
 import { accountSwitch, accountsCapabilities, accountsList } from './commands/accounts.js';
 import { workspaceDbEnable } from './commands/workspaceDb.js';
+import { registerDecisionCommands } from './commands/decision.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
 const EXIT_CODE_HELP = `
@@ -387,6 +388,9 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 `)
     .action(async (workspace: string, opts: { dryRun?: boolean; overwrite?: boolean }) =>
       workspaceDbEnable(makeCtx(program, io), workspace, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true }));
+
+  // DEC-4：决策命令组（ask / decisions / decision / answer / stop-check）
+  registerDecisionCommands(program, io, makeCtx);
 
   try {
     await program.parseAsync(argv);

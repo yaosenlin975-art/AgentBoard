@@ -175,6 +175,11 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string)
   return output;
 }
 
+/** DEC-4：占用者列后的 [待决策] 标记（grace 与 open 都算在途决策） */
+function decisionMark(issue: Issue): string {
+  return issue.decision_locked === true || issue.decision_grace_until != null ? '[待决策]' : '-';
+}
+
 export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.all === true && args.workspace !== undefined) {
     throw new Error('--all 与 --workspace 不能同时使用');
@@ -200,10 +205,10 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
       return;
     }
     ctx.io.write(table(
-      ['层级', 'id', '状态', '优先级', 'labels', '占用者', '评论', 'parent_issue_id', '标题'],
+      ['层级', 'id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
       visible.map((issue) => [
         issue.tree_context ? '路径' : String(issue.tree_depth), issue.id, issue.status, issue.priority,
-        issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', String(issue.comment_count),
+        issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', decisionMark(issue), String(issue.comment_count),
         issue.parent_issue_id ?? '-', `${'  '.repeat(issue.tree_depth)}${issue.tree_depth > 0 ? '↳ ' : ''}${issue.title}`,
       ]),
     ));
@@ -226,13 +231,14 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   }
   ctx.io.write(
     table(
-      ['id', '状态', '优先级', 'labels', '占用者', '评论', 'parent_issue_id', '标题'],
+      ['id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
       filtered.map((i) => [
         i.id,
         i.status,
         i.priority,
         i.labels.length > 0 ? i.labels.join(',') : '-',
         i.claimed_by ?? '-',
+        decisionMark(i),
         String(i.comment_count),
         i.parent_issue_id ?? '-',
         i.title,

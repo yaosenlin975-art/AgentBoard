@@ -1,4 +1,4 @@
-import type { IssueComment } from '@agentboard/shared';
+import type { Issue, IssueComment } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { commentLines, issueLines } from '../render.js';
@@ -31,6 +31,24 @@ async function fetchComments(ctx: Ctx, id: string, markRead: boolean): Promise<A
   }
 }
 
+/** DEC-4：卡面锁标识——grace 显示剩余秒数，open 显示已等待时长（DEC-2 只读投影） */
+function decisionLines(issue: Issue): string[] {
+  if (issue.open_decision_id != null && issue.decision_locked === true) {
+    const waited = issue.decision_waiting_seconds;
+    return [
+      `决策: LOCKED decision=${issue.open_decision_id}${waited != null ? `（已等待 ${waited} 秒）` : ''}`,
+      `  回答: kb answer ${issue.open_decision_id} --option <序号|label>；或 kb decisions --issue ${issue.id}`,
+    ];
+  }
+  if (issue.decision_grace_until != null) {
+    const remaining = Math.max(0, Math.ceil((issue.decision_grace_until - Date.now()) / 1000));
+    return [
+      `决策: grace decision=${issue.open_decision_id ?? '?'} 剩余 ${remaining} 秒（到期自动落锁）`,
+    ];
+  }
+  return [];
+}
+
 export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<void> {
   const issue = await resolveIssueByRef(ctx, id);
   const comments = await fetchComments(ctx, issue.id, args.markRead === true);
@@ -38,5 +56,5 @@ export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<v
     ctx.io.write(`${JSON.stringify({ ...issue, comments }, null, 2)}\n`);
     return;
   }
-  ctx.io.write(`${[...issueLines(issue), ...commentLines(comments)].join('\n')}\n`);
+  ctx.io.write(`${[...issueLines(issue), ...decisionLines(issue), ...commentLines(comments)].join('\n')}\n`);
 }
