@@ -27,6 +27,7 @@ import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaCreditChip } from './QuotaCards';
+import { QuotaDetail } from './QuotaDetail';
 import {
   APP_ORDER,
   appLabel,
@@ -182,7 +183,13 @@ export function AccountsPanel() {
         accountCount: sourceAccounts.length,
         done: 0,
         total: 0,
-        render: () => <QuotaSourceDetail source={source} accounts={sourceAccounts} errorMessage={cliError} />,
+        render: () => (
+          <div className="space-y-2">
+            {/* ACC-B6：额度平台右栏详情（余额 / 时间窗口 / 积分占位）；凭据明细保留在下方 */}
+            <QuotaDetail source={source} />
+            <QuotaSourceDetail source={source} accounts={sourceAccounts} errorMessage={cliError} />
+          </div>
+        ),
       };
     });
     return [...known, ...extras, ...sources];

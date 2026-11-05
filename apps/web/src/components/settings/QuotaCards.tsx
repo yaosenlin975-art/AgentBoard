@@ -251,16 +251,24 @@ export function quotaGroupedRows(items: readonly QuotaItem[]): {
 export const QUOTA_ROW_ORDER: readonly QuotaSourceId[] = QUOTA_SOURCE_IDS;
 
 /**
+ * ACC-B6：额度快照的唯一查询入口——`QuotaRows` 与右栏 `QuotaDetail` 共用同一 queryKey 与 staleTime，
+ * 左右两处同屏、切换平台都不会各拉一份或串数据。
+ */
+export function useQuotaSnapshot() {
+  return useQuery({
+    queryKey: ['managed-account-quotas'],
+    queryFn: () => api.get<QuotaSnapshot>('/api/managed-account-quotas'),
+    staleTime: 30_000,
+  });
+}
+
+/**
  * 额度来源行组（ACC-PANEL-03 嵌入六行总览的后三行）：逐来源一行，不可展开、无账号操作。
  * 加载中/失败各占一行提示；来源缺失（服务端未返回）按 ORDER 补成同栏位的 `quota-row-<source>` 行，
  * 因此「每个来源恰有一行」在总览里恒成立。
  */
 export function QuotaRows() {
-  const query = useQuery({
-    queryKey: ['managed-account-quotas'],
-    queryFn: () => api.get<QuotaSnapshot>('/api/managed-account-quotas'),
-    staleTime: 30_000,
-  });
+  const query = useQuotaSnapshot();
   const now = Date.now();
   const bySource = new Map((query.data?.items ?? []).map((item) => [item.source, item]));
   const items = QUOTA_ROW_ORDER.map((source) => bySource.get(source));
