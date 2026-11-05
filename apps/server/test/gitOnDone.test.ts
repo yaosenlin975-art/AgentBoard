@@ -238,6 +238,72 @@ describe('git on done', () => {
     expect(comments(issueId).join('\n')).toContain('other/out.ts');
   });
 
+  // KB-DONE-STAGE：卡外脏文件（含被别的卡预暂存的）不得卷进本卡提交
+  it('commitsOnlyCardScopeEvenWhenOutsideFileIsPreStaged', async () => {
+    const issueId = await makeIssue('本卡范围收尾');
+    await claim(issueId);
+
+    writeFileSync(join(repo, 'a-card.txt'), 'A 卡本次改动\n');
+    writeFileSync(join(repo, 'b-card.txt'), 'B 卡遗留的未提交改动\n');
+    // 模拟另一张卡已经 git add、但还没提交
+    git(repo, ['add', '--', 'b-card.txt']);
+
+    const res = await done(issueId, { scope_paths: ['a-card.txt'] });
+    expect(res.status).toBe(200);
+    expect(lastCommitFiles()).toEqual(['a-card.txt']);
+    // 卡外文件仍在工作树，且仍是「已暂存」状态：路径限定 commit 没有把它卷进来
+    expect(git(repo, ['status', '--porcelain'])).toContain('b-card.txt');
+
+    const note = comments(issueId).join('\n');
+    expect(note).toContain('已自动提交 1 个文件');
+    expect(note).toContain('卡外改动未提交');
+    expect(note).toContain('b-card.txt');
+  });
+
+  it('commitsEveryFileInsideDeclaredScope', async () => {
+    const issueId = await makeIssue('卡内多文件');
+    await claim(issueId);
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'a.ts'), 'a\n');
+    writeFileSync(join(repo, 'src', 'b.ts'), 'b\n');
+    writeFileSync(join(repo, 'outside.txt'), 'other\n');
+
+    await done(issueId, { scope_paths: ['src'] });
+
+    expect(lastCommitFiles().sort()).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(git(repo, ['status', '--porcelain'])).toContain('outside.txt');
+  });
+
+  it('includesOutsideChangesOnlyWhenAllIsExplicit', async () => {
+    const issueId = await makeIssue('显式全量');
+    await claim(issueId);
+    writeFileSync(join(repo, 'a-card.txt'), 'A\n');
+    writeFileSync(join(repo, 'b-card.txt'), 'B\n');
+
+    // CLI 的 --all 映射成声明工作区根 `.`
+    await done(issueId, { scope_paths: ['.'] });
+
+    expect(lastCommitFiles().sort()).toEqual(['a-card.txt', 'b-card.txt']);
+    expect(git(repo, ['status', '--porcelain'])).toBe('');
+    expect(comments(issueId).join('\n')).toContain('--all：显式纳入工作区全部未提交改动');
+  });
+
+  it('warnsExplicitlyWhenNoTargetFileSetDeclared', async () => {
+    writeFileSync(join(repo, 'preexisting.txt'), 'claim 前就脏\n');
+    const issueId = await makeIssue('老卡无声明');
+    await claim(issueId);
+    writeFileSync(join(repo, 'work.txt'), '本次改动\n');
+
+    await done(issueId);
+
+    expect(lastCommitFiles()).toEqual(['work.txt']);
+    expect(git(repo, ['status', '--porcelain'])).toContain('preexisting.txt');
+    const note = comments(issueId).join('\n');
+    expect(note).toContain('⚠ 未声明目标文件集（旧卡口径）');
+    expect(note).toContain('preexisting.txt');
+    expect(note).toContain('--scope 声明本卡文件集');
+  });
+
   it('writesNoCommentWhenNothingChanged', async () => {
     const issueId = await makeIssue('没有改动的任务');
     await claim(issueId);

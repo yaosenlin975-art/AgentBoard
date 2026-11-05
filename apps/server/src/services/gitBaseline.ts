@@ -5,11 +5,14 @@
  * - 基线 = claim 时 `git status --porcelain -uall -z` 的 path→指纹；指纹为内容 hash 前 16 位，删除项记 `deleted`。
  *   `.gitignore` 忽略项 porcelain 默认不列，天然不入基线。
  * - done 时重取快照，`基线 ≠ 当前` 的路径即「本任务期间发生变化」；claim 之前就存在的改动不会进入差异集。
- * - 变化集默认不是提交集：同 workspace 有其它「进行中且被占用」的任务时，变化无法判定归属。
- *   此时只提交本任务显式声明（done body 的 `scope_paths`，文件或目录前缀）范围内的路径，
- *   越界路径一律不提交，改为系统评论列出清单交 owner 决定；未声明则不提交任何路径。
- *   无并行占用时变化集可归属本任务，按变化集提交（保持既有行为）。
- * - 只用 `git add -A -- <paths>`（同时覆盖修改与删除），绝不 `git add -A` 全量。
+ * - 提交集只看本任务声明的目标文件集（done body 的 `scope_paths`，文件或目录前缀）：
+ *   与当前未提交路径取交集，卡外改动一律不提交，改为系统评论列出清单交 owner 处理；
+ *   要连同卡外改动一起入库，必须显式声明工作区根（`--all` → `.`）。
+ *   未声明范围（老卡）时只提交 claim 基线变化集，并在评论里显式警告「无法排除他人同期改动」
+ *   （claim 前就已脏且未变化的文件仍不纳入）；同 workspace 有其它并行占用时仍一律不提交。
+ *   本卡声明范围内、claim 前就已脏且未变化的文件按声明强制提交（否则接手遗留脏文件的卡会静默丢提交）。
+ * - 只用 `git add -A -- <paths>`（同时覆盖修改与删除）并配合**路径限定 commit**（`git commit -- <paths>`），
+ *   绝不 `git add -A` 全量，也绝不整索引提交（避免把别的卡已暂存的改动卷进来）。
  * - 提交身份：`git config user.name/email`（局部优先于全局，git 自身解析）都配好则尊重仓库身份；
  *   缺任一才用 `-c user.name=AgentBoard -c user.email=agentboard@local`，并在评论注明。
  * - 全程 `execFile('git', [...])`，标题等动态内容作为单个 `-m` 参数，不经 shell。
@@ -184,11 +187,19 @@ function changedPaths(baseline: Record<string, string>, current: Record<string, 
 }
 
 /**
+ * 工作区根声明标记：`--all` 由 CLI 映射成 `.`，归一化后记为 `ROOT_SCOPE`，表示「整个工作区」。
+ * 空串不是合法路径，不会与真实文件冲突。
+ */
+const ROOT_SCOPE = '';
+
+/**
  * 声明范围归一化：统一 `/`、去 `./` 段与尾部 `/`（`./src/` → `src`）。
  * 绝对路径、盘符路径、含 `..` 的路径丢弃——git 输出的路径都是仓库内相对路径，这类声明不可能命中。
+ * 只声明 `.` / `./` 视为工作区根（`--all` 口径）。
  */
 function normalizeDeclaredPaths(paths: readonly string[]): string[] {
   const normalized = new Set<string>();
+  let root = false;
   for (const raw of paths) {
     const slash = raw.trim().replace(/\\/g, '/');
     if (slash === '' || slash.startsWith('/') || /^[A-Za-z]:/.test(slash)) continue;
@@ -199,13 +210,17 @@ function normalizeDeclaredPaths(paths: readonly string[]): string[] {
       if (segment === '..') { escaped = true; break; }
       segments.push(segment);
     }
-    if (!escaped && segments.length > 0) normalized.add(segments.join('/'));
+    if (escaped) continue;
+    if (segments.length === 0) root = true;
+    else normalized.add(segments.join('/'));
   }
-  return [...normalized].sort();
+  const list = [...normalized].sort();
+  return root ? [ROOT_SCOPE, ...list] : list;
 }
 
-/** 命中声明范围：同路径，或声明的目录前缀（`src` 覆盖 `src/a.ts`，不覆盖 `srcx/a.ts`） */
+/** 命中声明范围：工作区根声明命中一切；否则同路径，或声明的目录前缀（`src` 覆盖 `src/a.ts`，不覆盖 `srcx/a.ts`） */
 function withinDeclaredScope(path: string, declared: readonly string[]): boolean {
+  if (declared.includes(ROOT_SCOPE)) return true;
   return declared.some(entry => path === entry || path.startsWith(`${entry}/`));
 }
 
@@ -234,11 +249,11 @@ function parallelClaimCount(db: Db, workspaceId: string, issueId: string): numbe
 }
 
 /**
- * 基线内且当前仍未提交的路径 = claim 之前就已修改的文件。
- * 这类路径指纹在基线与当前快照里相同，`changedPaths` 天然看不见（GIT-BASELINE-BLIND）。
+ * 基线内且当前指纹完全一致的路径 = claim 之前就已修改、本任务期间没再动过的文件。
+ * 这类路径 `changedPaths` 天然看不见（GIT-BASELINE-BLIND），只有在本卡声明范围内才强制提交。
  */
 function preexistingDirtyPaths(baseline: Record<string, string>, current: Record<string, string>): string[] {
-  return Object.keys(baseline).filter(path => current[path] !== undefined).sort();
+  return Object.keys(baseline).filter(path => current[path] === baseline[path]).sort();
 }
 
 /** 本任务 git 处理收尾：清基线（不存在时 DELETE 为 no-op），返回要落评论的文本（null = 不写评论） */
@@ -294,7 +309,11 @@ export async function commitIssueChanges(
       const baseline = JSON.parse(baselineRow.paths_json) as Record<string, string>;
       const current = await snapshotWorkTree(repo);
       const changed = changedPaths(baseline, current.files);
+      /** 当前全部未提交路径（porcelain -uall，含删除项）＝ 卡内/卡外比对的基准 */
+      const dirty = Object.keys(current.files).sort();
       const declared = normalizeDeclaredPaths(declaredPaths);
+      /** `--all`（CLI 映射成 `.`）：显式声明工作区根，才允许纳入卡外改动 */
+      const declaredAll = declared.includes(ROOT_SCOPE);
       const parallel = parallelClaimCount(db, issue.workspace_id, issueId);
       const preexisting = preexistingDirtyPaths(baseline, current.files);
       const forced = declared.length === 0 ? [] : preexisting.filter(path => withinDeclaredScope(path, declared));
@@ -336,21 +355,31 @@ export async function commitIssueChanges(
         return finish(`检测到 ${parallel} 个并行占用任务，无法判定 ${pending.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`);
       }
 
-      // 无并行占用 → 变化集即本任务改动；有声明 → 只认声明范围内的路径
-      const inScope = declared.length === 0 ? changed : changed.filter(path => withinDeclaredScope(path, declared));
-      const violations = declared.length === 0 ? [] : changed.filter(path => !withinDeclaredScope(path, declared));
-      const violationNote = violations.length === 0
-        ? null
-        : `未提交 ${violations.length} 个不在本任务声明范围内的改动（仍在工作树，需 owner 确认）：${listPaths(violations, MAX_LISTED_SCOPE_VIOLATIONS)}`;
-      const paths = [...new Set([...inScope, ...forced])].sort();
+      // 提交集 = 本卡目标文件集 ∩ 当前未提交路径；卡外改动只列清单，默认不纳入
+      const outsideNote = (paths: readonly string[]): string =>
+        `卡外改动未提交（${paths.length} 个，仍在工作树，需 owner 处理；要一并纳入请显式 --all）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}`;
+      const undeclaredWarn = (committed: readonly string[], skipped: readonly string[]): string =>
+        `⚠ 未声明目标文件集（旧卡口径）：已按 claim 基线变化集提交 ${committed.length} 个文件，无法排除他人同期改动`
+        + `；另有 ${skipped.length} 个未提交${skipped.length > 0 ? `：${listPaths(skipped, MAX_LISTED_SCOPE_VIOLATIONS)}` : ''}`
+        + '。下次收尾请用 --scope 声明本卡文件集';
 
-      if (paths.length === 0) {
-        // 没有可提交路径时也必须开口：基线内未提交文件不得再静默跳过
-        if (declared.length === 0) return finish(preexisting.length > 0 ? undeclaredNote(preexisting) : null);
+      let paths: string[];
+      let policyNotes: string[];
+      if (declaredAll) {
+        // 显式 --all：只影响「纳入全部未提交改动」，仍然按路径限定提交
+        paths = dirty;
+        policyNotes = [`⚠ --all：显式纳入工作区全部未提交改动 ${dirty.length} 个：${listPaths(dirty, MAX_LISTED_SCOPE_VIOLATIONS)}`];
+      } else if (declared.length > 0) {
+        const outside = dirty.filter(path => !withinDeclaredScope(path, declared));
+        paths = dirty.filter(path => withinDeclaredScope(path, declared));
         // SCOPE-GUARD：声明了范围却零命中 → 显眼标题 + 可复制的补救命令
-        const outOfScopePreexisting = preexisting.filter(path => !withinDeclaredScope(path, declared));
-        const pending = [...new Set([...violations, ...outOfScopePreexisting])].sort();
-        return finish(zeroHitNote(declared, pending));
+        if (paths.length === 0) return finish(zeroHitNote(declared, outside));
+        policyNotes = outside.length === 0 ? [] : [outsideNote(outside)];
+      } else {
+        // 老卡无声明：只提交 claim 基线变化集（claim 前就已脏且未变化的文件仍不纳入），并显式警告
+        paths = changed;
+        if (paths.length === 0) return finish(preexisting.length > 0 ? undeclaredNote(preexisting) : null);
+        policyNotes = [undeclaredWarn(paths, dirty.filter(path => !changed.includes(path)))];
       }
 
       await git(repo, ['add', '-A', '--', ...paths]);
@@ -360,9 +389,10 @@ export async function commitIssueChanges(
       const claimer = (baselineRow.claimed_by ?? '').trim();
       if (claimer !== '') trailerLines.push(`AgentBoard-Claim: ${claimer}`);
       const message = `[${shortId}] ${issue.title}\n\n${trailerLines.join('\n')}`;
+      // 路径限定 commit：只提交本次 stage 的 paths，不把其它卡已暂存（但未被本卡处理）的改动卷进来
       const commitArgs = identityOk
-        ? ['commit', '-m', message]
-        : ['-c', `user.name=${DEFAULT_IDENTITY.name}`, '-c', `user.email=${DEFAULT_IDENTITY.email}`, 'commit', '-m', message];
+        ? ['commit', '-m', message, '--', ...paths]
+        : ['-c', `user.name=${DEFAULT_IDENTITY.name}`, '-c', `user.email=${DEFAULT_IDENTITY.email}`, 'commit', '-m', message, '--', ...paths];
       const { stdout } = await git(repo, commitArgs);
       const sha = /\[[^\]]+ ([0-9a-f]{7,40})\]/.exec(stdout)?.[1] ?? (await git(repo, ['rev-parse', '--short', 'HEAD'])).stdout.trim();
 
@@ -375,7 +405,8 @@ export async function commitIssueChanges(
       const forcedNote = forced.length === 0
         ? null
         : `其中 ${forced.length} 个是 claim 前就已修改（基线内未提交）、按声明范围强制提交：${listPaths(forced, MAX_LISTED_SCOPE_VIOLATIONS)}`;
-      return finish([commitNote, forcedNote, violationNote].filter(Boolean).join('\n'));
+      const lines = [commitNote, forcedNote, ...policyNotes].filter((line): line is string => typeof line === 'string');
+      return finish(lines.join('\n'));
     } catch (error) {
       const detail = firstLine((error as { stderr?: string; message?: string }).stderr ?? (error as Error).message ?? '');
       return finish(`自动提交失败：${detail}（不影响待验收状态）`);

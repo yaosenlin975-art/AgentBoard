@@ -10,6 +10,8 @@ export interface DoneArgs {
   notesStdin?: boolean;
   /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；有并行占用时只提交声明范围内的改动 */
   scope?: string[];
+  /** 显式纳入工作区全部未提交改动（默认只提交 scope 声明的卡内文件集，卡外改动只列清单） */
+  all?: boolean;
   /** 幂等请求 id：与 workspace_id 一起才能命中服务端的 owner 幂等包装；重试必须复用同一 uuid */
   requestId?: string;
 }
@@ -45,6 +47,10 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
       );
     }
     body.scope_paths = args.scope;
+  }
+  if (args.all === true) {
+    // GIT-ON-DONE：声明工作区根（`.`）＝显式纳入卡外未提交改动；默认不纳入
+    body.scope_paths = [...(body.scope_paths ?? []), '.'];
   }
   if (args.requestId !== undefined) {
     // 服务端要求幂等 owner 操作提供 workspace_id；只在显式传 --request-id 时才多这一次解析

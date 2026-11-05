@@ -152,15 +152,17 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
       [],
     )
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .option('--all', '显式纳入工作区全部未提交改动（默认只提交 --scope 声明的卡内文件集，卡外改动只列清单）')
     .addHelpText('after', `
 示例：
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
   kb done 0f6ba9ab --scope packages/cli/src/index.ts --scope Docs/api.md
 退出码：0 成功（状态 → 待验收）；2 未被占用 / 非当前占用者 / 占用已改变；1 参数错误或任务不存在
-GIT-ON-DONE：非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
+GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
+非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
 `)
-    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; requestId?: string }) =>
-      done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, requestId: opts.requestId }));
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string }) =>
+      done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true, requestId: opts.requestId }));
 
   program
     .command('close')
