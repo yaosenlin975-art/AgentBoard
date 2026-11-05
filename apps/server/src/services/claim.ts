@@ -42,8 +42,10 @@ function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: str
   if (action === 'fail' && !detail?.trim()) throw new ValidationError('失败原因不能为空');
   return db.transaction(() => {
     const issue = requireIssueInWorkspace(db, issueId, workspaceId);
-    if (issue.claimed_by !== actorId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
+    // REL-1：fence 校验先于占用者校验 —— 批量退回后占用已清空，旧代次必须直接落 STALE_FENCE
+    // （否则会被「非占用者」抢先报错，掩盖真正的过期原因）
     assertFenceCurrent(db, issueId, fence);
+    if (issue.claimed_by !== actorId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
     const result = db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
       .run(action === 'done' ? '待验收' : '待规划', Date.now(), issueId, workspaceId, actorId);
     if (result.changes !== 1) throw new ApiError(409, 'NOT_TASK_OWNER', '任务占用已改变');
@@ -202,11 +204,12 @@ export async function doneIssue(
   const result = db.transaction(() => {
     const issue = getIssue(db, issueId);
     if (!issue) throw new NotFoundError('任务不存在');
+    // REL-1：fence 校验先于占用状态校验 —— 批量退回会 bump 代次，旧 fence 必须落 STALE_FENCE
+    assertFenceCurrent(db, issueId, fence);
     if (issue.claimed_by === null) throw new ConflictError('未被占用');
     if (agentId !== 'user' && issue.claimed_by !== agentId) {
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
     }
-    assertFenceCurrent(db, issueId, fence);
     const changed = db.prepare(
       `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
          last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)

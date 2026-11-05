@@ -222,6 +222,13 @@ export const failSchema = z.object({
   reason: z.string().min(1, 'reason 不能为空'),
 });
 
+/** REL-1：工作区批量退回待规划；workspace 只认路径参数，body 里的 workspace_id 被忽略 */
+export const releaseRunningSchema = z.object({
+  mode: z.enum(['expired', 'all']).optional(),
+  issue_ids: z.array(z.string().uuid()).max(500).optional(),
+  dry_run: z.boolean().optional(),
+});
+
 /**
  * DEP-1 依赖写通道：POST 走 body，DELETE 走 query；`workspace_id` 都必填（设计 §17-B1），
  * 服务端用 `requireIssueInWorkspace` 校验，不按 issue 自身工作区放行。

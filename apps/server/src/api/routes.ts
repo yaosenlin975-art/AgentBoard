@@ -67,6 +67,7 @@ import {
 import { collectStorageInfo } from '../services/storageInfo.js';
 import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs } from '../db/resolver.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
+import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
@@ -98,6 +99,7 @@ import {
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
   addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
+  releaseRunningSchema,
 } from './schemas.js';
 
 export interface RouterDeps {
@@ -549,6 +551,22 @@ export function createRouter(deps: RouterDeps): Router {
     deleteWorkspace(db, req.params.id!);
     await attachments.processCleanup();
     res.status(204).end();
+  });
+
+  /**
+   * REL-1：工作区批量退回待规划（「进行中」列头救火键的服务端契约）。
+   * workspace 只取路径参数 —— 明确不读 effectiveWorkspace（`body.workspace_id ?? query.workspace_id`），
+   * 不存在「省略工作区就清全部」；未知工作区 404 零写入。body 里的 workspace_id 直接忽略。
+   */
+  router.post('/workspaces/:workspaceId/release-running', (req, res) => {
+    const workspaceId = String(req.params.workspaceId);
+    if (!getWorkspace(db, workspaceId)) throw new NotFoundError('工作空间不存在');
+    const body = parseBody(releaseRunningSchema, req.body ?? {});
+    const { released, skipped } = releaseRunning(db, workspaceId, body);
+    if (body.dry_run !== true) {
+      for (const issue of released) broadcast({ type: 'issue.changed', issue });
+    }
+    res.json({ released, skipped });
   });
 
   router.post('/workspaces/:workspaceId/attachments', express.raw({ type: () => true, limit: MAX_IMAGE_BYTES }), async (req, res) => {
