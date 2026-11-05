@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus, IssueTreeItem, IssueTreePage } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
-import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, sortTreeItemsByChildCount, type IssueTreeFilter } from '../../lib/issueTree';
+import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, sortTreeItemsByChildCount, filterTreeItemsWithChildren, readTreeHideLeaf, writeTreeHideLeaf, type IssueTreeFilter } from '../../lib/issueTree';
 import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
   invalidateIssueStatusCaches,
@@ -46,6 +46,8 @@ export function IssueTreeView({
   // SYS2：状态筛选读工作区状态字典（含「已废弃」与自定义状态），不再走写死的四值列表
   const { names: statusNames } = useWorkspaceStatuses(workspaceId);
   const [status, setStatus] = useState<string>('all');
+  // TREE-HIDE-LEAF：勾选后只显示有直接子节点的任务；持久化到 localStorage，存储不可用时回落 false
+  const [hideLeaf, setHideLeaf] = useState<boolean>(readTreeHideLeaf);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set());
   const [moveEditor, setMoveEditor] = useState<MoveEditorState | null>(null);
@@ -144,6 +146,20 @@ export function IssueTreeView({
             {statusNames.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
+        <label className="inline-flex items-center gap-1.5 pb-1 text-xs text-ink-2">
+          <input
+            type="checkbox"
+            aria-label="隐藏无子任务"
+            checked={hideLeaf}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setHideLeaf(next);
+              writeTreeHideLeaf(next);
+            }}
+            className="size-3.5 accent-[var(--ab-accent)]"
+          />
+          隐藏无子任务
+        </label>
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-auto p-2 sm:p-3">
         <TaskTreeChildren
@@ -152,6 +168,7 @@ export function IssueTreeView({
           issues={issues}
           filter={filter}
           sortByChildCount={status === 'all'}
+          hideLeaf={hideLeaf}
           expandedIds={expandedIds}
           collapsedIds={collapsedIds}
           moveEditor={moveEditor}
@@ -175,6 +192,7 @@ function TaskTreeChildren({
   issues,
   filter,
   sortByChildCount,
+  hideLeaf,
   expandedIds,
   collapsedIds,
   moveEditor,
@@ -192,6 +210,7 @@ function TaskTreeChildren({
   issues: Issue[];
   filter: IssueTreeFilter;
   sortByChildCount: boolean;
+  hideLeaf: boolean;
   expandedIds: ReadonlySet<string>;
   collapsedIds: ReadonlySet<string>;
   moveEditor: MoveEditorState | null;
@@ -221,6 +240,8 @@ function TaskTreeChildren({
   const visibleItems = visibleChildren === null ? pageItems : pageItems.filter((item) => visibleChildren.has(item.id));
   // TREE-SORT-CHILD：仅状态筛选为「全部状态」（sortByChildCount=true）时按直接子节点数降序；其它筛选保持服务端原序
   const orderedItems = sortByChildCount ? sortTreeItemsByChildCount(visibleItems) : visibleItems;
+  // TREE-HIDE-LEAF：勾选后只保留有直接子节点的任务（与状态筛选正交，判定用真实 child_count）
+  const displayItems = hideLeaf ? filterTreeItemsWithChildren(orderedItems) : orderedItems;
   const autoPageTargetsLoaded = visibleChildren === null || [...visibleChildren].every((id) => pageItems.some((item) => item.id === id));
 
   useEffect(() => {
@@ -234,16 +255,19 @@ function TaskTreeChildren({
   if (query.isError) {
     return <ErrorState error={query.error} prefix={depth === 0 ? '加载任务树失败' : '加载子任务失败'} className="mx-2 my-3 text-sm" />;
   }
-  if (visibleItems.length === 0 && query.isFetchingNextPage) {
+  if (displayItems.length === 0 && query.isFetchingNextPage) {
     return <p className="px-2 py-3 text-sm text-ink-3" role="status">正在查找匹配任务…</p>;
   }
-  if (visibleItems.length === 0 && (!filter.active || autoPageTargetsLoaded)) {
-    return <p className="px-2 py-3 text-sm text-ink-3">{depth === 0 ? (filter.active ? '没有匹配的任务' : '暂无任务') : '没有可显示的子任务'}</p>;
+  if (displayItems.length === 0 && (!filter.active || autoPageTargetsLoaded)) {
+    const emptyText = hideLeaf
+      ? (depth === 0 ? '已隐藏无子任务的任务' : '子任务均无下级任务（已隐藏）')
+      : (depth === 0 ? (filter.active ? '没有匹配的任务' : '暂无任务') : '没有可显示的子任务');
+    return <p className="px-2 py-3 text-sm text-ink-3">{emptyText}</p>;
   }
 
   return (
     <ul aria-label={parentId === null ? '根任务' : `子任务：${issues.find((issue) => issue.id === parentId)?.title ?? ''}`} className="space-y-1">
-      {orderedItems.map((item) => {
+      {displayItems.map((item) => {
         const defaultExpanded = filter.autoExpandedIds.has(item.id) && !collapsedIds.has(item.id);
         const expanded = expandedIds.has(item.id) || defaultExpanded;
         const visibleChildIds = filter.visibleChildrenByParent.get(item.id);
@@ -274,6 +298,7 @@ function TaskTreeChildren({
                   issues={issues}
                   filter={filter}
                   sortByChildCount={sortByChildCount}
+                  hideLeaf={hideLeaf}
                   expandedIds={expandedIds}
                   collapsedIds={collapsedIds}
                   moveEditor={moveEditor}

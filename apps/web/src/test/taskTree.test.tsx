@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -338,6 +338,77 @@ describe('任务树同级排序（TREE-SORT-CHILD）', () => {
 
     await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), '进行中');
     expect(rootNodeIds()).toEqual(['leaf', 'mid', 'two']);
+  });
+});
+
+describe('任务树隐藏无子任务（TREE-HIDE-LEAF）', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  const leaf = treeItem('leaf', { title: '叶子任务', child_count: 0 });
+  const parent = treeItem('parent', { title: '有子任务的任务', child_count: 2 });
+
+  function renderWithItems() {
+    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([leaf, parent]))));
+    return renderTree([leaf, parent]);
+  }
+
+  it('默认未勾选全部可见；勾选后叶子消失、父任务保留；取消勾选恢复', async () => {
+    const { unmount } = renderWithItems();
+    const checkbox = screen.getByLabelText('隐藏无子任务') as HTMLInputElement;
+    expect(await screen.findByText('叶子任务')).toBeInTheDocument();
+    expect(checkbox.checked).toBe(false);
+
+    await userEvent.click(checkbox);
+    expect(screen.queryByTestId('tree-node-leaf')).toBeNull();
+    expect(screen.getByTestId('tree-node-parent')).toBeInTheDocument();
+    expect(window.localStorage.getItem('agentboard.taskTree.hideLeaf')).toBe('1');
+
+    await userEvent.click(checkbox);
+    expect(screen.getByTestId('tree-node-leaf')).toBeInTheDocument();
+    expect(window.localStorage.getItem('agentboard.taskTree.hideLeaf')).toBe('0');
+    unmount();
+  });
+
+  it('根层任务全无子节点时显示空态提示', async () => {
+    const onlyLeaf = treeItem('only-leaf', { title: '唯一任务' });
+    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([onlyLeaf]))));
+    renderTree([onlyLeaf]);
+
+    expect(await screen.findByText('唯一任务')).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText('隐藏无子任务'));
+    expect(screen.getByText('已隐藏无子任务的任务')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-node-only-leaf')).toBeNull();
+  });
+
+  it('持久化：预置勾选状态后重新挂载仍生效', async () => {
+    window.localStorage.setItem('agentboard.taskTree.hideLeaf', '1');
+    const { unmount } = renderWithItems();
+    const checkbox = screen.getByLabelText('隐藏无子任务') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(await screen.findByTestId('tree-node-parent')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-node-leaf')).toBeNull();
+    unmount();
+
+    renderWithItems();
+    expect((screen.getByLabelText('隐藏无子任务') as HTMLInputElement).checked).toBe(true);
+    expect(await screen.findByTestId('tree-node-parent')).toBeInTheDocument();
+    expect(screen.queryByTestId('tree-node-leaf')).toBeNull();
+  });
+
+  it('localStorage 读取抛错时静默回落 false，不崩', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage denied');
+    });
+    try {
+      renderWithItems();
+      const checkbox = screen.getByLabelText('隐藏无子任务') as HTMLInputElement;
+      expect(checkbox.checked).toBe(false);
+      expect(await screen.findByText('叶子任务')).toBeInTheDocument();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
 

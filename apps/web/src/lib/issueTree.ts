@@ -66,6 +66,32 @@ export function sortTreeItemsByChildCount(items: readonly IssueTreeItem[]): Issu
   ));
 }
 
+/** 任务树「隐藏无子任务」开关的 localStorage 键。 */
+export const TREE_HIDE_LEAF_STORAGE_KEY = 'agentboard.taskTree.hideLeaf';
+
+/** 读取开关状态；存储不可用（禁用/抛错）时静默回落 false。 */
+export function readTreeHideLeaf(): boolean {
+  try {
+    return window.localStorage.getItem(TREE_HIDE_LEAF_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/** 写入开关状态；存储不可用时静默回落，不影响当次会话内的显隐。 */
+export function writeTreeHideLeaf(hideLeaf: boolean): void {
+  try {
+    window.localStorage.setItem(TREE_HIDE_LEAF_STORAGE_KEY, hideLeaf ? '1' : '0');
+  } catch {
+    // 存储不可用：忽略，仅本次会话内生效
+  }
+}
+
+/** 过滤出有直接子节点的任务（TREE-HIDE-LEAF）；判定只用服务端 child_count，与状态筛选正交。 */
+export function filterTreeItemsWithChildren(items: readonly IssueTreeItem[]): IssueTreeItem[] {
+  return items.filter((item) => item.child_count > 0);
+}
+
 export function getIssueAncestors(issues: Issue[], issueId: string): Issue[] {
   const byId = new Map(issues.map((issue) => [issue.id, issue]));
   const ancestors: Issue[] = [];
