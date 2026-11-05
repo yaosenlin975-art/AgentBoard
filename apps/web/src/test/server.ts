@@ -64,6 +64,23 @@ export const server = setupServer(
   })),
   // ACC-CLI-MULTI：CLI 三来源的本机凭据登记默认空列表；具体用例用 server.use 覆盖
   http.get('/api/cli-accounts', () => HttpResponse.json({ items: [] })),
+  // ACC-CC-3：Command Code 本机能力默认「未安装」；具体用例用 server.use 覆盖
+  http.get('/api/cli-accounts/commandcode/capability', () => HttpResponse.json({
+    capability: {
+      app_id: 'commandcode',
+      installed: false,
+      capture: false,
+      capture_reason_code: 'CLI_NOT_INSTALLED',
+      capture_reason: '本机未安装 Command Code CLI',
+      switch: false,
+      switch_reason_code: 'AUTH_WRITE_UNVERIFIED',
+      switch_reason: '写回 auth.json 是否等价于有效登录态未验证，暂不支持切换',
+      checkin: false,
+      checkin_reason_code: 'CHECKIN_NOT_APPLICABLE',
+      checkin_reason: 'Command Code 没有签到功能',
+      auth_file_state: 'missing',
+    },
+  })),
   // ACC-QUOTA-01：账号页额度卡默认夹具（ok / unsupported / error 三态各一条，避免走真实 fetch）
   http.get('/api/managed-account-quotas', () => HttpResponse.json({
     workspace_id: null,

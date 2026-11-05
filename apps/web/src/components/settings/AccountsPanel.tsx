@@ -17,7 +17,7 @@
  * 行为不变：能力矩阵失败不回退本地副本、全部写操作禁用；`POST /api/checkin-runs` 带 Idempotency-Key；
  * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看（该批次同样进右栏吸顶批次条）。
  */
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -32,8 +32,9 @@ import { QuotaDetail } from './QuotaDetail';
 import {
   APP_ORDER,
   appLabel,
-  COMMANDCODE_CAPABILITY,
   COMMANDCODE_SOURCE_LABEL,
+  commandCodeEmptyHint,
+  useCommandCodeCapability,
   hasReasonLabel,
   isOfflineApp,
   localDayKey,
@@ -488,10 +489,20 @@ function QuotaSourceDetail({
   source,
   accounts,
   errorMessage,
+  emptyHint,
+  header,
+  importPlaceholder,
+  switchNote,
 }: {
   source: string;
   accounts: PublicCliAccount[];
   errorMessage: string | null;
+  /** 空态文案按来源覆盖（Command Code 的未安装 / 无文件 / 格式未识别必须分开说） */
+  emptyHint?: string;
+  /** 列表上方的来源专属内容（Command Code 用它放真实能力矩阵） */
+  header?: ReactNode;
+  importPlaceholder?: string;
+  switchNote?: string;
 }) {
   const queryClient = useQueryClient();
   const [importOpen, setImportOpen] = useState(false);
@@ -524,13 +535,14 @@ function QuotaSourceDetail({
   };
   return (
     <div className="space-y-1.5 text-xs leading-relaxed">
+      {header}
       {errorMessage !== null ? (
         <p data-testid={`accounts-source-error-${source}`} role="alert" className="text-red-600 dark:text-red-400">
           读取本机 CLI 凭据失败：{errorMessage}
         </p>
       ) : accounts.length === 0 ? (
         <p data-testid={`accounts-source-empty-${source}`} className="text-ink-3">
-          本机未发现该来源的凭据（Codex 没有可枚举的凭据，恒为 0）。
+          {emptyHint ?? '本机未发现该来源的凭据（Codex 没有可枚举的凭据，恒为 0）。'}
         </p>
       ) : (
         <ul data-testid={`accounts-source-list-${source}`} className="space-y-1">
@@ -579,7 +591,7 @@ function QuotaSourceDetail({
             data-testid={`accounts-source-import-text-${source}`}
             className={FIELD_CLASS + ' h-16 w-full py-1 font-mono text-[11px]'}
             value={draft}
-            placeholder="粘贴 API key（一次一份；也可从 api_key / DEEPSEEK_API_KEY 字段中解析）"
+            placeholder={importPlaceholder ?? '粘贴 API key（一次一份；也可从 api_key / DEEPSEEK_API_KEY 字段中解析）'}
             onChange={(event) => {
               setDraft(event.target.value);
               setNotice(null);
@@ -635,72 +647,91 @@ function QuotaSourceDetail({
       )}
 
       <p data-testid={`accounts-source-switch-note-${source}`} className="text-ink-3">
-        暂不支持切换：需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）。
+        {switchNote ?? '暂不支持切换：需先支持导入与写入校验（见 CLI-IMPORT / CLI-SWITCH）。'}
       </p>
     </div>
   );
 }
 
 /**
- * ACC-CC-2：Command Code（CLI 来源）右栏详情。
+ * ACC-CC-2 / ACC-CC-3：Command Code（CLI 来源）右栏详情。
  *
- * 能力表保守（见 `COMMANDCODE_CAPABILITY`）：三项一律不可用，只展示中文原因 + 可展开技术码。
- * 不渲染任何写操作按钮——「未实测的写回」不允许出现「点了没反应」或「点了必失败」的入口。
+ * 能力来自服务端真实探测（安装 / auth.json 可读性），未安装、无凭据文件、格式未识别分别给原因，
+ * 不伪造账号。导入入口开放（粘贴 Studio API key 或 COMMAND_CODE_API_KEY=…）；
+ * 切换与签到只给原因，不渲染按钮——「未实测的写回」不允许出现点了没反应的入口。
  */
 function CommandCodeSourceDetail({ accounts }: { accounts: PublicCliAccount[] }) {
+  const { capability, isPending, isError, errorMessage } = useCommandCodeCapability();
   const dimensions = [
-    { key: 'capture', label: '读取本机', code: COMMANDCODE_CAPABILITY.capture_reason_code },
-    { key: 'switch', label: '切换账号', code: COMMANDCODE_CAPABILITY.switch_reason_code },
-    { key: 'checkin', label: '签到', code: COMMANDCODE_CAPABILITY.checkin_reason_code },
+    {
+      key: 'capture',
+      label: '读取本机',
+      available: capability?.capture === true,
+      code: capability === null ? null : capability.capture ? null : capability.capture_reason_code,
+    },
+    {
+      key: 'switch',
+      label: '切换账号',
+      available: capability?.switch === true,
+      code: capability === null ? null : capability.switch ? null : capability.switch_reason_code,
+    },
+    {
+      key: 'checkin',
+      label: '签到',
+      available: capability?.checkin === true,
+      code: capability === null ? null : capability.checkin ? null : capability.checkin_reason_code,
+    },
   ] as const;
   return (
-    <div className="space-y-1.5 text-xs leading-relaxed">
-      <p data-testid="accounts-source-note-commandcode" className="text-ink-3">
-        Command Code 属 CLI 来源（本机凭据固定在 ~/.commandcode/auth.json）。本机未安装，凭据字段与写回等价性均未实测，三项能力一律按不可用处理。
-      </p>
-      <ul data-testid="accounts-source-capabilities-commandcode" className="space-y-1">
-        {dimensions.map((dimension) => {
-          const technicalCode = reasonTechnicalCode(dimension.code);
-          return (
-            <li
-              key={dimension.key}
-              data-testid={`accounts-source-cap-commandcode-${dimension.key}`}
-              data-available="false"
-              className="flex flex-wrap items-center gap-x-2"
-            >
-              <span className="text-ink">{dimension.label}</span>
-              <span className="text-ink-3">{reasonLabel(dimension.code)}</span>
-              {technicalCode !== null && (
-                <details data-testid={`accounts-source-cap-code-commandcode-${dimension.key}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                  <summary className="cursor-pointer select-none">技术码</summary>
-                  <code className="font-mono">{technicalCode}</code>
-                </details>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {accounts.length === 0 ? (
-        <p data-testid="accounts-source-empty-commandcode" className="text-ink-3">本机未发现该来源的凭据。</p>
-      ) : (
-        <ul data-testid="accounts-source-list-commandcode" className="space-y-1">
-          {accounts.map((account) => (
-            <li
-              key={account.id}
-              data-testid={`accounts-source-item-${account.id}`}
-              className="flex flex-wrap items-center gap-x-2 rounded-md bg-surface-raised px-2 py-1"
-            >
-              <span className="font-mono text-[11px] text-ink" title="身份指纹（不可逆哈希前缀，不是 key）">
-                {account.identity_hint}
-              </span>
-              <span className="text-[11px] text-ink-3">最近发现 {new Date(account.last_seen_at).toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <p data-testid="accounts-source-write-note-commandcode" className="text-ink-3">
-        导入与切换入口未开放：需先在一台已安装 Command Code 的机器上实测 auth.json 字段与写回校验（见 CC-1 §8）。
-      </p>
-    </div>
+    <QuotaSourceDetail
+      source="commandcode"
+      accounts={accounts}
+      errorMessage={null}
+      header={
+        <>
+          <p data-testid="accounts-source-note-commandcode" className="text-ink-3">
+            Command Code 属 CLI 来源（本机凭据固定在 ~/.commandcode/auth.json）。能力按服务端实时探测展示；写回等价性与签到语义未成立，故切换/签到固定不可用。
+          </p>
+          {isError && (
+            <p data-testid="accounts-source-cap-error-commandcode" role="alert" className="text-red-600 dark:text-red-400">
+              能力状态读取失败：{errorMessage ?? '未知错误'}（不展示猜测值）
+            </p>
+          )}
+          <ul data-testid="accounts-source-capabilities-commandcode" className="space-y-1">
+            {dimensions.map((dimension) => {
+              const technicalCode = capability !== null && !dimension.available && dimension.code !== null
+                ? reasonTechnicalCode(dimension.code)
+                : null;
+              return (
+                <li
+                  key={dimension.key}
+                  data-testid={`accounts-source-cap-commandcode-${dimension.key}`}
+                  data-available={String(dimension.available)}
+                  className="flex flex-wrap items-center gap-x-2"
+                >
+                  <span className="text-ink">{dimension.label}</span>
+                  <span className="text-ink-3">
+                    {dimension.available
+                      ? '可用'
+                      : isPending
+                        ? '能力检测中…'
+                        : reasonLabel(dimension.code ?? 'CAPABILITY_UNKNOWN')}
+                  </span>
+                  {technicalCode !== null && (
+                    <details data-testid={`accounts-source-cap-code-commandcode-${dimension.key}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                      <summary className="cursor-pointer select-none">技术码</summary>
+                      <code className="font-mono">{technicalCode}</code>
+                    </details>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      }
+      emptyHint={commandCodeEmptyHint(capability)}
+      importPlaceholder="粘贴 Studio API key（一次一份；也可粘贴 COMMAND_CODE_API_KEY=…）"
+      switchNote="切换与签到入口不开放：写回 auth.json 是否等价于有效登录态未验证；Command Code 没有签到功能。"
+    />
   );
 }

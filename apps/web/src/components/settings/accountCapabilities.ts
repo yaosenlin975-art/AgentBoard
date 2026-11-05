@@ -7,7 +7,7 @@
  * 栏位从 `APP_ORDER` / `APP_LABEL` 移除，历史账号在 `AccountsPanel` 过滤掉（库内数据与接口不变）。
  */
 import { useQuery } from '@tanstack/react-query';
-import type { AccountCapability, AccountOperation, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
+import type { AccountCapability, AccountOperation, CliAppCapability, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { isTerminalState } from './AccountOperationStatus';
 
@@ -190,6 +190,7 @@ export const REASON_LABEL: Record<string, string> = {
   AUTH_SCHEMA_UNSUPPORTED: '凭据文件格式不在支持范围',
   AUTH_WRITE_UNVERIFIED: '写回路径未验证，暂不可切换',
   CHECKIN_NOT_APPLICABLE: '该来源没有签到功能',
+  CAPABILITY_UNKNOWN: '能力状态未取到',
   // 通用错误（errors.ts 默认码 + 前端网络错误）
   VALIDATION_ERROR: '参数不合法',
   NOT_FOUND: '对象不存在',
@@ -491,40 +492,46 @@ export function canToggleEnabled(
   return { allowed: true, code: null, reason: null, nextEnabled };
 }
 
-/* ────────────────────────────── ACC-CC-2 ────────────────────────────── */
-
-/**
- * CLI 来源的能力视图（与 ManagedAppId 的能力矩阵刻意分开：CLI 来源没有桌面客户端的
- * capture/switch/checkin 语义，不能塞进 `AccountCapability`）。
- */
-export interface CliSourceCapabilityView {
-  capture: boolean;
-  switch: boolean;
-  checkin: boolean;
-  capture_reason_code: string;
-  switch_reason_code: string;
-  checkin_reason_code: string;
-}
-
-/**
- * Command Code 能力表（保守版，依据 `Docs/design-2026-11-05-commandcode-capability.md` §4）：
- * - checkin：产品没有签到语义（硬结论）→ 不可用；
- * - capture：本机未安装，且 `auth.json` 字段 schema 未实测 → 不可用，给 `CLI_NOT_INSTALLED`；
- * - switch：单文件凭据 + 校验路径存在，但「写回等价于有效登录态」未实测 → 一律 `switch=false`。
- *
- * 硬规则：未实测的写回不得标成可用（不许出现「点了没反应」或「点了必失败」的入口）。
- */
-export const COMMANDCODE_CAPABILITY: CliSourceCapabilityView = {
-  capture: false,
-  switch: false,
-  checkin: false,
-  capture_reason_code: 'CLI_NOT_INSTALLED',
-  switch_reason_code: 'AUTH_WRITE_UNVERIFIED',
-  checkin_reason_code: 'CHECKIN_NOT_APPLICABLE',
-};
+/* ────────────────────────────── ACC-CC-2 / ACC-CC-3 ────────────────────────────── */
 
 /** Command Code 的界面显示名（CLI 来源区，不引入新色相） */
 export const COMMANDCODE_SOURCE_LABEL = 'Command Code';
+
+/**
+ * ACC-CC-3：Command Code 的真实能力来自服务端 `GET /api/cli-accounts/commandcode/capability`。
+ * 前端不再持有「写死不可用」的本地副本：拿不到就显示「能力未知」，绝不硬编码成可用。
+ */
+export interface CommandCodeCapabilityState {
+  capability: CliAppCapability | null;
+  isPending: boolean;
+  isError: boolean;
+  errorMessage: string | null;
+}
+
+export function useCommandCodeCapability(): CommandCodeCapabilityState {
+  const query = useQuery({
+    queryKey: ['cli-accounts-commandcode-capability'],
+    queryFn: () => api.get<{ capability: CliAppCapability }>('/api/cli-accounts/commandcode/capability'),
+    staleTime: 30_000,
+  });
+  return {
+    capability: query.data?.capability ?? null,
+    isPending: query.isPending,
+    isError: query.isError,
+    errorMessage: query.error instanceof Error ? query.error.message : null,
+  };
+}
+
+/**
+ * 空态文案必须与能力状态一致（未安装 ≠ 没登录 ≠ 格式不认识），不拿「0 个账号」笼统带过。
+ */
+export function commandCodeEmptyHint(capability: CliAppCapability | null): string {
+  if (capability === null) return '能力状态未取到，暂不展示账号。';
+  if (capability.auth_file_state === 'readable') return '本机已识别凭据，但尚未登记账号（可点「导入凭据」补登记）。';
+  if (capability.auth_file_state === 'unrecognized') return '本机存在 auth.json，但格式未识别，未登记任何账号。';
+  if (capability.installed) return '本机已安装 Command Code，但未找到凭据文件。';
+  return '本机未安装 Command Code CLI，也未发现凭据。';
+}
 
 /** 能力矩阵查询：失败时不回退到本地副本，界面据此禁用全部写操作 */
 export function useAccountCapabilities(): AccountCapabilitiesState {
