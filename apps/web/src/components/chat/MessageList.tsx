@@ -315,6 +315,8 @@ export function MessageList({
   let turnCells: React.ReactNode[] = [];
   let turnId: string | null = null;
   const barRendered = new Set<string>();
+  // 同一 turn 被别的 turn 打断后可能分成多段渲染：容器 key 必须带段序号，否则 React 报 duplicate key
+  const turnSegments = new Map<string, number>();
 
   const pushCell = (node: React.ReactNode): void => {
     (turnId === null ? rows : turnCells).push(node);
@@ -340,8 +342,10 @@ export function MessageList({
           />
         ) : null;
       if (bar !== null) barRendered.add(id);
+      const segment = turnSegments.get(id) ?? 0;
+      turnSegments.set(id, segment + 1);
       rows.push(
-        <div key={`turn-${id}`} data-testid={`turn-group-${id}`} className="min-w-0 space-y-2">
+        <div key={`turn-${id}-${segment}`} data-testid={`turn-group-${id}`} className="min-w-0 space-y-2">
           {bar}
           {turnCells}
         </div>,

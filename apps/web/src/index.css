@@ -469,16 +469,3 @@ optgroup {
   background-color: var(--ab-del-soft);
   color: var(--ab-del);
 }
-
-/*
- * CHAT-VIS1：diff 行级底色。文字走 --ab-add / --ab-del（亮暗两套都已定义、对比度 ≥ 4.5:1），
- * 底色用同一色的低透明度形态 --ab-*-soft，避免在组件里写死色值。
- */
-.ab-diff-add {
-  background-color: var(--ab-add-soft);
-  color: var(--ab-add);
-}
-.ab-diff-del {
-  background-color: var(--ab-del-soft);
-  color: var(--ab-del);
-}
