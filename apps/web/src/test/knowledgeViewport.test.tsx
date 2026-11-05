@@ -1,10 +1,11 @@
 /**
- * KB-GRAPH-H / KB-DETAIL-W 回归：视口自适应。
+ * KB-GRAPH-H / KB-DETAIL-W / KB-DETAIL-ALIGN 回归：视口自适应。
  *
  * jsdom 不做布局，所以断言「决定几何的声明」：
  * - 星图绘制区高度用 clamp(360px, calc(100dvh - 320px), 900px)，不再写死 480px；
- * - 详情正文用 max-w-[min(88ch,100%)] + mx-auto（自适应但保留可读上限并居中）。
- * 真实三档数值（1920/1440/1280 → 760/580/400px、中心偏移 0,0、每行 88 字符）由 CDP 实测保证。
+ * - 详情正文用 max-w-[min(calc(88ch+100px),100%)] 且左对齐（无 mx-auto），
+ *   详情区 article 水平内边距 px-7=28px，正文与下方区块共用同一条左边线。
+ * 真实三档数值（1920/1440/1280 → 760/580/400px、中心偏移 0,0）由 CDP 实测保证。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
@@ -79,8 +80,8 @@ describe('星图绘制区高度随视口（KB-GRAPH-H）', () => {
   });
 });
 
-describe('详情正文宽度自适应且有可读上限（KB-DETAIL-W）', () => {
-  it('正文容器 max-w-[min(88ch,100%)] + mx-auto，不再是 max-w-[70ch]', async () => {
+describe('详情正文宽度自适应且有可读上限（KB-DETAIL-W / KB-DETAIL-ALIGN）', () => {
+  it('正文容器左对齐、上限 88ch+100px，与下方区块共用 article 的 28px 左边线', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={client}>
@@ -90,8 +91,12 @@ describe('详情正文宽度自适应且有可读上限（KB-DETAIL-W）', () =>
     const item = await screen.findByTestId('knowledge-item-p1');
     fireEvent.click(within(item).getByRole('button'));
     const body = await screen.findByTestId('knowledge-body');
-    expect(body.className).toContain('max-w-[min(88ch,100%)]');
-    expect(body.className).toContain('mx-auto');
+    expect(body.className).toContain('max-w-[min(calc(88ch+100px),100%)]');
+    expect(body.className).not.toContain('mx-auto');
     expect(body.className).not.toContain('max-w-[70ch]');
+    // 正文列自身不加水平内边距：其左边线由 article px-7 统一决定，编辑/来源/归档区块同源对齐
+    const article = screen.getByLabelText('知识详情');
+    expect(article.className).toContain('px-7');
+    expect(article.className).not.toContain('p-4');
   });
 });

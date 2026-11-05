@@ -136,7 +136,7 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   const p = page.data;
   const labels = { archive: '归档', restore: '恢复', delete: '软删除' };
   const isExpired = p.expires_at !== null && p.expires_at !== undefined && p.expires_at <= Date.now();
-  return <article aria-label="知识详情" className="min-w-0 flex-1 overflow-auto rounded-lg border border-hairline bg-surface-card p-4 text-ink">
+  return <article aria-label="知识详情" className="min-w-0 flex-1 overflow-auto rounded-lg border border-hairline bg-surface-card px-7 py-4 text-ink">
     <header>
       <h2 className="text-base font-semibold leading-snug">{p.title}</h2>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -159,9 +159,10 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
       </div>
     </header>
 
-    {/* KB-DETAIL-W：正文按可用宽度自适应，但保留可读上限（≈88 字符/行）并居中，
-        避免宽屏下右侧堆一大片空白（原 max-w-[70ch] 左对齐） */}
-    <div data-testid="knowledge-body" className="mx-auto mt-3 w-full max-w-[min(88ch,100%)] text-sm text-ink">
+    {/* KB-DETAIL-ALIGN：正文左对齐贴详情区内边距（article px-7=28px，与下方「编辑正文」
+        「来源与证据」「归档/历史」共用同一条左边线），宽度上限在原 88ch 基础上 +100px；
+        外层 min(...,100%) 保证窄屏不横向溢出 */}
+    <div data-testid="knowledge-body" className="mr-auto mt-3 w-full max-w-[min(calc(88ch+100px),100%)] text-sm text-ink">
       <MarkdownView>{p.body_md}</MarkdownView>
     </div>
 
