@@ -1,0 +1,24 @@
+# 【DESKTOP-1】AgentBoard 桌面壳（Tauri v2）。
+#
+# 职责边界：只做「窗口 / 托盘 / 单例 / server 进程生命周期」，不读写业务数据、不代理 API、不改端口。
+# 构建（Windows）：先进入 MSVC 环境（VS 2022 Developer Shell），再
+#   cargo build --release --manifest-path desktop/src-tauri/Cargo.toml
+# 依赖纪律：Tauri CLI 等构建工具只落在 desktop/package.json 的 devDependencies，apps/** 不新增运行时依赖。
+[package]
+name = "agentboard-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "AgentBoard desktop shell (window + tray + singleton + server lifecycle)"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# tray-icon 提供托盘；image-png 用于托盘图标解码（显式读 icons/icon.png，不依赖 config 图标兜底）
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
+# 单例：Tauri 官方插件（Windows 上用命名互斥体，第二个实例直接退出，回调里聚焦已有窗口）。
+# 选择它而不是自写 server.lock 判活：server.lock 由 server 进程持有，壳侧读它只能判「服务在不在」，
+# 无法阻止「壳自己也开第二个」；单例要保证的正是「第二个壳不出现」。
+tauri-plugin-single-instance = "2"

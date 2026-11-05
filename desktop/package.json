@@ -1,0 +1,14 @@
+{
+  "name": "agentboard-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AgentBoard 桌面壳（Tauri v2）：窗口 + 托盘 + 单例 + server 进程生命周期",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "check": "cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>AgentBoard</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      display: grid;
+      place-items: center;
+      background: #16181d;
+      color: #e6e8ec;
+      font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    }
+    .boot {
+      width: 420px;
+      padding: 28px 32px;
+      border: 1px solid #2b2f37;
+      border-radius: 12px;
+      background: #1c1f25;
+    }
+    h1 { margin: 0 0 6px; font-size: 18px; font-weight: 600; letter-spacing: 0.2px; }
+    .sub { margin: 0 0 18px; font-size: 12px; color: #8b919c; }
+    #status { margin: 0; font-size: 14px; }
+    #detail {
+      margin: 12px 0 0;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #f0a8a8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 8px;
+      border-radius: 50%;
+      background: #6aa6ff;
+      animation: pulse 1.2s ease-in-out infinite;
+      vertical-align: 1px;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+  </style>
+</head>
+<body>
+  <div class="boot">
+    <h1>AgentBoard</h1>
+    <p class="sub">本地服务 · 桌面壳启动中</p>
+    <p id="status"><span class="dot" id="dot"></span>正在启动本地服务…</p>
+    <p id="detail"></p>
+  </div>
+  <script>
+    // 壳在等待健康检查超时 / 启动失败时由 Rust 侧 eval 调用，把可读原因显示在这张本地页上（不是白屏）。
+    window.__setShellError = function (message) {
+      var dot = document.getElementById('dot');
+      dot.classList.add('error');
+      document.getElementById('status').textContent = '本地服务启动失败';
+      document.getElementById('detail').textContent = message || '';
+    };
+  </script>
+</body>
+</html>
