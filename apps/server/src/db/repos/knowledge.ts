@@ -184,6 +184,34 @@ export function setKnowledgePageStatus(db: Db, pageId: string, scope: KnowledgeS
   if (!['archive', 'restore', 'delete'].includes(action)) throw new ValidationError('未知状态操作');
   return changePage(db, pageId, scope, expectedRevision, { actor }, action);
 }
+
+/**
+ * KB-DEL（N-03）：`DELETE /api/workspaces/:id` 用的「知识占用」口径。
+ *
+ * 为什么不能照抄图查询：图/搜索只看 `status='active'`，而删空间的判据要更宽一点——
+ * - `status='deleted'`（已软删）的页对用户不可见、也不可再编辑，继续计入会让 delete-space 永远过不去
+ *   （`knowledge_page.workspace_id` 是 `ON DELETE RESTRICT`，路由随后会把这些行硬删，见 services/workspaceKnowledgePurge.ts）；
+ * - `status='archived'` 仍可 restore、仍是该空间的实际资产，必须继续阻断，避免「归档页被静默销毁」。
+ *
+ * revision 与页面同口径：只统计**未软删页**的历史，已删页的 revision 不再计入占用、也不出现在拒绝原因里。
+ * `pageIds` 按 updated_at 倒序返回未软删页 id，供拒绝信息点名「还剩哪几页」，`pages` 与 `pageIds.length` 恒等。
+ */
+export interface WorkspaceKnowledgeOccupancy {
+  pages: number;
+  revisions: number;
+  pageIds: string[];
+}
+
+export function getWorkspaceKnowledgeOccupancy(db: Db, workspaceId: string): WorkspaceKnowledgeOccupancy {
+  const pageIds = (db.prepare(
+    `SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id=@workspace AND status<>'deleted' ORDER BY updated_at DESC, id`,
+  ).all({ workspace: workspaceId }) as Array<{ id: string }>).map(row => row.id);
+  const revisions = (db.prepare(
+    `SELECT COUNT(*) AS n FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id
+      WHERE p.scope='workspace' AND p.workspace_id=@workspace AND p.status<>'deleted'`,
+  ).get({ workspace: workspaceId }) as { n: number }).n;
+  return { pages: pageIds.length, revisions, pageIds };
+}
 /** KB-DIFF-S：列表项**不再带正文**，只给体积/字符数摘要（正文上限已到 200 万字符，20 条全文可达几十 MB） */
 export type KnowledgeRevisionSummary = Omit<KnowledgeRevision, 'body_snapshot'> & { body_bytes: number; body_chars: number };
 

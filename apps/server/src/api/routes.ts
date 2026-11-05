@@ -32,7 +32,6 @@ import type { SecretVault } from '../services/accounts/secretVault.js';
 import { AttachmentStore, MAX_IMAGE_BYTES } from '../services/attachments.js';
 import {
   createWorkspace,
-  deleteWorkspace,
   getWorkspace,
   getWorkspaceDeleteBlockers,
   listWorkspaces,
@@ -73,6 +72,9 @@ import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { requireWorkspaceStatus } from '../services/workspaceStatus.js';
+import { deleteWorkspaceRemovingDeletedKnowledge } from '../services/workspaceKnowledgePurge.js';
+import { getWorkspaceKnowledgeOccupancy } from '../db/repos/knowledge.js';
+import { appendServerLog } from '../services/serverLog.js';
 import { closeIssue, reopenIssue } from '../services/issueTransitions.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
@@ -539,16 +541,35 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   router.delete('/workspaces/:id', async (req, res) => {
-    const blockers = getWorkspaceDeleteBlockers(db, req.params.id!);
-    if (blockers.knowledgePages > 0)
+    const workspaceId = req.params.id!;
+    // KB-DEL（N-03）：知识占用只算**未软删**的页与其 revision（口径见 repos/knowledge.ts）；
+    // 已 `status='deleted'` 的页对用户不可见，不再阻断，由下面的 purge 一并硬删——
+    // `knowledge_page.workspace_id` 是 ON DELETE RESTRICT，留着它们空间行本来就删不掉。
+    // purge 只可能发生在显式 `--yes` 的 DELETE 上（`kb delete-space` 缺 --yes 不发请求），
+    // 且删了多少页/多少条 revision 一律回显（响应头 + 服务日志）。
+    const knowledge = getWorkspaceKnowledgeOccupancy(db, workspaceId);
+    if (knowledge.pages > 0) {
+      // 拒绝原因点名剩余页 id（最多 5 个，多了只报总数），用户才能直接去删/迁这几页
+      const shown = 5;
       throw new ConflictError(
-        `该空间仍有 ${blockers.knowledgePages} 个知识页及 ${blockers.knowledgeRevisions} 条历史 revision，请先删除或迁移知识页后再移除`,
+        `该空间仍有 ${knowledge.pages} 个知识页及 ${knowledge.revisions} 条历史 revision`
+        + `（剩余页：${knowledge.pageIds.slice(0, shown).join(', ')}`
+        + `${knowledge.pageIds.length > shown ? ` 等 ${knowledge.pageIds.length} 个` : ''}），请先删除或迁移知识页后再移除`,
       );
+    }
+    const blockers = getWorkspaceDeleteBlockers(db, workspaceId);
     if (blockers.runningSessions > 0)
       throw new ConflictError(`该空间有 ${blockers.runningSessions} 个运行中会话，请先结束会话后再移除`);
     if (blockers.childIssues > 0)
       throw new ConflictError(`该空间有 ${blockers.childIssues} 个子任务仍挂在父任务下，请先解除关联后再移除`);
-    deleteWorkspace(db, req.params.id!);
+    const purged = deleteWorkspaceRemovingDeletedKnowledge(db, workspaceId);
+    if (purged.pages > 0) {
+      res.setHeader('X-Knowledge-Purged', `pages=${purged.pages}; revisions=${purged.revisions}`);
+      appendServerLog(
+        `[workspace-delete] ${workspaceId} 移除时硬删已软删知识页 ${purged.pages} 个、历史 revision ${purged.revisions} 条（仅 status='deleted'）`,
+      );
+    }
+    // 空间行已由 purge 服务在同一事务内删除（外键 CASCADE 带走任务/会话/评论/消息）
     await attachments.processCleanup();
     res.status(204).end();
   });
