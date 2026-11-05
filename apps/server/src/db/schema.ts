@@ -27,6 +27,8 @@ import { migrateSessionAwaiting } from './migrations/sessionAwaiting.js';
 import { migrateApprovalRule } from './migrations/approvalRule.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
+// BORROW-4.2：会话事件流（纯追加表；seq 翻页依赖主键）
+import { migrateSessionEvent } from './migrations/sessionEvent.js';
 // CHAT-RETRY1（契约 #15）：单步重试步骤台账（依赖 session_turn 已建）
 import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
@@ -116,6 +118,8 @@ export function initSchema(db: Db): void {
   // CHAT-TURN1（契约 #5–8）：轮次表 + message 三列。纯加表/加列，不重建 message/session
   //（重建会带走 error_code/retryable 与全部消息），历史数据不回填。
   migrateSessionTurn(db);
+  // BORROW-4.2：会话事件流（纯追加；依赖 session 表已建）
+  migrateSessionEvent(db);
   // CHAT-RETRY1（契约 #15）：步骤台账（必须排在 migrateSessionTurn 之后）
   migrateSessionStepLedger(db);
   // CHAT-AWAIT1（契约 #13 / 超时兜底）：session_turn 心跳列（必须排在 migrateSessionTurn 之后）

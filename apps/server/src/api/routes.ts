@@ -59,6 +59,7 @@ import { decideTurnApproval } from '../services/turnApproval.js';
 import { retryFailedStep } from '../services/turnStepRetry.js';
 import { listActiveApprovalRules, revokeApprovalRule } from '../db/repos/approvalRule.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
+import { listSessionEvents } from '../db/repos/sessionEvent.js';
 import { buildSessionPreview } from '../services/messageSignals.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { SERVER_VERSION } from '../version.js';
@@ -1225,6 +1226,20 @@ export function createRouter(deps: RouterDeps): Router {
       if (!Number.isFinite(after) || after < 0) throw new ValidationError('after 必须为非负整数时间戳');
     }
     res.json(listMessagesBySession(db, req.params.id!, after));
+  });
+
+  // BORROW-4.2：会话事件流增量拉取（after_seq 之后的全部事件，seq 升序；老会话返回空数组）
+  router.get('/sessions/:id/events', (req, res) => {
+    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    const raw = req.query.after_seq;
+    let afterSeq = 0;
+    if (typeof raw === 'string' && raw !== '') {
+      afterSeq = Number(raw);
+      if (!Number.isInteger(afterSeq) || afterSeq < 0) {
+        throw new ValidationError('after_seq 必须为非负整数');
+      }
+    }
+    res.json(listSessionEvents(db, req.params.id!, afterSeq));
   });
 
   // 契约修订：issue_id 为空时 body.workspace_id 必填；绑 issue 时自动 claim+派发

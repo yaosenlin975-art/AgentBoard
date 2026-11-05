@@ -15,6 +15,7 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
+import { appendSessionEvent } from '../db/repos/sessionEvent.js';
 import { failAllOpenTurns, failOpenTurns, getTurn, updateTurn } from '../db/repos/sessionTurn.js';
 import { initialToolMeta } from './messageMeta.js';
 import { markTurnAwaiting, setAwaitingAnswerDispatcher } from './turnAwaiting.js';
@@ -328,7 +329,8 @@ function persistMessage(
   signal?: SessionErrorSignal | null,
   turn?: MessageTurnContext,
 ): Message {
-  const message = addMessage(assertAssembled(), {
+  const database = assertAssembled();
+  const message = addMessage(database, {
     session_id: sessionId,
     role,
     content,
@@ -337,6 +339,9 @@ function persistMessage(
     ...(turn?.step_id ? { step_id: turn.step_id } : {}),
     ...(turn?.meta_json ? { meta_json: turn.meta_json } : {}),
   });
+  // BORROW-4.2：事件流双写。顺序固定「先 message 再 event」——事件 seq 与消息落库顺序一致；
+  // 事件只是回放/增量拉取的底稿，丢失时可按 message.ts 重放，不反向影响聊天主链。
+  appendSessionEvent(database, sessionId, 'message.added', message);
   broadcast({ type: 'message.added', message });
   return message;
 }
