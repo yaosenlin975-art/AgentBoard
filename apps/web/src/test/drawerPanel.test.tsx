@@ -12,8 +12,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useNavStore } from '../state/navStore';
 import { DrawerPanel, DRAWER_SQUEEZE_MIN_WIDTH } from '../components/drawer/DrawerPanel';
 
-/** 让 matchMedia 按给定宽度工作（jsdom 没有真实视口） */
+/** 让 matchMedia 与 innerWidth 按给定宽度工作（jsdom 没有真实视口） */
 function stubViewport(width: number): void {
+  Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: width });
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
     configurable: true,
@@ -81,6 +82,19 @@ describe('drawer 两态', () => {
     act(() => useNavStore.getState().closeDrawer());
     expect(screen.getByTestId('drawer-panel').style.width).toBe('0px');
   });
+  it('宽屏 ≥920：贴左栏右边缘（left = 8），宽度放宽到 720，不再挤压主区', () => {
+    stubViewport(1440);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+    const panel = screen.getByTestId('drawer-panel');
+    expect(panel.getAttribute('data-mode')).toBe('anchored');
+    // 独立渲染无左栏时以内容区左缘为锚点（= 相对定位容器的 8px）
+    expect(panel.style.left).toBe('8px');
+    expect(panel.style.width).toBe('720px');
+    expect(screen.queryByTestId('drawer-backdrop')).toBeNull();
+    expect(document.body.style.overflow).toBe('');
+  });
+
   it('窄屏覆盖：data-mode=overlay、有遮罩、锁 body 滚动，关闭后解锁', () => {
     stubViewport(375);
     renderDrawer();
