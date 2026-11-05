@@ -937,23 +937,24 @@ describe('DetailPanel 评论区', () => {
 });
 
 describe('DETAIL-D3 信息沉降（描述 clamp / 评论 2 条 / 折叠区 / 操作沉底）', () => {
-  it('长描述默认 3 行 clamp；展开全文后移除 clamp，可再收起', { timeout: 15000 }, async () => {
+  it('长描述默认展示全文（不 clamp）；点「收起」后 clamp 3 行，可再展开', { timeout: 15000 }, async () => {
     const longDescription = Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行描述内容`).join('\n');
     mockDetailApi(makeIssue({ description: longDescription }));
     renderDetail();
 
     const preview = await screen.findByTestId('desc-preview');
-    expect(preview.className).toContain('line-clamp-3');
+    expect(preview.className).not.toContain('line-clamp-3');
     const toggle = screen.getByTestId('desc-expand');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveTextContent('展开全文');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle).toHaveTextContent('收起');
 
     await userEvent.click(toggle);
-    expect(screen.getByTestId('desc-expand')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('desc-preview').className).not.toContain('line-clamp-3');
+    expect(screen.getByTestId('desc-expand')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('desc-expand')).toHaveTextContent('展开全文');
+    expect(screen.getByTestId('desc-preview').className).toContain('line-clamp-3');
 
     await userEvent.click(screen.getByTestId('desc-expand'));
-    expect(screen.getByTestId('desc-preview').className).toContain('line-clamp-3');
+    expect(screen.getByTestId('desc-preview').className).not.toContain('line-clamp-3');
   });
 
   it('评论默认只显示最新 2 条；查看全部后正序全量，收起恢复 2 条', { timeout: 15000 }, async () => {
@@ -1486,6 +1487,50 @@ describe('RightPanel 容器', () => {
     fireEvent.pointerMove(window, { clientX: 0 }); // +1000 → 钳制 720
     fireEvent.pointerUp(window, { clientX: 0 });
     await waitFor(() => expect(localStorage.getItem('agentboard.right-panel-width')).toBe('720'));
+  });
+});
+
+describe('DETAIL-LAYOUT 顶栏标题块（标题 + ✎ 与关闭按钮同行 / 描述默认全文 / 占用提示第二行）', () => {
+  it('标题与 ✎ 落在表头槽位内，单行截断且 title 给全文，关闭按钮仍在同一行最右', async () => {
+    const longTitle = '这是一个非常非常长的任务标题，用来验证顶栏单行截断不会把关闭按钮挤出面板之外';
+    mockDetailApi(makeIssue({ title: longTitle }));
+    renderDetail();
+
+    const slot = await screen.findByTestId('detail-title-slot');
+    const title = await screen.findByTestId('title-display');
+    expect(slot).toContainElement(title);
+    expect(slot).toContainElement(screen.getByTestId('title-edit-btn'));
+    expect(title).toHaveTextContent(longTitle);
+    expect(title).toHaveAttribute('title', longTitle);
+    expect(title.className).toContain('truncate');
+
+    const header = slot.closest('header');
+    expect(header).not.toBeNull();
+    expect(header).toContainElement(screen.getByTestId('right-panel-close'));
+  });
+
+  it('编辑态在顶栏槽位里原地展开输入框，面板名称由标题承担', async () => {
+    mockDetailApi(makeIssue({ title: '测试任务' }));
+    renderDetail();
+
+    await userEvent.click(await screen.findByTestId('title-edit-btn'));
+    const input = await screen.findByTestId('title-input');
+    expect(screen.getByTestId('detail-title-slot')).toContainElement(input);
+    // 工具条投影到表头下方独立一行，表头保持 h-10 不增高
+    expect(screen.getByTestId('detail-edit-slot')).toContainElement(screen.getByTestId('title-edit-bar'));
+    expect(document.getElementById('right-panel-shell')).toHaveAttribute('aria-labelledby', 'detail-title');
+  });
+
+  it('「进行中」维护提示是标题块第二行，meta 行不再重复', async () => {
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: null }));
+    renderDetail();
+
+    const block = await screen.findByTestId('detail-title-block');
+    const hint = await screen.findByTestId('status-blocked-hint');
+    expect(block).toContainElement(hint);
+    expect(hint).toHaveTextContent('进行中');
+    expect(screen.getAllByTestId('status-blocked-hint')).toHaveLength(1);
+    expect(screen.getByTestId('meta-row')).not.toContainElement(hint);
   });
 });
 

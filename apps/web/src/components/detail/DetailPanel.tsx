@@ -5,7 +5,8 @@
  * - 操作区：D4 起收进底部吸底条（ActionBar，1 主 + ⋯ 溢出；危险操作在 ⋯ 内做行内确认）；
  * - 关联会话列表（点击切聊天）与评论区。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarkdownView } from '../../lib/markdown';
 import type { Issue, IssueStatus, Priority, Session, Workspace } from '@agentboard/shared';
@@ -96,8 +97,12 @@ export function DetailPanel() {
   const [dueDate, setDueDate] = useState('');
   const [dueTime, setDueTime] = useState('');
   const [descEditing, setDescEditing] = useState(false);
-  /** D3：描述长文本默认 3 行 clamp，点展开后完整显示 */
-  const [descExpanded, setDescExpanded] = useState(false);
+  /** DETAIL-LAYOUT：描述默认展示全文；手动「收起」后才 clamp 3 行 */
+  const [descCollapsed, setDescCollapsed] = useState(false);
+  /** 顶栏标题槽位（由 RightPanel 表头提供；独立渲染 DetailPanel 时为空，标题回落正文顶部） */
+  const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
+  /** 标题编辑工具条槽位（表头下方独立一行，避免撑高 h-10 表头） */
+  const [editBarSlot, setEditBarSlot] = useState<HTMLElement | null>(null);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [claimBlocked, setClaimBlocked] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -115,11 +120,17 @@ export function DetailPanel() {
     setDueDate(issue.due_date ?? '');
     setDueTime(issue.due_time ?? '');
     setDescEditing(false);
-    setDescExpanded(false);
+    setDescCollapsed(false);
     setClaimBlocked(false);
     // 仅在切换 issue 时重置本地编辑
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [issue?.id]);
+
+  // DETAIL-LAYOUT：标题块投影到 RightPanel 表头槽位（与关闭按钮同一行）；槽位缺失时回落正文顶部
+  useLayoutEffect(() => {
+    setTitleSlot(document.getElementById('detail-title-slot'));
+    setEditBarSlot(document.getElementById('detail-edit-slot'));
+  }, []);
 
   const pendingRef = useRef<Record<string, unknown>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -264,8 +275,20 @@ export function DetailPanel() {
   const workspacePath = (workspaces ?? []).find((w) => w.id === issue.workspace_id)?.path ?? '';
   // F-07：标签联想取本工作区已有标签（去重）
   const allLabels = [...new Set((workspaceIssues ?? []).flatMap((item) => item.labels))];
-  // D3：长描述默认 3 行 clamp（按长度/行数启发式判定是否显示「展开全文」）
+  // DETAIL-LAYOUT：长描述默认全文展示，只在用户手动收起后才 clamp（按长度/行数判定是否给收起入口）
   const descLong = description.trim() !== '' && (description.length > 140 || description.split('\n').length > 3);
+
+  /** 顶栏标题块：标题 + ✎（编辑态原地展开），第二行为占用/进行中的状态维护提示 */
+  const titleBlock = (
+    <div data-testid="detail-title-block" className="w-full min-w-0">
+      <TitleInlineEditor title={issue.title} onSave={saveTitle} editBarSlot={editBarSlot} />
+      {statusBlocked !== null && (
+        <p data-testid="status-blocked-hint" role="alert" className="mt-0.5 break-words text-[10.5px] leading-4 text-ink-3">
+          {statusBlocked}
+        </p>
+      )}
+    </div>
+  );
 
   const changeLabels = (next: string[]): void => {
     setLabels(next);
@@ -343,12 +366,15 @@ export function DetailPanel() {
 
   return (
     <div data-testid="detail-panel" className="flex h-full min-h-0 flex-col">
+      {/* DETAIL-LAYOUT：标题（+ ✎）投影到卡片顶栏，与关闭按钮同一行 */}
+      {titleSlot !== null && createPortal(titleBlock, titleSlot)}
+
       {/* 滚动区：右侧留 16px（> 15px 经典滚动条宽度），避免滚动条压住标题与首个字段 */}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-3 pl-3 pr-4">
         {/* 字段区 */}
         <section aria-label="字段" className="space-y-2">
-          {/* D1：标题顶掉「任务详情」标题行；阅读态 + ✎ 就地编辑 */}
-          <TitleInlineEditor title={issue.title} onSave={saveTitle} />
+          {/* 无顶栏槽位（独立渲染 DetailPanel）时标题回落正文顶部 */}
+          {titleSlot === null && titleBlock}
 
           {/* D2：状态 / 优先级 / 截止 / 负责人 四 chip 同排；明细收进 popover */}
           <MetaRow
@@ -459,19 +485,19 @@ export function DetailPanel() {
               </div>
             ) : (
               <>
-                {/* D3：去掉预览外层边框容器，正文直接铺在纸面上；长文本默认 3 行 clamp */}
-                <div data-testid="desc-preview" className={descExpanded ? '' : 'line-clamp-3'}>
+                {/* DETAIL-LAYOUT：默认展示全文；仅用户手动收起后 clamp 3 行 */}
+                <div data-testid="desc-preview" className={descCollapsed ? 'line-clamp-3' : ''}>
                   <MarkdownView>{description.trim() === '' ? '（无描述）' : description}</MarkdownView>
                 </div>
                 {descLong && (
                   <button
                     type="button"
                     data-testid="desc-expand"
-                    aria-expanded={descExpanded}
-                    onClick={() => setDescExpanded((value) => !value)}
+                    aria-expanded={!descCollapsed}
+                    onClick={() => setDescCollapsed((value) => !value)}
                     className="mt-0.5 text-[11px] text-ink-3 underline underline-offset-2 hover:text-accent"
                   >
-                    {descExpanded ? '收起' : '展开全文'}
+                    {descCollapsed ? '展开全文' : '收起'}
                   </button>
                 )}
               </>

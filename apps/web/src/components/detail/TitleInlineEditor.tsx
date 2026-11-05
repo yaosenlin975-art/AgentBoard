@@ -1,11 +1,14 @@
 /**
- * 详情标题（D1）：阅读态 2 行（窄屏 <920px 3 行）+ ✎ 就地编辑。
+ * 详情标题（D1/DETAIL-LAYOUT）：渲染在卡片顶栏（关闭按钮那一行）。
+ * - 阅读态单行截断（title 属性给全文）+ ✎ 紧邻其右；
+ * - 编辑态在同一行原地展开输入框，保存/取消工具条换行到标题下方。
  * - 两态互斥渲染：编辑时原文本整块让位，不出现「文字 + 输入框」并存；
  * - 进入编辑前量出阅读态高度锁给输入框容器，标题行高度不跳变（工具条增高属已知差异，见未决 11）；
  * - Enter 提交 / Esc 取消（有改动保留一次草稿）/ 点编辑区外部保持编辑态；
  * - 空值、超长、保存失败、409 冲突都在行内给可读提示，且不丢用户输入。
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ApiError } from '../../api/client';
 
@@ -28,9 +31,11 @@ export interface TitleInlineEditorProps {
   title: string;
   /** 提交标题；抛错时由本组件展示提示并保留输入 */
   onSave: (value: string, options: TitleSaveOptions) => Promise<void>;
+  /** 编辑工具条投影目标（卡片头部下方独立一行）；为空时工具条留在标题块内 */
+  editBarSlot?: HTMLElement | null;
 }
 
-export function TitleInlineEditor({ title, onSave }: TitleInlineEditorProps) {
+export function TitleInlineEditor({ title, onSave, editBarSlot = null }: TitleInlineEditorProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   /** 进入编辑前锁定的阅读态高度；null 表示不锁（jsdom/测量为 0 时） */
@@ -142,12 +147,13 @@ export function TitleInlineEditor({ title, onSave }: TitleInlineEditorProps) {
 
   if (!editing) {
     return (
-      <div data-testid="title-editor" className="flex items-start gap-2">
+      <div data-testid="title-editor" className="flex min-w-0 w-full items-center gap-1">
         <h1
           ref={displayRef}
+          id="detail-title"
           data-testid="title-display"
           title={title}
-          className="line-clamp-3 min-[920px]:line-clamp-2 min-w-0 flex-1 break-words text-[15px] font-semibold leading-[1.42] text-ink"
+          className="min-w-0 truncate text-[15px] font-semibold leading-[1.42] text-ink"
         >
           {title}
         </h1>
@@ -167,32 +173,10 @@ export function TitleInlineEditor({ title, onSave }: TitleInlineEditorProps) {
   }
 
   const overLimit = draft.length > TITLE_MAX_LENGTH;
-  return (
-    <div data-testid="title-editor" className="text-sm">
-      <div
-        data-testid="title-edit-wrap"
-        className="min-w-0 flex-1"
-        style={lockedHeight === null ? undefined : { height: `${lockedHeight}px` }}
-      >
-        <input
-          ref={inputRef}
-          data-testid="title-input"
-          aria-label="编辑标题"
-          value={draft}
-          disabled={saving}
-          onChange={(event) => {
-            setDraft(event.target.value);
-            setError(null);
-            setConflict(false);
-          }}
-          onKeyDown={onKeyDown}
-          className="h-full w-full rounded border border-accent bg-surface-card px-1.5 text-[15px] font-semibold text-ink outline-none ring-2 ring-accent-soft"
-        />
-      </div>
-      {/* 编辑工具条：整个 header 因此增高约 41px（未决 11，已知且接受） */}
+  const editBar = (
       <div
         data-testid="title-edit-bar"
-        className="mt-2 flex flex-wrap items-center gap-2 border-t border-dashed border-hairline pt-2"
+        className="mt-1 flex flex-wrap items-center gap-1.5 border-t border-dashed border-hairline pt-1"
       >
         {draft.length > TITLE_COUNTER_THRESHOLD && (
           <span
@@ -243,6 +227,33 @@ export function TitleInlineEditor({ title, onSave }: TitleInlineEditorProps) {
           </p>
         )}
       </div>
+  );
+
+  return (
+    <div data-testid="title-editor" className="w-full min-w-0 text-sm">
+      <div
+        data-testid="title-edit-wrap"
+        className="flex min-w-0 w-full items-center"
+        style={lockedHeight === null ? undefined : { height: `${lockedHeight}px` }}
+      >
+        <input
+          ref={inputRef}
+          id="detail-title"
+          data-testid="title-input"
+          aria-label="编辑标题"
+          value={draft}
+          disabled={saving}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setError(null);
+            setConflict(false);
+          }}
+          onKeyDown={onKeyDown}
+          className="h-full w-full rounded border border-accent bg-surface-card px-1.5 text-[15px] font-semibold text-ink outline-none ring-2 ring-accent-soft"
+        />
+      </div>
+      {/* 编辑工具条：有外部槽位时投影到头部下方独立一行，不撑高 h-10 头部 */}
+      {editBarSlot !== null ? createPortal(editBar, editBarSlot) : editBar}
     </div>
   );
 }

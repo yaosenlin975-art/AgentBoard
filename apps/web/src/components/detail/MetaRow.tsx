@@ -363,11 +363,7 @@ export function MetaRow({
         </div>
       )}
 
-      {statusBlocked !== null && (
-        <span data-testid="status-blocked-hint" role="alert" className="text-[10.5px] text-ink-3">
-          {statusBlocked}
-        </span>
-      )}
+      {/* DETAIL-LAYOUT：占用/进行中的状态维护提示已上移到顶栏标题块第二行（DetailPanel），此处不再重复 */}
     </div>
   );
 }

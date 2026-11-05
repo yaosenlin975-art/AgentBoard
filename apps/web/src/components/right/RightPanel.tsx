@@ -218,7 +218,9 @@ export function RightPanel() {
       data-panel-state={phase}
       data-anchor-side={anchored?.side ?? 'fixed'}
       data-anchored={anchored !== null ? 'true' : 'false'}
-      aria-label="右侧面板"
+      aria-label={activeView === 'detail' ? undefined : '右侧面板'}
+      // DETAIL-LAYOUT：详情视图的可访问名称改由标题承担，避免标题移动后容器丢掉名称
+      aria-labelledby={activeView === 'detail' ? 'detail-title' : undefined}
       id="right-panel-shell"
       aria-hidden={isOpen ? undefined : true}
       inert={isOpen ? undefined : true}
@@ -262,16 +264,26 @@ export function RightPanel() {
           className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent"
         />
         <header className="flex h-10 shrink-0 items-center justify-between border-b border-hairline px-3">
-          {/* D1：detail 视图不再渲染可见的「任务详情」文案（任务标题顶替其位置），
-              aria-label 保留语义与焦点兜底；h-10 头部高度契约不变。 */}
-          <h2
-            ref={headingRef}
-            tabIndex={-1}
-            aria-label={activeView === 'detail' ? '任务详情' : undefined}
-            className="text-sm font-semibold"
-          >
-            {activeView === 'detail' ? null : refPanel?.kind === 'log' ? '日志' : '知识'}
-          </h2>
+          {activeView === 'detail' ? (
+            <>
+              {/* D1：detail 视图不再渲染可见的「任务详情」文案；空 h2 只保留语义与焦点兜底，
+                  可见标题由 DetailPanel 投影进右侧槽位（标题 + ✎ 与关闭按钮同一行）。 */}
+              <h2 ref={headingRef} tabIndex={-1} aria-label="任务详情" className="sr-only" />
+              <div
+                id="detail-title-slot"
+                data-testid="detail-title-slot"
+                className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1"
+              />
+            </>
+          ) : (
+            <h2
+              ref={headingRef}
+              tabIndex={-1}
+              className="text-sm font-semibold"
+            >
+              {refPanel?.kind === 'log' ? '日志' : '知识'}
+            </h2>
+          )}
           <button
             type="button"
             data-testid="right-panel-close"
@@ -283,6 +295,11 @@ export function RightPanel() {
             ×
           </button>
         </header>
+        {/* DETAIL-LAYOUT：标题编辑工具条（保存/取消/冲突提示）投影到头部下方独立一行，
+            不改变 h-10 头部高度契约，也不压缩滚动区 */}
+        {activeView === 'detail' && (
+          <div id="detail-edit-slot" data-testid="detail-edit-slot" className="shrink-0 px-3" />
+        )}
         <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* DETAIL-VIEW-BUG2：**同一时刻只挂载一个视图**（按 view 条件渲染）。
               历史两次修法都是「三个 body 全挂载 + inline transform 遮蔽」，一旦 transform/样式类失效
