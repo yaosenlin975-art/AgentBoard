@@ -1,0 +1,1299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>任务详情重做 · 可点原型</title>
+<style>
+  /* ============================================================
+     设计令牌：与 apps/web/src/index.css 的 --ab-* 保持同源
+     暖石墨 + 琥珀；暗色同源。本文件不引入任何外部依赖。
+     ============================================================ */
+  :root {
+    color-scheme: light;
+    --ab-page: #f7f4ee;
+    --ab-card: #fdfbf7;
+    --ab-raised: #efe9df;
+    --ab-hairline: rgba(31, 27, 22, 0.1);
+    --ab-ink: #1f1b16;
+    --ab-ink-2: #5e554a;
+    --ab-ink-3: #6b6257;
+    --ab-accent: #a04a08;
+    --ab-accent-ink: #ffffff;
+    --ab-accent-soft: rgba(180, 83, 9, 0.12);
+    --ab-add: #3f6d3a;
+    --ab-del: #a13d3d;
+    --ab-add-soft: rgba(63, 109, 58, 0.12);
+    --ab-del-soft: rgba(161, 61, 61, 0.12);
+    --ab-shadow: 0 18px 50px rgba(31, 27, 22, 0.14);
+    /* 用户本轮指定：160ms cubic-bezier(0.2,0,0,1) */
+    --ab-ease: cubic-bezier(0.2, 0, 0, 1);
+    --ab-dur: 160ms;
+  }
+  .dark {
+    color-scheme: dark;
+    --ab-page: #161513;
+    --ab-card: #1c1a18;
+    --ab-raised: #262421;
+    --ab-hairline: rgba(239, 233, 222, 0.12);
+    --ab-ink: #efe9de;
+    --ab-ink-2: #aaa398;
+    --ab-ink-3: #a09a90;
+    --ab-accent: #f0a01e;
+    --ab-accent-ink: #1c1a18;
+    --ab-accent-soft: rgba(240, 160, 30, 0.16);
+    --ab-add: #7ec96f;
+    --ab-del: #f08a7a;
+    --ab-add-soft: rgba(126, 201, 111, 0.14);
+    --ab-del-soft: rgba(240, 138, 122, 0.14);
+    --ab-shadow: 0 18px 50px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--ab-page);
+    color: var(--ab-ink);
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--ab-accent); outline-offset: 2px; }
+
+  /* ---------- 原型控制条（非设计的一部分） ---------- */
+  .proto-bar {
+    position: sticky; top: 0; z-index: 40;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+    padding: 10px 18px;
+    background: color-mix(in srgb, var(--ab-raised) 88%, transparent);
+    border-bottom: 1px solid var(--ab-hairline);
+    backdrop-filter: blur(8px);
+  }
+  .proto-brand { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .proto-brand strong { font-size: 12.5px; font-weight: 650; }
+  .proto-brand .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--ab-accent);
+  }
+  .proto-note {
+    font-size: 11px; color: var(--ab-ink-3);
+    border: 1px dashed var(--ab-hairline); border-radius: 5px;
+    padding: 1px 6px; margin-left: 2px;
+  }
+  .proto-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .proto-label { font-size: 11px; color: var(--ab-ink-3); margin-right: 2px; }
+  .pbtn {
+    border: 1px solid var(--ab-hairline); background: var(--ab-card);
+    color: var(--ab-ink-2); border-radius: 6px; padding: 4px 9px;
+    font-size: 11.5px; transition: background var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease), border-color var(--ab-dur) var(--ab-ease);
+  }
+  .pbtn:hover { background: var(--ab-accent-soft); color: var(--ab-accent); }
+  .pbtn.is-on { border-color: var(--ab-accent); background: var(--ab-accent-soft); color: var(--ab-accent); font-weight: 600; }
+  .psep { width: 1px; height: 18px; background: var(--ab-hairline); margin: 0 4px; }
+  .pcheck { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ab-ink-2); }
+  .pcheck input { accent-color: var(--ab-accent); }
+
+  /* ---------- 舞台 & 背景假看板 ---------- */
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 460px;
+    gap: 26px;
+    align-items: start;
+    padding: 26px 26px 40px;
+    max-width: 1440px;
+    margin: 0 auto;
+  }
+  .board-ghost { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; opacity: .92; }
+  .ghost-col {
+    border: 1px solid var(--ab-hairline); border-radius: 10px;
+    background: color-mix(in srgb, var(--ab-card) 55%, transparent);
+    padding: 10px; min-height: 210px;
+  }
+  .ghost-col-head { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--ab-ink-3); padding: 2px 4px 8px; }
+  .ghost-card {
+    border: 1px solid var(--ab-hairline); border-radius: 7px;
+    background: var(--ab-card); padding: 9px 10px; margin-bottom: 8px;
+  }
+  .ghost-card.active { border-color: var(--ab-accent); box-shadow: inset 3px 0 0 var(--ab-accent); }
+  .ghost-title { font-size: 11.5px; font-weight: 600; color: var(--ab-ink-2); }
+  .ghost-meta { margin-top: 6px; font-size: 10px; color: var(--ab-ink-3); display: flex; gap: 8px; }
+  .ghost-line { height: 5px; border-radius: 3px; background: var(--ab-raised); margin-top: 7px; }
+
+  /* ---------- 设备框 ---------- */
+  .device {
+    justify-self: end;
+    width: 460px; height: min(860px, calc(100vh - 118px)); min-height: 620px;
+    position: relative;
+    border-radius: 11px;
+    background: var(--ab-card);
+    border: 1px solid var(--ab-hairline);
+    box-shadow: var(--ab-shadow);
+    overflow: hidden;
+    transition: width var(--ab-dur) var(--ab-ease), height var(--ab-dur) var(--ab-ease), border-radius var(--ab-dur) var(--ab-ease);
+  }
+  .device-notch { display: none; }
+
+  /* ---------- 面板骨架 ---------- */
+  .panel { display: flex; flex-direction: column; height: 100%; }
+  .panel-header {
+    flex: none;
+    padding: 13px 14px 10px;
+    border-bottom: 1px solid var(--ab-hairline);
+    background: var(--ab-card);
+    position: relative;
+    z-index: 6;
+  }
+  .panel-scroll {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    padding: 12px 14px 18px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ab-raised) transparent;
+  }
+  .panel-scroll::-webkit-scrollbar { width: 8px; }
+  .panel-scroll::-webkit-scrollbar-thumb { background: var(--ab-raised); border-radius: 4px; }
+  .proto-watermark {
+    position: absolute; right: 10px; bottom: 6px;
+    font-size: 9px; color: var(--ab-ink-3); opacity: .55;
+    pointer-events: none; letter-spacing: .02em;
+  }
+
+  /* ---------- 标题区（替代「任务详情」标题行） ---------- */
+  .title-row { display: flex; align-items: flex-start; gap: 8px; }
+  .title-display { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; }
+  .panel-title {
+    margin: 0; font-size: 15px; line-height: 1.42; font-weight: 650;
+    letter-spacing: -.01em;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+  }
+  .title-dirty { color: var(--ab-accent); font-size: 11px; line-height: 1; }
+  .title-edit-wrap { flex: 1; min-width: 0; }
+  .title-input {
+    width: 100%; border: 1px solid var(--ab-accent);
+    background: var(--ab-card); border-radius: 6px;
+    padding: 4px 7px; font-size: 14px; font-weight: 600;
+    box-shadow: 0 0 0 3px var(--ab-accent-soft);
+  }
+  .title-tools { display: flex; gap: 2px; flex: none; }
+  .icon-btn {
+    width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; background: transparent; color: var(--ab-ink-3);
+    border-radius: 6px; font-size: 13px; line-height: 1;
+    transition: background var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease), border-color var(--ab-dur) var(--ab-ease);
+  }
+  .icon-btn:hover { background: var(--ab-accent-soft); color: var(--ab-accent); border-color: var(--ab-hairline); }
+  .edit-bar {
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--ab-hairline);
+  }
+  .edit-bar .spacer { flex: 1; }
+  .counter { font-size: 10.5px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+  .counter.over { color: var(--ab-del); font-weight: 600; }
+  .edit-error {
+    flex-basis: 100%; font-size: 11px; color: var(--ab-del);
+    background: var(--ab-del-soft); border-radius: 5px; padding: 4px 7px;
+  }
+  .stale-banner {
+    margin-top: 7px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    font-size: 11px; color: var(--ab-ink-2);
+    background: var(--ab-accent-soft); border-radius: 6px; padding: 5px 8px;
+  }
+
+  /* ---------- Meta 行（状态 / 优先级 / 截止 / 负责人） ---------- */
+  .meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; position: relative; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    height: 24px; padding: 0 8px;
+    border: 1px solid var(--ab-hairline); border-radius: 999px;
+    background: var(--ab-raised); color: var(--ab-ink-2);
+    font-size: 11px; white-space: nowrap;
+    transition: background var(--ab-dur) var(--ab-ease), border-color var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease);
+  }
+  .chip:hover { border-color: var(--ab-accent); color: var(--ab-accent); }
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ab-ink-3); flex: none; }
+  .chip-status { font-weight: 600; }
+  .chip-status[data-status="进行中"] { background: var(--ab-accent-soft); border-color: color-mix(in srgb, var(--ab-accent) 45%, transparent); color: var(--ab-accent); }
+  .chip-status[data-status="进行中"] .dot { background: var(--ab-accent); }
+  .chip-status[data-status="待规划"] .dot { background: var(--ab-ink-3); }
+  .chip-status[data-status="待验收"] .dot { background: var(--ab-add); }
+  .chip-status[data-status="已关闭"] { opacity: .78; }
+  .chip-status[data-status="已关闭"] .dot { background: var(--ab-ink-3); }
+  .chip-priority[data-priority="高"] { color: var(--ab-del); border-color: color-mix(in srgb, var(--ab-del) 38%, transparent); background: var(--ab-del-soft); }
+  .chip-priority[data-priority="高"] .dot { background: var(--ab-del); }
+  .chip-priority[data-priority="中"] .dot { background: var(--ab-accent); }
+  .chip-priority[data-priority="低"] .dot { background: var(--ab-ink-3); }
+  .chip-due.overdue { color: var(--ab-del); background: var(--ab-del-soft); border-color: color-mix(in srgb, var(--ab-del) 38%, transparent); }
+  .chip-owner { color: var(--ab-ink-2); }
+  .chip-owner .avatar {
+    width: 15px; height: 15px; border-radius: 50%;
+    background: var(--ab-accent); color: var(--ab-accent-ink);
+    font-size: 8.5px; display: inline-flex; align-items: center; justify-content: center;
+    flex: none;
+  }
+  .chip-owner.unclaimed .avatar { background: var(--ab-raised); color: var(--ab-ink-3); border: 1px solid var(--ab-hairline); }
+
+  /* ---------- 弹出层 ---------- */
+  .popover {
+    /* 贴住整个 meta 行下缘：行内 chip 换行时也不会盖住第二行 chip */
+    position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+    min-width: 190px; max-width: 100%;
+    background: var(--ab-card); border: 1px solid var(--ab-hairline);
+    border-radius: 8px; box-shadow: 0 10px 28px rgba(31, 27, 22, .16);
+    padding: 5px;
+    animation: pop var(--ab-dur) var(--ab-ease);
+  }
+  .dark .popover { box-shadow: 0 10px 28px rgba(0, 0, 0, .5); }
+  @keyframes pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+  .popover[hidden] { display: none; }
+  .pop-item {
+    display: flex; align-items: center; gap: 7px; width: 100%;
+    border: 0; background: transparent; text-align: left;
+    padding: 6px 8px; border-radius: 5px; font-size: 11.5px; color: var(--ab-ink-2);
+  }
+  .pop-item:hover { background: var(--ab-accent-soft); color: var(--ab-accent); }
+  .pop-item.is-on { color: var(--ab-accent); font-weight: 600; }
+  .pop-divider { border-top: 1px solid var(--ab-hairline); margin: 4px 2px; }
+  .pop-field { display: flex; flex-direction: column; gap: 5px; padding: 5px 7px 7px; }
+  .pop-field label { font-size: 10.5px; color: var(--ab-ink-3); }
+  .pop-field input {
+    border: 1px solid var(--ab-hairline); border-radius: 5px;
+    background: var(--ab-card); padding: 4px 6px; font-size: 11.5px;
+  }
+  .pop-actions { display: flex; gap: 5px; justify-content: flex-end; padding: 3px 7px 6px; }
+
+  /* ---------- 通用按钮 ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    height: 30px; padding: 0 11px;
+    border: 1px solid var(--ab-hairline); border-radius: 6px;
+    background: var(--ab-card); color: var(--ab-ink-2); font-size: 11.5px; font-weight: 500;
+    transition: background var(--ab-dur) var(--ab-ease), border-color var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease), opacity var(--ab-dur) var(--ab-ease);
+  }
+  .btn:hover { background: var(--ab-accent-soft); border-color: var(--ab-accent); color: var(--ab-accent); }
+  .btn-primary { background: var(--ab-accent); border-color: var(--ab-accent); color: var(--ab-accent-ink); }
+  .btn-primary:hover { background: var(--ab-accent); color: var(--ab-accent-ink); opacity: .9; }
+  .btn-sm { height: 26px; padding: 0 8px; font-size: 11px; }
+  .btn-icon { width: 30px; padding: 0; font-size: 14px; letter-spacing: .06em; }
+  .btn-quiet { background: transparent; border-color: transparent; color: var(--ab-ink-3); }
+  .btn-quiet:hover { background: var(--ab-accent-soft); border-color: transparent; }
+  .linkbtn {
+    border: 0; background: transparent; padding: 0; color: var(--ab-accent);
+    font-size: 11px; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .linkbtn:hover { opacity: .8; }
+  .linkbtn.danger { color: var(--ab-del); }
+
+  /* ---------- 内容块 ---------- */
+  .block { padding: 11px 0; border-bottom: 1px solid var(--ab-hairline); }
+  .block:last-child { border-bottom: 0; }
+  .block-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
+  .block-label { font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--ab-ink-3); font-weight: 600; }
+  .block-head .spacer { flex: 1; }
+  .desc { font-size: 12px; color: var(--ab-ink-2); line-height: 1.62; }
+  .desc.clamped { max-height: 66px; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 68%, transparent); mask-image: linear-gradient(to bottom, #000 68%, transparent); }
+  .desc h4 { margin: 7px 0 3px; font-size: 11.5px; color: var(--ab-ink); font-weight: 600; }
+  .desc ul { margin: 3px 0; padding-left: 16px; }
+  .desc li { margin: 1px 0; }
+  .desc code { font-size: 11px; background: var(--ab-raised); border-radius: 3px; padding: 0 3px; }
+
+  .labels-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 8px; }
+  .label-chip {
+    font-size: 10.5px; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--ab-hairline); background: var(--ab-raised); color: var(--ab-ink-2);
+  }
+  .label-add { border-style: dashed; background: transparent; color: var(--ab-ink-3); }
+
+  /* ---------- 折叠行 ---------- */
+  .fold { border-bottom: 1px solid var(--ab-hairline); }
+  .fold-head {
+    display: flex; align-items: center; gap: 7px; width: 100%;
+    border: 0; background: transparent; text-align: left;
+    padding: 9px 2px; color: var(--ab-ink-2); font-size: 12px;
+  }
+  .fold-head:hover { color: var(--ab-accent); }
+  .fold-chevron { font-size: 10px; color: var(--ab-ink-3); transition: transform var(--ab-dur) var(--ab-ease); flex: none; width: 10px; }
+  .fold-head[aria-expanded="true"] .fold-chevron { transform: rotate(90deg); color: var(--ab-accent); }
+  .fold-title { font-weight: 600; color: var(--ab-ink); }
+  .fold-sum { font-size: 10.5px; color: var(--ab-ink-3); }
+  .fold-sum.warn { color: var(--ab-accent); }
+  .fold-head .spacer { flex: 1; }
+  .fold-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--ab-dur) var(--ab-ease); }
+  .fold-body.open { grid-template-rows: 1fr; }
+  .fold-inner { min-height: 0; overflow: hidden; }
+  .fold-content { padding: 1px 2px 11px; }
+  .badge {
+    font-size: 9.5px; padding: 1px 6px; border-radius: 999px;
+    background: var(--ab-raised); color: var(--ab-ink-2); border: 1px solid var(--ab-hairline);
+    white-space: nowrap;
+  }
+  .badge.warn { background: var(--ab-accent-soft); color: var(--ab-accent); border-color: color-mix(in srgb, var(--ab-accent) 40%, transparent); }
+  .badge.ok { background: var(--ab-add-soft); color: var(--ab-add); border-color: color-mix(in srgb, var(--ab-add) 40%, transparent); }
+
+  /* ---------- 依赖 ---------- */
+  .dep-group { margin-bottom: 8px; }
+  .dep-group:last-child { margin-bottom: 0; }
+  .dep-group-label { font-size: 10px; color: var(--ab-ink-3); margin-bottom: 4px; }
+  .dep-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 6px; border-radius: 5px; font-size: 11px;
+  }
+  .dep-row:hover { background: var(--ab-raised); }
+  .dep-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--ab-ink-3); }
+  .dep-dot.open { background: var(--ab-accent); }
+  .dep-dot.done { background: var(--ab-add); }
+  .dep-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ab-ink-2); }
+  .dep-status { font-size: 10px; color: var(--ab-ink-3); flex: none; }
+  .dep-add { display: flex; gap: 5px; margin-top: 7px; }
+  .dep-add input {
+    flex: 1; min-width: 0; border: 1px solid var(--ab-hairline); border-radius: 5px;
+    background: var(--ab-card); padding: 4px 7px; font-size: 11px;
+  }
+
+  /* ---------- 评论 ---------- */
+  .comment { padding: 7px 0; border-bottom: 1px dashed var(--ab-hairline); }
+  .comment:last-of-type { border-bottom: 0; }
+  .comment-head { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+  .author { font-size: 10.5px; font-weight: 600; color: var(--ab-ink-2); }
+  .author.agent { color: var(--ab-accent); }
+  .comment-time { font-size: 9.5px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+  .comment-body { font-size: 11.5px; color: var(--ab-ink-2); line-height: 1.55; }
+  .comment-body code { font-size: 10.5px; background: var(--ab-raised); border-radius: 3px; padding: 0 3px; }
+  .comment-more { margin-top: 6px; }
+  .composer { margin-top: 9px; border: 1px solid var(--ab-hairline); border-radius: 7px; background: var(--ab-card); padding: 7px; }
+  .composer textarea {
+    width: 100%; border: 0; background: transparent; resize: vertical; min-height: 38px;
+    font-size: 11.5px; line-height: 1.5; outline: none;
+  }
+  .composer-foot { display: flex; align-items: center; gap: 7px; margin-top: 5px; }
+  .composer-hint { flex: 1; font-size: 9.5px; color: var(--ab-ink-3); }
+
+  /* ---------- 底部吸底工具条 ---------- */
+  .action-bar {
+    flex: none; position: relative;
+    display: flex; align-items: center; gap: 6px;
+    padding: 9px 12px calc(9px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--ab-hairline);
+    background: color-mix(in srgb, var(--ab-card) 88%, transparent);
+    backdrop-filter: blur(8px);
+    z-index: 8;
+  }
+  .action-bar .primary-slot { display: flex; gap: 6px; flex: 1; min-width: 0; }
+  .action-bar .primary-slot .btn-primary { flex: 1; }
+  .more-wrap { position: relative; flex: none; }
+  .more-menu {
+    position: absolute; bottom: 38px; right: 0; z-index: 20;
+    min-width: 168px; padding: 5px;
+    background: var(--ab-card); border: 1px solid var(--ab-hairline); border-radius: 8px;
+    box-shadow: 0 10px 28px rgba(31, 27, 22, .16);
+    animation: pop var(--ab-dur) var(--ab-ease);
+  }
+  .more-menu[hidden] { display: none; }
+  .more-item {
+    display: flex; align-items: center; gap: 7px; width: 100%;
+    border: 0; background: transparent; text-align: left;
+    padding: 6px 8px; border-radius: 5px; font-size: 11.5px; color: var(--ab-ink-2);
+  }
+  .more-item:hover { background: var(--ab-accent-soft); color: var(--ab-accent); }
+  .more-item.danger { color: var(--ab-del); }
+  .more-item.danger:hover { background: var(--ab-del-soft); color: var(--ab-del); }
+  .more-confirm { padding: 6px 8px; font-size: 10.5px; color: var(--ab-ink-2); }
+  .more-confirm p { margin: 0 0 6px; }
+  .more-confirm-actions { display: flex; gap: 5px; justify-content: flex-end; }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(6px);
+    background: var(--ab-ink); color: var(--ab-page);
+    font-size: 11.5px; padding: 7px 13px; border-radius: 7px;
+    opacity: 0; pointer-events: none; z-index: 50;
+    transition: opacity var(--ab-dur) var(--ab-ease), transform var(--ab-dur) var(--ab-ease);
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ---------- 窄屏态（<920px 回落抽屉） ---------- */
+  .stage.narrow {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    padding: 18px 12px 28px;
+  }
+  .stage.narrow .board-ghost { display: none; }
+  .stage.narrow .device {
+    width: 390px; max-width: 100%;
+    height: min(844px, calc(100vh - 96px)); min-height: 560px;
+    border-radius: 22px;
+    justify-self: center;
+  }
+  .stage.narrow .device-notch {
+    display: block; position: absolute; top: 7px; left: 50%; transform: translateX(-50%);
+    width: 84px; height: 5px; border-radius: 3px; background: var(--ab-raised); z-index: 10;
+  }
+  .stage.narrow .panel-header { padding-top: 20px; }
+  .stage.narrow .panel-title { -webkit-line-clamp: 3; }
+  .stage.narrow .meta-row { gap: 5px; }
+  .stage.narrow .chip { height: 23px; }
+  .stage.narrow .action-bar { padding-left: 10px; padding-right: 10px; }
+
+  /* ---------- 减弱动效 ---------- */
+  @media (prefers-reduced-motion: reduce) {
+    :root { --ab-dur: 0ms; }
+    *, *::before, *::after {
+      animation-duration: 1ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+  <div class="proto-bar">
+    <div class="proto-brand">
+      <span class="dot" aria-hidden="true"></span>
+      <strong>任务详情重做 · 可点原型</strong>
+      <span class="proto-note">仅原型，未接真实数据</span>
+    </div>
+    <div class="proto-controls">
+      <span class="proto-label">原型状态</span>
+      <button class="pbtn is-on" id="protoDefault" data-proto="default">默认态</button>
+      <button class="pbtn" id="protoEdit" data-proto="edit">标题编辑态</button>
+      <button class="pbtn" id="protoExpanded" data-proto="expanded">折叠区展开态</button>
+      <button class="pbtn" id="protoNarrow" data-proto="narrow">窄屏态</button>
+      <span class="psep" aria-hidden="true"></span>
+      <label class="pcheck"><input type="checkbox" id="failMode"> 模拟保存失败</label>
+      <label class="pcheck"><input type="checkbox" id="darkMode"> 暗色</label>
+    </div>
+  </div>
+
+  <main class="stage" id="stage">
+    <div class="board-ghost" aria-hidden="true">
+      <div class="ghost-col">
+        <div class="ghost-col-head">待规划 · 6</div>
+        <div class="ghost-card">
+          <div class="ghost-title">【PERF-2】知识读路径瘦身</div>
+          <div class="ghost-meta"><span>中</span><span>11-08</span></div>
+        </div>
+        <div class="ghost-card">
+          <div class="ghost-title">【KB-DOC-1】文档清场</div>
+          <div class="ghost-line"></div><div class="ghost-line" style="width:72%"></div>
+        </div>
+        <div class="ghost-card">
+          <div class="ghost-title">【ACC-B6】额度平台详情</div>
+          <div class="ghost-line" style="width:55%"></div>
+        </div>
+      </div>
+      <div class="ghost-col">
+        <div class="ghost-col-head">进行中 · 3</div>
+        <div class="ghost-card active">
+          <div class="ghost-title">【DETAIL-REDESIGN】任务详情重做</div>
+          <div class="ghost-meta"><span>中</span><span>11-07</span><span>trae-detail-redesign</span></div>
+        </div>
+        <div class="ghost-card">
+          <div class="ghost-title">【AUDIT-DETAIL】验收动作与草稿保护</div>
+          <div class="ghost-line" style="width:64%"></div>
+        </div>
+      </div>
+      <div class="ghost-col">
+        <div class="ghost-col-head">待验收 · 5</div>
+        <div class="ghost-card">
+          <div class="ghost-title">【UI-ANCHOR】浮窗贴列选边</div>
+          <div class="ghost-meta"><span>已解除</span></div>
+        </div>
+        <div class="ghost-card">
+          <div class="ghost-title">【BORROW-2.2】依赖聚合标记</div>
+          <div class="ghost-line" style="width:78%"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="device" id="device">
+      <div class="device-notch" aria-hidden="true"></div>
+      <aside class="panel" id="panel" aria-label="任务详情" data-testid="detail-panel">
+        <header class="panel-header">
+          <div class="title-row">
+            <div class="title-display" id="titleDisplay">
+              <h1 class="panel-title" id="panelTitle" data-testid="panel-title">【DETAIL-REDESIGN】任务详情界面重做：脑暴 + 可点原型</h1>
+              <span class="title-dirty" id="titleDirty" hidden title="有未保存的修改" aria-label="有未保存的修改">●</span>
+            </div>
+            <div class="title-edit-wrap" id="titleEditWrap" hidden>
+              <input class="title-input" id="titleInput" aria-label="编辑标题" data-testid="title-input" maxlength="260" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="title-tools">
+              <button class="icon-btn" id="editBtn" aria-label="编辑标题" title="编辑标题" data-testid="edit-title">✎</button>
+              <button class="icon-btn" id="closeBtn" aria-label="关闭右侧面板" title="关闭右侧面板">×</button>
+            </div>
+          </div>
+
+          <div class="edit-bar" id="editBar" hidden>
+            <span class="counter" id="titleCounter">0 / 200</span>
+            <span class="spacer"></span>
+            <button class="btn btn-sm" id="cancelBtn" data-testid="cancel-title">取消</button>
+            <button class="btn btn-primary btn-sm" id="saveBtn" data-testid="save-title">保存</button>
+            <span class="edit-error" id="titleError" role="alert" hidden></span>
+          </div>
+
+          <div class="stale-banner" id="staleBanner" hidden>
+            <span>此任务在你编辑期间被更新（12:04 · 其他人）。</span>
+            <button class="linkbtn" id="reloadTitle">载入最新版本</button>
+            <button class="linkbtn" id="keepMine">保留我的输入</button>
+          </div>
+
+          <div class="meta-row" id="metaRow">
+            <button class="chip chip-status" id="statusChip" data-status="进行中" aria-haspopup="true" data-testid="status-chip">
+              <span class="dot" aria-hidden="true"></span><span id="statusText">进行中</span>
+            </button>
+            <button class="chip chip-priority" id="priorityChip" data-priority="中" aria-haspopup="true" data-testid="priority-chip">
+              <span class="dot" aria-hidden="true"></span><span id="priorityText">优先级 · 中</span>
+            </button>
+            <button class="chip chip-due" id="dueChip" aria-haspopup="true" data-testid="due-chip">
+              <span aria-hidden="true">◷</span><span id="dueText">截止 · 11-07 18:00</span>
+            </button>
+            <button class="chip chip-owner" id="ownerChip" aria-haspopup="true" data-testid="owner-chip">
+              <span class="avatar" aria-hidden="true">T</span><span id="ownerText">trae-detail-redesign · 12 分钟前</span>
+            </button>
+
+            <div class="popover" id="statusPop" hidden role="menu" aria-label="修改状态">
+              <button class="pop-item" data-status="待规划" role="menuitem">待规划</button>
+              <button class="pop-item is-on" data-status="进行中" role="menuitem">进行中</button>
+              <button class="pop-item" data-status="待验收" role="menuitem">待验收</button>
+              <button class="pop-item" data-status="已关闭" role="menuitem">已关闭</button>
+              <div class="pop-divider"></div>
+              <div class="pop-field" style="padding-bottom:2px">
+                <span style="font-size:9.5px;color:var(--ab-ink-3)">状态修改沿用服务端 updated_at CAS；冲突时回到服务端现值并提示原因。</span>
+              </div>
+            </div>
+
+            <div class="popover" id="priorityPop" hidden role="menu" aria-label="修改优先级">
+              <button class="pop-item" data-priority="低" role="menuitem">低</button>
+              <button class="pop-item is-on" data-priority="中" role="menuitem">中</button>
+              <button class="pop-item" data-priority="高" role="menuitem">高</button>
+            </div>
+
+            <div class="popover" id="duePop" hidden role="menu" aria-label="修改截止">
+              <div class="pop-field">
+                <label for="dueDateInput">日期</label>
+                <input type="date" id="dueDateInput" value="2026-11-07">
+                <label for="dueTimeInput">时间（可空）</label>
+                <input type="time" id="dueTimeInput" value="18:00">
+              </div>
+              <div class="pop-actions">
+                <button class="btn btn-sm" id="dueClear">清除</button>
+                <button class="btn btn-primary btn-sm" id="dueApply">应用</button>
+              </div>
+            </div>
+
+            <div class="popover" id="ownerPop" hidden role="menu" aria-label="占用信息">
+              <div class="pop-field">
+                <span style="font-size:11px;color:var(--ab-ink)">trae-detail-redesign</span>
+                <span style="font-size:10px;color:var(--ab-ink-3)">已占用 12 分钟 · 租约仍有效</span>
+                <span style="font-size:10px;color:var(--ab-ink-3)">关联会话：1 个（运行中）</span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div class="panel-scroll" id="panelScroll">
+          <section class="block" aria-label="描述">
+            <div class="block-head">
+              <span class="block-label">描述</span>
+              <span class="spacer"></span>
+              <button class="linkbtn" id="descToggle" data-testid="desc-toggle" aria-expanded="false">展开</button>
+            </div>
+            <div class="desc clamped" id="descBody" data-testid="desc-body">
+              <h4>目标</h4>
+              <p>把任务详情从「一排字段 + 一排按钮」的堆叠改成信息分层面板：首屏只留决策要素，其余收进折叠区。</p>
+              <h4>已拍板基线</h4>
+              <ul>
+                <li>标题直接替代「任务详情」标题行；</li>
+                <li>标题右侧一个修改按钮，就地编辑，Enter 提交 / Esc 取消；</li>
+                <li>优先级与截止时间拉到同一横行。</li>
+              </ul>
+              <h4>验收</h4>
+              <p>原型可点、四个状态可切；文档含未决问题与拆卡建议；本轮不改 <code>apps/**</code> 源码。</p>
+            </div>
+            <div class="labels-row" aria-label="标签">
+              <span class="block-label" style="margin-right:2px">标签</span>
+              <span class="label-chip">web</span>
+              <span class="label-chip">文档</span>
+              <span class="label-chip label-add" role="button" tabindex="0">+ 添加</span>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="依赖">
+            <button class="fold-head" id="depHead" aria-expanded="false" data-testid="fold-dependency">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">依赖</span>
+              <span class="fold-sum warn" id="depSum">前置 2 · 1 项未解除 · 阻塞 3</span>
+              <span class="spacer"></span>
+              <span class="badge warn" id="depBlockBadge">暂不可领取</span>
+            </button>
+            <div class="fold-body" id="depBody">
+              <div class="fold-inner"><div class="fold-content">
+                <div class="dep-group">
+                  <div class="dep-group-label">前置任务（未解除前不可 claim）</div>
+                  <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">【UI-ANCHOR】任务详情浮窗贴列选边</span><span class="dep-status">待验收 · 已解除</span></div>
+                  <div class="dep-row"><span class="dep-dot open"></span><span class="dep-name">【AUDIT-SYS1】详情浮窗与导航视图解耦</span><span class="dep-status">待验收 · 未解除</span></div>
+                </div>
+                <div class="dep-group">
+                  <div class="dep-group-label">被本卡阻塞</div>
+                  <div class="dep-row"><span class="dep-dot open"></span><span class="dep-name">详情字段重排（待拆卡）</span><span class="dep-status">待规划</span></div>
+                  <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">就地编辑标题（待拆卡）</span><span class="dep-status">待规划</span></div>
+                  <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">底部吸底操作条（待拆卡）</span><span class="dep-status">待规划</span></div>
+                </div>
+                <div class="dep-group">
+                  <div class="dep-group-label">关联 / 重复（不阻塞领取）</div>
+                  <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">【AUDIT-DETAIL】验收动作与草稿保护</span><span class="dep-status">待验收 · related</span></div>
+                </div>
+                <div class="dep-add">
+                  <input placeholder="搜索本工作区任务，添加前置…" aria-label="搜索前置任务">
+                  <button class="btn btn-sm" id="depAddBtn">添加</button>
+                </div>
+              </div></div>
+            </div>
+          </section>
+
+          <section class="block" aria-label="评论">
+            <div class="block-head">
+              <span class="block-label">评论 · 4</span>
+              <span class="spacer"></span>
+              <button class="linkbtn" id="commentToggle" aria-expanded="false" data-testid="comment-toggle">查看全部</button>
+            </div>
+            <div id="commentList">
+              <div class="comment">
+                <div class="comment-head">
+                  <span class="author agent">trae-detail-redesign</span>
+                  <span class="comment-time">11-05 11:42</span>
+                </div>
+                <div class="comment-body">已读现有 DetailPanel：字段区 6 项 + 操作区 6 个按钮 + 依赖 4 组 + 会话 + 评论全部同时铺开，这就是「臃肿」的来源。原型按「首屏决策 / 折叠明细」重排。</div>
+              </div>
+              <div class="comment">
+                <div class="comment-head">
+                  <span class="author">user</span>
+                  <span class="comment-time">11-05 11:58</span>
+                </div>
+                <div class="comment-body">标题不要再单独一行「任务详情」，标题本身就是标题；优先级和截止放一行。</div>
+              </div>
+              <div class="comment comment-extra" hidden>
+                <div class="comment-head">
+                  <span class="author agent">trae-detail-redesign</span>
+                  <span class="comment-time">11-05 12:04</span>
+                </div>
+                <div class="comment-body">操作区放底部吸底：主操作随状态变化，危险操作进 ⋯ 溢出；顶部右上角只保留「编辑 / 关闭」。</div>
+              </div>
+              <div class="comment comment-extra" hidden>
+                <div class="comment-head">
+                  <span class="author">system</span>
+                  <span class="comment-time">11-05 12:06</span>
+                </div>
+                <div class="comment-body">状态变更：进行中 → 待验收（由 trae-detail-redesign 标记）。</div>
+              </div>
+            </div>
+            <div class="composer">
+              <textarea rows="2" placeholder="追加评论（markdown）" aria-label="评论内容"></textarea>
+              <div class="composer-foot">
+                <span class="composer-hint">将唤醒 trae-detail-redesign</span>
+                <button class="btn btn-sm">添加图片</button>
+                <button class="btn btn-primary btn-sm">发送</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="关联会话">
+            <button class="fold-head" id="sessionHead" aria-expanded="false" data-testid="fold-sessions">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">关联会话</span>
+              <span class="fold-sum">1 个 · 运行中</span>
+              <span class="spacer"></span>
+              <span class="badge ok">当前</span>
+            </button>
+            <div class="fold-body" id="sessionBody">
+              <div class="fold-inner"><div class="fold-content">
+                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">Trae · DeepSeek-V4.1-Flash</span><span class="dep-status">运行中 · 当前</span></div>
+              </div></div>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="活动记录">
+            <button class="fold-head" id="activityHead" aria-expanded="false" data-testid="fold-activity">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">活动记录</span>
+              <span class="fold-sum">6 条</span>
+              <span class="spacer"></span>
+              <span class="badge">需新接口</span>
+            </button>
+            <div class="fold-body" id="activityBody">
+              <div class="fold-inner"><div class="fold-content">
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">创建任务</span><span class="dep-status">11-05 11:31 · user</span></div>
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">claim（占用 12 分钟）</span><span class="dep-status">11-05 11:32 · trae</span></div>
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">优先级 低 → 中</span><span class="dep-status">11-05 11:40 · user</span></div>
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">标签 +web +文档</span><span class="dep-status">11-05 11:41 · user</span></div>
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">状态 进行中 → 待验收</span><span class="dep-status">11-05 12:06 · trae</span></div>
+                <div class="dep-row"><span class="dep-dot"></span><span class="dep-name">评论 +1</span><span class="dep-status">11-05 12:07 · trae</span></div>
+              </div></div>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="附件">
+            <button class="fold-head" id="attachHead" aria-expanded="false" data-testid="fold-attachments">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">附件</span>
+              <span class="fold-sum">2 张图片</span>
+              <span class="spacer"></span>
+            </button>
+            <div class="fold-body" id="attachBody">
+              <div class="fold-inner"><div class="fold-content">
+                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">detail-before.png</span><span class="dep-status">820 KB · 已投递</span></div>
+                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">detail-after.png</span><span class="dep-status">640 KB · 已投递</span></div>
+              </div></div>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="原始数据">
+            <button class="fold-head" id="rawHead" aria-expanded="false" data-testid="fold-raw">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">原始 JSON</span>
+              <span class="fold-sum">开发排查用</span>
+              <span class="spacer"></span>
+              <span class="badge">默认折叠</span>
+            </button>
+            <div class="fold-body" id="rawBody">
+              <div class="fold-inner"><div class="fold-content">
+                <pre style="margin:0;font-size:10px;line-height:1.5;color:var(--ab-ink-2);background:var(--ab-raised);border-radius:6px;padding:8px;overflow:auto">{
+  "id": "23e916b4-7d49-4bbd-a52a-8bf003c7c77c",
+  "status": "进行中",
+  "priority": "中",
+  "due_date": "2026-11-07",
+  "due_time": "18:00",
+  "claimed_by": "trae-detail-redesign",
+  "blocked_by_count": 2,
+  "blocked_by_open_count": 1,
+  "updated_at": 1793885870791
+}</pre>
+              </div></div>
+            </div>
+          </section>
+
+          <section class="fold" aria-label="审计证据">
+            <button class="fold-head" id="auditHead" aria-expanded="false" data-testid="fold-audit">
+              <span class="fold-chevron" aria-hidden="true">▸</span>
+              <span class="fold-title">审计证据</span>
+              <span class="fold-sum">2 条 · 收尾记录</span>
+              <span class="spacer"></span>
+              <span class="badge">默认折叠</span>
+            </button>
+            <div class="fold-body" id="auditBody">
+              <div class="fold-inner"><div class="fold-content">
+                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">cmd: pnpm --filter @agentboard/web build</span><span class="dep-status">本轮未接真实数据</span></div>
+                <div class="dep-row"><span class="dep-dot done"></span><span class="dep-name">issue: 23e916b4-…（本卡）</span><span class="dep-status">原型验收证据</span></div>
+              </div></div>
+            </div>
+          </section>
+        </div>
+
+        <footer class="action-bar" aria-label="任务操作">
+          <div class="primary-slot">
+            <button class="btn btn-quiet" id="secondaryAction" hidden data-testid="secondary-action">退回进行中</button>
+            <button class="btn btn-primary" id="primaryAction" data-testid="primary-action">标记待验收</button>
+          </div>
+          <div class="more-wrap">
+            <button class="btn btn-icon" id="moreBtn" aria-label="更多操作" aria-haspopup="true" aria-expanded="false" data-testid="more-actions">⋯</button>
+            <div class="more-menu" id="moreMenu" hidden role="menu" aria-label="更多操作">
+              <button class="more-item" id="releaseItem" role="menuitem" data-testid="release-action">强制释放占用</button>
+              <button class="more-item" id="copyIdItem" role="menuitem" data-testid="copy-id-action">复制任务 ID</button>
+              <div class="pop-divider"></div>
+              <div class="more-confirm" id="deleteZone">
+                <button class="more-item danger" id="deleteItem" role="menuitem" data-testid="delete-action">删除任务</button>
+              </div>
+              <div class="more-confirm" id="deleteConfirm" hidden>
+                <p>确认删除？关联会话与消息将一并删除，且不可撤销。</p>
+                <div class="more-confirm-actions">
+                  <button class="btn btn-sm" id="deleteCancel">取消</button>
+                  <button class="btn btn-sm" id="deleteConfirmBtn" style="background:var(--ab-del);border-color:var(--ab-del);color:#fff">确认删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </footer>
+
+        <span class="proto-watermark">原型 · 非真实数据</span>
+      </aside>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var clamp = function (n, min, max) { return Math.min(max, Math.max(min, n)); };
+
+  // ---------- 演示数据 ----------
+  var state = {
+    title: '【DETAIL-REDESIGN】任务详情界面重做：脑暴 + 可点原型',
+    status: '进行中',
+    priority: '中',
+    dueDate: '2026-11-07',
+    dueTime: '18:00',
+    owner: 'trae-detail-redesign',
+    editing: false,
+    draft: '',
+    draftRestored: false,
+    stale: false
+  };
+
+  // ---------- 工具 ----------
+  var toastTimer = null;
+  function toast(text) {
+    var el = $('toast');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 1800);
+  }
+
+  function closePopovers(except) {
+    ['statusPop', 'priorityPop', 'duePop', 'ownerPop'].forEach(function (id) {
+      if (id !== except) $(id).hidden = true;
+    });
+  }
+  function closeMore() {
+    $('moreMenu').hidden = true;
+    $('moreBtn').setAttribute('aria-expanded', 'false');
+  }
+
+  // ---------- 标题：显示 / 编辑 ----------
+  var TITLE_MAX = 200;
+
+  function refreshTitleDisplay() {
+    $('panelTitle').textContent = state.title;
+    $('panelTitle').title = state.title;
+  }
+
+  function setEditing(on) {
+    state.editing = on;
+    $('titleDisplay').hidden = on;
+    $('titleEditWrap').hidden = !on;
+    $('editBar').hidden = !on;
+    $('staleBanner').hidden = !(on && state.stale);
+    $('titleError').hidden = true;
+    $('titleError').textContent = '';
+    if (!on) {
+      $('titleDirty').hidden = true;
+    }
+  }
+
+  function updateCounter() {
+    var input = $('titleInput');
+    var len = input.value.length;
+    var counter = $('titleCounter');
+    counter.textContent = len + ' / ' + TITLE_MAX;
+    counter.classList.toggle('over', len > TITLE_MAX);
+  }
+
+  function startEdit() {
+    closePopovers();
+    closeMore();
+    state.draft = state.editing ? $('titleInput').value : state.title;
+    setEditing(true);
+    var input = $('titleInput');
+    input.value = state.draft;
+    updateCounter();
+    if (state.draftRestored) {
+      showTitleError('已恢复上次未保存的草稿。');
+      state.draftRestored = false;
+    }
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    markProto('edit');
+  }
+
+  function showTitleError(message) {
+    var el = $('titleError');
+    el.textContent = message;
+    el.hidden = false;
+  }
+
+  function commitTitle(force) {
+    var input = $('titleInput');
+    var raw = input.value;
+    var value = raw.trim();
+    if (value === '') {
+      showTitleError('标题不能为空，请填写后再保存。');
+      input.focus();
+      return;
+    }
+    if (value.length > TITLE_MAX) {
+      showTitleError('标题最多 ' + TITLE_MAX + ' 字，当前 ' + value.length + ' 字（已保留你的输入）。');
+      input.focus();
+      return;
+    }
+    if ($('failMode').checked && !force) {
+      showTitleError('保存失败：服务暂时不可用。你的输入已保留，可重试。');
+      return;
+    }
+    if (state.stale && !force) {
+      showTitleError('保存冲突：任务已在 12:04 被更新。你的输入已保留，请选择「载入最新版本」或「仍然保存」。');
+      return;
+    }
+    state.title = value;
+    state.stale = false;
+    refreshTitleDisplay();
+    setEditing(false);
+    toast('标题已保存');
+    markProto(null);
+  }
+
+  function cancelEdit() {
+    state.draftRestored = ($('titleInput').value !== state.title);
+    setEditing(false);
+    state.stale = false;
+    $('staleBanner').hidden = true;
+    refreshTitleDisplay();
+    markProto(null);
+  }
+
+  // ---------- Meta：状态 / 优先级 / 截止 / 负责人 ----------
+  var STATUS_RULES = {
+    '待规划': { primary: '派发任务', secondary: null, badge: null, owner: null, block: true },
+    '进行中': { primary: '标记待验收', secondary: null, badge: '占用中', owner: 'trae-detail-redesign', block: true },
+    '待验收': { primary: '通过验收并关闭', secondary: '退回进行中', badge: null, owner: null, block: false },
+    '已关闭': { primary: '重新打开', secondary: null, badge: null, owner: null, block: false }
+  };
+
+  function applyStatus(status) {
+    state.status = status;
+    var chip = $('statusChip');
+    chip.dataset.status = status;
+    $('statusText').textContent = status;
+    var rule = STATUS_RULES[status];
+    $('primaryAction').textContent = rule.primary;
+    var secondary = $('secondaryAction');
+    if (rule.secondary) { secondary.hidden = false; secondary.textContent = rule.secondary; }
+    else { secondary.hidden = true; }
+
+    var ownerChip = $('ownerChip');
+    if (rule.owner) {
+      ownerChip.classList.remove('unclaimed');
+      $('ownerText').textContent = rule.owner + ' · 12 分钟前';
+    } else {
+      ownerChip.classList.add('unclaimed');
+      $('ownerText').textContent = status === '待验收' ? '待验收 · 无占用' : '未占用';
+    }
+    // 依赖摘要徽标随状态更新（进行中且仍有未解除前置时提示）
+    var badge = $('depBlockBadge');
+    badge.hidden = !rule.block;
+  }
+
+  function applyPriority(priority) {
+    state.priority = priority;
+    var chip = $('priorityChip');
+    chip.dataset.priority = priority;
+    chip.classList.toggle('chip-priority', true);
+    $('priorityText').textContent = '优先级 · ' + priority;
+  }
+
+  function formatDue() {
+    var text;
+    if (state.dueDate === '') { text = '截止 · 未设置'; }
+    else {
+      var md = state.dueDate.slice(5);
+      text = '截止 · ' + md + (state.dueTime ? ' ' + state.dueTime : '');
+    }
+    $('dueText').textContent = text;
+    $('dueChip').classList.toggle('overdue', false);
+  }
+
+  function applyDue() {
+    var d = $('dueDateInput').value;
+    var t = $('dueTimeInput').value;
+    state.dueDate = d;
+    state.dueTime = t;
+    formatDue();
+    $('duePop').hidden = true;
+    toast(d === '' ? '已清除截止时间' : '截止时间已更新');
+  }
+
+  // ---------- 折叠区 ----------
+  var FOLDS = [
+    ['depHead', 'depBody'],
+    ['sessionHead', 'sessionBody'],
+    ['activityHead', 'activityBody'],
+    ['attachHead', 'attachBody'],
+    ['rawHead', 'rawBody'],
+    ['auditHead', 'auditBody']
+  ];
+
+  function setFold(headId, bodyId, open) {
+    var head = $(headId);
+    var body = $(bodyId);
+    head.setAttribute('aria-expanded', open ? 'true' : 'false');
+    body.classList.toggle('open', open);
+  }
+  function isFoldOpen(headId) { return $(headId).getAttribute('aria-expanded') === 'true'; }
+
+  FOLDS.forEach(function (pair) {
+    $(pair[0]).addEventListener('click', function () {
+      setFold(pair[0], pair[1], !isFoldOpen(pair[0]));
+      markProto(null);
+    });
+  });
+
+  function openAllFolds(open) {
+    FOLDS.forEach(function (pair) { setFold(pair[0], pair[1], open); });
+  }
+
+  function setDescriptionExpanded(open) {
+    $('descBody').classList.toggle('clamped', !open);
+    $('descToggle').textContent = open ? '收起' : '展开';
+    $('descToggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  $('descToggle').addEventListener('click', function () {
+    setDescriptionExpanded($('descBody').classList.contains('clamped'));
+  });
+
+  var commentsExpanded = false;
+  $('commentToggle').addEventListener('click', function () {
+    commentsExpanded = !commentsExpanded;
+    document.querySelectorAll('.comment-extra').forEach(function (el) { el.hidden = !commentsExpanded; });
+    $('commentToggle').textContent = commentsExpanded ? '收起' : '查看全部';
+    $('commentToggle').setAttribute('aria-expanded', commentsExpanded ? 'true' : 'false');
+  });
+
+  // ---------- 原型状态切换 ----------
+  function markProto(name) {
+    ['default', 'edit', 'expanded', 'narrow'].forEach(function (key) {
+      var btn = $('proto' + key.charAt(0).toUpperCase() + key.slice(1));
+      if (btn) btn.classList.toggle('is-on', key === name);
+    });
+  }
+
+  function protoDefault() {
+    cancelEditIfNeeded();
+    openAllFolds(false);
+    setDescriptionExpanded(false);
+    commentsExpanded = false;
+    document.querySelectorAll('.comment-extra').forEach(function (el) { el.hidden = true; });
+    $('commentToggle').textContent = '查看全部';
+    $('stage').classList.remove('narrow');
+    state.stale = false;
+    markProto('default');
+  }
+
+  function protoEdit() {
+    openAllFolds(false);
+    setDescriptionExpanded(false);
+    $('stage').classList.remove('narrow');
+    startEdit();
+  }
+
+  function protoExpanded() {
+    cancelEditIfNeeded();
+    openAllFolds(true);
+    setDescriptionExpanded(true);
+    commentsExpanded = true;
+    document.querySelectorAll('.comment-extra').forEach(function (el) { el.hidden = false; });
+    $('commentToggle').textContent = '收起';
+    $('stage').classList.remove('narrow');
+    markProto('expanded');
+  }
+
+  function protoNarrow() {
+    cancelEditIfNeeded();
+    openAllFolds(false);
+    setDescriptionExpanded(false);
+    $('stage').classList.add('narrow');
+    $('panelScroll').scrollTop = 0;
+    markProto('narrow');
+  }
+
+  function cancelEditIfNeeded() {
+    if (state.editing) {
+      state.draftRestored = ($('titleInput').value !== state.title);
+      setEditing(false);
+      refreshTitleDisplay();
+      state.stale = false;
+      $('staleBanner').hidden = true;
+    }
+  }
+
+  $('protoDefault').addEventListener('click', protoDefault);
+  $('protoEdit').addEventListener('click', protoEdit);
+  $('protoExpanded').addEventListener('click', protoExpanded);
+  $('protoNarrow').addEventListener('click', protoNarrow);
+
+  // ---------- 标题编辑交互 ----------
+  $('editBtn').addEventListener('click', startEdit);
+  $('saveBtn').addEventListener('click', function () { commitTitle(false); });
+  $('cancelBtn').addEventListener('click', cancelEdit);
+  $('titleInput').addEventListener('input', function () {
+    $('titleDirty').hidden = $('titleInput').value === state.title;
+    $('titleError').hidden = true;
+    updateCounter();
+  });
+  $('titleInput').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); commitTitle(false); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancelEdit(); }
+  });
+  // 点击编辑区外部不自动提交、也不自动取消：避免误保存与丢输入（设计取舍见 DESIGN-NOTES）
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      if (state.editing) { cancelEdit(); }
+      closePopovers(); closeMore();
+    }
+  });
+  $('closeBtn').addEventListener('click', function () {
+    toast('原型：关闭面板（真实组件走 dismiss）');
+  });
+  $('reloadTitle').addEventListener('click', function () {
+    state.stale = false;
+    $('staleBanner').hidden = true;
+    $('titleInput').value = state.title;
+    updateCounter();
+    toast('已载入最新版本，你的输入已被覆盖');
+  });
+  $('keepMine').addEventListener('click', function () {
+    state.stale = false;
+    $('staleBanner').hidden = true;
+    toast('保留你的输入；保存时将强制写入');
+  });
+
+  // ---------- Popover ----------
+  $('statusChip').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willShow = $('statusPop').hidden;
+    closePopovers('statusPop');
+    $('statusPop').hidden = !willShow;
+  });
+  $('priorityChip').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willShow = $('priorityPop').hidden;
+    closePopovers('priorityPop');
+    $('priorityPop').hidden = !willShow;
+  });
+  $('dueChip').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willShow = $('duePop').hidden;
+    closePopovers('duePop');
+    $('duePop').hidden = !willShow;
+    $('dueDateInput').value = state.dueDate;
+    $('dueTimeInput').value = state.dueTime;
+  });
+  $('ownerChip').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willShow = $('ownerPop').hidden;
+    closePopovers('ownerPop');
+    $('ownerPop').hidden = !willShow;
+  });
+
+  $('statusPop').addEventListener('click', function (e) {
+    var item = e.target.closest('[data-status]');
+    if (!item) return;
+    applyStatus(item.dataset.status);
+    this.querySelectorAll('[data-status]').forEach(function (el) {
+      el.classList.toggle('is-on', el.dataset.status === state.status);
+    });
+    $('statusPop').hidden = true;
+    toast('状态已改为「' + state.status + '」');
+  });
+  $('priorityPop').addEventListener('click', function (e) {
+    var item = e.target.closest('[data-priority]');
+    if (!item) return;
+    applyPriority(item.dataset.priority);
+    this.querySelectorAll('[data-priority]').forEach(function (el) {
+      el.classList.toggle('is-on', el.dataset.priority === state.priority);
+    });
+    $('priorityPop').hidden = true;
+    toast('优先级已改为「' + state.priority + '」');
+  });
+  $('dueApply').addEventListener('click', applyDue);
+  $('dueClear').addEventListener('click', function () {
+    $('dueDateInput').value = '';
+    $('dueTimeInput').value = '';
+    applyDue();
+  });
+
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('.popover') && !e.target.closest('.chip')) closePopovers();
+    if (!e.target.closest('.more-wrap')) closeMore();
+  });
+
+  // ---------- 底部操作条 ----------
+  $('primaryAction').addEventListener('click', function () {
+    if (state.status === '待规划') {
+      applyStatus('进行中');
+      $('statusPop').querySelectorAll('[data-status]').forEach(function (el) {
+        el.classList.toggle('is-on', el.dataset.status === '进行中');
+      });
+      toast('原型：已派发（真实流程打开派发弹窗）');
+    } else if (state.status === '进行中') {
+      applyStatus('待验收');
+      toast('已标记待验收');
+    } else if (state.status === '待验收') {
+      applyStatus('已关闭');
+      toast('已通过验收并关闭');
+    } else {
+      applyStatus('待规划');
+      toast('已重新打开');
+    }
+  });
+  $('secondaryAction').addEventListener('click', function () {
+    applyStatus('进行中');
+    toast('已退回进行中');
+  });
+  $('moreBtn').addEventListener('click', function (e) {
+    e.stopPropagation();
+    var willShow = $('moreMenu').hidden;
+    closePopovers();
+    closeMore();
+    $('moreMenu').hidden = !willShow;
+    $('moreBtn').setAttribute('aria-expanded', willShow ? 'true' : 'false');
+  });
+  $('releaseItem').addEventListener('click', function () {
+    closeMore();
+    toast('原型：强制释放需行内二次确认（沿用 ConfirmInline）');
+  });
+  $('copyIdItem').addEventListener('click', function () {
+    closeMore();
+    toast('已复制任务 ID（原型）');
+  });
+  $('deleteItem').addEventListener('click', function () {
+    $('deleteZone').hidden = true;
+    $('deleteConfirm').hidden = false;
+  });
+  $('deleteCancel').addEventListener('click', function () {
+    $('deleteZone').hidden = false;
+    $('deleteConfirm').hidden = true;
+  });
+  $('deleteConfirmBtn').addEventListener('click', function () {
+    closeMore();
+    $('deleteZone').hidden = false;
+    $('deleteConfirm').hidden = true;
+    toast('原型：删除不可用（未接真实数据）');
+  });
+
+  // ---------- 折叠区的「添加前置」按钮 ----------
+  $('depAddBtn').addEventListener('click', function () {
+    toast('原型：添加前置（真实流程为搜索 + 服务端 409 兜底）');
+  });
+
+  // ---------- 暗色 ----------
+  $('darkMode').addEventListener('change', function () {
+    document.documentElement.classList.toggle('dark', this.checked);
+  });
+
+  // ---------- 初始化 ----------
+  refreshTitleDisplay();
+  applyStatus('进行中');
+  applyPriority('中');
+  formatDue();
+})();
+</script>
+</body>
+</html>
