@@ -53,6 +53,13 @@ describe('ANCHOR-DETAIL 选边算法', () => {
     expect(computeDetailAnchor(null, 1440)).toEqual({ mode: 'drawer' });
   });
 
+  it('D4 回归：锚定高度=列高（吸底条贴面板底边，而不是视口底边）', () => {
+    const anchor = computeDetailAnchor({ left: 0, right: 300, top: 120, height: 480 }, 1440);
+    if (anchor.mode !== 'anchored') throw new Error('expected anchored');
+    expect(anchor.height).toBe(480);
+    expect(anchor.top).toBe(120);
+  });
+
   it('面板宽度 clamp(360, 34vw, 460)', () => {
     expect(detailPanelWidth(900)).toBe(360);
     expect(detailPanelWidth(1000)).toBe(360);

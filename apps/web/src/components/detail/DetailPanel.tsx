@@ -1,9 +1,8 @@
 /**
  * 任务详情视图（§7.4）：
- * - 字段区：标题 / 描述（markdown 预览与编辑切换）/ 优先级 / 标签（逗号分隔），
+ * - 字段区：标题 / 描述（markdown 预览与编辑切换）/ 标签（逗号分隔），
  *   onChange 防抖 500ms 合并 PATCH（占用中也可编辑，agent 经 kb show 拉取最新）；
- * - 操作区按状态条件化：派发（状态∈{待规划,进行中}且未占用）/ 会话进行中（禁用）+
- *   强制释放 + 标记待验收（占用中）/ 删除（非占用中，二次确认 → DELETE → 关面板）；
+ * - 操作区：D4 起收进底部吸底条（ActionBar，1 主 + ⋯ 溢出；危险操作在 ⋯ 内做行内确认）；
  * - 关联会话列表（点击切聊天）与评论区。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,9 +20,9 @@ import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { getIssueDescendantIds } from '../../lib/issueTree';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
+import { ActionBar } from './ActionBar';
 import { CommentThread } from './CommentThread';
 import { LabelChipsEditor } from './LabelChipsEditor';
-import { ConfirmInline } from '../ui/ConfirmInline';
 import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
@@ -88,9 +87,6 @@ export function DetailPanel() {
   const [descExpanded, setDescExpanded] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [claimBlocked, setClaimBlocked] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
-  /** F-09：强制释放先展开行内确认（写明会断开占用） */
-  const [confirmingRelease, setConfirmingRelease] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -103,8 +99,6 @@ export function DetailPanel() {
     setDueTime(issue.due_time ?? '');
     setDescEditing(false);
     setDescExpanded(false);
-    setConfirmingDelete(false);
-    setConfirmingRelease(false);
     setClaimBlocked(false);
     // 仅在切换 issue 时重置本地编辑
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -357,163 +351,7 @@ export function DetailPanel() {
           </div>
         </section>
 
-        {/* 操作区（状态条件化）：D3 起视觉沉底（order-last），D4 会改成吸底条 */}
-        <section data-testid="detail-actions" aria-label="操作" className="order-last space-y-2 border-t border-hairline pt-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">操作</h3>
-          <div className="flex flex-wrap items-center gap-2">
-            {dispatchable && (
-              <button
-                type="button"
-                data-testid="dispatch-btn"
-                onClick={() => {
-                  // claim 入口前端先拦：有未解除前置时列出 blocker 清单，不开派发弹窗（服务端 409 仍是唯一防线）
-                  if (openBlockerCount(issue) > 0) {
-                    setClaimBlocked(true);
-                    return;
-                  }
-                  setDispatchOpen(true);
-                }}
-                className="rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70"
-              >
-                派发
-              </button>
-            )}
-            {/* F-01：待验收卡的验收动作（关闭口径与状态下拉一致：PATCH status=已关闭） */}
-            {issue.status === '待验收' && (
-              <button
-                type="button"
-                data-testid="accept-close-btn"
-                onClick={acceptAndClose}
-                disabled={changeStatus.isPending || closeBlocked}
-                title={closeBlocked ? '存在未关闭的子孙任务，需先全部关闭' : undefined}
-                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                通过验收并关闭
-              </button>
-            )}
-            {issue.status === '待验收' && (
-              <button
-                type="button"
-                data-testid="reopen-running-btn"
-                onClick={() => changeStatus.mutate('进行中')}
-                disabled={changeStatus.isPending}
-                className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
-              >
-                退回进行中
-              </button>
-            )}
-            {claimed && (
-              <>
-                <button
-                  type="button"
-                  data-testid="session-active-btn"
-                  disabled
-                  title={`占用者：${issue.claimed_by}`}
-                  className="rounded bg-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-500 disabled:cursor-not-allowed dark:bg-neutral-800 dark:text-neutral-400"
-                >
-                  会话进行中
-                </button>
-                {/* F-09：强制释放先二次确认（行内，不弹模态），文案写明会断开占用 */}
-                {confirmingRelease ? (
-                  <ConfirmInline
-                    message="强制释放会立即断开当前会话的占用，任务回到可领取状态；执行中的会话不会自动结束。"
-                    confirmLabel="确认释放"
-                    messageTestId="release-confirm-text"
-                    confirmTestId="release-confirm"
-                    cancelTestId="release-cancel"
-                    busy={release.isPending}
-                    onConfirm={() => {
-                      setConfirmingRelease(false);
-                      release.mutate();
-                    }}
-                    onCancel={() => setConfirmingRelease(false)}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    data-testid="release-btn"
-                    onClick={() => setConfirmingRelease(true)}
-                    disabled={release.isPending}
-                    className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
-                  >
-                    强制释放
-                  </button>
-                )}
-                <button
-                  type="button"
-                  data-testid="done-btn"
-                  onClick={() => markDone.mutate()}
-                  disabled={markDone.isPending}
-                  className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
-                >
-                  标记待验收
-                </button>
-              </>
-            )}
-            {!claimed &&
-              (confirmingDelete ? (
-                // F-08：与 A05 会话删除共用 ConfirmInline
-                <ConfirmInline
-                  message={
-                    directChildCount > 0
-                      ? `该任务有 ${directChildCount} 个直接子任务；先移动或删除子任务后才能删除此任务`
-                      : '确认删除？关联会话与消息将一并删除'
-                  }
-                  confirmLabel="确认删除"
-                  messageTestId="delete-confirm-text"
-                  confirmTestId="delete-confirm"
-                  cancelTestId="delete-cancel"
-                  busy={remove.isPending}
-                  disabled={directChildCount > 0}
-                  onConfirm={() => remove.mutate()}
-                  onCancel={() => setConfirmingDelete(false)}
-                />
-              ) : (
-                // V-05：删除降为文本按钮（危险动作不抢主按钮视觉）
-                <button
-                  type="button"
-                  data-testid="delete-btn"
-                  onClick={() => setConfirmingDelete(true)}
-                  className="px-1 text-xs text-red-600 underline underline-offset-2 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                >
-                  删除
-                </button>
-              ))}
-          </div>
-          {actionError !== null && (
-            <p role="alert" data-testid="detail-action-error" className="text-xs text-red-600 dark:text-red-400">
-              {actionError}
-            </p>
-          )}
-          {claimBlocked && (
-            <div
-              data-testid="claim-blocked-panel"
-              className="rounded border border-hairline bg-surface-raised p-2 text-xs text-ink-2"
-            >
-              <p className="font-medium">存在 {openBlockerCount(issue)} 项未解除的前置任务，已拦住本次领取（派发）：</p>
-              <ul className="mt-1 list-disc space-y-0.5 pl-4">
-                {(dependencies?.blockers ?? [])
-                  .filter((blocker) => !blocker.resolved)
-                  .map((blocker) => (
-                    <li key={blocker.issue_id} data-testid={`claim-blocked-${blocker.issue_id}`}>
-                      {blocker.title}（{blocker.status}）
-                    </li>
-                  ))}
-              </ul>
-              {dependencies === undefined && (
-                <p data-testid="claim-blocked-loading" className="mt-1">正在加载前置清单…</p>
-              )}
-              <button
-                type="button"
-                data-testid="claim-blocked-dismiss"
-                onClick={() => setClaimBlocked(false)}
-                className="mt-2 rounded border border-hairline px-2 py-0.5 text-xs text-ink-2 transition-colors hover:bg-accent-soft"
-              >
-                知道了
-              </button>
-            </div>
-          )}
-        </section>
+        {/* D4：操作区已迁出滚动区，收进底部吸底条（见 scroll 容器之后的 ActionBar） */}
 
         {/* 依赖：D3 起默认只占一行摘要，点开后才显示三组明细与添加入口 */}
         <DependencySection issue={issue} />
@@ -550,6 +388,39 @@ export function DetailPanel() {
           </p>
         </FoldSection>
       </div>
+
+      {/* D4：吸底操作条（flex 末位子项，贴面板底边；不随滚动区内容滚走） */}
+      <ActionBar
+        issue={issue}
+        dispatchable={dispatchable}
+        claimed={claimed}
+        closeBlocked={closeBlocked}
+        directChildCount={directChildCount}
+        actionError={actionError}
+        claimBlocked={claimBlocked}
+        blockers={dependencies?.blockers ?? []}
+        dependenciesLoaded={dependencies !== undefined}
+        statusPending={changeStatus.isPending}
+        releasePending={release.isPending}
+        donePending={markDone.isPending}
+        deletePending={remove.isPending}
+        onDispatch={() => {
+          // claim 入口前端先拦：有未解除前置时列出 blocker 清单，不开派发弹窗（服务端 409 仍是唯一防线）
+          if (openBlockerCount(issue) > 0) {
+            setClaimBlocked(true);
+            return;
+          }
+          setDispatchOpen(true);
+        }}
+        onAcceptClose={acceptAndClose}
+        onReopenRunning={() => changeStatus.mutate('进行中')}
+        // 已关闭→重新打开：回到「待规划」（可再派发）；进行中 只能由 claim/done 流转，不能手动跳过去
+        onReopenClosed={() => changeStatus.mutate('待规划')}
+        onRelease={() => release.mutate()}
+        onDone={() => markDone.mutate()}
+        onDelete={() => remove.mutate()}
+        onDismissClaimBlocked={() => setClaimBlocked(false)}
+      />
 
       {dispatchOpen && workspacePath !== '' && (
         <DispatchDialog issue={issue} workspacePath={workspacePath} onClose={() => setDispatchOpen(false)} />

@@ -108,43 +108,69 @@ beforeEach(() => {
   usePanelStore.setState({ view: null, issueId: null, sessionId: null, rightOpen: false });
 });
 
-describe('DetailPanel 操作区四态', () => {
-  it('待规划未占用：派发 + 删除，无占用操作', async () => {
+describe('DetailPanel 操作区四态（D4 吸底条）', () => {
+  it('待规划未占用：吸底主按钮「派发任务」；⋯ 菜单含复制 ID 与删除，无占用操作', async () => {
     mockDetailApi(makeIssue());
     renderDetail();
-    expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('detail-action-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('dispatch-btn')).toHaveTextContent('派发任务');
+    // 会话进行中禁用按钮已按 D4 删除，占用状态由负责人 chip 表达
     expect(screen.queryByTestId('session-active-btn')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('done-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('actionbar-menu')).toBeInTheDocument();
+    expect(screen.getByTestId('copy-id-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
   });
 
-  it('进行中占用：会话进行中（禁用）+ 强制释放 + 标记待验收，无派发/删除', async () => {
+  it('进行中占用：主按钮「标记待验收」；⋯ 内是强制释放，无派发/删除', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
     renderDetail();
-    expect(await screen.findByTestId('session-active-btn')).toBeDisabled();
-    expect(screen.getByTestId('release-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('done-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('done-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('detail-action-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-active-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('release-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('delete-btn')).not.toBeInTheDocument();
   });
 
-  it('待验收未占用：仅删除', async () => {
+  it('待验收未占用：通过验收并关闭 + 退回进行中；⋯ 含复制 ID/删除', async () => {
     mockDetailApi(makeIssue({ status: '待验收' }));
     renderDetail();
-    expect(await screen.findByTestId('delete-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('accept-close-btn')).toBeInTheDocument();
+    expect(screen.getByTestId('reopen-running-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
   });
 
-  it('已关闭未占用：仅删除', async () => {
-    mockDetailApi(makeIssue({ status: '已关闭' }));
+  it('已关闭未占用：主按钮「重新打开」（PATCH status=待规划）；⋯ 含删除', async () => {
+    mockDetailApi(makeIssue({ status: '已关闭', updated_at: 3 }));
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(makeIssue({ status: '待规划', updated_at: 9 }));
+      }),
+    );
     renderDetail();
-    expect(await screen.findByTestId('delete-btn')).toBeInTheDocument();
-    expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByTestId('reopen-btn'));
+    await waitFor(() => expect(body).toMatchObject({ status: '待规划' }));
+    // 重开后回到「待规划」，吸底主按钮随即变成派发任务
+    expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
   });
 
-  it('强制释放：POST release 后回到可派发态', async () => {
+  it('强制释放：⋯ 内先展开行内二次确认，确认后 POST release 回到可派发态', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
     let releaseCalled = false;
     server.use(
@@ -156,6 +182,7 @@ describe('DetailPanel 操作区四态', () => {
       }),
     );
     renderDetail();
+    await userEvent.click(await screen.findByTestId('actionbar-more'));
     await userEvent.click(await screen.findByTestId('release-btn'));
     // F-09：强制释放先展开行内二次确认，确认后才发请求
     expect(await screen.findByTestId('release-confirm-text')).toBeInTheDocument();
@@ -177,7 +204,30 @@ describe('DetailPanel 操作区四态', () => {
     renderDetail();
     await userEvent.click(await screen.findByTestId('done-btn'));
     await waitFor(() => expect(doneBody).toEqual({ agent_id: 'user' }));
-    await waitFor(() => expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument());
+    expect(await screen.findByTestId('accept-close-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
+  });
+
+  it('⋯ 菜单 Esc 关闭并把焦点还给触发器', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const more = await screen.findByTestId('actionbar-more');
+    await userEvent.click(more);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('actionbar-menu')).not.toBeInTheDocument();
+    expect(screen.getByTestId('actionbar-more')).toHaveAttribute('aria-expanded', 'false');
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('actionbar-more')));
+  });
+
+  it('窄屏收口契约：主按钮在可撑满的主槽内，⋯ 触发器始终保留', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const primary = await screen.findByTestId('dispatch-btn');
+    // CSS（index.css .detail-action-bar .ab-primary-slot）负责 <920px 时 flex:1 占满；这里锁结构契约
+    expect(primary.closest('.ab-primary-slot')).not.toBeNull();
+    expect(screen.getByTestId('detail-action-bar').className).toContain('detail-action-bar');
+    expect(screen.getByTestId('actionbar-more')).toBeInTheDocument();
   });
 });
 
@@ -942,13 +992,13 @@ describe('DETAIL-D3 信息沉降（描述 clamp / 评论 2 条 / 折叠区 / 操
       expect(await screen.findByTestId(id)).toBeInTheDocument();
       expect(screen.getByTestId(`${id}-toggle`)).toHaveAttribute('aria-expanded', 'false');
     }
-    // 首屏顺序：依赖摘要 → 评论 → 折叠区；操作区视觉沉底（order-last，D4 再改吸底）
+    // 首屏顺序：依赖摘要 → 评论 → 折叠区；操作条吸底（D4：在滚动区之后，不随内容滚走）
     const deps = screen.getByTestId('detail-dependencies');
     const comments = screen.getByTestId('detail-comments');
     const raw = screen.getByTestId('fold-raw-json');
     expect(deps.compareDocumentPosition(comments) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(comments.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId('detail-actions').className).toContain('order-last');
+    expect(raw.compareDocumentPosition(screen.getByTestId('detail-action-bar')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     const toggle = screen.getByTestId('fold-raw-json-toggle');
     await userEvent.click(toggle);
@@ -966,11 +1016,13 @@ describe('DetailPanel 删除二次确认', () => {
       return new HttpResponse(null, { status: 204 });
     }));
     renderDetail();
-    await userEvent.click(await screen.findByTestId('delete-btn'));
+    await userEvent.click(await screen.findByTestId('actionbar-more'));
+    await userEvent.click(screen.getByTestId('delete-btn'));
     expect(screen.getByTestId('delete-confirm-text')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('delete-cancel'));
     expect(screen.queryByTestId('delete-confirm-text')).not.toBeInTheDocument();
 
+    // 取消后菜单保持展开（原型口径），无需再点 ⋯
     await userEvent.click(screen.getByTestId('delete-btn'));
     await userEvent.click(screen.getByTestId('delete-confirm'));
     await waitFor(() => expect(deleted).toBe(true));
@@ -992,8 +1044,8 @@ describe('DetailPanel 删除二次确认', () => {
       }),
     );
     renderDetail();
-    await userEvent.click(await screen.findByTestId('delete-btn'));
-
+    await userEvent.click(await screen.findByTestId('actionbar-more'));
+    await userEvent.click(screen.getByTestId('delete-btn'));
     expect(await screen.findByTestId('delete-confirm-text')).toHaveTextContent('该任务有 1 个直接子任务');
     expect(screen.getByTestId('delete-confirm-text')).toHaveTextContent('先移动或删除子任务');
     expect(screen.getByTestId('delete-confirm')).toBeDisabled();
