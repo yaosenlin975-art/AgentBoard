@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter } from '@agentboard/adapters';
-import type { WsEvent } from '@agentboard/shared';
+import type { ServerWsEvent } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -66,7 +66,7 @@ afterEach(() => {
 
 describe('空闲起轮', () => {
   it('user 消息落库、runTurn 参数正确、事件经 broadcaster 可订阅、正常结束', async () => {
-    const events: WsEvent[] = [];
+    const events: ServerWsEvent[] = [];
     setBroadcaster((e) => events.push(e));
 
     const session = await newSession({ model: 'm1', prompt: '第一轮指令' });
@@ -194,7 +194,7 @@ describe('全局并发槽位', () => {
 
 describe('运行时态可见（session.runtime）', () => {
   it('sendToSession 入队：getSessionRuntime 计数与文本副本正确且广播；轮尾合并后 queued_count 归零广播', async () => {
-    const events: WsEvent[] = [];
+    const events: ServerWsEvent[] = [];
     setBroadcaster((e) => events.push(e));
     const held: FakeTurnControl[] = [];
     hangFirstTurn(held);
@@ -230,7 +230,7 @@ describe('运行时态可见（session.runtime）', () => {
 
   it('maxConcurrentTurns=1：等槽位轮次 waiting_slot=true 并广播，槽位释放复位；等槽位期间 stop 复位且队列保留', async () => {
     initSessionManager(t.db, fakeResolver, { maxConcurrentTurns: 1 });
-    const events: WsEvent[] = [];
+    const events: ServerWsEvent[] = [];
     setBroadcaster((e) => events.push(e));
     const held: FakeTurnControl[] = [];
     adapter.script = (control) => {
@@ -513,7 +513,7 @@ describe('事件聚合', () => {
   });
 
   it('thinking delta 聚合为一条 kind:thinking event 消息；tool 切分后同点位落库；session.event 照常广播', async () => {
-    const events: WsEvent[] = [];
+    const events: ServerWsEvent[] = [];
     setBroadcaster((e) => events.push(e));
     adapter.script = (control) => {
       control.emit({ type: 'thinking', delta: '先想' });

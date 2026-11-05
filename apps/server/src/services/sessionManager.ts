@@ -4,7 +4,7 @@
  * 模块级单例（不导出类）：Task 9 启动时 initSessionManager(db, getAdapter, { maxConcurrentTurns }) 装配；
  * comments 服务经 comments.setSessionSender(sendToSession) 接入评论唤醒。
  */
-import type { Message, Session, WsEvent } from '@agentboard/shared';
+import type { Message, MessageMeta, ServerWsEvent, Session } from '@agentboard/shared';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import type { Db } from '../db/connection.js';
@@ -15,6 +15,9 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
+import { failOpenTurns } from '../db/repos/sessionTurn.js';
+import { initialToolMeta } from './messageMeta.js';
+import { beginTurn as startTurnTracking, type TurnTracker } from './turnObservation.js';
 import { classifySessionError, looksLikeErrorOutput, type SessionErrorSignal } from './messageSignals.js';
 import {
   markIssueAttachmentsDelivered,
@@ -72,6 +75,8 @@ interface SessionState {
   /** 当前轮次正在等全局并发槽位（beginTurn acquireSlot 窗口） */
   waitingSlot: boolean;
   current: TurnContext | null;
+  /** CHAT-TURN1：当前轮次的观测器（session_turn 唯一写入句柄；无在途轮次为 null） */
+  tracker: TurnTracker | null;
 }
 
 interface TurnInput {
@@ -81,6 +86,8 @@ interface TurnInput {
   retryUnknownAttachmentIds: string[];
   /** CHAT-IMG-DELIVERY：附件绑定在 session_attachment（聊天入口），投递状态走会话版 */
   sessionAttachment: boolean;
+  /** CHAT-TURN1 #6：本条输入落库的 user 消息 id（轮次行后建，起轮时回填 turn_id） */
+  messageIds?: string[];
 }
 
 /** 会话运行时态（内存，不入库）：队列长度/等待槽位/排队文本副本 */
@@ -96,7 +103,14 @@ let maxConcurrentTurns = 3;
 let activeTurns = 0;
 const slotWaiters: Array<() => void> = [];
 const states = new Map<string, SessionState>();
-let broadcaster: ((event: WsEvent) => void) | null = null;
+let broadcaster: ((event: ServerWsEvent) => void) | null = null;
+/** 在途轮次观测器：usage 节流计时器的归属登记表（复位/删会话时统一停表，避免写已关闭的库） */
+const liveTrackers = new Set<TurnTracker>();
+
+function closeAllTrackers(): void {
+  for (const tracker of liveTrackers) tracker.close();
+  liveTrackers.clear();
+}
 
 function assertAssembled(): Db {
   if (!db) throw new Error('sessionManager 未装配');
@@ -116,6 +130,7 @@ export function initSessionManager(
   resolveAdapter = getAdapter;
   maxConcurrentTurns = opts.maxConcurrentTurns;
   states.clear();
+  closeAllTrackers();
   activeTurns = 0;
   slotWaiters.length = 0;
   broadcaster = null;
@@ -127,6 +142,7 @@ export function resetSessionManager(): void {
   resolveAdapter = null;
   maxConcurrentTurns = 3;
   states.clear();
+  closeAllTrackers();
   activeTurns = 0;
   slotWaiters.length = 0;
   broadcaster = null;
@@ -141,12 +157,12 @@ export function setMaxConcurrentTurns(n: number): void {
   maxConcurrentTurns = n;
 }
 
-/** Task 9 接 WS hub：广播 session.event / message.added / session.changed */
-export function setBroadcaster(fn: (event: WsEvent) => void): void {
+/** Task 9 接 WS hub：广播 session.event / message.added / session.changed（CHAT-TURN1 追加 session.plan / session.usage） */
+export function setBroadcaster(fn: (event: ServerWsEvent) => void): void {
   broadcaster = fn;
 }
 
-function broadcast(event: WsEvent): void {
+function broadcast(event: ServerWsEvent): void {
   broadcaster?.(event);
 }
 
@@ -176,12 +192,28 @@ function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
   return session;
 }
 
-function persistMessage(sessionId: string, role: Message['role'], content: string, signal?: SessionErrorSignal | null): Message {
+/** CHAT-TURN1：轮次归属（#6/#7/#8）；轮次外的消息不传，三列保持 NULL */
+export interface MessageTurnContext {
+  turn_id?: string | null;
+  step_id?: string | null;
+  meta_json?: MessageMeta | null;
+}
+
+function persistMessage(
+  sessionId: string,
+  role: Message['role'],
+  content: string,
+  signal?: SessionErrorSignal | null,
+  turn?: MessageTurnContext,
+): Message {
   const message = addMessage(assertAssembled(), {
     session_id: sessionId,
     role,
     content,
     ...(signal ? { error_code: signal.code, retryable: signal.retryable } : {}),
+    ...(turn?.turn_id ? { turn_id: turn.turn_id } : {}),
+    ...(turn?.step_id ? { step_id: turn.step_id } : {}),
+    ...(turn?.meta_json ? { meta_json: turn.meta_json } : {}),
   });
   broadcast({ type: 'message.added', message });
   return message;
@@ -190,7 +222,7 @@ function persistMessage(sessionId: string, role: Message['role'], content: strin
 function ensureState(sessionId: string): SessionState {
   let state = states.get(sessionId);
   if (!state) {
-    state = { queue: [], turnActive: false, waitingSlot: false, current: null };
+    state = { queue: [], turnActive: false, waitingSlot: false, current: null, tracker: null };
     states.set(sessionId, state);
   }
   return state;
@@ -223,6 +255,13 @@ function broadcastRuntime(sessionId: string): void {
  * 避免残留计数或 id 复用后串态。不 kill、不落库、不广播（拒绝运行中会话后调用，此处在途轮次必为空）。
  */
 export function forgetSession(sessionId: string): void {
+  // CHAT-TURN1：会话行删除后，在途观测器必须停表——否则 usage 节流计时器会往已删除的轮次写库
+  const state = states.get(sessionId);
+  if (state?.tracker) {
+    state.tracker.close();
+    liveTrackers.delete(state.tracker);
+    state.tracker = null;
+  }
   states.delete(sessionId);
 }
 
@@ -295,8 +334,15 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
   ensureState(session.id);
 
   if (prompt.trim() !== '') {
-    persistMessage(session.id, 'user', prompt);
-    void beginTurn(session.id, { prompt, attachments: [], deliveredAttachmentIds: [], retryUnknownAttachmentIds: [], sessionAttachment: false });
+    const userMessage = persistMessage(session.id, 'user', prompt);
+    void beginTurn(session.id, {
+      prompt,
+      attachments: [],
+      deliveredAttachmentIds: [],
+      retryUnknownAttachmentIds: [],
+      sessionAttachment: false,
+      messageIds: [userMessage.id],
+    });
   }
   return getSession(database, session.id)!;
 }
@@ -325,16 +371,16 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
     }
   }
   const state = ensureState(sessionId);
+  // 先落 user 行（空闲/排队都落）；轮次行要到真正起轮才建，所以记下 id 待回填 turn_id
+  const userMessage = persistMessage(sessionId, 'user', text);
   const input: TurnInput = {
     prompt: text,
     attachments,
     deliveredAttachmentIds: delivery.deliveredAttachmentIds ?? [],
     retryUnknownAttachmentIds: delivery.retryUnknownAttachmentIds ?? [],
     sessionAttachment: delivery.sessionAttachment === true,
+    messageIds: [userMessage.id],
   };
-
-  // 先落 user 行（空闲/排队都落）
-  persistMessage(sessionId, 'user', text);
 
   if (state.turnActive) {
     state.queue.push(input);
@@ -383,6 +429,9 @@ export async function recoverOnBoot(database: Db): Promise<void> {
   for (const session of stale) {
     const updated = updateSession(database, session.id, { status: '失败' });
     broadcast({ type: 'session.changed', session: updated });
+    // CHAT-TURN1：会话置失败的同时收口其未结束轮次（否则计划条永远停在 running），
+    // 原因落 awaiting_json.reason = server_restart，机器可判（验收 6）。
+    failOpenTurns(database, session.id, { reason: 'server_restart', message: '服务重启，轮次中断', at: Date.now() });
     if (!session.issue_id) continue;
     const issue = getIssue(database, session.issue_id);
     if (!issue || issue.claimed_by === null || issue.session_id !== session.id) continue;
@@ -418,6 +467,12 @@ async function beginTurn(sessionId: string, input: TurnInput): Promise<void> {
   } catch (err) {
     // 兜底：未预期异常不崩进程，会话置失败
     if (state.current === ctx) {
+      // CHAT-TURN1：漏网的异常也要收口轮次（finish 幂等，executeTurn 已收口时是空操作）
+      if (state.tracker) {
+        state.tracker.finish({ state: 'failed', reason: 'turn_internal_error', message: err instanceof Error ? err.message : String(err) });
+        liveTrackers.delete(state.tracker);
+        state.tracker = null;
+      }
       state.turnActive = false;
       state.current = null;
       try {
@@ -455,10 +510,33 @@ async function executeTurn(
     return;
   }
 
+  // CHAT-TURN1：轮次行在起轮点建立（此后每条早退路径都能收口成带原因的终态）。
+  // 执行器语义不变：这里只旁观 adapter 事件，不增删事件类型、不干预排队/合并/kill。
+  const tracker = startTurnTracking(database, {
+    session_id: sessionId,
+    prompt: input.prompt,
+    user_message_ids: input.messageIds ?? [],
+  }, { broadcast });
+  state.tracker = tracker;
+  liveTrackers.add(tracker);
+  /** 轮次收口（tracker.finish 幂等）：同时把它从会话状态与计时器登记表摘掉 */
+  const finishTurn = (outcome: Parameters<TurnTracker['finish']>[0]): void => {
+    tracker.finish(outcome);
+    liveTrackers.delete(tracker);
+    if (state.tracker === tracker) state.tracker = null;
+  };
+  /** 本轮消息的轮次归属：turn_id 恒定，step_id 取当前打开的工具步骤 */
+  const inTurn = (meta?: MessageMeta) => ({
+    turn_id: tracker.turnId,
+    ...(tracker.currentStepId() ? { step_id: tracker.currentStepId() } : {}),
+    ...(meta ? { meta_json: meta } : {}),
+  });
+
   let adapter: AgentAdapter;
   try {
     adapter = resolve(session.cli);
   } catch (err) {
+    finishTurn({ state: 'failed', reason: 'adapter_resolve_failed', message: err instanceof Error ? err.message : String(err) });
     state.turnActive = false;
     state.current = null;
     await startError(sessionId, err);
@@ -469,6 +547,7 @@ async function executeTurn(
   if (input.attachments.length > 0) {
     detectedCliVersion = await getVerifiedImageInputCliVersion(adapter, session.model ?? undefined) ?? undefined;
     if (!detectedCliVersion) {
+      finishTurn({ state: 'failed', reason: 'image_delivery_unverified', message: '当前 CLI/model 组合没有通过图片输入验证' });
       state.turnActive = false;
       state.current = null;
       await startError(sessionId, new ValidationError('IMAGE_DELIVERY_UNVERIFIED:当前 CLI/model 组合没有通过图片输入验证'));
@@ -479,6 +558,7 @@ async function executeTurn(
       try {
         markSessionAttachmentsSending(database, sessionId, input.deliveredAttachmentIds, Date.now());
       } catch (err) {
+        finishTurn({ state: 'failed', reason: 'attachment_mark_failed', message: err instanceof Error ? err.message : String(err) });
         state.turnActive = false;
         state.current = null;
         await startError(sessionId, err);
@@ -486,6 +566,7 @@ async function executeTurn(
       }
     } else {
       if (!session.issue_id) {
+        finishTurn({ state: 'failed', reason: 'image_attachment_selection_invalid', message: '图片必须绑定到任务' });
         state.turnActive = false;
         state.current = null;
         await startError(sessionId, new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:图片必须绑定到任务'));
@@ -515,6 +596,7 @@ async function executeTurn(
   try {
     handle = adapter.runTurn(opts);
   } catch (err) {
+    finishTurn({ state: 'failed', reason: 'adapter_run_failed', message: err instanceof Error ? err.message : String(err) });
     if (input.attachments.length > 0) markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
     state.turnActive = false;
     state.current = null;
@@ -532,35 +614,49 @@ async function executeTurn(
     textBuf = '';
     // AUDIT-SRV（F-04）：CLI 把额度/限流失败当普通 stdout 打印，按正文形态落 error（否则被当 assistant 正文）
     if (looksLikeErrorOutput(content)) {
-      persistMessage(sessionId, 'error', content, classifySessionError(content));
+      tracker.noteError();
+      persistMessage(sessionId, 'error', content, classifySessionError(content), inTurn());
       return;
     }
-    persistMessage(sessionId, 'assistant', content);
+    persistMessage(sessionId, 'assistant', content, undefined, inTurn());
   };
   const flushThinking = () => {
     if (thinkingBuf === '') return;
     const content = thinkingBuf;
     thinkingBuf = '';
-    persistMessage(sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }));
+    persistMessage(sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }), undefined, inTurn());
   };
   handle.onEvent((event: UnifiedEvent) => {
     broadcast({ type: 'session.event', session_id: sessionId, event });
     switch (event.type) {
       case 'text':
         textBuf += event.delta;
+        tracker.onTextDelta(event.delta);
         break;
       case 'thinking':
         thinkingBuf += event.delta;
+        tracker.onThinkingDelta(event.delta);
         break;
-      case 'tool':
+      case 'tool': {
         flushThinking();
         flushText();
-        persistMessage(sessionId, 'event', JSON.stringify({ name: event.name, input: event.input }));
+        // CHAT-TURN1：一次 tool 事件 = 一个计划步骤（上一步在此收口并回填耗时/成败）
+        const step = tracker.beginStep(event.name);
+        const message = persistMessage(
+          sessionId,
+          'event',
+          JSON.stringify({ name: event.name, input: event.input }),
+          undefined,
+          { turn_id: tracker.turnId, step_id: step.step_id, meta_json: initialToolMeta(step.step_id) },
+        );
+        tracker.registerStepMessage(step.step_id, message.id);
         break;
+      }
       case 'error':
         flushThinking();
         flushText();
-        persistMessage(sessionId, 'error', event.message, classifySessionError(event.message) ?? { code: 'UNKNOWN_ERROR', retryable: true });
+        tracker.noteError();
+        persistMessage(sessionId, 'error', event.message, classifySessionError(event.message) ?? { code: 'UNKNOWN_ERROR', retryable: true }, inTurn());
         break;
       case 'end':
         flushThinking();
@@ -573,6 +669,7 @@ async function executeTurn(
   try {
     result = await handle.result;
   } catch (err) {
+    finishTurn({ state: 'failed', reason: 'adapter_threw', message: err instanceof Error ? err.message : String(err) });
     markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
     throw err;
   }
@@ -584,16 +681,30 @@ async function executeTurn(
     markImageDelivery(database, session, input.deliveredAttachmentIds, result.exitCode === 0 ? 'delivered' : 'unknown', input.sessionAttachment);
   }
 
-  if (state.current !== ctx) return; // 已被新轮次取代：旧结果弃用
-  if (ctx.stopRequested) return; // stop 已置 '已结束' 并保留队列
+  if (state.current !== ctx) {
+    // 已被新轮次取代：旧结果弃用，但旧轮次要收口（否则永远停在 running）
+    finishTurn({ state: 'stopped', reason: 'superseded', message: '同一会话起了新轮次，本轮结果弃用' });
+    return;
+  }
+  if (ctx.stopRequested) {
+    finishTurn({ state: 'stopped', reason: 'user_stop', message: '用户停止' });
+    return; // stop 已置 '已结束' 并保留队列
+  }
 
   if (result.adapterSessionId !== null) {
     persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
   }
   // 适配器带回的 stderr 尾部落 error 消息（排障：真实 CLI 静默失败/异常退出时 UI 可见）
   if (result.stderrTail && result.stderrTail.length > 0) {
-    persistMessage(sessionId, 'error', `适配器 stderr 尾部：\n${result.stderrTail.join('\n')}`);
+    persistMessage(sessionId, 'error', `适配器 stderr 尾部：\n${result.stderrTail.join('\n')}`, undefined, inTurn());
   }
+
+  // 本轮终态：退出码非零 = failed（原因机器可判），否则 done
+  finishTurn(
+    result.exitCode !== 0
+      ? { state: 'failed', reason: 'adapter_exit_nonzero', message: `适配器退出码 ${result.exitCode}` }
+      : { state: 'done' },
+  );
 
   if (state.queue.length > 0) {
     const pending = state.queue;
@@ -605,6 +716,7 @@ async function executeTurn(
       deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
       retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
       sessionAttachment: pending.some((item) => item.sessionAttachment),
+      messageIds: pending.flatMap((item) => item.messageIds ?? []),
     }); // turnActive 保持 true；下一轮重走全局槽位 FIFO
     return;
   }

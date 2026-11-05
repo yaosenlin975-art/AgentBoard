@@ -197,13 +197,74 @@ export interface Session {
 }
 /** AUDIT-SRV（F-04）：会话错误归类码（服务端按 CLI 输出/事件判定，前端据此给重试与切换入口） */
 export type SessionErrorCode = 'QUOTA_EXCEEDED' | 'RATE_LIMITED' | 'AUTH_FAILED' | 'CONTEXT_OVERFLOW' | 'UNKNOWN_ERROR';
+/** CHAT-TURN1（契约 #5）：轮次状态。`awaiting_*` 只在轮次维度，`session.status` 保持现有四态不新增。 */
+export type SessionTurnState = 'running' | 'awaiting_input' | 'awaiting_approval' | 'failed' | 'done' | 'stopped';
+/** CHAT-TURN1（契约 #5 / 设计 §4.2）：计划步骤状态 */
+export type TurnStepState = 'pending' | 'running' | 'done' | 'failed' | 'awaiting';
+/**
+ * CHAT-TURN1（契约 #5）：`session_turn.plan_json` 的元素。
+ * `step_id` 在同一轮内稳定（`s1`、`s2`…，只追加不重排），是 CHAT-RETRY1 step ledger 的定位键。
+ */
+export interface TurnPlanStep { step_id: string; title: string; state: TurnStepState }
+/**
+ * CHAT-TURN1（契约 #5）：`session_turn.awaiting_json`。
+ * 阻塞态与失败原因共用这一列，`reason` 机器可判：
+ * - 本卡落地：`user_stop` / `superseded` / `server_restart` / `adapter_resolve_failed` / `adapter_run_failed`
+ *   / `adapter_threw` / `adapter_exit_nonzero` / `image_delivery_unverified` / `image_attachment_selection_invalid`
+ *   / `attachment_mark_failed`；
+ * - `awaiting_input` / `awaiting_approval` 及其超时 `awaiting_timeout` 由 CHAT-AWAIT1 写入（字段已就位）。
+ */
+export interface TurnAwaitingInfo { reason: string; message?: string | null; at?: number }
+/**
+ * CHAT-TURN1（契约 #21）：`session_turn.usage_json`。
+ * 本卡无真实 token 来源（适配器事件不带 usage，且本卡不改执行器），按服务端可观测的正文字符量估算，
+ * 恒 `estimated=true`；`cost_usd` / `context_limit_tokens` 无来源时为 null（不编造金额与上限）。
+ */
+export interface TurnUsage {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  context_used_tokens: number | null;
+  context_limit_tokens: number | null;
+  estimated: boolean;
+}
+/** CHAT-TURN1（契约 #5）：`session_turn` 行 */
+export interface SessionTurn {
+  id: string; session_id: string; seq: number;
+  state: SessionTurnState; current_index: number;
+  plan_json: TurnPlanStep[] | null;
+  awaiting_json: TurnAwaitingInfo | null;
+  usage_json: TurnUsage | null;
+  started_at: number; ended_at: number | null;
+}
+/** CHAT-TURN1（契约 #8）：meta_json.diff 的文件级条目；`patch` 已按行截断（见 `truncated`） */
+export interface MessageDiffFile { path: string; add: number; del: number; patch: string | null; truncated?: boolean }
+/**
+ * CHAT-TURN1（契约 #8）：`message.meta_json`（工具调用观测）。
+ * 口径：本卡的 `status` 表示「服务端可观测到的失败」（error 事件或非零退出落在该步期间），
+ * **不是** CLI 的工具返回值；`output_summary` / `diff` 需要执行器给出工具结果后才能填真值，当前为 null。
+ */
+export interface MessageToolMeta {
+  status: 'ok' | 'failed';
+  duration_ms: number | null;
+  output_summary: string | null;
+  tool_call_id: string | null;
+  diff?: { files: MessageDiffFile[] } | null;
+}
+export type MessageMeta = MessageToolMeta;
 export interface Message { id: string; session_id: string; role: 'user' | 'assistant' | 'event' | 'error'; content: string; ts: number;
   /** 服务端归类：error 消息的错误码；非 error 或未归类为 null */
   error_code?: SessionErrorCode | null;
   /** 该错误是否值得重试（额度/鉴权/上下文超限为 false，限流与未知为 true） */
   retryable?: boolean;
   /** 正文含「原始编码不可用」标记（U+FFFD 或连续 ???）：写入前已损坏，清洗不可逆 */
-  encoding_lost?: boolean }
+  encoding_lost?: boolean;
+  /** 契约 #6：所属轮次（session_turn.id）；历史消息与轮次外消息为 null */
+  turn_id?: string | null;
+  /** 契约 #7：所属计划步骤（plan_json[].step_id）；非工具消息为 null */
+  step_id?: string | null;
+  /** 契约 #8：库内 meta_json 列解析后的对象；老消息 null → 前端沿用旧渲染（EventGroup） */
+  meta_json?: MessageMeta | null; }
 export interface CliInfo {
   id: string; displayName: string; installed: boolean; version: string | null;
   /** false=模型只读（由 CLI profile 配置决定，UI 禁用选择并标注，如 dsh） */
@@ -222,6 +283,35 @@ export type WsEvent =
   | { type: 'message.added'; message: Message }
   | { type: 'clis.changed'; clis: CliInfo[] }
   | { type: 'account.notice'; app_id: ManagedAppId; client_instance_id: string; message: string };
+
+/**
+ * CHAT-TURN1 契约 #18：计划快照，变更即推（一轮的 plan_json 全量，不做增量 diff）。
+ * `plan` 为空数组 = 本轮没有可观测的工具步骤，前端应隐藏计划条（与「历史会话无 turn 行」同降级）。
+ */
+export interface SessionPlanEvent {
+  type: 'session.plan';
+  session_id: string;
+  turn_id: string;
+  plan: TurnPlanStep[];
+  current_index: number;
+}
+/** CHAT-TURN1 契约 #21：轮次用量，合并节流推送（窗口内多次更新只推最后一次快照） */
+export interface SessionUsageEvent {
+  type: 'session.usage';
+  session_id: string;
+  turn_id: string;
+  usage: TurnUsage;
+}
+export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent;
+/**
+ * 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件。
+ *
+ * 为什么不直接把 #18/#21 并进 `WsEvent`：`apps/web/src/api/ws.ts` 的 `eventToQueryKeys` 是无 default 的
+ * 穷尽 switch，并入后 web 的 `tsc --noEmit` 立刻失败（TS2366 缺返回路径），而 CHAT-TURN1 禁改 `apps/web/**`。
+ * 接线时机：CHAT-VIS1 落计划条/成本脚注时，把这两个类型加入 `WsEvent` 并在 `eventToQueryKeys` 补 case
+ * （返回 `[]`：轮次观测走 wsBus 增量，不触发 react-query invalidation）。
+ */
+export type ServerWsEvent = WsEvent | TurnObservationEvent;
 
 /** 工作区变更日志类型；`历史` 仅由旧 CHANGELOG 导入写入，普通 UI/CLI 新增不可选 */
 export type WorkspaceChangeType = '新增' | '修复' | '调整' | '历史';

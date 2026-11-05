@@ -9,7 +9,7 @@ import request from 'supertest';
 import { WebSocket, type WebSocket as WsClient } from 'ws';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import type { WsEvent } from '@agentboard/shared';
+import type { ServerWsEvent, WsEvent } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
@@ -508,7 +508,7 @@ describe('session 运行时态（队列长度/等待槽位）', () => {
     const session = await dispatchHeld(wsId, id);
 
     // sessionManager 广播经 setBroadcaster 捕获（hub.broadcast 在装配时按值注入，spy hub 拦不到）
-    const runtimeEvents: WsEvent[] = [];
+    const runtimeEvents: ServerWsEvent[] = [];
     const original = created.hub.broadcast.bind(created.hub);
     setBroadcaster((e) => {
       runtimeEvents.push(e);

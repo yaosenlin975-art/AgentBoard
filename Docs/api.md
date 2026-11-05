@@ -393,6 +393,18 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留 | 404 会话不存在 | routes.ts:491 |
 | `PATCH /api/sessions/:id` | body：`model?: 非空 string\|null`、`title?: 1-50 字 string\|null`（两个键至少给一个；null 均表示清空——model 回落 CLI 默认、title 回落派生标题） | `Session`；model 下一轮起轮生效；title 立即生效（会话列表/详情均读该字段）；WS session.changed | 400 两键都缺、model 空串、title trim 后为空或超 50 字；404 会话不存在 | routes.ts:496 |
 
+### 轮次底座（CHAT-TURN1，`session_turn` + `message` 三列，无新增 HTTP 端点）
+
+存储（`db/migrations/sessionTurn.ts`，`initSchema` 里在 `migrateSessionTitle` 之后执行；全幂等、**不回填空历史行**）：
+
+- `session_turn(id, session_id → session(id) ON DELETE CASCADE, seq, state, current_index, plan_json, awaiting_json, usage_json, started_at, ended_at)`，`UNIQUE(session_id, seq)`；`state ∈ running | awaiting_input | awaiting_approval | failed | done | stopped`。
+- `message.turn_id` / `message.step_id` / `message.meta_json`（旧行三列恒 `NULL` → 前端沿用旧渲染，验收 5）。
+- `plan_json = [{ step_id, title, state }]`，`step_id` 轮内稳定（`s1/s2/…`，只追加不重排，供 CHAT-RETRY1 定位重跑点），步骤 `state ∈ pending | running | done | failed | awaiting`。
+- `meta_json = { status, duration_ms, output_summary, tool_call_id, diff? }`；`diff.files[].patch` 由服务端按 **400 行/文件**截断并标 `truncated`。`tool_call_id` 暂用 `step_id` 充当关联键（适配器不给调用 id）。
+- `awaiting_json = { reason, message?, at? }` 是**唯一的机器可判原因通道**：`failed` / `stopped` 必带 `reason`（本卡已落 `adapter_resolve_failed`、`adapter_run_failed`、`adapter_threw`、`adapter_exit_nonzero`、`image_delivery_unverified`、`attachment_mark_failed`、`image_attachment_selection_invalid`、`superseded`、`user_stop`、`turn_internal_error`、`server_restart`）；CHAT-AWAIT1 直接写 `awaiting_timeout` 即可，无需改表。
+- **唯一写入方是服务端 `sessionManager`**（`services/turnObservation.ts` 的 tracker 只在 `executeTurn` 内被调用），客户端没有写接口；`session.status` 未新增取值（仍是 `运行中 | 已结束 | 失败`，排队/等槽位继续走 `session.runtime`），`awaiting_*` 只落在 turn 上。
+- 影响面：`GET /api/sessions/:id/messages` 返回体每条多三个字段（旧消息为 `null`），其余请求/响应形状不变。
+
 ### 知识页图片（KB-IMG-1，`services/knowledgeImages.ts`）
 
 存储：`<db 目录>/attachments/knowledge/<pageId>/<attachmentId>.<ext>`（`storage_key` 只由服务端生成，不接受客户端文件名 → 防路径穿越）；表 `knowledge_attachment`。
@@ -469,6 +481,10 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | `message.added` | `{ message: Message }` | 每条消息落库（user/assistant/event/error） |
 | `clis.changed` | `{ clis: CliInfo[] }` | 服务启动探测完成后一次（`index.ts:67`）；运行期无刷新端点 |
 | `account.notice` | `{ app_id, client_instance_id, message }` | 账号切换 safe-exit 降级：UIA 托盘退出失败后提示用户手动退出 WorkBuddy（ACC-05，`accountRoutes.ts` → provider broadcast）；前端仅提示不失效查询 |
+| `session.plan` | `{ session_id, turn_id, plan: TurnPlanStep[], current_index }` | CHAT-TURN1 契约 #18：轮次计划**变更即推**（追加步骤 / 步骤收口 / 轮次收口各一次，同批变更合并）。`plan` 是快照副本，`current_index` 为当前打开步骤的下标（无步骤 = -1，轮次收口 = plan.length）。CLI 不声明计划，所以步骤 = 一次 `tool` 事件，无 tool 事件时 `plan` 为 `[]`（前端隐藏计划条） |
+| `session.usage` | `{ session_id, turn_id, usage: TurnUsage }` | CHAT-TURN1 契约 #21：用量**合并节流**推送（窗口 `TURN_USAGE_THROTTLE_MS = 250ms`，窗口内的多次 delta 只在末尾推一次；轮次收口再推最终一次）。本卡无 CLI token 来源，`input/output/context_used_tokens` 按约 4 字符 = 1 token 估算并恒带 `estimated: true`，`cost_usd` / `context_limit_tokens` 为 `null`（不编造） |
+
+**这两条事件的类型在服务端侧是 `ServerWsEvent = WsEvent | TurnObservationEvent`（`packages/shared/src/types.ts`），刻意没有并进 `WsEvent`**：`apps/web/src/api/ws.ts::eventToQueryKeys` 是对 `WsEvent` 的无 default 穷尽 switch，加成员会让前端 `tsc --noEmit` 直接失败。CHAT-VIS1 接前端时再把它们加入 `WsEvent` 并补 `case`。
 
 ## 13. 枚举汇总
 
@@ -480,6 +496,8 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | ModelInfo.source | `probed \| static \| manual`（types.ts:72） |
 | Message.role | `user \| assistant \| event \| error`（types.ts:66） |
 | CLI id（CliInfo.id / sessions.cli） | `codebuddy \| codex \| opencode \| dsh`（adapters/src/index.ts:14） |
+| SessionTurnState（`session_turn.state`） | `running \| awaiting_input \| awaiting_approval \| failed \| done \| stopped`（CHAT-TURN1，types.ts） |
+| TurnStepState（`plan_json[].state`） | `pending \| running \| done \| failed \| awaiting`（CHAT-TURN1） |
 
 状态流转：issue 由 claim（→进行中）/done（→待验收）/fail、release（→待规划）驱动；PATCH 可直接改 status，但占用中禁改。session 由轮次生命周期驱动：运行中 →（正常/停止）已结束、（异常退出/起轮失败）失败。
 

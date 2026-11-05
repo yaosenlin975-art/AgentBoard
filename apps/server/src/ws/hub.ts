@@ -6,11 +6,15 @@
  */
 import type { Server as HttpServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { WsEvent } from '@agentboard/shared';
+import type { ServerWsEvent } from '@agentboard/shared';
 
 export interface WsHub {
-  /** 向全部在线客户端广播一个事件（JSON 一行） */
-  broadcast(event: WsEvent): void;
+  /**
+   * 向全部在线客户端广播一个事件（JSON 一行）。
+   * CHAT-TURN1：参数放宽到 `ServerWsEvent`（= 前端 `WsEvent` + 轮次观测事件），
+   * 广播方（routes / sessionManager / provider）传 `WsEvent` 依然可赋值，行为不变。
+   */
+  broadcast(event: ServerWsEvent): void;
   /** 在 HTTP server 上挂 upgrade 处理（路径 /ws） */
   attach(server: HttpServer): void;
   /** 当前 OPEN 连接数（冒烟/测试观察用） */
@@ -25,8 +29,13 @@ export function createWsHub(): WsHub {
     broadcast(event) {
       const payload = JSON.stringify(event);
       for (const client of wss.clients) {
-        if (client.readyState === WebSocket.OPEN) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        try {
           client.send(payload);
+        } catch {
+          // 验收 4：没有监听方 / 客户端在发送瞬间关闭时不得炸广播链路。
+          // 观测事件（session.plan / session.usage）丢掉一条不影响正确性：
+          // 前端下一次快照/重连后以服务端状态为准。
         }
       }
     },
