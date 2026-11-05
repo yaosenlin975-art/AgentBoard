@@ -15,7 +15,9 @@ const basePage = {
   status: 'active',
   expires_at: null,
   sources: [{ source_id: 's', locator: 'Docs/ref.md:1', content_hash: 'a'.repeat(64), captured_at: 1 }],
-  evidence: [{ source_id: 's', locator: 'Docs/proof.md:9' }],
+  // PROV-A：真实数据的证据 locator 常只写行号区间（`file:9-12`），渲染时按 source_id 回填成
+  // 「仓库相对路径 + 行号区间」；这里保留来源 locator 原样显示的断言，另加回填断言。
+  evidence: [{ source_id: 's', locator: 'file:9-12' }],
   created_at: 1,
   updated_at: 1,
 };
@@ -52,6 +54,9 @@ describe('知识库页面结构（KB-STYLE01）', () => {
     fireEvent.click(details.querySelector('summary')!);
     expect(details.open).toBe(true);
     expect(await screen.findByText('Docs/ref.md:1')).toBeInTheDocument();
+    // PROV-A：只剩行号的证据条目回填为「仓库相对路径 + 行号区间」，不再出现孤立 file:9-12
+    expect(screen.getByText('Docs/ref.md:9-12')).toBeInTheDocument();
+    expect(screen.queryByText('file:9-12')).not.toBeInTheDocument();
     expect(screen.getByText(/SHA-256/)).toBeInTheDocument();
   });
 

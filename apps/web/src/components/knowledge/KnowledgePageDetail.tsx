@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type { KnowledgePage, KnowledgeRevision } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -29,18 +29,237 @@ const CATEGORY_TONE: Record<KnowledgeCategory, BadgeTone> = {
 };
 const LANDED_LABEL: Record<KnowledgeLanded, string> = { landed: '已落地', partial: '部分落地', proposed: '未落地' };
 
-function Provenance({ sources, evidence }: Pick<KnowledgePage, 'sources' | 'evidence'>) {
-  return <>
-    <ul className="space-y-2 text-sm">{sources.map(s => <li key={s.source_id} className="rounded-md bg-surface-page px-2 py-1.5">
-      <code className="break-all text-xs text-ink">{s.locator}</code>
-      <div className="mt-0.5 break-all text-xs text-ink-3">SHA-256 {s.content_hash} · {new Date(s.captured_at).toLocaleString()}</div>
-      {s.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-hairline pl-2 text-xs text-ink-2">{s.snapshot}</blockquote>}
-    </li>)}</ul>
-    {evidence.length > 0 && <ul className="mt-2 space-y-2 text-sm">{evidence.map((e, i) => <li key={i} className="rounded-md bg-surface-page px-2 py-1.5">
-      <code className="break-all text-xs text-ink">{e.locator}</code>
-      {e.snapshot && <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-hairline pl-2 text-xs text-ink-2">{e.snapshot}</blockquote>}
-    </li>)}</ul>}
-  </>;
+/* ============ PROV-A：来源与证据的展示口径 ============
+ * 只做展示与复制：不渲染可点击跳转、不输出 file:/// 链接（跳转能力属 PROV-B）。
+ * 取证口径（真实数据 kb knowledge show --json 核对得到）：
+ *   sources[].locator 写「仓库相对路径」（apps/web/src/.../Board.tsx），
+ *   evidence[].locator 常只写行号区间（file:185-193）→ 必须靠 evidence.source_id ==
+ *   sources[].source_id 命中后回填路径，否则界面就只剩一串没有文件名的孤立行号。
+ */
+
+type ProvenanceSource = KnowledgePage['sources'][number];
+type ProvenanceEvidence = KnowledgePage['evidence'][number];
+
+/** 非文件取证前缀：命令 / 工单 / 外链。本身不指向仓库路径，不回填、也不给「复制路径」。 */
+const NON_FILE_SCHEME = /^(?:cmd|command|issue|task|url|https?):/i;
+
+/** 「含路径」判定：有目录分隔符，或有一段扩展名（真实数据一律仓库相对 + 正斜杠）。 */
+const HAS_PATH_HINT = /[/\\]|\.[A-Za-z][A-Za-z0-9]{0,7}(?=[\s:/]|$)/;
+
+/** 去掉 `file:` / `file:///` 前缀（真实数据把行号取证写成 `file:125-137`） */
+function stripFileScheme(value: string): string {
+  return value.replace(/^file:\/{0,3}/i, '');
+}
+
+/** 尾部行号区间（`:1`、`:125-137`、`:12,15`）与路径分离，回填后再原样拼回去 */
+function splitTrailingRange(value: string): { path: string; range: string } {
+  const match = value.match(/^(.*?):(\d+(?:\s*[-,]\s*\d+)*)$/);
+  return match ? { path: match[1] ?? value, range: match[2] ?? '' } : { path: value, range: '' };
+}
+
+/** locator 主体 → { path, range, note }；`1-41（口径说明）` 这类畸形条目 path 为空 */
+function parseLocatorBody(body: string): { path: string; range: string; note: string } {
+  const bare = body.match(/^(\d+(?:\s*[-,]\s*\d+)*)\s*([\s\S]*)$/);
+  if (bare) return { path: '', range: bare[1] ?? '', note: (bare[2] ?? '').trim() };
+  const split = splitTrailingRange(body);
+  return { path: split.path, range: split.range, note: '' };
+}
+
+/** source_id → 可回填的仓库相对路径：优先 sources[].locator，退化到 source_id 自身 */
+function provenancePathById(sources: readonly ProvenanceSource[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const source of sources) {
+    const fromLocator = splitTrailingRange(stripFileScheme((source.locator ?? '').trim())).path;
+    const fromSourceId = splitTrailingRange(stripFileScheme((source.source_id ?? '').trim())).path;
+    const path = HAS_PATH_HINT.test(fromLocator) ? fromLocator : HAS_PATH_HINT.test(fromSourceId) ? fromSourceId : '';
+    if (path !== '' && !map.has(source.source_id)) map.set(source.source_id, path);
+  }
+  return map;
+}
+
+/**
+ * 归一一条 locator（来源与证据共用）：
+ * ① 命令/工单/外链类取证原样显示；② locator 自带路径就用它自己的；
+ * ③ locator 只剩行号 → 按 source_id 回填成「仓库相对路径 + 行号区间」；
+ * ④ 回填不出来仍原样显示——宁缺毋伪，绝不编造文件名。
+ */
+export function resolveProvenanceLocator(
+  locator: string | undefined,
+  sourceId: string | undefined,
+  paths: Map<string, string>,
+): { display: string; copyPath: string | null } {
+  const raw = (locator ?? '').trim();
+  if (NON_FILE_SCHEME.test(raw)) return { display: raw, copyPath: null };
+  const parsed = parseLocatorBody(stripFileScheme(raw));
+  const ownPath = HAS_PATH_HINT.test(parsed.path) ? parsed.path : '';
+  const sourcePath = sourceId === undefined ? '' : (paths.get(sourceId) ?? '');
+  const path = ownPath || sourcePath;
+  if (path === '') return { display: raw, copyPath: null };
+  const withRange = parsed.range === '' ? path : `${path}:${parsed.range}`;
+  return { display: [withRange, parsed.note].filter(Boolean).join(' '), copyPath: withRange };
+}
+
+/** 去重键：locator 有路径 → 按 locator 折叠；没有（同一提交的 sha 之类）→ 退到 content_hash */
+function provenanceDedupKey(display: string, contentHash: string): string {
+  if (HAS_PATH_HINT.test(display)) return display;
+  return contentHash === '' ? display : `commit:${contentHash}`;
+}
+
+/** 折叠后的一行来源/证据 */
+export type ProvenanceRow = {
+  key: string;
+  kind: 'source' | 'evidence';
+  display: string;
+  copyPath: string | null;
+  contentHash: string;
+  capturedAt: number | null;
+  snapshot: string;
+};
+
+/** 来源行信息更全（带 SHA-256 与采集时间）→ 与证据行同键时留来源行 */
+const ROW_RANK: Record<ProvenanceRow['kind'], number> = { evidence: 0, source: 1 };
+const NO_TIME = Number.MAX_SAFE_INTEGER;
+const timeOf = (row: ProvenanceRow): number => row.capturedAt ?? NO_TIME;
+
+/**
+ * 回填 + 去重（PROV-A）：同一 locator / 同一提交只留一条，时间冲突保留最早 captured_at
+ * （都没有时间就保留首次出现顺序）；被折叠那条若带 snapshot 而留下的没有，则把 snapshot 带上，
+ * 去重不丢内容。
+ */
+export function buildProvenanceRows(
+  sources: readonly ProvenanceSource[],
+  evidence: readonly ProvenanceEvidence[],
+): ProvenanceRow[] {
+  const paths = provenancePathById(sources);
+  const rows: ProvenanceRow[] = [];
+  const position = new Map<string, number>();
+  const put = (row: ProvenanceRow): void => {
+    const at = position.get(row.key);
+    if (at === undefined) {
+      position.set(row.key, rows.length);
+      rows.push(row);
+      return;
+    }
+    const current = rows[at];
+    if (current === undefined) return;
+    if (ROW_RANK[row.kind] < ROW_RANK[current.kind]) return;
+    if (ROW_RANK[row.kind] === ROW_RANK[current.kind] && timeOf(current) <= timeOf(row)) return;
+    rows[at] = { ...row, snapshot: row.snapshot === '' ? current.snapshot : row.snapshot };
+  };
+  for (const source of sources) {
+    const resolved = resolveProvenanceLocator(source.locator, source.source_id, paths);
+    put({
+      key: provenanceDedupKey(resolved.display, (source.content_hash ?? '').trim()),
+      kind: 'source',
+      display: resolved.display,
+      copyPath: resolved.copyPath,
+      contentHash: (source.content_hash ?? '').trim(),
+      capturedAt: typeof source.captured_at === 'number' ? source.captured_at : null,
+      snapshot: (source.snapshot ?? '').trim() === '' ? '' : String(source.snapshot),
+    });
+  }
+  for (const item of evidence) {
+    const resolved = resolveProvenanceLocator(item.locator, item.source_id, paths);
+    put({
+      key: provenanceDedupKey(resolved.display, ''),
+      kind: 'evidence',
+      display: resolved.display,
+      copyPath: resolved.copyPath,
+      contentHash: '',
+      capturedAt: null,
+      snapshot: (item.snapshot ?? '').trim() === '' ? '' : String(item.snapshot),
+    });
+  }
+  return rows;
+}
+
+/** snapshot 折叠阈值：JSON 一律折叠；纯文本超过 200 字符或 3 行才折叠（短文本仍直接显示） */
+const SNAPSHOT_MAX_CHARS = 200;
+const SNAPSHOT_MAX_LINES = 3;
+
+/** 是 JSON 就返回两空格缩进后的文本，不是则 null（不做「猜一个像 JSON」的乐观折叠） */
+export function prettyJsonSnapshot(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return null;
+  }
+}
+
+export function shouldCollapseSnapshot(text: string): boolean {
+  if (text.trim() === '') return false;
+  if (prettyJsonSnapshot(text) !== null) return true;
+  return text.length > SNAPSHOT_MAX_CHARS || text.split(/\r?\n/).length > SNAPSHOT_MAX_LINES;
+}
+
+/** JSON / 长文本收成「展开查看」，不再整段 blockquote 裸露（KB-SNAP-FOLD） */
+function SnapshotBlock({ text }: { text: string }) {
+  if (!shouldCollapseSnapshot(text)) {
+    return <blockquote className="mt-1 whitespace-pre-wrap break-words border-l-2 border-hairline pl-2 text-xs text-ink-2">{text}</blockquote>;
+  }
+  const json = prettyJsonSnapshot(text);
+  const lines = text.split(/\r?\n/).length;
+  return <details data-testid="provenance-snapshot" className="mt-1">
+    <summary className="cursor-pointer text-xs text-ink-3 hover:text-ink">
+      展开查看（{json === null ? '长文本' : 'JSON'} · {lines} 行 / {text.length} 字符）
+    </summary>
+    <pre
+      data-testid="provenance-snapshot-body"
+      className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words border-l-2 border-hairline bg-surface-card px-2 py-1 text-[11px] text-ink-2"
+    >
+      {json ?? text}
+    </pre>
+  </details>;
+}
+
+const COPY_RESET_MS = 1500;
+
+/**
+ * 「复制路径」：只写剪贴板，不造跳转（无路由可跳，属 PROV-B）。
+ * 非文件取证（cmd:/issue: 等）拿不到路径 → 不渲染本按钮，避免「复制路径」骗人。
+ */
+export function CopyPathButton({ path }: { path: string }) {
+  const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle');
+  const resetTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (resetTimer.current !== null) window.clearTimeout(resetTimer.current); }, []);
+  return <button
+    type="button"
+    data-testid="provenance-copy"
+    title={`复制 ${path}`}
+    className={`${BUTTON_SECONDARY} h-7 shrink-0 px-2`}
+    onClick={() => {
+      const clipboard = navigator.clipboard;
+      if (typeof clipboard?.writeText !== 'function') {
+        setState('fail');
+        return;
+      }
+      clipboard.writeText(path).then(
+        () => setState('ok'),
+        () => setState('fail'),
+      ).finally(() => {
+        if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => setState('idle'), COPY_RESET_MS);
+      });
+    }}
+  >
+    {state === 'ok' ? '已复制' : state === 'fail' ? '复制失败' : '复制路径'}
+  </button>;
+}
+
+function Provenance({ rows }: { rows: ProvenanceRow[] }) {
+  if (rows.length === 0) return <p data-testid="provenance-empty" className="text-xs text-ink-3">（无）</p>;
+  return <ul className="space-y-2 text-sm">{rows.map(row => <li key={row.key} data-testid="provenance-row" data-kind={row.kind} className="rounded-md bg-surface-page px-2 py-1.5">
+    <div className="flex flex-wrap items-start gap-x-2 gap-y-1">
+      <code className="min-w-0 flex-1 break-all text-xs text-ink">{row.display}</code>
+      {row.copyPath !== null && <CopyPathButton path={row.copyPath} />}
+    </div>
+    {(row.contentHash !== '' || row.capturedAt !== null) && <div className="mt-0.5 break-all text-xs text-ink-3">
+      {[row.contentHash === '' ? '' : `SHA-256 ${row.contentHash}`, row.capturedAt === null ? '' : new Date(row.capturedAt).toLocaleString()].filter(Boolean).join(' · ')}
+    </div>}
+    {row.snapshot !== '' && <SnapshotBlock text={row.snapshot} />}
+  </li>)}</ul>;
 }
 
 export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: { pageId: string; scope: 'workspace' | 'common'; workspaceId: string | null; onChanged: () => void }) {
@@ -135,6 +354,8 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
   if (page.isError) return <p role="alert" className="min-w-0 flex-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{page.error.message}</p>;
   const p = page.data;
   const labels = { archive: '归档', restore: '恢复', delete: '软删除' };
+  /** PROV-A：来源与证据先回填 + 去重，再统一渲染（条数与展开后的行必须同口径） */
+  const provenanceRows = buildProvenanceRows(p.sources, p.evidence);
   const isExpired = p.expires_at !== null && p.expires_at !== undefined && p.expires_at <= Date.now();
   return <article aria-label="知识详情" className="min-w-0 flex-1 overflow-auto rounded-lg border border-hairline bg-surface-card px-7 py-4 text-ink">
     <header>
@@ -216,10 +437,10 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged }: {
 
     <details data-testid="provenance" className="mt-4 rounded-md border border-hairline">
       <summary className="cursor-pointer px-2.5 py-1.5 text-xs font-medium text-ink-2">
-        来源与证据（{p.sources.length + p.evidence.length} 条）
+        来源与证据（{provenanceRows.length} 条）
       </summary>
       <div className="px-2.5 pb-2.5">
-        <Provenance sources={p.sources} evidence={p.evidence} />
+        <Provenance rows={provenanceRows} />
       </div>
     </details>
 
