@@ -30,6 +30,8 @@ import { migrateSessionTurn } from './migrations/sessionTurn.js';
 // CHAT-RETRY1（契约 #15）：单步重试步骤台账（依赖 session_turn 已建）
 import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
+// DEC-1：待决策区三表（纯追加表 + 部分唯一索引；workspace 纯加列）
+import { migratePendingDecision } from './migrations/pendingDecision.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -39,7 +41,9 @@ import { migrateCliAccounts } from './migrations/cliAccounts.js';
  */
 const DDL = `
 CREATE TABLE IF NOT EXISTS workspace (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+  -- DEC-1：工作区级默认宽限秒数；默认 180，区间 0–600（存量库由 migratePendingDecision 幂等补列）
+  decision_grace_seconds INTEGER NOT NULL DEFAULT 180 CHECK (decision_grace_seconds BETWEEN 0 AND 600));
 CREATE TABLE IF NOT EXISTS issue (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
   title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
@@ -119,6 +123,8 @@ export function initSchema(db: Db): void {
   // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
   // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
   migrateClaimLease(db);
+  // DEC-1：待决策区三表与索引（纯追加，不重建 issue/workspace；必须排在 claim 租约之后）
+  migratePendingDecision(db);
   // ACC-CLI-MULTI：CLI 三来源的本机凭据登记表（纯追加，幂等；与 managed_account 无关）
   migrateCliAccounts(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
