@@ -38,40 +38,81 @@ function prefersReducedMotion(): boolean {
 /**
  * 聚焦提示：贴在被聚焦控件正下方的一条小字（fixed 定位，不占流）。
  * `enabled=false` 时完全不挂监听（STT 关闭/无可用模型）。
+ *
+ * 跟随锚点（CHAT-MICPOP）：`fixed` 坐标若只在聚焦时算一次，滚动后就会与输入框分离悬空；
+ * 这里保存锚点控件，在 `scroll`（capture，覆盖任意滚动容器）/ `resize` / `ResizeObserver`
+ * 的真实事件里按实时矩形重算——不用定时器轮询（不会引入计时器漂移）；锚点滚出视口即隐藏。
+ * 位置更新是即时的、不引入过渡动画，因此 `prefers-reduced-motion` 下与常规行为一致，无需额外分支。
  */
 export function VoiceHint({ enabled }: { enabled: boolean }) {
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
   const hintIdRef = useRef(`voice-hint-${Math.random().toString(36).slice(2, 8)}`);
   const describedRef = useRef<HTMLElement | null>(null);
+  const anchorElRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!enabled) {
+      anchorElRef.current = null;
       setAnchor(null);
       return undefined;
     }
+    let observer: ResizeObserver | null = null;
     const detach = (): void => {
       const previous = describedRef.current;
       if (previous !== null && previous.isConnected) previous.removeAttribute('aria-describedby');
       describedRef.current = null;
     };
+    /** 按锚点控件当前矩形重算坐标；已被移出视口时隐藏，避免提示悬空错位 */
+    const syncAnchor = (): void => {
+      const el = anchorElRef.current;
+      if (el === null) return;
+      if (!el.isConnected) {
+        setAnchor(null);
+        return;
+      }
+      const rect = el.getBoundingClientRect();
+      if (rect.bottom < 0 || rect.top > window.innerHeight) {
+        setAnchor(null);
+        return;
+      }
+      const next = { x: Math.round(rect.left), y: Math.round(rect.bottom + 4) };
+      setAnchor((previous) => (previous !== null && previous.x === next.x && previous.y === next.y ? previous : next));
+    };
+    /** 锚点可能切换（从一个输入框换到另一个），RO 观察对象随之切换 */
+    const observeAnchor = (el: HTMLElement): void => {
+      if (typeof ResizeObserver !== 'function') return;
+      observer?.disconnect();
+      observer = new ResizeObserver(() => { syncAnchor(); });
+      observer.observe(el);
+    };
     const onFocusIn = (event: FocusEvent): void => {
       const el = event.target instanceof Element ? event.target : null;
       if (!isVoiceEligibleElement(el)) return;
-      const rect = el.getBoundingClientRect();
-      setAnchor({ x: Math.round(rect.left), y: Math.round(rect.bottom + 4) });
+      anchorElRef.current = el;
+      syncAnchor();
+      observeAnchor(el);
       detach();
       el.setAttribute('aria-describedby', hintIdRef.current);
       describedRef.current = el;
     };
     const onFocusOut = (): void => {
+      anchorElRef.current = null;
+      observer?.disconnect();
       setAnchor(null);
       detach();
     };
     document.addEventListener('focusin', onFocusIn, true);
     document.addEventListener('focusout', onFocusOut, true);
+    // capture 阶段：任意滚动容器的滚动都能命中，不只是 window
+    document.addEventListener('scroll', syncAnchor, true);
+    window.addEventListener('resize', syncAnchor);
     return () => {
       document.removeEventListener('focusin', onFocusIn, true);
       document.removeEventListener('focusout', onFocusOut, true);
+      document.removeEventListener('scroll', syncAnchor, true);
+      window.removeEventListener('resize', syncAnchor);
+      observer?.disconnect();
+      observer = null;
       detach();
     };
   }, [enabled]);

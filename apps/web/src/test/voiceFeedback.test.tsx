@@ -64,6 +64,73 @@ describe('VoiceHint（聚焦提示）', () => {
   });
 });
 
+describe('VoiceHint 跟随锚点（CHAT-MICPOP）', () => {
+  /** jsdom 的 getBoundingClientRect 恒为 0，注入可控矩形才能观察「滚动后是否真的重算」 */
+  function stubRect(el: HTMLElement, left: number, top: number, height: number): void {
+    el.getBoundingClientRect = () => ({
+      x: left, y: top, left, top, right: left + 200, bottom: top + height, width: 200, height,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  }
+
+  it('滚动后按锚点实时矩形重算坐标，与输入框间距保持不变', () => {
+    const scrollBox = document.createElement('div');
+    const input = document.createElement('input');
+    input.type = 'text';
+    scrollBox.appendChild(input);
+    document.body.appendChild(scrollBox);
+    stubRect(input, 120, 400, 32);
+    render(<VoiceHint enabled />);
+
+    act(() => { input.focus(); });
+    const hintTop = (): number => parseFloat(screen.getByTestId('voice-hint').style.top);
+    const hintLeft = (): number => parseFloat(screen.getByTestId('voice-hint').style.left);
+    /** 提示顶边与输入框底边的间距（判据：滚动前后变化 ≤2px） */
+    const gap = (): number => hintTop() - input.getBoundingClientRect().bottom;
+    expect(hintLeft()).toBe(120);
+    expect(hintTop()).toBe(436);
+    expect(gap()).toBe(4);
+
+    // 聊天区滚动（非 window 滚动）：提示必须跟着输入框重算，而不是停在原屏幕坐标
+    stubRect(input, 120, 300, 32);
+    act(() => { scrollBox.dispatchEvent(new Event('scroll')); });
+    expect(hintTop()).toBe(336);
+    expect(gap()).toBe(4);
+
+    // 窗口尺寸变化（缩放）走同一重算路径
+    stubRect(input, 100, 350, 32);
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(hintLeft()).toBe(100);
+    expect(hintTop()).toBe(386);
+    expect(gap()).toBe(4);
+  });
+
+  it('锚点滚出视口时提示隐藏（不悬空），滚回后恢复且 aria-describedby 不回退', () => {
+    const scrollBox = document.createElement('div');
+    const input = document.createElement('input');
+    input.type = 'text';
+    scrollBox.appendChild(input);
+    document.body.appendChild(scrollBox);
+    render(<VoiceHint enabled />);
+
+    act(() => { input.focus(); });
+    const hintId = screen.getByTestId('voice-hint').id;
+
+    // 输入框滚到视口上方之外：提示不得留在原地悬空
+    stubRect(input, 120, -120, 32);
+    act(() => { scrollBox.dispatchEvent(new Event('scroll')); });
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+    expect(input.getAttribute('aria-describedby')).toBe(hintId);
+
+    // 滚回视口内：重新出现并与输入框保持 4px 间距
+    stubRect(input, 120, 500, 32);
+    act(() => { scrollBox.dispatchEvent(new Event('scroll')); });
+    const hint = screen.getByTestId('voice-hint');
+    expect(hint.id).toBe(hintId);
+    expect(parseFloat(hint.style.top)).toBe(536);
+  });
+});
+
 describe('VoiceMicWave（录音音波）', () => {
   it('active 时 rAF 逐帧写竖条高度并计数；active=false 后帧计数停止增长', async () => {
     reducedMotion(false);
