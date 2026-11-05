@@ -178,7 +178,15 @@ export interface Session {
   queued_count?: number;
   waiting_slot?: boolean;
 }
-export interface Message { id: string; session_id: string; role: 'user' | 'assistant' | 'event' | 'error'; content: string; ts: number }
+/** AUDIT-SRV（F-04）：会话错误归类码（服务端按 CLI 输出/事件判定，前端据此给重试与切换入口） */
+export type SessionErrorCode = 'QUOTA_EXCEEDED' | 'RATE_LIMITED' | 'AUTH_FAILED' | 'CONTEXT_OVERFLOW' | 'UNKNOWN_ERROR';
+export interface Message { id: string; session_id: string; role: 'user' | 'assistant' | 'event' | 'error'; content: string; ts: number;
+  /** 服务端归类：error 消息的错误码；非 error 或未归类为 null */
+  error_code?: SessionErrorCode | null;
+  /** 该错误是否值得重试（额度/鉴权/上下文超限为 false，限流与未知为 true） */
+  retryable?: boolean;
+  /** 正文含「原始编码不可用」标记（U+FFFD 或连续 ???）：写入前已损坏，清洗不可逆 */
+  encoding_lost?: boolean }
 export interface CliInfo {
   id: string; displayName: string; installed: boolean; version: string | null;
   /** false=模型只读（由 CLI profile 配置决定，UI 禁用选择并标注，如 dsh） */

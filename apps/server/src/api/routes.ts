@@ -51,7 +51,8 @@ import {
   updateSession,
   deleteSession,
 } from '../db/repos/session.js';
-import { listMessagesBySession, deleteMessagesBySession } from '../db/repos/message.js';
+import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
+import { buildSessionPreview } from '../services/messageSignals.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { SERVER_VERSION } from '../version.js';
 import { resolveProxyEnv } from '@agentboard/shared';
@@ -1012,10 +1013,19 @@ export function createRouter(deps: RouterDeps): Router {
   router.get('/sessions', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
+    const sessions = listSessionsByWorkspace(db, workspaceId);
+    // AUDIT-SRV（F-03）：首条用户消息预览 + 来源（dispatch=绑任务，chat=自由会话），一次查回避免 N+1
+    const previews = listFirstUserMessages(db, sessions.map((s) => s.id));
     res.json(
-      listSessionsByWorkspace(db, workspaceId).map((s) => {
+      sessions.map((s) => {
         const runtime = getSessionRuntime(s.id);
-        return { ...s, queued_count: runtime.queuedCount, waiting_slot: runtime.waitingSlot };
+        return {
+          ...s,
+          preview: buildSessionPreview(previews.get(s.id) ?? ''),
+          source: s.issue_id === null ? 'chat' : 'dispatch',
+          queued_count: runtime.queuedCount,
+          waiting_slot: runtime.waitingSlot,
+        };
       }),
     );
   });

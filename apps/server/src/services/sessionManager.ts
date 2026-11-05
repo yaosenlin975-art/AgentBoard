@@ -15,6 +15,7 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
+import { classifySessionError, looksLikeErrorOutput, type SessionErrorSignal } from './messageSignals.js';
 import {
   markIssueAttachmentsDelivered,
   markIssueAttachmentsSending,
@@ -175,8 +176,13 @@ function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
   return session;
 }
 
-function persistMessage(sessionId: string, role: Message['role'], content: string): Message {
-  const message = addMessage(assertAssembled(), { session_id: sessionId, role, content });
+function persistMessage(sessionId: string, role: Message['role'], content: string, signal?: SessionErrorSignal | null): Message {
+  const message = addMessage(assertAssembled(), {
+    session_id: sessionId,
+    role,
+    content,
+    ...(signal ? { error_code: signal.code, retryable: signal.retryable } : {}),
+  });
   broadcast({ type: 'message.added', message });
   return message;
 }
@@ -524,6 +530,11 @@ async function executeTurn(
     if (textBuf === '') return;
     const content = textBuf;
     textBuf = '';
+    // AUDIT-SRV（F-04）：CLI 把额度/限流失败当普通 stdout 打印，按正文形态落 error（否则被当 assistant 正文）
+    if (looksLikeErrorOutput(content)) {
+      persistMessage(sessionId, 'error', content, classifySessionError(content));
+      return;
+    }
     persistMessage(sessionId, 'assistant', content);
   };
   const flushThinking = () => {
@@ -549,7 +560,7 @@ async function executeTurn(
       case 'error':
         flushThinking();
         flushText();
-        persistMessage(sessionId, 'error', event.message);
+        persistMessage(sessionId, 'error', event.message, classifySessionError(event.message) ?? { code: 'UNKNOWN_ERROR', retryable: true });
         break;
       case 'end':
         flushThinking();

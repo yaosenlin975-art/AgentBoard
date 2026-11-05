@@ -20,6 +20,7 @@ import { createIssueMonotonicTimeTrigger } from './migrations/taskHierarchy.js';
 import { migrateWorkspaceStatus } from './migrations/workspaceStatus.js';
 import { migrateDraftAudit } from './migrations/draftAudit.js';
 import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js';
+import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -87,6 +88,8 @@ export function initSchema(db: Db): void {
   migrateDeviceIdentity(db);
   // STORE-1：必须排在最末（此前任何 workspace 表重建都会丢掉后加列）
   migrateWorkspaceDbMode(db);
+  // AUDIT-SRV（F-04）：message 表的错误归类列（幂等加列；老行保持 NULL，读取时现算兜底）
+  migrateSessionMessageSignals(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }
