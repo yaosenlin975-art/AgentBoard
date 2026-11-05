@@ -204,6 +204,17 @@ export interface Session {
    * 可选是为了兼容尚未带该字段的旧快照与测试夹具，语义等价于 null。
    */
   title?: string | null;
+  /**
+   * CHAT-SB1（契约 #2）：归档时间戳（毫秒）；null/未设置 = 未归档。
+   * `GET /api/sessions` 默认排除归档会话，`include_archived=1` 时返回。
+   */
+  archived_at?: number | null;
+  /**
+   * CHAT-SB1（契约 #3/#4）：分叉来源——源会话 id 与分叉起点消息 id（仅用于来源标记）。
+   * 普通会话为 null。
+   */
+  forked_from_session_id?: string | null;
+  fork_message_id?: string | null;
   /** 运行时态（不入库）：sessions 接口返回时由服务端合并；WS session.changed 不携带 */
   queued_count?: number;
   waiting_slot?: boolean;
@@ -289,7 +300,19 @@ export type WsEvent =
   | { type: 'issue.deleted'; issue_id: string; workspace_id: string }
   | { type: 'comment.added'; comment: IssueComment }
   | { type: 'comment.delivery.changed'; issue_id: string; comment_ids: string[] }
-  | { type: 'session.changed'; session: Session }
+  /**
+   * CHAT-SB1（契约 #22）：会话变更。`session` 保留完整会话对象（既有前端按它覆盖 liveSession），
+   * 顶层附加侧栏增量字段（`session_id / title / archived_at / forked_from_session_id`），
+   * 侧栏只读这些字段即可增量更新，不必依赖整对象 diff。
+   */
+  | {
+    type: 'session.changed';
+    session: Session;
+    session_id?: string;
+    title?: string | null;
+    archived_at?: number | null;
+    forked_from_session_id?: string | null;
+  }
   | { type: 'session.deleted'; session_id: string }
   | { type: 'session.event'; session_id: string; event: { type: 'text' | 'thinking' | 'tool' | 'error' | 'end'; [k: string]: unknown } }
   | { type: 'session.runtime'; session_id: string; queued_count: number; waiting_slot: boolean }

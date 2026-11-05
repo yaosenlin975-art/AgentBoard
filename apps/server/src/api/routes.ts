@@ -50,6 +50,7 @@ import {
   getSession,
   updateSession,
   deleteSession,
+  forkSession,
 } from '../db/repos/session.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
 import { buildSessionPreview } from '../services/messageSignals.js';
@@ -96,6 +97,7 @@ import {
   issueTreeQuerySchema,
   patchIssueSchema,
   patchSessionSchema,
+  forkSessionSchema,
   patchSettingsSchema,
   dbMigrateSchema,
   sendMessageSchema,
@@ -158,8 +160,9 @@ function parseBody<T>(schema: ZodType<T>, body: unknown): T {
   return result.data;
 }
 
+/** CHAT-SB1：会话列表按设计稿用 `workspace_id` 查询，既有调用方仍用 `workspace`，两者等价 */
 function requireWorkspaceParam(req: Request): string {
-  const value = req.query.workspace;
+  const value = req.query.workspace ?? req.query.workspace_id;
   if (typeof value !== 'string' || value === '') {
     throw new ValidationError('缺少 workspace 查询参数');
   }
@@ -1053,7 +1056,9 @@ export function createRouter(deps: RouterDeps): Router {
   router.get('/sessions', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
-    const sessions = listSessionsByWorkspace(db, workspaceId);
+    // CHAT-SB1（契约 #11）：默认排除归档会话；侧栏「归档组」用 include_archived=1 拉全量
+    const includeArchived = req.query.include_archived === '1' || req.query.include_archived === 'true';
+    const sessions = listSessionsByWorkspace(db, workspaceId, { includeArchived });
     // AUDIT-SRV（F-03）：首条用户消息预览 + 来源（dispatch=绑任务，chat=自由会话），一次查回避免 N+1
     const previews = listFirstUserMessages(db, sessions.map((s) => s.id));
     res.json(
@@ -1214,14 +1219,46 @@ export function createRouter(deps: RouterDeps): Router {
 
   // Task 14：修改会话模型（下一轮生效——sessionManager.runTurn 起轮时读取 session.model）
   // 会话标题：同一端点接受 title（1–50 字，null 清空回到派生标题），与 model 可同时提交。
+  // CHAT-SB1：同一端点接受 archived（true=归档 / false=恢复）；运行中归档与删除同口径 409。
   router.patch('/sessions/:id', (req, res) => {
     const body = parseBody(patchSessionSchema, req.body);
-    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
-    const patch: { model?: string | null; title?: string | null } = {};
+    const current = getSession(db, req.params.id!);
+    if (!current) throw new NotFoundError('会话不存在');
+    if (body.archived === true && current.status === '运行中') {
+      throw new ConflictError('会话正在运行，请先停止再归档');
+    }
+    const patch: { model?: string | null; title?: string | null; archived_at?: number | null } = {};
     if (body.model !== undefined) patch.model = body.model;
     if (body.title !== undefined) patch.title = body.title;
+    if (body.archived !== undefined) patch.archived_at = body.archived ? Date.now() : null;
     const session = updateSession(db, req.params.id!, patch);
-    broadcast({ type: 'session.changed', session });
+    broadcast({
+      type: 'session.changed',
+      session,
+      session_id: session.id,
+      title: session.title ?? null,
+      archived_at: session.archived_at ?? null,
+      forked_from_session_id: session.forked_from_session_id ?? null,
+    });
+    res.json(session);
+  });
+
+  // CHAT-SB1（契约 #12）：分叉会话——复制截止消息到新会话（不复制 plan / adapter_session_id），
+  // 新会话继承 issue_id / cli / model，并写 forked_from_session_id + fork_message_id 来源标记。
+  router.post('/sessions/:id/fork', (req, res) => {
+    const body = parseBody(forkSessionSchema, req.body ?? {});
+    const session = forkSession(db, req.params.id!, {
+      fromMessageId: body.from_message_id ?? null,
+      title: body.title,
+    });
+    broadcast({
+      type: 'session.changed',
+      session,
+      session_id: session.id,
+      title: session.title ?? null,
+      archived_at: session.archived_at ?? null,
+      forked_from_session_id: session.forked_from_session_id ?? null,
+    });
     res.json(session);
   });
 

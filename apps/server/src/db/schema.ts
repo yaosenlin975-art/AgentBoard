@@ -22,6 +22,7 @@ import { migrateDraftAudit } from './migrations/draftAudit.js';
 import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js';
 import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
 import { migrateSessionTitle } from './migrations/sessionTitle.js';
+import { migrateSessionSidebar } from './migrations/sessionSidebar.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
@@ -56,7 +57,8 @@ CREATE TABLE IF NOT EXISTS session (
   issue_id TEXT REFERENCES issue(id) ON DELETE SET NULL,
   cli TEXT NOT NULL, model TEXT, status TEXT NOT NULL DEFAULT '运行中'
     CHECK (status IN ('运行中','已结束','失败')),
-  adapter_session_id TEXT, created_at INTEGER NOT NULL, title TEXT);
+  adapter_session_id TEXT, created_at INTEGER NOT NULL, title TEXT,
+  archived_at INTEGER, forked_from_session_id TEXT, fork_message_id TEXT);
 CREATE TABLE IF NOT EXISTS message (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user','assistant','event','error')),
@@ -98,6 +100,9 @@ export function initSchema(db: Db): void {
   migrateSessionMessageSignals(db);
   // 会话级标题（重命名）：幂等加列，不重建 session 表；NULL 保持既有派生标题
   migrateSessionTitle(db);
+  // CHAT-SB1（契约 #1–4）：侧栏会话字段 archived_at / forked_from_session_id / fork_message_id
+  //（title 已由上一步补齐；同样是纯加列，不重建 session 表）
+  migrateSessionSidebar(db);
   // CHAT-TURN1（契约 #5–8）：轮次表 + message 三列。纯加表/加列，不重建 message/session
   //（重建会带走 error_code/retryable 与全部消息），历史数据不回填。
   migrateSessionTurn(db);
