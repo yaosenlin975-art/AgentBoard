@@ -14,6 +14,8 @@ export function migrateKnowledge(db: Db): void {
     CREATE UNIQUE INDEX IF NOT EXISTS knowledge_workspace_slug ON knowledge_page(workspace_id,slug) WHERE scope='workspace' AND status<>'deleted';
     CREATE UNIQUE INDEX IF NOT EXISTS knowledge_common_slug ON knowledge_page(slug) WHERE scope='common' AND status<>'deleted';
     CREATE INDEX IF NOT EXISTS knowledge_browse ON knowledge_page(scope,workspace_id,status,updated_at DESC);
+    -- PERF-2（F5）：/pages 列表按 status 过滤 + ORDER BY updated_at DESC, id 的混向索引（正向扫描即满足，消除 TEMP B-TREE）
+    CREATE INDEX IF NOT EXISTS idx_knowledge_page_status_updated ON knowledge_page(status, updated_at DESC, id);
     CREATE INDEX IF NOT EXISTS knowledge_expiry ON knowledge_page(expires_at) WHERE expires_at IS NOT NULL;
     CREATE TABLE IF NOT EXISTS knowledge_revision (
       id TEXT PRIMARY KEY, page_id TEXT NOT NULL REFERENCES knowledge_page(id) ON DELETE RESTRICT,
