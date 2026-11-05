@@ -12,6 +12,7 @@ import {
 import {
   DEFAULT_DISPLAY_OPTIONS,
   groupIssuesForDisplay,
+  KNOWLEDGE_DISPLAY_KEY,
   parseDisplayOptions,
   readDisplayOptions,
   writeDisplayOptions,
@@ -83,6 +84,22 @@ describe('显示偏好', () => {
     expect(readDisplayOptions(storage)).toEqual(DEFAULT_DISPLAY_OPTIONS);
     writeDisplayOptions({ density: 'compact', grouping: 'label' }, storage);
     expect(readDisplayOptions(storage)).toEqual({ density: 'compact', grouping: 'label' });
+  });
+
+  it('BORROW-3.3：知识列表独立键与看板键互不影响', () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); } };
+    // 知识键写入紧凑，看板键保持默认
+    writeDisplayOptions({ density: 'compact', grouping: 'none' }, storage, KNOWLEDGE_DISPLAY_KEY);
+    expect(readDisplayOptions(storage, KNOWLEDGE_DISPLAY_KEY)).toEqual({ density: 'compact', grouping: 'none' });
+    expect(readDisplayOptions(storage)).toEqual(DEFAULT_DISPLAY_OPTIONS);
+    // 看板键反向写入，知识键不受影响
+    writeDisplayOptions({ density: 'comfortable', grouping: 'label' }, storage);
+    expect(readDisplayOptions(storage)).toEqual({ density: 'comfortable', grouping: 'label' });
+    expect(readDisplayOptions(storage, KNOWLEDGE_DISPLAY_KEY)).toEqual({ density: 'compact', grouping: 'none' });
+    // 知识键损坏数据回落默认（复用同一解析器）
+    store.set(KNOWLEDGE_DISPLAY_KEY, 'not-json');
+    expect(readDisplayOptions(storage, KNOWLEDGE_DISPLAY_KEY)).toEqual(DEFAULT_DISPLAY_OPTIONS);
   });
 
   it('分组按首个标签，无标签归未分类，组内保持原顺序', () => {

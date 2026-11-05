@@ -35,16 +35,20 @@ export function parseDisplayOptions(raw: string | null): DisplayOptions {
   }
 }
 
-export function readDisplayOptions(storage: Pick<Storage, 'getItem'> | null = globalThis.localStorage ?? null): DisplayOptions {
-  return parseDisplayOptions(storage?.getItem(STORAGE_KEY) ?? null);
+export function readDisplayOptions(storage: Pick<Storage, 'getItem'> | null = globalThis.localStorage ?? null, key: string = STORAGE_KEY): DisplayOptions {
+  return parseDisplayOptions(storage?.getItem(key) ?? null);
 }
 
 export function writeDisplayOptions(
   options: DisplayOptions,
   storage: Pick<Storage, 'setItem'> | null = globalThis.localStorage ?? null,
+  key: string = STORAGE_KEY,
 ): void {
-  storage?.setItem(STORAGE_KEY, JSON.stringify(options));
+  storage?.setItem(key, JSON.stringify(options));
 }
+
+/** BORROW-3.3：知识列表独立存储键——与看板偏好互不影响（同一 DisplayOptions 形状复用） */
+export const KNOWLEDGE_DISPLAY_KEY = 'agentboard.knowledge.displayOptions.v1';
 
 export interface DisplayGroup {
   key: string;

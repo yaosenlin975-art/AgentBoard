@@ -50,6 +50,10 @@ interface Props {
   workspaceId: string | null;
   scope: 'both' | 'workspace' | 'common';
   onSelect: (page: GraphNodeTarget) => void;
+  /** BORROW-3.3（局部图 IA）：外部聚焦入口（详情「在星图中查看」）——非空时跟随设为 focusId */
+  initialFocusPageId?: string | null;
+  /** BORROW-3.3：聚焦来源页的返回回调；提供且聚焦中时渲染「返回原页」 */
+  onExitFocus?: () => void;
 }
 
 const FALLBACK_PAGE_CAP = 50;
@@ -118,7 +122,7 @@ export function prefetchGraphChunk(): void {
   void import('./pixiGraph');
 }
 
-export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
+export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageId = null, onExitFocus }: Props) {
   const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ link: true, source: true, keyword: true });
   const [showIsolated, setShowIsolated] = useState(true);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -209,7 +213,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
   // 搜索与聚焦（KB-GRAPH-3）
   const [search, setSearch] = useState('');
   const [onlyMatches, setOnlyMatches] = useState(false);
-  const [focusId, setFocusId] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(initialFocusPageId ?? null);
+  // BORROW-3.3：外部聚焦入口变化时跟随（详情进入局部图；用户在图内自选节点后外部值不再覆盖）
+  useEffect(() => {
+    if (initialFocusPageId) setFocusId(initialFocusPageId);
+  }, [initialFocusPageId]);
   const [focusHops, setFocusHops] = useState<1 | 2>(1);
   // KB-GRAPH-P4：局部图（C10）+ 控件面板（B2）
   const [localMode, setLocalMode] = useState(false);
@@ -564,6 +572,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect }: Props) {
       className="flex min-h-0 flex-col rounded-2xl border border-hairline bg-surface-card"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-2 text-xs text-ink-2">
+        {focusId !== null && onExitFocus && (
+          <button
+            type="button"
+            data-testid="knowledge-graph-exit-focus"
+            onClick={onExitFocus}
+            className="rounded px-2 py-0.5 text-xs text-accent transition-colors hover:bg-accent-soft"
+          >
+            返回原页
+          </button>
+        )}
         <label className="flex items-center gap-1">
           <input
             type="checkbox"

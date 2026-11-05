@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -18,6 +18,9 @@ import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 import { persistKnowledgeScope, resolveKnowledgeScope, type KnowledgeScope } from '../../lib/knowledgeScope';
+// BORROW-3.3：列表显示偏好复用看板 DisplayOptions 形状，但走独立存储键（改一个不影响另一个）
+import { KNOWLEDGE_DISPLAY_KEY, readDisplayOptions, writeDisplayOptions, type DisplayOptions } from '../../lib/displayOptions';
+import { KnowledgeDeepLinkHistory } from './KnowledgeDeepLinkHistory';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -75,6 +78,31 @@ export function KnowledgePanel({
   // （403 文案由服务端保证不含标题）。同一引用只消费一次，避免列表交互中被重复拉起。
   const [deepLinkError, setDeepLinkError] = useState<string | null>(null);
   const [deepLinkConsumed, setDeepLinkConsumed] = useState<string | null>(null);
+  // BORROW-3.3（D8）：深链落到已删除页（resolve 410）→ 从提示一键进入历史版本列表
+  const [deepLinkHistoryOpen, setDeepLinkHistoryOpen] = useState(false);
+  // BORROW-3.3（局部图 IA）：详情「在星图中查看」→ 图内聚焦该页；「返回原页」回列表详情
+  const [graphFocus, setGraphFocus] = useState<{ id: string } | null>(null);
+  // BORROW-3.3：知识列表显示偏好（独立键，与看板互不影响）
+  const [display, setDisplay] = useState<DisplayOptions>(() => readDisplayOptions(undefined, KNOWLEDGE_DISPLAY_KEY));
+  const setDisplayOptions = (next: DisplayOptions): void => {
+    setDisplay(next);
+    writeDisplayOptions(next, undefined, KNOWLEDGE_DISPLAY_KEY);
+  };
+  const deepLinkDeleted = deepLinkError !== null && deepLinkPageId !== null
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(deepLinkPageId)
+    && deepLinkError.includes('已删除');
+  // BORROW-3.3：列表分组（顺序扫描遇 category 变化分段，不重排——视觉顺序仍等于接口顺序）
+  const grouped = useMemo(() => {
+    if (display.grouping === 'none') return null;
+    const groups: Array<{ category: ReturnType<typeof normalizeCategory>; items: typeof items }> = [];
+    for (const page of items) {
+      const category = normalizeCategory((page as { category?: unknown }).category);
+      const last = groups[groups.length - 1];
+      if (last && last.category === category) last.items.push(page);
+      else groups.push({ category, items: [page] });
+    }
+    return groups;
+  }, [items, display.grouping]);
   useEffect(() => {
     if (deepLinkPageId === null || deepLinkConsumed === deepLinkPageId) return;
     setDeepLinkConsumed(deepLinkPageId);
@@ -148,8 +176,27 @@ export function KnowledgePanel({
       {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-ink-2"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
     </form>
 
+    {/* BORROW-3.3：列表显示偏好（独立键；density 作用于行内边距，grouping 按分类分段不重排） */}
+    <div className="mt-3 flex shrink-0 flex-wrap items-center gap-3 text-xs text-ink-2" data-testid="knowledge-display-options">
+      <label className="flex items-center gap-1">密度
+        <select aria-label="知识列表密度" value={display.density} onChange={e => setDisplayOptions({ ...display, density: e.target.value as DisplayOptions['density'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+          <option value="comfortable">舒适</option>
+          <option value="compact">紧凑</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-1">分组
+        <select aria-label="知识列表分组" value={display.grouping} onChange={e => setDisplayOptions({ ...display, grouping: e.target.value as DisplayOptions['grouping'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+          <option value="none">不分组</option>
+          <option value="label">按分类</option>
+        </select>
+      </label>
+    </div>
+
     {list.isError && <p role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{list.error.message}</p>}
-    {deepLinkError && <p role="alert" data-testid="knowledge-deeplink-error" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{deepLinkError}</p>}
+    {deepLinkError && <div className="mt-3 flex flex-wrap items-center gap-2">
+      <p role="alert" data-testid="knowledge-deeplink-error" className="flex-1 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{deepLinkError}</p>
+      {deepLinkDeleted && <button type="button" data-testid="knowledge-deeplink-history-open" className={`${BUTTON_SECONDARY} shrink-0`} onClick={() => setDeepLinkHistoryOpen(true)}>查看历史版本</button>}
+    </div>}
 
     <div className="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-auto lg:flex-row">
       {view === 'graph' ? (
@@ -158,7 +205,13 @@ export function KnowledgePanel({
             workspaceId={workspaceId}
             scope={scope}
             onSelect={(page) => setSelected({ ...page })}
+            initialFocusPageId={graphFocus?.id ?? null}
+            onExitFocus={() => { setGraphFocus(null); setView('list'); }}
           />
+        </div>
+      ) : deepLinkHistoryOpen && deepLinkPageId !== null ? (
+        <div className="min-w-0 lg:w-80 lg:flex-none">
+          <KnowledgeDeepLinkHistory pageId={deepLinkPageId} workspaceId={workspaceId} onBack={() => setDeepLinkHistoryOpen(false)} />
         </div>
       ) : (
       <div className="min-w-0 lg:w-80 lg:flex-none">
@@ -179,32 +232,42 @@ export function KnowledgePanel({
         )}
 
         {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
-          {items.map(page => {
-            const isSelected = selected?.id === page.id && selected?.scope === page.scope;
-            const isExpired = page.expires_at !== null && page.expires_at !== undefined && page.expires_at <= Date.now();
-            const category = normalizeCategory((page as { category?: unknown }).category);
-            const landed = normalizeLanded((page as { landed?: unknown }).landed);
-            return <li key={page.id} data-testid={`knowledge-item-${page.id}`} className={`relative px-3 py-2.5 transition-colors ${isSelected ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}>
-              {isSelected && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-accent" />}
-              <button type="button" aria-current={isSelected ? 'true' : undefined} className="block w-full text-left" onClick={() => setSelected(page)}>
-                <span className="block truncate text-sm font-medium text-ink">{page.title}</span>
-                {page.snippet && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-ink-3">{page.snippet}</span>}
-                {/* UNSLOP-4：每行只有一种字号、一种元信息色；类别是唯一有颜色的信息（小圆点），其余用「·」分隔的静默文本 */}
-                <span data-testid="knowledge-meta" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
-                  <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: `var(${CATEGORY_STYLES[category].cssVar})` }} />
-                  <span className="text-ink-2">{CATEGORY_LABEL[category]}</span>
-                  <span aria-hidden>·</span>
-                  <span>{page.scope === 'common' ? '公共' : '项目'}</span>
-                  <span aria-hidden>·</span>
-                  <span className="tabular-nums">v{page.revision}</span>
-                  <span aria-hidden>·</span>
-                  <span>{STATUS_LABEL[page.status] ?? page.status}</span>
-                  {landed !== null && <><span aria-hidden>·</span><span>{LANDED_LABEL[landed]}</span></>}
-                  {isExpired && <><span aria-hidden>·</span><span>已过期</span></>}
-                </span>
-              </button>
-            </li>;
-          })}
+          {(grouped ?? items.map(page => ({ category: null as ReturnType<typeof normalizeCategory> | null, items: [page] }))).map((group, groupIndex) => (
+            <Fragment key={group.category ?? `flat:${groupIndex}`}>
+              {group.category !== null && (
+                <li aria-hidden className="px-3 py-1 text-xs font-medium text-ink-2">
+                  <span className="mr-1.5 inline-block size-1.5 rounded-full align-middle" style={{ background: `var(${CATEGORY_STYLES[group.category].cssVar})` }} />
+                  {CATEGORY_LABEL[group.category]}
+                </li>
+              )}
+              {group.items.map(page => {
+                const isSelected = selected?.id === page.id && selected?.scope === page.scope;
+                const isExpired = page.expires_at !== null && page.expires_at !== undefined && page.expires_at <= Date.now();
+                const category = normalizeCategory((page as { category?: unknown }).category);
+                const landed = normalizeLanded((page as { landed?: unknown }).landed);
+                return <li key={page.id} data-testid={`knowledge-item-${page.id}`} className={`relative px-3 transition-colors ${display.density === 'compact' ? 'py-1.5' : 'py-2.5'} ${isSelected ? 'bg-accent-soft' : 'hover:bg-surface-raised'}`}>
+                  {isSelected && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-accent" />}
+                  <button type="button" aria-current={isSelected ? 'true' : undefined} className="block w-full text-left" onClick={() => setSelected(page)}>
+                    <span className="block truncate text-sm font-medium text-ink">{page.title}</span>
+                    {display.density === 'comfortable' && page.snippet && <span className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-xs text-ink-3">{page.snippet}</span>}
+                    {/* UNSLOP-4：每行只有一种字号、一种元信息色；类别是唯一有颜色的信息（小圆点），其余用「·」分隔的静默文本 */}
+                    <span data-testid="knowledge-meta" className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-3">
+                      <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: `var(${CATEGORY_STYLES[category].cssVar})` }} />
+                      <span className="text-ink-2">{CATEGORY_LABEL[category]}</span>
+                      <span aria-hidden>·</span>
+                      <span>{page.scope === 'common' ? '公共' : '项目'}</span>
+                      <span aria-hidden>·</span>
+                      <span className="tabular-nums">v{page.revision}</span>
+                      <span aria-hidden>·</span>
+                      <span>{STATUS_LABEL[page.status] ?? page.status}</span>
+                      {landed !== null && <><span aria-hidden>·</span><span>{LANDED_LABEL[landed]}</span></>}
+                      {isExpired && <><span aria-hidden>·</span><span>已过期</span></>}
+                    </span>
+                  </button>
+                </li>;
+              })}
+            </Fragment>
+          ))}
         </ul>}
 
         {!query && items.length > 0 && <div className="mt-3 flex items-center gap-2">
@@ -214,7 +277,7 @@ export function KnowledgePanel({
       </div>
       )}
 
-      {selected && <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} />}
+      {selected && <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} onViewInGraph={selected.status !== 'deleted' ? () => { setGraphFocus({ id: selected.id }); setView('graph'); } : undefined} />}
       <KnowledgeImportDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}
