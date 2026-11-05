@@ -125,7 +125,7 @@ describe('采集侧纯函数（VOICE-3）', () => {
 
 describe('上行帧格式（与服务端 Float32LE 契约对齐）', () => {
   /** 最小采集环境桩：AudioContext/AudioWorkletNode/getUserMedia/WS 全部可观察 */
-  const setupRecorder = async () => {
+  const setupRecorder = async (options: { stopText?: string } = {}) => {
     const sent: ArrayBuffer[] = [];
     const order: string[] = [];
     const socket = {
@@ -136,7 +136,11 @@ describe('上行帧格式（与服务端 Float32LE 契约对齐）', () => {
       close: () => { order.push('close'); },
     };
     const fetchImpl = (async (input: unknown) => {
-      order.push(`fetch:${String(input)}`);
+      const url = String(input);
+      order.push(`fetch:${url}`);
+      if (url.endsWith('/stop')) {
+        return { ok: true, status: 200, json: async () => ({ session_id: 's1', text: options.stopText ?? '', frames: 1, state: 'ended' }) };
+      }
       return { ok: true, status: 201, json: async () => ({ session_id: 's1', sample_rate: 16000 }) };
     }) as unknown as typeof fetch;
     let workletNode: { port: { onmessage: ((event: { data: Float32Array }) => void) | null } } | null = null;
@@ -189,6 +193,16 @@ describe('上行帧格式（与服务端 Float32LE 契约对齐）', () => {
     const view = new DataView(buffer);
     expect(view.getFloat32(0, true)).toBeCloseTo(0.5, 5);
     await h.session.stop();
+    h.restore();
+  });
+
+  it('stop 先请求 /stop 取回最终文本，再关 WS（文本不丢）', async () => {
+    const h = await setupRecorder({ stopText: '你好世界' });
+    const text = await h.session.stop();
+    expect(text).toBe('你好世界');
+    // 顺序：建会话 → /stop 取文本 → 关 WS；提前关 WS 会丢服务端推的 final
+    expect(h.order.indexOf('fetch:/api/voice/session/s1/stop')).toBeGreaterThan(-1);
+    expect(h.order.indexOf('fetch:/api/voice/session/s1/stop')).toBeLessThan(h.order.indexOf('close'));
     h.restore();
   });
 });

@@ -223,15 +223,29 @@ export async function startVoiceSession(options: StartVoiceOptions): Promise<Voi
       rejectFinal?.(new VoiceInputError('VOICE_UNSUPPORTED', '已取消'));
     },
     stop: async () => {
-      cleanup();
-      if (options.mock) return pending === '' ? '（语音）测试文本' : pending;
+      if (options.mock) {
+        cleanup();
+        return pending === '' ? '（语音）测试文本' : pending;
+      }
+      // 先请求 /stop 拿最终文本：服务端在 finishSession 里先推 final 再关 WS，
+      // 若提前 cleanup() 关连接，final 会丢，只剩可能不完整的 partial。
+      const doFetch = options.fetchImpl ?? fetch;
+      let restText = '';
       try {
         if (sessionId !== null) {
-          await fetch(`/api/voice/session/${sessionId}/stop`, { method: 'POST' }).catch(() => undefined);
+          const res = await doFetch(`/api/voice/session/${sessionId}/stop`, { method: 'POST' });
+          if (res.ok) {
+            const body = (await res.json()) as { text?: unknown };
+            if (typeof body.text === 'string') restText = body.text;
+          }
         }
+      } catch {
+        // 服务端不可达时退回 WS 已收到的文本
       } finally {
-        // 服务端在 stop 后也会推 final；这里以已收到的 final 优先，否则等 1.5s
+        cleanup();
       }
+      if (finalFromWs !== null && finalFromWs !== '') return finalFromWs;
+      if (restText !== '') return restText;
       const timeout = new Promise<string>((resolve) => {
         setTimeout(() => resolve(pending), 1500);
       });
