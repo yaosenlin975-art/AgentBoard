@@ -195,6 +195,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     // 原因来自服务端 switch_reason_code（CLIENT_NOT_INSTALLED），不是前端自造
     expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('本机未安装该客户端'));
     expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('CLIENT_NOT_INSTALLED'));
+    // ACC-SWITCH：禁用的切换按钮必须给出出路，不能只留一个点不动的按钮
+    expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('需手动在客户端切换'));
     await userEvent.click(mmSwitch);
     expect(posts).toHaveLength(0);
 
@@ -206,6 +208,36 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
     await waitFor(() => expect(posts).toEqual(['acc-wb-2']));
     await waitFor(() => expect(within(wbCard).getByTestId('accounts-op-acc-wb-2')).toHaveTextContent('切换成功'));
+  });
+
+  it('切换成功后刷新账号列表：is_current 与结果一致，旧「客户端当前」芯片消失', async () => {
+    let switched = false;
+    const wbCurrent = account({ id: 'acc-wb-cur', display_name: 'WB 当前', is_current: true });
+    const wbNext = account({ id: 'acc-wb-next', display_name: 'WB 待切', is_current: false });
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([
+        { ...wbCurrent, is_current: !switched },
+        { ...wbNext, is_current: switched },
+      ])),
+      http.post('/api/managed-accounts/acc-wb-next/switch', () =>
+        HttpResponse.json({ operation_id: 'op-sw', operation: operation() }, { status: 202 }),
+      ),
+      http.get('/api/account-operations/op-sw', () => {
+        switched = true;
+        return HttpResponse.json(operation({ state: 'succeeded', stage: 'verify' }));
+      }),
+    );
+    renderPanel();
+
+    const nextCard = await screen.findByTestId('accounts-card-acc-wb-next');
+    await userEvent.click(within(nextCard).getByTestId('accounts-switch-acc-wb-next'));
+    await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
+
+    await waitFor(
+      () => expect(within(nextCard).getByTestId('accounts-client-current-acc-wb-next')).toHaveTextContent('客户端当前'),
+      { timeout: 3000 },
+    );
+    expect(screen.getByTestId('accounts-client-current-acc-wb-cur')).toBeEmptyDOMElement();
   });
 
   it('切换恢复失败（recovery_required）：冻结该账号切换并显示恢复引用', async () => {

@@ -83,8 +83,28 @@ const batchCreateSchema = z.object({
 
 export type DesktopCaptureProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent'>;
 export type DesktopSwitchProvider = Pick<WorkbuddyDesktopProvider, 'switchAccount'>;
+/**
+ * ACC-SWITCH：读「客户端当前登录身份」的哈希（只读、不抛错；读不到返回 null）。
+ * 列表用它逐平台判定 `is_current`，缺方法时该平台退化为 null（未知），不再用 WorkBuddy 的身份去比对别的平台。
+ */
+export type DesktopIdentityProvider = { getCurrentIdentityHash?: () => Promise<string | null> };
 /** ACC-GET：捕获与切换不再强制同时存在（Trae 只有捕获能力，registry 的 switch=false 会先拦住切换） */
-export type DesktopProvider = Partial<DesktopCaptureProvider & DesktopSwitchProvider>;
+export type DesktopProvider = Partial<DesktopCaptureProvider & DesktopSwitchProvider> & DesktopIdentityProvider;
+
+/** ACC-SWITCH：逐平台取当前身份哈希；读不到/未装配读取能力 → 该平台不出现在结果里（is_current = null） */
+async function readCurrentIdentityHashes(deps: AccountRouterDeps): Promise<Partial<Record<ManagedAppId, string | null>>> {
+  const hashes: Partial<Record<ManagedAppId, string | null>> = {};
+  if (deps.workbuddy) {
+    const identity = await deps.workbuddy.getCurrentIdentity().catch(() => null);
+    hashes.workbuddy_desktop = identity?.identity_hash ?? null;
+  }
+  for (const app of ['minimax', 'trae'] as const) {
+    const provider = deps.desktopProviders?.[app];
+    if (!provider?.getCurrentIdentityHash) continue;
+    hashes[app] = await Promise.resolve(provider.getCurrentIdentityHash()).catch(() => null);
+  }
+  return hashes;
+}
 
 /** ACC-13：按平台解析桌面 provider；minimax/trae 从注入表取，workbuddy 走既有字段 */
 function resolveDesktopProvider(app: ManagedAppId, deps: AccountRouterDeps): DesktopProvider {
@@ -219,12 +239,19 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const app = managedAppParam.safeParse(req.query.app ?? undefined);
     if (req.query.app !== undefined && !app.success) throw new ValidationError('app 不合法');
     const filter = app.success ? app.data : undefined;
-    const currentIdentity = deps.workbuddy ? await deps.workbuddy.getCurrentIdentity() : null;
+    // ACC-SWITCH：按账号所属平台各自读取「客户端当前身份」，不再拿 WorkBuddy 的身份去比对所有平台
+    const currentHashes = await readCurrentIdentityHashes(deps);
     const rows = (db.prepare('SELECT id FROM managed_account ORDER BY created_at,id').all() as Array<{ id: string }>)
       .map(row => getManagedAccount(db, row.id)!);
     res.json(rows
       .filter(account => filter === undefined || account.app_id === filter)
-      .map(account => ({ ...publicManagedAccount(account), is_current: currentIdentity ? account.identity_hash === currentIdentity.identity_hash : null })));
+      .map(account => {
+        const currentHash = currentHashes[account.app_id];
+        return {
+          ...publicManagedAccount(account),
+          is_current: currentHash === undefined || currentHash === null ? null : account.identity_hash === currentHash,
+        };
+      }));
   });
 
   router.post('/managed-accounts/:app/capture-current', async (req, res) => {

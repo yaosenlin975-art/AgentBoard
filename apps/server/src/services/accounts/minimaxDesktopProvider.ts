@@ -251,6 +251,21 @@ export class MinimaxDesktopProvider {
   }
 
   /**
+   * ACC-SWITCH：读 auth.json 判定「客户端当前登录身份」的哈希（身份口径与 captureCurrent 一致）。
+   * 只读凭据文件、不要求 exe 存在、不抛错：读不到/解不开 → null（列表显示「当前未知」）。
+   */
+  async getCurrentIdentityHash(): Promise<string | null> {
+    try {
+      if (!(await this.fs.exists(this.paths.authFile))) return null;
+      const identity = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)));
+      if (!identity) return null;
+      return createHash('sha256').update(`${MINIMAX_APP_ID}\u0000${identity.clientId}`).digest('hex');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * switch：走**共用骨架**（B4S-4），本类只提供各步回调。
    * 步序：preflight（含「客户端在跑则阻断」）→ stop → snapshot → validate_target → write → start → verify →（失败）rollback。
    */

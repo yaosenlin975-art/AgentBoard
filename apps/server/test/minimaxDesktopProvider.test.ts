@@ -2,7 +2,7 @@
  * ACC-13：minimax 文件级登录态切换（capture / switch），失败分支逐个覆盖。
  * trae 不提供文件级切换（登录态不在可安全改写的明文文件里），此处只断言能力表口径。
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +113,61 @@ describe('minimax desktop provider (ACC-13)', () => {
     expect(account.checkin_credential_ref).toBeTruthy();
     expect(account.client_snapshot_ref).toBeTruthy();
     expect(account.identity_hash).toMatch(/^[a-f0-9]{64}$/);
+  }, 30000);
+
+  it('readsCurrentIdentityHashFromAuthFileWithoutClientExe', async () => {
+    const { provider } = build({ [AUTH]: authJson(TOKEN_A) });
+    expect(await provider.getCurrentIdentityHash()).toBe(
+      createHash('sha256').update(`minimax\u0000com.minimax.mcode`).digest('hex'),
+    );
+  });
+
+  it('returnsNullCurrentIdentityWhenAuthFileMissingOrCorrupt', async () => {
+    const { provider } = build({});
+    expect(await provider.getCurrentIdentityHash()).toBeNull();
+    const corrupt = build({ [AUTH]: '{not-json' });
+    expect(await corrupt.provider.getCurrentIdentityHash()).toBeNull();
+  });
+
+  it('serializesConcurrentSwitchesOnSameClientInstance', async () => {
+    const { provider, memory, process } = build(filesWithClient(TOKEN_A));
+    await provider.captureCurrent();
+
+    // 两个不同目标账号（凭据各自独立）
+    const makeTarget = async (token: string, displayName: string) => {
+      const identityHash = createHash('sha256').update(`target\u0000${token}`).digest('hex');
+      const id = randomUUID();
+      const ref = await vault.protect(Buffer.from(token, 'utf8'), { app_id: 'minimax', client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' });
+      t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+        VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(id, identityHash, displayName, ref);
+      return id;
+    };
+    const targetB = await makeTarget(TOKEN_B, '目标 B');
+    const targetC = await makeTarget(TOKEN_C, '目标 C');
+
+    // 在写盘处记录并发度：同一时刻只允许一个切换在写客户端
+    let active = 0;
+    let maxActive = 0;
+    const originalWrite = memory.fs.writeFile;
+    memory.fs.writeFile = async (path, data) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise(resolve => setTimeout(resolve, 25));
+      try { await originalWrite(path, data, 0o600); } finally { active -= 1; }
+    };
+
+    const [first, second] = await Promise.allSettled([provider.switchAccount(targetB), provider.switchAccount(targetC)]);
+    const settled = [first, second];
+    const succeeded = settled.filter(item => item.status === 'fulfilled') as PromiseFulfilledResult<Awaited<ReturnType<typeof provider.switchAccount>>>[];
+    const rejected = settled.filter(item => item.status === 'rejected') as PromiseRejectedResult[];
+    // ACC-SWITCH：同一实例同时只允许一个切换（第二个立刻 409 ACCOUNT_BUSY），不出现双写
+    expect(succeeded).toHaveLength(1);
+    expect(succeeded[0]!.value.state).toBe('succeeded');
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0]!.reason as { code?: string }).code).toBe('ACCOUNT_BUSY');
+    expect(maxActive).toBe(1);
+    // 只跑了一轮探测/启动，被拒的那一路没有碰客户端
+    expect(process.calls).toEqual(['isRunning', 'start']);
   }, 30000);
 
   it('switching WritesTargetTokenAndVerifies', async () => {

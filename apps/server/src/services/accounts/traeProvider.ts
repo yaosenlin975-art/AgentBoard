@@ -197,6 +197,14 @@ export class TraeDesktopProvider {
     this.pepper = deps.pepper;
   }
 
+  /** ACC-SWITCH：读 storage.json 判定客户端当前登录身份（身份口径与 captureCurrent 一致）；读不到 → null */
+  async getCurrentIdentityHash(): Promise<string | null> {
+    const read = readTraePayload({ ...(this.storagePath !== undefined ? { storagePath: this.storagePath } : {}), ...(this.pepper !== undefined ? { pepper: this.pepper } : {}) });
+    if (!read.ok) return null;
+    const subject = jwtSubject(read.payload.token) ?? read.payload.userId;
+    return subject === null ? null : sha256(`trae\0${subject}`);
+  }
+
   async captureCurrent(options: { display_name?: string } = {}): Promise<ManagedAccount> {
     if (options.display_name !== undefined && (options.display_name.trim().length < 1 || options.display_name.trim().length > 100)) {
       throw new ValidationError('display_name 不合法');

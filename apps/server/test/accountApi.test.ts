@@ -629,3 +629,56 @@ describe('account api ACC-GET capture capability', () => {
     expect(res.body.error.code).toBe('PROVIDER_UNVERIFIED');
   });
 });
+
+describe('account api ACC-SWITCH is_current 按平台判定', () => {
+  let t: TestDb;
+
+  beforeEach(() => { t = createTestDb(); });
+  afterEach(() => { t.cleanup(); });
+
+  type Row = { id: string; is_current: boolean | null };
+
+  const byId = (body: unknown): Map<string, Row> =>
+    new Map((body as Row[]).map(row => [row.id, row]));
+
+  it('MiniMax / Trae 各用自己客户端的身份判定，其余平台保持 null（未知）', async () => {
+    const MINIMAX_HASH = sha256('minimax-live');
+    const TRAE_HASH = sha256('trae-live');
+    const app = (await createApp({
+      db: t.db,
+      refreshClisOnBoot: false,
+      desktopProviders: {
+        minimax: { getCurrentIdentityHash: async () => MINIMAX_HASH },
+        trae: { getCurrentIdentityHash: async () => TRAE_HASH },
+      },
+    })).app;
+
+    const mmCurrent = createManagedAccount(t.db, { app_id: 'minimax', client_instance_id: 'minimax-desktop', service_region: 'cn', identity_hash: MINIMAX_HASH, display_name: 'MM 当前' });
+    const mmOther = createManagedAccount(t.db, { app_id: 'minimax', client_instance_id: 'minimax-desktop', service_region: 'cn', identity_hash: sha256('minimax-other'), display_name: 'MM 其他' });
+    const traeCurrent = createManagedAccount(t.db, { app_id: 'trae', client_instance_id: 'trae-desktop', service_region: 'cn', identity_hash: TRAE_HASH, display_name: 'Trae 当前' });
+    const qoderRow = createManagedAccount(t.db, { app_id: 'qoder_cn', client_instance_id: 'qoder-desktop', service_region: 'cn', identity_hash: sha256('qoder-x'), display_name: 'Qoder' });
+
+    const res = await request(app).get('/api/managed-accounts');
+    expect(res.status).toBe(200);
+    const rows = byId(res.body);
+    expect(rows.get(mmCurrent.id)?.is_current).toBe(true);
+    expect(rows.get(mmOther.id)?.is_current).toBe(false);
+    expect(rows.get(traeCurrent.id)?.is_current).toBe(true);
+    // 没有身份读取能力的平台不猜：null = 未知，而不是 false
+    expect(rows.get(qoderRow.id)?.is_current).toBeNull();
+  });
+
+  it('客户端身份读取失败 → is_current 为 null（列表不 500、不误判「非当前」）', async () => {
+    const app = (await createApp({
+      db: t.db,
+      refreshClisOnBoot: false,
+      desktopProviders: {
+        minimax: { getCurrentIdentityHash: async () => { throw new Error('EPERM auth.json'); } },
+      },
+    })).app;
+    const row = createManagedAccount(t.db, { app_id: 'minimax', client_instance_id: 'minimax-desktop', service_region: 'cn', identity_hash: sha256('minimax-any'), display_name: 'MM' });
+    const res = await request(app).get('/api/managed-accounts');
+    expect(res.status).toBe(200);
+    expect(byId(res.body).get(row.id)?.is_current).toBeNull();
+  });
+});

@@ -175,6 +175,13 @@ export function AccountCard({
     if (needsRecovery) setFrozen(true);
   }, [needsRecovery]);
 
+  // ACC-SWITCH：切换进入终态后刷新账号列表，让 is_current 芯片与真实登录态一致（成功的切过去 / 回滚的切回来）
+  const operationState = operation?.state ?? null;
+  useEffect(() => {
+    if (operationState === null || !isTerminalState(operationState)) return;
+    void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+  }, [operationState, queryClient]);
+
   // ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出）
   const badge = capabilityBadge(capability);
   // 启停可点判定：本卡已知的操作（切换进行中）与服务端 409 ACCOUNT_BUSY 同口径
@@ -198,8 +205,9 @@ export function AccountCard({
   });
 
   const switchBlocked = capability?.switch !== true || account.is_current === true || frozen;
+  // ACC-SWITCH：不能切的平台必须给出可见原因 + 出路，不能只留一个禁用按钮
   const switchTitle = capability?.switch !== true
-    ? `${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}）`
+    ? `该平台暂不支持切换：${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}），需手动在客户端切换`
     : account.is_current === true
       ? '该账号已是客户端当前登录账号'
       : frozen
