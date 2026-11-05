@@ -7,7 +7,7 @@
  * 进入后用 ←/→/↑/↓/Home/End 在 chip 间移动；Space/Enter 仍是原生 button 的选中行为，
  * aria-pressed 与鼠标点击语义不变。「清除筛选」是独立操作，仍是单独 1 个 Tab 停靠点。
  */
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { useWorkspaceLabels } from '../../api/workspaceLabels';
 
@@ -19,11 +19,20 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
 
   // roving tabindex：只让 activeIndex 对应的 chip 进入 Tab 序
   const [rovingIndex, setRovingIndex] = useState(0);
+  // AUDIT-BOARD（I-07）：选中标签置顶；其余标签收进「更多标签」，避免一条拥挤的横滚条
+  const [moreOpen, setMoreOpen] = useState(false);
+  // 选中态下按「已选在前、未选在后」重排；无选中时保持原顺序（默认全部可见）
+  const orderedLabels = useMemo(() => {
+    if (selected.length === 0) return labels;
+    return [...labels.filter((label) => selected.includes(label)), ...labels.filter((label) => !selected.includes(label))];
+  }, [labels, selected]);
+  const folded = selected.length > 0 && !moreOpen;
+  const visibleLabels = folded ? orderedLabels.filter((label) => selected.includes(label)) : orderedLabels;
   const chipRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const activeIndex = labels.length === 0 ? 0 : Math.min(rovingIndex, labels.length - 1);
+  const activeIndex = visibleLabels.length === 0 ? 0 : Math.min(rovingIndex, visibleLabels.length - 1);
 
   function focusChip(index: number) {
-    const clamped = Math.max(0, Math.min(labels.length - 1, index));
+    const clamped = Math.max(0, Math.min(visibleLabels.length - 1, index));
     setRovingIndex(clamped);
     chipRefs.current[clamped]?.focus();
   }
@@ -46,7 +55,7 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
         break;
       case 'End':
         event.preventDefault();
-        focusChip(labels.length - 1);
+        focusChip(visibleLabels.length - 1);
         break;
       default:
         break;
@@ -54,11 +63,18 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    // 标签数量可能很多：单行横向滚动，保证不被撑高。
-    // 固定独占工具栏第二行（宽度随容器自适应），不再与切换按钮/搜索框抢同一行。
-    <div data-testid="label-filter-bar" className="w-full min-w-0 overflow-x-auto">
-      <div role="toolbar" aria-label="标签筛选" className="flex w-max items-center gap-1">
-        {labels.map((label, index) => {
+    // 标签数量可能很多：flex-wrap 换行而不是横向滚动，900 宽下也不截断（AUDIT-BOARD I-07）
+    <div data-testid="label-filter-bar" className="w-full min-w-0">
+      <div role="toolbar" aria-label="标签筛选" className="flex flex-wrap items-center gap-1">
+        {selected.length > 0 && (
+          <span
+            data-testid="label-filter-selected-count"
+            className="shrink-0 whitespace-nowrap rounded bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent"
+          >
+            已选 {selected.length}
+          </span>
+        )}
+        {visibleLabels.map((label, index) => {
           const active = selected.includes(label);
           return (
             <button
@@ -82,6 +98,17 @@ export function LabelFilterBar({ workspaceId }: { workspaceId: string }) {
             </button>
           );
         })}
+        {selected.length > 0 && labels.length > selected.length && (
+          <button
+            type="button"
+            data-testid="label-filter-more"
+            aria-expanded={moreOpen}
+            onClick={() => setMoreOpen((open) => !open)}
+            className="shrink-0 whitespace-nowrap rounded border border-hairline px-2 py-0.5 text-xs text-ink-3 transition-colors duration-150 hover:bg-surface-raised active:bg-neutral-200 motion-reduce:transition-none"
+          >
+            {moreOpen ? '收起标签' : `更多标签（${labels.length - selected.length}）`}
+          </button>
+        )}
         {selected.length > 0 && (
           <button
             type="button"

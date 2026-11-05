@@ -93,17 +93,24 @@ describe('标签筛选 roving tabindex（A11Y-TABNOISE）', () => {
     await userEvent.keyboard(' ');
     expect(chips[0]).toHaveAttribute('aria-pressed', 'true');
 
-    await userEvent.click(chips[4]!);
-    expect(chips[4]).toHaveAttribute('aria-pressed', 'true');
-    expect(chips[4]).toHaveFocus();
+    // AUDIT-BOARD：选中后未选标签收进「更多标签」，先展开再操作其余 chip
+    expect(screen.getByTestId('label-filter-selected-count')).toHaveTextContent('已选 1');
+    expect(screen.queryByTestId('label-filter-label-05')).toBeNull();
+    await userEvent.click(screen.getByTestId('label-filter-more'));
+    const expanded = await screen.findAllByTestId(/^label-filter-label-/);
+    expect(expanded).toHaveLength(30);
+
+    await userEvent.click(expanded[4]!);
+    expect(expanded[4]).toHaveAttribute('aria-pressed', 'true');
+    expect(expanded[4]).toHaveFocus();
     expect(screen.getByTestId('label-filter-clear')).toBeInTheDocument();
 
-    await userEvent.click(chips[4]!);
-    expect(chips[4]).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(expanded[4]!);
+    expect(expanded[4]).toHaveAttribute('aria-pressed', 'false');
 
     // 清掉 Space 选中的首项后，清除按钮随之消失（选中集合为空）
-    await userEvent.click(chips[0]!);
-    expect(chips[0]).toHaveAttribute('aria-pressed', 'false');
+    await userEvent.click(screen.getByTestId('label-filter-label-01'));
+    expect(screen.getByTestId('label-filter-label-01')).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByTestId('label-filter-clear')).toBeNull();
   });
 });

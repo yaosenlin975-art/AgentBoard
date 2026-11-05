@@ -1,6 +1,6 @@
 /**
  * BOARD-COLS：看板列容器改 grid（列数取当前列数组长度，不写死 4）。
- * - 每列 `minmax(280px, 1fr)`：列少时撑满容器不留白，列多时保底 280px 并横向滚动；
+ * - 每列 `minmax(240px, 1fr)`：列少时撑满容器不留白，列多时保底 280px 并横向滚动；
  * - 列本身不再有固定宽度（移除 `w-64 shrink-0`）。
  * 真实布局宽度与横向滚动由 CDP 在浏览器验证（jsdom 无布局）。
  */
@@ -30,14 +30,14 @@ function renderBoard(node: React.ReactNode) {
 }
 
 describe('看板列容器（grid 自适应）', () => {
-  it('列数取当前列数组长度：4 列 → repeat(4, minmax(280px, 1fr))', async () => {
+  it('列数取当前列数组长度：4 列 → repeat(4, minmax(240px, 1fr))', async () => {
     useAppStore.setState({ workspaceId: 'ws-1', selectedLabelsByWorkspace: {} });
     mockBoardData();
     renderBoard(<Board />);
 
     const container = await screen.findByTestId('board-columns');
     // STATUS-3-UI：列由 workspace_status 派生，未 mock 接口时用五条内置兜底
-    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(280px, 1fr))');
+    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(240px, 1fr))');
     // 横向滚动能力：列多时容器自己滚，不挤压列
     expect(container.className).toContain('grid');
     expect(container.className).toContain('overflow-x-auto');

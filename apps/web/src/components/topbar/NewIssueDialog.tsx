@@ -485,7 +485,7 @@ export function NewIssueDialog({
   );
 
   return (
-    <Modal open={open} title="新建 issue" onClose={onClose}>
+    <Modal open={open} title="新建任务" onClose={onClose}>
       <form onSubmit={submit} className="space-y-3" data-testid="new-issue-form" onPaste={onPaste}>
         {/* 状态预填（NEW-ISSUE-PLUS）：服务端创建时固定落「待规划」，这里只展示，不可改 */}
         <div className="flex items-center gap-2 text-sm">
@@ -716,7 +716,7 @@ export function NewIssueDialog({
                 disabled={!canSubmit}
                 className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink ab-transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {draft !== null ? '创建任务' : '创建'}
+                创建任务
               </button>
             )}
           </div>

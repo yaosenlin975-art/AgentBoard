@@ -29,7 +29,7 @@ vi.mock('../lib/dnd', async () => {
 });
 
 describe('看板列容器（5 列）', () => {
-  it('列数组有 5 项时模板变成 repeat(5, minmax(280px, 1fr))', async () => {
+  it('列数组有 5 项时模板变成 repeat(5, minmax(240px, 1fr))', async () => {
     server.use(
       http.get('/api/issues', () => HttpResponse.json<Issue[]>([])),
       http.get('/api/sessions', () => HttpResponse.json([])),
@@ -43,7 +43,7 @@ describe('看板列容器（5 列）', () => {
     );
 
     const container = await screen.findByTestId('board-columns');
-    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(280px, 1fr))');
+    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(240px, 1fr))');
     expect(screen.getByTestId('column-已废弃')).toBeInTheDocument();
     expect(screen.getByTestId('column-已关闭')).toBeInTheDocument();
   });

@@ -1,7 +1,7 @@
 /**
  * 看板单列（§7.3）：列头（名称 + 新建入口 + 计数）、可落点容器、卡片列表；空列占位提示。
  * 新建入口（NEW-ISSUE-PLUS）：只由外层对「待规划」列传入 onCreateIssue —— 新任务由服务端固定落在待规划。
- * 列宽（BOARD-COLS）：宽高由外层 grid 的列轨道决定（minmax(280px, 1fr)），这里不再写死宽度。
+ * 列宽（BOARD-COLS）：宽高由外层 grid 的列轨道决定（minmax(240px, 1fr)），这里不再写死宽度。
  * 排序控件（SORT-PLAN）：只由外层对「待规划」列传入 sortControl，渲染在列头下方；其它列没有。
  */
 import { useDroppable } from '@dnd-kit/core';
@@ -113,13 +113,26 @@ export function Column({
               ))}
         </SortableContext>
         {issues.length === 0 && (
-          <EmptyState
-            compact
-            testId={`empty-${status}`}
-            title="暂无任务"
-            hint="把卡片拖到本列，或点列头「+」新建"
-            className="flex-1 justify-center"
-          />
+          <>
+            <EmptyState
+              compact
+              testId={`empty-${status}`}
+              title="暂无任务"
+              hint={onCreateIssue === undefined ? '把卡片拖到本列' : '把卡片拖到本列，或点下方按钮新建（新任务进入待规划）'}
+              className="flex-1 justify-center"
+            />
+            {/* AUDIT-BOARD（I-08）：空列直达新建；落点固定「待规划」，在提示文案里说明 */}
+            {onCreateIssue !== undefined && (
+              <button
+                type="button"
+                data-testid={`empty-create-${status}`}
+                onClick={onCreateIssue}
+                className="mx-auto mb-2 shrink-0 rounded-md border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink motion-reduce:transition-none"
+              >
+                + 新建任务
+              </button>
+            )}
+          </>
         )}
       </div>
     </section>

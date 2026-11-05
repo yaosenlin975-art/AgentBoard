@@ -475,7 +475,8 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(screen.queryByTestId('issue-card-l2')).not.toBeInTheDocument();
     expect(screen.queryByTestId('issue-card-l3')).not.toBeInTheDocument();
 
-    // 多选 OR：命中任一选中标签即显示
+    // 多选 OR：命中任一选中标签即显示（AUDIT-BOARD：未选标签收在「更多标签」内，先展开）
+    await userEvent.click(screen.getByTestId('label-filter-more'));
     await userEvent.click(screen.getByTestId('label-filter-后端'));
     expect(screen.getByTestId('issue-card-l1')).toBeInTheDocument();
     expect(screen.getByTestId('issue-card-l2')).toBeInTheDocument();
@@ -620,8 +621,8 @@ describe('顶栏搜索（BOARD-SEARCH）', () => {
     renderBoard();
 
     await userEvent.click(await screen.findByTestId('label-filter-前端'));
+    await userEvent.click(screen.getByTestId('label-filter-more'));
     await userEvent.click(screen.getByTestId('label-filter-后端'));
-    // 标签 OR：c1 c2 c3
     expect(screen.getByTestId('issue-card-c1')).toBeInTheDocument();
     expect(screen.getByTestId('issue-card-c2')).toBeInTheDocument();
     expect(screen.getByTestId('issue-card-c3')).toBeInTheDocument();

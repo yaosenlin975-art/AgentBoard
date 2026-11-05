@@ -72,13 +72,28 @@ describe('新建任务入口（待规划列头 +）', () => {
     expect(plus).toHaveFocus();
   });
 
+  it('AUDIT-BOARD：空列给「+ 新建任务」，文案说明落点待规划', async () => {
+    mockData();
+    // 让「待规划」列真正为空（唯一一张卡在别的列）
+    server.use(http.get('/api/issues', () => HttpResponse.json<Issue[]>([{ ...existing, id: 'i2', status: '进行中' }])));
+    renderBoard();
+
+    const empty = await screen.findByTestId('empty-待规划');
+    expect(empty).toHaveTextContent('新任务进入待规划');
+    const create = screen.getByTestId('empty-create-待规划');
+    expect(create).toHaveTextContent('+ 新建任务');
+
+    await userEvent.click(create);
+    expect(await screen.findByRole('dialog', { name: '新建任务' })).toBeInTheDocument();
+  });
+
   it('点 + 打开新建对话框，状态预填「待规划」', async () => {
     mockData();
     renderBoard();
 
     await userEvent.click(await screen.findByTestId('column-create-待规划'));
 
-    expect(await screen.findByRole('dialog', { name: '新建 issue' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: '新建任务' })).toBeInTheDocument();
     expect(screen.getByTestId('new-issue-status')).toHaveTextContent('待规划');
   });
 
@@ -90,7 +105,7 @@ describe('新建任务入口（待规划列头 +）', () => {
     plus.focus();
     await userEvent.keyboard('{Enter}');
 
-    expect(await screen.findByRole('dialog', { name: '新建 issue' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: '新建任务' })).toBeInTheDocument();
   });
 
   it('提交后 POST 不带 status（服务端固定落待规划）并关闭对话框', async () => {
@@ -111,7 +126,7 @@ describe('新建任务入口（待规划列头 +）', () => {
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toMatchObject({ workspace_id: 'ws-1', title: '新任务' });
     expect(body).not.toHaveProperty('status');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建 issue' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建任务' })).toBeNull());
   });
 
   it('任务树视图：工具条给同等入口（树没有列），点它打开同一个对话框', async () => {
@@ -123,7 +138,7 @@ describe('新建任务入口（待规划列头 +）', () => {
     expect(screen.queryByTestId('column-create-待规划')).toBeNull();
 
     await userEvent.click(screen.getByTestId('tree-create-issue'));
-    expect(await screen.findByRole('dialog', { name: '新建 issue' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: '新建任务' })).toBeInTheDocument();
     expect(screen.getByTestId('new-issue-status')).toHaveTextContent('待规划');
   });
 });

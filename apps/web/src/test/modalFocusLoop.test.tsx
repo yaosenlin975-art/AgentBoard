@@ -65,7 +65,7 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
     trigger.focus();
     await user.click(trigger);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建 issue' });
+    const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     expect(document.activeElement).toBe(within(dialog).getByTestId('new-issue-title'));
   });
 
@@ -77,7 +77,7 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
     trigger.focus();
     await user.click(trigger);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建 issue' });
+    const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     // 注意 DOM 顺序：头部「关闭」按钮在内容之前
     const items = tabbablesIn(dialog);
     const first = items[0]!;
@@ -116,11 +116,11 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
     trigger.focus();
     await user.click(trigger);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建 issue' });
+    const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     expect(within(dialog).getByTestId('new-issue-title')).toHaveFocus();
 
     await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建 issue' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建任务' })).toBeNull());
     expect(trigger).toHaveFocus();
   });
 
@@ -132,9 +132,9 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
     trigger.focus();
     await user.click(trigger);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建 issue' });
+    const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     await user.click(within(dialog).getByRole('button', { name: '取消' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建 issue' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建任务' })).toBeNull());
     expect(trigger).toHaveFocus();
   });
 
@@ -167,10 +167,10 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
     trigger.focus();
     await user.click(trigger);
 
-    const dialog = await screen.findByRole('dialog', { name: '新建 issue' });
+    const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     await user.type(within(dialog).getByTestId('new-issue-title'), '新任务');
     await user.click(within(dialog).getByTestId('new-issue-submit'));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建 issue' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建任务' })).toBeNull());
     expect(trigger).toHaveFocus();
   });
 

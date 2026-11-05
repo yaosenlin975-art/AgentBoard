@@ -118,7 +118,7 @@ describe('看板列派生', () => {
 
     await waitFor(() => expect(columnNames()).toEqual(['待规划', '进行中', '待验收', '已关闭', '已废弃']));
     const container = screen.getByTestId('board-columns');
-    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(280px, 1fr))');
+    expect(container.style.gridTemplateColumns).toBe('repeat(5, minmax(240px, 1fr))');
     // 已废弃列头颜色区别于已关闭
     const deprecatedHeader = within(screen.getByTestId('column-已废弃')).getByRole('heading', { level: 3 });
     // UNSLOP：已废弃用更深一档石墨与已关闭区分（不再借琥珀）
@@ -134,7 +134,7 @@ describe('看板列派生', () => {
     renderBoard();
 
     await waitFor(() => expect(columnNames()).toEqual(['待规划', '等一下', '已关闭']));
-    expect(screen.getByTestId('board-columns').style.gridTemplateColumns).toBe('repeat(3, minmax(280px, 1fr))');
+    expect(screen.getByTestId('board-columns').style.gridTemplateColumns).toBe('repeat(3, minmax(240px, 1fr))');
   });
 
   it('接口失败 → 回落五条内置列（兜底）', async () => {

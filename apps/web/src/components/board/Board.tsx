@@ -287,7 +287,7 @@ export function Board({
                 // A2：点击反馈只走颜色过渡（≤150ms），reduced-motion 下即时
                 className="shrink-0 rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink active:bg-accent active:text-accent-ink motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40"
               >
-                + 新建
+                + 新建任务
               </button>
             )}
           </div>
@@ -323,15 +323,16 @@ export function Board({
           onDragEnd={handleDragEnd}
           onDragCancel={() => setActiveDrag(null)}
         >
-          {/* 列容器（BOARD-COLS / design §6）：grid 自适应，列数取当前列数组长度（不写死 4）。
-              每列 minmax(280px, 1fr)：列少时 1fr 撑满容器、右侧不留白；列多时保底 280px 并横向滚动。
+          {/* 列容器（BOARD-COLS / AUDIT-BOARD I-05）：grid 自适应，列数取当前列数组长度（不写死 4）。
+              每列 minmax(240px, 1fr)：1440 宽下五列不横向滚动；列少时 1fr 撑满容器、右侧不留白；
+              列多时保底 240px 并横向滚动。
               auto-rows-fr（COL-SCROLL）：把隐式行高钉成 minmax(0, 1fr)，否则默认 auto 行会按内容
               max-content 撑到上万像素——列内 overflow-y-auto 就永远没有可滚动溢出，而外层
               overflow-y-hidden 又把超长内容裁掉，表现为「列内滚轮失效」。 */}
           <div
             data-testid="board-columns"
             className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-4"
-            style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(280px, 1fr))` }}
+            style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(240px, 1fr))` }}
           >
             {columns.map((status) => (
               <Column
