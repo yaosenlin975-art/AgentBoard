@@ -19,6 +19,7 @@ export function Column({
   issues,
   runningSessionIds,
   onCreateIssue,
+  onReleaseRunning,
   sortControl,
   accent,
   density = 'comfortable',
@@ -33,6 +34,8 @@ export function Column({
   issues: Issue[];
   runningSessionIds: ReadonlySet<string>;
   onCreateIssue?: () => void;
+  /** REL-2：批量退回运行中任务（只由外层对「进行中」列传入） */
+  onReleaseRunning?: () => void;
   sortControl?: ReactNode;
   /** 列头强调色（按 workspace_status.kind：已废弃与已关闭要区分开） */
   accent?: string;
@@ -86,12 +89,27 @@ export function Column({
           {/* 排序控件（SORT-ICON）：紧跟 + 号右侧 */}
           {sortControl}
         </div>
-        <span
-          data-testid={`count-${status}`}
-          className="tabular-nums text-xs font-medium text-ink-3"
-        >
-          {issues.length}
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* REL-2：进行中列头救火键（小文字按钮，不抢列头视觉；只在有卡时出现） */}
+          {onReleaseRunning !== undefined && issues.length > 0 && (
+            <button
+              type="button"
+              data-testid="column-release-running"
+              aria-label={`退回运行中任务（${status}）`}
+              title="批量退回运行中任务到待规划"
+              onClick={onReleaseRunning}
+              className="rounded px-1.5 text-xs leading-5 text-ink-3 hover:bg-surface-card hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              退回
+            </button>
+          )}
+          <span
+            data-testid={`count-${status}`}
+            className="tabular-nums text-xs font-medium text-ink-3"
+          >
+            {issues.length}
+          </span>
+        </div>
       </header>
       <div
         ref={setNodeRef}

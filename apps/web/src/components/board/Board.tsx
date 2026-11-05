@@ -52,6 +52,7 @@ import {
 } from '../../lib/selection';
 import { SelectionBar } from './SelectionBar';
 import { ErrorState } from '../ui/ErrorState';
+import { ReleaseRunningDialog } from './ReleaseRunningDialog';
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -70,6 +71,11 @@ export function Board({
   const [activeDrag, setActiveDrag] = useState<ActiveDrag | null>(null);
   // 新建任务弹窗（NEW-ISSUE-PLUS）：入口只在待规划列头 / 任务树工具条，不再放顶栏
   const [newIssueOpen, setNewIssueOpen] = useState(false);
+  // REL-2：进行中列头救火键 → 预览弹窗；退回后用「本次退回 id 集」做即时过滤入口
+  const [releaseOpen, setReleaseOpen] = useState(false);
+  const [releasedBatch, setReleasedBatch] = useState<{ ids: ReadonlySet<string>; count: number } | null>(null);
+  const [onlyReleased, setOnlyReleased] = useState(false);
+  const [releaseToast, setReleaseToast] = useState<string | null>(null);
   // 待规划列排序方式（SORT-PLAN）：本地存储，不落库
   const [planningSort, setPlanningSort] = useState<PlanningSort>(() => readPlanningSort());
   // BORROW-1.1：显示偏好（密度/分组）本地持久化；两段式选择状态
@@ -100,6 +106,12 @@ export function Board({
     return () => clearTimeout(timer);
   }, [error]);
 
+  useEffect(() => {
+    if (releaseToast === null) return;
+    const timer = setTimeout(() => setReleaseToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [releaseToast]);
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -122,8 +134,10 @@ export function Board({
   // 平铺用 matchingIds（不含祖先）；树视图用同一 filter 的 visibleIds，保证同语义
   const visibleIssues = useMemo(() => {
     const all = issues ?? [];
-    return filter.active ? all.filter((issue) => filter.matchingIds.has(issue.id)) : all;
-  }, [issues, filter]);
+    const base = filter.active ? all.filter((issue) => filter.matchingIds.has(issue.id)) : all;
+    if (!onlyReleased || releasedBatch === null) return base;
+    return base.filter((issue) => releasedBatch.ids.has(issue.id));
+  }, [issues, filter, onlyReleased, releasedBatch]);
   const grouped = groupByColumn(visibleIssues, columns);
   // 「待规划」列排序（SORT-PLAN）：纯函数排序 + 本地存储；其它列保持 sort_order 顺序
   const planningIssues = useMemo(
@@ -182,6 +196,20 @@ export function Board({
     }
   };
 
+  /**
+   * REL-2：退回成功后把响应里的 issue **就地写回列表缓存**（与 DetailPanel 的 refreshIssue 同一口径），
+   * 卡片立刻离开「进行中」、占用徽标立刻消失，不依赖随后的 WS 帧；同时记录本次 id 集供「仅看本次退回」。
+   */
+  const handleReleased = (released: Issue[]): void => {
+    if (workspaceId === null || released.length === 0) return;
+    queryClient.setQueryData<Issue[]>(['issues', workspaceId], (list) =>
+      list === undefined ? list : list.map((item) => released.find((r) => r.id === item.id) ?? item),
+    );
+    setReleasedBatch({ ids: new Set(released.map((issue) => issue.id)), count: released.length });
+    setOnlyReleased(true);
+    setReleaseToast(`已退回 ${released.length} 张到待规划`);
+  };
+
   if (workspaceId === null) {
     return (
       <div className="flex h-full items-center justify-center p-8">
@@ -223,6 +251,28 @@ export function Board({
     <div className="flex h-full flex-col">
       {error !== null && (
         <ErrorState error={error} onDismiss={() => setError(null)} className="rounded-none border-x-0 border-t-0 px-3 py-1.5 text-sm" />
+      )}
+      {/* REL-2：退回结果条 —— toast 文案 + 「仅看本次退回」入口（组件态记住本次 id 集） */}
+      {(releaseToast !== null || releasedBatch !== null) && (
+        <div
+          data-testid="release-banner"
+          className="flex items-center gap-3 border-b border-hairline px-3 py-1.5 text-xs"
+        >
+          {releaseToast !== null && (
+            <span className="text-ink-2" data-testid="release-toast">{releaseToast}</span>
+          )}
+          {releasedBatch !== null && (
+            <button
+              type="button"
+              data-testid="release-only-toggle"
+              aria-pressed={onlyReleased}
+              onClick={() => setOnlyReleased((value) => !value)}
+              className="rounded px-1.5 py-0.5 text-ink-3 hover:bg-surface-raised hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              {onlyReleased ? '显示全部任务' : `仅看本次退回（${releasedBatch.count}）`}
+            </button>
+          )}
+        </div>
       )}
       {/* TOPBAR-INLINE：视图切换（平铺看板/任务树/知识库/日志）+ 搜索框 + 标签 chips 同在一行。
           tab 组 `shrink-0` 不被压缩；搜索框 `shrink-0`；chips 容器 `min-w-0 flex-1 overflow-x-auto`
@@ -348,6 +398,7 @@ export function Board({
                 selectedIds={selectedIds}
                 onToggleSelect={toggleCardSelection}
                 {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
+                {...(status === '进行中' ? { onReleaseRunning: () => setReleaseOpen(true) } : {})}
                 {...(status === '待规划'
                   ? { sortControl: <PlanningSortButton sort={planningSort} onChange={changePlanningSort} /> }
                   : {})}
@@ -371,6 +422,16 @@ export function Board({
       {/* 新建任务入口（NEW-ISSUE-PLUS）：平铺看板在「待规划」列头，任务树在工具条（树没有列） */}
       {workspaceId !== null && (
         <NewIssueDialog open={newIssueOpen} workspaceId={workspaceId} onClose={() => setNewIssueOpen(false)} />
+      )}
+      {/* REL-2：预览弹窗（dry_run 清单 → 勾选 → 提交） */}
+      {workspaceId !== null && (
+        <ReleaseRunningDialog
+          open={releaseOpen}
+          workspaceId={workspaceId}
+          issues={issues ?? []}
+          onClose={() => setReleaseOpen(false)}
+          onReleased={handleReleased}
+        />
       )}
     </div>
   );
