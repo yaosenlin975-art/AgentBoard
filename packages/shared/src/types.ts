@@ -299,7 +299,13 @@ export interface MessageToolMeta {
   tool_call_id: string | null;
   diff?: { files: MessageDiffFile[] } | null;
 }
+/** CHAT-TURN1 契约 #8：`message.meta_json` 的工具调用观测 */
 export type MessageMeta = MessageToolMeta;
+/**
+ * CHAT-VIS1：`ToolMeta` = `MessageMeta` 的语义别名（前端按「工具元信息」读，
+ * 与 `diff.files` 同处一张工具结果卡）。只是别名，不引入第二套字段。
+ */
+export type ToolMeta = MessageToolMeta;
 export interface Message { id: string; session_id: string; role: 'user' | 'assistant' | 'event' | 'error'; content: string; ts: number;
   /** 服务端归类：error 消息的错误码；非 error 或未归类为 null */
   error_code?: SessionErrorCode | null;
@@ -342,7 +348,13 @@ export type WsEvent =
   | { type: 'session.runtime'; session_id: string; queued_count: number; waiting_slot: boolean }
   | { type: 'message.added'; message: Message }
   | { type: 'clis.changed'; clis: CliInfo[] }
-  | { type: 'account.notice'; app_id: ManagedAppId; client_instance_id: string; message: string };
+  | { type: 'account.notice'; app_id: ManagedAppId; client_instance_id: string; message: string }
+  /**
+   * CHAT-VIS1：轮次观测事件按 CHAT-TURN1 预留的时机并入前端 `WsEvent`
+   * （`apps/web/src/api/ws.ts::eventToQueryKeys` 已补 case，返回 `[]`：走 wsBus 增量，不触发 invalidation）。
+   */
+  | SessionPlanEvent
+  | SessionUsageEvent;
 
 /**
  * CHAT-TURN1 契约 #18：计划快照，变更即推（一轮的 plan_json 全量，不做增量 diff）。
@@ -392,10 +404,11 @@ export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | Sessio
 /**
  * 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件。
  *
- * 为什么不直接把 #18/#21 并进 `WsEvent`：`apps/web/src/api/ws.ts` 的 `eventToQueryKeys` 是无 default 的
- * 穷尽 switch，并入后 web 的 `tsc --noEmit` 立刻失败（TS2366 缺返回路径），而 CHAT-TURN1 禁改 `apps/web/**`。
- * 接线时机：CHAT-VIS1 落计划条/成本脚注时，把这两个类型加入 `WsEvent` 并在 `eventToQueryKeys` 补 case
- * （返回 `[]`：轮次观测走 wsBus 增量，不触发 react-query invalidation）。
+ * 历史：CHAT-TURN1 时期刻意没有把 #18/#21 并进 `WsEvent`——`apps/web/src/api/ws.ts` 的 `eventToQueryKeys`
+ * 是无 default 的穷尽 switch，当时并入会让前端 `tsc --noEmit` 立刻失败（TS2366 缺返回路径），而 CHAT-TURN1 禁改 `apps/web/**`，
+ * 所以另立本类型给 `WsHub.broadcast` / `sessionManager.setBroadcaster` 收宽。
+ * CHAT-VIS1 已按计划把两个事件加入 `WsEvent` 并补 case（返回 `[]`），于是二者等价；
+ * 保留别名是为了不动服务端签名，也给「服务端广播、前端暂未消费」的后续事件留位置。
  */
 export type ServerWsEvent = WsEvent | TurnObservationEvent;
 
