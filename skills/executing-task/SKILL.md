@@ -9,6 +9,8 @@ Read and follow the AgentBoard operating guide before board operations. 该文�
 
 **无卡不动手（RULE-1）**：只执行已存在并被 claim 的卡；开工前核对卡号与卡面，提交信息必须带卡号；发现改动落在卡外先停下补卡或回报，不得先改后补（口径见 `using-agentboard` 的「The Rule」）。
 
+**派工前查占用（RULE-2）**：开工前 `kb show <全长 UUID>` 核对 `claimed_by` 与同文件 owner；发现他人占用或同文件已有他卡在飞即停手，先在卡上 `kb comment` 留言协调，不抢改、不并行。
+
 The assigned AgentBoard issue is the current execution source. Project code, design documents, logs, and test results are evidence; do not require a plan file, ledger, task brief, or local plan workspace.
 
 本技能默认执行被指派的一张卡；并行推进多张卡时按「并行执行（最多 3 路）」一节执行，单卡流程不变。
