@@ -70,7 +70,7 @@ import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateI
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
-import { addDependency, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
+import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { requireWorkspaceStatus } from '../services/workspaceStatus.js';
 import { closeIssue, reopenIssue } from '../services/issueTransitions.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
@@ -789,8 +789,9 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.post('/issues/:id/dependencies', (req, res) => {
     const body = parseBody(addDependencySchema, req.body);
-    const outcome = mutation(req, () => addDependency(db, {
+    const outcome = mutation(req, () => addRelation(db, {
       blocked_issue_id: req.params.id!, blocker_issue_id: body.blocker_issue_id, workspace_id: body.workspace_id,
+      relation: body.relation ?? 'blocks',
     }));
     if (!outcome.replayed) {
       broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
