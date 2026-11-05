@@ -20,6 +20,7 @@ import {
   updateTurn,
 } from '../db/repos/sessionTurn.js';
 import { linkMessagesToTurn, updateMessageMeta } from '../db/repos/message.js';
+import { recordStepFinish, recordStepStart } from '../db/repos/stepLedger.js';
 import { estimateTokens, estimateTokensFromChars, initialToolMeta } from './messageMeta.js';
 
 /** 契约 #21：usage 合并节流窗口（窗口内的多次更新只推最后一次快照） */
@@ -162,6 +163,12 @@ export function beginTurn(db: Db, input: BeginTurnInput, deps: TurnTrackerDeps):
         // 回填失败只丢观测，不影响执行
       }
     }
+    // CHAT-RETRY1：步骤台账同步收口；台账写入失败同样不影响执行（重试时缺台账会被 409 拒绝）
+    try {
+      recordStepFinish(db, { turn_id: turn.id, step_id: open.step.step_id, failed: stepFailed });
+    } catch {
+      // 观测失败不炸会话链路
+    }
     open = null;
   };
 
@@ -175,6 +182,17 @@ export function beginTurn(db: Db, input: BeginTurnInput, deps: TurnTrackerDeps):
       plan.push(step);
       open = { step, index: plan.length - 1, startedAt: Date.now(), messageId: null, sawError: false };
       currentIndex = plan.length - 1;
+      // CHAT-RETRY1：步骤开始即登记台账（幂等键 turn+step+tool_call_id；事件暂无 call id）
+      try {
+        recordStepStart(db, {
+          session_id: input.session_id,
+          turn_id: turn.id,
+          step_id: step.step_id,
+          tool_name: toolName,
+        });
+      } catch {
+        // 台账写入失败不影响执行（重试时会被 409 拒绝）
+      }
       pushPlan();
       return step;
     },

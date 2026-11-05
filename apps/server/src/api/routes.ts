@@ -55,6 +55,7 @@ import {
 import { listTurnsBySession } from '../db/repos/sessionTurn.js';
 import { answerAwaitingTurn } from '../services/turnAwaiting.js';
 import { decideTurnApproval } from '../services/turnApproval.js';
+import { retryFailedStep } from '../services/turnStepRetry.js';
 import { listActiveApprovalRules, revokeApprovalRule } from '../db/repos/approvalRule.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
 import { buildSessionPreview } from '../services/messageSignals.js';
@@ -86,7 +87,7 @@ import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
 import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/idempotency.js';
 import { dispatchIssue } from '../services/dispatch.js';
-import { createSession, forgetSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession } from '../services/sessionManager.js';
+import { createSession, forgetSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession, runRetriedStep } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
 import { attachmentsDirFor, configDir, loadConfig, readSettings, writeSettings, type DbPathSource } from '../config.js';
 import {
@@ -1306,6 +1307,18 @@ export function createRouter(deps: RouterDeps): Router {
       awaiting: null,
     });
     res.json(turn);
+  });
+
+  // CHAT-RETRY1（契约 #15）：单步重试——只重跑该 failed + retryable 的步骤，不新建轮次、不整轮重发。
+  // 校验/幂等/状态推进与广播都在 service 内完成（重复提交在状态校验处 409，不会执行第二次）。
+  router.post('/sessions/:id/turns/:turnId/steps/:stepId/retry', async (req, res) => {
+    const session = getSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('会话不存在');
+    const result = await retryFailedStep(db, session.id, req.params.turnId!, req.params.stepId!, {
+      broadcast,
+      execute: ({ session_id, turn_id, step_id, tool_name }) => runRetriedStep(session_id, { turn_id, step_id, tool_name }),
+    });
+    res.json(result);
   });
 
   // CHAT-APP1（契约 #14）：三档确认决策——allow 按档写规则并恢复 running，deny 置 stopped；

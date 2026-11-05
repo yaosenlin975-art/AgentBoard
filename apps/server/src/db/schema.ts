@@ -27,6 +27,8 @@ import { migrateSessionAwaiting } from './migrations/sessionAwaiting.js';
 import { migrateApprovalRule } from './migrations/approvalRule.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
+// CHAT-RETRY1（契约 #15）：单步重试步骤台账（依赖 session_turn 已建）
+import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
 
 /**
@@ -108,6 +110,8 @@ export function initSchema(db: Db): void {
   // CHAT-TURN1（契约 #5–8）：轮次表 + message 三列。纯加表/加列，不重建 message/session
   //（重建会带走 error_code/retryable 与全部消息），历史数据不回填。
   migrateSessionTurn(db);
+  // CHAT-RETRY1（契约 #15）：步骤台账（必须排在 migrateSessionTurn 之后）
+  migrateSessionStepLedger(db);
   // CHAT-AWAIT1（契约 #13 / 超时兜底）：session_turn 心跳列（必须排在 migrateSessionTurn 之后）
   migrateSessionAwaiting(db);
   // CHAT-APP1（契约 #9）：三档确认规则表（含未撤销规则的部分唯一索引；依赖 session_turn 已建）

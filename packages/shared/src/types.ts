@@ -285,6 +285,23 @@ export interface SessionTurn {
   usage_json: TurnUsage | null;
   started_at: number; ended_at: number | null;
 }
+/** CHAT-RETRY1（契约 #15）：步骤台账状态（与 `plan_json[].state` 的失败/完成对应） */
+export type StepLedgerStatus = 'running' | 'done' | 'failed';
+/**
+ * CHAT-RETRY1（契约 #15）：`session_step_ledger` 行。
+ * 幂等键 = `turn_id + step_id + tool_call_id`（当前事件无 tool_call_id 时退化为 `no-tool-call`）；
+ * `retryable` 只在「失败且没有已成功写入」时为 true（部分成功一律不可重试）。
+ */
+export interface SessionStepLedgerEntry {
+  id: string; session_id: string; turn_id: string; step_id: string;
+  tool_name: string; tool_call_id: string | null; idempotency_key: string;
+  status: StepLedgerStatus; retryable: boolean; writes: string[];
+  attempt: number; created_at: number; updated_at: number;
+}
+/** CHAT-RETRY1：`POST /turns/:turnId/steps/:stepId/retry` 的响应 */
+export interface SessionStepRetryResult {
+  turn: SessionTurn; step_id: string; ledger: SessionStepLedgerEntry; executed: boolean;
+}
 /** CHAT-TURN1（契约 #8）：meta_json.diff 的文件级条目；`patch` 已按行截断（见 `truncated`） */
 export interface MessageDiffFile { path: string; add: number; del: number; patch: string | null; truncated?: boolean }
 /**

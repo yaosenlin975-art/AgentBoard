@@ -29,7 +29,7 @@ import {
 } from '../db/repos/attachment.js';
 import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
-import { NotFoundError, ValidationError } from '../errors.js';
+import { NotFoundError, ValidationError, ConflictError } from '../errors.js';
 import { failIssue } from './claim.js';
 import { addComment } from './comments.js';
 
@@ -297,6 +297,57 @@ function releaseSlot(): void {
   } else if (activeTurns > 0) {
     activeTurns -= 1;
   }
+}
+
+/**
+ * CHAT-RETRY1：单步重试的执行通道。
+ *
+ * 限制（必须写进代码注释）：CLI 的工具执行发生在适配器进程内，服务端不能直接调用某个工具；
+ * 这里用**同会话定向提示**恢复该步，并且：
+ * - 不新建 `session_turn`（重试必须落在原轮次行上）；
+ * - 不落 message / 不推 `session.event`（避免已完成步骤的消息与 diff 卡重复生成）。
+ * 状态推进由 `services/turnStepRetry.ts` 负责（本函数只跑执行器并返回成败）。
+ */
+export async function runRetriedStep(
+  sessionId: string,
+  input: { turn_id: string; step_id: string; tool_name: string },
+): Promise<{ ok: boolean; message: string | null }> {
+  const database = assertAssembled();
+  const session = getSession(database, sessionId);
+  if (!session) throw new NotFoundError('会话不存在');
+  const state = ensureState(sessionId);
+  if (state.turnActive) throw new ConflictError('会话正在运行，无法单步重试');
+  const resolve = resolveAdapter;
+  if (!resolve) throw new ConflictError('当前装配没有适配器，无法单步重试');
+  const workspace = getWorkspace(database, session.workspace_id);
+  if (!workspace) throw new NotFoundError('工作空间不存在');
+  let adapter: AgentAdapter;
+  try {
+    adapter = resolve(session.cli);
+  } catch (err) {
+    throw new ConflictError(`无法解析适配器：${err instanceof Error ? err.message : String(err)}`);
+  }
+  const prompt = `【单步重试】第 ${input.turn_id} 轮步骤 ${input.step_id}（工具 ${input.tool_name}）执行失败，`
+    + '请只重试该步骤；已完成的步骤不要重复执行。';
+  const opts: RunTurnOptions = {
+    cwd: workspace.path,
+    model: session.model ?? undefined,
+    prompt,
+    adapterSessionId: session.adapter_session_id ?? undefined,
+  };
+  let result: Awaited<ReturnType<AgentAdapter['runTurn']>['result']>;
+  try {
+    result = await adapter.runTurn(opts).result;
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+  if (result.adapterSessionId !== null) {
+    persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
+  }
+  if (result.exitCode !== 0) {
+    return { ok: false, message: `重试执行器退出码 ${result.exitCode}` };
+  }
+  return { ok: true, message: null };
 }
 
 // ---- 对外 API ----
