@@ -1,9 +1,11 @@
 # 待决策区 + ask-user 技能 + CLI 接口：可行性设计
 
-- 状态：设计提案 v2（未实现、未拆实现卡）
+- 状态：设计提案 v3（未实现、未拆实现卡）
 - 日期：2026-11-05
-- 设计卡：`77fcf859-5303-40e4-8c47-6593b54cc465`（v1）、`3c03ce2e-ccf8-4d95-ab78-03408df0a005`（v2 语义修订）
-- 版本：**v2 按用户 2026-11-05 追加语义重写**——提问后 60 秒宽限期，期内回答立即放行，超时才停止任务并回「待规划」+上锁。v1 的「提问即永久锁」不再成立；§3.2 为新的权威时序，其余章节已同步。
+- 设计卡：`77fcf859-5303-40e4-8c47-6593b54cc465`（v1）、`3c03ce2e-ccf8-4d95-ab78-03408df0a005`（v2 语义修订）、`2c98cb95-8c24-4a88-997c-8332173568e7`（v3 宽限默认值）
+- 版本：
+  - **v3（2026-11-05，本版）**：用户拍板宽限默认值 = **180 秒**（原 60；理由是通知本身有数秒延迟，120 秒实际只剩不到两分钟）。可配置区间 **0–600 秒**；单次调用 `--grace <秒>` 覆盖工作区默认；夜间/批处理用 `--grace 0` 立即落锁、不等待。全文宽限表述统一为「默认 180s，0–600 可配」，以后调值只改默认常量与本节，不再逐句改数字；新增 `--grace 0` 独立状态转移（§4.3.1）与「宽限配置不当」风险（R5）。
+  - **v2**：按用户追加语义重写——提问后宽限期，期内回答立即放行，超时才停止任务并回「待规划」+上锁；v1 的「提问即永久锁」不再成立。
 - 边界：本文只落 `Docs/**`。未改动 `apps/**`、`packages/**`、`scripts/**`、`desktop/**`，也未在看板建任何实现卡。
 
 ---
@@ -18,7 +20,7 @@
 | **回答（answer）** | 首次给出答案，使决策从 `grace`/`open` 变 answered；宽限内直接放行，锁后解除锁。 | 不等于「修订」。 |
 | **修订（revise）** | 已回答后改答案，追加一条新 revision。 | 不会重新加锁，也不会自动重跑任务。 |
 | **占用（claim）** | 智能体领取任务执行，受 fence / 租约约束。 | 与决策锁互斥：锁着的卡不可 claim。 |
-| **宽限（grace）** | 提问后的 60 秒窗口：决策 `state='grace'`，卡**不锁**、仍由提问者占用，agent 阻塞等待答案。 | 不是「已锁」，也不是「已回答」。 |
+| **宽限（grace）** | 提问后的可等待窗口：工作区默认 **180 秒**（可配 0–600 秒，单次 `--grace` 覆盖）。期内决策 `state='grace'`，卡**不锁**、仍由提问者占用，agent 阻塞等待答案。 | 不是「已锁」，也不是「已回答」。 |
 | **停止请求（stop_requested）** | 宽限到期时服务端写入的协作式停止信号，要求 agent 停止该卡任务。 | 不是进程 kill；agent 不检查就无效。 |
 | **断点（checkpoint）** | 提问前记录的现场快照（stash SHA、改动清单、下一步、后台进程），用于回答后续跑。 | 不是自动提交，也不是自动清理工作树。 |
 
@@ -56,9 +58,9 @@
 | --- | --- | --- | --- |
 | 1 | 新增待决策区 + `ask-user` 技能 + CLI 接口 | **可实现** | 三件产物分别落在：新导航视图（`navStore` 第六入口）、`skills/ask-user/SKILL.md`、`kb` 新命令组。无数据结构硬阻碍。 |
 | 2 | 仅长任务后发现需决策时调用，正常沟通时不调用 | **有硬限制（模型自觉）** | 结构上只能做「前置校验 + 频率限制 + 审计」，无法验证「是否真的到了该问的时候」。见 §3.3。 |
-| 3 | 待决策区展示 + 右下角弹窗 | **可实现（分两档，但成为 60 秒机制的前置条件）** | 有 Tauri 壳可走系统通知；纯浏览器只能 Web Notification + 应用内提示，可能被系统静音/页面关闭。60 秒内要抢答，通知必须 ≤2s 到达。见 §3.2.5、§3.4。 |
+| 3 | 待决策区展示 + 右下角弹窗 | **可实现（分两档，但成为宽限机制的前置条件）** | 有 Tauri 壳可走系统通知；纯浏览器只能 Web Notification + 应用内提示，可能被系统静音/页面关闭。宽限默认 180 秒内要抢答，通知目标 ≤2s 到达（延迟预算见 §3.2.5）。见 §3.2.5、§3.4。 |
 | 4 | 问题与任务卡绑定 | **可实现** | 决策表以 `issue_id` 外键 + 同工作区约束；天然支持一卡多条历史决策。 |
-| 5 | 提问后 60 秒宽限；超时则停止任务、卡回「待规划」并上锁，回答才解锁；期内回答立即放行 | **需改数据模型 + 改 claim/状态门禁 + 新增宽限计时** | 全案核心。现有 `claimIssue` 会让任何「待规划」卡被领走；宽限期卡仍被占用，锁只在超时后生效。必须加独立锁源 + grace 状态 + 停止信号。见 §3.1、§3.2。 |
+| 5 | 提问后宽限（默认 180 秒，0–600 可配）；超时则停止任务、卡回「待规划」并上锁，回答才解锁；期内回答立即放行 | **需改数据模型 + 改 claim/状态门禁 + 新增宽限计时** | 全案核心。现有 `claimIssue` 会让任何「待规划」卡被领走；宽限期卡仍被占用，锁只在超时后生效。必须加独立锁源 + grace 状态 + 停止信号。见 §3.1、§3.2。 |
 | 6 | 问题必须带具体答案选项 | **可实现（结构强约束）** | 决策表 + 选项表；服务端强制 ≥2 个选项、每个选项带「后果」一句话。CLI 层同样校验。 |
 | 7 | 回答后移出待决策区；卡上仍可改答案 | **可实现（需定义权威）** | 用 append-only 的 answer revision；「移出待决策区」= 从 open 列表移除，历史仍可查。见 §3.5。 |
 
@@ -117,7 +119,7 @@
 | `swing-dev` 巡检 | 依赖 `claim` 成功；门禁生效即不会再领锁卡 | 技能文案补一条「`DECISION_LOCKED` 不是故障，跳过」 |
 | 看板拖拽 / PATCH status | `updateIssueGuardded` 只在 `claimed_by!=null` 时拦状态；锁卡无人占用，**可被直接改状态** | 在 `updateIssueInHierarchy` 统一加「open 决策存在 → 禁止改状态」；锁卡只允许改标题/描述/标签/截止 |
 | `releaseRunning` | 只选「进行中」，锁卡在待规划，天然不进批次 | 加注释 + 用例固化「批量退回不得解锁」；`mode=all` 也不得触碰锁 |
-| `sweepExpiredLeases` | 只清占用字段 | **有 `grace` 决策的卡必须跳过**（否则 60 秒内占用被清、别人可领，宽限语义被破坏）；open 卡无占用，不受影响 |
+| `sweepExpiredLeases` | 只清占用字段 | **有 `grace` 决策的卡必须跳过**（否则宽限期内占用被清、别人可领，宽限语义被破坏）；open 卡无占用，不受影响 |
 | `recoverOnBoot` | 把会话绑定卡置回待规划并清占用 | 不碰决策行；锁保持 |
 | `close` / `reopen` | 锁卡是「待规划」，close 本来就 409 | 无需改；文档写明「父卡收口前必须先回答或撤回子卡决策」 |
 | 依赖判定 | 锁卡 status=待规划（kind=open），对下游仍是未解除 | 语义不变；**不把锁当成新的 blocker kind**，避免依赖口径分叉 |
@@ -126,35 +128,37 @@
 
 ---
 
-### 3.2 卡级决策的时序：60 秒宽限期（v2，取代 v1 的「提问即锁」）
+### 3.2 卡级决策的时序：宽限期（v3 默认 180 秒，取代 v1 的「提问即锁」）
 
-**用户新语义（逐字）：**「智能体调用这个 cli 接口时任务卡不会马上锁上而是先等待 60 秒, 这 60 秒内若是用户没有回答则让智能体停止该任务卡的任务并任务卡回到待规划区并上锁, 若 60 秒内用户回答了问题, 则立马放行不需要继续等待」。
+**用户原始语义（v2 逐字引用，保留原文 60 秒以免篡改）：**「智能体调用这个 cli 接口时任务卡不会马上锁上而是先等待 60 秒, 这 60 秒内若是用户没有回答则让智能体停止该任务卡的任务并任务卡回到待规划区并上锁, 若 60 秒内用户回答了问题, 则立马放行不需要继续等待」。
+
+> **v3 变更**：用户拍板宽限默认值由 60 秒改为 **180 秒**（通知有数秒延迟，120 秒只剩不到两分钟），区间仍为 **0–600 秒**，单次 `--grace <秒>` 覆盖工作区默认，`--grace 0` = 不等待、立即 `LOCKED`。下文统一写「宽限/`grace_seconds`（默认 180）」，不再把 60 当默认值。
 
 三个相位：
 
 | 相位 | 卡状态 | 决策 state | 占用 | agent 行为 |
 | --- | --- | --- | --- | --- |
-| T0：调用 `kb ask` | 进行中 | `grace`（`grace_until = T0 + 60s`） | 仍归提问者，fence 不变 | 阻塞等待（默认同步，最多 60s） |
-| T0..T0+60s 内回答 | 进行中 | `answered` | 仍归提问者 | **立即放行**：不释放、不重领、直接继续 |
-| T0+60s 未回答 | 回待规划 | `open`（锁） | 释放、清占用、写 `stop_requested` | 收到停止信号后停手 |
+| T0：调用 `kb ask` | 进行中 | `grace`（`grace_until = T0 + grace_seconds`，默认 180s） | 仍归提问者，fence 不变 | 阻塞等待（默认同步，最多 `grace_seconds`） |
+| T0..`grace_until` 内回答 | 进行中 | `answered` | 仍归提问者 | **立即放行**：不释放、不重领、直接继续 |
+| `grace_until` 到点未回答 | 回待规划 | `open`（锁） | 释放、清占用、写 `stop_requested` | 收到停止信号后停手 |
 
-**关键不变式**：锁只在 `state='open'` 时成立；`state='grace'` **不锁**（但卡仍被占用，别人也领不走，所以「不锁」是语义描述，不是安全漏洞）。宽限到期与回答是同一事务里的互斥状态迁移，先到者赢。
+**关键不变式**：锁只在 `state='open'` 时成立；`state='grace'` **不锁**（但卡仍被占用，别人也领不走，所以「不锁」是语义描述，不是安全漏洞）。宽限到期与回答是同一事务里的互斥状态迁移，先到者赢。`grace_seconds ∈ [0,600]`；`=0` 不进 grace，直接走 §4.3.1 的独立分支。
 
-#### 3.2.1 60 秒怎么承载：同步阻塞 vs 异步 pending
+#### 3.2.1 宽限怎么承载（默认 180 秒）：同步阻塞 vs 异步 pending
 
 **方案 A：同步阻塞（CLI 侧短轮询，推荐）**
-- 做法：`kb ask` 默认 `--wait 60`；CLI 每 2 秒 GET `/api/decisions/:id`，收到 `answered` 立即打印答案并退出；到 60 秒打印 `LOCKED decision=<id>` 并退出。
+- 做法：`kb ask` 默认 `--wait = grace_seconds`（默认 180）；CLI 每 2 秒 GET `/api/decisions/:id`，收到 `answered` 立即打印答案并退出；到 `grace_until` 打印 `LOCKED decision=<id>` 并退出。
 - 优点：agent 协议最简单——一次工具调用就得到终局（答案或「已锁」），不需要额外轮询代码；回答延迟 ≤2 秒；超时返回值本身就是停止指令，**语义闭环**；没有漏唤醒。
-- 代价：一次工具调用会挂住最多 60 秒。对 agent harness 的单次工具超时预算有硬要求（必须 ≥60s + 余量，否则工具先超时、CLI 被杀，但服务端仍会在 60s 正确落锁）；60 秒内占用一个并发槽位。
-- 不采用「单条 HTTP 长挂」：SSE/反向代理/agent 网关的空闲超时常小于 60s，容易半路断连。2 秒短轮询没有长连接，最多产生 30 次轻量 GET，成本可忽略。
+- 代价：一次工具调用会挂住最多 180 秒（`--grace 600` 时最多 600 秒）。对 agent harness 的单次工具超时预算有硬要求（必须 ≥ `grace_seconds` + 余量，默认建议 ≥240s，否则工具先超时、CLI 被杀，但服务端仍会在 `grace_until` 正确落锁）；等待期间占用一个并发槽位。
+- 不采用「单条 HTTP 长挂」：SSE/反向代理/agent 网关的空闲超时常小于 60s，容易半路断连。2 秒短轮询没有长连接，默认 180 秒最多产生 90 次轻量 GET（600 秒上限 300 次），成本可忽略。
 
 **方案 B：异步 pending**
 - 做法：`kb ask --no-wait` 立即返回 `{decision_id, state:'grace', grace_until}`，agent 自己短轮询或写完断点后停手，等后续事件唤醒。
 - 优点：不占工具槽；适合夜间批处理、明确用户不在场、或 agent 想先落断点再等。
 - 代价：失败模式多（漏轮询、轮询进程被杀、上下文漂移、回答后无人接续）；必须额外定义「谁来唤醒、多久轮询、超时后怎么停」。
-- 结论：作为**可选降级**保留，不作为默认。
+- 结论：作为**可选降级**保留，不作为默认；夜间批处理更推荐 `--grace 0`（立即锁、直接停手），而不是异步挂起。
 
-**推荐：A（同步、2 秒短轮询、默认 60 秒）**。理由补充：同步等待让 agent 在答案未定时**不会继续推进**，上下文不存在「等回来已经忘了做到哪」的漂移；异步 B 则有明显的上下文时效问题，只能靠断点兜底。B 只在 `--no-wait` 时启用，且技能要求先写断点再离开。
+**推荐：A（同步、2 秒短轮询、默认宽限 180 秒）**。理由补充：同步等待让 agent 在答案未定时**不会继续推进**，上下文不存在「等回来已经忘了做到哪」的漂移；异步 B 则有明显的上下文时效问题，只能靠断点兜底。B 只在 `--no-wait` 时启用，且技能要求先写断点再离开。
 
 #### 3.2.2 「让智能体停止该任务卡的任务」怎么落地（协作式，不是 kill）
 
@@ -183,37 +187,48 @@
 - 后台进程：ask 前应主动停止长跑构建；无法强制收口，残留 PID 写入 checkpoint 供下次判断。
 - 会话型 agent 可额外记录 `created_turn_id`，但**不**把轮次改成 `awaiting_input`，避免两套状态/两套超时。
 
-#### 3.2.4 60 秒够不够：代价与可调参数
+#### 3.2.4 180 秒够不够：延迟预算、最坏情况与可调参数
 
-- **诚实结论**：60 秒只覆盖「人就在机器旁且通知秒到」的场景。开会、离开、专注助手拦截时**必然超时**，结果是「每个长任务至少被冻结一次」。这是用户明确选择的产品语义，不是实现缺陷，但必须在 UI 与技能里写清楚。
+- **从提问到用户看到，中间要扣掉三段延迟**：
+
+| 环节 | 目标 | 现实 / 最坏 | 说明 |
+| --- | --- | --- | --- |
+| 服务端落库 → 通知发出 | ≤0.5s | 1s | 事务提交后广播，无队列 |
+| 系统通知到达（Tauri） | ≤2s | 5–10s | 专注助手可能只进通知中心 |
+| 浏览器通知 / 应用内提示 | ≤2s | 10–30s（后台标签被节流） | 页面关闭则无穷大 |
+| 用户从看到到点击回答 | 10–30s | 1–2 分钟 | 人在做别的事时需要切换 |
+
+- 180 秒预算 ≈ 30 秒延迟 + 约 150 秒给人做决定；比 60 秒多出约两分钟，可覆盖「短时离开工位 / 正在回消息」，但**覆盖不了开会、外出、专注助手静音**。
+- **诚实结论**：180 秒显著降低误锁概率，但没有消除——**凡用户不在机器旁，仍必然超时**。这是用户明确选择的产品语义，不是实现缺陷，必须在 UI 与技能里写清楚。
+- **最坏情况**：用户正在开会/离开 → 每次提问都冻结一次；若工作区被调到 600，单卡最长冻结 10 分钟（见 R5）。
 - **代价**：一次冻结 ≈ 一次 stop + 一次 resume（重读上下文、检查脏工作树、可能重跑验证）。决策质量高时可接受；若提问频繁，会放大成「任务反复冻结」。
-- **可调参数建议**：
-  - 工作区级 `decision_grace_seconds`，默认 60，范围 0–600；
-  - 单次 `--grace <s>` 覆盖，服务端 clamp 到工作区上限；
-  - `--grace 0` = 立即锁，适合夜间批处理/明确无人；
-  - 不提供「检测用户在线自动延长」：无法可靠判定，且违背 60 秒语义。
+- **可调参数（v3 定稿）**：
+  - 工作区级 `workspace.decision_grace_seconds`，默认 **180**，范围 **0–600**；
+  - 单次 `--grace <s>` **覆盖**工作区默认（不是取 min），服务端统一 clamp 到 0–600；非法值（负数 / 非整数 / >600）由 CLI 直接拒绝（退出码 3），服务端兜底 400；
+  - `--grace 0` = 不等待，立即落锁（§4.3.1），适合夜间批处理/明确无人值守；
+  - 不提供「检测用户在线自动延长」：无法可靠判定，也会让时序不可预测。
 - UI 必须显示倒计时（卡面、待决策区、通知正文），否则用户不知道还剩多少秒。
 
-#### 3.2.5 抢答通道可达性（60 秒内答上）
+#### 3.2.5 抢答通道可达性（默认 180 秒内答上）
 
 - **Tauri 壳**：权限允许且进程常驻时，Windows toast 延迟通常 <1s，窗口最小化也能弹；专注助手可能只进通知中心（不算「秒级可见」）；托盘闪烁/任务栏 attention 可作补充。
 - **纯 Web**：页面必须开着；`localhost` 是安全上下文可用 Notification API，但需用户授权；后台标签被节流时可能延迟数十秒；页面关闭即**必然超时**。
-- 结论：60 秒把「通知可靠性」从增强项变成**功能前置**。DEC-7 验收必须包含「同机、权限允许时通知延迟 ≤2s」与「权限拒绝/页面关闭时的兜底可见性」。
-- 「用户没开着看板」：有壳常驻 → 仍可能收到；纯浏览器关页 → 必然超时，这是物理限制，不能靠服务端弥补。
+- 结论：180 秒把通知从「必须秒到」放宽到「必须在一分钟内到」，但通知可靠性仍是**功能前置**：目标 ≤2s、可接受 ≤10s；若通知晚到 60 秒以上，留给用户的决策时间已不足两分钟。DEC-7 验收仍按 ≤2s 目标 + 权限拒绝/页面关闭的兜底可见性。
+- 「用户没开着看板」：有壳常驻 → 仍可能收到；纯浏览器关页 → 必然超时，这是物理限制，不能靠服务端弥补（180 秒只是把「必然」推迟到宽限结束）。
 
 #### 3.2.6 与永久锁的取舍
 
-- 60 秒后上锁，若一直无人回答，**仍等价于 v1 的永久锁**，而且触发概率更高（60 秒很短），所以翻车点 ① 没有消失，只是更常见。
+- 宽限到期后上锁，若一直无人回答，**仍等价于 v1 的永久锁**；180 秒比 v2 的 60 秒触发概率低，但仍高于 v1（v1 是提问即锁），所以翻车点 ① 没有消失，只是频率下降。
 - 对策（仍然**不自动解锁**）：
   1. 分级提醒 4h / 24h / 72h，起点改为锁生效时间 `locked_at`（不是提问时间）；
   2. 依赖链熔断提示：下游卡/父卡错误文案显式写「因 decision `<id>` 未回答阻塞」；巡检遇 `DECISION_LOCKED` 跳过并计数；
   3. 人工「撤回 / 搁置」：用户在待决策区显式操作并写理由；撤回后解锁，但卡打 `decision_parked` 标记，避免 dispatch 立刻又领走（需用户手动取消或重新派工）；
   4. 绝不自动按默认项继续，除非提问时显式 `--on-expire unlock_default`（默认 `stay_locked`）。
-- 因此终局仍是「等人回答才解锁」，只是入口从「提问即锁」变成「60 秒后锁」。
+- 因此终局仍是「等人回答才解锁」，只是入口从「提问即锁」变成「宽限到期后锁」。
 
 #### 与会话级阻塞的关系
-- 两者**并存、不互相替代**：聊天执行器卡住用 `awaiting_input`（15 分钟/2 小时，超时收口轮次）；看板决策的 60 秒宽限是**第三条时序**，不写 `awaiting_json`、不改轮次状态。
-- 之所以不复用 15 分钟/2 小时：那是「这一轮还能不能续」的执行超时；60 秒是「用户能不能及时抢答」的产品窗口，超时后卡并不失败，只是回待规划 + 锁，等待回答后再续跑。
+- 两者**并存、不互相替代**：聊天执行器卡住用 `awaiting_input`（15 分钟/2 小时，超时收口轮次）；看板决策的默认 180 秒宽限是**第三条时序**，不写 `awaiting_json`、不改轮次状态。
+- 之所以不复用 15 分钟/2 小时：那是「这一轮还能不能续」的执行超时；180 秒是「用户能不能在宽限内抢答」的产品窗口，超时后卡并不失败，只是回待规划 + 锁，等待回答后再续跑。
 
 ---
 
@@ -225,7 +240,7 @@
 必须写死「问什么 / 不问什么」：
 - **必须问**：不可逆操作（删数据、改对外契约）、范围变更（跨工作区/跨模块）、需要产品取舍且两种实现都合理、缺少凭据/设备/账号这类 agent 无法自行获取的前提。
 - **禁止问**：能靠读代码/文档/知识页回答的；用户正在对话中可直接用一句话回的（**直接在聊天里回复，不进决策区**）；纯偏好/审美；一张卡能拆成多个小问题的（禁止打包多问，一次一条决策）；用提问代替执行或逃避验收。
-- **硬前置**：必须先 `kb claim` 成功、且当前卡已工作到「无法继续」；调用 `kb ask` 前先写断点（§3.2.3）；`kb ask` 默认阻塞等待 60 秒——收到答案就继续，收到 `LOCKED` 就立刻停手。
+- **硬前置**：必须先 `kb claim` 成功、且当前卡已工作到「无法继续」；调用 `kb ask` 前先写断点（§3.2.3）；`kb ask` 默认阻塞等待一轮宽限（默认 180 秒，0–600）——收到答案就继续，收到 `LOCKED` 就立刻停手。
 - **一次一条**：同一张卡同时最多 1 条 open/grace 决策。
 
 #### 手段 2：CLI 前置检查（可执行、可报错）
@@ -236,7 +251,7 @@
 4. 该卡不得已有 grace/open 决策（部分唯一索引兜底，服务端 409 `DECISION_ALREADY_OPEN`）；
 5. 频率限制：同一 agent 同工作区同时最多 3 条 grace/open 决策；每小时最多 6 条新决策（超过 429/409，文案给冷却时间）；
 6. 可选 `--session <id> --turn <id>`：服务端校验会话属于本卡/本工作区，并记录 `created_turn_id`。**只记录，不据此判定「够不够长」**；
-7. 提问默认同步等待（60 秒），等待期间卡仍被占用；CLI 超时返回 `LOCKED` 后 agent 必须停止，服务端在 `grace→open` 时释放占用并写 `stop_requested`。
+7. 提问默认同步等待宽限期（默认 180 秒，0–600 可配），等待期间卡仍被占用；CLI 超时返回 `LOCKED` 后 agent 必须停止，服务端在 `grace→open` 时释放占用并写 `stop_requested`。`--grace 0` 时不进入宽限、立即返回 `LOCKED`（行为见 §4.3.1）。
 
 #### 手段 3：服务端拒绝策略（防滥用，不防误判）
 - 上述 1–5 全部在**同一个 IMMEDIATE 事务**里判定；拒绝时返回机器可判错误码（`ASK_NOT_OWNER / ASK_ALREADY_OPEN / ASK_RATE_LIMITED / ASK_TOO_FEW_OPTIONS`）。
@@ -279,7 +294,7 @@
 | 浏览器 + 权限允许 + 页面在 | Web Notification | 徽标 + toast | 可用但不保证 |
 | 浏览器 + 权限拒绝/页面关闭 | **无** | 下次打开时的未读徽标 + 汇总条 | 唯一可靠通道是应用内 |
 
-**v2 新增的 60 秒硬要求**：宽限期只有 60 秒，通知必须做到「同机、权限允许时 ≤2 秒到达」，否则这套功能在多数场景下退化成「提问即冻结」。因此通知验收不是锦上添花，而是宽限期能否成立的前置条件；同时页面必须显示倒计时，让用户知道还剩多少秒可抢答。
+**v3 的宽限可靠性要求（默认 180 秒）**：宽限虽从 60 秒放宽到 180 秒，通知仍是决定成败的通道：目标 ≤2 秒到达、可接受 ≤10 秒；若通知完全失败（权限拒绝/页面关闭），用户只能靠应用内提示，而页面没开就必然超时。因此通知验收不是锦上添花，而是宽限机制能否成立的前置条件；倒计时必须在所有可见面显示。
 
 **原则**：通知不是事实来源；**待决策区的 open/grace 列表与徽标才是**。任何「只靠弹窗」的方案都会在权限/静音/最小化场景下静默失败。
 
@@ -314,14 +329,14 @@
 
 | 竞态 | 处理 |
 | --- | --- |
-| A 正在执行并准备提问，B 抢先 claim | `claim` 与 `ask` 都是单事务 + 条件 UPDATE。B 先 claim → A 的 `ask` 因 `claimed_by != A` 失败（409）；A 先 `ask` → 卡进入 grace、仍归 A 占用，B 的 `claim` 被占用挡住（409 `ISSUE_CLAIMED`）；60s 后转 open 并释放占用，B 再 claim 才被 `NOT EXISTS` 挡（409 `DECISION_LOCKED`）。 |
+| A 正在执行并准备提问，B 抢先 claim | `claim` 与 `ask` 都是单事务 + 条件 UPDATE。B 先 claim → A 的 `ask` 因 `claimed_by != A` 失败（409）；A 先 `ask` → 卡进入 grace、仍归 A 占用，B 的 `claim` 被占用挡住（409 `ISSUE_CLAIMED`）；宽限到期（默认 180s，`--grace 0` 即时）后转 open 并释放占用，B 再 claim 才被 `NOT EXISTS` 挡（409 `DECISION_LOCKED`）。 |
 | 两个 agent 同时提问同一卡 | 提问要求当前占用者，而占用是排他的 → 结构上只可能一个。即使异常路径绕过，`UNIQUE(issue_id) WHERE state IN ('grace','open')` 兜底，第二个 409。 |
-| 两个客户端同时点「回答」 | 回答是 `UPDATE ... WHERE state IN ('grace','open')` + `changes==1`；第二个 409 `DECISION_ALREADY_ANSWERED`；与 60s 到期竞态由事务时间戳判定。 |
+| 两个客户端同时点「回答」 | 回答是 `UPDATE ... WHERE state IN ('grace','open')` + `changes==1`；第二个 409 `DECISION_ALREADY_ANSWERED`；与宽限到期竞态由事务时间戳判定。 |
 | 回答与撤回同时 | 同一条件更新，先到者赢；另一个 409。 |
 | 两个修订同时提交 | `expected_revision` CAS，旧版 409。 |
 | 租约清扫 / 批量退回 / 启动恢复 与 提问并发 | 全部是 IMMEDIATE 事务，串行化。清扫跳过 grace 卡、只清过期占用；批量退回不选 grace 卡；提问要求持有占用且 fence 匹配。 |
-| 回答与 60 秒到期并发 | 同一事务内以 `grace_until` 与事务时间判定：`now < grace_until` 且决策仍 `grace` → 回答成功并直接放行；`now >= grace_until` → 先落锁再判回答，回答只能走「锁后解锁」路径。两者用条件 UPDATE，先到者赢，不出现「又放行又锁」。 |
-| ask 阻塞期间租约过期 | 宽限期内 agent 仍在占用，但租约可能先到期。处理：`sweepExpiredLeases` **跳过有 grace 决策的卡**；CLI 每次 2 秒轮询顺带刷新心跳/租约。这样 60 秒内不会被第三方领走；60s 后正常落锁。 |
+| 回答与宽限到期并发 | 同一事务内以 `grace_until` 与事务时间判定：`now < grace_until` 且决策仍 `grace` → 回答成功并直接放行；`now >= grace_until` → 先落锁再判回答，回答只能走「锁后解锁」路径。两者用条件 UPDATE，先到者赢，不出现「又放行又锁」。`grace_seconds=0` 时没有该竞态：提问事务内已直接落锁（§4.3.1）。 |
+| ask 阻塞期间租约过期 | 宽限期内 agent 仍在占用，但租约可能先到期。处理：`sweepExpiredLeases` **跳过有 grace 决策的卡**；CLI 每次 2 秒轮询顺带刷新心跳/租约。这样宽限期内不会被第三方领走（默认 180 秒、最长 600 秒）；到期后正常落锁。 |
 | 服务重启时正处于宽限期 | 启动恢复：`grace_until > now` 的决策继续计时（ticker 重建），卡保持占用；`grace_until <= now` 的直接执行 `grace→open`（释放占用 + 落锁 + 停止信号），避免重启留下「永远宽限」的卡。 |
 | 删卡与回答并发 | 删卡级联删决策；回答事务先读决策状态再更新，删卡后回答 404。 |
 | 提问后旧 agent 继续动代码（宽限内） | 宽限内占用仍归提问者，旧 agent 的 `done/fail` 仍可用（它会继续执行）；**锁后才释放占用**，此后旧 agent 的 `done/fail/heartbeat` 因 `claimed_by=null` / fence 不匹配而 409。 |
@@ -373,8 +388,8 @@ CREATE TABLE IF NOT EXISTS issue_decision (
   created_session_id TEXT,
   created_turn_id TEXT,
   created_fence INTEGER,                      -- 提问时的 claim_fence（审计用）
-  grace_seconds INTEGER NOT NULL DEFAULT 60,  -- 本次宽限时长（工作区默认 60，可单次覆盖）
-  grace_until INTEGER NOT NULL,               -- 宽限截止时刻；到期由 ticker/惰性判定落锁
+  grace_seconds INTEGER NOT NULL DEFAULT 180,  -- 本次宽限时长：默认 180，范围 0–600（v3 拍板；0=立即落锁）
+  grace_until INTEGER NOT NULL,               -- 宽限截止时刻；到期由 ticker/惰性判定落锁；grace_seconds=0 时 = created_at
   locked_at INTEGER,                          -- 实际落锁时间（提醒起点）
   stop_requested_at INTEGER,                  -- 协作式停止信号写入时间
   stop_ack_at INTEGER,                        -- agent 确认收到停止（可选，仅观测）
@@ -414,6 +429,17 @@ CREATE TABLE IF NOT EXISTS issue_decision_answer (
 );
 ```
 
+### 4.1.1 工作区级默认宽限（v3 新增）
+
+```sql
+-- 存量库：纯 ADD COLUMN，不重建表；新库直接写进 workspace DDL
+ALTER TABLE workspace ADD COLUMN decision_grace_seconds INTEGER NOT NULL DEFAULT 180;
+```
+
+- 语义：该工作区 `kb ask` 的缺省宽限秒数；列为 `NULL` 时同样按 180 兜底（老库与新建库口径一致）。
+- 范围：服务端读写两侧都 clamp 到 **0–600**；`CHECK` 只在新库 DDL 声明，存量库靠服务端校验（SQLite `ADD COLUMN` 带 `CHECK` 的旧版本兼容性不稳，不冒险）。
+- 配置入口：复用工作区更新端点（若现有 `PATCH /api/workspaces/:id` 未接收该字段，则在实现卡里新增专用端点；本文只定语义与默认值）。UI 必须写明「默认 180 / 建议 120–300 / 0 仅夜间批处理」。
+
 ### 4.2 索引与约束
 
 ```sql
@@ -430,14 +456,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_decision_answer_rev
   ON issue_decision_answer(decision_id, revision);
 ```
 
+- `grace_seconds` 约束：写入前必须是 `0 ≤ grace_seconds ≤ 600` 的整数，非法值返回 400 `INVALID_GRACE`；`--grace 0` 是**合法值**，表示立即落锁（§4.3.1），不是「未配置」。
+- `CHECK (grace_seconds BETWEEN 0 AND 600)` 只写在新建库的建表 DDL；存量库依赖服务端校验（理由见 §4.1.1）。
+
 ### 4.3 状态机
 
 ```
         kb ask（事务：建决策 grace，卡保持「进行中」+ 仍占用）
-   [无决策] ─────────────────────────────────────────────► grace (grace_until = now+60s)
+   [无决策] ─────────────────────────────────────────────► grace (grace_until = now + grace_seconds；默认 180s)
                                                                │
-            ┌──────────── 60s 内 answer（立即放行）─────────────┤
-            ▼                                                  │ 60s 到期（ticker/惰性判定）
+            ┌──── grace_until 前 answer（立即放行）─────────────┤
+            ▼                                                  │ grace_until 到期（ticker/惰性判定）
         answered（卡仍进行中、仍占用，agent 继续）                ▼
             │                                              open（锁）
             │ 修订（人类，CAS revision）                     │
@@ -446,14 +475,39 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_decision_answer_rev
                                                            └─ 不自动作答、不自动解锁
 ```
 
-- **进入 grace 的前置**：卡被提问者占用（`claimed_by=agent`、fence 匹配、`status='进行中'`）；同卡无 grace/open 决策；选项 ≥2 且 consequence 非空；checkpoint 已落库（建议强制，可配置）。
-- **grace 期间**：卡 status=进行中、占用不释放、`claim_fence` 不 bump；服务端只记录 `grace_until` 与 `checkpoint_json`；任何状态流转仍受「占用中禁止改状态」保护；租约清扫与批量退回必须跳过 grace 卡（否则 60 秒内会被第三方领走）。
+- **进入 grace 的前置**：卡被提问者占用（`claimed_by=agent`、fence 匹配、`status='进行中'`）；同卡无 grace/open 决策；选项 ≥2 且 consequence 非空；`grace_seconds ≥ 1`（`=0` 走 §4.3.1，不进入本状态机）；checkpoint 已落库（建议强制，可配置）。
+- **grace 期间**：卡 status=进行中、占用不释放、`claim_fence` 不 bump；服务端只记录 `grace_until` 与 `checkpoint_json`；任何状态流转仍受「占用中禁止改状态」保护；租约清扫与批量退回必须跳过 grace 卡（否则宽限期内会被第三方领走，默认 180 秒、最长 600 秒）。
 - **grace→answered（宽限内回答）**：决策转 answered；**卡不动**（仍进行中、仍占用），agent 直接继续；不写 stop 信号；不产生 trim/requeue。
-- **grace→open（60s 到期）**：单事务内完成——决策转 open、写 `locked_at`/`stop_requested_at`、bump `claim_fence`、卡 status=待规划、清空 `claimed_by/claimed_at/claim_lease_until/last_heartbeat_at/session_id/last_seen_comment_id`、写系统评论、广播 WS。bump fence 用于让旧 agent 的后续收尾一律 409，避免「已被停任务却还能 done」。
+- **grace→open（`grace_until` 到期）**：单事务内完成——决策转 open、写 `locked_at`/`stop_requested_at`、bump `claim_fence`、卡 status=待规划、清空 `claimed_by/claimed_at/claim_lease_until/last_heartbeat_at/session_id/last_seen_comment_id`、写系统评论、广播 WS。bump fence 用于让旧 agent 的后续收尾一律 409，避免「已被停任务却还能 done」。
 - **open→answered（锁后回答）**：决策转 answered；卡保持待规划、解锁；agent 需重新 `claim` 才继续（可能换人）。
 - **withdrawn**：分两种——**grace 内撤回**：取消宽限，卡保持「进行中」且占用不释放，CLI 返回 `WITHDRAWN`，agent 按默认选项继续（用户主动取消提问，不是拒绝执行）；**open 后撤回**：解锁，卡回待规划，保留理由与撤回人，并打 `decision_parked` 标记防止 dispatch 立刻领走。
 - **删除卡**：级联删除全部决策与答案；删除确认需提示。
 - **不允许**：answered → open（重新提问 = 新建一条决策）；grace/open → 自动 answered（无超时自动作答）；grace 期间被第三方 claim（占用未释放，结构上不可能）。
+
+#### 4.3.1 `--grace 0` 的独立状态转移（不等待，立即落锁）
+
+`grace_seconds = 0` **不创建可等待的 grace 态**，而是提问事务内直接走「落锁」路径；状态转移与宽限到期相同，只是没有宽限窗口：
+
+```
+kb ask --grace 0（单事务，不写 grace）
+   [无决策] ─────────────────────────────────────────────► open（锁）
+                                                               │
+                                          ├─ answer（人类）→ answered（解锁，卡回待规划，需重新 claim）
+                                          └─ withdraw（人类/提问者）→ withdrawn（解锁）
+```
+
+单事务内动作（与 `grace→open` **共用同一个 `lockIssueForDecision()` 函数**，避免两套实现漂移）：
+1. 插入 `issue_decision`：`state='open'`、`grace_seconds=0`、`grace_until=now`、`locked_at=now`、`stop_requested_at=now`；
+2. bump `claim_fence`，卡 `status='待规划'`，并按 §4.3 的同一清单清空占用字段；
+3. 写系统评论「已立即上锁（`--grace 0`），agent 停止执行」，广播 `decision.expired` + `issue.stop_requested`；
+4. CLI **不轮询、不等待**，直接输出 `LOCKED decision=<id>`（退出码 0）。
+
+边界：
+- `--grace 0 --wait <n>`：`--wait` 被忽略（没有宽限可等），CLI 帮助与技能文案必须写明；
+- `--grace 0 --no-wait`：等价，仍立即锁；
+- 唯一索引无需特殊处理：`open` 行本就占用 `ux_decision_active` 的位置；
+- **不是「跳过决策」**：决策照常创建、选项照常校验，用户仍可回答后解锁，只是 agent 当场停手；
+- 典型场景：夜间批处理、明确无人值守、agent 已确定「必须人工拍板且不应继续占着卡」。
 
 ### 4.4 `Issue` 投影新增字段（`packages/shared`，只读派生，不落 `issue` 表）
 
@@ -477,6 +531,7 @@ interface Issue {
 ### 4.5 迁移与注册顺序
 
 - 新增 `apps/server/src/db/migrations/pendingDecision.ts`，**纯追加表 + 索引**，不重建 `issue`，因此**不受** `migrateIssueStatusModel` 重建顺序影响；在 `initSchema` 末尾（`migrateClaimLease` 之后）注册即可。
+- 同一迁移内给 `workspace` **纯 ADD COLUMN** `decision_grace_seconds INTEGER NOT NULL DEFAULT 180`；执行前读 `PRAGMA table_info(workspace)` 做幂等判断（列已存在则跳过），不重建表、不影响 `workspace` 的现有列。
 - 若采纳可选优化「`issue.open_decision_id` 指针列」，该列必须在 `migrateIssueStatusModel` 之后加（否则被重建带走）；推荐先不做，避免双源。
 
 ---
@@ -487,8 +542,8 @@ interface Issue {
 
 | 命令 | 参数 | 作用 | 退出码 |
 | --- | --- | --- | --- |
-| `kb ask <issue-uuid>` | `--question <text>`（必填）<br>`--option '<label>|<consequence>'`（重复 ≥2）<br>`--default <ord>`（可选，默认 1）<br>`--context <md>` / `--context-stdin`<br>`--trigger blocked\|scope_change\|irreversible\|missing_input`<br>`--grace <s>`（默认取工作区 60，0–600）<br>`--wait <s>`（默认 = grace；0 等同 `--no-wait`）<br>`--no-wait`（异步 pending）<br>`--checkpoint-file <path>` / `--checkpoint-stdin`<br>`--on-expire stay_locked\|unlock_default`<br>`--session <id>` `--turn <id>`（仅记录） | 提问：建 `grace` 决策；**卡保持进行中、占用不释放**；同步等待最多 `--wait` 秒。宽限内答→打印答案并退出（放行）；超时→服务端落锁 + 停任务，打印 `LOCKED decision=<id>` | 0 已回答或已锁（两者都用结构化字段区分，非错误）<br>2 非占用者 / 已有 grace/open / 限流 / 状态非进行中<br>3 选项不足、重复 label、consequence 为空、非法枚举<br>1 任务不存在 / 服务错误 |
-| `kb decisions` | `--workspace <id\|名>`（缺省按 cwd）<br>`--state grace\|open\|answered\|withdrawn`（缺省 open）<br>`--issue <uuid>`<br>`--stale`（只看超时）<br>`--limit <n>`<br>`--json` | 列待决策（`grace` 用于展示 60 秒倒计时） | 0 / 1 |
+| `kb ask <issue-uuid>` | `--question <text>`（必填）<br>`--option '<label>|<consequence>'`（重复 ≥2）<br>`--default <ord>`（可选，默认 1）<br>`--context <md>` / `--context-stdin`<br>`--trigger blocked\|scope_change\|irreversible\|missing_input`<br>`--grace <s>`（缺省取工作区默认 **180**，覆盖式，clamp 0–600；`0` = 立即落锁、不等待）<br>`--wait <s>`（默认 = `grace_seconds`；`0` 等同 `--no-wait`；`--grace 0` 时忽略）<br>`--no-wait`（异步 pending）<br>`--checkpoint-file <path>` / `--checkpoint-stdin`<br>`--on-expire stay_locked\|unlock_default`<br>`--session <id>` `--turn <id>`（仅记录） | 提问：建 `grace` 决策；**卡保持进行中、占用不释放**；同步等待最多 `--wait` 秒。宽限内答→打印答案并退出（放行）；超时→服务端落锁 + 停任务，打印 `LOCKED decision=<id>` | 0 已回答或已锁（两者都用结构化字段区分，非错误）<br>2 非占用者 / 已有 grace/open / 限流 / 状态非进行中<br>3 选项不足、重复 label、consequence 为空、非法枚举<br>1 任务不存在 / 服务错误 |
+| `kb decisions` | `--workspace <id\|名>`（缺省按 cwd）<br>`--state grace\|open\|answered\|withdrawn`（缺省 open）<br>`--issue <uuid>`<br>`--stale`（只看超时）<br>`--limit <n>`<br>`--json` | 列待决策（`grace` 用于展示宽限倒计时，剩余秒数由 `grace_until - now` 派生） | 0 / 1 |
 | `kb decision <decision-id>` | 决策 id（支持 ≥8 位前缀，**仅本命令组**）<br>`--json` | 详情：问题、选项、答案、修订历史、等待时长 | 0 / 1 / 2（前缀歧义） |
 | `kb answer <decision-id>` | `--option <ord\|option-id\|label>` 或 `--text <自由文本>`（二选一/可并用）<br>`--actor user`（默认 user）<br>`--source cli`<br>`--mark`（可选：同时把卡评论游标推进） | 首次回答：`grace` 内→立即放行（卡不动）；`open` 后→解锁（卡回待规划）+ 写答案 + 系统评论 | 0 成功<br>2 已回答 / 已撤回 / CAS 冲突<br>3 选项不存在 / 既无选项又无文本<br>1 决策不存在 |
 | `kb answer <decision-id> --revise` | 追加 `--expected-revision <n>` | 修订答案（追加 revision） | 0 / 2（版本冲突）/ 3 |
@@ -505,7 +560,7 @@ interface Issue {
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/issues/:id/ask` | body：`{agent_id, fence?, question, context_md?, trigger, options:[{label,consequence,is_default?}], grace_seconds?, wait_seconds?, no_wait?, checkpoint?, expires_at?, on_expire?, session_id?, turn_id?}`；事务建 `grace` 决策（卡不变、占用不释放）；`wait_seconds>0` 时服务端最多挂起该请求到宽限结束或回答（也可由 CLI 轮询，实现取其一并保持一致）；返回 `{status:'answered'|'locked', decision}` |
+| POST | `/api/issues/:id/ask` | body：`{agent_id, fence?, question, context_md?, trigger, options:[{label,consequence,is_default?}], grace_seconds?, wait_seconds?, no_wait?, checkpoint?, expires_at?, on_expire?, session_id?, turn_id?}`；事务建决策：`grace_seconds≥1` → `grace`（卡不变、占用不释放）；`grace_seconds=0` → 直接 `open` + 释放占用 + 停任务（§4.3.1）。`wait_seconds>0` 时服务端最多挂起到宽限结束或回答（也可由 CLI 轮询，实现取其一并保持一致）；返回 `{status:'answered'|'locked', decision}` |
 | GET | `/api/decisions` | `workspace_id / state（含 grace）/ issue_id / stale / limit`；返回 decision 摘要 + 卡标题 |
 | GET | `/api/decisions/:id` | 全量：选项、答案、revision 历史、剩余宽限秒数、checkpoint 摘要 |
 | POST | `/api/decisions/:id/answer` | `{option_id?, option_ord?, answer_text?, answered_by:'user', source, expected_revision?}`；`state='grace'` → 立即放行（卡不动）；`state='open'` → 解锁（卡回待规划）；修订要求 `state='answered'` + CAS |
@@ -532,11 +587,11 @@ interface Issue {
 - 用户正在对话里，能用一句话回你 → 直接在聊天回答，不得进待决策区；
 - 能靠读仓库/知识页得出答案；
 - 想用提问逃避执行、验收或失败回报；
-- 同一张卡已有 grace/open 决策（先等这 60 秒，不要重复问）。
+- 同一张卡已有 grace/open 决策（先等这轮宽限，默认 180 秒，不要重复问）。
 
 ## 流程
 1. **先写断点**（stash create SHA、git status/diff 摘要、未完成步骤、next_step、后台进程 PID），存进 `--checkpoint-file` 或随 `--checkpoint-stdin`；
-2. `kb ask <卡> --question ... --option 'A|后果A' --option 'B|后果B' --trigger ... --checkpoint-file ...`（默认最多阻塞等待 60 秒）；
+2. `kb ask <卡> --question ... --option 'A|后果A' --option 'B|后果B' --trigger ... --checkpoint-file ...`（默认阻塞等待一轮宽限，默认 180 秒；无人值守加 `--grace 0` 立即返回 `LOCKED`）；
 3. 若返回 `answered`：**立即继续**，不释放占用、不重新 claim，按答案接着做；
 4. 若返回 `LOCKED`：**立即停止**——不再改文件、不再提交、不 `kb done`；写一条卡评论说明停在断点 `next_step`，然后结束本轮；
 5. 之后用户回答（可能 3 小时后）：重新 `kb claim` → `kb decision <id>` 读答案/修订 → `git status` 复核 → 从 checkpoint 的 `next_step` 续跑；
@@ -553,11 +608,11 @@ interface Issue {
 
 ---
 
-## 6. 风险清单（v2 重点 4 项，前 3 项最高）
+## 6. 风险清单（v3 重点 5 项，前 3 项最高）
 
-### R1 锁死与连锁阻塞（最高风险，v2 概率上调）
-- 触发：60 秒内没人抢答（开会/离开/通知没到）→ 每次长任务都被冻结一次；决策再无人回答 + 依赖链/父子结构把卡放在关键路径上。
-- 最坏后果：一条依赖链全部停摆，父卡永远无法 `close`，`swing-dev` 每班都跳过、看起来「没有可做任务」；用户以为系统坏了。由于 60 秒很短，**同样的永久锁问题会比 v1 更频繁地发生**。
+### R1 锁死与连锁阻塞（最高风险，v3 概率较 v2 下调）
+- 触发：宽限（默认 180 秒）内没人抢答（开会/离开/通知没到）→ 长任务被冻结一次；决策再无人回答 + 依赖链/父子结构把卡放在关键路径上。
+- 最坏后果：一条依赖链全部停摆，父卡永远无法 `close`，`swing-dev` 每班都跳过、看起来「没有可做任务」；用户以为系统坏了。180 秒比 v2 的 60 秒给了约 3 倍抢答时间，误锁频率下降，但**开会/离开仍必然触发**，永久锁问题没有消失。
 - 缓解：宽限倒计时 + 秒级通知（§3.2.5）、锁后 4h/24h/72h 分级提醒、待决策区置顶超时分组、`kb decisions --stale`、撤回/搁置入口、`decision_parked` 防自动派工、卡面与父卡错误文案显式点名「因未回答决策阻塞」。
 - 残余：只要用户始终不回答，锁就不会解开（除非显式撤回/搁置）——这是产品选择，必须在 UI 与技能文案里写明，不能靠自动解锁掩盖。
 
@@ -567,22 +622,29 @@ interface Issue {
 - 缓解：一卡一条 grace/open、同 agent 并发/频率上限、`trigger` 枚举与审计统计、技能「禁用清单」、可关闭开关。
 - 残余：结构校验能拦「没有选项/重复提问」，拦不住「这条问题本不该问」。
 
-### R3 通知静默失败（v2 从「不便」升级为「功能失效」）
+### R3 通知静默失败（v3 仍为「功能失效」）
 - 触发：浏览器权限被拒、页面关闭、系统专注助手拦截、桌面壳未授予通知权限、窗口最小化后定时器节流。
-- 最坏后果：宽限 60 秒内用户根本收不到提醒 → **每次提问都必然超时**；用户事后只看到「任务被冻结」，误判为「agent 卡死」。通知失败不再只是体验问题，而是直接决定 60 秒机制是否成立。
-- 缓解：把通知定位为宽限期前置能力（§3.2.5 的 ≤2s 验收标准）；徽标 + 顶部汇总条 + 应用内常驻 toast 三件套；宽限倒计时在所有可见面同步；回答前 toast 不自动消失；下次打开必现未回答列表。
-- 残余：纯 Web + 页面长期关闭时，系统层面没有任何可靠推送能力（没有 Service Worker/推送服务），只能等下次打开；这类场景 60 秒设计注定失败，需要用户改用桌面壳或缩短不在场时的工作。
+- 最坏后果：宽限 180 秒内用户根本收不到提醒 → **每次提问都必然超时**；用户事后只看到「任务被冻结」，误判为「agent 卡死」。180 秒只是把「必然」推迟约 3 分钟，通知失败仍直接决定宽限机制是否成立。
+- 缓解：把通知定位为宽限前置能力（§3.2.5 的 ≤2s 目标 / ≤10s 可接受）；徽标 + 顶部汇总条 + 应用内常驻 toast 三件套；宽限倒计时在所有可见面同步；回答前 toast 不自动消失；下次打开必现未回答列表。
+- 残余：纯 Web + 页面长期关闭时，系统层面没有任何可靠推送能力（没有 Service Worker/推送服务），只能等下次打开；这类场景 180 秒同样注定失败，需要用户改用桌面壳或避免在离开前提问。
 
-### R4 协作式停止失效（v2 新增）
+### R4 协作式停止失效（v2 新增，按 180 秒复核）
 - 触发：agent 收到 `LOCKED` 后仍继续跑（忽略返回值）、或用异步模式后没有检查 `stop_requested`；CLI 进程被杀/超时预算不足，停止信号没送达。
 - 最坏后果：卡已回待规划并上锁，但 agent 仍在改文件，产生「锁卡还在被写」的脏工作树；下一次 claim 的 agent 看到无法解释的改动；若 agent 尝试 `done` 会 409，但本地改动无法自动回滚。
+- 180 秒的影响：同步模式下 agent 在宽限内一直被阻塞，**不会产生「等待期间继续干活」的新窗口**；变化在于 CLI/工具被杀前的容错时间从 60 秒变为 180 秒（更难被误杀），但**失效模式不变**——agent 不检查返回值、或异步模式漏查 `stop_requested`，照样继续跑。远端/会话型 agent 的停止信号到达时间也变长，需要 DEC-9 保证 2 秒级可读。
 - 缓解：同步 `kb ask` 的返回值即停止指令（最短路径）；`--no-wait` 强制在技能里要求步骤间 `kb stop-check`；锁时 bump fence，使旧 agent 的一切看板收尾 409；断点约定让续跑者先 `git status` 审阅。
 - 残余：无法强制 kill 正在执行的工具；文件层只能协作式停止，必须如实写进技能与 UI。
+
+### R5 宽限期配置不当（v3 新增）
+- 触发：工作区默认被调到 600 → 单卡最长冻结 10 分钟，agent 同步等待占满一个并发槽；被调到 0 → 每次提问都立即锁，退化成 v1「提问即锁」，跳过「宽限内放行」这条主路径；单次 `--grace` 传负数/非整数/超 600 未 clamp。
+- 最坏后果：600 下长任务吞吐明显下降、并发槽被等待占满；0 下用户几乎没有抢答窗口，R1 概率回到最高档；非法值若被静默截断，用户以为设了 900 实际只有 600，行为与预期不符。
+- 缓解：三层约束——DB 默认 180 + 服务端 clamp 0–600 + CLI 参数校验（非整数/超界直接退出码 3）；UI 配置项标注「默认 180 / 建议 120–300 / 0 仅夜间批处理」；`--grace 0` 在 `kb ask --help` 与技能里显式标注「立即锁」；存量库 `ADD COLUMN` 默认同样是 180，不让历史工作区漂移成其它值。
+- 残余：用户主动设 600 是合法选择，服务端不强制，只能靠文档与推荐区间约束。
 
 ### 次级风险（列出但不展开）
 - 双源漂移（若加 `open_decision_id` 指针列，漏改即漂移）→ 推荐行即锁，不加权威列。
 - `routes.ts` 热点冲突 → 决策路由独立文件，`routes.ts` 只加一行挂载。
-- 旧库迁移顺序（新表纯追加，风险低；若加 issue 列须排在重建迁移之后）。
+- 旧库迁移顺序（新表纯追加，风险低；`workspace.decision_grace_seconds` 也是纯 ADD COLUMN；若加 issue 列须排在重建迁移之后）。
 - 候选：决策数据含用户输入，可能包含敏感信息；需与评论同级的脱敏要求，不进日志明文。
 
 ---
@@ -593,30 +655,30 @@ interface Issue {
 
 | 卡 | 标题（建议） | 目标文件集（预估） | 依赖 | 验收要点 |
 | --- | --- | --- | --- | --- |
-| DEC-1 | 决策数据模型与生命周期 | `apps/server/src/db/migrations/pendingDecision.ts`、`schema.ts`、`db/repos/decision.ts`、`services/decision.ts`、`test/decision.test.ts` | 无（本设计卡） | 建表/索引幂等；`grace/open` 唯一约束；状态机（grace→answered 放行 / grace→open 落锁 / open→answered 解锁 / withdraw；修订 CAS）；checkpoint 存取；删卡级联；旧库迁移 |
+| DEC-1 | 决策数据模型与生命周期 | `apps/server/src/db/migrations/pendingDecision.ts`、`schema.ts`、`db/repos/decision.ts`、`services/decision.ts`、`test/decision.test.ts` | 无（本设计卡） | 建表/索引幂等；`grace/open` 唯一约束；`grace_seconds` 默认 **180**、范围 **0–600** 校验；`workspace.decision_grace_seconds` 纯 ADD COLUMN（幂等、默认 180）；状态机（grace→answered 放行 / grace→open 落锁 / open→answered 解锁 / withdraw；修订 CAS）；**`grace_seconds=0` 独立分支直接建 open，且与 `grace→open` 共用 `lockIssueForDecision()`**；checkpoint 存取；删卡级联；旧库迁移 |
 | DEC-2 | 锁与流程门禁接线 | `services/claim.ts`、`services/taskHierarchy.ts`、`services/releaseRunning.ts`、`db/repos/issue.ts`、`packages/shared/src/types.ts`（仅本卡 hunk） | DEC-1 | 锁卡 claim 409 `DECISION_LOCKED`（仅 open）；`grace→open` 时释放占用 + bump fence + 卡回待规划；批量退回/租约清扫/启动恢复不得清 grace/open；issue 投影 `decision_locked/open_decision_id/decision_grace_until`；回归 claim/lease/release 用例 |
-| DEC-3 | 决策 REST 与 WS 事件 | `apps/server/src/api/decisionRoutes.ts`（新）、`routes.ts`（仅挂载 1–3 行）、`api/schemas.ts` | DEC-1、DEC-2 | ask（grace + wait/nowait）、answer（grace 放行 / open 解锁）、revise、withdraw、stop/stop-ack、count；单事务；错误码；WS 事件；幂等接口口径 |
-| DEC-4 | CLI 决策命令组 | `packages/cli/src/commands/decision.ts`（新）、`index.ts`、`show.ts`、`listTasks.ts`、`test/decision.test.ts` | DEC-3 | `kb ask`（默认 60s 同步等待/2s 轮询、`--no-wait`）、`kb decisions/decision/answer/withdraw/stop-check`；退出码 0/1/2/3；`--json`；claim 遇锁文案；`show` 决策块与倒计时 |
-| DEC-5 | ask-user 技能与打包清单 | `skills/ask-user/SKILL.md`、`AGENTS.md`、`scripts/package-portable.mjs`、`app/rules-manifest.json` 生成逻辑 | DEC-4（行为可验） | 技能文案含「禁用清单/checkpoint/60s 流程/LOCKED 停止/续跑」；打包后 `check-rules.cmd` 自检含 ask-user；不携带全局规则 |
+| DEC-3 | 决策 REST 与 WS 事件 | `apps/server/src/api/decisionRoutes.ts`（新）、`routes.ts`（仅挂载 1–3 行）、`api/schemas.ts` | DEC-1、DEC-2 | ask（grace + wait/nowait）、answer（grace 放行 / open 解锁）、revise、withdraw、stop/stop-ack、count；**`grace_seconds=0` 时事务内直接 open、不返回 grace 态**；单事务；错误码（含 `INVALID_GRACE`）；WS 事件；幂等接口口径 |
+| DEC-4 | CLI 决策命令组 | `packages/cli/src/commands/decision.ts`（新）、`index.ts`、`show.ts`、`listTasks.ts`、`test/decision.test.ts` | DEC-3 | `kb ask`（默认 **180s** 同步等待 / 2s 轮询、`--no-wait`）、`--grace <s>` 覆盖工作区默认并 clamp **0–600**；**`--grace 0` 不等待、立即输出 `LOCKED`，且忽略 `--wait`**；`kb decisions/decision/answer/withdraw/stop-check`；退出码 0/1/2/3（非法 grace 走 3）；`--json`；claim 遇锁文案；`show` 决策块与倒计时 |
+| DEC-5 | ask-user 技能与打包清单 | `skills/ask-user/SKILL.md`、`AGENTS.md`、`scripts/package-portable.mjs`、`app/rules-manifest.json` 生成逻辑 | DEC-4（行为可验） | 技能文案含「禁用清单/checkpoint/宽限流程（默认 180s、0–600）/`--grace 0` 无人值守/LOCKED 停止/续跑」；打包后 `check-rules.cmd` 自检含 ask-user；不携带全局规则 |
 | DEC-6 | 待决策视图与卡面锁标识 | `apps/web/src/state/navStore.ts`、`components/shell/SideBar.tsx`、`components/decisions/**`（新）、`App.tsx`、`Board.tsx`/`IssueCard.tsx`、`DetailPanel.tsx`、对应测试 | DEC-3 | 第六入口 + 徽标 = grace+open 数；三段分组（宽限中/未回答/超时/最近已回答）；卡面 `[待决策]`/倒计时标识；详情回答/修订历史/checkpoint 摘要；窄屏可用；测试 |
 | DEC-7 | 通知两档与降级 | `desktop/src-tauri/Cargo.toml`、`capabilities/*.json`、`apps/web/src/components/decisions/notify.ts`、`apps/web/**` toast/汇总条 | DEC-6 | 有壳走 Tauri 通知；无壳走 Web Notification；**同机权限允许时 ≤2s 到达**；拒绝/静音降级到徽标+toast；点击深链到决策；不引入服务端推送 |
 | DEC-8 | 提醒档位与超时升级 | `services/decisionReminder.ts`、启动接线、`decisionRoutes.ts` 的 stale 查询、测试 | DEC-2、DEC-6 | 从 `locked_at` 起算 4h/24h/72h 幂等去重；不自动解锁；`--stale` 列表；统计端点 |
-| DEC-9 | 宽限计时器与停止信号通道 | `services/decisionGrace.ts`（新）、启动接线、心跳响应、`services/sessionManager.ts`（仅 stop 读取）、测试 | DEC-2、DEC-3 | `grace→open` ticker 幂等（含服务重启补算）；写 `stop_requested_at` + bump fence + WS；心跳/`stop-check` 可读；不得误伤 `grace` 决策 |
+| DEC-9 | 宽限计时器与停止信号通道 | `services/decisionGrace.ts`（新）、启动接线、心跳响应、`services/sessionManager.ts`（仅 stop 读取）、测试 | DEC-2、DEC-3 | `grace→open` ticker 按 `grace_until` 幂等（含服务重启补算）；默认 **180s**、**0–600** 取值；**`grace_seconds=0` 不依赖 ticker（事务内已落锁）**；写 `stop_requested_at` + bump fence + WS；心跳/`stop-check` 2 秒级可读；不得误伤 `grace` 决策 |
 
 ### 7.2 执行顺序与并行约束
 
 ```
 DEC-1 → DEC-2 → DEC-3 → DEC-4 → DEC-5
 DEC-2, DEC-3 → DEC-9（宽限计时与停止信号）
-DEC-3 → DEC-6 → DEC-7（通知，须满足 60s 验收）
+DEC-3 → DEC-6 → DEC-7（通知，须满足宽限验收：默认 180s）
 DEC-2, DEC-6 → DEC-8（提醒与 stale 展示）
 ```
 
 - **必须串行**：DEC-1 → DEC-2 → DEC-3（三张卡都动服务端契约，且 DEC-2 改 `claim.ts` 热点）。
-- **DEC-9（60s 计时与停止信号）** 依赖 DEC-2 的「锁时释放 + bump fence」口径，可与 DEC-3 并行；但必须等 DEC-3 的 WS 事件名定稿，避免两卡各写一套事件。
+- **DEC-9（宽限计时与停止信号，默认 180s）** 依赖 DEC-2 的「锁时释放 + bump fence」口径，可与 DEC-3 并行；但必须等 DEC-3 的 WS 事件名定稿，避免两卡各写一套事件。
 - **DEC-4 / DEC-6** 在 DEC-3 完成后可并行（不同包），但 DEC-4 与 DEC-6 都会读 `Issue` 投影，需在 DEC-2 定稿字段名后冻结。
 - **DEC-6 与其它前端卡** 可能撞 `navStore.ts`、`SideBar.tsx`、`DetailPanel.tsx`、`Board.tsx`（项目里这些是高频文件）；派工前必须 `git status` + `kb show` 核对占用，有在飞卡就排队或建 blocks 边。
-- **DEC-7** 动 `desktop/**`，与前端卡不同包，但要等 DEC-6 的事件源与深链接口定型；60 秒验收必须在此卡完成（否则宽限期不可用）。
+- **DEC-7** 动 `desktop/**`，与前端卡不同包，但要等 DEC-6 的事件源与深链接口定型；宽限验收（默认 180s：目标 ≤2s、可接受 ≤10s）必须在此卡完成（否则宽限期不可用）。
 - **DEC-8** 只读决策表，可与 DEC-6 并行，但「超时分组」UI 归 DEC-6。
 - 每张卡独立验收、独立提交；提交信息带卡号；`--scope` 精确到本卡文件集。
 
@@ -630,14 +692,14 @@ DEC-2, DEC-6 → DEC-8（提醒与 stale 展示）
 ## 8. 结论摘要（给验收人 30 秒版）
 
 1. **可实现**，但必须新增一张决策表并把它作为「锁」的唯一真相；不加新状态、不用布尔锁字段当权威。
-2. **时序采用 v2 语义**：提问 → `grace` 60 秒（卡不锁、占用不释放、agent 同步等待）→ 期内回答立即放行（不重领卡）→ 超时则 `grace→open`，卡回待规划 + 释放占用 + bump fence + 停止信号。
+2. **时序采用 v3 定稿值**：提问 → `grace` 默认 **180 秒**（0–600 可配，`--grace` 单次覆盖；卡不锁、占用不释放、agent 同步等待）→ 期内回答立即放行（不重领卡）→ 超时则 `grace→open`，卡回待规划 + 释放占用 + bump fence + 停止信号；`--grace 0` 跳过宽限、事务内直接落锁（§4.3.1）。
 3. **7 条意图中 #2 有硬限制**（模型判断无法机器验证），只能靠技能硬规则 + CLI 结构校验 + 频率限制 + 审计；其余可实现，#5 需改 claim/状态门禁，#3/#7 有明确降级。
-4. **推荐承载方式 A**：CLI 同步等待 60 秒、2 秒短轮询，超时返回值即停止指令；`--no-wait` 作为异步降级，必须先写断点。
+4. **推荐承载方式 A**：CLI 同步等待宽限（默认 180 秒）、2 秒短轮询，超时返回值即停止指令；`--no-wait` 作为异步降级，必须先写断点；夜间批处理用 `--grace 0`。
 5. **推荐锁方案**：`issue_decision` 的 open 行即锁（`grace`/`open` 部分唯一索引 + `claim` 的 `NOT EXISTS`）；回答/撤回即解锁；批量退回、租约清扫、启动恢复都不得解锁。
 6. **不复用会话级 15 分钟/2 小时超时**：锁后默认永久等待，配 4h/24h/72h 分级提醒（从 `locked_at` 起算）与人工撤回/搁置，绝不自动作答或自动解锁。
-7. **60 秒只覆盖「人在机器旁 + 通知秒到」**：通知必须 ≤2s 且为宽限期前置条件；纯浏览器关页必然超时，这是物理限制。
+7. **180 秒覆盖「短时离开 + 通知数秒延迟」**，但开会/离开仍必然超时：通知目标 ≤2s、可接受 ≤10s，且为宽限前置条件；纯浏览器关页必然超时，这是物理限制。
 8. **弹窗两档**：Tauri 壳走 `tauri-plugin-notification`；纯浏览器走 Web Notification（localhost 可用但需授权）→ 两者都必须以「徽标 + 汇总条 + 常驻 toast」为可靠通道。
-9. **最可能翻车**：锁死连锁阻塞（60s 使概率上调）、ask-user 被滥用、通知静默失败、协作式停止失效。
+9. **最可能翻车**：锁死连锁阻塞（180s 缓解但未消除）、ask-user 被滥用、通知静默失败、协作式停止失效、宽限配置不当（600 = 单卡冻结 10 分钟）。
 10. **建议 9 张实现卡**（DEC-1…DEC-9），先模型/门禁/宽限计时，再接口/CLI/技能/Web，最后通知与提醒；`routes.ts`、`navStore.ts`、`SideBar.tsx`、`DetailPanel.tsx` 为串行热点。
 
 ---
@@ -647,8 +709,10 @@ DEC-2, DEC-6 → DEC-8（提醒与 stale 展示）
 - 桌面壳通知的实际权限表现（Windows 专注助手、打包后的通知身份）未在真机验证；设计只给出能力路径。
 - 浏览器 Web Notification 在 8787 的具体权限弹窗时机与系统静音表现未实测（需要真实点击）。
 - 「长任务」阈值（多少步/多久算长）没有客观口径，需产品裁决；本文只建议记录 `created_turn_id` 而不做硬判定。
-- **60 秒是否为最终默认值**未定：本文按用户原话设 60，并建议做成工作区可调（默认 60、0–600）。若实测「每次长任务都被冻结」成本过高，需要产品重新裁决默认值，而不是实现层偷偷延长。
-- **agent 工具调用的超时预算**未知：同步等待 60s 要求 harness 单次工具超时 ≥60s；若某些客户端硬编码 30s，必须改用 `--no-wait` 或缩短 `--wait`，需在 DEC-4 实测后确认。
-- **ticker 精度与重启补算**未实跑：`grace→open` 依赖服务端定时扫描，需验证「服务重启跨宽限」「高并发 100 条 grace」下的延迟与幂等。
+- **宽限默认值已裁决**：用户 2026-11-05 拍板默认 **180 秒**、区间 **0–600 秒**，本节不再待定；仍需实测「180 秒下的误锁率」与「每次冻结的恢复成本」，若成本过高应调默认值（建议区间 120–300），而不是实现层偷偷延长或缩短。
+- **agent 工具调用的超时预算**未知：同步等待默认 180 秒（`--grace 600` 时最多 600 秒）要求 harness 单次工具超时 ≥ `grace_seconds` + 余量（默认建议 ≥240s）；若某些客户端硬编码 30s，必须改用 `--no-wait` 或 `--grace 0`，需在 DEC-4 实测后确认。
+- **通知延迟预算未实测**：§3.2.4 的「目标 ≤2s、可接受 ≤10s」是设计目标，Tauri toast 在 Windows 专注助手/打包身份下的真实延迟，以及 180 秒是否足以让用户从看到到作答，需要 DEC-7 实机数据。
+- **600 上限的并发成本未压测**：`--grace 600` 会让 agent 占用一个并发槽最长 10 分钟，需在 DEC-9 用多卡并发验证槽位占用与吞吐影响。
+- **ticker 精度与重启补算**未实跑：`grace→open` 依赖服务端定时扫描，需验证「服务重启跨 180 秒宽限」「高并发 100 条 grace」「`--grace 600` 长窗口」下的延迟与幂等；`grace_seconds=0` 不经过 ticker，需单独验证事务内落锁。
 - 决策内容是否允许包含附件/截图（当前草案纯文本 + markdown），未定；如需附件，要复用现有 attachment 通道，成本另计。
 - 是否允许 agent 之间互相回答（草案：不允许，回答仅人类），需产品确认。
