@@ -181,8 +181,8 @@ describe('DetailPanel 操作区四态', () => {
   });
 });
 
-describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
-  it('显示四种状态；非进行中任务改状态时 PATCH 带 workspace_id + expected_updated_at，成功后按服务端响应更新', async () => {
+describe('DetailPanel 状态手动修改（DETAIL-STATUS01 / DETAIL-D2 chip）', () => {
+  it('状态 chip 打开 popover 后列出内置五状态；改状态 PATCH 带 workspace_id + expected_updated_at，成功后按服务端响应更新', async () => {
     const base = makeIssue({ status: '待规划', updated_at: 7 });
     mockDetailApi(base);
     let current = base;
@@ -202,21 +202,29 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
     );
     renderDetail();
 
-    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    // STATUS-3-UI：下拉走 workspace_status 字典；未 mock 状态接口时兜底为五条内置（含已废弃）
-    expect([...select.options].map((o) => o.value)).toEqual(['待规划', '进行中', '待验收', '已关闭', '已废弃']);
-    expect(select.value).toBe('待规划');
-    expect(select).not.toBeDisabled();
+    // D2：状态下拉改为 meta chip；点击后 popover 内是同一份状态字典
+    const chip = await screen.findByTestId('status-chip');
+    expect(chip).toHaveAttribute('data-status', '待规划');
+    expect(chip).toHaveAttribute('aria-haspopup', 'menu');
+    expect(chip).not.toBeDisabled();
+    expect(chip).toHaveTextContent('待规划');
 
-    await userEvent.selectOptions(select, '待验收');
+    await userEvent.click(chip);
+    expect(screen.getByTestId('status-popover')).toHaveAttribute('role', 'menu');
+    // STATUS-3-UI：走 workspace_status 字典；未 mock 状态接口时兜底为五条内置（含已废弃）
+    for (const name of ['待规划', '进行中', '待验收', '已关闭', '已废弃']) {
+      expect(screen.getByTestId(`status-option-${name}`)).toBeInTheDocument();
+    }
+
+    await userEvent.click(screen.getByTestId('status-option-待验收'));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]).toEqual({ workspace_id: 'ws-1', expected_updated_at: 7, status: '待验收' });
-    await waitFor(() => expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('待验收'));
+    await waitFor(() => expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待验收'));
     // 看板/树列表缓存被失效（重新拉 /api/issues）
     await waitFor(() => expect(issuesRefetches).toBeGreaterThan(0));
   });
 
-  it('「进行中」任务（含未占用）：下拉禁用并给出原因，不发 PATCH', async () => {
+  it('「进行中」任务（含未占用）：状态 chip 禁用并给出原因，点不开 popover、不发 PATCH', async () => {
     const running = makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 });
     mockDetailApi(running);
     const patches: Array<Record<string, unknown>> = [];
@@ -228,29 +236,30 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
     );
     renderDetail();
 
-    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    expect(select.value).toBe('进行中');
-    expect(select).toBeDisabled();
-    expect(select).toHaveAttribute('title', expect.stringContaining('进行中'));
+    const chip = await screen.findByTestId('status-chip');
+    expect(chip).toHaveAttribute('data-status', '进行中');
+    expect(chip).toBeDisabled();
+    expect(chip).toHaveAttribute('title', expect.stringContaining('进行中'));
     expect(screen.getByTestId('status-blocked-hint')).toHaveTextContent('进行中');
 
-    // 即使强制派发 change 事件也不产生请求
-    fireEvent.change(select, { target: { value: '已关闭' } });
+    // 禁用 chip 不会打开 popover，也不会产生状态请求
+    await userEvent.click(chip);
+    expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 200));
     expect(patches).toHaveLength(0);
-    expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('进行中');
+    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '进行中');
   });
 
-  it('已占用任务：状态下拉禁用并提示占用原因', async () => {
+  it('已占用任务：状态 chip 禁用并提示占用原因', async () => {
     mockDetailApi(makeIssue({ status: '待规划', claimed_by: 'agent:codex', claimed_at: 1 }));
     renderDetail();
 
-    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    expect(select).toBeDisabled();
-    expect(select).toHaveAttribute('title', expect.stringContaining('占用中'));
+    const chip = await screen.findByTestId('status-chip');
+    expect(chip).toBeDisabled();
+    expect(chip).toHaveAttribute('title', expect.stringContaining('占用中'));
   });
 
-  it('409 冲突：显示服务端原因，下拉保留服务端当前状态', async () => {
+  it('409 冲突：显示服务端原因，chip 保留服务端当前状态', async () => {
     const base = makeIssue({ status: '待规划', updated_at: 7 });
     mockDetailApi(base);
     server.use(
@@ -260,11 +269,11 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
     );
     renderDetail();
 
-    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    await userEvent.selectOptions(select, '待验收');
+    await userEvent.click(await screen.findByTestId('status-chip'));
+    await userEvent.click(await screen.findByTestId('status-option-待验收'));
     const alert = await screen.findByTestId('detail-action-error');
     expect(alert).toHaveTextContent('任务已更新，请重新读取');
-    expect((screen.getByTestId('status-select') as HTMLSelectElement).value).toBe('待规划');
+    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待规划');
   });
 
   it('后代未关闭时「已关闭」选项禁用（与树节点下拉同规则）', async () => {
@@ -278,11 +287,124 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01）', () => {
     );
     renderDetail();
 
-    const select = (await screen.findByTestId('status-select')) as HTMLSelectElement;
-    await waitFor(() => {
-      const option = [...select.options].find((o) => o.value === '已关闭');
-      expect(option?.disabled).toBe(true);
-    });
+    await userEvent.click(await screen.findByTestId('status-chip'));
+    const closeOption = await screen.findByTestId('status-option-已关闭');
+    await waitFor(() => expect(closeOption).toBeDisabled());
+    expect(screen.getByTestId('status-option-待验收')).not.toBeDisabled();
+  });
+});
+
+describe('DETAIL-D2 meta 行（状态 / 优先级 / 截止 / 负责人）', () => {
+  it('四个 chip 同排；宽屏强制单行、窄屏允许两行（状态+优先级 / 截止+负责人）', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const row = (await screen.findByTestId('meta-row')) as HTMLElement;
+    // ≥920px 强制单行；<920px 退化为两行分组（未决 2）
+    expect(row.className).toContain('min-[920px]:flex-row');
+    const chips = ['status-chip', 'priority-chip', 'due-chip', 'owner-chip'].map((id) => screen.getByTestId(id));
+    for (const chip of chips) {
+      expect(chip).toHaveAttribute('aria-haspopup');
+      expect(chip).toHaveAttribute('aria-expanded', 'false');
+    }
+    // jsdom 无布局：四个 chip 的 rect.top 均为 0，等价于「同一横行」
+    const tops = chips.map((chip) => Math.round(chip.getBoundingClientRect().top));
+    expect(new Set(tops)).toEqual(new Set([0]));
+  });
+
+  it('截止 chip：popover 内日期/时间/清除；应用后 chip 只显示结果', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue());
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(makeIssue({ due_date: '2026-11-10', due_time: '14:30' }));
+      }),
+    );
+    renderDetail();
+    await userEvent.click(await screen.findByTestId('due-chip'));
+    // 第一轮原型的 FAIL 修复点：日期选择器必须真实可见（#dueDateInput）
+    const dateInput = screen.getByTestId('detail-due-date');
+    expect(dateInput).toBeVisible();
+    expect(dateInput).toHaveAttribute('id', 'dueDateInput');
+    expect(screen.getByTestId('detail-due-time')).toBeDisabled();
+
+    fireEvent.change(dateInput, { target: { value: '2026-11-10' } });
+    fireEvent.change(screen.getByTestId('detail-due-time'), { target: { value: '14:30' } });
+    await userEvent.click(screen.getByTestId('due-apply'));
+    await waitFor(() => expect(patches).toHaveLength(1), { timeout: 3000 });
+    expect(patches[0]).toEqual({ due_date: '2026-11-10', due_time: '14:30' });
+    expect(screen.getByTestId('due-chip')).toHaveTextContent('11-10 14:30');
+    expect(screen.queryByTestId('detail-due-date')).not.toBeInTheDocument();
+  });
+
+  it('截止 chip：清除同时清空日期与时间（PATCH 两个 null）', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue({ due_date: '2026-11-10', due_time: '14:30' }));
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(makeIssue({ due_date: null, due_time: null }));
+      }),
+    );
+    renderDetail();
+    expect(await screen.findByTestId('due-chip')).toHaveTextContent('11-10 14:30');
+    await userEvent.click(screen.getByTestId('due-chip'));
+    await userEvent.click(screen.getByTestId('detail-due-clear'));
+    await waitFor(() => expect(patches).toHaveLength(1), { timeout: 3000 });
+    expect(patches[0]).toEqual({ due_date: null, due_time: null });
+    expect(screen.getByTestId('due-chip')).toHaveTextContent('未设置');
+  });
+
+  it('截止 chip：逾期显示「已逾期 N 天」角标', { timeout: 15000 }, async () => {
+    const daysAgo = (days: number): string => {
+      const d = new Date(Date.now() - days * 86400000);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    };
+    mockDetailApi(makeIssue({ due_date: daysAgo(2), due_time: null }));
+    renderDetail();
+    expect(await screen.findByTestId('due-chip')).toHaveTextContent('已逾期');
+    expect(screen.getByTestId('detail-due-overdue')).toHaveTextContent(/已逾期 \d+ 天/);
+  });
+
+  it('同一时刻只开一个 popover；Esc 关闭并把焦点还给触发 chip', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const priority = await screen.findByTestId('priority-chip');
+    const due = screen.getByTestId('due-chip');
+    await userEvent.click(priority);
+    expect(screen.getByTestId('priority-popover')).toBeInTheDocument();
+    expect(priority).toHaveAttribute('aria-expanded', 'true');
+
+    await userEvent.click(due);
+    expect(screen.queryByTestId('priority-popover')).not.toBeInTheDocument();
+    expect(screen.getByTestId('due-popover')).toBeInTheDocument();
+    expect(due).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('due-popover')).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(due);
+  });
+
+  it('负责人 chip：有占用显示名称 + 已占用时长；租约明细不臆造数值', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue({ claimed_by: 'agent:codex', claimed_at: Date.now() - 12 * 60 * 1000 }));
+    renderDetail();
+    const chip = await screen.findByTestId('owner-chip');
+    expect(chip).toHaveTextContent('codex');
+    expect(chip).toHaveTextContent('12 分钟');
+    expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
+    await userEvent.click(chip);
+    expect(screen.getByTestId('owner-popover-duration')).toHaveTextContent('已占用 12 分钟');
+    expect(screen.getByTestId('owner-popover')).toHaveTextContent('租约剩余时间：接口未暴露');
+  });
+
+  it('负责人 chip：未占用显示「未领取」并说明可直接派发', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const chip = await screen.findByTestId('owner-chip');
+    expect(chip).toHaveTextContent('未领取');
+    expect(chip).toHaveAttribute('title', '未领取');
+    await userEvent.click(chip);
+    expect(await screen.findByTestId('owner-popover')).toHaveTextContent('当前无占用者');
   });
 });
 
@@ -550,7 +672,7 @@ describe('DetailPanel 标题就地编辑（D1）', () => {
 });
 
 describe('DetailPanel 字段防抖 PATCH', () => {
-  it('标签逗号分隔编辑 → PATCH labels 数组；优先级 select → PATCH priority', async () => {
+  it('标签 chips 编辑 → PATCH labels 数组；优先级 chip popover → PATCH priority', async () => {
     mockDetailApi(makeIssue());
     const patches: Array<Record<string, unknown>> = [];
     server.use(
@@ -565,9 +687,14 @@ describe('DetailPanel 字段防抖 PATCH', () => {
     await waitFor(() => expect(patches).toHaveLength(1), { timeout: 2000 });
     expect(patches[0]).toEqual({ labels: ['前端', '性能'] });
 
-    await userEvent.selectOptions(screen.getByTestId('priority-select'), '高');
+    // D2：优先级 select 改成 chip + popover
+    const chip = screen.getByTestId('priority-chip');
+    expect(chip).toHaveAttribute('data-priority', '中');
+    await userEvent.click(chip);
+    await userEvent.click(screen.getByTestId('priority-option-高'));
     await waitFor(() => expect(patches).toHaveLength(2), { timeout: 2000 });
     expect(patches[1]).toEqual({ priority: '高' });
+    expect(screen.getByTestId('priority-chip')).toHaveAttribute('data-priority', '高');
   });
 });
 

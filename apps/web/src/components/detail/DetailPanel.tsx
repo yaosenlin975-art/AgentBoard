@@ -17,7 +17,7 @@ import {
   manualStatusBlockedReason,
   patchIssueStatus,
 } from '../../lib/issueStatus';
-import { statusOptions, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
+import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { getIssueDescendantIds } from '../../lib/issueTree';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
@@ -27,7 +27,7 @@ import { ConfirmInline } from '../ui/ConfirmInline';
 import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
-import { isOverdue, overdueDays } from '../../lib/planningSort';
+import { MetaRow, type DueDraft } from './MetaRow';
 import { SessionList } from './SessionList';
 import { TitleInlineEditor } from './TitleInlineEditor';
 
@@ -254,6 +254,13 @@ export function DetailPanel() {
     setLabels(next);
     schedulePatch('labels', next);
   };
+  /** D2：截止 popover 的「应用 / 清除」统一落库；日期为空时同时清时间（沿用旧语义） */
+  const applyDue = (next: DueDraft): void => {
+    setDueDate(next.date);
+    setDueTime(next.time);
+    schedulePatch('due_date', next.date === '' ? null : next.date);
+    schedulePatch('due_time', next.time === '' ? null : next.time);
+  };
   const updateDraft = (value: string): void => {
     setCommentDraft(value);
     writeCommentDraft(issue.id, value);
@@ -273,6 +280,24 @@ export function DetailPanel() {
         <section aria-label="字段" className="space-y-2">
           {/* D1：标题顶掉「任务详情」标题行；阅读态 + ✎ 就地编辑 */}
           <TitleInlineEditor title={issue.title} onSave={saveTitle} />
+
+          {/* D2：状态 / 优先级 / 截止 / 负责人 四 chip 同排；明细收进 popover */}
+          <MetaRow
+            issue={issue}
+            priority={priority}
+            dueDate={dueDate}
+            dueTime={dueTime}
+            statuses={statusDictionary.statuses}
+            statusBlocked={statusBlocked}
+            closeBlocked={closeBlocked}
+            statusPending={changeStatus.isPending}
+            onStatusChange={(next) => changeStatus.mutate(next)}
+            onPriorityChange={(next) => {
+              setPriority(next);
+              schedulePatch('priority', next);
+            }}
+            onDueChange={(next) => applyDue(next)}
+          />
 
           <div className="text-sm">
             <div className="mb-1 flex items-center justify-between">
@@ -304,111 +329,6 @@ export function DetailPanel() {
               </div>
             )}
           </div>
-
-          <label className="block text-sm">
-            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">优先级</span>
-            <select
-              data-testid="priority-select"
-              aria-label="优先级"
-              value={priority}
-              onChange={(e) => {
-                const v = e.target.value as Priority;
-                setPriority(v);
-                schedulePatch('priority', v);
-              }}
-              className={inputCls}
-            >
-              <option value="低">低</option>
-              <option value="中">中</option>
-              <option value="高">高</option>
-            </select>
-          </label>
-
-          <label className="block text-sm">
-            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">状态</span>
-            <select
-              data-testid="status-select"
-              aria-label="状态"
-              value={issue.status}
-              disabled={statusBlocked !== null || changeStatus.isPending}
-              title={statusBlocked ?? undefined}
-              onChange={(e) => {
-                // 双保险：disabled 之外再拦一层，任何路径都不发手动状态更新
-                if (statusBlocked !== null) return;
-                changeStatus.mutate(e.target.value as IssueStatus);
-              }}
-              className={inputCls}
-            >
-              {statusOptions(statusDictionary.statuses, closeBlocked).map((option) => (
-                <option key={option.name} value={option.name} disabled={option.disabled}>
-                  {option.name}
-                </option>
-              ))}
-            </select>
-            {statusBlocked !== null && (
-              <span data-testid="status-blocked-hint" className="mt-1 block text-xs text-neutral-500 dark:text-neutral-400">
-                {statusBlocked}
-              </span>
-            )}
-          </label>
-
-          <label className="block text-sm">
-            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">
-              截止日期（可选；不填 = 不设截止）
-              {dueDate !== '' && isOverdue({ due_date: dueDate, due_time: dueTime === '' ? null : dueTime }, Date.now()) && (
-                <span data-testid="detail-due-overdue" className="ml-2 rounded bg-red-100 px-1 text-xs font-medium text-red-700 dark:bg-red-950/50 dark:text-red-300">
-                  已逾期 {overdueDays({ due_date: dueDate, due_time: dueTime === '' ? null : dueTime }, Date.now())} 天
-                </span>
-              )}
-            </span>
-            {/* V-05：日期 / 时间改为上下两行（日期一行、时间一行），窄面板里不再挤压；清除仍是一处 */}
-            <span className="flex flex-wrap items-center gap-2">
-              <input
-                type="date"
-                data-testid="detail-due-date"
-                aria-label="截止日期"
-                value={dueDate}
-                onChange={(e) => {
-                  setDueDate(e.target.value);
-                  schedulePatch('due_date', e.target.value === '' ? null : e.target.value);
-                  if (e.target.value === '') {
-                    setDueTime('');
-                    schedulePatch('due_time', null);
-                  }
-                }}
-                className={inputCls}
-              />
-              <span className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400" title="截止时间">
-                <span aria-hidden>⏱</span>
-                <input
-                  type="time"
-                  data-testid="detail-due-time"
-                  aria-label="截止时间"
-                  value={dueTime}
-                  disabled={dueDate === ''}
-                  onChange={(e) => {
-                    setDueTime(e.target.value);
-                    schedulePatch('due_time', e.target.value === '' ? null : e.target.value);
-                  }}
-                  className={inputCls}
-                />
-              </span>
-              <button
-                type="button"
-                data-testid="detail-due-clear"
-                disabled={dueDate === '' && dueTime === ''}
-                onClick={() => {
-                  setDueDate('');
-                  setDueTime('');
-                  schedulePatch('due_date', null);
-                  schedulePatch('due_time', null);
-                }}
-                className="rounded px-1.5 py-1 text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-700 disabled:opacity-40 dark:text-neutral-400"
-              >
-                清除
-              </button>
-            </span>
-          </label>
 
           <div className="text-sm">
             <span className="mb-1 block text-neutral-600 dark:text-neutral-300">标签</span>
