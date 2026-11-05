@@ -14,6 +14,7 @@
     "check:stale": "node scripts/check-stale.mjs",
     "dev:test-page": "node scripts/dev-page.mjs",
     "publish:web": "node scripts/rebuild-web-dist.mjs",
+    "package:portable": "node scripts/package-portable.mjs",
     "shortcut:test-page": "powershell -ExecutionPolicy Bypass -File scripts/create-test-page-shortcut.ps1"
   }
 }
