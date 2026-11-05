@@ -130,7 +130,7 @@ function validateSources(flag: string, raw: unknown): void {
 }
 
 function validateEvidence(flag: string, raw: unknown): void {
-  if (!Array.isArray(raw)) fail(`${flag} 必须是数组，例如 [{"source_id":"file:README.md","locator":"file:1-20"}]（当前：${preview(raw)}）`);
+  if (!Array.isArray(raw)) fail(`${flag} 必须是数组，例如 [{"source_id":"file:README.md","locator":"README.md:1-20"}]（当前：${preview(raw)}）`);
   if (raw.length === 0) fail(`${flag} 至少要有 1 条证据`);
   if (raw.length > 100) fail(`${flag} 最多 100 条（当前 ${raw.length}）`);
   raw.forEach((item: unknown, index: number) => {
@@ -155,11 +155,15 @@ const FIELD_HELP = `
     locator      字符串 1–2000       必填  定位：文件相对路径 / URL / agent 名
     captured_at  非负整数            必填  采集时刻 epoch 毫秒（PowerShell：[DateTimeOffset]::Now.ToUnixTimeMilliseconds()）
     content_hash 64 位十六进制       必填  来源内容 sha256（PowerShell：Get-FileHash -Algorithm SHA256 <文件> 取 .Hash）
-    snapshot     字符串 可选         快照内容（≤100000 字符）
+    snapshot     字符串 可选         仅 url / agent 来源可带；file 来源带 snapshot 会被服务端拒（「本地代码来源只保存路径和 hash」）
   --evidence 数组，每条对象：
-    source_id    字符串 1–200        必填  必须指向上面某个 source_id
-    locator      字符串 1–2000       必填  证据定位，如 "file:12-30" / "issue:<uuid>" / "cmd:npm test"
-    snapshot     字符串 可选
+    source_id    字符串 1–200        必填  必须精确指向上面某个 source_id（不要拿 locator 猜对应关系）
+    locator      字符串 1–2000       必填  证据书写约定：仓库相对路径 + 可选行号区间，如 "apps/web/src/x.ts:125-137"；
+                                          非文件证据用 cmd: / issue: / agent: 前缀，如 "cmd:npm test" / "issue:<uuid>"。
+                                          「file:12-30」这类只有行号没有路径的是畸形条目，不要这样写（格式 CLI 不拦截，靠约定）
+    snapshot     字符串 可选         同 sources：file 来源的证据不带摘录；带则必须非空且 ≤2 KiB
+  snapshot 约定：只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入（服务端只查非空与 ≤2 KiB，不校验格式）。
+  去重约定：同一 evidence 不重复登记；同一提交（同一 sha）有多条时只保留一条。
   其它字段一律拒绝（服务端 .strict()），错误会指出具体字段名与期望格式。
 `;
 
@@ -178,13 +182,13 @@ const CREATE_HELP = `${FIELD_HELP}
 示例 A（PowerShell：单引号包 JSON、反引号续行；**PowerShell 不支持 \`<\` 重定向**，正文用管道喂 --stdin；实测可直接复制）：
   kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin \`
     --sources '[{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"'"$((Get-FileHash README.md -Algorithm SHA256).Hash.ToLower())"'"}]' \`
-    --evidence '[{"source_id":"file:README.md","locator":"file:1-20"}]' \`
+    --evidence '[{"source_id":"file:README.md","locator":"README.md:1-20"}]' \`
     注：上面这种写法在 PowerShell 里需要把正文用管道送进来，完整可复制版本见示例 C。
 
 示例 B（cmd：双引号包 JSON，内部双引号写 \\"，正文用 \`<\` 重定向）：
   kb knowledge create --scope common --title "缓存策略" --slug cache-policy --domain knowledge --stdin ^
     --sources "[{\\"source_id\\":\\"file:README.md\\",\\"source_type\\":\\"file\\",\\"locator\\":\\"README.md\\",\\"captured_at\\":1763000000000,\\"content_hash\\":\\"<64位hex>\\"}]" ^
-    --evidence "[{\\"source_id\\":\\"file:README.md\\",\\"locator\\":\\"file:1-20\\"}]" < body.md
+    --evidence "[{\\"source_id\\":\\"file:README.md\\",\\"locator\\":\\"README.md:1-20\\"}]" < body.md
 
 示例 C（**推荐**，零引号转义；把两个 JSON 存成文件后，PowerShell 可直接复制）：
   Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin \`
@@ -193,7 +197,7 @@ const CREATE_HELP = `${FIELD_HELP}
 最小文件样例 sources.json：
   [{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"0000000000000000000000000000000000000000000000000000000000000000"}]
 最小文件样例 evidence.json：
-  [{"source_id":"file:README.md","locator":"file:1-20"}]
+  [{"source_id":"file:README.md","locator":"README.md:1-20"}]
 
 输出：文本模式在标题后补一行 link: knowledge:<uuid>（--json 中为 link 对象，可直接发给别人打开）；
       引用串也可单独用 kb knowledge link <page-id> 生成。
@@ -490,7 +494,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       validateCategory(opts.category); validateLanded(opts.landed);
       const ctx = context();
       const missing: string[] = [];
-      if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain design --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md#L1-L20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
+      if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain design --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md:1-20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
       output(ctx, await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug }));
     });
   scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))

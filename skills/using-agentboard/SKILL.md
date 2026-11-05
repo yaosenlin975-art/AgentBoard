@@ -161,7 +161,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **`kb show` 不是严格只读**：它会推进该卡评论的已读游标（CLI-24）。盘点别人的卡时优先 `kb list-tasks` / `kb show` 单张按需，不要批量 `show` 全工作区，避免把别人的 `[新]` 留言消掉。
 - **区分事实与提议**：`category=open`（未决与盲区）或 `design` 且 `landed=proposed/partial` 的页**不得当成已实现的事实**；与卡面或代码冲突时先在卡评论提问，不猜、不按提议页当规格写代码。
 - **成本控制**：默认只读标题+摘要，正文按需；不要一次拉全量正文，也不要把知识页整段粘进评论。
-- **写知识页**（建/改/归档，PowerShell 复制可用；字段与三种引号写法见 `kb knowledge create --help`）：
+- **写知识页**（建/改/归档，PowerShell 复制可用；字段与三种引号写法见 `kb knowledge create --help`，sources/evidence 书写口径见「知识页写什么（内容口径）」的「证据书写口径」条）：
   ```powershell
   Get-Content body.md -Raw | kb knowledge create --scope workspace --workspace <当前工作区> --title '标题' --slug some-slug --domain knowledge --category design --landed proposed --stdin --sources-file sources.json --evidence-file evidence.json
   kb knowledge show <page-id> --scope workspace --workspace <当前工作区>
@@ -182,6 +182,10 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - **slug 语义化且稳定**：如 `agentboard-server-data`、`agentboard-frontend-ux`、`agentboard-testing-gates`、`agentboard-pitfalls`；**禁用** `handoff-<issue-uuid>` 命名，**不新建**「交接文档」类页。
 - **复用与冲突**：写前 `kb knowledge list --scope workspace --workspace <当前工作区> --status all --include-expired` 找同主题页；存在则 `kb knowledge revise <page-id> --expected-revision <n>`；`KNOWLEDGE_EXISTS`(409) 按 slug 回落（命令细节见「kb 命令速查」的 `kb knowledge` 段）。
 - **分类**：`design` 必须带 `--landed landed|partial|proposed`（缺 `--landed` 时服务端记 `proposed`）；未决与盲区用 `--category open`；不要留 `legacy`。
+- **证据书写口径（写入侧固化，与 `kb knowledge create --help` 示例、`handoff` 同口径）**：
+  - `evidence.locator` 必须是「仓库相对路径 + 可选行号区间」（如 `apps/web/src/x.ts:125-137`）；非文件证据只允许 `cmd:` / `issue:` / `agent:` 三类前缀（如 `cmd:pnpm test`、`issue:<完整uuid>`）。不要写 `file:12-30` 这类只有行号没有路径的畸形条目——CLI 与服务端都不拦格式，只能靠写入侧避免（渲染侧已按 [知识卡：知识页来源与证据：locator 回填与去重口径，以及 web 验证的四类假象](knowledge:d7d984f9-5615-4439-a642-e4b18581683a) 做回填兜底，但那是补救，不是继续产畸形条目的理由）。
+  - `snapshot` 只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入；服务端只查「非空且 ≤2 KiB」，不校验格式。`file` 类型来源（及指向它的 evidence）不许带 snapshot——带了服务端直接拒「本地代码来源只保存路径和 hash」，所以 snapshot 只可能出现在 url / agent 来源上。
+  - 同一 evidence 不重复登记；同一提交（同一 content_hash）有多条时只保留一条。
 - **写完回读**：`kb knowledge show <page-id> --scope workspace --workspace <当前工作区>` 确认 id / scope / revision / 内容；回读失败如实报「未保存」，不得声称已保存。
 
 ## 知识卡链接（KCLINK，强制）
