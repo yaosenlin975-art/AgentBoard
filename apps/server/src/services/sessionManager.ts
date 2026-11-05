@@ -4,10 +4,11 @@
  * 模块级单例（不导出类）：Task 9 启动时 initSessionManager(db, getAdapter, { maxConcurrentTurns }) 装配；
  * comments 服务经 comments.setSessionSender(sendToSession) 接入评论唤醒。
  */
-import type { Message, MessageMeta, ServerWsEvent, Session, SessionTurn } from '@agentboard/shared';
+import type { Issue, Message, MessageMeta, ServerWsEvent, Session, SessionTurn } from '@agentboard/shared';
 import type { AgentAdapter, AskEvent, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import type { Db } from '../db/connection.js';
+import type { WorkspaceDbRouting } from '../db/resolver.js';
 import {
   createSession as insertSessionRow,
   getSession,
@@ -51,6 +52,11 @@ export type SessionSender = (sessionId: string, text: string, delivery?: Session
 export interface SessionManagerOptions {
   /** 全局同时运行的轮次进程上限 */
   maxConcurrentTurns: number;
+  /**
+   * STORE-4d：按库路由（缺省未装配 = 单库行为——一切读写都在传入的库上，既有测试/最小装配不变）。
+   * 装配后：会话行落「工作区当前库」（未下沉回中心库），按 id 操作先定位归属工作区再经 resolver 取库。
+   */
+  routing?: WorkspaceDbRouting;
 }
 
 export interface CreateSessionInput {
@@ -101,6 +107,14 @@ export interface SessionRuntime {
 
 let db: Db | null = null;
 let resolveAdapter: ((cliId: string) => AgentAdapter) | null = null;
+/** STORE-4d：按库路由（null = 单库行为：一切读写都在 initSessionManager 传入的库上） */
+let routing: WorkspaceDbRouting | null = null;
+/**
+ * STORE-4d：会话 → 归属工作区（懒缓存）。
+ * 会话行的位置跟随工作区 db_mode（localize/revert 整库搬移），所以缓存 workspace_id 而不是 Db 句柄
+ * ——句柄由 resolver 统一懒开/换新，缓存不会握着已关闭的库；db_mode 变化后同一缓存仍解析到正确库。
+ */
+const workspaceBySession = new Map<string, string>();
 let maxConcurrentTurns = 3;
 let activeTurns = 0;
 const slotWaiters: Array<() => void> = [];
@@ -187,7 +201,8 @@ function deliverAwaitingAnswer(
   answer: { optionId?: string; text?: string },
   awaitingReason: string | null,
 ): void {
-  const database = db;
+  // STORE-4d：轮次行在会话所在库（会话已删/库不可达时无法收口，保持静默——回答通道本就失效）
+  const database = dbForSession(turn.session_id);
   if (!database) return;
   // 非 ask 驱动的等待态（历史/人工/审批路径）不参与回填，保持原有行为不变
   if (awaitingReason !== 'ask_user') return;
@@ -231,6 +246,61 @@ function assertAssembled(): Db {
   return db;
 }
 
+// ---- STORE-4d：按库路由 ----
+
+/** 已下沉工作区库清单（清单查询失败按空处理，恢复/探测不因清单查询失败而中断） */
+function workspaceDbs(): Db[] {
+  if (routing === null) return [];
+  try {
+    return routing.listWorkspaceDbs();
+  } catch {
+    return [];
+  }
+}
+
+/** workspace_id → 该工作区当前库（未装配路由 = 单库行为，全部落传入库） */
+function dbForWorkspaceId(workspaceId: string): Db {
+  if (routing === null) return assertAssembled();
+  return routing.getDbForWorkspace(workspaceId);
+}
+
+/**
+ * 会话 → 归属工作区：缓存命中直接返回；未命中先中心库后 fan-out 已下沉区逐库探测
+ * （行在哪个库，workspace_id 就指向哪个工作区）。找不到返回 null（调用方决定 404 或跳过）。
+ */
+function resolveSessionWorkspaceId(sessionId: string): string | null {
+  const cached = workspaceBySession.get(sessionId);
+  if (cached !== undefined) return cached;
+  let row = getSession(assertAssembled(), sessionId);
+  if (row === null) {
+    for (const wsDb of workspaceDbs()) {
+      row = getSession(wsDb, sessionId);
+      if (row !== null) break;
+    }
+  }
+  if (row === null) return null;
+  workspaceBySession.set(sessionId, row.workspace_id);
+  return row.workspace_id;
+}
+
+/** 会话所在库；会话不存在返回 null（后台收口路径用，不抛） */
+function dbForSession(sessionId: string): Db | null {
+  const workspaceId = resolveSessionWorkspaceId(sessionId);
+  if (workspaceId === null) return null;
+  try {
+    return dbForWorkspaceId(workspaceId);
+  } catch {
+    return null;
+  }
+}
+
+/** 会话所在库；会话不存在抛 NotFoundError，判定错误（LOCKED/MISSING/…）原样向上抛——与请求路径同语义 */
+function requireSessionDb(sessionId: string): Db {
+  const workspaceId = resolveSessionWorkspaceId(sessionId);
+  if (workspaceId === null) throw new NotFoundError('会话不存在');
+  return dbForWorkspaceId(workspaceId);
+}
+
 /** Task 9 启动装配；重复调用即重建 manager（内存队列、槽位计数、广播钩子清零） */
 export function initSessionManager(
   database: Db,
@@ -242,8 +312,10 @@ export function initSessionManager(
   }
   db = database;
   resolveAdapter = getAdapter;
+  routing = opts.routing ?? null;
   maxConcurrentTurns = opts.maxConcurrentTurns;
   states.clear();
+  workspaceBySession.clear();
   awaitingAsks.clear();
   handledAskRequests.clear();
   askOriginatedTurns.clear();
@@ -253,15 +325,25 @@ export function initSessionManager(
   broadcaster = null;
   // CHAT-AWAIT1（契约 #5）：启动即恢复——此刻内存里没有任何执行器，任何 running/awaiting 轮次
   // 都是上个进程遗留的孤儿，一律置 failed（reason=server_restart），不允许悄悄留在 awaiting。
-  failAllOpenTurns(db, { reason: 'server_restart', message: '服务重启，轮次中断', at: Date.now() });
+  // STORE-4d：遍历中心库 + 全部已下沉工作区库；单库失败不阻断装配（该库恢复失败由 recoverOnBoot 侧落日志）。
+  failAllOpenTurns(database, { reason: 'server_restart', message: '服务重启，轮次中断', at: Date.now() });
+  for (const wsDb of workspaceDbs()) {
+    try {
+      failAllOpenTurns(wsDb, { reason: 'server_restart', message: '服务重启，轮次中断', at: Date.now() });
+    } catch {
+      /* 单库失败不阻断启动 */
+    }
+  }
 }
 
 /** 恢复未装配状态（测试隔离用） */
 export function resetSessionManager(): void {
   db = null;
   resolveAdapter = null;
+  routing = null;
   maxConcurrentTurns = 3;
   states.clear();
+  workspaceBySession.clear();
   awaitingAsks.clear();
   handledAskRequests.clear();
   askOriginatedTurns.clear();
@@ -309,8 +391,8 @@ function markImageDelivery(
   broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
 }
 
-function persistSessionPatch(sessionId: string, patch: SessionPatch): Session {
-  const session = updateSession(assertAssembled(), sessionId, patch);
+function persistSessionPatch(database: Db, sessionId: string, patch: SessionPatch): Session {
+  const session = updateSession(database, sessionId, patch);
   broadcast({ type: 'session.changed', session });
   return session;
 }
@@ -323,13 +405,13 @@ export interface MessageTurnContext {
 }
 
 function persistMessage(
+  database: Db,
   sessionId: string,
   role: Message['role'],
   content: string,
   signal?: SessionErrorSignal | null,
   turn?: MessageTurnContext,
 ): Message {
-  const database = assertAssembled();
   const message = addMessage(database, {
     session_id: sessionId,
     role,
@@ -390,6 +472,8 @@ export function forgetSession(sessionId: string): void {
     state.tracker = null;
   }
   clearAskBindingOfSession(sessionId);
+  // STORE-4d：行已删，按库定位缓存随之失效（同 id 复用是新会话，会重新探测）
+  workspaceBySession.delete(sessionId);
   states.delete(sessionId);
 }
 
@@ -437,14 +521,15 @@ export async function runRetriedStep(
   sessionId: string,
   input: { turn_id: string; step_id: string; tool_name: string },
 ): Promise<{ ok: boolean; message: string | null }> {
-  const database = assertAssembled();
+  const database = requireSessionDb(sessionId);
   const session = getSession(database, sessionId);
   if (!session) throw new NotFoundError('会话不存在');
   const state = ensureState(sessionId);
   if (state.turnActive) throw new ConflictError('会话正在运行，无法单步重试');
   const resolve = resolveAdapter;
   if (!resolve) throw new ConflictError('当前装配没有适配器，无法单步重试');
-  const workspace = getWorkspace(database, session.workspace_id);
+  // 工作区注册表只在中心库（行不随 localize 搬移）
+  const workspace = getWorkspace(assertAssembled(), session.workspace_id);
   if (!workspace) throw new NotFoundError('工作空间不存在');
   let adapter: AgentAdapter;
   try {
@@ -467,7 +552,7 @@ export async function runRetriedStep(
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
   if (result.adapterSessionId !== null) {
-    persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
+    persistSessionPatch(database, sessionId, { adapter_session_id: result.adapterSessionId });
   }
   if (result.exitCode !== 0) {
     return { ok: false, message: `重试执行器退出码 ${result.exitCode}` };
@@ -478,12 +563,25 @@ export async function runRetriedStep(
 // ---- 对外 API ----
 
 export async function createSession(input: CreateSessionInput): Promise<Session> {
-  const database = assertAssembled();
-  const issue = input.issue_id ? getIssue(database, input.issue_id) : null;
-  if (input.issue_id && !issue) throw new NotFoundError('任务不存在');
+  const center = assertAssembled();
+  // STORE-4d：绑 issue 的会话先定位 issue 所在库（先中心后 fan-out 已下沉区）——会话行跟业务行同库
+  let issue: Issue | null = null;
+  if (input.issue_id) {
+    issue = getIssue(center, input.issue_id);
+    if (issue === null) {
+      for (const wsDb of workspaceDbs()) {
+        issue = getIssue(wsDb, input.issue_id);
+        if (issue !== null) break;
+      }
+    }
+    if (issue === null) throw new NotFoundError('任务不存在');
+  }
   const workspaceId = issue ? issue.workspace_id : input.workspace_id;
   if (!workspaceId) throw new ValidationError('自由会话必须提供 workspace_id');
-  if (!getWorkspace(database, workspaceId)) throw new NotFoundError('工作空间不存在');
+  // 工作区注册表只在中心库（行不随 localize 搬移）
+  if (!getWorkspace(center, workspaceId)) throw new NotFoundError('工作空间不存在');
+  // STORE-4d：会话行落「工作区当前库」（未下沉回中心库，行为与切库前一致）
+  const database = dbForWorkspaceId(workspaceId);
 
   let adapterSessionId: string | null = null;
   if (input.reuse_session === 'last' && issue) {
@@ -510,11 +608,12 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
   if (adapterSessionId !== null) {
     updateSession(database, session.id, { adapter_session_id: adapterSessionId });
   }
+  workspaceBySession.set(session.id, workspaceId);
   ensureState(session.id);
 
   if (prompt.trim() !== '') {
-    const userMessage = persistMessage(session.id, 'user', prompt);
-    void beginTurn(session.id, {
+    const userMessage = persistMessage(database, session.id, 'user', prompt);
+    void beginTurn(database, session.id, {
       prompt,
       attachments: [],
       deliveredAttachmentIds: [],
@@ -527,7 +626,8 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
 }
 
 export async function sendToSession(sessionId: string, text: string, delivery: SessionDelivery = {}): Promise<{ queued: boolean }> {
-  const database = assertAssembled();
+  // STORE-4d：会话行在「归属工作区当前库」；判定错误（LOCKED/MISSING/…）与请求路径同语义原样向上抛
+  const database = requireSessionDb(sessionId);
   const attachments = delivery.attachments ?? [];
   if (text.trim() === '' && attachments.length === 0) throw new ValidationError('消息内容不能为空');
   const session = getSession(database, sessionId);
@@ -551,7 +651,7 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
   }
   const state = ensureState(sessionId);
   // 先落 user 行（空闲/排队都落）；轮次行要到真正起轮才建，所以记下 id 待回填 turn_id
-  const userMessage = persistMessage(sessionId, 'user', text);
+  const userMessage = persistMessage(database, sessionId, 'user', text);
   const input: TurnInput = {
     prompt: text,
     attachments,
@@ -570,15 +670,14 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
   // 空闲（含停止/失败后续聊）：回运行中并立即起轮
   state.turnActive = true;
   if (getSession(database, sessionId)!.status !== '运行中') {
-    persistSessionPatch(sessionId, { status: '运行中' });
+    persistSessionPatch(database, sessionId, { status: '运行中' });
   }
-  void beginTurn(sessionId, input);
+  void beginTurn(database, sessionId, input);
   return { queued: false };
 }
 
 export async function stopSession(sessionId: string): Promise<Session> {
-  const database = assertAssembled();
-  if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
+  const database = requireSessionDb(sessionId);
   const state = ensureState(sessionId);
   state.turnActive = false;
   // CHAT-ASK-1B：停止即失效回填通道（迟到回答不会写进已被 kill 的进程）
@@ -598,14 +697,37 @@ export async function stopSession(sessionId: string): Promise<Session> {
       }
     }
   }
-  return persistSessionPatch(sessionId, { status: '已结束' });
+  return persistSessionPatch(database, sessionId, { status: '已结束' });
 }
 
 /**
  * 服务重启恢复：所有 '运行中' session 置 '失败'；其占用 issue 走 fail 流程，
  * 评论作者为 system（计划钉死"system 评论"，与 failIssue 的 agent:<cli> 评论不同，故释放 SQL 就地执行）。
+ * STORE-4d：传入 scope（routing）时遍历中心库 + 全部 db_mode=localized 工作区库——
+ * 中心库失败维持向上抛（既有启动失败语义）；单个工作区库失败落 stderr 后继续，不阻断其余库恢复。
  */
-export async function recoverOnBoot(database: Db): Promise<void> {
+export async function recoverOnBoot(database: Db, scope?: WorkspaceDbRouting): Promise<void> {
+  await recoverDbSessions(database);
+  if (scope === undefined) return;
+  for (const wsDb of workspaceDbsOf(scope)) {
+    try {
+      await recoverDbSessions(wsDb);
+    } catch (error) {
+      console.error(`[agentboard] 工作区库启动恢复失败（db=${wsDb.name}）：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+/** scope.listWorkspaceDbs 的容错包装（清单失败按空处理） */
+function workspaceDbsOf(scope: WorkspaceDbRouting): Db[] {
+  try {
+    return scope.listWorkspaceDbs();
+  } catch {
+    return [];
+  }
+}
+
+async function recoverDbSessions(database: Db): Promise<void> {
   const stale = database.prepare(`SELECT * FROM session WHERE status = '运行中'`).all() as Session[];
   for (const session of stale) {
     const updated = updateSession(database, session.id, { status: '失败' });
@@ -630,7 +752,7 @@ export async function recoverOnBoot(database: Db): Promise<void> {
 
 // ---- 轮次执行 ----
 
-async function beginTurn(sessionId: string, input: TurnInput): Promise<void> {
+async function beginTurn(database: Db, sessionId: string, input: TurnInput): Promise<void> {
   const state = states.get(sessionId);
   if (!state) return;
   const ctx: TurnContext = { handle: null, stopRequested: false };
@@ -644,7 +766,7 @@ async function beginTurn(sessionId: string, input: TurnInput): Promise<void> {
       state.turnActive = false; // 等槽位期间被 stop：放弃本轮，队列保留
       return;
     }
-    await executeTurn(sessionId, state, ctx, input);
+    await executeTurn(database, sessionId, state, ctx, input);
   } catch (err) {
     // 兜底：未预期异常不崩进程，会话置失败
     if (state.current === ctx) {
@@ -668,12 +790,12 @@ async function beginTurn(sessionId: string, input: TurnInput): Promise<void> {
 }
 
 async function executeTurn(
+  database: Db,
   sessionId: string,
   state: SessionState,
   ctx: TurnContext,
   input: TurnInput,
 ): Promise<void> {
-  const database = assertAssembled();
   const resolve = resolveAdapter;
   if (!resolve) return;
 
@@ -683,7 +805,8 @@ async function executeTurn(
     state.current = null;
     return;
   }
-  const workspace = getWorkspace(database, session.workspace_id);
+  // 工作区注册表只在中心库（行不随 localize 搬移）；cwd 取注册表里的 path
+  const workspace = getWorkspace(assertAssembled(), session.workspace_id);
   if (!workspace) {
     state.turnActive = false;
     state.current = null;
@@ -797,16 +920,16 @@ async function executeTurn(
     // AUDIT-SRV（F-04）：CLI 把额度/限流失败当普通 stdout 打印，按正文形态落 error（否则被当 assistant 正文）
     if (looksLikeErrorOutput(content)) {
       tracker.noteError();
-      persistMessage(sessionId, 'error', content, classifySessionError(content), inTurn());
+      persistMessage(database, sessionId, 'error', content, classifySessionError(content), inTurn());
       return;
     }
-    persistMessage(sessionId, 'assistant', content, undefined, inTurn());
+    persistMessage(database, sessionId, 'assistant', content, undefined, inTurn());
   };
   const flushThinking = () => {
     if (thinkingBuf === '') return;
     const content = thinkingBuf;
     thinkingBuf = '';
-    persistMessage(sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }), undefined, inTurn());
+    persistMessage(database, sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }), undefined, inTurn());
   };
   /**
    * CHAT-ASK-1B：ask → 同轮推进 awaiting_input 并登记回填通道。
@@ -841,6 +964,7 @@ async function executeTurn(
       // 步骤对不上等异常：不建等待态，留下可读错误（不静默吞）
       // 错误码字典在 shared 内（本卡禁改），复用既有 UNKNOWN_ERROR；具体原因在可读 message 里
       persistMessage(
+        database,
         sessionId,
         'error',
         `无法进入等待输入状态：${error instanceof Error ? error.message : String(error)}`,
@@ -870,6 +994,7 @@ async function executeTurn(
         // CHAT-TURN1：一次 tool 事件 = 一个计划步骤（上一步在此收口并回填耗时/成败）
         const step = tracker.beginStep(event.name);
         const message = persistMessage(
+          database,
           sessionId,
           'event',
           JSON.stringify({ name: event.name, input: event.input }),
@@ -888,7 +1013,7 @@ async function executeTurn(
         flushThinking();
         flushText();
         tracker.noteError();
-        persistMessage(sessionId, 'error', event.message, classifySessionError(event.message) ?? { code: 'UNKNOWN_ERROR', retryable: true }, inTurn());
+        persistMessage(database, sessionId, 'error', event.message, classifySessionError(event.message) ?? { code: 'UNKNOWN_ERROR', retryable: true }, inTurn());
         break;
       case 'end':
         flushThinking();
@@ -924,11 +1049,11 @@ async function executeTurn(
   }
 
   if (result.adapterSessionId !== null) {
-    persistSessionPatch(sessionId, { adapter_session_id: result.adapterSessionId });
+    persistSessionPatch(database, sessionId, { adapter_session_id: result.adapterSessionId });
   }
   // 适配器带回的 stderr 尾部落 error 消息（排障：真实 CLI 静默失败/异常退出时 UI 可见）
   if (result.stderrTail && result.stderrTail.length > 0) {
-    persistMessage(sessionId, 'error', `适配器 stderr 尾部：\n${result.stderrTail.join('\n')}`, undefined, inTurn());
+    persistMessage(database, sessionId, 'error', `适配器 stderr 尾部：\n${result.stderrTail.join('\n')}`, undefined, inTurn());
   }
 
   // 本轮终态：退出码非零 = failed（原因机器可判），否则 done
@@ -942,7 +1067,7 @@ async function executeTurn(
     const pending = state.queue;
     state.queue = [];
     broadcastRuntime(sessionId); // 排队消息已合并起下一轮：queued_count 归零
-    void beginTurn(sessionId, {
+    void beginTurn(database, sessionId, {
       prompt: pending.map((item) => item.prompt).join('\n\n'),
       attachments: pending.flatMap((item) => item.attachments),
       deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
@@ -958,21 +1083,23 @@ async function executeTurn(
   if (result.exitCode !== 0) {
     await markSessionFailed(sessionId, '会话异常退出');
   } else {
-    persistSessionPatch(sessionId, { status: '已结束' });
+    persistSessionPatch(database, sessionId, { status: '已结束' });
   }
 }
 
 /** 起轮失败（未知 CLI / 适配器抛错 / 工作空间丢失）：error 消息落库 + 会话置失败，不崩进程（Review Focus 5） */
 async function startError(sessionId: string, err: unknown): Promise<void> {
   const detail = err instanceof Error ? err.message : String(err);
-  if (db) persistMessage(sessionId, 'error', `会话启动失败：${detail}`);
+  const database = dbForSession(sessionId);
+  if (database) persistMessage(database, sessionId, 'error', `会话启动失败：${detail}`);
   await markSessionFailed(sessionId, '会话异常退出');
 }
 
 /** 会话置失败；issue 被本会话占用时走 fail 流程（释放占用 + agent:<cli> 失败评论） */
 async function markSessionFailed(sessionId: string, reason: string): Promise<void> {
-  const database = assertAssembled();
-  persistSessionPatch(sessionId, { status: '失败' });
+  const database = dbForSession(sessionId);
+  if (database === null) return;
+  persistSessionPatch(database, sessionId, { status: '失败' });
   const session = getSession(database, sessionId);
   if (!session?.issue_id) return;
   const issue = getIssue(database, session.issue_id);

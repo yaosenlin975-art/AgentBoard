@@ -14,8 +14,9 @@ import Database from 'better-sqlite3';
 import type { Db } from './connection.js';
 import { openDb } from './connection.js';
 import { acquireServerLock, describeLockHolder, releaseServerLock } from '../services/serverLock.js';
-import { ApiError } from '../errors.js';
+import { ApiError, NotFoundError } from '../errors.js';
 import { findEntityLocator, type EntityLocatorKind } from './repos/entityLocator.js';
+import { getWorkspace } from './repos/workspace.js';
 
 /** 中心库 workspace 行的期望状态（设计 §5.1 状态机） */
 export type WorkspaceDbMode = 'center' | 'localizing' | 'localized' | 'failed';
@@ -439,4 +440,68 @@ export function resetResolverState(): void {
   handles.clear();
   heldLocks.clear();
   handleMeta.clear();
+}
+
+/**
+ * STORE-4d：sessionManager / AttachmentStore / 启动恢复共用的**按库路由出口**。
+ * 判定与请求路径同源（decideWorkspaceDb + resolver 句柄缓存）：localized → 工作区库，
+ * 未下沉/localizing/disabled → 中心库；句柄由 resolver 统一懒开与换新，路由方不自持句柄。
+ */
+export interface WorkspaceDbRouting {
+  centerDb: Db;
+  /** workspace_id → 该工作区当前库；未知工作区抛 NotFoundError，判定错误（LOCKED/MISSING/…）原样向上抛 */
+  getDbForWorkspace: (workspaceId: string) => Db;
+  /** 全部 db_mode=localized 工作区库（单个打不开跳过，不中断遍历；清单查询失败按空处理） */
+  listWorkspaceDbs: () => Db[];
+}
+
+export interface WorkspaceDbRoutingOptions {
+  /** 每工作区锁与 server.lock 用同一实现（pid + instanceId + O_EXCL） */
+  instanceId: string;
+  port: number;
+  /** STORE-3a：AGENTBOARD_WORKSPACE_DB=disabled 紧急开关生效（缺省按 false） */
+  disabled?: boolean;
+}
+
+/** STORE-4d：按中心库自建路由出口（index.ts 装配用；routes.ts 的请求路径装配维持原状） */
+export function createWorkspaceDbRouting(centerDb: Db, options: WorkspaceDbRoutingOptions): WorkspaceDbRouting {
+  const deps: ResolverDeps = {
+    centerDb,
+    openWorkspaceDbs: true,
+    instanceId: options.instanceId,
+    port: options.port,
+    ...(options.disabled === true ? { disabled: true } : {}),
+  };
+  /** 读中心库 workspace.db_mode（缺列为老库 → center，行为与现状一致） */
+  const rowMode = (workspaceId: string): WorkspaceDbMode => {
+    try {
+      const row = centerDb.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(workspaceId) as { db_mode?: string } | undefined;
+      const raw = row?.db_mode ?? 'center';
+      return (WORKSPACE_DB_MODES as readonly string[]).includes(raw) ? (raw as WorkspaceDbMode) : 'center';
+    } catch {
+      return 'center';
+    }
+  };
+  return {
+    centerDb,
+    getDbForWorkspace: (workspaceId: string): Db => {
+      const row = getWorkspace(centerDb, workspaceId);
+      if (row === null) throw new NotFoundError('工作空间不存在');
+      return getDbForWorkspace(deps, { id: row.id, path: row.path, dbMode: rowMode(workspaceId) }).db;
+    },
+    listWorkspaceDbs: (): Db[] => {
+      try {
+        return (centerDb.prepare("SELECT id, path FROM workspace WHERE db_mode = 'localized'").all() as Array<{ id: string; path: string }>)
+          .flatMap((row) => {
+            try {
+              return [getDbForWorkspace(deps, { id: row.id, path: row.path, dbMode: 'localized' }).db];
+            } catch {
+              return [];
+            }
+          });
+      } catch {
+        return [];
+      }
+    },
+  };
 }

@@ -34,7 +34,7 @@ import express, { type Express } from 'express';
 import { ADAPTERS, getAdapter as defaultGetAdapter, type AgentAdapter } from '@agentboard/adapters';
 import type { Db } from './db/connection.js';
 import { openDb } from './db/connection.js';
-import { closeWorkspaceDbs } from './db/resolver.js';
+import { closeWorkspaceDbs, createWorkspaceDbRouting, isWorkspaceDbDisabled, type WorkspaceDbRouting } from './db/resolver.js';
 import { recoverLocalizeGates } from './services/workspaceDbOps.js';
 import { acquireServerLock, describeLockHolder, releaseServerLock } from './services/serverLock.js';
 import { initSchema } from './db/schema.js';
@@ -121,6 +121,11 @@ export interface CreateAppOptions {
   attachmentQuotaBytes?: number;
   attachmentStagedTtlMs?: number;
   attachmentCleanupIntervalMs?: number;
+  /**
+   * STORE-4d：按库路由（生产 main() 传入与启动恢复同一实例；缺省在 createApp 内按中心库自建
+   * ——测试/最小装配的单库行为不变）。
+   */
+  workspaceRouting?: WorkspaceDbRouting;
 }
 
 export interface CreatedApp {
@@ -133,11 +138,23 @@ export interface CreatedApp {
 /** 装配 express app 与 WS hub（重复调用即重建 manager/装配，测试隔离安全） */
 export async function createApp(options: CreateAppOptions): Promise<CreatedApp> {
   const db = options.db;
+  // STORE-4d：SecretVault 固定中心库目录（dirname(中心库)/accounts）——账号/凭据不随工作区库漂移，
+  // 删一个工作区不影响账号（父卡验收 5）
   const secretVault = options.secretVault ?? new SecretVault(resolve(dirname(db.name), 'accounts'));
+  // STORE-4d：按库路由（生产由 main() 传入与启动恢复同一实例；缺省自建——未下沉区全部回中心库）
+  const workspaceRouting = options.workspaceRouting ?? createWorkspaceDbRouting(db, {
+    instanceId: options.instance?.instanceId ?? 'inst-unset',
+    port: readSettings().port,
+    ...(isWorkspaceDbDisabled() ? { disabled: true } : {}),
+  });
+  // STORE-4d：AttachmentStore 带按库路由（workspace 维度落工作区当前库，行/文件按库隔离）
   const attachments = new AttachmentStore(db, options.attachmentStorageDir ?? resolve(dirname(db.name), 'attachments'), {
     attachmentQuotaBytes: options.attachmentQuotaBytes ?? DEFAULT_ATTACHMENT_QUOTA_BYTES,
     attachmentStagedTtlMs: options.attachmentStagedTtlMs ?? DEFAULT_ATTACHMENT_STAGED_TTL_MS,
     attachmentCleanupIntervalMs: options.attachmentCleanupIntervalMs ?? DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+  }, {
+    getDbForWorkspace: workspaceRouting.getDbForWorkspace,
+    listWorkspaceDbs: workspaceRouting.listWorkspaceDbs,
   });
   recoverAccountOperations(db);
   // STORE-3a：启动塌缩——上次进程死在迁移中的 localizing 一律落 failed（写闸门生命周期跨进程兜底）；
@@ -146,7 +163,8 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   const getAdapter: (cliId: string) => AgentAdapter =
     options.getAdapter ?? ((id) => defaultGetAdapter(id as AgentAdapter['id']));
 
-  initSessionManager(db, getAdapter, { maxConcurrentTurns: options.maxConcurrentTurns ?? 3 });
+  // STORE-4d：sessionManager 按库路由——会话行落「工作区当前库」，启动收口遍历中心库 + 全部已下发区
+  initSessionManager(db, getAdapter, { maxConcurrentTurns: options.maxConcurrentTurns ?? 3, routing: workspaceRouting });
 
   const hub = createWsHub();
   setBroadcaster(hub.broadcast);
@@ -189,11 +207,16 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   }
 
   const app = express();
-  // KB-IMG-1：启动后后台回收没有行引用的孤儿图片文件（失败不影响启动）
+  // KB-IMG-1：启动后后台回收没有行引用的孤儿图片文件（失败不影响启动）。
+  // STORE-4d：走 scoped store——common 页扫中心目录，workspace 页扫各工作区库目录（行按库比对）
   void (async () => {
     try {
-      const { createKnowledgeImageStore } = await import('./services/knowledgeImages.js');
-      await createKnowledgeImageStore({ db }).sweepOrphans();
+      const { createScopedKnowledgeImageStore } = await import('./services/knowledgeImages.js');
+      await createScopedKnowledgeImageStore({
+        center: db,
+        getWorkspaceDb: workspaceRouting.getDbForWorkspace,
+        listWorkspaceDbs: workspaceRouting.listWorkspaceDbs,
+      }).sweepOrphans();
     } catch { /* 回收失败不影响服务 */ }
   })();
   // KBIMP-1B：导入端点单独放宽请求体上限。全局 parser 在路由之前执行，100kb 会先把
@@ -282,7 +305,20 @@ export async function main(): Promise<StartedServer> {
   // BORROW-0.2：启动清租——上次进程异常退出遗留的占用租约统一过闸（只清占用、任务保留「进行中」、system 评论留痕）
   const sweptLeases = sweepExpiredLeases(db);
   if (sweptLeases > 0) appendServerLog(`启动清理过期占用租约：${sweptLeases} 个任务释放占用`);
-  await recoverOnBoot(db);
+  // SERVER-SINGLETON：实例标识提前生成——启动恢复要开工作区库（每工作区锁用同一 instanceId），exit 钩子也要先于开库注册
+  const instanceId = `inst-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+  const startedAt = Date.now();
+  // STORE-2a（D6）：退出钩子关全部工作区库句柄（SIGINT/SIGTERM 的 process.exit 同样会触发 exit 钩子）。
+  // STORE-4d：先于启动恢复注册——恢复路径打开的工作区库在启动失败退出时也必须释放锁。
+  wireWorkspaceDbCloseOnExit(instanceId);
+  // STORE-4d：按库路由（启动恢复、sessionManager、AttachmentStore、知识图片回收共用一套判定与句柄缓存）
+  const workspaceRouting = createWorkspaceDbRouting(db, {
+    instanceId,
+    port: readSettings().port,
+    ...(isWorkspaceDbDisabled() ? { disabled: true } : {}),
+  });
+  // STORE-4d：启动恢复遍历中心库 + 全部 db_mode=localized 工作区库（单区打不开落日志继续，不阻断启动）
+  await recoverOnBoot(db, workspaceRouting);
 
   // apps/server/{src,dist}/../../web/dist
   const here = dirname(fileURLToPath(import.meta.url));
@@ -300,8 +336,7 @@ export async function main(): Promise<StartedServer> {
   }
 
   // SERVER-SINGLETON：单例锁。**必须先于 openDb**——同一个 DB 被两个进程打开会互相踩 WAL。
-  const instanceId = `inst-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-  const startedAt = Date.now();
+  // （instanceId/startedAt 已提前到启动恢复之前：工作区库 per-workspace 锁与 exit 钩子要用）
   // SERVER-SINGLETON：`POST /api/system/restart` 的接班进程带 AGENTBOARD_RESTART_FROM（前任 pid），
   // 允许受让「前任还活着但正在退出」的那把锁；普通 `server:ensure` 不带，仍然拒绝双开。
   const restartFrom = Number(process.env.AGENTBOARD_RESTART_FROM ?? '');
@@ -326,8 +361,7 @@ export async function main(): Promise<StartedServer> {
     appendServerLog(`单例锁接管：旧持有者 ${describeLockHolder(lock.tookOver)} 已不存在，由 pid ${process.pid} 接管`);
   }
   process.on('exit', () => { releaseServerLock(configDir(), { instanceId }); });
-  // STORE-2a（D6）：退出钩子关全部工作区库句柄（SIGINT/SIGTERM 的 process.exit 同样会触发 exit 钩子）
-  wireWorkspaceDbCloseOnExit(instanceId);
+  // （STORE-2a 的 wireWorkspaceDbCloseOnExit 已提前到启动恢复之前注册）
   // SIGINT/SIGTERM 是能捕获的退出（Windows 的 Stop-Process -Force 走 TerminateProcess，捕获不到 →
   // 靠下一次启动时「陈旧锁接管」兜底）。
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -339,6 +373,7 @@ export async function main(): Promise<StartedServer> {
 
   const { app, hub, attachments } = await createApp({
     db,
+    workspaceRouting,
     dbPathSource: config.dbPathSource,
     instance: { instanceId, dbPath: config.dbPath, startedAt },
     maxConcurrentTurns: config.maxConcurrentTurns,
