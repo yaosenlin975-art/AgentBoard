@@ -300,6 +300,42 @@ export function assertWorkspaceDbWritable(deps: ResolverDeps, workspace: Workspa
   return decision;
 }
 
+export interface EntityLocation<T> {
+  db: Db;
+  /** 命中库上的探测结果（调用方避免二次查询） */
+  value: T;
+}
+
+/**
+ * STORE-4a（M3）：按 id 定位实体所在库——entity_locator（STORE-4b）落地前的**扫描实现**。
+ *
+ * 中心库命中即中心（switch 事务保证已下沉区的中心行已删，中心命中不可能是已下沉区的旧数据）；
+ * 未命中则逐个候选工作区探测（getDbForWorkspace 打开/复用句柄）。全部未中返回 null。
+ * 扫描中某区打不开（MISSING/UNREADABLE/LOCKED…）：记录第一个错误，扫完无命中时原样抛出
+ * ——目标区被锁/损坏时不许伪装成 404；有命中则忽略扫描错误（命中即事实）。
+ */
+export function locateDbByScan<T>(
+  deps: ResolverDeps,
+  candidates: readonly WorkspaceLike[],
+  probe: (db: Db) => T | null,
+): EntityLocation<T> | null {
+  const inCenter = probe(deps.centerDb);
+  if (inCenter !== null) return { db: deps.centerDb, value: inCenter };
+  let firstError: unknown = null;
+  for (const workspace of candidates) {
+    let routed: Db;
+    try {
+      routed = getDbForWorkspace(deps, workspace).db;
+      const value = probe(routed);
+      if (value !== null) return { db: routed, value };
+    } catch (error) {
+      if (firstError === null) firstError = error;
+    }
+  }
+  if (firstError !== null) throw firstError;
+  return null;
+}
+
 /** 关闭所有工作区库句柄并释放锁（进程退出时调用；退出前先 checkpoint） */
 export function closeWorkspaceDbs(instanceId: string): void {
   for (const [workspaceId, db] of handles) {
@@ -319,6 +355,33 @@ export function closeWorkspaceDbs(instanceId: string): void {
   handles.clear();
   heldLocks.clear();
   handleMeta.clear();
+}
+
+/**
+ * STORE-4a：关闭单个工作区库句柄并释放其每工作区锁。
+ * localize/cleanup/revert 作业要挪走或删除工作区库文件——Windows 上打开中的句柄会让 rename/unlink 报 EBUSY，
+ * 起作业前先收句柄；后续请求按判定懒重开。锁释放用 resolver 装配时的 instanceId。
+ */
+export function closeWorkspaceDb(workspaceId: string, instanceId: string): void {
+  const db = handles.get(workspaceId);
+  if (db === undefined) return;
+  handles.delete(workspaceId);
+  handleMeta.delete(workspaceId);
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch {
+    /* 忽略 */
+  }
+  try {
+    db.close();
+  } catch {
+    /* 忽略 */
+  }
+  const dir = heldLocks.get(workspaceId);
+  if (dir !== undefined) {
+    heldLocks.delete(workspaceId);
+    releaseServerLock(dir, { instanceId });
+  }
 }
 
 /** 当前已打开的工作区库（可观测：`/api/version` 的 db_scope.localized_open[]；M2 只记录不回收） */

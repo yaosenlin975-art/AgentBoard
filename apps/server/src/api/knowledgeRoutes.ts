@@ -51,6 +51,13 @@ export interface KnowledgeRouterOptions {
   fileSystem?: FileSystemDeps;
   /** PROV-B：打开器用到的进程视图（仅测试注入 fake spawn，绝不在单测里真起编辑器） */
   openProcess?: OpenProcessDeps;
+  /**
+   * STORE-4a：按请求取工作区库（scope=workspace 时调用；未下沉区由实现回中心库）。
+   * 缺省视为「全部走中心库」——既有测试与未装配 resolver 的调用方行为不变。
+   */
+  getWorkspaceDb?: (workspaceId: string) => Db;
+  /** STORE-4a：跨区 owner 探测的 fan-out 候选库（全部已下沉区；缺省只探中心库） */
+  listWorkspaceDbs?: () => Db[];
 }
 
 /**
@@ -64,8 +71,32 @@ const knowledgeFileOpenSchema = z.object({
 }).strict();
 
 export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = {}): Router {
-  /** KB-IMG-1：图片存储（目录 = <db 目录>/attachments/knowledge） */
+  /** KB-IMG-1：图片存储（目录 = <db 目录>/attachments/knowledge）；STORE-4a 仍绑中心库，按 page.scope 选目录属 4c/4d */
   const images = options.imageStore ?? createKnowledgeImageStore({ db });
+
+  // ---- STORE-4a：按请求取库 ----
+  /**
+   * scope → 库：common 与 both 走中心库（both 的跨库两路合并属 STORE-4c，本卡不改其语义）；
+   * workspace 走该工作区的解析库（未下沉区由 getWorkspaceDb 实现回中心库）。
+   * 未装配 getWorkspaceDb（旧测试/最小装配）一律中心库——行为与切库前一致。
+   */
+  const dbForScope = (scope: 'common' | 'workspace' | 'both', workspaceId: string | null | undefined): Db => {
+    if (scope !== 'workspace' || options.getWorkspaceDb === undefined || !workspaceId) return db;
+    return options.getWorkspaceDb(workspaceId);
+  };
+  /**
+   * 跨区 owner 探测：页不在当前范围时判断「它到底在哪」——中心库（common + 未下沉区 workspace 页）
+   * 先探，再 fan-out 已下沉区。只回 owner 元数据，不回标题（403 文案不得泄露他区标题）。
+   */
+  const probePageOwner = (pageId: string): { scope: 'common' | 'workspace'; workspace_id: string | null } | null => {
+    const inCenter = findKnowledgePageOwner(db, pageId);
+    if (inCenter !== null) return inCenter;
+    for (const wsDb of options.listWorkspaceDbs?.() ?? []) {
+      const owner = findKnowledgePageOwner(wsDb, pageId);
+      if (owner !== null) return owner;
+    }
+    return null;
+  };
 
   /** 图片可见性：common 页对所有工作区可读；workspace 页只对同工作区可读，跨区 → 403 */
   function requireVisiblePage(pageId: string, rawScope: unknown, rawWorkspaceId: unknown) {
@@ -73,10 +104,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const workspaceId = typeof rawWorkspaceId === 'string' && rawWorkspaceId !== '' ? rawWorkspaceId : null;
     if (page) return page; // common 页
     if (workspaceId === null) throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
-    const scoped = getKnowledgePage(db, pageId, { scope: 'workspace', workspace_id: workspaceId });
+    const scoped = getKnowledgePage(dbForScope('workspace', workspaceId), pageId, { scope: 'workspace', workspace_id: workspaceId });
     if (scoped) return scoped;
-    const exists = db.prepare('SELECT workspace_id FROM knowledge_page WHERE id=?').get(pageId) as { workspace_id: string } | undefined;
-    if (exists) throw new ApiError(403, KnowledgeErrorCode.SCOPE_FORBIDDEN, '该知识页属于其它工作区，无权访问其图片');
+    if (probePageOwner(pageId) !== null) throw new ApiError(403, KnowledgeErrorCode.SCOPE_FORBIDDEN, '该知识页属于其它工作区，无权访问其图片');
     throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
   }
 
@@ -84,8 +114,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   const router = Router();
   router.get('/search', (req, res) => {
     const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }).strict(), req.query);
-    // KB-PAGE-2：每条结果附 link（服务端产出，前端/CLI 不再拼串）
-    res.json(searchKnowledge(db, { ...input, query: input.q }).map((row) => ({
+    // KB-PAGE-2：每条结果附 link（服务端产出，前端/CLI 不再拼串）；STORE-4a：workspace scope 按请求取库
+    const rdb = dbForScope(input.scope, input.workspace_id);
+    res.json(searchKnowledge(rdb, { ...input, query: input.q }).map((row) => ({
       ...row,
       ...knowledgeLinkFields({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope, workspace_id: row.workspace_id, revision: row.revision }),
     })));
@@ -108,7 +139,8 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const allowedKinds = ['link', 'source', 'keyword'] as const;
     if (kinds.length === 0 || kinds.some(kind => !allowedKinds.includes(kind as typeof allowedKinds[number]))) throw new ValidationError('edge_kinds 仅支持 link,source,keyword');
     const pageLimit = maxGraphPages;
-    const { rows, pagesTruncated, pageTotal } = listKnowledgeGraphRows(db, { scope: input.scope, workspace_id: input.workspace_id ?? null }, pageLimit);
+    const rdb = dbForScope(input.scope, input.workspace_id);
+    const { rows, pagesTruncated, pageTotal } = listKnowledgeGraphRows(rdb, { scope: input.scope, workspace_id: input.workspace_id ?? null }, pageLimit);
     if (pagesTruncated) {
       console.warn('[knowledge-graph] 页面集合被上限截断：图只覆盖已加载页', {
         scope: input.scope, workspace_id: input.workspace_id ?? null, loaded: rows.length, limit: pageLimit,
@@ -116,7 +148,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     }
     const uniqueKinds = [...new Set(kinds)] as Array<'link' | 'source' | 'keyword'>;
     // V2-4：默认包含 link 时注入显式双链边（同对节点由 buildKnowledgeGraph 按 link > source > keyword 合并）
-    const links = uniqueKinds.includes('link') ? listResolvedLinks(db, rows.map(row => row.id)) : [];
+    const links = uniqueKinds.includes('link') ? listResolvedLinks(rdb, rows.map(row => row.id)) : [];
     res.json(buildKnowledgeGraph(rows, {
       pagesTruncated,
       pageTotal,
@@ -132,11 +164,12 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
     else if (!input.workspace_id) throw new ValidationError('both 必须提供 workspace_id');
     const scopeSql = knowledgeScopeWhere(input as KnowledgeScopeFilter);
+    const rdb = dbForScope(input.scope, input.workspace_id);
     const params: Record<string, number | string> = { limit: input.limit + 1, offset: input.offset };
     if (input.scope !== 'common') params.workspace = input.workspace_id!;
     if (input.status !== 'all') params.status = input.status;
     if (input.include_expired === 'false') params.now = Date.now();
-    const rows = db.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params) as Array<{
+    const rows = rdb.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params) as Array<{
       id: string; scope: 'common' | 'workspace'; workspace_id: string | null; slug: string; title: string;
       status: string; revision: number; expires_at: number | null; created_by: string; updated_by: string;
       created_at: number; updated_at: number; category: string; landed: string | null; domain: string | null;
@@ -155,7 +188,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
       include_body: z.enum(['true', 'false']).optional(),
     }), req.query);
-    const items = listKnowledgeRevisions(db, req.params.id!, scope, limit, offset, include_body === 'true');
+    const items = listKnowledgeRevisions(dbForScope(scope.scope, scope.workspace_id), req.params.id!, scope, limit, offset, include_body === 'true');
     res.json({ items, next_offset: items.length === limit ? offset + limit : null });
   });
 
@@ -163,7 +196,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   router.get('/pages/:id/revisions/:revision', (req, res) => {
     const scope = scopeOf(req.query);
     const revision = Number(req.params.revision);
-    res.json(getKnowledgeRevision(db, req.params.id!, revision, scope));
+    res.json(getKnowledgeRevision(dbForScope(scope.scope, scope.workspace_id), req.params.id!, revision, scope));
   });
   /**
    * KB-PAGE-2：统一引用解析。四态固定为 200(resolved) / 404(not_found) / 409(ambiguous) / 410(deleted)。
@@ -188,15 +221,16 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
         ? ({ scope: 'workspace', workspace_id: workspaceId! } as const)
         : ({ scope: 'both', workspace_id: workspaceId! } as const);
 
-    const result = resolveKnowledgeRef(db, { ref, scope });
+    const result = resolveKnowledgeRef(dbForScope(scope.scope, workspaceId), { ref, scope });
     if (result.state === 'resolved') { res.json(result); return; }
     if (result.state === 'deleted') throw new ApiError(410, KnowledgeErrorCode.DELETED, result.message);
     if (result.state === 'ambiguous') {
       throw new ApiError(409, KnowledgeErrorCode.REF_AMBIGUOUS, result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
     }
     // not_found：若该 id 存在但属于别的范围/别的工作区 → 403（**不回显标题**）
+    // STORE-4a：owner 探测含已下沉工作区库（页可能已搬出中心库）
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim())) {
-      const owner = findKnowledgePageOwner(db, ref.trim());
+      const owner = probePageOwner(ref.trim());
       if (owner !== null) {
         throw new ApiError(403, KnowledgeErrorCode.SCOPE_FORBIDDEN, owner.scope === 'common'
           ? '该知识页属于 common 范围，请用 --scope common 解析'
@@ -217,7 +251,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       workspace_id: z.string().min(1).optional(),
     }).strict(), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
-    const items = findKnowledgePagesBySource(db, { term: input.path, scope: input.scope, workspace_id: input.workspace_id ?? null })
+    const items = findKnowledgePagesBySource(dbForScope(input.scope, input.workspace_id), { term: input.path, scope: input.scope, workspace_id: input.workspace_id ?? null })
       .map(item => ({ ...item, ...knowledgeLinkFields(item) }));
     res.json({ path: input.path, items });
   });
@@ -238,10 +272,11 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
 
   router.get('/pages/:id', (req, res) => {
     const scope = scopeOf(req.query);
-    const page = getKnowledgePage(db, req.params.id!, scope);
+    const rdb = dbForScope(scope.scope, scope.workspace_id);
+    const page = getKnowledgePage(rdb, req.params.id!, scope);
     if (!page) {
       // KB-PAGE-1：软删页与「不存在」分开——deleted → 410（前端显示「已删除 + 可看历史」），其它 → 404
-      const deleted = getKnowledgePage(db, req.params.id!, scope, { includeDeleted: true });
+      const deleted = getKnowledgePage(rdb, req.params.id!, scope, { includeDeleted: true });
       if (deleted !== null && deleted.status === 'deleted') {
         throw new ApiError(410, KnowledgeErrorCode.DELETED, '知识页已删除（可查看历史版本）', { revision: deleted.revision });
       }
@@ -251,13 +286,15 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     res.json({
       ...page,
       ...knowledgeLinkFields(page),
-      ...getKnowledgePageLinkStats(db, page.id),
+      ...getKnowledgePageLinkStats(rdb, page.id),
     });
   });
 
   /** V2-4 反链：指向该页的当前 revision 链接；排序键固定 (created_at, id) 保证翻页稳定 */
   router.get('/pages/:id/backlinks', (req, res) => {
-    const page = getKnowledgePage(db, req.params.id!, scopeOf(req.query));
+    const scope = scopeOf(req.query);
+    const rdb = dbForScope(scope.scope, scope.workspace_id);
+    const page = getKnowledgePage(rdb, req.params.id!, scope);
     if (!page) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
     const input = parse(z.object({
       scope: z.enum(['common', 'workspace', 'both']).optional(),
@@ -265,13 +302,21 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
       limit: integerQuery(20, 100),
     }).strict(), req.query);
-    res.json(listBacklinks(db, page.id, { limit: input.limit, offset: input.offset }));
+    res.json(listBacklinks(rdb, page.id, { limit: input.limit, offset: input.offset }));
   });
 
-  /** V2-4 存量回填：显式触发（不做启动扫描），可重跑 */
+  /** V2-4 存量回填：显式触发（不做启动扫描），可重跑。STORE-4a：中心库 + 全部已下沉区各自回填，计数求和 */
   router.post('/reparse', (req, res) => {
     const body = parse(z.object({ batch_size: z.number().int().min(1).max(2000).optional() }).strict(), req.body ?? {});
-    res.json(reparseAllPages(db, { batchSize: body.batch_size }));
+    const run = (rdb: Db) => reparseAllPages(rdb, { batchSize: body.batch_size });
+    const center = run(db);
+    const perWorkspaceDb = options.listWorkspaceDbs?.() ?? [];
+    if (perWorkspaceDb.length === 0) { res.json(center); return; }
+    const totals = perWorkspaceDb.reduce((acc, rdb) => {
+      const result = run(rdb);
+      return { pages: acc.pages + result.pages, links: acc.links + result.links, duration_ms: acc.duration_ms + result.duration_ms };
+    }, { pages: center.pages, links: center.links, duration_ms: center.duration_ms });
+    res.json(totals);
   });
   /**
    * KBIMP-1：从 md / txt / json 文本导入知识页。
@@ -285,29 +330,35 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
    */
   router.post('/pages/import', express.json({ limit: '2mb' }), (req, res) => {
     const body = parse(knowledgeImportSchema, req.body);
-    const result = importKnowledgePages(db, body, { actor: body.actor });
+    // STORE-4a：整批同一 scope，按请求取库（workspace 页进已下沉区落工作区库）
+    const result = importKnowledgePages(dbForScope(body.scope, body.workspace_id), body, { actor: body.actor });
     res.json(result);
   });
   router.post('/pages', (req, res) => {
     const body = parse(knowledgeCreateSchema, req.body);
     const scope = scopeOf(body);
     const { scope: _scope, workspace_id: _workspace, ...content } = body;
+    const rdb = dbForScope(scope.scope, scope.workspace_id);
     // KB-PAGE-2b：create/revise 响应同样带 link（A7），CLI 文本输出补一行 link
-    const result = httpMutation(db, req, () => createKnowledgePage(db, { ...content, ...scope })).result;
+    const result = httpMutation(rdb, req, () => createKnowledgePage(rdb, { ...content, ...scope })).result;
     res.json({ ...result, ...knowledgeLinkFields(result) });
   });
   router.put('/pages/:id', (req, res) => {
     const { expected_revision, scope: _scope, workspace_id: _workspace, ...patch } = parse(knowledgeReviseSchema, req.body);
-    const result = httpMutation(db, req, () => reviseKnowledgePage(db, req.params.id!, scopeOf(req.body), expected_revision, patch)).result;
+    const scope = scopeOf(req.body);
+    const rdb = dbForScope(scope.scope, scope.workspace_id);
+    const result = httpMutation(rdb, req, () => reviseKnowledgePage(rdb, req.params.id!, scope, expected_revision, patch)).result;
     res.json({ ...result, ...knowledgeLinkFields(result) });
   });
   router.post('/pages/:id/actions', (req, res) => {
     const body = parse(knowledgeActionSchema, req.body);
-    const result = httpMutation(db, req, () => setKnowledgePageStatus(db, req.params.id!, scopeOf(body), body.expected_revision, body.action, body.actor)).result;
+    const scope = scopeOf(body);
+    const rdb = dbForScope(scope.scope, scope.workspace_id);
+    const result = httpMutation(rdb, req, () => setKnowledgePageStatus(rdb, req.params.id!, scope, body.expected_revision, body.action, body.actor)).result;
     // KB-IMG-1：页面「删除」是软删（status='deleted'），CASCADE 不会触发，因此这里显式清掉该页图片行 + 文件。
     // 硬删（如工作区删除时的级联）仍由 knowledge_attachment 的 ON DELETE CASCADE 兜底。
     if (body.action === 'delete') {
-      db.prepare('DELETE FROM knowledge_attachment WHERE page_id=?').run(req.params.id!);
+      rdb.prepare('DELETE FROM knowledge_attachment WHERE page_id=?').run(req.params.id!);
       void images.removePageFiles(req.params.id!);
     }
     res.json(result);

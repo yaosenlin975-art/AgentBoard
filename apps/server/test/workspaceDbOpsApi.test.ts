@@ -20,7 +20,7 @@ import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
 import { resetLocalizeJobs } from '../src/services/workspaceLocalizeJob.js';
 import { readLocalizeState, writeLocalizeState } from '../src/services/workspaceLocalize.js';
-import { workspaceDbPath, workspaceStateDir } from '../src/db/resolver.js';
+import { closeWorkspaceDbs, resetResolverState, workspaceDbPath, workspaceStateDir } from '../src/db/resolver.js';
 
 interface JobBody {
   jobId: string;
@@ -83,6 +83,9 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
   });
   afterEach(() => {
     resetLocalizeJobs();
+    // STORE-4a：REST 读写会打开工作区库句柄，先关闭再删目录（Windows 文件占用）
+    closeWorkspaceDbs('store3api-cleanup');
+    resetResolverState();
     t.cleanup();
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
@@ -153,12 +156,12 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     expect(job.counts.issue).toBe(3);
     expect((t.db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(ws) as { db_mode: string }).db_mode).toBe('localized');
 
-    // job 终态后写请求不再 409（新写落中心库 → localized 模式下快照落后 = 中心残留行数 +1）
+    // job 终态后写请求不再 409（STORE-4a：新写落工作区库 → 中心无残留行，快照不落后；归属侧计数 +1）
     const write = await request(app).post('/api/issues').send({ workspace_id: ws, title: '终态后新建' });
     expect(write.status).toBe(200);
     const status = await getStatus();
-    expect(status.body.snapshotLagRows).toBe(1);
-    expect(status.body.counts.issue).toBe(3);
+    expect(status.body.snapshotLagRows).toBe(0);
+    expect(status.body.counts.issue).toBe(4);
   });
 
   it('resume 无中间态 / 非法 body / 未知工作区 / 未知 jobId → 明确 4xx', async () => {
@@ -235,10 +238,10 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     expect(status.body.counts.issue).toBe(2);
   });
 
-  it('revert 拒绝分叉：localized 后中心又被写入 → job failed CENTER_ROWS，中心行保留', async () => {
+  it('revert 拒绝分叉：中心库出现该区行（disabled 期回写等分叉形态）→ job failed CENTER_ROWS，中心行保留', async () => {
     await runToDone();
-    // 分叉写：localized 状态下写仍走中心库（openWorkspaceDbs=false 现状）
-    await mkIssue('分叉卡');
+    // STORE-4a 后 REST 写按判定落工作区库，不再自然产生中心分叉；分叉用直插中心库模拟（与 disabled 期回写等价）
+    createIssue(t.db, { workspace_id: ws, title: '分叉卡', description: '', priority: '中', labels: [] } as never);
     const created = await postOp('revert');
     const job = await waitSettled(created.body.jobId);
     expect(job.status).toBe('failed');

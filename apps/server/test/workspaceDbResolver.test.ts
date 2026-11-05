@@ -14,10 +14,13 @@ import {
   decideWorkspaceDb,
   getDbForWorkspace,
   listOpenWorkspaceDbs,
+  locateDbByScan,
   readWorkspaceMeta,
   resetResolverState,
   workspaceDbPath,
   workspaceStateDir,
+  type ResolverDeps,
+  type WorkspaceLike,
 } from '../src/db/resolver.js';
 import { wireWorkspaceDbCloseOnExit } from '../src/index.js';
 import { createTestDb, type TestDb } from './helpers.js';
@@ -211,3 +214,83 @@ describe('STORE-1（M1）每工作区锁：同一工作区库只允许一个活�
   });
 });
 
+
+describe('STORE-4a（M3）locateDbByScan：entity_locator（4b）落地前的按 id fan-out 定位', () => {
+  let t: TestDb;
+  let root: string;
+  let wsPath: string;
+  let ws: string;
+  beforeEach(() => {
+    t = createTestDb();
+    root = mkdtempSync(join(tmpdir(), 'agentboard-store4a-locate-'));
+    wsPath = join(root, 'ws');
+    mkdirSync(join(wsPath, '.agentboard'), { recursive: true });
+    ws = createWorkspace(t.db, { name: '扫描区', path: wsPath }).id;
+  });
+  afterEach(() => {
+    closeWorkspaceDbs('scan-test');
+    resetResolverState();
+    t.cleanup();
+    rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  });
+
+  const mkLocalizedWsDb = (): void => {
+    const dbPath = workspaceDbPath(wsPath);
+    const db = new Database(dbPath);
+    db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    db.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?), ('localized','1')").run(ws);
+    db.close();
+    t.db.prepare("UPDATE workspace SET db_mode='localized' WHERE id=?").run(ws);
+  };
+  const deps = (): ResolverDeps => ({ centerDb: t.db, instanceId: 'scan-test', port: 0, openWorkspaceDbs: true });
+  const candidate = (): WorkspaceLike => ({ id: ws, path: wsPath, dbMode: 'localized' });
+
+  it('中心命中即中心（不打开任何工作区库）', () => {
+    const row = { marker: 'center-hit' };
+    const hit = locateDbByScan(deps(), [candidate()], (db) => (db === t.db ? row : null));
+    expect(hit).not.toBeNull();
+    expect(hit!.db).toBe(t.db);
+    expect(hit!.value).toEqual(row);
+    expect(listOpenWorkspaceDbs()).toEqual([]);
+  });
+
+  it('中心未中 → fan-out 工作区库命中（首开句柄进缓存，openReason=read）', () => {
+    mkLocalizedWsDb();
+    const hit = locateDbByScan(deps(), [candidate()], (db) => (db !== t.db ? { marker: 'ws-hit' } : null));
+    expect(hit).not.toBeNull();
+    expect(hit!.db).not.toBe(t.db);
+    expect(hit!.value).toEqual({ marker: 'ws-hit' });
+    expect(listOpenWorkspaceDbs()[0]).toMatchObject({ workspaceId: ws, openReason: 'read' });
+  });
+
+  it('全部未中 → null；候选区打不开（localized 但文件缺失）→ 扫描完原样抛 WORKSPACE_DB_MISSING，不伪装 404', () => {
+    expect(locateDbByScan(deps(), [], () => null)).toBeNull();
+    mkLocalizedWsDb();
+    rmSync(workspaceDbPath(wsPath), { force: true });
+    expect(() => locateDbByScan(deps(), [candidate()], () => null)).toThrow();
+    try {
+      locateDbByScan(deps(), [candidate()], () => null);
+      expect.unreachable('应抛出判定错误');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('WORKSPACE_DB_MISSING');
+    }
+  });
+
+  it('有命中时忽略其它候选区的打开失败（坏区在前面也先扫过再命中好区）', () => {
+    mkLocalizedWsDb();
+    const badPath = join(root, 'bad');
+    mkdirSync(join(badPath, '.agentboard'), { recursive: true });
+    const badWs = createWorkspace(t.db, { name: '坏区', path: badPath }).id;
+    t.db.prepare("UPDATE workspace SET db_mode='localized' WHERE id=?").run(badWs);
+    writeFileSync(join(badPath, '.agentboard', 'agentboard.db'), 'not a sqlite file');
+
+    const hit = locateDbByScan(
+      deps(),
+      [{ id: badWs, path: badPath, dbMode: 'localized' }, candidate()],
+      (db) => (db.name === workspaceDbPath(wsPath) ? { marker: 'good' } : null),
+    );
+    expect(hit).not.toBeNull();
+    expect(hit!.value).toEqual({ marker: 'good' });
+    expect(hit!.db.name).toBe(workspaceDbPath(wsPath));
+  });
+});

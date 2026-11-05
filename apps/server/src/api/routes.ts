@@ -72,7 +72,7 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, isWorkspaceDbDisabled, listOpenWorkspaceDbs, type WorkspaceDbMode } from '../db/resolver.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decideWorkspaceDb, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbByScan, type EntityLocation, type WorkspaceDbMode } from '../db/resolver.js';
 import { getActiveWorkspaceDbJob, getLocalizeJob, startLocalizeJob, startWorkspaceDbOpJob } from '../services/workspaceLocalizeJob.js';
 import { buildWorkspaceDbStatus } from '../services/workspaceDbStatus.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
@@ -357,9 +357,12 @@ export function createRouter(deps: RouterDeps): Router {
   const router = Router();
 
   // STORE-1（M1）：解析层装配（中心库=当前 db；每工作区锁用与 server.lock 同一实现）
+  // STORE-4a：openWorkspaceDbs 翻 true——STORE-2 搬库已落地，生产读写真正切到工作区库；
+  // 判定仍由 resolver 决定（未下沉区返回中心库，行为与切库前一致）。
   // STORE-3a：disabled 紧急开关在装配期解析一次（生产改 env 必然伴随重启重建路由，无需逐请求读）
   const workspaceResolverDeps = {
     centerDb: db,
+    openWorkspaceDbs: true,
     instanceId: deps.instance?.instanceId ?? 'inst-unset',
     port: readSettings().port,
     ...(isWorkspaceDbDisabled() ? { disabled: true } : {}),
@@ -383,6 +386,41 @@ export function createRouter(deps: RouterDeps): Router {
     const row = getWorkspace(db, workspaceId);
     if (row === null) throw new NotFoundError('工作空间不存在');
     return { id: row.id, path: row.path, dbMode: workspaceRowMode(workspaceId) };
+  };
+  // ---- STORE-4a：按请求取库 ----
+  /** 已下沉工作区清单（fan-out 定位候选；workspace 行与 db_mode 都是中心库的注册事实） */
+  const listLocalizedWorkspaces = (): Array<{ id: string; path: string; dbMode: WorkspaceDbMode }> => {
+    try {
+      return (db.prepare("SELECT id, path FROM workspace WHERE db_mode = 'localized'").all() as Array<{ id: string; path: string }>)
+        .map((row) => ({ id: row.id, path: row.path, dbMode: 'localized' as const }));
+    } catch {
+      return [];
+    }
+  };
+  /** workspace_id 已知时的取库：走 resolver 判定（localized→工作区库，未下沉/localizing/disabled→中心库），未知工作区 404 */
+  const dbForWorkspace = (workspaceId: string): Db => getDbForWorkspace(workspaceResolverDeps, requireWorkspaceRow(workspaceId)).db;
+  /** 按 id 定位 issue 所在库（4b 建索引前先扫描：中心命中即中心，否则 fan-out 已下沉区） */
+  const locateIssueRouted = (issueId: string): EntityLocation<NonNullable<ReturnType<typeof getIssue>>> | null =>
+    locateDbByScan(workspaceResolverDeps, listLocalizedWorkspaces(), (rdb) => getIssue(rdb, issueId));
+  const requireIssueRouted = (issueId: string): EntityLocation<NonNullable<ReturnType<typeof getIssue>>> => {
+    const hit = locateIssueRouted(issueId);
+    if (hit === null) throw new NotFoundError('任务不存在');
+    return hit;
+  };
+  /** 按 id 定位 session 所在库（4d 前 sessionManager 仍写中心库，故中心命中优先，工作区库补位） */
+  const locateSessionRouted = (sessionId: string): EntityLocation<NonNullable<ReturnType<typeof getSession>>> | null =>
+    locateDbByScan(workspaceResolverDeps, listLocalizedWorkspaces(), (rdb) => getSession(rdb, sessionId));
+  /** 端点内统一解析本请求的业务库：workspace_id 优先，其次按路由参数 id 定位实体；都拿不到回中心库（调用方自行 404） */
+  const resolveRequestDb = (req: Request, entityId?: string): Db => {
+    const workspace = effectiveWorkspace(req);
+    if (workspace !== undefined) return dbForWorkspace(String(workspace));
+    if (entityId !== undefined) {
+      const issueHit = locateIssueRouted(entityId);
+      if (issueHit !== null) return issueHit.db;
+      const sessionHit = locateSessionRouted(entityId);
+      if (sessionHit !== null) return sessionHit.db;
+    }
+    return db;
   };
 
   // ---- DB-2B：迁移编排上下文 ----
@@ -422,11 +460,12 @@ export function createRouter(deps: RouterDeps): Router {
     }
   }
   const effectiveWorkspace = (req: Request): string | undefined => req.body?.workspace_id ?? req.query.workspace_id;
-  function mutation<T>(req: Request, perform: () => T) {
-    return httpMutation(db, req, () => {
+  // STORE-4a：mutation 的业务写与幂等记录都落「本请求解析出的库」（幂等表随库走，重放在同一库命中）
+  function mutation<T>(rdb: Db, req: Request, perform: (routedDb: Db) => T) {
+    return httpMutation(rdb, req, () => {
       const workspace = effectiveWorkspace(req);
-      if (workspace && req.params.id) requireIssueInWorkspace(db, String(req.params.id), workspace);
-      return perform();
+      if (workspace && req.params.id) requireIssueInWorkspace(rdb, String(req.params.id), workspace);
+      return perform(rdb);
     });
   }
   // ---- version ----
@@ -448,7 +487,19 @@ export function createRouter(deps: RouterDeps): Router {
     });
   });
 
-  router.use('/knowledge', createKnowledgeRouter(deps.db, { maxGraphPages: deps.knowledgeGraphPageLimit }));
+  // STORE-4a：知识路由按请求取库——common→中心库、workspace→工作区库（判定走 resolver）；
+  // 跨区 owner 探测的 fan-out 候选 = 全部已下沉区（单区打不开跳过，命中即事实）。
+  router.use('/knowledge', createKnowledgeRouter(deps.db, {
+    maxGraphPages: deps.knowledgeGraphPageLimit,
+    getWorkspaceDb: (workspaceId) => dbForWorkspace(workspaceId),
+    listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
+      try {
+        return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
+      } catch {
+        return [];
+      }
+    }),
+  }));
 
   // ---- 已安装技能（只读、固定根、不接受路径参数）----
   router.get('/skills', (_req, res) => {
@@ -503,15 +554,21 @@ export function createRouter(deps: RouterDeps): Router {
 
   router.use('/issues/:id', (req, _res, next) => {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
+    // STORE-4a：本请求的业务库——workspace_id 已知按工作区取库；未知则按 id 定位（中心→fan-out）
+    let rdb: Db = db;
     if (raw !== undefined) {
       if (typeof raw !== 'string' || !raw) throw new ValidationError('workspace_id 不合法');
       if (req.query.workspace_id && req.body?.workspace_id && req.query.workspace_id !== req.body.workspace_id) throw new ValidationError('workspace_id 不一致');
+      rdb = dbForWorkspace(raw);
       const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies', '/close', '/reopen'].includes(req.path)));
-      if (!wrappedMutation) requireIssueInWorkspace(deps.db, String(req.params.id), raw);
+      if (!wrappedMutation) requireIssueInWorkspace(rdb, String(req.params.id), raw);
+    } else if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const hit = locateIssueRouted(String(req.params.id));
+      if (hit !== null) rdb = hit.db;
     }
     // STORE-1（M1）写入门禁：中间态/缺失/id 不匹配/被锁 → 409 或 500，读路径不受影响
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      const issue = getIssue(deps.db, String(req.params.id));
+      const issue = getIssue(rdb, String(req.params.id));
       if (issue !== null) assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(issue.workspace_id));
     }
     next();
@@ -613,8 +670,12 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/workspaces/:workspaceId/release-running', (req, res) => {
     const workspaceId = String(req.params.workspaceId);
     if (!getWorkspace(db, workspaceId)) throw new NotFoundError('工作空间不存在');
+    // STORE-4a：批量退回是写操作——迁移中间态冻结（409），落库走该区解析库
+    const row = requireWorkspaceRow(workspaceId);
+    assertWorkspaceDbWritable(workspaceResolverDeps, row);
+    const rdb = dbForWorkspace(workspaceId);
     const body = parseBody(releaseRunningSchema, req.body ?? {});
-    const { released, skipped } = releaseRunning(db, workspaceId, body);
+    const { released, skipped } = releaseRunning(rdb, workspaceId, body);
     if (body.dry_run !== true) {
       for (const issue of released) broadcast({ type: 'issue.changed', issue });
     }
@@ -653,6 +714,8 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/workspaces/:id/db/localize', async (req, res) => {
     const workspaceId = req.params.id!;
     requireWorkspaceRow(workspaceId); // 未知工作区显式 404，不进任务表
+    // STORE-4a：作业要建/换工作区库文件，先收掉本进程的路由句柄（Windows 打开中的句柄让 rename/unlink EBUSY）
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId);
     const body = parseBody(workspaceLocalizeSchema, req.body ?? {});
     const job = startLocalizeJob(db, {
       workspaceId,
@@ -680,6 +743,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/workspaces/:id/db/localize/cleanup', (req, res) => {
     const workspaceId = req.params.id!;
     requireWorkspaceRow(workspaceId);
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId); // STORE-4a：清残留文件前收句柄
     parseBody(workspaceDbOpSchema, req.body ?? {});
     const job = startWorkspaceDbOpJob(db, {
       workspaceId,
@@ -698,6 +762,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/workspaces/:id/db/localize/revert', (req, res) => {
     const workspaceId = req.params.id!;
     requireWorkspaceRow(workspaceId);
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId); // STORE-4a：回迁挪文件前收句柄
     parseBody(workspaceDbOpSchema, req.body ?? {});
     const job = startWorkspaceDbOpJob(db, {
       workspaceId,
@@ -838,25 +903,29 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   // ---- issues ----
+  // STORE-4a：本组端点按请求取库（localized 工作区读写工作区库，未下沉区仍中心库）；
+  // 工作区注册与状态字典的权威在中心库，requireExistingWorkspace 保持中心查询。
   router.get('/issues', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
+    const rdb = dbForWorkspace(workspaceId);
     // CLI-LIST-GUARD：status 必须是该工作区已定义的状态（内置 + 自定义），
     // 非法 → 400 并列出可用状态；合法 → 两个分支都真的按它过滤（旧实现非分页分支直接忽略 status）。
-    const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(db, workspaceId, parseBody(issueStatusSchema, req.query.status));
+    const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(rdb, workspaceId, parseBody(issueStatusSchema, req.query.status));
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
       const page = parseBody(pageQuerySchema, req.query);
-      res.json(listIssuesPage(db, workspaceId, { ...page, status }));
-    } else res.json(listIssues(db, workspaceId, status));
+      res.json(listIssuesPage(rdb, workspaceId, { ...page, status }));
+    } else res.json(listIssues(rdb, workspaceId, status));
   });
 
   router.get('/issues/tree', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
+    const rdb = dbForWorkspace(workspaceId);
     const input = parseBody(issueTreeQuerySchema, req.query);
     // CLI-LIST-GUARD：树视图的 status 同样按工作区字典校验，避免自定义状态被静默过滤成空树
-    const treeStatus = input.status === undefined ? undefined : requireWorkspaceStatus(db, workspaceId, input.status);
-    const result = getIssueTreeChildren(db, {
+    const treeStatus = input.status === undefined ? undefined : requireWorkspaceStatus(rdb, workspaceId, input.status);
+    const result = getIssueTreeChildren(rdb, {
       workspace_id: workspaceId,
       parent_issue_id: input.parent_issue_id ?? null,
       limit: input.limit,
@@ -872,7 +941,8 @@ export function createRouter(deps: RouterDeps): Router {
       assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(req.body.workspace_id));
     }
     const body = parseBody(createIssueSchema, req.body);
-    const outcome = mutation(req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(db, body); });
+    const rdb = dbForWorkspace(body.workspace_id);
+    const outcome = mutation(rdb, req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(rdb, body); });
     // KB-CLI-1：幂等重放标记（CLI 文本/JSON 依此区分新建与重放）
     if (outcome.replayed) res.setHeader('x-agentboard-replayed', '1');
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
@@ -880,8 +950,9 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   // kb show 依赖：按 id 取单个 issue（设计 §6.2；REST 全表补充，只读不改契约语义）
+  // STORE-4a：不带 workspace_id 时按 id 定位所在库（4b 索引前中心命中即中心，否则 fan-out 已下沉区）
   router.get('/issues/:id', (req, res) => {
-    const issue = requireIssue(db, req.params.id!);
+    const issue = requireIssueRouted(req.params.id!).value;
     if (req.query.description_offset_chars !== undefined || req.query.description_max_chars !== undefined) {
       const input = parseBody(descriptionQuerySchema, req.query); const window = textWindow(issue.description, input.description_offset_chars, input.description_max_chars);
       res.json({ ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars });
@@ -892,9 +963,10 @@ export function createRouter(deps: RouterDeps): Router {
     const body = parseBody(patchIssueSchema, req.body);
     const { workspace_id, expected_updated_at, fence, ...patch } = body;
     if (expected_updated_at !== undefined && !workspace_id) throw new ValidationError('CAS 必须提供 workspace_id');
-    const outcome = mutation(req, () => expected_updated_at !== undefined
-      ? updateIssueWithCAS(db, req.params.id!, workspace_id!, expected_updated_at, patch)
-      : updateIssueGuarded(db, req.params.id!, patch, fence));
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    const outcome = mutation(rdb, req, (routedDb) => expected_updated_at !== undefined
+      ? updateIssueWithCAS(routedDb, req.params.id!, workspace_id!, expected_updated_at, patch)
+      : updateIssueGuarded(routedDb, req.params.id!, patch, fence));
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
@@ -902,23 +974,31 @@ export function createRouter(deps: RouterDeps): Router {
   // 设计 §7.4：非占用中删除，级联清理关联会话与消息。
   // 先停各绑定会话的运行中轮次（stopSession 对无在途轮次会话幂等：不 kill、仅状态落库已结束），
   // 再在同一事务内显式删 message → session → issue（不依赖 FK CASCADE 语义）。
+  // STORE-4a：业务行在 issue 所在库；stopSession 是 sessionManager 单例（4d 前绑中心库）——
+  // 会话行不在中心库时无本进程在途轮次，NotFoundError 吞掉继续删（会话行由本库事务一并清）。
   router.delete('/issues/:id', async (req, res) => {
-    const issue = requireIssue(db, req.params.id!);
+    const routed = requireIssueRouted(req.params.id!);
+    const rdb = routed.db;
+    const issue = routed.value;
     if (issue.claimed_by !== null) throw new ConflictError('占用中禁止删除');
-    requireNoIssueChildren(db, issue.id);
-    const bound = listSessionsByIssue(db, issue.id);
+    requireNoIssueChildren(rdb, issue.id);
+    const bound = listSessionsByIssue(rdb, issue.id);
     for (const session of bound) {
-      await stopSession(session.id);
+      try {
+        await stopSession(session.id);
+      } catch (error) {
+        if (!(error instanceof NotFoundError)) throw error;
+      }
     }
     let unlockComments: ReturnType<typeof unlockCommentsForDeletedBlocker> = [];
-    db.transaction(() => {
+    rdb.transaction(() => {
       for (const session of bound) {
-        deleteMessagesBySession(db, session.id);
-        deleteSession(db, session.id);
+        deleteMessagesBySession(rdb, session.id);
+        deleteSession(rdb, session.id);
       }
       // DEP-1 §17-B4：删掉 blocker 卡时，同事务给每个被阻塞卡留解锁痕迹
-      unlockComments = unlockCommentsForDeletedBlocker(db, issue.id);
-      deleteIssue(db, issue.id);
+      unlockComments = unlockCommentsForDeletedBlocker(rdb, issue.id);
+      deleteIssue(rdb, issue.id);
     })();
     await attachments.processCleanup();
     broadcast({ type: 'issue.deleted', issue_id: issue.id, workspace_id: issue.workspace_id });
@@ -933,55 +1013,58 @@ export function createRouter(deps: RouterDeps): Router {
   // 读写都锁定工作区（§17-B1）：GET/DELETE 走 query，POST 走 body；跨区依赖在服务层与服务端触发器双重拒绝。
   router.get('/issues/:id/dependencies', (req, res) => {
     const { workspace_id: workspaceId } = parseBody(dependencyQuerySchema, req.query);
-    requireIssueInWorkspace(db, req.params.id!, workspaceId);
-    res.json(listDependencies(db, req.params.id!));
+    const rdb = dbForWorkspace(workspaceId);
+    requireIssueInWorkspace(rdb, req.params.id!, workspaceId);
+    res.json(listDependencies(rdb, req.params.id!));
   });
 
   router.post('/issues/:id/dependencies', (req, res) => {
     const body = parseBody(addDependencySchema, req.body);
-    const outcome = mutation(req, () => addRelation(db, {
+    const rdb = dbForWorkspace(body.workspace_id);
+    const outcome = mutation(rdb, req, (routedDb) => addRelation(routedDb, {
       blocked_issue_id: req.params.id!, blocker_issue_id: body.blocker_issue_id, workspace_id: body.workspace_id,
       relation: body.relation ?? 'blocks',
     }));
     if (!outcome.replayed) {
-      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
-      broadcast({ type: 'issue.changed', issue: getIssue(db, body.blocker_issue_id)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(rdb, body.blocker_issue_id)! });
     }
     res.status(201).json(outcome.result);
   });
 
   router.delete('/issues/:id/dependencies/:blockerId', (req, res) => {
     const { workspace_id: workspaceId } = parseBody(dependencyQuerySchema, req.query);
-    const outcome = mutation(req, () => removeDependency(db, {
+    const rdb = dbForWorkspace(workspaceId);
+    const outcome = mutation(rdb, req, (routedDb) => removeDependency(routedDb, {
       blocked_issue_id: req.params.id!, blocker_issue_id: req.params.blockerId!, workspace_id: workspaceId,
     }));
     if (!outcome.replayed) {
-      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
-      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.blockerId!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.blockerId!)! });
     }
     res.status(204).end();
   });
 
   // ---- comments ----
   router.get('/issues/:id/comments', (req, res) => {
-    requireIssue(db, req.params.id!);
-    if (req.query.limit !== undefined || req.query.offset !== undefined) res.json(listCommentsPage(db, req.params.id!, parseBody(pageQuerySchema, req.query)));
-    else res.json(listCommentsByIssue(db, req.params.id!));
+    const rdb = requireIssueRouted(req.params.id!).db;
+    if (req.query.limit !== undefined || req.query.offset !== undefined) res.json(listCommentsPage(rdb, req.params.id!, parseBody(pageQuerySchema, req.query)));
+    else res.json(listCommentsByIssue(rdb, req.params.id!));
   });
   router.get('/issues/:id/pending-attachments', (req, res) => {
-    requireIssue(db, req.params.id!);
+    const rdb = requireIssueRouted(req.params.id!).db;
     const input = parseBody(pageQuerySchema, req.query);
-    res.json(listPendingIssueAttachments(db, req.params.id!, input));
+    res.json(listPendingIssueAttachments(rdb, req.params.id!, input));
   });
   router.get('/issues/:id/comments/:commentId', (req, res) => {
-    requireIssue(db, req.params.id!);
+    const rdb = requireIssueRouted(req.params.id!).db;
     const input = parseBody(commentQuerySchema, req.query);
-    const comment = getCommentContent(db, req.params.id!, req.params.commentId!, input.content_offset_chars, input.content_max_chars);
+    const comment = getCommentContent(rdb, req.params.id!, req.params.commentId!, input.content_offset_chars, input.content_max_chars);
     res.json({ ...comment, next_content_offset_chars: comment.next_offset_chars });
   });
 
   router.get('/issues/:id/attachments/:attachmentId', (req, res, next) => {
-    requireIssue(db, req.params.id!);
+    requireIssueRouted(req.params.id!);
     const issueId = req.params.id!;
     const attachmentId = req.params.attachmentId!;
     const filePath = attachments.issuePath(issueId, attachmentId);
@@ -997,14 +1080,15 @@ export function createRouter(deps: RouterDeps): Router {
     const attachmentIds = body.attachment_ids ?? [];
     const workspaceId = effectiveWorkspace(req);
     if (attachmentIds.length > 0 && !workspaceId) throw new ValidationError('图片评论必须提供 workspace_id');
-    if (workspaceId) requireIssueInWorkspace(db, req.params.id!, workspaceId);
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    if (workspaceId) requireIssueInWorkspace(rdb, req.params.id!, workspaceId);
     // 作者身份：body.agent_id 存在 → agent:<agent_id>（agent 写评论），否则 user；唤醒判定在 addComment 内不变
     const author: string = body.agent_id ? `agent:${body.agent_id}` : 'user';
     const key = req.get('Idempotency-Key');
     if (key) {
       let wakeSessionId: string | null = null;
-      const outcome = httpMutation(db, req, () => {
-        const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
+      const outcome = httpMutation(rdb, req, () => {
+        const stored = storeComment(rdb, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
         wakeSessionId = stored.wakeSessionId;
         return {
           comment: stored.comment,
@@ -1016,45 +1100,46 @@ export function createRouter(deps: RouterDeps): Router {
       const result = outcome.result;
       if (attachmentIds.length > 0) result.warning = 'IMAGE_DELIVERY_UNVERIFIED';
       if (wakeSessionId) {
-        const wake = await wakeStoredComment(db, getAdapter, attachments, req.params.id!, wakeSessionId, body.content, attachmentIds);
+        const wake = await wakeStoredComment(rdb, getAdapter, attachments, req.params.id!, wakeSessionId, body.content, attachmentIds);
         result.woke = wake.woke;
         if (wake.warning) result.warning = wake.warning;
         else delete result.warning;
       }
-      finishIdempotentEffect(db, key, result);
+      finishIdempotentEffect(rdb, key, result);
       broadcast({ type: 'comment.added', comment: result.comment });
-      broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+      broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
       res.json(result); return;
     }
-    const stored = storeComment(db, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
+    const stored = storeComment(rdb, req.params.id!, author, body.content, attachmentIds, readFence(req, body));
     let woke = false;
     let warning: string | undefined;
     if (attachmentIds.length > 0) warning = 'IMAGE_DELIVERY_UNVERIFIED';
     if (stored.wakeSessionId) {
-      const wake = await wakeStoredComment(db, getAdapter, attachments, req.params.id!, stored.wakeSessionId, body.content, attachmentIds);
+      const wake = await wakeStoredComment(rdb, getAdapter, attachments, req.params.id!, stored.wakeSessionId, body.content, attachmentIds);
       woke = wake.woke;
       warning = wake.warning;
     }
     broadcast({ type: 'comment.added', comment: stored.comment });
-    broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+    broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
     res.json({ comment: stored.comment, woke, ...(warning ? { warning } : {}) });
   });
 
   // 留言消费（kb 占用场景）：事务内读全部评论 + 标注新评论 + 推进游标，恰好一次
   router.post('/issues/:id/comments/consume', (req, res) => {
-    res.json(consumeComments(db, req.params.id!));
+    res.json(consumeComments(resolveRequestDb(req, String(req.params.id)), req.params.id!));
   });
 
   // ---- 占用事务 ----
   // REST claim 仅占用登记（session_id=null），不建会话；派发场景走 POST /api/sessions
   router.post('/issues/:id/claim', async (req, res) => {
     const body = parseBody(claimSchema, req.body);
-    const outcome = mutation(req, () => {
-      const issue = claimIssue(db, req.params.id!, body.agent_id, null);
-      return { ...issue, knowledge: getTaskKnowledge(db, issue, body.knowledge_enabled ?? true, body.knowledge_query) };
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    const outcome = mutation(rdb, req, (routedDb) => {
+      const issue = claimIssue(routedDb, req.params.id!, body.agent_id, null);
+      return { ...issue, knowledge: getTaskKnowledge(routedDb, issue, body.knowledge_enabled ?? true, body.knowledge_query) };
     });
     // 领取后记录 git 基线（GIT-ON-DONE）；失败静默，不阻断领取
-    if (!outcome.replayed) await captureIssueGitBaseline(db, req.params.id!);
+    if (!outcome.replayed) await captureIssueGitBaseline(rdb, req.params.id!);
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
@@ -1062,8 +1147,9 @@ export function createRouter(deps: RouterDeps): Router {
   // BORROW-0.2：占用续租。不进幂等表——心跳只刷新租约，重放无意义；fence 校验属 B03。
   router.post('/issues/:id/heartbeat', (req, res) => {
     const body = parseBody(claimSchema, req.body);
-    const lease = heartbeatClaim(db, req.params.id!, body.agent_id, readFence(req, body));
-    broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    const lease = heartbeatClaim(rdb, req.params.id!, body.agent_id, readFence(req, body));
+    broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });
     res.json(lease);
   });
 
@@ -1088,23 +1174,25 @@ export function createRouter(deps: RouterDeps): Router {
     const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
     // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
     const scopePaths = doneBody?.scope_paths ?? [];
+    // STORE-4a：业务写与 git 基线落 issue 所在库
+    const rdb = resolveRequestDb(req, issueId);
     // KB-WRITE-NUDGE：hint 必须在 done 清空 claimed_at/claimed_by 之前算，并随幂等结果一起缓存（重放响应要逐字一致）
-    const outcome = workspace ? mutation(req, () => {
+    const outcome = workspace ? mutation(rdb, req, (routedDb) => {
       if (action === 'done') {
-        const preFinish = getIssue(db, issueId);
-        const hint = preFinish ? buildKnowledgeHint(db, preFinish) : null;
-        return { ...finishClaimedIssue(db, issueId, workspace, actor, 'done', detail, fence), knowledge_hint: hint };
+        const preFinish = getIssue(routedDb, issueId);
+        const hint = preFinish ? buildKnowledgeHint(routedDb, preFinish) : null;
+        return { ...finishClaimedIssue(routedDb, issueId, workspace, actor, 'done', detail, fence), knowledge_hint: hint };
       }
       return action === 'release'
-        ? releaseClaimedIssue(db, issueId, workspace, actor, fence)
-        : finishClaimedIssue(db, issueId, workspace, actor, action, detail, fence);
+        ? releaseClaimedIssue(routedDb, issueId, workspace, actor, fence)
+        : finishClaimedIssue(routedDb, issueId, workspace, actor, action, detail, fence);
     }) : { result: action === 'release'
-      ? await releaseIssue(db, issueId, fence) : action === 'done'
+      ? await releaseIssue(rdb, issueId, fence) : action === 'done'
         ? await (async () => {
-          const preFinish = getIssue(db, issueId);
-          const hint = preFinish ? buildKnowledgeHint(db, preFinish) : null;
-          return { ...(await doneIssue(db, issueId, actor, detail, fence)), knowledge_hint: hint };
-        })() : await failIssue(db, issueId, actor, detail!, undefined, fence), replayed: false };
+          const preFinish = getIssue(rdb, issueId);
+          const hint = preFinish ? buildKnowledgeHint(rdb, preFinish) : null;
+          return { ...(await doneIssue(rdb, issueId, actor, detail, fence)), knowledge_hint: hint };
+        })() : await failIssue(rdb, issueId, actor, detail!, undefined, fence), replayed: false };
     const { issue, comment } = outcome.result;
     const knowledgeHint = (outcome.result as { knowledge_hint?: KnowledgeHint | null }).knowledge_hint ?? null;
     // KB-CLI-1：done/fail/release 幂等重放同样回传标记
@@ -1114,13 +1202,13 @@ export function createRouter(deps: RouterDeps): Router {
       broadcast({ type: 'issue.changed', issue });
       // GIT-ON-DONE：done 后按 claim 基线提交本任务改动；幂等重放不重复提交
       if (action === 'done') {
-        const gitNote = await commitIssueChanges(db, issueId, scopePaths);
+        const gitNote = await commitIssueChanges(rdb, issueId, scopePaths);
         if (gitNote) {
-          const added = await addComment(db, issueId, 'system', gitNote);
+          const added = await addComment(rdb, issueId, 'system', gitNote);
           broadcast({ type: 'comment.added', comment: added.comment });
         }
       } else {
-        dropIssueGitBaseline(db, issueId);
+        dropIssueGitBaseline(rdb, issueId);
       }
     }
     res.json(action === 'done' ? { ...issue, comment, knowledge_hint: knowledgeHint } : { ...issue, comment });
@@ -1132,14 +1220,16 @@ export function createRouter(deps: RouterDeps): Router {
   // ---- CLI-CLOSE：验收后流转（close 待验收→已关闭；reopen 已关闭/已废弃→指定状态）----
   router.post('/issues/:id/close', (req, res) => {
     const workspace = effectiveWorkspace(req);
-    const outcome = mutation(req, () => closeIssue(db, req.params.id!, workspace));
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    const outcome = mutation(rdb, req, (routedDb) => closeIssue(routedDb, req.params.id!, workspace));
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
   router.post('/issues/:id/reopen', (req, res) => {
     const workspace = effectiveWorkspace(req);
     const body = parseBody(reopenSchema, req.body ?? {});
-    const outcome = mutation(req, () => reopenIssue(db, req.params.id!, body.status, workspace));
+    const rdb = resolveRequestDb(req, String(req.params.id));
+    const outcome = mutation(rdb, req, (routedDb) => reopenIssue(routedDb, req.params.id!, body.status, workspace));
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
@@ -1161,28 +1251,41 @@ export function createRouter(deps: RouterDeps): Router {
 
   // ---- approval rules（CHAT-APP1 契约 #16/#17）----
   // 只列未撤销规则（撤销入口数据源）；DELETE 是软撤销，行保留作审计。
+  // STORE-4a：规则行随工作区下沉，读写走该区解析库
   router.get('/workspaces/:workspaceId/approval-rules', (req, res) => {
     const workspaceId = req.params.workspaceId!;
     requireExistingWorkspace(db, workspaceId);
-    res.json(listActiveApprovalRules(db, workspaceId));
+    res.json(listActiveApprovalRules(dbForWorkspace(workspaceId), workspaceId));
   });
 
   router.delete('/workspaces/:workspaceId/approval-rules/:ruleId', (req, res) => {
     const workspaceId = req.params.workspaceId!;
     requireExistingWorkspace(db, workspaceId);
-    res.json(revokeApprovalRule(db, workspaceId, req.params.ruleId!));
+    res.json(revokeApprovalRule(dbForWorkspace(workspaceId), workspaceId, req.params.ruleId!));
   });
 
   // ---- sessions ----
+  // STORE-4a：读路径按工作区/会话所在库路由。4d 前 sessionManager 仍写中心库——已下沉区的新建
+  // 自由会话会落中心库，列表做「工作区库 + 中心库」并集兜底（同 id 只会在一侧），按 (created_at,id) 归并。
+  const mergeSessionsAcrossDbs = (primary: ReturnType<typeof listSessionsByWorkspace>, topUp: ReturnType<typeof listSessionsByWorkspace>): ReturnType<typeof listSessionsByWorkspace> => {
+    if (topUp.length === 0) return primary;
+    const seen = new Set(primary.map((s) => s.id));
+    return [...primary, ...topUp.filter((s) => !seen.has(s.id))]
+      .sort((a, b) => (a.created_at - b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  };
   // 运行时态（队列长度/等待槽位）内存合并进响应，不入库、不回传队列文本
   router.get('/sessions', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
     requireExistingWorkspace(db, workspaceId);
     // CHAT-SB1（契约 #11）：默认排除归档会话；侧栏「归档组」用 include_archived=1 拉全量
     const includeArchived = req.query.include_archived === '1' || req.query.include_archived === 'true';
-    const sessions = listSessionsByWorkspace(db, workspaceId, { includeArchived });
+    const rdb = dbForWorkspace(workspaceId);
+    const sessions = rdb === db
+      ? listSessionsByWorkspace(db, workspaceId, { includeArchived })
+      : mergeSessionsAcrossDbs(listSessionsByWorkspace(rdb, workspaceId, { includeArchived }), listSessionsByWorkspace(db, workspaceId, { includeArchived }));
+    const sessionIds = sessions.map((s) => s.id);
     // AUDIT-SRV（F-03）：首条用户消息预览 + 来源（dispatch=绑任务，chat=自由会话），一次查回避免 N+1
-    const previews = listFirstUserMessages(db, sessions.map((s) => s.id));
+    const previews = new Map([...listFirstUserMessages(rdb, sessionIds), ...(rdb === db ? [] : listFirstUserMessages(db, sessionIds))]);
     res.json(
       sessions.map((s) => {
         const runtime = getSessionRuntime(s.id);
@@ -1199,38 +1302,40 @@ export function createRouter(deps: RouterDeps): Router {
 
   // 聊天视图刷新恢复：panelStore 持久化的 sessionId 在 chatSession 缺失时按 id 拉取
   router.get('/sessions/:id', (req, res) => {
-    const session = getSession(db, req.params.id!);
-    if (!session) throw new NotFoundError('会话不存在');
-    const runtime = getSessionRuntime(session.id);
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const runtime = getSessionRuntime(routed.value.id);
     // CHAT-AWAIT1（契约 #18）：详情带该会话 turns，阻塞/超时状态可直接读取
     res.json({
-      ...session,
+      ...routed.value,
       queued_count: runtime.queuedCount,
       waiting_slot: runtime.waitingSlot,
-      turns: listTurnsBySession(db, session.id),
+      turns: listTurnsBySession(routed.db, routed.value.id),
     });
   });
 
   // 停止后队列查看（只读，不提供编辑）：返回当前内存排队文本
   router.get('/sessions/:id/queue', (req, res) => {
-    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    if (!locateSessionRouted(req.params.id!)) throw new NotFoundError('会话不存在');
     res.json({ texts: getSessionRuntime(req.params.id!).queuedTexts });
   });
 
   router.get('/sessions/:id/messages', (req, res) => {
-    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
     const raw = req.query.after;
     let after = 0;
     if (typeof raw === 'string' && raw !== '') {
       after = Number(raw);
       if (!Number.isFinite(after) || after < 0) throw new ValidationError('after 必须为非负整数时间戳');
     }
-    res.json(listMessagesBySession(db, req.params.id!, after));
+    res.json(listMessagesBySession(routed.db, req.params.id!, after));
   });
 
   // BORROW-4.2：会话事件流增量拉取（after_seq 之后的全部事件，seq 升序；老会话返回空数组）
   router.get('/sessions/:id/events', (req, res) => {
-    if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
     const raw = req.query.after_seq;
     let afterSeq = 0;
     if (typeof raw === 'string' && raw !== '') {
@@ -1239,10 +1344,12 @@ export function createRouter(deps: RouterDeps): Router {
         throw new ValidationError('after_seq 必须为非负整数');
       }
     }
-    res.json(listSessionEvents(db, req.params.id!, afterSeq));
+    res.json(listSessionEvents(routed.db, req.params.id!, afterSeq));
   });
 
   // 契约修订：issue_id 为空时 body.workspace_id 必填；绑 issue 时自动 claim+派发
+  // STORE-4a：创建/发送/停止走 sessionManager 单例（4d 前绑中心库），本卡不改其落库位置；
+  // 已下沉区的会话读侧由上方并集兜底，派发链路的彻底切库属 4d。
   router.post('/sessions', async (req, res) => {
     const body = parseBody(createSessionSchema, req.body);
     let session;
@@ -1334,11 +1441,12 @@ export function createRouter(deps: RouterDeps): Router {
   // 删除顺序照 issue 删除示范——事务内先删 message 再删 session，最后清内存态并无 body 204 + 广播 session.deleted。
   // 幂等：重复删除已删会话落 404（会话不存在），不会 500。
   router.delete('/sessions/:id', (req, res) => {
-    const session = getSession(db, req.params.id!);
-    if (!session) throw new NotFoundError('会话不存在');
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const session = routed.value;
     if (session.status === '运行中') throw new ConflictError('会话正在运行，请先停止再删除');
     if (session.issue_id !== null) {
-      const issue = getIssue(db, session.issue_id);
+      const issue = getIssue(routed.db, session.issue_id);
       if (
         issue !== null &&
         issue.status === '进行中' &&
@@ -1350,9 +1458,9 @@ export function createRouter(deps: RouterDeps): Router {
         );
       }
     }
-    db.transaction(() => {
-      deleteMessagesBySession(db, session.id);
-      deleteSession(db, session.id);
+    routed.db.transaction(() => {
+      deleteMessagesBySession(routed.db, session.id);
+      deleteSession(routed.db, session.id);
     })();
     forgetSession(session.id);
     broadcast({ type: 'session.deleted', session_id: session.id });
@@ -1364,8 +1472,9 @@ export function createRouter(deps: RouterDeps): Router {
   // CHAT-SB1：同一端点接受 archived（true=归档 / false=恢复）；运行中归档与删除同口径 409。
   router.patch('/sessions/:id', (req, res) => {
     const body = parseBody(patchSessionSchema, req.body);
-    const current = getSession(db, req.params.id!);
-    if (!current) throw new NotFoundError('会话不存在');
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const current = routed.value;
     if (body.archived === true && current.status === '运行中') {
       throw new ConflictError('会话正在运行，请先停止再归档');
     }
@@ -1373,7 +1482,7 @@ export function createRouter(deps: RouterDeps): Router {
     if (body.model !== undefined) patch.model = body.model;
     if (body.title !== undefined) patch.title = body.title;
     if (body.archived !== undefined) patch.archived_at = body.archived ? Date.now() : null;
-    const session = updateSession(db, req.params.id!, patch);
+    const session = updateSession(routed.db, req.params.id!, patch);
     broadcast({
       type: 'session.changed',
       session,
@@ -1389,7 +1498,9 @@ export function createRouter(deps: RouterDeps): Router {
   // 新会话继承 issue_id / cli / model，并写 forked_from_session_id + fork_message_id 来源标记。
   router.post('/sessions/:id/fork', (req, res) => {
     const body = parseBody(forkSessionSchema, req.body ?? {});
-    const session = forkSession(db, req.params.id!, {
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const session = forkSession(routed.db, req.params.id!, {
       fromMessageId: body.from_message_id ?? null,
       title: body.title,
     });
@@ -1408,15 +1519,15 @@ export function createRouter(deps: RouterDeps): Router {
   // 非 awaiting_input 一律 409（重复回答天然幂等）；成功推一次 session.turn。
   router.post('/sessions/:id/turns/:turnId/answer', (req, res) => {
     const body = parseBody(answerTurnSchema, req.body ?? {});
-    const session = getSession(db, req.params.id!);
-    if (!session) throw new NotFoundError('会话不存在');
-    const turn = answerAwaitingTurn(db, session.id, req.params.turnId!, {
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const turn = answerAwaitingTurn(routed.db, routed.value.id, req.params.turnId!, {
       optionId: body.option_id,
       text: body.text,
     });
     broadcast({
       type: 'session.turn',
-      session_id: session.id,
+      session_id: routed.value.id,
       turn_id: turn.id,
       state: turn.state,
       awaiting: null,
@@ -1427,9 +1538,9 @@ export function createRouter(deps: RouterDeps): Router {
   // CHAT-RETRY1（契约 #15）：单步重试——只重跑该 failed + retryable 的步骤，不新建轮次、不整轮重发。
   // 校验/幂等/状态推进与广播都在 service 内完成（重复提交在状态校验处 409，不会执行第二次）。
   router.post('/sessions/:id/turns/:turnId/steps/:stepId/retry', async (req, res) => {
-    const session = getSession(db, req.params.id!);
-    if (!session) throw new NotFoundError('会话不存在');
-    const result = await retryFailedStep(db, session.id, req.params.turnId!, req.params.stepId!, {
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const result = await retryFailedStep(routed.db, routed.value.id, req.params.turnId!, req.params.stepId!, {
       broadcast,
       execute: ({ session_id, turn_id, step_id, tool_name }) => runRetriedStep(session_id, { turn_id, step_id, tool_name }),
     });
@@ -1440,12 +1551,12 @@ export function createRouter(deps: RouterDeps): Router {
   // 非 awaiting_approval / 重复决策 → 409；request_id 不匹配 → 404；写类工具 + workspace 档 → 403。
   router.post('/sessions/:id/turns/:turnId/approvals/:requestId', (req, res) => {
     const body = parseBody(approvalDecisionSchema, req.body ?? {});
-    const session = getSession(db, req.params.id!);
-    if (!session) throw new NotFoundError('会话不存在');
-    const result = decideTurnApproval(db, session.id, req.params.turnId!, req.params.requestId!, body);
+    const routed = locateSessionRouted(req.params.id!);
+    if (!routed) throw new NotFoundError('会话不存在');
+    const result = decideTurnApproval(routed.db, routed.value.id, req.params.turnId!, req.params.requestId!, body);
     broadcast({
       type: 'session.turn',
-      session_id: session.id,
+      session_id: routed.value.id,
       turn_id: result.turn.id,
       state: result.turn.state,
       awaiting: result.turn.state === 'running' ? null : result.turn.awaiting_json,

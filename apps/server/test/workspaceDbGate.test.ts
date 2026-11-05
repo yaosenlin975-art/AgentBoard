@@ -21,7 +21,8 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
-import { workspaceDbPath } from '../src/db/resolver.js';
+import { initSchema } from '../src/db/schema.js';
+import { closeWorkspaceDb, closeWorkspaceDbs, resetResolverState, workspaceDbPath } from '../src/db/resolver.js';
 
 describe('STORE-1（M1）写入门禁与回显', () => {
   let t: TestDb;
@@ -35,6 +36,10 @@ describe('STORE-1（M1）写入门禁与回显', () => {
     const dbPath = workspaceDbPath(wsPath);
     mkdirSync(join(wsPath, '.agentboard'), { recursive: true });
     const db = new Database(dbPath);
+    // STORE-4a：读写按判定路由进工作区库，夹具必须是真实已下沉库的形态（全量 schema + workspace 行 + meta），
+    // meta-only 空库是 M1 时代的产物（当时读写不进工作区库）；meta 表由夹具自建（initSchema 不含）
+    initSchema(db);
+    db.prepare('INSERT INTO workspace (id, name, path, created_at) VALUES (?, ?, ?, ?)').run(workspaceId, '夹具区', wsPath, Date.now());
     db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
     db.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?)").run(workspaceId);
     db.prepare("INSERT INTO meta (key, value) VALUES ('localized', ?)").run(localized ? '1' : '0');
@@ -69,6 +74,9 @@ describe('STORE-1（M1）写入门禁与回显', () => {
     otherWs = createWorkspace(t.db, { name: '其它工作区', path: otherPath }).id;
   });
   afterEach(() => {
+    // STORE-4a：读写会打开工作区库句柄，先关闭再删目录（Windows 文件占用）
+    closeWorkspaceDbs('store1-gate-cleanup');
+    resetResolverState();
     t.cleanup();
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
@@ -111,6 +119,9 @@ describe('STORE-1（M1）写入门禁与回显', () => {
     const dbPath = mkWorkspaceDb(true, ws);
     setMode(ws, 'localized');
     const id = await mkIssue(ws, '已下沉卡');
+    // STORE-4a：写请求已把工作区库句柄开进缓存，删文件前先收（模拟外部删除的现场）
+    closeWorkspaceDb(ws, 'store1-gate-cleanup');
+    resetResolverState();
     unlinkSync(dbPath);
 
     const patched = await request(app).patch(`/api/issues/${id}`).send({ title: '不该生效' });
