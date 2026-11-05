@@ -22,7 +22,10 @@ const linkRef = (raw: unknown): string | undefined => {
   if (typeof link === 'string') return link;
   return (link as { ref?: string } | undefined)?.ref;
 };
-const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; const link = linkRef(raw); return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${link ? `  link: ${link}` : ''}${p.snippet ? `\n${p.snippet}` : ''}`; };
+const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; const link = linkRef(raw); return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${link ? `  link: ${link}` : ''}${p.snippet ? `\n${snippetOf(String(p.snippet))}` : ''}`; };
+/** KB-CLI-3a（CLI-10）：snippet 截 120 字（含省略号），保证一屏可见 ≥5 条命中 */
+const SNIPPET_MAX = 120;
+const snippetOf = (raw: string): string => (raw.length > SNIPPET_MAX ? `${raw.slice(0, SNIPPET_MAX)}…` : raw);
 function output(ctx: Ctx, data: unknown): void {
   if (ctx.json) { ctx.io.write(`${JSON.stringify(data, null, 2)}\n`); return; }
   if (Array.isArray(data)) { ctx.io.write(data.length ? data.map(pageLine).join('\n') + '\n' : '（无知识）\n'); return; }
@@ -34,7 +37,14 @@ function output(ctx: Ctx, data: unknown): void {
   }
   const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${p.landed === null ? '（未定）' : String(p.landed)}` : '', p.domain !== undefined ? `domain: ${String(p.domain ?? '未归类')}` : ''].filter(Boolean).join(' · ');
   const link = linkRef(data);
-  ctx.io.write(`${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}${link ? `\nlink: ${link}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`);
+  ctx.io.write(renderPageDetail(data));
+}
+/** KB-CLI-3a（CLI-06）：详情文本渲染单点（show --history 复用，页后追加逐条 rev 行） */
+function renderPageDetail(data: unknown): string {
+  const p = data as Record<string, unknown>;
+  const meta = [p.category !== undefined ? `category: ${String(p.category)}` : '', p.landed !== undefined ? `landed: ${p.landed === null ? '（未定）' : String(p.landed)}` : '', p.domain !== undefined ? `domain: ${String(p.domain ?? '未归类')}` : ''].filter(Boolean).join(' · ');
+  const link = linkRef(data);
+  return `${p.id ?? ''} [${p.scope ?? ''}] rev:${p.revision ?? ''} ${p.title ?? ''}${meta ? `\n${meta}` : ''}${link ? `\nlink: ${link}` : ''}\n${p.body_md ?? JSON.stringify(data, null, 2)}\n`;
 }
 const query = (params: Record<string, string | number | undefined>) => new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString();
 
@@ -434,10 +444,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .addHelpText('after', FIND_SOURCE_HELP)
     .action(async (pathArg: string, opts: ScopeOptions) => {
       const ctx = context();
-      const res = await request<{ path: string; items: Array<{ id: string; slug: string; title: string; scope: string; revision: number; status: string; link: { ref: string } }> }>(ctx.base, 'GET', `/api/knowledge/find-source?${query({ ...await scopeFor(ctx, opts, true), path: pathArg })}`);
+      const res = await request<{ path: string; items: Array<{ id: string; slug: string; title: string; scope: string; revision: number; status: string; link: string }> }>(ctx.base, 'GET', `/api/knowledge/find-source?${query({ ...await scopeFor(ctx, opts, true), path: pathArg })}`);
       if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
       if (res.items.length === 0) { ctx.io.write('（无引用该文件的知识页）\n'); return; }
-      for (const item of res.items) ctx.io.write(`${item.id} [${item.scope}] rev:${item.revision} ${item.slug}  ${item.title}  link: ${item.link.ref}\n`);
+      // BORROW-3.1（D10）补漏：link 已是引用串，旧 item.link.ref 文本输出会变 undefined
+      for (const item of res.items) ctx.io.write(`${item.id} [${item.scope}] rev:${item.revision} ${item.slug}  ${item.title}  link: ${linkRef(item)}\n`);
     });
 
   // KB-PAGE-2b：--scope 可省略——省略时先 resolve（both + 当前工作区），再按解析出的 scope 取页；显式给出时与旧版逐字一致
@@ -462,7 +473,14 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       }
       const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
-      if (opts.history) output(ctx, { page, history: await request(ctx.base, 'GET', `${path}/revisions?${suffix}`) }); else output(ctx, page);
+      if (!opts.history) { output(ctx, page); return; }
+      // KB-CLI-3a（CLI-06/L-04）：文本模式逐条 rev 行（每页 1 行），不再倒整包 JSON；--json 仍整包供脚本消费
+      const history = await request<{ items: Array<{ revision: number; title_snapshot: string | null; change_kind: string; actor: string | null; created_at: number }> }>(ctx.base, 'GET', `${path}/revisions?${suffix}`);
+      if (ctx.json) { ctx.io.write(`${JSON.stringify({ page, history }, null, 2)}\n`); return; }
+      ctx.io.write(renderPageDetail(page));
+      for (const rev of history.items) {
+        ctx.io.write(`rev:${rev.revision}  ${rev.change_kind}  ${rev.actor ?? '-'}  ${new Date(rev.created_at).toISOString()}  ${rev.title_snapshot ?? ''}\n`);
+      }
     });
   scoped(knowledge.command('list').description('列出知识页（默认只看 active）').option('--status <status>', 'active|archived|deleted|all', 'active').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量（上限 100）', '20').option('--include-expired', '包含过期页面'))
     .addHelpText('after', LIST_HELP)

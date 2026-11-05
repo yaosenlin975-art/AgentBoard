@@ -346,4 +346,43 @@ describe('knowledge CLI：show 省略 scope / find-source / create-revise link�
     expect(stream.out.join('')).toContain('p-1 [common] rev:3 api-doc');
     expect(stream.out.join('')).toContain('link: knowledge:p-1');
   });
+
+  // KB-CLI-3a（CLI-06/L-04）：--history 文本模式逐条 rev 行，不再倒整包 JSON
+  it('show --history：详情后逐条 rev 行（每页 1 行），--json 仍整包', async () => {
+    const detail = { id: 'p-h', scope: 'common', revision: 3, title: '历史页', body_md: '正文', category: 'design', landed: 'landed', domain: 'board', link: 'knowledge:p-h' };
+    const revisions = { items: [
+      { revision: 3, title_snapshot: '历史页', change_kind: 'edit', actor: 'agent:t', created_at: Date.UTC(2026, 10, 6, 1, 2, 3) },
+      { revision: 2, title_snapshot: '历史页（旧）', change_kind: 'create', actor: 'agent:t', created_at: Date.UTC(2026, 10, 5, 0, 0, 0) },
+    ] };
+    const fetch = vi.fn(async (url: string) => String(url).includes('/revisions')
+      ? new Response(JSON.stringify(revisions))
+      : new Response(JSON.stringify(detail)));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'p-h', '--scope', 'common', '--history'], stream)).toBe(0);
+    const out = stream.out.join('');
+    expect(out).toContain('p-h [common] rev:3 历史页');
+    expect(out).toContain('rev:3  edit  agent:t  2026-11-06T01:02:03.000Z  历史页');
+    expect(out).toContain('rev:2  create  agent:t  2026-11-05T00:00:00.000Z  历史页（旧）');
+    expect(out).not.toContain('"history"');
+
+    const json = io();
+    expect(await main(['node', 'kb', '--json', 'knowledge', 'show', 'p-h', '--scope', 'common', '--history'], json)).toBe(0);
+    const parsed = JSON.parse(json.out.join('')) as { page: { id: string }; history: { items: unknown[] } };
+    expect(parsed.page.id).toBe('p-h');
+    expect(parsed.history.items).toHaveLength(2);
+  });
+
+  // KB-CLI-3a（CLI-10）：snippet 截 120 字，多命中一屏可读
+  it('search snippet 超 120 字截断为单行省略；5 条命中各占 2 行内', async () => {
+    const longSnippet = '长'.repeat(200);
+    const rows = Array.from({ length: 5 }, (_, i) => ({ page_id: `s-${i}`, scope: 'common', workspace_id: null, revision: 1, title: `命中 ${i}`, snippet: longSnippet, score: 1, link: `knowledge:s-${i}` }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(rows)))); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'search', '长', '--scope', 'common'], stream)).toBe(0);
+    const out = stream.out.join('');
+    expect(out).toContain(`${'长'.repeat(120)}…`);
+    expect(out).not.toContain('长'.repeat(121));
+    // 每条命中 = 标题行 + snippet 行（snippet 截断后单行）
+    const lines = out.split('\n').filter(Boolean);
+    expect(lines).toHaveLength(10);
+  });
 });
