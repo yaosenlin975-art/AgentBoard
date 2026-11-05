@@ -157,6 +157,10 @@ describe('DetailPanel 操作区四态', () => {
     );
     renderDetail();
     await userEvent.click(await screen.findByTestId('release-btn'));
+    // F-09：强制释放先展开行内二次确认，确认后才发请求
+    expect(await screen.findByTestId('release-confirm-text')).toBeInTheDocument();
+    expect(releaseCalled).toBe(false);
+    await userEvent.click(screen.getByTestId('release-confirm'));
     await waitFor(() => expect(releaseCalled).toBe(true));
     expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
   });
@@ -323,13 +327,83 @@ describe('DetailPanel 字段防抖 PATCH', () => {
       }),
     );
     renderDetail();
-    await userEvent.type(await screen.findByTestId('labels-input'), ',性能');
+    // F-07：chips 编辑器 —— 输入后回车成 chip（不再靠逗号分隔整串解析）
+    await userEvent.type(await screen.findByTestId('labels-input'), '性能{Enter}');
     await waitFor(() => expect(patches).toHaveLength(1), { timeout: 2000 });
     expect(patches[0]).toEqual({ labels: ['前端', '性能'] });
 
     await userEvent.selectOptions(screen.getByTestId('priority-select'), '高');
     await waitFor(() => expect(patches).toHaveLength(2), { timeout: 2000 });
     expect(patches[1]).toEqual({ priority: '高' });
+  });
+});
+
+describe('AUDIT-DETAIL 增补', () => {
+  it('待验收卡：验收动作 + 通过验收并关闭预填验收评论草稿', async () => {
+    mockDetailApi(makeIssue({ status: '待验收', updated_at: 3 }));
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(makeIssue({ status: '已关闭', updated_at: 9 }));
+      }),
+    );
+    renderDetail();
+    const close = await screen.findByTestId('accept-close-btn');
+    expect(screen.getByTestId('reopen-running-btn')).toBeInTheDocument();
+    await userEvent.click(close);
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ status: '已关闭' });
+    // 预填草稿同时落 localStorage 与输入框
+    const draft = localStorage.getItem('agentboard.comment-draft:iss-1') ?? '';
+    expect(draft).toContain('验收通过');
+    expect(await screen.findByTestId('comment-input')).toHaveValue(draft);
+  });
+
+  it('待验收卡：退回进行中 → PATCH status=进行中', async () => {
+    mockDetailApi(makeIssue({ status: '待验收', updated_at: 3 }));
+    let body: Record<string, unknown> | null = null;
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        body = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(makeIssue({ status: '进行中', updated_at: 9 }));
+      }),
+    );
+    renderDetail();
+    await userEvent.click(await screen.findByTestId('reopen-running-btn'));
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toMatchObject({ status: '进行中' });
+  });
+
+  it('标签 chips：chip 逐枚删除 → PATCH labels 数组', async () => {
+    mockDetailApi(makeIssue());
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(makeIssue({ updated_at: Date.now() }));
+      }),
+    );
+    renderDetail();
+    expect(await screen.findByTestId('label-chip-前端')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('label-chip-remove-前端'));
+    expect(screen.queryByTestId('label-chip-前端')).not.toBeInTheDocument();
+    await waitFor(() => expect(patches).toHaveLength(1), { timeout: 2000 });
+    expect(patches[0]).toEqual({ labels: [] });
+  });
+
+  it('评论草稿落 localStorage；输入框内首按 Esc 只失焦不关面板', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const input = await screen.findByTestId('comment-input');
+    await userEvent.type(input, '半截草稿');
+    expect(localStorage.getItem('agentboard.comment-draft:iss-1')).toBe('半截草稿');
+
+    input.focus();
+    await userEvent.keyboard('{Escape}');
+    expect(document.activeElement).not.toBe(input);
+    // 面板仍在（DetailPanel 未被关闭）
+    expect(screen.getByTestId('detail-panel')).toBeInTheDocument();
   });
 });
 

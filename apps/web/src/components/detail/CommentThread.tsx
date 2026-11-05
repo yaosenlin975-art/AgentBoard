@@ -78,9 +78,20 @@ function renderAttachment(attachment: AttachmentMetadata, key: string) {
 const inputCls =
   'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
 
-export function CommentThread({ issue }: { issue: Issue }) {
+export function CommentThread({
+  issue,
+  draft,
+  onDraftChange,
+}: {
+  issue: Issue;
+  /** 受控草稿（DetailPanel 持有并落 localStorage，关闭前可被「预填验收评论」写入） */
+  draft?: string;
+  onDraftChange?: (value: string) => void;
+}) {
   const queryClient = useQueryClient();
-  const [content, setContent] = useState('');
+  const [localContent, setLocalContent] = useState('');
+  const content = draft ?? localContent;
+  const setContent = onDraftChange ?? setLocalContent;
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [wokeResult, setWokeResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -265,6 +276,14 @@ export function CommentThread({ issue }: { issue: Issue }) {
           aria-label="评论内容"
           value={content}
           onChange={(e) => setContent(e.target.value)}
+          onKeyDown={(event) => {
+            // I-04：输入框内首按 Esc 只失焦（同时拦住冒泡，避免 useDismissable 直接关面板）；
+            // 焦点离开后再按 Esc 才由面板的全局监听关闭。无候选列表时「清候选」等价于结束编辑。
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              event.currentTarget.blur();
+            }
+          }}
           onPaste={(event) => {
             const pasted = Array.from(event.clipboardData.items)
               .filter((item) => item.kind === 'file')

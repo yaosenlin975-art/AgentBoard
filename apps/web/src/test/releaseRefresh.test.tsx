@@ -72,8 +72,9 @@ describe('强制释放后界面归位（RELEASE-REFRESH）', () => {
       </QueryClientProvider>,
     );
 
-    const button = await screen.findByTestId('release-btn');
-    await userEvent.click(button);
+    // F-09：先点「强制释放」展开行内确认，再点确认才真正发请求
+    await userEvent.click(await screen.findByTestId('release-btn'));
+    await userEvent.click(await screen.findByTestId('release-confirm'));
 
     await waitFor(() => expect(released).toBe(true));
     // 修复前：列表缓存一直停在 'board-web-detail'（卡片仍显示占用、仍在「进行中」列）

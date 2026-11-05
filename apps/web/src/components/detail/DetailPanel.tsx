@@ -22,6 +22,9 @@ import { getIssueDescendantIds } from '../../lib/issueTree';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 import { CommentThread } from './CommentThread';
+import { LabelChipsEditor } from './LabelChipsEditor';
+import { ConfirmInline } from '../ui/ConfirmInline';
+import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
 import { isOverdue, overdueDays } from '../../lib/planningSort';
@@ -73,7 +76,9 @@ export function DetailPanel() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<Priority>('中');
-  const [labelsInput, setLabelsInput] = useState('');
+  const [labels, setLabels] = useState<string[]>([]);
+  /** I-04：评论草稿提到面板层，既能落 localStorage，也能被「通过验收并关闭」预填 */
+  const [commentDraft, setCommentDraft] = useState('');
   /** DUE-DATE：日期与时间分别可空，各自走防抖 PATCH */
   const [dueDate, setDueDate] = useState('');
   const [dueTime, setDueTime] = useState('');
@@ -81,6 +86,8 @@ export function DetailPanel() {
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [claimBlocked, setClaimBlocked] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  /** F-09：强制释放先展开行内确认（写明会断开占用） */
+  const [confirmingRelease, setConfirmingRelease] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -88,11 +95,13 @@ export function DetailPanel() {
     setTitle(issue.title);
     setDescription(issue.description);
     setPriority(issue.priority);
-    setLabelsInput(issue.labels.join(','));
+    setLabels(issue.labels);
+    setCommentDraft(readCommentDraft(issue.id));
     setDueDate(issue.due_date ?? '');
     setDueTime(issue.due_time ?? '');
     setDescEditing(false);
     setConfirmingDelete(false);
+    setConfirmingRelease(false);
     setClaimBlocked(false);
     // 仅在切换 issue 时重置本地编辑
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,14 +229,22 @@ export function DetailPanel() {
   const dispatchable = !claimed && (issue.status === '待规划' || issue.status === '进行中');
   const issueSessions = (allSessions ?? []).filter((s) => s.issue_id === issue.id);
   const workspacePath = (workspaces ?? []).find((w) => w.id === issue.workspace_id)?.path ?? '';
+  // F-07：标签联想取本工作区已有标签（去重）
+  const allLabels = [...new Set((workspaceIssues ?? []).flatMap((item) => item.labels))];
 
-  const onLabelsChange = (value: string): void => {
-    setLabelsInput(value);
-    const labels = value
-      .split(',')
-      .map((t) => t.trim())
-      .filter((t) => t !== '');
-    schedulePatch('labels', labels);
+  const changeLabels = (next: string[]): void => {
+    setLabels(next);
+    schedulePatch('labels', next);
+  };
+  const updateDraft = (value: string): void => {
+    setCommentDraft(value);
+    writeCommentDraft(issue.id, value);
+  };
+  /** F-01：通过验收并关闭 —— 与状态下拉同一 PATCH 口径（workspace_id + expected_updated_at） */
+  const acceptAndClose = (): void => {
+    const acceptance = `验收通过：按验收标准逐条核对，未发现阻塞问题。（${new Date().toLocaleString()}）`;
+    updateDraft(acceptance);
+    changeStatus.mutate('已关闭');
   };
 
   return (
@@ -337,7 +354,8 @@ export function DetailPanel() {
                 </span>
               )}
             </span>
-            <span className="flex items-center gap-2">
+            {/* V-05：日期 / 时间改为上下两行（日期一行、时间一行），窄面板里不再挤压；清除仍是一处 */}
+            <span className="flex flex-wrap items-center gap-2">
               <input
                 type="date"
                 data-testid="detail-due-date"
@@ -353,18 +371,21 @@ export function DetailPanel() {
                 }}
                 className={inputCls}
               />
-              <input
-                type="time"
-                data-testid="detail-due-time"
-                aria-label="截止时间"
-                value={dueTime}
-                disabled={dueDate === ''}
-                onChange={(e) => {
-                  setDueTime(e.target.value);
-                  schedulePatch('due_time', e.target.value === '' ? null : e.target.value);
-                }}
-                className={inputCls}
-              />
+              <span className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400" title="截止时间">
+                <span aria-hidden>⏱</span>
+                <input
+                  type="time"
+                  data-testid="detail-due-time"
+                  aria-label="截止时间"
+                  value={dueTime}
+                  disabled={dueDate === ''}
+                  onChange={(e) => {
+                    setDueTime(e.target.value);
+                    schedulePatch('due_time', e.target.value === '' ? null : e.target.value);
+                  }}
+                  className={inputCls}
+                />
+              </span>
               <button
                 type="button"
                 data-testid="detail-due-clear"
@@ -375,29 +396,24 @@ export function DetailPanel() {
                   schedulePatch('due_date', null);
                   schedulePatch('due_time', null);
                 }}
-                className="rounded border border-neutral-300 px-2 py-1 text-xs text-neutral-600 disabled:opacity-40 dark:border-neutral-600 dark:text-neutral-300"
+                className="rounded px-1.5 py-1 text-xs text-neutral-500 underline underline-offset-2 hover:text-neutral-700 disabled:opacity-40 dark:text-neutral-400"
               >
                 清除
               </button>
             </span>
           </label>
 
-          <label className="block text-sm">
-            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">标签（逗号分隔）</span>
-            <input
-              data-testid="labels-input"
-              aria-label="标签（逗号分隔）"
-              value={labelsInput}
-              onChange={(e) => onLabelsChange(e.target.value)}
-              placeholder="前端, 性能"
-              className={inputCls}
-            />
-          </label>
+          <div className="text-sm">
+            <span className="mb-1 block text-neutral-600 dark:text-neutral-300">标签</span>
+            {/* F-07：chips 编辑器 —— 回车成 chip、去重、逐枚删除，视觉与任务卡 chips 一致 */}
+            <LabelChipsEditor labels={labels} suggestions={allLabels} onChange={changeLabels} />
+          </div>
         </section>
 
         {/* 操作区（状态条件化） */}
-        <section data-testid="detail-actions" aria-label="操作" className="space-y-2">
-          <h3 className="text-sm font-semibold">操作</h3>
+        {/* V-05：操作区与上方字段用分隔线 + 小标题切开，避免「一排按钮」糊在正文里 */}
+        <section data-testid="detail-actions" aria-label="操作" className="space-y-2 border-t border-hairline pt-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">操作</h3>
           <div className="flex flex-wrap items-center gap-2">
             {dispatchable && (
               <button
@@ -416,6 +432,30 @@ export function DetailPanel() {
                 派发
               </button>
             )}
+            {/* F-01：待验收卡的验收动作（关闭口径与状态下拉一致：PATCH status=已关闭） */}
+            {issue.status === '待验收' && (
+              <button
+                type="button"
+                data-testid="accept-close-btn"
+                onClick={acceptAndClose}
+                disabled={changeStatus.isPending || closeBlocked}
+                title={closeBlocked ? '存在未关闭的子孙任务，需先全部关闭' : undefined}
+                className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                通过验收并关闭
+              </button>
+            )}
+            {issue.status === '待验收' && (
+              <button
+                type="button"
+                data-testid="reopen-running-btn"
+                onClick={() => changeStatus.mutate('进行中')}
+                disabled={changeStatus.isPending}
+                className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
+              >
+                退回进行中
+              </button>
+            )}
             {claimed && (
               <>
                 <button
@@ -427,15 +467,32 @@ export function DetailPanel() {
                 >
                   会话进行中
                 </button>
-                <button
-                  type="button"
-                  data-testid="release-btn"
-                  onClick={() => release.mutate()}
-                  disabled={release.isPending}
-                  className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
-                >
-                  强制释放
-                </button>
+                {/* F-09：强制释放先二次确认（行内，不弹模态），文案写明会断开占用 */}
+                {confirmingRelease ? (
+                  <ConfirmInline
+                    message="强制释放会立即断开当前会话的占用，任务回到可领取状态；执行中的会话不会自动结束。"
+                    confirmLabel="确认释放"
+                    messageTestId="release-confirm-text"
+                    confirmTestId="release-confirm"
+                    cancelTestId="release-cancel"
+                    busy={release.isPending}
+                    onConfirm={() => {
+                      setConfirmingRelease(false);
+                      release.mutate();
+                    }}
+                    onCancel={() => setConfirmingRelease(false)}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="release-btn"
+                    onClick={() => setConfirmingRelease(true)}
+                    disabled={release.isPending}
+                    className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
+                  >
+                    强制释放
+                  </button>
+                )}
                 <button
                   type="button"
                   data-testid="done-btn"
@@ -449,36 +506,29 @@ export function DetailPanel() {
             )}
             {!claimed &&
               (confirmingDelete ? (
-                <>
-                  <span data-testid="delete-confirm-text" className="text-xs text-red-600 dark:text-red-400">
-                    {directChildCount > 0
+                // F-08：与 A05 会话删除共用 ConfirmInline
+                <ConfirmInline
+                  message={
+                    directChildCount > 0
                       ? `该任务有 ${directChildCount} 个直接子任务；先移动或删除子任务后才能删除此任务`
-                      : '确认删除？关联会话与消息将一并删除'}
-                  </span>
-                  <button
-                    type="button"
-                    data-testid="delete-confirm"
-                    onClick={() => remove.mutate()}
-                    disabled={remove.isPending || directChildCount > 0}
-                    className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-40"
-                  >
-                    确认删除
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="delete-cancel"
-                    onClick={() => setConfirmingDelete(false)}
-                    className="rounded border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                  >
-                    取消
-                  </button>
-                </>
+                      : '确认删除？关联会话与消息将一并删除'
+                  }
+                  confirmLabel="确认删除"
+                  messageTestId="delete-confirm-text"
+                  confirmTestId="delete-confirm"
+                  cancelTestId="delete-cancel"
+                  busy={remove.isPending}
+                  disabled={directChildCount > 0}
+                  onConfirm={() => remove.mutate()}
+                  onCancel={() => setConfirmingDelete(false)}
+                />
               ) : (
+                // V-05：删除降为文本按钮（危险动作不抢主按钮视觉）
                 <button
                   type="button"
                   data-testid="delete-btn"
                   onClick={() => setConfirmingDelete(true)}
-                  className="rounded border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+                  className="px-1 text-xs text-red-600 underline underline-offset-2 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
                 >
                   删除
                 </button>
@@ -526,7 +576,7 @@ export function DetailPanel() {
         <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(s) => openChat(s.id, s)} />
 
         {/* 评论 */}
-        <CommentThread issue={issue} />
+        <CommentThread issue={issue} draft={commentDraft} onDraftChange={updateDraft} />
       </div>
 
       {dispatchOpen && workspacePath !== '' && (
