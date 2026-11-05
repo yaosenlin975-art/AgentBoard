@@ -449,15 +449,29 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/sessions` | query：`workspace`（必填） | `Session[]`（created_at,id 升序），合并运行时字段 `queued_count` `waiting_slot`（来源：sessionManager 内存态，不入库）与列表派生字段 `preview` `source`（一次查回首条 user 消息，避免 N+1；旧会话无消息时 `preview` 为空串，不报错） | 400 缺 workspace；404 工作空间不存在 | routes.ts:1014 |
-| `GET /api/sessions/:id` | — | `Session` + `queued_count` `waiting_slot` | 404 会话不存在 | routes.ts:431 |
+| `GET /api/sessions` | query：`workspace`（必填） | `Session[]`（created_at,id 升序），合并运行时字段 `queued_count` `waiting_slot`（来源：sessionManager 内存态，不入库）、派生字段 `paused`（= `paused_at` 非空，BORROW-4.3）与列表派生字段 `preview` `source`（一次查回首条 user 消息，避免 N+1；旧会话无消息时 `preview` 为空串，不报错） | 400 缺 workspace；404 工作空间不存在 | routes.ts:1332 |
+| `GET /api/sessions/:id` | — | `Session` + `queued_count` `waiting_slot` + 派生 `paused` | 404 会话不存在 | routes.ts:1360 |
 | `GET /api/sessions/:id/queue` | — | `{ texts: string[] }`：当前内存排队文本副本（只读，无编辑接口） | 404 会话不存在 | routes.ts:439 |
 | `GET /api/sessions/:id/messages` | query：`after?: 非负整数毫秒时间戳`（默认 0） | `Message[]`（ts 升序，ts>after） | 400 after 非法；404 会话不存在 | routes.ts:444 |
 | `GET /api/sessions/:id/events` | query：`after_seq?: 非负整数`（默认 0） | `SessionEvent[]`（`session_id` `seq` `type` `payload` `created_at`，seq 升序、seq>after_seq）；BORROW-4.2：本表上线前的老会话返回 `[]`，不回填历史 | 400 after_seq 非法；404 会话不存在 | routes.ts:1231 |
 | `POST /api/sessions` | body：`cli: string 非空`、`model?: string\|null`、`issue_id?: string`、`workspace_id?: string`（**issue_id 为空时必填**）、`prompt?: string`、`reuse_session?: 'last'\|'new'`（'last' 复用该任务已绑定会话的 adapter_session_id）、`knowledge_enabled?: boolean`、`knowledge_query?: string 1-500`、`selected_attachment_ids?: UUID[]`（仅 issue-bound session 可用，最多 100 个）、`retry_unknown_images?: boolean`（实际投递前缀含 unknown 时必须为 true） | 绑 issue：派发（自动 claim + 起首轮）；按评论顺序把所选图片截断为最多 5 张、总计 ≤20 MiB 的前缀；其余图片保持待读并追加 `另有 N 张未附`，返回 `{ ...session, knowledge, remaining_attachment_count }`。图片输入能力未验证时不派发所选图片。自由会话返回 `Session`，不含剩余图片计数。WS：绑 issue 先 issue.changed，再 session.changed | 400 issue_id 为空未给 workspace_id 或图片ID未绑定 issue；400 未知 CLI、选择 ID 超过 100、`IMAGE_DELIVERY_IN_PROGRESS`、`IMAGE_DELIVERY_UNKNOWN_RETRY_REQUIRED` 或 `IMAGE_DELIVERY_UNVERIFIED`；404 任务 / 工作空间 / 图片不存在；409 `ISSUE_CLAIMED` 已被占用（CLAIM-MSG，文案含占用者） | routes.ts:456 |
-| `POST /api/sessions/:id/messages` | body：`text: string 非空` | `{ queued: boolean }`；false=空闲立即起轮（状态回运行中），true=入队待合并（运行时变化经 WS session.runtime）。两种情况均先落 user 消息（WS message.added） | 400 text 为空；404 会话不存在 | routes.ts:485 |
-| `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留 | 404 会话不存在 | routes.ts:491 |
-| `PATCH /api/sessions/:id` | body：`model?: 非空 string\|null`、`title?: 1-50 字 string\|null`（两个键至少给一个；null 均表示清空——model 回落 CLI 默认、title 回落派生标题） | `Session`；model 下一轮起轮生效；title 立即生效（会话列表/详情均读该字段）；WS session.changed | 400 两键都缺、model 空串、title trim 后为空或超 50 字；404 会话不存在 | routes.ts:496 |
+| `POST /api/sessions/:id/messages` | body：`text: string 非空` | `{ queued: boolean }`；false=空闲立即起轮（状态回运行中），true=入队待合并（运行时变化经 WS session.runtime）。两种情况均先落 user 消息（WS message.added）。BORROW-4.3：会话已暂停（`paused_at` 非空）时恒返回 `true`，消息落库并入队，等恢复后按序交付 | 400 text 为空；404 会话不存在 | routes.ts:1453 |
+| `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留（暂停标记不变） | 404 会话不存在 | routes.ts:1498 |
+| `PATCH /api/sessions/:id` | body：`model?: 非空 string\|null`、`title?: 1-50 字 string\|null`（两者可同时给；null 均表示清空——model 回落 CLI 默认、title 回落派生标题）、`archived?: boolean`、`paused?: boolean`（BORROW-4.3，必须单独提交，不能与前三者同批） | 非 paused：`Session`（含派生 `paused`），WS session.changed；`paused=true`：`Session`（`paused=true`）并写 `session_event(type=session.paused)` + WS `session.paused`；`paused=false`：`Session`（`paused=false`，附加 `resume_after_seq`）并写 `session_event(type=session.resumed)` + WS `session.resumed`，随后消费暂停期队列 | 400 四键都缺 / model 空串 / title trim 后为空或超 50 字 / paused 与其它键同批；404 会话不存在 | routes.ts:1538 |
+
+### 会话暂停 / 恢复（BORROW-4.3，`session.paused_at`，不重建表）
+
+存储：`session.paused_at INTEGER NULL`（`db/migrations/sessionPaused.ts`，`ensureColumn` 幂等加列，老库自动补、连跑两次结果一致；**不重建 `session` 表**——`message` / `session_turn` / `session_event` 均有 FK 指向它，重建有级联清空风险）。存量行为 `NULL` = 未暂停。
+
+语义（写死）：
+
+- `paused_at` 非空即视为暂停；`session.status` 语义不变（仍是 `运行中 | 已结束 | 失败`），读接口另给派生字段 `paused`。
+- 暂停只拦「开始新轮次」：**不 kill 正在执行的工具/子进程，不撤销已写入的步骤或消息**。工具步骤在 CLI 进程内，服务端无法逐步骤暂停，在途轮次会自然跑完。
+- 暂停期间的入站消息照常落 `message` 行并入会话队列（`POST /api/sessions/:id/messages` 返回 `{ queued: true }`），**恢复后按入队顺序合并交付，不丢**。
+- 恢复**不重放已完成步骤**：`session.paused` / `session.resumed` 本身各写一条 `session_event` 行，恢复响应带 `resume_after_seq`（恢复事件的 seq）；已完成消息/步骤的 seq 全部 ≤ 该值，客户端从 `GET /api/sessions/:id/events?after_seq=<resume_after_seq>` 之后续拉即可，服务端不重发 message、不重跑 turn。
+- 重复暂停 / 未暂停时恢复均为幂等空操作（不重复写事件）。
+
+
 
 ### 轮次底座（CHAT-TURN1，`session_turn` + `message` 三列，无新增 HTTP 端点）
 
@@ -544,13 +558,15 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | `session.deleted` | `{ session_id }` | 任务删除级联清理会话 |
 | `session.event` | `{ session_id, event: { type: 'text'\|'thinking'\|'tool'\|'error'\|'end', ... } }` | 轮次执行事件实时流（text/thinking 为 delta） |
 | `session.runtime` | `{ session_id, queued_count, waiting_slot }` | 排队消息数或等槽位标志变化时 |
+| `session.paused` | `{ session_id, paused_at, session }` | BORROW-4.3：PATCH /api/sessions/:id `paused=true`（暂停只拦新轮次，不 kill 在途工具）；前端消费归后续聊天视图卡 |
+| `session.resumed` | `{ session_id, paused_at: null, session, resume_after_seq }` | BORROW-4.3：PATCH /api/sessions/:id `paused=false`；`resume_after_seq` 是事件流续拉锚点（不重放已完成步骤）；前端消费归后续聊天视图卡 |
 | `message.added` | `{ message: Message }` | 每条消息落库（user/assistant/event/error） |
 | `clis.changed` | `{ clis: CliInfo[] }` | 服务启动探测完成后一次（`index.ts:67`）；运行期无刷新端点 |
 | `account.notice` | `{ app_id, client_instance_id, message }` | 账号切换 safe-exit 降级：UIA 托盘退出失败后提示用户手动退出 WorkBuddy（ACC-05，`accountRoutes.ts` → provider broadcast）；前端仅提示不失效查询 |
 | `session.plan` | `{ session_id, turn_id, plan: TurnPlanStep[], current_index }` | CHAT-TURN1 契约 #18：轮次计划**变更即推**（追加步骤 / 步骤收口 / 轮次收口各一次，同批变更合并）。`plan` 是快照副本，`current_index` 为当前打开步骤的下标（无步骤 = -1，轮次收口 = plan.length）。CLI 不声明计划，所以步骤 = 一次 `tool` 事件，无 tool 事件时 `plan` 为 `[]`（前端隐藏计划条） |
 | `session.usage` | `{ session_id, turn_id, usage: TurnUsage }` | CHAT-TURN1 契约 #21：用量**合并节流**推送（窗口 `TURN_USAGE_THROTTLE_MS = 250ms`，窗口内的多次 delta 只在末尾推一次；轮次收口再推最终一次）。本卡无 CLI token 来源，`input/output/context_used_tokens` 按约 4 字符 = 1 token 估算并恒带 `estimated: true`，`cost_usd` / `context_limit_tokens` 为 `null`（不编造） |
 
-**这两条事件的类型在服务端侧是 `ServerWsEvent = WsEvent | TurnObservationEvent`（`packages/shared/src/types.ts`），刻意没有并进 `WsEvent`**：`apps/web/src/api/ws.ts::eventToQueryKeys` 是对 `WsEvent` 的无 default 穷尽 switch，加成员会让前端 `tsc --noEmit` 直接失败。CHAT-VIS1 接前端时再把它们加入 `WsEvent` 并补 `case`。
+**`session.plan` / `session.usage` / `session.turn` / `session.approval_request` / `session.paused` / `session.resumed` 在服务端侧走 `ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent`（`packages/shared/src/types.ts`），刻意没有并进 `WsEvent`**：`apps/web/src/api/ws.ts::eventToQueryKeys` 是对 `WsEvent` 的无 default 穷尽 switch，加成员会让前端 `tsc --noEmit` 直接失败。
 
 ## 13. 枚举汇总
 

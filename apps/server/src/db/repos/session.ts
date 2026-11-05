@@ -67,6 +67,8 @@ export type SessionPatch = Partial<{
   /** CHAT-SB1（分叉）：源会话 id 与分叉起点消息 id，仅由 fork 写入 */
   forked_from_session_id: string | null;
   fork_message_id: string | null;
+  /** BORROW-4.3：暂停时间戳；null = 恢复。只改该列，不动 status（status 语义不变） */
+  paused_at: number | null;
 }>;
 
 export function updateSession(db: Db, id: string, patch: SessionPatch): Session {
@@ -99,6 +101,10 @@ export function updateSession(db: Db, id: string, patch: SessionPatch): Session 
   if (patch.fork_message_id !== undefined) {
     sets.push('fork_message_id = ?');
     params.push(patch.fork_message_id);
+  }
+  if (patch.paused_at !== undefined) {
+    sets.push('paused_at = ?');
+    params.push(patch.paused_at);
   }
   if (sets.length === 0) throw new NotFoundError('无可用更新字段');
   params.push(id);

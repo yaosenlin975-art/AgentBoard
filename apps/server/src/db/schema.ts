@@ -29,6 +29,8 @@ import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
 // BORROW-4.2：会话事件流（纯追加表；seq 翻页依赖主键）
 import { migrateSessionEvent } from './migrations/sessionEvent.js';
+// BORROW-4.3：会话暂停标记（幂等加列，不重建 session 表）
+import { migrateSessionPaused } from './migrations/sessionPaused.js';
 // CHAT-RETRY1（契约 #15）：单步重试步骤台账（依赖 session_turn 已建）
 import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
@@ -72,7 +74,8 @@ CREATE TABLE IF NOT EXISTS session (
   cli TEXT NOT NULL, model TEXT, status TEXT NOT NULL DEFAULT '运行中'
     CHECK (status IN ('运行中','已结束','失败')),
   adapter_session_id TEXT, created_at INTEGER NOT NULL, title TEXT,
-  archived_at INTEGER, forked_from_session_id TEXT, fork_message_id TEXT);
+  archived_at INTEGER, forked_from_session_id TEXT, fork_message_id TEXT,
+  paused_at INTEGER);
 CREATE TABLE IF NOT EXISTS message (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user','assistant','event','error')),
@@ -124,6 +127,8 @@ export function initSchema(db: Db): void {
   migrateSessionTurn(db);
   // BORROW-4.2：会话事件流（纯追加；依赖 session 表已建）
   migrateSessionEvent(db);
+  // BORROW-4.3：会话暂停标记（纯加列；不重建 session 表，避免 FK 级联清空）
+  migrateSessionPaused(db);
   // CHAT-RETRY1（契约 #15）：步骤台账（必须排在 migrateSessionTurn 之后）
   migrateSessionStepLedger(db);
   // CHAT-AWAIT1（契约 #13 / 超时兜底）：session_turn 心跳列（必须排在 migrateSessionTurn 之后）

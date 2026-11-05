@@ -278,11 +278,13 @@ export const sendMessageSchema = z.object({
 
 /**
  * PATCH /api/sessions/:id：改 model（Task 14「修改模型，下一轮生效」）、会话级 title（重命名）
- * 或 archived（CHAT-SB1 归档/恢复）。
- * - 三者都缺 → 400；至少提供一个。
+ * 或 archived（CHAT-SB1 归档/恢复），BORROW-4.3 追加 paused（暂停/恢复）。
+ * - 四者都缺 → 400；至少提供一个。
  * - model：字符串或 null 清空。
  * - title：1–50 字符（首尾空白 trim 后判空）；null 清空自定义标题、回到派生标题。
  * - archived：true=归档（运行中由路由层 409 拒绝），false=恢复。
+ * - paused：true=暂停（不 kill 在途工具/子进程，轮次结束后不再起新轮），false=恢复（消费暂停期队列）。
+ *   paused 是独立互斥动作，不与其它三个字段同批提交，避免「先归档再暂停」这类中间态。
  */
 export const patchSessionSchema = z
   .object({
@@ -295,10 +297,18 @@ export const patchSessionSchema = z
       .nullable()
       .optional(),
     archived: z.boolean().optional(),
+    paused: z.boolean().optional(),
   })
-  .refine((value) => value.model !== undefined || value.title !== undefined || value.archived !== undefined, {
-    message: '至少提供 model / title / archived',
-  });
+  .refine(
+    (value) => value.model !== undefined || value.title !== undefined || value.archived !== undefined || value.paused !== undefined,
+    { message: '至少提供 model / title / archived / paused' },
+  )
+  .refine(
+    (value) =>
+      value.paused === undefined
+      || (value.model === undefined && value.title === undefined && value.archived === undefined),
+    { message: 'paused 不能与 model / title / archived 同时提交' },
+  );
 
 /**
  * POST /api/sessions/:id/fork：从某条消息（缺省=最后一条）分叉出新会话。

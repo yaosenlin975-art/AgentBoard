@@ -16,7 +16,7 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
-import { appendSessionEvent } from '../db/repos/sessionEvent.js';
+import { appendSessionEvent, lastSessionEventSeq } from '../db/repos/sessionEvent.js';
 import { failAllOpenTurns, failOpenTurns, getTurn, updateTurn } from '../db/repos/sessionTurn.js';
 import { initialToolMeta } from './messageMeta.js';
 import { markTurnAwaiting, setAwaitingAnswerDispatcher } from './turnAwaiting.js';
@@ -448,6 +448,44 @@ export function getSessionRuntime(sessionId: string): SessionRuntime {
   };
 }
 
+/** BORROW-4.3：暂停判定唯一口径——`paused_at` 非空即暂停（status 不参与） */
+function isSessionPaused(database: Db, sessionId: string): boolean {
+  const session = getSession(database, sessionId);
+  return session !== null && session.paused_at != null;
+}
+
+/** 把会话队列合并成一次下一轮输入（不改变既有合并语义：多条消息拼成一段 prompt） */
+function dequeueMergedInput(state: SessionState): TurnInput | null {
+  if (state.queue.length === 0) return null;
+  const pending = state.queue;
+  state.queue = [];
+  return {
+    prompt: pending.map((item) => item.prompt).join('\n\n'),
+    attachments: pending.flatMap((item) => item.attachments),
+    deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
+    retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
+    sessionAttachment: pending.some((item) => item.sessionAttachment),
+    messageIds: pending.flatMap((item) => item.messageIds ?? []),
+  };
+}
+
+/**
+ * BORROW-4.3：恢复后消费暂停期间积压的队列（按入队顺序合并交付，不丢弃）。
+ * 只在无在途轮次时起轮；在途轮次结束时由 `executeTurn` 收尾分支接手（那时 paused_at 已清空）。
+ */
+function drainSessionQueue(database: Db, sessionId: string): void {
+  const state = states.get(sessionId);
+  if (!state || state.turnActive) return;
+  const input = dequeueMergedInput(state);
+  if (input === null) return;
+  state.turnActive = true;
+  if (getSession(database, sessionId)?.status !== '运行中') {
+    persistSessionPatch(database, sessionId, { status: '运行中' });
+  }
+  broadcastRuntime(sessionId);
+  void beginTurn(database, sessionId, input);
+}
+
 /** 运行时变化广播 session.runtime（队列长度/等待槽位） */
 function broadcastRuntime(sessionId: string): void {
   const runtime = getSessionRuntime(sessionId);
@@ -667,6 +705,13 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
     return { queued: true };
   }
 
+  // BORROW-4.3：暂停期间不开始新轮次——消息照常落 user 行并入队，恢复后按序交付（不丢、不静默拒绝）
+  if (isSessionPaused(database, sessionId)) {
+    state.queue.push(input);
+    broadcastRuntime(sessionId);
+    return { queued: true };
+  }
+
   // 空闲（含停止/失败后续聊）：回运行中并立即起轮
   state.turnActive = true;
   if (getSession(database, sessionId)!.status !== '运行中') {
@@ -698,6 +743,57 @@ export async function stopSession(sessionId: string): Promise<Session> {
     }
   }
   return persistSessionPatch(database, sessionId, { status: '已结束' });
+}
+
+/**
+ * BORROW-4.3：暂停会话。
+ *
+ * 语义写死（勿自行扩展）：
+ * - 只置 `session.paused_at`，**不 kill 正在执行的工具/子进程，不撤销已写入**；
+ * - 在途轮次照常跑完（工具步骤在 CLI 进程内，服务端无法逐步骤暂停），但结束后不再自动开始下一轮；
+ * - 暂停期间的入站消息照常落 user 行并入队，恢复后按序交付（不丢）；
+ * - `session.status` 语义不变（仍是 运行中 | 已结束 | 失败），调用方以 `paused` / `paused_at` 判断。
+ */
+export async function pauseSession(sessionId: string): Promise<Session> {
+  const database = requireSessionDb(sessionId);
+  const existing = getSession(database, sessionId);
+  if (!existing) throw new NotFoundError('会话不存在');
+  if (existing.paused_at != null) return existing; // 幂等：重复暂停不重复记事件
+  const pausedAt = Date.now();
+  const session = persistSessionPatch(database, sessionId, { paused_at: pausedAt });
+  appendSessionEvent(database, sessionId, 'session.paused', { paused_at: pausedAt });
+  broadcast({ type: 'session.paused', session_id: sessionId, paused_at: pausedAt, session });
+  return session;
+}
+
+/**
+ * BORROW-4.3：恢复会话。
+ *
+ * 恢复语义写死：
+ * - **不重放已完成步骤**：已完成的消息/步骤 seq 全部 ≤ 恢复事件的 seq；客户端用
+ *   `GET /api/sessions/:id/events?after_seq=<resume_after_seq>` 续拉即可，
+ *   服务端不重发 message、不重跑 turn（依赖 BORROW-4.2 的 session_event 事件流）；
+ * - 暂停期间积压的入站消息按入队顺序合并交付（不丢、不重排）；
+ * - 未暂停时调用是幂等空操作（不写事件，锚点取当前最大 seq）。
+ */
+export async function resumeSession(sessionId: string): Promise<{ session: Session; resume_after_seq: number }> {
+  const database = requireSessionDb(sessionId);
+  const existing = getSession(database, sessionId);
+  if (!existing) throw new NotFoundError('会话不存在');
+  if (existing.paused_at == null) {
+    return { session: existing, resume_after_seq: lastSessionEventSeq(database, sessionId) };
+  }
+  const session = persistSessionPatch(database, sessionId, { paused_at: null });
+  const event = appendSessionEvent(database, sessionId, 'session.resumed', { resumed_at: Date.now() });
+  broadcast({
+    type: 'session.resumed',
+    session_id: sessionId,
+    paused_at: null,
+    session,
+    resume_after_seq: event.seq,
+  });
+  drainSessionQueue(database, sessionId);
+  return { session: getSession(database, sessionId)!, resume_after_seq: event.seq };
 }
 
 /**
@@ -764,6 +860,14 @@ async function beginTurn(database: Db, sessionId: string, input: TurnInput): Pro
     if (state.current !== ctx) return; // 已被新轮次取代
     if (ctx.stopRequested) {
       state.turnActive = false; // 等槽位期间被 stop：放弃本轮，队列保留
+      return;
+    }
+    // BORROW-4.3：暂停期间不开始新轮次。本轮输入退回队首（已落 user 行不丢），恢复后按序交付
+    if (isSessionPaused(database, sessionId)) {
+      state.queue.unshift(input);
+      state.turnActive = false;
+      state.current = null;
+      broadcastRuntime(sessionId);
       return;
     }
     await executeTurn(database, sessionId, state, ctx, input);
@@ -1063,18 +1167,11 @@ async function executeTurn(
       : { state: 'done' },
   );
 
-  if (state.queue.length > 0) {
-    const pending = state.queue;
-    state.queue = [];
+  // BORROW-4.3：暂停期间不自动消费队列（不开始新步骤）；队列保留，恢复时由 resumeSession 统一交付
+  const pending = isSessionPaused(database, sessionId) ? null : dequeueMergedInput(state);
+  if (pending !== null) {
     broadcastRuntime(sessionId); // 排队消息已合并起下一轮：queued_count 归零
-    void beginTurn(database, sessionId, {
-      prompt: pending.map((item) => item.prompt).join('\n\n'),
-      attachments: pending.flatMap((item) => item.attachments),
-      deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
-      retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
-      sessionAttachment: pending.some((item) => item.sessionAttachment),
-      messageIds: pending.flatMap((item) => item.messageIds ?? []),
-    }); // turnActive 保持 true；下一轮重走全局槽位 FIFO
+    void beginTurn(database, sessionId, pending); // turnActive 保持 true；下一轮重走全局槽位 FIFO
     return;
   }
 

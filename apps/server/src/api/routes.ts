@@ -94,7 +94,7 @@ import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
 import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/idempotency.js';
 import { dispatchIssue } from '../services/dispatch.js';
-import { createSession, forgetSession, getSessionRuntime, sendToSession, setMaxConcurrentTurns, stopSession, runRetriedStep } from '../services/sessionManager.js';
+import { createSession, forgetSession, getSessionRuntime, pauseSession, resumeSession, sendToSession, setMaxConcurrentTurns, stopSession, runRetriedStep } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
 import { attachmentsDirFor, configDir, loadConfig, readSettings, writeSettings, type DbPathSource } from '../config.js';
 import {
@@ -1346,6 +1346,7 @@ export function createRouter(deps: RouterDeps): Router {
         const runtime = getSessionRuntime(s.id);
         return {
           ...s,
+          paused: s.paused_at != null,
           preview: buildSessionPreview(previews.get(s.id) ?? ''),
           source: s.issue_id === null ? 'chat' : 'dispatch',
           queued_count: runtime.queuedCount,
@@ -1363,6 +1364,7 @@ export function createRouter(deps: RouterDeps): Router {
     // CHAT-AWAIT1（契约 #18）：详情带该会话 turns，阻塞/超时状态可直接读取
     res.json({
       ...routed.value,
+      paused: routed.value.paused_at != null,
       queued_count: runtime.queuedCount,
       waiting_slot: runtime.waitingSlot,
       turns: listTurnsBySession(routed.db, routed.value.id),
@@ -1532,10 +1534,26 @@ export function createRouter(deps: RouterDeps): Router {
   // Task 14：修改会话模型（下一轮生效——sessionManager.runTurn 起轮时读取 session.model）
   // 会话标题：同一端点接受 title（1–50 字，null 清空回到派生标题），与 model 可同时提交。
   // CHAT-SB1：同一端点接受 archived（true=归档 / false=恢复）；运行中归档与删除同口径 409。
-  router.patch('/sessions/:id', (req, res) => {
+  // BORROW-4.3：同一端点接受 paused（true=暂停 / false=恢复）；暂停只拦新轮次，不 kill 在途工具。
+  router.patch('/sessions/:id', async (req, res) => {
     const body = parseBody(patchSessionSchema, req.body);
     const routed = locateSessionRouted(req.params.id!);
     if (!routed) throw new NotFoundError('会话不存在');
+    // 暂停/恢复必须经 sessionManager：恢复要消费暂停期间积压的队列并写 session.resumed 事件
+    if (body.paused !== undefined) {
+      if (body.paused) {
+        const paused = await pauseSession(req.params.id!);
+        res.json({ ...paused, paused: true });
+        return;
+      }
+      const resumed = await resumeSession(req.params.id!);
+      res.json({
+        ...resumed.session,
+        paused: resumed.session.paused_at != null,
+        resume_after_seq: resumed.resume_after_seq,
+      });
+      return;
+    }
     const current = routed.value;
     if (body.archived === true && current.status === '运行中') {
       throw new ConflictError('会话正在运行，请先停止再归档');
@@ -1553,7 +1571,7 @@ export function createRouter(deps: RouterDeps): Router {
       archived_at: session.archived_at ?? null,
       forked_from_session_id: session.forked_from_session_id ?? null,
     });
-    res.json(session);
+    res.json({ ...session, paused: session.paused_at != null });
   });
 
   // CHAT-SB1（契约 #12）：分叉会话——复制截止消息到新会话（不复制 plan / adapter_session_id），

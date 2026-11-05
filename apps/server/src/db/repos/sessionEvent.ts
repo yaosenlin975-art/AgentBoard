@@ -72,3 +72,15 @@ export function listSessionEvents(db: Db, sessionId: string, afterSeq = 0): Sess
     .all(sessionId, afterSeq) as SessionEventRow[];
   return rows.map(toEvent);
 }
+
+/**
+ * BORROW-4.3：会话事件流的当前最大 seq（无事件 = 0）。
+ * 恢复会话时作为「从这里之后继续」的锚点：暂停/恢复本身也是事件行，
+ * 已完成步骤的 seq 全部 ≤ 该值，客户端 `after_seq` 拉取不会重放旧内容。
+ */
+export function lastSessionEventSeq(db: Db, sessionId: string): number {
+  const row = db
+    .prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM session_event WHERE session_id = ?')
+    .get(sessionId) as { seq: number };
+  return row.seq;
+}
