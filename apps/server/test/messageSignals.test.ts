@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createTestDb, type TestDb } from './helpers.js';
+import { createWorkspace } from '../src/db/repos/workspace.js';
+import { createSession } from '../src/db/repos/session.js';
+import { addMessage, listFirstUserMessages, listMessagesBySession } from '../src/db/repos/message.js';
 import {
   buildSessionPreview,
   classifySessionError,
@@ -44,5 +48,60 @@ describe('messageSignals（AUDIT-SRV F-03/F-04/F-06）', () => {
     expect(detectEncodingLost('?? 两个问号')).toBe(false);
     expect(detectEncodingLost('??? OK ????,??????')).toBe(true);
     expect(detectEncodingLost('乱码 \uFFFD 标记')).toBe(true);
+  });
+});
+
+describe('message 仓储：error 归类落库 + 读取期派生（AUDIT-SRV F-03/F-04/F-06）', () => {
+  let t: TestDb;
+  beforeEach(() => {
+    t = createTestDb();
+  });
+  afterEach(() => {
+    t.cleanup();
+  });
+
+  it('error 消息落 error_code/retryable 列；存量无归类行的读取兜底与编码标记不写回', () => {
+    const ws = createWorkspace(t.db, { name: 'w', path: 'D:\\ws\\w' });
+    const session = createSession(t.db, { workspace_id: ws.id, cli: 'codex' });
+
+    const quota = addMessage(t.db, {
+      session_id: session.id,
+      role: 'error',
+      content: '额度已用尽 429',
+    });
+    expect(quota.error_code).toBe('QUOTA_EXCEEDED');
+    expect(quota.retryable).toBe(false);
+
+    const rate = addMessage(t.db, { session_id: session.id, role: 'error', content: '429 Too Many Requests' });
+    expect(rate.error_code).toBe('RATE_LIMITED');
+    expect(rate.retryable).toBe(true);
+
+    // 存量行（直接写库、无归类列）：读取时按 content 现算兜底
+    t.db
+      .prepare('INSERT INTO message (id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)')
+      .run('legacy-1', session.id, 'error', '额度不足', 1_000);
+    t.db
+      .prepare('INSERT INTO message (id, session_id, role, content, ts) VALUES (?, ?, ?, ?, ?)')
+      .run('legacy-2', session.id, 'assistant', '??? OK ????,??????', 2_000);
+
+    const list = listMessagesBySession(t.db, session.id);
+    const legacyError = list.find((m) => m.id === 'legacy-1')!;
+    expect(legacyError.error_code).toBe('QUOTA_EXCEEDED');
+    expect(legacyError.retryable).toBe(false);
+    expect(list.find((m) => m.id === 'legacy-2')!.encoding_lost).toBe(true);
+    // 派生字段不写回：库里 error_code 仍为 NULL
+    const raw = t.db.prepare('SELECT error_code FROM message WHERE id = ?').get('legacy-1') as { error_code: string | null };
+    expect(raw.error_code).toBeNull();
+
+    // 首条 user 消息预览（F-03）：一次查回、无消息会话不在 Map 里
+    vi.useFakeTimers();
+    vi.setSystemTime(3_000);
+    addMessage(t.db, { session_id: session.id, role: 'user', content: '第一问' });
+    vi.setSystemTime(4_000);
+    addMessage(t.db, { session_id: session.id, role: 'user', content: '第二问' });
+    vi.useRealTimers();
+    const previews = listFirstUserMessages(t.db, [session.id]);
+    expect(previews.get(session.id)).toBe('第一问');
+    expect(listFirstUserMessages(t.db, []).size).toBe(0);
   });
 });
