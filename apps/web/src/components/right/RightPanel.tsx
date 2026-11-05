@@ -15,6 +15,7 @@ import { useDismissable } from '../overlay/useDismissable';
 import { panelMotionStyle, usePanelPresence, usePrefersReducedMotion } from '../overlay/panelMotion';
 import { DetailPanel } from '../detail/DetailPanel';
 import { RefPanel } from './RefPanel';
+import { computeDetailAnchor, type DetailAnchor } from '../../lib/detailAnchor';
 
 const WIDTH_KEY = 'agentboard.right-panel-width';
 const MIN_WIDTH = 320;
@@ -36,9 +37,12 @@ export function RightPanel() {
   const closeRight = usePanelStore((s) => s.closeRight);
   const clearView = usePanelStore((s) => s.clearView);
   const refPanel = usePanelStore((s) => s.refPanel);
+  const detailIssueId = usePanelStore((s) => s.issueId);
 
   const [width, setWidth] = useState(loadWidth);
   const [resizing, setResizing] = useState(false);
+  // ANCHOR-DETAIL：详情浮窗贴列定位（null=沿用右侧固定抽屉；narrow/无列信息时也是 drawer）
+  const [anchor, setAnchor] = useState<DetailAnchor | null>(null);
   const widthRef = useRef(width);
   widthRef.current = width;
   // 单一真源（PANEL-VIEW-BUG）：可见性只看 overlayStore.right；视图只看 panelStore.view。
@@ -116,6 +120,58 @@ export function RightPanel() {
     previousView.current = { isOpen, view: activeView, mounted };
   }, [activeView, isOpen, mounted]);
 
+  /**
+   * ANCHOR-DETAIL：重算详情浮窗位置（打开、切换卡片、resize、看板横向滚动）。
+   * 触发元素取 returnFocusRef；若当前焦点已落在另一列的任务卡上（面板打开时换卡），
+   * 则把触发元素更新为那张卡，保证跟着新列走、关闭后焦点也回到它。
+   */
+  const recomputeAnchor = useCallback((): void => {
+    if (activeView !== 'detail') {
+      setAnchor(null);
+      return;
+    }
+    // 关闭过程中保留上一位置，避免出场动画里面板跳回右侧
+    if (!isOpen || !mounted) return;
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused.closest('[data-testid^="column-"]') !== null) {
+      returnFocusRef.current = focused;
+    }
+    const trigger = returnFocusRef.current;
+    const columnEl = trigger !== null && trigger.isConnected ? trigger.closest('[data-testid^="column-"]') : null;
+    if (columnEl === null) {
+      setAnchor({ mode: 'drawer' });
+      return;
+    }
+    const rect = columnEl.getBoundingClientRect();
+    const next = computeDetailAnchor(
+      { left: rect.left, right: rect.right, top: rect.top, height: rect.height },
+      window.innerWidth,
+    );
+    if (next.mode === 'drawer' || asideRef.current === null) {
+      setAnchor(next);
+      return;
+    }
+    // 视口坐标 → 定位容器坐标（aside 的 offsetParent 就是 App 里的 relative 布局壳）
+    const containerRect = (asideRef.current.offsetParent as HTMLElement | null)?.getBoundingClientRect() ?? null;
+    setAnchor({
+      ...next,
+      left: next.left - (containerRect?.left ?? 0),
+      top: next.top - (containerRect?.top ?? 0),
+    });
+  }, [activeView, isOpen, mounted]);
+
+  useLayoutEffect(() => {
+    recomputeAnchor();
+    if (activeView !== 'detail' || !isOpen) return undefined;
+    window.addEventListener('resize', recomputeAnchor);
+    // capture 阶段监听 scroll：横向滚动容器（board-columns）的 scroll 不会冒泡到 window
+    window.addEventListener('scroll', recomputeAnchor, true);
+    return () => {
+      window.removeEventListener('resize', recomputeAnchor);
+      window.removeEventListener('scroll', recomputeAnchor, true);
+    };
+  }, [recomputeAnchor, activeView, isOpen, detailIssueId]);
+
 
   const onHandlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault();
@@ -152,30 +208,41 @@ export function RightPanel() {
   // PANEL-ENTRY2：取消「收起成小方块」状态；未打开且出场动画结束后整块不渲染，入口在任务卡与顶栏「聊天」
   if (!mounted) return null;
 
+  const anchored = activeView === 'detail' && anchor?.mode === 'anchored' ? anchor : null;
+  const panelWidth = anchored?.width ?? width;
+
   return (
     <aside
       ref={asideRef}
       data-testid="right-panel"
       data-panel-state={phase}
+      data-anchor-side={anchored?.side ?? 'fixed'}
+      data-anchored={anchored !== null ? 'true' : 'false'}
       aria-label="右侧面板"
       id="right-panel-shell"
       aria-hidden={isOpen ? undefined : true}
       inert={isOpen ? undefined : true}
       style={{
-        width: `${width}px`,
-        maxWidth: 'calc(100vw - 1rem)',
-        height: 'calc(100dvh - 5rem)',
+        width: `${panelWidth}px`,
+        maxWidth: anchored !== null ? 'none' : 'calc(100vw - 1rem)',
+        // ANCHOR-DETAIL：贴列时顶对齐列顶部、与列同高；否则沿用整宽抽屉高度
+        height: anchored !== null ? `${anchored.height}px` : 'calc(100dvh - 5rem)',
+        ...(anchored !== null ? { left: `${anchored.left}px`, top: `${anchored.top}px` } : {}),
         // 宽度只作为静态尺寸：不用 width 过渡，避免主内容随面板动画重排（PANEL-FLOAT 语义）
         ...panelMotionStyle('slide-right', phase, reducedMotion),
       }}
-      className="absolute right-2 top-2 z-30 overflow-hidden rounded-lg border border-hairline bg-surface-card shadow-xl"
+      className={`absolute z-30 overflow-hidden rounded-lg border border-hairline bg-surface-card ${
+        anchored !== null
+          ? `shadow-xl ${anchored.side === 'fallback' ? 'ring-1 ring-hairline shadow-2xl' : ''}`
+          : 'right-2 top-2 shadow-xl'
+      }`}
     >
       <div
         id="right-panel-content"
         data-testid="right-panel-content"
         aria-hidden={!isOpen}
         inert={!isOpen}
-        style={{ width: `${width}px`, maxWidth: 'calc(100vw - 1rem)' }}
+        style={{ width: '100%', maxWidth: anchored !== null ? 'none' : 'calc(100vw - 1rem)' }}
         className={`absolute inset-y-0 right-0 flex flex-col transition-transform duration-200 motion-reduce:transition-none ${isOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}
       >
         <div
@@ -190,7 +257,7 @@ export function RightPanel() {
           title="拖拽调整宽度"
           onPointerDown={onHandlePointerDown}
           onKeyDown={onHandleKeyDown}
-          hidden={!isOpen}
+          hidden={!isOpen || anchored !== null}
           // top-10 = 头部 h-10：手柄只在内容区，不再压住标题带（原先 inset-y-0 会盖掉头部左缘 6px 与 border）
           className="absolute bottom-0 left-0 top-10 z-10 w-1.5 cursor-col-resize hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-accent"
         />
