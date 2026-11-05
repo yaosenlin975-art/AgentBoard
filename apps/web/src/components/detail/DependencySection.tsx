@@ -1,17 +1,18 @@
 /**
- * 任务详情「依赖」区（设计 §11）：列出前置任务与被阻塞者（标题 + 状态 + 解除标记），
- * 支持在当前工作区内搜索添加前置、移除前置。解除判定只用服务端 `resolved`，不本地推断。
- * 已占用卡新增前置由服务端 409 `ISSUE_CLAIMED` 兜底，这里原样展示其中文原因。
+ * 任务详情「依赖」区（设计 §11 / DETAIL-D3）：
+ * - 默认只占一行（前置总数 / 未解除数 / 被阻塞数 + 「暂不可领取」角标），点击展开；
+ * - 展开后三组：前置任务 / 被本卡阻塞 / 关联·重复（不阻塞领取）；
+ * - 空组不渲染整块空状态；搜索添加前置只在展开后出现。
+ * 解除判定只用服务端 `resolved`，不本地推断；已占用卡新增前置仍由服务端 409 `ISSUE_CLAIMED` 兜底。
  */
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue } from '@agentboard/shared';
+import type { Issue, IssueStatus } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
 import type { DependencyRef, DependencyView } from '../../lib/dependency';
-import { EmptyState } from '../ui/EmptyState';
 
 const inputCls =
-  'w-full rounded border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-accent dark:border-neutral-700 dark:bg-neutral-800';
+  'w-full rounded border border-hairline bg-surface-card px-2 py-1 text-[11.5px] text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent';
 
 const MAX_VISIBLE_CANDIDATES = 30;
 
@@ -20,37 +21,69 @@ function errorText(error: unknown, fallback: string): string {
   return `${fallback}：${error instanceof Error ? error.message : '未知错误'}`;
 }
 
+/** 行首状态圆点：只做视觉，不替代文字状态 */
+function statusDotTone(status: IssueStatus): string {
+  if (status === '进行中') return 'bg-accent';
+  if (status === '待验收') return 'bg-ab-add';
+  if (status === '已关闭') return 'bg-ink-3';
+  return 'bg-amber-500';
+}
+
 function DependencyRow({
   item,
   testId,
   action,
+  showResolved = false,
 }: {
   item: DependencyRef;
   testId: string;
   action?: ReactNode;
+  showResolved?: boolean;
 }) {
   return (
-    <li
-      data-testid={testId}
-      className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 px-2 py-1 text-xs dark:border-neutral-800"
-    >
-      <span className="min-w-0 flex-1 truncate" title={item.title}>{item.title}</span>
-      <span className="text-neutral-500 dark:text-neutral-400">{item.status}</span>
+    <li data-testid={testId} className="flex items-center gap-1.5 py-0.5 text-[11.5px]">
       <span
-        data-testid={`${testId}-resolved`}
-        className={item.resolved
-          ? 'text-green-700 dark:text-green-400'
-          : 'text-amber-700 dark:text-amber-300'}
-      >
-        {item.resolved ? '已解除' : '未解除'}
+        aria-hidden
+        data-testid={`${testId}-dot`}
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotTone(item.status)}`}
+      />
+      <span className="min-w-0 flex-1 truncate text-ink-2" title={item.title}>
+        {item.title}
       </span>
+      <span className="shrink-0 text-[10.5px] text-ink-3">{item.status}</span>
+      {showResolved && (
+        <span
+          data-testid={`${testId}-resolved`}
+          className={item.resolved
+            ? 'shrink-0 text-green-700 dark:text-green-400'
+            : 'shrink-0 text-amber-700 dark:text-amber-300'}
+        >
+          {item.resolved ? '已解除' : '未解除'}
+        </span>
+      )}
       {action}
     </li>
   );
 }
 
+function removeAction(item: DependencyRef, label: string, pending: boolean, onRemove: (id: string) => void, testId: string): ReactNode {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-label={`移除${label} ${item.title}`}
+      disabled={pending}
+      onClick={() => onRemove(item.issue_id)}
+      className="shrink-0 rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-3 hover:bg-accent-soft hover:text-accent disabled:opacity-40"
+    >
+      移除
+    </button>
+  );
+}
+
 export function DependencySection({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
   const [search, setSearch] = useState('');
   const [picked, setPicked] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +102,16 @@ export function DependencySection({ issue }: { issue: Issue }) {
 
   const blockers = dependencies?.blockers ?? [];
   const blocked = dependencies?.blocked ?? [];
+  const related = dependencies?.related ?? [];
+  const duplicate = dependencies?.duplicate ?? [];
+
+  // 摘要优先用依赖接口的实际列表；未返回时回落到 Issue 投影，避免首屏空一行
+  const blockerTotal = dependencies !== undefined ? blockers.length : (issue.blocked_by_count ?? 0);
+  const openCount = dependencies !== undefined
+    ? blockers.filter((item) => !item.resolved).length
+    : (issue.blocked_by_open_count ?? 0);
+  const blockedTotal = blocked.length;
+
   const keyword = search.trim();
   const existingBlockerIds = new Set(blockers.map((item) => item.issue_id));
   const candidates = (workspaceIssues ?? [])
@@ -113,129 +156,151 @@ export function DependencySection({ issue }: { issue: Issue }) {
     onError: (e) => setError(errorText(e, '移除前置失败')),
   });
 
+  const summaryTone = openCount > 0
+    ? 'border-amber-600/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+    : 'border-hairline bg-surface-raised text-ink-2 hover:border-accent';
+
   return (
-    <section data-testid="detail-dependencies" aria-label="依赖" className="space-y-2">
-      <h3 className="text-sm font-semibold">依赖</h3>
+    <section data-testid="detail-dependencies" aria-label="依赖" className="space-y-1">
+      <button
+        type="button"
+        data-testid="dep-summary"
+        aria-expanded={expanded}
+        aria-controls="dep-body"
+        onClick={() => setExpanded((current) => !current)}
+        className={`flex w-full items-center justify-between gap-2 rounded border px-2 py-1.5 text-left text-[11.5px] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${summaryTone}`}
+      >
+        <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <span className="truncate">
+            前置 {blockerTotal} · {openCount} 项未解除 · 阻塞 {blockedTotal}
+          </span>
+          {openCount > 0 && (
+            <span
+              data-testid="dep-summary-badge"
+              className="shrink-0 rounded-full border border-amber-600/40 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300"
+            >
+              暂不可领取
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 text-[10.5px] text-ink-3">{expanded ? '收起' : '展开'}</span>
+      </button>
+
       {loadError !== null && (
         <p role="alert" className="text-xs text-red-600 dark:text-red-400">
           加载依赖失败：{loadError instanceof Error ? loadError.message : '未知错误'}
         </p>
       )}
 
-      <div className="space-y-1 text-sm">
-        <p className="text-xs text-neutral-600 dark:text-neutral-300">前置任务（未解除前不可领取）</p>
-        <ul data-testid="dep-blockers" className="space-y-1">
-          {blockers.map((item) => (
-            <DependencyRow
-              key={item.issue_id}
-              item={item}
-              testId={`dep-blocker-${item.issue_id}`}
-              action={(
+      <div
+        id="dep-body"
+        data-testid="dep-body"
+        className={`grid transition-[grid-template-rows] duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:duration-[1ms] ${
+          expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden" inert={expanded ? undefined : true}>
+          <div className="space-y-2 pt-1">
+            {blockers.length > 0 && (
+              <div data-testid="dep-blockers-group" className="space-y-0.5">
+                <p className="text-[10.5px] text-ink-3">前置任务（未解除前不可领取）</p>
+                <ul data-testid="dep-blockers" className="space-y-0.5">
+                  {blockers.map((item) => (
+                    <DependencyRow
+                      key={item.issue_id}
+                      item={item}
+                      testId={`dep-blocker-${item.issue_id}`}
+                      showResolved
+                      action={removeAction(item, '前置', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-${item.issue_id}`)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {blocked.length > 0 && (
+              <div data-testid="dep-blocked-group" className="space-y-0.5">
+                <p className="text-[10.5px] text-ink-3">被本卡阻塞</p>
+                <ul data-testid="dep-blocked" className="space-y-0.5">
+                  {blocked.map((item) => (
+                    <DependencyRow key={item.issue_id} item={item} testId={`dep-blocked-${item.issue_id}`} />
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {related.length + duplicate.length > 0 && (
+              <div data-testid="dep-relations-group" className="space-y-0.5">
+                <p className="text-[10.5px] text-ink-3">关联·重复（不阻塞领取）</p>
+                {related.length > 0 && (
+                  <ul data-testid="dep-related" className="space-y-0.5">
+                    {related.map((item) => (
+                      <DependencyRow
+                        key={item.issue_id}
+                        item={item}
+                        testId={`dep-related-${item.issue_id}`}
+                        action={removeAction(item, '关联', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-related-${item.issue_id}`)}
+                      />
+                    ))}
+                  </ul>
+                )}
+                {duplicate.length > 0 && (
+                  <ul data-testid="dep-duplicate" className="space-y-0.5">
+                    {duplicate.map((item) => (
+                      <DependencyRow
+                        key={item.issue_id}
+                        item={item}
+                        testId={`dep-duplicate-${item.issue_id}`}
+                        action={removeAction(item, '重复', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-duplicate-${item.issue_id}`)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-1 rounded border border-dashed border-hairline p-2">
+              <label className="block text-[10.5px] text-ink-3">
+                <span className="mb-1 block">添加前置（当前工作区内搜索）</span>
+                <input
+                  data-testid="dep-search"
+                  aria-label="搜索前置任务"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="按标题筛选"
+                  className={inputCls}
+                />
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  data-testid="dep-candidate"
+                  aria-label="选择前置任务"
+                  value={selectedId}
+                  onChange={(e) => setPicked(e.target.value)}
+                  className={`${inputCls} min-w-0 flex-1`}
+                >
+                  {candidates.length === 0 && <option value="">没有可选任务</option>}
+                  {candidates.map((item) => (
+                    <option key={item.id} value={item.id}>{item.title}</option>
+                  ))}
+                </select>
                 <button
                   type="button"
-                  data-testid={`dep-remove-${item.issue_id}`}
-                  aria-label={`移除前置 ${item.title}`}
-                  disabled={removeBlocker.isPending}
-                  onClick={() => removeBlocker.mutate(item.issue_id)}
-                  className="rounded border border-neutral-300 px-1.5 py-0.5 text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                  data-testid="dep-add"
+                  onClick={() => addBlockers.mutate(selectedId)}
+                  disabled={selectedId === '' || addBlockers.isPending}
+                  title={issue.claimed_by !== null ? '占用中新增前置会被服务端拒绝（需先 release）' : undefined}
+                  className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
                 >
-                  移除
+                  添加前置
                 </button>
+              </div>
+              {error !== null && (
+                <p role="alert" data-testid="dep-error" className="text-xs text-red-600 dark:text-red-400">{error}</p>
               )}
-            />
-          ))}
-        </ul>
-        {dependencies !== undefined && blockers.length === 0 && (
-          <EmptyState testId="dep-blockers-empty" compact title="无前置任务" hint="在下方「添加前置」里选择阻塞本卡的任务" />
-        )}
-      </div>
-
-      <div className="space-y-1 text-sm">
-        <p className="text-xs text-neutral-600 dark:text-neutral-300">被阻塞的任务</p>
-        <ul data-testid="dep-blocked" className="space-y-1">
-          {blocked.map((item) => (
-            <DependencyRow key={item.issue_id} item={item} testId={`dep-blocked-${item.issue_id}`} />
-          ))}
-        </ul>
-        {dependencies !== undefined && blocked.length === 0 && (
-          <EmptyState testId="dep-blocked-empty" compact title="没有阻塞其他任务" hint="其他任务把本卡设为前置后会出现在这里" />
-        )}
-      </div>
-
-      {(['related', 'duplicate'] as const).map((group) => {
-        const items = dependencies?.[group] ?? [];
-        const label = group === 'related' ? '关联任务（related，不阻塞领取）' : '重复任务（duplicate，不阻塞领取）';
-        const emptyHint = group === 'related' ? '把任务标为关联后会出现在这里' : '把任务标为重复后会出现在这里';
-        return (
-          <div key={group} className="space-y-1 text-sm" data-testid={`dep-${group}-group`}>
-            <p className="text-xs text-neutral-600 dark:text-neutral-300">{label}</p>
-            <ul data-testid={`dep-${group}`} className="space-y-1">
-              {items.map((item) => (
-                <DependencyRow
-                  key={item.issue_id}
-                  item={item}
-                  testId={`dep-${group}-${item.issue_id}`}
-                  action={(
-                    <button
-                      type="button"
-                      data-testid={`dep-remove-${group}-${item.issue_id}`}
-                      aria-label={`移除${group === 'related' ? '关联' : '重复'} ${item.title}`}
-                      disabled={removeBlocker.isPending}
-                      onClick={() => removeBlocker.mutate(item.issue_id)}
-                      className="rounded border border-neutral-300 px-1.5 py-0.5 text-neutral-600 hover:bg-neutral-100 disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                    >
-                      移除
-                    </button>
-                  )}
-                />
-              ))}
-            </ul>
-            {dependencies !== undefined && items.length === 0 && (
-              <p data-testid={`dep-${group}-empty`} className="text-xs text-ink-3">{emptyHint}</p>
-            )}
+            </div>
           </div>
-        );
-      })}
-
-      <div className="space-y-1 rounded border border-dashed border-neutral-300 p-2 dark:border-neutral-700">
-        <label className="block text-xs text-neutral-600 dark:text-neutral-300">
-          <span className="mb-1 block">添加前置（当前工作区内搜索）</span>
-          <input
-            data-testid="dep-search"
-            aria-label="搜索前置任务"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="按标题筛选"
-            className={inputCls}
-          />
-        </label>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            data-testid="dep-candidate"
-            aria-label="选择前置任务"
-            value={selectedId}
-            onChange={(e) => setPicked(e.target.value)}
-            className={`${inputCls} min-w-0 flex-1`}
-          >
-            {candidates.length === 0 && <option value="">没有可选任务</option>}
-            {candidates.map((item) => (
-              <option key={item.id} value={item.id}>{item.title}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            data-testid="dep-add"
-            onClick={() => addBlockers.mutate(selectedId)}
-            disabled={selectedId === '' || addBlockers.isPending}
-            title={issue.claimed_by !== null ? '占用中新增前置会被服务端拒绝（需先 release）' : undefined}
-            className="rounded bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
-          >
-            添加前置
-          </button>
         </div>
-        {error !== null && (
-          <p role="alert" data-testid="dep-error" className="text-xs text-red-600 dark:text-red-400">{error}</p>
-        )}
       </div>
     </section>
   );

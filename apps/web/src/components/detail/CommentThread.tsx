@@ -95,6 +95,8 @@ export function CommentThread({
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [wokeResult, setWokeResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** D3：默认只显示最新 2 条，点「查看全部 N 条」展开 */
+  const [showAll, setShowAll] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const nextLocalId = useRef(0);
   const attachmentsRef = useRef<PendingAttachment[]>([]);
@@ -122,6 +124,8 @@ export function CommentThread({
   }, [comments]);
 
   const claimedBy = issue.claimed_by;
+  // D3：默认只渲染最新 2 条（按正序切尾），展开后显示全部
+  const visibleComments = showAll ? orderedComments : orderedComments.slice(-2);
   const hint =
     claimedBy === null
       ? '仅留言'
@@ -232,7 +236,7 @@ export function CommentThread({
     <section data-testid="detail-comments" aria-label="评论区" className="space-y-2">
       <h3 className="text-sm font-semibold">评论</h3>
       <ol className="space-y-2">
-        {orderedComments.map((c) => (
+        {visibleComments.map((c) => (
           <li
             key={c.id}
             data-testid={`comment-${c.id}`}
@@ -258,6 +262,25 @@ export function CommentThread({
           </li>
         )}
       </ol>
+
+      {orderedComments.length > 2 && (
+        <div className="flex items-center justify-between gap-2">
+          {!showAll && (
+            <span data-testid="comments-collapsed-hint" className="text-[10.5px] text-ink-3">
+              仅显示最新 2 条
+            </span>
+          )}
+          <button
+            type="button"
+            data-testid="comments-toggle"
+            aria-expanded={showAll}
+            onClick={() => setShowAll((value) => !value)}
+            className="ml-auto text-[11px] text-ink-2 underline underline-offset-2 hover:text-accent"
+          >
+            {showAll ? '收起评论' : `查看全部 ${orderedComments.length} 条`}
+          </button>
+        </div>
+      )}
 
       <div
         data-testid="comment-dropzone"

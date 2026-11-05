@@ -155,7 +155,7 @@ describe('详情「依赖」区', () => {
   const blocker = { issue_id: 'blk-1', title: '前置任务一', status: '进行中' as const, resolved: false };
   const doneBlocker = { issue_id: 'blk-2', title: '前置任务二', status: '待验收' as const, resolved: true };
 
-  it('列出 blockers（标题/状态/解除标记）与被阻塞者', async () => {
+  it('默认收起；点开摘要后列出 blockers（标题/状态/解除标记）与被阻塞者', async () => {
     server.use(
       http.get('/api/issues/iss-1/dependencies', () =>
         HttpResponse.json({
@@ -167,6 +167,11 @@ describe('详情「依赖」区', () => {
     );
     render(withClient(<DependencySection issue={base} />));
 
+    const summary = await screen.findByTestId('dep-summary');
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(summary);
+    expect(summary).toHaveAttribute('aria-expanded', 'true');
+
     const row = await screen.findByTestId('dep-blocker-blk-1');
     expect(row).toHaveTextContent('前置任务一');
     expect(row).toHaveTextContent('进行中');
@@ -175,7 +180,35 @@ describe('详情「依赖」区', () => {
     expect(screen.getByTestId('dep-blocked-down-1')).toHaveTextContent('后续任务');
   });
 
-  it('BORROW-2.2：related/duplicate 分组展示（顺序：前置→被阻塞→关联→重复），空组显示占位', async () => {
+  it('默认收起：摘要行显示前置/未解除/阻塞与「暂不可领取」；展开/收起同步 aria-expanded', async () => {
+    server.use(
+      http.get('/api/issues/iss-1/dependencies', () =>
+        HttpResponse.json({
+          blockers: [blocker, doneBlocker],
+          blocked: [{ issue_id: 'down-1', title: '后续任务', status: '待规划' as const, resolved: false }],
+        }),
+      ),
+      http.get('/api/issues', () => HttpResponse.json([base])),
+    );
+    render(withClient(<DependencySection issue={base} />));
+
+    const summary = await screen.findByTestId('dep-summary');
+    await waitFor(() => expect(summary).toHaveTextContent('前置 2 · 1 项未解除 · 阻塞 1'));
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('dep-summary-badge')).toHaveTextContent('暂不可领取');
+    expect(screen.getByTestId('dep-body').className).toContain('grid-rows-[0fr]');
+
+    await userEvent.click(summary);
+    expect(summary).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('dep-body').className).toContain('grid-rows-[1fr]');
+    expect(screen.getByTestId('dep-blockers-group')).toBeInTheDocument();
+
+    await userEvent.click(summary);
+    expect(summary).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('dep-body').className).toContain('grid-rows-[0fr]');
+  });
+
+  it('BORROW-2.2：关联与重复合并为「关联·重复」（前置→阻塞→关联·重复），空组不渲染空状态', async () => {
     server.use(
       http.get('/api/issues/iss-1/dependencies', () =>
         HttpResponse.json({
@@ -189,15 +222,19 @@ describe('详情「依赖」区', () => {
     );
     render(withClient(<DependencySection issue={base} />));
 
+    await userEvent.click(await screen.findByTestId('dep-summary'));
     expect(await screen.findByTestId('dep-related-rel-1')).toHaveTextContent('关联任务');
     expect(screen.getByTestId('dep-duplicate-dup-1')).toHaveTextContent('重复任务');
-    // 分组顺序：related 组在 duplicate 组之前，且都在「被阻塞的任务」之后
-    const section = screen.getByTestId('detail-dependencies');
-    const blockedPos = section.textContent!.indexOf('被阻塞的任务');
-    const relatedPos = section.textContent!.indexOf('关联任务');
-    const dupPos = section.textContent!.indexOf('重复任务');
-    expect(relatedPos).toBeGreaterThan(blockedPos);
-    expect(dupPos).toBeGreaterThan(relatedPos);
+    // 分组顺序：前置组 → 关联·重复组；组内 related 行 → duplicate 行
+    const blockersGroup = screen.getByTestId('dep-blockers-group');
+    const relationsGroup = screen.getByTestId('dep-relations-group');
+    expect(blockersGroup.compareDocumentPosition(relationsGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const relatedRow = screen.getByTestId('dep-related-rel-1');
+    const dupRow = screen.getByTestId('dep-duplicate-dup-1');
+    expect(relatedRow.compareDocumentPosition(dupRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 空组不渲染整块空状态
+    expect(screen.queryByTestId('dep-blocked-group')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dep-related-empty')).not.toBeInTheDocument();
   });
 
   it('添加前置：提交 workspace_id + blocker_issue_id，成功后刷新列表', async () => {
@@ -215,7 +252,11 @@ describe('详情「依赖」区', () => {
     );
     render(withClient(<DependencySection issue={base} />));
 
-    expect(await screen.findByTestId('dep-blockers-empty')).toBeInTheDocument();
+    // D3：添加入口在展开区里；空组不渲染空状态
+    const summary = await screen.findByTestId('dep-summary');
+    await waitFor(() => expect(summary).toHaveTextContent('前置 0 · 0 项未解除 · 阻塞 0'));
+    await userEvent.click(summary);
+    expect(screen.queryByTestId('dep-blockers-group')).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('dep-candidate')).toHaveValue('cand-1'));
     await userEvent.click(screen.getByTestId('dep-add'));
 
@@ -237,6 +278,7 @@ describe('详情「依赖」区', () => {
     );
     render(withClient(<DependencySection issue={base} />));
 
+    await userEvent.click(await screen.findByTestId('dep-summary'));
     await userEvent.click(await screen.findByTestId('dep-remove-blk-1'));
     await waitFor(() => expect(deletes).toEqual(['ws-1']));
     await waitFor(() => expect(screen.queryByTestId('dep-blocker-blk-1')).not.toBeInTheDocument());
@@ -255,6 +297,7 @@ describe('详情「依赖」区', () => {
     );
     render(withClient(<DependencySection issue={makeIssue('iss-1', { claimed_by: 'agent:codex', claimed_at: 5 })} />));
 
+    await userEvent.click(await screen.findByTestId('dep-summary'));
     await waitFor(() => expect(screen.getByTestId('dep-candidate')).toHaveValue('cand-1'));
     await userEvent.click(screen.getByTestId('dep-add'));
     expect(await screen.findByTestId('dep-error')).toHaveTextContent('任务已被占用，请先 release 再新增前置');

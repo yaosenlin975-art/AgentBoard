@@ -27,6 +27,7 @@ import { ConfirmInline } from '../ui/ConfirmInline';
 import { readCommentDraft, writeCommentDraft } from '../../lib/commentDraft';
 import { DependencySection } from './DependencySection';
 import { DispatchDialog } from './DispatchDialog';
+import { FoldSection } from './FoldSection';
 import { MetaRow, type DueDraft } from './MetaRow';
 import { SessionList } from './SessionList';
 import { TitleInlineEditor } from './TitleInlineEditor';
@@ -83,6 +84,8 @@ export function DetailPanel() {
   const [dueDate, setDueDate] = useState('');
   const [dueTime, setDueTime] = useState('');
   const [descEditing, setDescEditing] = useState(false);
+  /** D3：描述长文本默认 3 行 clamp，点展开后完整显示 */
+  const [descExpanded, setDescExpanded] = useState(false);
   const [dispatchOpen, setDispatchOpen] = useState(false);
   const [claimBlocked, setClaimBlocked] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -99,6 +102,7 @@ export function DetailPanel() {
     setDueDate(issue.due_date ?? '');
     setDueTime(issue.due_time ?? '');
     setDescEditing(false);
+    setDescExpanded(false);
     setConfirmingDelete(false);
     setConfirmingRelease(false);
     setClaimBlocked(false);
@@ -249,6 +253,8 @@ export function DetailPanel() {
   const workspacePath = (workspaces ?? []).find((w) => w.id === issue.workspace_id)?.path ?? '';
   // F-07：标签联想取本工作区已有标签（去重）
   const allLabels = [...new Set((workspaceIssues ?? []).flatMap((item) => item.labels))];
+  // D3：长描述默认 3 行 clamp（按长度/行数启发式判定是否显示「展开全文」）
+  const descLong = description.trim() !== '' && (description.length > 140 || description.split('\n').length > 3);
 
   const changeLabels = (next: string[]): void => {
     setLabels(next);
@@ -275,7 +281,7 @@ export function DetailPanel() {
   return (
     <div data-testid="detail-panel" className="flex h-full min-h-0 flex-col">
       {/* 滚动区：右侧留 16px（> 15px 经典滚动条宽度），避免滚动条压住标题与首个字段 */}
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3 pl-3 pr-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto py-3 pl-3 pr-4">
         {/* 字段区 */}
         <section aria-label="字段" className="space-y-2">
           {/* D1：标题顶掉「任务详情」标题行；阅读态 + ✎ 就地编辑 */}
@@ -324,9 +330,23 @@ export function DetailPanel() {
                 className={inputCls}
               />
             ) : (
-              <div data-testid="desc-preview">
-                <MarkdownView className="rounded border border-neutral-200 px-2.5 py-2 dark:border-neutral-800">{description.trim() === '' ? '（无描述）' : description}</MarkdownView>
-              </div>
+              <>
+                {/* D3：去掉预览外层边框容器，正文直接铺在纸面上；长文本默认 3 行 clamp */}
+                <div data-testid="desc-preview" className={descExpanded ? '' : 'line-clamp-3'}>
+                  <MarkdownView>{description.trim() === '' ? '（无描述）' : description}</MarkdownView>
+                </div>
+                {descLong && (
+                  <button
+                    type="button"
+                    data-testid="desc-expand"
+                    aria-expanded={descExpanded}
+                    onClick={() => setDescExpanded((value) => !value)}
+                    className="mt-0.5 text-[11px] text-ink-3 underline underline-offset-2 hover:text-accent"
+                  >
+                    {descExpanded ? '收起' : '展开全文'}
+                  </button>
+                )}
+              </>
             )}
           </div>
 
@@ -337,9 +357,8 @@ export function DetailPanel() {
           </div>
         </section>
 
-        {/* 操作区（状态条件化） */}
-        {/* V-05：操作区与上方字段用分隔线 + 小标题切开，避免「一排按钮」糊在正文里 */}
-        <section data-testid="detail-actions" aria-label="操作" className="space-y-2 border-t border-hairline pt-3">
+        {/* 操作区（状态条件化）：D3 起视觉沉底（order-last），D4 会改成吸底条 */}
+        <section data-testid="detail-actions" aria-label="操作" className="order-last space-y-2 border-t border-hairline pt-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-3">操作</h3>
           <div className="flex flex-wrap items-center gap-2">
             {dispatchable && (
@@ -496,14 +515,40 @@ export function DetailPanel() {
           )}
         </section>
 
-        {/* 依赖 */}
+        {/* 依赖：D3 起默认只占一行摘要，点开后才显示三组明细与添加入口 */}
         <DependencySection issue={issue} />
 
-        {/* 关联会话 */}
-        <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(s) => openChat(s.id, s)} />
-
-        {/* 评论 */}
+        {/* 评论：D3 起默认只显示最新 2 条，可「查看全部」 */}
         <CommentThread issue={issue} draft={commentDraft} onDraftChange={updateDraft} />
+
+        {/* D3 折叠区：关联会话 / 附件 / 原始 JSON / 审计证据 */}
+        <FoldSection title="关联会话" testId="fold-sessions" count={issueSessions.length}>
+          {/* SessionList 自带 h3，折叠标题已经承担分组名，这里隐藏重复标题 */}
+          <div className="[&_h3]:hidden">
+            <SessionList sessions={issueSessions} currentSessionId={issue.session_id} onSelect={(s) => openChat(s.id, s)} />
+          </div>
+        </FoldSection>
+
+        <FoldSection title="附件" testId="fold-attachments">
+          <p data-testid="fold-attachments-empty" className="text-[11px] text-ink-3">
+            暂无附件索引；粘贴截图会随评论一起上传（DETAIL-D6），路径索引在 DETAIL-D7 接入。
+          </p>
+        </FoldSection>
+
+        <FoldSection title="原始 JSON" testId="fold-raw-json">
+          <pre
+            data-testid="fold-raw-json-pre"
+            className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded border border-hairline bg-surface-raised p-1.5 text-[10.5px] text-ink-3"
+          >
+            {JSON.stringify(issue, null, 2)}
+          </pre>
+        </FoldSection>
+
+        <FoldSection title="审计证据" testId="fold-audit">
+          <p data-testid="detail-audit-note" className="text-[11px] text-ink-3">
+            活动记录需要服务端 issue 级历史接口（未落地）；本区暂不展示伪造数据。
+          </p>
+        </FoldSection>
       </div>
 
       {dispatchOpen && workspacePath !== '' && (

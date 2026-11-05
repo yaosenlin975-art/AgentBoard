@@ -810,6 +810,9 @@ describe('DetailPanel 评论区', () => {
     renderDetail();
 
     await screen.findByTestId('comment-c4');
+    // D3：默认只显示最新 2 条，先「查看全部」再断言全量正序
+    expect(screen.getByTestId('comments-collapsed-hint')).toHaveTextContent('仅显示最新 2 条');
+    await userEvent.click(screen.getByTestId('comments-toggle'));
     const ids = [...document.querySelectorAll('[data-testid^="comment-c"]')]
       .map((node) => node.getAttribute('data-testid'))
       .filter((id) => id !== 'comment-count');
@@ -880,6 +883,77 @@ describe('DetailPanel 评论区', () => {
     await userEvent.type(screen.getByTestId('comment-input'), '异步留言');
     await userEvent.click(screen.getByTestId('comment-send'));
     expect(await screen.findByTestId('comment-woke-result')).toHaveTextContent('未唤醒');
+  });
+});
+
+describe('DETAIL-D3 信息沉降（描述 clamp / 评论 2 条 / 折叠区 / 操作沉底）', () => {
+  it('长描述默认 3 行 clamp；展开全文后移除 clamp，可再收起', { timeout: 15000 }, async () => {
+    const longDescription = Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行描述内容`).join('\n');
+    mockDetailApi(makeIssue({ description: longDescription }));
+    renderDetail();
+
+    const preview = await screen.findByTestId('desc-preview');
+    expect(preview.className).toContain('line-clamp-3');
+    const toggle = screen.getByTestId('desc-expand');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveTextContent('展开全文');
+
+    await userEvent.click(toggle);
+    expect(screen.getByTestId('desc-expand')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('desc-preview').className).not.toContain('line-clamp-3');
+
+    await userEvent.click(screen.getByTestId('desc-expand'));
+    expect(screen.getByTestId('desc-preview').className).toContain('line-clamp-3');
+  });
+
+  it('评论默认只显示最新 2 条；查看全部后正序全量，收起恢复 2 条', { timeout: 15000 }, async () => {
+    const comments: IssueComment[] = [
+      { id: 'c1', issue_id: 'iss-1', author: 'user', content: '第一条', ts: 100 },
+      { id: 'c2', issue_id: 'iss-1', author: 'user', content: '第二条', ts: 200 },
+      { id: 'c3', issue_id: 'iss-1', author: 'user', content: '第三条', ts: 300 },
+      { id: 'c4', issue_id: 'iss-1', author: 'user', content: '第四条', ts: 400 },
+    ];
+    mockDetailApi(makeIssue());
+    server.use(http.get('/api/issues/iss-1/comments', () => HttpResponse.json(comments)));
+    renderDetail();
+
+    await screen.findByTestId('comment-c4');
+    expect(screen.getByTestId('comments-collapsed-hint')).toHaveTextContent('仅显示最新 2 条');
+    expect(screen.queryByTestId('comment-c1')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('comment-c2')).not.toBeInTheDocument();
+    expect(screen.getByTestId('comment-c3')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-c4')).toBeInTheDocument();
+    expect(screen.getByTestId('comments-toggle')).toHaveTextContent('查看全部 4 条');
+
+    await userEvent.click(screen.getByTestId('comments-toggle'));
+    expect(screen.getByTestId('comments-toggle')).toHaveTextContent('收起评论');
+    expect(screen.getByTestId('comment-c1')).toBeInTheDocument();
+    expect(screen.getByTestId('comment-c2')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('comments-toggle'));
+    expect(screen.queryByTestId('comment-c1')).not.toBeInTheDocument();
+  });
+
+  it('会话/附件/原始 JSON/审计证据四个折叠区默认收起；展开原始 JSON 可见 issue 快照', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+
+    for (const id of ['fold-sessions', 'fold-attachments', 'fold-raw-json', 'fold-audit']) {
+      expect(await screen.findByTestId(id)).toBeInTheDocument();
+      expect(screen.getByTestId(`${id}-toggle`)).toHaveAttribute('aria-expanded', 'false');
+    }
+    // 首屏顺序：依赖摘要 → 评论 → 折叠区；操作区视觉沉底（order-last，D4 再改吸底）
+    const deps = screen.getByTestId('detail-dependencies');
+    const comments = screen.getByTestId('detail-comments');
+    const raw = screen.getByTestId('fold-raw-json');
+    expect(deps.compareDocumentPosition(comments) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(comments.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('detail-actions').className).toContain('order-last');
+
+    const toggle = screen.getByTestId('fold-raw-json-toggle');
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('fold-raw-json-pre')).toHaveTextContent('"id": "iss-1"');
   });
 });
 
