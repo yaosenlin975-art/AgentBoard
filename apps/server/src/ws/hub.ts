@@ -33,6 +33,9 @@ export function createWsHub(): WsHub {
     attach(server) {
       server.on('upgrade', (req, socket, head) => {
         const url = new URL(req.url ?? '/', 'http://localhost');
+        // 同一 upgrade 事件会依次触发所有监听：语音会话 WS 已由 attachVoiceWebSocket 接管，
+        // 这里必须跳过，否则会把刚握手成功的语音连接 destroy（表现为音频帧一帧都收不到）。
+        if (url.pathname.startsWith('/api/voice/session/')) return;
         if (url.pathname !== '/ws') {
           socket.destroy();
           return;

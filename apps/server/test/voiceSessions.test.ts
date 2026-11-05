@@ -22,6 +22,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { attachVoiceWebSocket } from '../src/api/voiceRoutes.js';
+import { createWsHub } from '../src/ws/hub.js';
 import {
   resetVoiceSessions,
   type VoiceRecognizerHandle,
@@ -185,6 +186,26 @@ describe('voice sessions (VOICE-2)', () => {
     await waitIn(events, event => event.type === 'final' && event.text === 'heard:10');
     const partials = events.filter(event => event.type === 'partial').map(event => String(event.text));
     expect(partials).toEqual(['heard:4', 'heard:8', 'heard:10']);
+    socket.close();
+  });
+
+  it('keepsVoiceWsAliveWhenHubUpgradeHandlerCoexists', async () => {
+    writeDownloadedModel();
+    await openApp();
+    // 真实进程里 hub.attach 与 attachVoiceWebSocket 挂在同一个 server 上：
+    // hub 的 upgrade 监听不能把语音连接 destroy（否则音频帧收不到，永远出不了文本）。
+    const hub = createWsHub();
+    hub.attach(server);
+    const created = await request(app).post('/api/voice/session').send({ language: 'zh-CN' });
+    expect(created.status).toBe(201);
+
+    const { socket, events } = await connect(created.body.session_id as string);
+    await waitIn(events, event => event.type === 'state' && event.state === 'running');
+    socket.send(float32Frame([0.1, 0.2]));
+    await waitIn(events, event => event.type === 'partial' && event.text === 'heard:2');
+
+    const stopped = await request(app).post(`/api/voice/session/${created.body.session_id}/stop`).send({});
+    expect(stopped.body).toMatchObject({ text: 'heard:2', frames: 1, state: 'ended' });
     socket.close();
   });
 
