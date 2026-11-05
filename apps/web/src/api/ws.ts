@@ -63,6 +63,15 @@ export function eventToQueryKeys(event: ServerWsEvent): unknown[][] {
       // CHAT-VIS1 / CHAT-AWAIT2：轮次观测（计划条 / 成本脚注 / 阻塞态 / 审批请求）由 turnStore 经 wsBus 增量消费，
       // 不触发 invalidation——否则每个 tool 事件与每个 usage 窗口都会全量刷会话列表
       return [];
+    case 'decision.grace_started':
+    case 'decision.answered':
+    case 'decision.expired':
+    case 'decision.revised':
+    case 'decision.withdrawn':
+    case 'issue.stop_requested':
+      // DEC-3：决策事件已进入 `ServerWsEvent`（服务端可广播）；前端待决策视图/通知归 DEC-6/DEC-7 消费，
+      // 当前无对应查询需失效，返回空列表。保留穷尽 switch（不加 default），新事件并入时在此显式补 case。
+      return [];
   }
 }
 
