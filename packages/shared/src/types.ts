@@ -142,6 +142,12 @@ export interface Issue {
   blocked_by_count?: number;
   blocked_by_open_count?: number;
   resolved?: boolean;
+  /**
+   * BORROW-2.2 依赖违规标记（查询期检测，非落库列；report-only，不改状态与依赖边）。
+   * 唯一违规型：blocks 前置中有本卡的祖先卡（父卡等子卡、子卡又等祖先卡 → 流程死锁）。
+   * 正常路径由 addRelation 守卫拒绝，违规只可能来自历史数据/绕过 API 的直接写库。
+   */
+  dependency_violation?: string | null;
   created_at: number; updated_at: number;
 }
 /**
