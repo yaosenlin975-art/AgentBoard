@@ -334,6 +334,9 @@ fn main() {
             // 第二实例：不新建窗口，只把已有窗口唤到前台（与托盘/菜单同一函数）。
             wake_main_window(app);
         }))
+        // DEC-7：系统通知插件。Tauri v2 的插件必须在 builder 上注册，仅给 capabilities 权限不够；
+        // 权限范围见 capabilities/decision-notifications.json（只覆盖 main 窗口与 127.0.0.1:8787）。
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             app.manage(ShellState {
                 boot: BootState {

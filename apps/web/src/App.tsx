@@ -13,6 +13,7 @@ import { Board } from './components/board/Board';
 import { ChangelogPanel } from './components/changelog/ChangelogPanel';
 import { ChatView } from './components/chat/ChatView';
 import { DecisionsView } from './components/decisions/DecisionsView';
+import { DecisionNotifier } from './components/decisions/DecisionNotifier';
 import { RightPanel } from './components/right/RightPanel';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import { useRestartStore } from './state/restartStore';
@@ -70,6 +71,8 @@ export default function App() {
         <SideBar workspace={current} />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* NAV-TOPBAR-01：顶栏已移除；FIX-1：窄屏也不再保留工作空间 select（由左栏承担） */}
+          {/* DEC-7：待决策汇总条 + 常驻 toast（通知失败时的可靠通道），无待决策时零占位 */}
+          <DecisionNotifier />
           <div className="relative flex min-h-0 flex-1">
             <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
               {view === 'decisions' ? (

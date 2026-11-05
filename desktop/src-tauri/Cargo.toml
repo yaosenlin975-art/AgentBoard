@@ -22,3 +22,6 @@ tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 # 选择它而不是自写 server.lock 判活：server.lock 由 server 进程持有，壳侧读它只能判「服务在不在」，
 # 无法阻止「壳自己也开第二个」；单例要保证的正是「第二个壳不出现」。
 tauri-plugin-single-instance = "2"
+# DEC-7：系统通知（Windows Toast）。权限在 capabilities/decision-notifications.json 里给
+# `notification:default`；前端只用壳注入的 IPC 通道，不给 apps/** 增加运行时依赖。
+tauri-plugin-notification = "2"

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "decision-notifications",
+  "description": "DEC-7：主窗口（远程 127.0.0.1:8787 页面）可用系统通知；只授予通知与 core 默认权限",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:8787"]
+  },
+  "permissions": ["core:default", "notification:default"]
+}
