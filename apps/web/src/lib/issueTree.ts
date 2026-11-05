@@ -1,4 +1,4 @@
-import type { Issue, IssueStatus } from '@agentboard/shared';
+import type { Issue, IssueStatus, IssueTreeItem } from '@agentboard/shared';
 
 export interface IssueTreeFilter {
   active: boolean;
@@ -51,6 +51,19 @@ export function buildIssueTreeFilter(
   }
 
   return { active, visibleIds, matchingIds, autoExpandedIds, visibleChildrenByParent };
+}
+
+/**
+ * 任务树同级排序（TREE-SORT-CHILD）：仅在状态筛选为「全部状态」时启用。
+ * 直接子节点数（服务端 child_count）降序；数量相同时 updated_at 降序，再按 id 升序保证稳定。
+ * 只在已加载页内排序（每层每页 50 条），不额外拉取全量。
+ */
+export function sortTreeItemsByChildCount(items: readonly IssueTreeItem[]): IssueTreeItem[] {
+  return [...items].sort((left, right) => (
+    right.child_count - left.child_count
+    || right.updated_at - left.updated_at
+    || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  ));
 }
 
 export function getIssueAncestors(issues: Issue[], issueId: string): Issue[] {

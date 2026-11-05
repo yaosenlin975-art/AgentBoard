@@ -306,6 +306,41 @@ describe('IssueTreeView', () => {
   });
 });
 
+describe('任务树同级排序（TREE-SORT-CHILD）', () => {
+  function rootNodeIds(): string[] {
+    const list = screen.getByRole('list', { name: '根任务' });
+    return [...list.querySelectorAll('[data-testid^="tree-node-"]')]
+      .map((node) => (node.getAttribute('data-testid') ?? '').replace('tree-node-', ''));
+  }
+
+  it('全部状态：按直接子节点数降序，同数量按更新时间降序，零子节点排最后', async () => {
+    const noChildren = treeItem('no-children', { title: '无子任务', child_count: 0, updated_at: 99 });
+    const twoChildren = treeItem('two', { title: '两个子任务', child_count: 2, updated_at: 5 });
+    const oneChildOlder = treeItem('one-old', { title: '一个子任务（旧）', child_count: 1, updated_at: 20 });
+    const oneChildNewer = treeItem('one-new', { title: '一个子任务（新）', child_count: 1, updated_at: 30 });
+    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([noChildren, twoChildren, oneChildOlder, oneChildNewer]))));
+    renderTree([noChildren, twoChildren, oneChildOlder, oneChildNewer]);
+
+    expect(await screen.findByText('两个子任务')).toBeInTheDocument();
+    expect(rootNodeIds()).toEqual(['two', 'one-new', 'one-old', 'no-children']);
+  });
+
+  it('切换到具体状态筛选后保持接口原序（不按子节点数排序）', async () => {
+    const leaf = treeItem('leaf', { title: '叶子任务', child_count: 0, status: '进行中' });
+    const mid = treeItem('mid', { title: '一个子任务', child_count: 1, status: '进行中' });
+    const two = treeItem('two', { title: '两个子任务', child_count: 2, status: '进行中' });
+    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([leaf, mid, two]))));
+    renderTree([leaf, mid, two]);
+
+    expect(await screen.findByText('叶子任务')).toBeInTheDocument();
+    // 全部状态：排序生效（2 → 1 → 0 个子节点）
+    expect(rootNodeIds()).toEqual(['two', 'mid', 'leaf']);
+
+    await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), '进行中');
+    expect(rootNodeIds()).toEqual(['leaf', 'mid', 'two']);
+  });
+});
+
 describe('任务树搜索（BOARD-SEARCH）', () => {
   it('query 命中子任务时保留未命中的祖先上下文', async () => {
     const root = treeItem('root', { title: '未命中父项', child_count: 1, descendant_count: 1 });

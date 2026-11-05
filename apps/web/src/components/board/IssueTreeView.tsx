@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus, IssueTreeItem, IssueTreePage } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
-import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, type IssueTreeFilter } from '../../lib/issueTree';
+import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, sortTreeItemsByChildCount, type IssueTreeFilter } from '../../lib/issueTree';
 import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
   invalidateIssueStatusCaches,
@@ -151,6 +151,7 @@ export function IssueTreeView({
           parentId={null}
           issues={issues}
           filter={filter}
+          sortByChildCount={status === 'all'}
           expandedIds={expandedIds}
           collapsedIds={collapsedIds}
           moveEditor={moveEditor}
@@ -173,6 +174,7 @@ function TaskTreeChildren({
   parentId,
   issues,
   filter,
+  sortByChildCount,
   expandedIds,
   collapsedIds,
   moveEditor,
@@ -189,6 +191,7 @@ function TaskTreeChildren({
   parentId: string | null;
   issues: Issue[];
   filter: IssueTreeFilter;
+  sortByChildCount: boolean;
   expandedIds: ReadonlySet<string>;
   collapsedIds: ReadonlySet<string>;
   moveEditor: MoveEditorState | null;
@@ -216,6 +219,8 @@ function TaskTreeChildren({
   const pageItems = query.data?.pages.flatMap((page) => page.items) ?? [];
   const visibleChildren = filter.active ? filter.visibleChildrenByParent.get(parentId) ?? emptyIds : null;
   const visibleItems = visibleChildren === null ? pageItems : pageItems.filter((item) => visibleChildren.has(item.id));
+  // TREE-SORT-CHILD：仅状态筛选为「全部状态」（sortByChildCount=true）时按直接子节点数降序；其它筛选保持服务端原序
+  const orderedItems = sortByChildCount ? sortTreeItemsByChildCount(visibleItems) : visibleItems;
   const autoPageTargetsLoaded = visibleChildren === null || [...visibleChildren].every((id) => pageItems.some((item) => item.id === id));
 
   useEffect(() => {
@@ -238,7 +243,7 @@ function TaskTreeChildren({
 
   return (
     <ul aria-label={parentId === null ? '根任务' : `子任务：${issues.find((issue) => issue.id === parentId)?.title ?? ''}`} className="space-y-1">
-      {visibleItems.map((item) => {
+      {orderedItems.map((item) => {
         const defaultExpanded = filter.autoExpandedIds.has(item.id) && !collapsedIds.has(item.id);
         const expanded = expandedIds.has(item.id) || defaultExpanded;
         const visibleChildIds = filter.visibleChildrenByParent.get(item.id);
@@ -268,6 +273,7 @@ function TaskTreeChildren({
                   parentId={item.id}
                   issues={issues}
                   filter={filter}
+                  sortByChildCount={sortByChildCount}
                   expandedIds={expandedIds}
                   collapsedIds={collapsedIds}
                   moveEditor={moveEditor}
