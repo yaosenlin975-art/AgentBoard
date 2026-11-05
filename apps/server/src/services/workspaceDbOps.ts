@@ -175,6 +175,8 @@ export interface RevertResult {
   /** 工作区库移入 `<ws>/.agentboard/backup/` 后的路径 */
   backup_path: string;
   target_db_path: string;
+  /** STORE-4e：finalize 一并清理的前向迁移快照（*.center-backup-*）数量 */
+  removed_center_backups: number;
 }
 
 /** revert 阶段顺序（独立于前向 localize 的 LOCALIZE_STAGES） */
@@ -190,7 +192,7 @@ export const REVERT_STAGES = ['preflight', 'copy_attachments_back', 'copy_back',
  * 流程：preflight（只读）→ 附件文件回拷（sha256）→ copy_back 单事务
  * （删中心残留行〔幂等〕+ 反向插行 + 逐表守恒校验 + db_mode='center'）→ finalize
  * （工作区库 checkpoint 后移入 `.agentboard/backup/`，backup 副本 meta.localized=0，清 localize.json，
- * 删工作区侧附件目录）。写闸门：preflight 过后置 localizing 冻结该区写，copy_back 事务内原子落 center；
+ * 删工作区侧附件目录与 *.center-backup-* 前向快照——生命周期定案见 finalize 内注释）。写闸门：preflight 过后置 localizing 冻结该区写，copy_back 事务内原子落 center；
  * 失败回滚（中心数据未动）并把 db_mode 还原为 localized（工作区库仍是唯一活副本）。
  */
 export async function revertWorkspace(centerDb: Db, input: { workspaceId: string }, deps: WorkspaceDbOpDeps = {}): Promise<RevertResult> {
@@ -297,7 +299,21 @@ export async function revertWorkspace(centerDb: Db, input: { workspaceId: string
     // 工作区侧附件目录已回拷中心，删除（失败安全：复制语义，中途失败只多中心侧孤儿文件，不丢数据）
     rmSync(wsAttachmentsDir, { recursive: true, force: true });
     clearLocalizeState(row.path);
-    return { migration_id: `revert-${stamp}`, stages, counts, backup_path: backupPath, target_db_path: wsDbPath };
+    // STORE-4e 快照生命周期定案：*.center-backup-* 是前向迁移 backup 阶段的中心库一致性快照，回滚
+    // 凭据只在前向迁移未定局（running / failed 未 revert）期间有效；revert 成功后中心库已恢复为事实
+    // 源（copy_back 逐表守恒），快照是迁移前旧时点（恢复它会丢 localized 期间的写入），凭据意义消失
+    // 且整份中心库拷贝常年占盘 → revert 收尾一并清理；revert 失败路径不动快照（凭据保留），cleanup
+    // 的 stale_backup 清场同口径。回迁保险留在 backup/agentboard.db-reverted-*，不在本清理范围。
+    const removedCenterBackups: string[] = [];
+    if (existsSync(stateDir)) {
+      for (const name of readdirSync(stateDir)) {
+        if (name.startsWith(`${basename(wsDbPath)}.center-backup-`)) {
+          rmSync(join(stateDir, name), { force: true });
+          removedCenterBackups.push(name);
+        }
+      }
+    }
+    return { migration_id: `revert-${stamp}`, stages, counts, backup_path: backupPath, target_db_path: wsDbPath, removed_center_backups: removedCenterBackups.length };
   } catch (error) {
     restoreLocalized();
     throw error;

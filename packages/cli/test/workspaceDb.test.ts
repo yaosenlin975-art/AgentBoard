@@ -29,6 +29,7 @@ const job = (overrides: Partial<WorkspaceLocalizeJobView> = {}): WorkspaceLocali
   stage: 'preflight',
   counts: {},
   lastError: null,
+  errorCode: null,
   result: null,
   targetDbPath: null,
   backupPath: null,
@@ -114,6 +115,7 @@ const opJob = (overrides: Partial<WorkspaceDbOpJobView> = {}): WorkspaceDbOpJobV
   stage: 'preflight',
   counts: {},
   lastError: null,
+  errorCode: null,
   result: null,
   backupPath: null,
   startedAt: 1,
@@ -254,6 +256,19 @@ describe('kb workspace-db enable', () => {
     expect(result.err).toContain('loc-ab12cd34');
   });
 
+  it('failed job 带 errorCode：文本行附错误码（STORE-4e 全链路透传到终端）', async () => {
+    handler = withWorkspaces((method, url) => {
+      if (method === 'POST' && url === LOCALIZE_PATH) return { status: 202, body: job({ stage: 'verify' }) };
+      if (method === 'GET' && url === `${LOCALIZE_PATH}/loc-ab12cd34`) {
+        return { status: 200, body: job({ status: 'failed', stage: 'verify', lastError: '迁移校验未通过：issue 行数 2 != 3', errorCode: 'LOCALIZE_VERIFY_FAILED' }) };
+      }
+      return undefined;
+    });
+    const result = await runDirect();
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('迁移失败（失败阶段：校验（verify），错误码 LOCALIZE_VERIFY_FAILED）');
+  });
+
   it('轮询超时：中文提示并保留 jobId 重查，退出码 1', async () => {
     handler = withWorkspaces((method, url) => {
       if (method === 'POST' && url === LOCALIZE_PATH) return { status: 202, body: job({ stage: 'copy' }) };
@@ -272,7 +287,7 @@ describe('kb workspace-db enable', () => {
     expect(thrown).toContain('复制数据（copy）');
   });
 
-  it('done 终态兼容真实迁移的精简 counts（无 rows_total/bytes 时省略聚合行，不打印「未知」）', async () => {
+  it('done 终态兼容旧服务端精简 counts（无 rows_total/bytes 时省略聚合行，不打印「未知」）', async () => {
     handler = withWorkspaces((method, url) => (
       method === 'POST' && url === LOCALIZE_PATH
         ? { status: 202, body: job({ status: 'done', stage: 'finalize', result: 'localized', counts: { workspace_status: 5, issue: 1, issue_comment: 0, issue_dependency: 0, issue_git_baseline: 0, issue_draft_audit: 0, session: 0, message: 0, attachment: 0, workspace_change_log: 0, knowledge_page: 0, knowledge_revision: 0, knowledge_link: 0, knowledge_attachment: 0, attachment_files: 0 }, targetDbPath: 'D:/ws/localize/.agentboard/agentboard.db', finishedAt: 3 }) }
@@ -284,6 +299,28 @@ describe('kb workspace-db enable', () => {
     expect(result.out).toContain('行数合计：6（卡 1、评论 0、会话 0、消息 0）');
     expect(result.out).toContain('附件：0 个');
     expect(result.out).not.toContain('未知');
+    expect(result.out).not.toContain('预计迁移数据量');
+  });
+
+  it('STORE-4e 键集统一：真实迁移终态带聚合键 → 行数合计走 rows_total、渲染迁移落盘数据量', async () => {
+    handler = withWorkspaces((method, url) => (
+      method === 'POST' && url === LOCALIZE_PATH
+        ? {
+          status: 202,
+          body: job({
+            status: 'done', stage: 'finalize', result: 'localized',
+            counts: { workspace_status: 5, issue: 2, issue_comment: 1, session: 1, message: 3, attachment: 1, workspace_change_log: 4, rows_total: 18, attachment_files: 1, attachment_bytes: 1024, db_bytes: 2048, estimated_bytes: 3072 },
+            targetDbPath: 'D:/ws/localize/.agentboard/agentboard.db',
+            finishedAt: 3,
+          }),
+        }
+        : undefined
+    ));
+    const result = await run(['workspace-db', 'enable', '下沉空间']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('行数合计：18（卡 2、评论 1、会话 1、消息 3）');
+    expect(result.out).toContain('附件：1 个（1 KB）');
+    expect(result.out).toContain('迁移落盘数据量：约 3 KB');
     expect(result.out).not.toContain('预计迁移数据量');
   });
 
@@ -463,8 +500,8 @@ describe('kb workspace-db cleanup', () => {
     expect(result.out).toContain('中心库该区数据：12 行（未动）');
   });
 
-  it('NOTHING_TO_CLEAN（服务端真实形态：202 + job failed）：中文「无可清理的半成品」，退出码 2；--json 同码', async () => {
-    const failed = opJob({ jobId: 'cleanup-2', kind: 'cleanup', status: 'failed', stage: null, lastError: '没有可清理的迁移半成品（该工作区当前没有 localize.json / 目标库 / 残留快照）', finishedAt: 2 });
+  it('NOTHING_TO_CLEAN（服务端真实形态：202 + job failed + errorCode）：中文「无可清理的半成品」，退出码 2；--json 同码', async () => {
+    const failed = opJob({ jobId: 'cleanup-2', kind: 'cleanup', status: 'failed', stage: null, lastError: '没有可清理的迁移半成品（该工作区当前没有 localize.json / 目标库 / 残留快照）', errorCode: 'WORKSPACE_DB_NOTHING_TO_CLEAN', finishedAt: 2 });
     handler = withWorkspaces((method, url) => (method === 'POST' && url === CLEANUP_PATH ? { status: 202, body: failed } : undefined));
     const text = await run(['workspace-db', 'cleanup', '--workspace', '下沉空间']);
     expect(text.code).toBe(2);
@@ -474,6 +511,15 @@ describe('kb workspace-db cleanup', () => {
     const json = await run(['workspace-db', 'cleanup', '--workspace', '下沉空间', '--json']);
     expect(json.code).toBe(2);
     expect((JSON.parse(json.out) as WorkspaceDbOpJobView).status).toBe('failed');
+  });
+
+  it('NOTHING_TO_CLEAN 判定只认 errorCode：lastError 文案碰巧含旧文案但 errorCode 不同 → 走清理失败（退出码 1，不误判为 2）', async () => {
+    const failed = opJob({ jobId: 'cleanup-4', kind: 'cleanup', status: 'failed', stage: null, lastError: '没有可清理的迁移半成品之外的原因', errorCode: 'WORKSPACE_DB_CLEANUP_UNSAFE', finishedAt: 2 });
+    handler = withWorkspaces((method, url) => (method === 'POST' && url === CLEANUP_PATH ? { status: 202, body: failed } : undefined));
+    const result = await runOp(workspaceDbCleanup);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('清理失败（错误码 WORKSPACE_DB_CLEANUP_UNSAFE）');
+    expect(result.err).not.toContain('无可清理的半成品');
   });
 
   it('NOTHING_TO_CLEAN（POST 409）：同样中文提示、退出码 2，不被包装成「已被占用（…）」', async () => {
@@ -522,7 +568,7 @@ describe('kb workspace-db revert', () => {
             status: 'done',
             stage: 'finalize',
             result: 'reverted',
-            counts: { workspace_status: 5, issue: 2, issue_comment: 4, issue_dependency: 0, session: 1, message: 10, attachment: 1 },
+            counts: { workspace_status: 5, issue: 2, issue_comment: 4, issue_dependency: 0, session: 1, message: 10, attachment: 1, removed_center_backups: 2 },
             backupPath: 'D:/ws/localize/.agentboard/backup/agentboard.db-reverted-2026',
             finishedAt: 3,
           }),
@@ -539,6 +585,8 @@ describe('kb workspace-db revert', () => {
     expect(result.out.indexOf('回拷附件')).toBeLessThan(result.out.indexOf('回拷数据'));
     expect(result.out).toContain('回迁完成');
     expect(result.out).toContain('反向拷贝行数合计：23（卡 2、评论 4、会话 1、消息 10）');
+    // STORE-4e 快照生命周期：回迁收尾一并清理前向迁移快照，CLI 透出数量
+    expect(result.out).toContain('已清理迁移前中心库快照 2 份');
     expect(result.out).toContain('工作区库已移入 .agentboard/backup/：D:/ws/localize/.agentboard/backup/agentboard.db-reverted-2026');
   });
 

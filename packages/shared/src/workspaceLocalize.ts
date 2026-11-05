@@ -36,9 +36,17 @@ export interface WorkspaceLocalizeJobView {
   status: WorkspaceLocalizeJobStatus;
   /** running=当前阶段；done=finalize；failed=失败所在阶段；already_localized / dry-run 完成 = null */
   stage: WorkspaceLocalizeStage | null;
-  /** 各表行数与附件统计（copy 阶段起逐步填充；dry-run 完成即全量计数） */
+  /**
+   * 各表行数与附件统计。STORE-4e：dry-run 与真实迁移终态键集统一——
+   * 14 张 scoped 表（与 copy 顺序一致，含 workspace_status、workspace_change_log）+ 聚合键
+   * rows_total（Σ scoped 表）/ attachment_files / attachment_bytes（按该区 storage_key 口径）/
+   * db_bytes（主库文件+WAL：dry-run=中心库，真实迁移=目标库）/ estimated_bytes（=attachment_bytes+db_bytes）；
+   * already_localized 补账沿用 localize.json 现场计数，可能缺聚合键（向前兼容，缺键不硬编 0）。
+   */
   counts: Record<string, number>;
   lastError: string | null;
+  /** STORE-4e：failed 时的机器可读错误码（preflight 硬拒绝码 / LOCALIZE_* 状态机码）；running/done = null；缺省 = 旧服务端无此字段 */
+  errorCode?: string | null;
   result: WorkspaceLocalizeJobResult | null;
   targetDbPath: string | null;
   /** 中心库一致性快照（VACUUM INTO）路径；dry-run / already_localized = null */
@@ -63,8 +71,11 @@ export interface WorkspaceDbOpJobView {
   status: WorkspaceDbOpJobStatus;
   /** cleanup = null；revert running=当前阶段，done=finalize，failed=失败所在阶段 */
   stage: string | null;
+  /** revert 终态 = 逐表反向拷贝行数 + removed_center_backups（一并清理的前向迁移快照数）；cleanup = center_rows_before + removed */
   counts: Record<string, number>;
   lastError: string | null;
+  /** STORE-4e：failed 时的机器可读错误码（WORKSPACE_DB_* 硬拒绝码）；running/done = null；缺省 = 旧服务端无此字段 */
+  errorCode?: string | null;
   result: WorkspaceDbOpJobResult | null;
   /** revert 成功后工作区库移入 `<ws>/.agentboard/backup/` 的路径；cleanup = null */
   backupPath: string | null;

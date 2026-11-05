@@ -5,6 +5,7 @@
  * - `preflightLocalize()`：六条硬拒绝（设计 §6.2），**全部只读**，失败即停、不动任何数据；
  * - `dryRunLocalize()`：统计该工作区将要搬的行数/附件数/预计字节，**不产生文件、不改中心库**（验收 1）；
  * - `localize.json`：每阶段前落盘的中间态（`migration_id / workspace_id / stage / center_db / backup_path / started_at / counts / last_error`）。
+ * 另承载跨阶段共用的小工具：`collectWorkspaceAttachmentKeys`（附件 key 集合，dry-run/copy/revert/status 单源）、`safeSize`。
  *
  * 后续阶段（backup/create/copy/copy_attachments/verify/switch/finalize）在 M2a 里继续补；
  * 切换读写的判定见卡评论 `b1e03bf1`（七条全成立才允许翻 `openWorkspaceDbs`）。
@@ -15,7 +16,7 @@ import { statfs } from 'node:fs/promises';
 import type { Db } from '../db/connection.js';
 import { ApiError } from '../errors.js';
 import { WORKSPACE_LOCALIZE_STAGES } from '@agentboard/shared';
-import { DB_MIGRATION_SPACE_MARGIN, listFilesRecursive } from './dbMigration.js';
+import { DB_MIGRATION_SPACE_MARGIN } from './dbMigration.js';
 import { workspaceStateDir } from '../db/resolver.js';
 
 /** 固定阶段顺序（设计 §6.3）；词表唯一来源 packages/shared（2b CLI 同源） */
@@ -81,6 +82,8 @@ export function localizeError(code: LocalizeErrorCode, detail?: string, status?:
 
 /** 该工作区需要搬迁的行数与字节（dry-run 与 preflight 的空间判断共用） */
 export interface LocalizeCounts {
+  /** STORE-4e：键集与真实迁移终态统一（14 张 scoped 表 + 4 个聚合键；表名即 copy 顺序的表名） */
+  workspace_status: number;
   issue: number;
   issue_comment: number;
   session: number;
@@ -93,7 +96,7 @@ export interface LocalizeCounts {
   knowledge_revision: number;
   knowledge_link: number;
   knowledge_attachment: number;
-  change_log: number;
+  workspace_change_log: number;
   rows_total: number;
   attachment_files: number;
   attachment_bytes: number;
@@ -103,7 +106,9 @@ export interface LocalizeCounts {
 
 /**
  * 统计该工作区将搬的数据量（**只读**：不建目录、不写文件、不改中心库）。
- * 表名与列名都取自 schema 现状；数量用 COUNT(*)，附件只走文件系统 stat。
+ * 表名与列名都取自 schema 现状；数量用 COUNT(*)。
+ * STORE-4e：附件按该区 storage_key 口径统计（与真实拷贝/revert/status 同一集合，dry-run 即真实预览，
+ * 不再取全局附件目录上界）；db_bytes = 主库文件 + WAL 体积（空间判断的库体积上界）。
  */
 export function countWorkspacePayload(
   centerDb: Db,
@@ -113,6 +118,7 @@ export function countWorkspacePayload(
   const count = (sql: string, ...params: unknown[]): number => Number((centerDb.prepare(sql).get(...params) as { n: number }).n);
   const scoped = count('SELECT COUNT(*) AS n FROM issue WHERE workspace_id = ?', workspace.id);
   const counts: Omit<LocalizeCounts, 'rows_total' | 'attachment_files' | 'attachment_bytes' | 'db_bytes' | 'estimated_bytes'> = {
+    workspace_status: count('SELECT COUNT(*) AS n FROM workspace_status WHERE workspace_id = ?', workspace.id),
     issue: scoped,
     issue_comment: count('SELECT COUNT(*) AS n FROM issue_comment c JOIN issue i ON i.id = c.issue_id WHERE i.workspace_id = ?', workspace.id),
     session: count('SELECT COUNT(*) AS n FROM session WHERE workspace_id = ?', workspace.id),
@@ -125,28 +131,41 @@ export function countWorkspacePayload(
     knowledge_revision: count("SELECT COUNT(*) AS n FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
     knowledge_link: count("SELECT COUNT(*) AS n FROM knowledge_link l JOIN knowledge_page p ON p.id = l.source_page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
     knowledge_attachment: count("SELECT COUNT(*) AS n FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
-    change_log: count('SELECT COUNT(*) AS n FROM workspace_change_log WHERE origin_workspace_id = ?', workspace.id),
+    workspace_change_log: count('SELECT COUNT(*) AS n FROM workspace_change_log WHERE origin_workspace_id = ?', workspace.id),
   };
   const attachmentsDir = deps.attachmentsDir ?? join(dirname(centerDb.name), 'attachments');
-  const files = listFilesRecursive(attachmentsDir);
+  const keys = collectWorkspaceAttachmentKeys(centerDb, workspace.id);
+  const attachmentBytes = keys.reduce((sum, key) => sum + safeSize(join(attachmentsDir, key)), 0);
+  const dbBytes = safeSize(centerDb.name) + safeSize(`${centerDb.name}-wal`);
   const rowsTotal = Object.values(counts).reduce((sum, n) => sum + n, 0);
   return {
     ...counts,
     rows_total: rowsTotal,
-    // 附件目录是全局的（中心库目录），真实拷贝时按 attachment 表取 key 再逐个搬；这里给上界供空间判断
-    attachment_files: files.length,
-    attachment_bytes: files.reduce((sum, f) => sum + f.bytes, 0),
-    db_bytes: safeSize(centerDb.name),
-    estimated_bytes: files.reduce((sum, f) => sum + f.bytes, 0) + safeSize(centerDb.name),
+    attachment_files: keys.length,
+    attachment_bytes: attachmentBytes,
+    db_bytes: dbBytes,
+    estimated_bytes: attachmentBytes + dbBytes,
   };
 }
 
-function safeSize(path: string): number {
+export function safeSize(path: string): number {
   try {
     return statSync(path).size;
   } catch {
     return 0;
   }
+}
+
+/**
+ * 该工作区附件行的全部 storage_key（attachment + knowledge_attachment；去重）。
+ * STORE-4e 自 workspaceLocalizeRun.ts 上移至本文件：dry-run 统计（countWorkspacePayload）与
+ * copy / revert 回拷 / status 附件盘点共用同一集合，SQL 单源；workspaceLocalizeRun.ts 原样转发导出。
+ */
+export function collectWorkspaceAttachmentKeys(db: Db, workspaceId: string): string[] {
+  const keys = new Set<string>();
+  for (const row of db.prepare('SELECT storage_key FROM attachment WHERE workspace_id = ?').all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
+  for (const row of db.prepare("SELECT a.storage_key FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?").all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
+  return [...keys];
 }
 
 /** 本地盘判定（Windows：盘符直连；其它平台不做判断，交给 preflight 的可写探测） */

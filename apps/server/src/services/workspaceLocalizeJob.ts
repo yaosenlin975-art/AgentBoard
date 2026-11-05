@@ -11,12 +11,16 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/connection.js';
+import { ApiError } from '../errors.js';
 import type { WorkspaceDbOpJobView, WorkspaceDbOpKind, WorkspaceLocalizeJobView } from '@agentboard/shared';
 import { dryRunLocalize, localizeError, type PreflightLocalizeInput } from './workspaceLocalize.js';
 import { localizeWorkspace, type LocalizeDeps } from './workspaceLocalizeRun.js';
 import { cleanupWorkspaceDbRemnants, revertWorkspace, type WorkspaceDbOpDeps } from './workspaceDbOps.js';
 
 type AnyJob = WorkspaceLocalizeJobView | WorkspaceDbOpJobView;
+
+/** STORE-4e：JobView.errorCode 取值——ApiError 带业务码全链路透传；非业务错误（fs/意外）= null */
+const errorCodeOf = (error: unknown): string | null => (error instanceof ApiError ? error.code : null);
 
 const jobs = new Map<string, AnyJob>();
 
@@ -60,6 +64,7 @@ export function startLocalizeJob(centerDb: Db, input: StartLocalizeJobInput): Wo
     stage: 'preflight',
     counts: {},
     lastError: null,
+    errorCode: null,
     result: null,
     targetDbPath: null,
     backupPath: null,
@@ -82,6 +87,7 @@ export function startWorkspaceDbOpJob(centerDb: Db, input: StartWorkspaceDbOpJob
     stage: input.kind === 'cleanup' ? null : 'preflight',
     counts: {},
     lastError: null,
+    errorCode: null,
     result: null,
     backupPath: null,
     startedAt: Date.now(),
@@ -153,6 +159,7 @@ async function runLocalizeJob(centerDb: Db, job: WorkspaceLocalizeJobView, input
   } catch (error) {
     job.status = 'failed';
     job.lastError = error instanceof Error ? error.message : String(error);
+    job.errorCode = errorCodeOf(error); // STORE-4e：机器可读错误码，CLI 按 code 判定不再依赖文案
     // job.stage 保持 onStage 停下的位置 = 失败所在阶段
     releaseGateIfStuck(centerDb, input.workspaceId);
   } finally {
@@ -174,7 +181,7 @@ async function runOpJob(centerDb: Db, job: WorkspaceDbOpJobView, input: StartWor
       job.stage = null;
     } else {
       const result = await revertWorkspace(centerDb, { workspaceId: input.workspaceId }, deps);
-      job.counts = { ...result.counts };
+      job.counts = { ...result.counts, removed_center_backups: result.removed_center_backups };
       job.backupPath = result.backup_path;
       job.result = 'reverted';
       job.status = 'done';
@@ -183,6 +190,7 @@ async function runOpJob(centerDb: Db, job: WorkspaceDbOpJobView, input: StartWor
   } catch (error) {
     job.status = 'failed';
     job.lastError = error instanceof Error ? error.message : String(error);
+    job.errorCode = errorCodeOf(error); // STORE-4e：机器可读错误码，CLI 按 code 判定不再依赖文案
     job.stage = null;
     releaseGateIfStuck(centerDb, input.workspaceId);
   } finally {

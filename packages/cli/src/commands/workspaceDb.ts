@@ -7,6 +7,7 @@
  * 超时不算失败（任务可能仍在跑），提示保留 jobId 重查。
  * 退出码：0 成功（含 dry-run / already_localized 幂等回显、status 查询）；2 冲突（POST 409：任务进行中等，
  * 服务端文案自解释，原样透出；cleanup 无可清理的半成品）；1 其余（failed job、404、超时、400 参数类——沿用全局口径，400 不单独用 3）。
+ * STORE-4e：失败判定一律按 JobView.errorCode（机器可读）判定，不再依赖服务端文案（如 NOTHING_TO_CLEAN）；文本失败行附错误码。
  */
 import { CommanderError } from 'commander';
 import type { WorkspaceDbOpJobView, WorkspaceDbStatusView, WorkspaceLocalizeJobView } from '@agentboard/shared';
@@ -63,6 +64,9 @@ const stageLabel = (profile: JobProfile, stage: string | null): string =>
 const stageIndex = (profile: JobProfile, stage: string | null): number =>
   stage === null ? 0 : profile.stages.indexOf(stage) + 1;
 
+/** STORE-4e：failed 文本行的错误码段（errorCode 缺省 / null 时不渲染，兼容旧服务端） */
+const errorCodeTag = (code: string | null | undefined): string => (code ? `，错误码 ${code}` : '');
+
 /** 字节人性化（B/KB/MB/GB，1 位小数截尾） */
 function formatBytes(n: number | undefined): string {
   if (n === undefined || !Number.isFinite(n)) return '未知';
@@ -77,7 +81,7 @@ function formatBytes(n: number | undefined): string {
   return `${text} ${units[unit]}`;
 }
 
-/** 行类计数键：真实迁移与 dry-run 的 counts 键集不一致（真实跑无 rows_total，且用 workspace_change_log），汇总时兼容两侧 */
+/** 行类计数键：STORE-4e 起两侧键集已统一（workspace_change_log）；change_log 为旧服务端兼容保留 */
 const ROW_COUNT_KEYS = [
   'issue', 'issue_comment', 'session', 'message', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
   'attachment', 'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
@@ -95,14 +99,16 @@ function rowsTotalLine(label: string, c: Record<string, number>): string {
   return `${label}：${rowsTotal}${parts.length === 0 ? '' : `（${parts.join('、')}）`}`;
 }
 
-/** 汇总段：行数合计 / 主要表 / 附件 / 预计数据量；缺失的聚合键（真实迁移无 bytes/estimated）按现状省略不硬编 0 */
+/** 汇总段：行数合计 / 主要表 / 附件 / 数据量；键集已统一（STORE-4e），缺键（旧服务端 / already_localized 补账）省略不硬编 0 */
 function countsLines(job: WorkspaceLocalizeJobView): string[] {
   const c = job.counts;
   const lines = [rowsTotalLine('行数合计', c)];
   if (typeof c['attachment_files'] === 'number') {
     lines.push(`附件：${c['attachment_files']} 个${typeof c['attachment_bytes'] === 'number' ? `（${formatBytes(c['attachment_bytes'])}）` : ''}`);
   }
-  if (typeof c['estimated_bytes'] === 'number') lines.push(`预计迁移数据量：约 ${formatBytes(c['estimated_bytes'])}`);
+  if (typeof c['estimated_bytes'] === 'number') {
+    lines.push(`${job.dryRun ? '预计迁移数据量' : '迁移落盘数据量'}：约 ${formatBytes(c['estimated_bytes'])}`);
+  }
   if (job.targetDbPath !== null) lines.push(`目标库：${job.targetDbPath}`);
   return lines;
 }
@@ -211,7 +217,7 @@ function renderLocalize(ctx: Ctx, job: WorkspaceLocalizeJobView): number {
   if (ctx.json) {
     writeJson(ctx, job);
   } else if (job.status === 'failed') {
-    ctx.io.writeErr(`迁移失败（失败阶段：${stageLabel(LOCALIZE, job.stage)}）：${job.lastError ?? '服务端未给出原因'}\n`);
+    ctx.io.writeErr(`迁移失败（失败阶段：${stageLabel(LOCALIZE, job.stage)}${errorCodeTag(job.errorCode)}）：${job.lastError ?? '服务端未给出原因'}\n`);
     ctx.io.writeErr(job.dryRun
       ? `jobId ${job.jobId}；dry-run 未产生任何变更，排查后可直接重跑\n`
       : `jobId ${job.jobId}；先 kb workspace-db status --workspace ${job.workspaceId} 查看中间态，再选：enable --resume 从中断阶段继续 / cleanup --workspace ${job.workspaceId} 清理半成品 / enable --overwrite 清理后重来\n`);
@@ -315,20 +321,21 @@ export async function workspaceDbStatus(ctx: Ctx, workspace?: string): Promise<v
 }
 
 /**
- * NOTHING_TO_CLEAN 识别：服务端在 job 内判定（202 + job failed，lastError 只带标准文案、不带 code），按标准文案识别；
- * POST 同步 409 时按 code 识别。
+ * NOTHING_TO_CLEAN 识别：服务端在 job 内判定（202 + job failed）。STORE-4e 起 JobView 带 errorCode，
+ * 按 WORKSPACE_DB_NOTHING_TO_CLEAN 判定，不再依赖服务端文案（文案一改即失效）；POST 同步 409 按同码识别。
  */
-const NOTHING_TO_CLEAN_TEXT = '没有可清理的迁移半成品';
+const NOTHING_TO_CLEAN_CODE = 'WORKSPACE_DB_NOTHING_TO_CLEAN';
 const nothingToClean = (detail: string): string => `无可清理的半成品：${detail}`;
 
 function renderCleanup(ctx: Ctx, job: WorkspaceDbOpJobView): number {
-  const nothing = job.status === 'failed' && job.lastError !== null && job.lastError.includes(NOTHING_TO_CLEAN_TEXT);
+  const nothing = job.status === 'failed' && job.errorCode === NOTHING_TO_CLEAN_CODE;
   if (ctx.json) {
     writeJson(ctx, job);
   } else if (nothing) {
-    ctx.io.writeErr(`${nothingToClean(job.lastError!)}\n`);
+    ctx.io.writeErr(`${nothingToClean(job.lastError ?? '')}\n`);
   } else if (job.status === 'failed') {
-    ctx.io.writeErr(`清理失败：${job.lastError ?? '服务端未给出原因'}\n`);
+    const codeSuffix = job.errorCode ? `（错误码 ${job.errorCode}）` : '';
+    ctx.io.writeErr(`清理失败${codeSuffix}：${job.lastError ?? '服务端未给出原因'}\n`);
     ctx.io.writeErr(`jobId ${job.jobId}；中心库数据未动，可用 kb workspace-db status --workspace ${job.workspaceId} 核对后处理\n`);
   } else {
     const removed = job.counts['removed'] ?? 0;
@@ -346,7 +353,7 @@ function renderCleanup(ctx: Ctx, job: WorkspaceDbOpJobView): number {
 export async function workspaceDbCleanup(ctx: Ctx, workspace: string, args: WorkspaceDbPollArgs = {}): Promise<void> {
   const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
   const started = await postJob<WorkspaceDbOpJobView>(ctx, `${dbPath(workspaceId)}/localize/cleanup`, {},
-    error => (error.code.endsWith('NOTHING_TO_CLEAN') ? nothingToClean(error.message) : error.message));
+    error => (error.code === NOTHING_TO_CLEAN_CODE ? nothingToClean(error.message) : error.message));
   const final = await waitForTerminal(ctx, started, CLEANUP, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
   exitWith(renderCleanup(ctx, final));
 }
@@ -355,12 +362,19 @@ function renderRevert(ctx: Ctx, job: WorkspaceDbOpJobView): number {
   if (ctx.json) {
     writeJson(ctx, job);
   } else if (job.status === 'failed') {
-    const stage = job.stage === null ? '' : `（失败阶段：${stageLabel(REVERT, job.stage)}）`;
-    ctx.io.writeErr(`回迁失败${stage}：${job.lastError ?? '服务端未给出原因'}\n`);
+    const parts: string[] = [];
+    if (job.stage !== null) parts.push(`失败阶段：${stageLabel(REVERT, job.stage)}`);
+    if (job.errorCode) parts.push(`错误码 ${job.errorCode}`);
+    const prefix = parts.length === 0 ? '' : `（${parts.join('，')}）`;
+    ctx.io.writeErr(`回迁失败${prefix}：${job.lastError ?? '服务端未给出原因'}\n`);
     ctx.io.writeErr(`jobId ${job.jobId}；回迁失败不改中心库数据，可用 kb workspace-db status --workspace ${job.workspaceId} 核对后处理\n`);
   } else {
     ctx.io.write('回迁完成：该工作区已回到中心库（db_mode=center），此后读写走中心库\n');
     ctx.io.write(`${rowsTotalLine('反向拷贝行数合计', job.counts)}\n`);
+    const removedBackups = job.counts['removed_center_backups'];
+    if (typeof removedBackups === 'number' && removedBackups > 0) {
+      ctx.io.write(`已清理迁移前中心库快照 ${removedBackups} 份（*.center-backup-*；回迁后中心库已是事实源，快照失回滚凭据意义）\n`);
+    }
     ctx.io.write(`工作区库已移入 .agentboard/backup/${job.backupPath === null ? '' : `：${job.backupPath}`}\n`);
   }
   return job.status === 'failed' ? 1 : 0;

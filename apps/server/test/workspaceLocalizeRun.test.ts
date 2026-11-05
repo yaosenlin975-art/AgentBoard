@@ -16,6 +16,15 @@ import { getDbForWorkspace, resetResolverState } from '../src/db/resolver.js';
 import { localizeWorkspace } from '../src/services/workspaceLocalizeRun.js';
 import { readLocalizeState, LOCALIZE_STAGES } from '../src/services/workspaceLocalize.js';
 
+/** STORE-4e：真实迁移终态与 dry-run 统一的 counts 键集（同 workspaceLocalize.test.ts） */
+const AGGREGATE_COUNT_KEYS = ['rows_total', 'attachment_files', 'attachment_bytes', 'db_bytes', 'estimated_bytes'];
+const UNIFIED_COUNT_KEYS = [
+  'workspace_status', 'issue', 'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
+  'session', 'message', 'attachment', 'workspace_change_log',
+  'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
+  ...AGGREGATE_COUNT_KEYS,
+];
+
 describe('STORE-2（M2a）八阶段状态机', () => {
   let t: TestDb;
   let root: string;
@@ -61,6 +70,14 @@ describe('STORE-2（M2a）八阶段状态机', () => {
     expect(result.counts.issue).toBe(3);
     expect(result.counts.knowledge_page).toBe(1);
     expect(existsSync(result.target_db_path)).toBe(true);
+    // STORE-4e：终态 counts 与 dry-run 同一键集；rows_total = Σ scoped 表；聚合键取实盘（本例无附件）
+    expect(Object.keys(result.counts).sort()).toEqual(UNIFIED_COUNT_KEYS.slice().sort());
+    const rowKeys = UNIFIED_COUNT_KEYS.filter((key) => !AGGREGATE_COUNT_KEYS.includes(key));
+    expect(result.counts.rows_total).toBe(rowKeys.reduce((sum, key) => sum + result.counts[key]!, 0));
+    expect(result.counts.attachment_files).toBe(0);
+    expect(result.counts.attachment_bytes).toBe(0);
+    expect(result.counts.db_bytes).toBeGreaterThan(0);
+    expect(result.counts.estimated_bytes).toBe(result.counts.attachment_bytes + result.counts.db_bytes);
 
     const mode = t.db.prepare('SELECT db_mode, localized_at FROM workspace WHERE id = ?').get(ws) as { db_mode: string; localized_at: number | null };
     expect(mode.db_mode).toBe('localized');

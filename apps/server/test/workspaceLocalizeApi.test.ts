@@ -38,7 +38,7 @@ describe('STORE-2a localize REST', () => {
   const postLocalize = (body: Record<string, unknown> = {}, id: string = ws) =>
     request(app).post(`/api/workspaces/${id}/db/localize`).send(body);
   const getJob = (jobId: string, id: string = ws) => request(app).get(`/api/workspaces/${id}/db/localize/${jobId}`);
-  const waitSettled = async (jobId: string): Promise<{ status: string; stage: string | null; counts: Record<string, number>; result: string | null; lastError: string | null }> => {
+  const waitSettled = async (jobId: string): Promise<{ status: string; stage: string | null; counts: Record<string, number>; result: string | null; lastError: string | null; errorCode: string | null }> => {
     for (let i = 0; i < 200; i += 1) {
       const res = await getJob(jobId);
       expect(res.status).toBe(200);
@@ -81,8 +81,9 @@ describe('STORE-2a localize REST', () => {
     expect(created.body.jobId).toBeTypeOf('string');
     expect(created.body.workspaceId).toBe(ws);
     const job = await waitSettled(created.body.jobId);
-    expect(job).toMatchObject({ dryRun: true, status: 'done', result: 'dry_run', stage: null, lastError: null });
+    expect(job).toMatchObject({ dryRun: true, status: 'done', result: 'dry_run', stage: null, lastError: null, errorCode: null });
     expect(job.counts.issue).toBe(2);
+    expect(job.counts.rows_total).toBeGreaterThan(0); // STORE-4e：dry-run 键集与真实迁移终态统一
     expect(job.targetDbPath).toBe(workspaceDbPath(wsPath));
 
     expect(existsSync(workspaceDbPath(wsPath))).toBe(false);
@@ -99,6 +100,8 @@ describe('STORE-2a localize REST', () => {
     expect(job.result).toBe('localized');
     expect(job.stage).toBe('finalize');
     expect(job.counts.issue).toBe(2);
+    expect(job.counts.rows_total).toBeGreaterThan(0); // STORE-4e：终态键集与 dry-run 统一（聚合键齐备）
+    expect(job.errorCode).toBeNull();
     expect(job.targetDbPath).toBe(workspaceDbPath(wsPath));
 
     expect((t.db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(ws) as { db_mode: string }).db_mode).toBe('localized');

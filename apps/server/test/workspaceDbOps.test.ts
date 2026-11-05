@@ -46,7 +46,7 @@ describe('STORE-3a cleanup / revert（服务层）', () => {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, 'PNGDATA-store3a', 'utf8');
     t.db.prepare(
-      "INSERT INTO attachment (id, workspace_id, storage_key, file_name, mime_type, size_bytes, status, created_at, expires_at) VALUES ('att-1', ?, ?, 'a.png', 'image/png', 15, 'attached', 1, 9999999999999)",
+      "INSERT INTO attachment (id, workspace_id, storage_key, file_name, mime_type, kind, size_bytes, status, created_at, expires_at) VALUES ('att-1', ?, ?, 'a.png', 'image/png', 'image', 15, 'attached', 1, 9999999999999)",
     ).run(ws, key);
     return key;
   };
@@ -102,6 +102,9 @@ describe('STORE-3a cleanup / revert（服务层）', () => {
     expect(result.backup_path).toContain(join('.agentboard', 'backup'));
     expect(readBackupMeta(result.backup_path).localized).toBe('0');
     expect(readLocalizeState(wsPath)).toBeNull();
+    // STORE-4e 快照生命周期：前向迁移的 center-backup 快照在 revert 收尾一并清理（数据已回中心，快照失回滚凭据意义）
+    expect(result.removed_center_backups).toBeGreaterThanOrEqual(1);
+    expect(readdirSync(workspaceStateDir(wsPath)).some((name) => name.includes('.center-backup-'))).toBe(false);
     // 附件文件回到中心目录，工作区侧附件目录已删
     expect(readFileSync(join(attachmentsDir(), key), 'utf8')).toBe('PNGDATA-store3a');
     expect(existsSync(join(workspaceStateDir(wsPath), 'attachments'))).toBe(false);

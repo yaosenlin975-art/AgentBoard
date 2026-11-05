@@ -30,6 +30,7 @@ interface JobBody {
   counts: Record<string, number>;
   result: string | null;
   lastError: string | null;
+  errorCode?: string | null;
   backupPath: string | null;
 }
 
@@ -112,6 +113,8 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
   it('status：localized 形态（数据归属工作区库、快照落后 0、写闸门 open）', async () => {
     const job = await runToDone();
     expect(job.result).toBe('localized');
+    expect(job.errorCode).toBeNull();
+    expect(job.counts.rows_total).toBeGreaterThan(0); // STORE-4e：迁移终态键集与 dry-run 统一
     const res = await getStatus();
     expect(res.body).toMatchObject({ dbMode: 'localized', writeGate: 'open', workspaceDbExists: true, snapshotLagRows: 0 });
     expect(res.body.counts.issue).toBe(2);
@@ -170,6 +173,7 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     const job = await waitSettled(created.body.jobId);
     expect(job.status).toBe('failed');
     expect(job.lastError).toContain('没有可恢复的迁移中间态');
+    expect(job.errorCode).toBe('NO_LOCALIZE_STATE'); // STORE-4e：errorCode 全链路透传
 
     expect((await postLocalize({ resume: 'yes' })).status).toBe(400);
     expect((await request(app).post('/api/workspaces/ws-none/db/localize').send({ resume: true })).status).toBe(404);
@@ -200,12 +204,13 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
 
     // 闸门释放：写回 center，PATCH 放行
     expect((await request(app).patch(`/api/issues/${id}`).send({ title: '清理后改名' })).status).toBe(200);
-    // 再清：无可清理物 → job failed NOTHING_TO_CLEAN
+    // 再清：无可清理物 → job failed NOTHING_TO_CLEAN（STORE-4e：机器可读码透传，CLI 按码判定）
     const again = await postOp('cleanup');
     expect(again.status).toBe(202);
     const againJob = await waitSettled(again.body.jobId);
     expect(againJob.status).toBe('failed');
     expect(againJob.lastError).toContain('没有可清理的迁移半成品');
+    expect(againJob.errorCode).toBe('WORKSPACE_DB_NOTHING_TO_CLEAN');
   });
 
   it('cleanup 拒绝活库：localized 时 job failed CLEANUP_NOT_ALLOWED，中心数据不动', async () => {
@@ -214,6 +219,7 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     const job = await waitSettled(created.body.jobId);
     expect(job.status).toBe('failed');
     expect(job.lastError).toContain('已正常下沉');
+    expect(job.errorCode).toBe('WORKSPACE_DB_CLEANUP_NOT_ALLOWED');
     expect(existsSync(workspaceDbPath(wsPath))).toBe(true);
     // 中心数据未动：迁移后该区行已搬进工作区库（中心 issue=0），活库仍在
     expect((t.db.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n).toBe(0);
@@ -229,6 +235,8 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     const job = await waitSettled(created.body.jobId);
     expect(job).toMatchObject({ status: 'done', result: 'reverted', stage: 'finalize' });
     expect(job.counts.issue).toBe(2);
+    // STORE-4e 快照生命周期：revert 收尾一并清理前向迁移的 center-backup 快照
+    expect(job.counts.removed_center_backups).toBeGreaterThanOrEqual(1);
     expect(job.backupPath).toContain(join('.agentboard', 'backup'));
     expect((t.db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(ws) as { db_mode: string }).db_mode).toBe('center');
     expect((t.db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id = ?').get(ws) as { n: number }).n).toBe(2);
@@ -246,6 +254,7 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     const job = await waitSettled(created.body.jobId);
     expect(job.status).toBe('failed');
     expect(job.lastError).toContain('无法安全回迁');
+    expect(job.errorCode).toBe('WORKSPACE_DB_REVERT_CENTER_ROWS');
     expect((t.db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id = ?').get(ws) as { n: number }).n).toBe(1);
     expect(existsSync(workspaceDbPath(wsPath))).toBe(true);
   });

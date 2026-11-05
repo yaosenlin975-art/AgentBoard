@@ -22,6 +22,15 @@ import {
   writeLocalizeState,
 } from '../src/services/workspaceLocalize.js';
 
+/** STORE-4e：dry-run 与真实迁移终态统一的 counts 键集（契约见 shared WorkspaceLocalizeJobView.counts） */
+const AGGREGATE_COUNT_KEYS = ['rows_total', 'attachment_files', 'attachment_bytes', 'db_bytes', 'estimated_bytes'];
+const UNIFIED_COUNT_KEYS = [
+  'workspace_status', 'issue', 'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
+  'session', 'message', 'attachment', 'workspace_change_log',
+  'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
+  ...AGGREGATE_COUNT_KEYS,
+];
+
 describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
   let t: TestDb;
   let root: string;
@@ -52,17 +61,24 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
     ...over,
   });
 
-  it('通过前置检查并给出统计（行数按工作区过滤，附件字节来自文件系统）', async () => {
+  it('通过前置检查并给出统计（行数按工作区过滤，附件按该区 storage_key 口径、字节来自文件系统）', async () => {
     const attachDir = join(root, 'attachments');
     mkdirSync(attachDir, { recursive: true });
     writeFileSync(join(attachDir, 'a.bin'), Buffer.alloc(1024, 1));
+    // STORE-4e：附件统计走该区 storage_key（与真实拷贝同集合）——同目录放一个别区的文件不计数
+    writeFileSync(join(attachDir, 'other-ws.bin'), Buffer.alloc(4096, 1));
+    t.db.prepare(
+      "INSERT INTO attachment (id, workspace_id, storage_key, file_name, mime_type, kind, size_bytes, status, created_at, expires_at) VALUES ('att-dry', ?, 'a.bin', 'a.bin', 'application/octet-stream', 'file', 1024, 'attached', 1, 9999999999999)",
+    ).run(ws);
     const result = await preflight({ attachmentsDir: attachDir });
     expect(result.workspace).toEqual({ id: ws, path: wsPath });
     expect(result.targetDbPath).toBe(join(wsPath, '.agentboard', 'agentboard.db'));
     expect(result.counts.issue).toBe(2);
+    expect(result.counts.attachment).toBe(1);
     expect(result.counts.attachment_files).toBe(1);
     expect(result.counts.attachment_bytes).toBe(1024);
-    expect(result.counts.estimated_bytes).toBeGreaterThanOrEqual(1024);
+    expect(result.counts.db_bytes).toBeGreaterThan(0);
+    expect(result.counts.estimated_bytes).toBe(result.counts.attachment_bytes + result.counts.db_bytes);
   });
 
   it('六条硬拒绝：非本地盘 / 目标已存在 / 空间不足 / 中心库不健康 / 工作区忙 / 已下沉', async () => {
@@ -127,7 +143,18 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
     const counts = countWorkspacePayload(t.db, { id: ws, path: wsPath }, { attachmentsDir: join(root, 'none') });
     expect(counts.knowledge_page).toBe(1);
     expect(counts.knowledge_revision).toBe(1);
+    expect(counts.attachment).toBe(0);
     expect(counts.attachment_files).toBe(0);
+  });
+
+  it('STORE-4e 键集统一：dry-run counts 与真实迁移终态同一键集（14 张 scoped 表 + 5 个聚合键）', async () => {
+    const result = await dryRunLocalize(t.db, { workspaceId: ws, freeBytes: async () => 1e12 });
+    expect(Object.keys(result.counts).sort()).toEqual(UNIFIED_COUNT_KEYS.slice().sort());
+    // rows_total = Σ scoped 表（含 workspace_status），change_log 旧键不复存在
+    const rowKeys = UNIFIED_COUNT_KEYS.filter((key) => !AGGREGATE_COUNT_KEYS.includes(key));
+    expect(result.counts.rows_total).toBe(rowKeys.reduce((sum, key) => sum + result.counts[key]!, 0));
+    expect(result.counts).toHaveProperty('workspace_change_log');
+    expect(result.counts).not.toHaveProperty('change_log');
   });
 
   it('阶段顺序常量固定（设计 §6.3）', () => {

@@ -18,16 +18,18 @@ import type { Db } from '../db/connection.js';
 import { openDb } from '../db/connection.js';
 import { initSchema } from '../db/schema.js';
 import { ApiError } from '../errors.js';
-import { vacuumInto } from './dbMigration.js';
+import { vacuumInto, listFilesRecursive } from './dbMigration.js';
 import { workspaceStateDir } from '../db/resolver.js';
 import {
   LOCALIZE_STAGES,
   clearLocalizeState,
+  collectWorkspaceAttachmentKeys,
   countWorkspacePayload,
   localizeError,
   localizeStatePath,
   preflightLocalize,
   readLocalizeState,
+  safeSize,
   writeLocalizeState,
   type LocalizeCounts,
   type LocalizeStage,
@@ -97,6 +99,21 @@ export function countScopedRowsByTable(db: Db, workspaceId: string): Record<stri
 export function centerRevertBlockingRows(db: Db, workspaceId: string): number {
   const counts = countScopedRowsByTable(db, workspaceId);
   return WORKSPACE_TABLE_QUERIES.reduce((sum, query) => sum + (query.table === 'workspace_status' ? 0 : (counts[query.table] ?? 0)), 0);
+}
+
+/**
+ * STORE-4e：迁移终态 counts 补齐与 dry-run 统一的聚合键（键集契约见 shared WorkspaceLocalizeJobView.counts）：
+ * rows_total = Σ scoped 表；attachment_files / attachment_bytes 取工作区附件目录实盘（= 拷出的同一集合，
+ * resume 中段复用上次拷贝时同样成立）；db_bytes = 目标库主文件 + WAL 体积（dry-run 侧为中心库同口径）；
+ * estimated_bytes = 附件 + 库体积（真实迁移即实际落盘合计）。
+ */
+function fillTerminalAggregateCounts(counts: Record<string, number>, stateDir: string, targetDbPath: string): void {
+  counts.rows_total = WORKSPACE_TABLE_QUERIES.reduce((sum, query) => sum + (counts[query.table] ?? 0), 0);
+  const files = listFilesRecursive(join(stateDir, 'attachments'));
+  counts.attachment_files = files.length;
+  counts.attachment_bytes = files.reduce((sum, file) => sum + file.bytes, 0);
+  counts.db_bytes = safeSize(targetDbPath) + safeSize(`${targetDbPath}-wal`);
+  counts.estimated_bytes = counts.attachment_bytes + counts.db_bytes;
 }
 
 export interface LocalizeDeps {
@@ -172,13 +189,8 @@ export function getMeta(db: Db, key: string): string | null {
   }
 }
 
-/** 该工作区附件行的全部 storage_key（attachment + knowledge_attachment；copy/revert/status 共用） */
-export function collectWorkspaceAttachmentKeys(db: Db, workspaceId: string): string[] {
-  const keys = new Set<string>();
-  for (const row of db.prepare('SELECT storage_key FROM attachment WHERE workspace_id = ?').all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
-  for (const row of db.prepare("SELECT a.storage_key FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?").all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
-  return [...keys];
-}
+/** 该工作区附件行的全部 storage_key：STORE-4e 实现上移 workspaceLocalize.ts（dry-run 统计同源），此处转发导出保持既有导入路径 */
+export { collectWorkspaceAttachmentKeys } from './workspaceLocalize.js';
 
 /** copy_attachments：两表取 storage_key，逐文件复制 + sha256（目标在 `<ws>/.agentboard/attachments`） */
 function copyAttachmentFiles(
@@ -476,7 +488,8 @@ export async function localizeWorkspace(
       deleteWorkspaceScopedRows(centerDb, workspaceRow.id);
       centerDb.prepare("UPDATE workspace SET db_mode='localized', localized_at=? WHERE id=?").run(now(), workspaceRow.id);
     })();
-    // ⑧ finalize
+    // ⑧ finalize（STORE-4e：先补齐与 dry-run 统一的聚合键——rows_total / 附件 / 库体积，再落盘状态）
+    fillTerminalAggregateCounts(counts, stateDir, targetDbPath);
     write('finalize');
     return { state: 'localized', migration_id: migrationId, stages, counts, backup_path: backupPath, target_db_path: targetDbPath };
   } catch (error) {
