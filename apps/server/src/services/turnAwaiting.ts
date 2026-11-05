@@ -27,6 +27,20 @@ export const TURN_AWAITING_MAX_MS = 2 * 60 * 60 * 1000;
 /** 心跳间隔（对 awaiting 行刷新 awaiting_heartbeat_at） */
 export const TURN_AWAITING_HEARTBEAT_MS = 30 * 1000;
 
+/** CHAT-ASK-1B：回答状态机推进成功后的执行器回填回调（装配方注册；不改变本模块的状态机语义） */
+export type AwaitingAnswerDispatcher = (
+  turn: SessionTurn,
+  answer: { optionId?: string; text?: string },
+  /** 回答前的等待原因（awaiting_json.reason，已随这次回答清空）：装配方据此只处理 ask_user 通道 */
+  awaitingReason: string | null,
+) => void;
+let answerDispatcher: AwaitingAnswerDispatcher | null = null;
+
+/** 注册/卸下回答回填派发器；传 null 卸下（测试隔离用） */
+export function setAwaitingAnswerDispatcher(dispatcher: AwaitingAnswerDispatcher | null): void {
+  answerDispatcher = dispatcher;
+}
+
 export interface AwaitingDeps {
   broadcast: (event: ServerWsEvent) => void;
   /** 测试注入时钟；缺省 Date.now */
@@ -99,7 +113,7 @@ export function answerAwaitingTurn(
   db: Db,
   sessionId: string,
   turnId: string,
-  _answer: { optionId?: string; text?: string },
+  answer: { optionId?: string; text?: string },
 ): SessionTurn {
   const turn = getTurn(db, turnId);
   if (!turn || turn.session_id !== sessionId) throw new NotFoundError('轮次不存在');
@@ -111,13 +125,22 @@ export function answerAwaitingTurn(
   const next = index + 1;
   if (plan[next]) plan[next] = { ...plan[next]!, state: 'running' };
   const current_index = next < plan.length ? next : plan.length;
-  return updateTurn(db, turnId, {
+  const updated = updateTurn(db, turnId, {
     state: 'running',
     current_index,
     plan_json: plan,
     awaiting_json: null,
     awaiting_heartbeat_at: null,
   })!;
+  // CHAT-ASK-1B：状态已推进成功后，把用户回答交给装配方写回执行器；派发异常不影响本次回答的成功语义
+  if (answerDispatcher !== null) {
+    try {
+      answerDispatcher(updated, answer, turn.awaiting_json?.reason ?? null);
+    } catch (error) {
+      console.error('[turnAwaiting] 回答回填派发失败', error);
+    }
+  }
+  return updated;
 }
 
 export interface SweepResult {

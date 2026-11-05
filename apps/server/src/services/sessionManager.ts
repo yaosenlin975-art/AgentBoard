@@ -4,8 +4,8 @@
  * 模块级单例（不导出类）：Task 9 启动时 initSessionManager(db, getAdapter, { maxConcurrentTurns }) 装配；
  * comments 服务经 comments.setSessionSender(sendToSession) 接入评论唤醒。
  */
-import type { Message, MessageMeta, ServerWsEvent, Session } from '@agentboard/shared';
-import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
+import type { Message, MessageMeta, ServerWsEvent, Session, SessionTurn } from '@agentboard/shared';
+import type { AgentAdapter, AskEvent, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import type { Db } from '../db/connection.js';
 import {
@@ -15,8 +15,9 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
-import { failAllOpenTurns, failOpenTurns } from '../db/repos/sessionTurn.js';
+import { failAllOpenTurns, failOpenTurns, getTurn, updateTurn } from '../db/repos/sessionTurn.js';
 import { initialToolMeta } from './messageMeta.js';
+import { markTurnAwaiting, setAwaitingAnswerDispatcher } from './turnAwaiting.js';
 import { beginTurn as startTurnTracking, type TurnTracker } from './turnObservation.js';
 import { classifySessionError, looksLikeErrorOutput, type SessionErrorSignal } from './messageSignals.js';
 import {
@@ -107,10 +108,122 @@ let broadcaster: ((event: ServerWsEvent) => void) | null = null;
 /** 在途轮次观测器：usage 节流计时器的归属登记表（复位/删会话时统一停表，避免写已关闭的库） */
 const liveTrackers = new Set<TurnTracker>();
 
+/**
+ * CHAT-ASK-1B：ask 事件的活动回填通道（turn_id → 可写 stdin 的适配器句柄）。
+ * 只存内存、不落库：`awaiting_json` 只留 reason/message，request_id 仅用于本次进程内的回填定位；
+ * 服务重启后句柄失效，回答会以 ask_answer_binding_missing 收口，不静默丢。
+ */
+interface AwaitingAskBinding {
+  sessionId: string;
+  requestId: string;
+  handle: TurnHandle;
+}
+const awaitingAsks = new Map<string, AwaitingAskBinding>();
+/** 每轮已处理过的提问 request_id：同一 request_id 的重复 ask 不再建等待态 */
+const handledAskRequests = new Map<string, { sessionId: string; requestIds: Set<string> }>();
+/**
+ * 本进程内由 ask 事件建立过等待态的轮次。
+ * 只有这些轮次的回答才参与回填收口：历史 seed / 人工置的 ask_user 等待态没有执行器句柄，
+ * 回答时保持原有语义（不接管），否则会破坏非 ask 通道的既有用例。
+ * 不随会话遗忘清理（遗忘后仍要以 binding_missing 明确收口），只在轮次收口与进程复位时移除。
+ */
+const askOriginatedTurns = new Set<string>();
+
+function clearAskBinding(turnId: string): void {
+  awaitingAsks.delete(turnId);
+  handledAskRequests.delete(turnId);
+  askOriginatedTurns.delete(turnId);
+}
+
+function clearAskBindingOfSession(sessionId: string): void {
+  for (const [turnId, binding] of awaitingAsks) {
+    if (binding.sessionId === sessionId) awaitingAsks.delete(turnId);
+  }
+  for (const [turnId, handled] of handledAskRequests) {
+    if (handled.sessionId === sessionId) handledAskRequests.delete(turnId);
+  }
+}
+
 function closeAllTrackers(): void {
   for (const tracker of liveTrackers) tracker.close();
   liveTrackers.clear();
 }
+
+/** ask 事件 → 等待态展示文案：问题 + 选项（awaiting_json 不新增字段，选项折叠进 message 供 UI 可读） */
+function formatAskMessage(event: AskEvent): string {
+  const lines = event.question !== '' ? [event.question] : [];
+  for (const option of event.options) {
+    lines.push(option.description ? `- ${option.label}：${option.description}` : `- ${option.label}`);
+  }
+  return lines.join('\n');
+}
+
+/** 回填失败收口：轮次置 failed 并只推一次 session.turn（不改动其它状态机语义） */
+function failAwaitingDelivery(database: Db, turn: SessionTurn, reason: string, message: string): void {
+  const now = Date.now();
+  const updated = updateTurn(database, turn.id, {
+    state: 'failed',
+    ended_at: now,
+    awaiting_json: { reason, message, at: now },
+    awaiting_heartbeat_at: null,
+  });
+  if (!updated || updated.state !== 'failed') return;
+  broadcast({
+    type: 'session.turn',
+    session_id: updated.session_id,
+    turn_id: updated.id,
+    state: 'failed',
+    awaiting: updated.awaiting_json,
+  });
+}
+
+/**
+ * CHAT-ASK-1B：把用户回答写回执行器 stdin。`turnAwaiting.answerAwaitingTurn` 在回答状态机推进成功后回调；
+ * 句柄缺失 / 适配器不支持 / 写入失败一律收敛为 failed（带机器可判 reason），不静默吞。
+ */
+function deliverAwaitingAnswer(
+  turn: SessionTurn,
+  answer: { optionId?: string; text?: string },
+  awaitingReason: string | null,
+): void {
+  const database = db;
+  if (!database) return;
+  // 非 ask 驱动的等待态（历史/人工/审批路径）不参与回填，保持原有行为不变
+  if (awaitingReason !== 'ask_user') return;
+  // 只有本进程 ask 通道建立过等待态的轮次才接管回答；纯 seed 路径没有执行器通道，保持原语义
+  if (!askOriginatedTurns.has(turn.id)) return;
+  const binding = awaitingAsks.get(turn.id);
+  if (!binding) {
+    failAwaitingDelivery(
+      database,
+      turn,
+      'ask_answer_binding_missing',
+      '提问回填通道已失效（服务重启或轮次已收口），回答未送达执行器',
+    );
+    return;
+  }
+  awaitingAsks.delete(turn.id);
+  const text = answer.text ?? answer.optionId ?? '';
+  if (typeof binding.handle.answer !== 'function') {
+    failAwaitingDelivery(database, turn, 'ask_answer_unsupported', '当前适配器不支持提问回填');
+    return;
+  }
+  void binding.handle.answer(binding.requestId, text).catch((error: unknown) => {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code: unknown }).code)
+        : null;
+    failAwaitingDelivery(
+      database,
+      turn,
+      code ?? 'ask_answer_write_failed',
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+}
+
+// 模块装配即注册（回调内才读 db，resetSessionManager 后成为空操作）
+setAwaitingAnswerDispatcher(deliverAwaitingAnswer);
 
 function assertAssembled(): Db {
   if (!db) throw new Error('sessionManager 未装配');
@@ -130,6 +243,9 @@ export function initSessionManager(
   resolveAdapter = getAdapter;
   maxConcurrentTurns = opts.maxConcurrentTurns;
   states.clear();
+  awaitingAsks.clear();
+  handledAskRequests.clear();
+  askOriginatedTurns.clear();
   closeAllTrackers();
   activeTurns = 0;
   slotWaiters.length = 0;
@@ -145,6 +261,9 @@ export function resetSessionManager(): void {
   resolveAdapter = null;
   maxConcurrentTurns = 3;
   states.clear();
+  awaitingAsks.clear();
+  handledAskRequests.clear();
+  askOriginatedTurns.clear();
   closeAllTrackers();
   activeTurns = 0;
   slotWaiters.length = 0;
@@ -265,6 +384,7 @@ export function forgetSession(sessionId: string): void {
     liveTrackers.delete(state.tracker);
     state.tracker = null;
   }
+  clearAskBindingOfSession(sessionId);
   states.delete(sessionId);
 }
 
@@ -456,6 +576,8 @@ export async function stopSession(sessionId: string): Promise<Session> {
   if (!getSession(database, sessionId)) throw new NotFoundError('会话不存在');
   const state = ensureState(sessionId);
   state.turnActive = false;
+  // CHAT-ASK-1B：停止即失效回填通道（迟到回答不会写进已被 kill 的进程）
+  clearAskBindingOfSession(sessionId);
   // 停止弃轮：等槽位中的轮次将被放弃，等待标志随之复位（队列保留，计数不变不发 runtime）
   setWaitingSlot(sessionId, state, false);
   const ctx = state.current;
@@ -575,6 +697,7 @@ async function executeTurn(
   liveTrackers.add(tracker);
   /** 轮次收口（tracker.finish 幂等）：同时把它从会话状态与计时器登记表摘掉 */
   const finishTurn = (outcome: Parameters<TurnTracker['finish']>[0]): void => {
+    clearAskBinding(tracker.turnId); // 轮次收口后回答通道失效，避免悬挂句柄
     tracker.finish(outcome);
     liveTrackers.delete(tracker);
     if (state.tracker === tracker) state.tracker = null;
@@ -680,8 +803,53 @@ async function executeTurn(
     thinkingBuf = '';
     persistMessage(sessionId, 'event', JSON.stringify({ kind: 'thinking', text: content }), undefined, inTurn());
   };
+  /**
+   * CHAT-ASK-1B：ask → 同轮推进 awaiting_input 并登记回填通道。
+   * 只有 type:'ask' 走这里；普通 tool 事件仍按原逻辑落步骤，不回归。
+   * 重复 ask（同 request_id 或轮次已在等待）不再建等待态、不重复推 session.turn。
+   */
+  const onAskEvent = (event: AskEvent): void => {
+    const current = getTurn(database, tracker.turnId);
+    if (!current || current.state !== 'running') return;
+    const handled = handledAskRequests.get(tracker.turnId);
+    const requestIds = handled?.requestIds ?? new Set<string>();
+    if (requestIds.has(event.request_id)) return;
+    requestIds.add(event.request_id);
+    handledAskRequests.set(tracker.turnId, { sessionId, requestIds });
+    try {
+      // 不传 stepId：轨迹的 plan_json 只在轮次结束时落库（beginStep 仅广播），传当前步骤 id 会撞「步骤不存在」
+      const updated = markTurnAwaiting(database, sessionId, tracker.turnId, {
+        state: 'awaiting_input',
+        reason: 'ask_user',
+        message: formatAskMessage(event),
+      });
+      awaitingAsks.set(tracker.turnId, { sessionId, requestId: event.request_id, handle });
+      askOriginatedTurns.add(tracker.turnId);
+      broadcast({
+        type: 'session.turn',
+        session_id: sessionId,
+        turn_id: updated.id,
+        state: 'awaiting_input',
+        awaiting: updated.awaiting_json,
+      });
+    } catch (error) {
+      // 步骤对不上等异常：不建等待态，留下可读错误（不静默吞）
+      // 错误码字典在 shared 内（本卡禁改），复用既有 UNKNOWN_ERROR；具体原因在可读 message 里
+      persistMessage(
+        sessionId,
+        'error',
+        `无法进入等待输入状态：${error instanceof Error ? error.message : String(error)}`,
+        { code: 'UNKNOWN_ERROR', retryable: true },
+        inTurn(),
+      );
+    }
+  };
+
   handle.onEvent((event: UnifiedEvent) => {
-    broadcast({ type: 'session.event', session_id: sessionId, event });
+    // ask 不进 session.event：共享 WS 联合类型不含 ask，等待信息统一走 session.turn 快照
+    if (event.type !== 'ask') {
+      broadcast({ type: 'session.event', session_id: sessionId, event });
+    }
     switch (event.type) {
       case 'text':
         textBuf += event.delta;
@@ -706,6 +874,11 @@ async function executeTurn(
         tracker.registerStepMessage(step.step_id, message.id);
         break;
       }
+      case 'ask':
+        flushThinking();
+        flushText();
+        onAskEvent(event);
+        break;
       case 'error':
         flushThinking();
         flushText();
