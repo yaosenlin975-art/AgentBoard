@@ -17,6 +17,7 @@ import { createApp } from '../src/index.js';
 import { initSchema } from '../src/db/schema.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { pruneIssueGitBaselines } from '../src/db/migrations/issueGitBaseline.js';
+import { captureIssueGitBaseline, commitIssueChanges, parseCommitTrailers } from '../src/services/gitBaseline.js';
 
 const git = (cwd: string, args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
@@ -112,7 +113,9 @@ describe('git on done', () => {
     writeFileSync(join(repo, 'multi.md'), 'x\n');
     await done(issueId);
     // 单参数 -m：完整标题（含换行）原样进入提交信息，不被拆成多个参数或截断
-    expect(git(repo, ['log', '-1', '--pretty=%B']).trimEnd()).toBe(`[${issueId.slice(0, 8)}] ${title}`);
+    expect(git(repo, ['log', '-1', '--pretty=%B']).trimEnd()).toBe(
+      `[${issueId.slice(0, 8)}] ${title}\n\nAgentBoard-Issue: ${issueId}\nAgentBoard-Claim: fake`,
+    );
   });
 
   it('stagesDeletedFiles', async () => {
@@ -287,6 +290,42 @@ describe('git on done', () => {
       if (previousGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
       if (previousSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
     }
+  });
+
+  it('commitTrailerRecordsIssueAndClaimerAtCaptureTime', async () => {
+    const issueId = await makeIssue('trailer 记录领取者');
+    await claim(issueId);
+    writeFileSync(join(repo, 'trailer.txt'), 'x\n');
+    await done(issueId);
+
+    const body = git(repo, ['log', '-1', '--pretty=%B']);
+    expect(body).toContain(`AgentBoard-Issue: ${issueId}`);
+    expect(body).toContain('AgentBoard-Claim: fake');
+    expect(parseCommitTrailers(body)).toEqual({ issueId, claim: 'fake' });
+
+    // 流转后 issue 的 claimed_by 已清空，但基线里捕获的值仍用于 trailer
+    const after = t.db.prepare('SELECT claimed_by FROM issue WHERE id=?').get(issueId) as { claimed_by: string | null };
+    expect(after.claimed_by).toBeNull();
+  });
+
+  it('omitsClaimTrailerWhenClaimedByIsEmpty', async () => {
+    const issueId = await makeIssue('无领取者');
+    // 无领取者也能进入进行中（清扫残留场景），基线 captured_by 为空
+    t.db.prepare("UPDATE issue SET status='进行中', claimed_by=NULL WHERE id=?").run(issueId);
+    await captureIssueGitBaseline(t.db, issueId);
+    writeFileSync(join(repo, 'no-claimer.txt'), 'x\n');
+    await commitIssueChanges(t.db, issueId);
+
+    const body = git(repo, ['log', '-1', '--pretty=%B']);
+    expect(body).toContain(`AgentBoard-Issue: ${issueId}`);
+    expect(body).not.toContain('AgentBoard-Claim');
+  });
+
+  it('parsesLegacyCommitWithoutTrailers', () => {
+    // 旧提交（无 trailer）解析不报错，两个字段均为 null
+    expect(parseCommitTrailers('[abc] 旧标题')).toEqual({ issueId: null, claim: null });
+    // 空值 trailer 视同缺失
+    expect(parseCommitTrailers('AgentBoard-Issue:   \nAgentBoard-Claim:')).toEqual({ issueId: null, claim: null });
   });
 
   it('prunesBaselinesForIssuesNoLongerInProgress', async () => {

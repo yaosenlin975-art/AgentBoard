@@ -16,10 +16,16 @@ export function migrateIssueGitBaseline(db: Db): void {
       head_sha     TEXT,
       paths_json   TEXT NOT NULL,
       file_count   INTEGER NOT NULL,
-      captured_at  INTEGER NOT NULL
+      captured_at  INTEGER NOT NULL,
+      claimed_by   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_issue_git_baseline_ws ON issue_git_baseline(workspace_id);
   `);
+  // BORROW-2.3：老库补 claimed_by 列（claim 时的领取者，供 commit trailer 使用）
+  const columns = db.prepare('PRAGMA table_info(issue_git_baseline)').all() as Array<{ name: string }>;
+  if (!columns.some(column => column.name === 'claimed_by')) {
+    db.exec('ALTER TABLE issue_git_baseline ADD COLUMN claimed_by TEXT');
+  }
 }
 
 /**

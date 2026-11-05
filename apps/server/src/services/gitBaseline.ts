@@ -36,6 +36,28 @@ interface BaselineRow {
   paths_json: string;
   file_count: number;
   captured_at: number;
+  /** BORROW-2.3：claim 时捕获的领取者；done 已清空 issue.claimed_by 后仍可写入 trailer */
+  claimed_by: string | null;
+}
+
+/** BORROW-2.3：提交信息里的可解析 trailer（旧提交没有这两行，解析为 null 而不是报错） */
+export interface CommitTrailers {
+  issueId: string | null;
+  claim: string | null;
+}
+
+export function parseCommitTrailers(message: string): CommitTrailers {
+  let issueId: string | null = null;
+  let claim: string | null = null;
+  for (const rawLine of message.split('\n')) {
+    const match = /^(AgentBoard-Issue|AgentBoard-Claim):\s*(.*)$/.exec(rawLine.trim());
+    if (match === null) continue;
+    const value = match[2]!.trim();
+    if (value === '') continue;
+    if (match[1] === 'AgentBoard-Issue') issueId = value;
+    else claim = value;
+  }
+  return { issueId, claim };
 }
 
 async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -146,9 +168,10 @@ export async function captureIssueGitBaseline(db: Db, issueId: string): Promise<
     if (!(await isGitWorkTree(workspace.path))) return;
     const snapshot = await snapshotWorkTree(workspace.path);
     db.prepare(`INSERT OR REPLACE INTO issue_git_baseline
-      (issue_id, workspace_id, head_sha, paths_json, file_count, captured_at)
-      VALUES (?,?,?,?,?,?)`).run(
+      (issue_id, workspace_id, head_sha, paths_json, file_count, captured_at, claimed_by)
+      VALUES (?,?,?,?,?,?,?)`).run(
       issueId, issue.workspace_id, snapshot.head, JSON.stringify(snapshot.files), Object.keys(snapshot.files).length, Date.now(),
+      issue.claimed_by ?? null,
     );
   } catch {
     // 基线缺失只会让 done 跳过自动提交，不影响任务流转
@@ -332,7 +355,11 @@ export async function commitIssueChanges(
 
       await git(repo, ['add', '-A', '--', ...paths]);
       const identityOk = await identityConfigured(repo);
-      const message = `[${shortId}] ${issue.title}`;
+      // BORROW-2.3：trailer 记录卡片与领取者；领取者取 claim 时写入基线的值（done 流转已清空 issue.claimed_by）
+      const trailerLines = [`AgentBoard-Issue: ${issueId}`];
+      const claimer = (baselineRow.claimed_by ?? '').trim();
+      if (claimer !== '') trailerLines.push(`AgentBoard-Claim: ${claimer}`);
+      const message = `[${shortId}] ${issue.title}\n\n${trailerLines.join('\n')}`;
       const commitArgs = identityOk
         ? ['commit', '-m', message]
         : ['-c', `user.name=${DEFAULT_IDENTITY.name}`, '-c', `user.email=${DEFAULT_IDENTITY.email}`, 'commit', '-m', message];
