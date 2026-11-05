@@ -56,7 +56,7 @@ import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages }
 import { buildSessionPreview } from '../services/messageSignals.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { SERVER_VERSION } from '../version.js';
-import { resolveProxyEnv } from '@agentboard/shared';
+import { CLAIM_FENCE_HEADER, resolveProxyEnv } from '@agentboard/shared';
 import {
   describeMigrationError,
   getMigrationStatus,
@@ -66,7 +66,7 @@ import {
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
 import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs } from '../db/resolver.js';
-import { claimIssue, doneIssue, failIssue, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
+import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
@@ -907,6 +907,24 @@ export function createRouter(deps: RouterDeps): Router {
     if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
     res.json(outcome.result);
   });
+
+  // BORROW-0.2：占用续租。不进幂等表——心跳只刷新租约，重放无意义；fence 校验属 B03。
+  router.post('/issues/:id/heartbeat', (req, res) => {
+    const body = parseBody(claimSchema, req.body);
+    const lease = heartbeatClaim(db, req.params.id!, body.agent_id, readFence(req, body));
+    broadcast({ type: 'issue.changed', issue: getIssue(db, req.params.id!)! });
+    res.json(lease);
+  });
+
+  // BORROW-0.3：fence 双通道——body.fence 优先，回退 x-claim-fence 头；缺席=软模式；值非法一律 400
+  function readFence(req: Request, body: { fence?: number } | undefined): number | undefined {
+    if (body?.fence !== undefined) return body.fence;
+    const raw = req.get(CLAIM_FENCE_HEADER);
+    if (raw === undefined || raw === '') return undefined;
+    const parsed = Number(raw);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) throw new ValidationError(`x-claim-fence 头需为 ≥0 整数，收到 ${JSON.stringify(raw)}`);
+    return parsed;
+  }
 
   // 自动评论补 WS 推送：comment 非空时追加 comment.added（顺序与手动评论端点一致：先 comment.added 后 issue.changed）
   async function claimAction(req: Request, res: Response, action: 'release' | 'done' | 'fail') {

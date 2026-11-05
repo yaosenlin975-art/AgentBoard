@@ -21,6 +21,7 @@ import { migrateWorkspaceStatus } from './migrations/workspaceStatus.js';
 import { migrateDraftAudit } from './migrations/draftAudit.js';
 import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js';
 import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
+import { migrateClaimLease } from './migrations/claimLease.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -39,6 +40,8 @@ CREATE TABLE IF NOT EXISTS issue (
   status TEXT NOT NULL DEFAULT '待规划',
   sort_order INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT, claimed_at INTEGER, session_id TEXT, last_seen_comment_id TEXT,
+  -- BORROW-0.2 占用租约：NULL 租约=不可抢占；fence 代次每次 claim 自增（校验属 B03）
+  claim_lease_until INTEGER, claim_fence INTEGER NOT NULL DEFAULT 0, last_heartbeat_at INTEGER,
   parent_issue_id TEXT REFERENCES issue(id) ON DELETE RESTRICT,
   due_date TEXT, due_time TEXT,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -90,6 +93,9 @@ export function initSchema(db: Db): void {
   migrateWorkspaceDbMode(db);
   // AUDIT-SRV（F-04）：message 表的错误归类列（幂等加列；老行保持 NULL，读取时现算兜底）
   migrateSessionMessageSignals(db);
+  // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
+  // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
+  migrateClaimLease(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }
