@@ -37,6 +37,19 @@ export const server = setupServer(
       { app_id: 'trae', protocol: 'trae_oauth', provider_version: 'acc-kb-b2s-v1', requires_browser: true, regions: ['cn'] },
     ],
   })),
+  // ACC-REFRESH：设置面板首次可用会自动刷新一次；默认给空成功结果，避免未挂载面板的用例打到未处理请求
+  http.post('/api/accounts/import-credentials', () => HttpResponse.json({
+    batch_id: 'startup-auto',
+    actor: 'web',
+    duration_ms: 0,
+    platforms: [
+      { platform: 'workbuddy', app_id: 'workbuddy_desktop', found: 0, created: 0, updated: 0, skipped: 0, error: null },
+      { platform: 'minimax', app_id: 'minimax', found: 0, created: 0, updated: 0, skipped: 0, error: null },
+      { platform: 'trae', app_id: 'trae', found: 0, created: 0, updated: 0, skipped: 0, error: null },
+    ],
+    accounts: [],
+    error: null,
+  })),
   // ACC-QUOTA-01：账号页额度卡默认夹具（ok / unsupported / error 三态各一条，避免走真实 fetch）
   http.get('/api/managed-account-quotas', () => HttpResponse.json({
     workspace_id: null,

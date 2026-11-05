@@ -34,16 +34,16 @@ const CAPABILITIES: AccountCapability[] = [
   { app_id: 'trae', capture: false, switch: false, checkin: true, capture_reason_code: 'LOGIN_STATE_NOT_FILE_BASED', switch_reason_code: 'LOGIN_STATE_NOT_FILE_BASED', checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE', reason_code: 'LOGIN_STATE_NOT_FILE_BASED', source: 'derived' },
 ];
 
-/** 列表按调用次数收敛：第一次带账号，之后为空 → 用来证明删除后确实「失效重拉」而不是本地摘除 */
-function mockList(accounts: AccountView[], removedAfterFirst = false) {
+/**
+ * 列表是否为空由「删除是否已发生」决定，而不是调用次数：
+ * ACC-REFRESH 启动刷新会额外触发一次失效重拉，按次数收敛会误判。
+ */
+function mockList(accounts: AccountView[], isRemoved: () => boolean = () => false) {
   const getCalls: number[] = [];
-  let first = true;
   server.use(
     http.get('/api/managed-accounts', () => {
       getCalls.push(Date.now());
-      const rows = removedAfterFirst && !first ? [] : accounts;
-      first = false;
-      return HttpResponse.json(rows);
+      return HttpResponse.json(isRemoved() ? [] : accounts);
     }),
   );
   return getCalls;
@@ -67,11 +67,13 @@ beforeEach(() => {
 
 describe('展开层删除两步流（ACC-DEL-02）', () => {
   it('两步流：点删除只出确认行，确认后才发 DELETE，成功后失效重拉列表', async () => {
-    const getCalls = mockList([account()], true);
+    let removed = false;
+    const getCalls = mockList([account()], () => removed);
     const deletes: string[] = [];
     server.use(
       http.delete('/api/managed-accounts/:id', ({ params }) => {
         deletes.push(String(params.id));
+        removed = true;
         return new HttpResponse(null, { status: 204 });
       }),
     );
