@@ -230,15 +230,39 @@ export type TurnStepState = 'pending' | 'running' | 'done' | 'failed' | 'awaitin
  * `step_id` 在同一轮内稳定（`s1`、`s2`…，只追加不重排），是 CHAT-RETRY1 step ledger 的定位键。
  */
 export interface TurnPlanStep { step_id: string; title: string; state: TurnStepState }
+/** CHAT-APP1（契约 #9/#20）：待审批请求详情，随 `awaiting_json` 落库，供决策端点按 `request_id` 校验 */
+export interface TurnApprovalInfo {
+  request_id: string;
+  tool: string;
+  target: string;
+  risk: string;
+  match_key: string;
+}
+/** CHAT-APP1（契约 #9）：`approval_rule.scope` 落库的两档；`once` 只批当前请求，不写规则 */
+export type ApprovalRuleScope = 'task' | 'workspace';
+/** CHAT-APP1（契约 #14）：审批决策的档位（三档确认 UI 的单选值） */
+export type ApprovalScope = 'once' | 'task' | 'workspace';
+/** CHAT-APP1（契约 #9）：`approval_rule` 行（`revoked_at` 非空 = 已软撤销） */
+export interface ApprovalRule {
+  id: string; workspace_id: string; issue_id: string | null; session_id: string | null;
+  turn_id: string | null; tool_name: string; match_key: string; scope: ApprovalRuleScope;
+  created_at: number; created_by: string; revoked_at: number | null;
+}
 /**
  * CHAT-TURN1（契约 #5）：`session_turn.awaiting_json`。
  * 阻塞态与失败原因共用这一列，`reason` 机器可判：
  * - 本卡落地：`user_stop` / `superseded` / `server_restart` / `adapter_resolve_failed` / `adapter_run_failed`
  *   / `adapter_threw` / `adapter_exit_nonzero` / `image_delivery_unverified` / `image_attachment_selection_invalid`
  *   / `attachment_mark_failed`；
- * - `awaiting_input` / `awaiting_approval` 及其超时 `awaiting_timeout` 由 CHAT-AWAIT1 写入（字段已就位）。
+ * - `awaiting_input` / `awaiting_approval` 及其超时 `awaiting_timeout` 由 CHAT-AWAIT1 写入（字段已就位）；
+ * - CHAT-APP1：`approval` 仅在等待审批时非空，决策端点按 `request_id` 关联，避免重复批准。
  */
-export interface TurnAwaitingInfo { reason: string; message?: string | null; at?: number }
+export interface TurnAwaitingInfo {
+  reason: string;
+  message?: string | null;
+  at?: number;
+  approval?: TurnApprovalInfo | null;
+}
 /**
  * CHAT-TURN1（契约 #21）：`session_turn.usage_json`。
  * 本卡无真实 token 来源（适配器事件不带 usage，且本卡不改执行器），按服务端可观测的正文字符量估算，
@@ -350,7 +374,21 @@ export interface SessionTurnEvent {
   state: SessionTurnState;
   awaiting?: TurnAwaitingInfo | null;
 }
-export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | SessionTurnEvent;
+/**
+ * CHAT-APP1 契约 #20：危险工具审批请求（触发三档确认弹窗）。
+ * 走 `TurnObservationEvent` 而非 `WsEvent`：与 CHAT-AWAIT1 同口径，前端消费归后续卡
+ * （并入 `WsEvent` 会让 `apps/web/src/api/ws.ts` 的穷尽 switch 编译失败）。
+ */
+export interface SessionApprovalRequestEvent {
+  type: 'session.approval_request';
+  session_id: string;
+  turn_id: string;
+  request_id: string;
+  tool: string;
+  target: string;
+  risk: string;
+}
+export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | SessionTurnEvent | SessionApprovalRequestEvent;
 /**
  * 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件。
  *

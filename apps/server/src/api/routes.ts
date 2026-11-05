@@ -54,6 +54,8 @@ import {
 } from '../db/repos/session.js';
 import { listTurnsBySession } from '../db/repos/sessionTurn.js';
 import { answerAwaitingTurn } from '../services/turnAwaiting.js';
+import { decideTurnApproval } from '../services/turnApproval.js';
+import { listActiveApprovalRules, revokeApprovalRule } from '../db/repos/approvalRule.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
 import { buildSessionPreview } from '../services/messageSignals.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
@@ -101,6 +103,7 @@ import {
   patchSessionSchema,
   forkSessionSchema,
   answerTurnSchema,
+  approvalDecisionSchema,
   patchSettingsSchema,
   dbMigrateSchema,
   sendMessageSchema,
@@ -1054,6 +1057,20 @@ export function createRouter(deps: RouterDeps): Router {
     res.json(await adapter.listModels());
   });
 
+  // ---- approval rules（CHAT-APP1 契约 #16/#17）----
+  // 只列未撤销规则（撤销入口数据源）；DELETE 是软撤销，行保留作审计。
+  router.get('/workspaces/:workspaceId/approval-rules', (req, res) => {
+    const workspaceId = req.params.workspaceId!;
+    requireExistingWorkspace(db, workspaceId);
+    res.json(listActiveApprovalRules(db, workspaceId));
+  });
+
+  router.delete('/workspaces/:workspaceId/approval-rules/:ruleId', (req, res) => {
+    const workspaceId = req.params.workspaceId!;
+    requireExistingWorkspace(db, workspaceId);
+    res.json(revokeApprovalRule(db, workspaceId, req.params.ruleId!));
+  });
+
   // ---- sessions ----
   // 运行时态（队列长度/等待槽位）内存合并进响应，不入库、不回传队列文本
   router.get('/sessions', (req, res) => {
@@ -1289,6 +1306,23 @@ export function createRouter(deps: RouterDeps): Router {
       awaiting: null,
     });
     res.json(turn);
+  });
+
+  // CHAT-APP1（契约 #14）：三档确认决策——allow 按档写规则并恢复 running，deny 置 stopped；
+  // 非 awaiting_approval / 重复决策 → 409；request_id 不匹配 → 404；写类工具 + workspace 档 → 403。
+  router.post('/sessions/:id/turns/:turnId/approvals/:requestId', (req, res) => {
+    const body = parseBody(approvalDecisionSchema, req.body ?? {});
+    const session = getSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('会话不存在');
+    const result = decideTurnApproval(db, session.id, req.params.turnId!, req.params.requestId!, body);
+    broadcast({
+      type: 'session.turn',
+      session_id: session.id,
+      turn_id: result.turn.id,
+      state: result.turn.state,
+      awaiting: result.turn.state === 'running' ? null : result.turn.awaiting_json,
+    });
+    res.json(result);
   });
 
   return router;

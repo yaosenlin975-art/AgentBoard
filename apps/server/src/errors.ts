@@ -23,6 +23,12 @@ export class NotFoundError extends ApiError {
   }
 }
 
+export class ForbiddenError extends ApiError {
+  constructor(message = '无权执行该操作') {
+    super(403, 'FORBIDDEN', message);
+  }
+}
+
 export class ValidationError extends ApiError {
   constructor(message = '参数不合法') {
     super(400, 'VALIDATION_ERROR', message);

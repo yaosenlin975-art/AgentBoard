@@ -1,4 +1,4 @@
-import type { ServerWsEvent, SessionTurn, TurnAwaitingInfo, TurnPlanStep } from '@agentboard/shared';
+import type { ServerWsEvent, SessionTurn, TurnApprovalInfo, TurnAwaitingInfo, TurnPlanStep } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { getTurn, updateTurn } from '../db/repos/sessionTurn.js';
 import { ConflictError, NotFoundError } from '../errors.js';
@@ -41,6 +41,8 @@ export interface MarkAwaitingInput {
   message?: string | null;
   /** 可选：指定阻塞的步骤 id；缺省取 current_index 指向的步骤 */
   stepId?: string;
+  /** CHAT-APP1：审批请求详情（仅 awaiting_approval 时使用），随 awaiting_json 落库供决策端点按 request_id 校验 */
+  approval?: TurnApprovalInfo;
 }
 
 const OPEN_STATES = ['awaiting_input', 'awaiting_approval'] as const;
@@ -75,7 +77,12 @@ export function markTurnAwaiting(db: Db, sessionId: string, turnId: string, inpu
   }
   if (index >= 0) plan[index] = { ...plan[index]!, state: 'awaiting' };
   const now = Date.now();
-  const awaiting: TurnAwaitingInfo = { reason: input.reason, message: input.message ?? null, at: now };
+  const awaiting: TurnAwaitingInfo = {
+    reason: input.reason,
+    message: input.message ?? null,
+    at: now,
+    ...(input.approval !== undefined ? { approval: input.approval } : {}),
+  };
   return updateTurn(db, turnId, {
     state: input.state,
     plan_json: plan,

@@ -24,6 +24,7 @@ import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
 import { migrateSessionTitle } from './migrations/sessionTitle.js';
 import { migrateSessionSidebar } from './migrations/sessionSidebar.js';
 import { migrateSessionAwaiting } from './migrations/sessionAwaiting.js';
+import { migrateApprovalRule } from './migrations/approvalRule.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
@@ -109,6 +110,8 @@ export function initSchema(db: Db): void {
   migrateSessionTurn(db);
   // CHAT-AWAIT1（契约 #13 / 超时兜底）：session_turn 心跳列（必须排在 migrateSessionTurn 之后）
   migrateSessionAwaiting(db);
+  // CHAT-APP1（契约 #9）：三档确认规则表（含未撤销规则的部分唯一索引；依赖 session_turn 已建）
+  migrateApprovalRule(db);
   // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
   // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
   migrateClaimLease(db);

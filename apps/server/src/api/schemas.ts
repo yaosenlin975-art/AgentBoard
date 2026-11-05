@@ -324,6 +324,15 @@ export const answerTurnSchema = z
   });
 
 /**
+ * POST /api/sessions/:id/turns/:turnId/approvals/:requestId：三档确认的审批决策。
+ * `decision` 只允许 allow/deny；`scope` 为三档（`once` 不落规则）。
+ */
+export const approvalDecisionSchema = z.object({
+  decision: z.enum(['allow', 'deny']),
+  scope: z.enum(['once', 'task', 'workspace']),
+});
+
+/**
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
  * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
  */
