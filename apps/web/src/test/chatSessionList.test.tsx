@@ -197,4 +197,38 @@ describe('S3 左会话列表', () => {
     usePanelStore.setState({ unread: { a: 2, b: 3 } });
     expect(await screen.findByTestId('sidebar-chat-unread')).toHaveTextContent('5');
   });
+
+  it('AUDIT-3：条目带相对时间与任务归属，同名标题追加时间可区分', async () => {
+    const now = Date.now();
+    issueStore = [
+      { id: 'iss-a', workspace_id: 'ws-1', title: '同名任务' } as Issue,
+      { id: 'iss-b', workspace_id: 'ws-1', title: '同名任务' } as Issue,
+      { id: 'iss-empty', workspace_id: 'ws-1', title: '' } as Issue,
+    ];
+    sessionsList = [
+      makeSession({ id: 's1', issue_id: 'iss-a', created_at: now - 5 * 60_000 }),
+      makeSession({ id: 's2', issue_id: 'iss-b', created_at: now - 90 * 60_000 }),
+      makeSession({ id: 's3', issue_id: 'iss-empty', created_at: now - 26 * 3_600_000 }),
+    ];
+    renderChatView();
+
+    // 同名标题各自追加相对时间，三条可区分
+    expect(await screen.findByTestId('session-option-s1')).toHaveTextContent('同名任务 · 5 分钟前');
+    expect(screen.getByTestId('session-option-s2')).toHaveTextContent('同名任务 · 1 小时前');
+    // 空标题退化为任务号，时间在副行
+    expect(screen.getByTestId('session-option-s3')).toHaveTextContent('#iss-empt');
+    expect(screen.getByTestId('session-meta-s1')).toHaveTextContent('#iss-a · 5 分钟前');
+    expect(screen.getByTestId('session-meta-s3')).toHaveTextContent('#iss-empt · 1 天前');
+  });
+
+  it('AUDIT-3：删除 ✕ 命中区 ≥24px，默认隐藏、hover/focus 可见', async () => {
+    sessionsList = [makeSession({ id: 's1' })];
+    renderChatView();
+
+    const del = await screen.findByTestId('session-delete-s1');
+    expect(del.className).toContain('size-6');
+    expect(del.className).toContain('opacity-0');
+    expect(del.className).toContain('group-hover:opacity-100');
+    expect(del.className).toContain('focus-visible:opacity-100');
+  });
 });

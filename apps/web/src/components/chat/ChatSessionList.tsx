@@ -41,6 +41,19 @@ function unreadLabel(count: number): string {
   return count > 99 ? "99+" : String(count);
 }
 
+/** AUDIT-3（I-10）：条目相对时间——同日讨论只看「几分钟前/几小时前」，更早退化为日期 */
+function relativeTime(ts: number, now = Date.now()): string {
+  const minutes = Math.floor(Math.max(0, now - ts) / 60000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} 天前`;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}月${d.getDate()}日`;
+}
+
 export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) {
   const sessionId = usePanelStore((s) => s.sessionId);
   const unread = usePanelStore((s) => s.unread);
@@ -81,6 +94,20 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
     const title = issueQueries[i]?.data?.title;
     if (title !== undefined) issueTitles.set(id, title);
   });
+
+  // AUDIT-3（I-10）：标题去重——同名会话追加相对时间，空标题（issue 标题未载入/为空）退化为任务号
+  const baseTitleOf = (session: Session): string => {
+    if (session.issue_id === null) {
+      return `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
+    }
+    const issueTitle = issueTitles.get(session.issue_id)?.trim() ?? '';
+    return issueTitle !== '' ? issueTitle : `#${session.issue_id.slice(0, 8)}`;
+  };
+  const titleCounts = new Map<string, number>();
+  for (const session of sessions) {
+    const base = baseTitleOf(session);
+    titleCounts.set(base, (titleCounts.get(base) ?? 0) + 1);
+  }
 
   // 进入聊天视图默认选中：本列表挂载后首次拿到会话时，无选中会话就取最近一条。
   // 只做一次（autoSelected）：之后用户删光当前会话也不自动跳到别的会话，空态归 ChatPanel 处理；
@@ -163,15 +190,22 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
                 {group.sessions.map((session) => {
                   const active = session.id === sessionId;
                   const count = unread[session.id] ?? 0;
+                  const baseTitle = baseTitleOf(session);
                   const title =
+                    (titleCounts.get(baseTitle) ?? 0) > 1
+                      ? `${baseTitle} · ${relativeTime(session.created_at)}`
+                      : baseTitle;
+                  // 任务归属 + 相对时间：同名会话靠时间区分，自由会话标明身份
+                  const meta =
                     session.issue_id !== null
-                      ? (issueTitles.get(session.issue_id) ?? `#${session.issue_id.slice(0, 8)}`)
-                      : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
+                      ? `#${session.issue_id.slice(0, 8)} · ${relativeTime(session.created_at)}`
+                      : `自由会话 · ${relativeTime(session.created_at)}`;
                   return (
                     <SessionRow
                       key={session.id}
                       session={session}
                       title={title}
+                      meta={meta}
                       active={active}
                       unreadCount={count}
                       onSelect={() => handleSelect(session)}
@@ -191,6 +225,7 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
 function SessionRow({
   session,
   title,
+  meta,
   active,
   unreadCount,
   onSelect,
@@ -198,6 +233,8 @@ function SessionRow({
 }: {
   session: Session;
   title: string;
+  /** 任务归属 + 相对时间（AUDIT-3 I-10） */
+  meta: string;
   active: boolean;
   unreadCount: number;
   onSelect: () => void;
@@ -216,38 +253,43 @@ function SessionRow({
         data-testid={`session-option-${session.id}`}
         aria-current={active ? 'true' : undefined}
         onClick={onSelect}
-        className={`flex min-w-0 flex-1 items-center gap-1 px-2.5 py-1.5 text-left text-xs ${
+        className={`flex min-w-0 flex-1 flex-col gap-0.5 px-2.5 py-1.5 text-left text-xs ${
           active ? 'font-medium text-accent' : 'text-ink-2'
         }`}
       >
-        <span className="truncate" title={title}>
-          {title}
-        </span>
-        {session.status === '运行中' && (
-          <span
-            data-testid={`option-running-${session.id}`}
-            title="运行中"
-            aria-label="运行中"
-            className="size-1.5 shrink-0 rounded-full bg-amber-500"
-          />
-        )}
-        {session.status === '失败' && (
-          <span
-            data-testid={`option-failed-${session.id}`}
-            title="失败"
-            aria-label="失败"
-            className="size-1.5 shrink-0 rounded-full bg-red-500"
-          />
-        )}
-        {unreadCount > 0 && (
-          <span
-            data-testid={`unread-${session.id}`}
-            title={`${unreadCount} 条新消息`}
-            className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
-          >
-            {unreadLabel(unreadCount)}
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="truncate" title={title}>
+            {title}
           </span>
-        )}
+          {session.status === '运行中' && (
+            <span
+              data-testid={`option-running-${session.id}`}
+              title="运行中"
+              aria-label="运行中"
+              className="size-1.5 shrink-0 rounded-full bg-amber-500"
+            />
+          )}
+          {session.status === '失败' && (
+            <span
+              data-testid={`option-failed-${session.id}`}
+              title="失败"
+              aria-label="失败"
+              className="size-1.5 shrink-0 rounded-full bg-red-500"
+            />
+          )}
+          {unreadCount > 0 && (
+            <span
+              data-testid={`unread-${session.id}`}
+              title={`${unreadCount} 条新消息`}
+              className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
+            >
+              {unreadLabel(unreadCount)}
+            </span>
+          )}
+        </span>
+        <span data-testid={`session-meta-${session.id}`} className="truncate text-[10px] text-ink-3">
+          {meta}
+        </span>
       </button>
       {confirming ? (
         <span className="flex shrink-0 items-center gap-1">
@@ -283,7 +325,7 @@ function SessionRow({
           aria-label="删除会话"
           title="删除会话"
           onClick={() => setConfirming(true)}
-          className="shrink-0 rounded px-1 text-[10px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
+          className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
         >
           ✕
         </button>

@@ -49,6 +49,14 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [actionError, setActionError] = useState<string | null>(null);
   // AUDIT-SRV：错误卡片的「切换模型」入口——递增即让 ModelSelector 打开弹窗（弹窗开合仍归它自己）
   const [modelOpenSignal, setModelOpenSignal] = useState(0);
+  // AUDIT-3：头部「修改」收进 ⋯ 菜单；点菜单外任意处收起
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!headerMenuOpen) return;
+    const close = (): void => setHeaderMenuOpen(false);
+    document.addEventListener('click', close);
+    return () => document.removeEventListener('click', close);
+  }, [headerMenuOpen]);
 
   // WS session.changed 覆盖打开时携带的会话对象（状态/模型变更）；切会话同步清按 id 拉取的兜底
   useEffect(() => {
@@ -308,65 +316,92 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
 
   return (
     <div data-testid="chat-panel" className="flex h-full min-h-0 flex-col">
-      {/* 头部（设计 §5）：会话标题 · issue 号 · CLI/模型徽标 + 工作空间；右侧保留模型选择与轮次动作 */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-3 py-1.5">
-        <span
-          data-testid="chat-session-title"
-          title={sessionTitle}
-          className="min-w-0 truncate text-sm font-medium text-ink"
-        >
-          {sessionTitle}
-        </span>
-        {session.issue_id !== null && (
-          <span data-testid="chat-issue-ref" title={`任务 ${session.issue_id}`} className="shrink-0 text-[10px] text-ink-3">
-            · #{session.issue_id.slice(0, 8)}
+      {/* 头部（设计 §5 / AUDIT-3）：第一行只留一处会话标题；第二行是任务归属 · 工作空间 · 模型副标题 */}
+      <div className="flex shrink-0 flex-col border-b border-hairline">
+        <div className="flex min-w-0 items-center gap-1.5 px-3 pt-1.5">
+          <span
+            data-testid="chat-session-title"
+            title={sessionTitle}
+            className="min-w-0 truncate text-sm font-medium text-ink"
+          >
+            {sessionTitle}
           </span>
-        )}
-        <span
-          data-testid="chat-cli-badge"
-          title="当前会话 CLI / 模型"
-          className="shrink-0 rounded bg-surface-raised px-1.5 py-0.5 text-[10px] text-ink-2"
-        >
-          {session.cli}
-          {session.model !== null ? ` · ${session.model}` : ''}
-        </span>
-        {workspaceBadge}
-        <span className="ml-auto flex shrink-0 items-center gap-1">
-          <ModelSelector session={session} onUpdated={setLiveSession} openSignal={modelOpenSignal} />
-          {waitingSlot && (
-            <span
-              data-testid="waiting-slot-badge"
-              title="并发槽位已满，轮次排队等待空闲槽位"
-              className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+          <span className="relative ml-auto flex shrink-0 items-center gap-1">
+            {waitingSlot && (
+              <span
+                data-testid="waiting-slot-badge"
+                title="并发槽位已满，轮次排队等待空闲槽位"
+                className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+              >
+                等待槽位
+              </span>
+            )}
+            {canMarkDone && (
+              <button
+                type="button"
+                data-testid="chat-done-btn"
+                onClick={() => markDone.mutate()}
+                disabled={markDone.isPending}
+                title="将关联任务标记为待验收并释放占用"
+                className="shrink-0 rounded border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90 disabled:opacity-40"
+              >
+                标记待验收
+              </button>
+            )}
+            {running && (
+              <button
+                type="button"
+                data-testid="stop-btn"
+                onClick={() => stop.mutate()}
+                disabled={stop.isPending}
+                title="停止当前轮次（排队消息保留）"
+                className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+              >
+                停止
+              </button>
+            )}
+            <button
+              type="button"
+              data-testid="chat-header-menu-btn"
+              aria-label="会话操作"
+              aria-haspopup="menu"
+              aria-expanded={headerMenuOpen}
+              onClick={(e) => {
+                e.stopPropagation();
+                setHeaderMenuOpen((v) => !v);
+              }}
+              className="flex size-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
             >
-              等待槽位
+              ⋯
+            </button>
+            {headerMenuOpen && (
+              <div
+                role="menu"
+                data-testid="chat-header-menu"
+                className="absolute right-0 top-full z-20 mt-1 w-28 rounded-md border border-hairline bg-surface-card p-0.5 shadow"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="edit-model-btn"
+                  onClick={() => setModelOpenSignal((n) => n + 1)}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink"
+                >
+                  修改模型
+                </button>
+              </div>
+            )}
+          </span>
+        </div>
+        <div className="flex min-w-0 items-center gap-1.5 px-3 pb-1.5 text-[10px] text-ink-3">
+          {session.issue_id !== null && (
+            <span data-testid="chat-issue-ref" title={`任务 ${session.issue_id}`} className="shrink-0">
+              #{session.issue_id.slice(0, 8)}
             </span>
           )}
-          {canMarkDone && (
-            <button
-              type="button"
-              data-testid="chat-done-btn"
-              onClick={() => markDone.mutate()}
-              disabled={markDone.isPending}
-              title="将关联任务标记为待验收并释放占用"
-              className="shrink-0 rounded border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent hover:opacity-90 disabled:opacity-40"
-            >
-              标记待验收
-            </button>
-          )}
-          {running && (
-            <button
-              type="button"
-              data-testid="stop-btn"
-              onClick={() => stop.mutate()}
-              disabled={stop.isPending}
-              title="停止当前轮次（排队消息保留）"
-              className="shrink-0 rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
-            >
-              停止
-            </button>
-          )}
-        </span>
+          {workspaceBadge}
+          <ModelSelector session={session} onUpdated={setLiveSession} openSignal={modelOpenSignal} showEditButton={false} />
+        </div>
       </div>
       {actionError !== null && (
         <p data-testid="chat-action-error" role="alert" className="px-3 pt-1 text-xs text-red-600 dark:text-red-400">

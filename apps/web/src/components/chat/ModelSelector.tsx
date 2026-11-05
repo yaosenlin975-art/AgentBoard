@@ -14,11 +14,14 @@ export function ModelSelector({
   session,
   onUpdated,
   openSignal,
+  showEditButton = true,
 }: {
   session: Session;
   onUpdated: (session: Session) => void;
   /** AUDIT-SRV：外部（如错误卡片「切换模型」）递增该值即打开弹窗；弹窗开合仍由本组件持有 */
   openSignal?: number;
+  /** AUDIT-3：false 时只渲染模型副标题，「修改」入口由调用方收进头部菜单 */
+  showEditButton?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -61,15 +64,17 @@ export function ModelSelector({
         {session.cli}
         {session.model !== null ? ` · ${session.model}` : ''}
       </span>
-      <button
-        type="button"
-        data-testid="edit-model-btn"
-        onClick={() => setOpen(true)}
-        title="修改模型（下一轮生效）"
-        className="shrink-0 rounded px-1 py-0.5 text-xs text-accent hover:bg-accent-soft/40"
-      >
-        修改
-      </button>
+      {showEditButton && (
+        <button
+          type="button"
+          data-testid="edit-model-btn"
+          onClick={() => setOpen(true)}
+          title="修改模型（下一轮生效）"
+          className="shrink-0 rounded px-1 py-0.5 text-xs text-accent hover:bg-accent-soft/40"
+        >
+          修改
+        </button>
+      )}
 
       {open && (
         <Modal open title="修改模型" onClose={() => setOpen(false)}>

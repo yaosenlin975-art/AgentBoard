@@ -112,6 +112,44 @@ function EventBlock({ message }: { message: Message }) {
   );
 }
 
+/**
+ * AUDIT-3（F-05）：同一轮 assistant 回复的连续事件聚合成一个折叠块，
+ * 汇总行只显示计数（「工具 12 次 · 思考 8 段」），默认收起，点开才逐条列明细。
+ */
+function EventGroup({ messages }: { messages: Message[] }) {
+  let tools = 0;
+  let thinking = 0;
+  let raw = 0;
+  for (const m of messages) {
+    const parsed = parseEventContent(m.content);
+    if (parsed.thinking !== null) thinking += 1;
+    else if (parsed.tool !== null) tools += 1;
+    else raw += 1;
+  }
+  const parts: string[] = [];
+  if (tools > 0) parts.push(`工具 ${tools} 次`);
+  if (thinking > 0) parts.push(`思考 ${thinking} 段`);
+  if (raw > 0) parts.push(`事件 ${raw} 条`);
+  return (
+    <details
+      data-testid={`event-group-${messages[0]!.id}`}
+      className="my-1 max-w-full rounded border border-hairline bg-surface-raised px-2 py-1 text-xs"
+    >
+      <summary
+        data-testid={`event-group-summary-${messages[0]!.id}`}
+        className="cursor-pointer select-none text-ink-3 hover:text-ink"
+      >
+        {parts.join(' · ')}
+      </summary>
+      <div className="mt-1 space-y-0.5">
+        {messages.map((m) => (
+          <EventBlock key={m.id} message={m} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
 /** AUDIT-SRV（F-04）：错误码 → 中文原因（服务端归类，前端只做展示映射） */
 const ERROR_LABELS: Record<string, string> = {
   QUOTA_EXCEEDED: '额度已用尽',
@@ -256,6 +294,57 @@ export function MessageList({
 
   const empty = messages.length === 0 && streaming === '';
 
+  // 连续 event 归入同一轮聚合块；user/assistant/error 仍各自独立成块（错误卡必须可一眼看到）
+  const rows: React.ReactNode[] = [];
+  let eventRun: { message: Message; index: number }[] = [];
+  const flushEvents = (): void => {
+    if (eventRun.length === 0) return;
+    rows.push(
+      <EventGroup key={`evt-${eventRun[0]!.message.id}`} messages={eventRun.map((x) => x.message)} />,
+    );
+    eventRun = [];
+  };
+  messages.forEach((m, index) => {
+    if (m.role === 'event') {
+      eventRun.push({ message: m, index });
+      return;
+    }
+    flushEvents();
+    if (m.role === 'user') {
+      rows.push(
+        <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
+          <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-accent-soft px-2.5 py-1.5 text-xs text-ink whitespace-pre-wrap">
+            {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
+            {renderUserContent(m.content)}
+          </div>
+        </div>,
+      );
+      return;
+    }
+    if (m.role === 'assistant') {
+      rows.push(
+        <div key={m.id} data-testid={`msg-${m.id}`} className="flex min-w-0 justify-start">
+          <div className="min-w-0 max-w-full flex-1">
+            {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
+            <MarkdownView>{m.content}</MarkdownView>
+          </div>
+        </div>,
+      );
+      return;
+    }
+    rows.push(
+      <ErrorBlock
+        key={m.id}
+        message={m}
+        retryText={findRetryText(messages, index)}
+        onRetry={onRetry}
+        onOpenModel={onOpenModel}
+        onOpenUsage={onOpenUsage}
+      />,
+    );
+  });
+  flushEvents();
+
   return (
     <div
       data-testid="message-list"
@@ -267,39 +356,7 @@ export function MessageList({
           发送第一条消息开始对话
         </p>
       )}
-      {messages.map((m, index) => {
-        if (m.role === 'user') {
-          return (
-            <div key={m.id} data-testid={`msg-${m.id}`} className="flex justify-end">
-              <div className="max-w-[85%] space-y-1 rounded-lg rounded-br-sm bg-accent-soft px-2.5 py-1.5 text-xs text-ink whitespace-pre-wrap">
-                {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
-                {renderUserContent(m.content)}
-              </div>
-            </div>
-          );
-        }
-        if (m.role === 'assistant') {
-          return (
-            <div key={m.id} data-testid={`msg-${m.id}`} className="flex min-w-0 justify-start">
-              <div className="min-w-0 max-w-full flex-1">
-                {m.encoding_lost === true && <EncodingLostBadge messageId={m.id} />}
-                <MarkdownView>{m.content}</MarkdownView>
-              </div>
-            </div>
-          );
-        }
-        if (m.role === 'event') return <EventBlock key={m.id} message={m} />;
-        return (
-          <ErrorBlock
-            key={m.id}
-            message={m}
-            retryText={findRetryText(messages, index)}
-            onRetry={onRetry}
-            onOpenModel={onOpenModel}
-            onOpenUsage={onOpenUsage}
-          />
-        );
-      })}
+      {rows}
 
       {streaming !== '' && (
         <div data-testid="streaming-bubble" className="flex min-w-0 justify-start">

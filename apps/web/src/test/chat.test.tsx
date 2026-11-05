@@ -341,7 +341,7 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(settled.body.className).toBe(streamingBodyClass);
   });
 
-  it('思考/工具/错误块仍是消息流同级块，未被 assistant 正文容器吞掉', async () => {
+  it('思考/工具/错误块仍在消息流内，聚合块未被 assistant 正文容器吞掉', async () => {
     sessionsList = [makeSession()];
     msgStore['s1'] = [
       makeMessage({ id: 'mu1', content: 'hi', ts: 100 }),
@@ -354,14 +354,51 @@ describe('ChatPanel 消息流与流式渲染', () => {
 
     const list = screen.getByTestId('message-list');
     await screen.findByTestId('msg-ma1');
-    // 折叠块与消息行都是 message-list 的直接子节点（未被正文容器嵌套/吞掉）
-    for (const id of ['msg-mu1', 'msg-ma1', 'thinking-block-mt1', 'event-block-me1', 'error-block-mx1']) {
-      expect(screen.getByTestId(id).parentElement).toBe(list);
-    }
+    // AUDIT-3：同一轮连续事件聚合成一个折叠块，该块是 message-list 的直接子节点（未被正文容器吞掉）
+    const group = screen.getByTestId('event-group-mt1');
+    expect(group.parentElement).toBe(list);
+    expect(screen.getByTestId('msg-mu1').parentElement).toBe(list);
+    expect(screen.getByTestId('msg-ma1').parentElement).toBe(list);
+    expect(screen.getByTestId('error-block-mx1').parentElement).toBe(list);
+    expect(within(group).getByTestId('thinking-block-mt1')).toBeInTheDocument();
+    expect(within(group).getByTestId('event-block-me1')).toBeInTheDocument();
+    // 汇总行计数：工具 1 次 · 思考 1 段；默认收起
+    expect(screen.getByTestId('event-group-summary-mt1')).toHaveTextContent('工具 1 次 · 思考 1 段');
+    expect(group).not.toHaveAttribute('open');
     // 折叠块自身保留 summary 与 pre 正文
     expect(within(screen.getByTestId('thinking-block-mt1')).getByText('思考')).toBeInTheDocument();
     expect(within(screen.getByTestId('event-block-me1')).getByText('工具 · read_file')).toBeInTheDocument();
     expect(within(screen.getByTestId('error-block-mx1')).getByText('错误')).toBeInTheDocument();
+  });
+
+  it('AUDIT-3：事件按轮聚合为一行汇总，点开后逐条明细', async () => {
+    sessionsList = [makeSession()];
+    const events = Array.from({ length: 20 }, (_, i) => {
+      const thinking = i < 8;
+      return makeMessage({
+        id: `e${i}`,
+        role: 'event',
+        content: JSON.stringify(
+          thinking ? { kind: 'thinking', text: `思考 ${i}` } : { name: 'read_file', input: `p${i}` },
+        ),
+        ts: 110 + i,
+      });
+    });
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', content: 'hi', ts: 100 }),
+      ...events,
+      makeMessage({ id: 'ma1', role: 'assistant', content: '答复', ts: 200 }),
+    ];
+    renderChat();
+
+    const group = await screen.findByTestId('event-group-e0');
+    expect(group).not.toHaveAttribute('open');
+    expect(screen.getByTestId('event-group-summary-e0')).toHaveTextContent('工具 12 次 · 思考 8 段');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('event-group-summary-e0'));
+    expect(group).toHaveAttribute('open');
+    expect(within(group).getAllByTestId(/^(event|thinking)-block-/)).toHaveLength(20);
   });
 
   it('运行中会话后台收流不丢：流式期间切到 B，A 的 delta 继续累积且不串显；切回 A 显示完整内容', async () => {
@@ -650,6 +687,8 @@ describe('ChatPanel 会话切换器与模型', () => {
     const user = userEvent.setup();
 
     expect(await screen.findByTestId('model-display')).toHaveTextContent('codebuddy · m1');
+    // AUDIT-3：「修改」收进头部 ⋯ 菜单
+    await user.click(screen.getByTestId('chat-header-menu-btn'));
     await user.click(screen.getByTestId('edit-model-btn'));
     const input = screen.getByTestId('model-input');
     expect(input).toHaveValue('m1');
@@ -667,6 +706,8 @@ describe('ChatPanel 会话切换器与模型', () => {
     renderChat(makeSession({ model: 'legacy-model' }));
     const user = userEvent.setup();
 
+    await screen.findByTestId('model-display');
+    await user.click(screen.getByTestId('chat-header-menu-btn'));
     await user.click(await screen.findByTestId('edit-model-btn'));
     const input = screen.getByTestId('model-input') as HTMLInputElement;
     expect(input).toHaveValue('legacy-model');
