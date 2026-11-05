@@ -1,9 +1,27 @@
 import type { ModelInfo } from '@agentboard/shared';
+
+/** ask 事件的单个选项：label 必填，description 为补充说明 */
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+/** 适配器发出的提问（如 codebuddy 的 AskUserQuestion）；request_id 供回答回填定位 */
+export interface AskEvent {
+  type: 'ask';
+  request_id: string;
+  question: string;
+  options: AskOption[];
+  /** 提问所属步骤（如 assistant message id）；协议无对应字段时为 null */
+  step_id: string | null;
+}
+
 export type UnifiedEvent =
   | { type: 'text'; delta: string }
   /** 模型思考/推理内容（终值或增量），服务端聚合为「思考」折叠块，不进聊天正文 */
   | { type: 'thinking'; delta: string }
   | { type: 'tool'; name: string; input: string }
+  | AskEvent
   | { type: 'error'; message: string }
   | { type: 'end'; exitCode: number };
 export interface RunTurnOptions {
@@ -23,6 +41,12 @@ export interface TurnResult {
 }
 export interface TurnHandle {
   onEvent(cb: (e: UnifiedEvent) => void): void;
+  /**
+   * 把对 ask 事件（request_id）的回答写入子进程 stdin，同一 request_id 只允许一次。
+   * 未知/过期 request_id、重复回答、轮次已结束、stdin 不可写时以 reject 返回明确错误（不抛同步异常）。
+   * 仅支持提问回填的适配器实现该方法（如 codebuddy）；其余适配器可不实现，消费方须判空。
+   */
+  answer?(requestId: string, answer: string): Promise<void>;
   kill(): Promise<void>;
   result: Promise<TurnResult>;
 }

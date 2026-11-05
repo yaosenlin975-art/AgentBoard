@@ -7,12 +7,33 @@ import {
   spawnLineChild,
   whereCommand,
 } from './spawn.js';
-import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import type { AgentAdapter, AskOption, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
 import { assertImageInputSupported } from './imageInput.js';
 
 export const CODEBUDDY_CMD = 'codebuddy';
 const VERIFIED_IMAGE_CLI_VERSION = '2.179.2';
 const VERIFIED_IMAGE_MODEL = 'minimax-m3.1-flash';
+
+/** 精确白名单：只有这些 tool_use 工具名升级为 ask 事件，其余 tool_use 仍走普通 tool 事件 */
+export const ASK_TOOL_NAMES: ReadonlySet<string> = new Set(['AskUserQuestion']);
+
+export type AskAnswerErrorCode =
+  | 'TURN_ENDED'
+  | 'UNKNOWN_ASK'
+  | 'ALREADY_ANSWERED'
+  | 'STDIN_UNAVAILABLE'
+  | 'STDIN_WRITE_FAILED';
+
+/** ask 回答回填被拒的明确错误（code 供调用方分支，message 可直接展示） */
+export class AskAnswerError extends Error {
+  readonly code: AskAnswerErrorCode;
+  constructor(code: AskAnswerErrorCode, message: string, cause?: Error) {
+    super(message);
+    this.name = 'AskAnswerError';
+    this.code = code;
+    if (cause) this.cause = cause;
+  }
+}
 
 function supportsCodebuddyImageInput(model: string | undefined, cliVersion?: string | null): boolean {
   return cliVersion === VERIFIED_IMAGE_CLI_VERSION && model === VERIFIED_IMAGE_MODEL;
@@ -22,10 +43,54 @@ export interface CodebuddyParseState {
   sessionId: string | null;
   /** 当前 assistant 消息是否已通过 stream_event 增量输出过正文（用于抑制末尾完整 assistant 的重复正文） */
   sawTextDelta: boolean;
+  /** 本轮已解析出的提问序号：tool_use 无 id 时据此生成稳定 request_id */
+  askSeq: number;
 }
 
 export function createParseState(): CodebuddyParseState {
-  return { sessionId: null, sawTextDelta: false };
+  return { sessionId: null, sawTextDelta: false, askSeq: 0 };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function parseAskOptions(value: unknown): AskOption[] {
+  if (!Array.isArray(value)) return [];
+  const options: AskOption[] = [];
+  for (const item of value) {
+    if (typeof item === 'string') {
+      if (item !== '') options.push({ label: item });
+      continue;
+    }
+    const rec = asRecord(item);
+    if (rec === null || typeof rec.label !== 'string' || rec.label === '') continue;
+    const option: AskOption = { label: rec.label };
+    if (typeof rec.description === 'string' && rec.description !== '') option.description = rec.description;
+    options.push(option);
+  }
+  return options;
+}
+
+/**
+ * 把 AskUserQuestion 的 tool_use 块归一为 ask 事件。
+ * 兼容 `{questions:[{question, options}]}` 与扁平 `{question, options}` 两种入参（取第一问）。
+ * request_id 优先用 tool_use 块的 id（回答时据此定位），缺失时用本轮提问序号兜底。
+ */
+function parseAskEvent(
+  block: Record<string, unknown>,
+  messageId: string | null,
+  askSeq: number,
+): UnifiedEvent {
+  const input = asRecord(block.input) ?? {};
+  const questions = input.questions;
+  const first = Array.isArray(questions) && questions.length > 0 ? asRecord(questions[0]) : input;
+  const question = first !== null && typeof first.question === 'string' ? first.question : '';
+  const options = parseAskOptions((first !== null ? first.options : undefined) ?? input.options);
+  const requestId = typeof block.id === 'string' && block.id !== '' ? block.id : `ask-${askSeq}`;
+  return { type: 'ask', request_id: requestId, question, options, step_id: messageId };
 }
 
 /**
@@ -77,11 +142,10 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
       }
     }
   } else if (rec.type === 'assistant') {
-    const message = rec.message;
-    const content =
-      message !== null && typeof message === 'object'
-        ? (message as Record<string, unknown>).content
-        : undefined;
+    const message = asRecord(rec.message);
+    const content = message?.content;
+    const messageId =
+      message !== null && typeof message.id === 'string' && message.id !== '' ? message.id : null;
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block === null || typeof block !== 'object') continue;
@@ -89,8 +153,13 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
         if (b.type === 'text' && typeof b.text === 'string' && b.text !== '') {
           if (!state.sawTextDelta) events.push({ type: 'text', delta: b.text });
         } else if (b.type === 'tool_use' && typeof b.name === 'string') {
-          const input = typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? null);
-          events.push({ type: 'tool', name: b.name, input });
+          if (ASK_TOOL_NAMES.has(b.name)) {
+            state.askSeq += 1;
+            events.push(parseAskEvent(b, messageId, state.askSeq));
+          } else {
+            const input = typeof b.input === 'string' ? b.input : JSON.stringify(b.input ?? null);
+            events.push({ type: 'tool', name: b.name, input });
+          }
         }
       }
     }
@@ -144,7 +213,7 @@ export const codebuddyAdapter: AgentAdapter = {
   runTurn(opts: RunTurnOptions): TurnHandle {
     // 行为钉死：codebuddy -p <prompt> [--model <model>] [--resume <adapterSessionId>]
     //   --output-format stream-json --verbose --include-partial-messages（无图片）
-    //   --output-format stream-json --input-format stream-json --verbose（有图片，行为不变）
+    //   --output-format stream-json --input-format stream-json --verbose（有图片；stdin 保持可写以便 ask 回填）
     // 参数数组直传不经 shell（spawnLineChild 内 shell:false）；
     // win32 下 .cmd/.bat 垫片经 resolveSpawnForm 解析为 cmd.exe /d /s /c 包装（与 opencode/dsh 一致）。
     // 非图片轮次必须走 stream-json：`--output-format json` 输出的是 pretty-print 的整段 JSON 数组，
@@ -182,6 +251,10 @@ export const codebuddyAdapter: AgentAdapter = {
 
     const state = createParseState();
     const eventCbs: Array<(e: UnifiedEvent) => void> = [];
+    // 提问回填只在 stream-json 输入模式（--input-format stream-json）可用；其余轮次 stdin 未开放
+    const streamJsonInput = hasImages;
+    const pendingAsks = new Set<string>();
+    const answeredAsks = new Set<string>();
     let settled = false;
     let killed = false;
     let sawEvents = false;
@@ -223,11 +296,18 @@ export const codebuddyAdapter: AgentAdapter = {
         finish(-1);
         return;
       }
-      child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd, stdinText === undefined ? undefined : { stdinText });
+      child = spawnLineChild(
+        form.cmd,
+        [...form.prefix, ...args],
+        opts.cwd,
+        stdinText === undefined ? undefined : { stdinText, keepStdinOpen: streamJsonInput },
+      );
       child.onLine((_source, line) => {
         for (const event of parseCodebuddyLine(line, state)) {
           sawEvents = true;
           if (event.type === 'text') sawAssistantText = true;
+          // 提问只登记一次；轮次已结束时不再登记（回填入口以 TURN_ENDED 拒绝）
+          if (event.type === 'ask' && !settled) pendingAsks.add(event.request_id);
           for (const cb of eventCbs) cb(event);
         }
       });
@@ -237,6 +317,42 @@ export const codebuddyAdapter: AgentAdapter = {
     return {
       onEvent(cb) {
         eventCbs.push(cb);
+      },
+      async answer(requestId: string, answer: string): Promise<void> {
+        if (settled) {
+          throw new AskAnswerError('TURN_ENDED', `本轮已结束，无法回填提问 ${requestId} 的回答`);
+        }
+        if (!streamJsonInput) {
+          throw new AskAnswerError(
+            'STDIN_UNAVAILABLE',
+            '当前轮次未开启 stream-json stdin 输入，无法回填回答',
+          );
+        }
+        if (answeredAsks.has(requestId)) {
+          throw new AskAnswerError('ALREADY_ANSWERED', `提问 ${requestId} 已回填过，不能重复回答`);
+        }
+        if (!pendingAsks.has(requestId)) {
+          throw new AskAnswerError('UNKNOWN_ASK', `未知或已过期的提问 request_id：${requestId}`);
+        }
+        if (child === null) {
+          throw new AskAnswerError('STDIN_UNAVAILABLE', '子进程尚未就绪，无法回填回答');
+        }
+        // 客户端协议：回答以 user 消息的 tool_result 块写回 stdin（与提问 tool_use 的 id 对应）
+        const payload = `${JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: requestId, content: answer }],
+          },
+        })}\n`;
+        try {
+          await child.writeStdin(payload);
+        } catch (err) {
+          const cause = err instanceof Error ? err : new Error(String(err));
+          throw new AskAnswerError('STDIN_WRITE_FAILED', `回答写入子进程 stdin 失败：${cause.message}`, cause);
+        }
+        pendingAsks.delete(requestId);
+        answeredAsks.add(requestId);
       },
       async kill() {
         killed = true;

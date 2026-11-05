@@ -2,11 +2,18 @@ import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
 import { vi } from 'vitest';
 
+export interface FakeStdin extends EventEmitter {
+  end: ReturnType<typeof vi.fn>;
+  write: ReturnType<typeof vi.fn>;
+  writable: boolean;
+  destroyed: boolean;
+}
+
 export interface FakeChild extends EventEmitter {
   pid: number;
   stdout: EventEmitter;
   stderr: EventEmitter;
-  stdin: { end: ReturnType<typeof vi.fn> };
+  stdin: FakeStdin;
   kill: ReturnType<typeof vi.fn>;
 }
 
@@ -15,7 +22,15 @@ export function makeFakeChild(pid = 4242): FakeChild {
   child.pid = pid;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { end: vi.fn() };
+  const stdin = new EventEmitter() as FakeStdin;
+  stdin.end = vi.fn();
+  stdin.write = vi.fn((_chunk: string, cb?: (err?: Error | null) => void) => {
+    cb?.(null);
+    return true;
+  });
+  stdin.writable = true;
+  stdin.destroyed = false;
+  child.stdin = stdin;
   child.kill = vi.fn(() => true);
   return child;
 }

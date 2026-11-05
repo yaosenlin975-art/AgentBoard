@@ -6,6 +6,21 @@ import { StringDecoder } from 'node:string_decoder';
 export interface SpawnLineOptions {
   env?: Record<string, string>;
   stdinText?: string;
+  /** 写入 stdinText 后保持 stdin 可写（供 ask 回答回填）；未设置时写完立即 end */
+  keepStdinOpen?: boolean;
+}
+
+export type StdinWriteErrorCode = 'STDIN_UNAVAILABLE' | 'STDIN_CLOSED' | 'STDIN_WRITE_FAILED';
+
+/** writeStdin 的明确错误：stdin 未开放 / 进程已退出 / 写入失败 */
+export class StdinWriteError extends Error {
+  readonly code: StdinWriteErrorCode;
+  constructor(code: StdinWriteErrorCode, message: string, cause?: Error) {
+    super(message);
+    this.name = 'StdinWriteError';
+    this.code = code;
+    if (cause) this.cause = cause;
+  }
 }
 
 /** stderr 尾部环形缓冲容量（最近 N 行），供适配器排障诊断。 */
@@ -16,6 +31,8 @@ export interface LineChild {
   onClose(cb: (code: number | null) => void): void;
   /** 子进程 stderr 尾部（最近 30 行的拷贝；含 close 时补发的末尾无换行行） */
   getStderrTail(): string[];
+  /** 向子进程 stdin 追加写入；未开放/已关闭/写失败时以 StdinWriteError reject（不抛同步异常） */
+  writeStdin(chunk: string): Promise<void>;
   kill(): Promise<void>;
   exit: Promise<number | null>;
   /** spawn 失败（'error' 事件，如 ENOENT）时以 SpawnFailedError reject；正常退出永不安定（内部已兜底消费，无观察者也不产生 unhandledRejection） */
@@ -166,16 +183,25 @@ function delay(ms: number): Promise<void> {
 }
 
 export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: SpawnLineOptions): LineChild {
+  const stdinOpen = opts?.stdinText !== undefined || opts?.keepStdinOpen === true;
   const options: SpawnOptionsLite = {
     cwd,
     shell: false,
     windowsHide: true,
-    stdio: [opts?.stdinText === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    stdio: [stdinOpen ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   };
   if (opts?.env) options.env = { ...process.env, ...opts.env };
 
   const child = spawnFn(cmd, args, options);
-  if (opts?.stdinText !== undefined) child.stdin?.end(opts.stdinText);
+  // keepStdinOpen 时 stdin 常驻，EPIPE 等 error 事件必须有监听，否则会成为未处理的 'error' 崩溃
+  let stdinError: Error | null = null;
+  if (stdinOpen) {
+    child.stdin?.on('error', (err: Error) => {
+      stdinError = err;
+    });
+  }
+  if (opts?.stdinText !== undefined) child.stdin?.write(opts.stdinText);
+  if (stdinOpen && opts?.keepStdinOpen !== true) child.stdin?.end();
 
   const lineCbs: Array<(source: 'stdout' | 'stderr', line: string) => void> = [];
   const closeCbs: Array<(code: number | null) => void> = [];
@@ -255,6 +281,36 @@ export function spawnLineChild(cmd: string, args: string[], cwd: string, opts?: 
     },
     getStderrTail() {
       return [...stderrTail];
+    },
+    writeStdin(chunk: string) {
+      return new Promise<void>((resolve, reject) => {
+        const stream = child.stdin;
+        if (!stdinOpen || stream == null) {
+          reject(new StdinWriteError('STDIN_UNAVAILABLE', '子进程 stdin 未开放（spawn 时未启用 stdin 管道）'));
+          return;
+        }
+        if (exited) {
+          reject(new StdinWriteError('STDIN_CLOSED', '子进程已退出，stdin 不可写'));
+          return;
+        }
+        if (stdinError !== null) {
+          reject(new StdinWriteError('STDIN_WRITE_FAILED', `写入 stdin 失败：${stdinError.message}`, stdinError));
+          return;
+        }
+        if (stream.destroyed || !stream.writable) {
+          reject(new StdinWriteError('STDIN_CLOSED', '子进程 stdin 已关闭，不可写'));
+          return;
+        }
+        try {
+          stream.write(chunk, (err?: Error | null) => {
+            if (err) reject(new StdinWriteError('STDIN_WRITE_FAILED', `写入 stdin 失败：${err.message}`, err));
+            else resolve();
+          });
+        } catch (err) {
+          const cause = err instanceof Error ? err : new Error(String(err));
+          reject(new StdinWriteError('STDIN_WRITE_FAILED', `写入 stdin 失败：${cause.message}`, cause));
+        }
+      });
     },
     exit: exitPromise,
     failure: failurePromise,

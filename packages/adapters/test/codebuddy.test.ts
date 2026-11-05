@@ -100,7 +100,7 @@ describe('codebuddy runTurn', () => {
         '--input-format', 'stream-json', '--verbose',
       ]);
       expect(runs[0]!.options.stdio).toEqual(['pipe', 'pipe', 'pipe']);
-      const firstInput = (spawned[0] as unknown as { stdin: { end: ReturnType<typeof vi.fn> } }).stdin.end.mock.calls[0]![0] as string;
+      const firstInput = (spawned[0] as unknown as { stdin: { write: ReturnType<typeof vi.fn> } }).stdin.write.mock.calls[0]![0] as string;
       expect(JSON.parse(firstInput)).toEqual({
         type: 'user',
         message: {
@@ -131,7 +131,7 @@ describe('codebuddy runTurn', () => {
         '-p', '--model', 'minimax-m3.1-flash', '--resume', 'session-image',
         '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose',
       ]);
-      const resumeInput = (spawned[1] as unknown as { stdin: { end: ReturnType<typeof vi.fn> } }).stdin.end.mock.calls[0]![0] as string;
+      const resumeInput = (spawned[1] as unknown as { stdin: { write: ReturnType<typeof vi.fn> } }).stdin.write.mock.calls[0]![0] as string;
       expect(JSON.parse(resumeInput).message.content[1]).toEqual({
         type: 'image', source: { type: 'base64', media_type: 'image/png', data: bytes.toString('base64') },
       });
@@ -439,6 +439,180 @@ describe('parseCodebuddyLine 增量（--include-partial-messages）', () => {
     expect(
       parseCodebuddyLine('{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":""}}}', state),
     ).toEqual([]);
+  });
+});
+
+describe('ask 事件与回答回填', () => {
+  it('AskUserQuestion 只升级为 ask 事件（不再产出同名 tool），其余 tool_use 仍走 tool 事件', () => {
+    const state = createParseState();
+    const events = parseCodebuddyLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'msg_ask',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_1',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  {
+                    question: '选哪个图？',
+                    options: [{ label: '方形', description: '4 个' }, { label: '圆形' }],
+                  },
+                ],
+              },
+            },
+            { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { cmd: 'ls' } },
+          ],
+        },
+      }),
+      state,
+    );
+    expect(events).toEqual([
+      {
+        type: 'ask',
+        request_id: 'toolu_1',
+        question: '选哪个图？',
+        options: [{ label: '方形', description: '4 个' }, { label: '圆形' }],
+        step_id: 'msg_ask',
+      },
+      { type: 'tool', name: 'Bash', input: '{"cmd":"ls"}' },
+    ]);
+  });
+
+  it('扁平入参 {question, options} 与缺字段兜底；无 tool_use id 时用本轮序号生成 request_id', () => {
+    const state = createParseState();
+    const first = parseCodebuddyLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', input: { question: '继续吗？', options: ['继续'] } }] },
+      }),
+      state,
+    );
+    expect(first).toEqual([
+      { type: 'ask', request_id: 'ask-1', question: '继续吗？', options: [{ label: '继续' }], step_id: null },
+    ]);
+    const second = parseCodebuddyLine(
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'AskUserQuestion' }] } }),
+      state,
+    );
+    expect(second).toEqual([{ type: 'ask', request_id: 'ask-2', question: '', options: [], step_id: null }]);
+    // 非白名单工具不受影响（大小写/近似名都不算提问）
+    expect(
+      parseCodebuddyLine(
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'askuserquestion', input: {} }] } }),
+        state,
+      ),
+    ).toEqual([{ type: 'tool', name: 'askuserquestion', input: '{}' }]);
+  });
+
+  it('stream-json 输入轮次：回答以 tool_result 写入 stdin，同一提问只能回填一次；子进程可继续产出', async () => {
+    const { spawned } = recordSpawns();
+    const dir = mkdtempSync(join(tmpdir(), 'agentboard-codebuddy-ask-'));
+    const path = join(dir, 'proof.png');
+    writeFileSync(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    try {
+      const handle = codebuddyAdapter.runTurn({
+        cwd: 'D:\\w',
+        model: 'minimax-m3.1-flash',
+        detectedCliVersion: '2.179.2',
+        prompt: '识别图中形状',
+        attachments: [{ path, mimeType: 'image/png' }],
+      });
+      await vi.waitFor(() => expect(spawned).toHaveLength(1));
+      const child = spawned[0]!;
+      const events: UnifiedEvent[] = [];
+      handle.onEvent((e) => events.push(e));
+
+      child.stdout.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({
+            type: 'assistant',
+            session_id: 's1',
+            message: {
+              id: 'msg_ask',
+              content: [
+                { type: 'text', text: '先问一句' },
+                {
+                  type: 'tool_use',
+                  id: 'toolu_ask',
+                  name: 'AskUserQuestion',
+                  input: { questions: [{ question: '继续吗？', options: [{ label: '继续' }] }] },
+                },
+              ],
+            },
+          })}\n`,
+        ),
+      );
+      await vi.waitFor(() => expect(events.some((e) => e.type === 'ask')).toBe(true));
+
+      await handle.answer!('toolu_ask', '继续');
+      const written = child.stdin.write.mock.calls.at(-1)![0] as string;
+      expect(JSON.parse(written)).toEqual({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: '继续' }],
+        },
+      });
+      expect(written.endsWith('\n')).toBe(true);
+
+      await expect(handle.answer!('toolu_ask', '继续')).rejects.toMatchObject({
+        name: 'AskAnswerError',
+        code: 'ALREADY_ANSWERED',
+      });
+      await expect(handle.answer!('toolu_missing', 'x')).rejects.toMatchObject({ code: 'UNKNOWN_ASK' });
+
+      child.stdout.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({
+            type: 'assistant',
+            session_id: 's1',
+            message: { content: [{ type: 'text', text: '已继续' }] },
+          })}\n`,
+        ),
+      );
+      closeChild(child, 0);
+      const result = await handle.result;
+      expect(result.exitCode).toBe(0);
+      expect(events.filter((e) => e.type === 'text')).toHaveLength(2);
+
+      await expect(handle.answer!('toolu_ask', '再来')).rejects.toMatchObject({ code: 'TURN_ENDED' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('非 stream-json 输入轮次：ask 事件照常发出（不再降级为 tool），但回填以 STDIN_UNAVAILABLE 拒绝且不崩进程', async () => {
+    const { spawned } = recordSpawns();
+    const handle = codebuddyAdapter.runTurn({ cwd: '.', prompt: 'hi' });
+    await vi.waitFor(() => expect(spawned).toHaveLength(1));
+    const child = spawned[0]!;
+    const events: UnifiedEvent[] = [];
+    handle.onEvent((e) => events.push(e));
+
+    child.stdout.emit(
+      'data',
+      Buffer.from(
+        `${JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: 'toolu_x', name: 'AskUserQuestion', input: { question: '?' } }] },
+        })}\n`,
+      ),
+    );
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'ask')).toBe(true));
+    expect(events.some((e) => e.type === 'tool')).toBe(false);
+
+    await expect(handle.answer!('toolu_x', '好')).rejects.toMatchObject({
+      name: 'AskAnswerError',
+      code: 'STDIN_UNAVAILABLE',
+    });
+    closeChild(child, 0);
+    await expect(handle.result).resolves.toMatchObject({ exitCode: 0 });
   });
 });
 

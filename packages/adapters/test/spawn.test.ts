@@ -50,6 +50,49 @@ describe('spawnLineChild', () => {
     expect(spawnCalls[0]!.options.stdio).toEqual(['ignore', 'pipe', 'pipe']);
   });
 
+  it('keepStdinOpen：写入初稿后不 end，stdin 可继续写入；进程退出后以 STDIN_CLOSED 拒绝', async () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const lc = spawnLineChild('x', [], '.', { stdinText: 'one\n', keepStdinOpen: true });
+
+    expect(child.stdin.write.mock.calls[0]![0]).toBe('one\n');
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    await expect(lc.writeStdin('two\n')).resolves.toBeUndefined();
+    expect(child.stdin.write.mock.calls.at(-1)![0]).toBe('two\n');
+
+    closeChild(child, 0);
+    await expect(lc.writeStdin('three\n')).rejects.toMatchObject({
+      name: 'StdinWriteError',
+      code: 'STDIN_CLOSED',
+    });
+  });
+
+  it('未开放 stdin 管道时 writeStdin 以 STDIN_UNAVAILABLE 拒绝（不抛同步异常）', async () => {
+    setSpawnFn(() => asChild(makeFakeChild()));
+    const lc = spawnLineChild('x', [], '.');
+
+    await expect(lc.writeStdin('x')).rejects.toMatchObject({
+      name: 'StdinWriteError',
+      code: 'STDIN_UNAVAILABLE',
+    });
+  });
+
+  it('stdin 写入回调报错 → STDIN_WRITE_FAILED（明确错误，不吞掉）', async () => {
+    const child = makeFakeChild();
+    setSpawnFn(() => asChild(child));
+    const lc = spawnLineChild('x', [], '.', { keepStdinOpen: true });
+
+    child.stdin.write.mockImplementationOnce((_chunk: string, cb?: (err?: Error | null) => void) => {
+      cb?.(new Error('EPIPE'));
+      return true;
+    });
+    await expect(lc.writeStdin('a')).rejects.toMatchObject({
+      name: 'StdinWriteError',
+      code: 'STDIN_WRITE_FAILED',
+      message: '写入 stdin 失败：EPIPE',
+    });
+  });
+
   it('opts.env 合并进 spawn 选项', () => {
     let captured: { env?: Record<string, string> } | undefined;
     setSpawnFn(((_cmd: string, _args: string[], options: { env?: Record<string, string> }) => {
