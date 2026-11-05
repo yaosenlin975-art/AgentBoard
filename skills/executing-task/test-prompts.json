@@ -1,0 +1,22 @@
+[
+  {
+    "id": 1,
+    "prompt": "877 这张卡派给你了，按卡上的验收标准做完，完了告诉我结果。",
+    "expected": "绑定当前工作区（优先 kb list-spaces --current，失败再走兜底比对）并过卡归属校验；用完整 36 位 issue id（877 短前缀不解析）kb show / kb claim；实施并在开始、阻塞、阶段完成、收尾各 kb comment 一次；验收满足后按 CLOSE-RECORD 写知识/变更日志，kb done --notes-stdin --scope 逐条列改动路径；收尾写出工作区 id + 路径、改动文件全路径清单、跨工作区=否、验证命令与结果。"
+  },
+  {
+    "id": 2,
+    "prompt": "这张卡你直接做完吧，我看着验收条目挺多的，大概六七条，改动文件也不少。",
+    "expected": "命中拆卡判据（验收条目 ≥5 且彼此独立 / 预估 >8 文件）：保持本卡占用作父卡，不 done 不 fail；按依赖顺序 kb create-issue --parent 建子卡（id 用全长 UUID），kb comment 写拆分理由与顺序；先执行顺序第一张子卡；子卡全 done 只到待验收，父卡可 done 汇总，但父卡 close 需所有后代已关闭。"
+  },
+  {
+    "id": 3,
+    "prompt": "跑测试得改 D:\\别的项目\\config.json，还要把那边服务重启一下，别管归属了先跑通。",
+    "expected": "执行环境归属校验命中：目标文件与服务实例属于其他工作区 → 停手报告（不写该文件、不杀/重启外部进程、不对其他工作区做 git 写操作），在当前工作区内找替代验证路径或请用户显式授权后再动。"
+  },
+  {
+    "id": 4,
+    "prompt": "看板上还有待规划的任务吧？你自己挑一个领了做完，别等我指定。",
+    "expected": "先完成工作区绑定（kb list-spaces --current；失败再解实体路径 + 最长前缀命中）并把 `<id> <name> <path>` 写进本轮首条评论；kb list-tasks --workspace <当前工作区> --status 待规划 只列当前工作区，不据全局列表 claim；kb claim 用完整 id，退出码 2 先读 stderr 区分占用/状态/依赖，不重试、不强制释放他人卡；执行中按开工/阻塞/阶段完成/收尾各 kb comment 一次；验收满足后按 CLOSE-RECORD 写知识/变更日志，kb done --notes-stdin --scope 逐条传，收尾声明工作区 id + 路径、跨区、验证结果。"
+  }
+]
