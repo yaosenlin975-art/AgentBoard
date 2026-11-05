@@ -7,6 +7,8 @@ import { syncPageLinks } from '../../services/knowledgeLinks.js';
 import { ApiError, ValidationError } from '../../errors.js';
 import { KNOWLEDGE_DOMAINS, KNOWLEDGE_DOMAIN_HINT, isKnowledgeDomain, type KnowledgeDomain } from '@agentboard/shared';
 import { validateKnowledgeContent, validateKnowledgeScope } from '../../services/knowledge.js';
+// STORE-4b：知识页创建/软删/恢复时维护中心库定位索引（写入吞错，索引不是事实来源）
+import { centerLocatorDb, removeEntityLocator, upsertEntityLocator } from './entityLocator.js';
 
 export type CreateKnowledgePageInput = KnowledgeScope & {
   slug: string; title: string; body_md: string; sources: KnowledgeSource[]; evidence: KnowledgeEvidence[];
@@ -149,7 +151,7 @@ export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): Kn
   const domain = requireKnowledgeDomain(input.domain);
   const page: KnowledgePage = { id: randomUUID(), scope: input.scope, workspace_id: input.workspace_id ?? null, slug: input.slug, title: input.title, body_md: input.body_md, sources: input.sources, evidence: input.evidence, status: 'active', revision: 1, expires_at: input.expires_at ?? null, created_by: input.actor, updated_by: input.actor, created_at: now, updated_at: now, ...taxonomy, domain } as KnowledgePage & { domain: string | null };
   try {
-    return db.transaction(() => {
+    const created = db.transaction(() => {
       db.prepare(`INSERT INTO knowledge_page (id,scope,workspace_id,slug,title,body_md,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .run(page.id, page.scope, page.workspace_id, page.slug, page.title, page.body_md, page.status, page.revision, page.expires_at, page.created_by, page.updated_by, now, now, page.category, page.landed, domain);
       appendRevision(db, page, 'create', input.change_note ?? '');
@@ -157,13 +159,16 @@ export function createKnowledgePage(db: Db, input: CreateKnowledgePageInput): Kn
       syncPageLinks(db, page);
       return page;
     })();
+    // STORE-4b：落中心库定位索引（workspace_id NULL=common 页在中心库；写失败降级为读侧兜底扫描）
+    upsertEntityLocator(centerLocatorDb(db), 'knowledge_page', created.id, created.workspace_id);
+    return created;
   } catch (error) { return duplicate(error); }
 }
 function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevision: number, patch: KnowledgePagePatch, kind: KnowledgeRevision['change_kind']): KnowledgePage {
   validateKnowledgeScope(scope);
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new ValidationError('expected_revision 必须为正整数');
   try {
-    return db.transaction(() => {
+    const changed = db.transaction(() => {
       const old = getKnowledgePage(db, pageId, scope, { includeDeleted: true });
       if (!old) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
       if (old.revision !== expectedRevision) throw new ApiError(409, KnowledgeErrorCode.REVISION_CONFLICT, '知识页已更新，请重新读取', { current_revision: old.revision });
@@ -189,6 +194,10 @@ function changePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevis
       syncPageLinks(db, page);
       return page;
     }).immediate();
+    // STORE-4b：软删=不再可按 id 寻址，清索引；恢复=重新可寻址，回填索引（archive 行仍在原库可寻址，不动索引）
+    if (kind === 'delete') removeEntityLocator(centerLocatorDb(db), 'knowledge_page', pageId);
+    else if (kind === 'restore') upsertEntityLocator(centerLocatorDb(db), 'knowledge_page', pageId, changed.workspace_id);
+    return changed;
   } catch (error) { return duplicate(error); }
 }
 export function reviseKnowledgePage(db: Db, pageId: string, scope: KnowledgeScope, expectedRevision: number, patch: KnowledgePagePatch): KnowledgePage {

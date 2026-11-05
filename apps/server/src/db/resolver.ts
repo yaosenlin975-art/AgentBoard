@@ -15,6 +15,7 @@ import type { Db } from './connection.js';
 import { openDb } from './connection.js';
 import { acquireServerLock, describeLockHolder, releaseServerLock } from '../services/serverLock.js';
 import { ApiError } from '../errors.js';
+import { findEntityLocator, type EntityLocatorKind } from './repos/entityLocator.js';
 
 /** 中心库 workspace 行的期望状态（设计 §5.1 状态机） */
 export type WorkspaceDbMode = 'center' | 'localizing' | 'localized' | 'failed';
@@ -334,6 +335,41 @@ export function locateDbByScan<T>(
   }
   if (firstError !== null) throw firstError;
   return null;
+}
+
+/**
+ * STORE-4b（M3）：按 id 定位实体所在库——**先查中心库 entity_locator 索引，未命中再 fan-out 扫描兜底**。
+ *
+ * 索引行回答「实体归哪个工作区」（`workspace_id` NULL = 中心 common），不直接存库路径：
+ * 非空时解析该工作区（再由 getDbForWorkspace 按 db_mode 决定中心/工作区库——工作区 localize/revert
+ * 前后索引行都不用改）。索引行缺失、工作区已删（resolveWorkspace 回 null）、解析或探测抛错、
+ * 探测未命中（索引过期）——一律回退 locateDbByScan，fan-out 语义（含「目标区打不开不伪装 404」）
+ * 原样保留；索引行过期只多一次探测，不影响正确性。索引不是事实来源。
+ */
+export function locateDbForEntity<T>(
+  deps: ResolverDeps,
+  candidates: readonly WorkspaceLike[],
+  kind: EntityLocatorKind,
+  entityId: string,
+  probe: (db: Db) => T | null,
+  resolveWorkspace: (workspaceId: string) => WorkspaceLike | null,
+): EntityLocation<T> | null {
+  try {
+    const row = findEntityLocator(deps.centerDb, kind, entityId);
+    if (row !== undefined) {
+      // workspace_id NULL = 中心 common；非空但工作区行已删（移除工作区后的索引残留）→ 不猜，走兜底
+      const indexedWorkspace = row.workspace_id === null ? null : resolveWorkspace(row.workspace_id);
+      if (row.workspace_id !== null && indexedWorkspace === null) {
+        return locateDbByScan(deps, candidates, probe);
+      }
+      const routed = indexedWorkspace === null ? deps.centerDb : getDbForWorkspace(deps, indexedWorkspace).db;
+      const value = probe(routed);
+      if (value !== null) return { db: routed, value };
+    }
+  } catch {
+    /* 索引路径任何异常（表被删/工作区库打不开）降级为扫描兜底 */
+  }
+  return locateDbByScan(deps, candidates, probe);
 }
 
 /** 关闭所有工作区库句柄并释放锁（进程退出时调用；退出前先 checkpoint） */

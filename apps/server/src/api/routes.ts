@@ -72,7 +72,9 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decideWorkspaceDb, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbByScan, type EntityLocation, type WorkspaceDbMode } from '../db/resolver.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decideWorkspaceDb, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbForEntity, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
+// STORE-4b：entity_locator 定位索引维护（repos 挂钩的中心库句柄绑定与创建/删除写入、删表重建路径）
+import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, removeEntityLocator, removeEntityLocatorByWorkspace, rebuildEntityLocator, upsertEntityLocator } from '../db/repos/entityLocator.js';
 import { getActiveWorkspaceDbJob, getLocalizeJob, startLocalizeJob, startWorkspaceDbOpJob } from '../services/workspaceLocalizeJob.js';
 import { buildWorkspaceDbStatus } from '../services/workspaceDbStatus.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
@@ -399,17 +401,32 @@ export function createRouter(deps: RouterDeps): Router {
   };
   /** workspace_id 已知时的取库：走 resolver 判定（localized→工作区库，未下沉/localizing/disabled→中心库），未知工作区 404 */
   const dbForWorkspace = (workspaceId: string): Db => getDbForWorkspace(workspaceResolverDeps, requireWorkspaceRow(workspaceId)).db;
-  /** 按 id 定位 issue 所在库（4b 建索引前先扫描：中心命中即中心，否则 fan-out 已下沉区） */
+  // ---- STORE-4b：定位索引 ----
+  // repos 层维护索引需要知道中心库句柄：中心句柄自绑；知识路由的工作区句柄在 getWorkspaceDb 出口逐个绑
+  bindEntityLocatorCenter(db, db);
+  /** 索引用的工作区行解析（未知/已删返回 null，读侧对该情形回退 fan-out 兜底，不猜） */
+  const findWorkspaceRow = (workspaceId: string): WorkspaceLike | null => {
+    const row = getWorkspace(db, workspaceId);
+    return row === null ? null : { id: row.id, path: row.path, dbMode: workspaceRowMode(workspaceId) };
+  };
+  /** 按 id 定位 issue 所在库（先查 entity_locator 索引，未命中/过期回退 fan-out 已下沉区） */
   const locateIssueRouted = (issueId: string): EntityLocation<NonNullable<ReturnType<typeof getIssue>>> | null =>
-    locateDbByScan(workspaceResolverDeps, listLocalizedWorkspaces(), (rdb) => getIssue(rdb, issueId));
+    locateDbForEntity(workspaceResolverDeps, listLocalizedWorkspaces(), 'issue', issueId, (rdb) => getIssue(rdb, issueId), findWorkspaceRow);
   const requireIssueRouted = (issueId: string): EntityLocation<NonNullable<ReturnType<typeof getIssue>>> => {
     const hit = locateIssueRouted(issueId);
     if (hit === null) throw new NotFoundError('任务不存在');
     return hit;
   };
-  /** 按 id 定位 session 所在库（4d 前 sessionManager 仍写中心库，故中心命中优先，工作区库补位） */
+  /** 按 id 定位 session 所在库（索引先行；4d 前 sessionManager 仍写中心库——索引指向已下沉区而行在中心时由兜底扫描接住） */
   const locateSessionRouted = (sessionId: string): EntityLocation<NonNullable<ReturnType<typeof getSession>>> | null =>
-    locateDbByScan(workspaceResolverDeps, listLocalizedWorkspaces(), (rdb) => getSession(rdb, sessionId));
+    locateDbForEntity(workspaceResolverDeps, listLocalizedWorkspaces(), 'session', sessionId, (rdb) => getSession(rdb, sessionId), findWorkspaceRow);
+  // STORE-4b：删表重建路径——索引空而中心库已有实体（存量数据首启 / 索引被删后的下一启）时回填中心库部分；
+  // 只扫中心库不开工作区库（已下沉区缺行由读侧兜底），任何失败不阻断启动。
+  try {
+    if (entityLocatorNeedsBackfill(db)) rebuildEntityLocator(db, [db]);
+  } catch {
+    /* 索引可重建，不是事实来源 */
+  }
   /** 端点内统一解析本请求的业务库：workspace_id 优先，其次按路由参数 id 定位实体；都拿不到回中心库（调用方自行 404） */
   const resolveRequestDb = (req: Request, entityId?: string): Db => {
     const workspace = effectiveWorkspace(req);
@@ -491,7 +508,12 @@ export function createRouter(deps: RouterDeps): Router {
   // 跨区 owner 探测的 fan-out 候选 = 全部已下沉区（单区打不开跳过，命中即事实）。
   router.use('/knowledge', createKnowledgeRouter(deps.db, {
     maxGraphPages: deps.knowledgeGraphPageLimit,
-    getWorkspaceDb: (workspaceId) => dbForWorkspace(workspaceId),
+    // STORE-4b：工作区句柄绑中心库——repos/knowledge 的定位索引维护要知道往哪个中心库写
+    getWorkspaceDb: (workspaceId) => {
+      const workspaceDb = dbForWorkspace(workspaceId);
+      bindEntityLocatorCenter(workspaceDb, db);
+      return workspaceDb;
+    },
     listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
       try {
         return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
@@ -658,6 +680,8 @@ export function createRouter(deps: RouterDeps): Router {
       );
     }
     // 空间行已由 purge 服务在同一事务内删除（外键 CASCADE 带走任务/会话/评论/消息）
+    // STORE-4b：该区全部实体（issue/session/知识页）随空间移除，定位索引一并清（common 页 workspace_id 为 NULL 不受影响）
+    removeEntityLocatorByWorkspace(db, workspaceId);
     await attachments.processCleanup();
     res.status(204).end();
   });
@@ -946,7 +970,11 @@ export function createRouter(deps: RouterDeps): Router {
     const outcome = mutation(rdb, req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(rdb, body); });
     // KB-CLI-1：幂等重放标记（CLI 文本/JSON 依此区分新建与重放）
     if (outcome.replayed) res.setHeader('x-agentboard-replayed', '1');
-    if (!outcome.replayed) broadcast({ type: 'issue.changed', issue: outcome.result });
+    if (!outcome.replayed) {
+      broadcast({ type: 'issue.changed', issue: outcome.result });
+      // STORE-4b：新卡登记定位索引（中心库；写失败自动降级为读侧 fan-out 兜底）
+      upsertEntityLocator(db, 'issue', outcome.result.id, body.workspace_id);
+    }
     res.json(outcome.result);
   });
 
@@ -1001,6 +1029,10 @@ export function createRouter(deps: RouterDeps): Router {
       unlockComments = unlockCommentsForDeletedBlocker(rdb, issue.id);
       deleteIssue(rdb, issue.id);
     })();
+    // STORE-4b：实体行已删，清定位索引（写在事务外——索引在中心库、与 rdb 不同连接；
+    // 若此间失败只留过期行，读侧探测未命中自动回退 fan-out，不会错读）
+    for (const session of bound) removeEntityLocator(db, 'session', session.id);
+    removeEntityLocator(db, 'issue', issue.id);
     await attachments.processCleanup();
     broadcast({ type: 'issue.deleted', issue_id: issue.id, workspace_id: issue.workspace_id });
     for (const comment of unlockComments) broadcast({ type: 'comment.added', comment });
@@ -1403,7 +1435,12 @@ export function createRouter(deps: RouterDeps): Router {
         prompt: body.prompt ?? null,
       });
     }
-    if (!replayed) broadcast({ type: 'session.changed', session });
+    if (!replayed) {
+      broadcast({ type: 'session.changed', session });
+      // STORE-4b：新会话登记定位索引（4d 前 sessionManager 落中心库，索引仍记归属工作区——
+      // 读侧索引探测未命中时由兜底扫描在中心库接住，4d 切库后无需迁移索引行）
+      upsertEntityLocator(db, 'session', session.id, session.workspace_id);
+    }
     const result = knowledge ? { ...session, knowledge } : session;
     res.json(remainingAttachmentCount === undefined ? result : { ...result, remaining_attachment_count: remainingAttachmentCount });
   });
@@ -1483,6 +1520,8 @@ export function createRouter(deps: RouterDeps): Router {
       deleteSession(routed.db, session.id);
     })();
     forgetSession(session.id);
+    // STORE-4b：会话行已删，清定位索引（写失败只留过期行，读侧兜底扫描接住）
+    removeEntityLocator(db, 'session', session.id);
     broadcast({ type: 'session.deleted', session_id: session.id });
     res.status(204).end();
   });
@@ -1524,6 +1563,8 @@ export function createRouter(deps: RouterDeps): Router {
       fromMessageId: body.from_message_id ?? null,
       title: body.title,
     });
+    // STORE-4b：分叉出的新会话同样登记定位索引
+    upsertEntityLocator(db, 'session', session.id, session.workspace_id);
     broadcast({
       type: 'session.changed',
       session,

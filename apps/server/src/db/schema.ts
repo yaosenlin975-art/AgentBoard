@@ -36,6 +36,8 @@ import { migrateCliAccounts } from './migrations/cliAccounts.js';
 import { migratePendingDecision } from './migrations/pendingDecision.js';
 // STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
 import { migrateIssueParentIndex } from './migrations/issueParentIndex.js';
+// STORE-4b：中心库定位索引 entity_locator（薄索引；行由 repos 维护钩子写入，删表可由重建路径回填）
+import { migrateEntityLocator } from './migrations/entityLocator.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -137,6 +139,8 @@ export function initSchema(db: Db): void {
   migrateCliAccounts(db);
   // STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
   migrateIssueParentIndex(db);
+  // STORE-4b：中心库定位索引 entity_locator（纯追加新表，幂等；与既有表无重建依赖，放最末）
+  migrateEntityLocator(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }
