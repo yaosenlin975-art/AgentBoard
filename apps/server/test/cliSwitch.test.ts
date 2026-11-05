@@ -224,11 +224,13 @@ describe('CLI-SWITCH：HTTP 端点', () => {
     rmSync(homeDir, { recursive: true, force: true });
   });
 
-  it('GET /api/cli-accounts/switch-capabilities 返回三来源且 codex 不可切换', async () => {
+  it('GET /api/cli-accounts/switch-capabilities 返回四来源且 codex / commandcode 不可切换', async () => {
     const res = await request(mount(t, homeDir, fakeVault(KEY_NEW)))
       .get('/api/cli-accounts/switch-capabilities').expect(200);
-    expect(res.body.items).toHaveLength(3);
+    expect(res.body.items).toHaveLength(4);
     expect(res.body.items.find((item: { app_id: string }) => item.app_id === 'codex').switch).toBe(false);
+    expect(res.body.items.find((item: { app_id: string }) => item.app_id === 'commandcode'))
+      .toMatchObject({ switch: false, reason_code: 'AUTH_WRITE_UNVERIFIED' });
     expect(JSON.stringify(res.body)).not.toContain(KEY_NEW);
   });
 

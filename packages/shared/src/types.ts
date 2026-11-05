@@ -63,7 +63,27 @@ export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'clien
  * ACC-CLI-MULTI：CLI 额度来源（口径 A：只登记本机可发现凭据 + 真实计数 + 持久化）。
  * 与 `ManagedAppId` 刻意分离——这三者没有桌面客户端登录态/签到/切换语义。
  */
-export type CliAccountAppId = 'deepseek' | 'opencode_go' | 'codex';
+export type CliAccountAppId = 'deepseek' | 'opencode_go' | 'codex' | 'commandcode';
+/**
+ * ACC-CC-3：CLI 来源的本机发现能力（能力如实）。
+ * 不可用维度必须带技术码；中文原因由服务端给出，界面不再自己猜。
+ */
+export interface CliAppCapability {
+  app_id: CliAccountAppId;
+  /** CLI 客户端是否安装在 PATH 中（当前仅 Command Code 做真实探测） */
+  installed: boolean;
+  capture: boolean;
+  capture_reason_code: string;
+  capture_reason: string | null;
+  switch: boolean;
+  switch_reason_code: string;
+  switch_reason: string | null;
+  checkin: boolean;
+  checkin_reason_code: string;
+  checkin_reason: string | null;
+  /** 凭据文件状态：readable = 已识别出唯一凭据；missing = 文件不存在；unrecognized = 存在但格式未识别 */
+  auth_file_state: 'readable' | 'missing' | 'unrecognized';
+}
 export interface PublicCliAccount {
   id: string;
   app_id: CliAccountAppId;
@@ -227,6 +247,13 @@ export interface Session {
    */
   forked_from_session_id?: string | null;
   fork_message_id?: string | null;
+  /**
+   * BORROW-4.3：暂停时间戳（毫秒）；非空即视为暂停，`status` 语义不变。
+   * 纯加列（不重建 session 表），存量行/未暂停为 null。
+   */
+  paused_at?: number | null;
+  /** BORROW-4.3：读接口返回的派生字段（= paused_at 非空），调用方不必自己猜 */
+  paused?: boolean;
   /** 运行时态（不入库）：sessions 接口返回时由服务端合并；WS session.changed 不携带 */
   queued_count?: number;
   waiting_slot?: boolean;
@@ -429,7 +456,26 @@ export interface SessionApprovalRequestEvent {
   target: string;
   risk: string;
 }
+/**
+ * BORROW-4.3：会话暂停/恢复事件（WS）。
+ * 不并入 `WsEvent`：`apps/web/src/api/ws.ts::eventToQueryKeys` 是无 default 的穷尽 switch，
+ * 本卡不改 `apps/web/**`，前端消费归后续聊天视图卡（届时加入 `WsEvent` 并补 case）。
+ */
+export interface SessionPauseEvent {
+  type: 'session.paused' | 'session.resumed';
+  session_id: string;
+  /** 暂停事件为暂停时刻；恢复事件为 null（paused_at 已清空） */
+  paused_at: number | null;
+  /** 变更后的会话快照（含 paused_at；不含运行时字段） */
+  session: Session;
+  /**
+   * 仅 `session.resumed`：暂停/恢复标记已写入 `session_event`，客户端从这里之后继续拉事件。
+   * 恢复不重放已完成步骤——已完成消息的 seq 都 ≤ 该锚点。
+   */
+  resume_after_seq?: number;
+}
 export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | SessionTurnEvent | SessionApprovalRequestEvent;
+export type SessionControlEvent = SessionPauseEvent;
 /**
  * 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件。
  *
@@ -467,8 +513,8 @@ export interface DecisionEvent {
   reason?: string;
 }
 
-/** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 */
-export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent;
+/** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 */
+export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent;
 
 /** 工作区变更日志类型；`历史` 仅由旧 CHANGELOG 导入写入，普通 UI/CLI 新增不可选 */
 export type WorkspaceChangeType = '新增' | '修复' | '调整' | '历史';

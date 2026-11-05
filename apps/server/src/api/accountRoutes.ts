@@ -33,7 +33,7 @@ import { startCheckinBatchInBackground } from '../services/accounts/checkinRunne
 import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
-import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
+import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
@@ -266,6 +266,19 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const body = parseBody(cliImportSchema, req.body);
     const result = await importCliCredential({ db, vault: cliVault, appId: body.app_id, credential: body.credential });
     res.json(result);
+  });
+
+  /**
+   * ACC-CC-3：Command Code 的真实发现能力（本机安装 / 凭据文件状态 / 三维能力）。
+   * 未安装或格式未识别时返回对应原因码，不伪造账号；写回与签到恒为不可用。
+   */
+  router.get('/cli-accounts/commandcode/capability', (_req, res) => {
+    res.json({
+      capability: commandCodeCapability(
+        deps.cliAccountHomeDir ?? homedir(),
+        deps.cliAccountEnv ?? process.env,
+      ),
+    });
   });
 
   // ---- CLI-SWITCH：能力表 + 逐来源切换（默认 dry-run，显式 apply 才写本机配置） ----

@@ -43,6 +43,13 @@ export const CLI_SWITCH_CAPABILITIES: readonly CliSwitchCapability[] = [
     reason_code: 'CODEX_OAUTH_WRITE_UNVERIFIED',
     reason: 'Codex 登录态是 OAuth 令牌（含刷新令牌），写入与读回校验路径未验证，保持只读',
   },
+  {
+    // ACC-CC-3：写回 ~/.commandcode/auth.json 是否等价于有效登录态未实测（CC-1 §7），保持只读
+    app_id: 'commandcode',
+    switch: false,
+    reason_code: 'AUTH_WRITE_UNVERIFIED',
+    reason: '写回 ~/.commandcode/auth.json 是否等价于有效登录态未验证，保持只读',
+  },
 ];
 
 export function cliSwitchCapability(appId: CliAccountAppId): CliSwitchCapability {

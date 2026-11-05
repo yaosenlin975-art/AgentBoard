@@ -8,7 +8,7 @@ import { ApiError, ValidationError } from '../../errors.js';
 /** 支持的后台应用；ACC-10 起含 minimax / trae（vault scope 随 ManagedAppId 一起扩展） */
 export const managedAppSchema = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
 /** ACC-CLI-MULTI：CLI 额度来源（只登记本机凭据，不参与桌面客户端的快照/签到语义） */
-export const cliAppSchema = z.enum(['deepseek', 'opencode_go', 'codex']);
+export const cliAppSchema = z.enum(['deepseek', 'opencode_go', 'codex', 'commandcode']);
 /** vault 的 app_id 维度 = 桌面平台 ∪ CLI 来源 */
 const vaultAppSchema = z.union([managedAppSchema, cliAppSchema]);
 /**

@@ -15,17 +15,17 @@
  * 凭据只进 secretVault（purpose `cli_credential`，与签到 purpose 分开）；响应与日志不含 key 明文。
  */
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
-import type { CliAccountAppId, PublicCliAccount } from '@agentboard/shared';
+import { delimiter, join } from 'node:path';
+import type { CliAccountAppId, CliAppCapability, PublicCliAccount } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
 import { ApiError } from '../../errors.js';
 import { collectDeepseekKeyCandidates } from '../quotas/quotaService.js';
 import type { SecretVault } from './secretVault.js';
 
-export const CLI_ACCOUNT_APP_IDS = ['deepseek', 'opencode_go', 'codex'] as const;
-/** 本机只读发现能产出账号的两类来源；Codex 无凭据可枚举，不产账号 */
+export const CLI_ACCOUNT_APP_IDS = ['deepseek', 'opencode_go', 'codex', 'commandcode'] as const;
+/** 本机只读发现能产出账号的来源；Codex 无凭据可枚举，不产账号 */
 type DiscoveredAppId = Exclude<CliAccountAppId, 'codex'>;
 /** CLI 凭据的 vault 只有写入能力需求（读取/删除随 CLI-IMPORT / CLI-SWITCH 再扩） */
 export type CliCredentialVault = Pick<SecretVault, 'protect'>;
@@ -60,6 +60,123 @@ export function readOpencodeGoKey(homeDir: string): string | null {
   }
 }
 
+/** Command Code 的凭据文件（home 相对，官方口径） */
+export function commandCodeAuthPath(homeDir: string): string {
+  return join(homeDir, '.commandcode', 'auth.json');
+}
+
+/**
+ * Command Code CLI 是否在 PATH 里。
+ * Windows 原生别名是 `cmdc`（`cmd` 被系统 shell 占用），npm 全局命令是 `command-code`；
+ * 这里只做文件存在性探测（不 spawn 子进程），覆盖 .cmd/.exe/.ps1 三种入口。
+ */
+export function isCommandCodeCliInstalled(env: Record<string, string | undefined> = process.env): boolean {
+  const pathValue = env.PATH ?? env.Path ?? '';
+  if (pathValue.trim().length === 0) return false;
+  const names = process.platform === 'win32'
+    ? ['cmdc.cmd', 'cmdc.exe', 'cmdc.ps1', 'command-code.cmd', 'command-code.exe', 'command-code.ps1']
+    : ['cmdc', 'command-code'];
+  return pathValue
+    .split(delimiter)
+    .map((dir) => dir.trim().replace(/^"|"$/g, ''))
+    .filter((dir) => dir.length > 0)
+    .some((dir) => names.some((name) => existsSync(join(dir, name))));
+}
+
+/** auth.json 里可能承载凭据的字段名（官方 schema 未公开，只读探测真实键，不猜值） */
+const COMMAND_CODE_TOKEN_FIELDS = ['accessToken', 'access_token', 'apiKey', 'api_key', 'key', 'token'] as const;
+
+/**
+ * 从 auth.json 中取「唯一」凭据：只看顶层与一层嵌套对象的已知字段名。
+ * 命中多个不同值 → 视为未识别（不替用户挑一个）；一个都没有 → 未识别。
+ */
+function extractCommandCodeToken(parsed: unknown): string | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+  const values = new Set<string>();
+  const collect = (value: Record<string, unknown>): void => {
+    for (const field of COMMAND_CODE_TOKEN_FIELDS) {
+      const candidate = value[field];
+      if (typeof candidate === 'string' && candidate.trim().length > 0) values.add(candidate.trim());
+    }
+  };
+  const root = parsed as Record<string, unknown>;
+  collect(root);
+  for (const value of Object.values(root)) {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      collect(value as Record<string, unknown>);
+    }
+  }
+  return values.size === 1 ? [...values][0]! : null;
+}
+
+export interface CommandCodeAuthProbe {
+  state: 'readable' | 'missing' | 'unrecognized';
+  key: string | null;
+}
+
+/** 只读探测 `~/.commandcode/auth.json`；不读凭据以外的字段，不打印/不回显文件内容 */
+export function readCommandCodeAuth(homeDir: string): CommandCodeAuthProbe {
+  const path = commandCodeAuthPath(homeDir);
+  if (!existsSync(path)) return { state: 'missing', key: null };
+  try {
+    const key = extractCommandCodeToken(JSON.parse(readFileSync(path, 'utf8')) as unknown);
+    return key === null ? { state: 'unrecognized', key: null } : { state: 'readable', key };
+  } catch {
+    return { state: 'unrecognized', key: null };
+  }
+}
+
+/**
+ * ACC-CC-3：Command Code 的真实能力（不猜）：
+ * - capture：auth.json 可识别出唯一凭据或存在 COMMAND_CODE_API_KEY → 可用；
+ *   否则按「未安装 / 无凭据文件 / 格式未识别」分别给原因码；
+ * - switch：写回 auth.json 是否等价有效登录态未实测 → 恒不可用（AUTH_WRITE_UNVERIFIED）；
+ * - checkin：产品无签到语义 → CHECKIN_NOT_APPLICABLE。
+ */
+export function commandCodeCapability(
+  homeDir: string,
+  env: Record<string, string | undefined> = process.env,
+): CliAppCapability {
+  const auth = readCommandCodeAuth(homeDir);
+  const envKey = (env.COMMAND_CODE_API_KEY ?? '').trim();
+  const installed = isCommandCodeCliInstalled(env);
+  let capture: boolean;
+  let captureReasonCode: string;
+  let captureReason: string | null;
+  if (auth.state === 'readable' || envKey.length > 0) {
+    capture = true;
+    captureReasonCode = 'OK';
+    captureReason = null;
+  } else if (auth.state === 'unrecognized') {
+    // 文件真实存在但格式不认识：比「未安装」更精确，不猜字段
+    capture = false;
+    captureReasonCode = 'AUTH_SCHEMA_UNSUPPORTED';
+    captureReason = 'auth.json 存在但格式未识别（未找到唯一凭据字段）';
+  } else if (!installed) {
+    capture = false;
+    captureReasonCode = 'CLI_NOT_INSTALLED';
+    captureReason = '本机未安装 Command Code CLI（PATH 中找不到 cmdc / command-code）';
+  } else {
+    capture = false;
+    captureReasonCode = 'AUTH_FILE_MISSING';
+    captureReason = '本机没有 ~/.commandcode/auth.json，请先登录或将 Studio API key 导入';
+  }
+  return {
+    app_id: 'commandcode',
+    installed,
+    capture,
+    capture_reason_code: captureReasonCode,
+    capture_reason: captureReason,
+    switch: false,
+    switch_reason_code: 'AUTH_WRITE_UNVERIFIED',
+    switch_reason: '写回 auth.json 是否等价于有效登录态未验证，暂不支持切换',
+    checkin: false,
+    checkin_reason_code: 'CHECKIN_NOT_APPLICABLE',
+    checkin_reason: 'Command Code 没有签到功能',
+    auth_file_state: auth.state,
+  };
+}
+
 /**
  * 收集本机可发现的凭据（已按来源内身份去重）。
  * DeepSeek 复用额度链路的候选收集（含跨位置去重口径），保证「计数」与「实际生效凭据」同源。
@@ -80,6 +197,9 @@ export function discoverCliCredentials(
   };
   for (const candidate of collectDeepseekKeyCandidates(homeDir, env)) push('deepseek', candidate.key);
   push('opencode_go', readOpencodeGoKey(homeDir));
+  // ACC-CC-3：Command Code 只登记真实读到的凭据（auth.json 唯一字段或环境变量），格式未识别不产账号
+  push('commandcode', (env.COMMAND_CODE_API_KEY ?? '').trim());
+  push('commandcode', readCommandCodeAuth(homeDir).key);
   return candidates;
 }
 
@@ -154,7 +274,7 @@ export async function captureCliAccounts(options: CaptureCliAccountsOptions): Pr
 /** 手动导入时接受的 token 形状（API key / OAuth 短令牌都是无空白的可打印串） */
 const CREDENTIAL_TOKEN = /^[A-Za-z0-9._~+/=-]{8,512}$/;
 /** 允许从配置文件/JSON 片段里取值的字段名；解析失败不猜、直接给可读原因 */
-const CREDENTIAL_FIELD = /\b(?:api_key|apikey|DEEPSEEK_API_KEY|key)\b["']?\s*[:=]\s*["']?([^"'\r\n,}]{1,512})/gi;
+const CREDENTIAL_FIELD = /\b(?:api_key|apikey|DEEPSEEK_API_KEY|COMMAND_CODE_API_KEY|key)\b["']?\s*[:=]\s*["']?([^"'\r\n,}]{1,512})/gi;
 
 /**
  * 解析粘贴文本/文件内容里的单份凭据：裸 token 优先，其次识别 `api_key = "…"` /
@@ -166,7 +286,7 @@ export function parseCliCredentialText(raw: string): { token: string } | { error
   if (text.length === 0) return { error: '凭据为空：请粘贴 API key 或选择凭据文件' };
   // `DEEPSEEK_API_KEY=sk-…` 这种赋值串整体也满足 token 字符集，必须先按字段名识别再说，
   // 否则会把整行（含变量名与等号）当成 key。
-  const looksLikeAssignment = /^\s*["']?(?:api_key|apikey|DEEPSEEK_API_KEY|key)["']?\s*[:=]/i.test(text);
+  const looksLikeAssignment = /^\s*["']?(?:api_key|apikey|DEEPSEEK_API_KEY|COMMAND_CODE_API_KEY|key)["']?\s*[:=]/i.test(text);
   if (!looksLikeAssignment && CREDENTIAL_TOKEN.test(text)) return { token: text };
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
   if (lines.length > 1 && lines.every(line => CREDENTIAL_TOKEN.test(line))) {
