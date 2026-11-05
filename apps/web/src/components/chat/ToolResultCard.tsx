@@ -7,15 +7,21 @@
  * 数据来源与局限（不要在此之上伪造）：
  * - `duration_ms` = 服务端墙钟、`status` = 「该步期间有没有 error / 轮次是否非零退出」，不是 CLI 的工具返回值；
  * - `output_summary` / `diff` 由后续执行器侧卡填真值，本卡读到 null 时显示占位文案，不编造内容；
- * - 没有「打开 git」的端点：footer 的 `在 git 里看 ↗` 退化为复制 `git diff -- <path>`，
- *   单步重试入口属于 CHAT-RETRY2，本卡不放。
+ * - 没有「打开 git」的端点：footer 的 `在 git 里看 ↗` 退化为复制 `git diff -- <path>`；
+ * - CHAT-RETRY2：`failed` 且轮次已收口的步骤卡提供「重试此步」，只调服务端单步重试端点，
+ *   不重发整轮；是否真的可重试由服务端 ledger 判定（409 文案原样展示，前端不推断 retryable）。
  */
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Message, MessageDiffFile } from '@agentboard/shared';
+import { ApiError } from '../../api/client';
+import { useRetryFailedStep, useTurnObservation } from '../../state/turnStore';
 import {
   classifyDiffLine,
   formatDuration,
   gitDiffCommand,
+  retryFailureText,
+  retryStepGate,
+  retryableAfterAttempt,
   singleLine,
 } from '../../lib/turnView';
 
@@ -120,6 +126,13 @@ export function ToolResultCard({ message }: { message: Message }) {
   // hooks 必须早于任何 return（坏元信息时同样保持调用顺序）
   const [open, setOpen] = useState(true);
   const [copyHint, setCopyHint] = useState<string | null>(null);
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  /** 服务端判死的重试原因（409 后置位：按钮变 disabled，直到该卡卸载） */
+  const [blockedReason, setBlockedReason] = useState<string | null>(null);
+  /** 连点护栏：同一张卡上同一时刻只允许一次重试请求（幂等键由服务端兜底，前端不多发一次） */
+  const retryInFlight = useRef(false);
+  const turn = useTurnObservation(message.turn_id);
+  const retry = useRetryFailedStep(message.session_id);
   const meta = message.meta_json;
   // 调用方已保证 meta 非空；这里再兜一层，坏元信息不得炸消息列表
   if (meta === null || meta === undefined) return null;
@@ -130,6 +143,48 @@ export function ToolResultCard({ message }: { message: Message }) {
   const shownSummary = summary === '' ? (fallback === '' ? '无输出摘要' : `输入：${fallback}`) : summary;
   const ok = meta.status === 'ok';
   const firstPath = files[0]?.path ?? null;
+  const gate = retryStepGate(turn, message.step_id);
+  const retryDisabled = retry.isPending || blockedReason !== null || !gate.enabled;
+
+  const runRetry = (): void => {
+    if (retryInFlight.current || retry.isPending) return;
+    if (message.turn_id === null || message.turn_id === undefined) return;
+    if (message.step_id === null || message.step_id === undefined) return;
+    retryInFlight.current = true;
+    setRetryNote(null);
+    retry.mutate(
+      { turnId: message.turn_id, stepId: message.step_id },
+      {
+        onSuccess: (result) => {
+          // 服务端 ledger 是唯一依据：重试后仍不可重试 → 直接禁用并给原因
+          setBlockedReason(retryableAfterAttempt(result.ledger.retryable));
+          setRetryNote(
+            result.turn.state === 'done'
+              ? '该步重试成功'
+              : result.turn.awaiting_json?.reason === 'step_retry_incomplete'
+                ? '该步已重试成功，但其余步骤未执行'
+                : '该步重试后仍失败',
+          );
+        },
+        onError: (error) => {
+          const text = retryFailureText(error);
+          setRetryNote(text);
+          // 409 不静默：可判「不可重试」的机器码同时把按钮置灰
+          if (
+            error instanceof ApiError &&
+            (error.code === 'STEP_NOT_RETRYABLE' ||
+              error.code === 'STEP_NOT_FAILED' ||
+              error.code === 'STEP_RETRY_IN_FLIGHT')
+          ) {
+            setBlockedReason(text);
+          }
+        },
+        onSettled: () => {
+          retryInFlight.current = false;
+        },
+      },
+    );
+  };
 
   const copyGitCommand = (): void => {
     const command = gitDiffCommand(firstPath);
@@ -211,6 +266,28 @@ export function ToolResultCard({ message }: { message: Message }) {
             {copyHint !== null && (
               <span data-testid={`git-hint-${message.id}`} role="status" className="min-w-0 truncate text-ink-3">
                 {copyHint}
+              </span>
+            )}
+            {!ok && (
+              <button
+                type="button"
+                data-testid={`retry-step-${message.id}`}
+                disabled={retryDisabled}
+                aria-disabled={retryDisabled}
+                title={gate.reason ?? blockedReason ?? '只重跑该失败步骤，不重发整轮'}
+                onClick={runRetry}
+                className="shrink-0 rounded border border-hairline px-1.5 py-0.5 text-accent hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:text-ink-3 disabled:hover:bg-transparent"
+              >
+                {retry.isPending ? '重试中…' : '重试此步'}
+              </button>
+            )}
+            {retryNote !== null && (
+              <span
+                data-testid={`retry-step-note-${message.id}`}
+                role="status"
+                className="min-w-0 truncate text-ink-2"
+              >
+                {retryNote}
               </span>
             )}
           </div>

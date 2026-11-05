@@ -261,10 +261,11 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     [sessionId, catchUp],
   );
 
-  // CHAT-AWAIT2：超时后的「重新开始此步」= 以新轮次重发最后一条用户消息（服务端没有「重置单个等待步」的端点）
+  // CHAT-RETRY2：超时卡片优先用「重试此步」（服务端单步重试端点）；
+  // 只有本轮没有可定位的失败步骤时才退回整轮重发（会重跑全部步骤，文案已在卡片上区分）
   const lastUserText =
     [...messages].reverse().find((m) => m.role === 'user' && m.content.trim() !== '')?.content ?? null;
-  const restartAwaiting = useCallback(async (): Promise<void> => {
+  const restartRound = useCallback(async (): Promise<void> => {
     if (lastUserText === null) throw new Error('没有可重发的用户消息');
     await handleSend(lastUserText, attachmentIdsFromText(lastUserText));
   }, [lastUserText, handleSend]);
@@ -622,7 +623,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         />
       )}
       {activeTurn !== null && timedOut && (
-        <AwaitingTimeoutCard turn={activeTurn} onRestart={restartAwaiting} />
+        <AwaitingTimeoutCard turn={activeTurn} onRestartRound={restartRound} />
       )}
       {/* 拒绝后轮次被服务端置 stopped：给出可见终态提示，不静默收起 */}
       {activeTurn !== null && activeTurn.state === 'stopped' && activeTurn.awaiting?.reason === 'approval_denied' && (

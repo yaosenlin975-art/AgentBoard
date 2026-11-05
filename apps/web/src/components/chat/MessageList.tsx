@@ -171,7 +171,7 @@ function truncateUrls(text: string, max = 64): string {
   );
 }
 
-/** 重试文案：取该错误之前最近的一条 user 消息（原样再发一次） */
+/** 整轮兜底文案：取该错误之前最近的一条 user 消息（原样再发一次，会重跑全部步骤） */
 function findRetryText(messages: Message[], index: number): string | null {
   for (let i = index - 1; i >= 0; i -= 1) {
     const prev = messages[i]!;
@@ -223,11 +223,16 @@ function ErrorBlock({ message, retryText, onRetry, onOpenModel, onOpenUsage }: E
               type="button"
               data-testid={`error-retry-${message.id}`}
               onClick={() => onRetry(retryText)}
-              title="重新发送上一条消息"
+              title="整轮重试：重新发送上一条消息（会重新执行全部步骤）"
               className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/40"
             >
-              重试
+              重发整轮
             </button>
+          )}
+          {retryable && (
+            <span data-testid={`error-retry-hint-${message.id}`} className="text-[10px] text-red-600/80 dark:text-red-400/80">
+              只想重跑失败的一步？在下方失败的步骤卡点「重试此步」
+            </span>
           )}
           {showModel && onOpenModel !== undefined && (
             <button

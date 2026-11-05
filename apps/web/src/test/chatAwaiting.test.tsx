@@ -6,7 +6,7 @@
  * - 等待态时 running 三点与停止按钮让位（不双显），输入区只读且发送禁用；
  * - answer 成功回 running、失败可读；审批 allow/deny 落库后状态跟得上、403 显示撤销入口说明；
  * - 刷新后按会话详情 `turns` 恢复阻塞卡片；
- * - 超时卡片的「重新开始此步」走整轮重发兜底；
+ * - 超时卡片：有可定位失败步骤时走单步重试（CHAT-RETRY2），没有时才退回「重发整轮」；
  * - turnView 展示口径纯函数（解析/时长/上限/错误映射）。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -393,7 +393,7 @@ describe('AWAIT2 刷新恢复与超时', () => {
     expect(screen.getByTestId('approval-allow')).toBeInTheDocument();
   });
 
-  it('failed(awaiting_timeout) 显示超时卡片，「重新开始此步」以新轮次重发上一条用户消息', async () => {
+  it('failed(awaiting_timeout) 显示超时卡片；没有可定位失败步骤时「重发整轮」重发上一条用户消息', async () => {
     renderChat();
     expect(await screen.findByTestId('composer')).toBeInTheDocument();
     emitTurn({

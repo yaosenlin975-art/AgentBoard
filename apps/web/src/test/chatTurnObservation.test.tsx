@@ -85,7 +85,13 @@ function emitUsage(turnId: string, usage: Partial<TurnUsage>, sessionId = 's1'):
 }
 
 function renderList(messages: Message[], sessionStatus: '运行中' | '已结束' | '失败' = '运行中'): void {
-  render(<MessageList messages={messages} streaming="" running={false} sessionStatus={sessionStatus} />);
+  // CHAT-RETRY2：工具卡内的单步重试是 useMutation，渲染必须带 QueryClient
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <MessageList messages={messages} streaming="" running={false} sessionStatus={sessionStatus} />
+    </QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
@@ -182,7 +188,8 @@ describe('计划条', () => {
     expect(live).toHaveTextContent('计划第 2 步，共 2 步：Edit');
     emitPlan('t1', [step('s1', 'Read', 'done'), step('s2', 'Edit', 'done')], 2);
     expect(live).toHaveTextContent('计划已完成，共 2 步');
-    // 验收 7：不放「重试此步」/整轮重发/编辑计划（CHAT-RETRY2、CHAT-AWAIT2 的地盘）
+    // 验收 7（CHAT-VIS1 口径）：计划条/计划条容器不放重试或改计划入口；
+    // 失败步骤卡的「重试此步」由 CHAT-RETRY2 提供（本用例的步骤 status=ok，不应出现重试按钮）
     const group = screen.getByTestId('turn-group-t1');
     expect(within(group).queryByRole('button', { name: /重试|重发|重新执行/ })).toBeNull();
     expect(within(group).queryAllByRole('textbox').length).toBe(0);

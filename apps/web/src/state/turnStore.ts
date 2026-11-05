@@ -3,14 +3,16 @@
  *
  * - 数据来源：WS `session.plan` / `session.usage` / `session.turn` / `session.approval_request`，
  *   以及会话详情 `GET /api/sessions/:id` 回传的 `turns`（刷新恢复用，CHAT-AWAIT2）；
- * - **只读**：没有写路径、没有 HTTP 端点、不与执行器双写（改计划/重跑步骤归 CHAT-RETRY2）；
- *   阻塞态的判定与超时只信服务端字段/事件，前端不本地推进状态、不本地判超时；
+ * - **store 本身只读**：不本地推进状态、不与执行器双写；阻塞态的判定与超时只信服务端字段/事件；
+ *   唯一写路径是 CHAT-RETRY2 的 `useRetryFailedStep`（只调服务端单步重试端点，再把返回的整轮回填）；
  * - 与 streamingStore 同构：模块级单例 + 全局 `subscribeWsEvents`，ChatPanel 未挂载也在收快照；
  * - 降级：`plan` 为空数组（CLI 不声明计划）→ 没有观测条目 → 前端隐藏计划条。
  */
 import { create } from 'zustand';
+import { useMutation } from '@tanstack/react-query';
 import type {
   SessionApprovalRequestEvent,
+  SessionStepRetryResult,
   SessionTurn,
   SessionTurnEvent,
   SessionTurnState,
@@ -18,6 +20,7 @@ import type {
   TurnPlanStep,
   TurnUsage,
 } from '@agentboard/shared';
+import { api } from '../api/client';
 import { subscribeWsEvents } from '../api/wsBus';
 
 /** 一轮的观测快照（`session.plan` + `session.usage` + `session.turn` 的合并视图） */
@@ -228,3 +231,26 @@ export function useSessionUsage(sessionId: string | null | undefined): TurnUsage
     return turnId ? (s.turns.get(turnId)?.usage ?? null) : null;
   });
 }
+
+/**
+ * CHAT-RETRY2：单步重试的唯一请求路径。
+ *
+ * - 只发 `POST /api/sessions/:id/turns/:turnId/steps/:stepId/retry`，**不带**整轮重发的
+ *   `POST /messages`；幂等键由服务端按 `turn_id:step_id:tool_call_id` 判定，前端不造键；
+ * - 成功只把服务端返回的整轮回填（步骤 `failed → done/failed` 以服务端为准），
+ *   不新增消息、不本地推进状态（所以不会出现第二张 diff 卡）；
+ * - 409 / 403 等失败**不改** store，由调用方按 `retryFailureText` 展示可读原因。
+ */
+export function useRetryFailedStep(sessionId: string | null) {
+  return useMutation({
+    mutationFn: (input: { turnId: string; stepId: string }) => {
+      if (sessionId === null) return Promise.reject(new Error('未选择会话'));
+      return api.post<SessionStepRetryResult>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(input.turnId)}/steps/${encodeURIComponent(input.stepId)}/retry`,
+        {},
+      );
+    },
+    onSuccess: (result) => applyServerTurn(result.turn),
+  });
+}
+

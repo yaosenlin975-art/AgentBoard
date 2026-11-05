@@ -341,3 +341,94 @@ export function approvalFailureText(error: unknown): string {
   }
   return error instanceof Error ? `审批提交失败：${error.message}` : '审批提交失败';
 }
+
+/* ------------------------------------------------------------------------------------------------
+ * CHAT-RETRY2：单步重试入口的展示口径（纯函数）
+ *
+ * 前端**不推断** retryable：真正的 retryable 只由服务端 step ledger 判定
+ * （`writes_json` 非空即不可重试，见 CHAT-RETRY1）。当前服务端没有 ledger 的读通道，
+ * 所以这里只按可观测的事实字段（轮次 state + 计划步骤 state）决定按钮是否可点，
+ * 是否真的可重试一律以点击后服务端 200/409 为准。
+ * ---------------------------------------------------------------------------------------------- */
+
+/** 重试入口需要的轮次事实（从 TurnObservation 取这两个字段即可，避免循环依赖） */
+export interface TurnRetryFacts {
+  state: SessionTurnState | null;
+  plan: TurnPlanStep[];
+}
+
+export interface StepRetryGate {
+  /** 是否可点（仍以服务端最终判定为准） */
+  enabled: boolean;
+  /** 不可点的原因（tooltip 文案）；enabled 时为 null */
+  reason: string | null;
+}
+
+const OPEN_TURN_STATES: SessionTurnState[] = ['running', 'awaiting_input', 'awaiting_approval'];
+
+/** 「重试此步」的可用性：轮次已收口 + 该步确为 failed 才可点 */
+export function retryStepGate(
+  turn: TurnRetryFacts | null,
+  stepId: string | null | undefined,
+): StepRetryGate {
+  if (stepId === null || stepId === undefined || stepId === '') {
+    return { enabled: false, reason: '该步骤缺少标识，无法定位重试点' };
+  }
+  if (turn === null) {
+    return { enabled: false, reason: '尚未收到该轮次状态，无法判断是否可重试' };
+  }
+  if (turn.state === null) {
+    return { enabled: false, reason: '尚未收到该轮次状态，无法判断是否可重试' };
+  }
+  if (OPEN_TURN_STATES.includes(turn.state)) {
+    return { enabled: false, reason: '轮次仍在执行或处于等待态，不能重试该步' };
+  }
+  const step = turn.plan.find((s) => s.step_id === stepId);
+  if (step === undefined) {
+    return { enabled: false, reason: '该步骤不在本轮计划中' };
+  }
+  if (step.state !== 'failed') {
+    return { enabled: false, reason: `该步当前不是失败状态（${stepLabel(step.state)}）` };
+  }
+  return { enabled: true, reason: null };
+}
+
+/** 本轮里可定位的失败步骤（优先 current_index 指向的那一步） */
+export function failedPlanStep(
+  turn: TurnRetryFacts & { current_index: number } | null,
+): TurnPlanStep | null {
+  if (turn === null) return null;
+  const at = turn.plan[turn.current_index];
+  if (at !== undefined && at.state === 'failed') return at;
+  return turn.plan.find((s) => s.state === 'failed') ?? null;
+}
+
+/** 该步在上一次重试后是否还能再重试（服务端 `ledger.retryable` 是唯一依据） */
+export function retryableAfterAttempt(retryable: boolean): string | null {
+  return retryable ? null : '该步已有成功写入，不支持重试';
+}
+
+/** 单步重试失败的可读原因：409 的机器码逐条映射，部分成功给出明确「不支持重试」文案 */
+export function retryFailureText(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? `重试失败：${error.message}` : '重试失败';
+  }
+  if (error.status === 404) return '轮次或步骤不存在（可能已被清理），请刷新后查看';
+  if (error.status === 403) return `服务端拒绝本次重试：${error.message}`;
+  if (error.status === 409) {
+    switch (error.code) {
+      case 'STEP_NOT_RETRYABLE':
+        // 服务端对「部分成功」的原文含「写入」，统一收敛成可读结论；缺台账等其它原因保留原文
+        return error.message.includes('写入') ? '该步已有成功写入，不支持重试' : error.message;
+      case 'STEP_NOT_FAILED':
+        return '该步当前不是失败状态，服务端拒绝重试';
+      case 'TURN_NOT_RETRYABLE':
+        return '轮次仍在执行或处于等待态，不能重试该步';
+      case 'STEP_RETRY_IN_FLIGHT':
+        return '该步重试已在处理中，请勿重复提交';
+      default:
+        return `该步当前不可重试：${error.message}`;
+    }
+  }
+  return `重试失败：${error.message}`;
+}

@@ -3,7 +3,8 @@
  *
  * - `awaiting_input`：展示提问正文与可选项（自由文本兜底），POST answer；
  * - `awaiting_approval` 的交互已由 CHAT-APP2 的 `ApprovalDialog` 接管（本组件不再渲染审批卡片）；
- * - `failed(awaiting_timeout)`：展示服务端超时原因与「重新开始此步」入口（整轮重发兜底）。
+ * - `failed(awaiting_timeout)`：展示服务端超时原因；有可定位失败步骤时提供「重试此步」
+ *   （CHAT-RETRY2 单步重试端点），没有失败步骤时才退回「重发整轮」，两种口径在文案上区分。
  *
  * 约束：
  * - 状态只来自 turnStore 的服务端投影（`session.turn` / 会话详情），本组件不本地推进状态；
@@ -15,7 +16,12 @@ import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { SessionTurn } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { applyServerTurn, type TurnObservation } from '../../state/turnStore';
+import {
+  applyServerTurn,
+  useRetryFailedStep,
+  type TurnObservation,
+} from '../../state/turnStore';
+import { failedPlanStep, retryFailureText, retryStepGate } from '../../lib/turnView';
 import {
   answerFailureText,
   awaitingCapText,
@@ -147,25 +153,37 @@ export function AwaitingCard({
 
 export function AwaitingTimeoutCard({
   turn,
-  onRestart,
+  onRestartRound,
 }: {
   turn: TurnObservation;
-  /** 重新开始此步：整轮重发兜底（服务端没有「重置单个等待步」的端点） */
-  onRestart: () => Promise<void>;
+  /** 整轮兜底：没有可定位的失败步骤时，重新发送上一条用户消息（会重跑全部步骤） */
+  onRestartRound: () => Promise<void>;
 }) {
   const [restarting, setRestarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const failedStep = failedPlanStep(turn);
+  const gate = retryStepGate(turn, failedStep?.step_id ?? null);
+  const retry = useRetryFailedStep(turn.session_id);
 
-  const restart = async (): Promise<void> => {
+  const restartRound = async (): Promise<void> => {
     setRestarting(true);
     setError(null);
     try {
-      await onRestart();
+      await onRestartRound();
     } catch (e) {
       setError(e instanceof Error ? e.message : '重新开始失败');
     } finally {
       setRestarting(false);
     }
+  };
+
+  const retryStep = (): void => {
+    if (failedStep === null || retry.isPending) return;
+    setError(null);
+    retry.mutate(
+      { turnId: turn.turn_id, stepId: failedStep.step_id },
+      { onError: (e) => setError(retryFailureText(e)) },
+    );
   };
 
   return (
@@ -186,16 +204,34 @@ export function AwaitingTimeoutCard({
         <p data-testid="awaiting-cap">{awaitingCapText(turn.awaiting?.at ?? null)}</p>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          data-testid="awaiting-restart"
-          disabled={restarting}
-          title="以新的轮次重新发起同一请求（服务端暂无「重置单个等待步」端点）"
-          onClick={() => void restart()}
-          className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/40"
-        >
-          {restarting ? '重新开始中…' : '重新开始此步'}
-        </button>
+        {failedStep !== null ? (
+          <>
+            <button
+              type="button"
+              data-testid="awaiting-retry-step"
+              disabled={retry.isPending || !gate.enabled}
+              title={gate.reason ?? '只重跑该失败步骤，不重发整轮'}
+              onClick={retryStep}
+              className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/40"
+            >
+              {retry.isPending ? '重试中…' : '重试此步'}
+            </button>
+            <span data-testid="awaiting-retry-hint" className="text-[10px] text-ink-3">
+              只重跑该步（不重发整轮）
+            </span>
+          </>
+        ) : (
+          <button
+            type="button"
+            data-testid="awaiting-restart"
+            disabled={restarting}
+            title="本轮没有可定位的失败步骤，只能整轮重发上一条用户消息（会重跑全部步骤）"
+            onClick={() => void restartRound()}
+            className="rounded border border-red-300 px-2 py-0.5 text-xs font-medium text-red-600 hover:bg-red-100 disabled:opacity-40 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/40"
+          >
+            {restarting ? '重新开始中…' : '重发整轮'}
+          </button>
+        )}
       </div>
       {error !== null && (
         <p
