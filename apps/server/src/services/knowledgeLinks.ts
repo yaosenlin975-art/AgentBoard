@@ -16,6 +16,9 @@
  */
 import { createHash } from 'node:crypto';
 import type { Db } from '../db/connection.js';
+// STORE-4c：跨库目标解析要知道中心库（工作区页双链可解析到中心 common 页）；
+// 未绑定句柄按「自身即中心」回退（单测/中心库直连路径行为不变）。entityLocator 无反向依赖，不成环。
+import { centerLocatorDb } from '../db/repos/entityLocator.js';
 
 export const MAX_TARGET_CHARS = 200;
 export const LINK_EDGE_WEIGHT = 5;
@@ -104,13 +107,26 @@ export function parseKnowledgeLinks(body: string, selfSlug: string): ParsedLink[
 const linkId = (pageId: string, revision: number, slugNorm: string): string =>
   createHash('sha256').update(`${pageId}\u0000${revision}\u0000${slugNorm}`).digest('hex').slice(0, 32);
 
-/** 用给定 revision 的正文重建该页的 link 行（先删同 revision 再插，幂等） */
-export function syncPageLinks(db: Db, page: { id: string; slug: string; body_md: string; revision: number; scope: 'workspace' | 'common'; workspace_id: string | null }): number {
+/**
+ * 用给定 revision 的正文重建该页的 link 行（先删同 revision 再插，幂等）。
+ *
+ * STORE-4c：目标解析分两跳——先解析源页本库（common 页对 common；workspace 页对同工作区），
+ * 本库未命中且源页是 workspace 页时再探中心库 common 页（跨库双链，`target_page_id` 存外库 id，
+ * 外键已松绑）。跨库探测读另一连接，失败（busy 等）降级为未解析，由 reparse 重试，不打断页面写入；
+ * 中心库句柄缺省取 `centerLocatorDb(db)`（routes.ts 装配时绑定），`options.centerDb` 显式覆盖
+ * （/reparse 对未走绑定的句柄 fan-out 时用）。
+ */
+export function syncPageLinks(db: Db, page: { id: string; slug: string; body_md: string; revision: number; scope: 'workspace' | 'common'; workspace_id: string | null }, options: { centerDb?: Db } = {}): number {
   const links = parseKnowledgeLinks(page.body_md, page.slug);
   const remove = db.prepare('DELETE FROM knowledge_link WHERE source_page_id=? AND revision=?');
   const resolve = db.prepare(page.scope === 'common'
     ? "SELECT id FROM knowledge_page WHERE scope='common' AND slug=? AND status<>'deleted'"
     : "SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id=? AND slug=? AND status<>'deleted'");
+  const crossDb = options.centerDb ?? centerLocatorDb(db);
+  // 跨库目标只对 workspace 源页开放（common 页不指工作区页：无法定位到具体工作区）；自库直连时探测等于本库，无额外开销
+  const crossResolve = page.scope === 'workspace' && crossDb !== db
+    ? crossDb.prepare("SELECT id FROM knowledge_page WHERE scope='common' AND slug=? AND status<>'deleted'")
+    : null;
   const insert = db.prepare(`INSERT INTO knowledge_link
     (id, source_page_id, revision, target_slug_norm, raw_target, alias, heading, target_page_id, resolved, weight, created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
@@ -118,8 +134,24 @@ export function syncPageLinks(db: Db, page: { id: string; slug: string; body_md:
   remove.run(page.id, page.revision);
   for (const link of links) {
     const resolved = (page.scope === 'common' ? resolve.get(link.target_slug_norm) : resolve.get(page.workspace_id, link.target_slug_norm)) as { id: string } | undefined;
-    insert.run(linkId(page.id, page.revision, link.target_slug_norm), page.id, page.revision, link.target_slug_norm,
-      link.raw_target, link.alias, link.heading, resolved?.id ?? null, resolved ? 1 : 0, link.weight, now);
+    let targetId: string | null = resolved?.id ?? null;
+    if (targetId === null && crossResolve !== null) {
+      try {
+        const cross = crossResolve.get(link.target_slug_norm) as { id: string } | undefined;
+        targetId = cross?.id ?? null;
+      } catch {
+        targetId = null; // 跨库探测失败降级为未解析（reparse 可重试），不打断页面写入
+      }
+    }
+    try {
+      insert.run(linkId(page.id, page.revision, link.target_slug_norm), page.id, page.revision, link.target_slug_norm,
+        link.raw_target, link.alias, link.heading, targetId, targetId === null ? 0 : 1, link.weight, now);
+    } catch (error) {
+      // 老结构库（target 外键未松绑）存跨库 id 会被拒：降级为未解析行，结构重建后 reparse 补齐
+      if (targetId === null) throw error;
+      insert.run(linkId(page.id, page.revision, link.target_slug_norm), page.id, page.revision, link.target_slug_norm,
+        link.raw_target, link.alias, link.heading, null, 0, link.weight, now);
+    }
   }
   return links.length;
 }
@@ -130,6 +162,8 @@ export interface BacklinkRow {
   title: string;
   alias: string | null;
   heading: string | null;
+  /** STORE-4c：跨库合并的排序键（响应新增字段，旧客户端忽略） */
+  created_at: number;
 }
 
 /** 反链：指向该页的（当前 revision 的）链接；排序键固定 (created_at, id) 保证翻页稳定 */
@@ -137,7 +171,7 @@ export function listBacklinks(db: Db, pageId: string, options: { limit: number; 
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM knowledge_link l
     JOIN knowledge_page p ON p.id = l.source_page_id AND p.revision = l.revision
     WHERE l.target_page_id=? AND l.resolved=1 AND p.status<>'deleted'`).get(pageId) as { n: number }).n;
-  const items = db.prepare(`SELECT p.id AS page_id, p.slug, p.title, l.alias, l.heading
+  const items = db.prepare(`SELECT p.id AS page_id, p.slug, p.title, l.alias, l.heading, l.created_at
     FROM knowledge_link l
     JOIN knowledge_page p ON p.id = l.source_page_id AND p.revision = l.revision
     WHERE l.target_page_id=? AND l.resolved=1 AND p.status<>'deleted'
@@ -199,9 +233,12 @@ export function countOutgoingLinks(db: Db, pageId: string): number {
 /**
  * 存量回填：按当前 revision 重新解析所有未被删除的页面。
  * 幂等（按 (page, revision) 先删后写），分批提交，可重复执行。
+ * `options.centerDb`：STORE-4c 跨库目标解析用——对工作区库回填时显式传中心库
+ * （fan-out 句柄可能未经 centerLocatorDb 绑定），中心库回填不用传。
  */
-export function reparseAllPages(db: Db, options: { batchSize?: number } = {}): { pages: number; links: number; duration_ms: number } {
+export function reparseAllPages(db: Db, options: { batchSize?: number; centerDb?: Db } = {}): { pages: number; links: number; duration_ms: number } {
   const batchSize = options.batchSize ?? 200;
+  const centerDb = options.centerDb;
   const started = Date.now();
   let pages = 0;
   let links = 0;
@@ -213,7 +250,7 @@ export function reparseAllPages(db: Db, options: { batchSize?: number } = {}): {
       }>;
     if (rows.length === 0) break;
     db.transaction(() => {
-      for (const row of rows) links += syncPageLinks(db, row);
+      for (const row of rows) links += centerDb === undefined ? syncPageLinks(db, row) : syncPageLinks(db, row, { centerDb });
     })();
     pages += rows.length;
     cursor = rows[rows.length - 1]!.id;

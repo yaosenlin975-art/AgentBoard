@@ -90,16 +90,25 @@ export function findKnowledgePageOwner(db: Db, pageId: string): { scope: 'common
 export function resolveKnowledgeRef(
   db: Db,
   input: { ref: string; scope: ResolveScope },
+  options: { workspaceDb?: Db } = {},
 ): KnowledgeResolveResult {
   const ref = input.ref.trim();
   if (ref === '') throw new ApiError(400, 'VALIDATION_ERROR', 'ref 不能为空');
+  // STORE-4c：both 范围的两库解析——common 侧查中心库（db），workspace 侧查工作区库；
+  // 未提供工作区库（旧装配/单测）保持单库 both 过滤的行为。工作区库与中心库同一句柄时按单库处理（防候选重复）。
+  const wsDb = input.scope.scope === 'both' && options.workspaceDb !== undefined && options.workspaceDb !== db
+    ? options.workspaceDb
+    : null;
+  const workspaceFilter = input.scope.scope === 'both'
+    ? ({ scope: 'workspace', workspace_id: input.scope.workspace_id } as const)
+    : null;
 
   // ① 完整 id：直接取（含已删除，用于区分 410 与 404）
   if (UUID_RE.test(ref)) {
     // both 范围：先按 common 找，再按该工作区找（同一 id 只会在一个范围里）
     const page = input.scope.scope === 'both'
       ? (getKnowledgePage(db, ref, { scope: 'common' }, { includeDeleted: true })
-        ?? getKnowledgePage(db, ref, { scope: 'workspace', workspace_id: input.scope.workspace_id }, { includeDeleted: true }))
+        ?? getKnowledgePage(wsDb ?? db, ref, workspaceFilter!, { includeDeleted: true }))
       : getKnowledgePage(db, ref, input.scope, { includeDeleted: true });
     if (page === null) {
       // 页存在但不在请求范围：先按「其它 scope 里是否存在」判断，存在则 403（不回显标题）
@@ -121,19 +130,23 @@ export function resolveKnowledgeRef(
 
   // ② 短 ID：KNOWLEDGE_SHORT_ID_LEN 位起的前缀，唯一才算命中，多命中 → 歧义（长度常量单源）
   if (new RegExp(`^[0-9a-f]{${KNOWLEDGE_SHORT_ID_LEN},}$`, 'i').test(ref)) {
-    const rows = listKnowledgePageRowsByPrefix(db, ref, input.scope);
+    const rows = wsDb === null
+      ? listKnowledgePageRowsByPrefix(db, ref, input.scope)
+      : [...listKnowledgePageRowsByPrefix(db, ref, { scope: 'common' }), ...listKnowledgePageRowsByPrefix(wsDb, ref, workspaceFilter!)];
     const live = rows.filter((row: { status: string }) => row.status !== 'deleted');
     if (live.length > 1) return { state: 'ambiguous', message: `id 前缀 ${ref} 命中 ${live.length} 页，请用完整 id`, candidates: live.map((row: { id: string }) => row.id) };
-    if (live.length === 1) return resolveKnowledgeRef(db, { ref: live[0]!.id, scope: input.scope });
+    if (live.length === 1) return resolveKnowledgeRef(db, { ref: live[0]!.id, scope: input.scope }, options);
     if (rows.length === 1) return { state: 'deleted', message: '知识页已删除（可查看历史版本）' };
     return { state: 'not_found', message: '知识页不存在' };
   }
 
   // ③ slug：只接受「唯一精确命中」；多条 → 歧义（不猜第一条）
-  const ids = findKnowledgePageIdsBySlug(db, ref, input.scope);
+  const ids = wsDb === null
+    ? findKnowledgePageIdsBySlug(db, ref, input.scope)
+    : [...findKnowledgePageIdsBySlug(db, ref, { scope: 'common' }), ...findKnowledgePageIdsBySlug(wsDb, ref, workspaceFilter!)];
   if (ids.length === 0) return { state: 'not_found', message: '知识页不存在' };
   if (ids.length > 1) return { state: 'ambiguous', message: `slug「${ref}」命中 ${ids.length} 页（可能有 common 与 workspace 同名），请改用完整 id`, candidates: ids };
-  return resolveKnowledgeRef(db, { ref: ids[0]!, scope: input.scope });
+  return resolveKnowledgeRef(db, { ref: ids[0]!, scope: input.scope }, options);
 }
 
 /** 跨 scope 探测：用于 403（存在但不属于你）与 404 的区分；返回值**不含标题** */

@@ -1,5 +1,5 @@
 import express, { Router } from 'express';
-import { knowledgeScopeWhere, type KnowledgeScopeFilter } from '../db/repos/knowledgeScope.js';
+import type { KnowledgeScopeFilter } from '../db/repos/knowledgeScope.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
 import { zhZodIssue } from './zod.js';
 import { z } from 'zod';
@@ -9,9 +9,10 @@ import { ApiError, ValidationError } from '../errors.js';
 import { createKnowledgePage, findKnowledgePagesBySource, getKnowledgePage, getKnowledgeRevision, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
 import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph } from '../services/knowledgeGraph.js';
 import {getKnowledgePageLinkStats, listBacklinks, listResolvedLinks, reparseAllPages} from '../services/knowledgeLinks.js';
-import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
+import { listKnowledgePageRows, listKnowledgePagesAcrossDbs, searchKnowledge, searchKnowledgeAcrossDbs } from '../db/repos/knowledgeSearch.js';
+import { migrateKnowledgeLinks } from '../db/migrations/knowledgeLinks.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
-import { createKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
+import { createScopedKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
 import { importKnowledgePages } from '../services/knowledgeImport.js';
 import { findKnowledgePageOwner, knowledgeLinkFields, resolveKnowledgeRef } from '../services/knowledgeResolve.js';
 import { parseMultipart } from '../services/multipart.js';
@@ -71,18 +72,41 @@ const knowledgeFileOpenSchema = z.object({
 }).strict();
 
 export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = {}): Router {
-  /** KB-IMG-1：图片存储（目录 = <db 目录>/attachments/knowledge）；STORE-4a 仍绑中心库，按 page.scope 选目录属 4c/4d */
-  const images = options.imageStore ?? createKnowledgeImageStore({ db });
+  /** KB-IMG-1：图片存储；STORE-4c：默认装配按 page.scope 路由的 store（common→中心目录、workspace→工作区目录），测试注入单一 store 时行为不变 */
+  const images = options.imageStore ?? createScopedKnowledgeImageStore({
+    center: db,
+    getWorkspaceDb: options.getWorkspaceDb,
+    listWorkspaceDbs: options.listWorkspaceDbs,
+  });
 
   // ---- STORE-4a：按请求取库 ----
   /**
-   * scope → 库：common 与 both 走中心库（both 的跨库两路合并属 STORE-4c，本卡不改其语义）；
-   * workspace 走该工作区的解析库（未下沉区由 getWorkspaceDb 实现回中心库）。
-   * 未装配 getWorkspaceDb（旧测试/最小装配）一律中心库——行为与切库前一致。
+   * scope → 库：common 走中心库；workspace 走该工作区的解析库（未下沉区由 getWorkspaceDb 实现回中心库）；
+   * both 的两路合并见各端点（未装配 getWorkspaceDb 时整体回中心库单库查询——旧测试/最小装配行为不变）。
    */
   const dbForScope = (scope: 'common' | 'workspace' | 'both', workspaceId: string | null | undefined): Db => {
-    if (scope !== 'workspace' || options.getWorkspaceDb === undefined || !workspaceId) return db;
-    return options.getWorkspaceDb(workspaceId);
+    if (scope === 'workspace') {
+      const wsDb = workspaceDbFor(workspaceId);
+      if (wsDb !== null) return wsDb;
+    }
+    return db;
+  };
+  /**
+   * STORE-4c：工作区库句柄补一次 knowledge_link 外键松绑迁移（幂等）。
+   * 升级前已 localize 的工作区库不跑 initSchema（openDb 不建结构），旧 target 外键会挡住跨库
+   * 目标写入；首个使用该句柄的知识请求处补齐，句柄缓存期间只跑一次。
+   */
+  const fkEnsured = new WeakSet<Db>();
+  const ensureLinkFk = (target: Db): Db => {
+    if (target !== db && !fkEnsured.has(target)) {
+      fkEnsured.add(target);
+      try { migrateKnowledgeLinks(target); } catch { /* 结构保障失败不阻塞读；跨库写入按未解析降级，reparse 补齐 */ }
+    }
+    return target;
+  };
+  const workspaceDbFor = (workspaceId: string | null | undefined): Db | null => {
+    if (options.getWorkspaceDb === undefined || !workspaceId) return null;
+    return ensureLinkFk(options.getWorkspaceDb(workspaceId));
   };
   /**
    * 跨区 owner 探测：页不在当前范围时判断「它到底在哪」——中心库（common + 未下沉区 workspace 页）
@@ -115,11 +139,22 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   router.get('/search', (req, res) => {
     const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }).strict(), req.query);
     // KB-PAGE-2：每条结果附 link（服务端产出，前端/CLI 不再拼串）；STORE-4a：workspace scope 按请求取库
-    const rdb = dbForScope(input.scope, input.workspace_id);
-    res.json(searchKnowledge(rdb, { ...input, query: input.q }).map((row) => ({
+    const withLink = (row: ReturnType<typeof searchKnowledge>[number]) => ({
       ...row,
       ...knowledgeLinkFields({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope, workspace_id: row.workspace_id, revision: row.revision }),
-    })));
+    });
+    // STORE-4c：both 且装配了取库 → 中心 common + 工作区库两路合并，统一 (updated_at desc, id asc) 排序切片；
+    // 命中数超过 limit 时 X-Knowledge-Truncated:true（合并后无精确总数，不报假总数；响应体仍是数组，客户端兼容）
+    if (input.scope === 'both' && options.getWorkspaceDb !== undefined) {
+      const wsDb = workspaceDbFor(input.workspace_id);
+      if (wsDb === null) throw new ValidationError('both 必须提供 workspace_id');
+      const { items, truncated } = searchKnowledgeAcrossDbs(db, wsDb, { ...input, query: input.q });
+      res.set('X-Knowledge-Truncated', truncated ? 'true' : 'false');
+      res.json(items.map(withLink));
+      return;
+    }
+    const rdb = dbForScope(input.scope, input.workspace_id);
+    res.json(searchKnowledge(rdb, { ...input, query: input.q }).map(withLink));
   });
   /**
    * KB-GRAPH 图聚合（只读）。
@@ -139,16 +174,42 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const allowedKinds = ['link', 'source', 'keyword'] as const;
     if (kinds.length === 0 || kinds.some(kind => !allowedKinds.includes(kind as typeof allowedKinds[number]))) throw new ValidationError('edge_kinds 仅支持 link,source,keyword');
     const pageLimit = maxGraphPages;
-    const rdb = dbForScope(input.scope, input.workspace_id);
-    const { rows, pagesTruncated, pageTotal } = listKnowledgeGraphRows(rdb, { scope: input.scope, workspace_id: input.workspace_id ?? null }, pageLimit);
+    const uniqueKinds = [...new Set(kinds)] as Array<'link' | 'source' | 'keyword'>;
+    let graphRows: ReturnType<typeof listKnowledgeGraphRows>['rows'];
+    let pagesTruncated: boolean;
+    let pageTotal: number;
+    let links: Array<{ source: string; target: string; weight: number }>;
+    if (input.scope === 'both' && options.getWorkspaceDb !== undefined) {
+      // STORE-4c：both 两路加载——中心 common + 工作区库该工作区（未下沉区两路同库，scope 过滤不相交不会重复）
+      const wsDb = workspaceDbFor(input.workspace_id)!;
+      const centerSide = listKnowledgeGraphRows(db, { scope: 'common' }, pageLimit);
+      const wsSide = listKnowledgeGraphRows(wsDb, { scope: 'workspace', workspace_id: input.workspace_id }, pageLimit);
+      const merged = [...centerSide.rows, ...wsSide.rows];
+      pageTotal = centerSide.pageTotal + wsSide.pageTotal;
+      pagesTruncated = centerSide.pagesTruncated || wsSide.pagesTruncated || merged.length > pageLimit;
+      graphRows = merged
+        .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+        .filter((row, index, all) => index === 0 || all[index - 1]!.id !== row.id)
+        .slice(0, pageLimit);
+      // 双链行与源页同库：两路各查各的，跨库目标（resolved=1 存外库 id）自然并入
+      links = uniqueKinds.includes('link')
+        ? [...listResolvedLinks(db, centerSide.rows.map(row => row.id)), ...listResolvedLinks(wsDb, wsSide.rows.map(row => row.id))]
+        : [];
+    } else {
+      const rdb = dbForScope(input.scope, input.workspace_id);
+      const single = listKnowledgeGraphRows(rdb, { scope: input.scope, workspace_id: input.workspace_id ?? null }, pageLimit);
+      graphRows = single.rows;
+      pagesTruncated = single.pagesTruncated;
+      pageTotal = single.pageTotal;
+      // V2-4：默认包含 link 时注入显式双链边（同对节点由 buildKnowledgeGraph 按 link > source > keyword 合并）
+      links = uniqueKinds.includes('link') ? listResolvedLinks(rdb, graphRows.map(row => row.id)) : [];
+    }
+    const rows = graphRows;
     if (pagesTruncated) {
       console.warn('[knowledge-graph] 页面集合被上限截断：图只覆盖已加载页', {
         scope: input.scope, workspace_id: input.workspace_id ?? null, loaded: rows.length, limit: pageLimit,
       });
     }
-    const uniqueKinds = [...new Set(kinds)] as Array<'link' | 'source' | 'keyword'>;
-    // V2-4：默认包含 link 时注入显式双链边（同对节点由 buildKnowledgeGraph 按 link > source > keyword 合并）
-    const links = uniqueKinds.includes('link') ? listResolvedLinks(rdb, rows.map(row => row.id)) : [];
     res.json(buildKnowledgeGraph(rows, {
       pagesTruncated,
       pageTotal,
@@ -163,17 +224,18 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }).strict(), req.query);
     if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
     else if (!input.workspace_id) throw new ValidationError('both 必须提供 workspace_id');
-    const scopeSql = knowledgeScopeWhere(input as KnowledgeScopeFilter);
+    // STORE-4c：both 且装配了取库 → 中心 common + 工作区库两路合并（窗口法精确 next_offset，不报假总数）
+    if (input.scope === 'both' && options.getWorkspaceDb !== undefined) {
+      const wsDb = workspaceDbFor(input.workspace_id)!;
+      const { items, next_offset } = listKnowledgePagesAcrossDbs(db, wsDb, { ...input, include_expired: input.include_expired === 'true' });
+      res.json({
+        items: items.map(row => ({ ...row, ...knowledgeLinkFields(row) })),
+        next_offset,
+      });
+      return;
+    }
     const rdb = dbForScope(input.scope, input.workspace_id);
-    const params: Record<string, number | string> = { limit: input.limit + 1, offset: input.offset };
-    if (input.scope !== 'common') params.workspace = input.workspace_id!;
-    if (input.status !== 'all') params.status = input.status;
-    if (input.include_expired === 'false') params.now = Date.now();
-    const rows = rdb.prepare(`SELECT id,scope,workspace_id,slug,title,status,revision,expires_at,created_by,updated_by,created_at,updated_at,category,landed,domain FROM knowledge_page WHERE ${scopeSql} ${input.status !== 'all' ? 'AND status=@status' : ''} ${input.include_expired === 'false' ? 'AND (expires_at IS NULL OR expires_at>@now)' : ''} ORDER BY updated_at DESC,id LIMIT @limit OFFSET @offset`).all(params) as Array<{
-      id: string; scope: 'common' | 'workspace'; workspace_id: string | null; slug: string; title: string;
-      status: string; revision: number; expires_at: number | null; created_by: string; updated_by: string;
-      created_at: number; updated_at: number; category: string; landed: string | null; domain: string | null;
-    }>;
+    const rows = listKnowledgePageRows(rdb, { ...input, include_expired: input.include_expired === 'true', limit: input.limit + 1 });
     // KB-PAGE-2b（A7）：列表项同样带 link，CLI/前端不再自己拼串
     res.json({
       items: rows.slice(0, input.limit).map(row => ({ ...row, ...knowledgeLinkFields(row) })),
@@ -221,7 +283,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
         ? ({ scope: 'workspace', workspace_id: workspaceId! } as const)
         : ({ scope: 'both', workspace_id: workspaceId! } as const);
 
-    const result = resolveKnowledgeRef(dbForScope(scope.scope, workspaceId), { ref, scope });
+    // STORE-4c：both 两库解析——common 侧查中心库，workspace 侧查工作区库（跨库同 slug 歧义照常 409）
+    const result = resolveKnowledgeRef(dbForScope(scope.scope, workspaceId), { ref, scope },
+      scope.scope === 'both' ? { workspaceDb: workspaceDbFor(workspaceId) ?? db } : {});
     if (result.state === 'resolved') { res.json(result); return; }
     if (result.state === 'deleted') throw new ApiError(410, KnowledgeErrorCode.DELETED, result.message);
     if (result.state === 'ambiguous') {
@@ -290,11 +354,26 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     });
   });
 
-  /** V2-4 反链：指向该页的当前 revision 链接；排序键固定 (created_at, id) 保证翻页稳定 */
+  /**
+   * V2-4 反链：指向该页的当前 revision 链接；排序键固定 (created_at, id) 保证翻页稳定。
+   * STORE-4c：scope 支持 both——中心库 + 工作区库两路合并（工作区页双链到 common 页的反链行
+   * 存在源页所在库，跨库目标靠 target_page_id 精确匹配）；page_total 两路精确求和，
+   * 窗口法取每路前 offset+limit+1 条后合并排序切片，翻页与单库语义一致。
+   */
   router.get('/pages/:id/backlinks', (req, res) => {
-    const scope = scopeOf(req.query);
-    const rdb = dbForScope(scope.scope, scope.workspace_id);
-    const page = getKnowledgePage(rdb, req.params.id!, scope);
+    const scope = parse(z.object({
+      scope: z.enum(['workspace', 'common', 'both']),
+      workspace_id: z.string().min(1).optional(),
+    }), req.query);
+    const workspaceId = scope.scope === 'common' ? null : scope.workspace_id;
+    if (scope.scope !== 'common' && !workspaceId) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
+    const wsDb = workspaceDbFor(workspaceId);
+    const wsLookup = () => (wsDb !== null ? getKnowledgePage(wsDb, req.params.id!, { scope: 'workspace', workspace_id: workspaceId! }) : null);
+    const page = scope.scope === 'common'
+      ? getKnowledgePage(db, req.params.id!, { scope: 'common' })
+      : scope.scope === 'workspace'
+        ? wsLookup()
+        : (getKnowledgePage(db, req.params.id!, { scope: 'common' }) ?? wsLookup());
     if (!page) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
     const input = parse(z.object({
       scope: z.enum(['common', 'workspace', 'both']).optional(),
@@ -302,13 +381,24 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
       limit: integerQuery(20, 100),
     }).strict(), req.query);
+    if (scope.scope === 'both' && wsDb !== null && wsDb !== db) {
+      const window = input.offset + input.limit + 1;
+      const centerSide = listBacklinks(db, page.id, { limit: window, offset: 0 });
+      const wsSide = listBacklinks(wsDb, page.id, { limit: window, offset: 0 });
+      const merged = [...centerSide.items, ...wsSide.items]
+        .sort((left, right) => (left.created_at - right.created_at) || (left.page_id < right.page_id ? -1 : left.page_id > right.page_id ? 1 : 0))
+        .slice(input.offset, input.offset + input.limit);
+      res.json({ items: merged, page_total: centerSide.page_total + wsSide.page_total });
+      return;
+    }
+    const rdb = dbForScope(scope.scope === 'both' ? 'workspace' : scope.scope, scope.workspace_id);
     res.json(listBacklinks(rdb, page.id, { limit: input.limit, offset: input.offset }));
   });
 
-  /** V2-4 存量回填：显式触发（不做启动扫描），可重跑。STORE-4a：中心库 + 全部已下沉区各自回填，计数求和 */
+  /** V2-4 存量回填：显式触发（不做启动扫描），可重跑。STORE-4a：中心库 + 全部已下沉区各自回填，计数求和。STORE-4c：工作区库回填显式带中心库（跨库目标解析）+ 补外键松绑 */
   router.post('/reparse', (req, res) => {
     const body = parse(z.object({ batch_size: z.number().int().min(1).max(2000).optional() }).strict(), req.body ?? {});
-    const run = (rdb: Db) => reparseAllPages(rdb, { batchSize: body.batch_size });
+    const run = (rdb: Db) => reparseAllPages(ensureLinkFk(rdb), { batchSize: body.batch_size, ...(rdb !== db ? { centerDb: db } : {}) });
     const center = run(db);
     const perWorkspaceDb = options.listWorkspaceDbs?.() ?? [];
     if (perWorkspaceDb.length === 0) { res.json(center); return; }
@@ -378,6 +468,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       declared_mime: file.contentType,
       original_bytes: Number.isSafeInteger(originalBytes) && originalBytes > 0 ? originalBytes : null,
       created_by: 'user',
+      // STORE-4c：按页所在库选目录（common→中心、workspace→工作区库目录；未下沉区随数据回中心）
+      scope: page.scope,
+      workspace_id: page.workspace_id,
     });
     res.status(201).json(saved);
   });

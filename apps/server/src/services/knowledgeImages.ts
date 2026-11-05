@@ -69,6 +69,9 @@ export interface SaveKnowledgeImageInput {
   /** 客户端压缩前的原始大小（可空） */
   original_bytes?: number | null;
   created_by: string;
+  /** STORE-4c：scoped 路由 store 按 page.scope 选目录（基础 store 忽略这两个字段） */
+  scope?: 'common' | 'workspace';
+  workspace_id?: string | null;
 }
 
 export interface SaveKnowledgeImageResult {
@@ -186,6 +189,80 @@ export function createKnowledgeImageStore(deps: KnowledgeImageStoreDeps): Knowle
         }
       };
       await walk(knowledgeImagesSubdir(root));
+      return removed;
+    },
+  };
+}
+
+/**
+ * STORE-4c：按 page.scope 路由的知识图片 store——common 页图片落中心库目录，
+ * workspace 页图片随工作区库目录（`dirname(工作区db)/attachments/knowledge`）。
+ * 底层 store 按库句柄懒创建缓存（键 = db 文件路径；未下沉区 getWorkspaceDb 回中心库时自然复用同一 store）。
+ * locate/remove 需要跨库找行：先中心、再 fan-out 已下沉区（附件 id 是 UUID，行在哪个库只能探测）；
+ * removePageFiles/sweepOrphans 覆盖全部已知库（目录缺失按无事发生）。
+ * 生产装配：`createScopedKnowledgeImageStore({ center, getWorkspaceDb, listWorkspaceDbs })`；
+ * 测试注入单一 `options.imageStore` 时不经本函数，行为不变。
+ */
+export interface ScopedKnowledgeImageStoreDeps {
+  center: Db;
+  getWorkspaceDb?: (workspaceId: string) => Db;
+  listWorkspaceDbs?: () => Db[];
+}
+
+export function createScopedKnowledgeImageStore(deps: ScopedKnowledgeImageStoreDeps): KnowledgeImageStore {
+  const storeByPath = new Map<string, KnowledgeImageStore>();
+  const storeFor = (db: Db): KnowledgeImageStore => {
+    const key = db.name ?? '';
+    const cached = storeByPath.get(key);
+    if (cached !== undefined) return cached;
+    const created = createKnowledgeImageStore({ db });
+    storeByPath.set(key, created);
+    return created;
+  };
+  const centerStore = storeFor(deps.center);
+  const allStores = (): KnowledgeImageStore[] => {
+    const stores = [centerStore];
+    for (const wsDb of deps.listWorkspaceDbs?.() ?? []) {
+      const store = storeFor(wsDb);
+      if (!stores.includes(store)) stores.push(store);
+    }
+    return stores;
+  };
+  const locate = (attachmentId: string): { row: KnowledgeAttachmentRow; path: string } | null => {
+    const inCenter = centerStore.locate(attachmentId);
+    if (inCenter !== null) return inCenter;
+    for (const wsDb of deps.listWorkspaceDbs?.() ?? []) {
+      const found = storeFor(wsDb).locate(attachmentId);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  return {
+    root: centerStore.root,
+    async save(input) {
+      // 按页所在库选目录：workspace 页 → 工作区库（未下沉区由 getWorkspaceDb 回中心库，目录随数据落位）
+      const db = input.scope === 'workspace' && input.workspace_id && deps.getWorkspaceDb !== undefined
+        ? deps.getWorkspaceDb(input.workspace_id)
+        : deps.center;
+      return storeFor(db).save(input);
+    },
+    locate,
+    async remove(attachmentId) {
+      // 行所在的库就是 owner（locate 先中心后工作区已保证找得到）；再逐库定位一次拿到 owner store
+      for (const store of allStores()) {
+        if (store.locate(attachmentId) !== null) {
+          await store.remove(attachmentId);
+          return;
+        }
+      }
+      throw new NotFoundError('图片不存在');
+    },
+    async removePageFiles(pageId) {
+      for (const store of allStores()) await store.removePageFiles(pageId);
+    },
+    async sweepOrphans() {
+      let removed = 0;
+      for (const store of allStores()) removed += await store.sweepOrphans();
       return removed;
     },
   };
