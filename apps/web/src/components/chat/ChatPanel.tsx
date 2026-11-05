@@ -25,6 +25,7 @@ import { clearStream, useStream } from '../../state/streamingStore';
 // 未读计数全局收集器：模块加载即订阅 wsBus（本组件未挂载期间同样计数，markUnread 不在此处，防双计）
 import '../../state/unreadCollector';
 import { Composer } from './Composer';
+import { RenameSessionDialog } from './RenameSessionDialog';
 import { MessageList } from './MessageList';
 import { ModelSelector } from './ModelSelector';
 
@@ -51,6 +52,8 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [modelOpenSignal, setModelOpenSignal] = useState(0);
   // AUDIT-3：头部「修改」收进 ⋯ 菜单；点菜单外任意处收起
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  /** 头部改名入口（与列表行共用 RenameSessionDialog） */
+  const [renameOpen, setRenameOpen] = useState(false);
   useEffect(() => {
     if (!headerMenuOpen) return;
     const close = (): void => setHeaderMenuOpen(false);
@@ -303,11 +306,14 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     );
   }
 
-  // 头部标题口径（设计 §5）：任务会话取 issue 标题（与左列表同源缓存），自由会话显示 cli·model
+  // 头部标题口径（设计 §5）：会话级自定义标题优先；否则任务会话取 issue 标题，自由会话显示 cli·model
+  const customTitle = (session.title ?? '').trim();
   const sessionTitle =
-    session.issue_id !== null
-      ? (linkedIssue?.title ?? `#${session.issue_id.slice(0, 8)}`)
-      : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
+    customTitle !== ''
+      ? customTitle
+      : session.issue_id !== null
+        ? (linkedIssue?.title ?? `#${session.issue_id.slice(0, 8)}`)
+        : `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
   const running = session.status === '运行中';
   // 标记待验收显隐：issue 关联非空 + 任务占用中 + 会话未结束/失败（无 issue 数据时 linkedIssue 为空 → 不渲染）
   const issueClaimed = linkedIssue?.claimed_by != null;
@@ -389,6 +395,18 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
                 >
                   修改模型
                 </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-testid="rename-session-btn"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    setRenameOpen(true);
+                  }}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink"
+                >
+                  修改名称
+                </button>
               </div>
             )}
           </span>
@@ -453,6 +471,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
       )}
 
       <Composer disabled={false} running={running} queuedCount={queuedCount} workspaceId={workspaceId} onSend={handleSend} />
+      {renameOpen && <RenameSessionDialog session={session} onClose={() => setRenameOpen(false)} />}
     </div>
   );
 }

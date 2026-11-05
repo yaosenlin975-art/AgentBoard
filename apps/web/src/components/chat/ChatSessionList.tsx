@@ -21,6 +21,7 @@ import { usePanelStore } from '../../state/panelStore';
 import { clearStream } from '../../state/streamingStore';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { RenameSessionDialog } from './RenameSessionDialog';
 
 /** 「无任务会话」分组键（不与工作空间 id 冲突） */
 const FREE_GROUP = 'free';
@@ -61,6 +62,8 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
   const removeSession = usePanelStore((s) => s.removeSession);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  /** 正在改名的会话（列表行入口；聊天头部「⋯」菜单另有同名入口，共用 RenameSessionDialog） */
+  const [renaming, setRenaming] = useState<Session | null>(null);
 
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
@@ -97,6 +100,9 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
 
   // AUDIT-3（I-10）：标题去重——同名会话追加相对时间，空标题（issue 标题未载入/为空）退化为任务号
   const baseTitleOf = (session: Session): string => {
+    // 会话级自定义标题优先（null/空白视为未改名，继续走派生规则）
+    const custom = (session.title ?? '').trim();
+    if (custom !== '') return custom;
     if (session.issue_id === null) {
       return `${session.cli}${session.model !== null ? ` · ${session.model}` : ''}`;
     }
@@ -209,6 +215,7 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
                       active={active}
                       unreadCount={count}
                       onSelect={() => handleSelect(session)}
+                      onRename={() => setRenaming(session)}
                       onDelete={() => handleDelete(session)}
                     />
                   );
@@ -218,6 +225,13 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
           ))
         )}
       </div>
+      {/* 会话改名（列表行入口） */}
+      {renaming !== null && (
+        <RenameSessionDialog
+          session={renaming}
+          onClose={() => setRenaming(null)}
+        />
+      )}
     </div>
   );
 }
@@ -229,6 +243,7 @@ function SessionRow({
   active,
   unreadCount,
   onSelect,
+  onRename,
   onDelete,
 }: {
   session: Session;
@@ -238,6 +253,7 @@ function SessionRow({
   active: boolean;
   unreadCount: number;
   onSelect: () => void;
+  onRename: () => void;
   onDelete: () => Promise<void>;
 }) {
   // 行内二次确认：confirming 时替换为「确认删除 / 取消」，避免误删；提交中禁用防重复
@@ -319,16 +335,29 @@ function SessionRow({
           </button>
         </span>
       ) : (
-        <button
-          type="button"
-          data-testid={`session-delete-${session.id}`}
-          aria-label="删除会话"
-          title="删除会话"
-          onClick={() => setConfirming(true)}
-          className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
-        >
-          ✕
-        </button>
+        <span className="flex shrink-0 items-center">
+          {/* 改名入口：与删除同一 hover 露出区 */}
+          <button
+            type="button"
+            data-testid={`session-rename-${session.id}`}
+            aria-label="修改会话名称"
+            title="修改会话名称"
+            onClick={onRename}
+            className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-accent focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            data-testid={`session-delete-${session.id}`}
+            aria-label="删除会话"
+            title="删除会话"
+            onClick={() => setConfirming(true)}
+            className="flex size-6 shrink-0 items-center justify-center rounded text-[11px] text-ink-3 opacity-0 hover:text-red-600 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:text-red-400"
+          >
+            ✕
+          </button>
+        </span>
       )}
     </li>
   );

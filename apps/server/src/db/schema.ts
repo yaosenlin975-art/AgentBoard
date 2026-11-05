@@ -21,6 +21,7 @@ import { migrateWorkspaceStatus } from './migrations/workspaceStatus.js';
 import { migrateDraftAudit } from './migrations/draftAudit.js';
 import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js';
 import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
+import { migrateSessionTitle } from './migrations/sessionTitle.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 
 /**
@@ -53,7 +54,7 @@ CREATE TABLE IF NOT EXISTS session (
   issue_id TEXT REFERENCES issue(id) ON DELETE SET NULL,
   cli TEXT NOT NULL, model TEXT, status TEXT NOT NULL DEFAULT '运行中'
     CHECK (status IN ('运行中','已结束','失败')),
-  adapter_session_id TEXT, created_at INTEGER NOT NULL);
+  adapter_session_id TEXT, created_at INTEGER NOT NULL, title TEXT);
 CREATE TABLE IF NOT EXISTS message (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('user','assistant','event','error')),
@@ -93,6 +94,8 @@ export function initSchema(db: Db): void {
   migrateWorkspaceDbMode(db);
   // AUDIT-SRV（F-04）：message 表的错误归类列（幂等加列；老行保持 NULL，读取时现算兜底）
   migrateSessionMessageSignals(db);
+  // 会话级标题（重命名）：幂等加列，不重建 session 表；NULL 保持既有派生标题
+  migrateSessionTitle(db);
   // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
   // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
   migrateClaimLease(db);

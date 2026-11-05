@@ -277,12 +277,25 @@ export const sendMessageSchema = z.object({
   .refine((value) => new Set(value.attachment_ids ?? []).size === (value.attachment_ids ?? []).length, { message: 'attachment_ids 不能重复' });
 
 /**
- * PATCH /api/sessions/:id：只改 model 字段（Task 14 聊天视图"修改模型，下一轮生效"）。
- * model 必填（字符串或 null 清空）；缺键 → 400。
+ * PATCH /api/sessions/:id：改 model（Task 14「修改模型，下一轮生效」）或会话级 title（重命名）。
+ * - 两者都缺 → 400；至少提供一个。
+ * - model：字符串或 null 清空。
+ * - title：1–50 字符（首尾空白 trim 后判空）；null 清空自定义标题、回到派生标题。
  */
-export const patchSessionSchema = z.object({
-  model: z.string().trim().min(1, 'model 不能为空').nullable(),
-});
+export const patchSessionSchema = z
+  .object({
+    model: z.string().trim().min(1, 'model 不能为空').nullable().optional(),
+    title: z
+      .string()
+      .trim()
+      .min(1, 'title 不能为空')
+      .max(50, 'title 不能超过 50 字')
+      .nullable()
+      .optional(),
+  })
+  .refine((value) => value.model !== undefined || value.title !== undefined, {
+    message: '至少提供 model 或 title',
+  });
 
 /**
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；

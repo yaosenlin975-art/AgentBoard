@@ -50,6 +50,8 @@ export type SessionPatch = Partial<{
   status: SessionStatus;
   adapter_session_id: string | null;
   model: string | null;
+  /** 会话级标题（重命名）；null = 清空自定义标题，回到派生规则 */
+  title: string | null;
 }>;
 
 export function updateSession(db: Db, id: string, patch: SessionPatch): Session {
@@ -66,6 +68,10 @@ export function updateSession(db: Db, id: string, patch: SessionPatch): Session 
   if (patch.model !== undefined) {
     sets.push('model = ?');
     params.push(patch.model);
+  }
+  if (patch.title !== undefined) {
+    sets.push('title = ?');
+    params.push(patch.title);
   }
   if (sets.length === 0) throw new NotFoundError('无可用更新字段');
   params.push(id);

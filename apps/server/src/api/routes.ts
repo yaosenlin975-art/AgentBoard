@@ -1191,11 +1191,15 @@ export function createRouter(deps: RouterDeps): Router {
     res.status(204).end();
   });
 
-  // Task 14：修改会话模型（只改 model 字段，下一轮生效——sessionManager.runTurn 起轮时读取 session.model）
+  // Task 14：修改会话模型（下一轮生效——sessionManager.runTurn 起轮时读取 session.model）
+  // 会话标题：同一端点接受 title（1–50 字，null 清空回到派生标题），与 model 可同时提交。
   router.patch('/sessions/:id', (req, res) => {
     const body = parseBody(patchSessionSchema, req.body);
     if (!getSession(db, req.params.id!)) throw new NotFoundError('会话不存在');
-    const session = updateSession(db, req.params.id!, { model: body.model });
+    const patch: { model?: string | null; title?: string | null } = {};
+    if (body.model !== undefined) patch.model = body.model;
+    if (body.title !== undefined) patch.title = body.title;
+    const session = updateSession(db, req.params.id!, patch);
     broadcast({ type: 'session.changed', session });
     res.json(session);
   });

@@ -180,6 +180,11 @@ export interface IssueComment { id: string; issue_id: string; author: CommentAut
 export interface Session {
   id: string; workspace_id: string; issue_id: string | null; cli: string; model: string | null;
   status: SessionStatus; adapter_session_id: string | null; created_at: number;
+  /**
+   * 会话级自定义标题（重命名）；未设置 / null = 未改名，展示时走派生规则（任务标题 / `cli · model`）。
+   * 可选是为了兼容尚未带该字段的旧快照与测试夹具，语义等价于 null。
+   */
+  title?: string | null;
   /** 运行时态（不入库）：sessions 接口返回时由服务端合并；WS session.changed 不携带 */
   queued_count?: number;
   waiting_slot?: boolean;
