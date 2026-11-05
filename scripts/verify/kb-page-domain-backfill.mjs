@@ -90,6 +90,25 @@ const RULES = [
   { domain: 'infra', id: 'I3', why: 'DSH 工具链问题（认证/codegraph/归档会话）', re: /^dsh-/ },
   { domain: 'infra', id: 'I4', why: 'MSI 打包通道与再发布', re: /msi 打包|msi-/i },
   { domain: 'infra', id: 'I5', why: 'P0 清缓存验证状态行（工具链）', re: /p0 清缓存/i },
+
+  // ---- KB-PAGE-4（a83ab388）：2026-11-05 服务换代后新落页，逐页精确 slug 归域 ----
+  // 旧进程（pid 35060，11-04 16:00 起）落后 dist 一整天：create 时 domain 被 strict schema 拒、category 缺省落 legacy。
+  { domain: 'chat', id: 'C4', why: '会话侧栏服务端契约（CHAT-SB1）', re: /^chat-session-sidebar$/ },
+  { domain: 'chat', id: 'C5', why: '轮次底座 session_turn 契约（CHAT-TURN1）', re: /^agentboard-session-turn-contract$/ },
+  { domain: 'chat', id: 'C6', why: 'AUDIT-SRV 会话服务端配套交接页', re: /^handoff-759a545b-09cd-4326-bd1b-0f9755bb05eb$/ },
+  { domain: 'accounts', id: 'A8', why: 'CLI 三来源账号手动导入（CLI-IMPORT）', re: /^cli-account-manual-import$/ },
+  { domain: 'board', id: 'B6', why: 'GIT-ON-DONE 收尾提交边界', re: /^agentboard-git-on-done-scope$/ },
+  { domain: 'board', id: 'B7', why: 'kb release 单卡释放口径', re: /^cli-release-command$/ },
+  { domain: 'board', id: 'B8', why: 'KB-CLI-2 CLI 错误信封与退出码', re: /^kb-cli-error-envelope$/ },
+  { domain: 'board', id: 'B9', why: 'kb list-tasks 请求数模型（KB-CLI-4）', re: /^kb-cli-list-request-model$/ },
+  { domain: 'board', id: 'B10', why: 'KB-SRVMSG done nudge 与 comment 语义交接页', re: /^handoff-服务端提示文案-2026-11-05$/ },
+  { domain: 'ui', id: 'U7', why: '抽屉点外部关闭的四类豁免', re: /^drawer-outside-dismiss-pitfalls$/ },
+  { domain: 'ui', id: 'U8', why: 'Modal 焦点闭环', re: /^modal-focus-loop$/ },
+  { domain: 'ui', id: 'U9', why: 'apps/web HMR 双 store 假象', re: /^web-hmr-store-reverify$/ },
+  { domain: 'infra', id: 'I6', why: '产物陈旧自检（dist/src 比对与 server:ensure 换代）', re: /^agentboard-build-staleness$/ },
+  { domain: 'knowledge', id: 'K12', why: 'KB-CR-2 知识路由层三处归一交接页', re: /^handoff-67fbc184-ee8a-48b2-b185-8f0115dc7cdb$/ },
+  { domain: 'knowledge', id: 'K13', why: 'PROV-C 证据写入侧示例页（已归档）', re: /^provc-sample-check$/ },
+  { domain: 'knowledge', id: 'K14', why: '分类体系参数探针页（已删）', re: /^tmp-taxonomy-probe$/ },
 ];
 
 /**
@@ -120,6 +139,12 @@ const LEGACY_TRIAGE = new Map([
   ['img-3edebe', 'solved'],
   ['page-time-verify', 'solved'],
   ['project-status-2026-11-03', 'solved'],
+  // KB-PAGE-4（a83ab388）：换代期新落的 legacy 页，全是「已落地工作的结论/踩坑记录」→ solved（无稳定操作口径，故不 pinned）
+  ['handoff-67fbc184-ee8a-48b2-b185-8f0115dc7cdb', 'solved'],
+  ['handoff-759a545b-09cd-4326-bd1b-0f9755bb05eb', 'solved'],
+  ['handoff-服务端提示文案-2026-11-05', 'solved'],
+  ['provc-sample-check', 'solved'],
+  ['tmp-taxonomy-probe', 'solved'],
 ]);
 
 function pickDomain(row) {
