@@ -17,6 +17,7 @@ import { Kbd } from '../ui/Kbd';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
+import { persistKnowledgeScope, resolveKnowledgeScope, type KnowledgeScope } from '../../lib/knowledgeScope';
 
 type PageItem = Pick<KnowledgePage, 'id' | 'scope' | 'workspace_id' | 'title' | 'revision' | 'status' | 'expires_at'>;
 interface SearchItem extends PageItem { page_id: string; snippet: string }
@@ -33,12 +34,14 @@ const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
 
 export function KnowledgePanel({
   workspaceId,
-
+  workspaceName = null,
 }: {
   workspaceId: string | null;
-
+  /** 当前工作区名称，仅用于空态说明「当前范围是项目 X」 */
+  workspaceName?: string | null;
 }) {
-  const [scope, setScope] = useState<'both' | 'workspace' | 'common'>(workspaceId ? 'both' : 'common');
+  // KB-SCOPE-DEFAULT：默认落在当前项目；用户显式切范围后由 persistKnowledgeScope 记住
+  const [scope, setScope] = useState<KnowledgeScope>(() => resolveKnowledgeScope(workspaceId !== null));
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('active');
@@ -99,7 +102,7 @@ export function KnowledgePanel({
 
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
       <label className="flex items-center gap-1 text-xs text-ink-2">范围
-        <select aria-label="知识范围" value={scope} onChange={e => { setScope(e.target.value as 'both' | 'workspace' | 'common'); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+        <select aria-label="知识范围" value={scope} onChange={e => { const next = e.target.value as KnowledgeScope; setScope(next); persistKnowledgeScope(next); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
       </label>
@@ -138,7 +141,17 @@ export function KnowledgePanel({
         {list.isPending && <Skeleton testId="knowledge-skeleton" rows={3} />}
         {list.isPending && <p className="sr-only">加载中…</p>}
 
-        {!list.isPending && !list.isError && items.length === 0 && <EmptyState testId="knowledge-empty" title={query ? '没有匹配的知识' : '暂无知识'} hint={query ? '换个关键词，或清除搜索后重新浏览' : '调整范围或状态后再试'} />}
+        {!list.isPending && !list.isError && items.length === 0 && (
+          query
+            ? <EmptyState testId="knowledge-empty" title="没有匹配的知识" hint="换个关键词，或清除搜索后重新浏览" />
+            : scope === 'workspace'
+              // KB-SCOPE-DEFAULT：空态要说清「当前范围是项目 X」，别让用户以为库里没东西
+              ? <EmptyState testId="knowledge-empty" title="暂无知识" hint={`当前范围是项目「${workspaceName ?? '当前工作区'}」，可切到「当前项目＋公共」查看全部`} />
+              : workspaceId === null
+                // 未选工作区时退化到公共经验，明确告知而不是静默变空
+                ? <EmptyState testId="knowledge-empty" title="暂无知识" hint="未选择工作区，已退化为「公共经验」；选择工作区后可查看项目知识" />
+                : <EmptyState testId="knowledge-empty" title="暂无知识" hint="调整范围或状态后再试" />
+        )}
 
         {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
           {items.map(page => {

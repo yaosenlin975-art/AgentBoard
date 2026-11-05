@@ -38,7 +38,7 @@ describe('knowledge UI', () => {
     handlers(); let params: URLSearchParams | undefined;
     server.use(http.get('/api/knowledge/search', ({ request }) => { params = new URL(request.url).searchParams; return HttpResponse.json([{ ...page, page_id: page.id, snippet: '命中片段' }]); }));
     mount(); fireEvent.change(screen.getByLabelText('搜索知识'), { target: { value: '缓存' } }); fireEvent.click(screen.getByRole('button', { name: '搜索' }));
-    expect(await screen.findByText('命中片段')).toBeInTheDocument(); expect(params?.get('scope')).toBe('both'); expect(params?.get('workspace_id')).toBe('A');
+    expect(await screen.findByText('命中片段')).toBeInTheDocument(); expect(params?.get('scope')).toBe('workspace'); expect(params?.get('workspace_id')).toBe('A');
     fireEvent.click(screen.getByRole('button', { name: /缓存策略/ })); expect(await screen.findByText('知识正文')).toBeInTheDocument();
     expect(screen.getAllByText('Docs/ref.md:1').length).toBeGreaterThan(0);
     // KB-HIST-UI：抽屉里先点 rN 再预览快照

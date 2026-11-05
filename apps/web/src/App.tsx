@@ -85,6 +85,7 @@ export default function App() {
                 <KnowledgePanel
                   key={workspaceId ?? 'common'}
                   workspaceId={workspaceId}
+                  workspaceName={current?.name ?? null}
                 />
               ) : view === 'chat' ? (
                 // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
