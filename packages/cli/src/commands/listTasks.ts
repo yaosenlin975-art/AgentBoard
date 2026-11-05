@@ -1,4 +1,4 @@
-import type { Issue, IssueTreeItem, IssueTreePage, Workspace } from '@agentboard/shared';
+import type { Issue, IssueTreeItem, Workspace } from '@agentboard/shared';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
@@ -22,19 +22,44 @@ interface VisibleTreeItem extends IssueTreeItem {
   tree_context: boolean;
 }
 
-interface WorkspaceStatusRow { name: string }
+interface WorkspaceStatusRow { name: string; kind: string }
+
+/** 内置五状态：每个工作区恒在（Docs/api.md 的 workspace statuses 段，`is_builtin=1`） */
+const BUILTIN_STATUSES: ReadonlySet<string> = new Set(['待规划', '进行中', '待验收', '已关闭', '已废弃']);
+
+/** 整区只用内置状态时的「关闭类」口径 */
+const BUILTIN_CLOSED_STATUSES: ReadonlySet<string> = new Set(['已关闭', '已废弃']);
+
+/**
+ * CLI-20：状态字典进程内缓存——一条 kb 命令里同一工作区最多取一次，`--status` 校验与任务树的
+ * 关闭态判定共用同一份缓存，不再各取一遍。
+ * 跨工作区聚合（`--all`）时每个工作区仍各一次：服务端没有「全部工作区状态字典」聚合接口
+ * （实测 `GET /api/statuses` → 404），自定义状态归属谁只能逐区确认。
+ */
+const statusDictCache = new Map<string, Promise<WorkspaceStatusRow[]>>();
+
+function readStatuses(ctx: Ctx, workspaceId: string): Promise<WorkspaceStatusRow[]> {
+  const cached = statusDictCache.get(workspaceId);
+  if (cached !== undefined) return cached;
+  const pending = request<WorkspaceStatusRow[]>(
+    ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/statuses`,
+  );
+  statusDictCache.set(workspaceId, pending);
+  pending.catch(() => statusDictCache.delete(workspaceId)); // 失败不留缓存，后续调用仍可重试
+  return pending;
+}
 
 /**
  * CLI-LIST-GUARD：`--status` 必须是工作区已定义的状态。
  *
+ * - 内置五状态恒在 → 直接放行，0 次字典请求（KB-CLI-4 / CLI-20）；
  * - 指定了 workspace → 校验该工作区的状态字典；
  * - 未指定（聚合模式）→ 任一工作区有该状态即放行（保持既有聚合语义）。
  * 非法值直接抛错（退出码非 0）并列出可用状态，不再静默返回「（无任务）」。
  */
 async function requireKnownStatus(ctx: Ctx, target: Workspace[], status: string): Promise<void> {
-  const dictionaries = await Promise.all(
-    target.map(space => request<WorkspaceStatusRow[]>(ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(space.id)}/statuses`)),
-  );
+  if (BUILTIN_STATUSES.has(status)) return;
+  const dictionaries = await Promise.all(target.map(space => readStatuses(ctx, space.id)));
   const available = [...new Set(dictionaries.flat().map(row => row.name))];
   if (available.includes(status)) return;
   const where = target.length === 1 ? `工作区 ${target[0]!.name}` : `全部 ${target.length} 个工作区`;
@@ -56,50 +81,77 @@ function projectForJson(issues: readonly Issue[], full: boolean): Array<Record<s
   });
 }
 
-async function readChildren(ctx: Ctx, workspaceId: string, parentId: string | null): Promise<IssueTreeItem[]> {
-  const items: IssueTreeItem[] = [];
-  let cursor: string | undefined;
-  do {
-    const query = new URLSearchParams({ workspace: workspaceId, limit: '100' });
-    if (parentId !== null) query.set('parent_issue_id', parentId);
-    if (cursor !== undefined) query.set('cursor', cursor);
-    const page = await request<IssueTreePage>(ctx.base, 'GET', `/api/issues/tree?${query.toString()}`);
-    items.push(...page.items);
-    cursor = page.next_cursor ?? undefined;
-  } while (cursor !== undefined);
-  return items;
+/**
+ * 关闭类状态名：整区状态全属内置五状态时按内置口径返回（免取字典）；一旦出现自定义状态，
+ * 才读该工作区字典并按 `kind`（done / deprecated）判定，与父卡汇总的关闭口径一致。
+ */
+async function closedStatusNames(
+  ctx: Ctx, workspaceId: string, statusesInUse: ReadonlySet<string>,
+): Promise<ReadonlySet<string>> {
+  for (const status of statusesInUse) {
+    if (BUILTIN_STATUSES.has(status)) continue;
+    const dictionary = await readStatuses(ctx, workspaceId);
+    return new Set(dictionary.filter(row => row.kind === 'done' || row.kind === 'deprecated').map(row => row.name));
+  }
+  return BUILTIN_CLOSED_STATUSES;
 }
 
+interface TreeCounts {
+  child_count: number;
+  descendant_count: number;
+  descendants_closed_count: number;
+}
+
+/**
+ * KB-CLI-4（CLI-19）：任务树本地组装——一次 `GET /api/issues?workspace=` 取回整区数据，在内存里按
+ * `parent_issue_id` 分组、算 `child_count` / `descendant_count` / `descendants_closed_count`、再前序
+ * 遍历输出；取代旧实现对每个父节点各发一次 `/api/issues/tree`（实测 525 卡 → 530 次请求）。
+ *
+ * 「输出与逐父接口逐行一致」依赖三条已实测口径（525 节点全量比对，0 处不一致）：
+ * - `GET /api/issues` 按 `sort_order,created_at,id` 升序返回，与逐父树查询同排序口径，因此
+ *   「保持数组顺序分组」得到的兄弟顺序就是旧实现的兄弟顺序；
+ * - `parent_issue_id` 指向已删除节点的孤儿不会被遍历到（与旧 BFS 一样既不输出、也不进可见集）；
+ * - 输出键序 = 整区字段序（`description` 由 projectForJson 摘除）+ 三个计数 + `tree_depth` / `tree_context`。
+ */
 async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string): Promise<VisibleTreeItem[]> {
-  const childrenByParent = new Map<string | null, IssueTreeItem[]>();
-  const issueById = new Map<string, IssueTreeItem>();
-  const queue: Array<string | null> = [null];
-  const seen = new Set<string>();
-  for (let index = 0; index < queue.length; index += 1) {
-    const parentId = queue[index]!;
-    const children = await readChildren(ctx, workspaceId, parentId);
-    childrenByParent.set(parentId, children);
-    for (const child of children) {
-      if (seen.has(child.id)) throw new Error('任务树返回了重复节点，请检查 parent_issue_id 完整性');
-      seen.add(child.id);
-      issueById.set(child.id, child);
-      queue.push(child.id);
-    }
+  const issues = await request<Issue[]>(ctx.base, 'GET', '/api/issues?workspace=' + encodeURIComponent(workspaceId));
+  const issueById = new Map<string, Issue>();
+  const childrenByParent = new Map<string | null, Issue[]>();
+  const statusesInUse = new Set<string>();
+  for (const issue of issues) {
+    if (issueById.has(issue.id)) throw new Error('任务树返回了重复节点，请检查 parent_issue_id 完整性');
+    issueById.set(issue.id, issue);
+    statusesInUse.add(issue.status);
+    const siblings = childrenByParent.get(issue.parent_issue_id);
+    if (siblings === undefined) childrenByParent.set(issue.parent_issue_id, [issue]);
+    else siblings.push(issue);
   }
 
+  const closed = await closedStatusNames(ctx, workspaceId, statusesInUse);
+  const countSubtree = (parentId: string): TreeCounts => {
+    const children = childrenByParent.get(parentId) ?? [];
+    let descendant_count = 0;
+    let descendants_closed_count = 0;
+    const walk = [...children];
+    while (walk.length > 0) {
+      const node = walk.pop()!;
+      descendant_count += 1;
+      if (closed.has(node.status)) descendants_closed_count += 1;
+      walk.push(...(childrenByParent.get(node.id) ?? []));
+    }
+    return { child_count: children.length, descendant_count, descendants_closed_count };
+  };
+
   const visibleIds = new Set<string>();
-  for (const children of childrenByParent.values()) {
-    for (const issue of children) {
-      if (status === undefined || issue.status === status) {
-        visibleIds.add(issue.id);
-        let ancestorId = issue.parent_issue_id;
-        while (ancestorId !== null) {
-          visibleIds.add(ancestorId);
-          const ancestor = issueById.get(ancestorId);
-          if (!ancestor) break;
-          ancestorId = ancestor.parent_issue_id;
-        }
-      }
+  for (const issue of issues) {
+    if (status !== undefined && issue.status !== status) continue;
+    visibleIds.add(issue.id);
+    let ancestorId = issue.parent_issue_id;
+    while (ancestorId !== null && !visibleIds.has(ancestorId)) { // 已收录即停：脏数据成环也不会死循环
+      visibleIds.add(ancestorId);
+      const ancestor = issueById.get(ancestorId);
+      if (ancestor === undefined) break;
+      ancestorId = ancestor.parent_issue_id;
     }
   }
 
@@ -109,7 +161,12 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string)
   while (stack.length > 0) {
     const current = stack.pop()!;
     if (!visibleIds.has(current.issue.id)) continue;
-    output.push({ ...current.issue, tree_depth: current.depth, tree_context: status !== undefined && current.issue.status !== status });
+    output.push({
+      ...current.issue,
+      ...countSubtree(current.issue.id),
+      tree_depth: current.depth,
+      tree_context: status !== undefined && current.issue.status !== status,
+    });
     const children = childrenByParent.get(current.issue.id) ?? [];
     for (let index = children.length - 1; index >= 0; index -= 1) {
       stack.push({ issue: children[index]!, depth: current.depth + 1 });
@@ -133,8 +190,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.tree) {
     if (args.status !== undefined) await requireKnownStatus(ctx, selected, args.status);
     const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))
-      .flat()
-      .map((issue) => ({ ...issue, workspace_id: issue.workspace_id }));
+      .flat();
     if (ctx.json) {
       ctx.io.write(`${JSON.stringify(projectForJson(visible, args.full === true), null, 2)}\n`);
       return;

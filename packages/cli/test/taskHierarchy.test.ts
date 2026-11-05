@@ -41,9 +41,11 @@ describe('CLI task hierarchy', () => {
     expect(calls[1]?.body).toMatchObject({ parent_issue_id: 'parent-1' });
   });
 
-  it('reads all tree pages and displays matching descendants with their ancestors', async () => {
-    const root = { ...issue('root-1', 'Root', null), child_count: 1, descendant_count: 1, descendants_closed_count: 0 };
-    const child = { ...issue('child-1', 'Child', 'root-1'), status: '进行中' as const, child_count: 0, descendant_count: 0, descendants_closed_count: 0 };
+  it('assembles the tree locally from one workspace read, keeping ancestors as context rows', async () => {
+    const root = issue('root-1', 'Root', null);
+    const child = { ...issue('child-1', 'Child', 'root-1'), status: '进行中' as const };
+    const grand = { ...issue('grand-1', 'Grand', 'child-1'), status: '已关闭' as const };
+    const orphan = issue('orphan-1', 'Orphan', 'deleted-1'); // 父卡已删除：与旧 BFS 一样不输出
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -53,22 +55,50 @@ describe('CLI task hierarchy', () => {
         { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
         { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ], { headers: { 'x-agentboard-version': '0.1.0' } });
-      const parsed = new URL(url);
-      const parentId = parsed.searchParams.get('parent_issue_id');
-      const page = parentId === null
-        ? { items: [root], ancestors: [], next_cursor: null }
-        : parentId === 'root-1'
-          ? { items: [child], ancestors: [issue('root-1', 'Root', null)], next_cursor: null }
-          : { items: [], ancestors: [root, child], next_cursor: null };
-      return Response.json(page, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+        return Response.json([root, child, grand, orphan], { headers: { 'x-agentboard-version': '0.1.0' } });
+      }
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
     }));
     const harness = context();
     await listTasks(harness.ctx, { workspace: workspace.id, tree: true, status: '进行中' });
-    expect(urls.some((url) => url.includes('/api/issues/tree?'))).toBe(true);
-    const rows = JSON.parse(harness.output) as Array<{ id: string; tree_depth: number; tree_context: boolean }>;
+    // KB-CLI-4（CLI-19/20）：整区一次读取；不再逐父打 /api/issues/tree；内置状态免取字典
+    expect(urls.filter((url) => url.includes('/api/issues?workspace='))).toHaveLength(1);
+    expect(urls.filter((url) => url.includes('/api/issues/tree?'))).toHaveLength(0);
+    expect(urls.filter((url) => url.includes('/statuses'))).toHaveLength(0);
+    const rows = JSON.parse(harness.output) as Array<Record<string, unknown>>;
     expect(rows).toEqual([
-      expect.objectContaining({ id: 'root-1', tree_depth: 0, tree_context: true }),
-      expect.objectContaining({ id: 'child-1', tree_depth: 1, tree_context: false }),
+      expect.objectContaining({ id: 'root-1', tree_depth: 0, tree_context: true, child_count: 1, descendant_count: 2, descendants_closed_count: 1 }),
+      expect.objectContaining({ id: 'child-1', tree_depth: 1, tree_context: false, child_count: 1, descendant_count: 1, descendants_closed_count: 1 }),
+    ]);
+  });
+
+  it('reads the status dictionary once per workspace when a custom status is in play', async () => {
+    const root = issue('root-1', 'Root', null);
+    const done = { ...issue('done-1', 'Done', 'root-1'), status: '已完成' as const };
+    const dictionary = [
+      { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+      { id: 's9', workspace_id: workspace.id, name: '已完成', kind: 'done', sort_order: 50, is_builtin: 0 },
+    ];
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.includes('/statuses')) return Response.json(dictionary, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+        return Response.json([root, done], { headers: { 'x-agentboard-version': '0.1.0' } });
+      }
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
+    }));
+    const harness = context();
+    await listTasks(harness.ctx, { workspace: workspace.id, tree: true, status: '已完成' });
+    // --status 校验与关闭态判定共用同一份进程内字典（CLI-20）
+    expect(urls.filter((url) => url.includes('/statuses'))).toHaveLength(1);
+    const rows = JSON.parse(harness.output) as Array<Record<string, unknown>>;
+    expect(rows).toEqual([
+      expect.objectContaining({ id: 'root-1', tree_depth: 0, tree_context: true, descendant_count: 1, descendants_closed_count: 1 }),
+      expect.objectContaining({ id: 'done-1', tree_depth: 1, tree_context: false, child_count: 0, descendants_closed_count: 0 }),
     ]);
   });
 
