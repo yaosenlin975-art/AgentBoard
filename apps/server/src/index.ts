@@ -46,6 +46,7 @@ import { sweepExpiredLeases } from './services/claim.js';
 import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
+import { startAwaitingSweeper } from './services/turnAwaiting.js';
 import { SERVER_VERSION } from './version.js';
 import {
   AttachmentStore,
@@ -352,6 +353,9 @@ export async function main(): Promise<StartedServer> {
       log: (line: string) => appendServerLog(line),
     },
   });
+
+  // CHAT-AWAIT1：阻塞态心跳 + 超时兜底（周期刷新 awaiting 心跳；超阈值收口 failed(awaiting_timeout)）
+  startAwaitingSweeper(db, event => hub.broadcast(event));
 
   const server = createServer(app);
   // VOICE-2：语音会话 WS 必须先于 hub 注册（hub 会 destroy 非 /ws 的 upgrade）

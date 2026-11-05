@@ -311,6 +311,19 @@ export const forkSessionSchema = z.object({
 });
 
 /**
+ * POST /api/sessions/:id/turns/:turnId/answer：回答 awaiting_input 轮次。
+ * `option_id` / `text` 至少给一个（两者都给时由调用方语义决定，服务端只做参数校验）。
+ */
+export const answerTurnSchema = z
+  .object({
+    option_id: z.string().trim().min(1, 'option_id 不能为空').optional(),
+    text: z.string().trim().min(1, 'text 不能为空').optional(),
+  })
+  .refine((value) => value.option_id !== undefined || value.text !== undefined, {
+    message: '至少提供 option_id 或 text',
+  });
+
+/**
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
  * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
  */

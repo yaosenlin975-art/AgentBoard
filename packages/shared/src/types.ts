@@ -338,7 +338,19 @@ export interface SessionUsageEvent {
   turn_id: string;
   usage: TurnUsage;
 }
-export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent;
+/**
+ * CHAT-AWAIT1 契约 #19：轮次阻塞态变更（进入/离开 awaiting、超时 failed 等）。
+ * 走 `TurnObservationEvent` 而非 `WsEvent`：前端 `eventToQueryKeys` 目前没有该 case，
+ * 归 CHAT-AWAIT2 消费；服务端广播侧（`ServerWsEvent`）已包含本事件。
+ */
+export interface SessionTurnEvent {
+  type: 'session.turn';
+  session_id: string;
+  turn_id: string;
+  state: SessionTurnState;
+  awaiting?: TurnAwaitingInfo | null;
+}
+export type TurnObservationEvent = SessionPlanEvent | SessionUsageEvent | SessionTurnEvent;
 /**
  * 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件。
  *

@@ -23,6 +23,7 @@ import { migrateKnowledgeAttachment } from './migrations/knowledgeAttachment.js'
 import { migrateSessionMessageSignals } from './migrations/sessionMessage.js';
 import { migrateSessionTitle } from './migrations/sessionTitle.js';
 import { migrateSessionSidebar } from './migrations/sessionSidebar.js';
+import { migrateSessionAwaiting } from './migrations/sessionAwaiting.js';
 import { migrateClaimLease } from './migrations/claimLease.js';
 import { migrateSessionTurn } from './migrations/sessionTurn.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
@@ -106,6 +107,8 @@ export function initSchema(db: Db): void {
   // CHAT-TURN1（契约 #5–8）：轮次表 + message 三列。纯加表/加列，不重建 message/session
   //（重建会带走 error_code/retryable 与全部消息），历史数据不回填。
   migrateSessionTurn(db);
+  // CHAT-AWAIT1（契约 #13 / 超时兜底）：session_turn 心跳列（必须排在 migrateSessionTurn 之后）
+  migrateSessionAwaiting(db);
   // BORROW-0.2：占用租约列。**必须排在 migrateIssueStatusModel 之后**——该迁移重建 issue 表，
   // 排在前面加的列会被重建带走（重建后这里再幂等补齐，新旧库都收敛到同一结构）。
   migrateClaimLease(db);

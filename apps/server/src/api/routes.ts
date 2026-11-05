@@ -26,7 +26,7 @@ import type { ZodType } from 'zod';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import { imageDeliveryHint } from '../services/imageDeliveryHint.js';
-import type { KnowledgeHint, ManagedAppId, WsEvent } from '@agentboard/shared';
+import type { KnowledgeHint, ManagedAppId, ServerWsEvent } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import type { SecretVault } from '../services/accounts/secretVault.js';
 import { AttachmentStore, MAX_IMAGE_BYTES } from '../services/attachments.js';
@@ -52,6 +52,8 @@ import {
   deleteSession,
   forkSession,
 } from '../db/repos/session.js';
+import { listTurnsBySession } from '../db/repos/sessionTurn.js';
+import { answerAwaitingTurn } from '../services/turnAwaiting.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../db/repos/message.js';
 import { buildSessionPreview } from '../services/messageSignals.js';
 import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
@@ -98,6 +100,7 @@ import {
   patchIssueSchema,
   patchSessionSchema,
   forkSessionSchema,
+  answerTurnSchema,
   patchSettingsSchema,
   dbMigrateSchema,
   sendMessageSchema,
@@ -111,8 +114,8 @@ export interface RouterDeps {
   attachments: AttachmentStore;
   secretVault?: SecretVault;
   getAdapter: (cliId: string) => AgentAdapter;
-  /** WS 广播钩子（index.ts 装配 hub.broadcast） */
-  broadcast: (event: WsEvent) => void;
+  /** WS 广播钩子（index.ts 装配 hub.broadcast）；CHAT-AWAIT1：放宽到 ServerWsEvent 以容纳 session.turn */
+  broadcast: (event: ServerWsEvent) => void;
   /** 账号 provider 装配（ACC-05/ACC-07）；缺省时账号写接口返回 PROVIDER_UNAVAILABLE */
   accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe; addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>; restoreHandlers?: Partial<Record<ManagedAppId, RestoreHandler>> };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
@@ -1080,7 +1083,13 @@ export function createRouter(deps: RouterDeps): Router {
     const session = getSession(db, req.params.id!);
     if (!session) throw new NotFoundError('会话不存在');
     const runtime = getSessionRuntime(session.id);
-    res.json({ ...session, queued_count: runtime.queuedCount, waiting_slot: runtime.waitingSlot });
+    // CHAT-AWAIT1（契约 #18）：详情带该会话 turns，阻塞/超时状态可直接读取
+    res.json({
+      ...session,
+      queued_count: runtime.queuedCount,
+      waiting_slot: runtime.waitingSlot,
+      turns: listTurnsBySession(db, session.id),
+    });
   });
 
   // 停止后队列查看（只读，不提供编辑）：返回当前内存排队文本
@@ -1260,6 +1269,26 @@ export function createRouter(deps: RouterDeps): Router {
       forked_from_session_id: session.forked_from_session_id ?? null,
     });
     res.json(session);
+  });
+
+  // CHAT-AWAIT1（契约 #13）：回答阻塞轮次——同一 turn 继续（步骤 awaiting→done，下一步 running），
+  // 非 awaiting_input 一律 409（重复回答天然幂等）；成功推一次 session.turn。
+  router.post('/sessions/:id/turns/:turnId/answer', (req, res) => {
+    const body = parseBody(answerTurnSchema, req.body ?? {});
+    const session = getSession(db, req.params.id!);
+    if (!session) throw new NotFoundError('会话不存在');
+    const turn = answerAwaitingTurn(db, session.id, req.params.turnId!, {
+      optionId: body.option_id,
+      text: body.text,
+    });
+    broadcast({
+      type: 'session.turn',
+      session_id: session.id,
+      turn_id: turn.id,
+      state: turn.state,
+      awaiting: null,
+    });
+    res.json(turn);
   });
 
   return router;

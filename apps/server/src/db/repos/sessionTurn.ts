@@ -39,6 +39,8 @@ export type TurnPatch = Partial<{
   awaiting_json: TurnAwaitingInfo | null;
   usage_json: TurnUsage | null;
   ended_at: number | null;
+  /** CHAT-AWAIT1：awaiting 期间的心跳时间戳；离开 awaiting 时置 null */
+  awaiting_heartbeat_at: number | null;
 }>;
 
 function parseJson<T>(raw: unknown): T | null {
@@ -145,6 +147,10 @@ export function updateTurn(db: Db, id: string, patch: TurnPatch): SessionTurn | 
     sets.push('ended_at = ?');
     params.push(patch.ended_at);
   }
+  if (patch.awaiting_heartbeat_at !== undefined) {
+    sets.push('awaiting_heartbeat_at = ?');
+    params.push(patch.awaiting_heartbeat_at);
+  }
   if (sets.length === 0) return getTurn(db, id);
   params.push(id);
   db.prepare(`UPDATE session_turn SET ${sets.join(', ')} WHERE id = ?`).run(...params);
@@ -162,6 +168,20 @@ export function failOpenTurns(db: Db, sessionId: string, awaiting: TurnAwaitingI
        WHERE session_id = ? AND state IN (${OPEN_STATES.map(() => '?').join(',')})`,
     )
     .run(Date.now(), JSON.stringify(awaiting), sessionId, ...OPEN_STATES);
+  return result.changes;
+}
+
+/**
+ * CHAT-AWAIT1（启动恢复）：把**全库**未结束轮次置 `failed`（上个进程遗留的孤儿）。
+ * 只动 `running/awaiting_input/awaiting_approval`，已结束轮次不碰，幂等（第二次 changes=0）。
+ */
+export function failAllOpenTurns(db: Db, awaiting: TurnAwaitingInfo): number {
+  const result = db
+    .prepare(
+      `UPDATE session_turn SET state = 'failed', ended_at = ?, awaiting_json = ?, awaiting_heartbeat_at = NULL
+       WHERE state IN (${OPEN_STATES.map(() => '?').join(',')})`,
+    )
+    .run(Date.now(), JSON.stringify(awaiting), ...OPEN_STATES);
   return result.changes;
 }
 

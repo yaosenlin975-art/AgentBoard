@@ -15,7 +15,7 @@ import {
   type SessionPatch,
 } from '../db/repos/session.js';
 import { addMessage } from '../db/repos/message.js';
-import { failOpenTurns } from '../db/repos/sessionTurn.js';
+import { failAllOpenTurns, failOpenTurns } from '../db/repos/sessionTurn.js';
 import { initialToolMeta } from './messageMeta.js';
 import { beginTurn as startTurnTracking, type TurnTracker } from './turnObservation.js';
 import { classifySessionError, looksLikeErrorOutput, type SessionErrorSignal } from './messageSignals.js';
@@ -134,6 +134,9 @@ export function initSessionManager(
   activeTurns = 0;
   slotWaiters.length = 0;
   broadcaster = null;
+  // CHAT-AWAIT1（契约 #5）：启动即恢复——此刻内存里没有任何执行器，任何 running/awaiting 轮次
+  // 都是上个进程遗留的孤儿，一律置 failed（reason=server_restart），不允许悄悄留在 awaiting。
+  failAllOpenTurns(db, { reason: 'server_restart', message: '服务重启，轮次中断', at: Date.now() });
 }
 
 /** 恢复未装配状态（测试隔离用） */
