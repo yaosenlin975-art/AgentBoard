@@ -10,16 +10,21 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  closeWorkspaceDbs,
   decideWorkspaceDb,
+  getDbForWorkspace,
   listOpenWorkspaceDbs,
   readWorkspaceMeta,
   resetResolverState,
   workspaceDbPath,
   workspaceStateDir,
 } from '../src/db/resolver.js';
+import { wireWorkspaceDbCloseOnExit } from '../src/index.js';
 import { createTestDb, type TestDb } from './helpers.js';
 import { acquireServerLock, releaseServerLock } from '../src/services/serverLock.js';
 import { initSchema } from '../src/db/schema.js';
+import { createWorkspace } from '../src/db/repos/workspace.js';
+import { assertWorkspaceDbWritable } from '../src/db/resolver.js';
 
 describe('STORE-1（M1）按工作区选库：判定表', () => {
   const CENTER = 'C:/center/agentboard.db';
@@ -53,9 +58,25 @@ describe('STORE-1（M1）按工作区选库：判定表', () => {
     expect(d).toMatchObject({ target: 'center', dbPath: CENTER, error: 'WORKSPACE_DB_MIGRATING' });
   });
 
-  it('② 文件在但读不到 meta（损坏/无 meta 表）→ 同样按中间态处理', () => {
+  it('②（D4）中心 db_mode=failed：即使 meta.localized=1 也不放行工作区库（读中心库、写阻断）', () => {
+    const d = decide({ centerDbMode: 'failed', fileExists: () => true, readMeta: () => ({ localized: true, workspaceId: WS_ID }) });
+    expect(d).toMatchObject({ target: 'center', dbPath: CENTER, error: 'WORKSPACE_DB_MIGRATING' });
+    expect(d.reason).toContain('failed');
+  });
+
+  it('② 中心 db_mode=localizing：迁移进行中，目标库未建好也冻结写（读中心库、WORKSPACE_DB_MIGRATING）', () => {
+    const d = decide({ centerDbMode: 'localizing', fileExists: () => false });
+    expect(d).toMatchObject({ target: 'center', dbPath: CENTER, error: 'WORKSPACE_DB_MIGRATING' });
+  });
+
+  it('②（D3）文件在但打不开（损坏/非 SQLite）→ WORKSPACE_DB_UNREADABLE，不再归 MIGRATING；读不得静默回退中心库', () => {
     const d = decide({ fileExists: () => true, readMeta: () => null });
-    expect(d.error).toBe('WORKSPACE_DB_MIGRATING');
+    expect(d).toMatchObject({ target: 'center', dbPath: CENTER, error: 'WORKSPACE_DB_UNREADABLE' });
+    // getDbForWorkspace 对非 MIGRATING 错误直接抛（读路径报错，不回退中心库）
+    expect(() => getDbForWorkspace(
+      { centerDb: { name: CENTER } as never, instanceId: 'inst-d3', port: 0, fileExists: () => true, readMeta: () => null },
+      { id: WS_ID, path: wsPath, dbMode: 'center' },
+    )).toThrow(/打不开|损坏/);
   });
 
   it('③ 中心=localized 但文件缺失 → WORKSPACE_DB_MISSING，且**不回退**中心库路径以外的东西', () => {
@@ -72,6 +93,12 @@ describe('STORE-1（M1）按工作区选库：判定表', () => {
   it('④ 文件在但库内 workspace_id 与目录不一致 → WORKSPACE_DB_ID_MISMATCH', () => {
     const d = decide({ fileExists: () => true, readMeta: () => ({ localized: true, workspaceId: 'other-ws' }) });
     expect(d).toMatchObject({ error: 'WORKSPACE_DB_ID_MISMATCH' });
+  });
+
+  it('④（D5）localized=1 但库内 workspace_id 缺失（null）→ 不再直接放行，按身份不明拒绝打开', () => {
+    const d = decide({ fileExists: () => true, readMeta: () => ({ localized: true, workspaceId: null }) });
+    expect(d).toMatchObject({ target: 'center', error: 'WORKSPACE_DB_ID_MISMATCH' });
+    expect(d.reason).toContain('缺失');
   });
 
   it('判定优先级：中心=localized + 文件缺失 > 其它一切（先报缺失）', () => {
@@ -103,9 +130,11 @@ describe('STORE-1（M1）按工作区选库：判定表', () => {
 describe('STORE-1（M1）每工作区锁：同一工作区库只允许一个活实例打开', () => {
   let t: TestDb;
   let root: string;
+  let ws: string;
   beforeEach(() => {
     t = createTestDb();
     root = mkdtempSync(join(tmpdir(), 'agentboard-store1-lock-'));
+    ws = createWorkspace(t.db, { name: '锁区', path: join(root, 'unused') }).id;
   });
   afterEach(() => {
     resetResolverState();
@@ -131,6 +160,53 @@ describe('STORE-1（M1）每工作区锁：同一工作区库只允许一个活�
   });
 
   it('句柄与可观测列表：未打开任何工作区库时为空（M1 不改数据、不预开库）', () => {
+    expect(listOpenWorkspaceDbs()).toEqual([]);
+  });
+
+  it('localized_open[] 扩展：读路径首开记 read，写闸门首开记 first-write；M2 只记录不回收（reclaimable=false）', () => {
+    const wsPath = join(root, 'ws-open');
+    mkdirSync(join(wsPath, '.agentboard'), { recursive: true });
+    const dbPath = workspaceDbPath(wsPath);
+    const wsDb = new Database(dbPath);
+    wsDb.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    wsDb.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?), ('localized','1')").run(ws);
+    wsDb.close();
+    t.db.prepare("UPDATE workspace SET db_mode='localized', path=? WHERE id=?").run(wsPath, ws);
+
+    const read = getDbForWorkspace({ centerDb: t.db, instanceId: 'inst-open', port: 0, openWorkspaceDbs: true }, { id: ws, path: wsPath, dbMode: 'localized' });
+    const opened = listOpenWorkspaceDbs();
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ workspaceId: ws, dbPath, openReason: 'read', reclaimable: false });
+    expect(opened[0]!.openedAt).toBeGreaterThan(0);
+    read.db.close();
+    resetResolverState();
+
+    const write = assertWorkspaceDbWritable({ centerDb: t.db, instanceId: 'inst-open2', port: 0, openWorkspaceDbs: true }, { id: ws, path: wsPath, dbMode: 'localized' });
+    expect(write.target).toBe('workspace');
+    expect(listOpenWorkspaceDbs()[0]).toMatchObject({ workspaceId: ws, openReason: 'first-write', reclaimable: false });
+    closeWorkspaceDbs('inst-open2');
+    expect(listOpenWorkspaceDbs()).toEqual([]);
+  });
+
+  it('（D6）closeWorkspaceDbs 已接线服务退出：退出钩子关闭全部句柄并清空 localized_open', () => {
+    const wsPath = join(root, 'ws-d6');
+    mkdirSync(join(wsPath, '.agentboard'), { recursive: true });
+    const dbPath = workspaceDbPath(wsPath);
+    const wsDb = new Database(dbPath);
+    wsDb.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    wsDb.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?), ('localized','1')").run(ws);
+    wsDb.close();
+    t.db.prepare("UPDATE workspace SET db_mode='localized', path=? WHERE id=?").run(wsPath, ws);
+
+    const { db: handle } = getDbForWorkspace({ centerDb: t.db, instanceId: 'inst-d6', port: 0, openWorkspaceDbs: true }, { id: ws, path: wsPath, dbMode: 'localized' });
+    expect(handle.open).toBe(true);
+
+    let exitHook: (() => void) | undefined;
+    wireWorkspaceDbCloseOnExit('inst-d6', (hook) => { exitHook = hook; });
+    expect(exitHook).toBeTypeOf('function');
+    exitHook!();
+
+    expect(handle.open).toBe(false);
     expect(listOpenWorkspaceDbs()).toEqual([]);
   });
 });

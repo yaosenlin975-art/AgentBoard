@@ -28,6 +28,7 @@ export const WORKSPACE_DB_MODES: readonly WorkspaceDbMode[] = ['center', 'locali
 export const WORKSPACE_DB_ERRORS = {
   WORKSPACE_DB_MIGRATING: { status: 409, message: '该工作区数据库正在迁移（中间态），暂不接受写入；请等迁移完成或执行恢复流程' },
   WORKSPACE_DB_MISSING: { status: 500, message: '中心库标记该工作区已下沉，但工作区库文件缺失；不回退中心库，请检查或恢复该文件' },
+  WORKSPACE_DB_UNREADABLE: { status: 500, message: '工作区库文件存在但打不开（损坏或非 SQLite 文件）；不回退中心库，请检查或恢复该文件' },
   WORKSPACE_DB_ID_MISMATCH: { status: 409, message: '工作区库内的 workspace_id 与目录绑定不一致（可能拷了别人的 .agentboard），拒绝打开' },
   WORKSPACE_DB_LOCKED: { status: 409, message: '该工作区库已被另一个活实例打开（一个工作区库同时只允许一个进程）' },
 } as const;
@@ -81,8 +82,9 @@ const defaultFileExists = (path: string): boolean => {
 
 /**
  * 纯判定：把「中心期望 + 文件实际」映射到「用哪个库 / 是否报错」。
- * 判定顺序（对应设计 §5.1 的状态表）：中心说已下沉但文件没了 → 缺失；文件在但无 meta/未下沉 → 中间态；
- * id 不匹配 → 拒绝打开；`meta.localized=1` → 用工作区库；无文件 → 中心库（现状）。
+ * 判定顺序：中心 localizing/failed → 迁移态（读中心库、写阻断，绝不打开工作区库）；
+ * 中心说已下沉但文件没了 → 缺失；文件在但打不开 → UNREADABLE（不静默回退中心库）；
+ * 未下沉 → 中间态；id 不一致/缺失 → 拒绝打开；`meta.localized=1` 且自洽 → 用工作区库；无文件 → 中心库（现状）。
  */
 export function decideWorkspaceDb(input: DecideWorkspaceDbInput): WorkspaceDbDecision {
   const targetPath = workspaceDbPath(input.workspacePath);
@@ -90,6 +92,15 @@ export function decideWorkspaceDb(input: DecideWorkspaceDbInput): WorkspaceDbDec
   const readMeta = input.readMeta ?? readWorkspaceMeta;
   const exists = fileExists(targetPath);
 
+  // STORE-2a（D4）：中心 failed = 迁移失败待恢复，库内容未定——meta.localized=1 也不放行工作区库
+  if (input.centerDbMode === 'failed') {
+    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MIGRATING', reason: '中心 db_mode=failed（迁移失败待恢复）：读走中心库、写被阻断，不打开工作区库' };
+  }
+  // STORE-2a：中心 localizing = 迁移进行中。目标库没建好时也必须冻结该区写
+  //（copy/switch 之间的中心写入会在切换时丢），读继续走中心库（switch 前中心行仍在）。
+  if (input.centerDbMode === 'localizing') {
+    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MIGRATING', reason: '中心 db_mode=localizing（迁移进行中）：读走中心库、写被阻断' };
+  }
   if (input.centerDbMode === 'localized' && !exists) {
     return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MISSING', reason: '中心=localized 但工作区库文件不存在（不回退中心库）' };
   }
@@ -98,13 +109,17 @@ export function decideWorkspaceDb(input: DecideWorkspaceDbInput): WorkspaceDbDec
   }
   const meta = readMeta(targetPath);
   if (meta === null) {
-    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MIGRATING', reason: '工作区库打不开或尚无 meta（中间态）' };
-  }
-  if (meta.workspaceId !== null && meta.workspaceId !== input.workspaceId) {
-    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_ID_MISMATCH', reason: `库内 workspace_id=${meta.workspaceId} 与目录工作区 ${input.workspaceId} 不一致` };
+    // STORE-2a（D3）：打不开 ≠ 迁移中间态。损坏库报 UNREADABLE；getDbForWorkspace 对非
+    // MIGRATING 错误直接抛——读路径不得静默回退中心库（中心数据可能已过期或缺失）。
+    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_UNREADABLE', reason: '工作区库存在但打不开（损坏或非 SQLite 文件）：不回退中心库，请修复或恢复该文件' };
   }
   if (!meta.localized) {
     return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_MIGRATING', reason: 'meta.localized=0（迁移中间态：读走中心库、写被阻断）' };
+  }
+  // STORE-2a（D5）：放行前先判定自洽——库内 workspace_id 缺失（null）与不一致同等处理，
+  // 身份不明的库（可能拷错 .agentboard）绝不打开。
+  if (meta.workspaceId !== input.workspaceId) {
+    return { target: 'center', dbPath: input.centerDbPath, error: 'WORKSPACE_DB_ID_MISMATCH', reason: `库内 workspace_id=${meta.workspaceId ?? '（缺失）'} 与目录工作区 ${input.workspaceId} 不一致` };
   }
   return { target: 'workspace', dbPath: targetPath, error: null, reason: `已下沉（meta.localized=1，中心 db_mode=${input.centerDbMode}）` };
 }
@@ -143,6 +158,21 @@ export function readWorkspaceMeta(dbPath: string): WorkspaceDbMeta | null {
 const handles = new Map<string, Db>();
 /** 已持有的每工作区锁目录（workspaceId → `.agentboard`） */
 const heldLocks = new Map<string, string>();
+/** STORE-2a：打开缘由（db_scope.localized_open[] 排障字段） */
+export type WorkspaceDbOpenReason = 'first-write' | 'read' | 'migrate' | 'recovery';
+
+export interface OpenWorkspaceDbInfo {
+  workspaceId: string;
+  dbPath: string;
+  /** 打开时间（epoch ms） */
+  openedAt: number;
+  /** first-write=写闸门放行时首开；read=读路径首开；migrate/recovery 供迁移/恢复路径使用 */
+  openReason: WorkspaceDbOpenReason;
+  /** M2 只记录不回收：恒 false，字段留给后续回收策略 */
+  reclaimable: boolean;
+}
+
+const handleMeta = new Map<string, { openedAt: number; reason: WorkspaceDbOpenReason }>();
 
 export interface ResolverDeps {
   centerDb: Db;
@@ -174,8 +204,9 @@ export interface WorkspaceResolution {
 /**
  * 取某工作区该用的库：已下沉 → 打开/复用工作区库（并持有该工作区 `.agentboard/server.lock`）；
  * 否则返回中心库。**本阶段不写工作区库**（`meta` 镜像与数据搬迁属 STORE-2）。
+ * `opts.openReason`：记录进 `db_scope.localized_open[]`（缺省 read；写闸门传 first-write）。
  */
-export function getDbForWorkspace(deps: ResolverDeps, workspace: WorkspaceLike): WorkspaceResolution {
+export function getDbForWorkspace(deps: ResolverDeps, workspace: WorkspaceLike, opts: { openReason?: WorkspaceDbOpenReason } = {}): WorkspaceResolution {
   const decision = decideWorkspaceDb({
     workspaceId: workspace.id,
     workspacePath: workspace.path,
@@ -202,15 +233,16 @@ export function getDbForWorkspace(deps: ResolverDeps, workspace: WorkspaceLike):
   heldLocks.set(workspace.id, stateDir);
   const db = (deps.open ?? openDb)(decision.dbPath);
   handles.set(workspace.id, db);
+  handleMeta.set(workspace.id, { openedAt: Date.now(), reason: opts.openReason ?? 'read' });
   return { db, decision };
 }
 
 /**
- * 写入门禁：中间态 / 缺失 / id 不匹配 / 被锁 一律按判定报错。
+ * 写入门禁：中间态 / 缺失 / 打不开 / id 不匹配 / 被锁 一律按判定报错。
  * 返回判定（调用方需要 `target` 时用），失败即抛。
  */
 export function assertWorkspaceDbWritable(deps: ResolverDeps, workspace: WorkspaceLike): WorkspaceDbDecision {
-  const { decision } = getDbForWorkspace(deps, workspace);
+  const { decision } = getDbForWorkspace(deps, workspace, { openReason: 'first-write' });
   if (decision.error !== null) throw workspaceDbError(decision.error);
   return decision;
 }
@@ -233,15 +265,26 @@ export function closeWorkspaceDbs(instanceId: string): void {
   }
   handles.clear();
   heldLocks.clear();
+  handleMeta.clear();
 }
 
-/** 当前已打开的工作区库（可观测：启动日志与 `/api/version`） */
-export function listOpenWorkspaceDbs(): Array<{ workspaceId: string; dbPath: string }> {
-  return [...handles.entries()].map(([workspaceId, db]) => ({ workspaceId, dbPath: db.name }));
+/** 当前已打开的工作区库（可观测：`/api/version` 的 db_scope.localized_open[]；M2 只记录不回收） */
+export function listOpenWorkspaceDbs(): OpenWorkspaceDbInfo[] {
+  return [...handles.entries()].map(([workspaceId, db]) => {
+    const meta = handleMeta.get(workspaceId);
+    return {
+      workspaceId,
+      dbPath: db.name,
+      openedAt: meta?.openedAt ?? 0,
+      openReason: meta?.reason ?? 'read',
+      reclaimable: false,
+    };
+  });
 }
 
 /** 测试用：清空句柄与锁记录（不关句柄，调用方自己管） */
 export function resetResolverState(): void {
   handles.clear();
   heldLocks.clear();
+  handleMeta.clear();
 }

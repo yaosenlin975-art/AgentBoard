@@ -347,6 +347,14 @@ export const dbMigrateSchema = z
   })
   .strict();
 
+/** STORE-2a：工作区库下沉（localize）请求体；字段名与 packages/shared 的 WorkspaceLocalizeRequest 同源 */
+export const workspaceLocalizeSchema = z
+  .object({
+    dryRun: z.boolean().optional(),
+    overwrite: z.boolean().optional(),
+  })
+  .strict();
+
 export const patchSettingsSchema = z
   .object({
     port: z

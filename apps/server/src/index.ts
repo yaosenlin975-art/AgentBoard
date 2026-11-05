@@ -33,6 +33,7 @@ import express, { type Express } from 'express';
 import { ADAPTERS, getAdapter as defaultGetAdapter, type AgentAdapter } from '@agentboard/adapters';
 import type { Db } from './db/connection.js';
 import { openDb } from './db/connection.js';
+import { closeWorkspaceDbs } from './db/resolver.js';
 import { acquireServerLock, describeLockHolder, releaseServerLock } from './services/serverLock.js';
 import { initSchema } from './db/schema.js';
 import {
@@ -252,6 +253,17 @@ export interface StartedServer {
   db: Db;
 }
 
+/**
+ * STORE-2a（D6）：进程退出前关掉全部工作区库句柄（wal checkpoint + close + 释放每工作区锁）。
+ * 生产挂 process 'exit'（SIGINT/SIGTERM 的 process.exit 也会触发该钩子）；测试注入 register 捕获钩子验证。
+ */
+export function wireWorkspaceDbCloseOnExit(
+  instanceId: string,
+  register: (hook: () => void) => void = (hook) => { process.on('exit', hook); },
+): void {
+  register(() => { closeWorkspaceDbs(instanceId); });
+}
+
 /** 真实启动：返回运行句柄（冒烟/后续管理用） */
 export async function main(): Promise<StartedServer> {
   const config = loadConfig();
@@ -305,6 +317,8 @@ export async function main(): Promise<StartedServer> {
     appendServerLog(`单例锁接管：旧持有者 ${describeLockHolder(lock.tookOver)} 已不存在，由 pid ${process.pid} 接管`);
   }
   process.on('exit', () => { releaseServerLock(configDir(), { instanceId }); });
+  // STORE-2a（D6）：退出钩子关全部工作区库句柄（SIGINT/SIGTERM 的 process.exit 同样会触发 exit 钩子）
+  wireWorkspaceDbCloseOnExit(instanceId);
   // SIGINT/SIGTERM 是能捕获的退出（Windows 的 Stop-Process -Force 走 TerminateProcess，捕获不到 →
   // 靠下一次启动时「陈旧锁接管」兜底）。
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

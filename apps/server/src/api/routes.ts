@@ -70,7 +70,8 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs } from '../db/resolver.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, decideWorkspaceDb, listOpenWorkspaceDbs, type WorkspaceDbMode } from '../db/resolver.js';
+import { getLocalizeJob, startLocalizeJob } from '../services/workspaceLocalizeJob.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
@@ -107,6 +108,7 @@ import {
   approvalDecisionSchema,
   patchSettingsSchema,
   dbMigrateSchema,
+  workspaceLocalizeSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
   addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
@@ -357,14 +359,24 @@ export function createRouter(deps: RouterDeps): Router {
     port: readSettings().port,
   };
   /** 读中心库 workspace.db_mode（缺列为老库 → center，行为与现状一致） */
-  const workspaceRowMode = (workspaceId: string): 'center' | 'localizing' | 'localized' | 'failed' => {
+  const workspaceRowMode = (workspaceId: string): WorkspaceDbMode => {
     try {
       const row = db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(workspaceId) as { db_mode?: string } | undefined;
       const raw = row?.db_mode ?? 'center';
-      return (WORKSPACE_DB_MODES as readonly string[]).includes(raw) ? (raw as 'center' | 'localizing' | 'localized' | 'failed') : 'center';
+      return (WORKSPACE_DB_MODES as readonly string[]).includes(raw) ? (raw as WorkspaceDbMode) : 'center';
     } catch {
       return 'center';
     }
+  };
+  /**
+   * STORE-2a（D7）：写闸门与 localize 端点共用的工作区行取用。
+   * 未知工作区显式 404——不得用 `path ?? ''` 进判定：'' 拼 `.agentboard/agentboard.db`
+   * 会落到进程 cwd 相对路径，读错文件比报错更糟。
+   */
+  const requireWorkspaceRow = (workspaceId: string): { id: string; path: string; dbMode: WorkspaceDbMode } => {
+    const row = getWorkspace(db, workspaceId);
+    if (row === null) throw new NotFoundError('工作空间不存在');
+    return { id: row.id, path: row.path, dbMode: workspaceRowMode(workspaceId) };
   };
 
   // ---- DB-2B：迁移编排上下文 ----
@@ -491,7 +503,7 @@ export function createRouter(deps: RouterDeps): Router {
     // STORE-1（M1）写入门禁：中间态/缺失/id 不匹配/被锁 → 409 或 500，读路径不受影响
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       const issue = getIssue(deps.db, String(req.params.id));
-      if (issue !== null) assertWorkspaceDbWritable(workspaceResolverDeps, { id: issue.workspace_id, path: getWorkspace(deps.db, issue.workspace_id)?.path ?? '', dbMode: workspaceRowMode(issue.workspace_id) });
+      if (issue !== null) assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(issue.workspace_id));
     }
     next();
   });
@@ -619,6 +631,32 @@ export function createRouter(deps: RouterDeps): Router {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(attachments.workspaceName(workspaceId, id))}`);
     res.sendFile(filePath, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) next(error); });
+  });
+
+  // ---- STORE-2a：工作区库下沉（localize）——八阶段状态机的 REST 入口（2b CLI 消费）----
+  /**
+   * POST /api/workspaces/:id/db/localize：body { dryRun?, overwrite? } → 202 { jobId, ... }。
+   * dry-run 与真实迁移统一走 jobId 模型；真实迁移开跑即置中心 db_mode=localizing，
+   * 该工作区写闸门随之 409 WORKSPACE_DB_MIGRATING、读继续走中心库、其它工作区无感。
+   */
+  router.post('/workspaces/:id/db/localize', async (req, res) => {
+    const workspaceId = req.params.id!;
+    requireWorkspaceRow(workspaceId); // 未知工作区显式 404，不进任务表
+    const body = parseBody(workspaceLocalizeSchema, req.body ?? {});
+    const job = startLocalizeJob(db, {
+      workspaceId,
+      dryRun: body.dryRun === true,
+      overwrite: body.overwrite === true,
+      ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
+    });
+    res.status(202).json(job);
+  });
+
+  /** GET /api/workspaces/:id/db/localize/:jobId：阶段、计数、last_error（任务表只在内存，重启即 404） */
+  router.get('/workspaces/:id/db/localize/:jobId', (req, res) => {
+    const job = getLocalizeJob(String(req.params.id), String(req.params.jobId));
+    if (job === null) throw new NotFoundError('迁移任务不存在');
+    res.json(job);
   });
 
   // ---- system ----
@@ -768,7 +806,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/issues', (req, res) => {
     // STORE-1（M1）：该工作区库不可写时不允许新建卡（与 /issues/:id 写操作同一门禁）
     if (typeof req.body?.workspace_id === 'string') {
-      assertWorkspaceDbWritable(workspaceResolverDeps, { id: req.body.workspace_id, path: getWorkspace(deps.db, req.body.workspace_id)?.path ?? '', dbMode: workspaceRowMode(req.body.workspace_id) });
+      assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(req.body.workspace_id));
     }
     const body = parseBody(createIssueSchema, req.body);
     const outcome = mutation(req, () => { requireExistingWorkspace(db, body.workspace_id); return createIssueInHierarchy(db, body); });

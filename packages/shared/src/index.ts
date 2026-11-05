@@ -6,3 +6,4 @@ export * from './graphRules.js';
 export * from './voiceModels.js';
 export * from './proxyEnv.js';
 export * from './domain.js';
+export * from './workspaceLocalize.js';

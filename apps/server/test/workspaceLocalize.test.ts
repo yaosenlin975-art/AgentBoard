@@ -56,7 +56,7 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
     const attachDir = join(root, 'attachments');
     mkdirSync(attachDir, { recursive: true });
     writeFileSync(join(attachDir, 'a.bin'), Buffer.alloc(1024, 1));
-    const result = await preflight({ attachemtsDir: attachDir });
+    const result = await preflight({ attachmentsDir: attachDir });
     expect(result.workspace).toEqual({ id: ws, path: wsPath });
     expect(result.targetDbPath).toBe(join(wsPath, '.agentboard', 'agentboard.db'));
     expect(result.counts.issue).toBe(2);
