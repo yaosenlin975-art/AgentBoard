@@ -1,5 +1,5 @@
 /**
- * 签到批次与能力矩阵接入（ACC-09）：
+ * 签到批次与能力矩阵接入（ACC-09；ACC-B3 起右栏批次走 CheckinRunPanel 吸顶呈现，断言迁移到 checkin-run-* testid）：
  * 能力以服务端为准、checkin=false 不发请求、批次 items 各状态、409 双开展示已有批次、取消只对 queued 生效、能力矩阵失败错误态。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -132,14 +132,14 @@ describe('签到批次（ACC-09）', () => {
     expect(checkinPosts[0]!.body).toEqual({ app_id: 'workbuddy_desktop', account_ids: [WB_ID, WB_ID2] });
     expect(checkinPosts[0]!.idempotencyKey).toBeTruthy();
 
-    const panel = await screen.findByTestId('checkin-batch-panel');
-    expect(within(panel).getByTestId('checkin-batch-id')).toHaveTextContent(BATCH_ID.slice(0, 8));
-    await waitFor(() => expect(within(panel).getByTestId(`checkin-item-${WB_ID}`)).toHaveAttribute('data-state', 'succeeded'));
-    expect(within(panel).getByTestId(`checkin-item-${WB_ID2}`)).toHaveAttribute('data-state', 'failed');
-    expect(within(panel).getByTestId(`checkin-item-error-${WB_ID2}`)).toHaveTextContent('账号正忙，本轮未发起');
+    const panel = await screen.findByTestId('checkin-run-panel');
+    expect(within(panel).getByTestId('checkin-run-id')).toHaveTextContent(BATCH_ID.slice(0, 8));
+    await waitFor(() => expect(within(panel).getByTestId(`checkin-run-item-${WB_ID}`)).toHaveAttribute('data-state', 'succeeded'));
+    expect(within(panel).getByTestId(`checkin-run-item-${WB_ID2}`)).toHaveAttribute('data-state', 'failed');
+    expect(within(panel).getByTestId(`checkin-run-item-error-${WB_ID2}`)).toHaveTextContent('账号正忙，本轮未发起');
   });
 
-  it('失败原因可读：无安全码给兜底文案，已知码给中文原因（不出现裸码）', async () => {
+  it('失败原因可读：无安全码给兜底文案，已知码给中文原因（裸码折叠进技术码层）', async () => {
     server.use(
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([
         capability({ checkin: true, reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived' }),
@@ -153,10 +153,13 @@ describe('签到批次（ACC-09）', () => {
     renderPanel();
     await userEvent.click(await screen.findByTestId('accounts-checkin-all-workbuddy_desktop'));
 
-    const panel = await screen.findByTestId('checkin-batch-panel');
-    await waitFor(() => expect(within(panel).getByTestId(`checkin-item-error-${WB_ID}`)).toHaveTextContent('原因未记录，请重试'));
-    // 已知码转中文文案，不把裸码当主文案抛给用户
-    expect(within(panel).getByTestId(`checkin-item-error-${WB_ID2}`)).toHaveTextContent('凭据已失效，请重新读取本机账号');
+    const panel = await screen.findByTestId('checkin-run-panel');
+    await waitFor(() => expect(within(panel).getByTestId(`checkin-run-item-error-${WB_ID}`)).toHaveTextContent('原因未记录，请重试'));
+    // 已知码转中文文案作为主文案，裸码收进折叠层
+    expect(within(panel).getByTestId(`checkin-run-item-error-${WB_ID2}`)).toHaveTextContent('凭据已失效，请重新读取本机账号');
+    const codeDetails = within(panel).getByTestId(`checkin-run-item-error-${WB_ID2}-code`);
+    expect(codeDetails).not.toHaveAttribute('open');
+    expect(codeDetails).toHaveTextContent('CHECKIN_CREDENTIAL_INVALID');
   });
 
   it('重试复用同一 Idempotency-Key（同批账号），换批次换 key', async () => {
@@ -205,8 +208,8 @@ describe('签到批次（ACC-09）', () => {
     expect(screen.getByTestId('accounts-notice-workbuddy_desktop')).toHaveTextContent('该产品已有进行中的签到批次');
 
     await userEvent.click(screen.getByTestId('accounts-view-batch-workbuddy_desktop'));
-    const panel = await screen.findByTestId('checkin-batch-panel');
-    await waitFor(() => expect(within(panel).getByTestId(`checkin-item-${WB_ID}`)).toHaveAttribute('data-state', 'running'));
+    const panel = await screen.findByTestId('checkin-run-panel');
+    await waitFor(() => expect(within(panel).getByTestId(`checkin-run-item-${WB_ID}`)).toHaveAttribute('data-state', 'running'));
   });
 
   it('取消只对 queued 生效：running 项如实提示已发出请求', async () => {
@@ -222,13 +225,13 @@ describe('签到批次（ACC-09）', () => {
     renderPanel();
 
     await userEvent.click(await screen.findByTestId('accounts-checkin-all-workbuddy_desktop'));
-    const panel = await screen.findByTestId('checkin-batch-panel');
-    const cancelBtn = within(panel).getByTestId('checkin-cancel');
+    const panel = await screen.findByTestId('checkin-run-panel');
+    const cancelBtn = within(panel).getByTestId('checkin-run-cancel');
     expect(cancelBtn).toBeEnabled();
-    expect(within(panel).getByTestId('checkin-cancel-hint')).toHaveTextContent('可取消 1 项');
+    expect(within(panel).getByTestId('checkin-run-cancel-hint')).toHaveTextContent('可取消 1 项');
     await userEvent.click(cancelBtn);
-    await waitFor(() => expect(within(panel).getByTestId('checkin-cancel-result')).toHaveTextContent('已取消 1 项'));
-    expect(within(panel).getByTestId('checkin-cancel-result')).toHaveTextContent('1 项已发出请求，未取消');
+    await waitFor(() => expect(within(panel).getByTestId('checkin-run-cancel-result')).toHaveTextContent('已取消 1 项'));
+    expect(within(panel).getByTestId('checkin-run-cancel-result')).toHaveTextContent('1 项已发出请求，未取消');
   });
 
   it('只有 running 项时取消按钮禁用并提示已发出请求', async () => {
@@ -243,9 +246,9 @@ describe('签到批次（ACC-09）', () => {
     renderPanel();
 
     await userEvent.click(await screen.findByTestId('accounts-checkin-all-workbuddy_desktop'));
-    const panel = await screen.findByTestId('checkin-batch-panel');
-    await waitFor(() => expect(within(panel).getByTestId('checkin-cancel')).toBeDisabled());
-    expect(within(panel).getByTestId('checkin-cancel-hint')).toHaveTextContent('已发出请求，无法取消');
+    const panel = await screen.findByTestId('checkin-run-panel');
+    await waitFor(() => expect(within(panel).getByTestId('checkin-run-cancel')).toBeDisabled());
+    expect(within(panel).getByTestId('checkin-run-cancel-hint')).toHaveTextContent('已发出请求，无法取消');
   });
 
   it('能力矩阵读取失败：显示错误态且不提供可点操作按钮', async () => {

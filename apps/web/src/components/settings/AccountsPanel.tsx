@@ -4,7 +4,8 @@
  *
  * 结构：工具栏（一键签到 / 读取本机账号 / 今日 n/m）→ 六行总览（三个可签到平台 + 三个仅额度来源）。
  * 排序与默认态（§5 拍板）：可签到平台在前、仅额度平台在后；组内维持 `APP_ORDER` / `QUOTA_ROW_ORDER`；默认全折叠。
- * 可签到行头部：平台名 + 「积分 未接入」灰芯片 + 签到芯片三态 + [签到]；账号管理（能力徽标 / AccountCard / 捕获 / 批次面板）收进展开层。
+ * 可签到行头部：平台名 + 「积分 未接入」灰芯片 + 签到芯片三态 + [签到]；账号管理（能力徽标 / AccountCard / 捕获）收进展开层。
+ * ACC-B3：单平台批次改由右栏工作区顶部的 `CheckinRunPanel` 吸顶呈现（进度 done/total + 账号级状态列表，终态无取消行）。
  * 仅额度行：嵌 C2 的 `QuotaRows`，不可展开、无账号操作。
  *
  * testid 口径（映射写进卡评论）：`accounts-app-*` / `accounts-toggle-*` / `accounts-body-*` / `accounts-count-*` /
@@ -14,7 +15,7 @@
  * `accounts-today-summary`（今日合计）、`accounts-overview`（六行容器）；额度侧 `quota-cards`/`quota-card-*` → `quota-rows`/`quota-row-*`。
  *
  * 行为不变：能力矩阵失败不回退本地副本、全部写操作禁用；`POST /api/checkin-runs` 带 Idempotency-Key；
- * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看。折叠行点 [签到] 自动展开（批次面板/通知都在展开层内）。
+ * `409 CHECKIN_BATCH_IN_PROGRESS` 展示已有批次并可查看（该批次同样进右栏吸顶批次条）。
  */
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,7 +24,7 @@ import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { AccountCard, type AccountView } from './AccountCard';
 import { CapabilityBadges } from './CapabilityBadges';
-import { CheckinBatchPanel } from './CheckinBatchPanel';
+import { CheckinRunPanel } from './CheckinRunPanel';
 import { LocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaCreditChip } from './QuotaCards';
@@ -314,6 +315,8 @@ function PlatformRow({
 
   return (
     <div data-testid={`accounts-app-${app}`} data-open={open ? 'true' : 'false'}>
+      {/* ACC-B3：单平台批次吸顶呈现（右栏工作区顶部 sticky，依附 drawer-body 滚动容器；key 换批次重置收起态） */}
+      {batchId !== null && <CheckinRunPanel key={batchId} batchId={batchId} accounts={accounts} />}
       {/* 行头部：平台名 + 积分占位芯片 + 签到芯片 + [签到] */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 py-2">
         <button
@@ -439,8 +442,6 @@ function PlatformRow({
             </button>
           </div>
         )}
-
-        {batchId !== null && <CheckinBatchPanel batchId={batchId} accounts={accounts} onClose={() => setBatchId(null)} />}
       </div>
     </div>
   );

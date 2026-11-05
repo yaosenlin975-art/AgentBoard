@@ -10,6 +10,7 @@ const FILES = [
   'components/settings/AccountCard.tsx',
   'components/settings/OneClickCheckin.tsx',
   'components/settings/CheckinBatchPanel.tsx',
+  'components/settings/CheckinRunPanel.tsx',
 ];
 
 /** 禁止出现的多色相工具类（红只用于破坏性操作，不在此列） */
