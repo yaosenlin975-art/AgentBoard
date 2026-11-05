@@ -207,9 +207,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     ctx.io.write(table(
       ['层级', 'id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
       visible.map((issue) => [
-        issue.tree_context ? '路径' : String(issue.tree_depth), issue.id, issue.status, issue.priority,
+        issue.tree_context ? '路径' : String(issue.tree_depth), issue.id.slice(0, 8), issue.status, issue.priority, // CLI-09：id 列短 ID
         issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', decisionMark(issue), String(issue.comment_count),
-        issue.parent_issue_id ?? '-', `${'  '.repeat(issue.tree_depth)}${issue.tree_depth > 0 ? '↳ ' : ''}${issue.title}`,
+        issue.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09 `${'  '.repeat(issue.tree_depth)}${issue.tree_depth > 0 ? '↳ ' : ''}${issue.title}`,
       ]),
     ));
     return;
@@ -233,14 +233,14 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     table(
       ['id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
       filtered.map((i) => [
-        i.id,
+        i.id.slice(0, 8), // CLI-09：id 列短 ID
         i.status,
         i.priority,
         i.labels.length > 0 ? i.labels.join(',') : '-',
         i.claimed_by ?? '-',
         decisionMark(i),
         String(i.comment_count),
-        i.parent_issue_id ?? '-',
+        i.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
         i.title,
       ]),
     ),

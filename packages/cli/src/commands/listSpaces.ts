@@ -21,5 +21,5 @@ export async function listSpaces(ctx: Ctx, args: ListSpacesArgs = {}): Promise<v
     ctx.io.write('（无工作空间）\n');
     return;
   }
-  ctx.io.write(table(['id', 'name', 'path'], spaces.map((s) => [s.id, s.name, s.path])));
+  ctx.io.write(table(['id', 'name', 'path'], spaces.map((s) => [s.id.slice(0, 8), s.name, s.path]))); // CLI-09：id 列短 ID
 }

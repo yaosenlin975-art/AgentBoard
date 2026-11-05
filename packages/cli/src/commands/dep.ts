@@ -77,7 +77,7 @@ const dependencyLines = (view: DependencyView): string[] => {
   const rows = (items: readonly DependencyRef[]) => items.map(item => [
     item.status,
     item.resolved ? '已解除' : '未解除',
-    item.issue_id,
+    item.issue_id.slice(0, 8), // CLI-09：id 列短 ID
     item.title,
   ]);
   const lines: string[] = [];

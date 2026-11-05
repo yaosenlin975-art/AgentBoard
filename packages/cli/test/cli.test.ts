@@ -323,11 +323,13 @@ describe('list-tasks', () => {
     expect(header).toContain('评论');
     const row = (id: string) => t.out().split('\n').find((r) => r.includes(id))!.split(/\s{2,}/);
     const iss1 = row('iss1');
+    // DEC-4 加「决策」列（占用者后）：评论 5→6（KB-CLI-3b 同步既有偏移遗留；扁平表列序 id0/状态1/优先级2/labels3/占用者4/决策5/评论6）
     expect(iss1[3]).toBe('p1,bug'); // 多标签逗号连接
-    expect(iss1[5]).toBe('2'); // 评论数
+    expect(iss1[5]).toBe('-'); // 无在途决策
+    expect(iss1[6]).toBe('2'); // 评论数
     const iss2 = row('iss2');
     expect(iss2[3]).toBe('-'); // 空标签显示 -
-    expect(iss2[5]).toBe('0');
+    expect(iss2[6]).toBe('0');
   });
 
   it('--workspace 传 id 同样可用', async () => {
@@ -418,8 +420,8 @@ describe('show', () => {
     expect(out).toContain('标签: p1');
     expect(out).toContain('占用者: （未占用）');
     expect(out).toContain('评论（2）:');
-    expect(out).toContain('- [user] 开工前注意兼容旧数据');
-    expect(out).toContain('- [agent:codebuddy] 已完成解析层');
+    expect(out).toMatch(/- \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[user\] 开工前注意兼容旧数据/); // KB-CLI-3b：评论行补时间
+    expect(out).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[agent:codebuddy\] 已完成解析层/);
     expect(out).not.toContain('[新]');
   });
 
@@ -433,8 +435,8 @@ describe('show', () => {
       { method: 'POST', url: '/api/issues/iss1/comments/consume', body: undefined },
     ]);
     const out = t.out();
-    expect(out).toContain('[新] - [agent:codebuddy] 已完成解析层');
-    expect(out).not.toContain('[新] - [user]');
+    expect(out).toMatch(/\[新\] - \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[agent:codebuddy\] 已完成解析层/);
+    expect(out).not.toMatch(/\[新\] - \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[user\]/);
   });
 
   it('show 展示附件名、MIME、大小与服务器URL元数据', async () => {
@@ -522,7 +524,7 @@ describe('claim', () => {
     expect(out).toContain('领取成功（agent: kb-cli）');
     expect(out).toContain('状态: 进行中');
     expect(out).toContain('工作空间路径: D:/ws/frontend');
-    expect(out).toContain('- [user] 开工前注意兼容旧数据');
+    expect(out).toMatch(/- \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[user\] 开工前注意兼容旧数据/); // KB-CLI-3b：评论行补时间
   });
 
   it('KB_AGENT 环境变量覆盖 agent_id', async () => {

@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
+import { formatDateTime } from '../render.js';
 
 /** LOG02：工作区变更日志 CLI（复用 LOG01 的活动/归档 REST 与导入服务端点，不重复实现业务逻辑） */
 
@@ -58,11 +59,7 @@ interface RetireVerdict {
   unparsable: { line: number; text: string }[];
 }
 
-const TIME = (ms: number): string => {
-  const date = new Date(ms);
-  const pad = (value: number): string => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-};
+// CLI-11：时间格式统一走 render.formatDateTime 公共实现（原本地 TIME 删除）
 const query = (params: Record<string, string | number | undefined>): string =>
   new URLSearchParams(
     Object.entries(params)
@@ -72,7 +69,7 @@ const query = (params: Record<string, string | number | undefined>): string =>
 
 function printRecord(ctx: Ctx, record: ChangeLogRecord): void {
   const origin = record.workspace_id === null ? `（归档，原空间 ${record.origin_workspace_name}）` : '';
-  ctx.io.write(`${record.id} [${record.change_type}] ${TIME(record.occurred_at)} rev:${record.revision} by:${record.updated_by}${origin}\n`);
+  ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} by:${record.updated_by}${origin}\n`);
   ctx.io.write(`${record.title}\n`);
   ctx.io.write(`${record.body_md}\n`);
 }
@@ -82,7 +79,7 @@ function printPage(ctx: Ctx, page: PageResponse<ChangeLogRecord>): void {
     ctx.io.write('（无变更日志）\n');
   } else {
     for (const record of page.items) {
-      ctx.io.write(`${record.id} [${record.change_type}] ${TIME(record.occurred_at)} rev:${record.revision} ${record.title}\n`);
+      ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} ${record.title}\n`);
     }
   }
   if (page.next_offset !== null) ctx.io.write(`下一页：--offset ${page.next_offset}\n`);
@@ -255,7 +252,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
       }
       if (page.items.length === 0) ctx.io.write('（无归档变更日志）\n');
       for (const item of page.items) {
-        ctx.io.write(`${item.origin_workspace_id} ${item.origin_workspace_name} ${item.entry_count} 条 最近 ${TIME(item.last_occurred_at)} ${item.origin_workspace_path}\n`);
+        ctx.io.write(`${item.origin_workspace_id} ${item.origin_workspace_name} ${item.entry_count} 条 最近 ${formatDateTime(item.last_occurred_at)} ${item.origin_workspace_path}\n`);
       }
       if (page.next_offset !== null) ctx.io.write(`下一页：--offset ${page.next_offset}\n`);
     });
@@ -316,9 +313,9 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
       }
       ctx.io.write(`源文件: ${preview.source_path}\nSHA-256: ${preview.source_sha256}\n`);
       ctx.io.write(`条目: 解析 ${preview.entry_count} / 新增 ${preview.added.length} / 已导入 ${preview.already_imported.length} / 不一致 ${preview.conflicting.length} / 无法解析 ${preview.unparsable.length}\n`);
-      for (const entry of preview.added) ctx.io.write(`[新增] ${TIME(entry.occurred_at)} ${entry.title}\n`);
-      for (const entry of preview.already_imported) ctx.io.write(`[已导入] ${TIME(entry.occurred_at)} ${entry.title}\n`);
-      for (const entry of preview.conflicting) ctx.io.write(`[不一致] ${TIME(entry.occurred_at)} ${entry.title}\n`);
+      for (const entry of preview.added) ctx.io.write(`[新增] ${formatDateTime(entry.occurred_at)} ${entry.title}\n`);
+      for (const entry of preview.already_imported) ctx.io.write(`[已导入] ${formatDateTime(entry.occurred_at)} ${entry.title}\n`);
+      for (const entry of preview.conflicting) ctx.io.write(`[不一致] ${formatDateTime(entry.occurred_at)} ${entry.title}\n`);
       for (const item of preview.unparsable) ctx.io.write(`[无法解析] 行 ${item.line}: ${item.text}\n`);
       if (preview.added.length > 0) {
         ctx.io.write(`确认后执行：kb changelog import apply --workspace ${workspaceId} --source "${preview.source_path}" --sha ${preview.source_sha256}\n`);

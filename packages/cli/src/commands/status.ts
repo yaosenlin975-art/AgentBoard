@@ -43,7 +43,7 @@ const kindLines = (rows: readonly StatusRow[]): string[] => {
   if (rows.length === 0) return ['（该工作区还没有状态）'];
   const body = table(
     ['排序', '状态名', 'kind', '来源', 'id'],
-    rows.map(row => [String(row.sort_order), row.name, String(row.kind), row.is_builtin === 1 ? '内置' : '自定义', row.id]),
+    rows.map(row => [String(row.sort_order), row.name, String(row.kind), row.is_builtin === 1 ? '内置' : '自定义', row.id.slice(0, 8)]), // CLI-09：id 列短 ID
   ).trimEnd().split('\n');
   return body;
 };
