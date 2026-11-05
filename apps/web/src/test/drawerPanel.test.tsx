@@ -136,3 +136,105 @@ describe('drawer 两态', () => {
     expect(screen.getByTestId('drawer-panel').getAttribute('data-mode')).toBe('squeeze');
   });
 });
+
+describe('点外部关闭（DRAWER-DISMISS）', () => {
+  const renderWithTrigger = () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={client}>
+        <button
+          type="button"
+          data-testid="drawer-trigger"
+          onClick={() => useNavStore.getState().toggleDrawer('accounts')}
+        >
+          账号
+        </button>
+        <DrawerPanel />
+      </QueryClientProvider>,
+    );
+  };
+
+  it('anchored 模式（≥920px）点击面板外任意区域关闭', () => {
+    stubViewport(1440);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+    expect(useNavStore.getState().drawer).toBe('accounts');
+
+    fireEvent.pointerDown(document.body);
+    expect(useNavStore.getState().drawer).toBeNull();
+  });
+
+  it('点击面板内部（含滚动区/内嵌确认框）不关闭', () => {
+    stubViewport(1440);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+
+    fireEvent.pointerDown(screen.getByTestId('drawer-body'));
+    expect(useNavStore.getState().drawer).toBe('accounts');
+
+    fireEvent.pointerDown(screen.getByTestId('drawer-panel'));
+    expect(useNavStore.getState().drawer).toBe('accounts');
+  });
+
+  it('点击打开它的触发按钮不会先关再开', () => {
+    stubViewport(1440);
+    renderWithTrigger();
+    const trigger = screen.getByTestId('drawer-trigger');
+
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(useNavStore.getState().drawer).toBe('accounts');
+
+    // 触发按钮上的 pointerdown 被排除，不抢先关闭（否则随后的 onClick 会再打开 → 闪一下）
+    fireEvent.pointerDown(trigger);
+    expect(useNavStore.getState().drawer).toBe('accounts');
+
+    fireEvent.click(trigger);
+    expect(useNavStore.getState().drawer).toBeNull();
+  });
+
+  it('Esc 关闭并把焦点归还打开它的按钮', () => {
+    stubViewport(1440);
+    renderWithTrigger();
+    const trigger = screen.getByTestId('drawer-trigger');
+
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(useNavStore.getState().drawer).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('存在 portal 出去的内层模态层时，点击外部不连带关闭外层抽屉', () => {
+    stubViewport(1440);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    document.body.appendChild(modal);
+    try {
+      fireEvent.pointerDown(modal);
+      expect(useNavStore.getState().drawer).toBe('accounts');
+      fireEvent.pointerDown(document.body);
+      expect(useNavStore.getState().drawer).toBe('accounts');
+    } finally {
+      modal.remove();
+    }
+  });
+
+  it('窄屏遮罩只走既有 click 一条关闭路径，不重复关闭', () => {
+    stubViewport(375);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('settings'));
+    const backdrop = screen.getByTestId('drawer-backdrop');
+
+    // 遮罩自身的 pointerdown 不关闭（否则同一击会先 pointerdown 关一次、再 click 关一次）
+    fireEvent.pointerDown(backdrop);
+    expect(useNavStore.getState().drawer).toBe('settings');
+
+    fireEvent.click(backdrop);
+    expect(useNavStore.getState().drawer).toBeNull();
+  });
+});

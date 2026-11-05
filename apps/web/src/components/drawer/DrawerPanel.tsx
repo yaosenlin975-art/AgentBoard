@@ -11,6 +11,10 @@
  * 刷新不自动弹出（store 里 drawer 不持久化，`merge` 口径见 navStore 注释）。
  *
  * 动效只走 `transform`/`opacity`，160ms `cubic-bezier(0.2,0,0,1)`，尊重 `prefers-reduced-motion`。
+ *
+ * 关闭路径（DRAWER-DISMISS）：Esc、关闭按钮、窄屏遮罩点击、以及**文档级点外部**（捕获阶段 pointerdown，
+ * 落点排除面板内部 / 触发按钮 / 遮罩自身 / portal 出去的内层模态层）。outside-click 不等 `click`，
+ * 避免点击触发按钮时先关后开。
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavStore, type NavDrawer } from '../../state/navStore';
@@ -104,8 +108,38 @@ export function DrawerPanel() {
         closeDrawer();
       }
     };
+    // DRAWER-DISMISS：文档级「点外部关闭」。用捕获阶段 pointerdown 判定落点，
+    // 避免 click 冒泡顺序导致「先关再开」（触发按钮的 onClick 会在 click 阶段重新打开）。
+    // 以下四类落点不关闭：
+    // 1) 面板内部（含滚动条、下拉、内嵌确认框）；
+    // 2) 打开它的触发按钮（记录 activeElement；body/documentElement 不算触发者，jsdom 下无焦点时即为 body）；
+    // 3) 窄屏遮罩自身——沿用既有 onClick，避免同一次点击触发两次关闭；
+    // 4) 存在别处的模态层（portal 到 body 的内层弹窗），此时点击的是内层，不连带关闭外层抽屉。
+    const isNestedModalOpen = (): boolean => {
+      const panel = panelRef.current;
+      for (const modal of Array.from(document.querySelectorAll('[role="dialog"][aria-modal="true"]'))) {
+        if (panel !== null && panel.contains(modal)) continue;
+        return true;
+      }
+      return false;
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target as Node | null;
+      const panel = panelRef.current;
+      if (target === null || panel === null || panel.contains(target)) return;
+      if (target instanceof Element && target.closest('[data-testid="drawer-backdrop"]') !== null) return;
+      const trigger = returnFocusRef.current;
+      const isRealTrigger = trigger !== null && trigger !== document.body && trigger !== document.documentElement;
+      if (isRealTrigger && trigger.contains(target)) return;
+      if (isNestedModalOpen()) return;
+      closeDrawer();
+    };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+    };
   }, [open, closeDrawer]);
 
   // S4：关闭后焦点回到触发元素（元素已卸载则放弃，不做隐式转移）
