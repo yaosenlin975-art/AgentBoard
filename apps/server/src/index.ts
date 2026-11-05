@@ -25,6 +25,7 @@ import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
 import { attachVoiceWebSocket, type VoiceRouterOptions } from './api/voiceRoutes.js';
 import { appendServerLog, resolveServerLogPath } from './services/serverLog.js';
+import { createKnowledgeDeepLinkRoutes } from './api/knowledgeDeepLinkRoutes.js';
 import type { ManagedAppId } from '@agentboard/shared';
 import type { ExportRunner } from './services/accounts/credentialImport.js';
 import type { QuotaService } from './services/quotas/quotaService.js';
@@ -227,6 +228,8 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
         res.setHeader('Cache-Control', HASHED_ASSET.test(basename(filePath)) ? 'public, max-age=31536000, immutable' : 'no-cache');
       },
     }));
+    // BORROW-3.2：知识深链（/k/:id/:slug 与 /k/:id）——uuid 预检三态（404/410/回壳），先于 SPA fallback
+    app.use(createKnowledgeDeepLinkRoutes(db, webDist));
     // SPA fallback：非 /api 的 GET 落 index.html（HTML 一律 no-cache，允许 304）
     // 根路径显式给 index.html：serve-static 关掉 index 后 `/` 不进 fallback（实测 404），这里补一条
     app.get('/', (_req, res) => {
