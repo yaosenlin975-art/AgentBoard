@@ -52,9 +52,12 @@ describe('KB-PAGE-2 统一 resolve', () => {
     const res = await request(app).get('/api/knowledge/resolve').query({ ref: page.id, scope: 'common' });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ id: page.id, title: '页 A', scope: 'common', status: 'active', revision: 1, redirect_to: null });
-    expect(res.body.link).toEqual({
+    // BORROW-3.1（D10）：link 收敛为引用串；旧对象字段以 link_info 兼容期保留
+    expect(res.body.link).toBe(`knowledge:${page.id}`);
+    expect(res.body.link_info).toEqual({
       id: page.id, scope: 'common', workspace_id: null, slug: 'a-slug',
-      ref: `knowledge:${page.id}`, markdown: `[页 A](knowledge:${page.id})`,
+      ref: `knowledge:${page.id}`, markdown: `[知识卡：页 A](knowledge:${page.id})`,
+      text: `知识卡《页 A》 knowledge:${page.id} · rev:1`,
     });
   });
 
@@ -114,15 +117,17 @@ describe('KB-PAGE-2 统一 resolve', () => {
   it('show 与 search 结果都带 link（KB-PAGE-2 A7）', async () => {
     const page = mk({ scope: 'common' }, 'linked', '带链接页');
     const shown = await request(app).get(`/api/knowledge/pages/${page.id}`).query({ scope: 'common' });
-    expect(shown.body.link.ref).toBe(`knowledge:${page.id}`);
+    expect(shown.body.link).toBe(`knowledge:${page.id}`);
+    expect(shown.body.link_info.markdown).toBe(`[知识卡：带链接页](knowledge:${page.id})`);
     const search = await request(app).get('/api/knowledge/search').query({ scope: 'common', q: 'cache', limit: '5' });
-    expect(search.body[0].link).toMatchObject({ id: page.id, ref: `knowledge:${page.id}`, markdown: `[带链接页](knowledge:${page.id})` });
+    expect(search.body[0].link).toBe(`knowledge:${page.id}`);
+    expect(search.body[0].link_info).toMatchObject({ id: page.id, ref: `knowledge:${page.id}`, markdown: `[知识卡：带链接页](knowledge:${page.id})` });
   });
 
   it('list/create/revise 响应都带 link（KB-PAGE-2b A7 全覆盖）', async () => {
     const page = mk({ scope: 'common' }, 'linked-list', '列表页');
     const list = await request(app).get('/api/knowledge/pages').query({ scope: 'common' });
-    expect(list.body.items[0].link.ref).toBe(`knowledge:${page.id}`);
+    expect(list.body.items[0].link).toBe(`knowledge:${page.id}`);
 
     const created = await request(app).post('/api/knowledge/pages').send({
       domain: 'knowledge', scope: 'common', slug: 'created-link', title: '新建页', body_md: '正文',
@@ -130,11 +135,12 @@ describe('KB-PAGE-2 统一 resolve', () => {
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     });
     expect(created.status).toBe(200);
-    expect(created.body.link.ref).toBe(`knowledge:${created.body.id}`);
+    expect(created.body.link).toBe(`knowledge:${created.body.id}`);
 
     const revised = await request(app).put(`/api/knowledge/pages/${page.id}`).send({ scope: 'common', expected_revision: 1, title: '改名页', actor: 'tester' });
     expect(revised.status).toBe(200);
-    expect(revised.body.link).toMatchObject({ ref: `knowledge:${page.id}`, markdown: `[改名页](knowledge:${page.id})` });
+    expect(revised.body.link).toBe(`knowledge:${page.id}`);
+    expect(revised.body.link_info.text).toBe(`知识卡《改名页》 knowledge:${page.id} · rev:2`);
   });
 
   it('find-source：按当前 revision 的 sources 反查，改名来源后旧路径不再命中', async () => {
@@ -142,7 +148,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
     const hit = await request(app).get('/api/knowledge/find-source').query({ path: 'README.md', scope: 'common' });
     expect(hit.status).toBe(200);
     expect(hit.body.items.map((item: { id: string }) => item.id)).toContain(page.id);
-    expect(hit.body.items[0].link.ref).toBe(`knowledge:${page.id}`);
+    expect(hit.body.items[0].link).toBe(`knowledge:${page.id}`);
 
     const miss = await request(app).get('/api/knowledge/find-source').query({ path: 'NOT-REFERENCED.md', scope: 'common' });
     expect(miss.body.items).toEqual([]);

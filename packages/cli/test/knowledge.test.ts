@@ -239,7 +239,9 @@ describe('knowledge CLI：resolve / link（KB-PAGE-2）', () => {
   const resolved = {
     state: 'resolved', id: 'p-1', title: '缓存策略', scope: 'common', workspace_id: null,
     status: 'active', revision: 3, redirect_to: null,
-    link: { id: 'p-1', scope: 'common', workspace_id: null, slug: 'cache-policy', ref: 'knowledge:p-1', markdown: '[缓存策略](knowledge:p-1)' },
+    // BORROW-3.1（D10）：link 为引用串；旧对象字段移入 link_info（D9 知识卡前缀）
+    link: 'knowledge:p-1',
+    link_info: { id: 'p-1', scope: 'common', workspace_id: null, slug: 'cache-policy', ref: 'knowledge:p-1', markdown: '[知识卡：缓存策略](knowledge:p-1)', text: '知识卡《缓存策略》 knowledge:p-1 · rev:3' },
   };
 
   it('resolve 成功：打印 id/scope/revision/title + link', async () => {
@@ -251,16 +253,17 @@ describe('knowledge CLI：resolve / link（KB-PAGE-2）', () => {
     expect(out).toContain('link: knowledge:p-1');
   });
 
-  it('resolve --json：原样输出服务端对象（含 link.markdown）', async () => {
+  it('resolve --json：原样输出服务端对象（link 为引用串 + link_info 对象）', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(resolved))));
     const stream = io();
     expect(await main(['node', 'kb', '--json', 'knowledge', 'resolve', 'p-1', '--scope', 'common'], stream)).toBe(0);
     const parsed = JSON.parse(stream.out.join(''));
-    expect(parsed.link).toMatchObject({ ref: 'knowledge:p-1', markdown: '[缓存策略](knowledge:p-1)' });
+    expect(parsed.link).toBe('knowledge:p-1');
+    expect(parsed.link_info).toMatchObject({ ref: 'knowledge:p-1', markdown: '[知识卡：缓存策略](knowledge:p-1)' });
   });
 
   it('link：token / markdown / plain 三形态', async () => {
-    for (const [format, expected] of [['token', 'knowledge:p-1'], ['markdown', '[缓存策略](knowledge:p-1)'], ['plain', '缓存策略 knowledge:p-1']] as const) {
+    for (const [format, expected] of [['token', 'knowledge:p-1'], ['markdown', '[知识卡：缓存策略](knowledge:p-1)'], ['plain', '知识卡《缓存策略》 knowledge:p-1 · rev:3']] as const) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(resolved))));
       const stream = io();
       expect(await main(['node', 'kb', 'knowledge', 'link', 'p-1', '--scope', 'common', '--format', format], stream)).toBe(0);

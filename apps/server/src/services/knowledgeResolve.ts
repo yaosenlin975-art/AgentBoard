@@ -10,7 +10,7 @@
  */
 import type { Db } from '../db/connection.js';
 import { ApiError } from '../errors.js';
-import type { KnowledgeScope } from '@agentboard/shared';
+import { KNOWLEDGE_SHORT_ID_LEN, type KnowledgeScope } from '@agentboard/shared';
 import { getKnowledgePage, listKnowledgePageRowsByPrefix, findKnowledgePageIdsBySlug } from '../db/repos/knowledge.js';
 
 /** 引用解析的四种结果（HTTP 状态固定：200 / 404 / 409 / 410） */
@@ -24,8 +24,10 @@ export interface KnowledgeLinkInfo {
   slug: string;
   /** 可直接粘贴/传播的引用串：`knowledge:<uuid>`（不用 slug，slug 会因改名或跨 scope 歧义） */
   ref: string;
-  /** markdown 形态：`[标题](knowledge:<uuid>)` */
+  /** markdown 形态：`[知识卡：标题](knowledge:<uuid>)`（KB-PAGE-4 A8 口径） */
   markdown: string;
+  /** 纯文本形态：`知识卡《标题》 knowledge:<uuid> · rev:<n>`（D9；带 revision 时含 rev 段） */
+  text: string;
 }
 
 export interface KnowledgeResolvedPage {
@@ -36,7 +38,10 @@ export interface KnowledgeResolvedPage {
   workspace_id: string | null;
   status: 'active' | 'archived';
   revision: number;
-  link: KnowledgeLinkInfo;
+  /** BORROW-3.1（D10）：引用串（字符串） */
+  link: string;
+  /** 旧 link 对象字段，兼容期保留 */
+  link_info: KnowledgeLinkInfo;
   redirect_to: null;
 }
 
@@ -50,8 +55,8 @@ export interface KnowledgeResolveFailure {
 
 export type KnowledgeResolveResult = KnowledgeResolvedPage | KnowledgeResolveFailure;
 
-/** 生成链接信息（页面/搜索结果/CLI 文本共用同一份，避免各端拼串） */
-export function knowledgeLink(page: { id: string; title: string; slug: string; scope: 'common' | 'workspace'; workspace_id: string | null }): KnowledgeLinkInfo {
+/** 生成链接信息（页面/搜索结果/CLI 文本共用同一份，避免各端拼串）；带 revision 时纯文本含 rev 段 */
+export function knowledgeLink(page: { id: string; title: string; slug: string; scope: 'common' | 'workspace'; workspace_id: string | null; revision?: number }): KnowledgeLinkInfo {
   const ref = `knowledge:${page.id}`;
   return {
     id: page.id,
@@ -59,8 +64,15 @@ export function knowledgeLink(page: { id: string; title: string; slug: string; s
     workspace_id: page.workspace_id,
     slug: page.slug,
     ref,
-    markdown: `[${page.title}](${ref})`,
+    markdown: `[知识卡：${page.title}](${ref})`,
+    text: `知识卡《${page.title}》 knowledge:${page.id}${page.revision === undefined ? '' : ` · rev:${page.revision}`}`,
   };
+}
+
+/** BORROW-3.1（D10）：link 收敛为引用串（字符串），旧对象以 link_info 兼容期保留 */
+export function knowledgeLinkFields(page: Parameters<typeof knowledgeLink>[0]): { link: string; link_info: KnowledgeLinkInfo } {
+  const info = knowledgeLink(page);
+  return { link: info.ref, link_info: info };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -102,13 +114,13 @@ export function resolveKnowledgeRef(
       workspace_id: page.workspace_id,
       status: page.status === 'archived' ? 'archived' : 'active',
       revision: page.revision,
-      link: knowledgeLink(page),
+      ...knowledgeLinkFields(page),
       redirect_to: null,
     };
   }
 
-  // ② ≥8 位 id 前缀：唯一才算命中，多命中 → 歧义
-  if (/^[0-9a-f]{8,}$/i.test(ref)) {
+  // ② 短 ID：KNOWLEDGE_SHORT_ID_LEN 位起的前缀，唯一才算命中，多命中 → 歧义（长度常量单源）
+  if (new RegExp(`^[0-9a-f]{${KNOWLEDGE_SHORT_ID_LEN},}$`, 'i').test(ref)) {
     const rows = listKnowledgePageRowsByPrefix(db, ref, input.scope);
     const live = rows.filter((row: { status: string }) => row.status !== 'deleted');
     if (live.length > 1) return { state: 'ambiguous', message: `id 前缀 ${ref} 命中 ${live.length} 页，请用完整 id`, candidates: live.map((row: { id: string }) => row.id) };

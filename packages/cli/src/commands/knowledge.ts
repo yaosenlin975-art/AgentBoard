@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { CommanderError, type Command } from 'commander';
-import { request } from '../api.js';
+import { request, CliHttpError } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
 import { KNOWLEDGE_DOMAIN_HINT } from '@agentboard/shared';
@@ -16,7 +16,12 @@ async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{
   // B：缺省按 cwd 解析当前工作区（与 list-tasks 同一解析器）；显式 --workspace 仍覆盖
   return { scope: opts.scope, workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) };
 }
-const linkRef = (raw: unknown): string | undefined => (raw as { link?: { ref?: string } }).link?.ref;
+const linkRef = (raw: unknown): string | undefined => {
+  // BORROW-3.1（D10）：link 已是字符串；兼容期容忍旧对象 {ref}
+  const link = (raw as { link?: unknown }).link;
+  if (typeof link === 'string') return link;
+  return (link as { ref?: string } | undefined)?.ref;
+};
 const pageLine = (raw: unknown): string => { const p = raw as Record<string, unknown>; const link = linkRef(raw); return `${p.page_id ?? p.id} [${p.scope}] rev:${p.revision} ${p.title}${link ? `  link: ${link}` : ''}${p.snippet ? `\n${p.snippet}` : ''}`; };
 function output(ctx: Ctx, data: unknown): void {
   if (ctx.json) { ctx.io.write(`${JSON.stringify(data, null, 2)}\n`); return; }
@@ -377,12 +382,20 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const ctx = context();
       try {
         const scope = await scopeFor(ctx, opts, true);
-        const res = await request<{ id: string; title: string; scope: string; revision: number; status: string; link: { ref: string; markdown: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref })}`);
+        const res = await request<{ id: string; title: string; scope: string; revision: number; status: string; link: string; link_info: { markdown: string; text: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref })}`);
         if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
         ctx.io.write(`${res.id} [${res.scope}] rev:${res.revision} ${res.title}\n`);
-        ctx.io.write(`link: ${res.link.ref}\n`);
+        ctx.io.write(`link: ${linkRef(res)}\n`);
       } catch (error) {
         ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        // BORROW-3.1（CLI-07）：resolve 409 歧义 → 打印候选 id 列表（服务端 details.candidates）
+        if (error instanceof CliHttpError && error.code === 'KNOWLEDGE_REF_AMBIGUOUS') {
+          const candidates = (error.details as { candidates?: string[] } | undefined)?.candidates;
+          if (Array.isArray(candidates) && candidates.length > 0) {
+            ctx.io.writeErr(`候选（${candidates.length} 个）：\n`);
+            for (const candidate of candidates) ctx.io.writeErr(`  ${candidate}\n`);
+          }
+        }
         throw new CommanderError(resolveExit(error), 'agentboard.knowledge.resolve', '');
       }
     });
@@ -398,9 +411,15 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const format = validateFormat(opts.format);
       try {
         const scope = await scopeFor(ctx, opts, true);
-        const res = await request<{ id: string; title: string; link: { ref: string; markdown: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
+        const res = await request<{ id: string; title: string; link: string; link_info: { markdown: string; text: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
         if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
-        const text = format === 'markdown' ? res.link.markdown : format === 'plain' ? `${res.title} ${res.link.ref}` : res.link.ref;
+        const info = (res as { link_info?: { markdown: string; text: string } }).link_info;
+        const ref = linkRef(res) ?? '';
+        const text = format === 'markdown'
+          ? (info?.markdown ?? `[知识卡：${res.title}](${ref})`)
+          : format === 'plain'
+            ? (info?.text ?? `知识卡《${res.title}》 ${ref}`)
+            : ref;
         ctx.io.write(`${text}\n`);
       } catch (error) {
         ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);

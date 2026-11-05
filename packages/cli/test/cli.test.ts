@@ -1534,3 +1534,51 @@ describe('幂等键透传（CLI-IDEM）', () => {
     expect(t.err()).toBe('该幂等键已用于不同请求\n');
   });
 });
+
+describe('knowledge resolve/link（BORROW-3.1 D10 + CLI-07）', () => {
+  const PAGE_200 = {
+    id: 'p1', title: '标题页', scope: 'common', revision: 3, status: 'active', redirect_to: null,
+    link: 'knowledge:p1',
+    link_info: { id: 'p1', scope: 'common', workspace_id: null, slug: 't', ref: 'knowledge:p1', markdown: '[知识卡：标题页](knowledge:p1)', text: '知识卡《标题页》 knowledge:p1 · rev:3' },
+  };
+
+  it('resolve 200：link 行输出引用串（字符串字段）', async () => {
+    handler = (m, u) => (m === 'GET' && u.startsWith('/api/knowledge/resolve?') ? { status: 200, body: PAGE_200 } : undefined);
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'knowledge', 'resolve', 'p1', '--scope', 'common'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('p1 [common] rev:3 标题页');
+    expect(t.out()).toContain('link: knowledge:p1');
+  });
+
+  it('resolve 409 歧义：退出码 2 且错误流打印候选 id 列表（CLI-07）', async () => {
+    handler = (m, u) => (m === 'GET' && u.startsWith('/api/knowledge/resolve?')
+      ? { status: 409, body: { error: { code: 'KNOWLEDGE_REF_AMBIGUOUS', message: 'id 前缀 deadbeef 命中 2 页，请用完整 id', details: { candidates: ['deadbeef-0000-4000-8000-000000000001', 'deadbeef-0000-4000-8000-000000000002'] } } } }
+      : undefined);
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'knowledge', 'resolve', 'deadbeef', '--scope', 'common'], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toContain('命中 2 页');
+    expect(t.err()).toContain('候选（2 个）：');
+    expect(t.err()).toContain('deadbeef-0000-4000-8000-000000000001');
+    expect(t.err()).toContain('deadbeef-0000-4000-8000-000000000002');
+  });
+
+  it('link --format plain：输出服务端「知识卡《》」纯文本（D9）；markdown/token 同源', async () => {
+    handler = (m, u) => (m === 'GET' && u.startsWith('/api/knowledge/resolve?') ? { status: 200, body: PAGE_200 } : undefined);
+    const plain = makeIo();
+    const codePlain = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common', '--format', 'plain'], plain.io);
+    expect(codePlain).toBe(0);
+    expect(plain.out()).toBe('知识卡《标题页》 knowledge:p1 · rev:3\n');
+
+    const md = makeIo();
+    const codeMd = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common', '--format', 'markdown'], md.io);
+    expect(codeMd).toBe(0);
+    expect(md.out()).toBe('[知识卡：标题页](knowledge:p1)\n');
+
+    const token = makeIo();
+    const codeToken = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common'], token.io);
+    expect(codeToken).toBe(0);
+    expect(token.out()).toBe('knowledge:p1\n');
+  });
+});
