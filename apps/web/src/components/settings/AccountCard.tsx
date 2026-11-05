@@ -14,6 +14,11 @@
  * → 成功失效重拉列表；失败只给中文主文案，裸码进 title。删除只清 AgentBoard 记录与本机 DPAPI 快照，
  * 不退出客户端登录，所以 `is_current=true` 不阻塞删除，仅在确认行追加警示。
  *
+ * ACC-B4 切换就地确认与切换态：点「切换为客户端登录账号」→ 卡片内展开确认行（3 秒未确认自动收回，
+ * 不弹全局层）；确认后进入切换中（operation 未到终态期间本卡动作按钮禁用，状态复用
+ * AccountOperationStatus / operation 轮询）；成功失效重拉后 is_current 芯片转移；失败给中文原因
+ * （沿用 reasonCode 中文化映射），无映射裸码只进三级「技术信息」，不进卡面。
+ *
  * ACC-14 两个「当前」必须分开表达：
  * - **客户端当前**（`accounts-client-current-*`）= 桌面客户端此刻登录的账号（服务端 `is_current`，来自 capture/switch 领域）；
  * - **签到当前**（`accounts-checkin-current-*`）= 一键签到会提交的账号（app 签到能力可用 + 账号启用 + 账号签到能力非 unsupported）；
@@ -55,6 +60,9 @@ export type AccountView = PublicManagedAccount & { is_current: boolean | null };
 
 /** 删除二次确认的窗口：3 秒内不点「确认删除」就自动收回（设计 §7） */
 const DELETE_CONFIRM_WINDOW_MS = 3_000;
+
+/** 切换就地确认的窗口：3 秒内不点「确认切换」就自动收回（ACC-B4，与删除同窗口） */
+const SWITCH_CONFIRM_WINDOW_MS = 3_000;
 
 /** 删除失败的中文口径；裸码不进主文案，只进 title（ACC-REASON-01） */
 const DELETE_FAIL_LABEL: Record<string, string> = {
@@ -103,6 +111,8 @@ export function AccountCard({
   const [operationId, setOperationId] = useState<string | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** ACC-B4：切换失败的原始原因码；主文案走中文映射，裸码只进 title 与三级技术信息 */
+  const [switchErrorCode, setSwitchErrorCode] = useState<string | null>(null);
   const [deleteConfirming, setDeleteConfirming] = useState(false);
   const [deleteErrorCode, setDeleteErrorCode] = useState<string | null>(null);
   const [restoreErrorCode, setRestoreErrorCode] = useState<string | null>(null);
@@ -127,12 +137,16 @@ export function AccountCard({
     mutationFn: () => api.post<{ operation_id: string; operation: AccountOperation }>(`/api/managed-accounts/${account.id}/switch`, {}),
     onSuccess: (result) => {
       setError(null);
+      setSwitchErrorCode(null);
       setConfirming(false);
       setOperationId(result.operation_id);
     },
     onError: (e) => {
+      // ACC-B4：回到未切换态 + 中文原因（沿用 reasonCode 映射）；裸码不进卡面，只进 title 与三级技术信息
       setConfirming(false);
-      setError(`${reasonLabel(reasonCodeOf(e))}：${e instanceof Error ? e.message : '切换失败'}`);
+      const code = reasonCodeOf(e);
+      setSwitchErrorCode(code);
+      setError(code === null ? '切换失败' : reasonLabel(code));
       setOperationId(null);
     },
   });
@@ -158,6 +172,13 @@ export function AccountCard({
     return () => clearTimeout(timer);
   }, [deleteConfirming, deleteMutation.isPending]);
 
+  // ACC-B4：切换就地确认 3 秒未确认自动收回（与删除确认同窗口）；确认请求在途时不收回
+  useEffect(() => {
+    if (!confirming || switchMutation.isPending) return;
+    const timer = setTimeout(() => setConfirming(false), SWITCH_CONFIRM_WINDOW_MS);
+    return () => clearTimeout(timer);
+  }, [confirming, switchMutation.isPending]);
+
   const operationQuery = useQuery({
     queryKey: ['account-operation', operationId],
     queryFn: () => api.get<AccountOperation>(`/api/account-operations/${operationId}`),
@@ -181,6 +202,15 @@ export function AccountCard({
     if (operationState === null || !isTerminalState(operationState)) return;
     void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
   }, [operationState, queryClient]);
+
+  /**
+   * ACC-B4 切换态：确认请求在途（operationId 还没发下来）或 operation 未到终态都算「切换中」。
+   * 期间本卡动作按钮统一禁用，防止重复发起；进行中状态由 AccountOperationStatus 呈现。
+   */
+  const switching = switchMutation.isPending
+    || (operationId !== null && (operation === null || !isTerminalState(operation.state)));
+  /** 三级技术信息里的失败原因码：切换请求失败码优先，其次 operation 的安全错误码 */
+  const techErrorCode = switchErrorCode ?? operation?.safe_error_code ?? null;
 
   // ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出）
   const badge = capabilityBadge(capability);
@@ -206,13 +236,15 @@ export function AccountCard({
 
   const switchBlocked = capability?.switch !== true || account.is_current === true || frozen;
   // ACC-SWITCH：不能切的平台必须给出可见原因 + 出路，不能只留一个禁用按钮
-  const switchTitle = capability?.switch !== true
-    ? `该平台暂不支持切换：${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}），需手动在客户端切换`
-    : account.is_current === true
-      ? '该账号已是客户端当前登录账号'
-      : frozen
-        ? '上次切换需要恢复，已冻结该账号的切换'
-        : '切换到该账号作为桌面客户端登录账号';
+  const switchTitle = switching
+    ? '切换进行中，等待当前操作完成后才能再次切换'
+    : capability?.switch !== true
+      ? `该平台暂不支持切换：${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}），需手动在客户端切换`
+      : account.is_current === true
+        ? '该账号已是客户端当前登录账号'
+        : frozen
+          ? '上次切换需要恢复，已冻结该账号的切换'
+          : '切换到该账号作为桌面客户端登录账号';
   const participation = checkinParticipation(account, capability);
   // ACC-CHECKIN：缺签到凭据 / 平台能力不可用 / 账号停用时按钮直接禁用，原因进 title
   const checkinEnabled = participation.participates && onCheckin !== undefined;
@@ -281,9 +313,9 @@ export function AccountCard({
             type="button"
             data-testid={`accounts-switch-${account.id}`}
             className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
-            disabled={switchBlocked || switchMutation.isPending}
+            disabled={switchBlocked || switching}
             title={switchTitle}
-            onClick={() => { setError(null); setConfirming(true); }}
+            onClick={() => { setError(null); setSwitchErrorCode(null); setConfirming(true); }}
           >
             切换为客户端登录账号
           </button>
@@ -291,7 +323,7 @@ export function AccountCard({
             type="button"
             data-testid={`accounts-checkin-${account.id}`}
             className={BTN_QUIET}
-            disabled={!checkinEnabled}
+            disabled={!checkinEnabled || switching}
             title={checkinTitle}
             onClick={() => { if (checkinEnabled) onCheckin?.(); }}
           >
@@ -302,7 +334,7 @@ export function AccountCard({
             type="button"
             data-testid={`accounts-enabled-toggle-${account.id}`}
             className={BTN_QUIET}
-            disabled={!toggle.allowed || toggleEnabledMutation.isPending}
+            disabled={!toggle.allowed || toggleEnabledMutation.isPending || switching}
             title={
               toggle.allowed
                 ? toggle.nextEnabled
@@ -318,7 +350,7 @@ export function AccountCard({
             type="button"
             data-testid={`accounts-delete-${account.id}`}
             className={BTN_QUIET}
-            disabled={muted || deleteMutation.isPending}
+            disabled={muted || deleteMutation.isPending || switching}
             title={
               muted
                 ? '能力矩阵未就绪，暂时不能删除账号'
@@ -355,6 +387,13 @@ export function AccountCard({
           <dt>实例</dt><dd className="break-all font-mono">{account.client_instance_id}</dd>
           <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
           <dt>最近签到</dt><dd>{lastCheckinLabel(account)}</dd>
+          {/* ACC-B4：切换失败的原始原因码（含无映射裸码）只进三级技术信息，不进卡面 */}
+          {techErrorCode !== null && (
+            <>
+              <dt>技术码</dt>
+              <dd data-testid={`accounts-tech-code-${account.id}`} className="break-all font-mono" title={techErrorCode}>{techErrorCode}</dd>
+            </>
+          )}
         </dl>
       </details>
 
@@ -410,17 +449,28 @@ export function AccountCard({
 
       {confirming && (
         <div data-testid="accounts-switch-confirm" role="group" aria-label="确认切换账号" className="mt-2 rounded-lg border border-hairline bg-surface-raised p-2.5 text-xs text-ink">
-          <p>确认切换到「{account.display_name}」作为桌面客户端登录账号？切换会重启目标客户端，进行中的会话可能中断。</p>
-          <div className="mt-2 flex flex-wrap gap-2">
+          <p>确认切换到「{account.display_name}」作为桌面客户端登录账号？切换后客户端将以该账号登录，目标客户端会重启，进行中的会话可能中断。</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <button type="button" data-testid="accounts-switch-confirm-yes" className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`} disabled={switchMutation.isPending} onClick={() => switchMutation.mutate()}>
-              确认切换
+              {switchMutation.isPending ? '切换中…' : '确认切换'}
             </button>
             <button type="button" className={BTN_QUIET} onClick={() => setConfirming(false)}>取消</button>
+            <span className="text-xs text-ink-3">3 秒内未确认会自动收回</span>
           </div>
         </div>
       )}
 
-      {error !== null && <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
+      {error !== null && (
+        <p
+          role="alert"
+          data-testid={`accounts-switch-error-${account.id}`}
+          data-code={switchErrorCode ?? undefined}
+          title={switchErrorCode ?? undefined}
+          className="mt-1 text-xs text-red-600 dark:text-red-400"
+        >
+          {error}
+        </p>
+      )}
 
       {/* ACC-KB-B4W：recovery_required 给出可操作的下一步（指向 restore），而不是只显示失败 */}
       {needsRecovery && (
