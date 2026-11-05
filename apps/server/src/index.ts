@@ -49,6 +49,7 @@ import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
 import { startAwaitingSweeper } from './services/turnAwaiting.js';
+import { startDecisionReminderTicker } from './services/decisionReminder.js';
 import { SERVER_VERSION } from './version.js';
 import {
   AttachmentStore,
@@ -374,6 +375,11 @@ export async function main(): Promise<StartedServer> {
 
   // CHAT-AWAIT1：阻塞态心跳 + 超时兜底（周期刷新 awaiting 心跳；超阈值收口 failed(awaiting_timeout)）
   startAwaitingSweeper(db, event => hub.broadcast(event));
+  // DEC-8：锁后分级提醒（4h/24h/72h，档位只前进不重复；不改决策状态、不自动解锁）
+  startDecisionReminderTicker(db, {
+    broadcast: event => hub.broadcast(event),
+    onRemind: entry => appendServerLog(`decision-reminder ${entry.decision_id} level=${entry.to_level}(${entry.label}) issue=${entry.issue_id}`),
+  });
 
   const server = createServer(app);
   // VOICE-2：语音会话 WS 必须先于 hub 注册（hub 会 destroy 非 /ws 的 upgrade）

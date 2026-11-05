@@ -90,8 +90,13 @@ const listQuerySchema = z.object({
   workspace_id: z.string().optional(),
   issue_id: z.string().optional(),
   state: z.enum(['grace', 'open', 'answered', 'withdrawn']).optional(),
-  stale: z.enum(['true', 'false']).optional(),
+  /** DEC-8 卡面口径 `stale=1`；兼容 DEC-3/CLI 已有的 `stale=true` */
+  stale: z.enum(['true', 'false', '1', '0']).optional(),
   limit: z.string().optional(),
+});
+
+const statsQuerySchema = z.object({
+  days: z.string().optional(),
 });
 
 function zodInput<T>(schema: z.ZodType<T>, input: unknown): T {
@@ -105,6 +110,15 @@ function zodInput<T>(schema: z.ZodType<T>, input: unknown): T {
 
 function emit(deps: DecisionRouterDeps, event: DecisionEvent): void {
   deps.broadcast?.(event);
+}
+
+/** DEC-8 统计：中位数（空集返回 null；偶数取中间两值均值并取整秒） */
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid]!;
+  return Math.round((sorted[mid - 1]! + sorted[mid]!) / 2);
 }
 
 /** 卡面锁标识走既有 issue.changed（§5.3）：读最新投影后原样广播，前端无需新事件名 */
@@ -259,7 +273,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
       workspace_id: query.workspace_id,
       ...(query.issue_id === undefined ? {} : { issue_id: query.issue_id }),
       ...(states === undefined ? {} : { states }),
-      ...(query.stale === 'true' ? { stale_before: Date.now() - 72 * 3600 * 1000 } : {}),
+      ...(query.stale === 'true' || query.stale === '1' ? { stale_before: Date.now() - 72 * 3600 * 1000 } : {}),
       ...(limit === undefined ? {} : { limit }),
     });
     res.json({ decisions: items, counts: countDecisions(deps.db, query.workspace_id) });
@@ -321,6 +335,67 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.get('/workspaces/:workspaceId/decisions/count', (req, res) => {
     res.json(countDecisions(deps.db, String(req.params.workspaceId)));
+  });
+
+  /**
+   * DEC-8：统计端点（设计 §3.3 手段 4）。口径：
+   * - 窗口 `days`（默认 7，1–365）按 `created_at` 截取；
+   * - 回答率 = 窗口内新建中 state='answered' 的比例（撤回/未回答都算未回答）；
+   * - 中位等待 = 窗口内已回答决策的 `answered_at - created_at`（秒），空集为 null；
+   * - 分布按 `created_by`（agent）与 `trigger`；
+   * - 额外给当前快照（grace/open/stale_open/answered_recent），数值与 `/decisions/count` 同源。
+   * 供后续 `kb decisions --stats` 消费（本卡目标文件集不含 packages/cli，CLI 侧留给后续卡）。
+   */
+  router.get('/workspaces/:workspaceId/decisions/stats', (req, res) => {
+    const workspaceId = String(req.params.workspaceId);
+    const query = zodInput(statsQuerySchema, req.query);
+    const days = query.days === undefined ? 7 : Number(query.days);
+    if (!Number.isSafeInteger(days) || days < 1 || days > 365) throw new ValidationError('days 需为 1–365 的整数');
+    const now = Date.now();
+    const since = now - days * 24 * 3600 * 1000;
+    const created = (deps.db
+      .prepare('SELECT COUNT(*) AS n FROM issue_decision WHERE workspace_id=? AND created_at>=?')
+      .get(workspaceId, since) as { n: number }).n;
+    const answered = (deps.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM issue_decision
+          WHERE workspace_id=? AND created_at>=? AND state='answered' AND answered_at IS NOT NULL`,
+      )
+      .get(workspaceId, since) as { n: number }).n;
+    const waits = (deps.db
+      .prepare(
+        `SELECT (answered_at - created_at) AS wait_ms FROM issue_decision
+          WHERE workspace_id=? AND created_at>=? AND state='answered' AND answered_at IS NOT NULL`,
+      )
+      .all(workspaceId, since) as Array<{ wait_ms: number }>).map((row) => row.wait_ms);
+    const byAgent = (deps.db
+      .prepare(
+        `SELECT created_by AS agent_id,
+                COUNT(*) AS created,
+                SUM(CASE WHEN state='answered' THEN 1 ELSE 0 END) AS answered
+           FROM issue_decision WHERE workspace_id=? AND created_at>=?
+          GROUP BY created_by ORDER BY created DESC, agent_id ASC`,
+      )
+      .all(workspaceId, since) as Array<{ agent_id: string; created: number; answered: number | null }>);
+    const byTrigger = (deps.db
+      .prepare(
+        `SELECT trigger, COUNT(*) AS count FROM issue_decision
+          WHERE workspace_id=? AND created_at>=?
+          GROUP BY trigger ORDER BY count DESC, trigger ASC`,
+      )
+      .all(workspaceId, since) as Array<{ trigger: string; count: number }>);
+    res.json({
+      workspace_id: workspaceId,
+      window_days: days,
+      since,
+      created,
+      answered,
+      answer_rate: created === 0 ? null : Number((answered / created).toFixed(3)),
+      median_wait_seconds: median(waits) === null ? null : Math.round((median(waits) as number) / 1000),
+      by_agent: byAgent.map((row) => ({ agent_id: row.agent_id, created: row.created, answered: row.answered ?? 0 })),
+      by_trigger: byTrigger,
+      open: countDecisions(deps.db, workspaceId, now),
+    });
   });
 
   return router;
