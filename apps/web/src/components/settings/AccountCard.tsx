@@ -11,8 +11,14 @@
  * - 三级（技术信息）：`<details>` 默认折叠，收纳 平台能力徽标 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照。
  *
  * ACC-DEL-02 删除是两步流：点「删除」→ 行内「确认删除」（3 秒未确认自动收回）→ `DELETE /api/managed-accounts/:id`
- * → 成功失效重拉列表；失败只给中文主文案，裸码进 title。删除只清 AgentBoard 记录与本机 DPAPI 快照，
- * 不退出客户端登录，所以 `is_current=true` 不阻塞删除，仅在确认行追加警示。
+ * → 成功失效重拉列表。删除只清 AgentBoard 记录与本机 DPAPI 快照，不退出客户端登录，
+ * 所以 `is_current=true` 不阻塞删除，仅在确认行追加警示。
+ *
+ * ACC-B5 删除确认增强（口径：原型 `.acard-confirm / .acard-error`）：确认行带 3 秒倒计时收缩条
+ * （`.ab-countdown`，色走 --ab-del 令牌，与收回定时器同周期）；三种 409（ACCOUNT_BUSY /
+ * CHECKIN_AUTHORIZATION_EXISTS / RECOVERY_REQUIRED）给删除语境的中文主文案，其余错误走 reasonLabel
+ * 通用中文原因；失败裸码不进主文案，进 title 与三级「技术信息」技术码行（优先于切换/operation 码）；
+ * 失败后卡片与选中态不变，删除按钮可再次操作。
  *
  * ACC-B4 切换就地确认与切换态：点「切换为客户端登录账号」→ 卡片内展开确认行（3 秒未确认自动收回，
  * 不弹全局层）；确认后进入切换中（operation 未到终态期间本卡动作按钮禁用，状态复用
@@ -209,8 +215,8 @@ export function AccountCard({
    */
   const switching = switchMutation.isPending
     || (operationId !== null && (operation === null || !isTerminalState(operation.state)));
-  /** 三级技术信息里的失败原因码：切换请求失败码优先，其次 operation 的安全错误码 */
-  const techErrorCode = switchErrorCode ?? operation?.safe_error_code ?? null;
+  /** 三级技术信息里的失败原因码：删除请求失败码优先（最近的用户动作），其次切换失败码与 operation 的安全错误码 */
+  const techErrorCode = deleteErrorCode ?? switchErrorCode ?? operation?.safe_error_code ?? null;
 
   // ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出）
   const badge = capabilityBadge(capability);
@@ -437,6 +443,8 @@ export function AccountCard({
             </button>
             <button type="button" className={BTN_QUIET} onClick={() => setDeleteConfirming(false)}>取消</button>
             <span className="text-xs text-ink-3">3 秒内未确认会自动收回</span>
+            {/* ACC-B5：3 秒倒计时收缩条（.ab-countdown，与上方收回定时器同周期；纯装饰，aria-hidden） */}
+            <span aria-hidden="true" data-testid={`accounts-delete-countdown-${account.id}`} className="ml-auto ab-countdown" />
           </div>
         </div>
       )}

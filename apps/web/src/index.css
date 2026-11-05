@@ -458,6 +458,36 @@ optgroup {
 }
 
 /*
+ * ACC-B5：删除就地确认的 3 秒倒计时收缩条（原型 b-console .countdown 同构）。
+ * 轨道 --ab-del-soft / 进条 --ab-del，scaleX 1→0 共 3 秒 linear，与确认行的收回定时器同周期。
+ */
+.ab-countdown {
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ab-del-soft);
+  overflow: hidden;
+}
+.ab-countdown::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--ab-del);
+  transform-origin: left center;
+  animation: ab-countdown 3s linear forwards;
+}
+@keyframes ab-countdown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/*
  * CHAT-VIS1：diff 行级底色。文字走 --ab-add / --ab-del（亮暗两套都定义、对比度 ≥ 4.5:1），
  * 底色取同一色的低透明度形态 --ab-*-soft，组件里不写死色值。
  */
