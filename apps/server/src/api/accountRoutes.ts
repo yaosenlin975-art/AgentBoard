@@ -44,8 +44,8 @@ export interface AccountRouterDeps {
   checkinProvider?: CheckinProviderSpec;
   /** ACC-12：按平台注入的签到 provider（优先于单个 checkinProvider） */
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
-  /** ACC-13：minimax 等按平台的桌面 provider（capture/switch） */
-  desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>;
+  /** ACC-13：按平台的桌面 provider（capture/switch）；ACC-GET 起允许「只有捕获」的实现（如 Trae） */
+  desktopProviders?: Partial<Record<ManagedAppId, DesktopProvider>>;
   vault?: CheckinVault;
   /** ACC-KB-B2S：协议级「添加账号」的 provider（按平台注入；未注入时加号端点 409 PROVIDER_UNVERIFIED） */
   addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>;
@@ -81,12 +81,13 @@ const batchCreateSchema = z.object({
   account_ids: z.array(z.string().uuid()).min(1).max(50),
 }).strict().refine(v => new Set(v.account_ids).size === v.account_ids.length, 'account_ids 不能重复');
 
-type DesktopProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>;
+export type DesktopCaptureProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent'>;
+export type DesktopSwitchProvider = Pick<WorkbuddyDesktopProvider, 'switchAccount'>;
+/** ACC-GET：捕获与切换不再强制同时存在（Trae 只有捕获能力，registry 的 switch=false 会先拦住切换） */
+export type DesktopProvider = Partial<DesktopCaptureProvider & DesktopSwitchProvider>;
 
-/** ACC-13：按平台解析桌面 provider；minimax 从注入表取，workbuddy 走既有字段 */
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): DesktopProvider {
-  const capability = accountProviderCapability(app);
-  if (!capability || !capability[action]) throw new ApiError(409, 'PROVIDER_UNVERIFIED', `该产品的${action === 'capture' ? '捕获' : '切换'}能力未验证`, capability ? { reason_code: capability.reason_code } : undefined);
+/** ACC-13：按平台解析桌面 provider；minimax/trae 从注入表取，workbuddy 走既有字段 */
+function resolveDesktopProvider(app: ManagedAppId, deps: AccountRouterDeps): DesktopProvider {
   const injected = deps.desktopProviders?.[app];
   if (injected) return injected;
   if (app === 'workbuddy_desktop') {
@@ -94,6 +95,22 @@ function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'ca
     return deps.workbuddy;
   }
   throw new ApiError(503, 'PROVIDER_UNAVAILABLE', '该产品的桌面 provider 未装配');
+}
+
+/** ACC-GET：能力表说「可用」就必须真有对应方法；缺方法时仍是 503（能力/行为不一致的兜底） */
+function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture'): DesktopCaptureProvider;
+function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'switch'): DesktopSwitchProvider;
+function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): DesktopCaptureProvider | DesktopSwitchProvider {
+  const capability = accountProviderCapability(app);
+  if (!capability || !capability[action]) throw new ApiError(409, 'PROVIDER_UNVERIFIED', `该产品的${action === 'capture' ? '捕获' : '切换'}能力未验证`, capability ? { reason_code: capability.reason_code } : undefined);
+  const provider = resolveDesktopProvider(app, deps);
+  // 不能重新包一层对象：方法里会用到 this（db/vault 等），必须保持原 provider 的接收者
+  if (action === 'capture') {
+    if (!provider.captureCurrent) throw new ApiError(503, 'PROVIDER_UNAVAILABLE', '该产品的桌面捕获 provider 未装配');
+    return provider as DesktopCaptureProvider;
+  }
+  if (!provider.switchAccount) throw new ApiError(503, 'PROVIDER_UNAVAILABLE', '该产品的桌面切换 provider 未装配');
+  return provider as DesktopSwitchProvider;
 }
 
 /**

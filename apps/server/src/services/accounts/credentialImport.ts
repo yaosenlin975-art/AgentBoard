@@ -112,13 +112,17 @@ export function buildExportArgs(scriptPath: string, platform: ExportPlatform): s
   return [scriptPath, '--platform', platform, '--json'];
 }
 
-function defaultRunner(options: { pythonCommand: string; scriptPath: string; timeoutMs: number }): ExportRunner {
+/** ACC-GET：导出脚本 runner 的默认实现（供凭据导入与「捕获时解析签到 token」共用） */
+export function createDefaultExportRunner(options: { pythonCommand?: string; scriptPath?: string; timeoutMs?: number } = {}): ExportRunner {
+  const pythonCommand = options.pythonCommand ?? 'python';
+  const scriptPath = options.scriptPath ?? defaultScriptPath();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (platform) => new Promise((resolve, reject) => {
     const started = Date.now();
     execFile(
-      options.pythonCommand,
-      buildExportArgs(options.scriptPath, platform),
-      { timeout: options.timeoutMs, maxBuffer: MAX_STDOUT_BYTES, windowsHide: true, encoding: 'utf8' },
+      pythonCommand,
+      buildExportArgs(scriptPath, platform),
+      { timeout: timeoutMs, maxBuffer: MAX_STDOUT_BYTES, windowsHide: true, encoding: 'utf8' },
       (error, stdout, stderr) => {
         if (error) {
           const code = (error as { code?: string }).code;
@@ -155,10 +159,10 @@ export function parseExportOutput(stdout: string, platform: ExportPlatform): { e
 
 export function createCredentialImporter(deps: CredentialImportDeps) {
   const now = deps.now ?? (() => Date.now());
-  const runExport = deps.runExport ?? defaultRunner({
-    pythonCommand: deps.pythonCommand ?? 'python',
-    scriptPath: deps.scriptPath ?? defaultScriptPath(),
-    timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  const runExport = deps.runExport ?? createDefaultExportRunner({
+    ...(deps.pythonCommand !== undefined ? { pythonCommand: deps.pythonCommand } : {}),
+    ...(deps.scriptPath !== undefined ? { scriptPath: deps.scriptPath } : {}),
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
   const audit = deps.onAudit ?? ((line: Record<string, unknown>) => console.log('[credential-import]', JSON.stringify(line)));
 

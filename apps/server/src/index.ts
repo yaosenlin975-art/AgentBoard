@@ -18,6 +18,8 @@ import { createAddAccountProviders } from './services/accounts/addAccountProvide
 import { ApiError } from './errors.js';
 import type { AddAccountProviderSpec } from './services/accounts/addAccountProtocol.js';
 import { MinimaxDesktopProvider, defaultMinimaxPaths, createMinimaxServerIdentityProbe } from './services/accounts/minimaxDesktopProvider.js';
+import { TraeDesktopProvider } from './services/accounts/traeProvider.js';
+import type { DesktopProvider } from './api/accountRoutes.js';
 import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.js';
 import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
@@ -74,7 +76,7 @@ export interface CreateAppOptions {
   /** ACC-12：三平台签到 provider（测试可注入 fake fetch / 替换 map） */
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
   /** ACC-13：按平台的桌面 provider（capture/switch）；测试可注入 fake fs/进程 */
-  desktopProviders?: Partial<Record<ManagedAppId, MinimaxDesktopProvider>>;
+  desktopProviders?: Partial<Record<ManagedAppId, DesktopProvider>>;
   /** ACC-KB-B2S：协议级加号的 provider（默认按五平台协议装配；测试可注入替身） */
   addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>;
   /** SYSTEM-RESTART：生产在 main() 注入真实 spawn/close/exit；测试注入 fake */
@@ -150,8 +152,11 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
 
   // MiniMax 桌面 provider（B4S-3：restore 端点的回滚处理器要用同一个实例，故先建好再装配）
   // S5 的服务端身份校验能力也在这里装配（provider 本身默认不装配 → PROVIDER_NOT_IMPLEMENTED）
-  const minimaxProvider = options.desktopProviders?.minimax
+  const injectedMinimax = options.desktopProviders?.minimax as MinimaxDesktopProvider | undefined;
+  const minimaxProvider: MinimaxDesktopProvider = injectedMinimax
     ?? new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), serverIdentityProbe: createMinimaxServerIdentityProbe(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) });
+  // ACC-GET：Trae 捕获 provider（只读 storage.json；能力表在 registry 按 storage 是否存在给出 true/false）
+  const traeProvider = new TraeDesktopProvider({ db, vault: secretVault });
 
   // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
   const migration = options.dbMigration ?? {};
@@ -192,7 +197,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: options.desktopProviders ?? { minimax: minimaxProvider }, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: { ...options.desktopProviders, minimax: minimaxProvider, trae: options.desktopProviders?.trae ?? traeProvider } as unknown as Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

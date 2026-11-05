@@ -46,6 +46,8 @@ export class FakeWorkbuddyEnv {
   persistLaunchUid?: string;
   startupActive = 0;
   startupMaxActive = 0;
+  /** ACC-GET：捕获时返回的签到 token；null 模拟「本机拿不到凭据」 */
+  checkinToken: string | null = 'FAKE-WB-CHECKIN-TOKEN-DO-NOT-LEAK';
 
   constructor(uid = UID_A) {
     this.dir = mkdtempSync(join(tmpdir(), 'agentboard-workbuddy-'));
@@ -130,6 +132,7 @@ export class FakeWorkbuddyEnv {
   provider(db: Db, options: Partial<{ uiaExitWaitMs: number; manualExitTimeoutMs: number; rollbackExitTimeoutMs: number; startupTimeoutMs: number }> = {}): WorkbuddyDesktopProvider {
     return new WorkbuddyDesktopProvider({
       db, vault: new SecretVault(this.vaultDir), paths: this.paths, probe: this.probe(),
+      checkinTokenSource: { find: async () => this.checkinToken },
       broadcast: event => { if (event.type === 'account.notice') { this.notices.push(event.message); this.onNotice?.(); } },
       uiaExitWaitMs: options.uiaExitWaitMs ?? 150,
       manualExitTimeoutMs: options.manualExitTimeoutMs ?? 400,

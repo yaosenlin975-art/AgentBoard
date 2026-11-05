@@ -2,7 +2,7 @@
  * ACC-05 账号 API 契约测试：managed-accounts 列表/捕获/切换 + account-operations 查询。
  * fake provider 注入 createApp（路径/探针见 fakeWorkbuddy.ts）；响应不得含凭据/信封/快照引用。
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,7 @@ import { attachClientSnapshot, createManagedAccount, getManagedAccount } from '.
 import { createAccountOperation, getAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
+import { defaultTraeStoragePath } from '../src/services/accounts/traeProvider.js';
 
 describe('account api (managed-accounts / account-operations)', () => {
   let t: TestDb;
@@ -561,5 +562,50 @@ describe('account api (managed-accounts / account-operations)', () => {
     const retried = await request(app).delete(`/api/managed-accounts/${accountId}`);
     expect(retried.status).toBe(200);
     expect(getManagedAccount(t.db, accountId)).toBeNull();
+  });
+});
+
+describe('account api ACC-GET capture capability', () => {
+  let t: TestDb;
+
+  beforeEach(() => { t = createTestDb(); });
+  afterEach(() => { t.cleanup(); });
+
+  async function bootWithTrae(): Promise<Express> {
+    const created = await createApp({
+      db: t.db,
+      refreshClisOnBoot: false,
+      desktopProviders: {
+        trae: {
+          captureCurrent: async () => createManagedAccount(t.db, {
+            app_id: 'trae', client_instance_id: 'trae-desktop', service_region: 'cn',
+            identity_hash: sha256('trae-fake'), display_name: 'Trae 测试号',
+          }),
+        },
+        // 故意给 qoder_cn 注入一个「有方法」的 provider：能力表仍为 false，路由必须先 409
+        qoder_cn: { captureCurrent: async () => { throw new Error('should not be called'); } },
+      },
+    });
+    return created.app;
+  }
+
+  it('Trae 能力表与真实返回值一致：有 storage → 200，没有 → 409（不再 503）', async () => {
+    const app = await bootWithTrae();
+    const res = await request(app).post('/api/managed-accounts/trae/capture-current').send({ display_name: 'Trae 号' });
+    if (existsSync(defaultTraeStoragePath())) {
+      expect(res.status).toBe(200);
+      expect(res.body.account.app_id).toBe('trae');
+      expect(JSON.stringify(res.body)).not.toMatch(/eyJ[A-Za-z0-9_-]{20,}/);
+    } else {
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('PROVIDER_UNVERIFIED');
+    }
+  });
+
+  it('注入 provider 不能绕过能力表：Qoder 捕获仍 409 PROVIDER_UNVERIFIED', async () => {
+    const app = await bootWithTrae();
+    const res = await request(app).post('/api/managed-accounts/qoder_cn/capture-current').send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('PROVIDER_UNVERIFIED');
   });
 });

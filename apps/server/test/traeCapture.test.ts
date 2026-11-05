@@ -11,11 +11,16 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { encryptTcEnvelope, traePepper, decryptTcEnvelope } from '@agentboard/adapters';
 import {
+  TRAE_CLIENT_INSTANCE,
   TRAE_STORAGE_KEY,
+  TraeDesktopProvider,
   captureTraeCredential,
   defaultTraeStoragePath,
   traeStorageAvailable,
 } from '../src/services/accounts/traeProvider.js';
+import type { SecretVault } from '../src/services/accounts/secretVault.js';
+import { FakeCheckinVault } from './fakeCheckinProvider.js';
+import { createTestDb } from './helpers.js';
 
 const sha8 = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, 8);
 
@@ -133,5 +138,82 @@ describe('captureTraeCredential (ACC-KB-B3)', () => {
     expect(result.entry.token_sha8).toMatch(/^[0-9a-f]{8}$/);
     // 只允许出现脱敏字段
     expect(JSON.stringify(result)).not.toMatch(/eyJ[A-Za-z0-9_-]{20,}/);
+  });
+});
+
+describe('TraeDesktopProvider captureCurrent (ACC-GET)', () => {
+  let dir: string;
+  let storagePath: string;
+  let t: ReturnType<typeof createTestDb>;
+  let vault: FakeCheckinVault;
+
+  const jwt = (sub?: string): string => {
+    const enc = (obj: unknown): string => Buffer.from(JSON.stringify(obj)).toString('base64url');
+    return `${enc({ alg: 'RS256' })}.${enc(sub === undefined ? {} : { sub })}.sig`;
+  };
+  const writeEnvelope = (payload: Record<string, unknown>): void => {
+    writeFileSync(storagePath, JSON.stringify({ [TRAE_STORAGE_KEY]: encryptTcEnvelope(payload, Buffer.alloc(32, 5)) }), 'utf8');
+  };
+  const mkProvider = (): TraeDesktopProvider => new TraeDesktopProvider({
+    db: t.db, vault: vault as unknown as SecretVault, storagePath,
+  });
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'agentboard-trae-get-'));
+    storagePath = join(dir, 'storage.json');
+    t = createTestDb();
+    vault = new FakeCheckinVault();
+  });
+  afterEach(() => {
+    t.cleanup();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  });
+
+  it('storage.json 不存在 → 409 TRAE_STORAGE_MISSING', async () => {
+    await expect(mkProvider().captureCurrent()).rejects.toMatchObject({ code: 'TRAE_STORAGE_MISSING' });
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM managed_account').get()).toEqual({ n: 0 });
+  });
+
+  it('捕获成功 → 落库且 checkin_credential_ref 可被签到链路按同 scope 读到', async () => {
+    const token = jwt('trae-user-a');
+    writeEnvelope({ token, host: 'https://api.trae.cn', userId: 'ignored-when-sub-present' });
+    const account = await mkProvider().captureCurrent();
+    const stored = t.db.prepare('SELECT * FROM managed_account WHERE id=?').get(account.id) as Record<string, unknown>;
+    expect(stored.checkin_credential_ref).toMatch(/^[0-9a-f-]{36}$/);
+    expect(stored.checkin_capability).toBe('supported');
+    expect(stored.client_instance_id).toBe(TRAE_CLIENT_INSTANCE);
+    expect(stored.service_region).toBe('cn');
+    const read = await vault.unprotect(String(stored.checkin_credential_ref), {
+      app_id: 'trae', client_instance_id: String(stored.client_instance_id), identity_hash: String(stored.identity_hash), purpose: 'checkin',
+    });
+    expect(read.toString('utf8')).toBe(token);
+    const dump = JSON.stringify(t.db.prepare('SELECT * FROM managed_account').all()) + JSON.stringify(t.db.prepare('SELECT * FROM account_operation').all());
+    expect(dump).not.toContain(token);
+  });
+
+  it('同身份重复捕获 → 更新同一账号、换 ref 并清理旧密文', async () => {
+    const firstToken = jwt('trae-user-a');
+    writeEnvelope({ token: firstToken });
+    const first = await mkProvider().captureCurrent();
+    writeEnvelope({ token: jwt('trae-user-a'), refreshToken: 'r2' });
+    const second = await mkProvider().captureCurrent();
+    expect(second.id).toBe(first.id);
+    expect(second.checkin_credential_ref).not.toBe(first.checkin_credential_ref);
+    expect(vault.deletedRefs).toContain(first.checkin_credential_ref);
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM managed_account').get()).toEqual({ n: 1 });
+  });
+
+  it('不同身份 → 新建第二个账号', async () => {
+    writeEnvelope({ token: jwt('trae-user-a') });
+    const a = await mkProvider().captureCurrent();
+    writeEnvelope({ token: jwt('trae-user-b') });
+    const b = await mkProvider().captureCurrent();
+    expect(b.id).not.toBe(a.id);
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM managed_account').get()).toEqual({ n: 2 });
+  });
+
+  it('token 与 payload 都无稳定身份 → 409 TRAE_IDENTITY_UNAVAILABLE', async () => {
+    writeEnvelope({ token: 'not-a-jwt' });
+    await expect(mkProvider().captureCurrent()).rejects.toMatchObject({ code: 'TRAE_IDENTITY_UNAVAILABLE' });
   });
 });

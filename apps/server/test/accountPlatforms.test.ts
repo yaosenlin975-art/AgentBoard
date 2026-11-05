@@ -14,6 +14,7 @@ import { initSchema } from '../src/db/schema.js';
 import { openDb } from '../src/db/connection.js';
 import { traeStorageAvailable } from '../src/services/accounts/traeProvider.js';
 import { accountProviderCapabilities } from '../src/services/accounts/registry.js';
+import { EXPORT_PLATFORMS } from '../src/services/accounts/credentialImport.js';
 import request from 'supertest';
 import { createApp } from '../src/index.js';
 import { FakeAdapter } from './fakeAdapter.js';
@@ -196,6 +197,19 @@ describe('account platforms migration (ACC-10)', () => {
     expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
     // trae：B3 交付了离线捕获能力，但真实 provider 接线属 B4S-4；当前契约统一 PROVIDER_NOT_IMPLEMENTED
     expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
+  });
+
+  it('ACC-GET：导入矩阵与能力表一致（三平台可捕获；Qoder/ZCode 只走授权添加）', () => {
+    const capabilities = accountProviderCapabilities();
+    const byApp = new Map(capabilities.map(item => [item.app_id, item]));
+    expect(EXPORT_PLATFORMS).toEqual(['workbuddy', 'trae', 'minimax']);
+    expect(byApp.get('workbuddy_desktop')?.capture).toBe(true);
+    expect(byApp.get('minimax')?.capture).toBe(true);
+    // Trae 的捕获能力跟随本机 storage.json 是否存在（与 provider 真实行为一致）
+    expect(byApp.get('trae')?.capture).toBe(traeStorageAvailable());
+    for (const app of ['qoder_cn', 'zcode'] as const) {
+      expect(byApp.get(app)).toMatchObject({ capture: false, switch: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
+    }
   });
 
 

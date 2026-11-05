@@ -23,7 +23,9 @@ import { runAccountOperation } from './operationRunner.js';
 import { runSwitchFlow } from './switchFlow.js';
 import { updateAccountOperation } from '../../db/repos/accountOperation.js';
 import { attachClientSnapshot, createManagedAccount, findManagedAccountByIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
+import { attachCheckinCredential } from '../../db/repos/checkin.js';
 import type { SecretVault } from './secretVault.js';
+import { createWorkbuddyCheckinTokenSource, type WorkbuddyCheckinTokenSource } from './workbuddyCheckinSource.js';
 import { ApiError, ValidationError } from '../../errors.js';
 
 export const WORKBUDDY_APP_ID = 'workbuddy_desktop' as const;
@@ -133,6 +135,8 @@ export interface WorkbuddyProviderDeps {
   paths: WorkbuddyDesktopPaths;
   probe: WorkbuddyClientProbe;
   broadcast: (event: WsEvent) => void;
+  /** ACC-GET：捕获时解析当前账号的签到 token（缺省读插件线明文 JWT / 导出脚本兜底） */
+  checkinTokenSource?: WorkbuddyCheckinTokenSource;
   /** UIA 退出后等待退出签名的窗口（默认 15s） */
   uiaExitWaitMs?: number;
   /** UIA 失败降级后等待用户手动退出的窗口（默认 120s） */
@@ -151,6 +155,7 @@ export class WorkbuddyDesktopProvider {
   private readonly paths: WorkbuddyDesktopPaths;
   private readonly probe: WorkbuddyClientProbe;
   private readonly broadcastFn: (event: WsEvent) => void;
+  private readonly checkinTokenSource: WorkbuddyCheckinTokenSource;
   private readonly uiaExitWaitMs: number;
   private readonly manualExitTimeoutMs: number;
   private readonly rollbackExitTimeoutMs: number;
@@ -161,6 +166,7 @@ export class WorkbuddyDesktopProvider {
   constructor(deps: WorkbuddyProviderDeps) {
     this.db = deps.db; this.vault = deps.vault; this.paths = deps.paths; this.probe = deps.probe;
     this.broadcastFn = deps.broadcast;
+    this.checkinTokenSource = deps.checkinTokenSource ?? createWorkbuddyCheckinTokenSource();
     this.uiaExitWaitMs = deps.uiaExitWaitMs ?? 15_000;
     this.manualExitTimeoutMs = deps.manualExitTimeoutMs ?? 120_000;
     this.rollbackExitTimeoutMs = deps.rollbackExitTimeoutMs ?? 60_000;
@@ -207,16 +213,34 @@ export class WorkbuddyDesktopProvider {
         await this.vault.delete(ref).catch(() => {});
         throw new ApiError(409, 'IDENTITY_CHANGED', '捕获期间登录身份变化，已放弃保存');
       }
-      const existing = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
-      if (existing) {
-        captured = attachClientSnapshot(this.db, existing.id, { client_snapshot_ref: ref, client_snapshot_version: 1 });
-        if (existing.client_snapshot_ref && existing.client_snapshot_ref !== ref) await this.vault.delete(existing.client_snapshot_ref).catch(() => {});
-      } else {
-        captured = createManagedAccount(this.db, {
-          app_id: WORKBUDDY_APP_ID, client_instance_id: pre.instanceId, service_region: 'unknown',
-          identity_hash: identity.identity_hash, display_name: (options.display_name ?? `WorkBuddy-${identity.uid_sha256_8}`).trim(),
-          identity_hint: identity.uid_sha256_8, client_snapshot_ref: ref, client_snapshot_version: 1,
-        });
+      // ACC-GET：捕获必须同时落签到凭据，否则账号会「抓到了但签不了到」；取不到就让捕获失败。
+      const token = await this.checkinTokenSource.find(identity).catch(() => null);
+      if (token === null || token.trim() === '') {
+        await this.vault.delete(ref).catch(() => {});
+        throw new ApiError(409, 'CHECKIN_CREDENTIAL_UNAVAILABLE', '未能从本机获取签到凭据，请改用授权添加或导入本机凭据');
+      }
+      const checkinRef = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(identity.identity_hash));
+      try {
+
+        const existing = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
+        if (existing) {
+          captured = attachClientSnapshot(this.db, existing.id, { client_snapshot_ref: ref, client_snapshot_version: 1 });
+          captured = attachCheckinCredential(this.db, existing.id, checkinRef);
+          if (existing.client_snapshot_ref && existing.client_snapshot_ref !== ref) await this.vault.delete(existing.client_snapshot_ref).catch(() => {});
+          if (existing.checkin_credential_ref && existing.checkin_credential_ref !== checkinRef) await this.vault.delete(existing.checkin_credential_ref).catch(() => {});
+        } else {
+          captured = createManagedAccount(this.db, {
+            app_id: WORKBUDDY_APP_ID, client_instance_id: pre.instanceId, service_region: 'unknown',
+            identity_hash: identity.identity_hash, display_name: (options.display_name ?? `WorkBuddy-${identity.uid_sha256_8}`).trim(),
+            identity_hint: identity.uid_sha256_8, client_snapshot_ref: ref, client_snapshot_version: 1,
+            checkin_credential_ref: checkinRef,
+          });
+          captured = attachCheckinCredential(this.db, captured.id, checkinRef);
+        }
+      } catch (error) {
+        await this.vault.delete(ref).catch(() => {});
+        await this.vault.delete(checkinRef).catch(() => {});
+        throw error;
       }
       return 'succeeded';
     });
@@ -291,6 +315,11 @@ export class WorkbuddyDesktopProvider {
 
   private vaultScope(identityHash: string) {
     return { app_id: WORKBUDDY_APP_ID, client_instance_id: this.instanceId, identity_hash: identityHash, purpose: 'client_snapshot' as const };
+  }
+
+  /** ACC-GET：签到凭据 scope 必须与 checkinRunner 解包时一致（client_instance_id = 本实例） */
+  private checkinScope(identityHash: string) {
+    return { app_id: WORKBUDDY_APP_ID, client_instance_id: this.instanceId, identity_hash: identityHash, purpose: 'checkin' as const };
   }
 
   private async preflight(): Promise<{ exePath: string; version: string; instanceId: string; pids: number[] }> {

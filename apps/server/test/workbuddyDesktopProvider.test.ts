@@ -36,18 +36,37 @@ describe('workbuddy desktop provider', () => {
     expect(account.identity_hash).toBe(sha256(UID_A));
     expect(account.client_instance_id).toBe(computeWorkbuddyInstanceId(env.paths.exePath));
     expect(getManagedAccount(t.db, account.id)?.client_snapshot_ref).toMatch(/^[0-9a-f-]{36}$/);
-    expect(readdirSync(env.vaultDir)).toHaveLength(1);
+    // ACC-GET：捕获必须落签到凭据（快照 + 签到 = 2 个密文文件）
+    const stored = getManagedAccount(t.db, account.id)!;
+    expect(stored.checkin_credential_ref).toMatch(/^[0-9a-f-]{36}$/);
+    expect(stored.checkin_capability).toBe('supported');
+    const vault = new SecretVault(env.vaultDir);
+    const token = await vault.unprotect(stored.checkin_credential_ref!, {
+      app_id: 'workbuddy_desktop', client_instance_id: stored.client_instance_id, identity_hash: stored.identity_hash, purpose: 'checkin',
+    });
+    expect(token.toString('utf8')).toBe(env.checkinToken);
+    expect(readdirSync(env.vaultDir)).toHaveLength(2);
     // 重新捕获同身份：换快照引用（token 轮换），不产生 ACCOUNT_EXISTS，旧密文清理
     env.writeAuthInfo(UID_A, 'ENVELOPE-ROTATED-2');
     const again = await provider.captureCurrent({ display_name: '工作号A' });
     expect(again.id).toBe(account.id);
     expect(getManagedAccount(t.db, account.id)?.client_snapshot_ref).not.toBe(account.client_snapshot_ref);
-    expect(readdirSync(env.vaultDir)).toHaveLength(1);
+    expect(readdirSync(env.vaultDir)).toHaveLength(2);
     // 元数据与操作记录不含 uid 原文与信封字节
     const dump = JSON.stringify(t.db.prepare('SELECT * FROM managed_account').all()) + JSON.stringify(t.db.prepare('SELECT * FROM account_operation').all());
     expect(dump).not.toContain(UID_A);
     expect(dump).not.toContain(ENVELOPE_MARK);
     expect(dump).not.toContain('ENVELOPE-ROTATED');
+    expect(dump).not.toContain(env.checkinToken!);
+  }, 20000);
+
+  it.runIf(process.platform === 'win32')('capture fails cleanly when no checkin credential is available', async () => {
+    env.checkinToken = null;
+    const provider = env.provider(t.db);
+    await expect(provider.captureCurrent()).rejects.toMatchObject({ code: 'CHECKIN_CREDENTIAL_UNAVAILABLE' });
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM managed_account').get()).toEqual({ n: 0 });
+    // 快照密文也一并清理，不留孤儿
+    expect(readdirSync(env.vaultDir)).toHaveLength(0);
   }, 20000);
 
   it.runIf(process.platform === 'win32')('capture rejects unsupported version, missing instance, not running, missing uid, v1 schema', async () => {
