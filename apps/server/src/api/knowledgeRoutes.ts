@@ -8,12 +8,12 @@ import type { Db } from '../db/connection.js';
 import { ApiError, ValidationError } from '../errors.js';
 import { createKnowledgePage, findKnowledgePagesBySource, getKnowledgePage, getKnowledgeRevision, listKnowledgeGraphRows, listKnowledgeRevisions, reviseKnowledgePage, setKnowledgePageStatus } from '../db/repos/knowledge.js';
 import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph } from '../services/knowledgeGraph.js';
-import { countBacklinks, countOutgoingLinks, listBacklinks, listResolvedLinks, listUnresolvedLinks, reparseAllPages } from '../services/knowledgeLinks.js';
+import {getKnowledgePageLinkStats, listBacklinks, listResolvedLinks, reparseAllPages} from '../services/knowledgeLinks.js';
 import { searchKnowledge } from '../db/repos/knowledgeSearch.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
 import { createKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
 import { importKnowledgePages } from '../services/knowledgeImport.js';
-import { findKnowledgePageOwner, knowledgeLink, resolveKnowledgeRef } from '../services/knowledgeResolve.js';
+import { findKnowledgePageOwner, knowledgeLinkFields, resolveKnowledgeRef } from '../services/knowledgeResolve.js';
 import { parseMultipart } from '../services/multipart.js';
 import { httpMutation } from '../services/idempotency.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeImportSchema, knowledgeScopeFields } from './schemas.js';
@@ -65,7 +65,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     // KB-PAGE-2：每条结果附 link（服务端产出，前端/CLI 不再拼串）
     res.json(searchKnowledge(db, { ...input, query: input.q }).map((row) => ({
       ...row,
-      link: knowledgeLink({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope, workspace_id: row.workspace_id }),
+      ...knowledgeLinkFields({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope, workspace_id: row.workspace_id, revision: row.revision }),
     })));
   });
   /**
@@ -121,7 +121,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     }>;
     // KB-PAGE-2b（A7）：列表项同样带 link，CLI/前端不再自己拼串
     res.json({
-      items: rows.slice(0, input.limit).map(row => ({ ...row, link: knowledgeLink(row) })),
+      items: rows.slice(0, input.limit).map(row => ({ ...row, ...knowledgeLinkFields(row) })),
       next_offset: rows.length > input.limit ? input.offset + input.limit : null,
     });
   });
@@ -196,7 +196,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     }).strict(), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
     const items = findKnowledgePagesBySource(db, { term: input.path, scope: input.scope, workspace_id: input.workspace_id ?? null })
-      .map(item => ({ ...item, link: knowledgeLink(item) }));
+      .map(item => ({ ...item, ...knowledgeLinkFields(item) }));
     res.json({ path: input.path, items });
   });
 
@@ -214,10 +214,8 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     // V2-4：只加字段，不删既有字段；KB-PAGE-2：再加 link（引用串由服务端产出）
     res.json({
       ...page,
-      link: knowledgeLink(page),
-      backlinks_count: countBacklinks(db, page.id),
-      links_out_count: countOutgoingLinks(db, page.id),
-      unresolved_links: listUnresolvedLinks(db, page.id),
+      ...knowledgeLinkFields(page),
+      ...getKnowledgePageLinkStats(db, page.id),
     });
   });
 
@@ -260,12 +258,12 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const { scope: _scope, workspace_id: _workspace, ...content } = body;
     // KB-PAGE-2b：create/revise 响应同样带 link（A7），CLI 文本输出补一行 link
     const result = httpMutation(db, req, () => createKnowledgePage(db, { ...content, ...scope })).result;
-    res.json({ ...result, link: knowledgeLink(result) });
+    res.json({ ...result, ...knowledgeLinkFields(result) });
   });
   router.put('/pages/:id', (req, res) => {
     const { expected_revision, scope: _scope, workspace_id: _workspace, ...patch } = parse(knowledgeReviseSchema, req.body);
     const result = httpMutation(db, req, () => reviseKnowledgePage(db, req.params.id!, scopeOf(req.body), expected_revision, patch)).result;
-    res.json({ ...result, link: knowledgeLink(result) });
+    res.json({ ...result, ...knowledgeLinkFields(result) });
   });
   router.post('/pages/:id/actions', (req, res) => {
     const body = parse(knowledgeActionSchema, req.body);
