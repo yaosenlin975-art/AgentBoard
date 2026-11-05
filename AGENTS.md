@@ -15,9 +15,10 @@
 3. `skills/executing-task/SKILL.md` —— 执行已派卡流程。
 4. `skills/handoff/SKILL.md` —— 交接流程。
 5. `skills/swing-dev/SKILL.md` —— 机动巡检流程。
-6. `README.md` —— 运行、端口、默认数据位置、构建与打包。
-7. `Docs/api.md` —— HTTP API 与 CLI 契约（含退出码）。
+6. `skills/ask-user/SKILL.md` —— 待决策提问流程（宽限 / LOCKED 停止 / 断点续跑）。
+7. `README.md` —— 运行、端口、默认数据位置、构建与打包。
+8. `Docs/api.md` —— HTTP API 与 CLI 契约（含退出码）。
 
 ## 对外打包约束
 
-便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 5 个技能，落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`）。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。
+便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 5 个技能，落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`）。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。DEC-5 起另含 `skills/ask-user`（待决策提问流程）。

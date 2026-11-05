@@ -10,12 +10,13 @@
  *   1. 构建 server / web / cli（+ 桌面壳；已存在 release exe 时直接复用）
  *   2. 组装 runtime(node.exe) + server 单文件包 + web 静态产物 + cli + 原生模块
  *   3. 携带桌面壳到 app/desktop/（start-desktop.cmd 调用；缺失时降级为浏览器模式）
- *   4. 携带配套规则到 app/rules/（AGENTS.md、README.md、Docs/api.md、5 个技能）
+ *   4. 携带配套规则到 app/rules/（AGENTS.md、README.md、Docs/api.md、6 个技能）
  *   5. 生成 app/rules-manifest.json 并跑包内自检 app/verify-rules.mjs
  *   6. 打 zip（顶层目录 AgentBoard）
  *
  * 规则来源：仓库 skills/ 优先；缺失的从 %AGENTBOARD_SKILLS_SRC%（默认 %USERPROFILE%\.agents\skills）取。
  * 外部技能不受本仓库 git 跟踪，来源会写进 rules-manifest.json。
+ * 注：ask-user 属本仓库技能（DEC-5），不会回落到全局 ~/.agents/AGENTS.md 原文。
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -38,7 +39,7 @@ const TEMPLATES = join(ROOT, 'scripts', 'portable');
 const PKG_NAME = 'AgentBoard';
 /** Tauri 壳的 release 产物（来源只读；壳按相对路径找 ../apps/server/dist 与 ../../runtime/node.exe）。 */
 const DESKTOP_EXE = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'agentboard-desktop.exe');
-const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev'];
+const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user'];
 const RULE_DOCS = [
   { src: 'AGENTS.md', dest: 'AGENTS.md' },
   { src: 'README.md', dest: 'README.md' },
