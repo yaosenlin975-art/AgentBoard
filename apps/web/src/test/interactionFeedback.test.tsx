@@ -7,7 +7,7 @@
  * - 任务树「+ 新建」按钮同样有 hover/active 颜色过渡与 reduced-motion 关闭。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import { SideBar } from '../components/shell/SideBar';
@@ -79,10 +79,8 @@ describe('A2 标签 chip 点击反馈（LabelFilterBar）', () => {
     );
 
     const chip = await screen.findByTestId('label-filter-设计');
-    // AUDIT-BOARD：有选中项时未选标签收进「更多标签」，展开后再断言未选 chip
-    fireEvent.click(screen.getByTestId('label-filter-more'));
-    await waitFor(() => expect(screen.getByTestId('label-filter-性能')).toBeInTheDocument());
-    const idleChip = screen.getByTestId('label-filter-性能');
+    // LABEL-BAR：标签总数 <= MAX_VISIBLE 时全部直接可见，无需展开「更多」
+    const idleChip = await screen.findByTestId('label-filter-性能');
 
     for (const element of [chip, idleChip]) {
       expect(element.className).toContain('transition-colors');

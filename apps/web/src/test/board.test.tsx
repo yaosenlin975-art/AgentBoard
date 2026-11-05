@@ -410,7 +410,7 @@ const labelIssues: Issue[] = [
 ];
 
 describe('顶栏标签筛选（UI-FILTER01）', () => {
-  it('工具条同一行：视图切换 + 搜索框 + 标签条（TOPBAR-INLINE），chips 可横滚', async () => {
+  it('工具条同一行：视图切换 + 搜索框 + 标签条（TOPBAR-INLINE），溢出收进更多浮层', async () => {
     mockBoardData(labelIssues, []);
     useAppStore.setState({ workspaceId: 'ws-1' });
     renderBoard();
@@ -426,11 +426,11 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(within(controls).queryByTestId('view-switcher')).toBeNull();
     expect(within(controls).queryByTestId('board-search')).not.toBeInTheDocument();
 
-    // 搜索框在 chips 之前；chips 容器负责横向滚动（空间不足优先压缩 chips）
+    // 搜索框在 chips 之前；chips 容器不再横滚（LABEL-BAR：溢出改由「更多」浮层承载，避免裁掉浮层）
     const search = within(filters).getByTestId('board-search');
     const chips = within(filters).getByTestId('board-toolbar-chips');
     expect(search.compareDocumentPosition(chips) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(chips.className).toContain('overflow-x-auto');
+    expect(chips.className).not.toContain('overflow-x-auto');
     expect(chips.className).toContain('min-w-0');
     expect(within(chips).getByTestId('label-filter-bar')).toBeInTheDocument();
     // tab 组与搜索框都不允许被压缩（shrink-0）
@@ -475,8 +475,7 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(screen.queryByTestId('issue-card-l2')).not.toBeInTheDocument();
     expect(screen.queryByTestId('issue-card-l3')).not.toBeInTheDocument();
 
-    // 多选 OR：命中任一选中标签即显示（AUDIT-BOARD：未选标签收在「更多标签」内，先展开）
-    await userEvent.click(screen.getByTestId('label-filter-more'));
+    // 多选 OR：命中任一选中标签即显示（LABEL-BAR：标签总数 <= MAX_VISIBLE，全部直接可见）
     await userEvent.click(screen.getByTestId('label-filter-后端'));
     expect(screen.getByTestId('issue-card-l1')).toBeInTheDocument();
     expect(screen.getByTestId('issue-card-l2')).toBeInTheDocument();
@@ -621,7 +620,6 @@ describe('顶栏搜索（BOARD-SEARCH）', () => {
     renderBoard();
 
     await userEvent.click(await screen.findByTestId('label-filter-前端'));
-    await userEvent.click(screen.getByTestId('label-filter-more'));
     await userEvent.click(screen.getByTestId('label-filter-后端'));
     expect(screen.getByTestId('issue-card-c1')).toBeInTheDocument();
     expect(screen.getByTestId('issue-card-c2')).toBeInTheDocument();

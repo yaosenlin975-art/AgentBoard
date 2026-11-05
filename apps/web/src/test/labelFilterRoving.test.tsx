@@ -1,6 +1,6 @@
 /**
- * A11Y-TABNOISE：标签筛选条 roving tabindex —— chip 组只占 1 个 Tab 停靠点，
- * 方向键在 chip 间移动，Space/Enter 与鼠标点击的 aria-pressed 语义不变。
+ * A11Y-TABNOISE + LABEL-BAR：默认只展示前 14 个 chip（两行封顶），其余进「更多」浮层。
+ * 本文件只锁 roving tabindex 与 chip 点击语义；排序/浮层行为见 labelBarOverflow.test.tsx。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
@@ -49,20 +49,20 @@ beforeEach(() => {
 });
 
 describe('标签筛选 roving tabindex（A11Y-TABNOISE）', () => {
-  it('30 个 chip 只有 1 个 Tab 停靠点（改动前为 30 个）', async () => {
+  it('默认只展示 14 个 chip，且只有 1 个 Tab 停靠点', async () => {
     renderBar();
     const chips = await screen.findAllByTestId(/^label-filter-label-/);
-    expect(chips).toHaveLength(30);
+    expect(chips).toHaveLength(14);
     const tabbable = chips.filter((chip) => chip.getAttribute('tabindex') === '0');
     expect(tabbable).toHaveLength(1);
     expect(chips[0]!.getAttribute('tabindex')).toBe('0');
-    expect(chips.filter((chip) => chip.getAttribute('tabindex') === '-1')).toHaveLength(29);
+    expect(chips.filter((chip) => chip.getAttribute('tabindex') === '-1')).toHaveLength(13);
   });
 
-  it('Tab 进入 chip 组后，←/→/Home/End 移动焦点并同步 roving 位', async () => {
+  it('Tab 进入 chip 组后，←/→/Home/End 在可见 chip 内移动焦点并同步 roving 位', async () => {
     renderBar();
     const chips = await screen.findAllByTestId(/^label-filter-label-/);
-    expect(chips).toHaveLength(30);
+    expect(chips).toHaveLength(14);
 
     await userEvent.tab();
     expect(chips[0]).toHaveFocus();
@@ -73,9 +73,9 @@ describe('标签筛选 roving tabindex（A11Y-TABNOISE）', () => {
     expect(chips[1]!.getAttribute('tabindex')).toBe('0');
 
     await userEvent.keyboard('{End}');
-    expect(chips[29]).toHaveFocus();
+    expect(chips[13]).toHaveFocus();
     await userEvent.keyboard('{ArrowRight}');
-    expect(chips[29]).toHaveFocus();
+    expect(chips[13]).toHaveFocus();
 
     await userEvent.keyboard('{Home}');
     expect(chips[0]).toHaveFocus();
@@ -86,29 +86,31 @@ describe('标签筛选 roving tabindex（A11Y-TABNOISE）', () => {
   it('Space 仍可选中（aria-pressed 翻转），鼠标点击行为不变', async () => {
     renderBar();
     const chips = await screen.findAllByTestId(/^label-filter-label-/);
-    expect(chips).toHaveLength(30);
+    expect(chips).toHaveLength(14);
 
     await userEvent.tab();
     expect(chips[0]).toHaveAttribute('aria-pressed', 'false');
     await userEvent.keyboard(' ');
     expect(chips[0]).toHaveAttribute('aria-pressed', 'true');
 
-    // AUDIT-BOARD：选中后未选标签收进「更多标签」，先展开再操作其余 chip
+    // LABEL-BAR：选中项置顶，其余标签仍在可见行（不整条收进「更多」）
     expect(screen.getByTestId('label-filter-selected-count')).toHaveTextContent('已选 1');
-    expect(screen.queryByTestId('label-filter-label-05')).toBeNull();
+    expect(screen.getByTestId('label-filter-label-05')).toBeInTheDocument();
+    expect(screen.getByTestId('label-filter-more')).toHaveTextContent('更多 +16');
+
+    // 浮层内的 chip 同样是原生 button，点击翻转选中态
     await userEvent.click(screen.getByTestId('label-filter-more'));
-    const expanded = await screen.findAllByTestId(/^label-filter-label-/);
-    expect(expanded).toHaveLength(30);
+    const panel = await screen.findByTestId('label-filter-more-panel');
+    expect(panel).toBeInTheDocument();
+    const hiddenChip = screen.getByTestId('label-filter-more-item-label-16');
+    await userEvent.click(hiddenChip);
+    expect(hiddenChip).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(hiddenChip);
+    expect(hiddenChip).toHaveAttribute('aria-pressed', 'false');
 
-    await userEvent.click(expanded[4]!);
-    expect(expanded[4]).toHaveAttribute('aria-pressed', 'true');
-    expect(expanded[4]).toHaveFocus();
-    expect(screen.getByTestId('label-filter-clear')).toBeInTheDocument();
-
-    await userEvent.click(expanded[4]!);
-    expect(expanded[4]).toHaveAttribute('aria-pressed', 'false');
-
-    // 清掉 Space 选中的首项后，清除按钮随之消失（选中集合为空）
+    // 清掉首项后，清除按钮随之消失（选中集合为空）
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByTestId('label-filter-more-panel')).toBeNull();
     await userEvent.click(screen.getByTestId('label-filter-label-01'));
     expect(screen.getByTestId('label-filter-label-01')).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByTestId('label-filter-clear')).toBeNull();

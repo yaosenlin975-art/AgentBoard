@@ -322,7 +322,8 @@ export function Board({
               placeholder="搜索标题/描述/标签"
               className="h-8 w-40 shrink-0 rounded-lg border border-hairline bg-surface-raised px-2.5 text-xs text-ink outline-none focus:border-accent sm:w-56"
             />
-            <div data-testid="board-toolbar-chips" className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto max-[900px]:basis-full">
+            {/* LABEL-BAR：容器不再 overflow-x-auto —— 会裁掉标签「更多」浮层（绝对定位子元素） */}
+            <div data-testid="board-toolbar-chips" className="flex min-w-0 flex-1 items-center gap-1 max-[900px]:basis-full">
               <LabelFilterBar workspaceId={workspaceId} />
             </div>
             {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
