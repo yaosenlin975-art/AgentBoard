@@ -7,6 +7,8 @@ description: 执行父代理明确派发的 AgentBoard 卡（读最新状态、�
 
 Read and follow the AgentBoard operating guide before board operations. 该文档的定位按 `using-agentboard` 的「权威来源解析」执行（本技能不复制解析表）；解析不到 → 🔴 停手报「权威文档缺失」，不降级执行。
 
+**无卡不动手（RULE-1）**：只执行已存在并被 claim 的卡；开工前核对卡号与卡面，提交信息必须带卡号；发现改动落在卡外先停下补卡或回报，不得先改后补（口径见 `using-agentboard` 的「The Rule」）。
+
 The assigned AgentBoard issue is the current execution source. Project code, design documents, logs, and test results are evidence; do not require a plan file, ledger, task brief, or local plan workspace.
 
 本技能默认执行被指派的一张卡；并行推进多张卡时按「并行执行（最多 3 路）」一节执行，单卡流程不变。

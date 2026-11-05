@@ -7,6 +7,8 @@ description: 把已批准的需求/设计拆成有序的 AgentBoard 任务卡（
 
 Use this skill when an approved spec or request needs multiple implementation steps. AgentBoard issues are the authoritative execution plan. Do not require a plan Markdown file, ledger, task brief, or local checklist as the source of work. 单步小改、需求未批准、或只是执行别人派的卡时不要用本技能。Project design docs, source files, logs, and other project artifacts may be cited as evidence.
 
+**无卡不动手（RULE-1）**：本技能是实现性改动的唯一建卡入口；没有对应卡就先建卡，派工前先确认卡已存在，同一内容已有卡就认领/追加、不重复新建（口径见 `using-agentboard` 的「The Rule」）。
+
 Read the AgentBoard operating guide before preparing board work. 该文档的定位按 `using-agentboard` 的「权威来源解析」执行（本技能不复制解析表）；解析不到 → 🔴 停手报「权威文档缺失」，不降级执行。
 
 ## 工作区边界（强制）
