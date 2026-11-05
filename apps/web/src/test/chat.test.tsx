@@ -478,6 +478,58 @@ describe('ChatPanel 消息流与流式渲染', () => {
     expect(screen.queryByTestId('thinking-block-me1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('thinking-block-mr1')).not.toBeInTheDocument();
   });
+
+  // AUDIT-SRV（F-04 / F-06）：错误归类卡片、重试动作、长 URL 截断、编码丢失标记
+  it('error_code 卡片：额度错误给原因与用量入口；限流错误可重试（重发上一条 user）；长 URL 截断；编码丢失标记', async () => {
+    sessionsList = [makeSession()];
+    const longUrl = `https://example.com/oauth/callback?token=${'a'.repeat(80)}`;
+    msgStore['s1'] = [
+      makeMessage({ id: 'mu1', content: '帮我查一下', ts: 100 }),
+      makeMessage({
+        id: 'mq1',
+        role: 'error',
+        content: `额度已用尽 429 ${longUrl}`,
+        ts: 110,
+        error_code: 'QUOTA_EXCEEDED',
+        retryable: false,
+      }),
+      makeMessage({
+        id: 'mr1',
+        role: 'error',
+        content: '429 Too Many Requests',
+        ts: 120,
+        error_code: 'RATE_LIMITED',
+        retryable: true,
+      }),
+      makeMessage({ id: 'ma1', role: 'assistant', content: '???? ???', ts: 130, encoding_lost: true }),
+    ];
+    renderChat();
+    const user = userEvent.setup();
+
+    // 额度错误：中文原因 + 用量入口，明确不可直接重试（不给重试按钮）
+    const quota = await screen.findByTestId('error-block-mq1');
+    expect(within(quota).getByTestId('error-code-mq1')).toHaveTextContent('额度已用尽');
+    expect(within(quota).getByTestId('error-open-usage')).toBeInTheDocument();
+    expect(within(quota).queryByTestId('error-retry-mq1')).not.toBeInTheDocument();
+    // 长 URL 截断显示，完整正文留在 title
+    const body = within(quota).getByTestId('error-body-mq1');
+    expect(body.textContent).not.toContain('a'.repeat(80));
+    expect(body.textContent).toContain('…');
+    expect(body).toHaveAttribute('title', `额度已用尽 429 ${longUrl}`);
+
+    // 限流错误：可重试 → 点击后重发上一条 user 消息
+    const rate = screen.getByTestId('error-block-mr1');
+    postResponses = [{ queued: false }];
+    await user.click(within(rate).getByTestId('error-retry-mr1'));
+    await waitFor(() => expect(postBodies.at(-1)?.text).toBe('帮我查一下'));
+
+    // 切换模型入口：点击打开模型弹窗（复用既有 ModelSelector）
+    await user.click(within(rate).getByTestId('error-switch-model'));
+    expect(await screen.findByTestId('model-input')).toBeInTheDocument();
+
+    // 编码丢失：旧消息显示标记
+    expect(within(screen.getByTestId('msg-ma1')).getByTestId('encoding-lost-ma1')).toHaveTextContent('原始编码不可用');
+  });
 });
 
 describe('ChatPanel 排队与停止', () => {

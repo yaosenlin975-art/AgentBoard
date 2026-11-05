@@ -26,7 +26,9 @@ export interface SessionErrorSignal { code: SessionErrorCode; retryable: boolean
 const QUOTA = /(额度已用尽|额度不足|额度已用完|余额不足|quota\s*(?:exceeded|exhausted)|insufficient\s*quota)/i;
 const AUTH = /(unauthori[sz]ed|invalid\s*api\s*key|api\s*key\s*invalid|鉴权失败|未授权|认证失败)/i;
 const CONTEXT = /(context\s*(?:length|window)|too\s*many\s*tokens|maximum\s*context|上下文(?:超长|过长))/i;
-const RATE = /(rate\s*limit|too\s*many\s*requests|限流|请求过于频繁|\b429\b)/i;
+// 裸 429 不单独算限流特征：否则短回答里「讲解 429 是什么」会被误判成错误；
+// 真正的 429 失败输出通常以 429 / Error 开头（HTTP_ERROR_LEAD）或带下方特征词。
+const RATE = /(rate\s*limit|too\s*many\s*requests|限流|请求过于频繁)/i;
 const HTTP_ERROR_LEAD = /^(?:429|401|403|5\d\d|Error|ERROR|error)[\s:：]/;
 
 /** 归类：强特征词优先于裸 429（额度失败文案里通常也带 429） */
