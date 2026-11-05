@@ -85,6 +85,35 @@ describe('RightPanel', () => {
     expect(screen.getByTestId('right-panel-close')).toBeInTheDocument();
   });
 
+  it('ANCHOR-DETAIL 仍被调用：打开详情时按触发卡片所在列计算锚点，面板可见且贴列右侧', async () => {
+    usePanelStore.setState({ view: null, issueId: null, rightOpen: false });
+    const column = document.createElement('section');
+    column.setAttribute('data-testid', 'column-待规划');
+    const card = document.createElement('div');
+    card.tabIndex = 0;
+    column.appendChild(card);
+    column.getBoundingClientRect = () => ({
+      x: 40, y: 20, width: 240, height: 600, top: 20, left: 40, right: 280, bottom: 620, toJSON: () => ({}),
+    }) as DOMRect;
+    document.body.appendChild(column);
+    card.focus();
+
+    render(<RightPanel />);
+    act(() => usePanelStore.getState().openDetail('issue-1'));
+
+    const panel = await screen.findByTestId('right-panel');
+    await waitFor(() => expect(panel).toHaveAttribute('data-panel-state', 'open'));
+    // 宽屏（jsdom 默认 1024）：列右侧容得下 → 贴右；宽度 clamp(360, 34vw, 460) = 360
+    expect(panel).toHaveAttribute('data-anchored', 'true');
+    expect(panel).toHaveAttribute('data-anchor-side', 'right');
+    expect(panel).toHaveStyle({ left: '288px', top: '20px', width: '360px', height: '600px' });
+    // 详情子树确实渲染出来且可见（不是只有 store 里有 issueId）
+    expect(screen.getByTestId('detail-panel-view')).toBeVisible();
+    expect(screen.getByTestId('detail-draft')).toBeVisible();
+
+    column.remove();
+  });
+
   it('键盘调整宽度限制在最小值和最大值之间', () => {
     localStorage.setItem('agentboard.right-panel-width', '320');
     render(<RightPanel />);

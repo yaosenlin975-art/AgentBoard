@@ -9,7 +9,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ApiError } from '../../api/client';
 
-/** 标题字数上限（未决 1：200 字，前后端同口径；本卡只做前端拦截） */
+/**
+ * 标题字数上限：取自服务端 `createIssueSchema` 的 `max(200)`（apps/server/src/api/schemas.ts 的 KB-CLI-1 口径）。
+ * 注意：就地编辑走 PATCH /api/issues/:id，其 `patchIssueSchema.title` 目前**没有**长度约束，
+ * DB 列 `issue.title TEXT` 也无长度限制，所以 200 是「比服务端更严」的前端拦截；
+ * 是否给 PATCH 补同口径约束（需改 apps/server，超出本卡文件集）待卡上决策。
+ */
 export const TITLE_MAX_LENGTH = 200;
 /** 超过该字数才显示计数 */
 export const TITLE_COUNTER_THRESHOLD = 160;

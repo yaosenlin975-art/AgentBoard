@@ -420,7 +420,31 @@ describe('DetailPanel 标题就地编辑（D1）', () => {
     expect(screen.getByTestId('title-input')).toBeInTheDocument();
   });
 
-  it('超过 200 字：>160 显示计数，超限红字阻止提交且输入保留', async () => {
+  it('长度边界：恰好 200 通过并提交（计数 200/200）', async () => {
+    const base = makeIssue({ updated_at: 7 });
+    mockDetailApi(base);
+    const patches: Array<Record<string, unknown>> = [];
+    server.use(
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        patches.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ ...base, title: 'a'.repeat(200), updated_at: 8 });
+      }),
+    );
+    renderDetail();
+
+    const input = await openTitleEditor();
+    fireEvent.change(input, { target: { value: 'a'.repeat(161) } });
+    expect(screen.getByTestId('title-counter')).toHaveTextContent('161 / 200');
+    fireEvent.change(input, { target: { value: 'a'.repeat(200) } });
+    expect(screen.getByTestId('title-counter')).toHaveTextContent('200 / 200');
+
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toMatchObject({ title: 'a'.repeat(200) });
+    expect(await screen.findByTestId('title-display')).toHaveTextContent('a'.repeat(200));
+  });
+
+  it('长度边界 +1：201 被拒、红字可读且输入保留、不发 PATCH', async () => {
     mockDetailApi(makeIssue());
     let patchCount = 0;
     server.use(
@@ -432,12 +456,12 @@ describe('DetailPanel 标题就地编辑（D1）', () => {
     renderDetail();
 
     const input = await openTitleEditor();
-    fireEvent.change(input, { target: { value: 'a'.repeat(161) } });
-    expect(screen.getByTestId('title-counter')).toHaveTextContent('161 / 200');
-
     fireEvent.change(input, { target: { value: 'a'.repeat(201) } });
+    expect(screen.getByTestId('title-counter')).toHaveTextContent('201 / 200');
     await userEvent.keyboard('{Enter}');
-    expect(await screen.findByTestId('title-error')).toHaveTextContent('标题最多 200 字，当前 201 字');
+    expect(await screen.findByTestId('title-error')).toHaveTextContent(
+      '标题最多 200 字，当前 201 字（已保留你的输入）。',
+    );
     expect(input).toHaveValue('a'.repeat(201));
     expect(patchCount).toBe(0);
   });
@@ -1157,6 +1181,30 @@ describe('RightPanel 容器', () => {
     openDetail();
     expect(await screen.findByTestId('right-panel')).toBeInTheDocument();
     expect(await screen.findByTestId('detail-panel')).toBeInTheDocument();
+  });
+
+  it('D1 回归排除：连续 3 次打开任务详情，详情容器每次都在 DOM 且可见（无列信息时 detailAnchor 回落 drawer）', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail({ open: false });
+
+    for (let round = 0; round < 3; round += 1) {
+      openDetail();
+      const panel = await screen.findByTestId('right-panel');
+      // 进入相位结束后（内联 opacity=1）才算「真实可见」，不能只看数据层
+      await waitFor(() => expect(panel).toHaveAttribute('data-panel-state', 'open'));
+      expect(panel).not.toHaveAttribute('aria-hidden');
+      expect(screen.getByTestId('right-panel-content')).not.toHaveAttribute('inert');
+      // 面板没有被某个条件提前 return/null：详情容器、字段区与标题都在 DOM 且可见
+      expect(await screen.findByTestId('detail-panel-view')).toBeVisible();
+      expect(await screen.findByTestId('detail-panel')).toBeVisible();
+      expect(await screen.findByTestId('title-display')).toBeVisible();
+      // jsdom 无列信息：detailAnchor 仍被调用并回落 drawer（不是锚定成 0 高面板）
+      expect(panel).toHaveAttribute('data-anchored', 'false');
+      expect(panel).toHaveAttribute('data-anchor-side', 'fixed');
+
+      await userEvent.click(screen.getByTestId('right-panel-close'));
+      await waitFor(() => expect(screen.queryByTestId('right-panel')).toBeNull());
+    }
   });
 
   it('openChat 走 navStore：面板不再渲染 chat 视图（S2b 整屏化，detail/ref 浮窗计数 0）', async () => {
