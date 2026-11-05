@@ -294,9 +294,9 @@
 现状事实（只读核对，未改源码）：
 
 - 评论里的图片**其实已经是内联渲染**：`CommentThread.tsx:49-75` 用 `<img src={attachment.url}>` 渲染 `figure`，不是一行文件名。
-- 描述走 `DetailPanel.tsx:294-297` 的 `MarkdownView`，markdown 里的 `img` 由 `markdownRenderer.tsx:28-54` 渲染；但描述编辑框目前没有粘贴 / 拖拽图片入口，所以「描述里能放图」只在手写 markdown 时成立。
-- 现有附件存储是**图片专用**：`services/attachments.ts:23,84-111` 只接受 PNG/JPEG/WebP、单张 ≤10MiB。所以「附件范围 = 一切文件」不是改文案，需要新增通用文件存储。
-- 附件读取已有稳定 URL：`GET /api/workspaces/:workspaceId/attachments/:attachmentId`（`routes.ts:615-632`，`Content-Disposition: inline`）。
+- 描述走 `DetailPanel.tsx:296` 的 `MarkdownView`，markdown 里的 `img` 由 `markdownRenderer.tsx:28-54` 渲染；但描述编辑框目前没有粘贴 / 拖拽图片入口，所以「描述里能放图」只在手写 markdown 时成立。
+- 现有附件存储是**图片专用**：`services/attachments.ts:23,46-47,89-111` 只接受 PNG/JPEG/WebP、单张 ≤10MiB。所以「附件范围 = 一切文件」不是改文案，需要新增通用文件存储。
+- 附件读取已有稳定 URL：`GET /api/workspaces/:workspaceId/attachments/:attachmentId`（`routes.ts:623-634`，`Content-Disposition: inline`）。
 
 ### 8.3 四个可行性问题（逐条回答）
 
@@ -322,7 +322,7 @@
 **对 `markdownLinks.tsx` 的扩展口径**：
 
 - 图片**不需要**新增 `attachment:` scheme——`markdownRenderer.tsx` 的 `img` 渲染器已经支持普通 URL，直接渲染成图。
-- 若以后需要「文件引用」可点击（非图片），再加 `attachment:<id>`：在 `markdownLinks.tsx:32-40` 的 `parseMarkdownRef` 增加分支，`MarkdownSmartLink` 里按 id 打开附件/路径动作，并补 `markdownLinks.test.tsx`。
+- 若以后需要「文件引用」可点击（非图片），再加 `attachment:<id>`：在 `markdownLinks.tsx:33-40` 的 `parseMarkdownRef` 增加分支，`MarkdownSmartLink` 里按 id 打开附件/路径动作，并补 `markdownLinks.test.tsx`。
 - 不建议把图片写成 `attachment:<id>`：现有 markdown 图片语法在其它 markdown 阅读器里也能退化显示，自定义 scheme 会失去可移植性。
 
 **通用文件（一切文件）的存储**：需要给附件表加 `kind`（image / file）或独立 `files` 表，上传不限制 MIME，仍限制大小与数量；下载端点区分 inline（图片）与 attachment（其它文件）。这是新能力，不能假装已有。
