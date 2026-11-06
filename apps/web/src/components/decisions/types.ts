@@ -48,7 +48,13 @@ export interface DecisionListItemDto {
   /** 服务端 join issue 派生 */
   issue_title: string;
   issue_status: string;
+  /** 服务端 join issue 派生（DEC-V4-API-LIST）：队列排序用 */
+  issue_priority: '低' | '中' | '高';
   option_count: number;
+  /** 列表内联选项（与详情同形状，按 ord 升序） */
+  options: DecisionOptionDto[];
+  /** 该卡作为 blocker 的 blocks 边数量；无下游为 0 */
+  blocked_downstream_count: number;
   /** grace 期间剩余秒数（其余 null），由服务端按请求时刻计算 */
   remaining_grace_seconds: number | null;
   /** open 已等待秒数（其余 null） */

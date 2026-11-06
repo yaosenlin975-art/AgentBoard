@@ -155,7 +155,13 @@ function listItem(overrides: Partial<DecisionListItemDto> & Pick<DecisionListIte
     withdrawn_reason: null,
     issue_title: `任务 ${overrides.id}`,
     issue_status: '待规划',
+    issue_priority: '中',
     option_count: 2,
+    options: [
+      { id: `option-a-${overrides.id}`, ord: 1, label: '继续', consequence: '继续执行', is_default: 1 },
+      { id: `option-b-${overrides.id}`, ord: 2, label: '停止', consequence: '停在检查点', is_default: 0 },
+    ],
+    blocked_downstream_count: 0,
     remaining_grace_seconds: 90,
     waiting_seconds: null,
     ...overrides,

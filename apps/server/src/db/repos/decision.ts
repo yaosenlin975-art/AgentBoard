@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Priority } from '@agentboard/shared';
 import type { Db } from '../connection.js';
 
 /**
@@ -105,7 +106,13 @@ export interface DecisionDetail extends DecisionRow {
 export interface DecisionListItem extends DecisionRow {
   issue_title: string;
   issue_status: string;
+  /** 由 issue join 派生（DEC-V4-API-LIST）：队列排序用 */
+  issue_priority: Priority;
   option_count: number;
+  /** 与 getDecisionDetail 的选项同形状，按 ord 升序；列表批量取，避免逐条拉详情 */
+  options: DecisionOptionRow[];
+  /** 该 issue 作为 blocker 的 blocks 边数量；无下游为 0 */
+  blocked_downstream_count: number;
   remaining_grace_seconds: number | null;
   waiting_seconds: number | null;
 }
@@ -248,16 +255,43 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
   params.push(limit);
   const rows = db
     .prepare(
-      `SELECT d.*, i.title AS issue_title, i.status AS issue_status,
-         (SELECT COUNT(*) FROM issue_decision_option o WHERE o.decision_id=d.id) AS option_count
+      `SELECT d.*, i.title AS issue_title, i.status AS issue_status, i.priority AS issue_priority,
+         (SELECT COUNT(*) FROM issue_decision_option o WHERE o.decision_id=d.id) AS option_count,
+         (SELECT COUNT(*) FROM issue_dependency dep
+           WHERE dep.blocker_issue_id=d.issue_id AND dep.relation='blocks') AS blocked_downstream_count
        FROM issue_decision d JOIN issue i ON i.id=d.issue_id
        ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`}
        ORDER BY d.created_at DESC, d.id DESC LIMIT ?`,
     )
-    .all(...params) as Array<DecisionRow & { issue_title: string; issue_status: string; option_count: number }>;
+    .all(...params) as Array<
+    DecisionRow & {
+      issue_title: string;
+      issue_status: string;
+      issue_priority: Priority;
+      option_count: number;
+      blocked_downstream_count: number;
+    }
+  >;
+  // DEC-V4-API-LIST：选项一次批量取（IN decisionIds），不做逐条 N+1
+  const optionsByDecision = new Map<string, DecisionOptionRow[]>();
+  if (rows.length > 0) {
+    const optionRows = db
+      .prepare(
+        `SELECT * FROM issue_decision_option
+          WHERE decision_id IN (${rows.map(() => '?').join(',')})
+          ORDER BY decision_id, ord, id`,
+      )
+      .all(...rows.map((row) => row.id)) as DecisionOptionRow[];
+    for (const option of optionRows) {
+      const list = optionsByDecision.get(option.decision_id);
+      if (list === undefined) optionsByDecision.set(option.decision_id, [option]);
+      else list.push(option);
+    }
+  }
   const now = Date.now();
   return rows.map((row) => ({
     ...row,
+    options: optionsByDecision.get(row.id) ?? [],
     remaining_grace_seconds: remainingGraceSeconds(row, now),
     waiting_seconds: waitingSeconds(row, now),
   }));

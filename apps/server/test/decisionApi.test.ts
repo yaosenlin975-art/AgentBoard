@@ -11,9 +11,12 @@ import type { DecisionEvent, ServerWsEvent } from '@agentboard/shared';
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
+import { insertDecision, listDecisions } from '../src/db/repos/decision.js';
 import { claimIssue } from '../src/services/claim.js';
 import { createDecisionRouter } from '../src/api/decisionRoutes.js';
 import { errorHandler } from '../src/api/routes.js';
+import { createApp } from '../src/index.js';
+import { FakeAdapter } from './fakeAdapter.js';
 
 let t: TestDb;
 let wsId: string;
@@ -296,5 +299,143 @@ describe('查询 / 计数 / 停止信号', () => {
     const counts = await request(app).get(`/api/workspaces/${wsId}/decisions/count`);
     expect(counts.status).toBe(200);
     expect(counts.body).toEqual({ grace: 1, open: 0, stale_open: 0, answered_recent: 0 });
+  });
+});
+
+describe('DEC-V4-API-LIST：列表投影（options / issue_priority / blocked_downstream_count）', () => {
+  it('列表项内联 options（ord 升序）与 issue_priority，无下游计数为 0 而非 null', async () => {
+    await ask({
+      options: [
+        { label: '继续', consequence: '继续执行' },
+        { label: '停止', consequence: '停在检查点' },
+        { label: '降级', consequence: '只做一半' },
+      ],
+    });
+    const list = await request(app).get(`/api/decisions?workspace_id=${wsId}&limit=50`);
+    expect(list.status).toBe(200);
+    expect(list.body.decisions).toHaveLength(1);
+    const item = list.body.decisions[0];
+    expect(item.option_count).toBe(3);
+    expect(item.options.map((option: { ord: number }) => option.ord)).toEqual([1, 2, 3]);
+    expect(item.options.map((option: { label: string }) => option.label)).toEqual(['继续', '停止', '降级']);
+    expect(item.options[0]).toMatchObject({ consequence: '继续执行' });
+    expect([0, 1]).toContain(item.options[0].is_default);
+    expect(item.issue_priority).toBe('中');
+    expect(item.blocked_downstream_count).toBe(0);
+  });
+
+  it('A blocks B 后 A 的 blocked_downstream_count 从 0 变 1；related 边不计入', async () => {
+    const downstream = createIssue(t.db, { workspace_id: wsId, title: '下游卡', priority: '高' });
+    await ask();
+    const before = await request(app).get(`/api/decisions?workspace_id=${wsId}`);
+    expect(before.body.decisions[0].blocked_downstream_count).toBe(0);
+
+    t.db
+      .prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?,?,?)')
+      .run(downstream.id, agentIssue.id, 'blocks', Date.now());
+    // 另建一条 related 标注边，验证非 blocks 边不计数
+    const relatedIssue = createIssue(t.db, { workspace_id: wsId, title: '关联卡' });
+    t.db
+      .prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?,?,?)')
+      .run(relatedIssue.id, agentIssue.id, 'related', Date.now());
+
+    const after = await request(app).get(`/api/decisions?workspace_id=${wsId}`);
+    expect(after.body.decisions[0].blocked_downstream_count).toBe(1);
+    expect(after.body.decisions[0].issue_priority).toBe('中');
+  });
+
+  it('50 条决策列表批量取选项：prepare 次数 ≤3（无 N+1）', () => {
+    for (let index = 0; index < 50; index += 1) {
+      const issue = createIssue(t.db, { workspace_id: wsId, title: `批量卡${index}` });
+      insertDecision(t.db, {
+        workspace_id: wsId,
+        issue_id: issue.id,
+        question: `问题${index}？`,
+        created_by: 'agent-1',
+        grace_seconds: 180,
+        grace_until: Date.now() + 180_000,
+        now: Date.now() + index,
+        options: [
+          { label: 'A', consequence: '选 A' },
+          { label: 'B', consequence: '选 B' },
+          { label: 'C', consequence: '选 C' },
+        ],
+      });
+    }
+    let prepared = 0;
+    const countingDb = new Proxy(t.db, {
+      get(target, property, receiver) {
+        if (property === 'prepare') {
+          return (...args: unknown[]) => {
+            prepared += 1;
+            return (target.prepare as (...inner: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as typeof t.db;
+
+    const items = listDecisions(countingDb, { workspace_id: wsId, limit: 50 });
+    expect(items).toHaveLength(50);
+    expect(items.every((item) => item.options.length === 3)).toBe(true);
+    expect(items[0]!.options.map((option) => option.ord)).toEqual([1, 2, 3]);
+    expect(prepared).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('DEC-V4-API-LIST：真实 createApp 下新字段对外可触达', () => {
+  let t2: TestDb;
+  let realApp: express.Express;
+  let realWsId: string;
+  let realIssue: { id: string; fence: number };
+
+  beforeEach(async () => {
+    t2 = createTestDb();
+    const adapter = new FakeAdapter();
+    const created = await createApp({
+      db: t2.db,
+      getAdapter: (id: string) => {
+        if (id === 'fake') return adapter;
+        throw new Error(`未知适配器 id: ${id}`);
+      },
+      adapters: [adapter],
+      maxConcurrentTurns: 1,
+      refreshClisOnBoot: false,
+    });
+    realApp = created.app;
+    realWsId = createWorkspace(t2.db, { name: 'ws-real', path: 'D:\\ws-real' }).id;
+    const issue = createIssue(t2.db, { workspace_id: realWsId, title: '真实 app 决策卡', priority: '高' });
+    realIssue = claimIssue(t2.db, issue.id, 'agent-real', null);
+  });
+
+  afterEach(() => {
+    t2.cleanup();
+  });
+
+  it('GET /api/decisions 返回 options / issue_priority / blocked_downstream_count', async () => {
+    const asked = await request(realApp).post(`/api/issues/${realIssue.id}/ask`).send({
+      agent_id: 'agent-real',
+      fence: realIssue.fence,
+      question: '选哪条？',
+      options: [
+        { label: '继续', consequence: '继续执行' },
+        { label: '停止', consequence: '停在检查点' },
+        { label: '降级', consequence: '只做一半' },
+      ],
+    });
+    expect(asked.status).toBe(201);
+
+    const downstream = createIssue(t2.db, { workspace_id: realWsId, title: '真实下游卡' });
+    t2.db
+      .prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?,?,?)')
+      .run(downstream.id, realIssue.id, 'blocks', Date.now());
+
+    const list = await request(realApp).get(`/api/decisions?workspace_id=${realWsId}&limit=50`);
+    expect(list.status).toBe(200);
+    const item = list.body.decisions[0];
+    expect(item.options).toHaveLength(3);
+    expect(item.options.map((option: { ord: number }) => option.ord)).toEqual([1, 2, 3]);
+    expect(item.issue_priority).toBe('高');
+    expect(item.blocked_downstream_count).toBe(1);
   });
 });
