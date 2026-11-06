@@ -49,15 +49,17 @@ export function normalizeBase(raw: string | undefined): string {
   return (raw ?? DEFAULT_BASE).trim().replace(/\/+$/, '');
 }
 
-/** fetch failed 的 cause 链上找 ECONNREFUSED（undici 包一层 TypeError） */
-function isConnRefused(err: unknown): boolean {
+/** CLI-RETRY：连接层错误码（undici 把真实原因包在 cause 链上，外层常是 `TypeError: fetch failed`） */
+type ConnErrorCode = 'ECONNREFUSED' | 'ECONNRESET';
+
+function connErrorCode(err: unknown): ConnErrorCode | null {
   let cur: unknown = err;
   for (let depth = 0; depth < 5 && cur; depth += 1) {
     const node = cur as { code?: unknown; cause?: unknown };
-    if (node.code === 'ECONNREFUSED') return true;
+    if (node.code === 'ECONNREFUSED' || node.code === 'ECONNRESET') return node.code;
     cur = node.cause;
   }
-  return false;
+  return null;
 }
 
 /** fetch 抛错的原始信息：cause 链各层 message 去重拼接（undici 外层常为 "fetch failed"，真实原因在 cause） */
@@ -129,24 +131,57 @@ export async function requestWithMeta<T>(
   return { data, replayed };
 }
 
-/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError，连接拒绝抛 ServerUnreachableError，其余网络层失败包装为看板服务不可达（含原始 message）。响应带 x-agentboard-version 时与 CLI 版本比对，不匹配 stderr 警告（每进程最多一次） */
-async function fetchResponse(base: string, method: string, path: string, headers?: Record<string, string>, body?: BodyInit): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(`${base}${path}`, {
-      method,
-      headers,
-      body,
-    });
-  } catch (err) {
-    if (isConnRefused(err)) throw new ServerUnreachableError(base);
-    if (!(err instanceof TypeError)) throw err;
-    throw new Error(`看板服务不可达（${base}，用 --server 指定；${rawChainMessages(err)}）`, {
-      cause: err,
-    });
+/**
+ * CLI-RETRY：网络抖动重试与错误分类。
+ * 只重试 GET：一次抖动（服务端重启、连接被重置）不该让只读命令直接失败；
+ * POST/PATCH/DELETE 一律不自动重试，重试可能重复写（幂等键只兜住带 --request-id 的那部分）。
+ * HTTP 4xx/5xx 不在此列——那是服务端明确答复，重试没有意义，原样透出。
+ */
+export const GET_RETRY_DELAY_MS = 200;
+
+/** 写请求断连后的下一步指引：同一个 request-id 重放才安全 */
+export const WRITE_RETRY_HINT = '网络中断；重试请复用 --request-id';
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 网络层失败 → 三类文案：① ECONNREFUSED=服务端未启动；② ECONNRESET=连接被重置；③ 其余按 cause 链透出 */
+function networkFailureError(base: string, method: string, err: unknown): Error {
+  const code = connErrorCode(err);
+  if (code === 'ECONNREFUSED') return new ServerUnreachableError(base);
+  const writeHint = method.toUpperCase() === 'GET' ? '' : `；${WRITE_RETRY_HINT}`;
+  if (code === 'ECONNRESET') {
+    return new Error(`连接被重置（ECONNRESET，${base}）：服务端可能未启动/网络抖动${writeHint}`, { cause: err });
   }
-  warnVersionMismatch(res.headers.get(SERVER_VERSION_HEADER));
-  return res;
+  if (err instanceof TypeError) {
+    return new Error(`看板服务不可达（${base}，用 --server 指定；${rawChainMessages(err)}）${writeHint}`, { cause: err });
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
+/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError；GET 遇连接层抖动自动重试一次，写请求不重试。响应带 x-agentboard-version 时与 CLI 版本比对，不匹配 stderr 警告（每进程最多一次） */
+async function fetchResponse(base: string, method: string, path: string, headers?: Record<string, string>, body?: BodyInit): Promise<Response> {
+  const retryable = method.toUpperCase() === 'GET';
+  for (let attempt = 0; ; attempt += 1) {
+    let res: Response;
+    try {
+      res = await fetch(`${base}${path}`, {
+        method,
+        headers,
+        body,
+      });
+    } catch (err) {
+      if (retryable && attempt === 0 && connErrorCode(err) !== null) {
+        await delay(GET_RETRY_DELAY_MS);
+        continue;
+      }
+      throw networkFailureError(base, method, err);
+    }
+    if (attempt > 0) process.stderr.write(`网络抖动：${method} ${path} 连接中断，已重试 1 次后成功\n`);
+    warnVersionMismatch(res.headers.get(SERVER_VERSION_HEADER));
+    return res;
+  }
 }
 
 async function decodeResponse<T>(base: string, res: Response): Promise<T> {
