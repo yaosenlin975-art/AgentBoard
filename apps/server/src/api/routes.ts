@@ -84,6 +84,7 @@ import {
   resolveSnapshotDir,
   validateWorkspaceSnapshot,
 } from '../services/workspaceSnapshot.js';
+import { centerSnapshotDir, exportCenterSnapshot, validateCenterSnapshot } from '../services/centerSnapshot.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
@@ -887,18 +888,41 @@ export function createRouter(deps: RouterDeps): Router {
   };
 
   /**
-   * STORE-5：POST /api/workspaces/:id/db/snapshot/export { includeMessages? }
-   * → { dir, manifest }。服务端单写者执行，导出后回读自校验。
+   * STORE-5/6：POST /api/workspaces/:id/db/snapshot/export { includeMessages?, includeAttachments? }
+   * → { dir, manifest }。已下沉时读工作区库；未下沉时从中心库按 workspace 过滤导出（STORE-6），
+   * 这样「没 enable 也能把看板提交进 git」。导出后回读自校验。
    */
   router.post('/workspaces/:id/db/snapshot/export', (req, res) => {
     const wsRow = requireWorkspaceRow(req.params.id!);
     const body = parseBody(workspaceSnapshotExportSchema, req.body ?? {});
-    const rdb = localizedWorkspaceDb(wsRow);
+    if (wsRow.dbMode === 'localizing') {
+      throw new ApiError(409, 'SNAPSHOT_MIGRATING', '工作区库迁移进行中，暂不导出快照（迁移结束后会自动导出）');
+    }
+    const resolution = getDbForWorkspace(workspaceResolverDeps, wsRow);
+    const includeMessages = body.includeMessages === true;
+    const includeAttachments = body.includeAttachments === true;
+    if (resolution.decision.target === 'workspace') {
+      const dbPath = workspaceDbPath(wsRow.path);
+      res.json(exportWorkspaceSnapshot({
+        db: resolution.db,
+        workspacePath: wsRow.path,
+        sourceDbPath: dbPath,
+        includeMessages,
+        includeAttachments,
+        attachmentsDir: attachmentsDirOf(dbPath),
+      }));
+      return;
+    }
+    // STORE-6：中心库模式——行集按 workspace_id 过滤，附件取中心库同级 attachments/
+    const centerPath = currentDbPath ?? db.name;
     res.json(exportWorkspaceSnapshot({
-      db: rdb,
+      db: resolution.db,
+      workspaceId: wsRow.id,
       workspacePath: wsRow.path,
-      sourceDbPath: workspaceDbPath(wsRow.path),
-      includeMessages: body.includeMessages === true,
+      sourceDbPath: centerPath,
+      includeMessages,
+      includeAttachments,
+      attachmentsDir: attachmentsDirOf(centerPath),
     }));
   });
 
@@ -937,6 +961,19 @@ export function createRouter(deps: RouterDeps): Router {
   });
 
   // ---- system ----
+  /**
+   * STORE-6：中心库全局快照（工作区注册表 / 成员 / 账号与签到元数据 / scope=common 知识页及历史）。
+   * 落在中心库同级的 center-snapshot/；账号引用一律 ***（导出后自检，防泄露）。
+   */
+  router.post('/system/center-snapshot/export', (_req, res) => {
+    res.json(exportCenterSnapshot({ db, centerDbPath: currentDbPath ?? db.name }));
+  });
+  /** STORE-6：只读校验中心库快照（manifest / 哈希 / 行数 / 脱敏自检） */
+  router.get('/system/center-snapshot/validate', (_req, res) => {
+    const checked = validateCenterSnapshot(centerSnapshotDir(currentDbPath ?? db.name));
+    res.json({ ok: true, dir: checked.dir, manifest: checked.manifest, tables: checked.tables });
+  });
+
   // 原生文件夹选择（Windows PowerShell FolderBrowserDialog）；同一时刻仅允许一个窗口
   router.post('/system/pick-folder', async (_req, res) => {
     if (pickFolderInFlight) {

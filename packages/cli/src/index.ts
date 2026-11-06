@@ -34,6 +34,8 @@ import {
   workspaceDbCleanup,
   workspaceDbEnable,
   workspaceDbRevert,
+  workspaceDbCenterSnapshotExport,
+  workspaceDbCenterSnapshotValidate,
   workspaceDbSnapshotExport,
   workspaceDbSnapshotImport,
   workspaceDbSnapshotValidate,
@@ -506,17 +508,21 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   // STORE-5：工作区文本快照（库为准，快照是派生物）——服务端单写者导出 / 只读校验 / 空库导入
   const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
   snapshot.command('export')
-    .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（服务端单写者执行，导出后回读自校验）')
+    .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（未下沉时从中心库按工作区导出；导出后回读自校验）')
     .argument('<workspace>', '工作空间 id 或名称')
     .option('--include-messages', '同时导出会话消息（messages.jsonl；默认不导出，体积大且敏感）')
+    .option('--include-attachments', '同时导出附件本体到 snapshot/attachments/（默认只导清单行）')
     .addHelpText('after', `
 示例：
   kb workspace-db snapshot export 任务看板
-  kb workspace-db snapshot export 任务看板 --include-messages
-退出码：0 成功；2 该工作区尚未下沉（先 enable）；1 其它错误
+  kb workspace-db snapshot export 任务看板 --include-messages --include-attachments
+退出码：0 成功；2 工作区库迁移进行中；1 其它错误
 `)
-    .action(async (workspace: string, opts: { includeMessages?: boolean }) =>
-      workspaceDbSnapshotExport(makeCtx(program, io), workspace, { includeMessages: opts.includeMessages === true }));
+    .action(async (workspace: string, opts: { includeMessages?: boolean; includeAttachments?: boolean }) =>
+      workspaceDbSnapshotExport(makeCtx(program, io), workspace, {
+        includeMessages: opts.includeMessages === true,
+        includeAttachments: opts.includeAttachments === true,
+      }));
   snapshot.command('validate')
     .description('校验快照：manifest 结构 + 每个文件 sha256/行数（只读，不写任何数据）')
     .argument('<workspace>', '工作空间 id 或名称')
@@ -542,6 +548,23 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 `)
     .action(async (workspace: string, opts: { file?: string; replace?: boolean }) =>
       workspaceDbSnapshotImport(makeCtx(program, io), workspace, { dir: opts.file, replace: opts.replace === true }));
+  // STORE-6：中心库全局快照（注册表/成员/账号元数据/公共知识；敏感引用脱敏为 ***）
+  snapshot.command('center-export')
+    .description('导出中心库全局快照到 <中心库同级>/center-snapshot（workspace 注册表、成员、账号/签到元数据、公共知识）')
+    .addHelpText('after', `
+示例：
+  kb workspace-db snapshot center-export
+退出码：0 成功；1 其它错误
+`)
+    .action(async () => workspaceDbCenterSnapshotExport(makeCtx(program, io)));
+  snapshot.command('center-validate')
+    .description('校验中心库快照：manifest + 每文件 sha256/行数 + 脱敏自检（只读）')
+    .addHelpText('after', `
+示例：
+  kb workspace-db snapshot center-validate
+退出码：0 校验通过；1 快照不可导入 / 脱敏自检失败
+`)
+    .action(async () => workspaceDbCenterSnapshotValidate(makeCtx(program, io)));
 
   // DEC-4：决策命令组（ask / decisions / decision / answer / stop-check）
   registerDecisionCommands(program, io, makeCtx);

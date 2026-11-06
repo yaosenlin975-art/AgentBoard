@@ -128,30 +128,46 @@
 | 1 | job failed（`lastError` 原文透出，含预检拒绝：目标库已存在、上次迁移未收尾、无中间态可恢复、清理被拒、回迁被拒）；工作区不存在；400；轮询超时；cleanup / revert 缺 `--workspace` |
 | 2 | POST 409（该区已有任务在跑，服务端文案原样透出）；cleanup 无可清理的半成品 |
 
-### 工作区文本快照（STORE-5，`/api/workspaces/:id/db/snapshot*`，`apps/server/src/services/workspaceSnapshot.ts`）
+### 工作区文本快照（STORE-5/6，`/api/workspaces/:id/db/snapshot*`，`apps/server/src/services/workspaceSnapshot.ts`）
 
-- `export` / `import` 只对 **localized** 工作区库生效；中心库模式回答 409 `SNAPSHOT_NOT_LOCALIZED`（文案指向 `kb workspace-db enable`）。`validate` 只读快照文件、不碰库，未下沉的工作区也能先校验。
-- 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues.jsonl` / `issue_comments.jsonl` / `issue_dependencies.jsonl` / `issue_git_baseline.jsonl` / `issue_draft_audit.jsonl` / `workspace_status.jsonl` / `workspace_change_log.jsonl` / `knowledge_pages.jsonl` / `knowledge_revisions.jsonl` / `knowledge_links.jsonl` / `sessions.jsonl`，可选 `messages.jsonl`）。
-- manifest：`format:'agentboard.workspace-snapshot/1'`、`workspace_id`、`schema_version:1`、`exported_at`（ISO）、`generator_version`、`source_db`、`included_tables`（库内单数表名）、`files:[{ file, table, rows, sha256 }]`；JSONL 每行一个对象，列序固定、按主键升序，保证同样数据两次导出除 `exported_at` 外逐字节一致。
+- `export` 对两种形态都可用：已 localized 读工作区库；未 enable 时从**中心库按 `workspace_id` 过滤**导出同一行集（STORE-6，行集与迁移/status 共用 `workspaceScopedQueries.ts`），因此「没 enable 也能把看板提交进 git」。迁移进行中（`db_mode=localizing`）回答 409 `SNAPSHOT_MIGRATING`。
+- `import` 仍只对 **localized** 工作区库生效；中心库模式回答 409 `SNAPSHOT_NOT_LOCALIZED`。`validate` 只读快照文件、不碰库。
+- 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues` / `issue_comments` / `issue_dependencies` / `issue_git_baseline` / `issue_draft_audit` / `workspace_status` / `workspace_change_log` / `knowledge_pages` / `knowledge_revisions` / `knowledge_links` / `sessions`，可选 `attachments` / `comment_attachments` / `knowledge_attachments`（`--include-attachments`）与 `messages`（`--include-messages`））。
+- manifest：`format:'agentboard.workspace-snapshot/1'`、`workspace_id`、`schema_version:1`、`exported_at`（ISO）、`generator_version`、`source_db`、`included_tables`（库内单数表名）、`files:[{ file, table, rows, sha256 }]`、可选 `attachments:[{ storage_key, file, bytes, sha256 }]`；JSONL 每行一个对象，列序固定、按主键升序，保证同样数据两次导出除 `exported_at` 外逐字节一致。
 - 时间列（`ts` 与 `*_at`）导出为 ISO 字符串，导入时还原为 epoch ms；列已存在则忽略导出侧多出的列，缺列 / 字段不一致 / 哈希或行数不符一律 422。
+- 附件（STORE-6）：`--include-attachments` 把 `attachment` / `knowledge_attachment` 行引用的本体复制到 `snapshot/attachments/<storage_key>` 并记 sha256；导入前逐个校验，缺文件 → 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key；通过后落到 `<ws>/.agentboard/attachments/`，图片路由即可 200。
 - 目录边界：缺省 `<ws>/.agentboard/snapshot`；`dir` 允许相对工作区根或绝对路径，但必须落在工作区内，否则 400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`。
-- enable 成功后由迁移流程自动导出一次（失败只记 `[snapshot]` 警告，不影响迁移结果）。
+- git 接线（STORE-6）：导出（含 enable 后自动导出）会同时写 `<ws>/.agentboard/.gitignore`（`*.db`、`*.db-wal`、`*.db-shm`、`localize.json`、`attachments/`）与 `<ws>/.agentboard/README.md`（事实源、恢复命令、附件开关说明）；内容不变不重写。根 `.gitignore` 不改（已有 `*.db`）。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `POST /api/workspaces/:id/db/snapshot/export` | body 严格 `{ includeMessages?: boolean }`（默认不导出会话消息） | `{ dir, manifest: SnapshotManifest }`；服务端单写者执行（`db.transaction` 读全表 → 临时目录 → rename 覆盖），导出后回读自校验 | 404；400；409 `SNAPSHOT_NOT_LOCALIZED`；500 `SNAPSHOT_SCHEMA_MISSING` / `SNAPSHOT_SELF_CHECK_FAILED` | routes.ts:893 |
-| `GET /api/workspaces/:id/db/snapshot/validate?dir=` | query `dir?`（缺省 `.agentboard/snapshot`） | `{ ok: true, dir, manifest, tables: [{ table, rows }] }`；只读 | 404；400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`；422 `SNAPSHOT_INVALID` | routes.ts:909 |
-| `POST /api/workspaces/:id/db/snapshot/import` | body 严格 `{ dir?: string, replace?: boolean }` | `ImportSnapshotResult`：`{ dir, tables: [{ table, rows }], rows, backupPath }`；`replace=true` 先 `VACUUM INTO <ws>/.agentboard/backup/snapshot-import-<ts>.db` 再覆盖（`backupPath` 返回该路径）；单事务插入、逐表行数守恒，失败整体 ROLLBACK | 404；400；409 `SNAPSHOT_NOT_LOCALIZED` / `SNAPSHOT_TARGET_NOT_EMPTY`；422 `SNAPSHOT_INVALID` / `SNAPSHOT_WORKSPACE_MISMATCH` | routes.ts:925 |
+| `POST /api/workspaces/:id/db/snapshot/export` | body 严格 `{ includeMessages?: boolean, includeAttachments?: boolean }` | `{ dir, manifest: SnapshotManifest }`；单写事务读行 → 临时目录 → rename 覆盖，导出后回读自校验 | 404；400；409 `SNAPSHOT_MIGRATING`；500 `SNAPSHOT_SCHEMA_MISSING` / `SNAPSHOT_SELF_CHECK_FAILED` / `SNAPSHOT_ATTACHMENT_SOURCE_MISSING` | routes.ts:886 |
+| `GET /api/workspaces/:id/db/snapshot/validate?dir=` | query `dir?`（缺省 `.agentboard/snapshot`） | `{ ok: true, dir, manifest, tables: [{ table, rows }] }`；只读 | 404；400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`；422 `SNAPSHOT_INVALID` / `SNAPSHOT_ATTACHMENT_MISSING` | routes.ts:928 |
+| `POST /api/workspaces/:id/db/snapshot/import` | body 严格 `{ dir?: string, replace?: boolean }` | `ImportSnapshotResult`：`{ dir, tables: [{ table, rows }], rows, backupPath }`；`replace=true` 先 `VACUUM INTO <ws>/.agentboard/backup/snapshot-import-<ts>.db` 再覆盖；单事务插入、逐表行数守恒，失败整体 ROLLBACK | 404；400；409 `SNAPSHOT_NOT_LOCALIZED` / `SNAPSHOT_TARGET_NOT_EMPTY`；422 `SNAPSHOT_INVALID` / `SNAPSHOT_WORKSPACE_MISMATCH` / `SNAPSHOT_ATTACHMENT_MISSING` | routes.ts:944 |
 
 `SNAPSHOT_TARGET_NOT_EMPTY` 判定只看 `workspace_status` 之外的业务表（内置状态字典非空不算）；`SNAPSHOT_WORKSPACE_MISMATCH` 是快照 `workspace_id` 与目标工作区不一致（不做跨库重映射）。导入使用 `PRAGMA foreign_key_check` 兜底，库内断链可导出但不可导入。
 
 | 端点 | CLI | 备注 |
 | --- | --- | --- |
-| `POST .../db/snapshot/export` | `kb workspace-db snapshot export <workspace>` | `--include-messages` 一并导出；文本输出「快照已导出 / 行数合计 / 未包含：会话消息」 |
-| `GET .../db/snapshot/validate` | `kb workspace-db snapshot validate <workspace>` | `--file <dir>` 指定目录；输出「快照校验通过 / 文件 N 个 / 行数合计」 |
+| `POST .../db/snapshot/export` | `kb workspace-db snapshot export <workspace>` | `--include-messages`、`--include-attachments`；文本输出「快照已导出 / 行数合计 / 附件 / 未包含」 |
+| `GET .../db/snapshot/validate` | `kb workspace-db snapshot validate <workspace>` | `--file <dir>`；输出「快照校验通过 / 文件 N 个 / 行数合计」 |
 | `POST .../db/snapshot/import` | `kb workspace-db snapshot import <workspace>` | `--file <dir>`、`--replace`；输出「快照已导入 / 导入行数 / 覆盖前备份」 |
 
-退出码沿用本族口径：0 成功；1 校验不通过（`SNAPSHOT_INVALID`）、工作区不存在、400；2 409（未下沉 / 目标库非空）。
+退出码沿用本族口径：0 成功；1 校验不通过（`SNAPSHOT_INVALID` / 附件缺失）、工作区不存在、400；2 409（迁移中 / 未下沉导入 / 目标库非空）。
+
+#### 中心库全局快照（STORE-6，`/api/system/center-snapshot/*`，`apps/server/src/services/centerSnapshot.ts`）
+
+- 内容：`workspaces`（注册表）、`workspace_members`、`managed_accounts`（账号元数据）、`account_operations`（签到/切换等操作元数据）、`common_knowledge_pages`、`common_knowledge_revisions`（`scope='common'`）。
+- 位置：**中心库同级的 `center-snapshot/`**（不跟随单个工作区仓库）；格式 `agentboard.center-snapshot/1`，manifest 多一个 `scope:'center'`、无 `workspace_id`。
+- 脱敏：`managed_account.client_snapshot_ref` / `checkin_credential_ref` 与 `account_operation.recovery_ref` 一律写 `***`；导出后自检，发现非空未脱敏值直接 500 `CENTER_SNAPSHOT_SECRET_LEAK`（防未来改列名后静默泄露）。
+- 只导出 + 校验，不提供导入（中心库重建走库备份）。
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `POST /api/system/center-snapshot/export` | — | `{ dir, manifest: CenterSnapshotManifest }` | 500 `SNAPSHOT_SCHEMA_MISSING` / `CENTER_SNAPSHOT_SECRET_LEAK` |
+| `GET /api/system/center-snapshot/validate` | — | `{ ok: true, dir, manifest, tables: [{ table, rows }] }`（含脱敏自检） | 422 `SNAPSHOT_INVALID` |
+
+CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<workspace>`，退出码 0 成功、1 校验/脱敏失败）。
 
 ## 4. system
 
@@ -470,7 +486,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
 | `POST /api/issues/:id/claim` | body：`agent_id: string 非空`、`knowledge_enabled?: boolean`（默认 true）、`knowledge_query?: string 1-500` | `{ ...issue, knowledge }`。原子占用（status→进行中、session_id=null 纯登记不建会话；仅未占用且 status∈{待规划,进行中} 可领取），并发领取仅一个成功；留言游标置为领取前最新评论；存在未验证图片时停在首条图片评论之前。**依赖门禁（DEP-1）**：前置未解除时 409，文案 `存在未完成的前置任务：<title>(<short id>)…；完成后可领取`，守卫与占用更新在同一 IMMEDIATE 事务内；`services/dispatch.ts` 派发路径同样被拦 | 400 agent_id 为空；**409 `ISSUE_CLAIMED`** 已被占（文案 `已被 <agent> 占用；先 release 或换卡，勿重复 claim`）/ **409 `ISSUE_STATUS_NOT_CLAIMABLE`** 无人占用但 status∉{待规划,进行中}（文案 `状态不可领取（当前=<status>，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`）/ 409 前置未解除（DEP-1）；404 `TASK_NOT_FOUND`（带 workspace_id 且任务缺失/不归属） | routes.ts、`claim.ts:83-91`（CLAIM-MSG） |
-| `POST /api/issues/:id/heartbeat` | body：`agent_id: string 非空`、`fence?: 非负整数`（或 `x-claim-fence` 头；缺席=软模式） | `{ claimed_by, claim_fence, claim_lease_until, last_heartbeat_at, stop_requested }`。仅当前占用者可续租；`stop_requested` 与 `GET /api/issues/:id/stop` 同源（同一个 `getStopState`、同一个 db），心跳一次即可知道是否被要求停止；新增字段向后兼容，`/stop` 端点保留。不进幂等表（重放无意义）。WS issue.changed | 400 `agent_id` 为空 / fence 非法；404 任务不存在；409 未占用 / `NOT_TASK_OWNER` / `STALE_FENCE` | routes.ts:1203 |
+| `POST /api/issues/:id/heartbeat` | body：`agent_id: string 非空`、`fence?: 非负整数`（或 `x-claim-fence` 头；缺席=软模式） | `{ claimed_by, claim_fence, claim_lease_until, last_heartbeat_at, stop_requested }`。仅当前占用者可续租；`stop_requested` 与 `GET /api/issues/:id/stop` 同源（同一个 `getStopState`、同一个 db），心跳一次即可知道是否被要求停止；新增字段向后兼容，`/stop` 端点保留。不进幂等表（重放无意义）。WS issue.changed | 400 `agent_id` 为空 / fence 非法；404 任务不存在；409 未占用 / `NOT_TASK_OWNER` / `STALE_FENCE`。**LEASE-GAP**：租约过期被清扫（`sweepExpiredLeases`）后占用清空、任务保留「进行中」，此时原代次仍可用本地 fence 调 `done` / `fail` 收尾（`fence` 必须显式传且等于当前 `claim_fence`；抢占会自增 fence → `STALE_FENCE`），服务端落 system 评论留痕；`fence` 缺席不享受该口子 | routes.ts:1203 |
 | `POST /api/issues/:id/release` | 不带 workspace_id：无需 body（用户强制释放）；带 workspace_id：body `agent_id: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用。不带 workspace_id：comment author=`system` 内容「用户强制释放」、任何状态可释放；带 workspace_id：comment author=`agent:<agent_id>` 内容「占用者释放任务」 | 不带 workspace_id：404 任务不存在。带 workspace_id：404 `TASK_NOT_FOUND`；409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id | routes.ts:398 |
 | `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`（空串等价不写评论）、`scope_paths?: string[]`（最多 200 项，提交范围声明：文件路径或目录前缀） | `{ ...issue, comment }`。状态→待验收、清空占用；notes 非空时落评论（author=`agent:<agent_id>`），否则 comment=null。GIT-ON-DONE 提交范围：同 workspace 有其它「进行中且被占用」任务时，只提交 `scope_paths` 命中的路径，其余路径不提交并以 system 评论列出清单；未声明则整批不提交（同样列清单）；无并行占用时按 claim 基线 diff 提交。**claim 前就已未提交的文件**（指纹与基线相同、不在变化集）：落在 `scope_paths` 内的会被强制提交，评论标注「claim 前就已修改、按声明范围强制提交」；不在范围内或未声明时一律不提交，改为评论列出清单 + 可直接执行的 `git add -- … && git commit -m … -- …` 补救命令（不静默跳过）。详见 `gitBaseline.ts` 头注释。**SCOPE-GUARD**：声明了 `scope_paths` 却零命中时，系统评论以「⚠ 声明范围零命中，本次未自动提交」开头，列出声明范围与未提交文件，并给出可直接执行的两条命令（`git add -- …; git commit -m … -- …`）；done 本身仍然成功（不阻塞已完成的卡）。CLI 侧 `--scope` 建议每个路径一个，不要写逗号串（PowerShell 会拆/并参数；含空格的值会给 stderr 警告）。**不能自动提交的三档原因**（`detectGitRepo`，`gitBaseline.ts`；done 本身仍成功，只落一条 system 评论并回显声明范围）：① `GIT_NOT_INSTALLED` — `git --version` 失败（如容器镜像未装 git）：`跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED，<path>）；声明范围：…`；② `NOT_A_GIT_REPO` — git 有但目录不是仓库或目录不存在：`跳过自动提交：工作区不是 git 仓库（NOT_A_GIT_REPO，<path>），如需自动提交请在该目录 git init；声明范围：…`；③ `GIT_REPO_UNHEALTHY` — 是仓库但 `git status` 失败（index/HEAD 损坏、权限）：`跳过自动提交：git 仓库状态异常（GIT_REPO_UNHEALTHY，<path>）：<具体错误>；声明范围：…`。 | 400 agent_id 为空；400 `scope_paths` 超限或空串。不带 workspace_id：404 任务不存在、409 `CONFLICT` 未被占用、409 `NOT_TASK_OWNER` 仅当 agent_id≠'user' 且≠占用者。带 workspace_id：404 `TASK_NOT_FOUND`、409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id（'user' 不豁免） | routes.ts:399 |
 | `POST /api/issues/:id/close`（幂等） | body：`agent_id`（可选）、`workspace_id?` | `Issue`（status→`已关闭`）。只允许「待验收」→「已关闭」；已关闭再调幂等返回；占用中拒绝 | 409 `ISSUE_CLAIMED`（先 release）/ `INVALID_TRANSITION`（当前不是待验收）；404 `NOT_FOUND` | routes.ts（`services/issueTransitions.ts`） |

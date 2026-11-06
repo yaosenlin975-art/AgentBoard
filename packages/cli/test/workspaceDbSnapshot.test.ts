@@ -151,14 +151,64 @@ describe('STORE-5：kb workspace-db snapshot', () => {
     expect(second.out).toContain('覆盖前备份：D:/ws/.agentboard/backup/snapshot-import-1.db');
   });
 
-  it('未下沉的工作区：export 409 → exit 2 并提示先 enable', async () => {
+  it('export --include-attachments 透传开关并显示附件清单摘要', async () => {
+    const withAttachments = {
+      ...MANIFEST,
+      included_tables: [...MANIFEST.included_tables, 'attachment'],
+      attachments: [{ storage_key: 'att-1.png', file: 'attachments/att-1.png', bytes: 16, sha256: 'c'.repeat(64) }],
+    };
+    handler = withWorkspaces((m, u) => (
+      m === 'POST' && u === `${BASE}/export` ? { status: 200, body: { dir: 'D:/snap', manifest: withAttachments } } : undefined
+    ));
+    const result = await run(['workspace-db', 'snapshot', 'export', 'ws1', '--include-attachments']);
+    expect(result.code).toBe(0);
+    expect(calls.find(c => c.method === 'POST')?.body).toEqual({ includeAttachments: true });
+    expect(result.out).toContain('附件：1 个文件，16 字节');
+  });
+
+  it('导出遇 409（如迁移中）→ exit 2 并保留服务端原因', async () => {
     handler = withWorkspaces((m, u) => (
       m === 'POST' && u === `${BASE}/export`
-        ? { status: 409, body: { error: { code: 'SNAPSHOT_NOT_LOCALIZED', message: '快照只作用于工作区库：先 kb workspace-db enable' } } }
+        ? { status: 409, body: { error: { code: 'SNAPSHOT_MIGRATING', message: '工作区库迁移进行中，暂不导出快照' } } }
         : undefined
     ));
     const result = await run(['workspace-db', 'snapshot', 'export', 'ws1']);
     expect(result.code).toBe(2);
-    expect(result.err).toContain('先 kb workspace-db enable');
+    expect(result.err).toContain('迁移进行中');
+  });
+
+  it('center-export / center-validate：不解析工作区，走 /api/system/center-snapshot/*', async () => {
+    const centerManifest = {
+      format: 'agentboard.center-snapshot/1',
+      scope: 'center',
+      schema_version: 1,
+      exported_at: '2026-11-06T12:00:00.000Z',
+      generator_version: 'agentboard-server/1',
+      source_db: 'C:/AppData/AgentBoard/agentboard.db',
+      included_tables: ['workspace', 'managed_account'],
+      files: [
+        { file: 'workspaces', table: 'workspace', rows: 2, sha256: 'a'.repeat(64) },
+        { file: 'managed_accounts', table: 'managed_account', rows: 1, sha256: 'b'.repeat(64) },
+      ],
+    };
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/system/center-snapshot/export') {
+        return { status: 200, body: { dir: 'C:/AppData/AgentBoard/center-snapshot', manifest: centerManifest } };
+      }
+      if (m === 'GET' && u === '/api/system/center-snapshot/validate') {
+        return { status: 200, body: { ok: true, dir: 'C:/AppData/AgentBoard/center-snapshot', manifest: centerManifest, tables: [{ table: 'workspace', rows: 2 }] } };
+      }
+      return undefined;
+    };
+
+    const exported = await run(['workspace-db', 'snapshot', 'center-export']);
+    expect(exported.code).toBe(0);
+    expect(exported.out).toContain('中心库快照已导出');
+    expect(exported.out).toContain('脱敏为 ***');
+    expect(calls.some(call => call.url === '/api/workspaces')).toBe(false);
+
+    const validated = await run(['workspace-db', 'snapshot', 'center-validate']);
+    expect(validated.code).toBe(0);
+    expect(validated.out).toContain('中心库快照校验通过');
   });
 });

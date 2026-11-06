@@ -1,8 +1,9 @@
 /**
- * STORE-5（RULE-3 接线）：快照 REST 路由在真实 app 上可达。
- * - 中心库模式 → 409 SNAPSHOT_NOT_LOCALIZED（不是 404）
+ * STORE-5/6（RULE-3 接线）：快照 REST 路由在真实 app 上可达。
+ * - 中心库模式 → export 200（STORE-6：按工作区过滤，不再 409）
  * - enable 后 → export / validate 200，manifest 与磁盘一致
  * - 非空库 import → 409 SNAPSHOT_TARGET_NOT_EMPTY（路由与错误码接通）
+ * - 中心库全局快照 → /api/system/center-snapshot/export|validate 200
  */
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,7 +20,7 @@ import { closeWorkspaceDbs, resetResolverState, workspaceStateDir } from '../src
 import { resetLocalizeJobs } from '../src/services/workspaceLocalizeJob.js';
 import { localizeWorkspace } from '../src/services/workspaceLocalizeRun.js';
 
-describe('STORE-5 快照 REST 接线', () => {
+describe('STORE-5/6 快照 REST 接线', () => {
   let t: TestDb;
   let app: Express;
   let root: string;
@@ -59,11 +60,28 @@ describe('STORE-5 快照 REST 接线', () => {
   const validateSnapshot = () => request(app).get(`/api/workspaces/${ws}/db/snapshot/validate`);
   const importSnapshot = (body: Record<string, unknown>) => request(app).post(`/api/workspaces/${ws}/db/snapshot/import`).send(body);
 
-  it('中心库模式：export 409 SNAPSHOT_NOT_LOCALIZED（路由存在且给可执行指引）', async () => {
+  it('中心库模式：export 200（STORE-6 按工作区过滤），未 enable 也有 .agentboard/snapshot', async () => {
     const res = await exportSnapshot();
-    expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe('SNAPSHOT_NOT_LOCALIZED');
-    expect(res.body.error.message).toContain('kb workspace-db enable');
+    expect(res.status).toBe(200);
+    expect(res.body.manifest.workspace_id).toBe(ws);
+    expect(res.body.manifest.source_db).toBe(t.db.name);
+    expect(existsSync(join(workspaceStateDir(wsPath), 'snapshot', 'issues.jsonl'))).toBe(true);
+    expect(existsSync(join(workspaceStateDir(wsPath), '.gitignore'))).toBe(true);
+    // 中心库模式仍不可 import（导入只对工作区库生效）
+    const conflict = await importSnapshot({});
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error.code).toBe('SNAPSHOT_NOT_LOCALIZED');
+  });
+
+  it('中心库全局快照：/api/system/center-snapshot/export|validate 200，账号引用脱敏', async () => {
+    const exported = await request(app).post('/api/system/center-snapshot/export').send({});
+    expect(exported.status).toBe(200);
+    expect(exported.body.manifest.scope).toBe('center');
+    expect(exported.body.manifest.included_tables).toContain('managed_account');
+    const validated = await request(app).get('/api/system/center-snapshot/validate');
+    expect(validated.status).toBe(200);
+    expect(validated.body.ok).toBe(true);
+    expect(validated.body.tables.find((item: { table: string }) => item.table === 'workspace')?.rows).toBe(1);
   });
 
   it('enable 后：export 200 + validate 200，snapshot/ 落盘且行数正确', async () => {
@@ -88,6 +106,12 @@ describe('STORE-5 快照 REST 接线', () => {
     const includeMessages = await request(app).post(`/api/workspaces/${ws}/db/snapshot/export`).send({ includeMessages: true });
     expect(includeMessages.status).toBe(200);
     expect(includeMessages.body.manifest.included_tables).toContain('message');
+
+    // STORE-6：--include-attachments 走同一路由的开关（无附件行时为空清单）
+    const includeAttachments = await request(app).post(`/api/workspaces/${ws}/db/snapshot/export`).send({ includeAttachments: true });
+    expect(includeAttachments.status).toBe(200);
+    expect(includeAttachments.body.manifest.included_tables).toContain('attachment');
+    expect(includeAttachments.body.manifest.attachments).toBeUndefined();
 
     const conflict = await importSnapshot({});
     expect(conflict.status).toBe(409);

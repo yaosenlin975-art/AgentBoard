@@ -7,14 +7,20 @@
  * - 导入：只允许同 workspace_id 的空工作区库（或 --replace，先 VACUUM INTO 备份）；
  *   单事务按外键顺序插入 → foreign_key_check 必须为空 → 行数比对 → 提交，失败整体回滚。
  *
- * 不导出：messages（--include-messages 时导出）、attachments / knowledge_attachments 二进制、
- * idempotency_record（临时重放缓存）、FTS 影子表（插入 knowledge_page 时由触发器重建）。
+ * STORE-6：中心库模式下也能导出同一工作区的快照——行集复用 WORKSPACE_TABLE_QUERIES
+ * （与迁移/状态统计同一口径），所以「未 enable」也有 .agentboard/snapshot 可进 git。
+ * 附件（attachment / comment_attachment / knowledge_attachment）默认只导出清单行；
+ * --include-attachments 时把二进制一并复制到 snapshot/attachments/ 并记 sha256。
+ *
+ * 不导出：messages（--include-messages 时导出）、idempotency_record（临时重放缓存）、
+ * FTS 影子表（插入 knowledge_page 时由触发器重建）。
  *
  * 约定：时间列（`*_at` 与 `ts`）以 ISO 字符串落盘，导入时还原为 epoch 毫秒；
  * 其余列保持库内原值。这样同一库重复导出只有 manifest.exported_at 会变。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -22,11 +28,12 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { Db } from '../db/connection.js';
 import { workspaceStateDir } from '../db/resolver.js';
 import { ApiError } from '../errors.js';
 import { vacuumInto } from './dbMigration.js';
+import { WORKSPACE_TABLE_QUERIES } from './workspaceScopedQueries.js';
 
 /** 快照格式版本：manifest.schema_version，导入时严格比对 */
 export const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -39,13 +46,16 @@ interface SnapshotTableSpec {
   file: string;
   /** 实际表名（库内为单数命名） */
   table: string;
-  /** messages 默认不导出，需 --include-messages */
-  optional?: boolean;
+  /** 默认不导出：messages 需 --include-messages；attachments 需 --include-attachments */
+  needs?: 'messages' | 'attachments';
 }
 
 /**
  * 固定表清单（导出顺序）：与知识页 §5.8.2 对齐，文件用复数名，表用库内单数名。
  * 插入顺序已按外键依赖排好（被引用表在前）；删除时倒序。
+ * STORE-6：附件三表放在 session 之后（attachment 引用 workspace、comment_attachment 引用
+ * issue_comment+attachment、knowledge_attachment 引用 knowledge_page），含二进制与否由
+ * manifest.attachments 决定，故旧快照（无这三表）仍然合法。
  */
 const SNAPSHOT_TABLES: readonly SnapshotTableSpec[] = [
   { file: 'issues', table: 'issue' },
@@ -59,13 +69,36 @@ const SNAPSHOT_TABLES: readonly SnapshotTableSpec[] = [
   { file: 'knowledge_revisions', table: 'knowledge_revision' },
   { file: 'knowledge_links', table: 'knowledge_link' },
   { file: 'sessions', table: 'session' },
-  { file: 'messages', table: 'message', optional: true },
+  { file: 'attachments', table: 'attachment', needs: 'attachments' },
+  { file: 'comment_attachments', table: 'comment_attachment', needs: 'attachments' },
+  { file: 'knowledge_attachments', table: 'knowledge_attachment', needs: 'attachments' },
+  { file: 'messages', table: 'message', needs: 'messages' },
 ];
+
+/** 附件 join 表不在迁移 copy 清单里，但快照要按工作区过滤：单独补一条 scoped SQL */
+const EXTRA_SCOPED_SQL: Record<string, string> = {
+  comment_attachment:
+    'SELECT a.* FROM comment_attachment a JOIN attachment t ON t.id = a.attachment_id WHERE t.workspace_id = ?',
+};
+
+function scopedSqlOf(table: string): string | null {
+  if (EXTRA_SCOPED_SQL[table] !== undefined) return EXTRA_SCOPED_SQL[table]!;
+  const hit = WORKSPACE_TABLE_QUERIES.find(query => query.table === table);
+  return hit === undefined ? null : hit.sql;
+}
 
 export interface SnapshotFileEntry {
   file: string;
   table: string;
   rows: number;
+  sha256: string;
+}
+
+export interface SnapshotAttachmentEntry {
+  storage_key: string;
+  /** 相对快照目录的路径（`attachments/<storage_key>`） */
+  file: string;
+  bytes: number;
   sha256: string;
 }
 
@@ -78,6 +111,8 @@ export interface SnapshotManifest {
   source_db: string;
   included_tables: string[];
   files: SnapshotFileEntry[];
+  /** STORE-6：附件清单（--include-attachments 时才有） */
+  attachments?: SnapshotAttachmentEntry[];
 }
 
 export interface ExportSnapshotInput {
@@ -87,6 +122,15 @@ export interface ExportSnapshotInput {
   /** 仅排障：写入 manifest.source_db */
   sourceDbPath?: string;
   includeMessages?: boolean;
+  /** STORE-6：附件二进制一并导出（写到 snapshot/attachments/） */
+  includeAttachments?: boolean;
+  /** 附件源目录；缺省取 sourceDbPath 同级的 attachments/ */
+  attachmentsDir?: string;
+  /**
+   * STORE-6：中心库模式下从中心库导出该工作区的行集（库内没有 meta.workspace_id）。
+   * 工作区库模式忽略此项（以 meta.workspace_id 为准）。
+   */
+  workspaceId?: string;
 }
 
 export interface ExportSnapshotResult {
@@ -217,7 +261,7 @@ function countLines(content: string): number {
  */
 export function validateWorkspaceSnapshot(dir: string): SnapshotValidation {
   const manifest = readManifest(dir);
-  const required = SNAPSHOT_TABLES.filter(spec => spec.optional !== true);
+  const required = SNAPSHOT_TABLES.filter(spec => spec.needs === undefined);
   const seen = new Set<string>();
   const rows = new Map<string, Array<Record<string, unknown>>>();
 
@@ -268,6 +312,32 @@ export function validateWorkspaceSnapshot(dir: string): SnapshotValidation {
       throw new ApiError(422, 'SNAPSHOT_INVALID', `快照不可导入：manifest 缺少必需表 ${spec.file}`);
     }
   }
+  // STORE-6：附件本体逐个校验（存在 + 体积 + sha256），缺文件按 storage_key 列清
+  const attachmentEntries = Array.isArray(manifest.attachments) ? manifest.attachments : [];
+  const missingAttachments: string[] = [];
+  for (const entry of attachmentEntries) {
+    if (!entry.file.startsWith('attachments/') || entry.file.includes('..')) {
+      throw new ApiError(422, 'SNAPSHOT_INVALID', `快照不可导入：附件路径非法（${entry.file}）`);
+    }
+    const path = join(dir, entry.file);
+    if (!existsSync(path)) {
+      missingAttachments.push(entry.storage_key);
+      continue;
+    }
+    const actual = sha256File(path);
+    if (actual.bytes !== entry.bytes || actual.sha256 !== entry.sha256) {
+      throw new ApiError(
+        422, 'SNAPSHOT_INVALID',
+        `快照不可导入：附件 ${entry.storage_key} 与 manifest 不符（体积/哈希）`,
+      );
+    }
+  }
+  if (missingAttachments.length > 0) {
+    throw new ApiError(
+      422, 'SNAPSHOT_ATTACHMENT_MISSING',
+      `快照不可导入：附件文件缺失（${missingAttachments.join('、')}），请用 --include-attachments 重新导出`,
+    );
+  }
   for (const table of manifest.included_tables) {
     const spec = SNAPSHOT_TABLES.find(item => item.table === table);
     if (spec === undefined) {
@@ -280,10 +350,14 @@ export function validateWorkspaceSnapshot(dir: string): SnapshotValidation {
   return { dir, manifest, rows };
 }
 
-/** 单读事务内取全表行（保证跨表同一时间点），按主键升序保证确定性 */
+/**
+ * 单读事务内取行（保证跨表同一时间点），按主键升序保证确定性。
+ * `scopedWorkspaceId` 非空时走「该工作区 scoped 行」SQL（中心库模式），否则读全表（工作区库）。
+ */
 function readSnapshotRows(
   db: Db,
   specs: readonly SnapshotTableSpec[],
+  scopedWorkspaceId: string | null,
 ): Array<{ spec: SnapshotTableSpec; content: string; rows: number }> {
   return db.transaction(() => specs.map(spec => {
     const facts = tableFacts(db, spec.table);
@@ -291,7 +365,16 @@ function readSnapshotRows(
     const order = facts.primaryKey.length > 0
       ? ` ORDER BY ${facts.primaryKey.map(quoteIdent).join(', ')}`
       : ' ORDER BY rowid';
-    const rawRows = db.prepare(`SELECT ${columns} FROM ${quoteIdent(spec.table)}${order}`).all() as Array<Record<string, unknown>>;
+    let rawRows: Array<Record<string, unknown>>;
+    if (scopedWorkspaceId === null) {
+      rawRows = db.prepare(`SELECT ${columns} FROM ${quoteIdent(spec.table)}${order}`).all() as Array<Record<string, unknown>>;
+    } else {
+      const scoped = scopedSqlOf(spec.table);
+      if (scoped === null) {
+        throw new ApiError(500, 'SNAPSHOT_SCHEMA_MISSING', `快照导出失败：表 ${spec.table} 没有按工作区过滤的口径`);
+      }
+      rawRows = db.prepare(`SELECT ${columns} FROM (${scoped})${order}`).all(scopedWorkspaceId) as Array<Record<string, unknown>>;
+    }
     const lines = rawRows.map(row => {
       const out: Record<string, unknown> = {};
       for (const column of facts.columns) out[column.name] = exportValue(column.name, row[column.name]);
@@ -306,6 +389,7 @@ function buildManifest(
   sourceDb: string,
   entries: SnapshotFileEntry[],
   exportedAt: string,
+  attachments: SnapshotAttachmentEntry[],
 ): SnapshotManifest {
   return {
     format: SNAPSHOT_FORMAT,
@@ -316,11 +400,19 @@ function buildManifest(
     source_db: sourceDb,
     included_tables: entries.map(entry => entry.table),
     files: entries,
+    ...(attachments.length === 0 ? {} : { attachments }),
   };
 }
 
-/** 临时目录写全量文件后整体 rename 覆盖 snapshot/；失败时旧快照原样保留 */
-function writeSnapshotAtomically(dir: string, files: Array<{ name: string; content: string }>): void {
+/**
+ * 临时目录写全量文件后整体 rename 覆盖 snapshot/；失败时旧快照原样保留。
+ * `copies` 是附件二进制（to 为相对 snapshot 目录的路径）。
+ */
+function writeSnapshotAtomically(
+  dir: string,
+  files: Array<{ name: string; content: string }>,
+  copies: Array<{ from: string; to: string }> = [],
+): void {
   const parent = resolve(dir, '..');
   mkdirSync(parent, { recursive: true });
   const tmp = join(parent, `.snapshot-tmp-${randomUUID()}`);
@@ -329,6 +421,11 @@ function writeSnapshotAtomically(dir: string, files: Array<{ name: string; conte
   let movedOld = false;
   try {
     for (const file of files) writeFileSync(join(tmp, file.name), file.content, 'utf8');
+    for (const copy of copies) {
+      const target = join(tmp, copy.to);
+      mkdirSync(dirname(target), { recursive: true });
+      copyFileSync(copy.from, target);
+    }
     if (existsSync(dir)) {
       renameSync(dir, backup);
       movedOld = true;
@@ -343,29 +440,131 @@ function writeSnapshotAtomically(dir: string, files: Array<{ name: string; conte
   if (movedOld) rmSync(backup, { recursive: true, force: true });
 }
 
+function sha256File(path: string): { sha256: string; bytes: number } {
+  const content = readFileSync(path);
+  return { sha256: createHash('sha256').update(content).digest('hex'), bytes: content.length };
+}
+
+/** 从已导出的 JSONL 内容里取 storage_key（附件三表），保证清单与行一一对应 */
+function storageKeysOf(content: string): string[] {
+  if (content === '') return [];
+  const keys: string[] = [];
+  for (const line of content.split('\n')) {
+    if (line === '') continue;
+    const row = JSON.parse(line) as { storage_key?: unknown };
+    if (typeof row.storage_key === 'string' && row.storage_key !== '') keys.push(row.storage_key);
+  }
+  return keys;
+}
+
+const GITIGNORE_CONTENT = [
+  '# AgentBoard 运行态数据（库为准，不进 git）',
+  '*.db',
+  '*.db-wal',
+  '*.db-shm',
+  'localize.json',
+  'attachments/',
+  '',
+].join('\n');
+
+const README_CONTENT = [
+  '# .agentboard（AgentBoard 工作区数据）',
+  '',
+  '本目录由 AgentBoard 维护，`snapshot/` 是库的只读派生文本快照：',
+  '',
+  '- 事实源始终是 `agentboard.db`（或其备份），快照只用于进 git、diff 与审阅；',
+  '- 快照可直接提交；`manifest.json` 记录每表行数与 sha256；',
+  '- 恢复：`kb workspace-db snapshot validate <workspace>` 校验后，',
+  '  `kb workspace-db snapshot import <workspace> --replace` 导入（会先自动备份当前库）；',
+  '- 附件默认只导出清单行；需要图片本体时用 `kb workspace-db snapshot export <workspace> --include-attachments`，',
+  '  导出到 `snapshot/attachments/`，导入时按 sha256 校验并落到本目录 `attachments/`；',
+  '- `*.db` / `attachments/` / `localize.json` 已被 `.gitignore` 排除，不要手工提交。',
+  '',
+].join('\n');
+
+/** 写（或按需更新）`.agentboard/.gitignore` 与 `.agentboard/README.md`：内容不变就不动文件 */
+export function writeAgentboardGitFiles(workspacePath: string): void {
+  const stateDir = workspaceStateDir(workspacePath);
+  mkdirSync(stateDir, { recursive: true });
+  writeIfChanged(join(stateDir, '.gitignore'), GITIGNORE_CONTENT);
+  writeIfChanged(join(stateDir, 'README.md'), README_CONTENT);
+}
+
+function writeIfChanged(path: string, content: string): void {
+  if (existsSync(path) && readFileSync(path, 'utf8') === content) return;
+  writeFileSync(path, content, 'utf8');
+}
+
 export function exportWorkspaceSnapshot(input: ExportSnapshotInput): ExportSnapshotResult {
-  const specs = SNAPSHOT_TABLES.filter(spec => spec.optional !== true || input.includeMessages === true);
-  const workspaceIdRow = input.db.prepare("SELECT value FROM meta WHERE key='workspace_id'").get() as
-    | { value: string }
-    | undefined;
-  const workspaceId = workspaceIdRow?.value ?? null;
+  const specs = SNAPSHOT_TABLES.filter(spec => {
+    if (spec.needs === 'messages') return input.includeMessages === true;
+    if (spec.needs === 'attachments') return input.includeAttachments === true;
+    return true;
+  });
+  // 中心库没有 meta 表（initSchema 不建），所以先探测再说：有 meta 才可能来自工作区库
+  const hasMetaTable = input.db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='meta'").get() !== undefined;
+  const workspaceIdRow = hasMetaTable
+    ? (input.db.prepare("SELECT value FROM meta WHERE key='workspace_id'").get() as { value: string } | undefined)
+    : undefined;
+  const localWorkspaceId = workspaceIdRow?.value ?? null;
+  // 工作区库以 meta 为准；中心库没有 meta，由调用方显式给目标工作区（STORE-6）
+  const workspaceId = localWorkspaceId ?? input.workspaceId ?? null;
   if (workspaceId === null) {
     throw new ApiError(409, 'SNAPSHOT_NOT_LOCALIZED', '快照导出失败：目标库不是工作区库（meta.workspace_id 缺失），先 kb workspace-db enable');
   }
+  const scopedTo = localWorkspaceId === null ? workspaceId : null;
   const exportedAt = new Date().toISOString();
-  const tables = readSnapshotRows(input.db, specs);
+  const tables = readSnapshotRows(input.db, specs, scopedTo);
   const entries: SnapshotFileEntry[] = tables.map(({ spec, content, rows }) => ({
     file: spec.file,
     table: spec.table,
     rows,
     sha256: sha256(content),
   }));
-  const manifest = buildManifest(workspaceId, input.sourceDbPath ?? input.db.name, entries, exportedAt);
+
+  // STORE-6：附件清单 + 二进制（key 来自刚导出的行，避免清单与行分叉）
+  const attachments: SnapshotAttachmentEntry[] = [];
+  const copies: Array<{ from: string; to: string }> = [];
+  if (input.includeAttachments === true) {
+    const sourceDir = input.attachmentsDir
+      ?? (input.sourceDbPath !== undefined ? join(dirname(input.sourceDbPath), 'attachments') : null);
+    if (sourceDir === null) {
+      throw new ApiError(400, 'SNAPSHOT_ATTACHMENTS_DIR_REQUIRED', '导出附件需要 attachmentsDir 或 sourceDbPath');
+    }
+    const keys = new Set<string>();
+    for (const table of tables) {
+      if (table.spec.table === 'attachment' || table.spec.table === 'knowledge_attachment') {
+        for (const key of storageKeysOf(table.content)) keys.add(key);
+      }
+    }
+    const missing: string[] = [];
+    for (const key of [...keys].sort()) {
+      const from = join(sourceDir, key);
+      if (!existsSync(from)) {
+        missing.push(key);
+        continue;
+      }
+      const digest = sha256File(from);
+      const file = `attachments/${key}`;
+      attachments.push({ storage_key: key, file, bytes: digest.bytes, sha256: digest.sha256 });
+      copies.push({ from, to: file });
+    }
+    if (missing.length > 0) {
+      throw new ApiError(
+        500, 'SNAPSHOT_ATTACHMENT_SOURCE_MISSING',
+        `快照导出失败：附件文件缺失（${missing.join('、')}），先确认 ${sourceDir}`,
+      );
+    }
+  }
+
+  const manifest = buildManifest(workspaceId, input.sourceDbPath ?? input.db.name, entries, exportedAt, attachments);
   const dir = snapshotDirOf(input.workspacePath);
   writeSnapshotAtomically(dir, [
     ...tables.map(({ spec, content }) => ({ name: `${spec.file}.jsonl`, content })),
     { name: 'manifest.json', content: `${JSON.stringify(manifest, null, 2)}\n` },
-  ]);
+  ], copies);
+  // git 接线（STORE-6）：.gitignore / README 随快照一起就位（内容不变则不动）
+  writeAgentboardGitFiles(input.workspacePath);
   // 自校验：回读行数与哈希，不符即失败（旧快照已被新内容替换，此时宁可报错也不静默）
   const checked = validateWorkspaceSnapshot(dir);
   if (checked.manifest.files.length !== manifest.files.length) {
@@ -461,6 +660,34 @@ export function importWorkspaceSnapshot(input: ImportSnapshotInput): ImportSnaps
     mkdirSync(backupDir, { recursive: true });
     backupPath = join(backupDir, `snapshot-import-${Date.now()}.db`);
     vacuumInto(input.db, backupPath);
+  }
+
+  // STORE-6：附件行必须在 manifest.attachments 里都有对应文件（不然导进来也是坏图）
+  const attachmentEntries = Array.isArray(manifest.attachments) ? manifest.attachments : [];
+  const attachmentRows = [
+    ...(validated.rows.get('attachment') ?? []),
+    ...(validated.rows.get('knowledge_attachment') ?? []),
+  ];
+  if (attachmentRows.length > 0) {
+    const declared = new Set(attachmentEntries.map(entry => entry.storage_key));
+    const missing = attachmentRows
+      .map(row => (typeof row.storage_key === 'string' ? row.storage_key : ''))
+      .filter(key => key !== '' && !declared.has(key));
+    if (missing.length > 0) {
+      throw new ApiError(
+        422, 'SNAPSHOT_ATTACHMENT_MISSING',
+        `快照不可导入：附件文件缺失（${[...new Set(missing)].join('、')}），请用 --include-attachments 重新导出`,
+      );
+    }
+  }
+  if (attachmentEntries.length > 0) {
+    const targetAttachments = join(workspaceStateDir(input.workspacePath), 'attachments');
+    for (const entry of attachmentEntries) {
+      const from = join(input.dir, entry.file);
+      const to = join(targetAttachments, entry.storage_key);
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(from, to);
+    }
   }
 
   const imported: Array<{ table: string; rows: number }> = [];

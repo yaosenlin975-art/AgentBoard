@@ -482,7 +482,9 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     res.type(found.row.mime);
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.sendFile(found.path, (error) => { if (error && !res.headersSent) throw new ApiError(404, 'IMAGE_NOT_FOUND', '图片文件不存在'); });
+    // STORE-6：工作区库模式的图片落在 `<ws>/.agentboard/attachments`，路径含点目录；
+    // sendFile 默认 dotfiles:'ignore' 会把它当 404，必须显式放开（与附件下载路由一致）。
+    res.sendFile(found.path, { dotfiles: 'allow' }, (error) => { if (error && !res.headersSent) throw new ApiError(404, 'IMAGE_NOT_FOUND', '图片文件不存在'); });
   });
 
   router.delete('/images/:attachmentId', async (req, res) => {

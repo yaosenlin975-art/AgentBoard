@@ -405,6 +405,8 @@ export interface SnapshotManifestView {
   source_db: string;
   included_tables: string[];
   files: SnapshotFileView[];
+  /** STORE-6：--include-attachments 时才有 */
+  attachments?: Array<{ storage_key: string; file: string; bytes: number; sha256: string }>;
 }
 
 export interface SnapshotExportView {
@@ -439,13 +441,16 @@ const snapshotMetaLine = (manifest: SnapshotManifestView): string =>
 
 export interface SnapshotExportArgs {
   includeMessages?: boolean;
+  /** STORE-6：附件本体一并导出到 snapshot/attachments/ */
+  includeAttachments?: boolean;
 }
 
-/** kb workspace-db snapshot export [--workspace] [--include-messages]：服务端单写者导出并自校验 */
+/** kb workspace-db snapshot export [--workspace] [--include-messages] [--include-attachments] */
 export async function workspaceDbSnapshotExport(ctx: Ctx, workspace: string, args: SnapshotExportArgs = {}): Promise<void> {
   const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
   const body: Record<string, boolean> = {};
   if (args.includeMessages === true) body.includeMessages = true;
+  if (args.includeAttachments === true) body.includeAttachments = true;
   const result = await postJob<SnapshotExportView>(ctx, `${dbPath(workspaceId)}/snapshot/export`, body);
   if (ctx.json) {
     writeJson(ctx, result);
@@ -453,8 +458,15 @@ export async function workspaceDbSnapshotExport(ctx: Ctx, workspace: string, arg
   }
   const files = result.manifest.files;
   ctx.io.write(`快照已导出：${result.dir}\n`);
-  ctx.io.write(`${snapshotMetaLine(result.manifest)}\n`);
+  ctx.io.write(`${snapshotMetaLine(result.manifest)}（来源：${result.manifest.source_db}）\n`);
   ctx.io.write(`行数合计：${snapshotTotal(files)}（${snapshotRowsSummary(files)}）\n`);
+  const attachments = result.manifest.attachments ?? [];
+  if (attachments.length > 0) {
+    const bytes = attachments.reduce((sum, item) => sum + item.bytes, 0);
+    ctx.io.write(`附件：${attachments.length} 个文件，${bytes} 字节（snapshot/attachments/）\n`);
+  } else if (!result.manifest.included_tables.includes('attachment')) {
+    ctx.io.write('未包含：附件本体（需要时加 --include-attachments）\n');
+  }
   if (!result.manifest.included_tables.includes('message')) {
     ctx.io.write('未包含：消息（会话与消息体积大，需要时加 --include-messages）\n');
   }
@@ -498,4 +510,55 @@ export async function workspaceDbSnapshotImport(ctx: Ctx, workspace: string, arg
   ctx.io.write(`快照已导入：${result.dir}\n`);
   ctx.io.write(`导入行数：${result.rows}（表 ${result.tables.length} 个：${snapshotRowsSummary(result.tables)}）\n`);
   if (result.backupPath !== null) ctx.io.write(`覆盖前备份：${result.backupPath}\n`);
+}
+
+/**
+ * STORE-6：中心库全局快照（工作区注册表 / 成员 / 账号与签到元数据 / 公共知识），
+ * 落在中心库同级的 center-snapshot/，不跟随单个工作区仓库。
+ */
+export interface CenterSnapshotManifestView {
+  format: string;
+  scope: 'center';
+  schema_version: number;
+  exported_at: string;
+  generator_version: string;
+  source_db: string;
+  included_tables: string[];
+  files: SnapshotFileView[];
+}
+
+export interface CenterSnapshotExportView {
+  dir: string;
+  manifest: CenterSnapshotManifestView;
+}
+
+export interface CenterSnapshotValidateView {
+  ok: boolean;
+  dir: string;
+  manifest: CenterSnapshotManifestView;
+  tables: Array<{ table: string; rows: number }>;
+}
+
+/** kb workspace-db snapshot center-export：导出中心库全局快照（敏感引用脱敏为 ***） */
+export async function workspaceDbCenterSnapshotExport(ctx: Ctx): Promise<void> {
+  const result = await postJob<CenterSnapshotExportView>(ctx, '/api/system/center-snapshot/export', {});
+  if (ctx.json) {
+    writeJson(ctx, result);
+    return;
+  }
+  ctx.io.write(`中心库快照已导出：${result.dir}\n`);
+  ctx.io.write(`schema_version=${result.manifest.schema_version}，导出于 ${result.manifest.exported_at}\n`);
+  ctx.io.write(`行数合计：${snapshotTotal(result.manifest.files)}（${snapshotRowsSummary(result.manifest.files)}）\n`);
+  ctx.io.write('账号凭据/引用已脱敏为 ***\n');
+}
+
+/** kb workspace-db snapshot center-validate：只读校验中心库快照（含脱敏自检） */
+export async function workspaceDbCenterSnapshotValidate(ctx: Ctx): Promise<void> {
+  const result = await request<CenterSnapshotValidateView>(ctx.base, 'GET', '/api/system/center-snapshot/validate');
+  if (ctx.json) {
+    writeJson(ctx, result);
+    return;
+  }
+  ctx.io.write(`中心库快照校验通过：${result.dir}\n`);
+  ctx.io.write(`文件：${result.manifest.files.length} 个，行数合计：${snapshotTotal(result.tables)}（${snapshotRowsSummary(result.tables)}）\n`);
 }
