@@ -445,6 +445,8 @@ describe('DEC-V4-INLINE 就地作答卡', () => {
       http.get('/api/decisions/inline-answered', () => HttpResponse.json({ decision: answered })),
     );
     renderWithQuery(<DecisionsView />);
+    // P7：无在途时「全部」展示真空态，已回答卡改从「已回答」tab 进入
+    fireEvent.click(await screen.findByTestId('decisions-tab-answered'));
     await screen.findByTestId('decision-item-inline-answered');
 
     // 收起态：当前答案选项 + 「改答案」入口
@@ -506,6 +508,8 @@ describe('DEC-V4-INLINE 就地作答卡', () => {
     );
 
     renderWithQuery(<DecisionsView />);
+    // P7：无在途时「全部」展示真空态，已回答卡改从「已回答」tab 进入
+    fireEvent.click(await screen.findByTestId('decisions-tab-answered'));
     await screen.findByTestId('decision-item-inline-answered');
     fireEvent.click(screen.getByTestId('decision-revise-inline-answered'));
     fireEvent.click(screen.getByTestId(`decision-detail-option-${inlineAnswered.options[0]!.id}`));
@@ -1078,5 +1082,93 @@ describe('P5 跨区范围', () => {
 
     expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2');
     expect(countCalls.length).toBe(countRequestsBefore);
+  });
+});
+
+describe('DEC-V4-EMPTY 空态', () => {
+  it('真空态：三条机制说明出现，「刚处理完」不存在', async () => {
+    server.use(decisionHandler([], []));
+    renderWithQuery(<DecisionsView />);
+
+    const empty = await screen.findByTestId('decisions-empty');
+    expect(empty).toHaveTextContent('当前范围没有待决策');
+    expect(empty).toHaveTextContent('3 分钟');
+    expect(empty).toHaveTextContent('通知');
+    expect(empty).toHaveTextContent('不等于失败');
+    expect(screen.queryByTestId('decisions-empty-recent')).not.toBeInTheDocument();
+  });
+
+  it('刚处理完：列出 24h 内已回答（标题 / 时间 / 结论摘要），点击回到该卡详情', async () => {
+    const recent = listItem({
+      id: 'dec-recent',
+      state: 'answered',
+      answer_revision: 2,
+      answered_at: NOW - 2 * 3600_000,
+      current_answer_by: 'agent:executor',
+    });
+    server.use(
+      decisionHandler([], [recent]),
+      http.get('/api/decisions/dec-recent', () =>
+        HttpResponse.json({
+          decision: {
+            ...recent,
+            checkpoint_json: null,
+            current_answer_id: 'answer-2',
+            expires_at: null,
+            on_expire: '',
+            answers: [
+              {
+                id: 'answer-2',
+                revision: 2,
+                option_id: recent.options[0]!.id,
+                answer_text: null,
+                answered_by: 'agent:executor',
+                source: 'web',
+                created_at: NOW - 2 * 3600_000,
+              },
+            ],
+          },
+        }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    const section = await screen.findByTestId('decisions-empty-recent');
+    expect(section).toHaveTextContent('刚处理完');
+    const row = screen.getByTestId('decisions-empty-recent-dec-recent');
+    expect(row).toHaveTextContent(recent.issue_title);
+    await waitFor(() => expect(row).toHaveTextContent('「继续」'));
+    expect(row).toHaveTextContent('agent:executor');
+
+    fireEvent.click(row.querySelector('button')!);
+    expect(usePanelStore.getState().issueId).toBe(recent.issue_id);
+    expect(usePanelStore.getState().view).toBe('detail');
+  });
+
+  it('筛选空态：有数据但当前 tab 为空 → 只显示「该筛选下没有条目」+「清除筛选」', async () => {
+    const openOnly = listItem({ id: 'dec-open-only', state: 'open', locked_at: NOW - 60_000, waiting_seconds: 60 });
+    server.use(decisionHandler([openOnly], []));
+    renderWithQuery(<DecisionsView />);
+
+    await screen.findByTestId('decision-item-dec-open-only');
+    fireEvent.click(screen.getByTestId('decisions-tab-grace'));
+
+    const filterEmpty = screen.getByTestId('decisions-filter-empty');
+    expect(filterEmpty).toHaveTextContent('该筛选下没有条目');
+    expect(screen.getByTestId('decisions-filter-clear')).toHaveTextContent('清除筛选');
+    expect(screen.queryByTestId('decisions-empty-mechanisms')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('decisions-empty')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('decisions-filter-clear'));
+    expect(await screen.findByTestId('decision-item-dec-open-only')).toBeInTheDocument();
+  });
+
+  it('点「去任务看板」切回 board 视图', async () => {
+    server.use(decisionHandler([], []));
+    useNavStore.setState({ view: 'knowledge' });
+    renderWithQuery(<DecisionsView />);
+
+    fireEvent.click(await screen.findByTestId('decisions-empty-go-board'));
+    expect(useNavStore.getState().view).toBe('board');
   });
 });

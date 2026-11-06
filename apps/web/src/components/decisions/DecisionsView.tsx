@@ -21,6 +21,7 @@ import {
   type DecisionSort,
 } from './countdown';
 import { DecisionCard } from './DecisionCard';
+import { DecisionsEmptyState } from './DecisionsEmptyState';
 import { useDecisionLists } from './useDecisions';
 import { persistDecisionsScope, resolveDecisionsScope, type DecisionsScope } from '../../lib/decisionsScope';
 import { ApiError } from '../../api/client';
@@ -41,6 +42,7 @@ const LAYERS: readonly DecisionLayer[] = ['grace', 'open', 'stale'];
 export function DecisionsView() {
   const workspaceId = useAppStore((state) => state.workspaceId);
   const focus = useNavStore((state) => state.decisionFocus);
+  const setView = useNavStore((state) => state.setView);
   const openDetail = usePanelStore((state) => state.openDetail);
   const queryClient = useQueryClient();
   const now = useDecisionClock();
@@ -82,6 +84,13 @@ export function DecisionsView() {
   }
 
   const total = groups.grace.length + groups.open.length + groups.stale.length;
+  const hasAnyData = total + groups.answered.length > 0;
+  // P7：无在途 + （无已回答或停在「全部」）才展示真空态；停在「已回答」tab 时仍走正常列表
+  const showEmptyState = total === 0 && (groups.answered.length === 0 || filter === 'all');
+  // P7：有数据但当前 tab 过滤后为空 → 只给「该筛选下没有条目 + 清除筛选」，不展示真空态机制说明
+  const visibleCount =
+    filter === 'all' ? total + groups.answered.length : filter === 'answered' ? groups.answered.length : groups[filter].length;
+  const filterEmpty = hasAnyData && !showEmptyState && filter !== 'all' && visibleCount === 0;
   const tabCounts: Record<DecisionFilter, number> = {
     all: total + groups.answered.length,
     grace: groups.grace.length,
@@ -166,15 +175,31 @@ export function DecisionsView() {
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {error !== null && <DecisionsError error={error} />}
         {error === null && loading && <p className="px-1 py-2 text-xs text-ink-3">加载中…</p>}
-        {error === null && !loading && total === 0 && groups.answered.length === 0 && (
-          <p data-testid="decisions-empty" className="px-1 py-3 text-xs text-ink-3">
-            {scope === 'all'
-              ? '所有可访问工作区都没有待决策'
-              : '暂无待决策：当前工作区没有在途或最近已回答的决策；其它工作区的待决策不在这里，切到「所有工作区」可查看'}
-          </p>
+        {error === null && !loading && showEmptyState && (
+          <DecisionsEmptyState
+            scope={scope}
+            answered={groups.answered}
+            onOpenIssue={openDetail}
+            onGoBoard={() => setView('board')}
+          />
+        )}
+        {error === null && !loading && filterEmpty && (
+          <div data-testid="decisions-filter-empty" className="flex flex-col items-start gap-1.5 px-1 py-3 text-xs text-ink-3">
+            <p>该筛选下没有条目</p>
+            <button
+              type="button"
+              data-testid="decisions-filter-clear"
+              onClick={() => setFilter('all')}
+              className="whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            >
+              清除筛选
+            </button>
+          </div>
         )}
 
-        {(filter === 'all' || filter === 'grace') && (
+        {error === null && !loading && hasAnyData && !showEmptyState && !filterEmpty && (
+          <>
+            {(filter === 'all' || filter === 'grace') && (
           <Group
             scope="grace"
             title="宽限中"
@@ -237,6 +262,8 @@ export function DecisionsView() {
             onToggle={toggleExpanded}
             onOpen={openDetail}
           />
+        )}
+          </>
         )}
       </div>
     </section>
