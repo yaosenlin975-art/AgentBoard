@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tansta
 import type { ServerWsEvent } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
+import type { DecisionsScope } from '../../lib/decisionsScope';
 import type { DecisionCounts, DecisionDetailDto, DecisionListResponse } from './types';
 
 export const DECISION_LIST_LIMIT = 50;
@@ -18,8 +19,13 @@ export function decisionsCountKey(workspaceId: string) {
   return ['decisions-count', workspaceId] as const;
 }
 
-export function decisionsListKey(workspaceId: string, scope: 'active' | 'answered' | `issue-${string}`) {
-  return ['decisions', workspaceId, scope] as const;
+export function decisionsListKey(
+  workspaceId: string,
+  scope: 'active' | 'answered' | `issue-${string}`,
+  range: DecisionsScope = 'workspace',
+) {
+  // 范围进 key：切到「所有可访问工作区」时不能复用单区缓存
+  return ['decisions', range === 'all' ? '*' : workspaceId, scope, range] as const;
 }
 
 export function decisionDetailKey(decisionId: string) {
@@ -38,24 +44,28 @@ export function useDecisionsCount(workspaceId: string | null): number {
   return (data?.grace ?? 0) + (data?.open ?? 0);
 }
 
-/** 当前工作区在途（grace + open）与已回答列表 */
-export function useDecisionLists(workspaceId: string | null) {
+/**
+ * 当前工作区 → 单区列表；`scope=all` → 服务端 `scope=accessible`（只返回有成员关系的区）。
+ * 权限过滤全部交给服务端，前端不拼全量请求、不在客户端过滤。
+ */
+export function useDecisionLists(workspaceId: string | null, scope: DecisionsScope = 'workspace') {
   const queryClient = useQueryClient();
+  const all = scope === 'all';
+  const activeUrl = all
+    ? `/api/decisions?scope=accessible&limit=${DECISION_LIST_LIMIT}`
+    : `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&limit=${DECISION_LIST_LIMIT}`;
+  const answeredUrl = all
+    ? `/api/decisions?scope=accessible&state=answered&limit=${DECISION_LIST_LIMIT}`
+    : `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&state=answered&limit=${DECISION_LIST_LIMIT}`;
   const active = useQuery({
-    queryKey: decisionsListKey(workspaceId ?? '', 'active'),
-    queryFn: () =>
-      api.get<DecisionListResponse>(
-        `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&limit=${DECISION_LIST_LIMIT}`,
-      ),
-    enabled: workspaceId !== null,
+    queryKey: decisionsListKey(workspaceId ?? '', 'active', scope),
+    queryFn: () => api.get<DecisionListResponse>(activeUrl),
+    enabled: all || workspaceId !== null,
   });
   const answered = useQuery({
-    queryKey: decisionsListKey(workspaceId ?? '', 'answered'),
-    queryFn: () =>
-      api.get<DecisionListResponse>(
-        `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&state=answered&limit=${DECISION_LIST_LIMIT}`,
-      ),
-    enabled: workspaceId !== null,
+    queryKey: decisionsListKey(workspaceId ?? '', 'answered', scope),
+    queryFn: () => api.get<DecisionListResponse>(answeredUrl),
+    enabled: all || workspaceId !== null,
   });
   useDecisionInvalidation(queryClient);
   return {
@@ -63,6 +73,8 @@ export function useDecisionLists(workspaceId: string | null) {
     answered: answered.data?.decisions ?? [],
     counts: active.data?.counts ?? null,
     loading: active.isLoading || answered.isLoading,
+    /** 列表级错误（401 身份失效 / 403 无权工作区），由视图分区展示 */
+    error: (active.error ?? answered.error) as unknown,
   };
 }
 

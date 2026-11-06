@@ -5,6 +5,8 @@
  * 前端先在本模块声明只读类型，字段名与服务端 `db/repos/decision.ts` 的
  * `DecisionListItem` / `DecisionDetail` / `DecisionCounts` 保持一致。
  */
+import type { DecisionCapabilities } from '@agentboard/shared';
+
 export type DecisionState = 'grace' | 'open' | 'answered' | 'withdrawn';
 
 export interface DecisionOptionDto {
@@ -51,6 +53,12 @@ export interface DecisionListItemDto {
   /** 服务端 join issue 派生 */
   issue_title: string;
   issue_status: string;
+  /** PERM-2 服务端 join workspace 派生；跨区视图展示用（旧快照可能缺省） */
+  workspace_name?: string;
+  /** PERM-2 当前答案回答者（旧快照可能缺省） */
+  current_answer_by?: string | null;
+  /** PERM-2 服务端按调用者角色计算的 capability 投影；缺省表示旧服务端 */
+  capabilities?: DecisionCapabilities;
   /** 服务端 join issue 派生（DEC-V4-API-LIST）：队列排序用 */
   issue_priority: '低' | '中' | '高';
   option_count: number;
@@ -83,4 +91,6 @@ export interface DecisionCounts {
 export interface DecisionListResponse {
   decisions: DecisionListItemDto[];
   counts: DecisionCounts;
+  /** PERM-2 响应级能力投影（多区时取最高角色）；旧服务端缺省 */
+  capabilities?: DecisionCapabilities;
 }

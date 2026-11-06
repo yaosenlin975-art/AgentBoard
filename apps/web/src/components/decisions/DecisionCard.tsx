@@ -83,11 +83,31 @@ export interface DecisionCardProps {
   focused: boolean;
   scope: 'grace' | 'open' | 'stale' | 'answered';
   expanded: boolean;
+  /** 当前选中的工作区；与 item.workspace_id 不同即跨区卡 */
+  homeWorkspaceId: string;
+  /** 切 tab / 切范围时递增的复位信号：清掉跨区二次确认 */
+  resetSignal: string;
   onToggle: (decisionId: string) => void;
   onOpenIssue: (issueId: string) => void;
 }
 
-export function DecisionCard({ item, now, rank, focused, scope, expanded, onToggle, onOpenIssue }: DecisionCardProps) {
+/** 跨区 chip 文案：短名展示、全名放 title（服务端 workspace_name） */
+function shortWorkspaceName(name: string): string {
+  return name.length > 8 ? `${name.slice(0, 8)}…` : name;
+}
+
+export function DecisionCard({
+  item,
+  now,
+  rank,
+  focused,
+  scope,
+  expanded,
+  homeWorkspaceId,
+  resetSignal,
+  onToggle,
+  onOpenIssue,
+}: DecisionCardProps) {
   const queryClient = useQueryClient();
   const { ref, narrow } = useNarrowContainer(NARROW_BREAKPOINT);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
@@ -96,6 +116,8 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   const [customOpen, setCustomOpen] = useState(false);
   const [customText, setCustomText] = useState('');
   const [customError, setCustomError] = useState<string | null>(null);
+  // P5：跨区回答的二次确认；改选项 / 收起 / 切 tab / 切范围都会复位
+  const [confirmCross, setConfirmCross] = useState(false);
   const prevOptionRef = useRef<string | null>(null);
   const customInputRef = useRef<HTMLInputElement | null>(null);
   // 已回答卡收起态也要展示当前答案选项 → 仅在 answered 时预取详情；展开时一律取详情
@@ -106,6 +128,12 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   const options = [...item.options].sort((a, b) => a.ord - b.ord);
   const defaultOption = options.find((option) => option.is_default === 1) ?? options[0] ?? null;
   const selectedOption = options.find((option) => option.id === selectedOptionId) ?? null;
+  // P5：跨区标注 + 服务端 capability 决定「能不能答」；不写死「跨区一定要确认」
+  const crossWorkspace = item.workspace_id !== homeWorkspaceId;
+  const workspaceName = item.workspace_name ?? item.workspace_id;
+  const capabilities = item.capabilities ?? null;
+  const roleBlocked = capabilities !== null && !capabilities.can_answer;
+  const needsCrossConfirm = crossWorkspace && !roleBlocked;
   const customDraft = customText.trim();
   const preview = customOpen
     ? {
@@ -124,6 +152,11 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
     (customOpen ? true : selectedOptionId !== null && (current === null || selectedOptionId !== current.option_id));
   const optionsScroll = options.length + 1 >= SCROLL_THRESHOLD;
 
+  // P5：切 tab / 切范围 / 展开收起都视为「换了上下文」，跨区确认必须重来
+  useEffect(() => {
+    setConfirmCross(false);
+  }, [resetSignal, expanded]);
+
   const graceRemaining =
     item.state === 'grace' && item.grace_until > now ? Math.max(0, Math.ceil((item.grace_until - now) / 1000)) : null;
   const waiting = item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
@@ -138,29 +171,47 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   }, [customOpen]);
 
   function handleSubmitError(err: unknown) {
-    if (err instanceof ApiError && err.status === 409) {
-      setError('答案版本冲突：已为你刷新，请重新选择后再提交');
-      void queryClient.invalidateQueries({ queryKey: ['decisions'] });
-      void queryClient.invalidateQueries({ queryKey: ['decision'] });
-      return;
+    if (err instanceof ApiError) {
+      // P5：401 / 403 分开给界面态，不一律「提交失败」
+      if (err.status === 401) {
+        setError('身份失效，请重新打开看板');
+        return;
+      }
+      if (err.code === 'WORKSPACE_FORBIDDEN') {
+        setError('无权操作该工作区的决策');
+        return;
+      }
+      if (err.code === 'ROLE_FORBIDDEN') {
+        setError('当前角色无权回答这条决策');
+        return;
+      }
+      if (err.status === 409) {
+        setError('答案版本冲突：已为你刷新，请重新选择后再提交');
+        void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+        void queryClient.invalidateQueries({ queryKey: ['decision'] });
+        return;
+      }
     }
     setError(err instanceof Error ? err.message : '提交失败');
   }
 
   function selectOption(optionId: string) {
     setSelectedOptionId(optionId);
+    setConfirmCross(false);
     // 与自定义互斥：收起输入框但保留草稿，再次点「自定义」可继续编辑
     setCustomOpen(false);
     setCustomError(null);
   }
 
   function closeCustom(revert: boolean) {
+    setConfirmCross(false);
     setCustomOpen(false);
     setCustomError(null);
     if (revert) setSelectedOptionId(prevOptionRef.current);
   }
 
   function toggleCustom() {
+    setConfirmCross(false);
     if (customOpen) {
       closeCustom(true);
       return;
@@ -175,6 +226,7 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   function onCustomChange(event: ChangeEvent<HTMLInputElement>) {
     // maxlength 挡不住程序化写入（含部分粘贴路径），这里硬截断
     setCustomText(event.target.value.slice(0, CUSTOM_MAX));
+    setConfirmCross(false);
   }
 
   function onCustomKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
@@ -192,8 +244,15 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
     }
   }
 
+  /** P5：第一次点击只「上膛」，不发请求；第二次才真正提交 */
+  function armCrossConfirm() {
+    setConfirmCross(true);
+    setError(null);
+    setCustomError(null);
+  }
+
   function submit() {
-    if (answerMutation.isPending) return;
+    if (answerMutation.isPending || roleBlocked) return;
     if (customOpen) {
       const text = customText.trim();
       if (text === '') {
@@ -204,6 +263,11 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
       if (text.length > CUSTOM_MAX) {
         setCustomError(`最多 ${CUSTOM_MAX} 字，当前 ${text.length} 字`);
         customInputRef.current?.focus();
+        return;
+      }
+      // 校验通过后才进入跨区确认，避免空文本先把按钮变成「确认」
+      if (needsCrossConfirm && !confirmCross) {
+        armCrossConfirm();
         return;
       }
       setError(null);
@@ -218,6 +282,7 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
           onSuccess: () => {
             setSelectedOptionId(null);
             setCustomOpen(false);
+            setConfirmCross(false);
           },
           onError: handleSubmitError,
         },
@@ -225,6 +290,10 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
       return;
     }
     if (selectedOptionId === null || !canSubmit) return;
+    if (needsCrossConfirm && !confirmCross) {
+      armCrossConfirm();
+      return;
+    }
     setError(null);
     answerMutation.mutate(
       {
@@ -233,13 +302,24 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
         ...(isAnswered ? { expectedRevision: item.answer_revision } : {}),
       },
       {
-        onSuccess: () => setSelectedOptionId(null),
+        onSuccess: () => {
+          setSelectedOptionId(null);
+          setConfirmCross(false);
+        },
         onError: handleSubmitError,
       },
     );
   }
 
-  const actionLabel = answerMutation.isPending ? '提交中…' : isAnswered ? '提交修订' : '提交回答';
+  const actionLabel = answerMutation.isPending
+    ? '提交中…'
+    : confirmCross
+      ? isAnswered
+        ? '确认跨区修订'
+        : '确认跨区回答'
+      : isAnswered
+        ? '提交修订'
+        : '提交回答';
 
   return (
     <li
@@ -258,6 +338,16 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
             className="shrink-0 whitespace-nowrap rounded bg-surface-raised px-1 font-mono text-xs tabular-nums text-ink-3"
           >
             #{rank}
+          </span>
+        )}
+        {crossWorkspace && (
+          <span
+            data-testid={`decision-workspace-${item.id}`}
+            data-workspace-name={workspaceName}
+            title={workspaceName}
+            className="max-w-[6rem] shrink-0 truncate rounded bg-surface-raised px-1 text-xs text-ink-3"
+          >
+            {shortWorkspaceName(workspaceName)}
           </span>
         )}
         <button
@@ -360,6 +450,21 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
 
       {waiting !== null && <span className="text-xs text-ink-3">已等 {waiting}</span>}
 
+      {roleBlocked && (
+        <p data-testid={`decision-role-blocked-${item.id}`} className="text-xs text-ink-3">
+          当前身份在「{workspaceName}」没有回答权限（只读或非成员）
+        </p>
+      )}
+
+      {confirmCross && needsCrossConfirm && (
+        <p
+          data-testid={`decision-cross-confirm-${item.id}`}
+          className="rounded border border-amber-300 bg-amber-50 px-1.5 py-1 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+        >
+          跨工作区回答：提交后会回答「{workspaceName}」的决策并可能释放该卡占用；请再点一次确认。
+        </p>
+      )}
+
       {error !== null && (
         <p data-testid={`decision-error-${item.id}`} className="text-xs text-red-600 dark:text-red-400">
           {error}
@@ -374,7 +479,7 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
         <button
           type="button"
           data-testid={`decision-action-${item.id}`}
-          disabled={(!customOpen && selectedOptionId === null) || !canSubmit}
+          disabled={roleBlocked || (!customOpen && selectedOptionId === null) || !canSubmit}
           onClick={submit}
           className={`whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50 ${
             isAnswered

@@ -14,6 +14,8 @@ import { DecisionMark } from '../components/decisions/DecisionMark';
 import { DecisionSection, checkpointLines } from '../components/decisions/DecisionSection';
 import { formatCountdown, formatWaiting, groupDecisions } from '../components/decisions/countdown';
 import type { DecisionDetailDto, DecisionListItemDto } from '../components/decisions/types';
+import { DECISIONS_SCOPE_KEY, persistDecisionsScope, resolveDecisionsScope } from '../lib/decisionsScope';
+import { KNOWLEDGE_SCOPE_KEY } from '../lib/knowledgeScope';
 import { SideBar } from '../components/shell/SideBar';
 import { useAppStore } from '../state/appStore';
 import { useNavStore } from '../state/navStore';
@@ -776,5 +778,305 @@ describe('DEC-6 详情决策区', () => {
   it('无决策时详情区不渲染', async () => {
     renderWithQuery(<DecisionSection issue={issue({ id: 'issue-none' })} />);
     await waitFor(() => expect(screen.queryByTestId('decision-section')).toBeNull());
+  });
+});
+
+describe('P5 跨区范围', () => {
+  const CAPS_ALL = {
+    can_answer: true,
+    can_revise: true,
+    can_undo: true,
+    can_withdraw: true,
+    can_extend: true,
+  };
+  const homeItem = listItem({ id: 'p5-home', state: 'grace', grace_until: NOW + 120_000, workspace_name: '主项目' });
+  const crossItem = listItem({
+    id: 'p5-cross',
+    state: 'grace',
+    grace_until: NOW + 120_000,
+    workspace_id: 'ws-2',
+    workspace_name: '设计区',
+    issue_title: '跨区任务',
+    capabilities: CAPS_ALL,
+  });
+
+  /** 记录每次列表请求的 query，按服务端口径（去重后的可访问区并集）返回 */
+  function scopedHandler(calls: string[], home: DecisionListItemDto[], all: DecisionListItemDto[]) {
+    return http.get('/api/decisions', ({ request }) => {
+      const url = new URL(request.url);
+      calls.push(url.search);
+      const isAnswered = url.searchParams.get('state') === 'answered';
+      const accessible = url.searchParams.get('scope') === 'accessible';
+      const decisions = isAnswered ? [] : accessible ? all : home;
+      return HttpResponse.json({
+        decisions,
+        counts: { grace: decisions.length, open: 0, stale_open: 0, answered_recent: 0 },
+        ...(accessible ? { capabilities: CAPS_ALL } : {}),
+      });
+    });
+  }
+
+  function postAnswer(posts: Array<Record<string, unknown>>, item: DecisionListItemDto = crossItem) {
+    return http.post('/api/decisions/:id/answer', async ({ request }) => {
+      posts.push((await request.json()) as Record<string, unknown>);
+      return HttpResponse.json({
+        decision: { ...item, checkpoint_json: null, current_answer_id: null, expires_at: null, on_expire: 'stay_locked', answers: [] },
+      });
+    });
+  }
+
+  const activeCall = (calls: string[]) => calls.find((query) => !query.includes('state=answered')) ?? '';
+
+  it('默认当前工作区：请求带 workspace_id 且不带 scope；本区卡不显示工作区 chip', async () => {
+    const calls: string[] = [];
+    server.use(scopedHandler(calls, [homeItem], [homeItem, crossItem]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    expect(screen.getByTestId('decisions-scope')).toHaveValue('workspace');
+    const query = activeCall(calls);
+    expect(query).toContain('workspace_id=ws-1');
+    expect(query).not.toContain('scope=accessible');
+    expect(screen.queryByTestId('decision-workspace-p5-home')).toBeNull();
+  });
+
+  it('切「所有可访问工作区」：请求 scope=accessible 且不带 workspace_id；跨区卡显示工作区名', async () => {
+    const calls: string[] = [];
+    server.use(scopedHandler(calls, [homeItem], [homeItem, crossItem]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    calls.length = 0;
+    fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
+    await screen.findByTestId('decision-item-p5-cross');
+
+    const query = activeCall(calls);
+    expect(query).toContain('scope=accessible');
+    expect(query).not.toContain('workspace_id=');
+
+    const chip = screen.getByTestId('decision-workspace-p5-cross');
+    expect(chip).toHaveTextContent('设计区');
+    expect(chip).toHaveAttribute('data-workspace-name', '设计区');
+    expect(chip).toHaveAttribute('title', '设计区');
+    expect(screen.queryByTestId('decision-workspace-p5-home')).toBeNull();
+    // 只渲染服务端返回的可访问区条目（不存在第三区）
+    expect(screen.getAllByTestId(/^decision-item-/)).toHaveLength(2);
+  });
+
+  it('空态文案：本区提示其它工作区；切到全部后该提示消失', async () => {
+    const calls: string[] = [];
+    server.use(scopedHandler(calls, [], []));
+    renderWithQuery(<DecisionsView />);
+
+    await waitFor(() => expect(screen.getByTestId('decisions-empty')).toBeInTheDocument());
+    expect(screen.getByTestId('decisions-empty')).toHaveTextContent('其它工作区');
+
+    fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
+    await waitFor(() =>
+      expect(screen.getByTestId('decisions-empty')).toHaveTextContent('所有可访问工作区都没有待决策'),
+    );
+    expect(screen.getByTestId('decisions-empty').textContent).not.toContain('其它工作区');
+  });
+
+  it('范围独立持久化：非法值回落、写入专用 key、知识库 key 不受影响', async () => {
+    localStorage.setItem(KNOWLEDGE_SCOPE_KEY, 'last-visited');
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'bogus');
+    const calls: string[] = [];
+    server.use(scopedHandler(calls, [homeItem], [homeItem, crossItem]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    expect(screen.getByTestId('decisions-scope')).toHaveValue('workspace');
+    fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
+    await screen.findByTestId('decision-item-p5-cross');
+
+    expect(localStorage.getItem(DECISIONS_SCOPE_KEY)).toBe('all');
+    expect(localStorage.getItem(KNOWLEDGE_SCOPE_KEY)).toBe('last-visited');
+  });
+
+  it('读取/写入纯函数：无记录与非法值回落 workspace，storage 不可用不抛错', () => {
+    const store = new Map<string, string>();
+    const read = { getItem: (key: string) => store.get(key) ?? null };
+    const write = { setItem: (key: string, value: string) => void store.set(key, value) };
+
+    expect(resolveDecisionsScope(read)).toBe('workspace');
+    persistDecisionsScope('all', write);
+    expect(store.get(DECISIONS_SCOPE_KEY)).toBe('all');
+    expect(resolveDecisionsScope(read)).toBe('all');
+
+    store.set(DECISIONS_SCOPE_KEY, 'everything');
+    expect(resolveDecisionsScope(read)).toBe('workspace');
+    expect(resolveDecisionsScope(null)).toBe('workspace');
+    expect(() => persistDecisionsScope('all', null)).not.toThrow();
+  });
+
+  it('跨区二次确认：第一次只上膛不发请求，第二次才发出 1 次 POST', async () => {
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'all');
+    const calls: string[] = [];
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(scopedHandler(calls, [], [crossItem]), postAnswer(posts));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-cross');
+
+    const option = crossItem.options[1]!;
+    fireEvent.click(screen.getByTestId(`decision-option-${option.id}`));
+    const action = screen.getByTestId('decision-action-p5-cross');
+    expect(action).toHaveTextContent('提交回答');
+
+    fireEvent.click(action);
+    expect(posts).toHaveLength(0);
+    expect(action).toHaveTextContent('确认跨区回答');
+    expect(screen.getByTestId('decision-cross-confirm-p5-cross')).toHaveTextContent('设计区');
+
+    fireEvent.click(action);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ option_id: option.id, source: 'web' });
+  });
+
+  it('改选项 / 展开收起都重置跨区确认态', async () => {
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'all');
+    const calls: string[] = [];
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(scopedHandler(calls, [], [crossItem]), postAnswer(posts));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-cross');
+
+    const [a, b] = crossItem.options;
+    fireEvent.click(screen.getByTestId(`decision-option-${b!.id}`));
+    const action = screen.getByTestId('decision-action-p5-cross');
+    fireEvent.click(action);
+    expect(screen.getByTestId('decision-cross-confirm-p5-cross')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId(`decision-option-${a!.id}`));
+    expect(screen.queryByTestId('decision-cross-confirm-p5-cross')).toBeNull();
+    expect(action).toHaveTextContent('提交回答');
+
+    fireEvent.click(action);
+    expect(screen.getByTestId('decision-cross-confirm-p5-cross')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('decision-toggle-p5-cross'));
+    expect(screen.queryByTestId('decision-cross-confirm-p5-cross')).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
+  it('capabilities.can_answer=false：按钮禁用、显示无权原因、不弹跨区确认', async () => {
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'all');
+    const blocked = listItem({
+      id: 'p5-blocked',
+      state: 'grace',
+      grace_until: NOW + 120_000,
+      workspace_id: 'ws-2',
+      workspace_name: '设计区',
+      capabilities: { ...CAPS_ALL, can_answer: false },
+    });
+    const calls: string[] = [];
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(scopedHandler(calls, [], [blocked]), postAnswer(posts, blocked));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-blocked');
+
+    expect(screen.getByTestId('decision-action-p5-blocked')).toBeDisabled();
+    expect(screen.getByTestId('decision-role-blocked-p5-blocked')).toHaveTextContent('设计区');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${blocked.options[0]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-action-p5-blocked'));
+    expect(screen.queryByTestId('decision-cross-confirm-p5-blocked')).toBeNull();
+    expect(posts).toHaveLength(0);
+  });
+
+  it('旧服务端无 capabilities：跨区仍按二次确认提交', async () => {
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'all');
+    const legacy = listItem({
+      id: 'p5-legacy',
+      state: 'grace',
+      grace_until: NOW + 120_000,
+      workspace_id: 'ws-2',
+      workspace_name: '设计区',
+    });
+    const calls: string[] = [];
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(scopedHandler(calls, [], [legacy]), postAnswer(posts, legacy));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-legacy');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${legacy.options[0]!.id}`));
+    const action = screen.getByTestId('decision-action-p5-legacy');
+    fireEvent.click(action);
+    expect(posts).toHaveLength(0);
+    expect(action).toHaveTextContent('确认跨区回答');
+
+    fireEvent.click(action);
+    await waitFor(() => expect(posts).toHaveLength(1));
+  });
+
+  it('提交 403 ROLE_FORBIDDEN：显示「当前角色无权回答这条决策」', async () => {
+    const calls: string[] = [];
+    server.use(
+      scopedHandler(calls, [homeItem], []),
+      http.post('/api/decisions/:id/answer', () =>
+        HttpResponse.json({ error: { code: 'ROLE_FORBIDDEN', message: '角色无权' } }, { status: 403 }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${homeItem.options[0]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-action-p5-home'));
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-error-p5-home')).toHaveTextContent('当前角色无权回答这条决策'),
+    );
+  });
+
+  it('列表 401 / 403 / 通用错误分区展示，不一律显示加载失败', async () => {
+    server.use(
+      http.get('/api/decisions', () =>
+        HttpResponse.json({ error: { code: 'UNAUTHENTICATED', message: '未认证' } }, { status: 401 }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decisions-error-unauth');
+    cleanup();
+
+    server.use(
+      http.get('/api/decisions', () =>
+        HttpResponse.json({ error: { code: 'WORKSPACE_FORBIDDEN', message: '无权工作区' } }, { status: 403 }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decisions-error-forbidden');
+    cleanup();
+
+    server.use(
+      http.get('/api/decisions', () =>
+        HttpResponse.json({ error: { code: 'INTERNAL', message: 'boom' } }, { status: 500 }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decisions-error-generic');
+  });
+
+  it('侧栏徽标不随范围切换变化（仍只算本工作区）', async () => {
+    const calls: string[] = [];
+    const countCalls: string[] = [];
+    server.use(
+      scopedHandler(calls, [homeItem], [homeItem, crossItem]),
+      http.get('/api/workspaces/:id/decisions/count', ({ request }) => {
+        countCalls.push(request.url);
+        return HttpResponse.json({ grace: 1, open: 1, stale_open: 0, answered_recent: 0 });
+      }),
+    );
+    renderWithQuery(
+      <>
+        <SideBar workspace={ws} />
+        <DecisionsView />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2'));
+    const countRequestsBefore = countCalls.length;
+
+    fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
+    await screen.findByTestId('decision-item-p5-cross');
+
+    expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2');
+    expect(countCalls.length).toBe(countRequestsBefore);
   });
 });

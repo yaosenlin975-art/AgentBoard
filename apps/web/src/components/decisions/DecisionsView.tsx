@@ -22,6 +22,8 @@ import {
 } from './countdown';
 import { DecisionCard } from './DecisionCard';
 import { useDecisionLists } from './useDecisions';
+import { persistDecisionsScope, resolveDecisionsScope, type DecisionsScope } from '../../lib/decisionsScope';
+import { ApiError } from '../../api/client';
 import type { DecisionListItemDto } from './types';
 
 type DecisionFilter = 'all' | 'grace' | 'open' | 'stale' | 'answered';
@@ -42,11 +44,19 @@ export function DecisionsView() {
   const openDetail = usePanelStore((state) => state.openDetail);
   const queryClient = useQueryClient();
   const now = useDecisionClock();
-  const { active, answered, loading } = useDecisionLists(workspaceId);
+  // P5：范围独立持久化（与知识库范围 / 形态 / 主题的键互不干扰）；非法值已在读取时回落
+  const [scope, setScope] = useState<DecisionsScope>(() => resolveDecisionsScope());
+  const { active, answered, loading, error } = useDecisionLists(workspaceId, scope);
   const [filter, setFilter] = useState<DecisionFilter>('all');
   const [sort, setSort] = useState<DecisionSort>('urgency');
   // DEC-V4-INLINE：同一时刻只展开一条，展开后由详细卡替换 chip 行
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const changeScope = (next: DecisionsScope) => {
+    setScope(next);
+    persistDecisionsScope(next);
+    // 换范围等价于换列表上下文：收起展开卡，避免跨区确认态残留
+    setExpandedId(null);
+  };
   const groups = groupDecisions(active, answered, now, sort);
   const toggleExpanded = (decisionId: string) => {
     setExpandedId((current) => (current === decisionId ? null : decisionId));
@@ -122,28 +132,45 @@ export function DecisionsView() {
           })}
         </div>
 
-        <label className="ml-auto flex items-center gap-1 text-xs text-ink-3">
-          排序
-          <select
-            data-testid="decisions-sort"
-            value={sort}
-            onChange={(event) => setSort(event.target.value as DecisionSort)}
-            className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-          >
-            {DECISION_SORTS.map((key) => (
-              <option key={key} value={key}>
-                {DECISION_SORT_LABELS[key]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1 max-sm:w-full">
+          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0 max-sm:flex-1">
+            排序
+            <select
+              data-testid="decisions-sort"
+              value={sort}
+              onChange={(event) => setSort(event.target.value as DecisionSort)}
+              className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+            >
+              {DECISION_SORTS.map((key) => (
+                <option key={key} value={key}>
+                  {DECISION_SORT_LABELS[key]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0 max-sm:flex-1">
+            范围
+            <select
+              data-testid="decisions-scope"
+              value={scope}
+              onChange={(event) => changeScope(event.target.value as DecisionsScope)}
+              className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+            >
+              <option value="workspace">当前工作区</option>
+              <option value="all">所有可访问工作区</option>
+            </select>
+          </label>
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-        {loading && <p className="px-1 py-2 text-xs text-ink-3">加载中…</p>}
-        {!loading && total === 0 && groups.answered.length === 0 && (
+        {error !== null && <DecisionsError error={error} />}
+        {error === null && loading && <p className="px-1 py-2 text-xs text-ink-3">加载中…</p>}
+        {error === null && !loading && total === 0 && groups.answered.length === 0 && (
           <p data-testid="decisions-empty" className="px-1 py-3 text-xs text-ink-3">
-            暂无待决策
+            {scope === 'all'
+              ? '所有可访问工作区都没有待决策'
+              : '暂无待决策：当前工作区没有在途或最近已回答的决策；其它工作区的待决策不在这里，切到「所有工作区」可查看'}
           </p>
         )}
 
@@ -157,6 +184,8 @@ export function DecisionsView() {
             focus={focus}
             rankMap={rankMap}
             expandedId={expandedId}
+            homeWorkspaceId={workspaceId}
+            resetSignal={`${filter}:${scope}`}
             onToggle={toggleExpanded}
             onOpen={openDetail}
           />
@@ -171,6 +200,8 @@ export function DecisionsView() {
             focus={focus}
             rankMap={rankMap}
             expandedId={expandedId}
+            homeWorkspaceId={workspaceId}
+            resetSignal={`${filter}:${scope}`}
             onToggle={toggleExpanded}
             onOpen={openDetail}
           />
@@ -185,6 +216,8 @@ export function DecisionsView() {
             focus={focus}
             rankMap={rankMap}
             expandedId={expandedId}
+            homeWorkspaceId={workspaceId}
+            resetSignal={`${filter}:${scope}`}
             onToggle={toggleExpanded}
             onOpen={openDetail}
           />
@@ -199,12 +232,45 @@ export function DecisionsView() {
             focus={focus}
             rankMap={rankMap}
             expandedId={expandedId}
+            homeWorkspaceId={workspaceId}
+            resetSignal={`${filter}:${scope}`}
             onToggle={toggleExpanded}
             onOpen={openDetail}
           />
         )}
       </div>
     </section>
+  );
+}
+
+/** P5：列表级错误分区展示，不把 401 / 403 一律显示成「加载失败」 */
+function DecisionsError({ error }: { error: unknown }) {
+  const apiError = error instanceof ApiError ? error : null;
+  if (apiError?.status === 401) {
+    return (
+      <p data-testid="decisions-error-unauth" className="px-1 py-3 text-xs text-red-600 dark:text-red-400">
+        身份失效，请重新打开看板
+      </p>
+    );
+  }
+  if (apiError?.code === 'WORKSPACE_FORBIDDEN') {
+    return (
+      <p data-testid="decisions-error-forbidden" className="px-1 py-3 text-xs text-ink-3">
+        无权查看该范围：当前身份没有任何可访问的工作区
+      </p>
+    );
+  }
+  if (apiError?.code === 'ROLE_FORBIDDEN') {
+    return (
+      <p data-testid="decisions-error-role" className="px-1 py-3 text-xs text-ink-3">
+        当前角色无权查看这些决策
+      </p>
+    );
+  }
+  return (
+    <p data-testid="decisions-error-generic" className="px-1 py-3 text-xs text-red-600 dark:text-red-400">
+      加载失败：{apiError?.message ?? (error instanceof Error ? error.message : '请稍后重试')}
+    </p>
   );
 }
 
@@ -217,11 +283,26 @@ interface GroupProps {
   focus: string | null;
   rankMap: ReadonlyMap<string, number>;
   expandedId: string | null;
+  homeWorkspaceId: string;
+  resetSignal: string;
   onToggle: (decisionId: string) => void;
   onOpen: (issueId: string) => void;
 }
 
-function Group({ scope, title, empty, items, now, focus, rankMap, expandedId, onToggle, onOpen }: GroupProps) {
+function Group({
+  scope,
+  title,
+  empty,
+  items,
+  now,
+  focus,
+  rankMap,
+  expandedId,
+  homeWorkspaceId,
+  resetSignal,
+  onToggle,
+  onOpen,
+}: GroupProps) {
   return (
     <div data-testid={`decisions-group-${scope}`} className="mb-4">
       <h2 className="flex items-baseline gap-2 px-1 pb-1 text-xs font-medium text-ink-2">
@@ -241,6 +322,8 @@ function Group({ scope, title, empty, items, now, focus, rankMap, expandedId, on
               focused={focus === item.id}
               scope={scope}
               expanded={expandedId === item.id}
+              homeWorkspaceId={homeWorkspaceId}
+              resetSignal={resetSignal}
               onToggle={onToggle}
               onOpenIssue={onOpen}
             />
