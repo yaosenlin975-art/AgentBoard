@@ -24,7 +24,8 @@ describe('issue dependency (DEP-1)', () => {
   let ws: string;
 
   const mkIssue = async (title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '' });
+    // CARD-FACE（02392cac）起新建任务要求非空描述；依赖用例的卡只是结构夹具，显式跳过
+    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '', allow_empty: true });
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -71,7 +72,18 @@ describe('issue dependency (DEP-1)', () => {
     const created = await addDep(blocked, blocker);
     expect(created.status).toBe(201);
     expect(created.body.blockers).toEqual([
-      { issue_id: blocker, title: '前置卡', status: '待规划', resolved: false, relation: 'blocks' },
+      {
+        issue_id: blocker,
+        title: '前置卡',
+        status: '待规划',
+        resolved: false,
+        relation: 'blocks',
+        // DEP 投影补齐的字段（依赖链深度 / 间接受阻来源 / 阻塞原因 / 占用者）
+        depth: 1,
+        via: null,
+        blocked_reason: null,
+        claimed_by: null,
+      },
     ]);
 
     const blockedView = await lsDep(blocked);
@@ -90,7 +102,7 @@ describe('issue dependency (DEP-1)', () => {
     try {
       const otherWs = (await request(app).post('/api/workspaces').send({ name: '别处', path: otherDir })).body.id as string;
       const mine = await mkIssue('本区卡');
-      const foreign = (await request(app).post('/api/issues').send({ workspace_id: otherWs, title: '外区前置', description: '' })).body.id as string;
+      const foreign = (await request(app).post('/api/issues').send({ workspace_id: otherWs, title: '外区前置', description: '', allow_empty: true })).body.id as string;
 
       const res = await addDep(mine, foreign);
       expect(res.status).toBe(400);
@@ -125,7 +137,7 @@ describe('issue dependency (DEP-1)', () => {
 
   it('子卡依赖父卡 → 409 DEPENDENCY_PARENT_CYCLE（父卡需等子卡完成，会互等死锁）', async () => {
     const parent = await mkIssue('父卡');
-    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', parent_issue_id: parent });
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', parent_issue_id: parent, allow_empty: true });
     expect(childRes.status).toBe(200);
     const child = childRes.body.id as string;
     const res = await addDep(child, parent);
@@ -139,8 +151,8 @@ describe('issue dependency (DEP-1)', () => {
 
   it('子卡依赖祖父卡（跨两代）也拒绝', async () => {
     const grand = await mkIssue('祖父卡');
-    const midRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '中间卡', parent_issue_id: grand });
-    const leafRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '叶子卡', parent_issue_id: midRes.body.id });
+    const midRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '中间卡', parent_issue_id: grand, allow_empty: true });
+    const leafRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '叶子卡', parent_issue_id: midRes.body.id, allow_empty: true });
     const res = await addDep(leafRes.body.id, grand);
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('DEPENDENCY_PARENT_CYCLE');
@@ -148,7 +160,7 @@ describe('issue dependency (DEP-1)', () => {
 
   it('反向（父卡依赖子卡）允许——语义合理的允许方向', async () => {
     const parent = await mkIssue('父卡允许方向');
-    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡允许方向', parent_issue_id: parent });
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡允许方向', parent_issue_id: parent, allow_empty: true });
     const child = childRes.body.id as string;
     const res = await addDep(parent, child);
     expect(res.status).toBe(201);
@@ -344,7 +356,7 @@ describe('issue dependency (DEP-1)', () => {
     const otherDir = mkdtempSync(join(tmpdir(), 'agentboard-dep-trigger-'));
     try {
       const otherWs = (await request(app).post('/api/workspaces').send({ name: '别处', path: otherDir })).body.id as string;
-      const foreign = (await request(app).post('/api/issues').send({ workspace_id: otherWs, title: '外区', description: '' })).body.id as string;
+      const foreign = (await request(app).post('/api/issues').send({ workspace_id: otherWs, title: '外区', description: '', allow_empty: true })).body.id as string;
       // 绕过服务层直写：同工作区触发器兜底
       expect(() => t.db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, created_at) VALUES (?,?,?)')
         .run(mine, foreign, Date.now())).toThrow(/workspace mismatch/);
