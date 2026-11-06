@@ -2,13 +2,14 @@
  * S1 状态模型：五视图 + 右滑出面板的互斥/正交/持久化/兜底，以及 openChat 跨 store 联动。
  * 矩阵见卡评论；每个编号对应用例名里的 [n]。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_NAV_VIEW,
   DEFAULT_SIDEBAR_MODE,
   NAV_STORAGE_KEY,
   NAV_VIEWS,
   SIDEBAR_MODES,
+  computeInitialSidebarMode,
   currentNavView,
   isNavDrawer,
   isNavView,
@@ -24,9 +25,15 @@ function resetNav(): void {
     view: DEFAULT_NAV_VIEW,
     drawer: null,
     sidebarMode: DEFAULT_SIDEBAR_MODE,
+    sidebarModeExplicit: false,
     chatOrigin: null,
     decisionFocus: null,
   });
+}
+
+function persistedState(): Record<string, unknown> {
+  const raw = localStorage.getItem(NAV_STORAGE_KEY);
+  return raw ? ((JSON.parse(raw) as { state?: Record<string, unknown> }).state ?? {}) : {};
 }
 
 beforeEach(() => {
@@ -89,10 +96,59 @@ describe('侧栏两形态（SIDEBAR-1）', () => {
     expect(useNavStore.getState().sidebarMode).toBe('expanded');
   });
 
-  it('[S3] 本卡不做形态持久化：localStorage 只写 view', () => {
-    useNavStore.getState().setSidebarMode('collapsed');
-    const persisted = JSON.parse(localStorage.getItem(NAV_STORAGE_KEY) ?? '{}') as { state?: Record<string, unknown> };
-    expect(persisted.state).not.toHaveProperty('sidebarMode');
+  it('[S3] 未显式切换形态时，任何写入都不落 sidebarMode', () => {
+    useNavStore.getState().setView('tree');
+    expect(persistedState().view).toBe('tree');
+    expect(persistedState()).not.toHaveProperty('sidebarMode');
+  });
+
+  it('[S4] 显式切换后写盘，rehydrate 恢复形态', async () => {
+    useNavStore.getState().toggleSidebar();
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    expect(persistedState().sidebarMode).toBe('collapsed');
+
+    await useNavStore.persist.rehydrate();
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    expect(useNavStore.getState().sidebarModeExplicit).toBe(true);
+  });
+
+  it('[S5] 持久化里的非法形态回落展开', async () => {
+    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ state: { sidebarMode: 'rail' }, version: 0 }));
+    await useNavStore.persist.rehydrate();
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+  });
+
+  it('[S6] 旧数据没有 sidebarMode 时保留当前视口默认，且不标记显式', async () => {
+    useNavStore.setState({ sidebarMode: 'collapsed', sidebarModeExplicit: false });
+    localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify({ state: { view: 'log' }, version: 0 }));
+    await useNavStore.persist.rehydrate();
+    expect(useNavStore.getState().view).toBe('log');
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    expect(useNavStore.getState().sidebarModeExplicit).toBe(false);
+  });
+
+  it('[S7] 首次默认按 920 断点：≥920 展开，<920 收起', () => {
+    expect(computeInitialSidebarMode(1280)).toBe('expanded');
+    expect(computeInitialSidebarMode(920)).toBe('expanded');
+    expect(computeInitialSidebarMode(919)).toBe('collapsed');
+  });
+});
+
+describe('侧栏形态首次进入（SIDEBAR-2）', () => {
+  it('[S8] 清空存储 + 视口 <920：首次进入为收起且不产生 sidebarMode', async () => {
+    const original = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 800 });
+    vi.resetModules();
+    try {
+      const mod = await import('../state/navStore');
+      expect(mod.useNavStore.getState().sidebarMode).toBe('collapsed');
+      const raw = localStorage.getItem(NAV_STORAGE_KEY);
+      const state = raw ? ((JSON.parse(raw) as { state?: Record<string, unknown> }).state ?? {}) : {};
+      expect(state).not.toHaveProperty('sidebarMode');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: original });
+      vi.resetModules();
+    }
   });
 });
 

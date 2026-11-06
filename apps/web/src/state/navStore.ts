@@ -19,9 +19,13 @@
  *
  * SIDEBAR-1：侧栏两形态骨架 —— `sidebarMode ∈ { expanded, collapsed }`，默认展开；
  * 本卡只落状态与切换动作，持久化策略由 SIDEBAR-2 负责（现在仍只写 `view`）。
+ *
+ * SIDEBAR-2：形态记忆 —— 显式切换后随 `agentboard.nav` 持久化；无存储时按视口给默认
+ * （≥920 展开 / <920 收起），该默认不写盘（`sidebarModeExplicit` 只在用户切换后置真）。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { DRAWER_ANCHOR_MIN_VIEWPORT } from '../lib/drawerAnchor';
 
 export type NavView = 'board' | 'decisions' | 'tree' | 'knowledge' | 'log' | 'chat';
 export type NavDrawer = 'accounts' | 'settings';
@@ -57,11 +61,21 @@ export function normalizeSidebarMode(value: unknown): SidebarMode {
   return isSidebarMode(value) ? value : DEFAULT_SIDEBAR_MODE;
 }
 
+/**
+ * SIDEBAR-2：无存储时的首次默认 —— 宽屏（≥920）展开、窄屏收起。
+ * 920 是窄屏浮层的唯一断点口径（`DRAWER_ANCHOR_MIN_VIEWPORT`），不另造魔法数。
+ */
+export function computeInitialSidebarMode(viewportWidth: number): SidebarMode {
+  return viewportWidth < DRAWER_ANCHOR_MIN_VIEWPORT ? 'collapsed' : 'expanded';
+}
+
 export interface NavState {
   view: NavView;
   drawer: NavDrawer | null;
-  /** SIDEBAR-1：侧栏形态（默认展开；持久化见 SIDEBAR-2） */
+  /** SIDEBAR-1：侧栏形态（默认按视口；显式切换后持久化，见 SIDEBAR-2） */
   sidebarMode: SidebarMode;
+  /** SIDEBAR-2：用户是否显式切过形态 —— 只有显式切换才把 sidebarMode 写盘 */
+  sidebarModeExplicit: boolean;
   /** 显式设定侧栏形态（非法值回落展开） */
   setSidebarMode: (mode: SidebarMode) => void;
   /** 展开 ↔ 收起 */
@@ -103,12 +117,19 @@ export const useNavStore = create<NavState>()(
     (set) => ({
       view: DEFAULT_NAV_VIEW,
       drawer: null,
-      sidebarMode: DEFAULT_SIDEBAR_MODE,
+      // SIDEBAR-2：创建时只读视口，不调用 set，避免无存储时把临时默认固化进 localStorage
+      sidebarMode:
+        typeof window === 'undefined' ? DEFAULT_SIDEBAR_MODE : computeInitialSidebarMode(window.innerWidth),
+      sidebarModeExplicit: false,
       chatOrigin: null,
       decisionFocus: null,
-      setSidebarMode: (mode) => set({ sidebarMode: normalizeSidebarMode(mode) }),
+      setSidebarMode: (mode) =>
+        set({ sidebarMode: normalizeSidebarMode(mode), sidebarModeExplicit: true }),
       toggleSidebar: () =>
-        set((state) => ({ sidebarMode: state.sidebarMode === 'expanded' ? 'collapsed' : 'expanded' })),
+        set((state) => ({
+          sidebarMode: state.sidebarMode === 'expanded' ? 'collapsed' : 'expanded',
+          sidebarModeExplicit: true,
+        })),
       setView: (view) =>
         set((state) => {
           const next = normalizeNavView(view);
@@ -133,15 +154,26 @@ export const useNavStore = create<NavState>()(
       name: NAV_STORAGE_KEY,
       version: 0,
       // drawer / chatOrigin / decisionFocus 都不持久化：刷新后不该自动弹出面板或高亮旧决策
-      partialize: (state) => ({ view: state.view }),
-      merge: (persisted, current) => ({
-        ...current,
-        view: normalizeNavView((persisted as { view?: unknown } | undefined)?.view),
-        // drawer 不持久化：恢复时一律收起（否则刷新会自动弹出面板）
-        drawer: null,
-        chatOrigin: null,
-        decisionFocus: null,
+      // SIDEBAR-2：只有用户显式切过形态才写 sidebarMode（视口默认不落盘）
+      partialize: (state) => ({
+        view: state.view,
+        ...(state.sidebarModeExplicit ? { sidebarMode: state.sidebarMode } : {}),
       }),
+      merge: (persisted, current) => {
+        const saved = (persisted ?? {}) as { view?: unknown; sidebarMode?: unknown };
+        // 旧数据没有 sidebarMode：保留按当前视口算出的默认，并视为「未显式设置」
+        const hasSavedMode = saved.sidebarMode !== undefined;
+        return {
+          ...current,
+          view: normalizeNavView(saved.view),
+          sidebarMode: hasSavedMode ? normalizeSidebarMode(saved.sidebarMode) : current.sidebarMode,
+          sidebarModeExplicit: hasSavedMode,
+          // drawer 不持久化：恢复时一律收起（否则刷新会自动弹出面板）
+          drawer: null,
+          chatOrigin: null,
+          decisionFocus: null,
+        };
+      },
     },
   ),
 );
