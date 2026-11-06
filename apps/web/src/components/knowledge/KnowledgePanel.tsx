@@ -165,45 +165,51 @@ export function KnowledgePanel({
         </button>
     </header>
 
+    {/* KB-TOOLBAR-ONE-LINE：9 个控件同属一个容器、顺序不变。
+        单行约需 800px 内容宽：≥1024px（实测可用 816px）稳定单行；搜索框最先收缩，Enter 提示在 <1280px 退让；
+        宽度不足时「密度/分组」整组换行，<900px 由零高整行断点固定成两行（筛选组 / 显示偏好组）。
+        全档只用 flex-wrap，不出现横向滚动，也不压扁控件。 */}
     <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
-      <label className="flex items-center gap-1 text-xs text-ink-2">范围
+      <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">范围
         <select aria-label="知识范围" value={scope} onChange={e => { const next = e.target.value as KnowledgeScope; setScope(next); persistKnowledgeScope(next); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
       </label>
-      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={"h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-w-24 flex-1"} />
+      <input aria-label="搜索知识" value={draft} onChange={e => setDraft(e.target.value)} maxLength={500} placeholder="搜索知识" className={"h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent min-w-20 flex-1"} />
       <button className="inline-flex h-8 shrink-0 items-center rounded-lg border border-accent bg-accent-soft px-3 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent" type="submit">搜索</button>
       {/* UNSLOP-5：表单内回车即提交（真实快捷键），用键帽呈现 */}
-      <span data-testid="knowledge-search-hint" className="hidden items-center gap-1 text-xs text-ink-3 sm:inline-flex">
+      <span data-testid="knowledge-search-hint" className="hidden items-center gap-1 text-xs text-ink-3 xl:inline-flex" title="按 Enter 搜索">
         <Kbd>Enter</Kbd>
         <span>搜索</span>
       </span>
       {/* KBIMP-2：导入入口（md/txt/json；json 数组逐条可取消） */}
       <button type="button" data-testid="knowledge-import-open" className={BUTTON_SECONDARY} onClick={() => setImportOpen(true)}>添加</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
-      {!query && <label className="flex items-center gap-1 text-xs text-ink-2">状态
+      {!query && <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">状态
         <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
       </label>}
       {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-ink-2"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
+      {/* <900px 的整行断点：零高、铺满整行，把「密度/分组」压到下一行，形成固定的两行降级 */}
+      <span aria-hidden="true" data-testid="knowledge-toolbar-break" className="hidden h-0 w-full basis-full max-[900px]:block" />
+      {/* BORROW-3.3：列表显示偏好（独立键；density 作用于行内边距，grouping 按分类分段不重排）。
+          两项成组作为一个 flex 项，宽度不足时整组换行，不会只掉一个到下一行。 */}
+      <span className="flex shrink-0 items-center gap-2">
+        <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">密度
+          <select aria-label="知识列表密度" value={display.density} onChange={e => setDisplayOptions({ ...display, density: e.target.value as DisplayOptions['density'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+            <option value="comfortable">舒适</option>
+            <option value="compact">紧凑</option>
+          </select>
+        </label>
+        <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">分组
+          <select aria-label="知识列表分组" value={display.grouping} onChange={e => setDisplayOptions({ ...display, grouping: e.target.value as DisplayOptions['grouping'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+            <option value="none">不分组</option>
+            <option value="label">按分类</option>
+          </select>
+        </label>
+      </span>
     </form>
-
-    {/* BORROW-3.3：列表显示偏好（独立键；density 作用于行内边距，grouping 按分类分段不重排） */}
-    <div className="mt-3 flex shrink-0 flex-wrap items-center gap-3 text-xs text-ink-2" data-testid="knowledge-display-options">
-      <label className="flex items-center gap-1">密度
-        <select aria-label="知识列表密度" value={display.density} onChange={e => setDisplayOptions({ ...display, density: e.target.value as DisplayOptions['density'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
-          <option value="comfortable">舒适</option>
-          <option value="compact">紧凑</option>
-        </select>
-      </label>
-      <label className="flex items-center gap-1">分组
-        <select aria-label="知识列表分组" value={display.grouping} onChange={e => setDisplayOptions({ ...display, grouping: e.target.value as DisplayOptions['grouping'] })} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
-          <option value="none">不分组</option>
-          <option value="label">按分类</option>
-        </select>
-      </label>
-    </div>
 
     {list.isError && <p role="alert" className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">{list.error.message}</p>}
     {deepLinkError && <div className="mt-3 flex flex-wrap items-center gap-2">

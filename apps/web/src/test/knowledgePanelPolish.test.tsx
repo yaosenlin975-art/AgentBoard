@@ -61,6 +61,39 @@ describe('搜索栏两行合一行（KB-PANEL-POLISH）', () => {
     }
   });
 
+  it('9 个控件同属一个工具条容器，顺序不变（含密度 / 分组）', () => {
+    renderPanel();
+    const scope = screen.getByLabelText('知识范围');
+    const keyword = screen.getByLabelText('搜索知识');
+    const submit = screen.getByRole('button', { name: '搜索' });
+    const hint = screen.getByTestId('knowledge-search-hint');
+    const add = screen.getByTestId('knowledge-import-open');
+    const status = screen.getByLabelText('知识状态');
+    const expired = screen.getByLabelText('包含过期');
+    const density = screen.getByLabelText('知识列表密度');
+    const grouping = screen.getByLabelText('知识列表分组');
+    const ordered: Array<[string, HTMLElement]> = [
+      ['范围', scope], ['搜索框', keyword], ['搜索按钮', submit], ['Enter 提示', hint],
+      ['添加', add], ['状态', status], ['包含过期', expired], ['密度', density], ['分组', grouping],
+    ];
+
+    const form = scope.closest('form');
+    expect(form).not.toBeNull();
+    for (const [, control] of ordered) {
+      expect(control.closest('form')).toBe(form);
+    }
+    // DOM 顺序即视觉顺序，合并成一行后不得重排
+    for (let i = 1; i < ordered.length; i += 1) {
+      const prev = ordered[i - 1]![1];
+      const cur = ordered[i]![1];
+      expect(prev.compareDocumentPosition(cur) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // <900px 的整行断点位于「包含过期」与「密度」之间（窄屏两行降级的锚点）
+    const brk = screen.getByTestId('knowledge-toolbar-break');
+    expect(expired.compareDocumentPosition(brk) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(brk.compareDocumentPosition(density) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('搜索态隐藏状态筛选（与搜索接口参数一致），仍留在一个 form 里', () => {
     renderPanel();
     const keyword = screen.getByLabelText('搜索知识');
