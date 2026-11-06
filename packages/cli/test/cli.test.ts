@@ -824,10 +824,10 @@ describe('create-space / create-issue', () => {
       return undefined;
     };
     const t = makeIo();
-    const code = await main(['node', 'kb', '--server', base, 'create-issue', '前端', '实现导出'], t.io);
+    const code = await main(['node', 'kb', '--server', base, 'create-issue', '前端', '实现导出', '-d', '正文与验收'], t.io);
     expect(code).toBe(0);
     expect(calls[0]).toEqual({ method: 'GET', url: '/api/workspaces', body: undefined });
-    expect(calls[1]).toEqual({ method: 'POST', url: '/api/issues', body: { workspace_id: 'ws1', title: '实现导出' } });
+    expect(calls[1]).toEqual({ method: 'POST', url: '/api/issues', body: { workspace_id: 'ws1', title: '实现导出', description: '正文与验收' } });
     expect(t.out()).toContain('已创建任务: iss1 实现导出');
     expect(t.out()).toContain('状态: 待规划');
   });
@@ -839,9 +839,9 @@ describe('create-space / create-issue', () => {
       return undefined;
     };
     const t = makeIo();
-    const code = await main(['node', 'kb', '--server', base, '--json', 'create-issue', 'ws1', '实现导出'], t.io);
+    const code = await main(['node', 'kb', '--server', base, '--json', 'create-issue', 'ws1', '实现导出', '-d', '正文与验收'], t.io);
     expect(code).toBe(0);
-    expect(calls[1]?.body).toEqual({ workspace_id: 'ws1', title: '实现导出' });
+    expect(calls[1]?.body).toEqual({ workspace_id: 'ws1', title: '实现导出', description: '正文与验收' });
     // KB-CLI-1：JSON 模式输出带 replayed 字段（非重放 = false）
     expect(JSON.parse(t.out())).toEqual({ ...ISSUE, replayed: false });
   });
@@ -849,7 +849,7 @@ describe('create-space / create-issue', () => {
   it('create-issue 未命中 → 退出码 1 + stderr 工作空间不存在，不发 POST', async () => {
     handler = (m, u) => (m === 'GET' && u === '/api/workspaces' ? { status: 200, body: [WS] } : undefined);
     const t = makeIo();
-    const code = await main(['node', 'kb', '--server', base, 'create-issue', '不存在', '实现导出'], t.io);
+    const code = await main(['node', 'kb', '--server', base, 'create-issue', '不存在', '实现导出', '-d', '正文与验收'], t.io);
     expect(code).toBe(1);
     expect(t.err()).toContain('工作空间不存在: 不存在');
     expect(calls.map((c) => c.method)).toEqual(['GET']);
@@ -874,6 +874,32 @@ describe('create-space / create-issue', () => {
       priority: '高',
       labels: ['a', 'b', 'c'],
     });
+  });
+
+  // CARD-FACE：空描述硬拒（本地先挡，不发 POST）；--allow-empty 是唯一逃生口
+  it('create-issue 空描述 / 纯空白描述被拒，不发 POST', async () => {
+    handler = (m, u) => (m === 'GET' && u === '/api/workspaces' ? { status: 200, body: [WS] } : undefined);
+    for (const args of [[], ['-d', ''], ['-d', '   '], ['-d', '验收标准：']]) {
+      const t = makeIo();
+      const code = await main(['node', 'kb', '--server', base, 'create-issue', '前端', '实现导出', ...args], t.io);
+      expect(code).toBe(1);
+      expect(t.err()).toContain('描述不能为空');
+      expect(t.err()).toContain('验收');
+    }
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it('create-issue --allow-empty 跳过空面校验并在回执提示', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'POST' && u === '/api/issues') return { status: 200, body: ISSUE };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'create-issue', '前端', '纯父卡', '--allow-empty'], t.io);
+    expect(code).toBe(0);
+    expect(calls[1]?.body).toEqual({ workspace_id: 'ws1', title: '纯父卡', allow_empty: true });
+    expect(t.out()).toContain('已跳过空面校验');
   });
 });
 

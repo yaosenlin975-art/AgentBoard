@@ -16,6 +16,17 @@ const pageFields = {
 const prioritySchema = z.enum(['低', '中', '高']);
 const statusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
 
+/** CARD-FACE：与服务端同口径的空描述判定（MCP 只做提前提示，服务端仍是唯一权威）。 */
+function isBlankDescription(text: string | undefined): boolean {
+  if (text === undefined) return true;
+  const stripped = text
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*(目标|范围|验收|验收标准|边界)\s*[:：]?\s*$/gm, '')
+    .replace(/^\s*[-*+]\s*$/gm, '')
+    .trim();
+  return stripped === '';
+}
+
 function boundedMutationData(data: unknown): unknown {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
   const result = { ...data as Record<string, unknown> };
@@ -145,16 +156,21 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('create_task', 'Create a task in one effective workspace.', z.object({
     ...workspaceField,
     title: z.string().trim().min(1),
-    description: z.string().default(''),
+    description: z.string().optional(),
+    allow_empty: z.boolean().optional(),
     priority: prioritySchema.default('中'),
     labels: z.array(z.string()).default([]),
     parent_issue_id: z.string().trim().min(1).nullable().optional(),
     ...requestIdField,
-  }).strict(), async ({ workspace_id, title, description, priority, labels, parent_issue_id, request_id }) => {
+  }).strict(), async ({ workspace_id, title, description, allow_empty, priority, labels, parent_issue_id, request_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
+    if (allow_empty !== true && isBlankDescription(description)) {
+      throw new Error('描述不能为空：请写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可传 allow_empty=true 跳过空面校验');
+    }
     const issue = await api.mutate<Issue>('POST', '/issues', {
       workspace_id: workspaceId, agent_id: agentId, title, description, priority, labels, parent_issue_id,
+      ...(allow_empty === true ? { allow_empty: true } : {}),
     }, request_id);
     return issue;
   }, false);

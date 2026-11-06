@@ -216,12 +216,29 @@ describe('新建任务附图', () => {
     pasteImage(pngFile());
     await waitFor(() => expect(uploads).toHaveLength(1));
     await userEvent.type(screen.getByTestId('new-issue-title'), '删除草稿');
+    await userEvent.type(screen.getByTestId('new-issue-description'), '正文与验收');
     await userEvent.click(screen.getByRole('button', { name: '移除图片 shot.png' }));
     expect(screen.queryByText('已上传')).toBeNull();
 
     await userEvent.click(screen.getByTestId('new-issue-submit'));
     await waitFor(() => expect(issueCalls).toHaveLength(1));
     expect(issueCalls[0]!.body.attachment_ids).toEqual([]);
+  });
+
+  // CARD-FACE：空描述不提交，表单内联报错（服务端仍会再校验一次）
+  it('空描述 / 纯空白描述不提交，内联报错', async () => {
+    setupHandlers();
+    renderDialog();
+
+    await userEvent.type(screen.getByTestId('new-issue-title'), '缺描述的卡');
+    await userEvent.click(screen.getByTestId('new-issue-submit'));
+    expect(await screen.findByTestId('new-issue-error')).toHaveTextContent('描述不能为空');
+    expect(issueCalls).toHaveLength(0);
+
+    await userEvent.type(screen.getByTestId('new-issue-description'), '   ');
+    await userEvent.click(screen.getByTestId('new-issue-submit'));
+    expect(await screen.findByTestId('new-issue-error')).toHaveTextContent('描述不能为空');
+    expect(issueCalls).toHaveLength(0);
   });
 
   it('切换 workspace 后图片 tag 清空，不跨空间引用', async () => {

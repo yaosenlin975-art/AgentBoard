@@ -27,6 +27,16 @@ import { Modal } from '../ui/Modal';
 const inputCls =
   'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none transition-colors duration-150 focus:border-accent motion-reduce:transition-none';
 
+/** CARD-FACE：与服务端同口径的空描述判定（Web 只做内联提示，服务端仍是唯一权威）。 */
+function isBlankDescription(text: string): boolean {
+  const stripped = text
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*(目标|范围|验收|验收标准|边界)\s*[:：]?\s*$/gm, '')
+    .replace(/^\s*[-*+]\s*$/gm, '')
+    .trim();
+  return stripped === '';
+}
+
 interface PendingImage {
   localId: number;
   file: File;
@@ -198,6 +208,11 @@ export function NewIssueDialog({
   const submit = (e: FormEvent): void => {
     e.preventDefault();
     if (!canSubmit) return;
+    // CARD-FACE：空描述不提交，内联报错（服务端仍会再校验一次）
+    if (isBlankDescription(description)) {
+      setError('描述不能为空：请写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）');
+      return;
+    }
     create.mutate({
       workspace_id: workspaceId,
       title: title.trim(),
@@ -368,12 +383,12 @@ export function NewIssueDialog({
         />
       </label>
       <label className="block text-sm">
-        <span className="mb-1 block text-neutral-600 dark:text-neutral-300">描述（markdown）</span>
+        <span className="mb-1 block text-neutral-600 dark:text-neutral-300">描述（markdown，必填：正文 + 验收标准）</span>
         <textarea
           data-testid="new-issue-description"
           aria-label="描述"
           value={description}
-          onChange={(e) => setDescription(e.target.value)}
+          onChange={(e) => { setDescription(e.target.value); if (error !== null) setError(null); }}
           rows={4}
           className={inputCls}
         />

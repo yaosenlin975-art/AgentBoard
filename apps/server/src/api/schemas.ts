@@ -145,12 +145,29 @@ export const draftRequestSchema = z.object({
   priority: prioritySchema.optional(),
 }).strict();
 
+/**
+ * CARD-FACE：描述「空」的唯一权威判定。
+ * 空 = 去掉 markdown 标题、模板段名（目标 / 范围 / 验收 / 验收标准 / 边界 …）、空列表项与空白后无实质内容；
+ * 描述很短但有正文不算空，不做长度阈值。
+ */
+export function isBlankIssueDescription(text: string | undefined): boolean {
+  if (text === undefined) return true;
+  const stripped = text
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*(目标|范围|验收|验收标准|边界)\s*[:：]?\s*$/gm, '')
+    .replace(/^\s*[-*+]\s*$/gm, '')
+    .trim();
+  return stripped === '';
+}
+
 export const createIssueSchema = z
   .object({
     workspace_id: z.string().min(1),
     // KB-CLI-1：标题 200 字上限（API 直调同样受限；CLI 本地先行报错）
     title: z.string().trim().min(1, 'title 不能为空').max(200, '标题超长：上限 200 字'),
     description: z.string().optional(),
+    // CARD-FACE：空描述逃生口（批量建卡 / 纯父卡）；用了它即跳过服务端空面校验
+    allow_empty: z.boolean().optional(),
     priority: prioritySchema.optional(),
     // TAG-CLEANUP-EXEC：请求边界统一规范化（拆空格/全角逗号、trim、去重），与 CLI parseLabels 同规则
   labels: z.array(z.string()).transform(normalizeLabels).optional(),
@@ -162,6 +179,10 @@ export const createIssueSchema = z
   })
   .refine((value) => new Set(value.attachment_ids ?? []).size === (value.attachment_ids ?? []).length, {
     message: 'attachment_ids 不能重复',
+  })
+  .refine((value) => value.allow_empty === true || !isBlankIssueDescription(value.description), {
+    message: '描述不能为空：请写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可传 allow_empty=true 跳过校验',
+    path: ['description'],
   });
 
 export const patchIssueSchema = z

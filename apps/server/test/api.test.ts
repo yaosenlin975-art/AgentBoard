@@ -192,6 +192,28 @@ describe('issues 全生命周期', () => {
     expect(missing.status).toBe(404);
   });
 
+  // CARD-FACE：服务端是空描述校验唯一权威；allow_empty 是唯一逃生口
+  it('建卡空描述 → 400 且提示验收标准；纯空白 / 只有模板段名同判空；allow_empty=true 放行；描述很短但有正文不算空', async () => {
+    const wsId = await mkSpace();
+
+    for (const description of [undefined, '', '   ', '验收标准：', '# 目标\n\n## 验收\n']) {
+      const res = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '空面卡', description });
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('描述不能为空');
+      expect(res.body.error.message).toContain('验收标准');
+    }
+
+    const allowed = await request(app)
+      .post('/api/issues')
+      .send({ workspace_id: wsId, title: '纯父卡', allow_empty: true });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toMatchObject({ title: '纯父卡', description: '' });
+
+    const short = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '短描述卡', description: '修一个按钮' });
+    expect(short.status).toBe(200);
+    expect(short.body).toMatchObject({ description: '修一个按钮' });
+  });
+
   it('claim：占用登记（session_id=null）→ 状态进行中；重复 claim 409；PATCH status 占用中 409、字段放行；release 回待规划 + system 评论', async () => {
     const wsId = await mkSpace();
     const issue = await mkIssue(wsId);

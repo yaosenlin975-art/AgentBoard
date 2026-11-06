@@ -18,6 +18,17 @@ export function parseLabels(raw: string): string[] {
   return [...new Set(parts)];
 }
 
+/** CARD-FACE：服务端同口径的空描述判定（CLI 只做提前提示，服务端仍是唯一权威）。 */
+export function isBlankDescription(text: string | undefined): boolean {
+  if (text === undefined) return true;
+  const stripped = text
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^\s*(目标|范围|验收|验收标准|边界)\s*[:：]?\s*$/gm, '')
+    .replace(/^\s*[-*+]\s*$/gm, '')
+    .trim();
+  return stripped === '';
+}
+
 export interface CreateIssueArgs {
   /** 工作空间 id 或名称（先解析为 id） */
   workspace: string;
@@ -26,6 +37,8 @@ export interface CreateIssueArgs {
   /** KB-CLI-1：标题走 stdin（PowerShell 引号吞参的绕行通道） */
   titleStdin?: boolean;
   description?: string;
+  /** CARD-FACE：跳过空描述校验（批量建卡 / 纯父卡），回执会提示已跳过 */
+  allowEmpty?: boolean;
   /** 低|中|高（非法值由服务端 400） */
   priority?: string;
   /** 逗号拆分 */
@@ -45,6 +58,8 @@ interface CreateIssueBody {
   parent_issue_id?: string;
   due_date?: string;
   due_time?: string;
+  /** CARD-FACE：跳过服务端空描述校验 */
+  allow_empty?: boolean;
 }
 
 /**
@@ -107,9 +122,15 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
     title = args.title;
   }
   assertIssueTitle(title);
+  // CARD-FACE：空描述默认拒绝；--allow-empty 是唯一逃生口（批量建卡 / 纯父卡）
+  const skipFaceCheck = args.allowEmpty === true;
+  if (!skipFaceCheck && isBlankDescription(args.description)) {
+    throw new Error('描述不能为空：请用 -d 写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可加 --allow-empty 跳过空面校验');
+  }
   const workspaceId = await resolveWorkspaceId(ctx.base, args.workspace);
   const body: CreateIssueBody = { workspace_id: workspaceId, title };
   if (args.description !== undefined) body.description = args.description;
+  if (skipFaceCheck) body.allow_empty = true;
   if (args.priority !== undefined) body.priority = args.priority;
   if (args.labels !== undefined) {
     body.labels = parseLabels(args.labels);
@@ -129,5 +150,6 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   const dueLine = issue.due_date === null || issue.due_date === undefined
     ? '截止: （未设置）'
     : `截止: ${issue.due_date}${issue.due_time === null || issue.due_time === undefined ? '' : ` ${issue.due_time}`}`;
-  ctx.io.write(`${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n${dueLine}\n`);
+  const skipLine = skipFaceCheck ? '已跳过空面校验（--allow-empty）\n' : '';
+  ctx.io.write(`${skipLine}${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n${dueLine}\n`);
 }

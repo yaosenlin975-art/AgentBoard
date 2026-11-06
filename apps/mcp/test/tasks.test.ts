@@ -237,7 +237,7 @@ describe('AgentBoard task MCP server', () => {
     await harness.start();
     const requestIds = Array.from({ length: 7 }, (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`);
     const calls = [
-      ['create_task', { title: 'New task', request_id: requestIds[0] }],
+      ['create_task', { title: 'New task', description: '正文与验收', request_id: requestIds[0] }],
       ['update_task', { task_id: 'task-1', expected_updated_at: 123, title: 'Updated', request_id: requestIds[1] }],
       ['claim_task', { task_id: 'task-1', request_id: requestIds[2] }],
       ['release_task', { task_id: 'task-1', request_id: requestIds[3] }],
@@ -254,7 +254,7 @@ describe('AgentBoard task MCP server', () => {
     for (const [index, request] of requests.entries()) {
       expect(new Headers(request.init?.headers).get('Idempotency-Key')).toBe(requestIds[index]);
     }
-    expect(JSON.parse(String(requests[0]?.init?.body))).toMatchObject({ workspace_id: 'workspace-a', agent_id: 'codex', title: 'New task', description: '', priority: '中', labels: [] });
+    expect(JSON.parse(String(requests[0]?.init?.body))).toMatchObject({ workspace_id: 'workspace-a', agent_id: 'codex', title: 'New task', description: '正文与验收', priority: '中', labels: [] });
     expect(JSON.parse(String(requests[1]?.init?.body))).toMatchObject({ workspace_id: 'workspace-a', agent_id: 'codex', expected_updated_at: 123, title: 'Updated' });
     expect(JSON.parse(String(requests[2]?.init?.body))).toMatchObject({ workspace_id: 'workspace-a', agent_id: 'codex', knowledge_enabled: false });
     expect(requests.map(({ url }) => new URL(url).pathname)).toEqual([
@@ -332,7 +332,7 @@ describe('AgentBoard task MCP server', () => {
 
     const created = (await harness.request('tools/call', {
       name: 'create_task',
-      arguments: { title: 'Long', request_id: '00000000-0000-4000-8000-000000000010' },
+      arguments: { title: 'Long', description: '长正文测试', request_id: '00000000-0000-4000-8000-000000000010' },
     })).result?.structuredContent?.data;
     expect(Array.from(created.description)).toHaveLength(12000);
     expect(created).toMatchObject({ description_truncated: true, next_description_offset_chars: 12000 });
@@ -382,7 +382,7 @@ describe('AgentBoard task MCP server', () => {
     await harness.start();
     await harness.request('tools/call', {
       name: 'create_task',
-      arguments: { title: 'Child', parent_issue_id: 'parent-1', request_id: '00000000-0000-4000-8000-000000000101' },
+      arguments: { title: 'Child', description: '子卡正文', parent_issue_id: 'parent-1', request_id: '00000000-0000-4000-8000-000000000101' },
     });
     await harness.request('tools/call', {
       name: 'update_task',
