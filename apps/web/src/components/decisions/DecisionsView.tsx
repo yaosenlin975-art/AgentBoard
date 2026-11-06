@@ -8,7 +8,7 @@
  * - 深链：`navStore.focusDecision(id)` 选中并滚动到该条；宽限到期本地先移入「未回答」，
  *   再按 `grace_until` 定时失效重取，等 ticker 落锁后服务端状态转正。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAppStore } from '../../state/appStore';
 import { useNavStore } from '../../state/navStore';
@@ -39,6 +39,15 @@ const FILTERS: ReadonlyArray<{ key: DecisionFilter; label: string }> = [
 ];
 const LAYERS: readonly DecisionLayer[] = ['grace', 'open', 'stale'];
 
+/** P8：reduced motion 下不播放闪烁，只保留高亮边框 */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 export function DecisionsView() {
   const workspaceId = useAppStore((state) => state.workspaceId);
   const focus = useNavStore((state) => state.decisionFocus);
@@ -53,6 +62,17 @@ export function DecisionsView() {
   const [sort, setSort] = useState<DecisionSort>('urgency');
   // DEC-V4-INLINE：同一时刻只展开一条，展开后由详细卡替换 chip 行
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // P8：深链定位 —— decisionFocus 只消费一次；selectedId 保留高亮边框，flashId 驱动 720ms ×2 闪烁
+  const consumeFocus = useNavStore((state) => state.focusDecision);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const [focusToast, setFocusToast] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const flashTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const clearFlashTimers = () => {
+    for (const timer of flashTimers.current) clearTimeout(timer);
+    flashTimers.current = [];
+  };
   const changeScope = (next: DecisionsScope) => {
     setScope(next);
     persistDecisionsScope(next);
@@ -63,6 +83,52 @@ export function DecisionsView() {
   const toggleExpanded = (decisionId: string) => {
     setExpandedId((current) => (current === decisionId ? null : decisionId));
   };
+  const allItems = [...groups.grace, ...groups.open, ...groups.stale, ...groups.answered];
+  const allItemsRef = useRef(allItems);
+  allItemsRef.current = allItems;
+
+  /**
+   * P8：消费 decisionFocus（看板卡面 / 详情底部按钮 / 通知 toast 的统一切入点）。
+   * - 定位并展开目标条，滚到可视区，闪烁 720ms ×2 后保留高亮边框；
+   * - 目标不存在（已撤回 / 已过期被清理 / 跨区不可见）→ 回列表顶部 + toast，绝不显示空白；
+   * - 消费后立即清空 decisionFocus，切走再回来不会重放。
+   */
+  useEffect(() => {
+    if (focus === null || loading) return;
+    const target = allItemsRef.current.find((item) => item.id === focus) ?? null;
+    setFilter('all');
+    setExpandedId(target?.id ?? null);
+    setSelectedId(target?.id ?? null);
+    setFlashId(null);
+    clearFlashTimers();
+    usePanelStore.getState().clearView();
+    consumeFocus(null);
+    if (target === null) {
+      setFocusToast('该决策已不存在或不在当前范围');
+      if (listRef.current !== null) listRef.current.scrollTop = 0;
+      return;
+    }
+    setFocusToast(null);
+    requestAnimationFrame(() => {
+      const node = document.querySelector<HTMLElement>(`[data-testid="decision-item-${focus}"]`);
+      node?.scrollIntoView?.({ block: 'center' });
+    });
+    if (prefersReducedMotion()) return;
+    setFlashId(focus);
+    flashTimers.current.push(setTimeout(() => setFlashId(null), 720));
+    flashTimers.current.push(setTimeout(() => setFlashId(focus), 1440));
+    flashTimers.current.push(setTimeout(() => setFlashId(null), 2160));
+  }, [focus, loading, consumeFocus]);
+
+  // 卸载时清掉未走完的闪烁定时器
+  useEffect(() => () => clearFlashTimers(), []);
+
+  // 目标缺失的提示自动消失（不阻塞继续操作列表）
+  useEffect(() => {
+    if (focusToast === null) return;
+    const timer = setTimeout(() => setFocusToast(null), 5000);
+    return () => clearTimeout(timer);
+  }, [focusToast]);
 
   // 宽限到期后补一次重取（服务端 ticker 落锁 → 状态转 open，`issue.changed` 也会刷新卡面）
   const nearestGraceUntil = groups.grace[0]?.grace_until ?? null;
@@ -172,7 +238,16 @@ export function DecisionsView() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        {focusToast !== null && (
+          <div
+            data-testid="decisions-focus-toast"
+            role="status"
+            className="mb-2 rounded border border-hairline bg-surface-raised px-2 py-1 text-xs text-ink-2"
+          >
+            {focusToast}
+          </div>
+        )}
         {error !== null && <DecisionsError error={error} />}
         {error === null && loading && <p className="px-1 py-2 text-xs text-ink-3">加载中…</p>}
         {error === null && !loading && showEmptyState && (
@@ -206,7 +281,8 @@ export function DecisionsView() {
             empty="无"
             items={groups.grace}
             now={now}
-            focus={focus}
+            selectedId={selectedId}
+            flashId={flashId}
             rankMap={rankMap}
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
@@ -222,7 +298,8 @@ export function DecisionsView() {
             empty="无"
             items={groups.open}
             now={now}
-            focus={focus}
+            selectedId={selectedId}
+            flashId={flashId}
             rankMap={rankMap}
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
@@ -238,7 +315,8 @@ export function DecisionsView() {
             empty="无"
             items={groups.stale}
             now={now}
-            focus={focus}
+            selectedId={selectedId}
+            flashId={flashId}
             rankMap={rankMap}
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
@@ -254,7 +332,8 @@ export function DecisionsView() {
             empty="无（保留 24 小时）"
             items={groups.answered}
             now={now}
-            focus={focus}
+            selectedId={selectedId}
+            flashId={flashId}
             rankMap={rankMap}
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
@@ -307,7 +386,8 @@ interface GroupProps {
   empty: string;
   items: DecisionListItemDto[];
   now: number;
-  focus: string | null;
+  selectedId: string | null;
+  flashId: string | null;
   rankMap: ReadonlyMap<string, number>;
   expandedId: string | null;
   homeWorkspaceId: string;
@@ -322,7 +402,8 @@ function Group({
   empty,
   items,
   now,
-  focus,
+  selectedId,
+  flashId,
   rankMap,
   expandedId,
   homeWorkspaceId,
@@ -346,7 +427,8 @@ function Group({
               item={item}
               now={now}
               rank={rankMap.get(item.id)}
-              focused={focus === item.id}
+              focused={selectedId === item.id}
+              flash={flashId === item.id}
               scope={scope}
               expanded={expandedId === item.id}
               homeWorkspaceId={homeWorkspaceId}

@@ -82,6 +82,8 @@ export interface DecisionCardProps {
   now: number;
   rank: number | undefined;
   focused: boolean;
+  /** P8：深链定位后的两次闪烁（reduced motion 下不闪，仅保留高亮边框） */
+  flash?: boolean;
   scope: 'grace' | 'open' | 'stale' | 'answered';
   expanded: boolean;
   /** 当前选中的工作区；与 item.workspace_id 不同即跨区卡 */
@@ -102,6 +104,7 @@ export function DecisionCard({
   now,
   rank,
   focused,
+  flash = false,
   scope,
   expanded,
   homeWorkspaceId,
@@ -327,10 +330,11 @@ export function DecisionCard({
       ref={ref}
       data-testid={`decision-item-${item.id}`}
       data-selected={focused ? 'true' : 'false'}
+      data-flash={flash ? 'true' : 'false'}
       data-expanded={expanded ? 'true' : 'false'}
       className={`flex min-w-0 flex-col gap-1.5 rounded-md border bg-surface-card px-2 py-1.5 transition-colors duration-150 motion-reduce:transition-none ${
         focused ? 'border-accent bg-accent-soft' : 'border-hairline hover:bg-surface-raised'
-      }`}
+      } ${flash ? 'ring-2 ring-accent ring-offset-1' : ''}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         {rank !== undefined && (
@@ -351,6 +355,15 @@ export function DecisionCard({
             {shortWorkspaceName(workspaceName)}
           </span>
         )}
+        <button
+          type="button"
+          data-testid={`decision-issue-id-${item.id}`}
+          onClick={() => onOpenIssue(item.issue_id)}
+          title={`任务 ${item.issue_id}（点击打开详情）`}
+          className="shrink-0 rounded font-mono text-[11px] tabular-nums text-ink-3 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          {item.issue_id.slice(0, 8)}
+        </button>
         <button
           type="button"
           onClick={() => onOpenIssue(item.issue_id)}

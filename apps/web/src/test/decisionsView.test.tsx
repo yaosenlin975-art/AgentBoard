@@ -4,7 +4,7 @@
  * 覆盖：四段分组与倒计时格式（纯函数）、徽标数（grace+open）、窄屏不折行、
  * grace 到期本地移入未回答、open 卡 [待决策] 已等待、详情两版答案时间线 + checkpoint + 修订请求。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -782,6 +782,118 @@ describe('DEC-6 详情决策区', () => {
   it('无决策时详情区不渲染', async () => {
     renderWithQuery(<DecisionSection issue={issue({ id: 'issue-none' })} />);
     await waitFor(() => expect(screen.queryByTestId('decision-section')).toBeNull());
+  });
+});
+
+describe('P8 三处互跳', () => {
+  it('看板卡面 [待决策] 可点 → 切待决策并带深链；缺 open_decision_id 时降级为不可点 span', () => {
+    render(
+      <DecisionMark
+        issue={issue({
+          id: 'issue-a',
+          decision_grace_until: Date.now() + 90_000,
+          open_decision_id: 'dec-open',
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('decision-mark-issue-a'));
+    expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: 'dec-open' });
+
+    cleanup();
+    useNavStore.setState({ view: 'board', decisionFocus: null });
+    // 已答 / 已撤回 / 旧投影没有 open_decision_id：降级展示，不出现「点进去空白」
+    render(
+      <DecisionMark
+        issue={issue({ id: 'issue-b', decision_locked: true, decision_waiting_seconds: 30, open_decision_id: null })}
+      />,
+    );
+    const degraded = screen.getByTestId('decision-mark-issue-b');
+    expect(degraded.tagName).toBe('SPAN');
+    fireEvent.click(degraded);
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', decisionFocus: null });
+  });
+
+  it('详情决策块底部按钮 → 切到待决策并深链该条', async () => {
+    server.use(
+      http.get('/api/decisions', ({ request }) => {
+        const url = new URL(request.url);
+        const isAnswered = url.searchParams.get('state') === 'answered';
+        return HttpResponse.json({
+          decisions: isAnswered ? [] : [openItem],
+          counts: { grace: 0, open: 1, stale_open: 0, answered_recent: 0 },
+        });
+      }),
+    );
+    renderWithQuery(<DecisionSection issue={issue({ id: openItem.issue_id })} />);
+
+    await waitFor(() => expect(screen.getByTestId('decision-question')).toHaveTextContent(openItem.question));
+    const button = screen.getByTestId('decision-open-in-queue');
+    expect(button).toHaveTextContent('在待决策区查看');
+
+    fireEvent.click(button);
+    expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: openItem.id });
+  });
+
+  it('决策列表消费深链：定位 / 展开 / 滚到可视区 / 闪两次后保留高亮，并强制回「全部」', async () => {
+    const scrollSpy = vi.fn();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      server.use(decisionHandler([graceItem, openItem], []));
+      useNavStore.setState({ view: 'decisions', decisionFocus: null });
+      renderWithQuery(<DecisionsView />);
+
+      await screen.findByTestId('decision-item-dec-open');
+      fireEvent.click(screen.getByTestId('decisions-tab-answered'));
+      expect(screen.getByTestId('decisions-tab-answered')).toHaveAttribute('aria-selected', 'true');
+
+      useNavStore.getState().focusDecision('dec-open');
+
+      await waitFor(() => expect(screen.getByTestId('decision-item-dec-open')).toHaveAttribute('data-selected', 'true'));
+      const target = screen.getByTestId('decision-item-dec-open');
+      expect(target).toHaveAttribute('data-expanded', 'true');
+      expect(target).toHaveAttribute('data-flash', 'true');
+      expect(screen.getByTestId('decisions-tab-all')).toHaveAttribute('aria-selected', 'true');
+      expect(useNavStore.getState().decisionFocus).toBeNull();
+      expect(screen.getByTestId('decision-item-dec-grace')).toHaveAttribute('data-selected', 'false');
+      await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+
+      // 两次闪烁结束后：不再闪，但高亮边框保留
+      await waitFor(() => expect(target).toHaveAttribute('data-flash', 'false'), { timeout: 3000 });
+      expect(target).toHaveAttribute('data-selected', 'true');
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView;
+    }
+  }, 15_000);
+
+  it('reduced motion：不闪，只保留高亮；目标缺失 → 回顶部 + toast，不空白', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true,
+      media: '(prefers-reduced-motion: reduce)',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    }) as unknown as typeof window.matchMedia;
+    try {
+      server.use(decisionHandler([openItem], []));
+      useNavStore.setState({ view: 'decisions', decisionFocus: 'dec-open' });
+      renderWithQuery(<DecisionsView />);
+
+      await waitFor(() => expect(screen.getByTestId('decision-item-dec-open')).toHaveAttribute('data-selected', 'true'));
+      expect(screen.getByTestId('decision-item-dec-open')).toHaveAttribute('data-flash', 'false');
+
+      useNavStore.getState().focusDecision('dec-missing');
+      const toast = await screen.findByTestId('decisions-focus-toast');
+      expect(toast).toHaveTextContent('该决策已不存在或不在当前范围');
+      expect(useNavStore.getState().decisionFocus).toBeNull();
+      expect(screen.queryByTestId('decision-item-dec-missing')).toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
   });
 });
 

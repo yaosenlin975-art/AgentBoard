@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { useNavStore } from '../../state/navStore';
 import { useIssueDecision } from './useDecisions';
 import type { DecisionAnswerDto, DecisionDetailDto, DecisionState } from './types';
 
@@ -191,6 +192,18 @@ export function DecisionSection({ issue }: { issue: Issue }) {
           </ul>
         </div>
       )}
+
+      {/* P8：详情 → 待决策（底部固定）；跳转只改 navStore，面板由待决策视图消费时清空 */}
+      <div className="sticky bottom-0 mt-2 flex justify-end bg-accent-soft/80 pt-1 backdrop-blur-sm">
+        <button
+          type="button"
+          data-testid="decision-open-in-queue"
+          onClick={() => useNavStore.getState().focusDecision(decision.id)}
+          className="whitespace-nowrap rounded border border-accent/50 px-2 py-1 text-xs text-accent transition-colors duration-150 motion-reduce:transition-none hover:bg-accent-soft focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          在待决策区查看
+        </button>
+      </div>
     </section>
   );
 }
