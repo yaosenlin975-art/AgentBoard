@@ -6,11 +6,11 @@
  * 左栏是按 `occurred_at DESC, id DESC` 倒序、按本地日期分组的日志列表，右栏是选中日志的详情（Markdown 正文 + 编辑/删除），
  * 默认选中最新一条；≤900px 由 `min-[901px]:` 断点退化为上下堆叠（列表在上、详情在下）。
  *
- * 保留既有能力：新建/编辑/删除（CAS）、搜索与类型筛选、分页、归档只读区、空态。
+ * 保留既有能力：新建/编辑/删除（CAS）、搜索与类型筛选、无限滚动加载、归档只读区、空态。
  * 查询状态只依赖 props（workspaceId），切 workspace 会复位筛选/分页/编辑态。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { WorkspaceChangeLog, WorkspaceChangeType } from '@agentboard/shared';
 import { ApiError } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
@@ -23,7 +23,15 @@ import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTi
 import { ChangelogTypeTag } from './ChangelogTypeTag';
 import { ErrorState } from '../ui/ErrorState';
 
-const PAGE = 20;
+/** LOG-INFINITE：首屏 20 条，后续每页 40 条（服务端 limit 上限 100） */
+const FIRST_PAGE = 20;
+const NEXT_PAGE = 40;
+/** 距底部多少像素开始预取下一页 */
+const PREFETCH_PX = 240;
+/** 已加载条目超过该数量才给条目行加 content-visibility，跳过视口外布局/绘制 */
+const CONTENT_VISIBILITY_AFTER = 200;
+/** 筛选组合 → 列表滚动位置；视图切走再回来时恢复（同一会话内） */
+const scrollMemory = new Map<string, number>();
 const TYPES: WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
 
 type EditorState =
@@ -74,7 +82,6 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
   const [draft, setDraft] = useState('');
   const [query, setQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<WorkspaceChangeType | 'all'>('all');
-  const [offset, setOffset] = useState(0);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ChangelogFormConflict | null>(null);
@@ -83,12 +90,11 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // 切 workspace：清空筛选、分页、编辑草稿、选中项与待删目标，避免跨 workspace 串数据
+  // 切 workspace：清空筛选、编辑草稿、选中项与待删目标，避免跨 workspace 串数据
   useEffect(() => {
     setDraft('');
     setQuery('');
     setTypeFilter('all');
-    setOffset(0);
     setEditor(null);
     setFormError(null);
     setConflict(null);
@@ -97,15 +103,20 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     setSelectedId(null);
   }, [workspaceId]);
 
-  const list = useQuery({
-    queryKey: ['changelog', workspaceId, typeFilter, query, offset],
-    queryFn: () =>
+  // LOG-INFINITE：offset 交给 useInfiniteQuery 的 pageParam 管理；筛选变化即换 queryKey 从首屏重来
+  const list = useInfiniteQuery({
+    queryKey: ['changelog', workspaceId, typeFilter, query],
+    queryFn: ({ pageParam }) =>
       changelogApi.list(workspaceId, {
         change_type: typeFilter === 'all' ? undefined : typeFilter,
         q: query === '' ? undefined : query,
-        offset,
-        limit: PAGE,
+        offset: pageParam,
+        limit: pageParam === 0 ? FIRST_PAGE : NEXT_PAGE,
       }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
+    // 视图切走再回来时保留已加载页，配合 scrollMemory 恢复滚动位置
+    gcTime: 30 * 60 * 1000,
   });
 
   const refresh = (): Promise<unknown> => queryClient.invalidateQueries({ queryKey: ['changelog', workspaceId] });
@@ -173,7 +184,19 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     }
   };
 
-  const items = list.data?.items ?? [];
+  // 翻页期间可能有新日志插到顶部导致 offset 位移，按 id 去重保证列表不出现重复条目
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: WorkspaceChangeLog[] = [];
+    for (const page of list.data?.pages ?? []) {
+      for (const entry of page.items) {
+        if (seen.has(entry.id)) continue;
+        seen.add(entry.id);
+        merged.push(entry);
+      }
+    }
+    return merged;
+  }, [list.data]);
   const sorted = useMemo(() => sortChangelog(items), [items]);
   const groups = useMemo(() => groupChangelogByDay(sorted), [sorted]);
   // 默认选中最新一条；选中项被筛选掉或删除后自动回落到最新
@@ -223,6 +246,49 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
     return () => observer.disconnect();
   }, [sorted]);
 
+  /** 左列表滚动容器（唯一滚动区）：无限滚动在这里监听 */
+  const listRef = useRef<HTMLOListElement | null>(null);
+  const memoryKey = `${workspaceId}\u0000${typeFilter}\u0000${query}`;
+  const lastMemoryKeyRef = useRef(memoryKey);
+
+  // 筛选/搜索变化：从首屏重来，滚动位置一并归零，不把上一组数据的偏移带过来
+  useEffect(() => {
+    if (lastMemoryKeyRef.current === memoryKey) return;
+    lastMemoryKeyRef.current = memoryKey;
+    scrollMemory.delete(memoryKey);
+    const el = listRef.current;
+    if (el !== null) el.scrollTop = 0;
+  }, [memoryKey]);
+
+  // 视图切走再回来：已加载页由 react-query 缓存恢复，这里补滚动位置
+  const restoredKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (restoredKeyRef.current === memoryKey) return;
+    const el = listRef.current;
+    if (el === null || list.data === undefined) return;
+    restoredKeyRef.current = memoryKey;
+    const saved = scrollMemory.get(memoryKey);
+    if (saved !== undefined && saved > 0) el.scrollTop = saved;
+  }, [list.data, memoryKey]);
+
+  // 首屏不足一屏时自动续拉，避免列表没满就没有滚动条、也就永远触发不了预取
+  useEffect(() => {
+    const el = listRef.current;
+    if (el === null || !list.hasNextPage || list.isFetchingNextPage) return;
+    if (el.clientHeight > 0 && el.scrollHeight <= el.clientHeight + PREFETCH_PX) void list.fetchNextPage();
+  }, [items.length, list.hasNextPage, list.isFetchingNextPage, list.fetchNextPage]);
+
+  const onListScroll = (event: UIEvent<HTMLOListElement>): void => {
+    const el = event.currentTarget;
+    scrollMemory.set(memoryKey, el.scrollTop);
+    if (!list.hasNextPage || list.isFetchingNextPage) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > PREFETCH_PX) return;
+    void list.fetchNextPage();
+  };
+
+  // 条目很少时 content-visibility 没有收益，超过阈值才启用，避免无谓的 contain 开销
+  const virtualizeItems = sorted.length > CONTENT_VISIBILITY_AFTER;
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2" data-testid="changelog-active">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -243,7 +309,6 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
           onSubmit={(event) => {
             event.preventDefault();
             setQuery(draft.trim());
-            setOffset(0);
           }}
         >
           <input
@@ -259,7 +324,6 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
             value={typeFilter}
             onChange={(event) => {
               setTypeFilter(event.target.value as WorkspaceChangeType | 'all');
-              setOffset(0);
             }}
             className={FIELD_CLASS}
           >
@@ -277,7 +341,6 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                 setDraft('');
                 setQuery('');
                 setTypeFilter('all');
-                setOffset(0);
               }}
             >
               清除筛选
@@ -340,7 +403,7 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
       )}
 
       {list.isPending && <p className="text-xs text-ink-3" role="status">加载变更日志…</p>}
-      {list.isError && <ErrorState error={list.error} className="text-xs" />}
+      {list.isError && list.data === undefined && <ErrorState error={list.error} className="text-xs" />}
       {list.data !== undefined && (
         <div
           data-testid="changelog-split"
@@ -358,9 +421,15 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                 {emptyText}
               </p>
             ) : (
-              /* LOG-PAGER：列表自己是唯一滚动容器，分页条留在滚动区外（否则 mt-auto 只把它推到内容末尾，
-                 滚动时漂到条目中间）。 */
-              <ol data-testid="changelog-list" aria-label="日志列表" className="min-h-0 flex-1 space-y-3 overflow-auto">
+              /* LOG-INFINITE：列表自己是唯一滚动容器，加载状态/到底提示作为最后一个<li>随内容滚动。 */
+              <ol
+                ref={listRef}
+                data-testid="changelog-list"
+                aria-label="日志列表"
+                aria-busy={list.isFetchingNextPage}
+                onScroll={onListScroll}
+                className="min-h-0 flex-1 space-y-3 overflow-auto"
+              >
                 {groups.map((group) => (
                   <li key={group.day} data-testid={`changelog-day-${group.day}`}>
                     <h3 className="mb-1 text-[11px] font-semibold text-ink-3">{group.day}</h3>
@@ -368,7 +437,14 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                       {group.entries.map((item) => {
                         const isSelected = selected?.id === item.id;
                         return (
-                          <li key={item.id}>
+                          <li
+                            key={item.id}
+                            style={
+                              virtualizeItems
+                                ? { contentVisibility: 'auto', containIntrinsicSize: 'auto 44px' }
+                                : undefined
+                            }
+                          >
                             <button
                               type="button"
                               data-testid={`changelog-entry-${item.id}`}
@@ -394,32 +470,23 @@ function ActiveChangelog({ workspaceId, onClose }: { workspaceId: string; onClos
                     </ul>
                   </li>
                 ))}
+                <li data-testid="changelog-list-status" className="list-none px-1 pb-1 text-center text-[11px] text-ink-3">
+                  {list.isFetchingNextPage ? (
+                    <p role="status" aria-live="polite">加载更多…</p>
+                  ) : list.isFetchNextPageError ? (
+                    <p role="alert">
+                      加载失败，{' '}
+                      <button type="button" className="underline" onClick={() => void list.fetchNextPage()}>
+                        重试
+                      </button>
+                    </p>
+                  ) : list.hasNextPage ? (
+                    <p role="status" aria-live="polite">继续向下滚动加载更多</p>
+                  ) : (
+                    <p role="status" aria-live="polite">已到底 · 共 {sorted.length} 条</p>
+                  )}
+                </li>
               </ol>
-            )}
-            {/* LOG-PAGER：分页条是 pane 的最后一个子元素（滚动区之外）+ shrink-0，滚动时位置不变；
-                空态（sorted.length === 0）不渲染分页条，避免悬空按钮。 */}
-            {sorted.length > 0 && (
-              <div
-                data-testid="changelog-pager"
-                className="flex shrink-0 items-center gap-2 border-t border-hairline pt-2"
-              >
-              <button
-                type="button"
-                className={BUTTON_SECONDARY}
-                disabled={offset === 0}
-                onClick={() => setOffset(Math.max(0, offset - PAGE))}
-              >
-                上一页
-              </button>
-              <button
-                type="button"
-                className={BUTTON_SECONDARY}
-                disabled={list.data.next_offset == null}
-                onClick={() => setOffset(list.data?.next_offset ?? offset)}
-              >
-                下一页
-              </button>
-              </div>
             )}
           </div>
 

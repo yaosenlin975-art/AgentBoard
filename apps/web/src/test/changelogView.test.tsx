@@ -195,14 +195,13 @@ describe('日志视图：左列表 + 右侧连续滚动区', () => {
     expect(within(scroll).getByTestId('changelog-doc-body-log-old')).toBeInTheDocument();
   });
 
-  it('LOG-PAGER：列表是唯一滚动容器，分页条在滚动区之外（滚动时不漂）', async () => {
+  it('LOG-INFINITE：列表是唯一滚动容器，加载/到底状态在列表内部随内容滚动，不再有分页条', async () => {
     mockList([older, latest]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
 
     const split = await screen.findByTestId('changelog-split');
     const pane = within(split).getByTestId('changelog-list-pane');
     const list = within(pane).getByTestId('changelog-list');
-    const pager = within(pane).getByTestId('changelog-pager');
 
     // pane 不再整体滚（overflow-hidden），列表自己滚（min-h-0 flex-1 overflow-auto）
     expect(pane.className).toContain('overflow-hidden');
@@ -210,21 +209,20 @@ describe('日志视图：左列表 + 右侧连续滚动区', () => {
     expect(list.className).toContain('overflow-auto');
     expect(list.className).toContain('flex-1');
     expect(list.className).toContain('min-h-0');
-    // 分页条：pane 的最后一个子元素、不在滚动区内部、shrink-0
-    expect(pane.lastElementChild).toBe(pager);
-    expect(list.contains(pager)).toBe(false);
-    expect(pager.className).toContain('shrink-0');
-    expect(pager.className).toContain('border-t');
-    // 曾经的 mt-auto 漂移写法已移除
-    expect(pager.className).not.toContain('mt-auto');
+    // 翻页按钮已移除，状态行是列表的最后一个子元素（随列表一起滚动）
+    expect(within(pane).queryByTestId('changelog-pager')).toBeNull();
+    expect(screen.queryByRole('button', { name: '上一页' })).toBeNull();
+    const status = within(list).getByTestId('changelog-list-status');
+    expect(list.lastElementChild).toBe(status);
+    expect(status).toHaveTextContent('已到底 · 共 2 条');
+    expect(list).toHaveAttribute('aria-busy', 'false');
   });
 
-  it('LOG-PAGER：空态不渲染分页条（不留悬空按钮）', async () => {
+  it('LOG-INFINITE：空态不渲染状态行（不留悬空提示）', async () => {
     mockList([]);
     withClient(<ChangelogPanel workspaceId="ws-1" />);
     expect(await screen.findByTestId('changelog-empty')).toBeInTheDocument();
-    expect(screen.queryByTestId('changelog-pager')).toBeNull();
-    expect(screen.queryByRole('button', { name: '上一页' })).toBeNull();
+    expect(screen.queryByTestId('changelog-list-status')).toBeNull();
   });
   it('右侧正文是真实 Markdown（折叠已取消，全部直接渲染）', { timeout: 20000 }, async () => {
     mockList([older, latest]);

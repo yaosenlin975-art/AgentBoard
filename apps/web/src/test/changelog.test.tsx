@@ -163,14 +163,81 @@ describe('变更日志面板', () => {
     await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ changeType: null, q: null }));
   });
 
-  it('分页：next_offset 驱动 offset，上一页禁用态', async () => {
-    mockActiveList([entry()], 20);
+  it('无限滚动：首屏 20 条，距底 240px 内预取下一页 40 条，按 id 去重并显示到底提示', async () => {
+    const first = entry({ id: 'log-1', title: '第一条' });
+    const second = entry({ id: 'log-2', title: '第二条', occurred_at: BASE_TS - DAY });
+    listCalls = [];
+    server.use(
+      http.get('/api/workspaces/:workspaceId/changelog', ({ request }) => {
+        const call = captureList(request);
+        // 第二页故意重复返回 log-1，验证客户端按 id 去重（并发新增会让 offset 位移）
+        if (call.offset === '0') return HttpResponse.json({ items: [first], next_offset: 20 });
+        return HttpResponse.json({ items: [first, second], next_offset: null });
+      }),
+    );
     renderPanel();
-    await screen.findByTestId('changelog-entry-log-1');
 
-    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled();
-    await userEvent.click(screen.getByRole('button', { name: '下一页' }));
-    await waitFor(() => expect(listCalls.at(-1)?.offset).toBe('20'));
+    const listEl = await screen.findByTestId('changelog-list');
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: '0', limit: '20' }));
+    expect(screen.getByTestId('changelog-list-status')).toHaveTextContent('继续向下滚动加载更多');
+
+    Object.defineProperty(listEl, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(listEl, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(listEl, 'scrollTop', { value: 500, writable: true, configurable: true });
+    fireEvent.scroll(listEl);
+
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ offset: '20', limit: '40' }));
+    await waitFor(() => expect(screen.getByTestId('changelog-list-status')).toHaveTextContent('已到底 · 共 2 条'));
+    expect(screen.getAllByTestId('changelog-entry-log-1')).toHaveLength(1);
+    expect(screen.getByTestId('changelog-entry-log-2')).toBeInTheDocument();
+  });
+
+  it('无限滚动：下一页失败显示可重试错误，重试后继续加载', async () => {
+    const first = entry({ id: 'log-1', title: '第一条' });
+    const second = entry({ id: 'log-2', title: '第二条', occurred_at: BASE_TS - DAY });
+    let secondPageAttempts = 0;
+    listCalls = [];
+    server.use(
+      http.get('/api/workspaces/:workspaceId/changelog', ({ request }) => {
+        const call = captureList(request);
+        if (call.offset === '0') return HttpResponse.json({ items: [first], next_offset: 20 });
+        secondPageAttempts += 1;
+        if (secondPageAttempts === 1) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({ items: [second], next_offset: null });
+      }),
+    );
+    renderPanel();
+
+    const listEl = await screen.findByTestId('changelog-list');
+    Object.defineProperty(listEl, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(listEl, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(listEl, 'scrollTop', { value: 500, writable: true, configurable: true });
+    fireEvent.scroll(listEl);
+
+    const retry = await screen.findByRole('button', { name: '重试' });
+    expect(screen.getByTestId('changelog-list-status')).toHaveTextContent('加载失败');
+    await userEvent.click(retry);
+
+    await waitFor(() => expect(screen.getByTestId('changelog-entry-log-2')).toBeInTheDocument());
+    expect(screen.getByTestId('changelog-list-status')).toHaveTextContent('已到底 · 共 2 条');
+  });
+
+  it('无限滚动：切换类型筛选后从首屏重新请求并把列表滚动位置归零', async () => {
+    listCalls = [];
+    server.use(
+      http.get('/api/workspaces/:workspaceId/changelog', ({ request }) => {
+        captureList(request);
+        return HttpResponse.json({ items: [entry()], next_offset: 20 });
+      }),
+    );
+    renderPanel();
+
+    const listEl = await screen.findByTestId('changelog-list');
+    Object.defineProperty(listEl, 'scrollTop', { value: 320, writable: true, configurable: true });
+    await userEvent.selectOptions(screen.getByLabelText('变更日志类型'), '修复');
+
+    await waitFor(() => expect(listCalls.at(-1)).toMatchObject({ changeType: '修复', offset: '0', limit: '20' }));
+    expect((await screen.findByTestId('changelog-list')).scrollTop).toBe(0);
   });
 
   it('新增：POST 带 actor=user/类型/毫秒时间，成功后刷新列表', async () => {
