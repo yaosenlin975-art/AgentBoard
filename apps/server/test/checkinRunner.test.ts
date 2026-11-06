@@ -175,6 +175,45 @@ describe('checkin runner', () => {
     expect(serialized).not.toContain('remote_state');
   });
 
+  it('ACC-FIX-3：401 后自动续期一次并写回 vault，重试成功', async () => {
+    provider.statusInvalidTimes = 1;
+    const account = await boundAccount('refresh-ok');
+    const oldRef = account.checkin_credential_ref!;
+    const batch = newBatch([account.id]);
+    const finished = await runCheckinBatch(deps(), batch.id);
+    expect(provider.refreshCalls).toBe(1);
+    expect(provider.statusCalls).toBe(2);
+    expect(provider.submitCalls).toBe(1);
+    expect(finished.status).toBe('succeeded');
+    const updated = getManagedAccount(t.db, account.id)!;
+    expect(updated.checkin_credential_ref).not.toBe(oldRef);
+    expect(vault.deletedRefs).toContain(oldRef);
+    expect(vault.values().map(value => value.toString())).toContain('FAKE-REFRESHED-CREDENTIAL');
+  });
+
+  it('ACC-FIX-3：无法续期（null）→ CHECKIN_CREDENTIAL_INVALID，只试一次不循环', async () => {
+    provider.statusInvalidTimes = 1;
+    provider.refreshedCredential = null;
+    const account = await boundAccount('refresh-null');
+    const batch = newBatch([account.id]);
+    const finished = await runCheckinBatch(deps(), batch.id);
+    expect(provider.refreshCalls).toBe(1);
+    expect(provider.statusCalls).toBe(1);
+    expect(provider.submitCalls).toBe(0);
+    expect(finished.status).toBe('failed');
+    expect(listCheckinBatchItems(t.db, batch.id)[0]).toMatchObject({ state: 'failed', safe_error_code: 'CHECKIN_CREDENTIAL_INVALID' });
+  });
+
+  it('ACC-FIX-3：续期后仍 401 → 停止重试，结果仍为 CHECKIN_CREDENTIAL_INVALID', async () => {
+    provider.statusInvalidTimes = 2;
+    const account = await boundAccount('refresh-twice');
+    const batch = newBatch([account.id]);
+    await runCheckinBatch(deps(), batch.id);
+    expect(provider.refreshCalls).toBe(1);
+    expect(provider.statusCalls).toBe(2);
+    expect(listCheckinBatchItems(t.db, batch.id)[0]).toMatchObject({ state: 'failed', safe_error_code: 'CHECKIN_CREDENTIAL_INVALID' });
+  });
+
 describe('cat travel hook (ACC-12)', () => {
   it('travel failure keeps checkin result and is visible in operation.recovery_ref', async () => {
     const account = await boundAccount('travel-fail');

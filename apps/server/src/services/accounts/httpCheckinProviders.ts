@@ -24,6 +24,12 @@ import { workbuddyBillingUrl } from './platformHosts.js';
 
 const MINIMAX_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
 const TRAE_BASE = 'https://api.trae.cn/trae/api/v2/ug';
+/** ACC-FIX-3：minimax 续期 token 与官方 CLI 的账号 origin 同源（见 addAccountProvider.ts） */
+const MINIMAX_ORIGIN: Record<'cn' | 'global', string> = {
+  cn: 'https://account.minimax.cn',
+  global: 'https://account.minimax.io',
+};
+const MINIMAX_CLIENT_ID = 'mcode-public';
 
 export interface HttpCheckinConfig {
   app_id: ManagedAppId;
@@ -74,7 +80,12 @@ function baseSpec(config: HttpCheckinConfig, parts: {
   status: (token: string) => Promise<CheckinStatusQuery>;
   claim: (token: string) => Promise<CheckinSubmission>;
   afterCheckin?: (token: string) => Promise<CheckinAfterActivity | null>;
+  /** ACC-FIX-3：从凭据字节取 access_token；缺省把凭据当裸串 */
+  token?: (credential: Buffer) => string;
+  /** ACC-FIX-3：凭据失效时的续期实现 */
+  refresh?: (credential: Buffer) => Promise<Buffer | null>;
 }): CheckinProviderSpec {
+  const tokenOfCredential = parts.token ?? tokenOf;
   return {
     app_id: config.app_id,
     region: config.region,
@@ -84,9 +95,10 @@ function baseSpec(config: HttpCheckinConfig, parts: {
       throw new ApiError(409, 'CHECKIN_AUTH_UNSUPPORTED', '该平台通过本机凭据导入，不支持授权流程');
     },
     pollAuthorization: async () => ({ status: 'failed', safe_error_code: 'CHECKIN_AUTH_UNSUPPORTED' }),
-    queryStatus: async (credential) => parts.status(tokenOf(credential)),
-    submitCheckin: async (credential) => parts.claim(tokenOf(credential)),
-    ...(parts.afterCheckin ? { afterCheckin: async (credential: Buffer) => parts.afterCheckin!(tokenOf(credential)) } : {}),
+    queryStatus: async (credential) => parts.status(tokenOfCredential(credential)),
+    submitCheckin: async (credential) => parts.claim(tokenOfCredential(credential)),
+    ...(parts.refresh ? { refreshCredential: parts.refresh } : {}),
+    ...(parts.afterCheckin ? { afterCheckin: async (credential: Buffer) => parts.afterCheckin!(tokenOfCredential(credential)) } : {}),
   };
 }
 
@@ -144,12 +156,76 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
   });
 }
 
+/** ACC-FIX-3：minimax 凭据载荷（新）或裸 access_token（旧）；旧裸串无 refresh_token，无法续期 */
+export interface MinimaxCredentialPayload {
+  access_token: string;
+  refresh_token?: string;
+  expires_at?: number | null;
+}
+
+export function parseMinimaxCredential(credential: Buffer): MinimaxCredentialPayload {
+  const raw = credential.toString('utf8').trim();
+  if (raw.startsWith('{')) {
+    try {
+      const record = asRecord(JSON.parse(raw) as unknown);
+      const access = typeof record.access_token === 'string' ? record.access_token : '';
+      if (access !== '') {
+        return {
+          access_token: access,
+          ...(typeof record.refresh_token === 'string' && record.refresh_token !== '' ? { refresh_token: record.refresh_token } : {}),
+          expires_at: typeof record.expires_at === 'number' ? record.expires_at : null,
+        };
+      }
+    } catch {
+      // 不是 JSON：按旧裸串处理
+    }
+  }
+  return { access_token: raw };
+}
+
+/** ACC-FIX-3：用 refresh_token 换新 access_token；失败/无 refresh_token 一律 null（不重试、不透传错误体） */
+async function refreshMinimaxCredential(config: HttpCheckinConfig, credential: Buffer): Promise<Buffer | null> {
+  const parsed = parseMinimaxCredential(credential);
+  if (parsed.refresh_token === undefined) return null;
+  const origin = config.region === 'global' ? MINIMAX_ORIGIN.global : MINIMAX_ORIGIN.cn;
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 15_000);
+  try {
+    const response = await fetchImpl(`${origin}/oauth2/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: parsed.refresh_token, client_id: MINIMAX_CLIENT_ID }),
+      signal: controller.signal,
+    });
+    let body: unknown = null;
+    try { body = await response.json(); } catch { body = null; }
+    if (!response.ok) return null;
+    const record = asRecord(body);
+    const access = typeof record.access_token === 'string' ? record.access_token : '';
+    if (access === '') return null;
+    const nextRefresh = typeof record.refresh_token === 'string' && record.refresh_token !== '' ? record.refresh_token : parsed.refresh_token;
+    const expiresIn = typeof record.expires_in === 'number' ? record.expires_in : null;
+    return Buffer.from(JSON.stringify({
+      access_token: access,
+      refresh_token: nextRefresh,
+      expires_at: expiresIn === null ? null : Date.now() + expiresIn * 1000,
+    }), 'utf8');
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** minimax：`days[]` 里 `is_today` 那条的 `status` 3=已领 / 2=可领 */
 export function createMinimaxCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
     requestJson(config, `${MINIMAX_BASE}${path}`, { token, ...init });
 
   return baseSpec(config, {
+    token: credential => parseMinimaxCredential(credential).access_token,
+    refresh: credential => refreshMinimaxCredential(config, credential),
     status: async (token) => {
       const result = await request('/signin/status', token);
       const days = (dataOf(result.body).days ?? []) as Array<Record<string, unknown>>;

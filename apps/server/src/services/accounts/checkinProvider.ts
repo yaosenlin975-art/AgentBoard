@@ -51,6 +51,11 @@ export interface CheckinProviderSpec {
   pollAuthorization(remoteState: string): Promise<CheckinAuthorizationPoll>;
   queryStatus(credential: Buffer): Promise<CheckinStatusQuery>;
   submitCheckin(credential: Buffer): Promise<CheckinSubmission>;
+  /**
+   * ACC-FIX-3：凭据失效（401/403）时用 refresh_token 续期一次。
+   * 返回新凭据字节；无法续期（无 refresh_token / 平台拒绝 / 网络失败）返回 null。
+   */
+  refreshCredential?(credential: Buffer): Promise<Buffer | null>;
   /** 可选：签到成功（succeeded/already_done）后的附加活动；异常/失败都不得影响签到结果 */
   afterCheckin?(credential: Buffer): Promise<CheckinAfterActivity | null>;
 }
@@ -59,4 +64,6 @@ export interface CheckinProviderSpec {
 export interface CheckinVault {
   protect(data: Buffer, scope: { app_id: ManagedAppId; client_instance_id: string; identity_hash: string; purpose: 'checkin' }): Promise<string>;
   unprotect(ref: string, scope: { app_id: ManagedAppId; client_instance_id: string; identity_hash: string; purpose: 'checkin' }): Promise<Buffer>;
+  /** ACC-FIX-3：续期成功后清理旧凭据（可选；缺失时旧记录留给 vault 自身回收） */
+  delete?(ref: string): Promise<void>;
 }

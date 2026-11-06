@@ -129,6 +129,34 @@ describe('minimax checkin provider', () => {
     expect(await provider([{ match: url => url.endsWith('/signin/claim'), status: 429 }]).provider.submitCheckin(TOKEN)).toBe('rate_limited');
     expect(await provider([{ match: url => url.endsWith('/signin/status'), body: { data: { days: [] } } }]).provider.queryStatus(TOKEN)).toBe('unknown');
   });
+
+  it('ACC-FIX-3：JSON 凭据取 access_token，旧裸串兼容', async () => {
+    const jsonCredential = Buffer.from(JSON.stringify({ access_token: 'json-token', refresh_token: 'rt' }));
+    const done = provider([{ match: url => url.endsWith('/signin/status'), body: { data: { days: [{ is_today: true, status: 3 }] } } }]);
+    expect(await done.provider.queryStatus(jsonCredential)).toBe('already_done');
+    expect(await done.provider.queryStatus(TOKEN)).toBe('already_done');
+  });
+
+  it('ACC-FIX-3：refresh_token 换新 access_token，写回 JSON 载荷', async () => {
+    const fake = fakeFetch([{ match: url => url.endsWith('/oauth2/token'), body: { access_token: 'new-token', refresh_token: 'rt2', expires_in: 3600 } }]);
+    const p = createMinimaxCheckinProvider({ app_id: 'minimax', region: 'cn', provider_version: 'test', fetchImpl: fake.impl });
+    const next = await p.refreshCredential!(Buffer.from(JSON.stringify({ access_token: 'old-token', refresh_token: 'rt1', expires_at: 1 })));
+    expect(next).not.toBeNull();
+    const payload = JSON.parse(next!.toString('utf8')) as { access_token: string; refresh_token: string; expires_at: number };
+    expect(payload.access_token).toBe('new-token');
+    expect(payload.refresh_token).toBe('rt2');
+    expect(payload.expires_at).toBeGreaterThan(Date.now());
+    expect(fake.calls[0]!.url).toBe('https://account.minimax.cn/oauth2/token');
+  });
+
+  it('ACC-FIX-3：裸串/无 refresh_token 不请求；平台拒绝 → null', async () => {
+    const rejected = fakeFetch([{ match: () => true, status: 400, body: { error: 'invalid_grant' } }]);
+    const p = createMinimaxCheckinProvider({ app_id: 'minimax', region: 'cn', provider_version: 'test', fetchImpl: rejected.impl });
+    expect(await p.refreshCredential!(TOKEN)).toBeNull();
+    expect(rejected.calls).toHaveLength(0);
+    expect(await p.refreshCredential!(Buffer.from(JSON.stringify({ access_token: 'a', refresh_token: 'r' })))).toBeNull();
+    expect(rejected.calls).toHaveLength(1);
+  });
 });
 
 describe('trae checkin provider', () => {

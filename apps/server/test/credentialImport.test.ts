@@ -185,6 +185,24 @@ describe('credential import (ACC-11)', () => {
     expect(TOKEN_SHAPE.test(JSON.stringify(audit))).toBe(false);
   });
 
+  it('ACC-FIX-3：minimax 导入把 refresh_token 一起落 vault；workbuddy 仍保留裸串', async () => {
+    const importer = createCredentialImporter({
+      db: t.db, vault, onAudit: () => {},
+      runExport: stubRunner({
+        workbuddy: [entry('workbuddy', 'user-a', TOKEN_A)],
+        minimax: [{ ...entry('minimax', 'client-1', TOKEN_B), refresh_token: 'refresh-1' }],
+      }),
+    });
+    await importer.importCredentials({ platforms: ['workbuddy', 'minimax'], actor: 'user' });
+    const row = (appId: string) => t.db.prepare('SELECT client_instance_id, identity_hash, checkin_credential_ref FROM managed_account WHERE app_id=?').get(appId) as { client_instance_id: string; identity_hash: string; checkin_credential_ref: string };
+    const minimax = row('minimax');
+    const payload = await vault.unprotect(minimax.checkin_credential_ref, { app_id: 'minimax', client_instance_id: minimax.client_instance_id, identity_hash: minimax.identity_hash, purpose: 'checkin' });
+    expect(JSON.parse(payload.toString('utf8'))).toMatchObject({ access_token: TOKEN_B, refresh_token: 'refresh-1', expires_at: 1793613258.13 });
+    const workbuddy = row('workbuddy_desktop');
+    const raw = await vault.unprotect(workbuddy.checkin_credential_ref, { app_id: 'workbuddy_desktop', client_instance_id: workbuddy.client_instance_id, identity_hash: workbuddy.identity_hash, purpose: 'checkin' });
+    expect(raw.toString('utf8')).toBe(TOKEN_A);
+  });
+
   it('endpointReturnsSummaryWithoutTokenAndHandlesPythonMissing', async () => {
     const ok = await request(app).post('/api/accounts/import-credentials').send({ platforms: ['workbuddy'], actor: 'user' });
     expect(ok.status).toBe(200);

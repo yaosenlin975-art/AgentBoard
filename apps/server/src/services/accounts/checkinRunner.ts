@@ -69,19 +69,46 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
   }
   const scope = { app_id: account.app_id, client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin' as const };
   let credential: Buffer;
+  let credentialRef = account.checkin_credential_ref;
   try {
-    credential = await deps.vault.unprotect(account.checkin_credential_ref, scope);
+    credential = await deps.vault.unprotect(credentialRef, scope);
   } catch {
     return failItem(deps.db, batchId, accountId, 'VAULT_READ_FAILED');
   }
+  /**
+   * ACC-FIX-3：凭据失效时用 refresh_token 续期一次，写回 vault 并更新账号引用后重试当前动作。
+   * 只重试一次；无 refresh_token / 续期失败 / 写回失败都不重试，维持 CHECKIN_CREDENTIAL_INVALID。
+   */
+  const withRefresh = async <T>(action: (current: Buffer) => Promise<T>): Promise<T> => {
+    try {
+      return await action(credential);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== 'CHECKIN_CREDENTIAL_INVALID' || deps.provider.refreshCredential === undefined) throw error;
+      const refreshed = await deps.provider.refreshCredential(credential).catch(() => null);
+      if (refreshed === null) throw error;
+      let newRef: string;
+      try {
+        newRef = await deps.vault.protect(refreshed, scope);
+        deps.db.prepare('UPDATE managed_account SET checkin_credential_ref=?, updated_at=? WHERE id=?').run(newRef, Date.now(), account.id);
+      } catch {
+        throw error;
+      }
+      if (deps.vault.delete !== undefined) {
+        try { await deps.vault.delete(credentialRef); } catch { /* 旧凭据清理失败不影响本次签到 */ }
+      }
+      credential = refreshed;
+      credentialRef = newRef;
+      return action(credential);
+    }
+  };
   try {
     const operation = await runAccountOperation(
       deps.db,
       { account_id: account.id, app_id: account.app_id, client_instance_id: account.client_instance_id, operation: 'checkin', batch_id: batchId },
       async () => {
-        const status = await deps.provider.queryStatus(credential);
+        const status = await withRefresh(current => deps.provider.queryStatus(current));
         if (status === 'already_done') return 'already_done';
-        const submitted = await deps.provider.submitCheckin(credential);
+        const submitted = await withRefresh(current => deps.provider.submitCheckin(current));
         if (submitted === 'succeeded') return 'succeeded';
         if (submitted === 'already_done') return 'already_done';
         if (submitted === 'rate_limited') throw new ApiError(429, 'CHECKIN_RATE_LIMITED', '签到被限流');

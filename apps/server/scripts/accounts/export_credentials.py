@@ -7,7 +7,8 @@
 
 输出契约（stdout 单行 JSON）：
     [{"platform": "workbuddy|trae|minimax", "account_key": "...", "display_hint": "...",
-      "token": "...", "expires_at": 1793613258.13}]
+      "token": "...", "expires_at": 1793613258.13,
+      "refresh_token": "...（仅 minimax 有）"}]
 诊断信息一律写 stderr（不含 token）；退出码 0=成功（含 0 条）、2=环境不支持、3=读取失败。
 
 平台来源：
@@ -227,6 +228,10 @@ def collect_minimax():
                 "token": token,
                 "expires_at": expires,
             }
+            # ACC-FIX-3：带上 refresh_token，服务端 401 时可自行续期（不写日志、不回显）
+            refresh_token = str(record.get("refreshToken") or "").strip()
+            if refresh_token:
+                entry["refresh_token"] = refresh_token
             if best is None or (expires or 0) > (best["expires_at"] or 0):
                 best = entry
     return [best] if best else []

@@ -53,6 +53,8 @@ const entrySchema = z.object({
   account_key: z.string().trim().min(1).max(200),
   display_hint: z.string().max(120).optional(),
   token: z.string().min(8),
+  /** ACC-FIX-3：minimax 续期用；缺省时只能靠重新导入 */
+  refresh_token: z.string().max(4000).optional(),
   expires_at: z.number().finite().nullish(),
 }).strict();
 
@@ -203,7 +205,11 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
           const scope = { app_id: appId, client_instance_id: IMPORT_CLIENT_INSTANCE, identity_hash: identityHash, purpose: 'checkin' as const };
           let credentialRef: string;
           try {
-            credentialRef = await deps.vault.protect(Buffer.from(entry.token, 'utf8'), scope);
+            // ACC-FIX-3：minimax 落 {access_token,refresh_token,expires_at} JSON，供 401 时续期；旧裸串仍可读
+            const payload = platform === 'minimax' && entry.refresh_token !== undefined && entry.refresh_token !== ''
+              ? JSON.stringify({ access_token: entry.token, refresh_token: entry.refresh_token, expires_at: entry.expires_at ?? null })
+              : entry.token;
+            credentialRef = await deps.vault.protect(Buffer.from(payload, 'utf8'), scope);
           } catch {
             summary.skipped += 1;
             continue;

@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { ManagedAccount, ManagedAppId } from '@agentboard/shared';
+import { ApiError } from '../src/errors.js';
 import type { CheckinIdentity, CheckinProviderSpec, CheckinVault } from '../src/services/accounts/checkinProvider.js';
 import type { CheckinAuthorizationPoll, CheckinAuthorizationStart, CheckinStatusQuery, CheckinSubmission } from '../src/services/accounts/checkinProvider.js';
 
@@ -30,6 +31,15 @@ export class FakeCheckinProvider implements CheckinProviderSpec {
   statusResult: CheckinStatusQuery = 'not_done';
   submitResults: CheckinSubmission[] = ['succeeded'];
   submittedAccounts: string[] = [];
+  /** ACC-FIX-3：前 N 次 queryStatus 抛 CHECKIN_CREDENTIAL_INVALID，验证续期重试 */
+  statusInvalidTimes = 0;
+  refreshCalls = 0;
+  /** null 表示无法续期（无 refresh_token / 平台拒绝） */
+  refreshedCredential: Buffer | null = Buffer.from('FAKE-REFRESHED-CREDENTIAL');
+  refreshCredential(): Promise<Buffer | null> {
+    this.refreshCalls += 1;
+    return Promise.resolve(this.refreshedCredential);
+  }
 
   startAuthorization(input: { account: ManagedAccount }): Promise<CheckinAuthorizationStart> {
     this.startCalls += 1;
@@ -47,6 +57,10 @@ export class FakeCheckinProvider implements CheckinProviderSpec {
   queryStatus(): Promise<CheckinStatusQuery> {
     this.statusCalls += 1;
     this.submittedAccounts.push('status');
+    if (this.statusInvalidTimes > 0) {
+      this.statusInvalidTimes -= 1;
+      return Promise.reject(new ApiError(401, 'CHECKIN_CREDENTIAL_INVALID', '凭据失效'));
+    }
     return Promise.resolve(this.statusResult);
   }
 
