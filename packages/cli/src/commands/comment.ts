@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import type { IssueComment } from '@agentboard/shared';
+import type { Issue, IssueComment } from '@agentboard/shared';
 import { request, requestBinary, verifyCommentStoredText } from '../api.js';
 import type { Ctx } from '../io.js';
-import { normalizeIssueRef } from '../issueRef.js';
+import { normalizeIssueRef, shortIssueId, withNotFoundSuggestion } from '../issueRef.js';
 
 export interface CommentArgs {
   /** 位置参数收集的评论文本片段（多词以空格合并） */
@@ -44,9 +44,14 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
   // CLI-02：允许 ≥8 位前缀；后续接口都用解析后的真实 id
   const target = await normalizeIssueRef(ctx, id);
   const issueId = target.id;
+  // CLI-RECEIPT：回执要回显卡标题与状态；前缀解析命中时已有整卡，不再多打一次 GET
+  let issue: Issue | null = target.issue ?? null;
   if (imagePaths.length > 0) {
-    workspaceId = target.issue?.workspace_id
-      ?? (await request<IssueWorkspace>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
+    if (issue === null) {
+      issue = await withNotFoundSuggestion(ctx, id, () =>
+        request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`));
+    }
+    workspaceId = issue.workspace_id;
     for (const path of imagePaths) {
       const bytes = await readFile(path);
       if (bytes.length > 10 * 1024 * 1024) throw new Error(`图片超过 10 MiB：${basename(path)}`);
@@ -62,7 +67,7 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
     }
   }
   // agent 身份：KB_AGENT 优先，默认 kb-cli；服务端记 author=agent:<id>，不触发唤醒
-  const res = await request<CommentResult>(
+  const res = await withNotFoundSuggestion(ctx, id, () => request<CommentResult>(
     ctx.base,
     'POST',
     `/api/issues/${encodeURIComponent(issueId)}/comments`,
@@ -72,16 +77,25 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
       ...(attachments.length > 0 ? { attachment_ids: attachments, workspace_id: workspaceId } : {}),
     },
     attachments.length > 0 ? args.requestId ?? randomUUID() : undefined,
-  );
+  ));
   // MOJI-GUARD：回读落库正文（纯图片评论没有文字可校验，不发这次回读）
   if (content !== undefined && content !== '') {
     await verifyCommentStoredText(ctx.base, issueId, res.comment.id, content);
   }
+  // CLI-RECEIPT：评论写成功后回显卡标题与状态；读不到就少打一行，不编造标题、不影响成功退出码
+  if (issue === null) {
+    issue = await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`).catch(() => null);
+  }
+  const receipt = issue !== null && typeof issue.title === 'string' && typeof issue.status === 'string'
+    ? `卡：${shortIssueId(issue.id)} ${issue.title}（${issue.status}）`
+    : null;
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(res, null, 2)}\n`);
+    const summary = receipt === null ? res : { ...res, issue: { id: issue!.id, title: issue!.title, status: issue!.status } };
+    ctx.io.write(`${JSON.stringify(summary, null, 2)}\n`);
     return;
   }
   ctx.io.write(`评论已写入: ${res.comment.id}\n`);
+  if (receipt !== null) ctx.io.write(`${receipt}\n`);
   if (res.warning === 'IMAGE_DELIVERY_UNVERIFIED') {
     ctx.io.write('图片已保存；图片交付能力未验证，评论保留为待读\n');
   } else {

@@ -13,7 +13,7 @@ import { CliHttpError, request, verifyIssueStoredText } from '../api.js';
 import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import { releaseAdvice } from '../errors.js';
 import type { Ctx } from '../io.js';
-import { normalizeIssueIdArg, normalizeIssueRef } from '../issueRef.js';
+import { normalizeIssueIdArg, normalizeIssueRef, shortIssueId, withNotFoundSuggestion } from '../issueRef.js';
 import { issueLines } from '../render.js';
 
 export interface RequestIdArg { requestId?: string }
@@ -150,7 +150,8 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
   if (Object.keys(patch).length === 0) {
     throw new Error('至少提供一个要修改的字段：--title / --description / --description-stdin / --priority / --labels / --due-date / --due-time / --parent / --clear-due / --clear-root');
   }
-  const issue = await request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(target.id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId)
+  const issue = await withNotFoundSuggestion(ctx, id, () =>
+    request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(target.id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId))
     .catch(error => mapConflict(ctx, error));
   // MOJI-GUARD：回读实际落库文本，中文被替换成 ? 时不再静默通过
   await verifyIssueStoredText(ctx.base, issue.id, {
@@ -161,5 +162,5 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;
   }
-  ctx.io.write(`已更新: ${issue.id}\n${issueLines(issue).join('\n')}\n`);
+  ctx.io.write(`已更新: ${issue.id}\n卡：${shortIssueId(issue.id)} ${issue.title}（${issue.status}）\n${issueLines(issue).join('\n')}\n`);
 }

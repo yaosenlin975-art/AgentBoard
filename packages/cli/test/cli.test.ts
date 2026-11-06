@@ -1643,3 +1643,96 @@ describe('knowledge resolve/link（BORROW-3.1 D10 + CLI-07）', () => {
     expect(token.out()).toBe('knowledge:p1\n');
   });
 });
+
+describe('CLI-RECEIPT：comment/update 回执回显卡标题 + id 写错给候选', () => {
+  const FULL = '11111111-2222-4333-8444-555555555555';
+  const fullIssue = { ...ISSUE, id: FULL, title: '实现导出', status: '待验收' };
+
+  it('comment 成功回执追加卡标题与状态', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === `/api/issues/${FULL}/comments`) {
+        return { status: 200, body: { comment: { id: 'c20', issue_id: FULL, author: 'user', content: '进展', ts: 9 }, woke: false } };
+      }
+      if (m === 'GET' && u === `/api/issues/${FULL}/comments/c20`) return { status: 200, body: { content: '进展' } };
+      if (m === 'GET' && u === `/api/issues/${FULL}`) return { status: 200, body: fullIssue };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'comment', FULL, '进展'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('评论已写入: c20');
+    expect(t.out()).toContain('卡：11111111 实现导出（待验收）');
+  });
+
+  it('comment --json 带 issue 摘要字段', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === `/api/issues/${FULL}/comments`) {
+        return { status: 200, body: { comment: { id: 'c21', issue_id: FULL, author: 'user', content: '进展', ts: 9 }, woke: true } };
+      }
+      if (m === 'GET' && u === `/api/issues/${FULL}/comments/c21`) return { status: 200, body: { content: '进展' } };
+      if (m === 'GET' && u === `/api/issues/${FULL}`) return { status: 200, body: fullIssue };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'comment', FULL, '进展'], t.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(t.out()) as { issue?: { id: string; title: string; status: string }; woke: boolean };
+    expect(parsed.issue).toEqual({ id: FULL, title: '实现导出', status: '待验收' });
+    expect(parsed.woke).toBe(true);
+  });
+
+  it('update 回执含卡标题与状态', async () => {
+    handler = (m, u) => {
+      if (m === 'PATCH' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '实现导出', status: '进行中' } };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '实现导出', status: '进行中' } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'update', 'iss1', '--title', '实现导出'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('卡：iss1 实现导出（进行中）');
+  });
+
+  it('id 前缀写错一位：exit 1 并提示唯一候选', async () => {
+    const near = { ...ISSUE, id: '02fa8b9d-0000-4000-8000-000000000000', title: '回执增强', status: '待规划' };
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [near] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'comment', '02fa8b9e', '进展'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('任务不存在；你是不是想写 02fa8b9d 回执增强');
+    expect(calls.some(c => c.url.endsWith('/comments'))).toBe(false);
+  });
+
+  it('完整 UUID 写错一位：编辑距离 ≤2 给出候选', async () => {
+    const near = { ...ISSUE, id: '02fa8b9d-0000-4000-8000-000000000000', title: '回执增强', status: '待规划' };
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [near] };
+      return undefined;
+    };
+    const t = makeIo();
+    const typo = '02fa8b9e-0000-4000-8000-000000000000';
+    const code = await main(['node', 'kb', '--server', base, 'update', typo, '--title', '新标题'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('你是不是想写 02fa8b9d 回执增强');
+    // 完整 UUID 只能由服务端 404 判定：PATCH 打过一次（失败），不做写重试
+    expect(calls.filter(c => c.method === 'PATCH')).toHaveLength(1);
+  });
+
+  it('随机 id 无候选：保持原文案，不猜', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [ISSUE] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'comment', 'ffffffffffff', '进展'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('任务不存在');
+    expect(t.err()).not.toContain('你是不是想写');
+  });
+});
