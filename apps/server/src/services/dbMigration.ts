@@ -299,7 +299,7 @@ export const DB_MIGRATION_ERROR_TEXT: Record<DbMigrationStatusCode, { message: s
   DB_MIGRATION_BUSY: { message: '已有迁移在进行中（同一时间只允许一个）', retryable: true },
   DB_MIGRATION_SELFCHECK_FAILED: { message: '新进程自检失败（表数/卡数/附件与迁移前不一致）', retryable: true },
   DB_MIGRATION_ROLLED_BACK: { message: '迁移未完成，已回滚到原数据库', retryable: true },
-  DB_MIGRATION_ENV_OVERRIDDEN: { message: '数据库路径由环境变量 AGENTBOARD_DB 指定，改设置不生效；先移除该环境变量再迁移', retryable: false },
+  DB_MIGRATION_ENV_OVERRIDDEN: { message: '中心库路径由环境变量 AGENTBOARD_DB 指定，改设置不生效；先移除该环境变量再迁移', retryable: false },
   DB_MIGRATION_RESTART_UNAVAILABLE: { message: '当前装配未启用服务重启，迁移后的新进程自检无法进行', retryable: false },
 };
 

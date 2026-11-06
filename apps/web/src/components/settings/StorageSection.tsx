@@ -103,7 +103,7 @@ export function StorageSection() {
       {data && (
         <div className="space-y-1.5 text-xs">
           <p data-testid="settings-storage-current" className="break-all text-ink">
-            <span className="text-ink-3">当前路径：</span>
+            <span className="text-ink-3">中心库路径：</span>
             <span className="font-mono">{data.db_path}</span>
           </p>
           <p data-testid="settings-storage-source" className="text-ink-3">
@@ -131,7 +131,7 @@ export function StorageSection() {
       {data && (
         <div className="mt-3 space-y-1.5">
           <div className="text-xs text-ink-2">
-            <label htmlFor="settings-storage-target">新的数据库位置</label>
+            <label htmlFor="settings-storage-target">新的中心库路径</label>
             {/* FOLDER-PICK：窄屏（375）下按钮换行到输入框下方，不与输入框重叠 */}
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <input

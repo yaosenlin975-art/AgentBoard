@@ -42,6 +42,8 @@ import { migrateWorkspaceMember } from './migrations/workspaceMember.js';
 import { migrateIssueParentIndex } from './migrations/issueParentIndex.js';
 // STORE-4b：中心库定位索引 entity_locator（薄索引；行由 repos 维护钩子写入，删表可由重建路径回填）
 import { migrateEntityLocator } from './migrations/entityLocator.js';
+// STORE-7：中心库归档记录（纯追加表；已下沉工作区删除时落一条，归档列表据此回显）
+import { migrateWorkspaceArchive } from './migrations/workspaceArchive.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -159,6 +161,8 @@ export function initSchema(db: Db): void {
   migrateIssueParentIndex(db);
   // STORE-4b：中心库定位索引 entity_locator（纯追加新表，幂等；与既有表无重建依赖，放最末）
   migrateEntityLocator(db);
+  // STORE-7：归档记录（纯追加新表，幂等；无外键，与 workspace 删除解耦）
+  migrateWorkspaceArchive(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

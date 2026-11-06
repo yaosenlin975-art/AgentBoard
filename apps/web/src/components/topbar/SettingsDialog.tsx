@@ -131,7 +131,7 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
         {/* SETTINGS-DB-DEDUP：数据库位置只在「数据存储」分区维护（含迁移），这里不再重复输入框；
             保存不再发 dbPath —— 路径的唯一写入口是迁移端点，避免绕过迁移直接改路径。 */}
         <p data-testid="settings-db-path-hint" className="text-xs text-ink-3">
-          数据库位置与迁移见下方「数据存储」分区
+          中心库路径与迁移见下方「数据存储」分区
         </p>
         <section data-testid="settings-section-theme" aria-labelledby="settings-section-theme-title" className="text-sm">
           <span id="settings-section-theme-title" className="mb-1 flex items-center gap-2 text-ink-2">

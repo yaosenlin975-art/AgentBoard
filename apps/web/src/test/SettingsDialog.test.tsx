@@ -38,16 +38,16 @@ beforeEach(() => {
 });
 
 describe('SettingsDialog', () => {
-  it('打开拉取 GET /api/settings 并回填端口/并发上限；数据库路径不再重复给输入框', async () => {
+  it('打开拉取 GET /api/settings 并回填端口/并发上限；中心库路径不再重复给输入框', async () => {
     server.use(http.get('/api/settings', () => HttpResponse.json(settingsPayload)));
     renderSettings();
 
     expect(await screen.findByDisplayValue('9000')).toBeInTheDocument();
     expect(screen.getByDisplayValue('2')).toBeInTheDocument();
-    // SETTINGS-DB-DEDUP：重复的「数据库路径」输入框已删除，改为指引小字（路径在「数据存储」分区维护）
-    expect(screen.queryByLabelText('数据库路径')).toBeNull();
+    // SETTINGS-DB-DEDUP：重复的「中心库路径」输入框已删除，改为指引小字（路径在「数据存储」分区维护）
+    expect(screen.queryByLabelText('中心库路径')).toBeNull();
     expect(screen.queryByTestId('settings-db-path')).toBeNull();
-    expect(screen.getByTestId('settings-db-path-hint')).toHaveTextContent('数据库位置与迁移见下方「数据存储」分区');
+    expect(screen.getByTestId('settings-db-path-hint')).toHaveTextContent('中心库路径与迁移见下方「数据存储」分区');
   });
 
   it('保存发送 PATCH 请求体并静默关闭', async () => {

@@ -154,14 +154,29 @@ export function deleteChangeLog(db: Db, input: { workspace_id: string; id: strin
   }).immediate();
 }
 
+/**
+ * STORE-7：归档列表 = legacy 中心日志行（`workspace_id IS NULL`，按 origin 分组）
+ * + `workspace_archive` 归档记录（已下沉工作区被移除；可能没有任何日志行，entry_count=0）。
+ * 同一 origin 两边都有时合并：条数取日志数，时间取两者最大值。
+ */
 export function listArchivedWorkspaces(db: Db, limit: number, offset: number): PageResult<ArchivedWorkspaceChangeLogSummary> {
   validatePage(limit, offset);
   const rows = db
     .prepare(
-      `SELECT origin_workspace_id,origin_workspace_name,origin_workspace_path,COUNT(*) AS entry_count,MAX(occurred_at) AS last_occurred_at
-       FROM workspace_change_log WHERE workspace_id IS NULL
-       GROUP BY origin_workspace_id,origin_workspace_name,origin_workspace_path
-       ORDER BY last_occurred_at DESC, origin_workspace_id DESC LIMIT ? OFFSET ?`,
+      `WITH legacy AS (
+         SELECT origin_workspace_id AS id, origin_workspace_name AS name, origin_workspace_path AS path,
+                COUNT(*) AS entry_count, MAX(occurred_at) AS last_at
+         FROM workspace_change_log WHERE workspace_id IS NULL
+         GROUP BY origin_workspace_id,origin_workspace_name,origin_workspace_path
+       ), merged AS (
+         SELECT id, name, path, entry_count, last_at FROM legacy
+         UNION ALL
+         SELECT workspace_id, workspace_name, origin_path, 0, archived_at FROM workspace_archive
+       )
+       SELECT id AS origin_workspace_id, MAX(name) AS origin_workspace_name, MAX(path) AS origin_workspace_path,
+              SUM(entry_count) AS entry_count, MAX(last_at) AS last_occurred_at
+       FROM merged GROUP BY id
+       ORDER BY last_occurred_at DESC, id DESC LIMIT ? OFFSET ?`,
     )
     .all(limit + 1, offset) as ArchivedWorkspaceChangeLogSummary[];
   return pageResult(rows, limit, offset);

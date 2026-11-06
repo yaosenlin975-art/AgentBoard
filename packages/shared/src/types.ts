@@ -167,7 +167,15 @@ export interface AccountCapability {
  * 工作空间；`sort_order` 为展示顺序（服务端恒返回）。声明为可选：既有测试夹具与旧消费者构造 `Workspace`
  * 时不带该字段仍可编译，前端按 0 兜底。
  */
-export interface Workspace { id: string; name: string; path: string; created_at: number; sort_order?: number }
+export interface Workspace {
+  id: string; name: string; path: string; created_at: number; sort_order?: number;
+  /** STORE-7：服务端只读回显（客户端不能据此决定走哪个库） */
+  db_mode?: 'center' | 'localizing' | 'localized' | 'failed' | string;
+  /** 解析层判定后实际生效的库路径 */
+  db_path?: string;
+  /** 快照落后条数；null = 未导出过快照 / 快照不可读 */
+  snapshot_lag?: number | null;
+}
 export interface Issue {
   id: string; workspace_id: string; title: string; description: string;
   priority: Priority; labels: string[]; status: IssueStatus; sort_order: number;

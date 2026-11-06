@@ -46,6 +46,29 @@ const MENU_ITEM_CLASS =
 const MENU_PANEL_CLASS =
   'absolute right-1 z-30 w-40 rounded-md border border-hairline bg-surface-card py-1 shadow-lg';
 
+/**
+ * STORE-7：工作区库只读徽标（只展示，不提供切换按钮——走哪个库由服务端判定）。
+ * `undefined`（旧服务端/既有夹具）不显示；已定义但不认识的值给兜底文案，绝不因未知状态崩。
+ */
+export function workspaceDbBadge(
+  workspace: Pick<Workspace, 'db_mode' | 'db_path'>,
+): { label: string; title: string } | null {
+  const path = workspace.db_path !== undefined && workspace.db_path !== '' ? `：${workspace.db_path}` : '';
+  switch (workspace.db_mode) {
+    case undefined:
+    case 'center':
+      return null;
+    case 'localized':
+      return { label: '本地库', title: `本地库${path}` };
+    case 'localizing':
+      return { label: '迁移中', title: '数据库迁移进行中，该工作区写请求暂时冻结' };
+    case 'failed':
+      return { label: '失败', title: '上次迁移失败，等待恢复；读走中心库，写被阻断' };
+    default:
+      return { label: '库状态未知', title: `未知库状态：${String(workspace.db_mode)}${path}` };
+  }
+}
+
 export function WorkspaceCard({
   workspace,
   onMoveUp,
@@ -65,6 +88,7 @@ export function WorkspaceCard({
 }) {
   const selected = useAppStore((s) => s.workspaceId === workspace.id);
   const selectWorkspace = useAppStore((s) => s.selectWorkspace);
+  const dbBadge = workspaceDbBadge(workspace);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAbove, setMenuAbove] = useState(false);
@@ -227,6 +251,16 @@ export function WorkspaceCard({
               >
                 {workspace.name}
               </div>
+              {dbBadge !== null && (
+                <span
+                  data-testid={`workspace-db-badge-${workspace.id}`}
+                  aria-label={`${workspace.name} 的库状态：${dbBadge.label}`}
+                  className="shrink-0 rounded bg-surface-raised px-1 text-[10px] font-medium text-ink-2"
+                  title={dbBadge.title}
+                >
+                  {dbBadge.label}
+                </span>
+              )}
               {pinned && onTogglePin !== undefined && (
                 <span
                   data-testid={`workspace-pinned-badge-${workspace.id}`}

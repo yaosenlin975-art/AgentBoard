@@ -93,6 +93,8 @@ import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe
 import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import { requireWorkspaceStatus } from '../services/workspaceStatus.js';
 import { deleteWorkspaceRemovingDeletedKnowledge } from '../services/workspaceKnowledgePurge.js';
+import { archiveWorkspaceState, rollbackWorkspaceArchive } from '../services/workspaceArchive.js';
+import { computeSnapshotLag } from '../services/workspaceSnapshotLag.js';
 import { getWorkspaceKnowledgeOccupancy } from '../db/repos/knowledge.js';
 import { appendServerLog } from '../services/serverLog.js';
 import { closeIssue, reopenIssue } from '../services/issueTransitions.js';
@@ -665,7 +667,9 @@ export function createRouter(deps: RouterDeps): Router {
     const centerDbMode = (WORKSPACE_DB_MODES as readonly string[]).includes(dbModeRaw) ? (dbModeRaw as (typeof WORKSPACE_DB_MODES)[number]) : 'center';
     // PERF-1（F2）：判定读 meta 走常驻只读句柄（readWorkspaceMetaCached）——列表不再每工作区每请求开库
     const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name, readMeta: readWorkspaceMetaCached, ...(isWorkspaceDbDisabled() ? { disabled: true } : {}) });
-    return { ...row, db_mode: centerDbMode, db_path: decision.dbPath, db_target: decision.target, db_reason: decision.reason };
+    // STORE-7：snapshot_lag 只读提示（快照是派生物；无 manifest → null）
+    const snapshotLag = computeSnapshotLag({ workspaceId: row.id, workspacePath: row.path, effectiveDbPath: decision.dbPath, centerDb: db });
+    return { ...row, db_mode: centerDbMode, db_path: decision.dbPath, db_target: decision.target, db_reason: decision.reason, snapshot_lag: snapshotLag };
   };
   router.get('/workspaces', (req, res) => {
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
@@ -732,7 +736,29 @@ export function createRouter(deps: RouterDeps): Router {
       throw new ConflictError(`该空间有 ${blockers.runningSessions} 个运行中会话，请先结束会话后再移除`);
     if (blockers.childIssues > 0)
       throw new ConflictError(`该空间有 ${blockers.childIssues} 个子任务仍挂在父任务下，请先解除关联后再移除`);
-    const purged = deleteWorkspaceRemovingDeletedKnowledge(db, workspaceId);
+    // STORE-7：已下沉工作区不删库文件——先把库（含 -wal/-shm）+ 附件移入归档目录并落记录；
+    // 未下沉时归档服务是 no-op，行为与现状一致。删行失败则把文件移回，不留在归档目录。
+    const workspaceRow = getWorkspace(db, workspaceId);
+    const mode = (workspaceRow as unknown as { db_mode?: string | null } | null)?.db_mode ?? 'center';
+    // 归档要 rename 活库文件，先收该工作区的 resolver 句柄（Windows 上有句柄时 rename=EBUSY）
+    if (workspaceRow !== null) closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId, workspaceDbPath(workspaceRow.path));
+    const archived = workspaceRow === null
+      ? null
+      : archiveWorkspaceState(db, { workspaceId, name: workspaceRow.name, path: workspaceRow.path, dbMode: mode });
+    let purged: ReturnType<typeof deleteWorkspaceRemovingDeletedKnowledge>;
+    try {
+      purged = deleteWorkspaceRemovingDeletedKnowledge(db, workspaceId);
+    } catch (error) {
+      if (archived?.archived === true && workspaceRow !== null) rollbackWorkspaceArchive(db, { workspaceId, path: workspaceRow.path });
+      throw error;
+    }
+    if (archived?.archived === true && archived.dir !== undefined) {
+      // 头值用 encodeURI 保证非 ASCII 路径可安全传输；服务日志留原文
+      res.setHeader('X-Workspace-Archived', encodeURI(archived.dir));
+      appendServerLog(
+        `[workspace-archive] ${workspaceId} 库与附件移入 ${archived.dir}（db ${archived.dbBytes} 字节 / 附件 ${archived.attachmentFiles} 个${archived.alreadyArchived ? '，沿用既有归档副本' : ''}）`,
+      );
+    }
     if (purged.pages > 0) {
       res.setHeader('X-Knowledge-Purged', `pages=${purged.pages}; revisions=${purged.revisions}`);
       appendServerLog(
@@ -1027,7 +1053,7 @@ export function createRouter(deps: RouterDeps): Router {
   // 只读：不改配置、不触发迁移。数字全部服务端算（含 ×1.2 空间门槛），前端只格式化。
   router.get('/settings/storage', (_req, res) => {
     if (currentDbPath === null) {
-      throw new ApiError(503, 'DB_STORAGE_UNAVAILABLE', '当前装配拿不到数据库路径，存储统计不可用');
+      throw new ApiError(503, 'DB_STORAGE_UNAVAILABLE', '当前装配拿不到中心库路径，存储统计不可用');
     }
     const attachmentsDir = attachmentsDirOf(currentDbPath);
     res.json(collectStorageInfo({
@@ -1056,7 +1082,7 @@ export function createRouter(deps: RouterDeps): Router {
       throw new ApiError(503, text.code, text.message);
     }
     if (currentDbPath === null) {
-      throw new ApiError(503, 'DB_MIGRATION_UNAVAILABLE', '当前装配拿不到数据库路径，迁移不可用');
+      throw new ApiError(503, 'DB_MIGRATION_UNAVAILABLE', '当前装配拿不到中心库路径，迁移不可用');
     }
     const status = await orchestrateMigration({
       fromDbPath: currentDbPath,
