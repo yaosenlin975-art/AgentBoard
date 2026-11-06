@@ -165,13 +165,19 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
       <ul className="ab-sidebar-nav flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;
+          // SIDEBAR-3：角标数字同时进 tooltip 与 aria-label（收起态图标旁看不到文字时也读得到）
+          const count = entry.view === 'chat' ? chatUnread : entry.view === 'decisions' ? decisionCount : 0;
+          const countText = count > 99 ? '99+' : String(count);
+          const tip = count > 0 ? `${entry.label} · ${countText}` : entry.label;
+          const entryLabel =
+            count > 0 ? (entry.view === 'chat' ? `聊天，${count} 条未读` : `待决策，${count} 条`) : entry.label;
           return (
-            <li key={entry.view}>
+            <li key={entry.view} className="ab-sidebar-tip" data-tip={tip}>
               <button
                 type="button"
                 data-testid={`sidebar-entry-${entry.view}`}
                 aria-current={active ? 'page' : undefined}
-                aria-label={entry.label}
+                aria-label={entryLabel}
                 aria-expanded={entry.view === 'chat' ? view === 'chat' : undefined}
                 data-active={active ? 'true' : 'false'}
                 onClick={() => setView(entry.view)}
@@ -189,7 +195,6 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 {entry.view === 'chat' && chatUnread > 0 && (
                   <span
                     data-testid="sidebar-chat-unread"
-                    title={`${chatUnread} 条未读消息`}
                     className="ab-sidebar-badge ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
                   >
                     {chatUnread > 99 ? '99+' : chatUnread}
@@ -198,7 +203,6 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 {entry.view === 'decisions' && decisionCount > 0 && (
                   <span
                     data-testid="sidebar-decisions-badge"
-                    title={`${decisionCount} 条待决策`}
                     className="ab-sidebar-badge ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-medium leading-4 text-white"
                   >
                     {decisionCount > 99 ? '99+' : decisionCount}
@@ -219,7 +223,8 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           aria-expanded={drawer === 'accounts'}
           title="管理 WorkBuddy / CodeBuddy 账号"
           onClick={() => toggleDrawer('accounts')}
-          className={`ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
+          data-tip="账号管理"
+          className={`ab-sidebar-tip ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6" />
@@ -232,7 +237,8 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           aria-label="设置"
           aria-expanded={drawer === 'settings'}
           onClick={() => toggleDrawer('settings')}
-          className={`ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
+          data-tip="设置"
+          className={`ab-sidebar-tip ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 15a3 3 0 100-6 3 3 0 000 6M4 12h2M18 12h2M12 4v2M12 18v2M6.5 6.5l1.4 1.4M16.1 16.1l1.4 1.4M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4" />
@@ -243,8 +249,9 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
 
       {/* ④ 状态行：服务状态圆点 + 主题小字（点字切主题） */}
       <div
-        className="ab-sidebar-status flex items-center gap-1 border-t border-hairline px-2 py-2 text-[11px] text-ink-3"
+        className="ab-sidebar-tip ab-sidebar-status flex items-center gap-1 border-t border-hairline px-2 py-2 text-[11px] text-ink-3"
         data-testid="sidebar-status"
+        data-tip={`${WS_LABEL[wsStatus]} · ${THEME_LABEL[theme]}`}
       >
         {/* PANEL-VIEW-BUG 口径：只保留状态圆点（颜色编码），文案用短词跟在后面 */}
         <span

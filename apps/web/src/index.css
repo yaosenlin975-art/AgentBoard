@@ -662,9 +662,71 @@ optgroup {
   padding: 0;
 }
 
-/* 角标：骨架阶段收起态先不占 36px 图标位；SIDEBAR-3 会改成右上角 14×14 */
+/* 角标：展开态沿用行尾 pill；收起态改为图标右上角 14×14 小徽标（SIDEBAR-3） */
+.ab-sidebar-entry {
+  position: relative;
+}
 .ab-sidebar[data-mode='collapsed'] .ab-sidebar-badge {
-  display: none;
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  margin: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 14px;
+  box-shadow: 0 0 0 2px var(--ab-card);
+}
+
+/* 当前项：收起态在图标左侧 2px 处补一条 16px 竖条（展开态靠 bg-accent-soft 已足够） */
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-entry[data-active='true']::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  width: 2px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: 1px;
+  background: var(--ab-accent);
+}
+
+/* tooltip：仅收起态出现；hover 延迟 120ms，键盘 focus 立即显示 */
+.ab-sidebar-tip {
+  position: relative;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  z-index: 60;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--ab-ink);
+  color: var(--ab-page);
+  font-size: 11.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--ab-shadow);
+  opacity: 0;
+  transform: translateY(-50%) translateX(-3px);
+  transition:
+    opacity 120ms var(--ab-ease-rail),
+    transform 120ms var(--ab-ease-rail);
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-tip:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+  transition-delay: 120ms;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-tip:focus-within::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+  transition-delay: 0ms;
 }
 
 /* 账号 / 设置：收起态 36×36 纯图标按钮 */
@@ -697,7 +759,9 @@ optgroup {
 @media (prefers-reduced-motion: reduce) {
   .ab-sidebar,
   .ab-sidebar-label,
-  .ab-sidebar-toggle {
+  .ab-sidebar-toggle,
+  .ab-sidebar-tip::after {
     transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
   }
 }
