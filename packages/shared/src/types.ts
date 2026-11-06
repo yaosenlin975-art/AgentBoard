@@ -528,6 +528,19 @@ export interface DecisionEvent {
   undo_deadline_at?: number;
 }
 
+/**
+ * DEC-V4-PERM-SERVER：决策能力投影（服务端唯一权威，前端不自行推断角色）。
+ *
+ * `can_undo` 只表示「有资格」，实际还受 6 秒撤销窗口与 `expected_revision` 约束。
+ */
+export interface DecisionCapabilities {
+  can_answer: boolean;
+  can_revise: boolean;
+  can_undo: boolean;
+  can_withdraw: boolean;
+  can_extend: boolean;
+}
+
 /** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 */
 export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent;
 

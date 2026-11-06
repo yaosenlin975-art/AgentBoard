@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Priority } from '@agentboard/shared';
+import type { DecisionCapabilities, Priority } from '@agentboard/shared';
 import type { Db } from '../connection.js';
 
 /**
@@ -125,6 +125,12 @@ export interface DecisionListItem extends DecisionRow {
   issue_status: string;
   /** 由 issue join 派生（DEC-V4-API-LIST）：队列排序用 */
   issue_priority: Priority;
+  /** PERM-2：跨区视图展示用（ws join 派生） */
+  workspace_name: string;
+  /** PERM-2：能力投影用；当前答案的回答者，未回答为 null */
+  current_answer_by: string | null;
+  /** PERM-2：路由层按调用者角色填充（仓储层不写权限） */
+  capabilities?: DecisionCapabilities;
   option_count: number;
   /** 与 getDecisionDetail 的选项同形状，按 ord 升序；列表批量取，避免逐条拉详情 */
   options: DecisionOptionRow[];
@@ -136,6 +142,8 @@ export interface DecisionListItem extends DecisionRow {
 
 export interface DecisionListFilter {
   workspace_id?: string;
+  /** PERM-2：多区查询（`scope=accessible` / `workspace_ids=a,b`）；空数组表示不返回任何行 */
+  workspace_ids?: string[];
   issue_id?: string;
   states?: DecisionState[];
   /** 仅返回 locked_at <= stale_before 的 open 决策（DEC-8 超时分组复用） */
@@ -256,6 +264,14 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
     where.push('d.workspace_id=?');
     params.push(filter.workspace_id);
   }
+  if (filter.workspace_ids !== undefined) {
+    if (filter.workspace_ids.length === 0) {
+      where.push('1=0');
+    } else {
+      where.push(`d.workspace_id IN (${filter.workspace_ids.map(() => '?').join(',')})`);
+      params.push(...filter.workspace_ids);
+    }
+  }
   if (filter.issue_id !== undefined) {
     where.push('d.issue_id=?');
     params.push(filter.issue_id);
@@ -273,10 +289,14 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
   const rows = db
     .prepare(
       `SELECT d.*, i.title AS issue_title, i.status AS issue_status, i.priority AS issue_priority,
+         w.name AS workspace_name,
+         (SELECT a.answered_by FROM issue_decision_answer a WHERE a.id=d.current_answer_id) AS current_answer_by,
          (SELECT COUNT(*) FROM issue_decision_option o WHERE o.decision_id=d.id) AS option_count,
          (SELECT COUNT(*) FROM issue_dependency dep
            WHERE dep.blocker_issue_id=d.issue_id AND dep.relation='blocks') AS blocked_downstream_count
-       FROM issue_decision d JOIN issue i ON i.id=d.issue_id
+       FROM issue_decision d
+       JOIN issue i ON i.id=d.issue_id
+       JOIN workspace w ON w.id=d.workspace_id
        ${where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`}
        ORDER BY d.created_at DESC, d.id DESC LIMIT ?`,
     )
@@ -285,6 +305,8 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
       issue_title: string;
       issue_status: string;
       issue_priority: Priority;
+      workspace_name: string;
+      current_answer_by: string | null;
       option_count: number;
       blocked_downstream_count: number;
     }

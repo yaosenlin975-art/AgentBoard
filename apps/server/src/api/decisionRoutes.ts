@@ -9,6 +9,7 @@ import {
   getDecisionDetail,
   getStopState,
   listDecisions,
+  type DecisionCounts,
 } from '../db/repos/decision.js';
 import {
   answerPendingDecision,
@@ -19,6 +20,13 @@ import {
 } from '../services/decision.js';
 import { extendDecisionGrace } from '../services/decisionGrace.js';
 import { assertFenceCurrent } from '../services/claim.js';
+import { getRole, listWorkspacesForActor, type WorkspaceRole } from '../db/repos/workspaceMember.js';
+import {
+  assertWorkspaceRole,
+  decisionCapabilities,
+  resolveActor,
+  roleCapabilities,
+} from '../services/permission.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 
 /**
@@ -108,6 +116,10 @@ const undoSchema = z.object({
 
 const listQuerySchema = z.object({
   workspace_id: z.string().optional(),
+  /** PERM-2：`scope=accessible` 返回调用者有成员关系的全部工作区 */
+  scope: z.enum(['accessible']).optional(),
+  /** PERM-2：逗号分隔的多区查询；逐区校验，无权限的区直接跳过 */
+  workspace_ids: z.string().optional(),
   issue_id: z.string().optional(),
   state: z.enum(['grace', 'open', 'answered', 'withdrawn']).optional(),
   /** DEC-8 卡面口径 `stale=1`；兼容 DEC-3/CLI 已有的 `stale=true` */
@@ -139,6 +151,42 @@ function median(values: number[]): number | null {
   const mid = Math.floor(sorted.length / 2);
   if (sorted.length % 2 === 1) return sorted[mid]!;
   return Math.round((sorted[mid - 1]! + sorted[mid]!) / 2);
+}
+
+/** PERM-2：多区查询的 counts = 逐区之和（与单区 `?workspace_id=` 同源） */
+function sumCounts(items: DecisionCounts[]): DecisionCounts {
+  return items.reduce<DecisionCounts>(
+    (acc, item) => ({
+      grace: acc.grace + item.grace,
+      open: acc.open + item.open,
+      stale_open: acc.stale_open + item.stale_open,
+      answered_recent: acc.answered_recent + item.answered_recent,
+    }),
+    { grace: 0, open: 0, stale_open: 0, answered_recent: 0 },
+  );
+}
+
+/** PERM-2：多区响应的能力投影取调用者在这些区里的最高角色，避免低估 */
+function highestRole(db: Db, workspaceIds: string[], actorId: string): WorkspaceRole | null {
+  const rank: Record<WorkspaceRole, number> = { viewer: 1, member: 2, owner: 3 };
+  let best: WorkspaceRole | null = null;
+  for (const workspaceId of workspaceIds) {
+    const role = getRole(db, workspaceId, actorId);
+    if (role !== null && (best === null || rank[role] > rank[best])) best = role;
+  }
+  return best;
+}
+
+/** PERM-2：当前答案的回答者（未回答 / 已撤销 → null），能力投影用 */
+function currentAnswerBy(decision: {
+  current_answer_id: string | null;
+  answers?: Array<{ id: string; answered_by: string }>;
+  current_answer_by?: string | null;
+}): string | null {
+  if (decision.answers !== undefined) {
+    return decision.answers.find((answer) => answer.id === decision.current_answer_id)?.answered_by ?? null;
+  }
+  return decision.current_answer_by ?? null;
 }
 
 /** 卡面锁标识走既有 issue.changed（§5.3）：读最新投影后原样广播，前端无需新事件名 */
@@ -260,6 +308,11 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
   router.post('/issues/:id/ask', (req, res) => {
     const issueId = String(req.params.id);
     const body = zodInput(askSchema, req.body);
+    const actor = resolveActor(req);
+    const target = getIssue(deps.db, issueId);
+    if (!target) throw new NotFoundError('任务不存在');
+    // PERM-2：提问者（身份头）必须是目标工作区 member/owner；claim/fence 校验仍按 body.agent_id
+    assertWorkspaceRole(deps.db, target.workspace_id, actor, 'member');
     const issue = requireAskOwnership(deps.db, issueId, body.agent_id, body.fence);
     assertAskOptions(body.options);
     assertAskRateLimit(deps.db, issue.workspace_id, body.agent_id);
@@ -297,28 +350,95 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.get('/decisions', (req, res) => {
     const query = zodInput(listQuerySchema, req.query);
-    if (!query.workspace_id) throw new ValidationError('workspace_id 必填');
+    const actor = resolveActor(req);
     const states = query.state === undefined ? undefined : [query.state];
     const limit = query.limit === undefined ? undefined : Number(query.limit);
     if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) throw new ValidationError('limit 不合法');
-    const items = listDecisions(deps.db, {
-      workspace_id: query.workspace_id,
-      ...(query.issue_id === undefined ? {} : { issue_id: query.issue_id }),
-      ...(states === undefined ? {} : { states }),
-      ...(query.stale === 'true' || query.stale === '1' ? { stale_before: Date.now() - 72 * 3600 * 1000 } : {}),
-      ...(limit === undefined ? {} : { limit }),
+
+    // PERM-2：单区（兼容旧 Web/CLI）→ 需 viewer；scope=accessible → 只聚合有成员关系的区；
+    // workspace_ids=a,b → 逐区校验并跳过无权限区（不整体 403，避免一个区拖垮整页）。
+    let workspaceIds: string[];
+    if (query.workspace_id !== undefined) {
+      assertWorkspaceRole(deps.db, query.workspace_id, actor, 'viewer');
+      workspaceIds = [query.workspace_id];
+    } else if (query.scope === 'accessible') {
+      const accessible = listWorkspacesForActor(deps.db, actor);
+      if (accessible.length === 0) {
+        throw new ApiError(403, 'WORKSPACE_FORBIDDEN', `身份 ${actor} 没有任何可访问的工作区`);
+      }
+      workspaceIds = accessible.map((workspace) => workspace.id);
+    } else if (query.workspace_ids !== undefined) {
+      const requested = [
+        ...new Set(
+          query.workspace_ids
+            .split(',')
+            .map((id) => id.trim())
+            .filter((id) => id.length > 0),
+        ),
+      ];
+      if (requested.length === 0) {
+        throw new ValidationError('workspace_ids 不合法（需逗号分隔的工作区 id）');
+      }
+      workspaceIds = requested.filter((id) => getRole(deps.db, id, actor) !== null);
+    } else {
+      throw new ValidationError('workspace_id 必填（或用 scope=accessible / workspace_ids）');
+    }
+
+    const items =
+      workspaceIds.length === 0
+        ? []
+        : listDecisions(deps.db, {
+            workspace_ids: workspaceIds,
+            ...(query.issue_id === undefined ? {} : { issue_id: query.issue_id }),
+            ...(states === undefined ? {} : { states }),
+            ...(query.stale === 'true' || query.stale === '1'
+              ? { stale_before: Date.now() - 72 * 3600 * 1000 }
+              : {}),
+            ...(limit === undefined ? {} : { limit }),
+          });
+    const roleByWorkspace = new Map<string, WorkspaceRole | null>();
+    for (const workspaceId of workspaceIds) roleByWorkspace.set(workspaceId, getRole(deps.db, workspaceId, actor));
+    res.json({
+      decisions: items.map((item) => ({
+        ...item,
+        capabilities: decisionCapabilities(roleByWorkspace.get(item.workspace_id) ?? null, actor, {
+          state: item.state,
+          current_answer_by: currentAnswerBy(item),
+        }),
+      })),
+      counts: sumCounts(workspaceIds.map((workspaceId) => countDecisions(deps.db, workspaceId))),
+      capabilities: roleCapabilities(highestRole(deps.db, workspaceIds, actor)),
     });
-    res.json({ decisions: items, counts: countDecisions(deps.db, query.workspace_id) });
   });
 
   router.get('/decisions/:id', (req, res) => {
+    const actor = resolveActor(req);
     const decision = getDecisionDetail(deps.db, String(req.params.id));
     if (!decision) throw new NotFoundError('决策不存在');
-    res.json({ decision });
+    const role = assertWorkspaceRole(deps.db, decision.workspace_id, actor, 'viewer');
+    res.json({
+      decision: {
+        ...decision,
+        capabilities: decisionCapabilities(role, actor, {
+          state: decision.state,
+          current_answer_by: currentAnswerBy(decision),
+        }),
+      },
+    });
   });
 
   router.post('/decisions/:id/answer', (req, res) => {
     const body = zodInput(answerSchema, req.body);
+    const actor = resolveActor(req);
+    const existing = getDecisionDetail(deps.db, String(req.params.id));
+    if (!existing) throw new NotFoundError('决策不存在');
+    // PERM-2：回答/修订要求 member+；member 只能修订本人答案，owner 可管理他人答案
+    const role = assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
+    if (existing.state === 'answered' && body.expected_revision !== undefined && role !== 'owner') {
+      if (currentAnswerBy(existing) !== actor) {
+        throw new ApiError(403, 'ROLE_FORBIDDEN', `当前身份 ${actor} 只能修订本人答案（角色 ${role}）`);
+      }
+    }
     const decision = answerPendingDecision(deps.db, {
       decision_id: String(req.params.id),
       source: body.source ?? 'web',
@@ -341,6 +461,11 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.post('/decisions/:id/withdraw', (req, res) => {
     const body = zodInput(withdrawSchema, req.body);
+    const actor = resolveActor(req);
+    const existing = getDecisionDetail(deps.db, String(req.params.id));
+    if (!existing) throw new NotFoundError('决策不存在');
+    // PERM-2：撤回决策仅 owner（member / viewer 一律 ROLE_FORBIDDEN）
+    assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'owner');
     const decision = withdrawPendingDecision(deps.db, {
       decision_id: String(req.params.id),
       by: body.by ?? 'user',
@@ -353,6 +478,15 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.post('/decisions/:id/undo', (req, res) => {
     const body = zodInput(undoSchema, req.body);
+    const actor = resolveActor(req);
+    const existing = getDecisionDetail(deps.db, String(req.params.id));
+    if (!existing) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    // PERM-2：撤销回答要求 member+；member 只能撤销本人答案，owner 可管理他人答案。
+    // 6 秒窗口 / expected_revision / UNDO_CLAIMED_AFTER_LOCK 仍由服务层状态校验。
+    const role = assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
+    if (existing.state === 'answered' && role !== 'owner' && currentAnswerBy(existing) !== actor) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', `当前身份 ${actor} 只能撤销本人答案（角色 ${role}）`);
+    }
     const result = undoDecision(deps.db, {
       decision_id: String(req.params.id),
       by: typeof body.by === 'string' ? body.by : '',
@@ -380,6 +514,11 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.post('/decisions/:id/extend', (req, res) => {
     const body = zodInput(extendSchema, req.body);
+    const actor = resolveActor(req);
+    const existing = getDecisionDetail(deps.db, String(req.params.id));
+    if (!existing) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    // PERM-2：延长宽限要求 member+（viewer / 匿名 403）；跨区 workspace_id 守卫仍在服务层
+    assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
     const result = extendDecisionGrace(deps.db, {
       decision_id: String(req.params.id),
       seconds: body.seconds,

@@ -897,14 +897,43 @@ app.use(express.json());
 
 原因（实测）：库里存在 200 万字符级页面时，原实现把全文取回再对每页做 `entityTerms` + `trigrams`，24 节点的图接口耗时 **22–23 秒**；改为摘要 + `(status,scope,id)` 索引后同规模 **22ms**（夹具实测，200 页 78ms）。
 
-## 20. 待决策（`/api/decisions`，decisionRoutes.ts，DEC-V4-API-EXTEND / DEC-V4-UNDO-SERVER）
+## 20. 待决策（`/api/decisions`，decisionRoutes.ts，DEC-V4-API-EXTEND / DEC-V4-UNDO-SERVER / PERM-2）
 
 | 方法 路径 | 请求 | 响应 | 错误 |
 | --- | --- | --- | --- |
-| `GET /api/decisions` | query：`workspace_id`（必填）、`state?`、`issue_id?`、`stale?`、`limit?`（≤500） | `{ decisions: DecisionListItem[] }`；列表项含 `options[]` / `issue_priority` / `blocked_downstream_count`（DEC-V4-API-LIST） | 400 缺 `workspace_id` |
-| `GET /api/decisions/:id` | — | `{ decision, options, answers[] }` | 404 `DECISION_NOT_FOUND` |
+| `GET /api/decisions` | query：`workspace_id`（单区，兼容旧调用）；或 `scope=accessible`（有成员关系的全部工作区）；或 `workspace_ids=a,b`（逗号分隔，逐区校验、无权限的区静默跳过）。另支持 `state?`、`issue_id?`、`stale?`、`limit?`（≤500） | `{ decisions: DecisionListItem[], counts, capabilities }`；列表项含 `workspace_name` / `options[]` / `issue_priority` / `blocked_downstream_count` 与逐条 `capabilities`；跨区时 `counts` = 可访问区逐区之和 | 400 缺 `workspace_id`（且未给 `scope`/`workspace_ids`）/ `workspace_ids` 为空；401 `UNAUTHENTICATED`；403 `WORKSPACE_FORBIDDEN`（单区非成员 / `scope=accessible` 但零成员关系） |
+| `GET /api/decisions/:id` | — | `{ decision, options, answers[] }`，`decision.capabilities` 按调用者角色投影 | 404 `NOT_FOUND`；401 `UNAUTHENTICATED`；403 `WORKSPACE_FORBIDDEN`（非成员） |
+| `POST /api/decisions/:id/answer` | body：`option_id` / `option_ord` / `answer_text` 三选一，可带 `expected_revision` 修订 | 200 `{ decision }` | 401/403（见下方权限矩阵）；400 `VALIDATION_ERROR`；409 决策状态冲突 |
+| `POST /api/decisions/:id/withdraw` | body：`by?`（缺省 `user`）、`reason`（必填） | 200 `{ decision }` | 401；403 `WORKSPACE_FORBIDDEN` / `ROLE_FORBIDDEN`（仅 owner 可撤回）；409 `DECISION_NOT_OPEN` 等 |
 | `POST /api/decisions/:id/undo` | body：`by`（必填）、`expected_revision`（必填，≥0 整数） | 200 `{ decision, reverted_to: 'grace'\|'open', undo_window_ms: 6000, already_undone }` | 400 `VALIDATION_ERROR`；404 `DECISION_NOT_FOUND`；409 `UNDO_WINDOW_EXPIRED` / `UNDO_NOT_ANSWERED` / `DECISION_REVISION_CONFLICT` / `UNDO_CLAIMED_AFTER_LOCK` / `UNDO_FORBIDDEN_ACTOR` / `DECISION_WITHDRAWN` |
 | `POST /api/decisions/:id/extend` | body：`seconds`（1–300 整数，必填）、`by?`（缺省 `user`）、`fence?`（传了就校验）、`workspace_id?`（显式传入即做跨区守卫） | 200 `{ decision_id, state: 'grace', grace_until, remaining_grace_seconds, extended_seconds, extension_count, max_extend_seconds }` | 400 `INVALID_SECONDS`；404 `DECISION_NOT_FOUND`；409 `DECISION_NOT_GRACE` / `EXTEND_LIMIT_EXCEEDED`（details `{ extended_seconds, max_extend_seconds }`）/ `STALE_FENCE`；403 `FORBIDDEN`（`workspace_id` 与决策工作区不一致） |
+
+### 20.1 身份与权限（PERM-2）
+
+**身份解析**：只认请求头 `X-AgentBoard-Actor`；没有该头 → 缺省 `user`（单机行为不变）。头存在但为空 / 超过 100 字符 / 含控制字符 / `agent:` 后名字为空 → **401 `UNAUTHENTICATED`**，绝不降级成 `user`。`user` 原样保留，其他值规范化为 `agent:<name>`。body 的 `by` / `answered_by` / `agent_id` 只保留原有业务语义（撤回人 / 回答人 / claim 的 agent），**不再用于反推权限身份**。
+
+**错误分工**：
+
+| HTTP | code | 触发 |
+| --- | --- | --- |
+| 401 | `UNAUTHENTICATED` | 身份头非法（空 / 超长 / 控制字符） |
+| 403 | `WORKSPACE_FORBIDDEN` | 身份有效，但不是目标工作区成员 |
+| 403 | `ROLE_FORBIDDEN` | 是成员，但角色不够 |
+
+**角色矩阵**（`workspace_member`；迁移期既有工作区均已 seed 为 `user/owner`）：
+
+| 动作 | owner | member | viewer | 非成员 |
+| --- | --- | --- | --- | --- |
+| 查看列表 / 详情 | ✓ | ✓ | ✓ | 403 |
+| 回答决策 | ✓ | ✓ | 403 | 403 |
+| 修订答案 | 本人 + 他人 | 仅本人 | 403 | 403 |
+| 撤销回答（6 秒 undo） | 本人 + 他人 | 仅本人 | 403 | 403 |
+| 撤回决策 | ✓ | 403 | 403 | 403 |
+| 延长宽限 | ✓ | ✓ | 403 | 403 |
+| 提问 `POST /api/issues/:id/ask` | 需持有效 claim | 需持有效 claim | 403 | 403 |
+
+- `capabilities`（`can_answer` / `can_revise` / `can_undo` / `can_withdraw` / `can_extend`）由服务端按「角色 + 当前答案归属」计算，前端只按能力渲染；`can_undo` 只表示有资格，实际还受 6 秒窗口与 `expected_revision` 约束。
+- 权限校验先于状态校验：403 路径不写库、不广播（`apps/server/test/decisionPermission.test.ts` 用逐字段快照 + broadcast spy 作证）。
 
 撤销回答语义（DEC-V4-UNDO-SERVER）：
 
