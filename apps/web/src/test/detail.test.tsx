@@ -231,50 +231,38 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
   });
 });
 
-describe('DetailPanel 状态手动修改（DETAIL-STATUS01 / DETAIL-D2 chip）', () => {
-  it('状态 chip 打开 popover 后列出内置五状态；改状态 PATCH 带 workspace_id + expected_updated_at，成功后按服务端响应更新', async () => {
+describe('DetailPanel 状态只读（详情内不可改状态，回收 DETAIL-D2 chip 可点改）', () => {
+  it('状态 chip 是纯展示：无 button/haspopup/tabindex，点击不弹菜单、不发 PATCH', async () => {
     const base = makeIssue({ status: '待规划', updated_at: 7 });
     mockDetailApi(base);
-    let current = base;
     const patches: Array<Record<string, unknown>> = [];
-    let issuesRefetches = 0;
     server.use(
-      http.get('/api/issues/iss-1', () => HttpResponse.json(current)),
-      http.get('/api/issues', () => {
-        issuesRefetches += 1;
-        return HttpResponse.json([current]);
-      }),
       http.patch('/api/issues/iss-1', async ({ request }) => {
         patches.push((await request.json()) as Record<string, unknown>);
-        current = { ...base, status: '待验收', updated_at: 9 };
-        return HttpResponse.json(current);
+        return HttpResponse.json({ ...base, status: '待验收' });
       }),
     );
     renderDetail();
 
-    // D2：状态下拉改为 meta chip；点击后 popover 内是同一份状态字典
     const chip = await screen.findByTestId('status-chip');
+    expect(chip.tagName).toBe('SPAN');
     expect(chip).toHaveAttribute('data-status', '待规划');
-    expect(chip).toHaveAttribute('aria-haspopup', 'menu');
-    expect(chip).not.toBeDisabled();
+    expect(chip).toHaveAttribute('data-readonly', 'true');
     expect(chip).toHaveTextContent('待规划');
+    expect(chip).not.toHaveAttribute('role');
+    expect(chip).not.toHaveAttribute('tabindex');
+    expect(chip).not.toHaveAttribute('aria-haspopup');
+    expect(chip).not.toHaveAttribute('aria-expanded');
+    expect(chip).not.toHaveAttribute('disabled');
 
     await userEvent.click(chip);
-    expect(screen.getByTestId('status-popover')).toHaveAttribute('role', 'menu');
-    // STATUS-3-UI：走 workspace_status 字典；未 mock 状态接口时兜底为五条内置（含已废弃）
-    for (const name of ['待规划', '进行中', '待验收', '已关闭', '已废弃']) {
-      expect(screen.getByTestId(`status-option-${name}`)).toBeInTheDocument();
-    }
-
-    await userEvent.click(screen.getByTestId('status-option-待验收'));
-    await waitFor(() => expect(patches).toHaveLength(1));
-    expect(patches[0]).toEqual({ workspace_id: 'ws-1', expected_updated_at: 7, status: '待验收' });
-    await waitFor(() => expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待验收'));
-    // 看板/树列表缓存被失效（重新拉 /api/issues）
-    await waitFor(() => expect(issuesRefetches).toBeGreaterThan(0));
+    expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(patches).toHaveLength(0);
+    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待规划');
   });
 
-  it('「进行中」任务（含未占用）：状态 chip 禁用并给出原因，点不开 popover、不发 PATCH', async () => {
+  it('「进行中」任务：chip 仍只读，title 给出维护原因，状态写请求为零', async () => {
     const running = makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 });
     mockDetailApi(running);
     const patches: Array<Record<string, unknown>> = [];
@@ -288,59 +276,34 @@ describe('DetailPanel 状态手动修改（DETAIL-STATUS01 / DETAIL-D2 chip）',
 
     const chip = await screen.findByTestId('status-chip');
     expect(chip).toHaveAttribute('data-status', '进行中');
-    expect(chip).toBeDisabled();
     expect(chip).toHaveAttribute('title', expect.stringContaining('进行中'));
+    expect(chip).not.toHaveAttribute('role');
+    // 维护原因同时出现在标题块第二行
     expect(screen.getByTestId('status-blocked-hint')).toHaveTextContent('进行中');
 
-    // 禁用 chip 不会打开 popover，也不会产生状态请求
     await userEvent.click(chip);
     expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 200));
     expect(patches).toHaveLength(0);
-    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '进行中');
   });
 
-  it('已占用任务：状态 chip 禁用并提示占用原因', async () => {
+  it('已占用任务：chip 只读，title 提示占用原因', async () => {
     mockDetailApi(makeIssue({ status: '待规划', claimed_by: 'agent:codex', claimed_at: 1 }));
     renderDetail();
 
     const chip = await screen.findByTestId('status-chip');
-    expect(chip).toBeDisabled();
+    expect(chip.tagName).toBe('SPAN');
     expect(chip).toHaveAttribute('title', expect.stringContaining('占用中'));
   });
 
-  it('409 冲突：显示服务端原因，chip 保留服务端当前状态', async () => {
-    const base = makeIssue({ status: '待规划', updated_at: 7 });
-    mockDetailApi(base);
-    server.use(
-      http.patch('/api/issues/iss-1', () =>
-        HttpResponse.json({ error: { code: 'TASK_REVISION_CONFLICT', message: '任务已更新，请重新读取' } }, { status: 409 }),
-      ),
-    );
+  it('详情内不存在任何状态下拉/选项入口', async () => {
+    mockDetailApi(makeIssue({ status: '待规划' }));
     renderDetail();
 
-    await userEvent.click(await screen.findByTestId('status-chip'));
-    await userEvent.click(await screen.findByTestId('status-option-待验收'));
-    const alert = await screen.findByTestId('detail-action-error');
-    expect(alert).toHaveTextContent('任务已更新，请重新读取');
-    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待规划');
-  });
-
-  it('后代未关闭时「已关闭」选项禁用（与树节点下拉同规则）', async () => {
-    const base = makeIssue({ status: '待规划' });
-    mockDetailApi(base);
-    server.use(
-      http.get('/api/issues', () => HttpResponse.json([
-        base,
-        makeIssue({ id: 'iss-child', parent_issue_id: 'iss-1', status: '进行中' }),
-      ])),
-    );
-    renderDetail();
-
-    await userEvent.click(await screen.findByTestId('status-chip'));
-    const closeOption = await screen.findByTestId('status-option-已关闭');
-    await waitFor(() => expect(closeOption).toBeDisabled());
-    expect(screen.getByTestId('status-option-待验收')).not.toBeDisabled();
+    await screen.findByTestId('status-chip');
+    expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('status-option-待验收')).not.toBeInTheDocument();
+    expect(screen.queryByRole('menu', { name: '修改状态' })).not.toBeInTheDocument();
   });
 });
 
@@ -352,7 +315,9 @@ describe('DETAIL-D2 meta 行（状态 / 优先级 / 截止 / 负责人）', () =
     // ≥920px 强制单行；<920px 退化为两行分组（未决 2）
     expect(row.className).toContain('min-[920px]:flex-row');
     const chips = ['status-chip', 'priority-chip', 'due-chip', 'owner-chip'].map((id) => screen.getByTestId(id));
-    for (const chip of chips) {
+    // 状态 chip 只读，不再宣称可展开；其余三枚仍是可交互 popover 触发器
+    expect(chips[0]).not.toHaveAttribute('aria-haspopup');
+    for (const chip of chips.slice(1)) {
       expect(chip).toHaveAttribute('aria-haspopup');
       expect(chip).toHaveAttribute('aria-expanded', 'false');
     }

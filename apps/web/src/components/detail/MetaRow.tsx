@@ -2,17 +2,16 @@
  * 详情 meta 行（D2）：把「状态 / 优先级 / 截止 / 负责人」四个决策项压成一行 chip。
  *
  * - 宽屏（≥920px）严格同一横行；窄屏回流两行：状态+优先级 / 截止+负责人（未决 2）。
- * - chip 是 button：aria-haspopup + aria-expanded；同一时刻只开一个 popover。
+ * - 可交互 chip（优先级/截止/负责人）是 button：aria-haspopup + aria-expanded；同一时刻只开一个 popover。
  * - popover 贴整个 meta 行下缘（top: calc(100% + 4px)），换行时不会盖住第二排 chip。
- * - 状态修改仍复用 DetailPanel 的 CAS 口径（本组件只负责交互与展示）；优先级/截止沿用防抖 PATCH。
+ * - 状态 chip 只读（不提供改状态入口，改状态走看板/任务树）；优先级/截止沿用防抖 PATCH。
  * - 负责人主行只显示名称 + 已占用时长；租约剩余时间本期接口未暴露（见卡面口径差异）。
  */
 import { useEffect, useRef, useState } from 'react';
-import type { Issue, IssueStatus, Priority, WorkspaceStatus } from '@agentboard/shared';
+import type { Issue, IssueStatus, Priority } from '@agentboard/shared';
 import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
-import { statusOptions } from '../../lib/workspaceStatuses';
 
-type ChipKey = 'status' | 'priority' | 'due' | 'owner';
+type ChipKey = 'priority' | 'due' | 'owner';
 
 export interface DueDraft {
   date: string;
@@ -24,13 +23,8 @@ export interface MetaRowProps {
   priority: Priority;
   dueDate: string;
   dueTime: string;
-  statuses: readonly WorkspaceStatus[];
-  /** 非 null 表示手动状态入口被禁（占用中 / 进行中），同时作为 chip 的 title 与行内提示 */
+  /** 非 null 时只作为只读状态 chip 的 title（说明为何不能在此改状态） */
   statusBlocked: string | null;
-  /** 有未关闭后代时「已关闭」选项禁用（与树节点下拉同规则） */
-  closeBlocked: boolean;
-  statusPending: boolean;
-  onStatusChange: (status: IssueStatus) => void;
   onPriorityChange: (priority: Priority) => void;
   onDueChange: (due: DueDraft) => void;
 }
@@ -78,11 +72,7 @@ export function MetaRow({
   priority,
   dueDate,
   dueTime,
-  statuses,
   statusBlocked,
-  closeBlocked,
-  statusPending,
-  onStatusChange,
   onPriorityChange,
   onDueChange,
 }: MetaRowProps) {
@@ -90,7 +80,6 @@ export function MetaRow({
   const [dueDraft, setDueDraft] = useState<DueDraft>({ date: dueDate, time: dueTime });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRefs = useRef<Record<ChipKey, HTMLButtonElement | null>>({
-    status: null,
     priority: null,
     due: null,
     owner: null,
@@ -126,7 +115,6 @@ export function MetaRow({
     toggle('due');
   };
 
-  const options = statusOptions(statuses, closeBlocked);
   const dueProjection = { due_date: dueDate === '' ? null : dueDate, due_time: dueTime === '' ? null : dueTime };
   const dueLabel = dueDate === '' ? '未设置' : (formatDueShort(dueProjection) ?? '未设置');
   const overdue = isOverdue(dueProjection, Date.now());
@@ -146,22 +134,18 @@ export function MetaRow({
       className="relative flex flex-col gap-1 min-[920px]:flex-row min-[920px]:items-center min-[920px]:gap-1.5"
     >
       <span className="flex items-center gap-1.5">
-        <button
-          ref={(node) => { triggerRefs.current.status = node; }}
-          type="button"
+        {/* 状态只读：纯展示，不带 button/haspopup/tabindex，也不发任何状态写请求 */}
+        <span
           data-testid="status-chip"
           data-status={issue.status}
+          data-readonly="true"
           aria-label={`状态：${issue.status}`}
-          aria-haspopup="menu"
-          aria-expanded={open === 'status'}
-          disabled={statusBlocked !== null || statusPending}
-          title={statusBlocked ?? undefined}
-          onClick={() => toggle('status')}
+          title={statusBlocked ?? '状态在详情内只读；改状态请到看板或任务树'}
           className={`${CHIP_BASE} ${statusChipTone(issue.status)} font-semibold`}
         >
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${statusDotTone(issue.status)}`} />
           {issue.status}
-        </button>
+        </span>
         <button
           ref={(node) => { triggerRefs.current.priority = node; }}
           type="button"
@@ -222,35 +206,6 @@ export function MetaRow({
           {claimedBy === null ? '未领取' : `${ownerName(claimedBy)} · ${silent}`}
         </button>
       </span>
-
-      {open === 'status' && (
-        <div
-          role="menu"
-          aria-label="修改状态"
-          data-testid="status-popover"
-          className={popoverCls}
-          style={popoverStyle}
-        >
-          {options.map((option) => (
-            <button
-              key={option.name}
-              type="button"
-              role="menuitem"
-              data-testid={`status-option-${option.name}`}
-              disabled={option.disabled}
-              aria-current={option.name === issue.status ? 'true' : undefined}
-              title={option.disabled ? '存在未关闭的子孙任务，需先全部关闭' : undefined}
-              onClick={() => {
-                setOpen(null);
-                onStatusChange(option.name as IssueStatus);
-              }}
-              className={`${itemCls} ${option.name === issue.status ? 'font-semibold text-accent' : ''}`}
-            >
-              {option.name}
-            </button>
-          ))}
-        </div>
-      )}
 
       {open === 'priority' && (
         <div

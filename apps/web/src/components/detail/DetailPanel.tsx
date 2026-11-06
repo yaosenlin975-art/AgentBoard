@@ -17,7 +17,6 @@ import {
   manualStatusBlockedReason,
   patchIssueStatus,
 } from '../../lib/issueStatus';
-import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { getIssueDescendantIds } from '../../lib/issueTree';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFromDataTransfer } from '../../lib/imageDraft';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
@@ -224,10 +223,6 @@ export function DetailPanel() {
     },
   });
 
-  // STATUS-3-UI：状态下拉取工作区状态字典（含自定义状态）；关闭项按 kind=done 判定。
-  // hook 必须在下面所有 early return 之前调用（否则 hook 数量随加载状态变化，React 会直接崩）。
-  const statusDictionary = useWorkspaceStatuses(issue?.workspace_id ?? null);
-
   /**
    * D1：标题就地编辑提交。
    * - 默认带 workspace_id + expected_updated_at（CAS），409 交给 TitleInlineEditor 展示并提供「仍然保存」；
@@ -382,11 +377,7 @@ export function DetailPanel() {
             priority={priority}
             dueDate={dueDate}
             dueTime={dueTime}
-            statuses={statusDictionary.statuses}
             statusBlocked={statusBlocked}
-            closeBlocked={closeBlocked}
-            statusPending={changeStatus.isPending}
-            onStatusChange={(next) => changeStatus.mutate(next)}
             onPriorityChange={(next) => {
               setPriority(next);
               schedulePatch('priority', next);
