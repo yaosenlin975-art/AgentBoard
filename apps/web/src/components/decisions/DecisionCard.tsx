@@ -20,7 +20,8 @@ import {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { formatCountdown, formatWaiting } from './countdown';
+import { BlockedDownstream } from './BlockedDownstream';
+import { downstreamCount, formatCountdown, formatWaiting } from './countdown';
 import { checkpointLines } from './DecisionSection';
 import { useAnswerDecision, useDecisionDetail } from './useDecisions';
 import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from './types';
@@ -400,6 +401,14 @@ export function DecisionCard({
           停止未确认（{formatClock(item.stop_requested_at)}）
         </span>
       ) : null}
+
+      {/* P6：统计行入口 + 就地下游清单（方向：本卡 blocks 了谁） */}
+      <BlockedDownstream
+        issueId={item.issue_id}
+        workspaceId={item.workspace_id}
+        count={downstreamCount(item)}
+        onOpenIssue={onOpenIssue}
+      />
 
       {expanded ? (
         <ExpandedBody
