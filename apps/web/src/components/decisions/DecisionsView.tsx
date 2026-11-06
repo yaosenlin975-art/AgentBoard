@@ -20,9 +20,9 @@ import {
   groupDecisions,
   type DecisionSort,
 } from './countdown';
-import { DecisionCard } from './DecisionCard';
+import { DecisionCard, type DecisionAnsweredPayload } from './DecisionCard';
 import { DecisionsEmptyState } from './DecisionsEmptyState';
-import { useDecisionLists } from './useDecisions';
+import { useDecisionLists, useUndoDecision } from './useDecisions';
 import { persistDecisionsScope, resolveDecisionsScope, type DecisionsScope } from '../../lib/decisionsScope';
 import { ApiError } from '../../api/client';
 import type { DecisionListItemDto } from './types';
@@ -48,6 +48,49 @@ function prefersReducedMotion(): boolean {
   );
 }
 
+/** DEC-V4-UNDO：提交后的视觉移出时长（reduced motion 直接 0） */
+const LEAVING_MS = 420;
+/** 结果提示（已撤销 / 409 文案）自动收起时长 */
+const UNDO_RESULT_TIMEOUT_MS = 8000;
+
+interface UndoBarState {
+  decisionId: string;
+  issueTitle: string;
+  /** answer 响应里的 `answer_revision`，撤销时作为 expected_revision */
+  revision: number;
+  by: string;
+  /** 服务端 `undo_until`（毫秒）；倒计时唯一依据 */
+  deadline: number;
+  phase: 'ready' | 'pending' | 'failed' | 'done';
+  tone: 'info' | 'error';
+  message: string | null;
+}
+
+/** DEC-V4-UNDO：409 各自文案，不一律「操作失败」；retry 只在网络/5xx 时保留重试入口 */
+function classifyUndoError(err: unknown): { message: string; retry: boolean } {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return { message: '身份失效，请重新打开看板', retry: false };
+    if (err.code === 'ROLE_FORBIDDEN' || err.code === 'WORKSPACE_FORBIDDEN') {
+      return { message: '没有撤销该回答的权限', retry: false };
+    }
+    switch (err.code) {
+      case 'UNDO_WINDOW_EXPIRED':
+        return { message: '撤销窗口已过（回答后 6 秒内可撤销）', retry: false };
+      case 'UNDO_CLAIMED_AFTER_LOCK':
+        return { message: '卡已被重新领取，无法撤销', retry: false };
+      case 'DECISION_REVISION_CONFLICT':
+        return { message: `答案版本已变化，无法撤销：${err.message}`, retry: false };
+      case 'UNDO_NOT_ANSWERED':
+      case 'DECISION_WITHDRAWN':
+      case 'UNDO_FORBIDDEN_ACTOR':
+        return { message: err.message, retry: false };
+      default:
+        return { message: `撤销失败：${err.message}`, retry: err.status >= 500 };
+    }
+  }
+  return { message: '撤销失败：网络异常，请重试', retry: true };
+}
+
 export function DecisionsView() {
   const workspaceId = useAppStore((state) => state.workspaceId);
   const focus = useNavStore((state) => state.decisionFocus);
@@ -69,9 +112,74 @@ export function DecisionsView() {
   const [focusToast, setFocusToast] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const flashTimers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  // DEC-V4-UNDO：leaving（420ms 视觉移出）+ 唯一一条撤销条
+  const [leavingId, setLeavingId] = useState<string | null>(null);
+  const [undo, setUndo] = useState<UndoBarState | null>(null);
+  const leavingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const undoResultTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const undoMutation = useUndoDecision();
   const clearFlashTimers = () => {
     for (const timer of flashTimers.current) clearTimeout(timer);
     flashTimers.current = [];
+  };
+
+  /** 撤销 / 移出结束后统一失效：列表、tab 计数、侧栏徽标、卡面 `[待决策]` */
+  const invalidateDecisionState = () => {
+    void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+    void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+    void queryClient.invalidateQueries({ queryKey: ['decision'] });
+    void queryClient.invalidateQueries({ queryKey: ['issue'] });
+    void queryClient.invalidateQueries({ queryKey: ['issues'] });
+  };
+
+  /**
+   * DEC-V4-UNDO：提交成功 → 立即出现撤销条（答案已在服务端），卡片先留在原地 420ms 再移入已回答。
+   * reduced motion 下跳过 leaving，直接失效刷新。
+   */
+  const handleAnswered = (payload: DecisionAnsweredPayload) => {
+    // 同时最多 1 条：新提交替换旧条，旧回答保持有效（不自动撤销）
+    setUndo({ ...payload, phase: 'ready', tone: 'info', message: null });
+    if (undoResultTimer.current !== null) {
+      clearTimeout(undoResultTimer.current);
+      undoResultTimer.current = null;
+    }
+    if (leavingTimer.current !== null) clearTimeout(leavingTimer.current);
+    if (prefersReducedMotion()) {
+      setLeavingId(null);
+      invalidateDecisionState();
+      return;
+    }
+    setLeavingId(payload.decisionId);
+    leavingTimer.current = setTimeout(() => {
+      leavingTimer.current = null;
+      setLeavingId(null);
+      invalidateDecisionState();
+    }, LEAVING_MS);
+  };
+
+  /** 点「撤销」/「重试撤销」：body 带 expected_revision，窗口判定全部交给服务端 */
+  const handleUndo = () => {
+    if (undo === null || undo.phase === 'pending') return;
+    const { decisionId, revision, by } = undo;
+    setUndo((prev) => (prev === null ? prev : { ...prev, phase: 'pending', tone: 'info', message: null }));
+    undoMutation.mutate(
+      { decisionId, expectedRevision: revision, by },
+      {
+        onSuccess: () => {
+          setUndo((prev) =>
+            prev === null ? prev : { ...prev, phase: 'done', tone: 'info', message: '已撤销' },
+          );
+        },
+        onError: (err) => {
+          const { message, retry } = classifyUndoError(err);
+          // 过期 / 冲突 / 已撤销都以服务端为准：刷新列表，不猜本地状态
+          invalidateDecisionState();
+          setUndo((prev) =>
+            prev === null ? prev : { ...prev, phase: retry ? 'failed' : 'done', tone: 'error', message },
+          );
+        },
+      },
+    );
   };
   const changeScope = (next: DecisionsScope) => {
     setScope(next);
@@ -120,8 +228,30 @@ export function DecisionsView() {
     flashTimers.current.push(setTimeout(() => setFlashId(null), 2160));
   }, [focus, loading, consumeFocus]);
 
-  // 卸载时清掉未走完的闪烁定时器
-  useEffect(() => () => clearFlashTimers(), []);
+  // 卸载时清掉未走完的闪烁 / leaving 定时器
+  useEffect(
+    () => () => {
+      clearFlashTimers();
+      if (leavingTimer.current !== null) clearTimeout(leavingTimer.current);
+      if (undoResultTimer.current !== null) clearTimeout(undoResultTimer.current);
+    },
+    [],
+  );
+
+  // 撤销结果（已撤销 / 409 文案）自动收起；网络失败保留「重试撤销」，不自动消失
+  useEffect(() => {
+    if (undo === null || undo.phase !== 'done') return;
+    undoResultTimer.current = setTimeout(() => {
+      undoResultTimer.current = null;
+      setUndo(null);
+    }, UNDO_RESULT_TIMEOUT_MS);
+    return () => {
+      if (undoResultTimer.current !== null) {
+        clearTimeout(undoResultTimer.current);
+        undoResultTimer.current = null;
+      }
+    };
+  }, [undo]);
 
   // 目标缺失的提示自动消失（不阻塞继续操作列表）
   useEffect(() => {
@@ -150,6 +280,9 @@ export function DecisionsView() {
   }
 
   const total = groups.grace.length + groups.open.length + groups.stale.length;
+  // 撤销倒计时以服务端 undo_until 为准；剩余秒数直接用当前时刻算，避免后台/节流标签页里
+  // useDecisionClock 的 now 停跳把窗口算大（会显示「看起来还在窗口内」而服务端已 409）。
+  const undoRemaining = undo === null ? 0 : Math.max(0, Math.ceil((undo.deadline - Date.now()) / 1000));
   const hasAnyData = total + groups.answered.length > 0;
   // P7：无在途 + （无已回答或停在「全部」）才展示真空态；停在「已回答」tab 时仍走正常列表
   const showEmptyState = total === 0 && (groups.answered.length === 0 || filter === 'all');
@@ -287,8 +420,10 @@ export function DecisionsView() {
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
             resetSignal={`${filter}:${scope}`}
+            leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            onAnswered={handleAnswered}
           />
         )}
         {(filter === 'all' || filter === 'open') && (
@@ -304,8 +439,10 @@ export function DecisionsView() {
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
             resetSignal={`${filter}:${scope}`}
+            leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            onAnswered={handleAnswered}
           />
         )}
         {(filter === 'all' || filter === 'stale') && (
@@ -321,8 +458,10 @@ export function DecisionsView() {
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
             resetSignal={`${filter}:${scope}`}
+            leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            onAnswered={handleAnswered}
           />
         )}
         {(filter === 'all' || filter === 'answered') && (
@@ -338,13 +477,72 @@ export function DecisionsView() {
             expandedId={expandedId}
             homeWorkspaceId={workspaceId}
             resetSignal={`${filter}:${scope}`}
+            leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            onAnswered={handleAnswered}
           />
         )}
           </>
         )}
       </div>
+
+      {/* DEC-V4-UNDO：同时最多 1 条；倒计时读服务端 undo_until */}
+      {undo !== null && (
+        <div
+          data-testid="decision-undo-bar"
+          data-phase={undo.phase}
+          data-decision-id={undo.decisionId}
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 z-20 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-md border border-hairline bg-surface-card px-3 py-1.5 text-xs shadow-lg"
+        >
+          <span className="min-w-0 truncate text-ink-3" title={undo.issueTitle}>
+            {undo.issueTitle}
+          </span>
+          {undo.phase === 'done' || undo.phase === 'failed' ? (
+            <>
+              <span
+                data-testid="decision-undo-result"
+                className={
+                  undo.tone === 'error' ? 'text-red-600 dark:text-red-400' : 'font-medium text-ink-2'
+                }
+              >
+                {undo.message}
+              </span>
+              {undo.phase === 'failed' && (
+                <button
+                  type="button"
+                  data-testid="decision-undo-retry"
+                  onClick={handleUndo}
+                  className="whitespace-nowrap rounded border border-hairline px-2 py-0.5 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                >
+                  重试撤销
+                </button>
+              )}
+            </>
+          ) : undoRemaining > 0 ? (
+            <>
+              <span data-testid="decision-undo-countdown" className="tabular-nums text-ink-2">
+                已记录 · {undoRemaining} 秒内可撤销
+              </span>
+              <button
+                type="button"
+                data-testid="decision-undo"
+                disabled={undo.phase === 'pending'}
+                onClick={handleUndo}
+                className="whitespace-nowrap rounded border border-hairline px-2 py-0.5 text-xs font-medium text-ink-2 hover:bg-surface-raised disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                {undo.phase === 'pending' ? '撤销中…' : '撤销'}
+              </button>
+            </>
+          ) : (
+            <span data-testid="decision-undo-expired" className="text-ink-3">
+              已作答
+            </span>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -392,8 +590,11 @@ interface GroupProps {
   expandedId: string | null;
   homeWorkspaceId: string;
   resetSignal: string;
+  /** DEC-V4-UNDO：正在 420ms 视觉移出的那条 */
+  leavingId: string | null;
   onToggle: (decisionId: string) => void;
   onOpen: (issueId: string) => void;
+  onAnswered: (payload: DecisionAnsweredPayload) => void;
 }
 
 function Group({
@@ -408,8 +609,10 @@ function Group({
   expandedId,
   homeWorkspaceId,
   resetSignal,
+  leavingId,
   onToggle,
   onOpen,
+  onAnswered,
 }: GroupProps) {
   return (
     <div data-testid={`decisions-group-${scope}`} className="mb-4">
@@ -429,12 +632,14 @@ function Group({
               rank={rankMap.get(item.id)}
               focused={selectedId === item.id}
               flash={flashId === item.id}
+              leaving={leavingId === item.id}
               scope={scope}
               expanded={expandedId === item.id}
               homeWorkspaceId={homeWorkspaceId}
               resetSignal={resetSignal}
               onToggle={onToggle}
               onOpenIssue={onOpen}
+              onAnswered={onAnswered}
             />
           ))}
         </ul>

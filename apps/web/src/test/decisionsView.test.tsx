@@ -1284,3 +1284,352 @@ describe('DEC-V4-EMPTY 空态', () => {
     expect(useNavStore.getState().view).toBe('board');
   });
 });
+
+describe('DEC-V4-UNDO Web 6 秒撤销', () => {
+  const undoGrace = listItem({ id: 'undo-grace', state: 'grace', grace_until: NOW + 600_000, remaining_grace_seconds: 600 });
+  /** 陪跑在途条：避免答完唯一一条后进入 P7 真空态（那时卡片不再以决策卡渲染） */
+  const undoFiller = listItem({ id: 'undo-filler', state: 'open', locked_at: NOW - 60_000, waiting_seconds: 60 });
+
+  function detailFor(
+    item: DecisionListItemDto,
+    revision: number,
+    deadline: number | null,
+  ): DecisionDetailDto {
+    return {
+      ...item,
+      state: revision > 0 ? 'answered' : 'grace',
+      answer_revision: revision,
+      undo_until: deadline,
+      answered_at: revision > 0 ? Date.now() : null,
+      checkpoint_json: null,
+      current_answer_id: revision > 0 ? `a-${revision}` : null,
+      expires_at: null,
+      on_expire: 'stay_locked',
+      options: item.options,
+      answers:
+        revision > 0
+          ? [
+              {
+                id: `a-${revision}`,
+                revision,
+                option_id: item.options[1]!.id,
+                answer_text: null,
+                answered_by: 'user',
+                source: 'web',
+                created_at: Date.now(),
+              },
+            ]
+          : [],
+    };
+  }
+
+  interface UndoFixtureOptions {
+    items?: DecisionListItemDto[];
+    /** 服务端 undo_until = 响应时刻 + N（默认 6000，测试可缩短） */
+    deadlineMs?: number;
+    /** 非空时 /undo 固定返回该错误；`network` 模拟断网 */
+    undoError?: { status: number; code: string; message: string } | 'network';
+  }
+
+  /** 有状态的决策服务：answer 落库 → 列表翻面；undo 真回滚 */
+  function installUndoServer(options: UndoFixtureOptions = {}) {
+    const base = options.items ?? [undoGrace, undoFiller];
+    const answerPosts: Array<Record<string, unknown>> = [];
+    const undoPosts: Array<Record<string, unknown>> = [];
+    const answered = new Set<string>();
+    const revisions = new Map<string, number>();
+    let deadline: number | null = null;
+    let failUndo = options.undoError === 'network';
+
+    const current = (item: DecisionListItemDto) => ({
+      ...item,
+      state: answered.has(item.id) ? ('answered' as const) : ('grace' as const),
+      answer_revision: revisions.get(item.id) ?? 0,
+      undo_until: answered.has(item.id) ? deadline : null,
+      // 列表分组按 answered_at 过滤 24h 内，必须给真实回答时刻
+      answered_at: answered.has(item.id) ? Date.now() : null,
+    });
+
+    const handlers = [
+      http.get('/api/decisions', ({ request }) => {
+        const isAnswered = new URL(request.url).searchParams.get('state') === 'answered';
+        const items = base.map(current).filter((item) => (item.state === 'answered') === isAnswered);
+        const active = base.map(current).filter((item) => item.state !== 'answered');
+        return HttpResponse.json({
+          decisions: items,
+          counts: {
+            grace: active.length,
+            open: 0,
+            stale_open: 0,
+            answered_recent: base.length - active.length,
+          },
+        });
+      }),
+      http.get('/api/decisions/:id', ({ params }) => {
+        const item = base.find((candidate) => candidate.id === params.id) ?? undoGrace;
+        const revision = revisions.get(item.id) ?? 0;
+        return HttpResponse.json({ decision: detailFor(item, revision, answered.has(item.id) ? deadline : null) });
+      }),
+      http.post('/api/decisions/:id/answer', async ({ request, params }) => {
+        const id = String(params.id);
+        answerPosts.push({ decisionId: id, ...((await request.json()) as Record<string, unknown>) });
+        const revision = (revisions.get(id) ?? 0) + 1;
+        revisions.set(id, revision);
+        answered.add(id);
+        deadline = Date.now() + (options.deadlineMs ?? 6000);
+        const item = base.find((candidate) => candidate.id === id) ?? undoGrace;
+        return HttpResponse.json({ decision: detailFor(item, revision, deadline) });
+      }),
+      http.post('/api/decisions/:id/undo', async ({ request, params }) => {
+        const id = String(params.id);
+        undoPosts.push({ decisionId: id, ...((await request.json()) as Record<string, unknown>) });
+        if (failUndo) return HttpResponse.error();
+        if (options.undoError !== undefined && options.undoError !== 'network') {
+          return HttpResponse.json(
+            { error: { code: options.undoError.code, message: options.undoError.message } },
+            { status: options.undoError.status },
+          );
+        }
+        answered.delete(id);
+        revisions.set(id, 0);
+        const item = base.find((candidate) => candidate.id === id) ?? undoGrace;
+        return HttpResponse.json({
+          decision: detailFor(item, 0, null),
+          reverted_to: 'grace',
+          undo_window_ms: 6000,
+          already_undone: false,
+        });
+      }),
+    ];
+
+    return {
+      handlers,
+      answerPosts,
+      undoPosts,
+      answered,
+      /** 让网络失败用例的第二次请求放行 */
+      recover: () => {
+        failUndo = false;
+      },
+    };
+  }
+
+  async function submitAnswer(item: DecisionListItemDto) {
+    await screen.findByTestId(`decision-item-${item.id}`);
+    fireEvent.click(screen.getByTestId(`decision-option-${item.options[1]!.id}`));
+    fireEvent.click(screen.getByTestId(`decision-action-${item.id}`));
+  }
+
+  it('提交即落库：420ms 覆盖「已记录 · 正在移出」且按钮不可点，之后移入已回答并出现撤销条', async () => {
+    const fixture = installUndoServer();
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    expect(fixture.answerPosts[0]).toMatchObject({ option_id: undoGrace.options[1]!.id, source: 'web' });
+
+    const leaving = await screen.findByTestId('decision-leaving-undo-grace');
+    expect(leaving).toHaveTextContent('已记录 · 正在移出');
+    expect(screen.getByTestId('decision-item-undo-grace')).toHaveAttribute('data-leaving', 'true');
+    expect(screen.getByTestId('decision-action-undo-grace')).toBeDisabled();
+
+    // 撤销条立即出现，倒计时读服务端 undo_until
+    expect(await screen.findByTestId('decision-undo-countdown')).toHaveTextContent('秒内可撤销');
+
+    // 420ms 后视觉移出，卡片落到「最近已回答」
+    await waitFor(() => expect(screen.queryByTestId('decision-leaving-undo-grace')).not.toBeInTheDocument(), {
+      timeout: 2000,
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-answered"]')).not.toBeNull(),
+    );
+  });
+
+  it('6 秒内撤销：POST 带 expected_revision，服务端回滚后卡片回到宽限中', async () => {
+    const fixture = installUndoServer();
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-answered"]')).not.toBeNull(),
+      { timeout: 2000 },
+    );
+
+    fireEvent.click(await screen.findByTestId('decision-undo'));
+    await waitFor(() => expect(fixture.undoPosts).toHaveLength(1));
+    expect(fixture.undoPosts[0]).toMatchObject({ by: 'user', expected_revision: 1 });
+
+    expect(await screen.findByTestId('decision-undo-result')).toHaveTextContent('已撤销');
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-grace"]')).not.toBeNull(),
+    );
+  });
+
+  it('窗口已过：撤销按钮消失显示「已作答」，不会补发 /undo', async () => {
+    const fixture = installUndoServer({ deadlineMs: 400 });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+
+    await waitFor(() => expect(screen.queryByTestId('decision-undo')).not.toBeInTheDocument(), { timeout: 2500 });
+    expect(screen.getByTestId('decision-undo-expired')).toHaveTextContent('已作答');
+    expect(fixture.undoPosts).toHaveLength(0);
+  });
+
+  it('刷新页面：答案已在服务端保持已回答，不补发 answer、不出现撤销条', async () => {
+    const fixture = installUndoServer();
+    server.use(...fixture.handlers);
+    const first = renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    first.unmount();
+
+    renderWithQuery(<DecisionsView />);
+    fireEvent.click(await screen.findByTestId('decisions-tab-answered'));
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-answered"]')).not.toBeNull(),
+    );
+    expect(fixture.answerPosts).toHaveLength(1);
+    expect(fixture.undoPosts).toHaveLength(0);
+    expect(screen.queryByTestId('decision-undo-bar')).not.toBeInTheDocument();
+  });
+
+  it('409 过期：toast「撤销窗口已过」，卡片保持已回答', async () => {
+    const fixture = installUndoServer({
+      undoError: { status: 409, code: 'UNDO_WINDOW_EXPIRED', message: '撤销窗口已过期' },
+    });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    fireEvent.click(await screen.findByTestId('decision-undo'));
+
+    expect(await screen.findByTestId('decision-undo-result')).toHaveTextContent('撤销窗口已过');
+    expect(screen.queryByTestId('decision-undo-retry')).not.toBeInTheDocument();
+    expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-grace"]')).toBeNull();
+  });
+
+  it('409 已被重新领取：toast 给出对应文案，不显示「操作失败」', async () => {
+    const fixture = installUndoServer({
+      undoError: {
+        status: 409,
+        code: 'UNDO_CLAIMED_AFTER_LOCK',
+        message: '卡在回答后已被重新领取',
+      },
+    });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    fireEvent.click(await screen.findByTestId('decision-undo'));
+
+    const result = await screen.findByTestId('decision-undo-result');
+    expect(result).toHaveTextContent('已被重新领取');
+    expect(result).not.toHaveTextContent('操作失败');
+  });
+
+  it('409 版本冲突：toast 带服务端原因', async () => {
+    const fixture = installUndoServer({
+      undoError: { status: 409, code: 'DECISION_REVISION_CONFLICT', message: 'revision 2 已过期' },
+    });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    fireEvent.click(await screen.findByTestId('decision-undo'));
+
+    expect(await screen.findByTestId('decision-undo-result')).toHaveTextContent('答案版本已变化');
+  });
+
+  it('连续提交两条：撤销条只保留第二条，旧回答保持有效', async () => {
+    const second = listItem({ id: 'undo-second', state: 'grace', grace_until: NOW + 600_000, remaining_grace_seconds: 600 });
+    const fixture = installUndoServer({ items: [undoGrace, second] });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    await submitAnswer(second);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(2));
+
+    const bar = screen.getByTestId('decision-undo-bar');
+    expect(bar).toHaveAttribute('data-decision-id', second.id);
+    expect(bar).toHaveTextContent(second.issue_title);
+
+    fireEvent.click(screen.getByTestId('decision-undo'));
+    await waitFor(() => expect(fixture.undoPosts).toHaveLength(1));
+    expect(fixture.undoPosts[0]).toMatchObject({ decisionId: second.id, expected_revision: 1 });
+    // 第一条没有被连带撤销
+    expect(fixture.answered.has(undoGrace.id)).toBe(true);
+  });
+
+  it('倒计时读服务端 undo_until，而不是本地提交时刻 + 6 秒', async () => {
+    const fixture = installUndoServer({ deadlineMs: 3000 });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+
+    const text = (await screen.findByTestId('decision-undo-countdown')).textContent ?? '';
+    // 服务端只给 3s 窗口；剩余秒数由服务端 undo_until 反推（本地此刻仍可能显示 4s 的取整差）
+    expect(text).toMatch(/秒内可撤销/);
+    expect(text).not.toContain('6 秒');
+  });
+
+  it('网络失败：保留「重试撤销」，重试成功后回到宽限中', async () => {
+    const fixture = installUndoServer({ undoError: 'network' });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await submitAnswer(undoGrace);
+    await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+    fireEvent.click(await screen.findByTestId('decision-undo'));
+
+    expect(await screen.findByTestId('decision-undo-retry')).toBeInTheDocument();
+    expect(screen.getByTestId('decision-undo-result')).toHaveTextContent('网络异常');
+
+    fixture.recover();
+    fireEvent.click(screen.getByTestId('decision-undo-retry'));
+    await waitFor(() => expect(fixture.undoPosts).toHaveLength(2));
+    expect(await screen.findByTestId('decision-undo-result')).toHaveTextContent('已撤销');
+  });
+
+  it('reduced motion：跳过 420ms leaving，提交后直接进入已回答', async () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    const fixture = installUndoServer();
+    server.use(...fixture.handlers);
+    try {
+      renderWithQuery(<DecisionsView />);
+      await submitAnswer(undoGrace);
+      await waitFor(() => expect(fixture.answerPosts).toHaveLength(1));
+
+      // 无 leaving 覆盖层，直接读列表新状态
+      expect(screen.queryByTestId('decision-leaving-undo-grace')).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByTestId('decision-item-undo-grace').closest('[data-testid="decisions-group-answered"]')).not.toBeNull(),
+      );
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+});

@@ -11,7 +11,7 @@ import type { ServerWsEvent } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import type { DecisionsScope } from '../../lib/decisionsScope';
-import type { DecisionCounts, DecisionDetailDto, DecisionListResponse } from './types';
+import type { DecisionCounts, DecisionDetailDto, DecisionListResponse, UndoDecisionResponse } from './types';
 
 export const DECISION_LIST_LIMIT = 50;
 
@@ -139,11 +139,13 @@ export interface AnswerDecisionInput {
 
 /**
  * DEC-V4-INLINE（P3）：就地作答 / 改答案。
- * 与卡详情 `DecisionSection` 同一口径：`POST /api/decisions/:id/answer`，修订带 `expected_revision`，
- * 成功后失效列表 / 徽标 / 详情 / 卡面（不乐观改列表，答案版本以服务端为准）。
+ * 与卡详情 `DecisionSection` 同一口径：`POST /api/decisions/:id/answer`，修订带 `expected_revision`。
+ *
+ * DEC-V4-UNDO：**不再在 onSuccess 立即失效列表**——提交后卡片要先走 420ms leaving 反馈，
+ * 视图在 leaving 结束后统一 invalidate（见 `DecisionsView` 的 `onAnswered`）；否则列表先刷新、
+ * 卡片直接跳组，leaving 覆盖层根本没机会出现。答案版本仍以服务端为准，不做乐观改列表。
  */
 export function useAnswerDecision() {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: AnswerDecisionInput) =>
       api.post<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(input.decisionId)}/answer`, {
@@ -151,6 +153,30 @@ export function useAnswerDecision() {
         ...(input.answerText === undefined ? {} : { answer_text: input.answerText }),
         source: 'web',
         ...(input.expectedRevision === undefined ? {} : { expected_revision: input.expectedRevision }),
+      }),
+  });
+}
+
+export interface UndoDecisionInput {
+  decisionId: string;
+  /** 必传：提交回答时服务端返回的 `answer_revision`（服务端 CAS，旧版本 → 409） */
+  expectedRevision: number;
+  /** 撤销人；web 端无人值守回答的 `answered_by` 是 `user`（服务端要求与答案行或提问者一致） */
+  by?: string;
+}
+
+/**
+ * DEC-V4-UNDO：`POST /api/decisions/:id/undo` 服务端真回滚。
+ * 成功（含 `already_undone` 幂等重放）后失效列表 / 徽标 / 详情 / 卡面；失败分支由视图按
+ * `ApiError.code` 分类展示（409 各自文案），这里不吞错。
+ */
+export function useUndoDecision() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UndoDecisionInput) =>
+      api.post<UndoDecisionResponse>(`/api/decisions/${encodeURIComponent(input.decisionId)}/undo`, {
+        by: input.by ?? 'user',
+        expected_revision: input.expectedRevision,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['decisions'] });
@@ -169,6 +195,7 @@ const DECISION_EVENT_TYPES = new Set<ServerWsEvent['type']>([
   'decision.revised',
   'decision.withdrawn',
   'decision.extended',
+  'decision.undone',
   'issue.stop_requested',
 ]);
 

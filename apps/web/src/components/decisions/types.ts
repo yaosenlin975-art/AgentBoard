@@ -61,6 +61,13 @@ export interface DecisionListItemDto {
   capabilities?: DecisionCapabilities;
   /** 服务端 join issue 派生（DEC-V4-API-LIST）：队列排序用 */
   issue_priority: '低' | '中' | '高';
+  /**
+   * DEC-V4-UNDO：最近一次回答/修订的可撤销截止（毫秒，服务端时钟）。
+   * 撤销 toast 的倒计时以此为准（即类型口径里的 `undo_deadline_at`），不用本地提交时刻 + 6s。
+   */
+  undo_until?: number | null;
+  /** DEC-V4-UNDO：最近一次撤销的答案版本（幂等重放判定用，旧快照可能缺省） */
+  last_undone_revision?: number | null;
   option_count: number;
   /** 列表内联选项（与详情同形状，按 ord 升序） */
   options: DecisionOptionDto[];
@@ -94,3 +101,17 @@ export interface DecisionListResponse {
   /** PERM-2 响应级能力投影（多区时取最高角色）；旧服务端缺省 */
   capabilities?: DecisionCapabilities;
 }
+
+/**
+ * `POST /api/decisions/:id/undo` 响应（DEC-V4-UNDO-SERVER 契约）。
+ * - `reverted_to` 是服务端记录的回答前状态：grace 沿用原 grace_until 继续倒计时，open 进「待回答」；
+ * - `already_undone` 是幂等重放标记（同一 by + 同一 revision 重复提交），按成功处理；
+ * - `undo_window_ms` 是固定窗口长度（6000），倒计时仍应以 `decision.undo_until` 为准。
+ */
+export interface UndoDecisionResponse {
+  decision: DecisionDetailDto;
+  reverted_to: 'grace' | 'open';
+  undo_window_ms: number;
+  already_undone: boolean;
+}
+

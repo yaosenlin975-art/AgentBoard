@@ -84,6 +84,8 @@ export interface DecisionCardProps {
   focused: boolean;
   /** P8：深链定位后的两次闪烁（reduced motion 下不闪，仅保留高亮边框） */
   flash?: boolean;
+  /** DEC-V4-UNDO：提交成功后的 420ms leaving 态（覆盖层 + 不可再点） */
+  leaving?: boolean;
   scope: 'grace' | 'open' | 'stale' | 'answered';
   expanded: boolean;
   /** 当前选中的工作区；与 item.workspace_id 不同即跨区卡 */
@@ -92,6 +94,19 @@ export interface DecisionCardProps {
   resetSignal: string;
   onToggle: (decisionId: string) => void;
   onOpenIssue: (issueId: string) => void;
+  /** DEC-V4-UNDO：提交成功 → 视图接管撤销条与移出节奏（答案已在服务端落库） */
+  onAnswered: (payload: DecisionAnsweredPayload) => void;
+}
+
+/** 提交成功后交给视图的服务端事实（revision / 撤销截止都来自 answer 响应） */
+export interface DecisionAnsweredPayload {
+  decisionId: string;
+  issueTitle: string;
+  revision: number;
+  /** 答案行的 answered_by（撤销时服务端要求与它或提问者一致） */
+  by: string;
+  /** 服务端 `undo_until`（毫秒）；撤销倒计时唯一依据 */
+  deadline: number;
 }
 
 /** 跨区 chip 文案：短名展示、全名放 title（服务端 workspace_name） */
@@ -105,12 +120,14 @@ export function DecisionCard({
   rank,
   focused,
   flash = false,
+  leaving = false,
   scope,
   expanded,
   homeWorkspaceId,
   resetSignal,
   onToggle,
   onOpenIssue,
+  onAnswered,
 }: DecisionCardProps) {
   const queryClient = useQueryClient();
   const { ref, narrow } = useNarrowContainer(NARROW_BREAKPOINT);
@@ -152,6 +169,7 @@ export function DecisionCard({
   const currentLabel = optionLabel(detail, current);
   const isAnswered = scope === 'answered' || item.state === 'answered';
   const canSubmit =
+    !leaving &&
     !answerMutation.isPending &&
     (customOpen ? true : selectedOptionId !== null && (current === null || selectedOptionId !== current.option_id));
   const optionsScroll = options.length + 1 >= SCROLL_THRESHOLD;
@@ -255,8 +273,23 @@ export function DecisionCard({
     setCustomError(null);
   }
 
+  /**
+   * DEC-V4-UNDO：提交成功回调。答案已在服务端落库，这里只上报事实：
+   * revision 用于撤销的 expected_revision，deadline 用服务端 `undo_until`（不是本地 +6s）。
+   */
+  function notifyAnswered(decision: DecisionDetailDto) {
+    const answer = decision.answers?.find((row) => row.id === decision.current_answer_id) ?? null;
+    onAnswered({
+      decisionId: item.id,
+      issueTitle: item.issue_title,
+      revision: decision.answer_revision,
+      by: answer?.answered_by ?? 'user',
+      deadline: decision.undo_until ?? Date.now() + 6000,
+    });
+  }
+
   function submit() {
-    if (answerMutation.isPending || roleBlocked) return;
+    if (leaving || answerMutation.isPending || roleBlocked) return;
     if (customOpen) {
       const text = customText.trim();
       if (text === '') {
@@ -283,10 +316,11 @@ export function DecisionCard({
           ...(isAnswered ? { expectedRevision: item.answer_revision } : {}),
         },
         {
-          onSuccess: () => {
+          onSuccess: (response) => {
             setSelectedOptionId(null);
             setCustomOpen(false);
             setConfirmCross(false);
+            notifyAnswered(response.decision);
           },
           onError: handleSubmitError,
         },
@@ -306,9 +340,10 @@ export function DecisionCard({
         ...(isAnswered ? { expectedRevision: item.answer_revision } : {}),
       },
       {
-        onSuccess: () => {
+        onSuccess: (response) => {
           setSelectedOptionId(null);
           setConfirmCross(false);
+          notifyAnswered(response.decision);
         },
         onError: handleSubmitError,
       },
@@ -332,10 +367,23 @@ export function DecisionCard({
       data-selected={focused ? 'true' : 'false'}
       data-flash={flash ? 'true' : 'false'}
       data-expanded={expanded ? 'true' : 'false'}
-      className={`flex min-w-0 flex-col gap-1.5 rounded-md border bg-surface-card px-2 py-1.5 transition-colors duration-150 motion-reduce:transition-none ${
+      data-leaving={leaving ? 'true' : 'false'}
+      aria-busy={leaving}
+      className={`relative flex min-w-0 flex-col gap-1.5 rounded-md border bg-surface-card px-2 py-1.5 transition-colors duration-150 motion-reduce:transition-none ${
         focused ? 'border-accent bg-accent-soft' : 'border-hairline hover:bg-surface-raised'
       } ${flash ? 'ring-2 ring-accent ring-offset-1' : ''}`}
     >
+      {/* DEC-V4-UNDO：提交已落库，420ms 视觉移出（reduced motion 下由视图直接跳过） */}
+      {leaving && (
+        <div
+          data-testid={`decision-leaving-${item.id}`}
+          role="status"
+          aria-live="polite"
+          className="absolute inset-0 z-10 flex items-center justify-center rounded-md bg-surface-card/90 text-xs font-medium text-ink-2"
+        >
+          已记录 · 正在移出
+        </div>
+      )}
       <div className="flex min-w-0 items-center gap-2">
         {rank !== undefined && (
           <span
