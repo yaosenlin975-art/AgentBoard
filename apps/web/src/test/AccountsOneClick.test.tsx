@@ -318,8 +318,8 @@ describe('一键签到（ACC-14）', () => {
     const chip = await screen.findByTestId('accounts-checkin-chip-workbuddy_desktop');
     expect(chip).toHaveTextContent('2/5 ?');
     expect(chip).toHaveAttribute('title', expect.stringContaining('结果未知'));
-    // 列表摘要与芯片同口径
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('今日已完成 2/5');
+    // 列表摘要与芯片同口径；ACC-UI-2 去掉摘要里的重复计数（只在芯片展示 n/m）
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('今日已完成');
     expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 5 个启用并参与一键签到');
   });
 });

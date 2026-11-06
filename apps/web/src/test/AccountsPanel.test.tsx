@@ -115,7 +115,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
     expect(within(wb).getByText('WB 账号一')).toBeInTheDocument();
     expect(within(wb).getByText('WB 账号二')).toBeInTheDocument();
-    expect(within(wb).getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('共 2 个账号');
+    expect(within(wb).getByTestId('accounts-count-workbuddy_desktop')).toHaveTextContent('2 个');
+    expect(within(wb).getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 2 个启用并参与一键签到');
 
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
     const mm = await screen.findByTestId('accounts-app-minimax');
@@ -143,8 +144,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     const cur = await screen.findByTestId('accounts-card-acc-wb-cur');
     expect(within(cur).getByTestId('accounts-client-current-acc-wb-cur')).toHaveTextContent('客户端当前');
     expect(within(cur).getByTestId('accounts-checkin-current-acc-wb-cur')).toHaveTextContent('签到当前');
-    // 客户端当前账号不需要切换
-    expect(within(cur).getByTestId('accounts-switch-acc-wb-cur')).toBeDisabled();
+    // ACC-UI-2：当前账号不渲染灰切换按钮（已有「客户端当前」芯片表达同一事实）
+    expect(within(cur).queryByTestId('accounts-switch-acc-wb-cur')).toBeNull();
 
     const next = screen.getByTestId('accounts-card-acc-wb-next');
     // ACC-B2：负向信息不渲染——「客户端非当前」退到 title
@@ -190,14 +191,13 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
     await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
     const mmCard = await screen.findByTestId('accounts-card-acc-mm-1');
-    const mmSwitch = within(mmCard).getByTestId('accounts-switch-acc-mm-1');
-    expect(mmSwitch).toBeDisabled();
-    // 原因来自服务端 switch_reason_code（CLIENT_NOT_INSTALLED），不是前端自造
-    expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('本机未安装该客户端'));
-    expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('CLIENT_NOT_INSTALLED'));
-    // ACC-SWITCH：禁用的切换按钮必须给出出路，不能只留一个点不动的按钮
-    expect(mmSwitch).toHaveAttribute('title', expect.stringContaining('需手动在客户端切换'));
-    await userEvent.click(mmSwitch);
+    // ACC-UI-2：不可用时不给灰按钮，改为平台级可见原因（含服务端 switch_reason_code 与出路）
+    expect(within(mmCard).queryByTestId('accounts-switch-acc-mm-1')).toBeNull();
+    const mmReason = screen.getByTestId('accounts-switch-unavailable-minimax');
+    expect(mmReason).toHaveTextContent('切换不可用');
+    expect(mmReason).toHaveAttribute('title', expect.stringContaining('本机未安装该客户端'));
+    expect(mmReason).toHaveAttribute('title', expect.stringContaining('CLIENT_NOT_INSTALLED'));
+    expect(mmReason).toHaveAttribute('title', expect.stringContaining('需在客户端手动切换'));
     expect(posts).toHaveLength(0);
 
     // ACC-B1：切回 WorkBuddy，右栏默认展开
@@ -292,7 +292,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toHaveTextContent('能力矩阵不可用');
     expect(await screen.findByTestId('accounts-one-click-checkin')).toBeDisabled();
     const card = await screen.findByTestId('accounts-card-acc-wb-1');
-    expect(within(card).getByTestId('accounts-switch-acc-wb-1')).toBeDisabled();
+    // ACC-UI-2：能力未知时不渲染切换按钮（避免假入口），签到仍按能力矩阵禁用
+    expect(within(card).queryByTestId('accounts-switch-acc-wb-1')).toBeNull();
     expect(within(card).getByTestId('accounts-checkin-acc-wb-1')).toBeDisabled();
     expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeDisabled();
   });

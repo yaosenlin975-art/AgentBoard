@@ -3,10 +3,12 @@
  * `Docs/prototypes/accounts-redesign-2026-11-04/b-console.html` 的 `.acard` + DESIGN-NOTES §三）。
  * 能力来自服务端能力矩阵（由 AccountsPanel 传入），前端不维护能力副本。
  *
- * 三级披露（ACC-B2）：
- * - 一级（身份）：首字头像 + display_name（truncate，title 全文）+ identity_hint（等宽小字，截到前 8 位）。
- * - 二级（状态与动作）：只渲染正向芯片「客户端当前 / 签到当前 / 已停用」；动作区 切换→签到→启停→删除，
- *   切换是唯一主按钮。负向信息（客户端非当前 / 客户端当前未知 / 区域未知 / 签到能力未知 / 不参与签到）
+ * 三级披露（ACC-B2 + ACC-UI-2）：
+ * - 一级（身份）：display_name（truncate，title 全文）+ identity_hint（等宽小字，截到前 8 位；空值不渲染占位）。
+ *   头像已移除（纯装饰、无信息）。
+ * - 二级（状态与动作）：只渲染正向芯片「客户端当前 / 签到当前 / 已停用」；动作区只留高频的 切换 → 签到，
+ *   低频/危险的 停用、删除 收进 `⋯` 溢出菜单。已是当前账号、平台不支持切换或能力未知时不渲染灰切换按钮，
+ *   原因由平台级说明行给出。负向信息（客户端非当前 / 客户端当前未知 / 区域未知 / 签到能力未知 / 不参与签到）
  *   一律不渲染，退到 title 或三级技术信息。
  * - 三级（技术信息）：`<details>` 默认折叠，收纳 平台能力徽标 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照。
  *
@@ -20,7 +22,7 @@
  * 通用中文原因；失败裸码不进主文案，进 title 与三级「技术信息」技术码行（优先于切换/operation 码）；
  * 失败后卡片与选中态不变，删除按钮可再次操作。
  *
- * ACC-B4 切换就地确认与切换态：点「切换为客户端登录账号」→ 卡片内展开确认行（3 秒未确认自动收回，
+ * ACC-B4 切换就地确认与切换态：点「切换」→ 卡片内展开确认行（3 秒未确认自动收回，
  * 不弹全局层）；确认后进入切换中（operation 未到终态期间本卡动作按钮禁用，状态复用
  * AccountOperationStatus / operation 轮询）；成功失效重拉后 is_current 芯片转移；失败给中文原因
  * （沿用 reasonCode 中文化映射），无映射裸码只进三级「技术信息」，不进卡面。
@@ -32,7 +34,7 @@
  *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AccountOperation, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -258,7 +260,7 @@ export function AccountCard({
     ? '为该账号发起签到'
     : (participation.reason ?? `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`);
 
-  // ACC-B2 一级：identity_hint 恒为前 8 位（服务端超长也截断），缺失保留「未提供」兜底
+  // ACC-UI-2 一级：identity_hint 恒为前 8 位（服务端超长也截断）；空值不渲染占位
   const hint = (account.identity_hint ?? '').slice(0, 8);
   // ACC-B2 二级：客户端当前非正向态不渲染，负向信息退到 title
   const clientCurrentTitle =
@@ -267,25 +269,19 @@ export function AccountCard({
       : account.is_current === null
         ? '客户端当前未知'
         : undefined;
-  const avatarChar = account.display_name.trim().slice(0, 1) || '?';
+  const menuRef = useRef<HTMLDetailsElement | null>(null);
+  const closeMenu = () => menuRef.current?.removeAttribute('open');
 
   return (
     <article
       data-testid={`accounts-card-${account.id}`}
-      className={`rounded-xl border border-hairline bg-surface-card px-3 py-3 ${account.enabled === false ? 'opacity-60' : ''}`}
+      className={`px-1 py-2.5 ${account.enabled === false ? 'opacity-60' : ''}`}
     >
-      {/* 一级 + 二级：头像 | 身份与正向芯片 | 动作区（顺序不变：切换 → 签到 → 启停 → 删除；唯一主按钮是切换） */}
-      <div data-testid={`accounts-card-face-${account.id}`} className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
-        <span
-          aria-hidden="true"
-          className="flex size-8 shrink-0 select-none items-center justify-center rounded-full bg-surface-raised text-xs font-semibold text-ink-2"
-        >
-          {avatarChar}
-        </span>
-
+      {/* 一级 + 二级：身份与正向芯片 | 动作区（切换 → 签到 → ⋯ 菜单） */}
+      <div data-testid={`accounts-card-face-${account.id}`} className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="min-w-0 truncate text-sm font-semibold text-ink" title={account.display_name}>
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="min-w-0 truncate text-sm font-medium text-ink" title={account.display_name}>
               {account.display_name}
             </span>
             {/* 客户端当前：正向才出芯片；非当前/未知退到 title（ACC-B2 负向不渲染） */}
@@ -307,24 +303,28 @@ export function AccountCard({
               <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-ink-2">已停用</span>
             )}
           </div>
-          <div className="mt-0.5 flex min-w-0 items-center">
-            <span data-testid={`accounts-hint-${account.id}`} className="truncate font-mono text-[11px] tracking-wide text-ink-3">
-              {hint === '' ? '未提供' : hint}
-            </span>
-          </div>
+          {/* ACC-UI-2：空 identity_hint 不再渲染「未提供」占位（无信息量）；有值才出等宽小字 */}
+          {hint !== '' && (
+            <p data-testid={`accounts-hint-${account.id}`} className="mt-0.5 truncate font-mono text-[11px] tracking-wide text-ink-3">
+              {hint}
+            </p>
+          )}
         </div>
 
-        <div className="flex flex-none items-center gap-2">
-          <button
-            type="button"
-            data-testid={`accounts-switch-${account.id}`}
-            className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
-            disabled={switchBlocked || switching}
-            title={switchTitle}
-            onClick={() => { setError(null); setSwitchErrorCode(null); setConfirming(true); }}
-          >
-            切换为客户端登录账号
-          </button>
+        <div className="flex flex-none items-center gap-1.5">
+          {/* ACC-UI-2：已是当前账号 / 平台不支持切换时不渲染灰按钮，原因交给芯片与平台级说明行 */}
+          {capability?.switch === true && account.is_current !== true && (
+            <button
+              type="button"
+              data-testid={`accounts-switch-${account.id}`}
+              className={`${BTN_BASE} bg-accent text-accent-ink hover:opacity-90`}
+              disabled={switchBlocked || switching}
+              title={switchTitle}
+              onClick={() => { setError(null); setSwitchErrorCode(null); setConfirming(true); }}
+            >
+              切换
+            </button>
+          )}
           <button
             type="button"
             data-testid={`accounts-checkin-${account.id}`}
@@ -335,37 +335,61 @@ export function AccountCard({
           >
             签到
           </button>
-          {/* ACC-KB-A2W：启用/停用插在「签到」与「删除」之间；排队/进行中由 canToggleEnabled 预判，服务端 409 另有可读提示 */}
-          <button
-            type="button"
-            data-testid={`accounts-enabled-toggle-${account.id}`}
-            className={BTN_QUIET}
-            disabled={!toggle.allowed || toggleEnabledMutation.isPending || switching}
-            title={
-              toggle.allowed
-                ? toggle.nextEnabled
-                  ? '重新启用该账号（恢复参与一键签到）'
-                  : '停用该账号（保留记录，不再参与一键签到）'
-                : toggle.reason ?? ACCOUNT_BUSY_REASON
-            }
-            onClick={() => { if (toggle.allowed) toggleEnabledMutation.mutate(toggle.nextEnabled); }}
-          >
-            {toggle.nextEnabled ? '启用' : '停用'}
-          </button>
-          <button
-            type="button"
-            data-testid={`accounts-delete-${account.id}`}
-            className={BTN_QUIET}
-            disabled={muted || deleteMutation.isPending || switching}
-            title={
-              muted
-                ? '能力矩阵未就绪，暂时不能删除账号'
-                : '删除 AgentBoard 里的这条账号记录（不清除客户端登录态）'
-            }
-            onClick={() => { setDeleteErrorCode(null); setDeleteConfirming(true); }}
-          >
-            删除
-          </button>
+          {/* ACC-UI-2：低频/危险操作（停用、删除）收进 ⋯ 菜单，主行只留高频动作 */}
+          <details ref={menuRef} data-testid={`accounts-more-${account.id}`} className="relative">
+            <summary
+              aria-label="更多操作"
+              title="更多操作（停用 / 删除）"
+              className="flex size-7 cursor-pointer select-none items-center justify-center rounded-lg border border-hairline bg-surface-card text-ink-2 ab-transition hover:bg-surface-raised [&::-webkit-details-marker]:hidden"
+            >
+              ⋯
+            </summary>
+            <div
+              role="menu"
+              aria-label="账号更多操作"
+              className="absolute right-0 top-full z-10 mt-1 w-32 rounded-lg border border-hairline bg-surface-card p-1 shadow-lg"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                data-testid={`accounts-enabled-toggle-${account.id}`}
+                className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-ink ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={!toggle.allowed || toggleEnabledMutation.isPending || switching}
+                title={
+                  toggle.allowed
+                    ? toggle.nextEnabled
+                      ? '重新启用该账号（恢复参与一键签到）'
+                      : '停用该账号（保留记录，不再参与一键签到）'
+                    : toggle.reason ?? ACCOUNT_BUSY_REASON
+                }
+                onClick={() => {
+                  closeMenu();
+                  if (toggle.allowed) toggleEnabledMutation.mutate(toggle.nextEnabled);
+                }}
+              >
+                {toggle.nextEnabled ? '启用' : '停用'}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid={`accounts-delete-${account.id}`}
+                className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-red-600 ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400"
+                disabled={muted || deleteMutation.isPending || switching}
+                title={
+                  muted
+                    ? '能力矩阵未就绪，暂时不能删除账号'
+                    : '删除 AgentBoard 里的这条账号记录（不清除客户端登录态）'
+                }
+                onClick={() => {
+                  closeMenu();
+                  setDeleteErrorCode(null);
+                  setDeleteConfirming(true);
+                }}
+              >
+                删除
+              </button>
+            </div>
+          </details>
         </div>
       </div>
 

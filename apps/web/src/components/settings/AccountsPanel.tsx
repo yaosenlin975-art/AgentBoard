@@ -45,6 +45,7 @@ import {
   checkinParticipation,
   summarizeCheckinToday,
   unavailableLabel,
+  unavailableReason,
   useAccountCapabilities,
   type CapabilityView,
   type CheckinChipTone,
@@ -162,7 +163,6 @@ export function AccountsPanel() {
             capabilityKnown={capabilityKnown}
             accounts={appAccounts}
             summary={summary}
-            today={today}
           />
         ),
       };
@@ -267,7 +267,6 @@ function PlatformRow({
   capabilityKnown,
   accounts,
   summary,
-  today,
 }: {
   app: string;
   open: boolean;
@@ -277,7 +276,6 @@ function PlatformRow({
   capabilityKnown: boolean;
   accounts: PublicManagedAccount[];
   summary: CheckinTodaySummary;
-  today: string;
 }) {
   const queryClient = useQueryClient();
   const [batchId, setBatchId] = useState<string | null>(null);
@@ -354,8 +352,6 @@ function PlatformRow({
           <span data-testid={`accounts-count-${app}`} className="text-[11px] font-normal text-neutral-400 dark:text-neutral-500">{accounts.length} 个</span>
         </button>
 
-        <QuotaCreditChip testId={`accounts-credit-${app}`} />
-
         <span
           data-testid={`accounts-checkin-chip-${app}`}
           data-tone={summary.chip.tone}
@@ -387,11 +383,30 @@ function PlatformRow({
 
       {/* 展开层：账号管理（默认折叠；用 hidden 保持可访问性，不做高度动画） */}
       <div id={bodyId} data-testid={bodyId} hidden={!open} className="pb-3">
-        <CapabilityBadges app={app} capability={capability} />
+        {/* ACC-UI-2：能力徽标 / 积分可用性 / 参与签到数合并为一条次级说明，账号数已由行头承载 */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <CapabilityBadges app={app} capability={capability} />
+          <QuotaCreditChip testId={`accounts-credit-${app}`} />
+          {accounts.length > 0 && (
+            <p data-testid={`accounts-summary-${app}`} className="text-[11px] text-ink-3">
+              其中 {checkinAccounts.length} 个启用并参与一键签到
+            </p>
+          )}
+        </div>
 
-        {capability !== null && !usable && (
-          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-            该客户端目标未确认：捕获/切换能力未验证，只读展示已有记录。
+        {/* ACC-UI-2：不可用原因可见——捕获/切换没有可点按钮时，用文字说明原因与出路 */}
+        {capability !== null && capability.capture !== true && (
+          <p className="mt-1 text-[11px] text-ink-3">
+            捕获不可用：{unavailableLabel(capability, 'capture') ?? '原因未知'}，只读展示已有记录。
+          </p>
+        )}
+        {capability !== null && capability.switch !== true && (
+          <p
+            data-testid={`accounts-switch-unavailable-${app}`}
+            className="mt-0.5 text-[11px] text-ink-3"
+            title={`${unavailableLabel(capability, 'switch') ?? '切换不可用'} · ${unavailableReason(capability, 'switch') ?? '能力未知'}，需在客户端手动切换`}
+          >
+            切换不可用：{unavailableLabel(capability, 'switch') ?? '原因未知'}，需在客户端手动切换
           </p>
         )}
 
@@ -400,23 +415,17 @@ function PlatformRow({
             尚无{appLabel(app)}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}。点「读取本机账号」或「捕获当前账号」后列出。
           </p>
         ) : (
-          <>
-            <p data-testid={`accounts-summary-${app}`} className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              共 {accounts.length} 个账号，其中 {checkinAccounts.length} 个启用并参与一键签到
-              <span className="ml-1">· 今日已完成 {summary.done}/{summary.total}（本地记录，{today}）</span>
-            </p>
-            <div className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {accounts.map((account) => (
-                <AccountCard
-                  key={account.id}
-                  account={account as AccountView}
-                  capability={capability}
-                  muted={!capabilityKnown}
-                  onCheckin={checkinEnabled ? () => checkin.mutate([account.id]) : undefined}
-                />
-              ))}
-            </div>
-          </>
+          <div className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
+            {accounts.map((account) => (
+              <AccountCard
+                key={account.id}
+                account={account as AccountView}
+                capability={capability}
+                muted={!capabilityKnown}
+                onCheckin={checkinEnabled ? () => checkin.mutate([account.id]) : undefined}
+              />
+            ))}
+          </div>
         )}
 
         <div className="mt-2 flex flex-wrap items-center gap-2">

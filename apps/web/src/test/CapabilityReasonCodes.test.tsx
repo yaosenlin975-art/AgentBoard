@@ -62,12 +62,13 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     expect(capText).toContain('签到 CHECKIN_PROVIDER_UNVERIFIED');
     // 捕获按钮可用（不因 checkin/switch 的码被禁）
     expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeEnabled();
-    // 切换按钮禁用且标题取 switch 维度文案
+    // ACC-UI-2：切换不可用不再渲染灰按钮，改为平台级可见原因（技术码仍在 title）
     const card = screen.getByTestId(`accounts-card-${WB_ID}`);
-    const switchBtn = within(card).getByTestId(`accounts-switch-${WB_ID}`);
-    expect(switchBtn).toBeDisabled();
-    expect(switchBtn).toHaveAttribute('title', expect.stringContaining('TARGET_KIND_UNCONFIRMED'));
-    expect(switchBtn).toHaveAttribute('title', expect.stringContaining('目标未确认，不可用'));
+    expect(within(card).queryByTestId(`accounts-switch-${WB_ID}`)).toBeNull();
+    const switchReason = screen.getByTestId('accounts-switch-unavailable-workbuddy_desktop');
+    expect(switchReason).toHaveTextContent('切换不可用');
+    expect(switchReason).toHaveAttribute('title', expect.stringContaining('TARGET_KIND_UNCONFIRMED'));
+    expect(switchReason).toHaveAttribute('title', expect.stringContaining('目标未确认，不可用'));
   });
 
   it('全部可用（三项均 OK）时不显示任何「不可用」文案', async () => {

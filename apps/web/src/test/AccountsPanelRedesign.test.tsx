@@ -181,6 +181,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(within(details).getByTestId('accounts-capability-workbuddy_desktop')).toHaveTextContent('捕获 OK');
     expect(within(details).getByTestId('accounts-capability-workbuddy_desktop')).toHaveTextContent('签到 OK');
     expect(within(details).getByTestId('accounts-capability-source-workbuddy_desktop')).toHaveTextContent('由已验证 provider 推导');
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('共 1 个账号');
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 1 个启用并参与一键签到');
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('共 1 个账号');
   });
 });

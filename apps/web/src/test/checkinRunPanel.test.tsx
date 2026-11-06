@@ -141,7 +141,8 @@ describe('完成口径（ACC-B3 父卡硬规则）', () => {
     // 平台指标：芯片 n/m?（unknown 加 ?）
     const chip = screen.getByTestId('accounts-checkin-chip-workbuddy_desktop');
     expect(chip).toHaveTextContent('1/2 ?');
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('今日已完成 1/2');
+    // ACC-UI-2：摘要不再重复「今日已完成 n/m」，只保留参与账号数口径
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('今日已完成');
   });
 
   it('② already_done 计入 done；终态文案「全部成功」', async () => {
@@ -172,7 +173,7 @@ describe('完成口径（ACC-B3 父卡硬规则）', () => {
     // failed 不计入完成：进度 0/1，平台指标 0/1（不是 ✓，也没有「已完成」）
     expect(screen.getByTestId('checkin-run-progress')).toHaveTextContent('0/1');
     expect(screen.getByTestId('accounts-checkin-chip-workbuddy_desktop')).toHaveTextContent('0/1');
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('今日已完成 0/1');
+    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('今日已完成');
     expect(screen.queryByTestId('checkin-run-cancel')).toBeNull();
   });
 
@@ -186,7 +187,7 @@ describe('完成口径（ACC-B3 父卡硬规则）', () => {
 
     // 参与分母（有凭据、启用），但不计入完成
     expect(screen.getByTestId('accounts-checkin-chip-trae')).toHaveTextContent('0/2');
-    expect(screen.getByTestId('accounts-summary-trae')).toHaveTextContent('今日已完成 0/2');
+    expect(screen.getByTestId('accounts-summary-trae')).not.toHaveTextContent('今日已完成');
     expect(screen.getByTestId('accounts-index-health-trae')).toHaveTextContent('0/2');
     // 左栏 Workbuddy 无账号，不出 ✓
     expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).toBeNull();

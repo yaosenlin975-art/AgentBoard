@@ -179,7 +179,18 @@ describe('一级身份（ACC-B2 ⑤⑥）', () => {
     expect(nameEl.closest(`[data-testid="accounts-card-acc-1"]`)).not.toBeNull();
   });
 
-  it('identity_hint 恒为前 8 位等宽（服务端超长也截断），缺失回「未提供」', () => {
+  it('ACC-UI-2：高频动作留主行，停用/删除收进 ⋯ 菜单；当前账号不给灰切换按钮', () => {
+    mount(account({ is_current: true }));
+    const more = screen.getByTestId('accounts-more-acc-1');
+    expect(more.tagName).toBe('DETAILS');
+    expect(within(more).getByTestId('accounts-enabled-toggle-acc-1')).toHaveTextContent('停用');
+    expect(within(more).getByTestId('accounts-delete-acc-1')).toBeInTheDocument();
+    // 主行只保留签到与溢出菜单
+    expect(screen.getByTestId('accounts-checkin-acc-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-switch-acc-1')).toBeNull();
+  });
+
+  it('identity_hint 恒为前 8 位等宽（服务端超长也截断），缺失时不渲染占位', () => {
     const first = mount(account({ identity_hint: 'a1b2c3d4efgh' }));
     const hint = screen.getByTestId('accounts-hint-acc-1');
     expect(hint.textContent).toBe('a1b2c3d4');
@@ -189,8 +200,8 @@ describe('一级身份（ACC-B2 ⑤⑥）', () => {
     const second = mount(account({ identity_hint: 'deadbeef' }));
     expect(screen.getByTestId('accounts-hint-acc-1').textContent).toBe('deadbeef');
     second.unmount();
-    // 缺失不虚构 8 位
+    // ACC-UI-2：缺失不渲染「未提供」占位（无信息量），也不虚构 8 位
     mount(account({ identity_hint: null }));
-    expect(screen.getByTestId('accounts-hint-acc-1').textContent).toBe('未提供');
+    expect(screen.queryByTestId('accounts-hint-acc-1')).toBeNull();
   });
 });

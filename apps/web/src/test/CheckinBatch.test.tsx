@@ -257,7 +257,8 @@ describe('签到批次（ACC-09）', () => {
 
     expect(await screen.findByTestId('accounts-capabilities-error')).toHaveTextContent('能力矩阵不可用');
     const card = await screen.findByTestId(`accounts-card-${WB_ID}`);
-    expect(within(card).getByTestId(`accounts-switch-${WB_ID}`)).toBeDisabled();
+    // ACC-UI-2：能力未知时不渲染切换假入口
+    expect(within(card).queryByTestId(`accounts-switch-${WB_ID}`)).toBeNull();
     expect(within(card).getByTestId(`accounts-checkin-${WB_ID}`)).toBeDisabled();
     expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeDisabled();
     expect(screen.getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeDisabled();

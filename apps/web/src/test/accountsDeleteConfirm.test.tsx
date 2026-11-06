@@ -150,7 +150,7 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     await waitFor(() => expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('0'));
     await waitFor(() => expect(screen.getByTestId('accounts-today-summary')).toHaveTextContent('今日 0/0'));
     expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).not.toBeInTheDocument();
-    expect(screen.getByTestId('accounts-detail-current')).toHaveTextContent('未设置当前账号');
+    expect(screen.getByTestId('accounts-detail-current')).toHaveTextContent('当前：未设置');
   });
 
   it('④删除失败：卡片与选中态不变，删除按钮可再次打开确认行', async () => {
