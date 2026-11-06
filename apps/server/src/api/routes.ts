@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Task 9：REST 路由（Pinned Contracts REST 全表 + 契约修订）。
  *
  * 修订点：POST /api/sessions 体增 workspace_id?——issue_id 为空时必填（400 校验）；
