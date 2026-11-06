@@ -24,6 +24,27 @@ node apps/server/dist/index.js
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
 - 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
 
+### 快照进 git 与 clone 后恢复（STORE-5/6）
+
+数据形态是「库为准、快照是派生物」：`.agentboard/` 目录可随仓库进 git，运行态数据库与附件本体不进。
+
+```bash
+kb workspace-db snapshot export <工作区> --include-attachments   # 服务端单写者导出，写完回读自校验
+kb workspace-db snapshot validate <工作区>                        # 只读校验：manifest + 每文件 sha256/行数 + 附件
+kb workspace-db snapshot import <工作区>                          # 只允许空工作区库
+kb workspace-db snapshot export <工作区> --include-messages        # 需要会话正文时显式打开
+```
+
+导出会同时落 `<工作区>/.agentboard/.gitignore`（排除 `*.db` / `-wal` / `-shm` / `localize.json` / `attachments/`）与 `.agentboard/README.md`（事实源与恢复命令），内容不变不重写；根 `.gitignore` 已有 `*.db`，不要加反向规则。
+
+clone 后取回数据与图片：
+
+1. `kb workspace-db enable <工作区>`（或对已存在的空工作区库直接 `import`）；
+2. `kb workspace-db snapshot import <工作区> --replace` 导入行集，`--include-attachments` 导出的快照会把附件本体还原到 `<工作区>/.agentboard/attachments/<storage_key>`，图片接口即可 200；缺文件时 import 直接 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key，不做「尽量导入」；
+3. 快照里没有附件本体（未加 `--include-attachments`）时，行在而文件不在，图片仍是 404 —— 需要图片就重新带开关导出/导入。
+
+中心库（注册表、成员、账号元数据、公共知识页）另有一套只读快照：`kb workspace-db snapshot center-export` / `center-validate`，落在中心库同级的 `center-snapshot/`，账号凭据引用一律脱敏为 `***`，不提供导入。
+
 ### Docker（单容器）
 
 ```bash
