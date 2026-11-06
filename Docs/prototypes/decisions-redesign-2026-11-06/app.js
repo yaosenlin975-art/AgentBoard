@@ -97,6 +97,66 @@
     }
   };
 
+  /* 工作区：第一个是「本工作区」，其余用于演示跨区范围切换与跨区标注 */
+  var CURRENT_WS = 'ws-board';
+  var WORKSPACES = [
+    { id: 'ws-board', name: 'AgentBoard', short: 'AB', path: 'd:\\WorkSpaces\\任务看板' },
+    { id: 'ws-dnf', name: 'DNF 单机复刻', short: 'DNF', path: 'd:\\Unity\\Projects\\DNF' },
+    { id: 'ws-s2a', name: 'Switch2Android', short: 'S2A', path: 'd:\\WorkSpaces\\Switch2Android' }
+  ];
+  var WS_OF = { 'AB-129': 'ws-dnf', 'AB-160': 'ws-s2a', 'AB-150': 'ws-dnf', 'AB-122': 'ws-s2a' };
+  Object.keys(issues).forEach(function (k) { issues[k].ws = WS_OF[k] || CURRENT_WS; });
+  var BOARD_KEYS = Object.keys(issues);
+  /* 只有阻塞清单里才出现的卡：不在看板列表里，仅用于打开一个最小详情 */
+  var extraIssues = {};
+
+  /*
+   * 阻塞关系示例数据（**非真实数据**）。
+   * 方向：key = 上游卡，数组 = 这张卡 blocks 掉的下游卡。
+   * 真实实现：GET /api/issues/:id/dependencies?workspace_id=… 返回的 blocked[]（DependencyRef），
+   * 字段有 issue_id / title / status / resolved；占用者与「为什么被挡」目前不在该结构里（见 DESIGN-NOTES §10）。
+   */
+  var BLOCKED = {
+    'AB-142': [
+      { key: 'AB-145', title: '便携包自检：分片完整性断言', status: '待规划', owner: null, why: '自检脚本读全部 26 个分片，缺片直接失败', depth: 1 },
+      { key: 'AB-146', title: '导出验收：坏分片回滚演练', status: '待规划', owner: 'codex', why: '回滚路径取决于本次选型，选完才能写用例', depth: 1 }
+    ],
+    'AB-151': [
+      { key: 'AB-152', title: '索引迁移：FTS5 建表脚本', status: '进行中', owner: 'codebuddy', why: '表结构取决于检索选型（FTS5 / LIKE / 外部引擎）', depth: 1 },
+      { key: 'AB-153', title: '中文分词：unicode61 口径', status: '待规划', owner: null, why: '分词方式随选型变化，选错要重写清洗脚本', depth: 1 },
+      { key: 'AB-154', title: '知识检索：增量更新钩子', status: '待规划', owner: null, why: '增量策略依赖索引实现', depth: 1 },
+      { key: 'AB-155', title: '知识检索：排序与高亮', status: '待规划', owner: null, why: 'FTS5 有 bm25/snippet，外部引擎要另接', depth: 1 },
+      { key: 'AB-156', title: '知识检索：分页与游标', status: '待规划', owner: null, why: '游标格式与存储引擎的排序稳定性绑定', depth: 1 },
+      { key: 'AB-157', title: '检索压测：12 万条基线', status: '待规划', owner: null, why: '压测目标要按最终方案定阈值', depth: 1 },
+      { key: 'AB-158', title: '便携包：索引体积预算', status: '待规划', owner: null, why: 'FTS5 索引约占原库 30%，外部引擎另算', depth: 1 },
+      { key: 'AB-159', title: '启动重建：6s 预算', status: '待规划', owner: null, why: '首次建索引耗时差异极大，需选型后实测', depth: 1 },
+      { key: 'AB-161', title: '知识页导入：重建索引', status: '进行中', owner: 'kb-cli', why: '导入流程要调用最终的索引接口', depth: 1 },
+      { key: 'AB-162', title: '检索回退：LIKE 兜底', status: '待规划', owner: null, why: '若选 FTS5，兜底分支才有意义', depth: 1 },
+      { key: 'AB-163', title: '迁移回滚脚本', status: '待规划', owner: null, why: '回滚目标结构取决于新表设计', depth: 1 },
+      { key: 'AB-164', title: '检索 API 契约', status: '待规划', owner: null, why: '参数（limit/offset/rank）随引擎能力不同', depth: 1 },
+      { key: 'AB-165', title: '索引健康检查', status: '待规划', owner: null, why: '检查项取决于索引文件形态', depth: 1 },
+      { key: 'AB-166', title: '知识页删除：索引清理', status: '待规划', owner: null, why: 'FTS5 触发器与外部引擎的删除语义不同', depth: 1 },
+      { key: 'AB-167', title: '多语言分词评估', status: '待规划', owner: null, why: '外部引擎自带多语言，SQLite 方案要自建', depth: 1 },
+      { key: 'AB-168', title: '检索埋点：命中率', status: '待规划', owner: null, why: '命中定义随排序方案变化', depth: 1 },
+      { key: 'AB-169', title: '星图：按检索结果高亮', status: '待规划', owner: null, why: '高亮片段格式由引擎返回', depth: 1 },
+      { key: 'AB-170', title: '知识库：搜索建议', status: '待规划', owner: null, why: '建议来源依赖索引是否支持前缀查询', depth: 1 },
+      { key: 'AB-171', title: '索引重建 CLI', status: '待规划', owner: null, why: '命令参数与重建粒度随选型定', depth: 1 },
+      { key: 'AB-172', title: '检索权限：跨区过滤', status: '待规划', owner: null, why: '权限过滤要下推到索引层还是内存层', depth: 1 },
+      { key: 'AB-173', title: '知识导出：索引附带', status: '待规划', owner: null, why: '导出是否带索引文件取决于体积预算', depth: 1 },
+      { key: 'AB-174', title: '迁移验收：100 条查询集', status: '待规划', owner: null, why: '验收集要覆盖最终方案的查询形态', depth: 1 },
+      { key: 'AB-180', title: '检索结果卡片：片段高亮', status: '待规划', owner: null, why: '经 AB-164 转手：契约未定则卡片字段无法冻结', depth: 2, via: 'AB-164' },
+      { key: 'AB-181', title: '便携包自检：索引文件', status: '待规划', owner: null, why: '经 AB-158 转手：体积预算未定则自检阈值无法写', depth: 2, via: 'AB-158' },
+      { key: 'AB-182', title: '星图首屏性能', status: '待规划', owner: null, why: '经 AB-169 转手：高亮格式未定则首屏渲染策略未定', depth: 2, via: 'AB-169' },
+      { key: 'AB-183', title: '知识库使用教程', status: '待规划', owner: null, why: '经 AB-170 转手：建议交互未定则教程截图会返工', depth: 2, via: 'AB-170' }
+    ],
+    'AB-137': [
+      { key: 'AB-138', title: '详情面板：决策块折叠态', status: '进行中', owner: 'codebuddy', why: '折叠交互要复用本次停止确认的文案口径', depth: 1 }
+    ],
+    'AB-129': [
+      { key: 'AB-130', title: '技能：swing-dev 派工前查占用', status: '待规划', owner: null, why: '占用查询口径取决于跨区决策如何处理', depth: 1 }
+    ]
+  };
+
   var decisions = [
     {
       id: 'd1',
@@ -164,14 +224,16 @@
       answers: [],
       createdBy: 'codex',
       trigger: '性能压测超阈值',
-      blockedDownstream: 3,
+      blockedDownstream: 22,
       question: '知识库检索：12 万条知识页、约 300 万字，选 SQLite FTS5 还是进程内倒排？中文分词怎么定？',
       context: '现状：知识库只有 LIKE 查询。12 万条、约 300 万字时，首屏查询约 800ms，按当前数据增速 6 个月后接近 2s。\n\n约束：便携包不能新增运行时依赖；服务端启动预算 3s；内存预算 +200MB 以内；索引必须能在 Windows 单机增量更新，不要求多进程并发写。\n\n取舍点：FTS5 零依赖但中文只能按字切分，召回高、精确率低；jieba 预分词精确但引入 Python 依赖与重建流程；进程内倒排最快但启动重建 6s、内存 +180MB。',
       options: [
         { id: 'a', label: 'FTS5 + unicode61 分词', consequence: '零新依赖，中文按字切分；召回高但精确率低，索引约 40MB' },
         { id: 'b', label: 'FTS5 + jieba 预分词写入', consequence: '精确率高；引入 Python 依赖与索引重建流程，增量同步要重写' },
         { id: 'c', label: '进程内倒排（内存）', consequence: '查询 <10ms；启动重建约 6s，内存 +180MB，进程重启即丢' },
-        { id: 'd', label: '维持 LIKE + 分页', consequence: '零改动；首屏 800ms，随数据量线性恶化' }
+        { id: 'd', label: '维持 LIKE + 分页', consequence: '零改动；首屏 800ms，随数据量线性恶化' },
+        { id: 'e', label: 'FTS5 + 自建中文词典', consequence: '不引依赖且精确率可控；词典要随版本维护，冷启动多 200ms' },
+        { id: 'f', label: '外挂 meilisearch 子进程', consequence: '召回与排序最好；与「便携包不加运行时依赖」冲突，包体 +60MB' }
       ],
       checkpoint: [
         ['改动摘要', 'knowledgeSearch.ts +96 −18（未提交）'],
@@ -338,12 +400,26 @@
     view: 'decisions',
     filter: 'all',
     sort: 'urgency',
+    /* 范围：workspace=只看本工作区；all=所有工作区（跨区卡带工作区标注） */
+    scope: 'workspace',
     scene: 'queue',
     narrow: false,
     dark: false,
     notif: 'default',
     expanded: new Set(['d1']),
     selectedOpt: {},
+    /* 自定义答案：展开的输入框、草稿、行内错误、打开前的选择（Esc 回退用） */
+    customOpen: new Set(),
+    customText: {},
+    customError: {},
+    prevOpt: {},
+    focusCustom: null,
+    /* 跨工作区回答需要二次确认，记已确认的决策 id */
+    crossConfirm: new Set(),
+    /* 阻塞下游清单：展开状态、筛选词、间接下游是否展开 */
+    blocksOpen: new Set(),
+    blocksQuery: {},
+    blocksIndirect: new Set(),
     revising: new Set(),
     leaving: new Set(),
     parked: new Set(),
@@ -381,14 +457,36 @@
     return d.answers.length ? d.answers[d.answers.length - 1] : null;
   }
 
+  /* 自定义答案：不是真实选项，id 用保留值，提交时写进答案的 customText */
+  var CUSTOM_ID = '__custom__';
+  var CUSTOM_LETTER = '✎';
+  var CUSTOM_MAX = 120;
+
   function optionById(d, id) {
+    if (id === CUSTOM_ID) {
+      return { id: CUSTOM_ID, label: d.customAnswer || '', consequence: '自定义答案：原文会写进卡评论并同步任务卡', custom: true };
+    }
     for (var i = 0; i < d.options.length; i++) if (d.options[i].id === id) return d.options[i];
     return null;
   }
 
+  /* 取某一条历史答案对应的选项（自定义答案要用那一条自己的文本，不能拿最新文本顶替） */
+  function answerOption(d, a) {
+    if (!a) return null;
+    if (a.optionId === CUSTOM_ID) {
+      return { id: CUSTOM_ID, label: a.customText || d.customAnswer || '', consequence: '自定义答案', custom: true };
+    }
+    return optionById(d, a.optionId);
+  }
+
   function optionLetter(d, id) {
+    if (id === CUSTOM_ID) return CUSTOM_LETTER;
     for (var i = 0; i < d.options.length; i++) if (d.options[i].id === id) return 'ABCDEFG'[i];
     return '?';
+  }
+
+  function truncate(text, n) {
+    return text.length > n ? text.slice(0, n) + '…' : text;
   }
 
   function priorityRank(p) { return p === '高' ? 3 : p === '中' ? 2 : 1; }
@@ -460,14 +558,43 @@
   function effectiveStatus(issueKey) {
     var d = activeDecisionOf(issueKey);
     if (d && d.state === 'open') return '待规划';
-    return issues[issueKey].status;
+    var issue = issues[issueKey] || extraIssues[issueKey];
+    return issue ? issue.status : '—';
   }
 
   /* -------------------- 4. 分组 / 排序 -------------------- */
 
+  function wsOf(issueKey) {
+    var issue = issues[issueKey];
+    if (!issue) return WORKSPACES[0];
+    for (var i = 0; i < WORKSPACES.length; i++) if (WORKSPACES[i].id === issue.ws) return WORKSPACES[i];
+    return WORKSPACES[0];
+  }
+
+  function isCrossWorkspace(d) {
+    return !!issues[d.issueKey] && issues[d.issueKey].ws !== CURRENT_WS;
+  }
+
+  function inScope(d) {
+    if (state.scope === 'all') return true;
+    return !!issues[d.issueKey] && issues[d.issueKey].ws === CURRENT_WS;
+  }
+
+  function blockedListOf(issueKey) {
+    return (BLOCKED[issueKey] || []).filter(function (b) { return b.depth === 1; });
+  }
+
+  function blockedIndirectOf(issueKey) {
+    return (BLOCKED[issueKey] || []).filter(function (b) { return b.depth === 2; });
+  }
+
+  function blockedCountOf(d) {
+    return blockedListOf(d.issueKey).length;
+  }
+
   function visibleInflight() {
     var list = decisions.filter(function (d) {
-      return (d.state === 'grace' || d.state === 'open') && !state.parked.has(d.id);
+      return (d.state === 'grace' || d.state === 'open') && !state.parked.has(d.id) && inScope(d);
     });
     if (state.scene === 'empty') return [];
     if (state.scene === 'single') return list.filter(function (d) { return d.id === 'd1'; });
@@ -477,7 +604,7 @@
 
   function visibleAnswered() {
     if (state.scene === 'single' || state.scene === 'long') return [];
-    return decisions.filter(function (d) { return d.state === 'answered'; });
+    return decisions.filter(function (d) { return d.state === 'answered' && inScope(d); });
   }
 
   function groupOf(list) {
@@ -570,6 +697,13 @@
 
   function headHtml(list, groups, counts) {
     var parts = [list.length + ' 条在途'];
+    if (state.scope === 'all') {
+      var cross = list.filter(isCrossWorkspace).length;
+      parts.push('范围：所有工作区（3 个）');
+      if (cross) parts.push(cross + ' 条来自其它工作区');
+    } else {
+      parts.push('范围：本工作区「' + WORKSPACES[0].name + '」');
+    }
     if (groups.grace.length) parts.push(groups.grace.length + ' 条在倒计时');
     if (groups.open.length) parts.push(groups.open.length + ' 条已锁');
     if (groups.stale.length) parts.push(groups.stale.length + ' 条超时待处置');
@@ -601,13 +735,22 @@
       '</div>' +
       '<div class="filterbar">' +
         '<div class="tabs" role="tablist" aria-label="按状态筛选">' + tabs + '</div>' +
-        '<label class="sort">排序 ' +
-          '<select data-action="sort" aria-label="排序方式">' +
-            '<option value="urgency"' + (state.sort === 'urgency' ? ' selected' : '') + '>紧急度</option>' +
-            '<option value="waiting"' + (state.sort === 'waiting' ? ' selected' : '') + '>等待最久</option>' +
-            '<option value="priority"' + (state.sort === 'priority' ? ' selected' : '') + '>任务优先级</option>' +
-          '</select>' +
-        '</label>' +
+        '<div class="filter-tools">' +
+          /* 范围切换：控件形态对齐知识库区的「范围 + 下拉」（label + 32px select） */
+          '<label class="scope">范围 ' +
+            '<select data-action="scope" aria-label="决策范围">' +
+              '<option value="workspace"' + (state.scope === 'workspace' ? ' selected' : '') + '>本工作区（AgentBoard）</option>' +
+              '<option value="all"' + (state.scope === 'all' ? ' selected' : '') + '>所有工作区（3 个）</option>' +
+            '</select>' +
+          '</label>' +
+          '<label class="sort">排序 ' +
+            '<select data-action="sort" aria-label="排序方式">' +
+              '<option value="urgency"' + (state.sort === 'urgency' ? ' selected' : '') + '>紧急度</option>' +
+              '<option value="waiting"' + (state.sort === 'waiting' ? ' selected' : '') + '>等待最久</option>' +
+              '<option value="priority"' + (state.sort === 'priority' ? ' selected' : '') + '>任务优先级</option>' +
+            '</select>' +
+          '</label>' +
+        '</div>' +
       '</div>' +
     '</div></div>';
   }
@@ -632,10 +775,14 @@
     var related = relatedDecisions(d);
     var selected = state.selectedOpt[d.id];
     var opt = selected ? optionById(d, selected) : null;
+    var ws = wsOf(d.issueKey);
+    var cross = isCrossWorkspace(d);
+    var needsConfirm = cross && !!selected && !state.crossConfirm.has(d.id);
+    var blocksOpen = state.blocksOpen.has(d.id);
     var cls = 'dcard tier-' + tier + (tier === 'critical' ? ' is-critical' : '') +
       (expanded ? ' is-expanded' : '') + (state.leaving.has(d.id) ? ' is-leaving' : '');
 
-    return '<article class="' + cls + '" data-id="' + d.id + '" aria-labelledby="q-' + d.id + '">' +
+    return '<article class="' + cls + '" data-id="' + d.id + '" data-ws="' + esc(ws.id) + '" aria-labelledby="q-' + d.id + '">' +
       '<span class="rail" aria-hidden="true"></span>' +
       '<div class="dc-head">' +
         '<span class="dc-rank tnum">#' + (rankMap.get(d.id) || '') + '</span>' +
@@ -644,16 +791,17 @@
           '<span class="issue-key">' + issue.key + '</span>' +
           '<span class="issue-title">' + esc(issue.title) + '</span>' +
         '</button>' +
+        (cross ? '<span class="ws-chip" title="跨工作区：' + esc(ws.path) + '">' + esc(ws.short) + ' · ' + esc(ws.name) + '</span>' : '') +
         '<span class="prio prio-' + esc(issue.priority) + '">' + esc(issue.priority) + '</span>' +
         (related.length ? '<span class="dc-note">同卡 ' + related.length + ' 条历史</span>' : '') +
         '<button type="button" class="icon-btn" data-action="open-issue" data-issue="' + issue.key + '" aria-label="打开任务卡 ' + issue.key + '">' + iconArrow() + '</button>' +
       '</div>' +
-      '<p class="dc-question" id="q-' + d.id + '">' + esc(d.question) + '</p>' +
-      optionsChipsHtml(d, selected) +
-      '<p class="dc-cons' + (opt ? '' : ' is-muted') + '">' +
-        (opt ? '选 ' + optionLetter(d, opt.id) + '：' + esc(opt.consequence)
-             : (defaultOption(d) ? '默认 ' + optionLetter(d, defaultOption(d).id) + '：' + esc(defaultOption(d).consequence) : '选择后在此显示后果')) +
-      '</p>' +
+      /* 展开时只保留详细卡：不再渲染简略的 2 行问题 + 选项 chip，避免两张卡并排出现 */
+      '<p class="dc-question' + (expanded ? ' is-full' : '') + '" id="q-' + d.id + '">' + esc(d.question) + '</p>' +
+      (expanded
+        ? optionsListHtml(d)
+        : optionsChipsHtml(d, selected) + consHtml(d, opt)) +
+      (needsConfirm ? crossNoteHtml(d) : '') +
       '<div class="dc-foot">' +
         '<div class="dc-stats">' + statsHtml(d) + '</div>' +
         '<div class="dc-actions">' +
@@ -662,11 +810,12 @@
               '<button type="button" class="btn btn-danger btn-sm" data-action="withdraw-start" data-id="' + d.id + '">撤回</button>'
             : '') +
           '<button type="button" class="btn btn-ghost" data-action="toggle-expand" data-id="' + d.id + '" aria-expanded="' + expanded + '">' + (expanded ? '收起' : '展开') + '</button>' +
-          '<button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>提交回答</button>' +
+          '<button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>' + (needsConfirm ? '确认跨区回答' : '提交回答') + '</button>' +
         '</div>' +
       '</div>' +
       (d.state === 'grace' ? progressHtml(d) : '') +
-      (expanded ? bodyHtml(d) : '') +
+      (expanded ? detailHtml(d) : '') +
+      (blocksOpen ? blocksHtml(d) : '') +
       (state.leaving.has(d.id) ? '<div class="leave-overlay" role="status">已记录 · 正在移出</div>' : '') +
     '</article>';
   }
@@ -675,12 +824,15 @@
     var expanded = state.expanded.has(d.id);
     var revising = state.revising.has(d.id);
     var issue = issues[d.issueKey];
+    var ws = wsOf(d.issueKey);
+    var cross = isCrossWorkspace(d);
     var answer = latestAnswer(d);
-    var answerOpt = answer ? optionById(d, answer.optionId) : null;
+    var answerOpt = answerOption(d, answer);
     var selected = state.selectedOpt[d.id];
     var related = relatedDecisions(d);
+    var needsConfirm = cross && !!selected && !state.crossConfirm.has(d.id);
 
-    return '<article class="dcard tier-answered' + (expanded || revising ? ' is-expanded' : '') + '" data-id="' + d.id + '">' +
+    return '<article class="dcard tier-answered' + (expanded || revising ? ' is-expanded' : '') + '" data-id="' + d.id + '" data-ws="' + esc(ws.id) + '">' +
       '<span class="rail" aria-hidden="true"></span>' +
       '<div class="dc-head">' +
         '<span class="chip chip-done">已回答 · 第 ' + d.answerRevision + ' 版</span>' +
@@ -688,33 +840,55 @@
           '<span class="issue-key">' + issue.key + '</span>' +
           '<span class="issue-title">' + esc(issue.title) + '</span>' +
         '</button>' +
+        (cross ? '<span class="ws-chip" title="跨工作区：' + esc(ws.path) + '">' + esc(ws.short) + ' · ' + esc(ws.name) + '</span>' : '') +
         '<span class="dc-note">' + rel(d.answeredAt) + '</span>' +
         '<button type="button" class="icon-btn" data-action="open-issue" data-issue="' + issue.key + '" aria-label="打开任务卡 ' + issue.key + '">' + iconArrow() + '</button>' +
       '</div>' +
-      '<p class="dc-question">' + esc(d.question) + '</p>' +
-      (revising
-        ? optionsChipsHtml(d, selected) +
-          '<p class="dc-cons' + (selected ? '' : ' is-muted') + '">' +
-            (selected ? '改为 ' + optionLetter(d, selected) + '：' + esc(optionById(d, selected).consequence) : '选择新答案后保存修订') + '</p>'
+      '<p class="dc-question' + (expanded || revising ? ' is-full' : '') + '">' + esc(d.question) + '</p>' +
+      /* 展开/修订时只渲染详细卡（选项行），不再叠一条简略的「已选 …」+ chip 行 */
+      (expanded || revising
+        ? optionsListHtml(d)
         : '<p class="dc-answer">已选 <b>' + (answerOpt ? optionLetter(d, answerOpt.id) + ' · ' + esc(answerOpt.label) : '—') + '</b>' +
-          '<span class="sep">·</span>' + esc(answer.by) + '（' + esc(answer.source) + '）' +
-          '<span class="sep">·</span>' + rel(answer.at) + '</p>') +
+            '<span class="sep">·</span>' + esc(answer.by) + '（' + esc(answer.source) + '）' +
+            '<span class="sep">·</span>' + rel(answer.at) + '</p>') +
+      (needsConfirm ? crossNoteHtml(d) : '') +
       '<div class="dc-foot">' +
         '<div class="dc-stats">' + (related.length ? '同卡还有 ' + related.length + ' 条相关决策' : '回答已同步到任务卡') + '</div>' +
         '<div class="dc-actions">' +
           (revising
             ? '<button type="button" class="btn btn-ghost" data-action="cancel-revise" data-id="' + d.id + '">取消</button>' +
-              '<button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>保存第 ' + (d.answerRevision + 1) + ' 版</button>'
+              '<button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>' + (needsConfirm ? '确认跨区修订' : '保存第 ' + (d.answerRevision + 1) + ' 版') + '</button>'
             : '<button type="button" class="btn" data-action="revise" data-id="' + d.id + '">改答案</button>' +
               '<button type="button" class="btn btn-ghost" data-action="toggle-expand" data-id="' + d.id + '" aria-expanded="' + expanded + '">' + (expanded ? '收起' : '展开') + '</button>') +
         '</div>' +
       '</div>' +
-      ((expanded || revising) ? bodyHtml(d) : '') +
-    '</article>';
+      ((expanded || revising) ? detailHtml(d) : '') +
+      '</article>';
+  }
+
+  function consHtml(d, opt) {
+    if (!opt) {
+      var def = defaultOption(d);
+      return '<p class="dc-cons is-muted">' +
+        (def ? '默认 ' + optionLetter(d, def.id) + '：' + esc(def.consequence) : '选择后在此显示后果') + '</p>';
+    }
+    if (opt.id === CUSTOM_ID) {
+      return '<p class="dc-cons">自定义：' + (opt.label ? esc(opt.label) : '在输入框里写一句答案') + '</p>';
+    }
+    return '<p class="dc-cons">选 ' + optionLetter(d, opt.id) + '：' + esc(opt.consequence) + '</p>';
+  }
+
+  function crossNoteHtml(d) {
+    var ws = wsOf(d.issueKey);
+    return '<p class="cross-note">跨工作区：提交后会在「' + esc(ws.name) + '」解锁 ' + esc(d.issueKey) +
+      ' 并释放该区占用。再点一次「确认跨区回答」才生效。</p>';
   }
 
   function optionsChipsHtml(d, selected) {
-    return '<div class="dc-opts" role="radiogroup" aria-label="答案选项">' +
+    var customOn = selected === CUSTOM_ID;
+    var draft = (state.customText[d.id] || '').trim();
+    var many = d.options.length + 1 >= 7;
+    return '<div class="dc-opts' + (many ? ' is-scroll' : '') + '" role="radiogroup" aria-label="答案选项">' +
       d.options.map(function (o) {
         return '<button type="button" role="radio" aria-checked="' + (selected === o.id) + '"' +
           ' class="opt-chip' + (selected === o.id ? ' is-selected' : '') + '"' +
@@ -723,7 +897,30 @@
           '<span class="opt-letter">' + optionLetter(d, o.id) + '</span>' +
           '<span>' + esc(o.label) + '</span>' +
         '</button>';
-      }).join('') + '</div>';
+      }).join('') +
+      '<button type="button" role="radio" aria-checked="' + customOn + '"' +
+        ' class="opt-chip opt-chip-custom' + (customOn ? ' is-selected' : '') + '"' +
+        ' data-action="select-custom" data-id="' + d.id + '"' +
+        ' title="不在选项里？自己写一句">' +
+        '<span class="opt-letter">' + CUSTOM_LETTER + '</span>' +
+        '<span>' + (draft ? esc(truncate(draft, 12)) : '自定义') + '</span>' +
+      '</button>' +
+    '</div>' +
+    (customOn ? customEditorHtml(d) : '');
+  }
+
+  function customEditorHtml(d) {
+    var text = state.customText[d.id] || '';
+    var err = state.customError[d.id];
+    return '<div class="opt-custom">' +
+      '<input type="text" class="opt-custom-input" data-custom-input="' + d.id + '"' +
+        ' maxlength="' + CUSTOM_MAX + '" value="' + esc(text) + '"' +
+        ' placeholder="写一句你自己的答案（≤' + CUSTOM_MAX + ' 字）· Enter 提交 · Esc 收起"' +
+        ' aria-label="自定义答案"' + (err ? ' aria-invalid="true" aria-describedby="cerr-' + d.id + '"' : '') + '>' +
+      '<span class="opt-custom-count tnum">' + text.length + '/' + CUSTOM_MAX + '</span>' +
+      '<button type="button" class="btn btn-primary btn-sm" data-action="submit-answer" data-id="' + d.id + '">用这句提交</button>' +
+    '</div>' +
+    (err ? '<p class="form-error" id="cerr-' + d.id + '">' + esc(err) + '</p>' : '');
   }
 
   function statsHtml(d) {
@@ -734,7 +931,13 @@
     } else {
       bits.push('提问 ' + esc(d.createdBy));
       bits.push('触发 ' + esc(d.trigger));
-      bits.push(d.blockedDownstream ? '阻塞 ' + d.blockedDownstream + ' 个下游' : '无下游阻塞');
+      var bcount = blockedCountOf(d);
+      var bopen = state.blocksOpen.has(d.id);
+      bits.push('<button type="button" class="link-btn' + (bcount ? '' : ' is-muted') + '"' +
+        ' data-action="toggle-blocks" data-id="' + d.id + '" aria-expanded="' + bopen + '"' +
+        ' title="本卡 blocks 了谁（下游），不是谁挡住了本卡">' +
+        (bcount ? '阻塞 ' + bcount + ' 个下游' : '无下游阻塞') +
+        '<span class="caret" aria-hidden="true">' + (bopen ? '▴' : '▾') + '</span></button>');
       if (d.state === 'open') {
         if (d.stopAckAt && d.stopRequestedAt) {
           bits.push('<span>停止已确认 · ' + Math.max(1, Math.round((d.stopAckAt - d.stopRequestedAt) / 1000)) + ' 秒</span>');
@@ -765,24 +968,41 @@
     return '<div class="dc-progress" aria-hidden="true"><span data-progress="' + d.id + '" style="width:' + pct.toFixed(1) + '%"></span></div>';
   }
 
-  function bodyHtml(d) {
+  /* 详细卡的「选项与后果」：展开态与改答案态共用，替代简略 chip 行 */
+  function optionsListHtml(d) {
+    var selected = state.selectedOpt[d.id];
+    var answer = latestAnswer(d);
+    var currentId = selected || (!state.revising.has(d.id) && d.state === 'answered' && answer ? answer.optionId : null);
+    var editorOpen = state.customOpen.has(d.id);
+    var draft = (state.customText[d.id] || '').trim();
+    var rows = d.options.map(function (o) {
+      var on = currentId === o.id;
+      return '<li><button type="button" class="opt-row' + (on ? ' is-selected' : '') + '" data-action="select-option" data-id="' + d.id + '" data-opt="' + o.id + '">' +
+        '<span class="opt-letter">' + optionLetter(d, o.id) + '</span>' +
+        '<span class="opt-main"><span class="opt-label">' + esc(o.label) +
+          (o.isDefault ? '<span class="opt-default">默认</span>' : '') + '</span>' +
+          '<span class="opt-cons">' + esc(o.consequence) + '</span></span>' +
+      '</button></li>';
+    }).join('') +
+      '<li><button type="button" class="opt-row opt-row-custom' + (currentId === CUSTOM_ID ? ' is-selected' : '') + '" data-action="select-custom" data-id="' + d.id + '">' +
+        '<span class="opt-letter">' + CUSTOM_LETTER + '</span>' +
+        '<span class="opt-main"><span class="opt-label">自定义答案' + (draft ? '：' + esc(draft) : '') + '</span>' +
+        '<span class="opt-cons">不在以上选项里：自己写一句，会原样写进卡评论</span></span>' +
+      '</button></li>';
+
+    return '<section class="dc-options-block"><h3 class="block-title">选项与后果</h3>' +
+      '<ul class="opt-list' + (d.options.length + 1 >= 6 ? ' is-scroll' : '') + '">' + rows + '</ul>' +
+      (editorOpen ? customEditorHtml(d) : '') +
+      '</section>';
+  }
+
+  function detailHtml(d) {
     var parts = [];
     var issue = issues[d.issueKey];
 
     if (d.context) {
       parts.push('<section><h3 class="block-title">背景</h3><p class="context">' + esc(d.context) + '</p></section>');
     }
-
-    parts.push('<section><h3 class="block-title">选项与后果</h3><ul class="opt-list">' +
-      d.options.map(function (o) {
-        var on = state.selectedOpt[d.id] === o.id || (!state.revising.has(d.id) && d.state === 'answered' && latestAnswer(d) && latestAnswer(d).optionId === o.id);
-        return '<li><button type="button" class="opt-row' + (on ? ' is-selected' : '') + '" data-action="select-option" data-id="' + d.id + '" data-opt="' + o.id + '">' +
-          '<span class="opt-letter">' + optionLetter(d, o.id) + '</span>' +
-          '<span class="opt-main"><span class="opt-label">' + esc(o.label) +
-            (o.isDefault ? '<span class="opt-default">默认</span>' : '') + '</span>' +
-            '<span class="opt-cons">' + esc(o.consequence) + '</span></span>' +
-        '</button></li>';
-      }).join('') + '</ul></section>');
 
     parts.push('<div class="kv-grid">' + kvHtml(d, issue) + '</div>');
 
@@ -825,9 +1045,67 @@
     return '<div class="dc-body">' + parts.join('') + '</div>';
   }
 
+  /* ---------------- 阻塞下游清单（本卡 blocks 了谁） ---------------- */
+
+  function blocksHtml(d) {
+    var all = blockedListOf(d.issueKey);
+    var indirect = blockedIndirectOf(d.issueKey);
+    var shown = state.blocksIndirect.has(d.id);
+    return '<section class="blocks" aria-label="本卡阻塞的下游">' +
+      '<div class="blocks-head">' +
+        '<h3 class="block-title">本卡 blocks 的下游</h3>' +
+        '<span class="blocks-dir">方向：这张卡 → 下游</span>' +
+        '<span class="blocks-count tnum">' + all.length + ' 张直接</span>' +
+      '</div>' +
+      '<p class="blocks-sub">列的是「这张卡挡住了谁」，不是「谁挡住了这张卡」。</p>' +
+      (all.length > 6
+        ? '<input type="search" class="blocks-filter" data-blocks-input="' + d.id + '" value="' + esc(state.blocksQuery[d.id] || '') + '" placeholder="筛选下游卡（卡号 / 标题 / 占用者 / 原因）" aria-label="筛选下游卡">'
+        : '') +
+      '<div data-blocks-list="' + d.id + '">' + blockListInner(d) + '</div>' +
+      (indirect.length
+        ? '<button type="button" class="blocks-toggle" data-action="toggle-indirect" data-id="' + d.id + '" aria-expanded="' + shown + '">' +
+            '间接下游 ' + indirect.length + ' 张（经 1 层转手）' + (shown ? ' ▴' : ' ▾') +
+          '</button>' +
+          (shown
+            ? '<ul class="blocks-list is-indirect">' + indirect.map(function (b) { return blockRowHtml(b); }).join('') + '</ul>'
+            : '<p class="blocks-hint">建议默认折叠：间接阻断通常归因不到单条决策，逐层展开容易爆炸。</p>')
+        : '') +
+      '<p class="blocks-note">示例数据。真实实现：<code>GET /api/issues/' + esc(d.issueKey) + '/dependencies</code> 的 <code>blocked[]</code>（issue_id / title / status / resolved）；占用者与「为什么被挡」需另加投影（见设计说明 §10）。</p>' +
+    '</section>';
+  }
+
+  function blockListInner(d) {
+    var all = blockedListOf(d.issueKey);
+    var q = (state.blocksQuery[d.id] || '').trim().toLowerCase();
+    var rows = q
+      ? all.filter(function (b) {
+          return (b.key + ' ' + b.title + ' ' + (b.owner || '') + ' ' + b.why).toLowerCase().indexOf(q) >= 0;
+        })
+      : all;
+    if (!all.length) {
+      return '<p class="blocks-empty">这张卡目前没有 blocks 任何下游：没有别的卡因为它被挡住。</p>';
+    }
+    if (!rows.length) {
+      return '<p class="blocks-empty">没有匹配「' + esc(q) + '」的下游卡。</p>';
+    }
+    return '<ul class="blocks-list' + (all.length > 6 ? ' is-scroll' : '') + '">' + rows.map(function (b) { return blockRowHtml(b); }).join('') + '</ul>';
+  }
+
+  function blockRowHtml(b) {
+    return '<li class="block-row">' +
+      '<button type="button" class="block-key" data-action="open-issue" data-issue="' + esc(b.key) + '" title="打开 ' + esc(b.key) + '">' + esc(b.key) + '</button>' +
+      '<span class="block-title-txt">' + esc(b.title) + '</span>' +
+      '<span class="chip chip-muted">' + esc(b.status) + '</span>' +
+      '<span class="block-owner">' + (b.owner ? esc(b.owner) : '未派工') + '</span>' +
+      '<button type="button" class="icon-btn" data-action="open-issue" data-issue="' + esc(b.key) + '" aria-label="打开 ' + esc(b.key) + '">' + iconArrow() + '</button>' +
+      '<p class="block-why">' + (b.via ? '<span class="block-via">经 ' + esc(b.via) + ' 转手</span>' : '') + esc(b.why) + '</p>' +
+    '</li>';
+  }
+
   function kvHtml(d, issue) {
+    var bcount = blockedCountOf(d);
     var cells = [];
-    cells.push(kv('阻塞下游', d.blockedDownstream ? d.blockedDownstream + ' 张卡' : '无', d.blockedDownstream ? 'is-warn' : ''));
+    cells.push(kv('阻塞下游', bcount ? bcount + ' 张卡' : '无', bcount ? 'is-warn' : ''));
     if (d.state === 'grace') {
       cells.push(kv('本次宽限', d.graceSeconds + ' 秒', ''));
       cells.push(kv('任务优先级', issue.priority, ''));
@@ -850,7 +1128,7 @@
   function timelineHtml(d) {
     if (!d.answers.length) return '<p class="context">还没有回答。</p>';
     return '<ol class="timeline">' + d.answers.map(function (a, i) {
-      var o = optionById(d, a.optionId);
+      var o = answerOption(d, a);
       return '<li class="' + (i === d.answers.length - 1 ? 'is-current' : '') + '">' +
         '<span class="tl-rev">第 ' + a.revision + ' 版</span>' +
         optionLetter(d, a.optionId) + ' · ' + esc(o ? o.label : a.optionId) +
@@ -861,7 +1139,7 @@
 
   function optionLabelText(d) {
     var a = latestAnswer(d);
-    var o = a ? optionById(d, a.optionId) : null;
+    var o = a ? answerOption(d, a) : null;
     return o ? optionLetter(d, o.id) + ' · ' + o.label : '';
   }
 
@@ -887,6 +1165,9 @@
       '<div class="empty-mark" aria-hidden="true">' + iconInboxCheck() + '</div>' +
       '<h2>现在没有需要你拍板的事</h2>' +
       '<p>agent 只在长任务走到「无法自动判定」时才会提问。提问会进入这里，宽限默认 3 分钟；到点未答的任务会自动回到待规划并上锁。</p>' +
+      (state.scope === 'workspace'
+        ? '<p class="empty-scope">当前范围：本工作区「' + esc(WORKSPACES[0].name) + '」。其它工作区的待决策不会出现在这里，切到「所有工作区」可查看。</p>'
+        : '') +
       '<div class="empty-cta">' +
         '<button type="button" class="btn btn-primary" data-action="switch-view" data-view="board">去任务看板</button>' +
         (state.scene !== 'empty'
@@ -911,7 +1192,8 @@
 
   function boardHtml() {
     var cols = ['待规划', '进行中', '待验收'];
-    var list = Object.keys(issues).map(function (k) { return issues[k]; });
+    /* 看板按工作区组织：只列本工作区的卡（跨区卡在待决策区用「所有工作区」查看） */
+    var list = BOARD_KEYS.map(function (k) { return issues[k]; }).filter(function (it) { return it.ws === CURRENT_WS; });
 
     var body = cols.map(function (status) {
       var cards = list.filter(function (it) { return effectiveStatus(it.key) === status; });
@@ -923,7 +1205,7 @@
 
     return '<div class="board-head"><div class="title-row">' +
         '<div><h1 class="view-title">任务看板</h1>' +
-        '<p class="view-summary">演示卡与决策的双向跳转：点卡面 [待决策] 进入决策区，点标题打开详情。</p></div>' +
+        '<p class="view-summary">工作区 ' + esc(WORKSPACES[0].name) + ' · 点卡面 [待决策] 进入决策区，点标题打开详情。</p></div>' +
         '<span class="board-note">锁卡不可派工 · 回答后才解锁</span>' +
       '</div></div>' +
       '<div class="board">' + body + '</div>';
@@ -983,6 +1265,7 @@
         (d ? (d.state === 'open' ? '已锁' : '宽限中') : effectiveStatus(issue.key)) + '</span>' +
       '<span class="chip chip-muted">' + esc(issue.priority) + ' 优先</span>' +
       issue.labels.map(function (l) { return '<span class="bcard-label">' + esc(l) + '</span>'; }).join('') +
+      (issue.ws && issue.ws !== CURRENT_WS ? '<span class="ws-chip" title="跨工作区">' + esc(wsOf(issue.key).name) + '</span>' : '') +
       (issue.parent ? '<span class="dc-note">父卡 ' + issue.parent + '</span>' : '') +
     '</div>');
 
@@ -1015,7 +1298,9 @@
     var isAnswered = d.state === 'answered';
     var selected = state.selectedOpt[d.id];
     var answer = latestAnswer(d);
-    var answerOpt = answer ? optionById(d, answer.optionId) : null;
+    var answerOpt = answerOption(d, answer);
+    var cross = isCrossWorkspace(d);
+    var needsConfirm = cross && !!selected && !state.crossConfirm.has(d.id);
 
     return '<div class="dbox">' +
       '<div class="dbox-head">' +
@@ -1039,9 +1324,16 @@
                 (o.isDefault ? '<span class="opt-default">默认</span>' : '') + '</span>' +
                 '<span class="opt-cons">' + esc(o.consequence) + '</span></span>' +
             '</button></li>';
-          }).join('') + '</ul>' +
+          }).join('') +
+            '<li><button type="button" class="opt-row opt-row-custom' + (selected === CUSTOM_ID ? ' is-selected' : '') + '" data-action="select-custom" data-id="' + d.id + '">' +
+              '<span class="opt-letter">' + CUSTOM_LETTER + '</span>' +
+              '<span class="opt-main"><span class="opt-label">自定义答案</span>' +
+              '<span class="opt-cons">不在以上选项里：自己写一句</span></span>' +
+            '</button></li></ul>' +
+          (state.customOpen.has(d.id) ? customEditorHtml(d) : '') +
+          (needsConfirm ? crossNoteHtml(d) : '') +
           '<div class="dc-foot"><div class="dc-stats">' + statsHtml(d) + '</div>' +
-            '<div class="dc-actions"><button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>提交回答</button></div></div>' +
+            '<div class="dc-actions"><button type="button" class="btn btn-primary" data-action="submit-answer" data-id="' + d.id + '"' + (selected ? '' : ' disabled') + '>' + (needsConfirm ? '确认跨区回答' : '提交回答') + '</button></div></div>' +
           '<p class="dbox-note">回答后卡会解锁并回到待规划，agent 需重新 claim 才能续跑；改写答案不会自动重跑。</p>') +
     '</div>';
   }
@@ -1069,6 +1361,14 @@
     renderToasts();
     renderChrome();
     restoreFocus(focus);
+    if (state.focusCustom) {
+      var input = document.querySelector('[data-custom-input="' + state.focusCustom + '"]');
+      if (input) {
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch (err) { /* 非文本输入忽略 */ }
+      }
+      state.focusCustom = null;
+    }
     if (state.flash) applyFlash(state.flash);
   }
 
@@ -1087,8 +1387,9 @@
     });
 
     var badge = $('#sb-decisions-badge');
+    /* 徽标只算本工作区（与生产的 useDecisionsCount(workspace.id) 一致），不随范围开关变化 */
     var inflight = decisions.filter(function (d) {
-      return (d.state === 'grace' || d.state === 'open') && !state.parked.has(d.id);
+      return (d.state === 'grace' || d.state === 'open') && !state.parked.has(d.id) && issues[d.issueKey] && issues[d.issueKey].ws === CURRENT_WS;
     }).length;
     badge.textContent = String(inflight);
     badge.classList.toggle('is-zero', inflight === 0);
@@ -1113,7 +1414,8 @@
   function renderPanel() {
     var panel = $('#panel');
     var backdrop = $('#panel-backdrop');
-    if (!state.panelIssue || !issues[state.panelIssue]) {
+    var panelIssue = state.panelIssue ? issueByKey(state.panelIssue) : null;
+    if (!state.panelIssue || !panelIssue) {
       panel.classList.remove('is-open');
       panel.setAttribute('aria-hidden', 'true');
       panel.innerHTML = '';
@@ -1122,7 +1424,7 @@
       state.panelIssue = null;
       return;
     }
-    panel.innerHTML = panelHtml(issues[state.panelIssue]);
+    panel.innerHTML = panelHtml(panelIssue);
     panel.classList.add('is-open');
     panel.setAttribute('aria-hidden', 'false');
     backdrop.hidden = false;
@@ -1190,13 +1492,16 @@
 
   function answer(d, optionId) {
     var now = Date.now();
+    var customText = optionId === CUSTOM_ID ? (state.customText[d.id] || '').trim() : null;
+    if (optionId === CUSTOM_ID) d.customAnswer = customText;
     if (d.state === 'answered') {
       var rev = d.answerRevision + 1;
-      d.answers.push({ revision: rev, optionId: optionId, by: '你', source: 'web', at: now });
+      d.answers.push({ revision: rev, optionId: optionId, customText: customText, by: '你', source: 'web', at: now });
       d.answerRevision = rev;
       d.answeredAt = now;
       state.revising.delete(d.id);
       delete state.selectedOpt[d.id];
+      state.customOpen.delete(d.id);
       pushToast({ text: '答案已修订为第 ' + rev + ' 版', kind: 'done' });
       render();
       return;
@@ -1204,6 +1509,7 @@
     if (state.leaving.has(d.id)) return;
 
     state.leaving.add(d.id);
+    state.customOpen.delete(d.id);
     render();
     var delay = prefersReducedMotion() ? 0 : 420;
 
@@ -1213,6 +1519,7 @@
         answeredAt: d.answeredAt,
         answerRevision: d.answerRevision,
         answers: d.answers.map(function (a) { return Object.assign({}, a); }),
+        customAnswer: d.customAnswer,
         lockedAt: d.lockedAt,
         stopRequestedAt: d.stopRequestedAt,
         stopAckAt: d.stopAckAt
@@ -1220,12 +1527,13 @@
       d.state = 'answered';
       d.answeredAt = Date.now();
       d.answerRevision = 1;
-      d.answers = [{ revision: 1, optionId: optionId, by: '你', source: 'web', at: Date.now() }];
+      d.answers = [{ revision: 1, optionId: optionId, customText: customText, by: '你', source: 'web', at: Date.now() }];
       d.lockedAt = null;
       d.stopRequestedAt = null;
       d.stopAckAt = null;
       state.leaving.delete(d.id);
       delete state.selectedOpt[d.id];
+      state.crossConfirm.delete(d.id);
 
       var token = 'u' + (++state.seq);
       state.undo.set(token, { id: d.id, prev: prev });
@@ -1258,9 +1566,104 @@
     if (d.state === 'answered' && !state.revising.has(d.id)) {
       state.revising.add(d.id);
     }
+    /* 与自定义互斥：选了预置选项就收起自定义框（文本保留，回来时还在） */
     state.selectedOpt[id] = optId;
+    state.customOpen.delete(id);
+    state.customError[id] = '';
+    state.crossConfirm.delete(id);
     state.withdrawError = '';
     render();
+  }
+
+  function selectCustom(id) {
+    var d = decisionById(id);
+    if (!d) return;
+    if (d.state === 'answered' && !state.revising.has(d.id)) {
+      state.revising.add(d.id);
+    }
+    if (!state.customOpen.has(id)) {
+      /* 记下打开前的选择，Esc 时回退；再点一次「自定义」则收起并回退 */
+      state.prevOpt[id] = state.selectedOpt[id] || null;
+      state.customOpen.add(id);
+      state.focusCustom = id;
+    } else {
+      state.customOpen.delete(id);
+      if (state.prevOpt[id]) state.selectedOpt[id] = state.prevOpt[id];
+      else delete state.selectedOpt[id];
+    }
+    state.selectedOpt[id] = state.customOpen.has(id) ? CUSTOM_ID : state.selectedOpt[id];
+    state.customError[id] = '';
+    state.crossConfirm.delete(id);
+    render();
+  }
+
+  function closeCustom(id, revert) {
+    var d = decisionById(id);
+    state.customOpen.delete(id);
+    state.customError[id] = '';
+    if (revert) {
+      if (state.prevOpt[id]) state.selectedOpt[id] = state.prevOpt[id];
+      else delete state.selectedOpt[id];
+    }
+    if (d) render();
+  }
+
+  /* 校验 + 提交（预置选项与自定义共用；跨工作区需二次确认） */
+  function submitAnswer(id) {
+    var d = decisionById(id);
+    if (!d) return;
+    var opt = state.selectedOpt[id];
+    if (!opt) return;
+    if (opt === CUSTOM_ID) {
+      var text = (state.customText[id] || '').trim();
+      if (!text) {
+        state.customError[id] = '先写一句答案再提交（不能为空）';
+        state.focusCustom = id;
+        render();
+        return;
+      }
+      if (text.length > CUSTOM_MAX) {
+        state.customError[id] = '最多 ' + CUSTOM_MAX + ' 字，当前 ' + text.length + ' 字';
+        state.focusCustom = id;
+        render();
+        return;
+      }
+      state.customText[id] = text;
+    }
+    if (isCrossWorkspace(d) && !state.crossConfirm.has(d.id)) {
+      state.crossConfirm.add(d.id);
+      render();
+      return;
+    }
+    answer(d, opt);
+  }
+
+  /* 阻塞清单里的卡可能不在内置的 8 张里：按需生成一张最小卡，只为能打开详情 */
+  function issueByKey(key) {
+    return issues[key] || extraIssues[key] || null;
+  }
+
+  function openIssue(key) {
+    if (!issueByKey(key)) {
+      var hit = null;
+      Object.keys(BLOCKED).forEach(function (up) {
+        BLOCKED[up].forEach(function (b) { if (b.key === key) hit = b; });
+      });
+      if (!hit) return;
+      extraIssues[key] = {
+        key: key,
+        title: hit.title,
+        status: hit.status,
+        priority: '中',
+        labels: ['下游'],
+        claimedBy: hit.owner,
+        parent: null,
+        desc: '原型示例数据：这张卡只存在于阻塞清单里，用来演示「从下游清单跳到该卡」。真实实现会按 issue_id 打开完整详情。',
+        ws: CURRENT_WS
+      };
+    }
+    state.panelIssue = key;
+    renderPanel();
   }
 
   function goDecision(id) {
@@ -1269,6 +1672,8 @@
     if (state.scene === 'single' || state.scene === 'long') state.scene = 'queue';
     state.filter = 'all';
     state.view = 'decisions';
+    /* 目标在别的工作区时自动切到「所有工作区」，否则跳过去会看不到它 */
+    if (!inScope(d)) state.scope = 'all';
     state.expanded.add(id);
     state.panelIssue = null;
     state.flash = id;
@@ -1415,17 +1820,37 @@
     }
     if (action === 'toggle-expand') { toggleExpand(el.dataset.id); return; }
     if (action === 'select-option') { selectOption(el.dataset.id, el.dataset.opt); return; }
-    if (action === 'submit-answer') {
-      var d = decisionById(el.dataset.id);
-      var opt = state.selectedOpt[el.dataset.id];
-      if (d && opt) answer(d, opt);
+    if (action === 'select-custom') { selectCustom(el.dataset.id); return; }
+    if (action === 'submit-answer') { submitAnswer(el.dataset.id); return; }
+    if (action === 'toggle-blocks') {
+      var bd = decisionById(el.dataset.id);
+      if (bd) {
+        if (state.blocksOpen.has(bd.id)) state.blocksOpen.delete(bd.id);
+        else state.blocksOpen.add(bd.id);
+        render();
+        var box = document.querySelector('[data-id="' + bd.id + '"] .blocks');
+        if (box) box.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+      }
+      return;
+    }
+    if (action === 'toggle-indirect') {
+      var id = el.dataset.id;
+      if (state.blocksIndirect.has(id)) state.blocksIndirect.delete(id);
+      else state.blocksIndirect.add(id);
+      render();
       return;
     }
     if (action === 'revise') {
       var rd = decisionById(el.dataset.id);
       if (rd) {
+        var a = latestAnswer(rd);
         state.revising.add(rd.id);
-        state.selectedOpt[rd.id] = latestAnswer(rd).optionId;
+        state.selectedOpt[rd.id] = a.optionId;
+        state.customText[rd.id] = a.customText || '';
+        if (a.optionId === CUSTOM_ID) {
+          state.customOpen.add(rd.id);
+          state.focusCustom = rd.id;
+        }
         render();
       }
       return;
@@ -1433,14 +1858,12 @@
     if (action === 'cancel-revise') {
       state.revising.delete(el.dataset.id);
       delete state.selectedOpt[el.dataset.id];
+      state.customOpen.delete(el.dataset.id);
+      state.customError[el.dataset.id] = '';
       render();
       return;
     }
-    if (action === 'open-issue') {
-      state.panelIssue = el.dataset.issue;
-      renderPanel();
-      return;
-    }
+    if (action === 'open-issue') { openIssue(el.dataset.issue); return; }
     if (action === 'close-panel') {
       state.panelIssue = null;
       renderPanel();
@@ -1478,7 +1901,28 @@
 
   document.addEventListener('input', function (e) {
     var el = e.target.closest('[data-withdraw-input]');
-    if (el) state.withdrawDraft[el.dataset.withdrawInput] = el.value;
+    if (el) { state.withdrawDraft[el.dataset.withdrawInput] = el.value; return; }
+
+    /* 自定义答案：只改内存 + 就地更新计数，不整页重渲染（否则每敲一个字都会丢焦点） */
+    var ci = e.target.closest('[data-custom-input]');
+    if (ci) {
+      var cid = ci.dataset.customInput;
+      state.customText[cid] = ci.value.slice(0, CUSTOM_MAX);
+      if (ci.value.length > CUSTOM_MAX) ci.value = state.customText[cid];
+      var cnt = ci.parentNode.querySelector('.opt-custom-count');
+      if (cnt) cnt.textContent = state.customText[cid].length + '/' + CUSTOM_MAX;
+      return;
+    }
+
+    /* 下游清单筛选：只重渲染列表容器，保住输入框焦点 */
+    var bi = e.target.closest('[data-blocks-input]');
+    if (bi) {
+      var bid = bi.dataset.blocksInput;
+      state.blocksQuery[bid] = bi.value;
+      var bd = decisionById(bid);
+      var box = document.querySelector('[data-blocks-list="' + bid + '"]');
+      if (bd && box) box.innerHTML = blockListInner(bd);
+    }
   });
 
   document.addEventListener('change', function (e) {
@@ -1486,14 +1930,40 @@
     if (el) {
       state.sort = el.value;
       render();
+      return;
+    }
+    var scopeEl = e.target.closest('[data-action="scope"]');
+    if (scopeEl) {
+      state.scope = scopeEl.value;
+      render();
+      $('#view-root').scrollTop = 0;
     }
   });
 
   document.addEventListener('keydown', function (e) {
+    /* 自定义输入框：Enter 提交、Esc 收起（并回退到打开前的选项） */
+    var ci = e.target.closest && e.target.closest('[data-custom-input]');
+    if (ci) {
+      var cid = ci.dataset.customInput;
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        e.preventDefault();
+        submitAnswer(cid);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeCustom(cid, true);
+        return;
+      }
+    }
     if (e.key === 'Escape') {
       if (state.withdrawing) {
         state.withdrawing = null;
         state.withdrawError = '';
+        render();
+      } else if (state.blocksOpen.size) {
+        state.blocksOpen.clear();
         render();
       } else if (state.panelIssue) {
         state.panelIssue = null;
