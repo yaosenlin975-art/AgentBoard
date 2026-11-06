@@ -889,6 +889,26 @@ describe('create-space / create-issue', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
   });
 
+  // CREATE-STATUS：--status 仅「待规划」「待验收」；待验收必须同时填验收标准
+  it('create-issue --status 待验收 + -d 透传初始状态；缺失验收标准或非法状态本地拒绝且不发 POST', async () => {
+    handler = (m, u, body) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'POST' && u === '/api/issues') return { status: 200, body: { ...ISSUE, status: (body as { status?: string }).status ?? ISSUE.status } };
+      return undefined;
+    };
+    const ok = makeIo();
+    expect(await main(['node', 'kb', '--server', base, 'create-issue', '前端', '记录型卡', '-d', '验收标准：可查', '--status', '待验收'], ok.io)).toBe(0);
+    expect(calls[1]?.body).toEqual({ workspace_id: 'ws1', title: '记录型卡', description: '验收标准：可查', status: '待验收' });
+    expect(ok.out()).toContain('状态: 待验收');
+
+    for (const args of [['--status', '待验收'], ['--allow-empty', '--status', '待验收'], ['--status', '进行中', '-d', '正文'], ['--status', '已关闭', '-d', '正文']]) {
+      const t = makeIo();
+      expect(await main(['node', 'kb', '--server', base, 'create-issue', '前端', '非法状态卡', ...args], t.io)).toBe(1);
+      expect(t.err()).toMatch(/验收标准|仅支持「待规划」和「待验收」/);
+    }
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
   it('create-issue --allow-empty 跳过空面校验并在回执提示', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };

@@ -29,6 +29,10 @@ export function isBlankDescription(text: string | undefined): boolean {
   return stripped === '';
 }
 
+/** CREATE-STATUS：建卡允许的初始状态（不开放进行中 / 已关闭） */
+export const CREATE_STATUSES = ['待规划', '待验收'] as const;
+export type CreateStatus = (typeof CREATE_STATUSES)[number];
+
 export interface CreateIssueArgs {
   /** 工作空间 id 或名称（先解析为 id） */
   workspace: string;
@@ -39,6 +43,8 @@ export interface CreateIssueArgs {
   description?: string;
   /** CARD-FACE：跳过空描述校验（批量建卡 / 纯父卡），回执会提示已跳过 */
   allowEmpty?: boolean;
+  /** CREATE-STATUS：初始状态，仅「待规划」「待验收」；待验收必须同时填验收标准 */
+  status?: string;
   /** 低|中|高（非法值由服务端 400） */
   priority?: string;
   /** 逗号拆分 */
@@ -60,6 +66,8 @@ interface CreateIssueBody {
   due_time?: string;
   /** CARD-FACE：跳过服务端空描述校验 */
   allow_empty?: boolean;
+  /** CREATE-STATUS：初始状态（待规划 / 待验收） */
+  status?: string;
 }
 
 /**
@@ -122,6 +130,13 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
     title = args.title;
   }
   assertIssueTitle(title);
+  // CREATE-STATUS：只放「待规划」「待验收」；待验收即使加 --allow-empty 也必须写验收标准
+  if (args.status !== undefined && !CREATE_STATUSES.includes(args.status as CreateStatus)) {
+    throw new Error(`--status 仅支持「待规划」和「待验收」，收到: ${args.status}`);
+  }
+  if (args.status === '待验收' && isBlankDescription(args.description)) {
+    throw new Error('初始状态为「待验收」时必须同时填写验收标准：请用 -d 写清验收口径');
+  }
   // CARD-FACE：空描述默认拒绝；--allow-empty 是唯一逃生口（批量建卡 / 纯父卡）
   const skipFaceCheck = args.allowEmpty === true;
   if (!skipFaceCheck && isBlankDescription(args.description)) {
@@ -131,6 +146,7 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   const body: CreateIssueBody = { workspace_id: workspaceId, title };
   if (args.description !== undefined) body.description = args.description;
   if (skipFaceCheck) body.allow_empty = true;
+  if (args.status !== undefined) body.status = args.status;
   if (args.priority !== undefined) body.priority = args.priority;
   if (args.labels !== undefined) {
     body.labels = parseLabels(args.labels);

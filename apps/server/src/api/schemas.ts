@@ -168,6 +168,8 @@ export const createIssueSchema = z
     description: z.string().optional(),
     // CARD-FACE：空描述逃生口（批量建卡 / 纯父卡）；用了它即跳过服务端空面校验
     allow_empty: z.boolean().optional(),
+    // CREATE-STATUS：建卡只允许停在「待规划」或「待验收」，不开放进行中/已关闭
+    status: z.enum(['待规划', '待验收'], { error: 'status 仅支持「待规划」和「待验收」' }).optional(),
     priority: prioritySchema.optional(),
     // TAG-CLEANUP-EXEC：请求边界统一规范化（拆空格/全角逗号、trim、去重），与 CLI parseLabels 同规则
   labels: z.array(z.string()).transform(normalizeLabels).optional(),
@@ -183,6 +185,10 @@ export const createIssueSchema = z
   .refine((value) => value.allow_empty === true || !isBlankIssueDescription(value.description), {
     message: '描述不能为空：请写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可传 allow_empty=true 跳过校验',
     path: ['description'],
+  })
+  .refine((value) => value.status !== '待验收' || !isBlankIssueDescription(value.description), {
+    message: '初始状态为「待验收」时必须同时填写验收标准（写在描述里，含验收口径）',
+    path: ['status'],
   });
 
 export const patchIssueSchema = z

@@ -214,6 +214,35 @@ describe('issues 全生命周期', () => {
     expect(short.body).toMatchObject({ description: '修一个按钮' });
   });
 
+  // CREATE-STATUS：建卡初始状态仅待规划 / 待验收；待验收必须同时填验收标准
+  it('建卡 status：待验收+验收标准 → 待验收且无占用无评论；待验收空面 → 400；非法状态 → 400 点名允许值且不建卡；缺省 → 待规划', async () => {
+    const wsId = await mkSpace();
+
+    const accepted = await request(app)
+      .post('/api/issues')
+      .send({ workspace_id: wsId, title: '建卡即待验收', description: '验收标准：GET 详情返回待验收', status: '待验收' });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body).toMatchObject({ status: '待验收', claimed_by: null, comment_count: 0 });
+    const shown = await request(app).get(`/api/issues/${accepted.body.id}`);
+    expect(shown.body).toMatchObject({ status: '待验收', claimed_by: null, comment_count: 0 });
+
+    const noFace = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '待验收无面', status: '待验收' });
+    expect(noFace.status).toBe(400);
+    expect(noFace.body.error.message).toContain('验收标准');
+
+    const before = (await request(app).get(`/api/issues?workspace=${wsId}`)).body.length;
+    for (const status of ['进行中', '已关闭']) {
+      const bad = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '非法状态', description: '正文', status });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error.message).toContain('待规划');
+      expect(bad.body.error.message).toContain('待验收');
+    }
+    expect((await request(app).get(`/api/issues?workspace=${wsId}`)).body.length).toBe(before);
+
+    const dflt = await mkIssue(wsId, '默认状态卡');
+    expect(dflt.status).toBe('待规划');
+  });
+
   it('claim：占用登记（session_id=null）→ 状态进行中；重复 claim 409；PATCH status 占用中 409、字段放行；release 回待规划 + system 评论', async () => {
     const wsId = await mkSpace();
     const issue = await mkIssue(wsId);

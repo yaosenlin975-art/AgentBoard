@@ -149,6 +149,8 @@ export interface CreateIssueInput {
   parent_issue_id?: string | null;
   due_date?: string | null;
   due_time?: string | null;
+  /** CREATE-STATUS：建卡初始状态，仅允许待规划 / 待验收；缺省待规划 */
+  status?: '待规划' | '待验收';
 }
 
 export function createIssue(db: Db, input: CreateIssueInput): Issue {
@@ -157,7 +159,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
   db.prepare(
     `INSERT INTO issue (id, workspace_id, title, description, priority, labels, status, sort_order,
        claimed_by, claimed_at, session_id, parent_issue_id, due_date, due_time, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, '待规划', ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.workspace_id,
@@ -165,6 +167,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
     input.description ?? '',
     input.priority ?? '中',
     JSON.stringify(input.labels ?? []),
+    input.status ?? '待规划',
     input.sort_order ?? 0,
     input.parent_issue_id ?? null,
     input.due_date ?? null,

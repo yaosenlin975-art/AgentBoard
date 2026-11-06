@@ -260,18 +260,20 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--title-stdin', '从 UTF-8 stdin 读标题（PowerShell 引号吞参时用：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（必填；含空格用引号；多行走 UI 或 API）')
     .option('--allow-empty', '跳过空描述校验（批量建卡 / 纯父卡）；回执会提示已跳过空面校验')
+    .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须同时用 -d 写验收标准）')
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
     .option('--parent <issue-id>', '父任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
-    .action(async (workspace: string, title: string | undefined, opts: { titleStdin?: boolean; description?: string; allowEmpty?: boolean; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
+    .action(async (workspace: string, title: string | undefined, opts: { titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, io), {
         workspace,
         title,
         titleStdin: opts.titleStdin,
         description: opts.description,
         allowEmpty: opts.allowEmpty,
+        status: opts.status,
         priority: opts.priority,
         labels: opts.labels,
         parentIssueId: opts.parent,
