@@ -76,7 +76,12 @@ describe('kb close / reopen / update', () => {
   });
 
   it('update patches fields without status and supports --description-stdin', async () => {
-    handler = (m, u) => (m === 'PATCH' && u === '/api/issues/iss1' ? { status: 200, body: { ...ISSUE, title: '新标题' } } : undefined);
+    handler = (m, u) => {
+      if (m === 'PATCH' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '新标题' } };
+      // MOJI-GUARD 回读：落库文本按提交原文应答
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '新标题', description: '长描述正文\n第二行' } };
+      return undefined;
+    };
     const result = await run(['update', 'iss1', '--title', '新标题', '--priority', '高', '--labels', 'a,b', '--due-date', '2026-12-01', '--description-stdin']);
     expect(result.code).toBe(0);
     expect(result.out).toContain('已更新: iss1');

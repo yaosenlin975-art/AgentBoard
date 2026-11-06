@@ -82,6 +82,7 @@ describe('create-issue 标题安全（本地拒绝，不发请求）', () => {
     handler = (method, url) => {
       if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: '长'.repeat(200) } };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title: '长'.repeat(200), description: '正文与验收' } };
       return undefined;
     };
     const result = await run(['create-issue', 'ws1', '长'.repeat(200), '-d', '正文与验收']);
@@ -93,6 +94,7 @@ describe('create-issue 标题安全（本地拒绝，不发请求）', () => {
     handler = (method, url) => {
       if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: '来自 stdin 的标题' } };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title: '来自 stdin 的标题', description: '正文与验收' } };
       return undefined;
     };
     const ok = await run(['create-issue', 'ws1', '--title-stdin', '-d', '正文与验收'], '来自 stdin 的标题\n');
@@ -122,6 +124,7 @@ describe('幂等重放回显', () => {
     handler = (method, url) => {
       if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: ISSUE, headers: { 'x-agentboard-replayed': '1' } };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, description: '正文与验收' } };
       return undefined;
     };
   });
@@ -140,6 +143,7 @@ describe('幂等重放回显', () => {
     handler = (method, url) => {
       if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: ISSUE };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, description: '正文与验收' } };
       return undefined;
     };
     const text = await run(['create-issue', 'ws1', '标题', '-d', '正文与验收']);

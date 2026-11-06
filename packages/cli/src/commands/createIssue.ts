@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Issue } from '@agentboard/shared';
-import { request, requestWithMeta } from '../api.js';
+import { request, requestWithMeta, verifyIssueStoredText } from '../api.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg } from '../issueRef.js';
 import { resolveWorkspaceId } from '../workspace.js';
@@ -159,6 +159,8 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   }
   // KB-CLI-1：幂等重放回显——文本标「（幂等重放）」，JSON 增 replayed 字段
   const { data: issue, replayed } = await requestWithMeta<Issue>(ctx.base, 'POST', '/api/issues', body, args.requestId ?? randomUUID());
+  // MOJI-GUARD：回读实际落库文本，中文被替换成 ? 时不再静默通过
+  await verifyIssueStoredText(ctx.base, issue.id, { title, description: args.description });
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify({ ...issue, replayed }, null, 2)}\n`);
     return;

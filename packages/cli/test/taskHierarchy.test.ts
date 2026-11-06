@@ -34,11 +34,15 @@ describe('CLI task hierarchy', () => {
         { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
         { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ], { headers: { 'x-agentboard-version': '0.1.0' } });
+      // MOJI-GUARD 回读：卡面描述按提交原文落库
+      if (url.endsWith('/api/issues/child-1')) return Response.json({ ...issue('child-1', 'Child', 'parent-1'), description: '子卡正文与验收' }, { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json(issue('child-1', 'Child', 'parent-1'), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));
     const { ctx } = context();
     await createIssue(ctx, { workspace: workspace.id, title: 'Child', description: '子卡正文与验收', parentIssueId: 'parent-1' });
     expect(calls[1]?.body).toMatchObject({ parent_issue_id: 'parent-1' });
+    // 写入后各多一次回读 GET（MOJI-GUARD）
+    expect(calls[2]?.url).toBe('http://agentboard.test/api/issues/child-1');
   });
 
   it('assembles the tree locally from one workspace read, keeping ancestors as context rows', async () => {
@@ -128,7 +132,7 @@ describe('CLI task hierarchy', () => {
         { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
         { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ], { headers: { 'x-agentboard-version': '0.1.0' } });
-      if (init?.method === 'GET') return Response.json(issue('child-1', 'Child', 'parent-1'), { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (init?.method === 'GET') return Response.json({ ...issue('child-1', 'Child', 'parent-1'), description: '子卡正文与验收' }, { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json(issue('child-1', 'Child', null), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));
     const { ctx } = context();
@@ -136,9 +140,10 @@ describe('CLI task hierarchy', () => {
     expect(await main(['node', 'kb', 'move-issue', 'child-1', '--root', '--expected-updated-at', '1', '--request-id', '00000000-0000-4000-8000-000000000202'], ctx.io)).toBe(0);
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ parent_issue_id: 'parent-1' });
     expect(new Headers(calls[1]?.init?.headers).get('Idempotency-Key')).toBe('00000000-0000-4000-8000-000000000201');
-    expect(JSON.parse(String(calls[3]?.init?.body))).toMatchObject({
+    // calls[2] 是 create 的 MOJI-GUARD 回读，move-issue 的请求因此后移到 3、4
+    expect(JSON.parse(String(calls[4]?.init?.body))).toMatchObject({
       workspace_id: workspace.id, expected_updated_at: 1, parent_issue_id: null,
     });
-    expect(new Headers(calls[3]?.init?.headers).get('Idempotency-Key')).toBe('00000000-0000-4000-8000-000000000202');
+    expect(new Headers(calls[4]?.init?.headers).get('Idempotency-Key')).toBe('00000000-0000-4000-8000-000000000202');
   });
 });

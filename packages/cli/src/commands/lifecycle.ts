@@ -9,7 +9,7 @@
  */
 import type { Issue } from '@agentboard/shared';
 import { CommanderError } from 'commander';
-import { CliHttpError, request } from '../api.js';
+import { CliHttpError, request, verifyIssueStoredText } from '../api.js';
 import { releaseAdvice } from '../errors.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg, normalizeIssueRef } from '../issueRef.js';
@@ -101,6 +101,11 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
   }
   const issue = await request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(target.id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId)
     .catch(error => mapConflict(ctx, error));
+  // MOJI-GUARD：回读实际落库文本，中文被替换成 ? 时不再静默通过
+  await verifyIssueStoredText(ctx.base, issue.id, {
+    ...(patch.title === undefined ? {} : { title: String(patch.title) }),
+    ...(patch.description === undefined ? {} : { description: String(patch.description) }),
+  });
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { IssueComment } from '@agentboard/shared';
-import { request, requestBinary } from '../api.js';
+import { request, requestBinary, verifyCommentStoredText } from '../api.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueRef } from '../issueRef.js';
 
@@ -73,6 +73,10 @@ export async function comment(ctx: Ctx, id: string, args: CommentArgs): Promise<
     },
     attachments.length > 0 ? args.requestId ?? randomUUID() : undefined,
   );
+  // MOJI-GUARD：回读落库正文（纯图片评论没有文字可校验，不发这次回读）
+  if (content !== undefined && content !== '') {
+    await verifyCommentStoredText(ctx.base, issueId, res.comment.id, content);
+  }
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(res, null, 2)}\n`);
     return;

@@ -585,6 +585,8 @@ describe('comment', () => {
           status: 200,
           body: { comment: { id: 'c9', issue_id: 'iss1', author: 'user', content: (body as { content: string }).content, ts: 7 }, woke: true },
         };
+      // MOJI-GUARD 回读：真实服务端会把落库正文按原样读回
+      if (m === 'GET' && u === '/api/issues/iss1/comments/c9') return { status: 200, body: { content: '你好 世界' } };
       return undefined;
     };
     const t = makeIo();
@@ -596,10 +598,12 @@ describe('comment', () => {
   });
 
   it('KB_AGENT 置位 → POST 体带 agent_id（服务端作者记为 agent:<KB_AGENT>）', async () => {
-    handler = (m, u) =>
-      m === 'POST' && u === '/api/issues/iss1/comments'
-        ? { status: 200, body: { comment: { ...COMMENTS[0]!, author: 'agent:coder-bot' }, woke: false } }
-        : undefined;
+    handler = (m, u, body) => {
+      if (m === 'POST' && u === '/api/issues/iss1/comments')
+        return { status: 200, body: { comment: { ...COMMENTS[0]!, author: 'agent:coder-bot', content: (body as { content: string }).content }, woke: false } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments/c1') return { status: 200, body: { content: '进展' } };
+      return undefined;
+    };
     const t = makeIo();
     process.env.KB_AGENT = 'coder-bot';
     try {
@@ -613,10 +617,11 @@ describe('comment', () => {
   });
 
   it('woke=false 提示已写入下次读取可见（KB-SRVMSG N-05）', async () => {
-    handler = (m, u) =>
-      m === 'POST' && u === '/api/issues/iss1/comments'
-        ? { status: 200, body: { comment: { ...COMMENTS[0]!, id: 'c8' }, woke: false } }
-        : undefined;
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/comments') return { status: 200, body: { comment: { ...COMMENTS[0]!, id: 'c8', content: '进展' }, woke: false } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments/c8') return { status: 200, body: { content: '进展' } };
+      return undefined;
+    };
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '进展'], t.io);
     expect(code).toBe(0);
@@ -659,10 +664,12 @@ describe('comment', () => {
 
   it('--stdin 中文/多行不损坏（体 content 精确往返）', async () => {
     const stdinText = '第一行：开工\n第二行：中文与空格保持 🙂\n第三行\n';
-    handler = (m, u) =>
-      m === 'POST' && u === '/api/issues/iss1/comments'
-        ? { status: 200, body: { comment: { id: 'c10', issue_id: 'iss1', author: 'user', content: 'echo', ts: 7 }, woke: true } }
-        : undefined;
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/comments')
+        return { status: 200, body: { comment: { id: 'c10', issue_id: 'iss1', author: 'user', content: 'echo', ts: 7 }, woke: true } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments/c10') return { status: 200, body: { content: stdinText } };
+      return undefined;
+    };
     const t = makeIo(stdinText);
     const code = await main(['node', 'kb', '--server', base, 'comment', 'iss1', '--stdin'], t.io);
     expect(code).toBe(0);
@@ -821,6 +828,8 @@ describe('create-space / create-issue', () => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'POST' && u === '/api/issues')
         return { status: 200, body: { ...ISSUE, title: (body as { title: string }).title } };
+      // MOJI-GUARD 回读：落库文本按提交原文应答
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '实现导出', description: '正文与验收' } };
       return undefined;
     };
     const t = makeIo();
@@ -836,6 +845,7 @@ describe('create-space / create-issue', () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'POST' && u === '/api/issues') return { status: 200, body: ISSUE };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '实现导出', description: '正文与验收' } };
       return undefined;
     };
     const t = makeIo();
@@ -859,6 +869,7 @@ describe('create-space / create-issue', () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'POST' && u === '/api/issues') return { status: 200, body: ISSUE };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '实现导出', description: '含 空格描述' } };
       return undefined;
     };
     const t = makeIo();
@@ -894,6 +905,7 @@ describe('create-space / create-issue', () => {
     handler = (m, u, body) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'POST' && u === '/api/issues') return { status: 200, body: { ...ISSUE, status: (body as { status?: string }).status ?? ISSUE.status } };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '记录型卡', description: '验收标准：可查' } };
       return undefined;
     };
     const ok = makeIo();
@@ -913,6 +925,7 @@ describe('create-space / create-issue', () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'POST' && u === '/api/issues') return { status: 200, body: ISSUE };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, title: '纯父卡' } };
       return undefined;
     };
     const t = makeIo();
