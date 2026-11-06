@@ -232,7 +232,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 - 同一时刻你只能占用 claim 成功的那些任务；claim 是排他的，第二个 claimer 得到 409。
 - 占用期间任务不可被拖拽流转（服务端 409 兜底），但字段与评论可被用户编辑。
 - `done`/`fail` 之后占用即释放；释放前确认 notes/reason 已写清楚，避免人工验收缺少上下文。
-- **CLI 没有 `kb release` 子命令**（帮助/提示里的 “release” 是概念，不是命令，CLI-05）。正常释放只有 `done`/`fail`；强制释放由用户当轮明确说「可以释放/接手」时，先 `kb comment` 写明范围与交接内容，再 `POST /api/issues/<id>/release`（不带 workspace_id = 用户强制释放，置回待规划）。`swing-dev` 父代理回收本班次僵尸 worker 的卡是该规则唯一例外：必须**在班次启动确认时得到用户显式授权**（用户说「可以自动释放」），默认不自动释放；未获授权就只标记「遗留占用卡」并停线。
+- **`kb release <issue-id>` 是正式子命令（REL-3）**：只释放自己占用的卡，状态退回「待规划」（不是失败），自动带本地 claim 的 fence；非占用者 / fence 过期 / 未被占用退出码 2。正常释放仍优先 `done`/`fail`；强制释放由用户当轮明确说「可以释放/接手」时，先 `kb comment` 写明范围与交接内容，再 `POST /api/issues/<id>/release`（不带 workspace_id = 用户强制释放，置回待规划）。`swing-dev` 父代理回收本班次僵尸 worker 的卡是该规则唯一例外：必须**在班次启动确认时得到用户显式授权**（用户说「可以自动释放」），默认不自动释放；未获授权就只标记「遗留占用卡」并停线。
 - **已占用的卡不得新增 blocker**：`kb dep add` 打到已被占用的卡时服务端 409 `ISSUE_CLAIMED`（CLI 退出码 2，文案会提示先释放占用）。要加前置先按上面的释放口径处理（先 `done`/`fail`，或按用户授权强制释放），不要自行抢他人占用。
 
 ## 收尾与提交（GIT-ON-DONE）
@@ -307,7 +307,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 「id 太长，用前 8 位就行」 | 任务 id 只认完整 36 位 UUID，前缀会报「任务不存在」；帮助里的截断示例不能照抄。只有 `knowledge resolve/link` 支持前缀。 |
 | 「子卡都 done 了，父卡直接 close」 | 子卡 done 只到待验收；父卡可以 `done`，但 `close` 要求所有后代已关闭，否则 409。 |
 | 「`--scope a,b` 更短」 | 优先逐条 `--scope`；逗号串实测可被 CLI 拆分，但顺序/语义不保证，脚本里不要用。 |
-| 「先 `kb release` 再 claim」 | CLI 没有 `kb release`；释放只有 `done`/`fail`，或用户授权后走 REST release。 |
+| 「先 `kb release` 再 claim」 | `kb release <id>` 只能释放自己占用的卡（退回待规划，自动带 fence，非占用者/未占用退出码 2）；别人的占用只能等 `done`/`fail`，或用户授权后走 REST 强制释放。 |
 | 「用 claim 时的描述就行」 | 关键节点重拉 `kb show`；用户可能在期间改过描述、优先级或留了 `[新]` 留言。 |
 | 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
 | 「没写知识页/变更日志就想 done」 | 先写再 done；知识页确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」，变更日志一律写（无用户可见变更时正文写「本轮无用户可见变更」）。沉默视为收尾未完成。 |

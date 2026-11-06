@@ -39,7 +39,7 @@ description: 把当前 AgentBoard 工作交接给另一个 agent/会话，或暂
 3. **等回报**：有等待工具（`wait_agent` / `TaskOutput`）就等；没有就要求成员在回复里给总结，不空等、不编造。
 4. **只有在消息发不出去或必须立刻停**时才强停：消息失败（成员不存在 / 工具报错），或用户要求「立刻停」而成员长时间不回 → 才用强停工具（`interrupt_agent` / `TaskStop`）。
    - 强停后必须复核成员状态是否转为 inactive（有列表工具时）；并在汇报里写明「哪个成员被强停、强停前是否收到过总结、哪些内容因此仍然缺失」。
-5. **释放占用**：按下面「Choose the truthful task state」处理；释放动作与「停会话回合」是两件事——`kb fail` 只放卡，不会停在跑的回合，两者都要做。CLI 没有 `kb release`，不要照帮助提示去敲。
+5. **释放占用**：按下面「Choose the truthful task state」处理；释放动作与「停会话回合」是两件事——`kb fail` 只放卡，不会停在跑的回合，两者都要做。只放卡不判失败用 `kb release <issue-id>`（REL-3：只有当前占用者可执行，退回「待规划」并清空占用，自动带本地 claim 的 fence；非占用者 / fence 过期 / 未被占用退出码 2），或直接 `kb done`/`kb fail` 收尾。
 
 ## 写入由调用者本人完成
 
@@ -80,7 +80,7 @@ description: 把当前 AgentBoard 工作交接给另一个 agent/会话，或暂
 - **粒度**：按**领域**分页（如「服务端与数据」「前端与交互」「测试与门禁」「坑与注意点」），不要按日期或按人分页；已有同主题页优先**修订**（`--expected-revision`）而不是新建同义页。
 - **slug**：语义化、稳定（如 `agentboard-server-data`、`agentboard-frontend-ux`、`agentboard-testing-gates`、`agentboard-pitfalls`）；**不使用** `handoff-<issue-uuid>` 命名，也不新建「交接文档」类页。
 - **重复判定**：写前先 `kb knowledge list --scope workspace --workspace <ws-id> --status all --include-expired` 找同主题页（`--scope` 必填；跨公共知识加一次 `--scope common`）；存在则修订（贴 `--expected-revision`），无则新建。`KNOWLEDGE_EXISTS`(409) 时按 slug 找回落。
-- **新建必须带分类与来源/证据**：`kb knowledge create ... --category design|solved|pinned|open --stdin --sources-file sources.json --evidence-file evidence.json`（缺 `--stdin`/`--sources`/`--evidence` 任一即退出 1；一次性把已有 md/txt 建成页可用 `kb knowledge import <file> --category …`，sources 自动构造）。不传 `--category` 会被落成 `legacy`（CLI-08）。设计类同时给 `--landed proposed|partial|landed`。
+- **新建必须带分类与来源/证据**：`kb knowledge create ... --domain accounts|knowledge|board|chat|ui|infra --stdin --sources-file sources.json --evidence-file evidence.json`（缺 `--stdin`/`--sources`/`--evidence` 任一即退出 1，缺 `--domain` 即 400；一次性把已有 md/txt 建成页可用 `kb knowledge import <file> --domain … --category …`，sources 自动构造）。`--domain` 必填（KB-CR-1，空串/非法值同样 400）；`--category design|solved|pinned|open` 缺省落 `open`（KB-CR-1 起不再兜底 `legacy`），仍应显式传。设计类同时给 `--landed proposed|partial|landed`。
 
 知识页字段（服务端要求 `sources`/`evidence` 各 ≥1 条）：`sources[]` = `source_id`（1–200，如 `file:apps/server/src/index.ts`）、`source_type`（`file|url|agent`）、`locator`（相对路径 / URL / agent 名）、`captured_at`（epoch ms）、`content_hash`（sha256 hex，按真实字节算）、`snapshot?`（仅 url / agent 来源可带，≤2 KiB 真实摘录；file 来源带了服务端直接拒「本地代码来源只保存路径和 hash」）；`evidence[]` = `source_id`（须精确指向同次写入的 sources 之一）、`locator`（仓库相对路径 + 可选行号区间，如 `apps/web/src/x.ts:125-137`；非文件证据只用 `cmd:` / `issue:` / `agent:` 前缀，不写 `file:12-30` 这类无路径裸行号畸形条目）、`snapshot?`（只放简短摘要或 diff 片段，禁止整段工具报告 JSON；file 来源的证据不带）。同一 evidence 不重复登记，同一提交多条只保留一条。口径以 `using-agentboard`「知识页写什么（内容口径）」的「证据书写口径」条为准，两处冲突时以该节为准。长 JSON 用 `--sources-file` / `--evidence-file` 传，正文用 `--stdin`。`body_md` ≤100,000 字符。
 
@@ -93,8 +93,8 @@ description: 把当前 AgentBoard 工作交接给另一个 agent/会话，或暂
 按 1→5 顺序取第一条命中，只决定目标状态，不执行动作：
 
 1. **已完成任务补交接（例外）**：状态为待验收/已关闭且 owner 为空 → 写评论；有可复用结论才写知识页，状态与 owner 不变。
-2. **正常交接且任务已完成、自检通过**：caller 占用中，评论已写并回读，且已按 `using-agentboard` 的 CLOSE-RECORD 处理收尾物——可复用结论写工作区知识页（新建必带 `--category`；无则 notes 显式声明「未沉淀知识页：<原因>」）+ 变更日志一律写 + notes 带知识页/变更日志 id 与声明 → `kb done <issue-id> --notes-stdin --scope <path>`（`--scope` 逐条传；无文件改动则不传并在 notes 写明）。只 done 到待验收，不等于关闭。
-3. **用户结束本 worker 或转交未完成任务**：评论已写 → `kb fail <issue-id> --reason '交接待续：已完成…；剩余…；未验证…；阻塞…；见本卡评论与知识页 <slug/page-id>（未沉淀则写「未沉淀知识页：原因」）'`。reason 必须自包含，不能让卡被释放后无迹可查；CLI 没有 `kb release`。
+2. **正常交接且任务已完成、自检通过**：caller 占用中，评论已写并回读，且已按 `using-agentboard` 的 CLOSE-RECORD 处理收尾物——可复用结论写工作区知识页（新建必带 `--category`；无则 notes 显式声明「未沉淀知识页：<原因>」）+ 变更日志一律写 + notes 带知识页/变更日志 id 与声明 → `kb done <issue-id> --notes-stdin --scope <path>`（`--scope` 逐条传；无文件改动则不传并在 notes 写明）。卡面含新增 REST 路由 / WS 事件 / 定时器 / CLI 命令 / DB 迁移时必须过 RULE-3：证明外部可触达（真实 app 断言 / 事件实发 / ticker 实跑），或在卡面写明接线归属并建 `blocks` 边，两者都没有不得 `done`。只 done 到待验收，不等于关闭。
+3. **用户结束本 worker 或转交未完成任务**：评论已写 → `kb fail <issue-id> --reason '交接待续：已完成…；剩余…；未验证…；阻塞…；见本卡评论与知识页 <slug/page-id>（未沉淀则写「未沉淀知识页：原因」）'`。reason 必须自包含，不能让卡被释放后无迹可查；只想放卡不判失败时可 `kb release <issue-id>`（当前占用者专属，退回待规划）。
 4. **交接执行失败或必需自检失败**：`kb fail <issue-id> --reason '...'` 写具体失败或阻塞，并按「不完整交接」汇报。
 5. **继续正常工作或在等用户决策**：需要用户拍板时走 `ask-user`（`kb ask` 落决策，默认宽限 180 秒；夜间无人值守用 `--grace 0`）；返回 `LOCKED` 时把确切问题与 `next_step` 写进交接评论后停手，不要只靠「保持占用」等回复。
 
