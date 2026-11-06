@@ -109,6 +109,7 @@ const DECISION_EVENT_TYPES = new Set<ServerWsEvent['type']>([
   'decision.expired',
   'decision.revised',
   'decision.withdrawn',
+  'decision.extended',
   'issue.stop_requested',
 ]);
 

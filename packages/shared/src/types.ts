@@ -506,6 +506,7 @@ export interface DecisionEvent {
     | 'decision.expired'
     | 'decision.revised'
     | 'decision.withdrawn'
+    | 'decision.extended'
     | 'issue.stop_requested';
   workspace_id: string;
   issue_id: string;
@@ -517,6 +518,9 @@ export interface DecisionEvent {
   grace_until?: number | null;
   /** issue.stop_requested 的原因（grace_zero / grace_expired） */
   reason?: string;
+  /** DEC-V4-API-EXTEND：decision.extended 的累计延长秒数与次数 */
+  extended_seconds?: number;
+  extension_count?: number;
 }
 
 /** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 */

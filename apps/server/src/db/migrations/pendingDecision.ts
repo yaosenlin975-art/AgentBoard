@@ -37,6 +37,10 @@ export function migratePendingDecision(db: Db): void {
       created_fence INTEGER,
       grace_seconds INTEGER NOT NULL DEFAULT 180 CHECK (grace_seconds BETWEEN 0 AND 600),
       grace_until INTEGER NOT NULL,
+      extended_seconds INTEGER NOT NULL DEFAULT 0,
+      extension_count INTEGER NOT NULL DEFAULT 0,
+      extended_by TEXT,
+      extended_at INTEGER,
       locked_at INTEGER,
       stop_requested_at INTEGER,
       stop_ack_at INTEGER,
@@ -94,4 +98,9 @@ export function migratePendingDecision(db: Db): void {
     'decision_grace_seconds',
     'decision_grace_seconds INTEGER NOT NULL DEFAULT 180',
   );
+  // DEC-V4-API-EXTEND：延长宽限的累计量/次数/操作者/时间（存量行为 0/NULL；可重复执行）
+  ensureColumn(db, 'issue_decision', 'extended_seconds', 'extended_seconds INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'issue_decision', 'extension_count', 'extension_count INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'issue_decision', 'extended_by', 'extended_by TEXT');
+  ensureColumn(db, 'issue_decision', 'extended_at', 'extended_at INTEGER');
 }

@@ -265,6 +265,16 @@ const EVENT_FIXTURES = {
     decision_id: 'd-1',
     state: 'withdrawn',
   },
+  'decision.extended': {
+    type: 'decision.extended',
+    workspace_id: 'ws-1',
+    issue_id: 'i-1',
+    decision_id: 'd-1',
+    state: 'grace',
+    grace_until: 2,
+    extended_seconds: 60,
+    extension_count: 1,
+  },
   'issue.stop_requested': {
     type: 'issue.stop_requested',
     workspace_id: 'ws-1',
@@ -318,6 +328,6 @@ describe('eventToQueryKeys 类型护栏', () => {
   });
 
   it('夹具覆盖 ServerWsEvent 的全部 type（缺键由 satisfies 编译期拦截）', () => {
-    expect(Object.keys(EVENT_FIXTURES)).toHaveLength(23);
+    expect(Object.keys(EVENT_FIXTURES)).toHaveLength(24);
   });
 });

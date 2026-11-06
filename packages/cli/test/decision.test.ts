@@ -274,3 +274,85 @@ describe('kb answer / decisions / stop-check / show', () => {
     expect(listed.out).toContain('[待决策]');
   });
 });
+
+describe('kb ask-extend（DEC-V4-API-EXTEND）', () => {
+  const extended = {
+    decision_id: DECISION_ID,
+    state: 'grace',
+    grace_until: Date.now() + 60_000,
+    remaining_grace_seconds: 60,
+    extended_seconds: 60,
+    extension_count: 1,
+    max_extend_seconds: 300,
+  };
+
+  it('成功：POST /api/decisions/:id/extend，默认 60 秒，文本含累计与次数', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [] };
+      if (method === 'POST' && url === `/api/decisions/${DECISION_ID}/extend`) return { status: 200, body: extended };
+      return undefined;
+    };
+    const result = await run(['ask-extend', DECISION_ID]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('EXTENDED');
+    expect(result.out).toContain('60/300');
+    const call = calls.find((c) => c.url === `/api/decisions/${DECISION_ID}/extend`);
+    expect(call?.body).toMatchObject({ seconds: 60 });
+    expect((call?.body as { by: string }).by).toBeTruthy();
+  });
+
+  it('--json：输出结构化结果；--by/--fence 进请求体', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [] };
+      if (method === 'POST' && url === `/api/decisions/${DECISION_ID}/extend`) return { status: 200, body: extended };
+      return undefined;
+    };
+    const result = await run(['ask-extend', DECISION_ID, '--seconds', '120', '--by', 'user', '--fence', '7', '--json']);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out)).toMatchObject({ decision_id: DECISION_ID, extended_seconds: 60 });
+    const call = calls.find((c) => c.url === `/api/decisions/${DECISION_ID}/extend`);
+    expect(call?.body).toMatchObject({ seconds: 120, by: 'user', fence: 7 });
+  });
+
+  it('参数非法（0/301/abc/前缀 <8 位）→ 退出码 3，不发延长请求', async () => {
+    handler = () => undefined;
+    for (const args of [
+      ['ask-extend', DECISION_ID, '--seconds', '0'],
+      ['ask-extend', DECISION_ID, '--seconds', '301'],
+      ['ask-extend', DECISION_ID, '--seconds', 'abc'],
+      ['ask-extend', 'decf000'],
+    ]) {
+      const result = await run(args);
+      expect(result.code).toBe(3);
+    }
+    expect(calls.some((c) => c.url.endsWith('/extend'))).toBe(false);
+  });
+
+  it('409 EXTEND_LIMIT_EXCEEDED → 退出码 2 并带错误码', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [] };
+      if (method === 'POST' && url === `/api/decisions/${DECISION_ID}/extend`) {
+        return { status: 409, body: { error: { code: 'EXTEND_LIMIT_EXCEEDED', message: '延长上限 200 秒' } } };
+      }
+      return undefined;
+    };
+    const result = await run(['ask-extend', DECISION_ID, '--seconds', '60']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('延长上限');
+  });
+
+  it('跨区（当前工作区 ≠ 决策工作区）→ 服务端 403 → 退出码 2', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws-local', name: '本地', path: cwd }] };
+      if (method === 'POST' && url === `/api/decisions/${DECISION_ID}/extend`) {
+        return { status: 403, body: { error: { code: 'FORBIDDEN', message: '跨区延长需要目标工作区写权限' } } };
+      }
+      return undefined;
+    };
+    const result = await run(['ask-extend', DECISION_ID]);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('FORBIDDEN');
+    const call = calls.find((c) => c.url === `/api/decisions/${DECISION_ID}/extend`);
+    expect(call?.body).toMatchObject({ workspace_id: 'ws-local' });
+  });
+});

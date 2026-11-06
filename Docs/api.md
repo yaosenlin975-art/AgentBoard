@@ -896,3 +896,26 @@ app.use(express.json());
 关键词边只按此摘要计算（标题 + 前 2000 字符），全文不参与。
 
 原因（实测）：库里存在 200 万字符级页面时，原实现把全文取回再对每页做 `entityTerms` + `trigrams`，24 节点的图接口耗时 **22–23 秒**；改为摘要 + `(status,scope,id)` 索引后同规模 **22ms**（夹具实测，200 页 78ms）。
+
+## 20. 待决策（`/api/decisions`，decisionRoutes.ts，DEC-V4-API-EXTEND）
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `GET /api/decisions` | query：`workspace_id`（必填）、`state?`、`issue_id?`、`stale?`、`limit?`（≤500） | `{ decisions: DecisionListItem[] }`；列表项含 `options[]` / `issue_priority` / `blocked_downstream_count`（DEC-V4-API-LIST） | 400 缺 `workspace_id` |
+| `GET /api/decisions/:id` | — | `{ decision, options, answers[] }` | 404 `DECISION_NOT_FOUND` |
+| `POST /api/decisions/:id/extend` | body：`seconds`（1–300 整数，必填）、`by?`（缺省 `user`）、`fence?`（传了就校验）、`workspace_id?`（显式传入即做跨区守卫） | 200 `{ decision_id, state: 'grace', grace_until, remaining_grace_seconds, extended_seconds, extension_count, max_extend_seconds }` | 400 `INVALID_SECONDS`；404 `DECISION_NOT_FOUND`；409 `DECISION_NOT_GRACE` / `EXTEND_LIMIT_EXCEEDED`（details `{ extended_seconds, max_extend_seconds }`）/ `STALE_FENCE`；403 `FORBIDDEN`（`workspace_id` 与决策工作区不一致） |
+
+延长语义：
+
+- `grace_until = max(now, 原 grace_until) + seconds × 1000`：已过旧截止但尚未落锁的决策从 `now` 起续，不会被压缩；
+- 累计 `extended_seconds` / `extension_count`，记录 `extended_by` / `extended_at`；**不改** `grace_seconds`、**不续** `claim_fence`、不改卡状态（落锁仍由 ticker 按新截止执行）；
+- 上限 `max_extend_seconds = min(300, max(0, 600 - grace_seconds))`：原宽限 600 秒时不可延；
+- WS 广播 `decision.extended`（带 `grace_until` / `extended_seconds` / `extension_count`）与 `issue.changed`。
+
+CLI：
+
+```
+kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fence <n>] [--json]
+```
+
+退出码：`0` 成功；`1` 决策不存在 / 服务不可达 / 其它；`2` 非宽限中、超上限（409）、跨区（403）；`3` `--seconds` 或 id 前缀非法（不发请求）。

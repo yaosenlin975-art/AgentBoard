@@ -16,6 +16,7 @@ import {
   withdrawPendingDecision,
   type CreateDecisionInput,
 } from '../services/decision.js';
+import { extendDecisionGrace } from '../services/decisionGrace.js';
 import { assertFenceCurrent } from '../services/claim.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 
@@ -28,12 +29,14 @@ import { ApiError, NotFoundError, ValidationError } from '../errors.js';
  *   GET  /decisions/:id                  详情（选项 + 全部答案 revision + 剩余宽限）
  *   POST /decisions/:id/answer           人类回答（可带 expected_revision 修订）
  *   POST /decisions/:id/withdraw         人类/提问者撤回
+ *   POST /decisions/:id/extend           延长宽限（DEC-V4-API-EXTEND）
  *   GET  /issues/:id/stop                DEC-9 停止信号只读窗口（agent 2 秒级轮询）
  *   POST /issues/:id/stop-ack            agent 确认已停在检查点
  *   GET  /workspaces/:workspaceId/decisions/count
  *
  * 状态码口径：400 参数非法 / 404 不存在 / 409 冲突（DECISION_ALREADY_OPEN、DECISION_LOCKED、STALE_FENCE、
- * DECISION_ALREADY_ANSWERED、DECISION_REVISION_CONFLICT、DECISION_WITHDRAWN）/ 403 非提问者撤回。
+ * DECISION_ALREADY_ANSWERED、DECISION_REVISION_CONFLICT、DECISION_WITHDRAWN、DECISION_NOT_GRACE、
+ * EXTEND_LIMIT_EXCEEDED）/ 403 非提问者撤回、跨区延长。
  * 请求 schema 暂时落在本文件，待 routes.ts/schemas.ts 的他人未提交改动释放后迁入 schemas.ts。
  */
 
@@ -86,6 +89,14 @@ const withdrawSchema = z.object({
   reason: z.string().min(1),
 });
 
+/** DEC-V4-API-EXTEND：seconds 的整数/区间校验在服务层（错误码必须是 INVALID_SECONDS） */
+const extendSchema = z.object({
+  seconds: z.unknown().optional(),
+  by: z.string().min(1).optional(),
+  fence: z.number().int().optional(),
+  workspace_id: z.string().min(1).optional(),
+});
+
 const listQuerySchema = z.object({
   workspace_id: z.string().optional(),
   issue_id: z.string().optional(),
@@ -136,7 +147,7 @@ function decisionEvent(
     state: DecisionEvent['state'];
     grace_until: number | null;
   },
-  extra: Partial<Pick<DecisionEvent, 'revision' | 'grace_until' | 'reason'>> = {},
+  extra: Partial<Pick<DecisionEvent, 'revision' | 'grace_until' | 'reason' | 'extended_seconds' | 'extension_count'>> = {},
 ): DecisionEvent {
   return {
     type,
@@ -317,6 +328,35 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
     emit(deps, decisionEvent('decision.withdrawn', decision, { grace_until: null }));
     emitIssueChanged(deps, decision.issue_id);
     res.json({ decision });
+  });
+
+  router.post('/decisions/:id/extend', (req, res) => {
+    const body = zodInput(extendSchema, req.body);
+    const result = extendDecisionGrace(deps.db, {
+      decision_id: String(req.params.id),
+      seconds: body.seconds,
+      ...(body.by === undefined ? {} : { by: body.by }),
+      ...(body.fence === undefined ? {} : { fence: body.fence }),
+      ...(body.workspace_id === undefined ? {} : { workspace_id: body.workspace_id }),
+    });
+    emit(
+      deps,
+      decisionEvent('decision.extended', result.decision, {
+        grace_until: result.grace_until,
+        extended_seconds: result.extended_seconds,
+        extension_count: result.extension_count,
+      }),
+    );
+    emitIssueChanged(deps, result.decision.issue_id);
+    res.json({
+      decision_id: result.decision.id,
+      state: result.decision.state,
+      grace_until: result.grace_until,
+      remaining_grace_seconds: result.remaining_grace_seconds,
+      extended_seconds: result.extended_seconds,
+      extension_count: result.extension_count,
+      max_extend_seconds: result.max_extend_seconds,
+    });
   });
 
   router.get('/issues/:id/stop', (req, res) => {

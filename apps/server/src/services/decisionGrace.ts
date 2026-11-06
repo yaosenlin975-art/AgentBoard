@@ -12,10 +12,11 @@
  */
 import type { Db } from '../db/connection.js';
 import type { ServerWsEvent } from '@agentboard/shared';
-import { getDecision } from '../db/repos/decision.js';
+import { getDecision, applyDecisionExtension, type DecisionRow } from '../db/repos/decision.js';
 import { getIssue } from '../db/repos/issue.js';
-import { ConflictError, NotFoundError } from '../errors.js';
+import { ApiError, ConflictError, ForbiddenError, NotFoundError } from '../errors.js';
 import { lockIssueForDecision } from './decision.js';
+import { assertFenceCurrent } from './claim.js';
 
 /** 设计定稿：ticker 与 stop-check 均为 2 秒级 */
 export const GRACE_TICK_INTERVAL_MS = 2000;
@@ -167,5 +168,93 @@ export function startDecisionGraceTicker(db: Db, options: GraceTickerOptions = {
       stopped = true;
       cancel(handle);
     },
+  };
+}
+
+/** DEC-V4-API-EXTEND：单次最多 300 秒；「原宽限 + 累计延长」最多 600 秒 */
+export const MAX_EXTEND_SECONDS = 300;
+export const MAX_TOTAL_GRACE_SECONDS = 600;
+
+export interface ExtendDecisionInput {
+  decision_id: string;
+  /** 由服务层校验（非整数/越界 → 400 INVALID_SECONDS） */
+  seconds: unknown;
+  by?: string;
+  fence?: number;
+  /** 显式传入时必须与决策所属工作区一致；不一致按跨区无写权限 → 403 */
+  workspace_id?: string;
+  now?: number;
+}
+
+export interface ExtendDecisionResult {
+  decision: DecisionRow;
+  grace_until: number;
+  remaining_grace_seconds: number;
+  extended_seconds: number;
+  extension_count: number;
+  max_extend_seconds: number;
+}
+
+/**
+ * 延长宽限（DEC-V4-API-EXTEND）：
+ * - `grace_until = max(now, grace_until) + seconds`（过期但尚未落锁也能续上）；
+ * - 累计 `extended_seconds` / `extension_count`，记录 `extended_by` / `extended_at`；
+ * - 不改 `grace_seconds`、不续 fence、不碰卡状态（落锁仍由 ticker 按新截止时间负责）。
+ */
+export function extendDecisionGrace(db: Db, input: ExtendDecisionInput): ExtendDecisionResult {
+  const seconds = input.seconds;
+  if (typeof seconds !== 'number' || !Number.isSafeInteger(seconds) || seconds < 1 || seconds > MAX_EXTEND_SECONDS) {
+    throw new ApiError(
+      400,
+      'INVALID_SECONDS',
+      `seconds 必须是 1–${MAX_EXTEND_SECONDS} 的整数（收到 ${JSON.stringify(seconds)}）`,
+    );
+  }
+  const decision = getDecision(db, input.decision_id);
+  if (!decision) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+  if (input.workspace_id !== undefined && input.workspace_id !== decision.workspace_id) {
+    throw new ForbiddenError('决策属于其它工作区，跨区延长需要目标工作区写权限');
+  }
+  if (decision.state !== 'grace') {
+    throw new ApiError(409, 'DECISION_NOT_GRACE', `决策当前状态为 ${decision.state}，仅宽限中可延长`);
+  }
+  assertFenceCurrent(db, decision.issue_id, input.fence);
+
+  const maxExtend = Math.min(MAX_EXTEND_SECONDS, Math.max(0, MAX_TOTAL_GRACE_SECONDS - decision.grace_seconds));
+  if (decision.extended_seconds + seconds > maxExtend) {
+    throw new ApiError(
+      409,
+      'EXTEND_LIMIT_EXCEEDED',
+      `延长上限 ${maxExtend} 秒（已延长 ${decision.extended_seconds} 秒，本次请求 ${seconds} 秒）`,
+      { extended_seconds: decision.extended_seconds, max_extend_seconds: maxExtend },
+    );
+  }
+
+  const now = input.now ?? Date.now();
+  const graceUntil = Math.max(now, decision.grace_until) + seconds * 1000;
+  const extendedSeconds = decision.extended_seconds + seconds;
+  const extensionCount = decision.extension_count + 1;
+  const by = input.by ?? 'user';
+  const applied = applyDecisionExtension(db, {
+    id: decision.id,
+    now,
+    by,
+    grace_until: graceUntil,
+    extended_seconds: extendedSeconds,
+    extension_count: extensionCount,
+  });
+  if (!applied) {
+    const latest = getDecision(db, decision.id);
+    if (!latest) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    throw new ApiError(409, 'DECISION_NOT_GRACE', `决策当前状态为 ${latest.state}，仅宽限中可延长`);
+  }
+
+  return {
+    decision: getDecision(db, decision.id)!,
+    grace_until: graceUntil,
+    remaining_grace_seconds: Math.max(0, Math.ceil((graceUntil - now) / 1000)),
+    extended_seconds: extendedSeconds,
+    extension_count: extensionCount,
+    max_extend_seconds: maxExtend,
   };
 }

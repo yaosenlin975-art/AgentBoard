@@ -438,4 +438,213 @@ describe('DEC-V4-API-LIST：真实 createApp 下新字段对外可触达', () =>
     expect(item.issue_priority).toBe('高');
     expect(item.blocked_downstream_count).toBe(1);
   });
+
+  it('POST /api/decisions/:id/extend 在真实 createApp 下非 404，并读回新的 grace_until', async () => {
+    const created = await request(realApp).post(`/api/issues/${realIssue.id}/ask`).send({
+      agent_id: 'agent-real',
+      fence: realIssue.fence,
+      question: '要延长吗？',
+      options: [
+        { label: '延长', consequence: '再等一分钟' },
+        { label: '不延', consequence: '按原截止落锁' },
+      ],
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.decision.id as string;
+    const before = created.body.decision.grace_until as number;
+
+    const extended = await request(realApp)
+      .post(`/api/decisions/${id}/extend`)
+      .send({ seconds: 30, by: 'user', workspace_id: realWsId });
+    expect(extended.status).toBe(200);
+    expect(extended.body.grace_until).toBe(before + 30_000);
+    expect(extended.body.extension_count).toBe(1);
+
+    const detail = await request(realApp).get(`/api/decisions/${id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.decision.grace_until).toBe(before + 30_000);
+    expect(detail.body.decision.extended_seconds).toBe(30);
+  });
+});
+
+describe('DEC-V4-API-EXTEND：延长宽限', () => {
+  const extend = (id: string, body: Record<string, unknown>) =>
+    request(app).post(`/api/decisions/${id}/extend`).send(body);
+
+  it('200：grace_until = max(now, 原值)+seconds；累计/次数/操作者落库；grace_seconds 与 fence 不变；广播 decision.extended', async () => {
+    const created = await ask({ grace_seconds: 120 });
+    const id = created.body.decision.id as string;
+    const before = created.body.decision.grace_until as number;
+    const issueBefore = t.db.prepare('SELECT claim_fence,claimed_by,status FROM issue WHERE id=?').get(agentIssue.id);
+    events.length = 0;
+
+    const response = await extend(id, { seconds: 60, by: 'user' });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      decision_id: id,
+      state: 'grace',
+      extended_seconds: 60,
+      extension_count: 1,
+      max_extend_seconds: 300,
+    });
+    expect(response.body.grace_until).toBe(before + 60_000);
+    expect(response.body.remaining_grace_seconds).toBeGreaterThan(170);
+
+    const row = t.db
+      .prepare('SELECT grace_seconds,grace_until,extended_seconds,extension_count,extended_by,extended_at FROM issue_decision WHERE id=?')
+      .get(id) as {
+      grace_seconds: number;
+      grace_until: number;
+      extended_seconds: number;
+      extension_count: number;
+      extended_by: string | null;
+      extended_at: number | null;
+    };
+    expect(row.grace_seconds).toBe(120);
+    expect(row.grace_until).toBe(before + 60_000);
+    expect(row.extended_seconds).toBe(60);
+    expect(row.extension_count).toBe(1);
+    expect(row.extended_by).toBe('user');
+    expect(row.extended_at).toBeTypeOf('number');
+    expect(t.db.prepare('SELECT claim_fence,claimed_by,status FROM issue WHERE id=?').get(agentIssue.id)).toEqual(issueBefore);
+
+    expect(decisionEvents()).toHaveLength(1);
+    expect(decisionEvents()[0]).toMatchObject({
+      type: 'decision.extended',
+      decision_id: id,
+      state: 'grace',
+      grace_until: before + 60_000,
+      extended_seconds: 60,
+      extension_count: 1,
+    });
+    expect(issueChanges()).toHaveLength(1);
+  });
+
+  it('已过截止但尚未落锁：从 now 起续，不回到被压缩的旧截止', async () => {
+    const now = Date.now();
+    const decision = insertDecision(t.db, {
+      workspace_id: wsId,
+      issue_id: agentIssue.id,
+      question: '过期宽限',
+      created_by: 'agent-1',
+      grace_seconds: 180,
+      grace_until: now - 10_000,
+      options: OPTIONS,
+      now,
+    });
+    const response = await extend(decision.id, { seconds: 60 });
+    expect(response.status).toBe(200);
+    expect(response.body.grace_until).toBeGreaterThanOrEqual(now + 60_000);
+    expect(response.body.grace_until).toBeLessThan(now + 62_000);
+  });
+
+  it('seconds 非法（0/301/1.5/字符串/缺失）→ 400 INVALID_SECONDS', async () => {
+    const created = await ask();
+    const id = created.body.decision.id as string;
+    for (const seconds of [0, 301, 1.5, '60', undefined]) {
+      const response = await extend(id, seconds === undefined ? {} : { seconds });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe('INVALID_SECONDS');
+    }
+  });
+
+  it('未知 id → 404 DECISION_NOT_FOUND；非宽限中（open/answered）→ 409 DECISION_NOT_GRACE', async () => {
+    const missing = await extend('00000000-0000-4000-8000-000000000000', { seconds: 60 });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe('DECISION_NOT_FOUND');
+
+    const now = Date.now();
+    const open = insertDecision(t.db, {
+      workspace_id: wsId,
+      issue_id: agentIssue.id,
+      question: '已落锁',
+      created_by: 'agent-1',
+      state: 'open',
+      grace_seconds: 180,
+      grace_until: now,
+      locked_at: now,
+      options: OPTIONS,
+      now,
+    });
+    const onOpen = await extend(open.id, { seconds: 60 });
+    expect(onOpen.status).toBe(409);
+    expect(onOpen.body.error.code).toBe('DECISION_NOT_GRACE');
+
+    const answered = insertDecision(t.db, {
+      workspace_id: wsId,
+      issue_id: agentIssue.id,
+      question: '已回答',
+      created_by: 'agent-1',
+      state: 'answered',
+      grace_seconds: 180,
+      grace_until: now,
+      options: OPTIONS,
+      now,
+    });
+    const onAnswered = await extend(answered.id, { seconds: 60 });
+    expect(onAnswered.status).toBe(409);
+    expect(onAnswered.body.error.code).toBe('DECISION_NOT_GRACE');
+  });
+
+  it('累计上限：grace 400 → 单次上限 min(300,200)=200；超出 → 409 EXTEND_LIMIT_EXCEEDED（带 details）', async () => {
+    const created = await ask({ grace_seconds: 400 });
+    const id = created.body.decision.id as string;
+    const first = await extend(id, { seconds: 200 });
+    expect(first.status).toBe(200);
+    expect(first.body.max_extend_seconds).toBe(200);
+    const over = await extend(id, { seconds: 1 });
+    expect(over.status).toBe(409);
+    expect(over.body.error.code).toBe('EXTEND_LIMIT_EXCEEDED');
+    expect(over.body.error.details).toEqual({ extended_seconds: 200, max_extend_seconds: 200 });
+
+    const now = Date.now();
+    const other = createIssue(t.db, { workspace_id: wsId, title: '满额卡' });
+    const full = insertDecision(t.db, {
+      workspace_id: wsId,
+      issue_id: other.id,
+      question: '原宽限已满 600',
+      created_by: 'agent-1',
+      grace_seconds: 600,
+      grace_until: now + 600_000,
+      options: OPTIONS,
+      now,
+    });
+    const none = await extend(full.id, { seconds: 1 });
+    expect(none.status).toBe(409);
+    expect(none.body.error.code).toBe('EXTEND_LIMIT_EXCEEDED');
+    expect(none.body.error.details).toEqual({ extended_seconds: 0, max_extend_seconds: 0 });
+  });
+
+  it('fence 过期 → 409 STALE_FENCE；缺省 fence 为软放行', async () => {
+    const created = await ask();
+    const id = created.body.decision.id as string;
+    const stale = await extend(id, { seconds: 60, fence: agentIssue.fence + 1 });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('STALE_FENCE');
+    expect((await extend(id, { seconds: 60, fence: agentIssue.fence })).status).toBe(200);
+    expect((await extend(id, { seconds: 60 })).status).toBe(200);
+  });
+
+  it('跨区：workspace_id 与决策工作区不一致 → 403 FORBIDDEN；一致则放行', async () => {
+    const created = await ask();
+    const id = created.body.decision.id as string;
+    const forbidden = await extend(id, { seconds: 60, workspace_id: 'other-workspace' });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error.code).toBe('FORBIDDEN');
+    expect((await extend(id, { seconds: 60, workspace_id: wsId })).status).toBe(200);
+  });
+
+  it('迁移幂等：重复执行后 extended_* 列仍在且沿用默认值', async () => {
+    const { migratePendingDecision } = await import('../src/db/migrations/pendingDecision.js');
+    migratePendingDecision(t.db);
+    const columns = (t.db.prepare('PRAGMA table_info(issue_decision)').all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    expect(columns).toEqual(expect.arrayContaining(['extended_seconds', 'extension_count', 'extended_by', 'extended_at']));
+    const created = await ask();
+    const row = t.db
+      .prepare('SELECT extended_seconds,extension_count,extended_by,extended_at FROM issue_decision WHERE id=?')
+      .get(created.body.decision.id) as Record<string, unknown>;
+    expect(row).toEqual({ extended_seconds: 0, extension_count: 0, extended_by: null, extended_at: null });
+  });
 });

@@ -28,6 +28,11 @@ export interface DecisionRow {
   created_fence: number | null;
   grace_seconds: number;
   grace_until: number;
+  /** DEC-V4-API-EXTEND：累计延长秒数 / 次数 / 最后操作者与时间 */
+  extended_seconds: number;
+  extension_count: number;
+  extended_by: string | null;
+  extended_at: number | null;
   locked_at: number | null;
   stop_requested_at: number | null;
   stop_ack_at: number | null;
@@ -295,6 +300,40 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
     remaining_grace_seconds: remainingGraceSeconds(row, now),
     waiting_seconds: waitingSeconds(row, now),
   }));
+}
+
+/**
+ * DEC-V4-API-EXTEND：延长宽限的 CAS 写入（仅 grace 状态；不续 fence、不改 grace_seconds）。
+ * 返回 false 表示并发下已被回答/撤回/落锁，调用方按 409 处理。
+ */
+export function applyDecisionExtension(
+  db: Db,
+  input: {
+    id: string;
+    now: number;
+    by: string;
+    grace_until: number;
+    extended_seconds: number;
+    extension_count: number;
+  },
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE issue_decision
+            SET grace_until=?, extended_seconds=?, extension_count=?, extended_by=?, extended_at=?, updated_at=?
+          WHERE id=? AND state='grace'`,
+      )
+      .run(
+        input.grace_until,
+        input.extended_seconds,
+        input.extension_count,
+        input.by,
+        input.now,
+        input.now,
+        input.id,
+      ).changes === 1
+  );
 }
 
 /** 徽标与 stale 分组：grace + open + 超时 open（lock 后 ≥72h）+ 近 24h 已回答 */

@@ -54,6 +54,22 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
    - 从 checkpoint 的 `next_step` 续跑。
 6. 若答案在开工后被修订（卡面标记 `answer_stale`），必须重读最新 `revision` 再继续。
 
+## 延长宽限（宽限中才可用）
+
+宽限内确实还需要时间、且**没有新信息要问**时，可以延长，而不是重复 `kb ask`（同卡已有 grace/open 会被 409 拒绝）：
+
+```
+kb ask-extend <decision-id|≥8 位前缀> --seconds 60 [--by <actor>] [--fence <n>]
+```
+
+- 单次 1–300 秒；「原宽限 + 累计延长」上限 600 秒（`--grace 600` 时不可延），超出 409 `EXTEND_LIMIT_EXCEEDED`；
+- `grace_until = max(now, 原值) + seconds`：已过截止但尚未落锁的决策从当前时间起续，不会更早；
+- 只动宽限截止与 `extended_seconds` / `extension_count` / `extended_by`：**不续 fence、不改卡状态、不改原 `grace_seconds`**；
+- 只对 `grace` 有效；`open` / `answered` / `withdrawn` → 409 `DECISION_NOT_GRACE`；
+- 跨区（决策不属于当前工作区）→ 403，CLI 退出码 2；
+- 已收到 `LOCKED` 后**不要**用延长续命：重新 `kb claim` 拿新 fence 再接着做；
+- 延长后继续按 2 秒轮询等待，不要借延长继续写代码或提交。
+
 ## 命令速查
 
 | 命令 | 用途 |
@@ -61,13 +77,14 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
 | `kb ask <issue-uuid> ...` | 建决策；`grace` 默认 180 秒，`--grace 0` 立即落锁；默认同步等待 |
 | `kb decisions [--state grace\|open\|answered\|withdrawn] [--stale]` | 列待决策（宽限剩余秒数由 `grace_until` 派生） |
 | `kb decision <id\|前缀>` | 详情：选项、答案、修订历史、断点摘要 |
+| `kb ask-extend <id\|前缀> [--seconds 60]` | 延长宽限（仅 `grace`；1–300 秒/次，累计 ≤600 秒；不续 fence） |
 | `kb answer <id> --option <ord\|label>` | 首次回答；`grace` 内放行，`open` 后解锁 |
 | `kb answer <id> --revise --expected-revision <n>` | 修订答案（CAS，冲突退出码 2） |
 | `kb decision withdraw <id> --reason "<text>"` | 撤回问题并解锁 |
 | `kb stop-check <issue-uuid> [--json]` | 步骤间 / 写文件前 / 提交前检查 `stop_requested`（2 秒级可读） |
 
 退出码：`0` 成功（`answered` / `locked` / `pending` 都是正常结果，看结构化输出区分）；`1` 任务或决策不存在、服务不可达；
-`2` 409（非占用者、已有在途、限流、状态非进行中、已回答/已撤回、CAS 冲突、决策锁）；`3` 选项/grace 参数非法。
+`2` 409（非占用者、已有在途、限流、状态非进行中、已回答/已撤回、CAS 冲突、决策锁、延长上限）/ 403（跨区延长）；`3` 选项/grace/seconds 参数非法。
 
 ## 禁止
 

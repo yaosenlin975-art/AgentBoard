@@ -7,13 +7,14 @@
  *   kb decision <id|前缀>            详情
  *   kb decision withdraw <id> --reason <text>
  *   kb answer <id> --option <ord|label> | --text <文本> [--revise --expected-revision n]
+ *   kb ask-extend <id> --seconds 60 [--by <actor>] [--fence <n>]
  *   kb stop-check <issue-id>
  *
  * 退出码（与卡面/设计 v3 一致）：
  *   0 成功；answered / locked 都是正常结果，用 output/JSON 的 outcome 区分
  *   1 任务/决策不存在、服务不可达、其它服务错误
- *   2 409（非占用者 / 已有在途 / 限流 / 状态非进行中 / 已回答 / 撤回 / CAS 冲突）
- *   3 选项不足 / 重复 label / consequence 空 / 非法枚举 / 非法 grace（非整数、负数、>600）
+ *   2 409（非占用者 / 已有在途 / 限流 / 状态非进行中 / 已回答 / 撤回 / CAS 冲突 / 延长上限）/ 403（跨区延长）
+ *   3 选项不足 / 重复 label / consequence 空 / 非法枚举 / 非法 grace / 非法 seconds / 决策 id 前缀不合法
  */
 import { Command, CommanderError } from 'commander';
 import { CliHttpError, request } from '../api.js';
@@ -53,7 +54,7 @@ export interface StopCheckDto {
 
 const TRIGGERS = ['blocked', 'scope_change', 'irreversible', 'missing_input'];
 const ON_EXPIRE = ['stay_locked', 'unlock_default'];
-const EXIT3_CODES: ReadonlySet<string> = new Set(['ASK_TOO_FEW_OPTIONS', 'INVALID_GRACE']);
+const EXIT3_CODES: ReadonlySet<string> = new Set(['ASK_TOO_FEW_OPTIONS', 'INVALID_GRACE', 'INVALID_SECONDS']);
 
 /** 退出码 3 的客户端校验失败：先写错误（--json 走结构化体），再抛 CommanderError(3) */
 function fail3(ctx: Ctx, message: string, code = 'INVALID_ARGUMENT', details?: unknown): never {
@@ -430,6 +431,84 @@ export async function withdraw(ctx: Ctx, ref: string, reason: string, actor?: st
   ctx.io.write(`WITHDRAWN decision=${id}\n`);
 }
 
+export interface AskExtendArgs {
+  seconds?: string;
+  by?: string;
+  fence?: string;
+}
+
+interface ExtendDecisionResponse {
+  decision_id: string;
+  state: string;
+  grace_until: number;
+  remaining_grace_seconds: number;
+  extended_seconds: number;
+  extension_count: number;
+  max_extend_seconds: number;
+}
+
+/**
+ * DEC-V4-API-EXTEND：延长宽限。
+ * 退出码：0 成功；2 状态/上限（409）/跨区（403）；3 参数或 id 前缀非法；1 其它。
+ */
+export async function askExtend(ctx: Ctx, ref: string, args: AskExtendArgs): Promise<void> {
+  const rawSeconds = args.seconds ?? '60';
+  const seconds = Number(rawSeconds);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+    fail3(ctx, `--seconds 必须是 1–300 的整数（收到 ${JSON.stringify(rawSeconds)}）`, 'INVALID_SECONDS');
+  }
+  const fence = args.fence === undefined ? undefined : Number(args.fence);
+  if (fence !== undefined && (!Number.isInteger(fence) || fence < 0)) {
+    fail3(ctx, '--fence 必须是 ≥0 的整数', 'INVALID_ARGUMENT');
+  }
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
+  if (!isUuid && ref.length < 8) {
+    fail3(ctx, '决策 id 前缀至少 8 位（或传完整 UUID）', 'INVALID_ARGUMENT');
+  }
+  let id: string;
+  try {
+    id = await resolveDecisionRef(ctx, ref);
+  } catch (err) {
+    fail3(ctx, err instanceof Error ? err.message : String(err), 'DECISION_NOT_FOUND');
+  }
+  // 跨区守卫：显式带当前工作区；cwd 不绑定工作区时省略（由服务端按无 workspace_id 处理）
+  let workspaceId: string | undefined;
+  try {
+    const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
+    workspaceId = matchCurrentWorkspace(spaces).id;
+  } catch {
+    workspaceId = undefined;
+  }
+  const body = {
+    seconds,
+    by: args.by ?? ctx.agentId,
+    ...(fence === undefined ? {} : { fence }),
+    ...(workspaceId === undefined ? {} : { workspace_id: workspaceId }),
+  };
+  let result: ExtendDecisionResponse;
+  try {
+    result = await request<ExtendDecisionResponse>(
+      ctx.base, 'POST', `/api/decisions/${encodeURIComponent(id)}/extend`, body,
+    );
+  } catch (err) {
+    if (err instanceof CliHttpError && err.status === 403) {
+      const described = describeError(err);
+      if (ctx.json) ctx.io.write(`${JSON.stringify({ error: { code: err.code, message: described.message } })}\n`);
+      else ctx.io.writeErr(`${err.code}: ${described.message}\n`);
+      throw new CommanderError(2, 'agentboard.decision', '');
+    }
+    rethrowDecisionError(ctx, err);
+  }
+  if (ctx.json) {
+    ctx.io.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  ctx.io.write(
+    `EXTENDED decision=${result.decision_id} grace_until=${result.grace_until}` +
+      `（剩余 ${result.remaining_grace_seconds} 秒；累计已延长 ${result.extended_seconds}/${result.max_extend_seconds} 秒，第 ${result.extension_count} 次）\n`,
+  );
+}
+
 export async function stopCheck(ctx: Ctx, id: string): Promise<void> {
   const issue = await resolveIssueByRef(ctx, id);
   const stop = await request<StopCheckDto>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issue.id)}/stop`);
@@ -509,6 +588,21 @@ export function registerDecisionCommands(program: Command, io: Io, makeCtx: (pro
     .option('--revise', '修订已有回答（必须同时给 --expected-revision）')
     .option('--expected-revision <n>', '修订时的期望当前 revision（CAS）')
     .action(async (id: string, opts: AnswerArgs) => answer(makeCtx(program, io), id, opts));
+
+  program
+    .command('ask-extend')
+    .description('延长宽限（仅宽限中；1–300 秒/次，原宽限+累计延长 ≤600 秒）')
+    .argument('<decision-id>', '决策 id：完整 UUID 或 ≥8 位前缀')
+    .option('--seconds <n>', '延长秒数（1–300，默认 60）', '60')
+    .option('--by <actor>', '操作者（默认当前 agent 身份）')
+    .option('--fence <n>', '占用代次（传了就必须等于当前 claim_fence）')
+    .addHelpText('after', `
+示例：
+  kb ask-extend <decision> --seconds 60
+  kb ask-extend <decision> --seconds 120 --by user
+退出码：0 成功；2 非宽限中/超上限/跨区；3 参数或 id 前缀非法；1 其它
+`)
+    .action(async (id: string, opts: AskExtendArgs) => askExtend(makeCtx(program, io), id, opts));
 
   program
     .command('stop-check')
