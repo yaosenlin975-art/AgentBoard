@@ -409,6 +409,18 @@ export const workspaceSnapshotImportSchema = z
   .object({ dir: z.string().min(1).optional(), replace: z.boolean().optional() })
   .strict();
 
+/** BORROW-4.3：任务交接（当前占用者 → 另一个 agent；成功后 bump fence，旧 fence 立即失效） */
+export const transferIssueSchema = z
+  .object({
+    from_agent: z.string().min(1).max(100),
+    to_agent: z.string().min(1).max(100),
+    reason: z.string().max(2000).optional(),
+    fence: z.number().int().min(0).optional(),
+    /** 跨区守卫：缺省走已解析的工作区上下文（与 claim/done 同口径） */
+    workspace_id: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const patchSettingsSchema = z
   .object({
     port: z

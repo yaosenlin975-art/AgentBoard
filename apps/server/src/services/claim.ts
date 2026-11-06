@@ -90,6 +90,58 @@ export interface ClaimActionResult {
   comment: IssueComment | null;
 }
 
+/** BORROW-4.3：交接结果 —— 额外回传新代次 fence（旧占用者的 fence 立即失效） */
+export interface TransferResult extends ClaimActionResult {
+  claim_fence: number;
+}
+
+/**
+ * BORROW-4.3：任务交接 —— 当前占用者把占用交给另一个 agent，写 system 评论留痕。
+ *
+ * - 只有当前占用者（`claimed_by === fromAgent`）可发起；传了 fence 就必须等于当前代次；
+ * - 成功后 `claimed_by=toAgent`、`claim_fence+1`（旧 fence 立即失效，旧占用者收尾落 STALE_FENCE）、
+ *   租约与心跳按领取重新起算、会话绑定与留言游标解绑；状态保持「进行中」；
+ * - 交接双方相同 → 400；无人占用 / 非进行中 → 409。
+ */
+export function transferClaimedIssue(
+  db: Db,
+  issueId: string,
+  workspaceId: string,
+  fromAgent: string,
+  toAgent: string,
+  reason?: string,
+  fence?: number,
+): TransferResult {
+  if (!fromAgent?.trim()) throw new ValidationError('from_agent 不能为空');
+  if (!toAgent?.trim()) throw new ValidationError('to_agent 不能为空');
+  if (fromAgent.trim() === toAgent.trim()) throw new ValidationError('交接双方不能是同一个 agent');
+  return db.transaction(() => {
+    const issue = requireIssueInWorkspace(db, issueId, workspaceId);
+    assertFenceCurrent(db, issueId, fence);
+    if (issue.claimed_by === null) throw new ConflictError('当前无人占用，无需交接');
+    if (issue.claimed_by !== fromAgent) {
+      throw new ApiError(409, 'NOT_TASK_OWNER', `只有当前占用者（${issue.claimed_by}）可发起交接`);
+    }
+    if (issue.status !== '进行中') throw new ConflictError(`当前状态「${issue.status}」不可交接（需=进行中）`);
+    const current = db.prepare('SELECT claim_fence FROM issue WHERE id=?').get(issueId) as { claim_fence: number };
+    const now = Date.now();
+    const nextFence = current.claim_fence + 1;
+    const changed = db.prepare(
+      `UPDATE issue SET claimed_by=?, claimed_at=?, claim_lease_until=?, claim_fence=?, last_heartbeat_at=?,
+         session_id=NULL, last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+       WHERE id=? AND workspace_id=? AND claimed_by=? AND claim_fence=?`,
+    ).run(toAgent, now, now + CLAIM_LEASE_MS, nextFence, now, now, issueId, workspaceId, fromAgent, current.claim_fence);
+    if (changed.changes !== 1) throw new ConflictError('占用已改变（并发交接/释放），未产生任何写入');
+    const trimmed = reason?.trim();
+    const comment = insertCommentRow(db, {
+      issue_id: issueId,
+      author: 'system',
+      content: `任务交接：${fromAgent} → ${toAgent}${trimmed ? `（${trimmed}）` : ''}`,
+    });
+    return { issue: getIssue(db, issueId)!, comment, claim_fence: nextFence };
+  }).immediate();
+}
+
 /**
  * 原子领取：并发领取仅一个成功；允许从"进行中"领取（覆盖用户手动拖到进行中后再派发）。
  * sessionId 传 null 即 REST/kb 的纯占用登记（不绑会话，评论不触发唤醒）。

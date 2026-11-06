@@ -85,7 +85,7 @@ import {
   validateWorkspaceSnapshot,
 } from '../services/workspaceSnapshot.js';
 import { centerSnapshotDir, exportCenterSnapshot, validateCenterSnapshot } from '../services/centerSnapshot.js';
-import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
+import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, transferClaimedIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
@@ -125,6 +125,7 @@ import {
   dbMigrateSchema,
   workspaceLocalizeSchema,
   workspaceDbOpSchema,
+  transferIssueSchema,
   workspaceSnapshotExportSchema,
   workspaceSnapshotImportSchema,
   sendMessageSchema,
@@ -1461,6 +1462,26 @@ export function createRouter(deps: RouterDeps): Router {
   router.post('/issues/:id/done', (req, res) => claimAction(req, res, 'done'));
   router.post('/issues/:id/fail', (req, res) => claimAction(req, res, 'fail'));
 
+  /**
+   * BORROW-4.3：任务交接 —— 把占用从一个 agent 交给另一个 agent，写 system 评论留痕，
+   * 并 bump `claim_fence`（旧占用者的 fence 立即失效，后续收尾落 STALE_FENCE）。
+   * 必填 workspace_id（与 claim/done 同口径：交接是 owner 域写操作）。
+   */
+  router.post('/issues/:id/transfer', (req, res) => {
+    const issueId = String(req.params.id);
+    const body = parseBody(transferIssueSchema, req.body);
+    // 工作区来源：query/header 已解析的上下文优先，其次 body.workspace_id（与 CLI/脚本同一口径）
+    const workspace = effectiveWorkspace(req) ?? body.workspace_id;
+    if (!workspace) throw new ValidationError('任务交接必须提供 workspace_id（或走已解析的工作区上下文）');
+    const rdb = resolveRequestDb(req, issueId);
+    const result = transferClaimedIssue(
+      rdb, issueId, workspace, body.from_agent, body.to_agent, body.reason, readFence(req, body),
+    );
+    if (result.comment) broadcast({ type: 'comment.added', comment: result.comment });
+    broadcast({ type: 'issue.changed', issue: result.issue });
+    res.json({ ...result.issue, comment: result.comment, claim_fence: result.claim_fence });
+  });
+
   // ---- CLI-CLOSE：验收后流转（close 待验收→已关闭；reopen 已关闭/已废弃→指定状态）----
   router.post('/issues/:id/close', (req, res) => {
     const workspace = effectiveWorkspace(req);
@@ -1871,3 +1892,4 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
 export const apiNotFound: RequestHandler = (req, res) => {
   res.status(404).json({ error: { code: 'NOT_FOUND', message: `接口不存在: ${req.method} ${req.path}` } });
 };
+
