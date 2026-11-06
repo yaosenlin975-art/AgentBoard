@@ -6,7 +6,7 @@
  * - WS：`decision.*` / `issue.stop_requested` 事件经 wsBus 触发失效重取。
  *   事件到查询键的映射刻意留在本模块（`api/ws.ts` 的穷尽 switch 属 DEC-3 文件集，不在本卡改动范围）。
  */
-import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { ServerWsEvent } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
@@ -101,6 +101,49 @@ export function useIssueDecision(workspaceId: string | null, issueId: string | n
     detail: detail.data?.decision ?? null,
     loading: active.isLoading || answered.isLoading,
   };
+}
+
+/** 单条决策详情（就地作答卡展开态 / 已回答卡当前答案）：选项、全量答案 revision、checkpoint */
+export function useDecisionDetail(decisionId: string | null): DecisionDetailDto | null {
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: decisionDetailKey(decisionId ?? ''),
+    queryFn: () => api.get<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(decisionId!)}`),
+    enabled: decisionId !== null,
+  });
+  useDecisionInvalidation(queryClient);
+  return query.data?.decision ?? null;
+}
+
+export interface AnswerDecisionInput {
+  decisionId: string;
+  optionId: string;
+  /** 修订必传：当前 `answer_revision`（服务端 CAS，旧版本 → 409 DECISION_REVISION_CONFLICT） */
+  expectedRevision?: number;
+}
+
+/**
+ * DEC-V4-INLINE（P3）：就地作答 / 改答案。
+ * 与卡详情 `DecisionSection` 同一口径：`POST /api/decisions/:id/answer`，修订带 `expected_revision`，
+ * 成功后失效列表 / 徽标 / 详情 / 卡面（不乐观改列表，答案版本以服务端为准）。
+ */
+export function useAnswerDecision() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: AnswerDecisionInput) =>
+      api.post<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(input.decisionId)}/answer`, {
+        option_id: input.optionId,
+        source: 'web',
+        ...(input.expectedRevision === undefined ? {} : { expected_revision: input.expectedRevision }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+      void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+      void queryClient.invalidateQueries({ queryKey: ['decision'] });
+      void queryClient.invalidateQueries({ queryKey: ['issue'] });
+      void queryClient.invalidateQueries({ queryKey: ['issues'] });
+    },
+  });
 }
 
 const DECISION_EVENT_TYPES = new Set<ServerWsEvent['type']>([

@@ -17,12 +17,10 @@ import { useDecisionClock } from './clock';
 import {
   DECISION_SORTS,
   DECISION_SORT_LABELS,
-  formatCountdown,
-  formatWaiting,
   groupDecisions,
-  remainingGraceSeconds,
   type DecisionSort,
 } from './countdown';
+import { DecisionCard } from './DecisionCard';
 import { useDecisionLists } from './useDecisions';
 import type { DecisionListItemDto } from './types';
 
@@ -47,7 +45,12 @@ export function DecisionsView() {
   const { active, answered, loading } = useDecisionLists(workspaceId);
   const [filter, setFilter] = useState<DecisionFilter>('all');
   const [sort, setSort] = useState<DecisionSort>('urgency');
+  // DEC-V4-INLINE：同一时刻只展开一条，展开后由详细卡替换 chip 行
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const groups = groupDecisions(active, answered, now, sort);
+  const toggleExpanded = (decisionId: string) => {
+    setExpandedId((current) => (current === decisionId ? null : decisionId));
+  };
 
   // 宽限到期后补一次重取（服务端 ticker 落锁 → 状态转 open，`issue.changed` 也会刷新卡面）
   const nearestGraceUntil = groups.grace[0]?.grace_until ?? null;
@@ -153,6 +156,8 @@ export function DecisionsView() {
             now={now}
             focus={focus}
             rankMap={rankMap}
+            expandedId={expandedId}
+            onToggle={toggleExpanded}
             onOpen={openDetail}
           />
         )}
@@ -165,6 +170,8 @@ export function DecisionsView() {
             now={now}
             focus={focus}
             rankMap={rankMap}
+            expandedId={expandedId}
+            onToggle={toggleExpanded}
             onOpen={openDetail}
           />
         )}
@@ -177,6 +184,8 @@ export function DecisionsView() {
             now={now}
             focus={focus}
             rankMap={rankMap}
+            expandedId={expandedId}
+            onToggle={toggleExpanded}
             onOpen={openDetail}
           />
         )}
@@ -189,6 +198,8 @@ export function DecisionsView() {
             now={now}
             focus={focus}
             rankMap={rankMap}
+            expandedId={expandedId}
+            onToggle={toggleExpanded}
             onOpen={openDetail}
           />
         )}
@@ -205,10 +216,12 @@ interface GroupProps {
   now: number;
   focus: string | null;
   rankMap: ReadonlyMap<string, number>;
+  expandedId: string | null;
+  onToggle: (decisionId: string) => void;
   onOpen: (issueId: string) => void;
 }
 
-function Group({ scope, title, empty, items, now, focus, rankMap, onOpen }: GroupProps) {
+function Group({ scope, title, empty, items, now, focus, rankMap, expandedId, onToggle, onOpen }: GroupProps) {
   return (
     <div data-testid={`decisions-group-${scope}`} className="mb-4">
       <h2 className="flex items-baseline gap-2 px-1 pb-1 text-xs font-medium text-ink-2">
@@ -220,108 +233,20 @@ function Group({ scope, title, empty, items, now, focus, rankMap, onOpen }: Grou
       ) : (
         <ul className="flex flex-col gap-1" role="list">
           {items.map((item) => (
-            <DecisionRow
+            <DecisionCard
               key={item.id}
               item={item}
               now={now}
               rank={rankMap.get(item.id)}
               focused={focus === item.id}
               scope={scope}
-              onOpen={onOpen}
+              expanded={expandedId === item.id}
+              onToggle={onToggle}
+              onOpenIssue={onOpen}
             />
           ))}
         </ul>
       )}
     </div>
-  );
-}
-
-interface RowProps {
-  item: DecisionListItemDto;
-  now: number;
-  rank: number | undefined;
-  focused: boolean;
-  scope: GroupProps['scope'];
-  onOpen: (issueId: string) => void;
-}
-
-function DecisionRow({ item, now, rank, focused, scope, onOpen }: RowProps) {
-  const graceRemaining =
-    item.state === 'grace' && item.grace_until > now ? remainingGraceSeconds(item.grace_until, now) : null;
-  const waiting =
-    item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
-  const answeredLabel =
-    scope === 'answered' && item.answered_at !== null
-      ? `已回答于 ${new Date(item.answered_at).toLocaleTimeString('zh-CN', { hour12: false })}`
-      : null;
-  const action = scope === 'grace' || scope === 'open' ? '立即回答' : '查看';
-
-  return (
-    <li
-      data-testid={`decision-item-${item.id}`}
-      data-selected={focused ? 'true' : 'false'}
-      className={`flex min-w-0 items-center gap-2 rounded-md border bg-surface-card px-2 py-1.5 transition-colors duration-150 motion-reduce:transition-none ${
-        focused ? 'border-accent bg-accent-soft' : 'border-hairline hover:bg-surface-raised'
-      }`}
-    >
-      <button
-        type="button"
-        onClick={() => onOpen(item.issue_id)}
-        title={`打开卡详情：${item.issue_title}`}
-        className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-      >
-        <span className="flex w-full min-w-0 items-center gap-2">
-          {rank !== undefined && (
-            <span
-              data-testid={`decision-rank-${item.id}`}
-              className="shrink-0 whitespace-nowrap rounded bg-surface-raised px-1 font-mono text-xs tabular-nums text-ink-3"
-            >
-              #{rank}
-            </span>
-          )}
-          <span className="truncate text-sm text-ink">{item.issue_title}</span>
-          {graceRemaining !== null && (
-            <span
-              data-testid={`decision-countdown-${item.id}`}
-              className="ml-auto shrink-0 whitespace-nowrap rounded bg-accent-soft px-1.5 text-xs font-medium tabular-nums text-accent"
-            >
-              {formatCountdown(graceRemaining)}
-            </span>
-          )}
-          {scope === 'stale' && (
-            <span className="ml-auto shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 text-xs text-ink-2">
-              超时
-            </span>
-          )}
-          {answeredLabel !== null && (
-            <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-ink-3">{answeredLabel}</span>
-          )}
-        </span>
-        <span className="w-full truncate text-xs text-ink-2">{item.question}</span>
-        <span className="flex w-full min-w-0 items-center gap-2 text-xs text-ink-3">
-          <span className="shrink-0">{item.option_count} 个选项</span>
-          <span aria-hidden="true">·</span>
-          <span className="shrink-0 truncate">提问：{item.created_by}</span>
-          {waiting !== null && (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="shrink-0 whitespace-nowrap">已等 {waiting}</span>
-            </>
-          )}
-        </span>
-      </button>
-      <button
-        type="button"
-        data-testid={`decision-action-${item.id}`}
-        onClick={() => onOpen(item.issue_id)}
-        className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
-          scope === 'grace'
-            ? 'bg-accent font-medium text-white hover:opacity-90'
-            : 'border border-hairline text-ink-2 hover:bg-surface-raised'
-        }`}
-      >
-        {action}
-      </button>
-    </li>
   );
 }

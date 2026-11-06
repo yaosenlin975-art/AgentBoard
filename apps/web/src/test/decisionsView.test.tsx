@@ -213,7 +213,7 @@ describe('DEC-6 待决策视图', () => {
     expect(countdown.textContent).toMatch(/1:5\d|2:00/);
     expect(countdown.className).toContain('whitespace-nowrap');
 
-    fireEvent.click(screen.getByTestId('decision-action-dec-grace'));
+    fireEvent.click(screen.getByTestId('decision-open-dec-grace'));
     expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: graceItem.issue_id });
   });
 
@@ -347,6 +347,244 @@ describe('DEC-V4-QUEUE 处置队列', () => {
 
     const groups = groupDecisions([noCount], [], NOW, 'priority');
     expect(groups.open.map((item) => item.id)).toEqual(['q-missing']);
+  });
+});
+
+describe('DEC-V4-INLINE 就地作答卡', () => {
+  const graceOptions = listItem({ id: 'inline-grace', state: 'grace', grace_until: NOW + 120_000 }).options;
+  const inlineGrace = listItem({ id: 'inline-grace', state: 'grace', grace_until: NOW + 120_000 });
+  const inlineAnswered = listItem({ id: 'inline-answered', state: 'answered', answer_revision: 2, answered_at: NOW - 60_000 });
+
+  function detailFor(
+    base: DecisionListItemDto,
+    answers: DecisionDetailDto['answers'],
+    checkpoint: string | null = null,
+  ): DecisionDetailDto {
+    return {
+      ...base,
+      checkpoint_json: checkpoint,
+      current_answer_id: answers.length > 0 ? answers[answers.length - 1]!.id : null,
+      expires_at: null,
+      on_expire: 'stay_locked',
+      options: base.options,
+      answers,
+    };
+  }
+
+  function postAnswer(posts: Array<Record<string, unknown>>, response: () => Record<string, unknown>) {
+    return http.post('/api/decisions/:id/answer', async ({ request }) => {
+      posts.push((await request.json()) as Record<string, unknown>);
+      return HttpResponse.json(response());
+    });
+  }
+
+  it('收起态：主按钮默认禁用；选中第二个选项后可用，提交发出 1 次 POST（含 option_id / source）', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(
+      decisionHandler([inlineGrace], []),
+      postAnswer(posts, () => ({ decision: detailFor(inlineGrace, []) })),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    const action = await screen.findByTestId('decision-action-inline-grace');
+    expect(action).toBeDisabled();
+    expect(screen.getByTestId(`decision-option-${graceOptions[0]!.id}`)).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${graceOptions[1]!.id}`));
+    expect(screen.getByTestId('decision-action-inline-grace')).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId('decision-action-inline-grace'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ option_id: graceOptions[1]!.id, source: 'web' });
+    expect(posts[0]).not.toHaveProperty('expected_revision');
+  });
+
+  it('单选：点 A 再点 B 只保留 B；重复点 B 不会取消选中', async () => {
+    server.use(decisionHandler([inlineGrace], []));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-inline-grace');
+
+    const a = graceOptions[0]!;
+    const b = graceOptions[1]!;
+    fireEvent.click(screen.getByTestId(`decision-option-${a.id}`));
+    expect(screen.getByTestId(`decision-option-${a.id}`)).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${b.id}`));
+    expect(screen.getByTestId(`decision-option-${a.id}`)).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId(`decision-option-${b.id}`)).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${b.id}`));
+    expect(screen.getByTestId(`decision-option-${b.id}`)).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('后果预览：默认展示默认选项 consequence；选中后跟随切换', async () => {
+    server.use(decisionHandler([inlineGrace], []));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-inline-grace');
+
+    const preview = screen.getByTestId('decision-consequence-inline-grace');
+    expect(preview).toHaveTextContent(graceOptions[0]!.consequence);
+
+    fireEvent.click(screen.getByTestId(`decision-option-${graceOptions[1]!.id}`));
+    expect(screen.getByTestId('decision-consequence-inline-grace')).toHaveTextContent(graceOptions[1]!.consequence);
+  });
+
+  it('展开态只渲染详细卡：chip 行不进 DOM，含选项 consequence / 默认标 / 断点 / 答案时间线', async () => {
+    const answered = detailFor(
+      inlineAnswered,
+      [
+        { id: 'a-1', revision: 1, option_id: inlineAnswered.options[0]!.id, answer_text: null, answered_by: 'human:lead', source: 'web', created_at: NOW - 7200_000 },
+        { id: 'a-2', revision: 2, option_id: inlineAnswered.options[1]!.id, answer_text: null, answered_by: 'human:lead', source: 'web', created_at: NOW - 1800_000 },
+      ],
+      '{"stash_sha":"abc123","next_step":"等回答后继续"}',
+    );
+    server.use(
+      decisionHandler([], [inlineAnswered]),
+      http.get('/api/decisions/inline-answered', () => HttpResponse.json({ decision: answered })),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-inline-answered');
+
+    // 收起态：当前答案选项 + 「改答案」入口
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-current-answer-inline-answered')).toHaveTextContent(
+        `第 2 版「${inlineAnswered.options[1]!.label}」`,
+      ),
+    );
+    fireEvent.click(screen.getByTestId('decision-revise-inline-answered'));
+
+    expect(screen.queryByTestId('decision-chips-inline-answered')).not.toBeInTheDocument();
+    expect(screen.getByTestId('decision-full-question-inline-answered')).toHaveTextContent(inlineAnswered.question);
+    expect(screen.getByTestId('decision-options-inline-answered')).toHaveTextContent(
+      inlineAnswered.options[1]!.consequence,
+    );
+    expect(screen.getByTestId(`decision-default-${inlineAnswered.options[0]!.id}`)).toHaveTextContent('默认');
+    expect(screen.getByTestId('decision-checkpoint-inline-answered')).toHaveTextContent('stash SHA：abc123');
+    expect(screen.getByTestId('decision-answer-revision-inline-answered-1')).toHaveTextContent('第 1 版');
+    expect(screen.getByTestId('decision-answer-revision-inline-answered-2')).toHaveAttribute('data-current', 'true');
+  });
+
+  it('改答案：提交带 expected_revision，成功后 revision 递增且新版高亮', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    let revision = 2;
+    let detail = detailFor(inlineAnswered, [
+      { id: 'a-2', revision: 2, option_id: inlineAnswered.options[1]!.id, answer_text: null, answered_by: 'human:lead', source: 'web', created_at: NOW - 1800_000 },
+    ]);
+
+    server.use(
+      http.get('/api/decisions', ({ request }) => {
+        const url = new URL(request.url);
+        const answered = url.searchParams.get('state') === 'answered';
+        return HttpResponse.json({
+          decisions: answered ? [{ ...inlineAnswered, answer_revision: revision }] : [],
+          counts: { grace: 0, open: 0, stale_open: 0, answered_recent: 1 },
+        });
+      }),
+      http.get('/api/decisions/inline-answered', () => HttpResponse.json({ decision: detail })),
+      http.post('/api/decisions/inline-answered/answer', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        revision += 1;
+        detail = detailFor(
+          { ...inlineAnswered, answer_revision: revision },
+          [
+            ...detail.answers,
+            {
+              id: `a-${revision}`,
+              revision,
+              option_id: inlineAnswered.options[0]!.id,
+              answer_text: null,
+              answered_by: 'human:lead',
+              source: 'web',
+              created_at: NOW,
+            },
+          ],
+        );
+        return HttpResponse.json({ decision: detail });
+      }),
+    );
+
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-inline-answered');
+    fireEvent.click(screen.getByTestId('decision-revise-inline-answered'));
+    fireEvent.click(screen.getByTestId(`decision-detail-option-${inlineAnswered.options[0]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-action-inline-answered'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ option_id: inlineAnswered.options[0]!.id, expected_revision: 2 });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-answer-revision-inline-answered-3')).toHaveAttribute('data-current', 'true'),
+    );
+    expect(screen.getByTestId('decision-answer-revision-inline-answered-2')).toHaveAttribute('data-current', 'false');
+  });
+
+  it('停止确认状态：未确认显示红字，已确认显示「已确认停止」', async () => {
+    const unacked = listItem({
+      id: 'stop-unacked',
+      state: 'open',
+      locked_at: NOW - 5000,
+      stop_requested_at: NOW - 2000,
+    });
+    const acked = listItem({
+      id: 'stop-acked',
+      state: 'open',
+      locked_at: NOW - 5000,
+      stop_requested_at: NOW - 4000,
+      stop_ack_at: NOW - 1000,
+    });
+    server.use(decisionHandler([unacked, acked], []));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-stop-unacked');
+
+    expect(screen.getByTestId('decision-stop-unacked-stop-unacked')).toHaveTextContent('停止未确认');
+    expect(screen.getByTestId('decision-stop-unacked-stop-unacked').className).toContain('text-red');
+    expect(screen.queryByTestId('decision-stop-acked-stop-unacked')).not.toBeInTheDocument();
+
+    expect(screen.getByTestId('decision-stop-acked-stop-acked')).toHaveTextContent('已确认停止');
+    expect(screen.queryByTestId('decision-stop-unacked-stop-acked')).not.toBeInTheDocument();
+  });
+
+  it('409 冲突：就地红字提示、保留选中、不自动重试', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(
+      decisionHandler([inlineGrace], []),
+      http.post('/api/decisions/:id/answer', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(
+          { error: { code: 'DECISION_REVISION_CONFLICT', message: '答案版本冲突' } },
+          { status: 409 },
+        );
+      }),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-inline-grace');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${graceOptions[1]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-action-inline-grace'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-error-inline-grace')).toHaveTextContent('答案版本冲突'),
+    );
+    expect(posts).toHaveLength(1);
+    // 选中保留，按钮仍可用，用户可直接重试
+    expect(screen.getByTestId(`decision-option-${graceOptions[1]!.id}`)).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('decision-action-inline-grace')).toBeEnabled();
+  });
+
+  it('容器 ≤660px：动作行 flex-direction 为 column（主按钮占满）', async () => {
+    const original = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 600 });
+    try {
+      server.use(decisionHandler([inlineGrace], []));
+      renderWithQuery(<DecisionsView />);
+      await screen.findByTestId('decision-item-inline-grace');
+      await waitFor(() =>
+        expect(window.getComputedStyle(screen.getByTestId('decision-actions-inline-grace')).flexDirection).toBe('column'),
+      );
+      expect(screen.getByTestId('decision-action-inline-grace').className).toContain('w-full');
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: original });
+    }
   });
 });
 

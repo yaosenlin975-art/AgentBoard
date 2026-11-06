@@ -22,6 +22,9 @@ export interface DecisionAnswerDto {
   answer_text: string | null;
   answered_by: string;
   source: string;
+  /** DEC-V4-UNDO-SERVER：撤销墓碑（有值为已撤销，行仍保留） */
+  revoked_at?: number | null;
+  revoked_by?: string | null;
   created_at: number;
 }
 
