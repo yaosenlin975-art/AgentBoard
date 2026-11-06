@@ -10,6 +10,14 @@ export function releaseAdvice(message: string): string {
     .replace(/请先 release 再/g, '请先 kb release <issue-id> 再');
 }
 
+/** 需要指定退出码的本地校验错误（如 ACCEPT-1 状态不符 exit 2，且不改数据） */
+export class CliExitError extends Error {
+  constructor(readonly code: string, message: string, readonly exitCode: number) {
+    super(message);
+    this.name = 'CliExitError';
+  }
+}
+
 export interface DescribedError {
   code: string;
   message: string;
@@ -22,6 +30,9 @@ export interface DescribedError {
 }
 
 export function describeError(err: unknown): DescribedError {
+  if (err instanceof CliExitError) {
+    return { code: err.code, message: err.message, exitCode: err.exitCode, wrapConflict: false, raw: true };
+  }
   if (err instanceof AmbiguousIssueRefError) {
     return {
       code: err.code,

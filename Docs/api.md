@@ -333,7 +333,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
 | `GET /api/issues` | query：`workspace`（必填）、`status?`（**该工作区已定义的任意状态名**：内置五状态 + 自定义；分页与非分页都生效）、`limit? offset?` | `Issue[]`（sort_order,created_at,id 升序）；分页模式 `PageResult<TaskPreview>`（id 升序；description 截取默认 12000 字符并附 `description_truncated` `next_description_offset_chars`） | 400 缺 workspace / 分页非法 / `status` 不属于该工作区（文案列出可用状态）；404 工作空间不存在 | routes.ts |
-| `POST /api/issues`（幂等） | body：`workspace_id: string`、`title: string 非空`、`description?: string`、`priority?: '低'\|'中'\|'高'`（缺省 中）、`labels?: string[]`（缺省 []） | `Issue`（status=待规划、sort_order=0）；WS issue.changed | 400 校验失败；404 工作空间不存在 | routes.ts:268 |
+| `POST /api/issues`（幂等） | body：`workspace_id: string`、`title: string 非空`、`description: string`（CARD-FACE：去标题/模板段名/空白后为空 → 400，错误文案含「验收标准」与最小模板）、`allow_empty?: boolean`（批量建卡 / 纯父卡跳过空面校验）、`status?: '待规划'\|'待验收'`（CREATE-STATUS：缺省 待规划；待验收必须同时填验收标准，其它值 400 并点名允许值）、`priority?: '低'\|'中'\|'高'`（缺省 中）、`labels?: string[]`（缺省 []） | `Issue`（缺省 status=待规划、sort_order=0；status=待验收时无占用、无 done 评论、无 baseline）；WS issue.changed | 400 校验失败（空描述 / 待验收缺验收标准 / status 非允许值）；404 工作空间不存在 | routes.ts:268 |
 | `POST /api/issues/draft` | body：`workspace_id`、`requirement: string 1-4000`、`adapter: 'dsh'\|'codex'\|'opencode'`、`priority?: '低'\|'中'\|'高'` | **不落库**：`{ cards: [{ local_id, title, description, labels, warnings }], title, description, labels, warnings }`（MULTI-DRAFT：多条需求按原话分条，1 条 1 张卡，最多 10 张；顶层字段镜像 `cards[0]` 以兼容旧单读法；`splitRequirementItems` 只切分不推断，模型条数不符时按原文逐条兜底）。`description` 固定三段（`## 背景` / `## 要求` / `## 验收`），模型没给的段落写「未提供」，**不补需求、不编验收条件**；`labels` 只保留工作区已有标签，自造的丢弃并进 `warnings`；一次性适配器调用（不建会话/不占 claim），超时 120s；审计写 `issue_draft_audit`（只记 adapter/耗时/成败/warning 数，不记需求原文） | 400 参数非法（adapter 不在三家内、requirement 空/超长）；404 工作空间不存在；422 `DRAFT_INVALID_OUTPUT`（JSON 不合法，已重试 1 次）；502 `DRAFT_ADAPTER_FAILED`；504 `DRAFT_TIMEOUT` | routes.ts（`services/smartCreateDraft.ts`） |
 | `GET /api/issues/:id` | query：`description_offset_chars?` `description_max_chars?` | `Issue`；带窗口参数时 description 为窗口内容并附 `description_truncated` `next_description_offset_chars` | 404 任务不存在（归属不匹配同为 404） | routes.ts:276 |
 | `PATCH /api/issues/:id`（幂等） | body：`title? description? priority? labels? status? sort_order?: int`（至少一个）；`workspace_id?`；`expected_updated_at?: int ≥0`（CAS，须同时提供 workspace_id） | `Issue`（`updated_at` 单调递增：`MAX(now, 旧值+1)`，`issue.ts:145` + `schema.ts:42` 触发器，CAS 调用方依赖）；WS issue.changed | 400 未提供更新字段 / CAS 缺 workspace_id / 参数非法；404 任务不存在；409 `CONFLICT` 占用中禁改 status；409 `TASK_REVISION_CONFLICT` CAS 过期（details `current_updated_at`） | routes.ts:284 |
@@ -416,6 +416,18 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 | `GET /api/issues/:id/comments/:commentId` | query：`content_offset_chars?` `content_max_chars?` | 单条评论窗口及 `truncated`、续读 offset；含 `attachments?` | 404 任务不存在；404 `COMMENT_NOT_FOUND` 评论不存在 | routes.ts |
 | `POST /api/issues/:id/comments` | body：`content: string`（可空，仅当有图片）、`workspace_id?`、`attachment_ids?: UUID[]`（唯一，最多 5；有图时 workspace_id 必填）、`agent_id?: string`。幂等 | `{ comment: IssueComment, woke: boolean, warning?: 'WAKE_FAILED'\|'IMAGE_DELIVERY_UNVERIFIED' }`。纯文字沿用用户评论唤醒；含图片时仅在当前 CLI/model 已验证时唤醒。附件元数据带 `delivery_state`：pending、sending、unknown、delivered。未知/失败时评论保持待读。WS comment.added + issue.changed；投递状态经 comment.delivery.changed 刷新 | 400 内容与图片同时空 / 字段非法；404 图片或任务不在指定空间；409 `ATTACHMENT_ALREADY_BOUND`；410 `ATTACHMENT_EXPIRED` | routes.ts |
 | `POST /api/issues/:id/comments/consume` | — | `{ comments: IssueComment[], new_comment_ids: string[] }`。含附件的首条待读评论在 `delivered_at` 为空时阻止游标前进；`new_comment_ids` 不含该图片评论及其后的评论。无图片阻塞时沿用原有恰好一次游标语义 | 404 任务不存在 | routes.ts |
+
+### 验收记录 CLI（ACCEPT-1，`kb accept`）
+
+```
+kb accept <issue-id> --verdict pass|fail --note "<验收依据>" [--reviewer <name>] [--request-id <uuid>]
+```
+
+- 只写一条固定格式评论，**不改卡片状态**：`【验收记录】verdict=<pass|fail>; reviewer=<name>; at=<ISO8601>`，第二行起为 `--note` 原文（固定格式供检索与审计，改动即破坏可读性）。
+- 仅「待验收」卡可写；其它状态 exit 2 且不发评论（待规划用 `kb done` 提交验收，关闭用 `kb close`）。
+- `reviewer` 缺省取 `KB_AGENT`，再缺省 `kb-cli`；`--request-id` 复用评论幂等通道，同一 id 重放不重复写评论。
+- 退出码：0 成功；1 缺 `--verdict` / `--note` 或取值非法；2 当前状态不是「待验收」；服务端 409 等按全局退出码表。
+- 与 `kb done` 的关系：`done` 是执行者提交（进行中 → 待验收，notes 落评论）；`accept` 是验收者留痕（状态不变）。要推进状态请显式执行 `kb close <issue-id>`（待验收 → 已关闭）。
 
 ## 8. 占用事务（claim / release / done / fail）
 

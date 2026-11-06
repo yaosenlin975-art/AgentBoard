@@ -84,7 +84,7 @@ describe('create-issue 标题安全（本地拒绝，不发请求）', () => {
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: '长'.repeat(200) } };
       return undefined;
     };
-    const result = await run(['create-issue', 'ws1', '长'.repeat(200)]);
+    const result = await run(['create-issue', 'ws1', '长'.repeat(200), '-d', '正文与验收']);
     expect(result.code).toBe(0);
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
@@ -95,7 +95,7 @@ describe('create-issue 标题安全（本地拒绝，不发请求）', () => {
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: '来自 stdin 的标题' } };
       return undefined;
     };
-    const ok = await run(['create-issue', 'ws1', '--title-stdin'], '来自 stdin 的标题\n');
+    const ok = await run(['create-issue', 'ws1', '--title-stdin', '-d', '正文与验收'], '来自 stdin 的标题\n');
     expect(ok.code).toBe(0);
     const post = calls.find((c) => c.method === 'POST' && c.url === '/api/issues');
     expect((post!.body as { title: string }).title).toBe('来自 stdin 的标题');
@@ -127,11 +127,11 @@ describe('幂等重放回显', () => {
   });
 
   it('文本模式标「（幂等重放）」；JSON 模式加 replayed:true；非重放无标记', async () => {
-    const text = await run(['create-issue', 'ws1', '标题']);
+    const text = await run(['create-issue', 'ws1', '标题', '-d', '正文与验收']);
     expect(text.code).toBe(0);
     expect(text.out).toContain('（幂等重放）已创建任务');
 
-    const json = await run(['--json', 'create-issue', 'ws1', '标题']);
+    const json = await run(['--json', 'create-issue', 'ws1', '标题', '-d', '正文与验收']);
     expect(json.code).toBe(0);
     expect(JSON.parse(json.out)).toMatchObject({ id: 'iss-new', replayed: true });
   });
@@ -142,9 +142,9 @@ describe('幂等重放回显', () => {
       if (method === 'POST' && url === '/api/issues') return { status: 200, body: ISSUE };
       return undefined;
     };
-    const text = await run(['create-issue', 'ws1', '标题']);
+    const text = await run(['create-issue', 'ws1', '标题', '-d', '正文与验收']);
     expect(text.out).not.toContain('（幂等重放）');
-    const json = await run(['--json', 'create-issue', 'ws1', '标题']);
+    const json = await run(['--json', 'create-issue', 'ws1', '标题', '-d', '正文与验收']);
     expect(JSON.parse(json.out)).toMatchObject({ id: 'iss-new', replayed: false });
   });
 });

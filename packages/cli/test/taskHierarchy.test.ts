@@ -37,7 +37,7 @@ describe('CLI task hierarchy', () => {
       return Response.json(issue('child-1', 'Child', 'parent-1'), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));
     const { ctx } = context();
-    await createIssue(ctx, { workspace: workspace.id, title: 'Child', parentIssueId: 'parent-1' });
+    await createIssue(ctx, { workspace: workspace.id, title: 'Child', description: '子卡正文与验收', parentIssueId: 'parent-1' });
     expect(calls[1]?.body).toMatchObject({ parent_issue_id: 'parent-1' });
   });
 
@@ -132,7 +132,7 @@ describe('CLI task hierarchy', () => {
       return Response.json(issue('child-1', 'Child', null), { headers: { 'x-agentboard-version': '0.1.0' } });
     }));
     const { ctx } = context();
-    expect(await main(['node', 'kb', 'create-issue', workspace.id, 'Child', '--parent', 'parent-1', '--request-id', '00000000-0000-4000-8000-000000000201'], ctx.io)).toBe(0);
+    expect(await main(['node', 'kb', 'create-issue', workspace.id, 'Child', '-d', '子卡正文与验收', '--parent', 'parent-1', '--request-id', '00000000-0000-4000-8000-000000000201'], ctx.io)).toBe(0);
     expect(await main(['node', 'kb', 'move-issue', 'child-1', '--root', '--expected-updated-at', '1', '--request-id', '00000000-0000-4000-8000-000000000202'], ctx.io)).toBe(0);
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ parent_issue_id: 'parent-1' });
     expect(new Headers(calls[1]?.init?.headers).get('Idempotency-Key')).toBe('00000000-0000-4000-8000-000000000201');

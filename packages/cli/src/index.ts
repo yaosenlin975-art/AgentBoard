@@ -17,6 +17,7 @@ import { show } from './commands/show.js';
 import { claim } from './commands/claim.js';
 import { release } from './commands/release.js';
 import { comment } from './commands/comment.js';
+import { accept } from './commands/accept.js';
 import { done } from './commands/done.js';
 import { deleteIssue } from './commands/deleteIssue.js';
 import { fail } from './commands/fail.js';
@@ -141,6 +142,17 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--request-id <uuid>', '图片评论幂等请求 id；重试时复用')
     .action(async (id: string, text: string[] | undefined, opts: { stdin?: boolean; image?: string[]; requestId?: string }) =>
       comment(makeCtx(program, io), id, { text, stdin: opts.stdin === true, image: opts.image, requestId: opts.requestId }));
+
+  program
+    .command('accept')
+    .description('给「待验收」卡写结构化验收记录：只写一条固定格式评论，不改卡片状态（关闭仍走 kb close）')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--verdict <pass|fail>', '验收结论（必填；写进评论首行 verdict=…）')
+    .option('--note <text>', '验收依据（必填；另起一行写入评论，写清对照的验收标准与观测结果）')
+    .option('--reviewer <name>', '验收人（默认 KB_AGENT / kb-cli）')
+    .option('--request-id <uuid>', '幂等请求 id；重试时复用，同一 id 不重复写评论')
+    .action(async (id: string, opts: { verdict?: string; note?: string; reviewer?: string; requestId?: string }) =>
+      accept(makeCtx(program, io), id, { verdict: opts.verdict, note: opts.note, reviewer: opts.reviewer, requestId: opts.requestId }));
 
   program
     .command('done')
