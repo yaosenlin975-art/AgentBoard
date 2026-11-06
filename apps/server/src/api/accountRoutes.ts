@@ -99,13 +99,15 @@ const batchCreateSchema = z.object({
 
 export type DesktopCaptureProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent'>;
 export type DesktopSwitchProvider = Pick<WorkbuddyDesktopProvider, 'switchAccount'>;
+/** ACC-FIX-4：客户端未运行时用插件线 JWT 回填既有账号行的签到凭据（仅 WorkBuddy 实现可选暴露） */
+export type DesktopCheckinBackfillProvider = Pick<WorkbuddyDesktopProvider, 'backfillCheckinCredentialFromPlugin'>;
 /**
  * ACC-SWITCH：读「客户端当前登录身份」的哈希（只读、不抛错；读不到返回 null）。
  * 列表用它逐平台判定 `is_current`，缺方法时该平台退化为 null（未知），不再用 WorkBuddy 的身份去比对别的平台。
  */
 export type DesktopIdentityProvider = { getCurrentIdentityHash?: () => Promise<string | null> };
 /** ACC-GET：捕获与切换不再强制同时存在（Trae 只有捕获能力，registry 的 switch=false 会先拦住切换） */
-export type DesktopProvider = Partial<DesktopCaptureProvider & DesktopSwitchProvider> & DesktopIdentityProvider;
+export type DesktopProvider = Partial<DesktopCaptureProvider & DesktopSwitchProvider & DesktopCheckinBackfillProvider> & DesktopIdentityProvider;
 
 /** ACC-SWITCH：逐平台取当前身份哈希；读不到/未装配读取能力 → 该平台不出现在结果里（is_current = null） */
 async function readCurrentIdentityHashes(deps: AccountRouterDeps): Promise<Partial<Record<ManagedAppId, string | null>>> {
@@ -134,7 +136,7 @@ function resolveDesktopProvider(app: ManagedAppId, deps: AccountRouterDeps): Des
 }
 
 /** ACC-GET：能力表说「可用」就必须真有对应方法；缺方法时仍是 503（能力/行为不一致的兜底） */
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture'): DesktopCaptureProvider;
+function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture'): DesktopCaptureProvider & Partial<DesktopCheckinBackfillProvider>;
 function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'switch'): DesktopSwitchProvider;
 function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): DesktopCaptureProvider | DesktopSwitchProvider {
   const capability = accountProviderCapability(app);
@@ -350,7 +352,17 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const app = parsed.data;
     const body = parseBody(captureBodySchema, req.body);
     const provider = requireProvider(app, deps, 'capture');
-    const account = await provider.captureCurrent({ display_name: body.display_name });
+    let account;
+    try {
+      account = await provider.captureCurrent({ display_name: body.display_name });
+    } catch (error) {
+      // ACC-FIX-4：WorkBuddy 进程不在时，插件线 JWT（文件级，无需进程）仍可回填既有账号行的签到凭据；匹配不到维持原 409
+      if (error instanceof ApiError && error.code === 'CLIENT_NOT_RUNNING' && app === 'workbuddy_desktop' && typeof provider.backfillCheckinCredentialFromPlugin === 'function') {
+        const backfilled = await provider.backfillCheckinCredentialFromPlugin();
+        if (backfilled) { res.json({ account: publicManagedAccount(backfilled) }); return; }
+      }
+      throw error;
+    }
     res.json({ account: publicManagedAccount(account) });
   });
 

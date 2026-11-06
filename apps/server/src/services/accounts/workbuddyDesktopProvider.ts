@@ -248,6 +248,28 @@ export class WorkbuddyDesktopProvider {
     return captured;
   }
 
+  /**
+   * ACC-FIX-4：客户端未运行时的签到凭据回填。桌面捕获需要 WorkBuddy 进程在线，但插件线
+   * `Tencent-Cloud.coding-copilot.info` 是文件级明文 JWT（readPluginToken 已做 sha256(sub)==identity_hash 校验），
+   * 无需进程即可读取。对库内既有 workbuddy_desktop 账号行逐行试匹配，命中即回填 checkin_credential_ref
+   * （不建新行、不分裂身份体系）；任一行命中返回该行，全部未命中返回 null（调用方维持原 409）。
+   */
+  async backfillCheckinCredentialFromPlugin(): Promise<ManagedAccount | null> {
+    const rows = this.db.prepare(
+      'SELECT id, identity_hash, identity_hint, checkin_credential_ref FROM managed_account WHERE app_id=? AND identity_hash IS NOT NULL',
+    ).all(WORKBUDDY_APP_ID) as Array<{ id: string; identity_hash: string; identity_hint: string | null; checkin_credential_ref: string | null }>;
+    for (const row of rows) {
+      const identity: ClientIdentity = { uid_sha256_8: row.identity_hint ?? '', identity_hash: row.identity_hash };
+      const token = await this.checkinTokenSource.find(identity).catch(() => null);
+      if (token === null || token.trim() === '') continue;
+      const ref = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(row.identity_hash));
+      const updated = attachCheckinCredential(this.db, row.id, ref);
+      if (row.checkin_credential_ref && row.checkin_credential_ref !== ref) await this.vault.delete(row.checkin_credential_ref).catch(() => undefined);
+      return updated;
+    }
+    return null;
+  }
+
   // ---- 切换 ----
 
   /**
