@@ -4,6 +4,9 @@
  * 与知识库范围、形态/主题等设置**独立持久化**（不同 localStorage 键），互不影响。
  * 非法/损坏值一律回落「当前工作区」，避免把无效范围带进 UI 或请求。
  * 纯逻辑 + 存储读写，不依赖 React；storage 可注入便于单测。
+ *
+ * DEC-BADGE：待决策列表与侧栏徽标必须共用同一份范围，所以这里额外提供
+ * 「读取快照 + 变更订阅」的最小外部 store；React 侧见 `state/useDecisionsScope.ts`。
  */
 export type DecisionsScope = 'workspace' | 'all';
 
@@ -47,4 +50,40 @@ export function persistDecisionsScope(
   } catch {
     // 隐私模式/配额满：忽略，本次会话内仍生效
   }
+}
+
+/**
+ * DEC-BADGE：存储不可用（隐私模式等）时的会话内兜底。
+ * 只要 localStorage 可读就以存储值为准，避免测试/多标签下出现第二份口径。
+ */
+let memoryScope: DecisionsScope | null = null;
+const scopeListeners = new Set<() => void>();
+
+/** 当前范围的快照；切范围后同一帧内所有订阅者读到同一个值 */
+export function readDecisionsScopeSnapshot(): DecisionsScope {
+  const storage = browserStorage();
+  if (storage !== null) {
+    try {
+      const raw = storage.getItem(DECISIONS_SCOPE_KEY);
+      return isDecisionsScope(raw) ? raw : 'workspace';
+    } catch {
+      // 读失败 → 落到会话内兜底
+    }
+  }
+  return memoryScope ?? 'workspace';
+}
+
+/** 订阅范围变更（列表与侧栏徽标共用，禁止各自维护一份） */
+export function subscribeDecisionsScope(listener: () => void): () => void {
+  scopeListeners.add(listener);
+  return () => {
+    scopeListeners.delete(listener);
+  };
+}
+
+/** 切换范围：写记忆 + 通知所有订阅者（持久化失败也会更新会话内兜底与界面） */
+export function setDecisionsScope(scope: DecisionsScope): void {
+  memoryScope = scope;
+  persistDecisionsScope(scope);
+  for (const listener of scopeListeners) listener();
 }

@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Workspace } from '@agentboard/shared';
 import { SideBar } from '../components/shell/SideBar';
+import type { DecisionListItemDto } from '../components/decisions/types';
 import { useAppStore } from '../state/appStore';
 import { useNavStore } from '../state/navStore';
 import { usePanelStore } from '../state/panelStore';
@@ -19,6 +20,56 @@ import { resetOverlays } from '../state/overlayStore';
 import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
+
+const NOW = Date.now();
+
+/** DEC-BADGE：侧栏徽标只消费 active 列表，按需造 grace / open 两类条目 */
+function decisionItem(id: string, state: 'grace' | 'open'): DecisionListItemDto {
+  const locked = state === 'open';
+  return {
+    id,
+    workspace_id: ws.id,
+    issue_id: 'issue-1',
+    question: `问题 ${id}`,
+    context_md: '',
+    trigger: 'manual',
+    state,
+    created_by: 'agent',
+    grace_seconds: 180,
+    grace_until: NOW + 120_000,
+    locked_at: locked ? NOW - 5_000 : null,
+    stop_requested_at: locked ? NOW - 5_000 : null,
+    stop_ack_at: null,
+    answer_revision: 0,
+    created_at: NOW - 10_000,
+    answered_at: null,
+    withdrawn_at: null,
+    withdrawn_by: null,
+    withdrawn_reason: null,
+    issue_title: '任务',
+    issue_status: '进行中',
+    issue_priority: '中',
+    option_count: 0,
+    options: [],
+    blocked_downstream_count: 0,
+    remaining_grace_seconds: locked ? null : 120,
+    waiting_seconds: locked ? 5 : null,
+  };
+}
+
+function decisionsHandler(items: DecisionListItemDto[]) {
+  return http.get('/api/decisions', () =>
+    HttpResponse.json({
+      decisions: items,
+      counts: {
+        grace: items.filter((item) => item.state === 'grace').length,
+        open: items.filter((item) => item.state === 'open').length,
+        stale_open: 0,
+        answered_recent: 0,
+      },
+    }),
+  );
+}
 
 /** jsdom 没有真实视口：按窄屏/宽屏让 matchMedia 作答（断点查询串含 max-width） */
 function mockViewport(narrow: boolean): void {
@@ -68,11 +119,13 @@ beforeEach(() => {
     rightOpen: false,
   });
   resetOverlays();
-  // 待决策数固定为 3（grace 1 + open 2），供 tooltip / aria-label / 角标断言
+  // 待决策固定为宽限中 1 + 已落锁 2，供分项徽标 / tooltip / aria-label 断言
   server.use(
-    http.get('/api/workspaces/:id/decisions/count', () =>
-      HttpResponse.json({ grace: 1, open: 2, stale_open: 0, answered_recent: 0 }),
-    ),
+    decisionsHandler([
+      decisionItem('d-grace', 'grace'),
+      decisionItem('d-open-1', 'open'),
+      decisionItem('d-open-2', 'open'),
+    ]),
   );
 });
 
@@ -85,7 +138,10 @@ describe('收起态 tooltip / 角标 / 当前项（SIDEBAR-3）', () => {
       expect(li).toHaveAttribute('data-tip');
     }
     await waitFor(() =>
-      expect(screen.getByTestId('sidebar-entry-decisions').closest('li')).toHaveAttribute('data-tip', '待决策 · 3'),
+      expect(screen.getByTestId('sidebar-entry-decisions').closest('li')).toHaveAttribute(
+        'data-tip',
+        '待决策 · 宽限中 1 · 已超时 2',
+      ),
     );
     expect(screen.getByTestId('sidebar-entry-chat').closest('li')).toHaveAttribute('data-tip', '聊天');
     expect(screen.getByTestId('topbar-accounts')).toHaveAttribute('data-tip', '账号管理');
@@ -104,6 +160,44 @@ describe('收起态 tooltip / 角标 / 当前项（SIDEBAR-3）', () => {
     expect(screen.getByTestId('sidebar-entry-chat').closest('li')).toHaveAttribute('data-tip', '聊天 · 99+');
   });
 
+  it('[T2b] 待决策分项徽标：宽限中（琥珀）与已落锁（红）分别渲染，收起态同样可见', async () => {
+    renderSideBar();
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('1'));
+    expect(screen.getByTestId('sidebar-decisions-locked')).toHaveTextContent('2');
+    expect(screen.getByTestId('sidebar-decisions-grace').className).toContain('ab-decision-badge-grace');
+    expect(screen.getByTestId('sidebar-decisions-locked').className).toContain('ab-decision-badge-locked');
+    // 收起态（56px 图标栏）徽标仍挂在入口按钮内
+    expect(screen.getByTestId('sidebar')).toHaveAttribute('data-mode', 'collapsed');
+    expect(screen.getByTestId('sidebar-entry-decisions')).toContainElement(
+      screen.getByTestId('sidebar-decisions-badge'),
+    );
+  });
+
+  it('[T2c] 分项为 0 不渲染该数字；两项都 0 整块不出现；任一 >99 折成 99+', async () => {
+    server.use(decisionsHandler([decisionItem('d-grace', 'grace')]));
+    renderSideBar();
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('1'));
+    expect(screen.queryByTestId('sidebar-decisions-locked')).toBeNull();
+    cleanup();
+
+    server.use(decisionsHandler([]));
+    renderSideBar();
+    await waitFor(() =>
+      expect(screen.getByTestId('sidebar-entry-decisions')).toHaveAttribute('aria-label', '待决策'),
+    );
+    expect(screen.queryByTestId('sidebar-decisions-badge')).toBeNull();
+    cleanup();
+
+    const many = [
+      ...Array.from({ length: 101 }, (_, i) => decisionItem(`g-${i}`, 'grace')),
+      ...Array.from({ length: 120 }, (_, i) => decisionItem(`o-${i}`, 'open')),
+    ];
+    server.use(decisionsHandler(many));
+    renderSideBar();
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('99+'));
+    expect(screen.getByTestId('sidebar-decisions-locked')).toHaveTextContent('99+');
+  });
+
   it('[T3] 当前项：data-active 与 aria-current 同步', () => {
     renderSideBar();
     expect(screen.getByTestId('sidebar-entry-board')).toHaveAttribute('data-active', 'true');
@@ -115,7 +209,10 @@ describe('收起态 tooltip / 角标 / 当前项（SIDEBAR-3）', () => {
   it('[T4] aria-label 带数量：待决策 N 条 / 聊天 N 条未读', async () => {
     renderSideBar();
     await waitFor(() =>
-      expect(screen.getByTestId('sidebar-entry-decisions')).toHaveAttribute('aria-label', '待决策，3 条'),
+      expect(screen.getByTestId('sidebar-entry-decisions')).toHaveAttribute(
+        'aria-label',
+        '待决策，宽限中 1 条，已超时 2 条',
+      ),
     );
     act(() => usePanelStore.setState({ unread: { s1: 2, s2: 3 } }));
     expect(screen.getByTestId('sidebar-entry-chat')).toHaveAttribute('aria-label', '聊天，5 条未读');

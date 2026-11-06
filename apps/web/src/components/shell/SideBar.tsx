@@ -21,7 +21,8 @@ import { useAppStore, type WsStatus } from '../../state/appStore';
 import { useOverlayStore } from '../../state/overlayStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
-import { useDecisionsCount } from '../decisions/useDecisions';
+import { useDecisionLayerCounts } from '../decisions/useDecisions';
+import { useDecisionsScope } from '../../state/useDecisionsScope';
 import { useSidebarShortcut } from './useSidebarShortcut';
 import { DRAWER_ANCHOR_MIN_VIEWPORT } from '../../lib/drawerAnchor';
 
@@ -102,8 +103,12 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const collapseToggleRef = useRef<HTMLButtonElement>(null);
-  // DEC-6：待决策徽标 = 当前工作区 grace + open 条数（0 时不显示数字，入口仍可见）
-  const decisionCount = useDecisionsCount(workspace?.id ?? null);
+  // DEC-BADGE：待决策徽标拆成「宽限中 / 已落锁」两项；范围跟随待决策区，数据与列表同源
+  const decisionsScope = useDecisionsScope();
+  const decision = useDecisionLayerCounts(workspace?.id ?? null, decisionsScope);
+  const decisionTotal = decision.grace + decision.locked;
+  /** 徽标数字：任一 >99 折成 99+（与聊天未读同一规则） */
+  const badgeText = (count: number): string => (count > 99 ? '99+' : String(count));
 
   /** SIDEBAR-1/4：形态切换的唯一动作（顶部按钮与 Ctrl/Cmd+B 共用）；收起时把侧栏内焦点交给仍可见的切换按钮，避免掉回 body */
   const applySidebarToggle = useCallback((): void => {
@@ -238,16 +243,28 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />
       </div>
 
-      {/* ② 六入口（聊天只在这里出现一次，未读徽标挂本项；待决策徽标见 DEC-6） */}
+      {/* ② 六入口（聊天只在这里出现一次，未读徽标挂本项；待决策分项徽标见 DEC-BADGE） */}
       <ul className="ab-sidebar-nav flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;
           // SIDEBAR-3：角标数字同时进 tooltip 与 aria-label（收起态图标旁看不到文字时也读得到）
-          const count = entry.view === 'chat' ? chatUnread : entry.view === 'decisions' ? decisionCount : 0;
-          const countText = count > 99 ? '99+' : String(count);
-          const tip = count > 0 ? `${entry.label} · ${countText}` : entry.label;
-          const entryLabel =
-            count > 0 ? (entry.view === 'chat' ? `聊天，${count} 条未读` : `待决策，${count} 条`) : entry.label;
+          const isDecisions = entry.view === 'decisions';
+          const count = entry.view === 'chat' ? chatUnread : isDecisions ? decisionTotal : 0;
+          // DEC-BADGE：待决策播报分项数量，其余入口沿用总量
+          const tip = isDecisions
+            ? decisionTotal > 0
+              ? `${entry.label} · 宽限中 ${badgeText(decision.grace)} · 已超时 ${badgeText(decision.locked)}`
+              : entry.label
+            : count > 0
+              ? `${entry.label} · ${badgeText(count)}`
+              : entry.label;
+          const entryLabel = isDecisions
+            ? decisionTotal > 0
+              ? `待决策，宽限中 ${decision.grace} 条，已超时 ${decision.locked} 条`
+              : entry.label
+            : count > 0
+              ? `聊天，${count} 条未读`
+              : entry.label;
           return (
             <li key={entry.view} className="ab-sidebar-tip" data-tip={tip}>
               <button
@@ -281,12 +298,23 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                     {chatUnread > 99 ? '99+' : chatUnread}
                   </span>
                 )}
-                {entry.view === 'decisions' && decisionCount > 0 && (
+                {entry.view === 'decisions' && decisionTotal > 0 && (
+                  // DEC-BADGE：琥珀=宽限中，红=已超时/落锁；数字由 aria-label 播报，视觉徽标对读屏隐藏
                   <span
                     data-testid="sidebar-decisions-badge"
-                    className="ab-sidebar-badge ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-medium leading-4 text-white"
+                    className="ab-sidebar-badge ab-decision-badge-group ml-auto shrink-0"
+                    aria-hidden="true"
                   >
-                    {decisionCount > 99 ? '99+' : decisionCount}
+                    {decision.grace > 0 && (
+                      <span data-testid="sidebar-decisions-grace" className="ab-decision-badge ab-decision-badge-grace">
+                        {badgeText(decision.grace)}
+                      </span>
+                    )}
+                    {decision.locked > 0 && (
+                      <span data-testid="sidebar-decisions-locked" className="ab-decision-badge ab-decision-badge-locked">
+                        {badgeText(decision.locked)}
+                      </span>
+                    )}
                   </span>
                 )}
               </button>

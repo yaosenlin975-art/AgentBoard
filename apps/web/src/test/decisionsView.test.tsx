@@ -163,21 +163,22 @@ describe('DEC-6 分组与倒计时', () => {
 });
 
 describe('DEC-6 徽标与卡面标识', () => {
-  it('徽标 = grace + open 条数；0 时不显示', async () => {
+  it('徽标分项 = 宽限中 + 已落锁；0 时不显示', async () => {
     server.use(
-      http.get('/api/workspaces/:id/decisions/count', () =>
-        HttpResponse.json({ grace: 1, open: 1, stale_open: 0, answered_recent: 0 }),
+      decisionHandler(
+        [
+          listItem({ id: 'badge-grace', state: 'grace', grace_until: NOW + 120_000 }),
+          listItem({ id: 'badge-locked', state: 'open', locked_at: NOW - 5_000 }),
+        ],
+        [],
       ),
     );
     renderWithQuery(<SideBar workspace={ws} />);
-    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2'));
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('1'));
+    expect(screen.getByTestId('sidebar-decisions-locked')).toHaveTextContent('1');
 
     cleanup();
-    server.use(
-      http.get('/api/workspaces/:id/decisions/count', () =>
-        HttpResponse.json({ grace: 0, open: 0, stale_open: 0, answered_recent: 1 }),
-      ),
-    );
+    server.use(decisionHandler([], []));
     renderWithQuery(<SideBar workspace={ws} />);
     expect(screen.queryByTestId('sidebar-decisions-badge')).toBeNull();
     // 入口仍在
@@ -1256,30 +1257,29 @@ describe('P5 跨区范围', () => {
     await screen.findByTestId('decisions-error-generic', {}, { timeout: 3000 });
   });
 
-  it('侧栏徽标不随范围切换变化（仍只算本工作区）', async () => {
+  it('侧栏分项徽标跟随范围切换，且与列表 tab 计数同源恒等（无重复请求）', async () => {
     const calls: string[] = [];
-    const countCalls: string[] = [];
-    server.use(
-      scopedHandler(calls, [homeItem], [homeItem, crossItem]),
-      http.get('/api/workspaces/:id/decisions/count', ({ request }) => {
-        countCalls.push(request.url);
-        return HttpResponse.json({ grace: 1, open: 1, stale_open: 0, answered_recent: 0 });
-      }),
-    );
+    server.use(scopedHandler(calls, [homeItem], [homeItem, crossItem]));
     renderWithQuery(
       <>
         <SideBar workspace={ws} />
         <DecisionsView />
       </>,
     );
-    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2'));
-    const countRequestsBefore = countCalls.length;
+    await waitFor(() => expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('1'));
+    // 与列表同一分组函数：宽限中数字恒等；本区没有落锁项 → 红色分项不渲染
+    expect(screen.getByTestId('decisions-tab-count-grace')).toHaveTextContent('1');
+    expect(screen.queryByTestId('sidebar-decisions-locked')).toBeNull();
+    // 初始只有 active + answered 各一次（侧栏复用同一 queryKey，不额外拉取）
+    expect(calls.length).toBe(2);
 
     fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
     await screen.findByTestId('decision-item-p5-cross');
 
-    expect(screen.getByTestId('sidebar-decisions-badge')).toHaveTextContent('2');
-    expect(countCalls.length).toBe(countRequestsBefore);
+    expect(screen.getByTestId('sidebar-decisions-grace')).toHaveTextContent('2');
+    expect(screen.getByTestId('decisions-tab-count-grace')).toHaveTextContent('2');
+    // 换范围后仍是 active(all) + answered(all) 各一次，侧栏没有独立请求
+    expect(calls.length).toBe(4);
   });
 });
 

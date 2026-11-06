@@ -681,6 +681,53 @@ optgroup {
   box-shadow: 0 0 0 2px var(--ab-card);
 }
 
+/* DEC-BADGE：待决策分项徽标（琥珀=宽限中，红=已超时/已落锁），沿用现有 --ab-* 令牌 */
+.ab-decision-badge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+}
+.ab-decision-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ab-decision-badge-grace {
+  background: var(--ab-accent);
+  color: var(--ab-accent-ink);
+}
+.ab-decision-badge-locked {
+  background: var(--ab-del);
+  color: var(--ab-accent-ink);
+}
+/* 收起态：两枚 12px 小币并列挂在图标右上角，聊天未读角标规则不变 */
+.ab-sidebar[data-mode='collapsed'] .ab-decision-badge-group {
+  top: -5px;
+  right: -8px;
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  gap: 2px;
+  box-shadow: none;
+  line-height: 1;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-decision-badge {
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  font-size: 8.5px;
+  box-shadow: 0 0 0 1.5px var(--ab-card);
+}
+
 /* 当前项：收起态在图标左侧 2px 处补一条 16px 竖条（展开态靠 bg-accent-soft 已足够） */
 .ab-sidebar[data-mode='collapsed'] .ab-sidebar-entry[data-active='true']::before {
   content: '';

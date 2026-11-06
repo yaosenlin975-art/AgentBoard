@@ -4,7 +4,7 @@
  * 四段：宽限中（秒级倒计时 + 「立即回答」主按钮）/ 未回答 / 已超时（锁后 72h+）/ 最近已回答（24h）。
  * - 页头只保留标题 + 在途总数徽标；状态用筛选 tab（计数来自完整分组，不受当前 tab 影响）。
  * - 三种排序：紧急度（默认）/ 等待最久 / 任务优先级；rank 只在 grace/open/stale 连续编号，切 tab 后重排。
- * - 数据：`/api/decisions`（在途默认口径）+ `state=answered`；徽标数来自 count 端点（SideBar）。
+ * - 数据：`/api/decisions`（在途默认口径）+ `state=answered`；侧栏徽标复用同一 active 列表与分组（DEC-BADGE）。
  * - 深链：`navStore.focusDecision(id)` 选中并滚动到该条；宽限到期本地先移入「未回答」，
  *   再按 `grace_until` 定时失效重取，等 ticker 落锁后服务端状态转正。
  */
@@ -23,7 +23,8 @@ import {
 import { DecisionCard, type DecisionAnsweredPayload } from './DecisionCard';
 import { DecisionsEmptyState } from './DecisionsEmptyState';
 import { useDecisionLists, useUndoDecision } from './useDecisions';
-import { persistDecisionsScope, resolveDecisionsScope, type DecisionsScope } from '../../lib/decisionsScope';
+import { setDecisionsScope, type DecisionsScope } from '../../lib/decisionsScope';
+import { useDecisionsScope } from '../../state/useDecisionsScope';
 import { ApiError } from '../../api/client';
 import type { DecisionListItemDto } from './types';
 
@@ -101,7 +102,8 @@ export function DecisionsView() {
   const queryClient = useQueryClient();
   const now = useDecisionClock();
   // P5：范围独立持久化（与知识库范围 / 形态 / 主题的键互不干扰）；非法值已在读取时回落
-  const [scope, setScope] = useState<DecisionsScope>(() => resolveDecisionsScope());
+  // DEC-BADGE：改为共享快照，侧栏徽标与列表同源（同一存储键 / 同一 queryKey）
+  const scope = useDecisionsScope();
   const { active, answered, loading, error } = useDecisionLists(workspaceId, scope);
   const [filter, setFilter] = useState<DecisionFilter>('all');
   const [sort, setSort] = useState<DecisionSort>('urgency');
@@ -184,8 +186,7 @@ export function DecisionsView() {
     );
   };
   const changeScope = (next: DecisionsScope) => {
-    setScope(next);
-    persistDecisionsScope(next);
+    setDecisionsScope(next);
     // 换范围等价于换列表上下文：收起展开卡，避免跨区确认态残留
     setExpandedId(null);
   };

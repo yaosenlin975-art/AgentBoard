@@ -1,8 +1,8 @@
 /**
  * DEC-6：待决策数据源（REST + WS 失效）。
  *
- * - 徽标：`GET /api/workspaces/:id/decisions/count`（轻量，不拉列表）；
  * - 列表：在途（grace+open，默认口径）与已回答（answered，24h 内展示）两次查询；
+ * - 侧栏徽标（DEC-BADGE）：复用同一个在途查询键 + `groupDecisions`，与列表 tab 计数恒等；
  * - WS：`decision.*` / `issue.stop_requested` 事件经 wsBus 触发失效重取。
  *   事件到查询键的映射刻意留在本模块（`api/ws.ts` 的穷尽 switch 属 DEC-3 文件集，不在本卡改动范围）。
  */
@@ -11,8 +11,9 @@ import type { ServerWsEvent } from '@agentboard/shared';
 import { ApiError, api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import type { DecisionsScope } from '../../lib/decisionsScope';
+import { useDecisionClock } from './clock';
+import { groupDecisions } from './countdown';
 import type {
-  DecisionCounts,
   DecisionDetailDto,
   DecisionListResponse,
   ExtendDecisionResponse,
@@ -31,10 +32,6 @@ function retryUnlessUnauthorized(failureCount: number, error: unknown): boolean 
   return failureCount < 1;
 }
 
-export function decisionsCountKey(workspaceId: string) {
-  return ['decisions-count', workspaceId] as const;
-}
-
 export function decisionsListKey(
   workspaceId: string,
   scope: 'active' | 'answered' | `issue-${string}`,
@@ -48,38 +45,51 @@ export function decisionDetailKey(decisionId: string) {
   return ['decision', decisionId] as const;
 }
 
-/** 当前工作区在途决策数（grace + open；徽标用） */
-export function useDecisionsCount(workspaceId: string | null): number {
-  const queryClient = useQueryClient();
-  const { data } = useQuery({
-    queryKey: decisionsCountKey(workspaceId ?? ''),
-    queryFn: () => api.get<DecisionCounts>(`/api/workspaces/${encodeURIComponent(workspaceId ?? '')}/decisions/count`),
-    enabled: workspaceId !== null,
-    retry: retryUnlessUnauthorized,
-  });
-  useDecisionInvalidation(queryClient);
-  return (data?.grace ?? 0) + (data?.open ?? 0);
-}
-
 /**
- * 当前工作区 → 单区列表；`scope=all` → 服务端 `scope=accessible`（只返回有成员关系的区）。
+ * 在途列表（grace + open）的唯一查询定义：列表与侧栏徽标共用同一 queryKey，避免重复请求。
+ * 当前工作区 → 单区；`scope=all` → 服务端 `scope=accessible`（只返回有成员关系的区）。
  * 权限过滤全部交给服务端，前端不拼全量请求、不在客户端过滤。
  */
-export function useDecisionLists(workspaceId: string | null, scope: DecisionsScope = 'workspace') {
-  const queryClient = useQueryClient();
+function useActiveDecisionQuery(workspaceId: string | null, scope: DecisionsScope) {
   const all = scope === 'all';
   const activeUrl = all
     ? `/api/decisions?scope=accessible&limit=${DECISION_LIST_LIMIT}`
     : `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&limit=${DECISION_LIST_LIMIT}`;
-  const answeredUrl = all
-    ? `/api/decisions?scope=accessible&state=answered&limit=${DECISION_LIST_LIMIT}`
-    : `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&state=answered&limit=${DECISION_LIST_LIMIT}`;
-  const active = useQuery({
+  return useQuery({
     queryKey: decisionsListKey(workspaceId ?? '', 'active', scope),
     queryFn: () => api.get<DecisionListResponse>(activeUrl),
     enabled: all || workspaceId !== null,
     retry: retryUnlessUnauthorized,
   });
+}
+
+/**
+ * DEC-BADGE：侧栏「待决策」分项计数。
+ * - `grace`：宽限中（与列表「宽限中」tab 同一分组判定）；
+ * - `locked`：已过宽限、已落锁、agent 已停手（列表 `open` 分组，含锁后 ≥72h 的「已超时」子集）。
+ * 不新增服务端口径：直接消费列表接口与 `groupDecisions`，两处数字构造上恒等。
+ */
+export function useDecisionLayerCounts(
+  workspaceId: string | null,
+  scope: DecisionsScope = 'workspace',
+): { grace: number; locked: number } {
+  const queryClient = useQueryClient();
+  const { data } = useActiveDecisionQuery(workspaceId, scope);
+  useDecisionInvalidation(queryClient);
+  // 与列表同一秒级时钟：宽限到期时两侧同一帧把条目从 grace 移入 open
+  const now = useDecisionClock();
+  const groups = groupDecisions(data?.decisions ?? [], [], now);
+  return { grace: groups.grace.length, locked: groups.open.length };
+}
+
+/** 列表：在途 + 已回答（各自独立查询键；侧栏徽标只复用其中的在途查询） */
+export function useDecisionLists(workspaceId: string | null, scope: DecisionsScope = 'workspace') {
+  const queryClient = useQueryClient();
+  const all = scope === 'all';
+  const answeredUrl = all
+    ? `/api/decisions?scope=accessible&state=answered&limit=${DECISION_LIST_LIMIT}`
+    : `/api/decisions?workspace_id=${encodeURIComponent(workspaceId ?? '')}&state=answered&limit=${DECISION_LIST_LIMIT}`;
+  const active = useActiveDecisionQuery(workspaceId, scope);
   const answered = useQuery({
     queryKey: decisionsListKey(workspaceId ?? '', 'answered', scope),
     queryFn: () => api.get<DecisionListResponse>(answeredUrl),
