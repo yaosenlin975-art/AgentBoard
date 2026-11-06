@@ -37,6 +37,17 @@ export function updateIssueWithCAS(db: Db, issueId: string, workspaceId: string,
     return updateIssueInHierarchy(db, issueId, patch, { workspaceId, expectedUpdatedAt });
   }).immediate();
 }
+/**
+ * LEASE-GAP：租约过期被 `sweepExpiredLeases` 清空占用（claimed_by=NULL）后，原占用代次仍可用本地 fence 收尾。
+ * 不加这条口子，卡会停在「进行中 + 无人占用」：claim 要求待规划、done/fail 要求有人占用，两边都进不去。
+ * 安全性来自 fence 本身：抢占会自增 claim_fence，旧代次在任何写之前就落 STALE_FENCE；
+ * 因此「fence 等于当前代次 + 无人占用 + 状态仍为进行中」只可能由该代次的原始持有者触发。
+ * fence 缺席（undefined/null，软模式）不享受该口子。
+ */
+function isLeaseExpiredTakeover(issue: Issue, fence: number | null | undefined): boolean {
+  return issue.claimed_by === null && issue.status === '进行中' && fence !== undefined && fence !== null;
+}
+
 function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: string, action: 'done' | 'fail' | 'release', detail?: string, fence?: number): ClaimActionResult {
   if (!actorId?.trim()) throw new ValidationError('agent_id 不能为空');
   if (action === 'fail' && !detail?.trim()) throw new ValidationError('失败原因不能为空');
@@ -45,10 +56,22 @@ function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: str
     // REL-1：fence 校验先于占用者校验 —— 批量退回后占用已清空，旧代次必须直接落 STALE_FENCE
     // （否则会被「非占用者」抢先报错，掩盖真正的过期原因）
     assertFenceCurrent(db, issueId, fence);
-    if (issue.claimed_by !== actorId) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
-    const result = db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
-      .run(action === 'done' ? '待验收' : '待规划', Date.now(), issueId, workspaceId, actorId);
+    const leaseExpiredTakeover = isLeaseExpiredTakeover(issue, fence);
+    if (issue.claimed_by !== actorId && !leaseExpiredTakeover) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
+    const nextStatus = action === 'done' ? '待验收' : '待规划';
+    const result = leaseExpiredTakeover
+      ? db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by IS NULL AND status='进行中'`)
+        .run(nextStatus, Date.now(), issueId, workspaceId)
+      : db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by=?`)
+        .run(nextStatus, Date.now(), issueId, workspaceId, actorId);
     if (result.changes !== 1) throw new ApiError(409, 'NOT_TASK_OWNER', '任务占用已改变');
+    if (leaseExpiredTakeover) {
+      insertCommentRow(db, {
+        issue_id: issueId,
+        author: 'system',
+        content: `占用租约已过期（占用被系统释放，fence=${fence}），原占用代次仍以该 fence 完成 ${action}（LEASE-GAP）`,
+      });
+    }
     const content = action === 'release' ? '占用者释放任务' : detail?.trim();
     const comment = content ? insertCommentRow(db, { issue_id: issueId, author: `agent:${actorId}`, content }) : null;
     return { issue: getIssue(db, issueId)!, comment };
@@ -215,16 +238,31 @@ export async function doneIssue(
     if (!issue) throw new NotFoundError('任务不存在');
     // REL-1：fence 校验先于占用状态校验 —— 批量退回会 bump 代次，旧 fence 必须落 STALE_FENCE
     assertFenceCurrent(db, issueId, fence);
-    if (issue.claimed_by === null) throw new ConflictError('未被占用');
-    if (agentId !== 'user' && issue.claimed_by !== agentId) {
+    // LEASE-GAP：租约过期被 sweep 清空占用后，原代次仍可收尾（fence 已校验匹配；抢占会自增 fence）
+    const leaseExpiredTakeover = isLeaseExpiredTakeover(issue, fence) && agentId !== 'user';
+    if (issue.claimed_by === null && !leaseExpiredTakeover) throw new ConflictError('未被占用');
+    if (agentId !== 'user' && issue.claimed_by !== agentId && !leaseExpiredTakeover) {
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可完成任务');
     }
-    const changed = db.prepare(
-      `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
-         last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
-       WHERE id=? AND claimed_by=?`,
-    ).run(now, issueId, agentId === 'user' ? issue.claimed_by : agentId);
+    const changed = leaseExpiredTakeover
+      ? db.prepare(
+        `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
+           last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+         WHERE id=? AND claimed_by IS NULL AND status='进行中'`,
+      ).run(now, issueId)
+      : db.prepare(
+        `UPDATE issue SET status='待验收', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
+           last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+         WHERE id=? AND claimed_by=?`,
+      ).run(now, issueId, agentId === 'user' ? issue.claimed_by : agentId);
     if (changed.changes !== 1) throw new ConflictError('占用已改变（并发完成/释放），未产生任何写入');
+    if (leaseExpiredTakeover) {
+      insertCommentRow(db, {
+        issue_id: issueId,
+        author: 'system',
+        content: `占用租约已过期（占用被系统释放，fence=${fence}），原占用代次仍以该 fence 完成 done（LEASE-GAP）`,
+      });
+    }
     const comment = writeNote ? insertCommentRow(db, { issue_id: issueId, author: `agent:${agentId}`, content: notes!.trim() }) : null;
     return { issue: getIssue(db, issueId)!, comment };
   }).immediate();
@@ -248,18 +286,33 @@ export async function failIssue(
   return db.transaction(() => {
     const issue = getIssue(db, issueId);
     if (!issue) throw new NotFoundError('任务不存在');
-    if (issue.claimed_by === null) throw new ConflictError('未被占用');
+    // LEASE-GAP：租约过期被 sweep 清空占用后，原代次仍可回报失败（fence 校验在下方仍是权威判定）
+    const leaseExpiredTakeover = isLeaseExpiredTakeover(issue, fence) && agentId !== 'user';
+    if (issue.claimed_by === null && !leaseExpiredTakeover) throw new ConflictError('未被占用');
     const boundSessionFailure = expectedSessionId !== undefined && issue.session_id === expectedSessionId;
-    if (agentId !== 'user' && issue.claimed_by !== agentId && !boundSessionFailure) {
+    if (agentId !== 'user' && issue.claimed_by !== agentId && !leaseExpiredTakeover && !boundSessionFailure) {
       throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可回报失败');
     }
     assertFenceCurrent(db, issueId, fence);
-    const changed = db.prepare(
-      `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
-         last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
-       WHERE id=? AND claimed_by=? AND session_id IS ?`,
-    ).run(now, issueId, issue.claimed_by, issue.session_id);
+    const changed = leaseExpiredTakeover
+      ? db.prepare(
+        `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
+           last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+         WHERE id=? AND claimed_by IS NULL AND status='进行中'`,
+      ).run(now, issueId)
+      : db.prepare(
+        `UPDATE issue SET status='待规划', claimed_by=NULL, claimed_at=NULL, claim_lease_until=NULL, last_heartbeat_at=NULL, session_id=NULL,
+           last_seen_comment_id=NULL, updated_at=MAX(?,updated_at+1)
+         WHERE id=? AND claimed_by=? AND session_id IS ?`,
+      ).run(now, issueId, issue.claimed_by, issue.session_id);
     if (changed.changes !== 1) throw new ConflictError('占用已改变（并发完成/释放），未产生任何写入');
+    if (leaseExpiredTakeover) {
+      insertCommentRow(db, {
+        issue_id: issueId,
+        author: 'system',
+        content: `占用租约已过期（占用被系统释放，fence=${fence}），原占用代次仍以该 fence 完成 fail（LEASE-GAP）`,
+      });
+    }
     const comment = insertCommentRow(db, { issue_id: issueId, author: `agent:${agentId}`, content: reason.trim() });
     return { issue: getIssue(db, issueId)!, comment };
   }).immediate();
