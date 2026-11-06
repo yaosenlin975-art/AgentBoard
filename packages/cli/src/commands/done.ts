@@ -3,6 +3,7 @@ import { request } from '../api.js';
 import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueRef } from '../issueRef.js';
+import { closeIssueWithOwnRelease } from './lifecycle.js';
 
 export interface DoneArgs {
   notes?: string;
@@ -14,6 +15,8 @@ export interface DoneArgs {
   all?: boolean;
   /** 幂等请求 id：与 workspace_id 一起才能命中服务端的 owner 幂等包装；重试必须复用同一 uuid */
   requestId?: string;
+  /** CLOSE-FLOW：done 成功后串行 close（待验收 → 已关闭），一步收口 */
+  close?: boolean;
 }
 
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
@@ -61,6 +64,26 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/done`, body, args.requestId,
   );
   clearClaimedFence(issueId);
+
+  // CLOSE-FLOW：done 成功后串行 close；两阶段分别报错，已成功的 done 不回滚、也不重复执行
+  if (args.close === true) {
+    const outcome = await closeIssueWithOwnRelease(ctx, issue.id)
+      .catch(error => {
+        ctx.io.writeErr('done 阶段已完成（状态已进入待验收，占用已释放）；close 阶段失败：\n');
+        throw error;
+      });
+    const closed = outcome.issue;
+    if (ctx.json) {
+      ctx.io.write(`${JSON.stringify({ done: issue, close: closed }, null, 2)}\n`);
+      return;
+    }
+    ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
+    if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
+    if (outcome.released) ctx.io.write('已释放自有占用后关闭\n');
+    ctx.io.write(`已关闭: ${closed.id}\n状态: ${closed.status}（done → close 一步收口）\n`);
+    return;
+  }
+
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;

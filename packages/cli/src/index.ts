@@ -168,23 +168,25 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     )
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .option('--all', '显式纳入工作区全部未提交改动（默认只提交 --scope 声明的卡内文件集，卡外改动只列清单）')
+    .option('--close', 'done 成功后串行 close（待验收 → 已关闭），一步收口；close 阶段失败不回滚已完成的 done')
     .addHelpText('after', `
 示例：
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
   kb done 0f6ba9ab --scope packages/cli/src/index.ts --scope Docs/api.md
-退出码：0 成功（状态 → 待验收）；2 未被占用 / 非当前占用者 / 占用已改变；1 参数错误或任务不存在
+  kb done 0f6ba9ab --notes '改完' --close        # 待验收 + 已关闭一步完成（父卡有未关闭后代时会停在待验收）
+退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误或任务不存在
 GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
 非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
 `)
-    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string }) =>
-      done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true, requestId: opts.requestId }));
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string; close?: boolean }) =>
+      done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true, requestId: opts.requestId, close: opts.close === true }));
 
   program
     .command('close')
-    .description('关闭任务：待验收 → 已关闭（占用中会 409：占用者先 kb release <issue-id> 或 done/fail 后再关）')
+    .description('关闭任务：待验收 → 已关闭（占用者就是当前 agent 时自动释放自有占用再关；他人占用 409 不自动释放，需 kb release <issue-id> 或 done/fail 后重试）')
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（占用中/状态不允许）；1 其它错误（404 等）')
+    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（他人占用/状态不允许/未关闭后代）；1 其它错误（404 等）')
     .action(async (id: string, opts: { requestId?: string }) => close(makeCtx(program, io), id, { requestId: opts.requestId }));
 
   program

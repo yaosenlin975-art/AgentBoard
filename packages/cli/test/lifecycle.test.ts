@@ -97,3 +97,89 @@ describe('kb close / reopen / update', () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe('CLOSE-FLOW：done --close 与 close 自动释放自有占用', () => {
+  it('done --close 成功路径直接关闭并输出两阶段回执', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收' } };
+      if (m === 'POST' && u === '/api/issues/iss1/close') return { status: 200, body: { ...ISSUE, status: '已关闭' } };
+      return undefined;
+    };
+    const result = await run(['done', 'iss1', '--close']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('已完成: iss1');
+    expect(result.out).toContain('已关闭: iss1');
+    expect(calls.map(c => `${c.method} ${c.url}`)).toEqual([
+      'POST /api/issues/iss1/done',
+      'POST /api/issues/iss1/close',
+    ]);
+  });
+
+  it('close 遇自有占用：自动 release 一次后再关闭', async () => {
+    let released = false;
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/close') {
+        return released
+          ? { status: 200, body: { ...ISSUE, status: '已关闭' } }
+          : { status: 409, body: { error: { code: 'ISSUE_CLAIMED', message: '任务正被 kb-cli 占用，请先 release 再关闭' } } };
+      }
+      if (m === 'GET' && u === '/api/issues/iss1') {
+        return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: 'kb-cli' } };
+      }
+      if (m === 'POST' && u === '/api/issues/iss1/release') {
+        released = true;
+        return { status: 200, body: { ...ISSUE, status: '待规划', claimed_by: null } };
+      }
+      return undefined;
+    };
+    const result = await run(['close', 'iss1']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('已释放自有占用后关闭');
+    expect(result.out).toContain('已关闭: iss1');
+    const releaseCall = calls.find(c => c.url === '/api/issues/iss1/release');
+    expect(releaseCall?.body).toMatchObject({ agent_id: 'kb-cli', workspace_id: 'ws1' });
+    expect(calls.filter(c => c.url === '/api/issues/iss1/close')).toHaveLength(2);
+  });
+
+  it('close 遇他人占用：exit 2，不 release，提示占用者与 kb release', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/close') {
+        return { status: 409, body: { error: { code: 'ISSUE_CLAIMED', message: '任务正被 board-server 占用，请先 release 再关闭' } } };
+      }
+      if (m === 'GET' && u === '/api/issues/iss1') {
+        return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: 'board-server' } };
+      }
+      return undefined;
+    };
+    const result = await run(['close', 'iss1']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('board-server');
+    expect(result.err).toContain('kb release <issue-id>');
+    expect(calls.some(c => c.url === '/api/issues/iss1/release')).toBe(false);
+  });
+
+  it('父卡存在未关闭后代：exit 2，原样透出且不 release', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/close'
+      ? { status: 409, body: { error: { code: 'CONFLICT', message: '存在未关闭的后代任务，不能关闭此父任务' } } }
+      : undefined);
+    const result = await run(['close', 'iss1']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('存在未关闭的后代任务，不能关闭此父任务');
+    expect(calls.some(c => c.url === '/api/issues/iss1/release')).toBe(false);
+  });
+
+  it('done 成功但 close 阶段失败：保留 done 结果并分阶段报错', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收' } };
+      if (m === 'POST' && u === '/api/issues/iss1/close') {
+        return { status: 409, body: { error: { code: 'CONFLICT', message: '存在未关闭的后代任务，不能关闭此父任务' } } };
+      }
+      return undefined;
+    };
+    const result = await run(['done', 'iss1', '--close']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('done 阶段已完成');
+    expect(result.err).toContain('存在未关闭的后代任务');
+    expect(calls.filter(c => c.url === '/api/issues/iss1/done')).toHaveLength(1);
+  });
+});

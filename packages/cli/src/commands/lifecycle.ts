@@ -10,6 +10,7 @@
 import type { Issue } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { CliHttpError, request, verifyIssueStoredText } from '../api.js';
+import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import { releaseAdvice } from '../errors.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg, normalizeIssueRef } from '../issueRef.js';
@@ -29,16 +30,66 @@ const mapConflict = (ctx: Ctx, error: unknown): never => {
   throw error;
 };
 
+function postClose(ctx: Ctx, issueId: string, requestId?: string): Promise<Issue> {
+  return request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/close`, { agent_id: ctx.agentId }, requestId);
+}
+
+/** 读当前卡；读不到返回 null（占用判定失败时按原始冲突透出，不改变语义） */
+async function getIssueOrNull(ctx: Ctx, issueId: string): Promise<Issue | null> {
+  try {
+    return await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`);
+  } catch {
+    return null;
+  }
+}
+
+/** 释放自有占用：必须带 workspace_id（服务端据此走占用者释放语义，不降级成强制释放） */
+async function releaseOwnClaim(ctx: Ctx, issue: Issue): Promise<void> {
+  const body: { agent_id: string; workspace_id: string; fence?: number } = {
+    agent_id: ctx.agentId,
+    workspace_id: issue.workspace_id,
+  };
+  const storedFence = loadClaimedFence(issue.id);
+  if (storedFence !== undefined) body.fence = storedFence;
+  // 不传 close 的 --request-id：幂等键按 (resource, payload) 校验，跨端点复用会 409 IDEMPOTENCY_KEY_REUSED
+  await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(issue.id)}/release`, body);
+  clearClaimedFence(issue.id);
+}
+
+export interface CloseOutcome {
+  issue: Issue;
+  /** true = 命中自有占用，先自动 release 一次再关 */
+  released: boolean;
+}
+
+/**
+ * CLOSE-FLOW：close 的共用流程（kb close 与 done --close 都走这里）。
+ * 仅当服务端 409 ISSUE_CLAIMED 且占用者等于当前 agent 时自动 release 一次再关；
+ * 他人占用、未关闭后代、状态不允许等冲突一律不重试，原样透出。
+ */
+export async function closeIssueWithOwnRelease(ctx: Ctx, issueId: string, requestId?: string): Promise<CloseOutcome> {
+  try {
+    return { issue: await postClose(ctx, issueId, requestId), released: false };
+  } catch (error) {
+    if (!(error instanceof CliHttpError) || error.status !== 409 || error.code !== 'ISSUE_CLAIMED') throw error;
+    const current = await getIssueOrNull(ctx, issueId);
+    if (current === null || current.claimed_by !== ctx.agentId) throw error;
+    await releaseOwnClaim(ctx, current);
+    return { issue: await postClose(ctx, issueId, requestId), released: true };
+  }
+}
+
 export async function close(ctx: Ctx, id: string, args: RequestIdArg = {}): Promise<void> {
   // CLI-02：允许 ≥8 位前缀
   const target = await normalizeIssueRef(ctx, id);
-  const issue = await request<Issue>(ctx.base, 'POST', `/api/issues/${encodeURIComponent(target.id)}/close`, { agent_id: ctx.agentId }, args.requestId)
+  const outcome = await closeIssueWithOwnRelease(ctx, target.id, args.requestId)
     .catch(error => mapConflict(ctx, error));
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
+    ctx.io.write(`${JSON.stringify(outcome.issue, null, 2)}\n`);
     return;
   }
-  ctx.io.write(`已关闭: ${issue.id}\n状态: ${issue.status}\n`);
+  if (outcome.released) ctx.io.write('已释放自有占用后关闭\n');
+  ctx.io.write(`已关闭: ${outcome.issue.id}\n状态: ${outcome.issue.status}\n`);
 }
 
 export interface ReopenArgs extends RequestIdArg { to?: string }
