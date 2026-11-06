@@ -126,11 +126,12 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
   });
 
-  it('进行中占用：主按钮「标记待验收」；⋯ 内是强制释放，无派发/删除', async () => {
+  it('进行中占用：无改状态主按钮，只留只读提示；⋯ 内是强制释放，无派发/删除', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
     renderDetail();
-    expect(await screen.findByTestId('done-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('status-readonly-hint')).toHaveTextContent('状态变更请到看板或任务树操作');
     expect(screen.getByTestId('detail-action-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('done-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('session-active-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
 
@@ -139,32 +140,34 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(screen.queryByTestId('delete-btn')).not.toBeInTheDocument();
   });
 
-  it('待验收未占用：通过验收并关闭 + 退回进行中；⋯ 含复制 ID/删除', async () => {
+  it('待验收未占用：无受理关闭/退回进行中，只留只读提示；⋯ 含复制 ID/删除', async () => {
     mockDetailApi(makeIssue({ status: '待验收' }));
     renderDetail();
-    expect(await screen.findByTestId('accept-close-btn')).toBeInTheDocument();
-    expect(screen.getByTestId('reopen-running-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('accept-close-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reopen-running-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('copy-id-btn')).toBeInTheDocument();
     expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
   });
 
-  it('已关闭未占用：主按钮「重新打开」（PATCH status=待规划）；⋯ 含删除', async () => {
+  it('已关闭未占用：无重新打开入口，只留只读提示；⋯ 含删除', async () => {
     mockDetailApi(makeIssue({ status: '已关闭', updated_at: 3 }));
-    let body: Record<string, unknown> | null = null;
+    const patches: Array<Record<string, unknown>> = [];
     server.use(
       http.patch('/api/issues/iss-1', async ({ request }) => {
-        body = (await request.json()) as Record<string, unknown>;
+        patches.push((await request.json()) as Record<string, unknown>);
         return HttpResponse.json(makeIssue({ status: '待规划', updated_at: 9 }));
       }),
     );
     renderDetail();
-    await userEvent.click(await screen.findByTestId('reopen-btn'));
-    await waitFor(() => expect(body).toMatchObject({ status: '待规划' }));
-    // 重开后回到「待规划」，吸底主按钮随即变成派发任务
-    expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
+    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('reopen-btn')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(patches).toHaveLength(0);
 
     await userEvent.click(screen.getByTestId('actionbar-more'));
     expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
@@ -192,20 +195,21 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
   });
 
-  it('标记待验收：POST done {agent_id:user}', async () => {
+  it('详情内已无「标记待验收」入口，点击操作条不发 /done', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
-    let doneBody: unknown = null;
+    let doneCalls = 0;
     server.use(
-      http.post('/api/issues/iss-1/done', async ({ request }) => {
-        doneBody = await request.json();
+      http.post('/api/issues/iss-1/done', () => {
+        doneCalls += 1;
         return HttpResponse.json(makeIssue({ status: '待验收', updated_at: 9 }));
       }),
     );
     renderDetail();
-    await userEvent.click(await screen.findByTestId('done-btn'));
-    await waitFor(() => expect(doneBody).toEqual({ agent_id: 'user' }));
-    expect(await screen.findByTestId('accept-close-btn')).toBeInTheDocument();
-    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('done-btn')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('detail-action-bar'));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(doneCalls).toBe(0);
   });
 
   it('⋯ 菜单 Esc 关闭并把焦点还给触发器', async () => {
@@ -714,7 +718,7 @@ describe('DetailPanel 字段防抖 PATCH', () => {
 });
 
 describe('AUDIT-DETAIL 增补', () => {
-  it('待验收卡：验收动作 + 通过验收并关闭预填验收评论草稿', async () => {
+  it('待验收卡：受理关闭与退回进行中已移除，不写状态也不预填验收草稿', async () => {
     mockDetailApi(makeIssue({ status: '待验收', updated_at: 3 }));
     const patches: Array<Record<string, unknown>> = [];
     server.use(
@@ -724,30 +728,14 @@ describe('AUDIT-DETAIL 增补', () => {
       }),
     );
     renderDetail();
-    const close = await screen.findByTestId('accept-close-btn');
-    expect(screen.getByTestId('reopen-running-btn')).toBeInTheDocument();
-    await userEvent.click(close);
-    await waitFor(() => expect(patches).toHaveLength(1));
-    expect(patches[0]).toMatchObject({ status: '已关闭' });
-    // 预填草稿同时落 localStorage 与输入框
-    const draft = localStorage.getItem('agentboard.comment-draft:iss-1') ?? '';
-    expect(draft).toContain('验收通过');
-    expect(await screen.findByTestId('comment-input')).toHaveValue(draft);
-  });
-
-  it('待验收卡：退回进行中 → PATCH status=进行中', async () => {
-    mockDetailApi(makeIssue({ status: '待验收', updated_at: 3 }));
-    let body: Record<string, unknown> | null = null;
-    server.use(
-      http.patch('/api/issues/iss-1', async ({ request }) => {
-        body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json(makeIssue({ status: '进行中', updated_at: 9 }));
-      }),
-    );
-    renderDetail();
-    await userEvent.click(await screen.findByTestId('reopen-running-btn'));
-    await waitFor(() => expect(body).not.toBeNull());
-    expect(body).toMatchObject({ status: '进行中' });
+    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(screen.queryByTestId('accept-close-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reopen-running-btn')).not.toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(patches).toHaveLength(0);
+    // 不再有「通过验收并关闭」的自动预填草稿
+    expect(localStorage.getItem('agentboard.comment-draft:iss-1') ?? '').not.toContain('验收通过');
+    expect(await screen.findByTestId('comment-input')).toHaveValue('');
   });
 
   it('标签 chips：chip 逐枚删除 → PATCH labels 数组', async () => {

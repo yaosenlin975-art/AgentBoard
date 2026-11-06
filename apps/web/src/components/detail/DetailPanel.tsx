@@ -9,15 +9,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarkdownView } from '../../lib/markdown';
-import type { Issue, IssueStatus, Priority, Session, Workspace } from '@agentboard/shared';
+import type { Issue, Priority, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
-import {
-  ISSUE_STATUSES,
-  invalidateIssueStatusCaches,
-  manualStatusBlockedReason,
-  patchIssueStatus,
-} from '../../lib/issueStatus';
-import { getIssueDescendantIds } from '../../lib/issueTree';
+import { ISSUE_STATUSES, manualStatusBlockedReason } from '../../lib/issueStatus';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFromDataTransfer } from '../../lib/imageDraft';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
@@ -185,12 +179,6 @@ export function DetailPanel() {
     onError: (e) => setActionError(e instanceof Error ? e.message : '释放失败'),
   });
 
-  const markDone = useMutation({
-    mutationFn: () => api.post<Issue>(`/api/issues/${issueId}/done`, { agent_id: 'user' }),
-    onSuccess: refreshIssue,
-    onError: (e) => setActionError(e instanceof Error ? e.message : '操作失败'),
-  });
-
   const remove = useMutation({
     mutationFn: () => api.del<void>(`/api/issues/${issueId}`),
     onSuccess: () => {
@@ -199,28 +187,6 @@ export function DetailPanel() {
       closeRight();
     },
     onError: (e) => setActionError(e instanceof Error ? e.message : '删除失败'),
-  });
-
-  // 手动改状态：与树节点下拉、看板拖动同一契约（workspace_id + expected_updated_at CAS）。
-  // 不做乐观更新：失败时下拉值仍是服务端现值（issue.status），只显示原因。
-  const changeStatus = useMutation({
-    mutationFn: (nextStatus: IssueStatus) =>
-      patchIssueStatus({
-        issueId: issueId as string,
-        workspaceId: issue!.workspace_id,
-        expectedUpdatedAt: issue!.updated_at,
-        status: nextStatus,
-      }),
-    onSuccess: (updated) => {
-      setActionError(null);
-      queryClient.setQueryData(['issue', updated.id], updated);
-      invalidateIssueStatusCaches(queryClient, { workspaceId: updated.workspace_id });
-    },
-    onError: (e) => {
-      setActionError(e instanceof Error ? e.message : '修改状态失败');
-      // 冲突后回到服务端当前状态
-      void queryClient.invalidateQueries({ queryKey: ['issue', issueId] });
-    },
   });
 
   /**
@@ -261,9 +227,6 @@ export function DetailPanel() {
   const claimed = issue.claimed_by !== null;
   const statusBlocked = manualStatusBlockedReason(issue);
   // 「已关闭」与树节点下拉同规则：后代全部关闭前不可选
-  const descendantIds = getIssueDescendantIds(workspaceIssues ?? [], issue.id);
-  const closeBlocked = issue.status !== '已关闭'
-    && [...descendantIds].some((id) => (workspaceIssues ?? []).find((candidate) => candidate.id === id)?.status !== '已关闭');
   const directChildCount = workspaceIssues?.filter((candidate) => candidate.parent_issue_id === issue.id).length ?? 0;
   const dispatchable = !claimed && (issue.status === '待规划' || issue.status === '进行中');
   const issueSessions = (allSessions ?? []).filter((s) => s.issue_id === issue.id);
@@ -300,13 +263,6 @@ export function DetailPanel() {
     setCommentDraft(value);
     writeCommentDraft(issue.id, value);
   };
-  /** F-01：通过验收并关闭 —— 与状态下拉同一 PATCH 口径（workspace_id + expected_updated_at） */
-  const acceptAndClose = (): void => {
-    const acceptance = `验收通过：按验收标准逐条核对，未发现阻塞问题。（${new Date().toLocaleString()}）`;
-    updateDraft(acceptance);
-    changeStatus.mutate('已关闭');
-  };
-
   /**
    * DETAIL-D6：描述编辑器的图片入口（粘贴为主、拖拽/选择为辅）。
    * - 与评论同一套校验：PNG/JPEG/WebP、单张 ≤10 MiB、整条描述最多 5 张（复用 imageDraft，不新写规则）；
@@ -544,15 +500,12 @@ export function DetailPanel() {
         issue={issue}
         dispatchable={dispatchable}
         claimed={claimed}
-        closeBlocked={closeBlocked}
         directChildCount={directChildCount}
         actionError={actionError}
         claimBlocked={claimBlocked}
         blockers={dependencies?.blockers ?? []}
         dependenciesLoaded={dependencies !== undefined}
-        statusPending={changeStatus.isPending}
         releasePending={release.isPending}
-        donePending={markDone.isPending}
         deletePending={remove.isPending}
         onDispatch={() => {
           // claim 入口前端先拦：有未解除前置时列出 blocker 清单，不开派发弹窗（服务端 409 仍是唯一防线）
@@ -562,12 +515,7 @@ export function DetailPanel() {
           }
           setDispatchOpen(true);
         }}
-        onAcceptClose={acceptAndClose}
-        onReopenRunning={() => changeStatus.mutate('进行中')}
-        // 已关闭→重新打开：回到「待规划」（可再派发）；进行中 只能由 claim/done 流转，不能手动跳过去
-        onReopenClosed={() => changeStatus.mutate('待规划')}
         onRelease={() => release.mutate()}
-        onDone={() => markDone.mutate()}
         onDelete={() => remove.mutate()}
         onDismissClaimBlocked={() => setClaimBlocked(false)}
       />

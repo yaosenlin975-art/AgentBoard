@@ -5,7 +5,7 @@
  * 这样「贴面板底边」在贴列锚定与整宽抽屉两种高度下都成立，且滚动区不会被条遮住（卡面要求 7）。
  *
  * 未决 10 取舍（卡面第 8 条）：
- * - 主按钮随状态变化，永远只有 1 个主操作 + 待验收时的 1 个次要操作；
+ * - 主槽最多 1 个操作，且只放不改状态的动作（派发任务）；状态变更一律回看板/任务树；
  * - 危险 / 低频操作（强制释放、复制 ID、删除）全部进 ⋯ 溢出菜单，不提升为主按钮、不做全屏模态；
  * - 危险动作仍在菜单内做行内二次确认（沿用 ConfirmInline），确认后才发请求。
  * - 「会话进行中」禁用按钮已删除：占用状态由 D2 的负责人 chip 表达（设计 §2.2 第 6 条）。
@@ -23,8 +23,6 @@ export interface ActionBarProps {
   /** 未占用且状态∈{待规划,进行中} */
   dispatchable: boolean;
   claimed: boolean;
-  /** 存在未关闭的子孙任务 → 不能「通过验收并关闭」 */
-  closeBlocked: boolean;
   directChildCount: number;
   actionError: string | null;
   claimBlocked: boolean;
@@ -32,16 +30,10 @@ export interface ActionBarProps {
   blockers: DependencyRef[];
   /** 依赖清单是否已加载（未加载时显示「正在加载」） */
   dependenciesLoaded: boolean;
-  statusPending: boolean;
   releasePending: boolean;
-  donePending: boolean;
   deletePending: boolean;
   onDispatch: () => void;
-  onAcceptClose: () => void;
-  onReopenRunning: () => void;
-  onReopenClosed: () => void;
   onRelease: () => void;
-  onDone: () => void;
   onDelete: () => void;
   onDismissClaimBlocked: () => void;
 }
@@ -50,22 +42,15 @@ export function ActionBar({
   issue,
   dispatchable,
   claimed,
-  closeBlocked,
   directChildCount,
   actionError,
   claimBlocked,
   blockers,
   dependenciesLoaded,
-  statusPending,
   releasePending,
-  donePending,
   deletePending,
   onDispatch,
-  onAcceptClose,
-  onReopenRunning,
-  onReopenClosed,
   onRelease,
-  onDone,
   onDelete,
   onDismissClaimBlocked,
 }: ActionBarProps) {
@@ -126,49 +111,20 @@ export function ActionBar({
   const openBlocker = openBlockerCount(issue);
   const blockerList = blockers.filter((blocker) => !blocker.resolved);
 
-  /** 主操作按状态唯一化：待验收 > 已关闭 > 可派发 > 占用中 */
-  const primary =
-    issue.status === '待验收' ? (
-      <button
-        type="button"
-        data-testid="accept-close-btn"
-        onClick={onAcceptClose}
-        disabled={statusPending || closeBlocked}
-        title={closeBlocked ? '存在未关闭的子孙任务，需先全部关闭' : undefined}
-        className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        通过验收并关闭
-      </button>
-    ) : issue.status === '已关闭' ? (
-      <button
-        type="button"
-        data-testid="reopen-btn"
-        onClick={onReopenClosed}
-        disabled={statusPending}
-        className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
-      >
-        重新打开
-      </button>
-    ) : dispatchable ? (
-      <button
-        type="button"
-        data-testid="dispatch-btn"
-        onClick={onDispatch}
-        className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90"
-      >
-        派发任务
-      </button>
-    ) : (
-      <button
-        type="button"
-        data-testid="done-btn"
-        onClick={onDone}
-        disabled={donePending}
-        className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
-      >
-        标记待验收
-      </button>
-    );
+  /**
+   * 详情内只读状态：不再提供任何改状态入口（受理关闭 / 退回进行中 / 重新打开 / 标记待验收），
+   * 仅保留不改变状态的「派发任务」（claim/dispatch 不改 status）。
+   */
+  const primary = dispatchable ? (
+    <button
+      type="button"
+      data-testid="dispatch-btn"
+      onClick={onDispatch}
+      className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90"
+    >
+      派发任务
+    </button>
+  ) : null;
 
   return (
     <footer
@@ -215,19 +171,11 @@ export function ActionBar({
 
       <div className="flex items-center gap-1.5 px-3 py-2">
         <div className="ab-primary-slot">
-          {/* F-01：待验收时主按钮之外给一个次要出口（退回进行中） */}
-          {issue.status === '待验收' && (
-            <button
-              type="button"
-              data-testid="reopen-running-btn"
-              onClick={onReopenRunning}
-              disabled={statusPending}
-              className="rounded border border-hairline px-3 py-1.5 text-xs font-medium text-ink-2 transition-colors hover:bg-accent-soft disabled:opacity-40"
-            >
-              退回进行中
-            </button>
+          {primary ?? (
+            <p data-testid="status-readonly-hint" className="px-0.5 text-xs text-ink-3">
+              状态变更请到看板或任务树操作
+            </p>
           )}
-          {primary}
         </div>
 
         <div className="relative shrink-0">
