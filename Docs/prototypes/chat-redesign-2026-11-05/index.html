@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentBoard 聊天界面改造 · 可点击原型</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body data-theme="light">
+  <!-- 原型控制条（不属于产品 UI，只用于触发五块能力） -->
+  <div class="proto-bar">
+    <span class="proto-tag">PROTOTYPE</span>
+    <span class="proto-copy">聊天界面改造 · 2026-11-05 · 五块能力可直接点</span>
+    <div class="proto-actions">
+      <button type="button" class="pbtn" data-act="demo-turn" id="demoTurnBtn" data-testid="demo-turn">① 开始长任务</button>
+      <button type="button" class="pbtn" data-act="demo-approve" data-testid="demo-approve">③ 危险操作</button>
+      <button type="button" class="pbtn" data-act="demo-await" data-testid="demo-await">④ 进入阻塞</button>
+      <button type="button" class="pbtn" data-act="demo-refresh" data-testid="demo-refresh">模拟刷新</button>
+      <button type="button" class="pbtn ghost" data-act="demo-reset" data-testid="demo-reset">重置</button>
+      <button type="button" class="pbtn ghost" data-act="theme" data-testid="theme-toggle">暗色</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <aside class="rail" id="rail" aria-label="会话侧栏"></aside>
+    <main class="chat">
+      <div class="chat-head" id="chatHead"></div>
+      <div class="thread" id="thread" role="log" aria-label="消息流"></div>
+      <div class="composer">
+        <p class="composer-hint" id="composerHint" data-testid="composer-hint" hidden></p>
+        <div class="composer-row">
+          <textarea
+            id="composerInput"
+            data-testid="composer-input"
+            rows="2"
+            aria-label="消息输入"
+            placeholder="输入消息，Enter 发送，Shift+Enter 换行；/ 选技能，@ 选任务"
+          ></textarea>
+          <button type="button" class="send-btn" data-act="send" data-testid="composer-send">发送</button>
+        </div>
+        <div class="composer-foot">
+          <span class="draft-flag" id="draftFlag" data-testid="draft-flag">草稿保存在本机</span>
+          <span class="usage" id="usageLine" data-testid="usage-line"></span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot" class="toast-root" aria-live="polite"></div>
+  <div id="live" class="sr-only" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

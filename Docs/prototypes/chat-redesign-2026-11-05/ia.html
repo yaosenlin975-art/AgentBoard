@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>聊天界面改造 · 信息架构（一屏）</title>
+<style>
+  :root {
+    --page: #f7f4ee; --card: #fdfbf7; --raised: #efe9df; --line: rgba(31,27,22,.12);
+    --ink: #1f1b16; --ink2: #5e554a; --ink3: #6b6257; --accent: #a04a08; --accent-soft: rgba(180,83,9,.12);
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 12px/1.45 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    padding: 18px 22px 22px;
+  }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .sub { color: var(--ink3); font-size: 11px; margin: 0 0 12px; }
+  .sub a { color: var(--accent); }
+  .grid { display: grid; grid-template-columns: 260px 1fr 220px; gap: 10px; align-items: start; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .box { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+  .box h2 { margin: 0 0 6px; font-size: 11px; display: flex; align-items: center; gap: 5px; }
+  .box h2 span.tag { font-size: 9px; color: var(--accent); background: var(--accent-soft); border-radius: 3px; padding: 1px 4px; }
+  .item { border: 1px dashed var(--line); border-radius: 5px; padding: 4px 6px; margin-top: 4px; font-size: 10px; color: var(--ink2); }
+  .item s { color: var(--ink3); }
+  .stack { display: flex; flex-direction: column; gap: 5px; }
+  .row { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+  .pill { border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; font-size: 10px; color: var(--ink2); }
+  .pill.acc { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .mono { font-family: var(--mono); font-size: 10px; }
+  .flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--ink2); }
+  .node { border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; background: var(--raised); }
+  .node.acc { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .node.bad { border-color: #b42318; background: rgba(180,35,24,.08); color: #b42318; }
+  .arrow { color: var(--ink3); }
+  .cut li { margin: 2px 0; font-size: 10px; color: var(--ink2); }
+  .cut ul { margin: 0; padding-left: 14px; }
+  .contract { margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .contract .box { padding: 7px 9px; }
+  .contract li { font-size: 10px; color: var(--ink2); margin: 2px 0; }
+  .contract ul { margin: 0; padding-left: 13px; }
+  .legend { margin-top: 10px; font-size: 10px; color: var(--ink3); }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } .contract { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <h1>聊天界面改造 · 信息架构（一屏）</h1>
+  <p class="sub">2026-11-05 · 暖石墨 + 琥珀令牌；不新增页面，只在现有 ChatView 三处（侧栏 / 轮次 / 输入区）加层。可点击原型：<a href="index.html">index.html</a></p>
+
+  <div class="grid">
+    <div class="col">
+      <div class="box">
+        <h2><span class="tag">⑤ 侧栏</span>ChatSessionList（保留 AUDIT-3）</h2>
+        <div class="stack">
+          <div class="row"><span class="pill">搜索框</span><span class="pill">＋ 新建</span></div>
+          <div class="item"><b>任务看板</b><br />· 标题 + 运行/失败点 + 未读<br />· 第二行：任务号 · 相对时间<br />· 行操作 ⋯：重命名 / 分叉 / 归档 / 删除</div>
+          <div class="item"><b>无任务会话</b>（自由会话归组，不变）</div>
+          <div class="item"><b>已归档 N ▸</b> 折叠组，可恢复</div>
+          <div class="item"><s>不做</s>：分叉树、拖拽排序、批量操作</div>
+        </div>
+      </div>
+      <div class="box">
+        <h2><span class="tag">新增</span>会话字段</h2>
+        <div class="mono">title · archived_at<br />forked_from_session_id<br />fork_message_id</div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="box">
+        <h2>ChatPanel · 会话头</h2>
+        <div class="row">
+          <span class="pill">标题（title 优先，回退 issue/cli·model）</span>
+          <span class="pill">⎇ 分叉来源</span>
+          <span class="pill">工作区</span>
+          <span class="pill">模型</span>
+          <span class="pill acc">停止</span>
+          <span class="pill">⋯ 审批规则 / 分叉 / 归档</span>
+        </div>
+      </div>
+
+      <div class="box">
+        <h2><span class="tag">①②④ 轮次</span>MessageList 内的「一轮」</h2>
+        <div class="stack">
+          <div class="item" style="border-style:solid;border-color:var(--accent);background:var(--accent-soft)">
+            <b>计划条（一轮一条，常驻 sticky）</b> · 第 n/m 步 · 状态 chip · 点击展开步骤清单
+          </div>
+          <div class="item"><b>折叠明细</b>（保持现状）：思考 8 段 · 工具 12 次，默认收起，不铺时间线</div>
+          <div class="item"><b>工具结果卡</b>：✓/✕ + 工具名 + 耗时 + 输出摘要；按文件折叠 diff；footer「在 git 里看 ↗」</div>
+          <div class="item" style="border-color:#b42318;background:rgba(180,35,24,.06)"><b>失败步骤卡</b>：错误摘要 + 「重试此步」+ 查看日志（不整轮重发）</div>
+          <div class="item" style="border-color:var(--accent)"><b>阻塞提问卡</b>（awaiting_input）：选项 + 自由回答；回答后同一轮继续</div>
+          <div class="item"><b>授权记录条</b>：已授权 · 本任务范围 · 可撤销入口</div>
+        </div>
+      </div>
+
+      <div class="box">
+        <h2>Composer · 输入区</h2>
+        <div class="row">
+          <span class="pill">草稿按会话持久化（localStorage）</span>
+          <span class="pill">阻塞态提示条</span>
+          <span class="pill">发送</span>
+          <span class="pill">脚注：本轮 tokens · 估算费用 · 上下文 %</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="box cut">
+        <h2>明确砍掉的信息</h2>
+        <ul>
+          <li>不做工具时间线 / 甘特图</li>
+          <li>不做全局计划面板</li>
+          <li>不做 token 仪表盘（只留一行脚注）</li>
+          <li>不做分叉树可视化（平铺 + 来源标记）</li>
+          <li>不做审批中心页（⋯ 内置入口）</li>
+          <li>不在列表加摘要行（避免 N+1）</li>
+          <li>不把工具明细默认展开</li>
+        </ul>
+      </div>
+      <div class="box">
+        <h2>五块能力入口</h2>
+        <div class="stack">
+          <span class="pill acc">① 计划条：轮次顶部</span>
+          <span class="pill acc">② diff 卡：工具结果内</span>
+          <span class="pill acc">③ 三档确认：危险工具弹窗</span>
+          <span class="pill acc">④ 阻塞态：轮次内提问卡</span>
+          <span class="pill acc">⑤ 侧栏：搜索/重命名/归档/分叉</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="contract">
+    <div class="box">
+      <h2>轮次状态机</h2>
+      <div class="flow">
+        <span class="node">idle</span><span class="arrow">→ 发送 →</span>
+        <span class="node acc">running</span><span class="arrow">→ 提问 →</span>
+        <span class="node acc">awaiting_input</span>
+        <span class="arrow">→ 回答（同一轮）→</span><span class="node acc">running</span>
+      </div>
+      <div class="flow" style="margin-top:4px">
+        <span class="node acc">running</span><span class="arrow">→ 危险工具 →</span>
+        <span class="node acc">awaiting_approval</span><span class="arrow">→ 允许 →</span>
+        <span class="node acc">running</span><span class="arrow">/ 拒绝 →</span><span class="node">stopped</span>
+      </div>
+      <div class="flow" style="margin-top:4px">
+        <span class="node acc">running</span><span class="arrow">→</span>
+        <span class="node">done</span><span class="arrow">|</span>
+        <span class="node bad">failed(step)</span><span class="arrow">→ 重试此步 →</span>
+        <span class="node acc">running(step)</span><span class="arrow">→</span><span class="node">done</span>
+      </div>
+    </div>
+    <div class="box">
+      <h2>三档确认作用域</h2>
+      <ul>
+        <li><b>仅本次</b>：只批准该次调用，不写规则</li>
+        <li><b>本任务</b>：规则绑定 issue_id，任务结束失效</li>
+        <li><b>本工作区</b>：规则绑定 workspace_id，跨会话生效；需撤销入口 + 审计</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h2>服务端落点</h2>
+      <ul>
+        <li>session：title / archived_at / 分叉来源</li>
+        <li>session_turn：state + plan_json + usage</li>
+        <li>message：turn_id / step_id / meta_json</li>
+        <li>approval_rule：scope + tool + 归属</li>
+        <li>端点与 WS 事件见 DESIGN-NOTES</li>
+      </ul>
+    </div>
+  </div>
+
+  <p class="legend">读法：上排是界面落点；下排是状态机与数据落点。所有块都在现有 ChatView / ChatPanel / MessageList / Composer / ChatSessionList 上增量改造，不新增独立页面。</p>
+</body>
+</html>

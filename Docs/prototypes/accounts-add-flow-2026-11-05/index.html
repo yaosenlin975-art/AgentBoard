@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>账号添加流程原型 · 2026-11-05</title>
+<style>
+/* ── 设计令牌（对齐 apps/web/src/index.css 的 --ab-*；不新增配色） ── */
+:root {
+  color-scheme: light;
+  --ab-page: #f7f4ee;
+  --ab-card: #fdfbf7;
+  --ab-raised: #efe9df;
+  --ab-hairline: rgba(31, 27, 22, 0.1);
+  --ab-ink: #1f1b16;
+  --ab-ink-2: #5e554a;
+  --ab-ink-3: #6b6257;
+  --ab-accent: #a04a08;
+  --ab-accent-ink: #ffffff;
+  --ab-accent-soft: rgba(180, 83, 9, 0.12);
+  --ab-add: #3f6d3a;
+  --ab-add-soft: rgba(63, 109, 58, 0.12);
+  --ab-ease: cubic-bezier(0.2, 0, 0, 1);
+  --ab-dur: 160ms;
+}
+.dark {
+  color-scheme: dark;
+  --ab-page: #161513;
+  --ab-card: #1c1a18;
+  --ab-raised: #262421;
+  --ab-hairline: rgba(239, 233, 222, 0.12);
+  --ab-ink: #efe9de;
+  --ab-ink-2: #aaa398;
+  --ab-ink-3: #a09a90;
+  --ab-accent: #f0a01e;
+  --ab-accent-ink: #1c1a18;
+  --ab-accent-soft: rgba(240, 160, 30, 0.16);
+  --ab-add: #7ec96f;
+  --ab-add-soft: rgba(126, 201, 111, 0.14);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--ab-page);
+  color: var(--ab-ink);
+  font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+[hidden] { display: none !important; }
+
+.stage { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+
+/* 原型控制条（不属于产品界面） */
+.proto-controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 12px; color: var(--ab-ink-3); font-size: 11px;
+}
+.proto-label { font-weight: 600; letter-spacing: .04em; color: var(--ab-ink-2); }
+.proto-note { margin-left: auto; }
+.seg { display: inline-flex; border: 1px solid var(--ab-hairline); border-radius: 999px; overflow: hidden; }
+.seg button {
+  border: 0; background: transparent; color: var(--ab-ink-2);
+  padding: 3px 10px; font-size: 11px; cursor: pointer;
+  transition: background var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease);
+}
+.seg button[aria-pressed="true"] { background: var(--ab-accent-soft); color: var(--ab-accent); font-weight: 600; }
+
+/* 弹窗内容区：约 720px（已加宽 drawer 口径） */
+.drawer {
+  width: min(720px, 100%);
+  margin: 0 auto;
+  background: var(--ab-card);
+  border: 1px solid var(--ab-hairline);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(20, 17, 13, 0.12);
+  padding: 16px;
+}
+
+.drawer-head { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+.head-title { min-width: 0; flex: 1; }
+.drawer-head h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.sub { margin: 2px 0 0; font-size: 11px; color: var(--ab-ink-3); }
+.head-actions { display: flex; gap: 6px; }
+
+.btn {
+  border: 1px solid var(--ab-hairline);
+  background: var(--ab-raised);
+  color: var(--ab-ink);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--ab-dur) var(--ab-ease), border-color var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease);
+}
+.btn:hover { border-color: var(--ab-accent); }
+.btn:focus-visible { outline: 2px solid var(--ab-accent); outline-offset: 2px; }
+.btn-primary { background: var(--ab-accent); border-color: transparent; color: var(--ab-accent-ink); }
+.btn-primary:hover { filter: brightness(1.04); }
+.btn-ghost { background: transparent; }
+.btn[disabled] { cursor: default; opacity: .7; }
+
+.notice { margin: 8px 0 0; font-size: 11px; color: var(--ab-ink-2); }
+.notice.warn { color: var(--ab-accent); }
+
+/* 主从 */
+.master-detail { display: flex; gap: 12px; margin-top: 12px; align-items: flex-start; }
+.rail { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; }
+.rail-empty { margin: 2px 0; font-size: 11px; color: var(--ab-ink-3); }
+.rail-item {
+  display: flex; align-items: center; gap: 6px;
+  border: 0; background: transparent; color: var(--ab-ink-2);
+  padding: 6px 8px; border-radius: 6px; text-align: left; font-size: 12px; cursor: pointer;
+  transition: background var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease);
+}
+.rail-item:hover { background: var(--ab-raised); }
+.rail-item[aria-selected="true"] { background: var(--ab-accent-soft); color: var(--ab-accent); font-weight: 600; }
+.rail-item:focus-visible { outline: 2px solid var(--ab-accent); outline-offset: 1px; }
+.rail-item .count { margin-left: auto; font-size: 11px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+.health { font-size: 11px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+.health.ok { color: var(--ab-add); }
+
+.detail { min-width: 0; flex: 1; }
+.detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.detail-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.current { font-size: 11px; color: var(--ab-ink-3); }
+.banner {
+  margin: 6px 0 8px; padding: 6px 8px; border-radius: 6px;
+  background: var(--ab-add-soft); color: var(--ab-ink); font-size: 11px;
+}
+
+.account-list { border-top: 1px solid var(--ab-hairline); }
+.account-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 9px 0; border-bottom: 1px solid var(--ab-hairline);
+}
+.account-row.is-new {
+  background: var(--ab-add-soft);
+  border-radius: 6px; padding-left: 8px; padding-right: 8px;
+  box-shadow: inset 3px 0 0 var(--ab-add);
+}
+.acc-name { font-weight: 600; font-size: 12px; }
+.hint { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--ab-ink-3); }
+.chip {
+  border-radius: 999px; padding: 1px 7px; font-size: 11px; white-space: nowrap;
+  background: var(--ab-raised); color: var(--ab-ink-3);
+}
+.chip-done { background: var(--ab-add-soft); color: var(--ab-add); }
+.chip-unknown { background: var(--ab-accent-soft); color: var(--ab-accent); }
+.badge { border-radius: 999px; padding: 1px 7px; font-size: 11px; }
+.badge-current { background: var(--ab-accent-soft); color: var(--ab-accent); }
+.badge-new { background: var(--ab-add-soft); color: var(--ab-add); }
+.foot-hint { margin: 10px 0 0; font-size: 11px; color: var(--ab-ink-3); }
+.source-note { margin: 0 0 6px; font-size: 11px; color: var(--ab-ink-3); }
+.source-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--ab-hairline); }
+
+.empty {
+  border: 1px dashed var(--ab-hairline); border-radius: 8px;
+  padding: 28px 16px; text-align: center;
+}
+.empty h2 { margin: 0 0 4px; font-size: 13px; }
+.empty p { margin: 0; font-size: 12px; color: var(--ab-ink-3); }
+.empty .btn { margin-top: 12px; }
+
+/* 添加供应商弹层 */
+.backdrop {
+  position: fixed; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(20, 17, 13, 0.42);
+}
+.sheet {
+  width: min(720px, 100%);
+  max-height: min(86vh, 760px);
+  overflow: auto;
+  background: var(--ab-card);
+  border: 1px solid var(--ab-hairline);
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 20px 48px rgba(20, 17, 13, 0.28);
+}
+.sheet-head { display: flex; align-items: center; gap: 8px; }
+.sheet-title-wrap { flex: 1; min-width: 0; }
+.sheet-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; margin-top: 12px; }
+.pcard {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 8px;
+  min-height: 70px; border: 1px solid var(--ab-hairline); border-radius: 8px;
+  background: var(--ab-page); padding: 10px;
+  transition: border-color var(--ab-dur) var(--ab-ease), background var(--ab-dur) var(--ab-ease);
+}
+.pcard:hover { border-color: var(--ab-ink-3); }
+.pcard:focus-visible { outline: 2px solid var(--ab-accent); outline-offset: 1px; }
+.pname {
+  font-size: 13px; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pstatus { margin: 0; font-size: 11px; color: var(--ab-ink-3); }
+.pstatus.accent { color: var(--ab-accent); }
+.pactions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.reason { font-size: 11px; color: var(--ab-ink-3); }
+.progress { height: 2px; border-radius: 2px; background: var(--ab-raised); overflow: hidden; }
+.progress > span { display: block; width: 30%; height: 100%; background: var(--ab-accent); animation: slide 900ms linear infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.cli-draft {
+  width: 100%; min-height: 46px; resize: vertical;
+  border: 1px solid var(--ab-hairline); border-radius: 6px;
+  background: var(--ab-card); color: var(--ab-ink);
+  padding: 6px; font: 11px/1.5 ui-monospace, Consolas, monospace;
+}
+
+/* 额度占位（Codex 只读入口） */
+.quota { border-top: 1px solid var(--ab-hairline); margin-top: 6px; }
+.quota-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--ab-hairline); }
+.quota-row .num { margin-left: auto; font-size: 11px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+.bar { flex: 0 0 100%; height: 3px; border-radius: 2px; background: var(--ab-raised); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--ab-accent); }
+
+/* 窄屏：左栏变横滑 rail（对应既有 920px 阈值） */
+@media (max-width: 920px) {
+  .master-detail { flex-direction: column; }
+  .rail { flex: 0 0 auto; flex-direction: row; overflow-x: auto; padding-bottom: 4px; width: 100%; }
+  .rail-item { flex: 0 0 auto; white-space: nowrap; }
+  .rail-item .count { margin-left: 0; }
+}
+@media (max-width: 640px) {
+  .stage { padding: 12px 8px 32px; }
+  .grid { grid-template-columns: 1fr; }
+  .drawer, .sheet { padding: 12px; }
+  .search { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+  .progress > span { width: 60%; }
+}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="proto-controls" role="group" aria-label="原型控制">
+    <span class="proto-label">原型控制</span>
+    <div class="seg"><button type="button" data-action="toggle-empty" aria-pressed="false">空态演示</button></div>
+    <div class="seg"><button type="button" data-action="toggle-theme" aria-pressed="false">暗色</button></div>
+    <span class="proto-note">示例数据 · 不连服务端</span>
+  </div>
+  <section class="drawer" aria-label="账号管理（原型）" id="app"></section>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var PLATFORMS = {
+    workbuddy_desktop: { label: 'WorkBuddy', kind: 'platform' },
+    minimax: { label: 'MiniMax', kind: 'platform' },
+    trae: { label: 'Trae', kind: 'platform' },
+    qoder_cn: { label: 'Qoder CN', kind: 'platform' },
+    zcode: { label: 'ZCode', kind: 'platform' },
+    deepseek: { label: 'DeepSeek', kind: 'source' },
+    codex: { label: 'Codex', kind: 'source' }
+  };
+
+  var ORDER = ['workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'codex'];
+  var SHEET_IDS = ['workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'codex'];
+
+  var CAPS = {
+    workbuddy_desktop: { local: true, authorize: true },
+    minimax: { local: true, authorize: true },
+    trae: { local: true, authorize: true },
+    qoder_cn: { authorize: true },
+    zcode: { authorize: true },
+    deepseek: { cli: true },
+    codex: { local: true }
+  };
+
+  var CARD_TITLES = {
+    workbuddy_desktop: '可读取本机，也可授权添加',
+    minimax: '可读取本机，也可授权添加',
+    trae: '可读取本机，也可授权添加',
+    qoder_cn: '仅支持授权添加：本机读取尚未接入（provider 未实现）',
+    zcode: '仅支持授权添加：本机读取尚未接入（provider 未实现）',
+    deepseek: 'CLI 凭据，可手动导入',
+    codex: '仅读取 rollout：无可导入凭据'
+  };
+
+  var NEW_ACCOUNTS = {
+    workbuddy_desktop: { name: 'WorkBuddy-9a02', hint: '3c7f51be' },
+    minimax: { name: 'MiniMax-88c1', hint: 'd7e2a410' },
+    trae: { name: 'Trae-5c02e8d4', hint: '4a9e6b13' },
+    qoder_cn: { name: 'Qoder-1d77', hint: '6b0c9e52' },
+    zcode: { name: 'ZCode-42ae', hint: '9f2d31c8' }
+  };
+
+  function seed() {
+    return {
+      workbuddy_desktop: [{ id: 'wb-1', name: 'WorkBuddy-2d14', hint: '1f3a9e77', current: true, checkin: 'unknown' }],
+      minimax: [],
+      trae: [
+        { id: 'tr-1', name: 'Trae-7f3a9c21', hint: 'cc41b7a2', current: true, checkin: 'succeeded' },
+        { id: 'tr-2', name: 'Trae-91be4420', hint: '872d55e1', current: false, checkin: 'already_done' }
+      ],
+      qoder_cn: [],
+      zcode: [],
+      deepseek: [
+        { id: 'ds-1', hint: 'a83f0c11', seen: '2026-11-04 18:22' },
+        { id: 'ds-2', hint: '5b7e2d90', seen: '2026-11-03 09:40' }
+      ],
+      codex: []
+    };
+  }
+
+  var accounts = seed();
+  var state = {
+    empty: false, selected: 'trae', sheet: false,
+    reading: null, auth: null, importing: null, importError: null,
+    busyRefresh: false, notice: null, banner: null, newId: null, codexView: false
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function esc(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function visibleApps() {
+    if (state.empty) return [];
+    return ORDER.filter(function (id) { return (accounts[id] || []).length > 0; });
+  }
+  function normalizeSelection() {
+    if (state.codexView) return;
+    var visible = visibleApps();
+    if (!state.selected || visible.indexOf(state.selected) === -1) {
+      state.selected = visible.length > 0 ? visible[0] : null;
+    }
+  }
+  function isDone(status) { return status === 'succeeded' || status === 'already_done'; }
+  function checkinChip(account) {
+    if (account.checkin === 'succeeded') return '<span class="chip chip-done">今日已签到</span>';
+    if (account.checkin === 'already_done') return '<span class="chip chip-done">今日已完成</span>';
+    if (account.checkin === 'unknown') return '<span class="chip chip-unknown">结果未知 ?</span>';
+    if (account.checkin === 'failed') return '<span class="chip">签到失败</span>';
+    return '<span class="chip">未签到</span>';
+  }
+  function healthOf(app) {
+    var list = accounts[app] || [];
+    var done = list.filter(function (item) { return isDone(item.checkin); }).length;
+    var unknown = list.filter(function (item) { return item.checkin === 'unknown'; }).length;
+    return { done: done, total: list.length, unknown: unknown };
+  }
+
+  /* ── 主视图 ── */
+  function drawerHtml() {
+    var visible = visibleApps();
+    var head = [
+      '<header class="drawer-head">',
+      '  <div class="head-title">',
+      '    <h1>账号管理</h1>',
+      '    <p class="sub">仅展示脱敏元数据；凭据与 token 不出现在界面</p>',
+      '  </div>',
+      '  <div class="head-actions">',
+      '    <button type="button" class="btn" data-action="refresh"' + (state.busyRefresh ? ' disabled' : '') + '>' + (state.busyRefresh ? '刷新中…' : '刷新') + '</button>',
+      '    <button type="button" class="btn btn-primary" data-action="open-sheet">添加账号</button>',
+      '  </div>',
+      '</header>'
+    ].join('');
+
+    if (state.notice) {
+      head += '<p class="notice' + (state.notice.warn ? ' warn' : '') + '" role="status">' + esc(state.notice.text) + '</p>';
+    }
+
+    var rail = visible.map(function (app) {
+      var meta = PLATFORMS[app];
+      var selected = state.selected === app ? 'true' : 'false';
+      var health = meta.kind === 'platform' ? healthOf(app) : null;
+      var healthHtml = health && health.total > 0
+        ? '<span class="health' + (health.done === health.total ? ' ok' : '') + '">' + health.done + '/' + health.total + (health.unknown > 0 ? ' ?' : '') + '</span>'
+        : '';
+      return '<button type="button" class="rail-item" role="tab" tabindex="' + (state.selected === app ? '0' : '-1') + '" aria-selected="' + selected + '" data-action="select" data-app="' + app + '">'
+        + '<span>' + esc(meta.label) + '</span>'
+        + healthHtml
+        + '<span class="count">' + accounts[app].length + '</span>'
+        + '</button>';
+    }).join('');
+    if (rail === '') rail = '<p class="rail-empty">暂无平台</p>';
+
+    var detail = detailHtml(visible);
+
+    return head
+      + '<div class="master-detail">'
+      + '  <nav class="rail" role="tablist" aria-label="平台索引">' + rail + '</nav>'
+      + '  <div class="detail">' + detail + '</div>'
+      + '</div>'
+      + (state.sheet ? sheetHtml() : '');
+  }
+
+  function detailHtml(visible) {
+    if (state.codexView) return codexQuotaHtml();
+    if (visible.length === 0) {
+      return '<div class="empty">'
+        + '<h2>还没有任何平台账号</h2>'
+        + '<p>索引只展示有账号的平台。点「添加账号」，从供应商选择页读取本机凭据或走官方授权添加。</p>'
+        + '<button type="button" class="btn btn-primary" data-action="open-sheet">添加账号</button>'
+        + '</div>';
+    }
+    var app = state.selected;
+    var meta = PLATFORMS[app];
+    if (meta.kind === 'source') return sourceDetailHtml(app);
+    return platformDetailHtml(app);
+  }
+
+  function platformDetailHtml(app) {
+    var meta = PLATFORMS[app];
+    var list = accounts[app] || [];
+    var current = list.filter(function (item) { return item.current; })[0] || null;
+    var head = '<div class="detail-head"><h2>' + esc(meta.label) + '</h2>'
+      + '<span class="current">' + (current ? '当前：' + esc(current.name) : '未设置当前账号') + '</span></div>';
+    var banner = state.banner ? '<div class="banner" role="status">' + esc(state.banner) + '</div>' : '';
+    var rows = list.map(function (item) {
+      var isNew = state.newId === item.id;
+      return '<div class="account-row' + (isNew ? ' is-new' : '') + '">'
+        + '<span class="acc-name">' + esc(item.name) + '</span>'
+        + '<span class="hint" title="身份指纹（不可逆哈希前缀）">' + esc(item.hint) + '</span>'
+        + (item.current ? '<span class="badge badge-current">当前</span>' : '')
+        + (isNew ? '<span class="badge badge-new">新添加</span>' : '')
+        + checkinChip(item)
+        + '</div>';
+    }).join('');
+    return head + banner
+      + '<div class="account-list">' + rows + '</div>'
+      + '<p class="foot-hint">添加新账号请用工具栏「添加账号」→ 供应商选择页；本平台行内加号已迁出。</p>';
+  }
+
+  function sourceDetailHtml(app) {
+    var meta = PLATFORMS[app];
+    var list = accounts[app] || [];
+    var rows = list.map(function (item) {
+      return '<div class="source-row">'
+        + '<span class="hint" title="身份指纹（不可逆哈希前缀，不是 key）">' + esc(item.hint) + '</span>'
+        + '<span class="current">最近发现 ' + esc(item.seen || '刚刚') + '</span>'
+        + (state.newId === item.id ? '<span class="badge badge-new">新添加</span>' : '')
+        + '</div>';
+    }).join('');
+    return '<div class="detail-head"><h2>' + esc(meta.label) + '</h2><span class="current">CLI 凭据</span></div>'
+      + '<p class="source-note">CLI 来源只登记本机发现的凭据指纹，不提供切换；导入入口在「添加账号」选择页。</p>'
+      + '<div class="account-list">' + rows + '</div>';
+  }
+
+  function codexQuotaHtml() {
+    var banner = state.banner ? '<div class="banner" role="status">' + esc(state.banner) + '</div>' : '';
+    return '<div class="detail-head"><h2>Codex · 额度区</h2>'
+      + '<button type="button" class="btn btn-ghost" data-action="back">返回账号列表</button></div>'
+      + banner
+      + '<p class="source-note">Codex 没有可枚举的凭据，只能读取本机 rollout 记录，因此不出现在索引、也不能导入。</p>'
+      + '<div class="quota">'
+      + '  <div class="quota-row"><span>5h 窗口</span><span class="num">1221 / 2000</span><div class="bar"><i style="width:61%"></i></div></div>'
+      + '  <div class="quota-row"><span>周窗口</span><span class="num">1620 / 10000</span><div class="bar"><i style="width:16.2%"></i></div></div>'
+      + '</div>';
+  }
+
+  /* ── 供应商选择页（每供应商一张卡：只留名字 + 按钮行） ── */
+  function sheetHtml() {
+    var cards = SHEET_IDS.map(cardHtml).join('');
+    return '<div class="backdrop">'
+      + '<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">'
+      + '  <header class="sheet-head">'
+      + '    <div class="sheet-title-wrap"><h2 id="sheet-title">添加供应商</h2></div>'
+      + '    <button type="button" class="btn btn-ghost" data-action="close-sheet" aria-label="关闭">×</button>'
+      + '  </header>'
+      + '  <div class="grid">' + cards + '</div>'
+      + '</div></div>';
+  }
+
+  function cardHtml(app) {
+    var meta = PLATFORMS[app];
+    var caps = CAPS[app] || {};
+    var reading = state.reading && state.reading.app === app ? state.reading : null;
+    var auth = state.auth && state.auth.app === app ? state.auth : null;
+    var importing = state.importing && state.importing.app === app ? state.importing : null;
+
+    var body;
+    if (reading) {
+      if (reading.stage === 'reading') {
+        body = '<div class="progress"><span></span></div>'
+          + '<p class="pstatus accent">读取中…</p>';
+      } else {
+        var r = reading.result;
+        body = '<p class="pstatus accent">发现 ' + r.found + ' · 新增 ' + r.created + ' · 已存在 ' + r.existing + '</p>';
+      }
+    } else if (auth) {
+      body = '<div class="pactions">'
+        + '<button type="button" class="btn btn-primary" data-action="auth-complete" data-app="' + app + '">模拟完成授权</button>'
+        + '<button type="button" class="btn btn-ghost" data-action="auth-cancel">取消</button>'
+        + '</div>';
+    } else if (importing) {
+      body = '<textarea class="cli-draft" id="cli-draft" rows="2" placeholder="粘贴凭据（示例占位 pt-••••••••）"></textarea>';
+      if (state.importError) body += '<p class="reason">' + esc(state.importError) + '</p>';
+      body += '<div class="pactions">'
+        + '<button type="button" class="btn btn-primary" data-action="import-submit" data-app="' + app + '">导入</button>'
+        + '<button type="button" class="btn btn-ghost" data-action="import-cancel">取消</button>'
+        + '</div>';
+    } else {
+      var actions = [];
+      if (caps.local) {
+        actions.push('<button type="button" class="btn" data-action="read" data-app="' + app + '">读取本机</button>');
+      }
+      if (caps.authorize) {
+        actions.push('<button type="button" class="btn btn-primary" data-action="auth" data-app="' + app + '">授权添加</button>');
+      }
+      if (caps.cli) {
+        actions.push('<button type="button" class="btn btn-primary" data-action="import-open" data-app="' + app + '">导入凭据</button>');
+      }
+      body = '<div class="pactions">' + actions.join('') + '</div>';
+    }
+
+    return '<article class="pcard" tabindex="0" title="' + esc(CARD_TITLES[app]) + '">'
+      + '<span class="pname" title="' + esc(meta.label) + '">' + esc(meta.label) + '</span>'
+      + body
+      + '</article>';
+  }
+
+  /* ── 渲染 ── */
+  function render() {
+    normalizeSelection();
+    $('app').innerHTML = drawerHtml();
+    syncControls();
+  }
+
+  function syncControls() {
+    var emptyBtn = document.querySelector('[data-action="toggle-empty"]');
+    if (emptyBtn) emptyBtn.setAttribute('aria-pressed', state.empty ? 'true' : 'false');
+    var themeBtn = document.querySelector('[data-action="toggle-theme"]');
+    if (themeBtn) themeBtn.setAttribute('aria-pressed', document.documentElement.classList.contains('dark') ? 'true' : 'false');
+  }
+
+  /* ── 动作 ── */
+  var lastFocusBeforeSheet = null;
+  function openSheet() {
+    lastFocusBeforeSheet = document.activeElement;
+    state.sheet = true;
+    state.importing = null;
+    state.importError = null;
+    render();
+    setTimeout(function () { var card = document.querySelector('.pcard'); if (card) card.focus(); }, 0);
+  }
+  function closeSheet(returnFocus) {
+    state.sheet = false;
+    state.reading = null;
+    state.auth = null;
+    state.importing = null;
+    state.importError = null;
+    render();
+    if (returnFocus) {
+      setTimeout(function () {
+        var target = lastFocusBeforeSheet && document.contains(lastFocusBeforeSheet)
+          ? lastFocusBeforeSheet
+          : document.querySelector('[data-action="open-sheet"]');
+        if (target) target.focus();
+      }, 0);
+    }
+  }
+
+  function addLocalAccount(app) {
+    var next = NEW_ACCOUNTS[app];
+    var account = {
+      id: app + '-new-' + Date.now(),
+      name: next ? next.name : (PLATFORMS[app].label + '-new'),
+      hint: next ? next.hint : '00000000',
+      current: false,
+      checkin: null
+    };
+    accounts[app].push(account);
+    return account;
+  }
+
+  function readLocal(app) {
+    if (app === 'codex') {
+      state.reading = { app: app, stage: 'reading' };
+      render();
+      setTimeout(function () {
+        if (!state.reading || state.reading.app !== app) return;
+        var emptyResult = { found: 0, created: 0, existing: 0 };
+        state.reading = { app: app, stage: 'done', result: emptyResult };
+        render();
+        setTimeout(function () {
+          if (!state.reading || state.reading.app !== app) return;
+          state.reading = null;
+          state.sheet = false;
+          state.codexView = true;
+          state.banner = '读取完成：发现 0 · 新增 0 · 已存在 0（Codex 无导入凭据）';
+          render();
+        }, 850);
+      }, 900);
+      return;
+    }
+    state.reading = { app: app, stage: 'reading' };
+    render();
+    setTimeout(function () {
+      if (!state.reading || state.reading.app !== app) return;
+      var existing = accounts[app].length;
+      var added = addLocalAccount(app);
+      var result = { found: existing + 1, created: 1, existing: existing };
+      state.reading = { app: app, stage: 'done', result: result };
+      render();
+      setTimeout(function () {
+        if (!state.reading || state.reading.app !== app) return;
+        state.reading = null;
+        state.empty = false;
+        state.sheet = false;
+        state.selected = app;
+        state.newId = added.id;
+        state.banner = '读取完成：发现 ' + result.found + ' · 新增 ' + result.created + ' · 已存在 ' + result.existing + '（已选中新增账号，未自动切换）';
+        render();
+      }, 850);
+    }, 900);
+  }
+
+  function refreshAll() {
+    if (state.busyRefresh) return;
+    state.busyRefresh = true;
+    state.notice = { text: '刷新中…', warn: false };
+    render();
+    setTimeout(function () {
+      state.busyRefresh = false;
+      if (state.empty) {
+        state.notice = { text: '本机刷新：发现 0 · 新增 0 · 已存在 0（当前为 0 账号演示）', warn: false };
+        render();
+        return;
+      }
+      var scanned = ['workbuddy_desktop', 'minimax', 'trae'];
+      var created = 0;
+      if (accounts.minimax.length === 0) {
+        addLocalAccount('minimax');
+        created = 1;
+      }
+      var found = scanned.reduce(function (sum, app) { return sum + accounts[app].length; }, 0);
+      var existing = found - created;
+      state.notice = {
+        text: '本机刷新：发现 ' + found + ' · 新增 ' + created + ' · 已存在 ' + existing
+          + (created > 0 ? '（MiniMax 新增 1 个，索引随之出现）' : ''),
+        warn: false
+      };
+      render();
+    }, 750);
+  }
+
+  function authStart(app) {
+    state.auth = { app: app };
+    state.importing = null;
+    state.importError = null;
+    render();
+  }
+  function authComplete(app) {
+    var added = addLocalAccount(app);
+    state.auth = null;
+    state.sheet = false;
+    state.empty = false;
+    state.selected = app;
+    state.newId = added.id;
+    state.banner = '授权完成：已添加 1 个账号（不会自动切换）';
+    render();
+  }
+
+  function importOpen(app) {
+    state.importing = { app: app };
+    state.importError = null;
+    state.auth = null;
+    render();
+    setTimeout(function () { var area = $('cli-draft'); if (area) area.focus(); }, 0);
+  }
+  function importSubmit(app) {
+    var area = $('cli-draft');
+    var value = area ? area.value.trim() : '';
+    if (value === '') {
+      state.importError = '请先粘贴凭据文本';
+      render();
+      return;
+    }
+    accounts[app].push({ id: app + '-new-' + Date.now(), hint: 'e1c40b7a', seen: '刚刚' });
+    state.importing = null;
+    state.importError = null;
+    state.sheet = false;
+    state.empty = false;
+    state.selected = app;
+    state.newId = accounts[app][accounts[app].length - 1].id;
+    state.banner = '导入成功：发现 1 · 新增 1 · 已存在 0';
+    render();
+  }
+
+  document.addEventListener('click', function (event) {
+    if (event.target.classList && event.target.classList.contains('backdrop')) {
+      closeSheet(true);
+      return;
+    }
+    var el = event.target.closest('[data-action]');
+    if (!el) return;
+    var action = el.getAttribute('data-action');
+    var app = el.getAttribute('data-app');
+
+    if (action === 'toggle-empty') {
+      state.empty = !state.empty;
+      state.selected = null;
+      state.banner = null;
+      state.newId = null;
+      state.notice = null;
+      state.codexView = false;
+      render();
+    } else if (action === 'toggle-theme') {
+      document.documentElement.classList.toggle('dark');
+      syncControls();
+    } else if (action === 'open-sheet') {
+      openSheet();
+    } else if (action === 'close-sheet') {
+      closeSheet(true);
+    } else if (action === 'select') {
+      state.selected = app;
+      state.codexView = false;
+      state.banner = null;
+      state.newId = null;
+      render();
+    } else if (action === 'refresh') {
+      refreshAll();
+    } else if (action === 'read') {
+      readLocal(app);
+    } else if (action === 'auth') {
+      authStart(app);
+    } else if (action === 'auth-complete') {
+      authComplete(app);
+    } else if (action === 'auth-cancel') {
+      state.auth = null;
+      render();
+    } else if (action === 'import-open') {
+      importOpen(app);
+    } else if (action === 'import-submit') {
+      importSubmit(app);
+    } else if (action === 'import-cancel') {
+      state.importing = null;
+      state.importError = null;
+      render();
+    } else if (action === 'back') {
+      state.codexView = false;
+      state.banner = null;
+      render();
+    }
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && state.sheet) {
+      closeSheet(true);
+      return;
+    }
+    var railItem = event.target.closest ? event.target.closest('.rail-item') : null;
+    if (!railItem) return;
+    var items = Array.prototype.slice.call(document.querySelectorAll('.rail-item'));
+    var index = items.indexOf(railItem);
+    var next = null;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') next = items[(index + 1) % items.length];
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') next = items[(index - 1 + items.length) % items.length];
+    else if (event.key === 'Home') next = items[0];
+    else if (event.key === 'End') next = items[items.length - 1];
+    if (next) {
+      event.preventDefault();
+      state.selected = next.getAttribute('data-app');
+      state.codexView = false;
+      state.banner = null;
+      state.newId = null;
+      render();
+      var focused = document.querySelector('.rail-item[data-app="' + state.selected + '"]');
+      if (focused) focused.focus();
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
