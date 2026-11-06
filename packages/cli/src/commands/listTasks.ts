@@ -34,8 +34,8 @@ const BUILTIN_CLOSED_STATUSES: ReadonlySet<string> = new Set(['已关闭', '已�
 /**
  * CLI-20：状态字典进程内缓存——一条 kb 命令里同一工作区最多取一次，`--status` 校验与任务树的
  * 关闭态判定共用同一份缓存，不再各取一遍。
- * 跨工作区聚合（`--all`）时每个工作区仍各一次：服务端没有「全部工作区状态字典」聚合接口
- * （实测 `GET /api/statuses` → 404），自定义状态归属谁只能逐区确认。
+ * 跨工作区聚合（`--all`）时由 `prefetchStatuses` 走 `GET /api/statuses?workspace_ids=…` 一次取全
+ * （KB-CLI-4）；聚合端点不可用（旧服务端）时自动退回逐区懒加载。
  */
 const statusDictCache = new Map<string, Promise<WorkspaceStatusRow[]>>();
 
@@ -48,6 +48,24 @@ function readStatuses(ctx: Ctx, workspaceId: string): Promise<WorkspaceStatusRow
   statusDictCache.set(workspaceId, pending);
   pending.catch(() => statusDictCache.delete(workspaceId)); // 失败不留缓存，后续调用仍可重试
   return pending;
+}
+
+/**
+ * KB-CLI-4（CLI-20）：多工作区一次性预热状态字典缓存。
+ * `GET /api/statuses?workspace_ids=a,b,c` 一次取回全部字典，`--all` 因此只发 1 次请求；
+ * 单工作区路径不预热（省一次往返，缓存按需懒加载）。
+ */
+async function prefetchStatuses(ctx: Ctx, workspaceIds: string[]): Promise<void> {
+  const missing = workspaceIds.filter(id => !statusDictCache.has(id));
+  if (missing.length === 0) return;
+  try {
+    const res = await request<{ items: Array<{ workspace_id: string; statuses: WorkspaceStatusRow[] }> }>(
+      ctx.base, 'GET', `/api/statuses?workspace_ids=${encodeURIComponent(missing.join(','))}`,
+    );
+    for (const item of res.items) statusDictCache.set(item.workspace_id, Promise.resolve(item.statuses));
+  } catch {
+    // 聚合端点不可用（旧服务端 / 4xx）时静默退回逐区懒加载，不改变输出
+  }
 }
 
 /**
@@ -205,6 +223,8 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   const selected = args.all === true
     ? spaces
     : [args.workspace === undefined ? matchCurrentWorkspace(spaces) : matchWorkspace(spaces, args.workspace)];
+  // KB-CLI-4：多工作区（--all）先一次性预热状态字典，避免每区一次 GET /statuses
+  if (selected.length > 1) await prefetchStatuses(ctx, selected.map(space => space.id));
   if (args.tree) {
     if (args.status !== undefined) await requireKnownStatus(ctx, selected, args.status);
     const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))

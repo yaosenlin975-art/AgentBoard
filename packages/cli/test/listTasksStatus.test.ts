@@ -106,6 +106,33 @@ describe('kb list-tasks status guard', () => {
     expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toHaveLength(2);
   });
 
+  it('prefetches status dictionaries once for --all through the aggregate endpoint', async () => {
+    // KB-CLI-4 / CLI-20：--all 的状态字典由 GET /api/statuses?workspace_ids=… 一次取全
+    const wsA = { ...WS, id: 'ws-a', name: 'A 区', path: 'D:/ws/a' };
+    const wsB = { ...WS, id: 'ws-b', name: 'B 区', path: 'D:/ws/b' };
+    const dictA = [{ id: 'a-open', workspace_id: 'ws-a', name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 }];
+    const dictB = [
+      { id: 'b-open', workspace_id: 'ws-b', name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
+      { id: 'b-custom', workspace_id: 'ws-b', name: '待复测', kind: 'review', sort_order: 50, is_builtin: 0 },
+    ];
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [wsA, wsB] };
+      if (method === 'GET' && url.startsWith('/api/statuses?workspace_ids=')) {
+        return { status: 200, body: { items: [{ workspace_id: 'ws-a', statuses: dictA }, { workspace_id: 'ws-b', statuses: dictB }] } };
+      }
+      if (method === 'GET' && url === '/api/issues?workspace=ws-a') return { status: 200, body: [{ ...issue('a1', '待规划'), workspace_id: 'ws-a' }] };
+      if (method === 'GET' && url === '/api/issues?workspace=ws-b') return { status: 200, body: [{ ...issue('b1', '待复测'), workspace_id: 'ws-b' }] };
+      return undefined;
+    };
+
+    const all = await run(['--json', 'list-tasks', '--all', '--status', '待复测']);
+    expect(all.code).toBe(0);
+    expect(((JSON.parse(all.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['b1']);
+    const statusCalls = calls.filter(call => call.url.includes('/statuses'));
+    expect(statusCalls).toHaveLength(1);
+    expect(statusCalls[0]!.url).toContain('/statuses?workspace_ids=');
+  });
+
   it('rejects --all with --workspace before fetching workspaces', async () => {
     handler = baseHandler;
     const result = await run(['list-tasks', '--workspace', 'ws1', '--all']);

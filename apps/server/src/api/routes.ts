@@ -12,7 +12,7 @@ import { createKnowledgeRouter } from './knowledgeRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, performRestart, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
-import { createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
+import { createStatusesAggregateRouter, createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createDecisionRouter } from './decisionRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
@@ -561,6 +561,8 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
   // STATUS-2：工作区状态字典（列表/新建/删除+强制迁移）
   router.use('/workspaces/:workspaceId/statuses', createWorkspaceStatusRouter(deps.db));
+  // KB-CLI-4：多工作区状态字典聚合（list-tasks --all 一次取全）
+  router.use('/statuses', createStatusesAggregateRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use('/voice', createVoiceRouter(deps.db, deps.voice ?? {}));
   router.use(createSystemRouter({ restart: deps.restart }));

@@ -49,6 +49,30 @@ function requireWorkspace(db: Db, workspaceId: string, declared?: string): strin
   return workspaceId;
 }
 
+/**
+ * KB-CLI-4（CLI-20）：多工作区状态字典聚合 —— `GET /api/statuses?workspace_ids=a,b,c`。
+ * 一次取回全部工作区的字典，CLI 的 `list-tasks --all` 因此从「每区一次」收敛到「一次」。
+ * 契约：`{ items: [{ workspace_id, statuses: WorkspaceStatus[] }] }`，顺序与入参一致；未知工作区 404。
+ */
+export function createStatusesAggregateRouter(db: Db): Router {
+  const router = Router();
+
+  router.get('/', (req, res) => {
+    const raw = typeof req.query.workspace_ids === 'string' ? req.query.workspace_ids : '';
+    const ids = raw.split(',').map(item => item.trim()).filter(item => item !== '');
+    if (ids.length === 0) throw new ValidationError('需要 workspace_ids=<id,id,…>（逗号分隔，至少一个）');
+    if (ids.length > 200) throw new ValidationError('workspace_ids 一次最多 200 个工作区');
+    if (new Set(ids).size !== ids.length) throw new ValidationError('workspace_ids 有重复项');
+    const items = ids.map((workspaceId) => {
+      requireWorkspace(db, workspaceId, undefined);
+      return { workspace_id: workspaceId, statuses: listWorkspaceStatuses(db, workspaceId) };
+    });
+    res.json({ items });
+  });
+
+  return router;
+}
+
 export function createWorkspaceStatusRouter(db: Db): Router {
   const router = Router({ mergeParams: true });
 
