@@ -13,7 +13,7 @@
  *   `topbar-theme`（状态行里的主题小字）· `topbar-ws-status`（状态圆点）
  *   已删除：`sidebar-controls`、`topbar-chat`、`topbar-chat-unread`（聊天入口与徽标合并到五入口）。
  */
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useNavStore, type NavView } from '../../state/navStore';
 import { usePanelStore } from '../../state/panelStore';
@@ -23,6 +23,7 @@ import { THEME_LABEL, useTheme } from '../../theme';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
 import { useDecisionsCount } from '../decisions/useDecisions';
 import { useSidebarShortcut } from './useSidebarShortcut';
+import { DRAWER_ANCHOR_MIN_VIEWPORT } from '../../lib/drawerAnchor';
 
 const ENTRY_ICON: Record<NavView, string> = {
   board: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
@@ -65,6 +66,24 @@ const THEME_SHORT: Record<string, string> = {
 const BOTTOM_BTN =
   'flex h-8 w-full items-center gap-2 rounded-md border border-hairline bg-surface-card px-2 text-xs text-ink-2 transition-colors hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
 
+/**
+ * SIDEBAR-5：窄屏口径（<920px，断点与抽屉锚定共用 DRAWER_ANCHOR_MIN_VIEWPORT）。
+ * 窄屏展开是瞬时浮层，不写 navStore 持久化；JS 与 CSS 用同一个查询串，避免判定漂移。
+ */
+const NARROW_QUERY = `(max-width: ${DRAWER_ANCHOR_MIN_VIEWPORT - 0.02}px)`;
+
+function subscribeNarrow(callback: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+  const media = window.matchMedia(NARROW_QUERY);
+  media.addEventListener('change', callback);
+  return () => media.removeEventListener('change', callback);
+}
+
+function readNarrow(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia(NARROW_QUERY).matches;
+}
+
 export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const view = useNavStore((state) => state.view);
   const setView = useNavStore((state) => state.setView);
@@ -101,20 +120,70 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
     }
   }, [toggleSidebar]);
 
-  // SIDEBAR-4：非输入区 Ctrl/Cmd+B 切换，与按钮同一动作
-  useSidebarShortcut(applySidebarToggle);
+  // SIDEBAR-5：窄屏（<920px）展开是 208px 浮层 + 遮罩的瞬时态，不写持久化
+  const narrow = useSyncExternalStore(subscribeNarrow, readNarrow, () => false);
+  const [narrowExpanded, setNarrowExpanded] = useState(false);
+  const effectiveMode = narrow && narrowExpanded ? 'expanded' : narrow ? 'collapsed' : sidebarMode;
+  const collapsed = effectiveMode === 'collapsed';
 
-  const collapsed = sidebarMode === 'collapsed';
+  const closeNarrowOverlay = useCallback((): void => {
+    setNarrowExpanded(false);
+    collapseToggleRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // 回到宽屏清掉瞬时态，避免下次变窄时浮层莫名打开
+  useEffect(() => {
+    if (!narrow) setNarrowExpanded(false);
+  }, [narrow]);
+
+  // 浮层打开时 Esc 收起并把焦点交还切换按钮；有弹窗时让弹窗先处理
+  useEffect(() => {
+    if (!narrow || !narrowExpanded) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeNarrowOverlay();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [narrow, narrowExpanded, closeNarrowOverlay]);
+
+  /** 按钮与快捷键共用：宽屏走 store（持久化）；窄屏只开合瞬时浮层 */
+  const toggleEffectiveMode = useCallback((): void => {
+    if (!narrow) {
+      applySidebarToggle();
+      return;
+    }
+    if (narrowExpanded) closeNarrowOverlay();
+    else setNarrowExpanded(true);
+  }, [narrow, narrowExpanded, applySidebarToggle, closeNarrowOverlay]);
+
+  // SIDEBAR-4：非输入区 Ctrl/Cmd+B 切换；窄屏同样开合浮层
+  useSidebarShortcut(toggleEffectiveMode);
 
   return (
-    <nav
-      ref={sidebarRef}
-      id="app-sidebar"
-      data-testid="sidebar"
-      data-mode={sidebarMode}
-      aria-label="主导航"
-      className="ab-sidebar flex shrink-0 flex-col border-r border-hairline bg-surface-card"
-    >
+    <>
+      {/* 窄屏浮层：56px 占位保持主区宽度，遮罩在浮层之下、主区之上 */}
+      {narrow && narrowExpanded && <div aria-hidden="true" className="ab-sidebar-rail-slot" />}
+      {narrow && narrowExpanded && (
+        <div
+          data-testid="sidebar-backdrop"
+          aria-hidden="true"
+          className="ab-sidebar-backdrop"
+          onClick={closeNarrowOverlay}
+        />
+      )}
+      <nav
+        ref={sidebarRef}
+        id="app-sidebar"
+        data-testid="sidebar"
+        data-mode={effectiveMode}
+        data-overlay={narrow && narrowExpanded ? 'true' : undefined}
+        aria-label="主导航"
+        className="ab-sidebar flex shrink-0 flex-col border-r border-hairline bg-surface-card"
+      >
       {/* ① 工作空间（FIX-1：容器 relative，浮窗锚定在触发按钮正下方） */}
       <div data-testid="sidebar-workspace" className="ab-sidebar-head relative border-b border-hairline px-3 py-3">
         <div className="ab-sidebar-head-row flex items-start gap-1.5">
@@ -146,7 +215,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
             aria-controls="app-sidebar"
             aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
             title={collapsed ? '展开侧栏' : '收起侧栏'}
-            onClick={applySidebarToggle}
+            onClick={toggleEffectiveMode}
             className="ab-sidebar-toggle inline-flex shrink-0 items-center justify-center rounded-md text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <svg aria-hidden="true" viewBox="0 0 24 24" className="ab-sidebar-ico-collapse" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -188,7 +257,11 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 aria-label={entryLabel}
                 aria-expanded={entry.view === 'chat' ? view === 'chat' : undefined}
                 data-active={active ? 'true' : 'false'}
-                onClick={() => setView(entry.view)}
+                onClick={() => {
+                  setView(entry.view);
+                  // SIDEBAR-5：窄屏浮层选中入口即收起
+                  if (narrow && narrowExpanded) closeNarrowOverlay();
+                }}
                 // A2：入口点击反馈只走颜色过渡（≤150ms）+ data-active 供断言；reduced-motion 下即时
                 className={`ab-sidebar-entry flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   active
@@ -284,7 +357,8 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           {THEME_SHORT[theme] ?? THEME_LABEL[theme]}
         </span>
       </div>
-    </nav>
+      </nav>
+    </>
   );
 }
 

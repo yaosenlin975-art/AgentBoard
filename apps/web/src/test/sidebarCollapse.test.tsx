@@ -20,6 +20,20 @@ import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
 
+/** jsdom 没有真实视口：按窄屏/宽屏让 matchMedia 作答（断点查询串含 max-width） */
+function mockViewport(narrow: boolean): void {
+  window.matchMedia = ((query: string) => ({
+    matches: narrow && query.includes('max-width'),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
 function renderSideBar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -32,6 +46,7 @@ function renderSideBar() {
 beforeEach(() => {
   cleanup();
   localStorage.clear();
+  mockViewport(false);
   document.documentElement.classList.remove('dark');
   useAppStore.setState({ wsStatus: 'open' });
   useNavStore.setState({
@@ -171,5 +186,84 @@ describe('Ctrl/Cmd+B 形态切换（SIDEBAR-4）', () => {
     fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
     // 只切一次：collapsed → expanded（若重复绑定会立刻切回 collapsed）
     expect(useNavStore.getState().sidebarMode).toBe('expanded');
+  });
+});
+
+describe('窄屏浮层 + 遮罩（SIDEBAR-5）', () => {
+  it('[T9] <920px 收起态：仍是图标栏，无遮罩与占位块', () => {
+    mockViewport(true);
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(sidebar).not.toHaveAttribute('data-overlay');
+    expect(screen.queryByTestId('sidebar-backdrop')).toBeNull();
+    expect(document.querySelector('.ab-sidebar-rail-slot')).toBeNull();
+  });
+
+  it('[T10] <920px 展开为瞬时浮层：Ctrl+B 打开、不写形态记忆，再点按钮收起并回焦', () => {
+    mockViewport(true);
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    const toggle = screen.getByTestId('sidebar-collapse-toggle');
+
+    fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
+    expect(sidebar).toHaveAttribute('data-mode', 'expanded');
+    expect(sidebar).toHaveAttribute('data-overlay', 'true');
+    expect(screen.getByTestId('sidebar-backdrop')).toBeInTheDocument();
+    // 56px 占位仍在流内，主区不被 208px 挤压
+    expect(document.querySelector('.ab-sidebar-rail-slot')).not.toBeNull();
+    // 瞬时态：store 与 localStorage 都没有被写成 expanded
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    const persisted = JSON.parse(localStorage.getItem('agentboard.nav') ?? '{"state":{}}') as {
+      state?: { sidebarMode?: string };
+    };
+    expect(persisted.state?.sidebarMode).toBeUndefined();
+
+    fireEvent.click(toggle);
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(screen.queryByTestId('sidebar-backdrop')).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('[T11] Esc / 点遮罩 / 选中入口三条路径都收起，焦点回到切换按钮', () => {
+    mockViewport(true);
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    const toggle = screen.getByTestId('sidebar-collapse-toggle');
+    const open = (): void => {
+      fireEvent.click(toggle);
+      expect(sidebar).toHaveAttribute('data-overlay', 'true');
+    };
+
+    open();
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(document.activeElement).toBe(toggle);
+
+    open();
+    fireEvent.click(screen.getByTestId('sidebar-backdrop'));
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(document.activeElement).toBe(toggle);
+
+    open();
+    fireEvent.click(screen.getByTestId('sidebar-entry-tree'));
+    expect(useNavStore.getState().view).toBe('tree');
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('[T12] ≥920px 走内联两形态：不加遮罩与浮层标记，切换写回 store', () => {
+    mockViewport(false);
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    const toggle = screen.getByTestId('sidebar-collapse-toggle');
+
+    expect(sidebar).not.toHaveAttribute('data-overlay');
+    expect(screen.queryByTestId('sidebar-backdrop')).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+    expect(sidebar).toHaveAttribute('data-mode', 'expanded');
+    expect(sidebar).not.toHaveAttribute('data-overlay');
   });
 });

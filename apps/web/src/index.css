@@ -102,6 +102,7 @@ optgroup {
   --ab-dur-rail: 160ms;
   --ab-sidebar-expanded: 176px;
   --ab-sidebar-collapsed: 56px;
+  --ab-sidebar-overlay: 208px;
   /*
    * CHAT-VIS1：diff 增删色（纸面 #fdfbf7 上 5.8:1 / 6.2:1，压饱和度对齐本套暖石墨）。
    * `--ab-*-soft` 是同一色的低透明度形态，只用作行底色，不单独承载语义。
@@ -763,5 +764,36 @@ optgroup {
   .ab-sidebar-tip::after {
     transition-duration: 1ms !important;
     transition-delay: 0ms !important;
+  }
+}
+
+/* ============================================================
+   SIDEBAR-5：窄屏（<920px）展开 = 208px 浮层 + 遮罩
+   - 收起态仍是 56px 贴左图标栏（在文档流内，主区 = 视口 - 56）
+   - 展开态脱离文档流覆盖主区；.ab-sidebar-rail-slot 占住 56px 位，主区不被挤压
+   - 遮罩覆盖主区、在浮层之下；弹窗/自检层（z-index 60+）仍在两者之上
+   - 查询串与 SideBar.tsx 的 NARROW_QUERY 保持一致（920 - 0.02）
+   ============================================================ */
+.ab-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.32);
+}
+.ab-sidebar-rail-slot {
+  flex: 0 0 var(--ab-sidebar-collapsed);
+  width: var(--ab-sidebar-collapsed);
+}
+@media (max-width: 919.98px) {
+  .ab-sidebar[data-overlay='true'] {
+    position: fixed;
+    inset-block: 0;
+    left: 0;
+    width: var(--ab-sidebar-overlay);
+    z-index: 50;
+    overflow-y: auto;
   }
 }
