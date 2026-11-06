@@ -20,8 +20,49 @@ export interface DecisionGroups {
   answered: DecisionListItemDto[];
 }
 
-function byNewest(a: DecisionListItemDto, b: DecisionListItemDto): number {
-  return b.created_at - a.created_at;
+/** DEC-V4-QUEUE：队列排序口径（默认紧急度；另两种只影响 grace/open/stale） */
+export type DecisionSort = 'urgency' | 'waiting' | 'priority';
+export const DECISION_SORTS: readonly DecisionSort[] = ['urgency', 'waiting', 'priority'];
+export const DECISION_SORT_LABELS: Record<DecisionSort, string> = {
+  urgency: '紧急度',
+  waiting: '等待最久',
+  priority: '任务优先级',
+};
+
+const PRIORITY_RANK: Record<string, number> = { 高: 3, 中: 2, 低: 1 };
+
+/** 缺失/未知优先级按「中」兜底（P2 验收：字段缺失不报错、不产生 NaN） */
+export function priorityRank(priority: string | null | undefined): number {
+  return PRIORITY_RANK[priority ?? ''] ?? 2;
+}
+
+/** 下游阻塞数：字段缺失或非数字按 0 */
+export function downstreamCount(item: DecisionListItemDto): number {
+  const value = item.blocked_downstream_count;
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** 默认口径：grace 截止升序；open 下游数降序→锁定时间升序；stale 锁定时间升序；answered 回答时间降序 */
+function compareUrgency(group: keyof DecisionGroups, a: DecisionListItemDto, b: DecisionListItemDto): number {
+  if (group === 'grace') return a.grace_until - b.grace_until;
+  if (group === 'open') return downstreamCount(b) - downstreamCount(a) || (a.locked_at ?? 0) - (b.locked_at ?? 0);
+  if (group === 'stale') return (a.locked_at ?? 0) - (b.locked_at ?? 0);
+  return (b.answered_at ?? 0) - (a.answered_at ?? 0);
+}
+
+function compareQueueSort(
+  sort: DecisionSort,
+  group: keyof DecisionGroups,
+  a: DecisionListItemDto,
+  b: DecisionListItemDto,
+): number {
+  if (sort === 'waiting' && (group === 'grace' || group === 'open')) {
+    return a.created_at - b.created_at || compareUrgency(group, a, b);
+  }
+  if (sort === 'priority' && group !== 'answered') {
+    return priorityRank(b.issue_priority) - priorityRank(a.issue_priority) || compareUrgency(group, a, b);
+  }
+  return compareUrgency(group, a, b);
 }
 
 /** grace 剩余秒数（≤0 视为已到期） */
@@ -30,16 +71,18 @@ export function remainingGraceSeconds(graceUntil: number, now: number = Date.now
 }
 
 /**
- * 四段分组：
+ * 四段分组 + 组内排序（DEC-V4-QUEUE）：
  * - `grace` 且 `grace_until > now` → 宽限中；
  * - `grace` 但已到期 → 未回答（本地过渡，服务端落锁后状态变 open）；
  * - `open` 且 `locked_at <= now - 72h` → 已超时；
  * - `answered` 且 `answered_at >= now - 24h` → 最近已回答。
+ * `sort` 缺省为紧急度；同键回落到紧急度比较，结果稳定。
  */
 export function groupDecisions(
   active: DecisionListItemDto[],
   answered: DecisionListItemDto[],
   now: number = Date.now(),
+  sort: DecisionSort = 'urgency',
 ): DecisionGroups {
   const staleBefore = now - DECISION_STALE_MS;
   const groups: DecisionGroups = { grace: [], open: [], stale: [], answered: [] };
@@ -61,10 +104,12 @@ export function groupDecisions(
     if (item.answered_at !== null && item.answered_at >= recentAfter) groups.answered.push(item);
   }
 
-  groups.grace.sort((a, b) => a.grace_until - b.grace_until);
-  groups.open.sort(byNewest);
-  groups.stale.sort((a, b) => (a.locked_at ?? 0) - (b.locked_at ?? 0));
-  groups.answered.sort((a, b) => (b.answered_at ?? 0) - (a.answered_at ?? 0));
+  const compare = (group: keyof DecisionGroups) => (a: DecisionListItemDto, b: DecisionListItemDto) =>
+    compareQueueSort(sort, group, a, b);
+  groups.grace.sort(compare('grace'));
+  groups.open.sort(compare('open'));
+  groups.stale.sort(compare('stale'));
+  groups.answered.sort(compare('answered'));
   return groups;
 }
 

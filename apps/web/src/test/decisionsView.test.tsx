@@ -227,6 +227,129 @@ describe('DEC-6 待决策视图', () => {
   });
 });
 
+describe('DEC-V4-QUEUE 处置队列', () => {
+  const qGrace1 = listItem({ id: 'q-g1', state: 'grace', grace_until: NOW + 90_000, created_at: NOW - 30_000, issue_priority: '中' });
+  const qGrace2 = listItem({ id: 'q-g2', state: 'grace', grace_until: NOW + 60_000, created_at: NOW - 10_000, issue_priority: '高' });
+  const qGrace3 = listItem({ id: 'q-g3', state: 'grace', grace_until: NOW + 150_000, created_at: NOW - 50_000, issue_priority: '低' });
+  const qOpen1 = listItem({
+    id: 'q-o1', state: 'open', locked_at: NOW - 2000, created_at: NOW - 70_000,
+    blocked_downstream_count: 2, issue_priority: '中',
+  });
+  const qOpen2 = listItem({
+    id: 'q-o2', state: 'open', locked_at: NOW - 1000, created_at: NOW - 80_000,
+    blocked_downstream_count: 0, issue_priority: '高',
+  });
+  const qStale = listItem({
+    id: 'q-s1', state: 'open', locked_at: NOW - 80 * 3600_000, created_at: NOW - 100 * 3600_000,
+    issue_priority: '低',
+  });
+  const qAnswered = listItem({ id: 'q-a1', state: 'answered', answered_at: NOW - 3600_000 });
+  const queueActive = [qGrace1, qGrace2, qGrace3, qOpen1, qOpen2, qStale];
+
+  const itemOrder = () =>
+    screen.getAllByTestId(/^decision-item-/).map((node) => node.getAttribute('data-testid'));
+
+  it('页头只留标题 + 在途总数徽标；筛选 tab 计数来自完整分组', async () => {
+    server.use(decisionHandler(queueActive, [qAnswered]));
+    renderWithQuery(<DecisionsView />);
+    await waitFor(() => expect(screen.getByTestId('decision-item-q-g2')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('decisions-summary')).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('宽限 3 · 未回答 2');
+    expect(screen.getByTestId('decisions-total')).toHaveTextContent('6');
+    expect(screen.getByTestId('decisions-tab-count-all')).toHaveTextContent('7');
+    expect(screen.getByTestId('decisions-tab-count-grace')).toHaveTextContent('3');
+    expect(screen.getByTestId('decisions-tab-count-open')).toHaveTextContent('2');
+    expect(screen.getByTestId('decisions-tab-count-stale')).toHaveTextContent('1');
+    expect(screen.getByTestId('decisions-tab-count-answered')).toHaveTextContent('1');
+  });
+
+  it('默认紧急度：宽限倒计时升序 → open 下游数降序 → 已超时；rank 连续且 answered 无 rank', async () => {
+    server.use(decisionHandler(queueActive, [qAnswered]));
+    renderWithQuery(<DecisionsView />);
+    await waitFor(() => expect(screen.getByTestId('decision-item-q-g2')).toBeInTheDocument());
+
+    expect(itemOrder()).toEqual([
+      'decision-item-q-g2',
+      'decision-item-q-g1',
+      'decision-item-q-g3',
+      'decision-item-q-o1',
+      'decision-item-q-o2',
+      'decision-item-q-s1',
+      'decision-item-q-a1',
+    ]);
+    expect(screen.getByTestId('decision-rank-q-g2')).toHaveTextContent('#1');
+    expect(screen.getByTestId('decision-rank-q-g1')).toHaveTextContent('#2');
+    expect(screen.getByTestId('decision-rank-q-g3')).toHaveTextContent('#3');
+    expect(screen.getByTestId('decision-rank-q-o1')).toHaveTextContent('#4');
+    expect(screen.getByTestId('decision-rank-q-o2')).toHaveTextContent('#5');
+    expect(screen.getByTestId('decision-rank-q-s1')).toHaveTextContent('#6');
+    expect(screen.queryByTestId('decision-rank-q-a1')).not.toBeInTheDocument();
+  });
+
+  it('切 tab 只渲染该层并重新从 #1 编号；切回全部恢复连续编号', async () => {
+    server.use(decisionHandler(queueActive, [qAnswered]));
+    renderWithQuery(<DecisionsView />);
+    await waitFor(() => expect(screen.getByTestId('decision-item-q-g2')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('decisions-tab-stale'));
+    expect(screen.queryByTestId('decisions-group-grace')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('decisions-group-open')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('decisions-group-answered')).not.toBeInTheDocument();
+    expect(itemOrder()).toEqual(['decision-item-q-s1']);
+    expect(screen.getByTestId('decision-rank-q-s1')).toHaveTextContent('#1');
+
+    fireEvent.click(screen.getByTestId('decisions-tab-all'));
+    expect(screen.getByTestId('decision-rank-q-g2')).toHaveTextContent('#1');
+    expect(screen.getByTestId('decision-rank-q-s1')).toHaveTextContent('#6');
+  });
+
+  it('等待最久：grace/open 按 created_at 升序，同键回落紧急度；answered 保持回答时间倒序', async () => {
+    const groups = groupDecisions(queueActive, [qAnswered], NOW, 'waiting');
+    expect(groups.grace.map((item) => item.id)).toEqual(['q-g3', 'q-g1', 'q-g2']);
+    expect(groups.open.map((item) => item.id)).toEqual(['q-o2', 'q-o1']);
+    expect(groups.answered.map((item) => item.id)).toEqual(['q-a1']);
+  });
+
+  it('任务优先级：grace/open/stale 按 高>中>低，同键回落紧急度；answered 不变', async () => {
+    const groups = groupDecisions(queueActive, [qAnswered], NOW, 'priority');
+    expect(groups.grace.map((item) => item.id)).toEqual(['q-g2', 'q-g1', 'q-g3']);
+    expect(groups.open.map((item) => item.id)).toEqual(['q-o2', 'q-o1']);
+    expect(groups.stale.map((item) => item.id)).toEqual(['q-s1']);
+    expect(groups.answered.map((item) => item.id)).toEqual(['q-a1']);
+  });
+
+  it('排序下拉可切换到等待最久，DOM 顺序随之变化', async () => {
+    server.use(decisionHandler(queueActive, [qAnswered]));
+    renderWithQuery(<DecisionsView />);
+    await waitFor(() => expect(screen.getByTestId('decision-item-q-g2')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByTestId('decisions-sort'), { target: { value: 'waiting' } });
+    expect(itemOrder().slice(0, 5)).toEqual([
+      'decision-item-q-g3',
+      'decision-item-q-g1',
+      'decision-item-q-g2',
+      'decision-item-q-o2',
+      'decision-item-q-o1',
+    ]);
+  });
+
+  it('字段缺失兜底：blocked_downstream_count / issue_priority 缺省不报错、不出现 NaN', async () => {
+    const noCount: DecisionListItemDto = {
+      ...listItem({ id: 'q-missing', state: 'open', locked_at: NOW - 500 }),
+      blocked_downstream_count: undefined as unknown as number,
+      issue_priority: undefined as unknown as DecisionListItemDto['issue_priority'],
+    };
+    server.use(decisionHandler([noCount], []));
+    renderWithQuery(<DecisionsView />);
+    await waitFor(() => expect(screen.getByTestId('decision-item-q-missing')).toBeInTheDocument());
+    expect(document.body.textContent).not.toContain('NaN');
+
+    const groups = groupDecisions([noCount], [], NOW, 'priority');
+    expect(groups.open.map((item) => item.id)).toEqual(['q-missing']);
+  });
+});
+
 describe('DEC-6 详情决策区', () => {
   const detail: DecisionDetailDto = {
     ...answeredItem,
