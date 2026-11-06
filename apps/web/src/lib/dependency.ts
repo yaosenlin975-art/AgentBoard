@@ -14,6 +14,14 @@ export interface DependencyRef {
   resolved: boolean;
   /** BORROW-2.1：边类型（服务端随行返回） */
   relation?: 'blocks' | 'related' | 'duplicate';
+  /** DEC-V4-API-DEP：下游卡占用者，未占用为 null */
+  claimed_by: string | null;
+  /** DEC-V4-API-DEP：被挡原因，未记录为 null（前端显示「未记录原因」） */
+  blocked_reason: string | null;
+  /** DEC-V4-API-DEP：1=直接下游，2=间接下游 */
+  depth: number;
+  /** DEC-V4-API-DEP：间接项的上一跳 issue_id；直接项为 null */
+  via: string | null;
 }
 
 export interface DependencyView {

@@ -33,6 +33,14 @@ export interface DependencyRef {
   resolved: boolean;
   /** BORROW-2.1：边类型（随行返回；blocks 边恒为 'blocks'） */
   relation?: DependencyRelation;
+  /** DEC-V4-API-DEP：下游卡占用者（join issue），未占用为 null */
+  claimed_by: string | null;
+  /** DEC-V4-API-DEP：边上的被挡原因；未记录为 null（服务端不拼 title/描述） */
+  blocked_reason: string | null;
+  /** DEC-V4-API-DEP：1=直接下游，2=间接下游（仅 blocked 方向展开） */
+  depth: number;
+  /** DEC-V4-API-DEP：间接项的上一跳 issue_id；直接项为 null */
+  via: string | null;
 }
 
 export interface DependencyView {
@@ -44,35 +52,69 @@ export interface DependencyView {
 }
 
 /** 行里带 kind（由 workspace_status 反查），resolved 只看 kind，不看状态名 */
-const refToView = (row: { id: string; title: string; status: string; kind: string | null; relation: string }): DependencyRef => ({
+const refToView = (
+  row: { id: string; title: string; status: string; kind: string | null; relation: string; claimed_by: string | null; blocked_reason: string | null },
+  depth = 1,
+  via: string | null = null,
+): DependencyRef => ({
   issue_id: row.id,
   title: row.title,
   status: row.status as IssueStatus,
   resolved: isBlockerResolvedKind(row.kind),
   relation: row.relation as DependencyRef['relation'],
+  claimed_by: row.claimed_by ?? null,
+  blocked_reason: row.blocked_reason ?? null,
+  depth,
+  via,
 });
 
 /** 依赖视图查询共用：按边类型过滤；连同该状态在当前工作区的 kind 一起取出来 */
-const DEPENDENCY_ROW_SQL = (where: string, relation: DependencyRelation): string => `SELECT i.id, i.title, i.status, ws.kind AS kind, d.relation AS relation
+const DEPENDENCY_ROW_SQL = (where: string, relation: DependencyRelation): string => `SELECT i.id, i.title, i.status, i.claimed_by, ws.kind AS kind, d.relation AS relation, d.blocked_reason
     FROM issue_dependency d
     JOIN issue i ON i.id = ${where === 'blocked' ? 'd.blocker_issue_id' : 'd.blocked_issue_id'}
     LEFT JOIN workspace_status ws ON ws.workspace_id = i.workspace_id AND ws.name = i.status
    WHERE d.relation = '${relation}' AND d.${where === 'blocked' ? 'blocked_issue_id' : 'blocker_issue_id'} = ? ORDER BY i.created_at, i.id`;
 
-type DependencyRow = { id: string; title: string; status: string; kind: string | null; relation: string };
-const rowsToRefs = (rows: DependencyRow[]): DependencyRef[] => rows.map(refToView);
+type DependencyRow = {
+  id: string;
+  title: string;
+  status: string;
+  kind: string | null;
+  relation: string;
+  claimed_by: string | null;
+  blocked_reason: string | null;
+};
+const rowsToRefs = (rows: DependencyRow[]): DependencyRef[] => rows.map((row) => refToView(row));
+
+/** DEC-V4-API-DEP：最大展开层级（卡面约定最多两跳，超出静默停在 2） */
+export const MAX_DEPENDENCY_DEPTH = 2;
 
 /**
  * 单个任务的依赖视图（GET /dependencies；CLI/MCP 复用）。
  * BORROW-2.2：blockers/blocked 仍是 blocks 边语义（kb dep 原口径）；related/duplicate 作标注边
  * 追加为可选数组（空集省略字段，旧消费者零改动）。分组顺序固定：前置 → 被阻塞 → 关联 → 重复。
+ * DEC-V4-API-DEP：`depth=2` 时把 blocked（下游）再展开一跳，间接项 depth=2、via=上一跳；
+ * 用 visited 集合防环，最多两跳，缺省行为与既有字段完全一致。
  */
-export function listDependencies(db: Db, issueId: string): DependencyView {
+export function listDependencies(db: Db, issueId: string, options: { depth?: number } = {}): DependencyView {
+  const depth = options.depth === MAX_DEPENDENCY_DEPTH ? MAX_DEPENDENCY_DEPTH : 1;
   const blockers = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'blocks')).all(issueId) as DependencyRow[];
   const blocked = db.prepare(DEPENDENCY_ROW_SQL('blocker', 'blocks')).all(issueId) as DependencyRow[];
   const related = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'related')).all(issueId) as DependencyRow[];
   const duplicate = db.prepare(DEPENDENCY_ROW_SQL('blocked', 'duplicate')).all(issueId) as DependencyRow[];
-  const view: DependencyView = { blockers: rowsToRefs(blockers), blocked: rowsToRefs(blocked) };
+  const blockedRefs = rowsToRefs(blocked);
+  if (depth === MAX_DEPENDENCY_DEPTH && blockedRefs.length > 0) {
+    const visited = new Set<string>([issueId, ...blockedRefs.map((ref) => ref.issue_id)]);
+    for (const direct of blockedRefs) {
+      const indirectRows = db.prepare(DEPENDENCY_ROW_SQL('blocker', 'blocks')).all(direct.issue_id) as DependencyRow[];
+      for (const row of indirectRows) {
+        if (visited.has(row.id)) continue;
+        visited.add(row.id);
+        blockedRefs.push(refToView(row, 2, direct.issue_id));
+      }
+    }
+  }
+  const view: DependencyView = { blockers: rowsToRefs(blockers), blocked: blockedRefs };
   if (related.length > 0) view.related = rowsToRefs(related);
   if (duplicate.length > 0) view.duplicate = rowsToRefs(duplicate);
   return view;
@@ -141,7 +183,13 @@ function wouldCreateCycle(db: Db, blockedIssueId: string, blockerIssueId: string
   return hit !== undefined;
 }
 
-export interface AddDependencyInput { blocked_issue_id: string; blocker_issue_id: string; workspace_id: string }
+export interface AddDependencyInput {
+  blocked_issue_id: string;
+  blocker_issue_id: string;
+  workspace_id: string;
+  /** DEC-V4-API-DEP：被挡原因（可选，空白视为未记录）；只落在边上，不拼 title/描述 */
+  reason?: string | null;
+}
 
 /**
  * 建边（BORROW-2.1 泛化）：服务层先判全部错误码（跨区/自环/重复），触发器只兜底。
@@ -170,8 +218,9 @@ export function addRelation(db: Db, input: AddDependencyInput & { relation: Depe
       if (wouldCreateCycle(db, blockedId, blockerId)) throw new ApiError(409, 'DEPENDENCY_CYCLE', '依赖会成环，已拒绝');
       assertEdgeBudget(db, blockedId);
     }
-    db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?,?,?)')
-      .run(blockedId, blockerId, relation, Date.now());
+    const reason = input.reason?.trim();
+    db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, blocked_reason, created_at) VALUES (?,?,?,?,?)')
+      .run(blockedId, blockerId, relation, reason === undefined || reason === '' ? null : reason, Date.now());
     return listDependencies(db, blockedId);
   }).immediate();
 }

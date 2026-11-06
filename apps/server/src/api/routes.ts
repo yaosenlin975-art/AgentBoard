@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Task 9：REST 路由（Pinned Contracts REST 全表 + 契约修订）。
  *
  * 修订点：POST /api/sessions 体增 workspace_id?——issue_id 为空时必填（400 校验）；
@@ -1049,7 +1049,9 @@ export function createRouter(deps: RouterDeps): Router {
     const { workspace_id: workspaceId } = parseBody(dependencyQuerySchema, req.query);
     const rdb = dbForWorkspace(workspaceId);
     requireIssueInWorkspace(rdb, req.params.id!, workspaceId);
-    res.json(listDependencies(rdb, req.params.id!));
+    // DEC-V4-API-DEP：只认 depth=2 展开两跳；缺省/其它值维持一跳，静默不报错
+    const depth = String(req.query.depth ?? '') === '2' ? 2 : 1;
+    res.json(listDependencies(rdb, req.params.id!, { depth }));
   });
 
   router.post('/issues/:id/dependencies', (req, res) => {
@@ -1058,6 +1060,7 @@ export function createRouter(deps: RouterDeps): Router {
     const outcome = mutation(rdb, req, (routedDb) => addRelation(routedDb, {
       blocked_issue_id: req.params.id!, blocker_issue_id: body.blocker_issue_id, workspace_id: body.workspace_id,
       relation: body.relation ?? 'blocks',
+      reason: body.reason ?? null,
     }));
     if (!outcome.replayed) {
       broadcast({ type: 'issue.changed', issue: getIssue(rdb, req.params.id!)! });

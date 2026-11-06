@@ -152,15 +152,15 @@ describe('树视图依赖锁标', () => {
 
 describe('详情「依赖」区', () => {
   const base = makeIssue('iss-1', { title: '主任务' });
-  const blocker = { issue_id: 'blk-1', title: '前置任务一', status: '进行中' as const, resolved: false };
-  const doneBlocker = { issue_id: 'blk-2', title: '前置任务二', status: '待验收' as const, resolved: true };
+  const blocker = { issue_id: 'blk-1', title: '前置任务一', status: '进行中' as const, resolved: false, claimed_by: null, blocked_reason: null, depth: 1, via: null };
+  const doneBlocker = { issue_id: 'blk-2', title: '前置任务二', status: '待验收' as const, resolved: true, claimed_by: null, blocked_reason: null, depth: 1, via: null };
 
   it('默认收起；点开摘要后列出 blockers（标题/状态/解除标记）与被阻塞者', async () => {
     server.use(
       http.get('/api/issues/iss-1/dependencies', () =>
         HttpResponse.json({
           blockers: [blocker, doneBlocker],
-          blocked: [{ issue_id: 'down-1', title: '后续任务', status: '待规划' as const, resolved: false }],
+          blocked: [{ issue_id: 'down-1', title: '后续任务', status: '待规划' as const, resolved: false, claimed_by: null, blocked_reason: null, depth: 1, via: null }],
         }),
       ),
       http.get('/api/issues', () => HttpResponse.json([base, makeIssue('cand-1', { title: '候选任务' })])),
@@ -185,7 +185,7 @@ describe('详情「依赖」区', () => {
       http.get('/api/issues/iss-1/dependencies', () =>
         HttpResponse.json({
           blockers: [blocker, doneBlocker],
-          blocked: [{ issue_id: 'down-1', title: '后续任务', status: '待规划' as const, resolved: false }],
+          blocked: [{ issue_id: 'down-1', title: '后续任务', status: '待规划' as const, resolved: false, claimed_by: null, blocked_reason: null, depth: 1, via: null }],
         }),
       ),
       http.get('/api/issues', () => HttpResponse.json([base])),
@@ -245,7 +245,7 @@ describe('详情「依赖」区', () => {
       http.post('/api/issues/iss-1/dependencies', async ({ request }) => {
         const body = (await request.json()) as { workspace_id: string; blocker_issue_id: string };
         posts.push(body);
-        blockers = [{ issue_id: body.blocker_issue_id, title: '候选任务', status: '待规划', resolved: false }];
+        blockers = [{ issue_id: body.blocker_issue_id, title: '候选任务', status: '待规划', resolved: false, claimed_by: null, blocked_reason: null, depth: 1, via: null }];
         return HttpResponse.json({ blockers, blocked: [] }, { status: 201 });
       }),
       http.get('/api/issues', () => HttpResponse.json([base, makeIssue('cand-1', { title: '候选任务' })])),

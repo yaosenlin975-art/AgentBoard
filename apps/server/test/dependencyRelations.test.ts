@@ -28,14 +28,17 @@ describe('依赖边类型（BORROW-2.1，REST）', () => {
   let spaceDir: string;
 
   const mkIssue = async (title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '' });
+    // 注：HEAD 上本文件用空 description 建卡，已被 create-issue 的非空描述校验（schemas.ts）判 400，此处补最小正文
+    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '目标：依赖投影测试用卡；验收：见用例。' });
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
   const addDep = (blocked: string, blocker: string, relation?: string) =>
     request(app).post(`/api/issues/${blocked}/dependencies`)
       .send({ workspace_id: ws, blocker_issue_id: blocker, ...(relation === undefined ? {} : { relation }) });
-  const lsDep = (id: string) => request(app).get(`/api/issues/${id}/dependencies`).query({ workspace_id: ws });
+  const lsDep = (id: string, depth?: number | string) =>
+    request(app).get(`/api/issues/${id}/dependencies`)
+      .query(depth === undefined ? { workspace_id: ws } : { workspace_id: ws, depth });
 
   beforeEach(async () => {
     t = createTestDb();
@@ -122,9 +125,9 @@ describe('依赖边类型（BORROW-2.1，REST）', () => {
 
   it('BORROW-2.2：违规检测——祖先卡为 blocks 前置（历史/直写库）→ 列表 dependency_violation 标记；正常卡为 null', async () => {
     // 父子结构：parent ← child（parent_issue_id）；绕过 API 守卫直插「child 以 parent 为 blocks 前置」→ 违规
-    const parentRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '父卡', description: '' });
+    const parentRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '父卡', description: '目标：父子违规检测；验收：见用例。' });
     const parent = parentRes.body.id as string;
-    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', description: '', parent_issue_id: parent });
+    const childRes = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', description: '目标：父子违规检测；验收：见用例。', parent_issue_id: parent });
     const child = childRes.body.id as string;
     t.db.prepare("INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, relation, created_at) VALUES (?,?, 'blocks', ?)")
       .run(child, parent, Date.now());
@@ -143,6 +146,87 @@ describe('依赖边类型（BORROW-2.1，REST）', () => {
     expect((await request(app).post(`/api/issues/${a}/claim`).send({ agent_id: 'fake' })).status).toBe(200);
     expect((await addDep(a, b)).status).toBe(409);
     expect((await addDep(a, b, 'related')).status).toBe(201);
+  });
+
+  it('DEC-V4-API-DEP：POST reason 落库并在 GET 回读；不带 reason 返回 null', async () => {
+    const a = await mkIssue('A');
+    const b = await mkIssue('B');
+    const c = await mkIssue('C');
+    expect((await addDep(b, a /* 无 reason */)).status).toBe(201);
+    const withReason = await request(app).post(`/api/issues/${c}/dependencies`)
+      .send({ workspace_id: ws, blocker_issue_id: a, reason: '依赖选型未定' });
+    expect(withReason.status).toBe(201);
+
+    const viewB = (await lsDep(b)).body as { blockers: Array<{ blocked_reason: string | null }> };
+    expect(viewB.blockers[0]!.blocked_reason).toBeNull();
+    const viewC = (await lsDep(c)).body as { blockers: Array<{ blocked_reason: string | null }> };
+    expect(viewC.blockers[0]!.blocked_reason).toBe('依赖选型未定');
+    // 超长原因 400
+    const tooLong = await request(app).post(`/api/issues/${b}/dependencies`)
+      .send({ workspace_id: ws, blocker_issue_id: c, reason: 'x'.repeat(201) });
+    expect(tooLong.status).toBe(400);
+  });
+
+  it('DEC-V4-API-DEP：claimed_by 取下游卡真实占用者，未占用为 null', async () => {
+    const a = await mkIssue('A');
+    const b = await mkIssue('B');
+    const c = await mkIssue('C');
+    expect((await addDep(b, a)).status).toBe(201);   // b ← a（a 阻塞 b）
+    expect((await addDep(c, a)).status).toBe(201);   // c ← a
+    // 前置 a 未解除时 c 不可领取：先把 a 置为已解除（待验收），再占用 c
+    expect((await request(app).patch(`/api/issues/${a}`).send({ status: '待验收' })).status).toBe(200);
+    expect((await request(app).post(`/api/issues/${c}/claim`).send({ agent_id: 'fake' })).status).toBe(200);
+
+    const view = (await lsDep(a)).body as { blocked: Array<{ issue_id: string; claimed_by: string | null }> };
+    const byId = new Map(view.blocked.map((ref) => [ref.issue_id, ref]));
+    expect(byId.get(b)?.claimed_by).toBeNull();
+    expect(byId.get(c)?.claimed_by).toBe('fake');
+  });
+
+  it('DEC-V4-API-DEP：depth=2 展开两跳并带 via；缺省仍只返回直接下游', async () => {
+    const a = await mkIssue('A');
+    const b = await mkIssue('B');
+    const cc = await mkIssue('C');
+    expect((await addDep(b, a)).status).toBe(201);   // a 阻塞 b
+    expect((await addDep(cc, b)).status).toBe(201);  // b 阻塞 c
+
+    const one = (await lsDep(a)).body as { blocked: Array<{ issue_id: string; depth: number }> };
+    expect(one.blocked.map((ref) => ref.issue_id)).toEqual([b]);
+    expect(one.blocked[0]!.depth).toBe(1);
+
+    const two = (await lsDep(a, 2)).body as { blocked: Array<{ issue_id: string; depth: number; via: string | null }> };
+    const byId = new Map(two.blocked.map((ref) => [ref.issue_id, ref]));
+    expect(two.blocked).toHaveLength(2);
+    expect(byId.get(b)).toMatchObject({ depth: 1, via: null });
+    expect(byId.get(cc)).toMatchObject({ depth: 2, via: b });
+
+    // depth 只认 2：5 / 非法值静默按一跳返回，不报错
+    const five = await lsDep(a, 5);
+    expect(five.status).toBe(200);
+    expect((five.body as { blocked: unknown[] }).blocked).toHaveLength(1);
+    const bad = await lsDep(a, 'abc');
+    expect(bad.status).toBe(200);
+    expect((bad.body as { blocked: unknown[] }).blocked).toHaveLength(1);
+  });
+
+  it('DEC-V4-API-DEP：环请求不挂死——成环建边被拒，depth=2 查询正常返回', async () => {
+    const a = await mkIssue('A');
+    const b = await mkIssue('B');
+    expect((await addDep(a, b)).status).toBe(201);   // b 阻塞 a
+    const cycle = await addDep(b, a);                 // a 阻塞 b → 环
+    expect(cycle.status).toBe(409);
+    expect(cycle.body.error.code).toBe('DEPENDENCY_CYCLE');
+
+    const view = await lsDep(b, 2);
+    expect(view.status).toBe(200);
+    const blocked = (view.body as { blocked: Array<{ issue_id: string; depth: number }> }).blocked;
+    expect(blocked.map((ref) => ref.issue_id)).toEqual([a]);
+    expect(blocked[0]!.depth).toBe(1);
+  });
+
+  it('DEC-V4-API-DEP：真实 createApp 启动后 issue_dependency 含 blocked_reason 列', () => {
+    const cols = t.db.prepare('PRAGMA table_info(issue_dependency)').all() as Array<{ name: string }>;
+    expect(cols.filter((column) => column.name === 'blocked_reason')).toHaveLength(1);
   });
 });
 
@@ -199,6 +283,10 @@ describe('依赖迁移（老库等价迁移 + 重入 + FK）', () => {
     expect(triggers.n).toBe(2);
     const cols = db.prepare('PRAGMA table_info(issue_dependency)').all() as Array<{ name: string }>;
     expect(cols.filter((c) => c.name === 'relation')).toHaveLength(1);
+    // DEC-V4-API-DEP：存量库补 blocked_reason（可空，旧行保持 NULL），重入后不重复
+    expect(cols.filter((c) => c.name === 'blocked_reason')).toHaveLength(1);
+    const legacyReason = db.prepare('SELECT blocked_reason FROM issue_dependency WHERE blocked_issue_id=?').get('a1') as { blocked_reason: string | null };
+    expect(legacyReason.blocked_reason).toBeNull();
     const fkIssues = db.pragma('foreign_key_check') as unknown[];
     expect(fkIssues).toHaveLength(0);
     db.close();
