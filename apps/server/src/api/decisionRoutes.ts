@@ -13,6 +13,7 @@ import {
 import {
   answerPendingDecision,
   createPendingDecision,
+  undoDecision,
   withdrawPendingDecision,
   type CreateDecisionInput,
 } from '../services/decision.js';
@@ -29,6 +30,7 @@ import { ApiError, NotFoundError, ValidationError } from '../errors.js';
  *   GET  /decisions/:id                  详情（选项 + 全部答案 revision + 剩余宽限）
  *   POST /decisions/:id/answer           人类回答（可带 expected_revision 修订）
  *   POST /decisions/:id/withdraw         人类/提问者撤回
+ *   POST /decisions/:id/undo             6 秒内撤销回答（DEC-V4-UNDO-SERVER，服务端真回滚）
  *   POST /decisions/:id/extend           延长宽限（DEC-V4-API-EXTEND）
  *   GET  /issues/:id/stop                DEC-9 停止信号只读窗口（agent 2 秒级轮询）
  *   POST /issues/:id/stop-ack            agent 确认已停在检查点
@@ -36,7 +38,8 @@ import { ApiError, NotFoundError, ValidationError } from '../errors.js';
  *
  * 状态码口径：400 参数非法 / 404 不存在 / 409 冲突（DECISION_ALREADY_OPEN、DECISION_LOCKED、STALE_FENCE、
  * DECISION_ALREADY_ANSWERED、DECISION_REVISION_CONFLICT、DECISION_WITHDRAWN、DECISION_NOT_GRACE、
- * EXTEND_LIMIT_EXCEEDED）/ 403 非提问者撤回、跨区延长。
+ * EXTEND_LIMIT_EXCEEDED、UNDO_WINDOW_EXPIRED、UNDO_NOT_ANSWERED、UNDO_CLAIMED_AFTER_LOCK、
+ * UNDO_FORBIDDEN_ACTOR）/ 403 非提问者撤回、跨区延长。
  * 请求 schema 暂时落在本文件，待 routes.ts/schemas.ts 的他人未提交改动释放后迁入 schemas.ts。
  */
 
@@ -97,6 +100,12 @@ const extendSchema = z.object({
   workspace_id: z.string().min(1).optional(),
 });
 
+/** DEC-V4-UNDO-SERVER：by / expected_revision 的合法性在服务层（错误码必须是 VALIDATION_ERROR） */
+const undoSchema = z.object({
+  by: z.unknown().optional(),
+  expected_revision: z.unknown().optional(),
+});
+
 const listQuerySchema = z.object({
   workspace_id: z.string().optional(),
   issue_id: z.string().optional(),
@@ -147,7 +156,19 @@ function decisionEvent(
     state: DecisionEvent['state'];
     grace_until: number | null;
   },
-  extra: Partial<Pick<DecisionEvent, 'revision' | 'grace_until' | 'reason' | 'extended_seconds' | 'extension_count'>> = {},
+  extra: Partial<
+    Pick<
+      DecisionEvent,
+      | 'revision'
+      | 'grace_until'
+      | 'reason'
+      | 'extended_seconds'
+      | 'extension_count'
+      | 'reverted_to'
+      | 'last_undone_revision'
+      | 'undo_deadline_at'
+    >
+  > = {},
 ): DecisionEvent {
   return {
     type,
@@ -328,6 +349,33 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
     emit(deps, decisionEvent('decision.withdrawn', decision, { grace_until: null }));
     emitIssueChanged(deps, decision.issue_id);
     res.json({ decision });
+  });
+
+  router.post('/decisions/:id/undo', (req, res) => {
+    const body = zodInput(undoSchema, req.body);
+    const result = undoDecision(deps.db, {
+      decision_id: String(req.params.id),
+      by: typeof body.by === 'string' ? body.by : '',
+      expected_revision: typeof body.expected_revision === 'number' ? body.expected_revision : Number.NaN,
+    });
+    // 幂等重放：不重复广播（网络重试安全）
+    if (!result.already_undone) {
+      emit(
+        deps,
+        decisionEvent('decision.undone', result.decision, {
+          reverted_to: result.reverted_to,
+          last_undone_revision: result.decision.last_undone_revision ?? undefined,
+          ...(result.decision.undo_until === null ? {} : { undo_deadline_at: result.decision.undo_until }),
+        }),
+      );
+      emitIssueChanged(deps, result.decision.issue_id);
+    }
+    res.json({
+      decision: result.decision,
+      reverted_to: result.reverted_to,
+      undo_window_ms: result.undo_window_ms,
+      already_undone: result.already_undone,
+    });
   });
 
   router.post('/decisions/:id/extend', (req, res) => {

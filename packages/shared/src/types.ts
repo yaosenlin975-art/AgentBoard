@@ -507,6 +507,7 @@ export interface DecisionEvent {
     | 'decision.revised'
     | 'decision.withdrawn'
     | 'decision.extended'
+    | 'decision.undone'
     | 'issue.stop_requested';
   workspace_id: string;
   issue_id: string;
@@ -521,6 +522,10 @@ export interface DecisionEvent {
   /** DEC-V4-API-EXTEND：decision.extended 的累计延长秒数与次数 */
   extended_seconds?: number;
   extension_count?: number;
+  /** DEC-V4-UNDO-SERVER：decision.undone 的回滚目标、墓碑版本与窗口截止 */
+  reverted_to?: 'grace' | 'open';
+  last_undone_revision?: number;
+  undo_deadline_at?: number;
 }
 
 /** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 */

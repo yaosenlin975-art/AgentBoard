@@ -47,6 +47,12 @@ export function migratePendingDecision(db: Db): void {
       checkpoint_json TEXT,
       current_answer_id TEXT,
       answer_revision INTEGER NOT NULL DEFAULT 0,
+      -- DEC-V4-UNDO-SERVER：撤销回答的回滚依据（回答时快照 + 6 秒窗口 + 墓碑指针）
+      answered_from_state TEXT,
+      undo_until INTEGER,
+      undone_at INTEGER,
+      undone_by TEXT,
+      last_undone_revision INTEGER,
       created_at INTEGER NOT NULL,
       answered_at INTEGER,
       withdrawn_at INTEGER,
@@ -77,6 +83,9 @@ export function migratePendingDecision(db: Db): void {
       answer_text TEXT,
       answered_by TEXT NOT NULL,
       source TEXT NOT NULL,
+      -- DEC-V4-UNDO-SERVER：撤销回答只打墓碑，不物理删行（append-only 审计）
+      revoked_at INTEGER,
+      revoked_by TEXT,
       created_at INTEGER NOT NULL
     );
 
@@ -103,4 +112,12 @@ export function migratePendingDecision(db: Db): void {
   ensureColumn(db, 'issue_decision', 'extension_count', 'extension_count INTEGER NOT NULL DEFAULT 0');
   ensureColumn(db, 'issue_decision', 'extended_by', 'extended_by TEXT');
   ensureColumn(db, 'issue_decision', 'extended_at', 'extended_at INTEGER');
+  // DEC-V4-UNDO-SERVER：撤销回答的回滚快照与墓碑（存量行 NULL；可重复执行）
+  ensureColumn(db, 'issue_decision', 'answered_from_state', 'answered_from_state TEXT');
+  ensureColumn(db, 'issue_decision', 'undo_until', 'undo_until INTEGER');
+  ensureColumn(db, 'issue_decision', 'undone_at', 'undone_at INTEGER');
+  ensureColumn(db, 'issue_decision', 'undone_by', 'undone_by TEXT');
+  ensureColumn(db, 'issue_decision', 'last_undone_revision', 'last_undone_revision INTEGER');
+  ensureColumn(db, 'issue_decision_answer', 'revoked_at', 'revoked_at INTEGER');
+  ensureColumn(db, 'issue_decision_answer', 'revoked_by', 'revoked_by TEXT');
 }

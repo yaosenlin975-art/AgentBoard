@@ -8,10 +8,14 @@ import {
   getDecisionDetail,
   insertAnswer,
   insertDecision,
+  listAnswers,
   listOptions,
   markDecisionLocked,
+  revokeAnswer,
   reviseDecisionAnswer,
+  undoDecisionAnswer,
   withdrawDecision as withdrawDecisionRow,
+  type DecisionAnsweredFromState,
   type DecisionDetail,
   type DecisionOptionInput,
   type DecisionOptionRow,
@@ -25,6 +29,12 @@ import { ApiError, ConflictError, ForbiddenError, NotFoundError, ValidationError
 /** v3 定稿：默认宽限 180 秒，合法区间 0–600；0 是合法值（立即落锁分支） */
 export const DECISION_GRACE_DEFAULT_SECONDS = 180;
 export const DECISION_GRACE_MAX_SECONDS = 600;
+
+/**
+ * DEC-V4-UNDO-SERVER：回答后的可撤销窗口（服务端常量，请求体不可覆盖、不可配置）。
+ * 到期后一律 409 UNDO_WINDOW_EXPIRED，即使 answered 行仍在。
+ */
+export const DECISION_UNDO_WINDOW_MS = 6000;
 
 const TRIGGERS: DecisionTrigger[] = ['blocked', 'scope_change', 'irreversible', 'missing_input'];
 const ON_EXPIRE_VALUES: DecisionOnExpire[] = ['stay_locked', 'unlock_default'];
@@ -333,6 +343,7 @@ export function answerPendingDecision(db: Db, input: AnswerDecisionInput): Decis
       }
       const now = Date.now();
       const expected = input.expected_revision ?? null;
+      const undoUntil = now + DECISION_UNDO_WINDOW_MS;
 
       if (decision.state === 'answered') {
         if (expected === null) {
@@ -368,6 +379,7 @@ export function answerPendingDecision(db: Db, input: AnswerDecisionInput): Decis
             answer_id: answer.id,
             expected_revision: expected,
             next_revision: nextRevision,
+            undo_until: undoUntil,
             now,
           })
         ) {
@@ -402,7 +414,16 @@ export function answerPendingDecision(db: Db, input: AnswerDecisionInput): Decis
         source,
         created_at: now,
       });
-      if (!answerActiveDecision(db, { id: decision.id, answer_id: answer.id, revision, now })) {
+      if (
+        !answerActiveDecision(db, {
+          id: decision.id,
+          answer_id: answer.id,
+          revision,
+          from_state: decision.state === 'grace' ? 'grace' : 'open',
+          undo_until: undoUntil,
+          now,
+        })
+      ) {
         throw new ApiError(409, 'DECISION_ALREADY_ANSWERED', '决策已被并发回答或撤回，本次未产生写入');
       }
       const wasGrace = decision.state === 'grace';
@@ -479,6 +500,157 @@ export function withdrawPendingDecision(
 /** 供 DEC-9/DEC-3 复用的「是否存在 in-flight 决策」查询 */
 export function hasActiveDecision(db: Db, issueId: string): boolean {
   return findActiveDecision(db, issueId) !== null;
+}
+
+export interface UndoDecisionInput {
+  decision_id: string;
+  /** 身份口径沿用现有 body actor 字符串（后续由权限卡接真实身份） */
+  by: string;
+  /** 必须等于当前 answer_revision，防止撤销掉更新的修订 */
+  expected_revision: number;
+}
+
+export interface UndoDecisionResult {
+  decision: DecisionDetail;
+  /** 回答前状态快照（回滚目标）；即使 grace 已过期被立即落锁，这里仍是快照值 */
+  reverted_to: DecisionAnsweredFromState;
+  undo_window_ms: number;
+  /** 同一 by + 同一 revision 的重复撤销：幂等 200，不写库、不广播 */
+  already_undone: boolean;
+}
+
+/** 回答前状态：优先读快照列；存量 answered 行无快照时按 locked_at 兜底推断 */
+function answeredFromState(decision: DecisionRow): DecisionAnsweredFromState {
+  if (decision.answered_from_state === 'grace' || decision.answered_from_state === 'open') {
+    return decision.answered_from_state;
+  }
+  return decision.locked_at === null ? 'grace' : 'open';
+}
+
+/**
+ * DEC-V4-UNDO-SERVER：6 秒内撤销回答（服务端真回滚，单事务 immediate）。
+ *
+ * 回滚边界（卡面写死）：
+ * - 答案行只打 `revoked_at` 墓碑，不物理删除；`current_answer_id` 置空，`answer_revision` 不回退；
+ * - decision 回 `answered_from_state`（grace/open），`undo_until` 保留供幂等重放判定；
+ * - issue 的解锁与 `claim_fence` 不回滚（`claimed_by` 保持 NULL）；
+ * - 回 grace 且原 `grace_until` 已过期时，复用 `lockIssueForDecisionInTx` 立即落锁（宽限不续命）。
+ */
+export function undoDecision(db: Db, input: UndoDecisionInput): UndoDecisionResult {
+  const by = input.by?.trim();
+  if (!by) throw new ValidationError('撤销人不能为空');
+  if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0) {
+    throw new ValidationError('expected_revision 不合法（需 ≥0 整数）');
+  }
+
+  return db
+    .transaction((): UndoDecisionResult => {
+      const now = Date.now();
+      const decision = getDecision(db, input.decision_id);
+      if (!decision) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+      if (decision.state === 'withdrawn') {
+        throw new ApiError(409, 'DECISION_WITHDRAWN', `决策已撤回（${decision.withdrawn_reason ?? '无理由'}），不能撤销回答`);
+      }
+      const revertedTo = answeredFromState(decision);
+
+      if (decision.state !== 'answered') {
+        // 幂等重放：同一 by + 同一 revision 且在窗口内 → 200 already_undone（不写库）
+        if (
+          decision.last_undone_revision === input.expected_revision &&
+          decision.undone_by === by &&
+          decision.undo_until !== null &&
+          now <= decision.undo_until
+        ) {
+          return {
+            decision: getDecisionDetail(db, decision.id, now)!,
+            reverted_to: revertedTo,
+            undo_window_ms: DECISION_UNDO_WINDOW_MS,
+            already_undone: true,
+          };
+        }
+        throw new ApiError(
+          409,
+          'UNDO_NOT_ANSWERED',
+          `决策当前不是 answered（state=${decision.state}），没有可撤销的回答`,
+        );
+      }
+
+      if (input.expected_revision !== decision.answer_revision) {
+        throw new ApiError(
+          409,
+          'DECISION_REVISION_CONFLICT',
+          `答案版本冲突（期望 revision=${input.expected_revision}，当前=${decision.answer_revision}），请重新读取后再撤销`,
+        );
+      }
+      if (decision.undo_until === null || now > decision.undo_until) {
+        throw new ApiError(
+          409,
+          'UNDO_WINDOW_EXPIRED',
+          `撤销窗口已过期（仅回答后 ${DECISION_UNDO_WINDOW_MS / 1000} 秒内可撤销）`,
+        );
+      }
+
+      const answer =
+        listAnswers(db, decision.id).find((row) => row.id === decision.current_answer_id) ?? null;
+      if (!answer) {
+        throw new ApiError(409, 'UNDO_NOT_ANSWERED', '决策没有可撤销的答案行（current_answer_id 为空）');
+      }
+      if (by !== answer.answered_by && by !== decision.created_by) {
+        throw new ApiError(409, 'UNDO_FORBIDDEN_ACTOR', `只有该答案的回答者或提问者可以撤销（by=${by}）`);
+      }
+      // open 场景：落锁后可能已有人重新 claim 并恢复工作，撤销会与真实工作冲突
+      if (revertedTo === 'open') {
+        const issue = getIssue(db, decision.issue_id);
+        if (issue && issue.claimed_by !== null) {
+          throw new ApiError(
+            409,
+            'UNDO_CLAIMED_AFTER_LOCK',
+            `任务已被 ${issue.claimed_by} 重新 claim，撤销会与已恢复的工作冲突`,
+          );
+        }
+      }
+
+      // 墓碑先写、条件更新最后（事务内抛错会整体回滚，不会留下半套墓碑）
+      revokeAnswer(db, { answer_id: answer.id, by, now });
+      if (
+        !undoDecisionAnswer(db, {
+          id: decision.id,
+          state: revertedTo,
+          answer_revision: decision.answer_revision,
+          answer_id: answer.id,
+          by,
+          now,
+        })
+      ) {
+        // immediate 事务内理论上不可达；若并发路径突破，按最新状态映射 409 且不写任何数据
+        const latest = getDecision(db, decision.id);
+        if (!latest || latest.state === 'withdrawn') {
+          throw new ApiError(409, 'DECISION_WITHDRAWN', '决策已被并发撤回，本次撤销未生效');
+        }
+        if (latest.state === 'answered' && latest.answer_revision !== input.expected_revision) {
+          throw new ApiError(409, 'DECISION_REVISION_CONFLICT', '答案已被并发修订，本次撤销未生效');
+        }
+        throw new ApiError(409, 'UNDO_NOT_ANSWERED', '决策状态已变化，本次撤销未生效');
+      }
+
+      // 回 grace 且宽限已过期：立即落锁（不续命；fence/占用按落锁口径处理）
+      if (revertedTo === 'grace' && decision.grace_until <= now) {
+        lockIssueForDecisionInTx(db, decision.id, { now, reason: 'grace_expired' });
+      }
+
+      insertCommentRow(db, {
+        issue_id: decision.issue_id,
+        author: 'system',
+        content: `决策回答已撤销（6 秒窗口）：decision=${decision.id}，第 ${decision.answer_revision} 版标记墓碑，回退到 ${revertedTo}`,
+      });
+      return {
+        decision: getDecisionDetail(db, decision.id, now)!,
+        reverted_to: revertedTo,
+        undo_window_ms: DECISION_UNDO_WINDOW_MS,
+        already_undone: false,
+      };
+    })
+    .immediate();
 }
 
 /** 供 DEC-2 投影复用：一卡当前锁/宽限状态 */

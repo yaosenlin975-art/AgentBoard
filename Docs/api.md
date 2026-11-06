@@ -897,13 +897,23 @@ app.use(express.json());
 
 原因（实测）：库里存在 200 万字符级页面时，原实现把全文取回再对每页做 `entityTerms` + `trigrams`，24 节点的图接口耗时 **22–23 秒**；改为摘要 + `(status,scope,id)` 索引后同规模 **22ms**（夹具实测，200 页 78ms）。
 
-## 20. 待决策（`/api/decisions`，decisionRoutes.ts，DEC-V4-API-EXTEND）
+## 20. 待决策（`/api/decisions`，decisionRoutes.ts，DEC-V4-API-EXTEND / DEC-V4-UNDO-SERVER）
 
 | 方法 路径 | 请求 | 响应 | 错误 |
 | --- | --- | --- | --- |
 | `GET /api/decisions` | query：`workspace_id`（必填）、`state?`、`issue_id?`、`stale?`、`limit?`（≤500） | `{ decisions: DecisionListItem[] }`；列表项含 `options[]` / `issue_priority` / `blocked_downstream_count`（DEC-V4-API-LIST） | 400 缺 `workspace_id` |
 | `GET /api/decisions/:id` | — | `{ decision, options, answers[] }` | 404 `DECISION_NOT_FOUND` |
+| `POST /api/decisions/:id/undo` | body：`by`（必填）、`expected_revision`（必填，≥0 整数） | 200 `{ decision, reverted_to: 'grace'\|'open', undo_window_ms: 6000, already_undone }` | 400 `VALIDATION_ERROR`；404 `DECISION_NOT_FOUND`；409 `UNDO_WINDOW_EXPIRED` / `UNDO_NOT_ANSWERED` / `DECISION_REVISION_CONFLICT` / `UNDO_CLAIMED_AFTER_LOCK` / `UNDO_FORBIDDEN_ACTOR` / `DECISION_WITHDRAWN` |
 | `POST /api/decisions/:id/extend` | body：`seconds`（1–300 整数，必填）、`by?`（缺省 `user`）、`fence?`（传了就校验）、`workspace_id?`（显式传入即做跨区守卫） | 200 `{ decision_id, state: 'grace', grace_until, remaining_grace_seconds, extended_seconds, extension_count, max_extend_seconds }` | 400 `INVALID_SECONDS`；404 `DECISION_NOT_FOUND`；409 `DECISION_NOT_GRACE` / `EXTEND_LIMIT_EXCEEDED`（details `{ extended_seconds, max_extend_seconds }`）/ `STALE_FENCE`；403 `FORBIDDEN`（`workspace_id` 与决策工作区不一致） |
+
+撤销回答语义（DEC-V4-UNDO-SERVER）：
+
+- 窗口固定 `6000ms`（服务端常量 `DECISION_UNDO_WINDOW_MS`），请求体不能覆盖；从最近一次回答/修订时刻起算，过期一律 409 `UNDO_WINDOW_EXPIRED`。
+- 回滚目标取回答时快照 `answered_from_state`：回 `grace` 沿用原 `grace_until`（已过期则立即复用落锁逻辑，**宽限不因撤销续命**）；回 `open` 时卡保持「待规划」。
+- 答案行只打 `revoked_at` / `revoked_by` 墓碑，**不物理删除**；`current_answer_id` 置空、`answer_revision` 不回退；`undone_at` / `undone_by` / `last_undone_revision` 记录最后撤销。
+- `claimed_by` 不恢复、`claim_fence` 不回退；open 场景若已有人重新 claim → 409 `UNDO_CLAIMED_AFTER_LOCK`。
+- 幂等：同一 `by` + 同一 `expected_revision` 在窗口内重复调用返回 200 `already_undone: true`，不写库、不重复广播。
+- 广播 `decision.undone`（带 `reverted_to` / `last_undone_revision` / `undo_deadline_at`）与 `issue.changed`；幂等重放不广播。
 
 延长语义：
 

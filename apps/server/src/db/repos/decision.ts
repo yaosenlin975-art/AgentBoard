@@ -13,6 +13,8 @@ export type DecisionState = 'grace' | 'open' | 'answered' | 'withdrawn';
 export type DecisionTrigger = 'blocked' | 'scope_change' | 'irreversible' | 'missing_input';
 export type DecisionSource = 'web' | 'cli';
 export type DecisionOnExpire = 'stay_locked' | 'unlock_default';
+/** DEC-V4-UNDO-SERVER：回答前的状态快照（撤销回滚的唯一依据） */
+export type DecisionAnsweredFromState = 'grace' | 'open';
 
 export interface DecisionRow {
   id: string;
@@ -39,6 +41,13 @@ export interface DecisionRow {
   checkpoint_json: string | null;
   current_answer_id: string | null;
   answer_revision: number;
+  /** DEC-V4-UNDO-SERVER：首次回答时的状态快照，撤销据此回滚（修订不改） */
+  answered_from_state: DecisionAnsweredFromState | null;
+  /** 最近一次回答/修订的可撤销截止（毫秒）；窗口长度固定 6000ms */
+  undo_until: number | null;
+  undone_at: number | null;
+  undone_by: string | null;
+  last_undone_revision: number | null;
   created_at: number;
   answered_at: number | null;
   withdrawn_at: number | null;
@@ -68,6 +77,9 @@ export interface DecisionAnswerRow {
   answer_text: string | null;
   answered_by: string;
   source: DecisionSource;
+  /** DEC-V4-UNDO-SERVER：撤销墓碑（只标记，不删行） */
+  revoked_at: number | null;
+  revoked_by: string | null;
   created_at: number;
 }
 
@@ -411,31 +423,102 @@ export function insertAnswer(
 /** 首次回答：grace/open → answered（先到者赢；changes=0 表示并发已被回答/撤回） */
 export function answerActiveDecision(
   db: Db,
-  input: { id: string; answer_id: string; revision: number; now: number },
+  input: {
+    id: string;
+    answer_id: string;
+    revision: number;
+    from_state: DecisionAnsweredFromState;
+    undo_until: number;
+    now: number;
+  },
 ): boolean {
   return (
     db
       .prepare(
         `UPDATE issue_decision SET state='answered', current_answer_id=?, answer_revision=?,
-           answered_at=?, updated_at=?
+           answered_from_state=?, undo_until=?, answered_at=?, updated_at=?
          WHERE id=? AND state IN ('grace','open')`,
       )
-      .run(input.answer_id, input.revision, input.now, input.now, input.id).changes === 1
+      .run(
+        input.answer_id,
+        input.revision,
+        input.from_state,
+        input.undo_until,
+        input.now,
+        input.now,
+        input.id,
+      ).changes === 1
   );
 }
 
-/** 修订：answered + expected_revision 的 CAS（旧 revision → 409） */
+/** 修订：answered + expected_revision 的 CAS（旧 revision → 409；undo_until 刷新为新窗口） */
 export function reviseDecisionAnswer(
   db: Db,
-  input: { id: string; answer_id: string; expected_revision: number; next_revision: number; now: number },
+  input: {
+    id: string;
+    answer_id: string;
+    expected_revision: number;
+    next_revision: number;
+    undo_until: number;
+    now: number;
+  },
 ): boolean {
   return (
     db
       .prepare(
-        `UPDATE issue_decision SET current_answer_id=?, answer_revision=?, updated_at=?
+        `UPDATE issue_decision SET current_answer_id=?, answer_revision=?, undo_until=?, updated_at=?
          WHERE id=? AND state='answered' AND answer_revision=?`,
       )
-      .run(input.answer_id, input.next_revision, input.now, input.id, input.expected_revision).changes === 1
+      .run(input.answer_id, input.next_revision, input.undo_until, input.now, input.id, input.expected_revision)
+      .changes === 1
+  );
+}
+
+/**
+ * DEC-V4-UNDO-SERVER：撤销回答的条件更新（末步 CAS）。
+ *
+ * `answer_revision` 不回退、`current_answer_id` 置空；只有仍是 answered 且版本/指针都匹配才生效。
+ * 返回 false 时调用方需重读该行并按状态映射 409（不写任何数据）。
+ */
+export function undoDecisionAnswer(
+  db: Db,
+  input: {
+    id: string;
+    state: DecisionAnsweredFromState;
+    answer_revision: number;
+    answer_id: string;
+    by: string;
+    now: number;
+  },
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE issue_decision
+            SET state=?, current_answer_id=NULL, undone_at=?, undone_by=?, last_undone_revision=?, updated_at=?
+          WHERE id=? AND state='answered' AND answer_revision=? AND current_answer_id=?`,
+      )
+      .run(
+        input.state,
+        input.now,
+        input.by,
+        input.answer_revision,
+        input.now,
+        input.id,
+        input.answer_revision,
+        input.answer_id,
+      ).changes === 1
+  );
+}
+
+/** DEC-V4-UNDO-SERVER：给答案行打墓碑（不物理删除；重复调用不覆盖首次墓碑） */
+export function revokeAnswer(db: Db, input: { answer_id: string; by: string; now: number }): boolean {
+  return (
+    db
+      .prepare(
+        'UPDATE issue_decision_answer SET revoked_at=?, revoked_by=? WHERE id=? AND revoked_at IS NULL',
+      )
+      .run(input.now, input.by, input.answer_id).changes === 1
   );
 }
 
