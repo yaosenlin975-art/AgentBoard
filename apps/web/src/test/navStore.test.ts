@@ -5,18 +5,28 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_NAV_VIEW,
+  DEFAULT_SIDEBAR_MODE,
   NAV_STORAGE_KEY,
   NAV_VIEWS,
+  SIDEBAR_MODES,
   currentNavView,
   isNavDrawer,
   isNavView,
+  isSidebarMode,
   normalizeNavView,
+  normalizeSidebarMode,
   useNavStore,
 } from '../state/navStore';
 import { usePanelStore } from '../state/panelStore';
 
 function resetNav(): void {
-  useNavStore.setState({ view: DEFAULT_NAV_VIEW, drawer: null, chatOrigin: null, decisionFocus: null });
+  useNavStore.setState({
+    view: DEFAULT_NAV_VIEW,
+    drawer: null,
+    sidebarMode: DEFAULT_SIDEBAR_MODE,
+    chatOrigin: null,
+    decisionFocus: null,
+  });
 }
 
 beforeEach(() => {
@@ -51,6 +61,38 @@ describe('视图枚举与守卫', () => {
     expect(normalizeNavView('log')).toBe('log');
     expect(normalizeNavView('nope')).toBe('board');
     expect(normalizeNavView(null)).toBe('board');
+  });
+});
+
+describe('侧栏两形态（SIDEBAR-1）', () => {
+  it('[S1] 默认展开；枚举与归一守卫', () => {
+    expect(SIDEBAR_MODES).toEqual(['expanded', 'collapsed']);
+    expect(DEFAULT_SIDEBAR_MODE).toBe('expanded');
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+    expect(isSidebarMode('collapsed')).toBe(true);
+    expect(isSidebarMode('rail')).toBe(false);
+    expect(isSidebarMode(undefined)).toBe(false);
+    expect(normalizeSidebarMode('collapsed')).toBe('collapsed');
+    expect(normalizeSidebarMode('weird')).toBe('expanded');
+    expect(normalizeSidebarMode(null)).toBe('expanded');
+  });
+
+  it('[S2] toggleSidebar 双向切换；setSidebarMode 非法值回落展开', () => {
+    useNavStore.getState().toggleSidebar();
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    useNavStore.getState().toggleSidebar();
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+
+    useNavStore.getState().setSidebarMode('collapsed');
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    useNavStore.getState().setSidebarMode('weird' as never);
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+  });
+
+  it('[S3] 本卡不做形态持久化：localStorage 只写 view', () => {
+    useNavStore.getState().setSidebarMode('collapsed');
+    const persisted = JSON.parse(localStorage.getItem(NAV_STORAGE_KEY) ?? '{}') as { state?: Record<string, unknown> };
+    expect(persisted.state).not.toHaveProperty('sidebarMode');
   });
 });
 

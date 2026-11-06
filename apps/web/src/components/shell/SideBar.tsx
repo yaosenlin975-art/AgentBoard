@@ -14,6 +14,7 @@
  *   已删除：`sidebar-controls`、`topbar-chat`、`topbar-chat-unread`（聊天入口与徽标合并到五入口）。
  */
 import { useRef } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useNavStore, type NavView } from '../../state/navStore';
 import { usePanelStore } from '../../state/panelStore';
@@ -69,6 +70,9 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const setView = useNavStore((state) => state.setView);
   const drawer = useNavStore((state) => state.drawer);
   const toggleDrawer = useNavStore((state) => state.toggleDrawer);
+  // SIDEBAR-1：两形态骨架（宽度与标签过渡见 index.css 的 .ab-sidebar）
+  const sidebarMode = useNavStore((state) => state.sidebarMode);
+  const toggleSidebar = useNavStore((state) => state.toggleSidebar);
   // 未读徽标 = 全部会话未读合计（设计 §5；只挂在五入口的聊天项上）
   const unread = usePanelStore((state) => state.unread);
   const chatUnread = Object.values(unread).reduce((sum, n) => sum + (n > 0 ? n : 0), 0);
@@ -77,35 +81,79 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
   const wsStatus = useAppStore((state) => state.wsStatus);
   const [theme, cycleTheme] = useTheme();
   const workspaceTriggerRef = useRef<HTMLButtonElement>(null);
+  const sidebarRef = useRef<HTMLElement>(null);
+  const collapseToggleRef = useRef<HTMLButtonElement>(null);
   // DEC-6：待决策徽标 = 当前工作区 grace + open 条数（0 时不显示数字，入口仍可见）
   const decisionCount = useDecisionsCount(workspace?.id ?? null);
 
+  /** SIDEBAR-1：切换形态；收起时把侧栏内的焦点交给仍可见的切换按钮，避免掉回 body */
+  function handleToggleSidebar(event: ReactMouseEvent<HTMLButtonElement>): void {
+    toggleSidebar();
+    if (sidebarMode !== 'expanded') return;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && sidebarRef.current?.contains(active) && active !== event.currentTarget) {
+      collapseToggleRef.current?.focus({ preventScroll: true });
+    }
+  }
+
+  const collapsed = sidebarMode === 'collapsed';
+
   return (
     <nav
+      ref={sidebarRef}
+      id="app-sidebar"
       data-testid="sidebar"
+      data-mode={sidebarMode}
       aria-label="主导航"
-      className="flex w-[176px] shrink-0 flex-col border-r border-hairline bg-surface-card"
+      className="ab-sidebar flex shrink-0 flex-col border-r border-hairline bg-surface-card"
     >
       {/* ① 工作空间（FIX-1：容器 relative，浮窗锚定在触发按钮正下方） */}
-      <div data-testid="sidebar-workspace" className="relative border-b border-hairline px-3 py-3">
-        <button
-          type="button"
-          id={LEFT_TRIGGER_ID}
-          ref={workspaceTriggerRef}
-          data-testid="topbar-workspace"
-          aria-expanded={leftOpen}
-          aria-controls={LEFT_PANEL_ID}
-          aria-label="工作空间"
-          title="切换工作空间"
-          onClick={toggleLeft}
-          className="flex w-full min-w-0 items-center gap-1 text-left text-xl font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-        >
-          <span aria-hidden="true" className="shrink-0 text-ink-3">▾</span>
-          <span className="truncate">{workspace?.name ?? '未选择工作区'}</span>
-        </button>
+      <div data-testid="sidebar-workspace" className="ab-sidebar-head relative border-b border-hairline px-3 py-3">
+        <div className="ab-sidebar-head-row flex items-start gap-1.5">
+          <button
+            type="button"
+            id={LEFT_TRIGGER_ID}
+            ref={workspaceTriggerRef}
+            data-testid="topbar-workspace"
+            aria-expanded={leftOpen}
+            aria-controls={LEFT_PANEL_ID}
+            aria-label="工作空间"
+            title="切换工作空间"
+            onClick={toggleLeft}
+            className="ab-sidebar-ws flex w-full min-w-0 items-center gap-1 text-left text-xl font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            <span aria-hidden="true" className="ab-sidebar-caret shrink-0 text-ink-3">▾</span>
+            <span className="ab-sidebar-label truncate">{workspace?.name ?? '未选择工作区'}</span>
+            {/* 收起态的工作空间方块（首字）；展开态由 .ab-sidebar-label 显示全名 */}
+            <span aria-hidden="true" className="ab-sidebar-ws-initial">
+              {(workspace?.name ?? '未选择工作区').slice(0, 1)}
+            </span>
+          </button>
+          {/* SIDEBAR-1：顶部切换按钮（展开 24×24 幽灵按钮 / 收起 28×22，仍在头部） */}
+          <button
+            type="button"
+            ref={collapseToggleRef}
+            data-testid="sidebar-collapse-toggle"
+            aria-expanded={!collapsed}
+            aria-controls="app-sidebar"
+            aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
+            title={collapsed ? '展开侧栏' : '收起侧栏'}
+            onClick={handleToggleSidebar}
+            className="ab-sidebar-toggle inline-flex shrink-0 items-center justify-center rounded-md text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="ab-sidebar-ico-collapse" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 6l-6 6 6 6" />
+              <path d="M19 4v16" />
+            </svg>
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="ab-sidebar-ico-expand" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 6l6 6-6 6" />
+              <path d="M19 4v16" />
+            </svg>
+          </button>
+        </div>
         <p
           data-testid="sidebar-workspace-path"
-          className="mt-0.5 truncate text-xs leading-none text-ink-3"
+          className="ab-sidebar-label mt-0.5 truncate text-xs leading-none text-ink-3"
           title={workspace?.path ?? '未选择工作区'}
         >
           {workspace?.path ?? '未选择工作区'}
@@ -114,7 +162,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
       </div>
 
       {/* ② 六入口（聊天只在这里出现一次，未读徽标挂本项；待决策徽标见 DEC-6） */}
-      <ul className="flex flex-col gap-0.5 p-2" role="list">
+      <ul className="ab-sidebar-nav flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;
           return (
@@ -128,7 +176,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 data-active={active ? 'true' : 'false'}
                 onClick={() => setView(entry.view)}
                 // A2：入口点击反馈只走颜色过渡（≤150ms）+ data-active 供断言；reduced-motion 下即时
-                className={`flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                className={`ab-sidebar-entry flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   active
                     ? 'bg-accent-soft font-medium text-accent active:bg-accent-soft'
                     : 'text-ink-2 hover:bg-surface-raised active:bg-surface-raised'
@@ -137,12 +185,12 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                 <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                   <path d={ENTRY_ICON[entry.view]} />
                 </svg>
-                <span className="truncate">{entry.label}</span>
+                <span className="ab-sidebar-label truncate">{entry.label}</span>
                 {entry.view === 'chat' && chatUnread > 0 && (
                   <span
                     data-testid="sidebar-chat-unread"
                     title={`${chatUnread} 条未读消息`}
-                    className="ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
+                    className="ab-sidebar-badge ml-auto shrink-0 rounded-full bg-red-600 px-1.5 text-[10px] font-medium leading-4 text-white"
                   >
                     {chatUnread > 99 ? '99+' : chatUnread}
                   </span>
@@ -151,7 +199,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                   <span
                     data-testid="sidebar-decisions-badge"
                     title={`${decisionCount} 条待决策`}
-                    className="ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-medium leading-4 text-white"
+                    className="ab-sidebar-badge ml-auto shrink-0 rounded-full bg-accent px-1.5 text-[10px] font-medium leading-4 text-white"
                   >
                     {decisionCount > 99 ? '99+' : decisionCount}
                   </span>
@@ -163,7 +211,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
       </ul>
 
       {/* ③ 账号 / 设置（FIX-1：从四宫格下沉到底部，纵向两项） */}
-      <div data-testid="sidebar-account-settings" className="mt-auto flex flex-col gap-1 px-2 pb-1">
+      <div data-testid="sidebar-account-settings" className="ab-sidebar-bottom mt-auto flex flex-col gap-1 px-2 pb-1">
         <button
           type="button"
           data-testid="topbar-accounts"
@@ -171,12 +219,12 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           aria-expanded={drawer === 'accounts'}
           title="管理 WorkBuddy / CodeBuddy 账号"
           onClick={() => toggleDrawer('accounts')}
-          className={BOTTOM_BTN}
+          className={`ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6" />
           </svg>
-          <span className="truncate">账号</span>
+          <span className="ab-sidebar-label truncate">账号</span>
         </button>
         <button
           type="button"
@@ -184,18 +232,18 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           aria-label="设置"
           aria-expanded={drawer === 'settings'}
           onClick={() => toggleDrawer('settings')}
-          className={BOTTOM_BTN}
+          className={`ab-sidebar-bottom-btn ${BOTTOM_BTN}`}
         >
           <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 15a3 3 0 100-6 3 3 0 000 6M4 12h2M18 12h2M12 4v2M12 18v2M6.5 6.5l1.4 1.4M16.1 16.1l1.4 1.4M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4" />
           </svg>
-          <span className="truncate">设置</span>
+          <span className="ab-sidebar-label truncate">设置</span>
         </button>
       </div>
 
       {/* ④ 状态行：服务状态圆点 + 主题小字（点字切主题） */}
       <div
-        className="flex items-center gap-1 border-t border-hairline px-2 py-2 text-[11px] text-ink-3"
+        className="ab-sidebar-status flex items-center gap-1 border-t border-hairline px-2 py-2 text-[11px] text-ink-3"
         data-testid="sidebar-status"
       >
         {/* PANEL-VIEW-BUG 口径：只保留状态圆点（颜色编码），文案用短词跟在后面 */}
@@ -208,15 +256,15 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         >
           <span className={`inline-block h-2 w-2 rounded-full ${WS_DOT[wsStatus]}`} aria-hidden="true" />
         </span>
-        <span className="truncate">{WS_LABEL[wsStatus]}</span>
-        <span aria-hidden="true" className="shrink-0 text-ink-3">·</span>
+        <span className="ab-sidebar-label truncate">{WS_LABEL[wsStatus]}</span>
+        <span aria-hidden="true" className="ab-sidebar-status-sep shrink-0 text-ink-3">·</span>
         {/* AUDIT-SETTINGS（F-13）：主题的唯一权威入口是「设置 → 主题」三选一；这里只**只读显示**当前主题，不再可点（两处可点 = 多入口） */}
         <span
           data-testid="topbar-theme"
           data-readonly="true"
           aria-label={`当前${THEME_LABEL[theme]}（在设置里切换）`}
           title={`主题：${THEME_LABEL[theme]}（在「设置 → 主题」里切换）`}
-          className="shrink-0 text-[11px] text-ink-3"
+          className="ab-sidebar-label shrink-0 text-[11px] text-ink-3"
         >
           {THEME_SHORT[theme] ?? THEME_LABEL[theme]}
         </span>

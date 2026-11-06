@@ -95,6 +95,14 @@ optgroup {
   /* UNSLOP pass 9：全站唯一缓动曲线 */
   --ab-ease: cubic-bezier(0.22, 1, 0.36, 1);
   /*
+   * SIDEBAR-1：侧栏两形态专用令牌（只给侧栏用，不动上面的全局 --ab-ease）。
+   * 宽度过渡 160ms cubic-bezier(0.2, 0, 0, 1)，见文末 .ab-sidebar 区块。
+   */
+  --ab-ease-rail: cubic-bezier(0.2, 0, 0, 1);
+  --ab-dur-rail: 160ms;
+  --ab-sidebar-expanded: 176px;
+  --ab-sidebar-collapsed: 56px;
+  /*
    * CHAT-VIS1：diff 增删色（纸面 #fdfbf7 上 5.8:1 / 6.2:1，压饱和度对齐本套暖石墨）。
    * `--ab-*-soft` 是同一色的低透明度形态，只用作行底色，不单独承载语义。
    */
@@ -544,6 +552,152 @@ optgroup {
   .detail-action-bar .ab-more-menu {
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+/* ============================================================
+   SIDEBAR-1：侧栏「展开 176px ↔ 收起 56px」两形态骨架
+   - 同一套 DOM：标签仍渲染，用 max-width + opacity 隐藏（不用 display:none）
+   - 过渡只用 --ab-ease-rail / --ab-dur-rail，全局 --ab-ease 保持不变
+   - 收起态 tooltip / 角标定位 / 当前项竖条由 SIDEBAR-3 负责
+   ============================================================ */
+.ab-sidebar {
+  width: var(--ab-sidebar-expanded);
+  transition: width var(--ab-dur-rail) var(--ab-ease-rail);
+}
+.ab-sidebar[data-mode='collapsed'] {
+  width: var(--ab-sidebar-collapsed);
+}
+
+/* 标签：展开最多 120px；收起压到 0 + 淡出（120ms，比宽度先结束，避免文字被拉成细条） */
+.ab-sidebar-label {
+  max-width: 120px;
+  opacity: 1;
+  transition:
+    max-width var(--ab-dur-rail) var(--ab-ease-rail),
+    opacity 120ms var(--ab-ease-rail);
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-label {
+  max-width: 0;
+  opacity: 0;
+}
+
+/* 顶部切换按钮：展开 24×24 幽灵按钮；收起 28×22，仍在头部区域 */
+.ab-sidebar-toggle {
+  width: 24px;
+  height: 24px;
+  transition:
+    background-color var(--ab-dur-rail) var(--ab-ease-rail),
+    color var(--ab-dur-rail) var(--ab-ease-rail);
+}
+.ab-sidebar-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+.ab-sidebar-ico-expand {
+  display: none;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-ico-collapse {
+  display: none;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-ico-expand {
+  display: block;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-toggle {
+  width: 28px;
+  height: 22px;
+}
+
+/* 工作空间：收起时变成 34×34 首字方块，切换按钮排在其下（头部同一 zone） */
+.ab-sidebar-ws-initial {
+  display: none;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-head {
+  padding: 10px 0 8px;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-head-row {
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-ws {
+  flex: 0 0 auto;
+  width: 34px;
+  justify-content: center;
+  padding: 0;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-caret {
+  display: none;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-ws-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--ab-accent-soft);
+  color: var(--ab-accent);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* 路径行收起后不占垂直空间（文本仍在 DOM 里） */
+.ab-sidebar[data-mode='collapsed'] [data-testid='sidebar-workspace-path'] {
+  margin-top: 0;
+  line-height: 0;
+}
+
+/* 六入口：收起态 36×36 居中图标（10 + 36 + 10 = 56） */
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-nav {
+  padding: 8px 10px;
+  gap: 6px;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-entry {
+  width: 36px;
+  height: 36px;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+
+/* 角标：骨架阶段收起态先不占 36px 图标位；SIDEBAR-3 会改成右上角 14×14 */
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-badge {
+  display: none;
+}
+
+/* 账号 / 设置：收起态 36×36 纯图标按钮 */
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-bottom {
+  align-items: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-bottom-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  gap: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+/* 状态行：收起只留圆点，文案与分隔符隐藏（tooltip 由 SIDEBAR-3 补） */
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-status {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.ab-sidebar[data-mode='collapsed'] .ab-sidebar-status-sep {
+  display: none;
+}
+
+/* 减弱动效：两形态切换与标签淡出直接落地（与系统设置同源） */
+@media (prefers-reduced-motion: reduce) {
+  .ab-sidebar,
+  .ab-sidebar-label,
+  .ab-sidebar-toggle {
     transition-duration: 1ms !important;
   }
 }

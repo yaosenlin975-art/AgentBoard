@@ -16,16 +16,23 @@
  *
  * 持久化：只持久化 `view`（`agentboard.nav`）；`drawer` 不持久化（刷新后不该自动弹出面板）。
  * 兜底：持久化里出现未知/非法 view（旧版本遗留、手改 localStorage）一律回落 `board`。
+ *
+ * SIDEBAR-1：侧栏两形态骨架 —— `sidebarMode ∈ { expanded, collapsed }`，默认展开；
+ * 本卡只落状态与切换动作，持久化策略由 SIDEBAR-2 负责（现在仍只写 `view`）。
  */
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 export type NavView = 'board' | 'decisions' | 'tree' | 'knowledge' | 'log' | 'chat';
 export type NavDrawer = 'accounts' | 'settings';
+/** SIDEBAR-1：侧栏形态 —— 展开 176px / 收起 56px 图标栏 */
+export type SidebarMode = 'expanded' | 'collapsed';
 
 export const NAV_VIEWS: readonly NavView[] = ['board', 'decisions', 'tree', 'knowledge', 'log', 'chat'];
 export const NAV_DRAWERS: readonly NavDrawer[] = ['accounts', 'settings'];
+export const SIDEBAR_MODES: readonly SidebarMode[] = ['expanded', 'collapsed'];
 export const DEFAULT_NAV_VIEW: NavView = 'board';
+export const DEFAULT_SIDEBAR_MODE: SidebarMode = 'expanded';
 export const NAV_STORAGE_KEY = 'agentboard.nav';
 
 export function isNavView(value: unknown): value is NavView {
@@ -36,14 +43,29 @@ export function isNavDrawer(value: unknown): value is NavDrawer {
   return typeof value === 'string' && (NAV_DRAWERS as readonly string[]).includes(value);
 }
 
+export function isSidebarMode(value: unknown): value is SidebarMode {
+  return typeof value === 'string' && (SIDEBAR_MODES as readonly string[]).includes(value);
+}
+
 /** 持久化恢复用：非法/缺失一律回落默认视图 */
 export function normalizeNavView(value: unknown): NavView {
   return isNavView(value) ? value : DEFAULT_NAV_VIEW;
 }
 
+/** 持久化恢复用：非法/缺失一律回落展开（与 normalizeNavView 同风格） */
+export function normalizeSidebarMode(value: unknown): SidebarMode {
+  return isSidebarMode(value) ? value : DEFAULT_SIDEBAR_MODE;
+}
+
 export interface NavState {
   view: NavView;
   drawer: NavDrawer | null;
+  /** SIDEBAR-1：侧栏形态（默认展开；持久化见 SIDEBAR-2） */
+  sidebarMode: SidebarMode;
+  /** 显式设定侧栏形态（非法值回落展开） */
+  setSidebarMode: (mode: SidebarMode) => void;
+  /** 展开 ↔ 收起 */
+  toggleSidebar: () => void;
   /** NAV-CHAT-EXIT：进入整屏聊天前所在的视图（退出时回到它；null = 无来源 → board） */
   chatOrigin: NavView | null;
   /** DEC-6 深链：待决策视图要选中的决策 id（切走即清空；不持久化） */
@@ -81,8 +103,12 @@ export const useNavStore = create<NavState>()(
     (set) => ({
       view: DEFAULT_NAV_VIEW,
       drawer: null,
+      sidebarMode: DEFAULT_SIDEBAR_MODE,
       chatOrigin: null,
       decisionFocus: null,
+      setSidebarMode: (mode) => set({ sidebarMode: normalizeSidebarMode(mode) }),
+      toggleSidebar: () =>
+        set((state) => ({ sidebarMode: state.sidebarMode === 'expanded' ? 'collapsed' : 'expanded' })),
       setView: (view) =>
         set((state) => {
           const next = normalizeNavView(view);
