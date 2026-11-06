@@ -128,6 +128,31 @@
 | 1 | job failed（`lastError` 原文透出，含预检拒绝：目标库已存在、上次迁移未收尾、无中间态可恢复、清理被拒、回迁被拒）；工作区不存在；400；轮询超时；cleanup / revert 缺 `--workspace` |
 | 2 | POST 409（该区已有任务在跑，服务端文案原样透出）；cleanup 无可清理的半成品 |
 
+### 工作区文本快照（STORE-5，`/api/workspaces/:id/db/snapshot*`，`apps/server/src/services/workspaceSnapshot.ts`）
+
+- `export` / `import` 只对 **localized** 工作区库生效；中心库模式回答 409 `SNAPSHOT_NOT_LOCALIZED`（文案指向 `kb workspace-db enable`）。`validate` 只读快照文件、不碰库，未下沉的工作区也能先校验。
+- 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues.jsonl` / `issue_comments.jsonl` / `issue_dependencies.jsonl` / `issue_git_baseline.jsonl` / `issue_draft_audit.jsonl` / `workspace_status.jsonl` / `workspace_change_log.jsonl` / `knowledge_pages.jsonl` / `knowledge_revisions.jsonl` / `knowledge_links.jsonl` / `sessions.jsonl`，可选 `messages.jsonl`）。
+- manifest：`format:'agentboard.workspace-snapshot/1'`、`workspace_id`、`schema_version:1`、`exported_at`（ISO）、`generator_version`、`source_db`、`included_tables`（库内单数表名）、`files:[{ file, table, rows, sha256 }]`；JSONL 每行一个对象，列序固定、按主键升序，保证同样数据两次导出除 `exported_at` 外逐字节一致。
+- 时间列（`ts` 与 `*_at`）导出为 ISO 字符串，导入时还原为 epoch ms；列已存在则忽略导出侧多出的列，缺列 / 字段不一致 / 哈希或行数不符一律 422。
+- 目录边界：缺省 `<ws>/.agentboard/snapshot`；`dir` 允许相对工作区根或绝对路径，但必须落在工作区内，否则 400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`。
+- enable 成功后由迁移流程自动导出一次（失败只记 `[snapshot]` 警告，不影响迁移结果）。
+
+| 方法 路径 | 请求 | 响应 | 错误 | 源 |
+| --- | --- | --- | --- | --- |
+| `POST /api/workspaces/:id/db/snapshot/export` | body 严格 `{ includeMessages?: boolean }`（默认不导出会话消息） | `{ dir, manifest: SnapshotManifest }`；服务端单写者执行（`db.transaction` 读全表 → 临时目录 → rename 覆盖），导出后回读自校验 | 404；400；409 `SNAPSHOT_NOT_LOCALIZED`；500 `SNAPSHOT_SCHEMA_MISSING` / `SNAPSHOT_SELF_CHECK_FAILED` | routes.ts:893 |
+| `GET /api/workspaces/:id/db/snapshot/validate?dir=` | query `dir?`（缺省 `.agentboard/snapshot`） | `{ ok: true, dir, manifest, tables: [{ table, rows }] }`；只读 | 404；400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`；422 `SNAPSHOT_INVALID` | routes.ts:909 |
+| `POST /api/workspaces/:id/db/snapshot/import` | body 严格 `{ dir?: string, replace?: boolean }` | `ImportSnapshotResult`：`{ dir, tables: [{ table, rows }], rows, backupPath }`；`replace=true` 先 `VACUUM INTO <ws>/.agentboard/backup/snapshot-import-<ts>.db` 再覆盖（`backupPath` 返回该路径）；单事务插入、逐表行数守恒，失败整体 ROLLBACK | 404；400；409 `SNAPSHOT_NOT_LOCALIZED` / `SNAPSHOT_TARGET_NOT_EMPTY`；422 `SNAPSHOT_INVALID` / `SNAPSHOT_WORKSPACE_MISMATCH` | routes.ts:925 |
+
+`SNAPSHOT_TARGET_NOT_EMPTY` 判定只看 `workspace_status` 之外的业务表（内置状态字典非空不算）；`SNAPSHOT_WORKSPACE_MISMATCH` 是快照 `workspace_id` 与目标工作区不一致（不做跨库重映射）。导入使用 `PRAGMA foreign_key_check` 兜底，库内断链可导出但不可导入。
+
+| 端点 | CLI | 备注 |
+| --- | --- | --- |
+| `POST .../db/snapshot/export` | `kb workspace-db snapshot export <workspace>` | `--include-messages` 一并导出；文本输出「快照已导出 / 行数合计 / 未包含：会话消息」 |
+| `GET .../db/snapshot/validate` | `kb workspace-db snapshot validate <workspace>` | `--file <dir>` 指定目录；输出「快照校验通过 / 文件 N 个 / 行数合计」 |
+| `POST .../db/snapshot/import` | `kb workspace-db snapshot import <workspace>` | `--file <dir>`、`--replace`；输出「快照已导入 / 导入行数 / 覆盖前备份」 |
+
+退出码沿用本族口径：0 成功；1 校验不通过（`SNAPSHOT_INVALID`）、工作区不存在、400；2 409（未下沉 / 目标库非空）。
+
 ## 4. system
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |

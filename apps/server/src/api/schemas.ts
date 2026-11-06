@@ -399,6 +399,14 @@ export const workspaceLocalizeSchema = z
 /** STORE-3a：cleanup / revert 请求体（当前无参数；保留 strict 空对象以便后续扩展不破坏契约） */
 export const workspaceDbOpSchema = z.object({}).strict();
 
+/** STORE-5：快照导出（messages 默认不导出） */
+export const workspaceSnapshotExportSchema = z.object({ includeMessages: z.boolean().optional() }).strict();
+
+/** STORE-5：快照导入（dir 缺省 <ws>/.agentboard/snapshot；replace 先 VACUUM INTO 备份） */
+export const workspaceSnapshotImportSchema = z
+  .object({ dir: z.string().min(1).optional(), replace: z.boolean().optional() })
+  .strict();
+
 export const patchSettingsSchema = z
   .object({
     port: z

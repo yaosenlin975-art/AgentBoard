@@ -19,6 +19,7 @@ import { openDb } from '../db/connection.js';
 import { initSchema } from '../db/schema.js';
 import { ApiError } from '../errors.js';
 import { vacuumInto, listFilesRecursive } from './dbMigration.js';
+import { exportWorkspaceSnapshot } from './workspaceSnapshot.js';
 import { workspaceStateDir } from '../db/resolver.js';
 import {
   LOCALIZE_STAGES,
@@ -491,6 +492,12 @@ export async function localizeWorkspace(
     // ⑧ finalize（STORE-4e：先补齐与 dry-run 统一的聚合键——rows_total / 附件 / 库体积，再落盘状态）
     fillTerminalAggregateCounts(counts, stateDir, targetDbPath);
     write('finalize');
+    // ⑨ STORE-5：迁移完成后自动导出一次文本快照（库为准；导出失败不阻断迁移，只告警）
+    try {
+      exportWorkspaceSnapshot({ db: target, workspacePath: wsPath, sourceDbPath: targetDbPath });
+    } catch (error) {
+      console.warn(`[snapshot] enable 后自动导出失败（不影响迁移）：${error instanceof Error ? error.message : String(error)}`);
+    }
     return { state: 'localized', migration_id: migrationId, stages, counts, backup_path: backupPath, target_db_path: targetDbPath };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

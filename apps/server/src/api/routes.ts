@@ -78,6 +78,12 @@ import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decide
 import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, removeEntityLocator, removeEntityLocatorByWorkspace, rebuildEntityLocator, upsertEntityLocator } from '../db/repos/entityLocator.js';
 import { getActiveWorkspaceDbJob, getLocalizeJob, startLocalizeJob, startWorkspaceDbOpJob } from '../services/workspaceLocalizeJob.js';
 import { buildWorkspaceDbStatus } from '../services/workspaceDbStatus.js';
+import {
+  exportWorkspaceSnapshot,
+  importWorkspaceSnapshot,
+  resolveSnapshotDir,
+  validateWorkspaceSnapshot,
+} from '../services/workspaceSnapshot.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
@@ -116,6 +122,8 @@ import {
   dbMigrateSchema,
   workspaceLocalizeSchema,
   workspaceDbOpSchema,
+  workspaceSnapshotExportSchema,
+  workspaceSnapshotImportSchema,
   sendMessageSchema,
   pageQuerySchema, descriptionQuerySchema, commentQuerySchema, issueStatusSchema,
   addDependencySchema, dependencyQuerySchema, draftRequestSchema, reopenSchema,
@@ -863,6 +871,68 @@ export function createRouter(deps: RouterDeps): Router {
       centerDbPath: currentDbPath ?? db.name,
       ...(currentDbPath === null ? {} : { attachmentsDir: attachmentsDirOf(currentDbPath) }),
       ...(active === null ? {} : { activeJob: { jobId: active.jobId, kind: active.kind ?? 'localize', status: active.status, stage: active.stage } }),
+    }));
+  });
+
+  /** STORE-5：快照只能作用于已下沉的工作区库（库为准；中心库模式先 enable） */
+  const localizedWorkspaceDb = (wsRow: { id: string; path: string; dbMode: WorkspaceDbMode }) => {
+    const resolution = getDbForWorkspace(workspaceResolverDeps, wsRow);
+    if (resolution.decision.target !== 'workspace') {
+      throw new ApiError(
+        409, 'SNAPSHOT_NOT_LOCALIZED',
+        `快照只作用于工作区库：该工作区当前解析为 ${resolution.decision.target}（${resolution.decision.reason}），先 kb workspace-db enable`,
+      );
+    }
+    return resolution.db;
+  };
+
+  /**
+   * STORE-5：POST /api/workspaces/:id/db/snapshot/export { includeMessages? }
+   * → { dir, manifest }。服务端单写者执行，导出后回读自校验。
+   */
+  router.post('/workspaces/:id/db/snapshot/export', (req, res) => {
+    const wsRow = requireWorkspaceRow(req.params.id!);
+    const body = parseBody(workspaceSnapshotExportSchema, req.body ?? {});
+    const rdb = localizedWorkspaceDb(wsRow);
+    res.json(exportWorkspaceSnapshot({
+      db: rdb,
+      workspacePath: wsRow.path,
+      sourceDbPath: workspaceDbPath(wsRow.path),
+      includeMessages: body.includeMessages === true,
+    }));
+  });
+
+  /**
+   * STORE-5：GET /api/workspaces/:id/db/snapshot/validate?dir=
+   * 只读校验 manifest + 文件哈希/行数；目录缺省 <ws>/.agentboard/snapshot，且必须位于工作区内。
+   */
+  router.get('/workspaces/:id/db/snapshot/validate', (req, res) => {
+    const wsRow = requireWorkspaceRow(req.params.id!);
+    const dir = resolveSnapshotDir(wsRow.path, typeof req.query.dir === 'string' ? req.query.dir : undefined);
+    const checked = validateWorkspaceSnapshot(dir);
+    res.json({
+      ok: true,
+      dir: checked.dir,
+      manifest: checked.manifest,
+      tables: [...checked.rows.entries()].map(([table, rows]) => ({ table, rows: rows.length })),
+    });
+  });
+
+  /**
+   * STORE-5：POST /api/workspaces/:id/db/snapshot/import { dir?, replace? }
+   * 只允许同 workspace_id 的空工作区库；replace=true 先 VACUUM INTO 备份再覆盖，失败整体回滚。
+   */
+  router.post('/workspaces/:id/db/snapshot/import', (req, res) => {
+    const wsRow = requireWorkspaceRow(req.params.id!);
+    const body = parseBody(workspaceSnapshotImportSchema, req.body ?? {});
+    const rdb = localizedWorkspaceDb(wsRow);
+    const dir = resolveSnapshotDir(wsRow.path, body.dir);
+    res.json(importWorkspaceSnapshot({
+      db: rdb,
+      dir,
+      workspaceId: wsRow.id,
+      workspacePath: wsRow.path,
+      replace: body.replace === true,
     }));
   });
 

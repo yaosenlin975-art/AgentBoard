@@ -30,7 +30,15 @@ import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
 import { accountSwitch, accountsCapabilities, accountsList } from './commands/accounts.js';
-import { workspaceDbCleanup, workspaceDbEnable, workspaceDbRevert, workspaceDbStatus } from './commands/workspaceDb.js';
+import {
+  workspaceDbCleanup,
+  workspaceDbEnable,
+  workspaceDbRevert,
+  workspaceDbSnapshotExport,
+  workspaceDbSnapshotImport,
+  workspaceDbSnapshotValidate,
+  workspaceDbStatus,
+} from './commands/workspaceDb.js';
 import { registerDecisionCommands } from './commands/decision.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
@@ -494,6 +502,46 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 1 回迁被拒或失败（未下沉 / 中心库已有该区数据 / 校验失败等，中心库数据不变）、工作区不存在、轮询超时
 `)
     .action(async (opts: { workspace: string }) => workspaceDbRevert(makeCtx(program, io), opts.workspace));
+
+  // STORE-5：工作区文本快照（库为准，快照是派生物）——服务端单写者导出 / 只读校验 / 空库导入
+  const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
+  snapshot.command('export')
+    .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（服务端单写者执行，导出后回读自校验）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .option('--include-messages', '同时导出会话消息（messages.jsonl；默认不导出，体积大且敏感）')
+    .addHelpText('after', `
+示例：
+  kb workspace-db snapshot export 任务看板
+  kb workspace-db snapshot export 任务看板 --include-messages
+退出码：0 成功；2 该工作区尚未下沉（先 enable）；1 其它错误
+`)
+    .action(async (workspace: string, opts: { includeMessages?: boolean }) =>
+      workspaceDbSnapshotExport(makeCtx(program, io), workspace, { includeMessages: opts.includeMessages === true }));
+  snapshot.command('validate')
+    .description('校验快照：manifest 结构 + 每个文件 sha256/行数（只读，不写任何数据）')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .option('--file <dir>', '快照目录（相对工作区根；缺省 .agentboard/snapshot）')
+    .addHelpText('after', `
+示例：
+  kb workspace-db snapshot validate 任务看板
+  kb workspace-db snapshot validate 任务看板 --file .agentboard/snapshot
+退出码：0 校验通过；1 快照不可导入（哈希/行数/schema_version 不符）、工作区不存在
+`)
+    .action(async (workspace: string, opts: { file?: string }) =>
+      workspaceDbSnapshotValidate(makeCtx(program, io), workspace, { dir: opts.file }));
+  snapshot.command('import')
+    .description('导入快照到工作区库：只允许空库；--replace 先 VACUUM INTO 备份再覆盖，失败整体回滚')
+    .argument('<workspace>', '工作空间 id 或名称')
+    .option('--file <dir>', '快照目录（相对工作区根；缺省 .agentboard/snapshot）')
+    .option('--replace', '目标库非空时覆盖（服务端先备份到 .agentboard/backup/）；不加则拒绝非空库')
+    .addHelpText('after', `
+示例：
+  kb workspace-db snapshot import 任务看板
+  kb workspace-db snapshot import 任务看板 --file .agentboard/snapshot --replace
+退出码：0 导入成功；2 该工作区尚未下沉 / 目标库非空且未加 --replace；1 快照不可导入（哈希/行数/外键校验失败）
+`)
+    .action(async (workspace: string, opts: { file?: string; replace?: boolean }) =>
+      workspaceDbSnapshotImport(makeCtx(program, io), workspace, { dir: opts.file, replace: opts.replace === true }));
 
   // DEC-4：决策命令组（ask / decisions / decision / answer / stop-check）
   registerDecisionCommands(program, io, makeCtx);

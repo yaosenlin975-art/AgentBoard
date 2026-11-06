@@ -151,7 +151,7 @@ const exitWith = (code: number): void => {
 async function postJob<T>(
   ctx: Ctx,
   path: string,
-  body: Record<string, boolean>,
+  body: Record<string, unknown>,
   conflictText: (error: CliHttpError) => string = error => error.message,
 ): Promise<T> {
   try {
@@ -386,4 +386,116 @@ export async function workspaceDbRevert(ctx: Ctx, workspace: string, args: Works
   const started = await postJob<WorkspaceDbOpJobView>(ctx, `${dbPath(workspaceId)}/localize/revert`, {});
   const final = await waitForTerminal(ctx, started, REVERT, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
   exitWith(renderRevert(ctx, final));
+}
+
+/** STORE-5：快照 manifest 的 CLI 视图（服务端结构见 services/workspaceSnapshot.ts） */
+export interface SnapshotFileView {
+  file: string;
+  table: string;
+  rows: number;
+  sha256: string;
+}
+
+export interface SnapshotManifestView {
+  format: string;
+  workspace_id: string;
+  schema_version: number;
+  exported_at: string;
+  generator_version: string;
+  source_db: string;
+  included_tables: string[];
+  files: SnapshotFileView[];
+}
+
+export interface SnapshotExportView {
+  dir: string;
+  manifest: SnapshotManifestView;
+}
+
+export interface SnapshotValidateView {
+  ok: boolean;
+  dir: string;
+  manifest: SnapshotManifestView;
+  tables: Array<{ table: string; rows: number }>;
+}
+
+export interface SnapshotImportView {
+  dir: string;
+  tables: Array<{ table: string; rows: number }>;
+  rows: number;
+  backupPath: string | null;
+}
+
+/** 表行数摘要：只列非零表，空库显式「无数据行」 */
+const snapshotRowsSummary = (tables: Array<{ table: string; rows: number }>): string => {
+  const parts = tables.filter(item => item.rows > 0).map(item => `${item.table} ${item.rows}`);
+  return parts.length === 0 ? '无数据行' : parts.join('、');
+};
+
+const snapshotTotal = (tables: Array<{ rows: number }>): number => tables.reduce((sum, item) => sum + item.rows, 0);
+
+const snapshotMetaLine = (manifest: SnapshotManifestView): string =>
+  `工作区：${manifest.workspace_id}（schema_version=${manifest.schema_version}，导出于 ${manifest.exported_at}）`;
+
+export interface SnapshotExportArgs {
+  includeMessages?: boolean;
+}
+
+/** kb workspace-db snapshot export [--workspace] [--include-messages]：服务端单写者导出并自校验 */
+export async function workspaceDbSnapshotExport(ctx: Ctx, workspace: string, args: SnapshotExportArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const body: Record<string, boolean> = {};
+  if (args.includeMessages === true) body.includeMessages = true;
+  const result = await postJob<SnapshotExportView>(ctx, `${dbPath(workspaceId)}/snapshot/export`, body);
+  if (ctx.json) {
+    writeJson(ctx, result);
+    return;
+  }
+  const files = result.manifest.files;
+  ctx.io.write(`快照已导出：${result.dir}\n`);
+  ctx.io.write(`${snapshotMetaLine(result.manifest)}\n`);
+  ctx.io.write(`行数合计：${snapshotTotal(files)}（${snapshotRowsSummary(files)}）\n`);
+  if (!result.manifest.included_tables.includes('message')) {
+    ctx.io.write('未包含：消息（会话与消息体积大，需要时加 --include-messages）\n');
+  }
+}
+
+export interface SnapshotValidateArgs {
+  /** 快照目录（相对工作区根；缺省 .agentboard/snapshot） */
+  dir?: string;
+}
+
+/** kb workspace-db snapshot validate [--workspace] [--file <dir>]：只读校验，不写任何数据 */
+export async function workspaceDbSnapshotValidate(ctx: Ctx, workspace: string, args: SnapshotValidateArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const query = args.dir === undefined ? '' : `?dir=${encodeURIComponent(args.dir)}`;
+  const result = await request<SnapshotValidateView>(ctx.base, 'GET', `${dbPath(workspaceId)}/snapshot/validate${query}`);
+  if (ctx.json) {
+    writeJson(ctx, result);
+    return;
+  }
+  ctx.io.write(`快照校验通过：${result.dir}\n`);
+  ctx.io.write(`${snapshotMetaLine(result.manifest)}\n`);
+  ctx.io.write(`文件：${result.manifest.files.length} 个，行数合计：${snapshotTotal(result.tables)}（${snapshotRowsSummary(result.tables)}）\n`);
+}
+
+export interface SnapshotImportArgs extends SnapshotValidateArgs {
+  /** 目标库非空时覆盖（服务端先 VACUUM INTO 备份） */
+  replace?: boolean;
+}
+
+/** kb workspace-db snapshot import [--workspace] [--file <dir>] [--replace] */
+export async function workspaceDbSnapshotImport(ctx: Ctx, workspace: string, args: SnapshotImportArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+  const body: Record<string, string | boolean> = {};
+  if (args.dir !== undefined) body.dir = args.dir;
+  if (args.replace === true) body.replace = true;
+  const result = await postJob<SnapshotImportView>(ctx, `${dbPath(workspaceId)}/snapshot/import`, body);
+  if (ctx.json) {
+    writeJson(ctx, result);
+    return;
+  }
+  ctx.io.write(`快照已导入：${result.dir}\n`);
+  ctx.io.write(`导入行数：${result.rows}（表 ${result.tables.length} 个：${snapshotRowsSummary(result.tables)}）\n`);
+  if (result.backupPath !== null) ctx.io.write(`覆盖前备份：${result.backupPath}\n`);
 }
