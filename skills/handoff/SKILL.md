@@ -96,7 +96,7 @@ description: 把当前 AgentBoard 工作交接给另一个 agent/会话，或暂
 2. **正常交接且任务已完成、自检通过**：caller 占用中，评论已写并回读，且已按 `using-agentboard` 的 CLOSE-RECORD 处理收尾物——可复用结论写工作区知识页（新建必带 `--category`；无则 notes 显式声明「未沉淀知识页：<原因>」）+ 变更日志一律写 + notes 带知识页/变更日志 id 与声明 → `kb done <issue-id> --notes-stdin --scope <path>`（`--scope` 逐条传；无文件改动则不传并在 notes 写明）。只 done 到待验收，不等于关闭。
 3. **用户结束本 worker 或转交未完成任务**：评论已写 → `kb fail <issue-id> --reason '交接待续：已完成…；剩余…；未验证…；阻塞…；见本卡评论与知识页 <slug/page-id>（未沉淀则写「未沉淀知识页：原因」）'`。reason 必须自包含，不能让卡被释放后无迹可查；CLI 没有 `kb release`。
 4. **交接执行失败或必需自检失败**：`kb fail <issue-id> --reason '...'` 写具体失败或阻塞，并按「不完整交接」汇报。
-5. **继续正常工作或在等用户决策**：保持占用，在评论写出确切问题。
+5. **继续正常工作或在等用户决策**：需要用户拍板时走 `ask-user`（`kb ask` 落决策，默认宽限 180 秒；夜间无人值守用 `--grace 0`）；返回 `LOCKED` 时把确切问题与 `next_step` 写进交接评论后停手，不要只靠「保持占用」等回复。
 
 ### 执行前守卫（每次 `done`/`fail` 都必须过）
 

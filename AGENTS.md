@@ -25,4 +25,4 @@
 
 ## 对外打包约束
 
-便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 5 个技能，落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`）。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。DEC-5 起另含 `skills/ask-user`（待决策提问流程）。
+便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 6 个技能（含 DEC-5 新增的 `skills/ask-user`，待决策提问流程），落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`），包内自检 `scripts/portable/verify-rules.mjs` 同样强制要求这 6 个技能齐全。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。

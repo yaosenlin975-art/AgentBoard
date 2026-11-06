@@ -54,6 +54,7 @@ AgentBoard 便携版（Windows x64）
   skills\executing-task\       执行已派卡
   skills\handoff\              交接
   skills\swing-dev\            机动巡检
+  skills\ask-user\             待决策提问（宽限 / LOCKED 停手 / 断点续跑）
   ../rules-manifest.json       文件清单 + sha256（自检依据）
 
 安装到对方机器（两种方式，二选一）：
@@ -65,7 +66,7 @@ AgentBoard 便携版（Windows x64）
      （using-agentboard 会按该变量解析权威文档；工作区仍按 cwd\skills 优先）
 
 自检：双击 check-rules.cmd，或执行 runtime\node.exe app\verify-rules.mjs。
-输出 [rules] OK：<文件数> 个文件，5 个技能，kb --help 可用，退出码 0；
+输出 [rules] OK：<文件数> 个文件，6 个技能，kb --help 可用，退出码 0；
 缺文件、内容被改（哈希不符）或 kb --help 失败时退出码 1 并逐条列出。
 
 五、怎么用 CLI（kb）

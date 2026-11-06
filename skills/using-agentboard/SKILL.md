@@ -1,11 +1,11 @@
 ---
 name: using-agentboard
-description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff / swing-dev / brainstorming，以及 kb CLI 完整用法、工作区边界强制规则、全 UUID 任务 id 口径、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定。
+description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff / swing-dev / ask-user / brainstorming，以及 kb CLI 完整用法、工作区边界强制规则、全 UUID 任务 id 口径、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定、ask-user、待决策、宽限、LOCKED。
 ---
 
 # Using AgentBoard
 
-AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI 读写。本技能是看板技能族的入口与唯一权威来源；`writing-task`、`executing-task`、`handoff`、`swing-dev`、`brainstorming` 只承载各自流程，冲突时以本技能为准。
+AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI 读写。本技能是看板技能族的入口与唯一权威来源；`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 只承载各自流程，冲突时以本技能为准。
 
 ## --scope 与 ID 口径（SCOPE-GUARD / FULL-ID，2026-11-04 实测）
 
@@ -18,7 +18,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 ## 权威来源解析（强制）
 
-本文件就是族内权威文档。凡引用「权威来源 / AgentBoard operating guide / 工作区边界（强制）」的地方，文档路径一律按本节解析；本节是族内唯一解析规则，`writing-task`、`executing-task`、`handoff`、`swing-dev`、`brainstorming` 只指回本节，不复制解析表。
+本文件就是族内权威文档。凡引用「权威来源 / AgentBoard operating guide / 工作区边界（强制）」的地方，文档路径一律按本节解析；本节是族内唯一解析规则，`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 只指回本节，不复制解析表。
 
 按下列顺序取第一个可读命中，命中即停：
 
@@ -46,7 +46,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 ## The Rule
 
-1. **先定动作，再加载技能，最后敲命令**：建卡/拆卡 → `writing-task`；执行别人派的卡 → `executing-task`；交接或阶段性收尾 → `handoff`；批量清「待规划」→ `swing-dev`；需求澄清/设计批准 → `brainstorming`；只要命令与故障排查 → 本技能。
+1. **先定动作，再加载技能，最后敲命令**：建卡/拆卡 → `writing-task`；执行别人派的卡 → `executing-task`；交接或阶段性收尾 → `handoff`；批量清「待规划」→ `swing-dev`；需求澄清/设计批准 → `brainstorming`；执行中卡住、需用户拍板或要安全停手 → `ask-user`；只要命令与故障排查 → 本技能。
 2. **写之前先绑定工作区**：见「工作区边界（强制）」的「调用即绑定」。
 3. **无卡不动手（RULE-1，强制）**：任何实现性改动（包括口头提出的一两行 UI 修补）先 `kb create-issue` 建卡并 `kb claim`，再改代码；派工前先确认目标卡已存在；同一内容已有卡就认领/追加，不重复新建；提交信息必须带卡号。禁止以「改动很小」豁免。
 4. **进入 plan mode 之前先澄清需求**：写计划、拆卡前先跑需求澄清（brainstorming / spec 类技能）并拿到批准；没有批准的设计不落板。
@@ -223,7 +223,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
    - **done 前置（CLOSE-RECORD，强制）**：`kb done` 之前先落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`，**新建必须带 `--domain`（accounts|knowledge|board|chat|ui|infra）与 `--category`，且 create 还必须有正文 `--stdin` 与 `--sources`/`--evidence` 各 ≥1**（否则退出 1/400；字段与完整示例见「写知识页」）；无可复用结论则在 notes 显式声明「未沉淀知识页：<原因>」；② **变更日志一律写**：`kb changelog create --workspace <当前工作区> --title '…' --type 新增|修复|调整`（正文走 `--stdin`；无用户可见变更时正文写「本轮无用户可见变更」）。notes 带上知识页 id（未写则带声明）与变更日志 id。沉默不声明、或拿「无变更日志」跳过，视为收尾未完成。
    - 完成且自验通过 → `Get-Content -Raw notes.md | kb done <id> --notes-stdin --scope <路径> --scope <路径>`，状态进「待验收」，释放占用。之后不要继续动该任务。`--scope` 逐条传，只声明真正改动的路径；无文件改动则不传并在 notes 写明。
    - 无法完成或自验失败 → `kb fail <id> --reason '<失败原因>'`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
-   - 拿不准/需用户决策 → 先 `kb comment` 说明问题后保持占用继续等；只有确定失败才 `fail`。
+   - 拿不准/需用户拍板 → 走 `ask-user`：`kb ask` 落决策并同步等一轮宽限（默认 180 秒），返回 `LOCKED` 即停手、不再改文件/提交/`done`；夜间无人值守用 `--grace 0` 立即落锁。只有确定失败才 `fail`。
 
 ## 占用
 
@@ -287,6 +287,7 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | 交接给别的 agent/会话，或阶段性收尾留可续接上下文 | `handoff` |
 | 只查命令、排查服务/CLI 故障、查工作区绑定规则 | 本技能（`using-agentboard`） |
 | 把某工作区的「待规划」批量做完（无人值守） | `swing-dev` |
+| 执行中卡住、需要用户拍板，或无人值守要安全停手并留断点 | `ask-user`（宽限 / `LOCKED` / 断点续跑） |
 | 需求还没澄清、方案要打磨/要批准 | `brainstorming`（批准后再转 `writing-task`） |
 
 ## Red Flags
@@ -333,9 +334,10 @@ kb dep rm <issue-id> <blocker-id>       # 移除前置
 | `executing-task` | 流程：领取 → 实施 → 汇报 → 收尾 | 引用本技能的命令与边界；只做被派的卡 |
 | `handoff` | 流程：交接 / 可续接上下文 | 引用本技能的命令与边界；产物落当前卡评论 + 工作区知识页 |
 | `swing-dev` | 流程：批量巡检 + 多 worker 调度 | 引用本技能的命令、边界与收尾口径；worker 领卡是父代理显式授权的例外 |
+| `ask-user` | 流程：待决策提问 → 宽限等待 → `LOCKED` 停手 / 断点续跑 | 引用本技能的命令与边界；默认宽限 180 秒（可配 0–600），`--grace 0` 立即落锁，不新造状态机 |
 | `brainstorming` | 流程：需求澄清 → 设计批准 | 批准后交 `writing-task`；设计页按本技能的知识页口径落 `design/landed=proposed` |
 
-- 六份技能对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）。
+- 七份技能（`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 与本技能）对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）。
 - 依赖关系：见「看板概念」的「依赖」条。
 
 ## User Instructions

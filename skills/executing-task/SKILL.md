@@ -74,7 +74,7 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 - At start, when blocked, at major milestones, and before completion, reread the issue with kb show. Record progress with kb comment at the start, when blocked, and at major phase completions.
 - Treat the latest kb show result as authoritative if the user edits the title, description, priority, labels, or comments.
 - If scope or plan details need amendment, explain the proposed change in a comment and reread with kb show; for description/parent/priority/labels edits use the documented `kb update <id> --description-stdin` / `--parent` / `--priority` / `--labels` (or `kb move-issue`), then re-read. Do not invent undocumented subcommands.
-- If a user decision is required, comment with the precise question and keep the claim while waiting. Check the latest issue state before acting on a reply.
+- If a user decision is required, follow `ask-user`: run `kb ask` (default 180s grace) instead of parking the claim in a comment; on `LOCKED` stop work at the checkpoint, and use `--grace 0` for unattended runs. Check the latest issue state before acting on a reply.
 - Perform only the verification required by the issue, user request, or project rules. Record actual commands and outcomes; do not claim checks that were not run.
 - Do not create a separate test issue. Record verification in the implementation issue.
 - 每次写文件前过一遍越界自检三问；路径不在当前工作区内即停手，必要时向用户申请授权。
@@ -115,7 +115,7 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 - **提交口径（GIT-ON-DONE）**：`kb done` 按 `--scope` 声明的路径自动提交，**不要手动 `git commit`**；`--scope` 逐条传（`--scope a --scope b`），只声明真正改动的路径（含新建/删除），漏声明会漏提交，多声明会把别人的改动卷进提交；纯看板任务无文件改动则不传并在 notes 写「本轮无文件改动」。不能自动提交时按 `using-agentboard` 的原因码（`NOT_A_GIT_REPO` / `GIT_NOT_INSTALLED` / `GIT_REPO_UNHEALTHY`）在 notes 说明，不自行改分支策略。
 - **done 前置（按 `using-agentboard` 的 CLOSE-RECORD，强制）**：① 本轮有可复用结论（坑、验证方法、接口事实、口径裁决）→ 写工作区知识页，且 `kb knowledge create` 必须带正文 `--stdin` + `--sources`/`--evidence` 各 ≥1、并显式带 `--category design|solved|pinned|open`（缺任一退出 1，不传分类会落成 `legacy`）；一次性把已有 md/txt 建成页可用 `kb knowledge import <file> --category …`；无可复用结论则在 notes 显式声明「未沉淀知识页：<原因>」；② **变更日志一律写**：`kb changelog create --workspace <当前工作区> --title ... --type 新增|修复|调整`（无用户可见变更时正文写「本轮无用户可见变更」）；③ notes 带上知识页 id（未写则带声明）与变更日志 id；④ `--scope` 逐条声明实际改动路径（纯看板任务不写，notes 写「本轮无文件改动」）。缺任一项不 done。
 - If the task cannot be completed or required verification fails, run `kb fail <issue-id> --reason '<具体阻塞>'` with the concrete blocker. This returns it to planning and releases the claim.
-- If work is awaiting a user decision, comment and keep the claim instead of marking it done or failed.
+- If work is awaiting a user decision, use `ask-user` (`kb ask`; `--grace 0` for unattended runs) instead of silently keeping the claim; on `LOCKED` stop and leave the checkpoint. Never mark it done or failed while the decision is open.
 - Use only the commands and status transitions documented by the AgentBoard guide. `kb update` / `kb move-issue` exist; never invent other update commands, status fields, or alternate claim behavior. For missing CLI or service failures, follow the AgentBoard guide's specific diagnostic branch; do not guess commands or server ports.
 🔴 CHECKPOINT · 🛑 STOP：收尾回报缺工作区 id/路径、改动清单、跨区声明、验证命令与结果任一项即停手，不跑 `kb done`。
 - 收尾回报必须包含：所在工作区 id + 路径、改动文件全路径清单、是否发生跨工作区操作（是/否；若是，列出授权依据）、验证命令与实际输出/结果。缺任意一项视为执行未完成，不得 `done`。
