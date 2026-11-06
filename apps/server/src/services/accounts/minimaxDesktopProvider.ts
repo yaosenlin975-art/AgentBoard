@@ -26,6 +26,7 @@ import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProc
 import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
+import { parseMinimaxCredential } from './httpCheckinProviders.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe } from './minimaxClientProbe.js';
 import { runSwitchFlow } from './switchFlow.js';
 import { credentialUid, validateTarget, verifyByServerUid, type ServerIdentityProbe, type ValidatedTarget } from './switchStages.js';
@@ -158,16 +159,30 @@ const recordEntries = (file: AuthFile): Array<[string, AuthRecord]> => Object.en
 
 const tokenOf = (record: AuthRecord): string => String(record.accessToken ?? '').trim();
 
-/** 从 auth.json 里挑有效期最晚的可用记录，返回 clientId + token */
-export function readMinimaxIdentity(file: AuthFile): { clientId: string; token: string } | null {
-  let best: { clientId: string; token: string; expires: number } | null = null;
+export interface MinimaxIdentity {
+  clientId: string;
+  token: string;
+  /** ACC-FIX-5：auth.json 里的 refreshToken（旧文件可能没有 → null） */
+  refreshToken: string | null;
+  expiresAt: number | null;
+}
+
+/** 从 auth.json 里挑有效期最晚的可用记录，返回 clientId + token + refreshToken */
+export function readMinimaxIdentity(file: AuthFile): MinimaxIdentity | null {
+  let best: { clientId: string; token: string; expires: number; refreshToken: string | null } | null = null;
   for (const [clientId, record] of recordEntries(file)) {
     const token = tokenOf(record);
     if (!token) continue;
     const expires = Number(record.expiresAtMs ?? 0);
-    if (!best || expires > best.expires) best = { clientId, token, expires };
+    if (!best || expires > best.expires) best = { clientId, token, expires, refreshToken: str(record.refreshToken) };
   }
-  return best ? { clientId: best.clientId, token: best.token } : null;
+  if (!best) return null;
+  return {
+    clientId: best.clientId,
+    token: best.token,
+    refreshToken: best.refreshToken,
+    expiresAt: Number.isFinite(best.expires) && best.expires > 0 ? best.expires : null,
+  };
 }
 
 export class MinimaxDesktopProvider {
@@ -232,21 +247,28 @@ export class MinimaxDesktopProvider {
     const clientInstanceId = 'minimax-desktop';
     const identityHash = createHash('sha256').update(`${MINIMAX_APP_ID}\u0000${identity.clientId}`).digest('hex');
     const scope = { app_id: MINIMAX_APP_ID, client_instance_id: clientInstanceId, identity_hash: identityHash, purpose: 'checkin' as const };
-    const credentialRef = await this.vault.protect(Buffer.from(identity.token, 'utf8'), scope);
+    /**
+     * ACC-FIX-5：auth.json 带 refreshToken 时按 JSON 载荷落库，与导入线同形态（ACC-FIX-3），
+     * 签到 401 后能走 refresh 自愈；旧文件没有 refreshToken 时保留裸串，不伪造续期能力。
+     */
+    const credentialPayload = identity.refreshToken
+      ? JSON.stringify({ access_token: identity.token, refresh_token: identity.refreshToken, expires_at: identity.expiresAt })
+      : identity.token;
+    const credentialRef = await this.vault.protect(Buffer.from(credentialPayload, 'utf8'), scope);
     const snapshotRef = await this.vault.protect(bytes, scope);
     const existing = this.db.prepare('SELECT id FROM managed_account WHERE app_id=? AND client_instance_id=? AND identity_hash=?')
       .get(MINIMAX_APP_ID, clientInstanceId, identityHash) as { id: string } | undefined;
     const timestamp = this.now();
     if (existing) {
-      this.db.prepare('UPDATE managed_account SET display_name=?, checkin_credential_ref=?, client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?')
+      this.db.prepare("UPDATE managed_account SET display_name=?, checkin_credential_ref=?, checkin_capability='supported', client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?")
         .run(options.display_name ?? identity.clientId.slice(0, 100), credentialRef, snapshotRef, timestamp, existing.id);
       return getManagedAccount(this.db, existing.id)!;
     }
     const id = randomUUID();
     this.db.prepare(`INSERT INTO managed_account
-      (id,app_id,client_instance_id,service_region,identity_hash,display_name,identity_hint,client_snapshot_ref,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(id, MINIMAX_APP_ID, clientInstanceId, 'cn', identityHash, (options.display_name ?? identity.clientId).slice(0, 100), null, snapshotRef, credentialRef, 1, timestamp, timestamp);
+      (id,app_id,client_instance_id,service_region,identity_hash,display_name,identity_hint,client_snapshot_ref,checkin_credential_ref,client_snapshot_version,checkin_capability,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(id, MINIMAX_APP_ID, clientInstanceId, 'cn', identityHash, (options.display_name ?? identity.clientId).slice(0, 100), null, snapshotRef, credentialRef, 1, 'supported', timestamp, timestamp);
     return getManagedAccount(this.db, id)!;
   }
 
@@ -325,7 +347,10 @@ export class MinimaxDesktopProvider {
             // S3：共用目标校验（账号在 / 属于本产品 / 凭据可解 / 身份可确定）
             validateTarget: async () => {
               if (!account.checkin_credential_ref) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号没有可用凭据');
-              const targetCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
+              const storedCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
+              // ACC-FIX-5：vault 里可能是 {access_token,refresh_token} JSON（捕获/导入线同形态），
+              // 写客户端只认裸 accessToken，身份也只从裸串取。
+              const targetCredential = Buffer.from(parseMinimaxCredential(storedCredential).access_token, 'utf8');
               target = validateTarget({
                 app_id: MINIMAX_APP_ID,
                 account,

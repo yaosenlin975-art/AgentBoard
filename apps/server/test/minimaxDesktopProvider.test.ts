@@ -17,11 +17,20 @@ import type { AgentAdapter } from '@agentboard/adapters';
 import { createApp } from '../src/index.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { accountProviderCapability } from '../src/services/accounts/registry.js';
+import { createMinimaxCheckinProvider } from '../src/services/accounts/httpCheckinProviders.js';
 
 const authJson = (token: string) => JSON.stringify({
   schemaVersion: 1,
   records: {
     'com.minimax.mcode': { accessToken: token, refreshToken: 'refresh-abc', expiresAtMs: 1_900_000_000_000, audience: 'mcode', clientId: 'com.minimax.mcode' },
+  },
+});
+
+/** ACC-FIX-5：旧版 auth.json 没有 refreshToken */
+const authJsonWithoutRefresh = (token: string) => JSON.stringify({
+  schemaVersion: 1,
+  records: {
+    'com.minimax.mcode': { accessToken: token, expiresAtMs: 1_900_000_000_000, audience: 'mcode', clientId: 'com.minimax.mcode' },
   },
 });
 
@@ -113,6 +122,79 @@ describe('minimax desktop provider (ACC-13)', () => {
     expect(account.checkin_credential_ref).toBeTruthy();
     expect(account.client_snapshot_ref).toBeTruthy();
     expect(account.identity_hash).toMatch(/^[a-f0-9]{64}$/);
+  }, 30000);
+
+  it('ACC-FIX-5：capture 落 JSON 凭据（含 refresh_token）并置 checkin_capability=supported', async () => {
+    const { provider } = build(filesWithClient(TOKEN_A));
+    const account = await provider.captureCurrent({ display_name: '小号' });
+    expect(account.checkin_capability).toBe('supported');
+    const credential = await vault.unprotect(account.checkin_credential_ref!, {
+      app_id: 'minimax', client_instance_id: 'minimax-desktop', identity_hash: account.identity_hash, purpose: 'checkin',
+    });
+    expect(JSON.parse(credential.toString('utf8'))).toEqual({
+      access_token: TOKEN_A,
+      refresh_token: 'refresh-abc',
+      expires_at: 1_900_000_000_000,
+    });
+  }, 30000);
+
+  it('ACC-FIX-5：重复 capture 命中同一行时也回填 capability 与新凭据', async () => {
+    const { provider } = build(filesWithClient(TOKEN_A));
+    const first = await provider.captureCurrent();
+    t.db.prepare("UPDATE managed_account SET checkin_capability='unknown' WHERE id=?").run(first.id);
+    const again = await provider.captureCurrent({ display_name: '改名' });
+    expect(again.id).toBe(first.id);
+    expect(again.checkin_capability).toBe('supported');
+    expect(again.display_name).toBe('改名');
+  }, 30000);
+
+  it('ACC-FIX-5：auth.json 没有 refreshToken 时保留裸串凭据（不伪造续期能力）', async () => {
+    const { provider } = build({ [AUTH]: authJsonWithoutRefresh(TOKEN_A), [EXE]: 'binary' });
+    const account = await provider.captureCurrent();
+    const credential = await vault.unprotect(account.checkin_credential_ref!, {
+      app_id: 'minimax', client_instance_id: 'minimax-desktop', identity_hash: account.identity_hash, purpose: 'checkin',
+    });
+    expect(credential.toString('utf8')).toBe(TOKEN_A);
+  }, 30000);
+
+  it('ACC-FIX-5：捕获落库的 JSON 凭据可直接交给签到 provider 续期（401 自愈链路贯通）', async () => {
+    const { provider } = build(filesWithClient(TOKEN_A));
+    const account = await provider.captureCurrent();
+    const credential = await vault.unprotect(account.checkin_credential_ref!, {
+      app_id: 'minimax', client_instance_id: 'minimax-desktop', identity_hash: account.identity_hash, purpose: 'checkin',
+    });
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL | Request) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: 'new-token', refresh_token: 'rt-new', expires_in: 3600 }),
+      };
+    }) as unknown as typeof fetch;
+    const checkin = createMinimaxCheckinProvider({ app_id: 'minimax', region: 'cn', provider_version: 'test', fetchImpl });
+    const next = await checkin.refreshCredential!(credential);
+    expect(next).not.toBeNull();
+    const payload = JSON.parse(next!.toString('utf8')) as { access_token: string; refresh_token: string; expires_at: number };
+    expect(payload.access_token).toBe('new-token');
+    expect(payload.refresh_token).toBe('rt-new');
+    expect(payload.expires_at).toBeGreaterThan(Date.now());
+    expect(calls).toEqual(['https://account.minimax.cn/oauth2/token']);
+  }, 30000);
+
+  it('ACC-FIX-5：切换到 JSON 凭据账号时只把 accessToken 写进客户端', async () => {
+    const { provider, memory } = build(filesWithClient(TOKEN_A));
+    await provider.captureCurrent();
+    const identityHash = 'a'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(JSON.stringify({ access_token: TOKEN_B, refresh_token: 'rt-b' }), 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, '目标 JSON', ref);
+
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('succeeded');
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_B);
   }, 30000);
 
   it('readsCurrentIdentityHashFromAuthFileWithoutClientExe', async () => {
