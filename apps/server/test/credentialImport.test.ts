@@ -4,7 +4,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +15,7 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { SecretVault } from '../src/services/accounts/secretVault.js';
-import { buildExportArgs, createCredentialImporter, parseExportOutput, type ExportPlatform, type ExportRunner } from '../src/services/accounts/credentialImport.js';
+import { DEFAULT_TIMEOUT_MS, buildExportArgs, createCredentialImporter, createDefaultExportRunner, parseExportOutput, type ExportPlatform, type ExportRunner } from '../src/services/accounts/credentialImport.js';
 
 const TOKEN_SHAPE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\./;
 const TOKEN_A = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLWEiLCJleHAiOjE3OTM2MTMyNTh9.c2lnbmF0dXJlLWE';
@@ -144,6 +144,23 @@ describe('credential import (ACC-11)', () => {
     const importer = createCredentialImporter({ db: t.db, vault, onAudit: () => {}, runExport: stubRunner({ trae: timeout }) });
     const result = await importer.importCredentials({ platforms: ['trae'], actor: 'user' });
     expect(result.platforms[0]).toMatchObject({ error: 'EXPORT_TIMEOUT', found: 0 });
+  });
+
+  it('ACC-FIX-2：默认超时放宽到 180s，真实 execFile 超时归类为 EXPORT_TIMEOUT 而非 EXPORT_FAILED', async () => {
+    expect(DEFAULT_TIMEOUT_MS).toBe(180_000);
+    const script = join(root, 'sleep.js');
+    writeFileSync(script, 'setTimeout(() => {}, 5000);', 'utf8');
+    const runner = createDefaultExportRunner({ pythonCommand: process.execPath, scriptPath: script, timeoutMs: 300 });
+    const started = Date.now();
+    await expect(runner('trae')).rejects.toMatchObject({ reason: 'EXPORT_TIMEOUT' });
+    expect(Date.now() - started).toBeLessThan(4_000);
+  });
+
+  it('ACC-FIX-2：maxBuffer 溢出仍归 EXPORT_OUTPUT_INVALID，不被误判成超时', async () => {
+    const script = join(root, 'huge.js');
+    writeFileSync(script, "process.stdout.write('x'.repeat(3 * 1024 * 1024));", 'utf8');
+    const runner = createDefaultExportRunner({ pythonCommand: process.execPath, scriptPath: script, timeoutMs: 10_000 });
+    await expect(runner('trae')).rejects.toMatchObject({ reason: 'EXPORT_OUTPUT_INVALID' });
   });
 
   it('emptyExportIsNotAnError', async () => {

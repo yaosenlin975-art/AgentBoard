@@ -43,7 +43,8 @@ const APP_ID_BY_PLATFORM: Record<ExportPlatform, ImportedAppId> = {
 
 /** 导入时用的稳定 client_instance_id：让 UNIQUE(app_id, client_instance_id, identity_hash) 在重复导入时命中同一行 */
 const IMPORT_CLIENT_INSTANCE = 'imported';
-const DEFAULT_TIMEOUT_MS = 20_000;
+/** ACC-FIX-2：本机脚本实测单平台可达 134s，20s 必超时；默认放宽到 180s（导入与签到捕获共用）。 */
+export const DEFAULT_TIMEOUT_MS = 180_000;
 const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const MAX_STDERR_CHARS = 2000;
 
@@ -126,8 +127,12 @@ export function createDefaultExportRunner(options: { pythonCommand?: string; scr
       (error, stdout, stderr) => {
         if (error) {
           const code = (error as { code?: string }).code;
+          const killed = (error as { killed?: boolean }).killed === true;
           if (code === 'ENOENT') { reject(Object.assign(new Error('python missing'), { reason: 'PYTHON_UNAVAILABLE' })); return; }
-          if (code === 'ETIMEDOUT' || /timed? ?out/i.test(error.message)) { reject(Object.assign(new Error('timeout'), { reason: 'EXPORT_TIMEOUT' })); return; }
+          // ACC-FIX-2：execFile 超时不会给 code=ETIMEDOUT，而是 killed=true + signal=SIGTERM；
+          // 必须按 killed 归类，否则超时会被误报成 EXPORT_FAILED。maxBuffer 也会 kill，先排除。
+          if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') { reject(Object.assign(new Error('stdout too large'), { reason: 'EXPORT_OUTPUT_INVALID' })); return; }
+          if (code === 'ETIMEDOUT' || killed || /timed? ?out/i.test(error.message)) { reject(Object.assign(new Error('timeout'), { reason: 'EXPORT_TIMEOUT' })); return; }
           reject(Object.assign(new Error('export failed'), { reason: 'EXPORT_FAILED' }));
           return;
         }
