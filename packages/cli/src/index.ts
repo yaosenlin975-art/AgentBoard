@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
 import { normalizeBase } from './api.js';
 import { toExit } from './errors.js';
+import { normalizeIssueRef } from './issueRef.js';
 import { processIo, type Ctx, type Io } from './io.js';
 import { CLI_VERSION } from './version.js';
 import { listSpaces } from './commands/listSpaces.js';
@@ -15,16 +16,16 @@ import { moveIssue } from './commands/moveIssue.js';
 import { listTasks } from './commands/listTasks.js';
 import { show } from './commands/show.js';
 import { claim } from './commands/claim.js';
-import { release } from './commands/release.js';
+import { release, releaseIssue } from './commands/release.js';
 import { comment } from './commands/comment.js';
 import { accept } from './commands/accept.js';
 import { done } from './commands/done.js';
 import { deleteIssue } from './commands/deleteIssue.js';
-import { fail } from './commands/fail.js';
+import { fail, failIssue } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
 import { depAdd, depLs, depRemove } from './commands/dep.js';
 import { statusAdd, statusList, statusRemove } from './commands/status.js';
-import { close, reopen, update } from './commands/lifecycle.js';
+import { close, closeIssueWithOwnRelease, reopen, runBulk, update } from './commands/lifecycle.js';
 import { registerChangelogCommands } from './commands/changelog.js';
 import { installAutostart, statusAutostart, uninstallAutostart } from './commands/autostart.js';
 import { createShortcut, removeShortcut } from './commands/shortcut.js';
@@ -120,17 +121,36 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('release')
-    .description('释放占用 → 待规划（不是失败；只有当前占用者可执行；一次只释放一张卡）')
-    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
-    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .description('释放占用 → 待规划（不是失败；只有当前占用者可执行；单张或 --ids-file 批量）')
+    .argument('[issue-id]', '任务 id：完整 UUID，或 ≥8 位唯一前缀（与 --ids-file 二选一）')
+    .option('--ids-file <path>', '批量释放：每行一个任务 id（≥8 位前缀），空行与 # 注释忽略')
+    .option('--dry-run', '批量模式只打印将处理的清单，不写任何数据')
+    .option('--request-id <uuid>', '幂等请求 id；批量时作为基底按 (动作, 任务) 派生，同输入重跑不重复写')
     .addHelpText('after', `
 说明：与 fail（需写失败原因）不同，release 只退回待规划并清空占用，释放后他人可重新 claim。
 示例：
   kb release 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
   kb release 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111
-退出码：0 成功（状态 → 待规划）；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误或任务不存在
+  kb release --ids-file ids.txt --dry-run          # 批量：只打印清单
+  kb release --ids-file ids.txt                    # 批量：逐条串行，末尾汇总
+退出码：0 成功（状态 → 待规划）；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误、任务不存在、批量中有失败
 `)
-    .action(async (id: string, opts: { requestId?: string }) => release(makeCtx(program, io), id, { requestId: opts.requestId }));
+    .action(async (id: string | undefined, opts: { requestId?: string; idsFile?: string; dryRun?: boolean }) => {
+      const ctx = makeCtx(program, io);
+      if (opts.idsFile !== undefined) {
+        if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
+        await runBulk(ctx, {
+          action: 'release',
+          idsFile: opts.idsFile,
+          dryRun: opts.dryRun === true,
+          requestId: opts.requestId,
+          run: (ref, requestId) => releaseIssue(ctx, ref, { requestId }),
+        });
+        return;
+      }
+      if (id === undefined) throw new Error('缺少任务 id：给 <issue-id>，或用 --ids-file 批量');
+      await release(ctx, id, { requestId: opts.requestId });
+    });
 
   program
     .command('comment')
@@ -184,10 +204,29 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   program
     .command('close')
     .description('关闭任务：待验收 → 已关闭（占用者就是当前 agent 时自动释放自有占用再关；他人占用 409 不自动释放，需 kb release <issue-id> 或 done/fail 后重试）')
-    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
-    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n退出码：0 成功；2 冲突（他人占用/状态不允许/未关闭后代）；1 其它错误（404 等）')
-    .action(async (id: string, opts: { requestId?: string }) => close(makeCtx(program, io), id, { requestId: opts.requestId }));
+    .argument('[issue-id]', '任务 id：完整 UUID，或 ≥8 位唯一前缀（与 --ids-file 二选一）')
+    .option('--ids-file <path>', '批量关闭：每行一个任务 id（≥8 位前缀），空行与 # 注释忽略')
+    .option('--dry-run', '批量模式只打印将处理的清单，不写任何数据')
+    .option('--request-id <uuid>', '幂等请求 id；批量时作为基底按 (动作, 任务) 派生，同输入重跑不重复写')
+    .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n  kb close --ids-file ids.txt --dry-run            # 批量：只打印清单\n  kb close --ids-file ids.txt                      # 批量：逐条串行，末尾汇总\n退出码：0 成功；2 冲突（他人占用/状态不允许/未关闭后代）；1 其它错误（404 等）、批量中有失败')
+    .action(async (id: string | undefined, opts: { requestId?: string; idsFile?: string; dryRun?: boolean }) => {
+      const ctx = makeCtx(program, io);
+      if (opts.idsFile !== undefined) {
+        if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
+        await runBulk(ctx, {
+          action: 'close',
+          idsFile: opts.idsFile,
+          dryRun: opts.dryRun === true,
+          requestId: opts.requestId,
+          // 批量层不经过 mapConflict：失败原因保留服务端原文，便于汇总
+          run: async (ref, requestId) =>
+            closeIssueWithOwnRelease(ctx, (await normalizeIssueRef(ctx, ref)).id, requestId),
+        });
+        return;
+      }
+      if (id === undefined) throw new Error('缺少任务 id：给 <issue-id>，或用 --ids-file 批量');
+      await close(ctx, id, { requestId: opts.requestId });
+    });
 
   program
     .command('reopen')
@@ -237,12 +276,34 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   program
     .command('fail')
-    .description('标记失败 → 待规划（reason 落评论流）')
-    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
-    .requiredOption('--reason <text>', '失败原因')
-    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .action(async (id: string, opts: { reason: string; requestId?: string }) =>
-      fail(makeCtx(program, io), id, { reason: opts.reason, requestId: opts.requestId }));
+    .description('标记失败 → 待规划（reason 落评论流；单张或 --ids-file 批量，批量共用同一 reason）')
+    .argument('[issue-id]', '任务 id：完整 UUID，或 ≥8 位唯一前缀（与 --ids-file 二选一）')
+    .requiredOption('--reason <text>', '失败原因（批量时写入每一张）')
+    .option('--ids-file <path>', '批量标记失败：每行一个任务 id（≥8 位前缀），空行与 # 注释忽略')
+    .option('--dry-run', '批量模式只打印将处理的清单，不写任何数据')
+    .option('--request-id <uuid>', '幂等请求 id；批量时作为基底按 (动作, 任务) 派生，同输入重跑不重复写')
+    .addHelpText('after', `
+示例：
+  kb fail 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --reason '依赖未就绪，退回'
+  kb fail --ids-file ids.txt --reason '批量退回' --dry-run
+退出码：0 成功；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误、任务不存在、批量中有失败
+`)
+    .action(async (id: string | undefined, opts: { reason: string; requestId?: string; idsFile?: string; dryRun?: boolean }) => {
+      const ctx = makeCtx(program, io);
+      if (opts.idsFile !== undefined) {
+        if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
+        await runBulk(ctx, {
+          action: 'fail',
+          idsFile: opts.idsFile,
+          dryRun: opts.dryRun === true,
+          requestId: opts.requestId,
+          run: (ref, requestId) => failIssue(ctx, ref, { reason: opts.reason, requestId }),
+        });
+        return;
+      }
+      if (id === undefined) throw new Error('缺少任务 id：给 <issue-id>，或用 --ids-file 批量');
+      await fail(ctx, id, { reason: opts.reason, requestId: opts.requestId });
+    });
 
   program
     .command('create-space')

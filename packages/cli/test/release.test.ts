@@ -143,13 +143,13 @@ describe('REL-3 文案：不再指向不存在的 release', () => {
     return { code, text: out.join('') };
   };
 
-  it('release --help：无批量参数、无工作区参数', async () => {
+  it('release --help：只收单张 id 或 --ids-file 批量，不收工作区/--all', async () => {
     const { code, text } = await helpOf('release');
     expect(code).toBe(0);
     expect(text).toContain('kb release');
+    expect(text).toContain('--ids-file');
     expect(text).not.toContain('--workspace');
     expect(text).not.toContain('--all');
-    expect(text).not.toContain('批量');
   });
 
   it('close / claim --help 不再出现孤立 release（都指向 kb release）', async () => {

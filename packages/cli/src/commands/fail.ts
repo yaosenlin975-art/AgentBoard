@@ -10,7 +10,7 @@ export interface FailArgs {
   requestId?: string;
 }
 
-export async function fail(ctx: Ctx, id: string, args: FailArgs): Promise<void> {
+export async function failIssue(ctx: Ctx, id: string, args: FailArgs): Promise<Issue> {
   // CLI-02：允许 ≥8 位前缀；fence 与接口都用解析后的真实 id
   const target = await normalizeIssueRef(ctx, id);
   const issueId = target.id;
@@ -29,6 +29,11 @@ export async function fail(ctx: Ctx, id: string, args: FailArgs): Promise<void> 
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/fail`, body, args.requestId,
   );
   clearClaimedFence(issueId);
+  return issue;
+}
+
+export async function fail(ctx: Ctx, id: string, args: FailArgs): Promise<void> {
+  const issue = await failIssue(ctx, id, args);
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;

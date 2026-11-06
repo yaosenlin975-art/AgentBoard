@@ -13,8 +13,9 @@ export interface ReleaseArgs {
  * REL-3：释放当前占用（退回「待规划」，不是失败）。
  * 必须带 workspace_id：服务端据此走「占用者释放」语义（非当前占用者 409 NOT_TASK_OWNER）；
  * 不带 workspace_id 会退化成用户强制释放，绕过占用者校验。
+ * BULK-OPS：单条实现不打印，批量模式据此逐条汇总（`release` 只负责回执）。
  */
-export async function release(ctx: Ctx, id: string, args: ReleaseArgs): Promise<void> {
+export async function releaseIssue(ctx: Ctx, id: string, args: ReleaseArgs): Promise<Issue> {
   const target = await normalizeIssueRef(ctx, id);
   const issueId = target.id;
   const body: { agent_id: string; workspace_id: string; fence?: number } = {
@@ -29,6 +30,11 @@ export async function release(ctx: Ctx, id: string, args: ReleaseArgs): Promise<
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/release`, body, args.requestId,
   );
   clearClaimedFence(issueId);
+  return issue;
+}
+
+export async function release(ctx: Ctx, id: string, args: ReleaseArgs): Promise<void> {
+  const issue = await releaseIssue(ctx, id, args);
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
     return;

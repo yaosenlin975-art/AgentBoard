@@ -7,6 +7,8 @@
  *
  * 三条都支持 `--request-id <uuid>`（幂等，同 done/fail 口径）。
  */
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type { Issue } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { CliHttpError, request, verifyIssueStoredText } from '../api.js';
@@ -163,4 +165,114 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
     return;
   }
   ctx.io.write(`已更新: ${issue.id}\n卡：${shortIssueId(issue.id)} ${issue.title}（${issue.status}）\n${issueLines(issue).join('\n')}\n`);
+}
+
+/**
+ * BULK-OPS：读取 `--ids-file`。每行一个任务引用（完整 UUID 或 ≥8 位前缀）；
+ * 空行与 `#` 注释忽略；编辑器/管道写出的 UTF-8 BOM 先剥离，避免首条 id 被污染。
+ */
+export function readIdsFile(path: string): string[] {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    throw new Error(`--ids-file 读取失败（${path}）：${(error as Error).message}`);
+  }
+  const entries = text
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line !== '' && !line.startsWith('#'));
+  if (entries.length === 0) {
+    throw new Error(`--ids-file 未读到任何任务 id（${path}）：每行一个 id，空行与 # 注释会被忽略`);
+  }
+  return entries;
+}
+
+/**
+ * BULK-OPS：每条操作的幂等键由 `--request-id` 基底派生（确定性 UUID）。
+ * 把动作与任务引用一起混入，避免同一次批量里 close/release/fail 互相撞键；
+ * 同一（基底, 动作, 引用）重跑得到同一个键，服务端幂等回放，不重复写。
+ */
+export function deriveBulkRequestId(base: string, action: string, issueRef: string): string {
+  const hex = createHash('sha256').update(`${base}:${action}:${issueRef.trim().toLowerCase()}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+export interface BulkRunArgs {
+  /** 动作名（close / release / fail）：用于汇总文案与幂等键派生 */
+  action: string;
+  idsFile: string;
+  dryRun?: boolean;
+  /** 幂等键基底；给定时每条按（基底, action, 引用）派生 */
+  requestId?: string;
+  /** 单条执行：失败以异常表达，批量层负责汇总与退出码 */
+  run: (ref: string, requestId?: string) => Promise<unknown>;
+}
+
+export interface BulkItemResult {
+  ref: string;
+  outcome: '成功' | '失败' | '跳过';
+  reason?: string;
+}
+
+function bulkFailureReason(error: unknown): string {
+  if (error instanceof CliHttpError) return error.message;
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * BULK-OPS：串行执行批量动作，末尾打印汇总（成功/失败/跳过 + 每条失败原因）。
+ * - 任一失败 → exit 1；条目间的失败不中断后续条目。
+ * - `--dry-run` 只打印清单，零请求、零写入。
+ * - 重复行只执行一次，第二次计入「跳过」。
+ */
+export async function runBulk(ctx: Ctx, args: BulkRunArgs): Promise<void> {
+  const entries = readIdsFile(args.idsFile);
+  if (args.dryRun === true) {
+    if (ctx.json) {
+      ctx.io.write(`${JSON.stringify({ action: args.action, dry_run: true, count: entries.length, ids: entries }, null, 2)}\n`);
+      return;
+    }
+    ctx.io.write(`[dry-run] ${args.action}：将处理 ${entries.length} 张（未写入任何数据）\n`);
+    for (const ref of entries) ctx.io.write(`  - ${ref}\n`);
+    return;
+  }
+
+  const results: BulkItemResult[] = [];
+  const seen = new Set<string>();
+  for (const ref of entries) {
+    const key = ref.toLowerCase();
+    if (seen.has(key)) {
+      results.push({ ref, outcome: '跳过', reason: '重复 id' });
+      continue;
+    }
+    seen.add(key);
+    const requestId = args.requestId === undefined ? undefined : deriveBulkRequestId(args.requestId, args.action, ref);
+    try {
+      await args.run(ref, requestId);
+      results.push({ ref, outcome: '成功' });
+    } catch (error) {
+      results.push({ ref, outcome: '失败', reason: bulkFailureReason(error) });
+    }
+  }
+
+  const succeeded = results.filter(item => item.outcome === '成功').length;
+  const failed = results.filter(item => item.outcome === '失败');
+  const skipped = results.filter(item => item.outcome === '跳过');
+
+  if (ctx.json) {
+    ctx.io.write(`${JSON.stringify({ action: args.action, success: succeeded, failed: failed.length, skipped: skipped.length, results }, null, 2)}\n`);
+  } else {
+    ctx.io.write(`批量 ${args.action}：成功 ${succeeded} / 失败 ${failed.length} / 跳过 ${skipped.length}\n`);
+    if (failed.length > 0) {
+      ctx.io.write('失败：\n');
+      for (const item of failed) ctx.io.write(`  - ${item.ref}：${item.reason ?? '未知错误'}\n`);
+    }
+    if (skipped.length > 0) {
+      ctx.io.write('跳过：\n');
+      for (const item of skipped) ctx.io.write(`  - ${item.ref}：${item.reason ?? ''}\n`);
+    }
+  }
+  if (failed.length > 0) throw new CommanderError(1, 'agentboard.bulk', '');
 }
