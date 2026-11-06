@@ -68,6 +68,10 @@ export interface DecisionListItemDto {
   undo_until?: number | null;
   /** DEC-V4-UNDO：最近一次撤销的答案版本（幂等重放判定用，旧快照可能缺省） */
   last_undone_revision?: number | null;
+  /** DEC-V4-EXTEND：累计延长秒数（服务端行字段；旧快照可能缺省） */
+  extended_seconds?: number;
+  /** DEC-V4-EXTEND：累计延长次数（旧快照可能缺省） */
+  extension_count?: number;
   option_count: number;
   /** 列表内联选项（与详情同形状，按 ord 升序） */
   options: DecisionOptionDto[];
@@ -113,5 +117,19 @@ export interface UndoDecisionResponse {
   reverted_to: 'grace' | 'open';
   undo_window_ms: number;
   already_undone: boolean;
+}
+
+/**
+ * `POST /api/decisions/:id/extend` 响应（DEC-V4-API-EXTEND 契约）。
+ * `extended_seconds` / `max_extend_seconds` 都是累计口径：总宽限 = grace_seconds + extended_seconds。
+ */
+export interface ExtendDecisionResponse {
+  decision_id: string;
+  state: DecisionState;
+  grace_until: number;
+  remaining_grace_seconds: number;
+  extended_seconds: number;
+  extension_count: number;
+  max_extend_seconds: number;
 }
 

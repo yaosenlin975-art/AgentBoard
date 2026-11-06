@@ -11,7 +11,13 @@ import type { ServerWsEvent } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import type { DecisionsScope } from '../../lib/decisionsScope';
-import type { DecisionCounts, DecisionDetailDto, DecisionListResponse, UndoDecisionResponse } from './types';
+import type {
+  DecisionCounts,
+  DecisionDetailDto,
+  DecisionListResponse,
+  ExtendDecisionResponse,
+  UndoDecisionResponse,
+} from './types';
 
 export const DECISION_LIST_LIMIT = 50;
 
@@ -184,6 +190,30 @@ export function useUndoDecision() {
       void queryClient.invalidateQueries({ queryKey: ['decision'] });
       void queryClient.invalidateQueries({ queryKey: ['issue'] });
       void queryClient.invalidateQueries({ queryKey: ['issues'] });
+    },
+  });
+}
+
+export interface ExtendDecisionInput {
+  decisionId: string;
+  /** 每次延长的秒数；Web 固定 60（服务端允许 1–300，累计上限 300 且总宽限 ≤600） */
+  seconds?: number;
+}
+
+/**
+ * DEC-V4-EXTEND：`POST /api/decisions/:id/extend` 延长宽限。
+ * 卡片的本地 +60s / 闪 chip / toast 由组件按响应处理；这里只负责落服务端真相（列表 + 详情失效）。
+ */
+export function useExtendDecision() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ExtendDecisionInput) =>
+      api.post<ExtendDecisionResponse>(`/api/decisions/${encodeURIComponent(input.decisionId)}/extend`, {
+        seconds: input.seconds ?? 60,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+      void queryClient.invalidateQueries({ queryKey: ['decision'] });
     },
   });
 }

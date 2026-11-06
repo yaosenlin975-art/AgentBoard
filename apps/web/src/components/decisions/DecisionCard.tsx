@@ -23,7 +23,7 @@ import { ApiError } from '../../api/client';
 import { BlockedDownstream } from './BlockedDownstream';
 import { downstreamCount, formatCountdown, formatWaiting } from './countdown';
 import { checkpointLines } from './DecisionSection';
-import { useAnswerDecision, useDecisionDetail } from './useDecisions';
+import { useAnswerDecision, useDecisionDetail, useExtendDecision } from './useDecisions';
 import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from './types';
 
 /** 容器宽度阈值：≤660px 时动作行纵向堆叠、主按钮占满 */
@@ -36,6 +36,15 @@ const CUSTOM_EMPTY_ERROR = '先写一句答案再提交（不能为空）';
 const SCROLL_THRESHOLD = 7;
 const CHIPS_MAX_HEIGHT = 76;
 const LIST_MAX_HEIGHT = 300;
+
+/** DEC-V4-EXTEND：单次 +60s，累计上限 300s，且总宽限不超过 600s（与原型 EXTEND_STEP / EXTEND_CAP / GRACE_HARD_CAP 一致） */
+const EXTEND_STEP_SECONDS = 60;
+const EXTEND_CAP_SECONDS = 300;
+const GRACE_HARD_CAP_SECONDS = 600;
+/** 延长成功后 chip 闪一下（reduced motion 下只变背景色、不做过渡） */
+const EXTEND_FLASH_MS = 700;
+/** 卡片内 toast 停留时长 */
+const EXTEND_NOTICE_MS = 4200;
 
 function useNarrowContainer(breakpoint: number) {
   const ref = useRef<HTMLLIElement | null>(null);
@@ -114,6 +123,13 @@ function shortWorkspaceName(name: string): string {
   return name.length > 8 ? `${name.slice(0, 8)}…` : name;
 }
 
+/** DEC-V4-EXTEND：延长成功后的本地覆盖，服务端列表追平（extended_seconds ≥ 补丁）即复位 */
+interface ExtendGracePatch {
+  graceUntil: number;
+  extendedSeconds: number;
+  extensionCount: number;
+}
+
 export function DecisionCard({
   item,
   now,
@@ -145,6 +161,13 @@ export function DecisionCard({
   const detailQueryEnabled = expanded || scope === 'answered';
   const detail = useDecisionDetail(detailQueryEnabled ? item.id : null);
   const answerMutation = useAnswerDecision();
+  // DEC-V4-EXTEND：延长宽限（+60s / 次，上限见 maxExtendSeconds）
+  const extendMutation = useExtendDecision();
+  const [gracePatch, setGracePatch] = useState<ExtendGracePatch | null>(null);
+  const [extendFlash, setExtendFlash] = useState(false);
+  const [extendNotice, setExtendNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
+  const extendFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const extendNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const options = [...item.options].sort((a, b) => a.ord - b.ord);
   const defaultOption = options.find((option) => option.is_default === 1) ?? options[0] ?? null;
@@ -179,9 +202,49 @@ export function DecisionCard({
     setConfirmCross(false);
   }, [resetSignal, expanded]);
 
+  const effectiveGraceUntil = gracePatch?.graceUntil ?? item.grace_until;
   const graceRemaining =
-    item.state === 'grace' && item.grace_until > now ? Math.max(0, Math.ceil((item.grace_until - now) / 1000)) : null;
+    item.state === 'grace' && effectiveGraceUntil > now
+      ? Math.max(0, Math.ceil((effectiveGraceUntil - now) / 1000))
+      : null;
+  const extendedSeconds = gracePatch?.extendedSeconds ?? item.extended_seconds ?? 0;
+  const extensionCount = gracePatch?.extensionCount ?? item.extension_count ?? 0;
+  const totalGraceSeconds = item.grace_seconds + extendedSeconds;
+  const maxExtendSeconds = Math.min(
+    EXTEND_CAP_SECONDS,
+    Math.max(0, GRACE_HARD_CAP_SECONDS - item.grace_seconds),
+  );
+  const extendCapped = maxExtendSeconds <= 0 || extendedSeconds >= maxExtendSeconds;
+  // 临界态：剩余 ≤60 秒时按钮仍可用，只加提示样式；延长后剩余回到 60 秒以上自动清除
+  const extendCritical = graceRemaining !== null && graceRemaining <= 60;
+  // 进度条与原型同口径：remaining / (grace_seconds + extended_seconds)
+  const progressPct =
+    graceRemaining === null || totalGraceSeconds <= 0
+      ? null
+      : Math.max(0, Math.min(100, (graceRemaining / totalGraceSeconds) * 100));
   const waiting = item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
+
+  // 服务端列表追平本地补丁（含其他端延长）后以服务端为准
+  useEffect(() => {
+    if (gracePatch === null) return;
+    if ((item.extended_seconds ?? 0) >= gracePatch.extendedSeconds) setGracePatch(null);
+  }, [item.extended_seconds, gracePatch]);
+
+  useEffect(() => {
+    return () => {
+      if (extendFlashTimer.current !== null) clearTimeout(extendFlashTimer.current);
+      if (extendNoticeTimer.current !== null) clearTimeout(extendNoticeTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (extendNotice === null) return;
+    if (extendNoticeTimer.current !== null) clearTimeout(extendNoticeTimer.current);
+    extendNoticeTimer.current = setTimeout(() => setExtendNotice(null), EXTEND_NOTICE_MS);
+    return () => {
+      if (extendNoticeTimer.current !== null) clearTimeout(extendNoticeTimer.current);
+    };
+  }, [extendNotice]);
 
   // 展开输入框：聚焦并就近滚动到可见区域（页面本身不跳；jsdom 无 scrollIntoView 时跳过）
   useEffect(() => {
@@ -360,6 +423,44 @@ export function DecisionCard({
         ? '提交修订'
         : '提交回答';
 
+  /**
+   * DEC-V4-EXTEND：延长宽限。成功按响应本地立即生效（+60s / 进度条 / 展开区同步），
+   * 失败（409 DECISION_NOT_GRACE / EXTEND_LIMIT_EXCEEDED / STALE_FENCE）原样展示服务端 message 并刷新列表。
+   */
+  function requestExtend() {
+    if (item.state !== 'grace' || extendCapped || extendMutation.isPending) return;
+    extendMutation.mutate(
+      { decisionId: item.id, seconds: EXTEND_STEP_SECONDS },
+      {
+        onSuccess: (response) => {
+          setGracePatch({
+            graceUntil: response.grace_until,
+            extendedSeconds: response.extended_seconds,
+            extensionCount: response.extension_count,
+          });
+          setExtendNotice({
+            tone: 'info',
+            text: `${item.issue_id.slice(0, 8)} 宽限 +1 分钟 · 剩余 ${formatCountdown(response.remaining_grace_seconds)}${
+              response.extended_seconds >= response.max_extend_seconds ? ' · 已达延长上限' : ''
+            }`,
+          });
+          setExtendFlash(true);
+          if (extendFlashTimer.current !== null) clearTimeout(extendFlashTimer.current);
+          extendFlashTimer.current = setTimeout(() => setExtendFlash(false), EXTEND_FLASH_MS);
+        },
+        onError: (err) => {
+          setExtendNotice({
+            tone: 'error',
+            text: err instanceof ApiError ? err.message : '延长失败，请重试',
+          });
+          // 状态可能已落锁 / 上限已被改：以服务端为准刷新，倒计时由新数据计算，不会出现负数
+          void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+          void queryClient.invalidateQueries({ queryKey: ['decision'] });
+        },
+      },
+    );
+  }
+
   return (
     <li
       ref={ref}
@@ -423,7 +524,10 @@ export function DecisionCard({
         {graceRemaining !== null && (
           <span
             data-testid={`decision-countdown-${item.id}`}
-            className="ml-auto shrink-0 whitespace-nowrap rounded bg-accent-soft px-1.5 text-xs font-medium tabular-nums text-accent"
+            data-flash={extendFlash ? 'true' : 'false'}
+            className={`ml-auto shrink-0 whitespace-nowrap rounded px-1.5 text-xs font-medium tabular-nums transition-colors duration-150 motion-reduce:transition-none ${
+              extendFlash ? 'bg-accent text-white' : 'bg-accent-soft text-accent'
+            }`}
           >
             {formatCountdown(graceRemaining)}
           </span>
@@ -448,6 +552,25 @@ export function DecisionCard({
           {expanded ? '收起' : '展开'}
         </button>
       </div>
+
+      {/* DEC-V4-EXTEND：宽限进度条（remaining / 原宽限 + 已延长） */}
+      {scope === 'grace' && progressPct !== null && (
+        <div
+          data-testid={`decision-progress-${item.id}`}
+          data-pct={progressPct.toFixed(1)}
+          role="progressbar"
+          aria-label="剩余宽限"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progressPct)}
+          className="h-0.5 w-full overflow-hidden rounded-full bg-surface-raised"
+        >
+          <span
+            className="block h-full rounded-full bg-accent transition-[width] duration-300 motion-reduce:transition-none"
+            style={{ width: `${progressPct}%` }}
+          />
+        </div>
+      )}
 
       {/* 停止确认状态（open / stale）：已确认优先于未确认 */}
       {item.stop_ack_at !== null ? (
@@ -477,6 +600,17 @@ export function DecisionCard({
           detail={detail}
           selectedOptionId={selectedOptionId}
           onSelect={selectOption}
+          grace={
+            item.state === 'grace'
+              ? {
+                  totalSeconds: totalGraceSeconds,
+                  originalSeconds: item.grace_seconds,
+                  extendedSeconds,
+                  maxExtendSeconds,
+                  extensionCount,
+                }
+              : null
+          }
           custom={{
             open: customOpen,
             text: customText,
@@ -535,6 +669,22 @@ export function DecisionCard({
         </p>
       )}
 
+      {extendNotice !== null && (
+        <p
+          data-testid={`decision-extend-toast-${item.id}`}
+          data-tone={extendNotice.tone}
+          role="status"
+          aria-live="polite"
+          className={`self-start rounded px-1.5 py-0.5 text-xs ${
+            extendNotice.tone === 'error'
+              ? 'border border-red-300 text-red-600 dark:border-red-800 dark:text-red-400'
+              : 'bg-accent-soft text-accent'
+          }`}
+        >
+          {extendNotice.text}
+        </p>
+      )}
+
       {error !== null && (
         <p data-testid={`decision-error-${item.id}`} className="text-xs text-red-600 dark:text-red-400">
           {error}
@@ -546,6 +696,28 @@ export function DecisionCard({
         style={{ flexDirection: narrow ? 'column' : 'row' }}
         className="flex items-stretch gap-1.5"
       >
+        {scope === 'grace' && (
+          <button
+            type="button"
+            data-testid={`decision-extend-${item.id}`}
+            data-critical={extendCritical ? 'true' : 'false'}
+            data-extended={extendedSeconds}
+            data-max-extend={maxExtendSeconds}
+            disabled={extendCapped || extendMutation.isPending}
+            onClick={requestExtend}
+            title={`每点一次 +60 秒；累计最多 +${Math.round(maxExtendSeconds / 60)} 分钟，且总宽限不超过 10 分钟。仅宽限内可延，已锁卡不可延。`}
+            className={`flex h-6 items-center gap-1 whitespace-nowrap rounded-md border px-1.5 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50 ${
+              extendCritical
+                ? 'is-critical border-red-300 font-medium text-red-600 dark:border-red-800 dark:text-red-400'
+                : 'border-hairline text-ink-2 hover:bg-surface-raised'
+            }`}
+          >
+            {extendCapped ? '宽限已达上限' : extendMutation.isPending ? '延长中…' : '＋1 分钟'}
+            <span className="font-mono text-[10px] tabular-nums text-ink-3">
+              {Math.round(extendedSeconds / 60)}/{Math.round(maxExtendSeconds / 60)}
+            </span>
+          </button>
+        )}
         <button
           type="button"
           data-testid={`decision-action-${item.id}`}
@@ -713,10 +885,18 @@ interface ExpandedBodyProps {
   detail: DecisionDetailDto | null;
   selectedOptionId: string | null;
   onSelect: (optionId: string) => void;
+  /** DEC-V4-EXTEND：宽限卡展示「宽限合计 / 已延长」；非宽限态为 null */
+  grace: {
+    totalSeconds: number;
+    originalSeconds: number;
+    extendedSeconds: number;
+    maxExtendSeconds: number;
+    extensionCount: number;
+  } | null;
   custom: CustomAnswerConfig;
 }
 
-function ExpandedBody({ item, detail, selectedOptionId, onSelect, custom }: ExpandedBodyProps) {
+function ExpandedBody({ item, detail, selectedOptionId, onSelect, grace, custom }: ExpandedBodyProps) {
   const options = [...(detail?.options ?? item.options)].sort((a, b) => a.ord - b.ord);
   const answers = [...(detail?.answers ?? [])].sort((a, b) => a.revision - b.revision);
   const current = currentAnswer(detail, item.answer_revision);
@@ -809,6 +989,23 @@ function ExpandedBody({ item, detail, selectedOptionId, onSelect, custom }: Expa
           <dt className="shrink-0">提问于</dt>
           <dd className="truncate text-ink-2">{formatClock(item.created_at)}</dd>
         </div>
+        {grace !== null && (
+          <>
+            <div className="flex min-w-0 gap-1" data-testid={`decision-grace-total-${item.id}`}>
+              <dt className="shrink-0">宽限合计</dt>
+              <dd className="truncate text-ink-2">
+                {formatCountdown(grace.totalSeconds)}（原 {formatCountdown(grace.originalSeconds)}）
+              </dd>
+            </div>
+            <div className="flex min-w-0 gap-1" data-testid={`decision-grace-extended-${item.id}`}>
+              <dt className="shrink-0">已延长</dt>
+              <dd className="truncate text-ink-2">
+                {Math.round(grace.extendedSeconds / 60)} 分钟 / 上限 {Math.round(grace.maxExtendSeconds / 60)} 分钟（
+                {grace.extensionCount} 次）
+              </dd>
+            </div>
+          </>
+        )}
       </dl>
 
       {checkpoints.length > 0 && (

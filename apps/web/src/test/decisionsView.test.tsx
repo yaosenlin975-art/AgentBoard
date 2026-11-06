@@ -1633,3 +1633,218 @@ describe('DEC-V4-UNDO Web 6 秒撤销', () => {
     }
   });
 });
+
+describe('DEC-V4-EXTEND 延长宽限', () => {
+  const extGrace = listItem({
+    id: 'ext-grace',
+    state: 'grace',
+    grace_seconds: 180,
+    grace_until: NOW + 120_000,
+    remaining_grace_seconds: 120,
+    extended_seconds: 0,
+    extension_count: 0,
+  });
+  const extOpen = listItem({ id: 'ext-open', state: 'open', locked_at: NOW - 60_000, waiting_seconds: 60 });
+
+  interface ExtendServerOptions {
+    items?: DecisionListItemDto[];
+    /** 非空时 /extend 固定返回该错误（服务端 409 分支） */
+    extendError?: { status: number; code: string; message: string };
+    /** 每次成功延长的秒数（默认 60） */
+    stepSeconds?: number;
+  }
+
+  /** 有状态的延长服务：按服务端口径累计 extended_seconds / grace_until / extension_count */
+  function installExtendServer(options: ExtendServerOptions = {}) {
+    const base = options.items ?? [extGrace, extOpen];
+    const posts: Array<Record<string, unknown>> = [];
+    const state = new Map(
+      base.map((item) => [
+        item.id,
+        {
+          extended: item.extended_seconds ?? 0,
+          graceUntil: item.grace_until,
+          count: item.extension_count ?? 0,
+        },
+      ]),
+    );
+    let listCalls = 0;
+    const step = options.stepSeconds ?? 60;
+
+    const current = (item: DecisionListItemDto) => {
+      const row = state.get(item.id)!;
+      return { ...item, extended_seconds: row.extended, extension_count: row.count, grace_until: row.graceUntil };
+    };
+
+    const handlers = [
+      http.get('/api/decisions', ({ request }) => {
+        listCalls += 1;
+        const isAnswered = new URL(request.url).searchParams.get('state') === 'answered';
+        const items = isAnswered ? [] : base.map(current);
+        return HttpResponse.json({
+          decisions: items,
+          counts: {
+            grace: items.filter((item) => item.state === 'grace').length,
+            open: items.filter((item) => item.state === 'open').length,
+            stale_open: 0,
+            answered_recent: 0,
+          },
+        });
+      }),
+      http.post('/api/decisions/:id/extend', async ({ request, params }) => {
+        const id = String(params.id);
+        posts.push({ decisionId: id, ...((await request.json()) as Record<string, unknown>) });
+        if (options.extendError !== undefined) {
+          return HttpResponse.json({ error: options.extendError }, { status: options.extendError.status });
+        }
+        const item = base.find((candidate) => candidate.id === id)!;
+        const row = state.get(id)!;
+        const max = Math.min(300, Math.max(0, 600 - item.grace_seconds));
+        const add = Math.min(step, Math.max(0, max - row.extended));
+        row.extended += add;
+        row.count += 1;
+        row.graceUntil += add * 1000;
+        return HttpResponse.json({
+          decision_id: id,
+          state: 'grace',
+          grace_until: row.graceUntil,
+          remaining_grace_seconds: Math.max(0, Math.round((row.graceUntil - Date.now()) / 1000)),
+          extended_seconds: row.extended,
+          extension_count: row.count,
+          max_extend_seconds: max,
+        });
+      }),
+    ];
+
+    return { handlers, posts, listCalls: () => listCalls };
+  }
+
+  /** 倒计时 chip 文本 → 秒（`3:45` → 225） */
+  function countdownSeconds(element: HTMLElement): number {
+    const [minutes, seconds] = (element.textContent ?? '0:00').split(':');
+    return Number(minutes) * 60 + Number(seconds);
+  }
+
+  it('仅 grace 卡在动作行最左显示「＋1 分钟」；open 卡不渲染', async () => {
+    const fixture = installExtendServer();
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    const button = await screen.findByTestId('decision-extend-ext-grace');
+    expect(button).toHaveTextContent('＋1 分钟');
+    expect(button).toHaveTextContent('0/5');
+    expect(button).toHaveAttribute('data-max-extend', '300');
+    expect(button).not.toBeDisabled();
+    expect(within(screen.getByTestId('decision-actions-ext-grace')).getAllByRole('button')[0]).toBe(button);
+    expect(screen.queryByTestId('decision-extend-ext-open')).not.toBeInTheDocument();
+  });
+
+  it('点一次：POST { seconds: 60 }，倒计时 +60s、chip 闪烁、toast 报剩余、进度条按新总宽限重算', async () => {
+    const fixture = installExtendServer();
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await screen.findByTestId('decision-item-ext-grace');
+    const chip = screen.getByTestId('decision-countdown-ext-grace');
+    const before = countdownSeconds(chip);
+    const pctBefore = Number(screen.getByTestId('decision-progress-ext-grace').getAttribute('data-pct'));
+
+    fireEvent.click(screen.getByTestId('decision-extend-ext-grace'));
+    await waitFor(() => expect(fixture.posts).toHaveLength(1));
+    expect(fixture.posts[0]).toMatchObject({ seconds: 60 });
+
+    const button = screen.getByTestId('decision-extend-ext-grace');
+    await waitFor(() => expect(button).toHaveAttribute('data-extended', '60'));
+    await waitFor(() => expect(button).not.toBeDisabled());
+
+    const after = countdownSeconds(screen.getByTestId('decision-countdown-ext-grace'));
+    expect(after - before).toBeGreaterThanOrEqual(59);
+    expect(after - before).toBeLessThanOrEqual(61);
+    expect(screen.getByTestId('decision-countdown-ext-grace')).toHaveAttribute('data-flash', 'true');
+
+    const toast = await screen.findByTestId('decision-extend-toast-ext-grace');
+    expect(toast).toHaveAttribute('data-tone', 'info');
+    expect(toast).toHaveTextContent('宽限 +1 分钟');
+    expect(toast).toHaveTextContent('剩余');
+
+    // 原型口径：remaining / (grace_seconds + extended_seconds) = remaining / 240
+    const pctAfter = Number(screen.getByTestId('decision-progress-ext-grace').getAttribute('data-pct'));
+    expect(Math.abs(pctAfter - (after / 240) * 100)).toBeLessThan(1.5);
+    expect(pctAfter).not.toBe(pctBefore);
+  });
+
+  it('原宽限 180s 连点 5 次：累计 +300s 后按钮 disabled、文案「宽限已达上限」', async () => {
+    const fixture = installExtendServer({ items: [extGrace] });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await screen.findByTestId('decision-item-ext-grace');
+    const before = countdownSeconds(screen.getByTestId('decision-countdown-ext-grace'));
+    const button = screen.getByTestId('decision-extend-ext-grace');
+
+    for (let index = 1; index <= 4; index += 1) {
+      fireEvent.click(button);
+      await waitFor(() => expect(button).toHaveAttribute('data-extended', String(index * 60)));
+      await waitFor(() => expect(button).not.toBeDisabled());
+    }
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveAttribute('data-extended', '300'));
+    await waitFor(() => expect(button).toBeDisabled());
+
+    expect(button).toHaveTextContent('宽限已达上限');
+    expect(button).toHaveTextContent('5/5');
+    expect(fixture.posts).toHaveLength(5);
+
+    const after = countdownSeconds(screen.getByTestId('decision-countdown-ext-grace'));
+    expect(after - before).toBeGreaterThanOrEqual(299);
+    expect(after - before).toBeLessThanOrEqual(301);
+  });
+
+  it('409 DECISION_NOT_GRACE：toast 显示服务端 message、列表刷新，倒计时不出现负数', async () => {
+    const fixture = installExtendServer({
+      items: [extGrace],
+      extendError: { status: 409, code: 'DECISION_NOT_GRACE', message: '决策已锁定，宽限结束后不能再延长' },
+    });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    await screen.findByTestId('decision-item-ext-grace');
+    const callsBefore = fixture.listCalls();
+    fireEvent.click(screen.getByTestId('decision-extend-ext-grace'));
+    await waitFor(() => expect(fixture.posts).toHaveLength(1));
+
+    const toast = await screen.findByTestId('decision-extend-toast-ext-grace');
+    expect(toast).toHaveAttribute('data-tone', 'error');
+    expect(toast).toHaveTextContent('宽限结束后不能再延长');
+    await waitFor(() => expect(fixture.listCalls()).toBeGreaterThan(callsBefore));
+
+    const chip = screen.getByTestId('decision-countdown-ext-grace');
+    expect(chip.textContent ?? '').toMatch(/^\d+:\d{2}$/);
+    expect(countdownSeconds(chip)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('剩余 ≤60s：按钮带 is-critical 且仍可点；延长后剩余 >60s 清除临界标记', async () => {
+    const critical = listItem({
+      id: 'ext-critical',
+      state: 'grace',
+      grace_seconds: 180,
+      grace_until: Date.now() + 30_000,
+      remaining_grace_seconds: 30,
+      extended_seconds: 0,
+      extension_count: 0,
+    });
+    const fixture = installExtendServer({ items: [critical] });
+    server.use(...fixture.handlers);
+    renderWithQuery(<DecisionsView />);
+
+    const button = await screen.findByTestId('decision-extend-ext-critical');
+    expect(button).toHaveAttribute('data-critical', 'true');
+    expect(button.className).toContain('is-critical');
+    expect(button).not.toBeDisabled();
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveAttribute('data-extended', '60'));
+    await waitFor(() => expect(button).toHaveAttribute('data-critical', 'false'));
+    expect(button.className).not.toContain('is-critical');
+  });
+});
