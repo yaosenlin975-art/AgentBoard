@@ -21,9 +21,12 @@ import { createApp } from '../src/index.js';
 import { openDb } from '../src/db/connection.js';
 import { migrateCliAccounts } from '../src/db/migrations/cliAccounts.js';
 import {
+  captureCliAccounts,
   commandCodeCapability,
+  deleteCliAccount,
   discoverCliCredentials,
   importCliCredential,
+  listCliAccounts,
   type CliCredentialVault,
 } from '../src/services/accounts/cliAccounts.js';
 import type { VaultScope } from '../src/services/accounts/secretVault.js';
@@ -43,15 +46,19 @@ function installedBinDir(): string {
   return dir;
 }
 
-function fakeVault(): { vault: CliCredentialVault; scopes: VaultScope[] } {
+function fakeVault(): { vault: CliCredentialVault; scopes: VaultScope[]; deleted: string[] } {
   const scopes: VaultScope[] = [];
+  const deleted: string[] = [];
   const vault: CliCredentialVault = {
     protect: async (_data, scope) => {
       scopes.push(scope);
       return `00000000-0000-4000-8000-${String(scopes.length).padStart(12, '0')}`;
     },
+    delete: async (ref) => {
+      deleted.push(ref);
+    },
   };
-  return { vault, scopes };
+  return { vault, scopes, deleted };
 }
 
 describe('ACC-CC-3：cli_account CHECK 约束幂等重建', () => {
@@ -230,5 +237,102 @@ describe('ACC-CC-3：Command Code 导入与路由接线', () => {
     expect(response.status).not.toBe(404);
     expect(response.status).toBe(200);
     expect(response.body.capability.app_id).toBe('commandcode');
+  });
+});
+
+describe('ACC-CC-5：API Key 添加、来源区分与删除', () => {
+  const ACCOUNT_ID = '11111111-1111-4111-8111-111111111111';
+  let t: TestDb;
+  let homeDir: string;
+
+  beforeEach(() => {
+    t = createTestDb();
+    homeDir = mkdtempSync(join(tmpdir(), 'cc-manage-home-'));
+  });
+  afterEach(() => {
+    rmSync(homeDir, { recursive: true, force: true });
+  });
+
+  it('来源区分：本机发现的凭据 = local，手动导入的另一份 key = manual', async () => {
+    writeCommandCodeAuth(homeDir, JSON.stringify({ accessToken: CC_KEY }));
+    const env = { PATH: join(homeDir, 'empty-bin') };
+    const { vault } = fakeVault();
+    await captureCliAccounts({ db: t.db, vault, homeDir, env, now: () => 1000 });
+    await importCliCredential({ db: t.db, vault, appId: 'commandcode', credential: 'cc-manual-key-999', now: () => 2000 });
+
+    const items = listCliAccounts(t.db, { homeDir, env });
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.source)).toEqual(['local', 'manual']);
+
+    // 本机凭据消失后同一条记录变 manual（仍保留历史行，不删）
+    rmSync(join(homeDir, '.commandcode'), { recursive: true, force: true });
+    expect(listCliAccounts(t.db, { homeDir, env }).map((item) => item.source)).toEqual(['manual', 'manual']);
+  });
+
+  it('删除：回收 vault 密文并删行；同 id 再删 → 404；缺回收能力 → 503 且不删行', async () => {
+    const { vault, deleted } = fakeVault();
+    const imported = await importCliCredential({ db: t.db, vault, appId: 'commandcode', credential: CC_KEY, now: () => 1000 });
+
+    // 没装配 delete 时拒绝删除，不制造孤儿密文
+    await expect(deleteCliAccount({ db: t.db, accountId: imported.account.id }))
+      .rejects.toMatchObject({ status: 503, code: 'VAULT_UNAVAILABLE' });
+    expect(listCliAccounts(t.db)).toHaveLength(1);
+
+    const result = await deleteCliAccount({
+      db: t.db,
+      accountId: imported.account.id,
+      deleteCredential: vault.delete!.bind(vault),
+    });
+    expect(result).toMatchObject({ deleted: true, app_id: 'commandcode' });
+    expect(deleted).toEqual(['00000000-0000-4000-8000-000000000001']);
+    expect(listCliAccounts(t.db)).toHaveLength(0);
+
+    await expect(deleteCliAccount({ db: t.db, accountId: imported.account.id, deleteCredential: vault.delete!.bind(vault) }))
+      .rejects.toMatchObject({ status: 404, code: 'ACCOUNT_NOT_FOUND' });
+  });
+
+  it('路由：空值/格式/未知来源都 400，重复导入返回 updated，删除端点可触达', async () => {
+    const { vault, deleted } = fakeVault();
+    const app: Express = express();
+    app.use(express.json());
+    app.use('/api', createAccountRouter({
+      db: t.db,
+      cliVault: vault,
+      cliAccountHomeDir: homeDir,
+      cliAccountEnv: { PATH: join(homeDir, 'empty-bin') },
+    }));
+    app.use(errorHandler);
+
+    await request(app).post('/api/cli-accounts/import').send({ app_id: 'commandcode', credential: '' }).expect(400);
+    await request(app).post('/api/cli-accounts/import').send({ app_id: 'commandcode', credential: '   ' }).expect(400);
+    await request(app).post('/api/cli-accounts/import').send({ app_id: 'commandcode', credential: 'has space inside key' }).expect(400);
+    await request(app).post('/api/cli-accounts/import').send({ app_id: 'unknown', credential: CC_KEY }).expect(400);
+
+    const created = await request(app)
+      .post('/api/cli-accounts/import')
+      .send({ app_id: 'commandcode', credential: `COMMAND_CODE_API_KEY=${CC_KEY}` })
+      .expect(200);
+    expect(created.body.action).toBe('created');
+    const repeated = await request(app)
+      .post('/api/cli-accounts/import')
+      .send({ app_id: 'commandcode', credential: CC_KEY })
+      .expect(200);
+    expect(repeated.body.action).toBe('updated');
+    expect(repeated.body.account.id).toBe(created.body.account.id);
+
+    await request(app).delete('/api/cli-accounts/not-a-uuid').expect(400);
+    const removed = await request(app).delete(`/api/cli-accounts/${created.body.account.id}`).expect(200);
+    expect(removed.body).toMatchObject({ deleted: true, app_id: 'commandcode' });
+    expect(deleted).toHaveLength(1);
+  });
+
+  it('真实 createApp 下 DELETE 端点非 404（路由确实挂载）', async () => {
+    t.db.prepare('INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)')
+      .run(ACCOUNT_ID, 'commandcode', 'hash-real-app', null, 1000, 1000);
+    const created = await createApp({ db: t.db, refreshClisOnBoot: false, workbuddyProvider: null });
+    const response = await request(created.app).delete(`/api/cli-accounts/${ACCOUNT_ID}`);
+    expect(response.status).not.toBe(404);
+    expect(response.status).toBe(200);
+    expect(listCliAccounts(t.db)).toHaveLength(0);
   });
 });

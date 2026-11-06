@@ -33,7 +33,7 @@ import { startCheckinBatchInBackground } from '../services/accounts/checkinRunne
 import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
-import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
+import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, deleteCliAccount, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
@@ -265,6 +265,20 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.post('/cli-accounts/import', async (req, res) => {
     const body = parseBody(cliImportSchema, req.body);
     const result = await importCliCredential({ db, vault: cliVault, appId: body.app_id, credential: body.credential });
+    res.json(result);
+  });
+
+  /**
+   * ACC-CC-5：删除一条 CLI 账号记录，并回收它的 vault 密文（purpose `cli_credential`）。
+   * 凭据文件仍在的「本机发现」账号删掉后，下次 GET 会重新登记；界面负责提示这一点。
+   */
+  const deleteCliCredential = deps.cliVault?.delete !== undefined
+    ? deps.cliVault.delete.bind(deps.cliVault)
+    : deps.secretVault?.delete.bind(deps.secretVault);
+  router.delete('/cli-accounts/:id', async (req, res) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) throw new ValidationError('账号 id 不合法');
+    const result = await deleteCliAccount({ db, accountId: id.data, deleteCredential: deleteCliCredential });
     res.json(result);
   });
 

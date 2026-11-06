@@ -479,6 +479,106 @@ const CLI_IMPORT_UNSUPPORTED: Record<string, string> = {
   codex: 'Codex 导入对象尚未确定（OAuth 令牌 / API key 待验证），暂不支持导入',
 };
 
+/** ACC-CC-5：CLI 账号来源文案（不新增色相，只用文字芯片） */
+const CLI_ACCOUNT_SOURCE_LABEL: Record<'local' | 'manual', string> = {
+  local: '本机发现',
+  manual: '手动添加',
+};
+
+/**
+ * ACC-CC-5：单条 CLI 账号（脱敏）。
+ * 删除是两步流；本机发现的账号会提示「删掉还会被重新登记」，避免用户误以为删除能清掉本机凭据。
+ */
+function CliSourceAccountItem({ source, account }: { source: string; account: PublicCliAccount }) {
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const remove = useMutation({
+    mutationFn: () => api.del<{ deleted: true }>(`/api/cli-accounts/${account.id}`),
+    onSuccess: () => {
+      setConfirming(false);
+      setErrorCode(null);
+      void queryClient.invalidateQueries({ queryKey: ['cli-accounts'] });
+    },
+    onError: (error) => {
+      setConfirming(false);
+      setErrorCode(reasonCodeOf(error));
+    },
+  });
+  return (
+    <li
+      data-testid={`accounts-source-item-${account.id}`}
+      className="rounded-md bg-surface-raised px-2 py-1"
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-mono text-[11px] text-ink" title="身份指纹（不可逆哈希前缀，不是 key）">
+          {account.identity_hint}
+        </span>
+        {account.source !== undefined && (
+          <span
+            data-testid={`accounts-source-kind-${account.id}`}
+            data-source={account.source}
+            className="rounded border border-hairline px-1 text-[10px] text-ink-3"
+          >
+            {CLI_ACCOUNT_SOURCE_LABEL[account.source]}
+          </span>
+        )}
+        <span className="text-[11px] text-ink-3">最近发现 {new Date(account.last_seen_at).toLocaleString()}</span>
+        <button
+          type="button"
+          data-testid={`accounts-source-delete-${account.id}`}
+          className="ml-auto rounded border border-hairline px-1.5 py-0.5 text-[11px] text-red-600 ab-transition hover:bg-surface-card disabled:opacity-40 dark:text-red-400"
+          disabled={remove.isPending}
+          onClick={() => {
+            setErrorCode(null);
+            setConfirming(true);
+          }}
+        >
+          删除
+        </button>
+      </div>
+      {confirming && (
+        <div data-testid={`accounts-source-delete-confirm-${account.id}`} role="group" aria-label="确认删除该 CLI 账号">
+          <p className="mt-1 text-[11px] text-ink">
+            {account.source === 'local'
+              ? '该账号的凭据仍在本机文件里：删除记录后，下次读取本机账号会重新登记；本机文件不会被改动。'
+              : '删除该记录并回收 AgentBoard 保存的凭据密文，删除后不可恢复。'}
+          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              data-testid={`accounts-source-delete-yes-${account.id}`}
+              className="rounded border border-hairline px-1.5 py-0.5 text-[11px] font-medium text-red-600 ab-transition hover:bg-surface-card disabled:opacity-40 dark:text-red-400"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? '删除中…' : '确认删除'}
+            </button>
+            <button
+              type="button"
+              data-testid={`accounts-source-delete-cancel-${account.id}`}
+              className="rounded px-1.5 py-0.5 text-[11px] text-ink-2 ab-transition hover:bg-surface-card"
+              onClick={() => setConfirming(false)}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+      {errorCode !== null && (
+        <p
+          role="alert"
+          data-testid={`accounts-source-delete-error-${account.id}`}
+          title={errorCode}
+          className="mt-1 text-[11px] text-red-600 dark:text-red-400"
+        >
+          删除失败：{reasonLabel(errorCode)}（{source}）
+        </p>
+      )}
+    </li>
+  );
+}
+
 /**
  * 需求 2 / ACC-CLI-MULTI：CLI 额度来源选中后的详情。
  * 只列脱敏身份指纹（哈希前缀），不显示 key / credential_ref；
@@ -492,6 +592,7 @@ function QuotaSourceDetail({
   emptyHint,
   header,
   importPlaceholder,
+  importLabel,
   switchNote,
 }: {
   source: string;
@@ -502,6 +603,8 @@ function QuotaSourceDetail({
   /** 列表上方的来源专属内容（Command Code 用它放真实能力矩阵） */
   header?: ReactNode;
   importPlaceholder?: string;
+  /** 导入入口文案（Command Code 用「添加 API Key」；其余来源沿用通用说法） */
+  importLabel?: string;
   switchNote?: string;
 }) {
   const queryClient = useQueryClient();
@@ -547,18 +650,15 @@ function QuotaSourceDetail({
       ) : (
         <ul data-testid={`accounts-source-list-${source}`} className="space-y-1">
           {accounts.map((account) => (
-            <li
-              key={account.id}
-              data-testid={`accounts-source-item-${account.id}`}
-              className="flex flex-wrap items-center gap-x-2 rounded-md bg-surface-raised px-2 py-1"
-            >
-              <span className="font-mono text-[11px] text-ink" title="身份指纹（不可逆哈希前缀，不是 key）">
-                {account.identity_hint}
-              </span>
-              <span className="text-[11px] text-ink-3">最近发现 {new Date(account.last_seen_at).toLocaleString()}</span>
-            </li>
+            <CliSourceAccountItem key={account.id} source={source} account={account} />
           ))}
         </ul>
+      )}
+
+      {accounts.some((account) => account.source === 'local') && (
+        <p data-testid={`accounts-source-local-hint-${source}`} className="text-[11px] text-ink-3">
+          标为「本机发现」的账号，凭据仍在本机文件里：删除后下次读取本机账号会重新登记。
+        </p>
       )}
 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -573,7 +673,7 @@ function QuotaSourceDetail({
             setNotice(null);
           }}
         >
-          导入凭据
+          {importLabel ?? '导入凭据'}
         </button>
         {unsupportedReason !== null && (
           <span data-testid={`accounts-source-import-reason-${source}`} className="text-ink-3">
@@ -730,6 +830,7 @@ function CommandCodeSourceDetail({ accounts }: { accounts: PublicCliAccount[] })
         </>
       }
       emptyHint={commandCodeEmptyHint(capability)}
+      importLabel="添加 API Key"
       importPlaceholder="粘贴 Studio API key（一次一份；也可粘贴 COMMAND_CODE_API_KEY=…）"
       switchNote="切换与签到入口不开放：写回 auth.json 是否等价于有效登录态未验证；Command Code 没有签到功能。"
     />

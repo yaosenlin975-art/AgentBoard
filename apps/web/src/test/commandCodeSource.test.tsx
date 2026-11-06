@@ -9,7 +9,7 @@
  * - 切换与签到只给原因，不渲染按钮。
  */
 import { describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -216,5 +216,79 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
       expect(item).toHaveAttribute('data-available', 'false');
       expect(item).toHaveTextContent('能力状态未取到');
     }
+  });
+
+  it('ACC-CC-5：入口文案为「添加 API Key」，账号区分本机发现 / 手动添加', async () => {
+    const items: PublicCliAccount[] = [
+      { id: 'cli-cc-local', app_id: 'commandcode', identity_hint: 'sha256:aaaaaaaaaaaa', source: 'local', created_at: 1, last_seen_at: 2 },
+      { id: 'cli-cc-manual', app_id: 'commandcode', identity_hint: 'sha256:bbbbbbbbbbbb', source: 'manual', created_at: 3, last_seen_at: 4 },
+    ];
+    mockPanel({ items, capabilityBody: capability({ installed: true, capture: true, capture_reason_code: 'OK', auth_file_state: 'readable' }) });
+    renderPanel();
+    const detail = await openCommandCode();
+
+    expect(within(detail).getByTestId('accounts-source-import-commandcode')).toHaveTextContent('添加 API Key');
+    expect(within(detail).getByTestId('accounts-source-kind-cli-cc-local')).toHaveAttribute('data-source', 'local');
+    expect(within(detail).getByTestId('accounts-source-kind-cli-cc-local')).toHaveTextContent('本机发现');
+    expect(within(detail).getByTestId('accounts-source-kind-cli-cc-manual')).toHaveTextContent('手动添加');
+    expect(within(detail).getByTestId('accounts-source-local-hint-commandcode')).toHaveTextContent('下次读取本机账号会重新登记');
+  });
+
+  it('ACC-CC-5：删除是两步流，本机发现账号提示会被重新登记，删除后列表刷新', async () => {
+    let items: PublicCliAccount[] = [
+      { id: 'cli-cc-local', app_id: 'commandcode', identity_hint: 'sha256:aaaaaaaaaaaa', source: 'local', created_at: 1, last_seen_at: 2 },
+    ];
+    const deleted: string[] = [];
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items })),
+      http.get('/api/cli-accounts/commandcode/capability', () =>
+        HttpResponse.json({ capability: capability({ installed: true, capture: true, capture_reason_code: 'OK', auth_file_state: 'readable' }) })),
+      http.delete('/api/cli-accounts/:id', ({ params }) => {
+        deleted.push(String(params.id));
+        items = items.filter((item) => item.id !== params.id);
+        return HttpResponse.json({ deleted: true, id: params.id, app_id: 'commandcode' });
+      }),
+    );
+    renderPanel();
+    const detail = await openCommandCode();
+
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-cli-cc-local'));
+    const confirm = within(detail).getByTestId('accounts-source-delete-confirm-cli-cc-local');
+    expect(confirm).toHaveTextContent('下次读取本机账号会重新登记');
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-cancel-cli-cc-local'));
+    expect(within(detail).queryByTestId('accounts-source-delete-confirm-cli-cc-local')).toBeNull();
+    expect(deleted).toHaveLength(0);
+
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-cli-cc-local'));
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-yes-cli-cc-local'));
+    await waitFor(() => expect(within(detail).queryByTestId('accounts-source-item-cli-cc-local')).toBeNull());
+    expect(deleted).toEqual(['cli-cc-local']);
+    expect(within(detail).getByTestId('accounts-source-empty-commandcode')).toBeInTheDocument();
+  });
+
+  it('ACC-CC-5：删除失败显示原因与技术码，不回显凭据', async () => {
+    const items: PublicCliAccount[] = [
+      { id: 'cli-cc-manual', app_id: 'commandcode', identity_hint: 'sha256:bbbbbbbbbbbb', source: 'manual', created_at: 1, last_seen_at: 2 },
+    ];
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items })),
+      http.get('/api/cli-accounts/commandcode/capability', () =>
+        HttpResponse.json({ capability: capability({ installed: true, capture: true, capture_reason_code: 'OK', auth_file_state: 'readable' }) })),
+      http.delete('/api/cli-accounts/:id', () =>
+        HttpResponse.json({ error: { code: 'VAULT_DELETE_FAILED', message: '凭据回收失败，未删除账号记录' } }, { status: 503 })),
+    );
+    renderPanel();
+    const detail = await openCommandCode();
+
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-cli-cc-manual'));
+    await userEvent.click(within(detail).getByTestId('accounts-source-delete-yes-cli-cc-manual'));
+    const error = await within(detail).findByTestId('accounts-source-delete-error-cli-cc-manual');
+    expect(error).toHaveTextContent('凭据回收失败，账号记录未删除');
+    expect(error).toHaveAttribute('title', 'VAULT_DELETE_FAILED');
+    expect(within(detail).getByTestId('accounts-source-item-cli-cc-manual')).toBeInTheDocument();
   });
 });

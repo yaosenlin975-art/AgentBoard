@@ -27,8 +27,11 @@ import type { SecretVault } from './secretVault.js';
 export const CLI_ACCOUNT_APP_IDS = ['deepseek', 'opencode_go', 'codex', 'commandcode'] as const;
 /** 本机只读发现能产出账号的来源；Codex 无凭据可枚举，不产账号 */
 type DiscoveredAppId = Exclude<CliAccountAppId, 'codex'>;
-/** CLI 凭据的 vault 只有写入能力需求（读取/删除随 CLI-IMPORT / CLI-SWITCH 再扩） */
-export type CliCredentialVault = Pick<SecretVault, 'protect'>;
+/**
+ * CLI 凭据的 vault：写入恒需要；删除是 ACC-CC-5 的增量需求，
+ * 旧测试替身只实现 protect 也能编译（缺删除能力时删除接口会明确拒绝，而非留孤儿密文）。
+ */
+export type CliCredentialVault = Pick<SecretVault, 'protect'> & Partial<Pick<SecretVault, 'delete'>>;
 export const CLI_CLIENT_INSTANCE_ID = 'cli-local';
 
 export interface CliCredentialCandidate {
@@ -204,21 +207,41 @@ export function discoverCliCredentials(
 }
 
 /** 对外投影：不含 credential_ref / identity_hash 全量 / key */
-function publicCliAccount(row: CliAccountRow): PublicCliAccount {
+function publicCliAccount(row: CliAccountRow, local?: Set<string>): PublicCliAccount {
+  const key = `${row.app_id}\u0000${row.identity_hash}`;
   return {
     id: row.id,
     app_id: row.app_id,
     identity_hint: `sha256:${row.identity_hash.slice(0, 12)}`,
+    // ACC-CC-5：不新增数据库列，按「本次发现集合」判定来源
+    ...(local === undefined ? {} : { source: local.has(key) ? ('local' as const) : ('manual' as const) }),
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
   };
 }
 
-export function listCliAccounts(db: Db): PublicCliAccount[] {
+/** 本机发现集合的身份键（app_id + identity_hash） */
+function localIdentityKeys(homeDir: string, env: Record<string, string | undefined>): Set<string> {
+  return new Set(
+    discoverCliCredentials(homeDir, env).map(
+      (candidate) => `${candidate.app_id}\u0000${cliIdentityHash(candidate.app_id, candidate.key)}`,
+    ),
+  );
+}
+
+/**
+ * CLI 账号列表（脱敏）。
+ * 传入 `homeDir/env` 时附带 `source`（local = 当前仍能在本机发现；manual = 仅存在于 AgentBoard）。
+ */
+export function listCliAccounts(
+  db: Db,
+  discovery?: { homeDir: string; env: Record<string, string | undefined> },
+): PublicCliAccount[] {
+  const local = discovery === undefined ? undefined : localIdentityKeys(discovery.homeDir, discovery.env);
   const rows = db
     .prepare('SELECT id,app_id,identity_hash,created_at,last_seen_at FROM cli_account ORDER BY app_id,created_at,id')
     .all() as CliAccountRow[];
-  return rows.map(publicCliAccount);
+  return rows.map((row) => publicCliAccount(row, local));
 }
 
 export interface CaptureCliAccountsOptions {
@@ -240,7 +263,13 @@ export interface CaptureCliAccountsOptions {
 export async function captureCliAccounts(options: CaptureCliAccountsOptions): Promise<PublicCliAccount[]> {
   const { db } = options;
   const now = (options.now ?? Date.now)();
-  const candidates = discoverCliCredentials(options.homeDir ?? homedir(), options.env ?? process.env);
+  const homeDir = options.homeDir ?? homedir();
+  const env = options.env ?? process.env;
+  const candidates = discoverCliCredentials(homeDir, env);
+  const local = new Set<string>();
+  for (const candidate of candidates) {
+    local.add(`${candidate.app_id}\u0000${cliIdentityHash(candidate.app_id, candidate.key)}`);
+  }
   const find = db.prepare('SELECT id FROM cli_account WHERE app_id=? AND identity_hash=?');
   const insert = db.prepare(
     'INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)',
@@ -268,7 +297,7 @@ export async function captureCliAccounts(options: CaptureCliAccountsOptions): Pr
     }
     insert.run(randomUUID(), candidate.app_id, identityHash, credentialRef, now, now);
   }
-  return listCliAccounts(db);
+  return listCliAccounts(db, { homeDir, env });
 }
 
 /** 手动导入时接受的 token 形状（API key / OAuth 短令牌都是无空白的可打印串） */
@@ -373,4 +402,46 @@ export async function importCliCredential(options: ImportCliCredentialOptions): 
     'INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)',
   ).run(id, appId, identityHash, credentialRef, now, now);
   return { app_id: appId, action: 'created', account: publicCliAccount(readRow(id)) };
+}
+
+export interface DeleteCliAccountOptions {
+  db: Db;
+  accountId: string;
+  /**
+   * 回收该账号在 vault 里的密文（purpose `cli_credential`）。
+   * 行内带 credential_ref 时必需：宁可拒绝删除并报错，也不留下无主密文。
+   */
+  deleteCredential?: (ref: string) => Promise<void>;
+}
+
+export interface DeletedCliAccount {
+  deleted: true;
+  id: string;
+  app_id: CliAccountAppId;
+}
+
+/**
+ * ACC-CC-5：删除一条 CLI 账号记录，并回收它的 vault 密文。
+ * - 不存在 → 404 ACCOUNT_NOT_FOUND；
+ * - 有 credential_ref 但没有回收能力 / 回收失败 → 503，且**不删库行**（可重试）；
+ * - 本机发现的账号删掉后，下次 `GET /api/cli-accounts` 会重新登记（凭据仍在原文件），界面需提示。
+ */
+export async function deleteCliAccount(options: DeleteCliAccountOptions): Promise<DeletedCliAccount> {
+  const { db, accountId } = options;
+  const row = db
+    .prepare('SELECT id,app_id,credential_ref FROM cli_account WHERE id=?')
+    .get(accountId) as { id: string; app_id: CliAccountAppId; credential_ref: string | null } | undefined;
+  if (row === undefined) throw new ApiError(404, 'ACCOUNT_NOT_FOUND', '账号不存在');
+  if (row.credential_ref !== null) {
+    if (options.deleteCredential === undefined) {
+      throw new ApiError(503, 'VAULT_UNAVAILABLE', '凭据保护未装配，无法回收该账号的凭据（未删除账号记录）');
+    }
+    try {
+      await options.deleteCredential(row.credential_ref);
+    } catch {
+      throw new ApiError(503, 'VAULT_DELETE_FAILED', '凭据回收失败，未删除账号记录');
+    }
+  }
+  db.prepare('DELETE FROM cli_account WHERE id=?').run(accountId);
+  return { deleted: true, id: row.id, app_id: row.app_id };
 }

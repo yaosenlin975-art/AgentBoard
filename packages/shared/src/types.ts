@@ -89,6 +89,12 @@ export interface PublicCliAccount {
   app_id: CliAccountAppId;
   /** 身份指纹 = identity_hash 前缀（不可逆哈希，不是 key 本身） */
   identity_hint: string;
+  /**
+   * ACC-CC-5：账号来源。`local` = 本次本机发现集合里仍能读到（下次读取会重新登记）；
+   * `manual` = 只存在于 AgentBoard（手动粘贴 API key 添加，删掉就不会自己回来）。
+   * 不落库（`cli_account` 无该列），由「当前发现集合」判定；旧响应缺省时按未知处理。
+   */
+  source?: 'local' | 'manual';
   created_at: number;
   last_seen_at: number;
 }

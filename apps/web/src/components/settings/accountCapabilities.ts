@@ -99,6 +99,7 @@ export const REASON_LABEL: Record<string, string> = {
   // ACC-KB-B1W：新增平台（qoder_cn / zcode）只有 id、provider 还没实现，如实展示「尚未接入」
   PROVIDER_NOT_IMPLEMENTED: '该平台尚未接入（provider 未实现）',
   VAULT_UNAVAILABLE: '凭据保护未装配',
+  VAULT_DELETE_FAILED: '凭据回收失败，账号记录未删除',
   VAULT_READ_FAILED: '凭据读取失败，请重新读取本机账号',
   // 桌面客户端捕获 / 切换
   CLIENT_NOT_RUNNING: '客户端未在运行',
