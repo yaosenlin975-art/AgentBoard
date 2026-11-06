@@ -97,6 +97,12 @@ function renderWithQuery(node: React.ReactElement) {
   return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
 }
 
+/** PERM-3：验证「401 不重试」需要一份带重试的 client，per-query 的 retry 才能生效 */
+function renderWithRetry(node: React.ReactElement, retry = 2) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry }, mutations: { retry } } });
+  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+}
+
 beforeEach(() => {
   cleanup();
   localStorage.clear();
@@ -1091,6 +1097,7 @@ describe('P5 跨区范围', () => {
     await screen.findByTestId('decision-item-p5-blocked');
 
     expect(screen.getByTestId('decision-action-p5-blocked')).toBeDisabled();
+    expect(screen.getByTestId('decision-role-blocked-p5-blocked')).toHaveTextContent('无目标工作区写权限');
     expect(screen.getByTestId('decision-role-blocked-p5-blocked')).toHaveTextContent('设计区');
 
     fireEvent.click(screen.getByTestId(`decision-option-${blocked.options[0]!.id}`));
@@ -1124,7 +1131,66 @@ describe('P5 跨区范围', () => {
     await waitFor(() => expect(posts).toHaveLength(1));
   });
 
-  it('提交 403 ROLE_FORBIDDEN：显示「当前角色无权回答这条决策」', async () => {
+  it('capabilities 逐项驱动动作：can_extend / can_revise / can_withdraw=false 时不出入口', async () => {
+    const limited = listItem({
+      id: 'p5-limited',
+      state: 'grace',
+      grace_until: NOW + 120_000,
+      capabilities: { ...CAPS_ALL, can_extend: false, can_withdraw: false },
+    });
+    const answeredLimited = listItem({
+      id: 'p5-answered-limited',
+      state: 'answered',
+      answer_revision: 1,
+      answered_at: NOW - 1000,
+      capabilities: { ...CAPS_ALL, can_revise: false },
+    });
+    server.use(decisionHandler([limited], [answeredLimited]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-limited');
+
+    expect(screen.queryByTestId('decision-extend-p5-limited')).toBeNull();
+    expect(screen.queryByTestId('decision-withdraw-p5-limited')).toBeNull();
+    expect(screen.queryByTestId('decision-revise-p5-answered-limited')).toBeNull();
+    // 已回答且 can_revise=false：即使选了选项也不能再次提交修订
+    fireEvent.click(screen.getByTestId(`decision-option-${answeredLimited.options[0]!.id}`));
+    expect(screen.getByTestId('decision-action-p5-answered-limited')).toBeDisabled();
+  });
+
+  it('capabilities.can_withdraw=true：撤回入口两步确认后才发 POST', async () => {
+    const withdrawable = listItem({
+      id: 'p5-withdraw',
+      state: 'grace',
+      grace_until: NOW + 120_000,
+      capabilities: CAPS_ALL,
+    });
+    const calls: string[] = [];
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(
+      scopedHandler(calls, [withdrawable], []),
+      http.post('/api/decisions/:id/withdraw', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({
+          decision: { ...withdrawable, state: 'withdrawn', checkpoint_json: null, current_answer_id: null, expires_at: null, on_expire: 'stay_locked', answers: [] },
+        });
+      }),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-withdraw');
+
+    const button = screen.getByTestId('decision-withdraw-p5-withdraw');
+    expect(button).toHaveAttribute('data-confirm', 'false');
+    fireEvent.click(button);
+    expect(posts).toHaveLength(0);
+    expect(button).toHaveAttribute('data-confirm', 'true');
+    expect(screen.getByTestId('decision-withdraw-confirm-p5-withdraw')).toBeInTheDocument();
+
+    fireEvent.click(button);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ reason: expect.any(String) });
+  });
+
+  it('提交 403 ROLE_FORBIDDEN：显示服务端 message、刷新列表、不跳页', async () => {
     const calls: string[] = [];
     server.use(
       scopedHandler(calls, [homeItem], []),
@@ -1134,22 +1200,40 @@ describe('P5 跨区范围', () => {
     );
     renderWithQuery(<DecisionsView />);
     await screen.findByTestId('decision-item-p5-home');
+    const before = calls.length;
 
     fireEvent.click(screen.getByTestId(`decision-option-${homeItem.options[0]!.id}`));
     fireEvent.click(screen.getByTestId('decision-action-p5-home'));
     await waitFor(() =>
-      expect(screen.getByTestId('decision-error-p5-home')).toHaveTextContent('当前角色无权回答这条决策'),
+      expect(screen.getByTestId('decision-error-p5-home')).toHaveTextContent('角色无权'),
     );
+    // 403 后以服务端为准刷新列表；卡片保留、页面不跳、不出现全屏错误
+    await waitFor(() => expect(calls.length).toBeGreaterThan(before));
+    expect(screen.getByTestId('decision-item-p5-home')).toBeInTheDocument();
+    expect(screen.queryByTestId('decisions-session-expired')).toBeNull();
+    expect(screen.queryByTestId('decisions-error-generic')).toBeNull();
   });
 
-  it('列表 401 / 403 / 通用错误分区展示，不一律显示加载失败', async () => {
+  it('列表 401：顶部 banner 只出现一次且不重试；403 / 通用错误仍分区展示', async () => {
+    const calls: string[] = [];
     server.use(
-      http.get('/api/decisions', () =>
-        HttpResponse.json({ error: { code: 'UNAUTHENTICATED', message: '未认证' } }, { status: 401 }),
-      ),
+      http.get('/api/decisions', ({ request }) => {
+        calls.push(request.url);
+        return HttpResponse.json({ error: { code: 'UNAUTHENTICATED', message: '未认证' } }, { status: 401 });
+      }),
     );
-    renderWithQuery(<DecisionsView />);
-    await screen.findByTestId('decisions-error-unauth');
+    renderWithRetry(<DecisionsView />);
+    const banner = await screen.findByTestId('decisions-session-expired');
+    expect(banner).toHaveTextContent('身份失效，请重新打开看板');
+    expect(screen.getAllByTestId('decisions-session-expired')).toHaveLength(1);
+    // 不再用「没权限」的旧内联提示重复一次
+    expect(screen.queryByTestId('decisions-error-unauth')).toBeNull();
+
+    // 401 关闭重试：等待超过默认退避（1s）后请求数不再增长
+    const settled = calls.length;
+    expect(settled).toBe(2); // active + answered 各一次
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(calls.length).toBe(settled);
     cleanup();
 
     server.use(
@@ -1159,6 +1243,7 @@ describe('P5 跨区范围', () => {
     );
     renderWithQuery(<DecisionsView />);
     await screen.findByTestId('decisions-error-forbidden');
+    expect(screen.queryByTestId('decisions-session-expired')).toBeNull();
     cleanup();
 
     server.use(
@@ -1167,7 +1252,8 @@ describe('P5 跨区范围', () => {
       ),
     );
     renderWithQuery(<DecisionsView />);
-    await screen.findByTestId('decisions-error-generic');
+    // 500 走一次重试（约 1s 退避），超时放宽
+    await screen.findByTestId('decisions-error-generic', {}, { timeout: 3000 });
   });
 
   it('侧栏徽标不随范围切换变化（仍只算本工作区）', async () => {

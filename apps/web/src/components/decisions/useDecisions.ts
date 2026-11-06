@@ -8,7 +8,7 @@
  */
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { ServerWsEvent } from '@agentboard/shared';
-import { api } from '../../api/client';
+import { ApiError, api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import type { DecisionsScope } from '../../lib/decisionsScope';
 import type {
@@ -20,6 +20,16 @@ import type {
 } from './types';
 
 export const DECISION_LIST_LIMIT = 50;
+
+/**
+ * PERM-3：401 是会话级错误（身份没带上），重试只会放大错误、并让 banner 重复出现；
+ * 其余错误保留一次重试。403 是业务结果，不重试。
+ */
+function retryUnlessUnauthorized(failureCount: number, error: unknown): boolean {
+  if (error instanceof ApiError && error.status === 401) return false;
+  if (error instanceof ApiError && error.status === 403) return false;
+  return failureCount < 1;
+}
 
 export function decisionsCountKey(workspaceId: string) {
   return ['decisions-count', workspaceId] as const;
@@ -45,6 +55,7 @@ export function useDecisionsCount(workspaceId: string | null): number {
     queryKey: decisionsCountKey(workspaceId ?? ''),
     queryFn: () => api.get<DecisionCounts>(`/api/workspaces/${encodeURIComponent(workspaceId ?? '')}/decisions/count`),
     enabled: workspaceId !== null,
+    retry: retryUnlessUnauthorized,
   });
   useDecisionInvalidation(queryClient);
   return (data?.grace ?? 0) + (data?.open ?? 0);
@@ -67,11 +78,13 @@ export function useDecisionLists(workspaceId: string | null, scope: DecisionsSco
     queryKey: decisionsListKey(workspaceId ?? '', 'active', scope),
     queryFn: () => api.get<DecisionListResponse>(activeUrl),
     enabled: all || workspaceId !== null,
+    retry: retryUnlessUnauthorized,
   });
   const answered = useQuery({
     queryKey: decisionsListKey(workspaceId ?? '', 'answered', scope),
     queryFn: () => api.get<DecisionListResponse>(answeredUrl),
     enabled: all || workspaceId !== null,
+    retry: retryUnlessUnauthorized,
   });
   useDecisionInvalidation(queryClient);
   return {
@@ -128,6 +141,7 @@ export function useDecisionDetail(decisionId: string | null): DecisionDetailDto 
     queryKey: decisionDetailKey(decisionId ?? ''),
     queryFn: () => api.get<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(decisionId!)}`),
     enabled: decisionId !== null,
+    retry: retryUnlessUnauthorized,
   });
   useDecisionInvalidation(queryClient);
   return query.data?.decision ?? null;
@@ -160,6 +174,35 @@ export function useAnswerDecision() {
         source: 'web',
         ...(input.expectedRevision === undefined ? {} : { expected_revision: input.expectedRevision }),
       }),
+  });
+}
+
+export interface WithdrawDecisionInput {
+  decisionId: string;
+  /** 服务端必填（≥1 字符）；Web 端固定写一句可读原因 */
+  reason: string;
+  by?: string;
+}
+
+/**
+ * PERM-3：`POST /api/decisions/:id/withdraw`（服务端要求 owner）。
+ * 入口可见性由 `capabilities.can_withdraw` 决定；这里只负责落服务端真相并失效列表。
+ */
+export function useWithdrawDecision() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: WithdrawDecisionInput) =>
+      api.post<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(input.decisionId)}/withdraw`, {
+        reason: input.reason,
+        by: input.by ?? 'user',
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+      void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+      void queryClient.invalidateQueries({ queryKey: ['decision'] });
+      void queryClient.invalidateQueries({ queryKey: ['issue'] });
+      void queryClient.invalidateQueries({ queryKey: ['issues'] });
+    },
   });
 }
 

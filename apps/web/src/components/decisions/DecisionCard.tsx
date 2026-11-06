@@ -23,7 +23,7 @@ import { ApiError } from '../../api/client';
 import { BlockedDownstream } from './BlockedDownstream';
 import { downstreamCount, formatCountdown, formatWaiting } from './countdown';
 import { checkpointLines } from './DecisionSection';
-import { useAnswerDecision, useDecisionDetail, useExtendDecision } from './useDecisions';
+import { useAnswerDecision, useDecisionDetail, useExtendDecision, useWithdrawDecision } from './useDecisions';
 import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from './types';
 
 /** 容器宽度阈值：≤660px 时动作行纵向堆叠、主按钮占满 */
@@ -116,6 +116,8 @@ export interface DecisionAnsweredPayload {
   by: string;
   /** 服务端 `undo_until`（毫秒）；撤销倒计时唯一依据 */
   deadline: number;
+  /** PERM-3：是否展示撤销入口（能力驱动的降级；窗口仍由服务端裁决） */
+  canUndo: boolean;
 }
 
 /** 跨区 chip 文案：短名展示、全名放 title（服务端 workspace_name） */
@@ -155,12 +157,16 @@ export function DecisionCard({
   const [customError, setCustomError] = useState<string | null>(null);
   // P5：跨区回答的二次确认；改选项 / 收起 / 切 tab / 切范围都会复位
   const [confirmCross, setConfirmCross] = useState(false);
+  // PERM-3：撤回（仅 can_withdraw=true 渲染入口）同样两步防误触
+  const [confirmWithdraw, setConfirmWithdraw] = useState(false);
   const prevOptionRef = useRef<string | null>(null);
   const customInputRef = useRef<HTMLInputElement | null>(null);
   // 已回答卡收起态也要展示当前答案选项 → 仅在 answered 时预取详情；展开时一律取详情
   const detailQueryEnabled = expanded || scope === 'answered';
   const detail = useDecisionDetail(detailQueryEnabled ? item.id : null);
   const answerMutation = useAnswerDecision();
+  // PERM-3：撤回决策（服务端要求 owner；capability=false 时入口不渲染）
+  const withdrawMutation = useWithdrawDecision();
   // DEC-V4-EXTEND：延长宽限（+60s / 次，上限见 maxExtendSeconds）
   const extendMutation = useExtendDecision();
   const [gracePatch, setGracePatch] = useState<ExtendGracePatch | null>(null);
@@ -172,12 +178,19 @@ export function DecisionCard({
   const options = [...item.options].sort((a, b) => a.ord - b.ord);
   const defaultOption = options.find((option) => option.is_default === 1) ?? options[0] ?? null;
   const selectedOption = options.find((option) => option.id === selectedOptionId) ?? null;
-  // P5：跨区标注 + 服务端 capability 决定「能不能答」；不写死「跨区一定要确认」
+  // P5/PERM-3：跨区标注 + 服务端 capability 决定「能不能答」；不写死「跨区一定要确认」
   const crossWorkspace = item.workspace_id !== homeWorkspaceId;
   const workspaceName = item.workspace_name ?? item.workspace_id;
   const capabilities = item.capabilities ?? null;
-  const roleBlocked = capabilities !== null && !capabilities.can_answer;
-  const needsCrossConfirm = crossWorkspace && !roleBlocked;
+  // PERM-3：能力字段只认服务端投影；缺字段按 false（不放大权限）。
+  // 整份 capabilities 缺失 = 旧服务端，按 state 渲染并允许点击，由 403 兜底（卡面要求 7）。
+  // 撤回不可逆：旧服务端拿不到能力就不给入口，不接受「缺省放行」。
+  const canAnswer = capabilities === null || capabilities.can_answer === true;
+  const canRevise = capabilities === null || capabilities.can_revise === true;
+  const canExtend = capabilities === null || capabilities.can_extend === true;
+  const canWithdraw = capabilities !== null && capabilities.can_withdraw === true;
+  const roleBlocked = !canAnswer;
+  const needsCrossConfirm = crossWorkspace && canAnswer;
   const customDraft = customText.trim();
   const preview = customOpen
     ? {
@@ -194,12 +207,15 @@ export function DecisionCard({
   const canSubmit =
     !leaving &&
     !answerMutation.isPending &&
+    canAnswer &&
+    (!isAnswered || canRevise) &&
     (customOpen ? true : selectedOptionId !== null && (current === null || selectedOptionId !== current.option_id));
   const optionsScroll = options.length + 1 >= SCROLL_THRESHOLD;
 
-  // P5：切 tab / 切范围 / 展开收起都视为「换了上下文」，跨区确认必须重来
+  // P5/PERM-3：切 tab / 切范围 / 展开收起都视为「换了上下文」，跨区确认与撤回确认必须重来
   useEffect(() => {
     setConfirmCross(false);
+    setConfirmWithdraw(false);
   }, [resetSignal, expanded]);
 
   const effectiveGraceUntil = gracePatch?.graceUntil ?? item.grace_until;
@@ -262,12 +278,13 @@ export function DecisionCard({
         setError('身份失效，请重新打开看板');
         return;
       }
-      if (err.code === 'WORKSPACE_FORBIDDEN') {
-        setError('无权操作该工作区的决策');
-        return;
-      }
-      if (err.code === 'ROLE_FORBIDDEN') {
-        setError('当前角色无权回答这条决策');
+      // PERM-3：403 用服务端 message（角色/成员原因以服务端为准），并刷新列表；
+      // 卡片留在原地，不抹掉、不跳页。
+      if (err.code === 'WORKSPACE_FORBIDDEN' || err.code === 'ROLE_FORBIDDEN') {
+        setError(err.message);
+        void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+        void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+        void queryClient.invalidateQueries({ queryKey: ['decision'] });
         return;
       }
       if (err.status === 409) {
@@ -348,11 +365,14 @@ export function DecisionCard({
       revision: decision.answer_revision,
       by: answer?.answered_by ?? 'user',
       deadline: decision.undo_until ?? Date.now() + 6000,
+      // PERM-3：优先用 answer 响应里的 can_undo；旧服务端不返回 capabilities 时
+      // 退回同源的 can_answer（member+ 写资格），窗口/revision 仍由服务端裁决。
+      canUndo: decision.capabilities?.can_undo ?? canAnswer,
     });
   }
 
   function submit() {
-    if (leaving || answerMutation.isPending || roleBlocked) return;
+    if (leaving || answerMutation.isPending || roleBlocked || (isAnswered && !canRevise)) return;
     if (customOpen) {
       const text = customText.trim();
       if (text === '') {
@@ -456,6 +476,37 @@ export function DecisionCard({
           // 状态可能已落锁 / 上限已被改：以服务端为准刷新，倒计时由新数据计算，不会出现负数
           void queryClient.invalidateQueries({ queryKey: ['decisions'] });
           void queryClient.invalidateQueries({ queryKey: ['decision'] });
+        },
+      },
+    );
+  }
+
+  /**
+   * PERM-3：撤回决策（仅 can_withdraw=true 时入口可见，服务端仍要求 owner）。
+   * 两步确认防误触；成功后失效列表（决策转 withdrawn 会离开在途队列），失败按服务端 message 就地提示。
+   */
+  function requestWithdraw() {
+    if (withdrawMutation.isPending) return;
+    if (!confirmWithdraw) {
+      setConfirmWithdraw(true);
+      setError(null);
+      return;
+    }
+    withdrawMutation.mutate(
+      { decisionId: item.id, reason: '用户在看板撤回' },
+      {
+        onSuccess: () => {
+          setConfirmWithdraw(false);
+          void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+          void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+          void queryClient.invalidateQueries({ queryKey: ['decision'] });
+          void queryClient.invalidateQueries({ queryKey: ['issue'] });
+          void queryClient.invalidateQueries({ queryKey: ['issues'] });
+        },
+        onError: (err) => {
+          setConfirmWithdraw(false);
+          setError(err instanceof ApiError ? err.message : '撤回失败，请重试');
+          void queryClient.invalidateQueries({ queryKey: ['decisions'] });
         },
       },
     );
@@ -656,7 +707,16 @@ export function DecisionCard({
 
       {roleBlocked && (
         <p data-testid={`decision-role-blocked-${item.id}`} className="text-xs text-ink-3">
-          当前身份在「{workspaceName}」没有回答权限（只读或非成员）
+          无目标工作区写权限（{workspaceName}）
+        </p>
+      )}
+
+      {confirmWithdraw && canWithdraw && (
+        <p
+          data-testid={`decision-withdraw-confirm-${item.id}`}
+          className="rounded border border-amber-300 bg-amber-50 px-1.5 py-1 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200"
+        >
+          撤回后该决策不再等待回答（不可恢复）；请再点一次确认。
         </p>
       )}
 
@@ -696,7 +756,7 @@ export function DecisionCard({
         style={{ flexDirection: narrow ? 'column' : 'row' }}
         className="flex items-stretch gap-1.5"
       >
-        {scope === 'grace' && (
+        {scope === 'grace' && canExtend && (
           <button
             type="button"
             data-testid={`decision-extend-${item.id}`}
@@ -723,6 +783,7 @@ export function DecisionCard({
           data-testid={`decision-action-${item.id}`}
           disabled={roleBlocked || (!customOpen && selectedOptionId === null) || !canSubmit}
           onClick={submit}
+          title={roleBlocked ? '无目标工作区写权限' : undefined}
           className={`whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50 ${
             isAnswered
               ? 'border border-hairline text-ink-2 hover:bg-surface-raised'
@@ -731,7 +792,7 @@ export function DecisionCard({
         >
           {actionLabel}
         </button>
-        {isAnswered && !expanded && (
+        {isAnswered && !expanded && canRevise && (
           <button
             type="button"
             data-testid={`decision-revise-${item.id}`}
@@ -739,6 +800,18 @@ export function DecisionCard({
             className="whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             改答案
+          </button>
+        )}
+        {canWithdraw && item.state !== 'withdrawn' && (
+          <button
+            type="button"
+            data-testid={`decision-withdraw-${item.id}`}
+            data-confirm={confirmWithdraw ? 'true' : 'false'}
+            disabled={withdrawMutation.isPending}
+            onClick={requestWithdraw}
+            className="whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-xs text-ink-2 hover:bg-surface-raised disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+          >
+            {withdrawMutation.isPending ? '撤回中…' : confirmWithdraw ? '确认撤回' : '撤回决策'}
           </button>
         )}
         <button

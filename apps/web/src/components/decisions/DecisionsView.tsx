@@ -61,6 +61,8 @@ interface UndoBarState {
   by: string;
   /** 服务端 `undo_until`（毫秒）；倒计时唯一依据 */
   deadline: number;
+  /** PERM-3：能力驱动的撤销入口开关 */
+  canUndo: boolean;
   phase: 'ready' | 'pending' | 'failed' | 'done';
   tone: 'info' | 'error';
   message: string | null;
@@ -283,6 +285,9 @@ export function DecisionsView() {
   // 撤销倒计时以服务端 undo_until 为准；剩余秒数直接用当前时刻算，避免后台/节流标签页里
   // useDecisionClock 的 now 停跳把窗口算大（会显示「看起来还在窗口内」而服务端已 409）。
   const undoRemaining = undo === null ? 0 : Math.max(0, Math.ceil((undo.deadline - Date.now()) / 1000));
+  // PERM-3：401 是会话级错误（身份没带上），用顶部 banner 统一承接；
+  // 列表查询已对 401 关闭重试，banner 只出一次，不逐卡弹「没权限」。
+  const sessionExpired = error instanceof ApiError && error.status === 401;
   const hasAnyData = total + groups.answered.length > 0;
   // P7：无在途 + （无已回答或停在「全部」）才展示真空态；停在「已回答」tab 时仍走正常列表
   const showEmptyState = total === 0 && (groups.answered.length === 0 || filter === 'all');
@@ -371,6 +376,24 @@ export function DecisionsView() {
         </div>
       </header>
 
+      {sessionExpired && (
+        <div
+          data-testid="decisions-session-expired"
+          role="alert"
+          className="mx-2 mt-2 flex flex-wrap items-center gap-2 rounded border border-red-300 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300"
+        >
+          <span>身份失效，请重新打开看板</span>
+          <button
+            type="button"
+            data-testid="decisions-session-reopen"
+            onClick={() => window.location.reload()}
+            className="rounded-md border border-red-300 px-2 py-0.5 font-medium hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent dark:border-red-700 dark:hover:bg-red-900"
+          >
+            重新打开看板
+          </button>
+        </div>
+      )}
+
       <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
         {focusToast !== null && (
           <div
@@ -381,7 +404,7 @@ export function DecisionsView() {
             {focusToast}
           </div>
         )}
-        {error !== null && <DecisionsError error={error} />}
+        {error !== null && !sessionExpired && <DecisionsError error={error} />}
         {error === null && loading && <p className="px-1 py-2 text-xs text-ink-3">加载中…</p>}
         {error === null && !loading && showEmptyState && (
           <DecisionsEmptyState
@@ -521,6 +544,11 @@ export function DecisionsView() {
                 </button>
               )}
             </>
+          ) : !undo.canUndo ? (
+            // PERM-3：can_undo=false 时不给撤销入口，但答案已落库，如实展示
+            <span data-testid="decision-undo-forbidden" className="text-ink-3">
+              已作答（无撤销权限）
+            </span>
           ) : undoRemaining > 0 ? (
             <>
               <span data-testid="decision-undo-countdown" className="tabular-nums text-ink-2">
@@ -547,16 +575,9 @@ export function DecisionsView() {
   );
 }
 
-/** P5：列表级错误分区展示，不把 401 / 403 一律显示成「加载失败」 */
+/** P5/PERM-3：列表级错误分区展示，不把 401 / 403 一律显示成「加载失败」；401 由顶部 banner 统一承担 */
 function DecisionsError({ error }: { error: unknown }) {
   const apiError = error instanceof ApiError ? error : null;
-  if (apiError?.status === 401) {
-    return (
-      <p data-testid="decisions-error-unauth" className="px-1 py-3 text-xs text-red-600 dark:text-red-400">
-        身份失效，请重新打开看板
-      </p>
-    );
-  }
   if (apiError?.code === 'WORKSPACE_FORBIDDEN') {
     return (
       <p data-testid="decisions-error-forbidden" className="px-1 py-3 text-xs text-ink-3">
