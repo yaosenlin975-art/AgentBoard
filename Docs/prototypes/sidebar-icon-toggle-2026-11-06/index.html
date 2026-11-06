@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>侧栏「图标简化 ↔ 完整」可切换 · 高保真原型（SIDEBAR-ICT-1）</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 原型控制条：明确不是产品 UI -->
+<div class="proto-bar" role="region" aria-label="原型演示控制条（不属于产品界面）">
+  <div class="proto-brand">
+    <span class="proto-dot" aria-hidden="true"></span>
+    <strong>侧栏图标简化 ↔ 完整</strong>
+    <span class="proto-sub">SIDEBAR-ICT-1 · 演示控制条（非产品 UI）</span>
+  </div>
+  <div class="proto-group" role="group" aria-label="演示设置">
+    <span class="proto-label">切换按钮位置</span>
+    <button type="button" class="proto-btn" data-pos="top" aria-pressed="true">顶部</button>
+    <button type="button" class="proto-btn" data-pos="bottom" aria-pressed="false">底部</button>
+    <span class="proto-sep" aria-hidden="true"></span>
+    <span class="proto-label">角标</span>
+    <button type="button" class="proto-btn" data-count="0" aria-pressed="false">无</button>
+    <button type="button" class="proto-btn" data-count="3" aria-pressed="true">3</button>
+    <button type="button" class="proto-btn" data-count="120" aria-pressed="false">120</button>
+    <span class="proto-sep" aria-hidden="true"></span>
+    <button type="button" class="proto-btn" id="btn-narrow" aria-pressed="false">窄屏预览</button>
+    <button type="button" class="proto-btn" id="btn-theme" aria-pressed="false">深色</button>
+    <button type="button" class="proto-btn" id="btn-reduce" aria-pressed="false">减弱动效</button>
+    <button type="button" class="proto-btn" id="btn-reset">重置记忆</button>
+    <span class="proto-memo" id="memo" title="写入 localStorage 的演示状态">记忆：展开 · 顶部</span>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="app-shell" id="app-shell" data-mode="expanded" data-pos="top">
+
+    <!-- 侧栏：与生产 SideBar.tsx 同结构（工作空间 → 六入口 → 账号/设置 → 状态行），图标沿用生产路径 -->
+    <nav class="sb" id="sb" aria-label="主导航">
+      <div class="sb-head">
+        <button type="button" class="sb-ws tip" data-tip="任务看板 · D:\WorkSpaces\任务看板" title="切换工作空间">
+          <span class="sb-caret" aria-hidden="true">▾</span>
+          <span class="sb-ws-text">
+            <span class="sb-ws-name">任务看板</span>
+            <span class="sb-ws-path">D:\WorkSpaces\任务看板</span>
+          </span>
+          <span class="sb-ws-initial" aria-hidden="true">任</span>
+        </button>
+        <button type="button" class="sb-toggle tip" id="toggle-top" data-toggle data-tip="收起侧栏（Ctrl+B）"
+          aria-expanded="true" aria-controls="sb-nav" aria-label="收起侧栏（Ctrl+B）" title="收起侧栏（Ctrl+B）">
+          <svg class="ico-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/><path d="M19 4v16"/></svg>
+          <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 6l6 6-6 6"/><path d="M19 4v16"/></svg>
+        </button>
+      </div>
+
+      <ul class="sb-nav" id="sb-nav" role="list">
+        <li class="tip" data-tip="任务看板">
+          <button type="button" class="sb-item is-active" data-view="board" aria-current="page" aria-label="任务看板">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg>
+            <span class="sb-label">任务看板</span>
+          </button>
+        </li>
+        <li class="tip" data-tip="待决策 · 3">
+          <button type="button" class="sb-item" data-view="decisions" aria-label="待决策，3 条">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 4v10l-7 4-7-4V7zM5 7l7 4 7-4M12 11v10"/></svg>
+            <span class="sb-label">待决策</span>
+            <span class="sb-badge" data-badge="decisions">3</span>
+          </button>
+        </li>
+        <li class="tip" data-tip="任务树">
+          <button type="button" class="sb-item" data-view="tree" aria-label="任务树">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6v4H4zM14 10h6v4h-6zM14 16h6v4h-6zM7 8v10h7M7 10h7"/></svg>
+            <span class="sb-label">任务树</span>
+          </button>
+        </li>
+        <li class="tip" data-tip="知识库">
+          <button type="button" class="sb-item" data-view="knowledge" aria-label="知识库">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg>
+            <span class="sb-label">知识库</span>
+          </button>
+        </li>
+        <li class="tip" data-tip="日志">
+          <button type="button" class="sb-item" data-view="log" aria-label="日志">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+            <span class="sb-label">日志</span>
+          </button>
+        </li>
+        <li class="tip" data-tip="聊天 · 3">
+          <button type="button" class="sb-item" data-view="chat" aria-label="聊天，3 条未读">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z"/></svg>
+            <span class="sb-label">聊天</span>
+            <span class="sb-badge" data-badge="chat" data-kind="chat">3</span>
+          </button>
+        </li>
+      </ul>
+
+      <div class="sb-bottom">
+        <button type="button" class="sb-toggle sb-toggle-bottom tip" id="toggle-bottom" data-toggle data-tip="收起侧栏（Ctrl+B）"
+          aria-expanded="true" aria-controls="sb-nav" aria-label="收起侧栏（Ctrl+B）" title="收起侧栏（Ctrl+B）">
+          <svg class="ico-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/><path d="M19 4v16"/></svg>
+          <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 6l6 6-6 6"/><path d="M19 4v16"/></svg>
+          <span class="sb-toggle-text">收起侧栏</span>
+          <kbd class="sb-kbd">Ctrl+B</kbd>
+        </button>
+
+        <div class="sb-util tip" data-tip="账号管理">
+          <button type="button" class="sb-item sb-util-btn" aria-label="账号管理" title="管理 WorkBuddy / CodeBuddy 账号">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6"/></svg>
+            <span class="sb-label">账号</span>
+          </button>
+        </div>
+        <div class="sb-util tip" data-tip="设置">
+          <button type="button" class="sb-item sb-util-btn" aria-label="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 100-6 3 3 0 000 6M4 12h2M18 12h2M12 4v2M12 18v2M6.5 6.5l1.4 1.4M16.1 16.1l1.4 1.4M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4"/></svg>
+            <span class="sb-label">设置</span>
+          </button>
+        </div>
+
+        <div class="sb-status tip" id="sb-status" data-tip="服务运行中 · 主题：浅色">
+          <span class="dot" aria-hidden="true"></span>
+          <span class="sb-status-text">服务运行中</span>
+          <span class="sb-status-sep" aria-hidden="true">·</span>
+          <span class="sb-theme">浅色</span>
+        </div>
+      </div>
+    </nav>
+
+    <main class="main">
+      <div class="main-scroll" id="view-root"></div>
+      <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+    </main>
+
+    <div class="narrow-scrim" id="narrow-scrim" aria-hidden="true"></div>
+  </div>
+
+  <aside class="selfcheck" id="selfcheck" data-open="true" aria-label="原型自检（非产品 UI）">
+    <button type="button" class="selfcheck-head" id="selfcheck-toggle" aria-expanded="true">
+      <span>原型自检</span>
+      <span class="selfcheck-score" id="selfcheck-score">0/8</span>
+      <span class="selfcheck-chev" aria-hidden="true">▾</span>
+    </button>
+    <ul id="selfcheck-list"></ul>
+    <p class="selfcheck-note">勾选来自真实交互：切换、悬停、快捷键、刷新记忆、角标、窄屏、深色、减弱动效。</p>
+  </aside>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
