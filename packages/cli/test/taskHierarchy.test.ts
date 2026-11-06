@@ -71,7 +71,7 @@ describe('CLI task hierarchy', () => {
     expect(urls.filter((url) => url.includes('/api/issues?workspace='))).toHaveLength(1);
     expect(urls.filter((url) => url.includes('/api/issues/tree?'))).toHaveLength(0);
     expect(urls.filter((url) => url.includes('/statuses'))).toHaveLength(0);
-    const rows = JSON.parse(harness.output) as Array<Record<string, unknown>>;
+    const rows = (JSON.parse(harness.output) as { items: Array<Record<string, unknown>> }).items;
     expect(rows).toEqual([
       expect.objectContaining({ id: 'root-1', tree_depth: 0, tree_context: true, child_count: 1, descendant_count: 2, descendants_closed_count: 1 }),
       expect.objectContaining({ id: 'child-1', tree_depth: 1, tree_context: false, child_count: 1, descendant_count: 1, descendants_closed_count: 1 }),
@@ -100,7 +100,7 @@ describe('CLI task hierarchy', () => {
     await listTasks(harness.ctx, { workspace: workspace.id, tree: true, status: '已完成' });
     // --status 校验与关闭态判定共用同一份进程内字典（CLI-20）
     expect(urls.filter((url) => url.includes('/statuses'))).toHaveLength(1);
-    const rows = JSON.parse(harness.output) as Array<Record<string, unknown>>;
+    const rows = (JSON.parse(harness.output) as { items: Array<Record<string, unknown>> }).items;
     expect(rows).toEqual([
       expect.objectContaining({ id: 'root-1', tree_depth: 0, tree_context: true, descendant_count: 1, descendants_closed_count: 1 }),
       expect.objectContaining({ id: 'done-1', tree_depth: 1, tree_context: false, child_count: 0, descendants_closed_count: 0 }),
@@ -204,7 +204,7 @@ describe('CHILD-PROGRESS：子卡进度展示', () => {
 
     const json = context(true);
     await listTasks(json.ctx, { workspace: workspace.id });
-    const rows = JSON.parse(json.output) as Array<{ id: string; children_total?: number; children_closed?: number }>;
+    const rows = (JSON.parse(json.output) as { items: Array<{ id: string; children_total?: number; children_closed?: number }> }).items;
     expect(rows.find(row => row.id === 'root-1')).toMatchObject({ children_total: 3, children_closed: 1 });
     expect(rows.find(row => row.id === 'leaf-1')).toMatchObject({ children_total: 0, children_closed: 0 });
   });

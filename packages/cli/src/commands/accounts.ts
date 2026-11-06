@@ -1,5 +1,6 @@
 import type { CliAccountAppId, PublicCliAccount } from '@agentboard/shared';
 import { request } from '../api.js';
+import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
 
@@ -31,7 +32,7 @@ interface CliSwitchCapabilityView {
 export async function accountsList(ctx: Ctx): Promise<void> {
   const data = await request<{ items: PublicCliAccount[] }>(ctx.base, 'GET', '/api/cli-accounts');
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(data, null, 2)}\n`);
+    writeListJson(ctx, data.items);
     return;
   }
   if (data.items.length === 0) {
@@ -47,7 +48,7 @@ export async function accountsList(ctx: Ctx): Promise<void> {
 export async function accountsCapabilities(ctx: Ctx): Promise<void> {
   const data = await request<{ items: CliSwitchCapabilityView[] }>(ctx.base, 'GET', '/api/cli-accounts/switch-capabilities');
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(data, null, 2)}\n`);
+    writeListJson(ctx, data.items);
     return;
   }
   ctx.io.write(table(

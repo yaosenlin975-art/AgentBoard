@@ -10,6 +10,7 @@
  * workspace 解析照 `commands/claim.ts:17-21`：先读 issue 的 workspace_id 再上送（写通道强制 workspace_id）。
  */
 import { CliHttpError, request } from '../api.js';
+import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg, resolveIssueByRef } from '../issueRef.js';
 import { table } from '../render.js';
@@ -104,7 +105,10 @@ export async function depLs(ctx: Ctx, issueId: string): Promise<number> {
       `/api/issues/${encodeURIComponent(target.id)}/dependencies?workspace_id=${encodeURIComponent(target.workspaceId)}`,
     );
     if (ctx.json) {
-      ctx.io.write(`${JSON.stringify(view, null, 2)}\n`);
+      // KB-CLI-3c：`dep ls` 属列表命令 → 信封；四组视图摊平成 items，用 direction 标方向
+      const groups = ['blockers', 'blocked', 'related', 'duplicate'] as const;
+      const rowsByGroup = view as unknown as Record<string, Array<Record<string, unknown>> | undefined>;
+      writeListJson(ctx, groups.flatMap(direction => (rowsByGroup[direction] ?? []).map(item => ({ direction, ...item }))));
       return 0;
     }
     ctx.io.write(`${dependencyLines(view).join('\n')}\n`);

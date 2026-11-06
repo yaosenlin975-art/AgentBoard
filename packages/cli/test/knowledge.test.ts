@@ -57,7 +57,7 @@ describe('knowledge CLI', () => {
   it('knowledgeCliJsonIncludesEvidence', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify([page]))); vi.stubGlobal('fetch', fetch); const stream = io();
     expect(await main(['node', 'kb', '--json', 'knowledge', 'search', '缓存', '--scope', 'common'], stream)).toBe(0);
-    expect(JSON.parse(stream.out.join(''))[0]).toMatchObject({ scope: 'common', revision: 1, sources: page.sources, evidence: page.evidence });
+    expect(JSON.parse(stream.out.join('')).items[0]).toMatchObject({ scope: 'common', revision: 1, sources: page.sources, evidence: page.evidence });
   });
   it('create reads UTF8 stdin with explicit scope', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(page))); vi.stubGlobal('fetch', fetch); const stream = io('中文\n多行');

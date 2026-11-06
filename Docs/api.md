@@ -50,9 +50,9 @@
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/workspaces` | query：`limit? offset?` | `Workspace[]`（created_at,id 升序）；带分页参数时 `PageResult<Workspace>`（id 升序） | 400 分页参数非法 | routes.ts:201 |
+| `GET /api/workspaces` | query：`limit? offset?` | `Workspace[]`（created_at,id 升序）；带分页参数时 `PageResult<Workspace>`（id 升序）。每项额外带**只读** `db_mode`（center/localizing/localized/failed）、`db_path`（实际生效库）、`snapshot_lag`（整数，快照落后条数；`null` = 未导出过快照或不可读），客户端不得据此改写走库决策 | 400 分页参数非法 | routes.ts |
 | `POST /api/workspaces` | body：`name: string`（键必填，可空串）、`path: string`（非空，须为已存在目录） | `Workspace`；name 空串时取 path 去尾部 `/` `\` 后的最后一段 | 400 path 为空 / 路径不存在或不是目录；path 重复（`workspace.path` UNIQUE，`schema.ts:9`）未映射为业务错误 → 500 `INTERNAL`（以实现为准） | routes.ts:206 |
-| `DELETE /api/workspaces/:id` | — | 204；级联删除该空间 issue/comment/session/message/附件元数据，提交后回收附件文件 | 404 工作空间不存在；409 `CONFLICT`（body `{error:{code,message}}`，message 为可读原因：`该空间仍有 <n> 个知识页及 <m> 条历史 revision，请先删除或迁移知识页后再移除` / `该空间有 <n> 个运行中会话，请先结束会话后再移除` / `该空间有 <n> 个子任务仍挂在父任务下，请先解除关联后再移除`）；CLI 用 `kb delete-space <id\|名> --yes`（缺 `--yes` 只回显，退出码 1；被阻塞退出码 2） | routes.ts:415 |
+| `DELETE /api/workspaces/:id` | — | 204；级联删除该空间 issue/comment/session/message/附件元数据，提交后回收附件文件。**STORE-7**：已下沉（`db_mode=localized`）时不删库文件——`<ws>/.agentboard/agentboard.db`（含 -wal/-shm）与 `attachments/` 移入 `<中心库目录>/archive/<id>/`，中心库落 `workspace_archive` 记录（归档列表可见），归档目录经响应头 `X-Workspace-Archived`（URI 编码）回显 | 404 工作空间不存在；409 `CONFLICT`（body `{error:{code,message}}`，message 为可读原因：`该空间仍有 <n> 个知识页及 <m> 条历史 revision，请先删除或迁移知识页后再移除` / `该空间有 <n> 个运行中会话，请先结束会话后再移除` / `该空间有 <n> 个子任务仍挂在父任务下，请先解除关联后再移除`）；CLI 用 `kb delete-space <id\|名> --yes`（缺 `--yes` 只回显，退出码 1；被阻塞退出码 2） | routes.ts:415 |
 
 ### 评论图片附件
 
@@ -180,7 +180,7 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出） | — | routes.ts |
+| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
 ﻿### 后端改动上线口径（源码新 ≠ 运行新）
@@ -591,6 +591,13 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 `--sources-file` / `--evidence-file` 读文件时先按字节剥 UTF-8 BOM 再 `JSON.parse`，命中时 stderr 打印「检测到 UTF-8 BOM，已剥离后解析」。
 
 `--domain`（知识领域：accounts/knowledge/board/chat/ui/infra，create 必填）与 `--scope`（页归属：workspace/common）是两个独立维度，互不替代；示例 `--scope common --domain infra`。
+
+### 11.1b CLI `--json` 输出形状（KB-CLI-3c，契约 knowledge:bb929054-1d44-4542-bb96-4530e42b0546）
+
+- **列表类命令**（`list-tasks` / `list-spaces` / `knowledge list` / `changelog list` / `decisions` / `status ls` / `dep ls` / `accounts list`）→ `{ "items": [...], "next_offset": number | null }`；空结果是 `{"items": [], "next_offset": null}`，两个字段都出现，不省略。`dep ls` 的四组视图（blockers / blocked / related / duplicate）摊平成一条 `items`，每项多一个 `direction` 标明方向。
+- **单对象命令**（`show` / `claim` / `done` / `close` / `settings` / `knowledge show` / `decision` / `changelog show` / `workspace-db *`）→ 对象直出，不套 `items`。
+- 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`、`decisions`）原样透传，`next_offset` 缺省补 `null`。
+- stdout 只放 JSON；提示/警告一律走 stderr。复算命令要按信封取数：`kb list-tasks --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`。
 
 ### 11.2 CLI 退出码表（`kb --help` 末尾同源，`index.ts` `EXIT_CODE_HELP`）
 

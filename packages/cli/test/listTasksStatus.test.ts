@@ -94,7 +94,7 @@ describe('kb list-tasks status guard', () => {
 
     const current = await run(['--json', 'list-tasks']);
     expect(current.code).toBe(0);
-    expect((JSON.parse(current.out) as Array<{ id: string }>).map(item => item.id)).toEqual(['i1']);
+    expect(((JSON.parse(current.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['i1']);
     expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
       { method: 'GET', url: '/api/issues?workspace=ws1' },
     ]);
@@ -102,7 +102,7 @@ describe('kb list-tasks status guard', () => {
     calls = [];
     const all = await run(['--json', 'list-tasks', '--all']);
     expect(all.code).toBe(0);
-    expect((JSON.parse(all.out) as Array<{ id: string }>).map(item => item.id)).toEqual(['i1', 'i2']);
+    expect(((JSON.parse(all.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['i1', 'i2']);
     expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toHaveLength(2);
   });
 
@@ -146,7 +146,7 @@ describe('kb list-tasks status guard', () => {
     handler = baseHandler;
     const trimmed = await run(['--json', 'list-tasks', '--workspace', 'ws1']);
     expect(trimmed.code).toBe(0);
-    const parsed = JSON.parse(trimmed.out) as Array<Record<string, unknown>>;
+    const parsed = (JSON.parse(trimmed.out) as { items: Array<Record<string, unknown>> }).items;
     expect(parsed).toHaveLength(3);
     expect(Object.keys(parsed[0]!)).not.toContain('description');
     expect(parsed[0]!.description_omitted).toBe(true);
@@ -154,7 +154,7 @@ describe('kb list-tasks status guard', () => {
 
     const full = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--full']);
     expect(full.code).toBe(0);
-    const fullParsed = JSON.parse(full.out) as Array<Record<string, unknown>>;
+    const fullParsed = (JSON.parse(full.out) as { items: Array<Record<string, unknown>> }).items;
     expect(fullParsed[0]!.description).toBe('正文-i1');
     expect(fullParsed[0]!.description_omitted).toBeUndefined();
   });

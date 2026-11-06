@@ -173,7 +173,7 @@ describe('版本', () => {
     expect(warnCount(cap.text())).toBe(1);
     expect(cap.text()).toContain('服务端未上报版本');
     expect(cap.text()).toContain(CLI_VERSION);
-    expect(JSON.parse(t.out())).toEqual([WS]);
+    expect(JSON.parse(t.out())).toEqual({ items: [WS], next_offset: null });
   });
 
   it('list-spaces --current 只输出 cwd 命中的工作区，JSON 仍为单元素数组', async () => {
@@ -187,7 +187,7 @@ describe('版本', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'list-spaces', '--current'], t.io);
     expect(code).toBe(0);
-    const parsed = JSON.parse(t.out()) as Array<{ id: string }>;
+    const parsed = (JSON.parse(t.out()) as { items: Array<{ id: string }> }).items;
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed).toHaveLength(1);
     expect(parsed[0]!.id).toBe(WS.id);
@@ -283,7 +283,7 @@ describe('list-spaces', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'list-spaces'], t.io);
     expect(code).toBe(0);
-    expect(JSON.parse(t.out())).toEqual([WS]);
+    expect(JSON.parse(t.out())).toEqual({ items: [WS], next_offset: null });
   });
 });
 
@@ -369,7 +369,7 @@ describe('list-tasks', () => {
       t.io,
     );
     expect(code).toBe(0);
-    const parsed = JSON.parse(t.out()) as Array<{ id: string }>;
+    const parsed = (JSON.parse(t.out()) as { items: Array<{ id: string }> }).items;
     expect(parsed.map((i) => i.id)).toEqual(['iss1']);
   });
 
@@ -385,7 +385,7 @@ describe('list-tasks', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, '--json', 'list-tasks', '--all'], t.io);
     expect(code).toBe(0);
-    const parsed = JSON.parse(t.out()) as Array<{ id: string }>;
+    const parsed = (JSON.parse(t.out()) as { items: Array<{ id: string }> }).items;
     expect(parsed.map((i) => i.id)).toEqual(['iss1', 'iss9']);
   });
 });

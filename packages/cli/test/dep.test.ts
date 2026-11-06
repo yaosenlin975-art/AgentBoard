@@ -147,7 +147,11 @@ describe('kb dep', () => {
     ));
     const result = await run(['--json', 'dep', 'ls', 'iss1']);
     expect(result.code).toBe(0);
-    expect(JSON.parse(result.out)).toEqual(VIEW);
+    // KB-CLI-3c：dep ls 输出信封，四组视图摊平成 items（direction 标方向）
+    const groups = ['blockers', 'blocked', 'related', 'duplicate'] as const;
+    const rowsByGroup = VIEW as unknown as Record<string, Array<Record<string, unknown>> | undefined>;
+    const expectedItems = groups.flatMap(direction => (rowsByGroup[direction] ?? []).map(item => ({ direction, ...item })));
+    expect(JSON.parse(result.out)).toEqual({ items: expectedItems, next_offset: null });
   });
 
   it('depAddPostsWorkspaceAndBlockerId', async () => {

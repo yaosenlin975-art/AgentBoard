@@ -1,5 +1,6 @@
 import type { Workspace } from '@agentboard/shared';
 import { request } from '../api.js';
+import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
 import { matchCurrentWorkspace } from '../workspace.js';
@@ -14,7 +15,7 @@ export async function listSpaces(ctx: Ctx, args: ListSpacesArgs = {}): Promise<v
   // A：--current 走与 list-tasks 默认值同一个解析器（唯一根等值优先 / 路径段边界 / 多候选报歧义 / 无匹配报错）
   const spaces = args.current === true ? [matchCurrentWorkspace(all)] : all;
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(spaces, null, 2)}\n`);
+    writeListJson(ctx, spaces);
     return;
   }
   if (spaces.length === 0) {

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { CommanderError, type Command } from 'commander';
 import { request, CliHttpError } from '../api.js';
+import { writeListJson, writeObjectJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
 import { KNOWLEDGE_DOMAIN_HINT } from '@agentboard/shared';
@@ -28,7 +29,8 @@ const pageLine = (raw: unknown): string => { const p = raw as Record<string, unk
 const SNIPPET_MAX = 120;
 const snippetOf = (raw: string): string => (raw.length > SNIPPET_MAX ? `${raw.slice(0, SNIPPET_MAX)}…` : raw);
 function output(ctx: Ctx, data: unknown): void {
-  if (ctx.json) { ctx.io.write(`${JSON.stringify(data, null, 2)}\n`); return; }
+  // KB-CLI-3c：数组结果包信封；单对象视图（show / resolve / 分页视图）直出
+  if (ctx.json) { if (Array.isArray(data)) writeListJson(ctx, data); else writeObjectJson(ctx, data); return; }
   if (Array.isArray(data)) { ctx.io.write(data.length ? data.map(pageLine).join('\n') + '\n' : '（无知识）\n'); return; }
   const p = data as Record<string, unknown>;
   if (Array.isArray(p.items)) {

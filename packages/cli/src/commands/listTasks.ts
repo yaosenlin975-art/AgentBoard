@@ -1,5 +1,6 @@
 import type { Issue, IssueTreeItem, Workspace } from '@agentboard/shared';
 import { request } from '../api.js';
+import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
 import { matchCurrentWorkspace, matchWorkspace } from '../workspace.js';
@@ -209,7 +210,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))
       .flat();
     if (ctx.json) {
-      ctx.io.write(`${JSON.stringify(projectForJson(visible, args.full === true), null, 2)}\n`);
+      writeListJson(ctx, projectForJson(visible, args.full === true));
       return;
     }
     if (visible.length === 0) {
@@ -234,7 +235,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   )).flat();
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(projectForJson(filtered, args.full === true), null, 2)}\n`);
+    writeListJson(ctx, projectForJson(filtered, args.full === true));
     return;
   }
   if (filtered.length === 0) {

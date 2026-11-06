@@ -11,6 +11,7 @@
 import type { WorkspaceStatus } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { CliHttpError, request } from '../api.js';
+import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
 import { resolveWorkspaceId } from '../workspace.js';
@@ -53,7 +54,7 @@ export async function statusList(ctx: Ctx, workspace: string): Promise<void> {
   const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
   const rows = await request<StatusRow[]>(ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(rows, null, 2)}\n`);
+    writeListJson(ctx, rows);
     return;
   }
   ctx.io.write(`工作区 ${workspaceId} 的状态（${rows.length} 个）：\n`);
