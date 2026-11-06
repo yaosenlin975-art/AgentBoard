@@ -9,7 +9,7 @@
  * - **浮窗打开时 Enter 只确认候选、不发送消息**；选中只插入 `/skill` 或 `@标题` 文本；
  * - IME 组合期间不触发、不刷新候选；无匹配时关闭浮窗且不阻塞输入。
  */
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -27,6 +27,69 @@ import {
   type MentionKind,
 } from '../../lib/mention';
 import { MentionPopover } from './MentionPopover';
+
+/**
+ * CHAT-COMPOSER-V2：草稿里已上传的图片（附件预览条的渲染来源）。
+ * 只认本服务附件端点的 markdown 图片，与 `attachmentIdsFromText` 的判定范围保持一致。
+ */
+const DRAFT_IMAGE_PATTERN = /!\[([^\]]*)\]\((\/api\/workspaces\/[^/)]+\/attachments\/[^/)]+)\)/g;
+
+interface DraftImage {
+  url: string;
+  alt: string;
+}
+
+function draftImages(text: string): DraftImage[] {
+  const list: DraftImage[] = [];
+  for (const match of text.matchAll(DRAFT_IMAGE_PATTERN)) {
+    const url = match[2];
+    if (url !== undefined && !list.some((item) => item.url === url)) {
+      list.push({ url, alt: match[1] ?? '' });
+    }
+  }
+  return list;
+}
+
+/** 上传后记下的元数据：重挂载后拿不到时降级为 alt / 「图片」 */
+interface DraftAttachmentMeta {
+  name: string;
+  mime: string;
+  bytes: number | null;
+}
+
+function mimeLabel(mime: string): string {
+  if (mime === 'image/png') return 'PNG';
+  if (mime === 'image/jpeg') return 'JPG';
+  if (mime === 'image/webp') return 'WebP';
+  return '图片';
+}
+
+function formatBytes(bytes: number | null): string | null {
+  if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) {
+    const kb = bytes / 1024;
+    return `${kb >= 10 ? Math.round(kb) : kb.toFixed(1)} KB`;
+  }
+  const mb = bytes / (1024 * 1024);
+  return `${mb >= 10 ? Math.round(mb) : mb.toFixed(1)} MB`;
+}
+
+function PlusIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+      <path d="M10 4.5v11M4.5 10h11" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 15.5v-11M5 9l5-4.5L15 9" />
+    </svg>
+  );
+}
 
 interface SkillItem {
   name: string;
@@ -75,14 +138,19 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   /** 正在上传的粘贴图片数（>0 时禁止发送，避免图片还没落盘就发出去） */
   const [uploadingImages, setUploadingImages] = useState(0);
+  /** CHAT-COMPOSER-V2：附件预览条的文件名 / 类型 / 体积（仅本次挂载内有效，重挂载按 markdown 降级） */
+  const [attachmentMeta, setAttachmentMeta] = useState<Record<string, DraftAttachmentMeta>>({});
   const [mention, setMention] = useState<MentionState | null>(null);
   const composingRef = useRef(false);
   // 选中候选后插入的文本本身仍能命中查询（如插入 `/mail-report` 后 `mar` 仍匹配），
   // 在插入后的短暂窗口内抑制刷新，避免浮窗立刻重开（100ms 只挡「同一批事件」，不影响继续输入）。
   const suppressUntilRef = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   // CHAT-VIS1：成本脚注数据（本轮用量快照，随 session.usage 流式更新；无轮次 → null → 0）
   const usage = useSessionUsage(sessionId);
+  // 附件预览条：随草稿文本变化（用户手删 markdown 即消失），无需额外状态
+  const attachments = useMemo(() => draftImages(value), [value]);
 
   const queueHint =
     queuedCount > 0
@@ -217,19 +285,17 @@ export function Composer({
     });
   };
 
-  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
-    const files = filesFromClipboard(event.clipboardData);
-    const images = files.filter((file) => getImageMimeType(file) !== null);
-    if (images.length === 0) return; // 纯文本/其他类型交给原生粘贴
-    event.preventDefault();
-    const plain = event.clipboardData?.getData('text/plain') ?? '';
-    if (plain !== '') insertAtCaret(plain);
-
+  /**
+   * 图片上传（粘贴 / 「＋」选图共用）：成功后按现有图片消息形态（markdown 图片）插到光标处；
+   * 张数上限按草稿里已有的附件数累计，超限/类型不支持/上传失败都落到 composer-error。
+   */
+  const uploadImages = (images: File[]): void => {
     if (workspaceId === undefined || workspaceId === null) {
       setError('图片上传需要先选择工作区：在左上角选中工作区后再贴图');
       return;
     }
-    const { accepted, rejection } = collectDraftImages(images, 0);
+    const current = usePanelStore.getState().chatDrafts[draftKey] ?? '';
+    const { accepted, rejection } = collectDraftImages(images, attachmentIdsFromText(current).length);
     setError(rejection);
     if (accepted.length === 0) return;
     setUploadingImages(accepted.length);
@@ -237,6 +303,14 @@ export function Composer({
       for (const item of accepted) {
         try {
           const result = await api.uploadAttachment(workspaceId, item.file, item.mimeType);
+          setAttachmentMeta((prev) => ({
+            ...prev,
+            [result.download_url]: {
+              name: result.file_name || item.file.name || '图片',
+              mime: result.mime_type,
+              bytes: result.size_bytes ?? item.file.size,
+            },
+          }));
           insertAtCaret(`![图片](${result.download_url})`);
         } catch (e) {
           setError(e instanceof Error ? e.message : '图片上传失败');
@@ -245,6 +319,16 @@ export function Composer({
         }
       }
     })();
+  };
+
+  const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
+    const files = filesFromClipboard(event.clipboardData);
+    const images = files.filter((file) => getImageMimeType(file) !== null);
+    if (images.length === 0) return; // 纯文本/其他类型交给原生粘贴
+    event.preventDefault();
+    const plain = event.clipboardData?.getData('text/plain') ?? '';
+    if (plain !== '') insertAtCaret(plain);
+    uploadImages(images);
   };
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {    const composing = e.nativeEvent.isComposing || composingRef.current;
@@ -280,7 +364,7 @@ export function Composer({
   };
 
   return (
-    <div data-testid="composer" className="shrink-0 space-y-1 border-t border-neutral-200 p-2 dark:border-neutral-800">
+    <div data-testid="composer" className="shrink-0 space-y-1 px-3 pb-3 pt-2">
       {queueHint !== null && (
         <p data-testid="queue-hint" className="text-xs text-ink-3" role="status">
           {queueHint}
@@ -292,7 +376,11 @@ export function Composer({
           —— 先在上方卡片处理，输入框暂不可编辑
         </p>
       )}
-      <div className="relative flex items-end gap-1.5">
+      {/* CHAT-COMPOSER-V2：截图同构的输入卡 —— 附件预览条 / 无边框文本区 / 底部「＋」与圆形发送 */}
+      <div
+        data-testid="composer-shell"
+        className="relative rounded-3xl border border-hairline bg-surface-card shadow-sm transition-[border-color,box-shadow] duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] focus-within:border-accent/40 focus-within:ring-2 focus-within:ring-accent/20 motion-reduce:transition-none"
+      >
         {mention !== null && (
           <MentionPopover
             kind={mention.kind}
@@ -301,6 +389,35 @@ export function Composer({
             onPick={pickCandidate}
             onHover={(index) => setMention((prev) => (prev === null ? prev : { ...prev, activeIndex: index }))}
           />
+        )}
+        {attachments.length > 0 && (
+          <div data-testid="composer-attachments" className="flex flex-wrap gap-1.5 px-2.5 pt-2.5">
+            {attachments.map((item) => {
+              const meta = attachmentMeta[item.url];
+              const bytes = formatBytes(meta?.bytes ?? null);
+              const name = meta?.name || item.alt || '图片';
+              const kind = mimeLabel(meta?.mime ?? '');
+              return (
+                <span
+                  key={item.url}
+                  data-testid="composer-attachment"
+                  className="flex max-w-[16rem] items-center gap-2 rounded-2xl border border-hairline bg-surface-raised/60 p-1.5 pr-2.5"
+                >
+                  <img
+                    src={item.url}
+                    alt=""
+                    className="size-8 shrink-0 rounded-lg border border-hairline object-cover"
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[11px] font-medium text-ink">{name}</span>
+                    <span className="block truncate text-[10px] text-ink-3">
+                      {bytes === null ? kind : `${kind} · ${bytes}`}
+                    </span>
+                  </span>
+                </span>
+              );
+            })}
+          </div>
         )}
         <textarea
           ref={inputRef}
@@ -336,19 +453,53 @@ export function Composer({
               ? '等待回答/审批中，请先处理上方卡片'
               : disabled
                 ? '选择会话后输入'
-                : '输入消息，Enter 发送，Shift+Enter 换行；/ 选技能，@ 选任务'
+                : '输入消息，Enter 发送，Shift+Enter 换行；/ 技能，@ 任务'
           }
-          className="min-h-0 w-full resize-none rounded border border-hairline bg-surface-card px-2 py-1.5 text-xs text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50"
+          className="block min-h-[52px] w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[13px] leading-[1.5] text-ink outline-none placeholder:text-ink-3 disabled:opacity-50"
         />
-        <button
-          type="button"
-          data-testid="composer-send"
-          onClick={() => void submit()}
-          disabled={disabled || blocked !== null || sending || uploadingImages > 0 || value.trim() === ''}
-          className="shrink-0 rounded border border-accent bg-accent-soft px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent-soft/70 disabled:cursor-not-allowed disabled:opacity-40 disabled:text-ink-3 disabled:border-hairline disabled:bg-transparent"
-        >
-          {sending ? '发送中…' : '发送'}
-        </button>
+        <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">
+          <button
+            type="button"
+            data-testid="composer-attach"
+            aria-label="添加图片"
+            title="添加图片（PNG / JPEG / WebP，单张 ≤10 MiB）"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={disabled || blocked !== null}
+            className="flex size-8 items-center justify-center rounded-full text-ink-2 transition-colors duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none"
+          >
+            <PlusIcon />
+          </button>
+          <input
+            ref={fileInputRef}
+            data-testid="composer-file-input"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              uploadImages(Array.from(event.target.files ?? []));
+              event.target.value = '';
+            }}
+          />
+          <button
+            type="button"
+            data-testid="composer-send"
+            aria-label={sending ? '发送中' : '发送'}
+            title={sending ? '发送中…' : '发送'}
+            onClick={() => void submit()}
+            disabled={disabled || blocked !== null || sending || uploadingImages > 0 || value.trim() === ''}
+            className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink shadow-sm transition-[background-color,color,opacity] duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-ink-3 disabled:opacity-70 motion-reduce:transition-none"
+          >
+            {sending ? (
+              <span
+                aria-hidden="true"
+                className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent motion-reduce:animate-none"
+              />
+            ) : (
+              <ArrowUpIcon />
+            )}
+          </button>
+        </div>
       </div>
       {uploadingImages > 0 && (
         <p data-testid="composer-uploading" role="status" className="text-xs text-ink-3">
