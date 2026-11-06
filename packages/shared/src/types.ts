@@ -15,7 +15,7 @@ export interface KnowledgePage {
   sources: KnowledgeSource[]; evidence: KnowledgeEvidence[];
   /** KB-MODEL 四类内容模型；旧行/未迁移库缺省视为 legacy */
   category?: 'design' | 'solved' | 'pinned' | 'open' | 'legacy';
-  /** design 类的落地状态（其他类为 null） */
+  /** 落地状态；与 category 独立、可任意组合（KB-LANDED）；未传时 design 记 proposed，其余为 null */
   landed?: 'landed' | 'partial' | 'proposed' | null;
   /** KB-PAGE-3：主题域（NULL=未归类）。读取路径尚未全部回填，故可选 */
   domain?: string | null;

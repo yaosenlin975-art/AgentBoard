@@ -497,7 +497,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限')
     .option('--category <分类>', 'design|solved|pinned|open（缺省由服务端归一）')
     .option('--domain <域>', `${KNOWLEDGE_DOMAIN_HINT}（KB-CR-1：创建必填；修订缺省=不改）`)
-    .option('--landed <状态>', 'landed|partial|proposed（design 缺省时服务端记 proposed）');
+    .option('--landed <状态>', 'landed|partial|proposed（与 category 独立，任意分类都可显式指定；design 缺省时服务端记 proposed）');
 
   async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string }) {
       // KB-CLI-1：--stdin 读到空正文 → 本地中文报错（先于 sources 校验：空正文是更早的失败点），不再把空串发给服务端吃「body_md 不能小于 1」

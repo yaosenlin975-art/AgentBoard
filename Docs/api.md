@@ -298,7 +298,9 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | 本条没有这两个键 | 继承请求顶层的 `category` / `landed` |
 | 本条值非法 | **400** `VALIDATION_ERROR`，message 指明第几条与可选值（例：`第 2 条 landed 非法：done（可选 landed / partial / proposed；null 表示未落地）`） |
 
-缺省归一规则不变：缺失/未知 `category` → `legacy`；`design` 缺 `landed` → `proposed`；非 `design` 类 `landed` 恒为 `null`。
+缺省归一规则：缺失/未知 `category` → `legacy`；`design` 缺 `landed` → `proposed`；非 `design` 类未显式传 `landed` 时为 `null`。
+
+> KB-LANDED（卡 `e0f324d0`）：`category` 与 `landed` 相互独立、可任意组合。显式传入合法 `landed`（`landed`/`partial`/`proposed`）时，**任何分类都原样落库**（`open` / `solved` / `pinned` / `legacy` 也可以带落地进度）；不再把非 `design` 的 `landed` 强制置 `null`。上文的缺省规则只在未传 `landed` 时生效。
 
 ### DB-3B-S 存储位置汇总（`GET /api/settings/storage`，只读）
 

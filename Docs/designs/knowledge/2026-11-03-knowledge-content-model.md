@@ -23,6 +23,8 @@
 
 `category` 缺失的旧页视为 `legacy`（不阻断，星图灰显）。
 
+> 修订（KB-LANDED，卡 `e0f324d0`）：`landed` 不再是 `design` 专属，**两者相互独立、可任意组合**（如 `open + partial`、`solved + landed`）。显式传 `landed` 时任何分类都原样落库；未传时 `design` 仍缺省 `proposed`，其余为 `null`。上表「必填字段」列中的 `landed` 仅表示 design 页的推荐字段。
+
 ## 3. 页面骨架（四类各一套，尽量短）
 
 - `design`：**结论先行一句话** → 方案要点 → 落地状态（`landed/partial/proposed` + 证据链接）→ 取舍与替代方案 → 未决项。

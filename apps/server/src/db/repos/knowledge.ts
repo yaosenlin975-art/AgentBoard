@@ -24,9 +24,10 @@ export type KnowledgePagePatch = Partial<Pick<KnowledgePage, 'title' | 'body_md'
 /**
  * KB-MODEL 落库规则（与前端 `normalizeCategory` 同语义）：
  * - 缺失/未知 category → `open`（KB-CR-1：不再落 legacy，新页必须有明确归属）；
- * - `design` 缺 `landed` → 落 `proposed`（fail-open：字段刚上线，老客户端不传不该 400；「未声明落地」按未落地算，
- *   并在响应里回显，避免被误读成已落地）；
- * - 非 design 类一律把 landed 置 null（solved/pinned/open/legacy 没有落地状态）。
+ * - `category` 与 `landed` **相互独立、可任意组合**（KB-LANDED）：显式传入合法 landed 时，任何 category 都原样落库
+ *   （open/solved/pinned/legacy 也可以有落地进度）；
+ * - 未传（或非法）landed 时不凭空造进度：`design` 仍落 `proposed`（fail-open，老客户端不传不该 400），
+ *   其他 category 保持 null。
  */
 /**
  * KB-CR-1（P5/P7）：domain 强制归域。
@@ -56,10 +57,11 @@ export function normalizeKnowledgeDomain(domain?: string | null): string | null 
 export function normalizePageCategory(category?: string | null, landed?: string | null): { category: NonNullable<KnowledgePage['category']>; landed: KnowledgePage['landed'] } {
   const allowed = ['design', 'solved', 'pinned', 'open', 'legacy'] as const;
   const normalized = (allowed as readonly string[]).includes(category ?? '') ? (category as (typeof allowed)[number]) : 'open';
-  if (normalized !== 'design') return { category: normalized, landed: null };
   const landedAllowed = ['landed', 'partial', 'proposed'] as const;
-  const nextLanded = (landedAllowed as readonly string[]).includes(landed ?? '') ? (landed as (typeof landedAllowed)[number]) : 'proposed';
-  return { category: normalized, landed: nextLanded };
+  // KB-LANDED：category 与 landed 解耦——显式传入合法 landed 时任何 category 都保留该值
+  if ((landedAllowed as readonly string[]).includes(landed ?? '')) return { category: normalized, landed: landed as (typeof landedAllowed)[number] };
+  // 未传/非法 landed：不凭空造进度；design 缺省 proposed（fail-open），其余保持 null
+  return { category: normalized, landed: normalized === 'design' ? 'proposed' : null };
 }
 const selectPage = `SELECT p.*,r.sources_json,r.evidence_json FROM knowledge_page p JOIN knowledge_revision r ON r.page_id=p.id AND r.revision=p.revision`;
 type PageRow = Omit<KnowledgePage, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string };

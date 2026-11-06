@@ -146,7 +146,7 @@ describe('knowledge import (KBIMP-1)', () => {
     const res = await post({ scope: 'common', format: 'json', content, category: 'solved', landed: 'landed' });
     expect(res.status).toBe(200);
     expect(res.body.pages.map((p: { category: string; landed: string | null }) => ({ category: p.category, landed: p.landed })))
-      .toEqual([{ category: 'design', landed: 'partial' }, { category: 'solved', landed: null }]);
+      .toEqual([{ category: 'design', landed: 'partial' }, { category: 'solved', landed: 'landed' }]);
   });
 
   it('逐条显式 null 表示「未落地」，不继承顶层 landed', async () => {
@@ -156,7 +156,7 @@ describe('knowledge import (KBIMP-1)', () => {
     expect(res.body.pages[0]).toMatchObject({ category: 'design', landed: 'proposed' });
   });
 
-  it('design 缺 landed → proposed；非 design 类 landed 恒为 null', async () => {
+  it('design 缺 landed → proposed；非 design 显式 landed 也原样落库（KB-LANDED 解耦）', async () => {
     const content = JSON.stringify([
       { title: '设计无落地', body_md: '正文', category: 'design' },
       { title: '解决类带落地', body_md: '正文', category: 'solved', landed: 'landed' },
@@ -164,7 +164,7 @@ describe('knowledge import (KBIMP-1)', () => {
     const res = await post({ scope: 'common', format: 'json', content });
     expect(res.status).toBe(200);
     expect(res.body.pages[0]).toMatchObject({ category: 'design', landed: 'proposed' });
-    expect(res.body.pages[1]).toMatchObject({ category: 'solved', landed: null });
+    expect(res.body.pages[1]).toMatchObject({ category: 'solved', landed: 'landed' });
   });
 
   it('逐条非法 category / landed → 400 且指明条序号与可选值', async () => {

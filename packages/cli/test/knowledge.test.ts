@@ -203,6 +203,18 @@ describe('knowledge CLI：C category/landed', () => {
     expect(body.landed).toBe('partial');
   });
 
+  it('KB-LANDED：open 分类也接受 --landed（不再被客户端拦截）', async () => {
+    const openPage = { ...page, category: 'open', landed: 'partial' };
+    const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(String(url).includes('/api/workspaces') ? [ws] : openPage)));
+    vi.stubGlobal('fetch', fetch);
+    const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'workspace', '--workspace', 'w1', '--slug', 's', '--title', 't', '--stdin', '--sources', JSON.stringify([{ source_id: 'a', source_type: 'file', locator: 'x', captured_at: 1, content_hash: 'a'.repeat(64) }]), '--evidence', JSON.stringify([{ source_id: 'a', locator: 'x' }]), '--category', 'open', '--landed', 'partial'], stream);
+    expect(code).toBe(0);
+    const body = JSON.parse(String(fetch.mock.calls.at(-1)![1].body)) as Record<string, unknown>;
+    expect(body.category).toBe('open');
+    expect(body.landed).toBe('partial');
+  });
+
   it('非法 --category 在客户端失败并列出可用值（不发请求）', async () => {
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
