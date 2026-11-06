@@ -1,12 +1,13 @@
 /**
  * SIDEBAR-3：收起态 tooltip / 角标 / 当前项指示 / aria-label 同步。
+ * SIDEBAR-4：Ctrl/Cmd+B 形态切换（非输入区、Alt 与长按重复不响应、卸载移除监听）。
  *
  * 收起态的行为大多由 index.css 的 `.ab-sidebar[data-mode='collapsed']` 作用域承担，
  * jsdom 不跑布局与伪元素，所以这里断言「数据接线」：data-tip 文案、角标文本与 99+、
  * data-active/aria-current、aria-label 带数量；视觉规格由 dev 页截图与 CSS 本身保证。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Workspace } from '@agentboard/shared';
@@ -19,9 +20,9 @@ import { server } from './server';
 
 const ws: Workspace = { id: 'ws-1', name: '主项目', path: 'D:/WorkSpaces/main', created_at: 1 };
 
-function renderSideBar(): void {
+function renderSideBar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  return render(
     <QueryClientProvider client={qc}>
       <SideBar workspace={ws} />
     </QueryClientProvider>,
@@ -103,5 +104,72 @@ describe('收起态 tooltip / 角标 / 当前项（SIDEBAR-3）', () => {
     );
     act(() => usePanelStore.setState({ unread: { s1: 2, s2: 3 } }));
     expect(screen.getByTestId('sidebar-entry-chat')).toHaveAttribute('aria-label', '聊天，5 条未读');
+  });
+});
+
+describe('Ctrl/Cmd+B 形态切换（SIDEBAR-4）', () => {
+  it('[T5] 非输入区 Ctrl+B 与 Cmd+B 都切换一次，且与顶部按钮同一 toggleSidebar', () => {
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+
+    // fireEvent 返回 false 表示 preventDefault 已调用（不触发浏览器默认行为）
+    expect(fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true })).toBe(false);
+    expect(sidebar).toHaveAttribute('data-mode', 'expanded');
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+
+    expect(fireEvent.keyDown(document.body, { key: 'B', metaKey: true })).toBe(false);
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+
+    // 与顶部按钮等价：点一次同样落在同一 store 动作上
+    fireEvent.click(screen.getByTestId('sidebar-collapse-toggle'));
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
+  });
+
+  it('[T6] input / textarea / select / contenteditable（含内部子节点）内不劫持', () => {
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+    const input = document.createElement('input');
+    const textarea = document.createElement('textarea');
+    const select = document.createElement('select');
+    const editable = document.createElement('div');
+    editable.setAttribute('contenteditable', 'true');
+    const inner = document.createElement('span');
+    editable.appendChild(inner);
+    document.body.append(input, textarea, select, editable);
+
+    for (const target of [input, textarea, select, editable, inner]) {
+      // true = 未 preventDefault，浏览器默认行为保留
+      expect(fireEvent.keyDown(target, { key: 'b', ctrlKey: true })).toBe(true);
+      expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    }
+    expect(fireEvent.keyDown(inner, { key: 'b', metaKey: true })).toBe(true);
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+    for (const node of [input, textarea, select, editable]) node.remove();
+  });
+
+  it('[T7] 带 Alt 或长按自动重复（repeat）不切换', () => {
+    renderSideBar();
+    const sidebar = screen.getByTestId('sidebar');
+
+    expect(fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true, altKey: true })).toBe(true);
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+
+    expect(fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true, repeat: true })).toBe(true);
+    expect(sidebar).toHaveAttribute('data-mode', 'collapsed');
+  });
+
+  it('[T8] 卸载后移除监听；重新挂载后一次按键只切一次', () => {
+    const first = renderSideBar();
+    first.unmount();
+
+    fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
+    expect(useNavStore.getState().sidebarMode).toBe('collapsed');
+
+    renderSideBar();
+    fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
+    // 只切一次：collapsed → expanded（若重复绑定会立刻切回 collapsed）
+    expect(useNavStore.getState().sidebarMode).toBe('expanded');
   });
 });

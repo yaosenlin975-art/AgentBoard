@@ -13,8 +13,7 @@
  *   `topbar-theme`（状态行里的主题小字）· `topbar-ws-status`（状态圆点）
  *   已删除：`sidebar-controls`、`topbar-chat`、`topbar-chat-unread`（聊天入口与徽标合并到五入口）。
  */
-import { useRef } from 'react';
-import type { MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useRef } from 'react';
 import type { Workspace } from '@agentboard/shared';
 import { useNavStore, type NavView } from '../../state/navStore';
 import { usePanelStore } from '../../state/panelStore';
@@ -23,6 +22,7 @@ import { useOverlayStore } from '../../state/overlayStore';
 import { THEME_LABEL, useTheme } from '../../theme';
 import { WorkspaceSidebarOverlay, LEFT_PANEL_ID, LEFT_TRIGGER_ID } from '../overlay/WorkspaceSidebarOverlay';
 import { useDecisionsCount } from '../decisions/useDecisions';
+import { useSidebarShortcut } from './useSidebarShortcut';
 
 const ENTRY_ICON: Record<NavView, string> = {
   board: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
@@ -86,15 +86,23 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
   // DEC-6：待决策徽标 = 当前工作区 grace + open 条数（0 时不显示数字，入口仍可见）
   const decisionCount = useDecisionsCount(workspace?.id ?? null);
 
-  /** SIDEBAR-1：切换形态；收起时把侧栏内的焦点交给仍可见的切换按钮，避免掉回 body */
-  function handleToggleSidebar(event: ReactMouseEvent<HTMLButtonElement>): void {
+  /** SIDEBAR-1/4：形态切换的唯一动作（顶部按钮与 Ctrl/Cmd+B 共用）；收起时把侧栏内焦点交给仍可见的切换按钮，避免掉回 body */
+  const applySidebarToggle = useCallback((): void => {
+    const wasExpanded = useNavStore.getState().sidebarMode === 'expanded';
     toggleSidebar();
-    if (sidebarMode !== 'expanded') return;
+    if (!wasExpanded) return;
     const active = document.activeElement;
-    if (active instanceof HTMLElement && sidebarRef.current?.contains(active) && active !== event.currentTarget) {
+    if (
+      active instanceof HTMLElement &&
+      sidebarRef.current?.contains(active) &&
+      active !== collapseToggleRef.current
+    ) {
       collapseToggleRef.current?.focus({ preventScroll: true });
     }
-  }
+  }, [toggleSidebar]);
+
+  // SIDEBAR-4：非输入区 Ctrl/Cmd+B 切换，与按钮同一动作
+  useSidebarShortcut(applySidebarToggle);
 
   const collapsed = sidebarMode === 'collapsed';
 
@@ -138,7 +146,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
             aria-controls="app-sidebar"
             aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
             title={collapsed ? '展开侧栏' : '收起侧栏'}
-            onClick={handleToggleSidebar}
+            onClick={applySidebarToggle}
             className="ab-sidebar-toggle inline-flex shrink-0 items-center justify-center rounded-md text-ink-3 transition-colors hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <svg aria-hidden="true" viewBox="0 0 24 24" className="ab-sidebar-ico-collapse" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
