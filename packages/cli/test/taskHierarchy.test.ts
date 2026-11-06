@@ -3,6 +3,7 @@ import type { Ctx } from '../src/io.js';
 import { createIssue } from '../src/commands/createIssue.js';
 import { listTasks } from '../src/commands/listTasks.js';
 import { moveIssue } from '../src/commands/moveIssue.js';
+import { show } from '../src/commands/show.js';
 import { main } from '../src/index.js';
 
 const workspace = { id: 'workspace-1', name: 'Demo', path: 'D:\\demo', created_at: 1 };
@@ -145,5 +146,66 @@ describe('CLI task hierarchy', () => {
       workspace_id: workspace.id, expected_updated_at: 1, parent_issue_id: null,
     });
     expect(new Headers(calls[4]?.init?.headers).get('Idempotency-Key')).toBe('00000000-0000-4000-8000-000000000202');
+  });
+});
+
+describe('CHILD-PROGRESS：子卡进度展示', () => {
+  const root = { ...issue('root-1', '父卡', null), children_total: 3, children_closed: 1 };
+  const closedChild = { ...issue('child-1', '已关子卡', 'root-1'), status: '已关闭' as const };
+  const startedChild = { ...issue('child-2', '在飞子卡', 'root-1'), status: '进行中' as const };
+  const reviewChild = { ...issue('child-3', '待验子卡', 'root-1'), status: '待验收' as const };
+
+  it('kb show 文本为父卡追加三态计数行', async () => {
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/api/issues/root-1')) return Response.json(root, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.endsWith('/api/issues/root-1/comments')) return Response.json([], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+        return Response.json([root, closedChild, startedChild, reviewChild], { headers: { 'x-agentboard-version': '0.1.0' } });
+      }
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
+    }));
+    const harness = context(false);
+    await show(harness.ctx, 'root-1');
+    expect(harness.output).toContain('子卡：1/3 已完成（进行中 1，待验收 1，待规划 0）');
+  });
+
+  it('kb show 对无子卡卡不显示该行、也不多发整区列表请求', async () => {
+    const urls: string[] = [];
+    const leaf = { ...issue('leaf-1', '叶子', null), children_total: 0, children_closed: 0 };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith('/api/issues/leaf-1')) return Response.json(leaf, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.endsWith('/api/issues/leaf-1/comments')) return Response.json([], { headers: { 'x-agentboard-version': '0.1.0' } });
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
+    }));
+    const harness = context(false);
+    await show(harness.ctx, 'leaf-1');
+    expect(harness.output).not.toContain('子卡：');
+    expect(urls.some(url => url.includes('/api/issues?workspace='))).toBe(false);
+  });
+
+  it('list-tasks 文本父卡标题后追加 [N/M]，--json 原样带字段', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+        return Response.json([root, closedChild, startedChild, { ...issue('leaf-1', '叶子', null), children_total: 0, children_closed: 0 }], { headers: { 'x-agentboard-version': '0.1.0' } });
+      }
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
+    }));
+    const text = context(false);
+    await listTasks(text.ctx, { workspace: workspace.id });
+    expect(text.output).toContain('父卡 [1/3]');
+    expect(text.output).toContain('叶子');
+
+    const json = context(true);
+    await listTasks(json.ctx, { workspace: workspace.id });
+    const rows = JSON.parse(json.output) as Array<{ id: string; children_total?: number; children_closed?: number }>;
+    expect(rows.find(row => row.id === 'root-1')).toMatchObject({ children_total: 3, children_closed: 1 });
+    expect(rows.find(row => row.id === 'leaf-1')).toMatchObject({ children_total: 0, children_closed: 0 });
   });
 });

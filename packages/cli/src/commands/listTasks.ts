@@ -175,6 +175,18 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string)
   return output;
 }
 
+/**
+ * CHILD-PROGRESS：父卡标题后追加 `[已关闭子卡数/子卡总数]`。
+ * 字段由服务端 GET /api/issues 与详情投影；无子卡或缺字段时原样返回标题（不改变既有输出）。
+ */
+function titleWithChildProgress(issue: Issue): string {
+  const raw = issue as Issue & { children_total?: unknown; children_closed?: unknown };
+  const total = typeof raw.children_total === 'number' ? raw.children_total : 0;
+  if (total <= 0) return issue.title;
+  const closed = typeof raw.children_closed === 'number' ? raw.children_closed : 0;
+  return `${issue.title} [${closed}/${total}]`;
+}
+
 /** DEC-4：占用者列后的 [待决策] 标记（grace 与 open 都算在途决策） */
 function decisionMark(issue: Issue): string {
   return issue.decision_locked === true || issue.decision_grace_until != null ? '[待决策]' : '-';
@@ -241,7 +253,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
         decisionMark(i),
         String(i.comment_count),
         i.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
-        i.title,
+        titleWithChildProgress(i),
       ]),
     ),
   );

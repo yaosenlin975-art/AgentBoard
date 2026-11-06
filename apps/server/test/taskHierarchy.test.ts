@@ -180,4 +180,22 @@ describe('task hierarchy REST contract', () => {
     expect(del.body.error.message).toContain('子任务');
     expect(() => deleteWorkspace(t.db, workspaceId)).toThrow(/FOREIGN KEY constraint failed/);
   });
+
+  it('CHILD-PROGRESS：详情与整区列表都投影 children_total / children_closed', async () => {
+    const root = await postIssue('root');
+    const closedChild = await postIssue('closed-child', root.body.id);
+    const openChild = await postIssue('open-child', root.body.id);
+    t.db.prepare("UPDATE issue SET status='已关闭' WHERE id=?").run(closedChild.body.id);
+
+    const detail = await request(app).get('/api/issues/' + root.body.id);
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({ children_total: 2, children_closed: 1 });
+
+    const list = await request(app).get('/api/issues?workspace=' + workspaceId);
+    expect(list.status).toBe(200);
+    const rows = list.body as Array<{ id: string; children_total: number; children_closed: number }>;
+    expect(rows.find((row) => row.id === root.body.id)).toMatchObject({ children_total: 2, children_closed: 1 });
+    // 叶子卡同样带这两个字段（统一 0/0，不做「有值才带」的分裂形状）
+    expect(rows.find((row) => row.id === openChild.body.id)).toMatchObject({ children_total: 0, children_closed: 0 });
+  });
 });

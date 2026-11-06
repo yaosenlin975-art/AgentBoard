@@ -44,6 +44,9 @@ interface IssueRow {
   decision_id: string | null;
   decision_grace_until: number | null;
   decision_locked_at: number | null;
+  /** CHILD-PROGRESS 子卡进度（查询期派生，仅详情与整区列表带这组列；其余查询为 undefined） */
+  children_total?: number;
+  children_closed?: number;
   created_at: number;
   updated_at: number;
 }
@@ -66,6 +69,13 @@ const DEPENDENCY_VIOLATION_COLUMN = `EXISTS (
         SELECT 1 FROM descendants WHERE id = i.id
       )
   ) AS dep_violation`;
+/**
+ * CHILD-PROGRESS：直接子卡进度（查询期派生，不落库）。
+ * 只挂在「单卡详情」与「整区列表」两条查询上；分页/树查询保持原样，避免给它们加额外开销。
+ * 已完成口径 = 状态名「已关闭」（卡面明确定义；自定义 done 类状态不计入）。
+ */
+const CHILD_PROGRESS_COLUMNS = `(SELECT COUNT(*) FROM issue c WHERE c.parent_issue_id = i.id) AS children_total,
+  (SELECT COUNT(*) FROM issue c WHERE c.parent_issue_id = i.id AND c.status = '已关闭') AS children_closed`;
 /** GET /issues 与树/分页共用：一条预聚合 LEFT JOIN 供全部行，不做 N+1 */
 const DEPENDENCY_JOIN = blockedByAggregateJoin();
 const DEPENDENCY_COLUMNS = 'dep.blocked_by_count, dep.blocked_by_open_count';
@@ -79,7 +89,7 @@ const DECISION_COLUMNS = `(SELECT d.state FROM issue_decision d WHERE d.issue_id
   (SELECT d.locked_at FROM issue_decision d WHERE d.issue_id=i.id AND d.state='open' ORDER BY d.locked_at ASC LIMIT 1) AS decision_locked_at`;
 
 function rowToIssue(row: IssueRow): Issue {
-  return {
+  const issue: Issue & { children_total?: number; children_closed?: number } = {
     id: row.id,
     workspace_id: row.workspace_id,
     title: row.title,
@@ -107,6 +117,12 @@ function rowToIssue(row: IssueRow): Issue {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+  // 只有带了 CHILD_PROGRESS_COLUMNS 的查询才有值；其余查询不带这两个字段，保持响应形状不变
+  if (row.children_total !== undefined) {
+    issue.children_total = row.children_total;
+    issue.children_closed = row.children_closed ?? 0;
+  }
+  return issue;
 }
 
 /**
@@ -180,7 +196,7 @@ export function createIssue(db: Db, input: CreateIssueInput): Issue {
 
 export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null {
   const row = db
-    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
+    .prepare(`SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS}, ${CHILD_PROGRESS_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.id = ?${workspaceId ? ' AND i.workspace_id=?' : ''}`)
     .get(...(workspaceId ? [id, workspaceId] : [id])) as IssueRow | undefined;
   return row ? rowToIssue(row) : null;
 }
@@ -190,7 +206,7 @@ export function listIssues(db: Db, workspaceId: string, status?: string): Issue[
   if (status !== undefined) params.push(status);
   const rows = db
     .prepare(
-      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
+      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS}, ${CHILD_PROGRESS_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
        WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(...params) as IssueRow[];
