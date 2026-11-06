@@ -52,6 +52,13 @@ describe('account foundation', () => {
     await expect(runAccountOperation(t.db, input, async () => 'succeeded')).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
     expect(JSON.stringify(t.db.prepare('SELECT * FROM account_operation').all())).not.toContain('fixture-secret-must-not-leak');
   });
+  it('checkin credential-invalid propagates its safe code instead of ACCOUNT_OPERATION_FAILED (ACC-FIX-1)', async () => {
+    const a = account(); const input = { account_id: a.id, app_id: a.app_id, client_instance_id: a.client_instance_id, operation: 'checkin' as const };
+    const invalid = await runAccountOperation(t.db, input, async () => { throw new ApiError(409, 'CHECKIN_CREDENTIAL_INVALID', '凭据已失效，请重新导入本机凭据'); });
+    expect(invalid.state).toBe('failed'); expect(invalid.safe_error_code).toBe('CHECKIN_CREDENTIAL_INVALID');
+    const generic = await runAccountOperation(t.db, input, async () => { throw new ApiError(409, 'NOT_A_SAFE_CODE', 'x'); });
+    expect(generic.state).toBe('failed'); expect(generic.safe_error_code).toBe('ACCOUNT_OPERATION_FAILED');
+  });
   it('operation transitions are durable and illegal final-state rewrites fail', () => {
     const a = account(); const op = createAccountOperation(t.db, { account_id: a.id, app_id: a.app_id, client_instance_id: a.client_instance_id, operation: 'checkin' });
     expect(op.state).toBe('queued'); updateAccountOperation(t.db, op.id, { state: 'running', stage: 'preflight' });
