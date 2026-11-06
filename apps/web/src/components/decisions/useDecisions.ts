@@ -117,7 +117,10 @@ export function useDecisionDetail(decisionId: string | null): DecisionDetailDto 
 
 export interface AnswerDecisionInput {
   decisionId: string;
-  optionId: string;
+  /** 预置选项与自定义答案二选一（服务端同样只接受其一） */
+  optionId?: string;
+  /** DEC-V4-CUSTOM：自定义答案原文（≤120 字，UI 硬截断 + 提交兜底校验） */
+  answerText?: string;
   /** 修订必传：当前 `answer_revision`（服务端 CAS，旧版本 → 409 DECISION_REVISION_CONFLICT） */
   expectedRevision?: number;
 }
@@ -132,7 +135,8 @@ export function useAnswerDecision() {
   return useMutation({
     mutationFn: (input: AnswerDecisionInput) =>
       api.post<{ decision: DecisionDetailDto }>(`/api/decisions/${encodeURIComponent(input.decisionId)}/answer`, {
-        option_id: input.optionId,
+        ...(input.optionId === undefined ? {} : { option_id: input.optionId }),
+        ...(input.answerText === undefined ? {} : { answer_text: input.answerText }),
         source: 'web',
         ...(input.expectedRevision === undefined ? {} : { expected_revision: input.expectedRevision }),
       }),

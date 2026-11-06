@@ -10,7 +10,14 @@
  * waiting_seconds / stop_*），详情（checkpoint / 全量 answers）走 `GET /api/decisions/:id`，
  * 不在前端自造数据源。
  */
-import { useEffect, useRef, useState } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
+} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { formatCountdown, formatWaiting } from './countdown';
@@ -20,6 +27,14 @@ import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from '
 
 /** 容器宽度阈值：≤660px 时动作行纵向堆叠、主按钮占满 */
 const NARROW_BREAKPOINT = 660;
+
+/** 自定义答案长度上限（与原型 CUSTOM_MAX 一致；服务端 answer_text 另有兜底） */
+const CUSTOM_MAX = 120;
+const CUSTOM_EMPTY_ERROR = '先写一句答案再提交（不能为空）';
+/** 选项（含「自定义」入口）≥7 时选项区内部滚动，页面本身不跳 */
+const SCROLL_THRESHOLD = 7;
+const CHIPS_MAX_HEIGHT = 76;
+const LIST_MAX_HEIGHT = 300;
 
 function useNarrowContainer(breakpoint: number) {
   const ref = useRef<HTMLLIElement | null>(null);
@@ -77,6 +92,12 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   const { ref, narrow } = useNarrowContainer(NARROW_BREAKPOINT);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // DEC-V4-CUSTOM：自定义答案与真实选项同属一个单选组，互斥；草稿跨收起/切换保留
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customText, setCustomText] = useState('');
+  const [customError, setCustomError] = useState<string | null>(null);
+  const prevOptionRef = useRef<string | null>(null);
+  const customInputRef = useRef<HTMLInputElement | null>(null);
   // 已回答卡收起态也要展示当前答案选项 → 仅在 answered 时预取详情；展开时一律取详情
   const detailQueryEnabled = expanded || scope === 'answered';
   const detail = useDecisionDetail(detailQueryEnabled ? item.id : null);
@@ -85,17 +106,124 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   const options = [...item.options].sort((a, b) => a.ord - b.ord);
   const defaultOption = options.find((option) => option.is_default === 1) ?? options[0] ?? null;
   const selectedOption = options.find((option) => option.id === selectedOptionId) ?? null;
-  const preview = selectedOption ?? defaultOption;
+  const customDraft = customText.trim();
+  const preview = customOpen
+    ? {
+        id: '__custom__',
+        ord: options.length + 1,
+        label: customDraft,
+        consequence: '自定义答案：原文会写进卡评论并同步任务卡',
+        is_default: 0,
+      }
+    : (selectedOption ?? defaultOption);
   const current = currentAnswer(detail, item.answer_revision);
   const currentLabel = optionLabel(detail, current);
   const isAnswered = scope === 'answered' || item.state === 'answered';
-  const canSubmit = !answerMutation.isPending && (current === null || selectedOptionId !== current.option_id);
+  const canSubmit =
+    !answerMutation.isPending &&
+    (customOpen ? true : selectedOptionId !== null && (current === null || selectedOptionId !== current.option_id));
+  const optionsScroll = options.length + 1 >= SCROLL_THRESHOLD;
 
   const graceRemaining =
     item.state === 'grace' && item.grace_until > now ? Math.max(0, Math.ceil((item.grace_until - now) / 1000)) : null;
   const waiting = item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
 
+  // 展开输入框：聚焦并就近滚动到可见区域（页面本身不跳；jsdom 无 scrollIntoView 时跳过）
+  useEffect(() => {
+    if (!customOpen) return;
+    const input = customInputRef.current;
+    if (!input) return;
+    input.focus();
+    if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'nearest' });
+  }, [customOpen]);
+
+  function handleSubmitError(err: unknown) {
+    if (err instanceof ApiError && err.status === 409) {
+      setError('答案版本冲突：已为你刷新，请重新选择后再提交');
+      void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+      void queryClient.invalidateQueries({ queryKey: ['decision'] });
+      return;
+    }
+    setError(err instanceof Error ? err.message : '提交失败');
+  }
+
+  function selectOption(optionId: string) {
+    setSelectedOptionId(optionId);
+    // 与自定义互斥：收起输入框但保留草稿，再次点「自定义」可继续编辑
+    setCustomOpen(false);
+    setCustomError(null);
+  }
+
+  function closeCustom(revert: boolean) {
+    setCustomOpen(false);
+    setCustomError(null);
+    if (revert) setSelectedOptionId(prevOptionRef.current);
+  }
+
+  function toggleCustom() {
+    if (customOpen) {
+      closeCustom(true);
+      return;
+    }
+    // 记下打开前的选择，Esc / 再点一次自定义时回退；自定义与真实选项同组互斥
+    prevOptionRef.current = selectedOptionId;
+    setSelectedOptionId(null);
+    setCustomOpen(true);
+    setCustomError(null);
+  }
+
+  function onCustomChange(event: ChangeEvent<HTMLInputElement>) {
+    // maxlength 挡不住程序化写入（含部分粘贴路径），这里硬截断
+    setCustomText(event.target.value.slice(0, CUSTOM_MAX));
+  }
+
+  function onCustomKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    // 中文输入法选词回车不提交
+    if (event.nativeEvent.isComposing) return;
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCustom(true);
+    }
+  }
+
   function submit() {
+    if (answerMutation.isPending) return;
+    if (customOpen) {
+      const text = customText.trim();
+      if (text === '') {
+        setCustomError(CUSTOM_EMPTY_ERROR);
+        customInputRef.current?.focus();
+        return;
+      }
+      if (text.length > CUSTOM_MAX) {
+        setCustomError(`最多 ${CUSTOM_MAX} 字，当前 ${text.length} 字`);
+        customInputRef.current?.focus();
+        return;
+      }
+      setError(null);
+      setCustomError(null);
+      answerMutation.mutate(
+        {
+          decisionId: item.id,
+          answerText: text,
+          ...(isAnswered ? { expectedRevision: item.answer_revision } : {}),
+        },
+        {
+          onSuccess: () => {
+            setSelectedOptionId(null);
+            setCustomOpen(false);
+          },
+          onError: handleSubmitError,
+        },
+      );
+      return;
+    }
     if (selectedOptionId === null || !canSubmit) return;
     setError(null);
     answerMutation.mutate(
@@ -106,15 +234,7 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
       },
       {
         onSuccess: () => setSelectedOptionId(null),
-        onError: (err) => {
-          if (err instanceof ApiError && err.status === 409) {
-            setError('答案版本冲突：已为你刷新，请重新选择后再提交');
-            void queryClient.invalidateQueries({ queryKey: ['decisions'] });
-            void queryClient.invalidateQueries({ queryKey: ['decision'] });
-            return;
-          }
-          setError(err instanceof Error ? err.message : '提交失败');
-        },
+        onError: handleSubmitError,
       },
     );
   }
@@ -196,7 +316,19 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
           item={item}
           detail={detail}
           selectedOptionId={selectedOptionId}
-          onSelect={setSelectedOptionId}
+          onSelect={selectOption}
+          custom={{
+            open: customOpen,
+            text: customText,
+            draft: customDraft,
+            error: customError,
+            scroll: optionsScroll,
+            inputRef: customInputRef,
+            onToggle: toggleCustom,
+            onTextChange: onCustomChange,
+            onKeyDown: onCustomKeyDown,
+            onSubmit: submit,
+          }}
         />
       ) : (
         <CollapsedBody
@@ -204,7 +336,19 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
           options={options}
           selectedOptionId={selectedOptionId}
           preview={preview}
-          onSelect={setSelectedOptionId}
+          onSelect={selectOption}
+          custom={{
+            open: customOpen,
+            text: customText,
+            draft: customDraft,
+            error: customError,
+            scroll: optionsScroll,
+            inputRef: customInputRef,
+            onToggle: toggleCustom,
+            onTextChange: onCustomChange,
+            onKeyDown: onCustomKeyDown,
+            onSubmit: submit,
+          }}
         />
       )}
 
@@ -230,7 +374,7 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
         <button
           type="button"
           data-testid={`decision-action-${item.id}`}
-          disabled={selectedOptionId === null || !canSubmit}
+          disabled={(!customOpen && selectedOptionId === null) || !canSubmit}
           onClick={submit}
           className={`whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50 ${
             isAnswered
@@ -265,27 +409,54 @@ export function DecisionCard({ item, now, rank, focused, scope, expanded, onTogg
   );
 }
 
+/** 自定义答案的就地编辑器状态（收起态 chip 行与展开态选项列表共用） */
+interface CustomAnswerConfig {
+  open: boolean;
+  text: string;
+  draft: string;
+  error: string | null;
+  scroll: boolean;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onToggle: () => void;
+  onTextChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLInputElement>) => void;
+  onSubmit: () => void;
+}
+
+function truncateDraft(text: string): string {
+  return text.length > 12 ? `${text.slice(0, 12)}…` : text;
+}
+
 interface CollapsedBodyProps {
   item: DecisionListItemDto;
   options: DecisionListItemDto['options'];
   selectedOptionId: string | null;
   preview: DecisionListItemDto['options'][number] | null;
   onSelect: (optionId: string) => void;
+  custom: CustomAnswerConfig;
 }
 
-function CollapsedBody({ item, options, selectedOptionId, preview, onSelect }: CollapsedBodyProps) {
+function CollapsedBody({ item, options, selectedOptionId, preview, onSelect, custom }: CollapsedBodyProps) {
   return (
     <>
       <p className="line-clamp-2 text-xs text-ink-2">{item.question}</p>
-      <div data-testid={`decision-chips-${item.id}`} role="group" aria-label="选择回答选项" className="flex flex-wrap gap-1">
+      <div
+        data-testid={`decision-chips-${item.id}`}
+        role="radiogroup"
+        aria-label="选择回答选项"
+        style={custom.scroll ? { maxHeight: CHIPS_MAX_HEIGHT, overflowY: 'auto' } : undefined}
+        className="flex flex-wrap gap-1"
+      >
         {options.map((option) => {
           const selected = option.id === selectedOptionId;
           return (
             <button
               key={option.id}
               type="button"
+              role="radio"
               data-testid={`decision-option-${option.id}`}
               aria-pressed={selected}
+              aria-checked={selected}
               onClick={() => onSelect(option.id)}
               className={`rounded-full border px-2 py-0.5 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                 selected ? 'border-accent bg-accent-soft font-medium text-accent' : 'border-hairline text-ink-2 hover:bg-surface-raised'
@@ -295,11 +466,70 @@ function CollapsedBody({ item, options, selectedOptionId, preview, onSelect }: C
             </button>
           );
         })}
+        <button
+          type="button"
+          role="radio"
+          data-testid={`decision-custom-${item.id}`}
+          aria-pressed={custom.open}
+          aria-checked={custom.open}
+          title="不在选项里？自己写一句"
+          onClick={custom.onToggle}
+          className={`rounded-full border border-dashed px-2 py-0.5 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+            custom.open ? 'border-accent bg-accent-soft font-medium text-accent' : 'border-hairline text-ink-3 hover:bg-surface-raised'
+          }`}
+        >
+          ✎ {custom.draft === '' ? '自定义' : truncateDraft(custom.draft)}
+        </button>
       </div>
+      {custom.open && <CustomEditor id={item.id} custom={custom} />}
       <p data-testid={`decision-consequence-${item.id}`} className="truncate text-xs text-ink-3">
         {preview === null ? '暂无选项' : `后果：${preview.consequence}`}
       </p>
     </>
+  );
+}
+
+/** 自定义答案输入框：Enter 提交 / Esc 收起（键盘处理在卡片层），空值与超长拦截在 submit 层 */
+function CustomEditor({ id, custom }: { id: string; custom: CustomAnswerConfig }) {
+  const errorId = `decision-custom-error-${id}`;
+  return (
+    <div data-testid={`decision-custom-editor-${id}`} className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <input
+          ref={custom.inputRef}
+          type="text"
+          data-testid={`decision-custom-input-${id}`}
+          aria-label="自定义答案"
+          aria-invalid={custom.error !== null}
+          aria-describedby={custom.error !== null ? errorId : undefined}
+          maxLength={CUSTOM_MAX}
+          value={custom.text}
+          placeholder={`写一句你自己的答案（≤${CUSTOM_MAX} 字）· Enter 提交 · Esc 收起`}
+          onChange={custom.onTextChange}
+          onKeyDown={custom.onKeyDown}
+          className="min-w-0 flex-1 rounded border border-dashed border-hairline bg-surface-card px-1.5 py-1 text-xs text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        />
+        <span
+          data-testid={`decision-custom-count-${id}`}
+          className="shrink-0 font-mono text-xs tabular-nums text-ink-3"
+        >
+          {custom.text.length}/{CUSTOM_MAX}
+        </span>
+        <button
+          type="button"
+          data-testid={`decision-custom-submit-${id}`}
+          onClick={custom.onSubmit}
+          className="shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 py-1 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          用这句提交
+        </button>
+      </div>
+      {custom.error !== null && (
+        <p id={errorId} data-testid={errorId} className="text-xs text-red-600 dark:text-red-400">
+          {custom.error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -308,9 +538,10 @@ interface ExpandedBodyProps {
   detail: DecisionDetailDto | null;
   selectedOptionId: string | null;
   onSelect: (optionId: string) => void;
+  custom: CustomAnswerConfig;
 }
 
-function ExpandedBody({ item, detail, selectedOptionId, onSelect }: ExpandedBodyProps) {
+function ExpandedBody({ item, detail, selectedOptionId, onSelect, custom }: ExpandedBodyProps) {
   const options = [...(detail?.options ?? item.options)].sort((a, b) => a.ord - b.ord);
   const answers = [...(detail?.answers ?? [])].sort((a, b) => a.revision - b.revision);
   const current = currentAnswer(detail, item.answer_revision);
@@ -323,7 +554,12 @@ function ExpandedBody({ item, detail, selectedOptionId, onSelect }: ExpandedBody
       </p>
       {item.context_md !== '' && <p className="whitespace-pre-wrap text-xs text-ink-2">{item.context_md}</p>}
 
-      <ul data-testid={`decision-options-${item.id}`} className="flex flex-col gap-1" role="list">
+      <ul
+        data-testid={`decision-options-${item.id}`}
+        className="flex flex-col gap-1"
+        role="radiogroup"
+        style={custom.scroll ? { maxHeight: LIST_MAX_HEIGHT, overflowY: 'auto' } : undefined}
+      >
         {options.map((option) => {
           const selected = option.id === selectedOptionId;
           const answered = current?.option_id === option.id;
@@ -331,8 +567,10 @@ function ExpandedBody({ item, detail, selectedOptionId, onSelect }: ExpandedBody
             <li key={option.id}>
               <button
                 type="button"
+                role="radio"
                 data-testid={`decision-detail-option-${option.id}`}
                 aria-pressed={selected}
+                aria-checked={selected}
                 onClick={() => onSelect(option.id)}
                 className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded border px-1.5 py-1 text-left transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   selected ? 'border-accent bg-accent-soft' : 'border-hairline bg-surface-card hover:bg-surface-raised'
@@ -355,7 +593,29 @@ function ExpandedBody({ item, detail, selectedOptionId, onSelect }: ExpandedBody
             </li>
           );
         })}
+        <li>
+          <button
+            type="button"
+            role="radio"
+            data-testid={`decision-detail-custom-${item.id}`}
+            aria-pressed={custom.open}
+            aria-checked={custom.open}
+            onClick={custom.onToggle}
+            className={`flex w-full min-w-0 flex-col items-start gap-0.5 rounded border border-dashed px-1.5 py-1 text-left transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+              custom.open ? 'border-accent bg-accent-soft' : 'border-hairline bg-surface-card hover:bg-surface-raised'
+            }`}
+          >
+            <span className="flex w-full min-w-0 items-baseline gap-2">
+              <span className="shrink-0 text-xs text-ink-3">✎</span>
+              <span className={`min-w-0 truncate text-sm ${custom.open ? 'font-semibold text-accent' : 'text-ink'}`}>
+                自定义答案{custom.draft === '' ? '' : `：${custom.draft}`}
+              </span>
+            </span>
+            <span className="w-full text-xs text-ink-2">不在以上选项里：自己写一句，会原样写进卡评论</span>
+          </button>
+        </li>
       </ul>
+      {custom.open && <CustomEditor id={item.id} custom={custom} />}
 
       <dl data-testid={`decision-meta-${item.id}`} className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs text-ink-3">
         <div className="flex min-w-0 gap-1">

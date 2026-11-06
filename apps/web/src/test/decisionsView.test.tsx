@@ -588,6 +588,124 @@ describe('DEC-V4-INLINE 就地作答卡', () => {
   });
 });
 
+describe('DEC-V4-CUSTOM 自定义答案', () => {
+  const customItem = listItem({ id: 'custom-grace', state: 'grace', grace_until: NOW + 120_000 });
+  const customOptions = customItem.options;
+  const a = customOptions[0]!;
+  const b = customOptions[1]!;
+
+  function postAnswer(posts: Array<Record<string, unknown>>) {
+    return http.post('/api/decisions/:id/answer', async ({ request }) => {
+      posts.push((await request.json()) as Record<string, unknown>);
+      return HttpResponse.json({ decision: { ...customItem, checkpoint_json: null, current_answer_id: null, expires_at: null, on_expire: 'stay_locked', answers: [] } });
+    });
+  }
+
+  it('互斥：选自定义后真实选项 aria-checked=false；再选真实选项收起输入框但保留草稿', async () => {
+    server.use(decisionHandler([customItem], []));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-custom-grace');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${a.id}`));
+    expect(screen.getByTestId(`decision-option-${a.id}`)).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(screen.getByTestId('decision-custom-custom-grace'));
+    expect(screen.getByTestId(`decision-option-${a.id}`)).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('decision-custom-custom-grace')).toHaveAttribute('aria-checked', 'true');
+    const input = screen.getByTestId('decision-custom-input-custom-grace');
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: '先这样' } });
+    fireEvent.click(screen.getByTestId(`decision-option-${b.id}`));
+    expect(screen.queryByTestId('decision-custom-input-custom-grace')).toBeNull();
+    expect(screen.getByTestId(`decision-option-${b.id}`)).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(screen.getByTestId('decision-custom-custom-grace'));
+    expect(screen.getByTestId('decision-custom-input-custom-grace')).toHaveValue('先这样');
+  });
+
+  it('空文本提交：不发 POST、红字提示、aria-invalid、焦点留在输入框', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(decisionHandler([customItem], []), postAnswer(posts));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-custom-grace');
+
+    fireEvent.click(screen.getByTestId('decision-custom-custom-grace'));
+    fireEvent.change(screen.getByTestId('decision-custom-input-custom-grace'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByTestId('decision-action-custom-grace'));
+
+    expect(posts).toHaveLength(0);
+    expect(screen.getByTestId('decision-custom-error-custom-grace')).toHaveTextContent('先写一句答案再提交（不能为空）');
+    const input = screen.getByTestId('decision-custom-input-custom-grace');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveFocus();
+  });
+
+  it('120 字硬截断：粘贴 130 字只留 120，提交请求体 answer_text 为 120 字且不带 option_id', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(decisionHandler([customItem], []), postAnswer(posts));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-custom-grace');
+
+    fireEvent.click(screen.getByTestId('decision-custom-custom-grace'));
+    const input = screen.getByTestId('decision-custom-input-custom-grace');
+    fireEvent.change(input, { target: { value: '甲'.repeat(130) } });
+
+    expect(input).toHaveValue('甲'.repeat(120));
+    expect(screen.getByTestId('decision-custom-count-custom-grace')).toHaveTextContent('120/120');
+
+    fireEvent.click(screen.getByTestId('decision-custom-submit-custom-grace'));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect((posts[0]!.answer_text as string).length).toBe(120);
+    expect(posts[0]).not.toHaveProperty('option_id');
+    expect(posts[0]).toMatchObject({ source: 'web' });
+  });
+
+  it('Enter 提交（非输入法组合）发出 1 次 POST；Esc 收起并回退到选自定义之前的选项', async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(decisionHandler([customItem], []), postAnswer(posts));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-custom-grace');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${b.id}`));
+    fireEvent.click(screen.getByTestId('decision-custom-custom-grace'));
+    const input = screen.getByTestId('decision-custom-input-custom-grace');
+    fireEvent.change(input, { target: { value: '我选自定义' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toMatchObject({ answer_text: '我选自定义', source: 'web' });
+  });
+
+  it('Esc：收起输入框并回退到前一项；7 项时 chip 行内部滚动且页面不跳', async () => {
+    const manyOptions = Array.from({ length: 6 }, (_, index) => ({
+      id: `many-opt-${index + 1}`,
+      ord: index + 1,
+      label: `选项 ${index + 1}`,
+      consequence: `后果 ${index + 1}`,
+      is_default: index === 0 ? 1 : 0,
+    }));
+    const manyItem = listItem({ id: 'custom-many', state: 'grace', grace_until: NOW + 120_000, options: manyOptions });
+    server.use(decisionHandler([manyItem], []));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-custom-many');
+
+    const chips = screen.getByTestId('decision-chips-custom-many');
+    expect(chips.style.maxHeight).toBe('76px');
+    expect(chips.style.overflowY).toBe('auto');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${manyOptions[1]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-custom-custom-many'));
+    expect(screen.getByTestId('decision-custom-input-custom-many')).toHaveFocus();
+
+    const scrollBefore = window.scrollY;
+    fireEvent.keyDown(screen.getByTestId('decision-custom-input-custom-many'), { key: 'Escape' });
+    expect(screen.queryByTestId('decision-custom-input-custom-many')).toBeNull();
+    expect(screen.getByTestId(`decision-option-${manyOptions[1]!.id}`)).toHaveAttribute('aria-checked', 'true');
+    expect(window.scrollY).toBe(scrollBefore);
+  });
+});
+
 describe('DEC-6 详情决策区', () => {
   const detail: DecisionDetailDto = {
     ...answeredItem,
