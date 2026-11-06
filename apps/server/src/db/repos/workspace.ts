@@ -5,6 +5,7 @@ import { ApiError, NotFoundError } from '../../errors.js';
 import type { PageResult } from '@agentboard/shared';
 import { pageResult, validatePage } from '../pagination.js';
 import { seedWorkspaceStatus } from '../migrations/workspaceStatus.js';
+import { DEFAULT_OWNER_ACTOR, ensureOwner } from './workspaceMember.js';
 
 export interface CreateWorkspaceInput {
   name: string;
@@ -56,6 +57,8 @@ function insertWorkspace(db: Db, id: string, created_at: number, input: CreateWo
     );
     // STATUS-1：新工作区在同一事务内种入 5 条内置状态，保证状态字典恒非空
     seedWorkspaceStatus(db, id, created_at);
+    // PERM-1：新工作区同步写 owner（与迁移回填共用同一个 repo 函数）
+    ensureOwner(db, id, DEFAULT_OWNER_ACTOR, created_at);
     return { id, name: input.name, path: input.path, created_at, sort_order: next };
   }).immediate();
 }

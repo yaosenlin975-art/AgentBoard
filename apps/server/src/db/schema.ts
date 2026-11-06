@@ -36,6 +36,8 @@ import { migrateSessionStepLedger } from './migrations/sessionStepLedger.js';
 import { migrateCliAccounts } from './migrations/cliAccounts.js';
 // DEC-1：待决策区三表（纯追加表 + 部分唯一索引；workspace 纯加列）
 import { migratePendingDecision } from './migrations/pendingDecision.js';
+// PERM-1：工作区成员表 + 既有工作区 owner 回填（纯追加表，幂等）
+import { migrateWorkspaceMember } from './migrations/workspaceMember.js';
 // STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
 import { migrateIssueParentIndex } from './migrations/issueParentIndex.js';
 // STORE-4b：中心库定位索引 entity_locator（薄索引；行由 repos 维护钩子写入，删表可由重建路径回填）
@@ -68,6 +70,15 @@ CREATE TABLE IF NOT EXISTS issue (
 CREATE TABLE IF NOT EXISTS issue_comment (
   id TEXT PRIMARY KEY, issue_id TEXT NOT NULL REFERENCES issue(id) ON DELETE CASCADE,
   author TEXT NOT NULL, content TEXT NOT NULL, ts INTEGER NOT NULL);
+-- PERM-1：工作区成员（权限方案路线 A；迁移期每个既有工作区 seed ('user','owner')）
+CREATE TABLE IF NOT EXISTS workspace_member (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+  actor_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner','member','viewer')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_workspace_member ON workspace_member(workspace_id, actor_id);
 CREATE TABLE IF NOT EXISTS session (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
   issue_id TEXT REFERENCES issue(id) ON DELETE SET NULL,
@@ -140,6 +151,8 @@ export function initSchema(db: Db): void {
   migrateClaimLease(db);
   // DEC-1：待决策区三表与索引（纯追加，不重建 issue/workspace；必须排在 claim 租约之后）
   migratePendingDecision(db);
+  // PERM-1：成员表 + 既有工作区 owner 回填（纯追加；只依赖 workspace 表已建）
+  migrateWorkspaceMember(db);
   // ACC-CLI-MULTI：CLI 三来源的本机凭据登记表（纯追加，幂等；与 managed_account 无关）
   migrateCliAccounts(db);
   // STORE-3a：issue(parent_issue_id) 子列索引（放在最末——此前任何 issue 表重建都会带走它，这里幂等补回）
