@@ -38,6 +38,7 @@ describe('VoiceHint（聚焦提示）', () => {
     const input = document.createElement('input');
     input.type = 'text';
     document.body.appendChild(input);
+    stubRect(input, 10, 100, 32);
     render(<VoiceHint enabled />);
 
     expect(screen.queryByTestId('voice-hint')).toBeNull();
@@ -64,15 +65,21 @@ describe('VoiceHint（聚焦提示）', () => {
   });
 });
 
-describe('VoiceHint 跟随锚点（CHAT-MICPOP）', () => {
-  /** jsdom 的 getBoundingClientRect 恒为 0，注入可控矩形才能观察「滚动后是否真的重算」 */
-  function stubRect(el: HTMLElement, left: number, top: number, height: number): void {
-    el.getBoundingClientRect = () => ({
-      x: left, y: top, left, top, right: left + 200, bottom: top + height, width: 200, height,
-      toJSON: () => ({}),
-    }) as DOMRect;
-  }
+/** jsdom 的 getBoundingClientRect 恒为 0，注入可控矩形才能观察「滚动后是否真的重算」 */
+function stubRect(el: HTMLElement, left: number, top: number, height: number, width = 200): void {
+  el.getBoundingClientRect = () => ({
+    x: left, y: top, left, top, right: left + width, bottom: top + height, width, height,
+    toJSON: () => ({}),
+  }) as DOMRect;
+}
 
+/** jsdom 无布局：clientWidth/clientHeight 恒为 0，裁剪判定需要显式注入 */
+function stubBoxSize(el: HTMLElement, width: number, height: number): void {
+  Object.defineProperty(el, 'clientWidth', { configurable: true, value: width });
+  Object.defineProperty(el, 'clientHeight', { configurable: true, value: height });
+}
+
+describe('VoiceHint 跟随锚点（CHAT-MICPOP）', () => {
   it('滚动后按锚点实时矩形重算坐标，与输入框间距保持不变', () => {
     const scrollBox = document.createElement('div');
     const input = document.createElement('input');
@@ -111,6 +118,7 @@ describe('VoiceHint 跟随锚点（CHAT-MICPOP）', () => {
     input.type = 'text';
     scrollBox.appendChild(input);
     document.body.appendChild(scrollBox);
+    stubRect(input, 120, 400, 32);
     render(<VoiceHint enabled />);
 
     act(() => { input.focus(); });
@@ -128,6 +136,58 @@ describe('VoiceHint 跟随锚点（CHAT-MICPOP）', () => {
     const hint = screen.getByTestId('voice-hint');
     expect(hint.id).toBe(hintId);
     expect(parseFloat(hint.style.top)).toBe(536);
+  });
+
+  // CHAT-MICPOP-2 回归：零尺寸锚点（折叠/未布局的输入框）以前会算出 (0, 4)，
+  // 即提示钉在视口左上角且不再跟随任何滚动。
+  it('锚点没有布局盒（零尺寸）时不出提示，拿到有效矩形后自动恢复', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    document.body.appendChild(input);
+    stubRect(input, 0, 0, 0, 0);
+    render(<VoiceHint enabled />);
+
+    act(() => { input.focus(); });
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+    expect(input.hasAttribute('aria-describedby')).toBe(true);
+
+    stubRect(input, 120, 300, 32);
+    act(() => { window.dispatchEvent(new Event('resize')); });
+    expect(parseFloat(screen.getByTestId('voice-hint').style.top)).toBe(336);
+  });
+
+  it('锚点被裁剪祖先完全裁掉时隐藏，部分可见时仍贴合显示', () => {
+    const clipBox = document.createElement('div');
+    clipBox.style.overflowY = 'hidden';
+    const input = document.createElement('input');
+    input.type = 'text';
+    clipBox.appendChild(input);
+    document.body.appendChild(clipBox);
+    stubRect(clipBox, 0, 0, 200);
+    stubBoxSize(clipBox, 200, 200);
+    stubRect(input, 10, 400, 32);
+    render(<VoiceHint enabled />);
+
+    // 输入框在容器可视范围（0..200）之外：不得停在容器外的坐标上
+    act(() => { input.focus(); });
+    expect(screen.queryByTestId('voice-hint')).toBeNull();
+
+    // 部分可见：仍然显示，间距 4px
+    stubRect(input, 10, 150, 32);
+    act(() => { clipBox.dispatchEvent(new Event('scroll')); });
+    expect(parseFloat(screen.getByTestId('voice-hint').style.top)).toBe(186);
+  });
+
+  it('层级低于抽屉/弹窗（z-35），不再压在最上层', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    document.body.appendChild(input);
+    stubRect(input, 10, 100, 32);
+    render(<VoiceHint enabled />);
+    act(() => { input.focus(); });
+    const hint = screen.getByTestId('voice-hint');
+    expect(hint.className).toContain('z-[35]');
+    expect(hint.className).not.toContain('z-[60]');
   });
 });
 

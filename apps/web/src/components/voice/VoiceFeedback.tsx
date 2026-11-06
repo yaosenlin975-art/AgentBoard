@@ -35,14 +35,63 @@ function prefersReducedMotion(): boolean {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+/** 提示与锚点底边的间距（px） */
+const HINT_GAP = 4;
+
+/**
+ * 锚点可视性的硬判据：任何一条不成立就**不显示**，而不是留在原地。
+ * 顺序有讲究——先排除「没有有效盒子」的情况（CHAT-MICPOP-2 的根因：零尺寸矩形的
+ * `left/bottom` 都是 0，直接参与计算会把提示画到 `(0, 4)`，也就是钉在视口左上角）。
+ */
+function resolveHintPosition(el: HTMLElement): { x: number; y: number } | null {
+  if (!el.isConnected) return null;
+  const rect = el.getBoundingClientRect();
+  // 1) 没有布局盒（display:none / 折叠中 / 尚未布局）：算不出锚点，必须隐藏
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  // 2) 完全移出可视区（任何一边）
+  if (rect.bottom <= 0 || rect.top >= window.innerHeight) return null;
+  if (rect.right <= 0 || rect.left >= window.innerWidth) return null;
+  // 3) 被某个裁剪祖先（滚动容器/overflow:hidden）完全裁掉
+  if (isFullyClipped(el, rect)) return null;
+  return { x: Math.round(rect.left), y: Math.round(rect.bottom + HINT_GAP) };
+}
+
+/**
+ * 锚点是否被某个「裁剪祖先」完全裁掉。
+ * 只判「完全不可见」：部分可见时仍贴合显示，避免把提示做成时有时无。
+ * `clientWidth/clientHeight` 为 0 的容器（含 jsdom 这种无布局环境）跳过判定。
+ */
+function isFullyClipped(el: HTMLElement, rect: DOMRect): boolean {
+  let node = el.parentElement;
+  while (node !== null && node !== document.body && node !== document.documentElement) {
+    const style = window.getComputedStyle(node);
+    const clipsX = style.overflowX !== 'visible';
+    const clipsY = style.overflowY !== 'visible';
+    if ((clipsX || clipsY) && node.clientWidth > 0 && node.clientHeight > 0) {
+      const box = node.getBoundingClientRect();
+      const left = box.left + node.clientLeft;
+      const top = box.top + node.clientTop;
+      const visibleX = !clipsX || (rect.left < left + node.clientWidth && rect.right > left);
+      const visibleY = !clipsY || (rect.top < top + node.clientHeight && rect.bottom > top);
+      if (!visibleX || !visibleY) return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
 /**
  * 聚焦提示：贴在被聚焦控件正下方的一条小字（fixed 定位，不占流）。
  * `enabled=false` 时完全不挂监听（STT 关闭/无可用模型）。
  *
- * 跟随锚点（CHAT-MICPOP）：`fixed` 坐标若只在聚焦时算一次，滚动后就会与输入框分离悬空；
- * 这里保存锚点控件，在 `scroll`（capture，覆盖任意滚动容器）/ `resize` / `ResizeObserver`
- * 的真实事件里按实时矩形重算——不用定时器轮询（不会引入计时器漂移）；锚点滚出视口即隐藏。
- * 位置更新是即时的、不引入过渡动画，因此 `prefers-reduced-motion` 下与常规行为一致，无需额外分支。
+ * 跟随锚点（CHAT-MICPOP / CHAT-MICPOP-2）：
+ * - 保存锚点控件而不是一次性坐标，在 `scroll`（在 document 上以 capture 监听，实测 Chromium
+ *   会把内部滚动容器的事件投递给 document 的捕获阶段，`window` 也会收到）/ `resize` /
+ *   `ResizeObserver` 的真实事件里重算，不用 setInterval 轮询（不引入计时器漂移）。
+ * - 坐标与可见性必须一起重算：只重算位置会把「无效/被裁掉的锚点」也算成有效坐标。
+ * - 层级固定 `z-[35]`：高于面板内浮层（z-20/30），低于抽屉与浮层容器（z-40）和 Modal（z-50），
+ *   打开抽屉/弹窗时提示会被盖住，而不是压在最上面。
+ * - 位置更新是即时的、不引入过渡动画，因此 `prefers-reduced-motion` 下与常规行为一致，无需额外分支。
  */
 export function VoiceHint({ enabled }: { enabled: boolean }) {
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
@@ -62,21 +111,16 @@ export function VoiceHint({ enabled }: { enabled: boolean }) {
       if (previous !== null && previous.isConnected) previous.removeAttribute('aria-describedby');
       describedRef.current = null;
     };
-    /** 按锚点控件当前矩形重算坐标；已被移出视口时隐藏，避免提示悬空错位 */
+    /** 按锚点控件当前矩形重算坐标与可见性；无效锚点一律隐藏，避免提示悬空错位 */
     const syncAnchor = (): void => {
       const el = anchorElRef.current;
       if (el === null) return;
-      if (!el.isConnected) {
-        setAnchor(null);
-        return;
-      }
-      const rect = el.getBoundingClientRect();
-      if (rect.bottom < 0 || rect.top > window.innerHeight) {
-        setAnchor(null);
-        return;
-      }
-      const next = { x: Math.round(rect.left), y: Math.round(rect.bottom + 4) };
-      setAnchor((previous) => (previous !== null && previous.x === next.x && previous.y === next.y ? previous : next));
+      const next = resolveHintPosition(el);
+      setAnchor((previous) => {
+        if (next === null) return null;
+        if (previous !== null && previous.x === next.x && previous.y === next.y) return previous;
+        return next;
+      });
     };
     /** 锚点可能切换（从一个输入框换到另一个），RO 观察对象随之切换 */
     const observeAnchor = (el: HTMLElement): void => {
@@ -124,7 +168,7 @@ export function VoiceHint({ enabled }: { enabled: boolean }) {
       data-testid="voice-hint"
       role="note"
       style={{ left: anchor.x, top: anchor.y }}
-      className="pointer-events-none fixed z-[60] rounded bg-surface-card px-1.5 py-0.5 text-[11px] text-ink-3 shadow-sm ring-1 ring-hairline"
+      className="pointer-events-none fixed z-[35] rounded bg-surface-card px-1.5 py-0.5 text-[11px] text-ink-3 shadow-sm ring-1 ring-hairline"
     >
       长按可语音输入
     </div>
