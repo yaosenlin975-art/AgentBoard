@@ -46,11 +46,11 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 
 - **并发上限硬性为 3**（含父会话自己执行的那张）：第 4 张一律排队，不得因为「卡小 / 看起来简单」而超限。
 - **准入：目标文件集不相交**。领取前逐卡列出「目标/禁止文件」清单并两两做交集；交集非空 → 排队串行。目录前缀按重叠计，样例：`apps/web/src/components/settings/**`、`apps/server/src/db/repos/knowledge.ts`、`apps/server/src/api/routes.ts`、`packages/cli/src/index.ts` 任一两两不得同时在飞。
-- **一卡一 worker，worker 不跨卡**：每个 worker 只 claim 自己那张、只改本卡文件、只提交本卡路径；不得帮别的 worker 收尾、改卡或顺手修它范围内的文件。
+- **一卡一 worker，worker 不跨卡**：每个 worker 只 claim 自己那张、只改本卡文件、只提交本卡路径；不得帮别的 worker 收尾、改卡或顺手修它范围内的文件。卡面确实要求动归属别的卡 / 别的 agent 的文件或目录时（同一工作区内也算），动手前在相关卡 `kb comment` 留一行 `改动声明：<文件> ｜ <YYYY-MM-DD HH:mm 本地> ｜ <意图>`，并把这行原文带进收尾回报；没这行就改别人的地盘，视同越界。
 - **领取纪律**：`kb show <全长 UUID>` 核对 status 与 claimed_by；已被他人占用且租约未过期 → 跳过，不抢。僵尸租约按 `using-agentboard` 口径处理，需用户授权才能强制释放，本技能不自行释放。close/done/fail 一律全长 UUID，禁止短码。
 - **失败隔离**：任一 worker 遇到阻塞（目标文件有他人未提交改动、卡被占用、测试失败非自身改动引起）→ 只停这一路（`kb fail` 或评论 + 保持占用），其余 worker 继续跑完并各自收尾；不得因一个失败整批中断，也不得把该失败记到其它卡上。
 - **提交纪律**：每卡单独提交，由 `kb done --scope` 只提交本卡声明路径；禁止 `git add -A`，禁止手动 `git commit` 兜底。提交后核对 `git show --stat <hash>` 只含本卡文件；混入他卡或未声明文件即停手报告，不带病继续。
-- **收尾纪律**：每卡 `done` 后立刻 `kb show` 回读，确认 status=待验收；汇总里的每个数字（并发数、完成/失败数、提交数）都必须能追到逐卡回读记录，不得估算。
+- **收尾纪律**：每卡 `done` 后立刻 `kb show` 回读，确认 status=待验收；汇总里的每个数字（并发数、完成/失败数、提交数）都必须能追到逐卡回读记录，不得估算，并且每个数字后面各附一行可重算命令，如 `待验收 3 —— 复算：kb list-tasks --workspace <id> --status 待验收 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).length"`，按命令重算，不引用他人转述。
 - **输出纪律**：worker 只回「卡号 / 结果 / 提交短 hash / 一句话阻塞」，禁止贴测试日志、整段 diff 或大段命令输出；父会话汇总按同一格式逐卡一行。单轮输出失控会直接废掉整轮（此前一次推 5 张卡的日志把窗口撑爆），宁可不并行也不放大输出。
 - **并发不等于抢占**：同一工作区若已有别的会话在飞、且改同一批文件，即使本技能允许 3 路，也必须降级为串行或跳过；跨工作区并行需按工作区边界逐区授权，不得借并行绕过。
 
@@ -72,9 +72,9 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 ## Execute and report
 
 - At start, when blocked, at major milestones, and before completion, reread the issue with kb show. Record progress with kb comment at the start, when blocked, and at major phase completions.
-- Treat the latest kb show result as authoritative if the user edits the title, description, priority, labels, or comments.
-- If scope or plan details need amendment, explain the proposed change in a comment and reread with kb show; for description/parent/priority/labels edits use the documented `kb update <id> --description-stdin` / `--parent` / `--priority` / `--labels` (or `kb move-issue`), then re-read. Do not invent undocumented subcommands.
-- If a user decision is required, follow `ask-user`: run `kb ask` (default 180s grace) instead of parking the claim in a comment; on `LOCKED` stop work at the checkpoint, and use `--grace 0` for unattended runs. Check the latest issue state before acting on a reply.
+- Treat the latest kb show result as authoritative if the user edits the title, description, priority, labels, or comments. 卡面引用别处原文（设计文档、日志、别人的 handoff、其他工作区的文件）时按「工作区 id + 相对路径 + 文件名」写坐标（如 `工作区 e41eb0fb-…：Docs/api.md §退出码`），据此打开原文再动手；只写「见 xx handoff」「参考那份设计」不算引用，打不开原文就停下问父代理，不靠猜补口径。
+- If scope or plan details need amendment, explain the proposed change in a comment and reread with kb show; for description/parent/priority/labels edits use the documented `kb update <id> --description-stdin` / `--parent` / `--priority` / `--labels` (or `kb move-issue`), then re-read. Do not invent undocumented subcommands. **本卡改动运行时语义（异常处理、返回值语义、调用契约）而卡面没有「影响面扫描清单」时，先补扫描再动手**：调用点（`grep -rn <符号> apps packages`）／现有断言与用例／验收探针三项用 `kb comment` 落进卡面，然后 `kb show` 重读；没补清单就改行为，视同卡外改动。
+- If a user decision is required, follow `ask-user`: run `kb ask` (default 180s grace) instead of parking the claim in a comment; on `LOCKED` stop work at the checkpoint, and use `--grace 0` for unattended runs. **要拍板的取舍必须立项成决策（`kb ask`），不得只散落在评论里等人看见**；接手与派活前先看有没有现成待决：`kb decisions --state open`（超 72 小时未处理加 `--stale`，锁定某张卡加 `--issue <卡 id>`），有 open 决策未答的卡不压新活。Check the latest issue state before acting on a reply.
 - Perform only the verification required by the issue, user request, or project rules. Record actual commands and outcomes; do not claim checks that were not run.
 - Do not create a separate test issue. Record verification in the implementation issue.
 - 每次写文件前过一遍越界自检三问；路径不在当前工作区内即停手，必要时向用户申请授权。
@@ -118,4 +118,4 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 - If work is awaiting a user decision, use `ask-user` (`kb ask`; `--grace 0` for unattended runs) instead of silently keeping the claim; on `LOCKED` stop and leave the checkpoint. Never mark it done or failed while the decision is open.
 - Use only the commands and status transitions documented by the AgentBoard guide. `kb update` / `kb move-issue` exist; never invent other update commands, status fields, or alternate claim behavior. For missing CLI or service failures, follow the AgentBoard guide's specific diagnostic branch; do not guess commands or server ports.
 🔴 CHECKPOINT · 🛑 STOP：收尾回报缺工作区 id/路径、改动清单、跨区声明、验证命令与结果任一项即停手，不跑 `kb done`。
-- 收尾回报必须包含：所在工作区 id + 路径、改动文件全路径清单、是否发生跨工作区操作（是/否；若是，列出授权依据）、验证命令与实际输出/结果。缺任意一项视为执行未完成，不得 `done`。
+- 收尾回报必须包含：所在工作区 id + 路径、改动文件全路径清单（本卡有 `改动声明：<文件> ｜ <时间> ｜ <意图>` 那行的，把原文一并带回）、是否发生跨工作区操作（是/否；若是，列出授权依据）、验证命令与实际输出/结果（回报里每个数字——耗时、条数、比例、行数、通过数——后面各附一行复算命令，按命令重算，不引用他人转述；引述别处原文写「工作区 id + 相对路径 + 文件名」全坐标）。缺任意一项视为执行未完成，不得 `done`。
