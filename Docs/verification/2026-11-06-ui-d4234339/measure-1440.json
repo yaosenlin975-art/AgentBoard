@@ -1,0 +1,132 @@
+{
+ "d1": {
+  "panel": {
+   "tid": "right-panel",
+   "text": "【SIDEBAR-IMPL】侧栏「图标简化 ↔ ",
+   "x": 440,
+   "y": 65,
+   "w": 460,
+   "h": 819,
+   "bottom": 884,
+   "right": 900
+  },
+  "view": {
+   "tid": "detail-panel-view",
+   "text": "待规划优先级 · 高◷截止 · 未设置－未领取描",
+   "x": 441,
+   "y": 106,
+   "w": 458,
+   "h": 777,
+   "bottom": 883,
+   "right": 899
+  },
+  "chips": [
+   {
+    "tid": "status-chip",
+    "text": "待规划",
+    "x": 453,
+    "y": 118,
+    "w": 61,
+    "h": 24,
+    "bottom": 142,
+    "right": 514
+   },
+   {
+    "tid": "priority-chip",
+    "text": "优先级 · 高",
+    "x": 520,
+    "y": 118,
+    "w": 80,
+    "h": 24,
+    "bottom": 142,
+    "right": 600
+   },
+   {
+    "tid": "due-chip",
+    "text": "◷截止 · 未设置",
+    "x": 606,
+    "y": 118,
+    "w": 95,
+    "h": 24,
+    "bottom": 142,
+    "right": 701
+   },
+   {
+    "tid": "owner-chip",
+    "text": "－未领取",
+    "x": 707,
+    "y": 118,
+    "w": 69,
+    "h": 24,
+    "bottom": 142,
+    "right": 776
+   },
+   {
+    "tid": "label-chips",
+    "text": "web×UI×",
+    "x": 453,
+    "y": 855,
+    "w": 430,
+    "h": 22,
+    "bottom": 877,
+    "right": 883
+   },
+   {
+    "tid": "label-chip-web",
+    "text": "web×",
+    "x": 453,
+    "y": 856,
+    "w": 46,
+    "h": 20,
+    "bottom": 876,
+    "right": 499
+   },
+   {
+    "tid": "label-chip-remove-web",
+    "text": "×",
+    "x": 485,
+    "y": 858,
+    "w": 8,
+    "h": 16,
+    "bottom": 874,
+    "right": 493
+   },
+   {
+    "tid": "label-chip-UI",
+    "text": "UI×",
+    "x": 503,
+    "y": 856,
+    "w": 36,
+    "h": 20,
+    "bottom": 876,
+    "right": 539
+   },
+   {
+    "tid": "label-chip-remove-UI",
+    "text": "×",
+    "x": 525,
+    "y": 858,
+    "w": 8,
+    "h": 16,
+    "bottom": 874,
+    "right": 533
+   }
+  ],
+  "rows": [
+   118,
+   855,
+   856,
+   858
+  ]
+ },
+ "popover": {
+  "tid": "priority-popover",
+  "text": "低中高",
+  "x": 453,
+  "y": 146,
+  "w": 192,
+  "h": 86,
+  "bottom": 232,
+  "right": 645
+ }
+}
