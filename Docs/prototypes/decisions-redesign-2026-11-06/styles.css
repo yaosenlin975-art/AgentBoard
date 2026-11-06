@@ -206,7 +206,14 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .view-head-inner { max-width: 1040px; margin: 0 auto; }
 .title-row { display: flex; align-items: flex-start; gap: 12px; }
 .view-title { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.title-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .view-summary { margin: 3px 0 0; font-size: 12.5px; color: var(--ab-ink-2); }
+.view-total {
+  min-width: 20px; height: 20px; padding: 0 6px;
+  border-radius: 999px;
+  background: var(--ab-raised); color: var(--ab-ink-2);
+  font-size: 11px; font-weight: 650; line-height: 20px; text-align: center;
+}
 .head-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .notify-chip {
   display: inline-flex; align-items: center; gap: 5px;
@@ -426,6 +433,13 @@ button { cursor: pointer; background: none; border: 0; padding: 0; }
 .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-ghost { border-color: transparent; background: transparent; color: var(--ab-ink-3); }
 .btn-ghost:hover { background: var(--ab-raised); color: var(--ab-ink-2); }
+.btn-extend { gap: 4px; color: var(--ab-accent); border-color: color-mix(in srgb, var(--ab-accent) 34%, transparent); }
+.btn-extend:hover { background: var(--ab-accent-soft); color: var(--ab-accent); }
+.btn-extend.is-critical { border-color: var(--ab-accent); background: var(--ab-accent-soft); font-weight: 650; }
+.btn-extend:disabled { color: var(--ab-ink-3); border-color: var(--ab-hairline); background: transparent; cursor: not-allowed; }
+.extend-meta { font-size: 10px; color: var(--ab-ink-3); font-variant-numeric: tabular-nums; }
+.btn-extend:disabled .extend-meta { color: var(--ab-ink-3); }
+.chip.is-flash { animation: flashRing 700ms var(--ab-ease) 1; }
 .btn-danger { border-color: color-mix(in srgb, var(--ab-del) 40%, var(--ab-hairline)); color: var(--ab-del); }
 .btn-danger:hover { background: var(--ab-del-soft); color: var(--ab-del); }
 .btn-sm { height: 24px; padding: 0 8px; font-size: 11.5px; }

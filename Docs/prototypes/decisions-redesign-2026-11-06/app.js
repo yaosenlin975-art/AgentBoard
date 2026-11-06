@@ -497,6 +497,16 @@
 
   function remainingSec(d) { return (d.graceUntil - state.now) / 1000; }
 
+  /* 延长宽限：每次 +60s，累计最多 +300s，且总宽限不超过设计上限 600s */
+  var EXTEND_STEP = 60;
+  var EXTEND_CAP = 300;
+  var GRACE_HARD_CAP = 600;
+  function extendedSeconds(d) { return d.extendedSeconds || 0; }
+  function maxExtendSeconds(d) {
+    return Math.min(EXTEND_CAP, Math.max(0, GRACE_HARD_CAP - d.graceSeconds));
+  }
+  function totalGraceSeconds(d) { return d.graceSeconds + extendedSeconds(d); }
+
   function tierOf(d) {
     if (d.state === 'answered') return 'answered';
     if (d.state === 'withdrawn') return 'answered';
@@ -692,23 +702,10 @@
         '<button type="button" data-action="unpark-all">恢复</button></div>';
     }
 
-    return headHtml(list, groups, counts) + '<div class="dv">' + main + '</div>';
+    return headHtml(list, counts) + '<div class="dv">' + main + '</div>';
   }
 
-  function headHtml(list, groups, counts) {
-    var parts = [list.length + ' 条在途'];
-    if (state.scope === 'all') {
-      var cross = list.filter(isCrossWorkspace).length;
-      parts.push('范围：所有工作区（3 个）');
-      if (cross) parts.push(cross + ' 条来自其它工作区');
-    } else {
-      parts.push('范围：本工作区「' + WORKSPACES[0].name + '」');
-    }
-    if (groups.grace.length) parts.push(groups.grace.length + ' 条在倒计时');
-    if (groups.open.length) parts.push(groups.open.length + ' 条已锁');
-    if (groups.stale.length) parts.push(groups.stale.length + ' 条超时待处置');
-    if (!list.length) parts.push('现在没有需要你拍板的事');
-
+  function headHtml(list, counts) {
     var tabs = [
       ['all', '全部', counts.all],
       ['grace', '宽限中', counts.grace],
@@ -722,10 +719,11 @@
         item[1] + ' <b class="tnum">' + item[2] + '</b></button>';
     }).join('');
 
+    /* 范围由右侧下拉表达，各状态条数由 tab 表达；标题旁只留一个总数，不再拼整句摘要 */
     return '<div class="view-head"><div class="view-head-inner">' +
       '<div class="title-row">' +
-        '<div><h1 class="view-title">待决策</h1>' +
-          '<p class="view-summary">' + esc(parts.join(' · ')) + '</p></div>' +
+        '<div class="title-main"><h1 class="view-title">待决策</h1>' +
+          '<span class="view-total tnum" title="当前范围内共 ' + list.length + ' 条">' + list.length + '</span></div>' +
         '<div class="head-actions">' +
           '<button type="button" class="notify-chip' + (state.notif === 'granted' ? ' is-on' : '') +
             '" data-action="notify" aria-pressed="' + (state.notif === 'granted') + '">' +
@@ -805,6 +803,7 @@
       '<div class="dc-foot">' +
         '<div class="dc-stats">' + statsHtml(d) + '</div>' +
         '<div class="dc-actions">' +
+          (d.state === 'grace' ? extendButtonHtml(d) : '') +
           (d.state === 'open'
             ? '<button type="button" class="btn btn-ghost btn-sm" data-action="park" data-id="' + d.id + '" title="仅本会话隐藏，不改变任务状态">稍后</button>' +
               '<button type="button" class="btn btn-danger btn-sm" data-action="withdraw-start" data-id="' + d.id + '">撤回</button>'
@@ -923,6 +922,22 @@
     (err ? '<p class="form-error" id="cerr-' + d.id + '">' + esc(err) + '</p>' : '');
   }
 
+  /* 延长宽限按钮：只在 grace 卡上出现；连点按 60s 递增，达到上限后禁用 */
+  function extendButtonHtml(d) {
+    var max = maxExtendSeconds(d);
+    var used = extendedSeconds(d);
+    var critical = remainingSec(d) <= 60;
+    var capped = max <= 0 || used >= max;
+    var meta = max > 0 ? Math.round(used / 60) + '/' + Math.round(max / 60) : '0/0';
+    return '<button type="button" class="btn btn-ghost btn-sm btn-extend' + (critical ? ' is-critical' : '') + '"' +
+      ' data-action="extend-grace" data-id="' + d.id + '"' + (capped ? ' disabled' : '') +
+      ' title="每点一次 +60 秒；累计最多 +' + max + ' 秒，且总宽限不超过 600 秒。仅宽限内可延，已锁卡不可延。"' +
+      ' aria-label="延长宽限 1 分钟">' +
+      (capped ? '宽限已达上限' : '＋1 分钟') +
+      '<span class="extend-meta" aria-hidden="true">' + meta + '</span>' +
+    '</button>';
+  }
+
   function statsHtml(d) {
     var bits = [];
     if (d.state === 'answered') {
@@ -964,7 +979,7 @@
   }
 
   function progressHtml(d) {
-    var pct = Math.max(0, Math.min(100, (remainingSec(d) / d.graceSeconds) * 100));
+    var pct = Math.max(0, Math.min(100, (remainingSec(d) / totalGraceSeconds(d)) * 100));
     return '<div class="dc-progress" aria-hidden="true"><span data-progress="' + d.id + '" style="width:' + pct.toFixed(1) + '%"></span></div>';
   }
 
@@ -1107,7 +1122,9 @@
     var cells = [];
     cells.push(kv('阻塞下游', bcount ? bcount + ' 张卡' : '无', bcount ? 'is-warn' : ''));
     if (d.state === 'grace') {
-      cells.push(kv('本次宽限', d.graceSeconds + ' 秒', ''));
+      cells.push(kv('宽限合计', fmtCd(totalGraceSeconds(d)) + '（原 ' + fmtCd(d.graceSeconds) + '）', ''));
+      cells.push(kv('已延长', Math.round(extendedSeconds(d) / 60) + ' / ' + Math.round(maxExtendSeconds(d) / 60) + ' 分钟',
+        extendedSeconds(d) ? 'is-ok' : ''));
       cells.push(kv('任务优先级', issue.priority, ''));
     } else if (d.state === 'open') {
       cells.push(kv('已锁时长', fmtWait((state.now - d.lockedAt) / 1000), isStale(d) ? 'is-warn' : ''));
@@ -1490,6 +1507,41 @@
 
   /* -------------------- 9. 交互动作 -------------------- */
 
+  /* 延长宽限：按钮每点一次 +60s；上限 = min(300s, 600s - 原宽限)，达到后按钮禁用 */
+  function extendGrace(id) {
+    var d = decisionById(id);
+    if (!d || d.state !== 'grace') return;
+    var max = maxExtendSeconds(d);
+    var used = extendedSeconds(d);
+    if (max <= 0) {
+      pushToast({ text: '本次宽限已是 600 秒上限，不能再延长', kind: 'warn' });
+      return;
+    }
+    if (used >= max) {
+      pushToast({ text: '已达到延长上限（+' + Math.round(max / 60) + ' 分钟），再点无效', kind: 'warn' });
+      return;
+    }
+    var add = Math.min(EXTEND_STEP, max - used);
+    d.extendedSeconds = used + add;
+    d.graceUntil += add * 1000;
+    d.warned = false;
+    state.now = Date.now();
+    var rem = (d.graceUntil - state.now) / 1000;
+    pushToast({
+      text: d.issueKey + ' 宽限 +' + Math.round(add / 60) + ' 分钟 · 剩余 ' + fmtCd(rem) +
+        (d.extendedSeconds >= max ? ' · 已达延长上限' : ''),
+      kind: 'done',
+      ttl: 4200
+    });
+    render();
+    /* 倒计时 chip 闪一下，作为「确实加上去了」的就地反馈 */
+    var chip = document.querySelector('[data-countdown="' + d.id + '"]');
+    if (chip) {
+      chip.classList.add('is-flash');
+      setTimeout(function () { chip.classList.remove('is-flash'); }, 700);
+    }
+  }
+
   function answer(d, optionId) {
     var now = Date.now();
     var customText = optionId === CUSTOM_ID ? (state.customText[d.id] || '').trim() : null;
@@ -1761,7 +1813,7 @@
     $all('[data-progress]').forEach(function (el) {
       var d = decisionById(el.dataset.progress);
       if (!d || d.state !== 'grace') return;
-      var pct = Math.max(0, Math.min(100, (remainingSec(d) / d.graceSeconds) * 100));
+      var pct = Math.max(0, Math.min(100, (remainingSec(d) / totalGraceSeconds(d)) * 100));
       el.style.width = pct.toFixed(1) + '%';
     });
   }
@@ -1819,6 +1871,7 @@
       return;
     }
     if (action === 'toggle-expand') { toggleExpand(el.dataset.id); return; }
+    if (action === 'extend-grace') { extendGrace(el.dataset.id); return; }
     if (action === 'select-option') { selectOption(el.dataset.id, el.dataset.opt); return; }
     if (action === 'select-custom') { selectCustom(el.dataset.id); return; }
     if (action === 'submit-answer') { submitAnswer(el.dataset.id); return; }
