@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { CommanderError, type Command } from 'commander';
 import { request, CliHttpError } from '../api.js';
@@ -97,15 +98,20 @@ function validateLanded(value: string | undefined): string | undefined {
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** 读 `--sources` / `--sources-file` 二选一（同时给视为用法错误，避免静默取一个） */
-function readJsonArg(flag: string, inline: string | undefined, file: string | undefined): unknown {
+function readJsonArg(flag: string, inline: string | undefined, file: string | undefined, warn: (message: string) => void): unknown {
   if (inline !== undefined && file !== undefined) fail(`${flag} 与 ${flag}-file 只能给一个（推荐用 ${flag}-file 避免 Windows 引号转义）`);
   if (inline === undefined && file === undefined) fail(`缺少 ${flag}（或 ${flag}-file）：见 kb knowledge create --help 的字段说明与示例`);
   const text = file !== undefined ? (() => {
     const path = resolve(process.cwd(), file);
-    try { return readFileSync(path, 'utf8'); } catch (error) {
+    let raw: Buffer;
+    try { raw = readFileSync(path); } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? 'ERR';
       return fail(`${flag}-file 读取失败：${path}（${code}）`);
     }
+    // KB-CREATE-ERGO：Windows 记事本/PowerShell 5.1 存的 JSON 常带 UTF-8 BOM，直接 JSON.parse 报 `Unexpected token`
+    const hasBom = raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf;
+    if (hasBom) warn(`提示：检测到 UTF-8 BOM，已剥离后解析（${flag}-file）\n`);
+    return (hasBom ? raw.subarray(3) : raw).toString('utf8');
   })() : inline!;
   try {
     return JSON.parse(text);
@@ -160,6 +166,36 @@ function validateEvidence(flag: string, raw: unknown): void {
   });
 }
 
+/**
+ * KB-CREATE-ERGO：`--hash-from-file <source_id>=<path>`（可重复）按 source_id 精确回填 content_hash。
+ * 只认 source_id，不按 locator 猜；未匹配或文件读不到都 fail（退出码 1）并点名。
+ */
+function applyHashFromFiles(flag: string, raw: unknown, specs: string[] | undefined): void {
+  if (specs === undefined || specs.length === 0) return;
+  if (!Array.isArray(raw)) fail(`${flag} 需要配合 --sources / --sources-file 使用`);
+  const items = raw.filter(isPlainObject);
+  for (const spec of specs) {
+    const eq = spec.indexOf('=');
+    if (eq <= 0 || eq === spec.length - 1) {
+      fail(`${flag} 用法：<source_id>=<path>（当前：${preview(spec)}）；可重复，例如 --hash-from-file file:README.md=README.md`);
+    }
+    const sourceId = spec.slice(0, eq).trim();
+    const relPath = spec.slice(eq + 1).trim();
+    const hit = items.find(item => item.source_id === sourceId);
+    if (hit === undefined) {
+      const known = items.map(item => String(item.source_id)).join(' / ');
+      fail(`${flag} 未匹配到 source_id：「${sourceId}」（现有：${known === '' ? '（无）' : known}）`);
+    }
+    const absolute = resolve(process.cwd(), relPath);
+    let bytes: Buffer;
+    try { bytes = readFileSync(absolute); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? 'ERR';
+      fail(`${flag} 读不到文件：${absolute}（${code}）`);
+    }
+    hit.content_hash = createHash('sha256').update(bytes).digest('hex');
+  }
+}
+
 // ---------------- help 文案 ----------------
 
 const FIELD_HELP = `
@@ -169,7 +205,7 @@ const FIELD_HELP = `
     source_type  file | url | agent  必填
     locator      字符串 1–2000       必填  定位：文件相对路径 / URL / agent 名
     captured_at  非负整数            必填  采集时刻 epoch 毫秒（PowerShell：[DateTimeOffset]::Now.ToUnixTimeMilliseconds()）
-    content_hash 64 位十六进制       必填  来源内容 sha256（PowerShell：Get-FileHash -Algorithm SHA256 <文件> 取 .Hash）
+    content_hash 64 位十六进制       必填  来源内容 sha256（可用 --hash-from-file <source_id>=<path> 自动填，见下）
     snapshot     字符串 可选         仅 url / agent 来源可带；file 来源带 snapshot 会被服务端拒（「本地代码来源只保存路径和 hash」）
   --evidence 数组，每条对象：
     source_id    字符串 1–200        必填  必须精确指向上面某个 source_id（不要拿 locator 猜对应关系）
@@ -180,6 +216,13 @@ const FIELD_HELP = `
   snapshot 约定：只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入（服务端只查非空与 ≤2 KiB，不校验格式）。
   去重约定：同一 evidence 不重复登记；同一提交（同一 sha）有多条时只保留一条。
   其它字段一律拒绝（服务端 .strict()），错误会指出具体字段名与期望格式。
+  --hash-from-file  <source_id>=<path>，可重复：按 source_id 精确匹配 sources 条目并写入该文件 sha256（小写 64 位）；
+                   不按 locator 猜、不跨条目复用；未匹配或文件读不到都退出码 1 并点名。
+
+维度说明（--domain 与 --scope 是两个正交维度，不要混）：
+  --domain  知识领域：accounts | knowledge | board | chat | ui | infra（create 必填；表示这条知识属于哪个业务域）
+  --scope   页归属范围：workspace（挂到某个工作区，须配 --workspace）| common（公共，不绑工作区）
+  示例：--scope common --domain infra 是「公共范围里的基础设施知识」；同一 domain 可同时有 workspace 与 common 两页。
 `;
 
 /**
@@ -207,7 +250,9 @@ const CREATE_HELP = `${FIELD_HELP}
 
 示例 C（**推荐**，零引号转义；把两个 JSON 存成文件后，PowerShell 可直接复制）：
   Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策略' --slug cache-policy --domain knowledge --stdin \`
-    --sources-file sources.json --evidence-file evidence.json
+    --sources-file sources.json --evidence-file evidence.json \`
+    --hash-from-file 'file:README.md=README.md'
+  （--sources-file 带 UTF-8 BOM 也能读：CLI 会先剥 BOM 再解析，并在 stderr 提示；--hash-from-file 可重复）
 
 最小文件样例 sources.json：
   [{"source_id":"file:README.md","source_type":"file","locator":"README.md","captured_at":1763000000000,"content_hash":"0000000000000000000000000000000000000000000000000000000000000000"}]
@@ -497,9 +542,12 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .option('--expires-at <ms>', '过期时间 epoch 毫秒；null 表示清除期限')
     .option('--category <分类>', 'design|solved|pinned|open（缺省由服务端归一）')
     .option('--domain <域>', `${KNOWLEDGE_DOMAIN_HINT}（KB-CR-1：创建必填；修订缺省=不改）`)
-    .option('--landed <状态>', 'landed|partial|proposed（与 category 独立，任意分类都可显式指定；design 缺省时服务端记 proposed）');
+    .option('--landed <状态>', 'landed|partial|proposed（与 category 独立，任意分类都可显式指定；design 缺省时服务端记 proposed）')
+    // Commander 重复同名单值选项默认只留最后一个，这里用累加器显式收集成数组
+    .option('--hash-from-file <source_id=path>', '按 source_id 精确匹配，把该文件 sha256 填进对应 sources 条目（可重复）',
+      (value: string, previous: string[]) => [...previous, value], [] as string[]);
 
-  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string }) {
+  async function content(ctx: Ctx, opts: { stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string; hashFromFile?: string[] }) {
       // KB-CLI-1：--stdin 读到空正文 → 本地中文报错（先于 sources 校验：空正文是更早的失败点），不再把空串发给服务端吃「body_md 不能小于 1」
     let bodyMd: string | undefined;
     if (opts.stdin) {
@@ -508,8 +556,14 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         fail('--stdin 读到的正文为空：PowerShell 用「Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create … --stdin」喂入正文，或检查文件是否为空');
       }
     }
-    const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile) : undefined;
-    const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile) : undefined;
+    const warn = (message: string) => ctx.io.writeErr(message);
+    const sourcesRaw = (opts.sources !== undefined || opts.sourcesFile !== undefined) ? readJsonArg('--sources', opts.sources, opts.sourcesFile, warn) : undefined;
+    const evidenceRaw = (opts.evidence !== undefined || opts.evidenceFile !== undefined) ? readJsonArg('--evidence', opts.evidence, opts.evidenceFile, warn) : undefined;
+    if (opts.hashFromFile !== undefined && opts.hashFromFile.length > 0 && sourcesRaw === undefined) {
+      fail('--hash-from-file 需要配合 --sources / --sources-file 使用');
+    }
+    // 先回填 sha256 再校验：避免用户为了通过 content_hash 校验手工算 hash
+    if (sourcesRaw !== undefined) applyHashFromFiles('--hash-from-file', sourcesRaw, opts.hashFromFile);
     if (sourcesRaw !== undefined) validateSources('--sources', sourcesRaw);
     if (evidenceRaw !== undefined) validateEvidence('--evidence', evidenceRaw);
     return {

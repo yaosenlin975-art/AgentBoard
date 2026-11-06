@@ -545,7 +545,11 @@ Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expect
 kb knowledge action <page-id> archive --scope common --expected-revision 2
 ```
 
-`--sources[].content_hash` 取文件 sha256：`(Get-FileHash README.md -Algorithm SHA256).Hash.ToLower()`；`captured_at` 取 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
+`--sources[].content_hash` 取文件 sha256：`(Get-FileHash README.md -Algorithm SHA256).Hash.ToLower()`；或用 `--hash-from-file <source_id>=<path>`（可重复）自动按 source_id 精确回填，未匹配/文件不存在退出码 1 并点名。`captured_at` 取 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
+
+`--sources-file` / `--evidence-file` 读文件时先按字节剥 UTF-8 BOM 再 `JSON.parse`，命中时 stderr 打印「检测到 UTF-8 BOM，已剥离后解析」。
+
+`--domain`（知识领域：accounts/knowledge/board/chat/ui/infra，create 必填）与 `--scope`（页归属：workspace/common）是两个独立维度，互不替代；示例 `--scope common --domain infra`。
 
 ### 11.2 CLI 退出码表（`kb --help` 末尾同源，`index.ts` `EXIT_CODE_HELP`）
 

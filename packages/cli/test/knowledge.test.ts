@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -396,5 +397,80 @@ describe('knowledge CLI：show 省略 scope / find-source / create-revise link�
     // 每条命中 = 标题行 + snippet 行（snippet 截断后单行）
     const lines = out.split('\n').filter(Boolean);
     expect(lines).toHaveLength(10);
+  });
+});
+
+describe('KB-CREATE-ERGO：JSON 文件 BOM、--hash-from-file、domain/scope 说明', () => {
+  const BOM = '\ufeff';
+  const sourceRow = { source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1763000000000, content_hash: 'b'.repeat(64) };
+
+  it('--sources-file / --evidence-file 带 UTF-8 BOM 仍能创建，stderr 提示已剥离', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kb-ergo-'));
+    const sources = join(dir, 'sources.json');
+    const evidence = join(dir, 'evidence.json');
+    writeFileSync(sources, `${BOM}${JSON.stringify([{ ...sourceRow, content_hash: 'a'.repeat(64) }])}`, 'utf8');
+    writeFileSync(evidence, `${BOM}${JSON.stringify([{ source_id: 'file:README.md', locator: 'README.md:1-20' }])}`, 'utf8');
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(page))); vi.stubGlobal('fetch', fetch); const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'common', '--slug', 's', '--title', 't', '--stdin', '--sources-file', sources, '--evidence-file', evidence], stream);
+    expect(code).toBe(0);
+    expect(stream.err.join('')).toContain('检测到 UTF-8 BOM，已剥离');
+    const body = JSON.parse(fetch.mock.calls[0]![1].body);
+    expect(body.sources[0].content_hash).toBe('a'.repeat(64));
+    expect(body.evidence[0].locator).toBe('README.md:1-20');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('--hash-from-file 按 source_id 回填文件 sha256（脚本计算值比对）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kb-ergo-'));
+    const target = join(dir, 'README.md');
+    writeFileSync(target, 'hello 知识\n', 'utf8');
+    const sources = join(dir, 'sources.json');
+    // 故意不写 content_hash：回填发生在校验之前
+    writeFileSync(sources, JSON.stringify([{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1763000000000 }]), 'utf8');
+    const evidence = join(dir, 'evidence.json');
+    writeFileSync(evidence, JSON.stringify([{ source_id: 'file:README.md', locator: 'README.md:1-20' }]), 'utf8');
+    const expected = createHash('sha256').update(readFileSync(target)).digest('hex');
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(page))); vi.stubGlobal('fetch', fetch); const stream = io('正文');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'common', '--slug', 's', '--title', 't', '--stdin', '--sources-file', sources, '--evidence-file', evidence, '--hash-from-file', `file:README.md=${target}`], stream);
+    expect(code).toBe(0);
+    const body = JSON.parse(fetch.mock.calls[0]![1].body);
+    expect(body.sources[0].content_hash).toBe(expected);
+    expect(expected).toMatch(/^[0-9a-f]{64}$/);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('--hash-from-file 未匹配 source_id：exit 1 并点名，不发请求', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch); const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'common', '--slug', 's', '--title', 't', '--stdin',
+      '--sources', JSON.stringify([sourceRow]),
+      '--evidence', JSON.stringify([{ source_id: 'file:README.md', locator: 'README.md:1-20' }]),
+      '--hash-from-file', 'file:missing.md=README.md'], stream);
+    expect(code).toBe(1);
+    expect(stream.err.join('')).toContain('未匹配到 source_id：「file:missing.md」');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('--hash-from-file 文件不存在：exit 1 并点名路径', async () => {
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch); const stream = io();
+    const missing = join(tmpdir(), 'kb-ergo-not-exist.md');
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--scope', 'common', '--slug', 's', '--title', 't', '--stdin',
+      '--sources', JSON.stringify([sourceRow]),
+      '--evidence', JSON.stringify([{ source_id: 'file:README.md', locator: 'README.md:1-20' }]),
+      '--hash-from-file', `file:README.md=${missing}`], stream);
+    expect(code).toBe(1);
+    expect(stream.err.join('')).toContain(missing);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('create --help 讲清 domain 与 scope 是两个维度并给示例', async () => {
+    const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', 'create', '--help'], stream);
+    expect(code).toBe(0);
+    const text = stream.out.join('');
+    expect(text).toContain('--domain 与 --scope 是两个正交维度');
+    expect(text).toContain('知识领域：accounts | knowledge | board | chat | ui | infra');
+    expect(text).toContain('页归属范围：workspace');
+    expect(text).toContain('--scope common --domain infra');
+    expect(text).toContain('--hash-from-file');
   });
 });
