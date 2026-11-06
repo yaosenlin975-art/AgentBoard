@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -50,7 +50,7 @@ describe('STORE-1（M1）写入门禁与回显', () => {
     t.db.prepare('UPDATE workspace SET db_mode = ? WHERE id = ?').run(mode, workspaceId);
   };
   const mkIssue = async (workspaceId: string, title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title });
+    const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -100,7 +100,7 @@ describe('STORE-1（M1）写入门禁与回显', () => {
     expect(patched.status).toBe(409);
     expect(patched.body.error.code).toBe('WORKSPACE_DB_MIGRATING');
 
-    const created = await request(app).post('/api/issues').send({ workspace_id: ws, title: '新卡也不许' });
+    const created = await request(app).post('/api/issues').send(issuePayload(ws, { title: '新卡也不许' }));
     expect(created.status).toBe(409);
     expect(created.body.error.code).toBe('WORKSPACE_DB_MIGRATING');
 

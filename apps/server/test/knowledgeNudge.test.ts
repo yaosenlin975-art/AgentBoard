@@ -11,7 +11,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import type { KnowledgeHint, KnowledgeScope } from '@agentboard/shared';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -28,7 +28,7 @@ describe('knowledge nudge on done', () => {
   let workspaceId: string;
 
   const makeIssue = async (title = '写知识提醒的任务'): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title, description: '' });
+    const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };

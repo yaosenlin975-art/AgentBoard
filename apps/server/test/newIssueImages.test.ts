@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
@@ -102,11 +102,11 @@ describe('POST /api/issues 附图', () => {
     const ws = await mkSpace('仅图片空间');
     const staged = await uploadStaged(ws);
 
-    const missingTitle = await request(app).post('/api/issues').send({ workspace_id: ws, title: '', attachment_ids: [staged] });
+    const missingTitle = await request(app).post('/api/issues').send(issuePayload(ws, { title: '', attachment_ids: [staged] }));
     expect(missingTitle.status).toBe(400);
     expect(missingTitle.body.error.code).toBe('VALIDATION_ERROR');
 
-    const created = await request(app).post('/api/issues').send({ workspace_id: ws, title: '只有图片', attachment_ids: [staged] });
+    const created = await request(app).post('/api/issues').send(issuePayload(ws, { title: '只有图片', attachment_ids: [staged] }));
     expect(created.status).toBe(200);
     expect(created.body.description).toBe('');
     expect(bindingCount(created.body.id)).toBe(1);
@@ -125,7 +125,7 @@ describe('POST /api/issues 附图', () => {
     const wsB = await mkSpace('B 空间', spaceDirB);
     const foreign = await uploadStaged(wsA);
 
-    const res = await request(app).post('/api/issues').send({ workspace_id: wsB, title: '跨空间', attachment_ids: [foreign] });
+    const res = await request(app).post('/api/issues').send(issuePayload(wsB, { title: '跨空间', attachment_ids: [foreign] }));
     expect(res.status).toBe(404);
     expect(t.db.prepare("SELECT COUNT(*) AS n FROM issue WHERE workspace_id=?").get(wsB)).toEqual({ n: 0 });
     expect(attachmentRow(foreign)).toMatchObject({ status: 'staged', workspace_id: wsA });
@@ -135,10 +135,10 @@ describe('POST /api/issues 附图', () => {
   it('重复绑定已 attached 的附件：409 且新任务不创建', async () => {
     const ws = await mkSpace('重绑空间');
     const staged = await uploadStaged(ws);
-    const firstIssue = await request(app).post('/api/issues').send({ workspace_id: ws, title: '先占用', attachment_ids: [staged] });
+    const firstIssue = await request(app).post('/api/issues').send(issuePayload(ws, { title: '先占用', attachment_ids: [staged] }));
     expect(firstIssue.status).toBe(200);
 
-    const second = await request(app).post('/api/issues').send({ workspace_id: ws, title: '再次占用', attachment_ids: [staged] });
+    const second = await request(app).post('/api/issues').send(issuePayload(ws, { title: '再次占用', attachment_ids: [staged] }));
     expect(second.status).toBe(409);
     expect(second.body.error.code).toBe('ATTACHMENT_ALREADY_BOUND');
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id=?').get(ws)).toEqual({ n: 1 });
@@ -150,7 +150,7 @@ describe('POST /api/issues 附图', () => {
     const staged = await uploadStaged(ws);
     t.db.prepare('UPDATE attachment SET expires_at = 1 WHERE id=?').run(staged);
 
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title: '过期图', attachment_ids: [staged] });
+    const res = await request(app).post('/api/issues').send(issuePayload(ws, { title: '过期图', attachment_ids: [staged] }));
     expect(res.status).toBe(410);
     expect(res.body.error.code).toBe('ATTACHMENT_EXPIRED');
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id=?').get(ws)).toEqual({ n: 0 });
@@ -161,15 +161,15 @@ describe('POST /api/issues 附图', () => {
     const staged = await uploadStaged(ws);
     const many = await Promise.all([0, 1, 2, 3, 4].map((i) => uploadStaged(ws, PNG, `shot-${i}.png`)));
 
-    expect((await request(app).post('/api/issues').send({ workspace_id: ws, title: '超量', attachment_ids: [...many, staged] })).status).toBe(400);
-    expect((await request(app).post('/api/issues').send({ workspace_id: ws, title: '重复', attachment_ids: [staged, staged] })).status).toBe(400);
+    expect((await request(app).post('/api/issues').send(issuePayload(ws, { title: '超量', attachment_ids: [...many, staged] }))).status).toBe(400);
+    expect((await request(app).post('/api/issues').send(issuePayload(ws, { title: '重复', attachment_ids: [staged, staged] }))).status).toBe(400);
   });
 
   it('幂等重放：同 Idempotency-Key 只建一个任务、一组绑定', async () => {
     const ws = await mkSpace('幂等空间');
     const staged = await uploadStaged(ws);
     const key = '00000000-0000-4000-8000-0000000000aa';
-    const payload = { workspace_id: ws, title: '幂等带图', attachment_ids: [staged] };
+    const payload = issuePayload(ws, { title: '幂等带图', attachment_ids: [staged] });
 
     const first = await request(app).post('/api/issues').set('Idempotency-Key', key).send(payload);
     const replay = await request(app).post('/api/issues').set('Idempotency-Key', key).send(payload);
@@ -181,7 +181,7 @@ describe('POST /api/issues 附图', () => {
   });
 
   it('workspace 不存在：404 且不创建', async () => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: 'nope', title: '幽灵空间' });
+    const res = await request(app).post('/api/issues').send(issuePayload('nope', { title: '幽灵空间' }));
     expect(res.status).toBe(404);
     expect(getWorkspace(t.db, 'nope')).toBeNull();
   });

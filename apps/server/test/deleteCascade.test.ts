@@ -12,7 +12,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
 import type { WsEvent } from '@agentboard/shared';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
@@ -63,7 +63,7 @@ async function mkSpace(): Promise<string> {
 async function mkIssue(workspaceId: string): Promise<Record<string, unknown>> {
   const res = await request(app)
     .post('/api/issues')
-    .send({ workspace_id: workspaceId, title: '待删任务' });
+    .send(issuePayload(workspaceId, { title: '待删任务' }));
   expect(res.status).toBe(200);
   return res.body as Record<string, unknown>;
 }

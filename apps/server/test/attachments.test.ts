@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/index.js';
 import { resetSessionSender, setSessionSender } from '../src/services/comments.js';
 import type { AttachmentStore } from '../src/services/attachments.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 interface StagedAttachmentResponse {
@@ -56,7 +56,7 @@ async function createWorkspace(name: string): Promise<string> {
 }
 
 async function createIssue(workspaceId: string, title = 'image issue'): Promise<string> {
-  const response = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title });
+  const response = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
   expect(response.status).toBe(200);
   return response.body.id as string;
 }

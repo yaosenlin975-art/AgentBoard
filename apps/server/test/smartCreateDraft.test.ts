@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -113,7 +113,7 @@ describe('smart create draft (SMART-CREATE)', () => {
 
   it('returnsAThreeSectionDraftWithoutPersisting', async () => {
     // 工作区里先有一张带标签的卡，labels 只允许从这里选
-    await request(app).post('/api/issues').send({ workspace_id: ws, title: '已有卡', description: '', labels: ['前端', '性能'] });
+    await request(app).post('/api/issues').send(issuePayload(ws, { title: '已有卡', labels: ['前端', '性能'] }));
     runner = async ({ prompt }) => { prompts.push(prompt); return modelJson({ labels: ['前端', '自造标签'] }); };
 
     const before = issueCount();

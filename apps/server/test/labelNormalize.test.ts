@@ -2,7 +2,7 @@ import express, { type Express } from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRouter, errorHandler } from '../src/api/routes.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { normalizeLabels } from '../src/services/labelNormalize.js';
 
@@ -34,12 +34,7 @@ describe('labels 规范化（服务端请求边界）', () => {
   });
 
   it('POST 带空格标签 → 落库为拆分后的多项；PATCH 同样生效', async () => {
-    const created = await request(app).post('/api/issues').send({
-      workspace_id: workspaceId,
-      title: '标签规范化',
-      priority: '低',
-      labels: ['功能 web UI', '调研，跨平台'],
-    });
+    const created = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title: '标签规范化', priority: '低', labels: ['功能 web UI', '调研，跨平台'] }));
     expect(created.status).toBe(200);
     expect(created.body.labels).toEqual(['功能', 'web', 'UI', '调研', '跨平台']);
 
@@ -52,7 +47,7 @@ describe('labels 规范化（服务端请求边界）', () => {
   });
 
   it('空标签数组清空所有标签', async () => {
-    const created = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title: 'x', priority: '低', labels: ['a b'] });
+    const created = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title: 'x', priority: '低', labels: ['a b'] }));
     expect(created.body.labels).toEqual(['a', 'b']);
     const cleared = await request(app).patch(`/api/issues/${created.body.id}`).send({ labels: [] });
     expect(cleared.body.labels).toEqual([]);

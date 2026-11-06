@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -25,7 +25,7 @@ describe('workspace status CRUD (STATUS-2)', () => {
   const createStatus = (body: Record<string, unknown>) => request(app).post(api('')).send(body);
   const listStatuses = async () => (await request(app).get(api(''))).body as Array<{ id: string; name: string; kind: string; sort_order: number; is_builtin: number }>;
   const mkIssue = async (title: string, status?: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '' });
+    const res = await request(app).post('/api/issues').send(issuePayload(ws, { title }));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const id = res.body.id as string;
     if (status) {

@@ -2,7 +2,7 @@ import express, { type Express } from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRouter, errorHandler } from '../src/api/routes.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 
 /**
@@ -24,7 +24,7 @@ describe('issue due date / time（DUE-DATE）', () => {
   afterEach(() => t.cleanup());
 
   const create = (extra: Record<string, unknown> = {}) =>
-    request(app).post('/api/issues').send({ workspace_id: workspaceId, title: '截止测试', priority: '低', ...extra });
+    request(app).post('/api/issues').send(issuePayload(workspaceId, { title: '截止测试', priority: '低', ...extra }));
 
   it('三条路径：有日期无时间 / 有日期有时间 / 无日期，落库与回读一致', async () => {
     const dateOnly = await create({ due_date: '2026-11-10' });

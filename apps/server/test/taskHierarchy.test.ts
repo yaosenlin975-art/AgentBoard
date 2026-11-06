@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { initSchema } from '../src/db/schema.js';
 import { createWorkspace, deleteWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue, listIssues, updateIssue } from '../src/db/repos/issue.js';
@@ -69,7 +69,7 @@ describe('task hierarchy REST contract', () => {
   afterEach(() => t.cleanup());
 
   async function postIssue(title: string, parent_issue_id?: string) {
-    return request(app).post('/api/issues').send({ workspace_id: workspaceId, title, parent_issue_id });
+    return request(app).post('/api/issues').send(issuePayload(workspaceId, { title, parent_issue_id }));
   }
 
   it('persists parent IDs in create, patch, detail, and legacy flat-list responses', async () => {
@@ -94,9 +94,9 @@ describe('task hierarchy REST contract', () => {
     const root = await postIssue('root');
     const requestId = '00000000-0000-4000-8000-000000000181';
     const first = await request(app).post('/api/issues').set('Idempotency-Key', requestId)
-      .send({ workspace_id: workspaceId, title: 'child', parent_issue_id: root.body.id });
+      .send(issuePayload(workspaceId, { title: 'child', parent_issue_id: root.body.id }));
     const replay = await request(app).post('/api/issues').set('Idempotency-Key', requestId)
-      .send({ workspace_id: workspaceId, title: 'child', parent_issue_id: root.body.id });
+      .send(issuePayload(workspaceId, { title: 'child', parent_issue_id: root.body.id }));
     expect(first.body.id).toBe(replay.body.id);
     expect(listIssues(t.db, workspaceId)).toHaveLength(2);
   });
@@ -105,7 +105,7 @@ describe('task hierarchy REST contract', () => {
     const root = await postIssue('root');
     const child = await postIssue('child', root.body.id);
     const grandchild = await postIssue('grandchild', child.body.id);
-    const foreign = await request(app).post('/api/issues').send({ workspace_id: otherWorkspaceId, title: 'foreign' });
+    const foreign = await request(app).post('/api/issues').send(issuePayload(otherWorkspaceId, { title: 'foreign' }));
 
     expect((await postIssue('missing-parent', 'missing')).status).toBe(404);
     expect((await request(app).patch('/api/issues/' + child.body.id).send({ parent_issue_id: foreign.body.id })).status).toBe(400);

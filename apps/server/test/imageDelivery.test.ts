@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import { createApp } from '../src/index.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { getIssue } from '../src/db/repos/issue.js';
 import { listCommentsByIssue } from '../src/db/repos/comment.js';
@@ -57,7 +57,7 @@ async function createWorkspace(): Promise<string> {
 }
 
 async function createIssue(workspaceId: string): Promise<string> {
-  const response = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title: '合成图验证' });
+  const response = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title: '合成图验证' }));
   expect(response.status).toBe(200);
   return response.body.id as string;
 }

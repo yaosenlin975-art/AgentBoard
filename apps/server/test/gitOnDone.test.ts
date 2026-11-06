@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { initSchema } from '../src/db/schema.js';
@@ -34,7 +34,7 @@ describe('git on done', () => {
   const lastCommitFiles = (): string[] => git(repo, ['show', '--name-only', '--pretty=format:', '-1']).split('\n').filter(Boolean);
 
   const makeIssue = async (title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title, description: '' });
+    const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -135,7 +135,7 @@ describe('git on done', () => {
     const plain = join(root, 'plain');
     mkdirSync(plain, { recursive: true });
     const plainWorkspace = createWorkspace(t.db, { name: '非仓库', path: plain }).id;
-    const created = await request(app).post('/api/issues').send({ workspace_id: plainWorkspace, title: '非仓库任务', description: '' });
+    const created = await request(app).post('/api/issues').send(issuePayload(plainWorkspace, { title: '非仓库任务' }));
     const issueId = created.body.id as string;
     await request(app).post(`/api/issues/${issueId}/claim`).send({ agent_id: 'fake' });
     writeFileSync(join(plain, 'a.txt'), 'x\n');

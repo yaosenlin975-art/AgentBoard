@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -40,7 +40,7 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
   let probes: Database.Database[];
 
   const mkIssue = async (workspaceId: string, title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title });
+    const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -132,7 +132,7 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
   it('localized 工作区：POST /issues 与 PATCH 写落工作区库（中心库不再有该行），新卡按 id 仍可读', async () => {
     await localize();
 
-    const created = await request(app).post('/api/issues').send({ workspace_id: ws, title: '迁移后新建' });
+    const created = await request(app).post('/api/issues').send(issuePayload(ws, { title: '迁移后新建' }));
     expect(created.status).toBe(200);
     const newId = created.body.id as string;
 
@@ -167,7 +167,7 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
     expect(patched.status).toBe(409);
     expect(patched.body.error.code).toBe('WORKSPACE_DB_MIGRATING');
 
-    const created = await request(app).post('/api/issues').send({ workspace_id: ws, title: '不许建' });
+    const created = await request(app).post('/api/issues').send(issuePayload(ws, { title: '不许建' }));
     expect(created.status).toBe(409);
     expect(created.body.error.code).toBe('WORKSPACE_DB_MIGRATING');
 

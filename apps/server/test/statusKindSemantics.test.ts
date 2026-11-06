@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -26,9 +26,7 @@ describe('status kind semantics (STATUS-3)', () => {
   let ws: string;
 
   const mkIssue = async (title: string, parentId?: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({
-      workspace_id: ws, title, description: '', ...(parentId ? { parent_issue_id: parentId } : {}),
-    });
+    const res = await request(app).post('/api/issues').send(issuePayload(ws, { title, ...(parentId ? { parent_issue_id: parentId } : {}) }));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     return res.body.id as string;
   };

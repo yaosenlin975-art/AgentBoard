@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -42,7 +42,7 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
   let ws: string;
 
   const mkIssue = async (title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title });
+    const res = await request(app).post('/api/issues').send(issuePayload(ws, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -160,7 +160,7 @@ describe('STORE-3a 工作区库 REST（status / resume / cleanup / revert）', (
     expect((t.db.prepare('SELECT db_mode FROM workspace WHERE id = ?').get(ws) as { db_mode: string }).db_mode).toBe('localized');
 
     // job 终态后写请求不再 409（STORE-4a：新写落工作区库 → 中心无残留行，快照不落后；归属侧计数 +1）
-    const write = await request(app).post('/api/issues').send({ workspace_id: ws, title: '终态后新建' });
+    const write = await request(app).post('/api/issues').send(issuePayload(ws, { title: '终态后新建' }));
     expect(write.status).toBe(200);
     const status = await getStatus();
     expect(status.body.snapshotLagRows).toBe(0);
@@ -332,7 +332,7 @@ describe('STORE-3a disabled 紧急开关（REST，env 隔离）', () => {
     expect(status.body.effectiveDbPath).toBe(t.db.name);
     expect(status.body.counts.issue).toBe(1); // 数据归属工作区库
     // 不静默回退的可见性：disabled 期间写落中心库 → 快照落后 +1，status 立刻显形
-    const write = await request(app).post('/api/issues').send({ workspace_id: ws, title: 'disabled 期写入' });
+    const write = await request(app).post('/api/issues').send(issuePayload(ws, { title: 'disabled 期写入' }));
     expect(write.status).toBe(200);
     const after = await request(app).get(`/api/workspaces/${ws}/db`);
     expect(after.body.snapshotLagRows).toBe(1);

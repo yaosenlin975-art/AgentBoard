@@ -10,7 +10,7 @@ import { WebSocket, type WebSocket as WsClient } from 'ws';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
 import type { ServerWsEvent, WsEvent } from '@agentboard/shared';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
 import { initSessionManager, resetSessionManager, setBroadcaster, setMaxConcurrentTurns } from '../src/services/sessionManager.js';
@@ -174,7 +174,7 @@ describe('issues 全生命周期', () => {
   });
 
   it('校验与 404：workspace 不存在 → 404；缺参数 → 400；PATCH 空体 → 400；未知 id → 404', async () => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: 'nope', title: 'x' });
+    const res = await request(app).post('/api/issues').send(issuePayload('nope', { title: 'x' }));
     expect(res.status).toBe(404);
 
     const noQuery = await request(app).get('/api/issues');
@@ -226,6 +226,7 @@ describe('issues 全生命周期', () => {
     const shown = await request(app).get(`/api/issues/${accepted.body.id}`);
     expect(shown.body).toMatchObject({ status: '待验收', claimed_by: null, comment_count: 0 });
 
+    // 显式空面 + 待验收：验证的正是「空描述被拒」语义，不使用 issuePayload（其默认 allow_empty）
     const noFace = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '待验收无面', status: '待验收' });
     expect(noFace.status).toBe(400);
     expect(noFace.body.error.message).toContain('验收标准');

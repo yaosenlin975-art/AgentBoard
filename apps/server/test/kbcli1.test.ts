@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 
@@ -32,12 +32,12 @@ afterEach(() => {
 
 describe('标题 200 字上限（KB-CLI-1）', () => {
   it('201 字 → 400 VALIDATION_ERROR；200 字 → 200', async () => {
-    const tooLong = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '长'.repeat(201) });
+    const tooLong = await request(app).post('/api/issues').send(issuePayload(wsId, { title: '长'.repeat(201) }));
     expect(tooLong.status).toBe(400);
     expect(tooLong.body.error.code).toBe('VALIDATION_ERROR');
     expect(tooLong.body.error.message).toContain('200');
 
-    const ok = await request(app).post('/api/issues').send({ workspace_id: wsId, title: '长'.repeat(200) });
+    const ok = await request(app).post('/api/issues').send(issuePayload(wsId, { title: '长'.repeat(200) }));
     expect(ok.status).toBe(200);
   });
 
@@ -46,14 +46,14 @@ describe('标题 200 字上限（KB-CLI-1）', () => {
     const first = await request(app).post('/api/issues')
       .set('Idempotency-Key', key)
       .set('workspace_id', wsId)
-      .send({ workspace_id: wsId, title: '幂等建卡' });
+      .send(issuePayload(wsId, { title: '幂等建卡' }));
     expect(first.status).toBe(200);
     expect(first.headers['x-agentboard-replayed']).toBeUndefined();
 
     const replay = await request(app).post('/api/issues')
       .set('Idempotency-Key', key)
       .set('workspace_id', wsId)
-      .send({ workspace_id: wsId, title: '幂等建卡' });
+      .send(issuePayload(wsId, { title: '幂等建卡' }));
     expect(replay.status).toBe(200);
     expect(replay.headers['x-agentboard-replayed']).toBe('1');
     expect(replay.body.id).toBe(first.body.id);

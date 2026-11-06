@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -23,7 +23,7 @@ describe('issue list status filter (CLI-LIST-GUARD)', () => {
   let ws: string;
 
   const mkIssue = async (title: string): Promise<string> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: ws, title, description: '' });
+    const res = await request(app).post('/api/issues').send(issuePayload(ws, { title }));
     expect(res.status).toBe(200);
     return res.body.id as string;
   };
@@ -86,7 +86,7 @@ describe('issue list status filter (CLI-LIST-GUARD)', () => {
 
   it('filtersTreeByDeprecatedStatus', async () => {
     const root = await mkIssue('根卡');
-    const child = await request(app).post('/api/issues').send({ workspace_id: ws, title: '子卡', description: '', parent_issue_id: root });
+    const child = await request(app).post('/api/issues').send(issuePayload(ws, { title: '子卡', parent_issue_id: root }));
     expect(child.status).toBe(200);
     expect((await setStatus(child.body.id as string, '已废弃')).status).toBe(200);
 

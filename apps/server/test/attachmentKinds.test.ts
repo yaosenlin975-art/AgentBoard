@@ -6,7 +6,7 @@ import type { Express } from 'express';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/index.js';
 import { migrateAttachmentKind } from '../src/db/migrations/attachments.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
@@ -158,7 +158,7 @@ describe('通用附件上传 / 下载 / 路径索引 API（D7）', () => {
   }
 
   async function createIssue(workspaceId: string, title = 'kind issue'): Promise<string> {
-    const response = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title });
+    const response = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
     expect(response.status).toBe(200);
     return response.body.id as string;
   }

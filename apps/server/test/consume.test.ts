@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter, settle } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
@@ -54,7 +54,7 @@ async function mkSpace(): Promise<string> {
 }
 
 async function mkIssue(workspaceId: string): Promise<string> {
-  const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title: '任务' });
+  const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title: '任务' }));
   expect(res.status).toBe(200);
   return res.body.id as string;
 }

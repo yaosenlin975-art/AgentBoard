@@ -18,7 +18,7 @@ import { mkdtempSync as mkTmp } from 'node:fs';
 import { openDb, type Db } from '../src/db/connection.js';
 import { initSchema } from '../src/db/schema.js';
 import { migrateIssueStatusModel } from '../src/db/migrations/issueStatusModel.js';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -178,7 +178,7 @@ describe('workspace status dictionary on a fresh database', () => {
   let workspaceId: string;
 
   const mkIssue = async (title: string, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
-    const res = await request(app).post('/api/issues').send({ workspace_id: workspaceId, title, description: '', ...extra });
+    const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title, ...extra }));
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     return res.body as Record<string, unknown>;
   };

@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, issuePayload, type TestDb } from './helpers.js';
 import { FakeAdapter, settle, type FakeTurnControl } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
@@ -69,7 +69,7 @@ async function mkSpace(name: string): Promise<string> {
 }
 
 async function mkIssue(workspaceId: string, title: string, parentIssueId?: string): Promise<string> {
-  const body: Record<string, unknown> = { workspace_id: workspaceId, title };
+  const body: Record<string, unknown> = issuePayload(workspaceId, { title });
   if (parentIssueId !== undefined) body.parent_issue_id = parentIssueId;
   const res = await request(app).post('/api/issues').send(body);
   expect(res.status).toBe(200);

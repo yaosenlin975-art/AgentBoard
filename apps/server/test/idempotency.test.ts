@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import express, { type Express } from 'express';
 import request from 'supertest';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { initSchema } from '../src/db/schema.js';
 import { migrateIdempotency } from '../src/db/migrations/idempotency.js';
 import { getIdempotencyRecord } from '../src/db/repos/idempotency.js';
@@ -18,12 +18,12 @@ describe('idempotent mutations', () => {
   afterEach(() => { resetSessionSender(); t.cleanup(); });
   it('sameIdempotencyKeyReplaysSameResponse and body key order is stable', async () => {
     const key = randomUUID();
-    const first = await request(app).post('/api/issues').set('Idempotency-Key', key).send({ workspace_id: a, title: 'task', agent_id: 'codex' });
-    const repeat = await request(app).post('/api/issues').set('Idempotency-Key', key).send({ agent_id: 'codex', title: 'task', workspace_id: a });
+    const first = await request(app).post('/api/issues').set('Idempotency-Key', key).send(issuePayload(a, { title: 'task', agent_id: 'codex' }));
+    const repeat = await request(app).post('/api/issues').set('Idempotency-Key', key).send(issuePayload(a, { agent_id: 'codex', title: 'task' }));
     expect(repeat.body).toEqual(first.body); expect(listIssues(t.db, a)).toHaveLength(1);
   });
   it('sameKeyDifferentPayloadReturns409 and actor/action are part of identity', async () => {
-    const key = randomUUID(); const body = { workspace_id: a, title: 'task', agent_id: 'codex' };
+    const key = randomUUID(); const body = issuePayload(a, { title: 'task', agent_id: 'codex' });
     await request(app).post('/api/issues').set('Idempotency-Key', key).send(body);
     for (const patch of [{ title: 'other' }, { agent_id: 'dsh' }]) {
       const res = await request(app).post('/api/issues').set('Idempotency-Key', key).send({ ...body, ...patch }); expect(res.status).toBe(409); expect(res.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
@@ -90,7 +90,7 @@ describe('idempotent mutations', () => {
   it('same key in different workspaces does not interfere (each workspace gets its own card)', async () => {
     const b = createWorkspace(t.db, { name: 'B', path: 'B' }).id;
     const key = randomUUID();
-    const send = (workspaceId: string) => request(app).post('/api/issues').set('Idempotency-Key', key).send({ workspace_id: workspaceId, title: 'task', agent_id: 'codex' });
+    const send = (workspaceId: string) => request(app).post('/api/issues').set('Idempotency-Key', key).send(issuePayload(workspaceId, { title: 'task', agent_id: 'codex' }));
     const first = await send(a); const second = await send(b);
     expect(first.status).toBe(200); expect(second.status).toBe(200);
     expect(second.body.id).not.toBe(first.body.id);
@@ -119,7 +119,7 @@ describe('idempotent mutations', () => {
   });
   it('legacy rows backfilled with empty workspace still replay-hit and never create a second card', async () => {
     const key = randomUUID();
-    const body = { workspace_id: a, title: 'legacy', agent_id: 'codex' };
+    const body = issuePayload(a, { title: 'legacy', agent_id: 'codex' });
     const first = await request(app).post('/api/issues').set('Idempotency-Key', key).send(body);
     expect(first.status).toBe(200);
     // 模拟迁移回填后的旧行：workspace_id 清成 ''（升级前全局作用域）
