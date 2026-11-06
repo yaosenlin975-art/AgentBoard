@@ -196,6 +196,98 @@ export function readWorkspaceMeta(dbPath: string): WorkspaceDbMeta | null {
   }
 }
 
+/**
+ * PERF-1（F2）：meta 只读句柄缓存——列表判定 / 写闸门每请求不再重开工作区库（改造前每工作区
+ * 每请求一次 readonly open + 3 查询 + close，20 区 ≈ 22.9ms）。
+ *
+ * 缓存范围：**meta.localized=1 的活库**（与 resolver 主句柄同策略，设计 §5.3：常驻、不做淘汰；
+ * closeWorkspaceDbs 进程退出统一关，localize/revert/cleanup 挪删文件前 closeWorkspaceDb 先收）。
+ * localized=0 的库（迁移半成品/中间态）**不缓存**：读频低且文件随时会被作业建/换，每次冷开
+ * （现状口径）——作业外的文件替换不命中旧句柄；localized=1 活库的 meta 不再原地变更
+ *（localize/revert 改 meta 前都先收句柄），故常驻句柄读到的恒为当前 meta，无需逐读 statSync 校验
+ *（实测 Windows 上 mtime 随句柄开合漂移，mtime 校验会持续误失效，反而打掉缓存收益）。
+ * 读失败自愈：丢句柄重开。判定语义与 readWorkspaceMeta 同口径：打不开 → null（→ UNREADABLE）；
+ * 无 meta 表 → localized=false。
+ */
+interface MetaHandleEntry {
+  db: Database.Database;
+  /** 单条预编译语句（缓存前提是 meta 表就绪且 localized=1） */
+  stmt: Database.Statement;
+}
+
+const metaHandles = new Map<string, MetaHandleEntry>();
+
+function closeMetaHandle(dbPath: string): void {
+  const entry = metaHandles.get(dbPath);
+  if (entry === undefined) return;
+  metaHandles.delete(dbPath);
+  try {
+    entry.db.close();
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** meta 两行 → 判定快照（口径与 readWorkspaceMeta 一致） */
+function readMetaRows(rows: Array<{ key?: unknown; value?: unknown }>): WorkspaceDbMeta {
+  let localized = false;
+  let workspaceId: string | null = null;
+  for (const row of rows) {
+    if (row.key === 'localized') localized = String(row.value ?? '0') === '1';
+    else if (row.key === 'workspace_id') workspaceId = typeof row.value === 'string' ? row.value : null;
+  }
+  return { localized, workspaceId };
+}
+
+/** 关临时句柄（失败忽略：只读句柄关闭失败不影响判定） */
+function closeQuietly(db: Database.Database): void {
+  try {
+    db.close();
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** PERF-1（F2）：readWorkspaceMeta 的常驻句柄版（供 routes 判定路径注入 readMeta；缓存策略见上） */
+export function readWorkspaceMetaCached(dbPath: string): WorkspaceDbMeta | null {
+  const cached = metaHandles.get(dbPath);
+  if (cached !== undefined) {
+    try {
+      return readMetaRows(cached.stmt.all() as Array<{ key?: unknown; value?: unknown }>);
+    } catch {
+      // 句柄读失败（文件被换/损坏等）：丢句柄，本次按打不开处理（与 readWorkspaceMeta 同口径）
+      closeMetaHandle(dbPath);
+      return null;
+    }
+  }
+  let db: Database.Database;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  } catch {
+    return null;
+  }
+  try {
+    if (db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type='table' AND name='meta'").get() === undefined) {
+      // 无 meta 表：不缓存（库可能后续被建/换）——本次临时句柄必须关，否则每请求泄漏一个
+      closeQuietly(db);
+      return { localized: false, workspaceId: null };
+    }
+    const stmt = db.prepare("SELECT key, value FROM meta WHERE key IN ('localized','workspace_id')");
+    const meta = readMetaRows(stmt.all() as Array<{ key?: unknown; value?: unknown }>);
+    if (!meta.localized) {
+      // 中间态/半成品：不缓存（见上）——同上，临时句柄立即关，不留句柄
+      closeQuietly(db);
+      return meta;
+    }
+    metaHandles.set(dbPath, { db, stmt });
+    return meta;
+  } catch {
+    // 打开成功但探测失败（损坏库）：不留句柄，按打不开口径返回
+    closeQuietly(db);
+    return null;
+  }
+}
+
 /** 句柄缓存：常驻（工作区数量级个位数到几十，设计 §5.3 明确不做淘汰） */
 const handles = new Map<string, Db>();
 /** 已持有的每工作区锁目录（workspaceId → `.agentboard`） */
@@ -389,6 +481,15 @@ export function closeWorkspaceDbs(instanceId: string): void {
     const dir = heldLocks.get(workspaceId);
     if (dir !== undefined) releaseServerLock(dir, { instanceId });
   }
+  // PERF-1（F2）：meta 只读句柄一并关闭（resolver 内部自建自管，别处关不了）
+  for (const entry of metaHandles.values()) {
+    try {
+      entry.db.close();
+    } catch {
+      /* 忽略 */
+    }
+  }
+  metaHandles.clear();
   handles.clear();
   heldLocks.clear();
   handleMeta.clear();
@@ -398,9 +499,13 @@ export function closeWorkspaceDbs(instanceId: string): void {
  * STORE-4a：关闭单个工作区库句柄并释放其每工作区锁。
  * localize/cleanup/revert 作业要挪走或删除工作区库文件——Windows 上打开中的句柄会让 rename/unlink 报 EBUSY，
  * 起作业前先收句柄；后续请求按判定懒重开。锁释放用 resolver 装配时的 instanceId。
+ * PERF-1（F2）：meta 只读句柄一并回收——主句柄在则用其库路径，不在则用调用方传入的路径
+ *（未下沉半成品库可能只有 meta 句柄；不收会让作业的 rm/rename 报 EPERM/EBUSY）。
  */
-export function closeWorkspaceDb(workspaceId: string, instanceId: string): void {
+export function closeWorkspaceDb(workspaceId: string, instanceId: string, dbPath?: string): void {
   const db = handles.get(workspaceId);
+  const metaPath = db?.name ?? dbPath;
+  if (metaPath !== undefined) closeMetaHandle(metaPath);
   if (db === undefined) return;
   handles.delete(workspaceId);
   handleMeta.delete(workspaceId);
@@ -435,11 +540,19 @@ export function listOpenWorkspaceDbs(): OpenWorkspaceDbInfo[] {
   });
 }
 
-/** 测试用：清空句柄与锁记录（不关句柄，调用方自己管） */
+/** 测试用：清空句柄与锁记录（主句柄不关，调用方自己管；meta 只读句柄为 resolver 内部自建，一并关闭） */
 export function resetResolverState(): void {
   handles.clear();
   heldLocks.clear();
   handleMeta.clear();
+  for (const entry of metaHandles.values()) {
+    try {
+      entry.db.close();
+    } catch {
+      /* 忽略 */
+    }
+  }
+  metaHandles.clear();
 }
 
 /**

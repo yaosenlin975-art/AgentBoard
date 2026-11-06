@@ -73,7 +73,7 @@ import {
   runBootSelfCheck,
 } from '../services/dbMigration.js';
 import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decideWorkspaceDb, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbForEntity, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
+import { WORKSPACE_DB_MODES, assertWorkspaceDbWritable, closeWorkspaceDb, decideWorkspaceDb, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbForEntity, readWorkspaceMetaCached, workspaceDbError, workspaceDbPath, type EntityLocation, type WorkspaceDbDecision, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
 // STORE-4b：entity_locator 定位索引维护（repos 挂钩的中心库句柄绑定与创建/删除写入、删表重建路径）
 import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, removeEntityLocator, removeEntityLocatorByWorkspace, rebuildEntityLocator, upsertEntityLocator } from '../db/repos/entityLocator.js';
 import { getActiveWorkspaceDbJob, getLocalizeJob, startLocalizeJob, startWorkspaceDbOpJob } from '../services/workspaceLocalizeJob.js';
@@ -363,11 +363,13 @@ export function createRouter(deps: RouterDeps): Router {
   // STORE-4a：openWorkspaceDbs 翻 true——STORE-2 搬库已落地，生产读写真正切到工作区库；
   // 判定仍由 resolver 决定（未下沉区返回中心库，行为与切库前一致）。
   // STORE-3a：disabled 紧急开关在装配期解析一次（生产改 env 必然伴随重启重建路由，无需逐请求读）
+  // PERF-1（F2）：判定读 meta 走常驻只读句柄（readWorkspaceMetaCached）——列表/取库/写闸门不再每请求重开库
   const workspaceResolverDeps = {
     centerDb: db,
     openWorkspaceDbs: true,
     instanceId: deps.instance?.instanceId ?? 'inst-unset',
     port: readSettings().port,
+    readMeta: readWorkspaceMetaCached,
     ...(isWorkspaceDbDisabled() ? { disabled: true } : {}),
   };
   /** 读中心库 workspace.db_mode（缺列为老库 → center，行为与现状一致） */
@@ -384,8 +386,24 @@ export function createRouter(deps: RouterDeps): Router {
    * STORE-2a（D7）：写闸门与 localize 端点共用的工作区行取用。
    * 未知工作区显式 404——不得用 `path ?? ''` 进判定：'' 拼 `.agentboard/agentboard.db`
    * 会落到进程 cwd 相对路径，读错文件比报错更糟。
+   * PERF-1（F3）：单条预编译语句一次取齐 path+db_mode（替代 getWorkspace + workspaceRowMode
+   * 两次查询）；prepare 失败（老库缺 db_mode 列）时回退两段式，口径与 workspaceRowMode 一致。
    */
+  let workspaceRowStmt: ReturnType<Db['prepare']> | null | undefined; // undefined=未尝试，null=不可用（缺列回退）
   const requireWorkspaceRow = (workspaceId: string): { id: string; path: string; dbMode: WorkspaceDbMode } => {
+    if (workspaceRowStmt === undefined) {
+      try {
+        workspaceRowStmt = db.prepare('SELECT id, path, db_mode FROM workspace WHERE id = ?');
+      } catch {
+        workspaceRowStmt = null;
+      }
+    }
+    if (workspaceRowStmt !== null) {
+      const row = workspaceRowStmt.get(workspaceId) as { id: string; path: string; db_mode?: string | null } | undefined;
+      if (row === undefined) throw new NotFoundError('工作空间不存在');
+      const rawMode = row.db_mode ?? 'center';
+      return { id: row.id, path: row.path, dbMode: (WORKSPACE_DB_MODES as readonly string[]).includes(rawMode) ? (rawMode as WorkspaceDbMode) : 'center' };
+    }
     const row = getWorkspace(db, workspaceId);
     if (row === null) throw new NotFoundError('工作空间不存在');
     return { id: row.id, path: row.path, dbMode: workspaceRowMode(workspaceId) };
@@ -579,20 +597,51 @@ export function createRouter(deps: RouterDeps): Router {
     const raw = req.query.workspace_id ?? req.body?.workspace_id;
     // STORE-4a：本请求的业务库——workspace_id 已知按工作区取库；未知则按 id 定位（中心→fan-out）
     let rdb: Db = db;
+    // PERF-1（F3）：判定与存在性随取库/校验一并产出，写闸门只复用不重查——非 GET 不再重复
+    // getIssue + 工作区行 + 重判定（改造前闸门每请求多 3 条查询，判定还要重开工作区库）。
+    let decided: WorkspaceDbDecision | null = null; // 取库时带回的判定（仅对应 gateWorkspaceId 时可复用）
+    let gateWorkspaceId: string | null = null;      // 闸门要验的工作区（issue 所属区）
+    let issueVerified = false;                      // issue 存在性已在本请求证实
     if (raw !== undefined) {
       if (typeof raw !== 'string' || !raw) throw new ValidationError('workspace_id 不合法');
       if (req.query.workspace_id && req.body?.workspace_id && req.query.workspace_id !== req.body.workspace_id) throw new ValidationError('workspace_id 不一致');
-      rdb = dbForWorkspace(raw);
+      const routed = getDbForWorkspace(workspaceResolverDeps, requireWorkspaceRow(raw));
+      rdb = routed.db;
+      decided = routed.decision;
+      gateWorkspaceId = raw;
       const wrappedMutation = req.get('Idempotency-Key') && ((req.method === 'PATCH' && req.path === '/') || (req.method === 'POST' && ['/claim', '/release', '/done', '/fail', '/comments', '/dependencies', '/close', '/reopen'].includes(req.path)));
-      if (!wrappedMutation) requireIssueInWorkspace(rdb, String(req.params.id), raw);
+      if (!wrappedMutation) {
+        // requireIssueInWorkspace 的 getIssue 已按 workspace_id 过滤：命中即 workspace_id === raw，判定可直接复用
+        requireIssueInWorkspace(rdb, String(req.params.id), raw);
+        issueVerified = true;
+      }
     } else if (req.method !== 'GET' && req.method !== 'HEAD') {
       const hit = locateIssueRouted(String(req.params.id));
-      if (hit !== null) rdb = hit.db;
+      if (hit !== null) {
+        rdb = hit.db;
+        issueVerified = true;
+        gateWorkspaceId = hit.value.workspace_id; // 定位探测即 getIssue：复用命中行，不再重查
+      }
     }
     // STORE-1（M1）写入门禁：中间态/缺失/id 不匹配/被锁 → 409 或 500，读路径不受影响
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      const issue = getIssue(rdb, String(req.params.id));
-      if (issue !== null) assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(issue.workspace_id));
+      if (!issueVerified) {
+        const issue = getIssue(rdb, String(req.params.id));
+        if (issue !== null) {
+          issueVerified = true;
+          gateWorkspaceId = issue.workspace_id;
+          // 判定只对应 raw 工作区；issue 不属于 raw（raw 未下沉时 issue 可能在中心库）→ 判定不可复用
+          if (decided !== null && gateWorkspaceId !== raw) decided = null;
+        }
+      }
+      if (issueVerified && gateWorkspaceId !== null) {
+        if (decided !== null) {
+          // 判定已随取库带回：getDbForWorkspace 对非 MIGRATING 错误已在此前抛出，这里补 MIGRATING 冻结
+          if (decided.error !== null) throw workspaceDbError(decided.error);
+        } else {
+          assertWorkspaceDbWritable(workspaceResolverDeps, requireWorkspaceRow(gateWorkspaceId));
+        }
+      }
     }
     next();
   });
@@ -605,7 +654,8 @@ export function createRouter(deps: RouterDeps): Router {
   const withWorkspaceDb = <T extends { id: string; path: string }>(row: T) => {
     const dbModeRaw = (row as T & { db_mode?: string | null }).db_mode ?? 'center';
     const centerDbMode = (WORKSPACE_DB_MODES as readonly string[]).includes(dbModeRaw) ? (dbModeRaw as (typeof WORKSPACE_DB_MODES)[number]) : 'center';
-    const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name, ...(isWorkspaceDbDisabled() ? { disabled: true } : {}) });
+    // PERF-1（F2）：判定读 meta 走常驻只读句柄（readWorkspaceMetaCached）——列表不再每工作区每请求开库
+    const decision = decideWorkspaceDb({ workspaceId: row.id, workspacePath: row.path, centerDbMode, centerDbPath: db.name, readMeta: readWorkspaceMetaCached, ...(isWorkspaceDbDisabled() ? { disabled: true } : {}) });
     return { ...row, db_mode: centerDbMode, db_path: decision.dbPath, db_target: decision.target, db_reason: decision.reason };
   };
   router.get('/workspaces', (req, res) => {
@@ -739,9 +789,10 @@ export function createRouter(deps: RouterDeps): Router {
    */
   router.post('/workspaces/:id/db/localize', async (req, res) => {
     const workspaceId = req.params.id!;
-    requireWorkspaceRow(workspaceId); // 未知工作区显式 404，不进任务表
+    const wsRow = requireWorkspaceRow(workspaceId); // 未知工作区显式 404，不进任务表
     // STORE-4a：作业要建/换工作区库文件，先收掉本进程的路由句柄（Windows 打开中的句柄让 rename/unlink EBUSY）
-    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId);
+    // PERF-1（F2）：meta 只读句柄一并收（未下沉半成品库可能只有 meta 句柄，传路径兜底）
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId, workspaceDbPath(wsRow.path));
     const body = parseBody(workspaceLocalizeSchema, req.body ?? {});
     const job = startLocalizeJob(db, {
       workspaceId,
@@ -768,8 +819,9 @@ export function createRouter(deps: RouterDeps): Router {
    */
   router.post('/workspaces/:id/db/localize/cleanup', (req, res) => {
     const workspaceId = req.params.id!;
-    requireWorkspaceRow(workspaceId);
-    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId); // STORE-4a：清残留文件前收句柄
+    const wsRow = requireWorkspaceRow(workspaceId);
+    // STORE-4a：清残留文件前收句柄；PERF-1（F2）：meta 只读句柄一并收（传路径兜底半成品库）
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId, workspaceDbPath(wsRow.path));
     parseBody(workspaceDbOpSchema, req.body ?? {});
     const job = startWorkspaceDbOpJob(db, {
       workspaceId,
@@ -787,8 +839,9 @@ export function createRouter(deps: RouterDeps): Router {
    */
   router.post('/workspaces/:id/db/localize/revert', (req, res) => {
     const workspaceId = req.params.id!;
-    requireWorkspaceRow(workspaceId);
-    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId); // STORE-4a：回迁挪文件前收句柄
+    const wsRow = requireWorkspaceRow(workspaceId);
+    // STORE-4a：回迁挪文件前收句柄；PERF-1（F2）：meta 只读句柄一并收（传路径兜底）
+    closeWorkspaceDb(workspaceId, workspaceResolverDeps.instanceId, workspaceDbPath(wsRow.path));
     parseBody(workspaceDbOpSchema, req.body ?? {});
     const job = startWorkspaceDbOpJob(db, {
       workspaceId,
