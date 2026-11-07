@@ -126,9 +126,9 @@ pnpm package:portable                                  # 默认出 AgentBoard-wi
 node scripts/package-portable.mjs --skip-build --no-zip  # 只重组装、不构建、不打 zip（验证用）
 ```
 
-- 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 6 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user`）。
+- 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 7 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`）。
 - 技能来源：仓库 `skills/` 优先；缺失项从 `%USERPROFILE%\.agents\skills` 取（外部路径不受 git 跟踪），来源逐条写入 `app/rules-manifest.json`。禁用 `AGENTBOARD_SKILLS_SRC` 可改外部技能根。
-- 包内自检：`app/rules-manifest.json` 记录文件清单与 sha256；解压后跑 `check-rules.cmd`（或 `runtime\node.exe app\verify-rules.mjs`），校验完整性、6 个技能与 `kb --help` 可用性，失败退出码 1。
+- 包内自检：`app/rules-manifest.json` 记录文件清单与 sha256；解压后跑 `check-rules.cmd`（或 `runtime\node.exe app\verify-rules.mjs`），校验完整性、7 个技能与 `kb --help` 可用性，失败退出码 1。
 - 不打包：`node_modules`（仅保留 better-sqlite3 / bindings / file-uri-to-path / sherpa 原生依赖）、测试文件、`.logs`、`Temp`、`Docs` 草稿、`.git`。
 - 冒烟用独立端口，不动 8787 生产实例。
 
