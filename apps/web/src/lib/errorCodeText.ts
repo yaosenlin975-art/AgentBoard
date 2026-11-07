@@ -23,6 +23,7 @@ const CODE_TEXT: Record<string, string> = {
   KNOWLEDGE_UNAVAILABLE: '知识检索暂不可用',
   IDEMPOTENCY_KEY_REUSED: '幂等键已被使用，请换新的 request-id',
   SERVER_UNREACHABLE: '看板服务未启动或不可达',
+  TIMEOUT: '服务无响应，请稍后重试',
   UNAUTHORIZED: '未登录或登录已过期',
 };
 

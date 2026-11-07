@@ -48,12 +48,47 @@ export interface IssueAttachmentListPage {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
+/**
+ * 普通 REST 请求超时：15s。三端都应有超时（MCP 客户端取 10s），web 首屏会串行发多条查询，
+ * 留更宽松的余量；服务进程存活但不回包时按超时报错，不再永久 loading。
+ */
+export const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * 上传超时：60s。上传要读本地大图 + 服务端落盘，时间尺度与普通 GET 不同，不能共用 15s；
+ * 仍必须有上限，否则服务端卡死时上传按钮永久转圈。
+ */
+export const UPLOAD_TIMEOUT_MS = 60_000;
+
+export const TIMEOUT_MESSAGE = '服务无响应，请稍后重试';
+
+/**
+ * 超时映射为 ApiError(code='TIMEOUT', status=0)：status=0 与服务端 HTTP 错误（≥400）可区分。
+ * 用竞速而非把 AbortSignal 传给 fetch：超时到点即解除 loading 是目标；底层连接交给浏览器/网关回收。
+ */
+async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const request = fetch(input, init);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // 超时先返回后，迟到的失败不再冒泡成 unhandled rejection
+  request.catch(() => {});
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new ApiError(TIMEOUT_MESSAGE, 'TIMEOUT', 0)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function request<T>(method: Method, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetchWithTimeout(path, {
     method,
     headers: body !== undefined ? { 'Content-Type': 'application/json', ...extraHeaders } : extraHeaders,
     body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  }, REQUEST_TIMEOUT_MS);
   if (res.status === 204) return undefined as T;
 
   let data: unknown = null;
@@ -85,11 +120,11 @@ async function uploadAttachment(workspaceId: string, file: File, mimeType: Attac
     reader.onerror = () => reject(reader.error ?? new Error('图片读取失败'));
     reader.readAsArrayBuffer(file);
   });
-  const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/attachments`, {
+  const res = await fetchWithTimeout(`/api/workspaces/${encodeURIComponent(workspaceId)}/attachments`, {
     method: 'POST',
     headers,
     body,
-  });
+  }, UPLOAD_TIMEOUT_MS);
 
   let data: unknown = null;
   try {
