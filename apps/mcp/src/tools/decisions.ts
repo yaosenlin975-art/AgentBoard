@@ -199,4 +199,122 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     },
     false,
   );
+
+  register(
+    'answer_decision',
+    'Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by.',
+    z.object({
+      ...decisionIdField,
+      ...requestIdField,
+      option: z.union([z.number().int().min(1), z.string().trim().min(1)]).optional(),
+      text: z.string().min(1).optional(),
+      expected_revision: z.number().int().min(0).optional(),
+      revise: z.boolean().optional(),
+    }).strict(),
+    async ({ decision_id, request_id, option, text, expected_revision, revise }) => {
+      if ((option === undefined) === (text === undefined)) {
+        throw new McpError('VALIDATION_ERROR', 'Provide exactly one of option or text.');
+      }
+      if (revise === true && expected_revision === undefined) {
+        throw new McpError('VALIDATION_ERROR', 'revise requires expected_revision.');
+      }
+      const detail = await api.get<{ decision: JsonObject }>(
+        `/decisions/${encodeURIComponent(decision_id)}`,
+        {},
+        'DECISION_NOT_FOUND',
+      );
+      assertWorkspaceMatches(config, detail.decision);
+      const body: JsonObject = { answered_by: 'user', source: 'cli' };
+      if (option !== undefined) {
+        if (typeof option === 'number' || /^\d+$/.test(option)) {
+          body.option_ord = typeof option === 'number' ? option : Number(option);
+        } else {
+          const options = Array.isArray(detail.decision.options) ? (detail.decision.options as JsonObject[]) : [];
+          const match = options.find((item) => item.label === option);
+          if (!match) throw new McpError('VALIDATION_ERROR', 'No option has that label; call get_decision first.');
+          body.option_id = match.id;
+        }
+      }
+      if (text !== undefined) body.answer_text = text;
+      if (expected_revision !== undefined) body.expected_revision = expected_revision;
+      const response = await api.mutate<{ decision: JsonObject }>(
+        'POST',
+        `/decisions/${encodeURIComponent(decision_id)}/answer`,
+        body,
+        request_id,
+        'DECISION_ALREADY_ANSWERED',
+        'DECISION_NOT_FOUND',
+      );
+      const revision = Number(response.decision.answer_revision ?? 0);
+      const answers = Array.isArray(response.decision.answers) ? (response.decision.answers as JsonObject[]) : [];
+      const latest = answers.find((item) => item.revision === revision) ?? null;
+      return {
+        decision: summarizeDecision(response.decision),
+        outcome: revision > 1 ? 'revised' : 'answered',
+        answer: latest,
+      };
+    },
+    false,
+  );
+
+  register(
+    'extend_decision_grace',
+    'Extend the grace window of a decision that is still in grace. 1-300 seconds per call; original grace plus extensions cannot exceed 600 seconds. Not available after the decision locks.',
+    z.object({
+      ...decisionIdField,
+      ...requestIdField,
+      seconds: z.number().int().min(1).max(300).default(60),
+      by: z.string().trim().min(1).optional(),
+      fence: z.number().int().min(0).optional(),
+      ...workspaceField,
+    }).strict(),
+    async ({ decision_id, request_id, seconds, by, fence, workspace_id }) => {
+      const workspaceId = config.workspaceId ? resolveWorkspaceId(config, workspace_id) : workspace_id?.trim();
+      const response = await api.mutate<JsonObject>(
+        'POST',
+        `/decisions/${encodeURIComponent(decision_id)}/extend`,
+        {
+          seconds,
+          by: by ?? config.agentId ?? 'user',
+          ...(workspaceId === undefined ? {} : { workspace_id: workspaceId }),
+          ...(fence === undefined ? {} : { fence }),
+        },
+        request_id,
+        'DECISION_NOT_GRACE',
+        'DECISION_NOT_FOUND',
+        fence,
+      );
+      return { extension: response };
+    },
+    false,
+  );
+
+  register(
+    'withdraw_decision',
+    'Withdraw a pending decision with a required reason. The audit actor defaults to AGENTBOARD_AGENT_ID; the workspace owner permission is granted by the local server identity.',
+    z.object({
+      ...decisionIdField,
+      ...requestIdField,
+      reason: z.string().trim().min(1),
+      by: z.string().trim().min(1).optional(),
+    }).strict(),
+    async ({ decision_id, request_id, reason, by }) => {
+      const detail = await api.get<{ decision: JsonObject }>(
+        `/decisions/${encodeURIComponent(decision_id)}`,
+        {},
+        'DECISION_NOT_FOUND',
+      );
+      assertWorkspaceMatches(config, detail.decision);
+      const response = await api.mutate<{ decision: JsonObject }>(
+        'POST',
+        `/decisions/${encodeURIComponent(decision_id)}/withdraw`,
+        { reason, by: by ?? config.agentId ?? 'user' },
+        request_id,
+        'DECISION_NOT_ACTIVE',
+        'DECISION_NOT_FOUND',
+      );
+      return { decision: summarizeDecision(response.decision) };
+    },
+    false,
+  );
 }

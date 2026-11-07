@@ -37,6 +37,9 @@ const SAFE_MESSAGES: Record<string, string> = {
   ASK_RATE_LIMITED: 'Too many in-flight or recent decisions for this agent; wait before asking again.',
   ISSUE_STATUS_NOT_RUNNING: 'Only a running task owned by this agent can ask a decision.',
   INVALID_GRACE: 'grace_seconds must be an integer between 0 and 600.',
+  INVALID_SECONDS: 'seconds must be an integer between 1 and 300.',
+  EXTEND_LIMIT_EXCEEDED: 'The grace window cannot be extended further; the 600-second total is reached.',
+  FORBIDDEN: 'The current identity is not allowed to perform this operation.',
 };
 
 function safeCode(code: unknown, status: number, conflictCode?: string, notFoundCode?: string): string {

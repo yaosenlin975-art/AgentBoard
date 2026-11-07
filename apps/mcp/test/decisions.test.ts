@@ -65,6 +65,28 @@ function fakeFetcher(calls: Call[], overrides: { status?: number; body?: unknown
         return json({ decision: decision() });
       case `GET /api/issues/${TASK_ID}/stop`:
         return json({ task_id: TASK_ID, stop_requested: true, decision_id: DECISION_ID, reason: 'user_ask' });
+      case `POST /api/decisions/${DECISION_ID}/answer`:
+        return json({
+          decision: decision({
+            state: 'answered',
+            answer_revision: 1,
+            current_answer_id: 'a1',
+            current_answer_by: 'user',
+            answers: [{ revision: 1, option_id: 'o2', answer_text: null, answered_by: 'user', source: 'cli', created_at: 1 }],
+          }),
+        });
+      case `POST /api/decisions/${DECISION_ID}/extend`:
+        return json({
+          decision_id: DECISION_ID,
+          state: 'grace',
+          grace_until: 1_700_000_240_000,
+          remaining_grace_seconds: 180,
+          extended_seconds: 60,
+          extension_count: 1,
+          max_extend_seconds: 300,
+        });
+      case `POST /api/decisions/${DECISION_ID}/withdraw`:
+        return json({ decision: decision({ state: 'withdrawn' }) });
       case `POST /api/issues/${TASK_ID}/ask`:
         return json({ decision: decision({ state: 'open', grace_until: null, remaining_grace_seconds: 0 }) });
       default:
@@ -238,6 +260,152 @@ describe('MCP 待决策工具', () => {
 
       const result = (await call('agentboard_stop_check', { task_id: TASK_ID })).result as ToolResult;
       expect(result.isError).toBeFalsy();
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answer_decision 用 label 解析成 option_id，并以人类身份提交', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const requestId = '5f1b2c34-0000-4000-8000-00000000e010';
+      const result = (await call('answer_decision', {
+        decision_id: DECISION_ID,
+        request_id: requestId,
+        option: '停止',
+      })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent!.data).toMatchObject({ outcome: 'answered' });
+      expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+        `GET /api/decisions/${DECISION_ID}`,
+        `POST /api/decisions/${DECISION_ID}/answer`,
+      ]);
+      expect(calls[1].headers.get('Idempotency-Key')).toBe(requestId);
+      expect(calls[1].body).toEqual({ answered_by: 'user', source: 'cli', option_id: 'o2' });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answer_decision 修订时透传 expected_revision，序号按 option_ord 提交', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const result = (await call('answer_decision', {
+        decision_id: DECISION_ID,
+        request_id: '5f1b2c34-0000-4000-8000-00000000e011',
+        option: 2,
+        revise: true,
+        expected_revision: 1,
+      })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(calls[1].body).toEqual({ answered_by: 'user', source: 'cli', option_ord: 2, expected_revision: 1 });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answer_decision 缺 expected_revision 的修订在本地拒绝', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const result = (await call('answer_decision', {
+        decision_id: DECISION_ID,
+        request_id: '5f1b2c34-0000-4000-8000-00000000e012',
+        text: '改主意了',
+        revise: true,
+      })).result as ToolResult;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ ok: false, error: { code: 'VALIDATION_ERROR' } });
+      expect(calls).toHaveLength(0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('extend_decision_grace 透传 seconds/by/工作区并返回延长结果', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const requestId = '5f1b2c34-0000-4000-8000-00000000e013';
+      const result = (await call('extend_decision_grace', {
+        decision_id: DECISION_ID,
+        request_id: requestId,
+        seconds: 60,
+        fence: 3,
+      })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent!.data.extension).toMatchObject({ extended_seconds: 60, extension_count: 1 });
+      expect(calls[0].headers.get('Idempotency-Key')).toBe(requestId);
+      expect(calls[0].headers.get('x-claim-fence')).toBe('3');
+      expect(calls[0].body).toEqual({ seconds: 60, by: 'codex', workspace_id: WORKSPACE_ID, fence: 3 });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('extend_decision_grace 把非宽限中与超上限映射为独立错误码', async () => {
+    const cases = [
+      { code: 'DECISION_NOT_GRACE', status: 409 },
+      { code: 'EXTEND_LIMIT_EXCEEDED', status: 409 },
+    ];
+    for (const item of cases) {
+      const calls: Call[] = [];
+      const { harness, call } = await harnessWith(calls, {
+        status: item.status,
+        body: { error: { code: item.code, message: 'raw server text' } },
+      });
+      try {
+        const result = (await call('extend_decision_grace', {
+          decision_id: DECISION_ID,
+          request_id: '5f1b2c34-0000-4000-8000-00000000e014',
+        })).result as ToolResult;
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ ok: false, error: { code: item.code } });
+        expect(result.content?.[0]?.text).not.toContain('raw server text');
+      } finally {
+        await harness.close();
+      }
+    }
+  });
+
+  it('answer_decision 把 revision 冲突映射为 DECISION_REVISION_CONFLICT', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls, {
+      status: 409,
+      body: { error: { code: 'DECISION_REVISION_CONFLICT', message: 'raw server text' } },
+    });
+    try {
+      const result = (await call('answer_decision', {
+        decision_id: DECISION_ID,
+        request_id: '5f1b2c34-0000-4000-8000-00000000e015',
+        text: '再改一次',
+        expected_revision: 1,
+      })).result as ToolResult;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ ok: false, error: { code: 'DECISION_REVISION_CONFLICT' } });
+      expect(result.content?.[0]?.text).not.toContain('raw server text');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('withdraw_decision 先校验工作区再带 reason/by 撤回', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const requestId = '5f1b2c34-0000-4000-8000-00000000e016';
+      const result = (await call('withdraw_decision', {
+        decision_id: DECISION_ID,
+        request_id: requestId,
+        reason: '不再需要',
+      })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent!.data.decision).toMatchObject({ state: 'withdrawn' });
+      expect(calls[0].path).toBe(`/api/decisions/${DECISION_ID}`);
+      expect(calls[1].body).toEqual({ reason: '不再需要', by: 'codex' });
+      expect(calls[1].headers.get('Idempotency-Key')).toBe(requestId);
     } finally {
       await harness.close();
     }

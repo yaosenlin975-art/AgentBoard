@@ -29,6 +29,7 @@ describe('AgentBoard task MCP server', () => {
       'add_dependency',
       'add_status',
       'add_task_comment',
+      'answer_decision',
       'archive_knowledge',
       'ask_decision',
       'claim_task',
@@ -36,6 +37,7 @@ describe('AgentBoard task MCP server', () => {
       'create_knowledge',
       'create_task',
       'delete_task',
+      'extend_decision_grace',
       'fail_task',
       'get_decision',
       'get_task',
@@ -55,6 +57,7 @@ describe('AgentBoard task MCP server', () => {
       'search_knowledge',
       'stop_check',
       'update_task',
+      'withdraw_decision',
     ]);
     expect(harness.stdoutMessages).toHaveLength(2);
     expect(harness.stdoutMessages.every((message) => message.jsonrpc === '2.0')).toBe(true);
