@@ -168,6 +168,34 @@ function projectIssueRow(row: IssueRow, fields: readonly IssueFieldName[]): Reco
   return out;
 }
 
+/**
+ * CR-5：labels 是 TEXT 列且没有 JSON 约束——旧版本写入、手工改库、外部工具都可能留下非法值。
+ * 容错解析的判定口径：必须是 JSON 字符串数组；其余（语法错误 / null / 对象 / 数字数组）一律视为无效。
+ * 返回 null 表示「按本口径无效」，与合法空数组区分开，供启动期体检复用。
+ */
+export function tryParseLabels(raw: string | null | undefined): string[] | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.some((item) => typeof item !== 'string')) return null;
+    return parsed as string[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * CR-5：单行脏 labels 不能让整个看板列表 500 —— 失败退 [] 并告警（带 issue id），数据本身不改写。
+ */
+export function parseLabelsOrEmpty(raw: string | null | undefined, issueId: string): string[] {
+  const labels = tryParseLabels(raw);
+  if (labels !== null) return labels;
+  console.warn(
+    `[agentboard] issue ${issueId} 的 labels 不是合法的 JSON 字符串数组，已按 [] 处理；原值前 80 字符：${String(raw).slice(0, 80)}`,
+  );
+  return [];
+}
+
 function rowToIssue(row: IssueRow): Issue {
   const issue: Issue & { children_total?: number; children_closed?: number } = {
     id: row.id,
@@ -175,7 +203,7 @@ function rowToIssue(row: IssueRow): Issue {
     title: row.title,
     description: row.description,
     priority: row.priority as Priority,
-    labels: JSON.parse(row.labels) as string[],
+    labels: parseLabelsOrEmpty(row.labels, row.id),
     status: row.status as IssueStatus,
     sort_order: row.sort_order,
     claimed_by: row.claimed_by,
