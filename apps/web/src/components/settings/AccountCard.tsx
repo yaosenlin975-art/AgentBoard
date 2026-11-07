@@ -25,10 +25,17 @@
  * （沿用 reasonCode 中文化映射），无映射裸码只进 title，不进卡面。
  *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
+ *
+ * ACC-TOKEN-3 凭据过期徽标与刷新：`credential_status=expired|invalid` 出红色徽标（已过期/已失效）+
+ * 「刷新」次级小按钮；`expiring` 只出中性「即将过期」提示、不给按钮（设计页的中性黄在本文件被
+ * ACC-UI-05 门禁禁 amber 收敛为中性芯片）；`valid/unknown` 不加任何新元素。
+ * 点「刷新」→ `POST /api/managed-accounts/:id/refresh-credential`（Idempotency-Key 每次点击新生成）；
+ * 成功失效重拉列表（状态回 valid 徽标消失）；失败给行内中文口径（裸码只进 title）；
+ * 409 CREDENTIAL_RELOGIN_REQUIRED → 经 `onReloginRequired` 打开该平台的添加账号向导（重新登录）。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { AccountOperation, PublicManagedAccount } from '@agentboard/shared';
+import type { AccountOperation, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 /** UNSLOP（ACC-UI-05）：本卡片内的按钮统一走令牌，chrome 只有一个强调色 */
 const BTN_BASE =
@@ -69,15 +76,34 @@ const DELETE_FAIL_LABEL: Record<string, string> = {
   RECOVERY_REQUIRED: '上次切换仍需恢复，恢复完成前不能删除',
 };
 
+/**
+ * ACC-TOKEN-3 刷新凭据失败的中文口径（与服务端错误表一致）；裸码不进主文案，只进 title。
+ * CREDENTIAL_RELOGIN_REQUIRED 常规路径转打开重新登录向导而非报错；只有无宿主回调
+ * （独立渲染）时才落这里兜底。
+ */
+const CREDENTIAL_REFRESH_FAIL_LABEL: Record<string, string> = {
+  ACCOUNT_BUSY: '该账号有进行中的账号操作，请稍后再试',
+  CREDENTIAL_RELOGIN_REQUIRED: '该账号的凭据无法自动刷新，请重新登录',
+  CREDENTIAL_REFRESH_FAILED: '刷新凭据失败，请稍后重试或重新登录',
+  CLIENT_NOT_RUNNING: '客户端未运行，无法读取最新登录态',
+  VAULT_UNAVAILABLE: '凭据保护不可用',
+};
+
 export function AccountCard({
   account,
   capability,
   muted = false,
+  onReloginRequired,
 }: {
   account: AccountView;
   capability: CapabilityView | null;
   /** 能力矩阵未就绪（加载中或失败）：删除这类写操作一并禁用，与其余写操作同口径 */
   muted?: boolean;
+  /**
+   * ACC-TOKEN-3：刷新凭据收到 409 CREDENTIAL_RELOGIN_REQUIRED 时的出路——打开该平台的添加账号向导
+   * （重新登录）。不传时退化为行内中文提示，保证卡片独立渲染（单测/旧宿主）也有反馈。
+   */
+  onReloginRequired?: (appId: ManagedAppId) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
@@ -88,7 +114,37 @@ export function AccountCard({
   const [deleteConfirming, setDeleteConfirming] = useState(false);
   const [deleteErrorCode, setDeleteErrorCode] = useState<string | null>(null);
   const [restoreErrorCode, setRestoreErrorCode] = useState<string | null>(null);
+  /** ACC-TOKEN-3：刷新凭据失败的原始原因码；主文案走中文映射，裸码只进 title */
+  const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const queryClient = useQueryClient();
+
+  /**
+   * ACC-TOKEN-3：`POST /api/managed-accounts/:id/refresh-credential`（Idempotency-Key 每次点击新生成，
+   * 双击/网络重试不会二次消费一次性 refresh token）。成功只失效重拉列表——徽标按服务端即时修正的
+   * 新 credential_status 重渲染，回 valid 即自然消失。
+   */
+  const refreshMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ refreshed: boolean }>(
+        `/api/managed-accounts/${account.id}/refresh-credential`,
+        {},
+        { headers: { 'Idempotency-Key': crypto.randomUUID() } },
+      ),
+    onSuccess: () => {
+      setRefreshErrorCode(null);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+    },
+    onError: (e) => {
+      const code = reasonCodeOf(e);
+      if (code === 'CREDENTIAL_RELOGIN_REQUIRED') {
+        // 无法自动刷新：打开该平台的添加账号向导（重新登录）；无宿主回调时退化为行内提示
+        if (onReloginRequired !== undefined) onReloginRequired(account.app_id);
+        else setRefreshErrorCode(code);
+        return;
+      }
+      setRefreshErrorCode(code);
+    },
+  });
 
   /**
    * ACC-KB-B4W：恢复入口（`POST /api/managed-accounts/:id/restore`）。
@@ -247,6 +303,27 @@ export function AccountCard({
             {account.enabled === false && (
               <span className="rounded-md bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-ink-2">已停用</span>
             )}
+            {/* ACC-TOKEN-3：凭据状态徽标——expired|invalid 红色（配下方「刷新」按钮）；expiring 中性提示、不给按钮（amber 被 ACC-UI-05 禁）；valid/unknown 不渲染 */}
+            {(account.credential_status === 'expired' || account.credential_status === 'invalid' || account.credential_status === 'expiring') && (
+              <span
+                data-testid={`accounts-credential-badge-${account.id}`}
+                data-status={account.credential_status}
+                title={
+                  account.credential_status === 'expired'
+                    ? '登录凭据已过期，可尝试自动刷新'
+                    : account.credential_status === 'invalid'
+                      ? '登录凭据已失效，请尝试刷新或重新登录'
+                      : '登录凭据预计 24 小时内过期'
+                }
+                className={
+                  account.credential_status === 'expiring'
+                    ? 'rounded-md bg-surface-raised px-1.5 py-0.5 text-xs font-medium text-ink-2'
+                    : 'rounded-md bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-600 dark:bg-red-950/40 dark:text-red-400'
+                }
+              >
+                {account.credential_status === 'expired' ? '已过期' : account.credential_status === 'invalid' ? '已失效' : '即将过期'}
+              </span>
+            )}
           </div>
           {/* ACC-UI-2：空 identity_hint 不再渲染「未提供」占位（无信息量）；有值才出等宽小字 */}
           {hint !== '' && (
@@ -257,6 +334,19 @@ export function AccountCard({
         </div>
 
         <div className="flex flex-none items-center gap-1.5">
+          {/* ACC-TOKEN-3：凭据过期/失效时的刷新出路（次级小按钮，与主行动作同区）；expiring 只提示不给按钮 */}
+          {(account.credential_status === 'expired' || account.credential_status === 'invalid') && (
+            <button
+              type="button"
+              data-testid={`accounts-credential-refresh-${account.id}`}
+              className={BTN_QUIET}
+              disabled={refreshMutation.isPending || switching}
+              title="尝试自动刷新该账号的登录凭据；无法自动刷新时会打开重新登录向导"
+              onClick={() => { setRefreshErrorCode(null); refreshMutation.mutate(); }}
+            >
+              {refreshMutation.isPending ? '刷新中…' : '刷新'}
+            </button>
+          )}
           {/* ACC-UI-2：已是当前账号 / 平台不支持切换时不渲染灰按钮，原因交给芯片与平台级说明行 */}
           {capability?.switch === true && account.is_current !== true && (
             <button
@@ -327,6 +417,19 @@ export function AccountCard({
           </details>
         </div>
       </div>
+
+      {/* ACC-TOKEN-3：刷新凭据失败不静默——中文口径为主文案，裸码只进 title（ACC-REASON-01） */}
+      {refreshErrorCode !== null && (
+        <p
+          role="alert"
+          data-testid={`accounts-credential-error-${account.id}`}
+          data-code={refreshErrorCode ?? undefined}
+          title={refreshErrorCode ?? undefined}
+          className="mt-1 text-xs text-red-600 dark:text-red-400"
+        >
+          {CREDENTIAL_REFRESH_FAIL_LABEL[refreshErrorCode] ?? '刷新凭据失败，请稍后重试'}
+        </p>
+      )}
 
       {/* ACC-KB-A2W：启停失败不静默——ACCOUNT_BUSY 给与服务端一致的可读文案，裸码只进 title */}
       {enabledError !== null && (

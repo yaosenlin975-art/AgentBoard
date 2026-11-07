@@ -25,7 +25,7 @@
  * `accounts-add-flow-*` / `accounts-desensitize-note` / `accounts-today-summary` /
  * `accounts-summary-*` / `accounts-capture-*` / `accounts-notice-*`。
  */
-import { useContext, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
@@ -106,6 +106,15 @@ export function AccountsPanel() {
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   /**
+   * ACC-TOKEN-3：刷新凭据收到 409 CREDENTIAL_RELOGIN_REQUIRED → 打开该平台的添加账号向导重新登录。
+   * 复用顶栏「添加」的同一份受控向导状态（addOpen + selectedApp）：选中该平台并打开；
+   * 关闭回调与顶栏「添加」共用 onWizardClose。向导 authorized 后已有失效重拉逻辑，徽标自动恢复。
+   */
+  const openReloginWizard = useCallback((app: string) => {
+    setSelectedApp(app);
+    setAddOpen(true);
+  }, []);
+  /**
    * 右栏当前平台（ACC-UI-TOPBAR 起顶栏动作需要它）。
    * 未选择时默认第一项：indexItems 的 known 段（APP_ORDER）恒非空且排最前，故首项恒为 `APP_ORDER[0]`。
    */
@@ -150,6 +159,7 @@ export function AccountsPanel() {
             accounts={appAccounts}
             wizardOpen={addOpen && activeApp === app}
             onWizardClose={() => setAddOpen(false)}
+            onReloginRequired={openReloginWizard}
           />
         ),
       };
@@ -199,7 +209,7 @@ export function AccountsPanel() {
       render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
     return [...known, ...extras, ...sources];
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp]);
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp, openReloginWizard]);
 
   /** 顶栏「添加」只对装配了协议的当前平台出现（不可用给面板内 reason 文案，不给必败按钮） */
   const activeProtocol = protocols.data?.items.find((item) => item.app_id === activeApp) ?? null;
@@ -278,6 +288,7 @@ function PlatformRow({
   accounts,
   wizardOpen,
   onWizardClose,
+  onReloginRequired,
 }: {
   app: string;
   capability: CapabilityView | null;
@@ -286,6 +297,8 @@ function PlatformRow({
   /** 顶栏「添加」打开的向导（ACC-UI-TOPBAR：入口按钮在标题栏，向导面板仍在平台体内） */
   wizardOpen: boolean;
   onWizardClose: () => void;
+  /** ACC-TOKEN-3：账号行刷新凭据需重新登录时，打开该平台的添加账号向导（受控状态在 AccountsPanel） */
+  onReloginRequired: (appId: ManagedAppId) => void;
 }) {
   return (
     <div data-testid={`accounts-app-${app}`}>
@@ -316,6 +329,7 @@ function PlatformRow({
                 account={account as AccountView}
                 capability={capability}
                 muted={!capabilityKnown}
+                onReloginRequired={onReloginRequired}
               />
             ))}
           </div>
