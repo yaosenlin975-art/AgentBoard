@@ -52,7 +52,7 @@ description: 把当前 AgentBoard 工作交接给另一个 agent/会话，或暂
 **启动强制动作：** 先按 `using-agentboard` 的「权威来源解析」确认权威文档可读（不可读即停手报「权威文档缺失」，不降级执行），再按「工作区边界（强制）」绑定当前工作区，再进入第 1 步；后续步骤只在该工作区内进行。
 交接前按 `using-agentboard` 的「开工前必读（项目上下文）」读三样：当前工作区知识（`--scope workspace`）、公共范围知识（`--scope common`）、最近变更日志；判据同该节——`category=open` 或 `landed=proposed|partial` 的页不得当成已实现事实。细节见该节，不在此复制。
 
-1. **确定范围**：用户点名了卡就用那张；id 必须是完整 36 位 UUID（任务 id 前缀不解析，CLI-02），用户给短 id 时先索要完整 id，不猜。用户说「交接整个项目 / 暂停所有工作」时不虚构单卡，按「多卡交接」处理（见下）。
+1. **确定范围**：用户点名了卡就用那张；命令接受 ≥8 位唯一前缀，但交接记录、知识页与提交信息一律写完整 36 位 UUID（前缀会随新卡增多而歧义）；用户只给短前缀时先 `kb show <前缀>` 解析出完整 id 并用完整 id 记录，不猜。用户说「交接整个项目 / 暂停所有工作」时不虚构单卡，按「多卡交接」处理（见下）。
 2. Determine the caller's agent identity from the runtime or explicit `KB_AGENT` setting. Do not assume the CLI default.
 3. 单卡正常交接仅当该卡状态为进行中且 owner = caller；否则不改状态、不评论、不释放，只报告实际状态。
 4. Narrow exception：用户明确只要求给某张已完成卡补交接记录时，允许写评论；有可复用设计点/技术点/注意点才写知识页（没有则不写，并在评论注明），不得 `claim`/`done`/`fail`，状态与 owner 保持不变。

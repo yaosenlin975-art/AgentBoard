@@ -51,7 +51,7 @@ Read the AgentBoard operating guide before preparing board work. 该文档的定
    - Goal and expected result.
    - Included scope and important exclusions.
    - Known files, interfaces, or project artifacts it touches.
-   - Ordered implementation steps and any prerequisite issue IDs. Write prerequisites as structured edges: `kb dep add <issue-id> <blocker-id>` (blocker 解除后本卡才可 claim). 描述里可留 plain issue id（如 `前置：<前置卡完整 UUID>（顺序不可交换）`）供人阅读，但**权威来源是边表**（`kb dep ls`）；不要另造依赖字段。任务 id 必须写完整 36 位 UUID——前缀不解析（`kb show 4908a07e` → 任务不存在，CLI-02）。
+   - Ordered implementation steps and any prerequisite issue IDs. Write prerequisites as structured edges: `kb dep add <issue-id> <blocker-id>` (blocker 解除后本卡才可 claim). 描述里可留 plain issue id（如 `前置：<前置卡完整 UUID>（顺序不可交换）`）供人阅读，但**权威来源是边表**（`kb dep ls`）；不要另造依赖字段。卡面里的任务 id 一律写完整 36 位 UUID（命令支持 ≥8 位唯一前缀，但卡面写前缀会随新卡增多而歧义、事后无法复算）。
    - Acceptance criteria and requested or project-required verification, with observable expected results. At least one line per issue carries an observable check, e.g. `验收：POST /api/handoff 返回 201；kb show <完整 UUID> 状态为待验收`.
    - **卡面写到的每个数字后面各附一行复算命令**（耗时、条数、比例、行数、通过数），条数类直接给可跑的一行，如 `待规划 32 条 —— 复算：kb list-tasks --workspace <id> --status 待规划 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).length"`；执行侧与收尾回报按同一命令重算，不引用他人转述的数字，也不得照抄卡面旧数字。
    - 若该 issue 改动运行时语义（异常处理、返回值语义、调用契约）：卡面必须先列**影响面扫描清单**再写实现步骤——① 全部调用点（`grep -rn <符号/命令> apps packages packages/cli/src/commands`）、② 现有断言与用例（`kb` 之外的测试目录同样扫）、③ 验收探针怎么打（真实请求 / 真实退出码 / 真实 stderr 文案）。列不出清单就先把扫描单独成步，不得凭印象落卡。
@@ -68,7 +68,7 @@ Read the AgentBoard operating guide before preparing board work. 该文档的定
 - 卡内验收条目 ≥5 条且彼此独立
 - 同一卡内混有「功能新增」与「重构/迁移/配置」两类性质不同的工作
 
-建子卡：`kb create-issue <workspace> '<子卡标题>' -d '<目标/范围/边界/验收>' --parent <父卡 id> --labels <标签>`（含双引号时用单引号或 `--description-stdin`）；建边：`kb dep add <子卡 id> <前置卡 id>`，建完用 `kb dep ls <子卡 id>` 复核边存在且前置正确；父卡描述里写清子卡顺序（plain issue id 供人阅读，权威来源是边表）。所有 id 用返回的全长 UUID。
+建子卡：`kb create-issue <workspace> '<子卡标题>' -d '<目标/范围/边界/验收>' --parent <父卡 id> --labels <标签>`（标题含双引号被拒时用单引号或 `--title-stdin`；`create-issue` **没有** `--description-stdin`，长描述先建卡再 `kb update <子卡 id> --description-stdin`）；建边：`kb dep add <子卡 id> <前置卡 id>`，建完用 `kb dep ls <子卡 id>` 复核边存在且前置正确；父卡描述里写清子卡顺序（plain issue id 供人阅读，权威来源是边表）。所有 id 用返回的全长 UUID。
 
 父卡只承载汇总与顺序，不承载实现；子卡全部 done 只到待验收，父卡可以 done 汇总，但 `kb close` 要求所有后代已关闭（否则 409），先逐张 close 子卡再 close 父卡。notes 汇总各子卡结论。
 
@@ -88,7 +88,7 @@ Read the AgentBoard operating guide before preparing board work. 该文档的定
 
 Follow the CLI and failure handling in the AgentBoard guide. Use only its documented commands:
 
-- For each new work item, create an issue in the exact workspace supplied by the parent. Use the documented form: `kb create-issue <workspace> '<title>' -d '<description>'`; if title/description contains a double quote, wrap with single quotes or use `--description-stdin` (PowerShell otherwise swallows following args, CLI-01). All returned IDs are full 36-char UUIDs; copy them whole (prefixes do not resolve for issues).
+- For each new work item, create an issue in the exact workspace supplied by the parent. Use the documented form: `kb create-issue <workspace> '<title>' -d '<description>'`; if the title contains a double quote, wrap with single quotes or use `--title-stdin` (`kb create-issue` has **no** `--description-stdin` — for long/quote-heavy descriptions create first, then `kb update <id> --description-stdin`; PowerShell otherwise swallows following args, CLI-01). All returned IDs are full 36-char UUIDs; copy them whole — commands accept ≥8-char unique prefixes, but cards, edges and commit messages must carry the full id.
 - Create prerequisite issues first so their returned IDs can be used as blockers. Record dependencies as structured edges with kb dep add <issue-id> <blocker-id> and verify with kb dep ls; plain issue IDs in descriptions are for human readers only — the edge table is authoritative.
 - For detailed multi-line plan content, add it with kb comment <issue-id> --stdin. For an existing issue, read it with kb show first, then add a comment.
 - If the plan changes, record the change with kb comment and, for description edits, `kb update <issue-id> --description-stdin` (the CLI does define `kb update`; do not invent new subcommands). Reread with `kb show` afterwards.
