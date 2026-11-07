@@ -1906,6 +1906,24 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     res.status(409).json({ error: { code: 'DB_BUSY', message: '数据库正被其它操作占用（写锁等待超时），请稍后重试' } });
     return;
   }
+  // CR-7：仓储层的 CHECK / UNIQUE / FK / NOT NULL / PK 违例漏到这里说明请求数据不合法，不是服务故障——
+  // 映射成 400，且 message 只带约束类别（不把 SQL 语句、表名、列值回显给调用方）。
+  // better-sqlite3 的 code 是扩展码（SQLITE_CONSTRAINT_CHECK / _UNIQUE / _FOREIGNKEY …），按前缀归并。
+  // 例外：SQLITE_CONSTRAINT_TRIGGER 是 schema 里 RAISE(ABORT) 主动拒绝（如附件事务回滚保护），
+  // 属于服务端内部拒绝而非调用方参数错误，保持既有 500 INTERNAL，不误报成 400。
+  const sqliteCode = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+  if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE_CONSTRAINT')) {
+    const kind = sqliteCode.slice('SQLITE_CONSTRAINT'.length).replace(/^_/, '') || 'UNKNOWN';
+    if (kind !== 'TRIGGER') {
+      res.status(400).json({ error: { code: 'CONSTRAINT_VIOLATION', message: `请求违反数据库约束（${kind}）` } });
+      return;
+    }
+  }
+  // CR-7：只读库（快照归档、权限受限、磁盘降级）上写失败是服务端可用性问题，不是调用方参数错误 → 503。
+  if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE_READONLY')) {
+    res.status(503).json({ error: { code: 'DB_READONLY', message: '数据库当前为只读模式，写入被拒绝' } });
+    return;
+  }
   console.error('[agentboard] 未处理错误:', err);
   res.status(500).json({ error: { code: 'INTERNAL', message: '内部错误' } });
 }
