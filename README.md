@@ -175,7 +175,7 @@ corepack pnpm --filter @agentboard/mcp list-tools          # 人读表格
 corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 ```
 
-当前 `tools/list` 返回 **50 条 = 25 个工具 + 25 个 `agentboard_*` alias**；alias 用于兼容旧客户端，计划在下个大版本移除（卡 `f78d7465`）。
+工具总数以 `list-tools` 的实时输出为准，本文不写死数量：它输出当前主名清单，并额外标注每个主名对应的 `agentboard_*` 兼容 alias（`tools/list` 条目数因此约为主名的两倍）。alias 用于兼容旧客户端，计划在下个大版本移除（卡 `f78d7465`），届时应同步跑一次 `list-tools` 核对。
 
 环境变量：
 
@@ -203,14 +203,16 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 }
 ```
 
-工具面（25 个主名，读写标注见 `list-tools`）：
+工具面按域分组，只列主名并标注读/写；完整清单（含 alias 与 read-only 标记）以 `list-tools` 输出为准，新增工具会先出现在输出里：
 
-- 工作区与任务（13）：`list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`、`create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`
-- 依赖（3）：`list_dependencies`、`add_dependency`、`remove_dependency`
-- 状态字典（3）：`list_statuses`、`add_status`、`remove_status`
-- 知识库（6）：`search_knowledge`、`read_knowledge`、`create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
+- 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
+- 依赖：读 `list_dependencies`；写 `add_dependency`、`remove_dependency`
+- 状态字典：读 `list_statuses`；写 `add_status`、`remove_status`
+- 知识库：读 `search_knowledge`、`list_knowledge`、`find_knowledge_sources`、`read_knowledge`；写 `create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
+- 待决策：读 `list_decisions`、`get_decision`、`stop_check`；写 `ask_decision`、`answer_decision`、`extend_decision_grace`、`withdraw_decision`
+- 变更日志：读 `list_changelog`、`get_changelog`；写 `create_changelog`
 
-边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。已裁决的缺口与承接卡见卡 `7c030fea`：收口（close/reopen/accept）→ `f504f61d`，变更日志 → `6a2ded57`，待决策读取与提问 → `64acde61`，待决策答复与宽限 → `d6753e4c`，知识 list/find-source → `4e009883`；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
+边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。原裁决要补的收口（close/reopen/accept）、变更日志、待决策读取/答复/宽限、知识 list/find-source 已全部落地（卡 `f504f61d`、`6a2ded57`、`64acde61`、`d6753e4c`、`4e009883`）；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
 
 ## Skill（agent 自助领任务）
 
