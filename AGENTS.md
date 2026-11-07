@@ -20,9 +20,12 @@
 4. `skills/handoff/SKILL.md` —— 交接流程。
 5. `skills/swing-dev/SKILL.md` —— 机动巡检流程。
 6. `skills/ask-user/SKILL.md` —— 待决策提问流程（宽限 / LOCKED 停止 / 断点续跑）。
-7. `README.md` —— 运行、端口、默认数据位置、构建与打包。
-8. `Docs/api.md` —— HTTP API 与 CLI 契约（含退出码）。
+7. `skills/brainstorming/SKILL.md` —— 需求澄清 / 方案对比 / 设计批准流程。
+8. `README.md` —— 运行、端口、默认数据位置、构建与打包。
+9. `Docs/api.md` —— HTTP API 与 CLI 契约（含退出码）。
 
 ## 对外打包约束
 
-便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 6 个技能（含 DEC-5 新增的 `skills/ask-user`，待决策提问流程），落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`），包内自检 `scripts/portable/verify-rules.mjs` 同样强制要求这 6 个技能齐全。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。
+便携包必须携带本文件、`README.md`、`Docs/api.md` 与上述 7 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`），落在包内 `app/rules/`；打包固定入口 `pnpm package:portable`（`scripts/package-portable.mjs`），包内自检 `scripts/portable/verify-rules.mjs` 同样强制要求这 7 个技能齐全。包内 `app/rules-manifest.json` 记录文件清单与 sha256，解压后用 `check-rules.cmd` 自检。
+
+新增或删除技能时，四处同源清单必须同时改：本文件技能索引与本节份数、`scripts/package-portable.mjs` 的 `REQUIRED_SKILLS`、`scripts/portable/verify-rules.mjs` 的同名常量、`scripts/portable/README.txt` 的携带清单与自检输出示例（另见根 `README.md` 打包小节）。
