@@ -1,12 +1,15 @@
 import { AddressInfo } from 'node:net';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentBoardApiClient } from '../src/apiClient.js';
+import { resetListFieldsFallback } from '../src/tools/tasks.js';
 import { createHarness } from './helpers.js';
 
 const baseConfig = { baseUrl: 'http://127.0.0.1:8787', workspaceId: 'workspace-a', agentId: 'codex' };
 
 describe('AgentBoard task MCP server', () => {
   const harnesses: Array<ReturnType<typeof createHarness>> = [];
+  // PERF-4d：fields= 回落标志是进程级状态，每个用例前置复位
+  beforeEach(() => resetListFieldsFallback());
   afterEach(async () => {
     await Promise.all(harnesses.splice(0).map((harness) => harness.close()));
   });
@@ -201,6 +204,10 @@ describe('AgentBoard task MCP server', () => {
     expect(calls[1]?.url.searchParams.get('workspace')).toBe('workspace-a');
     expect(calls[1]?.url.searchParams.get('limit')).toBe('50');
     expect(calls[1]?.url.searchParams.get('offset')).toBe('0');
+    // PERF-4d：平铺列表走 fields= 白名单，且白名单里不含 description
+    const requestedFields = calls[1]?.url.searchParams.get('fields')?.split(',') ?? [];
+    expect(requestedFields).toContain('title');
+    expect(requestedFields).not.toContain('description');
 
     const task = (await harness.request('tools/call', {
       name: 'get_task',
@@ -368,11 +375,65 @@ describe('AgentBoard task MCP server', () => {
       name: 'list_tasks',
       arguments: { tree: true, parent_issue_id: 'root-1', limit: 10 },
     });
-    expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { items: [child], next_cursor: 'next', workspace_id: 'workspace-a' } });
+    expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { items: [{ id: 'child-1', title: 'Child' }], next_cursor: 'next', workspace_id: 'workspace-a' } });
+    // PERF-4d：树列表同样剔除正文（树端点无 fields=，在 MCP 侧裁剪）
+    expect(response.result?.structuredContent?.data.items[0]).not.toHaveProperty('description');
     expect(String(fetcher.mock.calls[0]?.[0])).toContain('/api/issues/tree?');
     const url = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(url.searchParams.get('parent_issue_id')).toBe('root-1');
     expect(url.searchParams.get('workspace')).toBe('workspace-a');
+  });
+
+  // PERF-4d（用户拍板选项 A）：列表不含正文、get_task 含正文，对偶断言
+  it('omits descriptions from task listings while get_task keeps them', async () => {
+    const task = {
+      id: 'task-1', workspace_id: 'workspace-a', title: 'Task', description: '正文', priority: '中', labels: [],
+      status: '待规划', sort_order: 1, comment_count: 0, created_at: 1, updated_at: 1,
+      description_truncated: true, next_description_offset_chars: 2,
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      // 模拟服务端仍回正文（例如旧服务端忽略 fields=），MCP 侧必须自行剔除
+      if (url.pathname === '/api/issues') return Response.json({ items: [task], next_offset: null });
+      return Response.json(task);
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+
+    const listed = (await harness.request('tools/call', { name: 'list_tasks', arguments: {} })).result?.structuredContent?.data;
+    expect(listed.items[0]).toMatchObject({ id: 'task-1', title: 'Task' });
+    expect(listed.items[0]).not.toHaveProperty('description');
+    expect(listed.items[0]).not.toHaveProperty('description_truncated');
+    expect(listed.items[0]).not.toHaveProperty('next_description_offset_chars');
+
+    const read = (await harness.request('tools/call', {
+      name: 'get_task',
+      arguments: { task_id: 'task-1' },
+    })).result?.structuredContent?.data;
+    expect(read).toMatchObject({ id: 'task-1', description: '正文' });
+  });
+
+  it('falls back to an unfiltered request when the server rejects fields= and still omits descriptions', async () => {
+    const calls: URL[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      calls.push(url);
+      if (url.searchParams.has('fields')) {
+        return Response.json({ error: { code: 'VALIDATION_ERROR', message: 'fields 含未知字段' } }, { status: 400 });
+      }
+      return Response.json({ items: [{ id: 'task-1', title: 'Task', description: '旧服务端正文' }], next_offset: null });
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+
+    const listed = (await harness.request('tools/call', { name: 'list_tasks', arguments: {} })).result?.structuredContent?.data;
+    expect(listed.items[0]).toMatchObject({ id: 'task-1', title: 'Task' });
+    expect(listed.items[0]).not.toHaveProperty('description');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.searchParams.has('fields')).toBe(true);
+    expect(calls[1]?.searchParams.has('fields')).toBe(false);
   });
 
   it('passes parent fields through MCP task create and update mutations', async () => {

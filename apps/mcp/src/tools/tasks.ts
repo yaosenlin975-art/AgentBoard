@@ -16,6 +16,48 @@ const pageFields = {
 const prioritySchema = z.enum(['低', '中', '高']);
 const statusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
 
+/**
+ * PERF-4d（用户拍板选项 A）：列表类出参不再包含正文，正文由 `get_task` 提供。
+ * 这里请求服务端的 `fields=` 白名单与 CLI 同序（对齐 `rowToIssue` 键序），只是不含 `description`。
+ */
+const LIST_TASK_FIELDS = [
+  'id', 'workspace_id', 'title', 'priority', 'labels', 'status', 'sort_order',
+  'claimed_by', 'claimed_at', 'session_id', 'parent_issue_id', 'due_date', 'due_time',
+  'comment_count', 'dependency_violation', 'decision_locked', 'open_decision_id',
+  'decision_grace_until', 'decision_waiting_seconds',
+  'blocked_by_count', 'blocked_by_open_count', 'resolved',
+  'created_at', 'updated_at', 'children_total', 'children_closed',
+].join(',');
+
+/** 旧服务端不认 `fields`（400）或路由缺失（404）命中一次后，进程内不再尝试 */
+let listFieldsUnsupported = false;
+
+/** 单测复位回落标志 */
+export function resetListFieldsFallback(): void {
+  listFieldsUnsupported = false;
+}
+
+/** 列表出参统一剔除正文与其窗口标记（回落旧服务端时服务端仍会带正文） */
+function omitTaskDescription<T extends object>(task: T): Record<string, unknown> {
+  const copy = { ...(task as Record<string, unknown>) };
+  delete copy.description;
+  delete copy.description_truncated;
+  delete copy.next_description_offset_chars;
+  return copy;
+}
+
+/** 平铺列表：默认带 `fields=`；服务端不认时静默回落（回落结果同样会在调用处剔除正文） */
+async function getTaskListPage<T>(api: AgentBoardApiClient, query: Record<string, string | number | undefined>): Promise<T> {
+  if (listFieldsUnsupported) return api.get<T>('/issues', query);
+  try {
+    return await api.get<T>('/issues', { ...query, fields: LIST_TASK_FIELDS });
+  } catch (error) {
+    if (!(error instanceof McpError) || (error.code !== 'VALIDATION_ERROR' && error.code !== 'TASK_NOT_FOUND')) throw error;
+    listFieldsUnsupported = true;
+    return api.get<T>('/issues', query);
+  }
+}
+
 /** CARD-FACE：与服务端同口径的空描述判定（MCP 只做提前提示，服务端仍是唯一权威）。 */
 function isBlankDescription(text: string | undefined): boolean {
   if (text === undefined) return true;
@@ -71,7 +113,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return { items: page.items.map(({ id, name }) => ({ id, name })), next_offset: page.next_offset };
   });
 
-  register('list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace.', z.object({
+  register('list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace. Listings omit task descriptions (description, description_truncated, next_description_offset_chars are absent to keep responses small); call get_task to read one task with its description.', z.object({
     ...workspaceField,
     status: statusSchema.optional(),
     tree: z.boolean().default(false),
@@ -93,17 +135,18 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
         limit,
         cursor,
       });
-      const boundIssue = (issue: Issue) => {
-        const window = textWindow(issue.description);
-        return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
+      return {
+        ...page,
+        items: page.items.map(omitTaskDescription),
+        ancestors: page.ancestors.map(omitTaskDescription),
+        workspace_id: workspaceId,
       };
-      return { ...page, items: page.items.map(boundIssue), ancestors: page.ancestors.map(boundIssue), workspace_id: workspaceId };
     }
-    const page = await api.get<PageResult<TaskPreview>>('/issues', { workspace: workspaceId, status, limit, offset });
-    return { ...page, workspace_id: workspaceId };
+    const page = await getTaskListPage<PageResult<TaskPreview>>(api, { workspace: workspaceId, status, limit, offset });
+    return { ...page, items: page.items.map(omitTaskDescription), workspace_id: workspaceId };
   });
 
-  register('get_task', 'Read a task description window from one effective workspace.', z.object({
+  register('get_task', 'Read one task including a description window from one effective workspace. list_tasks omits descriptions, so use this tool for a task body.', z.object({
     ...workspaceField,
     ...taskIdField,
     description_offset_chars: z.number().int().min(0).default(0),
