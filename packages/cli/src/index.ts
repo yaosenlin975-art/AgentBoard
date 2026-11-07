@@ -9,6 +9,7 @@ import { normalizeIssueRef } from './issueRef.js';
 import { processIo, type Ctx, type Io } from './io.js';
 import { CLI_VERSION } from './version.js';
 import { listSpaces } from './commands/listSpaces.js';
+import { grep } from './commands/grep.js';
 import { createSpace } from './commands/createSpace.js';
 import { deleteSpace } from './commands/deleteSpace.js';
 import { createIssue } from './commands/createIssue.js';
@@ -52,9 +53,15 @@ const EXIT_CODE_HELP = `
      幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）、任务 id 前缀多命中；命令未改动数据，按提示处置后重试
   3  kb dep 专用：依赖参数错误（自环 / 跨工作区 / VALIDATION_ERROR）
   4  kb dep 专用：依赖边不存在
+kb grep（本地检索，不适用上表）：0 命中；1 未命中；2 出错（参数非法 / 根目录不存在 / 正则无效）
 约定：原因一律写 stderr（单行可读）；--json 时错误写 stdout 的 {"error":{"code","message","details"}}，退出码不变。
 `;
 
+
+/** commander 可重复选项收集器（--glob / --ignore） */
+function collectValue(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
 
 function makeCtx(program: Command, io: Io): Ctx {
   const opts = program.opts<{ server?: string; json?: boolean }>();
@@ -97,6 +104,60 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--full', '--json 时一并输出 description 正文（默认裁剪，只输出元数据）')
     .action(async (opts: { workspace?: string; all?: boolean; status?: string; tree?: boolean; full?: boolean }) =>
       listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, tree: opts.tree, full: opts.full === true }));
+
+  // KB-GREP：本地按内容检索仓库（纯 Node；无 REST 依赖，仅默认搜索根需要解析工作区）
+  program
+    .command('grep')
+    .description('按文件内容检索仓库（本地检索；默认搜索当前工作区根，不读 .gitignore）')
+    .argument('<pattern>', 'JS 正则；配合 --fixed-strings 时按字面量匹配')
+    .option('--path <dir>', '搜索根：绝对路径直接使用；相对路径相对当前工作区根')
+    .option('--glob <pattern>', '包含过滤，可重复（如 **/*.ts）；模式不含 / 时只比对文件名', collectValue, [] as string[])
+    .option('--ignore <pattern>', '追加忽略，可重复；同时剪枝同名目录', collectValue, [] as string[])
+    .option('--no-default-ignore', '关闭内置忽略目录集（不用 --no-ignore：--ignore 已用于追加忽略模式）')
+    .option('--hidden', '纳入点号开头的文件/目录')
+    .option('--fixed-strings', '把 pattern 当字面量而不是正则')
+    .option('-i, --ignore-case', '大小写不敏感')
+    .option('-C, --context <n>', '前后各 n 行上下文', '0')
+    .option('--max-count <n>', '单文件最多命中条数（默认不限）')
+    .option('--max-matches <n>', '全局命中上限（默认 1000）', '1000')
+    .option('--max-file-size <bytes>', '单文件大小上限（默认 2 MiB）', String(2 * 1024 * 1024))
+    .option('--timeout <ms>', '总超时（默认 10000）', '10000')
+    .option('--binary <skip|list>', '二进制文件处理：skip 跳过（默认）/ list 仅按路径列出', 'skip')
+    .addHelpText('after', `
+说明：
+  默认搜索根为当前工作区根（按 cwd 解析 workspace path）；给 --path 时绝对路径直接使用，相对路径相对工作区根。
+  --glob 是包含过滤（给了就必须命中至少一个），--ignore 追加忽略；两者都作用于「相对搜索根的 POSIX 路径」，
+  模式不含 / 时只比对文件名。内置忽略目录：node_modules .git dist build dist-package .logs .agentboard
+  coverage .next target（--no-default-ignore 关闭）。不读 .gitignore，也不读 .ignore。
+  二进制（前 8 KiB 含 NUL）默认跳过；--binary list 时仅在路径命中模式下列出（line/column 记 1、text 为空）。
+  UTF-8 解码并剥 BOM，CRLF 去尾部 \\r；符号链接不跟随；无权限/被占用的文件计入 files_skipped 不中断。
+  单行超 4000 字符只截断展示，匹配仍按整行进行。
+  截断（--max-matches / --timeout）不算错误：JSON 里 truncated.hit=true，退出码仍按是否命中给 0/1。
+退出码（本地命令例外）：0 命中；1 未命中；2 出错（参数非法 / 根目录不存在 / 正则无效）。
+示例：
+  kb grep "createIssue" --path packages/cli/src --glob "*.ts"
+  kb grep "TODO|FIXME" --glob "**/*.ts" -C 1 --max-matches 20 --json
+  kb grep "kb.claim" --ignore "*.test.ts" -i
+`)
+    .action(async (pattern: string, opts: {
+      path?: string; glob: string[]; ignore: string[]; defaultIgnore?: boolean; hidden?: boolean;
+      fixedStrings?: boolean; ignoreCase?: boolean; context?: string; maxCount?: string;
+      maxMatches?: string; maxFileSize?: string; timeout?: string; binary?: string;
+    }) => grep(makeCtx(program, io), pattern, {
+      path: opts.path,
+      glob: opts.glob,
+      ignore: opts.ignore,
+      noDefaultIgnore: opts.defaultIgnore === false,
+      hidden: opts.hidden === true,
+      fixedStrings: opts.fixedStrings === true,
+      ignoreCase: opts.ignoreCase === true,
+      context: opts.context,
+      maxCount: opts.maxCount,
+      maxMatches: opts.maxMatches,
+      maxFileSize: opts.maxFileSize,
+      timeout: opts.timeout,
+      binary: opts.binary,
+    }));
 
   program
     .command('show')
