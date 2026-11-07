@@ -163,6 +163,55 @@ kb fail <issue-id> --reason "..."  # 失败 → 待规划
 - agent 身份：环境变量 `KB_AGENT=<名字>`；未设 KB_AGENT 时默认 kb-cli，agent 评论不触发唤醒。
 - 版本：`kb --version` 输出 CLI 包版本；服务端所有 `/api` 响应带 `x-agentboard-version` 头并暴露 `GET /api/version`。CLI 每次请求比对响应头，major 不同、双方 0.x 且 minor 不同或服务端未上报版本时在 stderr 警告一次（仅警告不阻断，patch 差异不警告）。
 
+## MCP（stdio，给 Codex / DSH / WorkBuddy 等客户端）
+
+`apps/mcp` 是本机 stdio MCP 服务，作为看板与共享知识库的薄适配器：只经 `http://127.0.0.1:8787/api` 调现有 REST，不直连数据库、不复制业务逻辑、不启动服务。协议版本、契约、错误码与分页/截断规则见 [统一 MCP 设计](Docs/designs/infra/2026-11-01-unified-mcp.md)。
+
+构建并现场查看真实工具清单（会拉起 `apps/mcp/dist/index.js` 走 initialize + tools/list，不维护静态清单）：
+
+```bash
+corepack pnpm --filter @agentboard/mcp build
+corepack pnpm --filter @agentboard/mcp list-tools          # 人读表格
+corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
+```
+
+当前 `tools/list` 返回 **50 条 = 25 个工具 + 25 个 `agentboard_*` alias**；alias 用于兼容旧客户端，计划在下个大版本移除（卡 `f78d7465`）。
+
+环境变量：
+
+| 变量 | 必填 | 说明 |
+| --- | --- | --- |
+| `AGENTBOARD_BASE_URL` | 否 | 看板服务基址，默认 `http://127.0.0.1:8787`；仅接受 loopback HTTP origin，带路径、凭据或远程主机启动即报 `INVALID_CONFIG`。 |
+| `AGENTBOARD_WORKSPACE_ID` | 否 | 进程级工作区绑定：项目类工具省略 `workspace_id` 时使用它；显式传不同 id 返回 `WORKSPACE_BOUND`。未绑定时项目类工具必须显式传 `workspace_id`。 |
+| `AGENTBOARD_AGENT_ID` | 写工具必填 | claim / 评论 / 完成等写操作的审计标签（自报，不是鉴权）；缺失时写工具返回 `AGENT_ID_REQUIRED`。 |
+
+客户端 `mcpServers` 配置样例（路径与工作区 id 换成你自己的）：
+
+```json
+{
+  "mcpServers": {
+    "agentboard": {
+      "command": "node",
+      "args": ["D:/WorkSpaces/任务看板/apps/mcp/dist/index.js"],
+      "env": {
+        "AGENTBOARD_BASE_URL": "http://127.0.0.1:8787",
+        "AGENTBOARD_WORKSPACE_ID": "e41eb0fb-c367-43cf-a99d-6dc5239a5694",
+        "AGENTBOARD_AGENT_ID": "codex"
+      }
+    }
+  }
+}
+```
+
+工具面（25 个主名，读写标注见 `list-tools`）：
+
+- 工作区与任务（13）：`list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`、`create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`
+- 依赖（3）：`list_dependencies`、`add_dependency`、`remove_dependency`
+- 状态字典（3）：`list_statuses`、`add_status`、`remove_status`
+- 知识库（6）：`search_knowledge`、`read_knowledge`、`create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
+
+边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。已裁决的缺口与承接卡见卡 `7c030fea`：收口（close/reopen/accept）→ `f504f61d`，变更日志 → `6a2ded57`，待决策读取与提问 → `64acde61`，待决策答复与宽限 → `d6753e4c`，知识 list/find-source → `4e009883`；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
+
 ## Skill（agent 自助领任务）
 
 把 `skills/using-agentboard/` 目录复制或链接到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供。SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。

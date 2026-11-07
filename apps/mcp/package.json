@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "list-tools": "node scripts/list-tools.mjs"
   },
   "dependencies": {
     "@agentboard/shared": "workspace:*",
