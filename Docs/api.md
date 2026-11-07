@@ -792,6 +792,18 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 
 **边界**：Trae 的 `device_id` 必须与客户端设备凭证同源（自造会被服务端 20403/20405 拒），故只从本机已装客户端**只读**取得（`product.json` 的 `iCubeApp.authConfig.TRAE[quality]` / `bootConfig.consoleHost`、`state.vscdb` 的 `storage.serviceMachineId`、`aha/TinyStorage` 的 `aha.device.device_id`），读不到即报 `TRAE_DEVICE_IDENTITY_UNAVAILABLE`，不自造。
 
+## 14d. 无痕打开授权地址（`POST /api/browser/open-incognito`，browserRoutes.ts，ACC-INCOGNITO）
+
+账号授权向导要求「开始授权」与手点「授权地址」都直接弹无痕窗口，与账号平台无关。前端（含 Tauri webview）无法指定普通窗口、也没有 opener 插件，因此由本机服务拉起系统浏览器。
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `POST /api/browser/open-incognito` | body：`{ url: string }`，只接受 http/https，长度 ≤2048 | 200 `{ opened_with: 'chrome'\|'edge'\|'brave'\|'default', mode: 'incognito'\|'normal', degraded_reason: string\|null }` | 400 `BROWSER_URL_INVALID`（缺 url / 空串 / 超长 / 非 http(s)）；502 `BROWSER_OPEN_FAILED`（所有候选与默认浏览器都起不来，`details.attempts` 列每个候选的失败原因） |
+
+选择顺序：Windows 依次探测 Chrome（`--incognito --new-window`）/ Edge（`--inprivate --new-window`）/ Brave（`--incognito --new-window`）的常见安装路径；macOS 用 `open -na "<App>" --args ...`；Linux 依次试 `google-chrome` / `chromium` / `microsoft-edge` / `brave-browser`。全都不可用 → 降级系统默认浏览器普通窗口，返回 `mode='normal'` 与中文 `degraded_reason`，由前端展示可见提示（用户能感知这次不是无痕）。
+
+安全边界：只接受 http/https；`spawn` 用参数数组、不经 shell 拼串；与既有 `/api` 一致无鉴权，依赖服务只监听本机回环（单机工具前提）。
+
 ## 15. system（`/api/system`，systemRoutes.ts，SYSTEM-RESTART）
 
 服务自重启，供设置页「重启服务器」按钮调用。**无鉴权**，因此只允许本机回环地址触发（`req.ip` ∈ `127.0.0.1` / `::1` / `::ffff:127.0.0.1`，本项目无反向代理，不读 `X-Forwarded-For`）。

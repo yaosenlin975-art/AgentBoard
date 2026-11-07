@@ -15,6 +15,8 @@ import { createArchivedChangelogRouter, createChangelogRouter } from './changelo
 import { createStatusesAggregateRouter, createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
 import { createIssueCountsRouter, parseIssueFields } from './issuePayloadRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
+import { createBrowserRouter } from './browserRoutes.js';
+import type { BrowserOpenerDeps } from '../services/browserOpener.js';
 import { createDecisionRouter } from './decisionRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
@@ -174,6 +176,8 @@ export interface RouterDeps {
   dbMigrationSchedule?: (fn: () => void, ms: number) => void;
   /** VOICE-1：语音模型管理依赖（仅测试注入 catalog/fetch/freeBytes/rootDir；生产用默认值） */
   voice?: VoiceRouterOptions;
+  /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
+  browserOpener?: BrowserOpenerDeps;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -566,6 +570,8 @@ export function createRouter(deps: RouterDeps): Router {
   router.use('/statuses', createStatusesAggregateRouter(deps.db));
   router.use('/changelog', createArchivedChangelogRouter(deps.db));
   router.use('/voice', createVoiceRouter(deps.db, deps.voice ?? {}));
+  // ACC-INCOGNITO：账号授权地址用无痕窗口打开（与账号平台无关）
+  router.use(createBrowserRouter(deps.browserOpener));
   router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, secretVault: deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe, addAccountProviders: deps.accounts?.addAccountProviders, addAccountVault: deps.secretVault, restoreHandlers: deps.accounts?.restoreHandlers }));
   // ---- SMART-CREATE：智能创建草稿（不落库，设计 §4）----

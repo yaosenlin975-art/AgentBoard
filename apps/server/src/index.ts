@@ -24,6 +24,7 @@ import type { MinimaxClientProbe } from './services/accounts/minimaxClientProbe.
 import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
 import { attachVoiceWebSocket, type VoiceRouterOptions } from './api/voiceRoutes.js';
+import type { BrowserOpenerDeps } from './services/browserOpener.js';
 import { appendServerLog, resolveServerLogPath } from './services/serverLog.js';
 import { createKnowledgeDeepLinkRoutes } from './api/knowledgeDeepLinkRoutes.js';
 import type { ManagedAppId } from '@agentboard/shared';
@@ -104,6 +105,8 @@ export interface CreateAppOptions {
   draftTimeoutMs?: number;
   /** VOICE-1：语音模型管理依赖（仅测试注入；生产走默认 catalog/目录/fetch） */
   voice?: VoiceRouterOptions;
+  /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
+  browserOpener?: BrowserOpenerDeps;
   /** SERVER-SINGLETON：实例标识（`/api/version` 的 instance_id / db_path / started_at） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
   /** 启动期解析出的 db 路径来源（存储统计/迁移端点按它报，不在请求期重新解析） */
@@ -235,7 +238,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
-        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...migrationDeps }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;
