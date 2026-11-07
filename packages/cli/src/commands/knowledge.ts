@@ -42,6 +42,26 @@ function output(ctx: Ctx, data: unknown): void {
   const link = linkRef(data);
   ctx.io.write(renderPageDetail(data));
 }
+/**
+ * KB-SNAP-SILENT：正文写入成功但快照没进 git 时必须可观测（此前文本模式只打印 rev，失败与成功同形）。
+ * - 文本模式：stderr 打印原因 + 非 0 退出码（正文已保存，不能只报成功）；
+ * - `--json`：stdout 仍是单个 JSON 文档（含 `page_commit.committed=false`），失败信号走 stderr + 退出码；
+ * - `skipped=true`（无快照可提交 / 无变更）不算失败，不打扰调用方。
+ */
+function assertSnapshotCommitted(ctx: Ctx, data: unknown): void {
+  const raw = (data as { page_commit?: unknown }).page_commit;
+  if (!raw || typeof raw !== 'object') return;
+  const commit = raw as { committed?: unknown; skipped?: unknown; reason?: unknown; relative_path?: unknown; path?: unknown };
+  if (commit.committed !== false || commit.skipped === true) return;
+  const target = [commit.relative_path, commit.path].find((v): v is string => typeof v === 'string' && v !== '') ?? '（路径未知）';
+  const reason = typeof commit.reason === 'string' && commit.reason.trim() !== '' ? commit.reason.trim() : '（服务端未返回原因）';
+  ctx.io.writeErr(
+    `⚠ 知识页正文已保存，但快照未提交：${target}\n` +
+    `原因：${reason}\n` +
+    '库内 revision 已前进、git 侧没有对应提交；修好 git 后按新 revision 重跑 kb knowledge revise（--json 时判断 page_commit.committed）。\n',
+  );
+  throw new CommanderError(1, 'agentboard.knowledge.snapshot', '知识页快照未提交');
+}
 /** KB-CLI-3a（CLI-06）：详情文本渲染单点（show --history 复用，页后追加逐条 rev 行） */
 function renderPageDetail(data: unknown): string {
   const p = data as Record<string, unknown>;
@@ -588,19 +608,27 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const ctx = context();
       const missing: string[] = [];
       if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain design --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md:1-20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
-      output(ctx, await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug }));
+      const data = await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug });
+      output(ctx, data);
+      assertSnapshotCommitted(ctx, data);
     });
   scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))
     .addHelpText('after', REVISE_HELP)
     .action(async (id: string, opts: ScopeOptions & { expectedRevision: string; title?: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
-      const ctx = context(); output(ctx, await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) }));
+      const ctx = context();
+      const data = await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) });
+      output(ctx, data);
+      assertSnapshotCommitted(ctx, data);
     });
   scoped(knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致'))
     .addHelpText('after', ACTION_HELP)
     .action(async (id: string, action: string, opts: ScopeOptions & { expectedRevision: string }) => {
       const allowed = ['archive', 'restore', 'delete'];
       if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
-      const ctx = context(); output(ctx, await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId }));
+      const ctx = context();
+      const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
+      output(ctx, data);
+      assertSnapshotCommitted(ctx, data);
     });
 
   // KB-CLI-IMPORT：把本地文件导入为知识页（服务端 KBIMP-1 已有能力，这里只做 CLI 封装）

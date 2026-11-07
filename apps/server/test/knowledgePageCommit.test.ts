@@ -8,7 +8,7 @@
  * 并在真实 app 上验证 revise 路由真的触发（RULE-3）。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -80,7 +80,7 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
     const onDisk = readFileSync(knowledgePageSnapshotPath(repo, 'page-1'), 'utf8');
     const inHead = execFileSync('git', ['show', 'HEAD:.agentboard/snapshot/knowledge/page-1.md'], { cwd: repo, encoding: 'utf8' });
     expect(onDisk).toBe(inHead);
-  });
+  }, 30_000);
 
   it('非 git 目录：committed=false 且文件回滚（不留半提交）', () => {
     const notRepo = join(root, 'plain');
@@ -113,8 +113,36 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
   it('软删不存在的快照：不造空提交，reason 说明无需提交', () => {
     const result = removeKnowledgePageSnapshot(repo, page(1));
     expect(result.committed).toBe(false);
+    expect(result.skipped).toBe(true);
     expect(result.reason).toContain('不存在');
   });
+
+  /**
+   * KB-SNAP-SILENT：git 写失败时 reason 必须是「真原因」（git stderr 首行），而不是
+   * `Command failed: git add ...` 这种只有命令行的壳；且文件要回滚到上一版。
+   * 这里真的注入 .git/index.lock，不 mock git。
+   */
+  it('git 写入失败（index.lock 注入）：reason 带 git stderr，快照回滚且无新提交', () => {
+    expect(commitKnowledgePageSnapshot(repo, page(1)).committed).toBe(true);
+    const head = git(repo, ['rev-parse', '--short', 'HEAD']);
+    writeFileSync(join(repo, '.git', 'index.lock'), '', 'utf8');
+    try {
+      const failed = commitKnowledgePageSnapshot(repo, page(2, '正文 v2'));
+      expect(failed.committed).toBe(false);
+      expect(failed.skipped).toBeUndefined();
+      expect(failed.reason).toContain('git add 失败');
+      expect(failed.reason).toContain('index.lock');
+      expect(readFileSync(knowledgePageSnapshotPath(repo, 'page-1'), 'utf8')).toContain('revision: 1');
+      expect(git(repo, ['rev-parse', '--short', 'HEAD'])).toBe(head);
+      expect(git(repo, ['log', '--format=%s'])).not.toContain('r2');
+    } finally {
+      rmSync(join(repo, '.git', 'index.lock'), { force: true });
+    }
+    // 锁释放后同一正文可正常提交 r2（说明失败是可恢复的，不需要人工重写内容）
+    const retried = commitKnowledgePageSnapshot(repo, page(2, '正文 v2'));
+    expect(retried.committed).toBe(true);
+    expect(git(repo, ['log', '--format=%s'])).toContain('knowledge(ws-page): r2 本区页');
+  }, 30_000);
 });
 
 describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
@@ -252,5 +280,55 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
     expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(snapshot);
     // 删除提交不得把工作树里其它路径卷进来
     expect(git(repo, ['status', '--porcelain'])).toBe('');
+  }, 30_000);
+
+  /**
+   * KB-SNAP-SILENT 接线：真实 app + 真实 git 失败时，HTTP 仍是 200（正文已写入），
+   * 但响应体必须诚实给出 page_commit.committed=false 与真原因，供 CLI 报警。
+   */
+  it('index.lock 注入：revise 返回 200 但 page_commit.committed=false 且 reason 含 git 原因', async () => {
+    const payload = {
+      scope: 'workspace',
+      workspace_id: wsId,
+      slug: 'locked-page',
+      title: '锁冲突页',
+      body_md: '正文 v1',
+      domain: 'knowledge',
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      evidence: [{ source_id: 'file:README.md', locator: 'README.md:1-2' }],
+      actor: 'tester',
+    };
+    const created = await request(app).post('/api/knowledge/pages').send(payload);
+    expect(created.status).toBe(200);
+    const pageId: string = created.body.id;
+    const { slug: _slug, ...reviseBase } = payload;
+
+    writeFileSync(join(repo, '.git', 'index.lock'), '', 'utf8');
+    try {
+      const revised = await request(app).put(`/api/knowledge/pages/${pageId}`).send({
+        ...reviseBase,
+        expected_revision: 1,
+        body_md: '正文 v2',
+      });
+      expect(revised.status).toBe(200);
+      expect(revised.body.revision).toBe(2);
+      expect(revised.body.page_commit?.committed).toBe(false);
+      expect(revised.body.page_commit?.reason).toContain('index.lock');
+      // 回滚：文件仍是 rev1，git 侧没有 r2
+      expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('revision: 1');
+      expect(git(repo, ['log', '--format=%s'])).not.toContain('r2 锁冲突页');
+    } finally {
+      rmSync(join(repo, '.git', 'index.lock'), { force: true });
+    }
+
+    // 锁释放后按新 revision 重跑成功（正文已被上次写入，故提交 r3）
+    const retried = await request(app).put(`/api/knowledge/pages/${pageId}`).send({
+      ...reviseBase,
+      expected_revision: 2,
+      body_md: '正文 v3',
+    });
+    expect(retried.status).toBe(200);
+    expect(retried.body.page_commit?.committed).toBe(true);
+    expect(git(repo, ['log', '--format=%s'])).toContain('r3 锁冲突页');
   }, 30_000);
 });

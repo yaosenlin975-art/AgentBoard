@@ -474,3 +474,61 @@ describe('KB-CREATE-ERGO：JSON 文件 BOM、--hash-from-file、domain/scope 说
     expect(text).toContain('--hash-from-file');
   });
 });
+
+/**
+ * KB-SNAP-SILENT：正文写入成功但快照没进 git 时不能再「看着像成功」。
+ * 现场（2026-11-07）：revise exit 0、打印 rev:3，但无 r3 提交、快照仍是 rev2。
+ */
+describe('knowledge CLI：快照未提交必须可观测（KB-SNAP-SILENT）', () => {
+  const failing = {
+    ...page,
+    revision: 2,
+    page_commit: {
+      path: 'D:/ws/.agentboard/snapshot/knowledge/p.md',
+      relative_path: '.agentboard/snapshot/knowledge/p.md',
+      committed: false,
+      commit: null,
+      reason: "git add 失败：fatal: Unable to create 'D:/ws/.git/index.lock': File exists.",
+    },
+  };
+
+  it('文本模式：正文仍渲染，stderr 打印路径与 git 原因，退出码非 0', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failing))));
+    const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
+    expect(code).toBe(1);
+    expect(stream.out.join('')).toContain('缓存');
+    const err = stream.err.join('');
+    expect(err).toContain('快照未提交');
+    expect(err).toContain('.agentboard/snapshot/knowledge/p.md');
+    expect(err).toContain('index.lock');
+  });
+
+  it('--json：stdout 仍是单个 JSON 文档，失败信号走 stderr + 退出码', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failing))));
+    const stream = io();
+    const code = await main(['node', 'kb', '--json', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
+    expect(code).toBe(1);
+    const body = JSON.parse(stream.out.join('')) as Record<string, unknown>;
+    expect((body.page_commit as { committed: boolean }).committed).toBe(false);
+    expect(stream.err.join('')).toContain('index.lock');
+  });
+
+  it('skipped=true（无快照可提交）不算失败：退出码 0、stderr 为空', async () => {
+    const skipped = { ...page, revision: 3, page_commit: { path: 'D:/ws/x.md', relative_path: '.agentboard/snapshot/knowledge/p.md', committed: false, commit: null, reason: '快照文件不存在，无需提交删除', skipped: true } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(skipped))));
+    const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', 'action', 'p', 'delete', '--scope', 'common', '--expected-revision', '2'], stream);
+    expect(code).toBe(0);
+    expect(stream.err.join('')).toBe('');
+  });
+
+  it('committed=true 不打扰：退出码 0、stderr 为空', async () => {
+    const ok = { ...page, revision: 2, page_commit: { path: 'D:/ws/x.md', relative_path: '.agentboard/snapshot/knowledge/p.md', committed: true, commit: 'abc1234', reason: null } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(ok))));
+    const stream = io();
+    const code = await main(['node', 'kb', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
+    expect(code).toBe(0);
+    expect(stream.err.join('')).toBe('');
+  });
+});

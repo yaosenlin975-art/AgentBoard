@@ -43,6 +43,11 @@ export interface PageCommitResult {
   commit: string | null;
   /** committed=false 时的原因（含没落盘的情况） */
   reason: string | null;
+  /**
+   * committed=false 但**不是失败**（无快照可提交 / 无变更）：调用方不应报警或判失败。
+   * 缺失视为 false（真实失败），保持对旧客户端的兼容语义。
+   */
+  skipped?: boolean;
 }
 
 /** 每页快照文件路径：`<ws>/.agentboard/snapshot/knowledge/<page_id>.md` */
@@ -94,6 +99,20 @@ function headShort(cwd: string): string | null {
 }
 
 /**
+ * 失败原因：优先取 git stderr 的首行（如 `fatal: Unable to create '...index.lock': File exists`）。
+ * `execFileSync` 抛出的 Error.message 首行是 `Command failed: git add ...`，只取 message 会丢掉真正原因
+ * （2026-11-07 现场：快照没落盘时 reason 只有命令行，看不出 index.lock 冲突）。
+ */
+function failureReason(error: unknown): string {
+  const stderr = (error as { stderr?: unknown } | null)?.stderr;
+  const text = typeof stderr === 'string' ? stderr : Buffer.isBuffer(stderr) ? stderr.toString('utf8') : '';
+  const first = text.split('\n').map((line) => line.trim()).filter(Boolean)[0];
+  if (first) return first;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split('\n')[0]!.trim();
+}
+
+/**
  * 落盘 + 提交该页快照；任一步失败都把文件回滚到改动前，并写明原因。
  * 不抛错（调用方是知识页写操作的收尾动作，不能因为派生物失败让数据写失败）。
  */
@@ -102,18 +121,22 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
   const relativePath = relative(workspacePath, path).split('\\').join('/');
   const previous = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const result: PageCommitResult = { path, relative_path: relativePath, committed: false, commit: null, reason: null };
+  let stage = '写入快照文件';
 
   try {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, renderKnowledgePageSnapshot(page), 'utf8');
+    stage = 'git add';
     git(workspacePath, ['add', '-A', '--', relativePath]);
     // 内容没变化（例如只改了不进快照的分类字段）时不强行造空提交
+    stage = 'git status';
     const staged = git(workspacePath, ['status', '--porcelain', '--', relativePath]);
     if (staged === '' && git(workspacePath, ['log', '-1', '--format=%H', '--', relativePath]) !== '') {
       result.committed = true;
       result.commit = headShort(workspacePath);
       return result;
     }
+    stage = 'git commit';
     git(workspacePath, ['commit', ...identityArgs(workspacePath), '-m', `knowledge(${page.slug}): r${page.revision} ${page.title}`, '--', relativePath]);
     result.committed = true;
     result.commit = headShort(workspacePath);
@@ -125,7 +148,7 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
       else writeFileSync(path, previous, 'utf8');
       resetIndex(workspacePath, relativePath);
     } catch { /* 回滚失败也不再抛：原因里已能看出 */ }
-    result.reason = error instanceof Error ? error.message.split('\n')[0]!.trim() : String(error);
+    result.reason = `${stage} 失败：${failureReason(error)}`;
     return result;
   }
 }
@@ -140,24 +163,30 @@ export function removeKnowledgePageSnapshot(workspacePath: string, page: Pick<Pa
   const result: PageCommitResult = { path, relative_path: relativePath, committed: false, commit: null, reason: null };
   if (!existsSync(path)) {
     result.reason = '快照文件不存在，无需提交删除';
+    result.skipped = true;
     return result;
   }
+  let stage = '删除快照文件';
   try {
     rmSync(path, { force: true });
+    stage = 'git add';
     git(workspacePath, ['add', '-A', '--', relativePath]);
+    stage = 'git status';
     const staged = git(workspacePath, ['status', '--porcelain', '--', relativePath]);
     if (staged === '') {
       // 从未入库的本地文件（例如入库前的遗留）：删掉即可，没有可提交的变更
       result.reason = '快照未入库，已删除本地文件';
+      result.skipped = true;
       return result;
     }
+    stage = 'git commit';
     git(workspacePath, ['commit', ...identityArgs(workspacePath), '-m', `knowledge(${page.slug}): 删除快照 ${page.title}`, '--', relativePath]);
     result.committed = true;
     result.commit = headShort(workspacePath);
     return result;
   } catch (error) {
     resetIndex(workspacePath, relativePath);
-    result.reason = error instanceof Error ? error.message.split('\n')[0]!.trim() : String(error);
+    result.reason = `${stage} 失败：${failureReason(error)}`;
     return result;
   }
 }

@@ -216,6 +216,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
   - `snapshot` 只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入；服务端只查「非空且 ≤2 KiB」，不校验格式。`file` 类型来源（及指向它的 evidence）不许带 snapshot——带了服务端直接拒「本地代码来源只保存路径和 hash」，所以 snapshot 只可能出现在 url / agent 来源上。
   - 同一 evidence 不重复登记；同一提交（同一 content_hash）有多条时只保留一条。
 - **写完回读**：`kb knowledge show <page-id> --scope workspace --workspace <当前工作区>` 确认 id / scope / revision / 内容；回读失败如实报「未保存」，不得声称已保存。
+- **快照没进 git 就是失败**：`kb knowledge create/revise/action` 正文已保存但快照未提交时，命令 **exit 1** 并在 stderr 打印快照路径与 `原因：<git stderr 首行>`（`--json` 时 stdout 仍是单个页面 JSON，判断 `page_commit.committed`）。不要原样重跑——revision 已前进，会撞 CAS（exit 2）；先修 git（常见 `.git/index.lock` 残留），再按新 revision 重跑。`page_commit.skipped=true` 是无快照可提交的正常情况，不算失败。
 
 ## 知识卡链接（KCLINK，强制）
 
