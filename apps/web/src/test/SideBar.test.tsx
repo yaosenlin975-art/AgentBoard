@@ -105,13 +105,17 @@ describe('SideBar 品牌位与控件（NAV-TOPBAR-01）', () => {
     expect(brand.contains(panel)).toBe(true);
   });
 
-  it('工作区标题字号加大 3 档（text-sm → text-xl，14px → 20px）', () => {
+  it('工作区标题 17px（原型规格）、入口标签 13px', () => {
     renderSideBar(ws);
     const title = screen.getByTestId('topbar-workspace');
-    expect(title.className).toContain('text-xl');
-    expect(title.className).not.toContain('text-sm');
+    expect(title.className).toContain('text-[17px]');
+    expect(title.className).not.toContain('text-xl');
     // 路径副标题不跟着放大
     expect(screen.getByTestId('sidebar-workspace-path').className).toContain('text-xs');
+    // 入口标签落在原型 12.5–13.5px 区间
+    const entry = screen.getByTestId('sidebar-entry-board');
+    expect(entry.className).toContain('text-[13px]');
+    expect(entry.className).not.toContain('text-sm');
   });
 
   it('未选工作区时显示占位文案（名称与路径都占位）', () => {

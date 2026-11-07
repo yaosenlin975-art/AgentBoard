@@ -202,7 +202,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
             aria-label="工作空间"
             title="切换工作空间"
             onClick={toggleLeft}
-            className="ab-sidebar-ws flex w-full min-w-0 items-center gap-1 text-left text-xl font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="ab-sidebar-ws flex w-full min-w-0 items-center gap-1 text-left text-[17px] font-semibold text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             <span aria-hidden="true" className="ab-sidebar-caret shrink-0 text-ink-3">▾</span>
             <span className="ab-sidebar-label truncate">{workspace?.name ?? '未选择工作区'}</span>
@@ -280,7 +280,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
                   if (narrow && narrowExpanded) closeNarrowOverlay();
                 }}
                 // A2：入口点击反馈只走颜色过渡（≤150ms）+ data-active 供断言；reduced-motion 下即时
-                className={`ab-sidebar-entry flex h-9 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+                className={`ab-sidebar-entry flex h-9 w-full items-center gap-2 rounded-md px-2 text-[13px] transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
                   active
                     ? 'bg-accent-soft font-medium text-accent active:bg-accent-soft'
                     : 'text-ink-2 hover:bg-surface-raised active:bg-surface-raised'
@@ -370,7 +370,10 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
           aria-label="服务连接状态"
           className="inline-flex shrink-0 items-center"
         >
-          <span className={`inline-block h-2 w-2 rounded-full ${WS_DOT[wsStatus]}`} aria-hidden="true" />
+          <span
+            className={`inline-block rounded-full ${collapsed ? 'h-1.5 w-1.5' : 'h-2 w-2'} ${WS_DOT[wsStatus]}`}
+            aria-hidden="true"
+          />
         </span>
         <span className="ab-sidebar-label truncate">{WS_LABEL[wsStatus]}</span>
         <span aria-hidden="true" className="ab-sidebar-status-sep shrink-0 text-ink-3">·</span>

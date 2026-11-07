@@ -286,6 +286,25 @@ describe('Ctrl/Cmd+B 形态切换（SIDEBAR-4）', () => {
   });
 });
 
+describe('SPEC-ALIGN：状态圆点尺寸（原型规格）', () => {
+  it('[T13] 收起态圆点 6px、展开态 8px', () => {
+    renderSideBar();
+    const status = screen.getByTestId('topbar-ws-status');
+    const dot = status.querySelector('span');
+    expect(dot).not.toBeNull();
+    // 收起态：原型 6px（h-1.5 / w-1.5）
+    expect(dot?.className).toContain('h-1.5');
+    expect(dot?.className).toContain('w-1.5');
+
+    fireEvent.click(screen.getByTestId('sidebar-collapse-toggle'));
+    expect(screen.getByTestId('sidebar')).toHaveAttribute('data-mode', 'expanded');
+    // 展开态保留原 8px（h-2 / w-2）
+    expect(dot?.className).toContain('h-2');
+    expect(dot?.className).toContain('w-2');
+    expect(dot?.className).not.toContain('h-1.5');
+  });
+});
+
 describe('窄屏浮层 + 遮罩（SIDEBAR-5）', () => {
   it('[T9] <920px 收起态：仍是图标栏，无遮罩与占位块', () => {
     mockViewport(true);
