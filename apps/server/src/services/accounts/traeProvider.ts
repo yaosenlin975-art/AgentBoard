@@ -25,12 +25,13 @@ import { dirname, join, resolve } from 'node:path';
 import type { AccountOperation, ManagedAccount } from '@agentboard/shared';
 import { decryptTcEnvelope, TraeEnvelopeError } from '@agentboard/adapters';
 import type { Db } from '../../db/connection.js';
-import { createManagedAccount, attachClientSnapshot, findManagedAccountByAppIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
+import { createManagedAccount, attachClientSnapshot, findManagedAccountByAppIdentity, getManagedAccount, parseCredentialExpiry, setCredentialExpiry } from '../../db/repos/managedAccount.js';
 import { attachCheckinCredential } from '../../db/repos/checkin.js';
 import { getAccountOperation, updateAccountOperation } from '../../db/repos/accountOperation.js';
 import { ApiError, NotFoundError, ValidationError } from '../../errors.js';
 import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProcessControl } from './clientProcess.js';
 import { runAccountOperation } from './operationRunner.js';
+import { jwtExpiresAt } from './addAccountProtocol.js';
 import type { SecretVault, VaultScope } from './secretVault.js';
 import { validateTarget, type ValidatedTarget } from './switchStages.js';
 import { runSwitchFlow } from './switchFlow.js';
@@ -477,13 +478,22 @@ export class TraeDesktopProvider {
     const subject = jwtSubject(read.payload.token) ?? read.payload.userId;
     if (subject === null) throw new ApiError(409, 'TRAE_IDENTITY_UNAVAILABLE', 'Trae 凭据缺少稳定用户标识，无法建立账号');
     const identityHash = sha256(`trae\0${subject}`);
+    // ACC-TOKEN-2：信封 payload 的 expiredAt == JWT exp（秒级字符串/数值），兜底再解一次 JWT exp
+    const expiresAt = parseCredentialExpiry(read.payload.expiredAt) ?? jwtExpiresAt(read.payload.token);
     let captured: ManagedAccount | null = null;
     const operation = await runAccountOperation(this.db, {
       app_id: 'trae', client_instance_id: TRAE_CLIENT_INSTANCE, operation: 'capture',
     }, async () => {
       const existing = findManagedAccountByAppIdentity(this.db, 'trae', identityHash);
       const clientInstance = existing?.client_instance_id ?? TRAE_CLIENT_INSTANCE;
-      const ref = await this.vault.protect(Buffer.from(read.payload.token, 'utf8'), {
+      // ACC-TOKEN-2：落 JSON 载荷 {token, refresh_token, expires_at}（旧实现只落裸 token，refreshToken/expiredAt
+      // 被丢弃——设计页 §2 trae 行的缺口）；签到/导入侧 parseTraeCredential 兼容旧裸串。
+      const credentialPayload = JSON.stringify({
+        token: read.payload.token,
+        ...(read.payload.refreshToken !== '' ? { refresh_token: read.payload.refreshToken } : {}),
+        expires_at: expiresAt,
+      });
+      const ref = await this.vault.protect(Buffer.from(credentialPayload, 'utf8'), {
         app_id: 'trae', client_instance_id: clientInstance, identity_hash: identityHash, purpose: 'checkin',
       });
       // ACC-SW-TRAE：凭据落库的同时 best-effort 快照登录态（切换的目标依据）；
@@ -511,6 +521,8 @@ export class TraeDesktopProvider {
           });
           captured = attachCheckinCredential(this.db, captured.id, ref);
         }
+        // ACC-TOKEN-2：捕获写入点——落到期列（trae refresh_method 固定 recapture）
+        setCredentialExpiry(this.db, captured.id, { expiresAt, refreshMethod: 'recapture' });
       } catch (error) {
         await this.vault.delete(ref).catch(() => {});
         if (snapshotRef !== null) await this.deleteSnapshotRef(snapshotRef).catch(() => {});

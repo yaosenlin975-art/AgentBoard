@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import { homedir } from 'node:os';
 import { z } from 'zod';
-import type { AccountCapability, CheckinAuthorization, ManagedAppId } from '@agentboard/shared';
+import type { AccountCapability, CheckinAuthorization, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { getAccountOperation } from '../db/repos/accountOperation.js';
 import {
@@ -17,6 +17,7 @@ import {
   operationsForBatch,
 } from '../db/repos/checkin.js';
 import { getManagedAccount, publicManagedAccount, setManagedAccountEnabled } from '../db/repos/managedAccount.js';
+import { refreshAccountCredential, type CredentialRefreshResult } from '../services/accounts/credentialRefresh.js';
 import { getAddAccountSession, listAddAccountSessions, publicAddAccountSession } from '../db/repos/addAccount.js';
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe, type MinimaxClientStatus } from '../services/accounts/minimaxClientProbe.js';
@@ -97,6 +98,8 @@ const batchCreateSchema = z.object({
   app_id: managedAppParam,
   account_ids: z.array(z.string().uuid()).min(1).max(50),
 }).strict().refine(v => new Set(v.account_ids).size === v.account_ids.length, 'account_ids 不能重复');
+/** ACC-TOKEN-2：刷新凭据请求体为空对象（actor 由 idempotencyInput 读取；Idempotency-Key 必需） */
+const refreshCredentialBodySchema = z.object({}).strict();
 
 export type DesktopCaptureProvider = Pick<WorkbuddyDesktopProvider, 'captureCurrent'>;
 export type DesktopSwitchProvider = Pick<WorkbuddyDesktopProvider, 'switchAccount'>;
@@ -378,6 +381,30 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       throw error;
     }
     res.json({ account: publicManagedAccount(account) });
+  });
+
+  /**
+   * ACC-TOKEN-2：按 refresh_method 三分派刷新凭据（设计页 §4）。
+   * Idempotency-Key 必需（UUID）：一次性 refresh token 不得重复发送，重放返回首次结果；
+   * 同账号刷新经 runAccountOperation tryLock 串行（与签到/捕获/切换互斥），抢不到锁 409 ACCOUNT_BUSY。
+   */
+  router.post('/managed-accounts/:id/refresh-credential', async (req, res) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) throw new ValidationError('id 必须为 UUID');
+    const input = idempotencyInput(req, true)!;
+    const cached = replayIdempotentResult<CredentialRefreshResult>(db, input);
+    if (cached) { res.status(202).json(cached); return; }
+    parseBody(refreshCredentialBodySchema, req.body);
+    const account = getManagedAccount(db, id.data);
+    if (!account) throw new NotFoundError('账号不存在');
+    const result = await refreshAccountCredential({
+      db,
+      vault: deps.vault,
+      resolveCapture: async () => requireProvider(account.app_id, deps, 'capture', minimaxProbe),
+    }, account);
+    const payload: CredentialRefreshResult = { account: result.account, refreshed: true, method: result.method };
+    withIdempotencyResult(db, input, () => payload);
+    res.status(202).json(payload);
   });
 
   // 切换：立即返回 operation id，执行结果经 GET /account-operations/:id 轮询（设计 §8）

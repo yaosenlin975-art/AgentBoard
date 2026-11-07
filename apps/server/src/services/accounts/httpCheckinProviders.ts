@@ -191,14 +191,26 @@ export function parseMinimaxCredential(credential: Buffer): MinimaxCredentialPay
   return { access_token: raw };
 }
 
-/** ACC-FIX-3：用 refresh_token 换新 access_token；失败/无 refresh_token 一律 null（不重试、不透传错误体） */
-async function refreshMinimaxCredential(config: HttpCheckinConfig, credential: Buffer): Promise<Buffer | null> {
-  const parsed = parseMinimaxCredential(credential);
-  if (parsed.refresh_token === undefined) return null;
-  const origin = config.region === 'global' ? MINIMAX_ORIGIN.global : MINIMAX_ORIGIN.cn;
-  const fetchImpl = config.fetchImpl ?? fetch;
+/**
+ * ACC-TOKEN-2：refresh grant 的区分化结果。既有 `refreshMinimaxCredential` 的行为保持不变
+ * （任何失败一律 null）；refresh-credential 端点需要区分 invalid_grant（refresh token 被官方
+ * 客户端轮换作废 → 409 CREDENTIAL_RELOGIN_REQUIRED）与网络/非 2xx/缺字段（409 CREDENTIAL_REFRESH_FAILED）。
+ */
+export type MinimaxRefreshOutcome =
+  | { ok: true; payload: { access_token: string; refresh_token: string; expires_at: number | null } }
+  | { ok: false; reason: 'no_refresh_token' | 'invalid_grant' | 'failed' };
+
+/** 复用既有刷新实现（同端点同 form 同判定顺序）：POST {account.minimax.cn|io}/oauth2/token */
+export async function attemptMinimaxRefresh(
+  parsed: MinimaxCredentialPayload,
+  region: 'cn' | 'global',
+  options: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+): Promise<MinimaxRefreshOutcome> {
+  if (parsed.refresh_token === undefined) return { ok: false, reason: 'no_refresh_token' };
+  const origin = region === 'global' ? MINIMAX_ORIGIN.global : MINIMAX_ORIGIN.cn;
+  const fetchImpl = options.fetchImpl ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 15_000);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
   try {
     const response = await fetchImpl(`${origin}/oauth2/token`, {
       method: 'POST',
@@ -208,22 +220,44 @@ async function refreshMinimaxCredential(config: HttpCheckinConfig, credential: B
     });
     let body: unknown = null;
     try { body = await response.json(); } catch { body = null; }
-    if (!response.ok) return null;
+    if (!response.ok) {
+      // G13 实测：refresh token 一次性+轮换作废时 HTTP 400 + body.error=invalid_grant
+      if (asRecord(body).error === 'invalid_grant') return { ok: false, reason: 'invalid_grant' };
+      return { ok: false, reason: 'failed' };
+    }
     const record = asRecord(body);
     const access = typeof record.access_token === 'string' ? record.access_token : '';
-    if (access === '') return null;
+    if (access === '') return { ok: false, reason: 'failed' };
     const nextRefresh = typeof record.refresh_token === 'string' && record.refresh_token !== '' ? record.refresh_token : parsed.refresh_token;
     const expiresIn = typeof record.expires_in === 'number' ? record.expires_in : null;
-    return Buffer.from(JSON.stringify({
-      access_token: access,
-      refresh_token: nextRefresh,
-      expires_at: expiresIn === null ? null : Date.now() + expiresIn * 1000,
-    }), 'utf8');
+    return {
+      ok: true,
+      payload: {
+        access_token: access,
+        refresh_token: nextRefresh,
+        expires_at: expiresIn === null ? null : Date.now() + expiresIn * 1000,
+      },
+    };
   } catch {
-    return null;
+    return { ok: false, reason: 'failed' };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** ACC-FIX-3：用 refresh_token 换新 access_token；失败/无 refresh_token 一律 null（不重试、不透传错误体） */
+async function refreshMinimaxCredential(config: HttpCheckinConfig, credential: Buffer): Promise<Buffer | null> {
+  const parsed = parseMinimaxCredential(credential);
+  const outcome = await attemptMinimaxRefresh(parsed, config.region === 'global' ? 'global' : 'cn', {
+    ...(config.fetchImpl !== undefined ? { fetchImpl: config.fetchImpl } : {}),
+    ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
+  });
+  if (!outcome.ok) return null;
+  return Buffer.from(JSON.stringify({
+    access_token: outcome.payload.access_token,
+    refresh_token: outcome.payload.refresh_token,
+    expires_at: outcome.payload.expires_at,
+  }), 'utf8');
 }
 
 /** minimax：`days[]` 里 `is_today` 那条的 `status` 3=已领 / 2=可领 */
@@ -263,12 +297,38 @@ export function createMinimaxCheckinProvider(config: HttpCheckinConfig): Checkin
   });
 }
 
+/**
+ * ACC-TOKEN-2：trae 捕获线落 JSON 载荷 `{token, refresh_token, expires_at}`（设计页 §2 trae 行——
+ * 旧实现只落裸 token，refreshToken/expiredAt 被丢弃）。旧裸串仍可读，签到/导入/切换不受影响。
+ */
+export function parseTraeCredential(credential: Buffer): { token: string; refresh_token?: string; expires_at?: number | null } {
+  const raw = credential.toString('utf8').trim();
+  if (raw.startsWith('{')) {
+    try {
+      const record = asRecord(JSON.parse(raw) as unknown);
+      const token = typeof record.token === 'string' ? record.token : '';
+      if (token !== '') {
+        return {
+          token,
+          ...(typeof record.refresh_token === 'string' && record.refresh_token !== '' ? { refresh_token: record.refresh_token } : {}),
+          expires_at: typeof record.expires_at === 'number' ? record.expires_at : null,
+        };
+      }
+    } catch {
+      // 不是 JSON：按旧裸串处理
+    }
+  }
+  return { token: raw };
+}
+
 /** trae：`checkin_credits/status` 的 `data.checked_in` */
 export function createTraeCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
     requestJson(config, `${TRAE_BASE}${path}`, { token, ...init });
 
   return baseSpec(config, {
+    // ACC-TOKEN-2：凭据可能是 JSON 载荷（新捕获线）或裸串（旧数据）——统一从这里取 Bearer token
+    token: credential => parseTraeCredential(credential).token,
     status: async (token) => {
       const result = await request('/checkin_credits/status', token, { method: 'POST', body: '{}' });
       const data = dataOf(result.body);

@@ -33,6 +33,7 @@ import {
   type AddAccountRegion,
   type AddAccountStart,
 } from './addAccountProtocol.js';
+import { parseCredentialExpiry } from '../../db/repos/managedAccount.js';
 import { createTraeAddAccountProvider } from './traeAddAccountProvider.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -143,7 +144,16 @@ export function createMinimaxAddAccountProvider(options: { fetchImpl?: typeof fe
       }
       if (!uid) uid = createHash('sha256').update(access_token).digest('hex').slice(0, 16);
       if (!uid) return { status: 'failed', safe_error_code: 'MINIMAX_IDENTITY_MISSING' };
-      return { status: 'authorized', uid, display_name: null, credential: Buffer.from(access_token, 'utf8') };
+      // ACC-TOKEN-2：加号线同步落 JSON 载荷 {access_token, refresh_token, expires_at}——校验完
+      // refresh_token 后只把裸 access_token 装进 credential 会丢续期能力（与 ACC-FIX-5 捕获线口径一致）
+      const expiresAt = Date.now() + expires_in * 1000;
+      return {
+        status: 'authorized',
+        uid,
+        display_name: null,
+        expires_at: expiresAt,
+        credential: Buffer.from(JSON.stringify({ access_token, refresh_token, expires_at: expiresAt }), 'utf8'),
+      };
     },
   };
 }
@@ -204,7 +214,10 @@ export function createZcodeAddAccountProvider(options: { fetchImpl?: typeof fetc
       const user = asRecord(data.user);
       const uid = str(user.user_id) ?? str(user.id) ?? str(data.user_id);
       if (!access_token || !uid) return { status: 'failed', safe_error_code: 'ZCODE_TOKEN_INVALID' };
-      return { status: 'authorized', uid, display_name: str(user.name) ?? str(user.nickname), credential: Buffer.from(access_token, 'utf8') };
+      // ACC-TOKEN-2：token 响应字段透传到期时间，取不到 null（design §3 写入点 2）
+      const expiresAt = parseCredentialExpiry(providerData.expires_at)
+        ?? (num(providerData.expires_in) !== null ? Date.now() + num(providerData.expires_in)! * 1000 : null);
+      return { status: 'authorized', uid, display_name: str(user.name) ?? str(user.nickname), expires_at: expiresAt, credential: Buffer.from(access_token, 'utf8') };
     },
   };
 }
@@ -282,7 +295,8 @@ export function createQoderAddAccountProvider(options: { fetchImpl?: typeof fetc
       const user = asRecord(info.body);
       const uid = str(user.id) ?? str(user.user_id) ?? str(user.uid);
       if (!uid) return { status: 'failed', safe_error_code: 'QODER_IDENTITY_MISSING' };
-      return { status: 'authorized', uid, display_name: str(user.name) ?? str(user.username), credential: Buffer.from(token, 'utf8') };
+      // ACC-TOKEN-2：到期字段透传（poll 响应/userinfo 均无已确认字段 → 恒 null，不伪造）
+      return { status: 'authorized', uid, display_name: str(user.name) ?? str(user.username), expires_at: parseCredentialExpiry(data.expires_at) ?? parseCredentialExpiry(user.expires_at), credential: Buffer.from(token, 'utf8') };
     },
   };
 }
@@ -356,7 +370,10 @@ export function createWorkbuddyAddAccountProvider(options: { fetchImpl?: typeof 
       const uid = str(accountData.oneidAccountId) ?? str(accountData.uin) ?? str(accountData.sub) ?? str(accountData.id);
       if (!uid) return { status: 'failed', safe_error_code: 'WORKBUDDY_IDENTITY_MISSING' };
       const displayName = str(accountData.nickname) ?? str(accountData.name) ?? str(accountData.email);
-      return { status: 'authorized', uid, display_name: displayName, credential: Buffer.from(access_token, 'utf8') };
+      // ACC-TOKEN-2：token 响应字段透传到期时间，取不到 null（access_token 是 Keycloak JWT 时由列表侧兜底）
+      const expiresAt = parseCredentialExpiry(tokenData.expiresAt)
+        ?? (num(tokenData.expiresIn) !== null ? Date.now() + num(tokenData.expiresIn)! * 1000 : null);
+      return { status: 'authorized', uid, display_name: displayName, expires_at: expiresAt, credential: Buffer.from(access_token, 'utf8') };
     },
   };
 }

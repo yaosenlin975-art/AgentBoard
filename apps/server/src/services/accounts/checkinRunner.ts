@@ -8,7 +8,7 @@ import {
   updateCheckinBatch,
   updateCheckinBatchItem,
 } from '../../db/repos/checkin.js';
-import { getManagedAccount } from '../../db/repos/managedAccount.js';
+import { credentialExpiresAtFromPayload, getManagedAccount, markCredentialInvalid, markCredentialRefreshed } from '../../db/repos/managedAccount.js';
 import { ApiError, NotFoundError } from '../../errors.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinProviderSpec, CheckinVault } from './checkinProvider.js';
@@ -85,7 +85,11 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
     } catch (error) {
       if (!(error instanceof ApiError) || error.code !== 'CHECKIN_CREDENTIAL_INVALID' || deps.provider.refreshCredential === undefined) throw error;
       const refreshed = await deps.provider.refreshCredential(credential).catch(() => null);
-      if (refreshed === null) throw error;
+      if (refreshed === null) {
+        // ACC-TOKEN-2：续期失败——凭据判失效，落 invalid_at 供列表显示「凭据已失效」
+        markCredentialInvalid(deps.db, account.id);
+        throw error;
+      }
       let newRef: string;
       try {
         newRef = await deps.vault.protect(refreshed, scope);
@@ -98,6 +102,8 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
       }
       credential = refreshed;
       credentialRef = newRef;
+      // ACC-TOKEN-2：续期成功——落新到期时间 + valid + 清 invalid_at（到期时间从 JSON 载荷 expires_at 取）
+      markCredentialRefreshed(deps.db, account.id, credentialExpiresAtFromPayload(refreshed));
       return action(credential);
     }
   };
@@ -138,6 +144,8 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
     if (state === 'succeeded' || state === 'already_done') recordAccountCheckin(deps.db, accountId, { day, status: state });
     if (state === 'unknown') recordAccountCheckin(deps.db, accountId, { day, status: 'unknown' });
   } catch (error) {
+    // ACC-TOKEN-2：收尾 CHECKIN_CREDENTIAL_INVALID（含续期后重试仍 401）——凭据判失效，落 invalid_at
+    if (error instanceof ApiError && error.code === 'CHECKIN_CREDENTIAL_INVALID') markCredentialInvalid(deps.db, accountId);
     const code = error instanceof ApiError
       ? (['ACCOUNT_BUSY', 'RECOVERY_REQUIRED', 'CHECKIN_RATE_LIMITED', 'CHECKIN_FAILED', 'CHECKIN_CREDENTIAL_INVALID', 'OPERATION_UNKNOWN', 'VAULT_READ_FAILED'].includes(error.code) ? error.code : 'CHECKIN_FAILED')
       : 'CHECKIN_FAILED';

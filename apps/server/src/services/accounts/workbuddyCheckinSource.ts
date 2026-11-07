@@ -10,9 +10,12 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ExportRunner } from './credentialImport.js';
 import { createDefaultExportRunner, parseExportOutput } from './credentialImport.js';
+import { jwtExpiresAt } from './addAccountProtocol.js';
+import { parseCredentialExpiry } from '../../db/repos/managedAccount.js';
 import type { ClientIdentity } from './workbuddyDesktopProvider.js';
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -32,6 +35,17 @@ export function jwtSubject(token: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * ACC-TOKEN-2：桌面线 info 文件 `auth.expiresAt` 是明文毫秒（本机实测，G2；信封字段不读），
+ * 文件缺失/损坏/字段缺失 → null。到期列写入点用，无需解密 token。
+ */
+export async function readWorkbuddyAuthExpiresAt(authInfoPath: string): Promise<number | null> {
+  if (!existsSync(authInfoPath)) return null;
+  let info: unknown;
+  try { info = JSON.parse((await readFile(authInfoPath)).toString('utf8')); } catch { return null; }
+  return parseCredentialExpiry((info as { auth?: { expiresAt?: unknown } } | null)?.auth?.expiresAt);
 }
 
 export interface WorkbuddyCheckinTokenSource {

@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { Db } from '../../db/connection.js';
-import { findManagedAccountByIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
+import { credentialRefreshMethodFor, deriveCredentialStatus, findManagedAccountByIdentity, getManagedAccount, parseCredentialExpiry } from '../../db/repos/managedAccount.js';
 import type { CheckinVault } from './checkinProvider.js';
 import { createCheckinProviders } from './httpCheckinProviders.js';
 
@@ -219,9 +219,14 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
           }
           const timestamp = now();
           const capability = importedCheckinCapability(appId);
+          // ACC-TOKEN-2：导入写入点——entry.expires_at → credential_expires_at（秒/毫秒归一化）；
+          // minimax 带 refresh_token → refresh_token，workbuddy/trae → recapture；status 按到期推导
+          const expiresAt = parseCredentialExpiry(entry.expires_at);
+          const refreshMethod = credentialRefreshMethodFor(appId, appId === 'minimax' && entry.refresh_token !== undefined && entry.refresh_token !== '');
+          const credentialStatus = deriveCredentialStatus({ expiresAt, invalidAt: null, stored: 'unknown' });
           if (existing) {
-            deps.db.prepare('UPDATE managed_account SET display_name=?, checkin_credential_ref=?, checkin_capability=?, updated_at=? WHERE id=?')
-              .run(displayName, credentialRef, capability, timestamp, existing.id);
+            deps.db.prepare('UPDATE managed_account SET display_name=?, checkin_credential_ref=?, checkin_capability=?, credential_expires_at=?, credential_status=?, credential_refresh_method=?, credential_invalid_at=NULL, updated_at=? WHERE id=?')
+              .run(displayName, credentialRef, capability, expiresAt, credentialStatus, refreshMethod, timestamp, existing.id);
             // 旧密文引用作废即删，避免重复导入让 vault 里堆孤儿文件（失败不影响导入结果）
             const previousRef = existing.checkin_credential_ref;
             if (previousRef && previousRef !== credentialRef) {
@@ -229,15 +234,15 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
               if (typeof deletable.delete === 'function') await deletable.delete(previousRef).catch(() => undefined);
             }
             summary.updated += 1;
-            accounts.push({ account_id: existing.id, app_id: appId, display_name: displayName, action: 'updated', expires_at: entry.expires_at ?? null });
+            accounts.push({ account_id: existing.id, app_id: appId, display_name: displayName, action: 'updated', expires_at: expiresAt });
           } else {
             const id = randomUUID();
             deps.db.prepare(`INSERT INTO managed_account
-              (id, app_id, client_instance_id, service_region, identity_hash, display_name, identity_hint, client_snapshot_ref, checkin_credential_ref, client_snapshot_version, checkin_capability, created_at, updated_at)
-              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-              .run(id, appId, IMPORT_CLIENT_INSTANCE, 'unknown', identityHash, displayName, null, null, credentialRef, 1, capability, timestamp, timestamp);
+              (id, app_id, client_instance_id, service_region, identity_hash, display_name, identity_hint, client_snapshot_ref, checkin_credential_ref, client_snapshot_version, checkin_capability, credential_expires_at, credential_status, credential_refresh_method, created_at, updated_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+              .run(id, appId, IMPORT_CLIENT_INSTANCE, 'unknown', identityHash, displayName, null, null, credentialRef, 1, capability, expiresAt, credentialStatus, refreshMethod, timestamp, timestamp);
             summary.created += 1;
-            accounts.push({ account_id: getManagedAccount(deps.db, id)!.id, app_id: appId, display_name: displayName, action: 'created', expires_at: entry.expires_at ?? null });
+            accounts.push({ account_id: getManagedAccount(deps.db, id)!.id, app_id: appId, display_name: displayName, action: 'created', expires_at: expiresAt });
           }
         }
 

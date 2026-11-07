@@ -32,7 +32,14 @@ export interface AddAccountStart {
 
 export type AddAccountPoll =
   | { status: 'pending' }
-  | { status: 'authorized'; uid: string; display_name: string | null; credential: Buffer }
+  | {
+      status: 'authorized';
+      uid: string;
+      display_name: string | null;
+      credential: Buffer;
+      /** ACC-TOKEN-2：凭据到期时间（epoch ms；minimax 用 expires_in*1000+now，其余平台从 token 响应透传，取不到 null） */
+      expires_at?: number | null;
+    }
   | { status: 'failed'; safe_error_code: string }
   | { status: 'expired' };
 
@@ -115,6 +122,21 @@ export function jwtSubject(token: string): string | null {
     const json = Buffer.from(payload, 'base64url').toString('utf8');
     const sub = str(asRecord(JSON.parse(json)).sub);
     return sub;
+  } catch {
+    return null;
+  }
+}
+
+/** ACC-TOKEN-2：JWT payload 解出 `exp`（epoch 秒 → 毫秒）；不是合法 JWT / 无 exp → null */
+export function jwtExpiresAt(token: string): number | null {
+  const parts = token.split('.');
+  const payload = parts[1];
+  if (parts.length !== 3 || !payload) return null;
+  try {
+    const json = Buffer.from(payload, 'base64url').toString('utf8');
+    const exp = asRecord(JSON.parse(json)).exp;
+    if (typeof exp !== 'number' || !Number.isFinite(exp) || exp <= 0) return null;
+    return exp < 10_000_000_000 ? exp * 1000 : exp;
   } catch {
     return null;
   }

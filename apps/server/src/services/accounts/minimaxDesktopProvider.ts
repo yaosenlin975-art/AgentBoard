@@ -26,7 +26,7 @@ import type { Db } from '../../db/connection.js';
 import { updateAccountOperation } from '../../db/repos/accountOperation.js';
 import { ApiError, NotFoundError } from '../../errors.js';
 import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProcessControl } from './clientProcess.js';
-import { getManagedAccount } from '../../db/repos/managedAccount.js';
+import { getManagedAccount, setCredentialExpiry } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
 import { parseMinimaxCredential, type MinimaxCredentialPayload } from './httpCheckinProviders.js';
@@ -285,6 +285,11 @@ export class MinimaxDesktopProvider {
     if (existing) {
       this.db.prepare("UPDATE managed_account SET display_name=?, checkin_credential_ref=?, checkin_capability='supported', client_snapshot_ref=?, client_snapshot_version=client_snapshot_version+1, updated_at=? WHERE id=?")
         .run(options.display_name ?? identity.clientId.slice(0, 100), credentialRef, snapshotRef, timestamp, existing.id);
+      // ACC-TOKEN-2：捕获写入点——落到期列（auth.json expiresAtMs），带 refresh_token 的 JSON 载荷走 refresh_token
+      setCredentialExpiry(this.db, existing.id, {
+        expiresAt: identity.expiresAt,
+        refreshMethod: identity.refreshToken ? 'refresh_token' : 'recapture',
+      });
       return getManagedAccount(this.db, existing.id)!;
     }
     const id = randomUUID();
@@ -292,6 +297,7 @@ export class MinimaxDesktopProvider {
       (id,app_id,client_instance_id,service_region,identity_hash,display_name,identity_hint,client_snapshot_ref,checkin_credential_ref,client_snapshot_version,checkin_capability,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, MINIMAX_APP_ID, clientInstanceId, 'cn', identityHash, (options.display_name ?? identity.clientId).slice(0, 100), null, snapshotRef, credentialRef, 1, 'supported', timestamp, timestamp);
+    setCredentialExpiry(this.db, id, { expiresAt: identity.expiresAt, refreshMethod: identity.refreshToken ? 'refresh_token' : 'recapture' });
     return getManagedAccount(this.db, id)!;
   }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { ManagedAccount, PublicManagedAccount } from '@agentboard/shared';
+import type { CredentialRefreshMethod, CredentialStatus, ManagedAccount, ManagedAppId, PublicManagedAccount } from '@agentboard/shared';
 import type { Db } from '../connection.js';
 import { ApiError, ValidationError } from '../../errors.js';
 import { managedAppSchema } from '../../services/accounts/secretVault.js';
@@ -41,10 +41,107 @@ export function setManagedAccountEnabled(db: Db, id: string, enabled: boolean): 
   return getManagedAccount(db, id)!;
 }
 
-export function publicManagedAccount(account: ManagedAccount): PublicManagedAccount {
-  const { identity_hash: _hash, client_snapshot_ref: _snapshot, checkin_credential_ref: checkinRef, ...safe } = account;
+// ---------- ACC-TOKEN-2：凭据到期/失效列的判定与写入助手（设计页 §3） ----------
+
+/** expiring 阈值：到期前 24h（minimax 生命周期 5–7h 会常态 expiring——预期信号，中性色） */
+export const CREDENTIAL_EXPIRING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 到期时间归一化为 epoch ms：秒级数值/字符串（<1e10，JWT exp、trae expiredAt）×1000；
+ * 毫秒数值/字符串（workbuddy auth.expiresAt 明文毫秒）原样；ISO 字符串按 Date.parse；其余 null。
+ */
+export function parseCredentialExpiry(value: unknown): number | null {
+  const toMs = (n: number): number | null => (Number.isFinite(n) && n > 0 ? (n < 10_000_000_000 ? n * 1000 : n) : null);
+  if (typeof value === 'number') return toMs(value);
+  if (typeof value === 'string' && value.trim() !== '') {
+    const numeric = toMs(Number(value));
+    if (numeric !== null) return numeric;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+/** 从 JSON 形态凭据载荷（{access_token|token, refresh_token, expires_at}）里取 expires_at；裸串/解析失败 → null */
+export function credentialExpiresAtFromPayload(credential: Buffer): number | null {
+  const raw = credential.toString('utf8').trim();
+  if (!raw.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(raw) as { expires_at?: unknown };
+    return typeof parsed.expires_at === 'number' && Number.isFinite(parsed.expires_at) && parsed.expires_at > 0 ? parsed.expires_at : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * status 判定规则（设计页 §3；GET 列表时逐行计算，不解密）：
+ * 1. invalid_at 非空（成功刷新会清掉它）→ invalid；
+ * 2. expires_at 非空：now >= expires_at → expired；expires_at - now <= 24h → expiring；否则 valid；
+ * 3. 其余 → 落库基准值（默认 unknown）。
+ */
+export function deriveCredentialStatus(input: { expiresAt?: number | null; invalidAt?: number | null; stored?: CredentialStatus | null; now?: number }): CredentialStatus {
+  const now = input.now ?? Date.now();
+  if (input.invalidAt !== null && input.invalidAt !== undefined) return 'invalid';
+  if (input.expiresAt !== null && input.expiresAt !== undefined) {
+    if (now >= input.expiresAt) return 'expired';
+    if (input.expiresAt - now <= CREDENTIAL_EXPIRING_WINDOW_MS) return 'expiring';
+    return 'valid';
+  }
+  return input.stored ?? 'unknown';
+}
+
+/**
+ * refresh_method = 平台静态表 ⊕ 载荷能力（设计页 §2 矩阵）：
+ * minimax 载荷带 refresh_token → refresh_token（旧裸串降 recapture）；workbuddy/trae → recapture；
+ * qoder/zcode → relogin；codebuddy_desktop 矩阵未覆盖 → null（端点按 relogin 口径 409 引导）。
+ */
+export function credentialRefreshMethodFor(appId: ManagedAppId, payloadHasRefreshToken = false): CredentialRefreshMethod | null {
+  switch (appId) {
+    case 'minimax': return payloadHasRefreshToken ? 'refresh_token' : 'recapture';
+    case 'workbuddy_desktop':
+    case 'trae': return 'recapture';
+    case 'qoder_cn':
+    case 'zcode': return 'relogin';
+    default: return null;
+  }
+}
+
+/** 捕获/导入/协议加号写入点：落到期列，status 按到期推导，清 invalid_at（新凭据即恢复） */
+export function setCredentialExpiry(db: Db, accountId: string, input: { expiresAt: number | null; refreshMethod: CredentialRefreshMethod | null }): void {
+  const status = deriveCredentialStatus({ expiresAt: input.expiresAt, invalidAt: null, stored: 'unknown' });
+  db.prepare('UPDATE managed_account SET credential_expires_at=?, credential_status=?, credential_refresh_method=?, credential_invalid_at=NULL, updated_at=MAX(?,updated_at+1) WHERE id=?')
+    .run(input.expiresAt, status, input.refreshMethod, Date.now(), accountId);
+}
+
+/** 续期成功（withRefresh / refresh-credential）：valid + 新到期时间 + 清 invalid_at；不动 refresh_method */
+export function markCredentialRefreshed(db: Db, accountId: string, expiresAt: number | null, now = Date.now()): void {
+  db.prepare("UPDATE managed_account SET credential_expires_at=?, credential_status='valid', credential_invalid_at=NULL, updated_at=MAX(?,updated_at+1) WHERE id=?")
+    .run(expiresAt, now, accountId);
+}
+
+/** 凭据被判失效（401 / invalid_grant）：invalid + 记失效时间 */
+export function markCredentialInvalid(db: Db, accountId: string, now = Date.now()): void {
+  db.prepare("UPDATE managed_account SET credential_status='invalid', credential_invalid_at=?, updated_at=MAX(?,updated_at+1) WHERE id=?")
+    .run(now, now, accountId);
+}
+
+export function publicManagedAccount(account: ManagedAccount, now = Date.now()): PublicManagedAccount {
+  const {
+    identity_hash: _hash, client_snapshot_ref: _snapshot, checkin_credential_ref: checkinRef,
+    credential_status: storedStatus, credential_expires_at: expiresAt, credential_refresh_method: refreshMethod,
+    credential_invalid_at: invalidAt,
+    ...safe
+  } = account;
   // ACC-CHECKIN：前端据此禁用「缺凭据」账号的签到按钮；只给布尔，不给 ref
-  return { ...safe, has_checkin_credential: checkinRef !== null };
+  // ACC-TOKEN-2：状态读取时即时修正（落库 valid 但实际已过期的行不失真）；零解密——只读列
+  return {
+    ...safe,
+    has_checkin_credential: checkinRef !== null,
+    credential_status: deriveCredentialStatus({ expiresAt: expiresAt ?? null, invalidAt: invalidAt ?? null, stored: storedStatus ?? 'unknown', now }),
+    credential_expires_at: expiresAt ?? null,
+    refresh_method: refreshMethod ?? null,
+  };
 }
 export function listManagedAccounts(db: Db): PublicManagedAccount[] {
   return (db.prepare('SELECT id FROM managed_account ORDER BY created_at,id').all() as Array<{ id: string }>).map(r => publicManagedAccount(getManagedAccount(db, r.id)!));

@@ -22,9 +22,9 @@ import {
   publicAddAccountSession,
   transitionAddAccountSession,
 } from '../../db/repos/addAccount.js';
-import { findManagedAccountByAppIdentity, getManagedAccount, publicManagedAccount } from '../../db/repos/managedAccount.js';
+import { credentialRefreshMethodFor, deriveCredentialStatus, findManagedAccountByAppIdentity, getManagedAccount, publicManagedAccount } from '../../db/repos/managedAccount.js';
 import { ApiError, NotFoundError } from '../../errors.js';
-import { createCheckinProviders } from './httpCheckinProviders.js';
+import { createCheckinProviders, parseMinimaxCredential } from './httpCheckinProviders.js';
 import type { AddAccountProviderSpec, AddAccountRegion, AddAccountVault } from './addAccountProtocol.js';
 
 export interface AddAccountDeps {
@@ -117,19 +117,32 @@ export async function startAddAccountAuthorization(
   }
 }
 /** 建号 / 更新号：同一 app + 同一 uid 命中既有行就更新，不产生重复账号 */
-function upsertAccount(deps: AddAccountDeps, appId: ManagedAppId, identityHash: string, displayName: string, credentialRef: string, existing: ManagedAccount | null, region: 'cn' | 'global' | 'unknown'): { account: ManagedAccount; previousRef: string | null } {
+function upsertAccount(
+  deps: AddAccountDeps,
+  appId: ManagedAppId,
+  identityHash: string,
+  displayName: string,
+  credentialRef: string,
+  existing: ManagedAccount | null,
+  region: 'cn' | 'global' | 'unknown',
+  expiresAt: number | null,
+  payloadHasRefreshToken: boolean,
+): { account: ManagedAccount; previousRef: string | null } {
   const capability = CHECKIN_CAPABLE_APPS.has(appId) ? 'supported' : 'unsupported';
   const timestamp = deps.now?.() ?? Date.now();
+  // ACC-TOKEN-2：加号写入点——expires_at（poll 响应透传）+ refresh_method（平台静态表 ⊕ minimax 载荷能力）+ status 按到期推导
+  const refreshMethod = credentialRefreshMethodFor(appId, payloadHasRefreshToken);
+  const credentialStatus = deriveCredentialStatus({ expiresAt, invalidAt: null, stored: 'unknown', now: timestamp });
   if (existing) {
-    deps.db.prepare('UPDATE managed_account SET display_name=?,checkin_credential_ref=?,checkin_capability=?,updated_at=MAX(?,updated_at+1) WHERE id=?')
-      .run(displayName, credentialRef, capability, timestamp, existing.id);
+    deps.db.prepare('UPDATE managed_account SET display_name=?,checkin_credential_ref=?,checkin_capability=?,credential_expires_at=?,credential_status=?,credential_refresh_method=?,credential_invalid_at=NULL,updated_at=MAX(?,updated_at+1) WHERE id=?')
+      .run(displayName, credentialRef, capability, expiresAt, credentialStatus, refreshMethod, timestamp, existing.id);
     return { account: getManagedAccount(deps.db, existing.id)!, previousRef: existing.checkin_credential_ref };
   }
   const id = randomUUID();
   deps.db.prepare(`INSERT INTO managed_account
-    (id,app_id,client_instance_id,service_region,identity_hash,display_name,identity_hint,client_snapshot_ref,checkin_credential_ref,client_snapshot_version,checkin_capability,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, appId, PROTOCOL_CLIENT_INSTANCE, region, identityHash, displayName, null, null, credentialRef, 1, capability, timestamp, timestamp);
+    (id,app_id,client_instance_id,service_region,identity_hash,display_name,identity_hint,client_snapshot_ref,checkin_credential_ref,client_snapshot_version,checkin_capability,credential_expires_at,credential_status,credential_refresh_method,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, appId, PROTOCOL_CLIENT_INSTANCE, region, identityHash, displayName, null, null, credentialRef, 1, capability, expiresAt, credentialStatus, refreshMethod, timestamp, timestamp);
   return { account: getManagedAccount(deps.db, id)!, previousRef: null };
 }
 
@@ -187,9 +200,11 @@ export async function pollAddAccountAuthorization(
   const clientInstanceId = existing?.client_instance_id ?? PROTOCOL_CLIENT_INSTANCE;
   const scope = scopeOfCredential(row.app_id, clientInstanceId, identityHash);
   const credentialRef = await deps.vault.protect(polled.credential, scope);
+  // ACC-TOKEN-2：minimax 载荷带 refresh_token 才落 refresh_token，其余平台不看载荷
+  const payloadHasRefreshToken = row.app_id === 'minimax' && parseMinimaxCredential(polled.credential).refresh_token !== undefined;
   try {
     const result = deps.db.transaction(() => {
-      const upserted = upsertAccount(deps, row.app_id, identityHash, displayName, credentialRef, existing, row.service_region);
+      const upserted = upsertAccount(deps, row.app_id, identityHash, displayName, credentialRef, existing, row.service_region, polled.expires_at ?? null, payloadHasRefreshToken);
       const updated = transitionAddAccountSession(deps.db, sessionId, 'pending', { status: 'authorized', account_id: upserted.account.id });
       if (!updated) throw new ApiError(409, 'AUTHORIZATION_NOT_PENDING', '该添加账号会话已不在进行中');
       return upserted;

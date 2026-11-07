@@ -3,6 +3,8 @@ import { migrateKnowledge } from './migrations/knowledge.js';
 import { migrateIdempotency } from './migrations/idempotency.js';
 import { migrateAccounts } from './migrations/accounts.js';
 import { migrateDeviceIdentity } from './migrations/deviceIdentity.js';
+// ACC-TOKEN-2：凭据到期/失效四列（幂等加列；必须排在 migrateDeviceIdentity 与一切重建 managed_account 的迁移之后）
+import { migrateCredentialExpiry } from './migrations/credentialExpiry.js';
 import { migrateWorkspaceDbMode } from './migrations/workspaceDbMode.js';
 import { migrateTaskHierarchy } from './migrations/taskHierarchy.js';
 import { migrateAttachments, migrateAttachmentKind } from './migrations/attachments.js';
@@ -128,6 +130,8 @@ export function initSchema(db: Db): void {
   // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）。**必须放在所有「重建 managed_account」的迁移之后**，
   // 否则重建表会把这 4 列丢掉（accountPlatforms / checkinPlatforms 都是 DROP+CREATE 重建）。
   migrateDeviceIdentity(db);
+  // ACC-TOKEN-2：凭据到期/失效四列（幂等纯加列；老数据不回填，保持 unknown 由写入点自然补齐）
+  migrateCredentialExpiry(db);
   // STORE-1：必须排在最末（此前任何 workspace 表重建都会丢掉后加列）
   migrateWorkspaceDbMode(db);
   // AUDIT-SRV（F-04）：message 表的错误归类列（幂等加列；老行保持 NULL，读取时现算兜底）

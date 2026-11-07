@@ -44,20 +44,37 @@ export interface PageResult<T> { items: T[]; next_offset: number | null }
 export interface TextWindow { content: string; truncated: boolean; next_offset_chars: number | null }
 export interface TaskPreview extends Issue { description_truncated: boolean; next_description_offset_chars: number | null }
 export type ManagedAppId = 'workbuddy_desktop' | 'codebuddy_desktop' | 'minimax' | 'trae' | 'qoder_cn' | 'zcode';
+/** ACC-TOKEN-2：凭据状态（落库基准值；读取时按 now 与 expires_at 即时修正） */
+export type CredentialStatus = 'valid' | 'expiring' | 'expired' | 'invalid' | 'unknown';
+/** ACC-TOKEN-2：凭据刷新路径（平台静态表 ⊕ 载荷能力） */
+export type CredentialRefreshMethod = 'refresh_token' | 'recapture' | 'relogin';
 export interface ManagedAccount {
   id: string; app_id: ManagedAppId; client_instance_id: string; service_region: 'cn' | 'global' | 'unknown';
   identity_hash: string; display_name: string; identity_hint: string | null;
   client_snapshot_ref: string | null; checkin_credential_ref: string | null; client_snapshot_version: number;
   checkin_capability: 'unknown' | 'supported' | 'unsupported'; enabled: boolean;
   last_checkin_day: string | null; last_checkin_status: string | null; last_checkin_at: number | null;
+  // ACC-TOKEN-2：凭据到期四列（写入点落库；老数据 NULL/unknown，读取时即时修正）。声明可选兼容既有 fixture。
+  credential_expires_at?: number | null;
+  credential_status?: CredentialStatus;
+  credential_refresh_method?: CredentialRefreshMethod | null;
+  credential_invalid_at?: number | null;
   created_at: number; updated_at: number;
 }
-export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'client_snapshot_ref' | 'checkin_credential_ref'> & {
+export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'client_snapshot_ref' | 'checkin_credential_ref' | 'credential_invalid_at' | 'credential_refresh_method'> & {
   /**
    * ACC-CHECKIN：是否已有签到凭据（只暴露布尔，不返回凭据 ref/明文）。
    * 服务端恒填；声明为可选是为了让既有测试 fixture 不必逐处补齐，界面只在显式 `false` 时禁用。
    */
   has_checkin_credential?: boolean;
+  /**
+   * ACC-TOKEN-2：凭据状态（credential_status 列做基准 + 服务端按 now 即时修正 expired/expiring）。
+   * credential_invalid_at / credential_refresh_method 两列不直接暴露：前者内部记失效时间，
+   * 后者以 `refresh_method` 名义返回（字段名与设计页 §4 一致）。
+   */
+  credential_status?: CredentialStatus;
+  credential_expires_at?: number | null;
+  refresh_method?: CredentialRefreshMethod | null;
 };
 /**
  * ACC-CLI-MULTI：CLI 额度来源（口径 A：只登记本机可发现凭据 + 真实计数 + 持久化）。

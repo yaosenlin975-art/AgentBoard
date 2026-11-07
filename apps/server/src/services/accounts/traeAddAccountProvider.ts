@@ -30,6 +30,7 @@ import {
   asRecord,
   decodePending,
   encodePending,
+  jwtExpiresAt,
   num,
   requestJson,
   str,
@@ -38,6 +39,7 @@ import {
   type AddAccountRegion,
   type AddAccountStart,
 } from './addAccountProtocol.js';
+import { parseCredentialExpiry } from '../../db/repos/managedAccount.js';
 
 const TRAE_CALLBACK_PATH = '/authorize';
 const DEFAULT_TRAE_CALLBACK_PORT = 17388;
@@ -382,7 +384,9 @@ export function createTraeAddAccountProvider(options: TraeAddAccountOptions = {}
       if (!uid) return { status: 'failed', safe_error_code: 'TRAE_IDENTITY_MISSING' };
       callbacks.delete(pending.login_trace_id);
       const normalized = token.replace(/^Cloud-IDE-JWT\s+/i, '');
-      return { status: 'authorized', uid, display_name: callback.display_name, credential: Buffer.from(normalized, 'utf8') };
+      // ACC-TOKEN-2：token 是 RS256 JWT，到期从 exp claim 落列；交换响应字段兜底
+      const expiresAt = parseCredentialExpiry(data.expires_at) ?? parseCredentialExpiry(data.expiredAt) ?? jwtExpiresAt(normalized);
+      return { status: 'authorized', uid, display_name: callback.display_name, expires_at: expiresAt, credential: Buffer.from(normalized, 'utf8') };
     },
     async dispose(pendingSecret: Buffer): Promise<void> {
       const pending = decodePending<TraePending>(pendingSecret);

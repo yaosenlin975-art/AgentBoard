@@ -186,9 +186,31 @@ describe('TraeDesktopProvider captureCurrent (ACC-GET)', () => {
     const read = await vault.unprotect(String(stored.checkin_credential_ref), {
       app_id: 'trae', client_instance_id: String(stored.client_instance_id), identity_hash: String(stored.identity_hash), purpose: 'checkin',
     });
-    expect(read.toString('utf8')).toBe(token);
+    // ACC-TOKEN-2：捕获落 JSON 载荷 {token, refresh_token, expires_at}（旧裸串契约改为信封字段不再丢弃）；
+    // 签到链路 parseTraeCredential 兼容两种形态
+    const payload = JSON.parse(read.toString('utf8')) as { token: string; refresh_token?: string; expires_at: number | null };
+    expect(payload.token).toBe(token);
+    expect(payload.refresh_token).toBeUndefined();
+    expect(payload.expires_at).toBeNull();
+    expect(stored.credential_refresh_method).toBe('recapture');
+    expect(stored.credential_status).toBe('unknown');
     const dump = JSON.stringify(t.db.prepare('SELECT * FROM managed_account').all()) + JSON.stringify(t.db.prepare('SELECT * FROM account_operation').all());
     expect(dump).not.toContain(token);
+  });
+
+  it('ACC-TOKEN-2：信封带 refreshToken/expiredAt → JSON 载荷齐全 + 到期列落库', async () => {
+    const token = jwt('trae-user-c');
+    writeEnvelope({ token, refreshToken: 'rt-123', expiredAt: '1796606419', userId: 'trae-user-c' });
+    const account = await mkProvider().captureCurrent();
+    const stored = t.db.prepare('SELECT * FROM managed_account WHERE id=?').get(account.id) as Record<string, unknown>;
+    const read = await vault.unprotect(String(stored.checkin_credential_ref), {
+      app_id: 'trae', client_instance_id: String(stored.client_instance_id), identity_hash: String(stored.identity_hash), purpose: 'checkin',
+    });
+    const payload = JSON.parse(read.toString('utf8')) as { token: string; refresh_token?: string; expires_at: number | null };
+    expect(payload.refresh_token).toBe('rt-123');
+    expect(payload.expires_at).toBe(1_796_606_419_000); // 秒级字符串归一化为 ms
+    expect(stored.credential_expires_at).toBe(1_796_606_419_000);
+    expect(stored.credential_refresh_method).toBe('recapture');
   });
 
   it('同身份重复捕获 → 更新同一账号、换 ref 并清理旧密文', async () => {

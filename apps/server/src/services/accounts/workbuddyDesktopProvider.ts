@@ -22,10 +22,11 @@ import type { Db } from '../../db/connection.js';
 import { runAccountOperation } from './operationRunner.js';
 import { runSwitchFlow } from './switchFlow.js';
 import { updateAccountOperation } from '../../db/repos/accountOperation.js';
-import { attachClientSnapshot, createManagedAccount, findManagedAccountByIdentity, getManagedAccount } from '../../db/repos/managedAccount.js';
+import { attachClientSnapshot, createManagedAccount, findManagedAccountByIdentity, getManagedAccount, setCredentialExpiry } from '../../db/repos/managedAccount.js';
 import { attachCheckinCredential } from '../../db/repos/checkin.js';
 import type { SecretVault } from './secretVault.js';
-import { createWorkbuddyCheckinTokenSource, type WorkbuddyCheckinTokenSource } from './workbuddyCheckinSource.js';
+import { createWorkbuddyCheckinTokenSource, readWorkbuddyAuthExpiresAt, type WorkbuddyCheckinTokenSource } from './workbuddyCheckinSource.js';
+import { jwtExpiresAt } from './addAccountProtocol.js';
 import { ApiError, ValidationError } from '../../errors.js';
 
 export const WORKBUDDY_APP_ID = 'workbuddy_desktop' as const;
@@ -220,6 +221,8 @@ export class WorkbuddyDesktopProvider {
         throw new ApiError(409, 'CHECKIN_CREDENTIAL_UNAVAILABLE', '未能从本机获取签到凭据，请改用授权添加或导入本机凭据');
       }
       const checkinRef = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(identity.identity_hash));
+      // ACC-TOKEN-2：到期来源优先桌面线 info 文件 auth.expiresAt（明文毫秒，无需解密）；兜底插件线 JWT exp
+      const expiresAt = (await readWorkbuddyAuthExpiresAt(this.paths.authInfoPath)) ?? jwtExpiresAt(token);
       try {
 
         const existing = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
@@ -237,6 +240,8 @@ export class WorkbuddyDesktopProvider {
           });
           captured = attachCheckinCredential(this.db, captured.id, checkinRef);
         }
+        // ACC-TOKEN-2：捕获写入点——落到期列（workbuddy refresh_method 固定 recapture）
+        if (captured) setCredentialExpiry(this.db, captured.id, { expiresAt, refreshMethod: 'recapture' });
       } catch (error) {
         await this.vault.delete(ref).catch(() => {});
         await this.vault.delete(checkinRef).catch(() => {});
@@ -263,9 +268,11 @@ export class WorkbuddyDesktopProvider {
       const token = await this.checkinTokenSource.find(identity).catch(() => null);
       if (token === null || token.trim() === '') continue;
       const ref = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(row.identity_hash));
-      const updated = attachCheckinCredential(this.db, row.id, ref);
+      attachCheckinCredential(this.db, row.id, ref);
+      // ACC-TOKEN-2：回填写入点——插件线是明文 JWT，到期从 exp claim 落列
+      setCredentialExpiry(this.db, row.id, { expiresAt: jwtExpiresAt(token), refreshMethod: 'recapture' });
       if (row.checkin_credential_ref && row.checkin_credential_ref !== ref) await this.vault.delete(row.checkin_credential_ref).catch(() => undefined);
-      return updated;
+      return getManagedAccount(this.db, row.id);
     }
     return null;
   }
