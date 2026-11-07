@@ -26,6 +26,17 @@ const SAFE_MESSAGES: Record<string, string> = {
   OPERATION_UNKNOWN: 'The request timed out after sending; inspect or retry with the same request_id.',
   UPSTREAM_ERROR: 'The local AgentBoard API request failed.',
   STALE_FENCE: 'The occupancy fence is stale; claim the task again to get a fresh fence before finishing.',
+  DECISION_NOT_FOUND: 'The decision does not exist or is not visible to this workspace.',
+  DECISION_ALREADY_OPEN: 'The task already has an in-flight decision; answer or withdraw it first.',
+  DECISION_ALREADY_ANSWERED: 'The decision was already answered or withdrawn; read it again.',
+  DECISION_REVISION_CONFLICT: 'The decision answer changed; read it again before revising.',
+  DECISION_NOT_ACTIVE: 'The decision is no longer active; read it again before acting.',
+  DECISION_WITHDRAWN: 'The decision was withdrawn and can no longer be answered.',
+  DECISION_NOT_GRACE: 'The decision is not in its grace window; only grace decisions can be extended.',
+  ASK_TOO_FEW_OPTIONS: 'At least two options with non-empty label and consequence are required.',
+  ASK_RATE_LIMITED: 'Too many in-flight or recent decisions for this agent; wait before asking again.',
+  ISSUE_STATUS_NOT_RUNNING: 'Only a running task owned by this agent can ask a decision.',
+  INVALID_GRACE: 'grace_seconds must be an integer between 0 and 600.',
 };
 
 function safeCode(code: unknown, status: number, conflictCode?: string, notFoundCode?: string): string {

@@ -10,6 +10,7 @@ import { registerTaskTools } from './tools/tasks.js';
 import { registerDependencyTools } from './tools/dependencies.js';
 import { registerStatusTools } from './tools/statuses.js';
 import { registerKnowledgeTools } from './tools/knowledge.js';
+import { registerDecisionTools } from './tools/decisions.js';
 
 // MCP 握手版本：createRequire 按模块 URL 定位本包 package.json（src/ 与打包后 dist/ 均在其上一级）
 const require = createRequire(import.meta.url);
@@ -22,6 +23,7 @@ export function createTaskMcpServer(config: McpConfig, fetcher: typeof fetch = f
   registerDependencyTools(server, config, api);
   registerStatusTools(server, config, api);
   registerKnowledgeTools(server, config, api);
+  registerDecisionTools(server, config, api);
   return server;
 }
 
