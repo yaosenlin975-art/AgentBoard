@@ -16,9 +16,9 @@ import { api } from '../../api/client';
 import {
   attachmentIds,
   attachmentMarkdown,
-  collectDraftImages,
+  collectDraftAttachments,
   filesFromClipboard,
-  getImageMimeType,
+  isImageMime,
   type DraftAttachment,
 } from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
@@ -40,12 +40,26 @@ import { MentionPopover } from './MentionPopover';
  * 正文（textarea）只存用户文字，不再内联 `![图片](...)` markdown。
  */
 const EMPTY_ATTACHMENTS: DraftAttachment[] = [];
-function mimeLabel(mime: string): string {
-  if (mime === 'image/png') return 'PNG';
-  if (mime === 'image/jpeg') return 'JPG';
-  if (mime === 'image/webp') return 'WebP';
-  return '图片';
+/** CHAT-ATTACH-ANY：草稿含非图片附件时的发送闸门文案（投递通道由服务端卡负责） */
+export const NON_IMAGE_BLOCKED_MESSAGE =
+  '非图片附件投递通道待服务端卡 3b7d483f-0651-4f4a-a02a-dcdb35dceec9；当前只能发送图片附件，请先移除文件附件。';
+
+/** 非图片附件的类型徽标：优先文件扩展名，过长/无扩展名退回 FILE */
+function attachmentBadge(name: string): string {
+  const extension = name.includes('.') ? (name.split('.').at(-1) ?? '').toUpperCase() : '';
+  return extension !== '' && extension.length <= 4 ? extension : 'FILE';
 }
+
+/**
+ * D7 服务端已支持任意 MIME，但 web 的 client 类型仍按图片通道收窄；
+ * 这里显式放宽到任意文件，避免为放宽类型去改共享 client（本卡范围只到 chat/**）。
+ */
+const uploadAttachmentAny = api.uploadAttachment as unknown as (
+  workspaceId: string,
+  file: File,
+  mimeType: string,
+) => Promise<{ id: string; file_name: string; mime_type: string; size_bytes: number; download_url: string }>;
+
 
 function formatBytes(bytes: number | null): string | null {
   if (bytes === null || !Number.isFinite(bytes) || bytes <= 0) return null;
@@ -119,8 +133,8 @@ export function Composer({
   const setValue = (text: string): void => setChatDraft(draftKey, text);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** 正在上传的粘贴图片数（>0 时禁止发送，避免图片还没落盘就发出去） */
-  const [uploadingImages, setUploadingImages] = useState(0);
+  /** 正在上传的附件数（>0 时禁止发送，避免附件还没落盘就发出去） */
+  const [uploadingAttachments, setUploadingAttachments] = useState(0);
   const [mention, setMention] = useState<MentionState | null>(null);
   const composingRef = useRef(false);
   // 选中候选后插入的文本本身仍能命中查询（如插入 `/mail-report` 后 `mar` 仍匹配），
@@ -133,6 +147,8 @@ export function Composer({
   // 附件预览条：来自 panelStore 的结构化草稿状态（与正文解耦，见 CHAT-ATTACH-STATE）
   const attachments = usePanelStore((s) => s.chatAttachments[draftKey] ?? EMPTY_ATTACHMENTS);
   const setChatAttachments = usePanelStore((s) => s.setChatAttachments);
+  /** CHAT-ATTACH-ANY：图片件走现有图片通道；含非图片时禁用发送（投递通道由服务端卡负责） */
+  const hasNonImage = attachments.some((item) => !isImageMime(item.mime));
 
   const queueHint =
     queuedCount > 0
@@ -206,15 +222,21 @@ export function Composer({
     const text = value.trim();
     if (blocked !== null) return;
     if (sending || disabled) return;
-    // CHAT-USER-IMAGE：图片仍在上传时不许发送，避免消息先发出去（不含附件）而上传结果落回空输入框
-    if (uploadingImages > 0) {
-      setError('图片还在上传，请稍候再发送');
+    // CHAT-ATTACH-ANY：附件还在上传时不许发送，避免消息先发出去（不含附件）而上传结果落回空输入框
+    if (uploadingAttachments > 0) {
+      setError('附件还在上传，请稍候再发送');
       return;
     }
     if (text === '' && attachments.length === 0) return;
     setError(null);
     if (attachments.length > 5) {
-      setError('一条消息最多附带 5 张图片，请删除多余的图再发送');
+      setError('一条消息最多附带 5 个附件，请删除多余的附件再发送');
+      return;
+    }
+    // CHAT-ATTACH-ANY：聊天投递仍只有图片通道（RunTurnOptions.attachments → --image），
+    // 非图片附件先拦截；放开投递由服务端卡 3b7d483f-0651-4f4a-a02a-dcdb35dceec9 负责。
+    if (hasNonImage) {
+      setError(NON_IMAGE_BLOCKED_MESSAGE);
       return;
     }
     // CHAT-ATTACH-STATE：附件 id 来自结构化状态；发出文本物化 markdown，
@@ -270,38 +292,39 @@ export function Composer({
   };
 
   /**
-   * 图片上传（粘贴 / 「＋」选图共用）：成功后只写入结构化附件状态，正文不再插 markdown；
-   * 张数上限按草稿里已有的附件数累计，超限/类型不支持/上传失败都落到 composer-error。
+   * 附件上传（粘贴 / 「＋」选文件共用，CHAT-ATTACH-ANY）：任意类型都接受，
+   * 成功后只写入结构化附件状态（正文不插标记）；上限 5 个、单文件 ≤10 MiB，
+   * 超限/上传失败都落到 composer-error。非图片的投递闸门在 submit 里拦截。
    */
-  const uploadImages = (images: File[]): void => {
+  const uploadAttachments = (files: File[]): void => {
     if (workspaceId === undefined || workspaceId === null) {
-      setError('图片上传需要先选择工作区：在左上角选中工作区后再贴图');
+      setError('附件上传需要先选择工作区：在左上角选中工作区后再添加文件');
       return;
     }
     const current = usePanelStore.getState().chatAttachments[draftKey] ?? [];
-    const { accepted, rejection } = collectDraftImages(images, current.length);
+    const { accepted, rejection } = collectDraftAttachments(files, current.length);
     setError(rejection);
     if (accepted.length === 0) return;
-    setUploadingImages(accepted.length);
+    setUploadingAttachments(accepted.length);
     void (async () => {
       for (const item of accepted) {
         try {
-          const result = await api.uploadAttachment(workspaceId, item.file, item.mimeType);
+          const result = await uploadAttachmentAny(workspaceId, item.file, item.mimeType);
           const next = usePanelStore.getState().chatAttachments[draftKey] ?? [];
           usePanelStore.getState().setChatAttachments(draftKey, [
             ...next,
             {
               id: result.id,
               url: result.download_url,
-              name: result.file_name || item.file.name || '图片',
-              mime: result.mime_type,
+              name: result.file_name || item.file.name || '附件',
+              mime: result.mime_type || item.mimeType,
               bytes: result.size_bytes ?? item.file.size,
             },
           ]);
         } catch (e) {
-          setError(e instanceof Error ? e.message : '图片上传失败');
+          setError(e instanceof Error ? e.message : '附件上传失败');
         } finally {
-          setUploadingImages((n) => Math.max(0, n - 1));
+          setUploadingAttachments((n) => Math.max(0, n - 1));
         }
       }
     })();
@@ -309,12 +332,11 @@ export function Composer({
 
   const onPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>): void => {
     const files = filesFromClipboard(event.clipboardData);
-    const images = files.filter((file) => getImageMimeType(file) !== null);
-    if (images.length === 0) return; // 纯文本/其他类型交给原生粘贴
+    if (files.length === 0) return; // 纯文本交给原生粘贴
     event.preventDefault();
     const plain = event.clipboardData?.getData('text/plain') ?? '';
     if (plain !== '') insertAtCaret(plain);
-    uploadImages(images);
+    uploadAttachments(files);
   };
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {    const composing = e.nativeEvent.isComposing || composingRef.current;
@@ -380,22 +402,33 @@ export function Composer({
           <div data-testid="composer-attachments" className="flex flex-wrap gap-1.5 px-2.5 pt-2.5">
             {attachments.map((item) => {
               const bytes = formatBytes(item.bytes);
-              const kind = mimeLabel(item.mime);
+              const image = isImageMime(item.mime);
               return (
                 <span
                   key={item.id}
                   data-testid="composer-attachment"
+                  data-kind={image ? 'image' : 'file'}
                   className="flex max-w-[16rem] items-center gap-2 rounded-2xl border border-hairline bg-surface-raised/60 p-1.5 pr-1.5"
                 >
-                  <img
-                    src={item.url}
-                    alt=""
-                    className="size-8 shrink-0 rounded-lg border border-hairline object-cover"
-                  />
+                  {image ? (
+                    <img
+                      src={item.url}
+                      alt=""
+                      className="size-8 shrink-0 rounded-lg border border-hairline object-cover"
+                    />
+                  ) : (
+                    <span
+                      data-testid="composer-attachment-badge"
+                      aria-hidden="true"
+                      className="grid size-8 shrink-0 place-items-center rounded-lg border border-hairline bg-surface-card text-[9px] font-semibold uppercase text-ink-2"
+                    >
+                      {attachmentBadge(item.name)}
+                    </span>
+                  )}
                   <span className="min-w-0">
                     <span className="block truncate text-[11px] font-medium text-ink">{item.name}</span>
                     <span className="block truncate text-[10px] text-ink-3">
-                      {bytes === null ? kind : `${kind} · ${bytes}`}
+                      {bytes === null ? item.mime : `${item.mime} · ${bytes}`}
                     </span>
                   </span>
                   <button
@@ -416,6 +449,15 @@ export function Composer({
               );
             })}
           </div>
+        )}
+        {hasNonImage && (
+          <p
+            data-testid="composer-attachment-blocked"
+            role="status"
+            className="px-3 pt-2 text-[11px] text-amber-700 dark:text-amber-300"
+          >
+            {NON_IMAGE_BLOCKED_MESSAGE}
+          </p>
         )}
         <textarea
           ref={inputRef}
@@ -459,8 +501,8 @@ export function Composer({
           <button
             type="button"
             data-testid="composer-attach"
-            aria-label="添加图片"
-            title="添加图片（PNG / JPEG / WebP，单张 ≤10 MiB）"
+            aria-label="添加附件"
+            title="添加附件（任意类型，单个 ≤10 MiB）"
             onClick={() => fileInputRef.current?.click()}
             disabled={disabled || blocked !== null}
             className="flex size-8 items-center justify-center rounded-full text-ink-2 transition-colors duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 motion-reduce:transition-none"
@@ -471,11 +513,10 @@ export function Composer({
             ref={fileInputRef}
             data-testid="composer-file-input"
             type="file"
-            accept="image/png,image/jpeg,image/webp"
             multiple
             className="hidden"
             onChange={(event) => {
-              uploadImages(Array.from(event.target.files ?? []));
+              uploadAttachments(Array.from(event.target.files ?? []));
               event.target.value = '';
             }}
           />
@@ -485,7 +526,9 @@ export function Composer({
             aria-label={sending ? '发送中' : '发送'}
             title={sending ? '发送中…' : '发送'}
             onClick={() => void submit()}
-            disabled={disabled || blocked !== null || sending || uploadingImages > 0 || value.trim() === ''}
+            disabled={
+              disabled || blocked !== null || sending || uploadingAttachments > 0 || hasNonImage || value.trim() === ''
+            }
             className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink shadow-sm transition-[background-color,color,opacity] duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-ink-3 disabled:opacity-70 motion-reduce:transition-none"
           >
             {sending ? (
@@ -499,9 +542,9 @@ export function Composer({
           </button>
         </div>
       </div>
-      {uploadingImages > 0 && (
+      {uploadingAttachments > 0 && (
         <p data-testid="composer-uploading" role="status" className="text-xs text-ink-3">
-          图片上传中…（完成后会自动插入到光标处，再发送）
+          附件上传中…（完成后会自动加入附件卡，再发送）
         </p>
       )}      {error !== null && (
         <p data-testid="composer-error" role="alert" className="text-xs text-red-600 dark:text-red-400">

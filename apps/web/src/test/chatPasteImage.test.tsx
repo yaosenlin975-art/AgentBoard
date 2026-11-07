@@ -96,23 +96,33 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
     expect(input.value).toBe('');
   });
 
-  it('超过 10 MiB：给「单张图片不能超过 10 MiB」且不上传', async () => {
+  it('超过 10 MiB：给「单个附件不能超过 10 MiB」且不上传', async () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     paste(input, { files: [pngFile('big.png', 11 * 1024 * 1024)] });
 
-    expect(await screen.findByTestId('composer-error')).toHaveTextContent('单张图片不能超过 10 MiB');
+    expect(await screen.findByTestId('composer-error')).toHaveTextContent('单个附件不能超过 10 MiB');
     expect(uploaded).toHaveLength(0);
   });
 
-  it('非图片文件不接管粘贴（交给原生行为），也不上传', async () => {
+  it('非图片文件走同一条上传链路（文件名 + MIME + 大小），发送被闸门拦住并提示阻塞卡', async () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
-    paste(input, { files: [new File(['x'], 'a.txt', { type: 'text/plain' })] });
+    paste(input, { files: [new File([new Uint8Array(2048)], 'report.pdf', { type: 'application/pdf' })] });
 
-    await new Promise((r) => setTimeout(r, 50));
-    expect(uploaded).toHaveLength(0);
-    expect(screen.queryByTestId('composer-error')).toBeNull();
+    await waitFor(() => expect(uploaded).toHaveLength(1));
+    const card = await screen.findByTestId('composer-attachment');
+    expect(card).toHaveAttribute('data-kind', 'file');
+    expect(screen.getByTestId('composer-attachment-badge')).toHaveTextContent('PDF');
+    expect(card).toHaveTextContent('report.pdf');
+    expect(card).toHaveTextContent('application/pdf · 2.0 KB');
+    expect(input.value).not.toContain('![图片]');
+
+    await userEvent.type(input, '看看这个');
+    expect(screen.getByTestId('composer-send')).toBeDisabled();
+    expect(screen.getByTestId('composer-attachment-blocked')).toHaveTextContent(
+      '3b7d483f-0651-4f4a-a02a-dcdb35dceec9',
+    );
   });
 
   it('未选工作区时给可读提示，不发起上传', async () => {
@@ -120,7 +130,7 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     paste(input, { files: [pngFile()] });
 
-    expect(await screen.findByTestId('composer-error')).toHaveTextContent('图片上传需要先选择工作区');
+    expect(await screen.findByTestId('composer-error')).toHaveTextContent('附件上传需要先选择工作区');
     expect(uploaded).toHaveLength(0);
   });
 
@@ -168,7 +178,7 @@ describe('用户气泡里的图片（CHAT-USER-IMAGE）', () => {
     // 用户手快：刚打完字就 Enter
     await userEvent.type(input, '看这张');
     await userEvent.keyboard('{Enter}');
-    expect(await screen.findByTestId('composer-error')).toHaveTextContent('图片还在上传');
+    expect(await screen.findByTestId('composer-error')).toHaveTextContent('附件还在上传');
     expect(onSend).not.toHaveBeenCalled();
 
     // 放行上传 → 附件卡出现（正文仍无 markdown）→ 再发送，消息里带图与附件 id

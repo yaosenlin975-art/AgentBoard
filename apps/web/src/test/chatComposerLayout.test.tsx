@@ -84,7 +84,7 @@ describe('聊天输入框结构（CHAT-COMPOSER-V2）', () => {
 
     const chip = await screen.findByTestId('composer-attachment');
     expect(chip).toHaveTextContent('shot.png');
-    expect(chip).toHaveTextContent('PNG · 1.0 KB');
+    expect(chip).toHaveTextContent('image/png · 1.0 KB');
     // CHAT-ATTACH-STATE：附件卡是独立状态，正文不再出现 ![图片](...) 纯文本
     expect(input.value).not.toContain('![图片]');
     expect(input.value).toBe('');
@@ -93,6 +93,8 @@ describe('聊天输入框结构（CHAT-COMPOSER-V2）', () => {
   it('「＋」选图走上传链路并生成附件预览条', async () => {
     renderComposer();
     const picker = screen.getByTestId('composer-file-input') as HTMLInputElement;
+    // CHAT-ATTACH-ANY：不再限制 accept，任何文件类型都可选
+    expect(picker.getAttribute('accept')).toBeNull();
     fireEvent.change(picker, { target: { files: [pngFile('picked.png')] } });
 
     const chip = await screen.findByTestId('composer-attachment');

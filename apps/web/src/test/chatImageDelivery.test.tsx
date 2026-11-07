@@ -146,7 +146,7 @@ describe('Composer 发送携带附件 id', () => {
     input.focus();
     await userEvent.keyboard('{Enter}');
 
-    expect(await screen.findByTestId('composer-error')).toHaveTextContent('一条消息最多附带 5 张图片');
+    expect(await screen.findByTestId('composer-error')).toHaveTextContent('一条消息最多附带 5 个附件');
     expect(onSend).not.toHaveBeenCalled();
   });
 });

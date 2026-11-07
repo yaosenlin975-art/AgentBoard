@@ -8,6 +8,9 @@ export type ImageMimeType = AttachmentUploadResult['mime_type'];
 
 export const MAX_DRAFT_IMAGES = 5;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** CHAT-ATTACH-ANY：聊天附件（任意类型）的上限，与服务端 D7 单文件 10 MiB 同值 */
+export const MAX_DRAFT_ATTACHMENTS = 5;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 const MIME_BY_EXTENSION: Record<string, ImageMimeType> = {
   png: 'image/png',
@@ -76,6 +79,61 @@ export function collectDraftImages(
       continue;
     }
     accepted.push({ file, mimeType });
+    remaining -= 1;
+  }
+  return { accepted, rejection };
+}
+
+/**
+ * CHAT-ATTACH-ANY：任意类型附件的 MIME 判定。
+ * 浏览器给的类型优先（保留服务端 D7 的原始 MIME），缺失时按扩展名兜底（png/jpg/webp），
+ * 仍未知则用 `application/octet-stream`；不做可执行类型拦截——文件只存储、不执行、不内联预览，
+ * 下载由服务端强制 `Content-Disposition: attachment`。
+ */
+export function resolveAttachmentMime(file: File): string {
+  if (file.type !== '') return file.type;
+  const extension = file.name.split('.').at(-1)?.toLowerCase();
+  return extension === undefined ? 'application/octet-stream' : MIME_BY_EXTENSION[extension] ?? 'application/octet-stream';
+}
+
+/** 是否图片附件（决定缩略图 vs 类型徽标，以及是否允许走当前聊天图片通道发送） */
+export function isImageMime(mime: string): boolean {
+  return mime.toLowerCase().startsWith('image/');
+}
+
+export interface AcceptedDraftAttachment {
+  file: File;
+  mimeType: string;
+}
+
+export interface CollectedDraftAttachments {
+  accepted: AcceptedDraftAttachment[];
+  /** 第一条被拒原因（超限/超数量） */
+  rejection: string | null;
+}
+
+/**
+ * CHAT-ATTACH-ANY：聊天附件收集（任意类型）。
+ * 上限：每条消息最多 5 个、单文件 ≤10 MiB（与服务端 D7 一致）；已接收项按顺序保留。
+ */
+export function collectDraftAttachments(
+  files: Iterable<File>,
+  existingCount: number,
+  max = MAX_DRAFT_ATTACHMENTS,
+): CollectedDraftAttachments {
+  const accepted: AcceptedDraftAttachment[] = [];
+  let rejection: string | null = null;
+  let remaining = max - existingCount;
+  for (const file of files) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      rejection = '单个附件不能超过 10 MiB';
+      continue;
+    }
+    if (remaining <= 0) {
+      rejection = `每次最多添加 ${max} 个附件`;
+      continue;
+    }
+    accepted.push({ file, mimeType: resolveAttachmentMime(file) });
     remaining -= 1;
   }
   return { accepted, rejection };
