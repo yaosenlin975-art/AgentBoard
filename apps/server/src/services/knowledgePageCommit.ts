@@ -75,6 +75,29 @@ export function renderKnowledgePageSnapshot(page: PageSnapshotContent): string {
 const git = (cwd: string, args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
+/** 原样输出（不 trim）：校验暂存内容时必须逐字节比对，trim 会吃掉首尾空行 */
+const gitRaw = (cwd: string, args: string[]): string =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+/**
+ * GIT-SNAPSHOT-CHECK（卡 9fa0d16f）：快照正文只能是 DB 权威正文的渲染结果。
+ * 多会话共用工作树时，`git stash pop` 等操作可能在「写文件」与「git add/commit」之间把冲突标记写进同一路径
+ * （2026-11-07 现场：快照提交里出现了 `<<<<<<<`），因此落盘后与暂存后都要复核。
+ */
+const CONFLICT_MARKER = /^(<{7}|={7,}|>{7})(\s|$)/;
+
+/** 返回命中的冲突标记行（截断到 40 字符）；无命中返回 null */
+export function findConflictMarker(text: string): string | null {
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trimStart();
+    if (CONFLICT_MARKER.test(trimmed)) return trimmed.slice(0, 40);
+  }
+  return null;
+}
+
+/** git 可能按 .gitattributes/autocrlf 归一换行；比对前统一成 LF，避免环境差异造成假失败 */
+const normalizeNewlines = (text: string): string => text.replace(/\r\n/g, '\n');
+
 /**
  * 仓库没配 user.name / user.email 时补上兜底身份（与 GIT-ON-DONE 同口径：局部/全局都没配才补）。
  * 不覆盖已有身份，避免改写用户的提交署名。
@@ -121,13 +144,34 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
   const relativePath = relative(workspacePath, path).split('\\').join('/');
   const previous = existsSync(path) ? readFileSync(path, 'utf8') : null;
   const result: PageCommitResult = { path, relative_path: relativePath, committed: false, commit: null, reason: null };
-  let stage = '写入快照文件';
+  const content = renderKnowledgePageSnapshot(page);
+  let stage = '权威正文自检';
+
+  // 正文来源只能是 DB 行（page.body_md）；先自检再落盘，避免把库里的脏正文写成快照
+  const bodyMarker = findConflictMarker(page.body_md);
+  if (bodyMarker !== null) {
+    result.reason = `${stage} 失败：DB 正文含冲突标记「${bodyMarker}」，拒绝落盘`;
+    return result;
+  }
 
   try {
+    stage = '写入快照文件';
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, renderKnowledgePageSnapshot(page), 'utf8');
+    writeFileSync(path, content, 'utf8');
+    // 落盘后回读：确认工作树上的文件就是权威正文渲染结果（防写盘后被并发改写）
+    stage = '快照回读校验';
+    const readBack = readFileSync(path, 'utf8');
+    const readMarker = findConflictMarker(readBack);
+    if (readMarker !== null) throw new Error(`落盘快照含冲突标记「${readMarker}」，疑似多会话并发改写`);
+    if (readBack !== content) throw new Error('落盘快照与 DB 权威正文不一致（疑似多会话并发改写）');
     stage = 'git add';
     git(workspacePath, ['add', '-A', '--', relativePath]);
+    // 暂存后复核：commit -- <path> 提交的是索引内容，必须与权威正文逐字节一致
+    stage = '暂存内容校验';
+    const stagedBlob = gitRaw(workspacePath, ['show', `:${relativePath}`]);
+    const stagedMarker = findConflictMarker(stagedBlob);
+    if (stagedMarker !== null) throw new Error(`暂存快照含冲突标记「${stagedMarker}」，拒绝提交`);
+    if (normalizeNewlines(stagedBlob) !== normalizeNewlines(content)) throw new Error('暂存快照与 DB 权威正文不一致（索引被并发改写）');
     // 内容没变化（例如只改了不进快照的分类字段）时不强行造空提交
     stage = 'git status';
     const staged = git(workspacePath, ['status', '--porcelain', '--', relativePath]);

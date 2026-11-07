@@ -146,6 +146,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 
 - 全局选项：`--server <url>`（覆盖 `KB_SERVER`）、`--json`（输出原始 JSON）。
 - 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
+- **`kb done` 的 1 是「已生效但没提交」**（GIT-OBSERVABLE）：done 已把卡推进到待验收（或已关闭），但自动提交未完成（`git_commit.status='not-committed'`，原因码 `NO_BASELINE` / `COMMIT_FAILED` / `ZERO_HIT` / `PARALLEL_UNDECLARED`）时，CLI 在 stderr 打「未提交 + 原因 + 可照抄补救命令」并 exit 1；按 stderr 补救，**不要重跑 `kb done`**。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。带 `--close` 且命中阻断性缺口时 CLI 会跳过 close（exit 1），补救后 `kb close <id>`。`--json` 仍输出单个 issue JSON，判定读 `git_commit.status/reason`。
 - `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
 - **claim 状态门禁**：`kb claim` 接受「待规划」**或「进行中且无人占用」**（含租约已过期的抢占，`apps/server/src/services/claim.ts`）；待验收/已关闭/已废弃、他人占用、存在 open 决策都会被拒（退出码 2）。当前 CLI 文案已区分「状态不可领取（当前=…）」「已被 <agent> 占用」「决策锁」三类，别一律当撞卡；仍以 `kb show <id>` 的 `status` / `claimed_by` 为准。
@@ -272,10 +273,13 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - **实现必须有接线（RULE-3）**：新增 REST 路由 / WS 事件 / 定时器 / CLI 命令 / DB 迁移的卡，`done` 前必须证明外部可触达（真实 app 断言 / 事件实发 / ticker 实跑），或在卡面写明接线归属并建 `blocks` 边；两者都没有不得 `done`。细则见 `executing-task` 的同名段。
 - 提交信息、分支与合并规则仍按项目 git 约定执行；GIT-ON-DONE 只解决「提交哪些路径」，不改变分支策略。
 - **提交信息带卡号（RULE-1）**：提交主题或正文必须包含本卡卡号（完整 UUID，或服务端自动生成的 `[shortId]`）；无卡提交视为违规，事后补卡也不能把这次提交洗成合规操作。
-- **不能自动提交时看原因码，别只看「没提交」**（`done` 仍成功，评论里带声明范围）：
+- **不能自动提交时看原因码，别只看「没提交」**（`done` 仍成功，评论里带声明范围；CLI 会 stderr + exit 1，`unavailable` 只警告）：
   - `GIT_NOT_INSTALLED` — 环境没装 git（容器镜像常见）：装 git 或改在宿主机收尾；
   - `NOT_A_GIT_REPO` — git 有但目录不是仓库：在该目录 `git init`；
   - `GIT_REPO_UNHEALTHY` — 是仓库但 `git status` 失败（index/HEAD 损坏、权限）：评论里带具体错误，先修仓库。
+  - `NO_BASELINE` — 无 claim 基线（旧卡 / 早期租约清扫）：按评论里的 `git add -- …; git commit -m … -- …` 补救（租约清扫现已保留基线，新卡不该再出现）；
+  - `COMMIT_FAILED` — 有基线但 git 提交失败（index.lock 残留、hook 拒绝等）：按评论里的补救命令重试；
+  - `ZERO_HIT` / `PARALLEL_UNDECLARED` — 声明范围零命中 / 并行占用未声明：按 `--scope` 重声明，或按评论列出的路径分开提交。
 
 ## 测试页与正式页（TEST-PAGE，强制）
 

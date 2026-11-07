@@ -256,13 +256,60 @@ function preexistingDirtyPaths(baseline: Record<string, string>, current: Record
   return Object.keys(baseline).filter(path => current[path] === baseline[path]).sort();
 }
 
-/** 本任务 git 处理收尾：清基线（不存在时 DELETE 为 no-op），返回要落评论的文本（null = 不写评论） */
-function dropAndNull(db: Db, issueId: string, note: string | null = null): string | null {
+/**
+ * GIT-OBSERVABLE（卡 9fa0d16f）：done 自动提交的结果必须让调用方可感知。
+ * - committed：本次确有变动并已提交（卡外改动只列清单，不影响本状态）；
+ * - nothing：无基线变动、无声明范围内脏文件，或有前置条件不满足但没有待提交内容；
+ * - not-committed：有声明范围内的改动但本次没提交（无基线 / 提交失败 / scope 零命中 / 并行占用未声明）；
+ * - unavailable：仓库不可用（未装 git / 非仓库 / 仓库损坏），自动提交不适用，与「提交失败」分开报。
+ */
+export type IssueCommitStatus = 'committed' | 'nothing' | 'not-committed' | 'unavailable';
+
+export type IssueCommitReason =
+  | 'NO_BASELINE'
+  | 'COMMIT_FAILED'
+  | 'ZERO_HIT'
+  | 'PARALLEL_UNDECLARED'
+  | 'UNDECLARED_PREEXISTING'
+  | 'GIT_NOT_INSTALLED'
+  | 'NOT_A_GIT_REPO'
+  | 'GIT_REPO_UNHEALTHY';
+
+export interface IssueCommitResult {
+  status: IssueCommitStatus;
+  reason: IssueCommitReason | null;
+  /** 要落成系统评论的文本（null = 不写评论） */
+  note: string | null;
+  /** not-committed 时仍未提交的路径（声明范围内；未声明=全部脏文件；ZERO_HIT=声明范围外的脏文件） */
+  pending: string[];
+}
+
+const NOTHING: IssueCommitResult = { status: 'nothing', reason: null, note: null, pending: [] };
+
+/** 本任务 git 处理收尾：清基线（不存在时 DELETE 为 no-op），返回结构化结果 */
+function dropAndNull(db: Db, issueId: string, result: Partial<IssueCommitResult> = {}): IssueCommitResult {
   db.prepare('DELETE FROM issue_git_baseline WHERE issue_id=?').run(issueId);
-  return note;
+  return { ...NOTHING, ...result };
+}
+
+/** 读取基线（不存在时 exists=false，调用方据此区分「无基线」与「无改动」） */
+function baselineRowOf(db: Db, issueId: string): {
+  exists: boolean;
+  paths: Record<string, string>;
+  claimedBy: string | null;
+  headSha: string | null;
+} {
+  const row = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
+  if (!row) return { exists: false, paths: {}, claimedBy: null, headSha: null };
+  return {
+    exists: true,
+    paths: JSON.parse(row.paths_json) as Record<string, string>,
+    claimedBy: row.claimed_by,
+    headSha: row.head_sha,
+  };
 }
 /**
- * done 阶段：按基线 diff 提交本任务改动，返回要落地为评论的文本（null = 不写评论）。
+ * done 阶段：按基线 diff 提交本任务改动，返回结构化结果（调用方据此判断「是否真的提交了」）。
  * declaredPaths 为本任务显式声明的路径（done body 的 `scope_paths`），文件或目录前缀皆可。
  *
  * 三类路径分开处理：
@@ -270,63 +317,85 @@ function dropAndNull(db: Db, issueId: string, note: string | null = null): strin
  * - `preexisting`：claim 前就已未提交、现在仍未提交 → 指纹相同；只有**声明范围内**的才强制提交
  *   （否则「接手遗留脏文件并收口」的卡会静默丢提交），评论里标注为强制提交；
  * - 越界或无法判定的路径一律不提交，只列清单（附可直接执行的补救命令）。
- * 非仓库 / 无基线 / 既无变化也无历史脏文件才返回 null。
+ * 无基线 / 有改动但提交失败 / scope 零命中 / 并行占用未声明 → `not-committed` + 原因码 + 补救命令。
  */
 export async function commitIssueChanges(
   db: Db,
   issueId: string,
   declaredPaths: readonly string[] = [],
   options: { git?: GitRunner } = {},
-): Promise<string | null> {
+): Promise<IssueCommitResult> {
   const issue = getIssue(db, issueId);
   if (!issue) return dropAndNull(db, issueId);
   const workspace = getWorkspace(db, issue.workspace_id);
   if (!workspace) return dropAndNull(db, issueId);
   const repo = workspace.path;
+  const declared = normalizeDeclaredPaths(declaredPaths);
+  /** `--all`（CLI 映射成 `.`）：显式声明工作区根，才允许纳入卡外改动 */
+  const declaredAll = declared.includes(ROOT_SCOPE);
+  const scopeLine = `声明范围：${declaredAll ? '（工作区根 .）' : declared.length > 0 ? declared.join(' / ') : '（未声明）'}`;
+  const shortId = issueId.slice(0, 8);
+
+  /** 可复制的补救命令（PowerShell / bash 都能直接粘贴执行，不使用行连接符） */
+  const remedyCommand = (paths: readonly string[]): string => {
+    const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
+    const quoted = listed.map(path => (/\s|["']/.test(path) ? JSON.stringify(path) : path));
+    const title = `[${shortId}] ${issue.title.replace(/"/g, '\\"')}`;
+    // 用 `;` 连接：PowerShell 5.1 不支持 `&&`，bash 里 `;` 同样可用
+    return `git add -- ${quoted.join(' ')}; git commit -m "${title}" -- ${quoted.join(' ')}`;
+  };
+
   // 不能自动提交：不再静默跳过，落一行系统评论并回显声明范围（否则「done 成功但没提交」无从判断）。
   // GIT-DETECT：三种原因分开报——容器里缺 git 与「目录没 git init」的处置方式完全不同。
   const gitState = await detectGitRepo(repo, options.git ?? defaultGitRunner);
   if (gitState.kind !== 'repo') {
-    const declared = normalizeDeclaredPaths(declaredPaths);
-    const scopeLine = `声明范围：${declared.length > 0 ? declared.join(' / ') : '（未声明）'}`;
     const detail = gitState.detail !== undefined ? `：${gitState.detail}` : '';
+    const reasonCode: IssueCommitReason = gitState.kind === 'git-missing'
+      ? 'GIT_NOT_INSTALLED'
+      : gitState.kind === 'not-a-repo'
+        ? 'NOT_A_GIT_REPO'
+        : 'GIT_REPO_UNHEALTHY';
     const reason = gitState.kind === 'git-missing'
       ? `跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED，${repo}）`
       : gitState.kind === 'not-a-repo'
         ? `跳过自动提交：工作区不是 git 仓库（NOT_A_GIT_REPO，${repo}），如需自动提交请在该目录 git init`
         : `跳过自动提交：git 仓库状态异常（GIT_REPO_UNHEALTHY，${repo}）${detail}`;
-    return dropAndNull(db, issueId, `${reason}；${scopeLine}`);
+    return dropAndNull(db, issueId, { status: 'unavailable', reason: reasonCode, note: `${reason}；${scopeLine}` });
   }
-  const baselineRow = db.prepare('SELECT * FROM issue_git_baseline WHERE issue_id=?').get(issueId) as BaselineRow | undefined;
-  if (!baselineRow) return dropAndNull(db, issueId);
-  const finish = (text: string | null): string | null => {
-    db.prepare('DELETE FROM issue_git_baseline WHERE issue_id=?').run(issueId);
-    return text;
-  };
 
   return withAccountLock('git-commit', repo, async () => {
+    /** 提交失败时用于补救的候选路径（声明范围内仍脏的路径） */
+    let pendingOnFailure: string[] = [];
     try {
-      const baseline = JSON.parse(baselineRow.paths_json) as Record<string, string>;
       const current = await snapshotWorkTree(repo);
-      const changed = changedPaths(baseline, current.files);
+      const baselineRow = baselineRowOf(db, issueId);
       /** 当前全部未提交路径（porcelain -uall，含删除项）＝ 卡内/卡外比对的基准 */
       const dirty = Object.keys(current.files).sort();
-      const declared = normalizeDeclaredPaths(declaredPaths);
-      /** `--all`（CLI 映射成 `.`）：显式声明工作区根，才允许纳入卡外改动 */
-      const declaredAll = declared.includes(ROOT_SCOPE);
+      pendingOnFailure = declaredAll || declared.length === 0
+        ? dirty
+        : dirty.filter(path => withinDeclaredScope(path, declared));
+
+      if (!baselineRow.exists) {
+        // GIT-OBSERVABLE：无基线不再静默早退——有脏文件就必须让调用方知道「这次没提交」
+        if (pendingOnFailure.length === 0) return dropAndNull(db, issueId);
+        return dropAndNull(db, issueId, {
+          status: 'not-committed',
+          reason: 'NO_BASELINE',
+          pending: pendingOnFailure,
+          note: [
+            '⚠ 无 claim 基线，本次未自动提交（done 已生效，工作树未改动）',
+            `- ${scopeLine}`,
+            `- 未提交的改动（${pendingOnFailure.length} 个）：${listPaths(pendingOnFailure, MAX_LISTED_SCOPE_VIOLATIONS)}`,
+            '- 原因：claim 时未记录基线（仓库不可用 / 写入失败），或该卡曾被租约清扫（清扫不再删基线，历史卡仍可能缺失）；done 无法判断哪些改动属于本卡，故跳过提交。',
+            `- 补救（可直接复制执行）：${remedyCommand(pendingOnFailure)}`,
+          ].join('\n'),
+        });
+      }
+      const baseline = baselineRow.paths;
+      const changed = changedPaths(baseline, current.files);
       const parallel = parallelClaimCount(db, issue.workspace_id, issueId);
       const preexisting = preexistingDirtyPaths(baseline, current.files);
       const forced = declared.length === 0 ? [] : preexisting.filter(path => withinDeclaredScope(path, declared));
-      const shortId = issueId.slice(0, 8);
-
-      /** 可复制的补救命令（PowerShell / bash 都能直接粘贴执行，不使用行连接符） */
-      const remedyCommand = (paths: readonly string[]): string => {
-        const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
-        const quoted = listed.map(path => (/\s|["']/.test(path) ? JSON.stringify(path) : path));
-        const title = `[${shortId}] ${issue.title.replace(/"/g, '\\"')}`;
-        // 用 `;` 连接：PowerShell 5.1 不支持 `&&`，bash 里 `;` 同样可用
-        return `git add -- ${quoted.join(' ')}; git commit -m "${title}" -- ${quoted.join(' ')}`;
-      };
 
       /**
        * SCOPE-GUARD：声明了 scope 但一个路径都没命中——最容易「看着 done、其实没提交」的场景。
@@ -344,15 +413,20 @@ export async function commitIssueChanges(
       const undeclaredNote = (paths: readonly string[]): string => {
         const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
         return `未提交 ${paths.length} 个 claim 前就已修改的文件（指纹未变、不在本次变化集，且未声明范围；仍在工作树）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}\n`
-          + `如需入库：git add -- ${listed.join(' ')} && git commit -m "[${shortId}] ${issue.title}" -- ${listed.join(' ')}`
+          + `如需入库：git add -- ${listed.join(' ')}; git commit -m "[${shortId}] ${issue.title}" -- ${listed.join(' ')}`
           + '；或重新 done 时用 scope_paths 声明这些路径';
       };
 
       // 并行占用且未声明范围：改动归属不可判定，任何路径都不提交，只把清单交 owner
-      if (declared.length === 0 && parallel > 0) {
+      if (declared.length === 0 && !declaredAll && parallel > 0) {
         const pending = [...new Set([...changed, ...preexisting])].sort();
-        if (pending.length === 0) return finish(null);
-        return finish(`检测到 ${parallel} 个并行占用任务，无法判定 ${pending.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`);
+        if (pending.length === 0) return dropAndNull(db, issueId);
+        return dropAndNull(db, issueId, {
+          status: 'not-committed',
+          reason: 'PARALLEL_UNDECLARED',
+          pending,
+          note: `检测到 ${parallel} 个并行占用任务，无法判定 ${pending.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`,
+        });
       }
 
       // 提交集 = 本卡目标文件集 ∩ 当前未提交路径；卡外改动只列清单，默认不纳入
@@ -373,20 +447,32 @@ export async function commitIssueChanges(
         const outside = dirty.filter(path => !withinDeclaredScope(path, declared));
         paths = dirty.filter(path => withinDeclaredScope(path, declared));
         // SCOPE-GUARD：声明了范围却零命中 → 显眼标题 + 可复制的补救命令
-        if (paths.length === 0) return finish(zeroHitNote(declared, outside));
+        if (paths.length === 0) {
+          return dropAndNull(db, issueId, {
+            status: 'not-committed',
+            reason: 'ZERO_HIT',
+            note: zeroHitNote(declared, outside),
+            pending: outside,
+          });
+        }
         policyNotes = outside.length === 0 ? [] : [outsideNote(outside)];
       } else {
         // 老卡无声明：只提交 claim 基线变化集（claim 前就已脏且未变化的文件仍不纳入），并显式警告
         paths = changed;
-        if (paths.length === 0) return finish(preexisting.length > 0 ? undeclaredNote(preexisting) : null);
+        if (paths.length === 0) {
+          return dropAndNull(db, issueId, preexisting.length > 0
+            ? { status: 'not-committed', reason: 'UNDECLARED_PREEXISTING', note: undeclaredNote(preexisting), pending: preexisting }
+            : {});
+        }
         policyNotes = [undeclaredWarn(paths, dirty.filter(path => !changed.includes(path)))];
       }
+      pendingOnFailure = paths;
 
       await git(repo, ['add', '-A', '--', ...paths]);
       const identityOk = await identityConfigured(repo);
       // BORROW-2.3：trailer 记录卡片与领取者；领取者取 claim 时写入基线的值（done 流转已清空 issue.claimed_by）
       const trailerLines = [`AgentBoard-Issue: ${issueId}`];
-      const claimer = (baselineRow.claimed_by ?? '').trim();
+      const claimer = (baselineRow.claimedBy ?? '').trim();
       if (claimer !== '') trailerLines.push(`AgentBoard-Claim: ${claimer}`);
       const message = `[${shortId}] ${issue.title}\n\n${trailerLines.join('\n')}`;
       // 路径限定 commit：只提交本次 stage 的 paths，不把其它卡已暂存（但未被本卡处理）的改动卷进来
@@ -400,16 +486,24 @@ export async function commitIssueChanges(
       const listed = paths.slice(0, MAX_LISTED_FILES).join('、');
       const more = paths.length > MAX_LISTED_FILES ? ` 等 ${paths.length} 个` : '';
       if (!identityOk) notes.push(`使用 ${DEFAULT_IDENTITY.name} 默认身份提交`);
-      if (baselineRow.head_sha && current.head && baselineRow.head_sha !== current.head) notes.push('任务期间仓库 HEAD 已变化');
+      if (baselineRow.headSha && current.head && baselineRow.headSha !== current.head) notes.push('任务期间仓库 HEAD 已变化');
       const commitNote = `已自动提交 ${paths.length} 个文件：${listed}${more}（commit ${sha.slice(0, 8)}）${notes.length > 0 ? `；${notes.join('；')}` : ''}`;
       const forcedNote = forced.length === 0
         ? null
         : `其中 ${forced.length} 个是 claim 前就已修改（基线内未提交）、按声明范围强制提交：${listPaths(forced, MAX_LISTED_SCOPE_VIOLATIONS)}`;
       const lines = [commitNote, forcedNote, ...policyNotes].filter((line): line is string => typeof line === 'string');
-      return finish(lines.join('\n'));
+      return dropAndNull(db, issueId, { status: 'committed', note: lines.join('\n') });
     } catch (error) {
       const detail = firstLine((error as { stderr?: string; message?: string }).stderr ?? (error as Error).message ?? '');
-      return finish(`自动提交失败：${detail}（不影响待验收状态）`);
+      return dropAndNull(db, issueId, {
+        status: 'not-committed',
+        reason: 'COMMIT_FAILED',
+        pending: pendingOnFailure,
+        note: `自动提交失败：${detail}（不影响待验收状态）`
+          + (pendingOnFailure.length > 0
+            ? `\n- 未提交的改动（${pendingOnFailure.length} 个）：${listPaths(pendingOnFailure, MAX_LISTED_SCOPE_VIOLATIONS)}\n- 补救（可直接复制执行）：${remedyCommand(pendingOnFailure)}`
+            : ''),
+      });
     }
   });
 }

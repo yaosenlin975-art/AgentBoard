@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
-import { commitIssueChanges, detectGitRepo, type GitRunner } from '../src/services/gitBaseline.js';
+import { commitIssueChanges, detectGitRepo, type GitRunner, type IssueCommitResult } from '../src/services/gitBaseline.js';
 
 /** 按调用参数返回预设结果；未预设的命令一律按「成功但空输出」处理 */
 const runnerFrom = (table: Array<{ match: (args: string[]) => boolean; result: string | Error }>): GitRunner => {
@@ -102,8 +102,10 @@ describe('commitIssueChanges 三态提示（GIT-DETECT）', () => {
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
-  const note = (runner: GitRunner, declared: string[] = ['apps/server/src']): Promise<string | null> =>
+  const result = (runner: GitRunner, declared: string[] = ['apps/server/src']): Promise<IssueCommitResult> =>
     commitIssueChanges(t.db, issueId, declared, { git: runner });
+  const note = async (runner: GitRunner, declared: string[] = ['apps/server/src']): Promise<string | null> =>
+    (await result(runner, declared)).note;
 
   it('git 未安装 → GIT_NOT_INSTALLED 文案 + 回显声明范围', async () => {
     const text = await note(runnerFrom([{ match: isVersion, result: enoent() }]));
@@ -150,12 +152,13 @@ describe('commitIssueChanges 三态提示（GIT-DETECT）', () => {
     expect(new Set([missing, notRepo, unhealthy]).size).toBe(3);
   });
 
-  it('真实仓库路径不受影响：探测为 repo，无基线时仍返回 null（不落误导评论）', async () => {
+  it('真实仓库路径不受影响：探测为 repo，无基线且无脏文件时返回 nothing（不落误导评论）', async () => {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir, windowsHide: true });
-    writeFileSync(join(dir, 'README.md'), '# fixture\n');
-    expect(await note(runnerFrom([
+    const outcome = await result(runnerFrom([
       { match: isVersion, result: 'git version 2.45.0\n' },
       { match: isRevParse, result: 'true\n' },
-    ]), [])).toBeNull();
+    ]), []);
+    expect(outcome.status).toBe('nothing');
+    expect(outcome.note).toBeNull();
   });
 });

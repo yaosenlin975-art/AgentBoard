@@ -172,7 +172,7 @@ describe('heartbeatClaim 续租', () => {
 });
 
 describe('sweepExpiredLeases 启动清扫', () => {
-  it('只清过期占用：状态保留「进行中」、system 评论、基线删除；未过期/NULL 租约不动', () => {
+  it('只清过期占用：状态保留「进行中」、system 评论、基线保留；未过期/NULL 租约不动', () => {
     const expired = seedIssue('过期');
     const fresh = seedIssue('未过期');
     const legacy = seedIssue('无租约');
@@ -200,8 +200,9 @@ describe('sweepExpiredLeases 启动清扫', () => {
     const comments = listCommentsByIssue(t.db, expired.id);
     const systemComment = comments.find((c) => c.author === 'system');
     expect(systemComment?.content).toContain('占用租约过期');
+    // 卡 9fa0d16f：基线保留——LEASE-GAP 的 done 仍要按基线判断本卡改动范围
     const baseline = t.db.prepare('SELECT COUNT(*) AS n FROM issue_git_baseline WHERE issue_id=?').get(expired.id) as { n: number };
-    expect(baseline.n).toBe(0);
+    expect(baseline.n).toBe(1);
 
     expect(leaseRow(fresh.id).claimed_by).toBe('agent-b');
     expect(leaseRow(legacy.id).claimed_by).toBe('agent-c');

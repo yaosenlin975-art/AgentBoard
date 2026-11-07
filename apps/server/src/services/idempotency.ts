@@ -64,3 +64,11 @@ export function finishIdempotentEffect(db: Db, key: string, result: unknown): vo
   // 不按工作区过滤：调用方（routes/dispatch）持有同一 key 的 pending 行，key + effect_pending=1 已足够定位
   db.prepare("UPDATE idempotency_record SET response_json=?,effect_pending=0,effect_state='applied' WHERE request_id=? AND effect_pending=1").run(JSON.stringify(result), key);
 }
+/**
+ * GIT-OBSERVABLE：done 的 git 提交结果要在业务事务提交之后才算得出（提交本身不在事务里），
+ * 首次响应落账后补写回幂等记录，保证同 key 重放返回逐字一致的 body（含 `git_commit`）。
+ * 只更新已生效（effect_pending=0）的本工作区记录，不改副作用状态，避免造出并发的 409 窗口。
+ */
+export function amendIdempotentResult(db: Db, key: string, workspaceId: string, result: unknown): void {
+  db.prepare('UPDATE idempotency_record SET response_json=? WHERE request_id=? AND workspace_id=? AND effect_pending=0').run(JSON.stringify(result), key, workspaceId);
+}

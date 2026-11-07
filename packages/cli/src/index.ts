@@ -265,9 +265,10 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
   kb done 0f6ba9ab --scope packages/cli/src/index.ts --scope Docs/api.md
   kb done 0f6ba9ab --notes '改完' --close        # 待验收 + 已关闭一步完成（父卡有未关闭后代时会停在待验收）
-退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误或任务不存在
+退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误、任务不存在，或**done 已生效但自动提交未完成**（无基线 / 提交失败 / scope 零命中 / 并行占用未声明——此时状态已是待验收，按 stderr 里的补救命令执行即可）
 GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
-非 git 工作区会留一行「跳过自动提交：工作区不是 git 仓库」并回显 --scope；静默跳过已取消。
+自动提交未完成时 stderr 输出「未提交 + 原因 + 可照抄的补救命令」；带 --close 时该场景会跳过 close（避免未提交的卡被关闭后无法用 done 补救），修复后执行 kb close <issue-id>。
+非 git 工作区（未装 git / 非仓库 / 仓库损坏）只落 stderr 警告、退出码保持 0（结果状态 unavailable）。
 `)
     .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string; close?: boolean }) =>
       done(makeCtx(program, io), id, { notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true, requestId: opts.requestId, close: opts.close === true }));

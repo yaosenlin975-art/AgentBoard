@@ -213,3 +213,72 @@ describe('CLOSE-FLOW：done --close 与 close 自动释放自有占用', () => {
     expect(calls.filter(c => c.url === '/api/issues/iss1/done')).toHaveLength(1);
   });
 });
+
+describe('GIT-OBSERVABLE：done 自动提交未完成必须可感知（卡 9fa0d16f）', () => {
+  const NOT_COMMITTED = {
+    status: 'not-committed',
+    reason: 'NO_BASELINE',
+    pending: ['src/feature.ts'],
+    note: '⚠ 无 claim 基线，本次未自动提交（done 已生效，工作树未改动）\n- 补救（可直接复制执行）：git add -- src/feature.ts; git commit -m "[iss1] 标题" -- src/feature.ts',
+  };
+
+  it('无基线 / 提交失败：done 已生效但 exit 1，stderr 带原因与补救命令', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: NOT_COMMITTED } }
+      : undefined);
+    const result = await run(['done', 'iss1', '--scope', 'src/feature.ts']);
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('已完成: iss1');
+    expect(result.err).toContain('自动提交未完成');
+    expect(result.err).toContain('git add -- src/feature.ts');
+  });
+
+  it('done --close 遇提交未完成：不执行 close 并 exit 1', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', git_commit: NOT_COMMITTED } };
+      if (m === 'POST' && u === '/api/issues/iss1/close') return { status: 200, body: { ...ISSUE, status: '已关闭' } };
+      return undefined;
+    };
+    const result = await run(['done', 'iss1', '--close']);
+    expect(result.code).toBe(1);
+    expect(calls.some(c => c.url === '/api/issues/iss1/close')).toBe(false);
+    expect(result.err).toContain('已跳过 close');
+    expect(result.err).toContain('kb close iss1');
+  });
+
+  it('提交成功：不产生 stderr，退出码 0', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: { status: 'committed', reason: null, pending: [], note: '已自动提交 1 个文件：a.ts（commit abc12345）' } } }
+      : undefined);
+    const result = await run(['done', 'iss1', '--scope', 'a.ts']);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+  });
+
+  it('git 不可用（无法判定）只落 stderr 警告，不改退出码', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: { status: 'unavailable', reason: 'GIT_NOT_INSTALLED', pending: [], note: '跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED）' } } }
+      : undefined);
+    const result = await run(['done', 'iss1', '--scope', 'a.ts']);
+    expect(result.code).toBe(0);
+    expect(result.err).toContain('跳过自动提交');
+  });
+
+  it('仅提示类原因（未声明范围的遗留脏文件）保持 exit 0 但落 stderr', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: { status: 'not-committed', reason: 'UNDECLARED_PREEXISTING', pending: ['legacy.ts'], note: '未提交 1 个 claim 前就已修改的文件' } } }
+      : undefined);
+    const result = await run(['done', 'iss1']);
+    expect(result.code).toBe(0);
+    expect(result.err).toContain('未提交 1 个');
+  });
+
+  it('幂等重放（git_commit=null）不误报，退出码 0', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: null } }
+      : undefined);
+    const result = await run(['done', 'iss1']);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+  });
+});

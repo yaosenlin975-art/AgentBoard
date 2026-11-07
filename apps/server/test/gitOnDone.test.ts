@@ -18,6 +18,7 @@ import { initSchema } from '../src/db/schema.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { pruneIssueGitBaselines } from '../src/db/migrations/issueGitBaseline.js';
 import { captureIssueGitBaseline, commitIssueChanges, parseCommitTrailers } from '../src/services/gitBaseline.js';
+import { sweepExpiredLeases } from '../src/services/claim.js';
 
 const git = (cwd: string, args: string[]): string =>
   execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true }).trim();
@@ -328,6 +329,9 @@ describe('git on done', () => {
     const replay = await request(app).post(`/api/issues/${issueId}/done`).set('Idempotency-Key', key).send(body);
     expect(replay.status).toBe(200);
     expect(replay.body.id).toBe(first.body.id);
+    // GIT-OBSERVABLE：重放必须逐字一致，git_commit 取首次结果（不重新提交，也不退化成 null）
+    expect(replay.body.git_commit).toEqual(first.body.git_commit);
+    expect(replay.body.git_commit).toMatchObject({ status: 'committed' });
     expect(commitCount()).toBe(afterFirst);
   });
 
@@ -434,5 +438,74 @@ describe('git on done', () => {
     expect(row.file_count).toBe(1);
     expect(row.head_sha).toBe(git(repo, ['rev-parse', 'HEAD']));
     expect(JSON.parse(row.paths_json)).toHaveProperty(['legacy-dirty.txt']);
+  });
+
+  // —— 卡 9fa0d16f：自动提交必须可观测（四条验收里的「无基线」「stub git 失败」「租约过期 + 脏树」） ——
+
+  it('noBaselineIsObservableInsteadOfSilentSkip', async () => {
+    const issueId = await makeIssue('无基线收尾');
+    await claim(issueId);
+    mkdirSync(join(repo, 'src'), { recursive: true });
+    writeFileSync(join(repo, 'src', 'feature.ts'), 'export const v = 1;\n');
+    const before = commitCount();
+    // 模拟基线被清扫/丢失：done 不能再静默跳过
+    t.db.prepare('DELETE FROM issue_git_baseline WHERE issue_id=?').run(issueId);
+
+    const res = await done(issueId, { scope_paths: ['src/feature.ts'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('待验收');
+    expect(res.body.git_commit).toMatchObject({
+      status: 'not-committed',
+      reason: 'NO_BASELINE',
+      pending: ['src/feature.ts'],
+    });
+    expect(commitCount()).toBe(before);
+    const text = comments(issueId).join('\n');
+    expect(text).toContain('无 claim 基线');
+    expect(text).toContain('git add -- src/feature.ts');
+    expect(git(repo, ['status', '--porcelain', '--untracked-files=all'])).toContain('src/feature.ts');
+  });
+
+  it('commitFailureIsReportedWithRemedy', async () => {
+    const issueId = await makeIssue('提交失败可观测');
+    await claim(issueId);
+    writeFileSync(join(repo, 'fail.ts'), 'x\n');
+    // 真实失败注入：pre-commit 钩子 exit 1（Git for Windows 同样会执行 hooks）
+    mkdirSync(join(repo, '.git', 'hooks'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n');
+    const before = commitCount();
+
+    const res = await done(issueId, { scope_paths: ['fail.ts'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('待验收');
+    expect(res.body.git_commit).toMatchObject({
+      status: 'not-committed',
+      reason: 'COMMIT_FAILED',
+      pending: ['fail.ts'],
+    });
+    expect(commitCount()).toBe(before);
+    const text = comments(issueId).join('\n');
+    expect(text).toContain('自动提交失败');
+    expect(text).toContain('git add -- fail.ts');
+  });
+
+  it('leaseExpiredKeepsBaselineAndStillCommits', async () => {
+    const issueId = await makeIssue('租约过期后收尾');
+    const claimed = await claim(issueId);
+    const fence = claimed.body.claim_fence as number;
+    writeFileSync(join(repo, 'late.ts'), 'export const late = 1;\n');
+
+    // 清扫只清占用，基线保留（否则 LEASE-GAP 的 done 必然变成「无基线」丢提交）
+    expect(sweepExpiredLeases(t.db, Date.now() + 60 * 60 * 1000)).toBe(1);
+    expect(t.db.prepare('SELECT COUNT(*) AS n FROM issue_git_baseline WHERE issue_id=?').get(issueId)).toEqual({ n: 1 });
+
+    const res = await done(issueId, { scope_paths: ['late.ts'], fence });
+
+    expect(res.status).toBe(200);
+    expect(res.body.git_commit).toMatchObject({ status: 'committed' });
+    expect(lastCommitFiles()).toEqual(['late.ts']);
+    expect(lastSubject()).toBe(`[${issueId.slice(0, 8)}] 租约过期后收尾`);
   });
 });

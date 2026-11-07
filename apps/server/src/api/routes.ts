@@ -90,7 +90,7 @@ import {
 import { centerSnapshotDir, exportCenterSnapshot, validateCenterSnapshot } from '../services/centerSnapshot.js';
 import { claimIssue, doneIssue, failIssue, heartbeatClaim, releaseIssue, transferClaimedIssue, updateIssueGuarded, requireIssueInWorkspace, updateIssueWithCAS, finishClaimedIssue, releaseClaimedIssue } from '../services/claim.js';
 import { releaseRunning } from '../services/releaseRunning.js';
-import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline } from '../services/gitBaseline.js';
+import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline, type IssueCommitResult } from '../services/gitBaseline.js';
 import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
@@ -104,7 +104,7 @@ import { closeIssue, reopenIssue } from '../services/issueTransitions.js';
 import { buildKnowledgeHint } from '../services/knowledgeNudge.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../services/comments.js';
-import { hashPayload, httpMutation, finishIdempotentEffect } from '../services/idempotency.js';
+import { amendIdempotentResult, hashPayload, httpMutation, finishIdempotentEffect } from '../services/idempotency.js';
 import { dispatchIssue } from '../services/dispatch.js';
 import { createSession, forgetSession, getSessionRuntime, pauseSession, resumeSession, sendToSession, setMaxConcurrentTurns, stopSession, runRetriedStep } from '../services/sessionManager.js';
 import { getCachedClis } from '../services/cliDetect.js';
@@ -1454,6 +1454,8 @@ export function createRouter(deps: RouterDeps): Router {
         })() : await failIssue(rdb, issueId, actor, detail!, undefined, fence), replayed: false };
     const { issue, comment } = outcome.result;
     const knowledgeHint = (outcome.result as { knowledge_hint?: KnowledgeHint | null }).knowledge_hint ?? null;
+    /** GIT-OBSERVABLE：done 的自动提交结果随响应回传；同 key 重放取首次结果（不重复提交） */
+    let gitCommit: IssueCommitResult | null = (outcome.result as { git_commit?: IssueCommitResult | null }).git_commit ?? null;
     // KB-CLI-1：done/fail/release 幂等重放同样回传标记
     if (outcome.replayed) res.setHeader('x-agentboard-replayed', '1');
     if (!outcome.replayed) {
@@ -1461,16 +1463,22 @@ export function createRouter(deps: RouterDeps): Router {
       broadcast({ type: 'issue.changed', issue });
       // GIT-ON-DONE：done 后按 claim 基线提交本任务改动；幂等重放不重复提交
       if (action === 'done') {
-        const gitNote = await commitIssueChanges(rdb, issueId, scopePaths);
-        if (gitNote) {
-          const added = await addComment(rdb, issueId, 'system', gitNote);
+        gitCommit = await commitIssueChanges(rdb, issueId, scopePaths);
+        if (gitCommit.note) {
+          const added = await addComment(rdb, issueId, 'system', gitCommit.note);
           broadcast({ type: 'comment.added', comment: added.comment });
         }
       } else {
         dropIssueGitBaseline(rdb, issueId);
       }
     }
-    res.json(action === 'done' ? { ...issue, comment, knowledge_hint: knowledgeHint } : { ...issue, comment });
+    const responseBody = action === 'done' ? { ...issue, comment, knowledge_hint: knowledgeHint, git_commit: gitCommit } : { ...issue, comment };
+    // GIT-OBSERVABLE：提交结果晚于事务产生，按事务结果的嵌套形状补写回首次落账，保证同 key 重放逐字一致
+    const idempotencyKey = req.get('Idempotency-Key');
+    if (idempotencyKey && !outcome.replayed) {
+      amendIdempotentResult(rdb, idempotencyKey, workspace ?? '', { issue, comment, knowledge_hint: knowledgeHint, git_commit: gitCommit });
+    }
+    res.json(responseBody);
   }
   router.post('/issues/:id/release', (req, res) => claimAction(req, res, 'release'));
   router.post('/issues/:id/done', (req, res) => claimAction(req, res, 'done'));

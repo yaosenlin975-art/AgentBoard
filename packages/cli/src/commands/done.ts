@@ -1,9 +1,21 @@
 import type { Issue, KnowledgeHint } from '@agentboard/shared';
+import { CommanderError } from 'commander';
 import { request } from '../api.js';
 import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueRef } from '../issueRef.js';
 import { closeIssueWithOwnRelease } from './lifecycle.js';
+
+/** GIT-OBSERVABLE：服务端 done 回传的自动提交结果（同 key 重放返回首次结果） */
+interface GitCommitInfo {
+  status: 'committed' | 'nothing' | 'not-committed' | 'unavailable';
+  reason: string | null;
+  note: string | null;
+  pending: string[];
+}
+
+/** 这些原因意味着「声明范围内确有改动但本次没提交」，须以非 0 退出码提醒调用方 */
+const BLOCKING_COMMIT_REASONS = new Set(['NO_BASELINE', 'COMMIT_FAILED', 'ZERO_HIT', 'PARALLEL_UNDECLARED']);
 
 export interface DoneArgs {
   notes?: string;
@@ -60,13 +72,42 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     body.workspace_id = target.issue?.workspace_id
       ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
   }
-  const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null }>(
+  const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null; git_commit?: GitCommitInfo | null }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/done`, body, args.requestId,
   );
   clearClaimedFence(issueId);
 
+  const gitCommit = issue.git_commit ?? null;
+  /** not-committed 且不是「仅提示」类原因 → 需要非 0 退出码（done 本身已生效） */
+  const commitBlocked = gitCommit !== null
+    && gitCommit.status === 'not-committed'
+    && BLOCKING_COMMIT_REASONS.has(gitCommit.reason ?? '');
+
+  /** 打印 done 结果（JSON 模式只输出单个 JSON 文档） */
+  const printDone = (): void => {
+    if (ctx.json) {
+      ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
+      return;
+    }
+    ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
+    // 软提醒：建议而非错误，不加 ERROR 前缀、不影响退出码
+    if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
+  };
+  /** 自动提交结果不是 committed/nothing 时落 stderr（reason + 补救命令都在 note 里） */
+  const warnCommit = (): void => {
+    if (gitCommit === null || gitCommit.status === 'committed' || gitCommit.status === 'nothing') return;
+    ctx.io.writeErr(`自动提交未完成：${gitCommit.note ?? '未知原因'}\n`);
+  };
+
   // CLOSE-FLOW：done 成功后串行 close；两阶段分别报错，已成功的 done 不回滚、也不重复执行
   if (args.close === true) {
+    if (commitBlocked) {
+      // 不 close：卡一旦关闭就没法再用 done 触发自动提交，补救命令只能靠人工执行
+      printDone();
+      warnCommit();
+      ctx.io.writeErr(`已跳过 close（避免未提交的卡被关闭后无法用 done 补救）；修复后执行：kb close ${issue.id}\n`);
+      throw new CommanderError(1, 'agentboard.done.commit', '');
+    }
     const outcome = await closeIssueWithOwnRelease(ctx, issue.id)
       .catch(error => {
         ctx.io.writeErr('done 阶段已完成（状态已进入待验收，占用已释放）；close 阶段失败：\n');
@@ -75,20 +116,18 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     const closed = outcome.issue;
     if (ctx.json) {
       ctx.io.write(`${JSON.stringify({ done: issue, close: closed }, null, 2)}\n`);
+      warnCommit();
       return;
     }
     ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
     if (outcome.released) ctx.io.write('已释放自有占用后关闭\n');
     ctx.io.write(`已关闭: ${closed.id}\n状态: ${closed.status}（done → close 一步收口）\n`);
+    warnCommit();
     return;
   }
 
-  if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
-    return;
-  }
-  ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
-  // 软提醒：建议而非错误，不加 ERROR 前缀、不影响退出码
-  if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
+  printDone();
+  warnCommit();
+  if (commitBlocked) throw new CommanderError(1, 'agentboard.done.commit', '');
 }

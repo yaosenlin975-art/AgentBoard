@@ -7,7 +7,6 @@ import { ApiError } from '../errors.js';
 import { addComment as insertCommentRow } from '../db/repos/comment.js';
 import { updateIssueInHierarchy } from './taskHierarchy.js';
 import { blockedClaimMessage, unresolvedBlockers } from './dependency.js';
-import { dropIssueGitBaseline } from './gitBaseline.js';
 
 export function requireIssueInWorkspace(db: Db, issueId: string, workspaceId: string): Issue {
   const issue = getIssue(db, issueId, workspaceId);
@@ -230,9 +229,10 @@ export function heartbeatClaim(db: Db, issueId: string, agentId: string, fence?:
 
 /**
  * BORROW-0.2：启动清扫过期占用租约。只清占用（claimed_by/claimed_at/租约/心跳/会话/游标），
- * 任务状态原样保留（领取即「进行中」，清扫不动状态=保留「进行中」）；写 system 评论留痕；
- * 基线（GIT-ON-DONE）随之作废。租约 NULL 的占用不在清扫范围（无法判定新旧）。
- * 返回清扫数（启动日志与用例断言用）。
+ * 任务状态原样保留（领取即「进行中」，清扫不动状态=保留「进行中」）；写 system 评论留痕。
+ * 基线（GIT-ON-DONE）**保留**：租约过期后原代次仍可按 LEASE-GAP 收尾，基线 diff 依然有效；
+ * 删基线会让「租约过期后 done」变成无基线 → 自动提交静默丢失（卡 9fa0d16f）。
+ * 租约 NULL 的占用不在清扫范围（无法判定新旧）。返回清扫数（启动日志与用例断言用）。
  */
 export function sweepExpiredLeases(db: Db, now: number = Date.now()): number {
   // DEC-2：宽限期内的占用不得被清扫——agent 正在等人类回答，清掉占用会让它无法收尾/续跑。
@@ -261,7 +261,7 @@ export function sweepExpiredLeases(db: Db, now: number = Date.now()): number {
         author: 'system',
         content: `占用租约过期（超过 ${leaseMinutes} 分钟无心跳），系统自动释放占用；任务保留「进行中」，可直接重新领取`,
       });
-      dropIssueGitBaseline(db, row.id);
+      // 基线保留：LEASE-GAP 的 done 仍要靠它判断本卡改动范围（见 sweepExpiredLeases 注释）
       swept += 1;
     }
     return swept;

@@ -22,6 +22,7 @@ import { createWorkspace } from '../src/db/repos/workspace.js';
 import {
   commitKnowledgePageRevision,
   commitKnowledgePageSnapshot,
+  findConflictMarker,
   knowledgePageSnapshotPath,
   removeKnowledgePageRevision,
   removeKnowledgePageSnapshot,
@@ -143,6 +144,36 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
     expect(retried.committed).toBe(true);
     expect(git(repo, ['log', '--format=%s'])).toContain('knowledge(ws-page): r2 本区页');
   }, 30_000);
+
+  /**
+   * GIT-SNAPSHOT-CHECK（卡 9fa0d16f）：快照正文只能来自 DB 权威正文。
+   * 多会话共用工作树时，stash pop 会在写盘与 add/commit 之间把冲突标记写进同一路径。
+   */
+  it('DB 正文含冲突标记：拒绝落盘，不留半成品', () => {
+    const conflicted = '正文前\n<<<<<<< HEAD\n本地\n=======\n远端\n>>>>>>> other\n';
+    const result = commitKnowledgePageSnapshot(repo, page(1, conflicted));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain('冲突标记');
+    expect(existsSync(knowledgePageSnapshotPath(repo, 'page-1'))).toBe(false);
+  });
+
+  it('冲突标记识别：只认 7 位以上且行首的标记，正常 Markdown 不受影响', () => {
+    expect(findConflictMarker('<<<<<<< HEAD')).toBe('<<<<<<< HEAD');
+    expect(findConflictMarker('  =======')).toBe('=======');
+    expect(findConflictMarker('>>>>>>> branch')).toBe('>>>>>>> branch');
+    expect(findConflictMarker('标题\n===\n')).toBeNull(); // setext 标题下划线（3 位）不误判
+    expect(findConflictMarker('`<<<<<<<` 在行内')).toBeNull();
+    expect(findConflictMarker('a\n---\nb')).toBeNull();
+  });
+
+  it('暂存内容被并发改写（clean filter 注入冲突标记）：判失败并回滚', () => {
+    writeFileSync(join(repo, '.gitattributes'), '.agentboard/snapshot/knowledge/*.md filter=corrupt\n', 'utf8');
+    git(repo, ['config', 'filter.corrupt.clean', "printf '<<<<<<< HEAD\\n'"]);
+    const result = commitKnowledgePageSnapshot(repo, page(1));
+    expect(result.committed).toBe(false);
+    expect(result.reason).toContain('冲突标记');
+    expect(existsSync(knowledgePageSnapshotPath(repo, 'page-1'))).toBe(false);
+  });
 });
 
 describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
