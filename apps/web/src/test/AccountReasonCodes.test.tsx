@@ -158,8 +158,7 @@ describe('原因码文案（ACC-REASON-01）', () => {
     }, { status: 409 })));
     renderPanel();
 
-    // ACC-PANEL-03：捕获入口在展开层内，先展开该平台行
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
+    // ACC-UI-PRUNE：平台行折叠已删，右栏详情直接可见
     await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
     const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
     expect(reason).toHaveTextContent('客户端未在运行');
@@ -175,7 +174,6 @@ describe('原因码文案（ACC-REASON-01）', () => {
     }, { status: 409 })));
     renderPanel();
 
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
     const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
     expect(reason).toHaveTextContent(UNKNOWN_REASON_LABEL);
@@ -187,33 +185,6 @@ describe('原因码文案（ACC-REASON-01）', () => {
     expect(details.tagName).toBe('DETAILS');
     expect(within(details).getByText('技术码')).toBeInTheDocument();
     expect(details.textContent).toContain('SERVER_ADDED_A_NEW_CODE');
-  });
-
-  it('签到 409 提示同样走中文文案 + 服务端 message，不打重复文案', async () => {
-    server.use(
-      http.get('/api/managed-account-capabilities', () => HttpResponse.json([
-        { ...CAPTURE_OK[0]!, checkin: true, checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived' },
-      ] satisfies AccountCapability[])),
-      http.get('/api/managed-accounts', () => HttpResponse.json([
-        {
-          id: '22222222-2222-4222-8222-222222222222', app_id: 'workbuddy_desktop', client_instance_id: 'wb-inst-1',
-          service_region: 'cn', display_name: 'WorkBuddy 副号', identity_hint: 'a1b2c3d4', client_snapshot_version: 1,
-          checkin_capability: 'supported', enabled: true, last_checkin_day: null, last_checkin_status: null,
-          last_checkin_at: null, created_at: 1, updated_at: 2, is_current: false,
-        },
-      ])),
-      http.post('/api/checkin-runs', () => HttpResponse.json({
-        error: { code: 'CHECKIN_BATCH_IN_PROGRESS', message: '该产品已有进行中的签到批次', details: { batch_id: '33333333-3333-4333-8333-333333333333' } },
-      }, { status: 409 })),
-    );
-    renderPanel();
-
-    await userEvent.click(await screen.findByTestId('accounts-checkin-all-workbuddy_desktop'));
-    const notice = await screen.findByTestId('accounts-notice-workbuddy_desktop');
-    expect(notice).toHaveTextContent('该产品已有进行中的签到批次');
-    // 主文案与 message 相同 → 只出现一次
-    expect((notice.textContent ?? '').match(/该产品已有进行中的签到批次/g)?.length).toBe(1);
-    expect(screen.queryByTestId('accounts-notice-code-workbuddy_desktop')).not.toBeInTheDocument();
   });
 
   it('无码与非字符串兜底：reasonLabel(null) 给中性文案，reasonTechnicalCode 空码返回 null', () => {

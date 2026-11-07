@@ -1,8 +1,7 @@
 /**
- * ACC-KB-A2W 接线回归：AccountCard 的能力徽标互斥 + 启用/停用按钮（PATCH + 409 可读提示）。
- *
- * 判定逻辑本身在 accountCapabilityBadge.test.ts 用纯数据钉死了，这里只验「DOM 真的按两个布尔渲染、
- * 按钮真的打 PATCH、409 真的给可读文案」。
+ * ACC-KB-A2W 接线回归：AccountCard 的启用/停用按钮（PATCH + 409 可读提示）。
+ * ACC-UI-PRUNE：账号卡「技术信息」折叠（含能力徽标 accounts-capability-badge-*）已删，
+ * 能力徽标互斥用例随删除；能力三图标徽标（平台层）由 AccountsPanelRedesign.test 覆盖。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -61,40 +60,6 @@ function mount(card: AccountView, cap: CapabilityView | null): void {
 
 beforeEach(() => {
   localStorage.clear();
-});
-
-describe('能力徽标互斥（DOM 层，ACC-KB-A2W）', () => {
-  it('能力未知 → 只有灰标，且只有一个子节点、没有强调色样式', () => {
-    mount(account(), null);
-    const badge = screen.getByTestId('accounts-capability-badge-acc-1');
-    expect(badge).toHaveAttribute('data-state', 'unknown');
-    expect(badge.children).toHaveLength(1);
-    expect(badge).toHaveTextContent('能力未知');
-    expect(badge.querySelector('.bg-accent-soft')).toBeNull();
-    expect(badge.getAttribute('title')).toContain('能力矩阵未取到该平台');
-  });
-
-  it('能力可用 → 只有蓝标；全不可用 → 只有灰标「能力不可用」', () => {
-    mount(account(), capability());
-    const blue = screen.getByTestId('accounts-capability-badge-acc-1');
-    expect(blue).toHaveAttribute('data-state', 'supported');
-    expect(blue.children).toHaveLength(1);
-    expect(blue.querySelector('.bg-accent-soft')).not.toBeNull();
-    expect(blue).toHaveTextContent('能力可用');
-  });
-
-  it('全维度不可用（qoder_cn 式）→ 单个灰标，title 带 reason_code', () => {
-    mount(
-      account({ app_id: 'qoder_cn' as AccountView['app_id'] }),
-      capability({ app_id: 'qoder_cn', capture: false, switch: false, checkin: false, capture_reason_code: 'PROVIDER_NOT_IMPLEMENTED', switch_reason_code: 'PROVIDER_NOT_IMPLEMENTED', checkin_reason_code: 'PROVIDER_NOT_IMPLEMENTED', reason_code: 'PROVIDER_NOT_IMPLEMENTED', source: 'static' }),
-    );
-    const gray = screen.getByTestId('accounts-capability-badge-acc-1');
-    expect(gray).toHaveAttribute('data-state', 'unsupported');
-    expect(gray.children).toHaveLength(1);
-    expect(gray).toHaveTextContent('能力不可用');
-    expect(gray.querySelector('.bg-accent-soft')).toBeNull();
-    expect(gray.getAttribute('title')).toContain('PROVIDER_NOT_IMPLEMENTED');
-  });
 });
 
 describe('启用/停用按钮（ACC-KB-A2W）', () => {

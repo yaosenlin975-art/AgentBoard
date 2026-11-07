@@ -1,16 +1,14 @@
 /**
- * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14 / ACC-DEL-02；ACC-B2 重做为三级披露，口径：
- * `Docs/prototypes/accounts-redesign-2026-11-04/b-console.html` 的 `.acard` + DESIGN-NOTES §三）。
+ * 单个托管账号卡（ACC-08 / ACC-09 / ACC-14 / ACC-DEL-02；ACC-UI-PRUNE 精简后为两级）。
  * 能力来自服务端能力矩阵（由 AccountsPanel 传入），前端不维护能力副本。
  *
- * 三级披露（ACC-B2 + ACC-UI-2）：
+ * 两级披露（ACC-B2 + ACC-UI-PRUNE）：
  * - 一级（身份）：display_name（truncate，title 全文）+ identity_hint（等宽小字，截到前 8 位；空值不渲染占位）。
- *   头像已移除（纯装饰、无信息）。
- * - 二级（状态与动作）：只渲染正向芯片「客户端当前 / 签到当前 / 已停用」；动作区只留高频的 切换 → 签到，
+ * - 二级（状态与动作）：正向芯片只留「客户端当前 / 已停用」；动作区只留高频的 切换，
  *   低频/危险的 停用、删除 收进 `⋯` 溢出菜单。已是当前账号、平台不支持切换或能力未知时不渲染灰切换按钮，
- *   原因由平台级说明行给出。负向信息（客户端非当前 / 客户端当前未知 / 区域未知 / 签到能力未知 / 不参与签到）
- *   一律不渲染，退到 title 或三级技术信息。
- * - 三级（技术信息）：`<details>` 默认折叠，收纳 平台能力徽标 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照。
+ *   原因由平台级说明行给出。负向信息（客户端非当前 / 客户端当前未知）一律不渲染，退到 title。
+ *   ACC-UI-PRUNE：账号行「签到当前」芯片、「签到」按钮与三级「技术信息」折叠已删；
+ *   签到统一走一键签到，失败裸码只进 title，不再有三级技术码行。
  *
  * ACC-DEL-02 删除是两步流：点「删除」→ 行内「确认删除」（3 秒未确认自动收回）→ `DELETE /api/managed-accounts/:id`
  * → 成功失效重拉列表。删除只清 AgentBoard 记录与本机 DPAPI 快照，不退出客户端登录，
@@ -19,18 +17,12 @@
  * ACC-B5 删除确认增强（口径：原型 `.acard-confirm / .acard-error`）：确认行带 3 秒倒计时收缩条
  * （`.ab-countdown`，色走 --ab-del 令牌，与收回定时器同周期）；三种 409（ACCOUNT_BUSY /
  * CHECKIN_AUTHORIZATION_EXISTS / RECOVERY_REQUIRED）给删除语境的中文主文案，其余错误走 reasonLabel
- * 通用中文原因；失败裸码不进主文案，进 title 与三级「技术信息」技术码行（优先于切换/operation 码）；
- * 失败后卡片与选中态不变，删除按钮可再次操作。
+ * 通用中文原因；失败裸码不进主文案，只进 title；失败后卡片与选中态不变，删除按钮可再次操作。
  *
  * ACC-B4 切换就地确认与切换态：点「切换」→ 卡片内展开确认行（3 秒未确认自动收回，
  * 不弹全局层）；确认后进入切换中（operation 未到终态期间本卡动作按钮禁用，状态复用
  * AccountOperationStatus / operation 轮询）；成功失效重拉后 is_current 芯片转移；失败给中文原因
- * （沿用 reasonCode 中文化映射），无映射裸码只进三级「技术信息」，不进卡面。
- *
- * ACC-14 两个「当前」必须分开表达：
- * - **客户端当前**（`accounts-client-current-*`）= 桌面客户端此刻登录的账号（服务端 `is_current`，来自 capture/switch 领域）；
- * - **签到当前**（`accounts-checkin-current-*`）= 一键签到会提交的账号（app 签到能力可用 + 账号启用 + 账号签到能力非 unsupported）；
- * 两者可以不同，不合并成一个「当前」。
+ * （沿用 reasonCode 中文化映射），无映射裸码只进 title，不进卡面。
  *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  */
@@ -55,8 +47,6 @@ import {
 import {
   ACCOUNT_BUSY_REASON,
   canToggleEnabled,
-  capabilityBadge,
-  checkinParticipation,
   reasonCodeOf,
   reasonLabel,
   unavailableLabel,
@@ -79,39 +69,13 @@ const DELETE_FAIL_LABEL: Record<string, string> = {
   RECOVERY_REQUIRED: '上次切换仍需恢复，恢复完成前不能删除',
 };
 
-const REGION_LABEL: Record<AccountView['service_region'], string> = { cn: '国内', global: '国际', unknown: '区域未知' };
-const CHECKIN_CAPABILITY_LABEL: Record<AccountView['checkin_capability'], string> = {
-  supported: '签到可用',
-  unsupported: '签到不可用',
-  unknown: '签到能力未知',
-};
-
-/** 最近签到原始枚举 → 中文化对照（ACC-B2；原始枚举与中文并列展示在技术信息里） */
-const LAST_CHECKIN_STATUS_LABEL: Record<string, string> = {
-  succeeded: '签到成功',
-  already_done: '今日已完成',
-  unknown: '结果未知',
-  failed: '签到失败',
-  authorized: '授权中',
-};
-
-/** 技术信息里的「最近签到」：日期 + 原始枚举（中文对照），未签到时不虚构状态 */
-function lastCheckinLabel(account: AccountView): string {
-  if (account.last_checkin_day === null && account.last_checkin_status === null) return '未签到';
-  const status = account.last_checkin_status;
-  if (status === null) return account.last_checkin_day ?? '未签到';
-  return `${account.last_checkin_day ?? '—'} · ${status}（${LAST_CHECKIN_STATUS_LABEL[status] ?? status}）`;
-}
-
 export function AccountCard({
   account,
   capability,
-  onCheckin,
   muted = false,
 }: {
   account: AccountView;
   capability: CapabilityView | null;
-  onCheckin?: () => void;
   /** 能力矩阵未就绪（加载中或失败）：删除这类写操作一并禁用，与其余写操作同口径 */
   muted?: boolean;
 }) {
@@ -217,11 +181,7 @@ export function AccountCard({
    */
   const switching = switchMutation.isPending
     || (operationId !== null && (operation === null || !isTerminalState(operation.state)));
-  /** 三级技术信息里的失败原因码：删除请求失败码优先（最近的用户动作），其次切换失败码与 operation 的安全错误码 */
-  const techErrorCode = deleteErrorCode ?? switchErrorCode ?? operation?.safe_error_code ?? null;
 
-  // ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出）
-  const badge = capabilityBadge(capability);
   // 启停可点判定：本卡已知的操作（切换进行中）与服务端 409 ACCOUNT_BUSY 同口径
   const toggle = canToggleEnabled(account, operation === null ? [] : [operation]);
   const [enabledError, setEnabledError] = useState<string | null>(null);
@@ -253,12 +213,6 @@ export function AccountCard({
         : frozen
           ? '上次切换需要恢复，已冻结该账号的切换'
           : '切换到该账号作为桌面客户端登录账号';
-  const participation = checkinParticipation(account, capability);
-  // ACC-CHECKIN：缺签到凭据 / 平台能力不可用 / 账号停用时按钮直接禁用，原因进 title
-  const checkinEnabled = participation.participates && onCheckin !== undefined;
-  const checkinTitle = checkinEnabled
-    ? '为该账号发起签到'
-    : (participation.reason ?? `${unavailableLabel(capability, 'checkin') ?? '签到不可用'}（${unavailableReason(capability, 'checkin') ?? '能力未知'}）`);
 
   // ACC-UI-2 一级：identity_hint 恒为前 8 位（服务端超长也截断）；空值不渲染占位
   const hint = (account.identity_hint ?? '').slice(0, 8);
@@ -277,7 +231,7 @@ export function AccountCard({
       data-testid={`accounts-card-${account.id}`}
       className={`px-1 py-2.5 ${account.enabled === false ? 'opacity-60' : ''}`}
     >
-      {/* 一级 + 二级：身份与正向芯片 | 动作区（切换 → 签到 → ⋯ 菜单） */}
+      {/* 一级 + 二级：身份与正向芯片 | 动作区（切换 → ⋯ 菜单；签到走一键签到） */}
       <div data-testid={`accounts-card-face-${account.id}`} className="flex flex-wrap items-start gap-x-3 gap-y-2">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -288,15 +242,6 @@ export function AccountCard({
             <span data-testid={`accounts-client-current-${account.id}`} title={clientCurrentTitle}>
               {account.is_current === true && (
                 <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">客户端当前</span>
-              )}
-            </span>
-            {/* 签到当前：正向才出芯片；不参与原因退到 title（可与客户端当前不同） */}
-            <span
-              data-testid={`accounts-checkin-current-${account.id}`}
-              title={participation.participates ? '一键签到会提交该账号' : `不参与一键签到：${participation.reason ?? '签到不可用'}`}
-            >
-              {participation.participates && (
-                <span className="rounded-md border border-hairline px-1.5 py-0.5 text-xs text-ink">签到当前</span>
               )}
             </span>
             {account.enabled === false && (
@@ -325,16 +270,6 @@ export function AccountCard({
               切换
             </button>
           )}
-          <button
-            type="button"
-            data-testid={`accounts-checkin-${account.id}`}
-            className={BTN_QUIET}
-            disabled={!checkinEnabled || switching}
-            title={checkinTitle}
-            onClick={() => { if (checkinEnabled) onCheckin?.(); }}
-          >
-            签到
-          </button>
           {/* ACC-UI-2：低频/危险操作（停用、删除）收进 ⋯ 菜单，主行只留高频动作 */}
           <details ref={menuRef} data-testid={`accounts-more-${account.id}`} className="relative">
             <summary
@@ -392,40 +327,6 @@ export function AccountCard({
           </details>
         </div>
       </div>
-
-      {/* 三级：技术信息（ACC-B2，默认折叠）——平台能力 / 区域 / 签到能力 / 实例 / 快照 / 最近签到原始枚举对照 */}
-      <details data-testid={`accounts-tech-${account.id}`} className="mt-2 text-[11px] text-ink-3">
-        <summary className="cursor-pointer select-none ab-transition hover:text-ink-2">技术信息</summary>
-        <dl className="mt-1.5 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
-          <dt>平台能力</dt>
-          <dd>
-            {/* ACC-KB-A2W：能力徽标三态互斥（蓝标 / 灰标由 capabilityBadge 的 showBlue/showGray 决定，不会同时出） */}
-            <span
-              data-testid={`accounts-capability-badge-${account.id}`}
-              data-state={badge.state}
-              title={badge.title}
-              aria-label={badge.title}
-            >
-              {badge.showBlue && (
-                <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs font-medium text-accent">{badge.label}</span>
-              )}
-              {badge.showGray && <span className="text-xs text-ink-3">{badge.label}</span>}
-            </span>
-          </dd>
-          <dt>区域</dt><dd>{REGION_LABEL[account.service_region]}</dd>
-          <dt>签到能力</dt><dd>{CHECKIN_CAPABILITY_LABEL[account.checkin_capability]}</dd>
-          <dt>实例</dt><dd className="break-all font-mono">{account.client_instance_id}</dd>
-          <dt>快照</dt><dd>v{account.client_snapshot_version}</dd>
-          <dt>最近签到</dt><dd>{lastCheckinLabel(account)}</dd>
-          {/* ACC-B4：切换失败的原始原因码（含无映射裸码）只进三级技术信息，不进卡面 */}
-          {techErrorCode !== null && (
-            <>
-              <dt>技术码</dt>
-              <dd data-testid={`accounts-tech-code-${account.id}`} className="break-all font-mono" title={techErrorCode}>{techErrorCode}</dd>
-            </>
-          )}
-        </dl>
-      </details>
 
       {/* ACC-KB-A2W：启停失败不静默——ACCOUNT_BUSY 给与服务端一致的可读文案，裸码只进 title */}
       {enabledError !== null && (

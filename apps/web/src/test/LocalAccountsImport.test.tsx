@@ -77,7 +77,8 @@ describe('ACC-REFRESH', () => {
 
     const button = screen.getByTestId('accounts-import-local');
     expect(button).toHaveTextContent('刷新');
-    expect(screen.getByText(/启动时自动扫描一次，也可手动刷新/)).toBeInTheDocument();
+    // ACC-UI-PRUNE：刷新旁说明文案已删
+    expect(screen.queryByText(/启动时自动扫描一次，也可手动刷新/)).toBeNull();
 
     await userEvent.click(button);
     expect(button).toBeDisabled();

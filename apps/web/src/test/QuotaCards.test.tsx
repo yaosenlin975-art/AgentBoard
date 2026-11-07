@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import { QuotaCreditChip, QuotaRow, QuotaRows, formatRemaining, formatResetClock, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
+import { QuotaRow, QuotaRows, formatRemaining, formatResetClock, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
 import { server } from './server';
 
 function item(overrides: Partial<QuotaItem> = {}): QuotaItem {
@@ -350,16 +350,6 @@ describe('额度行内绘制（ACC-QUOTA-02）', () => {
     render(<QuotaRow item={item({ source: 'deepseek', status: 'error', balance: null, unit: null, reason_code: 'CREDENTIAL_INVALID', detail: null })} now={NOW} />);
     expect(screen.getByTestId('quota-row-reason-deepseek')).toHaveTextContent('凭据已失效');
     expect(screen.queryByTestId('quota-row-code-deepseek')).toBeNull();
-  });
-
-  it('积分占位分支：灰芯片「积分 未接入」，平台行可换文案与 testid 复用同一栏位', () => {
-    render(<QuotaCreditChip />);
-    const chip = screen.getByTestId('quota-credit-chip');
-    expect(chip).toHaveTextContent('积分 未接入');
-    expect(chip.className).toContain('bg-surface-raised');
-
-    render(<QuotaCreditChip label="积分 未接入" testId="accounts-credit-workbuddy_desktop" />);
-    expect(screen.getByTestId('accounts-credit-workbuddy_desktop')).toHaveTextContent('积分 未接入');
   });
 
   it('prefers-reduced-motion：进度条只过渡宽度且带 motion-reduce 兜底，无高度动画', () => {

@@ -99,7 +99,7 @@ export function LocalAccountsImport() {
   );
 
   return (
-    <div data-testid="accounts-import" className="mb-2 inline-flex flex-col gap-1">
+    <div data-testid="accounts-import" className="inline-flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -111,7 +111,6 @@ export function LocalAccountsImport() {
         >
           {importMutation.isPending ? '刷新中…' : '刷新'}
         </button>
-        <span className="text-xs text-neutral-500 dark:text-neutral-400">启动时自动扫描一次，也可手动刷新；token 只进加密存储</span>
       </div>
 
       {failure !== null && (

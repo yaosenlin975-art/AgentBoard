@@ -82,7 +82,6 @@ beforeEach(() => {
 describe('恢复提示与恢复入口（ACC-KB-B4W）', () => {
   it('recovery_required 时给出可操作的下一步（恢复按钮 + 说明），而不是只显示失败', async () => {
     renderPanel();
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
     await userEvent.click(await screen.findByTestId(`accounts-switch-${ACCOUNT_ID}`));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
@@ -103,8 +102,7 @@ describe('恢复提示与恢复入口（ACC-KB-B4W）', () => {
       }),
     );
     renderPanel();
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
-    await userEvent.click(await screen.findByTestId(`accounts-switch-${ACCOUNT_ID}`));
+        await userEvent.click(await screen.findByTestId(`accounts-switch-${ACCOUNT_ID}`));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
     await userEvent.click(await screen.findByTestId(`accounts-recovery-action-${ACCOUNT_ID}`));
@@ -121,8 +119,7 @@ describe('恢复提示与恢复入口（ACC-KB-B4W）', () => {
       }, { status: 202 })),
     );
     renderPanel();
-    await userEvent.click(await screen.findByTestId('accounts-toggle-workbuddy_desktop'));
-    await userEvent.click(await screen.findByTestId(`accounts-switch-${ACCOUNT_ID}`));
+        await userEvent.click(await screen.findByTestId(`accounts-switch-${ACCOUNT_ID}`));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
     await userEvent.click(await screen.findByTestId(`accounts-recovery-action-${ACCOUNT_ID}`));

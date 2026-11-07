@@ -1,13 +1,11 @@
 /**
- * 平台能力图标徽标（ACC-UI-01 / 设计 D2）。
+ * 平台能力图标徽标（ACC-UI-01 / 设计 D2；ACC-UI-PRUNE 起只留三个图标）。
  *
  * - 三个图标：capture / switch / checkin；三态 `true → ✓`、`false → ✗`、能力未取到 → `?`。
- * - **徽标上不显示 reason_code**：原因只进 `title`（tooltip）与「技术信息」`<details>`。
- * - 保留既有 testid 契约：`accounts-capability-${app}`（技术串，含 `捕获 X · 切换 Y · 签到 Z`）与
- *   `accounts-capability-source-${app}`（来源），便于既有断言与排障继续工作。
+ * - **徽标上不显示 reason_code**：原因只进 `title`（tooltip）。
+ * - ACC-UI-PRUNE：「技术信息」折叠块（`accounts-capability-details-*` 技术串与来源）已删。
  */
-import type { AccountCapability } from '@agentboard/shared';
-import { SOURCE_LABEL, capabilityReasonCode, unavailableLabel, unavailableReason, type CapabilityAction, type CapabilityView } from './accountCapabilities';
+import { capabilityReasonCode, unavailableLabel, unavailableReason, type CapabilityAction, type CapabilityView } from './accountCapabilities';
 import { IconCheck, IconCross, IconQuestion } from '../ui/Icon';
 
 const ACTIONS: CapabilityAction[] = ['capture', 'switch', 'checkin'];
@@ -48,24 +46,13 @@ export function CapabilityIcon({
   );
 }
 
-/** 三个图标 + 收起在 `<details>` 里的技术串（原因码只出现在 tooltip 与这里） */
+/** 三个能力图标（原因码只出现在 tooltip） */
 export function CapabilityBadges({ app, capability }: { app: string; capability: CapabilityView | null }) {
   return (
     <span className="flex items-center gap-0.5">
       {ACTIONS.map((action) => (
         <CapabilityIcon key={action} app={app} action={action} capability={capability} />
       ))}
-      <details data-testid={`accounts-capability-details-${app}`} className="ml-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-        <summary className="cursor-pointer select-none text-[11px]">技术信息</summary>
-        <span data-testid={`accounts-capability-${app}`} className="block font-mono">
-          {capability
-            ? `捕获 ${capability.capture ? 'OK' : capabilityReasonCode(capability, 'capture')} · 切换 ${capability.switch ? 'OK' : capabilityReasonCode(capability, 'switch')} · 签到 ${capability.checkin ? 'OK' : capabilityReasonCode(capability, 'checkin')}`
-            : '捕获 ? · 切换 ? · 签到 ?'}
-        </span>
-        <span data-testid={`accounts-capability-source-${app}`} className="block">
-          来源：{capability ? SOURCE_LABEL[capability.source as AccountCapability['source']] : '能力未知'}
-        </span>
-      </details>
     </span>
   );
 }

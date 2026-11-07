@@ -60,17 +60,13 @@ function renderPanel(): void {
 beforeEach(() => server.resetHandlers());
 
 describe('账号面板主从布局（ACC-B1）', () => {
-  it('ACC-UI-2：详情头不重复平台名与账号数，当前账号单行截断并保留全文', async () => {
-    const longName = `com.minimax.mcode.oauth.prod.${'x'.repeat(60)}`;
-    mockBase([account('wb-1', { is_current: true, display_name: longName })]);
+  it('ACC-UI-PRUNE：详情头「当前：…」提示条不再渲染，详情直接从平台内容开始', async () => {
+    mockBase([account('wb-1', { is_current: true })]);
     renderPanel();
 
-    const current = await screen.findByTestId('accounts-detail-current');
-    expect(current).toHaveClass('truncate');
-    expect(current).toHaveTextContent(`当前：${longName}`);
-    expect(current).toHaveAttribute('title', longName);
-    // 平台名/账号数只由行头与左栏索引承载，详情头不再重复
-    expect(screen.queryByTestId('accounts-detail-title')).toBeNull();
+    await screen.findByTestId('accounts-body-workbuddy_desktop');
+    expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
+    expect(screen.queryByText(/当前：/)).toBeNull();
   });
 
   it('左栏索引：六平台 + 其它平台都在，带账号数与当前账号；默认选中第一个平台', async () => {
@@ -91,9 +87,9 @@ describe('账号面板主从布局（ACC-B1）', () => {
     ]);
     expect(screen.queryByTestId('accounts-index-item-codebuddy_desktop')).toBeNull();
 
-    // 账号数 + 当前账号 + 健康态
+    // 账号数（「当前：…」提示条已删，ACC-UI-PRUNE）
     expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('2');
-    expect(screen.getByTestId('accounts-detail-current')).toHaveTextContent('当前：账号 wb-1');
+    expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
 
     // 默认选中第一个
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');

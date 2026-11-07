@@ -2,11 +2,11 @@
  * ACC-B5：删除账号就地确认增强（口径：`Docs/prototypes/accounts-redesign-2026-11-04/b-console.html`
  * `.acard-confirm / .acard-error`）。
  *
- * 覆盖：
+ * 覆盖（ACC-UI-PRUNE：三级技术信息、「今日 x/x」与「当前：…」提示条已删，裸码只进 title）：
  * ① 三种 409（ACCOUNT_BUSY / CHECKIN_AUTHORIZATION_EXISTS / RECOVERY_REQUIRED）各给删除语境中文主文案，
- *    裸码不进主文案，进三级「技术信息」技术码行（accounts-tech-code-*，details 折叠内）；卡片仍在、确认行收回；
+ *    裸码不进主文案，只进 title；卡片仍在、确认行收回；
  * ② is_current=true 确认行追加当前账号警示与 3 秒倒计时收缩条；非当前不出现警示；
- * ③ 删除成功卡片消失（列表失效重拉），左栏平台计数与今日 n/m 重算；
+ * ③ 删除成功卡片消失（列表失效重拉），左栏平台计数与健康角标重算；
  * ④ 删除失败卡片与选中态不变，删除按钮可再次操作。
  *
  * 全程真实时钟：确认窗 3 秒远大于 MSW 往返，自动收回不会插队断言。
@@ -83,7 +83,7 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     { code: 'ACCOUNT_BUSY', label: '账号正忙' },
     { code: 'CHECKIN_AUTHORIZATION_EXISTS', label: '已有进行中的签到授权' },
     { code: 'RECOVERY_REQUIRED', label: '上次切换仍需恢复' },
-  ])('①409 $code：主文案「$label…」中文前缀，裸码进三级技术信息，卡片仍在', async ({ code, label }) => {
+  ])('①409 $code：主文案「$label…」中文前缀，裸码只进 title，卡片仍在', async ({ code, label }) => {
     server.use(http.delete('/api/managed-accounts/:id', () =>
       HttpResponse.json({ error: { code, message: 'server says no' } }, { status: 409 })));
     renderPanel();
@@ -97,10 +97,10 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     expect(alert.textContent ?? '').not.toContain('server says no');
     expect(alert).toHaveAttribute('title', code);
 
-    // 裸码进三级「技术信息」（details 折叠内）的 dt 技术码行
-    const tech = screen.getByTestId(`accounts-tech-${WB_ID}`);
-    expect(tech.tagName).toBe('DETAILS');
-    expect(within(tech).getByTestId(`accounts-tech-code-${WB_ID}`)).toHaveTextContent(code);
+    // ACC-UI-PRUNE：三级技术信息已删，裸码不进卡面
+    expect(screen.queryByTestId(`accounts-tech-${WB_ID}`)).toBeNull();
+    expect(screen.queryByTestId(`accounts-tech-code-${WB_ID}`)).toBeNull();
+    expect(screen.queryByText(code)).toBeNull();
 
     // 确认行收回；卡片仍在
     expect(screen.queryByTestId(`accounts-delete-confirm-${WB_ID}`)).not.toBeInTheDocument();
@@ -137,20 +137,19 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     );
     renderPanel();
     await screen.findByTestId(`accounts-card-${WB_ID}`);
-    // 初始：左栏平台计数 1、今日 0/1、索引健康态出现
+    // 初始：左栏平台计数 1、索引健康态 0/1（「今日 x/x」已删，ACC-UI-PRUNE）
     expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('1');
-    expect(screen.getByTestId('accounts-today-summary')).toHaveTextContent('今日 0/1');
+    expect(screen.queryByTestId('accounts-today-summary')).toBeNull();
     expect(screen.getByTestId('accounts-index-health-workbuddy_desktop')).toHaveTextContent('0/1');
 
     await openDeleteConfirm();
     await userEvent.click(screen.getByTestId(`accounts-delete-confirm-yes-${WB_ID}`));
 
-    // 卡片消失；失效重拉带动左栏平台指标与今日 n/m
+    // 卡片消失；失效重拉带动左栏平台指标
     await waitFor(() => expect(screen.queryByTestId(`accounts-card-${WB_ID}`)).not.toBeInTheDocument());
     await waitFor(() => expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('0'));
-    await waitFor(() => expect(screen.getByTestId('accounts-today-summary')).toHaveTextContent('今日 0/0'));
     expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).not.toBeInTheDocument();
-    expect(screen.getByTestId('accounts-detail-current')).toHaveTextContent('当前：未设置');
+    expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
   });
 
   it('④删除失败：卡片与选中态不变，删除按钮可再次打开确认行', async () => {

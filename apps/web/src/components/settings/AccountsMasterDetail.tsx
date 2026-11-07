@@ -22,10 +22,8 @@ import type { CheckinTodaySummary } from './accountCapabilities';
 export interface PlatformIndexItem {
   app: string;
   label: string;
-  /** 来源行（DeepSeek / OpenCode-Go / Codex）：不显示「当前账号」，不可签到 */
+  /** 来源行（DeepSeek / OpenCode-Go / Codex）：不可签到，右栏只读详情 */
   kind?: 'platform' | 'source';
-  /** 当前账号（客户端登录账号优先，缺失则空） */
-  currentLabel: string | null;
   accountCount: number;
   /** 今日签到：已完成/可参与（CheckinTodaySummary 的 done/total） */
   done: number;
@@ -133,17 +131,7 @@ export function AccountsMasterDetail({ items }: { items: PlatformIndexItem[] }) 
         {active === null ? (
           <p data-testid="accounts-detail-empty" className="text-xs text-ink-3">没有可显示的平台</p>
         ) : (
-          <>
-            {/* ACC-UI-2：平台名/账号数已由行头与左栏索引承载，这里只留一行当前账号（超长身份串单行截断） */}
-            {active.kind !== 'source' && (
-              <p className="mb-1 flex min-w-0 items-baseline text-[11px] text-ink-3">
-                <span data-testid="accounts-detail-current" className="min-w-0 flex-1 truncate" title={active.currentLabel ?? undefined}>
-                  {active.currentLabel === null ? '当前：未设置' : `当前：${active.currentLabel}`}
-                </span>
-              </p>
-            )}
-            {active.render()}
-          </>
+          active.render()
         )}
       </div>
     </div>

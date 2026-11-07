@@ -56,10 +56,15 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     ] satisfies AccountCapability[])));
     renderPanel();
 
-    const capText = (await screen.findByTestId('accounts-capability-workbuddy_desktop')).textContent ?? '';
-    expect(capText).toContain('捕获 OK');
-    expect(capText).toContain('切换 TARGET_KIND_UNCONFIRMED');
-    expect(capText).toContain('签到 CHECKIN_PROVIDER_UNVERIFIED');
+    // ACC-UI-PRUNE：平台「技术信息」折叠已删，分维度原因码只在能力图标徽标的 tooltip
+    const capBadge = await screen.findByTestId('accounts-badge-workbuddy_desktop-capture');
+    expect(capBadge).toHaveAttribute('data-state', 'available');
+    const switchBadge = screen.getByTestId('accounts-badge-workbuddy_desktop-switch');
+    expect(switchBadge).toHaveAttribute('data-state', 'unavailable');
+    expect(switchBadge.getAttribute('title')).toContain('TARGET_KIND_UNCONFIRMED');
+    const checkinBadge = screen.getByTestId('accounts-badge-workbuddy_desktop-checkin');
+    expect(checkinBadge).toHaveAttribute('data-state', 'unavailable');
+    expect(checkinBadge.getAttribute('title')).toContain('CHECKIN_PROVIDER_UNVERIFIED');
     // 捕获按钮可用（不因 checkin/switch 的码被禁）
     expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeEnabled();
     // ACC-UI-2：切换不可用不再渲染灰按钮，改为平台级可见原因（技术码仍在 title）
@@ -99,9 +104,9 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     expect(switchBadge.querySelector('svg')).not.toBeNull();
     expect(switchBadge.getAttribute('aria-label')).toContain('可用');
     expect(wb.textContent).not.toContain('不可用');
-    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toBeEnabled();
-    // ACC-PANEL-03：行上按钮文案收敛为「签到」（长说明交给 tooltip / 芯片）
-    expect(within(wb).getByTestId('accounts-checkin-all-workbuddy_desktop')).toHaveTextContent('签到');
+    // ACC-UI-PRUNE：平台头部签到按钮已删，签到入口只剩工具栏一键签到（能力可用 → 可点）
+    expect(within(wb).queryByTestId('accounts-checkin-all-workbuddy_desktop')).toBeNull();
+    expect(screen.getByTestId('accounts-one-click-checkin')).toBeEnabled();
   });
 
   it('旧结构兜底：缺少分维度字段时按顶层 reason_code 补齐，不把签到码当成捕获/切换原因', () => {

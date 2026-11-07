@@ -28,6 +28,7 @@
  * `accounts-add-url-<app>`（授权链接）/ `accounts-add-code-<app>`（设备码）/
  * `accounts-add-check-<app>`（检查授权结果）/ `accounts-add-cancel-<app>`（取消）/
  * `accounts-add-status-<app>`（状态与原因）/ `accounts-add-unsupported-<app>`（能力不可用文案）。
+ * ACC-UI-PRUNE：入口旁的链路标签 `accounts-add-flow-*`（设备码 / 浏览器登录等）已删。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -96,7 +97,6 @@ export function AddAccountEntry({ app }: { app: ManagedAppId }) {
     );
   }
 
-  const copy = addAccountFlowCopy(info.protocol);
   return (
     <>
       <button
@@ -108,20 +108,13 @@ export function AddAccountEntry({ app }: { app: ManagedAppId }) {
       >
         添加账号
       </button>
-      {/* 链路形态标签：让用户点之前就知道这条平台链路怎么走（设备码 / CLI / 本地回调…） */}
-      <span
-        data-testid={`accounts-add-flow-${app}`}
-        className="rounded-full bg-surface-raised px-2 py-0.5 text-[11px] text-ink-3"
-      >
-        {copy.flowLabel}
-      </span>
       {open && <AddAccountWizard app={app} info={info} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
 /** 向导本体：选区域 → 发起授权 → 展示授权地址/设备码 → 轮询 → 成功或给出原因 */
-function AddAccountWizard({
+export function AddAccountWizard({
   app,
   info,
   onClose,

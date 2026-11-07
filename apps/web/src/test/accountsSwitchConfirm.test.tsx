@@ -6,8 +6,8 @@
  * ② 确认后进入切换中 → operation 轮询真实到达成功终态（第一次 running、第二次 succeeded），
  *    列表失效重拉后目标账号出现「客户端当前」芯片、原账号失去；
  * ③ 切换中本卡动作按钮禁用不可重复点击；失败到终态给中文原因（沿用 reasonCode 映射），
- *    裸码只进三级技术信息；失败后回到未切换态，当前账号不变；
- * ④ 切换请求本身失败且原因码无中文映射：卡面给中性文案，裸码/原始 message 不进卡面，只进 title 与三级技术信息。
+ *    裸码只进 title（ACC-UI-PRUNE：三级技术信息已删）；失败后回到未切换态，当前账号不变；
+ * ④ 切换请求本身失败且原因码无中文映射：卡面给中性文案，裸码/原始 message 不进卡面，只进 title。
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -178,10 +178,9 @@ describe('切换就地确认与切换态（ACC-B4）', () => {
     await userEvent.click(within(nextCard).getByTestId('accounts-switch-acc-wb-next'));
     await userEvent.click(await screen.findByTestId('accounts-switch-confirm-yes'));
 
-    // 切换中（operation 未到终态）：本卡全部动作按钮禁用，不可重复点击
+    // 切换中（operation 未到终态）：本卡动作按钮禁用，不可重复点击（单账号签到按钮已删，ACC-UI-PRUNE）
     const switchBtn = within(nextCard).getByTestId('accounts-switch-acc-wb-next');
     await waitFor(() => expect(switchBtn).toBeDisabled());
-    expect(within(nextCard).getByTestId('accounts-checkin-acc-wb-next')).toBeDisabled();
     expect(within(nextCard).getByTestId('accounts-enabled-toggle-acc-wb-next')).toBeDisabled();
     expect(within(nextCard).getByTestId('accounts-delete-acc-wb-next')).toBeDisabled();
 
@@ -193,7 +192,9 @@ describe('切换就地确认与切换态（ACC-B4）', () => {
     }, { timeout: 3_000 });
     expect(op).toHaveTextContent('目标账号缺少可用凭据');
     expect(op.textContent ?? '').not.toContain('TARGET_CREDENTIAL_MISSING');
-    expect(within(nextCard).getByTestId('accounts-tech-code-acc-wb-next')).toHaveTextContent('TARGET_CREDENTIAL_MISSING');
+    // ACC-UI-PRUNE：三级技术信息已删，裸码只进 title（op 状态块 title 与错误行 title）
+    expect(within(nextCard).queryByTestId('accounts-tech-code-acc-wb-next')).toBeNull();
+    expect(within(nextCard).queryByText('TARGET_CREDENTIAL_MISSING')).toBeNull();
 
     // 失败后回到未切换态：切换按钮恢复可点；当前账号芯片不变、目标账号无芯片
     await waitFor(() => expect(switchBtn).toBeEnabled());
@@ -202,7 +203,7 @@ describe('切换就地确认与切换态（ACC-B4）', () => {
     expect(polls).toBeGreaterThanOrEqual(2);
   });
 
-  it('④切换请求失败且原因码无中文映射：卡面给中性文案，裸码只进三级技术信息，账号状态不变', async () => {
+  it('④切换请求失败且原因码无中文映射：卡面给中性文案，裸码只进 title（三级技术信息已删），账号状态不变', async () => {
     const switchPosts: string[] = [];
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([CURRENT, NEXT])),
@@ -222,10 +223,11 @@ describe('切换就地确认与切换态（ACC-B4）', () => {
     expect(alert.textContent ?? '').not.toContain('mystery failure');
     expect(alert).toHaveAttribute('title', 'FUTURE_SWITCH_REASON');
 
-    // 确认行收回；未进入切换中（无 operation 状态块）；裸码进三级技术信息
+    // 确认行收回；未进入切换中（无 operation 状态块）；三级技术信息已删，裸码不进卡面
     expect(screen.queryByTestId('accounts-switch-confirm')).not.toBeInTheDocument();
     expect(screen.queryByTestId('accounts-op-acc-wb-next')).not.toBeInTheDocument();
-    expect(within(nextCard).getByTestId('accounts-tech-code-acc-wb-next')).toHaveTextContent('FUTURE_SWITCH_REASON');
+    expect(within(nextCard).queryByTestId('accounts-tech-code-acc-wb-next')).toBeNull();
+    expect(within(nextCard).queryByText('FUTURE_SWITCH_REASON')).toBeNull();
 
     // 回到未切换态：当前账号不变，目标账号无芯片
     expect(within(nextCard).getByTestId('accounts-switch-acc-wb-next')).toBeEnabled();

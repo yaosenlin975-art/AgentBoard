@@ -54,10 +54,9 @@ function renderPanel() {
   return render(<QueryClientProvider client={qc}><AccountsPanel /></QueryClientProvider>);
 }
 
-/** 默认全折叠：删除按钮在展开层里，先展开 WorkBuddy 行 */
+/** ACC-UI-PRUNE：平台行折叠已删，右栏详情直接可见 */
 async function openWorkBuddyRow() {
   await screen.findByTestId('accounts-card-' + WB_ID);
-  await userEvent.click(screen.getByTestId('accounts-toggle-workbuddy_desktop'));
 }
 
 beforeEach(() => {

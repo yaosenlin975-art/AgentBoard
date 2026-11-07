@@ -123,7 +123,7 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
     expect(screen.queryByTestId('accounts-add-workbuddy_desktop')).not.toBeInTheDocument();
   });
 
-  it('五平台各自的添加态文案正确：设备码 / 设备授权 / CLI / 浏览器登录 / 本地回调', async () => {
+  it('ACC-UI-PRUNE：入口旁链路标签（设备码/浏览器登录等）已删；各平台仍有「添加账号」入口且向导引导文案正确', async () => {
     server.use(http.get('/api/add-account-protocols', () => HttpResponse.json({
       items: [
         { app_id: 'minimax', protocol: 'minimax_device', provider_version: 'v1', requires_browser: true, regions: ['cn', 'global'] },
@@ -138,20 +138,12 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
     await screen.findByTestId('accounts-index');
     // qoder_cn / zcode 现在并入左栏索引（不在 APP_ORDER），同样要有入口
     // ACC-B1：右栏只渲染选中平台 → 每个平台「切换后 await 自身元素再断言」
-    await userEvent.click(await screen.findByTestId('accounts-index-item-minimax'));
-    expect(await screen.findByTestId('accounts-add-flow-minimax')).toHaveTextContent('设备码');
-
-    await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
-    expect(await screen.findByTestId('accounts-add-flow-trae')).toHaveTextContent('本地回调');
-
-    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
-    expect(await screen.findByTestId('accounts-add-flow-workbuddy_desktop')).toHaveTextContent('浏览器登录');
-
-    await userEvent.click(screen.getByTestId('accounts-index-item-qoder_cn'));
-    expect(await screen.findByTestId('accounts-add-flow-qoder_cn')).toHaveTextContent('设备授权');
-
-    await userEvent.click(screen.getByTestId('accounts-index-item-zcode'));
-    expect(await screen.findByTestId('accounts-add-flow-zcode')).toHaveTextContent('CLI 授权');
+    for (const app of ['minimax', 'trae', 'workbuddy_desktop', 'qoder_cn', 'zcode']) {
+      await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
+      expect(await screen.findByTestId(`accounts-add-${app}`)).toHaveTextContent('添加账号');
+      // ACC-UI-PRUNE：入口旁的链路标签不再渲染
+      expect(screen.queryByTestId(`accounts-add-flow-${app}`)).toBeNull();
+    }
 
     // 引导文案在展开的向导里（Trae 强调「同一台机器的浏览器」）→ 切回 Trae 再打开
     await userEvent.click(screen.getByTestId('accounts-index-item-trae'));

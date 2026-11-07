@@ -1,7 +1,6 @@
 /**
- * ACC-UI-01 账号管理页重设计（能力图标徽标 + 平台级签到 + 折叠语义）。
- * 设计：Docs/design-2026-11-03-accounts-panel-redesign.md（D1/D2/D3/D4/D5）；
- * 折叠默认态与额度区版式自 ACC-PANEL-03（design-2026-11-04 §5 方案 C）起改为**六行总览 + 默认全折叠 + 额度行组**。
+ * ACC-UI-01 账号管理页重设计（能力图标徽标 + 主从布局）。
+ * ACC-UI-PRUNE：平台级签到行头与「技术信息」折叠已删，签到统一走一键签到。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -146,41 +145,14 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(await screen.findByTestId('accounts-source-switch-note-deepseek')).toBeInTheDocument();
   });
 
-  it('平台头部「签到」：只提交该平台启用账号', async () => {
-    const posts: Array<{ body: { app_id: string; account_ids: string[] }; key: string | null }> = [];
-    server.use(
-      http.post('/api/checkin-runs', async ({ request }) => {
-        posts.push({ body: await request.json() as { app_id: string; account_ids: string[] }, key: request.headers.get('Idempotency-Key') });
-        return HttpResponse.json({
-          batch: { id: '11111111-1111-4111-8111-111111111111', app_id: 'workbuddy_desktop', status: 'queued', total: 1, profile_local_day: '2026-11-03', created_at: 1, finished_at: null, items: [] },
-          replayed: false,
-        }, { status: 202 });
-      }),
-      http.get('/api/checkin-runs/:id', () => HttpResponse.json({
-        id: '11111111-1111-4111-8111-111111111111', app_id: 'workbuddy_desktop', status: 'queued', total: 1,
-        profile_local_day: '2026-11-03', created_at: 1, finished_at: null,
-        items: [{ batch_id: '11111111-1111-4111-8111-111111111111', account_id: 'wb-1', seq: 0, state: 'queued', operation_id: null, safe_error_code: null, updated_at: 2 }],
-      })),
-    );
-    renderPanel();
-
-    const wbButton = await screen.findByTestId('accounts-checkin-all-workbuddy_desktop');
-    expect(wbButton).toHaveTextContent('签到');
-    await userEvent.click(wbButton);
-    await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]!.body).toEqual({ app_id: 'workbuddy_desktop', account_ids: ['wb-1'] });
-    expect(posts[0]!.key).toBeTruthy();
-  });
-
-  it('既有 testid 映射：accounts-capability-* / accounts-capability-source-* 收进「技术信息」details，accounts-summary-* 仍在平台体内', async () => {
+  it('ACC-UI-PRUNE：「技术信息」折叠与积分徽标已删，accounts-summary-* 仍在平台体内', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
-    const details = screen.getByTestId('accounts-capability-details-workbuddy_desktop');
-    expect(details.tagName).toBe('DETAILS');
-    expect(within(details).getByTestId('accounts-capability-workbuddy_desktop')).toHaveTextContent('捕获 OK');
-    expect(within(details).getByTestId('accounts-capability-workbuddy_desktop')).toHaveTextContent('签到 OK');
-    expect(within(details).getByTestId('accounts-capability-source-workbuddy_desktop')).toHaveTextContent('由已验证 provider 推导');
+    expect(screen.queryByTestId('accounts-capability-details-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-capability-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-capability-source-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByText('技术信息')).toBeNull();
     expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 1 个启用并参与一键签到');
     expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('共 1 个账号');
   });

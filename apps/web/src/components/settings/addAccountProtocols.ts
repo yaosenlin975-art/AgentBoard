@@ -21,12 +21,10 @@
 import type { AddAccountProtocol } from '@agentboard/shared';
 import { hasReasonLabel, reasonLabel } from './accountCapabilities';
 
-/** 协议链路种类（决定按钮后缀与步骤文案） */
+/** 协议链路种类（决定步骤文案与设备码展示） */
 export type AddAccountFlowKind = 'device_code' | 'device_auth' | 'cli' | 'browser_login' | 'local_callback';
 
 export interface AddAccountFlowCopy {
-  /** 按钮后缀：让用户点之前就知道这条链路怎么走 */
-  flowLabel: string;
   /** 一句话引导 */
   instruction: string;
   /** 是否要展示设备码（`user_code`） */
@@ -42,7 +40,6 @@ export interface AddAccountFlowCopy {
 /** 五平台各自的文案（逐条对照服务端实现与知识页 `89c72721` §2 写，不猜） */
 const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
   minimax_device: {
-    flowLabel: '设备码',
     instruction: '在浏览器打开授权页，输入设备码并确认登录。',
     showsUserCode: true,
     userCodeLabel: '设备码',
@@ -50,7 +47,6 @@ const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
     sameMachine: false,
   },
   qoder_device: {
-    flowLabel: '设备授权',
     instruction: '在浏览器打开授权页，选择要添加的账号并确认。',
     showsUserCode: false,
     userCodeLabel: null,
@@ -58,7 +54,6 @@ const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
     sameMachine: false,
   },
   zcode_cli: {
-    flowLabel: 'CLI 授权',
     instruction: '在浏览器打开授权页完成登录，命令行轮询会自动收口。',
     showsUserCode: false,
     userCodeLabel: null,
@@ -66,7 +61,6 @@ const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
     sameMachine: false,
   },
   workbuddy_oneid: {
-    flowLabel: '浏览器登录',
     instruction: '在浏览器打开授权页完成登录，授权后由服务端换取账号凭据。',
     showsUserCode: false,
     userCodeLabel: null,
@@ -74,7 +68,6 @@ const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
     sameMachine: false,
   },
   trae_oauth: {
-    flowLabel: '本地回调',
     instruction: '在同一台机器的浏览器打开授权页完成登录；授权后回调会打到本机 127.0.0.1:17388。',
     showsUserCode: false,
     userCodeLabel: null,
@@ -85,7 +78,6 @@ const PROTOCOL_COPY: Record<AddAccountProtocol, AddAccountFlowCopy> = {
 
 /** 未知协议（服务端新增但前端还没跟进）时的中性文案：不猜流程，只说「在浏览器完成登录」 */
 const FALLBACK_COPY: AddAccountFlowCopy = {
-  flowLabel: '浏览器授权',
   instruction: '在浏览器打开授权页完成登录。',
   showsUserCode: false,
   userCodeLabel: null,

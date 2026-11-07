@@ -220,14 +220,6 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
   );
 }
 
-/** 积分占位芯片（设计 §5）：与余额/进度条同栏位，WorkBuddy / MiniMax / Trae 行复用；未来接入只换绘制分支 */
-export function QuotaCreditChip({ label = '积分 未接入', testId = 'quota-credit-chip' }: { label?: string; testId?: string } = {}) {
-  return (
-    <span data-testid={testId} title="积分体系未接入，暂无数据" className="inline-flex items-center rounded-full bg-surface-raised px-2 py-0.5 text-[11px] font-medium text-ink-3">
-      {label}
-    </span>
-  );
-}
 /**
  * ACC-KB-B5W：把来源按 `QUOTA_GROUPS`（CLI 额度 / 平台账号）分组，组内顺序 = 该组 sources。
  * 服务端没返回的来源补成 `undefined` 占位（渲染为「暂时取不到额度」行），保证「每个来源恰有一行」。

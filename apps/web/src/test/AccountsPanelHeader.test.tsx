@@ -1,7 +1,7 @@
 /**
- * ACC-HEADER：账号管理标题去重 + 一键签到上移到标题行。
- * 弹窗头部（`Modal title="账号管理"`）保留唯一标题；面板内不再渲染同名标题，
- * 只保留一行工具栏：左「脱敏说明」小字 + 右「一键签到」；窄屏（375）允许换行。
+ * ACC-HEADER：账号管理标题去重 + 一键签到在工具栏。
+ * 弹窗头部（`Modal title="账号管理"`）保留唯一标题；面板内不再渲染同名标题。
+ * ACC-UI-PRUNE：工具栏只剩一键签到计划/按钮与刷新（脱敏说明、「今日 x/x」已删）。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -48,32 +48,33 @@ describe('账号页头部（ACC-HEADER）', () => {
     expect(screen.getByLabelText('账号管理')).toBeInTheDocument();
   });
 
-  it('工具栏：一键签到与脱敏说明同一行，且整排位于主从内容之后', async () => {
+  it('工具栏只剩一键签到计划/按钮与刷新，脱敏说明与「今日 x/x」不再渲染，整排位于主从内容之后', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
     const toolbar = screen.getByTestId('accounts-toolbar');
     expect(toolbar.className).toContain('flex-wrap');
-    const button = within(toolbar).getByTestId('accounts-one-click-checkin');
-    const note = within(toolbar).getByTestId('accounts-desensitize-note');
-    expect(button).toHaveTextContent('一键签到');
-    expect(note).toHaveTextContent('仅展示脱敏元数据');
+    expect(within(toolbar).getByTestId('accounts-one-click-checkin')).toHaveTextContent('一键签到');
+    expect(within(toolbar).getByTestId('accounts-one-click-plan')).toBeInTheDocument();
+    expect(within(toolbar).getByTestId('accounts-import-local')).toHaveTextContent('刷新');
+    expect(within(toolbar).queryByTestId('accounts-desensitize-note')).toBeNull();
+    expect(within(toolbar).queryByTestId('accounts-today-summary')).toBeNull();
+    expect(screen.queryByText('仅展示脱敏元数据')).toBeNull();
 
-    // 需求 6：工具栏移到主从内容下方；额度面板整块移除
+    // 工具栏在主从内容下方；额度面板整块移除
     const master = screen.getByTestId('accounts-master-detail');
     expect(master.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByTestId('quota-rows')).toBeNull();
-    // 按钮在 toolbar 内靠右（说明占 mr-auto，按钮排在其后）
-    expect(note.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('平台分区的「签到」保持不动（与顶部一键签到是两个不同按钮）', async () => {
+  it('ACC-UI-PRUNE：平台头部行不再渲染（toggle/签到芯片/平台签到按钮全删，签到只剩一键签到）', async () => {
     renderPanel();
-    const wbButton = await screen.findByTestId('accounts-checkin-all-workbuddy_desktop');
-    // ACC-PANEL-03：行上按钮文案由「仅此平台签到」收敛为「签到」
-    expect(wbButton).toHaveTextContent('签到');
-    expect(wbButton).not.toHaveTextContent('一键签到');
-    // 与顶部一键签到是两个不同按钮
-    expect(screen.getByTestId('accounts-one-click-checkin')).not.toBe(wbButton);
+    await screen.findByTestId('accounts-app-workbuddy_desktop');
+
+    expect(screen.queryByTestId('accounts-toggle-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-checkin-chip-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-checkin-all-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-credit-workbuddy_desktop')).toBeNull();
+    expect(screen.getByTestId('accounts-one-click-checkin')).toBeEnabled();
   });
 });

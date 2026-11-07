@@ -258,7 +258,7 @@ describe('一键签到（ACC-14）', () => {
     expect(skipped).toHaveTextContent('签到能力未验证');
   });
 
-  it('缺签到凭据：单账号按钮禁用并给出原因，一键签到跳过该账号并在结果里列出', async () => {
+  it('缺签到凭据：单账号签到入口已删（ACC-UI-PRUNE），一键签到跳过该账号并在结果里列出', async () => {
     const accounts: AccountView[] = [
       account(WB_1, 'workbuddy_desktop', 'WB 主号', { is_current: true }),
       account(WB_2, 'workbuddy_desktop', 'WB 副号', { has_checkin_credential: false }),
@@ -284,14 +284,10 @@ describe('一键签到（ACC-14）', () => {
     );
     renderPanel();
 
-    // 账号级前置判定：缺凭据 → 按钮禁用 + 可见原因（不是点了才失败）
-    const missing = await screen.findByTestId(`accounts-checkin-${WB_2}`);
-    expect(missing).toBeDisabled();
-    expect(missing).toHaveAttribute('title', '缺少签到凭据，请先刷新或重新获取');
-    expect(screen.getByTestId(`accounts-checkin-${WB_1}`)).toBeEnabled();
-    // 平台级按钮提示会跳过几个
-    expect(screen.getByTestId('accounts-checkin-all-workbuddy_desktop'))
-      .toHaveAttribute('title', '为本平台 1 个可签到账号发起批次；跳过 1 个（缺少签到凭据或不可签到）');
+    // ACC-UI-PRUNE：单账号与平台级签到入口均已删除
+    await screen.findByTestId('accounts-app-workbuddy_desktop');
+    expect(screen.queryByTestId(`accounts-checkin-${WB_2}`)).toBeNull();
+    expect(screen.queryByTestId('accounts-checkin-all-workbuddy_desktop')).toBeNull();
 
     await userEvent.click(screen.getByTestId('accounts-one-click-checkin'));
     await waitFor(() => expect(checkinPosts).toHaveLength(3));
@@ -301,7 +297,7 @@ describe('一键签到（ACC-14）', () => {
     expect(skipped).toHaveTextContent('跳过 1 个账号：WB 副号（缺少签到凭据，请先刷新或重新获取）');
   });
 
-  it('今日 x/y 口径：succeeded/already_done 计入；unknown 不计入并带 ?；failed/authorized/缺凭据不计入分母', async () => {
+  it('今日 done/total 口径（左栏索引健康角标）：succeeded/already_done 计入 done；failed/authorized/缺凭据不计入分母', async () => {
     const today = localDayKey(Date.now());
     const accounts: AccountView[] = [
       account(WB_1, 'workbuddy_desktop', 'WB 成功', { last_checkin_day: today, last_checkin_status: 'succeeded' }),
@@ -314,12 +310,13 @@ describe('一键签到（ACC-14）', () => {
     server.use(http.get('/api/managed-accounts', () => HttpResponse.json(accounts)));
     renderPanel();
 
-    // 分母 5（缺凭据被排除）；分子 2（succeeded + already_done）；1 个 unknown 加 ? 角标
-    const chip = await screen.findByTestId('accounts-checkin-chip-workbuddy_desktop');
-    expect(chip).toHaveTextContent('2/5 ?');
-    expect(chip).toHaveAttribute('title', expect.stringContaining('结果未知'));
-    // 列表摘要与芯片同口径；ACC-UI-2 去掉摘要里的重复计数（只在芯片展示 n/m）
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('今日已完成');
+    // 分母 5（缺凭据被排除）；分子 2（succeeded + already_done）；签到芯片已删（ACC-UI-PRUNE），口径在左栏索引健康角标
+    const health = await screen.findByTestId('accounts-index-health-workbuddy_desktop');
+    expect(health).toHaveTextContent('2/5');
+    expect(health).toHaveAttribute('title', '今日签到 2/5');
+    expect(screen.queryByTestId('accounts-checkin-chip-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-today-summary')).toBeNull();
+    // 列表摘要仍按参与人数口径
     expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 5 个启用并参与一键签到');
   });
 });

@@ -1,29 +1,21 @@
 /**
- * ACC-B3：单平台签到批次的右栏呈现（收敛 `PlatformRow` 的批次视图）。
- * 结构形态取 `Docs/prototypes/accounts-redesign-2026-11-04/b-console.html` 的 `.runPanel`，样式沿用 `--ab-*` 令牌：
- * - 吸顶批次条：批次短号 + 状态 + 进度（done/total，unknown 加 ?）+ 收起/展开；
- * - 账号级状态列表：display_name + 排队中 / 执行中 / 签到成功 / 今日已完成 / 结果未知（? 角标）/ 签到失败 / 已取消；
- * - 终态（succeeded / partial / failed / cancelled）：不渲染取消按钮，也不渲染「没有可取消的排队项」占位行；
+ * 签到批次共享层（ACC-B3；ACC-UI-PRUNE 起单平台吸顶批次条 `CheckinRunPanel` 已随单平台签到入口删除，
+ * 本文件只保留跨平台一键签到结果条（OneClickCheckin → CheckinBatchPanel）复用的共享件）：
+ * - 状态/条目中文对照与配色（CHECKIN_BATCH_LABEL / CHECKIN_BATCH_TONE / CHECKIN_ITEM_LABEL / CHECKIN_ITEM_TONE）；
+ * - 批次查询与旅行结果轮询（useCheckinBatch / useCheckinBatchTravel / useCancelCheckinBatch / isBatchActive）；
+ * - 失败原因与取消控制（CheckinItemError / CheckinItemTravel / CheckinCancelControls）。
+ * - 终态（succeeded / partial / failed / cancelled）不渲染取消按钮，也不渲染「没有可取消的排队项」占位行；
  *   失败原因给中文主文案，技术码收进折叠层。
  *
- * sticky 依附点（读 DrawerPanel 层级确认）：`drawer-body`（`overflow-auto`）是右栏唯一滚动容器；
- * `accounts-detail` 与 `PlatformRow` 根节点都没有 overflow，`sticky top-0` 相对 drawer-body 生效；
- * `-mx-3 px-3` 抵消 drawer-body 的 `p-3`，吸顶时左右不留透缝。
- *
- * 完成口径（父卡硬规则，批次进度与平台指标同口径）：
- * succeeded / already_done 计入 done；unknown 计入 total 不计入 done 且带 ?；failed 落回未签到；
- * authorized 不是批次条目状态，只在平台今日指标（`summarizeCheckinToday`）里不计入完成。
- *
- * 跨平台一键签到（OneClickCheckin → CheckinBatchPanel）复用本文件的状态对照 / 进度口径 / 取消控制 / 失败原因渲染。
+ * 完成口径（父卡硬规则）：succeeded / already_done 计入 done；unknown 计入 total 不计入 done；
+ * failed 落回未签到；authorized 不是批次条目状态，只在平台今日指标（`summarizeCheckinToday`）里不计入完成。
  */
-import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AccountOperation,
   CheckinBatch,
   CheckinBatchItem,
   CheckinBatchStatus,
-  PublicManagedAccount,
 } from '@agentboard/shared';
 import { BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { cancelCheckinBatch, fetchBatchOperations, fetchCheckinBatch } from './checkinApi';
@@ -72,38 +64,12 @@ export const CHECKIN_ITEM_TONE: Record<CheckinBatchItem['state'], string> = {
 };
 
 /** 状态点（单色相：ink 分级表达进度深浅，accent 只给失败） */
-const ITEM_DOT: Record<CheckinBatchItem['state'], string> = {
-  queued: 'bg-ink-3/50',
-  running: 'bg-ink',
-  succeeded: 'bg-ink-2',
-  already_done: 'bg-ink-2/60',
-  failed: 'bg-accent',
-  unknown: 'bg-ink-3',
-  cancelled: 'bg-ink-3/50',
-};
 
 /** 批次是否仍在执行（有 queued/running 条目且未结束）；终态 = false */
 export function isBatchActive(batch: CheckinBatch | null | undefined): boolean {
   if (!batch) return false;
   if (batch.finished_at !== null) return false;
   return (batch.items ?? []).some((item) => item.state === 'queued' || item.state === 'running');
-}
-
-export interface CheckinBatchProgress {
-  /** 计入完成：succeeded + already_done */
-  done: number;
-  /** 结果未知：计入 total 不计入 done（展示加 ? 角标） */
-  unknown: number;
-  total: number;
-}
-
-/** 批次进度口径（父卡硬规则）：succeeded / already_done 计入 done；unknown 计入 total 不计入 done */
-export function checkinBatchProgress(items: CheckinBatchItem[]): CheckinBatchProgress {
-  return {
-    done: items.filter((item) => item.state === 'succeeded' || item.state === 'already_done').length,
-    unknown: items.filter((item) => item.state === 'unknown').length,
-    total: items.length,
-  };
 }
 
 /** 批次查询（未终态时 700ms 轮询）；查询键与一键签到共用，react-query 自动去重 */
@@ -219,127 +185,5 @@ export function CheckinCancelControls({
         </p>
       )}
     </>
-  );
-}
-
-/**
- * 单平台批次吸顶呈现。`batchId` 变化时由调用方换 `key` 重挂（收起态随新批次重置为展开）。
- * 取消只对 queued 生效；running 项如实提示已发出请求、无法取消。
- */
-export function CheckinRunPanel({
-  batchId,
-  accounts,
-}: {
-  batchId: string;
-  accounts: PublicManagedAccount[];
-}) {
-  const [collapsed, setCollapsed] = useState(false);
-  const batchQuery = useCheckinBatch(batchId);
-  const batch = batchQuery.data ?? null;
-  const items = batch?.items ?? [];
-  const progress = checkinBatchProgress(items);
-  const active = isBatchActive(batch);
-  const travelByAccount = useCheckinBatchTravel(batchId, active);
-  const percent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
-  const nameOf = (accountId: string): string =>
-    accounts.find((account) => account.id === accountId)?.display_name ?? accountId.slice(0, 8);
-
-  return (
-    <section data-testid="checkin-run-panel" data-active={active ? 'true' : 'false'} aria-label="签到批次" className="mb-1">
-      {/* 吸顶批次条：依附 drawer-body 滚动容器（层级见文件头注释）；实底 + backdrop 防正文透出 */}
-      <div
-        data-testid="checkin-run-bar"
-        className="sticky top-0 z-10 -mx-3 border-b border-hairline bg-surface-card/95 px-3 py-1.5 backdrop-blur"
-      >
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span aria-hidden="true" className={`inline-block size-1.5 rounded-full ${active ? 'bg-accent motion-safe:animate-pulse' : 'bg-ink-3'}`} />
-          <span className="font-medium text-ink">签到批次</span>
-          {batch !== null && (
-            <span data-testid="checkin-run-status" className={`rounded-md px-1.5 py-0.5 ${CHECKIN_BATCH_TONE[batch.status]}`}>
-              {CHECKIN_BATCH_LABEL[batch.status]}
-            </span>
-          )}
-          <span data-testid="checkin-run-id" className="font-mono text-xs tabular-nums text-ink-3">{batchId.slice(0, 8)}…</span>
-          <span
-            data-testid="checkin-run-progress"
-            data-done={progress.done}
-            data-total={progress.total}
-            data-unknown={progress.unknown}
-            title="succeeded/already_done 计入完成；unknown 标 ? 不计入"
-            className="ml-auto font-semibold text-xs tabular-nums text-ink-2"
-          >
-            {progress.done}/{progress.total}{progress.unknown > 0 ? '?' : ''}
-          </span>
-          <button
-            type="button"
-            data-testid="checkin-run-toggle"
-            aria-expanded={!collapsed}
-            className="text-xs text-ink-3 hover:text-ink hover:underline"
-            onClick={() => setCollapsed((value) => !value)}
-          >
-            {collapsed ? '展开' : '收起'}
-          </button>
-        </div>
-        {/* 进度条：done/total 百分比（unknown 留空档，与计数口径一致） */}
-        <span data-testid="checkin-run-progressbar" className="mt-1 block h-0.5 overflow-hidden rounded-sm bg-surface-raised">
-          <span
-            className="block h-full bg-accent duration-300 transition-[width] motion-reduce:transition-none"
-            style={{ width: `${percent}%` }}
-          />
-        </span>
-      </div>
-
-      {batchQuery.isError && (
-        <p role="alert" className="mt-1 text-xs text-red-600 dark:text-red-400">
-          批次读取失败：{batchQuery.error instanceof Error ? batchQuery.error.message : '未知错误'}
-        </p>
-      )}
-
-      {!collapsed && (
-        <div data-testid="checkin-run-body" className="mt-2">
-          <ul data-testid="checkin-run-items" className="space-y-1.5">
-            {items.map((item) => {
-              const travel = travelByAccount.get(item.account_id) ?? null;
-              return (
-                <li
-                  key={`${item.batch_id}-${item.account_id}`}
-                  data-testid={`checkin-run-item-${item.account_id}`}
-                  data-state={item.state}
-                  className="flex flex-wrap items-center gap-2 text-xs"
-                >
-                  <span aria-hidden="true" className={`inline-block size-1.5 shrink-0 rounded-full ${ITEM_DOT[item.state]}`} />
-                  <span className="min-w-0 truncate text-ink">{nameOf(item.account_id)}</span>
-                  <span className={`rounded-md px-1.5 py-0.5 tabular-nums ${CHECKIN_ITEM_TONE[item.state]}`}>
-                    {CHECKIN_ITEM_LABEL[item.state]}
-                    {item.state === 'unknown' && (
-                      <span
-                        data-testid={`checkin-run-item-unknown-${item.account_id}`}
-                        title="结果未知，未自动重发；计入总数不计入完成"
-                        className="ml-0.5 font-semibold"
-                      >
-                        ?
-                      </span>
-                    )}
-                  </span>
-                  {item.state === 'failed' && (
-                    <CheckinItemError code={item.safe_error_code} testId={`checkin-run-item-error-${item.account_id}`} />
-                  )}
-                  {travel !== null && (
-                    <CheckinItemTravel travel={travel} testId={`checkin-run-item-travel-${item.account_id}`} />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {/* 终态口径说明（原型 .b-run-note） */}
-          {batch !== null && !active && (
-            <p data-testid="checkin-run-note" className="mt-2 text-[11px] text-ink-3">
-              成功与今日已完成计入完成；结果未知标 ? 不计入；失败落回未签到；授权中不算完成。
-            </p>
-          )}
-          <CheckinCancelControls batchId={batchId} items={items} active={active} testPrefix="checkin-run" />
-        </div>
-      )}
-    </section>
   );
 }

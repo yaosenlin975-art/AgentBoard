@@ -1,6 +1,7 @@
 /**
- * 账号管理面板（ACC-08 基线 + ACC-14）：三平台多账号、两个「当前」区分、切换可用性、脱敏。
+ * 账号管理面板（ACC-08 基线 + ACC-14 + ACC-UI-PRUNE）：三平台多账号、客户端当前芯片、切换可用性、脱敏。
  * ACC-14 起平台范围是 WorkBuddy / MiniMax / Trae；CodeBuddy Desktop 栏位移除（历史账号在界面过滤）。
+ * ACC-UI-PRUNE：行头计数、账号行「签到当前」芯片与单账号「签到」按钮已删，签到统一走一键签到。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -115,7 +116,6 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
     expect(within(wb).getByText('WB 账号一')).toBeInTheDocument();
     expect(within(wb).getByText('WB 账号二')).toBeInTheDocument();
-    expect(within(wb).getByTestId('accounts-count-workbuddy_desktop')).toHaveTextContent('2 个');
     expect(within(wb).getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 2 个启用并参与一键签到');
 
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
@@ -133,7 +133,7 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(screen.queryByText('CodeBuddy Desktop')).not.toBeInTheDocument();
   });
 
-  it('两个「当前」分开表达：客户端当前取 is_current，签到当前取参与签到判定', async () => {
+  it('客户端当前芯片取 is_current；停用号出「已停用」芯片；签到当前芯片已随 ACC-UI-PRUNE 删除', async () => {
     mockList([
       account({ id: 'acc-wb-cur', display_name: '客户端当前号', is_current: true }),
       account({ id: 'acc-wb-next', display_name: '仅签到号', is_current: false }),
@@ -143,7 +143,7 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
 
     const cur = await screen.findByTestId('accounts-card-acc-wb-cur');
     expect(within(cur).getByTestId('accounts-client-current-acc-wb-cur')).toHaveTextContent('客户端当前');
-    expect(within(cur).getByTestId('accounts-checkin-current-acc-wb-cur')).toHaveTextContent('签到当前');
+    expect(within(cur).queryByTestId('accounts-checkin-current-acc-wb-cur')).toBeNull();
     // ACC-UI-2：当前账号不渲染灰切换按钮（已有「客户端当前」芯片表达同一事实）
     expect(within(cur).queryByTestId('accounts-switch-acc-wb-cur')).toBeNull();
 
@@ -152,14 +152,12 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(within(next).queryByText('客户端非当前')).toBeNull();
     expect(within(next).getByTestId('accounts-client-current-acc-wb-next')).toBeEmptyDOMElement();
     expect(within(next).getByTestId('accounts-client-current-acc-wb-next')).toHaveAttribute('title', '客户端非当前');
-    expect(within(next).getByTestId('accounts-checkin-current-acc-wb-next')).toHaveTextContent('签到当前');
     expect(within(next).getByTestId('accounts-switch-acc-wb-next')).toBeEnabled();
 
     const off = screen.getByTestId('accounts-card-acc-wb-off');
-    // ACC-B2：负向信息不渲染——「不参与签到」退到 title（原因 = 账号已停用）
-    expect(within(off).queryByText('不参与签到')).toBeNull();
-    expect(within(off).getByTestId('accounts-checkin-current-acc-wb-off')).toBeEmptyDOMElement();
-    expect(within(off).getByTestId('accounts-checkin-current-acc-wb-off')).toHaveAttribute('title', expect.stringContaining('账号已停用'));
+    expect(within(off).getByText('已停用')).toBeInTheDocument();
+    expect(within(off).queryByTestId('accounts-checkin-current-acc-wb-off')).toBeNull();
+    expect(within(off).queryByTestId(`accounts-checkin-acc-wb-off`)).toBeNull();
   });
 
   it('is_current=null 时负向信息不渲染：「客户端当前未知」退到 title，不假装非当前', async () => {
@@ -292,9 +290,9 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toHaveTextContent('能力矩阵不可用');
     expect(await screen.findByTestId('accounts-one-click-checkin')).toBeDisabled();
     const card = await screen.findByTestId('accounts-card-acc-wb-1');
-    // ACC-UI-2：能力未知时不渲染切换按钮（避免假入口），签到仍按能力矩阵禁用
+    // ACC-UI-2：能力未知时不渲染切换按钮（避免假入口）；单账号签到按钮已删（ACC-UI-PRUNE）
     expect(within(card).queryByTestId('accounts-switch-acc-wb-1')).toBeNull();
-    expect(within(card).getByTestId('accounts-checkin-acc-wb-1')).toBeDisabled();
+    expect(within(card).queryByTestId('accounts-checkin-acc-wb-1')).toBeNull();
     expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeDisabled();
   });
 
