@@ -17,12 +17,28 @@
  *    再延迟约 200ms：`server.close()` 停掉监听 → 轮询新进程健康 → 健康才退出旧进程；
  *    不健康则 `reopenServer()` 把监听要回来，旧进程继续服务（前端据 `/api/version` 的 pid
  *    与 202 里的 `new_pid` 对比即可判断是「新进程接管」还是「已回退」）。
+ *
+ * ACC-SRV-RESTART 交棒时序契约（旧进程 = 编排方，新进程 = 接班方；.logs 2026-11-06/07 三类实录）：
+ * - 旧进程：spawn（带 AGENTBOARD_RESTART_FROM=selfPid）→ 202 → +200ms 关监听 → 健康等待
+ *   （首段 healthTimeoutMs；接班进程仍活着则延长到总窗口 takeoverTimeoutMs，任一拍
+ *   `/api/version` 的 pid 等于新 pid 即接管成功）→ exit(0)。
+ *   等待失败后回退前先探端口归属：
+ *   · 端口已是健康看板实例且 pid = 新进程 → 接管迟到，按成功收口退出；
+ *   · 端口已是健康看板实例但 pid 不同 → 交棒回调被事件循环饿到迟到、期间更晚一次重启已成功
+ *     （04:01 / 08:29 实录）：终止自己的迟到子进程后 exit(0)，绝不回退抢监听；
+ *   · 端口无健康看板 → 必须先终止已 spawn 的子进程、等端口让出，再 reopen；reopen 成功后
+ *     重持单例锁（受让自子进程 pid）。
+ * - 新进程：带 AGENTBOARD_RESTART_FROM 受让「前任活着但正在退出」的锁 → 启动 → listen 对
+ *   EADDRINUSE 重试（交班子进程总窗口 60s、每 500ms；普通启动 5s、每 250ms，见 index.ts）。
+ *   新进程在交棒窗口内不因瞬时 EADDRINUSE 退出；旧进程回退前会先终止它，因此不存在
+ *   「回退后新进程才 bind」的死亡路径（14:18 / 14:20 / 14:43 实录主因）。
  */
 import { Router, type Request, type Response } from 'express';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
 import { connect } from 'node:net';
 import { appendServerLog, resolveServerLogPath } from '../services/serverLog.js';
+import { isProcessAlive } from '../services/serverLock.js';
 import { ensureProxyEnv } from '@agentboard/shared';
 
 /** 端口占用判定：free=没人监听 / self=本进程 / foreign=别的进程（含另一个看板实例） */
@@ -58,6 +74,19 @@ export interface RestartDeps {
   logPath?: () => string;
   /** 健康等待上限，缺省 15000 */
   healthTimeoutMs?: number;
+  // ---- ACC-SRV-RESTART 交棒竞态收口（回退路径的进程 / 端口 / 锁处置，缺省实现走真实进程）----
+  /** 总接管窗口（自关监听起算，含首段健康等待）；接班进程活着就等到它，死了立即收口。缺省 60000 */
+  takeoverTimeoutMs?: number;
+  /** pid 存活判定（缺省复用单例锁的 isProcessAlive） */
+  isProcessAlive?: (pid: number) => boolean;
+  /** 终止已 spawn 的子进程并等它消失（true = 已终止 / 本就不在）；缺省 win32 taskkill /T /F、其余 SIGKILL */
+  killChild?: (pid: number) => Promise<boolean>;
+  /** 端口归属探测：null = 空闲；board = true 表示端口上已是健康看板实例（本子进程或后继链） */
+  inspectPortOwner?: (port: number) => Promise<{ board: boolean; pid: number | null } | null>;
+  /** 终止子进程后等端口真正让出（true = 已空闲）；缺省 TCP 探测 3s 上限 */
+  waitForPortFree?: (port: number) => Promise<boolean>;
+  /** 回退成功后旧进程重持单例锁（受让自子进程 pid，true = 已持有）；生产由 index.ts 注入 */
+  reacquireLock?: (takeoverFromPid: number) => boolean;
 }
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -170,6 +199,46 @@ async function defaultWaitForHealth(port: number, newPid: number | null, timeout
   return false;
 }
 
+/** 端口归属探测（回退前判定）：null = 端口空闲；board = true = 端口上已是健康看板实例 */
+export async function defaultInspectPortOwner(port: number): Promise<{ board: boolean; pid: number | null } | null> {
+  const version = await probeVersion(port);
+  if (version === null) return null;
+  return { board: version.name === 'agentboard-server', pid: typeof version.pid === 'number' ? version.pid : null };
+}
+
+/**
+ * 终止自重启拉起的接班进程并等它真正消失（回退路径用，见 performRestart 时序契约）。
+ * win32 用 `taskkill /T /F`：/T 连子树（接班进程启动期可能已拉起适配器 CLI），/F 走
+ * TerminateProcess，taskkill 返回即内核已确认；其余平台 SIGKILL。taskkill 非 0 不直接判
+ * 失败（目标已不存在也非 0），以存活探测收口。
+ */
+export async function defaultKillChild(pid: number): Promise<boolean> {
+  if (!isProcessAlive(pid)) return true;
+  if (process.platform === 'win32') {
+    const code = await new Promise<number | null>(resolve => {
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.once('exit', code_ => resolve(code_));
+      killer.once('error', () => resolve(null));
+    });
+    if (code !== 0 && !isProcessAlive(pid)) return true;
+  } else {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* 已死 */ }
+  }
+  const deadline = Date.now() + 2_000;
+  while (isProcessAlive(pid) && Date.now() < deadline) await sleep(50);
+  return !isProcessAlive(pid);
+}
+
+/** 终止子进程后等监听句柄真正释放（内核回收有延迟），给 reopen 一个干净的端口 */
+async function defaultWaitForPortFree(port: number, timeoutMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await canConnect(port, 500))) return true;
+    await sleep(100);
+  }
+  return !(await canConnect(port, 500));
+}
+
 /** 重启结果：ok=false 时调用方决定 HTTP 状态（内部调用方据 code 判定） */
 export type RestartOutcome =
   | { ok: true; old_pid: number; new_pid: number | null; log_path: string; started_at: number }
@@ -207,23 +276,86 @@ export async function performRestart(deps: RestartDeps): Promise<RestartOutcome>
     return { ok: false, status: 500, code: 'RESTART_SPAWN_FAILED', message: '新进程启动失败，旧进程继续服务' };
   }
 
-  // 3) 交接：先让调用方回 202（closeAllConnections 会掐断在途响应），200ms 后关监听并判定
+  // 3) 交接：先让调用方回 202（closeAllConnections 会掐断在途响应），200ms 后关监听并判定。
+  //    旧进程是唯一编排方，完整时序契约见文件头注；窗口计时一律走 wall clock（deps.now 只给 202 打戳）。
   const startedAt = (deps.now ?? Date.now)();
   log('即将重启：旧进程 ' + selfPid + ' → 新进程 ' + (newPid ?? '未知') + '，日志 ' + logPath);
-  const timeoutMs = deps.healthTimeoutMs ?? 15_000;
+  const healthTimeoutMs = deps.healthTimeoutMs ?? 15_000;
+  const takeoverTimeoutMs = deps.takeoverTimeoutMs ?? 60_000;
+  const exitProcess = deps.exit ?? (code => process.exit(code));
   (deps.schedule ?? ((fn, ms) => { setTimeout(fn, ms); }))(() => {
     void (async () => {
       try { await deps.closeServer?.(); } catch { /* 关闭失败也要继续判定，交给新进程 */ }
-      const healthy = await (deps.waitForHealth ?? ((pid, ms) => defaultWaitForHealth(port, pid, ms)))(newPid, timeoutMs);
+      const isAlive = deps.isProcessAlive ?? isProcessAlive;
+      const inspectOwner = deps.inspectPortOwner ?? defaultInspectPortOwner;
+      const waitForHealth = deps.waitForHealth ?? ((pid, ms) => defaultWaitForHealth(port, pid, ms));
+      const handoffStart = Date.now();
+
+      // ④ 首段等 healthTimeoutMs；接班进程还活着（可能只是启动慢）则延长到总窗口 takeoverTimeoutMs，
+      //    期间接班进程死亡立即收口回退，任一拍健康成立即接管成功。
+      let healthy = await waitForHealth(newPid, healthTimeoutMs);
+      if (!healthy && newPid !== null && isAlive(newPid)) {
+        while (!healthy && Date.now() < handoffStart + takeoverTimeoutMs) {
+          if (!isAlive(newPid)) break;
+          healthy = await waitForHealth(newPid, 1_000);
+          if (!healthy) await sleep(50);
+        }
+      }
       if (healthy) {
         log('重启完成：新进程 ' + (newPid ?? '未知') + ' 已接管端口 ' + port);
-        (deps.exit ?? (code => process.exit(code)))(0);
+        exitProcess(0);
         return;
       }
-      log('重启失败：新进程 ' + (newPid ?? '未知') + ' 未在 ' + timeoutMs + 'ms 内接管端口 ' + port + '，回退旧进程 ' + selfPid + ' 监听（日志 ' + logPath + '）');
+
+      // 回退前的竞态收口：先探端口现在归谁，再决定「退出 / 终止子进程后回退」。
+      const owner = await inspectOwner(port);
+      if (owner !== null && owner.board && newPid !== null && owner.pid === newPid) {
+        // 健康等待刚过期、子进程恰好在这之后才 bind 成功（探测迟到）：按接管成功收口。
+        log('重启完成（回退检查时确认）：新进程 ' + newPid + ' 已在端口 ' + port + ' 服务');
+        exitProcess(0);
+        return;
+      }
+      if (owner !== null && owner.board) {
+        // 端口已是健康看板实例但不是本子进程：交棒回调被事件循环饿到迟到，期间更晚一次重启已成功
+        // （.logs 2026-11-07 04:01 / 08:29 实录）。旧进程不得回退抢监听：终止自己的迟到子进程
+        // （若还在）后退出，由后继实例继续服务。
+        if (newPid !== null && isAlive(newPid)) {
+          const killed = await (deps.killChild ?? defaultKillChild)(newPid);
+          log('竞态处置：端口 ' + port + ' 已由看板 pid ' + (owner.pid ?? '未知') + ' 服务；迟到子进程 ' + newPid + (killed ? ' 已终止' : ' 终止失败'));
+        } else {
+          log('竞态处置：端口 ' + port + ' 已由看板 pid ' + (owner.pid ?? '未知') + ' 服务；子进程 ' + (newPid ?? '未知') + ' 已退出');
+        }
+        log('竞态结局：旧进程 ' + selfPid + ' 退出，不回退（后继实例继续服务端口 ' + port + '）');
+        exitProcess(0);
+        return;
+      }
+
+      // 端口无健康看板（空闲或被外来进程占用）：回退前必须先终止已 spawn 的子进程——否则回退后
+      // 子进程 bind 必撞 EADDRINUSE 死亡（.logs 2026-11-06 14:18 / 14:20 / 14:43 实录主因）。
+      const waitedMs = Math.max(healthTimeoutMs, Date.now() - handoffStart);
+      log('重启失败：新进程 ' + (newPid ?? '未知') + ' 未在 ' + waitedMs + 'ms 内接管端口 ' + port + '，回退旧进程 ' + selfPid + ' 监听（日志 ' + logPath + '）');
+      let killAttempted = false;
+      if (newPid !== null && isAlive(newPid)) {
+        killAttempted = true;
+        const killed = await (deps.killChild ?? defaultKillChild)(newPid);
+        log('竞态处置：已终止子进程 ' + newPid + (killed ? '，端口归属交还旧进程' : '（终止失败，端口可能仍被其占用）'));
+      } else if (newPid !== null) {
+        log('竞态处置：子进程 ' + newPid + ' 已退出，无需终止');
+      }
+      if (killAttempted && !(await (deps.waitForPortFree ?? defaultWaitForPortFree)(port))) {
+        log('竞态处置：端口 ' + port + ' 在子进程终止后仍被占用，回退可能失败');
+      }
       try {
         await deps.reopenServer?.();
         log('已回退：旧进程 ' + selfPid + ' 重新监听端口 ' + port);
+        // 交棒期间单例锁已归子进程（受让自旧进程）；子进程被终止后锁文件挂着死 pid，旧进程必须
+        // 拿回来，否则「同库双开检测」对仍在服务的旧进程失效。失败只记录（可用性优先）。
+        if (newPid !== null && deps.reacquireLock !== undefined) {
+          const regained = deps.reacquireLock(newPid);
+          log(regained
+            ? '竞态结局：旧进程 ' + selfPid + ' 已重新持有单例锁（受让自 ' + newPid + '）'
+            : '竞态结局：旧进程 ' + selfPid + ' 未能重新持有单例锁（继续服务，后续以陈旧锁接管兜底）');
+        }
       } catch (error) {
         log('回退失败：旧进程 ' + selfPid + ' 无法重新监听端口 ' + port + '（' + (error instanceof Error ? error.message : String(error)) + '），服务不可用');
       }

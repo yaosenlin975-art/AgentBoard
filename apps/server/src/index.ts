@@ -409,6 +409,15 @@ export async function main(): Promise<StartedServer> {
     restart: {
       // SERVER-SINGLETON：接班进程带上前任 pid，才允许受让「前任还活着但正在退出」的锁
       spawnChild: (command, args) => spawnDetached(command, args, undefined, { AGENTBOARD_RESTART_FROM: String(process.pid) }),
+      // ACC-SRV-RESTART：回退成功后旧进程重新持有单例锁（交棒期间锁已归子进程；子进程被终止后
+      // 锁文件挂着死 pid，不拿回来「同库双开检测」对仍在服务的旧进程失效）。
+      reacquireLock: (takeoverFromPid: number) => acquireServerLock({
+        configDir: configDir(),
+        dbPath: config.dbPath,
+        port: config.port,
+        instanceId,
+        takeoverFrom: [takeoverFromPid],
+      }).ok,
       closeServer: () => new Promise<void>(resolve => {
         server.closeAllConnections();
         server.close(() => resolve());
@@ -448,8 +457,18 @@ export async function main(): Promise<StartedServer> {
   // VOICE-2：语音会话 WS 必须先于 hub 注册（hub 会 destroy 非 /ws 的 upgrade）
   attachVoiceWebSocket(server, db);
   hub.attach(server);
-  // SYSTEM-RESTART：新进程可能比旧进程先起来，遇到 EADDRINUSE 时重试等端口让出（最多 5s）
-  for (let attempt = 0; ; attempt += 1) {
+  // SYSTEM-RESTART：新进程可能比旧进程先起来，遇到 EADDRINUSE 时重试等端口让出。
+  // ACC-SRV-RESTART 交棒契约（接班进程侧，编排方见 systemRoutes.performRestart 文件头注）：
+  // 旧进程 spawn 后 ~200ms 才关监听，接班进程首次 bind 撞上「旧进程尚未让出」属正常瞬时态；
+  // 交班子进程（带 AGENTBOARD_RESTART_FROM）的重试窗口与旧进程的总接管窗口对齐（60s、每 500ms），
+  // 高 IO 下接班进程可能远晚于旧进程首段 15s 才走到 bind；普通启动保持 5s 快速失败
+  // （端口被占是配置错误，不该拖 60s）。旧进程回退前会先终止本进程，因此不存在
+  // 「与回退后的旧监听抢端口」的死路径。
+  const restartTakeover = Number.isInteger(restartFrom) && restartFrom > 0;
+  const bindRetryWindowMs = restartTakeover ? 60_000 : 5_000;
+  const bindRetryGapMs = restartTakeover ? 500 : 250;
+  const bindDeadline = Date.now() + bindRetryWindowMs;
+  for (;;) {
     try {
       await new Promise<void>((resolve, reject) => {
         const onError = (error: NodeJS.ErrnoException): void => { server.off('listening', onListening); reject(error); };
@@ -460,8 +479,8 @@ export async function main(): Promise<StartedServer> {
       });
       break;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || attempt >= 20) throw error;
-      await new Promise(resolve => setTimeout(resolve, 250));
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE' || Date.now() >= bindDeadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, bindRetryGapMs));
     }
   }
   attachments.startCleanupWorker();

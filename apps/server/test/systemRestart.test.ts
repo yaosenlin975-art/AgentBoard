@@ -46,6 +46,13 @@ const deps = (overrides: Partial<RestartDeps> = {}) => {
     port: () => 8787,
     probePort: async () => { calls.push('probe'); return { kind: 'self' }; },
     waitForHealth: async () => { calls.push('health'); return true; },
+    // ACC-SRV-RESTART：缺省按「子进程已不在、端口无看板、终止/等端口即成功」注入假件，
+    // 单测不得触到真实进程与真实网络（pid 5151 是假 pid，8787 是生产端口）。
+    isProcessAlive: () => false,
+    killChild: async () => { calls.push('kill'); return true; },
+    inspectPortOwner: async () => { calls.push('owner'); return null; },
+    waitForPortFree: async () => { calls.push('portFree'); return true; },
+    reacquireLock: () => { calls.push('reacquire'); return true; },
     log: line => { logs.push(line); },
     logPath: () => 'D:/repo/.logs/server.log',
     ...overrides,
@@ -138,7 +145,8 @@ describe('restart hardening (RESTART-HARDENING)', () => {
     await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
     await flushHandoff();
     expect(record.status).toBe(202);
-    expect(calls).toEqual(['probe', 'spawn', 'schedule', 'close', 'health', 'reopen']);
+    // ACC-SRV-RESTART：回退判定前多了端口归属探测（owner）；子进程已不在 → 不 kill，回退后重持锁
+    expect(calls).toEqual(['probe', 'spawn', 'schedule', 'close', 'health', 'owner', 'reopen', 'reacquire']);
     expect(logs.some(line => line.includes('重启失败') && line.includes('回退'))).toBe(true);
   });
 
@@ -151,6 +159,122 @@ describe('restart hardening (RESTART-HARDENING)', () => {
     await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
     await flushHandoff();
     expect(logs.some(line => line.includes('回退失败'))).toBe(true);
+    // 回退没成功就不该重持锁
+    expect(logs.some(line => line.includes('重新持有单例锁'))).toBe(false);
+  });
+});
+
+describe('restart handoff race closure (ACC-SRV-RESTART)', () => {
+  it('terminatesLiveChildBeforeReopeningOnRollback', async () => {
+    // 主因修复（14:18 / 14:20 / 14:43 实录）：回退 reopen 之前必须先终止已 spawn 的子进程，
+    // 否则回退后子进程 bind 必撞 EADDRINUSE 死亡
+    const { injected, calls, logs } = deps({
+      waitForHealth: async () => { calls.push('health'); return false; },
+      isProcessAlive: () => true,
+      // 本用例只针对回退判定，不走延长窗口（takeoverTimeoutMs=0 使窗口立即到期）
+      takeoverTimeoutMs: 0,
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    await flushHandoff();
+    expect(calls.indexOf('kill')).toBeGreaterThan(calls.indexOf('health'));
+    expect(calls.indexOf('kill')).toBeLessThan(calls.indexOf('reopen'));
+    expect(calls.indexOf('portFree')).toBeGreaterThan(calls.indexOf('kill'));
+    expect(calls).toContain('reacquire');
+    expect(calls).not.toContain('exit');
+    expect(logs.some(line => line.includes('竞态处置：已终止子进程 5151'))).toBe(true);
+    expect(logs.some(line => line.includes('已回退：旧进程 4242'))).toBe(true);
+    expect(logs.some(line => line.includes('已重新持有单例锁'))).toBe(true);
+  });
+
+  it('treatsLateTakeoverAsSuccessWithoutReopening', async () => {
+    // 健康等待刚过期、子进程恰好在这之后 bind 成功（回退检查时确认接管）→ 按成功收口
+    const { injected, calls, logs } = deps({
+      waitForHealth: async () => { calls.push('health'); return false; },
+      isProcessAlive: () => true,
+      takeoverTimeoutMs: 0,
+      inspectPortOwner: async () => { calls.push('owner'); return { board: true, pid: 5151 }; },
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    await flushHandoff();
+    expect(calls).toContain('exit');
+    expect(calls).not.toContain('reopen');
+    expect(calls).not.toContain('kill');
+    expect(logs.some(line => line.includes('重启完成') && line.includes('回退检查时确认'))).toBe(true);
+  });
+
+  it('exitsWithoutRollbackWhenSuccessorChainMovedOn', async () => {
+    // 交棒回调被事件循环饿到迟到、期间更晚一次重启已成功（04:01 / 08:29 实录）：
+    // 端口已由别的看板 pid 服务 → 终止自己的迟到子进程后退出，绝不回退抢监听
+    const { injected, calls, logs } = deps({
+      waitForHealth: async () => { calls.push('health'); return false; },
+      isProcessAlive: () => true,
+      takeoverTimeoutMs: 0,
+      inspectPortOwner: async () => { calls.push('owner'); return { board: true, pid: 9999 }; },
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    await flushHandoff();
+    expect(calls).toContain('kill');
+    expect(calls).not.toContain('reopen');
+    expect(calls).toContain('exit');
+    expect(logs.some(line => line.includes('竞态处置') && line.includes('9999'))).toBe(true);
+    expect(logs.some(line => line.includes('竞态结局') && line.includes('不回退'))).toBe(true);
+  });
+
+  it('keepsWaitingWhileChildAliveAndSucceedsLateWithinTakeoverWindow', async () => {
+    // ④ 接班进程活着就延长等待（总窗口内任一拍健康即成功），不再 15s 一到就回退
+    let healthCalls = 0;
+    const { injected, calls, logs } = deps({
+      now: () => Date.now(),
+      takeoverTimeoutMs: 120,
+      waitForHealth: async () => { calls.push('health'); healthCalls += 1; return healthCalls >= 2; },
+      isProcessAlive: () => true,
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    await flushHandoff();
+    expect(healthCalls).toBeGreaterThanOrEqual(2);
+    expect(calls).toContain('exit');
+    expect(calls).not.toContain('reopen');
+    expect(calls).not.toContain('kill');
+    expect(logs.some(line => line.includes('重启完成'))).toBe(true);
+  });
+
+  it('abortsExtensionAndRollsBackWhenChildDiesMidWindow', async () => {
+    // 接班进程在延长窗口内死亡 → 立即收口回退，不等满窗口
+    let aliveChecks = 0;
+    const { injected, calls, logs } = deps({
+      now: () => Date.now(),
+      takeoverTimeoutMs: 60_000,
+      waitForHealth: async () => { calls.push('health'); return false; },
+      isProcessAlive: () => { aliveChecks += 1; return aliveChecks <= 2; },
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    // 延长窗口每拍间隔 50ms（实现里的 real sleep），等 200ms 让「死亡收口 → 回退」走完
+    await new Promise(resolve => setTimeout(resolve, 200));
+    // 首段等待后 gate 判活(1)、延长窗口首拍判活(2)、第三拍已死(3) → 跳出，子进程已不在 → 不 kill
+    expect(calls).not.toContain('kill');
+    expect(calls).toContain('reopen');
+    expect(logs.some(line => line.includes('已退出，无需终止'))).toBe(true);
+    expect(logs.some(line => line.includes('重启失败'))).toBe(true);
+  });
+
+  it('stillAttemptsReopenAndLogsFailureWhenKillFails', async () => {
+    const { injected, calls, logs } = deps({
+      waitForHealth: async () => { calls.push('health'); return false; },
+      isProcessAlive: () => true,
+      takeoverTimeoutMs: 0,
+      killChild: async () => { calls.push('kill'); return false; },
+    });
+    const { res } = fakeRes();
+    await createRestartHandler(injected)(fakeReq('127.0.0.1'), res);
+    await flushHandoff();
+    expect(calls).toContain('kill');
+    expect(calls).toContain('reopen');
+    expect(logs.some(line => line.includes('终止失败，端口可能仍被其占用'))).toBe(true);
   });
 });
 
