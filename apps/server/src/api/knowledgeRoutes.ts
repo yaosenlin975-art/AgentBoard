@@ -11,6 +11,7 @@ import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph 
 import {getKnowledgePageLinkStats, listBacklinks, listResolvedLinks, reparseAllPages} from '../services/knowledgeLinks.js';
 import { listKnowledgePageRows, listKnowledgePagesAcrossDbs, searchKnowledge, searchKnowledgeAcrossDbs } from '../db/repos/knowledgeSearch.js';
 import { migrateKnowledgeLinks } from '../db/migrations/knowledgeLinks.js';
+import { commitKnowledgePageRevision, removeKnowledgePageRevision } from '../services/knowledgePageCommit.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
 import { createScopedKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
 import { importKnowledgePages } from '../services/knowledgeImport.js';
@@ -431,14 +432,18 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const rdb = dbForScope(scope.scope, scope.workspace_id);
     // KB-PAGE-2b：create/revise 响应同样带 link（A7），CLI 文本输出补一行 link
     const result = httpMutation(rdb, req, () => createKnowledgePage(rdb, { ...content, ...scope })).result;
-    res.json({ ...result, ...knowledgeLinkFields(result) });
+    // BORROW-5.1：新建同样落一份每页快照并只提交该页路径（派生物，失败不影响本次写入）
+    const pageCommit = commitKnowledgePageRevision(db, scope.workspace_id ?? result.workspace_id, result);
+    res.json({ ...result, ...knowledgeLinkFields(result), page_commit: pageCommit });
   });
   router.put('/pages/:id', (req, res) => {
     const { expected_revision, scope: _scope, workspace_id: _workspace, ...patch } = parse(knowledgeReviseSchema, req.body);
     const scope = scopeOf(req.body);
     const rdb = dbForScope(scope.scope, scope.workspace_id);
     const result = httpMutation(rdb, req, () => reviseKnowledgePage(rdb, req.params.id!, scope, expected_revision, patch)).result;
-    res.json({ ...result, ...knowledgeLinkFields(result) });
+    // BORROW-5.1：每次 revise 落一份每页快照并只提交该页路径（派生物，失败不影响本次 revise）
+    const pageCommit = commitKnowledgePageRevision(db, scope.workspace_id ?? result.workspace_id, result);
+    res.json({ ...result, ...knowledgeLinkFields(result), page_commit: pageCommit });
   });
   router.post('/pages/:id/actions', (req, res) => {
     const body = parse(knowledgeActionSchema, req.body);
@@ -451,7 +456,11 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
       rdb.prepare('DELETE FROM knowledge_attachment WHERE page_id=?').run(req.params.id!);
       void images.removePageFiles(req.params.id!);
     }
-    res.json(result);
+    // BORROW-5.1：归档/恢复重写该页快照（front matter 带 status），软删则撤掉快照并提交删除
+    const pageCommit = body.action === 'delete'
+      ? removeKnowledgePageRevision(db, scope.workspace_id ?? result.workspace_id, result)
+      : commitKnowledgePageRevision(db, scope.workspace_id ?? result.workspace_id, result);
+    res.json({ ...result, page_commit: pageCommit });
   });
   // ---- KB-IMG-1：知识页图片（设计 §3/§4）----
   // 原始体上限留足 multipart 头部开销：真正的 5 MiB 限额由 images.save() 判，保证错误码是 IMAGE_TOO_LARGE

@@ -568,6 +568,14 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `PUT /api/knowledge/pages/:id`（幂等） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`、`title? body_md? sources? evidence? expires_at?`（至少一个）、`actor`、`change_note?` | `KnowledgePage`（revision+1） | 400 校验（含合并后内容规则复验）；404 `KNOWLEDGE_NOT_FOUND`；409 `KNOWLEDGE_REVISION_CONFLICT`（details `current_revision`）；409 `KNOWLEDGE_STATE_CONFLICT` 页已 deleted（archived 页可修订，`knowledge.ts:56`） | knowledgeRoutes.ts:58 |
 | `POST /api/knowledge/pages/:id/actions`（幂等） | body：`scope`、`workspace_id?`、`action: archive\|restore\|delete`、`expected_revision: int ≥1`、`actor` | `KnowledgePage` | 400 未知操作；404 `KNOWLEDGE_NOT_FOUND`；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_STATE_CONFLICT`（前置：archive←active、restore←archived、delete←active\|archived；deleted 页拒绝一切操作，`knowledge.ts:56`） | knowledgeRoutes.ts:62 |
 
+**BORROW-5.1 每页快照与单页提交**（决策 c0cb9509 选项 A，`services/knowledgePageCommit.ts`）：`POST /pages`、`PUT /pages/:id`、`POST /pages/:id/actions` 三个写端点成功后，把该页写成 `<ws>/.agentboard/snapshot/knowledge/<page_id>.md`（front matter：`id/slug/title/scope/revision/status/updated_at` + 正文），并只提交这一个路径（`git add -A -- <path>` + `git commit -- <path>`）。响应新增 `page_commit`：
+
+- `{ path, relative_path, committed, commit, reason }`；`scope=common` 或无对应工作区时为 `null`；
+- 提交失败**不回滚知识页本身**（库是事实源），只在 `reason` 里给出原因，且文件回滚到改动前（新建的删掉、已有的还原），不留半提交；
+- `archive`/`restore` 重写同一路径并由 front matter 的 `status` 标注归档态；`delete`（软删）则删除该页快照并提交删除；
+- 内容未变化时不造空提交（`committed=true` 但 `commit` 指向已有 HEAD）；批量导入 `/pages/import` 不接线（一次请求多页，与「只含该页路径」冲突）。
+
+
 ### 11.1 CLI 对应命令（`kb knowledge *`，`packages/cli/src/commands/knowledge.ts`）
 
 | 端点 | CLI | 必填 | 备注 |
