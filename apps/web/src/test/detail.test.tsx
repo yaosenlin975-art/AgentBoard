@@ -903,32 +903,32 @@ describe('DETAIL-CREATED 创建时间展示', () => {
 });
 
 describe('DETAIL-D3 信息沉降（描述 clamp / 评论 2 条 / 折叠区 / 操作沉底）', () => {
-  it('长描述默认 3 行 clamp；点「展开全文」铺满，再点「收起」恢复 clamp', { timeout: 15000 }, async () => {
+  it('长描述默认展开全文；点「收起」后 3 行 clamp，再点恢复全文', { timeout: 15000 }, async () => {
     const longDescription = Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行描述内容`).join('\n');
     mockDetailApi(makeIssue({ description: longDescription }));
     renderDetail();
 
     const preview = await screen.findByTestId('desc-preview');
-    expect(preview.className).toContain('line-clamp-3');
+    expect(preview.className).not.toContain('line-clamp-3');
     const toggle = screen.getByTestId('desc-expand');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveTextContent('展开全文');
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(toggle).toHaveTextContent('收起');
 
     await userEvent.click(toggle);
-    expect(screen.getByTestId('desc-expand')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByTestId('desc-expand')).toHaveTextContent('收起');
-    expect(screen.getByTestId('desc-preview').className).not.toContain('line-clamp-3');
+    expect(screen.getByTestId('desc-expand')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('desc-expand')).toHaveTextContent('展开全文');
+    expect(screen.getByTestId('desc-preview').className).toContain('line-clamp-3');
 
     await userEvent.click(screen.getByTestId('desc-expand'));
-    expect(screen.getByTestId('desc-preview').className).toContain('line-clamp-3');
+    expect(screen.getByTestId('desc-preview').className).not.toContain('line-clamp-3');
   });
 
-  it('短描述默认 clamp 但不给「展开全文」入口（无内容可展开）', { timeout: 15000 }, async () => {
+  it('短描述默认展开且不渲染「收起 / 展开全文」入口（无内容可展开）', { timeout: 15000 }, async () => {
     mockDetailApi(makeIssue({ description: '一句话描述' }));
     renderDetail();
 
-    expect((await screen.findByTestId('desc-preview')).className).toContain('line-clamp-3');
-    // 短描述 clamp 无视觉影响，也不该出现无意义的展开按钮
+    expect((await screen.findByTestId('desc-preview')).className).not.toContain('line-clamp-3');
+    // 短描述无内容可收起，也不该出现无意义的切换按钮
     expect(screen.queryByTestId('desc-expand')).toBeNull();
   });
 

@@ -98,8 +98,8 @@ export function DetailPanel() {
   const [dueDate, setDueDate] = useState('');
   const [dueTime, setDueTime] = useState('');
   const [descEditing, setDescEditing] = useState(false);
-  /** D3：描述默认 3 行 clamp，点「展开全文」后才铺满（长描述会把依赖/评论挤出首屏） */
-  const [descCollapsed, setDescCollapsed] = useState(true);
+  /** DETAIL-DESC-EXPAND：描述默认展开全文（用户口径）；长描述保留「收起」，descLong 判据不变 */
+  const [descCollapsed, setDescCollapsed] = useState(false);
   /** 顶栏标题槽位（由 RightPanel 表头提供；独立渲染 DetailPanel 时为空，标题回落正文顶部） */
   const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
   /** 标题编辑工具条槽位（表头下方独立一行，避免撑高 h-10 表头） */
@@ -121,7 +121,7 @@ export function DetailPanel() {
     setDueDate(issue.due_date ?? '');
     setDueTime(issue.due_time ?? '');
     setDescEditing(false);
-    setDescCollapsed(true);
+    setDescCollapsed(false);
     setClaimBlocked(false);
     // 仅在切换 issue 时重置本地编辑
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -241,7 +241,7 @@ export function DetailPanel() {
   const workspacePath = (workspaces ?? []).find((w) => w.id === issue.workspace_id)?.path ?? '';
   // F-07：标签联想取本工作区已有标签（去重）
   const allLabels = [...new Set((workspaceIssues ?? []).flatMap((item) => item.labels))];
-  // D3：默认 3 行 clamp；超过 3 行或 140 字才给「展开全文 / 收起」入口（短描述不给按钮）
+  // DETAIL-DESC-EXPAND：默认展开全文；超过 3 行或 140 字才给「收起 / 展开全文」入口（短描述不给按钮）
   const descLong = description.trim() !== '' && (description.length > 140 || description.split('\n').length > 3);
 
   /** 顶栏标题块：标题 + ✎（编辑态原地展开），第二行为占用/进行中的状态维护提示 */
@@ -449,7 +449,7 @@ export function DetailPanel() {
               </div>
             ) : (
               <>
-                {/* D3：默认 3 行 clamp（line-clamp-3），点「展开全文」才铺满 */}
+                {/* DETAIL-DESC-EXPAND：默认展开全文，点「收起」才 3 行 clamp */}
                 <div data-testid="desc-preview" className={descCollapsed ? 'line-clamp-3' : ''}>
                   <MarkdownView>{description.trim() === '' ? '（无描述）' : description}</MarkdownView>
                 </div>
