@@ -9,6 +9,13 @@ import type { WsStatus } from '../state/appStore';
 export const RECONNECT_MS = 2000;
 
 /**
+ * PERF-8：同一 query key 在该窗口内的重复失效合并为一次。
+ * 服务端一次写操作会连发 `comment.added` + `issue.changed`，两者都会命中 `['issue', id]`；
+ * 评论批量的多帧也会反复命中同一个列表前缀。400ms 内的重复失效不再调用 invalidateQueries。
+ */
+export const INVALIDATE_DEDUPE_MS = 400;
+
+/**
  * CHAT-AWAIT2：前端按服务端实际广播的联合类型收事件（`ServerWsEvent` = `WsEvent` + 轮次观测事件）。
  * 轮次阻塞态（`session.turn`）与审批请求（`session.approval_request`）由 turnStore 经 wsBus 增量消费，
  * 与既有观测事件同口径：不触发 react-query invalidation。
@@ -29,11 +36,11 @@ export function eventToQueryKeys(event: ServerWsEvent): unknown[][] {
         ['dependencies'],
       ];
     case 'comment.added':
-      // 载荷无 workspace_id，看板列表按 ['issues'] 前缀失效（与 DetailPanel 既有粒度一致）；
+      // PERF-8：载荷无 workspace_id，无法定位到具体列表 → 只失效评论/详情相关 key，不再全域失效 ['issues']。
+      // 列表刷新由服务端同批发送的 `issue.changed`（带 workspace_id）负责，粒度正确且不会连带 counts。
       // 详情 issue 对象含 comment_count，一并精确失效
       return [
         ['comments', event.comment.issue_id],
-        ['issues'],
         ['issue', event.comment.issue_id],
         ...(event.comment.attachments?.length ? [['pending-attachments', event.comment.issue_id]] : []),
       ];
@@ -99,10 +106,27 @@ export function connectWs(options: ConnectWsOptions): () => void {
   let closedByUs = false;
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** PERF-8：key → 上次失效时间戳；400ms 内的重复失效直接跳过 */
+  const lastInvalidatedAt = new Map<string, number>();
+
+  const shouldInvalidate = (key: unknown[]): boolean => {
+    const id = JSON.stringify(key);
+    const now = Date.now();
+    const last = lastInvalidatedAt.get(id);
+    if (last !== undefined && now - last < INVALIDATE_DEDUPE_MS) return false;
+    if (lastInvalidatedAt.size >= 500) {
+      for (const [staleId, at] of lastInvalidatedAt) {
+        if (now - at >= INVALIDATE_DEDUPE_MS) lastInvalidatedAt.delete(staleId);
+      }
+    }
+    lastInvalidatedAt.set(id, now);
+    return true;
+  };
 
   const handleEvent = (event: ServerWsEvent): void => {
     onEvent?.(event);
     for (const key of eventToQueryKeys(event)) {
+      if (!shouldInvalidate(key)) continue;
       void queryClient.invalidateQueries({ queryKey: key });
     }
   };

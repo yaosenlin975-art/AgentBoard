@@ -372,22 +372,34 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('count-待规划')).toHaveTextContent('1');
   });
 
-  it('WS comment.added：按 eventToQueryKeys 失效（connectWs 语义）后卡片评论数刷新', async () => {
+  it('WS 评论：comment.added 只失效评论/详情，列表由同批 issue.changed 刷新（PERF-8）', async () => {
     mockBoardData(boardIssues, []);
     useAppStore.setState({ workspaceId: 'ws-1' });
     const { qc } = renderBoard();
     expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('2');
 
-    // 服务端又落一条评论：mock 数据更新，comment.added 到达 → ['issues'] 前缀失效重拉
+    // 服务端又落一条评论：mock 数据更新，先到 comment.added（不再触达列表 key）
     mockBoardData(boardIssues.map((i) => (i.id === 'i1' ? { ...i, comment_count: 3 } : i)), []);
-    const event: WsEvent = {
+    const commentEvent: WsEvent = {
       type: 'comment.added',
       comment: { id: 'c-new', issue_id: 'i1', author: 'user', content: 'x', ts: 2 },
     };
-    for (const key of eventToQueryKeys(event)) {
+    const commentKeys = eventToQueryKeys(commentEvent);
+    expect(commentKeys).not.toContainEqual(['issues']);
+    for (const key of commentKeys) {
       await qc.invalidateQueries({ queryKey: key });
     }
+    // 列表未被评论帧刷新：仍是旧评论数
+    expect(screen.getByTestId('comment-count-i1')).toHaveTextContent('2');
 
+    // 同批 issue.changed 带 workspace_id，按正确粒度刷新列表
+    const changedEvent: WsEvent = {
+      type: 'issue.changed',
+      issue: { ...boardIssues[0]!, comment_count: 3 },
+    };
+    for (const key of eventToQueryKeys(changedEvent)) {
+      await qc.invalidateQueries({ queryKey: key });
+    }
     expect(await screen.findByTestId('comment-count-i1')).toHaveTextContent('3');
   });
 

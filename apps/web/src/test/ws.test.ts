@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
 import type { Issue, ServerWsEvent, WsEvent } from '@agentboard/shared';
-import { eventToQueryKeys } from '../api/ws';
+import { INVALIDATE_DEDUPE_MS, connectWs, eventToQueryKeys } from '../api/ws';
 
 const issue: Issue = {
   id: 'i-1',
@@ -39,14 +40,13 @@ describe('eventToQueryKeys', () => {
     ]);
   });
 
-  it('comment.added → comments+issue_id、issues（前缀，卡片评论数刷新）、issue+issue_id', () => {
+  it('comment.added → comments+issue_id、issue+issue_id（不再全域失效 issues 列表，PERF-8）', () => {
     const event: WsEvent = {
       type: 'comment.added',
       comment: { id: 'c-1', issue_id: 'i-1', author: 'user', content: 'x', ts: 1 },
     };
     expect(eventToQueryKeys(event)).toEqual([
       ['comments', 'i-1'],
-      ['issues'],
       ['issue', 'i-1'],
     ]);
     const imageEvent: WsEvent = {
@@ -144,6 +144,77 @@ describe('eventToQueryKeys', () => {
     };
     expect(eventToQueryKeys(paused)).toEqual([['sessions']]);
     expect(eventToQueryKeys(resumed)).toEqual([['sessions']]);
+  });
+});
+
+describe('connectWs 失效去重（PERF-8）', () => {
+  class FakeWebSocket {
+    static instances: FakeWebSocket[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((ev: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+
+    constructor(public url: string) {
+      FakeWebSocket.instances.push(this);
+    }
+
+    close(): void {
+      /* no-op */
+    }
+  }
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function emit(frame: unknown): void {
+    FakeWebSocket.instances[0]!.onmessage?.({ data: JSON.stringify(frame) });
+  }
+
+  function invalidatedKeys(spy: { mock: { calls: unknown[][] } }): string[] {
+    return spy.mock.calls.map(([arg]) =>
+      JSON.stringify((arg as { queryKey: unknown[] }).queryKey),
+    );
+  }
+
+  function setup(): { spy: ReturnType<typeof vi.spyOn>; dispose: () => void } {
+    const qc = new QueryClient();
+    const spy = vi.spyOn(qc, 'invalidateQueries').mockResolvedValue(undefined as never);
+    const dispose = connectWs({ queryClient: qc });
+    return { spy, dispose };
+  }
+
+  it('一次写评论（comment.added + issue.changed）：不触达全域 issues，列表只失效一次', () => {
+    const { spy, dispose } = setup();
+    emit({ type: 'comment.added', comment: { id: 'c-1', issue_id: 'i-1', author: 'user', content: 'x', ts: 1 } });
+    emit({ type: 'issue.changed', issue });
+
+    const keys = invalidatedKeys(spy);
+    expect(keys).not.toContain(JSON.stringify(['issues']));
+    expect(keys.filter((k) => k === JSON.stringify(['issues', 'ws-1']))).toHaveLength(1);
+    // 两个帧都指向 ['issue','i-1']，去重后只失效一次
+    expect(keys.filter((k) => k === JSON.stringify(['issue', 'i-1']))).toHaveLength(1);
+    dispose();
+  });
+
+  it('超过去重窗口后同一 key 再次失效（不吞掉真实的二次变更）', () => {
+    let now = 1_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const { spy, dispose } = setup();
+
+    emit({ type: 'issue.changed', issue });
+    now += INVALIDATE_DEDUPE_MS;
+    emit({ type: 'issue.changed', issue });
+
+    const keys = invalidatedKeys(spy);
+    expect(keys.filter((k) => k === JSON.stringify(['issues', 'ws-1']))).toHaveLength(2);
+    dispose();
   });
 });
 
