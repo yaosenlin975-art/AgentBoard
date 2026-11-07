@@ -11,10 +11,33 @@
  * 2. `voiceLongPressProps()` 工厂形状（显式 opt-in 用），且不劫持普通右键。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { isVoiceEligible } from '../lib/voice/contract';
 import { VOICE_ELIGIBLE_SELECTOR } from '../lib/voice/contract';
 import { voiceLongPressProps, VoiceInputProvider } from '../components/voice/useLongPressVoice';
+
+// VOICE-CANCEL：把采集链路换成可控假会话，只看「取消是否真的停会话且不插入文本」
+const { startSpy, stopSpy } = vi.hoisted(() => {
+  const stopSpy = vi.fn(async () => '这段文本不应该被插入');
+  const startSpy = vi.fn(async () => ({
+    stop: stopSpy,
+    level: () => 0.2,
+    info: () => ({ inputRate: 16000, frames: 0 }),
+    cancel: vi.fn(),
+  }));
+  return { startSpy, stopSpy };
+});
+
+vi.mock('../lib/voice/recorder', () => ({
+  VoiceInputError: class VoiceInputError extends Error {
+    readonly code: string;
+    constructor(code: string, message?: string) {
+      super(message ?? code);
+      this.code = code;
+    }
+  },
+  startVoiceSession: startSpy,
+}));
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -70,5 +93,50 @@ describe('长按语音的目标覆盖（VOICE-UI-2）', () => {
     expect(names).toContain('pointercancel:true');
     expect(names).toContain('pointerleave:true');
     addSpy.mockRestore();
+  });
+});
+
+describe('录音浮层的取消出口（VOICE-CANCEL）', () => {
+  const enableVoice = (): void => {
+    localStorage.setItem('agentboard.voice', JSON.stringify({ enabled: true, language: 'system', modelId: 'test-model', mock: true }));
+  };
+
+  /** 长按进入录音态并等浮层出现（400ms 长按阈值 + 会话就绪） */
+  const startRecording = async (): Promise<HTMLTextAreaElement> => {
+    const textarea = document.createElement('textarea');
+    textarea.value = '原始内容';
+    document.body.appendChild(textarea);
+    render(<VoiceInputProvider />);
+    fireEvent.pointerDown(textarea, { button: 0, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(screen.getByTestId('voice-listening')).toBeTruthy(), { timeout: 3000 });
+    return textarea;
+  };
+
+  beforeEach(() => {
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    enableVoice();
+  });
+
+  it('点浮层关闭按钮 → 浮层消失、会话被 stop、输入框不插入识别文本', async () => {
+    const textarea = await startRecording();
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('voice-cancel'));
+
+    await waitFor(() => expect(screen.queryByTestId('voice-listening')).toBeNull());
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe('原始内容');
+    expect((window as unknown as { __voiceDebug?: { lastText: string | null } }).__voiceDebug?.lastText ?? null).toBeNull();
+  });
+
+  it('按 Esc → 同样退出录音且不插入文本', async () => {
+    const textarea = await startRecording();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByTestId('voice-listening')).toBeNull());
+    expect(stopSpy).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe('原始内容');
   });
 });

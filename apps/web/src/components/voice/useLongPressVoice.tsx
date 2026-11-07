@@ -101,6 +101,8 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
   const sessionRef = useRef<VoiceSessionHandle | null>(null);
   /** 松手早于会话就绪：就绪后立刻收尾并插入，避免丢结果/漏停 */
   const stopRequestedRef = useRef(false);
+  /** VOICE-CANCEL：会话就绪前就点了取消 → 拿到会话后直接停掉，不进入 listening */
+  const cancelRequestedRef = useRef(false);
   const [status, setStatus] = useState<Status>('idle');
   const [level, setLevel] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +146,32 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
     }
   }, []);
 
+  /**
+   * VOICE-CANCEL：放弃本次录音（误触发 / 点关闭 / Esc）。
+   * 停会话并丢弃识别结果，不插入任何文本；同时释放麦克风与电平定时器。
+   */
+  const cancel = useCallback(async (): Promise<void> => {
+    clearTimer();
+    stopRequestedRef.current = false;
+    const session = sessionRef.current;
+    sessionRef.current = null;
+    // 只有「会话还没起来」时才需要留标记，让 begin 拿到会话后自行停掉；已有会话则直接停
+    cancelRequestedRef.current = session === null;
+    gestureRef.current = IDLE_GESTURE;
+    const withTick = session as unknown as { __tick?: ReturnType<typeof setInterval> } | null;
+    if (withTick?.__tick !== undefined) clearInterval(withTick.__tick);
+    setStatus('idle');
+    setLevel(0);
+    if (session !== null) {
+      try {
+        // stop() 会停止采集并关闭 AudioWorklet/MediaStream；返回值按取消处理丢弃
+        await session.stop();
+      } catch {
+        // 取消路径不弹错误：目标就是安静退出
+      }
+    }
+  }, []);
+
   const begin = useCallback(async (): Promise<void> => {
     const el = targetRef.current;
     if (el === null) return;
@@ -157,6 +185,17 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
         mediaDevices: navigator.mediaDevices,
       });
       sessionRef.current = session;
+      // VOICE-CANCEL：会话起来前已点关闭 / Esc → 直接停掉，不进入 listening，也不插入文本
+      if (cancelRequestedRef.current) {
+        cancelRequestedRef.current = false;
+        sessionRef.current = null;
+        try {
+          await session.stop();
+        } catch {
+          // 取消路径静默
+        }
+        return;
+      }
       if (stopRequestedRef.current) {
         stopRequestedRef.current = false;
         noteDebug({ getUserMediaCalls: ((window as unknown as { __voiceDebug?: VoiceDebug }).__voiceDebug?.getUserMediaCalls ?? 0) + 1 });
@@ -189,6 +228,7 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
       if (!isVoiceEligible(el)) return;
       targetRef.current = el;
       stopRequestedRef.current = false;
+      cancelRequestedRef.current = false;
       gestureRef.current = gestureDown(event.clientX, event.clientY, performance.now());
       clearTimer();
       timerRef.current = setTimeout(() => {
@@ -218,10 +258,9 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return;
       if (gestureRef.current.phase === 'idle' && sessionRef.current === null) return;
-      gestureRef.current = IDLE_GESTURE;
-      clearTimer();
+      // VOICE-CANCEL：Esc 是「放弃本次录音」，不是「说完了」——停会话且不插入任何文本
       stopLevelTimer();
-      void finish();
+      void cancel();
     };
 
     document.addEventListener('pointerdown', onPointerDown, true);
@@ -237,8 +276,9 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
       gestureRef.current = IDLE_GESTURE;
       clearTimer();
       if (wasRecording) {
+        // VOICE-CANCEL：指针移出输入框即视为放弃本次录音（误触发的常见形态），不插入文本
         stopLevelTimer();
-        void finish();
+        void cancel();
       }
     };
     document.addEventListener('pointerleave', onPointerLeave, true);
@@ -253,7 +293,7 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
       clearTimer();
       stopLevelTimer();
     };
-  }, [begin, finish]);
+  }, [begin, cancel, finish]);
 
   // 错误提示 3.5s 自动收起
   useEffect(() => {
@@ -277,6 +317,17 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
             <span className="block h-full rounded-full bg-accent transition-[width] duration-100" style={{ width: `${Math.round(level * 100)}%` }} />
           </span>
           <span className="text-ink-3">松手结束</span>
+          {/* VOICE-CANCEL：误触发/想放弃时点这里立刻退出；Esc 同样生效 */}
+          <button
+            type="button"
+            data-testid="voice-cancel"
+            aria-label="取消录音"
+            title="取消录音（Esc）"
+            onClick={() => void cancel()}
+            className="ml-1 flex h-5 w-5 items-center justify-center rounded text-ink-3 hover:bg-surface-raised hover:text-ink"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
         </div>
       )}
       {/* VOICE-UI-3：聚焦提示（STT 开启且模型可用时） */}
