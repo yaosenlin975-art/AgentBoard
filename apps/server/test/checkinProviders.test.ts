@@ -112,27 +112,39 @@ describe('minimax checkin provider', () => {
     return { provider: createMinimaxCheckinProvider({ app_id: 'minimax', region: 'cn', provider_version: 'test', fetchImpl: fake.impl }), calls: fake.calls };
   };
 
-  it('status 3 → already_done；status 2 → not_done → claim succeeded', async () => {
-    const done = provider([{ match: url => url.endsWith('/signin/status'), body: { data: { days: [{ is_today: true, status: 3 }] } } }]);
+  it('status 3 → already_done；status 2 → not_done → claim succeeded；请求带 timezone_id query（ACC-CHK-MX-TZ）', async () => {
+    const done = provider([{ match: url => url.endsWith('/signin/status?timezone_id=Asia/Shanghai'), body: { data: { days: [{ is_today: true, status: 3 }] } } }]);
     expect(await done.provider.queryStatus(TOKEN)).toBe('already_done');
+    expect(done.calls[0]?.url).toBe('https://agent.minimaxi.com/minimax-cloud/api/v1/signin/status?timezone_id=Asia/Shanghai');
 
     const claimable = provider([
-      { match: url => url.endsWith('/signin/status'), body: { data: { days: [{ is_today: true, status: 2 }] } } },
-      { match: url => url.endsWith('/signin/claim'), status: 200, body: { code: 0 } },
+      { match: url => url.endsWith('/signin/status?timezone_id=Asia/Shanghai'), body: { data: { days: [{ is_today: true, status: 2 }] } } },
+      { match: url => url.endsWith('/signin/claim?timezone_id=Asia/Shanghai'), status: 200, body: { code: 0 } },
     ]);
     expect(await claimable.provider.queryStatus(TOKEN)).toBe('not_done');
     expect(await claimable.provider.submitCheckin(TOKEN)).toBe('succeeded');
+    expect(claimable.calls.at(-1)?.url).toBe('https://agent.minimaxi.com/minimax-cloud/api/v1/signin/claim?timezone_id=Asia/Shanghai');
+  });
+
+  it('ACC-CHK-MX-TZ：无 timezone_id 恒业务错 1406010011 的形态 → status unknown、claim failed（不误判 succeeded）', async () => {
+    const businessError = { base_resp: { status_code: 1406010011 } };
+    expect(await provider([{ match: () => true, body: businessError }]).provider.queryStatus(TOKEN)).toBe('unknown');
+    expect(await provider([{ match: () => true, body: businessError }]).provider.submitCheckin(TOKEN)).toBe('failed');
+  });
+
+  it('ACC-CHK-MX-TZ：claim 成功形态含 base_resp.status_code=0 → succeeded', async () => {
+    expect(await provider([{ match: () => true, body: { base_resp: { status_code: 0 } } }]).provider.submitCheckin(TOKEN)).toBe('succeeded');
   });
 
   it('401 → credential invalid；429 → rate_limited；无 is_today → unknown', async () => {
     await expect(provider([{ match: () => true, status: 403 }]).provider.queryStatus(TOKEN)).rejects.toMatchObject({ code: 'CHECKIN_CREDENTIAL_INVALID' });
-    expect(await provider([{ match: url => url.endsWith('/signin/claim'), status: 429 }]).provider.submitCheckin(TOKEN)).toBe('rate_limited');
-    expect(await provider([{ match: url => url.endsWith('/signin/status'), body: { data: { days: [] } } }]).provider.queryStatus(TOKEN)).toBe('unknown');
+    expect(await provider([{ match: url => url.endsWith('/signin/claim?timezone_id=Asia/Shanghai'), status: 429 }]).provider.submitCheckin(TOKEN)).toBe('rate_limited');
+    expect(await provider([{ match: url => url.endsWith('/signin/status?timezone_id=Asia/Shanghai'), body: { data: { days: [] } } }]).provider.queryStatus(TOKEN)).toBe('unknown');
   });
 
   it('ACC-FIX-3：JSON 凭据取 access_token，旧裸串兼容', async () => {
     const jsonCredential = Buffer.from(JSON.stringify({ access_token: 'json-token', refresh_token: 'rt' }));
-    const done = provider([{ match: url => url.endsWith('/signin/status'), body: { data: { days: [{ is_today: true, status: 3 }] } } }]);
+    const done = provider([{ match: url => url.endsWith('/signin/status?timezone_id=Asia/Shanghai'), body: { data: { days: [{ is_today: true, status: 3 }] } } }]);
     expect(await done.provider.queryStatus(jsonCredential)).toBe('already_done');
     expect(await done.provider.queryStatus(TOKEN)).toBe('already_done');
   });

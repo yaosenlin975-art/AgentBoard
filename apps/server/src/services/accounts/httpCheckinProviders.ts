@@ -23,6 +23,14 @@ import type { ManagedAppId } from '@agentboard/shared';
 import { workbuddyBillingUrl } from './platformHosts.js';
 
 const MINIMAX_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
+/**
+ * ACC-CHK-MX-TZ 真机实证（2026-11-07，账号 2c8f498f）：
+ * signin/status、signin/claim 不带 timezone_id 时服务端 HTTP 200 但 `base_resp.status_code=1406010011`
+ * （invalid timezone_id）——status 拿不到 days（queryStatus 恒 unknown，runner 每次都盲发 claim）、
+ * claim 实际未落地却被旧判定读成成功（顶层无 code → `?? 0` 误判 succeeded，当天批次 447ec295 假阳性）。
+ * 仅 query 参数形态生效（header 形态无效），与 minimaxDesktopProvider 切换探针同参。
+ */
+const MINIMAX_TIMEZONE_QUERY = '?timezone_id=Asia/Shanghai';
 const TRAE_BASE = 'https://api.trae.cn/trae/api/v2/ug';
 /** ACC-FIX-3：minimax 续期 token 与官方 CLI 的账号 origin 同源（见 addAccountProvider.ts） */
 const MINIMAX_ORIGIN: Record<'cn' | 'global', string> = {
@@ -227,7 +235,9 @@ export function createMinimaxCheckinProvider(config: HttpCheckinConfig): Checkin
     token: credential => parseMinimaxCredential(credential).access_token,
     refresh: credential => refreshMinimaxCredential(config, credential),
     status: async (token) => {
-      const result = await request('/signin/status', token);
+      const result = await request(`/signin/status${MINIMAX_TIMEZONE_QUERY}`, token);
+      // 200 但业务层报错（base_resp.status_code != 0）= 服务端没服务这次调用，按 unknown（不误读空 days）
+      if (Number(asRecord(asRecord(result.body).base_resp).status_code ?? 0) !== 0) return 'unknown';
       const days = (dataOf(result.body).days ?? []) as Array<Record<string, unknown>>;
       const today = days.find(day => day.is_today === true);
       if (!today) return 'unknown';
@@ -236,12 +246,16 @@ export function createMinimaxCheckinProvider(config: HttpCheckinConfig): Checkin
       return 'unknown';
     },
     claim: async (token) => {
-      const result = await request('/signin/claim', token, { method: 'POST', body: '{}' });
+      const result = await request(`/signin/claim${MINIMAX_TIMEZONE_QUERY}`, token, { method: 'POST', body: '{}' });
       if (result.status === 429) return 'rate_limited';
       if (result.status >= 200 && result.status < 300) {
-        const code = Number(asRecord(result.body).code ?? 0);
-        if (code === 0) return 'succeeded';
-        if (code === 3 || String(asRecord(result.body).msg ?? '').includes('已')) return 'already_done';
+        const record = asRecord(result.body);
+        const code = Number(record.code ?? 0);
+        // 业务错藏在 base_resp.status_code（顶层无 code 时旧判定 `?? 0` 会误判 succeeded）
+        const baseCode = Number(asRecord(record.base_resp).status_code ?? 0);
+        if (code === 0 && baseCode === 0) return 'succeeded';
+        const msg = `${String(record.msg ?? '')}${String(asRecord(record.base_resp).msg ?? '')}`;
+        if (code === 3 || baseCode === 3 || msg.includes('已')) return 'already_done';
         return 'failed';
       }
       return classifyFailure(result);
