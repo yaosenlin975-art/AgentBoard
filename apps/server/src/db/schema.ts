@@ -44,6 +44,8 @@ import { migrateIssueParentIndex } from './migrations/issueParentIndex.js';
 import { migrateEntityLocator } from './migrations/entityLocator.js';
 // STORE-7：中心库归档记录（纯追加表；已下沉工作区删除时落一条，归档列表据此回显）
 import { migrateWorkspaceArchive } from './migrations/workspaceArchive.js';
+// PERF-5：issue_comment(issue_id) 索引（comment_count 相关子查询；放最末，幂等补回）
+import { migrateIssueCommentIndex } from './migrations/issueCommentIndex.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -163,6 +165,8 @@ export function initSchema(db: Db): void {
   migrateEntityLocator(db);
   // STORE-7：归档记录（纯追加新表，幂等；无外键，与 workspace 删除解耦）
   migrateWorkspaceArchive(db);
+  // PERF-5：issue_comment(issue_id) 索引（放最末，幂等；comment_count 相关子查询从 SCAN 变 SEARCH）
+  migrateIssueCommentIndex(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }
