@@ -1934,3 +1934,67 @@ describe('DEC-V4-EXTEND 延长宽限', () => {
     expect(button.className).not.toContain('is-critical');
   });
 });
+
+describe('DEC-RAIL 状态色轨与 ≤60 秒临界态', () => {
+  const criticalItem = listItem({
+    id: 'rail-critical',
+    state: 'grace',
+    grace_seconds: 180,
+    grace_until: Date.now() + 59_000,
+    remaining_grace_seconds: 59,
+  });
+
+  it('四类状态各渲染 3px 色轨（琥珀/石墨/红/绿）', async () => {
+    server.use(decisionHandler([graceItem, openItem, staleItem], [answeredItem]));
+    renderWithQuery(<DecisionsView />);
+
+    const graceRail = await screen.findByTestId('decision-rail-dec-grace');
+    expect(graceRail).toHaveAttribute('data-tier', 'grace');
+    expect(graceRail.className).toContain('w-[3px]');
+    expect(graceRail.className).toContain('bg-accent');
+
+    const openRail = screen.getByTestId('decision-rail-dec-open');
+    expect(openRail).toHaveAttribute('data-tier', 'open');
+    expect(openRail.className).toContain('bg-ink-3');
+
+    const staleRail = screen.getByTestId('decision-rail-dec-stale');
+    expect(staleRail).toHaveAttribute('data-tier', 'stale');
+    expect(staleRail.className).toContain('bg-ab-del');
+
+    const answeredRail = screen.getByTestId('decision-rail-dec-answered');
+    expect(answeredRail).toHaveAttribute('data-tier', 'answered');
+    expect(answeredRail.className).toContain('bg-ab-add');
+  });
+
+  it('剩余 ≤60 秒：倒计时 chip 变红并追加「即将落锁」，色轨与进度线转红；延长后自动清除', async () => {
+    server.use(
+      decisionHandler([criticalItem], []),
+      http.post('/api/decisions/rail-critical/extend', () =>
+        HttpResponse.json({
+          decision_id: 'rail-critical',
+          state: 'grace',
+          grace_until: Date.now() + 179_000,
+          remaining_grace_seconds: 179,
+          extended_seconds: 60,
+          extension_count: 1,
+          max_extend_seconds: 300,
+        }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    const chip = await screen.findByTestId('decision-countdown-rail-critical');
+    expect(chip).toHaveAttribute('data-critical', 'true');
+    expect(chip).toHaveTextContent('即将落锁');
+    expect(chip.className).toContain('text-ab-del');
+    expect(screen.getByTestId('decision-rail-rail-critical')).toHaveAttribute('data-tier', 'critical');
+    expect(screen.getByTestId('decision-rail-rail-critical').className).toContain('bg-ab-del');
+    expect(screen.getByTestId('decision-progress-rail-critical').firstElementChild?.className).toContain('bg-ab-del');
+
+    fireEvent.click(screen.getByTestId('decision-extend-rail-critical'));
+    await waitFor(() => expect(chip).toHaveAttribute('data-critical', 'false'));
+    expect(chip).not.toHaveTextContent('即将落锁');
+    expect(screen.getByTestId('decision-rail-rail-critical')).toHaveAttribute('data-tier', 'grace');
+    expect(screen.getByTestId('decision-rail-rail-critical').className).toContain('bg-accent');
+  });
+});

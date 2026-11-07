@@ -239,6 +239,25 @@ export function DecisionCard({
       ? null
       : Math.max(0, Math.min(100, (graceRemaining / totalGraceSeconds) * 100));
   const waiting = item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
+  // DEC-RAIL：左缘 3px 状态色轨（琥珀=宽限中 / 石墨=已锁 / 红=已超时或临界 / 绿=已回答）
+  // 只影响视觉与文案，倒计时计算仍以 effectiveGraceUntil 为准。
+  const cardTier: 'critical' | 'grace' | 'stale' | 'answered' | 'open' = isAnswered
+    ? 'answered'
+    : scope === 'stale'
+      ? 'stale'
+      : extendCritical
+        ? 'critical'
+        : scope === 'grace'
+          ? 'grace'
+          : 'open';
+  const railClass =
+    cardTier === 'critical' || cardTier === 'stale'
+      ? 'bg-ab-del'
+      : cardTier === 'grace'
+        ? 'bg-accent'
+        : cardTier === 'answered'
+          ? 'bg-ab-add'
+          : 'bg-ink-3';
 
   // 服务端列表追平本地补丁（含其他端延长）后以服务端为准
   useEffect(() => {
@@ -520,11 +539,19 @@ export function DecisionCard({
       data-flash={flash ? 'true' : 'false'}
       data-expanded={expanded ? 'true' : 'false'}
       data-leaving={leaving ? 'true' : 'false'}
+      data-tier={cardTier}
       aria-busy={leaving}
       className={`relative flex min-w-0 flex-col gap-1.5 rounded-md border bg-surface-card px-2 py-1.5 transition-colors duration-150 motion-reduce:transition-none ${
         focused ? 'border-accent bg-accent-soft' : 'border-hairline hover:bg-surface-raised'
       } ${flash ? 'ring-2 ring-accent ring-offset-1' : ''}`}
     >
+      {/* DEC-RAIL：左缘 3px 状态色轨，颜色复用 --ab-* 令牌 */}
+      <span
+        data-testid={`decision-rail-${item.id}`}
+        data-tier={cardTier}
+        aria-hidden="true"
+        className={`pointer-events-none absolute bottom-0 left-0 top-0 w-[3px] rounded-l-md ${railClass}`}
+      />
       {/* DEC-V4-UNDO：提交已落库，420ms 视觉移出（reduced motion 下由视图直接跳过） */}
       {leaving && (
         <div
@@ -576,11 +603,17 @@ export function DecisionCard({
           <span
             data-testid={`decision-countdown-${item.id}`}
             data-flash={extendFlash ? 'true' : 'false'}
+            data-critical={extendCritical ? 'true' : 'false'}
             className={`ml-auto shrink-0 whitespace-nowrap rounded px-1.5 text-xs font-medium tabular-nums transition-colors duration-150 motion-reduce:transition-none ${
-              extendFlash ? 'bg-accent text-white' : 'bg-accent-soft text-accent'
+              extendFlash
+                ? 'bg-accent text-white'
+                : extendCritical
+                  ? 'bg-[color-mix(in_srgb,var(--ab-del)_14%,transparent)] text-ab-del'
+                  : 'bg-accent-soft text-accent'
             }`}
           >
             {formatCountdown(graceRemaining)}
+            {extendCritical && <span className="ml-1">即将落锁</span>}
           </span>
         )}
         {scope === 'stale' && (
@@ -617,7 +650,9 @@ export function DecisionCard({
           className="h-0.5 w-full overflow-hidden rounded-full bg-surface-raised"
         >
           <span
-            className="block h-full rounded-full bg-accent transition-[width] duration-300 motion-reduce:transition-none"
+            className={`block h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${
+              extendCritical ? 'bg-ab-del' : 'bg-accent'
+            }`}
             style={{ width: `${progressPct}%` }}
           />
         </div>
