@@ -302,6 +302,72 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('issue-card-i1')).not.toHaveAttribute('aria-disabled');
   });
 
+  it('PERF-9：首次加载渲染列骨架，不把空数组当「暂无任务」', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get('/api/issues', async () => {
+        await gate;
+        return HttpResponse.json(boardIssues);
+      }),
+      http.get('/api/sessions', () => HttpResponse.json([])),
+    );
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    renderBoard();
+
+    expect(await screen.findByTestId('column-skeleton-待规划')).toBeInTheDocument();
+    expect(screen.queryByText('暂无任务')).not.toBeInTheDocument();
+    expect(screen.getByTestId('board-loading-note')).toHaveTextContent('正在载入任务');
+
+    await act(async () => {
+      release?.();
+      await gate;
+    });
+    expect(await screen.findByTestId('issue-card-i1')).toBeInTheDocument();
+    expect(screen.queryByTestId('column-skeleton-待规划')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('board-loading-note')).not.toBeInTheDocument();
+  });
+
+  it('PERF-9：切到未缓存工作空间时保留上一屏，并标明是上一工作空间数据', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get('/api/issues', async ({ request }) => {
+        const wid = new URL(request.url).searchParams.get('workspace');
+        if (wid === 'ws-2') {
+          await gate;
+          return HttpResponse.json([makeIssue('w2', { workspace_id: 'ws-2', title: '新空间任务' })]);
+        }
+        return HttpResponse.json(boardIssues);
+      }),
+      http.get('/api/sessions', () => HttpResponse.json(boardSessions)),
+    );
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    renderBoard();
+    expect(await screen.findByText('渲染检查')).toBeInTheDocument();
+
+    act(() => {
+      useAppStore.setState({ workspaceId: 'ws-2' });
+    });
+    // 新数据未到：上一屏仍在，且显式标注为上一工作空间数据（不伪装成已完成）
+    expect(screen.getByText('渲染检查')).toBeInTheDocument();
+    expect(screen.getByTestId('board-loading-note')).toHaveTextContent('上一工作空间');
+    expect(screen.getByTestId('board-columns')).toHaveAttribute('data-placeholder', 'true');
+    // 保留的是上一屏真实卡片，不是骨架
+    expect(screen.queryByTestId('column-skeleton-待规划')).not.toBeInTheDocument();
+
+    await act(async () => {
+      release?.();
+      await gate;
+    });
+    expect(await screen.findByText('新空间任务')).toBeInTheDocument();
+    expect(screen.queryByTestId('board-loading-note')).not.toBeInTheDocument();
+  });
+
   it('PERF-6：首屏 /api/issues 只请求一次（标签条复用看板主查询缓存）', async () => {
     let issueRequests = 0;
     server.use(
@@ -529,7 +595,8 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     expect(screen.queryByTestId('issue-card-l1')).not.toBeInTheDocument();
     expect(screen.queryByTestId('issue-card-l2')).not.toBeInTheDocument();
     expect(screen.queryByTestId('issue-card-l3')).not.toBeInTheDocument();
-    expect(screen.getByTestId('empty-待规划')).toBeInTheDocument();
+    // PERF-9：加载中显示列骨架，只有数据落定后才出现真正的空列
+    expect(await screen.findByTestId('empty-待规划')).toBeInTheDocument();
   });
 
   it('切换工作空间后标签选择不串台', async () => {

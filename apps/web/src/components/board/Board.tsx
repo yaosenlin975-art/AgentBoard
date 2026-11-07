@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
   DndContext,
   DragOverlay,
@@ -89,15 +89,23 @@ export function Board({
   const columns = statuses.names;
 
   const enabled = workspaceId !== null;
-  const { data: issues } = useQuery({
+  // PERF-9：区分「加载中」与「真的没任务」——isPending 期间列内渲染骨架，不用 `[]` 冒充空态；
+  // 切工作空间用 keepPreviousData 保留上一屏，配 placeholder 标记说明这是上一空间数据。
+  const {
+    data: issues,
+    isPending: issuesPending,
+    isPlaceholderData: issuesPlaceholder,
+  } = useQuery({
     queryKey: ['issues', workspaceId],
     queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspaceId ?? '')}`),
     enabled,
+    placeholderData: keepPreviousData,
   });
   const { data: sessions } = useQuery({
     queryKey: ['sessions', workspaceId],
     queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(workspaceId ?? '')}`),
     enabled,
+    placeholderData: keepPreviousData,
   });
 
   useEffect(() => {
@@ -344,6 +352,20 @@ export function Board({
           </div>
         </div>
       </ViewToolbarShell>
+      {/* PERF-9：加载 / 切空间提示 —— 切空间时上一屏保留，但必须显式标明「不是已加载完成的数据」 */}
+      {(issuesPending || issuesPlaceholder) && (
+        <div
+          data-testid="board-loading-note"
+          role="status"
+          className="flex items-center gap-2 border-b border-hairline px-3 py-1 text-xs text-ink-3"
+        >
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent motion-reduce:animate-none"
+          />
+          {issuesPending ? '正在载入任务…' : '正在切换工作空间，当前显示上一工作空间的数据'}
+        </div>
+      )}
       {selectionActive && !treeMode && (
         <SelectionBar
           columns={columns}
@@ -382,7 +404,12 @@ export function Board({
               overflow-y-hidden 又把超长内容裁掉，表现为「列内滚轮失效」。 */}
           <div
             data-testid="board-columns"
-            className="grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-4"
+            data-loading={issuesPending ? 'true' : undefined}
+            data-placeholder={issuesPlaceholder ? 'true' : undefined}
+            aria-busy={issuesPending || issuesPlaceholder}
+            className={`grid min-h-0 flex-1 auto-rows-fr gap-3 overflow-x-auto overflow-y-hidden p-4 ${
+              issuesPlaceholder ? 'opacity-60 ab-transition motion-reduce:transition-none' : ''
+            }`}
             style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(240px, 1fr))` }}
           >
             {columns.map((status) => (
@@ -390,6 +417,7 @@ export function Board({
                 key={status}
                 status={status}
                 issues={status === '待规划' ? planningIssues : (grouped[status] ?? [])}
+                loading={issuesPending}
                 accent={statusAccent(statuses.byName.get(status)?.kind)}
                 runningSessionIds={runningSessionIds}
                 density={displayOptions.density}

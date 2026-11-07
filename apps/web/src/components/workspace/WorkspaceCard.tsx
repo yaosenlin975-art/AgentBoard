@@ -88,8 +88,8 @@ export function WorkspaceCard({
   canMoveDown?: boolean;
   /**
    * PERF-4b：由 WorkspaceList 的 counts 聚合按 workspace_id 下发。
-   * `undefined` = counts 还在加载（先按 0 渲染，不发请求）；`null` = counts 不可用（404/失败），
-   * 才回落到本卡自己的全量 `GET /api/issues`。
+   * `undefined` = counts 还在加载（PERF-9：统计格显示占位「—」，不再先按 0 渲染）；
+   * `null` = counts 不可用（404/失败），才回落到本卡自己的全量 `GET /api/issues`。
    */
   statusCounts?: Record<string, number> | null;
 }) {
@@ -118,6 +118,9 @@ export function WorkspaceCard({
   // 字典外的历史状态归「其他」，保证统计加总 = 该工作区任务总数。
   // PERF-4b：计数优先用 counts 聚合（statusCounts），仅在其不可用（null）时回落到全量 issues。
   const { names: statusNames } = useWorkspaceStatuses(workspace.id);
+  // PERF-9：counts 未到位（undefined，或降级路径下全量 issues 还没到）时统计格显示「—」，
+  // 不用 0 冒充已加载结果；数据到位后 0 就是真实的 0。
+  const countsPending = statusCounts === undefined || (statusCounts === null && issues === undefined);
   const counts = new Map<string, number>(statusNames.map((s) => [s, 0]));
   let otherCount = 0;
   if (statusCounts !== undefined && statusCounts !== null) {
@@ -304,7 +307,7 @@ export function WorkspaceCard({
                   data-testid={`stat-${cell.key}`}
                   className="rounded bg-surface-raised py-1"
                 >
-                  <div className="font-semibold">{cell.count}</div>
+                  <div className="font-semibold">{countsPending ? '—' : cell.count}</div>
                   <div className="whitespace-nowrap text-ink-3">{cell.label}</div>
                 </div>
               ))}

@@ -13,6 +13,7 @@ import { groupIssuesForDisplay, type BoardDensity, type BoardGrouping } from '..
 import { issueInScope, type SelectionScope } from '../../lib/selection';
 import { IssueCard } from './IssueCard';
 import { EmptyState } from '../ui/EmptyState';
+import { Skeleton } from '../ui/Skeleton';
 
 export function Column({
   status,
@@ -28,6 +29,7 @@ export function Column({
   selectionScope = null,
   selectedIds,
   onToggleSelect,
+  loading = false,
 }: {
   /** 列名（STATUS-3-UI：内置五条 + 任意自定义状态） */
   status: string;
@@ -47,6 +49,11 @@ export function Column({
   selectionScope?: SelectionScope | null;
   selectedIds?: ReadonlySet<string>;
   onToggleSelect?: (id: string) => void;
+  /**
+   * PERF-9：真实加载中（React Query isPending）才为 true —— 渲染列骨架，不把 `[]` 当真空态。
+   * 数据到位立即卸载骨架；空数组且非加载中才渲染「暂无任务」。
+   */
+  loading?: boolean;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: columnDroppableId(status),
@@ -107,7 +114,7 @@ export function Column({
             data-testid={`count-${status}`}
             className="tabular-nums text-xs font-medium text-ink-3"
           >
-            {issues.length}
+            {loading ? '—' : issues.length}
           </span>
         </div>
       </header>
@@ -117,38 +124,44 @@ export function Column({
           isOver ? 'bg-accent-soft' : ''
         }`}
       >
-        <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-          {groups === null
-            ? issues.map(renderCard)
-            : groups.map((group) => (
-                <section key={group.key} data-testid={`board-group-${status}-${group.key}`} className="flex flex-col gap-1">
-                  <div className="flex items-center justify-between px-1 pt-1 text-[11px] font-medium text-ink-3">
-                    <span>{group.label}</span>
-                    <span className="tabular-nums">{group.issues.length}</span>
-                  </div>
-                  {group.issues.map(renderCard)}
-                </section>
-              ))}
-        </SortableContext>
-        {issues.length === 0 && (
+        {loading ? (
+          <Skeleton rows={3} testId={`column-skeleton-${status}`} className="m-1" />
+        ) : (
           <>
-            <EmptyState
-              compact
-              testId={`empty-${status}`}
-              title="暂无任务"
-              hint={onCreateIssue === undefined ? '把卡片拖到本列' : '把卡片拖到本列，或点下方按钮新建（新任务进入待规划）'}
-              className="flex-1 justify-center"
-            />
-            {/* AUDIT-BOARD（I-08）：空列直达新建；落点固定「待规划」，在提示文案里说明 */}
-            {onCreateIssue !== undefined && (
-              <button
-                type="button"
-                data-testid={`empty-create-${status}`}
-                onClick={onCreateIssue}
-                className="mx-auto mb-2 shrink-0 rounded-md border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink motion-reduce:transition-none"
-              >
-                + 新建任务
-              </button>
+            <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+              {groups === null
+                ? issues.map(renderCard)
+                : groups.map((group) => (
+                    <section key={group.key} data-testid={`board-group-${status}-${group.key}`} className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between px-1 pt-1 text-[11px] font-medium text-ink-3">
+                        <span>{group.label}</span>
+                        <span className="tabular-nums">{group.issues.length}</span>
+                      </div>
+                      {group.issues.map(renderCard)}
+                    </section>
+                  ))}
+            </SortableContext>
+            {issues.length === 0 && (
+              <>
+                <EmptyState
+                  compact
+                  testId={`empty-${status}`}
+                  title="暂无任务"
+                  hint={onCreateIssue === undefined ? '把卡片拖到本列' : '把卡片拖到本列，或点下方按钮新建（新任务进入待规划）'}
+                  className="flex-1 justify-center"
+                />
+                {/* AUDIT-BOARD（I-08）：空列直达新建；落点固定「待规划」，在提示文案里说明 */}
+                {onCreateIssue !== undefined && (
+                  <button
+                    type="button"
+                    data-testid={`empty-create-${status}`}
+                    onClick={onCreateIssue}
+                    className="mx-auto mb-2 shrink-0 rounded-md border border-accent bg-accent-soft px-2.5 py-1 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink motion-reduce:transition-none"
+                  >
+                    + 新建任务
+                  </button>
+                )}
+              </>
             )}
           </>
         )}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';import type { Issue, Workspace } from '@agentboard/shared';
@@ -123,6 +123,39 @@ describe('WorkspaceList', () => {
       expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('2'),
     );
     expect(issuesCalls.some((url) => url.includes('workspace=ws-1'))).toBe(true);
+  });
+
+  it('PERF-9：counts 未返回期间统计格显示占位「—」，不闪 0；到位后真实 0 仍显示 0', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.get('/api/issues/counts', async () => {
+        await gate;
+        return HttpResponse.json({
+          items: [{ workspace_id: 'ws-1', total: 3, counts: { 待规划: 2, 进行中: 0, 已关闭: 1 } }],
+        });
+      }),
+      http.get('/api/issues', () => HttpResponse.json([])),
+    );
+    mockWorkspaces([ws1]);
+    renderList();
+
+    const card = await screen.findByTestId('workspace-card-ws-1');
+    const statTexts = [...card.querySelectorAll('[data-testid^="stat-"]')].map((el) => el.textContent ?? '');
+    expect(statTexts.join('')).not.toContain('0');
+    expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('—');
+
+    await act(async () => {
+      release?.();
+      await gate;
+    });
+    await waitFor(() =>
+      expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('2'),
+    );
+    // 真实 0 不被占位吞掉
+    expect(within(card).getByTestId('stat-进行中').firstElementChild).toHaveTextContent('0');
   });
 
   it('点击卡片选中并高亮', async () => {
