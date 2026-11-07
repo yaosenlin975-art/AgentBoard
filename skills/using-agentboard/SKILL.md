@@ -1,6 +1,6 @@
 ---
 name: using-agentboard
-description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff / swing-dev / ask-user / brainstorming，以及 kb CLI 完整用法、工作区边界强制规则、全 UUID 任务 id 口径、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定、ask-user、待决策、宽限、LOCKED。
+description: AgentBoard 看板技能族入口：何时加载 writing-task / executing-task / handoff / swing-dev / ask-user / brainstorming，以及 kb CLI 完整用法、工作区边界强制规则、任务 id 口径（命令认 ≥8 位唯一前缀，卡面/依赖/提交写全长 UUID）、故障分支与收尾提交口径。触发词：AgentBoard、任务看板、看板、领任务、领卡、建卡、拆卡、任务树、依赖、kb 命令、kb CLI、汇报进度、标记完成、失败、交接、handoff、工作区绑定、ask-user、待决策、宽限、LOCKED。不适用：纯咨询、只读调研、单命令查询（直接回答，不建卡）、已被明确派发的单卡执行（用 executing-task）。
 ---
 
 # Using AgentBoard

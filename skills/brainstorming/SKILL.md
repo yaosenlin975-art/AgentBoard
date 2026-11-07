@@ -270,6 +270,16 @@ After the design doc is approved, use the standalone `writing-task` skill to pre
 | "They said 'sounds good' to the idea" | Approval covers what you showed them. A design doc you haven't written isn't approved. |
 | "The spike works, I'll keep building on it" | Keeping it is a new request. Back through the gate. |
 
+## 失败分支（Failure branches）
+
+澄清阶段卡住时按「一线 → 兜底」处置，不得用自问自答或编造用户答案推进；在 AgentBoard 任务内需要用户拍板时，提问通道一律走 `ask-user`（`kb ask`），不用其它确认工具。
+
+- **用户沉默 / 只回「你先定」**：一线 → 把问题收敛成一个、重述已知约束，并给出一个具体默认值供其否决；兜底 → 按「Minor」（仅影响实现方式、不改变做什么）自行定并写进设计文档标为你的调用；「Theirs」（改变做什么）仍不得自定，若必须推进，先写断点再停手，不发散成多轮追问。
+- **方案被连续否掉 3 次**：停止再堆方案。回到「Look Before You Ask」重读目标、约束与既有实现，用一句话复述「我以为你要的是什么」请对方确认/纠正；目标本身没对齐时先对齐目标，再重列方案。
+- **设计文档无法落库**：AgentBoard 知识页写入按 `using-agentboard` 的「写知识页」分支处理（`create` 缺必填项 / 409 slug 冲突改 `revise` / 服务不可达）；一次性 md 可用 `kb knowledge import`；仍失败 → 把设计留在对话里并明确写「未保存」，不得声称已落库，也不得因此跳过设计批准的硬门槛。
+- **视觉陪伴起不来**：连续 2 次启动失败（缺 bash / 端口占用 / 浏览器不可用）→ 本轮永久退回纯文本或静态 HTML/截图，不再反复提议，避免把澄清卡在工具上。
+- **用户中途改需求**：先停手，把新需求与已确认部分并列复述，确认哪部分作废；设计文档与方案列表按确认结果重写，不把新旧需求糊在一起。
+
 ## Visual Companion
 
 A browser tab for showing mockups, diagrams, and prototypes. It's a
