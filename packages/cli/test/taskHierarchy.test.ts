@@ -107,6 +107,33 @@ describe('CLI task hierarchy', () => {
     ]);
   });
 
+  it('CLI-TREE-TITLE：树表格标题列与 title 逐字一致（普通 / 超长 / 纯 CJK）', async () => {
+    const titles = [
+      '普通标题',
+      '超长标题'.repeat(40),
+      '纯中文标题，含逗号与括号（验收）',
+    ];
+    const issues = titles.map((title, index) => issue(`tree-${index}`, title, null));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
+        return Response.json(issues, { headers: { 'x-agentboard-version': '0.1.0' } });
+      }
+      return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
+    }));
+    const harness = context(false);
+    await listTasks(harness.ctx, { workspace: workspace.id, tree: true });
+    const lines = harness.output.split('\n').filter((line) => line.trim() !== '');
+    expect(lines[0]).toContain('标题');
+    for (const [index, title] of titles.entries()) {
+      const line = lines.find((candidate) => candidate.includes(`tree-${index}`));
+      expect(line).toBeDefined();
+      // 标题是最后一列：表格只做右侧补空格，trimEnd 后应与 title 逐字一致
+      expect(line!.trimEnd().endsWith(title)).toBe(true);
+    }
+  });
+
   it('moves an issue with CAS and can explicitly clear its parent', async () => {
     const calls: Array<{ method: string; url: string; body?: unknown }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

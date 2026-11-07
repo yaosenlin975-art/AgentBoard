@@ -283,7 +283,8 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
       visible.map((issue) => [
         issue.tree_context ? '路径' : String(issue.tree_depth), issue.id.slice(0, 8), issue.status, issue.priority, // CLI-09：id 列短 ID
         issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', decisionMark(issue), String(issue.comment_count),
-        issue.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09 `${'  '.repeat(issue.tree_depth)}${issue.tree_depth > 0 ? '↳ ' : ''}${issue.title}`,
+        issue.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
+        issue.title, // CLI-TREE-TITLE：树表格标题列与 --json 的 title 逐字一致（层级已由「层级」列表达）
       ]),
     ));
     return;
