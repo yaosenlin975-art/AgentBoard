@@ -21,7 +21,15 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
 import { BlockedDownstream } from './BlockedDownstream';
-import { downstreamCount, formatCountdown, formatWaiting } from './countdown';
+import {
+  DECISION_STALE_MS,
+  downstreamCount,
+  formatCountdown,
+  formatElapsed,
+  formatRelative,
+  formatWaiting,
+  remainingGraceSeconds,
+} from './countdown';
 import { checkpointLines } from './DecisionSection';
 import { useAnswerDecision, useDecisionDetail, useExtendDecision, useWithdrawDecision } from './useDecisions';
 import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from './types';
@@ -86,6 +94,26 @@ function optionLabel(detail: DecisionDetailDto | null, answer: DecisionAnswerDto
   return '（空答案）';
 }
 
+/**
+ * 同卡其它决策的状态摘要。
+ * 列表 DTO 不含答案正文，answered 用「第 N 版」代替选项文案（不伪造选项名）。
+ */
+function siblingStatusLabel(sibling: DecisionListItemDto, now: number): string {
+  if (sibling.state === 'answered') {
+    const rel = formatRelative(sibling.answered_at === null ? null : now - sibling.answered_at);
+    return `${rel === null ? '已回答' : `已回答 ${rel}`} · 第 ${sibling.answer_revision} 版`;
+  }
+  if (sibling.state === 'grace' && sibling.grace_until > now) {
+    return `宽限中 · 剩 ${formatCountdown(remainingGraceSeconds(sibling.grace_until, now))}`;
+  }
+  if (sibling.locked_at !== null && sibling.locked_at <= now - DECISION_STALE_MS) {
+    const elapsed = formatElapsed((now - sibling.locked_at) / 1000);
+    return elapsed === null ? '超时' : `超时 ${elapsed}`;
+  }
+  const waiting = formatElapsed(sibling.waiting_seconds);
+  return waiting === null ? '已锁' : `已锁 ${waiting}`;
+}
+
 export interface DecisionCardProps {
   item: DecisionListItemDto;
   now: number;
@@ -97,12 +125,16 @@ export interface DecisionCardProps {
   leaving?: boolean;
   scope: 'grace' | 'open' | 'stale' | 'answered';
   expanded: boolean;
+  /** 同一张任务卡上的其它决策（已由视图聚合，排除自身；用于卡头计数与展开区互跳） */
+  siblings: DecisionListItemDto[];
   /** 当前选中的工作区；与 item.workspace_id 不同即跨区卡 */
   homeWorkspaceId: string;
   /** 切 tab / 切范围时递增的复位信号：清掉跨区二次确认 */
   resetSignal: string;
   onToggle: (decisionId: string) => void;
   onOpenIssue: (issueId: string) => void;
+  /** 同卡决策互跳：交给视图 focusDecision，复用深链定位/展开/高亮 */
+  onJumpDecision: (decisionId: string) => void;
   /** DEC-V4-UNDO：提交成功 → 视图接管撤销条与移出节奏（答案已在服务端落库） */
   onAnswered: (payload: DecisionAnsweredPayload) => void;
 }
@@ -141,10 +173,12 @@ export function DecisionCard({
   leaving = false,
   scope,
   expanded,
+  siblings,
   homeWorkspaceId,
   resetSignal,
   onToggle,
   onOpenIssue,
+  onJumpDecision,
   onAnswered,
 }: DecisionCardProps) {
   const queryClient = useQueryClient();
@@ -599,6 +633,26 @@ export function DecisionCard({
         >
           {item.issue_title}
         </button>
+        {item.issue_priority && (
+          <span
+            data-testid={`decision-priority-${item.id}`}
+            data-priority={item.issue_priority}
+            title={`任务优先级：${item.issue_priority}`}
+            className={`shrink-0 whitespace-nowrap rounded border px-1 text-[10px] font-semibold leading-4 ${
+              item.issue_priority === '高' ? 'border-accent text-accent' : 'border-hairline text-ink-3'
+            }`}
+          >
+            {item.issue_priority}
+          </span>
+        )}
+        {siblings.length > 0 && (
+          <span
+            data-testid={`decision-sibling-count-${item.id}`}
+            className="shrink-0 whitespace-nowrap text-[10.5px] text-ink-3"
+          >
+            同卡 {siblings.length} 条历史
+          </span>
+        )}
         {graceRemaining !== null && (
           <span
             data-testid={`decision-countdown-${item.id}`}
@@ -634,6 +688,20 @@ export function DecisionCard({
           className="shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 py-0.5 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
           {expanded ? '收起' : '展开'}
+        </button>
+        <button
+          type="button"
+          data-testid={`decision-jump-${item.id}`}
+          aria-label={`打开任务卡 ${item.issue_id}`}
+          title="打开任务卡 ↗"
+          onClick={() => onOpenIssue(item.issue_id)}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        >
+          <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.5]">
+            <path d="M6 3h7v7" />
+            <path d="M13 3 6.5 9.5" />
+            <path d="M12 10.5V13H3V4h2.5" />
+          </svg>
         </button>
       </div>
 
@@ -730,6 +798,34 @@ export function DecisionCard({
             onSubmit: submit,
           }}
         />
+      )}
+
+      {/* DEC-SIBLING：同一张任务卡上的其它决策（可互跳；数据由视图从在途+24h 已回答列表聚合） */}
+      {expanded && siblings.length > 0 && (
+        <section
+          data-testid={`decision-siblings-${item.id}`}
+          aria-label="同一张任务卡上的其它决策"
+          className="flex min-w-0 flex-col gap-1 border-t border-hairline pt-1.5"
+        >
+          <h3 className="text-[10.5px] font-medium text-ink-3">同一张任务卡</h3>
+          {siblings.map((sibling) => (
+            <button
+              key={sibling.id}
+              type="button"
+              data-testid={`decision-sibling-${item.id}-${sibling.id}`}
+              onClick={() => onJumpDecision(sibling.id)}
+              className="flex min-w-0 items-center gap-2 rounded border border-hairline px-1.5 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            >
+              <span className="min-w-0 flex-1 truncate">{sibling.question}</span>
+              <span className="shrink-0 whitespace-nowrap text-[10.5px] text-ink-3">
+                {siblingStatusLabel(sibling, now)}
+              </span>
+              <span aria-hidden="true" className="shrink-0 text-ink-3">
+                →
+              </span>
+            </button>
+          ))}
+        </section>
       )}
 
       {currentLabel !== null && (

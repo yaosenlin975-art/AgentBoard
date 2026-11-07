@@ -191,6 +191,14 @@ export function DecisionsView() {
     setExpandedId(null);
   };
   const groups = groupDecisions(active, answered, now, sort);
+  // DEC-SIBLING：同一 issue 的决策聚合（在途 + 24h 已回答）。
+  // 复用本页已拉取的列表一次算出，不新增接口、不按卡再发请求（DESIGN-NOTES §10「前端本地聚合」）。
+  const siblingsByIssue = new Map<string, DecisionListItemDto[]>();
+  for (const entry of [...active, ...answered]) {
+    const bucket = siblingsByIssue.get(entry.issue_id);
+    if (bucket === undefined) siblingsByIssue.set(entry.issue_id, [entry]);
+    else bucket.push(entry);
+  }
   const toggleExpanded = (decisionId: string) => {
     setExpandedId((current) => (current === decisionId ? null : decisionId));
   };
@@ -447,6 +455,8 @@ export function DecisionsView() {
             leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            siblingsByIssue={siblingsByIssue}
+            onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
           />
         )}
@@ -466,6 +476,8 @@ export function DecisionsView() {
             leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            siblingsByIssue={siblingsByIssue}
+            onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
           />
         )}
@@ -485,6 +497,8 @@ export function DecisionsView() {
             leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            siblingsByIssue={siblingsByIssue}
+            onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
           />
         )}
@@ -504,6 +518,8 @@ export function DecisionsView() {
             leavingId={leavingId}
             onToggle={toggleExpanded}
             onOpen={openDetail}
+            siblingsByIssue={siblingsByIssue}
+            onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
           />
         )}
@@ -614,8 +630,12 @@ interface GroupProps {
   resetSignal: string;
   /** DEC-V4-UNDO：正在 420ms 视觉移出的那条 */
   leavingId: string | null;
+  /** DEC-SIBLING：issue_id → 同卡全部决策（含自身），卡片内排除自身后展示 */
+  siblingsByIssue: ReadonlyMap<string, DecisionListItemDto[]>;
   onToggle: (decisionId: string) => void;
   onOpen: (issueId: string) => void;
+  /** 同卡决策互跳（复用 focusDecision） */
+  onJumpDecision: (decisionId: string) => void;
   onAnswered: (payload: DecisionAnsweredPayload) => void;
 }
 
@@ -632,8 +652,10 @@ function Group({
   homeWorkspaceId,
   resetSignal,
   leavingId,
+  siblingsByIssue,
   onToggle,
   onOpen,
+  onJumpDecision,
   onAnswered,
 }: GroupProps) {
   return (
@@ -646,24 +668,31 @@ function Group({
         <p className="px-1 py-1 text-xs text-ink-3">{empty}</p>
       ) : (
         <ul className="flex flex-col gap-1" role="list">
-          {items.map((item) => (
-            <DecisionCard
-              key={item.id}
-              item={item}
-              now={now}
-              rank={rankMap.get(item.id)}
-              focused={selectedId === item.id}
-              flash={flashId === item.id}
-              leaving={leavingId === item.id}
-              scope={scope}
-              expanded={expandedId === item.id}
-              homeWorkspaceId={homeWorkspaceId}
-              resetSignal={resetSignal}
-              onToggle={onToggle}
-              onOpenIssue={onOpen}
-              onAnswered={onAnswered}
-            />
-          ))}
+          {items.map((item) => {
+            const siblings = (siblingsByIssue.get(item.issue_id) ?? [])
+              .filter((entry) => entry.id !== item.id)
+              .sort((a, b) => b.created_at - a.created_at);
+            return (
+              <DecisionCard
+                key={item.id}
+                item={item}
+                now={now}
+                rank={rankMap.get(item.id)}
+                focused={selectedId === item.id}
+                flash={flashId === item.id}
+                leaving={leavingId === item.id}
+                scope={scope}
+                expanded={expandedId === item.id}
+                siblings={siblings}
+                homeWorkspaceId={homeWorkspaceId}
+                resetSignal={resetSignal}
+                onToggle={onToggle}
+                onOpenIssue={onOpen}
+                onJumpDecision={onJumpDecision}
+                onAnswered={onAnswered}
+              />
+            );
+          })}
         </ul>
       )}
     </div>

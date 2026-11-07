@@ -1998,3 +1998,67 @@ describe('DEC-RAIL 状态色轨与 ≤60 秒临界态', () => {
     expect(screen.getByTestId('decision-rail-rail-critical').className).toContain('bg-accent');
   });
 });
+
+describe('DEC-SIBLING 卡头信息与同卡其它决策', () => {
+  const siblingGrace = listItem({
+    id: 'sib-grace',
+    state: 'grace',
+    grace_until: NOW + 120_000,
+    remaining_grace_seconds: 120,
+    issue_id: 'issue-shared',
+    issue_title: '列表与树的请求数收敛',
+    issue_priority: '高',
+    question: '先收敛哪个请求？',
+  });
+  const siblingAnswered = listItem({
+    id: 'sib-answered',
+    state: 'answered',
+    answer_revision: 2,
+    answered_at: NOW - 6 * 60_000,
+    locked_at: NOW - 36 * 60_000,
+    issue_id: 'issue-shared',
+    issue_title: '列表与树的请求数收敛',
+    issue_priority: '高',
+    question: '树是否要懒加载？',
+  });
+
+  it('卡头展示优先级/同卡条数/↗；展开区列出同卡决策并带状态摘要，可互跳', async () => {
+    server.use(decisionHandler([siblingGrace], [siblingAnswered]));
+    renderWithQuery(<DecisionsView />);
+
+    await waitFor(() => expect(screen.getByTestId('decision-item-sib-grace')).toBeInTheDocument());
+
+    const priority = screen.getByTestId('decision-priority-sib-grace');
+    expect(priority).toHaveTextContent('高');
+    expect(priority.className).toContain('border-accent');
+    expect(screen.getByTestId('decision-sibling-count-sib-grace')).toHaveTextContent('同卡 1 条历史');
+    expect(screen.getByTestId('decision-sibling-count-sib-answered')).toHaveTextContent('同卡 1 条历史');
+    expect(screen.getByTestId('decision-jump-sib-grace')).toHaveAttribute(
+      'aria-label',
+      `打开任务卡 ${siblingGrace.issue_id}`,
+    );
+
+    fireEvent.click(screen.getByTestId('decision-toggle-sib-grace'));
+    const section = screen.getByTestId('decision-siblings-sib-grace');
+    expect(within(section).getByText('树是否要懒加载？')).toBeInTheDocument();
+    expect(within(section).getByText(/已回答 6 分钟前 · 第 2 版/)).toBeInTheDocument();
+
+    // 互跳：点同卡条目 → 目标条被选中并展开（复用 focusDecision）
+    fireEvent.click(screen.getByTestId('decision-sibling-sib-grace-sib-answered'));
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-item-sib-answered')).toHaveAttribute('data-selected', 'true'),
+    );
+    expect(screen.getByTestId('decision-item-sib-answered')).toHaveAttribute('data-expanded', 'true');
+  });
+
+  it('单条决策不渲染同卡计数，也不渲染空区块', async () => {
+    server.use(decisionHandler([graceItem], []));
+    renderWithQuery(<DecisionsView />);
+
+    await waitFor(() => expect(screen.getByTestId('decision-item-dec-grace')).toBeInTheDocument());
+    expect(screen.queryByTestId('decision-sibling-count-dec-grace')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('decision-toggle-dec-grace'));
+    expect(screen.queryByTestId('decision-siblings-dec-grace')).toBeNull();
+  });
+});

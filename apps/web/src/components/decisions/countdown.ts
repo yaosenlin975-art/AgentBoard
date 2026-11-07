@@ -134,3 +134,28 @@ export function formatWaiting(totalSeconds: number | null): string | null {
   const hours = Math.floor(minutes / 60);
   return `${hours} 小时 ${minutes % 60} 分`;
 }
+
+/** 已锁/超时时长：`26 分` / `5 小时 20 分` / `3 天 2 小时`（与设计「已锁 26 分」「超时 3 天 2 小时」同口径） */
+export function formatElapsed(totalSeconds: number | null): string | null {
+  if (totalSeconds === null || !Number.isFinite(totalSeconds) || totalSeconds < 0) return null;
+  const seconds = Math.floor(totalSeconds);
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days} 天` : `${days} 天 ${hours % 24} 小时`;
+}
+
+/** 相对时间：`刚刚` / `6 分钟前` / `3 小时前` / `2 天前`（负数按 0） */
+export function formatRelative(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms)) return null;
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return '刚刚';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
+}
