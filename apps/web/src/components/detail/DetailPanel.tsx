@@ -33,6 +33,14 @@ const inputCls =
 
 const DEBOUNCE_MS = 500;
 
+/** DETAIL-CREATED：创建时间的本地展示格式（YYYY-MM-DD HH:MM），不引第三方日期库 */
+function formatCreatedAt(ts: number): string {
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return '未知';
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export function DetailPanel() {
   const issueId = usePanelStore((s) => s.issueId);
   const openChat = usePanelStore((s) => s.openChat);
@@ -340,6 +348,15 @@ export function DetailPanel() {
             }}
             onDueChange={(next) => applyDue(next)}
           />
+
+          {/* DETAIL-CREATED：创建时间只读展示（title 给完整本地时间；不发任何写请求） */}
+          <p
+            data-testid="detail-created-at"
+            title={new Date(issue.created_at).toLocaleString()}
+            className="text-[10.5px] text-ink-3"
+          >
+            创建于 {formatCreatedAt(issue.created_at)}
+          </p>
 
           {/* DEC-6：卡有在途/最近决策时展示问题、选项、答案时间线与断点摘要 */}
           <DecisionSection issue={issue} />

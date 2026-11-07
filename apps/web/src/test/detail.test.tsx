@@ -889,6 +889,19 @@ describe('DetailPanel 评论区', () => {
   });
 });
 
+describe('DETAIL-CREATED 创建时间展示', () => {
+  it('详情首屏以只读文本展示创建时间（YYYY-MM-DD HH:MM），不提供可交互控件', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue({ created_at: 1793890268623 }));
+    renderDetail();
+
+    const created = await screen.findByTestId('detail-created-at');
+    expect(created).toHaveTextContent(/^创建于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(created.getAttribute('title')).not.toBe('');
+    // 只读展示：不是按钮，也不进入 PATCH
+    expect(created.tagName).toBe('P');
+  });
+});
+
 describe('DETAIL-D3 信息沉降（描述 clamp / 评论 2 条 / 折叠区 / 操作沉底）', () => {
   it('长描述默认 3 行 clamp；点「展开全文」铺满，再点「收起」恢复 clamp', { timeout: 15000 }, async () => {
     const longDescription = Array.from({ length: 8 }, (_, i) => `第 ${i + 1} 行描述内容`).join('\n');
