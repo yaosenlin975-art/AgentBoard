@@ -88,6 +88,86 @@ const DECISION_COLUMNS = `(SELECT d.state FROM issue_decision d WHERE d.issue_id
   (SELECT d.grace_until FROM issue_decision d WHERE d.issue_id=i.id AND d.state='grace' ORDER BY d.created_at DESC LIMIT 1) AS decision_grace_until,
   (SELECT d.locked_at FROM issue_decision d WHERE d.issue_id=i.id AND d.state='open' ORDER BY d.locked_at ASC LIMIT 1) AS decision_locked_at`;
 
+/** PERF-4a：`fields=` 白名单（字段名与共享 Issue 同名；children_* 仅查询时才存在） */
+export const ISSUE_FIELD_NAMES = [
+  'id', 'workspace_id', 'title', 'description', 'priority', 'labels', 'status', 'sort_order',
+  'parent_issue_id', 'claimed_by', 'claimed_at', 'session_id', 'due_date', 'due_time',
+  'comment_count', 'blocked_by_count', 'blocked_by_open_count', 'resolved',
+  'dependency_violation', 'decision_locked', 'open_decision_id', 'decision_grace_until',
+  'decision_waiting_seconds', 'children_total', 'children_closed', 'created_at', 'updated_at',
+] as const;
+
+export type IssueFieldName = (typeof ISSUE_FIELD_NAMES)[number];
+
+export function isIssueFieldName(value: string): value is IssueFieldName {
+  return (ISSUE_FIELD_NAMES as readonly string[]).includes(value);
+}
+
+/** 直接落库列：从 `i` 取，白名单命中才进 SELECT */
+const BASE_ISSUE_COLUMNS: ReadonlyArray<readonly [IssueFieldName, string]> = [
+  ['id', 'i.id'],
+  ['workspace_id', 'i.workspace_id'],
+  ['title', 'i.title'],
+  ['priority', 'i.priority'],
+  ['labels', 'i.labels'],
+  ['status', 'i.status'],
+  ['sort_order', 'i.sort_order'],
+  ['parent_issue_id', 'i.parent_issue_id'],
+  ['claimed_by', 'i.claimed_by'],
+  ['claimed_at', 'i.claimed_at'],
+  ['session_id', 'i.session_id'],
+  ['due_date', 'i.due_date'],
+  ['due_time', 'i.due_time'],
+  ['created_at', 'i.created_at'],
+  ['updated_at', 'i.updated_at'],
+];
+
+/**
+ * PERF-4a：按 `fields` 组 SELECT 列表——只查被请求的列，并跳过未被请求的重聚合子查询。
+ * 未给 fields 时保持旧查询（完整字段 + 全部派生列），旧调用方行为不变。
+ */
+function issueSelect(fields?: readonly IssueFieldName[]): { columns: string; join: string } {
+  if (fields === undefined) {
+    return {
+      columns: `i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS}, ${CHILD_PROGRESS_COLUMNS}`,
+      join: DEPENDENCY_JOIN,
+    };
+  }
+  const wanted = new Set(fields);
+  const columns = BASE_ISSUE_COLUMNS.filter(([name]) => wanted.has(name)).map(([, expr]) => expr);
+  if (wanted.has('description')) columns.push('i.description');
+  if (wanted.has('comment_count')) columns.push(COMMENT_COUNT_COLUMN);
+  const needsDependency =
+    wanted.has('blocked_by_count') || wanted.has('blocked_by_open_count') || wanted.has('resolved');
+  if (needsDependency) columns.push(DEPENDENCY_COLUMNS);
+  if (wanted.has('dependency_violation')) columns.push(DEPENDENCY_VIOLATION_COLUMN);
+  if (
+    wanted.has('decision_locked') ||
+    wanted.has('open_decision_id') ||
+    wanted.has('decision_grace_until') ||
+    wanted.has('decision_waiting_seconds')
+  ) {
+    columns.push(DECISION_COLUMNS);
+  }
+  if (wanted.has('children_total') || wanted.has('children_closed')) columns.push(CHILD_PROGRESS_COLUMNS);
+  return { columns: columns.join(','), join: needsDependency ? DEPENDENCY_JOIN : '' };
+}
+
+/** PERF-4a：把整行投影成白名单字段；未查询的列不参与 JSON.parse / 文本窗口 */
+function projectIssueRow(row: IssueRow, fields: readonly IssueFieldName[]): Record<string, unknown> {
+  // 未选中的列补安全默认值：rowToIssue 会解析 labels 并读取 dep_violation，缺值会让投影直接抛错
+  const full = rowToIssue({
+    ...row,
+    description: row.description ?? '',
+    labels: row.labels ?? '[]',
+    dep_violation: row.dep_violation ?? 0,
+    comment_count: row.comment_count ?? 0,
+  }) as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const field of fields) if (Object.hasOwn(full, field)) out[field] = full[field];
+  return out;
+}
+
 function rowToIssue(row: IssueRow): Issue {
   const issue: Issue & { children_total?: number; children_closed?: number } = {
     id: row.id,
@@ -201,27 +281,80 @@ export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null
   return row ? rowToIssue(row) : null;
 }
 
-export function listIssues(db: Db, workspaceId: string, status?: string): Issue[] {
+export function listIssues(
+  db: Db,
+  workspaceId: string,
+  status?: string,
+  fields?: readonly IssueFieldName[],
+): Array<Issue | Record<string, unknown>> {
   const params: unknown[] = [workspaceId];
   if (status !== undefined) params.push(status);
+  const select = issueSelect(fields);
   const rows = db
     .prepare(
-      `SELECT i.*, ${COMMENT_COUNT_COLUMN}, ${DEPENDENCY_COLUMNS}, ${DEPENDENCY_VIOLATION_COLUMN}, ${DECISION_COLUMNS}, ${CHILD_PROGRESS_COLUMNS} FROM issue i ${DEPENDENCY_JOIN}
+      `SELECT ${select.columns} FROM issue i ${select.join}
        WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(...params) as IssueRow[];
-  return rows.map(rowToIssue);
+  return rows.map(row => (fields === undefined ? rowToIssue(row) : projectIssueRow(row, fields)));
 }
-export function listIssuesPage(db: Db, workspaceId: string, input: { limit: number; offset: number; /** CLI-LIST-GUARD：任意工作区状态名 */ status?: string }): PageResult<TaskPreview> {
+export function listIssuesPage(
+  db: Db,
+  workspaceId: string,
+  input: {
+    limit: number;
+    offset: number;
+    /** CLI-LIST-GUARD：任意工作区状态名 */
+    status?: string;
+    /** PERF-4a：字段白名单；给了只返回所列字段并跳过未请求的重聚合列 */
+    fields?: readonly IssueFieldName[];
+  },
+): PageResult<TaskPreview | Record<string, unknown>> {
   validatePage(input.limit, input.offset);
   const params: unknown[] = [workspaceId];
   if (input.status) params.push(input.status);
   params.push(input.limit + 1, input.offset);
-  const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},${DECISION_COLUMNS} FROM issue i ${DEPENDENCY_JOIN} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
+  const select = issueSelect(input.fields);
+  const rows = db.prepare(`SELECT ${select.columns} FROM issue i ${select.join} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
   return pageResult(rows.map(row => {
-    const issue = rowToIssue(row); const window = textWindow(issue.description);
-    return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
+    if (input.fields === undefined) {
+      const issue = rowToIssue(row); const window = textWindow(issue.description);
+      return { ...issue, description: window.content, description_truncated: window.truncated, next_description_offset_chars: window.next_offset_chars };
+    }
+    const projected = projectIssueRow(row, input.fields);
+    // 只有正文被请求时才做文本窗口；未请求 description 的响应里不出现正文与截断标记
+    if (input.fields.includes('description')) {
+      const window = textWindow(String(projected.description ?? ''));
+      projected.description = window.content;
+      projected.description_truncated = window.truncated;
+      projected.next_description_offset_chars = window.next_offset_chars;
+    }
+    return projected;
   }), input.limit, input.offset);
+}
+
+export interface WorkspaceIssueCounts {
+  workspace_id: string;
+  total: number;
+  counts: Record<string, number>;
+}
+
+/** PERF-4a：单库内按状态聚合；调用方负责按目标库分组后逐库调用（不跨库拼 SQL） */
+export function countIssuesByStatus(db: Db, workspaceIds: readonly string[]): WorkspaceIssueCounts[] {
+  if (workspaceIds.length === 0) return [];
+  const placeholders = workspaceIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT workspace_id, status, COUNT(*) AS n FROM issue WHERE workspace_id IN (${placeholders}) GROUP BY workspace_id, status`)
+    .all(...workspaceIds) as Array<{ workspace_id: string; status: string; n: number }>;
+  const byWorkspace = new Map<string, WorkspaceIssueCounts>();
+  for (const workspaceId of workspaceIds) byWorkspace.set(workspaceId, { workspace_id: workspaceId, total: 0, counts: {} });
+  for (const row of rows) {
+    const item = byWorkspace.get(row.workspace_id);
+    if (item === undefined) continue;
+    item.counts[row.status] = row.n;
+    item.total += row.n;
+  }
+  return workspaceIds.map(workspaceId => byWorkspace.get(workspaceId)!);
 }
 
 export type IssuePatch = Partial<{

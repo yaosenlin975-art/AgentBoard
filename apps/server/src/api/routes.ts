@@ -13,6 +13,7 @@ import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, performRestart, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter, createChangelogRouter } from './changelogRoutes.js';
 import { createStatusesAggregateRouter, createWorkspaceStatusRouter } from './workspaceStatusRoutes.js';
+import { createIssueCountsRouter, parseIssueFields } from './issuePayloadRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createDecisionRouter } from './decisionRoutes.js';
 import { createDraftService, type DraftRunner } from '../services/smartCreateDraft.js';
@@ -1127,11 +1128,16 @@ export function createRouter(deps: RouterDeps): Router {
     // CLI-LIST-GUARD：status 必须是该工作区已定义的状态（内置 + 自定义），
     // 非法 → 400 并列出可用状态；合法 → 两个分支都真的按它过滤（旧实现非分页分支直接忽略 status）。
     const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(rdb, workspaceId, parseBody(issueStatusSchema, req.query.status));
+    // PERF-4a：fields= 白名单（回滚开关关闭时解析结果为 undefined，按旧完整字段返回）
+    const fields = parseIssueFields(typeof req.query.fields === 'string' ? req.query.fields : undefined);
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
       const page = parseBody(pageQuerySchema, req.query);
-      res.json(listIssuesPage(rdb, workspaceId, { ...page, status }));
-    } else res.json(listIssues(rdb, workspaceId, status));
+      res.json(listIssuesPage(rdb, workspaceId, { ...page, status, fields }));
+    } else res.json(listIssues(rdb, workspaceId, status, fields));
   });
+
+  // PERF-4a：多工作区状态计数聚合；必须注册在 `/issues/:id` 之前，避免 'counts' 被当成卡 id
+  router.use('/issues/counts', createIssueCountsRouter({ db, dbForWorkspace }));
 
   router.get('/issues/tree', (req, res) => {
     const workspaceId = requireWorkspaceParam(req);
