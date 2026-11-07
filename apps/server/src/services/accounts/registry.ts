@@ -10,7 +10,7 @@ export interface AccountProviderCapability {
   reason_code: string;
 }
 
-/** MiniMax 已安装但生产未装配进程控制（停止/启动）时的 switch 根因码 */
+/** MiniMax 未探测（静态登记/离线）时 switch 的保留根因码：探测前无法给出切换可用性结论 */
 export const MINIMAX_SWITCH_UNAVAILABLE = 'CLIENT_PROCESS_CONTROL_UNAVAILABLE';
 
 /**
@@ -18,15 +18,16 @@ export const MINIMAX_SWITCH_UNAVAILABLE = 'CLIENT_PROCESS_CONTROL_UNAVAILABLE';
  * workbuddy_desktop：捕获/切换已按验证契约实现（Docs/evidence/workbuddy-desktop-contract-2026-11-01.md），
  * 签到 provider 未验证 → checkin 关闭；codebuddy_desktop 契约未确认，全部关闭。
  *
- * MINIMAX-PATH：minimax 的 capture 与根因码由客户端探测结果推导（`minimaxClientProbe.ts`）——
+ * MINIMAX-PATH：minimax 的 capture/switch 与根因码由客户端探测结果推导（`minimaxClientProbe.ts`）——
  * 默认安装位置、其它盘、卸载注册表三路都探过才判定「未安装」，不再把「装在非默认位置」误报成
- * `CLIENT_NOT_INSTALLED`。switch 恒为 false：生产未装配客户端停止/启动能力。
+ * `CLIENT_NOT_INSTALLED`。ACC-SW-MAX：停止/启动（clientProcess.ts）已装配，定位到 exe 即 switch 可用；
+ * 未探测时保留 `MINIMAX_SWITCH_UNAVAILABLE`（探测前不结论）。
  */
 const CAPABILITIES: AccountProviderCapability[] = [
   { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: true, reason_code: 'CHECKIN_READY' },
   { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED' },
-  // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-13）
-  { app_id: 'minimax', capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' },
+  // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-SW-MAX）
+  { app_id: 'minimax', capture: true, switch: false, checkin: true, reason_code: MINIMAX_SWITCH_UNAVAILABLE },
   // B4S-1：Trae 没有进程概念（无 preflight/stop/start），switch 明确声明未实现，不伪造能力
   { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
   // ACC-KB-B1S：先登记平台 id，provider 行为分别由 B1S2 / B4S / B5S 落地；在此之前一律全关，
@@ -36,13 +37,13 @@ const CAPABILITIES: AccountProviderCapability[] = [
 ];
 
 /**
- * minimax 行按探测结果改写：定位到 exe → capture 可用（根因码说明 switch 为何仍不可用）；
- * 未安装 / 路径不可解析 → capture 关闭并给出对应原因码。
+ * minimax 行按探测结果改写：定位到 exe → capture/switch 可用（ACC-SW-MAX：start/stop 已装配）；
+ * 未安装 / 路径不可解析 → capture/switch 关闭并给出对应原因码。
  * 未传探测结果时沿用静态登记（兼容既有同步调用方与离线场景）。
  */
 function withMinimaxClient(capability: AccountProviderCapability, minimaxClient?: MinimaxClientStatus): AccountProviderCapability {
   if (capability.app_id !== 'minimax' || !minimaxClient) return capability;
-  if (minimaxClient.installed) return { ...capability, capture: true, switch: false, reason_code: MINIMAX_SWITCH_UNAVAILABLE };
+  if (minimaxClient.installed) return { ...capability, capture: true, switch: true, reason_code: 'OK' };
   return { ...capability, capture: false, switch: false, reason_code: minimaxClient.reason_code };
 }
 

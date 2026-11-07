@@ -8,7 +8,7 @@
  * 语义约定（调用方按此实现 fail-fast）：
  * - **探测失败/平台不支持 → 抛错**，绝不静默返回 false（静默 false 会退化成"以为没在跑"）；
  * - `stop()` 只在确认在跑时调用，内部轮询 `isRunning` 直到退出或超时；
- * - 错误码固定且可读：`CLIENT_PROCESS_PROBE_FAILED` / `CLIENT_PROCESS_CONTROL_UNAVAILABLE` / `CLIENT_STOP_TIMEOUT`。
+ * - 错误码固定且可读：`CLIENT_PROCESS_PROBE_FAILED` / `CLIENT_PROCESS_CONTROL_UNAVAILABLE` / `CLIENT_STOP_TIMEOUT` / `CLIENT_START_FAILED`。
  *
  * 本模块只做进程，不碰快照（B4S-2）、不碰设备身份（B6 `deviceIdentity.ts`）。
  */
@@ -21,6 +21,8 @@ export const CLIENT_PROCESS_ERROR_CODES = {
   controlUnavailable: 'CLIENT_PROCESS_CONTROL_UNAVAILABLE',
   /** 已发停止指令但客户端在超时内没有退出 */
   stopTimeout: 'CLIENT_STOP_TIMEOUT',
+  /** spawn 拉起客户端失败（exe 不存在 / 权限拒绝等，ACC-SW-MAX） */
+  startFailed: 'CLIENT_START_FAILED',
 } as const;
 
 export interface ClientProcessControl {
@@ -28,16 +30,28 @@ export interface ClientProcessControl {
   isRunning(exePath: string): Promise<boolean>;
   /** 停止客户端并等待退出；超时抛 `CLIENT_STOP_TIMEOUT` */
   stop(exePath: string, options?: { timeoutMs?: number; pollMs?: number }): Promise<void>;
+  /** detached 拉起客户端（不等待窗口出现）；spawn 失败抛 `CLIENT_START_FAILED`（ACC-SW-MAX） */
+  start(exePath: string): Promise<void>;
 }
 
 export interface ClientProcessOptions {
   /** 执行 PowerShell 脚本（测试注入；缺省 spawn pwsh -NoProfile -Command） */
   run?: (script: string) => Promise<string>;
+  /** start 用的 spawn（测试注入；缺省 node:child_process 的 spawn） */
+  spawn?: (command: string, options: { detached: boolean; stdio: 'ignore'; windowsHide: boolean }) => SpawnedProcess;
   platform?: NodeJS.Platform;
   /** stop 的默认等待上限 */
   exitTimeoutMs?: number;
   /** stop 的轮询间隔 */
   pollMs?: number;
+  /** start 的 spawn 错误侦听窗口（ms）：窗口内没报错即认为已拉起 */
+  startErrorWindowMs?: number;
+}
+
+/** start 依赖的最小 spawn 面（node:child_process 的 spawn 满足此形状） */
+export interface SpawnedProcess {
+  once(event: 'error', listener: (error: Error) => void): unknown;
+  unref(): unknown;
 }
 
 const PS_QUOTE = (value: string): string => `'${value.replace(/'/g, "''")}'`;
@@ -72,6 +86,8 @@ export function createClientProcessControl(options: ClientProcessOptions = {}): 
   const run = options.run ?? defaultRun;
   const exitTimeoutMs = options.exitTimeoutMs ?? 15_000;
   const pollMs = options.pollMs ?? 250;
+  const spawnExe = options.spawn;
+  const startErrorWindowMs = options.startErrorWindowMs ?? 500;
 
   const requireWindows = (): void => {
     if (platform !== 'win32') {
@@ -92,6 +108,11 @@ export function createClientProcessControl(options: ClientProcessOptions = {}): 
       .map((line) => Number.parseInt(line.trim(), 10))
       .filter((pid) => Number.isInteger(pid) && pid > 0);
     return pids;
+  };
+
+  const spawnDefault = async (command: string, spawnOptions: { detached: boolean; stdio: 'ignore'; windowsHide: boolean }): Promise<SpawnedProcess> => {
+    const { spawn } = await import('node:child_process');
+    return spawn(command, [], spawnOptions);
   };
 
   return {
@@ -115,6 +136,28 @@ export function createClientProcessControl(options: ClientProcessOptions = {}): 
         CLIENT_PROCESS_ERROR_CODES.stopTimeout,
         `客户端在 ${timeoutMs}ms 内没有退出，已中止切换（不覆盖凭据文件）`,
       );
+    },
+
+    // ACC-SW-MAX：detached 拉起客户端（windowsHide + stdio ignore，不等窗口出现）。
+    // spawn 的 ENOENT/权限错误是异步 error 事件：在短窗口内监听，窗口内没报错即视为已拉起。
+    async start(exePath: string): Promise<void> {
+      requireWindows();
+      const spawnFn = spawnExe ?? spawnDefault;
+      const child = await spawnFn(exePath, { detached: true, stdio: 'ignore', windowsHide: true });
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        child.once('error', (error) => {
+          if (settled) return;
+          settled = true;
+          reject(new ApiError(409, CLIENT_PROCESS_ERROR_CODES.startFailed, `启动客户端失败：${error.message}`));
+        });
+        setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.unref();
+          resolve();
+        }, startErrorWindowMs);
+      });
     },
   };
 }

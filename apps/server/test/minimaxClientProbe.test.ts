@@ -40,7 +40,8 @@ describe('minimax client probe (MINIMAX-PATH)', () => {
       readRegistry: async () => NO_REGISTRY,
     });
     expect(status).toMatchObject({ installed: true, exe, source: 'default', reason_code: 'CLIENT_READY' });
-    expect(minimaxCapability(status)).toMatchObject({ capture: true, switch: false, reason_code: MINIMAX_SWITCH_UNAVAILABLE });
+    // ACC-SW-MAX：stop/start 已装配 → 定位到 exe 即 capture/switch 可用
+    expect(minimaxCapability(status)).toMatchObject({ capture: true, switch: true, reason_code: 'OK' });
   });
 
   it('resolves a non-default install through the uninstall registry entry', async () => {
@@ -53,7 +54,7 @@ describe('minimax client probe (MINIMAX-PATH)', () => {
     });
     expect(status).toMatchObject({ installed: true, exe, source: 'registry', reason_code: 'CLIENT_READY' });
     expect(status.message).toContain('卸载注册表');
-    expect(minimaxCapability(status)).toMatchObject({ capture: true, switch: false, reason_code: MINIMAX_SWITCH_UNAVAILABLE });
+    expect(minimaxCapability(status)).toMatchObject({ capture: true, switch: true, reason_code: 'OK' });
   });
 
   it('reports CLIENT_NOT_INSTALLED only when no candidate and no registry evidence exist', async () => {
@@ -132,19 +133,22 @@ describe('minimax client probe (MINIMAX-PATH)', () => {
 
   it('feeds the capability matrix through the injected probe (three scenarios end to end)', async () => {
     const cases = [
-      { status: { installed: true, exe: 'C:\\x\\MiniMax.exe', source: 'default' as const, reason_code: 'CLIENT_READY' as const, message: '', probed: [] }, capture: true, reason: MINIMAX_SWITCH_UNAVAILABLE },
-      { status: { installed: false, exe: null, source: null, reason_code: 'CLIENT_PATH_UNRESOLVED' as const, message: '', probed: [] }, capture: false, reason: 'CLIENT_PATH_UNRESOLVED' },
-      { status: { installed: false, exe: null, source: null, reason_code: 'CLIENT_NOT_INSTALLED' as const, message: '', probed: [] }, capture: false, reason: 'CLIENT_NOT_INSTALLED' },
+      // ACC-SW-MAX：installed → capture/switch 均可用（switch_reason=OK；聚合 reason_code 走 checkin 口径）
+      { status: { installed: true, exe: 'C:\\x\\MiniMax.exe', source: 'default' as const, reason_code: 'CLIENT_READY' as const, message: '', probed: [] }, capture: true, switch: true, reason: 'CHECKIN_PROVIDER_UNVERIFIED' },
+      { status: { installed: false, exe: null, source: null, reason_code: 'CLIENT_PATH_UNRESOLVED' as const, message: '', probed: [] }, capture: false, switch: false, reason: 'CLIENT_PATH_UNRESOLVED' },
+      { status: { installed: false, exe: null, source: null, reason_code: 'CLIENT_NOT_INSTALLED' as const, message: '', probed: [] }, capture: false, switch: false, reason: 'CLIENT_NOT_INSTALLED' },
     ];
     for (const item of cases) {
       const row = mergeAccountCapabilities(undefined, item.status).find(capability => capability.app_id === 'minimax')!;
       expect({ capture: row.capture, reason_code: row.reason_code }).toEqual({ capture: item.capture, reason_code: item.reason });
       expect(row.capture_reason_code).toBe(item.capture ? 'OK' : item.reason);
-      expect(row.switch).toBe(false);
+      expect(row.switch).toBe(item.switch);
+      expect(row.switch_reason_code).toBe(item.switch ? 'OK' : item.reason);
     }
   });
 
   it('keeps the static registration when no probe result is supplied', () => {
-    expect(minimaxCapability()).toMatchObject({ capture: true, switch: false, reason_code: 'CLIENT_NOT_INSTALLED' });
+    // ACC-SW-MAX：未探测时不结论，switch 根因码保留 CLIENT_PROCESS_CONTROL_UNAVAILABLE
+    expect(minimaxCapability()).toMatchObject({ capture: true, switch: false, reason_code: MINIMAX_SWITCH_UNAVAILABLE });
   });
 });

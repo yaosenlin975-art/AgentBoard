@@ -193,8 +193,8 @@ describe('account platforms migration (ACC-10)', () => {
 
   it('registersNewPlatformsWithExpectedCapabilities', () => {
     const capabilities = accountProviderCapabilities();
-    // ACC-12 开启签到；ACC-13 开启 minimax 的 capture/switch
-    expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
+    // ACC-12 开启签到；ACC-SW-MAX：静态登记保留 CLIENT_PROCESS_CONTROL_UNAVAILABLE（switch 可用性由探测推导）
+    expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_PROCESS_CONTROL_UNAVAILABLE' });
     // trae：B3 交付了离线捕获能力，但真实 provider 接线属 B4S-4；当前契约统一 PROVIDER_NOT_IMPLEMENTED
     expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
   });

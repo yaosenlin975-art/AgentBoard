@@ -8,6 +8,9 @@
  * write → start → verify；任一步失败 → rollback 到快照，回滚成功抛 `SWITCH_ROLLED_BACK`，
  * 回滚也失败抛 `RECOVERY_REQUIRED`（由 `runAccountOperation` 落 `recovery_required` 状态）。
  *
+ * ACC-SW-MAX：write 同写 refreshToken/expiresAtMs（JSON 形态凭据），记录键收敛为目标账号键；
+ * start 走真实 spawn（clientProcess.ts），目标身份按 JWT → 服务端探测 → sha256 兜底链解析。
+ *
  * 与签到解耦：签到只用 vault 里该账号的凭据（`checkin_credential_ref`），**不依赖**客户端当前登录态；
  * 切换失败不影响签到能力。
  *
@@ -26,7 +29,7 @@ import { CLIENT_PROCESS_ERROR_CODES, createClientProcessControl, type ClientProc
 import { getManagedAccount } from '../../db/repos/managedAccount.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinVault } from './checkinProvider.js';
-import { parseMinimaxCredential } from './httpCheckinProviders.js';
+import { parseMinimaxCredential, type MinimaxCredentialPayload } from './httpCheckinProviders.js';
 import { createMinimaxClientProbe, type MinimaxClientProbe } from './minimaxClientProbe.js';
 import { runSwitchFlow } from './switchFlow.js';
 import { credentialUid, validateTarget, verifyByServerUid, type ServerIdentityProbe, type ValidatedTarget } from './switchStages.js';
@@ -44,6 +47,9 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const str = (value: unknown): string | null =>
   (typeof value === 'string' && value.trim() !== '' ? value : null);
 
+/** ACC-SW-MAX：verify 轮询用真实时钟（不用可注入 now——测试冻结时钟时避免死等） */
+const sleepVerify = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+
 /**
  * B4S-3：MiniMax 的服务端身份探针。
  *
@@ -59,7 +65,9 @@ export function createMinimaxServerIdentityProbe(options: { fetchImpl?: typeof f
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15_000);
       try {
-        const response = await fetchImpl(`${MINIMAX_AGENT_BASE}/signin/status`, {
+        // ACC-SW-MAX 真机实证（2026-11-07）：不带 timezone_id 时服务端恒回业务错 1406010011
+        // （invalid timezone_id），有效凭据也拿不到结果；带 timezone_id 后有效凭据 200/ok、无效凭据 401。
+        const response = await fetchImpl(`${MINIMAX_AGENT_BASE}/signin/status?timezone_id=Asia/Shanghai`, {
           method: 'GET',
           headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
           signal: controller.signal,
@@ -72,9 +80,15 @@ export function createMinimaxServerIdentityProbe(options: { fetchImpl?: typeof f
         }
         let body: unknown = null;
         try { body = await response.json(); } catch { body = null; }
+        // 200 但业务层报错（base_resp.status_code != 0）= 服务端没服务这次调用，同样按拒认
+        const baseResp = asRecord(asRecord(body).base_resp);
+        if (Number(baseResp.status_code ?? 0) !== 0) {
+          throw new ApiError(409, 'SERVER_CREDENTIAL_REJECTED', '服务端身份校验未通过');
+        }
         const data = asRecord(asRecord(body).data);
         const uid = str(data.user_id) ?? str(data.uid) ?? str(data.account_id) ?? str(asRecord(body).user_id) ?? null;
-        return { uid: uid ?? credentialUid(token) };
+        // ACC-FIX-6 同链：真实 accessToken 是非 JWT 裸串且该响应无身份字段 → sha256(token) 本地兜底
+        return { uid: uid ?? credentialUid(token) ?? createHash('sha256').update(token).digest('hex').slice(0, 16) };
       } finally {
         clearTimeout(timer);
       }
@@ -121,6 +135,10 @@ export interface MinimaxProviderDeps {
    * 这样「能力是否具备」由装配决定，测试也不会意外发起真实网络请求。
    */
   serverIdentityProbe?: ServerIdentityProbe | null;
+  /** ACC-SW-MAX：verify 等客户端启动归一化 auth.json 的窗口（ms，默认 20s；测试注入缩短） */
+  verifySettleTimeoutMs?: number;
+  /** ACC-SW-MAX：verify 轮询间隔（ms，默认 400） */
+  verifyPollMs?: number;
 }
 
 /** 默认路径：`~/.minimax/auth/prod/cn/mcode-public/auth.json`（本机实测） */
@@ -194,6 +212,8 @@ export class MinimaxDesktopProvider {
   private readonly now: () => number;
   private readonly clientProbe: Pick<MinimaxClientProbe, 'get'>;
   private readonly serverIdentityProbe: ServerIdentityProbe | null;
+  private readonly verifySettleTimeoutMs: number;
+  private readonly verifyPollMs: number;
   /** 探测一次后在本实例内复用（探测本身有 TTL 缓存） */
   private resolvedClientExe: string | null = null;
 
@@ -203,15 +223,18 @@ export class MinimaxDesktopProvider {
     this.paths = deps.paths ?? defaultMinimaxPaths();
     this.fs = deps.fs ?? defaultFs;
     // B4S-1：默认接真实进程探测/停止（之前 isRunning 恒 false，等于在跑时也会覆盖 auth.json）
+    // ACC-SW-MAX：start 装配真实 spawn（此前恒抛 CLIENT_START_UNAVAILABLE，切换永远回滚）
     const realProcess = createClientProcessControl();
     this.process = deps.process ?? {
       isRunning: (exePath: string) => realProcess.isRunning(exePath),
       stop: (exePath: string) => realProcess.stop(exePath),
-      start: async () => { throw new ApiError(409, 'CLIENT_START_UNAVAILABLE', '未装配客户端启动能力'); },
+      start: (exePath: string) => realProcess.start(exePath),
     };
     this.now = deps.now ?? (() => Date.now());
     this.clientProbe = deps.clientProbe ?? cachedMinimaxClientProbe;
     this.serverIdentityProbe = deps.serverIdentityProbe ?? null;
+    this.verifySettleTimeoutMs = deps.verifySettleTimeoutMs ?? 20_000;
+    this.verifyPollMs = deps.verifyPollMs ?? 400;
   }
 
   private scope(account: { identity_hash: string; client_instance_id: string }) {
@@ -304,6 +327,10 @@ export class MinimaxDesktopProvider {
         let original: Buffer | null = null;
         let clientExe = '';
         let target: ValidatedTarget | null = null;
+        /** S3 解析出的目标凭据载荷（write 用：JSON 形态同写 refreshToken/expiresAtMs） */
+        let targetPayload: MinimaxCredentialPayload | null = null;
+        /** S3 从目标账号快照取出的记录键（write 用；取不到为 null → 沿用源文件现有键） */
+        let targetRecordKey: string | null = null;
 
         await runSwitchFlow({
           setStage: stage => this.setStage(op, stage),
@@ -348,15 +375,33 @@ export class MinimaxDesktopProvider {
             validateTarget: async () => {
               if (!account.checkin_credential_ref) throw new ApiError(409, 'TARGET_CREDENTIAL_MISSING', '目标账号没有可用凭据');
               const storedCredential = await this.vault.unprotect(account.checkin_credential_ref, this.scope(account));
-              // ACC-FIX-5：vault 里可能是 {access_token,refresh_token} JSON（捕获/导入线同形态），
-              // 写客户端只认裸 accessToken，身份也只从裸串取。
-              const targetCredential = Buffer.from(parseMinimaxCredential(storedCredential).access_token, 'utf8');
+              // ACC-FIX-5：vault 里可能是 {access_token,refresh_token,expires_at} JSON（捕获/导入线同形态）；
+              // ACC-SW-MAX：JSON 形态在 write 时同写 refreshToken/expiresAtMs，裸串（旧形态）维持只写 accessToken。
+              const payload = parseMinimaxCredential(storedCredential);
+              const targetCredential = Buffer.from(payload.access_token, 'utf8');
+              // ACC-SW-MAX（与 ACC-FIX-6 同链）：真实 accessToken 是非 JWT 裸串，credentialUid 兜不住——
+              // 身份链：JWT sub → signin/status 服务端探测 → sha256(token) 本地兜底
+              let uid = credentialUid(targetCredential);
+              if (!uid && this.serverIdentityProbe) {
+                try { uid = (await this.serverIdentityProbe.probe(payload.access_token)).uid; } catch { uid = null; }
+              }
+              if (!uid) uid = createHash('sha256').update(payload.access_token).digest('hex').slice(0, 16);
               target = validateTarget({
                 app_id: MINIMAX_APP_ID,
                 account,
                 credential: targetCredential,
-                uid: credentialUid(targetCredential),
+                uid,
               });
+              targetPayload = payload;
+              // ACC-SW-MAX 记录键（KB cc06032d：换账号键也要换，否则两条记录并存、客户端读哪条不可控）：
+              // 目标账号被捕获时的快照里带它自己的记录键（键尾 43 字符摘要无法从凭据推导，只能复用捕获产物）。
+              // 快照缺失/不可解析（如凭据导入线账号）→ 保守沿用源文件现有键（假设：单记录覆盖不产生并存键）。
+              if (account.client_snapshot_ref) {
+                try {
+                  const snapshotFile = parseAuth(await this.vault.unprotect(account.client_snapshot_ref, this.scope(account)));
+                  targetRecordKey = readMinimaxIdentity(snapshotFile)?.clientId ?? null;
+                } catch { targetRecordKey = null; }
+              }
               return target;
             },
             // S4：临时文件 + rename 原子替换
@@ -365,10 +410,20 @@ export class MinimaxDesktopProvider {
               const entries = recordEntries(file);
               if (entries.length === 0) throw new ApiError(409, 'CLIENT_STATE_UNREADABLE', '客户端凭据文件没有记录');
               const targetToken = value.credential.toString('utf8').trim();
-              const rewritten: AuthFile = {
-                ...file,
-                records: Object.fromEntries(entries.map(([key, record]) => [key, { ...record, accessToken: targetToken }])),
+              const rewriteRecord = (record: AuthRecord): AuthRecord => {
+                const next: AuthRecord = { ...record, accessToken: targetToken };
+                // JSON 形态同写 refreshToken/expiresAtMs（MiniMax 单会话互踢：只换 accessToken 会用旧号 refreshToken 串号）；
+                // 裸串（旧形态）没有续期能力，维持只写 accessToken。
+                const payload = targetPayload!;
+                if (payload.refresh_token) next.refreshToken = payload.refresh_token;
+                if (typeof payload.expires_at === 'number') next.expiresAtMs = payload.expires_at;
+                return next;
               };
+              // 有目标记录键 → 整个 records 收敛为单条（键用目标键，不产生并存键）；没有 → 原键覆盖写
+              const records: Record<string, AuthRecord> = targetRecordKey !== null
+                ? { [targetRecordKey]: rewriteRecord(entries[0]![1]) }
+                : Object.fromEntries(entries.map(([key, record]) => [key, rewriteRecord(record)]));
+              const rewritten: AuthFile = { ...file, records };
               const temp = `${this.paths.authFile}.agentboard-${randomUUID()}.tmp`;
               try {
                 await this.fs.writeFile(temp, Buffer.from(JSON.stringify(rewritten), 'utf8'), 0o600);
@@ -383,10 +438,23 @@ export class MinimaxDesktopProvider {
             },
             // S5：启动客户端
             start: async () => { await this.process.start(clientExe); },
-            // S5：服务端身份校验——本地 token 比对只作辅助信号，最终以服务端认可的身份为准
+            // S5：服务端身份校验——本地 token 比对只作辅助信号，最终以服务端认可的身份为准。
+            // ACC-SW-MAX：客户端启动后会归一化重写 auth.json（真机实证 2026-11-07：启动后立即读会读到
+            // 中间态，回滚写盘再与客户端启动写盘竞态 → 客户端把登录态重置 anonymous）。所以在窗口内
+            // 轮询「文件里出现目标 token」才算落地；读失败按尚未出现处理，窗口耗尽才判 MISMATCH 走回滚。
             verify: async () => {
-              const liveToken = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)))?.token ?? '';
-              if (liveToken !== target!.credential.toString('utf8').trim()) {
+              const targetToken = target!.credential.toString('utf8').trim();
+              const deadline = Date.now() + this.verifySettleTimeoutMs;
+              let liveToken = '';
+              while (true) {
+                try {
+                  liveToken = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)))?.token ?? '';
+                } catch { liveToken = ''; }
+                if (liveToken === targetToken) break;
+                if (Date.now() >= deadline) break;
+                await sleepVerify(this.verifyPollMs);
+              }
+              if (liveToken !== targetToken) {
                 throw new ApiError(409, 'TARGET_IDENTITY_MISMATCH', '客户端当前凭据与目标不一致');
               }
               await verifyByServerUid({
@@ -396,8 +464,13 @@ export class MinimaxDesktopProvider {
                 probe: this.serverIdentityProbe,
               });
             },
-            // 回滚：写回快照（失败 → recovery_ref → 由 A3 restore 通道重放）
-            rollback: async (snapshotRef, cause) => { await this.rollbackToSnapshot(op, snapshotRef, account, cause); },
+            // 回滚：先停客户端再写回快照（失败 → recovery_ref → 由 A3 restore 通道重放）。
+            // ACC-SW-MAX：客户端在跑时写回快照会与它的启动写盘竞态（真机实证导致登录态重置）；
+            // 停止失败不阻断恢复尝试——restore 再失败会落 recovery_required 交给 A3 通道。
+            rollback: async (snapshotRef, cause) => {
+              try { await this.process.stop(clientExe); } catch { /* 停不下来按恢复失败路径处理 */ }
+              await this.rollbackToSnapshot(op, snapshotRef, account, cause);
+            },
           },
         });
         return 'succeeded';

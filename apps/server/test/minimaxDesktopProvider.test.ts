@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from './helpers.js';
+import { ApiError } from '../src/errors.js';
 import { getManagedAccount } from '../src/db/repos/managedAccount.js';
 import { SecretVault } from '../src/services/accounts/secretVault.js';
 import { MinimaxDesktopProvider, type MinimaxFileSystem, type MinimaxProcessControl } from '../src/services/accounts/minimaxDesktopProvider.js';
@@ -17,6 +18,7 @@ import type { AgentAdapter } from '@agentboard/adapters';
 import { createApp } from '../src/index.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { accountProviderCapability } from '../src/services/accounts/registry.js';
+import type { MinimaxClientStatus } from '../src/services/accounts/minimaxClientProbe.js';
 import { createMinimaxCheckinProvider } from '../src/services/accounts/httpCheckinProviders.js';
 
 const authJson = (token: string) => JSON.stringify({
@@ -72,6 +74,17 @@ const fakeProcess = (running = false): MinimaxProcessControl & { calls: string[]
   };
 };
 
+/** ACC-SW-MAX：start 抛错（spawn 失败）的假进程，其余同 fakeProcess */
+const fakeProcessWithStartFailure = (): MinimaxProcessControl & { calls: string[] } => {
+  const calls: string[] = [];
+  return {
+    calls,
+    isRunning: async () => { calls.push('isRunning'); return false; },
+    stop: async () => { calls.push('stop'); },
+    start: async () => { calls.push('start'); throw new ApiError(409, 'CLIENT_START_FAILED', '启动客户端失败'); },
+  };
+};
+
 const AUTH = 'C:/fake/.minimax/auth/prod/cn/mcode-public/auth.json';
 const EXE = 'C:/fake/MiniMax.exe';
 
@@ -109,6 +122,9 @@ describe('minimax desktop provider (ACC-13)', () => {
       db: t.db, vault, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process,
       now: () => 1_700_000_000_000,
       serverIdentityProbe: fakeServerProbe,
+      // ACC-SW-MAX：失败分支测试不等 20s 真实窗口，注入短窗口
+      verifySettleTimeoutMs: 300,
+      verifyPollMs: 25,
     });
     return { provider, memory, process };
   };
@@ -182,19 +198,63 @@ describe('minimax desktop provider (ACC-13)', () => {
     expect(calls).toEqual(['https://account.minimax.cn/oauth2/token']);
   }, 30000);
 
-  it('ACC-FIX-5：切换到 JSON 凭据账号时只把 accessToken 写进客户端', async () => {
+  it('ACC-SW-MAX：切换到 JSON 凭据账号时同写 refreshToken 与 expiresAtMs', async () => {
     const { provider, memory } = build(filesWithClient(TOKEN_A));
     await provider.captureCurrent();
     const identityHash = 'a'.repeat(64);
     const targetId = randomUUID();
     const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
-    const ref = await vault.protect(Buffer.from(JSON.stringify({ access_token: TOKEN_B, refresh_token: 'rt-b' }), 'utf8'), scope);
+    const ref = await vault.protect(Buffer.from(JSON.stringify({ access_token: TOKEN_B, refresh_token: 'rt-b', expires_at: 1_800_000_000_000 }), 'utf8'), scope);
     t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
       VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, '目标 JSON', ref);
 
     const operation = await provider.switchAccount(targetId);
     expect(operation.state).toBe('succeeded');
-    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_B);
+    const record = JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'];
+    expect(record.accessToken).toBe(TOKEN_B);
+    expect(record.refreshToken).toBe('rt-b');
+    expect(record.expiresAtMs).toBe(1_800_000_000_000);
+  }, 30000);
+
+  it('ACC-SW-MAX：JSON 凭据缺 refresh_token/expires_at 时只写 accessToken，不伪造续期能力', async () => {
+    const { provider, memory } = build(filesWithClient(TOKEN_A));
+    await provider.captureCurrent();
+    const identityHash = 'a'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(JSON.stringify({ access_token: TOKEN_B }), 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, '目标 窄JSON', ref);
+
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('succeeded');
+    const record = JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'];
+    expect(record.accessToken).toBe(TOKEN_B);
+    expect(record.refreshToken).toBe('refresh-abc'); // 原文件字段原样保留，不凭空造 refreshToken
+    expect(record.expiresAtMs).toBe(1_900_000_000_000);
+  }, 30000);
+
+  it('ACC-SW-MAX：records 键收敛为目标账号快照里的记录键（不产生并存键）', async () => {
+    const { provider, memory } = build(filesWithClient(TOKEN_A));
+    await provider.captureCurrent();
+    const identityHash = 'a'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(TOKEN_B, 'utf8'), scope);
+    // 目标账号被捕获时的快照：记录键与源文件不同（键尾 43 字符摘要无法从凭据推导，只能复用捕获产物）
+    const targetSnapshot = JSON.stringify({
+      schemaVersion: 1,
+      records: { 'com.target.account': { accessToken: TOKEN_B, refreshToken: 'rt-b', expiresAtMs: 1_800_000_000_000, clientId: 'com.target.account' } },
+    });
+    const snapshotRef = await vault.protect(Buffer.from(targetSnapshot, 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,? ,1,1,1)`).run(targetId, identityHash, '目标键', ref, snapshotRef);
+
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('succeeded');
+    const file = JSON.parse(memory.files.get(AUTH)!);
+    expect(Object.keys(file.records)).toEqual(['com.target.account']);
+    expect(file.records['com.target.account'].accessToken).toBe(TOKEN_B);
   }, 30000);
 
   it('readsCurrentIdentityHashFromAuthFileWithoutClientExe', async () => {
@@ -265,10 +325,99 @@ describe('minimax desktop provider (ACC-13)', () => {
 
     const operation = await provider.switchAccount(targetId);
     expect(operation.state).toBe('succeeded');
-    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_B);
+    const record = JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'];
+    // ACC-SW-MAX：裸串（旧形态）目标只写 accessToken，原 refreshToken/expiresAtMs 原样保留
+    expect(record.accessToken).toBe(TOKEN_B);
+    expect(record.refreshToken).toBe('refresh-abc');
     expect(process.calls).toEqual(['isRunning', 'start']);
     // 快照已写入源账号行（用于人工恢复）
     expect(getManagedAccount(t.db, source.id)!.client_snapshot_ref).toBeTruthy();
+  }, 30000);
+
+  it('ACC-SW-MAX：start 成功走通全链（spawn 已装配进默认 process）', async () => {
+    const { provider, memory, process } = build(filesWithClient(TOKEN_A));
+    const source = await provider.captureCurrent();
+    const identityHash = 'f'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(TOKEN_Z, 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, '同号目标', ref);
+
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('succeeded');
+    expect(process.calls).toEqual(['isRunning', 'start']);
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_Z);
+    expect(getManagedAccount(t.db, source.id)!.client_snapshot_ref).toBeTruthy();
+  }, 30000);
+
+  it('ACC-SW-MAX：start 抛错 → 回滚到快照（原文件恢复，SWITCH_ROLLED_BACK）', async () => {
+    const memory = memoryFs(filesWithClient(TOKEN_A));
+    const process = fakeProcessWithStartFailure();
+    const provider = new MinimaxDesktopProvider({
+      db: t.db, vault, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process,
+      now: () => 1_700_000_000_000,
+      serverIdentityProbe: fakeServerProbe,
+    });
+    await provider.captureCurrent();
+    const identityHash = 'b'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(TOKEN_B, 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, 'start失败', ref);
+
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('failed');
+    expect(operation.safe_error_code).toBe('SWITCH_ROLLED_BACK');
+    // 客户端文件已回滚为原内容
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_A);
+    // ACC-SW-MAX：回滚前必须先停客户端（isRunning 探测 → start 失败 → rollback 里 stop → 恢复）
+    expect(process.calls).toEqual(['isRunning', 'start', 'stop']);
+  }, 30000);
+
+  it('ACC-SW-MAX：verify 等待客户端启动归一化后再判定（不与启动写盘竞态）', async () => {
+    const memory = memoryFs(filesWithClient(TOKEN_A));
+    const process = fakeProcess(false);
+    const provider = new MinimaxDesktopProvider({
+      db: t.db, vault, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process,
+      now: () => 1_700_000_000_000,
+      serverIdentityProbe: fakeServerProbe,
+      verifySettleTimeoutMs: 5_000,
+      verifyPollMs: 25,
+    });
+    await provider.captureCurrent();
+    const identityHash = 'c'.repeat(64);
+    const targetId = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'minimax-desktop', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(TOKEN_B, 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, identityHash, '启动慢', ref);
+
+    // 模拟客户端启动归一化：切换写入后先短暂回到旧 token，150ms 后客户端落回目标 token
+    const originalRename = memory.fs.rename;
+    memory.fs.rename = async (from, to) => {
+      await originalRename(from, to);
+      if (to === AUTH && memory.files.get(from)?.includes(TOKEN_B)) {
+        memory.files.set(AUTH, authJson(TOKEN_A));
+        setTimeout(() => { memory.files.set(AUTH, authJson(TOKEN_B)); }, 150);
+      }
+    };
+    const operation = await provider.switchAccount(targetId);
+    expect(operation.state).toBe('succeeded');
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_B);
+    expect(process.calls).toEqual(['isRunning', 'start']);
+  }, 30000);
+
+  it('ACC-SW-MAX：切到当前同号 → 幂等成功（真机单活跃账号口径）', async () => {
+    const { provider, memory, process } = build(filesWithClient(TOKEN_A));
+    const source = await provider.captureCurrent();
+    const operation = await provider.switchAccount(source.id);
+    expect(operation.state).toBe('succeeded');
+    const record = JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'];
+    expect(record.accessToken).toBe(TOKEN_A);
+    expect(record.refreshToken).toBe('refresh-abc');
+    expect(process.calls).toEqual(['isRunning', 'start']);
   }, 30000);
 
   it('rejectsWhenTargetAccountMissing', async () => {
@@ -372,6 +521,9 @@ describe('endpoint capture → switch (ACC-13)', () => {
     const memory = memoryFs({ [AUTH]: authJson(TOKEN_A), [EXE]: 'binary' });
     const process = fakeProcess(false);
     const provider = new MinimaxDesktopProvider({ db: t2.db, vault: vault2, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process, serverIdentityProbe: fakeServerProbe });
+    // ACC-SW-MAX：gate 与能力矩阵同一探测口径——注入可变的探测结果，先 installed（放行）后 not installed（拒绝）
+    let probeStatus: MinimaxClientStatus = { installed: true, exe: EXE, source: 'override', reason_code: 'CLIENT_READY', message: '', probed: [] };
+    const mutableProbe = { get: async () => probeStatus, reset: () => {} };
     const adapter = new FakeAdapter();
     const created = await createApp({
       db: t2.db,
@@ -380,6 +532,7 @@ describe('endpoint capture → switch (ACC-13)', () => {
       refreshClisOnBoot: false,
       secretVault: vault2,
       desktopProviders: { minimax: provider },
+      minimaxClientProbe: mutableProbe,
     });
     const captured = await request(created.app).post('/api/managed-accounts/minimax/capture-current').send({ display_name: '小号' });
     expect(captured.status, 'capture body: ' + JSON.stringify(captured.body)).toBe(200);
@@ -392,24 +545,46 @@ describe('endpoint capture → switch (ACC-13)', () => {
     t2.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
       VALUES (?,'minimax','minimax-desktop','cn',?,?,?,1,1,1)`).run(targetId, targetHash, '目标', ref);
 
-    // switch 能力按本机事实关闭 → 端点必须拒绝并给出 reason_code
+    // 探测到客户端（installed）→ gate 放行，切换端点返回 operation 并最终 succeeded
     const switched = await request(created.app).post(`/api/managed-accounts/${targetId}/switch`).send({});
-    expect(switched.status).toBe(409);
-    expect(switched.body.error).toMatchObject({ code: 'PROVIDER_UNVERIFIED', details: { reason_code: 'CLIENT_NOT_INSTALLED' } });
-    // 拒绝后原文件未被改动
-    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_A);
+    expect(switched.status, 'switch body: ' + JSON.stringify(switched.body)).toBe(202);
+    expect(switched.body.operation_id).toMatch(/^[0-9a-f-]{36}$/);
+    let final: { state: string } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const op = await request(created.app).get(`/api/account-operations/${switched.body.operation_id}`);
+      if (['succeeded', 'failed', 'recovery_required'].includes(op.body.state)) { final = op.body; break; }
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(final).not.toBeNull();
+    expect(final!.state).toBe('succeeded');
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_Z);
 
+    // 探测未安装 → gate 与能力矩阵同口径拒绝，原文件未被改动
+    probeStatus = { installed: false, exe: null, source: null, reason_code: 'CLIENT_NOT_INSTALLED', message: '', probed: [] };
+    const rejected = await request(created.app).post(`/api/managed-accounts/${targetId}/switch`).send({});
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error).toMatchObject({ code: 'PROVIDER_UNVERIFIED', details: { reason_code: 'CLIENT_NOT_INSTALLED' } });
+    expect(JSON.parse(memory.files.get(AUTH)!).records['com.minimax.mcode'].accessToken).toBe(TOKEN_Z);
   }, 40000);
 });
 
-describe('capability registry for switch (ACC-13)', () => {
-  it('minimax switch is enabled and trae stays disabled with a reason', () => {
-    // 本机无 MiniMax.exe（扩展/CLI 形态）→ capture 可行、switch 不可行
-    const minimax = accountProviderCapability('minimax');
-    expect(minimax).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_NOT_INSTALLED' });
+describe('capability registry for switch (ACC-13 / ACC-SW-MAX)', () => {
+  const probeStatus = (over: Partial<MinimaxClientStatus>): MinimaxClientStatus =>
+    ({ installed: true, exe: 'C:/x/MiniMax.exe', source: 'default', reason_code: 'CLIENT_READY', message: '', probed: [], ...over });
+
+  it('探测推导：installed → capture/switch 可用（OK）；未安装 → probe 原因码', () => {
+    const installed = accountProviderCapability('minimax', probeStatus({}));
+    expect(installed).toMatchObject({ capture: true, switch: true, checkin: true, reason_code: 'OK' });
+    const notInstalled = accountProviderCapability('minimax', probeStatus({ installed: false, exe: null, source: null, reason_code: 'CLIENT_NOT_INSTALLED' }));
+    expect(notInstalled).toMatchObject({ capture: false, switch: false, reason_code: 'CLIENT_NOT_INSTALLED' });
     const trae = accountProviderCapability('trae');
     // B4S-1：Trae 没有进程概念（无 preflight/stop），switch 明确声明未实现，不再用 LOGIN_STATE_NOT_FILE_BASED 混淆
     expect(trae?.switch).toBe(false);
     expect(trae?.reason_code).toBe('PROVIDER_NOT_IMPLEMENTED');
+  });
+
+  it('未探测（静态登记）→ switch 关闭并保留 CLIENT_PROCESS_CONTROL_UNAVAILABLE', () => {
+    const minimax = accountProviderCapability('minimax');
+    expect(minimax).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_PROCESS_CONTROL_UNAVAILABLE' });
   });
 });

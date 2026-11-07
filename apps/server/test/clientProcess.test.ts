@@ -92,4 +92,47 @@ describe('clientProcess：真进程探测', () => {
     await control.stop(EXE);
     expect(scripts.some((script) => script.includes('Stop-Process'))).toBe(false);
   });
+
+  // ---- ACC-SW-MAX：start（detached 拉起，不等窗口） ----
+
+  it('start：非 Windows 平台 → CLIENT_PROCESS_CONTROL_UNAVAILABLE', async () => {
+    const control = createClientProcessControl({ platform: 'linux' });
+    await expect(control.start(EXE)).rejects.toMatchObject({ code: CLIENT_PROCESS_ERROR_CODES.controlUnavailable });
+  });
+
+  it('start：spawn 报错（ENOENT 等）→ CLIENT_START_FAILED', async () => {
+    const control = createClientProcessControl({
+      platform: 'win32',
+      startErrorWindowMs: 30,
+      spawn: async () => ({
+        once: (_event, listener) => { (listener as (error: Error) => void)(new Error('spawn ENOENT')); },
+        unref: () => {},
+      }),
+    });
+    await expect(control.start(EXE)).rejects.toMatchObject({ code: CLIENT_PROCESS_ERROR_CODES.startFailed });
+  });
+
+  it('start：窗口内无错误 → 视为已拉起（detached + windowsHide + stdio ignore + unref）', async () => {
+    const calls: string[] = [];
+    const control = createClientProcessControl({
+      platform: 'win32',
+      startErrorWindowMs: 30,
+      spawn: async (command, options) => {
+        calls.push(command);
+        calls.push(`detached=${options.detached}`, `hide=${options.windowsHide}`, `stdio=${options.stdio}`);
+        return {
+          once: (event) => { calls.push(`registered:${event}`); },
+          unref: () => { calls.push('unref'); },
+        };
+      },
+    });
+    await control.start(EXE);
+    expect(calls[0]).toBe(EXE);
+    expect(calls).toContain('detached=true');
+    expect(calls).toContain('hide=true');
+    expect(calls).toContain('stdio=ignore');
+    expect(calls).toContain('unref');
+    // 错误窗口内没等到 error 事件（只注册了监听、没有触发）
+    expect(calls).not.toContain('fired:error');
+  });
 });

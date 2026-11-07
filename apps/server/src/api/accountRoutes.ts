@@ -135,11 +135,15 @@ function resolveDesktopProvider(app: ManagedAppId, deps: AccountRouterDeps): Des
   throw new ApiError(503, 'PROVIDER_UNAVAILABLE', '该产品的桌面 provider 未装配');
 }
 
-/** ACC-GET：能力表说「可用」就必须真有对应方法；缺方法时仍是 503（能力/行为不一致的兜底） */
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture'): DesktopCaptureProvider & Partial<DesktopCheckinBackfillProvider>;
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'switch'): DesktopSwitchProvider;
-function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch'): DesktopCaptureProvider | DesktopSwitchProvider {
-  const capability = accountProviderCapability(app);
+/**
+ * ACC-GET：能力表说「可用」就必须真有对应方法；缺方法时仍是 503（能力/行为不一致的兜底）。
+ * ACC-SW-MAX：minimax 行按客户端探测推导（与能力矩阵同一套探测/口径），gate 不再硬编码静态表。
+ */
+async function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture', minimaxProbe?: MinimaxClientProbe): Promise<DesktopCaptureProvider & Partial<DesktopCheckinBackfillProvider>>;
+async function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'switch', minimaxProbe?: MinimaxClientProbe): Promise<DesktopSwitchProvider>;
+async function requireProvider(app: ManagedAppId, deps: AccountRouterDeps, action: 'capture' | 'switch', minimaxProbe?: MinimaxClientProbe): Promise<DesktopCaptureProvider | DesktopSwitchProvider> {
+  const minimaxClient = app === 'minimax' && minimaxProbe ? await minimaxProbe.get() : undefined;
+  const capability = accountProviderCapability(app, minimaxClient);
   if (!capability || !capability[action]) throw new ApiError(409, 'PROVIDER_UNVERIFIED', `该产品的${action === 'capture' ? '捕获' : '切换'}能力未验证`, capability ? { reason_code: capability.reason_code } : undefined);
   const provider = resolveDesktopProvider(app, deps);
   // 不能重新包一层对象：方法里会用到 this（db/vault 等），必须保持原 provider 的接收者
@@ -351,7 +355,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     if (!parsed.success) throw new ValidationError('app 不合法');
     const app = parsed.data;
     const body = parseBody(captureBodySchema, req.body);
-    const provider = requireProvider(app, deps, 'capture');
+    const provider = await requireProvider(app, deps, 'capture', minimaxProbe);
     let account;
     try {
       account = await provider.captureCurrent({ display_name: body.display_name });
@@ -370,7 +374,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.post('/managed-accounts/:id/switch', async (req, res) => {
     const account = getManagedAccount(db, req.params.id!);
     if (!account) throw new NotFoundError('账号不存在');
-    const provider = requireProvider(account.app_id, deps, 'switch');
+    const provider = await requireProvider(account.app_id, deps, 'switch', minimaxProbe);
     let operationId: string | undefined;
     let failure: unknown;
     const completion = provider.switchAccount(account.id, { onOperationCreated: id => { operationId = id; } });
