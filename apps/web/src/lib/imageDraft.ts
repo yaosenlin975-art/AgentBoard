@@ -82,6 +82,28 @@ export function collectDraftImages(
 }
 
 /**
+ * CHAT-ATTACH-STATE：草稿附件（结构化状态，正文不再内联 markdown）。
+ * 发送时由 `attachmentMarkdown` 物化到「发出文本」，保证气泡渲染与服务端历史不变。
+ */
+export interface DraftAttachment {
+  id: string;
+  url: string;
+  name: string;
+  mime: string;
+  bytes: number;
+}
+
+/** 发出文本的附件 markdown（与历史渲染口径一致） */
+export function attachmentMarkdown(list: DraftAttachment[]): string {
+  return list.map((item) => `![图片](${item.url})`).join('\n\n');
+}
+
+/** 发送时投递的附件 id（按附件卡顺序） */
+export function attachmentIds(list: DraftAttachment[]): string[] {
+  return list.map((item) => item.id);
+}
+
+/**
  * CHAT-IMG-DELIVERY：从草稿文本提取粘贴上传的附件 id（按出现顺序去重）。
  * 只认指向本服务附件端点的图片 markdown（`![…](/api/workspaces/{ws}/attachments/{id})`）；
  * 用户手删了某张图的 markdown 即视为不投递该图。超 5 张由调用方提示。

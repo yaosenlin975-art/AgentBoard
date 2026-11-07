@@ -45,7 +45,7 @@ const uploaded: Array<{ name: string; mime: string }> = [];
 beforeEach(() => {
   localStorage.clear();
   uploaded.length = 0;
-  usePanelStore.setState({ chatDrafts: {} });
+  usePanelStore.setState({ chatDrafts: {}, chatAttachments: {} });
   server.use(
     http.post('/api/workspaces/:ws/attachments', async ({ request, params }) => {
       const mime = request.headers.get('Content-Type') ?? 'image/png';
@@ -67,7 +67,7 @@ beforeEach(() => {
 });
 
 describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
-  it('粘贴 1 张 png + 一段文本：文本照常插入，上传被调 1 次，图片 markdown 插到光标处', async () => {
+  it('粘贴 1 张 png + 一段文本：文本照常插入，上传被调 1 次，正文不出现 markdown 但出现附件卡', async () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     input.focus();
@@ -75,22 +75,25 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
     paste(input, { text: '看这张图', files: [pngFile()] });
 
     await waitFor(() => expect(uploaded).toHaveLength(1));
-    await waitFor(() => expect(input.value).toContain('![图片](/api/workspaces/ws-1/attachments/att-1)'));
-    expect(input.value.startsWith('看这张图')).toBe(true);
+    // CHAT-ATTACH-STATE：正文保持干净，附件改由独立卡片呈现
+    expect(input.value).toBe('看这张图');
+    expect(input.value).not.toContain('![图片]');
+    const cards = await screen.findAllByTestId('composer-attachment');
+    expect(cards).toHaveLength(1);
     expect(screen.queryByTestId('composer-error')).toBeNull();
   });
 
-  it('多图按粘贴顺序串行上传，顺序稳定', async () => {
+  it('多图按粘贴顺序串行上传，附件卡顺序稳定', async () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     paste(input, { files: [pngFile('a.png'), pngFile('b.png')] });
 
     await waitFor(() => expect(uploaded).toHaveLength(2));
-    await waitFor(() => expect(input.value).toContain('attachments/att-2'));
-    const firstAt = input.value.indexOf('attachments/att-1');
-    const secondAt = input.value.indexOf('attachments/att-2');
-    expect(firstAt).toBeGreaterThan(-1);
-    expect(secondAt).toBeGreaterThan(firstAt);
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(2));
+    const cards = screen.getAllByTestId('composer-attachment');
+    expect(cards[0]).toHaveTextContent('a.png');
+    expect(cards[1]).toHaveTextContent('b.png');
+    expect(input.value).toBe('');
   });
 
   it('超过 10 MiB：给「单张图片不能超过 10 MiB」且不上传', async () => {
@@ -168,11 +171,33 @@ describe('用户气泡里的图片（CHAT-USER-IMAGE）', () => {
     expect(await screen.findByTestId('composer-error')).toHaveTextContent('图片还在上传');
     expect(onSend).not.toHaveBeenCalled();
 
-    // 放行上传 → markdown 落到输入框 → 再发送，消息里带图
+    // 放行上传 → 附件卡出现（正文仍无 markdown）→ 再发送，消息里带图与附件 id
     release();
-    await waitFor(() => expect(input.value).toContain('![图片](/api/workspaces/ws-1/attachments/att-slow)'));
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(1));
+    expect(input.value).toBe('看这张');
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
-    expect(onSend.mock.calls[0]?.[0]).toContain('![图片]');
+    expect(onSend.mock.calls[0]?.[0]).toContain('![图片](/api/workspaces/ws-1/attachments/att-slow)');
+    expect(onSend.mock.calls[0]?.[1]).toEqual(['att-slow']);
+    // 发送成功后附件卡与正文一起清空
+    await waitFor(() => expect(screen.queryByTestId('composer-attachment')).toBeNull());
+    expect(input.value).toBe('');
+  });
+
+  it('删除附件卡后发送：不投递附件，正文也不自动补 markdown', async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    renderComposer('ws-1', onSend);
+    const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
+    paste(input, { files: [pngFile()] });
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(1));
+
+    await userEvent.click(screen.getByTestId('composer-attachment-remove-att-1'));
+    expect(screen.queryByTestId('composer-attachment')).toBeNull();
+    await userEvent.type(input, '只有文字');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]?.[0]).toBe('只有文字');
+    expect(onSend.mock.calls[0]?.[1]).toEqual([]);
   });
 });

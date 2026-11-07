@@ -17,6 +17,7 @@ import { create } from 'zustand';
 import { useNavStore } from './navStore';
 import { persist } from 'zustand/middleware';
 import type { Session } from '@agentboard/shared';
+import type { DraftAttachment } from '../lib/imageDraft';
 
 /** S2b：聊天已从面板视图移除（整屏由 navStore.view === 'chat' 表达） */
 export type PanelView = 'detail' | 'ref';
@@ -48,6 +49,25 @@ function sanitizeDrafts(value: unknown): Record<string, string> {
   return out;
 }
 
+/** 草稿附件恢复容错：非对象/数组回空对象；每条附件必须是完整结构（坏条目剔除，空列表不保留） */
+function sanitizeAttachments(value: unknown): Record<string, DraftAttachment[]> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const out: Record<string, DraftAttachment[]> = {};
+  for (const [id, list] of Object.entries(value)) {
+    if (!Array.isArray(list)) continue;
+    const valid = list.filter((item): item is DraftAttachment =>
+      typeof item === 'object' &&
+      item !== null &&
+      typeof (item as DraftAttachment).id === 'string' &&
+      typeof (item as DraftAttachment).url === 'string' &&
+      typeof (item as DraftAttachment).name === 'string' &&
+      typeof (item as DraftAttachment).mime === 'string' &&
+      typeof (item as DraftAttachment).bytes === 'number');
+    if (valid.length > 0) out[id] = valid;
+  }
+  return out;
+}
+
 interface PanelState {
   view: PanelView | null;
   issueId: string | null;
@@ -65,6 +85,12 @@ interface PanelState {
    */
   chatDrafts: Record<string, string>;
   setChatDraft: (sessionId: string | null, draft: string) => void;
+  /**
+   * CHAT-ATTACH-STATE：草稿附件（会话 id → 附件列表），与 chatDrafts 同生命周期。
+   * 正文只存用户文字，附件卡从这份状态渲染；发送时才物化成 markdown。
+   */
+  chatAttachments: Record<string, DraftAttachment[]>;
+  setChatAttachments: (sessionId: string | null, attachments: DraftAttachment[]) => void;
   /** 右侧面板是否展开（收起保留 view/issueId/sessionId，展开按钮恢复） */
   rightOpen: boolean;
   /** 打开任务详情并展开右侧 */
@@ -97,9 +123,20 @@ export const usePanelStore = create<PanelState>()(
       unread: {},
       refPanel: null,
       chatDrafts: {},
+      chatAttachments: {},
       rightOpen: false,
       setChatDraft: (sessionId, draft) =>
         set((s) => ({ chatDrafts: { ...s.chatDrafts, [sessionId ?? '']: draft } })),
+      setChatAttachments: (sessionId, attachments) =>
+        set((s) => {
+          const key = sessionId ?? '';
+          if (attachments.length === 0) {
+            const next = { ...s.chatAttachments };
+            delete next[key];
+            return { chatAttachments: next };
+          }
+          return { chatAttachments: { ...s.chatAttachments, [key]: attachments } };
+        }),
       openDetail: (issueId) => {
         // S2b：从「整屏聊天」点任务卡时先把主区切回看板，否则详情浮窗会盖在整屏聊天上（切换不串）
         if (useNavStore.getState().view === 'chat') useNavStore.getState().setView('board');
@@ -136,9 +173,11 @@ export const usePanelStore = create<PanelState>()(
           // 会话删除后草稿一并丢弃，避免 localStorage 残留无主草稿
           const chatDrafts = { ...s.chatDrafts };
           delete chatDrafts[sessionId];
+          const chatAttachments = { ...s.chatAttachments };
+          delete chatAttachments[sessionId];
           return s.sessionId === sessionId
-            ? { sessionId: null, chatSession: null, unread, chatDrafts }
-            : { unread, chatDrafts };
+            ? { sessionId: null, chatSession: null, unread, chatDrafts, chatAttachments }
+            : { unread, chatDrafts, chatAttachments };
         }),
       markUnread: (sessionId) =>
         set((s) => ({ unread: { ...s.unread, [sessionId]: (s.unread[sessionId] ?? 0) + 1 } })),
@@ -156,6 +195,7 @@ export const usePanelStore = create<PanelState>()(
         chatSession: state.chatSession,
         unread: state.unread,
         chatDrafts: state.chatDrafts,
+        chatAttachments: state.chatAttachments,
       }),
       // 重水合容错：unread 做结构/取值校验（脏数据回空对象，不抛错）；
       // 视图意图一律丢弃 —— 旧版快照里可能残留 `view:'chat'`（S2b 前聊天曾是面板视图），
@@ -168,6 +208,7 @@ export const usePanelStore = create<PanelState>()(
           chatSession: p.chatSession ?? null,
           unread: sanitizeUnread(p.unread),
           chatDrafts: sanitizeDrafts(p.chatDrafts),
+          chatAttachments: sanitizeAttachments(p.chatAttachments),
           view: null,
           issueId: null,
           rightOpen: false,

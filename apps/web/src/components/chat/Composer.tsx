@@ -9,11 +9,18 @@
  * - **浮窗打开时 Enter 只确认候选、不发送消息**；选中只插入 `/skill` 或 `@标题` 文本；
  * - IME 组合期间不触发、不刷新候选；无匹配时关闭浮窗且不阻塞输入。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
-import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, getImageMimeType } from '../../lib/imageDraft';
+import {
+  attachmentIds,
+  attachmentMarkdown,
+  collectDraftImages,
+  filesFromClipboard,
+  getImageMimeType,
+  type DraftAttachment,
+} from '../../lib/imageDraft';
 import { usePanelStore } from '../../state/panelStore';
 import { useSessionUsage } from '../../state/turnStore';
 import { singleLine, usageFootnote } from '../../lib/turnView';
@@ -29,34 +36,10 @@ import {
 import { MentionPopover } from './MentionPopover';
 
 /**
- * CHAT-COMPOSER-V2：草稿里已上传的图片（附件预览条的渲染来源）。
- * 只认本服务附件端点的 markdown 图片，与 `attachmentIdsFromText` 的判定范围保持一致。
+ * CHAT-ATTACH-STATE：草稿附件的渲染来源是 panelStore 的结构化状态，
+ * 正文（textarea）只存用户文字，不再内联 `![图片](...)` markdown。
  */
-const DRAFT_IMAGE_PATTERN = /!\[([^\]]*)\]\((\/api\/workspaces\/[^/)]+\/attachments\/[^/)]+)\)/g;
-
-interface DraftImage {
-  url: string;
-  alt: string;
-}
-
-function draftImages(text: string): DraftImage[] {
-  const list: DraftImage[] = [];
-  for (const match of text.matchAll(DRAFT_IMAGE_PATTERN)) {
-    const url = match[2];
-    if (url !== undefined && !list.some((item) => item.url === url)) {
-      list.push({ url, alt: match[1] ?? '' });
-    }
-  }
-  return list;
-}
-
-/** 上传后记下的元数据：重挂载后拿不到时降级为 alt / 「图片」 */
-interface DraftAttachmentMeta {
-  name: string;
-  mime: string;
-  bytes: number | null;
-}
-
+const EMPTY_ATTACHMENTS: DraftAttachment[] = [];
 function mimeLabel(mime: string): string {
   if (mime === 'image/png') return 'PNG';
   if (mime === 'image/jpeg') return 'JPG';
@@ -138,8 +121,6 @@ export function Composer({
   const [error, setError] = useState<string | null>(null);
   /** 正在上传的粘贴图片数（>0 时禁止发送，避免图片还没落盘就发出去） */
   const [uploadingImages, setUploadingImages] = useState(0);
-  /** CHAT-COMPOSER-V2：附件预览条的文件名 / 类型 / 体积（仅本次挂载内有效，重挂载按 markdown 降级） */
-  const [attachmentMeta, setAttachmentMeta] = useState<Record<string, DraftAttachmentMeta>>({});
   const [mention, setMention] = useState<MentionState | null>(null);
   const composingRef = useRef(false);
   // 选中候选后插入的文本本身仍能命中查询（如插入 `/mail-report` 后 `mar` 仍匹配），
@@ -149,8 +130,9 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // CHAT-VIS1：成本脚注数据（本轮用量快照，随 session.usage 流式更新；无轮次 → null → 0）
   const usage = useSessionUsage(sessionId);
-  // 附件预览条：随草稿文本变化（用户手删 markdown 即消失），无需额外状态
-  const attachments = useMemo(() => draftImages(value), [value]);
+  // 附件预览条：来自 panelStore 的结构化草稿状态（与正文解耦，见 CHAT-ATTACH-STATE）
+  const attachments = usePanelStore((s) => s.chatAttachments[draftKey] ?? EMPTY_ATTACHMENTS);
+  const setChatAttachments = usePanelStore((s) => s.setChatAttachments);
 
   const queueHint =
     queuedCount > 0
@@ -223,24 +205,26 @@ export function Composer({
   const submit = async (): Promise<void> => {
     const text = value.trim();
     if (blocked !== null) return;
-    if (text === '' || sending || disabled) return;
-    // CHAT-USER-IMAGE：图片仍在上传时不许发送。否则消息先发出去（不含图片 markdown），
-    // 上传完成后 markdown 只会落回已清空的输入框 → 用户看到「气泡里没有图」。
+    if (sending || disabled) return;
+    // CHAT-USER-IMAGE：图片仍在上传时不许发送，避免消息先发出去（不含附件）而上传结果落回空输入框
     if (uploadingImages > 0) {
       setError('图片还在上传，请稍候再发送');
       return;
     }
+    if (text === '' && attachments.length === 0) return;
     setError(null);
-    // CHAT-IMG-DELIVERY：只投递草稿里仍保留 markdown 的图片（用户手删即不投递），与消息文本一致
-    const attachmentIds = attachmentIdsFromText(text);
-    if (attachmentIds.length > 5) {
+    if (attachments.length > 5) {
       setError('一条消息最多附带 5 张图片，请删除多余的图再发送');
       return;
     }
+    // CHAT-ATTACH-STATE：附件 id 来自结构化状态；发出文本物化 markdown，
+    // 保证消息气泡仍能渲染图片、服务端历史与「重试上一条」的文本反解行为不变。
+    const outgoing = attachments.length === 0 ? text : [text, attachmentMarkdown(attachments)].filter(Boolean).join('\n\n');
     setSending(true);
     try {
-      await onSend(text, attachmentIds);
+      await onSend(outgoing, attachmentIds(attachments));
       setValue('');
+      setChatAttachments(draftKey, []);
       setMention(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : '发送失败');
@@ -286,7 +270,7 @@ export function Composer({
   };
 
   /**
-   * 图片上传（粘贴 / 「＋」选图共用）：成功后按现有图片消息形态（markdown 图片）插到光标处；
+   * 图片上传（粘贴 / 「＋」选图共用）：成功后只写入结构化附件状态，正文不再插 markdown；
    * 张数上限按草稿里已有的附件数累计，超限/类型不支持/上传失败都落到 composer-error。
    */
   const uploadImages = (images: File[]): void => {
@@ -294,8 +278,8 @@ export function Composer({
       setError('图片上传需要先选择工作区：在左上角选中工作区后再贴图');
       return;
     }
-    const current = usePanelStore.getState().chatDrafts[draftKey] ?? '';
-    const { accepted, rejection } = collectDraftImages(images, attachmentIdsFromText(current).length);
+    const current = usePanelStore.getState().chatAttachments[draftKey] ?? [];
+    const { accepted, rejection } = collectDraftImages(images, current.length);
     setError(rejection);
     if (accepted.length === 0) return;
     setUploadingImages(accepted.length);
@@ -303,15 +287,17 @@ export function Composer({
       for (const item of accepted) {
         try {
           const result = await api.uploadAttachment(workspaceId, item.file, item.mimeType);
-          setAttachmentMeta((prev) => ({
-            ...prev,
-            [result.download_url]: {
+          const next = usePanelStore.getState().chatAttachments[draftKey] ?? [];
+          usePanelStore.getState().setChatAttachments(draftKey, [
+            ...next,
+            {
+              id: result.id,
+              url: result.download_url,
               name: result.file_name || item.file.name || '图片',
               mime: result.mime_type,
               bytes: result.size_bytes ?? item.file.size,
             },
-          }));
-          insertAtCaret(`![图片](${result.download_url})`);
+          ]);
         } catch (e) {
           setError(e instanceof Error ? e.message : '图片上传失败');
         } finally {
@@ -393,15 +379,13 @@ export function Composer({
         {attachments.length > 0 && (
           <div data-testid="composer-attachments" className="flex flex-wrap gap-1.5 px-2.5 pt-2.5">
             {attachments.map((item) => {
-              const meta = attachmentMeta[item.url];
-              const bytes = formatBytes(meta?.bytes ?? null);
-              const name = meta?.name || item.alt || '图片';
-              const kind = mimeLabel(meta?.mime ?? '');
+              const bytes = formatBytes(item.bytes);
+              const kind = mimeLabel(item.mime);
               return (
                 <span
-                  key={item.url}
+                  key={item.id}
                   data-testid="composer-attachment"
-                  className="flex max-w-[16rem] items-center gap-2 rounded-2xl border border-hairline bg-surface-raised/60 p-1.5 pr-2.5"
+                  className="flex max-w-[16rem] items-center gap-2 rounded-2xl border border-hairline bg-surface-raised/60 p-1.5 pr-1.5"
                 >
                   <img
                     src={item.url}
@@ -409,11 +393,25 @@ export function Composer({
                     className="size-8 shrink-0 rounded-lg border border-hairline object-cover"
                   />
                   <span className="min-w-0">
-                    <span className="block truncate text-[11px] font-medium text-ink">{name}</span>
+                    <span className="block truncate text-[11px] font-medium text-ink">{item.name}</span>
                     <span className="block truncate text-[10px] text-ink-3">
                       {bytes === null ? kind : `${kind} · ${bytes}`}
                     </span>
                   </span>
+                  <button
+                    type="button"
+                    data-testid={`composer-attachment-remove-${item.id}`}
+                    aria-label={`移除附件 ${item.name}`}
+                    onClick={() =>
+                      setChatAttachments(
+                        draftKey,
+                        usePanelStore.getState().chatAttachments[draftKey]?.filter((a) => a.id !== item.id) ?? [],
+                      )
+                    }
+                    className="ml-0.5 grid size-5 shrink-0 place-items-center rounded-full text-ink-3 transition-colors hover:bg-hairline/60 hover:text-ink"
+                  >
+                    ×
+                  </button>
                 </span>
               );
             })}

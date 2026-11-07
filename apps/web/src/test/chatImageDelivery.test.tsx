@@ -65,7 +65,7 @@ function renderComposer(onSend = vi.fn().mockResolvedValue(undefined)): void {
 beforeEach(() => {
   localStorage.clear();
   uploadCount = 0;
-  usePanelStore.setState({ chatDrafts: {} });
+  usePanelStore.setState({ chatDrafts: {}, chatAttachments: {} });
   server.use(
     http.post('/api/workspaces/:ws/attachments', async ({ params }) => {
       uploadCount += 1;
@@ -94,7 +94,7 @@ describe('Composer 发送携带附件 id', () => {
     input.setSelectionRange(0, 0);
     paste(input, { text: '看这两张图', files: [pngFile('a.png'), pngFile('b.png')] });
 
-    await waitFor(() => expect(input.value).toContain('attachments/att-2'));
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(2));
     await userEvent.keyboard('{Enter}');
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
@@ -102,7 +102,7 @@ describe('Composer 发送携带附件 id', () => {
     expect(onSend.mock.calls[0]![1]).toEqual(['att-1', 'att-2']);
   });
 
-  it('用户手删图片 markdown 后发送：该图不投递', async () => {
+  it('删除附件卡后发送：该附件不投递', async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     renderComposer(onSend);
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
@@ -110,8 +110,8 @@ describe('Composer 发送携带附件 id', () => {
     input.setSelectionRange(0, 0);
     paste(input, { files: [pngFile()] });
 
-    await waitFor(() => expect(input.value).toContain('attachments/att-1'));
-    await userEvent.clear(input);
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(1));
+    await userEvent.click(screen.getByTestId('composer-attachment-remove-att-1'));
     await userEvent.type(input, '图我删了，只发文字');
     await userEvent.keyboard('{Enter}');
 
@@ -130,12 +130,18 @@ describe('Composer 发送携带附件 id', () => {
     expect(onSend.mock.calls[0]![1]).toEqual([]);
   });
 
-  it('草稿含超过 5 张附件 markdown：中文提示且不发送', async () => {
+  it('草稿含超过 5 张附件：中文提示且不发送', async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     renderComposer(onSend);
-    const six = Array.from({ length: 6 }, (_, i) => `![图片](/api/workspaces/ws-1/attachments/att-${i + 1})`).join('\n');
+    const six = Array.from({ length: 6 }, (_, i) => ({
+      id: `att-${i + 1}`,
+      url: `/api/workspaces/ws-1/attachments/att-${i + 1}`,
+      name: `shot-${i + 1}.png`,
+      mime: 'image/png',
+      bytes: 1024,
+    }));
     // Composer 无 sessionId → 草稿落在空串键（与本卡 chatDrafts 口径一致）
-    usePanelStore.setState({ chatDrafts: { '': `${six}\n发` } });
+    usePanelStore.setState({ chatDrafts: { '': '发' }, chatAttachments: { '': six } });
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     input.focus();
     await userEvent.keyboard('{Enter}');
@@ -194,7 +200,7 @@ describe('ChatPanel 请求体（attachment_ids 键形态）', () => {
     input.focus();
     (input as HTMLTextAreaElement).setSelectionRange(0, 0);
     paste(input, { files: [pngFile()] });
-    await waitFor(() => expect((screen.getByTestId('composer-input') as HTMLTextAreaElement).value).toContain('attachments/att-1'));
+    await waitFor(() => expect(screen.getAllByTestId('composer-attachment')).toHaveLength(1));
     await userEvent.type(screen.getByTestId('composer-input'), '看图');
     await userEvent.keyboard('{Enter}');
     await waitFor(() => expect(postBodies).toHaveLength(2));

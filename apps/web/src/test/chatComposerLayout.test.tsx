@@ -27,7 +27,7 @@ function renderComposer(onSend = vi.fn().mockResolvedValue(undefined)): void {
 
 beforeEach(() => {
   localStorage.clear();
-  usePanelStore.setState({ chatDrafts: {} });
+  usePanelStore.setState({ chatDrafts: {}, chatAttachments: {} });
   server.use(
     http.post('/api/workspaces/:ws/attachments', async ({ request, params }) => {
       const mime = request.headers.get('Content-Type') ?? 'image/png';
@@ -68,7 +68,7 @@ describe('聊天输入框结构（CHAT-COMPOSER-V2）', () => {
     expect(send).toBeEnabled();
   });
 
-  it('粘贴图片后显示附件预览条（文件名 + 类型 · 体积），并保留 markdown 草稿', async () => {
+  it('粘贴图片后显示附件预览条（文件名 + 类型 · 体积），正文保持干净不插 markdown', async () => {
     renderComposer();
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     const file = pngFile();
@@ -85,7 +85,9 @@ describe('聊天输入框结构（CHAT-COMPOSER-V2）', () => {
     const chip = await screen.findByTestId('composer-attachment');
     expect(chip).toHaveTextContent('shot.png');
     expect(chip).toHaveTextContent('PNG · 1.0 KB');
-    await waitFor(() => expect(input.value).toContain('![图片](/api/workspaces/ws-1/attachments/att-1)'));
+    // CHAT-ATTACH-STATE：附件卡是独立状态，正文不再出现 ![图片](...) 纯文本
+    expect(input.value).not.toContain('![图片]');
+    expect(input.value).toBe('');
   });
 
   it('「＋」选图走上传链路并生成附件预览条', async () => {
@@ -96,6 +98,6 @@ describe('聊天输入框结构（CHAT-COMPOSER-V2）', () => {
     const chip = await screen.findByTestId('composer-attachment');
     expect(chip).toHaveTextContent('picked.png');
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
-    await waitFor(() => expect(input.value).toContain('/api/workspaces/ws-1/attachments/att-1'));
+    expect(input.value).not.toContain('/api/workspaces/ws-1/attachments/att-1');
   });
 });
