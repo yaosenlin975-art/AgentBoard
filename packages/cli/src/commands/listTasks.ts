@@ -1,5 +1,5 @@
 import type { Issue, IssueTreeItem, Workspace } from '@agentboard/shared';
-import { request } from '../api.js';
+import { CliHttpError, request } from '../api.js';
 import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
@@ -132,8 +132,8 @@ interface TreeCounts {
  * - `parent_issue_id` 指向已删除节点的孤儿不会被遍历到（与旧 BFS 一样既不输出、也不进可见集）；
  * - 输出键序 = 整区字段序（`description` 由 projectForJson 摘除）+ 三个计数 + `tree_depth` / `tree_context`。
  */
-async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status?: string): Promise<VisibleTreeItem[]> {
-  const issues = await request<Issue[]>(ctx.base, 'GET', '/api/issues?workspace=' + encodeURIComponent(workspaceId));
+async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string | undefined, withFields: boolean): Promise<VisibleTreeItem[]> {
+  const issues = await readWorkspaceIssues(ctx, workspaceId, withFields);
   const issueById = new Map<string, Issue>();
   const childrenByParent = new Map<string | null, Issue[]>();
   const statusesInUse = new Set<string>();
@@ -211,6 +211,45 @@ function decisionMark(issue: Issue): string {
   return issue.decision_locked === true || issue.decision_grace_until != null ? '[待决策]' : '-';
 }
 
+/**
+ * PERF-4c：list-tasks 展示所需字段（不含 `description`）。
+ * 表格模式本就不输出正文，`--json` 非 `--full` 也会由 `projectForJson` 摘除正文；
+ * 只有 `--json --full` 才走无 `fields` 的全量请求。
+ * 顺序与服务端 `rowToIssue` 的键序一致（去掉 description），保证 `--json` 输出逐行不变。
+ */
+const LIST_TASK_FIELDS = [
+  'id', 'workspace_id', 'title', 'priority', 'labels', 'status', 'sort_order',
+  'claimed_by', 'claimed_at', 'session_id', 'parent_issue_id', 'due_date', 'due_time',
+  'comment_count', 'dependency_violation', 'decision_locked', 'open_decision_id',
+  'decision_grace_until', 'decision_waiting_seconds',
+  'blocked_by_count', 'blocked_by_open_count', 'resolved',
+  'created_at', 'updated_at', 'children_total', 'children_closed',
+].join(',');
+
+/** 旧服务端 / 回滚开关（400 或 404）命中一次后，本次进程内不再尝试 `fields=` */
+let issueFieldsUnsupported = false;
+
+/** 单测复位回落标志（同一进程连跑多个用例时互不影响） */
+export function resetIssueFieldsFallback(): void {
+  issueFieldsUnsupported = false;
+}
+
+/**
+ * 整区读取：默认带 `fields=` 裁剪；服务端不认（400，旧版/回滚开关）或路由不存在（404）时
+ * 静默回落全量请求一次，输出口径不变；其它错误照常抛出。
+ */
+async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean): Promise<Issue[]> {
+  const path = '/api/issues?workspace=' + encodeURIComponent(workspaceId);
+  if (!withFields || issueFieldsUnsupported) return request<Issue[]>(ctx.base, 'GET', path);
+  try {
+    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${LIST_TASK_FIELDS}`);
+  } catch (err) {
+    if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
+    issueFieldsUnsupported = true;
+    return request<Issue[]>(ctx.base, 'GET', path);
+  }
+}
+
 export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.all === true && args.workspace !== undefined) {
     throw new Error('--all 与 --workspace 不能同时使用');
@@ -227,7 +266,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (selected.length > 1) await prefetchStatuses(ctx, selected.map(space => space.id));
   if (args.tree) {
     if (args.status !== undefined) await requireKnownStatus(ctx, selected, args.status);
-    const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status))))
+    // PERF-4c：只有 `--json --full` 需要正文；其余场景带 fields= 裁剪（回落见 readWorkspaceIssues）
+    const withFields = !(ctx.json === true && args.full === true);
+    const visible = (await Promise.all(selected.map((space) => readWorkspaceTree(ctx, space.id, args.status, withFields))))
       .flat();
     if (ctx.json) {
       writeListJson(ctx, projectForJson(visible, args.full === true));
@@ -250,8 +291,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.status !== undefined) {
     await requireKnownStatus(ctx, selected, args.status);
   }
+  const flatWithFields = !(ctx.json === true && args.full === true);
   const issues = (await Promise.all(
-    selected.map(space => request<Issue[]>(ctx.base, 'GET', '/api/issues?workspace=' + encodeURIComponent(space.id))),
+    selected.map(space => readWorkspaceIssues(ctx, space.id, flatWithFields)),
   )).flat();
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {

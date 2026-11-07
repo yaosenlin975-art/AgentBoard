@@ -125,7 +125,7 @@ describe('BULK-OPS：close --ids-file', () => {
     const full = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'Demo', path: 'D:\\demo', created_at: 1 }] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [issue(full)] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [issue(full)] };
       if (m === 'POST' && u === `/api/issues/${full}/close`) return { status: 200, body: issue(full, '已关闭') };
       return undefined;
     };

@@ -58,7 +58,7 @@ describe('CLI-UX：--full 只在 --json 下生效', () => {
   it('表格模式带 --full → 提示且不影响输出', async () => {
     handler = (m, u) => (m === 'GET' && u.startsWith('/api/workspaces/ws1/statuses') ? { status: 200, body: [] }
       : m === 'GET' && u === '/api/workspaces' ? { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws', created_at: 1 }] }
-        : m === 'GET' && u === '/api/issues?workspace=ws1' ? { status: 200, body: [ISSUE] } : undefined);
+        : m === 'GET' && u.startsWith('/api/issues?workspace=ws1') ? { status: 200, body: [ISSUE] } : undefined);
     const result = await run(['list-tasks', '--workspace', 'ws1', '--full']);
     expect(result.code).toBe(0);
     expect(result.err).toContain('--full 只对 --json 输出生效');

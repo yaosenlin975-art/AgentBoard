@@ -256,7 +256,7 @@ describe('kb answer / decisions / stop-check / show', () => {
   it('kb show 显示 open 决策锁标识；list-tasks 占用者后带 [待决策]', async () => {
     handler = (method, url) => {
       if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'ws', path: cwd }] };
-      if (method === 'GET' && url === '/api/issues?workspace=ws1') {
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) {
         return { status: 200, body: [{ ...ISSUE, decision_locked: true, open_decision_id: DECISION_ID, decision_waiting_seconds: 42 }] };
       }
       if (method === 'GET' && url === '/api/issues/iss-a') {

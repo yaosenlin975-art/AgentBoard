@@ -8,6 +8,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { main } from '../src/index.js';
+import { resetIssueFieldsFallback } from '../src/commands/listTasks.js';
 
 interface Recorded { method: string; url: string }
 type MockReply = { status: number; body?: unknown } | undefined;
@@ -34,6 +35,7 @@ let handler: Handler = () => undefined;
 beforeEach(async () => {
   calls = [];
   handler = () => undefined;
+  resetIssueFieldsFallback();
   server = createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', c => chunks.push(c as Buffer));
@@ -69,7 +71,7 @@ function makeIo() {
 const baseHandler: Handler = (method, url) => {
   if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
   if (method === 'GET' && url === '/api/workspaces/ws1/statuses') return { status: 200, body: STATUSES };
-  if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+  if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
   return undefined;
 };
 
@@ -85,8 +87,8 @@ describe('kb list-tasks status guard', () => {
     const remoteSpace = { ...WS, id: 'ws2', name: '远端', path: 'Z:/remote/workspace' };
     handler = (method, url) => {
       if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [cwdSpace, remoteSpace] };
-      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: [ISSUES[0]] };
-      if (method === 'GET' && url === '/api/issues?workspace=ws2') {
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [ISSUES[0]] };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws2')) {
         return { status: 200, body: [{ ...ISSUES[1], workspace_id: 'ws2' }] };
       }
       return undefined;
@@ -95,9 +97,9 @@ describe('kb list-tasks status guard', () => {
     const current = await run(['--json', 'list-tasks']);
     expect(current.code).toBe(0);
     expect(((JSON.parse(current.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['i1']);
-    expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
-      { method: 'GET', url: '/api/issues?workspace=ws1' },
-    ]);
+    const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+    expect(issueCalls).toHaveLength(1);
+    expect(issueCalls[0]!.url.startsWith('/api/issues?workspace=ws1&fields=')).toBe(true);
 
     calls = [];
     const all = await run(['--json', 'list-tasks', '--all']);
@@ -120,8 +122,8 @@ describe('kb list-tasks status guard', () => {
       if (method === 'GET' && url.startsWith('/api/statuses?workspace_ids=')) {
         return { status: 200, body: { items: [{ workspace_id: 'ws-a', statuses: dictA }, { workspace_id: 'ws-b', statuses: dictB }] } };
       }
-      if (method === 'GET' && url === '/api/issues?workspace=ws-a') return { status: 200, body: [{ ...issue('a1', '待规划'), workspace_id: 'ws-a' }] };
-      if (method === 'GET' && url === '/api/issues?workspace=ws-b') return { status: 200, body: [{ ...issue('b1', '待复测'), workspace_id: 'ws-b' }] };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws-a')) return { status: 200, body: [{ ...issue('a1', '待规划'), workspace_id: 'ws-a' }] };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws-b')) return { status: 200, body: [{ ...issue('b1', '待复测'), workspace_id: 'ws-b' }] };
       return undefined;
     };
 
@@ -184,5 +186,40 @@ describe('kb list-tasks status guard', () => {
     const fullParsed = (JSON.parse(full.out) as { items: Array<Record<string, unknown>> }).items;
     expect(fullParsed[0]!.description).toBe('正文-i1');
     expect(fullParsed[0]!.description_omitted).toBeUndefined();
+  });
+
+  it('--json --full 不请求 fields=（正文窗口照旧）', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+      return undefined;
+    };
+    const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--full']);
+    expect(result.code).toBe(0);
+    expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
+      { method: 'GET', url: '/api/issues?workspace=ws1' },
+    ]);
+  });
+
+  it('旧服务端/回滚开关（400）时静默回落全量，输出不变且进程内只回落一次', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+      if (method === 'GET' && url.includes('fields=')) {
+        return { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: '未知字段：fields' } } };
+      }
+      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+      return undefined;
+    };
+    const first = await run(['--json', 'list-tasks', '--workspace', 'ws1']);
+    expect(first.code).toBe(0);
+    const items = (JSON.parse(first.out) as { items: Array<Record<string, unknown>> }).items;
+    expect(items.map(item => item.id)).toEqual(['i1', 'i2', 'i3']);
+    expect(Object.keys(items[0]!)).not.toContain('description');
+    expect(calls.filter(call => call.url.includes('fields='))).toHaveLength(1);
+
+    const second = await run(['--json', 'list-tasks', '--workspace', 'ws1']);
+    expect(second.code).toBe(0);
+    expect(calls.filter(call => call.url.includes('fields='))).toHaveLength(1);
+    expect(second.out).toBe(first.out);
   });
 });

@@ -60,7 +60,7 @@ describe('CLI task hierarchy', () => {
         { id: 's1', workspace_id: workspace.id, name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
         { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ], { headers: { 'x-agentboard-version': '0.1.0' } });
-      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+      if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
         return Response.json([root, child, grand, orphan], { headers: { 'x-agentboard-version': '0.1.0' } });
       }
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
@@ -91,7 +91,7 @@ describe('CLI task hierarchy', () => {
       urls.push(url);
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.includes('/statuses')) return Response.json(dictionary, { headers: { 'x-agentboard-version': '0.1.0' } });
-      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+      if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
         return Response.json([root, done], { headers: { 'x-agentboard-version': '0.1.0' } });
       }
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
@@ -162,7 +162,7 @@ describe('CHILD-PROGRESS：子卡进度展示', () => {
       urls.push(url);
       if (url.endsWith('/api/issues/root-1')) return Response.json(root, { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.endsWith('/api/issues/root-1/comments')) return Response.json([], { headers: { 'x-agentboard-version': '0.1.0' } });
-      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+      if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
         return Response.json([root, closedChild, startedChild, reviewChild], { headers: { 'x-agentboard-version': '0.1.0' } });
       }
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
@@ -192,7 +192,7 @@ describe('CHILD-PROGRESS：子卡进度展示', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers: { 'x-agentboard-version': '0.1.0' } });
-      if (url === `http://agentboard.test/api/issues?workspace=${workspace.id}`) {
+      if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
         return Response.json([root, closedChild, startedChild, { ...issue('leaf-1', '叶子', null), children_total: 0, children_closed: 0 }], { headers: { 'x-agentboard-version': '0.1.0' } });
       }
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });

@@ -296,13 +296,19 @@ describe('list-tasks', () => {
   it('--workspace 按名称解析后查任务，输出含 id/状态/优先级/占用者/标题', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: issues };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: issues };
       return undefined;
     };
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'list-tasks', '--workspace', '前端'], t.io);
     expect(code).toBe(0);
-    expect(calls[1]).toEqual({ method: 'GET', url: '/api/issues?workspace=ws1', body: undefined });
+    // PERF-4c：默认带 fields= 裁剪，且白名单不含 description（--json 由 projectForJson 摘正文）
+    const issuesUrl = calls[1]?.url ?? '';
+    expect(issuesUrl.startsWith('/api/issues?workspace=ws1&fields=')).toBe(true);
+    const fields = new URL(issuesUrl, 'http://x').searchParams.get('fields')!.split(',');
+    expect(fields).not.toContain('description');
+    expect(fields).toContain('decision_grace_until');
+    expect(fields).toContain('children_total');
     expect(t.out()).toContain('实现登录');
     expect(t.out()).toContain('agent:codebuddy');
     expect(t.out()).toContain('待规划');
@@ -312,7 +318,7 @@ describe('list-tasks', () => {
   it('表格含 labels（多标签逗号连接、空为 -）与评论（comment_count）列', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: issues };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: issues };
       return undefined;
     };
     const t = makeIo();
@@ -335,7 +341,7 @@ describe('list-tasks', () => {
   it('--workspace 传 id 同样可用', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [] };
       return undefined;
     };
     const t = makeIo();
@@ -360,7 +366,7 @@ describe('list-tasks', () => {
         { id: 's1', workspace_id: 'ws1', name: '待规划', kind: 'open', sort_order: 0, is_builtin: 1 },
         { id: 's2', workspace_id: 'ws1', name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: issues };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: issues };
       return undefined;
     };
     const t = makeIo();
@@ -377,7 +383,7 @@ describe('list-tasks', () => {
     const ws2 = { ...WS, id: 'ws2', name: '后端' };
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS, ws2] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [ISSUE] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [ISSUE] };
       if (m === 'GET' && u === '/api/issues?workspace=ws2')
         return { status: 200, body: [{ ...ISSUE, id: 'iss9', workspace_id: 'ws2' }] };
       return undefined;
@@ -1697,7 +1703,7 @@ describe('CLI-RECEIPT：comment/update 回执回显卡标题 + id 写错给候�
     const near = { ...ISSUE, id: '02fa8b9d-0000-4000-8000-000000000000', title: '回执增强', status: '待规划' };
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [near] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [near] };
       return undefined;
     };
     const t = makeIo();
@@ -1711,7 +1717,7 @@ describe('CLI-RECEIPT：comment/update 回执回显卡标题 + id 写错给候�
     const near = { ...ISSUE, id: '02fa8b9d-0000-4000-8000-000000000000', title: '回执增强', status: '待规划' };
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [near] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [near] };
       return undefined;
     };
     const t = makeIo();
@@ -1726,7 +1732,7 @@ describe('CLI-RECEIPT：comment/update 回执回显卡标题 + id 写错给候�
   it('随机 id 无候选：保持原文案，不猜', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
-      if (m === 'GET' && u === '/api/issues?workspace=ws1') return { status: 200, body: [ISSUE] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [ISSUE] };
       return undefined;
     };
     const t = makeIo();
