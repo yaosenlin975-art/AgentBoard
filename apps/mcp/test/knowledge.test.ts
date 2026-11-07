@@ -263,4 +263,104 @@ describe('AgentBoard knowledge MCP tools', () => {
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'KNOWLEDGE_UNAVAILABLE' } });
   });
+
+  it('lists knowledge pages with default paging and metadata-only summaries', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/knowledge/pages');
+      expect(url.searchParams.get('scope')).toBe('workspace');
+      expect(url.searchParams.get('workspace_id')).toBe('workspace-a');
+      expect(url.searchParams.get('status')).toBe('active');
+      expect(url.searchParams.get('include_expired')).toBe('false');
+      expect(url.searchParams.get('offset')).toBe('0');
+      expect(url.searchParams.get('limit')).toBe('20');
+      return Response.json({
+        items: [{
+          ...page, body_md: 'should not leak', category: 'design', landed: 'landed', domain: 'board',
+          link: `knowledge:${page.id}`, link_info: { ref: `knowledge:${page.id}`, markdown: '...', text: '...' },
+        }],
+        next_offset: 20,
+      });
+    });
+    const harness = createHarness(config, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', { name: 'list_knowledge', arguments: {} });
+    const data = response.result?.structuredContent?.data;
+    expect(data).toMatchObject({
+      scope: 'workspace',
+      workspace_id: 'workspace-a',
+      next_offset: 20,
+      items: [{ id: 'page-1', slug: 'guide', status: 'active', revision: 2, category: 'design', domain: 'board', link: 'knowledge:page-1' }],
+    });
+    expect(data.items[0]).not.toHaveProperty('body_md');
+    expect(data.items[0]).not.toHaveProperty('link_info');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists common knowledge without a workspace_id and enforces the 100-item limit', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      expect(url.searchParams.get('scope')).toBe('common');
+      expect(url.searchParams.has('workspace_id')).toBe(false);
+      return Response.json({ items: [], next_offset: null });
+    });
+    const harness = createHarness(config, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const common = await harness.request('tools/call', { name: 'list_knowledge', arguments: { scope: 'common' } });
+    expect(common.result?.structuredContent?.data).toEqual({ scope: 'common', workspace_id: null, items: [], next_offset: null });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const tooMany = await harness.request('tools/call', { name: 'list_knowledge', arguments: { limit: 101 } });
+    expect(tooMany).toMatchObject({ jsonrpc: '2.0', result: { isError: true, content: [{ text: expect.stringContaining('Input validation error') }] } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('finds knowledge pages by source path and caps oversized result sets', async () => {
+    const hit = { id: 'page-1', slug: 'guide', title: 'Guide', scope: 'workspace', workspace_id: 'workspace-a', revision: 2, status: 'active', link: 'knowledge:page-1', link_info: { ref: 'knowledge:page-1' } };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/knowledge/find-source');
+      expect(url.searchParams.get('path')).toBe('apps/mcp/src/index.ts');
+      expect(url.searchParams.get('scope')).toBe('both');
+      expect(url.searchParams.get('workspace_id')).toBe('workspace-a');
+      return Response.json({ path: 'apps/mcp/src/index.ts', items: Array.from({ length: 120 }, () => hit) });
+    });
+    const harness = createHarness(config, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'find_knowledge_sources', arguments: { path: 'apps/mcp/src/index.ts' },
+    });
+    const data = response.result?.structuredContent?.data;
+    expect(data).toMatchObject({ path: 'apps/mcp/src/index.ts', total: 120, truncated: true });
+    expect(data.items).toHaveLength(100);
+    expect(data.items[0]).toMatchObject({ id: 'page-1', link: 'knowledge:page-1' });
+    expect(data.items[0]).not.toHaveProperty('link_info');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects scope overflows on the knowledge browsing tools', async () => {
+    const fetcher = vi.fn(async () => Response.json({ items: [], next_offset: null }));
+    const harness = createHarness(config, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const commonWithWorkspace = await harness.request('tools/call', {
+      name: 'list_knowledge', arguments: { scope: 'common', workspace_id: 'workspace-a' },
+    });
+    expect(commonWithWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    const wrongWorkspace = await harness.request('tools/call', {
+      name: 'find_knowledge_sources', arguments: { path: 'apps/mcp/src/index.ts', scope: 'workspace', workspace_id: 'workspace-b' },
+    });
+    expect(wrongWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_BOUND' } });
+    expect(fetcher).not.toHaveBeenCalled();
+
+    const unbound = createHarness({ baseUrl: 'http://127.0.0.1:8787', agentId: 'codex' }, fetcher as typeof fetch);
+    harnesses.push(unbound);
+    await unbound.start();
+    const missingWorkspace = await unbound.request('tools/call', { name: 'list_knowledge', arguments: { scope: 'workspace' } });
+    expect(missingWorkspace.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'WORKSPACE_REQUIRED' } });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
 });

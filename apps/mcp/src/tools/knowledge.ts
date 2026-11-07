@@ -113,6 +113,45 @@ function pageArray<T>(items: T[], offset: number, limit: number): { items: T[]; 
   };
 }
 
+/** /knowledge/pages 与 /knowledge/find-source 的列表行（服务端已附 link/link_info） */
+type KnowledgeListRow = {
+  id: string;
+  scope: 'workspace' | 'common';
+  workspace_id: string | null;
+  slug: string;
+  title: string;
+  status: string;
+  revision: number;
+  category?: string | null;
+  landed?: string | null;
+  domain?: string | null;
+  expires_at: number | null;
+  updated_at: number;
+  link?: string;
+};
+
+/** 列表摘要：只保留浏览所需字段，丢掉正文/引用渲染串，保证 100 条也能塞进 40k 上限 */
+function pageSummary(row: KnowledgeListRow): Record<string, unknown> {
+  return {
+    id: row.id,
+    scope: row.scope,
+    workspace_id: row.workspace_id,
+    slug: row.slug,
+    title: row.title,
+    status: row.status,
+    revision: row.revision,
+    category: row.category ?? null,
+    landed: row.landed ?? null,
+    domain: row.domain ?? null,
+    expires_at: row.expires_at,
+    updated_at: row.updated_at,
+    ...(row.link !== undefined ? { link: row.link } : {}),
+  };
+}
+
+const MAX_LIST_LIMIT = 100;
+const MAX_FIND_SOURCE_ITEMS = 100;
+
 function mutationSummary(page: KnowledgePage): Record<string, unknown> {
   let low = 0;
   let high = Math.min(12000, Array.from(page.body_md).length);
@@ -300,6 +339,51 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
         evidence_total: item.evidence.length,
         evidence_next_offset: item.evidence.length > 1 ? 1 : null,
       })),
+    };
+  });
+
+  register('list_knowledge', 'List knowledge pages as bounded metadata summaries (no body) in common, one workspace, or that workspace plus common.', z.object({
+    ...scopeFields,
+    scope: z.enum(['common', 'workspace', 'both']).default('workspace'),
+    status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'),
+    include_expired: z.boolean().default(false),
+    offset: offsetField.default(0),
+    limit: z.number().int().min(1).max(MAX_LIST_LIMIT).default(20),
+  }).strict(), async ({ scope, workspace_id, status, include_expired, offset, limit }) => {
+    const effective = searchScope(config, scope, workspace_id);
+    const listing = await api.get<{ items: KnowledgeListRow[]; next_offset: number | null }>('/knowledge/pages', {
+      scope: effective.scope,
+      workspace_id: effective.workspace_id,
+      status,
+      include_expired: include_expired ? 'true' : 'false',
+      offset,
+      limit,
+    }, 'KNOWLEDGE_UNAVAILABLE');
+    return {
+      scope: effective.scope,
+      workspace_id: effective.workspace_id ?? null,
+      items: listing.items.map(pageSummary),
+      next_offset: listing.next_offset,
+    };
+  });
+
+  register('find_knowledge_sources', 'Find knowledge pages whose current sources reference a file path, content hash, or source id.', z.object({
+    ...scopeFields,
+    scope: z.enum(['common', 'workspace', 'both']).default('both'),
+    path: z.string().trim().min(1).max(2000),
+  }).strict(), async ({ scope, workspace_id, path }) => {
+    const effective = searchScope(config, scope, workspace_id);
+    const found = await api.get<{ path: string; items: KnowledgeListRow[] }>('/knowledge/find-source', {
+      path,
+      scope: effective.scope,
+      workspace_id: effective.workspace_id,
+    }, 'KNOWLEDGE_UNAVAILABLE');
+    const items = found.items.slice(0, MAX_FIND_SOURCE_ITEMS).map(pageSummary);
+    return {
+      path: found.path,
+      total: found.items.length,
+      items,
+      truncated: found.items.length > items.length,
     };
   });
 
