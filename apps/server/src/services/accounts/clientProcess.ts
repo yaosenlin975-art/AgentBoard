@@ -78,7 +78,11 @@ function runningPidsScript(exePath: string): string {
 }
 
 function stopPidsScript(pids: number[]): string {
-  return pids.map((pid) => `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`).join('; ');
+  // ACC-SW-TRAE：结尾强制 exit 0——SilentlyContinue 会吞掉单条 Stop-Process 的报错显示，但只要目标进程
+  // 在列出与执行之间已经消失（Electron 主进程被杀后子进程自行退出，Trae 实测 36 进程），$? 仍为 false，
+  // powershell.exe 照样退出 1，stop() 会把它当探测失败抛出去。真正的守卫是后面的轮询 isRunning：
+  // 没杀干净会在那里以 CLIENT_STOP_TIMEOUT 露出来，这里不需要退出码报信。
+  return `${pids.map((pid) => `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`).join('; ')}; exit 0`;
 }
 
 export function createClientProcessControl(options: ClientProcessOptions = {}): ClientProcessControl {

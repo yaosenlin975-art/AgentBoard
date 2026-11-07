@@ -28,8 +28,8 @@ const CAPABILITIES: AccountProviderCapability[] = [
   { app_id: 'codebuddy_desktop', capture: false, switch: false, checkin: false, reason_code: 'TARGET_KIND_UNCONFIRMED' },
   // ACC-10：先登记平台，能力由后续子卡开启（capture: ACC-13、checkin: ACC-12、switch: ACC-SW-MAX）
   { app_id: 'minimax', capture: true, switch: false, checkin: true, reason_code: MINIMAX_SWITCH_UNAVAILABLE },
-  // B4S-1：Trae 没有进程概念（无 preflight/stop/start），switch 明确声明未实现，不伪造能力
-  { app_id: 'trae', capture: false, switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
+  // ACC-SW-TRAE：trae 行的 capture/switch 实际值一律由 withTraeStorage 按 storage.json 存在推导（静态行只是占位）
+  { app_id: 'trae', capture: true, switch: true, checkin: true, reason_code: 'OK' },
   // ACC-KB-B1S：先登记平台 id，provider 行为分别由 B1S2 / B4S / B5S 落地；在此之前一律全关，
   // 用固定码 PROVIDER_NOT_IMPLEMENTED 说明「不是不可用，是还没实现」，避免与 CLIENT_NOT_INSTALLED 混淆。
   { app_id: 'qoder_cn', capture: false, switch: false, checkin: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' },
@@ -47,18 +47,22 @@ function withMinimaxClient(capability: AccountProviderCapability, minimaxClient?
   return { ...capability, capture: false, switch: false, reason_code: minimaxClient.reason_code };
 }
 
-/** trae 行按「本机是否真的有可读 storage.json」改写：有 → capture 可用；没有 → 保持关闭并给 TRAE_STORAGE_MISSING */
-function withTraeStorage(capability: AccountProviderCapability): AccountProviderCapability {
+/**
+ * trae 行按「本机是否真的有可读 storage.json」推导（ACC-SW-TRAE）：有 → capture/switch 可用
+ * （15 条目录级快照切换已实现，traeProvider.switchAccount）；没有 → 关闭并给 TRAE_STORAGE_MISSING。
+ * `traeAvailable` 供测试注入（缺省探真实本机）。
+ */
+function withTraeStorage(capability: AccountProviderCapability, traeAvailable: boolean): AccountProviderCapability {
   if (capability.app_id !== 'trae') return capability;
-  return traeStorageAvailable()
-    ? { ...capability, capture: true, switch: false, reason_code: 'PROVIDER_NOT_IMPLEMENTED' }
+  return traeAvailable
+    ? { ...capability, capture: true, switch: true, reason_code: 'OK' }
     : { ...capability, capture: false, switch: false, reason_code: 'TRAE_STORAGE_MISSING' };
 }
 
-export function accountProviderCapabilities(minimaxClient?: MinimaxClientStatus): AccountProviderCapability[] {
-  return CAPABILITIES.map(capability => ({ ...withTraeStorage(withMinimaxClient(capability, minimaxClient)) }));
+export function accountProviderCapabilities(minimaxClient?: MinimaxClientStatus, traeAvailable: boolean = traeStorageAvailable()): AccountProviderCapability[] {
+  return CAPABILITIES.map(capability => ({ ...withTraeStorage(withMinimaxClient(capability, minimaxClient), traeAvailable) }));
 }
 
-export function accountProviderCapability(app: ManagedAppId, minimaxClient?: MinimaxClientStatus): AccountProviderCapability | undefined {
-  return accountProviderCapabilities(minimaxClient).find(capability => capability.app_id === app);
+export function accountProviderCapability(app: ManagedAppId, minimaxClient?: MinimaxClientStatus, traeAvailable: boolean = traeStorageAvailable()): AccountProviderCapability | undefined {
+  return accountProviderCapabilities(minimaxClient, traeAvailable).find(capability => capability.app_id === app);
 }

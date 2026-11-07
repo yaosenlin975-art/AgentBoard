@@ -46,6 +46,7 @@ import {
 } from './services/sessionManager.js';
 import { setSessionSender } from './services/comments.js';
 import { sweepExpiredLeases } from './services/claim.js';
+import { inspectIssueLabels } from './services/labelIntegrity.js';
 import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
@@ -183,6 +184,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   const minimaxProvider: MinimaxDesktopProvider = injectedMinimax
     ?? new MinimaxDesktopProvider({ db, vault: secretVault, paths: defaultMinimaxPaths(), serverIdentityProbe: createMinimaxServerIdentityProbe(), ...(options.minimaxClientProbe ? { clientProbe: options.minimaxClientProbe } : {}) });
   // ACC-GET：Trae 捕获 provider（只读 storage.json；能力表在 registry 按 storage 是否存在给出 true/false）
+  // ACC-SW-TRAE：Trae 登录态切换（15 条目录级快照）；restore 端点的回滚处理器要用同一个实例，故先建好再装配
   const traeProvider = new TraeDesktopProvider({ db, vault: secretVault });
 
   // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
@@ -229,7 +231,11 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: { ...options.desktopProviders, minimax: minimaxProvider, trae: options.desktopProviders?.trae ?? traeProvider } as unknown as Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: { minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); } } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: { ...options.desktopProviders, minimax: minimaxProvider, trae: options.desktopProviders?.trae ?? traeProvider } as unknown as Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: {
+          minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
+          // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
+          trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, ...migrationDeps }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;
@@ -350,6 +356,14 @@ export async function main(): Promise<StartedServer> {
   // BORROW-0.2：启动清租——上次进程异常退出遗留的占用租约统一过闸（只清占用、任务保留「进行中」、system 评论留痕）
   const sweptLeases = sweepExpiredLeases(db);
   if (sweptLeases > 0) appendServerLog(`启动清理过期占用租约：${sweptLeases} 个任务释放占用`);
+  // CR-5：labels 是 TEXT 无 JSON 约束，读取侧已按 [] 兜底；启动时只读体检一次，把脏行数与本卡 id 落日志，不改写数据
+  const labelIntegrity = inspectIssueLabels(db);
+  if (labelIntegrity.invalid.length > 0) {
+    const sample = labelIntegrity.invalid.slice(0, 10).map(row => row.id).join(',');
+    appendServerLog(
+      `启动体检：${labelIntegrity.invalid.length}/${labelIntegrity.scanned} 个任务的 labels 不是合法 JSON 字符串数组（读取时按 [] 处理，未改写数据）：${sample}${labelIntegrity.invalid.length > 10 ? '…' : ''}`,
+    );
+  }
   // STORE-4d：按库路由（启动恢复、sessionManager、AttachmentStore、知识图片回收共用一套判定与句柄缓存）
   const workspaceRouting = createWorkspaceDbRouting(db, {
     instanceId,

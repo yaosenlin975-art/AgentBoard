@@ -195,8 +195,9 @@ describe('account platforms migration (ACC-10)', () => {
     const capabilities = accountProviderCapabilities();
     // ACC-12 开启签到；ACC-SW-MAX：静态登记保留 CLIENT_PROCESS_CONTROL_UNAVAILABLE（switch 可用性由探测推导）
     expect(capabilities.find(item => item.app_id === 'minimax')).toMatchObject({ capture: true, switch: false, checkin: true, reason_code: 'CLIENT_PROCESS_CONTROL_UNAVAILABLE' });
-    // trae：B3 交付了离线捕获能力，但真实 provider 接线属 B4S-4；当前契约统一 PROVIDER_NOT_IMPLEMENTED
-    expect(capabilities.find(item => item.app_id === 'trae')).toMatchObject({ switch: false, checkin: true, reason_code: 'PROVIDER_NOT_IMPLEMENTED' });
+    // ACC-SW-TRAE：trae 行按 storage.json 存在推导（注入断言，不随测试机装没装 Trae 波动）
+    expect(accountProviderCapabilities(undefined, true).find(item => item.app_id === 'trae')).toMatchObject({ capture: true, switch: true, checkin: true, reason_code: 'OK' });
+    expect(accountProviderCapabilities(undefined, false).find(item => item.app_id === 'trae')).toMatchObject({ capture: false, switch: false, checkin: true, reason_code: 'TRAE_STORAGE_MISSING' });
   });
 
   it('ACC-GET：导入矩阵与能力表一致（三平台可捕获；Qoder/ZCode 只走授权添加）', () => {

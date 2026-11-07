@@ -577,10 +577,9 @@ describe('capability registry for switch (ACC-13 / ACC-SW-MAX)', () => {
     expect(installed).toMatchObject({ capture: true, switch: true, checkin: true, reason_code: 'OK' });
     const notInstalled = accountProviderCapability('minimax', probeStatus({ installed: false, exe: null, source: null, reason_code: 'CLIENT_NOT_INSTALLED' }));
     expect(notInstalled).toMatchObject({ capture: false, switch: false, reason_code: 'CLIENT_NOT_INSTALLED' });
-    const trae = accountProviderCapability('trae');
-    // B4S-1：Trae 没有进程概念（无 preflight/stop），switch 明确声明未实现，不再用 LOGIN_STATE_NOT_FILE_BASED 混淆
-    expect(trae?.switch).toBe(false);
-    expect(trae?.reason_code).toBe('PROVIDER_NOT_IMPLEMENTED');
+    // ACC-SW-TRAE：trae 行按 storage.json 存在推导（注入断言，不随测试机装没装 Trae 波动）
+    expect(accountProviderCapability('trae', undefined, true)).toMatchObject({ capture: true, switch: true, reason_code: 'OK' });
+    expect(accountProviderCapability('trae', undefined, false)).toMatchObject({ capture: false, switch: false, reason_code: 'TRAE_STORAGE_MISSING' });
   });
 
   it('未探测（静态登记）→ switch 关闭并保留 CLIENT_PROCESS_CONTROL_UNAVAILABLE', () => {
