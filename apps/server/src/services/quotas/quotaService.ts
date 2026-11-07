@@ -20,8 +20,9 @@ import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
-import { MINIMAX_UNSUPPORTED_DETAIL, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
-import { workbuddyQuotaUrl } from '../accounts/platformHosts.js';
+import { parseMinimaxCredits, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
+import { traeQuotaUrl, workbuddyQuotaUrl } from '../accounts/platformHosts.js';
+import type { PlatformQuotaCredential } from './platformQuotaCredentials.js';
 
 // ACC-KB-A4：额度类型收敛到 packages/shared（此前 server 与 web 各抄一份字面量 union）。
 // 这里 re-export 保持既有 import 路径可用（`accountQuotas.test.ts` 等仍从本模块取类型）。
@@ -59,9 +60,24 @@ export interface QuotaServiceOptions {
    * 缺省或值为 null → 该来源如实返回 `unsupported` + `NO_CREDENTIAL`，绝不编造额度。
    */
   platformTokens?: Partial<Record<QuotaSourceId, string | null>>;
+  /**
+   * ACC-QUOTA-ALL：平台凭据解析器（fetch 时调用，可感知凭据导入/轮换；优先于 `platformTokens`）。
+   * 实现：`platformQuotaCredentials.resolvePlatformQuotaCredential`（中心库签到凭据 / zcode 本机文件）。
+   * 解析器自身不抛错；这里对意外抛错兜底成 `CREDENTIAL_UNAVAILABLE`。
+   */
+  platformCredential?: (source: QuotaSourceId) => Promise<PlatformQuotaCredential>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
+/** ACC-QUOTA-ALL：平台额度端点（知识 `3c21b76c` §1 矩阵；trae/workbuddy 走 platformHosts 单一事实源） */
+const MINIMAX_QUOTA_URL = 'https://agent.minimaxi.com/matrix/api/v1/commerce/get_membership_info';
+const QODER_QUOTA_URL = 'https://openapi.qoder.com.cn/api/v2/quota/usage';
+const ZCODE_QUOTA_URL = 'https://bigmodel.cn/api/monitor/usage/quota/limit';
+/** 平台请求超时：对齐 httpCheckinProviders 的 15s 口径（平台网络质量差于本地 CLI） */
+const PLATFORM_TIMEOUT_MS = 15_000;
+const PLATFORM_LABEL: Partial<Record<QuotaSourceId, string>> = {
+  workbuddy: 'WorkBuddy', minimax: 'MiniMax', trae: 'Trae', qoder_cn: 'Qoder', zcode: 'ZCode',
+};
 const DEFAULT_TTL_MS = 60_000;
 const DEFAULT_MAX_BACKOFF_MS = 600_000;
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -573,39 +589,82 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   }
 
   /**
-   * ACC-KB-B5S S2/S3：平台账号侧五个来源。
-   * - 凭据由 `options.platformTokens` 注入；默认空 → 如实 `unsupported` + `NO_CREDENTIAL`，绝不编造额度；
-   * - MiniMax 需要会员签名头（yy / x-timestamp / x-signature），本机无材料 → 同样 `unsupported`；
+   * ACC-KB-B5S S2 + ACC-QUOTA-ALL：平台账号侧五个来源。
+   * - 凭据：`platformCredential` 解析器（中心库签到凭据 / zcode 本机文件）优先，兼容旧 `platformTokens` 静态注入；
+   *   取不到凭据 → 如实 `unsupported` + 精确 reason_code + 可行动指引，绝不编造额度；
+   * - 端点与鉴权按公共知识 `3c21b76c` §1 矩阵（2026-11-07 真机复核）：trae 必须 v2 且
+   *   `Authorization: Cloud-IDE-JWT` 前缀（Bearer 一律 401）、body 带 require_usage（v2 才有 usage_summary）；
+   *   minimax 的 `get_membership_info` 仅 Bearer 即成功（签名头实测非必需，真积分在 op_credit_summary）；
+   * - 平台请求统一 15s AbortSignal（对齐 httpCheckinProviders 的超时口径）；
    * - 单来源失败不影响其它来源（沿用 load() 的逐来源缓存与退避）。
    */
   async function fetchPlatform(source: QuotaSourceId): Promise<QuotaResult> {
-    const token = options.platformTokens?.[source] ?? null;
-    if (token === null) {
-      const detail = source === 'minimax' ? MINIMAX_UNSUPPORTED_DETAIL : `本机未找到 ${source} 的额度凭据`;
-      return empty(source, 'unsupported', now(), 'NO_CREDENTIAL', detail);
+    let credential: PlatformQuotaCredential;
+    if (options.platformCredential) {
+      try {
+        credential = await options.platformCredential(source);
+      } catch {
+        return empty(source, 'error', now(), 'CREDENTIAL_UNAVAILABLE', '额度凭据解析失败（vault 暂不可用），稍后重试');
+      }
+    } else {
+      const token = options.platformTokens?.[source] ?? null;
+      credential = token === null
+        ? { kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: `本机未找到 ${source} 的额度凭据` }
+        : { kind: 'ok', token, accountName: null };
     }
+    if (credential.kind === 'missing') {
+      return empty(source, 'unsupported', now(), credential.reasonCode, credential.detail);
+    }
+    const token = credential.token;
     const endpoints: Partial<Record<QuotaSourceId, { url: string; init: RequestInit }>> = {
-      trae: { url: 'https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage', init: { method: 'POST', headers: { 'Cloud-IDE-JWT': token, 'content-type': 'application/json' }, body: '{}' } },
-      workbuddy: { url: workbuddyQuotaUrl(), init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: '{}' } },
-      qoder_cn: { url: 'https://openapi.qoder.com.cn/api/v2/quota/usage', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
-      zcode: { url: 'https://bigmodel.cn/api/monitor/usage/quota/limit', init: { method: 'GET', headers: { authorization: `Bearer ${token}` } } },
+      // KB §1：Trae 必须 v2 + `Cloud-IDE-JWT` 前缀（不是独立头名、更不是 Bearer），body 需 require_usage:true
+      trae: {
+        url: traeQuotaUrl(),
+        init: {
+          method: 'POST',
+          headers: { authorization: `Cloud-IDE-JWT ${token}`, 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ require_usage: true, req_source: 1 }),
+        },
+      },
+      // KB §1：WorkBuddy 计费域只认 Bearer（Cookie 一律 APISIX 401），body 空对象
+      workbuddy: {
+        url: workbuddyQuotaUrl(),
+        init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' }, body: '{}' },
+      },
+      // KB §2（2026-11-07 复核）：真积分端点仅 Bearer 即 status_code=0；签名头 yy/x-timestamp/x-signature 非必需
+      minimax: {
+        url: MINIMAX_QUOTA_URL,
+        init: { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' }, body: '{}' },
+      },
+      // KB §1：Qoder 开放平台只认 Bearer（dt- 桌面令牌）；big_model_credits 明细通道才要 Cookie（本来源不消费）
+      qoder_cn: { url: QODER_QUOTA_URL, init: { method: 'GET', headers: { authorization: `Bearer ${token}`, accept: 'application/json' } } },
+      // KB §2：必须 oauth:bigmodel:access_token（zcodejwttoken 会 401），凭据选择在凭据解析层完成
+      zcode: { url: ZCODE_QUOTA_URL, init: { method: 'GET', headers: { authorization: `Bearer ${token}`, accept: 'application/json' } } },
     };
     const target = endpoints[source];
     if (!target) return empty(source, 'unsupported', now(), 'NO_PUBLIC_QUOTA_ENDPOINT', `${source} 暂无余额端点`);
     const doFetch = options.fetchImpl ?? fetch;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PLATFORM_TIMEOUT_MS);
     try {
-      const response = await doFetch(target.url, target.init);
+      const response = await doFetch(target.url, { ...target.init, signal: controller.signal });
       if (!response.ok) {
+        const invalid = response.status === 401 || response.status === 403;
         const code = response.status === 429 ? 'RATE_LIMITED'
-          : response.status === 401 || response.status === 403 ? 'CREDENTIAL_INVALID' : 'UPSTREAM_ERROR';
-        return empty(source, 'error', now(), code, `对方返回 ${response.status}`);
+          : invalid ? 'CREDENTIAL_INVALID' : 'UPSTREAM_ERROR';
+        const detail = invalid
+          ? `${PLATFORM_LABEL[source] ?? source} 凭据已失效（对方返回 ${response.status}），请重新导入凭据`
+          : `对方返回 ${response.status}`;
+        return empty(source, 'error', now(), code, detail);
       }
       const body: unknown = await response.json();
       const parsed = source === 'trae' ? parseTraeUsage(body)
         : source === 'workbuddy' ? parseWorkbuddyCredits(body)
-          : source === 'qoder_cn' ? parseQoderQuota(body)
-            : parseZcodeQuota(body);
+          : source === 'minimax' ? parseMinimaxCredits(body)
+            : source === 'qoder_cn' ? parseQoderQuota(body)
+              : parseZcodeQuota(body);
       const parsedOk = parsed.balance !== null || parsed.windows.length > 0;
+      const accountHint = credential.accountName === null ? null : `账号：${credential.accountName}`;
       return {
         source,
         status: parsedOk ? 'ok' : 'unsupported',
@@ -614,10 +673,12 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
         windows: parsed.windows,
         fetched_at: now(),
         reason_code: parsedOk ? null : 'UPSTREAM_SHAPE_UNEXPECTED',
-        detail: parsedOk ? null : '对方返回的数据结构不在预期内',
+        detail: parsedOk ? accountHint : '对方返回的数据结构不在预期内',
       };
     } catch {
       return empty(source, 'error', now(), 'NETWORK_ERROR', '网络不可用或超时');
+    } finally {
+      clearTimeout(timer);
     }
   }
 

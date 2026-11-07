@@ -43,3 +43,12 @@ export function workbuddyBillingUrl(region: CheckinRegion, path: string): string
 export function workbuddyQuotaUrl(region: CheckinRegion = 'cn'): string {
   return workbuddyBillingUrl(region, '/billing/meter/get-user-resource-summary');
 }
+
+/**
+ * Trae 额度端点（ACC-QUOTA-ALL）。与签到（`httpCheckinProviders.ts` 的 `TRAE_BASE`）同域 `api.trae.cn`，
+ * 但**必须 v2 pay 路径**（公共知识 `3c21b76c` §1：v1 无 usage_summary；Bearer 一律 401，
+ * 鉴权前缀是 `Authorization: Cloud-IDE-JWT <token>`——头名前缀构造见 `quotaService.fetchPlatform`）。
+ */
+export function traeQuotaUrl(): string {
+  return 'https://api.trae.cn/trae/api/v2/pay/ide_user_ent_usage';
+}

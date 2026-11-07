@@ -177,8 +177,18 @@ export function parseQoderQuota(body: unknown): PlatformQuotaParse {
 }
 
 /**
- * MiniMax（S3）：`POST …/commerce/get_membership_info` 需要 `yy` / `x-timestamp` / `x-signature` 签名头。
- * 本机没有可用的签名材料 → 按卡面要求**如实返回「无凭据」**，不伪造任何额度；
- * 另两个已知语义坑（`*_usage_count` 是剩余不是已用、无 Token Plan 时 remains 恒 2062）在这里无用武之地。
+ * MiniMax：`POST https://agent.minimaxi.com/matrix/api/v1/commerce/get_membership_info`
+ * 真积分在 `op_credit_summary.total_remaining_amount`（= purchased + free，可能是**字符串**）。
+ * 坑（知识 `3c21b76c` §2）：`opcredit_balance` / `total_remains_credit` 是「已购积分取整」，
+ * 当总余额用会漏掉免费积分——**只认 `op_credit_summary`**；
+ * `*_usage_count` 是剩余不是已用（本解析不消费这两个字段）。
+ * 签名头（yy / x-timestamp / x-signature）实测（2026-11-07）**非必需**：仅 Bearer 也 `status_code=0` 成功。
  */
-export const MINIMAX_UNSUPPORTED_DETAIL = '本机缺少 MiniMax 会员签名材料（yy / x-timestamp / x-signature），余额查询待 B5S2';
+export function parseMinimaxCredits(body: unknown): PlatformQuotaParse {
+  const summary = pick(body, 'op_credit_summary');
+  const total = num(pick(summary, 'total_remaining_amount'));
+  const windows: QuotaWindow[] = total === null
+    ? []
+    : [{ name: '会员积分', kind: 'credit', remaining: total, total: null, used: null, used_percent: null, reset_at: null }];
+  return { balance: total, unit: '积分', windows };
+}

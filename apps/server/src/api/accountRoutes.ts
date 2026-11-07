@@ -36,6 +36,7 @@ import { createCredentialImporter, type ExportRunner } from '../services/account
 import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, deleteCliAccount, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
 import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
+import { resolvePlatformQuotaCredential } from '../services/quotas/platformQuotaCredentials.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -244,7 +245,16 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   const router = Router();
   const { db } = deps;
   /** ACC-QUOTA-01：单实例缓存（60s TTL + 失败退避），每次服务装配只建一次 */
-  const quotas = deps.quotas ?? createQuotaService();
+  // ACC-QUOTA-ALL：平台凭据 fetch 时解析（中心库签到凭据 / zcode 本机文件），凭据导入/轮换即时生效
+  const quotas = deps.quotas ?? createQuotaService({
+    platformCredential: (source) => resolvePlatformQuotaCredential({
+      db,
+      vault: deps.vault,
+      homeDir: deps.cliAccountHomeDir,
+      env: deps.cliAccountEnv,
+      source,
+    }),
+  });
   /** MINIMAX-PATH：客户端探测单实例缓存（60s TTL），每次装配只建一次 */
   const minimaxProbe = deps.minimaxClientProbe ?? createMinimaxClientProbe();
   /** ACC-CLI-MULTI：生产复用注入的 SecretVault（`vault` 字段是签到侧的窄类型视图） */
