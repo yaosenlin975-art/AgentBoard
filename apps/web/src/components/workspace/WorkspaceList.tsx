@@ -26,6 +26,28 @@ import { NewWorkspaceDialog } from './NewWorkspaceDialog';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 
+/** counts 端点单次 workspace_ids 上限（服务端 MAX_COUNT_WORKSPACES = 50） */
+const COUNT_BATCH_SIZE = 50;
+
+interface WorkspaceIssueCounts {
+  workspace_id: string;
+  total: number;
+  counts: Record<string, number>;
+}
+
+/** PERF-4b：按 50 个一批拉 counts，合并为 workspace_id → (status → count) */
+async function fetchIssueCounts(ids: string[]): Promise<Record<string, Record<string, number>>> {
+  const merged: Record<string, Record<string, number>> = {};
+  for (let index = 0; index < ids.length; index += COUNT_BATCH_SIZE) {
+    const chunk = ids.slice(index, index + COUNT_BATCH_SIZE);
+    const page = await api.get<{ items: WorkspaceIssueCounts[] }>(
+      `/api/issues/counts?workspace_ids=${encodeURIComponent(chunk.join(','))}`,
+    );
+    for (const item of page.items) merged[item.workspace_id] = item.counts;
+  }
+  return merged;
+}
+
 export function WorkspaceList() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -49,6 +71,18 @@ export function WorkspaceList() {
         workspace.name.toLowerCase().includes(needle) ||
         workspace.path.toLowerCase().includes(needle),
     );
+  /**
+   * PERF-4b：可见工作区的状态计数一次聚合拉取，替代每卡一次全量 `GET /api/issues`。
+   * 服务端单次上限 50 个 workspace_id，超出按 50 分批（仍是 O(n/50) 次，不是 N+1）。
+   * 失败（404 / 网络）时 `isError` → 卡片回落旧全量路径。
+   */
+  const visibleIds = entries.map(({ workspace }) => workspace.id);
+  const countsQuery = useQuery({
+    queryKey: ['issues', 'counts', visibleIds],
+    queryFn: () => fetchIssueCounts(visibleIds),
+    enabled: visibleIds.length > 0,
+    retry: false,
+  });
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -155,6 +189,13 @@ export function WorkspaceList() {
                 onMoveUp={() => moveBy(index, -1)}
                 onMoveDown={() => moveBy(index, 1)}
                 onTogglePin={() => togglePin(workspace.id)}
+                statusCounts={
+                  countsQuery.isError
+                    ? null
+                    : countsQuery.data === undefined
+                      ? undefined
+                      : countsQuery.data[workspace.id] ?? {}
+                }
               />
             ))}
           </SortableContext>

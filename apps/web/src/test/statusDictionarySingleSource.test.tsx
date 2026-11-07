@@ -114,8 +114,14 @@ describe('状态字典单源（SYS2）', () => {
       makeIssue('i5', { status: '已关闭' }),
       makeIssue('i6', { status: '已废弃' as unknown as Issue['status'] }),
     ];
+    const counts: Record<string, number> = {};
+    for (const issue of issues) counts[issue.status] = (counts[issue.status] ?? 0) + 1;
     server.use(
       http.get('/api/workspaces', () => HttpResponse.json([workspace])),
+      // PERF-4b：统计格优先用 counts 聚合（含字典外状态，由卡片归「其他」）
+      http.get('/api/issues/counts', () =>
+        HttpResponse.json({ items: [{ workspace_id: 'ws-1', total: issues.length, counts }] }),
+      ),
       http.get('/api/issues', () => HttpResponse.json(issues)),
     );
     renderWorkspaceList();

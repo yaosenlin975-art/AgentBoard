@@ -35,9 +35,23 @@ beforeEach(() => {
 });
 
 describe('WorkspaceList', () => {
-  it('渲染工作空间卡片与四列统计', async () => {
+  it('渲染工作空间卡片与四列统计；计数只发一次 counts 聚合，不再每卡拉全量', async () => {
+    const countsCalls: string[] = [];
+    const issuesCalls: string[] = [];
     server.use(
+      http.get('/api/issues/counts', ({ request }) => {
+        countsCalls.push(request.url);
+        const ids = new URL(request.url).searchParams.get('workspace_ids')?.split(',') ?? [];
+        return HttpResponse.json({
+          items: ids.map((id) => ({
+            workspace_id: id,
+            total: id === 'ws-1' ? issuesWs1.length : 0,
+            counts: id === 'ws-1' ? { 待规划: 2, 进行中: 1, 已关闭: 1 } : {},
+          })),
+        });
+      }),
       http.get('/api/issues', ({ request }) => {
+        issuesCalls.push(request.url);
         const wid = new URL(request.url).searchParams.get('workspace');
         return HttpResponse.json(wid === 'ws-1' ? issuesWs1 : []);
       }),
@@ -50,13 +64,65 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('D:/WorkSpaces/main')).toBeInTheDocument();
 
     const card = screen.getByTestId('workspace-card-ws-1');
-    // 统计数字是 stat 单元格的第一个子节点；issues 查询异步返回，用 waitFor
+    // 统计数字是 stat 单元格的第一个子节点；counts 查询异步返回，用 waitFor
     await waitFor(() =>
       expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('2'),
     );
     expect(within(card).getByTestId('stat-进行中').firstElementChild).toHaveTextContent('1');
     expect(within(card).getByTestId('stat-待验收').firstElementChild).toHaveTextContent('0');
     expect(within(card).getByTestId('stat-已关闭').firstElementChild).toHaveTextContent('1');
+
+    // PERF-4b：N 张卡只发 1 次 counts（覆盖可见工作区），不再出现每卡一次全量 /api/issues
+    expect(countsCalls).toHaveLength(1);
+    expect(new URL(countsCalls[0]!).searchParams.get('workspace_ids')).toBe('ws-1,ws-2');
+    expect(issuesCalls).toEqual([]);
+  });
+
+  it('字典外状态归「其他」，各格加总等于 total', async () => {
+    server.use(
+      http.get('/api/issues/counts', ({ request }) => {
+        const ids = new URL(request.url).searchParams.get('workspace_ids')?.split(',') ?? [];
+        return HttpResponse.json({
+          items: ids.map((id) => ({
+            workspace_id: id,
+            total: id === 'ws-1' ? 5 : 0,
+            counts: id === 'ws-1' ? { 待规划: 2, 已关闭: 1, 归档中: 2 } : {},
+          })),
+        });
+      }),
+    );
+    mockWorkspaces([ws1]);
+    renderList();
+
+    const card = await screen.findByTestId('workspace-card-ws-1');
+    await waitFor(() =>
+      expect(within(card).getByTestId('stat-其他').firstElementChild).toHaveTextContent('2'),
+    );
+    const cells = [...card.querySelectorAll('[data-testid^="stat-"]')];
+    const total = cells.reduce((sum, cell) => sum + Number(cell.firstElementChild?.textContent ?? 0), 0);
+    expect(total).toBe(5);
+  });
+
+  it('counts 不可用（404）时回落旧全量路径', async () => {
+    const issuesCalls: string[] = [];
+    server.use(
+      http.get('/api/issues/counts', () =>
+        HttpResponse.json({ error: { code: 'NOT_FOUND', message: '接口不存在: GET /issues/counts' } }, { status: 404 }),
+      ),
+      http.get('/api/issues', ({ request }) => {
+        issuesCalls.push(request.url);
+        const wid = new URL(request.url).searchParams.get('workspace');
+        return HttpResponse.json(wid === 'ws-1' ? issuesWs1 : []);
+      }),
+    );
+    mockWorkspaces([ws1, ws2]);
+    renderList();
+
+    const card = await screen.findByTestId('workspace-card-ws-1');
+    await waitFor(() =>
+      expect(within(card).getByTestId('stat-待规划').firstElementChild).toHaveTextContent('2'),
+    );
+    expect(issuesCalls.some((url) => url.includes('workspace=ws-1'))).toBe(true);
   });
 
   it('点击卡片选中并高亮', async () => {

@@ -77,6 +77,7 @@ export function WorkspaceCard({
   pinned = false,
   canMoveUp = false,
   canMoveDown = false,
+  statusCounts,
 }: {
   workspace: Workspace;
   onMoveUp?: () => void;
@@ -85,6 +86,12 @@ export function WorkspaceCard({
   pinned?: boolean;
   canMoveUp?: boolean;
   canMoveDown?: boolean;
+  /**
+   * PERF-4b：由 WorkspaceList 的 counts 聚合按 workspace_id 下发。
+   * `undefined` = counts 还在加载（先按 0 渲染，不发请求）；`null` = counts 不可用（404/失败），
+   * 才回落到本卡自己的全量 `GET /api/issues`。
+   */
+  statusCounts?: Record<string, number> | null;
 }) {
   const selected = useAppStore((s) => s.workspaceId === workspace.id);
   const selectWorkspace = useAppStore((s) => s.selectWorkspace);
@@ -97,6 +104,8 @@ export function WorkspaceCard({
   const { data: issues } = useQuery({
     queryKey: ['issues', workspace.id],
     queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspace.id)}`),
+    // PERF-4b：只有 counts 不可用（null）时才回落旧全量；加载中（undefined）不发请求，避免 N+1
+    enabled: statusCounts === null,
   });
   const sortable = useSortable({ id: workspace.id });
   // 与 IssueCard 同一写法：不用 @dnd-kit/utilities（未在 apps/web 依赖里声明）
@@ -107,13 +116,21 @@ export function WorkspaceCard({
 
   // SYS2：统计格读工作区状态字典（含「已废弃」与自定义状态），不再写死四列；
   // 字典外的历史状态归「其他」，保证统计加总 = 该工作区任务总数。
+  // PERF-4b：计数优先用 counts 聚合（statusCounts），仅在其不可用（null）时回落到全量 issues。
   const { names: statusNames } = useWorkspaceStatuses(workspace.id);
   const counts = new Map<string, number>(statusNames.map((s) => [s, 0]));
   let otherCount = 0;
-  for (const issue of issues ?? []) {
-    const key = issue.status as string;
-    if (counts.has(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
-    else otherCount += 1;
+  if (statusCounts !== undefined && statusCounts !== null) {
+    for (const [status, count] of Object.entries(statusCounts)) {
+      if (counts.has(status)) counts.set(status, count);
+      else otherCount += count;
+    }
+  } else {
+    for (const issue of issues ?? []) {
+      const key = issue.status as string;
+      if (counts.has(key)) counts.set(key, (counts.get(key) ?? 0) + 1);
+      else otherCount += 1;
+    }
   }
   const statCells = statusNames.map((name) => ({ key: name, label: name, count: counts.get(name) ?? 0 }));
   if (otherCount > 0) statCells.push({ key: '其他', label: '其他', count: otherCount });

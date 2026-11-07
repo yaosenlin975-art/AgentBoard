@@ -47,6 +47,13 @@ function rowIds(): (string | null)[] {
 function mockBase(list: Workspace[] = [wsA, wsB, wsC], onReorder?: (ids: string[]) => void) {
   server.use(
     http.get('/api/workspaces', () => HttpResponse.json(list)),
+    // PERF-4b：切换面板计数走 counts 聚合，不再每卡拉全量
+    http.get('/api/issues/counts', ({ request }) => {
+      const ids = new URL(request.url).searchParams.get('workspace_ids')?.split(',') ?? [];
+      return HttpResponse.json({
+        items: ids.map((id) => ({ workspace_id: id, total: 0, counts: {} })),
+      });
+    }),
     http.get('/api/issues', () => HttpResponse.json([])),
     http.post('/api/workspaces/reorder', async ({ request }) => {
       const body = (await request.json()) as { ordered_ids: string[] };
