@@ -247,6 +247,11 @@ export class AttachmentStore {
     return getWorkspaceAttachment(this.dbForWorkspace(workspaceId), workspaceId, id).file_name;
   }
 
+  /** CHAT-ATTACH-ANY：非图片附件投递时把体积写进 prompt 元数据 */
+  workspaceSize(workspaceId: string, id: string): number {
+    return getWorkspaceAttachment(this.dbForWorkspace(workspaceId), workspaceId, id).size_bytes;
+  }
+
   /** D7：下载端点按 kind 决定 Content-Disposition（image→inline，file→attachment） */
   workspaceKind(workspaceId: string, id: string): AttachmentKind {
     return getWorkspaceAttachment(this.dbForWorkspace(workspaceId), workspaceId, id).kind;

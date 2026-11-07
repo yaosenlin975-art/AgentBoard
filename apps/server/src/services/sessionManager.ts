@@ -40,6 +40,8 @@ import { addComment } from './comments.js';
 export interface SessionDelivery {
   attachments?: RunTurnOptions['attachments'];
   deliveredAttachmentIds?: string[];
+  /** CHAT-ATTACH-ANY：非图片附件（文件本体不进 image 通道，路径与元数据已拼进 prompt） */
+  fileAttachmentIds?: string[];
   /** Image IDs observed as unknown when the user explicitly confirmed retry. */
   retryUnknownAttachmentIds?: string[];
   /** Actual detected CLI version already checked by dispatchIssue before claim. */
@@ -91,6 +93,8 @@ interface TurnInput {
   prompt: string;
   attachments: NonNullable<RunTurnOptions['attachments']>;
   deliveredAttachmentIds: string[];
+  /** CHAT-ATTACH-ANY：随 prompt 投递的非图片附件 id（仅用于投递状态推进） */
+  fileAttachmentIds: string[];
   retryUnknownAttachmentIds: string[];
   /** CHAT-IMG-DELIVERY：附件绑定在 session_attachment（聊天入口），投递状态走会话版 */
   sessionAttachment: boolean;
@@ -463,6 +467,7 @@ function dequeueMergedInput(state: SessionState): TurnInput | null {
     prompt: pending.map((item) => item.prompt).join('\n\n'),
     attachments: pending.flatMap((item) => item.attachments),
     deliveredAttachmentIds: pending.flatMap((item) => item.deliveredAttachmentIds),
+    fileAttachmentIds: pending.flatMap((item) => item.fileAttachmentIds),
     retryUnknownAttachmentIds: pending.flatMap((item) => item.retryUnknownAttachmentIds),
     sessionAttachment: pending.some((item) => item.sessionAttachment),
     messageIds: pending.flatMap((item) => item.messageIds ?? []),
@@ -655,6 +660,7 @@ export async function createSession(input: CreateSessionInput): Promise<Session>
       prompt,
       attachments: [],
       deliveredAttachmentIds: [],
+      fileAttachmentIds: [],
       retryUnknownAttachmentIds: [],
       sessionAttachment: false,
       messageIds: [userMessage.id],
@@ -667,7 +673,10 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
   // STORE-4d：会话行在「归属工作区当前库」；判定错误（LOCKED/MISSING/…）与请求路径同语义原样向上抛
   const database = requireSessionDb(sessionId);
   const attachments = delivery.attachments ?? [];
-  if (text.trim() === '' && attachments.length === 0) throw new ValidationError('消息内容不能为空');
+  const fileAttachmentIds = delivery.fileAttachmentIds ?? [];
+  if (text.trim() === '' && attachments.length === 0 && fileAttachmentIds.length === 0) {
+    throw new ValidationError('消息内容不能为空');
+  }
   const session = getSession(database, sessionId);
   if (!session) throw new NotFoundError('会话不存在');
   if (attachments.length > 0) {
@@ -687,6 +696,10 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
       throw new ValidationError('IMAGE_ATTACHMENT_SELECTION_INVALID:聊天图片必须绑定到会话（session_attachment）');
     }
   }
+  // CHAT-ATTACH-ANY：非图片附件只走聊天会话的 session_attachment（issue 附件不走本通道）
+  if (fileAttachmentIds.length > 0 && session.issue_id === null && !delivery.sessionAttachment) {
+    throw new ValidationError('ATTACHMENT_SELECTION_INVALID:聊天附件必须绑定到会话（session_attachment）');
+  }
   const state = ensureState(sessionId);
   // 先落 user 行（空闲/排队都落）；轮次行要到真正起轮才建，所以记下 id 待回填 turn_id
   const userMessage = persistMessage(database, sessionId, 'user', text);
@@ -694,6 +707,7 @@ export async function sendToSession(sessionId: string, text: string, delivery: S
     prompt: text,
     attachments,
     deliveredAttachmentIds: delivery.deliveredAttachmentIds ?? [],
+    fileAttachmentIds,
     retryUnknownAttachmentIds: delivery.retryUnknownAttachmentIds ?? [],
     sessionAttachment: delivery.sessionAttachment === true,
     messageIds: [userMessage.id],
@@ -991,6 +1005,18 @@ async function executeTurn(
       broadcast({ type: 'comment.delivery.changed', issue_id: session.issue_id, comment_ids: commentIds });
     }
   }
+  // CHAT-ATTACH-ANY：非图片附件的文件本体不进 image 通道，但投递状态与图片同一套推进
+  if (input.fileAttachmentIds.length > 0 && input.sessionAttachment) {
+    try {
+      markSessionAttachmentsSending(database, sessionId, input.fileAttachmentIds, Date.now());
+    } catch (err) {
+      finishTurn({ state: 'failed', reason: 'attachment_mark_failed', message: err instanceof Error ? err.message : String(err) });
+      state.turnActive = false;
+      state.current = null;
+      await startError(sessionId, err);
+      return;
+    }
+  }
 
   const opts: RunTurnOptions = {
     cwd: workspace.path,
@@ -1006,7 +1032,15 @@ async function executeTurn(
     handle = adapter.runTurn(opts);
   } catch (err) {
     finishTurn({ state: 'failed', reason: 'adapter_run_failed', message: err instanceof Error ? err.message : String(err) });
-    if (input.attachments.length > 0) markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
+    if (input.attachments.length > 0 || input.fileAttachmentIds.length > 0) {
+      markImageDelivery(
+        database,
+        session,
+        [...input.deliveredAttachmentIds, ...input.fileAttachmentIds],
+        'unknown',
+        input.sessionAttachment,
+      );
+    }
     state.turnActive = false;
     state.current = null;
     await startError(sessionId, err);
@@ -1131,15 +1165,27 @@ async function executeTurn(
     result = await handle.result;
   } catch (err) {
     finishTurn({ state: 'failed', reason: 'adapter_threw', message: err instanceof Error ? err.message : String(err) });
-    markImageDelivery(database, session, input.deliveredAttachmentIds, 'unknown', input.sessionAttachment);
+    markImageDelivery(
+      database,
+      session,
+      [...input.deliveredAttachmentIds, ...input.fileAttachmentIds],
+      'unknown',
+      input.sessionAttachment,
+    );
     throw err;
   }
   ctx.handle = null;
   flushThinking(); // 无 end 事件收尾（kill / 异常退出）时兜底落盘（先于 text，保持事件时序）
   flushText();
 
-  if (input.attachments.length > 0) {
-    markImageDelivery(database, session, input.deliveredAttachmentIds, result.exitCode === 0 ? 'delivered' : 'unknown', input.sessionAttachment);
+  if (input.attachments.length > 0 || input.fileAttachmentIds.length > 0) {
+    markImageDelivery(
+      database,
+      session,
+      [...input.deliveredAttachmentIds, ...input.fileAttachmentIds],
+      result.exitCode === 0 ? 'delivered' : 'unknown',
+      input.sessionAttachment,
+    );
   }
 
   if (state.current !== ctx) {

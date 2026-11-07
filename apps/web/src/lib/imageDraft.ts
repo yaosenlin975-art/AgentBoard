@@ -153,7 +153,8 @@ export interface DraftAttachment {
 
 /** 发出文本的附件 markdown（与历史渲染口径一致） */
 export function attachmentMarkdown(list: DraftAttachment[]): string {
-  return list.map((item) => `![图片](${item.url})`).join('\n\n');
+  // CHAT-ATTACH-ANY：只有图片靠正文 markdown 渲染；非图片由服务端把路径/元数据拼进 prompt，不写进气泡正文
+  return list.filter((item) => isImageMime(item.mime)).map((item) => `![图片](${item.url})`).join('\n\n');
 }
 
 /** 发送时投递的附件 id（按附件卡顺序） */

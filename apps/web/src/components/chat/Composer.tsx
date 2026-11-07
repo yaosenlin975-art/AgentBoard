@@ -40,9 +40,6 @@ import { MentionPopover } from './MentionPopover';
  * 正文（textarea）只存用户文字，不再内联 `![图片](...)` markdown。
  */
 const EMPTY_ATTACHMENTS: DraftAttachment[] = [];
-/** CHAT-ATTACH-ANY：草稿含非图片附件时的发送闸门文案（投递通道由服务端卡负责） */
-export const NON_IMAGE_BLOCKED_MESSAGE =
-  '非图片附件投递通道待服务端卡 3b7d483f-0651-4f4a-a02a-dcdb35dceec9；当前只能发送图片附件，请先移除文件附件。';
 
 /** 非图片附件的类型徽标：优先文件扩展名，过长/无扩展名退回 FILE */
 function attachmentBadge(name: string): string {
@@ -147,8 +144,6 @@ export function Composer({
   // 附件预览条：来自 panelStore 的结构化草稿状态（与正文解耦，见 CHAT-ATTACH-STATE）
   const attachments = usePanelStore((s) => s.chatAttachments[draftKey] ?? EMPTY_ATTACHMENTS);
   const setChatAttachments = usePanelStore((s) => s.setChatAttachments);
-  /** CHAT-ATTACH-ANY：图片件走现有图片通道；含非图片时禁用发送（投递通道由服务端卡负责） */
-  const hasNonImage = attachments.some((item) => !isImageMime(item.mime));
 
   const queueHint =
     queuedCount > 0
@@ -233,14 +228,8 @@ export function Composer({
       setError('一条消息最多附带 5 个附件，请删除多余的附件再发送');
       return;
     }
-    // CHAT-ATTACH-ANY：聊天投递仍只有图片通道（RunTurnOptions.attachments → --image），
-    // 非图片附件先拦截；放开投递由服务端卡 3b7d483f-0651-4f4a-a02a-dcdb35dceec9 负责。
-    if (hasNonImage) {
-      setError(NON_IMAGE_BLOCKED_MESSAGE);
-      return;
-    }
-    // CHAT-ATTACH-STATE：附件 id 来自结构化状态；发出文本物化 markdown，
-    // 保证消息气泡仍能渲染图片、服务端历史与「重试上一条」的文本反解行为不变。
+    // CHAT-ATTACH-STATE：附件 id 来自结构化状态；发出文本物化图片 markdown（非图片由服务端把
+    // 路径/元数据拼进 prompt），保证消息气泡仍能渲染图片、历史与「重试上一条」的文本反解行为不变。
     const outgoing = attachments.length === 0 ? text : [text, attachmentMarkdown(attachments)].filter(Boolean).join('\n\n');
     setSending(true);
     try {
@@ -450,15 +439,6 @@ export function Composer({
             })}
           </div>
         )}
-        {hasNonImage && (
-          <p
-            data-testid="composer-attachment-blocked"
-            role="status"
-            className="px-3 pt-2 text-[11px] text-amber-700 dark:text-amber-300"
-          >
-            {NON_IMAGE_BLOCKED_MESSAGE}
-          </p>
-        )}
         <textarea
           ref={inputRef}
           data-testid="composer-input"
@@ -527,7 +507,7 @@ export function Composer({
             title={sending ? '发送中…' : '发送'}
             onClick={() => void submit()}
             disabled={
-              disabled || blocked !== null || sending || uploadingAttachments > 0 || hasNonImage || value.trim() === ''
+              disabled || blocked !== null || sending || uploadingAttachments > 0 || value.trim() === ''
             }
             className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink shadow-sm transition-[background-color,color,opacity] duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-ink-3 disabled:opacity-70 motion-reduce:transition-none"
           >

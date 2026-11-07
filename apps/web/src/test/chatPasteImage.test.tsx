@@ -105,8 +105,9 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
     expect(uploaded).toHaveLength(0);
   });
 
-  it('非图片文件走同一条上传链路（文件名 + MIME + 大小），发送被闸门拦住并提示阻塞卡', async () => {
-    renderComposer();
+  it('非图片文件走同一条上传链路，附件卡展示文件名 + MIME + 大小，发送按钮与 Enter 都不再拦截', async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    renderComposer('ws-1', onSend);
     const input = screen.getByTestId('composer-input') as HTMLTextAreaElement;
     paste(input, { files: [new File([new Uint8Array(2048)], 'report.pdf', { type: 'application/pdf' })] });
 
@@ -119,10 +120,14 @@ describe('聊天输入框粘贴图片（CHAT-PASTE-IMAGE）', () => {
     expect(input.value).not.toContain('![图片]');
 
     await userEvent.type(input, '看看这个');
-    expect(screen.getByTestId('composer-send')).toBeDisabled();
-    expect(screen.getByTestId('composer-attachment-blocked')).toHaveTextContent(
-      '3b7d483f-0651-4f4a-a02a-dcdb35dceec9',
-    );
+    expect(screen.getByTestId('composer-send')).toBeEnabled();
+    expect(screen.queryByTestId('composer-attachment-blocked')).toBeNull();
+
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    // 非图片不进正文 markdown，但附件 id 随消息投递（服务端据此拼路径/元数据）
+    expect(onSend).toHaveBeenCalledWith('看看这个', ['att-1']);
+    expect(input.value).toBe('');
   });
 
   it('未选工作区时给可读提示，不发起上传', async () => {
