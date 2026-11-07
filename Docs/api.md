@@ -472,6 +472,7 @@ kb accept <issue-id> --verdict pass|fail --note "<验收依据>" [--reviewer <na
 - `reviewer` 缺省取 `KB_AGENT`，再缺省 `kb-cli`；`--request-id` 复用评论幂等通道，同一 id 重放不重复写评论。
 - 退出码：0 成功；1 缺 `--verdict` / `--note` 或取值非法；2 当前状态不是「待验收」；服务端 409 等按全局退出码表。
 - 与 `kb done` 的关系：`done` 是执行者提交（进行中 → 待验收，notes 落评论）；`accept` 是验收者留痕（状态不变）。要推进状态请显式执行 `kb close <issue-id>`（待验收 → 已关闭）。
+- MCP 对应工具（MCP-C1）：`close_task`（`workspace_id`/`task_id`/`request_id`，可选 `fence`）、`reopen_task`（多 `status?`）、`accept_task`（`verdict` 默认 `pass`、`note?`、`reviewer?`，reviewer 缺省 `AGENTBOARD_AGENT_ID`）。三者与 CLI 同语义；`accept_task` 在非「待验收」卡上直接返回 `ACCEPT_STATUS_NOT_ACCEPTABLE` 且不发写请求。生命周期写工具必须显式或绑定 `workspace_id`，缺省返回 `WORKSPACE_REQUIRED`。
 
 ## 8. 占用事务（claim / release / done / fail）
 
@@ -572,8 +573,10 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 **BORROW-5.1 每页快照与单页提交**（决策 c0cb9509 选项 A，`services/knowledgePageCommit.ts`）：`POST /pages`、`PUT /pages/:id`、`POST /pages/:id/actions` 三个写端点成功后，把该页写成 `<ws>/.agentboard/snapshot/knowledge/<page_id>.md`（front matter：`id/slug/title/scope/revision/status/updated_at` + 正文），并只提交这一个路径（`git add -A -- <path>` + `git commit -- <path>`）。响应新增 `page_commit`：
 
-- `{ path, relative_path, committed, commit, reason }`；`scope=common` 或无对应工作区时为 `null`；
-- 提交失败**不回滚知识页本身**（库是事实源），只在 `reason` 里给出原因，且文件回滚到改动前（新建的删掉、已有的还原），不留半提交；
+- `{ path, relative_path, committed, commit, reason, skipped? }`；`scope=common` 或无对应工作区时为 `null`；
+- 提交失败**不回滚知识页本身**（库是事实源），只在 `reason` 里给出原因（形如 `<阶段> 失败：<git stderr 首行>`，能直接看到 `index.lock` 等真因），且文件回滚到改动前（新建的删掉、已有的还原），不留半提交；
+- `committed=false` 且 `skipped=true` 表示**不是失败**（无快照可提交 / 无变更），客户端不应报警；缺失 `skipped` 视为真实失败；
+- CLI（KB-SNAP-SILENT）：`page_commit.committed=false && skipped!==true` 时，文本与 `--json` 模式都在 **stderr** 打印快照路径与 `reason`，并 **exit 1**；`--json` 的 stdout 仍是单个页面 JSON 文档（失败信号看退出码与 `page_commit`，不插入错误 JSON）；
 - `archive`/`restore` 重写同一路径并由 front matter 的 `status` 标注归档态；`delete`（软删）则删除该页快照并提交删除；
 - 内容未变化时不造空提交（`committed=true` 但 `commit` 指向已有 HEAD）；批量导入 `/pages/import` 不接线（一次请求多页，与「只含该页路径」冲突）。
 

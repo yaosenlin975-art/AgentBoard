@@ -40,6 +40,8 @@ const SAFE_MESSAGES: Record<string, string> = {
   INVALID_SECONDS: 'seconds must be an integer between 1 and 300.',
   EXTEND_LIMIT_EXCEEDED: 'The grace window cannot be extended further; the 600-second total is reached.',
   FORBIDDEN: 'The current identity is not allowed to perform this operation.',
+  INVALID_TRANSITION: 'The task status does not allow this transition.',
+  ACCEPT_STATUS_NOT_ACCEPTABLE: 'Only tasks in review (待验收) can receive an acceptance record.',
 };
 
 function safeCode(code: unknown, status: number, conflictCode?: string, notFoundCode?: string): string {

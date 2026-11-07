@@ -26,6 +26,7 @@ describe('AgentBoard task MCP server', () => {
       .filter((name: string) => !name.startsWith('agentboard_'))
       .sort();
     expect(primaryNames).toEqual([
+      'accept_task',
       'add_dependency',
       'add_status',
       'add_task_comment',
@@ -33,6 +34,7 @@ describe('AgentBoard task MCP server', () => {
       'archive_knowledge',
       'ask_decision',
       'claim_task',
+      'close_task',
       'complete_task',
       'create_knowledge',
       'create_task',
@@ -52,6 +54,7 @@ describe('AgentBoard task MCP server', () => {
       'release_task',
       'remove_dependency',
       'remove_status',
+      'reopen_task',
       'restore_knowledge',
       'revise_knowledge',
       'search_knowledge',
@@ -501,5 +504,96 @@ describe('AgentBoard task MCP server', () => {
     expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'STALE_FENCE' } });
     expect(JSON.stringify(response.result)).toContain('claim the task again');
     expect(JSON.stringify(response.result)).not.toContain('请求 fence=1');
+  });
+
+  it('closes and reopens a task through the lifecycle endpoints', async () => {
+    const calls: Array<{ path: string; method: string; body: unknown; fence: string | null }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({
+        path,
+        method: init?.method ?? 'GET',
+        body: init?.body === undefined ? null : JSON.parse(String(init.body)),
+        fence: new Headers(init?.headers).get('x-claim-fence'),
+      });
+      return Response.json({ id: 'task-1', status: path.endsWith('/close') ? '已关闭' : '待规划' });
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+
+    const closed = await harness.request('tools/call', {
+      name: 'close_task',
+      arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000301', fence: 2 },
+    });
+    expect(closed.result?.isError).toBeFalsy();
+    expect(closed.result?.structuredContent).toMatchObject({ ok: true, data: { status: '已关闭' } });
+
+    const reopened = await harness.request('tools/call', {
+      name: 'reopen_task',
+      arguments: { task_id: 'task-1', status: '待规划', request_id: '00000000-0000-4000-8000-000000000302' },
+    });
+    expect(reopened.result?.isError).toBeFalsy();
+
+    expect(calls).toEqual([
+      { path: '/api/issues/task-1/close', method: 'POST', body: { workspace_id: 'workspace-a', agent_id: 'codex' }, fence: '2' },
+      { path: '/api/issues/task-1/reopen', method: 'POST', body: { workspace_id: 'workspace-a', agent_id: 'codex', status: '待规划' }, fence: null },
+    ]);
+  });
+
+  it('maps lifecycle conflicts to INVALID_TRANSITION without leaking server text', async () => {
+    const fetcher = vi.fn(async () => Response.json({ error: { code: 'INVALID_TRANSITION', message: '只有「待验收」的任务可以关闭（当前：进行中）' } }, { status: 409 }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'close_task',
+      arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000303' },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_TRANSITION' } });
+    expect(JSON.stringify(response.result)).not.toContain('当前：进行中');
+  });
+
+  it('accept_task 只在待验收卡上写结构化验收记录', async () => {
+    const calls: Array<{ path: string; method: string; body: any }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? null : JSON.parse(String(init.body)) });
+      if (path.endsWith('/comments')) {
+        return Response.json({ comment: { id: 'comment-9', issue_id: 'task-1', author: 'agent:codex', ts: 1, content: 'x' }, woke: false });
+      }
+      return Response.json({ id: 'task-1', workspace_id: 'workspace-a', status: '待验收' });
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+
+    const accepted = await harness.request('tools/call', {
+      name: 'accept_task',
+      arguments: { task_id: 'task-1', verdict: 'pass', note: '自验通过', request_id: '00000000-0000-4000-8000-000000000304' },
+    });
+    expect(accepted.result?.isError).toBeFalsy();
+    expect(accepted.result?.structuredContent).toMatchObject({ ok: true, data: { task_id: 'task-1', verdict: 'pass', reviewer: 'codex' } });
+
+    const posted = calls.find((call) => call.method === 'POST')!;
+    expect(posted.path).toBe('/api/issues/task-1/comments');
+    expect(posted.body.content).toMatch(/^【验收记录】verdict=pass; reviewer=codex; at=\d{4}-\d{2}-\d{2}T/);
+    expect(posted.body.content).toContain('自验通过');
+    expect(posted.body.agent_id).toBe('codex');
+  });
+
+  it('accept_task 在非待验收卡上直接拒绝，不发写请求', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', workspace_id: 'workspace-a', status: '进行中' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'accept_task',
+      arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000305' },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'ACCEPT_STATUS_NOT_ACCEPTABLE' } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });

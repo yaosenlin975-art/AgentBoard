@@ -316,4 +316,55 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       workspace_id: workspaceId, agent_id: agentId, reason,
     }, request_id, undefined, undefined, fence);
   }, false);
+
+  register('close_task', 'Close a task that is in review (待验收). Rejected while the task is claimed or while any descendant task is still open.', z.object({
+    ...workspaceField,
+    ...taskIdField,
+    ...requestIdField,
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
+    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const agentId = requireAgentId(config);
+    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(task_id)}/close`, {
+      workspace_id: workspaceId, agent_id: agentId,
+    }, request_id, 'INVALID_TRANSITION', 'TASK_NOT_FOUND', fence);
+  }, false);
+
+  register('reopen_task', 'Reopen a closed or deprecated task into the given workspace status (default 待规划). Rejected while the task is claimed.', z.object({
+    ...workspaceField,
+    ...taskIdField,
+    ...requestIdField,
+    status: z.string().trim().min(1).optional(),
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, request_id, status, fence }) => {
+    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const agentId = requireAgentId(config);
+    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(task_id)}/reopen`, {
+      workspace_id: workspaceId, agent_id: agentId, ...(status === undefined ? {} : { status }),
+    }, request_id, 'INVALID_TRANSITION', 'TASK_NOT_FOUND', fence);
+  }, false);
+
+  register('accept_task', 'Record a structured acceptance verdict on a task waiting for review (待验收). Writes a 【验收记录】 comment; it does not change the task status.', z.object({
+    ...workspaceField,
+    ...taskIdField,
+    verdict: z.enum(['pass', 'fail']).default('pass'),
+    note: z.string().default(''),
+    reviewer: z.string().trim().min(1).optional(),
+    ...requestIdField,
+    fence: z.number().int().min(0).optional(),
+  }).strict(), async ({ workspace_id, task_id, verdict, note, reviewer, request_id, fence }) => {
+    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const agentId = requireAgentId(config);
+    const issue = await api.get<Issue>(`/issues/${encodeURIComponent(task_id)}`, {}, 'TASK_NOT_FOUND');
+    if (issue.workspace_id !== workspaceId) throw new McpError('WORKSPACE_BOUND', 'The task belongs to a different workspace.');
+    if (issue.status !== '待验收') {
+      throw new McpError('ACCEPT_STATUS_NOT_ACCEPTABLE', 'Only tasks in review (待验收) can receive an acceptance record.');
+    }
+    const record = `【验收记录】verdict=${verdict}; reviewer=${reviewer ?? agentId}; at=${new Date().toISOString()}`;
+    const content = note.trim() === '' ? record : `${record}\n${note}`;
+    const response = await api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(task_id)}/comments`, {
+      workspace_id: workspaceId, content, agent_id: agentId,
+    }, request_id, undefined, undefined, fence);
+    return { task_id, verdict, reviewer: reviewer ?? agentId, comment: response.comment };
+  }, false);
 }
