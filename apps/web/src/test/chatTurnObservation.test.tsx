@@ -158,6 +158,42 @@ describe('计划条', () => {
     expect(within(list).getByTestId('plan-step-t1-s4')).toHaveTextContent('待执行');
   });
 
+  it('步骤点阵：每步一圆点、状态着色与原型一致，超出 12 步保留末位', () => {
+    const plan = [
+      step('s1', 'Read', 'done'),
+      step('s2', 'Grep', 'done'),
+      step('s3', 'Edit', 'running'),
+      step('s4', 'Test', 'failed'),
+      step('s5', 'Ask', 'awaiting'),
+    ];
+    emitPlan('t1', plan, 2);
+    renderList(messages);
+    const dots = screen.getByTestId('plan-dots-t1');
+    expect(dots).toHaveAttribute('aria-hidden', 'true');
+    expect(dots).toHaveAttribute('data-count', '5');
+    expect(dots).not.toHaveAttribute('data-truncated');
+    // 5 步渲染 5 个点，颜色按状态映射（jsdom 无样式表 → 断类名）
+    const rendered = within(dots).getAllByTestId(/^plan-dot-t1-/);
+    expect(rendered).toHaveLength(5);
+    expect(rendered.map((el) => el.getAttribute('data-state'))).toEqual(['done', 'done', 'running', 'failed', 'awaiting']);
+    expect(rendered[0]!.className).toContain('bg-accent');
+    expect(rendered[2]!.className).toContain('animate-pulse');
+    expect(rendered[3]!.className).toContain('bg-red-600');
+    expect(rendered[4]!.className).toContain('ring-1');
+    plan.forEach((s) => expect(rendered.some((el) => el.getAttribute('data-state') === s.state)).toBe(true));
+
+    // 超出 12 步：只保留末位 12 个，前面折成省略号
+    cleanup();
+    const long = Array.from({ length: 15 }, (_, i) => step(`l${i}`, `步骤 ${i}`, 'pending'));
+    emitPlan('t1', long, 14);
+    renderList(messages);
+    const longDots = screen.getByTestId('plan-dots-t1');
+    expect(longDots).toHaveAttribute('data-truncated', 'true');
+    expect(within(longDots).getAllByTestId(/^plan-dot-t1-l/)).toHaveLength(12);
+    expect(within(longDots).getByTestId('plan-dot-t1-l14')).toBeInTheDocument();
+    expect(within(longDots).queryByTestId('plan-dot-t1-l0')).toBeNull();
+  });
+
   it('chip 三态文案与配色语义可辨（data-tone 区分：accent / danger / neutral）', () => {
     const cases: Array<[TurnPlanStep[], number, '运行中' | '已结束' | '失败', string, string]> = [
       [[step('s1', 'Read', 'awaiting')], 0, '运行中', '等待回答', 'accent'],

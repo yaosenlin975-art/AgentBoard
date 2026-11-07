@@ -35,6 +35,22 @@ const STEP_CLASS: Record<TurnPlanStep['state'], string> = {
   pending: 'text-ink-3',
 };
 
+/**
+ * 步骤点阵（原型 chat-redesign-2026-11-05：app.js:375-382 / styles.css:303-311）
+ * - 7px 圆点 + 3px 间距，只做状态可视化，不新增交互与数据源；
+ * - 完成=accent、执行中=accent + 脉冲、失败=红、等待回答=accent + 描边、待执行=hairline。
+ */
+const DOT_CLASS: Record<TurnPlanStep['state'], string> = {
+  done: 'bg-accent',
+  running: 'bg-accent motion-safe:animate-pulse',
+  failed: 'bg-red-600',
+  awaiting: 'bg-accent ring-1 ring-accent',
+  pending: 'bg-hairline',
+};
+
+/** 点阵最大可见数：超出时保留末位（当前进度在尾部），前面折成省略号 */
+const MAX_VISIBLE_DOTS = 12;
+
 export interface PlanBarProps {
   turnId: string;
   plan: TurnPlanStep[];
@@ -50,6 +66,9 @@ export function PlanBar({ turnId, plan, currentIndex, sessionStatus = null }: Pl
   const headline = planHeadline(plan, currentIndex, chip);
   const announcement = planAnnouncement(plan, currentIndex, chip);
   const active = currentStep(plan, currentIndex);
+  // 点阵超出宽度时保留末位（原型截断规则：当前进度在尾部）
+  const overflow = plan.length > MAX_VISIBLE_DOTS;
+  const visibleDots = overflow ? plan.slice(-MAX_VISIBLE_DOTS) : plan;
 
   return (
     <div
@@ -66,6 +85,23 @@ export function PlanBar({ turnId, plan, currentIndex, sessionStatus = null }: Pl
         onClick={() => setOpen((v) => !v)}
         className="flex w-full min-w-0 flex-wrap items-center gap-1.5 rounded border border-hairline bg-surface-card px-2 py-1 text-left text-xs text-ink hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
+        <span
+          data-testid={`plan-dots-${turnId}`}
+          aria-hidden="true"
+          data-count={plan.length}
+          data-truncated={overflow ? 'true' : undefined}
+          className="flex shrink-0 items-center gap-[3px]"
+        >
+          {overflow && <span className="text-[10px] leading-none text-ink-3">…</span>}
+          {visibleDots.map((step) => (
+            <span
+              key={step.step_id}
+              data-testid={`plan-dot-${turnId}-${step.step_id}`}
+              data-state={step.state}
+              className={`inline-block h-[7px] w-[7px] shrink-0 rounded-full ${DOT_CLASS[step.state]}`}
+            />
+          ))}
+        </span>
         <span data-testid={`plan-headline-${turnId}`} className="min-w-0 flex-1 truncate">
           {headline}
         </span>
