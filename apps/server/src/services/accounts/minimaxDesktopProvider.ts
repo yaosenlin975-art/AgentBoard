@@ -10,6 +10,8 @@
  *
  * ACC-SW-MAX：write 同写 refreshToken/expiresAtMs（JSON 形态凭据），记录键收敛为目标账号键；
  * start 走真实 spawn（clientProcess.ts），目标身份按 JWT → 服务端探测 → sha256 兜底链解析。
+ * ACC-CUR-FIX：verify 通过后把目标行 identity_hash 收敛到登录态派生（记录键哈希），
+ * 否则 protocol/imported 线账号切过去后 GET /managed-accounts 的 is_current 全 false。
  *
  * 与签到解耦：签到只用 vault 里该账号的凭据（`checkin_credential_ref`），**不依赖**客户端当前登录态；
  * 切换失败不影响签到能力。
@@ -469,6 +471,9 @@ export class MinimaxDesktopProvider {
                 expectedUid: target!.uid,
                 probe: this.serverIdentityProbe,
               });
+              // ACC-CUR-FIX:登录态已确认落地,把目标行 identity_hash 收敛到登录态派生,
+              // 否则 protocol/imported 线账号切过去后列表 is_current 全 false
+              await this.convergeIdentityHashToLoginState(account);
             },
             // 回滚：先停客户端再写回快照（失败 → recovery_ref → 由 A3 restore 通道重放）。
             // ACC-SW-MAX：客户端在跑时写回快照会与它的启动写盘竞态（真机实证导致登录态重置）；
@@ -488,6 +493,67 @@ export class MinimaxDesktopProvider {
 
   private setStage(op: AccountOperation, stage: AccountOperation['stage']): void {
     updateAccountOperation(this.db, op.id, { stage });
+  }
+
+  /**
+   * ACC-CUR-FIX:切换成功后把目标行 identity_hash 收敛到登录态派生(与 getCurrentIdentityHash 同一口径:
+   * sha256(app_id + NUL + auth.json 记录键))。
+   *
+   * 根因:protocol/imported 线行的 identity_hash 来自凭据推导的 uid 链(ACC-FIX-6:JWT sub → 服务端探测 →
+   * sha256(token) 截 16 兜底),与登录态记录键派生不同源 → 切到这类账号后 GET /managed-accounts 全行
+   * is_current=false。记录键要等客户端归一化 auth.json 后才存在(键尾摘要无法从凭据推导,建号时不可预知),
+   * 只能在 verify 通过后回填。捕获线行的 identity_hash 本就是登录态派生 → loginHash 相等 → 原样返回。
+   *
+   * 约束:
+   * - UNIQUE(app_id,client_instance_id,identity_hash) 已被其他行占用 → 跳过收敛,不破坏唯一约束;
+   * - vault 的 DPAPI entropy 绑完整 scope(含 identity_hash):改哈希前必须把行上引用按新 scope 重护,
+   *   旧密文在事务提交后才删除;
+   * - 全程不抛错:切换本身已成功,收敛是尽力而为,任何失败行保持旧 identity_hash 与旧 scope 引用,
+   *   后续再切到该行可重试。
+   */
+  private async convergeIdentityHashToLoginState(account: ManagedAccount): Promise<void> {
+    try {
+      if (!(await this.fs.exists(this.paths.authFile))) return;
+      const identity = readMinimaxIdentity(parseAuth(await this.fs.readFile(this.paths.authFile)));
+      if (!identity) return;
+      const loginHash = createHash('sha256').update(`${MINIMAX_APP_ID}\u0000${identity.clientId}`).digest('hex');
+      if (loginHash === account.identity_hash) return;
+      const occupied = this.db.prepare('SELECT id FROM managed_account WHERE app_id=? AND client_instance_id=? AND identity_hash=?')
+        .get(MINIMAX_APP_ID, account.client_instance_id, loginHash) as { id: string } | undefined;
+      if (occupied && occupied.id !== account.id) return;
+      const oldScope = this.scope(account);
+      const newScope = { ...oldScope, identity_hash: loginHash };
+      const reprotected: Array<{ oldRef: string; newRef: string }> = [];
+      const createdRefs: string[] = [];
+      try {
+        for (const ref of [account.checkin_credential_ref, account.client_snapshot_ref]) {
+          if (!ref) continue;
+          const data = await this.vault.unprotect(ref, oldScope);
+          const nextRef = await this.vault.protect(data, newScope);
+          createdRefs.push(nextRef);
+          reprotected.push({ oldRef: ref, newRef: nextRef });
+        }
+        const nextRefOf = (ref: string | null): string | null =>
+          (ref === null ? null : reprotected.find(item => item.oldRef === ref)?.newRef ?? ref);
+        const timestamp = this.now();
+        this.db.transaction(() => {
+          this.db.prepare('UPDATE managed_account SET identity_hash=?, checkin_credential_ref=?, client_snapshot_ref=?, updated_at=? WHERE id=?')
+            .run(loginHash, nextRefOf(account.checkin_credential_ref), nextRefOf(account.client_snapshot_ref), timestamp, account.id);
+        }).immediate();
+      } catch {
+        for (const ref of createdRefs) {
+          if (typeof this.vault.delete === 'function') await this.vault.delete(ref).catch(() => undefined);
+        }
+        return;
+      }
+      for (const item of reprotected) {
+        if (item.oldRef !== item.newRef && typeof this.vault.delete === 'function') {
+          await this.vault.delete(item.oldRef).catch(() => undefined);
+        }
+      }
+    } catch {
+      // 收敛失败不影响切换结果;行保持旧状态,后续切换可再次尝试
+    }
   }
 
   /**

@@ -568,6 +568,145 @@ describe('endpoint capture → switch (ACC-13)', () => {
   }, 40000);
 });
 
+describe('ACC-CUR-FIX:切换成功后 identity_hash 收敛到登录态派生', () => {
+  let t: TestDb;
+  let root: string;
+  let vault: SecretVault;
+
+  beforeEach(() => {
+    t = createTestDb();
+    root = mkdtempSync(join(tmpdir(), 'agentboard-acccurfix-'));
+    vault = new SecretVault(join(root, 'vault'));
+  });
+  afterEach(() => { t.cleanup(); rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); });
+
+  const loginHashOf = (recordKey: string) => createHash('sha256').update(`minimax\u0000${recordKey}`).digest('hex');
+  const RECORD_KEY = 'com.minimax.mcode';
+  const LOGIN_HASH = loginHashOf(RECORD_KEY);
+  /** protocol 线建号派生(ACC-FIX-6 兜底):sha256(app_id+NUL+uid),uid = sha256(token) 截 16 */
+  const protocolHashOf = (token: string) => {
+    const uid = createHash('sha256').update(token).digest('hex').slice(0, 16);
+    return createHash('sha256').update(`minimax\u0000${uid}`).digest('hex');
+  };
+
+  /** 与首个 describe 的 filesWithClient 同形(那里是 describe 内局部函数) */
+  const filesWithClient = (token: string) => ({ [AUTH]: authJson(token), [EXE]: 'binary' });
+
+  /** 造一个 protocol 线目标行(凭据与身份哈希同 scope 落 vault),返回行 id 与行内凭据 scope */
+  const insertProtocolAccount = async (token: string, displayName: string) => {
+    const identityHash = protocolHashOf(token);
+    const id = randomUUID();
+    const scope = { app_id: 'minimax' as const, client_instance_id: 'protocol', identity_hash: identityHash, purpose: 'checkin' as const };
+    const ref = await vault.protect(Buffer.from(token, 'utf8'), scope);
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','protocol','cn',?,?,?,1,1,1)`).run(id, identityHash, displayName, ref);
+    return { id, identityHash, scope };
+  };
+
+  const buildProvider = (files: Record<string, string>, running = false) => {
+    const memory = memoryFs(files);
+    const process = fakeProcess(running);
+    const provider = new MinimaxDesktopProvider({
+      db: t.db, vault, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process,
+      now: () => 1_700_000_000_000,
+      serverIdentityProbe: fakeServerProbe,
+      verifySettleTimeoutMs: 300,
+      verifyPollMs: 25,
+    });
+    return { provider, memory, process };
+  };
+
+  it('切到 protocol 线账号后行哈希收敛到登录态派生,凭据引用按新 scope 重护', async () => {
+    const { provider } = buildProvider(filesWithClient(TOKEN_A));
+    const target = await insertProtocolAccount(TOKEN_B, 'protocol 小号');
+    // 前置:protocol 行哈希(凭据推导)≠ 登录态派生 → is_current 比对不上(复现根因)
+    expect(target.identityHash).not.toBe(LOGIN_HASH);
+    expect(await provider.getCurrentIdentityHash()).toBe(LOGIN_HASH);
+
+    const operation = await provider.switchAccount(target.id);
+    expect(operation.state).toBe('succeeded');
+    const row = getManagedAccount(t.db, target.id)!;
+    // 收敛:行 identity_hash 与登录态派生同源 → is_current 比对命中
+    expect(row.identity_hash).toBe(LOGIN_HASH);
+    expect(await provider.getCurrentIdentityHash()).toBe(row.identity_hash);
+    // vault 引用已按新 scope 重护:新 scope 可解,旧 scope 解不开
+    const credential = await vault.unprotect(row.checkin_credential_ref!, { ...target.scope, identity_hash: LOGIN_HASH });
+    expect(credential.toString('utf8')).toBe(TOKEN_B);
+    await expect(vault.unprotect(row.checkin_credential_ref!, target.scope)).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
+  }, 30000);
+
+  it('端到端:切到 protocol 线账号后 GET /managed-accounts 的 is_current=true', async () => {
+    const memory = memoryFs(filesWithClient(TOKEN_A));
+    const process = fakeProcess(false);
+    const provider = new MinimaxDesktopProvider({ db: t.db, vault, paths: { authFile: AUTH, clientExe: EXE }, fs: memory.fs, process, serverIdentityProbe: fakeServerProbe });
+    const adapter = new FakeAdapter();
+    const created = await createApp({
+      db: t.db,
+      getAdapter: (id: string): AgentAdapter => { if (id === 'fake') return adapter; throw new Error(`未知适配器 id: ${id}`); },
+      adapters: [adapter],
+      refreshClisOnBoot: false,
+      secretVault: vault,
+      desktopProviders: { minimax: provider },
+    });
+    const target = await insertProtocolAccount(TOKEN_B, 'protocol 小号');
+    // 切换前列表:protocol 行 is_current=false(哈希不同源,复现根因)
+    const before = await request(created.app).get('/api/managed-accounts?app=minimax');
+    expect(before.status).toBe(200);
+    expect(before.body.find((item: { id: string }) => item.id === target.id)?.is_current).toBe(false);
+
+    const switched = await request(created.app).post(`/api/managed-accounts/${target.id}/switch`).send({});
+    expect(switched.status).toBe(202);
+    let final: { state: string } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const op = await request(created.app).get(`/api/account-operations/${switched.body.operation_id}`);
+      if (['succeeded', 'failed', 'recovery_required'].includes(op.body.state)) { final = op.body; break; }
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(final).not.toBeNull();
+    expect(final!.state).toBe('succeeded');
+
+    // 切换后列表:protocol 行 is_current=true(身份派生统一)
+    const after = await request(created.app).get('/api/managed-accounts?app=minimax');
+    expect(after.status).toBe(200);
+    const row = after.body.find((item: { id: string }) => item.id === target.id);
+    expect(row?.is_current).toBe(true);
+    expect(row?.identity_hash).toBeUndefined(); // 公共视图不外泄 identity_hash,只断言 is_current
+  }, 40000);
+
+  it('UNIQUE(app_id,client_instance_id,identity_hash) 已被他行占用时跳过收敛,行保持旧状态', async () => {
+    const { provider } = buildProvider(filesWithClient(TOKEN_A));
+    // 另一行已占住 (minimax, protocol, 登录态哈希)
+    const occupiedId = randomUUID();
+    const occupiedRef = await vault.protect(Buffer.from(TOKEN_C, 'utf8'), { app_id: 'minimax', client_instance_id: 'protocol', identity_hash: LOGIN_HASH, purpose: 'checkin' });
+    t.db.prepare(`INSERT INTO managed_account (id,app_id,client_instance_id,service_region,identity_hash,display_name,checkin_credential_ref,client_snapshot_version,created_at,updated_at)
+      VALUES (?,'minimax','protocol','cn',?,?,?,1,1,1)`).run(occupiedId, LOGIN_HASH, '占位行', occupiedRef);
+    const target = await insertProtocolAccount(TOKEN_B, 'protocol 小号');
+
+    const operation = await provider.switchAccount(target.id);
+    expect(operation.state).toBe('succeeded');
+    const row = getManagedAccount(t.db, target.id)!;
+    // 行哈希未收敛(仍为凭据推导),凭据引用仍按旧 scope 可解
+    expect(row.identity_hash).toBe(target.identityHash);
+    const credential = await vault.unprotect(row.checkin_credential_ref!, target.scope);
+    expect(credential.toString('utf8')).toBe(TOKEN_B);
+  }, 30000);
+
+  it('捕获线行哈希本就是登录态派生,切换后原样保留(no-op)', async () => {
+    const { provider, memory } = buildProvider(filesWithClient(TOKEN_A));
+    const source = await provider.captureCurrent();
+    expect(source.identity_hash).toBe(LOGIN_HASH);
+    const target = await insertProtocolAccount(TOKEN_B, '先切走');
+
+    const away = await provider.switchAccount(target.id);
+    expect(away.state).toBe('succeeded');
+    const back = await provider.switchAccount(source.id);
+    expect(back.state).toBe('succeeded');
+    // 切回捕获行:哈希不变,文件 token 回到 TOKEN_A
+    expect(getManagedAccount(t.db, source.id)!.identity_hash).toBe(LOGIN_HASH);
+    expect(JSON.parse(memory.files.get(AUTH)!).records[RECORD_KEY].accessToken).toBe(TOKEN_A);
+  }, 30000);
+});
+
 describe('capability registry for switch (ACC-13 / ACC-SW-MAX)', () => {
   const probeStatus = (over: Partial<MinimaxClientStatus>): MinimaxClientStatus =>
     ({ installed: true, exe: 'C:/x/MiniMax.exe', source: 'default', reason_code: 'CLIENT_READY', message: '', probed: [], ...over });
