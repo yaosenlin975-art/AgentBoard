@@ -435,6 +435,8 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 
 > **命名与兼容（MCP-NAMING）**：MCP server 名已是 `agentboard`，工具名不再带 `agentboard_` 前缀（客户端显示为 `mcp__agentboard__list_tasks` 这类形式）。旧名 `agentboard_<name>` 作为 alias 同时注册、指向同一 handler，**下个大版本移除**；已有客户端配置与 prompt 无需立即改。
 
+**MCP（MCP-C2，`apps/mcp/src/tools/changelog.ts`）**：`list_changelog`（`workspace_id?`、`limit` 1–100、`offset`、`change_type?`、`q?`；正文只回 300 字摘要）、`get_changelog`（`changelog_id`、`body_offset`、`body_max_chars` 默认 12000，截断回 `next_offset_chars`）、`create_changelog`（`title`、`body_md`、`change_type` 新增/修复/调整、`occurred_at?`、`request_id` 作 `Idempotency-Key`，`actor` 取 `AGENTBOARD_AGENT_ID`）。三者复用 `GET/POST /api/workspaces/:workspaceId/changelog`，404 落 `CHANGELOG_NOT_FOUND` / `WORKSPACE_NOT_FOUND`，不新增路由。
+
 ### 状态字典（STATUS-1/2，`workspace_status` + `services/workspaceStatus.ts`）
 
 `issue.status` 落库是名字字符串，合法值 = 该卡所属工作区的 `workspace_status.name`；写入不在字典里的值 → 400 `VALIDATION_ERROR` 且文案列出可用状态（DDL 已无 CHECK 枚举，STATUS-1 迁移把校验挪到服务层）。

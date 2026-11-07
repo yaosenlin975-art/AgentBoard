@@ -42,6 +42,8 @@ const SAFE_MESSAGES: Record<string, string> = {
   FORBIDDEN: 'The current identity is not allowed to perform this operation.',
   INVALID_TRANSITION: 'The task status does not allow this transition.',
   ACCEPT_STATUS_NOT_ACCEPTABLE: 'Only tasks in review (待验收) can receive an acceptance record.',
+  CHANGELOG_NOT_FOUND: 'The change-log entry does not exist in this workspace.',
+  WORKSPACE_NOT_FOUND: 'The workspace does not exist.',
 };
 
 function safeCode(code: unknown, status: number, conflictCode?: string, notFoundCode?: string): string {
