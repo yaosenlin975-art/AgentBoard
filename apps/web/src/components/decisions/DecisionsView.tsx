@@ -9,7 +9,9 @@
  *   再按 `grace_until` 定时失效重取，等 ticker 落锁后服务端状态转正。
  */
 import { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { Workspace } from '@agentboard/shared';
+import { api } from '../../api/client';
 import { useAppStore } from '../../state/appStore';
 import { useNavStore } from '../../state/navStore';
 import { usePanelStore } from '../../state/panelStore';
@@ -105,6 +107,15 @@ export function DecisionsView() {
   // DEC-BADGE：改为共享快照，侧栏徽标与列表同源（同一存储键 / 同一 queryKey）
   const scope = useDecisionsScope();
   const { active, answered, loading, error } = useDecisionLists(workspaceId, scope);
+  // 范围下拉计数（设计「所有工作区（3 个）」）；与 App 侧同源 queryKey，共享缓存不额外发请求
+  const { data: workspaces } = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => api.get<Workspace[]>('/api/workspaces'),
+  });
+  const allScopeLabel =
+    workspaces === undefined || workspaces.length === 0
+      ? '所有工作区'
+      : `所有工作区（${workspaces.length} 个）`;
   const [filter, setFilter] = useState<DecisionFilter>('all');
   const [sort, setSort] = useState<DecisionSort>('urgency');
   // DEC-V4-INLINE：同一时刻只展开一条，展开后由详细卡替换 chip 行
@@ -361,7 +372,7 @@ export function DecisionsView() {
               data-testid="decisions-sort"
               value={sort}
               onChange={(event) => setSort(event.target.value as DecisionSort)}
-              className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
             >
               {DECISION_SORTS.map((key) => (
                 <option key={key} value={key}>
@@ -376,10 +387,10 @@ export function DecisionsView() {
               data-testid="decisions-scope"
               value={scope}
               onChange={(event) => changeScope(event.target.value as DecisionsScope)}
-              className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
             >
               <option value="workspace">当前工作区</option>
-              <option value="all">所有可访问工作区</option>
+              <option value="all">{allScopeLabel}</option>
             </select>
           </label>
         </div>

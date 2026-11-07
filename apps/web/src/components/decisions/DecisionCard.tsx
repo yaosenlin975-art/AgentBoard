@@ -27,12 +27,11 @@ import {
   formatCountdown,
   formatElapsed,
   formatRelative,
-  formatWaiting,
   remainingGraceSeconds,
 } from './countdown';
 import { checkpointLines } from './DecisionSection';
 import { useAnswerDecision, useDecisionDetail, useExtendDecision, useWithdrawDecision } from './useDecisions';
-import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto } from './types';
+import type { DecisionAnswerDto, DecisionDetailDto, DecisionListItemDto, DecisionOptionDto } from './types';
 
 /** 容器宽度阈值：≤660px 时动作行纵向堆叠、主按钮占满 */
 const NARROW_BREAKPOINT = 660;
@@ -92,6 +91,23 @@ function optionLabel(detail: DecisionDetailDto | null, answer: DecisionAnswerDto
   if (option) return option.label;
   if (answer.answer_text !== null && answer.answer_text !== '') return answer.answer_text;
   return '（空答案）';
+}
+
+/**
+ * 卡短码：设计写的是 AB-142 形式，但服务端 DTO 暂无短码字段
+ * （`DecisionListItemDto` 只有 issue_id，没有 AB-xxx 投影）。
+ * 按规格卡验收口径降级为 8 位 UUID 前缀，保证延长 toast 不留空白；
+ * 服务端补短码字段后只改这里。
+ */
+function decisionShortCode(item: DecisionListItemDto): string {
+  return item.issue_id.slice(0, 8);
+}
+
+/** 选项字母（设计「已选 A · 选项」）：按 ord 升序下标映射 A/B/C…；自定义文本答案为 null */
+function answerLetter(options: DecisionOptionDto[], optionId: string | null): string | null {
+  if (optionId === null) return null;
+  const index = options.findIndex((option) => option.id === optionId);
+  return index < 0 ? null : String.fromCharCode(65 + index);
 }
 
 /**
@@ -272,7 +288,9 @@ export function DecisionCard({
     graceRemaining === null || totalGraceSeconds <= 0
       ? null
       : Math.max(0, Math.min(100, (graceRemaining / totalGraceSeconds) * 100));
-  const waiting = item.state === 'open' ? formatWaiting(item.waiting_seconds ?? null) : null;
+  const waiting = item.state === 'open' ? formatElapsed(item.waiting_seconds ?? null) : null;
+  // 已锁/超时时长（设计：已锁 26 分 / 超时 3 天 2 小时）
+  const staleElapsed = item.locked_at === null ? null : formatElapsed((now - item.locked_at) / 1000);
   // DEC-RAIL：左缘 3px 状态色轨（琥珀=宽限中 / 石墨=已锁 / 红=已超时或临界 / 绿=已回答）
   // 只影响视觉与文案，倒计时计算仍以 effectiveGraceUntil 为准。
   const cardTier: 'critical' | 'grace' | 'stale' | 'answered' | 'open' = isAnswered
@@ -513,7 +531,7 @@ export function DecisionCard({
           });
           setExtendNotice({
             tone: 'info',
-            text: `${item.issue_id.slice(0, 8)} 宽限 +1 分钟 · 剩余 ${formatCountdown(response.remaining_grace_seconds)}${
+            text: `${decisionShortCode(item)} 宽限 +1 分钟 · 剩余 ${formatCountdown(response.remaining_grace_seconds)}${
               response.extended_seconds >= response.max_extend_seconds ? ' · 已达延长上限' : ''
             }`,
           });
@@ -670,14 +688,25 @@ export function DecisionCard({
             {extendCritical && <span className="ml-1">即将落锁</span>}
           </span>
         )}
+        {scope === 'open' && waiting !== null && (
+          <span
+            data-testid={`decision-locked-${item.id}`}
+            className="ml-auto shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 text-xs text-ink-2"
+          >
+            已锁 {waiting}
+          </span>
+        )}
         {scope === 'stale' && (
-          <span className="ml-auto shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 text-xs text-ink-2">
-            超时
+          <span
+            data-testid={`decision-stale-badge-${item.id}`}
+            className="ml-auto shrink-0 whitespace-nowrap rounded border border-hairline px-1.5 text-xs text-ink-2"
+          >
+            超时{staleElapsed === null ? '' : ` ${staleElapsed}`}
           </span>
         )}
         {scope === 'answered' && item.answered_at !== null && (
           <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-ink-3">
-            已回答于 {formatClock(item.answered_at)}
+            {formatRelative(now - item.answered_at) ?? formatClock(item.answered_at)}
           </span>
         )}
         <button
@@ -705,7 +734,7 @@ export function DecisionCard({
         </button>
       </div>
 
-      {/* DEC-V4-EXTEND：宽限进度条（remaining / 原宽限 + 已延长） */}
+      {/* DEC-V4-EXTEND：宽限进度条（remaining / 原宽限 + 已延长）；规格：2px 贴卡片底边、1s 线性 */}
       {scope === 'grace' && progressPct !== null && (
         <div
           data-testid={`decision-progress-${item.id}`}
@@ -715,10 +744,10 @@ export function DecisionCard({
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(progressPct)}
-          className="h-0.5 w-full overflow-hidden rounded-full bg-surface-raised"
+          className="pointer-events-none absolute bottom-0 left-px right-px h-[2px] overflow-hidden rounded-b-md bg-surface-raised"
         >
           <span
-            className={`block h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${
+            className={`block h-full transition-[width] duration-1000 ease-linear motion-reduce:transition-none ${
               extendCritical ? 'bg-ab-del' : 'bg-accent'
             }`}
             style={{ width: `${progressPct}%` }}
@@ -828,13 +857,19 @@ export function DecisionCard({
         </section>
       )}
 
-      {currentLabel !== null && (
-        <span data-testid={`decision-current-answer-${item.id}`} className="text-xs text-ink-2">
-          当前答案：第 {item.answer_revision} 版「{currentLabel}」
-        </span>
+      {/* 结论行（设计 dc-answer）：已选 A · 选项 · 回答者（来源）· 相对时间 */}
+      {isAnswered && current !== null && currentLabel !== null && (
+        <p data-testid={`decision-current-answer-${item.id}`} className="text-xs text-ink-2">
+          已选{' '}
+          <b className="font-medium text-ink">
+            {[answerLetter(options, current.option_id), currentLabel].filter((part) => part !== null).join(' · ')}
+          </b>
+          <span className="text-ink-3">{' · '}</span>
+          {current.answered_by}（{current.source}）
+          <span className="text-ink-3">{'· '}</span>
+          {formatRelative(now - current.created_at) ?? formatClock(current.created_at)}
+        </p>
       )}
-
-      {waiting !== null && <span className="text-xs text-ink-3">已等 {waiting}</span>}
 
       {roleBlocked && (
         <p data-testid={`decision-role-blocked-${item.id}`} className="text-xs text-ink-3">

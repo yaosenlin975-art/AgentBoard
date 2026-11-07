@@ -456,10 +456,10 @@ describe('DEC-V4-INLINE 就地作答卡', () => {
     fireEvent.click(await screen.findByTestId('decisions-tab-answered'));
     await screen.findByTestId('decision-item-inline-answered');
 
-    // 收起态：当前答案选项 + 「改答案」入口
+    // 收起态：结论行（已选 B · 选项 · 回答者（来源）· 相对时间）+ 「改答案」入口
     await waitFor(() =>
       expect(screen.getByTestId('decision-current-answer-inline-answered')).toHaveTextContent(
-        `第 2 版「${inlineAnswered.options[1]!.label}」`,
+        `已选 B · ${inlineAnswered.options[1]!.label}`,
       ),
     );
     fireEvent.click(screen.getByTestId('decision-revise-inline-answered'));
@@ -2060,5 +2060,105 @@ describe('DEC-SIBLING 卡头信息与同卡其它决策', () => {
 
     fireEvent.click(screen.getByTestId('decision-toggle-dec-grace'));
     expect(screen.queryByTestId('decision-siblings-dec-grace')).toBeNull();
+  });
+});
+
+describe('DEC-SPEC 规格对齐：进度线 / 范围下拉 / 状态文案 / 延长短码', () => {
+  it('进度线 2px 贴卡片底边、1s 线性', async () => {
+    server.use(decisionHandler([graceItem], []));
+    renderWithQuery(<DecisionsView />);
+
+    const bar = await screen.findByTestId('decision-progress-dec-grace');
+    expect(bar.className).toContain('absolute');
+    expect(bar.className).toContain('bottom-0');
+    expect(bar.className).toContain('h-[2px]');
+    expect(bar).toHaveAttribute('data-pct');
+
+    const fill = bar.firstElementChild as HTMLElement;
+    expect(fill.className).toContain('duration-1000');
+    expect(fill.className).toContain('ease-linear');
+  });
+
+  it('范围下拉显示工作区计数；范围/排序下拉 32px 高、8px 圆角、12.5px 字', async () => {
+    server.use(
+      decisionHandler([graceItem], []),
+      http.get('/api/workspaces', () =>
+        HttpResponse.json([
+          { id: 'ws-1', name: 'A', path: 'D:/a' },
+          { id: 'ws-2', name: 'B', path: 'D:/b' },
+          { id: 'ws-3', name: 'C', path: 'D:/c' },
+        ]),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    const scopeSelect = await screen.findByTestId('decisions-scope');
+    await waitFor(() => expect(scopeSelect).toHaveTextContent('所有工作区（3 个）'));
+    for (const select of [scopeSelect, screen.getByTestId('decisions-sort')]) {
+      expect(select.className).toContain('h-8');
+      expect(select.className).toContain('rounded-lg');
+      expect(select.className).toContain('text-[12.5px]');
+    }
+  });
+
+  it('卡头状态文案：已锁 X / 超时 X 天 X 小时 / 已回答结论行', async () => {
+    const answeredDetail: DecisionDetailDto = {
+      ...answeredItem,
+      checkpoint_json: null,
+      current_answer_id: 'ans-1',
+      expires_at: null,
+      on_expire: 'stay_locked',
+      options: answeredItem.options,
+      answers: [
+        {
+          id: 'ans-1',
+          revision: 2,
+          option_id: answeredItem.options[1]!.id,
+          answer_text: null,
+          answered_by: 'human:lead',
+          source: 'web',
+          created_at: NOW - 3600_000,
+        },
+      ],
+    };
+    server.use(
+      decisionHandler([openItem, staleItem], [answeredItem]),
+      http.get('/api/decisions/:id', () => HttpResponse.json({ decision: answeredDetail })),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    await waitFor(() => expect(screen.getByTestId('decision-locked-dec-open')).toHaveTextContent('已锁 1 小时'));
+    expect(screen.getByTestId('decision-stale-badge-dec-stale')).toHaveTextContent('超时 3 天 8 小时');
+    expect(screen.queryByText(/^已等 /)).toBeNull();
+
+    fireEvent.click(screen.getByTestId('decisions-tab-answered'));
+    await screen.findByTestId('decision-item-dec-answered');
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-current-answer-dec-answered')).toHaveTextContent(
+        `已选 B · ${answeredItem.options[1]!.label} · human:lead（web）· 1 小时前`,
+      ),
+    );
+  });
+
+  it('延长 toast 用 8 位卡前缀（无 AB 短码数据时降级且不留空白）', async () => {
+    server.use(
+      decisionHandler([graceItem], []),
+      http.post('/api/decisions/dec-grace/extend', () =>
+        HttpResponse.json({
+          decision_id: 'dec-grace',
+          state: 'grace',
+          grace_until: Date.now() + 179_000,
+          remaining_grace_seconds: 179,
+          extended_seconds: 60,
+          extension_count: 1,
+          max_extend_seconds: 300,
+        }),
+      ),
+    );
+    renderWithQuery(<DecisionsView />);
+
+    fireEvent.click(await screen.findByTestId('decision-extend-dec-grace'));
+    const toast = await screen.findByTestId('decision-extend-toast-dec-grace');
+    expect(toast).toHaveTextContent(/^issue-de 宽限 \+1 分钟 · 剩余 2:59$/);
   });
 });
