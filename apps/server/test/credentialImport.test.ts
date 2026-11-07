@@ -141,12 +141,23 @@ describe('credential import (ACC-11)', () => {
 
   it('mapsTimeoutToFixedCode', async () => {
     const timeout = Object.assign(new Error('timeout'), { reason: 'EXPORT_TIMEOUT' });
-    const importer = createCredentialImporter({ db: t.db, vault, onAudit: () => {}, runExport: stubRunner({ trae: timeout }) });
-    const result = await importer.importCredentials({ platforms: ['trae'], actor: 'user' });
+    // ACC-FIX-7 后 trae 平台短路不再跑扫描，超时映射改在 workbuddy 平台验证
+    const importer = createCredentialImporter({ db: t.db, vault, onAudit: () => {}, runExport: stubRunner({ workbuddy: timeout }) });
+    const result = await importer.importCredentials({ platforms: ['workbuddy'], actor: 'user' });
     expect(result.platforms[0]).toMatchObject({ error: 'EXPORT_TIMEOUT', found: 0 });
   });
 
-  it('ACC-FIX-2：默认超时放宽到 180s，真实 execFile 超时归类为 EXPORT_TIMEOUT 而非 EXPORT_FAILED', async () => {
+    it('ACC-FIX-7：trae 平台短路不跑内存扫描，秒级返回空结果', async () => {
+    let called = 0;
+    const runner = () => { called += 1; return Promise.resolve({ stdout: '[]', stderr: '', durationMs: 1 }); };
+    const importer = createCredentialImporter({ db: t.db, vault, runExport: runner });
+    const result = await importer.importCredentials({ platforms: ['trae'], actor: 'test' });
+    expect(called).toBe(0);
+    expect(result.platforms).toHaveLength(1);
+    expect(result.platforms[0]).toMatchObject({ platform: 'trae', found: 0, error: null });
+  });
+
+it('ACC-FIX-2：默认超时放宽到 180s，真实 execFile 超时归类为 EXPORT_TIMEOUT 而非 EXPORT_FAILED', async () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(180_000);
     const script = join(root, 'sleep.js');
     writeFileSync(script, 'setTimeout(() => {}, 5000);', 'utf8');
@@ -255,9 +266,9 @@ describe('credential import (ACC-11)', () => {
       secretVault: vault,
       credentialRunner: async (platform) => { seen.push(platform); return { stdout: '[]', stderr: '', durationMs: 1 }; },
     });
-    const ok = await request(spy.app).post('/api/accounts/import-credentials').send({ platforms: ['trae'], actor: 'user' });
+    const ok = await request(spy.app).post('/api/accounts/import-credentials').send({ platforms: ['minimax'], actor: 'user' });
     expect(ok.status).toBe(200);
-    expect(seen).toEqual(['trae']);
+    expect(seen).toEqual(['minimax']);
   });
   it('realScriptEmitsJsonArrayForMinimaxWithoutNetwork', () => {
     // 真实 python 冒烟：只跑 minimax（读本地文件，不扫进程、不打网络）

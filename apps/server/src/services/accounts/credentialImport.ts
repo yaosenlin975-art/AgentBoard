@@ -185,6 +185,9 @@ export function createCredentialImporter(deps: CredentialImportDeps) {
       for (const platform of platforms) {
         const appId = APP_ID_BY_PLATFORM[platform];
         const summary: PlatformImportSummary = { platform, app_id: appId, found: 0, created: 0, updated: 0, skipped: 0, error: null };
+        // ACC-FIX-7：trae 内存扫描对 Trae CN 实测无效（134-255s 超时且恒 0 结果），获取正道是 DesktopProvider
+        // capture-current（读 storage.json 秒级）——导入通道直接短路，不再拖用户 3-4 分钟。
+        if (platform === 'trae') { summaries.push(summary); continue; }
         let entries: z.infer<typeof entrySchema>[] = [];
         try {
           const run = await runExport(platform);
