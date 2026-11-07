@@ -299,18 +299,57 @@ export function wireWorkspaceDbCloseOnExit(
 /** 真实启动：返回运行句柄（冒烟/后续管理用） */
 export async function main(): Promise<StartedServer> {
   const config = loadConfig();
+  // SERVER-SINGLETON：单例锁**必须先于 openDb**——同一个 DB 被两个进程打开会互相踩 WAL：
+  // 迁移是「先 PRAGMA table_info 再 ALTER」的非原子模式（db/schema.ts、db/migrations/*），
+  // 双开时两边都读到「列不存在」，后到者抛 duplicate column name；两边还会同时 sweepExpiredLeases
+  // 互清对方刚写入的租约。锁只用 configDir / dbPath / port，不依赖 DB，可以安全前置。
+  // 锁覆盖的启动步骤：openDb → initSchema（全部迁移）→ sweepExpiredLeases → recoverOnBoot（开工作区库）
+  // → createApp（会话恢复与传输装配）→ listen；被拒绝的后到进程不碰库、不清租约。
+  // `POST /api/system/restart` 的接班进程带 AGENTBOARD_RESTART_FROM（前任 pid），
+  // 允许受让「前任还活着但正在退出」的那把锁；普通 `server:ensure` 不带，仍然拒绝双开。
+  const instanceId = `inst-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+  const startedAt = Date.now();
+  // STORE-2a（D6）：退出钩子关全部工作区库句柄（SIGINT/SIGTERM 的 process.exit 同样会触发 exit 钩子）。
+  // STORE-4d：先于启动恢复注册——恢复路径打开的工作区库在启动失败退出时也必须释放锁。
+  // exit 钩子按注册顺序执行：先关工作区库、再放单例锁，退场时不能先让新实例接手同一批库。
+  wireWorkspaceDbCloseOnExit(instanceId);
+  const restartFrom = Number(process.env.AGENTBOARD_RESTART_FROM ?? '');
+  const lock = acquireServerLock({
+    configDir: configDir(),
+    dbPath: config.dbPath,
+    port: config.port,
+    instanceId,
+    now: () => startedAt,
+    ...(Number.isInteger(restartFrom) && restartFrom > 0 ? { takeoverFrom: [restartFrom] } : {}),
+  });
+  if (!lock.ok) {
+    const holderText = lock.holder === null ? '未知持有者' : describeLockHolder(lock.holder);
+    const reasonText = lock.reason === 'held-by-live'
+      ? '同一 configDir 已有活着的看板实例'
+      : '无法写入单例锁文件（检查目录权限）';
+    console.error(`[agentboard] 拒绝启动：${reasonText}。持有者：${holderText}`);
+    console.error('[agentboard] 单例口径：同 DB / 同 configDir 只能有一个实例；需要多开请换 APPDATA（configDir）与 AGENTBOARD_DB 并监听不同端口');
+    process.exit(4);
+  }
+  if (lock.tookOver !== null) {
+    appendServerLog(`单例锁接管：旧持有者 ${describeLockHolder(lock.tookOver)} 已不存在，由 pid ${process.pid} 接管`);
+  }
+  process.on('exit', () => { releaseServerLock(configDir(), { instanceId }); });
+  // SIGINT/SIGTERM 是能捕获的退出（Windows 的 Stop-Process -Force 走 TerminateProcess，捕获不到 →
+  // 靠下一次启动时「陈旧锁接管」兜底）。
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      releaseServerLock(configDir(), { instanceId });
+      process.exit(0);
+    });
+  }
+
   mkdirSync(dirname(config.dbPath), { recursive: true });
   const db = openDb(config.dbPath);
   initSchema(db);
   // BORROW-0.2：启动清租——上次进程异常退出遗留的占用租约统一过闸（只清占用、任务保留「进行中」、system 评论留痕）
   const sweptLeases = sweepExpiredLeases(db);
   if (sweptLeases > 0) appendServerLog(`启动清理过期占用租约：${sweptLeases} 个任务释放占用`);
-  // SERVER-SINGLETON：实例标识提前生成——启动恢复要开工作区库（每工作区锁用同一 instanceId），exit 钩子也要先于开库注册
-  const instanceId = `inst-${process.pid.toString(36)}-${Date.now().toString(36)}`;
-  const startedAt = Date.now();
-  // STORE-2a（D6）：退出钩子关全部工作区库句柄（SIGINT/SIGTERM 的 process.exit 同样会触发 exit 钩子）。
-  // STORE-4d：先于启动恢复注册——恢复路径打开的工作区库在启动失败退出时也必须释放锁。
-  wireWorkspaceDbCloseOnExit(instanceId);
   // STORE-4d：按库路由（启动恢复、sessionManager、AttachmentStore、知识图片回收共用一套判定与句柄缓存）
   const workspaceRouting = createWorkspaceDbRouting(db, {
     instanceId,
@@ -335,41 +374,7 @@ export async function main(): Promise<StartedServer> {
     );
   }
 
-  // SERVER-SINGLETON：单例锁。**必须先于 openDb**——同一个 DB 被两个进程打开会互相踩 WAL。
-  // （instanceId/startedAt 已提前到启动恢复之前：工作区库 per-workspace 锁与 exit 钩子要用）
-  // SERVER-SINGLETON：`POST /api/system/restart` 的接班进程带 AGENTBOARD_RESTART_FROM（前任 pid），
-  // 允许受让「前任还活着但正在退出」的那把锁；普通 `server:ensure` 不带，仍然拒绝双开。
-  const restartFrom = Number(process.env.AGENTBOARD_RESTART_FROM ?? '');
-  const lock = acquireServerLock({
-    configDir: configDir(),
-    dbPath: config.dbPath,
-    port: config.port,
-    instanceId,
-    now: () => startedAt,
-    ...(Number.isInteger(restartFrom) && restartFrom > 0 ? { takeoverFrom: [restartFrom] } : {}),
-  });
-  if (!lock.ok) {
-    const holderText = lock.holder === null ? '未知持有者' : describeLockHolder(lock.holder);
-    const reasonText = lock.reason === 'held-by-live'
-      ? '同一 configDir 已有活着的看板实例'
-      : '无法写入单例锁文件（检查目录权限）';
-    console.error(`[agentboard] 拒绝启动：${reasonText}。持有者：${holderText}`);
-    console.error('[agentboard] 单例口径：同 DB / 同 configDir 只能有一个实例；需要多开请换 APPDATA（configDir）与 AGENTBOARD_DB 并监听不同端口');
-    process.exit(4);
-  }
-  if (lock.tookOver !== null) {
-    appendServerLog(`单例锁接管：旧持有者 ${describeLockHolder(lock.tookOver)} 已不存在，由 pid ${process.pid} 接管`);
-  }
-  process.on('exit', () => { releaseServerLock(configDir(), { instanceId }); });
-  // （STORE-2a 的 wireWorkspaceDbCloseOnExit 已提前到启动恢复之前注册）
-  // SIGINT/SIGTERM 是能捕获的退出（Windows 的 Stop-Process -Force 走 TerminateProcess，捕获不到 →
-  // 靠下一次启动时「陈旧锁接管」兜底）。
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => {
-      releaseServerLock(configDir(), { instanceId });
-      process.exit(0);
-    });
-  }
+  // （SERVER-SINGLETON 单例锁已提前到 openDb 之前；退出钩子与信号处理也随之上移）
 
   const { app, hub, attachments } = await createApp({
     db,
