@@ -116,7 +116,8 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
     expect(within(wb).getByText('WB 账号一')).toBeInTheDocument();
     expect(within(wb).getByText('WB 账号二')).toBeInTheDocument();
-    expect(within(wb).getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 2 个启用并参与一键签到');
+    // ACC-UI-TOPBAR：「其中 N 个启用并参与一键签到」次级说明已删
+    expect(within(wb).queryByTestId('accounts-summary-workbuddy_desktop')).toBeNull();
 
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
     const mm = await screen.findByTestId('accounts-app-minimax');
@@ -290,10 +291,11 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toHaveTextContent('能力矩阵不可用');
     expect(await screen.findByTestId('accounts-one-click-checkin')).toBeDisabled();
     const card = await screen.findByTestId('accounts-card-acc-wb-1');
-    // ACC-UI-2：能力未知时不渲染切换按钮（避免假入口）；单账号签到按钮已删（ACC-UI-PRUNE）
+    // ACC-UI-2：能力未知时不渲染切换按钮（避免假入口）；单账号签到按钮已删（ACC-UI-PRUNE）；
+    // ACC-UI-TOPBAR：捕获按钮已整体删除
     expect(within(card).queryByTestId('accounts-switch-acc-wb-1')).toBeNull();
     expect(within(card).queryByTestId('accounts-checkin-acc-wb-1')).toBeNull();
-    expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeDisabled();
+    expect(screen.queryByTestId('accounts-capture-workbuddy_desktop')).toBeNull();
   });
 
   it('DOM 不含秘密字段：identity_hash / client_snapshot_ref / token / 路径一律不渲染', async () => {

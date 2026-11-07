@@ -7,10 +7,12 @@
  * - Escape 关闭、点遮罩关闭都回到 `drawer=null`；关闭后不残留 body 滚动锁。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { HttpResponse, http } from 'msw';
 import { useNavStore } from '../state/navStore';
 import { DrawerPanel, DRAWER_SQUEEZE_MIN_WIDTH } from '../components/drawer/DrawerPanel';
+import { server } from './server';
 
 /** 让 matchMedia 与 innerWidth 按给定宽度工作（jsdom 没有真实视口） */
 function stubViewport(width: number): void {
@@ -134,6 +136,35 @@ describe('drawer 两态', () => {
     act(() => useNavStore.getState().openDrawer('settings'));
     expect(screen.getByTestId('drawer-title')).toHaveTextContent('设置');
     expect(screen.getByTestId('drawer-panel').getAttribute('data-mode')).toBe('squeeze');
+  });
+
+  it('ACC-UI-TOPBAR：账号 drawer 标题栏经 Portal 渲染 添加/一键签到/刷新（关闭左侧），面板内无回退操作行', async () => {
+    server.use(
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([
+        { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: true, capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE', reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived' },
+      ])),
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+    );
+    stubViewport(DRAWER_SQUEEZE_MIN_WIDTH);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('accounts'));
+
+    const actions = screen.getByTestId('drawer-header-actions');
+    expect(await within(actions).findByTestId('accounts-add-workbuddy_desktop')).toHaveTextContent('添加');
+    expect(within(actions).getByTestId('accounts-one-click-checkin')).toHaveTextContent('一键签到');
+    expect(within(actions).getByTestId('accounts-import-local')).toHaveTextContent('刷新');
+    // 关闭按钮在操作区之后（标题行最右）；面板内不渲染回退操作行
+    expect(actions.compareDocumentPosition(screen.getByTestId('drawer-close')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByTestId('accounts-toolbar')).toBeNull();
+  });
+
+  it('ACC-UI-TOPBAR：设置 drawer 标题栏操作区为空，不渲染账号操作', () => {
+    stubViewport(DRAWER_SQUEEZE_MIN_WIDTH);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('settings'));
+    expect(screen.getByTestId('drawer-header-actions')).toBeEmptyDOMElement();
+    expect(screen.queryByTestId('accounts-one-click-checkin')).toBeNull();
+    expect(screen.queryByTestId('accounts-import-local')).toBeNull();
   });
 });
 

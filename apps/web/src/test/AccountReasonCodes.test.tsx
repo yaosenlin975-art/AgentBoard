@@ -5,21 +5,17 @@
  * 1. 服务端会出现的 `*_reason_code` 全部有中文文案（清单来自服务端代码，逐个核对，不猜码）；
  * 2. 未收录的码不以裸码作主文案：中性文案 + 可展开「技术码」；
  * 3. 服务端 message 保留为副文案。
+ *
+ * ACC-UI-TOPBAR：捕获按钮与捕获 notice 已随「捕获当前账号」整体删除，
+ * 原因码渲染口径（主文案中文 / 技术码可展开）改由 reasonLabel / reasonTechnicalCode 纯函数用例锁定。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { HttpResponse, http } from 'msw';
-import type { AccountCapability } from '@agentboard/shared';
-import { AccountsPanel } from '../components/settings/AccountsPanel';
+import { describe, expect, it } from 'vitest';
 import {
   hasReasonLabel,
   reasonLabel,
   reasonTechnicalCode,
   UNKNOWN_REASON_LABEL,
 } from '../components/settings/accountCapabilities';
-import { server } from './server';
 
 /**
  * 服务端实际会产生的原因码（来源逐个标注，改服务端时要同步这张清单）：
@@ -118,27 +114,6 @@ const SERVER_REASON_CODES = [
   'NETWORK',
 ];
 
-const CAPTURE_OK: AccountCapability[] = [
-  {
-    app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: false,
-    capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_UNVERIFIED',
-    reason_code: 'CHECKIN_PROVIDER_UNVERIFIED', source: 'static',
-  },
-];
-
-function renderPanel() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={qc}><AccountsPanel /></QueryClientProvider>);
-}
-
-beforeEach(() => {
-  server.resetHandlers();
-  server.use(
-    http.get('/api/managed-account-capabilities', () => HttpResponse.json(CAPTURE_OK)),
-    http.get('/api/managed-accounts', () => HttpResponse.json([])),
-  );
-});
-
 describe('原因码文案（ACC-REASON-01）', () => {
   it('服务端会出现的每个原因码都有中文文案，且文案不是裸码回显', () => {
     const missing = SERVER_REASON_CODES.filter((code) => !hasReasonLabel(code));
@@ -152,39 +127,11 @@ describe('原因码文案（ACC-REASON-01）', () => {
     }
   });
 
-  it('CLIENT_NOT_RUNNING：主文案中文可解释，服务端 message 作副文案，裸码不进主文案', async () => {
-    server.use(http.post('/api/managed-accounts/workbuddy_desktop/capture-current', () => HttpResponse.json({
-      error: { code: 'CLIENT_NOT_RUNNING', message: 'WorkBuddy 未在运行，无法捕获当前登录态' },
-    }, { status: 409 })));
-    renderPanel();
-
-    // ACC-UI-PRUNE：平台行折叠已删，右栏详情直接可见
-    await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
-    const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
-    expect(reason).toHaveTextContent('客户端未在运行');
-    expect(reason).toHaveTextContent('WorkBuddy 未在运行，无法捕获当前登录态');
-    // 裸码不得出现在主文案 / 提示条可见区（已知码不渲染技术码区）
-    expect(reason.textContent ?? '').not.toContain('CLIENT_NOT_RUNNING');
-    expect(screen.queryByTestId('accounts-notice-code-workbuddy_desktop')).not.toBeInTheDocument();
-  });
-
-  it('未收录的码：主文案只能是中性文案，裸码放在可展开技术码里', async () => {
-    server.use(http.post('/api/managed-accounts/workbuddy_desktop/capture-current', () => HttpResponse.json({
-      error: { code: 'SERVER_ADDED_A_NEW_CODE', message: '客户端目标未确认' },
-    }, { status: 409 })));
-    renderPanel();
-
-    await userEvent.click(await screen.findByTestId('accounts-capture-workbuddy_desktop'));
-    const reason = await screen.findByTestId('accounts-notice-reason-workbuddy_desktop');
-    expect(reason).toHaveTextContent(UNKNOWN_REASON_LABEL);
-    expect(reason).toHaveTextContent('客户端目标未确认');
-    expect(reason.textContent ?? '').not.toContain('SERVER_ADDED_A_NEW_CODE');
-
-    // 技术码可展开：默认收起，展开后可见原码（排障能力保留）
-    const details = await screen.findByTestId('accounts-notice-code-workbuddy_desktop');
-    expect(details.tagName).toBe('DETAILS');
-    expect(within(details).getByText('技术码')).toBeInTheDocument();
-    expect(details.textContent).toContain('SERVER_ADDED_A_NEW_CODE');
+  it('未收录的码：主文案只能是中性文案，裸码只进可展开技术码', () => {
+    // 未收录码不再回裸码
+    expect(reasonLabel('SOMETHING_UNSEEN')).toBe(UNKNOWN_REASON_LABEL);
+    // 技术码口径：未收录码原样保留（排障能力在可展开技术码里）
+    expect(reasonTechnicalCode('SOMETHING_UNSEEN')).toBe('SOMETHING_UNSEEN');
   });
 
   it('无码与非字符串兜底：reasonLabel(null) 给中性文案，reasonTechnicalCode 空码返回 null', () => {
@@ -193,7 +140,5 @@ describe('原因码文案（ACC-REASON-01）', () => {
     expect(reasonTechnicalCode(null)).toBeNull();
     expect(reasonTechnicalCode('')).toBeNull();
     expect(reasonTechnicalCode('CLIENT_NOT_RUNNING')).toBe('CLIENT_NOT_RUNNING');
-    // 未收录码不再回裸码
-    expect(reasonLabel('SOMETHING_UNSEEN')).toBe(UNKNOWN_REASON_LABEL);
   });
 });

@@ -72,9 +72,9 @@ function renderPanel() {
   return render(<QueryClientProvider client={qc}><AccountsPanel /></QueryClientProvider>);
 }
 
-/** 打开某平台的「添加账号」向导（入口在平台行展开层内，先展开再点） */
+/** 打开某平台的「添加账号」向导（ACC-UI-TOPBAR：入口按钮在顶栏，先切平台再点顶栏「添加」） */
 async function openWizard(app: string) {
-  // ACC-B1：主从布局下点左栏索引项即切换平台（右栏默认展开）
+  // ACC-B1：主从布局下点左栏索引项即切换平台（右栏默认展开；顶栏「添加」作用于当前平台）
   await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
   await userEvent.click(await screen.findByTestId(`accounts-add-${app}`));
   await screen.findByTestId(`accounts-add-panel-${app}`);
@@ -140,7 +140,7 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
     // ACC-B1：右栏只渲染选中平台 → 每个平台「切换后 await 自身元素再断言」
     for (const app of ['minimax', 'trae', 'workbuddy_desktop', 'qoder_cn', 'zcode']) {
       await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
-      expect(await screen.findByTestId(`accounts-add-${app}`)).toHaveTextContent('添加账号');
+      expect(await screen.findByTestId(`accounts-add-${app}`)).toHaveTextContent('添加');
       // ACC-UI-PRUNE：入口旁的链路标签不再渲染
       expect(screen.queryByTestId(`accounts-add-flow-${app}`)).toBeNull();
     }
@@ -283,16 +283,21 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     expect(polls).toBe(0);
   });
 
-  it('向导在平台行的展开层内：折叠时不可见', async () => {
+  it('ACC-UI-TOPBAR：入口按钮在顶栏操作行，向导面板仍在平台体内；切走平台后整体不渲染', async () => {
     renderPanel();
     await screen.findByTestId('accounts-index');
     // ACC-B1：默认选中第一个平台（workbuddy）→ 右栏已展开；切走后该平台整体不渲染
     const body = await screen.findByTestId('accounts-body-workbuddy_desktop');
     expect(body).not.toHaveAttribute('hidden');
+    // 入口按钮不在平台体内（已上顶栏回退操作行），向导面板点开后落在平台体内
+    expect(within(body).queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
+    const toolbar = screen.getByTestId('accounts-toolbar');
+    await userEvent.click(within(toolbar).getByTestId('accounts-add-workbuddy_desktop'));
+    expect(await screen.findByTestId('accounts-add-panel-workbuddy_desktop')).toBeInTheDocument();
+
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
     await screen.findByTestId('accounts-body-minimax');
     expect(screen.queryByTestId('accounts-body-workbuddy_desktop')).toBeNull();
-    await userEvent.click(screen.getByTestId('accounts-index-item-workbuddy_desktop'));
-    expect(within(body).getByTestId('accounts-add-workbuddy_desktop')).toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-add-panel-workbuddy_desktop')).toBeNull();
   });
 });

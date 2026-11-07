@@ -1,30 +1,41 @@
 /**
- * 账号管理主从面板（ACC-B1 主从布局 + ACC-UI-PRUNE 精简）。
+ * 账号管理主从面板（ACC-B1 主从布局 + ACC-UI-PRUNE 精简 + ACC-UI-TOPBAR 顶栏化）。
  * 能力一律以服务端能力矩阵为准；数据只来自脱敏接口，不显示 identity_hash / 快照 ref / token / 路径。
  *
  * ACC-UI-PRUNE（2026-11-07）剔除：顶部「当前：账号名」提示条、平台容器头部行（含平台层签到按钮与签到芯片）、
  * 平台层与账号行「技术信息」折叠、「积分 未接入」徽标、账号行「签到当前」芯片与「签到」按钮、添加账号旁的
- * 链路标签、脱敏声明与刷新旁说明、「今日 x/x」合计。签到统一走工具栏「一键签到」（单账号/单平台签到入口已删）。
+ * 链路标签、脱敏声明与刷新旁说明、「今日 x/x」合计。
  *
- * 结构：主从布局（左栏平台索引 + 右栏选中平台详情）→ 工具栏（一键签到计划/按钮 + 刷新）→ 一键签到结果。
- * 保留：左栏平台索引（导航 + 今日健康态）、账号行身份展示 + 切换 + ⋯ 菜单（停用/删除）、捕获当前账号、
- * 添加账号、刷新、「N 个平台 / M 个可签到账号」计划摘要。
+ * ACC-UI-TOPBAR（2026-11-07）：操作上标题栏、去两处字样——
+ * - 顶栏（drawer 标题栏「账号管理 … 关闭」一行，关闭左侧）依次渲染「添加」（原平台行「添加账号」改名，
+ *   只对选中平台且装配了协议的平台出现）、「一键签到」（次级样式）、「刷新」；有 drawer 宿主时经
+ *   Portal 渲进标题栏，独立渲染（单测/无宿主）回退为面板顶部 `accounts-toolbar` 一行。
+ * - 删除：底部操作行与「N 个平台 / N 个可签到账号」计划摘要（`accounts-one-click-plan` 不再渲染）、
+ *   平台容器「其中 N 个启用并参与一键签到」次级说明（`accounts-summary-*`）、
+ *   「捕获当前账号」按钮及捕获 notice（workbuddy/trae 免登录捕获 UI 入口移除；API 保留，添加账号向导仍可用）。
+ * - 保留：导入结果框（点刷新后的「发现 N 个账号…」明细，含失败原因，挂在面板底部）、
+ *   左栏平台索引、账号行元素与 ⋯ 菜单、能力三图标徽标（✓✗?）。
  *
- * testid 口径：`accounts-app-*` / `accounts-body-*` / `accounts-summary-*` / `accounts-empty-*` /
- * `accounts-capture-*` / `accounts-notice-*` / `accounts-capability-badge-*`（能力三图标）保留；
+ * 结构：标题栏动作（Portal 或回退行）→ 主从布局（左栏平台索引 + 右栏选中平台详情）→ 导入结果 → 一键签到结果。
+ *
+ * testid 口径：`accounts-app-*` / `accounts-body-*` / `accounts-empty-*` / `accounts-capability-badge-*`
+ * （能力三图标）保留；`accounts-add-<app>`（顶栏添加入口）/ `accounts-add-panel-*`（向导在平台体内）沿用；
  * 已删 testid：`accounts-toggle-*` / `accounts-count-*` / `accounts-checkin-chip-*` / `accounts-checkin-all-*` /
  * `accounts-credit-*` / `accounts-checkin-current-*` / `accounts-tech-*` / `accounts-detail-current` /
- * `accounts-add-flow-*` / `accounts-desensitize-note` / `accounts-today-summary`。
+ * `accounts-add-flow-*` / `accounts-desensitize-note` / `accounts-today-summary` /
+ * `accounts-summary-*` / `accounts-capture-*` / `accounts-notice-*`。
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useContext, useMemo, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
+import { DrawerHeaderActionsContext } from '../drawer/drawerHeaderActions';
 import { AccountCard, type AccountView } from './AccountCard';
 import { CapabilityBadges } from './CapabilityBadges';
-import { LocalAccountsImport } from './LocalAccountsImport';
-import { OneClickCheckinButton, OneClickCheckinPlan, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
+import { LocalAccountsImportButton, LocalAccountsImportResult, useLocalAccountsImport } from './LocalAccountsImport';
+import { OneClickCheckinButton, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaDetail } from './QuotaDetail';
 import {
   APP_ORDER,
@@ -32,14 +43,12 @@ import {
   COMMANDCODE_SOURCE_LABEL,
   commandCodeEmptyHint,
   useCommandCodeCapability,
-  hasReasonLabel,
   isOfflineApp,
   localDayKey,
   platformMeta,
   reasonCodeOf,
   reasonLabel,
   reasonTechnicalCode,
-  checkinParticipation,
   summarizeCheckinToday,
   unavailableLabel,
   unavailableReason,
@@ -47,6 +56,7 @@ import {
   type CapabilityView,
   type CheckinTodaySummary,
 } from './accountCapabilities';
+import { fetchAddAccountProtocols } from './addAccountApi';
 import { AddAccountEntry } from './AddAccountWizard';
 import { AccountsMasterDetail, type PlatformIndexItem } from './AccountsMasterDetail';
 
@@ -58,25 +68,9 @@ const CLI_SOURCE_ROW_LABEL: Record<string, string> = {
   commandcode: COMMANDCODE_SOURCE_LABEL,
 };
 
-/**
- * 提示条（ACC-REASON-01）：主文案=中文原因，副文案=服务端 message，
- * 未收录的码放进可展开的「技术码」，裸码不出现在主文案里。
- */
-interface AppNotice {
-  label: string;
-  message: string | null;
-  technicalCode: string | null;
-}
-
-function noticeOf(code: string | null, message: string | null): AppNotice {
-  return {
-    label: reasonLabel(code),
-    message,
-    technicalCode: code !== null && !hasReasonLabel(code) ? reasonTechnicalCode(code) : null,
-  };
-}
-
 export function AccountsPanel() {
+  // ACC-UI-TOPBAR：drawer 标题栏操作区宿主；无宿主（单测/独立渲染）时回退为面板顶部内联操作行
+  const actionsHost = useContext(DrawerHeaderActionsContext);
   const list = useQuery({
     queryKey: ['managed-accounts'],
     queryFn: () => api.get<AccountView[]>('/api/managed-accounts'),
@@ -97,8 +91,25 @@ export function AccountsPanel() {
   // ACC-14：已下线平台（CodeBuddy Desktop）的历史账号不在界面出现；其余平台全部账号都列出（同平台多账号）
   const accounts: AccountView[] = (list.data ?? []).filter((account) => !isOfflineApp(account.app_id));
   const capabilityKnown = !caps.isPending && !caps.isError;
-  /** ACC-HEADER：一键签到按钮在工具栏，状态与结果分离渲染 */
+  /** ACC-HEADER：一键签到按钮在标题栏，状态与结果分离渲染 */
   const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
+  /** ACC-UI-TOPBAR：刷新按钮上标题栏；导入结果框留在面板底部（同一份状态） */
+  const importer = useLocalAccountsImport();
+  /** 顶栏「添加」可用性：与平台内向导共用同一份协议清单（同一 queryKey → 一次请求、全局缓存） */
+  const protocols = useQuery({
+    queryKey: ['add-account-protocols'],
+    queryFn: fetchAddAccountProtocols,
+    staleTime: 60_000,
+  });
+
+  // 选中平台上提到面板：顶栏「添加」作用于右栏当前平台；切平台即关向导
+  const [selectedApp, setSelectedApp] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  /**
+   * 右栏当前平台（ACC-UI-TOPBAR 起顶栏动作需要它）。
+   * 未选择时默认第一项：indexItems 的 known 段（APP_ORDER）恒非空且排最前，故首项恒为 `APP_ORDER[0]`。
+   */
+  const activeApp = selectedApp ?? APP_ORDER[0] ?? '';
 
   const today = localDayKey(Date.now());
   const accountsByApp = APP_ORDER.map((app) => accounts.filter((account) => account.app_id === app));
@@ -137,6 +148,8 @@ export function AccountsPanel() {
             capability={caps.capabilities[app as ManagedAppId] ?? null}
             capabilityKnown={capabilityKnown}
             accounts={appAccounts}
+            wizardOpen={addOpen && activeApp === app}
+            onWizardClose={() => setAddOpen(false)}
           />
         ),
       };
@@ -186,13 +199,35 @@ export function AccountsPanel() {
       render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
     return [...known, ...extras, ...sources];
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError]);
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp]);
+
+  /** 顶栏「添加」只对装配了协议的当前平台出现（不可用给面板内 reason 文案，不给必败按钮） */
+  const activeProtocol = protocols.data?.items.find((item) => item.app_id === activeApp) ?? null;
+
+  /** 标题栏动作（添加 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
+  const headerActions = (
+    <>
+      {activeProtocol !== null && (
+        <button
+          type="button"
+          data-testid={`accounts-add-${activeApp}`}
+          className={BUTTON_SECONDARY}
+          title={`通过 ${appLabel(activeApp as ManagedAppId)} 的官方授权流程添加账号（不需要客户端在跑）`}
+          onClick={() => setAddOpen(true)}
+        >
+          添加
+        </button>
+      )}
+      <OneClickCheckinButton controller={oneClick} variant="secondary" />
+      <LocalAccountsImportButton controller={importer} />
+    </>
+  );
 
   return (
     <section aria-label="账号管理">
       {caps.isError && (
         <p role="alert" data-testid="accounts-capabilities-error" className="mb-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
-          能力矩阵读取失败：{caps.errorMessage ?? '未知错误'}；为避免误操作，捕获/切换/签到均已禁用
+          能力矩阵读取失败：{caps.errorMessage ?? '未知错误'}；为避免误操作，切换/签到均已禁用
         </p>
       )}
       {caps.isPending && <p data-testid="accounts-capabilities-loading" className="mb-2 text-sm text-neutral-500 dark:text-neutral-400">读取能力矩阵…</p>}
@@ -204,13 +239,29 @@ export function AccountsPanel() {
         </p>
       )}
 
-      {!list.isPending && !list.isError && <AccountsMasterDetail items={indexItems} />}
+      {/* ACC-UI-TOPBAR：有 drawer 宿主 → 标题栏 Portal；无宿主 → 面板顶部回退行（testid 沿用 accounts-toolbar） */}
+      {actionsHost !== null
+        ? createPortal(headerActions, actionsHost)
+        : (
+          <div data-testid="accounts-toolbar" className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+            {headerActions}
+          </div>
+        )}
 
-      {/* ACC-UI-PRUNE：工具条在主从内容之后，只留一键签到计划/按钮与刷新 */}
-      <div data-testid="accounts-toolbar" className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <OneClickCheckinPlan controller={oneClick} />
-        <OneClickCheckinButton controller={oneClick} />
-        <LocalAccountsImport />
+      {!list.isPending && !list.isError && (
+        <AccountsMasterDetail
+          items={indexItems}
+          selected={activeApp}
+          onSelect={(app) => {
+            setSelectedApp(app);
+            setAddOpen(false);
+          }}
+        />
+      )}
+
+      {/* ACC-UI-TOPBAR：导入结果框（含手动刷新失败原因）不随按钮上顶栏，留在面板底部原区域 */}
+      <div className="mt-3 empty:hidden">
+        <LocalAccountsImportResult controller={importer} />
       </div>
 
       <div data-testid="accounts-one-click-results" className="mb-2 empty:hidden">
@@ -225,52 +276,28 @@ function PlatformRow({
   capability,
   capabilityKnown,
   accounts,
+  wizardOpen,
+  onWizardClose,
 }: {
   app: string;
   capability: CapabilityView | null;
   capabilityKnown: boolean;
   accounts: PublicManagedAccount[];
+  /** 顶栏「添加」打开的向导（ACC-UI-TOPBAR：入口按钮在标题栏，向导面板仍在平台体内） */
+  wizardOpen: boolean;
+  onWizardClose: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const [notice, setNotice] = useState<AppNotice | null>(null);
-
-  const capture = useMutation({
-    mutationFn: () => api.post<{ account: PublicManagedAccount }>(`/api/managed-accounts/${app}/capture-current`, {}),
-    onSuccess: () => {
-      setNotice(null);
-      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
-    },
-    onError: (e) => setNotice(noticeOf(reasonCodeOf(e), e instanceof Error ? e.message : '捕获失败')),
-  });
-
-  const usable = capability ? capability.capture || capability.switch : false;
-  // ACC-CHECKIN：一键签到只提交可参与账号（缺凭据/不支持签到的账号跳过）；单账号/单平台签到入口已删
-  const enabledAccounts = accounts.filter((account) => account.enabled !== false);
-  const checkinAccounts = enabledAccounts.filter((account) => checkinParticipation(account, capability).participates);
-
   return (
     <div data-testid={`accounts-app-${app}`}>
       <div data-testid={`accounts-body-${app}`} className="pb-3">
-        {/* ACC-UI-2：能力三图标 + 参与签到数的次级说明（「技术信息」折叠与积分徽标已删） */}
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <CapabilityBadges app={app} capability={capability} />
-          {accounts.length > 0 && (
-            <p data-testid={`accounts-summary-${app}`} className="text-[11px] text-ink-3">
-              其中 {checkinAccounts.length} 个启用并参与一键签到
-            </p>
-          )}
-        </div>
+        {/* ACC-UI-2：能力三图标（「其中 N 个参与一键签到」次级说明已随 ACC-UI-TOPBAR 删除） */}
+        <CapabilityBadges app={app} capability={capability} />
 
-        {/* ACC-UI-2：不可用原因可见——捕获/切换没有可点按钮时，用文字说明原因与出路 */}
-        {capability !== null && capability.capture !== true && (
-          <p className="mt-1 text-[11px] text-ink-3">
-            捕获不可用：{unavailableLabel(capability, 'capture') ?? '原因未知'}，只读展示已有记录。
-          </p>
-        )}
+        {/* ACC-UI-2：不可用原因可见——切换没有可点按钮时，用文字说明原因与出路 */}
         {capability !== null && capability.switch !== true && (
           <p
             data-testid={`accounts-switch-unavailable-${app}`}
-            className="mt-0.5 text-[11px] text-ink-3"
+            className="mt-1 text-[11px] text-ink-3"
             title={`${unavailableLabel(capability, 'switch') ?? '切换不可用'} · ${unavailableReason(capability, 'switch') ?? '能力未知'}，需在客户端手动切换`}
           >
             切换不可用：{unavailableLabel(capability, 'switch') ?? '原因未知'}，需在客户端手动切换
@@ -279,7 +306,7 @@ function PlatformRow({
 
         {accounts.length === 0 ? (
           <p data-testid={`accounts-empty-${app}`} className="mt-1 rounded-md border border-dashed border-neutral-300 px-3 py-3 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-            尚无{appLabel(app)}账号{usable ? '' : '；该客户端能力未验证，暂不可捕获'}。点「读取本机账号」或「捕获当前账号」后列出。
+            尚无{appLabel(app)}账号。点顶栏「添加」或「刷新」后列出。
           </p>
         ) : (
           <div className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -294,37 +321,8 @@ function PlatformRow({
           </div>
         )}
 
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            data-testid={`accounts-capture-${app}`}
-            className={capability?.capture ? BUTTON_PRIMARY : BUTTON_SECONDARY}
-            disabled={capability?.capture !== true || capture.isPending}
-            title={capability?.capture ? '从当前客户端读取并保存账号快照' : unavailableLabel(capability, 'capture') ?? '捕获不可用'}
-            onClick={() => capture.mutate()}
-          >
-            {capability?.capture ? '捕获当前账号' : `捕获不可用（${unavailableLabel(capability, 'capture') ?? '能力未知'}）`}
-          </button>
-          {/* ACC-KB-B2W：协议级「添加账号」（与捕获并列；未装配协议的平台只给 reason 文案，不给按钮） */}
-          <AddAccountEntry app={app as ManagedAppId} />
-        </div>
-
-        {notice !== null && (
-          <div role="alert" data-testid={`accounts-notice-${app}`} className="mt-1 text-xs text-red-600 dark:text-red-400">
-            <p data-testid={`accounts-notice-reason-${app}`}>
-              {notice.label}
-              {notice.message !== null && notice.message !== notice.label && (
-                <span className="ml-1 text-neutral-600 dark:text-neutral-400">{notice.message}</span>
-              )}
-            </p>
-            {notice.technicalCode !== null && (
-              <details data-testid={`accounts-notice-code-${app}`} className="mt-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
-                <summary className="cursor-pointer select-none">技术码</summary>
-                <code className="font-mono">{notice.technicalCode}</code>
-              </details>
-            )}
-          </div>
-        )}
+        {/* ACC-KB-B2W / ACC-UI-TOPBAR：协议级「添加账号」入口在标题栏；这里渲染向导面板与能力不可用文案 */}
+        <AddAccountEntry app={app as ManagedAppId} wizardOpen={wizardOpen} onWizardClose={onWizardClose} />
       </div>
     </div>
   );

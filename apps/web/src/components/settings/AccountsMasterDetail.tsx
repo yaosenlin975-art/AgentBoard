@@ -32,10 +32,28 @@ export interface PlatformIndexItem {
   render: () => React.ReactNode;
 }
 
-export function AccountsMasterDetail({ items }: { items: PlatformIndexItem[] }) {
-  const [selected, setSelected] = useState<string>(items[0]?.app ?? '');
+export function AccountsMasterDetail({
+  items,
+  selected: selectedProp,
+  onSelect,
+}: {
+  items: PlatformIndexItem[];
+  /**
+   * 受控选中（ACC-UI-TOPBAR：顶栏「添加」作用于右栏当前平台，选中态上提到面板）。
+   * 不传时保持组件内 useState（既有独立渲染口径不变）。
+   */
+  selected?: string;
+  onSelect?: (app: string) => void;
+}) {
+  const [internalSelected, setInternalSelected] = useState<string>(items[0]?.app ?? '');
+  const selected = selectedProp ?? internalSelected;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const active = items.find((item) => item.app === selected) ?? items[0] ?? null;
+
+  const choose = useCallback((app: string) => {
+    setInternalSelected(app);
+    onSelect?.(app);
+  }, [onSelect]);
 
   const focusIndex = useCallback((delta: number | 'home' | 'end') => {
     const buttons = containerRef.current?.querySelectorAll<HTMLButtonElement>('[data-testid^="accounts-index-item-"]');
@@ -50,9 +68,9 @@ export function AccountsMasterDetail({ items }: { items: PlatformIndexItem[] }) 
         : (from + delta + list.length) % list.length;
     const next = list[nextIndex];
     if (next === undefined) return;
-    setSelected(next.dataset.app ?? '');
+    choose(next.dataset.app ?? '');
     next.focus();
-  }, []);
+  }, [choose]);
 
   return (
     <div
@@ -81,7 +99,7 @@ export function AccountsMasterDetail({ items }: { items: PlatformIndexItem[] }) 
               aria-controls={`accounts-panel-${item.app}`}
               id={`accounts-tab-${item.app}`}
               tabIndex={isActive ? 0 : -1}
-              onClick={() => setSelected(item.app)}
+              onClick={() => choose(item.app)}
               onKeyDown={(event) => {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
                   event.preventDefault();

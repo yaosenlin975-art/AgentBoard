@@ -316,8 +316,8 @@ describe('一键签到（ACC-14）', () => {
     expect(health).toHaveAttribute('title', '今日签到 2/5');
     expect(screen.queryByTestId('accounts-checkin-chip-workbuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-today-summary')).toBeNull();
-    // 列表摘要仍按参与人数口径
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 5 个启用并参与一键签到');
+    // ACC-UI-TOPBAR：「其中 N 个启用并参与一键签到」列表摘要已删，今日口径只剩左栏索引健康角标
+    expect(screen.queryByTestId('accounts-summary-workbuddy_desktop')).toBeNull();
   });
 });
 

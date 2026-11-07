@@ -102,10 +102,10 @@ describe('账号面板主从布局（ACC-B1）', () => {
     for (const app of ['deepseek', 'opencode_go', 'codex']) {
       expect(screen.getByTestId(`accounts-index-item-${app}`)).toBeInTheDocument();
     }
-    // 工具条移到主从内容之后
+    // ACC-UI-TOPBAR：操作回退行在主从内容之前（drawer 里则 Portal 进标题栏）
     const toolbar = screen.getByTestId('accounts-toolbar');
     const master = screen.getByTestId('accounts-master-detail');
-    expect(master.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toolbar.compareDocumentPosition(master) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('右栏只渲染选中平台：切平台后旧平台账号消失', async () => {

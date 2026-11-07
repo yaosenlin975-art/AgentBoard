@@ -65,8 +65,8 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     const checkinBadge = screen.getByTestId('accounts-badge-workbuddy_desktop-checkin');
     expect(checkinBadge).toHaveAttribute('data-state', 'unavailable');
     expect(checkinBadge.getAttribute('title')).toContain('CHECKIN_PROVIDER_UNVERIFIED');
-    // 捕获按钮可用（不因 checkin/switch 的码被禁）
-    expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeEnabled();
+    // ACC-UI-TOPBAR：捕获按钮已整体删除（不因 checkin/switch 的码出现）
+    expect(screen.queryByTestId('accounts-capture-workbuddy_desktop')).toBeNull();
     // ACC-UI-2：切换不可用不再渲染灰按钮，改为平台级可见原因（技术码仍在 title）
     const card = screen.getByTestId(`accounts-card-${WB_ID}`);
     expect(within(card).queryByTestId(`accounts-switch-${WB_ID}`)).toBeNull();

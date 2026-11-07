@@ -1,5 +1,6 @@
 /**
- * 刷新本机账号（ACC-11 导入端点的界面入口，ACC-14 增加；ACC-REFRESH 改为「刷新」）。
+ * 刷新本机账号（ACC-11 导入端点的界面入口，ACC-14 增加；ACC-REFRESH 改为「刷新」；
+ * ACC-UI-TOPBAR 起拆为 useLocalAccountsImport + LocalAccountsImportButton（上标题栏）+ LocalAccountsImportResult（面板底部））。
  *
  * 契约：`POST /api/accounts/import-credentials` → `CredentialImportResult`
  * `{ batch_id, actor, duration_ms, platforms[{ platform, app_id, found, created, updated, skipped, error }], accounts[], error }`。
@@ -15,6 +16,15 @@ import { api } from '../../api/client';
 import { Badge } from '../ui/Badge';
 import { BUTTON_SECONDARY } from '../ui/buttonStyles';
 import { appLabel, importErrorLabel, reasonCodeOf } from './accountCapabilities';
+
+/** ACC-UI-TOPBAR:刷新按钮与导入结果框拆成两块——按钮上标题栏,结果框留在面板底部;状态共用同一 hook */
+export interface LocalAccountsImportController {
+  pending: boolean;
+  refresh: () => void;
+  result: CredentialImportResult | null;
+  failure: string | null;
+  totals: { found: number; created: number; updated: number; skipped: number };
+}
 
 export type ExportPlatform = 'workbuddy' | 'trae' | 'minimax';
 
@@ -64,7 +74,8 @@ export function resetLocalAccountsStartupRefreshForTests(): void {
   startupRefreshPromise = null;
 }
 
-export function LocalAccountsImport() {
+/** 刷新状态与动作：按钮（顶栏）与结果框（面板底部）共用一份 */
+export function useLocalAccountsImport(): LocalAccountsImportController {
   const queryClient = useQueryClient();
   const [result, setResult] = useState<CredentialImportResult | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -98,21 +109,36 @@ export function LocalAccountsImport() {
     { found: 0, created: 0, updated: 0, skipped: 0 },
   );
 
-  return (
-    <div data-testid="accounts-import" className="inline-flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          data-testid="accounts-import-local"
-          className={BUTTON_SECONDARY}
-          disabled={importMutation.isPending}
-          title="扫描本机三平台凭据并写入加密存储；启动时会自动扫描一次，也可手动刷新"
-          onClick={() => importMutation.mutate()}
-        >
-          {importMutation.isPending ? '刷新中…' : '刷新'}
-        </button>
-      </div>
+  return {
+    pending: importMutation.isPending,
+    refresh: () => importMutation.mutate(),
+    result,
+    failure,
+    totals,
+  };
+}
 
+/** 顶栏「刷新」按钮（`accounts-import-local` testid 保持不变） */
+export function LocalAccountsImportButton({ controller }: { controller: LocalAccountsImportController }) {
+  return (
+    <button
+      type="button"
+      data-testid="accounts-import-local"
+      className={BUTTON_SECONDARY}
+      disabled={controller.pending}
+      title="扫描本机三平台凭据并写入加密存储；启动时会自动扫描一次，也可手动刷新"
+      onClick={controller.refresh}
+    >
+      {controller.pending ? '刷新中…' : '刷新'}
+    </button>
+  );
+}
+
+/** 导入结果框与手动刷新失败原因：不随按钮上顶栏，留在面板底部原区域 */
+export function LocalAccountsImportResult({ controller }: { controller: LocalAccountsImportController }) {
+  const { result, failure, totals } = controller;
+  return (
+    <>
       {failure !== null && (
         <p role="alert" data-testid="accounts-import-error" className="text-xs text-red-600 dark:text-red-400">
           刷新失败：{failure}
@@ -142,6 +168,17 @@ export function LocalAccountsImport() {
           )}
         </div>
       )}
+    </>
+  );
+}
+
+/** 组合用法（等价旧 DOM 结构；单测与无 drawer 宿主的独立渲染用） */
+export function LocalAccountsImport() {
+  const controller = useLocalAccountsImport();
+  return (
+    <div data-testid="accounts-import" className="inline-flex flex-col gap-1">
+      <LocalAccountsImportButton controller={controller} />
+      <LocalAccountsImportResult controller={controller} />
     </div>
   );
 }

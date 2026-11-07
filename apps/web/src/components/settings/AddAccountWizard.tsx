@@ -1,7 +1,7 @@
 /**
  * 协议级「添加账号」向导（ACC-KB-B2W）。
  *
- * 与既有「捕获当前账号」（读本机已登录态）**并列但不同**：本组件走平台自己的授权协议，
+ * 与「读本机已登录态」（ACC-UI-TOPBAR 前的「捕获当前账号」，UI 入口已删、API 保留）不同：本组件走平台自己的授权协议，
  * 授权成功后凭据落 vault、建 `managed_account`，**不需要客户端在跑、不需要重启客户端**
  * （知识页 `89c72721` §3「加号 ≠ 切号」）。
  *
@@ -63,12 +63,24 @@ function noticeOf(code: string | null, message: string | null): AddAccountNotice
 }
 
 /**
- * 添加账号入口 + 向导。挂在平台行的展开层里（与「捕获当前账号」并列）。
+ * 添加账号向导挂载点（ACC-KB-B2W；ACC-UI-TOPBAR 起入口按钮上标题栏，由 AccountsPanel 渲染）。
+ *
+ * 本组件只负责：协议不可用/读取中/读取失败的文案（`accounts-add-unsupported-*` / `accounts-add-pending-*`），
+ * 以及协议可用且调用方打开向导时渲染 `AddAccountWizard` 面板。
  *
  * @param app 平台 id（协议清单按它查）
+ * @param wizardOpen 向导是否打开（打开状态由顶栏「添加」按钮的调用方持有）
+ * @param onWizardClose 关闭向导回调
  */
-export function AddAccountEntry({ app }: { app: ManagedAppId }) {
-  const [open, setOpen] = useState(false);
+export function AddAccountEntry({
+  app,
+  wizardOpen = false,
+  onWizardClose,
+}: {
+  app: ManagedAppId;
+  wizardOpen?: boolean;
+  onWizardClose?: () => void;
+}) {
   // 五个平台共用同一份协议清单（同一 queryKey → 一次请求、全局缓存）
   const protocols = useQuery({
     queryKey: ['add-account-protocols'],
@@ -97,20 +109,9 @@ export function AddAccountEntry({ app }: { app: ManagedAppId }) {
     );
   }
 
-  return (
-    <>
-      <button
-        type="button"
-        data-testid={`accounts-add-${app}`}
-        className={BUTTON_PRIMARY}
-        title={`通过 ${appLabel(app)} 的官方授权流程添加账号（不需要客户端在跑）`}
-        onClick={() => setOpen(true)}
-      >
-        添加账号
-      </button>
-      {open && <AddAccountWizard app={app} info={info} onClose={() => setOpen(false)} />}
-    </>
-  );
+  // 协议可用：入口按钮在标题栏（ACC-UI-TOPBAR），这里只渲染向导面板
+  if (!wizardOpen) return null;
+  return <AddAccountWizard app={app} info={info} onClose={() => onWizardClose?.()} />;
 }
 
 /** 向导本体：选区域 → 发起授权 → 展示授权地址/设备码 → 轮询 → 成功或给出原因 */

@@ -145,7 +145,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(await screen.findByTestId('accounts-source-switch-note-deepseek')).toBeInTheDocument();
   });
 
-  it('ACC-UI-PRUNE：「技术信息」折叠与积分徽标已删，accounts-summary-* 仍在平台体内', async () => {
+  it('ACC-UI-PRUNE/TOPBAR：「技术信息」折叠与积分徽标已删，「其中 N 个参与一键签到」摘要也已删', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
@@ -153,7 +153,7 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(screen.queryByTestId('accounts-capability-workbuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-capability-source-workbuddy_desktop')).toBeNull();
     expect(screen.queryByText('技术信息')).toBeNull();
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).toHaveTextContent('其中 1 个启用并参与一键签到');
-    expect(screen.getByTestId('accounts-summary-workbuddy_desktop')).not.toHaveTextContent('共 1 个账号');
+    expect(screen.queryByTestId('accounts-summary-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByText('共 1 个账号')).toBeNull();
   });
 });

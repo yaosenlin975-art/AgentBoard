@@ -1,7 +1,8 @@
 /**
- * ACC-HEADER：账号管理标题去重 + 一键签到在工具栏。
- * 弹窗头部（`Modal title="账号管理"`）保留唯一标题；面板内不再渲染同名标题。
- * ACC-UI-PRUNE：工具栏只剩一键签到计划/按钮与刷新（脱敏说明、「今日 x/x」已删）。
+ * ACC-HEADER：账号管理标题去重 + 操作上顶栏（ACC-UI-TOPBAR）。
+ * 弹窗头部（drawer 标题栏「账号管理」）保留唯一标题；面板内不再渲染同名标题。
+ * ACC-UI-TOPBAR：操作行上标题栏（添加 / 一键签到 / 刷新，Portal 进 drawer 标题栏，
+ * 独立渲染回退为面板顶部 accounts-toolbar 一行）；「N 个平台 / N 个可签到账号」计划摘要删除。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -36,7 +37,7 @@ beforeEach(() => {
   );
 });
 
-describe('账号页头部（ACC-HEADER）', () => {
+describe('账号页头部（ACC-HEADER / ACC-UI-TOPBAR）', () => {
   it('面板内不再出现重复的「账号管理」标题（唯一标题在弹窗头部）', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
@@ -48,22 +49,28 @@ describe('账号页头部（ACC-HEADER）', () => {
     expect(screen.getByLabelText('账号管理')).toBeInTheDocument();
   });
 
-  it('工具栏只剩一键签到计划/按钮与刷新，脱敏说明与「今日 x/x」不再渲染，整排位于主从内容之后', async () => {
+  it('操作上顶栏：回退操作行依次含 添加/一键签到/刷新；计划摘要与旧说明字样零残留；整排位于主从内容之前', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
     const toolbar = screen.getByTestId('accounts-toolbar');
     expect(toolbar.className).toContain('flex-wrap');
+    // 三个按钮依次在操作行内（drawer 宿主下 Portal 进标题栏，见 drawerPanel.test 的标题栏断言）
+    expect(within(toolbar).getByTestId('accounts-add-workbuddy_desktop')).toHaveTextContent('添加');
     expect(within(toolbar).getByTestId('accounts-one-click-checkin')).toHaveTextContent('一键签到');
-    expect(within(toolbar).getByTestId('accounts-one-click-plan')).toBeInTheDocument();
     expect(within(toolbar).getByTestId('accounts-import-local')).toHaveTextContent('刷新');
+    // 计划摘要（N 个平台 / N 个可签到账号）与历史说明字样不再渲染
+    expect(within(toolbar).queryByTestId('accounts-one-click-plan')).toBeNull();
     expect(within(toolbar).queryByTestId('accounts-desensitize-note')).toBeNull();
     expect(within(toolbar).queryByTestId('accounts-today-summary')).toBeNull();
     expect(screen.queryByText('仅展示脱敏元数据')).toBeNull();
+    expect(screen.queryByText(/个可签到账号/)).toBeNull();
+    // 捕获当前账号按钮整体删除
+    expect(screen.queryByTestId('accounts-capture-workbuddy_desktop')).toBeNull();
 
-    // 工具栏在主从内容下方；额度面板整块移除
+    // 回退操作行在主从内容之前；额度面板整块移除
     const master = screen.getByTestId('accounts-master-detail');
-    expect(master.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toolbar.compareDocumentPosition(master) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByTestId('quota-rows')).toBeNull();
   });
 

@@ -20,6 +20,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import { useNavStore, type NavDrawer } from '../../state/navStore';
 import { AccountsPanel } from '../settings/AccountsPanel';
 import { SettingsDialog } from '../topbar/SettingsDialog';
+import { DrawerHeaderActionsContext } from './drawerHeaderActions';
 import { computeDrawerAnchor, type DrawerAnchor } from '../../lib/drawerAnchor';
 
 /** 挤压态的最小视口宽度（窄于此改为覆盖态） */
@@ -77,6 +78,8 @@ export function DrawerPanel() {
   }, [recomputeAnchor]);
   // 覆盖态遮罩淡入用；关闭瞬间保留一帧避免闪断
   const [rendered, setRendered] = useState(open);
+  // ACC-UI-TOPBAR：标题栏操作区宿主（关闭按钮左侧空槽）；挂载后经 Context 下发给面板做 Portal
+  const [actionsHost, setActionsHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (open) setRendered(true);
     else {
@@ -195,20 +198,30 @@ export function DrawerPanel() {
           <h2 data-testid="drawer-title" className="text-sm font-semibold text-ink">
             {drawer === null ? '' : TITLE[drawer]}
           </h2>
-          <button
-            type="button"
-            data-testid="drawer-close"
-            aria-label="关闭面板"
-            onClick={closeDrawer}
-            className="rounded px-2 py-1 text-sm text-ink-3 hover:bg-surface-raised"
-          >
-            关闭
-          </button>
+          <div className="flex items-center gap-2">
+            {/* ACC-UI-TOPBAR：顶栏操作区（添加 / 一键签到 / 刷新由面板 Portal 进来）；空槽用 empty:hidden 收起 */}
+            <div
+              ref={setActionsHost}
+              data-testid="drawer-header-actions"
+              className="flex items-center gap-2 empty:hidden"
+            />
+            <button
+              type="button"
+              data-testid="drawer-close"
+              aria-label="关闭面板"
+              onClick={closeDrawer}
+              className="rounded px-2 py-1 text-sm text-ink-3 hover:bg-surface-raised"
+            >
+              关闭
+            </button>
+          </div>
         </header>
         <div data-testid="drawer-body" className="min-h-0 flex-1 overflow-auto p-3">
           {/* 只在打开时挂载内容：避免面板关闭后仍跑查询/轮询 */}
-          {open && drawer === 'accounts' && <AccountsPanel />}
-          {open && drawer === 'settings' && <SettingsDialog open onClose={closeDrawer} variant="inline" />}
+          <DrawerHeaderActionsContext.Provider value={actionsHost}>
+            {open && drawer === 'accounts' && <AccountsPanel />}
+            {open && drawer === 'settings' && <SettingsDialog open onClose={closeDrawer} variant="inline" />}
+          </DrawerHeaderActionsContext.Provider>
         </div>
       </aside>
     </>

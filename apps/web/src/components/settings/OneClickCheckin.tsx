@@ -13,7 +13,7 @@ import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ManagedAppId } from '@agentboard/shared';
 import { Badge } from '../ui/Badge';
-import { BUTTON_PRIMARY } from '../ui/buttonStyles';
+import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 import type { AccountView } from './AccountCard';
 import { CheckinBatchPanel } from './CheckinBatchPanel';
 import { APP_LABEL, APP_ORDER, appLabel, checkinParticipation, reasonLabel, unavailableLabel, type AccountsAppId, type CapabilityView } from './accountCapabilities';
@@ -157,14 +157,14 @@ export function useOneClickCheckin({
   };
 }
 
-/** 标题行右端的「一键签到」按钮（`accounts-one-click-checkin` testid 保持不变） */
-export function OneClickCheckinButton({ controller }: { controller: OneClickCheckinController }) {
+/** 标题行右端的「一键签到」按钮（`accounts-one-click-checkin` testid 保持不变；ACC-UI-TOPBAR 起在标题栏用次级样式，不抢关闭） */
+export function OneClickCheckinButton({ controller, variant = 'primary' }: { controller: OneClickCheckinController; variant?: 'primary' | 'secondary' }) {
   const { pending, runnableCount, totalAccounts, skippedAccountCount, run } = controller;
   return (
     <button
       type="button"
       data-testid="accounts-one-click-checkin"
-      className={BUTTON_PRIMARY}
+      className={variant === 'primary' ? BUTTON_PRIMARY : BUTTON_SECONDARY}
       disabled={pending || runnableCount === 0}
       title={runnableCount === 0
         ? (skippedAccountCount > 0

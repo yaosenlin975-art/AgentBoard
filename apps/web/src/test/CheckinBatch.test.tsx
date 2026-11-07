@@ -113,7 +113,8 @@ describe('签到批次（ACC-09）', () => {
     const oneClick = screen.getByTestId('accounts-one-click-checkin');
     expect(oneClick).toBeDisabled();
     expect(oneClick).toHaveAttribute('title', expect.stringContaining('没有可签到的平台'));
-    expect(screen.getByTestId('accounts-one-click-plan')).toHaveTextContent('当前没有可签到的平台');
+    // ACC-UI-TOPBAR：「N 个平台 / N 个可签到账号」计划摘要已删
+    expect(screen.queryByTestId('accounts-one-click-plan')).toBeNull();
     await userEvent.click(oneClick);
     expect(checkinPosts).toHaveLength(0);
   });
@@ -238,7 +239,8 @@ describe('签到批次（ACC-09）', () => {
     // ACC-UI-2：能力未知时不渲染切换假入口；ACC-UI-PRUNE：单账号签到按钮已删
     expect(within(card).queryByTestId(`accounts-switch-${WB_ID}`)).toBeNull();
     expect(within(card).queryByTestId(`accounts-checkin-${WB_ID}`)).toBeNull();
-    expect(screen.getByTestId('accounts-capture-workbuddy_desktop')).toBeDisabled();
+    // ACC-UI-TOPBAR：捕获按钮已整体删除
+    expect(screen.queryByTestId('accounts-capture-workbuddy_desktop')).toBeNull();
     expect(screen.getByTestId('accounts-one-click-checkin')).toBeDisabled();
     expect(screen.queryByTestId('accounts-checkin-all-workbuddy_desktop')).toBeNull();
     expect(checkinPosts).toHaveLength(0);
