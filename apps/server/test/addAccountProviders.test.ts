@@ -101,6 +101,37 @@ describe('add account providers', () => {
       expect(polled.status === 'authorized' && polled.uid).toBe('mm-user-1');
     });
 
+    // ACC-FIX-6：真实 accessToken 是 60ch mmoat_ 裸串非 JWT——身份从 signin/status 服务端探测
+    it('minimaxPollProbesSigninStatusForOpaqueToken', async () => {
+      const fake = new FakeFetch((url) => {
+        if (url.includes('/oauth2/token')) return { status: 200, body: { access_token: 'mmoat_opaque_60chars_fixture_token_not_a_jwt_0000000000', refresh_token: 'mmort_r', token_type: 'bearer', expires_in: 3600, scope: 'agent.default' } };
+        if (url.includes('/signin/status')) return { status: 200, body: { data: { user_id: 'mm-uid-9', days: [] } } };
+        return { status: 200, body: { device_code: 'd', user_code: 'u', verification_uri: 'https://x', expires_in: 300 } };
+      });
+      const provider = createMinimaxAddAccountProvider({ fetchImpl: fake.fetch as unknown as typeof fetch });
+      const started = await provider.startAuthorization({ region: 'cn' });
+      const polled = await provider.pollAuthorization(started.pending_secret);
+      expect(polled.status).toBe('authorized');
+      expect(polled.status === 'authorized' && polled.uid).toBe('mm-uid-9');
+      const probe = fake.calls.find(c => c.url.includes('/signin/status'));
+      expect(probe?.url).toBe('https://agent.minimaxi.com/minimax-cloud/api/v1/signin/status');
+      expect(probe?.headers.authorization).toContain('Bearer mmoat_');
+    });
+
+    // ACC-FIX-6：signin/status 也不给 uid 时兜底 sha256(token) 前 16 位，授权不再 100% 失败
+    it('minimaxPollFallsBackToTokenHashWhenIdentityUnavailable', async () => {
+      const fake = new FakeFetch((url) => {
+        if (url.includes('/oauth2/token')) return { status: 200, body: { access_token: 'mmoat_opaque_60chars_fixture_token_not_a_jwt_0000000000', refresh_token: 'mmort_r', token_type: 'bearer', expires_in: 3600, scope: 'agent.default' } };
+        if (url.includes('/signin/status')) return { status: 401, body: { error: 'invalid access token' } };
+        return { status: 200, body: { device_code: 'd', user_code: 'u', verification_uri: 'https://x', expires_in: 300 } };
+      });
+      const provider = createMinimaxAddAccountProvider({ fetchImpl: fake.fetch as unknown as typeof fetch });
+      const started = await provider.startAuthorization({ region: 'cn' });
+      const polled = await provider.pollAuthorization(started.pending_secret);
+      expect(polled.status).toBe('authorized');
+      expect(polled.status === 'authorized' && polled.uid).toMatch(/^[0-9a-f]{16}$/);
+    });
+
     it('minimaxPollRejectsIncompleteTokenResponse', async () => {
       const fake = new FakeFetch((url) => url.includes('/oauth2/token')
         ? { status: 200, body: { access_token: 'a', token_type: 'bearer' } }

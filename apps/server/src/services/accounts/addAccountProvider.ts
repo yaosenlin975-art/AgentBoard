@@ -48,6 +48,8 @@ const MINIMAX_CLIENT_ID = 'mcode-public';
 const MINIMAX_SCOPE = 'agent.default';
 const MINIMAX_AUDIENCE = 'agent-backend';
 const MINIMAX_DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
+/** ACC-FIX-6：身份探测端点（与 minimaxDesktopProvider 的 createMinimaxServerIdentityProbe 同源） */
+const MINIMAX_AGENT_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
 
 interface MinimaxPending { origin: string; device_code: string; code_verifier: string }
 
@@ -125,7 +127,21 @@ export function createMinimaxAddAccountProvider(options: { fetchImpl?: typeof fe
       if (!access_token || !refresh_token || token_type?.toLowerCase() !== 'bearer' || expires_in === null || !scope?.split(/\s+/).includes(MINIMAX_SCOPE)) {
         return { status: 'failed', safe_error_code: 'MINIMAX_TOKEN_RESPONSE_INVALID' };
       }
-      const uid = jwtSubject(access_token) ?? str(data.account_id);
+      // ACC-FIX-6：真实 accessToken 是 60ch `mmoat_` 裸串非 JWT（知识页 9a7cb532 实测），token 响应也无 account_id，
+      // credentialUid 也是 JWT-only 兜不住——身份链：JWT sub → 响应 account_id → signin/status 服务端探测 → sha256(token) 本地兜底
+      // （入库后 refresh 写回按 account.id 更新行，不重算身份，哈希漂移不影响后续自愈）
+      let uid = jwtSubject(access_token) ?? str(data.account_id);
+      if (!uid) {
+        try {
+          const info = await requestJson(fetchImpl, `${MINIMAX_AGENT_BASE}/signin/status`, {
+            method: 'GET',
+            headers: { authorization: `Bearer ${access_token}`, accept: 'application/json' },
+          }, timeoutMs);
+          const infoData = asRecord(asRecord(info.body).data);
+          uid = str(infoData.user_id) ?? str(infoData.uid) ?? str(infoData.account_id) ?? str(asRecord(info.body).user_id) ?? null;
+        } catch { uid = null; }
+      }
+      if (!uid) uid = createHash('sha256').update(access_token).digest('hex').slice(0, 16);
       if (!uid) return { status: 'failed', safe_error_code: 'MINIMAX_IDENTITY_MISSING' };
       return { status: 'authorized', uid, display_name: null, credential: Buffer.from(access_token, 'utf8') };
     },
