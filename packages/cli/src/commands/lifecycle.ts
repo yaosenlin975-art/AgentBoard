@@ -3,7 +3,7 @@
  *
  * - close：待验收 → 已关闭（占用中 409：占用者先 kb release 或 done/fail 再关；已关闭幂等返回）。
  * - reopen：已关闭/已废弃 → `--to`（默认待规划）；目标必须是本工作区已定义状态。
- * - update：改 title/description/priority/labels/due_date/due_time/parent；**不含 status**（流转走 close/reopen/done/fail）。
+ * - update：改 title/description/priority/labels/due_date/due_time/parent/status（内置流转仍优先走 close/reopen/done/fail）。
  *
  * 三条都支持 `--request-id <uuid>`（幂等，同 done/fail 口径）。
  */
@@ -123,6 +123,8 @@ export interface UpdateArgs extends RequestIdArg {
   /** 显式清空截止日期/时间 */
   clearDue?: boolean;
   clearParent?: boolean;
+  /** CLI-STATUS-SET：目标状态名（本工作区已定义状态，含自定义；占用中的卡由服务端 409 拒绝） */
+  status?: string;
 }
 
 export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promise<void> {
@@ -148,13 +150,21 @@ export async function update(ctx: Ctx, id: string, args: UpdateArgs = {}): Promi
   }
   if (args.clearParent === true) patch.parent_issue_id = null;
   else if (args.parent !== undefined) patch.parent_issue_id = await normalizeIssueIdArg(ctx, args.parent);
+  // CLI-STATUS-SET：状态合法性与占用门禁由服务端判定（400 列可用状态 / 409 占用中禁止修改状态）
+  if (args.status !== undefined) patch.status = args.status;
 
   if (Object.keys(patch).length === 0) {
-    throw new Error('至少提供一个要修改的字段：--title / --description / --description-stdin / --priority / --labels / --due-date / --due-time / --parent / --clear-due / --clear-root');
+    throw new Error('至少提供一个要修改的字段：--title / --description / --description-stdin / --priority / --labels / --due-date / --due-time / --parent / --clear-due / --clear-root / --status');
   }
   const issue = await withNotFoundSuggestion(ctx, id, () =>
     request<Issue>(ctx.base, 'PATCH', `/api/issues/${encodeURIComponent(target.id)}`, { ...patch, agent_id: ctx.agentId }, args.requestId))
-    .catch(error => mapConflict(ctx, error));
+    .catch((error: unknown) => {
+      // CLI-STATUS-SET：服务端只回「占用中禁止修改状态」，补一行释放办法，避免用户不知道下一步
+      if (args.status !== undefined && error instanceof CliHttpError && error.status === 409) {
+        ctx.io.writeErr('提示：改状态前需先释放占用（kb done / kb fail / kb release）\n');
+      }
+      return mapConflict(ctx, error);
+    });
   // MOJI-GUARD：回读实际落库文本，中文被替换成 ? 时不再静默通过
   await verifyIssueStoredText(ctx.base, issue.id, {
     ...(patch.title === undefined ? {} : { title: String(patch.title) }),

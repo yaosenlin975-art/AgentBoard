@@ -310,7 +310,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   program
     .command('update')
-    .description('修改任务字段（不含状态；状态请用 claim/done/release/close/reopen/fail）')
+    .description('修改任务字段与状态（内置流转仍优先用 claim/done/release/close/reopen/fail）')
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--title <text>', '标题')
     .option('--description <text>', '描述（短文本）')
@@ -322,13 +322,15 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--clear-due', '清空截止日期与时间')
     .option('--parent <issue-id>', '新父任务：完整 UUID，或 ≥8 位唯一前缀')
     .option('--clear-root', '移动为根任务（清空父任务）')
+    .option('--status <状态>', '目标状态（须是本工作区已定义状态，含自定义状态与「已废弃」；占用中的卡会被 409 拒绝）')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
-    .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab --title "修好的标题"\n  Get-Content spec.md -Raw | kb update 0f6ba9ab --description-stdin\n  kb update 0f6ba9ab --priority 高 --due-date 2026-11-10 --due-time 14:30\n退出码：0 成功；1 其它错误（400 字段非法 / 404 任务不存在；占用中改状态会 409，本命令不含状态）')
-    .action(async (id: string, opts: { title?: string; description?: string; descriptionStdin?: boolean; priority?: string; labels?: string; dueDate?: string; dueTime?: string; clearDue?: boolean; parent?: string; clearRoot?: boolean; requestId?: string }) =>
+    .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab --title "修好的标题"\n  Get-Content spec.md -Raw | kb update 0f6ba9ab --description-stdin\n  kb update 0f6ba9ab --priority 高 --due-date 2026-11-10 --due-time 14:30\n  kb update 0f6ba9ab --status 已废弃\n退出码：0 成功；2 冲突（占用中禁止修改状态，先 done/fail 释放）；1 其它错误（400 状态/字段非法并列出可用状态 / 404 任务不存在）')
+    .action(async (id: string, opts: { title?: string; description?: string; descriptionStdin?: boolean; priority?: string; labels?: string; dueDate?: string; dueTime?: string; clearDue?: boolean; parent?: string; clearRoot?: boolean; status?: string; requestId?: string }) =>
       update(makeCtx(program, io), id, {
         title: opts.title, description: opts.description, descriptionStdin: opts.descriptionStdin,
         priority: opts.priority, labels: opts.labels, dueDate: opts.dueDate, dueTime: opts.dueTime,
-        clearDue: opts.clearDue, parent: opts.parent, clearParent: opts.clearRoot, requestId: opts.requestId,
+        clearDue: opts.clearDue, parent: opts.parent, clearParent: opts.clearRoot,
+        status: opts.status, requestId: opts.requestId,
       }));
 
   program

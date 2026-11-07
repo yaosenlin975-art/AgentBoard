@@ -96,6 +96,36 @@ describe('kb close / reopen / update', () => {
     expect(result.err).toContain('至少提供一个要修改的字段');
     expect(calls).toHaveLength(0);
   });
+
+  it('CLI-STATUS-SET：update --status 把卡置入自定义状态', async () => {
+    handler = (m, u) => (m === 'PATCH' && u === '/api/issues/iss1'
+      ? { status: 200, body: { ...ISSUE, status: '待确认' } }
+      : undefined);
+    const result = await run(['update', 'iss1', '--status', '待确认']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('状态: 待确认');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.body).toMatchObject({ agent_id: 'kb-cli', status: '待确认' });
+  });
+
+  it('CLI-STATUS-SET：update --status 非法 → exit 1 且透出可用状态清单', async () => {
+    handler = (m, u) => (m === 'PATCH' && u === '/api/issues/iss1'
+      ? { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: 'status: 不是本工作区已定义状态，可用：待规划 / 进行中 / 待确认' } } }
+      : undefined);
+    const result = await run(['update', 'iss1', '--status', '不存在']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain('可用：待规划 / 进行中 / 待确认');
+  });
+
+  it('CLI-STATUS-SET：update --status 命中占用 → exit 2 并提示先释放', async () => {
+    handler = (m, u) => (m === 'PATCH' && u === '/api/issues/iss1'
+      ? { status: 409, body: { error: { code: 'ISSUE_CLAIMED', message: '占用中禁止修改状态' } } }
+      : undefined);
+    const result = await run(['update', 'iss1', '--status', '已废弃']);
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('占用中禁止修改状态');
+    expect(result.err).toContain('kb release');
+  });
 });
 
 describe('CLOSE-FLOW：done --close 与 close 自动释放自有占用', () => {

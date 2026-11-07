@@ -381,6 +381,8 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | `PATCH /api/issues/:id`（幂等） | body：`title? description? priority? labels? status? sort_order?: int`（至少一个）；`workspace_id?`；`expected_updated_at?: int ≥0`（CAS，须同时提供 workspace_id） | `Issue`（`updated_at` 单调递增：`MAX(now, 旧值+1)`，`issue.ts:145` + `schema.ts:42` 触发器，CAS 调用方依赖）；WS issue.changed | 400 未提供更新字段 / CAS 缺 workspace_id / 参数非法；404 任务不存在；409 `CONFLICT` 占用中禁改 status；409 `TASK_REVISION_CONFLICT` CAS 过期（details `current_updated_at`） | routes.ts:284 |
 | `DELETE /api/issues/:id` | — | 204；先停各绑定会话在途轮次，再同事务级联删除消息+会话+任务；同事务内对每个被本卡阻塞的卡追加 system 评论「前置 X(short id) 已删除，依赖自动解除」；WS issue.deleted + 每会话 session.deleted + 每条解锁评论 comment.added | 404 任务不存在；409 `CONFLICT` 占用中禁止删除；含子任务时 409 `CONFLICT`（子任务先处理） | routes.ts:447；CLI `kb delete-issue <id> --yes`（缺 `--yes` 只打印标题/状态、非 0 退出、不发请求）；MCP `agentboard_delete_task` |
 
+**CLI 状态入口（CLI-STATUS-SET）**：`kb update <issue-id> --status <状态>` 直接走本端点的 `status` 字段，可把卡置入本工作区任意已定义状态（含 `kb status add` 的自定义状态与内置「已废弃」）；非法状态仍由服务端 400 并列出可用状态（exit 1），占用中的卡仍 409 `占用中禁止修改状态`（exit 2，先 done/fail/release）。内置流转仍优先用 `kb claim` / `done` / `close` / `reopen` / `fail`；幂等沿用 `--request-id`。
+
 ### 依赖（DEP-1，`services/dependency.ts`）
 
 ﻿| `POST /api/issues/:id/dependencies` | — | — | 400 `DEPENDENCY_SELF`（依赖自身）/ `CROSS_WORKSPACE_DEPENDENCY`（跨工作区）；409 `DEPENDENCY_EXISTS`（重复）/ `ISSUE_CLAIMED`（被阻塞卡占用中）/ **`DEPENDENCY_PARENT_CYCLE`**（被阻塞卡是前置卡的**子孙**：父卡要等子卡全完才 done，再让子卡依赖父卡会双向互等 → 流程死锁）/ `DEPENDENCY_CYCLE`（依赖环，含多跳与长链） |
