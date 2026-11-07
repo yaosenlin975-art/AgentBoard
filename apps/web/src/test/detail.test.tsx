@@ -447,6 +447,19 @@ describe('DetailPanel 标题就地编辑（D1）', () => {
     return (await screen.findByTestId('title-input')) as HTMLInputElement;
   }
 
+  it('阅读态标题 2 行截断、窄屏 3 行（原型规格），编辑态仍锁阅读态高度不跳变', async () => {
+    mockDetailApi(makeIssue());
+    renderDetail();
+    const display = await screen.findByTestId('title-display');
+    expect(display.className).toContain('line-clamp-2');
+    expect(display.className).toContain('max-[919.98px]:line-clamp-3');
+    expect(display.className).not.toContain('truncate');
+    // 进入编辑：输入框容器沿用阅读态量出的高度（jsdom 高度为 0 → 不锁，仅断言输入框存在）
+    await userEvent.click(screen.getByTestId('title-edit-btn'));
+    expect(await screen.findByTestId('title-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('title-display')).not.toBeInTheDocument();
+  });
+
   it('点 ✎ 进入编辑：原文本让位、只显示输入框，预填原文且光标在末尾；取消后恢复，连续 3 次成立', async () => {
     mockDetailApi(makeIssue());
     renderDetail();
@@ -1466,7 +1479,7 @@ describe('RightPanel 容器', () => {
 });
 
 describe('DETAIL-LAYOUT 顶栏标题块（标题 + ✎ 与关闭按钮同行 / 描述默认全文 / 占用提示第二行）', () => {
-  it('标题与 ✎ 落在表头槽位内，单行截断且 title 给全文，关闭按钮仍在同一行最右', async () => {
+  it('标题与 ✎ 落在表头槽位内，最多 2 行截断且 title 给全文，关闭按钮仍在同一行最右', async () => {
     const longTitle = '这是一个非常非常长的任务标题，用来验证顶栏单行截断不会把关闭按钮挤出面板之外';
     mockDetailApi(makeIssue({ title: longTitle }));
     renderDetail();
@@ -1477,7 +1490,10 @@ describe('DETAIL-LAYOUT 顶栏标题块（标题 + ✎ 与关闭按钮同行 / �
     expect(slot).toContainElement(screen.getByTestId('title-edit-btn'));
     expect(title).toHaveTextContent(longTitle);
     expect(title).toHaveAttribute('title', longTitle);
-    expect(title.className).toContain('truncate');
+    // 原型 §1.1/§1.5：宽屏 2 行、窄屏 3 行，不再单行截断
+    expect(title.className).toContain('line-clamp-2');
+    expect(title.className).toContain('max-[919.98px]:line-clamp-3');
+    expect(title.className).not.toContain('truncate');
 
     const header = slot.closest('header');
     expect(header).not.toBeNull();

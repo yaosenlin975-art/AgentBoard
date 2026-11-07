@@ -5,11 +5,16 @@
  *   v1 单页拉满 limit=100（服务端契约单页上限即 100），不做滚动加载；
  * - 每条展示 文件名 + 完整路径（固定 URL /api/workspaces/{ws}/attachments/{id}）；v1 只做「复制路径」，
  *   不做内联预览；
+ * - 折叠区最多 5 行（原型 task-detail-redesign-2026-11-05 §8.2 / 实测 rows=5），超出部分用「查看其余」展开，
+ *   不删数据、不加内部滚动条；
  * - 「打开所在位置」置灰占位：需服务端 reveal 能力（未落地），不给可点死的假按钮。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, type IssueAttachmentListPage } from '../../api/client';
+
+/** 折叠区默认可见行数（原型规格：5 行） */
+export const ATTACHMENT_VISIBLE_ROWS = 5;
 
 /** 复制文本：clipboard API 失败（非安全上下文/权限拒绝/不存在）时回退 execCommand */
 async function copyText(text: string): Promise<boolean> {
@@ -38,10 +43,13 @@ export function AttachmentsSection({ issueId }: { issueId: string }) {
     queryFn: () => api.get<IssueAttachmentListPage>(`/api/issues/${issueId}/attachments?limit=100`),
   });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
   }, []);
+  // 切到别的卡时收起「查看其余」，避免沿用上一张卡的展开态
+  useEffect(() => { setExpanded(false); }, [issueId]);
 
   const copy = async (id: string, path: string): Promise<void> => {
     if (!(await copyText(path))) return;
@@ -59,35 +67,51 @@ export function AttachmentsSection({ issueId }: { issueId: string }) {
     );
   }
 
+  const visibleItems = expanded ? items : items.slice(0, ATTACHMENT_VISIBLE_ROWS);
+  const hiddenCount = items.length - visibleItems.length;
+
   return (
-    <ul data-testid="detail-attachments" className="space-y-1.5">
-      {items.map((item) => (
-        <li key={item.id} data-testid={`detail-attachment-${item.id}`} className="flex items-start justify-between gap-2">
-          <div className="min-w-0 text-[11.5px] leading-snug">
-            <div className="truncate text-ink">{item.file_name}</div>
-            <div className="truncate text-[10.5px] text-ink-3">{item.url}</div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              data-testid={`detail-attachment-copy-${item.id}`}
-              onClick={() => { void copy(item.id, item.url); }}
-              className="rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
-            >
-              {copiedId === item.id ? '已复制' : '复制路径'}
-            </button>
-            <button
-              type="button"
-              disabled
-              title="需服务端 reveal 能力"
-              data-testid={`detail-attachment-reveal-${item.id}`}
-              className="cursor-not-allowed rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-3 opacity-50"
-            >
-              打开所在位置
-            </button>
-          </div>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul data-testid="detail-attachments" className="space-y-1.5">
+        {visibleItems.map((item) => (
+          <li key={item.id} data-testid={`detail-attachment-${item.id}`} className="flex items-start justify-between gap-2">
+            <div className="min-w-0 text-[11.5px] leading-snug">
+              <div className="truncate text-ink">{item.file_name}</div>
+              <div className="truncate text-[10.5px] text-ink-3">{item.url}</div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                data-testid={`detail-attachment-copy-${item.id}`}
+                onClick={() => { void copy(item.id, item.url); }}
+                className="rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
+              >
+                {copiedId === item.id ? '已复制' : '复制路径'}
+              </button>
+              <button
+                type="button"
+                disabled
+                title="需服务端 reveal 能力"
+                data-testid={`detail-attachment-reveal-${item.id}`}
+                className="cursor-not-allowed rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-3 opacity-50"
+              >
+                打开所在位置
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {(hiddenCount > 0 || expanded) && items.length > ATTACHMENT_VISIBLE_ROWS && (
+        <button
+          type="button"
+          data-testid="detail-attachments-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          className="mt-1.5 rounded border border-hairline px-1.5 py-0.5 text-[10.5px] text-ink-2 transition-colors hover:bg-accent-soft hover:text-accent"
+        >
+          {expanded ? '收起附件' : `查看其余 ${hiddenCount} 个附件（共 ${items.length} 个）`}
+        </button>
+      )}
+    </>
   );
 }

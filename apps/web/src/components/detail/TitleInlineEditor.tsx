@@ -1,6 +1,6 @@
 /**
  * 详情标题（D1/DETAIL-LAYOUT）：渲染在卡片顶栏（关闭按钮那一行）。
- * - 阅读态单行截断（title 属性给全文）+ ✎ 紧邻其右；
+ * - 阅读态 2 行截断（窄屏 <920px 3 行，原型 task-detail-redesign-2026-11-05 §1.1/§1.5）+ title 属性给全文 + ✎ 紧邻其右；
  * - 编辑态在同一行原地展开输入框，保存/取消工具条换行到标题下方。
  * - 两态互斥渲染：编辑时原文本整块让位，不出现「文字 + 输入框」并存；
  * - 进入编辑前量出阅读态高度锁给输入框容器，标题行高度不跳变（工具条增高属已知差异，见未决 11）；
@@ -153,7 +153,7 @@ export function TitleInlineEditor({ title, onSave, editBarSlot = null }: TitleIn
           id="detail-title"
           data-testid="title-display"
           title={title}
-          className="min-w-0 truncate text-[15px] font-semibold leading-[1.42] text-ink"
+          className="min-w-0 break-words line-clamp-2 max-[919.98px]:line-clamp-3 text-[15px] font-semibold leading-[1.42] text-ink"
         >
           {title}
         </h1>

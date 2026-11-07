@@ -89,4 +89,39 @@ describe('DETAIL-D7 附件路径索引', () => {
     expect(await screen.findByTestId('detail-attachments-empty')).toHaveTextContent('暂无附件');
     expect(screen.queryByTestId('detail-attachments')).not.toBeInTheDocument();
   });
+
+  it('折叠区最多 5 行：6 个附件只渲染 5 行，点「查看其余」可访问第 6 个并收起', async () => {
+    const six = Array.from({ length: 6 }, (_, i) => ({
+      id: `att-${i}`,
+      file_name: `file-${i}.png`,
+      kind: 'image',
+      size_bytes: 10,
+      url: `/api/workspaces/ws-1/attachments/att-${i}`,
+    }));
+    server.use(http.get('/api/issues/iss-1/attachments', () => HttpResponse.json({ items: six, next_offset: null })));
+    renderSection();
+
+    const list = await screen.findByTestId('detail-attachments');
+    expect(list.querySelectorAll('li')).toHaveLength(5);
+    expect(screen.queryByTestId('detail-attachment-att-5')).toBeNull();
+    // 第 6 个附件的数据没被删，通过折叠入口可达
+    const toggle = screen.getByTestId('detail-attachments-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveTextContent('查看其余 1 个附件（共 6 个）');
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('detail-attachments').querySelectorAll('li')).toHaveLength(6);
+    expect(screen.getByTestId('detail-attachment-att-5')).toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(screen.getByTestId('detail-attachments').querySelectorAll('li')).toHaveLength(5);
+  });
+
+  it('不超过 5 个附件时不出现折叠入口', async () => {
+    server.use(http.get('/api/issues/iss-1/attachments', () => HttpResponse.json({ items, next_offset: null })));
+    renderSection();
+    await screen.findByTestId('detail-attachments');
+    expect(screen.queryByTestId('detail-attachments-toggle')).toBeNull();
+  });
 });
