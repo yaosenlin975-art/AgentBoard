@@ -365,14 +365,14 @@ export function DecisionsView() {
           })}
         </div>
 
-        <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1 max-sm:w-full">
-          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0 max-sm:flex-1">
+        <div data-testid="decisions-controls" className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0">
             排序
             <select
               data-testid="decisions-sort"
               value={sort}
               onChange={(event) => setSort(event.target.value as DecisionSort)}
-              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0"
             >
               {DECISION_SORTS.map((key) => (
                 <option key={key} value={key}>
@@ -381,13 +381,13 @@ export function DecisionsView() {
               ))}
             </select>
           </label>
-          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0 max-sm:flex-1">
+          <label className="flex items-center gap-1 text-xs text-ink-3 max-sm:min-w-0">
             范围
             <select
               data-testid="decisions-scope"
               value={scope}
               onChange={(event) => changeScope(event.target.value as DecisionsScope)}
-              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0 max-sm:flex-1"
+              className="h-8 rounded-lg border border-hairline bg-surface-card px-2.5 text-[12.5px] text-ink-2 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent max-sm:min-w-0"
             >
               <option value="workspace">当前工作区</option>
               <option value="all">{allScopeLabel}</option>

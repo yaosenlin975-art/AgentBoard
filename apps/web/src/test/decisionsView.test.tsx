@@ -2101,6 +2101,21 @@ describe('DEC-SPEC 规格对齐：进度线 / 范围下拉 / 状态文案 / 延�
     }
   });
 
+  it('排序/范围下拉跟在筛选标签后靠左（不再 ml-auto，窄屏换行后仍靠左）', async () => {
+    server.use(decisionHandler([graceItem], []));
+    renderWithQuery(<DecisionsView />);
+
+    const controls = await screen.findByTestId('decisions-controls');
+    const tablist = screen.getByRole('tablist', { name: '按状态筛选' });
+    // 同一 header 内紧跟筛选标签，DOM 顺序即视觉顺序（从左往右）
+    expect(tablist.nextElementSibling).toBe(controls);
+    // 靠右的推力与窄屏拉满整行的旧样式都已移除
+    expect(controls.className).not.toContain('ml-auto');
+    expect(controls.className).not.toContain('max-sm:w-full');
+    expect(controls.contains(screen.getByTestId('decisions-sort'))).toBe(true);
+    expect(controls.contains(screen.getByTestId('decisions-scope'))).toBe(true);
+  });
+
   it('卡头状态文案：已锁 X / 超时 X 天 X 小时 / 已回答结论行', async () => {
     const answeredDetail: DecisionDetailDto = {
       ...answeredItem,
