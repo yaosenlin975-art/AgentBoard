@@ -302,6 +302,25 @@ describe('Board 组件', () => {
     expect(screen.getByTestId('issue-card-i1')).not.toHaveAttribute('aria-disabled');
   });
 
+  it('PERF-6：首屏 /api/issues 只请求一次（标签条复用看板主查询缓存）', async () => {
+    let issueRequests = 0;
+    server.use(
+      http.get('/api/issues', ({ request }) => {
+        issueRequests += 1;
+        const wid = new URL(request.url).searchParams.get('workspace');
+        return HttpResponse.json(wid === 'ws-1' ? boardIssues : []);
+      }),
+      http.get('/api/sessions', () => HttpResponse.json([])),
+    );
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    renderBoard();
+
+    expect(await screen.findByText('渲染检查')).toBeInTheDocument();
+    // LabelFilterBar 的标签查询与看板主查询同为 ['issues', ws]，React Query 按 key 去重 → 只发一次
+    expect(issueRequests).toBe(1);
+    expect(screen.getByTestId('label-filter-前端')).toBeInTheDocument();
+  });
+
   it('点击卡片打开任务详情（panelStore）', async () => {
     mockBoardData(boardIssues, []);
     useAppStore.setState({ workspaceId: 'ws-1' });
