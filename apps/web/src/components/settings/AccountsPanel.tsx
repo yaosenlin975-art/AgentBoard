@@ -119,12 +119,6 @@ export function AccountsPanel() {
     setSelectedApp(app);
     setAddOpen(true);
   }, []);
-  /**
-   * 右栏当前平台（ACC-UI-TOPBAR 起顶栏动作需要它）。
-   * 未选择时默认第一项：indexItems 的 known 段（APP_ORDER）恒非空且排最前，故首项恒为 `APP_ORDER[0]`。
-   */
-  const activeApp = selectedApp ?? APP_ORDER[0] ?? '';
-
   const today = localDayKey(Date.now());
   const accountsByApp = APP_ORDER.map((app) => accounts.filter((account) => account.app_id === app));
   const summaries = APP_ORDER.map((app, index) => summarizeCheckinToday(accountsByApp[index]!, caps.capabilities[app] ?? null, today));
@@ -143,6 +137,28 @@ export function AccountsPanel() {
     }
     return [...ids].filter((id) => !known.has(id)).sort((left, right) => left.localeCompare(right));
   }, [accounts, caps.capabilities]);
+
+  /**
+   * ADD-FLOW-2（口径 A）：左栏只列**有账号**的平台/来源，零账号平台不占行（入口改由顶部「添加账号」承担）。
+   * 停用账号仍计数（`accounts` 不按 enabled 过滤）；未知平台只要有账号就必须出现，不静默丢卡。
+   * 顺序与 `indexItems` 一致：APP_ORDER → 其它平台（字典序）→ CLI 来源 → Command Code。
+   */
+  const visibleApps = useMemo(() => {
+    const cliSources = [...(QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []), 'commandcode'];
+    return [
+      ...[...APP_ORDER, ...extraApps].filter((app) => accounts.some((account) => String(account.app_id) === app)),
+      ...cliSources.filter((source) => cliAccounts.some((account) => String(account.app_id) === source)),
+    ];
+  }, [accounts, extraApps, cliAccounts]);
+
+  /**
+   * 右栏当前平台（ACC-UI-TOPBAR 起顶栏动作需要它）。
+   * ADD-FLOW-2：过滤后首项不再恒为 `APP_ORDER[0]`，选中项必须归一化到**过滤后**的列表；
+   * 选中平台被删到零账号时回落到首项，全空时为空串（右栏走空态）。
+   */
+  const activeApp = selectedApp !== null && visibleApps.includes(selectedApp)
+    ? selectedApp
+    : (visibleApps[0] ?? '');
 
   /**
    * ACC-B1：左栏平台索引项 = APP_ORDER（六平台）+ 「其它平台」（不静默丢卡）。
@@ -213,8 +229,8 @@ export function AccountsPanel() {
       total: 0,
       render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
-    return [...known, ...extras, ...sources];
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp, openReloginWizard]);
+    return [...known, ...extras, ...sources].filter((item) => visibleApps.includes(item.app));
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp, openReloginWizard, visibleApps]);
 
   /** 顶栏「添加」只对装配了协议的当前平台出现（不可用给面板内 reason 文案，不给必败按钮） */
   const activeProtocol = protocols.data?.items.find((item) => item.app_id === activeApp) ?? null;

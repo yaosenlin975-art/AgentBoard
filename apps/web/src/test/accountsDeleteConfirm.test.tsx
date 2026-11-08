@@ -126,7 +126,7 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     expect(within(confirmAgain).getByTestId(`accounts-delete-countdown-${WB_ID}`)).toBeInTheDocument();
   });
 
-  it('③删除成功：卡片消失，左栏平台计数与今日 n/m 重算', async () => {
+  it('③删除成功：卡片消失，左栏计数重算；删到零账号该平台不占行', async () => {
     let removed = false;
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json(removed ? [] : [account({ is_current: true })])),
@@ -145,10 +145,13 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     await openDeleteConfirm();
     await userEvent.click(screen.getByTestId(`accounts-delete-confirm-yes-${WB_ID}`));
 
-    // 卡片消失；失效重拉带动左栏平台指标
+    // 卡片消失；失效重拉带动左栏平台指标。删到零账号后该平台不再占行（ADD-FLOW-2 口径 A），整体走空态引导
     await waitFor(() => expect(screen.queryByTestId(`accounts-card-${WB_ID}`)).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('0'));
+    await waitFor(() => expect(screen.queryByTestId('accounts-index-item-workbuddy_desktop')).not.toBeInTheDocument());
+    expect(screen.queryByTestId('accounts-index-count-workbuddy_desktop')).not.toBeInTheDocument();
     expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).not.toBeInTheDocument();
+    expect(screen.getByTestId('accounts-index-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-detail-empty')).toHaveTextContent('添加账号');
     expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
   });
 

@@ -75,10 +75,12 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
     const extra = await screen.findByTestId('accounts-index');
     // 按 id 字典序：qoder_cn < zcode
     const apps = [...extra.querySelectorAll('[data-testid^="accounts-index-item-"]')].map((el) => el.getAttribute('data-app'));
-    // APP_ORDER 之后追加其它平台（按 id 字典序），最后是 CLI 额度三来源 + Command Code（ACC-CC-2）
-    expect(apps).toEqual([
-      'workbuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode', 'deepseek', 'opencode_go', 'codex', 'commandcode',
-    ]);
+    // ADD-FLOW-2（口径 A）：只列有账号的平台。APP_ORDER 里有账号的在前，其它平台按 id 字典序追加；
+    // 零账号的 minimax / trae 与无登记账号的 CLI 来源都不占行。
+    expect(apps).toEqual(['workbuddy_desktop', 'qoder_cn', 'zcode']);
+    for (const absent of ['minimax', 'trae', 'deepseek', 'opencode_go', 'codex', 'commandcode']) {
+      expect(screen.queryByTestId(`accounts-index-item-${absent}`)).toBeNull();
+    }
     expect(within(extra).getByText('Qoder CN')).toBeInTheDocument();
     expect(within(extra).getByText('ZCode')).toBeInTheDocument();
     // 需求 4：索引行不再有首字母 glyph

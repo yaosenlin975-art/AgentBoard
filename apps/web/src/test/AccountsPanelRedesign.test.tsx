@@ -123,7 +123,15 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(await screen.findByTestId('accounts-capabilities-error')).toBeInTheDocument();
   });
 
-  it('额度面板整块移除；CLI 三来源改为紧凑平台行并入列表', async () => {
+  it('额度面板整块移除；CLI 三来源有登记账号时改为紧凑平台行并入列表', async () => {
+    // ADD-FLOW-2（口径 A）：来源行只在有登记账号时出现，先给三来源各一条登记结果
+    server.use(http.get('/api/cli-accounts', () => HttpResponse.json({
+      items: [
+        { id: 'd-1', app_id: 'deepseek', identity_hint: 'sha256:aaaaaaaaaaaa', created_at: 1, last_seen_at: 2 },
+        { id: 'o-1', app_id: 'opencode_go', identity_hint: 'sha256:bbbbbbbbbbbb', created_at: 1, last_seen_at: 2 },
+        { id: 'c-1', app_id: 'codex', identity_hint: 'sha256:cccccccccccc', created_at: 1, last_seen_at: 2 },
+      ],
+    })));
     renderPanel();
     await screen.findByTestId('accounts-index');
 
@@ -140,6 +148,8 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(screen.getByTestId('accounts-index-item-deepseek')).toHaveTextContent('DeepSeek');
     expect(screen.getByTestId('accounts-index-item-opencode_go')).toHaveTextContent('OpenCode-Go');
     expect(screen.getByTestId('accounts-index-item-codex')).toHaveTextContent('Codex');
+    // 无登记账号的来源不占行
+    expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull();
 
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     expect(await screen.findByTestId('accounts-source-switch-note-deepseek')).toBeInTheDocument();

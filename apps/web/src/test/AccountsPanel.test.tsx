@@ -266,15 +266,21 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await waitFor(() => expect(within(card).getByTestId('accounts-switch-acc-wb-3')).toBeDisabled());
   });
 
-  it('无账号时三个平台各显示空态', async () => {
+  it('无账号时左栏不占行，左右两栏给空态引导（ADD-FLOW-2 口径 A）', async () => {
     mockList([]);
     renderPanel();
-    for (const app of ['workbuddy_desktop', 'minimax', 'trae']) {
-      await userEvent.click(await screen.findByTestId(`accounts-index-item-${app}`));
-      const section = await screen.findByTestId(`accounts-app-${app}`);
-      expect(within(section).getByTestId(`accounts-empty-${app}`)).toHaveTextContent('尚无');
+
+    const index = await screen.findByTestId('accounts-index');
+    expect(within(index).queryAllByRole('tab')).toHaveLength(0);
+    expect(screen.getByTestId('accounts-index-empty')).toHaveTextContent('还没有账号');
+    expect(screen.getByTestId('accounts-detail-empty')).toHaveTextContent('添加账号');
+    // 零账号平台不占行，也不再渲染按平台的空态块
+    for (const app of ['workbuddy_desktop', 'minimax', 'trae', 'codebuddy_desktop']) {
+      expect(screen.queryByTestId(`accounts-index-item-${app}`)).toBeNull();
+      expect(screen.queryByTestId(`accounts-empty-${app}`)).toBeNull();
     }
-    expect(screen.queryByTestId('accounts-empty-codebuddy_desktop')).not.toBeInTheDocument();
+    // 入口仍在顶部：零账号平台靠全局「添加账号」进入
+    expect(screen.getByTestId('accounts-add-toggle')).toBeInTheDocument();
   });
 
   it('列表读取失败显示错误态', async () => {

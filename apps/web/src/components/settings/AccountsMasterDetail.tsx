@@ -14,6 +14,10 @@
  *
  * 键盘：左栏项是 `role="tab"` 的 `<button>`，`aria-selected` 表达选中；
  * ↑/↓/←/→ 在项间移动焦点并切换，Home/End 跳首尾，Tab 正常离开索引。
+ *
+ * ADD-FLOW-2（口径 A）：`items` 由调用方过滤成「有账号」的平台/来源，可能为空；
+ * 空态在左栏给一行提示（`accounts-index-empty`，放 tablist 之外）、右栏指向顶部「添加账号」
+ * （`accounts-detail-empty`），不再显示「没有可显示的平台」这种死胡同文案。
  */
 import { useCallback, useRef, useState } from 'react';
 import type { AccountView } from './AccountCard';
@@ -77,66 +81,73 @@ export function AccountsMasterDetail({
       data-testid="accounts-master-detail"
       className="flex min-h-0 flex-col gap-2 min-[920px]:flex-row min-[920px]:gap-3"
     >
-      {/* 左栏：平台索引（窄屏变横滑 rail） */}
-      <div
-        ref={containerRef}
-        data-testid="accounts-index"
-        role="tablist"
-        aria-label="平台索引"
-        aria-orientation="vertical"
-        className="flex shrink-0 gap-1 overflow-x-auto pb-1 min-[920px]:w-[200px] min-[920px]:flex-col min-[920px]:overflow-visible min-[920px]:pb-0"
-      >
-        {items.map((item) => {
-          const isActive = active !== null && item.app === active.app;
-          return (
-            <button
-              key={item.app}
-              type="button"
-              role="tab"
-              data-testid={`accounts-index-item-${item.app}`}
-              data-app={item.app}
-              aria-selected={isActive}
-              aria-controls={`accounts-panel-${item.app}`}
-              id={`accounts-tab-${item.app}`}
-              tabIndex={isActive ? 0 : -1}
-              onClick={() => choose(item.app)}
-              onKeyDown={(event) => {
-                if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
-                  event.preventDefault();
-                  focusIndex(1);
-                } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
-                  event.preventDefault();
-                  focusIndex(-1);
-                } else if (event.key === 'Home') {
-                  event.preventDefault();
-                  focusIndex('home');
-                } else if (event.key === 'End') {
-                  event.preventDefault();
-                  focusIndex('end');
-                }
-              }}
-              className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-left text-xs ab-transition ${
-                isActive
-                  ? 'bg-accent-soft font-medium text-accent'
-                  : 'text-ink-2 hover:bg-surface-raised'
-              }`}
-            >
-              <span className="truncate">{item.label}</span>
-              <span data-testid={`accounts-index-count-${item.app}`} className="tabular-nums text-[11px] text-ink-3">
-                {item.accountCount}
-              </span>
-              {item.total > 0 && (
-                <span
-                  data-testid={`accounts-index-health-${item.app}`}
-                  title={`今日签到 ${item.done}/${item.total}`}
-                  className={`tabular-nums text-[11px] ${item.done === item.total ? 'text-accent' : 'text-ink-3'}`}
-                >
-                  {item.done}/{item.total}
+      {/* 左栏：平台索引（窄屏变横滑 rail）。空态提示放 tablist 之外，避免 tablist 里混入非 tab 子节点 */}
+      <div className="shrink-0 min-[920px]:w-[200px]">
+        <div
+          ref={containerRef}
+          data-testid="accounts-index"
+          role="tablist"
+          aria-label="平台索引"
+          aria-orientation="vertical"
+          className="flex gap-1 overflow-x-auto pb-1 min-[920px]:flex-col min-[920px]:overflow-visible min-[920px]:pb-0"
+        >
+          {items.map((item) => {
+            const isActive = active !== null && item.app === active.app;
+            return (
+              <button
+                key={item.app}
+                type="button"
+                role="tab"
+                data-testid={`accounts-index-item-${item.app}`}
+                data-app={item.app}
+                aria-selected={isActive}
+                aria-controls={`accounts-panel-${item.app}`}
+                id={`accounts-tab-${item.app}`}
+                tabIndex={isActive ? 0 : -1}
+                onClick={() => choose(item.app)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    focusIndex(1);
+                  } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+                    event.preventDefault();
+                    focusIndex(-1);
+                  } else if (event.key === 'Home') {
+                    event.preventDefault();
+                    focusIndex('home');
+                  } else if (event.key === 'End') {
+                    event.preventDefault();
+                    focusIndex('end');
+                  }
+                }}
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-left text-xs ab-transition ${
+                  isActive
+                    ? 'bg-accent-soft font-medium text-accent'
+                    : 'text-ink-2 hover:bg-surface-raised'
+                }`}
+              >
+                <span className="truncate">{item.label}</span>
+                <span data-testid={`accounts-index-count-${item.app}`} className="tabular-nums text-[11px] text-ink-3">
+                  {item.accountCount}
                 </span>
-              )}
-            </button>
-          );
-        })}
+                {item.total > 0 && (
+                  <span
+                    data-testid={`accounts-index-health-${item.app}`}
+                    title={`今日签到 ${item.done}/${item.total}`}
+                    className={`tabular-nums text-[11px] ${item.done === item.total ? 'text-accent' : 'text-ink-3'}`}
+                  >
+                    {item.done}/{item.total}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+        {items.length === 0 && (
+          <p data-testid="accounts-index-empty" className="px-2 text-[11px] leading-snug text-ink-3">
+            还没有账号
+          </p>
+        )}
       </div>
 
       {/* 右栏：只渲染选中平台 */}
@@ -147,7 +158,9 @@ export function AccountsMasterDetail({
         {...(active === null ? {} : { id: `accounts-panel-${active.app}`, 'aria-labelledby': `accounts-tab-${active.app}` })}
       >
         {active === null ? (
-          <p data-testid="accounts-detail-empty" className="text-xs text-ink-3">没有可显示的平台</p>
+          <p data-testid="accounts-detail-empty" className="text-xs text-ink-3">
+            还没有账号。点顶部「添加账号」选择供应商：授权登录，或读取本机已登录的凭据。
+          </p>
         ) : (
           active.render()
         )}
