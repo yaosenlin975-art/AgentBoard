@@ -1,8 +1,9 @@
 /**
  * ACC-CLI-MULTI：CLI 三来源行的真实计数与只读详情。
  *
- * 验收口径：
- * - 左栏计数 = `/api/cli-accounts` 里该来源的条数（不再固定 0）；
+ * 验收口径（ADD-FLOW-2 口径 A）：
+ * - 左栏只列**有登记账号**的来源；零账号来源行不出现（计数为 0 时行直接消失）；
+ * - 左栏计数 = `/api/cli-accounts` 里该来源的条数；
  * - 右侧详情列出与计数相同数量的条目，且只有脱敏身份指纹；
  * - 不提供可点但必失败的切换按钮，只给原因文案。
  */
@@ -33,7 +34,7 @@ function mockCli(items: PublicCliAccount[]): void {
 }
 
 describe('CLI 三来源（ACC-CLI-MULTI）', () => {
-  it('计数取真实登记结果：两个 DeepSeek key → 2，OpenCode/Codex 为 0；详情与计数一致', async () => {
+  it('计数取真实登记结果：两个 DeepSeek key → 2；零账号来源不占行；详情与计数一致', async () => {
     mockCli([
       cliAccount('d-1', 'deepseek', 'aaaaaaaaaaaa'),
       cliAccount('d-2', 'deepseek', 'bbbbbbbbbbbb'),
@@ -42,8 +43,9 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
 
     await screen.findByTestId('accounts-index');
     expect(screen.getByTestId('accounts-index-count-deepseek')).toHaveTextContent('2');
-    expect(screen.getByTestId('accounts-index-count-opencode_go')).toHaveTextContent('0');
-    expect(screen.getByTestId('accounts-index-count-codex')).toHaveTextContent('0');
+    // 口径 A：OpenCode/Codex 没有登记账号 → 左栏行不出现
+    expect(screen.queryByTestId('accounts-index-item-opencode_go')).toBeNull();
+    expect(screen.queryByTestId('accounts-index-item-codex')).toBeNull();
 
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     const detail = screen.getByTestId('accounts-detail');
@@ -55,8 +57,9 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     expect(detail.textContent).not.toContain('credential_ref');
   });
 
-  it('三来源都没有切换按钮；Codex 导入入口禁用并给出可见原因', async () => {
-    mockCli([]);
+  it('Codex 行只给切换原因文案；导入入口禁用并给出可见原因', async () => {
+    // 口径 A：Codex 原本零账号不占行；补一条登记账号使行合法出现，再断言详情业务口径
+    mockCli([cliAccount('cx-1', 'codex', 'eeeeeeeeeeee')]);
     renderPanel();
 
     await screen.findByTestId('accounts-index');
@@ -90,7 +93,10 @@ describe('CLI-IMPORT：手动导入 UI', () => {
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
-      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [cliAccount('d-new', 'deepseek', 'dddddddddddd')] })),
+      // DeepSeek + Codex 都有登记账号 → 两行都出现（口径 A：零账号来源不占行）
+      http.get('/api/cli-accounts', () => HttpResponse.json({
+        items: [cliAccount('d-new', 'deepseek', 'dddddddddddd'), cliAccount('cx-1', 'codex', 'eeeeeeeeeeee')],
+      })),
       http.post('/api/cli-accounts/import', async ({ request }) => {
         requestBody = (await request.json()) as { app_id: string; credential: string };
         const result = handler(requestBody);

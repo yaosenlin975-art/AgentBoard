@@ -1,8 +1,9 @@
 /**
  * ACC-CC-2 / ACC-CC-3：Command Code 接入账号管理（CLI 来源区）。
  *
- * 验收口径：
- * - Command Code 出现在 CLI 来源区（不是 ManagedAppId 的六平台分区），计数用真实值；
+ * 验收口径（ADD-FLOW-2 口径 A）：
+ * - Command Code 属 CLI 来源区（不是 ManagedAppId 的六平台分区）；左栏只列**有登记账号**的来源，
+ *   零账号时行不出现，计数用真实值；
  * - 能力来自 GET /api/cli-accounts/commandcode/capability：未安装 / 无凭据文件 / 格式未识别分别展示，
  *   技术码可展开；不出现写死的「可用」，也不出现假按钮；
  * - 导入入口开放，成功 / 重复 / 失败都有可见反馈，凭据明文不回显；
@@ -37,6 +38,11 @@ function capability(overrides: Partial<CliAppCapability> = {}): CliAppCapability
   };
 }
 
+/** 口径 A：零账号 CLI 来源不占行——需要 Command Code 行出现的用例先补一条登记账号（手动添加的 key） */
+function ccItem(id = 'cli-cc-1', identity = 'abc12345'): PublicCliAccount {
+  return { id, app_id: 'commandcode', identity_hint: identity, source: 'manual', created_at: 1000, last_seen_at: 2000 };
+}
+
 function mockPanel(options: {
   items?: PublicCliAccount[];
   capabilityBody?: CliAppCapability;
@@ -65,17 +71,18 @@ async function openCommandCode(): Promise<HTMLElement> {
 }
 
 describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
-  it('CLI 来源区出现 Command Code 条目，未登记账号时计数为 0', async () => {
+  it('未登记账号时 Command Code 来源行不出现（零账号来源不占行）', async () => {
     mockPanel();
     renderPanel();
 
     await screen.findByTestId('accounts-index');
-    expect(screen.getByTestId('accounts-index-item-commandcode')).toHaveTextContent('Command Code');
-    expect(screen.getByTestId('accounts-index-count-commandcode')).toHaveTextContent('0');
+    expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull();
+    expect(screen.getByTestId('accounts-index-empty')).toBeInTheDocument();
   });
 
   it('未安装：capture=CLI_NOT_INSTALLED、switch/checkin 只给原因与技术码，导入入口可用', async () => {
-    mockPanel();
+    // 口径 A：补一条手动登记的账号使行合法出现（CLI 未安装 ≠ 没有手动添加的 key）
+    mockPanel({ items: [ccItem()] });
     renderPanel();
     const detail = await openCommandCode();
 
@@ -96,9 +103,8 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     expect(checkin).toHaveTextContent('该来源没有签到功能');
     expect(within(checkin).getByText('CHECKIN_NOT_APPLICABLE')).toBeInTheDocument();
 
-    // 空态如实说明未安装，不伪造账号
-    expect(within(detail).getByTestId('accounts-source-empty-commandcode'))
-      .toHaveTextContent('本机未安装 Command Code CLI，也未发现凭据');
+    // 口径 A：行能出现说明已有登记账号；详情列真实登记结果，不伪造账号，也不造额度行
+    expect(within(detail).getByTestId('accounts-source-list-commandcode')).toHaveTextContent('abc12345');
     expect(within(detail).queryByTestId('quota-row-commandcode')).toBeNull();
 
     // 导入入口开放；切换 / 签到没有按钮
@@ -107,8 +113,9 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     expect(within(detail).queryByRole('button', { name: /签到/ })).toBeNull();
   });
 
-  it('已安装但无凭据文件 → AUTH_FILE_MISSING，空态与原因一致', async () => {
+  it('已安装但无凭据文件 → AUTH_FILE_MISSING，原因与技术码一致', async () => {
     mockPanel({
+      items: [ccItem()],
       capabilityBody: capability({ installed: true, capture_reason_code: 'AUTH_FILE_MISSING', auth_file_state: 'missing' }),
     });
     renderPanel();
@@ -116,12 +123,13 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     const capture = within(detail).getByTestId('accounts-source-cap-commandcode-capture');
     expect(capture).toHaveTextContent('本机没有该来源的凭据文件');
     expect(within(capture).getByText('AUTH_FILE_MISSING')).toBeInTheDocument();
-    expect(within(detail).getByTestId('accounts-source-empty-commandcode'))
-      .toHaveTextContent('本机已安装 Command Code，但未找到凭据文件');
+    // 口径 A：详情列的是登记账号（本例为手动添加），不是从缺失文件里造出来的
+    expect(within(detail).getByTestId('accounts-source-list-commandcode')).toBeInTheDocument();
   });
 
-  it('auth.json 格式未识别 → AUTH_SCHEMA_UNSUPPORTED，不猜字段也不产账号', async () => {
+  it('auth.json 格式未识别 → AUTH_SCHEMA_UNSUPPORTED，不从文件产账号', async () => {
     mockPanel({
+      items: [ccItem()],
       capabilityBody: capability({ installed: true, capture_reason_code: 'AUTH_SCHEMA_UNSUPPORTED', auth_file_state: 'unrecognized' }),
     });
     renderPanel();
@@ -129,8 +137,8 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     const capture = within(detail).getByTestId('accounts-source-cap-commandcode-capture');
     expect(capture).toHaveTextContent('凭据文件格式不在支持范围');
     expect(within(capture).getByText('AUTH_SCHEMA_UNSUPPORTED')).toBeInTheDocument();
-    expect(within(detail).getByTestId('accounts-source-empty-commandcode'))
-      .toHaveTextContent('auth.json，但格式未识别');
+    // 口径 A：详情里唯一的账号是手动添加来源，不是从未识别的 auth.json 产出的
+    expect(within(detail).getByTestId('accounts-source-kind-cli-cc-1')).toHaveAttribute('data-source', 'manual');
   });
 
   it('凭据可读：capture 展示可用，计数与列表用真实发现结果', async () => {
@@ -163,7 +171,8 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
-      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [] })),
+      // 口径 A：补一条登记账号使 Command Code 行出现，导入用例才能进入右栏
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [ccItem()] })),
       http.get('/api/cli-accounts/commandcode/capability', () => HttpResponse.json({ capability: capability() })),
       http.post('/api/cli-accounts/import', async ({ request }) => {
         const body = await request.json() as { app_id: string; credential: string };
@@ -206,7 +215,7 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
   });
 
   it('能力查询失败 → 显示能力未知，不回退成伪造的可用状态', async () => {
-    mockPanel({ capabilityStatus: 500 });
+    mockPanel({ capabilityStatus: 500, items: [ccItem()] });
     renderPanel();
     const detail = await openCommandCode();
 
@@ -234,7 +243,7 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     expect(within(detail).getByTestId('accounts-source-local-hint-commandcode')).toHaveTextContent('下次读取本机账号会重新登记');
   });
 
-  it('ACC-CC-5：删除是两步流，本机发现账号提示会被重新登记，删除后列表刷新', async () => {
+  it('ACC-CC-5：删除是两步流，本机发现账号提示会被重新登记，删空后来源行消失', async () => {
     let items: PublicCliAccount[] = [
       { id: 'cli-cc-local', app_id: 'commandcode', identity_hint: 'sha256:aaaaaaaaaaaa', source: 'local', created_at: 1, last_seen_at: 2 },
     ];
@@ -265,7 +274,9 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     await userEvent.click(within(detail).getByTestId('accounts-source-delete-yes-cli-cc-local'));
     await waitFor(() => expect(within(detail).queryByTestId('accounts-source-item-cli-cc-local')).toBeNull());
     expect(deleted).toEqual(['cli-cc-local']);
-    expect(within(detail).getByTestId('accounts-source-empty-commandcode')).toBeInTheDocument();
+    // 口径 A：唯一账号删除后来源行不再占行，右栏走面板空态
+    await waitFor(() => expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull());
+    expect(screen.getByTestId('accounts-detail-empty')).toBeInTheDocument();
   });
 
   it('ACC-CC-5：删除失败显示原因与技术码，不回显凭据', async () => {
