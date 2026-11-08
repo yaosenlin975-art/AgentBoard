@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -104,8 +105,49 @@ function walk(dir, base = dir) {
   return out;
 }
 
+/** CR-13：软链（含 Windows junction）处理统计，打包结束统一打印。目录软链跳过防展开/环，文件软链解引用复制。 */
+const symlinkStats = { dereferenced: [], skipped: [] };
+
+function recordSymlink(kind, src, note) {
+  const path = relative(ROOT, src).split('\\').join('/');
+  if (kind === 'deref') symlinkStats.dereferenced.push(`${path}${note}`);
+  else symlinkStats.skipped.push(`${path}${note}`);
+}
+
 function copyTree(src, dest, filter) {
-  const stat = statSync(src);
+  copyTreeEntry(src, dest, filter, true);
+}
+
+/**
+ * CR-13：遍历复制改用 lstatSync，软链显式决策，不再 statSync 盲目跟随：
+ * - 文件软链 → 解引用复制并计数（保持既有「不漏文件」语义）；
+ * - 目录软链 → 跳过并计数（根路径除外：调用方显式指定的来源目录，如技能目录是 junction 时解引用进入）；
+ * - 悬空软链 → 跳过并计数。
+ * 子级目录软链一律跳过后，遍历只走真实目录树，不可能因软链成环或把目标整树展开。
+ */
+function copyTreeEntry(src, dest, filter, isRoot) {
+  let stat = lstatSync(src);
+  if (stat.isSymbolicLink()) {
+    let target;
+    try {
+      target = statSync(src);
+    } catch {
+      recordSymlink('skip', src, ' → 悬空软链');
+      log(`跳过悬空软链：${relative(ROOT, src)}`);
+      return;
+    }
+    if (target.isFile()) {
+      recordSymlink('deref', src, ' → 文件软链解引用');
+      stat = target;
+    } else if (isRoot) {
+      recordSymlink('deref', src, ' → 根目录软链解引用');
+      stat = target;
+    } else {
+      recordSymlink('skip', src, ' → 目录软链');
+      log(`跳过目录软链（防展开/环）：${relative(ROOT, src)}`);
+      return;
+    }
+  }
   if (stat.isFile()) {
     if (filter && !filter(src, false)) return;
     mkdirSync(dirname(dest), { recursive: true });
@@ -115,8 +157,18 @@ function copyTree(src, dest, filter) {
   if (filter && !filter(src, true)) return;
   mkdirSync(dest, { recursive: true });
   for (const entry of readdirSync(src, { withFileTypes: true })) {
-    copyTree(join(src, entry.name), join(dest, entry.name), filter);
+    copyTreeEntry(join(src, entry.name), join(dest, entry.name), filter, false);
   }
+}
+
+/** 打包结束打印软链处理统计（各列表最多展示 20 条，全部路径见逐条日志与计数）。 */
+function logSymlinkStats() {
+  const { dereferenced, skipped } = symlinkStats;
+  if (dereferenced.length === 0 && skipped.length === 0) return;
+  log(`软链处理：解引用复制 ${dereferenced.length} 个，跳过 ${skipped.length} 个`);
+  for (const item of dereferenced.slice(0, 20)) log(`  解引用：${item}`);
+  for (const item of skipped.slice(0, 20)) log(`  跳过：${item}`);
+  if (dereferenced.length > 20 || skipped.length > 20) log('  （仅展示前 20 条）');
 }
 
 /** pnpm 虚拟仓库中按包名取一个已安装目录（多个版本时取字典序最后，即最高版本）。 */
@@ -352,6 +404,7 @@ if (!opts.noZip) {
 const dirty = dirtyFiles();
 console.log('');
 log(`完成：${stageRoot}`);
+logSymlinkStats();
 log(`规则：${manifest.file_count} 个文件 / ${manifest.skills.length} 个技能`);
 if (!opts.noZip) log(`压缩包：${zipPath}（${(statSync(zipPath).size / 1048576).toFixed(1)} MB）`);
 log(`HEAD=${head}；构建时未提交改动 ${dirty.length} 个文件${dirty.length ? `：${dirty.join(', ')}` : ''}`);
