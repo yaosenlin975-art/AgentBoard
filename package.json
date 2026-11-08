@@ -7,7 +7,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "prebuild": "node scripts/check-bom.mjs",
+    "prebuild": "node scripts/check-bom.mjs && node scripts/run-lint.mjs",
+    "lint": "node scripts/run-lint.mjs",
+    "lint:update-baseline": "node scripts/run-lint.mjs --update-baseline",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "server:ensure": "node scripts/server-detached.mjs",
@@ -16,5 +20,10 @@
     "publish:web": "node scripts/rebuild-web-dist.mjs",
     "package:portable": "node scripts/package-portable.mjs",
     "shortcut:test-page": "powershell -ExecutionPolicy Bypass -File scripts/create-test-page-shortcut.ps1"
+  },
+  "devDependencies": {
+    "eslint": "^10.14.0",
+    "prettier": "^3.9.10",
+    "typescript-eslint": "^8.72.1"
   }
 }

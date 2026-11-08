@@ -1,0 +1,10 @@
+**/dist/**
+**/node_modules/**
+**/coverage/**
+.agentboard/**
+.logs/**
+.tmp/**
+pnpm-lock.yaml
+**/*.md
+skills/**
+Docs/**

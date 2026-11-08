@@ -21,7 +21,7 @@ import {
 } from '../../api/endpoints';
 import { ISSUE_STATUSES, manualStatusBlockedReason } from '../../lib/issueStatus';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFromDataTransfer } from '../../lib/imageDraft';
-import { openBlockerCount, type DependencyView } from '../../lib/dependency';
+import { openBlockerCount } from '../../lib/dependency';
 import { usePanelStore } from '../../state/panelStore';
 import { ActionBar } from './ActionBar';
 import { AttachmentsSection } from './AttachmentsSection';
