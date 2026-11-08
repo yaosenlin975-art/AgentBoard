@@ -235,6 +235,8 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 
 启动首行日志会打印实际生效的库路径与来源：`listening http://… db=<path> db_source=<env|settings|default> attachments=<dir>`；附件目录恒为 `dirname(db)/attachments`，DB 路径一变自动跟随。
 
+存储引擎口径（CR-12，2026-11-08 定案）：WAL + `synchronous=FULL`（SQLite 默认，不显式降级）。掉电语义：每个事务提交都 FlushFileBuffers，**掉电/断电不丢任何已提交事务、库不损坏**；实测本机 NVMe 下 FULL 的逐提交 fsync 开销约 20µs/事务（吞吐 ~14k tx/s，better-sqlite3 同步 API），`synchronous=NORMAL` 两轮 5 次采样中位无可测收益（0.96x/0.98x，噪声内），不改默认——评估数据与采样方法见知识页 `kb-synchronous-full-vs-normal`。
+
 ### DB-2 迁移引擎（`services/dbMigration.ts`，服务层；无新增端点）
 
 把「当前库 + 附件目录」整体搬到新位置：**前置检查 → 一致性快照 → 附件逐文件校验 → 写设置 → 重启 → 自检**。
