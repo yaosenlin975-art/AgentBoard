@@ -12,7 +12,7 @@
  * 入口断言改到全局供应商选择页（顶栏 `accounts-add-toggle` → `accounts-add-picker` 卡片），
  * 向导从选择页的「授权添加」卡打开；平台级顶栏「添加」用例补 fixture 账号使左栏行合法出现。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -90,6 +90,15 @@ beforeEach(() => {
     http.get('/api/managed-accounts', () => HttpResponse.json([])),
   );
 });
+
+/** ACC-INCOGNITO-W：无痕打开端点的默认 mock（mode='incognito'），可选记录请求体 */
+function useIncognitoHandler(requests: Array<unknown> = []) {
+  server.use(http.post('/api/browser/open-incognito', async ({ request }) => {
+    requests.push(await request.json());
+    return HttpResponse.json({ opened_with: 'chrome', mode: 'incognito', degraded_reason: null });
+  }));
+  return requests;
+}
 
 describe('协议级添加账号入口（ACC-KB-B2W）', () => {
   it('已装配协议的平台给出「添加账号」按钮；未装配的平台只给 reason 文案、没有按钮', async () => {
@@ -182,6 +191,7 @@ describe('协议级添加账号入口（ACC-KB-B2W）', () => {
 describe('添加账号流程（ACC-KB-B2W）', () => {
   it('发起授权 → 展示授权地址与设备码 → 轮询成功后账号列表重新拉取', async () => {
     const starts: unknown[] = [];
+    useIncognitoHandler();
     let accountLists = 0;
     server.use(
       http.get('/api/managed-accounts', () => {
@@ -222,6 +232,7 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
   });
 
   it('轮询失败（平台拒绝授权）给中文原因，裸码只进可展开技术码', async () => {
+    useIncognitoHandler();
     server.use(
       http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
       http.post('/api/add-account-sessions/:id/poll', () => HttpResponse.json({
@@ -262,6 +273,7 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
   });
 
   it('取消授权：会话置 cancelled，不建账号、不轮询', async () => {
+    useIncognitoHandler();
     let polls = 0;
     let deletes = 0;
     server.use(
@@ -308,5 +320,91 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     await screen.findByTestId('accounts-body-minimax');
     expect(screen.queryByTestId('accounts-body-workbuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-add-panel-workbuddy_desktop')).toBeNull();
+  });
+});
+
+describe('ACC-INCOGNITO-W：授权地址无痕打开', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('点「开始授权」后自动请求无痕打开端点，且不调用 window.open；mode=incognito 无降级提示', async () => {
+    const windowOpen = vi.spyOn(window, 'open');
+    const opens = useIncognitoHandler();
+    server.use(
+      http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
+    );
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await openWizard('workbuddy_desktop');
+
+    await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
+
+    // 请求命中 POST /api/browser/open-incognito，body 是会话里的授权地址
+    await waitFor(() => expect(opens).toEqual([{ url: 'https://www.codebuddy.cn/auth?state=abc' }]));
+    // 不经前端 window.open（打开由服务端 spawn 完成）
+    expect(windowOpen).not.toHaveBeenCalled();
+    // mode='incognito'：不加降级提示
+    expect(screen.queryByTestId('accounts-add-degraded-workbuddy_desktop')).toBeNull();
+  });
+
+  it('点「授权地址」走同一端点且阻止默认导航；mode=normal 时展示服务端降级原因', async () => {
+    const DEGRADED = '未找到 Chrome / Edge / Brave，已用系统默认浏览器普通窗口打开（非无痕）';
+    const opens: unknown[] = [];
+    server.use(
+      http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
+      http.post('/api/browser/open-incognito', async ({ request }) => {
+        opens.push(await request.json());
+        return HttpResponse.json({ opened_with: 'default', mode: 'normal', degraded_reason: DEGRADED });
+      }),
+      // 自动轮询兜底（用例慢时 3 秒后触发）：返回 pending，不改变会话
+      http.post('/api/add-account-sessions/:id/poll', () => HttpResponse.json({ session: session(), account: null })),
+    );
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await openWizard('workbuddy_desktop');
+
+    await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
+    const url = await screen.findByTestId('accounts-add-url-workbuddy_desktop');
+    // href 保留供右键复制/查看
+    expect(url).toHaveAttribute('href', 'https://www.codebuddy.cn/auth?state=abc');
+
+    // 点击拦截：默认导航被阻止（document 冒泡阶段读到 defaultPrevented）
+    let prevented = false;
+    const listener = (event: MouseEvent) => { prevented = event.defaultPrevented; };
+    document.addEventListener('click', listener);
+    await userEvent.click(url);
+    document.removeEventListener('click', listener);
+    expect(prevented).toBe(true);
+
+    // 同一端点被调用（start 自动打开 1 次 + 手点 1 次）
+    await waitFor(() => expect(opens).toHaveLength(2));
+    expect(opens[1]).toEqual({ url: 'https://www.codebuddy.cn/auth?state=abc' });
+    // 降级原因原样展示在向导内
+    expect(await screen.findByTestId('accounts-add-degraded-workbuddy_desktop')).toHaveTextContent(DEGRADED);
+  });
+
+  it('无痕打开端点 502 时给中文失败提示（含技术码），会话仍为 pending 可继续', async () => {
+    server.use(
+      http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
+      http.post('/api/browser/open-incognito', () =>
+        HttpResponse.json({ error: { code: 'BROWSER_OPEN_FAILED', message: '没有可用的浏览器可以打开授权地址' } }, { status: 502 })),
+      // 自动轮询兜底（用例慢时 3 秒后触发）：返回 pending，不改变会话
+      http.post('/api/add-account-sessions/:id/poll', () => HttpResponse.json({ session: session(), account: null })),
+    );
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await openWizard('workbuddy_desktop');
+
+    await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
+
+    const reason = await screen.findByTestId('accounts-add-notice-reason-workbuddy_desktop');
+    expect(reason).toHaveTextContent('没有可用的浏览器可以打开授权地址');
+    const details = await screen.findByTestId('accounts-add-notice-code-workbuddy_desktop');
+    expect(details.textContent).toContain('BROWSER_OPEN_FAILED');
+    // 会话不受影响：授权地址仍在、检查/取消按钮仍在（pending）
+    expect(screen.getByTestId('accounts-add-url-workbuddy_desktop')).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-add-check-workbuddy_desktop')).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-add-cancel-workbuddy_desktop')).toBeInTheDocument();
   });
 });

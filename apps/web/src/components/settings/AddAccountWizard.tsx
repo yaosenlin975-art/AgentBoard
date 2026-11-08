@@ -27,13 +27,21 @@
  * `accounts-add-region-<app>-<region>`（区域）/ `accounts-add-start-<app>`（开始授权）/
  * `accounts-add-url-<app>`（授权链接）/ `accounts-add-code-<app>`（设备码）/
  * `accounts-add-check-<app>`（检查授权结果）/ `accounts-add-cancel-<app>`（取消）/
- * `accounts-add-status-<app>`（状态与原因）/ `accounts-add-unsupported-<app>`（能力不可用文案）。
+ * `accounts-add-status-<app>`（状态与原因）/ `accounts-add-unsupported-<app>`（能力不可用文案）/
+ * `accounts-add-degraded-<app>`（无痕降级提示，ACC-INCOGNITO-W）。
  * ACC-UI-PRUNE：入口旁的链路标签 `accounts-add-flow-*`（设备码 / 浏览器登录等）已删。
+ *
+ * ACC-INCOGNITO-W：授权地址一律走服务端无痕窗口打开（POST /api/browser/open-incognito，
+ * 经 `api/browserOpen.ts` 的 `browserOpenApi`）：点「开始授权」成功后自动打开，手点「授权地址」
+ * 链接也走同一条链路（点击拦截，href 仅保留供右键复制/查看）。降级（mode='normal'）时把
+ * 服务端 `degraded_reason` 中文文案原样展示在向导内；mode='incognito' 不加提示。
+ * 打开失败只进失败 notice，不影响会话继续（用户仍可手点链接重试）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AddAccountProtocolInfo, AddAccountSession, ManagedAppId } from '@agentboard/shared';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
+import { browserOpenApi } from '../../api/browserOpen';
 import { appLabel, reasonCodeOf, reasonLabel } from './accountCapabilities';
 import {
   cancelAddAccountSession,
@@ -131,20 +139,38 @@ export function AddAccountWizard({
   const [notice, setNotice] = useState<AddAccountNotice | null>(null);
   const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
+  /** ACC-INCOGNITO-W：降级提示（mode='normal' 时的服务端中文原因）；mode='incognito' 恒为 null */
+  const [degraded, setDegraded] = useState<string | null>(null);
+
+  /**
+   * ACC-INCOGNITO-W：用无痕窗口打开授权地址（start 自动打开与手点链接共用同一条链路）。
+   * 降级时把服务端 degraded_reason 原样展示；打开失败只进失败 notice，不影响会话继续。
+   */
+  const openAuthUrl = useCallback(async (url: string) => {
+    try {
+      const result = await browserOpenApi.openIncognito(url);
+      setDegraded(result.mode === 'normal' ? result.degraded_reason ?? '已用系统默认浏览器普通窗口打开（非无痕）' : null);
+    } catch (error) {
+      setNotice(noticeOf(reasonCodeOf(error), error instanceof Error ? error.message : null));
+    }
+  }, []);
 
   /** 发起授权：拿到授权地址（+ 设备码）。凭据只进服务端 vault，界面只拿脱敏字段。 */
   const start = useCallback(async () => {
     setBusy(true);
     setNotice(null);
+    setDegraded(null);
     try {
       const result = await startAddAccountSession(app, region);
       setSession(result.session);
+      // 拿到授权地址即自动弹无痕窗口；不 await（打开慢时不阻塞取消/检查按钮）
+      if (result.session.authorization_url !== null) void openAuthUrl(result.session.authorization_url);
     } catch (error) {
       setNotice(noticeOf(reasonCodeOf(error), error instanceof Error ? error.message : null));
     } finally {
       setBusy(false);
     }
-  }, [app, region]);
+  }, [app, region, openAuthUrl]);
 
   /** 轮询一次授权结果；`pending` 无副作用，`authorized` 时刷新账号列表 */
   const runPoll = useCallback(async (sessionId: string): Promise<AddAccountSession | null> => {
@@ -247,15 +273,25 @@ export function AddAccountWizard({
           {session.authorization_url !== null && (
             <p className="flex flex-wrap items-center gap-1.5">
               <span className="text-[11px] text-neutral-500 dark:text-neutral-400">授权地址</span>
+              {/* ACC-INCOGNITO-W：点击拦截后走无痕打开，不再依赖 target=_blank；href 保留供右键复制/查看 */}
               <a
                 data-testid={`accounts-add-url-${app}`}
                 href={session.authorization_url}
-                target="_blank"
-                rel="noreferrer"
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (session.authorization_url !== null) void openAuthUrl(session.authorization_url);
+                }}
                 className="break-all text-accent underline underline-offset-2"
               >
                 {session.authorization_url}
               </a>
+            </p>
+          )}
+
+          {/* ACC-INCOGNITO-W：降级（未用无痕）时展示服务端中文原因，可感知、不静默 */}
+          {degraded !== null && (
+            <p data-testid={`accounts-add-degraded-${app}`} role="status" className="text-[11px] text-amber-600 dark:text-amber-400">
+              {degraded}
             </p>
           )}
 
