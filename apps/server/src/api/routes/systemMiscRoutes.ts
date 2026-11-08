@@ -2,7 +2,8 @@
  * system 杂域 REST（CR-10d 自 routes.ts 纯搬迁，不改语义）。
  * 覆盖：GET /api/version（SERVER-SINGLETON/RESTART-HARDENING 自报）、GET /api/skills、
  * GET /api/clis 与 /api/clis/:id/models、POST/GET /api/system/center-snapshot/*（STORE-6 中心库快照）、
- * POST /api/system/pick-folder（Windows 原生文件夹选择，模块级并发守卫随域迁入）。
+ * POST /api/system/pick-folder（Windows 原生文件夹选择，模块级并发守卫随域迁入）、
+ * GET /api/system/mcp-info（MCP 入口与工具清单自报）。
  * 注意与 ../systemRoutes.ts（createSystemRouter：/system/restart 重启服务）分工：本文件是
  * version/skills/clis/center-snapshot/pick-folder 杂域，挂载点在 /system/restart 所属路由之前，
  * 两者无同路径冲突。
@@ -18,6 +19,8 @@ import { ApiError, NotFoundError } from '../../errors.js';
 import { centerSnapshotDir, exportCenterSnapshot, validateCenterSnapshot } from '../../services/centerSnapshot.js';
 import { listSkills } from '../../services/skills.js';
 import { getCachedClis } from '../../services/cliDetect.js';
+import { buildMcpInfo } from '../../services/mcpInfo.js';
+import { readSettings } from '../../config.js';
 
 export interface SystemMiscRouterDeps {
   /** 中心库：center-snapshot 的源库 */
@@ -156,6 +159,11 @@ export function createSystemMiscRouter(deps: SystemMiscRouterDeps): Router {
     } finally {
       pickFolderInFlight = false;
     }
+  });
+
+  // MCP 入口与工具清单自报：真实 spawn apps/mcp/dist/index.js 拉 tools/list（10s 超时、60s 模块级缓存）
+  router.get('/system/mcp-info', async (_req, res) => {
+    res.json(await buildMcpInfo({ port: readSettings().port }));
   });
 
   // ---- clis ----
