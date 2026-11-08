@@ -8,8 +8,9 @@
  */
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, Priority } from '@agentboard/shared';
+import type { Priority } from '@agentboard/shared';
 import { api, type AttachmentUploadResult } from '../../api/client';
+import { createIssue } from '../../api/endpoints';
 import { MAX_DRAFT_IMAGES, MAX_IMAGE_BYTES, collectDraftImages, filesFromClipboard, filesFromDataTransfer, type ImageMimeType } from '../../lib/imageDraft';
 import {
   ADAPTER_LABEL,
@@ -178,7 +179,7 @@ export function NewIssueDialog({
 
   const create = useMutation({
     mutationFn: (body: { workspace_id: string; title: string; description: string; priority: Priority; labels: string[]; attachment_ids: string[] }) =>
-      api.post<Issue>('/api/issues', body, { headers: { 'Idempotency-Key': draftKeyRef.current } }),
+      createIssue(body, { idempotencyKey: draftKeyRef.current }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['issues', workspaceId] });
       setTitle('');
@@ -304,8 +305,7 @@ export function NewIssueDialog({
     const rows: Array<{ localId: string; title: string; ok: boolean; error?: string }> = [];
     for (const card of chosen) {
       try {
-        await api.post<Issue>(
-          '/api/issues',
+        await createIssue(
           {
             workspace_id: workspaceId,
             title: card.title.trim(),
@@ -314,7 +314,7 @@ export function NewIssueDialog({
             labels: card.labels,
             attachment_ids: [],
           },
-          { headers: { 'Idempotency-Key': crypto.randomUUID() } },
+          { idempotencyKey: crypto.randomUUID() },
         );
         rows.push({ localId: card.localId, title: card.title.trim(), ok: true });
       } catch (e) {

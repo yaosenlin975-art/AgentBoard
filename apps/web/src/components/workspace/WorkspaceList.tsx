@@ -11,6 +11,7 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import type { Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { listIssueCounts } from '../../api/endpoints';
 import {
   commitWorkspaceOrder,
   moveWorkspace,
@@ -40,9 +41,7 @@ async function fetchIssueCounts(ids: string[]): Promise<Record<string, Record<st
   const merged: Record<string, Record<string, number>> = {};
   for (let index = 0; index < ids.length; index += COUNT_BATCH_SIZE) {
     const chunk = ids.slice(index, index + COUNT_BATCH_SIZE);
-    const page = await api.get<{ items: WorkspaceIssueCounts[] }>(
-      `/api/issues/counts?workspace_ids=${encodeURIComponent(chunk.join(','))}`,
-    );
+    const page = await listIssueCounts<{ items: WorkspaceIssueCounts[] }>(chunk);
     for (const item of page.items) merged[item.workspace_id] = item.counts;
   }
   return merged;

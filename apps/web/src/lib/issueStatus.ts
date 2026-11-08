@@ -7,7 +7,7 @@
  */
 import type { QueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus } from '@agentboard/shared';
-import { api } from '../api/client';
+import { patchIssue } from '../api/endpoints';
 import { BUILTIN_STATUS_NAMES } from './workspaceStatuses';
 
 /**
@@ -48,7 +48,7 @@ export interface ManualStatusUpdate {
 
 /** 手动状态更新：与看板拖动、树节点下拉同一契约（workspace_id + expected_updated_at CAS） */
 export function patchIssueStatus(input: ManualStatusUpdate): Promise<Issue> {
-  return api.patch<Issue>(`/api/issues/${input.issueId}`, {
+  return patchIssue(input.issueId, {
     workspace_id: input.workspaceId,
     expected_updated_at: input.expectedUpdatedAt,
     status: input.status,

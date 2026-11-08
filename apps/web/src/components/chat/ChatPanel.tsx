@@ -15,8 +15,9 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, Message, Session, SessionTurn, Workspace } from '@agentboard/shared';
+import type { Message, Session, SessionTurn, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { getIssue, markIssueDone } from '../../api/endpoints';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
@@ -121,7 +122,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const issueId = session?.issue_id ?? null;
   const { data: linkedIssue } = useQuery({
     queryKey: ['issue', issueId],
-    queryFn: () => api.get<Issue>(`/api/issues/${issueId}`),
+    queryFn: () => getIssue(issueId!),
     enabled: issueId !== null,
   });
 
@@ -325,7 +326,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const markDone = useMutation({
     mutationFn: () => {
       if (issueId === null) return Promise.reject(new Error('会话未关联任务'));
-      return api.post<Issue>(`/api/issues/${issueId}/done`, { agent_id: 'user' });
+      return markIssueDone(issueId, { agent_id: 'user' });
     },
     onSuccess: (updated) => {
       void queryClient.invalidateQueries({ queryKey: ['issue', updated.id] });

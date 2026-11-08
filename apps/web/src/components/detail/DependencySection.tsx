@@ -8,8 +8,9 @@
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus } from '@agentboard/shared';
-import { ApiError, api } from '../../api/client';
-import type { DependencyRef, DependencyView } from '../../lib/dependency';
+import { ApiError } from '../../api/client';
+import { addIssueDependencies, getIssueDependencies, listIssues, removeIssueDependency } from '../../api/endpoints';
+import type { DependencyRef } from '../../lib/dependency';
 
 const inputCls =
   'w-full rounded border border-hairline bg-surface-card px-2 py-1 text-[11.5px] text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent';
@@ -90,14 +91,11 @@ export function DependencySection({ issue }: { issue: Issue }) {
 
   const { data: dependencies, error: loadError } = useQuery({
     queryKey: ['dependencies', issue.id],
-    queryFn: () =>
-      api.get<DependencyView>(
-        `/api/issues/${issue.id}/dependencies?workspace_id=${encodeURIComponent(issue.workspace_id)}`,
-      ),
+    queryFn: () => getIssueDependencies(issue.id, issue.workspace_id),
   });
   const { data: workspaceIssues } = useQuery({
     queryKey: ['issues', issue.workspace_id],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(issue.workspace_id)}`),
+    queryFn: () => listIssues(issue.workspace_id),
   });
 
   const blockers = dependencies?.blockers ?? [];
@@ -131,7 +129,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
 
   const addBlockers = useMutation({
     mutationFn: (blockerId: string) =>
-      api.post<DependencyView>(`/api/issues/${issue.id}/dependencies`, {
+      addIssueDependencies(issue.id, {
         workspace_id: issue.workspace_id,
         blocker_issue_id: blockerId,
       }),
@@ -146,9 +144,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
 
   const removeBlocker = useMutation({
     mutationFn: (blockerId: string) =>
-      api.del<void>(
-        `/api/issues/${issue.id}/dependencies/${blockerId}?workspace_id=${encodeURIComponent(issue.workspace_id)}`,
-      ),
+      removeIssueDependency(issue.id, blockerId, issue.workspace_id),
     onSuccess: () => {
       setError(null);
       void refresh();

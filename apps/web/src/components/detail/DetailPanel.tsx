@@ -11,6 +11,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarkdownView } from '../../lib/markdown';
 import type { Issue, Priority, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
+import {
+  deleteIssue,
+  getIssue,
+  getIssueDependencies,
+  listIssues,
+  patchIssue,
+  releaseIssue,
+} from '../../api/endpoints';
 import { ISSUE_STATUSES, manualStatusBlockedReason } from '../../lib/issueStatus';
 import { attachmentIdsFromText, collectDraftImages, filesFromClipboard, filesFromDataTransfer } from '../../lib/imageDraft';
 import { openBlockerCount, type DependencyView } from '../../lib/dependency';
@@ -49,7 +57,7 @@ export function DetailPanel() {
 
   const { data: issue, error: issueError } = useQuery({
     queryKey: ['issue', issueId],
-    queryFn: () => api.get<Issue>(`/api/issues/${issueId}`),
+    queryFn: () => getIssue(issueId!),
     enabled: issueId !== null,
   });
   const { data: workspaces } = useQuery({
@@ -59,7 +67,7 @@ export function DetailPanel() {
   });
   const { data: workspaceIssues } = useQuery({
     queryKey: ['issues', issue?.workspace_id],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(issue!.workspace_id)}`),
+    queryFn: () => listIssues(issue!.workspace_id),
     enabled: issue !== undefined,
   });
   const { data: allSessions } = useQuery({
@@ -71,10 +79,7 @@ export function DetailPanel() {
   // 依赖清单：与详情「依赖」区共用同一 queryKey（同一份缓存），claim/派发前用来列 blocker
   const { data: dependencies } = useQuery({
     queryKey: ['dependencies', issueId],
-    queryFn: () =>
-      api.get<DependencyView>(
-        `/api/issues/${issueId}/dependencies?workspace_id=${encodeURIComponent(issue!.workspace_id)}`,
-      ),
+    queryFn: () => getIssueDependencies(issueId!, issue!.workspace_id),
     enabled: issueId !== null && issue !== undefined,
   });
 
@@ -146,8 +151,7 @@ export function DetailPanel() {
         const body = pendingRef.current;
         pendingRef.current = {};
         if (Object.keys(body).length === 0) return;
-        api
-          .patch<Issue>(`/api/issues/${issueId}`, body)
+        patchIssue(issueId, body)
           .then((updated) => {
             queryClient.setQueryData(['issue', issueId], updated);
             // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
@@ -182,13 +186,13 @@ export function DetailPanel() {
   };
 
   const release = useMutation({
-    mutationFn: () => api.post<Issue>(`/api/issues/${issueId}/release`),
+    mutationFn: () => releaseIssue(issueId!),
     onSuccess: refreshIssue,
     onError: (e) => setActionError(e instanceof Error ? e.message : '释放失败'),
   });
 
   const remove = useMutation({
-    mutationFn: () => api.del<void>(`/api/issues/${issueId}`),
+    mutationFn: () => deleteIssue(issueId!),
     onSuccess: () => {
       // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
@@ -210,7 +214,7 @@ export function DetailPanel() {
         body.workspace_id = issue.workspace_id;
         body.expected_updated_at = issue.updated_at;
       }
-      const updated = await api.patch<Issue>(`/api/issues/${issueId}`, body);
+      const updated = await patchIssue(issueId, body);
       queryClient.setQueryData(['issue', issueId], updated);
     },
     [issueId, issue, queryClient],

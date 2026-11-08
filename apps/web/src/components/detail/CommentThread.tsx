@@ -2,8 +2,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MarkdownView } from '../../lib/markdown';
-import type { AttachmentMetadata, Issue, IssueComment } from '@agentboard/shared';
+import type { AttachmentMetadata, Issue } from '@agentboard/shared';
 import { api, type AttachmentUploadResult } from '../../api/client';
+import { addIssueComment, listIssueComments } from '../../api/endpoints';
 import { Badge } from '../ui/Badge';
 import { EmptyState } from '../ui/EmptyState';
 import { ImageLightbox } from '../ui/ImageLightbox';
@@ -139,7 +140,7 @@ export function CommentThread({
 
   const { data: comments } = useQuery({
     queryKey: ['comments', issue.id],
-    queryFn: () => api.get<IssueComment[]>(`/api/issues/${issue.id}/comments`),
+    queryFn: () => listIssueComments(issue.id),
   });
 
   /**
@@ -166,7 +167,7 @@ export function CommentThread({
 
   const send = useMutation({
     mutationFn: (input: { text: string; attachmentIds: string[] }) =>
-      api.post<{ comment: IssueComment; woke: boolean; warning?: string }>(`/api/issues/${issue.id}/comments`, {
+      addIssueComment(issue.id, {
         content: input.text,
         ...(input.attachmentIds.length > 0
           ? { workspace_id: issue.workspace_id, attachment_ids: input.attachmentIds }

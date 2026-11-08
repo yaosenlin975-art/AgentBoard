@@ -9,8 +9,9 @@
  */
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, WorkspaceStatus, WorkspaceStatusKind } from '@agentboard/shared';
+import type { WorkspaceStatus, WorkspaceStatusKind } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { listIssues } from '../../api/endpoints';
 import { useWorkspaceStatuses, invalidateStatuses, statusAccent } from '../../lib/workspaceStatuses';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 
@@ -38,7 +39,7 @@ export function WorkspaceStatusSettings({ workspaceId }: { workspaceId: string |
   // 卡数：复用看板的 issues 查询缓存（同一 key），不额外打接口
   const { data: issues } = useQuery({
     queryKey: ['issues', workspaceId],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspaceId ?? '')}`),
+    queryFn: () => listIssues(workspaceId),
     enabled: workspaceId !== null,
   });
   const countByStatus = new Map<string, number>();

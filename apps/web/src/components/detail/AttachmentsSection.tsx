@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api, type IssueAttachmentListPage } from '../../api/client';
+import { listIssueAttachments } from '../../api/endpoints';
 
 /** 折叠区默认可见行数（原型规格：5 行） */
 export const ATTACHMENT_VISIBLE_ROWS = 5;
@@ -40,7 +40,7 @@ async function copyText(text: string): Promise<boolean> {
 export function AttachmentsSection({ issueId }: { issueId: string }) {
   const { data } = useQuery({
     queryKey: ['issue-attachments', issueId],
-    queryFn: () => api.get<IssueAttachmentListPage>(`/api/issues/${issueId}/attachments?limit=100`),
+    queryFn: () => listIssueAttachments(issueId, 100),
   });
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);

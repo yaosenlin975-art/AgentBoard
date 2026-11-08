@@ -11,8 +11,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { MAX_DISPATCH_IMAGE_BYTES, MAX_DISPATCH_IMAGE_COUNT, MAX_DISPATCH_SELECTED_ID_COUNT, selectDispatchBatch, type CliInfo, type DispatchAttachmentCandidate, type Issue, type IssueComment, type ModelInfo, type PageResult, type Session, type TaskKnowledge } from '@agentboard/shared';
+import { MAX_DISPATCH_IMAGE_BYTES, MAX_DISPATCH_IMAGE_COUNT, MAX_DISPATCH_SELECTED_ID_COUNT, selectDispatchBatch, type CliInfo, type DispatchAttachmentCandidate, type Issue, type ModelInfo, type PageResult, type Session, type TaskKnowledge } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { listIssueComments, listIssuePendingAttachments } from '../../api/endpoints';
 import { Modal } from '../ui/Modal';
 import {
   DISPATCH_PROMPT_TEMPLATE,
@@ -90,13 +91,15 @@ export function DispatchDialog({
   // 打开时拉取评论渲染历史备注段（queryKey 与 CommentThread 一致，缓存复用）
   const { data: comments } = useQuery({
     queryKey: ['comments', issue.id],
-    queryFn: () => api.get<IssueComment[]>(`/api/issues/${issue.id}/comments`),
+    queryFn: () => listIssueComments(issue.id),
   });
   const historyNotes = comments === undefined ? null : renderHistoryNotes(comments);
   const pendingAttachments = useInfiniteQuery({
     queryKey: ['pending-attachments', issue.id],
-    queryFn: ({ pageParam }) => api.get<PageResult<DispatchAttachmentCandidate>>(
-      `/api/issues/${encodeURIComponent(issue.id)}/pending-attachments?limit=20&offset=${pageParam}`,
+    queryFn: ({ pageParam }) => listIssuePendingAttachments<PageResult<DispatchAttachmentCandidate>>(
+      issue.id,
+      20,
+      pageParam,
     ),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,

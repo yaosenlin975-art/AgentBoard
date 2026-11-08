@@ -11,8 +11,8 @@
  */
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { Issue } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { listIssues } from '../../api/endpoints';
 import {
   attachmentIds,
   attachmentMarkdown,
@@ -165,7 +165,7 @@ export function Composer({
   // 任务列表：与 Board 共用 ['issues', workspaceId] 缓存
   const issues = useQuery({
     queryKey: ['issues', workspaceId],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspaceId ?? '')}`),
+    queryFn: () => listIssues(workspaceId),
     enabled: workspaceId !== undefined && workspaceId !== null,
     staleTime: 30_000,
   });

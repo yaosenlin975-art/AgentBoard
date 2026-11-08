@@ -19,6 +19,7 @@ import {
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import type { Issue, Session } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { listIssues as listIssuesApi, patchIssue as patchIssueApi } from '../../api/endpoints';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { commitDrop, detectDropCollision, groupByColumn, resolveDrop } from '../../lib/dnd';
 import { buildIssueTreeFilter } from '../../lib/issueTree';
@@ -97,7 +98,7 @@ export function Board({
     isPlaceholderData: issuesPlaceholder,
   } = useQuery({
     queryKey: ['issues', workspaceId],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspaceId ?? '')}`),
+    queryFn: () => listIssuesApi(workspaceId),
     enabled,
     placeholderData: keepPreviousData,
   });
@@ -193,7 +194,7 @@ export function Board({
     setBatchBusy(true);
     try {
       await Promise.all(
-        [...selectedIds].map((id) => api.patch<Issue>(`/api/issues/${id}`, { status })),
+        [...selectedIds].map((id) => patchIssueApi(id, { status })),
       );
       await queryClient.invalidateQueries({ queryKey: ['issues', workspaceId] });
       setSelectedIds(new Set());
@@ -250,7 +251,7 @@ export function Board({
       queryClient,
       queryKey: ['issues', workspaceId],
       drop,
-      patchIssue: (id, patch) => api.patch<Issue>(`/api/issues/${id}`, patch),
+      patchIssue: (id, patch) => patchIssueApi(id, patch),
       onError: (err) => setError(err instanceof Error ? err.message : '移动失败，请重试'),
     });
   };

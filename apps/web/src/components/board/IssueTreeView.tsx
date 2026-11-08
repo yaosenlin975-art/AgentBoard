@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, IssueStatus, IssueTreeItem, IssueTreePage } from '@agentboard/shared';
-import { ApiError, api } from '../../api/client';
+import type { Issue, IssueStatus, IssueTreeItem } from '@agentboard/shared';
+import { ApiError } from '../../api/client';
+import { createIssue, listIssueTree, patchIssue } from '../../api/endpoints';
 import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, sortTreeItemsByChildCount, filterTreeItemsWithChildren, readTreeHideLeaf, writeTreeHideLeaf, type IssueTreeFilter } from '../../lib/issueTree';
 import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
@@ -113,7 +114,7 @@ export function IssueTreeView({
     if (editor === null || editor.saving || editor.conflict || editor.selectedParentId === (editor.originalParentId ?? '')) return;
     setMoveEditor({ ...editor, saving: true, error: null });
     try {
-      await api.patch<Issue>(`/api/issues/${editor.issueId}`, {
+      await patchIssue(editor.issueId, {
         workspace_id: workspaceId,
         expected_updated_at: editor.expectedUpdatedAt,
         parent_issue_id: editor.selectedParentId === '' ? null : editor.selectedParentId,
@@ -230,7 +231,7 @@ function TaskTreeChildren({
       const params = new URLSearchParams({ workspace: workspaceId, limit: String(PAGE_SIZE) });
       if (parentId !== null) params.set('parent_issue_id', parentId);
       if (pageParam !== null) params.set('cursor', pageParam);
-      return api.get<IssueTreePage>(`/api/issues/tree?${params.toString()}`);
+      return listIssueTree(params);
     },
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
@@ -392,7 +393,7 @@ function TaskTreeRow({
     setSavingCreate(true);
     setCreateError(null);
     try {
-      await api.post<Issue>('/api/issues', { workspace_id: workspaceId, title, parent_issue_id: item.id });
+      await createIssue({ workspace_id: workspaceId, title, parent_issue_id: item.id });
       setNewTitle('');
       setCreateOpen(false);
       await refresh();

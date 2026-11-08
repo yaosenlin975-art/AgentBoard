@@ -23,8 +23,8 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useSortable } from '@dnd-kit/sortable';
-import type { Issue, Workspace } from '@agentboard/shared';
-import { api } from '../../api/client';
+import type { Workspace } from '@agentboard/shared';
+import { listIssues } from '../../api/endpoints';
 import { useAppStore } from '../../state/appStore';
 import { RemoveWorkspaceDialog } from './RemoveWorkspaceDialog';
 import { GRAB_CURSOR } from '../../lib/cursor';
@@ -103,7 +103,7 @@ export function WorkspaceCard({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const { data: issues } = useQuery({
     queryKey: ['issues', workspace.id],
-    queryFn: () => api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspace.id)}`),
+    queryFn: () => listIssues(workspace.id),
     // PERF-4b：只有 counts 不可用（null）时才回落旧全量；加载中（undefined）不发请求，避免 N+1
     enabled: statusCounts === null,
   });

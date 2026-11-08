@@ -11,7 +11,7 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Issue } from '@agentboard/shared';
-import { api } from './client';
+import { listIssues } from './endpoints';
 
 /** 与看板主查询共用同一 key（详见文件头 PERF-6 说明），不再自建独立缓存槽位 */
 export function workspaceLabelsQueryKey(workspaceId: string): readonly unknown[] {
@@ -20,7 +20,7 @@ export function workspaceLabelsQueryKey(workspaceId: string): readonly unknown[]
 
 /** 全量拉取该 workspace 的 issue（不带分页参数 = 覆盖整个 workspace） */
 export function fetchWorkspaceIssues(workspaceId: string): Promise<Issue[]> {
-  return api.get<Issue[]>(`/api/issues?workspace=${encodeURIComponent(workspaceId)}`);
+  return listIssues(workspaceId);
 }
 
 /** 从全量 issue 聚合去重排序后的标签集合 */

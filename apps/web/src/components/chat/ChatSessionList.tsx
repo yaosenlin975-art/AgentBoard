@@ -22,8 +22,9 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Issue, Session, Workspace } from '@agentboard/shared';
+import type { Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
+import { getIssue } from '../../api/endpoints';
 import { usePanelStore } from '../../state/panelStore';
 import { clearStream } from '../../state/streamingStore';
 import { EmptyState } from '../ui/EmptyState';
@@ -109,7 +110,7 @@ export function ChatSessionList({ onNewSession }: { onNewSession: () => void }) 
   const issueQueries = useQueries({
     queries: issueIds.map((id) => ({
       queryKey: ['issue', id],
-      queryFn: () => api.get<Issue>(`/api/issues/${id}`),
+      queryFn: () => getIssue(id),
     })),
   });
   const issueTitles = new Map<string, string>();

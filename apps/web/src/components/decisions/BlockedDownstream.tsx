@@ -7,8 +7,8 @@
  */
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../../api/client';
-import type { DependencyRef, DependencyView } from '../../lib/dependency';
+import { getIssueDependencies } from '../../api/endpoints';
+import type { DependencyRef } from '../../lib/dependency';
 
 /** 超过 6 张下游才出现筛选框（设计 §3.4） */
 export const BLOCKED_FILTER_THRESHOLD = 6;
@@ -106,10 +106,7 @@ export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: 
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['dependencies', issueId, 'downstream-depth2'],
-    queryFn: () =>
-      api.get<DependencyView>(
-        `/api/issues/${encodeURIComponent(issueId)}/dependencies?depth=2&workspace_id=${encodeURIComponent(workspaceId)}`,
-      ),
+    queryFn: () => getIssueDependencies(issueId, workspaceId, 2),
     enabled: open,
   });
 

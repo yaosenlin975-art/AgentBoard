@@ -8,6 +8,7 @@
  *   503 ADAPTER_UNAVAILABLE（前置探测，附原因）/ 400 参数 / 404 工作区
  */
 import type { Priority } from '@agentboard/shared';
+import { ISSUE_DRAFT_PATH } from '../api/endpoints';
 
 export const DRAFT_ADAPTERS = ['dsh', 'codex', 'opencode', 'codebuddy'] as const;
 export type DraftAdapter = (typeof DRAFT_ADAPTERS)[number];
@@ -201,7 +202,7 @@ async function postDraft(input: DraftRequestInput, options: DraftOptions): Promi
   const init: RequestInit = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body };
   const withSignal = options.signal !== undefined && signalSupported !== false;
   try {
-    const res = await fetch(options.endpoint ?? '/api/issues/draft', withSignal ? { ...init, signal: options.signal } : init);
+    const res = await fetch(options.endpoint ?? ISSUE_DRAFT_PATH, withSignal ? { ...init, signal: options.signal } : init);
     if (withSignal) signalSupported = true;
     return res;
   } catch (e) {
@@ -209,7 +210,7 @@ async function postDraft(input: DraftRequestInput, options: DraftOptions): Promi
     // fetch 会在跨 realm signal 上抛 "Expected signal ... to be an instance of AbortSignal"
     if (withSignal && /signal/i.test(message) && options.signal?.aborted !== true) {
       signalSupported = false;
-      return fetch(options.endpoint ?? '/api/issues/draft', init);
+      return fetch(options.endpoint ?? ISSUE_DRAFT_PATH, init);
     }
     throw e;
   }
