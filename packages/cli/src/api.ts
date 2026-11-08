@@ -62,6 +62,32 @@ function connErrorCode(err: unknown): ConnErrorCode | null {
   return null;
 }
 
+/**
+ * CR-3：请求统一超时（服务进程存活但卡死：同步 SQLite 长事务、事件循环阻塞等，此前任意命令会无限挂起）。
+ * 每次尝试独立计时（signal 在 fetch 调用点创建）；超时不参与 GET 重试，避免总耗时翻倍。
+ */
+export const REQUEST_TIMEOUT_MS = 15_000;
+
+/** CR-3：识别超时中断——AbortSignal.timeout 的原因是 TimeoutError；旧版 undici 包装为 AbortError；均在 cause 链上 */
+function isTimeoutError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur; depth += 1) {
+    const node = cur as { name?: unknown; cause?: unknown };
+    if (node.name === 'TimeoutError' || node.name === 'AbortError') return true;
+    cur = node.cause;
+  }
+  return false;
+}
+
+/** CR-3：超时报错文案（含服务地址与「服务无响应」；写请求带幂等重试指引） */
+function timeoutError(base: string, method: string, path: string, err: unknown): Error {
+  const writeHint = method.toUpperCase() === 'GET' ? '' : `；${WRITE_RETRY_HINT}`;
+  return new Error(
+    `服务无响应：${method} ${path} 超过 ${REQUEST_TIMEOUT_MS / 1000}s 未完成（${base}），看板服务可能卡死；确认服务状态或用 --server 指定其它地址${writeHint}`,
+    { cause: err },
+  );
+}
+
 /** fetch 抛错的原始信息：cause 链各层 message 去重拼接（undici 外层常为 "fetch failed"，真实原因在 cause） */
 function rawChainMessages(err: unknown): string {
   const messages: string[] = [];
@@ -127,7 +153,7 @@ export async function requestWithMeta<T>(
   };
   const response = await fetchResponse(base, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
   const replayed = response.headers.get(REPLAYED_HEADER) === '1';
-  const data = await decodeResponse<T>(base, response);
+  const data = await decodeWithTimeout<T>(base, method, path, response);
   return { data, replayed };
 }
 
@@ -146,10 +172,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 网络层失败 → 三类文案：① ECONNREFUSED=服务端未启动；② ECONNRESET=连接被重置；③ 其余按 cause 链透出 */
-function networkFailureError(base: string, method: string, err: unknown): Error {
+/** 网络层失败 → 四类文案：① ECONNREFUSED=服务端未启动；② 超时中断=服务无响应；③ ECONNRESET=连接被重置；④ 其余按 cause 链透出 */
+function networkFailureError(base: string, method: string, path: string, err: unknown): Error {
   const code = connErrorCode(err);
   if (code === 'ECONNREFUSED') return new ServerUnreachableError(base);
+  if (isTimeoutError(err)) return timeoutError(base, method, path, err);
   const writeHint = method.toUpperCase() === 'GET' ? '' : `；${WRITE_RETRY_HINT}`;
   if (code === 'ECONNRESET') {
     return new Error(`连接被重置（ECONNRESET，${base}）：服务端可能未启动/网络抖动${writeHint}`, { cause: err });
@@ -160,7 +187,7 @@ function networkFailureError(base: string, method: string, err: unknown): Error 
   return err instanceof Error ? err : new Error(String(err));
 }
 
-/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError；GET 遇连接层抖动自动重试一次，写请求不重试。响应带 x-agentboard-version 时与 CLI 版本比对，不匹配 stderr 警告（每进程最多一次） */
+/** 发请求；2xx 返回解析后的 JSON（204 → undefined），非 2xx 抛 CliHttpError；GET 遇连接层抖动自动重试一次，写请求不重试。响应带 x-agentboard-version 时与 CLI 版本比对，不匹配 stderr 警告（每进程最多一次）。CR-3：每次尝试统一 15s 超时（REQUEST_TIMEOUT_MS） */
 async function fetchResponse(base: string, method: string, path: string, headers?: Record<string, string>, body?: BodyInit): Promise<Response> {
   const retryable = method.toUpperCase() === 'GET';
   for (let attempt = 0; ; attempt += 1) {
@@ -170,17 +197,28 @@ async function fetchResponse(base: string, method: string, path: string, headers
         method,
         headers,
         body,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
       if (retryable && attempt === 0 && connErrorCode(err) !== null) {
         await delay(GET_RETRY_DELAY_MS);
         continue;
       }
-      throw networkFailureError(base, method, err);
+      throw networkFailureError(base, method, path, err);
     }
     if (attempt > 0) process.stderr.write(`网络抖动：${method} ${path} 连接中断，已重试 1 次后成功\n`);
     warnVersionMismatch(res.headers.get(SERVER_VERSION_HEADER));
     return res;
+  }
+}
+
+/** CR-3：响应体读取阶段被同一超时 signal 中断（响应头已到、body 卡住）→ 补映射为同一可读文案 */
+async function decodeWithTimeout<T>(base: string, method: string, path: string, res: Response): Promise<T> {
+  try {
+    return await decodeResponse<T>(base, res);
+  } catch (err) {
+    if (isTimeoutError(err)) throw timeoutError(base, method, path, err);
+    throw err;
   }
 }
 
@@ -221,7 +259,7 @@ export async function request<T>(
     ...(requestId === undefined ? {} : { 'Idempotency-Key': requestId }),
   };
   const response = await fetchResponse(base, method, path, headers, body === undefined ? undefined : JSON.stringify(body));
-  return decodeResponse<T>(base, response);
+  return decodeWithTimeout<T>(base, method, path, response);
 }
 
 export async function requestBinary<T>(
@@ -238,7 +276,7 @@ export async function requestBinary<T>(
     'content-type': mimeType,
     'x-file-name': fileName,
   }, bodyBuffer);
-  return decodeResponse<T>(base, response);
+  return decodeWithTimeout<T>(base, method, path, response);
 }
 
 /**
