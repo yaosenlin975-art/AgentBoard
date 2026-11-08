@@ -3,7 +3,7 @@
  * 环境变量 AGENTBOARD_PORT / AGENTBOARD_DB / AGENTBOARD_HOST 覆盖，不写回）。
  * DOCKER-1：监听地址由 AGENTBOARD_HOST 提供，缺省仍为 127.0.0.1（安全口径不变）；非法值启动即报错。
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -102,19 +102,19 @@ function defaultConfig(): AgentBoardConfig {
   };
 }
 
-/** 读 config.json 原始对象；缺失/损坏返回空（损坏不覆盖原文件） */
-function readPersistedFile(): Partial<AgentBoardConfig> {
+/** 读 config.json 原始对象；缺失/损坏返回空。CR-8：损坏时带 corrupted 标记（原文件不覆盖，由 loadConfig 显式提示） */
+function readPersistedFile(): { source: Partial<AgentBoardConfig>; corrupted: boolean } {
   const path = configFilePath();
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return { source: {}, corrupted: false };
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
     if (parsed !== null && typeof parsed === 'object') {
-      return parsed as Partial<AgentBoardConfig>;
+      return { source: parsed as Partial<AgentBoardConfig>, corrupted: false };
     }
   } catch {
-    // 损坏的配置文件按默认处理
+    // 损坏：按默认处理，但保留原文件（CR-8），由 loadConfig 启动日志显式提示
   }
-  return {};
+  return { source: {}, corrupted: true };
 }
 
 /** 字段级容错合并：仅合法字段覆盖（非法回退默认/当前值）；loadConfig 与 settings 读写共用 */
@@ -147,10 +147,15 @@ function mergeValidFields(
   return target;
 }
 
-/** 读取配置；文件缺失时写回默认；字段非法回退默认值；环境变量最后覆盖（测试用） */
+/** 读取配置；文件缺失时写回默认；字段非法回退默认值；环境变量最后覆盖（测试用）。
+ *  CR-8：config.json 损坏时启动日志显式提示「配置文件损坏，已按默认值启动」，原文件保留不自动覆盖 */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRuntimeConfig {
   const path = configFilePath();
-  const fileConfig = readPersistedFile();
+  const persisted = readPersistedFile();
+  const fileConfig = persisted.source;
+  if (persisted.corrupted) {
+    console.error(`[agentboard] 配置文件损坏，已按默认值启动（原文件保留未覆盖，请人工检查或恢复后重启）：${path}`);
+  }
   if (!existsSync(path)) {
     mkdirSync(configDir(), { recursive: true });
     writeFileSync(path, `${JSON.stringify(defaultConfig(), null, 2)}\n`, 'utf8');
@@ -198,13 +203,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
  * settings 端点只反映 config.json 持久化值——PATCH 写回的目标即 GET 回显的对象，避免回显与写回不一致。
  */
 export function readSettings(): AgentBoardSettings {
-  return mergeValidFields(defaultConfig(), readPersistedFile());
+  return mergeValidFields(defaultConfig(), readPersistedFile().source);
 }
 
-/** 设置端点写侧：读当前持久化值 → 合并 patch（内部字段级容错，与 routes 层 zod 校验并存）→ 写回 → 返回新持久化值 */
+/** 设置端点写侧：读当前持久化值 → 合并 patch（内部字段级容错，与 routes 层 zod 校验并存）→ 写回 → 返回新持久化值。
+ *  CR-8：原子写——先写同目录临时文件（config.json.tmp）再 renameSync 原子替换；
+ *  写进程被杀/断电最多留下半截临时文件，config.json 本身要么是旧内容要么是新内容；
+ *  临时文件写失败或替换失败都不触碰原文件，替换失败时尽力清理临时文件。 */
 export function writeSettings(patch: Partial<AgentBoardSettings>): AgentBoardSettings {
   const merged = mergeValidFields(readSettings(), patch);
+  const target = configFilePath();
+  const tmpPath = `${target}.tmp`;
   mkdirSync(configDir(), { recursive: true });
-  writeFileSync(configFilePath(), `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  writeFileSync(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  try {
+    renameSync(tmpPath, target);
+  } catch (err) {
+    try {
+      rmSync(tmpPath, { force: true });
+    } catch {
+      // 清理失败不影响主错误：残留临时文件会在下次写入时被覆盖
+    }
+    throw err;
+  }
   return merged;
 }
