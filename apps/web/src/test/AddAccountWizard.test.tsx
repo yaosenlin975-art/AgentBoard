@@ -272,11 +272,16 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     expect(reason.textContent ?? '').not.toContain('TRAE_DEVICE_IDENTITY_UNAVAILABLE');
   });
 
-  it('取消授权：会话置 cancelled，不建账号、不轮询', async () => {
+  it('ACC-CANCEL-W：取消授权后 DELETE 会话、账号列表重拉、抽屉收起；重开无旧会话残留', async () => {
     useIncognitoHandler();
     let polls = 0;
     let deletes = 0;
+    let accountLists = 0;
     server.use(
+      http.get('/api/managed-accounts', () => {
+        accountLists += 1;
+        return HttpResponse.json([]);
+      }),
       http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
       http.post('/api/add-account-sessions/:id/poll', () => {
         polls += 1;
@@ -295,8 +300,42 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     await userEvent.click(await screen.findByTestId('accounts-add-cancel-workbuddy_desktop'));
 
     await waitFor(() => expect(deletes).toBe(1));
-    expect(await screen.findByTestId('accounts-add-status-workbuddy_desktop')).toHaveTextContent('已取消添加账号，未创建任何账号');
+    // 账号列表/授权状态重新拉取（首屏 1 次 + 取消后失效重拉）
+    await waitFor(() => expect(accountLists).toBeGreaterThanOrEqual(2));
+    // 抽屉收起：向导面板从 DOM 移除（取消成功后不再展示「已取消」短文案）
+    await waitFor(() => expect(screen.queryByTestId('accounts-add-panel-workbuddy_desktop')).toBeNull());
     expect(polls).toBe(0);
+
+    // 重新打开向导：无旧 session 残留（不出现「等待你在浏览器完成授权」，也不出检查/取消按钮）
+    await userEvent.click(await screen.findByTestId('accounts-add-picker-action-authorize-workbuddy_desktop'));
+    await screen.findByTestId('accounts-add-panel-workbuddy_desktop');
+    expect(screen.queryByText('等待你在浏览器完成授权')).toBeNull();
+    expect(screen.queryByTestId('accounts-add-check-workbuddy_desktop')).toBeNull();
+    expect(deletes).toBe(1);
+  });
+
+  it('ACC-CANCEL-W：DELETE 失败时抽屉不收起，保留中文错误提示可重试', async () => {
+    useIncognitoHandler();
+    let deletes = 0;
+    server.use(
+      http.post('/api/add-account-sessions', () => HttpResponse.json({ session: session() }, { status: 202 })),
+      http.post('/api/add-account-sessions/:id/poll', () => HttpResponse.json({ session: session(), account: null })),
+      http.delete('/api/add-account-sessions/:id', () => {
+        deletes += 1;
+        return HttpResponse.json({ error: { code: 'AUTHORIZATION_NOT_PENDING', message: '该授权会话已不在进行中' } }, { status: 409 });
+      }),
+    );
+    renderPanel();
+    await screen.findByTestId('accounts-index');
+    await openWizard('workbuddy_desktop');
+
+    await userEvent.click(await screen.findByTestId('accounts-add-start-workbuddy_desktop'));
+    await userEvent.click(await screen.findByTestId('accounts-add-cancel-workbuddy_desktop'));
+
+    await waitFor(() => expect(deletes).toBe(1));
+    // 面板仍在（未收起），失败提示可见
+    expect(screen.queryByTestId('accounts-add-panel-workbuddy_desktop')).not.toBeNull();
+    expect(await screen.findByTestId('accounts-add-notice-reason-workbuddy_desktop')).toHaveTextContent('该授权会话已不在进行中');
   });
 
   it('ACC-UI-TOPBAR：入口按钮在顶栏操作行，向导面板仍在平台体内；切走平台后整体不渲染', async () => {

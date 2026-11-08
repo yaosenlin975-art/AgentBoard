@@ -201,19 +201,28 @@ export function AddAccountWizard({
     return () => clearTimeout(timer);
   }, [session, runPoll]);
 
-  /** 放弃授权：会话置 cancelled，不建账号、待激活凭据删除 */
+  /**
+   * 放弃授权（ACC-CANCEL-W）：DELETE 会话成功 → 刷新账号/授权状态（账号列表重新拉取）、
+   * 清空本地会话态并收起抽屉（onClose 让组件卸载，pending state 与轮询定时器一并清除，
+   * 下次打开不会残留「等待你在浏览器完成授权」）。DELETE 失败不收起，保留中文错误提示让用户重试。
+   */
   const cancel = useCallback(async () => {
     if (session === null) return;
     setBusy(true);
     try {
-      const result = await cancelAddAccountSession(session.id);
-      setSession(result.session);
+      await cancelAddAccountSession(session.id);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+      setSession(null);
+      setNotice(null);
+      setDegraded(null);
+      setPolling(false);
+      onClose();
     } catch (error) {
       setNotice(noticeOf(reasonCodeOf(error), error instanceof Error ? error.message : null));
     } finally {
       setBusy(false);
     }
-  }, [session]);
+  }, [session, queryClient, onClose]);
 
   const pending = session?.status === 'pending';
   const authorized = session?.status === 'authorized';
