@@ -8,6 +8,54 @@
 - pnpm（经 corepack：`corepack enable`）
 - 可选：四家 CLI agent（codebuddy / codex / opencode / dsh）；未安装的项在看板中标"未安装"禁用
 
+## 安装与使用总览（Windows / macOS / Docker）
+
+三种运行形态：Windows 宿主（已实测）、macOS 宿主（未实测）、Docker 单容器（Windows 11 + Docker Desktop 实测 linux/amd64 镜像，Apple Silicon 未实测）。服务默认 `127.0.0.1:8787`。
+
+### 安装
+
+| 形态 | 安装 | 说明 |
+| --- | --- | --- |
+| Windows 宿主 | `corepack pnpm install` → `corepack pnpm -r build` → `pnpm server:ensure` | 详见下文「启动」「后台常驻（Windows）」；免 Node 环境用便携包，见「便携包（Windows x64）」 |
+| macOS 宿主 | 同上（纯 Node 实现，未实测） | 见下文「macOS 宿主（未实测）」 |
+| Docker | `docker build` + `docker run` | 详见下文「Docker（单容器）」；镜像自带 `kb` |
+
+### 把 skills 放到哪里
+
+7 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`（详见下文「Skill（agent 自助领任务）」节）。
+
+| 形态 | 放哪 | 说明 |
+| --- | --- | --- |
+| Windows / macOS 宿主 | 复制或软链 `skills/<技能名>/` 到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供 | macOS 用 `ln -s`，Windows 用 `mklink /J`；或设 `AGENTBOARD_SKILL_ROOT` |
+| Docker | 镜像内没有（`.dockerignore` 排除了 `skills/`） | 运行时挂载或宿主 agent 直连，见「Docker（单容器）」节 |
+| Windows 便携包 | 包内 `app/rules/` | 7 技能齐全自检（`check-rules.cmd`），仅 Windows x64 包 |
+
+### 使用入口
+
+| 形态 | 服务地址 | 使用方式 |
+| --- | --- | --- |
+| Windows / macOS 宿主 | `http://127.0.0.1:8787` | 浏览器开 web；agent 经 `kb` 命令行 / MCP / Skill 交互，见下文各节 |
+| Docker（容器内 agent） | `http://127.0.0.1:8787`（同容器） | `docker exec agentboard kb ...`；无桌面会话，容器内 agent 派发/进程启停/autostart/shortcut 不支持 |
+| Docker（宿主 agent 直连容器） | `http://127.0.0.1:<宿主映射端口>` | `KB_SERVER` 或 `kb --server` 指向容器，见「Docker（单容器）」节 |
+
+### macOS 宿主（未实测）
+
+安装/构建/启动命令与 Windows 同款：
+
+```bash
+corepack pnpm install
+corepack pnpm -r build
+pnpm server:ensure   # = node scripts/server-detached.mjs，纯 Node 实现，未在 macOS 实测
+```
+
+DB 默认路径在非 Windows 回退 `~/.config/AgentBoard/agentboard.db`，附件自动派生为同目录 `attachments`。后台常驻：
+
+```bash
+nohup node apps/server/dist/index.js > server.log 2>&1 &
+```
+
+`kb autostart` / `kb shortcut` 是 Windows-only（见「后台常驻（Windows）」节），macOS 用上面的 nohup 或自写 launchd plist（LaunchAgent 属规划未实现）。已知缺口（均属「暂时不支持」清单）：账号凭据 vault 走 Windows DPAPI，非 Windows 一律 503，账号相关功能（凭据捕获/切换/签到）不可用，服务本体可正常启动；WorkBuddy 桌面探针（user32/UIA）不可用；MiniMax 客户端探测走注册表/盘符不可用。
+
 ## 启动
 
 ```bash
@@ -65,6 +113,21 @@ docker exec -e KB_AGENT=cagent agentboard kb create-issue docker-cli-ws 'contain
 ```
 
 镜像内没有 git，`kb done` 会提示「跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED）」（与「工作区不是 git 仓库（NOT_A_GIT_REPO）」分开报；自动提交仍需宿主执行或另装 git）。
+
+**容器里没有 skills**：`.dockerignore` 排除了 `skills/`，镜像内无技能目录。两种解法：
+
+a) 运行时挂载宿主 skills 目录，给容器内 agent 设技能根：
+
+```bash
+docker run -d --name agentboard --restart unless-stopped -p 8788:8787 -v agentboard-data:/data \
+  -v ./skills:/app/skills:ro -e AGENTBOARD_SKILL_ROOT=/app/skills agentboard:local
+```
+
+`AGENTBOARD_SKILL_ROOT` 是技能权威解析第一优先级环境变量，可指向技能根或 SKILL.md 全路径。
+
+b) agent 留在宿主机跑，只把 `KB_SERVER=http://127.0.0.1:<宿主映射端口>` 指向容器。
+
+**宿主 agent 直连容器**：`KB_SERVER` 环境变量或 `kb --server <url>`（见「kb 命令行」节），指向宿主映射端口即可；容器内无桌面会话，agent 派发/进程启停/autostart/shortcut 不支持。
 
 ### 后台常驻（Windows）
 
@@ -216,7 +279,16 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 
 ## Skill（agent 自助领任务）
 
-把 `skills/using-agentboard/` 目录复制或链接到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供。SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。
+7 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`。放置方式按运行形态：
+
+| 形态 | 放哪 | 说明 |
+| --- | --- | --- |
+| Windows / macOS 宿主 | 把仓库 `skills/<技能名>/` 复制或软链到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供 | macOS 用 `ln -s`，Windows 用 `mklink /J` |
+| 任何形态 | 设 `AGENTBOARD_SKILL_ROOT` | 技能权威解析第一优先级环境变量，可指向技能根或 SKILL.md 全路径 |
+| Docker | 镜像内没有（`.dockerignore` 排除了 `skills/`） | 见上文「Docker（单容器）」节 |
+| Windows 便携包 | 包内 `app/rules/` | 7 技能齐全自检，仅 Windows x64 包 |
+
+SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。
 
 ## 文档
 
