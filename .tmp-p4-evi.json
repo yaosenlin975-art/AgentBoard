@@ -1,0 +1,18 @@
+[
+ {
+  "source_id": "file:apps/web/src/components/workspace/WorkspaceCard.tsx",
+  "locator": "apps/web/src/components/workspace/WorkspaceCard.tsx:97-100"
+ },
+ {
+  "source_id": "file:apps/server/src/api/routes.ts",
+  "locator": "apps/server/src/api/routes.ts (GET /api/issues 路由段)"
+ },
+ {
+  "source_id": "file:apps/server/src/db/repos/issue.ts",
+  "locator": "apps/server/src/db/repos/issue.ts:29"
+ },
+ {
+  "source_id": "file:Docs/api.md",
+  "locator": "issue:97a67f45-3f4d-4970-90ee-3a5524696562"
+ }
+]

@@ -1,0 +1,30 @@
+[
+ {
+  "source_id": "file:apps/web/src/components/workspace/WorkspaceCard.tsx",
+  "source_type": "file",
+  "locator": "apps/web/src/components/workspace/WorkspaceCard.tsx",
+  "captured_at": 1794129760914,
+  "content_hash": "8e12591c9bb0dd702eb18cccba0f3983674508f4401e88b8b2fa38ff3f2ed252"
+ },
+ {
+  "source_id": "file:apps/server/src/api/routes.ts",
+  "source_type": "file",
+  "locator": "apps/server/src/api/routes.ts",
+  "captured_at": 1794129760916,
+  "content_hash": "b7d33a9bfed4d62755df74a1bb1534b3ba9ce293d94cec0dba07a7e118335ebc"
+ },
+ {
+  "source_id": "file:apps/server/src/db/repos/issue.ts",
+  "source_type": "file",
+  "locator": "apps/server/src/db/repos/issue.ts",
+  "captured_at": 1794129760916,
+  "content_hash": "f9af9edc9609ac3b0069c805aa75ba4aec79ea5ff9d77e97d902e6ff28793647"
+ },
+ {
+  "source_id": "file:Docs/api.md",
+  "source_type": "file",
+  "locator": "Docs/api.md",
+  "captured_at": 1794129760916,
+  "content_hash": "b154284b59273bf66638dee02bfc763c937e31061450467604e0fce91b851bdb"
+ }
+]
