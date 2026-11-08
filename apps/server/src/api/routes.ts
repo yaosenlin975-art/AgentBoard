@@ -1,20 +1,20 @@
 /**
  * Task 9：REST 路由（Pinned Contracts REST 全表 + 契约修订）。
  *
- * 修订点：POST /api/sessions 体增 workspace_id?——issue_id 为空时必填（400 校验）；
- * POST /api/issues/:id/claim 仅做占用登记（session_id 置 null，供 kb claim 场景），不建会话。
+ * CR-10：端点按域纯搬迁至 routes/<域>Routes.ts（issue/workspace/session/settings/systemMisc），
+ * 本文件只留 RouterDeps 契约、STORE-1/4a 解析上下文装配、各域挂载与统一错误处理。
  */
-import { spawn } from 'node:child_process';
-import { zhZodIssue } from './zod.js';
 import { Router } from 'express';
 import { createKnowledgeRouter } from './knowledgeRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
-import { createSystemRouter, performRestart, type RestartDeps } from './systemRoutes.js';
+import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter } from './changelogRoutes.js';
 import { createStatusesAggregateRouter } from './workspaceStatusRoutes.js';
 import { createIssueRouter } from './routes/issueRoutes.js';
 import { createWorkspaceRouter } from './routes/workspaceRoutes.js';
 import { createSessionRouter } from './routes/sessionRoutes.js';
+import { createSettingsRouter } from './routes/settingsRoutes.js';
+import { createSystemMiscRouter } from './routes/systemMiscRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createBrowserRouter } from './browserRoutes.js';
 import type { BrowserOpenerDeps } from '../services/browserOpener.js';
@@ -26,7 +26,6 @@ import type { AddAccountProviderSpec } from '../services/accounts/addAccountProt
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import type { QuotaService } from '../services/quotas/quotaService.js';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import type { ZodType } from 'zod';
 import type { AgentAdapter } from '@agentboard/adapters';
 import type { ManagedAppId, ServerWsEvent } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
@@ -35,34 +34,19 @@ import { AttachmentStore } from '../services/attachments.js';
 import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
 import { getSession } from '../db/repos/session.js';
-import { ApiError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
-import { SERVER_VERSION } from '../version.js';
-import { resolveProxyEnv } from '@agentboard/shared';
+import { ApiError, NotFoundError } from '../errors.js';
 import {
-  describeMigrationError,
-  getMigrationStatus,
   isMigrationActive,
-  orchestrateMigration,
   runBootSelfCheck,
 } from '../services/dbMigration.js';
-import { collectStorageInfo } from '../services/storageInfo.js';
-import { WORKSPACE_DB_MODES, getDbForWorkspace, isWorkspaceDbDisabled, listOpenWorkspaceDbs, locateDbForEntity, readWorkspaceMetaCached, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
+import { WORKSPACE_DB_MODES, getDbForWorkspace, isWorkspaceDbDisabled, locateDbForEntity, readWorkspaceMetaCached, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
 // STORE-4b：entity_locator 定位索引维护（repos 挂钩的中心库句柄绑定与创建/删除写入、删表重建路径）
 import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, rebuildEntityLocator } from '../db/repos/entityLocator.js';
-import { centerSnapshotDir, exportCenterSnapshot, validateCenterSnapshot } from '../services/centerSnapshot.js';
 import { requireIssueInWorkspace } from '../services/claim.js';
-import { listSkills } from '../services/skills.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
-import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../services/dependency.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { httpMutation } from '../services/idempotency.js';
-import { setMaxConcurrentTurns } from '../services/sessionManager.js';
-import { getCachedClis } from '../services/cliDetect.js';
-import { attachmentsDirFor, configDir, loadConfig, readSettings, writeSettings, type DbPathSource } from '../config.js';
-import {
-  patchSettingsSchema,
-  dbMigrateSchema,
-} from './schemas.js';
+import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
 
 export interface RouterDeps {
   db: Db;
@@ -105,142 +89,6 @@ export interface RouterDeps {
   voice?: VoiceRouterOptions;
   /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
   browserOpener?: BrowserOpenerDeps;
-}
-
-/** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
-/**
- * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
- * 例：invalid_value → 「取值必须是：a / b」；too_small → 「不能小于 N」。
- */
-function parseBody<T>(schema: ZodType<T>, body: unknown): T {
-  const result = schema.safeParse(body);
-  if (!result.success) {
-    throw new ValidationError(zhZodIssue(result.error.issues[0] ?? {}));
-  }
-  return result.data;
-}
-
-function requireIssue(db: Db, id: string) {
-  const issue = getIssue(db, id);
-  if (!issue) throw new NotFoundError('任务不存在');
-  return issue;
-}
-
-/** name 留空兜底：先去尾部 / 与 \，再按 / 或 \ 分段取最后一段 */
-function workspaceNameFromPath(path: string): string {
-  const segments = path
-    .replace(/[\\/]+$/, '')
-    .split(/[\\/]+/)
-    .filter(Boolean);
-  return segments.length > 0 ? segments[segments.length - 1]! : path;
-}
-
-// ---- POST /api/system/pick-folder（Windows 原生文件夹选择） ----
-
-/** pick-folder 并发守卫：同一时刻只允许一个选择窗口（finally 复位） */
-let pickFolderInFlight = false;
-
-/**
- * PowerShell 弹 FolderBrowserDialog：单引号 PS 字符串、无双引号，-Command 参数整体
- * 经 spawn 参数数组传递不经 shell；OK 时 stdout 只输出 SelectedPath（UTF-8，无换行）。
- */
-const PICK_FOLDER_PS_SCRIPT = [
-  "$ErrorActionPreference='Stop'",
-  'try{[Console]::OutputEncoding=[System.Text.Encoding]::UTF8}catch{}',
-  'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
-  '$d=New-Object System.Windows.Forms.FolderBrowserDialog',
-  "$d.Description='选择工作空间文件夹'",
-  '$d.ShowNewFolderButton=$true',
-  'if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($d.SelectedPath)}',
-].join('; ');
-
-function pickFolderErrorDetail(stderr: string, fallback: string): string {
-  const firstLine = stderr.trim().split(/\r?\n/, 1)[0];
-  return (firstLine && firstLine !== '' ? firstLine : fallback).slice(0, 200);
-}
-
-/** spawn powershell 弹窗；选中 → 路径，取消/无输出 → null，spawn 或脚本失败 → reject */
-function pickFolderViaPowerShell(): Promise<string | null> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-STA', '-Command', PICK_FOLDER_PS_SCRIPT],
-      { windowsHide: true },
-    );
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.on('error', (err) => {
-      reject(
-        new ApiError(
-          500,
-          'PICK_FOLDER_FAILED',
-          `打开文件夹选择窗口失败: ${pickFolderErrorDetail(stderr, err.message)}`,
-        ),
-      );
-    });
-    child.on('close', (code) => {
-      const picked = stdout.trim();
-      if (picked !== '') {
-        resolve(picked);
-        return;
-      }
-      if (code !== 0) {
-        reject(
-          new ApiError(
-            500,
-            'PICK_FOLDER_FAILED',
-            `打开文件夹选择窗口失败: ${pickFolderErrorDetail(stderr, `exit code ${code}`)}`,
-          ),
-        );
-        return;
-      }
-      resolve(null); // 用户取消（无输出）
-    });
-  });
-}
-
-/**
- * 默认草稿 runner：直接调适配器的 runTurn（一次性进程），只收集 text 事件。
- * 不建 session 行、不占 claim 槽位；超时由 smartCreateDraft 的 AbortSignal 触发 kill。
- */
-function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftRunner {
-  return ({ adapter, prompt, cwd, signal }) => new Promise<string>((resolve, reject) => {
-    let handle: ReturnType<AgentAdapter['runTurn']>;
-    try {
-      handle = getAdapter(adapter).runTurn({ cwd, prompt });
-    } catch (error) {
-      reject(error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-    let text = '';
-    handle.onEvent((event) => {
-      if (event.type === 'text') text += event.delta;
-    });
-    const onAbort = (): void => { void handle.kill().catch(() => {}); };
-    signal.addEventListener('abort', onAbort, { once: true });
-    handle.result.then((result) => {
-      signal.removeEventListener('abort', onAbort);
-      if (signal.aborted) return;
-      if (result.exitCode !== 0) {
-        // stderr 尾部最后一行常是 Node 版本横幅，取最后 3 行非空内容更可解释
-        const tail = (result.stderrTail ?? []).map(line => line.trim()).filter(line => line !== '').slice(-3).join(' | ');
-        reject(new Error(tail === '' ? `适配器退出码 ${result.exitCode}` : `适配器退出码 ${result.exitCode}：${tail}`));
-        return;
-      }
-      resolve(text);
-    }, (error: unknown) => {
-      signal.removeEventListener('abort', onAbort);
-      if (!signal.aborted) reject(error instanceof Error ? error : new Error(String(error)));
-    });
-  });
 }
 
 export function createRouter(deps: RouterDeps): Router {
@@ -353,21 +201,6 @@ export function createRouter(deps: RouterDeps): Router {
   // db 可能是最小装配的替身（无 name）：此时迁移端点明确 503，不在构造期抛错
   const currentDbPath: string | null = deps.dbPath ?? (typeof db.name === 'string' && db.name !== '' ? db.name : null);
   const attachmentsDirOf = (dbPath: string): string => deps.attachmentStorageDir ?? attachmentsDirFor(dbPath);
-  // 来源三态（env / settings / default）：缺省按启动同一套规则解析（loadConfig），
-  // 解析失败（例如 AGENTBOARD_HOST 非法）时退化为 env-否则-settings 两态，不让只读端点 500。
-  const resolveDbPathSource = (): DbPathSource => {
-    if (deps.dbPathSource !== undefined) return deps.dbPathSource;
-    try {
-      return loadConfig(process.env).dbPathSource;
-    } catch {
-      return (process.env.AGENTBOARD_DB ?? '') !== '' ? 'env' : 'settings';
-    }
-  };
-  const triggerRestart = async (): Promise<void> => {
-    if (!deps.restart) throw new Error('当前装配未启用服务重启');
-    const outcome = await performRestart(deps.restart);
-    if (!outcome.ok) throw new Error(outcome.message);
-  };
 
   // 新进程启动钩子：有 pending 意图就自检；失败则回滚设置并退出本进程
   // （旧进程健康判定会失败 → 重新监听旧库继续服务，即「重启回旧库」）。
@@ -392,24 +225,17 @@ export function createRouter(deps: RouterDeps): Router {
       return perform(rdb);
     });
   }
-  // ---- version ----
-  // pid：RESTART-HARDENING —— 客户端据它区分「新进程已接管」与「已回退旧进程」，端口占用检查也靠它识别自身
-  router.get('/version', (_req, res) => {
-    // PROXY-ENV：出站代理是否生效（只读、脱敏）。客户端/诊断脚本据此判断「为什么外网请求超时」
-    const proxy = resolveProxyEnv(process.env);
-    res.json({
-      name: 'agentboard-server',
-      version: SERVER_VERSION,
-      pid: process.pid,
-      // SERVER-SINGLETON：判定「端口上的实例是不是同一个 DB 的同一个进程」
-      instance_id: deps.instance?.instanceId ?? null,
-      db_path: deps.instance?.dbPath ?? currentDbPath,
-      started_at: deps.instance?.startedAt ?? null,
-      proxy_env: { enabled: proxy.enabled, proxy_var: proxy.proxy_var, proxy_host: proxy.proxy_host, node_env_proxy: proxy.node_env_proxy },
-      // STORE-1（M1）：排障要能看出「本实例服务哪些库」——中心库 + 当前已打开的工作区库
-      db_scope: { center_db_path: deps.instance?.dbPath ?? currentDbPath, localized_open: listOpenWorkspaceDbs() },
-    });
-  });
+  // ---- system 杂域（CR-10d 自本文件纯搬迁到 routes/systemMiscRoutes.ts）----
+  // version / skills / clis / center-snapshot / pick-folder；挂载位置即原 /version 端点处
+  // （此前位于本挂载点之前的路由均无 /version、/skills、/clis、/system/* 业务路径；
+  // /system/restart 属 ../systemRoutes.ts 且在挂载点之后，两文件无同路径）。
+  router.use(createSystemMiscRouter({
+    db,
+    getAdapter,
+    currentDbPath,
+    ...(deps.instance === undefined ? {} : { instance: deps.instance }),
+    ...(deps.skillsRoot === undefined ? {} : { skillsRoot: deps.skillsRoot }),
+  }));
 
   // STORE-4a：知识路由按请求取库——common→中心库、workspace→工作区库（判定走 resolver）；
   // 跨区 owner 探测的 fan-out 候选 = 全部已下沉区（单区打不开跳过，命中即事实）。
@@ -430,10 +256,6 @@ export function createRouter(deps: RouterDeps): Router {
     }),
   }));
 
-  // ---- 已安装技能（只读、固定根、不接受路径参数）----
-  router.get('/skills', (_req, res) => {
-    res.json(listSkills({ root: deps.skillsRoot }));
-  });
   // ---- workspaces 域（CR-10b 自本文件纯搬迁到 routes/workspaceRoutes.ts）----
   // 含 per-workspace changelog / statuses 子挂载与 CRUD/删除归档/release-running/附件/
   // localize/snapshot/approval-rules 全域端点；挂载位置即原 changelog 子挂载处。
@@ -480,148 +302,18 @@ export function createRouter(deps: RouterDeps): Router {
     mutation,
   }));
 
-  // ---- system ----
-  /**
-   * STORE-6：中心库全局快照（工作区注册表 / 成员 / 账号与签到元数据 / scope=common 知识页及历史）。
-   * 落在中心库同级的 center-snapshot/；账号引用一律 ***（导出后自检，防泄露）。
-   */
-  router.post('/system/center-snapshot/export', (_req, res) => {
-    res.json(exportCenterSnapshot({ db, centerDbPath: currentDbPath ?? db.name }));
-  });
-  /** STORE-6：只读校验中心库快照（manifest / 哈希 / 行数 / 脱敏自检） */
-  router.get('/system/center-snapshot/validate', (_req, res) => {
-    const checked = validateCenterSnapshot(centerSnapshotDir(currentDbPath ?? db.name));
-    res.json({ ok: true, dir: checked.dir, manifest: checked.manifest, tables: checked.tables });
-  });
-
-  // 原生文件夹选择（Windows PowerShell FolderBrowserDialog）；同一时刻仅允许一个窗口
-  router.post('/system/pick-folder', async (_req, res) => {
-    if (pickFolderInFlight) {
-      throw new ApiError(409, 'PICK_FOLDER_BUSY', '已有选择窗口打开');
-    }
-    pickFolderInFlight = true;
-    try {
-      res.json({ path: await pickFolderViaPowerShell() });
-    } finally {
-      pickFolderInFlight = false;
-    }
-  });
-
-  // ---- settings ----
-  // 读侧只反映 config.json 持久化值（环境变量覆盖不参与，见 config.readSettings 注释）
-  router.get('/settings', (_req, res) => {
-    const settings = readSettings();
-    // DB-1：对外规范名是 db_path；dbPath 保留给既有前端字段（同值，避免破坏已有设置界面）
-    res.json({ ...settings, db_path: settings.dbPath });
-  });
-
-  // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
-  router.patch('/settings', (req, res) => {
-    const body = parseBody(patchSettingsSchema, req.body);
-    // DB-2B：迁移进行中不接受直接改 db 路径（否则与新库切换打架）
-    if ((body.db_path !== undefined || body.dbPath !== undefined) && isMigrationActive(migrationStateDir)) {
-      const text = describeMigrationError('DB_MIGRATION_BUSY');
-      throw new ApiError(409, text.code, '迁移进行中，暂不接受直接修改 db 路径；请等迁移结束：' + text.message);
-    }
-    // DB-1：db_path 是对外规范名；与 dbPath 同时出现且不一致时明确报错（不静默取一个）
-    if (body.db_path !== undefined && body.dbPath !== undefined && body.db_path !== body.dbPath) {
-      throw new ValidationError('db_path 与 dbPath 同时出现且不一致：请只传 db_path');
-    }
-    const patch: Partial<typeof body> = { ...body, ...(body.db_path !== undefined ? { dbPath: body.db_path } : {}) };
-    delete (patch as { db_path?: string }).db_path;
-    const current = readSettings();
-    const next = writeSettings(patch);
-    if (body.maxConcurrentTurns !== undefined && body.maxConcurrentTurns !== current.maxConcurrentTurns) {
-      setMaxConcurrentTurns(body.maxConcurrentTurns);
-    }
-    attachments.configure({
-      attachmentQuotaBytes: next.attachmentQuotaBytes,
-      attachmentStagedTtlMs: next.attachmentStagedTtlMs,
-      attachmentCleanupIntervalMs: next.attachmentCleanupIntervalMs,
-    });
-    // DB-1：响应与 GET /settings 同形（都带对外 db_path），避免同一资源两种形状
-    res.json({ ...next, db_path: next.dbPath });
-  });
-
-  // ---- DB-3B-S：存储位置只读汇总 ----
-  // 只读：不改配置、不触发迁移。数字全部服务端算（含 ×1.2 空间门槛），前端只格式化。
-  router.get('/settings/storage', (_req, res) => {
-    if (currentDbPath === null) {
-      throw new ApiError(503, 'DB_STORAGE_UNAVAILABLE', '当前装配拿不到中心库路径，存储统计不可用');
-    }
-    const attachmentsDir = attachmentsDirOf(currentDbPath);
-    res.json(collectStorageInfo({
-      dbPath: currentDbPath,
-      attachmentsDir,
-      dbPathSource: resolveDbPathSource(),
-      countIssues: () => Number((db.prepare('SELECT COUNT(*) AS n FROM issue').get() as { n: number }).n),
-    }));
-  });
-
-  // ---- DB-2B：数据库位置迁移编排 ----
-  // 顺序：preflight → snapshot → verify → switch → restart（旧进程）→ selfcheck → cleanup | rolled_back（新进程）。
-  // 自检在新进程启动时跑，故本端点只保证「已切换 + 已拉起新进程」；结果用 GET 状态查询。
-  router.post('/settings/db-path/migrate', async (req, res) => {
-    const body = parseBody(dbMigrateSchema, req.body);
-    if (resolveDbPathSource() === 'env') {
-      const text = describeMigrationError('DB_MIGRATION_ENV_OVERRIDDEN');
-      throw new ApiError(409, text.code, text.message);
-    }
-    if (isMigrationActive(migrationStateDir)) {
-      const text = describeMigrationError('DB_MIGRATION_BUSY');
-      throw new ApiError(409, text.code, text.message);
-    }
-    if (!deps.restart) {
-      const text = describeMigrationError('DB_MIGRATION_RESTART_UNAVAILABLE');
-      throw new ApiError(503, text.code, text.message);
-    }
-    if (currentDbPath === null) {
-      throw new ApiError(503, 'DB_MIGRATION_UNAVAILABLE', '当前装配拿不到中心库路径，迁移不可用');
-    }
-    const status = await orchestrateMigration({
-      fromDbPath: currentDbPath,
-      toDbPath: body.target_db_path,
-      fromAttachmentsDir: attachmentsDirOf(currentDbPath),
-      toAttachmentsDir: attachmentsDirFor(body.target_db_path),
-      ...(body.overwrite !== undefined ? { overwrite: body.overwrite } : {}),
-      stateDir: migrationStateDir,
-      sourceDb: db,
-      applySettings: (path) => { writeSettings({ dbPath: path }); },
-      triggerRestart,
-    });
-    if (status.ok === false) {
-      throw new ApiError(status.retryable ? 409 : 500, status.code ?? 'DB_MIGRATION_COPY_FAILED', status.message);
-    }
-    res.status(202).json({
-      migration_id: status.migration_id,
-      backup_dir: status.backup_dir,
-      stages: status.stages,
-      stage: status.stage,
-      message: status.message,
-    });
-  });
-
-  // 迁移状态：重启后由新进程读盘返回（内存表在重启时丢失）
-  router.get('/settings/db-path/migrate/:migrationId', (req, res) => {
-    const status = getMigrationStatus(migrationStateDir, req.params.migrationId);
-    if (status === null) throw new NotFoundError('迁移记录不存在');
-    res.json(status);
-  });
-
-  // ---- clis ----
-  router.get('/clis', (_req, res) => {
-    res.json(getCachedClis());
-  });
-
-  router.get('/clis/:id/models', async (req, res) => {
-    let adapter: AgentAdapter;
-    try {
-      adapter = getAdapter(req.params.id!);
-    } catch {
-      throw new NotFoundError(`未知 CLI: ${req.params.id}`);
-    }
-    res.json(await adapter.listModels());
-  });
+  // ---- settings 域（CR-10d 自本文件纯搬迁到 routes/settingsRoutes.ts）----
+  // GET/PATCH /settings、storage 只读汇总、db-path 迁移编排与状态查询；
+  // resolveDbPathSource / triggerRestart 闭包仅本域消费，随域迁入（deps 注入 dbPathSource/restart）。
+  router.use(createSettingsRouter({
+    db,
+    attachments,
+    currentDbPath,
+    attachmentsDirOf,
+    migrationStateDir,
+    ...(deps.dbPathSource === undefined ? {} : { dbPathSource: deps.dbPathSource }),
+    ...(deps.restart === undefined ? {} : { restart: deps.restart }),
+  }));
 
   // ---- sessions 域（CR-10c 自本文件纯搬迁到 routes/sessionRoutes.ts）----
   // 列表（跨库并集兜底）/详情/队列/消息/事件、新建（派发或自由）、发送（图片/文件分流）、
