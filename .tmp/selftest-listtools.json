@@ -1,0 +1,408 @@
+{
+  "protocolVersion": "2025-06-18",
+  "count": 80,
+  "primary": 40,
+  "aliases": 40,
+  "tools": [
+    {
+      "name": "list_workspaces",
+      "read_only": true,
+      "description": "List workspaces by page. Local filesystem paths are omitted."
+    },
+    {
+      "name": "agentboard_list_workspaces",
+      "read_only": true,
+      "description": "List workspaces by page. Local filesystem paths are omitted."
+    },
+    {
+      "name": "list_tasks",
+      "read_only": true,
+      "description": "List flat tasks or one cursor-paginated level of the task tree in one effective workspace. Listings omit task descriptions (description, description_truncated, next_description_offset_chars are absent to keep responses small); call get_task to read one task with its description."
+    },
+    {
+      "name": "agentboard_list_tasks",
+      "read_only": true,
+      "description": "List flat tasks or one cursor-paginated level of the task tree in one effective workspace. Listings omit task descriptions (description, description_truncated, next_description_offset_chars are absent to keep responses small); call get_task to read one task with its description."
+    },
+    {
+      "name": "get_task",
+      "read_only": true,
+      "description": "Read one task including a description window from one effective workspace. list_tasks omits descriptions, so use this tool for a task body."
+    },
+    {
+      "name": "agentboard_get_task",
+      "read_only": true,
+      "description": "Read one task including a description window from one effective workspace. list_tasks omits descriptions, so use this tool for a task body."
+    },
+    {
+      "name": "get_task_comments",
+      "read_only": true,
+      "description": "Read a paged comment list without advancing the shared unread cursor."
+    },
+    {
+      "name": "agentboard_get_task_comments",
+      "read_only": true,
+      "description": "Read a paged comment list without advancing the shared unread cursor."
+    },
+    {
+      "name": "get_task_comment",
+      "read_only": true,
+      "description": "Read a comment body window without changing comment read state."
+    },
+    {
+      "name": "agentboard_get_task_comment",
+      "read_only": true,
+      "description": "Read a comment body window without changing comment read state."
+    },
+    {
+      "name": "create_task",
+      "read_only": false,
+      "description": "Create a task in one effective workspace."
+    },
+    {
+      "name": "agentboard_create_task",
+      "read_only": false,
+      "description": "Create a task in one effective workspace."
+    },
+    {
+      "name": "update_task",
+      "read_only": false,
+      "description": "Update task fields with the expected task timestamp."
+    },
+    {
+      "name": "agentboard_update_task",
+      "read_only": false,
+      "description": "Update task fields with the expected task timestamp."
+    },
+    {
+      "name": "claim_task",
+      "read_only": false,
+      "description": "Atomically claim an eligible task; the configured agent ID is an audit label."
+    },
+    {
+      "name": "agentboard_claim_task",
+      "read_only": false,
+      "description": "Atomically claim an eligible task; the configured agent ID is an audit label."
+    },
+    {
+      "name": "release_task",
+      "read_only": false,
+      "description": "Release a task owned by the configured agent."
+    },
+    {
+      "name": "agentboard_release_task",
+      "read_only": false,
+      "description": "Release a task owned by the configured agent."
+    },
+    {
+      "name": "add_task_comment",
+      "read_only": false,
+      "description": "Add a task comment under the configured agent audit label."
+    },
+    {
+      "name": "agentboard_add_task_comment",
+      "read_only": false,
+      "description": "Add a task comment under the configured agent audit label."
+    },
+    {
+      "name": "complete_task",
+      "read_only": false,
+      "description": "Complete a task owned by the configured agent."
+    },
+    {
+      "name": "agentboard_complete_task",
+      "read_only": false,
+      "description": "Complete a task owned by the configured agent."
+    },
+    {
+      "name": "delete_task",
+      "read_only": false,
+      "description": "Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks."
+    },
+    {
+      "name": "agentboard_delete_task",
+      "read_only": false,
+      "description": "Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks."
+    },
+    {
+      "name": "fail_task",
+      "read_only": false,
+      "description": "Return a task to planning with a required failure reason."
+    },
+    {
+      "name": "agentboard_fail_task",
+      "read_only": false,
+      "description": "Return a task to planning with a required failure reason."
+    },
+    {
+      "name": "close_task",
+      "read_only": false,
+      "description": "Close a task that is in review (待验收). Rejected while the task is claimed or while any descendant task is still open."
+    },
+    {
+      "name": "agentboard_close_task",
+      "read_only": false,
+      "description": "Close a task that is in review (待验收). Rejected while the task is claimed or while any descendant task is still open."
+    },
+    {
+      "name": "reopen_task",
+      "read_only": false,
+      "description": "Reopen a closed or deprecated task into the given workspace status (default 待规划). Rejected while the task is claimed."
+    },
+    {
+      "name": "agentboard_reopen_task",
+      "read_only": false,
+      "description": "Reopen a closed or deprecated task into the given workspace status (default 待规划). Rejected while the task is claimed."
+    },
+    {
+      "name": "accept_task",
+      "read_only": false,
+      "description": "Record a structured acceptance verdict on a task waiting for review (待验收). Writes a 【验收记录】 comment; it does not change the task status."
+    },
+    {
+      "name": "agentboard_accept_task",
+      "read_only": false,
+      "description": "Record a structured acceptance verdict on a task waiting for review (待验收). Writes a 【验收记录】 comment; it does not change the task status."
+    },
+    {
+      "name": "list_dependencies",
+      "read_only": true,
+      "description": "List a task's blockers and blocked tasks in one effective workspace, with the server-side resolved flag."
+    },
+    {
+      "name": "agentboard_list_dependencies",
+      "read_only": true,
+      "description": "List a task's blockers and blocked tasks in one effective workspace, with the server-side resolved flag."
+    },
+    {
+      "name": "add_dependency",
+      "read_only": false,
+      "description": "Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed)."
+    },
+    {
+      "name": "agentboard_add_dependency",
+      "read_only": false,
+      "description": "Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed)."
+    },
+    {
+      "name": "remove_dependency",
+      "read_only": false,
+      "description": "Remove a blocker edge from a task."
+    },
+    {
+      "name": "agentboard_remove_dependency",
+      "read_only": false,
+      "description": "Remove a blocker edge from a task."
+    },
+    {
+      "name": "list_statuses",
+      "read_only": true,
+      "description": "List one workspace's status dictionary (name, kind, sort order, builtin flag)."
+    },
+    {
+      "name": "agentboard_list_statuses",
+      "read_only": true,
+      "description": "List one workspace's status dictionary (name, kind, sort order, builtin flag)."
+    },
+    {
+      "name": "add_status",
+      "read_only": false,
+      "description": "Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour."
+    },
+    {
+      "name": "agentboard_add_status",
+      "read_only": false,
+      "description": "Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour."
+    },
+    {
+      "name": "remove_status",
+      "read_only": false,
+      "description": "Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected."
+    },
+    {
+      "name": "agentboard_remove_status",
+      "read_only": false,
+      "description": "Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected."
+    },
+    {
+      "name": "search_knowledge",
+      "read_only": true,
+      "description": "Search knowledge in common, one workspace, or that workspace plus common."
+    },
+    {
+      "name": "agentboard_search_knowledge",
+      "read_only": true,
+      "description": "Search knowledge in common, one workspace, or that workspace plus common."
+    },
+    {
+      "name": "list_knowledge",
+      "read_only": true,
+      "description": "List knowledge pages as bounded metadata summaries (no body) in common, one workspace, or that workspace plus common."
+    },
+    {
+      "name": "agentboard_list_knowledge",
+      "read_only": true,
+      "description": "List knowledge pages as bounded metadata summaries (no body) in common, one workspace, or that workspace plus common."
+    },
+    {
+      "name": "find_knowledge_sources",
+      "read_only": true,
+      "description": "Find knowledge pages whose current sources reference a file path, content hash, or source id."
+    },
+    {
+      "name": "agentboard_find_knowledge_sources",
+      "read_only": true,
+      "description": "Find knowledge pages whose current sources reference a file path, content hash, or source id."
+    },
+    {
+      "name": "read_knowledge",
+      "read_only": true,
+      "description": "Read one knowledge page with codepoint windows, paged sources/evidence, and optional paged history."
+    },
+    {
+      "name": "agentboard_read_knowledge",
+      "read_only": true,
+      "description": "Read one knowledge page with codepoint windows, paged sources/evidence, and optional paged history."
+    },
+    {
+      "name": "create_knowledge",
+      "read_only": false,
+      "description": "Create a knowledge page in the explicitly selected scope."
+    },
+    {
+      "name": "agentboard_create_knowledge",
+      "read_only": false,
+      "description": "Create a knowledge page in the explicitly selected scope."
+    },
+    {
+      "name": "revise_knowledge",
+      "read_only": false,
+      "description": "Revise a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "agentboard_revise_knowledge",
+      "read_only": false,
+      "description": "Revise a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "archive_knowledge",
+      "read_only": false,
+      "description": "Archive a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "agentboard_archive_knowledge",
+      "read_only": false,
+      "description": "Archive a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "restore_knowledge",
+      "read_only": false,
+      "description": "Restore a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "agentboard_restore_knowledge",
+      "read_only": false,
+      "description": "Restore a knowledge page using expected_revision compare-and-swap."
+    },
+    {
+      "name": "list_decisions",
+      "read_only": true,
+      "description": "List pending decisions in one workspace with state/issue filters and counts. Use get_decision for full context and answer revisions."
+    },
+    {
+      "name": "agentboard_list_decisions",
+      "read_only": true,
+      "description": "List pending decisions in one workspace with state/issue filters and counts. Use get_decision for full context and answer revisions."
+    },
+    {
+      "name": "get_decision",
+      "read_only": true,
+      "description": "Read one decision with options, answer revisions, checkpoint and remaining grace. Text fields are windowed."
+    },
+    {
+      "name": "agentboard_get_decision",
+      "read_only": true,
+      "description": "Read one decision with options, answer revisions, checkpoint and remaining grace. Text fields are windowed."
+    },
+    {
+      "name": "stop_check",
+      "read_only": true,
+      "description": "Check whether the agent was asked to stop on a task. Read-only; it does not acknowledge the stop signal."
+    },
+    {
+      "name": "agentboard_stop_check",
+      "read_only": true,
+      "description": "Check whether the agent was asked to stop on a task. Read-only; it does not acknowledge the stop signal."
+    },
+    {
+      "name": "ask_decision",
+      "read_only": false,
+      "description": "Create a pending decision (ask the user) on a running task owned by the configured agent. Does not wait for an answer; revisit with get_decision or stop_check. grace_seconds=0 locks immediately."
+    },
+    {
+      "name": "agentboard_ask_decision",
+      "read_only": false,
+      "description": "Create a pending decision (ask the user) on a running task owned by the configured agent. Does not wait for an answer; revisit with get_decision or stop_check. grace_seconds=0 locks immediately."
+    },
+    {
+      "name": "answer_decision",
+      "read_only": false,
+      "description": "Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by."
+    },
+    {
+      "name": "agentboard_answer_decision",
+      "read_only": false,
+      "description": "Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by."
+    },
+    {
+      "name": "extend_decision_grace",
+      "read_only": false,
+      "description": "Extend the grace window of a decision that is still in grace. 1-300 seconds per call; original grace plus extensions cannot exceed 600 seconds. Not available after the decision locks."
+    },
+    {
+      "name": "agentboard_extend_decision_grace",
+      "read_only": false,
+      "description": "Extend the grace window of a decision that is still in grace. 1-300 seconds per call; original grace plus extensions cannot exceed 600 seconds. Not available after the decision locks."
+    },
+    {
+      "name": "withdraw_decision",
+      "read_only": false,
+      "description": "Withdraw a pending decision with a required reason. The audit actor defaults to AGENTBOARD_AGENT_ID; the workspace owner permission is granted by the local server identity."
+    },
+    {
+      "name": "agentboard_withdraw_decision",
+      "read_only": false,
+      "description": "Withdraw a pending decision with a required reason. The audit actor defaults to AGENTBOARD_AGENT_ID; the workspace owner permission is granted by the local server identity."
+    },
+    {
+      "name": "list_changelog",
+      "read_only": true,
+      "description": "List workspace change-log entries (newest first). Each entry carries title/type/actor/revision and a 300-character body preview; use get_changelog for the full body."
+    },
+    {
+      "name": "agentboard_list_changelog",
+      "read_only": true,
+      "description": "List workspace change-log entries (newest first). Each entry carries title/type/actor/revision and a 300-character body preview; use get_changelog for the full body."
+    },
+    {
+      "name": "get_changelog",
+      "read_only": true,
+      "description": "Read one change-log entry, including the body windowed at 12000 characters (continuation offset returned when truncated)."
+    },
+    {
+      "name": "agentboard_get_changelog",
+      "read_only": true,
+      "description": "Read one change-log entry, including the body windowed at 12000 characters (continuation offset returned when truncated)."
+    },
+    {
+      "name": "create_changelog",
+      "read_only": false,
+      "description": "Append a workspace change-log entry (title + body_md + change_type 新增/修复/调整). Required before marking a task done; request_id is the idempotency key."
+    },
+    {
+      "name": "agentboard_create_changelog",
+      "read_only": false,
+      "description": "Append a workspace change-log entry (title + body_md + change_type 新增/修复/调整). Required before marking a task done; request_id is the idempotency key."
+    }
+  ]
+}

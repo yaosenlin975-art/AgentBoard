@@ -1,0 +1,7 @@
+{
+  "issue_id": "19a123d7-d650-46e1-b96d-b4544ba55101",
+  "fence": 1,
+  "agent_id": "codex-smoke",
+  "claimed_at": 1794021673976,
+  "base": "http://127.0.0.1:8787"
+}

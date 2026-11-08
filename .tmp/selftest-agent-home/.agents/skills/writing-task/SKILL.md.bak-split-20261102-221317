@@ -1,0 +1,64 @@
+---
+name: writing-plans
+description: Turn approved requirements into ordered AgentBoard issues with clear scope, dependencies, and acceptance criteria before implementation.
+---
+
+# Writing Plans
+
+Use this skill when an approved spec or request needs multiple implementation steps. AgentBoard issues are the authoritative execution plan. Do not require a plan Markdown file, ledger, task brief, or local checklist as the source of work. Project design docs, source files, logs, and other project artifacts may be cited as evidence.
+
+Read the AgentBoard operating guide before preparing board work:
+
+D:\WorkSpaces\任务看板\skills\agentboard\SKILL.md
+
+## 工作区边界（强制）
+
+本节优先于本技能其余步骤；冲突时以本节为准。
+
+- **调用即绑定**：技能启动第一步先绑定「当前工作区」。执行 `kb list-spaces` 取全部工作空间的 id/name/path，与会话 cwd 的绝对路径逐一比对，确认当前工作区 = cwd 对应的那个工作空间。确认不到、或存在多个候选，停下来问用户，不要猜，也不要先写再补。
+- **默认只在当前工作区内读写**：计划产物与文件路径必须落在当前工作区根目录之下；工作区外的路径默认只读——可以读、可以引用，不得写。
+- **跨工作区一律需要用户显式授权**：任何对非当前工作区的写入（改文件、建/改任务卡、写知识、起服务、改 DB、切分支）都必须先说明「将影响哪个工作区、哪些文件/数据」，取得明确同意后再做。用户没点头就不做，也不得以「顺手」为由越界。
+- **越界前自检三问**：① 这个路径 / 任务卡属于哪个工作区？② 它和当前工作区是同一个吗？③ 若不是，用户是否明确授权过？三问答不全即停手。
+
+### 计划产物的落点
+
+- 计划开头固定一行 `工作区：<name>（<id>）<path>`，取自 `kb list-spaces` 的真实值；缺这行视为计划未完成。
+- 计划若落盘成文档，只放在当前工作区内（如 `Docs/` 或 `.workbuddy/`），写绝对路径并断言前缀命中当前工作区根。
+- 计划里涉及其他工作区的步骤，必须单独成段标注「跨工作区步骤（需用户授权）」，写明目标工作区 id/path 与影响面；不得混写进常规步骤。
+- 交付计划时写明本次计划涉及的工作区 id + 路径；发生跨工作区动作则写出授权依据。
+
+## Roles and scope
+
+- The parent agent owns design, planning, assignment, acceptance, and summary. It prepares exact issue titles and descriptions, then delegates AgentBoard creation or comments to a child agent.
+- The child assigned to board operations uses only the explicitly provided workspace and issue IDs. It creates or comments on plan issues as directed. Creating a planning issue does not require claiming it.
+- Do not choose a workspace, issue, or task to claim by guesswork. If the workspace or target issue is missing, prepare the proposed plan without a board write and ask for that identifier.
+- Do not create separate test-only issues. Put requested or project-required verification in the issue that owns the implementation.
+
+## Prepare the plan
+
+**启动强制动作：** 先按「工作区边界（强制）」绑定当前工作区，定下计划首行的工作区标识，再进入第 1 步。
+
+1. Confirm the approved requirements and any design decisions that affect interfaces, data, scope, or acceptance.
+2. Inspect the relevant project files and established patterns before naming exact files, interfaces, or commands. Mark unknown details instead of inventing them.
+3. Split work into independently reviewable deliverables. Each issue should make one coherent change and state its ordering relative to dependent issues.
+4. For each issue, prepare:
+   - Goal and expected result.
+   - Included scope and important exclusions.
+   - Known files, interfaces, or project artifacts it touches.
+   - Ordered implementation steps and any prerequisite issue IDs.
+   - Acceptance criteria and requested or project-required verification, with observable expected results.
+   - 若该 issue 涉及其他工作区：单独标注「跨工作区步骤（需用户授权）」，写明目标工作区 id/path 与影响面，不混进常规步骤。
+5. Self-review coverage, interface consistency, dependency order, and scope. Keep implementation choices open where the spec does not decide them.
+
+## Record the plan in AgentBoard
+
+**落板前强制动作：** 确认计划首行「工作区：<name>（<id>）<path>」已写且与绑定的当前工作区一致；不一致先停下问用户，不得按任一方直接建卡。
+
+Follow the CLI and failure handling in the AgentBoard guide. Use only its documented commands:
+
+- For each new work item, create an issue in the exact workspace supplied by the parent. Use the documented form: kb create-issue <workspace> <title> -d <description>.
+- Create prerequisite issues first so their returned IDs can be referenced by dependent issues. Express dependencies in descriptions or comments as plain issue IDs; do not invent dependency fields.
+- For detailed multi-line plan content, add it with kb comment <issue-id> --stdin. For an existing issue, read it with kb show first, then add a comment.
+- If the plan changes, record the change with kb comment and reread the issue with kb show. The CLI guide does not define an issue-update command; do not invent one.
+- Do not claim an issue just to create or record a plan. Do not modify another agent's claimed issue.
+- Return the created or updated issue IDs, their dependency order, and any unresolved questions to the parent. Do not begin implementation unless separately assigned.
