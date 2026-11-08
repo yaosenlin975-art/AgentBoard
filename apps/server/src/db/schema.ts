@@ -48,6 +48,8 @@ import { migrateEntityLocator } from './migrations/entityLocator.js';
 import { migrateWorkspaceArchive } from './migrations/workspaceArchive.js';
 // PERF-5：issue_comment(issue_id) 索引（comment_count 相关子查询；放最末，幂等补回）
 import { migrateIssueCommentIndex } from './migrations/issueCommentIndex.js';
+// CR2-2：聊天热表索引 message(session_id)、session(workspace_id)（放最末，幂等补回）
+import { migrateChatIndex } from './migrations/chatIndex.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -171,6 +173,8 @@ export function initSchema(db: Db): void {
   migrateWorkspaceArchive(db);
   // PERF-5：issue_comment(issue_id) 索引（放最末，幂等；comment_count 相关子查询从 SCAN 变 SEARCH）
   migrateIssueCommentIndex(db);
+  // CR2-2：聊天热表索引（放最末，幂等；message 按 session、session 按 workspace 查询从 SCAN 变 SEARCH）
+  migrateChatIndex(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }
