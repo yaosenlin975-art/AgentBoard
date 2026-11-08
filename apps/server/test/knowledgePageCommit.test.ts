@@ -8,10 +8,10 @@
  * 并在真实 app 上验证 revise 路由真的触发（RULE-3）。
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
@@ -133,6 +133,9 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
       expect(failed.skipped).toBeUndefined();
       expect(failed.reason).toContain('git add 失败');
       expect(failed.reason).toContain('index.lock');
+      // KB-SNAP-ROLLBACK 回归：单失败（git add 未成功，索引里没有本 run 内容）时 reason 只报原始失败，不混入回滚失败
+      expect(failed.reason).not.toContain('回滚失败');
+      expect(failed.rollback_failed).toBeUndefined();
       expect(readFileSync(knowledgePageSnapshotPath(repo, 'page-1'), 'utf8')).toContain('revision: 1');
       expect(git(repo, ['rev-parse', '--short', 'HEAD'])).toBe(head);
       expect(git(repo, ['log', '--format=%s'])).not.toContain('r2');
@@ -174,6 +177,35 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
     expect(result.reason).toContain('冲突标记');
     expect(existsSync(knowledgePageSnapshotPath(repo, 'page-1'))).toBe(false);
   });
+
+  /**
+   * KB-SNAP-ROLLBACK：双重失败不再静默。clean filter 在 git add 期间把快照文件 chmod 只读并注入冲突标记：
+   * 暂存内容校验失败（原始失败）→ 回滚还原文件也失败（EPERM 只读）→ reason 同时含两者 + rollback_failed=true，
+   * console.error 日志指认残留路径；git status --porcelain 能看到未还原的快照路径。
+   */
+  it('双重失败（暂存校验失败 + 还原被只读挡住）：reason 含原始失败与回滚失败，日志指认残留路径', () => {
+    expect(commitKnowledgePageSnapshot(repo, page(1)).committed).toBe(true);
+    const snapshotPath = knowledgePageSnapshotPath(repo, 'page-1');
+    writeFileSync(join(repo, '.gitattributes'), '.agentboard/snapshot/knowledge/*.md filter=corrupt\n', 'utf8');
+    const corrupt = `chmod 444 '${snapshotPath.split('\\').join('/')}' && printf '<<<<<<< HEAD\\n'`;
+    git(repo, ['config', 'filter.corrupt.clean', corrupt]);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const failed = commitKnowledgePageSnapshot(repo, page(2, '正文 v2'));
+      expect(failed.committed).toBe(false);
+      expect(failed.rollback_failed).toBe(true);
+      expect(failed.reason).toContain('暂存内容校验 失败');
+      expect(failed.reason).toContain('回滚失败（还原快照文件）');
+      // 文件未还原（仍是本次写入的 r2）：工作树残留该路径，且日志里出现该路径
+      expect(readFileSync(snapshotPath, 'utf8')).toContain('revision: 2');
+      expect(git(repo, ['status', '--porcelain', '--', '.agentboard/snapshot/knowledge/page-1.md'])).not.toBe('');
+      expect(errorSpy.mock.calls.some((call) => String(call[0]).includes('snapshot/knowledge/page-1.md'))).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+      chmodSync(snapshotPath, 0o644);
+      git(repo, ['config', '--unset', 'filter.corrupt.clean']);
+    }
+  }, 30_000);
 });
 
 describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {

@@ -49,6 +49,12 @@ export interface PageCommitResult {
    * 缺失视为 false（真实失败），保持对旧客户端的兼容语义。
    */
   skipped?: boolean;
+  /**
+   * KB-SNAP-ROLLBACK：失败回滚自身也失败（还原快照文件 / 清暂存失败），属双重失败——
+   * 工作树或索引可能残留该页路径，被后续不带路径限定的提交卷走。原因拼进 `reason`（`；回滚失败（<动作>）：<git stderr>`），
+   * 并 console.error 留痕（含 relative_path）。缺失/false 表示回滚成功或无需回滚；不重试，可观测优先。
+   */
+  rollback_failed?: boolean;
 }
 
 /** 每页快照文件路径：`<ws>/.agentboard/snapshot/knowledge/<page_id>.md` */
@@ -112,9 +118,49 @@ function identityArgs(cwd: string): string[] {
     : ['-c', 'user.name=AgentBoard', '-c', 'user.email=agentboard@local'];
 }
 
-/** 提交失败时尽力把索引恢复原状，避免留下「文件回滚了但内容仍在暂存区」的半状态 */
+/** 提交失败时尽力把索引恢复原状，避免留下「文件回滚了但内容仍在暂存区」的半状态；失败向上抛，由回滚块并入 rollback_failed 信号 */
 function resetIndex(cwd: string, relativePath: string): void {
-  try { git(cwd, ['reset', '-q', 'HEAD', '--', relativePath]); } catch { /* 无 HEAD / 非仓库：忽略 */ }
+  git(cwd, ['reset', '-q', 'HEAD', '--', relativePath]);
+}
+
+/**
+ * KB-SNAP-ROLLBACK：回滚失败的唯一出口——标记 rollback_failed、把原因拼进 reason、console.error 留痕（含 relative_path）。
+ * 不重试：双重失败时静默重试只会把问题埋深，可观测优先。
+ */
+function noteRollbackFailure(result: PageCommitResult, action: string, error: unknown): void {
+  result.rollback_failed = true;
+  const detail = `回滚失败（${action}）：${failureReason(error)}`;
+  result.reason = result.reason === null ? detail : `${result.reason}；${detail}`;
+  console.error(
+    `[knowledge-snapshot] ${result.relative_path || '(路径未知)'} ${detail}——索引/工作树可能残留该页路径，请人工检查 git status`,
+  );
+}
+
+/**
+ * 失败回滚：新建的删掉、已有的还原，再清掉本 run 暂存的路径。
+ * 任一步失败都经 noteRollbackFailure 显式留痕（不抛）；`added=false`（git add 尚未成功）时索引里没有本 run 的内容，
+ * 不调 reset 也不把 reset 失败算回滚失败——此时 reset 失败（如 index.lock 未释放）是噪音，不能污染「单失败」语义。
+ */
+function rollbackSnapshot(result: PageCommitResult, options: {
+  path: string;
+  previous: string | null;
+  workspacePath: string;
+  relativePath: string;
+  added: boolean;
+}): void {
+  const { path, previous, workspacePath, relativePath, added } = options;
+  try {
+    if (previous === null) rmSync(path, { force: true });
+    else writeFileSync(path, previous, 'utf8');
+  } catch (error) {
+    noteRollbackFailure(result, '还原快照文件', error);
+  }
+  if (!added) return;
+  try {
+    resetIndex(workspacePath, relativePath);
+  } catch (error) {
+    noteRollbackFailure(result, '清暂存', error);
+  }
 }
 
 /** 提交后回读 HEAD 简写；取不到时返回 null 而不是伪装成功 */
@@ -147,6 +193,8 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
   const result: PageCommitResult = { path, relative_path: relativePath, committed: false, commit: null, reason: null };
   const content = renderKnowledgePageSnapshot(page);
   let stage = '权威正文自检';
+  // KB-SNAP-ROLLBACK：git add 是否已成功（成功后才需要在回滚时清暂存；失败时索引里没有本 run 的内容）
+  let added = false;
 
   // 正文来源只能是 DB 行（page.body_md）；先自检再落盘，避免把库里的脏正文写成快照
   const bodyMarker = findConflictMarker(page.body_md);
@@ -167,6 +215,7 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
     if (readBack !== content) throw new Error('落盘快照与 DB 权威正文不一致（疑似多会话并发改写）');
     stage = 'git add';
     git(workspacePath, ['add', '-A', '--', relativePath]);
+    added = true;
     // 暂存后复核：commit -- <path> 提交的是索引内容，必须与权威正文逐字节一致
     stage = '暂存内容校验';
     const stagedBlob = gitRaw(workspacePath, ['show', `:${relativePath}`]);
@@ -187,13 +236,9 @@ export function commitKnowledgePageSnapshot(workspacePath: string, page: PageSna
     result.commit = headShort(workspacePath);
     return result;
   } catch (error) {
-    // 回滚：新建的删掉、已有的还原，保证不留半提交
-    try {
-      if (previous === null) rmSync(path, { force: true });
-      else writeFileSync(path, previous, 'utf8');
-      resetIndex(workspacePath, relativePath);
-    } catch { /* 回滚失败也不再抛：原因里已能看出 */ }
     result.reason = `${stage} 失败：${failureReason(error)}`;
+    // KB-SNAP-ROLLBACK：回滚（新建的删掉、已有的还原、清掉本 run 暂存）自身失败时显式留痕，不再空吞
+    rollbackSnapshot(result, { path, previous, workspacePath, relativePath, added });
     return result;
   }
 }
@@ -212,10 +257,13 @@ export function removeKnowledgePageSnapshot(workspacePath: string, page: Pick<Pa
     return result;
   }
   let stage = '删除快照文件';
+  // KB-SNAP-ROLLBACK：git add 是否已成功（删除提交失败时索引里有已暂存的删除，回滚要清掉）
+  let added = false;
   try {
     rmSync(path, { force: true });
     stage = 'git add';
     git(workspacePath, ['add', '-A', '--', relativePath]);
+    added = true;
     stage = 'git status';
     const staged = git(workspacePath, ['status', '--porcelain', '--', relativePath]);
     if (staged === '') {
@@ -230,8 +278,15 @@ export function removeKnowledgePageSnapshot(workspacePath: string, page: Pick<Pa
     result.commit = headShort(workspacePath);
     return result;
   } catch (error) {
-    resetIndex(workspacePath, relativePath);
     result.reason = `${stage} 失败：${failureReason(error)}`;
+    // KB-SNAP-ROLLBACK：清暂存失败时显式留痕；previous 语义不适用（删除路径文件已删，无需还原文件）
+    if (added) {
+      try {
+        resetIndex(workspacePath, relativePath);
+      } catch (rollbackError) {
+        noteRollbackFailure(result, '清暂存', rollbackError);
+      }
+    }
     return result;
   }
 }

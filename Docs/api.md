@@ -577,8 +577,9 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 **BORROW-5.1 每页快照与单页提交**（决策 c0cb9509 选项 A，`services/knowledgePageCommit.ts`）：`POST /pages`、`PUT /pages/:id`、`POST /pages/:id/actions` 三个写端点成功后，把该页写成 `<ws>/.agentboard/snapshot/knowledge/<page_id>.md`（front matter：`id/slug/title/scope/revision/status/updated_at` + 正文），并只提交这一个路径（`git add -A -- <path>` + `git commit -- <path>`）。响应新增 `page_commit`：
 
-- `{ path, relative_path, committed, commit, reason, skipped? }`；`scope=common` 或无对应工作区时为 `null`；
+- `{ path, relative_path, committed, commit, reason, skipped?, rollback_failed? }`；`scope=common` 或无对应工作区时为 `null`；
 - 提交失败**不回滚知识页本身**（库是事实源），只在 `reason` 里给出原因（形如 `<阶段> 失败：<git stderr 首行>`，能直接看到 `index.lock` 等真因），且文件回滚到改动前（新建的删掉、已有的还原），不留半提交；
+- 回滚自身失败（KB-SNAP-ROLLBACK）：`rollback_failed=true`，原因以 `；回滚失败（<还原快照文件|清暂存>）：<git stderr>` 拼进同一 `reason`，服务端另 `console.error` 一条含 `relative_path` 的日志；此时工作树/索引可能残留该页路径，需人工 `git status` 检查（不重试，可观测优先）。`git add` 未成功时不调 reset、不算回滚失败（索引里没有本次内容，锁未释放导致的 reset 失败是噪音）；
 - `committed=false` 且 `skipped=true` 表示**不是失败**（无快照可提交 / 无变更），客户端不应报警；缺失 `skipped` 视为真实失败；
 - CLI（KB-SNAP-SILENT）：`page_commit.committed=false && skipped!==true` 时，文本与 `--json` 模式都在 **stderr** 打印快照路径与 `reason`，并 **exit 1**；`--json` 的 stdout 仍是单个页面 JSON 文档（失败信号看退出码与 `page_commit`，不插入错误 JSON）；
 - `archive`/`restore` 重写同一路径并由 front matter 的 `status` 标注归档态；`delete`（软删）则删除该页快照并提交删除；
