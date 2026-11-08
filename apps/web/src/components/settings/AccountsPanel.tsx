@@ -20,6 +20,8 @@
  *
  * testid 口径：`accounts-app-*` / `accounts-body-*` / `accounts-empty-*` / `accounts-capability-badge-*`
  * （能力三图标）保留；`accounts-add-<app>`（顶栏添加入口）/ `accounts-add-panel-*`（向导在平台体内）沿用；
+ * ADD-FLOW-1 新增：`accounts-add-toggle`（全局「添加账号」）/ `accounts-add-picker`（7 卡选择页）/
+ * `accounts-add-moved-<app>`（平台底部指路文案）；
  * 已删 testid：`accounts-toggle-*` / `accounts-count-*` / `accounts-checkin-chip-*` / `accounts-checkin-all-*` /
  * `accounts-credit-*` / `accounts-checkin-current-*` / `accounts-tech-*` / `accounts-detail-current` /
  * `accounts-add-flow-*` / `accounts-desensitize-note` / `accounts-today-summary` /
@@ -57,6 +59,7 @@ import {
   type CheckinTodaySummary,
 } from './accountCapabilities';
 import { fetchAddAccountProtocols } from './addAccountApi';
+import { AddAccountPicker } from './AddAccountPicker';
 import { AddAccountEntry } from './AddAccountWizard';
 import { AccountsMasterDetail, type PlatformIndexItem } from './AccountsMasterDetail';
 
@@ -105,6 +108,8 @@ export function AccountsPanel() {
   // 选中平台上提到面板：顶栏「添加」作用于右栏当前平台；切平台即关向导
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  /** ADD-FLOW-1：全局「添加账号」→ 供应商选择页；平台级「添加」只作用于选中平台，零账号平台靠这里进入 */
+  const [addPickerOpen, setAddPickerOpen] = useState(false);
   /**
    * ACC-TOKEN-3：刷新凭据收到 409 CREDENTIAL_RELOGIN_REQUIRED → 打开该平台的添加账号向导重新登录。
    * 复用顶栏「添加」的同一份受控向导状态（addOpen + selectedApp）：选中该平台并打开；
@@ -214,9 +219,19 @@ export function AccountsPanel() {
   /** 顶栏「添加」只对装配了协议的当前平台出现（不可用给面板内 reason 文案，不给必败按钮） */
   const activeProtocol = protocols.data?.items.find((item) => item.app_id === activeApp) ?? null;
 
-  /** 标题栏动作（添加 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
+  /** 标题栏动作（添加账号 / 添加 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
   const headerActions = (
     <>
+      <button
+        type="button"
+        data-testid="accounts-add-toggle"
+        className={BUTTON_SECONDARY}
+        aria-expanded={addPickerOpen}
+        title="选择供应商添加账号（含左栏还没有账号的平台）"
+        onClick={() => setAddPickerOpen((previous) => !previous)}
+      >
+        添加账号
+      </button>
       {activeProtocol !== null && (
         <button
           type="button"
@@ -257,6 +272,8 @@ export function AccountsPanel() {
             {headerActions}
           </div>
         )}
+
+      {addPickerOpen && <AddAccountPicker onClose={() => setAddPickerOpen(false)} />}
 
       {!list.isPending && !list.isError && (
         <AccountsMasterDetail
@@ -337,6 +354,11 @@ function PlatformRow({
 
         {/* ACC-KB-B2W / ACC-UI-TOPBAR：协议级「添加账号」入口在标题栏；这里渲染向导面板与能力不可用文案 */}
         <AddAccountEntry app={app as ManagedAppId} wizardOpen={wizardOpen} onWizardClose={onWizardClose} />
+
+        {/* ADD-FLOW-1（原型 Q2=A）：行内加号迁出后只留一句指路，不在平台体里放第二个添加入口 */}
+        <p data-testid={`accounts-add-moved-${app}`} className="mt-1 text-[11px] text-ink-3">
+          添加账号已移到顶部「添加账号」
+        </p>
       </div>
     </div>
   );
