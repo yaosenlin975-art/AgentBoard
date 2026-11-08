@@ -1,8 +1,9 @@
 /**
- * KB-GRAPH-H / KB-DETAIL-W / KB-DETAIL-ALIGN 回归：视口自适应。
+ * KB-SCROLL / KB-DETAIL-W / KB-DETAIL-ALIGN 回归：视口自适应。
  *
  * jsdom 不做布局，所以断言「决定几何的声明」：
- * - 星图绘制区高度用 clamp(360px, calc(100dvh - 320px), 900px)，不再写死 480px；
+ * - 星图绘制区高度随父容器自适应（stage flex-1 填满剩余空间 + minHeight 360px 下限），
+ *   不再写死 480px、也不再依赖 100dvh 固定差值；
  * - 详情正文用 max-w-[min(calc(88ch+100px),100%)] 且左对齐（无 mx-auto），
  *   详情区 article 水平内边距 px-7=28px，正文与下方区块共用同一条左边线。
  * 真实三档数值（1920/1440/1280 → 760/580/400px、中心偏移 0,0）由 CDP 实测保证。
@@ -16,7 +17,7 @@ import { KnowledgePanel } from '../components/knowledge/KnowledgePanel';
 import { useAppStore } from '../state/appStore';
 import { server } from './server';
 
-const STAGE_HEIGHT = 'clamp(360px, calc(100dvh - 320px), 900px)';
+const STAGE_MIN_HEIGHT = '360px';
 
 function withClient(node: React.ReactElement): React.ReactElement {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -58,24 +59,24 @@ beforeEach(() => {
   );
 });
 
-describe('星图绘制区高度随视口（KB-GRAPH-H）', () => {
-  it('stage 用 clamp 高度，不再写死 480px', async () => {
+describe('星图绘制区高度随父容器（KB-SCROLL）', () => {
+  it('stage 高度随父容器自适应（flex-1 填满），360px 仅作下限，不再写死 480px / 100dvh', async () => {
     render(withClient(<KnowledgeGraph workspaceId="ws-1" scope="both" onSelect={() => undefined} />));
     const stage = await screen.findByTestId('knowledge-graph-stage');
-    // jsdom 会把 clamp() 重新序列化，所以按片段断言（真实值由 CDP 实测）
-    expect(stage.style.height).toContain('clamp');
-    expect(stage.style.height).toContain('360px');
-    expect(stage.style.height).toContain('100dvh');
-    expect(stage.style.height).toContain('900px');
+    expect(stage.style.height).toBe('');
+    expect(stage.style.minHeight).toContain(STAGE_MIN_HEIGHT);
+    expect(stage.className).toContain('flex-1');
     expect(stage.className).not.toContain('h-[480px]');
   });
 
-  it('无 WebGL 的列表回退也用同一套高度上限', async () => {
+  it('无 WebGL 的列表回退同一套自适应：flex-1 填满 + 360px 下限 + 自滚动', async () => {
     render(withClient(<KnowledgeGraph workspaceId="ws-1" scope="both" onSelect={() => undefined} />));
     const fallback = await screen.findByTestId('graph-fallback-list');
     const box = fallback.closest('[data-graph-fallback]') as HTMLElement;
-    expect(box.style.maxHeight).toContain('clamp');
-    expect(box.style.maxHeight).toContain('100dvh');
+    expect(box.style.minHeight).toContain(STAGE_MIN_HEIGHT);
+    expect(box.style.maxHeight).toBe('');
+    expect(box.className).toContain('flex-1');
+    expect(box.className).toContain('overflow-auto');
     expect(box.className).not.toContain('max-h-[480px]');
   });
 });

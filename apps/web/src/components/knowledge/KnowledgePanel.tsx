@@ -217,9 +217,12 @@ export function KnowledgePanel({
       {deepLinkDeleted && <button type="button" data-testid="knowledge-deeplink-history-open" className={`${BUTTON_SECONDARY} shrink-0`} onClick={() => setDeepLinkHistoryOpen(true)}>查看历史版本</button>}
     </div>}
 
-    <div className="mt-3 flex min-h-0 flex-1 flex-col gap-4 overflow-auto lg:flex-row">
+    {/* KB-SCROLL：容器不再整体滚（去 overflow-auto）。lg+ 两栏各自 h-full 独立滚；
+        <lg 纵向堆叠回退整页滚动（App main scroller 接管）。 */}
+    <div className="mt-3 flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
       {view === 'graph' ? (
-        <div className="min-w-0 flex-1">
+        // KB-SCROLL：星图列固定视口（h-full 不滚），stage 高度随列自适应
+        <div className="min-h-0 min-w-0 flex-1 lg:h-full">
           <KnowledgeGraph
             workspaceId={workspaceId}
             scope={scope}
@@ -229,11 +232,11 @@ export function KnowledgePanel({
           />
         </div>
       ) : deepLinkHistoryOpen && deepLinkPageId !== null ? (
-        <div className="min-w-0 lg:w-80 lg:flex-none">
+        <div className="min-h-0 min-w-0 lg:h-full lg:w-80 lg:flex-none lg:overflow-y-auto">
           <KnowledgeDeepLinkHistory pageId={deepLinkPageId} workspaceId={workspaceId} onBack={() => setDeepLinkHistoryOpen(false)} />
         </div>
       ) : (
-      <div className="min-w-0 lg:w-80 lg:flex-none">
+      <div className="min-h-0 min-w-0 lg:h-full lg:w-80 lg:flex-none lg:overflow-y-auto">
         {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），数据到位即卸载；画法统一走 Skeleton 基元 */}
         {list.isPending && <Skeleton testId="knowledge-skeleton" rows={3} />}
         {list.isPending && <p className="sr-only">加载中…</p>}
@@ -298,7 +301,7 @@ export function KnowledgePanel({
       )}
 
       {/* AUDIT-KB（I-06）：未选中不空白——引导 + 最近更新 3 条 + 新建入口 */}
-      {selected === null && <div data-testid="knowledge-detail-empty" className="min-w-0 flex-1 rounded-lg border border-hairline bg-surface-card px-5 py-4">
+      {selected === null && <div data-testid="knowledge-detail-empty" className="min-h-0 min-w-0 flex-1 rounded-lg border border-hairline bg-surface-card px-5 py-4 lg:h-full lg:overflow-y-auto">
         <p className="text-sm font-medium text-ink">从左侧选择知识页</p>
         <div className="mt-3">
           <p className="text-xs text-ink-3">最近更新</p>
@@ -311,7 +314,7 @@ export function KnowledgePanel({
         </div>
         <button type="button" className={`${BUTTON_PRIMARY} mt-4`} onClick={() => setImportOpen(true)}>新建知识页</button>
       </div>}
-      {selected && <div className="min-w-0 flex-1">
+      {selected && <div className="min-h-0 min-w-0 flex-1 lg:h-full lg:overflow-y-auto">
         {selectedOutside && <p data-testid="knowledge-selected-stale" className="mb-1 text-xs text-ink-3">选中项来自上一页，此处仍显示其内容</p>}
         <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} onViewInGraph={selected.status !== 'deleted' ? () => { setGraphFocus({ id: selected.id }); setView('graph'); } : undefined} />
       </div>}

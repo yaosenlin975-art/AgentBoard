@@ -61,11 +61,10 @@ const FALLBACK_PAGE_CAP = 50;
 const LAYOUT_W = 720;
 const LAYOUT_H = 480;
 /**
- * KB-GRAPH-H：绘制区高度随浏览器视口自适应。
- * 视口高度 − 顶栏/视图 tab/知识库工具条/搜索行/星图工具条/图例等固定占用（≈320px），
- * 再夹在 360–900 之间：1280×720 → 400px，1440×900 → 580px，1920×1080 → 760px。
+ * KB-SCROLL：绘制区高度随父容器自适应（stage flex-1 填满剩余空间），
+ * 360px 只是容器高度不足时的画布下限，防容器被压扁时画布消失；不再用 100dvh 固定差值。
  */
-const STAGE_HEIGHT = 'clamp(360px, calc(100dvh - 320px), 900px)';
+const STAGE_MIN_HEIGHT = '360px';
 
 /** GRAPH-INIT-FAIL：四类失败原因分开（各自文案 + data-graph-fallback 取值） */
 type FallbackRenderer = 'no-webgl' | 'no-size' | 'import-failed' | 'create-failed';
@@ -569,7 +568,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
       data-matches={matches.size}
       data-focus-id={focusId ?? ''}
       data-focus-hops={focusHops}
-      className="flex min-h-0 flex-col rounded-2xl border border-hairline bg-surface-card"
+      className="flex h-full min-h-0 flex-col rounded-2xl border border-hairline bg-surface-card"
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-3 py-2 text-xs text-ink-2">
         {focusId !== null && onExitFocus && (
@@ -792,21 +791,21 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
       )}
 
       {showStage && shown !== null && (
-        <div className="relative">
+        <div className="relative flex min-h-0 flex-1 flex-col">
           <div
             data-testid="knowledge-graph-stage"
             ref={stageRef}
             role="img"
             tabIndex={0}
             aria-label={`知识星图：${stats?.nodeCount ?? 0} 个节点，${stats?.edgeCount ?? 0} 条关联`}
-            className={`w-full max-w-full touch-none outline-none ${
+            className={`w-full max-w-full flex-1 touch-none outline-none ${
               FALLBACK_RENDERERS.includes(renderer) ? 'hidden' : ''
             }`}
             // CURSOR-WHITE/CURSOR-REUSE：原生 grab 在 Windows 是合成的白手掌位图（无描边），白底看不见；
             // 复用 lib/cursor 的双色光标（白填充 + 深描边）。悬停到节点时保持 pointer 语义不变。
-            // KB-GRAPH-H：绘制区高度随视口自适应（扣除顶栏/工具条/搜索行/图例等固定占用），夹在 360–900；
+            // KB-SCROLL：高度随父容器自适应（flex-1 填满剩余空间），360px 是画布高度下限；
             // 尺寸变化由 pixiGraph 的 ResizeObserver 接住，并按 panCenteredOn 保持内容居中。
-            style={{ height: STAGE_HEIGHT, cursor: hovered === null ? GRAB_CURSOR : 'pointer' }}
+            style={{ minHeight: STAGE_MIN_HEIGHT, cursor: hovered === null ? GRAB_CURSOR : 'pointer' }}
           />
           <GraphControls
             localMode={localMode}
@@ -889,8 +888,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
             <div
               data-graph-fallback={renderer}
               data-graph-error={graphError === null ? '' : `${graphError.code}: ${graphError.message}`}
-              className="overflow-auto px-3 py-3"
-              style={{ maxHeight: STAGE_HEIGHT }}
+              className="w-full flex-1 overflow-auto px-3 py-3"
+              style={{ minHeight: STAGE_MIN_HEIGHT }}
             >
               <p className="text-sm font-medium text-ink">
                 {FALLBACK_TITLE[renderer as FallbackRenderer]}
