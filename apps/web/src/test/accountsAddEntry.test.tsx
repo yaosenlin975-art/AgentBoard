@@ -82,7 +82,7 @@ describe('全局「添加账号」入口（ADD-FLOW-1）', () => {
   });
 
   it('选中平台没装配协议时全局入口仍在：零账号平台可从选择页添加', async () => {
-    // 当前平台 workbuddy 无协议 → 平台级「添加」不渲染；minimax 有协议 → 只能走全局选择页
+    // ACC-UI-DEDUP：平台级「添加」按钮已删除——即使 minimax 装配了协议也不出 accounts-add-<app>，只能走全局选择页
     server.use(http.get('/api/add-account-protocols', () => HttpResponse.json({
       items: [
         { app_id: 'minimax', protocol: 'minimax_device', provider_version: 'v1', requires_browser: true, regions: ['cn', 'global'] },
@@ -92,6 +92,7 @@ describe('全局「添加账号」入口（ADD-FLOW-1）', () => {
 
     const toggle = await screen.findByTestId('accounts-add-toggle');
     expect(screen.queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
+    expect(screen.queryByTestId('accounts-add-minimax')).toBeNull();
 
     await userEvent.click(toggle);
     await userEvent.click(await screen.findByTestId('accounts-add-picker-action-authorize-minimax'));

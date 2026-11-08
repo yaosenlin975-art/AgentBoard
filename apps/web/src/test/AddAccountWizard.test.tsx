@@ -10,7 +10,8 @@
  *
  * ADD-FLOW-1 / ADD-FLOW-2（口径 A）迁移：左栏只列「有账号」平台，空 fixture 下左栏为空；
  * 入口断言改到全局供应商选择页（顶栏 `accounts-add-toggle` → `accounts-add-picker` 卡片），
- * 向导从选择页的「授权添加」卡打开；平台级顶栏「添加」用例补 fixture 账号使左栏行合法出现。
+ * 向导从选择页的「授权添加」卡打开；ACC-UI-DEDUP 删除平台级顶栏「添加」后，
+ * 平台体内向导由重新登录链路（ACC-TOKEN-3 openReloginWizard）打开的用例覆盖。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -338,21 +339,33 @@ describe('添加账号流程（ACC-KB-B2W）', () => {
     expect(await screen.findByTestId('accounts-add-notice-reason-workbuddy_desktop')).toHaveTextContent('该授权会话已不在进行中');
   });
 
-  it('ACC-UI-TOPBAR：入口按钮在顶栏操作行，向导面板仍在平台体内；切走平台后整体不渲染', async () => {
+  it('ACC-UI-TOPBAR/ACC-UI-DEDUP：平台级「添加」删除，向导面板仍在平台体内（重新登录链路），切走平台后整体不渲染', async () => {
     // 口径 A：左栏只列「有账号」平台 → 给 workbuddy / minimax 各一条 fixture 账号，左栏行合法出现
-    server.use(http.get('/api/managed-accounts', () => HttpResponse.json([
-      account(),
-      account({ id: '99999999-9999-4999-8999-999999999999', app_id: 'minimax', client_instance_id: 'mm-inst-1', display_name: 'MiniMax 账号' }),
-    ])));
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([
+        account({ credential_status: 'expired', credential_expires_at: 1 }),
+        account({ id: '99999999-9999-4999-8999-999999999999', app_id: 'minimax', client_instance_id: 'mm-inst-1', display_name: 'MiniMax 账号' }),
+      ])),
+      // ACC-UI-DEDUP 后平台体内向导只剩重新登录链路（openReloginWizard）可打开
+      http.post('/api/managed-accounts/77777777-7777-4777-8777-777777777777/refresh-credential', () =>
+        HttpResponse.json(
+          { error: { code: 'CREDENTIAL_RELOGIN_REQUIRED', message: '该账号的凭据无法自动刷新，请重新登录' } },
+          { status: 409 },
+        )),
+    );
     renderPanel();
     await screen.findByTestId('accounts-index');
     // ACC-B1：默认选中第一个有账号平台（workbuddy）→ 右栏已展开；切走后该平台整体不渲染
     const body = await screen.findByTestId('accounts-body-workbuddy_desktop');
     expect(body).not.toHaveAttribute('hidden');
-    // 入口按钮不在平台体内（在顶栏回退操作行），向导面板点开后落在平台体内
+    // 平台级「添加」按钮零渲染（顶栏与平台体内都没有），顶栏只剩全局「添加账号」
     expect(within(body).queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
     const toolbar = await screen.findByTestId('accounts-toolbar');
-    await userEvent.click(await within(toolbar).findByTestId('accounts-add-workbuddy_desktop'));
+    expect(within(toolbar).getByTestId('accounts-add-toggle')).toBeInTheDocument();
+    expect(within(toolbar).queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
+    // 向导面板经重新登录链路落在平台体内
+    const card = await screen.findByTestId('accounts-card-77777777-7777-4777-8777-777777777777');
+    await userEvent.click(within(card).getByTestId('accounts-credential-refresh-77777777-7777-4777-8777-777777777777'));
     expect(await screen.findByTestId('accounts-add-panel-workbuddy_desktop')).toBeInTheDocument();
 
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));

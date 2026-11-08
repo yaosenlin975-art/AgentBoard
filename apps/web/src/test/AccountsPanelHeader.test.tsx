@@ -1,8 +1,9 @@
 /**
  * ACC-HEADER：账号管理标题去重 + 操作上顶栏（ACC-UI-TOPBAR）。
  * 弹窗头部（drawer 标题栏「账号管理」）保留唯一标题；面板内不再渲染同名标题。
- * ACC-UI-TOPBAR：操作行上标题栏（添加 / 一键签到 / 刷新，Portal 进 drawer 标题栏，
+ * ACC-UI-TOPBAR：操作行上标题栏（添加账号 / 一键签到 / 刷新，Portal 进 drawer 标题栏，
  * 独立渲染回退为面板顶部 accounts-toolbar 一行）；「N 个平台 / N 个可签到账号」计划摘要删除。
+ * ACC-UI-DEDUP：平台级「添加」（accounts-add-<app>）删除，唯一添加入口是「添加账号」。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -49,16 +50,19 @@ describe('账号页头部（ACC-HEADER / ACC-UI-TOPBAR）', () => {
     expect(screen.getByLabelText('账号管理')).toBeInTheDocument();
   });
 
-  it('操作上顶栏：回退操作行依次含 添加/一键签到/刷新；计划摘要与旧说明字样零残留；整排位于主从内容之前', async () => {
+  it('操作上顶栏：回退操作行依次含 添加账号/一键签到/刷新；计划摘要与旧说明字样零残留；整排位于主从内容之前', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
     const toolbar = screen.getByTestId('accounts-toolbar');
     expect(toolbar.className).toContain('flex-wrap');
     // 三个按钮依次在操作行内（drawer 宿主下 Portal 进标题栏，见 drawerPanel.test 的标题栏断言）
-    expect(within(toolbar).getByTestId('accounts-add-workbuddy_desktop')).toHaveTextContent('添加');
+    expect(within(toolbar).getByTestId('accounts-add-toggle')).toHaveTextContent('添加账号');
     expect(within(toolbar).getByTestId('accounts-one-click-checkin')).toHaveTextContent('一键签到');
     expect(within(toolbar).getByTestId('accounts-import-local')).toHaveTextContent('刷新');
+    // ACC-UI-DEDUP：平台级「添加」按钮删除，标题栏只剩「添加账号」一个添加入口
+    expect(within(toolbar).queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
+    expect(within(toolbar).queryByTestId('accounts-add-minimax')).toBeNull();
     // 计划摘要（N 个平台 / N 个可签到账号）与历史说明字样不再渲染
     expect(within(toolbar).queryByTestId('accounts-one-click-plan')).toBeNull();
     expect(within(toolbar).queryByTestId('accounts-desensitize-note')).toBeNull();

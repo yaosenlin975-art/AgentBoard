@@ -138,7 +138,7 @@ describe('drawer 两态', () => {
     expect(screen.getByTestId('drawer-panel').getAttribute('data-mode')).toBe('squeeze');
   });
 
-  it('ACC-UI-TOPBAR：账号 drawer 标题栏经 Portal 渲染 添加/一键签到/刷新（关闭左侧），面板内无回退操作行', async () => {
+  it('ACC-UI-TOPBAR：账号 drawer 标题栏经 Portal 渲染 添加账号/一键签到/刷新（关闭左侧），面板内无回退操作行', async () => {
     server.use(
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([
         { app_id: 'workbuddy_desktop', capture: true, switch: true, checkin: true, capture_reason_code: 'OK', switch_reason_code: 'OK', checkin_reason_code: 'CHECKIN_PROVIDER_AVAILABLE', reason_code: 'CHECKIN_PROVIDER_AVAILABLE', source: 'derived' },
@@ -150,7 +150,9 @@ describe('drawer 两态', () => {
     act(() => useNavStore.getState().openDrawer('accounts'));
 
     const actions = screen.getByTestId('drawer-header-actions');
-    expect(await within(actions).findByTestId('accounts-add-workbuddy_desktop')).toHaveTextContent('添加');
+    // ACC-UI-DEDUP：唯一添加入口「添加账号」；平台级「添加」按钮不再渲染
+    expect(await within(actions).findByTestId('accounts-add-toggle')).toHaveTextContent('添加账号');
+    expect(within(actions).queryByTestId('accounts-add-workbuddy_desktop')).toBeNull();
     expect(within(actions).getByTestId('accounts-one-click-checkin')).toHaveTextContent('一键签到');
     expect(within(actions).getByTestId('accounts-import-local')).toHaveTextContent('刷新');
     // 关闭按钮在操作区之后（标题行最右）；面板内不渲染回退操作行

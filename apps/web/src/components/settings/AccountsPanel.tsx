@@ -7,9 +7,10 @@
  * 链路标签、脱敏声明与刷新旁说明、「今日 x/x」合计。
  *
  * ACC-UI-TOPBAR（2026-11-07）：操作上标题栏、去两处字样——
- * - 顶栏（drawer 标题栏「账号管理 … 关闭」一行，关闭左侧）依次渲染「添加」（原平台行「添加账号」改名，
- *   只对选中平台且装配了协议的平台出现）、「一键签到」（次级样式）、「刷新」；有 drawer 宿主时经
+ * - 顶栏（drawer 标题栏「账号管理 … 关闭」一行，关闭左侧）依次渲染「添加账号」（ACC-UI-DEDUP 后
+ *   唯一添加入口，打开 7 卡供应商选择页）、「一键签到」（次级样式）、「刷新」；有 drawer 宿主时经
  *   Portal 渲进标题栏，独立渲染（单测/无宿主）回退为面板顶部 `accounts-toolbar` 一行。
+ *   ACC-UI-DEDUP（2026-11-08）：平台级「添加」（accounts-add-<app>）删除，避免与「添加账号」重复。
  * - 删除：底部操作行与「N 个平台 / N 个可签到账号」计划摘要（`accounts-one-click-plan` 不再渲染）、
  *   平台容器「其中 N 个启用并参与一键签到」次级说明（`accounts-summary-*`）、
  *   「捕获当前账号」按钮及捕获 notice（workbuddy/trae 免登录捕获 UI 入口移除；API 保留，添加账号向导仍可用）。
@@ -19,7 +20,7 @@
  * 结构：标题栏动作（Portal 或回退行）→ 主从布局（左栏平台索引 + 右栏选中平台详情）→ 导入结果 → 一键签到结果。
  *
  * testid 口径：`accounts-app-*` / `accounts-body-*` / `accounts-empty-*` / `accounts-capability-badge-*`
- * （能力三图标）保留；`accounts-add-<app>`（顶栏添加入口）/ `accounts-add-panel-*`（向导在平台体内）沿用；
+ * （能力三图标）保留；`accounts-add-panel-*`（向导在平台体内）沿用；
  * ADD-FLOW-1 新增：`accounts-add-toggle`（全局「添加账号」）/ `accounts-add-picker`（7 卡选择页）/
  * `accounts-add-moved-<app>`（平台底部指路文案）；
  * 已删 testid：`accounts-toggle-*` / `accounts-count-*` / `accounts-checkin-chip-*` / `accounts-checkin-all-*` /
@@ -30,15 +31,24 @@
 import { useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount } from '@agentboard/shared';
+import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount, type QuotaResult } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { DrawerHeaderActionsContext } from '../drawer/drawerHeaderActions';
 import { AccountCard, type AccountView } from './AccountCard';
-import { CapabilityBadges } from './CapabilityBadges';
 import { LocalAccountsImportButton, LocalAccountsImportResult, useLocalAccountsImport } from './LocalAccountsImport';
 import { OneClickCheckinButton, OneClickCheckinResults, useOneClickCheckin } from './OneClickCheckin';
 import { QuotaDetail } from './QuotaDetail';
+import {
+  QUOTA_UNKNOWN_REASON_LABEL,
+  isWindowLimited,
+  quotaReasonView,
+  quotaRowBalance,
+  quotaWindowKindLabel,
+  quotaWindowsOf,
+  useQuotaSnapshot,
+  windowBarWidth,
+} from './QuotaCards';
 import {
   APP_ORDER,
   appLabel,
@@ -58,10 +68,44 @@ import {
   type CapabilityView,
   type CheckinTodaySummary,
 } from './accountCapabilities';
-import { fetchAddAccountProtocols } from './addAccountApi';
 import { AddAccountPicker } from './AddAccountPicker';
 import { AddAccountEntry } from './AddAccountWizard';
-import { AccountsMasterDetail, type PlatformIndexItem } from './AccountsMasterDetail';
+import { AccountsMasterDetail, type PlatformIndexItem, type PlatformIndexMetric } from './AccountsMasterDetail';
+
+/**
+ * accounts-redesign 方向 B：左栏指标行（指标 + 迷你条 + 异常色）。
+ * 签到平台指标 = 今日签到 done/total（异常色：全完成 accent、部分完成琥珀、无参与中性）；
+ * 额度来源指标 = 余额或首个窗口百分比（已限额红 + 迷你条）；Command Code 无签到/额度，指标回落账号数。
+ */
+function checkinMetric(summary: CheckinTodaySummary): PlatformIndexMetric {
+  if (summary.total === 0) return { text: '无参与账号', tone: 'idle' };
+  return {
+    text: `${summary.done}/${summary.total}`,
+    tone: summary.done === summary.total ? 'ok' : summary.done > 0 ? 'warn' : 'idle',
+    title: `今日签到 ${summary.done}/${summary.total}`,
+  };
+}
+
+/** 额度来源的左栏指标：余额优先，其次首个窗口（带迷你条）；取不到/失败给中文原因 */
+function quotaRailMetric(item: QuotaResult | undefined): PlatformIndexMetric {
+  if (item === undefined || item.status !== 'ok') {
+    const text = item === undefined ? QUOTA_UNKNOWN_REASON_LABEL : quotaReasonView(item).text ?? QUOTA_UNKNOWN_REASON_LABEL;
+    return { text, tone: 'idle' };
+  }
+  const balance = quotaRowBalance(item);
+  if (balance !== null) return { text: balance, tone: 'idle' };
+  const first = quotaWindowsOf(item)[0];
+  if (first !== undefined) {
+    const limited = isWindowLimited(first);
+    const percent = windowBarWidth(first.used_percent);
+    return {
+      text: `${quotaWindowKindLabel(first)} · ${percent}%`,
+      tone: limited ? 'danger' : 'idle',
+      barPercent: percent,
+    };
+  }
+  return { text: '正常', tone: 'ok' };
+}
 
 /** 需求 2：CLI 额度来源并入同一平台列表时的短标签（长标签仍用于额度详情） */
 const CLI_SOURCE_ROW_LABEL: Record<string, string> = {
@@ -98,22 +142,18 @@ export function AccountsPanel() {
   const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
   /** ACC-UI-TOPBAR：刷新按钮上标题栏；导入结果框留在面板底部（同一份状态） */
   const importer = useLocalAccountsImport();
-  /** 顶栏「添加」可用性：与平台内向导共用同一份协议清单（同一 queryKey → 一次请求、全局缓存） */
-  const protocols = useQuery({
-    queryKey: ['add-account-protocols'],
-    queryFn: fetchAddAccountProtocols,
-    staleTime: 60_000,
-  });
 
-  // 选中平台上提到面板：顶栏「添加」作用于右栏当前平台；切平台即关向导
+  // 选中平台上提到面板：向导（添加账号选择页的「授权添加」/重新登录）作用于右栏当前平台；切平台即关向导
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  /** accounts-redesign 方向 B：左栏指标行的额度数据（与右栏 QuotaDetail 共享同一 queryKey，不另拉一份） */
+  const quotas = useQuotaSnapshot();
   /** ADD-FLOW-1：全局「添加账号」→ 供应商选择页；平台级「添加」只作用于选中平台，零账号平台靠这里进入 */
   const [addPickerOpen, setAddPickerOpen] = useState(false);
   /**
    * ACC-TOKEN-3：刷新凭据收到 409 CREDENTIAL_RELOGIN_REQUIRED → 打开该平台的添加账号向导重新登录。
-   * 复用顶栏「添加」的同一份受控向导状态（addOpen + selectedApp）：选中该平台并打开；
-   * 关闭回调与顶栏「添加」共用 onWizardClose。向导 authorized 后已有失效重拉逻辑，徽标自动恢复。
+   * 复用平台向导的同一份受控状态（addOpen + selectedApp）：选中该平台并打开；
+   * 关闭回调与向导共用 onWizardClose。向导 authorized 后已有失效重拉逻辑，徽标自动恢复。
    */
   const openReloginWizard = useCallback((app: string) => {
     setSelectedApp(app);
@@ -172,6 +212,7 @@ export function AccountsPanel() {
         accountCount: appAccounts.length,
         done: summary.done,
         total: summary.total,
+        metric: checkinMetric(summary),
         render: () => (
           <PlatformRow
             app={app}
@@ -205,6 +246,7 @@ export function AccountsPanel() {
         accountCount: sourceAccounts.length,
         done: 0,
         total: 0,
+        metric: quotaRailMetric((quotas.data?.items ?? []).find((item) => item.source === source)),
         render: () => (
           <div className="space-y-2">
             {/* ACC-B6：额度平台右栏详情（余额 / 时间窗口 / 积分占位）；凭据明细保留在下方 */}
@@ -227,15 +269,13 @@ export function AccountsPanel() {
       accountCount: commandCodeAccounts.length,
       done: 0,
       total: 0,
+      metric: { text: `${commandCodeAccounts.length} 个账号`, tone: 'idle' },
       render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
     return [...known, ...extras, ...sources].filter((item) => visibleApps.includes(item.app));
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, addOpen, activeApp, openReloginWizard, visibleApps]);
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, quotas.data, addOpen, activeApp, openReloginWizard, visibleApps]);
 
-  /** 顶栏「添加」只对装配了协议的当前平台出现（不可用给面板内 reason 文案，不给必败按钮） */
-  const activeProtocol = protocols.data?.items.find((item) => item.app_id === activeApp) ?? null;
-
-  /** 标题栏动作（添加账号 / 添加 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
+  /** 标题栏动作（添加账号 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
   const headerActions = (
     <>
       <button
@@ -248,17 +288,6 @@ export function AccountsPanel() {
       >
         添加账号
       </button>
-      {activeProtocol !== null && (
-        <button
-          type="button"
-          data-testid={`accounts-add-${activeApp}`}
-          className={BUTTON_SECONDARY}
-          title={`通过 ${appLabel(activeApp as ManagedAppId)} 的官方授权流程添加账号（不需要客户端在跑）`}
-          onClick={() => setAddOpen(true)}
-        >
-          添加
-        </button>
-      )}
       <OneClickCheckinButton controller={oneClick} variant="secondary" />
       <LocalAccountsImportButton controller={importer} />
     </>
@@ -327,7 +356,7 @@ function PlatformRow({
   capability: CapabilityView | null;
   capabilityKnown: boolean;
   accounts: PublicManagedAccount[];
-  /** 顶栏「添加」打开的向导（ACC-UI-TOPBAR：入口按钮在标题栏，向导面板仍在平台体内） */
+  /** 受控向导（ACC-UI-TOPBAR：向导面板在平台体内，入口在「添加账号」选择页/重新登录回调） */
   wizardOpen: boolean;
   onWizardClose: () => void;
   /** ACC-TOKEN-3：账号行刷新凭据需重新登录时，打开该平台的添加账号向导（受控状态在 AccountsPanel） */
@@ -336,8 +365,8 @@ function PlatformRow({
   return (
     <div data-testid={`accounts-app-${app}`}>
       <div data-testid={`accounts-body-${app}`} className="pb-3">
-        {/* ACC-UI-2：能力三图标（「其中 N 个参与一键签到」次级说明已随 ACC-UI-TOPBAR 删除） */}
-        <CapabilityBadges app={app} capability={capability} />
+        {/* accounts-redesign 方向 B（口径 A 页 r4 拍板采纳）：平台级能力徽标整行删除，
+            正常态不占像素；异常仍以文字提示（下方 switch 不可用原因、额度原因行、左栏异常色）。 */}
 
         {/* ACC-UI-2：不可用原因可见——切换没有可点按钮时，用文字说明原因与出路 */}
         {capability !== null && capability.switch !== true && (
@@ -352,7 +381,7 @@ function PlatformRow({
 
         {accounts.length === 0 ? (
           <p data-testid={`accounts-empty-${app}`} className="mt-1 rounded-md border border-dashed border-neutral-300 px-3 py-3 text-center text-xs text-neutral-500 dark:border-neutral-700 dark:text-neutral-400">
-            尚无{appLabel(app)}账号。点顶栏「添加」或「刷新」后列出。
+            尚无{appLabel(app)}账号。点顶栏「添加账号」或「刷新」后列出。
           </p>
         ) : (
           <div className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
