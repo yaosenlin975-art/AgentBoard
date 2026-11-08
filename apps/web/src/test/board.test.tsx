@@ -396,6 +396,30 @@ describe('Board 组件', () => {
     expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i1' });
   });
 
+  it('DETAIL-HIGHLIGHT：详情打开中对应卡有选中态（data-selected + 高亮类），非当前详情卡无高亮', async () => {
+    mockBoardData(boardIssues, []);
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    renderBoard();
+
+    const card = await screen.findByTestId('issue-card-i1');
+    // 未打开详情：无选中态
+    expect(card).not.toHaveAttribute('data-selected', 'true');
+    expect(card).not.toHaveClass('border-accent');
+
+    await userEvent.click(screen.getByTestId('issue-card-i1'));
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i1' });
+    expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i1')).toHaveClass('border-accent', 'bg-accent-soft/40');
+
+    // 切到另一张卡：新详情卡命中，原详情卡高亮移除
+    await userEvent.click(screen.getByTestId('issue-card-i2'));
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i2' });
+    expect(screen.getByTestId('issue-card-i2')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i2')).toHaveClass('border-accent', 'bg-accent-soft/40');
+    expect(screen.getByTestId('issue-card-i1')).not.toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i1')).not.toHaveClass('border-accent');
+  });
+
   it('拖动卡片时预览移到 body portal，脱离列滚动裁切区域', async () => {
     mockBoardData([boardIssues[0]!], []);
     useAppStore.setState({ workspaceId: 'ws-1' });

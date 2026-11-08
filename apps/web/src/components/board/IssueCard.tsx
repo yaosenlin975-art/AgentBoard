@@ -1,6 +1,7 @@
 /**
  * 看板卡片（§7.3）：标题、左缘优先级色条、标签 chips、占用徽标（会话运行中加动效点）、
  * 关联会话标记、评论数徽标（0 条隐藏，详情看右侧面板）；点击开任务详情。
+ * 详情打开中（panelStore view='detail' 且 issueId 命中本卡）输出选中高亮，与批量勾选同 token（DETAIL-HIGHLIGHT）。
  * 占用中卡片禁止拖出：useSortable 仅禁 draggable，仍可作为落点；光标 not-allowed + title。
  */
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react';
@@ -190,6 +191,10 @@ export function IssueCard({
   const locked = issue.decision_locked === true;
   const frozen = claimed || locked;
   const openDetail = usePanelStore((s) => s.openDetail);
+  // DETAIL-HIGHLIGHT：详情打开中的卡有选中态。布尔选择器等值稳定（Object.is），只有命中翻转的这张卡重渲。
+  const detailOpen = usePanelStore((s) => s.view === 'detail' && s.issueId === issue.id);
+  // 批量勾选与详情打开任一命中即高亮，同时命中不互相抹掉（批量勾选的勾选框仍只看 selected）。
+  const highlighted = selected || detailOpen;
   // 拖拽结束后浏览器仍派发 click：记录按下位置，位移超过激活阈值(5px)即视为拖拽，不打开详情
   const downPos = useRef<{ x: number; y: number } | null>(null);
 
@@ -228,7 +233,7 @@ export function IssueCard({
       ref={setNodeRef}
       style={style}
       data-testid={`issue-card-${issue.id}`}
-      data-selected={selectable ? (selected ? 'true' : 'false') : undefined}
+      data-selected={highlighted ? 'true' : selectable ? 'false' : undefined}
       aria-disabled={frozen || undefined}
       title={locked ? '等待决策回答，暂不可拖动' : claimed ? '占用中，不可拖动' : undefined}
       // AUDIT-P0（I-01）：卡片本身可 Tab 聚焦、可 Enter/Space 打开详情，并且 focus-visible 有可见描边。
@@ -261,7 +266,7 @@ export function IssueCard({
       }}
       onPointerDown={onPointerDown}
       onClick={onClick}
-      className={`${CARD_CLASS} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isDragging ? 'opacity-50' : ''} ${selectable && selected ? 'border-accent bg-accent-soft/40' : ''}`}
+      className={`${CARD_CLASS} focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${isDragging ? 'opacity-50' : ''} ${highlighted ? 'border-accent bg-accent-soft/40' : ''}`}
     >
       <IssueCardPriority issue={issue} />
       {selectable && (

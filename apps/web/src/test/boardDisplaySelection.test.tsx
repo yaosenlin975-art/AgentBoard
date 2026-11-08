@@ -141,4 +141,23 @@ describe('两段式选择与批量操作', () => {
     await userEvent.click(screen.getByTestId('issue-card-i1'));
     expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i1' });
   });
+
+  it('DETAIL-HIGHLIGHT：详情打开高亮与批量勾选同时命中不互相抹掉', async () => {
+    renderBoard();
+    await screen.findByTestId('issue-card-i1');
+
+    // 先打开 i1 详情 → 卡片进入选中态
+    await userEvent.click(screen.getByTestId('issue-card-i1'));
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i1' });
+    expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i1')).toHaveClass('border-accent', 'bg-accent-soft/40');
+
+    // 进入选择模式并勾选 i1：勾选框生效（selected 驱动），高亮不被抹掉
+    await userEvent.click(screen.getByTestId('board-select-toggle'));
+    await userEvent.click(screen.getByTestId('selection-scope-column-待规划'));
+    await userEvent.click(screen.getByTestId('issue-card-i1'));
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 1 / 2');
+    expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i1')).toHaveClass('border-accent', 'bg-accent-soft/40');
+  });
 });
