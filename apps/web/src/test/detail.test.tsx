@@ -494,16 +494,35 @@ describe('DETAIL-D2 meta 行（状态 / 优先级 / 截止 / 负责人）', () =
     expect(document.activeElement).toBe(due);
   });
 
-  it('负责人 chip：有占用显示名称 + 已占用时长；租约明细不臆造数值', { timeout: 15000 }, async () => {
-    mockDetailApi(makeIssue({ claimed_by: 'agent:codex', claimed_at: Date.now() - 12 * 60 * 1000 }));
+  it('负责人 chip：有占用显示名称 + 已占用时长；租约剩余进 title 与浮层（034427fa 投影）', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue({
+      claimed_by: 'agent:codex',
+      claimed_at: Date.now() - 12 * 60 * 1000,
+      claim_lease_until: Date.now() + 48 * 60 * 60 * 1000,
+      last_heartbeat_at: Date.now() - 3 * 60 * 1000,
+    }));
     renderDetail();
     const chip = await screen.findByTestId('owner-chip');
     expect(chip).toHaveTextContent('codex');
     expect(chip).toHaveTextContent('12 分钟');
     expect(chip).toHaveAttribute('aria-haspopup', 'dialog');
+    // 租约剩余进 tooltip（title）：逐渲染 claim_lease_until - Date.now() 求差（DEC-UNDO 口径）；48h 租约 → 1 天 23 小时
+    expect(chip.getAttribute('title')).toContain('已占用 12 分钟，租约剩余 1 天 23 小时');
     await userEvent.click(chip);
     expect(screen.getByTestId('owner-popover-duration')).toHaveTextContent('已占用 12 分钟');
-    expect(screen.getByTestId('owner-popover')).toHaveTextContent('租约剩余时间：接口未暴露');
+    expect(screen.getByTestId('owner-popover-lease')).toHaveTextContent(/租约剩余 1 天 23 小时/);
+  });
+
+  it('负责人 chip：占用中但无租约语义（claim_lease_until 缺失/存量占用）→ 不显示剩余行，不臆造数值', { timeout: 15000 }, async () => {
+    mockDetailApi(makeIssue({ claimed_by: 'agent:codex', claimed_at: Date.now() - 12 * 60 * 1000 }));
+    renderDetail();
+    const chip = await screen.findByTestId('owner-chip');
+    expect(chip).toHaveTextContent('12 分钟');
+    expect(chip).toHaveAttribute('title', '已占用 12 分钟');
+    await userEvent.click(chip);
+    expect(await screen.findByTestId('owner-popover-duration')).toHaveTextContent('已占用 12 分钟');
+    expect(screen.queryByTestId('owner-popover-lease')).not.toBeInTheDocument();
+    expect(screen.getByTestId('owner-popover')).toHaveTextContent('无租约语义（存量占用），剩余时间不可用');
   });
 
   it('负责人 chip：未占用显示「未领取」并说明可直接派发', { timeout: 15000 }, async () => {

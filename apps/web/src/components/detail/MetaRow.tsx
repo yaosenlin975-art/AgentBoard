@@ -6,7 +6,8 @@
  * - popover 贴整个 meta 行下缘（top: calc(100% + 4px)），换行时不会盖住第二排 chip。
  * - 状态 chip（DETAIL-FLOW）：未占用卡可点开「修改状态」菜单（PATCH 带 CAS，就地换缓存）；
  *   占用中保持只读 span，title 说明「先释放再改」；优先级/截止沿用防抖 PATCH。
- * - 负责人主行只显示名称 + 已占用时长；租约剩余时间本期接口未暴露（见卡面口径差异）。
+ * - 负责人主行只显示名称 + 已占用时长；租约剩余进 title/占用浮层（数据源 claim_lease_until，034427fa 投影接线，
+ *   剩余 = claim_lease_until - Date.now() 逐渲染求差，DEC-UNDO 倒计时口径；无租约语义的存量占用不显示该行）。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -45,6 +46,23 @@ export function formatClaimedDuration(claimedAt: number | null, now: number): st
   const hours = Math.round(minutes / 60);
   if (hours < 24) return `${hours} 小时`;
   return `${Math.round(hours / 24)} 天`;
+}
+
+/**
+ * 租约剩余展示（034427fa 投影 + e0530dcb）：`claim_lease_until - now` 逐渲染求差
+ * （DEC-UNDO 倒计时口径：每次渲染用 Date.now() 求差，不用共享节流时钟，防后台标签页停跳）。
+ * 无租约语义（null/undefined，如存量占用不可抢占）返回 null，调用方不显示该行，不臆造数值。
+ */
+export function formatLeaseRemaining(claimLeaseUntil: number | null | undefined, now: number): string | null {
+  if (claimLeaseUntil === null || claimLeaseUntil === undefined || !Number.isFinite(claimLeaseUntil)) return null;
+  const msLeft = claimLeaseUntil - now;
+  if (msLeft <= 0) return '已过期（等清扫或续租）';
+  const minutes = Math.floor(msLeft / 60000);
+  if (minutes < 1) return '不足 1 分钟';
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分`;
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
 }
 
 function statusChipTone(status: IssueStatus): string {
@@ -151,6 +169,8 @@ export function MetaRow({
   const dueLabel = dueDate === '' ? '未设置' : (formatDueShort(dueProjection) ?? '未设置');
   const overdue = isOverdue(dueProjection, Date.now());
   const silent = formatClaimedDuration(issue.claimed_at, Date.now());
+  // 租约剩余：每次渲染用 Date.now() 与 claim_lease_until 求差（034427fa 投影）；无租约语义为 null
+  const leaseRemaining = formatLeaseRemaining(issue.claim_lease_until, Date.now());
   const claimedBy = issue.claimed_by;
 
   const popoverCls =
@@ -244,7 +264,7 @@ export function MetaRow({
           aria-label={claimedBy === null ? '负责人：未领取' : `负责人：${ownerName(claimedBy)}`}
           aria-haspopup="dialog"
           aria-expanded={open === 'owner'}
-          title={claimedBy === null ? '未领取' : `已占用 ${silent}（租约剩余时间接口未提供）`}
+          title={claimedBy === null ? '未领取' : `已占用 ${silent}${leaseRemaining === null ? '' : `，租约剩余 ${leaseRemaining}`}`}
           onClick={() => toggle('owner')}
           className={`${CHIP_BASE} ${claimedBy === null ? CHIP_IDLE : 'border-hairline bg-surface-raised text-ink-2'}`}
         >
@@ -393,7 +413,11 @@ export function MetaRow({
               <p className="text-ink-3">
                 领取于 {issue.claimed_at === null ? '未知' : new Date(issue.claimed_at).toLocaleString()}
               </p>
-              <p className="text-ink-3">租约剩余时间：接口未暴露（不臆造数值）</p>
+              {leaseRemaining === null ? (
+                <p className="text-ink-3">无租约语义（存量占用），剩余时间不可用</p>
+              ) : (
+                <p data-testid="owner-popover-lease" className="text-ink-3">租约剩余 {leaseRemaining}</p>
+              )}
             </>
           )}
         </div>
