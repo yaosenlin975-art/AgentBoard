@@ -6,7 +6,7 @@
  * 2. 保存成功给一次可见提示（`settings-saved`），不再静默关闭；
  * 3. 有未保存改动时关闭要确认（window.confirm），未确认则不关；
  * 4. 主题唯一入口在设置内（三选一按钮），左栏状态行只读（非 button、点击不改主题）；
- * 5. 长表单分区：服务与并发 / 主题 / 数据存储 各自有 section，且数据存储的危险按钮可见（不被折叠）。
+ * 5. 长表单分区：服务与并发 / 主题 / 数据存储 / MCP 各自有 section，且数据存储的危险按钮可见（不被折叠）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -17,6 +17,15 @@ import { SettingsDialog } from '../components/topbar/SettingsDialog';
 import { server } from './server';
 
 const settingsPayload = { port: 9000, dbPath: 'D:\\db\\agentboard.db', maxConcurrentTurns: 4 };
+
+/** MCP 分区默认夹具（各用例可覆盖）；分区挂载即拉 /api/system/mcp-info */
+const mcpInfoPayload = {
+  mcp_entry: 'D:\\db\\apps\\mcp\\dist\\index.js',
+  mcp_built: true,
+  base_url: 'http://127.0.0.1:9000',
+  tools: null,
+  tools_error: null,
+};
 
 function renderSettings(onClose = vi.fn()): () => void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -29,7 +38,10 @@ function renderSettings(onClose = vi.fn()): () => void {
 }
 
 beforeEach(() => {
-  server.use(http.get('/api/settings', () => HttpResponse.json(settingsPayload)));
+  server.use(
+    http.get('/api/settings', () => HttpResponse.json(settingsPayload)),
+    http.get('/api/system/mcp-info', () => HttpResponse.json(mcpInfoPayload)),
+  );
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -74,5 +86,6 @@ describe('AUDIT-SETTINGS 长表单分区', () => {
     expect(screen.getByTestId('settings-section-server')).toBeInTheDocument();
     expect(screen.getByTestId('settings-section-theme')).toBeInTheDocument();
     expect(screen.getByTestId('settings-storage')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-mcp')).toBeInTheDocument();
   });
 });

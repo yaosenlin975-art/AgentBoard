@@ -10,6 +10,7 @@ import { api } from '../../api/client';
 import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
+import { McpSection } from '../settings/McpSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 import { StorageSection } from '../settings/StorageSection';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
@@ -214,6 +215,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
       </section>
       {/* DB-3：数据存储（当前路径/来源/占用/附件目录 + 迁移确认与阶段进度；端点待 DB-2B） */}
       <StorageSection />
+      {/* MCP：本机 stdio 服务接入配置（mcpServers JSON / 工具清单 / 未构建警示） */}
+      <McpSection />
       <RestartServerPanel />
     </Modal>
   );
