@@ -218,7 +218,7 @@ kb list-tasks [--workspace <id|名>] [--status 待规划]
 kb show <issue-id>
 kb claim <issue-id>                # 原子领取；已被占用退出码 2
 kb comment <issue-id> "内容"       # 长文/中文用 --stdin
-kb done <issue-id> --notes "..."   # 完成 → 待验收
+kb done <issue-id> --notes "..."   # 完成 → 待验收（非 git 工作区时状态仍转、exit 1 附补救命令）
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
 ```
 
@@ -266,7 +266,7 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 }
 ```
 
-工具面按域分组，只列主名并标注读/写；完整清单（含 alias 与 read-only 标记）以 `list-tools` 输出为准，新增工具会先出现在输出里：
+工具面按域分组，只列主名并标注读/写；完整清单（含 alias 与 read-only 标记）以 `list-tools` 输出为准，新增工具会先出现在输出里。两个实测口径（2026-11-08）：写工具（如 `create_task`）必传 `request_id`（uuid 幂等键，缺失直接校验失败）；业务数据在 `structuredContent.data`（`content` 只有一句状态文案，从 text 抽不到 id）：
 
 - 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
 - 依赖：读 `list_dependencies`；写 `add_dependency`、`remove_dependency`

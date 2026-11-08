@@ -11,7 +11,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 - `--scope` 首选**逐条重复传参**：`kb done <id> --scope a --scope b`。
 - 逗号串 `--scope "a,b"` 当前 CLI 会吞下并按逗号拆分（2026-11-04 实测提交成功），但不要依赖它：含空格的参数仍会触发 SCOPE-GUARD 警告；声明范围与实际改动不一致时仍会零命中、不提交。脚本里一律逐条传。
-- **issue id 支持 ≥8 位唯一前缀（CLI-02）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 同口径。实测 `kb show 230c15de` → 完整卡详情（exit 0）；7 位 `kb show 230c15d` → 「任务不存在」（exit 1）；前缀命中多张卡 → exit 2 并列出候选，需补全区分。**写卡面 / 建依赖 / 写提交信息时仍用完整 36 位 UUID**（人对人可读、可复算），前缀只在手敲命令时图省事。`kb dep add` 传不存在的前缀 → 「任务或依赖不存在」（退出 4）。
+- **issue id 支持 ≥8 位唯一前缀（CLI-02）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 同口径。实测 `kb show 230c15de` → 完整卡详情（exit 0）；7 位 `kb show 230c15d` → 「任务 id 前缀至少 8 位」（exit 1）；前缀命中多张卡 → exit 2 并列出候选，需补全区分。**写卡面 / 建依赖 / 写提交信息时仍用完整 36 位 UUID**（人对人可读、可复算），前缀只在手敲命令时图省事。`kb dep add` 传不存在的前缀 → 「任务或依赖不存在」（退出 4）。
 - `kb knowledge resolve` / `kb knowledge link`、`kb decision` / `kb ask-extend` 同样支持 id 的 ≥8 位前缀；`--parent` 也接受唯一前缀（`kb create-issue --help`）。
 - 服务端在「声明了范围却零命中」时会写一条 `⚠ 声明范围零命中，本次未自动提交` 的系统评论，并给出可直接复制执行的 `git add -- <paths>; git commit -m "..." -- <paths>` 补救命令；照抄执行即可（该评论里「逗号串被拆」只是常见原因之一，不是唯一原因，先核对你声明的路径是否真的改过）。
 - 看到这条评论＝你的改动没进 git，不要当成已完成；先执行补救命令，再看 `git log -1`。
