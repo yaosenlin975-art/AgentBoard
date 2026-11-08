@@ -8,6 +8,7 @@ dist/
 .zcode/
 # 运行日志与测试生成物（GIT-BATCH P10；均为未跟踪文件）
 *.log
+.logs/
 apps/server/test/.fixture-*/
 apps/server/test/fixtures/.tmp-*
 gui-test-screenshots/
