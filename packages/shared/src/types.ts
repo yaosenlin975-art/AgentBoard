@@ -198,6 +198,14 @@ export interface Issue {
   priority: Priority; labels: string[]; status: IssueStatus; sort_order: number;
   parent_issue_id: string | null;
   claimed_by: string | null; claimed_at: number | null; session_id: string | null;
+  /**
+   * BORROW-0.2 租约投影（034427fa）：占用到期时刻 epoch ms；null = 无租约语义（未占用或不可抢占）。
+   * 服务端恒填；声明为可选：旧消费者/夹具构造 `Issue` 不带该字段仍可编译。
+   * 前端计算租约剩余用 `claim_lease_until - Date.now()` 逐渲染求差（DEC-UNDO 倒计时口径），不用共享节流时钟。
+   */
+  claim_lease_until?: number | null;
+  /** 最近一次心跳续租时刻 epoch ms；从未心跳为 null（领取时与 claimed_at 同值起算）。服务端恒填，可选理由同上 */
+  last_heartbeat_at?: number | null;
   /** 截止日期 `YYYY-MM-DD`；无截止为 null（STATUS-1 新增列，服务端恒填） */
   due_date?: string | null;
   /** 截止时间 `HH:mm`（24h）；与 due_date 独立，无时间为 null */

@@ -208,6 +208,9 @@ function rowToIssue(row: IssueRow): Issue {
     sort_order: row.sort_order,
     claimed_by: row.claimed_by,
     claimed_at: row.claimed_at,
+    // BORROW-0.2 租约投影（034427fa）：内部列带出（列已存在于 issue 表，零迁移）；fields= 白名单模式不带（PERF-4 白名单未决，本卡不动）
+    claim_lease_until: row.claim_lease_until,
+    last_heartbeat_at: row.last_heartbeat_at,
     session_id: row.session_id,
     parent_issue_id: row.parent_issue_id,
     due_date: row.due_date,

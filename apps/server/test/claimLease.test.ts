@@ -294,3 +294,53 @@ describe('REST POST /api/issues/:id/heartbeat', () => {
     expect(after.body).toMatchObject({ claimed_by: 'agent-a', claim_fence: 1 });
   });
 });
+
+/**
+ * 034427fa：GET /api/issues 与 GET /api/issues/:id 投影带出租约字段（claim_lease_until / last_heartbeat_at）。
+ * e0530dcb 评估产出：两列已存在于 issue 表（BORROW-0.2 迁移），此前 rowToIssue 白名单不外发；本卡接线，零迁移。
+ */
+describe('GET /api/issues 投影带出 claim_lease_until / last_heartbeat_at（034427fa）', () => {
+  let app: Express;
+
+  beforeEach(async () => {
+    const adapter = new FakeAdapter();
+    const created = await createApp({ db: t.db, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false });
+    app = created.app;
+  });
+
+  it('未占用卡：两字段存在且为 null；占用后：lease=领取时刻+租约窗、heartbeat=领取时刻；心跳后推进', async () => {
+    const unclaimed = seedIssue();
+    const before = await request(app).get('/api/issues').query({ workspace: wsId });
+    expect(before.status).toBe(200);
+    const unclaimedItem = before.body.find((item: { id: string }) => item.id === unclaimed.id);
+    expect(unclaimedItem).toBeDefined();
+    expect(Object.hasOwn(unclaimedItem, 'claim_lease_until')).toBe(true);
+    expect(Object.hasOwn(unclaimedItem, 'last_heartbeat_at')).toBe(true);
+    expect(unclaimedItem.claim_lease_until).toBeNull();
+    expect(unclaimedItem.last_heartbeat_at).toBeNull();
+
+    const claimRes = await request(app).post(`/api/issues/${unclaimed.id}/claim`).send({ agent_id: 'agent-a', workspace_id: wsId });
+    expect(claimRes.status).toBe(200);
+    const claimedAt = claimRes.body.claimed_at;
+
+    // 列表投影 + 详情投影都带出（两处同一 rowToIssue 映射）
+    const listed = await request(app).get('/api/issues').query({ workspace: wsId });
+    const listedItem = listed.body.find((item: { id: string }) => item.id === unclaimed.id);
+    expect(listedItem.claim_lease_until).toBeGreaterThan(Date.now());
+    expect(listedItem.last_heartbeat_at).toBe(claimedAt);
+    const detail = await request(app).get(`/api/issues/${unclaimed.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.claim_lease_until).toBe(listedItem.claim_lease_until);
+    expect(detail.body.last_heartbeat_at).toBe(claimedAt);
+
+    // 心跳续租：两字段推进
+    const beat = await request(app).post(`/api/issues/${unclaimed.id}/heartbeat`)
+      .set('Idempotency-Key', 'hb-proj-1')
+      .send({ agent_id: 'agent-a', workspace_id: wsId });
+    expect(beat.status).toBe(200);
+    const after = await request(app).get('/api/issues').query({ workspace: wsId });
+    const afterItem = after.body.find((item: { id: string }) => item.id === unclaimed.id);
+    expect(afterItem.claim_lease_until).toBe(beat.body.claim_lease_until);
+    expect(afterItem.last_heartbeat_at).toBeGreaterThan(claimedAt);
+  });
+});
