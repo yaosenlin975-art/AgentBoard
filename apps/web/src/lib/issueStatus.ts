@@ -1,8 +1,9 @@
 /**
- * 任务状态的手动更新契约（DETAIL-STATUS01）：详情面板、任务树节点、看板拖动共用同一套判定与请求。
+ * 任务状态的手动更新契约（DETAIL-STATUS01 / DETAIL-FLOW）：详情面板、任务树节点、看板拖动共用同一套判定与请求。
  * - 手动改状态一律走 PATCH /api/issues/<id>，带 workspace_id + expected_updated_at（CAS），不复制第二套逻辑；
- * - 「进行中」不接受手动改状态（含未占用）：只能由 claim / done / fail 流转；
- * - 已占用任务的状态由 agent 流程维护，服务端也会以 409「占用中禁止修改状态」兜底。
+ * - 未占用卡允许手动改状态（含「进行中」，服务端 updateIssueGuarded 对未占用卡放行 status）；
+ * - 已占用任务的状态由 agent 流程维护，服务端也会以 409「占用中禁止修改状态」兜底；
+ * - 看板拖动仍冻结「进行中」列（statusChangeBlocked，仅服务拖拽，不随手动入口放开）。
  */
 import type { QueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus } from '@agentboard/shared';
@@ -15,18 +16,17 @@ import { BUILTIN_STATUS_NAMES } from './workspaceStatuses';
  */
 export const ISSUE_STATUSES: readonly string[] = BUILTIN_STATUS_NAMES;
 
-/** 只有 agent 流程能离开的状态 */
+/** 只有 agent 流程能离开的状态（看板拖动冻结用；手动改状态入口已不受此限制，见 DETAIL-FLOW） */
 const FLOW_ONLY_STATUS: IssueStatus = '进行中';
 
 /**
- * 手动状态入口是否禁用。
+ * 手动状态入口是否禁用（详情面板、任务树共用）。
  * 返回 null 表示可手动修改；否则为禁用原因（同时用于 title 提示）。
  */
 export function manualStatusBlockedReason(
   issue: Pick<Issue, 'status' | 'claimed_by'>,
 ): string | null {
-  if (issue.claimed_by !== null) return '占用中：状态由 agent 流程维护';
-  if (issue.status === FLOW_ONLY_STATUS) return '进行中：状态由 claim / done / fail 流转，不能手动修改';
+  if (issue.claimed_by !== null) return '占用中：状态由 agent 流程维护，请先释放任务再改状态';
   return null;
 }
 

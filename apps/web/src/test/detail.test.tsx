@@ -126,24 +126,28 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
   });
 
-  it('进行中占用：无改状态主按钮，只留只读提示；⋯ 内是强制释放，无派发/删除', async () => {
+  it('进行中占用：无改状态主按钮，只留「先释放再改」提示；释放按钮直接可见，无派发/删除', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
     renderDetail();
-    expect(await screen.findByTestId('status-readonly-hint')).toHaveTextContent('状态变更请到看板或任务树操作');
+    expect(await screen.findByTestId('status-readonly-hint')).toHaveTextContent('占用中：请先释放任务，再修改状态');
     expect(screen.getByTestId('detail-action-bar')).toBeInTheDocument();
     expect(screen.queryByTestId('done-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('session-active-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByTestId('actionbar-more'));
+    // DETAIL-FLOW：释放入口提为行内显著按钮，无需先开 ⋯ 菜单
     expect(screen.getByTestId('release-btn')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('actionbar-more'));
+    expect(screen.getByTestId('actionbar-menu')).toBeInTheDocument();
+    expect(screen.queryByTestId('release-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('delete-btn')).not.toBeInTheDocument();
   });
 
-  it('待验收未占用：无受理关闭/退回进行中，只留只读提示；⋯ 含复制 ID/删除', async () => {
+  it('待验收未占用：无只读提示（状态 chip 可改）、无释放入口；⋯ 含复制 ID/删除', async () => {
     mockDetailApi(makeIssue({ status: '待验收' }));
     renderDetail();
-    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(await screen.findByTestId('detail-action-bar')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('status-readonly-hint')).not.toBeInTheDocument());
     expect(screen.queryByTestId('accept-close-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('reopen-running-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('dispatch-btn')).not.toBeInTheDocument();
@@ -154,7 +158,7 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
   });
 
-  it('已关闭未占用：无重新打开入口，只留只读提示；⋯ 含删除', async () => {
+  it('已关闭未占用：无重新打开入口、无只读提示；⋯ 含删除', async () => {
     mockDetailApi(makeIssue({ status: '已关闭', updated_at: 3 }));
     const patches: Array<Record<string, unknown>> = [];
     server.use(
@@ -164,7 +168,8 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
       }),
     );
     renderDetail();
-    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    expect(await screen.findByTestId('detail-action-bar')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('status-readonly-hint')).not.toBeInTheDocument());
     expect(screen.queryByTestId('reopen-btn')).not.toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 200));
     expect(patches).toHaveLength(0);
@@ -173,7 +178,7 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
     expect(screen.getByTestId('delete-btn')).toBeInTheDocument();
   });
 
-  it('强制释放：⋯ 内先展开行内二次确认，确认后 POST release 回到可派发态', async () => {
+  it('强制释放：行内释放按钮先展开二次确认，确认后 POST release 回到可派发态', async () => {
     mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
     let releaseCalled = false;
     server.use(
@@ -185,7 +190,7 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
       }),
     );
     renderDetail();
-    await userEvent.click(await screen.findByTestId('actionbar-more'));
+    // DETAIL-FLOW：释放按钮直接可见，不再需要先展开 ⋯ 菜单
     await userEvent.click(await screen.findByTestId('release-btn'));
     // F-09：强制释放先展开行内二次确认，确认后才发请求
     expect(await screen.findByTestId('release-confirm-text')).toBeInTheDocument();
@@ -235,79 +240,165 @@ describe('DetailPanel 操作区四态（D4 吸底条）', () => {
   });
 });
 
-describe('DetailPanel 状态只读（详情内不可改状态，回收 DETAIL-D2 chip 可点改）', () => {
-  it('状态 chip 是纯展示：无 button/haspopup/tabindex，点击不弹菜单、不发 PATCH', async () => {
+describe('DetailPanel 状态 chip（DETAIL-FLOW：未占用可就地改，占用中只读）', () => {
+  it('待规划未占用：状态 chip 是可点按钮，点开菜单选「待验收」发 PATCH（带 CAS）并就地换 chip', async () => {
     const base = makeIssue({ status: '待规划', updated_at: 7 });
     mockDetailApi(base);
     const patches: Array<Record<string, unknown>> = [];
     server.use(
       http.patch('/api/issues/iss-1', async ({ request }) => {
         patches.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json({ ...base, status: '待验收' });
+        return HttpResponse.json({ ...base, status: '待验收', updated_at: 9 });
       }),
     );
     renderDetail();
 
     const chip = await screen.findByTestId('status-chip');
-    expect(chip.tagName).toBe('SPAN');
+    expect(chip.tagName).toBe('BUTTON');
     expect(chip).toHaveAttribute('data-status', '待规划');
-    expect(chip).toHaveAttribute('data-readonly', 'true');
-    expect(chip).toHaveTextContent('待规划');
-    expect(chip).not.toHaveAttribute('role');
-    expect(chip).not.toHaveAttribute('tabindex');
-    expect(chip).not.toHaveAttribute('aria-haspopup');
-    expect(chip).not.toHaveAttribute('aria-expanded');
-    expect(chip).not.toHaveAttribute('disabled');
+    expect(chip).toHaveAttribute('data-readonly', 'false');
+    expect(chip).toHaveAttribute('aria-haspopup', 'menu');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
 
     await userEvent.click(chip);
+    expect(screen.getByTestId('status-popover')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('status-option-待验收'));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ workspace_id: 'ws-1', expected_updated_at: 7, status: '待验收' });
+    expect(await screen.findByTestId('status-chip')).toHaveAttribute('data-status', '待验收');
     expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 200));
-    expect(patches).toHaveLength(0);
-    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待规划');
   });
 
-  it('「进行中」任务：chip 仍只读，title 给出维护原因，状态写请求为零', async () => {
+  it('「进行中」未占用：chip 可点开修改（不再只读），无 status-blocked-hint', async () => {
     const running = makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 });
     mockDetailApi(running);
     const patches: Array<Record<string, unknown>> = [];
     server.use(
       http.patch('/api/issues/iss-1', async ({ request }) => {
         patches.push((await request.json()) as Record<string, unknown>);
-        return HttpResponse.json(running);
+        return HttpResponse.json({ ...running, status: '待规划', updated_at: 4 });
       }),
     );
     renderDetail();
 
     const chip = await screen.findByTestId('status-chip');
     expect(chip).toHaveAttribute('data-status', '进行中');
-    expect(chip).toHaveAttribute('title', expect.stringContaining('进行中'));
-    expect(chip).not.toHaveAttribute('role');
-    // 维护原因同时出现在标题块第二行
-    expect(screen.getByTestId('status-blocked-hint')).toHaveTextContent('进行中');
+    expect(chip.tagName).toBe('BUTTON');
+    expect(screen.queryByTestId('status-blocked-hint')).not.toBeInTheDocument();
 
     await userEvent.click(chip);
-    expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 200));
-    expect(patches).toHaveLength(0);
+    expect(screen.getByTestId('status-popover')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('status-option-待规划'));
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ workspace_id: 'ws-1', expected_updated_at: 3, status: '待规划' });
   });
 
-  it('已占用任务：chip 只读，title 提示占用原因', async () => {
+  it('已占用任务：chip 只读，title 提示占用原因（先释放再改）', async () => {
     mockDetailApi(makeIssue({ status: '待规划', claimed_by: 'agent:codex', claimed_at: 1 }));
     renderDetail();
 
     const chip = await screen.findByTestId('status-chip');
     expect(chip.tagName).toBe('SPAN');
     expect(chip).toHaveAttribute('title', expect.stringContaining('占用中'));
+    expect(chip).toHaveAttribute('title', expect.stringContaining('先释放'));
   });
 
-  it('详情内不存在任何状态下拉/选项入口', async () => {
-    mockDetailApi(makeIssue({ status: '待规划' }));
+  it('占用中：不存在状态下拉/选项入口；未占用：存在', async () => {
+    mockDetailApi(makeIssue({ status: '待规划', claimed_by: 'agent:codex', claimed_at: 1 }));
     renderDetail();
 
     await screen.findByTestId('status-chip');
     expect(screen.queryByTestId('status-popover')).not.toBeInTheDocument();
     expect(screen.queryByTestId('status-option-待验收')).not.toBeInTheDocument();
     expect(screen.queryByRole('menu', { name: '修改状态' })).not.toBeInTheDocument();
+  });
+});
+
+describe('DETAIL-FLOW 详情释放入口与未占用改状态', () => {
+  it('未占用「进行中」卡：释放入口直接可见（退回待规划），确认后 POST release 回可派发态', async () => {
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 }));
+    let releaseCalled = false;
+    server.use(
+      http.post('/api/issues/iss-1/release', () => {
+        releaseCalled = true;
+        return HttpResponse.json(makeIssue({ status: '待规划', claimed_by: null, updated_at: 9 }));
+      }),
+    );
+    renderDetail();
+    // 不开 ⋯ 菜单，释放按钮直接可见
+    const btn = await screen.findByTestId('release-btn');
+    expect(btn).toHaveTextContent('退回待规划');
+    await userEvent.click(btn);
+    expect(await screen.findByTestId('release-confirm-text')).toHaveTextContent('退回待规划');
+    expect(releaseCalled).toBe(false);
+    await userEvent.click(screen.getByTestId('release-confirm'));
+    await waitFor(() => expect(releaseCalled).toBe(true));
+    expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
+  });
+
+  it('未占用「待规划」卡：无释放入口', async () => {
+    mockDetailApi(makeIssue({ status: '待规划', claimed_by: null }));
+    renderDetail();
+    expect(await screen.findByTestId('dispatch-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('release-btn')).not.toBeInTheDocument();
+  });
+
+  it('释放失败：detail-action-error 展示服务端错误', async () => {
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5, session_id: 's-old' }));
+    server.use(
+      http.post('/api/issues/iss-1/release', () =>
+        HttpResponse.json(
+          { error: { code: 'CONFLICT', message: '占用已改变（并发完成/释放），未产生任何写入' } },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderDetail();
+    await userEvent.click(await screen.findByTestId('release-btn'));
+    await userEvent.click(await screen.findByTestId('release-confirm'));
+    expect(await screen.findByTestId('detail-action-error')).toHaveTextContent('占用已改变（并发完成/释放），未产生任何写入');
+  });
+
+  it('未占用卡改状态失败：detail-action-error 展示且 chip 保持原状态', async () => {
+    mockDetailApi(makeIssue({ status: '待规划', updated_at: 7 }));
+    server.use(
+      http.patch('/api/issues/iss-1', () =>
+        HttpResponse.json(
+          { error: { code: 'TASK_REVISION_CONFLICT', message: '任务已更新，请重新读取' } },
+          { status: 409 },
+        ),
+      ),
+    );
+    renderDetail();
+    await userEvent.click(await screen.findByTestId('status-chip'));
+    await userEvent.click(screen.getByTestId('status-option-待验收'));
+    expect(await screen.findByTestId('detail-action-error')).toHaveTextContent('任务已更新，请重新读取');
+    expect(screen.getByTestId('status-chip')).toHaveAttribute('data-status', '待规划');
+  });
+
+  it('未占用卡改状态成功：列表与详情缓存立即换新（不依赖 WS / 不 invalidate 旧快照）', async () => {
+    const base = makeIssue({ status: '进行中', claimed_by: null, updated_at: 3 });
+    mockDetailApi(base);
+    server.use(
+      http.patch('/api/issues/iss-1', () =>
+        HttpResponse.json({ ...base, status: '待验收', updated_at: 9 }),
+      ),
+    );
+    usePanelStore.setState({ view: 'detail', issueId: 'iss-1', sessionId: null, rightOpen: true });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 15_000 } } });
+    qc.setQueryData(['issues', 'ws-1'], [base]);
+    render(
+      <QueryClientProvider client={qc}>
+        <DetailPanel />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByTestId('status-chip'));
+    await userEvent.click(screen.getByTestId('status-option-待验收'));
+    await waitFor(() => {
+      const list = qc.getQueryData<Issue[]>(['issues', 'ws-1']);
+      expect(list?.[0]?.status).toBe('待验收');
+    });
+    expect((qc.getQueryData<Issue>(['issue', 'iss-1']) as Issue).status).toBe('待验收');
   });
 });
 
@@ -319,9 +410,8 @@ describe('DETAIL-D2 meta 行（状态 / 优先级 / 截止 / 负责人）', () =
     // ≥920px 强制单行；<920px 退化为两行分组（未决 2）
     expect(row.className).toContain('min-[920px]:flex-row');
     const chips = ['status-chip', 'priority-chip', 'due-chip', 'owner-chip'].map((id) => screen.getByTestId(id));
-    // 状态 chip 只读，不再宣称可展开；其余三枚仍是可交互 popover 触发器
-    expect(chips[0]).not.toHaveAttribute('aria-haspopup');
-    for (const chip of chips.slice(1)) {
+    // DETAIL-FLOW：未占用卡的状态 chip 也是可交互 popover 触发器；其余三枚保持不变
+    for (const chip of chips) {
       expect(chip).toHaveAttribute('aria-haspopup');
       expect(chip).toHaveAttribute('aria-expanded', 'false');
     }
@@ -741,7 +831,7 @@ describe('AUDIT-DETAIL 增补', () => {
       }),
     );
     renderDetail();
-    expect(await screen.findByTestId('status-readonly-hint')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('status-readonly-hint')).not.toBeInTheDocument());
     expect(screen.queryByTestId('accept-close-btn')).not.toBeInTheDocument();
     expect(screen.queryByTestId('reopen-running-btn')).not.toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 200));
@@ -1513,15 +1603,24 @@ describe('DETAIL-LAYOUT 顶栏标题块（标题 + ✎ 与关闭按钮同行 / �
   });
 
   it('「进行中」维护提示是标题块第二行，meta 行不再重复', async () => {
-    mockDetailApi(makeIssue({ status: '进行中', claimed_by: null }));
+    // DETAIL-FLOW：未占用进行中卡已可就地改状态，不再渲染维护提示；占用中仍保留
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: 'agent:codex', claimed_at: 5 }));
     renderDetail();
 
     const block = await screen.findByTestId('detail-title-block');
     const hint = await screen.findByTestId('status-blocked-hint');
     expect(block).toContainElement(hint);
-    expect(hint).toHaveTextContent('进行中');
+    expect(hint).toHaveTextContent('占用中');
     expect(screen.getAllByTestId('status-blocked-hint')).toHaveLength(1);
     expect(screen.getByTestId('meta-row')).not.toContainElement(hint);
+  });
+
+  it('「进行中」未占用卡：无维护提示（状态 chip 可就地修改）', async () => {
+    mockDetailApi(makeIssue({ status: '进行中', claimed_by: null }));
+    renderDetail();
+
+    await screen.findByTestId('detail-title-block');
+    expect(screen.queryByTestId('status-blocked-hint')).not.toBeInTheDocument();
   });
 });
 

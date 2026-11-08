@@ -72,9 +72,8 @@ describe('强制释放后界面归位（RELEASE-REFRESH）', () => {
       </QueryClientProvider>,
     );
 
-    // F-09：先点「强制释放」展开行内确认，再点确认才真正发请求
-    // D4：强制释放已收进 ⋯ 溢出菜单，先展开菜单再点菜单项
-    await userEvent.click(await screen.findByTestId('actionbar-more'));
+    // F-09：先点「释放」展开行内确认，再点确认才真正发请求
+    // DETAIL-FLOW：释放按钮提为行内显著按钮，不再需要先展开 ⋯ 菜单
     await userEvent.click(await screen.findByTestId('release-btn'));
     await userEvent.click(await screen.findByTestId('release-confirm'));
 

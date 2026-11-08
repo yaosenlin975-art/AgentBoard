@@ -4,10 +4,12 @@
  * 布局口径：作为 DetailPanel 的最后一个 flex 子项（`shrink-0`），而不是绝对定位覆盖层——
  * 这样「贴面板底边」在贴列锚定与整宽抽屉两种高度下都成立，且滚动区不会被条遮住（卡面要求 7）。
  *
- * 未决 10 取舍（卡面第 8 条）：
- * - 主槽最多 1 个操作，且只放不改状态的动作（派发任务）；状态变更一律回看板/任务树；
- * - 危险 / 低频操作（强制释放、复制 ID、删除）全部进 ⋯ 溢出菜单，不提升为主按钮、不做全屏模态；
- * - 危险动作仍在菜单内做行内二次确认（沿用 ConfirmInline），确认后才发请求。
+ * 未决 10 取舍（卡面第 8 条）+ DETAIL-FLOW 修订：
+ * - 主槽最多 1 个操作，且只放不改状态的动作（派发任务）；未占用卡改状态走 MetaRow 状态 chip；
+ * - 危险 / 低频操作（复制 ID、删除）进 ⋯ 溢出菜单；删除在菜单内做行内二次确认；
+ * - 释放入口（DETAIL-FLOW）提为行内显著按钮、不再藏进 ⋯ 菜单：已占用卡 = 用户强制释放（POST release 无 body）；
+ *   未占用但「进行中」的卡同样提供「退回待规划」（服务端无 workspace 的 release 对进行中未占用卡同样清占用回待规划）；
+ *   释放保留行内二次确认（ConfirmInline）。
  * - 「会话进行中」禁用按钮已删除：占用状态由 D2 的负责人 chip 表达（设计 §2.2 第 6 条）。
  */
 import { useEffect, useRef, useState } from 'react';
@@ -112,8 +114,8 @@ export function ActionBar({
   const blockerList = blockers.filter((blocker) => !blocker.resolved);
 
   /**
-   * 详情内只读状态：不再提供任何改状态入口（受理关闭 / 退回进行中 / 重新打开 / 标记待验收），
-   * 仅保留不改变状态的「派发任务」（claim/dispatch 不改 status）。
+   * 详情内改状态口径（DETAIL-FLOW）：不再提供改状态按钮——未占用卡走 MetaRow 状态 chip，
+   * 占用中卡保持只读（hint 提示先释放）。主槽仍只放不改状态的动作（派发任务）。
    */
   const primary = dispatchable ? (
     <button
@@ -124,7 +126,14 @@ export function ActionBar({
     >
       派发任务
     </button>
+  ) : claimed ? (
+    <p data-testid="status-readonly-hint" className="px-0.5 text-xs text-ink-3">
+      占用中：请先释放任务，再修改状态
+    </p>
   ) : null;
+
+  // DETAIL-FLOW：释放入口 = 已占用，或未占用但停在「进行中」（租约被清扫 / agent 死亡的死路卡）
+  const releasable = claimed || issue.status === '进行中';
 
   return (
     <footer
@@ -171,12 +180,40 @@ export function ActionBar({
 
       <div className="flex items-center gap-1.5 px-3 py-2">
         <div className="ab-primary-slot">
-          {primary ?? (
-            <p data-testid="status-readonly-hint" className="px-0.5 text-xs text-ink-3">
-              状态变更请到看板或任务树操作
-            </p>
-          )}
+          {primary}
         </div>
+
+        {/* DETAIL-FLOW：释放入口提为行内显著按钮（不再只藏在 ⋯ 菜单），行内二次确认 */}
+        {releasable && confirming !== 'release' && (
+          <button
+            type="button"
+            data-testid="release-btn"
+            onClick={() => setConfirming('release')}
+            disabled={releasePending}
+            className="shrink-0 rounded border border-hairline px-2 py-1 text-xs text-ink-2 transition-colors hover:border-accent hover:text-accent"
+          >
+            {claimed ? '释放任务' : '退回待规划'}
+          </button>
+        )}
+        {confirming === 'release' && (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <ConfirmInline
+              message={claimed
+                ? '强制释放会立即断开当前会话的占用，任务回到可领取状态；执行中的会话不会自动结束。'
+                : '退回待规划会清空占用信息，并把任务从「进行中」退回「待规划」。'}
+              confirmLabel={claimed ? '确认释放' : '确认退回'}
+              messageTestId="release-confirm-text"
+              confirmTestId="release-confirm"
+              cancelTestId="release-cancel"
+              busy={releasePending}
+              onConfirm={() => {
+                setConfirming(null);
+                onRelease();
+              }}
+              onCancel={() => setConfirming(null)}
+            />
+          </div>
+        )}
 
         <div className="relative shrink-0">
           <button
@@ -198,36 +235,6 @@ export function ActionBar({
               aria-label="更多操作"
               className="ab-more-menu absolute bottom-full right-0 z-20 mb-1 min-w-[168px] rounded-md border border-hairline bg-surface-card p-1 shadow-xl"
             >
-              {claimed && confirming !== 'release' && (
-                <button
-                  type="button"
-                  role="menuitem"
-                  data-testid="release-btn"
-                  onClick={() => setConfirming('release')}
-                  disabled={releasePending}
-                  className={MENU_ITEM}
-                >
-                  强制释放
-                </button>
-              )}
-              {claimed && confirming === 'release' && (
-                <div className="flex flex-wrap items-center gap-1.5 p-1">
-                  <ConfirmInline
-                    message="强制释放会立即断开当前会话的占用，任务回到可领取状态；执行中的会话不会自动结束。"
-                    confirmLabel="确认释放"
-                    messageTestId="release-confirm-text"
-                    confirmTestId="release-confirm"
-                    cancelTestId="release-cancel"
-                    busy={releasePending}
-                    onConfirm={() => {
-                      setConfirming(null);
-                      setMenuOpen(false);
-                      onRelease();
-                    }}
-                    onCancel={() => setConfirming(null)}
-                  />
-                </div>
-              )}
               <button type="button" role="menuitem" data-testid="copy-id-btn" onClick={copyId} className={MENU_ITEM}>
                 {copied ? '已复制' : '复制任务 ID'}
               </button>

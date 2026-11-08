@@ -291,7 +291,7 @@ describe('IssueTreeView', () => {
     expect(moveError).toHaveTextContent('目标父任务不存在');
   });
 
-  it('「进行中」节点（含未占用）状态下拉禁用，其他状态可改（DETAIL-STATUS01）', async () => {
+  it('「进行中」未占用节点状态下拉可改（DETAIL-FLOW），占用中仍禁用', async () => {
     const running = treeItem('run', { title: '进行中节点', status: '进行中' });
     const planned = treeItem('plan', { title: '待规划节点', status: '待规划' });
     server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([running, planned]))));
@@ -299,10 +299,21 @@ describe('IssueTreeView', () => {
 
     const runSelect = (await screen.findByLabelText('状态：进行中节点')) as HTMLSelectElement;
     expect(runSelect.value).toBe('进行中');
-    expect(runSelect).toBeDisabled();
-    expect(runSelect).toHaveAttribute('title', expect.stringContaining('进行中'));
+    // DETAIL-FLOW：未占用卡（含进行中）手动改状态已放开，树与详情共用 manualStatusBlockedReason
+    expect(runSelect).not.toBeDisabled();
+    expect(runSelect).toHaveAttribute('title', '状态：进行中');
     const planSelect = screen.getByLabelText('状态：待规划节点') as HTMLSelectElement;
     expect(planSelect).not.toBeDisabled();
+  });
+
+  it('「进行中」占用节点状态下拉禁用（占用保护不放开）', async () => {
+    const running = treeItem('run', { title: '占用节点', status: '进行中', claimed_by: 'agent:codex', claimed_at: 1 });
+    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([running]))));
+    renderTree([running]);
+
+    const runSelect = (await screen.findByLabelText('状态：占用节点')) as HTMLSelectElement;
+    expect(runSelect).toBeDisabled();
+    expect(runSelect).toHaveAttribute('title', expect.stringContaining('占用中'));
   });
 });
 
