@@ -284,6 +284,13 @@ export class WorkbuddyDesktopProvider {
    * 步序与既有行为一一对应：preflight → stop → snapshot → validate_target → write → start → verify →（失败）rollback。
    */
   async switchAccount(accountId: string, hooks: { onOperationCreated?: (id: string) => void } = {}): Promise<AccountOperation> {
+    // ACC-SW-VALID：操作创建的库级校验要求 账号.app_id+client_instance_id 与入参三元组一致（本类恒传当前实例哈希），
+    // 协议授权/导入线的账号 instance 是字面量（protocol/imported），不预检会被兜成 400 VALIDATION_ERROR「参数不合法」；
+    // 这里按 preflight 同语义提前给 409 TARGET_INSTANCE_MISMATCH（前端已有中文映射），不建操作行、不触碰客户端。
+    const target = getManagedAccount(this.db, accountId);
+    if (target && target.app_id === WORKBUDDY_APP_ID && target.client_instance_id !== this.instanceId) {
+      throw new ApiError(409, 'TARGET_INSTANCE_MISMATCH', '目标账号与当前客户端实例不一致，无法切换（授权/导入添加或客户端重装后的账号没有本机快照）');
+    }
     return runAccountOperation(this.db, {
       account_id: accountId, app_id: WORKBUDDY_APP_ID, client_instance_id: this.instanceId, operation: 'switch',
     }, async op => {

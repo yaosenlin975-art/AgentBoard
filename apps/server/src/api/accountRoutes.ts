@@ -409,7 +409,10 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
 
   // 切换：立即返回 operation id，执行结果经 GET /account-operations/:id 轮询（设计 §8）
   router.post('/managed-accounts/:id/switch', async (req, res) => {
-    const account = getManagedAccount(db, req.params.id!);
+    // ACC-SW-VALID：对齐同域写端点（refresh-credential/restore/PATCH/delete）的 :id UUID 校验
+    const parsed = z.string().uuid().safeParse(req.params.id);
+    if (!parsed.success) throw new ValidationError('id 必须为 UUID');
+    const account = getManagedAccount(db, parsed.data);
     if (!account) throw new NotFoundError('账号不存在');
     const provider = await requireProvider(account.app_id, deps, 'switch', minimaxProbe);
     let operationId: string | undefined;

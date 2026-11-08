@@ -196,6 +196,27 @@ describe('account api (managed-accounts / account-operations)', () => {
     expect(missingAccount.status).toBe(404);
   }, 20000);
 
+  // ACC-SW-VALID：switch 路由 :id 对齐同域写端点做 UUID 校验
+  it.runIf(process.platform === 'win32')('switch with non-UUID id returns 400 VALIDATION_ERROR', async () => {
+    await boot();
+    const res = await request(app).post('/api/managed-accounts/not-a-uuid/switch').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+  }, 20000);
+
+  // ACC-SW-VALID：协议/导入线账号（client_instance_id 为字面量，≠ 当前实例哈希）此前被库级三元组校验
+  // 兜成 400 VALIDATION_ERROR（界面显示「参数不合法」）；修复后提前给 409 TARGET_INSTANCE_MISMATCH
+  it.runIf(process.platform === 'win32')('switch on protocol/import-line account returns 409 TARGET_INSTANCE_MISMATCH, not 400', async () => {
+    await boot();
+    const protocolAccountId = seedAccount('协议线账号');
+    const res = await request(app).post(`/api/managed-accounts/${protocolAccountId}/switch`).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('TARGET_INSTANCE_MISMATCH');
+    // 不建操作行（拒绝发生在创建操作之前）
+    const ops = t.db.prepare('SELECT COUNT(*) AS n FROM account_operation').get() as { n: number };
+    expect(ops.n).toBe(0);
+  }, 20000);
+
   // ---------------- ACC-07：签到授权 / 批量签到 / 能力矩阵 ----------------
 
   it('managed-account-capabilities reports per-dimension reason codes from registry (no checkin provider)', async () => {
