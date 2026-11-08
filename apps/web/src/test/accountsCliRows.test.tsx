@@ -42,7 +42,9 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     renderPanel();
 
     await screen.findByTestId('accounts-index');
-    expect(screen.getByTestId('accounts-index-count-deepseek')).toHaveTextContent('2');
+    // accounts-redesign 方向 B：左栏行改指标形态（额度来源指标取共享额度快照，默认夹具 deepseek ¥12.34）；
+    // 登记计数语义由下方详情列表条数承载
+    expect(screen.getByTestId('accounts-index-metric-deepseek')).toHaveTextContent('¥12.34');
     // 口径 A：OpenCode/Codex 没有登记账号 → 左栏行不出现
     expect(screen.queryByTestId('accounts-index-item-opencode_go')).toBeNull();
     expect(screen.queryByTestId('accounts-index-item-codex')).toBeNull();
@@ -79,7 +81,7 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     renderPanel();
 
     await screen.findByTestId('accounts-index');
-    expect(screen.getByTestId('accounts-index-count-deepseek')).toHaveTextContent('1');
+    expect(screen.getByTestId('accounts-index-metric-deepseek')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     expect(within(screen.getByTestId('accounts-detail')).getAllByRole('listitem')).toHaveLength(1);
   });

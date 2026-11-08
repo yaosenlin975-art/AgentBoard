@@ -79,48 +79,36 @@ describe('账号页重设计（ACC-UI-01）', () => {
     expect(screen.queryByTestId('accounts-body-workbuddy_desktop')).toBeNull();
   });
 
-  it('能力徽标三态：✓ / ✗ / ?，徽标文本不含原因码，原因只进 tooltip', async () => {
+  it('能力徽标已整行删除（accounts-redesign 方向 B）：右栏不再渲染三图标，异常以文字提示', async () => {
     renderPanel();
     await screen.findByTestId('accounts-app-workbuddy_desktop');
 
-    // workbuddy：capture ✓ switch ✓ checkin ✓（derived）
+    // workbuddy 三项全可用：正常态不占像素，不渲染任何能力徽标
     for (const action of ['capture', 'switch', 'checkin']) {
-      const badge = await screen.findByTestId(`accounts-badge-workbuddy_desktop-${action}`);
-      expect(badge).toHaveAttribute('data-state', 'available');
-      // UNSLOP：三态改为线性图标，状态由 data-state + 图标 + aria-label 三重表达（不再用 ✓ 字形）
-      expect(badge.querySelector('svg')).not.toBeNull();
-      expect(badge.getAttribute('aria-label')).toContain('可用');
-      expect(badge.textContent ?? '').not.toContain('OK');
+      expect(screen.queryByTestId(`accounts-badge-workbuddy_desktop-${action}`)).toBeNull();
     }
 
-    // minimax：capture ✓ switch ✗（CLIENT_NOT_INSTALLED 原因只进 tooltip）
-    // ACC-B1：右栏只渲染选中平台 → 先切到 MiniMax
+    // minimax：switch 不可用（CLIENT_NOT_INSTALLED）→ 异常仍可见，落平台级文字提示
     await userEvent.click(screen.getByTestId('accounts-index-item-minimax'));
-    const mmSwitch = await screen.findByTestId('accounts-badge-minimax-switch');
-    expect(mmSwitch).toHaveAttribute('data-state', 'unavailable');
-    expect(mmSwitch.querySelector('svg')).not.toBeNull();
-    expect(mmSwitch.getAttribute('aria-label')).toContain('不可用');
-    expect(mmSwitch.getAttribute('title')).toContain('本机未安装该客户端');
-    expect(mmSwitch.getAttribute('title')).toContain('CLIENT_NOT_INSTALLED');
-    expect(mmSwitch.textContent ?? '').not.toContain('CLIENT_NOT_INSTALLED');
+    const mmBody = await screen.findByTestId('accounts-body-minimax');
+    expect(within(mmBody).queryByTestId('accounts-badge-minimax-switch')).toBeNull();
+    const switchReason = within(mmBody).getByTestId('accounts-switch-unavailable-minimax');
+    expect(switchReason).toHaveTextContent('切换不可用');
+    expect(switchReason).toHaveAttribute('title', expect.stringContaining('CLIENT_NOT_INSTALLED'));
 
-    // trae：capture ✗ 原因在 tooltip → 先切到 Trae
+    // trae：capture 不可用同理，不给徽标（异常提示只承载可操作的出路）
     await userEvent.click(screen.getByTestId('accounts-index-item-trae'));
-    const trCapture = await screen.findByTestId('accounts-badge-trae-capture');
-    expect(trCapture).toHaveAttribute('data-state', 'unavailable');
-    expect(trCapture.getAttribute('title')).toContain('LOGIN_STATE_NOT_FILE_BASED');
+    const trBody = await screen.findByTestId('accounts-body-trae');
+    expect(within(trBody).queryByTestId('accounts-badge-trae-capture')).toBeNull();
   });
 
-  it('能力未知时徽标为 ?（能力矩阵未取到）', async () => {
+  it('能力矩阵未取到：错误提示可见，徽标不渲染（不再有 ? 态）', async () => {
     server.use(http.get('/api/managed-account-capabilities', () => HttpResponse.json({ error: { code: 'INTERNAL', message: '能力矩阵不可用' } }, { status: 500 })));
     renderPanel();
 
-    const badge = await screen.findByTestId('accounts-badge-workbuddy_desktop-capture');
-    expect(badge).toHaveAttribute('data-state', 'unknown');
-    expect(badge.querySelector('svg')).not.toBeNull();
-    expect(badge.getAttribute('aria-label')).toContain('能力未知');
-    expect(badge.getAttribute('title')).toContain('能力未知');
+    await screen.findByTestId('accounts-app-workbuddy_desktop');
     expect(await screen.findByTestId('accounts-capabilities-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-badge-workbuddy_desktop-capture')).toBeNull();
   });
 
   it('额度面板整块移除；CLI 三来源有登记账号时改为紧凑平台行并入列表', async () => {

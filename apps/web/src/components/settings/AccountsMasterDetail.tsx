@@ -1,15 +1,16 @@
 /**
  * ACC-B1：账号面板主从布局骨架。
  *
- * 左栏 = 平台索引（每个平台一行：图标 + 名称 + 当前账号 + 账号数 + 今日签到健康态），
+ * 左栏 = 平台索引（accounts-redesign 方向 B：每平台一行 = 名称 + 指标 + 迷你条 + 异常色；
+ * `metric` 未传时回落旧单行形态：名称 + 账号数 + 今日签到健康态），
  * 右栏 = **只渲染选中平台**的容器（从结构上消除六平台同屏堆叠）。
  *
  * 选中态用**组件内 useState**（与既有 `openApps` 同层），不新增第二套导航 store；
  * `navStore` 只管视图级导航，账号面板内部的平台选择留在面板内。
  *
  * 响应式（阈值取卡面 920px）：
- * - ≥920px：`flex-row`，左栏固定 200px、右栏 flex-1；
- * - <920px：`flex-col`，左栏变**可横滑 rail**（`overflow-x-auto` + 不换行），避免竖排六行吃掉首屏；
+ * - ≥920px：`flex-row`，左栏固定 244px（accounts-redesign 方向 B 规格，原 200px）、右栏 flex-1；
+ * - <920px：`flex-col`，左栏变**可横滑 rail**（`overflow-x-auto` + 不换行），避免竖排多行吃掉首屏；
  * - <560px：仍是单列 + 横滑，375px 下页面 `scrollWidth == clientWidth`（rail 自己滚，不撑破页面）。
  *
  * 键盘：左栏项是 `role="tab"` 的 `<button>`，`aria-selected` 表达选中；
@@ -23,6 +24,21 @@ import { useCallback, useRef, useState } from 'react';
 import type { AccountView } from './AccountCard';
 import type { CheckinTodaySummary } from './accountCapabilities';
 
+/**
+ * 左栏指标行（accounts-redesign 方向 B：指标 + 迷你条 + 异常色）。
+ * 文本不带裸码：异常一律中文短句，技术细节留给右栏。
+ */
+export interface PlatformIndexMetric {
+  /** 指标文本，如 `2/3`（今日签到）、`¥12.34`（余额）、`5h · 34%`（首个窗口）、`1 个账号` */
+  text: string;
+  /** 异常色：ok=已完成/正常（accent）；warn=部分完成（琥珀提醒）；idle=中性灰；danger=已限额（红） */
+  tone: 'ok' | 'warn' | 'idle' | 'danger';
+  /** 迷你条百分比（0-100，方向 B 仅额度窗口行有）；缺省不渲染条 */
+  barPercent?: number;
+  /** tooltip 补充（如「今日签到 2/5」）；缺省无 */
+  title?: string;
+}
+
 export interface PlatformIndexItem {
   app: string;
   label: string;
@@ -32,9 +48,22 @@ export interface PlatformIndexItem {
   /** 今日签到：已完成/可参与（CheckinTodaySummary 的 done/total） */
   done: number;
   total: number;
+  /**
+   * 左栏指标（方向 B 规格）。传入时该行渲染「名称 + 指标（+ 迷你条）」，不再渲染账号数/健康角标；
+   * 缺省回落旧单行形态（accountCount + done/total），兼容直接渲染本组件的调用方与测试夹具。
+   */
+  metric?: PlatformIndexMetric | null;
   /** 右栏渲染：选中平台的内容 */
   render: () => React.ReactNode;
 }
+
+/** 指标异常色（与设计 rail-check 的 ok/warn/idle 三态 + 已限额 danger 对齐） */
+const METRIC_TONE_CLASS: Record<PlatformIndexMetric['tone'], string> = {
+  ok: 'text-accent',
+  warn: 'text-amber-600 dark:text-amber-400',
+  idle: 'text-ink-3',
+  danger: 'text-red-600 dark:text-red-400',
+};
 
 export function AccountsMasterDetail({
   items,
@@ -82,7 +111,7 @@ export function AccountsMasterDetail({
       className="flex min-h-0 flex-col gap-2 min-[920px]:flex-row min-[920px]:gap-3"
     >
       {/* 左栏：平台索引（窄屏变横滑 rail）。空态提示放 tablist 之外，避免 tablist 里混入非 tab 子节点 */}
-      <div className="shrink-0 min-[920px]:w-[200px]">
+      <div className="shrink-0 min-[920px]:w-[244px]">
         <div
           ref={containerRef}
           data-testid="accounts-index"
@@ -126,18 +155,45 @@ export function AccountsMasterDetail({
                     : 'text-ink-2 hover:bg-surface-raised'
                 }`}
               >
-                <span className="truncate">{item.label}</span>
-                <span data-testid={`accounts-index-count-${item.app}`} className="tabular-nums text-[11px] text-ink-3">
-                  {item.accountCount}
-                </span>
-                {item.total > 0 && (
-                  <span
-                    data-testid={`accounts-index-health-${item.app}`}
-                    title={`今日签到 ${item.done}/${item.total}`}
-                    className={`tabular-nums text-[11px] ${item.done === item.total ? 'text-accent' : 'text-ink-3'}`}
-                  >
-                    {item.done}/{item.total}
+                {item.metric != null ? (
+                  /* 方向 B 规格：名称 + 指标（+ 迷你条），账号数/健康角标不再占行 */
+                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <span className="truncate">{item.label}</span>
+                    <span
+                      data-testid={`accounts-index-metric-${item.app}`}
+                      data-tone={item.metric.tone}
+                      title={item.metric.title}
+                      className={`tabular-nums text-[11px] font-normal ${METRIC_TONE_CLASS[item.metric.tone]}`}
+                    >
+                      {item.metric.text}
+                    </span>
+                    {item.metric.barPercent !== undefined && (
+                      <span aria-hidden="true" className="block h-[3px] w-full overflow-hidden rounded bg-surface-raised">
+                        <span
+                          data-testid={`accounts-index-bar-${item.app}`}
+                          data-width={item.metric.barPercent}
+                          style={{ width: `${item.metric.barPercent}%` }}
+                          className={`block h-full rounded ${item.metric.tone === 'danger' ? 'bg-red-600 dark:bg-red-400' : 'bg-ink-2'}`}
+                        />
+                      </span>
+                    )}
                   </span>
+                ) : (
+                  <>
+                    <span className="truncate">{item.label}</span>
+                    <span data-testid={`accounts-index-count-${item.app}`} className="tabular-nums text-[11px] text-ink-3">
+                      {item.accountCount}
+                    </span>
+                    {item.total > 0 && (
+                      <span
+                        data-testid={`accounts-index-health-${item.app}`}
+                        title={`今日签到 ${item.done}/${item.total}`}
+                        className={`tabular-nums text-[11px] ${item.done === item.total ? 'text-accent' : 'text-ink-3'}`}
+                      >
+                        {item.done}/{item.total}
+                      </span>
+                    )}
+                  </>
                 )}
               </button>
             );

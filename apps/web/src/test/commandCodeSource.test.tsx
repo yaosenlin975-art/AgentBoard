@@ -156,7 +156,8 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     renderPanel();
 
     await screen.findByTestId('accounts-index');
-    expect(screen.getByTestId('accounts-index-count-commandcode')).toHaveTextContent('1');
+    // 方向 B：Command Code 无签到/额度，左栏指标回落账号数
+    expect(screen.getByTestId('accounts-index-metric-commandcode')).toHaveTextContent('1 个账号');
 
     const detail = await openCommandCode();
     const capture = within(detail).getByTestId('accounts-source-cap-commandcode-capture');

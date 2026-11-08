@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { KnowledgePanel } from './components/knowledge/KnowledgePanel';
+import { parseKnowledgeDeepLink } from './lib/knowledgeDeepLink';
 import type { Workspace } from '@agentboard/shared';
 import { api } from './api/client';
 import { useWsEvents } from './api/useWsEvents';
@@ -35,6 +36,12 @@ export default function App() {
   const setView = useNavStore((s) => s.setView);
   const chatOrigin = useNavStore((s) => s.chatOrigin);
   const exitChat = useNavStore((s) => s.exitChat);
+  // BORROW-3.2：知识深链（/k/:id/:slug 与 ?kb=<id>）——挂载时读一次 URL，切知识视图并传面板定位；
+  // 刷新后 URL 不清除（?kb= 保留语义），每次挂载重新解析
+  const deepLink = useMemo(() => parseKnowledgeDeepLink(window.location.href), []);
+  useEffect(() => {
+    if (deepLink) setView('knowledge');
+  }, [deepLink, setView]);
   const CHAT_EXIT_LABEL: Record<NavView, string> = {
     board: '看板',
     decisions: '待决策',
@@ -93,6 +100,7 @@ export default function App() {
                   key={workspaceId ?? 'common'}
                   workspaceId={workspaceId}
                   workspaceName={current?.name ?? null}
+                  deepLinkPageId={deepLink?.pageId ?? null}
                 />
               ) : view === 'chat' ? (
                 // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，

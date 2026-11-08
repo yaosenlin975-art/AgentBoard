@@ -4,6 +4,7 @@
  * - 'OK' 走正常可用态，不显示成错误文案；
  * - CodeBuddy 的捕获/切换真实原因 TARGET_KIND_UNCONFIRMED 必须落在文案映射里；
  * - 旧结构（只有顶层 reason_code）仍能容错，不把签到码误显示成捕获/切换原因。
+ * - accounts-redesign 方向 B：能力徽标整行删除后，分维度原因码经平台级异常文字提示（switch 不可用）与技术层承载。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
@@ -45,7 +46,7 @@ beforeEach(() => {
 });
 
 describe('能力矩阵分维度原因码（ACC-09）', () => {
-  it('捕获可用但切换不可用：切换按钮用 switch_reason_code，捕获按钮保持可用', async () => {
+  it('捕获可用但切换不可用：切换不可用提示用 switch_reason_code，原因码只进技术层', async () => {
     server.use(http.get('/api/managed-account-capabilities', () => HttpResponse.json([
       {
         app_id: 'workbuddy_desktop', capture: true, switch: false, checkin: false,
@@ -56,15 +57,11 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     ] satisfies AccountCapability[])));
     renderPanel();
 
-    // ACC-UI-PRUNE：平台「技术信息」折叠已删，分维度原因码只在能力图标徽标的 tooltip
-    const capBadge = await screen.findByTestId('accounts-badge-workbuddy_desktop-capture');
-    expect(capBadge).toHaveAttribute('data-state', 'available');
-    const switchBadge = screen.getByTestId('accounts-badge-workbuddy_desktop-switch');
-    expect(switchBadge).toHaveAttribute('data-state', 'unavailable');
-    expect(switchBadge.getAttribute('title')).toContain('TARGET_KIND_UNCONFIRMED');
-    const checkinBadge = screen.getByTestId('accounts-badge-workbuddy_desktop-checkin');
-    expect(checkinBadge).toHaveAttribute('data-state', 'unavailable');
-    expect(checkinBadge.getAttribute('title')).toContain('CHECKIN_PROVIDER_UNVERIFIED');
+    await screen.findByTestId('accounts-app-workbuddy_desktop');
+    // accounts-redesign 方向 B：能力徽标整行删除，分维度原因码不再进图标 tooltip；
+    // 异常（switch 不可用）落平台级可见原因（中文主文案 + 技术码进 title）
+    expect(screen.queryByTestId('accounts-badge-workbuddy_desktop-capture')).toBeNull();
+    expect(screen.queryByTestId('accounts-badge-workbuddy_desktop-switch')).toBeNull();
     // ACC-UI-TOPBAR：捕获按钮已整体删除（不因 checkin/switch 的码出现）
     expect(screen.queryByTestId('accounts-capture-workbuddy_desktop')).toBeNull();
     // ACC-UI-2：切换不可用不再渲染灰按钮，改为平台级可见原因（技术码仍在 title）
@@ -97,12 +94,8 @@ describe('能力矩阵分维度原因码（ACC-09）', () => {
     renderPanel();
 
     const wb = await screen.findByTestId('accounts-app-workbuddy_desktop');
-    // ACC-UI-01 D2：能力改用三图标徽标，不再有「切换可用」这类文字徽章（原因码只进 tooltip/details）
-    expect(within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch')).toHaveAttribute('data-state', 'available');
-    // UNSLOP：三态改线性图标，状态由 data-state + 图标 + aria-label 表达
-    const switchBadge = within(wb).getByTestId('accounts-badge-workbuddy_desktop-switch');
-    expect(switchBadge.querySelector('svg')).not.toBeNull();
-    expect(switchBadge.getAttribute('aria-label')).toContain('可用');
+    // accounts-redesign 方向 B：全可用属正常态，不渲染徽标、也不出现「不可用」文字
+    expect(within(wb).queryByTestId('accounts-badge-workbuddy_desktop-switch')).toBeNull();
     expect(wb.textContent).not.toContain('不可用');
     // ACC-UI-PRUNE：平台头部签到按钮已删，签到入口只剩工具栏一键签到（能力可用 → 可点）
     expect(within(wb).queryByTestId('accounts-checkin-all-workbuddy_desktop')).toBeNull();

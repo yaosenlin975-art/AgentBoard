@@ -177,13 +177,13 @@ describe('connectWs 失效去重（PERF-8）', () => {
     FakeWebSocket.instances[0]!.onmessage?.({ data: JSON.stringify(frame) });
   }
 
-  function invalidatedKeys(spy: { mock: { calls: unknown[][] } }): string[] {
-    return spy.mock.calls.map(([arg]) =>
+  function invalidatedKeys(calls: readonly unknown[][]): string[] {
+    return calls.map(([arg]) =>
       JSON.stringify((arg as { queryKey: unknown[] }).queryKey),
     );
   }
 
-  function setup(): { spy: ReturnType<typeof vi.spyOn>; dispose: () => void } {
+  function setup() {
     const qc = new QueryClient();
     const spy = vi.spyOn(qc, 'invalidateQueries').mockResolvedValue(undefined as never);
     const dispose = connectWs({ queryClient: qc });
@@ -195,7 +195,7 @@ describe('connectWs 失效去重（PERF-8）', () => {
     emit({ type: 'comment.added', comment: { id: 'c-1', issue_id: 'i-1', author: 'user', content: 'x', ts: 1 } });
     emit({ type: 'issue.changed', issue });
 
-    const keys = invalidatedKeys(spy);
+    const keys = invalidatedKeys(spy.mock.calls);
     expect(keys).not.toContain(JSON.stringify(['issues']));
     expect(keys.filter((k) => k === JSON.stringify(['issues', 'ws-1']))).toHaveLength(1);
     // 两个帧都指向 ['issue','i-1']，去重后只失效一次
@@ -212,7 +212,7 @@ describe('connectWs 失效去重（PERF-8）', () => {
     now += INVALIDATE_DEDUPE_MS;
     emit({ type: 'issue.changed', issue });
 
-    const keys = invalidatedKeys(spy);
+    const keys = invalidatedKeys(spy.mock.calls);
     expect(keys.filter((k) => k === JSON.stringify(['issues', 'ws-1']))).toHaveLength(2);
     dispose();
   });

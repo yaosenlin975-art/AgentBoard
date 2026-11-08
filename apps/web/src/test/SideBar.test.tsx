@@ -214,10 +214,9 @@ describe('账号管理入口（ACCOUNT-ENTRY，迁到左栏）', () => {
     expect(within(drawer).getByTestId('accounts-index-item-minimax')).toBeInTheDocument();
     expect(within(drawer).getByTestId('accounts-index-item-trae')).toBeInTheDocument();
     expect(within(drawer).queryByText('CodeBuddy Desktop')).toBeNull();
-    // ACC-UI-PRUNE：能力「技术信息」串已删，能力状态在右栏选中平台的三图标徽标上（切到 minimax 再断言）
+    // accounts-redesign 方向 B：能力三图标徽标已整行删除（异常改平台级文字提示，徽标断言随之移除）
     await userEvent.click(within(drawer).getByTestId('accounts-index-item-minimax'));
-    const switchBadge = await screen.findByTestId('accounts-badge-minimax-switch');
-    expect(switchBadge.getAttribute('title')).toContain('CLIENT_NOT_INSTALLED');
+    expect(within(drawer).queryByTestId('accounts-badge-minimax-switch')).toBeNull();
     expect(within(drawer).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
     expect(within(drawer).getByTestId('accounts-import-local')).toBeInTheDocument();
 

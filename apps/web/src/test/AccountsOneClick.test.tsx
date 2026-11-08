@@ -310,13 +310,13 @@ describe('一键签到（ACC-14）', () => {
     server.use(http.get('/api/managed-accounts', () => HttpResponse.json(accounts)));
     renderPanel();
 
-    // 分母 5（缺凭据被排除）；分子 2（succeeded + already_done）；签到芯片已删（ACC-UI-PRUNE），口径在左栏索引健康角标
-    const health = await screen.findByTestId('accounts-index-health-workbuddy_desktop');
+    // 分母 5（缺凭据被排除）；分子 2（succeeded + already_done）；签到芯片已删（ACC-UI-PRUNE），口径在左栏指标行（方向 B）
+    const health = await screen.findByTestId('accounts-index-metric-workbuddy_desktop');
     expect(health).toHaveTextContent('2/5');
     expect(health).toHaveAttribute('title', '今日签到 2/5');
     expect(screen.queryByTestId('accounts-checkin-chip-workbuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-today-summary')).toBeNull();
-    // ACC-UI-TOPBAR：「其中 N 个启用并参与一键签到」列表摘要已删，今日口径只剩左栏索引健康角标
+    // ACC-UI-TOPBAR：「其中 N 个启用并参与一键签到」列表摘要已删，今日口径只剩左栏指标行
     expect(screen.queryByTestId('accounts-summary-workbuddy_desktop')).toBeNull();
   });
 });

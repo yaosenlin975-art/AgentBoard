@@ -103,12 +103,12 @@ describe('完成口径（ACC-B3 硬规则，左栏索引健康角标）', () => 
     await userEvent.click(await screen.findByTestId('accounts-index-item-trae'));
 
     // 参与分母（有凭据、启用），但不计入完成
-    expect(screen.getByTestId('accounts-index-health-trae')).toHaveTextContent('0/2');
+    expect(screen.getByTestId('accounts-index-metric-trae')).toHaveTextContent('0/2');
     // ACC-UI-TOPBAR：「其中 N 个参与一键签到」摘要已删，平台内无「今日已完成」字样
     expect(screen.queryByTestId('accounts-summary-trae')).toBeNull();
     expect(within(screen.getByTestId('accounts-app-trae')).queryByText('今日已完成')).toBeNull();
-    // 左栏 Workbuddy 无账号，不出健康角标
-    expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).toBeNull();
+    // 左栏 Workbuddy 无账号，不出指标行
+    expect(screen.queryByTestId('accounts-index-metric-workbuddy_desktop')).toBeNull();
     // ACC-UI-PRUNE：吸顶批次条与行头签到芯片已随单平台签到入口删除
     expect(screen.queryByTestId('checkin-run-panel')).toBeNull();
     expect(screen.queryByTestId('accounts-checkin-chip-trae')).toBeNull();

@@ -137,10 +137,9 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     );
     renderPanel();
     await screen.findByTestId(`accounts-card-${WB_ID}`);
-    // 初始：左栏平台计数 1、索引健康态 0/1（「今日 x/x」已删，ACC-UI-PRUNE）
-    expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('1');
+    // 初始：左栏指标行 0/1（方向 B：账号数/健康角标合并为指标行，「今日 x/x」已删，ACC-UI-PRUNE）
     expect(screen.queryByTestId('accounts-today-summary')).toBeNull();
-    expect(screen.getByTestId('accounts-index-health-workbuddy_desktop')).toHaveTextContent('0/1');
+    expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('0/1');
 
     await openDeleteConfirm();
     await userEvent.click(screen.getByTestId(`accounts-delete-confirm-yes-${WB_ID}`));
@@ -148,8 +147,7 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     // 卡片消失；失效重拉带动左栏平台指标。删到零账号后该平台不再占行（ADD-FLOW-2 口径 A），整体走空态引导
     await waitFor(() => expect(screen.queryByTestId(`accounts-card-${WB_ID}`)).not.toBeInTheDocument());
     await waitFor(() => expect(screen.queryByTestId('accounts-index-item-workbuddy_desktop')).not.toBeInTheDocument());
-    expect(screen.queryByTestId('accounts-index-count-workbuddy_desktop')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('accounts-index-health-workbuddy_desktop')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-index-metric-workbuddy_desktop')).not.toBeInTheDocument();
     expect(screen.getByTestId('accounts-index-empty')).toBeInTheDocument();
     expect(screen.getByTestId('accounts-detail-empty')).toHaveTextContent('添加账号');
     expect(screen.queryByTestId('accounts-detail-current')).toBeNull();

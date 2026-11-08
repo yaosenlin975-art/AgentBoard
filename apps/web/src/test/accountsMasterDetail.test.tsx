@@ -69,7 +69,7 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.queryByText(/当前：/)).toBeNull();
   });
 
-  it('左栏索引：只列有账号的平台（口径 A），带账号数；默认选中第一个平台', async () => {
+  it('左栏索引：只列有账号的平台（口径 A），行带指标（方向 B）；默认选中第一个平台', async () => {
     mockBase([
       account('wb-1', { is_current: true }),
       account('wb-2'),
@@ -87,8 +87,10 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.queryByTestId('accounts-index-item-codebuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-index-item-trae')).toBeNull();
 
-    // 账号数（「当前：…」提示条已删，ACC-UI-PRUNE）
-    expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('2');
+    // 方向 B：指标行取代账号数/健康角标（两账号今日均未签到 → 0/2 中性；无参与时才给「无参与账号」）
+    expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('0/2');
+    expect(screen.getByTestId('accounts-index-metric-minimax')).toHaveTextContent('0/1');
+    expect(screen.queryByTestId('accounts-index-count-workbuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
 
     // 默认选中第一个
@@ -154,8 +156,8 @@ describe('账号面板主从布局（ACC-B1）', () => {
 
     const index = await screen.findByTestId('accounts-index');
     expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax']);
-    expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('2');
-    expect(screen.getByTestId('accounts-index-count-minimax')).toHaveTextContent('1');
+    expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('0/2');
+    expect(screen.getByTestId('accounts-index-metric-minimax')).toHaveTextContent('0/1');
     expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
   });
 
@@ -165,8 +167,79 @@ describe('账号面板主从布局（ACC-B1）', () => {
 
     const index = await screen.findByTestId('accounts-index');
     expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax']);
-    expect(screen.getByTestId('accounts-index-count-workbuddy_desktop')).toHaveTextContent('1');
+    // 停用账号不进签到分母（checkinParticipation 排除 enabled=false）→ 指标「无参与账号」，但行仍出现（停用 ≠ 零账号）
+    expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('无参与账号');
     // 停用与零账号是两件事：零账号的 trae 仍不占行
     expect(screen.queryByTestId('accounts-index-item-trae')).toBeNull();
+  });
+
+  it('方向 B 规格：左栏 ≥920px 固定 244px（原 200px）', async () => {
+    mockBase([account('wb-1')]);
+    renderPanel();
+
+    await screen.findByTestId('accounts-index');
+    const rail = screen.getByTestId('accounts-index').parentElement as HTMLElement;
+    expect(rail.className).toContain('min-[920px]:w-[244px]');
+    expect(rail.className).not.toContain('w-[200px]');
+  });
+
+  it('方向 B 签到指标异常色：全完成 ok / 部分完成 warn / 无参与中性', async () => {
+    const wbDone = account('wb-1', { last_checkin_day: TODAY, last_checkin_status: 'succeeded' });
+    const wbPart = account('wb-2', { last_checkin_day: TODAY, last_checkin_status: 'unknown' });
+    const mmDone = account('mm-1', { app_id: 'minimax', last_checkin_day: TODAY, last_checkin_status: 'already_done' });
+    mockBase([wbDone, wbPart, mmDone]);
+    renderPanel();
+
+    await screen.findByTestId('accounts-index');
+    // workbuddy 1/2：部分完成 → warn（unknown 不计入完成）
+    const wbMetric = screen.getByTestId('accounts-index-metric-workbuddy_desktop');
+    expect(wbMetric).toHaveTextContent('1/2');
+    expect(wbMetric).toHaveAttribute('data-tone', 'warn');
+    // minimax 1/1：全完成 → ok
+    expect(screen.getByTestId('accounts-index-metric-minimax')).toHaveAttribute('data-tone', 'ok');
+  });
+
+  it('方向 B 额度来源指标：余额无条；窗口带迷你条；已限额 danger 色', async () => {
+    server.use(
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json(CAPS)),
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/account-operations', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({
+        items: [
+          { id: 'd-1', app_id: 'deepseek', identity_hint: 'sha256:aaaaaaaaaaaa', created_at: 1, last_seen_at: 2 },
+          { id: 'o-1', app_id: 'opencode_go', identity_hint: 'sha256:bbbbbbbbbbbb', created_at: 1, last_seen_at: 2 },
+          { id: 'c-1', app_id: 'codex', identity_hint: 'sha256:cccccccccccc', created_at: 1, last_seen_at: 2 },
+        ],
+      })),
+      http.get('/api/managed-account-quotas', () => HttpResponse.json({
+        workspace_id: null,
+        fetched_at: 1_700_000_000_000,
+        items: [
+          { source: 'deepseek', status: 'ok', balance: 751.81, unit: 'CNY', windows: [], fetched_at: 1_700_000_000_000, reason_code: null, detail: null },
+          { source: 'opencode_go', status: 'ok', balance: null, unit: null, windows: [
+            { name: 'rolling', kind: 'rolling', used_percent: 34, used: 3.4, total: 10, reset_at: 1_700_000_000_000 },
+          ], fetched_at: 1_700_000_000_000, reason_code: null, detail: null },
+          { source: 'codex', status: 'ok', balance: null, unit: null, windows: [
+            { name: 'rolling', kind: 'rolling', used_percent: 100, used: 10, total: 10, reset_at: 1_700_000_000_000 },
+          ], fetched_at: 1_700_000_000_000, reason_code: null, detail: null },
+        ],
+      })),
+    );
+    renderPanel();
+
+    await screen.findByTestId('accounts-index');
+    // 余额来源：¥751.81，无迷你条
+    expect(screen.getByTestId('accounts-index-metric-deepseek')).toHaveTextContent('¥751.81');
+    expect(screen.queryByTestId('accounts-index-bar-deepseek')).toBeNull();
+    // 窗口来源：首个窗口 5h · 34% + 迷你条 34%
+    const ocMetric = screen.getByTestId('accounts-index-metric-opencode_go');
+    expect(ocMetric).toHaveTextContent('5h · 34%');
+    expect(ocMetric).toHaveAttribute('data-tone', 'idle');
+    expect(screen.getByTestId('accounts-index-bar-opencode_go')).toHaveAttribute('data-width', '34');
+    // 已限额：100% → danger 色 + 条也红
+    const cxMetric = screen.getByTestId('accounts-index-metric-codex');
+    expect(cxMetric).toHaveTextContent('5h · 100%');
+    expect(cxMetric).toHaveAttribute('data-tone', 'danger');
+    expect(screen.getByTestId('accounts-index-bar-codex')).toHaveAttribute('data-width', '100');
   });
 });
