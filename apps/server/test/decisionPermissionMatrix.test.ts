@@ -1,7 +1,7 @@
 /**
  * DEC-V4-PERM-TEST：跨工作区决策权限矩阵（服务端集成，真实 `createApp`）。
  *
- * 依据 `Docs/design-2026-11-06-workspace-permissions.md` §4/§5：
+ * 依据 `knowledge:41cc78e5-946e-4b03-a79c-0a93f13aad12（知识卡：跨工作区决策权限：最小可行方案（路线 A））` §4/§5：
  * - 角色：owner / member / viewer / anonymous（无成员记录）；
  * - 动作：查看列表、查看详情、回答、修订、撤销回答、撤回、延长宽限、提问 ask；
  * - 每个 ✗ 必须是正确 403 code，且「零写入」（三张表 `SELECT *` 前后一致）+ 不广播；

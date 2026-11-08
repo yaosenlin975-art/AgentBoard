@@ -3,7 +3,7 @@ import type { Workspace } from '@agentboard/shared';
 import type { Db } from '../connection.js';
 
 /**
- * PERM-1：工作区成员表仓储（权限方案路线 A，`Docs/design-2026-11-06-workspace-permissions.md` §2/§3）。
+ * PERM-1：工作区成员表仓储（权限方案路线 A，`knowledge:41cc78e5-946e-4b03-a79c-0a93f13aad12（知识卡：跨工作区决策权限：最小可行方案（路线 A））` §2/§3）。
  *
  * 本轮只落「身份 + 角色」的存储事实，不做请求身份解析与鉴权（那是 PERM-2）：
  * 单机迁移后 `user` 是全部工作区的 owner，因此既有行为零变化。

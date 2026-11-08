@@ -1,6 +1,6 @@
 /**
  * PERM-1：工作区成员表 + 幂等迁移 + 既有工作区 owner seed。
- * 设计口径：`Docs/design-2026-11-06-workspace-permissions.md` §2/§3/§8。
+ * 设计口径：`knowledge:41cc78e5-946e-4b03-a79c-0a93f13aad12（知识卡：跨工作区决策权限：最小可行方案（路线 A））` §2/§3/§8。
  * 用真实 HTTP（supertest）+ 真实临时 SQLite，不 mock 仓储层。
  */
 import { mkdtempSync, rmSync } from 'node:fs';

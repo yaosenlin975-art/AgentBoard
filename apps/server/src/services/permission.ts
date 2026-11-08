@@ -1,6 +1,6 @@
 /**
  * DEC-V4-PERM-SERVER：决策端点的身份解析与角色校验（方案见
- * `Docs/design-2026-11-06-workspace-permissions.md` §4/§5）。
+ * `knowledge:41cc78e5-946e-4b03-a79c-0a93f13aad12（知识卡：跨工作区决策权限：最小可行方案（路线 A））` §4/§5）。
  *
  * 身份口径（本卡按父会话要求收紧为「请求头优先且唯一」）：
  * - 只认 `X-AgentBoard-Actor` 请求头；没有头 → 缺省 `user`（单机行为零变化）；

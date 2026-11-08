@@ -97,9 +97,7 @@
 | 2026-11-03 | [code-review-2026-11-03.md](Docs/code-review-2026-11-03.md) | UNSLOP 工作树代码审查 |
 | 2026-11-03 | [skill-trial-report-2026-11-03.md](Docs/skill-trial-report-2026-11-03.md) | 四份技能文档实测缺陷 |
 | 2026-11-03 | [archive-2026-11-03-agentboard-skill.md](Docs/archive-2026-11-03-agentboard-skill.md) | 旧 `skills/agentboard` 删除前快照 |
-| 2026-11-04 | [audit-2026-11-04-product-health.md](Docs/audit-2026-11-04-product-health.md) | 产品体检（截图见 `Docs/audit-2026-11-04/`） |
-| 2026-11-04 | [code-review-2026-11-04-design-perf.md](Docs/code-review-2026-11-04-design-perf.md) | 设计落地 / 性能评审 |
-| 2026-11-04 | [review-2026-11-04-kb-cli.md](Docs/review-2026-11-04-kb-cli.md) | `kb` CLI 审查与试用 |
+| 2026-11-04 | [知识卡：产品体检 2026-11-04](knowledge:bdb81648-5bec-4746-839e-b8c325daf499) | 产品体检跨模块一致性原则与未闭环项（原 md 与截图目录已清退，全文在该页 rev1 历史） |
 | 2026-11-04 | [guide-2026-11-04-cli-knowledge-tasks.md](Docs/guide-2026-11-04-cli-knowledge-tasks.md) | 当前工作区 CLI / 知识 / 任务操作指引 |
 | 2026-11-04 | [kb-cli-newcomer-report.md](Docs/kb-cli-newcomer-report.md) | `kb` CLI 新人可用性实测 |
 | 长期 | [agentboard测试问题记录.md](Docs/agentboard测试问题记录.md) | 测试问题流水 |

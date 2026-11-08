@@ -3,7 +3,7 @@ import { ensureOwner } from '../repos/workspaceMember.js';
 
 /**
  * PERM-1：`workspace_member` 成员表 + 既有工作区 owner 回填。
- * 设计：`Docs/design-2026-11-06-workspace-permissions.md` §3「数据模型（路线 A）」。
+ * 设计：`knowledge:41cc78e5-946e-4b03-a79c-0a93f13aad12（知识卡：跨工作区决策权限：最小可行方案（路线 A））` §3「数据模型（路线 A）」。
  *
  * - 纯追加表，不改 `workspace` / `issue` / `issue_decision` 任何列，不重建表。
  * - 幂等：`CREATE TABLE/INDEX IF NOT EXISTS` + `INSERT OR IGNORE`（唯一索引
