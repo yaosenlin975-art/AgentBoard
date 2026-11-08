@@ -145,6 +145,21 @@ export function quotaRowBalance(item: QuotaItem): string | null {
 }
 
 /**
+ * ACC-ROW-QUOTA：账号 app_id → 平台额度来源。额度数据是平台级，同平台各账号行显示同源数据；
+ * CLI 来源（deepseek 等）与 commandcode 没有 AccountCard 账号行，不在映射内，返回 null 走占位文案。
+ */
+const APP_TO_QUOTA_SOURCE: Record<string, QuotaSourceId> = {
+  workbuddy_desktop: 'workbuddy',
+  minimax: 'minimax',
+  trae: 'trae',
+  qoder_cn: 'qoder_cn',
+  zcode: 'zcode',
+};
+export function quotaSourceOfApp(appId: string): QuotaSourceId | null {
+  return APP_TO_QUOTA_SOURCE[appId] ?? null;
+}
+
+/**
  * ACC-QUOTA-02：单个额度来源的行内绘制（设计 §5），供 C3 总览面板嵌入行栏。
  * 三种分支同栏位互斥：余额 / 窗口迷你进度条 / 原因（+ 可展开技术码）。
  */

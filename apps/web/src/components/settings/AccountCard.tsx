@@ -26,6 +26,9 @@
  *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  *
+ * ACC-ROW-QUOTA：卡面下方一行平台级额度（余额/积分 + 窗口剩余，与 QuotaRow 同口径；异常给中文原因或
+ * 占位文案）。数据来自 useQuotaSnapshot（平台级，同平台各账号行同源），只读展示、不影响操作禁用逻辑。
+ *
  * ACC-TOKEN-3 凭据过期徽标与刷新：`credential_status=expired|invalid` 出红色徽标（已过期/已失效）+
  * 「刷新」次级小按钮；`expiring` 只出中性「即将过期」提示、不给按钮（设计页的中性黄在本文件被
  * ACC-UI-05 门禁禁 amber 收敛为中性芯片）；`valid/unknown` 不加任何新元素。
@@ -45,6 +48,17 @@ const BTN_QUIET =
 const BTN_DANGER =
   'rounded-lg border border-hairline bg-surface-card px-2.5 py-1 text-xs font-medium text-red-600 ab-transition hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40 dark:text-red-400';
 import { AccountOperationStatus, isTerminalState } from './AccountOperationStatus';
+import {
+  QUOTA_UNKNOWN_REASON_LABEL,
+  isWindowLimited,
+  quotaReasonView,
+  quotaRowBalance,
+  quotaSourceOfApp,
+  quotaWindowKindLabel,
+  quotaWindowsOf,
+  useQuotaSnapshot,
+  windowBarWidth,
+} from './QuotaCards';
 import {
   RECOVERY_ACTION_LABEL,
   RECOVERY_FAIL_LABEL,
@@ -68,6 +82,39 @@ const DELETE_CONFIRM_WINDOW_MS = 3_000;
 
 /** 切换就地确认的窗口：3 秒内不点「确认切换」就自动收回（ACC-B4，与删除同窗口） */
 const SWITCH_CONFIRM_WINDOW_MS = 3_000;
+
+/**
+ * ACC-ROW-QUOTA：账号行额度文案（平台级数据，同平台各账号行同源）。
+ * 分支互斥：无来源 / 读取中 / 读取失败 / 快照缺来源 / 非 ok 中文原因 / ok 余额+窗口；
+ * ok 且余额与窗口都空 →「正常」（与左栏 quotaRailMetric 同语义）。
+ */
+function accountQuotaView(
+  source: ReturnType<typeof quotaSourceOfApp>,
+  query: ReturnType<typeof useQuotaSnapshot>,
+): { status: string; text: string } | null {
+  if (source === null) return { status: 'unsupported', text: '该平台无额度数据源' };
+  if (query.isPending) return { status: 'pending', text: '额度读取中…' };
+  if (query.isError) return { status: 'error', text: '额度读取失败' };
+  const item = query.data?.items.find((row) => row.source === source);
+  if (item === undefined) return { status: 'missing', text: QUOTA_UNKNOWN_REASON_LABEL };
+  if (item.status !== 'ok') {
+    return { status: item.status, text: quotaReasonView(item).text ?? QUOTA_UNKNOWN_REASON_LABEL };
+  }
+  const parts: string[] = [];
+  const balance = quotaRowBalance(item);
+  if (balance !== null) parts.push(balance);
+  for (const window of quotaWindowsOf(item)) {
+    // 与 QuotaRow 同口径：已限额出「已限额」；有 total/used 出「已用/总量」，否则回落百分比
+    if (isWindowLimited(window)) parts.push(`${quotaWindowKindLabel(window)} 已限额`);
+    else if (window.total !== undefined && window.total !== null && window.used !== undefined && window.used !== null) {
+      parts.push(`${quotaWindowKindLabel(window)} ${Math.round(window.used)}/${Math.round(window.total)}`);
+    } else {
+      parts.push(`${quotaWindowKindLabel(window)} ${windowBarWidth(window.used_percent)}%`);
+    }
+  }
+  if (parts.length === 0) return { status: 'ok', text: '正常' };
+  return { status: 'ok', text: parts.join(' · ') };
+}
 
 /** 删除失败的中文口径；裸码不进主文案，只进 title（ACC-REASON-01） */
 const DELETE_FAIL_LABEL: Record<string, string> = {
@@ -117,6 +164,12 @@ export function AccountCard({
   /** ACC-TOKEN-3：刷新凭据失败的原始原因码；主文案走中文映射，裸码只进 title */
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  /**
+   * ACC-ROW-QUOTA：账号行额度（平台级）。与左栏指标/额度详情共用 useQuotaSnapshot 同一 queryKey，
+   * react-query 去重后整页只发一次请求；额度行只读展示，不参与切换/删除的禁用逻辑。
+   */
+  const quotaQuery = useQuotaSnapshot();
+  const quotaView = accountQuotaView(quotaSourceOfApp(String(account.app_id)), quotaQuery);
 
   /**
    * ACC-TOKEN-3：`POST /api/managed-accounts/:id/refresh-credential`（Idempotency-Key 每次点击新生成，
@@ -417,6 +470,18 @@ export function AccountCard({
           </details>
         </div>
       </div>
+
+      {/* ACC-ROW-QUOTA：平台级额度一行（余额/积分 + 窗口剩余；异常给中文原因或占位文案） */}
+      {quotaView !== null && (
+        <p
+          data-testid={`accounts-quota-${account.id}`}
+          data-status={quotaView.status}
+          className="mt-0.5 text-[11px] text-ink-3"
+          title="平台级数据：同平台各账号行显示同源额度"
+        >
+          {quotaView.text}
+        </p>
+      )}
 
       {/* ACC-TOKEN-3：刷新凭据失败不静默——中文口径为主文案，裸码只进 title（ACC-REASON-01） */}
       {refreshErrorCode !== null && (
