@@ -7,6 +7,7 @@ import { dshAdapter } from './dsh.js';
 export * from './types.js';
 export * from './imageInput.js';
 export * from './spawn.js';
+export * from './capabilityProbe.js';
 export * from './codebuddy.js';
 export * from './codex.js';
 export * from './opencode.js';

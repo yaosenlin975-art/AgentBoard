@@ -9,6 +9,7 @@ import {
 } from './spawn.js';
 import type { AgentAdapter, AskOption, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
 import { assertImageInputSupported } from './imageInput.js';
+import { probeCliCapabilities, resolvePermissionArgs } from './capabilityProbe.js';
 
 export const CODEBUDDY_CMD = 'codebuddy';
 const VERIFIED_IMAGE_CLI_VERSION = '2.179.2';
@@ -218,6 +219,10 @@ export const codebuddyAdapter: AgentAdapter = {
     // win32 下 .cmd/.bat 垫片经 resolveSpawnForm 解析为 cmd.exe /d /s /c 包装（与 opencode/dsh 一致）。
     // 非图片轮次必须走 stream-json：`--output-format json` 输出的是 pretty-print 的整段 JSON 数组，
     // 逐行解析取不到任何事件（正文静默丢失）；--include-partial-messages 提供真增量 text_delta。
+    // persona/工具管控注入（flag 名以本机 codebuddy 2.179.2 --help 实测为准，camel/kebab 经 CLI 解析器验证）：
+    //   persona：personaInjection 非 off/file（含未设置，按 auto 语义）→ --append-system-prompt <body>（单 argv 直传）；
+    //   工具管控与 persona 注入解耦：非 off（含 file）→ allow 非空 --allowedTools <逗号清单>，deny 非空 --disallowedTools；
+    //   权限档位：approval_mode 非 inherit 且注入未全关 → 经 capabilityProbe 确认 --permission-mode 后按映射追加（见下）。
     const hasImages = (opts.attachments?.length ?? 0) > 0;
     assertImageInputSupported(opts, supportsCodebuddyImageInput);
     const stdinText = hasImages
@@ -243,6 +248,13 @@ export const codebuddyAdapter: AgentAdapter = {
     if (!hasImages) args.push(opts.prompt);
     if (opts.model) args.push('--model', opts.model);
     if (opts.adapterSessionId) args.push('--resume', opts.adapterSessionId);
+    if (opts.persona && opts.personaInjection !== 'off' && opts.personaInjection !== 'file') {
+      args.push('--append-system-prompt', opts.persona.body);
+    }
+    if (opts.toolPolicy && opts.personaInjection !== 'off') {
+      if (opts.toolPolicy.allow.length > 0) args.push('--allowedTools', opts.toolPolicy.allow.join(','));
+      if (opts.toolPolicy.deny.length > 0) args.push('--disallowedTools', opts.toolPolicy.deny.join(','));
+    }
     if (hasImages) {
       args.push('--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose');
     } else {
@@ -292,6 +304,20 @@ export const codebuddyAdapter: AgentAdapter = {
 
     void (async () => {
       const form = await resolveSpawnForm(CODEBUDDY_CMD);
+      if (killed) {
+        finish(-1);
+        return;
+      }
+      // 权限档位注入（探测 5s 超时/失败=不传）：approval_mode 非 inherit 且注入未全关才探测，
+      // help 未确认权限 flag 名时映射返回空数组（不猜 flag）
+      if (
+        opts.toolPolicy &&
+        opts.personaInjection !== 'off' &&
+        opts.toolPolicy.approval_mode !== 'inherit'
+      ) {
+        const caps = await probeCliCapabilities(CODEBUDDY_CMD);
+        args.push(...resolvePermissionArgs(opts.toolPolicy.approval_mode, caps));
+      }
       if (killed) {
         finish(-1);
         return;

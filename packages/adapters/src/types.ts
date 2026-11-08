@@ -24,6 +24,20 @@ export type UnifiedEvent =
   | AskEvent
   | { type: 'error'; message: string }
   | { type: 'end'; exitCode: number };
+/** 会话 persona：body 为注入 CLI 的系统提示词文本（作为单个 argv 直传，不经 shell） */
+export interface SessionPersona {
+  id: string;
+  body: string;
+  source: 'builtin' | 'user' | 'import';
+}
+
+/** 会话工具管控策略：allow/deny 为工具名清单（逗号拼接后传 CLI） */
+export interface SessionToolPolicy {
+  approval_mode: 'inherit' | 'plan' | 'acceptEdits' | 'bypass';
+  allow: string[];
+  deny: string[];
+}
+
 export interface RunTurnOptions {
   cwd: string;
   model?: string;
@@ -32,6 +46,12 @@ export interface RunTurnOptions {
   prompt: string;
   adapterSessionId?: string;
   attachments?: Array<{ path: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' }>;
+  /** 会话 persona；注入方式由 personaInjection 控制（未设置按 auto 语义处理） */
+  persona?: SessionPersona;
+  /** 会话工具管控；personaInjection=off 时随注入全关，其余模式（含 file）照传工具/权限 flags */
+  toolPolicy?: SessionToolPolicy;
+  /** persona 注入方式：auto/flag=适配器传 CLI flag；file=服务端走标记块（适配器不传 persona flag）；off=全关 */
+  personaInjection?: 'auto' | 'flag' | 'file' | 'off';
 }
 export interface TurnResult {
   exitCode: number;
