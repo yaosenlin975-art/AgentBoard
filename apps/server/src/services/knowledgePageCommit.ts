@@ -11,7 +11,8 @@
  * 状态规则：
  * - active / archived / restore：重写同一路径，front matter 的 `status` 如实反映归档态；
  * - 软删（status='deleted'）：撤掉该页快照并提交删除，避免留一份可读的已删正文；
- * - 批量导入（`/pages/import`）不接线：一次请求会写多页，逐页提交与「只含该页路径」冲突。
+ * - 批量导入（`/pages/import`）不接线：一次请求会写多页，逐页提交与「只含该页路径」冲突；
+ *   响应以 `IMPORT_BATCH_COMMIT_SKIPPED`（committed=false + skipped=true）显式标记该跳过（KB-SNAP-IMPORT 方案 3），不是失败。
  *
  * 该快照是派生物：库仍是唯一事实源，删掉文件不影响数据；提交失败也不影响知识页写入本身。
  */
@@ -236,6 +237,21 @@ export function removeKnowledgePageSnapshot(workspacePath: string, page: Pick<Pa
 }
 
 const INVALID_WORKSPACE_PATH = '工作区路径不是绝对路径，跳过每页快照（相对路径会落到服务进程 cwd 下的仓库）';
+
+/**
+ * KB-SNAP-IMPORT（方案 3）：批量导入端点不接线每页快照的显式信号。
+ * 一次导入写多页，逐页/批量提交与 BORROW-5.1「一次提交只含该页路径」冲突，属既定决策的跳过：
+ * `committed=false && skipped=true` 沿用 KB-SNAP-SILENT 语义 = 不是失败；调用方据此可判断
+ * 「已接线但显式跳过」而不是「端点根本不落快照」。
+ */
+export const IMPORT_BATCH_COMMIT_SKIPPED: PageCommitResult = {
+  path: '',
+  relative_path: '',
+  committed: false,
+  commit: null,
+  reason: '批量导入不落每页快照（BORROW-5.1 一次提交只含该页路径，与逐页/批量提交冲突）；导入页在 git 审计链里无对应提交，属既定决策',
+  skipped: true,
+};
 
 /** 路由侧接线：按 workspace_id 从中心库解析工作区路径后落盘 + 提交；任何异常都吞成 reason */
 export function commitKnowledgePageRevision(

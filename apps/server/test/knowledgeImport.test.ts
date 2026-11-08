@@ -11,7 +11,9 @@ import type { Express } from 'express';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
-import { createWorkspace } from '../src/db/repos/workspace.js';
+import { createWorkspace, getWorkspace } from '../src/db/repos/workspace.js';
+import { existsSync } from 'node:fs';
+import { knowledgePageSnapshotPath } from '../src/services/knowledgePageCommit.js';
 import { IMPORT_MAX_BODY_CHARS, IMPORT_MAX_BYTES, assertContentLimits, mdTitle, slugifyTitle, txtTitle } from '../src/services/knowledgeImport.js';
 
 describe('knowledge import (KBIMP-1)', () => {
@@ -57,6 +59,17 @@ describe('knowledge import (KBIMP-1)', () => {
 
     const byFile = await post({ scope: 'workspace', workspace_id: ws, format: 'txt', content: '没有标题的行\n', filename: 'notes.txt' });
     expect(byFile.body.pages[0].title).toBe('没有标题的行');
+  });
+
+  it('KB-SNAP-IMPORT（方案 3）：响应带 page_commit 显式跳过信号；导入页不留快照文件（既定决策非失败）', async () => {
+    const content = '# 页一\n\n正文。\n';
+    const res = await post({ scope: 'workspace', workspace_id: ws, format: 'md', content, filename: 'snap.md' });
+    expect(res.status).toBe(200);
+    expect(res.body.page_commit).toMatchObject({ committed: false, skipped: true, commit: null });
+    expect(String(res.body.page_commit.reason)).toContain('批量导入不落每页快照');
+    // 端点保持不接线（本卡裁决）：导入页不产生快照文件；响应信号让调用方可区分「显式跳过」与「未接线」
+    const workspace = getWorkspace(t.db, ws)!;
+    expect(existsSync(knowledgePageSnapshotPath(workspace.path, res.body.pages[0].id))).toBe(false);
   });
 
   it('json 单对象：body 映射成正文并带上 category/landed', async () => {

@@ -582,7 +582,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 - `committed=false` 且 `skipped=true` 表示**不是失败**（无快照可提交 / 无变更），客户端不应报警；缺失 `skipped` 视为真实失败；
 - CLI（KB-SNAP-SILENT）：`page_commit.committed=false && skipped!==true` 时，文本与 `--json` 模式都在 **stderr** 打印快照路径与 `reason`，并 **exit 1**；`--json` 的 stdout 仍是单个页面 JSON 文档（失败信号看退出码与 `page_commit`，不插入错误 JSON）；
 - `archive`/`restore` 重写同一路径并由 front matter 的 `status` 标注归档态；`delete`（软删）则删除该页快照并提交删除；
-- 内容未变化时不造空提交（`committed=true` 但 `commit` 指向已有 HEAD）；批量导入 `/pages/import` 不接线（一次请求多页，与「只含该页路径」冲突）。
+- 内容未变化时不造空提交（`committed=true` 但 `commit` 指向已有 HEAD）；批量导入 `/pages/import` 不接线（一次请求多页，与「只含该页路径」冲突；KB-SNAP-IMPORT 方案 3 定案）：响应带显式跳过信号 `page_commit: { committed: false, skipped: true, reason, path: "", relative_path: "", commit: null }`，不是失败；CLI `kb knowledge import` 文本模式在 stderr 打印一行该 reason，`--json` 保持机器可读。
 
 
 ### 11.1 CLI 对应命令（`kb knowledge *`，`packages/cli/src/commands/knowledge.ts`）
@@ -919,7 +919,7 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 | `labels` | string[]? | 知识页无 labels 字段，导入时忽略并回 `warnings` |
 | `actor` / `change_note` | string? | 审计字段 |
 
-响应：`{ pages: KnowledgePage[], warnings: string[] }`（json 数组会返回多条）。
+响应：`{ pages: KnowledgePage[], warnings: string[], page_commit }`（json 数组会返回多条）。`page_commit` 恒为跳过信号 `{ committed: false, skipped: true, reason: '批量导入不落每页快照（…）', path: "", relative_path: "", commit: null }`（KB-SNAP-IMPORT 方案 3：本端点不接线 BORROW-5.1 每页快照，导入页在 git 审计链里无对应提交，属显式既定决策不是失败；接线与否以 `skipped` 字段判断，未来接线后该值自动变为真实提交结果）。
 
 推导规则：
 

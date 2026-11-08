@@ -686,7 +686,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         ...(opts.labels !== undefined ? { labels: opts.labels.split(',').map((label) => label.trim()).filter((label) => label !== '') } : {}),
         actor: ctx.agentId,
       };
-      const result = await request<{ pages?: unknown[]; warnings?: string[] }>(ctx.base, 'POST', '/api/knowledge/pages/import', body);
+      const result = await request<{ pages?: unknown[]; warnings?: string[]; page_commit?: { committed?: boolean; skipped?: boolean; reason?: string } }>(ctx.base, 'POST', '/api/knowledge/pages/import', body);
       if (ctx.json) {
         ctx.io.write(`${JSON.stringify(result, null, 2)}\n`);
         return;
@@ -700,6 +700,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
           const body = String(page.body_md ?? '');
           ctx.io.write(`${page.id} [${page.scope}] ${page.slug} ${body.length} 字符  rev:${page.revision}\n`);
         }
+      }
+      // KB-SNAP-IMPORT（方案 3）：批量导入不落每页快照（page_commit.skipped），文本模式给一行可见提示；--json 保持机器可读
+      const batchCommit = result.page_commit;
+      if (batchCommit && batchCommit.committed === false && batchCommit.skipped === true) {
+        ctx.io.writeErr(`提示：${batchCommit.reason ?? '批量导入不落每页快照（git 审计链无对应提交）'}\n`);
       }
       for (const warning of result.warnings ?? []) ctx.io.writeErr(`warning: ${warning}\n`);
     }));

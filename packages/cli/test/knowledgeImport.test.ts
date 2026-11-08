@@ -104,6 +104,33 @@ describe('kb knowledge import：错误态', () => {
   });
 });
 
+describe('KB-SNAP-IMPORT（方案 3）：导入不落快照的显式信号', () => {
+  const payload = {
+    pages: [{ id: 'p9', scope: 'common', slug: 's9', body_md: 'x', revision: 1 }],
+    page_commit: { path: '', relative_path: '', committed: false, commit: null, reason: '批量导入不落每页快照（BORROW-5.1 一次提交只含该页路径）', skipped: true },
+  };
+
+  it('文本模式：stderr 一行可见提示（不落快照），退出码 0（skipped=true 不是失败）', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
+    const path = fileOf('a.md', '# 标题');
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    const err = String(stream.err.join(''));
+    expect(err).toContain('批量导入不落每页快照');
+    expect(err.split('\n').filter((line) => line.trim() !== '')).toHaveLength(1);
+  });
+
+  it('--json：page_commit 进 stdout 机器可读，stderr 不加提示', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
+    const path = fileOf('b.md', '# 标题');
+    const stream = io();
+    expect(await main(['node', 'kb', '--json', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    const parsed = JSON.parse(String(stream.out.join('')));
+    expect(parsed.page_commit).toMatchObject({ committed: false, skipped: true });
+    expect(String(stream.err.join(''))).toBe('');
+  });
+});
+
 describe('kb knowledge import --help', () => {
   it('写清三件事：支持格式、上限、slug 冲突处置', async () => {
     const stream = io();

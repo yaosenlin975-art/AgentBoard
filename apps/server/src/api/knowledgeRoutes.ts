@@ -11,7 +11,7 @@ import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph 
 import {getKnowledgePageLinkStats, listBacklinks, listResolvedLinks, reparseAllPages} from '../services/knowledgeLinks.js';
 import { listKnowledgePageRows, listKnowledgePagesAcrossDbs, searchKnowledge, searchKnowledgeAcrossDbs } from '../db/repos/knowledgeSearch.js';
 import { migrateKnowledgeLinks } from '../db/migrations/knowledgeLinks.js';
-import { commitKnowledgePageRevision, removeKnowledgePageRevision } from '../services/knowledgePageCommit.js';
+import { IMPORT_BATCH_COMMIT_SKIPPED, commitKnowledgePageRevision, removeKnowledgePageRevision } from '../services/knowledgePageCommit.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
 import { createScopedKnowledgeImageStore, KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
 import { importKnowledgePages } from '../services/knowledgeImport.js';
@@ -411,7 +411,7 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
   });
   /**
    * KBIMP-1：从 md / txt / json 文本导入知识页。
-   * 单条（md/txt/json 对象）或批量（json 数组）都返回 `{ pages, warnings }`；
+   * 单条（md/txt/json 对象）或批量（json 数组）都返回 `{ pages, warnings, page_commit }`；
    * 来源与证据自动构造（file 来源只存路径 + sha256，不写 snapshot），落库走既有事务路径。
    */
   /**
@@ -423,7 +423,8 @@ export function createKnowledgeRouter(db: Db, options: KnowledgeRouterOptions = 
     const body = parse(knowledgeImportSchema, req.body);
     // STORE-4a：整批同一 scope，按请求取库（workspace 页进已下沉区落工作区库）
     const result = importKnowledgePages(dbForScope(body.scope, body.workspace_id), body, { actor: body.actor });
-    res.json(result);
+    // KB-SNAP-IMPORT（方案 3）：批量导入不接线每页快照，page_commit 显式给跳过信号（committed=false + skipped=true，不是失败）
+    res.json({ ...result, page_commit: IMPORT_BATCH_COMMIT_SKIPPED });
   });
   router.post('/pages', (req, res) => {
     const body = parse(knowledgeCreateSchema, req.body);
