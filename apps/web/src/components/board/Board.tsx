@@ -22,6 +22,7 @@ import { api } from '../../api/client';
 import { listIssues as listIssuesApi, patchIssue as patchIssueApi } from '../../api/endpoints';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { commitDrop, detectDropCollision, groupByColumn, resolveDrop } from '../../lib/dnd';
+import { mapWithConcurrency } from '../../lib/promisePool';
 import { buildIssueTreeFilter } from '../../lib/issueTree';
 import { Column } from './Column';
 import { IssueCardPreview } from './IssueCard';
@@ -56,6 +57,9 @@ import { ErrorState } from '../ui/ErrorState';
 import { ReleaseRunningDialog } from './ReleaseRunningDialog';
 
 type ActiveDrag = { issue: Issue; width?: number };
+
+/** CR-4：批量改状态的并发上限（单测断言不超此值） */
+const BATCH_PATCH_CONCURRENCY = 6;
 
 export function Board({
 
@@ -189,17 +193,34 @@ export function Board({
       return next.size === prev.size ? prev : next;
     });
   }, [issues]);
+  // CR-4：批量改状态有限并发（≤6），避免选 N 张就并发 N 个写请求放大 SQLite 写锁排队
   const applyBatchStatus = async (status: string): Promise<void> => {
     if (workspaceId === null || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
     setBatchBusy(true);
     try {
-      await Promise.all(
-        [...selectedIds].map((id) => patchIssueApi(id, { status })),
+      const results = await mapWithConcurrency(ids, BATCH_PATCH_CONCURRENCY, (id) =>
+        patchIssueApi(id, { status }),
       );
+      // 无论成败统一失效刷新：已成功写入的卡立刻反映到界面，不依赖 WS 帧
       await queryClient.invalidateQueries({ queryKey: ['issues', workspaceId] });
-      setSelectedIds(new Set());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '批量修改状态失败，请重试');
+      const failures = results
+        .map((result, index) => ({ id: ids[index], result }))
+        .filter((entry): entry is { id: string; result: PromiseRejectedResult } => entry.result.status === 'rejected');
+      if (failures.length === 0) {
+        setSelectedIds(new Set());
+        return;
+      }
+      // 部分失败：失败 id 保留在选中态（重试只重打失败卡，不重复 PATCH 已成功卡），逐条列出原因
+      setSelectedIds(new Set(failures.map((failure) => failure.id)));
+      const titles = new Map((issues ?? []).map((issue) => [issue.id, issue.title]));
+      const detail = failures
+        .map(({ id, result }) => {
+          const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          return `${titles.get(id) ?? id}：${reason}`;
+        })
+        .join('；');
+      setError(`批量移动完成：成功 ${ids.length - failures.length} 张，失败 ${failures.length} 张 —— ${detail}`);
     } finally {
       setBatchBusy(false);
     }

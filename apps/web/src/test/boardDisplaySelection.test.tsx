@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { HttpResponse, http } from 'msw';
+import { HttpResponse, http, delay } from 'msw';
 import type { Issue } from '@agentboard/shared';
 import { Board } from '../components/board/Board';
 import { useAppStore } from '../state/appStore';
@@ -159,5 +159,89 @@ describe('两段式选择与批量操作', () => {
     expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 1 / 2');
     expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
     expect(screen.getByTestId('issue-card-i1')).toHaveClass('border-accent', 'bg-accent-soft/40');
+  });
+});
+
+describe('批量改状态：并发上限与部分失败收敛（CR-4）', () => {
+  it('第 3 张卡 409：其余卡全部落库，失败卡保留选中并逐条展示原因，列表缓存刷新', async () => {
+    const batch = ['i1', 'i2', 'i3', 'i4', 'i5'].map((id) => makeIssue(id));
+    const succeeded: string[] = [];
+    const attempted: string[] = [];
+    const issueFetches: string[] = [];
+    server.use(
+      http.get('/api/issues', ({ request }) => {
+        issueFetches.push(request.url);
+        return HttpResponse.json(batch);
+      }),
+      http.get('/api/sessions', () => HttpResponse.json([])),
+      http.patch('/api/issues/:id', async ({ params }) => {
+        const id = String(params.id);
+        attempted.push(id);
+        if (id === 'i3') {
+          return HttpResponse.json(
+            { error: { code: 'ISSUE_CLAIMED', message: '任务正被其他代理占用' } },
+            { status: 409 },
+          );
+        }
+        succeeded.push(id);
+        return HttpResponse.json({ ...batch.find((issue) => issue.id === id)!, status: '已关闭' });
+      }),
+    );
+    renderBoard();
+    await screen.findByTestId('issue-card-i1');
+
+    await userEvent.click(screen.getByTestId('board-select-toggle'));
+    await userEvent.click(screen.getByTestId('selection-scope-column-待规划'));
+    await userEvent.click(screen.getByTestId('selection-select-all'));
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 5 / 5');
+
+    await userEvent.selectOptions(screen.getByTestId('selection-batch-status'), '已关闭');
+    await userEvent.click(screen.getByTestId('selection-batch-apply'));
+
+    // 全部 5 张都被尝试（包括失败的 i3），其余 4 张成功落库
+    await waitFor(() => expect(attempted).toHaveLength(5));
+    expect(attempted).toContain('i3');
+    expect(succeeded.sort()).toEqual(['i1', 'i2', 'i4', 'i5']);
+
+    // 失败卡保留在选中态；横幅逐条列出原因
+    await waitFor(() => expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 1 / 5'));
+    const banner = await screen.findByRole('alert');
+    expect(banner).toHaveTextContent('成功 4 张，失败 1 张');
+    expect(banner).toHaveTextContent('任务i3：任务正被其他代理占用');
+
+    // 无论成败统一 invalidate：初次拉取后又刷新了一次列表
+    await waitFor(() => expect(issueFetches.length).toBeGreaterThanOrEqual(2));
+  });
+
+  it('20 张卡批量改状态：并发不超过 6 且全部落库', async () => {
+    const batch = Array.from({ length: 20 }, (_, index) => makeIssue(`i${index + 1}`));
+    const patches: string[] = [];
+    let inflight = 0;
+    let maxInflight = 0;
+    server.use(
+      http.get('/api/issues', () => HttpResponse.json(batch)),
+      http.get('/api/sessions', () => HttpResponse.json([])),
+      http.patch('/api/issues/:id', async ({ params }) => {
+        inflight += 1;
+        maxInflight = Math.max(maxInflight, inflight);
+        await delay(15);
+        patches.push(String(params.id));
+        inflight -= 1;
+        return HttpResponse.json({});
+      }),
+    );
+    renderBoard();
+    await screen.findByTestId('issue-card-i1');
+
+    await userEvent.click(screen.getByTestId('board-select-toggle'));
+    await userEvent.click(screen.getByTestId('selection-scope-column-待规划'));
+    await userEvent.click(screen.getByTestId('selection-select-all'));
+    await userEvent.selectOptions(screen.getByTestId('selection-batch-status'), '已关闭');
+    await userEvent.click(screen.getByTestId('selection-batch-apply'));
+
+    await waitFor(() => expect(patches).toHaveLength(20));
+    expect(maxInflight).toBeLessThanOrEqual(6);
+    // 全部成功 → 选择清空
+    await waitFor(() => expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 0 / 20'));
   });
 });
