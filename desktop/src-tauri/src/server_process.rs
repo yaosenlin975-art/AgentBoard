@@ -21,14 +21,35 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-/// 端口常量：与 `apps/server/src/config.ts` 的 `DEFAULT_PORT` 保持一致，8787 不散落在各处。
-pub const PORT: u16 = 8787;
+/// 端口默认值：与 `apps/server/src/config.ts` 的 `DEFAULT_PORT` 保持一致。
+/// 实际端口在启动时由 `resolve_port()` 从 `<configDir>/config.json` 读取（CR-6），读不到/非法时退回本值。
+pub const DEFAULT_PORT: u16 = 8787;
 /// 监听地址：与 server 默认一致（只监听回环）。
 pub const HOST: &str = "127.0.0.1";
 
 /// 窗口加载的地址（同源、无自定义协议、不改任何 API 契约）。
-pub fn base_url() -> String {
-    format!("http://{HOST}:{PORT}")
+pub fn base_url(port: u16) -> String {
+    format!("http://{HOST}:{port}")
+}
+
+/// 从 `<configDir>/config.json` 解析 port（CR-6）：与 server 端 `mergeValidFields` 同口径（整数且 >0）；
+/// 上界取 u16（`SocketAddr` 解析所需，也是 server 实际可监听范围）。非法/缺失/损坏返回 None，由调用方退回默认。
+fn parse_config_port(raw: &str) -> Option<u16> {
+    let parsed = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    match parsed.get("port").and_then(|value| value.as_u64()) {
+        Some(port) if (1..=u16::MAX as u64).contains(&port) => Some(port as u16),
+        _ => None,
+    }
+}
+
+/// 壳启动时的服务端口：读 `%APPDATA%\AgentBoard\config.json` 的 `port`；读不到或非法退回 8787。
+/// 注：server 端 `AGENTBOARD_PORT` 环境变量可临时覆盖端口，壳侧不读该变量（卡面口径只读 config.json）。
+pub fn resolve_port() -> u16 {
+    let path = config_dir().join("config.json");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| parse_config_port(&raw))
+        .unwrap_or(DEFAULT_PORT)
 }
 
 /// 命令行创建标志：CREATE_NO_WINDOW，避免 node 子进程弹出控制台黑窗。
@@ -39,6 +60,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub struct ServerHandle {
     /// `None` 表示服务在壳启动前就已经在跑（外部实例）：壳只复用，退出时不终止它。
     child: Option<Child>,
+    /// 本次启动使用的端口（停服后等端口释放用）。
+    port: u16,
 }
 
 impl ServerHandle {
@@ -79,7 +102,7 @@ impl ServerHandle {
 
         // 端口应随进程消失；给 Windows 最多 5s 释放监听。
         let deadline = Instant::now() + Duration::from_secs(5);
-        while is_healthy(Duration::from_millis(400)) && Instant::now() < deadline {
+        while is_healthy(Duration::from_millis(400), self.port) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(200));
         }
 
@@ -91,10 +114,10 @@ impl ServerHandle {
 /// 确保服务在跑：已健康则复用；否则用 node 拉起 `apps/server/dist/index.js` 并等待健康检查通过。
 ///
 /// 单例口径：壳自身由 `tauri-plugin-single-instance` 保证唯一；server 由 `server.lock` 保证唯一。
-/// 因此第二个壳不会走到这里，而这里若发现 8787 已健康，也不会再起第二个 server 进程。
-pub fn ensure_server() -> Result<ServerHandle, String> {
-    if is_healthy(Duration::from_millis(1200)) {
-        return Ok(ServerHandle { child: None });
+/// 因此第二个壳不会走到这里，而这里若发现目标端口已健康，也不会再起第二个 server 进程。
+pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
+    if is_healthy(Duration::from_millis(1200), port) {
+        return Ok(ServerHandle { child: None, port });
     }
 
     let entry = resolve_server_entry()?;
@@ -120,8 +143,8 @@ pub fn ensure_server() -> Result<ServerHandle, String> {
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        if is_healthy(Duration::from_millis(1200)) {
-            return Ok(ServerHandle { child: Some(child) });
+        if is_healthy(Duration::from_millis(1200), port) {
+            return Ok(ServerHandle { child: Some(child), port });
         }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
@@ -134,7 +157,7 @@ pub fn ensure_server() -> Result<ServerHandle, String> {
             let _ = child.kill();
             return Err(format!(
                 "等待服务健康检查超时（60 秒）。地址：{}\n入口：{}\n日志：{}",
-                base_url(),
+                base_url(port),
                 entry.display(),
                 log_path_display(&cwd)
             ));
@@ -147,8 +170,8 @@ pub fn ensure_server() -> Result<ServerHandle, String> {
 ///
 /// 项目没有 `/api/health` 端点（卡面已核对），`/api/version` 是现存探活口径；
 /// 这里用 std TcpStream 手写最小 HTTP 请求，避免为一次探活引入 reqwest/tokio 这类重依赖。
-pub fn is_healthy(timeout: Duration) -> bool {
-    let Ok(addr) = format!("{HOST}:{PORT}").parse::<SocketAddr>() else {
+pub fn is_healthy(timeout: Duration, port: u16) -> bool {
+    let Ok(addr) = format!("{HOST}:{port}").parse::<SocketAddr>() else {
         return false;
     };
     let Ok(mut socket) = TcpStream::connect_timeout(&addr, timeout) else {
@@ -342,4 +365,34 @@ fn is_pid_alive(pid: u32) -> bool {
             .map(|field| field.trim().trim_matches('"') == pid.to_string())
             .unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_config_port, DEFAULT_PORT};
+
+    #[test]
+    fn valid_port_is_parsed() {
+        assert_eq!(parse_config_port("{ \"port\": 8790 }"), Some(8790));
+        assert_eq!(parse_config_port(&format!("{{ \"dbPath\": \"x\", \"port\": {DEFAULT_PORT} }}")), Some(DEFAULT_PORT));
+        assert_eq!(parse_config_port("{ \"port\": 65535 }"), Some(65535));
+    }
+
+    #[test]
+    fn missing_file_or_field_falls_back_to_default() {
+        assert_eq!(parse_config_port("{ \"dbPath\": \"x\" }"), None);
+        assert_eq!(parse_config_port(""), None);
+        assert_eq!(parse_config_port("not json"), None);
+        assert_eq!(parse_config_port("[]"), None);
+    }
+
+    #[test]
+    fn illegal_port_falls_back_to_default() {
+        // 与 server 端 mergeValidFields 同口径：整数且 >0；u16 上界为本机 SocketAddr 解析所需
+        assert_eq!(parse_config_port("{ \"port\": 0 }"), None);
+        assert_eq!(parse_config_port("{ \"port\": -1 }"), None);
+        assert_eq!(parse_config_port("{ \"port\": 65536 }"), None);
+        assert_eq!(parse_config_port("{ \"port\": \"8790\" }"), None);
+        assert_eq!(parse_config_port("{ \"port\": 1.5 }"), None);
+    }
 }

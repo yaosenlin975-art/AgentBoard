@@ -1,10 +1,10 @@
 //! 【DESKTOP-1】AgentBoard 桌面壳（Tauri v2）。
 //!
 //! 壳只做四件事：**窗口、托盘、单例、server 进程生命周期**。
-//! - 窗口：本地启动页 → 健康检查通过后导航到 `http://127.0.0.1:8787`（不改任何 API 契约）；
+//! - 窗口：本地启动页 → 健康检查通过后导航到服务地址（CR-6：端口读 config.json 的 port，缺省 8787）；
 //! - 托盘：菜单含「显示」「退出」；关窗 = 隐藏到托盘，服务继续运行；
 //! - 单例：Tauri 官方 `tauri-plugin-single-instance`（第二个实例直接退出，回调聚焦已有窗口）；
-//! - 生命周期：8787 未起时由壳用 node 拉起 server（见 `server_process.rs`），托盘「退出」时停服并释放 `server.lock`。
+//! - 生命周期：目标端口未起时由壳用 node 拉起 server（见 `server_process.rs`），托盘「退出」时停服并释放 `server.lock`。
 //!
 //! 平台：仅 Windows 实现。macOS 的窗口/菜单栏托盘/node 二进制差异留给 DESKTOP-3，
 //! 本文件只在单例与托盘处保留注释，不写 mac 实现代码。
@@ -29,20 +29,22 @@ struct ShellState {
     server: Mutex<Option<ServerHandle>>,
     /// 用户点了「退出」后置位：此时正在启动线程若刚拉起 server，必须立刻停掉，不能留下孤儿进程。
     quitting: AtomicBool,
+    /// CR-6：启动时解析一次的服务端口（config.json 的 port，非法/缺失退回 8787）；探活与导航都用它。
+    port: u16,
 }
 
 struct BootState {
     /// 本地启动页是否已加载完成（未完成前不 eval，避免把错误写进空白文档）。
     page_loaded: AtomicBool,
     /// 启动结果：`Ok(())` = 服务健康；`Err(msg)` = 可读失败原因。`take()` 保证只应用一次
-    /// （导航到 8787 本身会再触发一次 PageLoad Finished，重复应用会变成反复 location.replace）。
+    /// （导航到服务页本身会再触发一次 PageLoad Finished，重复应用会变成反复 location.replace）。
     outcome: Mutex<Option<Result<(), String>>>,
     /// 启动结论留档：窗口被销毁后重建时用它复现同一落地动作（`outcome` 已被 take 消费掉）。
     boot_ok: AtomicBool,
     boot_error: Mutex<Option<String>>,
 }
 
-/// 启动结果落地：页面已加载且结果已产生时，导航到 8787 或把错误显示在本地页上，然后显示窗口。
+/// 启动结果落地：页面已加载且结果已产生时，导航到服务页或把错误显示在本地页上，然后显示窗口。
 fn apply_boot(app: &AppHandle) {
     let state = app.state::<ShellState>();
     if !state.boot.page_loaded.load(Ordering::SeqCst) {
@@ -61,8 +63,8 @@ fn apply_boot(app: &AppHandle) {
     match outcome {
         Ok(()) => {
             state.boot.boot_ok.store(true, Ordering::SeqCst);
-            // 导航到既有 8787 页面：同源、无自定义协议、无请求注入。
-            let _ = window.eval(&format!("location.replace('{}')", server_process::base_url()));
+            // 导航到既有服务页面（CR-6：端口来自 config.json）：同源、无自定义协议、无请求注入。
+            let _ = window.eval(&format!("location.replace('{}')", server_process::base_url(state.port)));
         }
         Err(message) => {
             *state.boot.boot_error.lock().unwrap() = Some(message.clone());
@@ -77,7 +79,8 @@ fn apply_boot(app: &AppHandle) {
 /// 启动线程：探活/拉起 server，结果写回 BootState 并尝试落地。
 fn start_server(app: AppHandle) {
     std::thread::spawn(move || {
-        let result = match server_process::ensure_server() {
+        let port = app.state::<ShellState>().port;
+        let result = match server_process::ensure_server(port) {
             Ok(handle) => {
                 let state = app.state::<ShellState>();
                 if state.quitting.load(Ordering::SeqCst) {
@@ -198,13 +201,13 @@ fn wake_main_window(app: &AppHandle) {
 }
 
 /// 窗口被销毁后的重建路径：同一进程内重新建 `main` 窗口。
-/// 启动已成功则直接加载 8787；启动失败则回到本地页并复现同一错误文案；启动未完成则等启动线程落地。
+/// 启动已成功则直接加载服务页（端口取 ShellState.port）；启动失败则回到本地页并复现同一错误文案；启动未完成则等启动线程落地。
 fn recreate_main_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<ShellState>();
     state.boot.page_loaded.store(false, Ordering::SeqCst);
     let url = if state.boot.boot_ok.load(Ordering::SeqCst) {
         WebviewUrl::External(
-            server_process::base_url()
+            server_process::base_url(state.port)
                 .parse()
                 .map_err(|error| format!("服务地址解析失败：{error}"))?,
         )
@@ -347,6 +350,8 @@ fn main() {
                 },
                 server: Mutex::new(None),
                 quitting: AtomicBool::new(false),
+                // CR-6：启动时解析一次端口；探活/导航/重建窗口统一取这里，不再硬编码 8787。
+                port: server_process::resolve_port(),
             });
 
             // 托盘：菜单「显示 / 退出」。
@@ -391,7 +396,7 @@ fn main() {
             // 托盘句柄必须活到进程结束（TrayIcon 被 drop 会移除托盘），故意不释放。
             std::mem::forget(tray);
 
-            // 窗口：先本地启动页（隐藏显示），健康检查通过后再导航到 8787。
+            // 窗口：先本地启动页（隐藏显示），健康检查通过后再导航到服务页（CR-6：端口读 config.json）。
             build_main_window(app.handle(), WebviewUrl::App("index.html".into()), false)?;
 
             start_server(app.handle().clone());
