@@ -16,13 +16,14 @@ import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createAccountRouter } from '../src/api/accountRoutes.js';
 import { errorHandler } from '../src/api/routes.js';
-import type { SecretVault } from '../src/services/accounts/secretVault.js';
+import { SecretVault } from '../src/services/accounts/secretVault.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
 import { attachClientSnapshot, createManagedAccount, getManagedAccount } from '../src/db/repos/managedAccount.js';
 import { createAccountOperation, getAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
 import { createQuotaService, type QuotaService } from '../src/services/quotas/quotaService.js';
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
+import { WorkbuddyDesktopProvider } from '../src/services/accounts/workbuddyDesktopProvider.js';
 import { defaultTraeStoragePath } from '../src/services/accounts/traeProvider.js';
 import { cliIdentityHash } from '../src/services/accounts/cliAccounts.js';
 
@@ -804,4 +805,132 @@ describe('account api ACC-SWITCH is_current 按平台判定', () => {
     expect(res.status).toBe(200);
     expect(byId(res.body).get(row.id)?.is_current).toBeNull();
   });
+});
+
+describe('account api ACC-SW-VALID-A 协议行按目标账号补齐本机登录态', () => {
+  let t: TestDb;
+  let env: FakeWorkbuddyEnv;
+
+  beforeEach(() => {
+    t = createTestDb();
+    env = new FakeWorkbuddyEnv();
+  });
+  afterEach(() => {
+    t.cleanup();
+    env.cleanup();
+  });
+
+  const protocolHash = (uid: string): string => sha256(`workbuddy_desktop\0${uid}`);
+
+  async function bootWith(provider = env.provider(t.db)): Promise<Express> {
+    return (await createApp({ db: t.db, refreshClisOnBoot: false, workbuddyProvider: provider })).app;
+  }
+
+  function seedProtocol(uid: string, name = '协议号'): string {
+    return createManagedAccount(t.db, {
+      app_id: 'workbuddy_desktop', client_instance_id: 'protocol', service_region: 'cn',
+      identity_hash: protocolHash(uid), display_name: name,
+    }).id;
+  }
+
+  it.runIf(process.platform === 'win32')('列表对 protocol 行给出 switch_available=false 与 TARGET_INSTANCE_MISMATCH', async () => {
+    const app = await bootWith();
+    const id = seedProtocol(UID_A);
+    const res = await request(app).get('/api/managed-accounts');
+    expect(res.status).toBe(200);
+    const row = (res.body as Array<{ id: string; switch_available?: boolean; switch_reason_code?: string | null }>).find(item => item.id === id);
+    expect(row?.switch_available).toBe(false);
+    expect(row?.switch_reason_code).toBe('TARGET_INSTANCE_MISMATCH');
+    expect(JSON.stringify(res.body)).not.toContain('client_snapshot_ref');
+    expect(JSON.stringify(res.body)).not.toContain('credential_ref');
+  }, 20000);
+
+  it.runIf(process.platform === 'win32')('capture-current 的 target_account_id 非 UUID → 400，未知 UUID → 404', async () => {
+    const app = await bootWith();
+    const bad = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: 'not-a-uuid' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe('VALIDATION_ERROR');
+    const missing = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: '0c99142a-0000-4000-8000-000000000099' });
+    expect(missing.status).toBe(404);
+  }, 20000);
+
+  it.runIf(process.platform === 'win32')('本机登录目标账号后补齐：复用原行 id 并落快照与签到凭据', async () => {
+    const app = await bootWith();
+    const id = seedProtocol(UID_A);
+    await env.loginAs(UID_A);
+    const res = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: id });
+    expect(res.status).toBe(200);
+    expect(res.body.account.id).toBe(id);
+    const row = getManagedAccount(t.db, id)!;
+    expect(row.client_instance_id).not.toBe('protocol');
+    expect(row.identity_hash).toBe(sha256(UID_A));
+    expect(row.client_snapshot_ref).toBeTruthy();
+    expect(row.checkin_credential_ref).toBeTruthy();
+    expect(row.display_name).toBe('协议号');
+  }, 30000);
+
+  it.runIf(process.platform === 'win32')('本机登录其他账号时拒绝补齐，原行不变', async () => {
+    const app = await bootWith();
+    const id = seedProtocol(UID_A);
+    const before = getManagedAccount(t.db, id)!;
+    await env.loginAs(UID_B);
+    const res = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: id });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('TARGET_IDENTITY_MISMATCH');
+    expect(getManagedAccount(t.db, id)).toEqual(before);
+  }, 30000);
+
+  it.runIf(process.platform === 'win32')('同身份已有本机行时拒绝自动合并', async () => {
+    const app = await bootWith();
+    await env.loginAs(UID_A);
+    const native = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ display_name: '本机A' });
+    expect(native.status).toBe(200);
+    const id = seedProtocol(UID_A);
+    const res = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: id });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('ACCOUNT_EXISTS');
+    expect(getManagedAccount(t.db, id)!.client_instance_id).toBe('protocol');
+  }, 30000);
+
+  it.runIf(process.platform === 'win32')('本机取不到新 token 时回退重封装目标行旧签到凭据', async () => {
+    const app = await bootWith();
+    const id = seedProtocol(UID_A);
+    const vault = new SecretVault(env.vaultDir);
+    const ref = await vault.protect(Buffer.from('OLD-CREDENTIAL'), {
+      app_id: 'workbuddy_desktop', client_instance_id: 'protocol', identity_hash: protocolHash(UID_A), purpose: 'checkin',
+    });
+    attachCheckinCredential(t.db, id, ref);
+    env.checkinToken = null;
+    await env.loginAs(UID_A);
+    const res = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: id });
+    expect(res.status).toBe(200);
+    const row = getManagedAccount(t.db, id)!;
+    expect(row.checkin_credential_ref).toBeTruthy();
+    expect(row.checkin_credential_ref).not.toBe(ref);
+    const plain = await vault.unprotect(row.checkin_credential_ref!, {
+      app_id: row.app_id, client_instance_id: row.client_instance_id, identity_hash: row.identity_hash, purpose: 'checkin',
+    });
+    expect(plain?.toString('utf8')).toBe('OLD-CREDENTIAL');
+  }, 30000);
+
+  it.runIf(process.platform === 'win32')('vault 写入失败时不落库，原行保持不变', async () => {
+    let calls = 0;
+    const failingVault = {
+      protect: async () => { calls += 1; if (calls === 2) throw new Error('DPAPI down'); return `ref-${calls}`; },
+      unprotect: async () => null,
+      delete: async () => undefined,
+    } as unknown as SecretVault;
+    const provider = new WorkbuddyDesktopProvider({
+      db: t.db, vault: failingVault, paths: env.paths, probe: env.probe(),
+      checkinTokenSource: { find: async () => 'TOKEN' }, broadcast: () => undefined,
+      uiaExitWaitMs: 150, manualExitTimeoutMs: 400, rollbackExitTimeoutMs: 600, startupTimeoutMs: 2_000,
+    });
+    const app = await bootWith(provider);
+    const id = seedProtocol(UID_A);
+    const before = getManagedAccount(t.db, id)!;
+    await env.loginAs(UID_A);
+    const res = await request(app).post('/api/managed-accounts/workbuddy_desktop/capture-current').send({ target_account_id: id });
+    expect(res.status).toBe(409);
+    expect(getManagedAccount(t.db, id)).toEqual(before);
+  }, 30000);
 });

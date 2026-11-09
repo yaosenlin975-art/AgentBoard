@@ -75,6 +75,13 @@ export type PublicManagedAccount = Omit<ManagedAccount, 'identity_hash' | 'clien
   credential_status?: CredentialStatus;
   credential_expires_at?: number | null;
   refresh_method?: CredentialRefreshMethod | null;
+  /**
+   * ACC-SW-VALID-A：逐账号真实切换能力（服务端按账号计算）。
+   * 缺省（undefined）表示服务端未提供，界面回退平台级能力；显式 false 时界面不得展示可点切换。
+   * 原因码：PROVIDER_UNAVAILABLE / TARGET_INSTANCE_MISMATCH / SNAPSHOT_MISSING。
+   */
+  switch_available?: boolean;
+  switch_reason_code?: string | null;
 };
 /**
  * ACC-CLI-MULTI：CLI 额度来源（口径 A：只登记本机可发现凭据 + 真实计数 + 持久化）。

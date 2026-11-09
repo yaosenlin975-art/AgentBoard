@@ -78,7 +78,11 @@ export interface AccountRouterDeps {
 
 // ACC-10：app_id 校验扩到四值，与 managed_account 的 CHECK 及 shared ManagedAppId 保持一致
 const managedAppParam = z.enum(['workbuddy_desktop', 'codebuddy_desktop', 'minimax', 'trae', 'qoder_cn', 'zcode']);
-const captureBodySchema = z.object({ display_name: z.string().trim().min(1).max(100).optional() }).strict();
+const captureBodySchema = z.object({
+  display_name: z.string().trim().min(1).max(100).optional(),
+  /** ACC-SW-VALID-A：指定目标账号 id 时走「本机登录态补齐到既有 protocol 行」分支（仅 WorkBuddy） */
+  target_account_id: z.string().uuid().optional(),
+}).strict();
 const importCredentialsSchema = z.object({
   platforms: z.array(z.enum(['workbuddy', 'trae', 'minimax'])).min(1).max(3).optional(),
   actor: z.string().trim().min(1).max(100).optional(),
@@ -379,14 +383,21 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const currentHashes = await readCurrentIdentityHashes(deps);
     const rows = (db.prepare('SELECT id FROM managed_account ORDER BY created_at,id').all() as Array<{ id: string }>)
       .map(row => getManagedAccount(db, row.id)!);
+    const workbuddyInstanceId = deps.workbuddy?.instanceId;
     res.json(rows
       .filter(account => filter === undefined || account.app_id === filter)
       .map(account => {
         const currentHash = currentHashes[account.app_id];
-        return {
+        const base = {
           ...publicManagedAccount(account),
           is_current: currentHash === undefined || currentHash === null ? null : account.identity_hash === currentHash,
         };
+        // ACC-SW-VALID-A：逐账号真实切换能力；其他平台不填（前端回退平台级 capability）
+        if (account.app_id !== 'workbuddy_desktop') return base;
+        if (deps.workbuddy === undefined) return { ...base, switch_available: false, switch_reason_code: 'PROVIDER_UNAVAILABLE' };
+        if (account.client_instance_id !== workbuddyInstanceId) return { ...base, switch_available: false, switch_reason_code: 'TARGET_INSTANCE_MISMATCH' };
+        if (account.client_snapshot_ref === null || account.client_snapshot_ref === undefined) return { ...base, switch_available: false, switch_reason_code: 'SNAPSHOT_MISSING' };
+        return { ...base, switch_available: true, switch_reason_code: null };
       }));
   });
 
@@ -395,10 +406,13 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     if (!parsed.success) throw new ValidationError('app 不合法');
     const app = parsed.data;
     const body = parseBody(captureBodySchema, req.body);
+    if (body.target_account_id !== undefined && app !== 'workbuddy_desktop') {
+      throw new ValidationError('target_account_id 仅支持 WorkBuddy');
+    }
     const provider = await requireProvider(app, deps, 'capture', minimaxProbe);
     let account;
     try {
-      account = await provider.captureCurrent({ display_name: body.display_name });
+      account = await provider.captureCurrent({ display_name: body.display_name, target_account_id: body.target_account_id });
     } catch (error) {
       // ACC-FIX-4：WorkBuddy 进程不在时，插件线 JWT（文件级，无需进程）仍可回填既有账号行的签到凭据；匹配不到维持原 409
       if (error instanceof ApiError && error.code === 'CLIENT_NOT_RUNNING' && app === 'workbuddy_desktop' && typeof provider.backfillCheckinCredentialFromPlugin === 'function') {

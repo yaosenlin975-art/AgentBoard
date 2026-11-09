@@ -27,7 +27,7 @@ import { attachCheckinCredential } from '../../db/repos/checkin.js';
 import type { SecretVault } from './secretVault.js';
 import { createWorkbuddyCheckinTokenSource, readWorkbuddyAuthExpiresAt, type WorkbuddyCheckinTokenSource } from './workbuddyCheckinSource.js';
 import { jwtExpiresAt } from './addAccountProtocol.js';
-import { ApiError, ValidationError } from '../../errors.js';
+import { ApiError, NotFoundError, ValidationError } from '../../errors.js';
 
 export const WORKBUDDY_APP_ID = 'workbuddy_desktop' as const;
 /** 契约验证过的产品版本线（5.9.3.x，schema v2）；其他版本一律 unsupported */
@@ -187,15 +187,18 @@ export class WorkbuddyDesktopProvider {
 
   // ---- 捕获 ----
 
-  async captureCurrent(options: { display_name?: string } = {}): Promise<ManagedAccount> {
+  async captureCurrent(options: { display_name?: string; target_account_id?: string } = {}): Promise<ManagedAccount> {
     if (options.display_name !== undefined && (options.display_name.trim().length < 1 || options.display_name.trim().length > 100)) throw new ValidationError('display_name 不合法');
+    // ACC-SW-VALID-A：目标账号必须已存在且属于 WorkBuddy；不存在就 404，不改任何行
+    const target = options.target_account_id === undefined ? null : getManagedAccount(this.db, options.target_account_id);
+    if (options.target_account_id !== undefined && (target === null || target.app_id !== WORKBUDDY_APP_ID)) throw new NotFoundError('目标账号不存在');
     let captured: ManagedAccount | null = null;
     const operation = await runAccountOperation(this.db, {
       app_id: WORKBUDDY_APP_ID, client_instance_id: this.instanceId, operation: 'capture',
     }, async op => {
       const pre = await this.preflight();
       if (pre.pids.length === 0) throw new ApiError(409, 'CLIENT_NOT_RUNNING', 'WorkBuddy 未在运行，无法捕获当前登录态');
-      const identity = await this.requireV2Identity();
+      const { uid, identity } = await this.requireV2Credentials();
       this.setStage(op, 'snapshot');
       const snapshot: WorkbuddySnapshot = {
         schema: WORKBUDDY_SNAPSHOT_SCHEMA, app_id: WORKBUDDY_APP_ID, client_instance_id: pre.instanceId,
@@ -214,37 +217,75 @@ export class WorkbuddyDesktopProvider {
         await this.vault.delete(ref).catch(() => {});
         throw new ApiError(409, 'IDENTITY_CHANGED', '捕获期间登录身份变化，已放弃保存');
       }
+      // ACC-SW-VALID-A：指定目标账号时，先核对「本机当前登录身份」是否就是目标协议账号。
+      // protocol 行的 identity_hash = sha256(app_id + NUL + uid)；匹配失败立即放弃，原行不做任何修改。
+      const targetIsCurrentNative = target !== null && target.client_instance_id === pre.instanceId && target.identity_hash === identity.identity_hash;
+      if (target !== null && !targetIsCurrentNative) {
+        const protocolHash = createHash('sha256').update(`${WORKBUDDY_APP_ID}\0${uid}`).digest('hex');
+        if (protocolHash !== target.identity_hash) {
+          await this.vault.delete(ref).catch(() => {});
+          throw new ApiError(409, 'TARGET_IDENTITY_MISMATCH', '本机当前登录身份与目标账号不一致，未做任何修改');
+        }
+      }
       // ACC-GET：捕获必须同时落签到凭据，否则账号会「抓到了但签不了到」；取不到就让捕获失败。
       const token = await this.checkinTokenSource.find(identity).catch(() => null);
-      if (token === null || token.trim() === '') {
+      let checkinRef: string | null = null;
+      if (token !== null && token.trim() !== '') {
+        checkinRef = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(identity.identity_hash));
+      }
+      // ACC-SW-VALID-A：本机取不到新 token 且目标是既有行时，按原 scope 解出旧签到凭据并重封装
+      if (checkinRef === null && target !== null && target.checkin_credential_ref !== null) {
+        const previous = await this.vault.unprotect(target.checkin_credential_ref, {
+          app_id: WORKBUDDY_APP_ID, client_instance_id: target.client_instance_id, identity_hash: target.identity_hash, purpose: 'checkin',
+        }).catch(() => null);
+        if (previous !== null) checkinRef = await this.vault.protect(previous, this.checkinScope(identity.identity_hash));
+      }
+      if (checkinRef === null) {
         await this.vault.delete(ref).catch(() => {});
         throw new ApiError(409, 'CHECKIN_CREDENTIAL_UNAVAILABLE', '未能从本机获取签到凭据，请改用授权添加或导入本机凭据');
       }
-      const checkinRef = await this.vault.protect(Buffer.from(token, 'utf8'), this.checkinScope(identity.identity_hash));
+      const checkinCredentialRef: string = checkinRef;
       // ACC-TOKEN-2：到期来源优先桌面线 info 文件 auth.expiresAt（明文毫秒，无需解密）；兜底插件线 JWT exp
-      const expiresAt = (await readWorkbuddyAuthExpiresAt(this.paths.authInfoPath)) ?? jwtExpiresAt(token);
+      const expiresAt = (await readWorkbuddyAuthExpiresAt(this.paths.authInfoPath)) ?? jwtExpiresAt(token ?? '');
       try {
-
-        const existing = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
-        if (existing) {
-          captured = attachClientSnapshot(this.db, existing.id, { client_snapshot_ref: ref, client_snapshot_version: 1 });
-          captured = attachCheckinCredential(this.db, existing.id, checkinRef);
-          if (existing.client_snapshot_ref && existing.client_snapshot_ref !== ref) await this.vault.delete(existing.client_snapshot_ref).catch(() => {});
-          if (existing.checkin_credential_ref && existing.checkin_credential_ref !== checkinRef) await this.vault.delete(existing.checkin_credential_ref).catch(() => {});
-        } else {
-          captured = createManagedAccount(this.db, {
-            app_id: WORKBUDDY_APP_ID, client_instance_id: pre.instanceId, service_region: 'unknown',
-            identity_hash: identity.identity_hash, display_name: (options.display_name ?? `WorkBuddy-${identity.uid_sha256_8}`).trim(),
-            identity_hint: identity.uid_sha256_8, client_snapshot_ref: ref, client_snapshot_version: 1,
-            checkin_credential_ref: checkinRef,
+        if (target !== null && !targetIsCurrentNative) {
+          // ACC-SW-VALID-A：事务内把本机登录态补齐到原协议行；保留 id/名称/签到历史，只改实例与身份列
+          const adopt = this.db.transaction(() => {
+            const conflict = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
+            if (conflict !== null && conflict.id !== target.id) {
+              throw new ApiError(409, 'ACCOUNT_EXISTS', '该身份已有本机账号行，不能自动合并');
+            }
+            this.db.prepare(
+              "UPDATE managed_account SET client_instance_id=?, identity_hash=?, identity_hint=?, client_snapshot_ref=?, client_snapshot_version=1, checkin_credential_ref=?, checkin_capability='supported', updated_at=MAX(?,updated_at+1) WHERE id=?",
+            ).run(pre.instanceId, identity.identity_hash, identity.uid_sha256_8, ref, checkinCredentialRef, this.now(), target.id);
+            setCredentialExpiry(this.db, target.id, { expiresAt, refreshMethod: 'recapture' });
+            return getManagedAccount(this.db, target.id)!;
           });
-          captured = attachCheckinCredential(this.db, captured.id, checkinRef);
+          captured = adopt();
+          if (target.client_snapshot_ref !== null && target.client_snapshot_ref !== ref) await this.vault.delete(target.client_snapshot_ref).catch(() => {});
+          if (target.checkin_credential_ref !== null && target.checkin_credential_ref !== checkinCredentialRef) await this.vault.delete(target.checkin_credential_ref).catch(() => {});
+        } else {
+          const existing = findManagedAccountByIdentity(this.db, WORKBUDDY_APP_ID, pre.instanceId, identity.identity_hash);
+          if (existing) {
+            captured = attachClientSnapshot(this.db, existing.id, { client_snapshot_ref: ref, client_snapshot_version: 1 });
+            captured = attachCheckinCredential(this.db, existing.id, checkinCredentialRef);
+            if (existing.client_snapshot_ref && existing.client_snapshot_ref !== ref) await this.vault.delete(existing.client_snapshot_ref).catch(() => {});
+            if (existing.checkin_credential_ref && existing.checkin_credential_ref !== checkinCredentialRef) await this.vault.delete(existing.checkin_credential_ref).catch(() => {});
+          } else {
+            captured = createManagedAccount(this.db, {
+              app_id: WORKBUDDY_APP_ID, client_instance_id: pre.instanceId, service_region: 'unknown',
+              identity_hash: identity.identity_hash, display_name: (options.display_name ?? `WorkBuddy-${identity.uid_sha256_8}`).trim(),
+              identity_hint: identity.uid_sha256_8, client_snapshot_ref: ref, client_snapshot_version: 1,
+              checkin_credential_ref: checkinCredentialRef,
+            });
+            captured = attachCheckinCredential(this.db, captured.id, checkinCredentialRef);
+          }
+          // ACC-TOKEN-2：捕获写入点——落到期列（workbuddy refresh_method 固定 recapture）
+          if (captured) setCredentialExpiry(this.db, captured.id, { expiresAt, refreshMethod: 'recapture' });
         }
-        // ACC-TOKEN-2：捕获写入点——落到期列（workbuddy refresh_method 固定 recapture）
-        if (captured) setCredentialExpiry(this.db, captured.id, { expiresAt, refreshMethod: 'recapture' });
       } catch (error) {
         await this.vault.delete(ref).catch(() => {});
-        await this.vault.delete(checkinRef).catch(() => {});
+        await this.vault.delete(checkinCredentialRef).catch(() => {});
         throw error;
       }
       return 'succeeded';
@@ -366,7 +407,7 @@ export class WorkbuddyDesktopProvider {
     return { exePath, version, instanceId: this.instanceId, pids: await this.probe.instancePids(exePath) };
   }
 
-  private async requireV2Identity(): Promise<ClientIdentity> {
+  private async requireV2Credentials(): Promise<{ uid: string; identity: ClientIdentity }> {
     let info: unknown;
     try { info = JSON.parse((await readFile(this.paths.authInfoPath)).toString('utf8')); }
     catch { throw new ApiError(409, 'IDENTITY_UNAVAILABLE', '无法读取 WorkBuddy 登录身份'); }
@@ -374,7 +415,11 @@ export class WorkbuddyDesktopProvider {
     if (typeof uid !== 'string' || uid.length !== 36) throw new ApiError(409, 'IDENTITY_UNAVAILABLE', '登录身份缺少稳定 uid，不可保存');
     if (detectWorkbuddySchema(info) !== 'v2-wbencrypted') throw new ApiError(409, 'CLIENT_SCHEMA_UNSUPPORTED', '客户端凭据 schema 版本不受支持（需 v2 信封格式）');
     const hash = createHash('sha256').update(uid).digest('hex');
-    return { uid_sha256_8: hash.slice(0, 8), identity_hash: hash };
+    return { uid, identity: { uid_sha256_8: hash.slice(0, 8), identity_hash: hash } };
+  }
+
+  private async requireV2Identity(): Promise<ClientIdentity> {
+    return (await this.requireV2Credentials()).identity;
   }
 
   private async snapshotFile(path: string): Promise<{ sha256: string; content_base64: string }> {
