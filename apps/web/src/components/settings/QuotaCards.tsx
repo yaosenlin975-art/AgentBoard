@@ -199,7 +199,7 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
                 className="inline-flex items-center gap-1.5"
               >
                 <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{quotaWindowKindLabel(window)}</span>
-                <span aria-hidden="true" className="h-1.5 w-14 overflow-hidden rounded-full bg-surface-raised">
+                <span aria-hidden="true" className="h-[2px] w-14 overflow-hidden rounded-full bg-surface-raised">
                   <span
                     data-testid={`quota-row-bar-${item.source}-${index}`}
                     data-width={pct}

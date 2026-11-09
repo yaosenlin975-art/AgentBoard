@@ -314,6 +314,7 @@ describe('额度行内绘制（ACC-QUOTA-02）', () => {
     const bar = within(row).getByTestId('quota-row-bar-opencode_go-0');
     expect(bar).toHaveAttribute('data-width', '19');
     expect(bar).toHaveStyle({ width: '19%' });
+    expect(bar.parentElement).toHaveClass('h-[2px]');
     // 重置时间不再占行内文字位（设计 §5：进 tooltip）
     expect(within(row).getByTestId('quota-row-window-opencode_go-0').getAttribute('title') ?? '').toContain('Resets in 1h 20m');
     expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Reset time unknown');
