@@ -3,7 +3,8 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus, IssueTreeItem } from '@agentboard/shared';
 import { ApiError } from '../../api/client';
 import { createIssue, listIssueTree, patchIssue } from '../../api/endpoints';
-import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, sortTreeItemsByChildCount, filterTreeItemsWithChildren, readTreeHideLeaf, writeTreeHideLeaf, type IssueTreeFilter } from '../../lib/issueTree';
+import { getIssueAncestors, getIssueDescendantIds, buildIssueTreeFilter, filterTreeItemsWithChildren, readTreeHideLeaf, writeTreeHideLeaf, type IssueTreeFilter } from '../../lib/issueTree';
+import { byCreatedAtThenId } from '../../lib/planningSort';
 import { countSubtreeOpenBlockers, openBlockerCount } from '../../lib/dependency';
 import {
   invalidateIssueStatusCaches,
@@ -168,7 +169,6 @@ export function IssueTreeView({
           parentId={null}
           issues={issues}
           filter={filter}
-          sortByChildCount={status === 'all'}
           hideLeaf={hideLeaf}
           expandedIds={expandedIds}
           collapsedIds={collapsedIds}
@@ -192,7 +192,6 @@ function TaskTreeChildren({
   parentId,
   issues,
   filter,
-  sortByChildCount,
   hideLeaf,
   expandedIds,
   collapsedIds,
@@ -210,7 +209,6 @@ function TaskTreeChildren({
   parentId: string | null;
   issues: Issue[];
   filter: IssueTreeFilter;
-  sortByChildCount: boolean;
   hideLeaf: boolean;
   expandedIds: ReadonlySet<string>;
   collapsedIds: ReadonlySet<string>;
@@ -239,8 +237,7 @@ function TaskTreeChildren({
   const pageItems = query.data?.pages.flatMap((page) => page.items) ?? [];
   const visibleChildren = filter.active ? filter.visibleChildrenByParent.get(parentId) ?? emptyIds : null;
   const visibleItems = visibleChildren === null ? pageItems : pageItems.filter((item) => visibleChildren.has(item.id));
-  // TREE-SORT-CHILD：仅状态筛选为「全部状态」（sortByChildCount=true）时按直接子节点数降序；其它筛选保持服务端原序
-  const orderedItems = sortByChildCount ? sortTreeItemsByChildCount(visibleItems) : visibleItems;
+  const orderedItems = [...visibleItems].sort(byCreatedAtThenId);
   // TREE-HIDE-LEAF：勾选后只保留有直接子节点的任务（与状态筛选正交，判定用真实 child_count）
   const displayItems = hideLeaf ? filterTreeItemsWithChildren(orderedItems) : orderedItems;
   const autoPageTargetsLoaded = visibleChildren === null || [...visibleChildren].every((id) => pageItems.some((item) => item.id === id));
@@ -298,7 +295,6 @@ function TaskTreeChildren({
                   parentId={item.id}
                   issues={issues}
                   filter={filter}
-                  sortByChildCount={sortByChildCount}
                   hideLeaf={hideLeaf}
                   expandedIds={expandedIds}
                   collapsedIds={collapsedIds}

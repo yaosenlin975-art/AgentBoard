@@ -317,38 +317,41 @@ describe('IssueTreeView', () => {
   });
 });
 
-describe('任务树同级排序（TREE-SORT-CHILD）', () => {
-  function rootNodeIds(): string[] {
-    const list = screen.getByRole('list', { name: '根任务' });
+describe('任务树按创建时间排序', () => {
+  function nodeIds(listName: string): string[] {
+    const list = screen.getByRole('list', { name: listName });
     return [...list.querySelectorAll('[data-testid^="tree-node-"]')]
       .map((node) => (node.getAttribute('data-testid') ?? '').replace('tree-node-', ''));
   }
 
-  it('全部状态：按直接子节点数降序，同数量按更新时间降序，零子节点排最后', async () => {
-    const noChildren = treeItem('no-children', { title: '无子任务', child_count: 0, updated_at: 99 });
-    const twoChildren = treeItem('two', { title: '两个子任务', child_count: 2, updated_at: 5 });
-    const oneChildOlder = treeItem('one-old', { title: '一个子任务（旧）', child_count: 1, updated_at: 20 });
-    const oneChildNewer = treeItem('one-new', { title: '一个子任务（新）', child_count: 1, updated_at: 30 });
-    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([noChildren, twoChildren, oneChildOlder, oneChildNewer]))));
-    renderTree([noChildren, twoChildren, oneChildOlder, oneChildNewer]);
+  it('根任务和每层子任务跨页加载后按 created_at、id 升序排列', async () => {
+    const parent = treeItem('parent', { title: '父任务', created_at: 1, child_count: 3 });
+    const laterRoot = treeItem('later-root', { title: '较晚根任务', created_at: 2, child_count: 10 });
+    const childA = treeItem('child-a', { title: '子任务 A', parent_issue_id: 'parent', created_at: 10, child_count: 0 });
+    const childZ = treeItem('child-z', { title: '子任务 Z', parent_issue_id: 'parent', created_at: 10, child_count: 5 });
+    const laterChild = treeItem('later-child', { title: '较晚子任务', parent_issue_id: 'parent', created_at: 20, child_count: 10 });
+    server.use(http.get('/api/issues/tree', ({ request }) => {
+      const url = new URL(request.url);
+      const parentId = url.searchParams.get('parent_issue_id');
+      const cursor = url.searchParams.get('cursor');
+      if (parentId === null) return HttpResponse.json(cursor === 'root-next' ? page([laterRoot]) : page([parent], 'root-next'));
+      if (parentId === 'parent') return HttpResponse.json(cursor === 'child-next'
+        ? page([laterChild])
+        : page([childA, childZ], 'child-next'));
+      return HttpResponse.json(page([]));
+    }));
+    renderTree([parent, laterRoot, childA, childZ, laterChild]);
 
-    expect(await screen.findByText('两个子任务')).toBeInTheDocument();
-    expect(rootNodeIds()).toEqual(['two', 'one-new', 'one-old', 'no-children']);
-  });
+    expect(await screen.findByText('父任务')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '加载更多根任务' }));
+    expect(await screen.findByText('较晚根任务')).toBeInTheDocument();
+    expect(nodeIds('根任务')).toEqual(['parent', 'later-root']);
 
-  it('切换到具体状态筛选后保持接口原序（不按子节点数排序）', async () => {
-    const leaf = treeItem('leaf', { title: '叶子任务', child_count: 0, status: '进行中' });
-    const mid = treeItem('mid', { title: '一个子任务', child_count: 1, status: '进行中' });
-    const two = treeItem('two', { title: '两个子任务', child_count: 2, status: '进行中' });
-    server.use(http.get('/api/issues/tree', () => HttpResponse.json(page([leaf, mid, two]))));
-    renderTree([leaf, mid, two]);
-
-    expect(await screen.findByText('叶子任务')).toBeInTheDocument();
-    // 全部状态：排序生效（2 → 1 → 0 个子节点）
-    expect(rootNodeIds()).toEqual(['two', 'mid', 'leaf']);
-
-    await userEvent.selectOptions(screen.getByLabelText('按状态筛选'), '进行中');
-    expect(rootNodeIds()).toEqual(['leaf', 'mid', 'two']);
+    await userEvent.click(screen.getByRole('button', { name: '展开子任务：父任务' }));
+    expect(await screen.findByText('子任务 A')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '加载更多子任务：父任务' }));
+    expect(await screen.findByText('较晚子任务')).toBeInTheDocument();
+    expect(nodeIds('子任务：父任务')).toEqual(['child-a', 'child-z', 'later-child']);
   });
 });
 
