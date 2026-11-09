@@ -237,6 +237,37 @@ describe('kb answer / decisions / stop-check / show', () => {
     expect(result.code).toBe(0);
     expect(result.out).toContain('待决策卡');
     expect(result.out).toContain('[grace]');
+    // OPT-12：--issue 由服务端按 issue_id 过滤，不在客户端扫描 200 条前缀窗口
+    const listCall = calls.find(c => c.method === 'GET' && c.url.startsWith('/api/decisions?workspace_id=ws1'));
+    expect(listCall?.url).toContain('issue_id=iss-a');
+    expect(listCall?.url).not.toContain('limit=');
+  });
+
+  it('decisions 不带 --issue 时不传 issue_id（旧口径逐字不变）', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'ws', path: cwd }] };
+      if (method === 'GET' && url.startsWith('/api/decisions?workspace_id=ws1')) {
+        return { status: 200, body: { decisions: [{ ...decision(), issue_title: ISSUE.title, issue_status: ISSUE.status, option_count: 2 }], counts: { grace: 1, open: 0, stale: 0 } } };
+      }
+      return undefined;
+    };
+    const result = await run(['decisions', '--workspace', 'ws1']);
+    expect(result.code).toBe(0);
+    const listCall = calls.find(c => c.method === 'GET' && c.url.startsWith('/api/decisions?workspace_id=ws1'));
+    expect(listCall?.url).not.toContain('issue_id=');
+  });
+
+  it('decisions --issue 无该卡决策时输出空表并退出 0', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/issues/iss-a') return { status: 200, body: ISSUE };
+      if (method === 'GET' && url.startsWith('/api/decisions?workspace_id=ws1')) {
+        return { status: 200, body: { decisions: [], counts: { grace: 0, open: 0, stale: 0 } } };
+      }
+      return undefined;
+    };
+    const result = await run(['decisions', '--issue', 'iss-a']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('（无决策）');
   });
 
   it('stop-check：落锁后输出 STOP_REQUESTED 与下一步协作式停止指引', async () => {
