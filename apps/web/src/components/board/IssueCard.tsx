@@ -4,7 +4,7 @@
  * 详情打开中（panelStore view='detail' 且 issueId 命中本卡）输出选中高亮，与批量勾选同 token（DETAIL-HIGHLIGHT）。
  * 占用中卡片禁止拖出：useSortable 仅禁 draggable，仍可作为落点；光标 not-allowed + title。
  */
-import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import type { Issue, Priority } from '@agentboard/shared';
 import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
@@ -165,7 +165,8 @@ function claimedCli(claimedBy: string): string {
   return claimedBy.startsWith('agent:') ? claimedBy.slice('agent:'.length) : claimedBy;
 }
 
-export function IssueCard({
+/** CR2-6：memo 化 —— 搜索/选择等无关重渲时，issue 引用未变的卡片直接跳过 */
+export const IssueCard = memo(function IssueCard({
   issue,
   sessionRunning,
   density = 'comfortable',
@@ -288,4 +289,4 @@ export function IssueCard({
       </div>
     </div>
   );
-}
+});

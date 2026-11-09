@@ -6,7 +6,7 @@
  */
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import type { ReactNode } from 'react';
+import { memo, type ReactNode } from 'react';
 import type { Issue } from '@agentboard/shared';
 import { columnDroppableId } from '../../lib/dnd';
 import { groupIssuesForDisplay, type BoardDensity, type BoardGrouping } from '../../lib/displayOptions';
@@ -15,7 +15,8 @@ import { IssueCard } from './IssueCard';
 import { EmptyState } from '../ui/EmptyState';
 import { Skeleton } from '../ui/Skeleton';
 
-export function Column({
+/** CR2-6：memo 化 —— 只有本列 issues / 选择态 / 显示偏好变化时才重渲 */
+export const Column = memo(function Column({
   status,
   issues,
   runningSessionIds,
@@ -168,4 +169,4 @@ export function Column({
       </div>
     </section>
   );
-}
+});

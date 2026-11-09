@@ -3,7 +3,7 @@
  * 拖放经 resolveDrop 结算 → 乐观更新 → PATCH（跨列带 status，列内只带 sort_order）；
  * PATCH 失败（如 409 占用冲突）回滚缓存并提示。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -151,16 +151,28 @@ export function Board({
     if (!onlyReleased || releasedBatch === null) return base;
     return base.filter((issue) => releasedBatch.ids.has(issue.id));
   }, [issues, filter, onlyReleased, releasedBatch]);
-  const grouped = groupByColumn(visibleIssues, columns);
+  // CR2-6：分组结果按引用缓存，无关状态变化（弹窗、选择态等）不再重建各列数组
+  const grouped = useMemo(() => groupByColumn(visibleIssues, columns), [visibleIssues, columns]);
   // 「待规划」列排序（SORT-PLAN）：纯函数排序 + 本地存储；其它列保持 sort_order 顺序
   const planningIssues = useMemo(
     () => sortPlanning(grouped['待规划'] ?? [], planningSort),
     [grouped, planningSort],
   );
-  const changePlanningSort = (next: PlanningSort): void => {
+  const changePlanningSort = useCallback((next: PlanningSort): void => {
     setPlanningSort(next);
     writePlanningSort(next);
-  };
+  }, []);
+  // CR2-6：列头排序控件 / 运行中会话集按引用缓存，否则每次渲染都生成新 props 打穿 Column memo
+  const planningSortControl = useMemo(
+    () => <PlanningSortButton sort={planningSort} onChange={changePlanningSort} />,
+    [planningSort, changePlanningSort],
+  );
+  const runningSessionIds = useMemo(
+    () => new Set((sessions ?? []).filter((s) => s.status === '运行中').map((s) => s.id)),
+    [sessions],
+  );
+  const openNewIssue = useCallback(() => setNewIssueOpen(true), []);
+  const openReleaseRunning = useCallback(() => setReleaseOpen(true), []);
   // BORROW-1.1：显示偏好即时生效并写 localStorage（刷新后保持）
   const changeDisplayOptions = (next: DisplayOptions): void => {
     setDisplayOptions(next);
@@ -181,10 +193,13 @@ export function Board({
     setSelectedIds(new Set());
   };
   // 两段式第二段：只有范围内卡片可勾选
-  const toggleCardSelection = (id: string): void => {
-    const issue = (issues ?? []).find((item) => item.id === id);
-    setSelectedIds((prev) => toggleSelected(prev, id, issue !== undefined && issueInScope(selectionScope, issue)));
-  };
+  const toggleCardSelection = useCallback(
+    (id: string): void => {
+      const issue = (issues ?? []).find((item) => item.id === id);
+      setSelectedIds((prev) => toggleSelected(prev, id, issue !== undefined && issueInScope(selectionScope, issue)));
+    },
+    [issues, selectionScope],
+  );
   const scopeIds = idsInScope(visibleIssues, selectionScope);
   // 数据刷新后剔除已删除卡片，避免批量 PATCH 打到幽灵 id
   useEffect(() => {
@@ -250,10 +265,6 @@ export function Board({
       </div>
     );
   }
-
-  const runningSessionIds = new Set(
-    (sessions ?? []).filter((s) => s.status === '运行中').map((s) => s.id),
-  );
 
   const handleDragStart = (event: DragStartEvent): void => {
     const issue = (issues ?? []).find((item) => item.id === String(event.active.id));
@@ -448,10 +459,10 @@ export function Board({
                 selectionScope={selectionScope}
                 selectedIds={selectedIds}
                 onToggleSelect={toggleCardSelection}
-                {...(status === '待规划' ? { onCreateIssue: () => setNewIssueOpen(true) } : {})}
-                {...(status === '进行中' ? { onReleaseRunning: () => setReleaseOpen(true) } : {})}
+                {...(status === '待规划' ? { onCreateIssue: openNewIssue } : {})}
+                {...(status === '进行中' ? { onReleaseRunning: openReleaseRunning } : {})}
                 {...(status === '待规划'
-                  ? { sortControl: <PlanningSortButton sort={planningSort} onChange={changePlanningSort} /> }
+                  ? { sortControl: planningSortControl }
                   : {})}
               />
             ))}

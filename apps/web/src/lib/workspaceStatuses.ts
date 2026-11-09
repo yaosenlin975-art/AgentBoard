@@ -5,6 +5,7 @@
  * - 静态兜底：接口失败或未选工作区时用五条内置名（`BUILTIN_STATUS_NAMES`），保证看板永远画得出来；
  * - 状态变化无 WS 事件（STATUS-2 未推），增删后由调用方 `invalidateStatuses` 显式失效。
  */
+import { useMemo } from 'react';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 import type { WorkspaceStatus, WorkspaceStatusKind } from '@agentboard/shared';
 import { api } from '../api/client';
@@ -71,11 +72,17 @@ export function useWorkspaceStatuses(workspaceId: string | null): WorkspaceStatu
     queryFn: () => api.get<WorkspaceStatus[]>(`/api/workspaces/${encodeURIComponent(workspaceId ?? '')}/statuses`),
   });
   const fromServer = Array.isArray(query.data) && query.data.length > 0;
-  const statuses = fromServer ? query.data! : fallbackStatuses(workspaceId);
+  // CR2-6：names/byName 按数据引用缓存 —— 每次渲染都新建数组会让下游 useMemo / memo 全部失效
+  const statuses = useMemo(
+    () => (fromServer ? query.data! : fallbackStatuses(workspaceId)),
+    [fromServer, query.data, workspaceId],
+  );
+  const names = useMemo(() => statusNames(statuses), [statuses]);
+  const byName = useMemo(() => new Map(statuses.map((status) => [status.name, status])), [statuses]);
   return {
     statuses,
-    names: statusNames(statuses),
-    byName: new Map(statuses.map((status) => [status.name, status])),
+    names,
+    byName,
     isLoading: query.isPending && workspaceId !== null,
     fromServer,
   };

@@ -141,6 +141,27 @@ export function DetailPanel() {
   const pendingRef = useRef<Record<string, unknown>>({});
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /** 发出一次 PATCH（防抖到期与卸载 flush 共用同一条保存路径） */
+  const sendPatch = useCallback(
+    (body: Record<string, unknown>): void => {
+      if (issueId === null || Object.keys(body).length === 0) return;
+      patchIssue(issueId, body)
+        .then((updated) => {
+          queryClient.setQueryData(['issue', issueId], updated);
+          // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
+        })
+        .catch((e: unknown) => setActionError(e instanceof Error ? e.message : '保存失败'));
+    },
+    [issueId, queryClient],
+  );
+
+  /** 取走并清空待发载荷（取走后立即清空，避免 flush 与定时器重复发送同一批字段） */
+  const takePending = useCallback((): Record<string, unknown> => {
+    const body = pendingRef.current;
+    pendingRef.current = {};
+    return body;
+  }, []);
+
   const schedulePatch = useCallback(
     (field: string, value: unknown) => {
       if (issueId === null) return;
@@ -148,25 +169,22 @@ export function DetailPanel() {
       if (timerRef.current !== null) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => {
         timerRef.current = null;
-        const body = pendingRef.current;
-        pendingRef.current = {};
-        if (Object.keys(body).length === 0) return;
-        patchIssue(issueId, body)
-          .then((updated) => {
-            queryClient.setQueryData(['issue', issueId], updated);
-            // 不再 invalidate ['issues']：refetch 若拿到落后快照会把刚写入的真值覆盖回去（用户报障的成因）
-          })
-          .catch((e: unknown) => setActionError(e instanceof Error ? e.message : '保存失败'));
+        sendPatch(takePending());
       }, DEBOUNCE_MS);
     },
-    [issueId, queryClient],
+    [issueId, sendPatch, takePending],
   );
 
+  // CR2-6：卸载 / 切卡时把防抖窗口内的改动立即发出，不能再只 clearTimeout（会静默丢改动）
   useEffect(
     () => () => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current);
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      sendPatch(takePending());
     },
-    [],
+    [sendPatch, takePending],
   );
 
   /**

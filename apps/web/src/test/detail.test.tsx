@@ -839,6 +839,48 @@ describe('DetailPanel 字段防抖 PATCH', () => {
   });
 });
 
+describe('CR2-6 卸载 flush：防抖窗口内关面板不丢改动', () => {
+  it('改描述后 200ms 内卸载 → 立即 PATCH，重新打开内容已保存', async () => {
+    let stored = makeIssue();
+    const patches: Array<Record<string, unknown>> = [];
+    mockDetailApi(makeIssue());
+    server.use(
+      http.get('/api/issues/iss-1', () => HttpResponse.json(stored)),
+      http.patch('/api/issues/iss-1', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>;
+        patches.push(body);
+        stored = { ...stored, ...body, updated_at: Date.now() } as Issue;
+        return HttpResponse.json(stored);
+      }),
+    );
+    openDetail();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={qc}>
+        <DetailPanel />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByTestId('desc-toggle'));
+    const input = screen.getByTestId('desc-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '卸载前的描述');
+    // 仍在 500ms 防抖窗口内，尚未发出任何 PATCH
+    expect(patches).toHaveLength(0);
+
+    view.unmount();
+    await waitFor(() => expect(patches).toHaveLength(1), { timeout: 2000 });
+    expect(patches[0]).toEqual({ description: '卸载前的描述' });
+
+    // 重新打开（全新 cache，强制走 GET）：改动已在服务端
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <DetailPanel />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId('desc-preview')).toHaveTextContent('卸载前的描述');
+  });
+});
+
 describe('AUDIT-DETAIL 增补', () => {
   it('待验收卡：受理关闭与退回进行中已移除，不写状态也不预填验收草稿', async () => {
     mockDetailApi(makeIssue({ status: '待验收', updated_at: 3 }));
