@@ -5,6 +5,7 @@
  * ⑤copy 阶段中断后（模拟 kill）带 overwrite 重跑能完成且行数一致。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,6 +13,10 @@ import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
 import { createKnowledgePage } from '../src/db/repos/knowledge.js';
+import { createSession } from '../src/db/repos/session.js';
+import { createPendingDecision, answerPendingDecision } from '../src/services/decision.js';
+import { revertWorkspace } from '../src/services/workspaceDbOps.js';
+import type { Db } from '../src/db/connection.js';
 import { getDbForWorkspace, resetResolverState } from '../src/db/resolver.js';
 import { localizeWorkspace } from '../src/services/workspaceLocalizeRun.js';
 import { readLocalizeState, LOCALIZE_STAGES } from '../src/services/workspaceLocalize.js';
@@ -19,8 +24,12 @@ import { readLocalizeState, LOCALIZE_STAGES } from '../src/services/workspaceLoc
 /** STORE-4e：真实迁移终态与 dry-run 统一的 counts 键集（同 workspaceLocalize.test.ts） */
 const AGGREGATE_COUNT_KEYS = ['rows_total', 'attachment_files', 'attachment_bytes', 'db_bytes', 'estimated_bytes'];
 const UNIFIED_COUNT_KEYS = [
-  'workspace_status', 'issue', 'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
-  'session', 'message', 'attachment', 'workspace_change_log',
+  'workspace_status', 'issue',
+  // CR2-1：决策三表与审批规则随区下沉
+  'issue_decision', 'issue_decision_option', 'issue_decision_answer',
+  'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
+  'session', 'session_turn', 'session_step_ledger', 'message', 'attachment', 'approval_rule',
+  'workspace_change_log',
   'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
   ...AGGREGATE_COUNT_KEYS,
 ];
@@ -141,5 +150,69 @@ describe('STORE-2（M2a）八阶段状态机', () => {
     } finally {
       target.close();
     }
+  });
+
+  it('CR2-1：决策三表 / 轮次账本 / 审批规则随区下沉，中心清空，回迁守恒', async () => {
+    mkdirSync(join(root, 'attachments'), { recursive: true });
+    const issue = createIssue(t.db, { workspace_id: ws, title: '带决策的卡' } as never);
+    const pending = createPendingDecision(t.db, {
+      workspace_id: ws,
+      issue_id: issue.id,
+      created_by: 'agent-1',
+      question: '继续还是停止？',
+      options: [
+        { label: '继续', consequence: '继续执行' },
+        { label: '停止', consequence: '停在检查点' },
+      ],
+      grace_seconds: 0,
+    });
+    answerPendingDecision(t.db, { decision_id: pending.decision.id, option_ord: 1, answered_by: 'user' });
+    // 迁移门禁会拦「运行中的会话」，这里显式建已结束会话
+    const session = createSession(t.db, { workspace_id: ws, cli: 'claude', status: '已结束' });
+    const turnId = randomUUID();
+    t.db
+      .prepare(
+        `INSERT INTO session_turn(id, session_id, seq, state, current_index, plan_json, awaiting_json, usage_json, started_at, ended_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(turnId, session.id, 1, 'done', 0, '[]', null, null, Date.now(), Date.now());
+    t.db
+      .prepare(
+        `INSERT INTO session_step_ledger(id, session_id, turn_id, step_id, tool_name, tool_call_id, idempotency_key, status, retryable, writes_json, attempt, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(randomUUID(), session.id, turnId, 's1', 'Read', null, 'cr2-1-key', 'done', 0, '[]', 1, Date.now(), Date.now());
+    t.db
+      .prepare(
+        `INSERT INTO approval_rule(id, workspace_id, issue_id, session_id, turn_id, tool_name, match_key, scope, created_at, created_by, revoked_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,NULL)`,
+      )
+      .run(randomUUID(), ws, null, null, null, 'Bash', 'rm -rf build', 'workspace', Date.now(), 'user');
+
+    const localize = await run();
+    expect(localize.counts.issue_decision).toBe(1);
+    expect(localize.counts.issue_decision_option).toBe(2);
+    expect(localize.counts.issue_decision_answer).toBe(1);
+    expect(localize.counts.session_turn).toBe(1);
+    expect(localize.counts.session_step_ledger).toBe(1);
+    expect(localize.counts.approval_rule).toBe(1);
+
+    const count = (db: Db, table: string): number =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+    const moved = ['issue_decision', 'issue_decision_option', 'issue_decision_answer', 'session_turn', 'session_step_ledger', 'approval_rule'];
+    // 中心清空：FK 级联会把选项/答案/账本一并带走，正是原缺陷
+    for (const table of moved) expect(count(t.db, table)).toBe(0);
+
+    const Database = (await import('better-sqlite3')).default;
+    const target = new Database(localize.target_db_path, { readonly: true });
+    try {
+      for (const table of moved) expect(count(target as unknown as Db, table)).toBe(1 + (table.endsWith('option') ? 1 : 0));
+    } finally {
+      target.close();
+    }
+
+    // 回迁守恒：中心恢复同量
+    await revertWorkspace(t.db, { workspaceId: ws }, { attachmentsDir: join(root, 'attachments') });
+    for (const table of moved) expect(count(t.db, table)).toBe(1 + (table.endsWith('option') ? 1 : 0));
   });
 });

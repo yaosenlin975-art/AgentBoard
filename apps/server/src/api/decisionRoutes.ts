@@ -55,6 +55,14 @@ export interface DecisionRouterDeps {
   db: Db;
   /** WS 广播；缺省时静默（单测可注入 spy） */
   broadcast?: (event: ServerWsEvent) => void;
+  /**
+   * CR2-1：决策数据已随区下沉到工作区库，业务读写必须走「该工作区实际所在的库」。
+   * 三个解析器缺省时回中心库（单测最小装配 / 未下沉区行为不变）。
+   * 注意：权限（workspace_member / 角色）始终读中心库，不随此解析器漂移。
+   */
+  dbForWorkspace?: (workspaceId: string) => Db;
+  locateIssueDb?: (issueId: string) => Db | null;
+  locateDecisionDb?: (decisionId: string) => Db | null;
 }
 
 /** 频率限制（设计 v3 §3.3 手段 2/3）：同 agent 同工作区在途 ≤3、每小时新建 ≤6 */
@@ -190,8 +198,8 @@ function currentAnswerBy(decision: {
 }
 
 /** 卡面锁标识走既有 issue.changed（§5.3）：读最新投影后原样广播，前端无需新事件名 */
-function emitIssueChanged(deps: DecisionRouterDeps, issueId: string): void {
-  const issue = getIssue(deps.db, issueId);
+function emitIssueChanged(deps: DecisionRouterDeps, issueId: string, db: Db = deps.db): void {
+  const issue = getIssue(db, issueId);
   if (issue) deps.broadcast?.({ type: 'issue.changed', issue });
 }
 
@@ -305,17 +313,36 @@ function assertAskRateLimit(db: Db, workspaceId: string, agentId: string): void 
 export function createDecisionRouter(deps: DecisionRouterDeps): Router {
   const router = Router();
 
+  /** CR2-1：业务库解析（决策/轮次/审批规则随工作区下沉；权限判定仍用 deps.db 中心库） */
+  const dbOfWorkspace = (workspaceId: string): Db => deps.dbForWorkspace?.(workspaceId) ?? deps.db;
+  const dbOfIssue = (issueId: string): Db | null => {
+    if (deps.locateIssueDb !== undefined) return deps.locateIssueDb(issueId);
+    return getIssue(deps.db, issueId) === null ? null : deps.db;
+  };
+  const findDecision = (decisionId: string): { db: Db; decision: NonNullable<ReturnType<typeof getDecisionDetail>> } | null => {
+    if (deps.locateDecisionDb !== undefined) {
+      const hit = deps.locateDecisionDb(decisionId);
+      if (hit === null) return null;
+      const decision = getDecisionDetail(hit, decisionId);
+      return decision === null ? null : { db: hit, decision };
+    }
+    const decision = getDecisionDetail(deps.db, decisionId);
+    return decision === null ? null : { db: deps.db, decision };
+  };
+
   router.post('/issues/:id/ask', (req, res) => {
     const issueId = String(req.params.id);
     const body = zodInput(askSchema, req.body);
     const actor = resolveActor(req);
-    const target = getIssue(deps.db, issueId);
-    if (!target) throw new NotFoundError('任务不存在');
+    // CR2-1：任务/决策/审批规则读写走任务所在库；成员角色仍读中心库
+    const businessDb = dbOfIssue(issueId);
+    const target = businessDb === null ? null : getIssue(businessDb, issueId);
+    if (businessDb === null || target === null) throw new NotFoundError('任务不存在');
     // PERM-2：提问者（身份头）必须是目标工作区 member/owner；claim/fence 校验仍按 body.agent_id
     assertWorkspaceRole(deps.db, target.workspace_id, actor, 'member');
-    const issue = requireAskOwnership(deps.db, issueId, body.agent_id, body.fence);
+    const issue = requireAskOwnership(businessDb, issueId, body.agent_id, body.fence);
     assertAskOptions(body.options);
-    assertAskRateLimit(deps.db, issue.workspace_id, body.agent_id);
+    assertAskRateLimit(businessDb, issue.workspace_id, body.agent_id);
     const input: CreateDecisionInput = {
       workspace_id: issue.workspace_id,
       issue_id: issueId,
@@ -330,7 +357,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
       ...(body.expires_at === undefined ? {} : { expires_at: body.expires_at }),
       ...(body.on_expire === undefined ? {} : { on_expire: body.on_expire }),
     };
-    const result = createPendingDecision(deps.db, input);
+    const result = createPendingDecision(businessDb, input);
     if (result.locked) {
       // §4.3.1：grace=0 立即落锁 → decision.expired + issue.stop_requested（与宽限到期同一套事件）
       emit(deps, decisionEvent('decision.expired', result.decision, { grace_until: null, reason: 'grace_zero' }));
@@ -344,7 +371,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
         decisionEvent('decision.grace_started', result.decision, { grace_until: result.decision.grace_until }),
       );
     }
-    emitIssueChanged(deps, issueId);
+    emitIssueChanged(deps, issueId, businessDb);
     res.status(201).json({ decision: result.decision });
   });
 
@@ -384,18 +411,26 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
       throw new ValidationError('workspace_id 必填（或用 scope=accessible / workspace_ids）');
     }
 
-    const items =
-      workspaceIds.length === 0
-        ? []
-        : listDecisions(deps.db, {
-            workspace_ids: workspaceIds,
-            ...(query.issue_id === undefined ? {} : { issue_id: query.issue_id }),
-            ...(states === undefined ? {} : { states }),
-            ...(query.stale === 'true' || query.stale === '1'
-              ? { stale_before: Date.now() - 72 * 3600 * 1000 }
-              : {}),
-            ...(limit === undefined ? {} : { limit }),
-          });
+    // CR2-1：决策随区下沉 → 逐区到各自库取数后合并，再按「全局最近 limit 条」截断
+    const staleBefore =
+      query.stale === 'true' || query.stale === '1' ? Date.now() - 72 * 3600 * 1000 : undefined;
+    const perWorkspace = workspaceIds.map((workspaceId) => {
+      const rdb = dbOfWorkspace(workspaceId);
+      return {
+        items: listDecisions(rdb, {
+          workspace_ids: [workspaceId],
+          ...(query.issue_id === undefined ? {} : { issue_id: query.issue_id }),
+          ...(states === undefined ? {} : { states }),
+          ...(staleBefore === undefined ? {} : { stale_before: staleBefore }),
+          ...(limit === undefined ? {} : { limit }),
+        }),
+        counts: countDecisions(rdb, workspaceId),
+      };
+    });
+    const merged = perWorkspace
+      .flatMap((entry) => entry.items)
+      .sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
+    const items = limit === undefined ? merged : merged.slice(0, limit);
     const roleByWorkspace = new Map<string, WorkspaceRole | null>();
     for (const workspaceId of workspaceIds) roleByWorkspace.set(workspaceId, getRole(deps.db, workspaceId, actor));
     res.json({
@@ -406,15 +441,16 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
           current_answer_by: currentAnswerBy(item),
         }),
       })),
-      counts: sumCounts(workspaceIds.map((workspaceId) => countDecisions(deps.db, workspaceId))),
+      counts: sumCounts(perWorkspace.map((entry) => entry.counts)),
       capabilities: roleCapabilities(highestRole(deps.db, workspaceIds, actor)),
     });
   });
 
   router.get('/decisions/:id', (req, res) => {
     const actor = resolveActor(req);
-    const decision = getDecisionDetail(deps.db, String(req.params.id));
-    if (!decision) throw new NotFoundError('决策不存在');
+    const hit = findDecision(String(req.params.id));
+    if (hit === null) throw new NotFoundError('决策不存在');
+    const decision = hit.decision;
     const role = assertWorkspaceRole(deps.db, decision.workspace_id, actor, 'viewer');
     res.json({
       decision: {
@@ -430,8 +466,9 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
   router.post('/decisions/:id/answer', (req, res) => {
     const body = zodInput(answerSchema, req.body);
     const actor = resolveActor(req);
-    const existing = getDecisionDetail(deps.db, String(req.params.id));
-    if (!existing) throw new NotFoundError('决策不存在');
+    const existingHit = findDecision(String(req.params.id));
+    if (existingHit === null) throw new NotFoundError('决策不存在');
+    const existing = existingHit.decision;
     // PERM-2：回答/修订要求 member+；member 只能修订本人答案，owner 可管理他人答案
     const role = assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
     if (existing.state === 'answered' && body.expected_revision !== undefined && role !== 'owner') {
@@ -439,7 +476,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
         throw new ApiError(403, 'ROLE_FORBIDDEN', `当前身份 ${actor} 只能修订本人答案（角色 ${role}）`);
       }
     }
-    const decision = answerPendingDecision(deps.db, {
+    const decision = answerPendingDecision(existingHit.db, {
       decision_id: String(req.params.id),
       source: body.source ?? 'web',
       ...(body.option_id === undefined ? {} : { option_id: body.option_id }),
@@ -455,39 +492,40 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
         grace_until: null,
       }),
     );
-    emitIssueChanged(deps, decision.issue_id);
+    emitIssueChanged(deps, decision.issue_id, existingHit.db);
     res.json({ decision });
   });
 
   router.post('/decisions/:id/withdraw', (req, res) => {
     const body = zodInput(withdrawSchema, req.body);
     const actor = resolveActor(req);
-    const existing = getDecisionDetail(deps.db, String(req.params.id));
-    if (!existing) throw new NotFoundError('决策不存在');
+    const existingHit = findDecision(String(req.params.id));
+    if (existingHit === null) throw new NotFoundError('决策不存在');
     // PERM-2：撤回决策仅 owner（member / viewer 一律 ROLE_FORBIDDEN）
-    assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'owner');
-    const decision = withdrawPendingDecision(deps.db, {
+    assertWorkspaceRole(deps.db, existingHit.decision.workspace_id, actor, 'owner');
+    const decision = withdrawPendingDecision(existingHit.db, {
       decision_id: String(req.params.id),
       by: body.by ?? 'user',
       reason: body.reason,
     });
     emit(deps, decisionEvent('decision.withdrawn', decision, { grace_until: null }));
-    emitIssueChanged(deps, decision.issue_id);
+    emitIssueChanged(deps, decision.issue_id, existingHit.db);
     res.json({ decision });
   });
 
   router.post('/decisions/:id/undo', (req, res) => {
     const body = zodInput(undoSchema, req.body);
     const actor = resolveActor(req);
-    const existing = getDecisionDetail(deps.db, String(req.params.id));
-    if (!existing) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    const existingHit = findDecision(String(req.params.id));
+    if (existingHit === null) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    const existing = existingHit.decision;
     // PERM-2：撤销回答要求 member+；member 只能撤销本人答案，owner 可管理他人答案。
     // 6 秒窗口 / expected_revision / UNDO_CLAIMED_AFTER_LOCK 仍由服务层状态校验。
     const role = assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
     if (existing.state === 'answered' && role !== 'owner' && currentAnswerBy(existing) !== actor) {
       throw new ApiError(403, 'ROLE_FORBIDDEN', `当前身份 ${actor} 只能撤销本人答案（角色 ${role}）`);
     }
-    const result = undoDecision(deps.db, {
+    const result = undoDecision(existingHit.db, {
       decision_id: String(req.params.id),
       by: typeof body.by === 'string' ? body.by : '',
       expected_revision: typeof body.expected_revision === 'number' ? body.expected_revision : Number.NaN,
@@ -502,7 +540,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
           ...(result.decision.undo_until === null ? {} : { undo_deadline_at: result.decision.undo_until }),
         }),
       );
-      emitIssueChanged(deps, result.decision.issue_id);
+      emitIssueChanged(deps, result.decision.issue_id, existingHit.db);
     }
     res.json({
       decision: result.decision,
@@ -515,11 +553,11 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
   router.post('/decisions/:id/extend', (req, res) => {
     const body = zodInput(extendSchema, req.body);
     const actor = resolveActor(req);
-    const existing = getDecisionDetail(deps.db, String(req.params.id));
-    if (!existing) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
+    const existingHit = findDecision(String(req.params.id));
+    if (existingHit === null) throw new ApiError(404, 'DECISION_NOT_FOUND', '决策不存在');
     // PERM-2：延长宽限要求 member+（viewer / 匿名 403）；跨区 workspace_id 守卫仍在服务层
-    assertWorkspaceRole(deps.db, existing.workspace_id, actor, 'member');
-    const result = extendDecisionGrace(deps.db, {
+    assertWorkspaceRole(deps.db, existingHit.decision.workspace_id, actor, 'member');
+    const result = extendDecisionGrace(existingHit.db, {
       decision_id: String(req.params.id),
       seconds: body.seconds,
       ...(body.by === undefined ? {} : { by: body.by }),
@@ -534,7 +572,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
         extension_count: result.extension_count,
       }),
     );
-    emitIssueChanged(deps, result.decision.issue_id);
+    emitIssueChanged(deps, result.decision.issue_id, existingHit.db);
     res.json({
       decision_id: result.decision.id,
       state: result.decision.state,
@@ -548,20 +586,23 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
 
   router.get('/issues/:id/stop', (req, res) => {
     const issueId = String(req.params.id);
-    if (!getIssue(deps.db, issueId)) throw new NotFoundError('任务不存在');
-    res.json({ issue_id: issueId, ...getStopState(deps.db, issueId) });
+    const rdb = dbOfIssue(issueId);
+    if (rdb === null || !getIssue(rdb, issueId)) throw new NotFoundError('任务不存在');
+    res.json({ issue_id: issueId, ...getStopState(rdb, issueId) });
   });
 
   router.post('/issues/:id/stop-ack', (req, res) => {
     const issueId = String(req.params.id);
-    if (!getIssue(deps.db, issueId)) throw new NotFoundError('任务不存在');
+    const rdb = dbOfIssue(issueId);
+    if (rdb === null || !getIssue(rdb, issueId)) throw new NotFoundError('任务不存在');
     // §5.2：stop-ack 仅观测（写 stop_ack_at），不影响锁，也不额外发明事件名
-    ackStop(deps.db, issueId, Date.now());
-    res.json({ issue_id: issueId, ...getStopState(deps.db, issueId) });
+    ackStop(rdb, issueId, Date.now());
+    res.json({ issue_id: issueId, ...getStopState(rdb, issueId) });
   });
 
   router.get('/workspaces/:workspaceId/decisions/count', (req, res) => {
-    res.json(countDecisions(deps.db, String(req.params.workspaceId)));
+    const workspaceId = String(req.params.workspaceId);
+    res.json(countDecisions(dbOfWorkspace(workspaceId), workspaceId));
   });
 
   /**
@@ -580,22 +621,24 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
     if (!Number.isSafeInteger(days) || days < 1 || days > 365) throw new ValidationError('days 需为 1–365 的整数');
     const now = Date.now();
     const since = now - days * 24 * 3600 * 1000;
-    const created = (deps.db
+    // CR2-1：统计口径与决策数据同库（随区下沉）
+    const statsDb = dbOfWorkspace(workspaceId);
+    const created = (statsDb
       .prepare('SELECT COUNT(*) AS n FROM issue_decision WHERE workspace_id=? AND created_at>=?')
       .get(workspaceId, since) as { n: number }).n;
-    const answered = (deps.db
+    const answered = (statsDb
       .prepare(
         `SELECT COUNT(*) AS n FROM issue_decision
           WHERE workspace_id=? AND created_at>=? AND state='answered' AND answered_at IS NOT NULL`,
       )
       .get(workspaceId, since) as { n: number }).n;
-    const waits = (deps.db
+    const waits = (statsDb
       .prepare(
         `SELECT (answered_at - created_at) AS wait_ms FROM issue_decision
           WHERE workspace_id=? AND created_at>=? AND state='answered' AND answered_at IS NOT NULL`,
       )
       .all(workspaceId, since) as Array<{ wait_ms: number }>).map((row) => row.wait_ms);
-    const byAgent = (deps.db
+    const byAgent = (statsDb
       .prepare(
         `SELECT created_by AS agent_id,
                 COUNT(*) AS created,
@@ -604,7 +647,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
           GROUP BY created_by ORDER BY created DESC, agent_id ASC`,
       )
       .all(workspaceId, since) as Array<{ agent_id: string; created: number; answered: number | null }>);
-    const byTrigger = (deps.db
+    const byTrigger = (statsDb
       .prepare(
         `SELECT trigger, COUNT(*) AS count FROM issue_decision
           WHERE workspace_id=? AND created_at>=?
@@ -621,7 +664,7 @@ export function createDecisionRouter(deps: DecisionRouterDeps): Router {
       median_wait_seconds: median(waits) === null ? null : Math.round((median(waits) as number) / 1000),
       by_agent: byAgent.map((row) => ({ agent_id: row.agent_id, created: row.created, answered: row.answered ?? 0 })),
       by_trigger: byTrigger,
-      open: countDecisions(deps.db, workspaceId, now),
+      open: countDecisions(statsDb, workspaceId, now),
     });
   });
 

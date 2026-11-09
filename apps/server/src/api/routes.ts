@@ -176,6 +176,28 @@ export function createRouter(deps: RouterDeps): Router {
   /** 按 id 定位 session 所在库（索引先行；4d 前 sessionManager 仍写中心库——索引指向已下沉区而行在中心时由兜底扫描接住） */
   const locateSessionRouted = (sessionId: string): EntityLocation<NonNullable<ReturnType<typeof getSession>>> | null =>
     locateDbForEntity(workspaceResolverDeps, listLocalizedWorkspaces(), 'session', sessionId, (rdb) => getSession(rdb, sessionId), findWorkspaceRow);
+  /**
+   * CR2-1：按 id 定位决策所在库。issue_decision 无 entity_locator 索引（历史表，未接入定位索引），
+   * 用一次主键探针按「中心库 → 已下沉区」扫描；已下沉区数量有限，决策详情类请求可接受。
+   */
+  const locateDecisionDb = (decisionId: string): Db | null => {
+    const hasDecision = (candidate: Db): boolean =>
+      candidate.prepare('SELECT 1 AS hit FROM issue_decision WHERE id = ?').get(decisionId) !== undefined;
+    try {
+      if (hasDecision(db)) return db;
+    } catch {
+      /* 中心库异常不阻断，继续扫已下沉区 */
+    }
+    for (const wsRow of listLocalizedWorkspaces()) {
+      try {
+        const rdb = getDbForWorkspace(workspaceResolverDeps, wsRow).db;
+        if (hasDecision(rdb)) return rdb;
+      } catch {
+        /* 该区库打不开：跳过 */
+      }
+    }
+    return null;
+  };
   // STORE-4b：删表重建路径——索引空而中心库已有实体（存量数据首启 / 索引被删后的下一启）时回填中心库部分；
   // 只扫中心库不开工作区库（已下沉区缺行由读侧兜底），任何失败不阻断启动。
   try {
@@ -281,7 +303,14 @@ export function createRouter(deps: RouterDeps): Router {
   router.use(createSystemRouter({ restart: deps.restart }));
   router.use(createAccountRouter({ db, workbuddy: deps.accounts?.workbuddy, checkinProvider: deps.accounts?.checkinProvider, checkinProviders: deps.accounts?.checkinProviders, desktopProviders: deps.accounts?.desktopProviders, vault: deps.accounts?.vault ?? deps.secretVault, secretVault: deps.secretVault, credentialRunner: deps.credentialRunner, quotas: deps.accounts?.quotas, minimaxClientProbe: deps.accounts?.minimaxClientProbe, addAccountProviders: deps.accounts?.addAccountProviders, addAccountVault: deps.secretVault, restoreHandlers: deps.accounts?.restoreHandlers }));
   // DEC-WIRE：决策 REST（DEC-3 定稿）必须在 '/issues/:id' 中间件之前注册，否则 /issues/:id/ask 与 /issues/:id/stop 会被当作 issue 子路由
-  router.use(createDecisionRouter({ db, broadcast }));
+  router.use(createDecisionRouter({
+    db,
+    broadcast,
+    // CR2-1：决策/轮次/审批规则随区下沉 → 业务读写按实体或工作区解析到实际库；权限仍用中心库 db
+    dbForWorkspace,
+    locateIssueDb: (issueId) => locateIssueRouted(issueId)?.db ?? null,
+    locateDecisionDb,
+  }));
 
   // ---- issues 域（CR-10a 自本文件纯搬迁到 routes/issueRoutes.ts）----
   // 挂载点保持在决策路由之后（DEC-WIRE 顺序不变）；域内相对顺序不变：

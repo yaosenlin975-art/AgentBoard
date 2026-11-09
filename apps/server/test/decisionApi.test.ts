@@ -648,3 +648,86 @@ describe('DEC-V4-API-EXTEND：延长宽限', () => {
     expect(row).toEqual({ extended_seconds: 0, extension_count: 0, extended_by: null, extended_at: null });
   });
 });
+
+/**
+ * CR2-1：决策已随区下沉。任务在中心库被清空、决策表只在工作区库时，
+ * ask/answer/详情/列表都必须落到工作区库；中心库不得再长出决策行（否则锁判定读错库）。
+ */
+describe('CR2-1 跨库一致性：下沉后决策读写走工作区库', () => {
+  let wsDb: TestDb;
+  let remoteIssue: { id: string; fence: number };
+  let routed: express.Express;
+
+  function countIn(db: TestDb['db'], table: string): number {
+    return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
+  }
+
+  beforeEach(() => {
+    // 模拟 localize 后的目标库：同 workspace id、同任务，中心库只剩 workspace 登记
+    wsDb = createTestDb();
+    wsDb.db
+      .prepare('INSERT INTO workspace (id, name, path, created_at, sort_order) VALUES (?,?,?,?,?)')
+      .run(wsId, 'ws', 'D:\\ws-localized', Date.now(), 0);
+    const localized = createIssue(wsDb.db, { workspace_id: wsId, title: '下沉后的决策卡' });
+    const claimed = claimIssue(wsDb.db, localized.id, 'agent-1', null);
+    remoteIssue = { id: claimed.id, fence: claimed.claim_fence };
+
+    routed = express();
+    routed.use(express.json());
+    routed.use(
+      '/api',
+      createDecisionRouter({
+        db: t.db,
+        broadcast: (event: ServerWsEvent) => events.push(event),
+        dbForWorkspace: (workspaceId) => (workspaceId === wsId ? wsDb.db : t.db),
+        locateIssueDb: (issueId) => (issueId === remoteIssue.id ? wsDb.db : null),
+        locateDecisionDb: (decisionId) =>
+          (wsDb.db.prepare('SELECT 1 AS hit FROM issue_decision WHERE id = ?').get(decisionId) as { hit: number } | undefined)
+            ? wsDb.db
+            : null,
+      }),
+    );
+    routed.use(errorHandler);
+  });
+
+  afterEach(() => {
+    wsDb.cleanup();
+  });
+
+  it('ask 写工作区库、中心 0 行；answer / 详情 / 列表全部解析到工作区库', async () => {
+    const created = await request(routed)
+      .post(`/api/issues/${remoteIssue.id}/ask`)
+      .send({
+        agent_id: 'agent-1',
+        fence: remoteIssue.fence,
+        question: '继续还是停止？',
+        options: OPTIONS,
+        grace_seconds: 60,
+      });
+    expect(created.status).toBe(201);
+    const decisionId = created.body.decision.id as string;
+    expect(countIn(wsDb.db, 'issue_decision')).toBe(1);
+    expect(countIn(t.db, 'issue_decision')).toBe(0);
+
+    const detail = await request(routed).get(`/api/decisions/${decisionId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.decision.id).toBe(decisionId);
+
+    const list = await request(routed).get('/api/decisions').query({ workspace_id: wsId });
+    expect(list.status).toBe(200);
+    expect(list.body.decisions.map((item: { id: string }) => item.id)).toEqual([decisionId]);
+    expect(list.body.counts.grace).toBe(1);
+
+    const answered = await request(routed)
+      .post(`/api/decisions/${decisionId}/answer`)
+      .send({ option_ord: 1 });
+    expect(answered.status).toBe(200);
+    expect(answered.body.decision.state).toBe('answered');
+    expect(countIn(wsDb.db, 'issue_decision_answer')).toBe(1);
+    expect(countIn(t.db, 'issue_decision_answer')).toBe(0);
+    // 锁判定读工作区库：回答后无 open 决策
+    expect(
+      (wsDb.db.prepare("SELECT COUNT(*) AS n FROM issue_decision WHERE state IN ('grace','open')").get() as { n: number }).n,
+    ).toBe(0);
+  });
+});

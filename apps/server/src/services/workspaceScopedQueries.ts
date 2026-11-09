@@ -13,13 +13,19 @@ import type { Db } from '../db/connection.js';
 export const LOCALIZE_COPY_ORDER = [
   'workspace_status',
   'issue',
+  'issue_decision',
+  'issue_decision_option',
+  'issue_decision_answer',
   'issue_comment',
   'issue_dependency',
   'issue_git_baseline',
   'issue_draft_audit',
   'session',
+  'session_turn',
+  'session_step_ledger',
   'message',
   'attachment',
+  'approval_rule',
   'workspace_change_log',
   'knowledge_page',
   'knowledge_revision',
@@ -35,13 +41,23 @@ export interface WorkspaceTableQuery {
 export const WORKSPACE_TABLE_QUERIES: readonly WorkspaceTableQuery[] = [
   { table: 'workspace_status', sql: 'SELECT * FROM workspace_status WHERE workspace_id = ?' },
   { table: 'issue', sql: 'SELECT * FROM issue WHERE workspace_id = ?' },
+  // CR2-1：决策三表随区下沉 —— 否则 switch 时 issue 级联删除会把已回答决策与选项/答案一并抹掉，
+  // 且 claim / PATCH 的决策锁判定读工作区库永远看不到中心库的在途决策（锁被绕过）。
+  { table: 'issue_decision', sql: 'SELECT * FROM issue_decision WHERE workspace_id = ?' },
+  { table: 'issue_decision_option', sql: 'SELECT o.* FROM issue_decision_option o JOIN issue_decision d ON d.id = o.decision_id WHERE d.workspace_id = ?' },
+  { table: 'issue_decision_answer', sql: 'SELECT a.* FROM issue_decision_answer a JOIN issue_decision d ON d.id = a.decision_id WHERE d.workspace_id = ?' },
   { table: 'issue_comment', sql: 'SELECT c.* FROM issue_comment c JOIN issue i ON i.id = c.issue_id WHERE i.workspace_id = ?' },
   { table: 'issue_dependency', sql: 'SELECT d.* FROM issue_dependency d JOIN issue i ON i.id = d.blocked_issue_id WHERE i.workspace_id = ?' },
   { table: 'issue_git_baseline', sql: 'SELECT b.* FROM issue_git_baseline b JOIN issue i ON i.id = b.issue_id WHERE i.workspace_id = ?' },
   { table: 'issue_draft_audit', sql: 'SELECT * FROM issue_draft_audit WHERE workspace_id = ?' },
   { table: 'session', sql: 'SELECT * FROM session WHERE workspace_id = ?' },
+  // CR2-1：轮次与步骤账本随会话下沉（session 删除会级联带走，不下沉即丢历史）
+  { table: 'session_turn', sql: 'SELECT t.* FROM session_turn t JOIN session s ON s.id = t.session_id WHERE s.workspace_id = ?' },
+  { table: 'session_step_ledger', sql: 'SELECT l.* FROM session_step_ledger l JOIN session s ON s.id = l.session_id WHERE s.workspace_id = ?' },
   { table: 'message', sql: 'SELECT m.* FROM message m JOIN session s ON s.id = m.session_id WHERE s.workspace_id = ?' },
   { table: 'attachment', sql: 'SELECT * FROM attachment WHERE workspace_id = ?' },
+  // CR2-1：审批规则按 workspace_id 收口（原按 issue_id 删会漏掉 workspace 级规则：issue_id 为 NULL）
+  { table: 'approval_rule', sql: 'SELECT * FROM approval_rule WHERE workspace_id = ?' },
   { table: 'workspace_change_log', sql: 'SELECT * FROM workspace_change_log WHERE origin_workspace_id = ?' },
   { table: 'knowledge_page', sql: "SELECT * FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?" },
   { table: 'knowledge_revision', sql: "SELECT r.* FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.scope='workspace' AND p.workspace_id = ?" },

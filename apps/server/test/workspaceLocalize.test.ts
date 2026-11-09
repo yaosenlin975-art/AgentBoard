@@ -25,8 +25,12 @@ import {
 /** STORE-4e：dry-run 与真实迁移终态统一的 counts 键集（契约见 shared WorkspaceLocalizeJobView.counts） */
 const AGGREGATE_COUNT_KEYS = ['rows_total', 'attachment_files', 'attachment_bytes', 'db_bytes', 'estimated_bytes'];
 const UNIFIED_COUNT_KEYS = [
-  'workspace_status', 'issue', 'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
-  'session', 'message', 'attachment', 'workspace_change_log',
+  'workspace_status', 'issue',
+  // CR2-1：决策三表与审批规则随区下沉
+  'issue_decision', 'issue_decision_option', 'issue_decision_answer',
+  'issue_comment', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
+  'session', 'session_turn', 'session_step_ledger', 'message', 'attachment', 'approval_rule',
+  'workspace_change_log',
   'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
   ...AGGREGATE_COUNT_KEYS,
 ];

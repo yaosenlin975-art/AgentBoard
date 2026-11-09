@@ -82,11 +82,17 @@ export function localizeError(code: LocalizeErrorCode, detail?: string, status?:
 
 /** 该工作区需要搬迁的行数与字节（dry-run 与 preflight 的空间判断共用） */
 export interface LocalizeCounts {
-  /** STORE-4e：键集与真实迁移终态统一（14 张 scoped 表 + 4 个聚合键；表名即 copy 顺序的表名） */
+  /** STORE-4e：键集与真实迁移终态统一（20 张 scoped 表 + 5 个聚合键；表名即 copy 顺序的表名） */
   workspace_status: number;
   issue: number;
   issue_comment: number;
   session: number;
+  session_turn: number;
+  session_step_ledger: number;
+  issue_decision: number;
+  issue_decision_option: number;
+  issue_decision_answer: number;
+  approval_rule: number;
   message: number;
   issue_dependency: number;
   issue_git_baseline: number;
@@ -122,6 +128,13 @@ export function countWorkspacePayload(
     issue: scoped,
     issue_comment: count('SELECT COUNT(*) AS n FROM issue_comment c JOIN issue i ON i.id = c.issue_id WHERE i.workspace_id = ?', workspace.id),
     session: count('SELECT COUNT(*) AS n FROM session WHERE workspace_id = ?', workspace.id),
+    // CR2-1：轮次/步骤账本/决策三表/审批规则随区下沉，dry-run 必须与真实迁移同键集
+    session_turn: count('SELECT COUNT(*) AS n FROM session_turn t JOIN session s ON s.id = t.session_id WHERE s.workspace_id = ?', workspace.id),
+    session_step_ledger: count('SELECT COUNT(*) AS n FROM session_step_ledger l JOIN session s ON s.id = l.session_id WHERE s.workspace_id = ?', workspace.id),
+    issue_decision: count('SELECT COUNT(*) AS n FROM issue_decision WHERE workspace_id = ?', workspace.id),
+    issue_decision_option: count('SELECT COUNT(*) AS n FROM issue_decision_option o JOIN issue_decision d ON d.id = o.decision_id WHERE d.workspace_id = ?', workspace.id),
+    issue_decision_answer: count('SELECT COUNT(*) AS n FROM issue_decision_answer a JOIN issue_decision d ON d.id = a.decision_id WHERE d.workspace_id = ?', workspace.id),
+    approval_rule: count('SELECT COUNT(*) AS n FROM approval_rule WHERE workspace_id = ?', workspace.id),
     message: count('SELECT COUNT(*) AS n FROM message m JOIN session s ON s.id = m.session_id WHERE s.workspace_id = ?', workspace.id),
     issue_dependency: count('SELECT COUNT(*) AS n FROM issue_dependency d JOIN issue i ON i.id = d.blocked_issue_id WHERE i.workspace_id = ?', workspace.id),
     issue_git_baseline: count('SELECT COUNT(*) AS n FROM issue_git_baseline b JOIN issue i ON i.id = b.issue_id WHERE i.workspace_id = ?', workspace.id),

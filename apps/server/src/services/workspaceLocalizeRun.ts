@@ -200,7 +200,7 @@ export function deleteWorkspaceScopedRows(centerDb: Db, workspaceId: string): vo
   centerDb.prepare(`DELETE FROM issue_dependency WHERE blocked_issue_id IN ${inIssue} OR blocker_issue_id IN ${inIssue}`).run(workspaceId, workspaceId);
   centerDb.prepare(`DELETE FROM issue_git_baseline WHERE issue_id IN ${inIssue}`).run(workspaceId);
   centerDb.prepare(`DELETE FROM issue_decision WHERE issue_id IN ${inIssue}`).run(workspaceId);
-  centerDb.prepare(`DELETE FROM approval_rule WHERE issue_id IN ${inIssue}`).run(workspaceId);
+  centerDb.prepare(`DELETE FROM approval_rule WHERE workspace_id = ?`).run(workspaceId);
   const deleteLeafIssues = centerDb.prepare('DELETE FROM issue WHERE workspace_id = ? AND NOT EXISTS (SELECT 1 FROM issue child WHERE child.parent_issue_id = issue.id)');
   for (;;) {
     if (deleteLeafIssues.run(workspaceId).changes === 0) break;
