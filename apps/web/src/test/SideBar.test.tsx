@@ -199,7 +199,7 @@ describe('账号管理入口（ACCOUNT-ENTRY，迁到左栏）', () => {
     );
   });
 
-  it('「账号」入口打开账号抽屉（三个平台分区，无 CodeBuddy），Esc 可关', async () => {
+  it('「账号」入口打开账号抽屉；零账号平台隐藏、Codex 空态保留，Esc 可关', async () => {
     renderSideBar(ws);
     const entry = screen.getByTestId('topbar-accounts');
     expect(entry).toHaveTextContent('账号');
@@ -209,14 +209,13 @@ describe('账号管理入口（ACCOUNT-ENTRY，迁到左栏）', () => {
     const drawer = await screen.findByTestId('drawer-panel');
     expect(drawer).toHaveAttribute('data-drawer', 'accounts');
     expect(entry).toHaveAttribute('aria-expanded', 'true');
-    // 主从布局：平台可见性按左栏索引项断言（平台名同时出现在左栏与右栏标题，getByText 会多命中）
-    expect(within(drawer).getByTestId('accounts-index-item-workbuddy_desktop')).toBeInTheDocument();
-    expect(within(drawer).getByTestId('accounts-index-item-minimax')).toBeInTheDocument();
-    expect(within(drawer).getByTestId('accounts-index-item-trae')).toBeInTheDocument();
+    // 口径 A：零托管账号平台隐藏；Codex 保留本机登录状态入口。
+    for (const app of ['workbuddy_desktop', 'minimax', 'trae', 'codebuddy_desktop']) {
+      expect(within(drawer).queryByTestId(`accounts-index-item-${app}`)).toBeNull();
+    }
+    expect(within(drawer).getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    expect(await within(drawer).findByTestId('accounts-source-empty-codex')).toHaveTextContent('未读取到有效的本机登录账号');
     expect(within(drawer).queryByText('CodeBuddy Desktop')).toBeNull();
-    // accounts-redesign 方向 B：能力三图标徽标已整行删除（异常改平台级文字提示，徽标断言随之移除）
-    await userEvent.click(within(drawer).getByTestId('accounts-index-item-minimax'));
-    expect(within(drawer).queryByTestId('accounts-badge-minimax-switch')).toBeNull();
     expect(within(drawer).getByTestId('accounts-one-click-checkin')).toBeInTheDocument();
     expect(within(drawer).getByTestId('accounts-import-local')).toBeInTheDocument();
 
