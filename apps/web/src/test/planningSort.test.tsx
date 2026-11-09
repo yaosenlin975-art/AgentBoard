@@ -1,5 +1,5 @@
 /**
- * SORT-PLAN：待规划列五种排序（design §5）。
+ * SORT-PLAN：待规划列排序（design §5）。
  * 权重表逐值断言（≥8 组）、逾期压过高优先级无截止、同分按创建时间升序、本地存储保持、只作用于待规划列。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import {
   PLANNING_SORT_KEY,
   PRIORITY_SCORE,
   URGENCY_SCORE,
+  byCreatedAtThenId,
   comboScore,
   dueTimestamp,
   isOverdue,
@@ -170,14 +171,25 @@ describe('A-Z / Z-A / 截止日期 / 优先级', () => {
     ];
     expect(sortPlanning(cards, 'priority', NOW).map((i) => i.title)).toEqual(['high', 'mid-old', 'mid-new', 'low']);
   });
+
+  it('创建时间：早的在前，同时间按 id 升序', () => {
+    const cards = [
+      issue({ title: 'new', id: 'c', created_at: 300 }),
+      issue({ title: 'same-z', id: 'z', created_at: 100 }),
+      issue({ title: 'middle', id: 'm', created_at: 200 }),
+      issue({ title: 'same-a', id: 'a', created_at: 100 }),
+    ];
+    expect(sortPlanning(cards, 'created').map((i) => i.id)).toEqual(['a', 'z', 'm', 'c']);
+    expect(byCreatedAtThenId({ id: 'a', created_at: 1 }, { id: 'b', created_at: 1 })).toBeLessThan(0);
+  });
 });
 
 describe('本地存储', () => {
   it('写入后读回；非法值回落组合', () => {
     expect(readPlanningSort()).toBe('combo');
-    writePlanningSort('az');
-    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('az');
-    expect(readPlanningSort()).toBe('az');
+    writePlanningSort('created');
+    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('created');
+    expect(readPlanningSort()).toBe('created');
     window.localStorage.setItem(PLANNING_SORT_KEY, 'not-a-sort');
     expect(readPlanningSort()).toBe('combo');
   });
@@ -224,23 +236,30 @@ describe('看板接线', () => {
     // 默认组合：高优先级 alpha 在前
     expect(cardOrder('待规划')).toEqual(['issue-card-i-alpha', 'issue-card-i-Bravo']);
 
-    // 组合 → 截止日期 → 优先级：点两次
+    // 组合 → 截止日期 → 优先级 → A-Z → Z-A → 创建时间
     await userEvent.click(sortButton);
     expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('due');
     await userEvent.click(sortButton);
     expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('priority');
-    expect(sortButton).toHaveAttribute('data-sort', 'priority');
-    await waitFor(() => expect(cardOrder('待规划')).toEqual(['issue-card-i-alpha', 'issue-card-i-Bravo']));
+    await userEvent.click(sortButton);
+    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('az');
+    await userEvent.click(sortButton);
+    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('za');
+    expect(cardOrder('待规划')).toEqual(['issue-card-i-Bravo', 'issue-card-i-alpha']);
+    await userEvent.click(sortButton);
+    expect(window.localStorage.getItem(PLANNING_SORT_KEY)).toBe('created');
+    expect(sortButton).toHaveAttribute('data-sort', 'created');
+    await waitFor(() => expect(cardOrder('待规划')).toEqual(['issue-card-i-Bravo', 'issue-card-i-alpha']));
     // 其它列不受影响
     expect(cardOrder('进行中')).toHaveLength(1);
   });
 
   it('刷新后保持上次选择（localStorage）', async () => {
-    writePlanningSort('za');
+    writePlanningSort('created');
     renderBoard(cards);
-    expect(await screen.findByTestId('planning-sort')).toHaveAttribute('data-sort', 'za');
+    expect(await screen.findByTestId('planning-sort')).toHaveAttribute('data-sort', 'created');
     await screen.findByTestId('issue-card-i-Bravo');
-    // Z-A：Bravo 在 alpha 之前
+    // 创建时间升序：Bravo 在 alpha 之前
     expect(cardOrder('待规划')).toEqual(['issue-card-i-Bravo', 'issue-card-i-alpha']);
   });
 });

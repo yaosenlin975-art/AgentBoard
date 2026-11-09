@@ -4,18 +4,16 @@
  * 位置：列头「待规划 +」右侧，单个图标按钮，无文字；点击按固定顺序循环切换，写既有
  * `localStorage['agentboard.planning-sort']`（排序算法本身在 lib/planningSort.ts，本组件只切模式）。
  *
- * 循环顺序：组合 → 截止日期 → 优先级 → A-Z → Z-A → 组合…
- * 说明：需求原文里的第 6 档「截止日期+优先级」在 `PlanningSort` 里没有对应算法（卡面要求不动 planningSort），
- * 故本轮只在现有 5 种模式间循环；若确实要「截止+优先级」新策略，需另开卡改算法后在这里插一档。
+ * 循环顺序：组合 → 截止日期 → 优先级 → A-Z → Z-A → 创建时间 → 组合…
  *
- * 图标用内联 SVG（5 个模式各一个），不用 emoji、不引入图标库。
+ * 图标用内联 SVG（6 个模式各一个），不用 emoji、不引入图标库。
  * 可达性：原生 button（Tab 聚焦、Enter/Space 触发）+ `aria-label` 描述当前模式与下一档，`title` 显示当前模式中文名。
  */
 import type { PlanningSort } from '../../lib/planningSort';
 import { PLANNING_SORT_OPTIONS } from '../../lib/planningSort';
 
 /** 固定循环顺序（顺序调整只改这一行） */
-export const PLANNING_SORT_CYCLE: readonly PlanningSort[] = ['combo', 'due', 'priority', 'az', 'za'];
+export const PLANNING_SORT_CYCLE: readonly PlanningSort[] = ['combo', 'due', 'priority', 'az', 'za', 'created'];
 
 export function nextPlanningSort(current: PlanningSort): PlanningSort {
   const index = PLANNING_SORT_CYCLE.indexOf(current);
@@ -38,6 +36,8 @@ const ICON_PATHS: Record<PlanningSort, string> = {
   az: 'M3 12l3-8 3 8M4 9.5h4M11 4h3l-3 8h3',
   // Z-A：降序箭头 + Z
   za: 'M3 4h4L3 11h4M11 4l2 3-2 3',
+  // 创建时间：时钟
+  created: 'M7 2a5 5 0 1 0 0 10a5 5 0 0 0 0-10M7 4v3l2 1',
 };
 
 function SortIcon({ sort }: { sort: PlanningSort }) {

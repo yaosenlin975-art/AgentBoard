@@ -52,17 +52,18 @@ beforeEach(() => {
 });
 
 describe('循环顺序（纯函数）', () => {
-  it('组合 → 截止日期 → 优先级 → A-Z → Z-A → 组合', () => {
-    expect(PLANNING_SORT_CYCLE).toEqual(['combo', 'due', 'priority', 'az', 'za']);
+  it('组合 → 截止日期 → 优先级 → A-Z → Z-A → 创建时间 → 组合', () => {
+    expect(PLANNING_SORT_CYCLE).toEqual(['combo', 'due', 'priority', 'az', 'za', 'created']);
     expect(nextPlanningSort('combo')).toBe('due');
     expect(nextPlanningSort('due')).toBe('priority');
     expect(nextPlanningSort('priority')).toBe('az');
     expect(nextPlanningSort('az')).toBe('za');
-    expect(nextPlanningSort('za')).toBe('combo');
+    expect(nextPlanningSort('za')).toBe('created');
+    expect(nextPlanningSort('created')).toBe('combo');
   });
 
   it('每个模式都有中文名', () => {
-    expect(PLANNING_SORT_CYCLE.map(planningSortLabel)).toEqual(['组合', '截止日期', '优先级', 'A-Z', 'Z-A']);
+    expect(PLANNING_SORT_CYCLE.map(planningSortLabel)).toEqual(['组合', '截止日期', '优先级', 'A-Z', 'Z-A', '创建时间']);
   });
 });
 
@@ -81,16 +82,16 @@ describe('排序图标按钮', () => {
     expect(within(button).getByTestId('planning-sort-icon-combo')).toBeInTheDocument();
   });
 
-  it('连点 5 次回到初始模式，每步都写 localStorage 并更新 title / aria-label / 图标', async () => {
+  it('连点 6 次回到初始模式，每步都写 localStorage 并更新 title / aria-label / 图标', async () => {
     renderBoard();
     const button = await screen.findByTestId('planning-sort');
     expect(button).toHaveAttribute('data-sort', 'combo');
     expect(button).toHaveAttribute('title', '排序：组合');
     expect(button).toHaveAttribute('aria-label', '待规划排序：组合（点击切换为截止日期）');
 
-    const expected = ['due', 'priority', 'az', 'za', 'combo'];
-    const labels = ['截止日期', '优先级', 'A-Z', 'Z-A', '组合'];
-    const nextLabels = ['优先级', 'A-Z', 'Z-A', '组合', '截止日期'];
+    const expected = ['due', 'priority', 'az', 'za', 'created', 'combo'];
+    const labels = ['截止日期', '优先级', 'A-Z', 'Z-A', '创建时间', '组合'];
+    const nextLabels = ['优先级', 'A-Z', 'Z-A', '创建时间', '组合', '截止日期'];
     for (let i = 0; i < expected.length; i += 1) {
       await userEvent.click(button);
       expect(button).toHaveAttribute('data-sort', expected[i]!);
@@ -101,7 +102,7 @@ describe('排序图标按钮', () => {
     }
   });
 
-  it('五个模式图标各不相同（path d 不重复）', async () => {
+  it('六个模式图标各不相同（path d 不重复）', async () => {
     renderBoard();
     const button = await screen.findByTestId('planning-sort');
     const paths: string[] = [];
@@ -131,11 +132,11 @@ describe('排序图标按钮', () => {
   });
 
   it('刷新后保持所选模式（localStorage）', async () => {
-    writePlanningSort('az');
+    writePlanningSort('created');
     renderBoard();
     const button = await screen.findByTestId('planning-sort');
-    expect(button).toHaveAttribute('data-sort', 'az');
-    expect(within(button).getByTestId('planning-sort-icon-az')).toBeInTheDocument();
+    expect(button).toHaveAttribute('data-sort', 'created');
+    expect(within(button).getByTestId('planning-sort-icon-created')).toBeInTheDocument();
   });
 
   it('按钮里没有 emoji', async () => {

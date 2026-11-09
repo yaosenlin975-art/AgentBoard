@@ -1,7 +1,7 @@
 /**
  * 「待规划」列排序（SORT-PLAN / design §5）。
  *
- * 五种：A-Z / Z-A / 截止日期 / 优先级 / 组合（默认）。纯函数，不依赖 React 状态；
+ * 六种：A-Z / Z-A / 截止日期 / 优先级 / 创建时间 / 组合（默认）。纯函数，不依赖 React 状态；
  * 选择结果由调用方写 localStorage（不落库）。只用于「待规划」列，其它列保持 sort_order 顺序。
  *
  * 组合权重：优先级 高30/中20/低10；紧迫度 逾期+50 / ≤3天+30 / ≤7天+15 / >7天+5 / 无截止0；
@@ -10,13 +10,14 @@
  */
 import type { Issue, Priority } from '@agentboard/shared';
 
-export type PlanningSort = 'az' | 'za' | 'due' | 'priority' | 'combo';
+export type PlanningSort = 'az' | 'za' | 'due' | 'priority' | 'created' | 'combo';
 
 export const PLANNING_SORT_OPTIONS: ReadonlyArray<{ id: PlanningSort; label: string }> = [
   { id: 'az', label: 'A-Z' },
   { id: 'za', label: 'Z-A' },
   { id: 'due', label: '截止日期' },
   { id: 'priority', label: '优先级' },
+  { id: 'created', label: '创建时间' },
   { id: 'combo', label: '组合' },
 ];
 
@@ -130,8 +131,11 @@ export function compareTitle(left: string, right: string): number {
   return left.localeCompare(right, 'zh', { sensitivity: 'base' });
 }
 
-/** 同分兜底：创建时间升序（老的在前），再按 id 保证稳定 */
-function byCreatedAtThenId(left: Issue, right: Issue): number {
+/** 同分兜底与创建时间排序：创建时间升序，再按 id 保证稳定 */
+export function byCreatedAtThenId(
+  left: Pick<Issue, 'created_at' | 'id'>,
+  right: Pick<Issue, 'created_at' | 'id'>,
+): number {
   if (left.created_at !== right.created_at) return left.created_at - right.created_at;
   return left.id.localeCompare(right.id);
 }
@@ -163,6 +167,8 @@ export function sortPlanning(issues: readonly Issue[], sort: PlanningSort, now: 
         const delta = (PRIORITY_SCORE[right.priority] ?? 0) - (PRIORITY_SCORE[left.priority] ?? 0);
         return delta !== 0 ? delta : byCreatedAtThenId(left, right);
       });
+    case 'created':
+      return list.sort(byCreatedAtThenId);
     case 'combo':
     default:
       return list.sort((left, right) => {
