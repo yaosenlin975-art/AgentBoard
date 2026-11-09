@@ -10,7 +10,7 @@
  *   1. 构建 server / web / cli（+ 桌面壳；已存在 release exe 时直接复用）
  *   2. 组装 runtime(node.exe) + server 单文件包 + web 静态产物 + cli + 原生模块
  *   3. 携带桌面壳到 app/desktop/（start-desktop.cmd 调用；缺失时降级为浏览器模式）
- *   4. 携带配套规则到 app/rules/（AGENTS.md、README.md、Docs/api.md、7 个技能）
+ *   4. 携带配套规则到 app/rules/（AGENTS.md、README.md、Docs/api.md、8 个技能）
  *   5. 生成 app/rules-manifest.json 并跑包内自检 app/verify-rules.mjs
  *   6. 打 zip（顶层目录 AgentBoard）
  *
@@ -40,7 +40,7 @@ const TEMPLATES = join(ROOT, 'scripts', 'portable');
 const PKG_NAME = 'AgentBoard';
 /** Tauri 壳的 release 产物（来源只读；壳按相对路径找 ../apps/server/dist 与 ../../runtime/node.exe）。 */
 const DESKTOP_EXE = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'agentboard-desktop.exe');
-const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user', 'brainstorming'];
+const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user', 'brainstorming', 'kb-curator'];
 const RULE_DOCS = [
   { src: 'AGENTS.md', dest: 'AGENTS.md' },
   { src: 'README.md', dest: 'README.md' },

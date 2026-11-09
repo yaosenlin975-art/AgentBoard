@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 包内规则自检：校验 app/rules 文件清单与 sha256、七个必需技能（含 ask-user、brainstorming）、kb CLI 帮助可用性。
+ * 包内规则自检：校验 app/rules 文件清单与 sha256、八个必需技能（含 ask-user、brainstorming、kb-curator）、kb CLI 帮助可用性。
  * 用法：check-rules.cmd（或 runtime\node.exe app\verify-rules.mjs）
  * 退出码：0 齐全；1 缺失 / 哈希不符 / 技能不齐 / CLI 帮助失败。
  */
@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 
 const APP = dirname(fileURLToPath(import.meta.url));
 const MANIFEST_PATH = join(APP, 'rules-manifest.json');
-const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user', 'brainstorming'];
+const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user', 'brainstorming', 'kb-curator'];
 
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
