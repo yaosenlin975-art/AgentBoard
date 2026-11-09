@@ -1,7 +1,7 @@
 /**
  * P1-C：PATCH /api/sessions/:id 的 persona 注入四字段契约测试。
- * 覆盖：四字段持久化 + GET 回读、null 清空、悬空 persona_id 400、非法 persona_injection 400、
- * 与 paused 互斥、字段全缺 400。
+ * 覆盖：四字段持久化 + GET 回读、API PATCH → runTurn 装配、null 清空、悬空 persona_id 400、
+ * 非法 persona_injection 400、与 paused 互斥、字段全缺 400、file marker 删除回收。
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -147,6 +147,27 @@ describe('PATCH /api/sessions/:id persona 四字段', () => {
     expect(empty.status).toBe(400);
   });
 
+  it('接线：API PATCH 设置 persona/flag 后，消息起轮的 runTurn options 收到配置', async () => {
+    const wsId = await mkSpace();
+    const persona = await mkPersona();
+    const session = await mkSession(wsId);
+    const patchRes = await request(app).patch(`/api/sessions/${session.id}`).send({
+      persona_id: persona.id,
+      persona_injection: 'flag',
+      tool_policy: TOOL_POLICY,
+    });
+    expect(patchRes.status).toBe(200);
+
+    const sendRes = await request(app).post(`/api/sessions/${session.id}/messages`).send({ text: '按 API 配置起轮' });
+    expect(sendRes.status).toBe(200);
+    await settle();
+
+    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls[0]!.persona).toEqual({ id: persona.id, body: '审查者 正文', source: 'user' });
+    expect(adapter.calls[0]!.personaInjection).toBe('flag');
+    expect(adapter.calls[0]!.toolPolicy).toEqual(TOOL_POLICY);
+  });
+
   it('接线：file 模式起轮写入的工作区标记块随会话删除回收（DELETE /api/sessions/:id）', async () => {
     const wsId = await mkSpace();
     const persona = await mkPersona();
@@ -158,6 +179,9 @@ describe('PATCH /api/sessions/:id persona 四字段', () => {
     const blockFile = join(spaceDir, 'AGENTS.md');
     expect(existsSync(blockFile)).toBe(true);
     expect(readFileSync(blockFile, 'utf8')).toContain(`AGENTBOARD-SESSION:${session.id}`);
+    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls[0]!.persona).toBeUndefined();
+    expect(adapter.calls[0]!.personaInjection).toBe('file');
     const delRes = await request(app).delete(`/api/sessions/${session.id}`);
     expect(delRes.status).toBe(204);
     // 文件只承载过本会话块 → 删除后回收文件
