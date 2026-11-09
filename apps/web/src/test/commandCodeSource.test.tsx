@@ -77,7 +77,9 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
 
     await screen.findByTestId('accounts-index');
     expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull();
-    expect(screen.getByTestId('accounts-index-empty')).toBeInTheDocument();
+    // Codex 按 0f76c59a 常驻，所以左栏不再出现整体空态；零账号判断只看 Command Code 行本身
+    expect(screen.getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
   });
 
   it('未安装：capture=CLI_NOT_INSTALLED、switch/checkin 只给原因与技术码，导入入口可用', async () => {
@@ -275,9 +277,10 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     await userEvent.click(within(detail).getByTestId('accounts-source-delete-yes-cli-cc-local'));
     await waitFor(() => expect(within(detail).queryByTestId('accounts-source-item-cli-cc-local')).toBeNull());
     expect(deleted).toEqual(['cli-cc-local']);
-    // 口径 A：唯一账号删除后来源行不再占行，右栏走面板空态
+    // 口径 A：唯一账号删除后来源行不再占行；Codex 常驻，右栏回落 Codex 空态而非面板空态
     await waitFor(() => expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull());
-    expect(screen.getByTestId('accounts-detail-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('accounts-detail-empty')).toBeNull();
   });
 
   it('ACC-CC-5：删除失败显示原因与技术码，不回显凭据', async () => {

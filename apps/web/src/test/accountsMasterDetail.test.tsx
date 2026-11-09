@@ -81,8 +81,9 @@ describe('账号面板主从布局（ACC-B1）', () => {
 
     const index = await screen.findByTestId('accounts-index');
     const items = within(index).getAllByRole('tab');
-    // ADD-FLOW-2：有账号的 workbuddy / minimax + 其它平台 qoder_cn；零账号的 trae 与无登记的 CLI 来源都不占行
-    expect(items.map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax', 'qoder_cn']);
+    // ADD-FLOW-2：有账号的 workbuddy / minimax + 其它平台 qoder_cn；零账号的 trae 与无登记的 CLI 来源都不占行；
+    // Codex 按 0f76c59a 常驻（零账号时显示本机登录空态）
+    expect(items.map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax', 'qoder_cn', 'codex']);
     // 已下线平台即使有历史账号也不出现（ACC-14 口径不变）
     expect(screen.queryByTestId('accounts-index-item-codebuddy_desktop')).toBeNull();
     expect(screen.queryByTestId('accounts-index-item-trae')).toBeNull();
@@ -101,7 +102,7 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.queryByTestId('accounts-quota-rows')).toBeNull();
     expect(screen.queryByTestId('quota-rows')).toBeNull();
     expect(screen.queryByTestId('accounts-overview')).toBeNull();
-    for (const app of ['deepseek', 'opencode_go', 'codex', 'commandcode']) {
+    for (const app of ['deepseek', 'opencode_go', 'commandcode']) {
       expect(screen.queryByTestId(`accounts-index-item-${app}`)).toBeNull();
     }
     // ACC-UI-TOPBAR：操作回退行在主从内容之前（drawer 里则 Portal 进标题栏）
@@ -143,19 +144,19 @@ describe('账号面板主从布局（ACC-B1）', () => {
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{End}');
-    // ADD-FLOW-2：列表只含有账号的平台，末尾是 trae（CLI 来源无登记账号，不占行）
-    expect(screen.getByTestId('accounts-index-item-trae')).toHaveAttribute('aria-selected', 'true');
+    // ADD-FLOW-2：列表只含有账号的平台；Codex 按 0f76c59a 常驻，是列表末尾
+    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
 
     await userEvent.keyboard('{Home}');
     expect(screen.getByTestId('accounts-index-item-workbuddy_desktop')).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('ADD-FLOW-2：workbuddy 2 + minimax 1 时左栏只有这两项，零账号平台与来源都不占行', async () => {
+  it('ADD-FLOW-2：workbuddy 2 + minimax 1 时左栏只有这两项（Codex 常驻），零账号平台与来源都不占行', async () => {
     mockBase([account('wb-1'), account('wb-2'), account('mm-1', { app_id: 'minimax' })]);
     renderPanel();
 
     const index = await screen.findByTestId('accounts-index');
-    expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax']);
+    expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax', 'codex']);
     expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('0/2');
     expect(screen.getByTestId('accounts-index-metric-minimax')).toHaveTextContent('0/1');
     expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
@@ -166,7 +167,7 @@ describe('账号面板主从布局（ACC-B1）', () => {
     renderPanel();
 
     const index = await screen.findByTestId('accounts-index');
-    expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax']);
+    expect(within(index).getAllByRole('tab').map((el) => el.dataset.app)).toEqual(['workbuddy_desktop', 'minimax', 'codex']);
     // 停用账号不进签到分母（checkinParticipation 排除 enabled=false）→ 指标「无参与账号」，但行仍出现（停用 ≠ 零账号）
     expect(screen.getByTestId('accounts-index-metric-workbuddy_desktop')).toHaveTextContent('无参与账号');
     // 停用与零账号是两件事：零账号的 trae 仍不占行

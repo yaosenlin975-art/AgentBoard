@@ -76,9 +76,9 @@ describe('其它平台分区（ACC-KB-B1W）', () => {
     // 按 id 字典序：qoder_cn < zcode
     const apps = [...extra.querySelectorAll('[data-testid^="accounts-index-item-"]')].map((el) => el.getAttribute('data-app'));
     // ADD-FLOW-2（口径 A）：只列有账号的平台。APP_ORDER 里有账号的在前，其它平台按 id 字典序追加；
-    // 零账号的 minimax / trae 与无登记账号的 CLI 来源都不占行。
-    expect(apps).toEqual(['workbuddy_desktop', 'qoder_cn', 'zcode']);
-    for (const absent of ['minimax', 'trae', 'deepseek', 'opencode_go', 'codex', 'commandcode']) {
+    // 零账号的 minimax / trae 与无登记账号的 CLI 来源（Command Code 等）都不占行；Codex 按 0f76c59a 常驻。
+    expect(apps).toEqual(['workbuddy_desktop', 'qoder_cn', 'zcode', 'codex']);
+    for (const absent of ['minimax', 'trae', 'deepseek', 'opencode_go', 'commandcode']) {
       expect(screen.queryByTestId(`accounts-index-item-${absent}`)).toBeNull();
     }
     expect(within(extra).getByText('Qoder CN')).toBeInTheDocument();

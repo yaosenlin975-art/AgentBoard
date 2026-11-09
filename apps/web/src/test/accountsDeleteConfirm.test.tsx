@@ -144,12 +144,15 @@ describe('删除就地确认与三种 409（ACC-B5）', () => {
     await openDeleteConfirm();
     await userEvent.click(screen.getByTestId(`accounts-delete-confirm-yes-${WB_ID}`));
 
-    // 卡片消失；失效重拉带动左栏平台指标。删到零账号后该平台不再占行（ADD-FLOW-2 口径 A），整体走空态引导
+    // 卡片消失；失效重拉带动左栏平台指标。删到零账号后该平台不再占行（ADD-FLOW-2 口径 A）；
+    // Codex 按 0f76c59a 常驻，故整体不再走 accounts-index-empty，右栏回落到 Codex 空态
     await waitFor(() => expect(screen.queryByTestId(`accounts-card-${WB_ID}`)).not.toBeInTheDocument());
     await waitFor(() => expect(screen.queryByTestId('accounts-index-item-workbuddy_desktop')).not.toBeInTheDocument());
     expect(screen.queryByTestId('accounts-index-metric-workbuddy_desktop')).not.toBeInTheDocument();
-    expect(screen.getByTestId('accounts-index-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('accounts-detail-empty')).toHaveTextContent('添加账号');
+    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
+    expect(screen.queryByTestId('accounts-detail-empty')).toBeNull();
+    expect(screen.getByTestId('accounts-source-empty-codex')).toHaveTextContent('未读取到有效的本机登录账号');
     expect(screen.queryByTestId('accounts-detail-current')).toBeNull();
   });
 

@@ -173,7 +173,10 @@ describe('ACC-B6 额度平台右栏详情', () => {
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
-      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [] })),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [
+        { id: 'cli-ds-1', app_id: 'deepseek', identity_hint: 'sha256:ds000001', source: 'local', created_at: 1, last_seen_at: 2 },
+        { id: 'cli-oc-1', app_id: 'opencode_go', identity_hint: 'sha256:oc000001', source: 'local', created_at: 1, last_seen_at: 2 },
+      ] })),
       http.get('/api/managed-account-quotas', () => HttpResponse.json(snapshot([
         item({ source: 'deepseek', balance: 12.34, unit: 'CNY' }),
         item({ source: 'opencode_go', windows: WINDOWS }),
