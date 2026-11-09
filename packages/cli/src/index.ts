@@ -43,6 +43,7 @@ import {
   workspaceDbStatus,
 } from './commands/workspaceDb.js';
 import { registerDecisionCommands } from './commands/decision.js';
+import { parseCommentLimit } from './render.js';
 
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
 const EXIT_CODE_HELP = `
@@ -165,14 +166,17 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .description('任务完整字段 + 评论列表（含作者）；默认只读，不推进评论已读游标')
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--mark-read', '把本次读到的评论标为已读（推进本 agent 的已读游标）；缺省不推进')
+    .option('--comments <n|all>', '评论渲染条数：最近 n 条（缺省 5，未读优先；单条按窗口截断），all = 全量原文')
     .addHelpText('after', `
 示例：
   kb show 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
   kb show 0f6ba9ab                      # ≥8 位前缀（唯一命中时解析为完整 id）
   kb show 0f6ba9ab --mark-read          # 明确要求推进评论已读游标
+  kb show 0f6ba9ab --comments all       # 全量评论原文（与改造前逐字一致）
 退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位；2 前缀命中多张卡（会列出候选 id）
 `)
-    .action(async (id: string, opts: { markRead?: boolean }) => show(makeCtx(program, io), id, { markRead: opts.markRead === true }));
+    .action(async (id: string, opts: { markRead?: boolean; comments?: string }) =>
+      show(makeCtx(program, io), id, { markRead: opts.markRead === true, comments: parseCommentLimit(opts.comments) }));
 
   program
     .command('claim')
@@ -180,6 +184,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--no-knowledge', '关闭任务知识检索')
     .option('--knowledge-query <query>', '自定义知识查询')
+    .option('--comments <n|all>', '领取回执的评论渲染条数：最近 n 条（缺省 5，未读优先），all = 全量原文')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .addHelpText('after', `
 说明：占用冲突（已被 <agent> 占用）与状态不可领取（无人占用但状态不是待规划/进行中，如待验收）是两条不同文案。
@@ -187,9 +192,11 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 示例：
   kb claim 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
   kb claim 0f6ba9ab --no-knowledge
+  kb claim 0f6ba9ab --comments all      # 回执带全量评论原文
 退出码：0 成功；2 已被 <agent> 占用 / 状态不可领取（当前=待验收…）/ 前置未解除（DEP-1）；1 任务不存在或参数错误
 `)
-    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string }) => claim(makeCtx(program, io), id, opts));
+    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string; comments?: string }) =>
+      claim(makeCtx(program, io), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
 
   program
     .command('release')

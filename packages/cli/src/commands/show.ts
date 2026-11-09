@@ -1,7 +1,7 @@
 import type { Issue, IssueComment } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
-import { commentLines, issueLines } from '../render.js';
+import { COMMENT_DEFAULT_LIMIT, COMMENT_PREVIEW_CHARS, commentLines, issueLines, selectRecentComments } from '../render.js';
 import { resolveIssueByRef } from '../issueRef.js';
 
 interface ConsumeResponse {
@@ -12,6 +12,8 @@ interface ConsumeResponse {
 export interface ShowArgs {
   /** CLI-24：显式要求推进已读游标；缺省只读，不改别人的「新留言」可见性 */
   markRead?: boolean;
+  /** OPT-04：评论渲染条数（缺省 5；`all` = 全量原文，与改造前逐字一致） */
+  comments?: number | 'all';
 }
 
 /**
@@ -76,11 +78,19 @@ export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<v
     ctx.io.write(`${JSON.stringify({ ...issue, comments }, null, 2)}\n`);
     return;
   }
+  const limit = args.comments ?? COMMENT_DEFAULT_LIMIT;
+  const selection = selectRecentComments(comments, limit);
   const progress = await childProgressLine(ctx, issue);
   ctx.io.write(`${[
     ...issueLines(issue),
     ...(progress === null ? [] : [progress]),
     ...decisionLines(issue),
-    ...commentLines(comments),
+    ...commentLines(
+      selection.visible,
+      limit === 'all'
+        ? { totalComments: selection.total }
+        : { totalComments: selection.total, previewChars: COMMENT_PREVIEW_CHARS, issueId: issue.id },
+    ),
+    ...(selection.hidden > 0 ? [`另有 ${selection.hidden} 条，--comments all 查看`] : []),
   ].join('\n')}\n`);
 }
