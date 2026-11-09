@@ -163,6 +163,8 @@ export function AccountCard({
   const [restoreErrorCode, setRestoreErrorCode] = useState<string | null>(null);
   /** ACC-TOKEN-3：刷新凭据失败的原始原因码；主文案走中文映射，裸码只进 title */
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
+  /** ACC-SW-VALID-A2：把本机登录态补齐到 block 行失败的原因码 */
+  const [adoptErrorCode, setAdoptErrorCode] = useState<string | null>(null);
   const queryClient = useQueryClient();
   /** ACC-ROW-QUOTA：账号行额度按 account.id 隔离；额度行只读展示，不参与切换/删除的禁用逻辑。 */
   const quotaQuery = useQuotaSnapshot(account.id);
@@ -209,6 +211,23 @@ export function AccountCard({
       void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
     },
     onError: (e) => { setRestoreErrorCode(reasonCodeOf(e)); },
+  });
+
+  /**
+   * ACC-SW-VALID-A2：switch_available=false 的 WorkBuddy 行给「补齐本机登录态」出路。
+   * 前置由用户完成：先在 WorkBuddy 客户端手动登录目标账号；服务端会核对身份，不匹配则原行不变。
+   */
+  const adoptMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ account: AccountView }>(
+        `/api/managed-accounts/${account.app_id}/capture-current`,
+        { target_account_id: account.id },
+      ),
+    onSuccess: () => {
+      setAdoptErrorCode(null);
+      void queryClient.invalidateQueries({ queryKey: ['managed-accounts'] });
+    },
+    onError: (e) => { setAdoptErrorCode(reasonCodeOf(e)); },
   });
 
   const switchMutation = useMutation({
@@ -308,11 +327,16 @@ export function AccountCard({
     },
   });
 
-  const switchBlocked = capability?.switch !== true || account.is_current === true || frozen;
+  const switchBlocked = capability?.switch !== true || account.is_current === true || frozen || account.switch_available === false;
   // ACC-SWITCH：不能切的平台必须给出可见原因 + 出路，不能只留一个禁用按钮
+  const switchUnavailableReason = account.switch_available === false
+    ? reasonLabel(account.switch_reason_code ?? null)
+    : null;
   const switchTitle = switching
     ? '切换进行中，等待当前操作完成后才能再次切换'
-    : capability?.switch !== true
+    : account.switch_available === false
+      ? `该账号暂不可直接切换：${switchUnavailableReason}`
+      : capability?.switch !== true
       ? `该平台暂不支持切换：${unavailableLabel(capability, 'switch') ?? '切换不可用'}（${unavailableReason(capability, 'switch') ?? '能力未知'}），需手动在客户端切换`
       : account.is_current === true
         ? '该账号已是客户端当前登录账号'
@@ -398,7 +422,7 @@ export function AccountCard({
             </button>
           )}
           {/* ACC-UI-2：已是当前账号 / 平台不支持切换时不渲染灰按钮，原因交给芯片与平台级说明行 */}
-          {capability?.switch === true && account.is_current !== true && (
+          {capability?.switch === true && account.is_current !== true && account.switch_available !== false && (
             <button
               type="button"
               data-testid={`accounts-switch-${account.id}`}
@@ -408,6 +432,19 @@ export function AccountCard({
               onClick={() => { setError(null); setSwitchErrorCode(null); setConfirming(true); }}
             >
               切换
+            </button>
+          )}
+          {/* ACC-SW-VALID-A2：本机无快照/实例不匹配时，给「先手动登录再补齐」的可操作出路 */}
+          {account.switch_available === false && account.is_current !== true && (
+            <button
+              type="button"
+              data-testid={`accounts-adopt-${account.id}`}
+              className={BTN_QUIET}
+              disabled={adoptMutation.isPending || switching}
+              title="先在 WorkBuddy 客户端手动登录该账号，再点此把本机登录态补齐到该行；服务端会核对身份，不一致时不会改动任何数据"
+              onClick={() => { setAdoptErrorCode(null); adoptMutation.mutate(); }}
+            >
+              {adoptMutation.isPending ? '补齐中…' : '补齐本机登录态'}
             </button>
           )}
           {/* ACC-UI-2：低频/危险操作（停用、删除）收进 ⋯ 菜单，主行只留高频动作 */}
@@ -467,6 +504,25 @@ export function AccountCard({
           </details>
         </div>
       </div>
+
+      {/* ACC-SW-VALID-A2：不可直接切换的原因与出路（不只留一个隐藏按钮） */}
+      {account.switch_available === false && account.is_current !== true && (
+        <p data-testid={`accounts-switch-unavailable-${account.id}`} className="mt-1 text-xs text-ink-3">
+          {switchUnavailableReason ?? '该账号暂不可直接切换'}
+          {account.app_id === 'workbuddy_desktop' && '。先在 WorkBuddy 客户端手动登录该账号，再点「补齐本机登录态」；未登录该账号时不会改动任何数据'}
+        </p>
+      )}
+      {adoptErrorCode !== null && (
+        <p
+          role="alert"
+          data-testid={`accounts-adopt-error-${account.id}`}
+          data-code={adoptErrorCode ?? undefined}
+          title={adoptErrorCode ?? undefined}
+          className="mt-1 text-xs text-red-600 dark:text-red-400"
+        >
+          {reasonLabel(adoptErrorCode)}
+        </p>
+      )}
 
       {/* ACC-ROW-QUOTA：当前账号额度一行（余额/积分 + 窗口剩余；异常给中文原因或占位文案） */}
       {quotaView !== null && (
