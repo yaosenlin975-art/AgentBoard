@@ -12,6 +12,8 @@ export interface ListTasksArgs {
   all?: boolean;
   /** 按状态过滤：本工作区已定义的任意状态（内置五状态 + 自定义状态） */
   status?: string;
+  /** OPT-01：保留改造前口径（整区全状态全占用），关闭缺省收敛 */
+  allStatus?: boolean;
   /** 以展开的层级视图列出全部任务 */
   tree?: boolean;
   /** --json 时是否连 description 正文一起输出（默认裁剪，避免把大量上下文灌给 agent） */
@@ -235,11 +237,18 @@ export function resetIssueFieldsFallback(): void {
 }
 
 /**
+ * OPT-01：缺省收敛口径——未完成（kind ∈ open/started/review）且无主（claimed_by IS NULL）。
+ * 过滤在服务端 SQL 里做（`GET /api/issues?kinds=…&unclaimed=1`），CLI 不拉全量后本地筛。
+ */
+const DEFAULT_CONVERGED_FILTER = '&kinds=open,started,review&unclaimed=1';
+
+/**
  * 整区读取：默认带 `fields=` 裁剪；服务端不认（400，旧版/回滚开关）或路由不存在（404）时
  * 静默回落全量请求一次，输出口径不变；其它错误照常抛出。
+ * `filterQuery` 为 OPT-01 的缺省收敛参数，回落请求同样携带（旧服务端忽略未知参数，行为不变）。
  */
-async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean): Promise<Issue[]> {
-  const path = '/api/issues?workspace=' + encodeURIComponent(workspaceId);
+async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery = ''): Promise<Issue[]> {
+  const path = '/api/issues?workspace=' + encodeURIComponent(workspaceId) + filterQuery;
   if (!withFields || issueFieldsUnsupported) return request<Issue[]>(ctx.base, 'GET', path);
   try {
     return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${LIST_TASK_FIELDS}`);
@@ -258,6 +267,10 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.full === true && ctx.json !== true) {
     ctx.io.writeErr('提示：--full 只对 --json 输出生效（表格模式本来就不含 description），本次已忽略\n');
   }
+  // OPT-01：缺省收敛为「当前工作区 · 未完成 · 无主」；`--status` 显式覆盖，`--tree` 保留整树上下文，
+  // 需要改造前的整区全状态口径时用 `--all-status`。
+  const converged = args.allStatus !== true && args.status === undefined && args.tree !== true;
+  if (converged) ctx.io.writeErr('默认已收敛为未完成无主卡，全量用 --all-status\n');
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
   const selected = args.all === true
     ? spaces
@@ -293,8 +306,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     await requireKnownStatus(ctx, selected, args.status);
   }
   const flatWithFields = !(ctx.json === true && args.full === true);
+  const filterQuery = converged ? DEFAULT_CONVERGED_FILTER : '';
   const issues = (await Promise.all(
-    selected.map(space => readWorkspaceIssues(ctx, space.id, flatWithFields)),
+    selected.map(space => readWorkspaceIssues(ctx, space.id, flatWithFields, filterQuery)),
   )).flat();
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {

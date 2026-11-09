@@ -99,7 +99,8 @@ describe('kb list-tasks status guard', () => {
     expect(((JSON.parse(current.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['i1']);
     const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
     expect(issueCalls).toHaveLength(1);
-    expect(issueCalls[0]!.url.startsWith('/api/issues?workspace=ws1&fields=')).toBe(true);
+    // OPT-01：缺省收敛参数在 fields= 之前下发
+    expect(issueCalls[0]!.url.startsWith('/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1&fields=')).toBe(true);
 
     calls = [];
     const all = await run(['--json', 'list-tasks', '--all']);
@@ -191,14 +192,56 @@ describe('kb list-tasks status guard', () => {
   it('--json --full 不请求 fields=（正文窗口照旧）', async () => {
     handler = (method, url) => {
       if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
-      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
       return undefined;
     };
     const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--full']);
     expect(result.code).toBe(0);
     expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
-      { method: 'GET', url: '/api/issues?workspace=ws1' },
+      { method: 'GET', url: '/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1' },
     ]);
+  });
+
+  it('OPT-01 缺省收敛：请求携带 kind 集合与无主过滤，stderr 首行提示全量开关', async () => {
+    handler = baseHandler;
+    const result = await run(['list-tasks', '--workspace', 'ws1']);
+    expect(result.code).toBe(0);
+    expect(result.err.startsWith('默认已收敛为未完成无主卡，全量用 --all-status')).toBe(true);
+    const issueCall = calls.find(call => call.url.startsWith('/api/issues?'))!;
+    expect(issueCall.url).toContain('kinds=open,started,review');
+    expect(issueCall.url).toContain('unclaimed=1');
+  });
+
+  it('--all-status 关闭收敛（不带过滤参数、无提示），--status 显式覆盖同样不带收敛参数', async () => {
+    handler = baseHandler;
+    const allStatus = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--all-status']);
+    expect(allStatus.code).toBe(0);
+    expect(allStatus.err).not.toContain('默认已收敛');
+    expect(calls.filter(call => call.url.startsWith('/api/issues?')).every(call => !call.url.includes('kinds='))).toBe(true);
+    expect(((JSON.parse(allStatus.out) as { items: Array<{ id: string }> }).items).map(item => item.id)).toEqual(['i1', 'i2', 'i3']);
+
+    calls = [];
+    const byStatus = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--status', '已废弃']);
+    expect(byStatus.code).toBe(0);
+    expect(byStatus.err).not.toContain('默认已收敛');
+    const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+    expect(issueCalls).toHaveLength(1);
+    expect(issueCalls[0]!.url).not.toContain('kinds=');
+    expect(issueCalls[0]!.url).not.toContain('unclaimed=');
+  });
+
+  it('--tree 保留整树口径：不做缺省收敛、不提示', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
+      return undefined;
+    };
+    const result = await run(['list-tasks', '--workspace', 'ws1', '--tree']);
+    expect(result.code).toBe(0);
+    expect(result.err).not.toContain('默认已收敛');
+    const issueCall = calls.find(call => call.url.startsWith('/api/issues?'))!;
+    expect(issueCall.url).not.toContain('kinds=');
+    expect(issueCall.url).not.toContain('unclaimed=');
   });
 
   it('旧服务端/回滚开关（400）时静默回落全量，输出不变且进程内只回落一次', async () => {
@@ -207,7 +250,7 @@ describe('kb list-tasks status guard', () => {
       if (method === 'GET' && url.includes('fields=')) {
         return { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: '未知字段：fields' } } };
       }
-      if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
       return undefined;
     };
     const first = await run(['--json', 'list-tasks', '--workspace', 'ws1']);

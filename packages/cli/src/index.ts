@@ -100,10 +100,11 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--workspace <id|名>', '工作空间 id 或名称')
     .option('--all', '聚合全部工作空间；只读盘点，与 --workspace 互斥')
     .option('--status <状态>', '按当前筛选范围已定义的状态过滤；非法值会列出可用状态')
+    .option('--all-status', '保留改造前口径：不按「未完成 · 无主」收敛，输出整区全状态')
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
     .option('--full', '--json 时一并输出 description 正文（默认裁剪，只输出元数据）')
-    .action(async (opts: { workspace?: string; all?: boolean; status?: string; tree?: boolean; full?: boolean }) =>
-      listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, tree: opts.tree, full: opts.full === true }));
+    .action(async (opts: { workspace?: string; all?: boolean; status?: string; allStatus?: boolean; tree?: boolean; full?: boolean }) =>
+      listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, allStatus: opts.allStatus === true, tree: opts.tree, full: opts.full === true }));
 
   // KB-GREP：本地按内容检索仓库（纯 Node；无 REST 依赖，仅默认搜索根需要解析工作区）
   program

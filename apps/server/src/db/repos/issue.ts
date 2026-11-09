@@ -312,19 +312,43 @@ export function getIssue(db: Db, id: string, workspaceId?: string): Issue | null
   return row ? rowToIssue(row) : null;
 }
 
+/**
+ * OPT-01：列表过滤口径。
+ * - `kinds` 走 STATUS-3 的 kind 语义（比对 `workspace_status.kind`，不比对状态名，自定义状态同样生效）；
+ * - `unclaimed` 只取 `claimed_by IS NULL`（被任何人占用即排除）。
+ * 过滤在 SQL 里完成，CLI 不拉全量后本地筛。
+ */
+export interface IssueListFilters {
+  kinds?: readonly string[];
+  unclaimed?: boolean;
+}
+
+/** 把列表过滤条件追加进 WHERE（kinds 用占位符，调用方按同样顺序推参数） */
+function appendIssueListFilters(where: string[], params: unknown[], filters: IssueListFilters | undefined): void {
+  if (filters?.kinds !== undefined && filters.kinds.length > 0) {
+    where.push(`EXISTS (SELECT 1 FROM workspace_status ws
+      WHERE ws.workspace_id = i.workspace_id AND ws.name = i.status AND ws.kind IN (${filters.kinds.map(() => '?').join(',')}))`);
+    params.push(...filters.kinds);
+  }
+  if (filters?.unclaimed === true) where.push('i.claimed_by IS NULL');
+}
+
 export function listIssues(
   db: Db,
   workspaceId: string,
   status?: string,
   fields?: readonly IssueFieldName[],
+  filters?: IssueListFilters,
 ): Array<Issue | Record<string, unknown>> {
+  const where: string[] = ['i.workspace_id = ?'];
   const params: unknown[] = [workspaceId];
-  if (status !== undefined) params.push(status);
+  if (status !== undefined) { where.push('i.status = ?'); params.push(status); }
+  appendIssueListFilters(where, params, filters);
   const select = issueSelect(fields);
   const rows = db
     .prepare(
       `SELECT ${select.columns} FROM issue i ${select.join}
-       WHERE i.workspace_id = ?${status === undefined ? '' : ' AND i.status = ?'} ORDER BY i.sort_order, i.created_at, i.id`,
+       WHERE ${where.join(' AND ')} ORDER BY i.sort_order, i.created_at, i.id`,
     )
     .all(...params) as IssueRow[];
   return rows.map(row => (fields === undefined ? rowToIssue(row) : projectIssueRow(row, fields)));
@@ -339,14 +363,18 @@ export function listIssuesPage(
     status?: string;
     /** PERF-4a：字段白名单；给了只返回所列字段并跳过未请求的重聚合列 */
     fields?: readonly IssueFieldName[];
+    /** OPT-01：kind 集合 / 未占用过滤（与 status 叠加） */
+    filters?: IssueListFilters;
   },
 ): PageResult<TaskPreview | Record<string, unknown>> {
   validatePage(input.limit, input.offset);
+  const where: string[] = ['i.workspace_id=?'];
   const params: unknown[] = [workspaceId];
-  if (input.status) params.push(input.status);
+  if (input.status) { where.push('i.status=?'); params.push(input.status); }
+  appendIssueListFilters(where, params, input.filters);
   params.push(input.limit + 1, input.offset);
   const select = issueSelect(input.fields);
-  const rows = db.prepare(`SELECT ${select.columns} FROM issue i ${select.join} WHERE i.workspace_id=?${input.status ? ' AND i.status=?' : ''} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
+  const rows = db.prepare(`SELECT ${select.columns} FROM issue i ${select.join} WHERE ${where.join(' AND ')} ORDER BY i.id ASC LIMIT ? OFFSET ?`).all(...params) as IssueRow[];
   return pageResult(rows.map(row => {
     if (input.fields === undefined) {
       const issue = rowToIssue(row); const window = textWindow(issue.description);

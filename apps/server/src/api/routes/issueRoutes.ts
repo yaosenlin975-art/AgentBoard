@@ -53,7 +53,7 @@ import {
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline, type IssueCommitResult } from '../../services/gitBaseline.js';
 import { getTaskKnowledge } from '../../services/taskKnowledge.js';
 import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../../services/dependency.js';
-import { requireWorkspaceStatus } from '../../services/workspaceStatus.js';
+import { requireWorkspaceStatus, STATUS_KINDS } from '../../services/workspaceStatus.js';
 import { buildKnowledgeHint } from '../../services/knowledgeNudge.js';
 import { addComment, consumeComments, storeComment, wakeCommentSession, type AddCommentResult } from '../../services/comments.js';
 import { amendIdempotentResult, httpMutation, finishIdempotentEffect } from '../../services/idempotency.js';
@@ -133,6 +133,29 @@ function requireWorkspaceParam(req: Request): string {
 
 function requireExistingWorkspace(db: Db, id: string): void {
   if (!getWorkspace(db, id)) throw new NotFoundError('工作空间不存在');
+}
+
+/**
+ * OPT-01：`GET /api/issues` 的 kind 集合过滤（`kinds=open,started,review`）。
+ * kind 取值以 STATUS-3 的字典为准；未知值 400 并列出可用 kind，不做静默忽略。
+ */
+function parseKindsFilter(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string') throw new ValidationError('kinds 必须是逗号分隔的 kind 列表');
+  const kinds = raw.split(',').map((kind) => kind.trim()).filter((kind) => kind !== '');
+  const allowed = STATUS_KINDS as readonly string[];
+  if (kinds.length === 0) throw new ValidationError(`kinds 不能为空（可用 kind：${allowed.join(' / ')}）`);
+  const unknownKinds = kinds.filter((kind) => !allowed.includes(kind));
+  if (unknownKinds.length > 0) throw new ValidationError(`kinds 含未知值：${unknownKinds.join(' / ')}（可用 kind：${allowed.join(' / ')}）`);
+  return [...new Set(kinds)];
+}
+
+/** OPT-01：`unclaimed=1` 只取无主卡（`claimed_by IS NULL`）；`0` 为显式关闭 */
+function parseUnclaimedFilter(raw: unknown): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === '1' || raw === 'true') return true;
+  if (raw === '0' || raw === 'false') return false;
+  throw new ValidationError('unclaimed 只接受 1 / 0');
 }
 
 async function wakeStoredComment(
@@ -333,10 +356,14 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(rdb, workspaceId, parseBody(issueStatusSchema, req.query.status));
     // PERF-4a：fields= 白名单（回滚开关关闭时解析结果为 undefined，按旧完整字段返回）
     const fields = parseIssueFields(typeof req.query.fields === 'string' ? req.query.fields : undefined);
+    // OPT-01：kind 集合 / 未占用过滤（缺省查询参数时行为与旧版一致）
+    const kinds = parseKindsFilter(req.query.kinds);
+    const unclaimed = parseUnclaimedFilter(req.query.unclaimed);
+    const filters = { ...(kinds === undefined ? {} : { kinds }), ...(unclaimed === true ? { unclaimed } : {}) };
     if (req.query.limit !== undefined || req.query.offset !== undefined) {
       const page = parseBody(pageQuerySchema, req.query);
-      res.json(listIssuesPage(rdb, workspaceId, { ...page, status, fields }));
-    } else res.json(listIssues(rdb, workspaceId, status, fields));
+      res.json(listIssuesPage(rdb, workspaceId, { ...page, status, fields, filters }));
+    } else res.json(listIssues(rdb, workspaceId, status, fields, filters));
   });
 
   // PERF-4a：多工作区状态计数聚合；必须注册在 `/issues/:id` 之前，避免 'counts' 被当成卡 id
