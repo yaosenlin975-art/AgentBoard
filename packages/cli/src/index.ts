@@ -6,7 +6,7 @@ import { Command, CommanderError } from 'commander';
 import { normalizeBase } from './api.js';
 import { toExit } from './errors.js';
 import { normalizeIssueRef } from './issueRef.js';
-import { processIo, type Ctx, type Io } from './io.js';
+import { meterIo, processIo, type Ctx, type Io } from './io.js';
 import { CLI_VERSION } from './version.js';
 import { listSpaces } from './commands/listSpaces.js';
 import { grep } from './commands/grep.js';
@@ -102,6 +102,11 @@ function makeCtx(program: Command, io: Io): Ctx {
 export async function main(argv: string[] = process.argv, io: Io = processIo): Promise<number> {
   // OPT-06：多 id show 允许「部分失败仍输出其余块」，由命令自己返回退出码（不抛错，避免 --json 流被错误体污染）
   let commandExitCode = 0;
+  // ARCH-06：输出层统一埋点。统计所有经 io.write 写出的 stdout；KB_METRICS=1 时在结束前向 stderr 追加一行。
+  const meter = meterIo(io);
+  const ctxIo = meter.io;
+  const metricsEnabled = process.env.KB_METRICS === '1';
+  let metricsCommand = '-';
   const program = new Command();
   program
     .name('kb')
@@ -110,16 +115,24 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .exitOverride()
     // KBGUIDE：把 commander 的 help/version 输出也接到注入的 io 上（生产 io 就是 process 流，行为不变；
     // 进程内调用可捕获 --help，help 文案才可被单测覆盖）
-    .configureOutput({ writeOut: (text: string) => io.write(text), writeErr: (text: string) => io.writeErr(text) })
+    .configureOutput({ writeOut: (text: string) => ctxIo.write(text), writeErr: (text: string) => ctxIo.writeErr(text) })
     .option('--server <url>', '看板服务基址（默认取 KB_SERVER，再默认 http://127.0.0.1:8787）', process.env.KB_SERVER)
     .option('--json', '输出原始 JSON 响应')
     .addHelpText('after', EXIT_CODE_HELP);
+
+  // ARCH-06：cmd 取本次真正执行到的顶层子命令（嵌套命令向上回溯到 program 的直接子命令），
+  // 不解析 argv；help/version 等未进入 action 的路径保持 '-'。
+  program.hook('preAction', (_thisCommand, actionCommand) => {
+    let cmd: Command = actionCommand;
+    while (cmd.parent !== null && cmd.parent.parent !== null) cmd = cmd.parent;
+    metricsCommand = cmd.name();
+  });
 
   program
     .command('list-spaces')
     .description('列出全部工作空间（id / name / path）；--current 只列 cwd 解析到的当前工作区')
     .option('--current', '只输出当前工作区（按 cwd 实体路径解析，JSON 仍为单元素数组）')
-    .action(async (opts: { current?: boolean }) => listSpaces(makeCtx(program, io), { current: opts.current === true }));
+    .action(async (opts: { current?: boolean }) => listSpaces(makeCtx(program, ctxIo), { current: opts.current === true }));
 
   program
     .command('list-tasks')
@@ -131,7 +144,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
     .option('--full', '表格输出完整列（labels/决策/评论/parent_issue_id）；--json 时一并输出 description 正文')
     .action(async (opts: { workspace?: string; all?: boolean; status?: string; allStatus?: boolean; tree?: boolean; full?: boolean }) =>
-      listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, allStatus: opts.allStatus === true, tree: opts.tree, full: opts.full === true }));
+      listTasks(makeCtx(program, ctxIo), { workspace: opts.workspace, all: opts.all === true, status: opts.status, allStatus: opts.allStatus === true, tree: opts.tree, full: opts.full === true }));
 
   // OPT-10：可派卡组合视图（替代 list-tasks + 逐卡 show + 逐卡 dep ls 三轮）
   program
@@ -149,7 +162,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 退出码：0 成功（无可派卡时输出「（无可派卡）」仍为 0）；1 参数错误 / 工作区无法解析
 `)
     .action(async (opts: { workspace?: string; limit?: string }) => {
-      commandExitCode = await next(makeCtx(program, io), { workspace: opts.workspace, limit: parseLimit(opts.limit) });
+      commandExitCode = await next(makeCtx(program, ctxIo), { workspace: opts.workspace, limit: parseLimit(opts.limit) });
     });
 
   // OPT-11：汇总计数（替代逐状态 list-tasks 复算）
@@ -166,7 +179,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 退出码：0 成功；1 工作区无法解析 / 服务端错误
 `)
     .action(async (opts: { workspace?: string }) => {
-      commandExitCode = await stats(makeCtx(program, io), { workspace: opts.workspace });
+      commandExitCode = await stats(makeCtx(program, ctxIo), { workspace: opts.workspace });
     });
 
   // KB-GREP：本地按内容检索仓库（纯 Node；无 REST 依赖，仅默认搜索根需要解析工作区）
@@ -207,7 +220,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
       path?: string; glob: string[]; ignore: string[]; defaultIgnore?: boolean; hidden?: boolean;
       fixedStrings?: boolean; ignoreCase?: boolean; context?: string; maxCount?: string;
       maxMatches?: string; maxFileSize?: string; timeout?: string; binary?: string;
-    }) => grep(makeCtx(program, io), pattern, {
+    }) => grep(makeCtx(program, ctxIo), pattern, {
       path: opts.path,
       glob: opts.glob,
       ignore: opts.ignore,
@@ -242,7 +255,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位 / 多 id 中有读取失败；2 前缀命中多张卡（会列出候选 id）
 `)
     .action(async (ids: string[], opts: { markRead?: boolean; comments?: string; descriptionMaxChars?: string; descriptionOffset?: string }) => {
-      commandExitCode = await show(makeCtx(program, io), ids, {
+      commandExitCode = await show(makeCtx(program, ctxIo), ids, {
         markRead: opts.markRead === true,
         comments: parseCommentLimit(opts.comments),
         descriptionMaxChars: parseDescriptionChars('--description-max-chars', opts.descriptionMaxChars),
@@ -268,7 +281,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 退出码：0 成功；2 已被 <agent> 占用 / 状态不可领取（当前=待验收…）/ 前置未解除（DEP-1）；1 任务不存在或参数错误
 `)
     .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string; comments?: string }) =>
-      claim(makeCtx(program, io), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
+      claim(makeCtx(program, ctxIo), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
 
   program
     .command('release')
@@ -287,7 +300,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 退出码：0 成功（状态 → 待规划）；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误、任务不存在、批量中有失败
 `)
     .action(async (id: string | undefined, opts: { requestId?: string; idsFile?: string; dryRun?: boolean }) => {
-      const ctx = makeCtx(program, io);
+      const ctx = makeCtx(program, ctxIo);
       if (opts.idsFile !== undefined) {
         if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
         await runBulk(ctx, {
@@ -312,7 +325,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--image <path>', '附加图片文件（最多 5 次）', (value: string, previous: string[] = []) => [...previous, value], [])
     .option('--request-id <uuid>', '图片评论幂等请求 id；重试时复用')
     .action(async (id: string, text: string[] | undefined, opts: { stdin?: boolean; image?: string[]; requestId?: string }) =>
-      comment(makeCtx(program, io), id, { text, stdin: opts.stdin === true, image: opts.image, requestId: opts.requestId }));
+      comment(makeCtx(program, ctxIo), id, { text, stdin: opts.stdin === true, image: opts.image, requestId: opts.requestId }));
 
   program
     .command('accept')
@@ -323,7 +336,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--reviewer <name>', '验收人（默认 KB_AGENT / kb-cli）')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用，同一 id 不重复写评论')
     .action(async (id: string, opts: { verdict?: string; note?: string; reviewer?: string; requestId?: string }) =>
-      accept(makeCtx(program, io), id, { verdict: opts.verdict, note: opts.note, reviewer: opts.reviewer, requestId: opts.requestId }));
+      accept(makeCtx(program, ctxIo), id, { verdict: opts.verdict, note: opts.note, reviewer: opts.reviewer, requestId: opts.requestId }));
 
   program
     .command('done')
@@ -359,7 +372,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 非 git 工作区（未装 git / 非仓库 / 仓库损坏）只落 stderr 警告、退出码保持 0（结果状态 unavailable）。
 `)
     .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string; close?: boolean; closeRecord?: boolean; changelogTitle?: string; type?: string; changelogBody?: string; knowledgePage?: string; designNotAdvanced?: boolean }) =>
-      done(makeCtx(program, io), id, {
+      done(makeCtx(program, ctxIo), id, {
         notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true,
         requestId: opts.requestId, close: opts.close === true, closeRecord: opts.closeRecord === true,
         changelogTitle: opts.changelogTitle, changelogType: opts.type, changelogBody: opts.changelogBody,
@@ -375,7 +388,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--request-id <uuid>', '幂等请求 id；批量时作为基底按 (动作, 任务) 派生，同输入重跑不重复写')
     .addHelpText('after', '\n示例：\n  kb close 0f6ba9ab-996d-4af5-b0cd-d9208c44936f\n  kb close 0f6ba9ab --request-id 11111111-1111-4111-8111-111111111111\n  kb close --ids-file ids.txt --dry-run            # 批量：只打印清单\n  kb close --ids-file ids.txt                      # 批量：逐条串行，末尾汇总\n退出码：0 成功；2 冲突（他人占用/状态不允许/未关闭后代）；1 其它错误（404 等）、批量中有失败')
     .action(async (id: string | undefined, opts: { requestId?: string; idsFile?: string; dryRun?: boolean }) => {
-      const ctx = makeCtx(program, io);
+      const ctx = makeCtx(program, ctxIo);
       if (opts.idsFile !== undefined) {
         if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
         await runBulk(ctx, {
@@ -400,7 +413,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--to <状态>', '目标状态名（须是本工作区已定义状态，含自定义状态）', '待规划')
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .addHelpText('after', '\n示例：\n  kb reopen 0f6ba9ab                  # 回到「待规划」\n  kb reopen 0f6ba9ab --to 进行中\n退出码：0 成功；2 冲突（占用中/当前不是关闭态）；1 其它错误（400 目标状态非法 / 404）')
-    .action(async (id: string, opts: { to?: string; requestId?: string }) => reopen(makeCtx(program, io), id, { to: opts.to, requestId: opts.requestId }));
+    .action(async (id: string, opts: { to?: string; requestId?: string }) => reopen(makeCtx(program, ctxIo), id, { to: opts.to, requestId: opts.requestId }));
 
   program
     .command('update')
@@ -420,7 +433,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .addHelpText('after', '\n示例：\n  kb update 0f6ba9ab --title "修好的标题"\n  Get-Content spec.md -Raw | kb update 0f6ba9ab --description-stdin\n  kb update 0f6ba9ab --priority 高 --due-date 2026-11-10 --due-time 14:30\n  kb update 0f6ba9ab --status 已废弃\n退出码：0 成功；2 冲突（占用中禁止修改状态，先 done/fail 释放）；1 其它错误（400 状态/字段非法并列出可用状态 / 404 任务不存在）')
     .action(async (id: string, opts: { title?: string; description?: string; descriptionStdin?: boolean; priority?: string; labels?: string; dueDate?: string; dueTime?: string; clearDue?: boolean; parent?: string; clearRoot?: boolean; status?: string; requestId?: string }) =>
-      update(makeCtx(program, io), id, {
+      update(makeCtx(program, ctxIo), id, {
         title: opts.title, description: opts.description, descriptionStdin: opts.descriptionStdin,
         priority: opts.priority, labels: opts.labels, dueDate: opts.dueDate, dueTime: opts.dueTime,
         clearDue: opts.clearDue, parent: opts.parent, clearParent: opts.clearRoot,
@@ -439,7 +452,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 成功；1 缺 --yes（仅回显，不发请求）/ 参数错误 / 任务不存在；2 占用中 / 含子任务
 `)
     .action(async (id: string, opts: { yes?: boolean }) =>
-      deleteIssue(makeCtx(program, io), id, { yes: opts.yes === true }));
+      deleteIssue(makeCtx(program, ctxIo), id, { yes: opts.yes === true }));
 
   program
     .command('fail')
@@ -456,7 +469,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 成功；2 非当前占用者 / fence 已过期 / 未被占用；1 参数错误、任务不存在、批量中有失败
 `)
     .action(async (id: string | undefined, opts: { reason: string; requestId?: string; idsFile?: string; dryRun?: boolean }) => {
-      const ctx = makeCtx(program, io);
+      const ctx = makeCtx(program, ctxIo);
       if (opts.idsFile !== undefined) {
         if (id !== undefined) throw new Error('不能同时指定 <issue-id> 与 --ids-file');
         await runBulk(ctx, {
@@ -477,7 +490,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .description('创建工作空间（path 必须已存在且是目录）')
     .argument('<name>', '工作空间名称')
     .argument('<path>', '工作空间目录路径')
-    .action(async (name: string, path: string) => createSpace(makeCtx(program, io), { name, path }));
+    .action(async (name: string, path: string) => createSpace(makeCtx(program, ctxIo), { name, path }));
 
   program
     .command('delete-space')
@@ -492,7 +505,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 说明：409 原因由服务端给出（例：该空间仍有 1 个知识页及 1 条历史 revision，请先删除或迁移知识页后再移除）。
 `)
     .action(async (workspace: string, opts: { yes?: boolean }) =>
-      deleteSpace(makeCtx(program, io), workspace, { yes: opts.yes === true }));
+      deleteSpace(makeCtx(program, ctxIo), workspace, { yes: opts.yes === true }));
 
   program
     .command('create-issue')
@@ -510,7 +523,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .action(async (workspaceArg: string | undefined, titleArg: string | undefined, opts: { workspace?: string; titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
-      createIssue(makeCtx(program, io), {
+      createIssue(makeCtx(program, ctxIo), {
         workspace: opts.workspace ?? workspaceArg,
         // OPT-02：显式 --workspace 时，单个位置参数是标题
         title: opts.workspace !== undefined && titleArg === undefined ? workspaceArg : titleArg,
@@ -534,34 +547,34 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--expected-updated-at <timestamp>', 'CAS 版本；重试时复用原值')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .action(async (id: string, opts: { parent?: string; root?: boolean; expectedUpdatedAt?: string; requestId?: string }) =>
-      moveIssue(makeCtx(program, io), id, {
+      moveIssue(makeCtx(program, ctxIo), id, {
         parentIssueId: opts.parent, root: opts.root,
         expectedUpdatedAt: opts.expectedUpdatedAt === undefined ? undefined : Number(opts.expectedUpdatedAt),
         requestId: opts.requestId,
       }));
 
-  registerKnowledgeCommands(program, () => makeCtx(program, io));
-  registerChangelogCommands(program, () => makeCtx(program, io));
+  registerKnowledgeCommands(program, () => makeCtx(program, ctxIo));
+  registerChangelogCommands(program, () => makeCtx(program, ctxIo));
 
   // CLI-SWITCH：CLI 三来源账号查看与切换（默认 dry-run，--apply 才写本机配置）
   const accounts = program.command('accounts').description('CLI 三来源（DeepSeek / OpenCode-Go / Codex）账号与当前生效切换');
   accounts.command('list')
     .description('列出已登记的 CLI 账号（id / 来源 / 身份指纹 / 最近发现时间）')
-    .action(async () => accountsList(makeCtx(program, io)));
+    .action(async () => accountsList(makeCtx(program, ctxIo)));
   accounts.command('capabilities')
     .description('列出各来源是否支持切换及不可用原因')
-    .action(async () => accountsCapabilities(makeCtx(program, io)));
+    .action(async () => accountsCapabilities(makeCtx(program, ctxIo)));
   accounts.command('switch')
     .description('切换当前生效账号（默认 dry-run；--apply 才写入本机配置，失败自动回滚）')
     .argument('<account-id>', 'CLI 账号 id（完整 UUID，见 kb accounts list）')
     .option('--apply', '显式写入本机配置文件（默认只打印将写入的计划摘要）')
     .addHelpText('after', '\n示例：\n  kb accounts switch 0f6ba9ab-996d-4af5-b0cd-d9208c44936f            # dry-run\n  kb accounts switch 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --apply    # 真正写入\n退出码：0 成功；2 不支持切换 / 预检阻断 / 已被占用 / 校验失败已回滚；1 参数或其它错误')
     .action(async (id: string, opts: { apply?: boolean }) =>
-      accountSwitch(makeCtx(program, io), id, { apply: opts.apply === true }));
+      accountSwitch(makeCtx(program, ctxIo), id, { apply: opts.apply === true }));
 
   // 依赖（DEP-2）：退出码由 commands/dep.ts 自带映射（0/2/3/4），这里只把结果码转成进程退出码
   const depRun = (run: (ctx: Ctx) => Promise<number>) => async () => {
-    const code = await run(makeCtx(program, io));
+    const code = await run(makeCtx(program, ctxIo));
     if (code !== 0) throw new CommanderError(code, 'agentboard.dep', '');
   };
   const dep = program.command('dep').description('任务依赖（前置 / 被阻塞）：ls 列出、add 建边、rm 删边');
@@ -588,7 +601,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .action(async (workspaceArg: string | undefined, opts: { workspace?: string }) =>
-      statusList(makeCtx(program, io), opts.workspace ?? workspaceArg));
+      statusList(makeCtx(program, ctxIo), opts.workspace ?? workspaceArg));
   status.command('add')
     .description('新增自定义状态（名称在工作区内唯一；内置五状态不可复刻；缺省按 cwd 解析工作区）')
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数时按状态名处理）')
@@ -600,7 +613,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
       const name = nameArg ?? workspaceArg;
       if (name === undefined || name.trim() === '') throw new Error('缺少状态名：kb status add [workspace] <name> --kind <kind>');
       const workspace = opts.workspace ?? (nameArg === undefined ? undefined : workspaceArg);
-      await statusAdd(makeCtx(program, io), workspace, name, {
+      await statusAdd(makeCtx(program, ctxIo), workspace, name, {
         kind: opts.kind,
         sortOrder: opts.sortOrder === undefined ? undefined : Number(opts.sortOrder),
       });
@@ -615,22 +628,22 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
       const target = statusArg ?? workspaceArg;
       if (target === undefined || target.trim() === '') throw new Error('缺少状态名：kb status rm [workspace] <status> --migrate-to <name>');
       const workspace = opts.workspace ?? (statusArg === undefined ? undefined : workspaceArg);
-      await statusRemove(makeCtx(program, io), workspace, target, { migrateTo: opts.migrateTo });
+      await statusRemove(makeCtx(program, ctxIo), workspace, target, { migrateTo: opts.migrateTo });
     });
 
   const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 键经 scripts/agentboard.vbs 隐藏拉起服务，日志在 %APPDATA%\\AgentBoard\\logs）');
   autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；node/仓库/端口/日志写进 vbs）')
-    .action(async () => installAutostart(io));
+    .action(async () => installAutostart(ctxIo));
   autostart.command('uninstall').description('移除自启（仅删自家 Run 键值，vbs 文件保留）')
-    .action(async () => uninstallAutostart(io));
+    .action(async () => uninstallAutostart(ctxIo));
   autostart.command('status').description('自启安装状态 + 服务可达性 + 日志路径')
-    .action(async () => statusAutostart(makeCtx(program, io)));
+    .action(async () => statusAutostart(makeCtx(program, ctxIo)));
 
   const shortcut = program.command('shortcut').description('桌面快捷方式（Windows：AgentBoard.lnk 双击拉起服务并打开看板）');
   shortcut.command('create').description('创建桌面快捷方式（需先 kb autostart install 配置 vbs 与图标）')
-    .action(async () => createShortcut(makeCtx(program, io)));
+    .action(async () => createShortcut(makeCtx(program, ctxIo)));
   shortcut.command('remove').description('移除桌面快捷方式')
-    .action(async () => removeShortcut(makeCtx(program, io)));
+    .action(async () => removeShortcut(makeCtx(program, ctxIo)));
 
   // STORE-2b/3b：工作区库下沉（localize）——服务端状态机的 CLI 编排（jobId 轮询模型），迁移 / 清理 / 回迁逻辑全在服务端
   const workspaceDb = program.command('workspace-db').description('工作区库下沉：把工作区数据从中心库迁到工作区目录独享库（<工作区>/.agentboard/agentboard.db）；含状态查询、半成品清理、反向回迁');
@@ -651,7 +664,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 轮询超时——超时会保留 jobId 供重查；400 参数类）
 `)
     .action(async (workspaceArg: string | undefined, opts: { workspace?: string; dryRun?: boolean; overwrite?: boolean; resume?: boolean }) =>
-      workspaceDbEnable(makeCtx(program, io), opts.workspace ?? workspaceArg, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true, resume: opts.resume === true }));
+      workspaceDbEnable(makeCtx(program, ctxIo), opts.workspace ?? workspaceArg, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true, resume: opts.resume === true }));
   workspaceDb.command('status')
     .description('工作区库状态（只读）：模式 / 写闸门 / 生效库 / 行数与附件 / 快照落后 / localize.json 中间态 / 活动任务')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
@@ -659,7 +672,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 紧急开关 AGENTBOARD_WORKSPACE_DB=disabled 生效且该区已下沉时，首行醒目提示需 revert 才能回中心库；failed 态末行提示 resume / cleanup。
 退出码：0 查询成功（不论模式）；1 工作区不存在 / 服务不可达
 `)
-    .action(async (opts: { workspace?: string }) => workspaceDbStatus(makeCtx(program, io), opts.workspace));
+    .action(async (opts: { workspace?: string }) => workspaceDbStatus(makeCtx(program, ctxIo), opts.workspace));
   workspaceDb.command('cleanup')
     .description('清理失败迁移的半成品（工作区侧目标库 / 附件目录 / 残留快照 / localize.json）；中心库数据不动，db_mode 落回 center')
     .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
@@ -667,7 +680,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 清理完成；2 无可清理的半成品 / 已有任务在跑（409）；
 1 清理被拒（已下沉的活库 / 工作区库是唯一数据副本——按提示先 revert）、工作区不存在、轮询超时
 `)
-    .action(async (opts: { workspace: string }) => workspaceDbCleanup(makeCtx(program, io), opts.workspace));
+    .action(async (opts: { workspace: string }) => workspaceDbCleanup(makeCtx(program, ctxIo), opts.workspace));
   workspaceDb.command('revert')
     .description('反向回迁：把已下沉工作区的数据拷回中心库（预检→回拷附件→回拷数据→收尾），工作区库移入 <工作区>/.agentboard/backup/')
     .requiredOption('--workspace <id|名>', '工作空间 id 或名称')
@@ -675,7 +688,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 回迁完成；2 已有任务在跑（409）；
 1 回迁被拒或失败（未下沉 / 中心库已有该区数据 / 校验失败等，中心库数据不变）、工作区不存在、轮询超时
 `)
-    .action(async (opts: { workspace: string }) => workspaceDbRevert(makeCtx(program, io), opts.workspace));
+    .action(async (opts: { workspace: string }) => workspaceDbRevert(makeCtx(program, ctxIo), opts.workspace));
 
   // STORE-5：工作区文本快照（库为准，快照是派生物）——服务端单写者导出 / 只读校验 / 空库导入
   const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
@@ -692,7 +705,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 成功；2 工作区库迁移进行中；1 其它错误
 `)
     .action(async (workspaceArg: string | undefined, opts: { workspace?: string; includeMessages?: boolean; includeAttachments?: boolean }) =>
-      workspaceDbSnapshotExport(makeCtx(program, io), opts.workspace ?? workspaceArg, {
+      workspaceDbSnapshotExport(makeCtx(program, ctxIo), opts.workspace ?? workspaceArg, {
         includeMessages: opts.includeMessages === true,
         includeAttachments: opts.includeAttachments === true,
       }));
@@ -707,7 +720,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 校验通过；1 快照不可导入（哈希/行数/schema_version 不符）、工作区不存在
 `)
     .action(async (workspace: string, opts: { file?: string }) =>
-      workspaceDbSnapshotValidate(makeCtx(program, io), workspace, { dir: opts.file }));
+      workspaceDbSnapshotValidate(makeCtx(program, ctxIo), workspace, { dir: opts.file }));
   snapshot.command('import')
     .description('导入快照到工作区库：只允许空库；--replace 先 VACUUM INTO 备份再覆盖，失败整体回滚')
     .argument('<workspace>', '工作空间 id 或名称')
@@ -720,7 +733,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 退出码：0 导入成功；2 该工作区尚未下沉 / 目标库非空且未加 --replace；1 快照不可导入（哈希/行数/外键校验失败）
 `)
     .action(async (workspace: string, opts: { file?: string; replace?: boolean }) =>
-      workspaceDbSnapshotImport(makeCtx(program, io), workspace, { dir: opts.file, replace: opts.replace === true }));
+      workspaceDbSnapshotImport(makeCtx(program, ctxIo), workspace, { dir: opts.file, replace: opts.replace === true }));
   // STORE-6：中心库全局快照（注册表/成员/账号元数据/公共知识；敏感引用脱敏为 ***）
   snapshot.command('center-export')
     .description('导出中心库全局快照到 <中心库同级>/center-snapshot（workspace 注册表、成员、账号/签到元数据、公共知识）')
@@ -729,7 +742,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   kb workspace-db snapshot center-export
 退出码：0 成功；1 其它错误
 `)
-    .action(async () => workspaceDbCenterSnapshotExport(makeCtx(program, io)));
+    .action(async () => workspaceDbCenterSnapshotExport(makeCtx(program, ctxIo)));
   snapshot.command('center-validate')
     .description('校验中心库快照：manifest + 每文件 sha256/行数 + 脱敏自检（只读）')
     .addHelpText('after', `
@@ -737,17 +750,23 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   kb workspace-db snapshot center-validate
 退出码：0 校验通过；1 快照不可导入 / 脱敏自检失败
 `)
-    .action(async () => workspaceDbCenterSnapshotValidate(makeCtx(program, io)));
+    .action(async () => workspaceDbCenterSnapshotValidate(makeCtx(program, ctxIo)));
 
   // DEC-4：决策命令组（ask / decisions / decision / answer / stop-check）
-  registerDecisionCommands(program, io, makeCtx);
+  registerDecisionCommands(program, ctxIo, makeCtx);
 
   try {
     await program.parseAsync(argv);
     return commandExitCode;
   } catch (err) {
     if (err instanceof CommanderError) return err.exitCode;
-    return toExit(err, io, program.opts<{ json?: boolean }>().json === true);
+    return toExit(err, ctxIo, program.opts<{ json?: boolean }>().json === true);
+  } finally {
+    // ARCH-06：只写 stderr；未设 KB_METRICS 时一个字节都不输出（改造前后 stdout/stderr 逐字一致）
+    if (metricsEnabled) {
+      const { bytes, lines } = meter.stats();
+      io.writeErr(`[kb] cmd=${metricsCommand} out=${bytes}B lines=${lines}\n`);
+    }
   }
 }
 

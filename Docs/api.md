@@ -639,6 +639,7 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 - **单对象命令**（`show` / `claim` / `done` / `close` / `settings` / `knowledge show` / `decision` / `changelog show` / `workspace-db *`）→ 对象直出，不套 `items`。
 - 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`、`decisions`）原样透传，`next_offset` 缺省补 `null`。
 - stdout 只放 JSON；提示/警告一律走 stderr。复算命令要按信封取数：`kb list-tasks --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`。
+- 输出体积观测（ARCH-06，环境变量 `KB_METRICS`）：设为 `1` 时命令结束前向 **stderr** 追加一行 `[kb] cmd=<顶层命令名> out=<写入 stdout 的 UTF-8 字节数>B lines=<行数>`；`0`/未设完全不输出（stdout/stderr 与改造前逐字一致）。该行只走 stderr，不破坏 `--json` 的 `JSON.parse`，不改变退出码；嵌套命令取顶层名（如 `kb knowledge search` → `knowledge`）。
 
 ### 11.2 CLI 退出码表（`kb --help` 末尾同源，`index.ts` `EXIT_CODE_HELP`）
 

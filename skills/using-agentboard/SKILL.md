@@ -145,6 +145,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 ```
 
 - 全局选项：`--server <url>`（覆盖 `KB_SERVER`）、`--json`（输出原始 JSON）。
+- 输出体积观测（ARCH-06）：设 `KB_METRICS=1` 时命令结束后向 **stderr** 追加一行 `[kb] cmd=<顶层命令> out=<字节数>B lines=<行数>`（统计本次写到 stdout 的 UTF-8 字节数与行数；嵌套命令取顶层名如 `knowledge`，未进入命令时为 `-`）。未设或设 `0` 时不输出，stdout/stderr 与改造前逐字一致；该行不写 stdout，不影响 `--json` 解析与退出码。
 - 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
 - **`kb done` 的 1 是「已生效但没提交」**（GIT-OBSERVABLE）：done 已把卡推进到待验收（或已关闭），但自动提交未完成（`git_commit.status='not-committed'`，原因码 `NO_BASELINE` / `COMMIT_FAILED` / `ZERO_HIT` / `PARALLEL_UNDECLARED`）时，CLI 在 stderr 打「未提交 + 原因 + 可照抄补救命令」并 exit 1；按 stderr 补救，**不要重跑 `kb done`**。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。带 `--close` 且命中阻断性缺口时 CLI 会跳过 close（exit 1），补救后 `kb close <id>`。`--json` 仍输出单个 issue JSON，判定读 `git_commit.status/reason`。
 - `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。

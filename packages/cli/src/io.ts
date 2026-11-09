@@ -30,6 +30,40 @@ export function readAllStdin(stream: Readable): Promise<string> {
   });
 }
 
+/**
+ * ARCH-06：输出体积埋点（KB_METRICS=1）。
+ * 只在「最终写 stdout 的那一层」统计已写出的字节数（UTF-8）与行数；stderr 原样透传、不计数。
+ * 不在启用开关本身：是否打印由入口 main 决定，未设 KB_METRICS 时与改造前逐字节一致。
+ */
+export interface OutputMeter {
+  io: Io;
+  /** 已写入 stdout 的字节数与行数（行数按换行符计，末尾无换行的非空片段也算一行） */
+  stats(): { bytes: number; lines: number };
+}
+
+export function meterIo(inner: Io): OutputMeter {
+  let bytes = 0;
+  let lines = 0;
+  /** 是否有一行已写出内容但还没遇到换行（跨 write 分片时避免把同一条长行数成多行） */
+  let pendingLine = false;
+  const io: Io = {
+    write: (line) => {
+      bytes += Buffer.byteLength(line, 'utf8');
+      const parts = line.split('\n');
+      if (parts.length === 1) {
+        if (line !== '') pendingLine = true;
+      } else {
+        lines += parts.length - 1;
+        pendingLine = parts[parts.length - 1] !== '';
+      }
+      inner.write(line);
+    },
+    writeErr: (line) => inner.writeErr(line),
+    readStdin: () => inner.readStdin(),
+  };
+  return { io, stats: () => ({ bytes, lines: lines + (pendingLine ? 1 : 0) }) };
+}
+
 export const processIo: Io = {
   write: (line) => {
     process.stdout.write(line);
