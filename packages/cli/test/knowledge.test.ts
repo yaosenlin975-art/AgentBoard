@@ -78,7 +78,7 @@ describe('knowledge CLI', () => {
     expect(stream.err.join('')).not.toContain('已被占用');
   });
   it('claim JSON includes server knowledge and --no-knowledge explicitly disables it', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'task', knowledge: { enabled: true, query: '缓存', items: [page] } })));
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'task', status: '进行中', knowledge: { enabled: true, query: '缓存', items: [page] } })));
     vi.stubGlobal('fetch', fetch); const stream = io();
     expect(await main(['node', 'kb', '--json', 'claim', 'task', '--no-knowledge'], stream)).toBe(0);
     expect(JSON.parse(fetch.mock.calls[0]![1].body)).toMatchObject({ knowledge_enabled: false });

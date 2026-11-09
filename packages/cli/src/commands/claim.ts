@@ -27,6 +27,10 @@ export async function claim(
   const issue = await request<Issue & { knowledge?: TaskKnowledge; claim_fence?: number }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/claim`, body, opts.requestId,
   );
+  // OPT-08：领取结果以服务端返回的最新状态为准；状态不符直接报错，不打印「领取成功」
+  if (issue.status !== '进行中') {
+    throw new Error(`领取后状态异常：期望「进行中」，服务端返回「${issue.status}」（任务 ${issue.id}）`);
+  }
   // BORROW-0.3：领取成功即持久化 fence，done/fail 自动携带；失败仅告警不影响领取
   if (typeof issue.claim_fence === 'number') {
     try {

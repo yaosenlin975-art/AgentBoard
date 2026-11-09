@@ -75,6 +75,10 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null; git_commit?: GitCommitInfo | null }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/done`, body, args.requestId,
   );
+  // OPT-08：完成结果以服务端返回的最新状态为准；状态不符直接报错，不打印「已完成」
+  if (issue.status !== '待验收') {
+    throw new Error(`完成后状态异常：期望「待验收」，服务端返回「${issue.status}」（任务 ${issue.id}）`);
+  }
   clearClaimedFence(issueId);
 
   const gitCommit = issue.git_commit ?? null;
@@ -90,6 +94,7 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
       return;
     }
     ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
+    ctx.io.write(`占用者: ${issue.claimed_by ?? '（未占用）'}\n`);
     // 软提醒：建议而非错误，不加 ERROR 前缀、不影响退出码
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
   };
@@ -120,6 +125,7 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
       return;
     }
     ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
+    ctx.io.write(`占用者: ${issue.claimed_by ?? '（未占用）'}\n`);
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
     if (outcome.released) ctx.io.write('已释放自有占用后关闭\n');
     ctx.io.write(`已关闭: ${closed.id}\n状态: ${closed.status}（done → close 一步收口）\n`);

@@ -570,6 +570,16 @@ describe('claim', () => {
     }
   });
 
+  it('OPT-08 领取后状态不符：报错退出 1，不打印领取成功', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/claim' ? { status: 200, body: { ...ISSUE, status: '待规划' } } : undefined;
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'claim', 'iss1'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('领取后状态异常');
+    expect(t.out()).not.toContain('领取成功');
+  });
+
   it('409 → 退出码 2 + stderr 已被占用', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/claim'
@@ -733,6 +743,28 @@ describe('done / fail', () => {
       body: { agent_id: 'kb-cli', notes: '已完成并自测' },
     });
     expect(t.out()).toContain('状态: 待验收');
+  });
+
+  it('OPT-08 done 输出自带 status/占用者，与回读一致', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/done'
+        ? { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: null } }
+        : undefined;
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--notes', 'ok'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('状态: 待验收');
+    expect(t.out()).toContain('占用者: （未占用）');
+  });
+
+  it('OPT-08 完成后状态不符：报错退出 1，不打印已完成', async () => {
+    handler = (m, u) =>
+      m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '进行中' } } : undefined;
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('完成后状态异常');
+    expect(t.out()).not.toContain('已完成');
   });
 
   it('done 无 --notes：体只含 agent_id', async () => {
