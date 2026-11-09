@@ -20,6 +20,7 @@ import type { SecretVault } from '../src/services/accounts/secretVault.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
 import { attachClientSnapshot, createManagedAccount, getManagedAccount } from '../src/db/repos/managedAccount.js';
 import { createAccountOperation, getAccountOperation, updateAccountOperation } from '../src/db/repos/accountOperation.js';
+import { createQuotaService, type QuotaService } from '../src/services/quotas/quotaService.js';
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
 import { defaultTraeStoragePath } from '../src/services/accounts/traeProvider.js';
@@ -70,7 +71,7 @@ describe('account api (managed-accounts / account-operations)', () => {
     return account.id;
   }
 
-  async function bootCheckin(): Promise<{ provider: FakeCheckinProvider; vault: FakeCheckinVault; boundAccount: (name: string) => Promise<string> }> {
+  async function bootCheckin(quotas?: Pick<QuotaService, 'get'>): Promise<{ provider: FakeCheckinProvider; vault: FakeCheckinVault; boundAccount: (name: string) => Promise<string> }> {
     const provider = new FakeCheckinProvider();
     const vault = new FakeCheckinVault();
     const created = await createApp({
@@ -84,6 +85,7 @@ describe('account api (managed-accounts / account-operations)', () => {
       workbuddyProvider: env.provider(t.db),
       checkinProvider: provider,
       secretVault: vault as unknown as SecretVault,
+      ...(quotas ? { quotas } : {}),
     });
     app = created.app;
     const boundAccount = async (name: string): Promise<string> => {
@@ -381,6 +383,62 @@ describe('account api (managed-accounts / account-operations)', () => {
     expect(ops.body).toHaveLength(2);
     expect(JSON.stringify(ops.body)).not.toContain(CREDENTIAL_MARK);
     expect((await request(app).get('/api/account-operations?batch_id=nope')).status).toBe(400);
+  }, 30000);
+
+  it('resets real account and aggregate quota caches after successful and failed background batches', async () => {
+    let credits = 500;
+    let quotaFetches = 0;
+    const quotas = createQuotaService({
+      env: {},
+      homeDir: spaceDir,
+      platformCredential: async source => source === 'workbuddy'
+        ? { kind: 'ok', token: 'quota-test-token', accountName: null }
+        : { kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: 'test credential unavailable' },
+      fetchImpl: async () => {
+        quotaFetches += 1;
+        return new Response(JSON.stringify({ data: { TotalCredits: credits } }), { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    });
+    const { provider, boundAccount } = await bootCheckin(quotas);
+    provider.submitDelayMs = 40;
+    const accountId = await boundAccount('quota-invalidation');
+
+    const before = await request(app).get(`/api/managed-account-quotas?account_id=${accountId}`).expect(200);
+    expect(before.body.items[0]).toMatchObject({ source: 'workbuddy', status: 'ok', balance: 500 });
+    const beforeAggregate = await request(app).get('/api/managed-account-quotas').expect(200);
+    expect(beforeAggregate.body.items.find((item: { source: string }) => item.source === 'workbuddy')).toMatchObject({ status: 'ok', balance: 500 });
+    expect(quotaFetches).toBe(2);
+
+    credits = 508;
+    const created = await request(app).post('/api/checkin-runs')
+      .set('Idempotency-Key', randomUUID())
+      .send({ app_id: 'workbuddy_desktop', account_ids: [accountId] })
+      .expect(202);
+    expect(created.body.replayed).toBe(false);
+    expect(await waitBatch(created.body.batch.id)).toMatchObject({ status: 'succeeded' });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const after = await request(app).get(`/api/managed-account-quotas?account_id=${accountId}`).expect(200);
+    expect(after.body.items[0]).toMatchObject({ source: 'workbuddy', status: 'ok', balance: 508 });
+    const afterAggregate = await request(app).get('/api/managed-account-quotas').expect(200);
+    expect(afterAggregate.body.items.find((item: { source: string }) => item.source === 'workbuddy')).toMatchObject({ status: 'ok', balance: 508 });
+    expect(quotaFetches).toBe(4);
+
+    const failedBatchAccount = await boundAccount('quota-invalidation-failed');
+    provider.submitResults = ['unknown'];
+    credits = 600;
+    const failedBatch = await request(app).post('/api/checkin-runs')
+      .set('Idempotency-Key', randomUUID())
+      .send({ app_id: 'workbuddy_desktop', account_ids: [failedBatchAccount] })
+      .expect(202);
+    expect(await waitBatch(failedBatch.body.batch.id)).toMatchObject({ status: 'failed' });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const afterFailure = await request(app).get(`/api/managed-account-quotas?account_id=${accountId}`).expect(200);
+    expect(afterFailure.body.items[0]).toMatchObject({ source: 'workbuddy', status: 'ok', balance: 600 });
+    const afterFailureAggregate = await request(app).get('/api/managed-account-quotas').expect(200);
+    expect(afterFailureAggregate.body.items.find((item: { source: string }) => item.source === 'workbuddy')).toMatchObject({ status: 'ok', balance: 600 });
+    expect(quotaFetches).toBe(6);
   }, 30000);
 
   it('checkin cancel only affects queued items and finished batches cannot be cancelled', async () => {

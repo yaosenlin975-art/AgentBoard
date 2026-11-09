@@ -666,4 +666,48 @@ describe('托管账号额度缓存隔离', () => {
     await service.get({ accountId: accountA, source: 'workbuddy' });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
+
+  it('reset 后旧在途请求不能回写缓存或清除新在途请求', async () => {
+    const accountId = '33333333-3333-4333-8333-333333333333';
+    const releases: Array<(response: Response) => void> = [];
+    const fetchImpl = vi.fn(() => new Promise<Response>(resolve => releases.push(resolve)));
+    const service = createQuotaService({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      platformCredential: async () => ({ kind: 'ok' as const, token: 'quota-test-token', accountName: null }),
+      homeDir: tempHome({}),
+      env: {},
+      now: () => 1_000,
+    });
+    const getBalance = async (read: ReturnType<typeof service.get>) => (await read).items[0]!.balance;
+    const waitForFetchCount = async (count: number): Promise<void> => {
+      for (let attempt = 0; attempt < 50 && fetchImpl.mock.calls.length < count; attempt += 1) {
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      expect(fetchImpl).toHaveBeenCalledTimes(count);
+    };
+    const reply = (balance: number) => new Response(JSON.stringify({ data: { TotalCredits: balance } }), { status: 200 });
+
+    const oldRead = service.get({ accountId, source: 'workbuddy' });
+    await waitForFetchCount(1);
+    service.reset();
+    const newRead = service.get({ accountId, source: 'workbuddy' });
+    await waitForFetchCount(2);
+
+    try {
+      releases[0]!(reply(101.25));
+      expect(await getBalance(oldRead)).toBe(101.25);
+
+      const concurrentRead = service.get({ accountId, source: 'workbuddy' });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      releases[1]!(reply(202.5));
+      const [newBalance, concurrentBalance] = await Promise.all([getBalance(newRead), getBalance(concurrentRead)]);
+      expect(newBalance).toBe(202.5);
+      expect(concurrentBalance).toBe(202.5);
+      expect(await service.get({ accountId, source: 'workbuddy' }).then(snapshot => snapshot.items[0]!.balance)).toBe(202.5);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      for (const release of releases) release(reply(0));
+    }
+  });
 });

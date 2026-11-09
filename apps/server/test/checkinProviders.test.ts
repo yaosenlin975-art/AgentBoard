@@ -31,24 +31,67 @@ const fakeFetch = (routes: Array<{ match: (url: string, method: string) => boole
 describe('workbuddy checkin provider', () => {
   it('uses checkin-activity-status (not checkin-status) and claims when not done', async () => {
     const { impl, calls } = fakeFetch([
-      { match: url => url.endsWith('/billing/meter/checkin-activity-status'), body: { data: { today_checked_in: false } } },
-      { match: url => url.endsWith('/billing/meter/daily-checkin'), status: 200, body: { code: 0 } },
+      { match: url => url.endsWith('/billing/meter/checkin-activity-status'), body: { code: 0, data: { today_checked_in: true } } },
+      { match: url => url.endsWith('/billing/meter/daily-checkin'), status: 200, body: { code: 0, data: { today_checked_in: true, reward_credit: 8 } } },
     ]);
     const provider = createWorkbuddyCheckinProvider({ ...base, fetchImpl: impl });
-    expect(await provider.queryStatus(TOKEN)).toBe('not_done');
     expect(await provider.submitCheckin(TOKEN)).toBe('succeeded');
+    expect(calls.map(call => call.method)).toEqual(['POST', 'POST']);
+    expect(calls.map(call => call.body)).toEqual(['{}', '{}']);
     expect(calls.map(call => call.url)).toEqual([
-      'https://www.codebuddy.cn/billing/meter/checkin-activity-status',
       'https://www.codebuddy.cn/billing/meter/daily-checkin',
+      'https://www.codebuddy.cn/billing/meter/checkin-activity-status',
     ]);
     expect(calls.some(call => /\/billing\/meter\/checkin-status$/.test(call.url))).toBe(false);
   });
 
+  it('reads explicit not_done from the source before a claim is attempted', async () => {
+    const { impl, calls } = fakeFetch([{ match: url => url.endsWith('/checkin-activity-status'), body: { code: 0, data: { today_checked_in: false } } }]);
+    const provider = createWorkbuddyCheckinProvider({ ...base, fetchImpl: impl });
+    expect(await provider.queryStatus(TOKEN)).toBe('not_done');
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.body).toBe('{}');
+  });
+
   it('reports already_done from today_checked_in without claiming', async () => {
-    const { impl, calls } = fakeFetch([{ match: url => url.endsWith('/checkin-activity-status'), body: { data: { today_checked_in: true } } }]);
+    const { impl, calls } = fakeFetch([{ match: url => url.endsWith('/checkin-activity-status'), body: { code: 0, data: { today_checked_in: true } } }]);
     const provider = createWorkbuddyCheckinProvider({ ...base, fetchImpl: impl });
     expect(await provider.queryStatus(TOKEN)).toBe('already_done');
     expect(calls).toHaveLength(1);
+  });
+
+  it('treats missing or failed source status as unknown', async () => {
+    const missingCode = fakeFetch([{ match: url => url.endsWith('/checkin-activity-status'), body: { data: { today_checked_in: false } } }]);
+    const failedCode = fakeFetch([{ match: url => url.endsWith('/checkin-activity-status'), body: { code: 17, data: { today_checked_in: false } } }]);
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: missingCode.impl }).queryStatus(TOKEN)).toBe('unknown');
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: failedCode.impl }).queryStatus(TOKEN)).toBe('unknown');
+  });
+
+  it('does not treat HTTP success or claim data alone as a successful claim', async () => {
+    const missingCode = fakeFetch([{ match: url => url.endsWith('/daily-checkin'), status: 200, body: { data: { reward_credit: 8 } } }]);
+    const missingData = fakeFetch([{ match: url => url.endsWith('/daily-checkin'), status: 200, body: { code: 0 } }]);
+    const duplicate = fakeFetch([
+      { match: url => url.endsWith('/daily-checkin'), status: 200, body: { code: 10001, data: {} } },
+      { match: url => url.endsWith('/checkin-activity-status'), status: 200, body: { code: 0, data: { today_checked_in: true } } },
+    ]);
+    const unconfirmedDuplicate = fakeFetch([
+      { match: url => url.endsWith('/daily-checkin'), status: 200, body: { code: 10001, data: {} } },
+      { match: url => url.endsWith('/checkin-activity-status'), status: 200, body: { code: 0, data: { today_checked_in: false } } },
+    ]);
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: missingCode.impl }).submitCheckin(TOKEN)).toBe('unknown');
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: missingData.impl }).submitCheckin(TOKEN)).toBe('unknown');
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: duplicate.impl }).submitCheckin(TOKEN)).toBe('already_done');
+    expect(await createWorkbuddyCheckinProvider({ ...base, fetchImpl: unconfirmedDuplicate.impl }).submitCheckin(TOKEN)).toBe('unknown');
+  });
+
+  it('does not confirm a code=0 claim when the source status remains not_done', async () => {
+    const { impl, calls } = fakeFetch([
+      { match: url => url.endsWith('/daily-checkin'), status: 200, body: { code: 0, data: { reward_credit: 8 } } },
+      { match: url => url.endsWith('/checkin-activity-status'), status: 200, body: { code: 0, data: { today_checked_in: false } } },
+    ]);
+    const provider = createWorkbuddyCheckinProvider({ ...base, fetchImpl: impl });
+    expect(await provider.submitCheckin(TOKEN)).toBe('unknown');
+    expect(calls.map(call => call.url)).toHaveLength(2);
   });
 
   it('maps 401 to credential-invalid error', async () => {

@@ -585,6 +585,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
 
   const cache = new Map<string, Cached>();
   const inFlight = new Map<string, Promise<QuotaResult>>();
+  let cacheGeneration = 0;
 
   /** 上次命中的 DeepSeek key 来源：命中后在同一缓存生命周期内复用，避免每次把 N 个候选全试一遍 */
   let deepseekSuccessSource: DeepseekKeySource | null = null;
@@ -863,22 +864,25 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     if (cached && cached.expiresAt > now()) return cached.result;
     const running = inFlight.get(key);
     if (running) return running;
+    const generation = cacheGeneration;
     const promise = (async () => {
       const loader = loaderFor(source, accountId);
       const result = await loader();
-      const previous = cache.get(key);
-      const failures = result.status === 'error' ? (previous?.failures ?? 0) + 1 : 0;
-      const backoff = result.status === 'error'
-        ? Math.min(ttlMs * 2 ** Math.max(0, failures - 1), maxBackoffMs)
-        : ttlMs;
-      cache.set(key, { result, expiresAt: now() + backoff, failures });
+      if (generation === cacheGeneration) {
+        const previous = cache.get(key);
+        const failures = result.status === 'error' ? (previous?.failures ?? 0) + 1 : 0;
+        const backoff = result.status === 'error'
+          ? Math.min(ttlMs * 2 ** Math.max(0, failures - 1), maxBackoffMs)
+          : ttlMs;
+        cache.set(key, { result, expiresAt: now() + backoff, failures });
+      }
       return result;
     })();
     inFlight.set(key, promise);
     try {
       return await promise;
     } finally {
-      inFlight.delete(key);
+      if (inFlight.get(key) === promise) inFlight.delete(key);
     }
   }
 
@@ -889,6 +893,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
       return { items, fetched_at: now() };
     },
     reset() {
+      cacheGeneration += 1;
       cache.clear();
       inFlight.clear();
     },

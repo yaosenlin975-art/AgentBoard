@@ -63,7 +63,7 @@ export interface AccountRouterDeps {
   /** ACC-11：凭据导出 runner（仅测试注入；生产走真实 python 子进程） */
   credentialRunner?: ExportRunner;
   /** ACC-QUOTA-01：额度聚合（仅测试注入；生产用 60s 缓存的内置实现） */
-  quotas?: Pick<QuotaService, 'get'>;
+  quotas?: Pick<QuotaService, 'get'> & Partial<Pick<QuotaService, 'reset'>>;
   /** MINIMAX-PATH：minimax 客户端探测（仅测试注入；生产用 60s 缓存的内置实现） */
   minimaxClientProbe?: MinimaxClientProbe;
   /** ACC-CLI-MULTI：CLI 三来源的凭据保险库（生产复用 SecretVault；测试注入内存替身） */
@@ -610,7 +610,9 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       account_ids: accounts.map(account => account.id),
       profile_local_day: profileLocalDay(),
     }));
-    if (!created.replayed) startCheckinBatchInBackground({ db, vault, provider }, created.result.id);
+    if (!created.replayed) {
+      void startCheckinBatchInBackground({ db, vault, provider }, created.result.id).finally(() => quotas.reset?.());
+    }
     res.status(202).json({ batch: created.result, replayed: created.replayed });
   });
 

@@ -154,8 +154,8 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
 }
 
 /** 路由用：不等待执行完成，批次状态经 GET /api/checkin-runs/:id 轮询 */
-export function startCheckinBatchInBackground(deps: CheckinRunnerDeps, batchId: string): void {
-  void runCheckinBatch(deps, batchId).catch(() => {
+export function startCheckinBatchInBackground(deps: CheckinRunnerDeps, batchId: string): Promise<void> {
+  return runCheckinBatch(deps, batchId).then(() => undefined).catch(() => {
     // 执行器内部已把逐账号结果落库；批级异常保留 running 由下次启动 recoverAccountOperations 收敛
   });
 }

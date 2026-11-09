@@ -129,23 +129,38 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
   const travelState = (data: Record<string, unknown>) =>
     typeof data.state === 'string' ? data.state.trim().toLowerCase()
       : typeof data.status === 'string' ? data.status.trim().toLowerCase() : '';
+  const queryCheckinStatus = async (token: string): Promise<CheckinStatusQuery> => {
+    const result = await request('/billing/meter/checkin-activity-status', token, { method: 'POST', body: '{}' });
+    if (result.status < 200 || result.status >= 300) return 'unknown';
+    const body = asRecord(result.body);
+    if (body.code !== 0) return 'unknown';
+    const data = dataOf(result.body);
+    if (data.today_checked_in === true) return 'already_done';
+    if (data.today_checked_in === false) return 'not_done';
+    return 'unknown';
+  };
 
   return baseSpec(config, {
     // 注意：`/billing/meter/checkin-status` 恒返回 active=false，真实状态只有 activity-status 给
-    status: async (token) => {
-      const result = await request('/billing/meter/checkin-activity-status', token);
-      if (result.status === 429) return 'unknown';
-      const data = dataOf(result.body);
-      if (data.today_checked_in === true) return 'already_done';
-      if (data.today_checked_in === false) return 'not_done';
-      return 'unknown';
-    },
+    status: queryCheckinStatus,
     claim: async (token) => {
       const result = await request('/billing/meter/daily-checkin', token, { method: 'POST', body: '{}' });
       if (result.status === 429) return 'rate_limited';
-      if (result.status >= 200 && result.status < 300) return 'succeeded';
-      const data = dataOf(result.body);
-      if (data.already_checked_in === true || data.code === 'ALREADY_CHECKED_IN') return 'already_done';
+      if (result.status >= 200 && result.status < 300) {
+        const body = asRecord(result.body);
+        // 仓库参考脚本将 code=10001 解释为「今日已签到」；本实现仍回查来源状态确认。
+        if (body.code === 10001 || body.code === 0) {
+          try {
+            const confirmed = await queryCheckinStatus(token);
+            if (confirmed !== 'already_done') return 'unknown';
+            return body.code === 0 ? 'succeeded' : 'already_done';
+          } catch (error) {
+            if (error instanceof ApiError && error.code === 'CHECKIN_CREDENTIAL_INVALID') throw error;
+            return 'unknown';
+          }
+        }
+        return body.code === undefined ? 'unknown' : 'failed';
+      }
       return classifyFailure(result);
     },
     // 猫猫旅行：idle → depart（派出） / traveling → 已派出 / arrived → claim（领取） / 其它异常 → 失败
