@@ -226,10 +226,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - **先取 id 再拼链接**：用 `kb knowledge resolve <ref>` 或 `kb knowledge link <id|slug>` 拿到 `id`，不要手写 slug 冒充 id，也不要按搜索结果第一条兜底。
 - **Markdown 形态**：`[知识卡：{title}](knowledge:{id})`
 - **纯文本降级**（飞书消息 / 日志 / 终端）：`知识卡《{title}》 knowledge:{id} · rev:{n}`
-- **禁止**：
-  - 用 `file:///Docs/*.md` 或 `Docs/xxx.md` 当“知识引用”——文件路径只用于“改这个文件”的代码定位，且必须显式说明是文件路径；
-  - agent 对外输出 `knowledge:<slug>` 或裸 slug——slug 只是输入别名，可能歧义；
-  - 只发裸 token 就指望对方能点开——至少要同时给可读标题（A8 最差形态）。
+- **禁止**：用 `file:///Docs/*.md` 或 `Docs/xxx.md` 当“知识引用”（文件路径只用于「改这个文件」的代码定位，须显式说明）；对外输出 `knowledge:<slug>` 或裸 slug（slug 只是输入别名、可能歧义）；只发裸 token 就指望对方能点开（至少要给可读标题，A8 最差形态）。
 - **反查**：文档迁移或重构后，先 `kb knowledge find-source <path>` 找出引用了该文件的知识页，再逐页 `kb knowledge revise --expected-revision <n>` 更新；不要批量改历史消息里的旧路径（过渡口径见设计 §9）。
 - **解析与展示**：`kb knowledge show <page-id>` 的 `--scope` 可省略（内部 resolve）；`--json` 里的 `link.ref` 可直接用于拼串。
 
@@ -271,6 +268,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - 未改文件的任务（纯看板操作）不写 `--scope`，`notes` 里写明「本轮无文件改动」。
 - **`--scope` 与知识页/变更日志是两件事**：GIT-ON-DONE 只管提交哪些路径，不替代「领任务 → 执行 → 汇报」第 4 步的 done 前置记录；纯看板操作同样要写变更日志，知识页按「有可复用结论才写」判定，不写就在 notes 声明原因。
 - **实现必须有接线（RULE-3）**：新增 REST 路由 / WS 事件 / 定时器 / CLI 命令 / DB 迁移的卡，`done` 前必须证明外部可触达（真实 app 断言 / 事件实发 / ticker 实跑），或在卡面写明接线归属并建 `blocks` 边；两者都没有不得 `done`。细则见 `executing-task` 的同名段。
+- **收尾状态回读（OPT-08）**：`kb claim` / `kb done` / `kb fail` / `kb close` 的文本输出自带 `状态:`（claim、done 另带 `占用者:`），`--json` 保留 `status` / `claimed_by`；核对直接读这条输出，不额外补 `kb show`。输出缺失/不可解析/无状态字段/与预期不符时，必须补 `kb show <id> --json` 复核，仍不符按未完成处理。预期：claim→进行中、done→待验收、fail→待规划、close→已关闭。
 - 提交信息、分支与合并规则仍按项目 git 约定执行；GIT-ON-DONE 只解决「提交哪些路径」，不改变分支策略。
 - **提交信息带卡号（RULE-1）**：提交主题或正文必须包含本卡卡号（完整 UUID，或服务端自动生成的 `[shortId]`）；无卡提交视为违规，事后补卡也不能把这次提交洗成合规操作。
 - **不能自动提交时看原因码，别只看「没提交」**（`done` 仍成功，评论里带声明范围；CLI 会 stderr + exit 1，`unavailable` 只警告）：
@@ -340,24 +338,18 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 | 「comment 随便两句就行」 | 收尾回报必须含工作区 id + 路径、改动文件清单、是否跨工作区、验证命令与结果；缺一项视为未完成。 |
 | 「id 太长，用前 8 位就行」 | 命令里可以：`kb show <≥8 位唯一前缀>` 能解析（多命中 exit 2）。但**卡面、依赖边、提交信息**仍要写完整 36 位 UUID——前缀会随新卡增多而歧义，事后无法复算。 |
 | 「子卡都 done 了，父卡直接 close」 | 子卡 done 只到待验收；父卡可以 `done`，但 `close` 要求所有后代已关闭，否则 409。 |
-| 「`--scope a,b` 更短」 | 优先逐条 `--scope`；逗号串实测可被 CLI 拆分，但顺序/语义不保证，脚本里不要用。 |
 | 「先 `kb release` 再 claim」 | `kb release <id>` 只能释放自己占用的卡（退回待规划，自动带 fence，非占用者/未占用退出码 2）；别人的占用只能等 `done`/`fail`，或用户授权后走 REST 强制释放。 |
 | 「用 claim 时的描述就行」 | 关键节点重拉 `kb show`；用户可能在期间改过描述、优先级或留了 `[新]` 留言。 |
-| 「done 会自动提交，`--scope` 可以省」 | 有并行占用时省 `--scope` 会把别人的改动卷进提交；GIT-ON-DONE 只提交声明范围。 |
-| 「没写知识页/变更日志就想 done」 | 先写再 done；知识页确实不需要的在 notes 显式声明「未沉淀知识页：<原因>」，变更日志一律写（无用户可见变更时正文写「本轮无用户可见变更」）。沉默视为收尾未完成。 |
 | 「这次做完顺手记一笔知识页」 | 进度不进知识库；有可复用的设计/技术/坑才写，否则写卡评论（口径见「知识页写什么（内容口径）」）。 |
 | 「这是别人的卡，我帮他改改」 | 不操作他人占用的卡；需要改动就回报父代理或用户。 |
 | 「技能和用户当轮指令冲突，按技能来」 | 用户当轮明确指令 > 技能 > 默认行为。 |
-| 「`Set-Content -Encoding UTF8` 写一下很快」 | PS 5.1 的 `UTF8` 带 BOM：写 `package.json` 会让 Vite 崩在 `Unexpected token ''`。用 write 工具 / `utf8NoBOM` / `UTF8Encoding($false)`，写完可跑 `node scripts/check-bom.mjs` 复核。 |
 
 ## Platform Adaptation
 
-- **Windows**：路径用反斜杠，比较前统一分隔符、去尾斜杠、大小写不敏感；junction 先按 target 解成实体路径再比对工作区根。
-- **PowerShell 拼参数**：标题/描述/评论含 `"`、`&`、`|`、`\` 时用**单引号**包裹（内部单引号写成 `''`），或改用 `--description-stdin` / `--notes-stdin` / `--stdin`；含双引号的参数若用双引号包裹，PowerShell 会静默吞掉后续参数（CLI-01）。
-- **PowerShell 写多行评论**：`Get-Content -Raw file.md | kb comment <id> --stdin`；先设 `$OutputEncoding = New-Object System.Text.UTF8Encoding($false)` 防中文乱码，需要无 BOM 文件时用 `[System.IO.File]::WriteAllText`。
+- **Windows**：路径用反斜杠；比较前统一分隔符、去尾斜杠、大小写不敏感；junction 先按 target 解成实体路径再比对工作区根。
+- **PowerShell**：含 `"`、`&`、`|`、`\` 的参数用单引号包裹（内部单引号写 `''`）或改走 `--description-stdin` / `--notes-stdin` / `--stdin`（双引号包裹会静默吞掉后续参数，CLI-01）；多行评论用 `Get-Content -Raw file.md | kb comment <id> --stdin`，先设 `$OutputEncoding = New-Object System.Text.UTF8Encoding($false)` 防乱码。
 - **bash/zsh**：`kb comment <id> --stdin <<'EOF' … EOF`。
-- **服务地址**：`--server` / `KB_SERVER` 见「前置条件」。
-- **身份**：多 agent 并行时用 `KB_AGENT=<角色名>` 区分，避免默认 `kb-cli` 身份混用。
+- 服务地址用 `--server` / `KB_SERVER`（见「前置条件」）；多 agent 并行用 `KB_AGENT=<角色名>` 区分身份，避免默认 `kb-cli` 混用。
 
 ## 与其它技能的关系
 
@@ -371,8 +363,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 | `ask-user` | 流程：待决策提问 → 宽限等待 → `LOCKED` 停手 / 断点续跑 | 引用本技能的命令与边界；默认宽限 180 秒（可配 0–600），`--grace 0` 立即落锁，不新造状态机 |
 | `brainstorming` | 流程：需求澄清 → 设计批准 | 批准后交 `writing-task`；设计页按本技能的知识页口径落 `design/landed=proposed` |
 
-- 七份技能（`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 与本技能）对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）。
-- 依赖关系：见「看板概念」的「依赖」条。
+- 七份技能（`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 与本技能）对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）；依赖关系见「看板概念」的「依赖」条。
 
 ## User Instructions
 
@@ -384,20 +375,8 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 
 ## 收尾与维护命令（CLI-CLOSE）
 
-```
-kb close <issue-id> [--request-id <uuid>]              # 待验收 → 已关闭（占用者=当前 agent 自动释放自有占用；他人占用 409；有未关闭后代 409）
-kb reopen <issue-id> [--to <状态>] [--request-id <uuid>] # 已关闭/已废弃 → 目标状态（默认待规划）
-kb update <issue-id> --title/--description/--priority/--labels/--due-date/--due-time/--parent [--status <状态>] [--clear-due|--clear-root] [--request-id <uuid>]
-kb update <issue-id> --description-stdin               # 长文本描述走 stdin
-```
+`kb close|reopen|update` 的完整参数见「kb 命令速查」，三条都接受 `--request-id <uuid>` 做幂等。补充口径：`close` 只接受「待验收」；`reopen` 目标须是本工作区已定义状态（含自定义）；`update --status` 目标含「已废弃」，占用中改状态 409；三条 409（占用中 / 状态不允许 / 有未关闭后代或未完成前置）原样打印服务端文案并退出 2，400（目标状态非法）退出 1。
 
-- `close` 只接受「待验收」；`reopen` 的目标必须是本工作区已定义状态（含自定义状态），非法会列出可用状态。
-- `update --status` 的目标须属于本工作区已定义状态（含自定义状态与「已废弃」）；占用中的卡改状态返回 409。内置生命周期流转优先用 `claim / done / release / close / reopen / fail`。
-- 三条 409（占用中 / 状态不允许 / 有未关闭后代或未完成前置）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。
+## CLI-UX 变更
 
-## CLI-UX 变更（2026-11-03）
-
-- 多行 `--notes` / 以 `- ` 开头的行会被 shell 拆成额外参数（实测 `too many arguments for 'done'`）：改用 `kb done <id> --notes-stdin`（从标准输入读，多行安全）。
-- `kb list-tasks --full` 只对 `--json` 生效；表格模式带 `--full` 会打提示并忽略。
-- `kb changelog` 的时间按**本地时区**展示（存储仍是 UTC 毫秒）。
-- 服务端参数校验错误已中文化并附可用值，例如 `priority: 取值必须是：低 / 中 / 高`。
+- 多行 `--notes` / 以 `- ` 开头的行会被 shell 拆成额外参数（`too many arguments`）：改用 `--notes-stdin`；`kb list-tasks --full` 对表格与 `--json` 均生效（表格缺省 5 列、`--full` 展示完整列；`--json --full` 附 description）；`kb changelog` 时间按本地时区展示（存 UTC 毫秒）；服务端参数校验错误已中文化并附可用值。
