@@ -476,6 +476,16 @@ describe('sessions', () => {
     expect(adapter.calls[0]!.prompt).toBe('自由指令');
   });
 
+  it('POST 未知字段 400（strict，API-CONTRACT bd3ca35d）：promptTemplate 反例点名报错，不再静默 strip', async () => {
+    const res = await request(app)
+      .post('/api/sessions')
+      .send({ cli: 'codebuddy', workspace_id: 'no-such', promptTemplate: 'CUSTOM' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    expect(res.body.error.message).toContain('promptTemplate');
+    expect(adapter.calls).toHaveLength(0);
+  });
+
   it('POST 自由会话不接受 issue-scoped selected_attachment_ids', async () => {
     const wsId = await mkSpace();
     const response = await request(app).post('/api/sessions').send({

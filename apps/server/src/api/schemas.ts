@@ -290,6 +290,7 @@ export const createSessionSchema = z
     selected_attachment_ids: z.array(z.string().uuid()).max(MAX_DISPATCH_SELECTED_ID_COUNT).optional()
       .refine((ids) => ids === undefined || new Set(ids).size === ids.length, { message: 'selected_attachment_ids 不能重复' }),
   })
+  .strict() // API-CONTRACT（bd3ca35d）：未知字段 400 不再静默 strip（反例：promptTemplate 拼错字段名不生效也不报错）
   .refine((v) => Boolean(v.issue_id) || Boolean(v.workspace_id), {
     message: 'issue_id 为空时必须提供 workspace_id',
   })
