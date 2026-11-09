@@ -401,7 +401,8 @@ describe('show', () => {
   /** show 的 handler：默认 GET comments；--mark-read 才 POST consume（c2 为新评论）；degrade 时 consume 404 → GET 降级 */
   function mockShow(opts: { degrade?: boolean } = {}): void {
     handler = (m, u) => {
-      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      // OPT-05：show 文本模式会带描述窗口查询参数，按路径匹配
+      if (m === 'GET' && u.split('?')[0] === '/api/issues/iss1') return { status: 200, body: ISSUE };
       if (m === 'POST' && u === '/api/issues/iss1/comments/consume') {
         return opts.degrade
           ? { status: 404, body: { error: { code: 'NOT_FOUND', message: '接口不存在' } } }
@@ -418,7 +419,7 @@ describe('show', () => {
     const code = await main(['node', 'kb', '--server', base, 'show', 'iss1'], t.io);
     expect(code).toBe(0);
     expect(calls).toEqual([
-      { method: 'GET', url: '/api/issues/iss1', body: undefined },
+      { method: 'GET', url: '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000', body: undefined },
       { method: 'GET', url: '/api/issues/iss1/comments', body: undefined },
     ]);
     const out = t.out();
@@ -438,7 +439,7 @@ describe('show', () => {
     const code = await main(['node', 'kb', '--server', base, 'show', 'iss1', '--mark-read'], t.io);
     expect(code).toBe(0);
     expect(calls).toEqual([
-      { method: 'GET', url: '/api/issues/iss1', body: undefined },
+      { method: 'GET', url: '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000', body: undefined },
       { method: 'POST', url: '/api/issues/iss1/comments/consume', body: undefined },
     ]);
     const out = t.out();
@@ -452,7 +453,7 @@ describe('show', () => {
       attachments: [{ id: 'a1', file_name: 'screen.png', mime_type: 'image/png', size_bytes: 123, url: '/api/issues/iss1/attachments/a1' }],
     };
     handler = (m, u) => {
-      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
+      if (m === 'GET' && u.split('?')[0] === '/api/issues/iss1') return { status: 200, body: ISSUE };
       if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: [withImage] };
       return undefined;
     };

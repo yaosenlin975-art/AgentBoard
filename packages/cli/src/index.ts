@@ -45,6 +45,20 @@ import {
 import { registerDecisionCommands } from './commands/decision.js';
 import { parseCommentLimit } from './render.js';
 
+/** OPT-05：描述窗口参数解析；非法值报参数错误（exit 1） */
+function parseDescriptionChars(
+  flag: '--description-max-chars' | '--description-offset',
+  raw: string | undefined,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  const min = flag === '--description-max-chars' ? 1 : 0;
+  if (!Number.isSafeInteger(value) || value < min) {
+    throw new Error(`${flag} 取值必须是${min === 1 ? '正' : '非负'}整数（当前 ${raw}）`);
+  }
+  return value;
+}
+
 /** 全局退出码表：help 末尾与 Docs/api.md §12.1 同源口径 */
 const EXIT_CODE_HELP = `
 退出码：
@@ -167,16 +181,24 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--mark-read', '把本次读到的评论标为已读（推进本 agent 的已读游标）；缺省不推进')
     .option('--comments <n|all>', '评论渲染条数：最近 n 条（缺省 5，未读优先；单条按窗口截断），all = 全量原文')
+    .option('--description-max-chars <n>', '描述窗口大小（缺省 12000，与 MCP get_task 一致；上限 40000）')
+    .option('--description-offset <n>', '描述续读偏移（从上一窗口的 next_description_offset_chars 续读）')
     .addHelpText('after', `
 示例：
   kb show 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
   kb show 0f6ba9ab                      # ≥8 位前缀（唯一命中时解析为完整 id）
   kb show 0f6ba9ab --mark-read          # 明确要求推进评论已读游标
   kb show 0f6ba9ab --comments all       # 全量评论原文（与改造前逐字一致）
+  kb show 0f6ba9ab --description-offset 12000   # 续读被窗口截断的描述
 退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位；2 前缀命中多张卡（会列出候选 id）
 `)
-    .action(async (id: string, opts: { markRead?: boolean; comments?: string }) =>
-      show(makeCtx(program, io), id, { markRead: opts.markRead === true, comments: parseCommentLimit(opts.comments) }));
+    .action(async (id: string, opts: { markRead?: boolean; comments?: string; descriptionMaxChars?: string; descriptionOffset?: string }) =>
+      show(makeCtx(program, io), id, {
+        markRead: opts.markRead === true,
+        comments: parseCommentLimit(opts.comments),
+        descriptionMaxChars: parseDescriptionChars('--description-max-chars', opts.descriptionMaxChars),
+        descriptionOffset: parseDescriptionChars('--description-offset', opts.descriptionOffset),
+      }));
 
   program
     .command('claim')

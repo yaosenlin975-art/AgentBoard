@@ -102,7 +102,7 @@ describe('OPT-04 kb show / kb claim 接线', () => {
       const url = String(input);
       const headers = { 'x-agentboard-version': '0.1.0' };
       if (init?.method === 'POST' && url.endsWith('/api/issues/card-1/claim')) return Response.json(issue('card-1'), { headers });
-      if (url.endsWith('/api/issues/card-1')) return Response.json(issue('card-1'), { headers });
+      if (url.split('?')[0]!.endsWith('/api/issues/card-1')) return Response.json(issue('card-1'), { headers });
       if (url.endsWith('/api/issues/card-1/comments')) return Response.json(comments, { headers });
       if (url.endsWith('/api/workspaces')) return Response.json([workspace], { headers });
       return Response.json({ error: { code: 'NOT_FOUND', message: `mock 未匹配：${url}` } }, { status: 404 });

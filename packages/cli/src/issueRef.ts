@@ -132,11 +132,16 @@ export async function withNotFoundSuggestion<T>(ctx: Ctx, ref: string, run: () =
   }
 }
 
-/** 前缀 → 唯一 Issue；<8 位本地拒绝（不发请求）；多命中抛 AmbiguousIssueRefError；无命中按 404 文案 */
-export async function resolveIssueByRef(ctx: Ctx, ref: string): Promise<Issue> {
+/** 前缀 → 唯一 Issue；<8 位本地拒绝（不发请求）；多命中抛 AmbiguousIssueRefError；无命中按 404 文案
+ *  `query` 为已编码的查询串（如描述窗口参数），原样拼在 `/api/issues/:id?` 之后。 */
+export async function resolveIssueByRef(ctx: Ctx, ref: string, query?: string): Promise<Issue> {
   const raw = ref.trim();
+  const detailUrl = (id: string): string => {
+    const path = `/api/issues/${encodeURIComponent(id)}`;
+    return query === undefined ? path : `${path}?${query}`;
+  };
   if (!isShortIssueRef(raw)) {
-    return request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(raw)}`);
+    return request<Issue>(ctx.base, 'GET', detailUrl(raw));
   }
   if (raw.length < MIN_ISSUE_PREFIX) {
     throw new Error(`任务 id 前缀至少 ${MIN_ISSUE_PREFIX} 位（当前 ${raw.length} 位）：请给完整 UUID 或 ≥${MIN_ISSUE_PREFIX} 位前缀`);
@@ -145,7 +150,7 @@ export async function resolveIssueByRef(ctx: Ctx, ref: string): Promise<Issue> {
   const candidates = issues.filter(issue => issue.id.toLowerCase().startsWith(raw.toLowerCase()));
   // 扫描只带定位字段，命中后再取一次完整 Issue，保证调用方拿到的仍是完整对象（show/accept 等依赖正文与评论计数）
   if (candidates.length === 1) {
-    return request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(candidates[0]!.id)}`);
+    return request<Issue>(ctx.base, 'GET', detailUrl(candidates[0]!.id));
   }
   if (candidates.length > 1) {
     throw new AmbiguousIssueRefError(raw, candidates.map(({ id, workspace_id, title, status }) => ({ id, workspace_id, title, status })));

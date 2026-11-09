@@ -14,6 +14,21 @@ export interface ShowArgs {
   markRead?: boolean;
   /** OPT-04：评论渲染条数（缺省 5；`all` = 全量原文，与改造前逐字一致） */
   comments?: number | 'all';
+  /** OPT-05：描述窗口大小（缺省 12000，与 MCP get_task 的 description_max_chars 口径一致） */
+  descriptionMaxChars?: number;
+  /** OPT-05：描述续读偏移（缺省 0） */
+  descriptionOffset?: number;
+}
+
+/** OPT-05：与 MCP `get_task` 的 `description_max_chars` 默认值一致；上限由服务端校验（1–40000） */
+export const DESCRIPTION_WINDOW_CHARS = 12_000;
+
+/** OPT-05：描述被窗口截断时给出续读命令（服务端 `next_description_offset_chars`） */
+function descriptionHintLines(issue: Issue): string[] {
+  const extra = issue as Issue & { description_truncated?: unknown; next_description_offset_chars?: unknown };
+  if (extra.description_truncated !== true) return [];
+  const next = typeof extra.next_description_offset_chars === 'number' ? extra.next_description_offset_chars : null;
+  return [next === null ? '描述已截断' : `描述已截断，续读：kb show ${issue.id} --description-offset ${next}`];
 }
 
 /**
@@ -72,7 +87,12 @@ async function childProgressLine(ctx: Ctx, issue: Issue): Promise<string | null>
 }
 
 export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<void> {
-  const issue = await resolveIssueByRef(ctx, id);
+  // OPT-05：文本模式默认按窗口读描述；--json 路径保持全量（除非显式给了窗口参数），避免破坏脚本消费
+  const windowed = !ctx.json || args.descriptionMaxChars !== undefined || args.descriptionOffset !== undefined;
+  const query = windowed
+    ? `description_offset_chars=${args.descriptionOffset ?? 0}&description_max_chars=${args.descriptionMaxChars ?? DESCRIPTION_WINDOW_CHARS}`
+    : undefined;
+  const issue = await resolveIssueByRef(ctx, id, query);
   const comments = await fetchComments(ctx, issue.id, args.markRead === true);
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify({ ...issue, comments }, null, 2)}\n`);
@@ -83,6 +103,7 @@ export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<v
   const progress = await childProgressLine(ctx, issue);
   ctx.io.write(`${[
     ...issueLines(issue),
+    ...descriptionHintLines(issue),
     ...(progress === null ? [] : [progress]),
     ...decisionLines(issue),
     ...commentLines(

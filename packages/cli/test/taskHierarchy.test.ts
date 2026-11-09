@@ -187,7 +187,7 @@ describe('CHILD-PROGRESS：子卡进度展示', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       urls.push(url);
-      if (url.endsWith('/api/issues/root-1')) return Response.json(root, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.split('?')[0]!.endsWith('/api/issues/root-1')) return Response.json(root, { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.endsWith('/api/issues/root-1/comments')) return Response.json([], { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
         return Response.json([root, closedChild, startedChild, reviewChild], { headers: { 'x-agentboard-version': '0.1.0' } });
@@ -205,7 +205,7 @@ describe('CHILD-PROGRESS：子卡进度展示', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       urls.push(url);
-      if (url.endsWith('/api/issues/leaf-1')) return Response.json(leaf, { headers: { 'x-agentboard-version': '0.1.0' } });
+      if (url.split('?')[0]!.endsWith('/api/issues/leaf-1')) return Response.json(leaf, { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.endsWith('/api/issues/leaf-1/comments')) return Response.json([], { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
     }));

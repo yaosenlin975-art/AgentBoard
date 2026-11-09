@@ -259,7 +259,7 @@ describe('kb answer / decisions / stop-check / show', () => {
       if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) {
         return { status: 200, body: [{ ...ISSUE, decision_locked: true, open_decision_id: DECISION_ID, decision_waiting_seconds: 42 }] };
       }
-      if (method === 'GET' && url === '/api/issues/iss-a') {
+      if (method === 'GET' && url.split('?')[0] === '/api/issues/iss-a') {
         return { status: 200, body: { ...ISSUE, decision_locked: true, open_decision_id: DECISION_ID, decision_waiting_seconds: 42 } };
       }
       if (method === 'GET' && url === '/api/issues/iss-a/comments') return { status: 200, body: [] };
