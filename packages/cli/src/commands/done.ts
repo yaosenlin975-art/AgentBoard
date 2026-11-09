@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Issue, KnowledgeHint } from '@agentboard/shared';
 import { CommanderError } from 'commander';
 import { request } from '../api.js';
@@ -29,6 +30,38 @@ export interface DoneArgs {
   requestId?: string;
   /** CLOSE-FLOW：done 成功后串行 close（待验收 → 已关闭），一步收口 */
   close?: boolean;
+  /** OPT-09：一次完成收尾三件套（changelog 先写 → 可选知识页挂引用 → done） */
+  closeRecord?: boolean;
+  /** OPT-09：CLOSE-RECORD 的 changelog 标题（必填，与 --close-record 一起） */
+  changelogTitle?: string;
+  /** OPT-09：CLOSE-RECORD 的 changelog 类型：新增|修复|调整 */
+  changelogType?: string;
+  /** OPT-09：changelog 正文（缺省复用 notes，仍为空时写「本轮无用户可见变更」） */
+  changelogBody?: string;
+  /** OPT-09：已有知识页 id（只挂引用，不新建页） */
+  knowledgePage?: string;
+}
+
+/** OPT-09：从 done 的 request-id 派生 changelog 幂等键（同一重试复用，不与 done 的 key 撞车） */
+function derivedRequestId(base: string, purpose: string): string {
+  const hex = createHash('sha256').update(`${base}:${purpose}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** OPT-09：--close-record 的参数前置校验（fail fast，不产生任何写入） */
+function validateCloseRecord(args: DoneArgs): { title: string; type: string } {
+  if (args.closeRecord !== true) {
+    if (args.changelogTitle !== undefined || args.changelogType !== undefined
+      || args.changelogBody !== undefined || args.knowledgePage !== undefined) {
+      throw new Error('--changelog-title / --type / --changelog-body / --knowledge-page 必须与 --close-record 一起使用');
+    }
+    return { title: '', type: '' };
+  }
+  const title = (args.changelogTitle ?? '').trim();
+  if (title === '') throw new Error('--close-record 需要 --changelog-title <标题>');
+  const type = (args.changelogType ?? '').trim();
+  if (!['新增', '修复', '调整'].includes(type)) throw new Error('--close-record 的 --type 只能是 新增|修复|调整');
+  return { title, type };
 }
 
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
@@ -72,9 +105,49 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     body.workspace_id = target.issue?.workspace_id
       ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
   }
+  // OPT-09：--close-record 先校验参数 → 校验知识页（只读）→ 写 changelog → 再 done；
+  // changelog/知识页任一步失败都在 done 之前中止，避免「卡 done 了但 changelog 没写」
+  const { title: changelogTitle, type: changelogType } = validateCloseRecord(args);
+  let closeRecordInfo: { changelog_id: string; knowledge_id: string | null } | null = null;
+  if (args.closeRecord === true) {
+    const workspaceId = target.issue?.workspace_id
+      ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
+    let knowledgeId: string | null = null;
+    if (args.knowledgePage !== undefined) {
+      const resolved = await request<{ id: string }>(
+        ctx.base, 'GET',
+        `/api/knowledge/resolve?${new URLSearchParams({ scope: 'both', workspace_id: workspaceId, ref: args.knowledgePage })}`,
+      ).catch((error) => {
+        ctx.io.writeErr(`close-record 中止：知识页 ${args.knowledgePage} 不可解析，done 未执行\n`);
+        throw error;
+      });
+      knowledgeId = resolved.id;
+    }
+    const record = await request<{ id: string }>(
+      ctx.base, 'POST', `/api/workspaces/${encodeURIComponent(workspaceId)}/changelog`,
+      {
+        title: changelogTitle,
+        body_md: args.changelogBody ?? body.notes ?? '本轮无用户可见变更',
+        change_type: changelogType,
+        actor: ctx.agentId,
+      },
+      args.requestId === undefined ? undefined : derivedRequestId(args.requestId, 'changelog'),
+    ).catch((error) => {
+      ctx.io.writeErr('close-record 中止：changelog 未创建，done 未执行\n');
+      throw error;
+    });
+    closeRecordInfo = { changelog_id: record.id, knowledge_id: knowledgeId };
+    const line = `close-record: changelog=${record.id} knowledge=${knowledgeId ?? '（未提供）'}`;
+    body.notes = body.notes === undefined ? line : `${body.notes}\n\n${line}`;
+  }
   const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null; git_commit?: GitCommitInfo | null }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/done`, body, args.requestId,
-  );
+  ).catch((error) => {
+    if (closeRecordInfo !== null) {
+      ctx.io.writeErr(`close-record 部分完成：changelog 已创建（${closeRecordInfo.changelog_id}）；done 未执行\n`);
+    }
+    throw error;
+  });
   // OPT-08：完成结果以服务端返回的最新状态为准；状态不符直接报错，不打印「已完成」
   if (issue.status !== '待验收') {
     throw new Error(`完成后状态异常：期望「待验收」，服务端返回「${issue.status}」（任务 ${issue.id}）`);
@@ -90,11 +163,14 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   /** 打印 done 结果（JSON 模式只输出单个 JSON 文档） */
   const printDone = (): void => {
     if (ctx.json) {
-      ctx.io.write(`${JSON.stringify(issue, null, 2)}\n`);
+      ctx.io.write(`${JSON.stringify(closeRecordInfo === null ? issue : { ...issue, close_record: closeRecordInfo }, null, 2)}\n`);
       return;
     }
     ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
     ctx.io.write(`占用者: ${issue.claimed_by ?? '（未占用）'}\n`);
+    if (closeRecordInfo !== null) {
+      ctx.io.write(`收尾记录: changelog=${closeRecordInfo.changelog_id} knowledge=${closeRecordInfo.knowledge_id ?? '（未提供）'}\n`);
+    }
     // 软提醒：建议而非错误，不加 ERROR 前缀、不影响退出码
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
   };
@@ -120,12 +196,15 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
       });
     const closed = outcome.issue;
     if (ctx.json) {
-      ctx.io.write(`${JSON.stringify({ done: issue, close: closed }, null, 2)}\n`);
+      ctx.io.write(`${JSON.stringify(closeRecordInfo === null ? { done: issue, close: closed } : { done: issue, close: closed, close_record: closeRecordInfo }, null, 2)}\n`);
       warnCommit();
       return;
     }
     ctx.io.write(`已完成: ${issue.id}\n状态: ${issue.status}（占用已释放，notes 落评论流）\n`);
     ctx.io.write(`占用者: ${issue.claimed_by ?? '（未占用）'}\n`);
+    if (closeRecordInfo !== null) {
+      ctx.io.write(`收尾记录: changelog=${closeRecordInfo.changelog_id} knowledge=${closeRecordInfo.knowledge_id ?? '（未提供）'}\n`);
+    }
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
     if (outcome.released) ctx.io.write('已释放自有占用后关闭\n');
     ctx.io.write(`已关闭: ${closed.id}\n状态: ${closed.status}（done → close 一步收口）\n`);

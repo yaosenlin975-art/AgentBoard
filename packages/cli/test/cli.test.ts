@@ -767,6 +767,86 @@ describe('done / fail', () => {
     expect(t.out()).not.toContain('已完成');
   });
 
+  it('OPT-09 close-record：先写 changelog 再 done，notes 与输出带两 id', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, status: '进行中' } };
+      if (m === 'GET' && u.startsWith('/api/knowledge/resolve')) return { status: 200, body: { id: 'page-1' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 201, body: { id: 'log-1' } };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: null } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--notes', '改完', '--close-record', '--changelog-title', '日志标题', '--type', '调整', '--knowledge-page', 'page-1'], t.io);
+    expect(code).toBe(0);
+    expect(calls.map(c => `${c.method} ${c.url}`)).toEqual([
+      'GET /api/issues/iss1',
+      'GET /api/knowledge/resolve?scope=both&workspace_id=ws1&ref=page-1',
+      'POST /api/workspaces/ws1/changelog',
+      'POST /api/issues/iss1/done',
+    ]);
+    expect(calls[2]!.body as Record<string, unknown>).toMatchObject({ title: '日志标题', change_type: '调整', body_md: '改完' });
+    expect((calls[3]!.body as { notes: string }).notes).toContain('close-record: changelog=log-1 knowledge=page-1');
+    expect(t.out()).toContain('收尾记录: changelog=log-1 knowledge=page-1');
+  });
+
+  it('OPT-09 close-record：changelog 失败 → done 不执行、退出 1', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, status: '进行中' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 500, body: { error: { code: 'INTERNAL', message: '日志写失败' } } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--close-record', '--changelog-title', 't', '--type', '修复'], t.io);
+    expect(code).toBe(1);
+    expect(calls.some(c => c.url.endsWith('/done'))).toBe(false);
+    expect(t.err()).toContain('changelog 未创建，done 未执行');
+  });
+
+  it('OPT-09 close-record：done 失败 → 报部分完成（changelog 已建）', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, status: '进行中' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 201, body: { id: 'log-2' } };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 409, body: { error: { code: 'CONFLICT', message: '未被占用' } } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--close-record', '--changelog-title', 't', '--type', '修复'], t.io);
+    expect(code).toBe(2);
+    expect(t.err()).toContain('close-record 部分完成：changelog 已创建（log-2）');
+  });
+
+  it('OPT-09 close-record：缺 --changelog-title / --type → 退出 1 且零请求', async () => {
+    const t = makeIo();
+    expect(await main(['node', 'kb', '--server', base, 'done', 'iss1', '--close-record'], t.io)).toBe(1);
+    expect(t.err()).toContain('--changelog-title');
+    const t2 = makeIo();
+    expect(await main(['node', 'kb', '--server', base, 'done', 'iss1', '--close-record', '--changelog-title', 't'], t2.io)).toBe(1);
+    expect(t2.err()).toContain('--type');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('OPT-09 close-record：同一 --request-id 重试时 changelog 幂等键稳定且不与 done 键相同', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: { ...ISSUE, status: '进行中' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 201, body: { id: 'log-3' } };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: null } };
+      return undefined;
+    };
+    const rid = '11111111-2222-4333-8444-555555555555';
+    const runOnce = async (): Promise<string[]> => {
+      const before = keyLog.length;
+      const t = makeIo();
+      expect(await main(['node', 'kb', '--server', base, 'done', 'iss1', '--close-record', '--changelog-title', 't', '--type', '修复', '--request-id', rid], t.io)).toBe(0);
+      return keyLog.slice(before).filter(Boolean);
+    };
+    const first = await runOnce();
+    const second = await runOnce();
+    expect(first).toHaveLength(2);
+    expect(first[0]).not.toBe(rid);
+    expect(first[1]).toBe(rid);
+    expect(second[0]).toBe(first[0]);
+  });
+
   it('done 无 --notes：体只含 agent_id', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/done'

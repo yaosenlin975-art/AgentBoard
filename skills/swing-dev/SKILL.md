@@ -102,7 +102,7 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 5. 完成：`kb done <id> --notes-stdin --scope <路径> --scope <路径>`
    - `--scope` 每个路径单独传一次（`--scope a --scope b`）；如实声明全部改动路径（含非 git 文件）；纯看板任务无文件改动则不传，并在 notes 写「本轮无文件改动」；GIT-ON-DONE 按 scope 自动提交，不手动 git commit
    - notes 含：做了什么、自验结果、遗留项；非 git 仓库注明「未自动提交 + 证据路径」（按上条归档）
-   - **按 `using-agentboard` 的 CLOSE-RECORD，必须**：可复用结论写工作区知识页（`kb knowledge create` 必须带正文 `--stdin` + `--sources`/`--evidence` 各 ≥1，并显式带 `--category`；缺任一退出 1，不传分类会落 `legacy`；一次性把已有 md/txt 建成页可用 `kb knowledge import <file> --category …`；不写则在 notes 声明「未沉淀知识页：<原因>」）；一律 `kb changelog create --workspace <id> --title '<标题>' --type 新增|修复|调整 --stdin`；notes 带上知识页 id 与变更日志 id
+   - **按 `using-agentboard` 的 CLOSE-RECORD，必须**：可复用结论写工作区知识页（`kb knowledge create` 必须带正文 `--stdin` + `--sources`/`--evidence` 各 ≥1，并显式带 `--category`；缺任一退出 1，不传分类会落 `legacy`；一次性把已有 md/txt 建成页可用 `kb knowledge import <file> --category …`；不写则在 notes 声明「未沉淀知识页：<原因>」）；一律 `kb changelog create --workspace <id> --title '<标题>' --type 新增|修复|调整 --stdin`；notes 带上知识页 id 与变更日志 id。**可用 OPT-09 一次收口**：`kb done <id> --close-record --changelog-title '<标题>' --type … --knowledge-page <已有页 id> --notes-stdin --scope …`——changelog 在 done 前写入、任一子步骤失败不落 done，notes 自动带 `close-record: changelog=… knowledge=…`；`--knowledge-page` 只挂引用，页正文仍需先建。
    - **回读（硬规则）**：读 `kb done` 输出里的 `状态:`（`--json` 时读 `status`）确认 = 「待验收」，并顺带核对 `占用者:` 已释放；输出缺失或状态不符 → 补 `kb show <id> --json` 复核，仍不符则这张卡按未完成记账，不进完成清单
 6. 无法完成：`kb fail <id> --reason '<具体原因>'`，读输出里的 `状态:`（`--json` 读 `status`）确认 = 「待规划」；输出缺失或状态未变 → 补 `kb show <id> --json` 复核，仍不符按未完成记账
 7. 关键节点（方案取舍、阻塞、部分完成）用 `kb comment <id>` 记录；done / fail 已有自动评论，不重复刷屏
