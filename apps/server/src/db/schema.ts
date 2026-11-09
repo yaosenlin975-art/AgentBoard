@@ -50,6 +50,8 @@ import { migrateWorkspaceArchive } from './migrations/workspaceArchive.js';
 import { migrateIssueCommentIndex } from './migrations/issueCommentIndex.js';
 // CR2-2：聊天热表索引 message(session_id)、session(workspace_id)（放最末，幂等补回）
 import { migrateChatIndex } from './migrations/chatIndex.js';
+// P1-C：会话 persona 注入（personas 表 + session 四列；幂等纯加表/加列，注册点本卡独占、放 chatIndex 之后）
+import { migratePersonaInjection } from './migrations/personaInjection.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -175,6 +177,8 @@ export function initSchema(db: Db): void {
   migrateIssueCommentIndex(db);
   // CR2-2：聊天热表索引（放最末，幂等；message 按 session、session 按 workspace 查询从 SCAN 变 SEARCH）
   migrateChatIndex(db);
+  // P1-C：会话 persona 注入（personas 表 + session 四列；必须排在 chatIndex 之后，纯加表/加列幂等）
+  migratePersonaInjection(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

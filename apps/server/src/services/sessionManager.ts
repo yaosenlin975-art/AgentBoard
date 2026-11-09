@@ -5,16 +5,19 @@
  * comments 服务经 comments.setSessionSender(sendToSession) 接入评论唤醒。
  */
 import type { Issue, Message, MessageMeta, ServerWsEvent, Session, SessionTurn } from '@agentboard/shared';
-import type { AgentAdapter, AskEvent, RunTurnOptions, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
+import type { AgentAdapter, AskEvent, RunTurnOptions, SessionPersona, SessionToolPolicy, TurnHandle, UnifiedEvent } from '@agentboard/adapters';
 import { getVerifiedImageInputCliVersion } from '@agentboard/adapters';
 import type { Db } from '../db/connection.js';
 import type { WorkspaceDbRouting } from '../db/resolver.js';
 import {
   createSession as insertSessionRow,
   getSession,
+  getSessionPersonaColumns,
   updateSession,
   type SessionPatch,
 } from '../db/repos/session.js';
+import { getPersona } from '../db/repos/persona.js';
+import { applyPersonaBlock } from './personaInjection.js';
 import { addMessage } from '../db/repos/message.js';
 import { appendSessionEvent, lastSessionEventSeq } from '../db/repos/sessionEvent.js';
 import { failAllOpenTurns, failOpenTurns, getTurn, updateTurn } from '../db/repos/sessionTurn.js';
@@ -862,6 +865,45 @@ async function recoverDbSessions(database: Db): Promise<void> {
 
 // ---- 轮次执行 ----
 
+/**
+ * P1-C：persona 注入方式归一——列值缺省/非法一律按 'auto'（存量行 NULL 与未来未知值都不拦起轮）。
+ */
+function normalizePersonaInjection(raw: string | null): 'auto' | 'flag' | 'file' | 'off' {
+  return raw === 'flag' || raw === 'file' || raw === 'off' ? raw : 'auto';
+}
+
+interface PersonaAssembly {
+  /** personas 行解析结果（file 模式下不传 adapter，仅供标记块 apply 使用） */
+  resolved?: SessionPersona;
+  toolPolicy?: SessionToolPolicy;
+  injection: 'auto' | 'flag' | 'file' | 'off';
+}
+
+/**
+ * P1-C：session 四列 + personas 行 → RunTurnOptions 装配载荷（起轮时读取，PATCH 后下一轮生效）。
+ * - persona 行缺失（被删/悬空引用）：persona 与标记块都不注入，不报错；
+ * - tool_policy JSON 解析失败按未设置处理（脏数据不拦起轮）；
+ * - skill_policy 本阶段只存取，无消费方（P2 接）。
+ */
+function resolvePersonaAssembly(database: Db, sessionId: string): PersonaAssembly {
+  const cols = getSessionPersonaColumns(database, sessionId);
+  const injection = normalizePersonaInjection(cols.persona_injection);
+  let toolPolicy: SessionToolPolicy | undefined;
+  if (cols.tool_policy) {
+    try {
+      toolPolicy = JSON.parse(cols.tool_policy) as SessionToolPolicy;
+    } catch {
+      toolPolicy = undefined;
+    }
+  }
+  let resolved: SessionPersona | undefined;
+  if (cols.persona_id) {
+    const row = getPersona(assertAssembled(), cols.persona_id);
+    if (row) resolved = { id: row.id, body: row.body_md, source: row.source };
+  }
+  return { ...(resolved ? { resolved } : {}), ...(toolPolicy ? { toolPolicy } : {}), injection };
+}
+
 async function beginTurn(database: Db, sessionId: string, input: TurnInput): Promise<void> {
   const state = states.get(sessionId);
   if (!state) return;
@@ -1018,6 +1060,17 @@ async function executeTurn(
     }
   }
 
+  // P1-C：persona / 工具管控装配（session 四列 → opts；PATCH 后下一轮生效）。
+  // personaInjection='file'：persona 不进 adapter argv，改写工作区标记块（写失败不拦起轮，只落 stderr）；
+  // toolPolicy 各模式照传（off 除外——off 时由 adapters 侧随注入全关）；skill_policy 无 adapter 通道，P2 接。
+  const personaAssembly = resolvePersonaAssembly(database, sessionId);
+  if (personaAssembly.injection === 'file' && personaAssembly.resolved) {
+    try {
+      applyPersonaBlock(session, personaAssembly.resolved, workspace.path);
+    } catch (err) {
+      console.error(`[agentboard] persona 标记块写入失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const opts: RunTurnOptions = {
     cwd: workspace.path,
     model: session.model ?? undefined,
@@ -1025,6 +1078,9 @@ async function executeTurn(
     adapterSessionId: session.adapter_session_id ?? undefined,
     ...(detectedCliVersion ? { detectedCliVersion } : {}),
     ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+    ...(personaAssembly.resolved && personaAssembly.injection !== 'file' ? { persona: personaAssembly.resolved } : {}),
+    ...(personaAssembly.toolPolicy ? { toolPolicy: personaAssembly.toolPolicy } : {}),
+    ...(personaAssembly.injection !== 'auto' ? { personaInjection: personaAssembly.injection } : {}),
   };
 
   let handle: TurnHandle;

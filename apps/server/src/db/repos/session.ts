@@ -69,6 +69,11 @@ export type SessionPatch = Partial<{
   fork_message_id: string | null;
   /** BORROW-4.3：暂停时间戳；null = 恢复。只改该列，不动 status（status 语义不变） */
   paused_at: number | null;
+  /** P1-C：persona 注入四列（迁移 personaInjection 补列）。tool/skill policy 存 JSON 字符串；persona_injection 为 auto|flag|file|off，NULL 视为 auto */
+  persona_id: string | null;
+  tool_policy: string | null;
+  skill_policy: string | null;
+  persona_injection: string | null;
 }>;
 
 export function updateSession(db: Db, id: string, patch: SessionPatch): Session {
@@ -105,6 +110,22 @@ export function updateSession(db: Db, id: string, patch: SessionPatch): Session 
   if (patch.paused_at !== undefined) {
     sets.push('paused_at = ?');
     params.push(patch.paused_at);
+  }
+  if (patch.persona_id !== undefined) {
+    sets.push('persona_id = ?');
+    params.push(patch.persona_id);
+  }
+  if (patch.tool_policy !== undefined) {
+    sets.push('tool_policy = ?');
+    params.push(patch.tool_policy);
+  }
+  if (patch.skill_policy !== undefined) {
+    sets.push('skill_policy = ?');
+    params.push(patch.skill_policy);
+  }
+  if (patch.persona_injection !== undefined) {
+    sets.push('persona_injection = ?');
+    params.push(patch.persona_injection);
   }
   if (sets.length === 0) throw new NotFoundError('无可用更新字段');
   params.push(id);
@@ -168,4 +189,31 @@ export function forkSession(
 /** 删会话行（绑定的 message 由外层显式删，不依赖 FK CASCADE） */
 export function deleteSession(db: Db, id: string): void {
   db.prepare('DELETE FROM session WHERE id = ?').run(id);
+}
+
+/** P1-C：session 表 persona 注入四列的 server 侧读取形状（shared.Session 不含这四列，读取点单独查） */
+export interface SessionPersonaColumns {
+  persona_id: string | null;
+  /** JSON 字符串（SessionToolPolicy 形状）；NULL/解析失败按未设置处理 */
+  tool_policy: string | null;
+  /** JSON 字符串；P2 起才有消费方，本阶段只存取 */
+  skill_policy: string | null;
+  /** 'auto' | 'flag' | 'file' | 'off'；NULL 视为 'auto' */
+  persona_injection: string | null;
+}
+
+const EMPTY_PERSONA_COLUMNS: SessionPersonaColumns = {
+  persona_id: null,
+  tool_policy: null,
+  skill_policy: null,
+  persona_injection: null,
+};
+
+/** 读会话的 persona 注入四列（行不存在返回全 null 形状，调用方按未设置处理） */
+export function getSessionPersonaColumns(db: Db, id: string): SessionPersonaColumns {
+  return (
+    (db
+      .prepare('SELECT persona_id, tool_policy, skill_policy, persona_injection FROM session WHERE id = ?')
+      .get(id) as SessionPersonaColumns | undefined) ?? EMPTY_PERSONA_COLUMNS
+  );
 }

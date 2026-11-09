@@ -19,6 +19,7 @@ import { getWorkspace } from '../../db/repos/workspace.js';
 import { getIssue } from '../../db/repos/issue.js';
 import { listSessionsByWorkspace, getSession, updateSession, deleteSession, forkSession } from '../../db/repos/session.js';
 import { listTurnsBySession } from '../../db/repos/sessionTurn.js';
+import { getPersona } from '../../db/repos/persona.js';
 import { listMessagesBySession, deleteMessagesBySession, listFirstUserMessages } from '../../db/repos/message.js';
 import { listSessionEvents } from '../../db/repos/sessionEvent.js';
 import { bindAttachmentsToSession } from '../../db/repos/attachment.js';
@@ -30,6 +31,7 @@ import { answerAwaitingTurn } from '../../services/turnAwaiting.js';
 import { decideTurnApproval } from '../../services/turnApproval.js';
 import { retryFailedStep } from '../../services/turnStepRetry.js';
 import { createSession, forgetSession, getSessionRuntime, pauseSession, resumeSession, sendToSession, stopSession, runRetriedStep } from '../../services/sessionManager.js';
+import { rollbackPersonaBlock } from '../../services/personaInjection.js';
 import { dispatchIssue } from '../../services/dispatch.js';
 import { hashPayload } from '../../services/idempotency.js';
 import { getTaskKnowledge } from '../../services/taskKnowledge.js';
@@ -326,6 +328,16 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
       deleteMessagesBySession(routed.db, session.id);
       deleteSession(routed.db, session.id);
     })();
+    // P1-C：personaInjection='file' 的工作区标记块随会话删除回收（文件不存在/无本会话块时为空操作；
+    // 失败不阻断删除——残留块在下次同 id 会话 apply 时原位替换，孤儿块不影响其它内容）
+    const workspaceForBlock = getWorkspace(db, session.workspace_id);
+    if (workspaceForBlock) {
+      try {
+        rollbackPersonaBlock(session, workspaceForBlock.path);
+      } catch (err) {
+        console.error(`[agentboard] persona 标记块回收失败（session=${session.id}）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     forgetSession(session.id);
     // STORE-4b：会话行已删，清定位索引（写失败只留过期行，读侧兜底扫描接住）
     removeEntityLocator(db, 'session', session.id);
@@ -337,6 +349,8 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
   // 会话标题：同一端点接受 title（1–50 字，null 清空回到派生标题），与 model 可同时提交。
   // CHAT-SB1：同一端点接受 archived（true=归档 / false=恢复）；运行中归档与删除同口径 409。
   // BORROW-4.3：同一端点接受 paused（true=暂停 / false=恢复）；暂停只拦新轮次，不 kill 在途工具。
+  // P1-C：同一端点接受 persona_id / tool_policy / skill_policy / persona_injection（下一轮生效——
+  // runTurn 起轮时读 session 四列装配 opts；tool/skill policy 落库存 JSON 字符串，null=清空）。
   router.patch('/sessions/:id', async (req, res) => {
     const body = parseBody(patchSessionSchema, req.body);
     const routed = locateSessionRouted(req.params.id!);
@@ -360,10 +374,22 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
     if (body.archived === true && current.status === '运行中') {
       throw new ConflictError('会话正在运行，请先停止再归档');
     }
-    const patch: { model?: string | null; title?: string | null; archived_at?: number | null } = {};
+    // P1-C：persona_id 指向的 persona 必须存在（悬空引用在起轮侧按缺失静默跳过，写入侧直接拒绝更可判）
+    if (body.persona_id !== undefined && body.persona_id !== null && getPersona(db, body.persona_id) === null) {
+      throw new ValidationError('persona_id 指向的 persona 不存在');
+    }
+    const patch: {
+      model?: string | null; title?: string | null; archived_at?: number | null;
+      persona_id?: string | null; tool_policy?: string | null; skill_policy?: string | null; persona_injection?: string | null;
+    } = {};
     if (body.model !== undefined) patch.model = body.model;
     if (body.title !== undefined) patch.title = body.title;
     if (body.archived !== undefined) patch.archived_at = body.archived ? Date.now() : null;
+    // P1-C：persona 注入四字段透传（tool/skill policy 对象 → JSON 字符串列；null=清空）
+    if (body.persona_id !== undefined) patch.persona_id = body.persona_id;
+    if (body.tool_policy !== undefined) patch.tool_policy = body.tool_policy === null ? null : JSON.stringify(body.tool_policy);
+    if (body.skill_policy !== undefined) patch.skill_policy = body.skill_policy === null ? null : JSON.stringify(body.skill_policy);
+    if (body.persona_injection !== undefined) patch.persona_injection = body.persona_injection;
     const session = updateSession(routed.db, req.params.id!, patch);
     broadcast({
       type: 'session.changed',

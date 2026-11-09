@@ -14,6 +14,7 @@ import { createIssueRouter } from './routes/issueRoutes.js';
 import { createWorkspaceRouter } from './routes/workspaceRoutes.js';
 import { createSessionRouter } from './routes/sessionRoutes.js';
 import { createSettingsRouter } from './routes/settingsRoutes.js';
+import { createPersonaRouter } from './routes/personaRoutes.js';
 import { createSystemMiscRouter } from './routes/systemMiscRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createBrowserRouter } from './browserRoutes.js';
@@ -326,6 +327,10 @@ export function createRouter(deps: RouterDeps): Router {
     dbForWorkspace,
     locateSessionRouted,
   }));
+
+  // ---- personas 域（P1-C）----
+  // persona CRUD（builtin 409）与 CLI 能力探测（probeCliCapabilities，60s 缓存在 adapters 侧）
+  router.use(createPersonaRouter({ db }));
   return router;
 }
 

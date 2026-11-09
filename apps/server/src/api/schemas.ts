@@ -306,14 +306,28 @@ export const sendMessageSchema = z.object({
   .refine((value) => new Set(value.attachment_ids ?? []).size === (value.attachment_ids ?? []).length, { message: 'attachment_ids 不能重复' });
 
 /**
+ * P1-C：会话工具管控策略（packages/adapters 契约 SessionToolPolicy 的请求形状）。
+ * allow/deny 为工具名清单；approval_mode 的映射与探测在 adapters 侧。
+ */
+export const sessionToolPolicySchema = z.object({
+  approval_mode: z.enum(['inherit', 'plan', 'acceptEdits', 'bypass']),
+  allow: z.array(z.string().trim().min(1)).max(200),
+  deny: z.array(z.string().trim().min(1)).max(200),
+});
+
+/**
  * PATCH /api/sessions/:id：改 model（Task 14「修改模型，下一轮生效」）、会话级 title（重命名）
- * 或 archived（CHAT-SB1 归档/恢复），BORROW-4.3 追加 paused（暂停/恢复）。
- * - 四者都缺 → 400；至少提供一个。
+ * 或 archived（CHAT-SB1 归档/恢复），BORROW-4.3 追加 paused（暂停/恢复），
+ * P1-C 追加 persona 注入四字段（persona_id / tool_policy / skill_policy / persona_injection）。
+ * - 字段都缺 → 400；至少提供一个。
  * - model：字符串或 null 清空。
  * - title：1–50 字符（首尾空白 trim 后判空）；null 清空自定义标题、回到派生标题。
  * - archived：true=归档（运行中由路由层 409 拒绝），false=恢复。
  * - paused：true=暂停（不 kill 在途工具/子进程，轮次结束后不再起新轮），false=恢复（消费暂停期队列）。
- *   paused 是独立互斥动作，不与其它三个字段同批提交，避免「先归档再暂停」这类中间态。
+ *   paused 是独立互斥动作，不与其它字段同批提交，避免「先归档再暂停」这类中间态。
+ * - persona_id：persona 行 id 或 null 解绑；tool_policy：SessionToolPolicy 对象或 null 清空
+ *   （落库存 JSON 字符串）；skill_policy：自由对象或 null（P2 起才有消费方，本阶段只存取）；
+ * - persona_injection：auto（缺省语义）/ flag（flag 注入）/ file（服务端标记块注入）/ off（全关）；null 回到 auto。
  */
 export const patchSessionSchema = z
   .object({
@@ -327,17 +341,56 @@ export const patchSessionSchema = z
       .optional(),
     archived: z.boolean().optional(),
     paused: z.boolean().optional(),
+    persona_id: z.string().trim().min(1, 'persona_id 不能为空').nullable().optional(),
+    tool_policy: sessionToolPolicySchema.nullable().optional(),
+    skill_policy: z.record(z.string(), z.unknown()).nullable().optional(),
+    persona_injection: z.enum(['auto', 'flag', 'file', 'off']).nullable().optional(),
   })
   .refine(
-    (value) => value.model !== undefined || value.title !== undefined || value.archived !== undefined || value.paused !== undefined,
-    { message: '至少提供 model / title / archived / paused' },
+    (value) =>
+      value.model !== undefined
+      || value.title !== undefined
+      || value.archived !== undefined
+      || value.paused !== undefined
+      || value.persona_id !== undefined
+      || value.tool_policy !== undefined
+      || value.skill_policy !== undefined
+      || value.persona_injection !== undefined,
+    { message: '至少提供 model / title / archived / paused / persona_id / tool_policy / skill_policy / persona_injection' },
   )
   .refine(
     (value) =>
       value.paused === undefined
-      || (value.model === undefined && value.title === undefined && value.archived === undefined),
-    { message: 'paused 不能与 model / title / archived 同时提交' },
+      || (value.model === undefined
+        && value.title === undefined
+        && value.archived === undefined
+        && value.persona_id === undefined
+        && value.tool_policy === undefined
+        && value.skill_policy === undefined
+        && value.persona_injection === undefined),
+    { message: 'paused 不能与 model / title / archived / persona 注入字段同时提交' },
   );
+
+/** P1-C：persona 正文上限（系统提示词体量级，与知识页 2M 口径不同——persona 是单条注入文本） */
+export const PERSONA_BODY_MAX_CHARS = 100_000;
+
+/** POST /api/personas：name / description / body_md 必填（description 允许空串） */
+export const createPersonaSchema = z.object({
+  name: z.string().trim().min(1, 'name 不能为空').max(100, 'name 不能超过 100 字'),
+  description: z.string().max(2000, 'description 不能超过 2000 字').default(''),
+  body_md: z.string().min(1, 'body_md 不能为空').max(PERSONA_BODY_MAX_CHARS, `body_md 不能超过 ${PERSONA_BODY_MAX_CHARS} 字`),
+});
+
+/** PATCH /api/personas/:id：三个字段全可选，至少提供一个 */
+export const patchPersonaSchema = z
+  .object({
+    name: z.string().trim().min(1, 'name 不能为空').max(100, 'name 不能超过 100 字').optional(),
+    description: z.string().max(2000, 'description 不能超过 2000 字').optional(),
+    body_md: z.string().min(1, 'body_md 不能为空').max(PERSONA_BODY_MAX_CHARS, `body_md 不能超过 ${PERSONA_BODY_MAX_CHARS} 字`).optional(),
+  })
+  .refine((v) => v.name !== undefined || v.description !== undefined || v.body_md !== undefined, {
+    message: '至少提供 name / description / body_md',
+  });
 
 /**
  * POST /api/sessions/:id/fork：从某条消息（缺省=最后一条）分叉出新会话。
