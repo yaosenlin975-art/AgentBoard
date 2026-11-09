@@ -86,17 +86,56 @@ async function childProgressLine(ctx: Ctx, issue: Issue): Promise<string | null>
   }
 }
 
-export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<void> {
+/**
+ * OPT-06：多 id 摘要视图（每块只给 id/标题/状态/占用者/评论数，不渲染描述与评论）。
+ * 任一 id 失败只标该块并继续其余，返回退出码 1；--json 走 `{ items: [...] }` 信封。
+ */
+async function showMany(ctx: Ctx, ids: string[]): Promise<number> {
+  const results = await Promise.all(ids.map(async (ref) => {
+    try {
+      return { ref, issue: await resolveIssueByRef(ctx, ref) };
+    } catch (err) {
+      return { ref, error: err instanceof Error ? err.message : String(err) };
+    }
+  }));
+  if (ctx.json) {
+    const items = results.map((result) => result.issue === undefined
+      ? { id: result.ref, error: result.error }
+      : { id: result.ref, issue: result.issue });
+    ctx.io.write(`${JSON.stringify({ items }, null, 2)}\n`);
+  } else {
+    const blocks = results.map((result, index) => {
+      const head = `【${index + 1}/${results.length}】${result.ref}`;
+      if (result.issue === undefined) return `${head}\n错误: ${result.error}`;
+      const issue = result.issue;
+      return [
+        head,
+        `id: ${issue.id}`,
+        `标题: ${issue.title}`,
+        `状态: ${issue.status}`,
+        `占用者: ${issue.claimed_by ?? '（未占用）'}`,
+        `评论数: ${issue.comment_count}`,
+      ].join('\n');
+    });
+    ctx.io.write(`${blocks.join('\n\n')}\n`);
+  }
+  return results.some((result) => result.issue === undefined) ? 1 : 0;
+}
+
+export async function show(ctx: Ctx, id: string | string[], args: ShowArgs = {}): Promise<number> {
+  const ids = Array.isArray(id) ? id : [id];
+  if (ids.length > 1) return showMany(ctx, ids);
+  const ref = ids[0]!;
   // OPT-05：文本模式默认按窗口读描述；--json 路径保持全量（除非显式给了窗口参数），避免破坏脚本消费
   const windowed = !ctx.json || args.descriptionMaxChars !== undefined || args.descriptionOffset !== undefined;
   const query = windowed
     ? `description_offset_chars=${args.descriptionOffset ?? 0}&description_max_chars=${args.descriptionMaxChars ?? DESCRIPTION_WINDOW_CHARS}`
     : undefined;
-  const issue = await resolveIssueByRef(ctx, id, query);
+  const issue = await resolveIssueByRef(ctx, ref, query);
   const comments = await fetchComments(ctx, issue.id, args.markRead === true);
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify({ ...issue, comments }, null, 2)}\n`);
-    return;
+    return 0;
   }
   const limit = args.comments ?? COMMENT_DEFAULT_LIMIT;
   const selection = selectRecentComments(comments, limit);
@@ -114,4 +153,5 @@ export async function show(ctx: Ctx, id: string, args: ShowArgs = {}): Promise<v
     ),
     ...(selection.hidden > 0 ? [`另有 ${selection.hidden} 条，--comments all 查看`] : []),
   ].join('\n')}\n`);
+  return 0;
 }

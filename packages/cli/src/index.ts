@@ -90,6 +90,8 @@ function makeCtx(program: Command, io: Io): Ctx {
 
 /** 返回退出码（0 成功）；--help/--version → 0；用法错误 → commander 自带 stderr + 1 */
 export async function main(argv: string[] = process.argv, io: Io = processIo): Promise<number> {
+  // OPT-06：多 id show 允许「部分失败仍输出其余块」，由命令自己返回退出码（不抛错，避免 --json 流被错误体污染）
+  let commandExitCode = 0;
   const program = new Command();
   program
     .name('kb')
@@ -177,12 +179,12 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('show')
-    .description('任务完整字段 + 评论列表（含作者）；默认只读，不推进评论已读游标')
-    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
-    .option('--mark-read', '把本次读到的评论标为已读（推进本 agent 的已读游标）；缺省不推进')
-    .option('--comments <n|all>', '评论渲染条数：最近 n 条（缺省 5，未读优先；单条按窗口截断），all = 全量原文')
-    .option('--description-max-chars <n>', '描述窗口大小（缺省 12000，与 MCP get_task 一致；上限 40000）')
-    .option('--description-offset <n>', '描述续读偏移（从上一窗口的 next_description_offset_chars 续读）')
+    .description('任务完整字段 + 评论列表（含作者）；默认只读，不推进评论已读游标；多 id 时输出摘要视图')
+    .argument('<issue-id...>', '任务 id（可多个）：完整 UUID，或 ≥8 位唯一前缀；多 id 时每块只给摘要')
+    .option('--mark-read', '把本次读到的评论标为已读（推进本 agent 的已读游标）；缺省不推进（多 id 时忽略）')
+    .option('--comments <n|all>', '评论渲染条数：最近 n 条（缺省 5，未读优先；单条按窗口截断），all = 全量原文（多 id 时忽略）')
+    .option('--description-max-chars <n>', '描述窗口大小（缺省 12000，与 MCP get_task 一致；上限 40000；多 id 时忽略）')
+    .option('--description-offset <n>', '描述续读偏移（从上一窗口的 next_description_offset_chars 续读；多 id 时忽略）')
     .addHelpText('after', `
 示例：
   kb show 0f6ba9ab-996d-4af5-b0cd-d9208c44936f
@@ -190,15 +192,17 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   kb show 0f6ba9ab --mark-read          # 明确要求推进评论已读游标
   kb show 0f6ba9ab --comments all       # 全量评论原文（与改造前逐字一致）
   kb show 0f6ba9ab --description-offset 12000   # 续读被窗口截断的描述
-退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位；2 前缀命中多张卡（会列出候选 id）
+  kb show 0f6ba9ab 1c2d3e4f aa11bb22    # 多 id 摘要视图（id/标题/状态/占用者/评论数）
+退出码：0 成功；1 参数错误 / 任务不存在 / 前缀不足 8 位 / 多 id 中有读取失败；2 前缀命中多张卡（会列出候选 id）
 `)
-    .action(async (id: string, opts: { markRead?: boolean; comments?: string; descriptionMaxChars?: string; descriptionOffset?: string }) =>
-      show(makeCtx(program, io), id, {
+    .action(async (ids: string[], opts: { markRead?: boolean; comments?: string; descriptionMaxChars?: string; descriptionOffset?: string }) => {
+      commandExitCode = await show(makeCtx(program, io), ids, {
         markRead: opts.markRead === true,
         comments: parseCommentLimit(opts.comments),
         descriptionMaxChars: parseDescriptionChars('--description-max-chars', opts.descriptionMaxChars),
         descriptionOffset: parseDescriptionChars('--description-offset', opts.descriptionOffset),
-      }));
+      });
+    });
 
   program
     .command('claim')
@@ -681,7 +685,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   try {
     await program.parseAsync(argv);
-    return 0;
+    return commandExitCode;
   } catch (err) {
     if (err instanceof CommanderError) return err.exitCode;
     return toExit(err, io, program.opts<{ json?: boolean }>().json === true);
