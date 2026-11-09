@@ -4,7 +4,8 @@ import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
 import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
-import { mcpToolFailure, mcpToolSuccess } from './result.js';
+import { mcpToolSuccess } from './result.js';
+import { registerBoardTool } from './register.js';
 
 const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
 const taskIdField = { task_id: z.string().trim().min(1) };
@@ -93,20 +94,15 @@ function boundedMutationData(data: unknown): unknown {
 
 export function registerTaskTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   // ponytail: SDK schemas validate inputs; this wrapper keeps every tool's result and error shape identical.
-  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    const handler = async (input: any) => {
-      try {
-        const data = await run(input);
-        return mcpToolSuccess(readOnly ? data : boundedMutationData(data), `${name} succeeded.`);
-      } catch (error) {
-        return mcpToolFailure(error);
-      }
-    };
-    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
-    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
-    server.registerTool(name, meta, handler);
-    server.registerTool(`agentboard_${name}`, meta, handler);
-  };
+  // CR2-8：注册样板收敛到 registerBoardTool；这里只剩写工具的结果裁剪（boundedMutationData）
+  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) =>
+    registerBoardTool(server, {
+      name,
+      description,
+      inputSchema,
+      readOnly,
+      ...(readOnly ? {} : { onResult: (data: unknown, summary: string) => mcpToolSuccess(boundedMutationData(data), summary) }),
+    }, run);
 
   register('list_workspaces', 'List workspaces by page. Local filesystem paths are omitted.', z.object(pageFields).strict(), async ({ limit, offset }) => {
     const page = await api.get<PageResult<Workspace>>('/workspaces', { limit, offset });

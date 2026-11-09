@@ -4,7 +4,7 @@ import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
 import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
-import { mcpToolFailure, mcpToolSuccess } from './result.js';
+import { registerBoardTool } from './register.js';
 
 const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
 const taskIdField = { task_id: z.string().trim().min(1) };
@@ -81,94 +81,81 @@ function assertWorkspaceMatches(config: McpConfig, decision: JsonObject): void {
 }
 
 export function registerDecisionTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
-  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    const handler = async (input: any) => {
-      try {
-        const data = await run(input);
-        return mcpToolSuccess(data, `${name} succeeded.`);
-      } catch (error) {
-        return mcpToolFailure(error);
-      }
-    };
-    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
-    server.registerTool(name, meta, handler);
-    server.registerTool(`agentboard_${name}`, meta, handler);
-  };
-
-  register(
-    'list_decisions',
-    'List pending decisions in one workspace with state/issue filters and counts. Use get_decision for full context and answer revisions.',
-    z.object({
+  registerBoardTool(server, {
+    name: 'list_decisions',
+    description: 'List pending decisions in one workspace with state/issue filters and counts. Use get_decision for full context and answer revisions.',
+    inputSchema: z.object({
       ...workspaceField,
       issue_id: z.string().trim().min(1).optional(),
       state: decisionStateSchema.optional(),
       stale: z.boolean().optional(),
       limit: z.number().int().min(1).max(100).default(50),
     }).strict(),
-    async ({ workspace_id, issue_id, state, stale, limit }) => {
-      const workspaceId = resolveWorkspaceId(config, workspace_id);
-      const page = await api.get<{ decisions: JsonObject[]; counts: unknown; capabilities: unknown }>(
-        '/decisions',
-        {
-          workspace_id: workspaceId,
-          ...(issue_id === undefined ? {} : { issue_id }),
-          ...(state === undefined ? {} : { state }),
-          ...(stale === true ? { stale: 'true' } : {}),
-          limit,
-        },
-        'DECISION_NOT_FOUND',
-      );
-      return {
-        items: page.decisions.map(summarizeDecision),
-        counts: page.counts,
-        capabilities: page.capabilities,
-      };
+  }, async ({ workspace_id, issue_id, state, stale, limit }) => {
+    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const page = await api.get<{ decisions: JsonObject[]; counts: unknown; capabilities: unknown }>(
+      '/decisions',
+      {
+        workspace_id: workspaceId,
+        ...(issue_id === undefined ? {} : { issue_id }),
+        ...(state === undefined ? {} : { state }),
+        ...(stale === true ? { stale: 'true' } : {}),
+        limit,
+      },
+      'DECISION_NOT_FOUND',
+    );
+    return {
+      items: page.decisions.map(summarizeDecision),
+      counts: page.counts,
+      capabilities: page.capabilities,
+    };
+  });
+
+  registerBoardTool(server, {
+    name: 'get_decision',
+    description: 'Read one decision with options, answer revisions, checkpoint and remaining grace. Text fields are windowed.',
+    inputSchema: z.object(decisionIdField).strict(),
+  }, async ({ decision_id }) => {
+    const response = await api.get<{ decision: JsonObject }>(
+      `/decisions/${encodeURIComponent(decision_id)}`,
+      {},
+      'DECISION_NOT_FOUND',
+    );
+    assertWorkspaceMatches(config, response.decision);
+    return { decision: detailDecision(response.decision) };
+  });
+
+  registerBoardTool(server, {
+    name: 'stop_check',
+    description: 'Check whether the agent was asked to stop on a task. Read-only; it does not acknowledge the stop signal.',
+    inputSchema: z.object(taskIdField).strict(),
+  }, async ({ task_id }) => api.get(`/issues/${encodeURIComponent(task_id)}/stop`, {}, 'TASK_NOT_FOUND'));
+
+  registerBoardTool(
+    server,
+    {
+      name: 'ask_decision',
+      description: 'Create a pending decision (ask the user) on a running task owned by the configured agent. Does not wait for an answer; revisit with get_decision or stop_check. grace_seconds=0 locks immediately.',
+      inputSchema: z.object({
+        ...taskIdField,
+        ...requestIdField,
+        question: z.string().trim().min(1),
+        options: z.array(
+          z.object({
+            label: z.string().trim().min(1),
+            consequence: z.string().trim().min(1),
+            is_default: z.boolean().optional(),
+          }).strict(),
+        ).min(2),
+        context_md: z.string().optional(),
+        trigger: z.enum(['blocked', 'scope_change', 'irreversible', 'missing_input']).optional(),
+        grace_seconds: z.number().int().min(0).max(600).optional(),
+        checkpoint: z.unknown().optional(),
+        on_expire: z.enum(['stay_locked', 'unlock_default']).optional(),
+        fence: z.number().int().optional(),
+      }).strict(),
+      readOnly: false,
     },
-  );
-
-  register(
-    'get_decision',
-    'Read one decision with options, answer revisions, checkpoint and remaining grace. Text fields are windowed.',
-    z.object(decisionIdField).strict(),
-    async ({ decision_id }) => {
-      const response = await api.get<{ decision: JsonObject }>(
-        `/decisions/${encodeURIComponent(decision_id)}`,
-        {},
-        'DECISION_NOT_FOUND',
-      );
-      assertWorkspaceMatches(config, response.decision);
-      return { decision: detailDecision(response.decision) };
-    },
-  );
-
-  register(
-    'stop_check',
-    'Check whether the agent was asked to stop on a task. Read-only; it does not acknowledge the stop signal.',
-    z.object(taskIdField).strict(),
-    async ({ task_id }) => api.get(`/issues/${encodeURIComponent(task_id)}/stop`, {}, 'TASK_NOT_FOUND'),
-  );
-
-  register(
-    'ask_decision',
-    'Create a pending decision (ask the user) on a running task owned by the configured agent. Does not wait for an answer; revisit with get_decision or stop_check. grace_seconds=0 locks immediately.',
-    z.object({
-      ...taskIdField,
-      ...requestIdField,
-      question: z.string().trim().min(1),
-      options: z.array(
-        z.object({
-          label: z.string().trim().min(1),
-          consequence: z.string().trim().min(1),
-          is_default: z.boolean().optional(),
-        }).strict(),
-      ).min(2),
-      context_md: z.string().optional(),
-      trigger: z.enum(['blocked', 'scope_change', 'irreversible', 'missing_input']).optional(),
-      grace_seconds: z.number().int().min(0).max(600).optional(),
-      checkpoint: z.unknown().optional(),
-      on_expire: z.enum(['stay_locked', 'unlock_default']).optional(),
-      fence: z.number().int().optional(),
-    }).strict(),
     async ({ task_id, request_id, question, options, context_md, trigger, grace_seconds, checkpoint, on_expire, fence }) => {
       const agentId = requireAgentId(config);
       const response = await api.mutate<{ decision: JsonObject }>(
@@ -197,20 +184,23 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
         stop_requested: response.decision.state === 'open',
       };
     },
-    false,
   );
 
-  register(
-    'answer_decision',
-    'Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by.',
-    z.object({
-      ...decisionIdField,
-      ...requestIdField,
-      option: z.union([z.number().int().min(1), z.string().trim().min(1)]).optional(),
-      text: z.string().min(1).optional(),
-      expected_revision: z.number().int().min(0).optional(),
-      revise: z.boolean().optional(),
-    }).strict(),
+  registerBoardTool(
+    server,
+    {
+      name: 'answer_decision',
+      description: 'Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by.',
+      inputSchema: z.object({
+        ...decisionIdField,
+        ...requestIdField,
+        option: z.union([z.number().int().min(1), z.string().trim().min(1)]).optional(),
+        text: z.string().min(1).optional(),
+        expected_revision: z.number().int().min(0).optional(),
+        revise: z.boolean().optional(),
+      }).strict(),
+      readOnly: false,
+    },
     async ({ decision_id, request_id, option, text, expected_revision, revise }) => {
       if ((option === undefined) === (text === undefined)) {
         throw new McpError('VALIDATION_ERROR', 'Provide exactly one of option or text.');
@@ -254,20 +244,23 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
         answer: latest,
       };
     },
-    false,
   );
 
-  register(
-    'extend_decision_grace',
-    'Extend the grace window of a decision that is still in grace. 1-300 seconds per call; original grace plus extensions cannot exceed 600 seconds. Not available after the decision locks.',
-    z.object({
-      ...decisionIdField,
-      ...requestIdField,
-      seconds: z.number().int().min(1).max(300).default(60),
-      by: z.string().trim().min(1).optional(),
-      fence: z.number().int().min(0).optional(),
-      ...workspaceField,
-    }).strict(),
+  registerBoardTool(
+    server,
+    {
+      name: 'extend_decision_grace',
+      description: 'Extend the grace window of a decision that is still in grace. 1-300 seconds per call; original grace plus extensions cannot exceed 600 seconds. Not available after the decision locks.',
+      inputSchema: z.object({
+        ...decisionIdField,
+        ...requestIdField,
+        seconds: z.number().int().min(1).max(300).default(60),
+        by: z.string().trim().min(1).optional(),
+        fence: z.number().int().min(0).optional(),
+        ...workspaceField,
+      }).strict(),
+      readOnly: false,
+    },
     async ({ decision_id, request_id, seconds, by, fence, workspace_id }) => {
       const workspaceId = config.workspaceId ? resolveWorkspaceId(config, workspace_id) : workspace_id?.trim();
       const response = await api.mutate<JsonObject>(
@@ -286,18 +279,21 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       );
       return { extension: response };
     },
-    false,
   );
 
-  register(
-    'withdraw_decision',
-    'Withdraw a pending decision with a required reason. The audit actor defaults to AGENTBOARD_AGENT_ID; the workspace owner permission is granted by the local server identity.',
-    z.object({
-      ...decisionIdField,
-      ...requestIdField,
-      reason: z.string().trim().min(1),
-      by: z.string().trim().min(1).optional(),
-    }).strict(),
+  registerBoardTool(
+    server,
+    {
+      name: 'withdraw_decision',
+      description: 'Withdraw a pending decision with a required reason. The audit actor defaults to AGENTBOARD_AGENT_ID; the workspace owner permission is granted by the local server identity.',
+      inputSchema: z.object({
+        ...decisionIdField,
+        ...requestIdField,
+        reason: z.string().trim().min(1),
+        by: z.string().trim().min(1).optional(),
+      }).strict(),
+      readOnly: false,
+    },
     async ({ decision_id, request_id, reason, by }) => {
       const detail = await api.get<{ decision: JsonObject }>(
         `/decisions/${encodeURIComponent(decision_id)}`,
@@ -315,6 +311,5 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       );
       return { decision: summarizeDecision(response.decision) };
     },
-    false,
   );
 }

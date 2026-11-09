@@ -5,7 +5,8 @@ import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
 import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
-import { mcpToolFailure, mcpToolResultFits, mcpToolSuccess, MCP_TOOL_RESULT_LIMIT } from './result.js';
+import { mcpToolResultFits, mcpToolSuccess, MCP_TOOL_RESULT_LIMIT } from './result.js';
+import { registerBoardTool } from './register.js';
 
 const MAX_TOOL_RESULT_CHARS = MCP_TOOL_RESULT_LIMIT - 500;
 const MAX_HISTORY = 50;
@@ -303,22 +304,19 @@ async function readKnowledge(
 }
 
 export function registerKnowledgeTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
-  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    const handler = async (input: any) => {
-      try {
-        const data = await run(input);
-        const response = mcpToolSuccess(data, `${name} succeeded.`);
+  // CR2-8：注册样板收敛到 registerBoardTool；这里只剩知识域的 40k 体积闸
+  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) =>
+    registerBoardTool(server, {
+      name,
+      description,
+      inputSchema,
+      readOnly,
+      onResult: (data, summary) => {
+        const response = mcpToolSuccess(data, summary);
         if (!mcpToolResultFits(response)) throw new McpError('KNOWLEDGE_RESULT_TOO_LARGE', 'The knowledge response exceeds the 40,000-character limit. Reduce the requested page sizes and continue from the returned offsets.');
         return response;
-      } catch (error) {
-        return mcpToolFailure(error);
-      }
-    };
-    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
-    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
-    server.registerTool(name, meta, handler);
-    server.registerTool(`agentboard_${name}`, meta, handler);
-  };
+      },
+    }, run);
 
   register('search_knowledge', 'Search knowledge in common, one workspace, or that workspace plus common.', z.object({
     ...scopeFields,

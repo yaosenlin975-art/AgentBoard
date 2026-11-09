@@ -13,7 +13,10 @@ export function mcpToolSuccess(data: unknown, summary: string): McpToolResponse 
 }
 
 export function mcpToolFailure(error: unknown): McpToolResponse {
-  const safe = error instanceof McpError ? error : new McpError('UPSTREAM_ERROR', 'The local AgentBoard API request failed.');
+  // CR2-8：McpError 直通；业务 Error 只透 message 文本（不带堆栈/属性），空 message 或非 Error 保持通用文案
+  const safe = error instanceof McpError
+    ? error
+    : new McpError('UPSTREAM_ERROR', error instanceof Error && error.message !== '' ? error.message : 'The local AgentBoard API request failed.');
   return {
     isError: true,
     content: [{ type: 'text', text: safe.message }],

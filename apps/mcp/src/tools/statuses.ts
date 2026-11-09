@@ -10,57 +10,57 @@ import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
 import { resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
-import { mcpToolFailure, mcpToolSuccess } from './result.js';
+import { registerBoardTool } from './register.js';
 
 const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
 const requestIdField = { request_id: z.string().uuid() };
 const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated']);
 
 export function registerStatusTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
-  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    const handler = async (input: any) => {
-      try {
-        return mcpToolSuccess(await run(input), `${name} succeeded.`);
-      } catch (error) {
-        return mcpToolFailure(error);
-      }
-    };
-    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
-    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
-    server.registerTool(name, meta, handler);
-    server.registerTool(`agentboard_${name}`, meta, handler);
-  };
-
-  register('list_statuses', 'List one workspace\'s status dictionary (name, kind, sort order, builtin flag).', z.object({
-    ...workspaceField,
-  }).strict(), async ({ workspace_id }) => {
+  registerBoardTool(server, {
+    name: 'list_statuses',
+    description: 'List one workspace\'s status dictionary (name, kind, sort order, builtin flag).',
+    inputSchema: z.object({
+      ...workspaceField,
+    }).strict(),
+  }, async ({ workspace_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const rows = await api.get<WorkspaceStatus[]>(`/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
     return { workspace_id: workspaceId, items: rows };
   });
 
-  register('add_status', 'Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour.', z.object({
-    ...workspaceField,
-    name: z.string().trim().min(1).max(50),
-    kind: kindSchema.default('open'),
-    sort_order: z.number().int().optional(),
-    ...requestIdField,
-  }).strict(), async ({ workspace_id, name, kind, sort_order, request_id }) => {
+  registerBoardTool(server, {
+    name: 'add_status',
+    description: 'Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour.',
+    inputSchema: z.object({
+      ...workspaceField,
+      name: z.string().trim().min(1).max(50),
+      kind: kindSchema.default('open'),
+      sort_order: z.number().int().optional(),
+      ...requestIdField,
+    }).strict(),
+    readOnly: false,
+  }, async ({ workspace_id, name, kind, sort_order, request_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const created = await api.mutate<WorkspaceStatus>('POST', `/workspaces/${encodeURIComponent(workspaceId)}/statuses`, {
       workspace_id: workspaceId, name, kind, ...(sort_order === undefined ? {} : { sort_order }),
     }, request_id);
     return created;
-  }, false);
+  });
 
-  register('remove_status', 'Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected.', z.object({
-    ...workspaceField,
-    status_id: z.string().trim().min(1),
-    migrate_to: z.string().trim().min(1),
-  }).strict(), async ({ workspace_id, status_id, migrate_to }) => {
+  registerBoardTool(server, {
+    name: 'remove_status',
+    description: 'Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected.',
+    inputSchema: z.object({
+      ...workspaceField,
+      status_id: z.string().trim().min(1),
+      migrate_to: z.string().trim().min(1),
+    }).strict(),
+    readOnly: false,
+  }, async ({ workspace_id, status_id, migrate_to }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     // DELETE 走 query 传 migrate_to（REST 侧同样不套幂等键）
     const path = `/workspaces/${encodeURIComponent(workspaceId)}/statuses/${encodeURIComponent(status_id)}?migrate_to=${encodeURIComponent(migrate_to)}`;
     return api.delete<{ removed: WorkspaceStatus; migrate_to: string; migrated_issue_count: number }>(path, 'WORKSPACE_STATUS_BUILTIN', 'NOT_FOUND');
-  }, false);
+  });
 }

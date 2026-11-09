@@ -8,7 +8,7 @@ import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
 import { resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
-import { mcpToolFailure, mcpToolSuccess } from './result.js';
+import { registerBoardTool } from './register.js';
 
 const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
 const issueIdField = { task_id: z.string().trim().min(1) };
@@ -20,47 +20,47 @@ interface DependencyRef { issue_id: string; title: string; status: string; resol
 interface DependencyView { blockers: DependencyRef[]; blocked: DependencyRef[] }
 
 export function registerDependencyTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
-  const register = (name: string, description: string, inputSchema: z.ZodObject<any>, run: (input: any) => Promise<unknown>, readOnly = true) => {
-    const handler = async (input: any) => {
-      try {
-        return mcpToolSuccess(await run(input), `${name} succeeded.`);
-      } catch (error) {
-        return mcpToolFailure(error);
-      }
-    };
-    // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
-    const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
-    server.registerTool(name, meta, handler);
-    server.registerTool(`agentboard_${name}`, meta, handler);
-  };
-
-  register('list_dependencies', 'List a task\'s blockers and blocked tasks in one effective workspace, with the server-side resolved flag.', z.object({
-    ...workspaceField,
-    ...issueIdField,
-  }).strict(), async ({ workspace_id, task_id }) => {
+  registerBoardTool(server, {
+    name: 'list_dependencies',
+    description: 'List a task\'s blockers and blocked tasks in one effective workspace, with the server-side resolved flag.',
+    inputSchema: z.object({
+      ...workspaceField,
+      ...issueIdField,
+    }).strict(),
+  }, async ({ workspace_id, task_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const view = await api.get<DependencyView>(`/issues/${encodeURIComponent(task_id)}/dependencies`, { workspace_id: workspaceId });
     return { ...view, workspace_id: workspaceId };
   });
 
-  register('add_dependency', 'Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed).', z.object({
-    ...workspaceField,
-    ...issueIdField,
-    ...blockerIdField,
-    ...requestIdField,
-  }).strict(), async ({ workspace_id, task_id, blocker_task_id, request_id }) => {
+  registerBoardTool(server, {
+    name: 'add_dependency',
+    description: 'Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed).',
+    inputSchema: z.object({
+      ...workspaceField,
+      ...issueIdField,
+      ...blockerIdField,
+      ...requestIdField,
+    }).strict(),
+    readOnly: false,
+  }, async ({ workspace_id, task_id, blocker_task_id, request_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const view = await api.mutate<DependencyView>('POST', `/issues/${encodeURIComponent(task_id)}/dependencies`, {
       workspace_id: workspaceId, blocker_issue_id: blocker_task_id,
     }, request_id);
     return { ...view, workspace_id: workspaceId };
-  }, false);
+  });
 
-  register('remove_dependency', 'Remove a blocker edge from a task.', z.object({
-    ...workspaceField,
-    ...issueIdField,
-    ...blockerIdField,
-  }).strict(), async ({ workspace_id, task_id, blocker_task_id }) => {
+  registerBoardTool(server, {
+    name: 'remove_dependency',
+    description: 'Remove a blocker edge from a task.',
+    inputSchema: z.object({
+      ...workspaceField,
+      ...issueIdField,
+      ...blockerIdField,
+    }).strict(),
+    readOnly: false,
+  }, async ({ workspace_id, task_id, blocker_task_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     // DELETE 的 workspace_id 走 query（服务端 `/api/issues/:id` 中间件从 query/body 取并校验归属）
     await api.delete(
@@ -69,5 +69,5 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
       'NOT_FOUND',
     );
     return { removed: true, task_id, blocker_task_id, workspace_id: workspaceId };
-  }, false);
+  });
 }
