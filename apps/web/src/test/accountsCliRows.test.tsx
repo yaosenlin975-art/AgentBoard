@@ -8,7 +8,7 @@
  * - 不提供可点但必失败的切换按钮，只给原因文案。
  */
 import { describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
@@ -18,6 +18,16 @@ import { server } from './server';
 
 function cliAccount(id: string, app_id: PublicCliAccount['app_id'], hint: string): PublicCliAccount {
   return { id, app_id, identity_hint: `sha256:${hint}`, created_at: 1, last_seen_at: 2 };
+}
+
+const CC1 = '11111111-1111-4111-8111-111111111111';
+const CC2 = '22222222-2222-4222-8222-222222222222';
+
+function commandCodeQuota(balance: number | null, status: string = 'ok', reason_code: string | null = null, detail: string | null = null, windows: unknown[] = []) {
+  return {
+    items: [{ source: 'commandcode', status, balance, unit: status === 'ok' ? 'USD' : null, windows, fetched_at: 3, reason_code, detail }],
+    fetched_at: 3,
+  };
 }
 
 function renderPanel(): void {
@@ -102,6 +112,113 @@ describe('CLI 来源（ACC-CLI-MULTI）', () => {
     expect(screen.getByTestId('accounts-index-metric-deepseek')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     expect(within(screen.getByTestId('accounts-detail')).getAllByRole('listitem')).toHaveLength(1);
+  });
+});
+
+describe('Command Code 每账号额度', () => {
+  it('两行独立查询并沿用 USD、真实零值、5h/weekly 与 reset 文案', async () => {
+    const first = cliAccount(CC1, 'commandcode', '111111111111');
+    const second = cliAccount(CC2, 'commandcode', '222222222222');
+    const requestedIds: string[] = [];
+    mockCli([first, second]);
+    server.use(
+      http.get('/api/cli-account-quotas', ({ request }) => {
+        const accountId = new URL(request.url).searchParams.get('account_id') ?? '';
+        requestedIds.push(accountId);
+        if (accountId === CC1) {
+          return HttpResponse.json(commandCodeQuota(0, 'ok', null, null, [
+            { name: '5h', kind: 'rolling', total: 100, used: 0, remaining: 100, used_percent: 0, reset_at: null },
+          ]));
+        }
+        return HttpResponse.json(commandCodeQuota(12.5, 'ok', null, null, [
+          { name: 'weekly', kind: 'weekly', total: 35, used: 9.6445, remaining: 25.3555, used_percent: 27.55, reset_at: Date.now() + 2 * 24 * 60 * 60_000 },
+        ]));
+      }),
+    );
+    renderPanel();
+
+    await userEvent.click(await screen.findByTestId('accounts-index-item-commandcode'));
+    await waitFor(() => expect(requestedIds).toHaveLength(2));
+    const firstRow = screen.getByTestId(`cli-account-quota-${CC1}`);
+    const secondRow = screen.getByTestId(`cli-account-quota-${CC2}`);
+    await waitFor(() => {
+      expect(firstRow).toHaveAttribute('data-status', 'ok');
+      expect(secondRow).toHaveAttribute('data-status', 'ok');
+    });
+
+    expect(requestedIds).toEqual(expect.arrayContaining([CC1, CC2]));
+    expect(firstRow).toHaveTextContent('$0.00');
+    expect(firstRow).not.toHaveTextContent('额度内');
+    expect(within(firstRow).getByTestId('quota-row-window-commandcode-0')).toHaveAttribute('data-kind', 'rolling');
+    expect(within(firstRow).getByTestId('quota-row-window-commandcode-0').getAttribute('title')).toContain('Reset time unknown');
+    expect(secondRow).toHaveTextContent('$12.50');
+    expect(within(secondRow).getByTestId('quota-row-window-commandcode-0')).toHaveAttribute('data-kind', 'weekly');
+    expect(within(secondRow).getByTestId('quota-row-used-commandcode-0')).toHaveTextContent('$9.64/$35.00');
+    expect(within(secondRow).getByTestId('quota-row-window-commandcode-0').getAttribute('title')).toContain('Resets in');
+  });
+
+  it('缺少凭据与额度查询错误明确显示非零状态', async () => {
+    const missing = cliAccount(CC1, 'commandcode', '333333333333');
+    const failed = cliAccount(CC2, 'commandcode', '444444444444');
+    mockCli([missing, failed]);
+    server.use(
+      http.get('/api/cli-account-quotas', ({ request }) => {
+        const accountId = new URL(request.url).searchParams.get('account_id');
+        return HttpResponse.json(accountId === CC1
+          ? commandCodeQuota(null, 'unsupported', 'CREDENTIAL_MISSING', '缺少 Command Code 凭据')
+          : commandCodeQuota(null, 'error', 'NETWORK_ERROR', '网络失败'));
+      }),
+    );
+    renderPanel();
+
+    await userEvent.click(await screen.findByTestId('accounts-index-item-commandcode'));
+    const missingRow = screen.getByTestId(`cli-account-quota-${CC1}`);
+    const failedRow = screen.getByTestId(`cli-account-quota-${CC2}`);
+    await waitFor(() => {
+      expect(missingRow).toHaveAttribute('data-status', 'unsupported');
+      expect(failedRow).toHaveAttribute('data-status', 'error');
+    });
+
+    expect(missingRow).toHaveTextContent('缺少 Command Code 凭据');
+    expect(failedRow).toHaveTextContent('网络不可用或超时');
+    expect(within(missingRow).queryByTestId('quota-row-balance-commandcode')).toBeNull();
+    expect(within(failedRow).queryByTestId('quota-row-balance-commandcode')).toBeNull();
+  });
+
+  it('Command Code 凭据导入与顶栏刷新都会刷新额度查询', async () => {
+    const codeAccount = cliAccount(CC1, 'commandcode', '555555555555');
+    let quotaReads = 0;
+    mockCli([codeAccount]);
+    server.use(
+      http.get('/api/cli-account-quotas', () => {
+        quotaReads += 1;
+        return HttpResponse.json(commandCodeQuota(quotaReads === 1 ? 100 : quotaReads === 2 ? 200 : 300));
+      }),
+      http.post('/api/cli-accounts/import', () => HttpResponse.json({ app_id: 'commandcode', action: 'updated', account: codeAccount })),
+      http.post('/api/accounts/import-credentials', () => HttpResponse.json({
+        batch_id: 'local-refresh', actor: 'web', duration_ms: 0, platforms: [], accounts: [], error: null,
+      })),
+    );
+    renderPanel();
+
+    await userEvent.click(await screen.findByTestId('accounts-index-item-commandcode'));
+    const quotaRow = screen.getByTestId(`cli-account-quota-${CC1}`);
+    await waitFor(() => expect(quotaRow).toHaveTextContent('$100.00'));
+
+    await userEvent.click(screen.getByTestId('accounts-source-import-commandcode'));
+    await userEvent.type(screen.getByTestId('accounts-source-import-text-commandcode'), 'test-api-key');
+    await userEvent.click(screen.getByTestId('accounts-source-import-submit-commandcode'));
+    await waitFor(() => {
+      expect(screen.getByTestId('accounts-source-import-duplicate-commandcode')).toBeInTheDocument();
+      expect(quotaRow).toHaveTextContent('$200.00');
+      expect(quotaReads).toBe(2);
+    });
+
+    await userEvent.click(screen.getByTestId('accounts-import-local'));
+    await waitFor(() => {
+      expect(quotaRow).toHaveTextContent('$300.00');
+      expect(quotaReads).toBe(3);
+    });
   });
 });
 

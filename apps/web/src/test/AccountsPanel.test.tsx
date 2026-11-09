@@ -266,19 +266,21 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await waitFor(() => expect(within(card).getByTestId('accounts-switch-acc-wb-3')).toBeDisabled());
   });
 
-  it('无账号时左栏不占行，左右两栏给空态引导（ADD-FLOW-2 口径 A）', async () => {
+  it('无账号时保留 Codex 本机登录入口，其它零账号平台不占行', async () => {
     mockList([]);
     renderPanel();
 
     const index = await screen.findByTestId('accounts-index');
-    expect(within(index).queryAllByRole('tab')).toHaveLength(0);
-    expect(screen.getByTestId('accounts-index-empty')).toHaveTextContent('还没有账号');
-    expect(screen.getByTestId('accounts-detail-empty')).toHaveTextContent('添加账号');
+    expect(within(index).getAllByRole('tab')).toHaveLength(1);
+    expect(screen.getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
     // 零账号平台不占行，也不再渲染按平台的空态块
     for (const app of ['workbuddy_desktop', 'minimax', 'trae', 'codebuddy_desktop']) {
       expect(screen.queryByTestId(`accounts-index-item-${app}`)).toBeNull();
       expect(screen.queryByTestId(`accounts-empty-${app}`)).toBeNull();
     }
+    await userEvent.click(screen.getByTestId('accounts-index-item-codex'));
+    expect(await screen.findByTestId('accounts-source-empty-codex')).toHaveTextContent('未读取到有效的本机登录账号');
     // 入口仍在顶部：零账号平台靠全局「添加账号」进入
     expect(screen.getByTestId('accounts-add-toggle')).toBeInTheDocument();
   });

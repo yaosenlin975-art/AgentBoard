@@ -28,10 +28,10 @@
  * `accounts-add-flow-*` / `accounts-desensitize-note` / `accounts-today-summary` /
  * `accounts-summary-*` / `accounts-capture-*` / `accounts-notice-*`。
  */
-import { useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount, type QuotaResult } from '@agentboard/shared';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { QUOTA_GROUPS, type ManagedAppId, type PublicCliAccount, type PublicManagedAccount, type QuotaResult, type QuotaSnapshot } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { DrawerHeaderActionsContext } from '../drawer/drawerHeaderActions';
@@ -41,6 +41,7 @@ import { OneClickCheckinButton, OneClickCheckinResults, useOneClickCheckin } fro
 import { QuotaDetail } from './QuotaDetail';
 import {
   QUOTA_UNKNOWN_REASON_LABEL,
+  QuotaRow,
   isWindowLimited,
   quotaReasonView,
   quotaRowBalance,
@@ -118,6 +119,7 @@ const CLI_SOURCE_ROW_LABEL: Record<string, string> = {
 export function AccountsPanel() {
   // ACC-UI-TOPBAR：drawer 标题栏操作区宿主；无宿主（单测/独立渲染）时回退为面板顶部内联操作行
   const actionsHost = useContext(DrawerHeaderActionsContext);
+  const queryClient = useQueryClient();
   const list = useQuery({
     queryKey: ['managed-accounts'],
     queryFn: () => api.get<AccountView[]>('/api/managed-accounts'),
@@ -142,6 +144,10 @@ export function AccountsPanel() {
   const oneClick = useOneClickCheckin({ accounts, capabilities: caps.capabilities, capabilityKnown });
   /** ACC-UI-TOPBAR：刷新按钮上标题栏；导入结果框留在面板底部（同一份状态） */
   const importer = useLocalAccountsImport();
+  useEffect(() => {
+    if (importer.result === null) return;
+    invalidateCliAccountQuotas(queryClient);
+  }, [importer.result, queryClient]);
 
   // 选中平台上提到面板：向导（添加账号选择页的「授权添加」/重新登录）作用于右栏当前平台；切平台即关向导
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
@@ -438,6 +444,37 @@ const CLI_ACCOUNT_SOURCE_LABEL: Record<'local' | 'manual', string> = {
   manual: '手动添加',
 };
 
+function invalidateCliAccountQuotas(queryClient: QueryClient): void {
+  void queryClient.cancelQueries({ queryKey: ['cli-account-quotas'] }).then(() =>
+    queryClient.invalidateQueries({ queryKey: ['cli-account-quotas'] }),
+  );
+}
+
+function CommandCodeAccountQuota({ account }: { account: PublicCliAccount }) {
+  const query = useQuery({
+    queryKey: ['cli-account-quotas', account.id],
+    queryFn: () => api.get<QuotaSnapshot>(`/api/cli-account-quotas?account_id=${encodeURIComponent(account.id)}`),
+  });
+  const item = query.data?.items.find((result) => result.source === 'commandcode');
+  const status = query.isPending ? 'pending' : query.isError ? 'error' : item?.status ?? 'missing';
+
+  return (
+    <div data-testid={`cli-account-quota-${account.id}`} data-status={status} className="mt-1">
+      {query.isPending ? (
+        <p className="text-[11px] text-ink-3">额度读取中…</p>
+      ) : query.isError ? (
+        <p role="alert" className="text-[11px] text-red-600 dark:text-red-400">
+          额度读取失败：{reasonLabel(reasonCodeOf(query.error))}
+        </p>
+      ) : item !== undefined ? (
+        <QuotaRow item={item} />
+      ) : (
+        <p role="alert" className="text-[11px] text-ink-3">额度响应缺少 Command Code 数据</p>
+      )}
+    </div>
+  );
+}
+
 /**
  * ACC-CC-5：单条 CLI 账号（脱敏）。
  * 删除是两步流；本机发现的账号会提示「删掉还会被重新登记」，避免用户误以为删除能清掉本机凭据。
@@ -452,6 +489,7 @@ function CliSourceAccountItem({ source, account }: { source: string; account: Pu
       setConfirming(false);
       setErrorCode(null);
       void queryClient.invalidateQueries({ queryKey: ['cli-accounts'] });
+      if (source === 'commandcode') invalidateCliAccountQuotas(queryClient);
     },
     onError: (error) => {
       setConfirming(false);
@@ -490,6 +528,7 @@ function CliSourceAccountItem({ source, account }: { source: string; account: Pu
           删除
         </button>
       </div>
+      {source === 'commandcode' && <CommandCodeAccountQuota account={account} />}
       {confirming && (
         <div data-testid={`accounts-source-delete-confirm-${account.id}`} role="group" aria-label="确认删除该 CLI 账号">
           <p className="mt-1 text-[11px] text-ink">
@@ -575,6 +614,7 @@ function QuotaSourceDetail({
         ? { tone: 'ok', duplicate: true, message: `已存在，已刷新最近发现时间（${result.account.identity_hint}）` }
         : { tone: 'ok', duplicate: false, message: `导入成功（${result.account.identity_hint}）` });
       void queryClient.invalidateQueries({ queryKey: ['cli-accounts'] });
+      if (source === 'commandcode') invalidateCliAccountQuotas(queryClient);
     },
     onError: (error) => {
       setNotice({ tone: 'error', duplicate: false, message: error instanceof Error ? error.message : '导入失败' });

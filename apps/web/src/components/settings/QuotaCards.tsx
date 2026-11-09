@@ -67,9 +67,13 @@ const currencySymbol = (unit: string | null): string => (unit === 'CNY' ? '¥' :
 
 export function quotaAmountText(item: QuotaItem): string | null {
   if (item.balance === null) return null;
-  const symbol = currencySymbol(item.unit);
-  const amount = item.balance.toFixed(2);
-  return symbol ? `${symbol}${amount}` : `${amount}${item.unit ? ` ${item.unit}` : ''}`;
+  return formatQuotaAmount(item.balance, item.unit);
+}
+
+function formatQuotaAmount(value: number, unit: string | null): string {
+  const symbol = currencySymbol(unit);
+  const amount = value.toFixed(2);
+  return symbol ? `${symbol}${amount}` : `${amount}${unit ? ` ${unit}` : ''}`;
 }
 
 /** 窗口名 → 参考图用词（rolling/5h → 5-hour window） */
@@ -80,9 +84,9 @@ export function quotaWindowTitle(name: string): string {
   return name;
 }
 
-/** 「Resets in Xd Yh / Xh Ym」：向下取整到分钟；无重置时刻或已过期 → `Resets soon` */
+/** 「Resets in Xd Yh / Xh Ym」：向下取整到分钟；无来源重置时刻 → 未知 */
 export function formatResets(resetAt: number | null, nowMs: number): string {
-  if (resetAt === null) return 'Resets soon';
+  if (resetAt === null || resetAt <= 0) return 'Reset time unknown';
   const diff = resetAt - nowMs;
   if (diff <= 0) return 'Resets soon';
   const totalMinutes = Math.floor(diff / 60_000);
@@ -138,10 +142,10 @@ export function quotaWindowsOf(item: QuotaItem): QuotaWindow[] {
   return item.source === 'codex' ? item.windows.filter((window) => quotaWindowTitle(window.name) !== 'Monthly') : item.windows;
 }
 
-/** 行内余额文案；有符号时不再重复单位，0 读作「额度内」以免被误认为欠费 */
+/** 行内余额文案；Command Code 零余额保留为真实 USD 金额 */
 export function quotaRowBalance(item: QuotaItem): string | null {
   if (item.balance === null) return null;
-  return item.balance === 0 ? '额度内' : quotaAmountText(item);
+  return item.balance === 0 && item.source !== 'commandcode' ? '额度内' : quotaAmountText(item);
 }
 
 /**
@@ -211,7 +215,9 @@ export function QuotaRow({ item, now = Date.now() }: { item: QuotaItem; now?: nu
                   // ACC-KB-B5W：窗口有 total/used 就显示「已用/总量」，否则回落百分比；老数据没有 kind/total/used 也不崩
                   <span data-testid={`quota-row-used-${item.source}-${index}`} className="tabular-nums text-[11px] text-neutral-700 dark:text-neutral-300">
                     {window.total !== undefined && window.total !== null && window.used !== undefined && window.used !== null
-                      ? `${Math.round(window.used)}/${Math.round(window.total)}`
+                      ? item.source === 'commandcode'
+                        ? `${formatQuotaAmount(window.used, item.unit)}/${formatQuotaAmount(window.total, item.unit)}`
+                        : `${Math.round(window.used)}/${Math.round(window.total)}`
                       : `${pct}%`}
                   </span>
                 )}

@@ -16,7 +16,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
-import { QuotaRow, QuotaRows, formatRemaining, formatResetClock, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
+import { QuotaRow, QuotaRows, formatRemaining, formatResetClock, formatResets, isWindowLimited, quotaAmountText, quotaRowBalance, quotaWindowShortLabel, type QuotaItem } from '../components/settings/QuotaCards';
 import { server } from './server';
 
 function item(overrides: Partial<QuotaItem> = {}): QuotaItem {
@@ -112,9 +112,9 @@ describe('额度来源行（ACC-QUOTA-01）', () => {
     // 进度条宽度 = used_percent
     expect(within(row).getByTestId('quota-row-bar-opencode_go-0')).toHaveAttribute('data-width', '19');
     expect(within(row).getByTestId('quota-row-bar-opencode_go-0')).toHaveStyle({ width: '19%' });
-    // 重置时间进 tooltip；无重置时刻 → Resets soon
+    // 重置时间进 tooltip；无来源重置时刻显示为未知
     expect(first.getAttribute('title') ?? '').toContain('Resets in 1h 20m');
-    expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Resets soon');
+    expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Reset time unknown');
     expect(within(row).getByTestId('quota-row-window-opencode_go-1')).toHaveTextContent('周');
   });
 
@@ -236,6 +236,28 @@ describe('Codex 本地额度（ACC-CODEX-QUOTA-IMPL）', () => {
   });
 });
 
+describe('Command Code USD 额度显示', () => {
+  it('零余额显示 $0.00，窗口金额保留两位小数，缺少 reset 显示未知', () => {
+    expect(quotaRowBalance(item({ source: 'commandcode', balance: 0, unit: 'USD' }))).toBe('$0.00');
+    expect(formatResets(0, NOW)).toBe('Reset time unknown');
+    render(
+      <QuotaRow
+        item={item({
+          source: 'commandcode',
+          balance: 0,
+          unit: 'USD',
+          windows: [{ name: 'weekly', kind: 'weekly', total: 35, used: 9.6445, remaining: 25.3555, used_percent: 27.55, reset_at: null }],
+        })}
+        now={NOW}
+      />,
+    );
+    const row = screen.getByTestId('quota-row-commandcode');
+    expect(within(row).getByTestId('quota-row-balance-commandcode')).toHaveTextContent('$0.00');
+    expect(within(row).getByTestId('quota-row-used-commandcode-0')).toHaveTextContent('$9.64/$35.00');
+    expect(within(row).getByTestId('quota-row-window-commandcode-0').getAttribute('title') ?? '').toContain('Reset time unknown');
+  });
+});
+
 /** ACC-QUOTA-02：行内绘制。now 固定注入，reset 时刻用相对 now 的偏移，避免用例随真实时钟漂移。 */
 const NOW = new Date('2026-11-04T12:00:00+08:00').getTime();
 
@@ -294,7 +316,7 @@ describe('额度行内绘制（ACC-QUOTA-02）', () => {
     expect(bar).toHaveStyle({ width: '19%' });
     // 重置时间不再占行内文字位（设计 §5：进 tooltip）
     expect(within(row).getByTestId('quota-row-window-opencode_go-0').getAttribute('title') ?? '').toContain('Resets in 1h 20m');
-    expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Resets soon');
+    expect(within(row).getByTestId('quota-row-window-opencode_go-1').getAttribute('title') ?? '').toContain('Reset time unknown');
     expect(row.textContent ?? '').not.toContain('Resets in');
     expect(within(row).queryByTestId('quota-row-balance-opencode_go')).toBeNull();
   });
