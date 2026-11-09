@@ -9,14 +9,14 @@
  * 每个码自带中文文案，避免被全局包装成「已被占用（…）」。
  * workspace 解析照 `commands/claim.ts:17-21`：先读 issue 的 workspace_id 再上送（写通道强制 workspace_id）。
  */
+import type { DependencyRef, DependencyView } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg, resolveIssueByRef } from '../issueRef.js';
 import { table } from '../render.js';
 
-export interface DependencyRef { issue_id: string; title: string; status: string; resolved: boolean; relation?: string }
-export interface DependencyView { blockers: DependencyRef[]; blocked: DependencyRef[]; related?: DependencyRef[]; duplicate?: DependencyRef[] }
+export type { DependencyRef, DependencyView } from '@agentboard/shared';
 
 /** BORROW-2.2：--type 白名单（与服务端 addRelation 同口径） */
 export const DEP_TYPES: readonly string[] = ['blocks', 'related', 'duplicate'];

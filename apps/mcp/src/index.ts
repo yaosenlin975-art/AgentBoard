@@ -7,6 +7,7 @@ import { AgentBoardApiClient } from './apiClient.js';
 import type { McpConfig } from './config.js';
 import { loadMcpConfig } from './config.js';
 import { registerTaskTools } from './tools/tasks.js';
+import { registerBoardViewTools } from './tools/boardViews.js';
 import { registerDependencyTools } from './tools/dependencies.js';
 import { registerStatusTools } from './tools/statuses.js';
 import { registerKnowledgeTools } from './tools/knowledge.js';
@@ -21,6 +22,7 @@ export function createTaskMcpServer(config: McpConfig, fetcher: typeof fetch = f
   const server = new McpServer({ name: 'agentboard', version: MCP_VERSION });
   const api = new AgentBoardApiClient(config, fetcher);
   registerTaskTools(server, config, api);
+  registerBoardViewTools(server, config, api);
   registerDependencyTools(server, config, api);
   registerStatusTools(server, config, api);
   registerKnowledgeTools(server, config, api);

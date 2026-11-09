@@ -1058,3 +1058,46 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 ```
 
 退出码：`0` 成功；`1` 决策不存在 / 服务不可达 / 其它；`2` 非宽限中、超上限（409）、跨区（403）；`3` `--seconds` 或 id 前缀非法（不发请求）。
+
+## 21. CLI / MCP 能力对照（ARCH-01）
+
+口径：`有` = 有等价 MCP 工具（可能一个 CLI 命令对应多个工具）；`无` = 当前没有 MCP 版，但语义上不排斥；`永不提供` = MCP 是**远程语义**，该命令只操作本机文件 / 本机库 / 本机凭据 / 本机操作系统，远程调用没有意义或越权。
+
+新增或删除 `kb` 顶层命令时**必须同步本表**：`apps/mcp/test/cliMcpParity.test.ts` 会解析 `packages/cli/src/index.ts`（含 `register*Commands` 模块）与本表并断言命令集合一致，缺行 / 未登记 / 「MCP 版」列取值非法都会失败。演练记录见该用例所在卡 ARCH-01 的完成备注。
+
+| CLI 顶层命令 | MCP 版 | MCP 工具 | 说明 / 不提供原因 |
+| --- | --- | --- | --- |
+| `kb list-spaces` | 有 | `list_workspaces` | 只读工作区清单；本机 path 刻意不暴露 |
+| `kb list-tasks` | 有 | `list_tasks` | 平铺/树两种读法；列表不含正文（正文走 `get_task`） |
+| `kb next` | 有 | `next_tasks` | 与 `kb next --json` 同形，共用 shared boardViews |
+| `kb stats` | 有 | `workspace_stats` | 与 `kb stats --json` 同形，共用 shared boardViews |
+| `kb grep` | 永不提供 | — | 本机文件内容检索：需要本地路径与文件系统遍历，MCP 远程调用无意义 |
+| `kb show` | 有 | `get_task` / `get_task_comments` | 任务正文与评论分别提供窗口化读取 |
+| `kb claim` | 有 | `claim_task` | 原子领取，审计标签为 MCP 配置的 agent |
+| `kb release` | 有 | `release_task` | 释放占用 → 待规划 |
+| `kb comment` | 有 | `add_task_comment` | 文本评论；图片附件仅 CLI/HTTP 提供 |
+| `kb accept` | 有 | `accept_task` | 结构化验收记录，不改卡状态 |
+| `kb done` | 有 | `complete_task` | 完成 → 待验收；自动 git 提交只在 CLI 侧 |
+| `kb close` | 有 | `close_task` | 待验收 → 已关闭 |
+| `kb reopen` | 有 | `reopen_task` | 已关闭/已废弃 → 指定状态 |
+| `kb update` | 有 | `update_task` | 字段与状态更新，带 CAS |
+| `kb delete-issue` | 有 | `delete_task` | 不可逆删除，占用中/含子卡拒绝 |
+| `kb fail` | 有 | `fail_task` | 退回待规划并写失败原因 |
+| `kb create-space` | 无 | — | MCP 以绑定工作区为运行前提，不负责登记工作区 |
+| `kb delete-space` | 无 | — | 同上：工作区管理属本地/管理面操作 |
+| `kb create-issue` | 有 | `create_task` | 建卡（含父卡、标签、优先级） |
+| `kb move-issue` | 有 | `update_task` | 通过 `parent_issue_id` 改父卡（传 null 恢复根卡） |
+| `kb knowledge` | 有 | `list_knowledge` / `read_knowledge` / `search_knowledge` / `find_knowledge_sources` / `create_knowledge` / `revise_knowledge` / `archive_knowledge` / `restore_knowledge` | 知识页读、检索、写与归档全链路 |
+| `kb changelog` | 有 | `list_changelog` / `get_changelog` / `create_changelog` | MCP 只提供列表/详情/新建；更新与删除仍走 CLI |
+| `kb accounts` | 永不提供 | — | 本机 CLI 账号与凭据切换：涉及本机凭据文件，MCP 远程语义下无凭据上下文且越权 |
+| `kb dep` | 有 | `list_dependencies` / `add_dependency` / `remove_dependency` | 依赖边读写 |
+| `kb status` | 有 | `list_statuses` / `add_status` / `remove_status` | 工作区状态字典 |
+| `kb autostart` | 永不提供 | — | 本机 Windows 自启（注册表 Run 键 / vbs），远程调用无意义 |
+| `kb shortcut` | 永不提供 | — | 本机桌面快捷方式（.lnk），远程调用无意义 |
+| `kb workspace-db` | 永不提供 | — | 本机数据库下沉 / 回迁 / 快照：直接操作本机库与工作区目录，MCP 远程语义无意义 |
+| `kb ask` | 有 | `ask_decision` | 提问并等待宽限 |
+| `kb decisions` | 有 | `list_decisions` | 列待决策 |
+| `kb decision` | 有 | `get_decision` / `withdraw_decision` | 决策详情与撤回（show / withdraw 子命令） |
+| `kb answer` | 有 | `answer_decision` | 回答或修订决策答案 |
+| `kb ask-extend` | 有 | `extend_decision_grace` | 延长宽限窗口 |
+| `kb stop-check` | 有 | `stop_check` | 协作式停止检查 |

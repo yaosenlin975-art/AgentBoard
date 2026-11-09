@@ -55,6 +55,7 @@ describe('AgentBoard task MCP server', () => {
       'list_statuses',
       'list_tasks',
       'list_workspaces',
+      'next_tasks',
       'read_knowledge',
       'release_task',
       'remove_dependency',
@@ -66,6 +67,7 @@ describe('AgentBoard task MCP server', () => {
       'stop_check',
       'update_task',
       'withdraw_decision',
+      'workspace_stats',
     ]);
     expect(harness.stdoutMessages).toHaveLength(2);
     expect(harness.stdoutMessages.every((message) => message.jsonrpc === '2.0')).toBe(true);
