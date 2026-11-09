@@ -21,6 +21,8 @@
 ## 2. 通用约定
 
 > CLI-UX（2026-11-03）：`400 VALIDATION_ERROR` 的 message 已中文化并附可用值（如 `priority: 取值必须是：低 / 中 / 高`）；`kb done` 支持 `--notes-stdin`，`kb list-tasks --full` 只对 `--json` 生效，`kb changelog` 时间按本地时区展示。
+>
+> ARCH-04：`kb done` 前置检查本卡（含父链）在 `issue:<uuid>` 来源/证据里关联的 `category=design` 知识页；若仍有 `landed=proposed`（非 pending/archived），报错退出 1 并列出页 id 与两个选项：`kb knowledge revise <页 id> --landed landed|partial`，或 `kb done ... --design-not-advanced`（声明写入 notes，跳过门禁）。
 
 
 - 请求/响应均为 JSON；时间戳为 Unix 毫秒整数。错误信封统一为 `{ "error": { "code", "message", "details"? } }`（`routes.ts:508`）。

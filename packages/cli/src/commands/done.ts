@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Issue, KnowledgeHint } from '@agentboard/shared';
 import { CommanderError } from 'commander';
-import { request } from '../api.js';
+import { CliHttpError, request } from '../api.js';
 import { clearClaimedFence, loadClaimedFence } from '../claimStore.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueRef } from '../issueRef.js';
@@ -40,6 +40,8 @@ export interface DoneArgs {
   changelogBody?: string;
   /** OPT-09：已有知识页 id（只挂引用，不新建页） */
   knowledgePage?: string;
+  /** ARCH-04：确认本卡不推进关联的设计页（landed=proposed 时写声明进 notes，跳过门禁） */
+  designNotAdvanced?: boolean;
 }
 
 /** OPT-09：从 done 的 request-id 派生 changelog 幂等键（同一重试复用，不与 done 的 key 撞车） */
@@ -64,11 +66,123 @@ function validateCloseRecord(args: DoneArgs): { title: string; type: string } {
   return { title, type };
 }
 
+/** ARCH-04：只对真实任务 id（UUID）启用设计门禁；非 UUID 引用保持旧行为 */
+const ISSUE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface KnowledgePageRow {
+  id: string;
+  slug: string;
+  title: string;
+  scope: 'common' | 'workspace';
+  workspace_id: string | null;
+  revision: number;
+  status: string;
+  category?: string | null;
+  landed?: string | null;
+}
+
+interface KnowledgePageDetail extends KnowledgePageRow {
+  sources?: Array<{ source_id?: string | null; locator?: string | null }>;
+  evidence?: Array<{ source_id?: string | null; locator?: string | null }>;
+}
+
+interface PendingDesignPage {
+  id: string;
+  slug: string;
+  revision: number;
+}
+
+/** ARCH-04：列出 active 知识页（common + 当前工作区），按 offset 翻页 */
+async function listActiveKnowledgePages(ctx: Ctx, workspaceId: string): Promise<KnowledgePageRow[]> {
+  const pages: KnowledgePageRow[] = [];
+  let offset = 0;
+  for (;;) {
+    const query = new URLSearchParams({
+      scope: 'both', workspace_id: workspaceId, status: 'active', limit: '100', offset: String(offset),
+    });
+    const result = await request<{ items: KnowledgePageRow[]; next_offset: number | null }>(
+      ctx.base, 'GET', `/api/knowledge/pages?${query}`,
+    );
+    pages.push(...result.items);
+    if (result.next_offset === null || result.next_offset <= offset) return pages;
+    offset = result.next_offset;
+  }
+}
+
+/** 本卡 + 父链（设计页常挂在父设计卡上，如 issue:<父卡 id>）；循环保护 */
+async function loadIssueChain(ctx: Ctx, issueId: string, known?: Issue): Promise<Issue[]> {
+  const chain: Issue[] = [];
+  const seen = new Set<string>();
+  let current = known ?? await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`);
+  while (!seen.has(current.id) && chain.length < 32) {
+    chain.push(current);
+    seen.add(current.id);
+    if (current.parent_issue_id === null) break;
+    current = await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(current.parent_issue_id)}`);
+  }
+  return chain;
+}
+
+/** 当前 revision 的 sources / evidence 是否精确引用了这批 issue（约定 `issue:<uuid>`） */
+function referencesIssues(page: KnowledgePageDetail, refs: Set<string>): boolean {
+  const entries = [...(page.sources ?? []), ...(page.evidence ?? [])];
+  return entries.some(entry =>
+    [entry.source_id, entry.locator].some(value => typeof value === 'string' && refs.has(value.toLowerCase())),
+  );
+}
+
+/**
+ * ARCH-04：找出「关联本卡（含父链）且仍为 proposed 的 active design 页」。
+ * 只读：列表接口取元数据，候选页再取详情核对 sources/evidence；不改 landed、不写库。
+ */
+async function findPendingDesignPages(ctx: Ctx, issueId: string, known?: Issue): Promise<PendingDesignPage[]> {
+  if (!ISSUE_UUID_RE.test(issueId)) return [];
+  const chain = await loadIssueChain(ctx, issueId, known);
+  const workspaceId = chain[0]!.workspace_id;
+  const refs = new Set(chain.map(issue => `issue:${issue.id}`.toLowerCase()));
+  const candidates = (await listActiveKnowledgePages(ctx, workspaceId)).filter(page =>
+    page.category === 'design' && page.landed === 'proposed' && page.status === 'active',
+  );
+  const pending: PendingDesignPage[] = [];
+  for (const page of candidates) {
+    const query = page.scope === 'common'
+      ? new URLSearchParams({ scope: 'common' })
+      : new URLSearchParams({ scope: 'workspace', workspace_id: page.workspace_id ?? workspaceId });
+    const detail = await request<KnowledgePageDetail>(
+      ctx.base, 'GET', `/api/knowledge/pages/${encodeURIComponent(page.id)}?${query}`,
+    ).catch((error: unknown) => {
+      // 列表与详情之间被归档/删除：跳过该页，不阻塞收尾
+      if (error instanceof CliHttpError && (error.status === 404 || error.status === 410)) return null;
+      throw error;
+    });
+    if (detail !== null && referencesIssues(detail, refs)) {
+      pending.push({ id: page.id, slug: page.slug, revision: detail.revision ?? page.revision });
+    }
+  }
+  return pending;
+}
+
+/** ARCH-04：门禁报错文案——每个页 id 都给出两个合法选项 */
+function designGateMessage(issueId: string, pages: PendingDesignPage[]): string {
+  const lines = pages.map(page =>
+    `  - ${page.id}（${page.slug}，rev ${page.revision}）\n` +
+    `    选项 1：kb knowledge revise ${page.id} --landed landed|partial --expected-revision ${page.revision} ...\n` +
+    `    选项 2：kb done ${issueId} ... --design-not-advanced`,
+  );
+  return `设计页未回改：本卡（含父链）关联了仍为 proposed 的设计页，done 未执行\n${lines.join('\n')}`;
+}
+
 export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> {
   // CLI-02：允许 ≥8 位前缀；fence 与接口都用解析后的真实 id
   const target = await normalizeIssueRef(ctx, id);
   const issueId = target.id;
   const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number } = { agent_id: ctx.agentId };
+  /** 一次收尾里 issue 详情最多取一次（workspace_id / 父链 / 设计页门禁共用） */
+  let issueDetail: Issue | undefined = target.issue;
+  const loadIssue = async (): Promise<Issue> => {
+    issueDetail ??= await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`);
+    return issueDetail;
+  };
   // BORROW-0.3：本地有 claim 记录就自动带 fence（软模式：无记录不带，服务端放行）
   const storedFence = loadClaimedFence(issueId);
   if (storedFence !== undefined) body.fence = storedFence;
@@ -102,16 +216,25 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   }
   if (args.requestId !== undefined) {
     // 服务端要求幂等 owner 操作提供 workspace_id；只在显式传 --request-id 时才多这一次解析
-    body.workspace_id = target.issue?.workspace_id
-      ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
+    body.workspace_id = (await loadIssue()).workspace_id;
   }
   // OPT-09：--close-record 先校验参数 → 校验知识页（只读）→ 写 changelog → 再 done；
   // changelog/知识页任一步失败都在 done 之前中止，避免「卡 done 了但 changelog 没写」
   const { title: changelogTitle, type: changelogType } = validateCloseRecord(args);
+  // ARCH-04：done 前置门禁——关联设计页仍为 proposed 时必须先回改或显式声明不推进；
+  // 判定阶段只读，失败时 done / changelog 都未执行。
+  let designDeclaration: string | null = null;
+  if (ISSUE_UUID_RE.test(issueId)) {
+    const currentIssue = await loadIssue();
+    const pendingDesignPages = await findPendingDesignPages(ctx, issueId, currentIssue);
+    if (pendingDesignPages.length > 0) {
+      if (args.designNotAdvanced !== true) throw new Error(designGateMessage(issueId, pendingDesignPages));
+      designDeclaration = `设计页：本卡不推进设计（${pendingDesignPages.map(page => page.id).join('、')}）`;
+    }
+  }
   let closeRecordInfo: { changelog_id: string; knowledge_id: string | null } | null = null;
   if (args.closeRecord === true) {
-    const workspaceId = target.issue?.workspace_id
-      ?? (await request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(issueId)}`)).workspace_id;
+    const workspaceId = (await loadIssue()).workspace_id;
     let knowledgeId: string | null = null;
     if (args.knowledgePage !== undefined) {
       const resolved = await request<{ id: string }>(
@@ -139,6 +262,9 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     closeRecordInfo = { changelog_id: record.id, knowledge_id: knowledgeId };
     const line = `close-record: changelog=${record.id} knowledge=${knowledgeId ?? '（未提供）'}`;
     body.notes = body.notes === undefined ? line : `${body.notes}\n\n${line}`;
+  }
+  if (designDeclaration !== null) {
+    body.notes = body.notes === undefined ? designDeclaration : `${body.notes}\n\n${designDeclaration}`;
   }
   const issue = await request<Issue & { knowledge_hint?: KnowledgeHint | null; git_commit?: GitCommitInfo | null }>(
     ctx.base, 'POST', `/api/issues/${encodeURIComponent(issueId)}/done`, body, args.requestId,

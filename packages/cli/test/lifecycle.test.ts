@@ -214,6 +214,116 @@ describe('CLOSE-FLOW：done --close 与 close 自动释放自有占用', () => {
   });
 });
 
+describe('ARCH-04：done 设计页 landed 回改门禁', () => {
+  const TASK_ID = 'aaaaaaaa-1111-4111-8111-111111111111';
+  const PARENT_ID = 'bbbbbbbb-2222-4222-8222-222222222222';
+  const PAGE_ID = 'cccccccc-3333-4333-8333-333333333333';
+  const OTHER_ID = 'dddddddd-4444-4444-8444-444444444444';
+  const TASK = { ...ISSUE, id: TASK_ID, parent_issue_id: PARENT_ID, status: '进行中' };
+  const PARENT = { ...ISSUE, id: PARENT_ID, parent_issue_id: null };
+  const page = (landed: string) => ({
+    id: PAGE_ID, slug: 'design-page', title: '设计页', scope: 'workspace', workspace_id: 'ws1',
+    revision: 1, status: 'active', category: 'design', landed,
+  });
+  const detail = (landed: string, linkedIssue = PARENT_ID) => ({
+    ...page(landed),
+    sources: [],
+    evidence: [{ source_id: `issue:${linkedIssue}`, locator: `issue:${linkedIssue}` }],
+  });
+  const designHandler = (
+    landed: () => string,
+    onRevise?: (next: string) => void,
+    linkedIssue = PARENT_ID,
+  ): Handler => (m, u, body) => {
+    if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: '测试工作区', path: 'D:\\ws1' }] };
+    if (m === 'GET' && u === `/api/issues/${TASK_ID}`) return { status: 200, body: { ...TASK, status: '进行中' } };
+    if (m === 'GET' && u === `/api/issues/${PARENT_ID}`) return { status: 200, body: PARENT };
+    if (m === 'GET' && u.startsWith('/api/knowledge/pages?')) {
+      return { status: 200, body: { items: [page(landed())], next_offset: null } };
+    }
+    if (m === 'GET' && u.startsWith(`/api/knowledge/pages/${PAGE_ID}`)) {
+      return { status: 200, body: detail(landed(), linkedIssue) };
+    }
+    if (m === 'PUT' && u === `/api/knowledge/pages/${PAGE_ID}`) {
+      const next = (body as { landed?: string }).landed ?? landed();
+      onRevise?.(next);
+      return { status: 200, body: detail(next, linkedIssue) };
+    }
+    if (m === 'POST' && u === `/api/issues/${TASK_ID}/done`) {
+      return { status: 200, body: { ...TASK, status: '待验收', claimed_by: null } };
+    }
+    return undefined;
+  };
+
+  it('① 关联 proposed design 页且未声明：exit 1，列出页 id 与两个选项，done 未执行', async () => {
+    handler = designHandler(() => 'proposed');
+    const result = await run(['done', TASK_ID, '--notes', '改完']);
+    expect(result.code).toBe(1);
+    expect(result.err).toContain(PAGE_ID);
+    expect(result.err).toContain('--landed landed|partial');
+    expect(result.err).toContain('--design-not-advanced');
+    expect(calls.some(c => c.method === 'POST' && c.url === `/api/issues/${TASK_ID}/done`)).toBe(false);
+    expect(calls.some(c => c.method === 'PUT')).toBe(false);
+  });
+
+  it('② revise 改 landed=landed 后 done 通过，knowledge show 回读 landed', async () => {
+    let landed = 'proposed';
+    handler = designHandler(() => landed, next => { landed = next; });
+    const revised = await run([
+      'knowledge', 'revise', PAGE_ID, '--scope', 'workspace', '--workspace', 'ws1',
+      '--expected-revision', '1', '--landed', 'landed',
+    ]);
+    expect(revised.code).toBe(0);
+    const shown = await run(['knowledge', 'show', PAGE_ID, '--scope', 'workspace', '--workspace', 'ws1']);
+    expect(shown.out).toContain('landed: landed');
+    const result = await run(['done', TASK_ID, '--notes', '改完']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('状态: 待验收');
+    expect(calls.some(c => c.method === 'POST' && c.url === `/api/issues/${TASK_ID}/done`)).toBe(true);
+  });
+
+  it('②b landed=partial 同样放行', async () => {
+    handler = designHandler(() => 'partial');
+    const result = await run(['done', TASK_ID]);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('状态: 待验收');
+  });
+
+  it('③ --design-not-advanced：done 通过，声明与页 id 写入 notes', async () => {
+    handler = designHandler(() => 'proposed');
+    const result = await run(['done', TASK_ID, '--notes', '改完', '--design-not-advanced']);
+    expect(result.code, result.err).toBe(0);
+    const doneCall = calls.find(c => c.method === 'POST' && c.url === `/api/issues/${TASK_ID}/done`);
+    expect((doneCall?.body as { notes?: string }).notes).toContain('设计页：本卡不推进设计');
+    expect((doneCall?.body as { notes?: string }).notes).toContain(PAGE_ID);
+  });
+
+  it('③b --design-not-advanced 与 --close-record 共存：notes 同时含收尾记录与声明', async () => {
+    const base = designHandler(() => 'proposed');
+    handler = (m, u, body) => {
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 201, body: { id: 'log-1' } };
+      return base(m, u, body);
+    };
+    const result = await run([
+      'done', TASK_ID, '--notes', '改完', '--design-not-advanced',
+      '--close-record', '--changelog-title', '收尾', '--type', '调整',
+    ]);
+    expect(result.code, result.err).toBe(0);
+    const notes = (calls.find(c => c.method === 'POST' && c.url === `/api/issues/${TASK_ID}/done`)?.body as { notes?: string }).notes;
+    expect(notes).toContain('close-record: changelog=log-1');
+    expect(notes).toContain('设计页：本卡不推进设计');
+    expect(notes).toContain(PAGE_ID);
+  });
+
+  it('④ 无关联 design 页（证据指向别的卡）：行为与改造前一致，不追加 notes', async () => {
+    handler = designHandler(() => 'proposed', undefined, OTHER_ID);
+    const result = await run(['done', TASK_ID, '--notes', '改完']);
+    expect(result.code).toBe(0);
+    const doneCall = calls.find(c => c.method === 'POST' && c.url === `/api/issues/${TASK_ID}/done`);
+    expect((doneCall?.body as { notes?: string }).notes).toBe('改完');
+  });
+});
+
 describe('GIT-OBSERVABLE：done 自动提交未完成必须可感知（卡 9fa0d16f）', () => {
   const NOT_COMMITTED = {
     status: 'not-committed',
