@@ -6,12 +6,13 @@ export const MAX_DISPATCH_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_DISPATCH_SELECTED_ID_COUNT = 100;
 
 /**
- * 额度来源清单（顺序即界面展示顺序，ACC-KB-A4 单一事实源）。
+ * 全局额度来源清单（顺序即界面展示顺序，ACC-KB-A4 单一事实源）。
  *
- * ACC-KB-B5S：来源扩到 **8 个，分两组，不要混为一谈**——
+ * ACC-KB-B5S：全局来源为 **8 个，分两组，不要混为一谈**——
  * - `cli`（3）：`deepseek` / `opencode_go` / `codex`，读的是本机 CLI 的余额或本地额度快照；
  * - `platform`（5）：`workbuddy` / `minimax` / `trae` / `qoder_cn` / `zcode`，读的是桌面/网页账号侧的积分或套餐余量。
  * 两组数据不同源、不同单位，UI 必须分组展示，否则会被误读成重复来源。
+ * Command Code 是 cli_account 级来源，仅在指定账号查询，不进入全局分组清单。
  */
 import type { QuotaSourceId } from './types.js';
 
@@ -19,6 +20,7 @@ export const QUOTA_SOURCE_GROUP: Record<QuotaSourceId, 'cli' | 'platform'> = {
   deepseek: 'cli',
   opencode_go: 'cli',
   codex: 'cli',
+  commandcode: 'cli',
   workbuddy: 'platform',
   minimax: 'platform',
   trae: 'platform',
@@ -32,6 +34,7 @@ export const QUOTA_GROUPS: readonly { id: 'cli' | 'platform'; label: string; sou
   { id: 'platform', label: '平台账号额度', sources: ['workbuddy', 'minimax', 'trae', 'qoder_cn', 'zcode'] },
 ];
 
+/** 全局聚合来源；Command Code 由 cli_account id 单独读取，避免聚合到错误账号。 */
 export const QUOTA_SOURCE_IDS: readonly QuotaSourceId[] = [...QUOTA_GROUPS[0]!.sources, ...QUOTA_GROUPS[1]!.sources];
 
 /** 额度来源的中文标签（服务端不拼 UI 文案，前端与 CLI 共用同一份） */
@@ -39,6 +42,7 @@ export const QUOTA_SOURCE_LABEL: Record<QuotaSourceId, string> = {
   deepseek: 'DeepSeek 余额',
   opencode_go: 'OpenCode Go 套餐余量',
   codex: 'Codex 额度窗口',
+  commandcode: 'Command Code 余额',
   workbuddy: 'WorkBuddy 积分',
   minimax: 'MiniMax 套餐余量',
   trae: 'Trae 积分',

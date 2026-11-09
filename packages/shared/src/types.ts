@@ -611,12 +611,13 @@ export interface ArchivedWorkspaceChangeLogSummary {
 
 // ---------------- 额度 / 余额（ACC-KB-A4：单一事实源） ----------------
 // 服务端 `services/quotas/quotaService.ts` 与前端 `components/settings/QuotaCards.tsx` 都从这里取，
-// 不再各抄一份字面量 union。新增来源（ACC-KB-B5）时同步更新 `QUOTA_SOURCE_IDS` / `QUOTA_SOURCE_LABEL`。
+// 不再各抄一份字面量 union。新增全局聚合来源时同步更新 `QUOTA_SOURCE_IDS` / `QUOTA_SOURCE_LABEL`；
+// 账号级来源可以加入 union 与标签映射，但不进入全局聚合清单。
 
 /** 额度来源 id */
 export type QuotaSourceId =
-  // CLI 侧额度（3）：本机 CLI 的余额/窗口
-  | 'deepseek' | 'opencode_go' | 'codex'
+  // CLI 侧额度（3 个全局来源 + Command Code 账号级来源）
+  | 'deepseek' | 'opencode_go' | 'codex' | 'commandcode'
   // 平台账号额度（5）：桌面/网页账号侧的积分或套餐余量（ACC-KB-B5S）
   | 'workbuddy' | 'minimax' | 'trae' | 'qoder_cn' | 'zcode';
 
@@ -649,7 +650,7 @@ export interface QuotaResult {
   status: QuotaStatus;
   /** 余额/剩余额度；unsupported 或 error 时为 null */
   balance: number | null;
-  /** 币种或单位：`CNY` / `USD` / null */
+  /** 币种或单位：`CNY` / `USD` / `credits` / null */
   unit: string | null;
   windows: QuotaWindow[];
   fetched_at: number;
