@@ -494,6 +494,7 @@ interface TreeCursor {
   workspace_id: string;
   parent_issue_id: string | null;
   status: string | null;
+  // Retained in the v1 cursor payload for compatibility; tree ordering uses created_at/id.
   sort_order: number;
   created_at: number;
   id: string;
@@ -536,13 +537,13 @@ export function listIssueTreePage(
   const filters = ['i.workspace_id=?', 'i.parent_issue_id IS ?'];
   if (status !== null) { filters.push('i.status=?'); params.push(status); }
   if (cursor) {
-    filters.push('(i.sort_order>? OR (i.sort_order=? AND (i.created_at>? OR (i.created_at=? AND i.id>?))))');
-    params.push(cursor.sort_order, cursor.sort_order, cursor.created_at, cursor.created_at, cursor.id);
+    filters.push('(i.created_at>? OR (i.created_at=? AND i.id>?))');
+    params.push(cursor.created_at, cursor.created_at, cursor.id);
   }
   params.push(input.limit + 1);
   const rows = db.prepare(`SELECT i.*,${COMMENT_COUNT_COLUMN},${DEPENDENCY_COLUMNS},${DEPENDENCY_VIOLATION_COLUMN},${DECISION_COLUMNS},
       (SELECT COUNT(*) FROM issue child WHERE child.parent_issue_id=i.id) AS child_count
-    FROM issue i ${DEPENDENCY_JOIN} WHERE ${filters.join(' AND ')} ORDER BY i.sort_order,i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
+    FROM issue i ${DEPENDENCY_JOIN} WHERE ${filters.join(' AND ')} ORDER BY i.created_at,i.id LIMIT ?`).all(...params) as Array<IssueRow & { child_count: number }>;
   const hasMore = rows.length > input.limit;
   const visibleRows = hasMore ? rows.slice(0, input.limit) : rows;
   const stats = descendantStats(db, visibleRows.map((row) => row.id));

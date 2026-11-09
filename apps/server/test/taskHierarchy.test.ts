@@ -116,21 +116,48 @@ describe('task hierarchy REST contract', () => {
     expect(moved.body.parent_issue_id).toBeNull();
   });
 
-  it('paginates direct children deterministically with ancestor context and rejects a cursor for changed filters', async () => {
+  it('paginates roots and direct children by creation time and id despite conflicting sort_order', async () => {
     const root = await postIssue('root');
+    const earlyRoot = await postIssue('early root');
+    const tiedRoot = await postIssue('tied root');
+    const lateRoot = await postIssue('late root');
     const parent = await postIssue('parent', root.body.id);
     const a = await postIssue('a', parent.body.id);
     const b = await postIssue('b', parent.body.id);
     const c = await postIssue('c', parent.body.id);
-    updateIssue(t.db, a.body.id, { sort_order: 1 });
-    updateIssue(t.db, b.body.id, { sort_order: 2 });
-    updateIssue(t.db, c.body.id, { sort_order: 3 });
+
+    const setTreePosition = (id: string, createdAt: number, sortOrder: number) => {
+      t.db.prepare('UPDATE issue SET created_at=? WHERE id=?').run(createdAt, id);
+      updateIssue(t.db, id, { sort_order: sortOrder });
+    };
+    setTreePosition(root.body.id, 200, 0);
+    setTreePosition(earlyRoot.body.id, 100, 3);
+    setTreePosition(tiedRoot.body.id, 200, 2);
+    setTreePosition(lateRoot.body.id, 300, 1);
+    setTreePosition(a.body.id, 300, 0);
+    setTreePosition(b.body.id, 100, 2);
+    setTreePosition(c.body.id, 100, 1);
     updateIssue(t.db, b.body.id, { status: '进行中' });
+
+    const expectedRoots = [earlyRoot.body.id, ...[root.body.id, tiedRoot.body.id].sort(), lateRoot.body.id];
+    const rootsFirst = await request(app).get('/api/issues/tree').query({ workspace: workspaceId, limit: 2 });
+    expect(rootsFirst.status).toBe(200);
+    expect(rootsFirst.body.items.map((item: { id: string }) => item.id)).toEqual(expectedRoots.slice(0, 2));
+    expect(rootsFirst.body.next_cursor).toEqual(expect.any(String));
+    const rootsSecond = await request(app).get('/api/issues/tree').query({
+      workspace: workspaceId, limit: 2, cursor: rootsFirst.body.next_cursor,
+    });
+    expect(rootsSecond.status).toBe(200);
+    const rootIds = [...rootsFirst.body.items, ...rootsSecond.body.items].map((item: { id: string }) => item.id);
+    expect(rootIds).toEqual(expectedRoots);
+    expect(new Set(rootIds).size).toBe(expectedRoots.length);
+    expect(rootsSecond.body.next_cursor).toBeNull();
 
     const first = await request(app).get('/api/issues/tree').query({ workspace: workspaceId, parent_issue_id: parent.body.id, limit: 2 });
     expect(first.status).toBe(200);
     expect(first.body.ancestors.map((item: { id: string }) => item.id)).toEqual([root.body.id, parent.body.id]);
-    expect(first.body.items.map((item: { title: string }) => item.title)).toEqual(['a', 'b']);
+    const expectedChildren = [...[b.body.id, c.body.id].sort(), a.body.id];
+    expect(first.body.items.map((item: { id: string }) => item.id)).toEqual(expectedChildren.slice(0, 2));
     expect(first.body.items[0]).toMatchObject({ child_count: 0, descendant_count: 0, descendants_closed_count: 0 });
     expect(first.body.next_cursor).toEqual(expect.any(String));
 
@@ -138,7 +165,9 @@ describe('task hierarchy REST contract', () => {
       workspace: workspaceId, parent_issue_id: parent.body.id, limit: 2, cursor: first.body.next_cursor,
     });
     expect(second.status).toBe(200);
-    expect(second.body.items.map((item: { title: string }) => item.title)).toEqual(['c']);
+    const childIds = [...first.body.items, ...second.body.items].map((item: { id: string }) => item.id);
+    expect(childIds).toEqual(expectedChildren);
+    expect(new Set(childIds).size).toBe(expectedChildren.length);
     expect(second.body.next_cursor).toBeNull();
     expect((await request(app).get('/api/issues/tree').query({ workspace: workspaceId, parent_issue_id: root.body.id, limit: 2, cursor: first.body.next_cursor })).status).toBe(400);
     const filtered = await request(app).get('/api/issues/tree').query({ workspace: workspaceId, parent_issue_id: parent.body.id, status: '进行中', limit: 2 });
