@@ -123,7 +123,7 @@ export function AccountsPanel() {
     queryFn: () => api.get<AccountView[]>('/api/managed-accounts'),
   });
   /**
-   * ACC-CLI-MULTI（口径 A）：CLI 三来源的本机凭据登记。GET 幂等登记并返回脱敏列表，
+   * ACC-CLI-MULTI（口径 A）：CLI 来源的本机账号登记。GET 幂等登记并返回脱敏列表，
    * 界面只拿它做真实计数与只读详情；不提供导入/切换入口（见 CLI-IMPORT / CLI-SWITCH）。
    */
   const cliList = useQuery({
@@ -179,7 +179,7 @@ export function AccountsPanel() {
   }, [accounts, caps.capabilities]);
 
   /**
-   * ADD-FLOW-2（口径 A）：左栏只列**有账号**的平台/来源，零账号平台不占行（入口改由顶部「添加账号」承担）。
+   * ADD-FLOW-2（口径 A）：零账号来源不占行，Codex 除外（需显示本机登录状态）。
    * 停用账号仍计数（`accounts` 不按 enabled 过滤）；未知平台只要有账号就必须出现，不静默丢卡。
    * 顺序与 `indexItems` 一致：APP_ORDER → 其它平台（字典序）→ CLI 来源 → Command Code。
    */
@@ -187,7 +187,7 @@ export function AccountsPanel() {
     const cliSources = [...(QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []), 'commandcode'];
     return [
       ...[...APP_ORDER, ...extraApps].filter((app) => accounts.some((account) => String(account.app_id) === app)),
-      ...cliSources.filter((source) => cliAccounts.some((account) => String(account.app_id) === source)),
+      ...cliSources.filter((source) => source === 'codex' || cliAccounts.some((account) => String(account.app_id) === source)),
     ];
   }, [accounts, extraApps, cliAccounts]);
 
@@ -251,7 +251,18 @@ export function AccountsPanel() {
           <div className="space-y-2">
             {/* ACC-B6：额度平台右栏详情（余额 / 时间窗口 / 积分占位）；凭据明细保留在下方 */}
             <QuotaDetail source={source} />
-            <QuotaSourceDetail source={source} accounts={sourceAccounts} errorMessage={cliError} />
+            {source === 'codex' && cliList.isPending ? (
+              <p data-testid="accounts-source-loading-codex" className="text-xs text-ink-3">
+                读取本机 Codex 登录账号…
+              </p>
+            ) : (
+              <QuotaSourceDetail
+                source={source}
+                accounts={sourceAccounts}
+                errorMessage={cliError}
+                {...(source === 'codex' ? { emptyHint: '未读取到有效的本机登录账号' } : {})}
+              />
+            )}
           </div>
         ),
       };
@@ -273,7 +284,7 @@ export function AccountsPanel() {
       render: () => <CommandCodeSourceDetail accounts={commandCodeAccounts} />,
     });
     return [...known, ...extras, ...sources].filter((item) => visibleApps.includes(item.app));
-  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, quotas.data, addOpen, activeApp, openReloginWizard, visibleApps]);
+  }, [accounts, accountsByApp, extraApps, summaries, caps.capabilities, capabilityKnown, today, cliAccounts, cliError, cliList.isPending, quotas.data, addOpen, activeApp, openReloginWizard, visibleApps]);
 
   /** 标题栏动作（添加账号 / 一键签到 / 刷新，依次排在关闭左侧；次级样式不抢关闭） */
   const headerActions = (
@@ -587,7 +598,7 @@ function QuotaSourceDetail({
         </p>
       ) : accounts.length === 0 ? (
         <p data-testid={`accounts-source-empty-${source}`} className="text-ink-3">
-          {emptyHint ?? '本机未发现该来源的凭据（Codex 没有可枚举的凭据，恒为 0）。'}
+          {emptyHint ?? '本机未发现该来源的凭据。'}
         </p>
       ) : (
         <ul data-testid={`accounts-source-list-${source}`} className="space-y-1">

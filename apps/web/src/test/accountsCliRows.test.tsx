@@ -1,8 +1,8 @@
 /**
- * ACC-CLI-MULTI：CLI 三来源行的真实计数与只读详情。
+ * ACC-CLI-MULTI：CLI 来源行的真实计数与只读详情。
  *
  * 验收口径（ADD-FLOW-2 口径 A）：
- * - 左栏只列**有登记账号**的来源；零账号来源行不出现（计数为 0 时行直接消失）；
+ * - 零账号普通来源行隐藏；Codex 行持续可见并说明未读取到有效本机登录账号；
  * - 左栏计数 = `/api/cli-accounts` 里该来源的条数；
  * - 右侧详情列出与计数相同数量的条目，且只有脱敏身份指纹；
  * - 不提供可点但必失败的切换按钮，只给原因文案。
@@ -33,7 +33,7 @@ function mockCli(items: PublicCliAccount[]): void {
   );
 }
 
-describe('CLI 三来源（ACC-CLI-MULTI）', () => {
+describe('CLI 来源（ACC-CLI-MULTI）', () => {
   it('计数取真实登记结果：两个 DeepSeek key → 2；零账号来源不占行；详情与计数一致', async () => {
     mockCli([
       cliAccount('d-1', 'deepseek', 'aaaaaaaaaaaa'),
@@ -45,9 +45,12 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     // accounts-redesign 方向 B：左栏行改指标形态（额度来源指标取共享额度快照，默认夹具 deepseek ¥12.34）；
     // 登记计数语义由下方详情列表条数承载
     expect(screen.getByTestId('accounts-index-metric-deepseek')).toHaveTextContent('¥12.34');
-    // 口径 A：OpenCode/Codex 没有登记账号 → 左栏行不出现
+    // 普通来源零账号时隐藏；Codex 保留来源行以展示本机登录状态。
     expect(screen.queryByTestId('accounts-index-item-opencode_go')).toBeNull();
-    expect(screen.queryByTestId('accounts-index-item-codex')).toBeNull();
+    expect(screen.getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('accounts-index-item-codex'));
+    const codexDetail = screen.getByTestId('accounts-detail');
+    expect(await within(codexDetail).findByTestId('accounts-source-empty-codex')).toHaveTextContent('未读取到有效的本机登录账号');
 
     await userEvent.click(screen.getByTestId('accounts-index-item-deepseek'));
     const detail = screen.getByTestId('accounts-detail');
@@ -59,8 +62,23 @@ describe('CLI 三来源（ACC-CLI-MULTI）', () => {
     expect(detail.textContent).not.toContain('credential_ref');
   });
 
+  it('Codex 登录列表请求失败显示错误，不误报为空账号', async () => {
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ error: 'offline' }, { status: 503 })),
+    );
+    renderPanel();
+
+    await userEvent.click(await screen.findByTestId('accounts-index-item-codex'));
+    const detail = screen.getByTestId('accounts-detail');
+    expect(await within(detail).findByTestId('accounts-source-error-codex')).toHaveAttribute('role', 'alert');
+    expect(within(detail).getByTestId('accounts-source-error-codex')).toHaveTextContent('读取本机 CLI 凭据失败');
+    expect(within(detail).queryByTestId('accounts-source-empty-codex')).toBeNull();
+  });
+
   it('Codex 行只给切换原因文案；导入入口禁用并给出可见原因', async () => {
-    // 口径 A：Codex 原本零账号不占行；补一条登记账号使行合法出现，再断言详情业务口径
+    // Codex 行始终存在；补一条已发现账号后断言详情业务口径
     mockCli([cliAccount('cx-1', 'codex', 'eeeeeeeeeeee')]);
     renderPanel();
 
@@ -95,7 +113,7 @@ describe('CLI-IMPORT：手动导入 UI', () => {
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
-      // DeepSeek + Codex 都有登记账号 → 两行都出现（口径 A：零账号来源不占行）
+      // DeepSeek 与 Codex 均有登记账号；Codex 无账号时也会保留空态行。
       http.get('/api/cli-accounts', () => HttpResponse.json({
         items: [cliAccount('d-new', 'deepseek', 'dddddddddddd'), cliAccount('cx-1', 'codex', 'eeeeeeeeeeee')],
       })),
