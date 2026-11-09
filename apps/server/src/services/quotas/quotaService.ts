@@ -4,9 +4,9 @@
  * 取证结论（2026-11-03，详见卡评论 bff272c2）：
  * - deepseek：`GET https://api.deepseek.com/user/balance`（Bearer），响应
  *   `{ is_available, balance_infos[{currency,total_balance,granted_balance,topped_up_balance}] }`
- *   → 唯一 supported 的来源；凭据取 `DEEPSEEK_API_KEY` 或 `~/.deepseek/config.toml` 的 `api_key`。
- * - opencode_go：OpenCode Go 只在 console 页面展示用量，无公开配额端点（本机探测 `/models`/`/usage`/`/me`/`/key` 全 404）
- *   → unsupported `NO_PUBLIC_QUOTA_ENDPOINT`，不请求任何第三方。
+ *   → 余额来源；凭据取 `DEEPSEEK_API_KEY` 或 `~/.deepseek/config.toml` 的 `api_key`。
+ * - opencode_go：Windows 从 OpenCode v2 的只读 credential SQLite 记录取得当前 active Console 凭据，直接读取官方 Go usage；
+ *   其他平台保留本机 `/api/experimental/usage/limits` 路径。
  * - codex：只有 ChatGPT OAuth 登录态（`~/.codex/auth.json`），`/backend-api/codex/usage` 与 `/rate_limits` 均 403，
  *   本地 sqlite/global-state 也没有额度窗口 → unsupported `NO_PUBLIC_QUOTA_ENDPOINT`，不请求任何第三方。
  *
@@ -18,7 +18,8 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
+import Database from 'better-sqlite3';
 import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
 import { parseMinimaxCredits, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
 import { traeQuotaUrl, workbuddyQuotaUrl } from '../accounts/platformHosts.js';
@@ -29,6 +30,7 @@ import type { AccountQuotaSourceId, PlatformQuotaCredential } from './platformQu
 import type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow } from '@agentboard/shared';
 export type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindow };
 
+type ExecFileRunnerOptions = { input?: string; timeoutMs?: number };
 
 export interface QuotaService {
   get(account?: { accountId: string; source: AccountQuotaSourceId }): Promise<QuotaSnapshot>;
@@ -41,6 +43,8 @@ export interface QuotaServiceOptions {
   fetchImpl?: typeof fetch;
   /** 注入当前时间（测试用） */
   now?: () => number;
+  /** 运行平台（测试用；默认 process.platform） */
+  platform?: NodeJS.Platform;
   /** 缓存 TTL，默认 60s */
   ttlMs?: number;
   /** 失败退避上限，默认 10min */
@@ -51,8 +55,8 @@ export interface QuotaServiceOptions {
   env?: Record<string, string | undefined>;
   /** 单来源请求超时，默认 8s */
   timeoutMs?: number;
-  /** 注入命令执行（测试用；默认 execFile 包装，用于发现本地 opencode 服务端口） */
-  execFileImpl?: (file: string, args: string[]) => Promise<string>;
+  /** 注入命令执行（测试用；默认 execFile 包装，用于服务发现及 Windows 只读额度请求） */
+  execFileImpl?: (file: string, args: string[], options?: ExecFileRunnerOptions) => Promise<string>;
   /** ACC-CODEX-QUOTA-IMPL：注入 Codex 扫描（测试用；默认读 ~/.codex/sessions 最新 rollout） */
   codexScan?: () => Promise<QuotaResult>;
   /**
@@ -81,6 +85,39 @@ const PLATFORM_LABEL: Partial<Record<QuotaSourceId, string>> = {
 const DEFAULT_TTL_MS = 60_000;
 const DEFAULT_MAX_BACKOFF_MS = 600_000;
 const DEFAULT_TIMEOUT_MS = 8_000;
+const OPENCODE_GO_TIMEOUT_MS = 12_000;
+const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
+const OPENCODE_GO_POWERSHELL_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
+[void][Reflection.Assembly]::LoadWithPartialName('System.Net.Http')
+$auth = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$handler = [System.Net.Http.HttpClientHandler]::new()
+$handler.UseProxy = $true
+$handler.AllowAutoRedirect = $false
+$client = [System.Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromMilliseconds([double]$auth.timeoutMs)
+$request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, [string]$auth.url)
+$request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', [string]$auth.token)
+$request.Headers.Add('x-opencode-org-id', [string]$auth.orgId)
+$request.Headers.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
+$response = $null
+try {
+  $response = $client.SendAsync($request).GetAwaiter().GetResult()
+  $result = @{ status = [int]$response.StatusCode }
+  if ([int]$response.StatusCode -eq 200) { $result.body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() }
+  $result | ConvertTo-Json -Compress -Depth 4
+} catch {
+  $exception = $_.Exception
+  $cause = $exception.GetType().Name
+  while ($null -ne $exception.InnerException) {
+    $exception = $exception.InnerException
+    if ($exception -is [System.Net.Sockets.SocketException]) { $cause = [string]$exception.SocketErrorCode; break }
+  }
+  @{ status = $null; error = $cause } | ConvertTo-Json -Compress
+} finally {
+  if ($null -ne $response) { $response.Dispose() }
+  $request.Dispose()
+  $client.Dispose()
+}`;
 
 interface Cached {
   result: QuotaResult;
@@ -174,6 +211,64 @@ export function readOpencodeServicePassword(homeDir: string): string | null {
   }
 }
 
+type OpenCodeCredentialLookup =
+  | { kind: 'ok'; token: string; orgId: string; workspaceName: string | null }
+  | { kind: 'missing' }
+  | { kind: 'workspace_missing' }
+  | { kind: 'unavailable' };
+
+function opencodeDatabasePath(homeDir: string, env: Record<string, string | undefined>): string {
+  const dataDir = join(env.XDG_DATA_HOME || join(homeDir, '.local', 'share'), 'opencode');
+  const configured = env.OPENCODE_DB?.trim();
+  if (!configured) return join(dataDir, 'opencode.db');
+  return isAbsolute(configured) ? configured : join(dataDir, configured);
+}
+
+/** 只读当前 OpenCode integration 的 active credential；顺序与 v2.2.5 active connection 一致。 */
+function readOpencodeGoCredential(
+  homeDir: string,
+  env: Record<string, string | undefined>,
+): OpenCodeCredentialLookup {
+  const filename = opencodeDatabasePath(homeDir, env);
+  if (!existsSync(filename)) return { kind: 'missing' };
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(filename, { readonly: true, fileMustExist: true, timeout: 1_000 });
+    const row = db.prepare(
+      'SELECT value FROM credential WHERE integration_id = ? ORDER BY active DESC, time_created DESC, id DESC LIMIT 1',
+    ).get('opencode') as { value?: unknown } | undefined;
+    if (!row || typeof row.value !== 'string') return { kind: 'missing' };
+    const value = JSON.parse(row.value) as {
+      type?: unknown;
+      key?: unknown;
+      access?: unknown;
+      metadata?: { orgID?: unknown; orgName?: unknown; server?: unknown };
+    };
+    if (value.type !== 'key' && value.type !== 'oauth') return { kind: 'unavailable' };
+    const token = value.type === 'oauth' ? value.access : value.key;
+    if (typeof token !== 'string' || token.length === 0) return { kind: 'unavailable' };
+    const metadata = value.metadata;
+    if (typeof metadata?.orgID !== 'string' || metadata.orgID.length === 0) return { kind: 'workspace_missing' };
+    let server = typeof metadata.server === 'string' ? metadata.server : 'https://opencode.ai/console';
+    server = server.replace(/^https:\/\/console\.opencode\.ai(?=\/|$)/, 'https://opencode.ai/console');
+    const parsedServer = new URL(server);
+    if (parsedServer.protocol !== 'https:' || parsedServer.port !== '' || parsedServer.username || parsedServer.password ||
+      (parsedServer.hostname !== 'opencode.ai' && parsedServer.hostname !== 'console.opencode.ai')) {
+      return { kind: 'unavailable' };
+    }
+    return {
+      kind: 'ok',
+      token,
+      orgId: metadata.orgID,
+      workspaceName: typeof metadata.orgName === 'string' ? metadata.orgName : null,
+    };
+  } catch {
+    return { kind: 'unavailable' };
+  } finally {
+    db?.close();
+  }
+}
+
 /** 从 `netstat -ano` 输出里取 LISTENING 的本地端口与 PID（导出于便于单测） */
 export function parseNetstatListeners(output: string): Array<{ port: number; pid: number }> {
   const rows: Array<{ port: number; pid: number }> = [];
@@ -260,6 +355,29 @@ export function parseOpencodeUsage(body: unknown, fetchedAt: number): QuotaResul
     reason_code: null,
     detail: limited ? '已触发 OpenCode Go 限额，请求可能被降级到免费模型' : workspaceName ? `工作区：${workspaceName}` : null,
   };
+}
+
+/** 解析官方 Go usage 响应；resetsAt 是 ISO 字符串，转换规则与 OpenCode DateFromString.getTime() 一致。 */
+function parseOpencodeGoUsage(body: unknown, fetchedAt: number, workspaceName?: string): QuotaResult {
+  const root = (body && typeof body === 'object' ? body : {}) as { usage?: Record<string, unknown> };
+  const usage = root.usage;
+  if (!usage || typeof usage !== 'object') {
+    return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 没有返回额度窗口');
+  }
+  const go: Record<string, { percent: number; limited: boolean; resetsAt: number }> = {};
+  for (const [key] of OPENCODE_WINDOW_NAMES) {
+    const meter = usage[key] as { status?: unknown; percent?: unknown; resetsAt?: unknown } | undefined;
+    if (!meter || typeof meter !== 'object' || (meter.status !== 'ok' && meter.status !== 'rate-limited') ||
+      typeof meter.percent !== 'number' || !Number.isFinite(meter.percent) || typeof meter.resetsAt !== 'string') {
+      return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 的额度窗口结构异常');
+    }
+    const resetsAt = Date.parse(meter.resetsAt);
+    if (!Number.isFinite(resetsAt)) {
+      return empty('opencode_go', 'error', fetchedAt, 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 的额度重置时间无效');
+    }
+    go[key] = { percent: meter.percent, limited: meter.status === 'rate-limited', resetsAt };
+  }
+  return parseOpencodeUsage({ data: { go, workspace: { name: workspaceName } } }, fetchedAt);
 }
 
 /** Codex 窗口分钟数 → 我们的窗口名（用户要求只展示 5h 与 weekly，不显示 Monthly） */
@@ -444,17 +562,26 @@ export function parseDeepseekBalance(body: unknown, fetchedAt: number): QuotaRes
 
 export function createQuotaService(options: QuotaServiceOptions = {}): QuotaService {
   const fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
-  const execFileImpl = options.execFileImpl ?? ((file: string, args: string[]) => new Promise<string>((resolve, reject) => {
-    execFile(file, args, { windowsHide: true, timeout: 5_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' }, (error, stdout) => {
-      if (error) reject(error); else resolve(String(stdout));
-    });
-  }));
+  const execFileImpl = options.execFileImpl ?? ((file: string, args: string[], runnerOptions?: ExecFileRunnerOptions) =>
+    new Promise<string>((resolve, reject) => {
+      const child = execFile(file, args, {
+        windowsHide: true,
+        timeout: runnerOptions?.timeoutMs ?? 5_000,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: 'utf8',
+      }, (error, stdout) => {
+        if (error) reject(error); else resolve(String(stdout));
+      });
+      child.stdin?.on('error', () => {});
+      child.stdin?.end(runnerOptions?.input);
+    }));
   const now = options.now ?? (() => Date.now());
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const maxBackoffMs = options.maxBackoffMs ?? DEFAULT_MAX_BACKOFF_MS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const homeDir = options.homeDir ?? homedir();
   const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
 
   const cache = new Map<string, Cached>();
   const inFlight = new Map<string, Promise<QuotaResult>>();
@@ -523,16 +650,17 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     return empty('deepseek', 'error', fetchedAt, 'UPSTREAM_REJECTED', `DeepSeek 拒绝了请求（HTTP ${lastStatus ?? 'unknown'}）${tried}`);
   }
 
-  /**
-   * ACC-QUOTA-02：OpenCode Go 额度窗口走**本地 opencode 服务**
-   * `GET {url}/api/experimental/usage/limits`（Basic `opencode:<service.json password>`）。
-   * 真实响应（2026-11-03 本机实测）：
-   * `{location:{directory}, data:{workspace:{id,name,usageURL}, go:{rolling:{percent,limited,resetsAt},
-   *   weekly:{...}, monthly:{...}}, budgets:[]}}`；`percent` = 已用百分比，`resetsAt` = 重置时刻。
-   * 不新增凭据：复用本机 `~/.local/share/opencode/auth.json` 与 `~/.config/opencode/service.json`。
-   */
+  /** Windows 显式本机服务配置优先；否则优先官方 Console credential，读取不可用时保留本机路径。 */
   async function fetchOpencodeGo(): Promise<QuotaResult> {
     const at = now();
+    if (platform === 'win32' && !env.OPENCODE_SERVER_URL?.trim()) {
+      const credential = readOpencodeGoCredential(homeDir, env);
+      if (credential.kind === 'ok') return fetchOpencodeGoDirect(credential, at);
+    }
+    return fetchOpencodeGoLocal(at);
+  }
+
+  async function fetchOpencodeGoLocal(at: number): Promise<QuotaResult> {
     if (!hasOpencodeGoKey(homeDir)) {
       return empty('opencode_go', 'unsupported', at, 'OPENCODE_NOT_LOGGED_IN', '本机未检测到 OpenCode Go 登录态（~/.local/share/opencode/auth.json）');
     }
@@ -574,6 +702,46 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
       return empty('opencode_go', 'error', now(), 'NETWORK_ERROR', '无法连接本地 opencode 服务（网络或超时）');
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  async function fetchOpencodeGoDirect(credential: Extract<OpenCodeCredentialLookup, { kind: 'ok' }>, fetchedAt: number): Promise<QuotaResult> {
+    const payload = JSON.stringify({
+      url: OPENCODE_GO_USAGE_URL,
+      token: credential.token,
+      orgId: credential.orgId,
+      timeoutMs: OPENCODE_GO_TIMEOUT_MS,
+    });
+    try {
+      const output = await execFileImpl('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', OPENCODE_GO_POWERSHELL_SCRIPT,
+      ], { input: payload, timeoutMs: OPENCODE_GO_TIMEOUT_MS });
+      let response: { status?: unknown; body?: unknown; error?: unknown };
+      try {
+        response = JSON.parse(output) as typeof response;
+      } catch {
+        return empty('opencode_go', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 请求结果结构异常');
+      }
+      const at = now();
+      if (typeof response.status !== 'number') {
+        return empty('opencode_go', 'error', at, 'NETWORK_ERROR', '无法连接 OpenCode Go 额度服务（网络或超时）');
+      }
+      if (response.status === 401) {
+        return empty('opencode_go', 'error', at, 'OPENCODE_AUTH_FAILED', 'OpenCode Console 凭据已失效，请在客户端恢复登录后重试');
+      }
+      if (response.status === 403) {
+        return empty('opencode_go', 'unsupported', at, 'OPENCODE_NO_ALLOWANCE', '当前 OpenCode 工作区没有 Go 额度');
+      }
+      if (response.status === 429) return empty('opencode_go', 'error', at, 'RATE_LIMITED', 'OpenCode Go 额度服务限流，稍后重试');
+      if (response.status >= 500) return empty('opencode_go', 'error', at, 'UPSTREAM_ERROR', 'OpenCode Go 额度服务暂时不可用');
+      if (response.status !== 200 || typeof response.body !== 'string') {
+        return empty('opencode_go', 'error', at, 'UPSTREAM_REJECTED', `OpenCode Go 额度服务拒绝了请求（HTTP ${response.status}）`);
+      }
+      let body: unknown = null;
+      try { body = JSON.parse(response.body); } catch { /* parser returns a safe shape error */ }
+      return parseOpencodeGoUsage(body, at, credential.workspaceName ?? undefined);
+    } catch {
+      return empty('opencode_go', 'error', now(), 'NETWORK_ERROR', '无法连接 OpenCode Go 额度服务（网络、命令执行或超时）');
     }
   }
 

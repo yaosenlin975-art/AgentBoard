@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import {
   collectDeepseekKeyCandidates,
   createQuotaService,
@@ -164,7 +165,7 @@ describe('聚合服务（缓存 / 错误映射 / 脱敏）', () => {
   });
 });
 
-describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
+describe('OpenCode Go（ACC-QUOTA-02）', () => {
   const usageBody = {
     location: { directory: 'C:\\Users\\test' },
     data: {
@@ -188,6 +189,7 @@ describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
       fetchImpl: fetchImpl as typeof fetch,
       homeDir: homeWithOpencode(),
       env: { OPENCODE_SERVER_URL: 'http://127.0.0.1:28894' },
+      platform: 'linux',
       now: () => 1_000,
       ...extra,
     });
@@ -229,6 +231,7 @@ describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
       fetchImpl: vi.fn() as unknown as typeof fetch,
       homeDir: homeWithOpencode(),
       env: {},
+      platform: 'linux',
       execFileImpl: async () => '',
       now: () => 1,
     });
@@ -246,6 +249,188 @@ describe('OpenCode Go（ACC-QUOTA-02，走本地服务 usage 路由）', () => {
   it('响应缺 go 段 → UPSTREAM_SHAPE_UNEXPECTED', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: { budgets: [] } }), { status: 200 }));
     expect((await opencodeService(fetchImpl).get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'UPSTREAM_SHAPE_UNEXPECTED' });
+  });
+
+  function writeOpenCodeCredentialDb(
+    filename: string,
+    rows: Array<{ id: string; integrationId: string; active: number; created: number; value: unknown }>,
+  ): void {
+    mkdirSync(join(filename, '..'), { recursive: true });
+    const db = new Database(filename);
+    db.exec('CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT NOT NULL, value TEXT NOT NULL, active INTEGER NOT NULL, time_created INTEGER NOT NULL)');
+    const insert = db.prepare('INSERT INTO credential (id, integration_id, value, active, time_created) VALUES (?, ?, ?, ?, ?)');
+    for (const row of rows) insert.run(row.id, row.integrationId, JSON.stringify(row.value), row.active, row.created);
+    db.close();
+  }
+
+  const directCredential = (overrides: Record<string, unknown> = {}) => ({
+    type: 'oauth',
+    access: 'access-token-only-in-memory',
+    expires: Date.parse('2026-12-01T00:00:00.000Z'),
+    metadata: { orgID: 'private-org-id', orgName: 'Default', server: 'https://opencode.ai/console' },
+    ...overrides,
+  });
+
+  function windowsOpencodeService(
+    homeDir: string,
+    output: string,
+    env: Record<string, string | undefined> = { OPENCODE_DB: join(homeDir, 'opencode.db') },
+  ) {
+    const execFileImpl = vi.fn(async () => output);
+    const service = createQuotaService({
+      homeDir,
+      env,
+      platform: 'win32',
+      now: () => Date.parse('2026-11-09T08:00:00.000Z'),
+      fetchImpl: vi.fn() as unknown as typeof fetch,
+      execFileImpl,
+    });
+    return { service, execFileImpl };
+  }
+
+  it('Windows 从当前 active credential 取 Go 窗口，凭据仅经 stdin 传入', async () => {
+    const home = tempHome({
+      '.local/share/opencode/auth.json': JSON.stringify({ 'opencode-go': { type: 'api', key: 'legacy-key-only' } }),
+    });
+    const xdgData = join(home, 'xdg-data');
+    const dbPath = join(xdgData, 'opencode', 'active.db');
+    writeOpenCodeCredentialDb(dbPath, [
+      { id: 'old', integrationId: 'opencode', active: 1, created: 100, value: directCredential({ access: 'older-token' }) },
+      { id: 'newest', integrationId: 'opencode', active: 1, created: 200, value: directCredential() },
+      { id: 'inactive', integrationId: 'opencode', active: 0, created: 900, value: directCredential({ access: 'inactive-token' }) },
+      { id: 'other-provider', integrationId: 'other', active: 1, created: 999, value: directCredential({ access: 'other-token' }) },
+    ]);
+    const usage = {
+      usage: {
+        rolling: { status: 'ok', percent: 0, resetsAt: '2026-11-09T09:18:13.247Z' },
+        weekly: { status: 'rate-limited', percent: 100, resetsAt: '2026-11-16T00:00:00.000Z' },
+        monthly: { status: 'ok', percent: 72, resetsAt: '2026-11-30T01:05:51.000Z' },
+      },
+    };
+    let capturedArgs: string[] = [];
+    let capturedInput = '';
+    let capturedTimeout: number | undefined;
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const execFileImpl = vi.fn(async (_file: string, args: string[], runnerOptions?: { input?: string; timeoutMs?: number }) => {
+      capturedArgs = args;
+      capturedInput = runnerOptions?.input ?? '';
+      capturedTimeout = runnerOptions?.timeoutMs;
+      return JSON.stringify({ status: 200, body: JSON.stringify(usage) });
+    });
+    const service = createQuotaService({
+      homeDir: home,
+      env: { XDG_DATA_HOME: xdgData, OPENCODE_DB: 'active.db' },
+      platform: 'win32',
+      now: () => Date.parse('2026-11-09T08:00:00.000Z'),
+      fetchImpl,
+      execFileImpl,
+    });
+
+    const result = (await service.get()).items[1]!;
+    expect(execFileImpl).toHaveBeenCalledOnce();
+    expect(execFileImpl.mock.calls[0]![0]).toBe('powershell.exe');
+    expect(capturedArgs).toContain('-Command');
+    expect(capturedArgs.join(' ')).not.toContain('access-token-only-in-memory');
+    expect(capturedArgs.join(' ')).not.toContain('private-org-id');
+    expect(capturedInput).toContain('access-token-only-in-memory');
+    expect(capturedInput).toContain('private-org-id');
+    expect(capturedInput).not.toContain('older-token');
+    expect(capturedInput).not.toContain('inactive-token');
+    expect(capturedInput).not.toContain('other-token');
+    expect(JSON.parse(capturedInput)).toMatchObject({
+      url: 'https://opencode.ai/zen/go/v1/usage', timeoutMs: 12_000,
+    });
+    expect(capturedTimeout).toBe(12_000);
+    const script = capturedArgs[capturedArgs.indexOf('-Command') + 1]!;
+    expect(script).toContain('$handler.UseProxy = $true');
+    expect(script).toContain('$handler.AllowAutoRedirect = $false');
+    expect(script).toContain('FromMilliseconds');
+    expect(script).toContain('[Console]::In.ReadToEnd()');
+    expect(script).toContain("$request.Headers.Add('x-opencode-org-id'");
+    expect(script).not.toContain('ServerCertificateCustomValidationCallback');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'ok', balance: null, unit: '%' });
+    expect(result.windows).toEqual([
+      { name: '5h', remaining: 100, used_percent: 0, reset_at: Date.parse('2026-11-09T09:18:13.247Z') },
+      { name: 'weekly', remaining: 0, used_percent: 100, reset_at: Date.parse('2026-11-16T00:00:00.000Z') },
+      { name: 'monthly', remaining: 28, used_percent: 72, reset_at: Date.parse('2026-11-30T01:05:51.000Z') },
+    ]);
+    expect(result.detail).toContain('限额');
+    expect(JSON.stringify(result)).not.toContain('private-org-id');
+    expect(JSON.stringify(result)).not.toContain('access-token-only-in-memory');
+  });
+
+  it('403 无 allowance、401 凭据失效、网络错误分别返回非成功状态', async () => {
+    const home = tempHome({});
+    writeOpenCodeCredentialDb(join(home, 'opencode.db'), [
+      {
+        id: 'active', integrationId: 'opencode', active: 1, created: 1,
+        value: directCredential({ expires: Date.parse('2026-11-09T08:02:00.000Z') }),
+      },
+    ]);
+    const noAllowance = windowsOpencodeService(home, JSON.stringify({ status: 403 }));
+    expect((await noAllowance.service.get()).items[1]!).toMatchObject({
+      status: 'unsupported', reason_code: 'OPENCODE_NO_ALLOWANCE', balance: null, windows: [],
+    });
+    const unauthorized = windowsOpencodeService(home, JSON.stringify({ status: 401 }));
+    expect((await unauthorized.service.get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'OPENCODE_AUTH_FAILED' });
+    expect(unauthorized.execFileImpl).toHaveBeenCalledOnce();
+    const networkError = windowsOpencodeService(home, JSON.stringify({ status: null, error: 'TimeoutException' }));
+    expect((await networkError.service.get()).items[1]!).toMatchObject({ status: 'error', reason_code: 'NETWORK_ERROR' });
+  });
+
+  it('Console credential 缺失或来源不受支持时回退既有本机路径', async () => {
+    const legacyHome = tempHome({
+      '.local/share/opencode/auth.json': JSON.stringify({ 'opencode-go': { type: 'api', key: 'legacy-key-only' } }),
+    });
+    const legacy = windowsOpencodeService(legacyHome, '');
+    expect((await legacy.service.get()).items[1]!).toMatchObject({ status: 'unsupported', reason_code: 'OPENCODE_AUTH_UNAVAILABLE' });
+    expect(legacy.execFileImpl).not.toHaveBeenCalled();
+
+    const unsupportedHostHome = tempHome({});
+    writeOpenCodeCredentialDb(join(unsupportedHostHome, 'opencode.db'), [
+      { id: 'untrusted-host', integrationId: 'opencode', active: 1, created: 1, value: directCredential({ metadata: { orgID: 'private-org-id', server: 'https://not-opencode.example/console' } }) },
+    ]);
+    const unsupportedHost = windowsOpencodeService(unsupportedHostHome, '');
+    expect((await unsupportedHost.service.get()).items[1]!).toMatchObject({ status: 'unsupported', reason_code: 'OPENCODE_NOT_LOGGED_IN' });
+    expect(unsupportedHost.execFileImpl).not.toHaveBeenCalled();
+  });
+
+  it('Windows 的显式 OPENCODE_SERVER_URL 保留本机服务路径', async () => {
+    const requested: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      requested.push(url);
+      return new Response(JSON.stringify(usageBody), { status: 200 });
+    });
+    const execFileImpl = vi.fn(async () => '');
+    const service = opencodeService(fetchImpl, { platform: 'win32', execFileImpl });
+
+    expect((await service.get()).items[1]!).toMatchObject({ status: 'ok', unit: '%' });
+    expect(requested).toEqual(['http://127.0.0.1:28894/api/experimental/usage/limits']);
+    expect(execFileImpl).not.toHaveBeenCalled();
+  });
+
+  it('Windows 缺少 Console credential 时保留发现并读取运行中的本机服务', async () => {
+    const netstat = '  TCP    127.0.0.1:28894        0.0.0.0:0              LISTENING       55392';
+    const tasklist = '"opencode.exe","55392","Console","1","417,780 K"';
+    const requested: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      requested.push(url);
+      return new Response(JSON.stringify(usageBody), { status: 200 });
+    });
+    const execFileImpl = vi.fn(async (file: string) => file === 'netstat' ? netstat : tasklist);
+    const service = createQuotaService({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      homeDir: homeWithOpencode(),
+      env: {},
+      platform: 'win32',
+      now: () => 1_000,
+      execFileImpl,
+    });
+
+    expect((await service.get()).items[1]!).toMatchObject({ status: 'ok', unit: '%' });
+    expect(requested).toEqual(['http://127.0.0.1:28894/api/experimental/usage/limits']);
+    expect(execFileImpl.mock.calls.map(([file]) => file)).toEqual(['netstat', 'tasklist']);
   });
 
   it('端口发现：netstat LISTENING ∩ tasklist 名字含 opencode', async () => {
