@@ -22,6 +22,7 @@ import {
   type DispatchDeps,
 } from '../src/services/dispatch.js';
 import { initSessionManager, resetSessionManager } from '../src/services/sessionManager.js';
+import { renderTaskKnowledge } from '../src/services/taskKnowledge.js';
 import { createRouter, errorHandler } from '../src/api/routes.js';
 
 let t: TestDb;
@@ -34,13 +35,16 @@ describe('knowledge context', () => {
   function seedKnowledge(workspace: string | null, slug: string, body = '缓存失效方案') {
     return createKnowledgePage(t.db, { domain: 'knowledge', scope: workspace ? 'workspace' : 'common', workspace_id: workspace, slug, title: slug, body_md: body, sources, evidence: [{ source_id: 's', locator: 'issue:evidence' }], actor: 'codex' } as any);
   }
-  it('dispatchInjectsWorkspaceAndCommonOnly with bounded provenance', async () => {
+  it('dispatchInjectsWorkspaceAndCommonOnly with reference links, no body', async () => {
     const issue = seedIssue({ title: '缓存失效' });
-    seedKnowledge(wsId, 'project'); seedKnowledge(null, 'common');
+    const project = seedKnowledge(wsId, 'project'); const common = seedKnowledge(null, 'common');
     seedKnowledge(createWorkspace(t.db, { name: 'other', path: 'other' }).id, 'forbidden');
     const result = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_enabled: true, knowledge_query: '缓存失效' });
     await settle(); const prompt = adapter.calls[0]!.prompt;
-    expect(prompt).toContain('issue:evidence'); expect(prompt).toContain('common'); expect(prompt).not.toContain('forbidden');
+    expect(prompt).toContain(`knowledge:${project.id}`); expect(prompt).toContain(`knowledge:${common.id}`);
+    expect(prompt).toContain('kb knowledge show');
+    expect(prompt).not.toContain('issue:evidence'); expect(prompt).not.toContain('缓存失效方案');
+    expect(prompt).not.toContain('forbidden');
     expect(result.knowledge.items).toHaveLength(2); expect(result.knowledge.items[0].revision).toBe(1);
     expect(prompt.split('## 知识参考')).toHaveLength(2);
   });
@@ -48,6 +52,15 @@ describe('knowledge context', () => {
     const issue = seedIssue({ title: '缓存失效' }); seedKnowledge(wsId, 'project');
     const result = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_enabled: false }); await settle();
     expect(adapter.calls[0]!.prompt).not.toContain('## 知识参考'); expect(result.knowledge.enabled).toBe(false);
+  });
+  it('preview prompt is sent verbatim and knowledge block is an exact suffix', async () => {
+    const issue = seedIssue({ title: '缓存失效' });
+    seedKnowledge(wsId, 'project');
+    const template = '自定义派发模板\n## 历史备注\n- [user] 备注';
+    const result = await dispatchIssue(t.db, deps, { issueId: issue.id, cli: 'fake', knowledge_query: '缓存失效', promptTemplate: template });
+    await settle();
+    const prompt = adapter.calls[0]!.prompt;
+    expect(prompt).toBe(`${template}\n${renderTaskKnowledge(result.knowledge)}`);
   });
   it('knowledgeSearchFailureDoesNotBlockDispatch', async () => {
     vi.spyOn(knowledgeSearch, 'searchKnowledge').mockImplementation(() => { throw Error('private-db-path'); });
