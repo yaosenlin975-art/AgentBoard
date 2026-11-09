@@ -114,7 +114,7 @@
 
 | 端点 | CLI | 必填 | 备注 |
 | --- | --- | --- | --- |
-| `POST .../db/localize` + 轮询 | `kb workspace-db enable <workspace>` | `<workspace>`（id 或名称） | `--dry-run` 只统计；`--overwrite` 清理后重来；`--resume` 透传 `resume:true`，先读 `GET .../db` 的 `localizeState.stage` 打印 `从<阶段>阶段继续`（同给 `--dry-run` 时不读不打印） |
+| `POST .../db/localize` + 轮询 | `kb workspace-db enable [workspace]` | `[workspace]`（id 或名称；缺省按 cwd 解析，「当前目录不在任何工作区且全库只有一个工作区」时回退到它并在 stderr 提示；也可用 `--workspace`） | `--dry-run` 只统计；`--overwrite` 清理后重来；`--resume` 透传 `resume:true`，先读 `GET .../db` 的 `localizeState.stage` 打印 `从<阶段>阶段继续`（同给 `--dry-run` 时不读不打印） |
 | `GET .../db` | `kb workspace-db status` | — | `--workspace <id\|名>`（缺省按 cwd 解析）；中文渲染模式（中心库 / 迁移中 / 已下沉 / 失败）、写闸门、生效库、行数合计与附件、快照落后、中间态、活动任务、解析依据；`disabled && needsRevert` 首行 `【警告】紧急开关已启用：该工作区数据在工作区库中，需 revert 才能回中心库`（`--json` 时该提示写 stderr）；failed 态末行提示 `enable --resume` / `cleanup` |
 | `POST .../db/localize/cleanup` + 轮询 | `kb workspace-db cleanup` | `--workspace <id\|名>` | 终态打印删除项数与中心库该区行数；`WORKSPACE_DB_NOTHING_TO_CLEAN`（job failed 或 POST 409）→ stderr `无可清理的半成品：<服务端文案>` |
 | `POST .../db/localize/revert` + 轮询 | `kb workspace-db revert` | `--workspace <id\|名>` | 进度按四阶段中文渲染（预检 / 回拷附件 / 回拷数据 / 收尾）；终态打印反向拷贝行数合计与 `工作区库已移入 .agentboard/backup/：<path>` |
@@ -149,7 +149,7 @@
 
 | 端点 | CLI | 备注 |
 | --- | --- | --- |
-| `POST .../db/snapshot/export` | `kb workspace-db snapshot export <workspace>` | `--include-messages`、`--include-attachments`；文本输出「快照已导出 / 行数合计 / 附件 / 未包含」 |
+| `POST .../db/snapshot/export` | `kb workspace-db snapshot export [workspace]` | `[workspace]` 缺省按 cwd 解析（同 enable 的单工作区回退），也可用 `--workspace`；`--include-messages`、`--include-attachments`；文本输出「快照已导出 / 行数合计 / 附件 / 未包含」 |
 | `GET .../db/snapshot/validate` | `kb workspace-db snapshot validate <workspace>` | `--file <dir>`；输出「快照校验通过 / 文件 N 个 / 行数合计」 |
 | `POST .../db/snapshot/import` | `kb workspace-db snapshot import <workspace>` | `--file <dir>`、`--replace`；输出「快照已导入 / 导入行数 / 覆盖前备份」 |
 
@@ -451,9 +451,11 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 | `POST /api/workspaces/:workspaceId/statuses` | body：`name: string 1-50`、`kind: 'open'\|'started'\|'review'\|'done'\|'deprecated'`、`sort_order?: int`（缺省 = 当前最大值 +10）、`workspace_id?`（一致性校验） | 201 `WorkspaceStatus`（`is_builtin=0`） | 400 名空 / kind 非法 / workspace_id 与路径不一致；409 `WORKSPACE_STATUS_EXISTS` 同区重名（含内置名）；404 工作空间不存在 | workspaceStatusRoutes.ts |
 | `DELETE /api/workspaces/:workspaceId/statuses/:statusId` | query：`migrate_to`（**必填**，目标状态名）、`workspace_id?` | 200 `{ removed, migrate_to, migrated_issue_count }`；同事务把该状态下的卡全部改成 `migrate_to` 再删行。`migrated_issue_count` = **实际迁移卡数**：先 `SELECT COUNT(*)` 该状态卡数再 UPDATE，两者不等则 500 `MIGRATION_COUNT_MISMATCH` 回滚（宁可报错也不谎报 0）；该状态本来没卡时为真实的 `0` | 400 `MIGRATION_TARGET_REQUIRED` 缺 migrate_to / `MIGRATION_TARGET_INVALID` 目标不存在或等于自身 / `workspace_id` 不一致；409 `WORKSPACE_STATUS_BUILTIN` 内置不可删；500 `MIGRATION_COUNT_MISMATCH` 计数不一致（已回滚）；404 `NOT_FOUND` 状态或工作空间不存在 | workspaceStatusRoutes.ts |
 
-**CLI**：`kb status ls <workspace>`、`kb status add <workspace> <name> [--kind …] [--sort-order N]`、`kb status rm <workspace> <name|id> --migrate-to <name>`。workspace 支持 id 或名称；409 的状态字典错误（`WORKSPACE_STATUS_*`）由子命令原样打印文案并退出 **2**（不被全局包装成「已被占用（…）」），其余失败退出 1。
+**CLI**：`kb status ls [workspace]`、`kb status add [workspace] [name] [--kind …] [--sort-order N]`、`kb status rm [workspace] [status] --migrate-to <name>`。workspace 支持 id 或名称，缺省按 cwd 解析（`--workspace` 与位置参数等价，显式给出时优先）；只给一个位置参数时按状态名处理（缺省工作区）。409 的状态字典错误（`WORKSPACE_STATUS_*`）由子命令原样打印文案并退出 **2**（不被全局包装成「已被占用（…）」），其余失败退出 1。
 
 **CLI 列表口径（CLI-LIST-GUARD）**：`kb list-tasks --status <状态>` 先按该工作区（未指定 workspace 时按「任一工作区」）的状态字典校验，非法值 → 非 0 退出并列出可用状态（不再静默返回「（无任务）」）；`--json` **默认裁掉 `description` 正文**并标记 `description_omitted: true`，需要正文时显式 `--json --full`；表格模式本来就不输出正文。
+
+**CLI 缺省工作区（OPT-02）**：`kb create-issue`、`kb status ls/add/rm`、`kb workspace-db enable`、`kb workspace-db snapshot export` 的工作区参数均可省略，缺省按 cwd 解析，并可用 `--workspace <id|名>` 显式指定（与位置参数等价，显式优先）。cwd 不属于任何工作区且全库只有一个工作区时回退到该区并在 stderr 提示；存在多个工作区时报错并列出候选（不猜）。`kb create-issue` 只给一个位置参数且它不匹配任何工作区时，按「当前工作区 + 该参数为标题」处理并在 stderr 提示。
 
 **CLI 默认收敛（OPT-01）**：`kb list-tasks` 不带 `--status` / `--tree` 时，缺省只取「未完成（`kind ∈ open/started/review`）且无主（`claimed_by IS NULL`）」的卡，并在 stderr 首行提示 `默认已收敛为未完成无主卡，全量用 --all-status`；过滤通过 `GET /api/issues?kinds=open,started,review&unclaimed=1` 在服务端完成，CLI 不拉全量后本地筛。`--all-status` 恢复改造前口径（整区全状态、含他人占用）；`--status <状态>` 显式覆盖缺省收敛；`--tree` 为保留整树上下文不做收敛；`--all` 跨区盘点同样适用缺省收敛，需要全量时配 `--all-status`。
 

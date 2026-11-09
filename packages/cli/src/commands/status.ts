@@ -14,7 +14,7 @@ import { CliHttpError, request } from '../api.js';
 import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { table } from '../render.js';
-import { resolveWorkspaceId } from '../workspace.js';
+import { resolveWorkspaceWithHint } from '../workspace.js';
 
 /**
  * 409 的状态字典冲突（重名 / 内置不可删）自带可解释文案，原样透出并退出 2；
@@ -49,9 +49,9 @@ const kindLines = (rows: readonly StatusRow[]): string[] => {
   return body;
 };
 
-/** kb status ls <workspace> */
-export async function statusList(ctx: Ctx, workspace: string): Promise<void> {
-  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+/** kb status ls [workspace] */
+export async function statusList(ctx: Ctx, workspace?: string): Promise<void> {
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
   const rows = await request<StatusRow[]>(ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
   if (ctx.json) {
     writeListJson(ctx, rows);
@@ -61,9 +61,9 @@ export async function statusList(ctx: Ctx, workspace: string): Promise<void> {
   ctx.io.write(`${kindLines(rows).join('\n')}\n`);
 }
 
-/** kb status add <workspace> <name> [--kind ...] [--sort-order N] */
-export async function statusAdd(ctx: Ctx, workspace: string, name: string, args: AddStatusArgs = {}): Promise<void> {
-  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+/** kb status add [workspace] <name> [--kind ...] [--sort-order N] */
+export async function statusAdd(ctx: Ctx, workspace: string | undefined, name: string, args: AddStatusArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
   const body: Record<string, unknown> = { workspace_id: workspaceId, name, kind: args.kind ?? 'open' };
   if (args.sortOrder !== undefined) body.sort_order = args.sortOrder;
   const created = await request<StatusRow>(ctx.base, 'POST', `/api/workspaces/${encodeURIComponent(workspaceId)}/statuses`, body)
@@ -75,9 +75,9 @@ export async function statusAdd(ctx: Ctx, workspace: string, name: string, args:
   ctx.io.write(`已新增状态：${created.name}（kind=${created.kind}，排序 ${created.sort_order}，id ${created.id}）\n`);
 }
 
-/** kb status rm <workspace> <name|id> --migrate-to <name> */
-export async function statusRemove(ctx: Ctx, workspace: string, status: string, args: RemoveStatusArgs = {}): Promise<void> {
-  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+/** kb status rm [workspace] <name|id> --migrate-to <name> */
+export async function statusRemove(ctx: Ctx, workspace: string | undefined, status: string, args: RemoveStatusArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
   const rows = await request<StatusRow[]>(ctx.base, 'GET', `/api/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
   const target = rows.find(row => row.id === status) ?? rows.find(row => row.name === status);
   if (!target) {

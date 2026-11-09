@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { Issue } from '@agentboard/shared';
+import type { Issue, Workspace } from '@agentboard/shared';
 import { request, requestWithMeta, verifyIssueStoredText } from '../api.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg } from '../issueRef.js';
-import { resolveWorkspaceId } from '../workspace.js';
+import { matchWorkspace, resolveWorkspaceWithHint } from '../workspace.js';
 
 /**
  * 标签解析（TAG-HYGIENE）：逗号（半角/全角）与**任意空白**都当分隔符，逐段 trim、丢空、去重。
@@ -34,8 +34,8 @@ export const CREATE_STATUSES = ['待规划', '待验收'] as const;
 export type CreateStatus = (typeof CREATE_STATUSES)[number];
 
 export interface CreateIssueArgs {
-  /** 工作空间 id 或名称（先解析为 id） */
-  workspace: string;
+  /** 工作空间 id 或名称（先解析为 id）；缺省按 cwd 解析 */
+  workspace?: string;
   /** 标题（与 titleStdin 二选一；含引号/选项样式的标题会被本地拒绝） */
   title?: string;
   /** KB-CLI-1：标题走 stdin（PowerShell 引号吞参的绕行通道） */
@@ -116,6 +116,27 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   if (args.titleStdin === true && args.title !== undefined) {
     throw new Error('--title-stdin 与位置参数 <title> 互斥，请二选一');
   }
+  // OPT-02：只给一个位置参数且它不匹配任何工作区时，按「当前工作区 + 该参数为标题」处理
+  if (args.workspace !== undefined && args.title === undefined && args.titleStdin !== true) {
+    let spaces: Workspace[] | undefined;
+    try {
+      spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
+    } catch {
+      // 探测失败时不下「当标题」结论，保持原有缺标题报错
+    }
+    if (spaces !== undefined && spaces.length > 0) {
+      let matchesWorkspace = true;
+      try {
+        matchWorkspace(spaces, args.workspace);
+      } catch {
+        matchesWorkspace = false;
+      }
+      if (!matchesWorkspace) {
+        ctx.io.writeErr(`提示：位置参数「${args.workspace}」不匹配任何工作区，已按「当前工作区 + 该参数为标题」处理（跨区请用 --workspace <id|名>）\n`);
+        args = { ...args, title: args.workspace, workspace: undefined };
+      }
+    }
+  }
   let title: string;
   if (args.titleStdin === true) {
     const raw = await ctx.io.readStdin();
@@ -142,7 +163,7 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   if (!skipFaceCheck && isBlankDescription(args.description)) {
     throw new Error('描述不能为空：请用 -d 写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可加 --allow-empty 跳过空面校验');
   }
-  const workspaceId = await resolveWorkspaceId(ctx.base, args.workspace);
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, args.workspace, text => ctx.io.writeErr(text));
   const body: CreateIssueBody = { workspace_id: workspaceId, title };
   if (args.description !== undefined) body.description = args.description;
   if (skipFaceCheck) body.allow_empty = true;

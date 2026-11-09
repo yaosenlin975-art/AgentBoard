@@ -404,9 +404,10 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   program
     .command('create-issue')
-    .description('创建任务（workspace 支持 id 或名称；标题含引号被拒时改用 --title-stdin）')
-    .argument('<workspace>', '工作空间 id 或名称')
+    .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；标题含引号被拒时改用 --title-stdin）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理）')
     .argument('[title]', '任务标题（与 --title-stdin 二选一）')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--title-stdin', '从 UTF-8 stdin 读标题（PowerShell 引号吞参时用：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（必填；含空格用引号；多行走 UI 或 API）')
     .option('--allow-empty', '跳过空描述校验（批量建卡 / 纯父卡）；回执会提示已跳过空面校验')
@@ -416,10 +417,11 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .option('--parent <issue-id>', '父任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--due <YYYY-MM-DD[THH:mm]>', '截止日期（可带时间）；不传 = 不设截止，不主动推断')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
-    .action(async (workspace: string, title: string | undefined, opts: { titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
+    .action(async (workspaceArg: string | undefined, titleArg: string | undefined, opts: { workspace?: string; titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, io), {
-        workspace,
-        title,
+        workspace: opts.workspace ?? workspaceArg,
+        // OPT-02：显式 --workspace 时，单个位置参数是标题
+        title: opts.workspace !== undefined && titleArg === undefined ? workspaceArg : titleArg,
         titleStdin: opts.titleStdin,
         description: opts.description,
         allowEmpty: opts.allowEmpty,
@@ -490,27 +492,39 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   // 状态字典（STATUS-2）：ls / add / rm --migrate-to
   const status = program.command('status').description('工作区状态字典：ls 列出、add 新增自定义状态、rm 删除并强制迁移');
   status.command('ls')
-    .description('列出工作区状态（名字 / kind / 排序 / 内置或自定义）')
-    .argument('<workspace>', '工作空间 id 或名称')
-    .action(async (workspace: string) => statusList(makeCtx(program, io), workspace));
+    .description('列出工作区状态（名字 / kind / 排序 / 内置或自定义；缺省按 cwd 解析工作区）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
+    .action(async (workspaceArg: string | undefined, opts: { workspace?: string }) =>
+      statusList(makeCtx(program, io), opts.workspace ?? workspaceArg));
   status.command('add')
-    .description('新增自定义状态（名称在工作区内唯一；内置五状态不可复刻）')
-    .argument('<workspace>', '工作空间 id 或名称')
-    .argument('<name>', '状态名')
+    .description('新增自定义状态（名称在工作区内唯一；内置五状态不可复刻；缺省按 cwd 解析工作区）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数时按状态名处理）')
+    .argument('[name]', '状态名')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--kind <kind>', '行为类别（默认 open）：open=未开始 / started=进行中 / review=待验收 / done=完成（关闭类）/ deprecated=废弃（关闭类，与 done 同级）')
     .option('--sort-order <n>', '排序值（默认最大值 +10）')
-    .action(async (workspace: string, name: string, opts: { kind?: string; sortOrder?: string }) =>
-      statusAdd(makeCtx(program, io), workspace, name, {
+    .action(async (workspaceArg: string | undefined, nameArg: string | undefined, opts: { workspace?: string; kind?: string; sortOrder?: string }) => {
+      const name = nameArg ?? workspaceArg;
+      if (name === undefined || name.trim() === '') throw new Error('缺少状态名：kb status add [workspace] <name> --kind <kind>');
+      const workspace = opts.workspace ?? (nameArg === undefined ? undefined : workspaceArg);
+      await statusAdd(makeCtx(program, io), workspace, name, {
         kind: opts.kind,
         sortOrder: opts.sortOrder === undefined ? undefined : Number(opts.sortOrder),
-      }));
+      });
+    });
   status.command('rm')
-    .description('删除自定义状态；必须 --migrate-to 指定该状态下的卡迁移目标（内置状态不可删）')
-    .argument('<workspace>', '工作空间 id 或名称')
-    .argument('<status>', '状态名或状态 id')
+    .description('删除自定义状态；必须 --migrate-to 指定该状态下的卡迁移目标（内置状态不可删；缺省按 cwd 解析工作区）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数时按状态名处理）')
+    .argument('[status]', '状态名或状态 id')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--migrate-to <name>', '该状态下的卡迁移到的目标状态名（必填）')
-    .action(async (workspace: string, nameOrId: string, opts: { migrateTo?: string }) =>
-      statusRemove(makeCtx(program, io), workspace, nameOrId, { migrateTo: opts.migrateTo }));
+    .action(async (workspaceArg: string | undefined, statusArg: string | undefined, opts: { workspace?: string; migrateTo?: string }) => {
+      const target = statusArg ?? workspaceArg;
+      if (target === undefined || target.trim() === '') throw new Error('缺少状态名：kb status rm [workspace] <status> --migrate-to <name>');
+      const workspace = opts.workspace ?? (statusArg === undefined ? undefined : workspaceArg);
+      await statusRemove(makeCtx(program, io), workspace, target, { migrateTo: opts.migrateTo });
+    });
 
   const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 键经 scripts/agentboard.vbs 隐藏拉起服务，日志在 %APPDATA%\\AgentBoard\\logs）');
   autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；node/仓库/端口/日志写进 vbs）')
@@ -530,7 +544,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   const workspaceDb = program.command('workspace-db').description('工作区库下沉：把工作区数据从中心库迁到工作区目录独享库（<工作区>/.agentboard/agentboard.db）；含状态查询、半成品清理、反向回迁');
   workspaceDb.command('enable')
     .description('启用工作区库：迁移该工作区的卡/评论/会话/知识页等（默认真实迁移；--dry-run 只统计不动数据）')
-    .argument('<workspace>', '工作空间 id 或名称')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--dry-run', '只统计将迁移的行数/附件/预计字节，不产生任何变更')
     .option('--overwrite', '目标库已存在或上次迁移未收尾时，清理后重来')
     .option('--resume', '从 localize.json 记录的中断阶段继续上次未完成的迁移（同给 --dry-run 时以 dry-run 为准；给 --resume 时忽略 --overwrite）')
@@ -543,8 +558,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 1 失败（failed job 含 lastError，预检拒绝如目标库已存在 / 上次迁移未收尾 / 无中间态可恢复均在此列；工作区不存在；
 轮询超时——超时会保留 jobId 供重查；400 参数类）
 `)
-    .action(async (workspace: string, opts: { dryRun?: boolean; overwrite?: boolean; resume?: boolean }) =>
-      workspaceDbEnable(makeCtx(program, io), workspace, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true, resume: opts.resume === true }));
+    .action(async (workspaceArg: string | undefined, opts: { workspace?: string; dryRun?: boolean; overwrite?: boolean; resume?: boolean }) =>
+      workspaceDbEnable(makeCtx(program, io), opts.workspace ?? workspaceArg, { dryRun: opts.dryRun === true, overwrite: opts.overwrite === true, resume: opts.resume === true }));
   workspaceDb.command('status')
     .description('工作区库状态（只读）：模式 / 写闸门 / 生效库 / 行数与附件 / 快照落后 / localize.json 中间态 / 活动任务')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
@@ -574,7 +589,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
   snapshot.command('export')
     .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（未下沉时从中心库按工作区导出；导出后回读自校验）')
-    .argument('<workspace>', '工作空间 id 或名称')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
+    .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--include-messages', '同时导出会话消息（messages.jsonl；默认不导出，体积大且敏感）')
     .option('--include-attachments', '同时导出附件本体到 snapshot/attachments/（默认只导清单行）')
     .addHelpText('after', `
@@ -583,8 +599,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   kb workspace-db snapshot export 任务看板 --include-messages --include-attachments
 退出码：0 成功；2 工作区库迁移进行中；1 其它错误
 `)
-    .action(async (workspace: string, opts: { includeMessages?: boolean; includeAttachments?: boolean }) =>
-      workspaceDbSnapshotExport(makeCtx(program, io), workspace, {
+    .action(async (workspaceArg: string | undefined, opts: { workspace?: string; includeMessages?: boolean; includeAttachments?: boolean }) =>
+      workspaceDbSnapshotExport(makeCtx(program, io), opts.workspace ?? workspaceArg, {
         includeMessages: opts.includeMessages === true,
         includeAttachments: opts.includeAttachments === true,
       }));

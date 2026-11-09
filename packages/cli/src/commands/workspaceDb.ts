@@ -14,7 +14,7 @@ import type { WorkspaceDbOpJobView, WorkspaceDbStatusView, WorkspaceLocalizeJobV
 import { WORKSPACE_LOCALIZE_STAGES } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
-import { resolveWorkspaceId } from '../workspace.js';
+import { resolveWorkspaceId, resolveWorkspaceWithHint } from '../workspace.js';
 
 /** 默认轮询口径：2s 间隔、总超时 10 分钟（迁移阻塞事件循环时 GET 可能很慢，不能短轮询） */
 export const DEFAULT_POLL_MS = 2000;
@@ -248,9 +248,9 @@ async function readResumeStage(base: string, workspaceId: string): Promise<strin
   }
 }
 
-/** kb workspace-db enable <workspace> [--dry-run] [--overwrite] [--resume] */
-export async function workspaceDbEnable(ctx: Ctx, workspace: string, args: WorkspaceDbEnableArgs = {}): Promise<void> {
-  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+/** kb workspace-db enable [workspace] [--dry-run] [--overwrite] [--resume] */
+export async function workspaceDbEnable(ctx: Ctx, workspace: string | undefined, args: WorkspaceDbEnableArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
   const body: Record<string, boolean> = {};
   if (args.dryRun === true) body.dryRun = true;
   if (args.overwrite === true) body.overwrite = true;
@@ -445,9 +445,9 @@ export interface SnapshotExportArgs {
   includeAttachments?: boolean;
 }
 
-/** kb workspace-db snapshot export [--workspace] [--include-messages] [--include-attachments] */
-export async function workspaceDbSnapshotExport(ctx: Ctx, workspace: string, args: SnapshotExportArgs = {}): Promise<void> {
-  const workspaceId = await resolveWorkspaceId(ctx.base, workspace);
+/** kb workspace-db snapshot export [workspace] [--include-messages] [--include-attachments] */
+export async function workspaceDbSnapshotExport(ctx: Ctx, workspace: string | undefined, args: SnapshotExportArgs = {}): Promise<void> {
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
   const body: Record<string, boolean> = {};
   if (args.includeMessages === true) body.includeMessages = true;
   if (args.includeAttachments === true) body.includeAttachments = true;
