@@ -131,6 +131,34 @@ describe('账号行额度（ACC-ROW-QUOTA）', () => {
     expect(await screen.findByText('正常')).toBeInTheDocument();
   });
 
+  it('WorkBuddy 余额有值但 used_percent 缺失时不伪显示 0%', async () => {
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null, fetched_at: 1_700_000_000_000,
+      items: [quotaItem({
+        balance: 1288.63, unit: '积分',
+        windows: [{ name: '积分包', remaining: 1288.63, reset_at: null, kind: 'credit', total: 1288.63, used: null, used_percent: null }],
+      })],
+    })));
+    mountCard(account());
+    await screen.findByText('1288.63 积分');
+    const row = screen.getByTestId('accounts-quota-acc-quota-1');
+    expect(row).toHaveTextContent('1288.63 积分');
+    expect(row).not.toHaveTextContent(/0%/);
+  });
+
+  it('有依据的真实 0% 仍显示为 0%', async () => {
+    server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
+      workspace_id: null, fetched_at: 1_700_000_000_000,
+      items: [quotaItem({
+        balance: 1288.63, unit: '积分',
+        windows: [{ name: '积分包', remaining: 1288.63, reset_at: null, kind: 'credit', total: null, used: null, used_percent: 0 }],
+      })],
+    })));
+    mountCard(account());
+    await screen.findByText(/积分 0%/);
+    expect(screen.getByTestId('accounts-quota-acc-quota-1')).toHaveTextContent('积分 0%');
+  });
+
   it('status=error（CREDENTIAL_INVALID）：显示中文原因而非占位', async () => {
     server.use(http.get('/api/managed-account-quotas', () => HttpResponse.json({
       workspace_id: null, fetched_at: 1_700_000_000_000,
@@ -174,16 +202,22 @@ describe('账号行额度（ACC-ROW-QUOTA）', () => {
     expect(screen.getByTestId('accounts-quota-acc-quota-1').getAttribute('data-status')).toBe('unsupported');
   });
 
-  it('平台级同源：面板内同平台两张账号卡显示同一份额度文本', async () => {
+  it('账号行按 account_id 获取各自额度；全局指标保留聚合请求', async () => {
+    const accountIds: string[] = [];
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([
         account({ id: 'acc-wb-a', display_name: '账号A' }),
         account({ id: 'acc-wb-b', display_name: '账号B' }),
       ])),
-      http.get('/api/managed-account-quotas', () => HttpResponse.json({
-        workspace_id: null, fetched_at: 1_700_000_000_000,
-        items: [quotaItem({ balance: 42.5, unit: 'CNY' })],
-      })),
+      http.get('/api/managed-account-quotas', ({ request }) => {
+        const accountId = new URL(request.url).searchParams.get('account_id');
+        accountIds.push(accountId ?? 'aggregate');
+        const balance = accountId === 'acc-wb-a' ? 42.5 : accountId === 'acc-wb-b' ? 17.25 : 999;
+        return HttpResponse.json({
+          workspace_id: null, fetched_at: 1_700_000_000_000,
+          items: [quotaItem({ balance, unit: 'CNY' })],
+        });
+      }),
     );
     mountPanel();
     const cardA = await screen.findByTestId('accounts-card-acc-wb-a');
@@ -191,7 +225,9 @@ describe('账号行额度（ACC-ROW-QUOTA）', () => {
     const quotaA = within(cardA).getByTestId('accounts-quota-acc-wb-a');
     const quotaB = within(cardB).getByTestId('accounts-quota-acc-wb-b');
     expect(quotaA).toHaveTextContent('¥42.50');
-    expect(quotaB).toHaveTextContent('¥42.50');
-    expect(quotaA.textContent).toBe(quotaB.textContent);
+    expect(quotaB).toHaveTextContent('¥17.25');
+    expect(quotaA.textContent).not.toBe(quotaB.textContent);
+    expect(accountIds.filter((id) => id !== 'aggregate').sort()).toEqual(['acc-wb-a', 'acc-wb-b']);
+    expect(accountIds).toContain('aggregate');
   });
 });

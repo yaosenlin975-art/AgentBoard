@@ -26,8 +26,8 @@
  *
  * 不展示 identity_hash / 快照引用 / 凭据引用 / token / 路径；标识只显示服务端给的 identity_hint（uid 哈希前 8 位）。
  *
- * ACC-ROW-QUOTA：卡面下方一行平台级额度（余额/积分 + 窗口剩余，与 QuotaRow 同口径；异常给中文原因或
- * 占位文案）。数据来自 useQuotaSnapshot（平台级，同平台各账号行同源），只读展示、不影响操作禁用逻辑。
+ * ACC-ROW-QUOTA：卡面下方一行当前账号额度（余额/积分 + 窗口剩余，与 QuotaRow 同口径；异常给中文原因或
+ * 占位文案）。数据来自按 account.id 隔离的 useQuotaSnapshot，只读展示、不影响操作禁用逻辑。
  *
  * ACC-TOKEN-3 凭据过期徽标与刷新：`credential_status=expired|invalid` 出红色徽标（已过期/已失效）+
  * 「刷新」次级小按钮；`expiring` 只出中性「即将过期」提示、不给按钮（设计页的中性黄在本文件被
@@ -84,7 +84,7 @@ const DELETE_CONFIRM_WINDOW_MS = 3_000;
 const SWITCH_CONFIRM_WINDOW_MS = 3_000;
 
 /**
- * ACC-ROW-QUOTA：账号行额度文案（平台级数据，同平台各账号行同源）。
+ * ACC-ROW-QUOTA：账号行额度文案（读取当前账号对应的额度数据）。
  * 分支互斥：无来源 / 读取中 / 读取失败 / 快照缺来源 / 非 ok 中文原因 / ok 余额+窗口；
  * ok 且余额与窗口都空 →「正常」（与左栏 quotaRailMetric 同语义）。
  */
@@ -104,11 +104,11 @@ function accountQuotaView(
   const balance = quotaRowBalance(item);
   if (balance !== null) parts.push(balance);
   for (const window of quotaWindowsOf(item)) {
-    // 与 QuotaRow 同口径：已限额出「已限额」；有 total/used 出「已用/总量」，否则回落百分比
+    // 与 QuotaRow 同口径：已限额出「已限额」；有 total/used 出「已用/总量」，否则只显示真实百分比
     if (isWindowLimited(window)) parts.push(`${quotaWindowKindLabel(window)} 已限额`);
     else if (window.total !== undefined && window.total !== null && window.used !== undefined && window.used !== null) {
       parts.push(`${quotaWindowKindLabel(window)} ${Math.round(window.used)}/${Math.round(window.total)}`);
-    } else {
+    } else if (typeof window.used_percent === 'number' && Number.isFinite(window.used_percent)) {
       parts.push(`${quotaWindowKindLabel(window)} ${windowBarWidth(window.used_percent)}%`);
     }
   }
@@ -164,11 +164,8 @@ export function AccountCard({
   /** ACC-TOKEN-3：刷新凭据失败的原始原因码；主文案走中文映射，裸码只进 title */
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const queryClient = useQueryClient();
-  /**
-   * ACC-ROW-QUOTA：账号行额度（平台级）。与左栏指标/额度详情共用 useQuotaSnapshot 同一 queryKey，
-   * react-query 去重后整页只发一次请求；额度行只读展示，不参与切换/删除的禁用逻辑。
-   */
-  const quotaQuery = useQuotaSnapshot();
+  /** ACC-ROW-QUOTA：账号行额度按 account.id 隔离；额度行只读展示，不参与切换/删除的禁用逻辑。 */
+  const quotaQuery = useQuotaSnapshot(account.id);
   const quotaView = accountQuotaView(quotaSourceOfApp(String(account.app_id)), quotaQuery);
 
   /**
@@ -471,13 +468,13 @@ export function AccountCard({
         </div>
       </div>
 
-      {/* ACC-ROW-QUOTA：平台级额度一行（余额/积分 + 窗口剩余；异常给中文原因或占位文案） */}
+      {/* ACC-ROW-QUOTA：当前账号额度一行（余额/积分 + 窗口剩余；异常给中文原因或占位文案） */}
       {quotaView !== null && (
         <p
           data-testid={`accounts-quota-${account.id}`}
           data-status={quotaView.status}
           className="mt-0.5 text-[11px] text-ink-3"
-          title="平台级数据：同平台各账号行显示同源额度"
+          title="当前账号对应的额度余额与窗口状态"
         >
           {quotaView.text}
         </p>

@@ -145,7 +145,7 @@ export function quotaRowBalance(item: QuotaItem): string | null {
 }
 
 /**
- * ACC-ROW-QUOTA：账号 app_id → 平台额度来源。额度数据是平台级，同平台各账号行显示同源数据；
+ * ACC-ROW-QUOTA：账号 app_id → 平台额度来源；账号行读取时附带当前账号 ID。
  * CLI 来源（deepseek 等）与 commandcode 没有 AccountCard 账号行，不在映射内，返回 null 走占位文案。
  */
 const APP_TO_QUOTA_SOURCE: Record<string, QuotaSourceId> = {
@@ -258,13 +258,14 @@ export function quotaGroupedRows(items: readonly QuotaItem[]): {
 export const QUOTA_ROW_ORDER: readonly QuotaSourceId[] = QUOTA_SOURCE_IDS;
 
 /**
- * ACC-B6：额度快照的唯一查询入口——`QuotaRows` 与右栏 `QuotaDetail` 共用同一 queryKey 与 staleTime，
- * 左右两处同屏、切换平台都不会各拉一份或串数据。
+ * ACC-B6：额度快照查询入口——全局 `QuotaRows` 与右栏 `QuotaDetail` 共用聚合 queryKey；账号行按 accountId 隔离。
  */
-export function useQuotaSnapshot() {
+export function useQuotaSnapshot(accountId?: string) {
   return useQuery({
-    queryKey: ['managed-account-quotas'],
-    queryFn: () => api.get<QuotaSnapshot>('/api/managed-account-quotas'),
+    queryKey: accountId === undefined ? ['managed-account-quotas'] : ['managed-account-quotas', accountId],
+    queryFn: () => api.get<QuotaSnapshot>(accountId === undefined
+      ? '/api/managed-account-quotas'
+      : `/api/managed-account-quotas?account_id=${encodeURIComponent(accountId)}`),
     staleTime: 30_000,
   });
 }
