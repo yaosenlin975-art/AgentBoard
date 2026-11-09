@@ -33,6 +33,7 @@ import { ApprovalDialog } from './ApprovalDialog';
 import { ApprovalRulesDialog } from './ApprovalRulesDialog';
 import { Composer } from './Composer';
 import { RenameSessionDialog } from './RenameSessionDialog';
+import { SessionSettingsDialog } from './SessionSettingsDialog';
 import { MessageList } from './MessageList';
 import { ModelSelector } from './ModelSelector';
 
@@ -66,6 +67,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
   const [renameOpen, setRenameOpen] = useState(false);
   /** CHAT-APP2：⋯ 里的「审批规则」工作表（弹层，不是新页面） */
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => {
     if (!headerMenuOpen) return;
     const close = (): void => setHeaderMenuOpen(false);
@@ -503,6 +505,18 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
                 <button
                   type="button"
                   role="menuitem"
+                  data-testid="session-settings-btn"
+                  onClick={() => {
+                    setHeaderMenuOpen(false);
+                    setSettingsOpen(true);
+                  }}
+                  className="w-full rounded px-2 py-1 text-left text-xs text-ink-2 hover:bg-surface-raised hover:text-ink"
+                >
+                  会话设置
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   data-testid="approval-rules-btn"
                   disabled={workspaceId === null}
                   title={
@@ -647,6 +661,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         onSend={handleSend}
       />
       {renameOpen && <RenameSessionDialog session={session} onClose={() => setRenameOpen(false)} />}
+      {settingsOpen && <SessionSettingsDialog session={session} onClose={() => setSettingsOpen(false)} />}
       {rulesOpen && workspaceId !== null && (
         <ApprovalRulesDialog workspaceId={workspaceId} onClose={() => setRulesOpen(false)} />
       )}

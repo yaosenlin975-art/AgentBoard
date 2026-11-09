@@ -1083,6 +1083,34 @@ describe('ChatPanel 工作空间名称（CHAT-WORKSPACE-LABEL）', () => {
   });
 });
 
+describe('ChatPanel 会话设置入口（P1-C 接线）', () => {
+  it('⋯ → 会话设置：打开三节设置弹窗', async () => {
+    server.use(
+      http.get('/api/personas', () => HttpResponse.json([])),
+      http.get('/api/cli-capabilities', () =>
+        HttpResponse.json({
+          adapter: 'codebuddy',
+          command: 'codebuddy',
+          personaFlag: true,
+          toolFlags: true,
+          permissionFlags: [],
+        }),
+      ),
+    );
+    sessionsList = [makeSession()];
+    renderChat();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByTestId('chat-header-menu-btn'));
+    await user.click(await screen.findByTestId('session-settings-btn'));
+
+    expect(await screen.findByTestId('session-settings-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-persona')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-tools')).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-skills')).toBeInTheDocument();
+  });
+});
+
 
 
 
