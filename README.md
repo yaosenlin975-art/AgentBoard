@@ -22,13 +22,13 @@
 
 ### 把 skills 放到哪里
 
-7 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`（详见下文「Skill（agent 自助领任务）」节）。
+8 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`（详见下文「Skill（agent 自助领任务）」节）。
 
 | 形态 | 放哪 | 说明 |
 | --- | --- | --- |
 | Windows / macOS 宿主 | 复制或软链 `skills/<技能名>/` 到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供 | macOS 用 `ln -s`，Windows 用 `mklink /J`；或设 `AGENTBOARD_SKILL_ROOT` |
 | Docker | 镜像内没有（`.dockerignore` 排除了 `skills/`） | 运行时挂载或宿主 agent 直连，见「Docker（单容器）」节 |
-| Windows 便携包 | 包内 `app/rules/` | 7 技能齐全自检（`check-rules.cmd`），仅 Windows x64 包 |
+| Windows 便携包 | 包内 `app/rules/` | 8 技能齐全自检（`check-rules.cmd`），仅 Windows x64 包 |
 
 ### 使用入口
 
@@ -189,9 +189,9 @@ pnpm package:portable                                  # 默认出 AgentBoard-wi
 node scripts/package-portable.mjs --skip-build --no-zip  # 只重组装、不构建、不打 zip（验证用）
 ```
 
-- 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 7 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`）。
+- 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 8 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`）。
 - 技能来源：仓库 `skills/` 优先；缺失项从 `%USERPROFILE%\.agents\skills` 取（外部路径不受 git 跟踪），来源逐条写入 `app/rules-manifest.json`。禁用 `AGENTBOARD_SKILLS_SRC` 可改外部技能根。
-- 包内自检：`app/rules-manifest.json` 记录文件清单与 sha256；解压后跑 `check-rules.cmd`（或 `runtime\node.exe app\verify-rules.mjs`），校验完整性、7 个技能与 `kb --help` 可用性，失败退出码 1。
+- 包内自检：`app/rules-manifest.json` 记录文件清单与 sha256；解压后跑 `check-rules.cmd`（或 `runtime\node.exe app\verify-rules.mjs`），校验完整性、8 个技能与 `kb --help` 可用性，失败退出码 1。
 - 不打包：`node_modules`（仅保留 better-sqlite3 / bindings / file-uri-to-path / sherpa 原生依赖）、测试文件、`.logs`、`Temp`、`Docs` 草稿、`.git`。
 - 冒烟用独立端口，不动 8787 生产实例。
 
@@ -279,14 +279,14 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 
 ## Skill（agent 自助领任务）
 
-7 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming`。放置方式按运行形态：
+8 个 agent 技能在仓库 `skills/` 下：`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`。放置方式按运行形态：
 
 | 形态 | 放哪 | 说明 |
 | --- | --- | --- |
 | Windows / macOS 宿主 | 把仓库 `skills/<技能名>/` 复制或软链到 agent 生态的 skills 目录（如 `~/.agents/skills/using-agentboard`），或随工作空间提供 | macOS 用 `ln -s`，Windows 用 `mklink /J` |
 | 任何形态 | 设 `AGENTBOARD_SKILL_ROOT` | 技能权威解析第一优先级环境变量，可指向技能根或 SKILL.md 全路径 |
 | Docker | 镜像内没有（`.dockerignore` 排除了 `skills/`） | 见上文「Docker（单容器）」节 |
-| Windows 便携包 | 包内 `app/rules/` | 7 技能齐全自检，仅 Windows x64 包 |
+| Windows 便携包 | 包内 `app/rules/` | 8 技能齐全自检，仅 Windows x64 包 |
 
 SKILL.md 定义领取 → 执行（以 `kb show` 实时拉取为准）→ `kb comment` 汇报 → `kb done`/`kb fail` 收尾的完整流程与占用规则。
 
