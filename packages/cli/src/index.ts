@@ -16,6 +16,7 @@ import { createIssue } from './commands/createIssue.js';
 import { moveIssue } from './commands/moveIssue.js';
 import { listTasks } from './commands/listTasks.js';
 import { next, NEXT_DEFAULT_LIMIT } from './commands/next.js';
+import { stats } from './commands/stats.js';
 import { show } from './commands/show.js';
 import { claim } from './commands/claim.js';
 import { release, releaseIssue } from './commands/release.js';
@@ -149,6 +150,23 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 `)
     .action(async (opts: { workspace?: string; limit?: string }) => {
       commandExitCode = await next(makeCtx(program, io), { workspace: opts.workspace, limit: parseLimit(opts.limit) });
+    });
+
+  // OPT-11：汇总计数（替代逐状态 list-tasks 复算）
+  program
+    .command('stats')
+    .description('工作区汇总计数：五状态 / 未完成无主 / 被阻塞（一次请求，带工作区 id 与生成时间）')
+    .option('--workspace <id|名>', '工作空间 id / 名称 / ≥8 位唯一前缀（缺省按 cwd 解析）')
+    .addHelpText('after', `
+示例：
+  kb stats
+  kb stats --workspace e41eb0fb --json
+输出：待规划/进行中/待验收/已关闭/已废弃 五行计数；无主（未完成）= 未完成且 claimed_by 为空；
+      被阻塞（未完成，有未解除前置）= blocked_by_open_count > 0；末尾给一条复算命令。
+退出码：0 成功；1 工作区无法解析 / 服务端错误
+`)
+    .action(async (opts: { workspace?: string }) => {
+      commandExitCode = await stats(makeCtx(program, io), { workspace: opts.workspace });
     });
 
   // KB-GREP：本地按内容检索仓库（纯 Node；无 REST 依赖，仅默认搜索根需要解析工作区）

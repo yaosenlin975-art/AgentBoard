@@ -92,7 +92,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 - **卡归属校验**：`kb show` 返回的 `workspace_id` 与本轮绑定的工作区不一致时，停止写入与状态流转，把两个 id/路径一起回报父代理或用户，由他们决定是否授权跨区。
 - **CLI 不会替你拦跨区**：`claim / comment / done / fail / close / dep` 只凭 issue id 就能写（CLI-25），服务端不校验 workspace；“命令能跑”≠“已授权”。跨区写入前必须过上面的绑定与授权检查。
 - **被占用不等于可释放**：见「占用规则」的 release 口径。
-- **收尾声明**：done/fail/交接的回报四要素——工作区 id + 绝对路径；改动文件清单（本轮若声明过改动他人归属目录，把那行 `改动声明：…` 原文一并带上）；是否跨工作区读写（是/否，若是写授权依据）；验证命令与结果（回报里每个数字——耗时、条数、比例、行数、通过数——后面各附一行复算命令，按命令重算，不引用他人转述；条数例如 `待规划 32 —— 复算：kb list-tasks --workspace <id> --status 待规划 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`））。
+- **收尾声明**：done/fail/交接的回报四要素——工作区 id + 绝对路径；改动文件清单（本轮若声明过改动他人归属目录，把那行 `改动声明：…` 原文一并带上）；是否跨工作区读写（是/否，若是写授权依据）；验证命令与结果（回报里每个数字——耗时、条数、比例、行数、通过数——后面各附一行复算命令，按命令重算，不引用他人转述；**看板计数类数字优先用 `kb stats --workspace <id>` 一次取全**（OPT-11：五状态 / 未完成无主 / 被阻塞，输出带工作区 id 与生成时间，单次请求），逐状态复核时再给 `待规划 32 —— 复算：kb list-tasks --workspace <id> --status 待规划 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`））。
 
 ## kb 命令速查
 

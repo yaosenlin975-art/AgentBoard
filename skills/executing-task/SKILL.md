@@ -51,7 +51,7 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 - **领取纪律**：`kb show <全长 UUID>` 核对 status 与 claimed_by；已被他人占用且租约未过期 → 跳过，不抢。僵尸租约按 `using-agentboard` 口径处理，需用户授权才能强制释放，本技能不自行释放。close/done/fail 一律全长 UUID，禁止短码。
 - **失败隔离**：任一 worker 遇到阻塞（目标文件有他人未提交改动、卡被占用、测试失败非自身改动引起）→ 只停这一路（`kb fail` 或评论 + 保持占用），其余 worker 继续跑完并各自收尾；不得因一个失败整批中断，也不得把该失败记到其它卡上。
 - **提交纪律**：每卡单独提交，由 `kb done --scope` 只提交本卡声明路径；禁止 `git add -A`，禁止手动 `git commit` 兜底。提交后核对 `git show --stat <hash>` 只含本卡文件；混入他卡或未声明文件即停手报告，不带病继续。
-- **收尾纪律**：每卡 `done` 后立刻 `kb show` 回读，确认 status=待验收；汇总里的每个数字（并发数、完成/失败数、提交数）都必须能追到逐卡回读记录，不得估算，并且每个数字后面各附一行可重算命令，如 `待验收 3 —— 复算：kb list-tasks --workspace <id> --status 待验收 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`），按命令重算，不引用他人转述。
+- **收尾纪律**：每卡 `done` 后按 OPT-08 口径核对命令输出里的 status=待验收；汇总里的每个数字（并发数、完成/失败数、提交数、各状态条数）都必须能追到实跑输出，不得估算。**看板计数类数字优先用 `kb stats --workspace <id>` 一次取全**（五状态 + 未完成无主 + 被阻塞，输出带工作区 id 与生成时间；OPT-11），每个数字后面仍各附一行可重算命令，如 `待验收 3 —— 复算：kb list-tasks --workspace <id> --status 待验收 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`），按命令重算，不引用他人转述。
 - **输出纪律**：worker 只回「卡号 / 结果 / 提交短 hash / 一句话阻塞」，禁止贴测试日志、整段 diff 或大段命令输出；父会话汇总按同一格式逐卡一行。单轮输出失控会直接废掉整轮（此前一次推 5 张卡的日志把窗口撑爆），宁可不并行也不放大输出。
 - **并发不等于抢占**：同一工作区若已有别的会话在飞、且改同一批文件，即使本技能允许 3 路，也必须降级为串行或跳过；跨工作区并行需按工作区边界逐区授权，不得借并行绕过。
 
