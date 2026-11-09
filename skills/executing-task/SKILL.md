@@ -37,6 +37,7 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 
 - The parent agent owns planning, assignment, acceptance, and summary. It delegates actual board operations and implementation to one or more child workers (at most 3, per 「并行执行」).
 - A worker executes only the specific issue ID and workspace assigned by the parent; it never touches another worker's card. Multiple workers may run in parallel only under 「并行执行（最多 3 路）」 (hard cap 3, disjoint target files). Do not recursively delegate, search for unrelated work, or claim a task by guessing.
+- worker 回合结束/回到 inactive 不等于卡完成；续做同一张还是续派下一张由父代理按 `swing-dev` 第 7 节「续派判定」以 `kb show` 的 `status` 为准决定，worker 不自行判断下一张。
 - If the parent is only requesting a plan, do not claim or execute an issue.
 - Follow dependencies recorded as issue IDs. Check referenced issues with kb show. If a prerequisite is not ready or the dependency order is unclear, report the blocker to the parent before claiming or proceeding.
 

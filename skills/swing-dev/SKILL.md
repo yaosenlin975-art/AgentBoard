@@ -40,6 +40,8 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 逐工作区：`kb list-tasks --workspace <id> --status 待规划`（`kb list-spaces` 输出含 id / name / path，直接可用）。扫描触发时机：班次启动；worker 回报（先扫其绑定区）；并发槽位释放需选新区（全局扫未绑定区）。worker 区内执行期间不重扫、不向在飞队列补发卡。
 
+**相邻卡取数口径**：worker 回报后决定「续做同一张还是派下一张」，一律按第 7 节「续派判定」现场取数（`kb show` 回读 status/claimed_by、`kb list-tasks --json` 过滤 `parent_issue_id`、`kb dep ls` 看被阻塞者与解除标记），不引用首次派发的队列快照——队列在班次中会因他人 claim / done / 新卡入池而变化。`kb list-tasks` 的 JSON 条目字段含 `parent_issue_id`、`status`、`claimed_by`、`resolved`，可直接本地过滤。
+
 ### 3. 排除（硬规则，命中即跳过并记原因）
 
 对候选卡执行 `kb show <id>`，读描述、标签、评论：
@@ -54,9 +56,16 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 排除判定以卡面语义为准，不按关键词字面命中：卡面模板用语（如「所需人工步骤」「引用迁移」）不构成排除；「人工」排除只指验收需真人执行，「迁移」排除只指数据库迁移。
 
+相邻卡取数口径（排除侧）：
+
+- 规则 4 的「占用者非空」只看 `claimed_by`，不看 `status`：`进行中` 且 `claimed_by` 为空 = worker 掉线遗留卡，属可续做卡，不得按「他人占用」跳过（处理路径见第 7 节续派判定第 1 条）。
+- 排除判定一律用当次命令回读，不吃扫描旧快照：`kb show <id> --json` 看 `status` / `claimed_by` / `decision_locked`，`kb dep ls <id>` 看前置当前是否已解除；扫描后状态可能已被他人推进。
+
 ### 4. 排序
 
 优先级（高 > 中 > 低）→ 同级创建时间旧者优先。
+
+本节排序只用于「回到池子」后的重扫（班次启动、绑定释放、无可续派后继）。worker 回报后的续派不先按本节重排，而是按第 7 节续派判定的固定顺序（父卡后继 → 同父兄弟 → 已解除后继 → 同 labels/同目录）取下一张。
 
 ### 5. 分派
 
@@ -99,6 +108,39 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 8. worker 收尾（含熔断或异常退出前）：未到终态的自占卡必须先 `kb fail <id> --reason '...'` 再退出；回报父代理：完成 / 失败 / 跳过清单（卡 id + 标题 + 原因）、改动文件清单、验证命令与结果、跨区声明（工作区 id + 绝对路径 + 是否写区外文件）
 
 ### 7. 回报处理与实例复用（父代理）
+
+#### 续派判定：worker 回到 inactive 后（先判定，再执行下面 1–6）
+
+worker 回合结束或宿主报 inactive **不等于卡完成**。唯一事实源是 `kb show <卡全长 UUID> --json` 的 `status`（必要时叠加 `claimed_by`）；不得按宿主状态、worker 自述或首次派发队列决定下一步。worker 一停，先回读它手上最后一张卡，再按下列固定顺序判定：
+
+1. **卡仍「进行中」** → 同一实例续做同一张：不 `release`、不换实例重派、不重复 `claim`（占用仍在，重 claim 会 409）。续批只补「继续同一张 + 最新进度要求」。
+   ```
+   kb show <卡全长 UUID> --json    # 看 status / claimed_by：status=进行中 且 claimed_by=<本班次身份> → 续做
+   ```
+   若回读为 `status=进行中` 但 `claimed_by` 为空（worker 异常退出、租约清扫后的掉线遗留卡）→ 它不是他人占用，而是可续做卡：`kb claim <卡全长 UUID>` 后由本实例接着做完（claim 接受「进行中且无人占用」）。不得按第 3 节规则 4 永久跳过，也不得释放或覆盖他人占用。
+2. **卡已「待验收」/「已关闭」** → 按下列顺序取下一张，命中即派、不跳步：
+   1. 父卡后继（本卡父卡下，按 `sort_order` 排在本卡之后的未完成子卡）：
+      ```
+      kb show <完成卡全长 UUID> --json | node -pe "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));const i=j.issue||j;i.parent_issue_id||''"
+      kb list-tasks --workspace <区 id> --all-status --json | node -pe "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));(j.items||j).filter(i=>i.parent_issue_id==='<父卡全长 UUID>'&&!['待验收','已关闭','已废弃'].includes(i.status)).map(i=>[i.status,i.claimed_by||'-',i.sort_order,i.id,i.title].join('\t')).join('\n')"
+      ```
+   2. 同父兄弟（父卡下其余未完成子卡，含排在本卡之前的；无父卡则跳过本步）：
+      ```
+      kb list-tasks --workspace <区 id> --all-status --json | node -pe "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));(j.items||j).filter(i=>i.parent_issue_id==='<父卡全长 UUID>'&&i.id!=='<完成卡全长 UUID>'&&!['待验收','已关闭','已废弃'].includes(i.status)).map(i=>[i.status,i.claimed_by||'-',i.id,i.title].join('\t')).join('\n')"
+      ```
+   3. 被本卡 blocks 且已解除的后继（完成卡变「待验收/已关闭」即解除其阻塞）：
+      ```
+      kb dep ls <完成卡全长 UUID>    # 看「被阻塞者（blocked）」：取状态为待规划或进行中无主、且未被他人占用的卡
+      ```
+   4. 同 `labels` / 同目录（前三条都空时）：按完成卡的 `labels` 或目标目录前缀，在当前区待规划卡中筛选：
+      ```
+      kb list-tasks --workspace <区 id> --status 待规划 --json | node -pe "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));(j.items||j).filter(i=>!i.claimed_by&&i.labels.some(l=>['<labels 逐项>'].includes(l))).map(i=>i.id+'\t'+i.title).join('\n')"
+      ```
+3. **以上都没有** → 回第 2–4 节重扫池子；确认无可做卡后按下面第 3、4 条释放绑定。
+
+每条判定都要把「回读到的 status + 命中的分支 + 依据卡 id」写进「绑定账本」与班次报告，不能用「worker 说做完了」代替。
+
+下列 1–6 为回报核对与实例复用流程（续派判定已在上方完成）：
 
 1. worker 回报到达：**逐卡**核对回报与看板实际状态——对回报里每张 done / fail / close 都跑一次 `kb show <全长 UUID> --json` 比对 `status`，不许抽查、不许按 worker 自述采信。状态不符的卡按「未完成」退回补做或记入失败栏。验证深度按风险定，证据有效即复用，不机械重跑
 2. 绑定区重扫（按第 2–4 节）：仍有可做卡 → 用宿主对应的续批工具（如 `SendMessage`）续批同一实例（只附新队列与区特有约束，第 6 节规则沿用首次派发不重发）；连续续批达复用预算，或回报出现上下文吃紧迹象（回报显著变短、丢细节、自述压缩）→ 派新实例接管绑定（提示重新自包含，账本更新 agentId，身份不变）
