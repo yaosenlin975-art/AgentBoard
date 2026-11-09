@@ -54,14 +54,23 @@ describe('CLI-UX：done --notes-stdin', () => {
   });
 });
 
-describe('CLI-UX：--full 只在 --json 下生效', () => {
-  it('表格模式带 --full → 提示且不影响输出', async () => {
+describe('CLI-UX：--full 表格列', () => {
+  it('表格模式带 --full → 输出完整列（不提示、不忽略）', async () => {
     handler = (m, u) => (m === 'GET' && u.startsWith('/api/workspaces/ws1/statuses') ? { status: 200, body: [] }
       : m === 'GET' && u === '/api/workspaces' ? { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws', created_at: 1 }] }
         : m === 'GET' && u.startsWith('/api/issues?workspace=ws1') ? { status: 200, body: [ISSUE] } : undefined);
     const result = await run(['list-tasks', '--workspace', 'ws1', '--full']);
     expect(result.code).toBe(0);
-    expect(result.err).toContain('--full 只对 --json 输出生效');
+    expect(result.err).not.toContain('只对 --json 输出生效');
     expect(result.out).toContain('iss1');
+    expect(result.out.split('\n')[0]).toContain('labels');
+  });
+
+  it('默认表格不带 --full → 只输出 5 列', async () => {
+    handler = (m, u) => (m === 'GET' && u === '/api/workspaces' ? { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws', created_at: 1 }] }
+      : m === 'GET' && u.startsWith('/api/issues?workspace=ws1') ? { status: 200, body: [ISSUE] } : undefined);
+    const result = await run(['list-tasks', '--workspace', 'ws1']);
+    expect(result.code).toBe(0);
+    expect(result.out.split('\n')[0]!.split(/\s{2,}/).filter(Boolean)).toEqual(['id', '状态', '优先级', '占用者', '标题']);
   });
 });

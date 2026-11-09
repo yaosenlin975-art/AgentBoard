@@ -263,10 +263,7 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   if (args.all === true && args.workspace !== undefined) {
     throw new Error('--all 与 --workspace 不能同时使用');
   }
-  // CLI-UX：--full 只影响 --json 输出；表格模式本来就没有 description，别静默无效
-  if (args.full === true && ctx.json !== true) {
-    ctx.io.writeErr('提示：--full 只对 --json 输出生效（表格模式本来就不含 description），本次已忽略\n');
-  }
+  // OPT-07：--full 同时作用于表格（恢复 labels/决策/评论/parent_issue_id 等列）与 --json（带 description 正文）
   // OPT-01：缺省收敛为「当前工作区 · 未完成 · 无主」；`--status` 显式覆盖，`--tree` 保留整树上下文，
   // 需要改造前的整区全状态口径时用 `--all-status`。
   const converged = args.allStatus !== true && args.status === undefined && args.tree !== true;
@@ -291,15 +288,27 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
       ctx.io.write('（无任务）\n');
       return;
     }
-    ctx.io.write(table(
-      ['层级', 'id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
-      visible.map((issue) => [
-        issue.tree_context ? '路径' : String(issue.tree_depth), issue.id.slice(0, 8), issue.status, issue.priority, // CLI-09：id 列短 ID
-        issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', decisionMark(issue), String(issue.comment_count),
-        issue.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
-        issue.title, // CLI-TREE-TITLE：树表格标题列与 --json 的 title 逐字一致（层级已由「层级」列表达）
-      ]),
-    ));
+    // OPT-07：默认只保留 层级/id/状态/优先级/占用者/标题；其余列走 --full（层级前缀规则不变）
+    if (args.full === true) {
+      ctx.io.write(table(
+        ['层级', 'id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
+        visible.map((issue) => [
+          issue.tree_context ? '路径' : String(issue.tree_depth), issue.id.slice(0, 8), issue.status, issue.priority, // CLI-09：id 列短 ID
+          issue.labels.length > 0 ? issue.labels.join(',') : '-', issue.claimed_by ?? '-', decisionMark(issue), String(issue.comment_count),
+          issue.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
+          issue.title, // CLI-TREE-TITLE：树表格标题列与 --json 的 title 逐字一致（层级已由「层级」列表达）
+        ]),
+      ));
+    } else {
+      ctx.io.write(table(
+        ['层级', 'id', '状态', '优先级', '占用者', '标题'],
+        visible.map((issue) => [
+          issue.tree_context ? '路径' : String(issue.tree_depth), issue.id.slice(0, 8), issue.status, issue.priority,
+          issue.claimed_by ?? '-',
+          issue.title,
+        ]),
+      ));
+    }
     return;
   }
   if (args.status !== undefined) {
@@ -319,18 +328,34 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     ctx.io.write('（无任务）\n');
     return;
   }
+  // OPT-07：扁平表格默认 5 列；--full 恢复改造前的完整列
+  if (args.full === true) {
+    ctx.io.write(
+      table(
+        ['id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
+        filtered.map((i) => [
+          i.id.slice(0, 8), // CLI-09：id 列短 ID
+          i.status,
+          i.priority,
+          i.labels.length > 0 ? i.labels.join(',') : '-',
+          i.claimed_by ?? '-',
+          decisionMark(i),
+          String(i.comment_count),
+          i.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
+          titleWithChildProgress(i),
+        ]),
+      ),
+    );
+    return;
+  }
   ctx.io.write(
     table(
-      ['id', '状态', '优先级', 'labels', '占用者', '决策', '评论', 'parent_issue_id', '标题'],
+      ['id', '状态', '优先级', '占用者', '标题'],
       filtered.map((i) => [
-        i.id.slice(0, 8), // CLI-09：id 列短 ID
+        i.id.slice(0, 8),
         i.status,
         i.priority,
-        i.labels.length > 0 ? i.labels.join(',') : '-',
         i.claimed_by ?? '-',
-        decisionMark(i),
-        String(i.comment_count),
-        i.parent_issue_id?.slice(0, 8) ?? '-', // CLI-09
         titleWithChildProgress(i),
       ]),
     ),

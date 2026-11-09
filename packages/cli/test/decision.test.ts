@@ -269,7 +269,7 @@ describe('kb answer / decisions / stop-check / show', () => {
     expect(shown.code).toBe(0);
     expect(shown.out).toContain('LOCKED');
     expect(shown.out).toContain('已等待 42 秒');
-    const listed = await run(['list-tasks', '--workspace', 'ws1']);
+    const listed = await run(['list-tasks', '--workspace', 'ws1', '--full']); // OPT-07：决策列走 --full
     expect(listed.code).toBe(0);
     expect(listed.out).toContain('[待决策]');
   });

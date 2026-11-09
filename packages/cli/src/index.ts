@@ -119,7 +119,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--status <状态>', '按当前筛选范围已定义的状态过滤；非法值会列出可用状态')
     .option('--all-status', '保留改造前口径：不按「未完成 · 无主」收敛，输出整区全状态')
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
-    .option('--full', '--json 时一并输出 description 正文（默认裁剪，只输出元数据）')
+    .option('--full', '表格输出完整列（labels/决策/评论/parent_issue_id）；--json 时一并输出 description 正文')
     .action(async (opts: { workspace?: string; all?: boolean; status?: string; allStatus?: boolean; tree?: boolean; full?: boolean }) =>
       listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, allStatus: opts.allStatus === true, tree: opts.tree, full: opts.full === true }));
 

@@ -316,7 +316,7 @@ describe('list-tasks', () => {
     expect(t.out()).toContain('高');
   });
 
-  it('表格含 labels（多标签逗号连接、空为 -）与评论（comment_count）列', async () => {
+  it('默认表格只输出 5 列（id/状态/优先级/占用者/标题）', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
       if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: issues };
@@ -325,10 +325,30 @@ describe('list-tasks', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'list-tasks', '--workspace', '前端'], t.io);
     expect(code).toBe(0);
+    const header = t.out().split('\n')[0]!.split(/\s{2,}/).filter(Boolean);
+    expect(header).toEqual(['id', '状态', '优先级', '占用者', '标题']);
+    expect(header).not.toContain('labels');
+    expect(header).not.toContain('评论');
+    const row = (id: string) => t.out().split('\n').find((r) => r.includes(id))!.split(/\s{2,}/).filter(Boolean);
+    expect(row('iss1')).toHaveLength(5);
+    expect(row('iss1')[3]).toBe('-'); // 默认无占用者
+  });
+
+  it('--full 表格恢复 labels/决策/评论/parent_issue_id 列', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: issues };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'list-tasks', '--workspace', '前端', '--full'], t.io);
+    expect(code).toBe(0);
+    // OPT-07：表格模式传 --full 不再被忽略，也不打提示
+    expect(t.err()).not.toContain('只对 --json 输出生效');
     const header = t.out().split('\n')[0]!;
     expect(header).toContain('labels');
     expect(header).toContain('评论');
-    const row = (id: string) => t.out().split('\n').find((r) => r.includes(id))!.split(/\s{2,}/);
+    const row = (id: string) => t.out().split('\n').find((r) => r.includes(id))!.split(/\s{2,}/).filter(Boolean);
     const iss1 = row('iss1');
     // DEC-4 加「决策」列（占用者后）：评论 5→6（KB-CLI-3b 同步既有偏移遗留；扁平表列序 id0/状态1/优先级2/labels3/占用者4/决策5/评论6）
     expect(iss1[3]).toBe('p1,bug'); // 多标签逗号连接
