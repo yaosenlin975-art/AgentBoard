@@ -3,9 +3,9 @@ id: 3eeca147-8df0-4cac-aee7-520df1afd1b5
 slug: dsh-plugin-install-gates
 title: DSH 第三方插件安装与版本门禁处置（ponytail 5.6.2 实录）
 scope: workspace
-revision: 2
+revision: 3
 status: active
-updated_at: 2026-11-09T09:46:51.262Z
+updated_at: 2026-11-09T09:47:04.264Z
 ---
 
 # DSH（DeepSeek Harness）第三方插件安装与版本门禁处置
@@ -47,7 +47,8 @@ updated_at: 2026-11-09T09:46:51.262Z
 - 判读：失败的是 pnpm 解析阶段，与被点名插件无关；根因是 profile 里另一个 `github:` 直依已失效。回滚「未能验证」也只是副作用。
 - 影响面：任何插件安装/更新都会在同一处失败；且 dsh-market 会周期性重新入队，导致重复弹窗。
 - 处置（不改无关扩展、不升级）：在 `profiles/<profile>/.dsh-market/state.json` 的 `updateExempt` 追加该插件名，阻止市场再尝试这次更新（dsh-purge 自 2026-10-29 起已在 exempt，之后日志再无其更新尝试，可作机制有效的证据）。
-- 彻底修复需要处理死依赖本身（重打包本地 tarball 或移除扩展），属于需用户拍板的单独事项；不要为了让更新通过而顺手升级被点名的插件——用户可能对它有本地热修（如 dsh-ops 的 `*.bak-20261029-cachefix`）。
+- 约束（用户 2026-11-09 明确要求）：**不得改动 dsh-purge 的版本、来源、git pin、registry 指向**，也不得降级/升级/换源/临时移除再装回。若修复路径绕不开它，停下来说明原因与剩余选项，由用户决定。可行路径限定为：只处理被点名插件本身的注册（如摘除 bundles，需说明副作用并备份）、或冻结该插件的自动更新。
+- 同理不要为了让更新通过而顺手升级被点名的插件——用户可能对它有本地热修（如 dsh-ops 的 `*.bak-20261029-cachefix`）。
 
 ## 验证套路
 
