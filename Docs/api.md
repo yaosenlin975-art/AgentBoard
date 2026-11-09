@@ -18,6 +18,17 @@
 - 环境变量 `AGENTBOARD_WORKBUDDY_REGION`（`cn` / `global`，缺省 `cn`；非法值启动即报错）：决定 WorkBuddy 签到与额度请求的计费域，同样仅启动期生效、不写回 config.json、`/api/settings` 不回显（`config.ts`、`services/accounts/platformHosts.ts`）。CN = `https://www.codebuddy.cn`（有业务成功证据），Global = `https://www.workbuddy.cn`（区域备用线路）；`unknown` 区域在装配期直接抛 `CHECKIN_REGION_UNSUPPORTED`，不回落默认域。
 - `PATCH /api/settings` 写回 config.json：`maxConcurrentTurns` 与附件设置即时生效，`port` / `dbPath` 重启生效（`routes.ts`）。
 
+### 派发 prompt 模板（ARCH-05，`services/dispatchTemplate.ts`）
+
+- 模板文件：数据目录（`configDir()`；Windows 默认 `%APPDATA%\AgentBoard`，非 Windows `~/.config/AgentBoard`）下的 `dispatch-prompt.md`，UTF-8 无 BOM（带 BOM 读取时剥掉）。
+- env 覆盖：`AGENTBOARD_DISPATCH_PROMPT=<路径>`，优先于数据目录默认文件；仅启动期生效，不写回 config.json。
+- 生效规则：**文件不存在 → 内置默认模板**（逐字等于 `DISPATCH_PROMPT_TEMPLATE`，派发行为与改造前一致）；**文件存在但缺任一必需占位符或不可读 → 拒绝启动**（启动日志/stderr 点名缺失占位符与文件路径，退出码 1），不静默回退默认值。env 指向的文件不存在时回落内置默认，并在启动日志记录 warning。
+- 运行期：启动时解析并校验一次并缓存，派发请求不重新读盘；改模板需重启服务。
+- 合法占位符（渲染见 `services/dispatch.ts` 的 `renderPrompt`）：`{{issue_id}}`、`{{title}}`、`{{description}}`（空描述渲染为 `(空)`）、`{{workspace_path}}`、`{{workspace_id}}`。必需集合 = 以上全部（`REQUIRED_PLACEHOLDERS`）；新增变量须同步 `renderPrompt` 与本清单。
+- 知识块：仍按 OPT-14 口径作为 prompt 的精确后缀追加（只列 `id` + `knowledge:<id>` + 标题 + `scope · revision`，不内联正文；模板已含 `## 知识参考` 时不重复追加）。
+- `POST /api/sessions` 的 `body.prompt` 仍可整段替换本次派发的模板（占位符照常渲染）。
+- 不做工作区级模板覆盖。
+
 ## 2. 通用约定
 
 > CLI-UX（2026-11-03）：`400 VALIDATION_ERROR` 的 message 已中文化并附可用值（如 `priority: 取值必须是：低 / 中 / 高`）；`kb done` 支持 `--notes-stdin`，`kb list-tasks --full` 只对 `--json` 生效，`kb changelog` 时间按本地时区展示。

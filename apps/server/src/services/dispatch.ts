@@ -15,25 +15,18 @@ import { getWorkspace } from '../db/repos/workspace.js';
 import { countPendingIssueAttachments, getIssueDispatchAttachments } from '../db/repos/attachment.js';
 import { getSession } from '../db/repos/session.js';
 import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import { DEFAULT_DISPATCH_PROMPT_TEMPLATE } from './dispatchTemplate.js';
 import { finishIdempotentEffect, hashPayload, replayIdempotentResult, withIdempotencyResult } from './idempotency.js';
 import { claimIssue } from './claim.js';
 import { captureIssueGitBaseline } from './gitBaseline.js';
 import * as sessionManager from './sessionManager.js';
 import type { AttachmentStore } from './attachments.js';
 
-/** Pinned Contracts 派发 prompt 模板（逐字，不得改动；`{{var}}` 渲染） */
-export const DISPATCH_PROMPT_TEMPLATE = `你是任务看板的执行 agent。
-任务 ID：{{issue_id}}
-标题：{{title}}
-描述：
-{{description}}
-工作目录：{{workspace_path}}（你的当前工作目录即此）
-规则：
-1. 任务内容以 \`kb show {{issue_id}}\` 实时返回为准，开工前与关键节点重新拉取。
-2. 用户在评论区的留言视为补充指令，经 \`kb show\` 读取最新评论。
-3. 关键节点（开工、受阻、阶段性完成）用 \`kb comment {{issue_id}} "..."\` 写进展总结。
-4. 全部完成后执行 \`kb done {{issue_id}}\`；无法完成执行 \`kb fail {{issue_id}} --reason "..."。
-5. 完成前必须写一条知识页（\`kb knowledge create --slug handoff-{{issue_id}} --scope workspace --workspace {{workspace_id}} --domain knowledge --stdin\`；\`--domain\` 必填，取值 accounts|knowledge|board|chat|ui|infra，按任务所属域替换，不确定用 knowledge）：正文写本次任务的目标、关键决策与取舍、验证方式与结果、未验证项与剩余风险；不写流水账、不写变更日志式条目。同 slug 已存在时更新该页，不新建重复页。`;
+/**
+ * Pinned Contracts 派发 prompt 模板（内置默认值，逐字不得改动；`{{var}}` 渲染）。
+ * ARCH-05 起默认值同源于 dispatchTemplate.ts，运行期默认模板由启动期解析（文件 → env → 内置）。
+ */
+export const DISPATCH_PROMPT_TEMPLATE = DEFAULT_DISPATCH_PROMPT_TEMPLATE;
 
 /** 历史备注段上限：该 issue 最近 10 条评论（ts 升序展示） */
 export const HISTORY_NOTE_LIMIT = 10;
@@ -42,6 +35,8 @@ export interface DispatchDeps {
   /** 适配器解析器：派发前校验 cli 可解析（未知 CLI 即 400），轮次执行仍由 sessionManager 解析 */
   getAdapter: (cliId: string) => AgentAdapter;
   attachments?: AttachmentStore;
+  /** ARCH-05：启动期解析并缓存的默认模板（缺省内置 DISPATCH_PROMPT_TEMPLATE） */
+  promptTemplate?: string;
 }
 
 export interface DispatchInput {
@@ -170,7 +165,7 @@ export async function dispatchIssue(db: Db, deps: DispatchDeps, input: DispatchI
     }));
   }
 
-  const rendered = renderPrompt(input.promptTemplate ?? DISPATCH_PROMPT_TEMPLATE, {
+  const rendered = renderPrompt(input.promptTemplate ?? deps.promptTemplate ?? DISPATCH_PROMPT_TEMPLATE, {
     issue_id: issue.id,
     title: issue.title,
     description: issue.description,

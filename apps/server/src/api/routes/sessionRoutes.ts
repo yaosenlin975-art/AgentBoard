@@ -59,6 +59,8 @@ export interface SessionRouterDeps {
   dbForWorkspace: (workspaceId: string) => Db;
   /** 按 id 定位 session 所在库（索引先行；4d 前 sessionManager 仍写中心库——索引指向已下沉区而行在中心时由兜底扫描接住） */
   locateSessionRouted: (sessionId: string) => EntityLocation<SessionRow> | null;
+  /** ARCH-05：启动期解析并缓存的派发默认模板（缺省内置默认） */
+  dispatchPromptTemplate?: string;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -102,7 +104,7 @@ export function fileAttachmentPromptBlock(files: Array<{ name: string; mime: str
 }
 
 export function createSessionRouter(deps: SessionRouterDeps): Router {
-  const { db, broadcast, getAdapter, attachments, dbForWorkspace, locateSessionRouted } = deps;
+  const { db, broadcast, getAdapter, attachments, dbForWorkspace, locateSessionRouted, dispatchPromptTemplate } = deps;
   const router = Router();
 
   // ---- sessions ----
@@ -200,7 +202,7 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
     let remainingAttachmentCount: number | undefined;
     let replayed = false;
     if (body.issue_id) {
-      const result = await dispatchIssue(db, { getAdapter, attachments }, {
+      const result = await dispatchIssue(db, { getAdapter, attachments, promptTemplate: dispatchPromptTemplate }, {
         issueId: body.issue_id,
         cli: body.cli,
         model: body.model ?? null,

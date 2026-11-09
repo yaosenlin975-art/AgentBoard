@@ -61,6 +61,7 @@ import {
   DEFAULT_ATTACHMENT_QUOTA_BYTES,
   DEFAULT_ATTACHMENT_STAGED_TTL_MS,
 } from './services/attachments.js';
+import { loadDispatchPromptTemplate } from './services/dispatchTemplate.js';
 
 export interface CreateAppOptions {
   db: Db;
@@ -130,6 +131,11 @@ export interface CreateAppOptions {
    * ——测试/最小装配的单库行为不变）。
    */
   workspaceRouting?: WorkspaceDbRouting;
+  /**
+   * ARCH-05：启动期解析并缓存的派发默认模板（生产 main() 传 loadDispatchPromptTemplate 结果；
+   * 缺省内置默认，测试不读盘）。
+   */
+  dispatchPromptTemplate?: string;
 }
 
 export interface CreatedApp {
@@ -234,7 +240,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     res.setHeader('x-agentboard-version', SERVER_VERSION);
     next();
   });
-  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: { ...options.desktopProviders, minimax: minimaxProvider, trae: options.desktopProviders?.trae ?? traeProvider } as unknown as Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: {
+  app.use('/api', createRouter({ db, getAdapter, secretVault, attachments, broadcast: (event) => hub.broadcast(event), ...(options.dispatchPromptTemplate === undefined ? {} : { dispatchPromptTemplate: options.dispatchPromptTemplate }), accounts: { workbuddy, checkinProvider: options.checkinProvider, checkinProviders: options.checkinProviders, desktopProviders: { ...options.desktopProviders, minimax: minimaxProvider, trae: options.desktopProviders?.trae ?? traeProvider } as unknown as Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>, vault: secretVault, quotas: options.quotas, minimaxClientProbe: options.minimaxClientProbe, addAccountProviders: options.addAccountProviders ?? createAddAccountProviders(), restoreHandlers: {
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
@@ -308,6 +314,14 @@ export function wireWorkspaceDbCloseOnExit(
 /** 真实启动：返回运行句柄（冒烟/后续管理用） */
 export async function main(): Promise<StartedServer> {
   const config = loadConfig();
+  // ARCH-05：启动期解析派发 prompt 模板（不读 DB，先于单例锁）。
+  // 文件存在但缺必需占位符/不可读 → 抛错，由 main().catch 落日志并 process.exit(1)（不静默回退默认值）。
+  const dispatchPromptTemplate = loadDispatchPromptTemplate({ dataDir: configDir() });
+  if (dispatchPromptTemplate.source === 'file') {
+    appendServerLog(`派发 prompt 模板：${dispatchPromptTemplate.path}`);
+  } else if (dispatchPromptTemplate.warning !== undefined) {
+    appendServerLog(dispatchPromptTemplate.warning);
+  }
   // SERVER-SINGLETON：单例锁**必须先于 openDb**——同一个 DB 被两个进程打开会互相踩 WAL：
   // 迁移是「先 PRAGMA table_info 再 ALTER」的非原子模式（db/schema.ts、db/migrations/*），
   // 双开时两边都读到「列不存在」，后到者抛 duplicate column name；两边还会同时 sweepExpiredLeases
@@ -404,6 +418,7 @@ export async function main(): Promise<StartedServer> {
     attachmentQuotaBytes: config.attachmentQuotaBytes,
     attachmentStagedTtlMs: config.attachmentStagedTtlMs,
     attachmentCleanupIntervalMs: config.attachmentCleanupIntervalMs,
+    dispatchPromptTemplate: dispatchPromptTemplate.template,
     // 生产装配：三平台真实签到 provider（测试默认不注入，保持 ACC-07 的 gated 语义）
     checkinProviders: createCheckinProviders({ region: config.workbuddyRegion }),
     restart: {

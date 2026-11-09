@@ -90,6 +90,8 @@ export interface RouterDeps {
   voice?: VoiceRouterOptions;
   /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
   browserOpener?: BrowserOpenerDeps;
+  /** ARCH-05：启动期解析并缓存的派发默认模板（缺省内置默认） */
+  dispatchPromptTemplate?: string;
 }
 
 export function createRouter(deps: RouterDeps): Router {
@@ -355,6 +357,7 @@ export function createRouter(deps: RouterDeps): Router {
     attachments,
     dbForWorkspace,
     locateSessionRouted,
+    ...(deps.dispatchPromptTemplate === undefined ? {} : { dispatchPromptTemplate: deps.dispatchPromptTemplate }),
   }));
 
   // ---- personas 域（P1-C）----
