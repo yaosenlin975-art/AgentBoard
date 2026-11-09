@@ -26,7 +26,38 @@ export interface SnapshotLagInput {
   centerDb: Db;
 }
 
+/**
+ * CR2-3（PERF-1 回归）：进程内 TTL 缓存——列表热路径不再每工作区每请求重开 readonly 库 +
+ * 14 条 COUNT(*)（改造前 20 区实测 ~22.9ms，与 PERF-1 F2 已修掉的「每请求开库」同模式）。
+ * 按 workspace_id 缓存 60s：正值与 null/失败都缓存（坏快照/库打不开也防抖，避免每请求重试拖垮列表）。
+ * 失效：manifest 唯一写入点 exportWorkspaceSnapshot 落盘后清对应条目（本地化流程走它）；
+ * 库行数变化靠 TTL 收敛。响应契约不变：snapshot_lag 语义不变，仅来源变缓存。
+ */
+const SNAPSHOT_LAG_TTL_MS = 60_000;
+
+interface SnapshotLagCacheEntry {
+  value: number | null;
+  computedAt: number;
+}
+
+const snapshotLagCache = new Map<string, SnapshotLagCacheEntry>();
+
+/** CR2-3：manifest 落盘后的失效钩子（workspaceSnapshot.exportWorkspaceSnapshot 调用） */
+export function invalidateSnapshotLagCache(workspaceId: string): void {
+  snapshotLagCache.delete(workspaceId);
+}
+
 export function computeSnapshotLag(input: SnapshotLagInput): number | null {
+  const cached = snapshotLagCache.get(input.workspaceId);
+  if (cached !== undefined && Date.now() - cached.computedAt < SNAPSHOT_LAG_TTL_MS) {
+    return cached.value;
+  }
+  const value = computeSnapshotLagUncached(input);
+  snapshotLagCache.set(input.workspaceId, { value, computedAt: Date.now() });
+  return value;
+}
+
+function computeSnapshotLagUncached(input: SnapshotLagInput): number | null {
   const manifestPath = join(workspaceStateDir(input.workspacePath), 'snapshot', 'manifest.json');
   if (!existsSync(manifestPath)) return null;
 

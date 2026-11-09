@@ -33,6 +33,7 @@ import type { Db } from '../db/connection.js';
 import { workspaceStateDir } from '../db/resolver.js';
 import { ApiError } from '../errors.js';
 import { vacuumInto } from './dbMigration.js';
+import { invalidateSnapshotLagCache } from './workspaceSnapshotLag.js';
 import { WORKSPACE_TABLE_QUERIES } from './workspaceScopedQueries.js';
 
 /** 快照格式版本：manifest.schema_version，导入时严格比对 */
@@ -563,6 +564,8 @@ export function exportWorkspaceSnapshot(input: ExportSnapshotInput): ExportSnaps
     ...tables.map(({ spec, content }) => ({ name: `${spec.file}.jsonl`, content })),
     { name: 'manifest.json', content: `${JSON.stringify(manifest, null, 2)}\n` },
   ], copies);
+  // CR2-3：磁盘 manifest 已变更 → 快照落后缓存按 workspace_id 失效（自校验失败也已换新，必须一并清）
+  invalidateSnapshotLagCache(workspaceId);
   // git 接线（STORE-6）：.gitignore / README 随快照一起就位（内容不变则不动）
   writeAgentboardGitFiles(input.workspacePath);
   // 自校验：回读行数与哈希，不符即失败（旧快照已被新内容替换，此时宁可报错也不静默）

@@ -18,6 +18,7 @@ import { createIssue } from '../src/db/repos/issue.js';
 import { resetResolverState } from '../src/db/resolver.js';
 import { localizeWorkspace } from '../src/services/workspaceLocalizeRun.js';
 import { exportWorkspaceSnapshot } from '../src/services/workspaceSnapshot.js';
+import { invalidateSnapshotLagCache } from '../src/services/workspaceSnapshotLag.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
 
 let t: TestDb;
@@ -85,6 +86,9 @@ describe('STORE-7 GET /api/workspaces 只读回显', () => {
     expect(afterExport!.snapshot_lag).toBe(0);
 
     createIssue(t.db, { workspace_id: ws.id, title: '快照后新增', description: '', priority: '中', labels: [] } as never);
+    // CR2-3：snapshot_lag 改为 60s TTL 缓存（见 workspaceSnapshotLag.ts），库行数变化按 TTL 收敛。
+    // 本用例直接写库（不经 API 失效钩子），这里显式失效以断言重算后的落后条数。
+    invalidateSnapshotLagCache(ws.id);
     const third = await request(app).get('/api/workspaces');
     const afterWrite = (third.body as Array<Record<string, unknown>>).find(row => row.id === ws.id);
     expect(afterWrite!.snapshot_lag).toBe(1);
