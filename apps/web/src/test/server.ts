@@ -5,6 +5,8 @@ import { setupServer } from 'msw/node';
 export const server = setupServer(
   http.get('/api/workspaces', () => HttpResponse.json([])),
   http.get('/api/issues', () => HttpResponse.json([])),
+  // 工作区状态字典默认空（组件回落内置五条；各测试按需覆盖）
+  http.get('/api/workspaces/:id/statuses', () => HttpResponse.json([])),
   // 技能联想端点（CHAT-MENTION；server 线落地前默认空列表，具体用例用 server.use 覆盖）
   http.get('/api/skills', () => HttpResponse.json({ items: [] })),
   http.get('/api/sessions', () => HttpResponse.json([])),

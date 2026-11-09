@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getIssueDependencies } from '../../api/endpoints';
 import type { DependencyRef } from '../../lib/dependency';
+import { isClosed, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 
 /** 超过 6 张下游才出现筛选框（设计 §3.4） */
 export const BLOCKED_FILTER_THRESHOLD = 6;
@@ -19,10 +20,10 @@ export function shortIssueCode(issueId: string): string {
   return issueId.slice(0, 8);
 }
 
-function statusChipClass(status: string): string {
+function statusChipClass(status: string, closed: boolean): string {
   if (status === '进行中') return 'border-accent text-accent';
   if (status === '待验收') return 'border-green-600 text-green-700 dark:text-green-400';
-  if (status === '已关闭') return 'border-hairline text-ink-3';
+  if (closed) return 'border-hairline text-ink-3';
   return 'border-amber-500 text-amber-700 dark:text-amber-300';
 }
 
@@ -41,9 +42,11 @@ function matches(item: DependencyRef, keyword: string): boolean {
 function DownstreamRow({
   item,
   onOpenIssue,
+  closed,
 }: {
   item: DependencyRef;
   onOpenIssue: (issueId: string) => void;
+  closed: boolean;
 }) {
   return (
     <li
@@ -62,7 +65,7 @@ function DownstreamRow({
       <span className="min-w-0 truncate text-ink" title={item.title}>
         {item.title}
       </span>
-      <span className={`shrink-0 rounded border px-1 text-[11px] ${statusChipClass(item.status)}`}>{item.status}</span>
+      <span className={`shrink-0 rounded border px-1 text-[11px] ${statusChipClass(item.status, closed)}`}>{item.status}</span>
       <span
         data-testid={`blocked-downstream-owner-${item.issue_id}`}
         className="max-sm:hidden min-w-0 max-w-[6rem] shrink-0 truncate text-ink-3"
@@ -100,6 +103,8 @@ export interface BlockedDownstreamProps {
 }
 
 export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: BlockedDownstreamProps) {
+  const { byName } = useWorkspaceStatuses(workspaceId);
+  const isItemClosed = (status: string): boolean => isClosed(status, byName.get(status)?.kind);
   const [open, setOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [indirectOpen, setIndirectOpen] = useState(false);
@@ -178,7 +183,7 @@ export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: 
               className="flex flex-col"
             >
               {visibleDirect.map((item) => (
-                <DownstreamRow key={`direct-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} />
+                <DownstreamRow key={`direct-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} closed={isItemClosed(item.status)} />
               ))}
             </ul>
           )}
@@ -206,7 +211,7 @@ export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: 
                   className="flex flex-col"
                 >
                   {visibleIndirect.map((item) => (
-                    <DownstreamRow key={`indirect-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} />
+                    <DownstreamRow key={`indirect-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} closed={isItemClosed(item.status)} />
                   ))}
                 </ul>
               )}

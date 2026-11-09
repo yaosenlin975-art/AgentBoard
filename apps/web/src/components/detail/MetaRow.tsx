@@ -14,6 +14,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { Issue, IssueStatus, Priority } from '@agentboard/shared';
 import { formatDueShort, isOverdue, overdueDays } from '../../lib/planningSort';
 import { ISSUE_STATUSES, patchIssueStatus } from '../../lib/issueStatus';
+import { isClosed, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 
 type ChipKey = 'status' | 'priority' | 'due' | 'owner';
 
@@ -65,9 +66,9 @@ export function formatLeaseRemaining(claimLeaseUntil: number | null | undefined,
   return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
 }
 
-function statusChipTone(status: IssueStatus): string {
+function statusChipTone(status: IssueStatus, closed: boolean): string {
   if (status === '进行中') return 'border-accent/50 bg-accent-soft text-accent';
-  if (status === '已关闭') return 'border-hairline bg-surface-raised text-ink-3';
+  if (closed) return 'border-hairline bg-surface-raised text-ink-3';
   return CHIP_IDLE;
 }
 
@@ -98,6 +99,8 @@ export function MetaRow({
   onDueChange,
 }: MetaRowProps) {
   const queryClient = useQueryClient();
+  const { byName } = useWorkspaceStatuses(issue.workspace_id);
+  const closed = isClosed(issue.status, byName.get(issue.status)?.kind);
   const [open, setOpen] = useState<ChipKey | null>(null);
   const [dueDraft, setDueDraft] = useState<DueDraft>({ date: dueDate, time: dueTime });
   const [statusPending, setStatusPending] = useState(false);
@@ -201,7 +204,7 @@ export function MetaRow({
             disabled={statusPending}
             title="点击修改状态"
             onClick={() => toggle('status')}
-            className={`${CHIP_BASE} ${statusChipTone(issue.status)} font-semibold`}
+            className={`${CHIP_BASE} ${statusChipTone(issue.status, closed)} font-semibold`}
           >
             <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${statusDotTone(issue.status)}`} />
             {issue.status}
@@ -213,7 +216,7 @@ export function MetaRow({
             data-readonly="true"
             aria-label={`状态：${issue.status}`}
             title={statusBlocked}
-            className={`${CHIP_BASE} ${statusChipTone(issue.status)} font-semibold`}
+            className={`${CHIP_BASE} ${statusChipTone(issue.status, closed)} font-semibold`}
           >
             <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${statusDotTone(issue.status)}`} />
             {issue.status}

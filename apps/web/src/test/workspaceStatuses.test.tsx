@@ -11,7 +11,7 @@ import { HttpResponse, http } from 'msw';
 import type { Issue, WorkspaceStatus, WorkspaceStatusKind } from '@agentboard/shared';
 import { Board } from '../components/board/Board';
 import { DetailPanel } from '../components/detail/DetailPanel';
-import { BUILTIN_STATUS_NAMES, statusAccent, statusNames, statusOptions } from '../lib/workspaceStatuses';
+import { BUILTIN_STATUS_NAMES, isClosed, statusAccent, statusNames, statusOptions } from '../lib/workspaceStatuses';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
 import { server } from './server';
@@ -171,6 +171,22 @@ describe('看板列派生', () => {
     const deprecated = screen.getByTestId('column-已废弃');
     await waitFor(() => expect(within(deprecated).getByText('废弃的卡')).toBeInTheDocument());
     expect(within(screen.getByTestId('column-待规划')).getByText('普通卡')).toBeInTheDocument();
+  });
+});
+
+describe('统一关闭类判定（isClosed）', () => {
+  it('kind=done / deprecated 视为关闭类，blocked 与 open 不算', () => {
+    expect(isClosed('已完成', 'done')).toBe(true);
+    expect(isClosed('已废弃', 'deprecated')).toBe(true);
+    expect(isClosed('等外部确认', 'blocked')).toBe(false);
+    expect(isClosed('进行中', 'started')).toBe(false);
+    expect(isClosed('待规划', 'open')).toBe(false);
+  });
+
+  it('kind 缺失时按状态名兜底：只认「已关闭」', () => {
+    expect(isClosed('已关闭')).toBe(true);
+    expect(isClosed('已完成')).toBe(false);
+    expect(isClosed('已废弃')).toBe(false);
   });
 });
 

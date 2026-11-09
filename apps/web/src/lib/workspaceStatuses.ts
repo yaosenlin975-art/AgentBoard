@@ -59,6 +59,15 @@ export function statusAccent(kind: WorkspaceStatusKind | undefined): string {
   }
 }
 
+/**
+ * 统一「关闭类」判定（ARCH-03）：关闭类只认 kind = done | deprecated，blocked 不算。
+ * kind 缺失（兜底字典 / 字典里查不到该状态名）时按状态名「已关闭」兜底，保持既有语义。
+ */
+export function isClosed(status: string, kind?: WorkspaceStatusKind): boolean {
+  if (kind !== undefined) return kind === 'done' || kind === 'deprecated';
+  return status === '已关闭';
+}
+
 export interface WorkspaceStatusDictionary {
   statuses: WorkspaceStatus[];
   names: string[];

@@ -11,7 +11,7 @@ import {
   manualStatusBlockedReason,
   patchIssueStatus,
 } from '../../lib/issueStatus';
-import { useWorkspaceStatuses } from '../../lib/workspaceStatuses';
+import { isClosed, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 import { NO_SELECTED_LABELS, useAppStore } from '../../state/appStore';
 import { usePanelStore } from '../../state/panelStore';
 import { IconLock } from '../ui/Icon';
@@ -362,7 +362,7 @@ function TaskTreeRow({
   onOpenDetail: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { names: statusOptions } = useWorkspaceStatuses(workspaceId);
+  const { names: statusOptions, byName } = useWorkspaceStatuses(workspaceId);
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [savingCreate, setSavingCreate] = useState(false);
@@ -373,7 +373,7 @@ function TaskTreeRow({
   // 依赖锁标与子树汇总只用服务端投影（blocked_by_open_count），不按状态本地推断
   const openBlockerTotal = openBlockerCount(item);
   const subtreeOpenBlockers = useMemo(() => countSubtreeOpenBlockers(issues, item.id), [issues, item.id]);
-  const blockedClose = item.status !== '已关闭' && item.descendant_count > item.descendants_closed_count;
+  const blockedClose = !isClosed(item.status, byName.get(item.status)?.kind) && item.descendant_count > item.descendants_closed_count;
   const statusBlockedReason = manualStatusBlockedReason(item);
   const visibleChildren = filter.visibleChildrenByParent.get(item.id);
   const moveOpen = moveEditor?.issueId === item.id;
@@ -487,7 +487,7 @@ function TaskTreeRow({
             >
               {!statusOptions.includes(item.status) && <option value={item.status}>{item.status}</option>}
               {statusOptions.map((value) => (
-                <option key={value} value={value} disabled={value === '已关闭' && blockedClose}>{value}</option>
+                <option key={value} value={value} disabled={isClosed(value, byName.get(value)?.kind) && blockedClose}>{value}</option>
               ))}
             </select>
             <button type="button" aria-label={`新建子任务：${item.title}`} onClick={() => { setCreateOpen((open) => !open); setCreateError(null); }} className="rounded px-2 py-1 text-xs text-accent hover:bg-accent-soft">

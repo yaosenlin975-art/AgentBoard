@@ -11,6 +11,7 @@ import type { Issue, IssueStatus } from '@agentboard/shared';
 import { ApiError } from '../../api/client';
 import { addIssueDependencies, getIssueDependencies, listIssues, removeIssueDependency } from '../../api/endpoints';
 import type { DependencyRef } from '../../lib/dependency';
+import { isClosed, useWorkspaceStatuses } from '../../lib/workspaceStatuses';
 
 const inputCls =
   'w-full rounded border border-hairline bg-surface-card px-2 py-1 text-[11.5px] text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent';
@@ -23,10 +24,10 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 /** 行首状态圆点：只做视觉，不替代文字状态 */
-function statusDotTone(status: IssueStatus): string {
+function statusDotTone(status: IssueStatus, closed: boolean): string {
   if (status === '进行中') return 'bg-accent';
   if (status === '待验收') return 'bg-ab-add';
-  if (status === '已关闭') return 'bg-ink-3';
+  if (closed) return 'bg-ink-3';
   return 'bg-amber-500';
 }
 
@@ -35,18 +36,20 @@ function DependencyRow({
   testId,
   action,
   showResolved = false,
+  closed,
 }: {
   item: DependencyRef;
   testId: string;
   action?: ReactNode;
   showResolved?: boolean;
+  closed: boolean;
 }) {
   return (
     <li data-testid={testId} className="flex items-center gap-1.5 py-0.5 text-[11.5px]">
       <span
         aria-hidden
         data-testid={`${testId}-dot`}
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotTone(item.status)}`}
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDotTone(item.status, closed)}`}
       />
       <span className="min-w-0 flex-1 truncate text-ink-2" title={item.title}>
         {item.title}
@@ -84,6 +87,8 @@ function removeAction(item: DependencyRef, label: string, pending: boolean, onRe
 
 export function DependencySection({ issue }: { issue: Issue }) {
   const queryClient = useQueryClient();
+  const { byName } = useWorkspaceStatuses(issue.workspace_id);
+  const isItemClosed = (status: IssueStatus): boolean => isClosed(status, byName.get(status)?.kind);
   const [expanded, setExpanded] = useState(false);
   const [search, setSearch] = useState('');
   const [picked, setPicked] = useState('');
@@ -207,6 +212,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
                       item={item}
                       testId={`dep-blocker-${item.issue_id}`}
                       showResolved
+                      closed={isItemClosed(item.status)}
                       action={removeAction(item, '前置', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-${item.issue_id}`)}
                     />
                   ))}
@@ -219,7 +225,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
                 <p className="text-[10.5px] text-ink-3">被本卡阻塞</p>
                 <ul data-testid="dep-blocked" className="space-y-0.5">
                   {blocked.map((item) => (
-                    <DependencyRow key={item.issue_id} item={item} testId={`dep-blocked-${item.issue_id}`} />
+                    <DependencyRow key={item.issue_id} item={item} testId={`dep-blocked-${item.issue_id}`} closed={isItemClosed(item.status)} />
                   ))}
                 </ul>
               </div>
@@ -235,6 +241,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
                         key={item.issue_id}
                         item={item}
                         testId={`dep-related-${item.issue_id}`}
+                        closed={isItemClosed(item.status)}
                         action={removeAction(item, '关联', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-related-${item.issue_id}`)}
                       />
                     ))}
@@ -247,6 +254,7 @@ export function DependencySection({ issue }: { issue: Issue }) {
                         key={item.issue_id}
                         item={item}
                         testId={`dep-duplicate-${item.issue_id}`}
+                        closed={isItemClosed(item.status)}
                         action={removeAction(item, '重复', removeBlocker.isPending, removeBlocker.mutate, `dep-remove-duplicate-${item.issue_id}`)}
                       />
                     ))}
