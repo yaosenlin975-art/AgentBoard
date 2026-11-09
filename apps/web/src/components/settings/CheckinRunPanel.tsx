@@ -10,6 +10,7 @@
  * 完成口径（父卡硬规则）：succeeded / already_done 计入 done；unknown 计入 total 不计入 done；
  * failed 落回未签到；authorized 不是批次条目状态，只在平台今日指标（`summarizeCheckinToday`）里不计入完成。
  */
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   AccountOperation,
@@ -74,11 +75,24 @@ export function isBatchActive(batch: CheckinBatch | null | undefined): boolean {
 
 /** 批次查询（未终态时 700ms 轮询）；查询键与一键签到共用，react-query 自动去重 */
 export function useCheckinBatch(batchId: string) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const batchQuery = useQuery({
     queryKey: ['checkin-batch', batchId],
     queryFn: () => fetchCheckinBatch(batchId),
     refetchInterval: (query) => (isBatchActive(query.state.data as CheckinBatch | undefined) ? 700 : false),
   });
+
+  useEffect(() => {
+    if (batchQuery.data?.finished_at == null) return;
+    // A quota query with no cached data can be joined by invalidateQueries while its first request is pending.
+    // Cancel it first so the post-batch read starts fresh and a late old snapshot cannot replace it.
+    void queryClient.cancelQueries({ queryKey: ['managed-account-quotas'] }).then(() => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['managed-accounts'] }),
+      queryClient.invalidateQueries({ queryKey: ['managed-account-quotas'] }),
+    ]));
+  }, [batchId, batchQuery.data?.finished_at, queryClient]);
+
+  return batchQuery;
 }
 
 /** 批次内 operation 记录（ACC-14：workbuddy 猫猫旅行结果挂在 recovery_ref）；未终态时随批次一起轮询 */

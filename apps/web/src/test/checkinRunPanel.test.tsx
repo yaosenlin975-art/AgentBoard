@@ -8,10 +8,10 @@
  * ② 一键签到结果条保持原入口位置，文案口径一致，终态无取消行。
  */
 import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { HttpResponse, http } from 'msw';
+import { HttpResponse, http, type RequestHandler } from 'msw';
 import type { AccountCapability, CheckinBatch, CheckinBatchItem, PublicManagedAccount } from '@agentboard/shared';
 import { AccountsPanel } from '../components/settings/AccountsPanel';
 import { localDayKey } from '../components/settings/accountCapabilities';
@@ -22,6 +22,7 @@ type AccountView = PublicManagedAccount & { is_current: boolean | null };
 const TR1 = '55555555-5555-4555-8555-555555555555';
 const TR2 = '66666666-6666-4666-8666-666666666666';
 const MM1 = '77777777-7777-4777-8777-777777777777';
+const WB1 = '88888888-8888-4888-8888-888888888888';
 const BATCH_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TODAY = localDayKey(Date.now());
 
@@ -78,9 +79,10 @@ function batchFor(items: ItemSeed[], status: CheckinBatch['status'], app: Checki
   };
 }
 
-function mount(accounts: AccountView[], capabilities: AccountCapability[] = CAPABILITIES): void {
+function mount(accounts: AccountView[], capabilities: AccountCapability[] = CAPABILITIES, extraHandlers: RequestHandler[] = []): void {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   server.use(
+    ...extraHandlers,
     http.get('/api/managed-accounts', () => HttpResponse.json(accounts)),
     http.get('/api/managed-account-capabilities', () => HttpResponse.json(capabilities)),
     http.get('/api/account-operations', () => HttpResponse.json([])),
@@ -139,4 +141,75 @@ describe('一键签到结果条（ACC-UI-PRUNE 后唯一批次呈现）', () => 
     expect(within(panel).queryByTestId('checkin-cancel')).toBeNull();
     expect(within(panel).queryByText('没有可取消的排队项')).toBeNull();
   });
+
+  it('批次进入终态后重拉账号与额度；旧的首次额度响应迟到时不覆盖新值', async () => {
+    const workbuddy = account(WB1, 'workbuddy_desktop', 'WB 账号');
+    const quotaCalls = new Map<string, number>();
+    const releaseInitialQuota = new Map<string, () => void>();
+    let accountCalls = 0;
+    let batchCalls = 0;
+
+    const quotaSnapshot = (balance: number) => ({
+      workspace_id: null,
+      fetched_at: 1_700_000_000_000,
+      items: [{
+        source: 'workbuddy', status: 'ok', balance, unit: '积分', windows: [],
+        fetched_at: 1_700_000_000_000, reason_code: null, detail: null,
+      }],
+    });
+
+    const extraHandlers: RequestHandler[] = [
+      http.get('/api/managed-accounts', () => {
+        accountCalls += 1;
+        return HttpResponse.json([workbuddy]);
+      }),
+      http.get('/api/managed-account-quotas', async ({ request }) => {
+        const scope = new URL(request.url).searchParams.get('account_id') ?? 'global';
+        const count = (quotaCalls.get(scope) ?? 0) + 1;
+        quotaCalls.set(scope, count);
+        if (count === 1) {
+          return await new Promise<Response>((resolve) => {
+            releaseInitialQuota.set(scope, () => resolve(HttpResponse.json(quotaSnapshot(500))));
+          });
+        }
+        return HttpResponse.json(quotaSnapshot(508));
+      }),
+      http.post('/api/checkin-runs', () =>
+        HttpResponse.json({ batch: batchFor([{ account_id: WB1, state: 'queued' }], 'queued'), replayed: false }, { status: 202 })),
+      http.get('/api/checkin-runs/:id', () => {
+        batchCalls += 1;
+        return HttpResponse.json(batchCalls === 1
+          ? batchFor([{ account_id: WB1, state: 'running' }], 'running')
+          : batchFor([{ account_id: WB1, state: 'succeeded' }], 'succeeded'));
+      }),
+    ];
+    mount([workbuddy], CAPABILITIES.filter((cap) => cap.app_id === 'workbuddy_desktop'), extraHandlers);
+
+    await userEvent.click(await screen.findByTestId('accounts-index-item-workbuddy_desktop'));
+    await waitFor(() => {
+      expect(quotaCalls.get('global')).toBe(1);
+      expect(quotaCalls.get(WB1)).toBe(1);
+    });
+
+    await userEvent.click(await screen.findByTestId('accounts-one-click-checkin'));
+    await screen.findByTestId('checkin-batch-panel');
+    await waitFor(() => expect(batchCalls).toBe(1));
+    await waitFor(() => expect(batchCalls).toBe(2), { timeout: 3_000 });
+
+    await waitFor(() => {
+      expect(accountCalls).toBeGreaterThanOrEqual(3);
+      expect(quotaCalls.get('global')).toBe(2);
+      expect(quotaCalls.get(WB1)).toBe(2);
+      expect(screen.getByTestId(`accounts-quota-${WB1}`)).toHaveTextContent('508.00 积分');
+    }, { timeout: 3_000 });
+
+    releaseInitialQuota.get('global')?.();
+    releaseInitialQuota.get(WB1)?.();
+    await waitFor(() => expect(screen.getByTestId(`accounts-quota-${WB1}`)).toHaveTextContent('508.00 积分'));
+
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    expect(batchCalls).toBe(2);
+    expect(quotaCalls.get('global')).toBe(2);
+    expect(quotaCalls.get(WB1)).toBe(2);
+  }, 10_000);
 });
