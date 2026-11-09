@@ -3,7 +3,7 @@
  *
  * 断言口径（对应卡面验收）：
  * - 两个不同 DeepSeek key → 2；同一 key 出现在两个位置 → 1；
- * - OpenCode Go ≤ 1；Codex 不产账号；
+ * - OpenCode Go ≤ 1；Codex 只从 ChatGPT OAuth account ID 产出身份；
  * - 重启（关闭库再打开 + initSchema）后账号仍在；ensureTable 连跑两次结构一致、数据不丢；
  * - 响应与库行都不含 key 明文 / credential_ref；凭据只进 vault 且 purpose = cli_credential。
  */
@@ -34,6 +34,7 @@ import type { VaultScope } from '../src/services/accounts/secretVault.js';
 const KEY_A = 'sk-deepseek-aaaa';
 const KEY_B = 'sk-deepseek-bbbb';
 const KEY_OPENCODE = 'sk-opencode-go-cccc';
+const CODEX_ACCOUNT_ID = 'chatgpt-account-001';
 
 function writeDeepseekConfig(homeDir: string, key: string): void {
   mkdirSync(join(homeDir, '.deepseek'), { recursive: true });
@@ -48,6 +49,29 @@ function writeDshCredentials(homeDir: string, key: string): void {
 function writeOpencodeAuth(homeDir: string, key: string): void {
   mkdirSync(join(homeDir, '.local', 'share', 'opencode'), { recursive: true });
   writeFileSync(join(homeDir, '.local', 'share', 'opencode', 'auth.json'), JSON.stringify({ 'opencode-go': { key } }));
+}
+
+function codexIdToken(accountId: string, signature: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } })).toString('base64url');
+  return `${header}.${payload}.${signature}`;
+}
+
+function writeCodexAuth(codexHomeDir: string, auth: unknown): void {
+  mkdirSync(codexHomeDir, { recursive: true });
+  writeFileSync(join(codexHomeDir, 'auth.json'), typeof auth === 'string' ? auth : JSON.stringify(auth));
+}
+
+function codexChatgptAuth(accountId: string, tokenVersion: string): { auth_mode: string; tokens: Record<string, string> } {
+  return {
+    auth_mode: 'chatgpt',
+    tokens: {
+      account_id: accountId,
+      id_token: codexIdToken(accountId, `signature-${tokenVersion}`),
+      access_token: `access-${tokenVersion}`,
+      refresh_token: `refresh-${tokenVersion}`,
+    },
+  };
 }
 
 function fakeVault(): { vault: CliCredentialVault; scopes: VaultScope[]; refs: string[] } {
@@ -91,7 +115,7 @@ describe('ACC-CLI-MULTI：本机凭据发现与去重', () => {
     expect(scopes[0]!.purpose).toBe('cli_credential');
   });
 
-  it('两个不同 DeepSeek key → 2 个账号；OpenCode Go 单条 key → ≤1；Codex 不产账号', async () => {
+  it('两个不同 DeepSeek key → 2 个账号；OpenCode Go 单条 key → ≤1；无 Codex OAuth 时不产账号', async () => {
     writeDeepseekConfig(homeDir, KEY_A);
     writeDshCredentials(homeDir, KEY_B);
     writeOpencodeAuth(homeDir, KEY_OPENCODE);
@@ -102,6 +126,57 @@ describe('ACC-CLI-MULTI：本机凭据发现与去重', () => {
     expect(items.filter(item => item.app_id === 'opencode_go')).toHaveLength(1);
     expect(items.filter(item => item.app_id === 'codex')).toHaveLength(0);
     expect(items).toHaveLength(3);
+  });
+
+  it('Codex 读取 CODEX_HOME 的稳定 account ID；token 轮换不重复登记且不进 vault', async () => {
+    const codexHomeDir = join(homeDir, 'custom-codex-home');
+    writeCodexAuth(codexHomeDir, codexChatgptAuth(CODEX_ACCOUNT_ID, 'first'));
+    const { vault, scopes } = fakeVault();
+
+    const first = await captureCliAccounts({ db: t.db, vault, homeDir, env: { CODEX_HOME: codexHomeDir }, now: () => 1000 });
+    const firstCodex = first.filter(item => item.app_id === 'codex');
+    expect(firstCodex).toHaveLength(1);
+    expect(firstCodex[0]!.identity_hint).toBe(`sha256:${cliIdentityHash('codex', CODEX_ACCOUNT_ID).slice(0, 12)}`);
+    const firstRow = t.db.prepare("SELECT id,identity_hash,credential_ref,created_at,last_seen_at FROM cli_account WHERE app_id='codex'").get() as Record<string, unknown>;
+    expect(firstRow).toMatchObject({ identity_hash: cliIdentityHash('codex', CODEX_ACCOUNT_ID), credential_ref: null, created_at: 1000, last_seen_at: 1000 });
+    expect(JSON.stringify(first)).not.toContain(CODEX_ACCOUNT_ID);
+    expect(JSON.stringify(first)).not.toContain('access-first');
+    expect(JSON.stringify(first)).not.toContain('refresh-first');
+    expect(JSON.stringify(firstRow)).not.toContain(CODEX_ACCOUNT_ID);
+    expect(scopes.filter(scope => scope.app_id === 'codex')).toEqual([]);
+
+    writeCodexAuth(codexHomeDir, codexChatgptAuth(CODEX_ACCOUNT_ID, 'rotated'));
+    const second = await captureCliAccounts({ db: t.db, vault, homeDir, env: { CODEX_HOME: codexHomeDir }, now: () => 2000 });
+    const secondCodex = second.filter(item => item.app_id === 'codex');
+    const secondRow = t.db.prepare("SELECT id,identity_hash,credential_ref,created_at,last_seen_at FROM cli_account WHERE app_id='codex'").get() as Record<string, unknown>;
+    expect(secondCodex).toHaveLength(1);
+    expect(secondCodex[0]!.id).toBe(firstCodex[0]!.id);
+    expect(secondRow).toMatchObject({ id: firstRow.id, identity_hash: firstRow.identity_hash, credential_ref: null, created_at: 1000, last_seen_at: 2000 });
+    expect((t.db.prepare("SELECT COUNT(*) AS n FROM cli_account WHERE app_id='codex'").get() as { n: number }).n).toBe(1);
+  });
+
+  it('Codex rejects API-key mode, malformed auth, mismatched identity, and hides stale identity after sign-out', async () => {
+    const codexHomeDir = join(homeDir, 'custom-codex-home');
+    const authPath = join(codexHomeDir, 'auth.json');
+    const env = { CODEX_HOME: codexHomeDir };
+    writeCodexAuth(codexHomeDir, codexChatgptAuth(CODEX_ACCOUNT_ID, 'valid'));
+    await captureCliAccounts({ db: t.db, homeDir, env, now: () => 1000 });
+
+    writeCodexAuth(codexHomeDir, { ...codexChatgptAuth(CODEX_ACCOUNT_ID, 'api-key'), auth_mode: 'api_key' });
+    expect((await captureCliAccounts({ db: t.db, homeDir, env, now: () => 2000 })).filter(item => item.app_id === 'codex')).toEqual([]);
+
+    writeCodexAuth(codexHomeDir, { ...codexChatgptAuth(CODEX_ACCOUNT_ID, 'mismatch'), tokens: { ...codexChatgptAuth(CODEX_ACCOUNT_ID, 'mismatch').tokens, account_id: 'another-account' } });
+    expect((await captureCliAccounts({ db: t.db, homeDir, env, now: () => 3000 })).filter(item => item.app_id === 'codex')).toEqual([]);
+
+    writeCodexAuth(codexHomeDir, { auth_mode: 'chatgpt', tokens: { account_id: CODEX_ACCOUNT_ID, id_token: 'not-a-jwt', access_token: 'secret-access' } });
+    expect((await captureCliAccounts({ db: t.db, homeDir, env, now: () => 4000 })).filter(item => item.app_id === 'codex')).toEqual([]);
+
+    writeCodexAuth(codexHomeDir, '{ invalid json');
+    expect((await captureCliAccounts({ db: t.db, homeDir, env, now: () => 5000 })).filter(item => item.app_id === 'codex')).toEqual([]);
+
+    rmSync(authPath, { force: true });
+    expect((await captureCliAccounts({ db: t.db, homeDir, env, now: () => 6000 })).filter(item => item.app_id === 'codex')).toEqual([]);
+    expect((t.db.prepare("SELECT COUNT(*) AS n FROM cli_account WHERE app_id='codex'").get() as { n: number }).n).toBe(1);
   });
 
   it('env 与配置文件里的不同 key 同样按 key 区分', () => {
@@ -204,19 +279,22 @@ describe('ACC-CLI-MULTI：GET /api/cli-accounts', () => {
     return scoped;
   }
 
-  it('返回真实计数，且响应体不含 key / credential_ref', async () => {
+  it('返回真实计数和脱敏Codex身份，且响应体不含 key / OAuth材料 / credential_ref', async () => {
     writeDeepseekConfig(homeDir, KEY_A);
     writeDshCredentials(homeDir, KEY_B);
     writeOpencodeAuth(homeDir, KEY_OPENCODE);
+    writeCodexAuth(join(homeDir, '.codex'), codexChatgptAuth(CODEX_ACCOUNT_ID, 'api'));
     const app = mount();
 
     const response = await request(app).get('/api/cli-accounts').expect(200);
     const body = response.body as { items: Array<{ app_id: string }> };
     expect(body.items.filter(item => item.app_id === 'deepseek')).toHaveLength(2);
     expect(body.items.filter(item => item.app_id === 'opencode_go')).toHaveLength(1);
-    expect(body.items.filter(item => item.app_id === 'codex')).toHaveLength(0);
+    expect(body.items.filter(item => item.app_id === 'codex')).toHaveLength(1);
     const raw = JSON.stringify(response.body);
-    for (const key of [KEY_A, KEY_B, KEY_OPENCODE]) expect(raw).not.toContain(key);
+    for (const key of [KEY_A, KEY_B, KEY_OPENCODE, CODEX_ACCOUNT_ID, 'access-api', 'refresh-api', codexIdToken(CODEX_ACCOUNT_ID, 'api')]) {
+      expect(raw).not.toContain(key);
+    }
     expect(raw).not.toContain('credential_ref');
   });
 

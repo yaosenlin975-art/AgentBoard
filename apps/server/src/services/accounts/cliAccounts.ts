@@ -1,5 +1,5 @@
 /**
- * ACC-CLI-MULTI（口径 A）：CLI 三来源（DeepSeek / OpenCode-Go / Codex）的本机凭据登记。
+ * ACC-CLI-MULTI（口径 A）：CLI 来源的本机账号登记。
  *
  * 只做三件事：只读发现本机凭据 → 按来源内身份去重并持久化 → 提供给界面真实计数。
  * CLI-IMPORT 起的「手动导入一份凭据」也在这里（`importCliCredential`）；
@@ -9,15 +9,15 @@
  * - DeepSeek：三个候选位置（env / `~/.deepseek/config.toml` / `~/.dsh/.credentials.yaml`），
  *   同一 key 出现在多个位置只算 1 个账号（key 哈希 = 身份），不同 key 才是不同账号 → 0..N；
  * - OpenCode Go：`~/.local/share/opencode/auth.json` 只有一条 `opencode-go.key` → 最多 1；
- * - Codex：没有可枚举的凭据（额度来自 `~/.codex/sessions` 最新 rollout，登录态在 auth.json）→ 恒 0，
- *   不编造记录。
+ * - Codex：仅在 ChatGPT OAuth 模式下读取 auth.json 的 account ID；API key 不冒充 ChatGPT 账号。
  *
- * 凭据只进 secretVault（purpose `cli_credential`，与签到 purpose 分开）；响应与日志不含 key 明文。
+ * API 凭据只进 secretVault（purpose `cli_credential`，与签到 purpose 分开）；Codex 只保存 account ID 哈希。
+ * 响应与日志不含 key、token 或原始 account ID。
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import type { CliAccountAppId, CliAppCapability, PublicCliAccount } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
 import { ApiError } from '../../errors.js';
@@ -25,8 +25,8 @@ import { collectDeepseekKeyCandidates } from '../quotas/quotaService.js';
 import type { SecretVault } from './secretVault.js';
 
 export const CLI_ACCOUNT_APP_IDS = ['deepseek', 'opencode_go', 'codex', 'commandcode'] as const;
-/** 本机只读发现能产出账号的来源；Codex 无凭据可枚举，不产账号 */
-type DiscoveredAppId = Exclude<CliAccountAppId, 'codex'>;
+/** 本机只读发现可产出账号的来源；Codex 用 ChatGPT account ID 作身份，不把令牌当凭据。 */
+type DiscoveredAppId = CliAccountAppId;
 /**
  * CLI 凭据的 vault：写入恒需要；删除是 ACC-CC-5 的增量需求，
  * 旧测试替身只实现 protect 也能编译（缺删除能力时删除接口会明确拒绝，而非留孤儿密文）。
@@ -36,6 +36,7 @@ export const CLI_CLIENT_INSTANCE_ID = 'cli-local';
 
 export interface CliCredentialCandidate {
   app_id: DiscoveredAppId;
+  /** 身份输入：其它来源为凭据；Codex 为 ChatGPT account ID。 */
   key: string;
 }
 
@@ -58,6 +59,47 @@ export function readOpencodeGoKey(homeDir: string): string | null {
     const json = JSON.parse(readFileSync(join(homeDir, '.local', 'share', 'opencode', 'auth.json'), 'utf8')) as Record<string, unknown>;
     const entry = json['opencode-go'] as { key?: unknown } | undefined;
     return typeof entry?.key === 'string' && entry.key.length > 0 ? entry.key : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 解析本机 ID token 缓存中的 ChatGPT account ID；不做远端认证校验、不存储或回显 token。 */
+function codexAccountIdFromIdToken(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const parts = value.split('.');
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const auth = claims['https://api.openai.com/auth'];
+    if (typeof auth !== 'object' || auth === null || Array.isArray(auth)) return null;
+    const accountId = (auth as Record<string, unknown>).chatgpt_account_id;
+    return typeof accountId === 'string' && accountId.trim().length > 0 ? accountId.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 只读 Codex ChatGPT OAuth 身份：CODEX_HOME/auth.json 或默认 ~/.codex/auth.json。
+ * API key 模式不是 ChatGPT 账号；account_id 只用于哈希，令牌不进入账号存储。
+ */
+function readCodexAccountId(homeDir: string, env: Record<string, string | undefined>): string | null {
+  const configuredHome = env.CODEX_HOME?.trim();
+  const authPath = resolve(configuredHome && configuredHome.length > 0 ? configuredHome : join(homeDir, '.codex'), 'auth.json');
+  try {
+    const auth = JSON.parse(readFileSync(authPath, 'utf8')) as Record<string, unknown>;
+    if (auth.auth_mode !== 'chatgpt') return null;
+    const tokens = typeof auth.tokens === 'object' && auth.tokens !== null && !Array.isArray(auth.tokens)
+      ? auth.tokens as Record<string, unknown>
+      : {};
+    const accountId = typeof tokens.account_id === 'string' && tokens.account_id.trim().length > 0
+      ? tokens.account_id.trim()
+      : null;
+    const claimAccountId = codexAccountIdFromIdToken(tokens.id_token);
+    if (claimAccountId === null) return null;
+    if (accountId !== null && claimAccountId !== null && accountId !== claimAccountId) return null;
+    return accountId ?? claimAccountId;
   } catch {
     return null;
   }
@@ -200,6 +242,7 @@ export function discoverCliCredentials(
   };
   for (const candidate of collectDeepseekKeyCandidates(homeDir, env)) push('deepseek', candidate.key);
   push('opencode_go', readOpencodeGoKey(homeDir));
+  push('codex', readCodexAccountId(homeDir, env));
   // ACC-CC-3：Command Code 只登记真实读到的凭据（auth.json 唯一字段或环境变量），格式未识别不产账号
   push('commandcode', (env.COMMAND_CODE_API_KEY ?? '').trim());
   push('commandcode', readCommandCodeAuth(homeDir).key);
@@ -241,7 +284,10 @@ export function listCliAccounts(
   const rows = db
     .prepare('SELECT id,app_id,identity_hash,created_at,last_seen_at FROM cli_account ORDER BY app_id,created_at,id')
     .all() as CliAccountRow[];
-  return rows.map((row) => publicCliAccount(row, local));
+  // Codex 不支持手动导入；认证身份变化或退出后隐藏旧身份，避免把历史记录误当当前登录账号。
+  return rows
+    .filter((row) => discovery === undefined || row.app_id !== 'codex' || local?.has(`${row.app_id}\u0000${row.identity_hash}`) === true)
+    .map((row) => publicCliAccount(row, local));
 }
 
 export interface CaptureCliAccountsOptions {
@@ -282,7 +328,7 @@ export async function captureCliAccounts(options: CaptureCliAccountsOptions): Pr
       continue;
     }
     let credentialRef: string | null = null;
-    if (options.vault) {
+    if (options.vault && candidate.app_id !== 'codex') {
       try {
         credentialRef = await options.vault.protect(Buffer.from(candidate.key, 'utf8'), {
           app_id: candidate.app_id,

@@ -2,7 +2,7 @@
  * ACC-05 账号 API 契约测试：managed-accounts 列表/捕获/切换 + account-operations 查询。
  * fake provider 注入 createApp（路径/探针见 fakeWorkbuddy.ts）；响应不得含凭据/信封/快照引用。
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +23,7 @@ import { createAccountOperation, getAccountOperation, updateAccountOperation } f
 import { CHECKIN_UID, CREDENTIAL_MARK, FakeCheckinProvider, FakeCheckinVault, sha256 } from './fakeCheckinProvider.js';
 import { ENVELOPE_MARK, FakeWorkbuddyEnv, UID_A, UID_B } from './fakeWorkbuddy.js';
 import { defaultTraeStoragePath } from '../src/services/accounts/traeProvider.js';
+import { cliIdentityHash } from '../src/services/accounts/cliAccounts.js';
 
 describe('account api (managed-accounts / account-operations)', () => {
   let t: TestDb;
@@ -101,6 +102,49 @@ describe('account api (managed-accounts / account-operations)', () => {
     };
     return { provider, vault, boundAccount };
   }
+
+  it('GET /api/cli-accounts reads and redacts Codex OAuth identity through createApp', async () => {
+    const previousEnv = {
+      USERPROFILE: process.env.USERPROFILE,
+      HOME: process.env.HOME,
+      CODEX_HOME: process.env.CODEX_HOME,
+      DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      COMMAND_CODE_API_KEY: process.env.COMMAND_CODE_API_KEY,
+    };
+    const codexHome = join(spaceDir, 'codex-home');
+    const accountId = 'acct-codex-test-001';
+    const accessToken = 'codex-access-token-test';
+    const refreshToken = 'codex-refresh-token-test';
+    const payload = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId } })).toString('base64url');
+    const idToken = `e30.${payload}.codex-test-signature`;
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { account_id: accountId, id_token: idToken, access_token: accessToken, refresh_token: refreshToken },
+    }));
+    process.env.USERPROFILE = spaceDir;
+    process.env.HOME = spaceDir;
+    process.env.CODEX_HOME = codexHome;
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.COMMAND_CODE_API_KEY;
+    try {
+      await boot();
+      const response = await request(app).get('/api/cli-accounts').expect(200);
+      const codex = (response.body as { items: Array<{ app_id: string; identity_hint: string }> }).items
+        .filter(item => item.app_id === 'codex');
+      expect(codex).toHaveLength(1);
+      expect(codex[0]!.identity_hint).toBe(`sha256:${cliIdentityHash('codex', accountId).slice(0, 12)}`);
+      const raw = JSON.stringify(response.body);
+      for (const sensitive of [accountId, accessToken, refreshToken, idToken, 'credential_ref']) expect(raw).not.toContain(sensitive);
+      const row = t.db.prepare("SELECT credential_ref FROM cli_account WHERE app_id='codex'").get() as { credential_ref: string | null };
+      expect(row.credential_ref).toBeNull();
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 
   async function waitBatch(batchId: string): Promise<{ status: string; items: Array<{ account_id: string; state: string }> }> {
     for (let i = 0; i < 200; i++) {
