@@ -8,8 +8,9 @@
  * 原始 HTML 保持字面量（未装 rehype-raw）是安全默认。
  * 消费方：聊天 assistant 消息、详情描述、评论、工作区日志（时间轴与归档只读）。
  */
-import { Suspense, lazy, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState, type ComponentType, type ReactElement, type ReactNode } from 'react';
 import { handleChunkError } from './chunkRecovery';
+import type { MarkdownRendererProps } from './markdownRenderer';
 
 /** CHUNK-RECOVER-W：markdownRenderer chunk 拉不到（旧页面 + 新 dist）时的纯文本降级 */
 function MarkdownPlain({ children }: { children: string }): ReactElement {
@@ -20,7 +21,7 @@ function MarkdownPlain({ children }: { children: string }): ReactElement {
   );
 }
 
-const MarkdownRenderer = lazy(() =>
+const MarkdownRenderer = lazy<ComponentType<MarkdownRendererProps>>(() =>
   import('./markdownRenderer').catch(() => {
     // 捕获动态 import 失败：交回全局恢复（首次自动刷新一次，之后只显示提示条），
     // 本次渲染降级为纯文本 —— 不允许整页白屏 / Uncaught TypeError。

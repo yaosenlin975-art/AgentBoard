@@ -276,6 +276,7 @@ function EncodingLostBadge({ messageId }: { messageId: string }) {
 }
 
 export function MessageList({
+  sessionId,
   messages,
   streaming,
   running,
@@ -284,6 +285,8 @@ export function MessageList({
   onOpenModel,
   onOpenUsage,
 }: {
+  /** CR2-5：按会话订阅轮次观测（无关会话的 plan/usage 事件不再带着本列表重渲） */
+  sessionId: string;
   messages: Message[];
   streaming: string;
   running: boolean;
@@ -307,7 +310,7 @@ export function MessageList({
 
   // CHAT-VIS1：轮次观测（只读投影）。只有收到过 `session.plan` 且 plan 非空的轮次才有计划条；
   // 历史轮次 / 无 tool 事件的轮次没有条目 → 不出条（与「无 turn 行」同降级）。
-  const turns = useSessionTurns();
+  const turns = useSessionTurns(sessionId);
 
   /**
    * AUDIT-3（F-05）：连续 event 归入同一轮聚合块；user/assistant/error 仍各自独立成块。

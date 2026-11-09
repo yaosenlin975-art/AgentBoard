@@ -84,12 +84,12 @@ function emitUsage(turnId: string, usage: Partial<TurnUsage>, sessionId = 's1'):
   });
 }
 
-function renderList(messages: Message[], sessionStatus: '运行中' | '已结束' | '失败' = '运行中'): void {
+function renderList(messages: Message[], sessionStatus: '运行中' | '已结束' | '失败' = '运行中', sessionId = 's1'): void {
   // CHAT-RETRY2：工具卡内的单步重试是 useMutation，渲染必须带 QueryClient
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MessageList messages={messages} streaming="" running={false} sessionStatus={sessionStatus} />
+      <MessageList sessionId={sessionId} messages={messages} streaming="" running={false} sessionStatus={sessionStatus} />
     </QueryClientProvider>,
   );
 }

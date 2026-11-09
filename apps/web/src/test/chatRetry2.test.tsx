@@ -237,7 +237,7 @@ describe('失败步骤卡的单步重试', () => {
 
   it('失败步可定位，点击只打单步重试端点且不重发整轮，成功后不新增消息/diff 卡', async () => {
     setupFailedTurn();
-    renderWithClient(<MessageList messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
+    renderWithClient(<MessageList sessionId="s1" messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
 
     const card = screen.getByTestId('tool-card-e1');
     expect(screen.getByTestId('tool-name-e1')).toHaveTextContent('Edit');
@@ -264,7 +264,7 @@ describe('失败步骤卡的单步重试', () => {
 
   it('连点两次只发一次请求（服务端幂等键兜底，前端不多发一次）', async () => {
     setupFailedTurn();
-    renderWithClient(<MessageList messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
+    renderWithClient(<MessageList sessionId="s1" messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
     const button = screen.getByTestId('retry-step-e1');
     await userEvent.dblClick(button);
     await waitFor(() => expect(retryCalls.length).toBeGreaterThan(0));
@@ -278,7 +278,7 @@ describe('失败步骤卡的单步重试', () => {
       status: 409,
       body: { error: { code: 'STEP_NOT_RETRYABLE', message: '该步骤不可重试：已有写入记录，重试可能重复写入' } },
     };
-    renderWithClient(<MessageList messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
+    renderWithClient(<MessageList sessionId="s1" messages={failedMessages} streaming="" running={false} sessionStatus="失败" />);
 
     await userEvent.click(screen.getByTestId('retry-step-e1'));
     await waitFor(() =>
@@ -292,7 +292,7 @@ describe('失败步骤卡的单步重试', () => {
   it('轮次仍在等待态时按钮置灰并给出原因（不本地推断 retryable）', () => {
     emitPlan('t1', [step('s1', 'Edit', 'failed')], 0);
     emitTurn('t1', 'awaiting_input');
-    renderWithClient(<MessageList messages={failedMessages} streaming="" running={false} sessionStatus="运行中" />);
+    renderWithClient(<MessageList sessionId="s1" messages={failedMessages} streaming="" running={false} sessionStatus="运行中" />);
     const button = screen.getByTestId('retry-step-e1');
     expect(button).toBeDisabled();
     expect(button.getAttribute('title')).toContain('等待态');

@@ -5,6 +5,7 @@
  * - 收流挂在 wsBus 全局层（模块加载即 subscribeWsEvents，非组件生命周期），与当前选中会话无关，
  *   非当前会话的 delta 同样累积；ChatPanel 不再各自累积，避免双计。
  */
+import { useEffect, useSyncExternalStore } from 'react';
 import { create } from 'zustand';
 import { subscribeWsEvents } from '../api/wsBus';
 
@@ -41,9 +42,82 @@ export function getStream(sessionId: string): string {
   return useStreamingStore.getState().streams.get(sessionId) ?? '';
 }
 
-/** 订阅指定会话的当前累积流式文本；仅该会话内容变化时重渲染 */
+/**
+ * 流式合帧窗口（CR2-5）：WS 每个 delta 都进 store（getStream / 非渲染读路径仍同步），
+ * 订阅者按 ~120ms 一帧收到展示快照，避免每个 token 触发一次整条消息的 markdown 重解析。
+ * 清空（assistant 落定）立即同步，流式气泡不残留一帧。
+ */
+const STREAM_FRAME_MS = 120;
+let shownStreams: Map<string, string> = useStreamingStore.getState().streams;
+const streamViewListeners = new Set<() => void>();
+let frameTimer: ReturnType<typeof setTimeout> | null = null;
+
+function subscribeStreamView(listener: () => void): () => void {
+  streamViewListeners.add(listener);
+  // 新订阅（首次挂载 / 切会话 / 聊天整屏重新打开）先对齐到最新快照，不展示上一帧的旧文本；
+  // useSyncExternalStore 的 subscribe 在提交后执行，这里同步通知不会踩渲染期。
+  syncStreamViewIfStale();
+  return () => {
+    streamViewListeners.delete(listener);
+  };
+}
+
+/** 有新订阅且展示快照落后于 store：立即合帧（等价于本帧到期） */
+function syncStreamViewIfStale(): void {
+  const latest = useStreamingStore.getState().streams;
+  if (latest === shownStreams) return;
+  if (frameTimer !== null) {
+    clearTimeout(frameTimer);
+    frameTimer = null;
+  }
+  shownStreams = latest;
+  notifyStreamView();
+}
+
+function notifyStreamView(): void {
+  for (const listener of streamViewListeners) listener();
+}
+
+function scheduleStreamFrame(): void {
+  if (frameTimer !== null) return;
+  frameTimer = setTimeout(() => {
+    frameTimer = null;
+    shownStreams = useStreamingStore.getState().streams;
+    notifyStreamView();
+  }, STREAM_FRAME_MS);
+}
+
+useStreamingStore.subscribe((state, prev) => {
+  let cleared = false;
+  for (const [sessionId, text] of state.streams) {
+    if (text === '' && (prev.streams.get(sessionId) ?? '') !== '') cleared = true;
+  }
+  for (const sessionId of prev.streams.keys()) {
+    if (!state.streams.has(sessionId)) cleared = true;
+  }
+  if (cleared) {
+    if (frameTimer !== null) {
+      clearTimeout(frameTimer);
+      frameTimer = null;
+    }
+    shownStreams = state.streams;
+    notifyStreamView();
+    return;
+  }
+  scheduleStreamFrame();
+});
+
+/** 订阅指定会话的当前累积流式文本；仅该会话展示快照变化时重渲染（按帧合流） */
 export function useStream(sessionId: string | null): string {
-  return useStreamingStore((s) => (sessionId === null ? '' : (s.streams.get(sessionId) ?? '')));
+  const text = useSyncExternalStore(
+    subscribeStreamView,
+    () => (sessionId === null ? '' : (shownStreams.get(sessionId) ?? '')),
+  );
+  // 切会话：若后台会话还有未到期的增量，立即补一帧（切回时不先闪旧文本再跳新内容）
+  useEffect(() => {
+    syncStreamViewIfStale();
+  }, [sessionId]);
+  return text;
 }
 
 // 全局层收流：session.event text delta → appendDelta；assistant message.added → clearStream；

@@ -8,7 +8,7 @@
  * （点击开右侧浮窗、知识按 common + 当前工作区鉴权）；http(s)/mailto 保持普通外链；
  * 其它未知 scheme 渲染为纯文本，不外链也不静默变成可点内容。
  */
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
@@ -93,17 +93,25 @@ const components: Components = {
   },
 };
 
-export default function MarkdownRenderer({ children }: MarkdownRendererProps) {
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeHighlight];
+// 默认 urlTransform 只放行 http/https/mailto/tel 与相对路径，会把 issue:/knowledge:/log: 抹成空串。
+// 原样透传是安全的：未知 scheme 在 components.a 里被渲染成纯文本（不带 href），不会变成可点的危险链接。
+const KEEP_URL = (url: string) => url;
+
+/**
+ * CR2-5：memo 包住正文渲染——流式增量只让正在变化的那一条消息重解析 markdown，
+ * 历史 assistant 消息在父组件重渲时保持原 VDOM（内容不变即跳过整棵 react-markdown 解析）。
+ */
+export default memo(function MarkdownRenderer({ children }: MarkdownRendererProps) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeHighlight]}
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
       components={components}
-      // 默认 urlTransform 只放行 http/https/mailto/tel 与相对路径，会把 issue:/knowledge:/log: 抹成空串。
-      // 原样透传是安全的：未知 scheme 在 components.a 里被渲染成纯文本（不带 href），不会变成可点的危险链接。
-      urlTransform={(url) => url}
+      urlTransform={KEEP_URL}
     >
       {children}
     </ReactMarkdown>
   );
-}
+});

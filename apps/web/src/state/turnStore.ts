@@ -39,6 +39,12 @@ export interface TurnObservation {
 interface TurnStoreState {
   /** turn_id → 快照（按会话的消息里的 turn_id 反查，天然不会跨会话串条） */
   turns: Map<string, TurnObservation>;
+  /**
+   * session_id → 该会话的 turn_id 快照索引。
+   * 更新时只换目标会话的内层 Map，其它会话的引用保持不变 → MessageList 按会话订阅时
+   * 不会被无关会话的 plan/usage 事件带着重渲（CR2-5）。
+   */
+  turnsBySession: Map<string, Map<string, TurnObservation>>;
   /** session_id → 最近一次收到观测的 turn_id（成本脚注/阻塞卡片读这一条） */
   activeTurnBySession: Map<string, string>;
   applyPlan: (e: { session_id: string; turn_id: string; plan: TurnPlanStep[]; current_index: number }) => void;
@@ -73,15 +79,32 @@ function pickActiveTurn(turns: SessionTurn[]): SessionTurn | null {
   return turns.reduce((latest, t) => (t.seq > latest.seq ? t : latest), turns[0]!);
 }
 
+/** `useSessionTurns` 无该会话观测时的稳定空值（避免每次选择器返回新 Map 触发重渲） */
+const EMPTY_SESSION_TURNS: Map<string, TurnObservation> = new Map();
+
+/** 写入一条观测：平表 + 会话索引同步更新，只换目标会话的内层 Map 引用 */
+function putTurn(
+  s: Pick<TurnStoreState, 'turns' | 'turnsBySession'>,
+  obs: TurnObservation,
+): Pick<TurnStoreState, 'turns' | 'turnsBySession'> {
+  const turns = new Map(s.turns);
+  turns.set(obs.turn_id, obs);
+  const sessionTurns = new Map(s.turnsBySession.get(obs.session_id) ?? []);
+  sessionTurns.set(obs.turn_id, obs);
+  const turnsBySession = new Map(s.turnsBySession);
+  turnsBySession.set(obs.session_id, sessionTurns);
+  return { turns, turnsBySession };
+}
+
 export const useTurnStore = create<TurnStoreState>()((set) => ({
   turns: new Map(),
+  turnsBySession: new Map(),
   activeTurnBySession: new Map(),
   applyPlan: (e) =>
     set((s) => {
       const prev = s.turns.get(e.turn_id);
       // 步骤状态只由服务端快照覆盖（前端不本地推进），usage/轮次状态保留上一次的值直到对应的服务端事件到达
-      const next = new Map(s.turns);
-      next.set(e.turn_id, {
+      const obs: TurnObservation = {
         turn_id: e.turn_id,
         session_id: e.session_id,
         plan: e.plan.map((step) => ({ ...step })),
@@ -89,16 +112,15 @@ export const useTurnStore = create<TurnStoreState>()((set) => ({
         usage: prev?.usage ?? null,
         state: prev?.state ?? null,
         awaiting: prev?.awaiting ?? null,
-      });
+      };
       const active = new Map(s.activeTurnBySession);
       active.set(e.session_id, e.turn_id);
-      return { turns: next, activeTurnBySession: active };
+      return { ...putTurn(s, obs), activeTurnBySession: active };
     }),
   applyUsage: (e) =>
     set((s) => {
       const prev = s.turns.get(e.turn_id);
-      const next = new Map(s.turns);
-      next.set(e.turn_id, {
+      const obs: TurnObservation = {
         turn_id: e.turn_id,
         session_id: e.session_id,
         plan: prev?.plan ?? [],
@@ -106,16 +128,15 @@ export const useTurnStore = create<TurnStoreState>()((set) => ({
         usage: e.usage,
         state: prev?.state ?? null,
         awaiting: prev?.awaiting ?? null,
-      });
+      };
       const active = new Map(s.activeTurnBySession);
       active.set(e.session_id, e.turn_id);
-      return { turns: next, activeTurnBySession: active };
+      return { ...putTurn(s, obs), activeTurnBySession: active };
     }),
   applyTurnEvent: (e) =>
     set((s) => {
       const prev = s.turns.get(e.turn_id);
-      const next = new Map(s.turns);
-      next.set(e.turn_id, {
+      const obs: TurnObservation = {
         turn_id: e.turn_id,
         session_id: e.session_id,
         plan: prev?.plan ?? [],
@@ -123,10 +144,10 @@ export const useTurnStore = create<TurnStoreState>()((set) => ({
         usage: prev?.usage ?? null,
         state: e.state,
         awaiting: e.awaiting ?? null,
-      });
+      };
       const active = new Map(s.activeTurnBySession);
       active.set(e.session_id, e.turn_id);
-      return { turns: next, activeTurnBySession: active };
+      return { ...putTurn(s, obs), activeTurnBySession: active };
     }),
   applyApprovalRequest: (e) =>
     set((s) => {
@@ -134,8 +155,7 @@ export const useTurnStore = create<TurnStoreState>()((set) => ({
       // 同一 request_id 重复广播不重算进入时刻（幂等）
       if (prev?.awaiting?.approval?.request_id === e.request_id) return s;
       const at = prev?.awaiting?.at ?? Date.now();
-      const next = new Map(s.turns);
-      next.set(e.turn_id, {
+      const obs: TurnObservation = {
         turn_id: e.turn_id,
         session_id: e.session_id,
         plan: prev?.plan ?? [],
@@ -154,30 +174,39 @@ export const useTurnStore = create<TurnStoreState>()((set) => ({
             match_key: '',
           },
         },
-      });
+      };
       const active = new Map(s.activeTurnBySession);
       active.set(e.session_id, e.turn_id);
-      return { turns: next, activeTurnBySession: active };
+      return { ...putTurn(s, obs), activeTurnBySession: active };
     }),
   hydrateTurns: (sessionId, turns) =>
     set((s) => {
       if (turns.length === 0) return s;
-      const next = new Map(s.turns);
-      for (const turn of turns) next.set(turn.id, fromSessionTurn(turn));
+      const merged = new Map(s.turns);
+      const sessionTurns = new Map(s.turnsBySession.get(sessionId) ?? []);
+      for (const turn of turns) {
+        const obs = fromSessionTurn(turn);
+        merged.set(obs.turn_id, obs);
+        sessionTurns.set(obs.turn_id, obs);
+      }
+      const turnsBySession = new Map(s.turnsBySession);
+      turnsBySession.set(sessionId, sessionTurns);
       const activeTurn = pickActiveTurn(turns);
       const active = new Map(s.activeTurnBySession);
       if (activeTurn !== null) active.set(sessionId, activeTurn.id);
-      return { turns: next, activeTurnBySession: active };
+      return { turns: merged, turnsBySession, activeTurnBySession: active };
     }),
   forgetSession: (sessionId) =>
     set((s) => {
       const turns = new Map(s.turns);
       for (const [turnId, obs] of turns) if (obs.session_id === sessionId) turns.delete(turnId);
+      const turnsBySession = new Map(s.turnsBySession);
+      const hadSession = turnsBySession.delete(sessionId);
       const active = new Map(s.activeTurnBySession);
-      const changed = active.delete(sessionId) || turns.size !== s.turns.size;
-      return changed ? { turns, activeTurnBySession: active } : s;
+      const changed = active.delete(sessionId) || hadSession || turns.size !== s.turns.size;
+      return changed ? { turns, turnsBySession, activeTurnBySession: active } : s;
     }),
-  reset: () => set({ turns: new Map(), activeTurnBySession: new Map() }),
+  reset: () => set({ turns: new Map(), turnsBySession: new Map(), activeTurnBySession: new Map() }),
 }));
 
 const { applyPlan, applyUsage, applyTurnEvent, applyApprovalRequest, forgetSession } =
@@ -207,11 +236,14 @@ export function useTurnObservation(turnId: string | null | undefined): TurnObser
 }
 
 /**
- * 本会话全部轮次观测（一次订阅，避免在消息流里按轮次循环调 hook）。
- * 返回的 Map 引用只在观测变化时更换，与消息流共渲染。
+ * 指定会话的轮次观测（一次订阅，避免在消息流里按轮次循环调 hook）。
+ * CR2-5：按会话细粒度订阅——其它会话的 plan/usage 事件只换它自己的内层 Map，
+ * 本会话的 Map 引用保持不变，消息列表不会跟着无关会话重渲。
  */
-export function useSessionTurns(): Map<string, TurnObservation> {
-  return useTurnStore((s) => s.turns);
+export function useSessionTurns(sessionId: string | null | undefined): Map<string, TurnObservation> {
+  return useTurnStore((s) =>
+    sessionId ? (s.turnsBySession.get(sessionId) ?? EMPTY_SESSION_TURNS) : EMPTY_SESSION_TURNS,
+  );
 }
 
 /** 当前会话最近一轮观测（阻塞卡片/成本脚注读这一条；无观测 → null） */

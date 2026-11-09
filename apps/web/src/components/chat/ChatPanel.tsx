@@ -587,6 +587,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
         </p>
       ) : (
         <MessageList
+          sessionId={sessionId}
           messages={messages}
           streaming={streaming}
           running={running}
