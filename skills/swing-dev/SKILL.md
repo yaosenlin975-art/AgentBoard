@@ -38,13 +38,13 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 ### 2. 扫描（禁用旧快照）
 
-逐工作区：`kb list-tasks --workspace <id> --status 待规划`（`kb list-spaces` 输出含 id / name / path，直接可用）。扫描触发时机：班次启动；worker 回报（先扫其绑定区）；并发槽位释放需选新区（全局扫未绑定区）。worker 区内执行期间不重扫、不向在飞队列补发卡。
+逐工作区：`kb next --workspace <id> --limit <n> --json`（OPT-10）一次拿到「待规划 · 无占用 · 前置全部解除」的候选与派活字段（`parent_issue_id` / `blockers` / `blocked` / `siblings_by_label`），替代「list-tasks 初筛 + 逐卡 dep ls」两轮；需要整区全状态盘点时仍用 `kb list-tasks --workspace <id> --status 待规划`（`kb list-spaces` 输出含 id / name / path，直接可用）。扫描触发时机：班次启动；worker 回报（先扫其绑定区）；并发槽位释放需选新区（全局扫未绑定区）。worker 区内执行期间不重扫、不向在飞队列补发卡。
 
-**相邻卡取数口径**：worker 回报后决定「续做同一张还是派下一张」，一律按第 7 节「续派判定」现场取数（`kb show` 回读 status/claimed_by、`kb list-tasks --json` 过滤 `parent_issue_id`、`kb dep ls` 看被阻塞者与解除标记），不引用首次派发的队列快照——队列在班次中会因他人 claim / done / 新卡入池而变化。`kb list-tasks` 的 JSON 条目字段含 `parent_issue_id`、`status`、`claimed_by`、`resolved`，可直接本地过滤。
+**相邻卡取数口径**：worker 回报后决定「续做同一张还是派下一张」，一律按第 7 节「续派判定」现场取数（`kb show` 回读 status/claimed_by、`kb next --json` 取同区可派卡与 `parent_issue_id`/`blockers`/`blocked`/`siblings_by_label`、`kb dep ls` 复核被阻塞者与解除标记），不引用首次派发的队列快照——队列在班次中会因他人 claim / done / 新卡入池而变化。`kb next` 已过滤占用非空与前置未解除，但仍须按第 7 节现场复核（竞态下状态可能已变）。
 
 ### 3. 排除（硬规则，命中即跳过并记原因）
 
-对候选卡执行 `kb show <id>`，读描述、标签、评论：
+对候选卡执行 `kb show <id>`，读描述、标签、评论。候选来自 `kb next`（已按 待规划/无占用/前置全解除 预过滤），规则 4 的占用与规则 6 的前置仍须现场复核一次（扫描与派发之间可能被他人 claim / 新增依赖）：
 
 1. 标签或标题/描述含：待决策、待确认、待用户、blocked-external、挂账、外发前确认 → 跳过（待人工）；无人值守班次不替用户拍板，已有决策按 `ask-user` 的 `kb decisions --state open --stale` 只读核对后跳过
 2. 验收要求真人参与：目视、听感、人工点击、真机操作、截图对比评审 → 跳过（需人工验收）
@@ -63,7 +63,7 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 ### 4. 排序
 
-优先级（高 > 中 > 低）→ 同级创建时间旧者优先。
+优先级（高 > 中 > 低）→ 同级创建时间旧者优先。候选集取自 `kb next --json` 的 `items`（`kb next` 按服务端顺序输出，本地按本节重排）；需要「父卡后继 → 同父兄弟 → 已解除后继 → 同 labels」时直接用 items 里的 `parent_issue_id` / `blocks` / `siblings_by_label` 字段，不必再逐卡取数。
 
 本节排序只用于「回到池子」后的重扫（班次启动、绑定释放、无可续派后继）。worker 回报后的续派不先按本节重排，而是按第 7 节续派判定的固定顺序（父卡后继 → 同父兄弟 → 已解除后继 → 同 labels/同目录）取下一张。
 

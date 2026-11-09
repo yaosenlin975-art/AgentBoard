@@ -15,6 +15,7 @@ import { deleteSpace } from './commands/deleteSpace.js';
 import { createIssue } from './commands/createIssue.js';
 import { moveIssue } from './commands/moveIssue.js';
 import { listTasks } from './commands/listTasks.js';
+import { next, NEXT_DEFAULT_LIMIT } from './commands/next.js';
 import { show } from './commands/show.js';
 import { claim } from './commands/claim.js';
 import { release, releaseIssue } from './commands/release.js';
@@ -56,6 +57,14 @@ function parseDescriptionChars(
   if (!Number.isSafeInteger(value) || value < min) {
     throw new Error(`${flag} 取值必须是${min === 1 ? '正' : '非负'}整数（当前 ${raw}）`);
   }
+  return value;
+}
+
+/** OPT-10：--limit 解析（正整数，非法 → exit 1） */
+function parseLimit(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`--limit 取值必须是正整数（当前 ${raw}）`);
   return value;
 }
 
@@ -122,6 +131,25 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--full', '表格输出完整列（labels/决策/评论/parent_issue_id）；--json 时一并输出 description 正文')
     .action(async (opts: { workspace?: string; all?: boolean; status?: string; allStatus?: boolean; tree?: boolean; full?: boolean }) =>
       listTasks(makeCtx(program, io), { workspace: opts.workspace, all: opts.all === true, status: opts.status, allStatus: opts.allStatus === true, tree: opts.tree, full: opts.full === true }));
+
+  // OPT-10：可派卡组合视图（替代 list-tasks + 逐卡 show + 逐卡 dep ls 三轮）
+  program
+    .command('next')
+    .description('列当前工作区可派卡（待规划 · 无占用 · 前置全部解除）及其派活字段；不自动 claim')
+    .option('--workspace <id|名>', '工作空间 id / 名称 / ≥8 位唯一前缀（缺省按 cwd 解析）')
+    .option('--limit <n>', `最多返回几张（缺省 ${NEXT_DEFAULT_LIMIT}）`)
+    .addHelpText('after', `
+示例：
+  kb next
+  kb next --limit 5                    # 最多 5 张
+  kb next --workspace e41eb0fb --json  # 机器可读：items[]，含 blockers/blocks/parent_issue_id
+输出：每张卡含 状态/优先级/父卡(parent_issue_id)/前置(blockers，均应为已解除)/后继(blocked)/同标签相邻卡；
+      前置未全部解除的卡不进入可派列表。
+退出码：0 成功（无可派卡时输出「（无可派卡）」仍为 0）；1 参数错误 / 工作区无法解析
+`)
+    .action(async (opts: { workspace?: string; limit?: string }) => {
+      commandExitCode = await next(makeCtx(program, io), { workspace: opts.workspace, limit: parseLimit(opts.limit) });
+    });
 
   // KB-GREP：本地按内容检索仓库（纯 Node；无 REST 依赖，仅默认搜索根需要解析工作区）
   program
