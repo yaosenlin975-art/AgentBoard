@@ -4,10 +4,11 @@
  *   flag 档按 GET /api/cli-capabilities 的能力置灰并给原因。
  * - 工具：approval_mode 四选 + allow/deny 标签输入 → tool_policy。
  * - 技能：allow/deny 标签输入 → skill_policy（仅存储，物化在 P2）。
- * 保存一律 PATCH /api/sessions/:id 且只发本段变更字段；失败回滚 UI 并提示。
+ * session 字段自动防抖 PATCH；失败回滚未被后续编辑覆盖的字段并提示。
+ * 人设正文是全局 persona 更新，使用单独的显式保存。
  * 会话四列由服务端 SELECT * 回传（shared.Session 未声明），此处按本地扩展类型读取。
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -183,7 +184,11 @@ function TagInput({
   );
 }
 
-export function SessionSettingsDialog({ session, onClose }: { session: Session; onClose: () => void }) {
+export function SessionSettingsDialog(props: { session: Session; onClose: () => void }) {
+  return <SessionSettingsDialogForm key={props.session.id} {...props} />;
+}
+
+function SessionSettingsDialogForm({ session, onClose }: { session: Session; onClose: () => void }) {
   const queryClient = useQueryClient();
   const raw = session as Session & SessionPersonaFields;
 
@@ -192,13 +197,82 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
   const [toolPolicy, setToolPolicy] = useState<ToolPolicyValue>(() => parseToolPolicy(raw.tool_policy));
   const [skillPolicy, setSkillPolicy] = useState<SkillPolicyValue>(() => parseSkillPolicy(raw.skill_policy));
   const [bodyDraft, setBodyDraft] = useState('');
-  const [saving, setSaving] = useState<'persona' | 'tools' | 'skills' | 'body' | null>(null);
+  const [saving, setSaving] = useState<'body' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // 基线：保存成功后推进，回滚时恢复
-  const [personaBase, setPersonaBase] = useState({ personaId: raw.persona_id ?? '', injection: parseInjection(raw.persona_injection) });
-  const [toolBase, setToolBase] = useState(() => parseToolPolicy(raw.tool_policy));
-  const [skillBase, setSkillBase] = useState(() => parseSkillPolicy(raw.skill_policy));
+  const savedRef = useRef({
+    personaId: raw.persona_id ?? '',
+    injection: parseInjection(raw.persona_injection),
+    toolPolicy: parseToolPolicy(raw.tool_policy),
+    skillPolicy: parseSkillPolicy(raw.skill_policy),
+  });
+  const pendingRef = useRef<Record<string, unknown>>({});
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const patchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const changeVersionRef = useRef<Record<string, number>>({});
+
+  const takePending = useCallback((): Record<string, unknown> => {
+    const body = pendingRef.current;
+    pendingRef.current = {};
+    return body;
+  }, []);
+
+  const sendPatch = useCallback((body: Record<string, unknown>): void => {
+    if (Object.keys(body).length === 0) return;
+    const sentVersions = Object.fromEntries(
+      Object.keys(body).map((field) => [field, changeVersionRef.current[field] ?? 0]),
+    ) as Record<string, number>;
+
+    const send = async (): Promise<void> => {
+      try {
+        await api.patch<Session>(`/api/sessions/${session.id}`, body);
+        if ('persona_id' in body) savedRef.current.personaId = typeof body.persona_id === 'string' ? body.persona_id : '';
+        if ('persona_injection' in body) savedRef.current.injection = body.persona_injection as PersonaInjection;
+        if ('tool_policy' in body) savedRef.current.toolPolicy = body.tool_policy as ToolPolicyValue;
+        if ('skill_policy' in body) savedRef.current.skillPolicy = body.skill_policy as SkillPolicyValue;
+        if (Object.entries(sentVersions).every(([field, version]) => changeVersionRef.current[field] === version)) setError(null);
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      } catch (e) {
+        if ('persona_id' in body && changeVersionRef.current.persona_id === sentVersions.persona_id) {
+          const failedValue = body.persona_id === null ? '' : body.persona_id;
+          setPersonaId((current) => current === failedValue ? savedRef.current.personaId : current);
+        }
+        if ('persona_injection' in body && changeVersionRef.current.persona_injection === sentVersions.persona_injection) {
+          setInjection((current) => current === body.persona_injection ? savedRef.current.injection : current);
+        }
+        if ('tool_policy' in body && changeVersionRef.current.tool_policy === sentVersions.tool_policy) {
+          setToolPolicy((current) => sameJson(current, body.tool_policy) ? savedRef.current.toolPolicy : current);
+        }
+        if ('skill_policy' in body && changeVersionRef.current.skill_policy === sentVersions.skill_policy) {
+          setSkillPolicy((current) => sameJson(current, body.skill_policy) ? savedRef.current.skillPolicy : current);
+        }
+        setError(e instanceof Error ? e.message : '会话设置保存失败，请重试');
+      }
+    };
+
+    patchQueueRef.current = patchQueueRef.current.then(send, send);
+  }, [queryClient, session.id]);
+
+  const flushPending = useCallback((): void => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    sendPatch(takePending());
+  }, [sendPatch, takePending]);
+
+  // ponytail: keep the tiny pending/flush path local; this session PATCH has a different payload from DetailPanel.
+  const schedulePatch = useCallback((field: string, value: unknown): void => {
+    changeVersionRef.current[field] = (changeVersionRef.current[field] ?? 0) + 1;
+    pendingRef.current[field] = value;
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      sendPatch(takePending());
+    }, 500);
+  }, [sendPatch, takePending]);
+
+  useEffect(() => () => flushPending(), [flushPending]);
 
   const personas = useQuery({
     queryKey: ['personas'],
@@ -221,10 +295,6 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
     setBodyDraft(selectedPersona?.body_md ?? '');
   }, [selectedPersona?.id, selectedPersona?.body_md]);
 
-  const personaDirty = personaId !== personaBase.personaId || injection !== personaBase.injection;
-  const toolsDirty = !sameJson(toolPolicy, toolBase);
-  const skillsDirty = !sameJson(skillPolicy, skillBase);
-
   const caps = capabilities.data ?? null;
   // flag 注入依赖 --append-system-prompt；file/off 不依赖 CLI flag
   const flagDisabled = caps !== null && !caps.personaFlag;
@@ -236,58 +306,6 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
         : caps !== null && !caps.personaFlag
           ? `该 CLI 未探测到 --append-system-prompt，flag 注入不可用（${caps.command}）`
           : null;
-
-  const savePersona = async (): Promise<void> => {
-    if (!personaDirty) return;
-    const payload: Record<string, unknown> = {};
-    if (personaId !== personaBase.personaId) payload.persona_id = personaId === '' ? null : personaId;
-    if (injection !== personaBase.injection) payload.persona_injection = injection;
-    setSaving('persona');
-    setError(null);
-    try {
-      await api.patch<Session>(`/api/sessions/${session.id}`, payload);
-      setPersonaBase({ personaId, injection });
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-    } catch (e) {
-      setPersonaId(personaBase.personaId);
-      setInjection(personaBase.injection);
-      setError(e instanceof Error ? e.message : '人设设置保存失败，请重试');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const saveTools = async (): Promise<void> => {
-    if (!toolsDirty) return;
-    setSaving('tools');
-    setError(null);
-    try {
-      await api.patch<Session>(`/api/sessions/${session.id}`, { tool_policy: toolPolicy });
-      setToolBase(toolPolicy);
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-    } catch (e) {
-      setToolPolicy(toolBase);
-      setError(e instanceof Error ? e.message : '工具策略保存失败，请重试');
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const saveSkills = async (): Promise<void> => {
-    if (!skillsDirty) return;
-    setSaving('skills');
-    setError(null);
-    try {
-      await api.patch<Session>(`/api/sessions/${session.id}`, { skill_policy: skillPolicy });
-      setSkillBase(skillPolicy);
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-    } catch (e) {
-      setSkillPolicy(skillBase);
-      setError(e instanceof Error ? e.message : '技能策略保存失败，请重试');
-    } finally {
-      setSaving(null);
-    }
-  };
 
   const saveBody = async (): Promise<void> => {
     if (selectedPersona === null || selectedPersona.source === 'builtin') return;
@@ -336,7 +354,9 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
               data-testid="persona-select"
               value={personaId}
               onChange={(e) => {
-                setPersonaId(e.target.value);
+                const next = e.target.value;
+                setPersonaId(next);
+                schedulePatch('persona_id', next === '' ? null : next);
                 setError(null);
               }}
               className="w-full rounded border border-hairline bg-surface-card px-2 py-1 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent"
@@ -405,6 +425,7 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
                     disabled={disabled}
                     onChange={() => {
                       setInjection(value);
+                      schedulePatch('persona_injection', value);
                       setError(null);
                     }}
                   />
@@ -418,17 +439,6 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             )}
           </fieldset>
 
-          <div className="flex justify-end">
-            <button
-              type="button"
-              data-testid="persona-save"
-              disabled={!personaDirty || saving !== null}
-              onClick={() => void savePersona()}
-              className="rounded bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-            >
-              {saving === 'persona' ? '保存中…' : '保存人设设置'}
-            </button>
-          </div>
         </section>
 
         {/* ---- 工具 ---- */}
@@ -439,7 +449,12 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             <select
               data-testid="tools-approval-select"
               value={toolPolicy.approval_mode}
-              onChange={(e) => setToolPolicy({ ...toolPolicy, approval_mode: e.target.value as ApprovalMode })}
+              onChange={(e) => {
+                const next = { ...toolPolicy, approval_mode: e.target.value as ApprovalMode };
+                setToolPolicy(next);
+                schedulePatch('tool_policy', next);
+                setError(null);
+              }}
               className="w-full rounded border border-hairline bg-surface-card px-2 py-1 text-sm text-ink outline-none focus-visible:outline-2 focus-visible:outline-accent"
             >
               {APPROVAL_MODES.map((mode) => (
@@ -452,7 +467,12 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             <TagInput
               testId="tools-allow-input"
               values={toolPolicy.allow}
-              onChange={(allow) => setToolPolicy({ ...toolPolicy, allow })}
+              onChange={(allow) => {
+                const next = { ...toolPolicy, allow };
+                setToolPolicy(next);
+                schedulePatch('tool_policy', next);
+                setError(null);
+              }}
               placeholder="输入工具名后回车"
             />
           </div>
@@ -461,24 +481,18 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             <TagInput
               testId="tools-deny-input"
               values={toolPolicy.deny}
-              onChange={(deny) => setToolPolicy({ ...toolPolicy, deny })}
+              onChange={(deny) => {
+                const next = { ...toolPolicy, deny };
+                setToolPolicy(next);
+                schedulePatch('tool_policy', next);
+                setError(null);
+              }}
               placeholder="输入工具名后回车"
             />
           </div>
           {caps !== null && !caps.toolFlags && (
             <p data-testid="tools-flag-note" className="text-[11px] text-ink-3">该 CLI 未探测到工具管控 flag，保存后不保证生效。</p>
           )}
-          <div className="flex justify-end">
-            <button
-              type="button"
-              data-testid="tools-save"
-              disabled={!toolsDirty || saving !== null}
-              onClick={() => void saveTools()}
-              className="rounded bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-            >
-              {saving === 'tools' ? '保存中…' : '保存工具策略'}
-            </button>
-          </div>
         </section>
 
         {/* ---- 技能 ---- */}
@@ -490,7 +504,12 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             <TagInput
               testId="skills-allow-input"
               values={skillPolicy.allow}
-              onChange={(allow) => setSkillPolicy({ ...skillPolicy, allow })}
+              onChange={(allow) => {
+                const next = { ...skillPolicy, allow };
+                setSkillPolicy(next);
+                schedulePatch('skill_policy', next);
+                setError(null);
+              }}
               placeholder="输入技能名后回车"
             />
           </div>
@@ -499,20 +518,14 @@ export function SessionSettingsDialog({ session, onClose }: { session: Session; 
             <TagInput
               testId="skills-deny-input"
               values={skillPolicy.deny}
-              onChange={(deny) => setSkillPolicy({ ...skillPolicy, deny })}
+              onChange={(deny) => {
+                const next = { ...skillPolicy, deny };
+                setSkillPolicy(next);
+                schedulePatch('skill_policy', next);
+                setError(null);
+              }}
               placeholder="输入技能名后回车"
             />
-          </div>
-          <div className="flex justify-end">
-            <button
-              type="button"
-              data-testid="skills-save"
-              disabled={!skillsDirty || saving !== null}
-              onClick={() => void saveSkills()}
-              className="rounded bg-accent px-3 py-1 text-xs font-medium text-white disabled:opacity-40"
-            >
-              {saving === 'skills' ? '保存中…' : '保存技能策略'}
-            </button>
           </div>
         </section>
       </div>

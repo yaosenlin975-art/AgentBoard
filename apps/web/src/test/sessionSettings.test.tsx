@@ -10,7 +10,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Session } from '@agentboard/shared';
-import { SessionSettingsDialog, type SessionPersonaFields } from '../components/chat/SessionSettingsDialog';
+import { SessionSettingsDialog, type SessionPersonaFields, type ToolPolicyValue } from '../components/chat/SessionSettingsDialog';
 import { server } from './server';
 
 const baseSession: Session & SessionPersonaFields = {
@@ -67,7 +67,7 @@ function stubCapabilities(overrides: Partial<{ personaFlag: boolean; toolFlags: 
 
 function renderDialog(session: Session & SessionPersonaFields = baseSession) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  return render(
     <QueryClientProvider client={client}>
       <SessionSettingsDialog session={session} onClose={vi.fn()} />
     </QueryClientProvider>,
@@ -82,14 +82,13 @@ describe('SessionSettingsDialog（P1-C）', () => {
   it('三节渲染：人设列表、builtin 只读、flag 注入按能力置灰并给原因', async () => {
     stubPersonas();
     stubCapabilities({ personaFlag: false, toolFlags: false });
-    renderDialog();
+    renderDialog({ ...baseSession, persona_id: 'p-builtin' });
 
     expect(screen.getByTestId('settings-section-persona')).toBeInTheDocument();
     expect(screen.getByTestId('settings-section-tools')).toBeInTheDocument();
     expect(screen.getByTestId('settings-section-skills')).toBeInTheDocument();
 
     await waitFor(() => expect(screen.getByRole('option', { name: '内置人设（内置）' })).toBeInTheDocument());
-    fireEvent.change(screen.getByTestId('persona-select'), { target: { value: 'p-builtin' } });
 
     expect(screen.getByTestId('persona-builtin-badge')).toBeInTheDocument();
     const body = screen.getByTestId('persona-body') as HTMLTextAreaElement;
@@ -101,7 +100,7 @@ describe('SessionSettingsDialog（P1-C）', () => {
     expect(screen.getByTestId('injection-flag-reason')).toBeInTheDocument();
   });
 
-  it('人设保存：PATCH 只带 persona_id（不连带 tool/skill 字段）', async () => {
+  it('人设改动自动防抖保存，并只 PATCH 变更字段', async () => {
     stubPersonas();
     stubCapabilities();
     let body: Record<string, unknown> | null = null;
@@ -115,34 +114,14 @@ describe('SessionSettingsDialog（P1-C）', () => {
     );
     renderDialog();
 
-    await waitFor(() => expect(screen.getByRole('option', { name: '自定义人设' })).toBeInTheDocument());
-    fireEvent.change(screen.getByTestId('persona-select'), { target: { value: 'p-user' } });
-    fireEvent.click(screen.getByTestId('persona-save'));
-
-    await waitFor(() => expect(body).not.toBeNull());
-    expect(body).toEqual({ persona_id: 'p-user' });
-    expect(patchCount).toBe(1);
-  });
-
-  it('人设保存：注入方式变更与 persona_id 同段提交', async () => {
-    stubPersonas();
-    stubCapabilities();
-    let body: Record<string, unknown> | null = null;
-    server.use(
-      http.patch('/api/sessions/sess-settings', async ({ request }) => {
-        body = (await request.json()) as Record<string, unknown>;
-        return HttpResponse.json(baseSession);
-      }),
-    );
-    renderDialog();
-
     await waitFor(() => expect(screen.getByTestId('injection-option-off')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('injection-option-off'));
     fireEvent.change(screen.getByTestId('persona-select'), { target: { value: 'p-user' } });
-    fireEvent.click(screen.getByTestId('persona-save'));
 
+    expect(body).toBeNull();
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toEqual({ persona_id: 'p-user', persona_injection: 'off' });
+    expect(patchCount).toBe(1);
   });
 
   it('工具保存：PATCH 只带 tool_policy（含审批模式与 allow 标签）', async () => {
@@ -160,7 +139,6 @@ describe('SessionSettingsDialog（P1-C）', () => {
     fireEvent.change(screen.getByTestId('tools-approval-select'), { target: { value: 'plan' } });
     fireEvent.change(screen.getByTestId('tools-allow-input'), { target: { value: 'bash' } });
     fireEvent.keyDown(screen.getByTestId('tools-allow-input'), { key: 'Enter' });
-    fireEvent.click(screen.getByTestId('tools-save'));
 
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toEqual({ tool_policy: { approval_mode: 'plan', allow: ['bash'], deny: [] } });
@@ -180,7 +158,6 @@ describe('SessionSettingsDialog（P1-C）', () => {
 
     fireEvent.change(screen.getByTestId('skills-allow-input'), { target: { value: 'skill-a' } });
     fireEvent.keyDown(screen.getByTestId('skills-allow-input'), { key: 'Enter' });
-    fireEvent.click(screen.getByTestId('skills-save'));
 
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toEqual({ skill_policy: { allow: ['skill-a'], deny: [] } });
@@ -197,10 +174,79 @@ describe('SessionSettingsDialog（P1-C）', () => {
     renderDialog();
 
     fireEvent.change(screen.getByTestId('tools-approval-select'), { target: { value: 'bypass' } });
-    fireEvent.click(screen.getByTestId('tools-save'));
 
     await waitFor(() => expect(screen.getByTestId('session-settings-error')).toHaveTextContent('保存炸了'));
     expect((screen.getByTestId('tools-approval-select') as HTMLSelectElement).value).toBe('inherit');
+  });
+
+  it('同字段后续快照已排队时，早期失败不回滚覆盖最新值', async () => {
+    stubPersonas();
+    stubCapabilities();
+    const patches: Array<{ approvalMode: string }> = [];
+    let savedMode = 'inherit';
+    let releaseFirst!: () => void;
+    const firstResponse = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    server.use(
+      http.patch('/api/sessions/sess-settings', async ({ request }) => {
+        const body = (await request.json()) as { tool_policy: ToolPolicyValue };
+        patches.push({ approvalMode: body.tool_policy.approval_mode });
+        if (patches.length === 1) {
+          await firstResponse;
+          return HttpResponse.json({ error: { code: 'INTERNAL', message: '首请求失败' } }, { status: 500 });
+        }
+        savedMode = body.tool_policy.approval_mode;
+        return HttpResponse.json(baseSession);
+      }),
+    );
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByTestId('tools-approval-select')).toBeInTheDocument());
+    const select = screen.getByTestId('tools-approval-select');
+    fireEvent.change(select, { target: { value: 'plan' } });
+    await waitFor(() => expect(patches).toHaveLength(1));
+
+    fireEvent.change(select, { target: { value: 'bypass' } });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    fireEvent.change(select, { target: { value: 'plan' } });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+
+    releaseFirst();
+    await waitFor(() => expect(patches).toHaveLength(3), { timeout: 3000 });
+    await waitFor(() => expect(savedMode).toBe('plan'));
+    expect(patches.map((patch) => patch.approvalMode)).toEqual(['plan', 'bypass', 'plan']);
+    expect((screen.getByTestId('tools-approval-select') as HTMLSelectElement).value).toBe('plan');
+  }, 10_000);
+
+  it('卸载和切换 session 会立即 flush 到对应的旧 session', async () => {
+    stubPersonas();
+    stubCapabilities();
+    const patches: Array<{ id: string; body: Record<string, unknown> }> = [];
+    server.use(
+      http.patch('/api/sessions/:id', async ({ request, params }) => {
+        patches.push({ id: String(params.id), body: (await request.json()) as Record<string, unknown> });
+        return HttpResponse.json(baseSession);
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const renderSession = (session: Session & SessionPersonaFields) => (
+      <QueryClientProvider client={client}>
+        <SessionSettingsDialog session={session} onClose={vi.fn()} />
+      </QueryClientProvider>
+    );
+    const view = render(renderSession({ ...baseSession, id: 'sess-old' }));
+
+    await waitFor(() => expect(screen.getByRole('option', { name: '自定义人设' })).toBeInTheDocument());
+    fireEvent.change(screen.getByTestId('persona-select'), { target: { value: 'p-user' } });
+    view.rerender(renderSession({ ...baseSession, id: 'sess-new', persona_id: 'p-builtin' }));
+
+    await waitFor(() => expect(patches).toHaveLength(1));
+    expect(patches[0]).toEqual({ id: 'sess-old', body: { persona_id: 'p-user' } });
+    expect((screen.getByTestId('persona-select') as HTMLSelectElement).value).toBe('p-builtin');
+
+    fireEvent.change(screen.getByTestId('persona-select'), { target: { value: '' } });
+    view.unmount();
+    await waitFor(() => expect(patches).toHaveLength(2));
+    expect(patches[1]).toEqual({ id: 'sess-new', body: { persona_id: null } });
   });
 
   it('未知/已删人设：显示「未知人设 <id>」且可切走为解绑', async () => {
@@ -217,7 +263,6 @@ describe('SessionSettingsDialog（P1-C）', () => {
 
     await waitFor(() => expect(screen.getByRole('option', { name: '未知人设 ghost-1' })).toBeInTheDocument());
     fireEvent.change(screen.getByTestId('persona-select'), { target: { value: '' } });
-    fireEvent.click(screen.getByTestId('persona-save'));
 
     await waitFor(() => expect(body).not.toBeNull());
     expect(body).toEqual({ persona_id: null });
