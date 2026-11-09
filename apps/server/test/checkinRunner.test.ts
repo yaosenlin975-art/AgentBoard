@@ -99,6 +99,29 @@ describe('checkin runner', () => {
     expect(operationsForBatch(t.db, batch.id)).toHaveLength(0);
   });
 
+  it('WorkBuddy same-day local success rechecks remote sign-in and still runs its travel hook', async () => {
+    provider.statusResult = 'already_done';
+    let travelCalls = 0;
+    Object.assign(provider, {
+      afterCheckin: async () => {
+        travelCalls += 1;
+        return { kind: 'travel' as const, status: 'claimed' as const };
+      },
+    });
+    const account = await boundAccount('WorkBuddy-travel-local-success');
+    t.db.prepare('UPDATE managed_account SET last_checkin_day=?,last_checkin_status=? WHERE id=?').run(profileLocalDay(), 'succeeded', account.id);
+    const batch = newBatch([account.id]);
+
+    const finished = await runCheckinBatch(deps(), batch.id);
+
+    expect(finished.status).toBe('succeeded');
+    expect(provider.statusCalls).toBe(1);
+    expect(provider.submitCalls).toBe(0);
+    expect(travelCalls).toBe(1);
+    expect(listCheckinBatchItems(t.db, batch.id)[0]).toMatchObject({ state: 'already_done' });
+    expect(operationsForBatch(t.db, batch.id)[0]?.recovery_ref).toBe('travel=claimed');
+  });
+
   it('Trae same-day local success is rechecked with the provider', async () => {
     provider.statusResult = 'already_done';
     const account = await makeAccount('Trae-local-success', { app_id: 'trae' });

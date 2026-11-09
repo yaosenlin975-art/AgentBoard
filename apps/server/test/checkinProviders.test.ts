@@ -38,8 +38,8 @@ describe('workbuddy checkin provider', () => {
     expect(await provider.queryStatus(TOKEN)).toBe('not_done');
     expect(await provider.submitCheckin(TOKEN)).toBe('succeeded');
     expect(calls.map(call => call.url)).toEqual([
-      expect.stringContaining('/billing/meter/checkin-activity-status'),
-      expect.stringContaining('/billing/meter/daily-checkin'),
+      'https://www.codebuddy.cn/billing/meter/checkin-activity-status',
+      'https://www.codebuddy.cn/billing/meter/daily-checkin',
     ]);
     expect(calls.some(call => /\/billing\/meter\/checkin-status$/.test(call.url))).toBe(false);
   });
@@ -66,40 +66,109 @@ describe('workbuddy checkin provider', () => {
 });
 
 describe('workbuddy cat travel (afterCheckin)', () => {
+  type Reply = { method: 'GET' | 'POST'; path: string; status?: number; body?: unknown };
+  const scriptedTravelProvider = (replies: Reply[]) => {
+    const calls: Call[] = [];
+    let next = 0;
+    const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = String(init?.method ?? 'GET').toUpperCase();
+      const path = new URL(url).pathname;
+      calls.push({ url, method, body: init?.body === undefined ? undefined : String(init.body) });
+      const reply = replies[next++];
+      const matches = reply?.method === method && reply.path === path;
+      return new Response(JSON.stringify(matches ? reply.body ?? {} : { code: 'UNEXPECTED_REQUEST' }), {
+        status: matches ? reply.status ?? 200 : 500,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    return { provider: createWorkbuddyCheckinProvider({ ...base, fetchImpl: impl }), calls };
+  };
   const travelProvider = (routes: Parameters<typeof fakeFetch>[0]) => {
     const fake = fakeFetch(routes);
     return { provider: createWorkbuddyCheckinProvider({ ...base, fetchImpl: fake.impl }), calls: fake.calls };
   };
 
-  it('departs when idle', async () => {
-    const { provider, calls } = travelProvider([
-      { match: url => url.endsWith('/travel/status'), body: { data: { state: 'idle' } } },
-      { match: url => url.endsWith('/travel/config'), body: { data: { spots: [{ id: 7 }] } } },
-      { match: url => url.endsWith('/travel/depart'), status: 200, body: { code: 0 } },
+  it('uses configured locations and verifies departure against source status', async () => {
+    const { provider, calls } = scriptedTravelProvider([
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: false } } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/config', body: { code: 0, data: { locations: [{ id: 7, reward_credit_min: 5, reward_credit_max: 10 }] } } },
+      { method: 'POST', path: '/activity/growth/buddy/travel/depart', body: { code: 0 } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'traveling', daily_limit_reached: true } } },
     ]);
     expect(await provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'dispatched' });
-    expect(calls.at(-1)?.body).toBe(JSON.stringify({ location_id: 7 }));
+    expect(calls.map(call => call.url)).toEqual([
+      'https://www.codebuddy.cn/activity/growth/buddy/travel/status',
+      'https://www.codebuddy.cn/activity/growth/buddy/travel/config',
+      'https://www.codebuddy.cn/activity/growth/buddy/travel/depart',
+      'https://www.codebuddy.cn/activity/growth/buddy/travel/status',
+    ]);
+    expect(calls[2]?.body).toBe(JSON.stringify({ location_id: 7 }));
   });
 
   it('returns dispatched when already traveling', async () => {
-    const { provider } = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { data: { state: 'traveling' } } }]);
+    const { provider } = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { code: 0, data: { state: 'traveling' } } }]);
     expect(await provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'dispatched' });
   });
 
-  it('claims when arrived, and reports already_done when claimed today', async () => {
-    const arrived = travelProvider([
-      { match: url => url.endsWith('/travel/status'), body: { data: { state: 'arrived' } } },
-      { match: url => url.endsWith('/travel/claim'), status: 200, body: { code: 0 } },
+  it('claims an arrived trip once, confirms source state, and skips an already claimed trip', async () => {
+    const arrived = scriptedTravelProvider([
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'arrived', reward_credit: 8 } } },
+      { method: 'POST', path: '/activity/growth/buddy/travel/claim', body: { code: 0, data: { reward_credit: 8 } } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: true } } },
     ]);
     expect(await arrived.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'claimed' });
+    expect(arrived.calls.filter(call => call.method === 'POST')).toHaveLength(1);
 
-    const claimedToday = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { data: { claimed_today: true } } }]);
+    const claimedToday = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { code: 0, data: { state: 'arrived', claimed_today: true } } }]);
     expect(await claimedToday.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'already_done' });
+    expect(claimedToday.calls).toHaveLength(1);
+  });
+
+  it('does not treat unknown status or failed business codes as idle', async () => {
+    const unknown = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { code: 0, data: { state: 'paused' } } }]);
+    expect(await unknown.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_STATUS_UNKNOWN' });
+    expect(unknown.calls).toHaveLength(1);
+
+    const noCode = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { data: { state: 'idle', daily_limit_reached: false } } }]);
+    expect(await noCode.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_STATUS_CODE_MISSING' });
+    expect(noCode.calls).toHaveLength(1);
+
+    const businessFailure = travelProvider([{ match: url => url.endsWith('/travel/status'), body: { code: 1001, data: { state: 'idle', daily_limit_reached: false } } }]);
+    expect(await businessFailure.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_STATUS_BUSINESS_1001' });
+    expect(businessFailure.calls).toHaveLength(1);
+  });
+
+  it('does not report 2xx business failures or unconfirmed departure as success', async () => {
+    const configFailure = scriptedTravelProvider([
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: false } } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/config', body: { code: 1401, data: { locations: [{ id: 1 }] } } },
+    ]);
+    expect(await configFailure.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_CONFIG_BUSINESS_1401' });
+    expect(configFailure.calls).toHaveLength(2);
+
+    const departFailure = scriptedTravelProvider([
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: false } } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/config', body: { code: 0, data: { locations: [{ id: 1 }] } } },
+      { method: 'POST', path: '/activity/growth/buddy/travel/depart', body: { code: 1402 } },
+    ]);
+    expect(await departFailure.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_DEPART_BUSINESS_1402' });
+    expect(departFailure.calls.filter(call => call.method === 'POST')).toHaveLength(1);
+    expect(departFailure.calls).toHaveLength(3);
+
+    const unconfirmed = scriptedTravelProvider([
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: false } } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/config', body: { code: 0, data: { locations: [{ id: 1 }] } } },
+      { method: 'POST', path: '/activity/growth/buddy/travel/depart', body: { code: 0 } },
+      { method: 'GET', path: '/activity/growth/buddy/travel/status', body: { code: 0, data: { state: 'idle', daily_limit_reached: false } } },
+    ]);
+    expect(await unconfirmed.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_DEPART_UNCONFIRMED' });
+    expect(unconfirmed.calls.filter(call => call.method === 'POST')).toHaveLength(1);
   });
 
   it('reports failed with code instead of throwing', async () => {
     const broken = travelProvider([{ match: url => url.endsWith('/travel/status'), status: 500 }]);
-    expect(await broken.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_HTTP_500' });
+    expect(await broken.provider.afterCheckin!(TOKEN)).toEqual({ kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_STATUS_HTTP_500' });
 
     const unauthorized = travelProvider([{ match: () => true, status: 401 }]);
     expect(await unauthorized.provider.afterCheckin!(TOKEN)).toMatchObject({ kind: 'travel', status: 'failed', safe_error_code: 'CHECKIN_CREDENTIAL_INVALID' });

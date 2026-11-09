@@ -63,8 +63,8 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
   if (account.app_id !== deps.provider.app_id) return failItem(deps.db, batchId, accountId, 'CHECKIN_PROVIDER_MISMATCH');
   // 无独立签到凭据的账号不发请求（不从 Desktop 快照推断）
   if (!account.checkin_credential_ref) return failItem(deps.db, batchId, accountId, 'CHECKIN_CREDENTIAL_MISSING');
-  // Trae 的历史 succeeded 可能来自未核验的 2xx；同日记录仍需查询来源状态
-  if (deps.provider.app_id !== 'trae' && account.last_checkin_day === day && account.last_checkin_status === 'succeeded') {
+  // Trae 的历史 succeeded 可能来自未核验的 2xx；带附加活动的 provider 也要回源继续处理活动状态。
+  if (deps.provider.app_id !== 'trae' && deps.provider.afterCheckin === undefined && account.last_checkin_day === day && account.last_checkin_status === 'succeeded') {
     return setItem(deps.db, batchId, accountId, 'already_done', 'LOCAL_RECORD');
   }
   const scope = { app_id: account.app_id, client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin' as const };

@@ -112,9 +112,23 @@ function baseSpec(config: HttpCheckinConfig, parts: {
 
 /** workbuddy：签到 + 猫猫旅行 */
 export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
-  const base = workbuddyBillingUrl(config.region, '');
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
-    requestJson(config, `${base}${path}`, { token, ...init });
+    requestJson(config, workbuddyBillingUrl(config.region, path), { token, ...init });
+  const travelResponseError = (stage: string, result: HttpResult): string | null => {
+    if (result.status === 429) return 'TRAVEL_RATE_LIMITED';
+    if (result.status < 200 || result.status >= 300) return `TRAVEL_${stage}_HTTP_${result.status}`;
+    const code = asRecord(result.body).code;
+    if (code === 0) return null;
+    if (code === undefined) return `TRAVEL_${stage}_CODE_MISSING`;
+    const safeCode = typeof code === 'number' && Number.isFinite(code)
+      ? String(code)
+      : typeof code === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(code) ? code : 'UNKNOWN';
+    return `TRAVEL_${stage}_BUSINESS_${safeCode}`;
+  };
+  const travelFailure = (safe_error_code: string) => ({ kind: 'travel' as const, status: 'failed' as const, safe_error_code });
+  const travelState = (data: Record<string, unknown>) =>
+    typeof data.state === 'string' ? data.state.trim().toLowerCase()
+      : typeof data.status === 'string' ? data.status.trim().toLowerCase() : '';
 
   return baseSpec(config, {
     // 注意：`/billing/meter/checkin-status` 恒返回 active=false，真实状态只有 activity-status 给
@@ -138,27 +152,57 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
     afterCheckin: async (token) => {
       try {
         const statusResult = await request('/activity/growth/buddy/travel/status', token);
-        if (statusResult.status === 429) return { kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_RATE_LIMITED' };
-        if (statusResult.status >= 400) return { kind: 'travel', status: 'failed', safe_error_code: `TRAVEL_HTTP_${statusResult.status}` };
+        const statusError = travelResponseError('STATUS', statusResult);
+        if (statusError) return travelFailure(statusError);
         const status = dataOf(statusResult.body);
-        const state = String(status.state ?? status.status ?? '').toLowerCase();
+        const state = travelState(status);
         if (status.claimed_today === true || state === 'claimed' || state === 'done') return { kind: 'travel', status: 'already_done' };
         if (state === 'arrived' || state === 'ready') {
           const claimed = await request('/activity/growth/buddy/travel/claim', token, { method: 'POST', body: '{}' });
-          if (claimed.status >= 200 && claimed.status < 300) return { kind: 'travel', status: 'claimed' };
-          return { kind: 'travel', status: 'failed', safe_error_code: `TRAVEL_CLAIM_HTTP_${claimed.status}` };
+          const claimError = travelResponseError('CLAIM', claimed);
+          if (claimError) return travelFailure(claimError);
+          const confirmResult = await request('/activity/growth/buddy/travel/status', token);
+          const confirmError = travelResponseError('CLAIM_CONFIRM', confirmResult);
+          if (confirmError) return travelFailure(confirmError);
+          const confirmed = dataOf(confirmResult.body);
+          const confirmedState = travelState(confirmed);
+          if (confirmed.claimed_today === true || ['claimed', 'done', 'idle'].includes(confirmedState)) {
+            return { kind: 'travel', status: 'claimed' };
+          }
+          return travelFailure('TRAVEL_CLAIM_UNCONFIRMED');
         }
         if (state === 'traveling' || state === 'on_the_way') return { kind: 'travel', status: 'dispatched' };
+        if (state !== 'idle') return travelFailure('TRAVEL_STATUS_UNKNOWN');
+        if (status.daily_limit_reached === true) return { kind: 'travel', status: 'already_done' };
+        if (status.daily_limit_reached !== false) return travelFailure('TRAVEL_DAILY_LIMIT_UNKNOWN');
         const config = await request('/activity/growth/buddy/travel/config', token);
-        const spots = (dataOf(config.body).spots ?? []) as Array<Record<string, unknown>>;
-        const spot = spots[0];
-        if (!spot || spot.id === undefined) return { kind: 'travel', status: 'failed', safe_error_code: 'TRAVEL_NO_SPOT' };
-        const departed = await request('/activity/growth/buddy/travel/depart', token, { method: 'POST', body: JSON.stringify({ location_id: spot.id }) });
-        if (departed.status >= 200 && departed.status < 300) return { kind: 'travel', status: 'dispatched' };
-        return { kind: 'travel', status: 'failed', safe_error_code: `TRAVEL_DEPART_HTTP_${departed.status}` };
+        const configError = travelResponseError('CONFIG', config);
+        if (configError) return travelFailure(configError);
+        const locations = dataOf(config.body).locations;
+        const location = Array.isArray(locations)
+          ? locations.map(asRecord).find(item =>
+            (typeof item.id === 'number' && Number.isFinite(item.id)) || (typeof item.id === 'string' && item.id.trim() !== ''),
+          )
+          : undefined;
+        if (!location) return travelFailure('TRAVEL_NO_LOCATION');
+        const departed = await request('/activity/growth/buddy/travel/depart', token, { method: 'POST', body: JSON.stringify({ location_id: location.id }) });
+        const departError = travelResponseError('DEPART', departed);
+        if (departError) return travelFailure(departError);
+        const confirmResult = await request('/activity/growth/buddy/travel/status', token);
+        const confirmError = travelResponseError('DEPART_CONFIRM', confirmResult);
+        if (confirmError) return travelFailure(confirmError);
+        const confirmed = dataOf(confirmResult.body);
+        const confirmedState = travelState(confirmed);
+        if (['traveling', 'on_the_way', 'arrived', 'ready'].includes(confirmedState) || (confirmedState === 'idle' && confirmed.daily_limit_reached === true)) {
+          return { kind: 'travel', status: 'dispatched' };
+        }
+        if (confirmed.claimed_today === true || confirmedState === 'claimed' || confirmedState === 'done') {
+          return { kind: 'travel', status: 'claimed' };
+        }
+        return travelFailure('TRAVEL_DEPART_UNCONFIRMED');
       } catch (error) {
         const code = error instanceof ApiError ? error.code : 'TRAVEL_FAILED';
-        return { kind: 'travel', status: 'failed', safe_error_code: code };
+        return travelFailure(code);
       }
     },
   });
