@@ -113,13 +113,16 @@ describe('browser opener', () => {
 
   it('fallsBackToSystemDefaultWithVisibleReason', async () => {
     const { deps, calls } = makeFakeDeps({ installed: [] });
-    const result = await openAuthorizationUrlIncognito('https://example.com/authorize', deps);
+    const url = 'https://example.com/authorize?code=abc&state=xyz';
+    const result = await openAuthorizationUrlIncognito(url, deps);
     expect(result.opened_with).toBe('default');
     expect(result.mode).toBe('normal');
     expect(result.degraded_reason).not.toBeNull();
     expect(result.degraded_reason).toContain('非无痕');
-    expect(calls[0].command).toBe('cmd.exe');
-    expect(calls[0].args).toContain('https://example.com/authorize');
+    expect(calls[0]).toEqual({
+      command: 'rundll32.exe',
+      args: ['url.dll,FileProtocolHandler', url],
+    });
   });
 
   it('rejectsNonHttpUrl', async () => {
@@ -140,7 +143,7 @@ describe('browser opener', () => {
   });
 
   it('returns502WithAttemptsWhenEveryCandidateFails', async () => {
-    const { deps } = makeFakeDeps({ installed: [CHROME_PATH], failCommands: [CHROME_PATH, 'cmd.exe'] });
+    const { deps } = makeFakeDeps({ installed: [CHROME_PATH], failCommands: [CHROME_PATH, 'rundll32.exe'] });
     await expect(openAuthorizationUrlIncognito('https://example.com/authorize', deps)).rejects.toMatchObject({
       status: 502,
       code: 'BROWSER_OPEN_FAILED',

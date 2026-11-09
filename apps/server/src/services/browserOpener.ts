@@ -163,8 +163,8 @@ function chromiumCandidates(deps: BrowserOpenerDeps, url: string): BrowserCandid
 /** ④ 降级：系统默认浏览器普通窗口 */
 function openWithSystemDefault(deps: BrowserOpenerDeps, url: string): Promise<void> {
   if (deps.platform === 'win32') {
-    // start 的空标题参数不可省：cmd 会把第一个引号参数当成窗口标题
-    return launch(deps, 'cmd.exe', ['/d', '/c', 'start', '', url]);
+    // Bypass cmd: valid authorization URLs can contain shell metacharacters such as &.
+    return launch(deps, 'rundll32.exe', ['url.dll,FileProtocolHandler', url]);
   }
   if (deps.platform === 'darwin') return launch(deps, 'open', [url]);
   return launch(deps, 'xdg-open', [url]);
