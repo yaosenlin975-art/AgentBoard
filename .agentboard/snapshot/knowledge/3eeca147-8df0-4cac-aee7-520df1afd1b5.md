@@ -3,9 +3,9 @@ id: 3eeca147-8df0-4cac-aee7-520df1afd1b5
 slug: dsh-plugin-install-gates
 title: DSH 第三方插件安装与版本门禁处置（ponytail 5.6.2 实录）
 scope: workspace
-revision: 1
+revision: 2
 status: active
-updated_at: 2026-11-09T09:38:54.062Z
+updated_at: 2026-11-09T09:46:51.262Z
 ---
 
 # DSH（DeepSeek Harness）第三方插件安装与版本门禁处置
@@ -40,6 +40,14 @@ updated_at: 2026-11-09T09:38:54.062Z
   2. 解压到 `profiles/<profile>/node_modules/<scope>/<name>`（npm tarball 内是 `package/` 目录，移动后改名）；
   3. 手工登记 `package.json` 的 `dependencies` 与 `dsh.profile.bundles`。
 - 遗留风险：`pnpm-lock.yaml` / `node_modules/.modules.yaml` 不会包含该包，后续 pnpm 操作可能把它当多余包处理；彻底解决要先修掉坏依赖的 spec（属于单独的卡）。
+
+## dsh-market 自动更新被死依赖连带打挂（2026-11-09 实况）
+
+- 现象：重启后弹「更新失败: <插件> — 更新失败且回滚未验证」，`.dsh-market/log.ndjson` 里 `update-start` 指向某插件（如 dsh-ops→0.5.1），但对应 `pnpm.log` 只有 `ERR_PNPM_FETCH_404 codeload.github.com/<dead-repo>/...`。
+- 判读：失败的是 pnpm 解析阶段，与被点名插件无关；根因是 profile 里另一个 `github:` 直依已失效。回滚「未能验证」也只是副作用。
+- 影响面：任何插件安装/更新都会在同一处失败；且 dsh-market 会周期性重新入队，导致重复弹窗。
+- 处置（不改无关扩展、不升级）：在 `profiles/<profile>/.dsh-market/state.json` 的 `updateExempt` 追加该插件名，阻止市场再尝试这次更新（dsh-purge 自 2026-10-29 起已在 exempt，之后日志再无其更新尝试，可作机制有效的证据）。
+- 彻底修复需要处理死依赖本身（重打包本地 tarball 或移除扩展），属于需用户拍板的单独事项；不要为了让更新通过而顺手升级被点名的插件——用户可能对它有本地热修（如 dsh-ops 的 `*.bak-20261029-cachefix`）。
 
 ## 验证套路
 
