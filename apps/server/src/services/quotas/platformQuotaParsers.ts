@@ -102,46 +102,61 @@ export function parseWorkbuddyCredits(body: unknown): PlatformQuotaParse {
 }
 
 /**
- * ZCode：`GET https://bigmodel.cn/api/monitor/usage/quota/limit`
- * `data.limits[]{type,unit,number,usage,currentValue,remaining,percentage,nextResetTime}`。
- * 坑：`unit`+`number` 是窗口粒度枚举（`unit=3` + `number=5` → 5 小时窗），不是数值本身；
+ * ZCode：`GET https://bigmodel.cn/api/monitor/usage/quota/limit`。
+ * `CREDIT_LIMIT` / `TOKENS_LIMIT` 是编码配额窗；`usage` 为总量、`currentValue` 为已用、`remaining` 为剩余。
+ * `unit` + `number` 标识窗口（3 + 5 → 5 小时，6 → weekly）；`TIME_LIMIT` 是独立的月度工具调用，不并入积分余额。
  * 凭据必须用 `oauth:bigmodel:access_token`，不是 `zcodejwttoken`（凭据选择在调用方）。
  */
 export function zcodeWindowName(unit: unknown, number: unknown): string {
   const n = num(number);
   if (num(unit) === 3 && n !== null) return `${n}h`;
-  const type = pick({ type: unit }, 'type');
-  return typeof type === 'string' && type !== '' ? type : '额度窗口';
+  if (num(unit) === 6) return 'weekly';
+  return '额度窗口';
 }
 
 export function parseZcodeQuota(body: unknown): PlatformQuotaParse {
   const data = pick(body, 'data') ?? body;
   const limits = pick(data, 'limits');
-  const windows: QuotaWindow[] = [];
-  if (Array.isArray(limits)) {
-    for (const entry of limits) {
-      const total = num(pick(entry, 'total')) ?? num(pick(entry, 'number'));
-      const used = num(pick(entry, 'currentValue')) ?? num(pick(entry, 'usage'));
-      const remaining = num(pick(entry, 'remaining'));
-      const percentage = num(pick(entry, 'percentage'));
-      const resetAt = num(pick(entry, 'nextResetTime'));
-      const computedRemaining = remaining ?? (total !== null && used !== null ? Math.max(total - used, 0) : null);
-      if (computedRemaining === null && total === null) continue;
-      const unit = pick(entry, 'unit');
-      const name = zcodeWindowName(unit, pick(entry, 'number'));
-      windows.push({
+  const parsed: Array<{ window: QuotaWindow; type: string; unit: number | null }> = [];
+  const rows = Array.isArray(limits) ? limits : [];
+
+  for (const entry of rows) {
+    const type = pick(entry, 'type');
+    if (type !== 'CREDIT_LIMIT' && type !== 'TOKENS_LIMIT' && type !== 'TIME_LIMIT') continue;
+    const total = num(pick(entry, 'usage'));
+    const used = num(pick(entry, 'currentValue'));
+    const remaining = num(pick(entry, 'remaining'));
+    const percentage = num(pick(entry, 'percentage'));
+    const resetAt = num(pick(entry, 'nextResetTime'));
+    const computedRemaining = remaining ?? (total !== null && used !== null ? Math.max(total - used, 0) : null);
+    if (computedRemaining === null) continue;
+    const unit = num(pick(entry, 'unit'));
+    const name = type === 'TIME_LIMIT' ? 'MCP工具调用（月）' : zcodeWindowName(unit, pick(entry, 'number'));
+    const kind: QuotaWindow['kind'] = type === 'TIME_LIMIT' ? 'monthly' : unit === 3 ? 'rolling' : unit === 6 ? 'weekly' : undefined;
+    parsed.push({
+      type,
+      unit,
+      window: {
         name,
-        kind: name.endsWith('h') ? 'rolling' : 'monthly',
-        remaining: computedRemaining ?? 0,
+        ...(kind === undefined ? {} : { kind }),
+        remaining: computedRemaining,
         total,
         used,
         used_percent: percentage ?? pct(used, total),
         reset_at: resetAt,
-      });
-    }
+      },
+    });
   }
-  const primary = windows[0];
-  return { balance: primary?.remaining ?? null, unit: '次', windows };
+  const primary = parsed.find(item => item.type === 'CREDIT_LIMIT' && item.unit === 3)
+    ?? parsed.find(item => item.type === 'TOKENS_LIMIT' && item.unit === 3)
+    ?? parsed.find(item => item.type === 'CREDIT_LIMIT' && item.unit === 6)
+    ?? parsed.find(item => item.type === 'TOKENS_LIMIT' && item.unit === 6)
+    ?? parsed.find(item => item.type === 'CREDIT_LIMIT' || item.type === 'TOKENS_LIMIT');
+  return {
+    balance: primary?.window.remaining ?? null,
+    unit: primary === undefined ? null : primary.type === 'CREDIT_LIMIT' ? '积分' : '额度',
+    windows: parsed.map(item => item.window),
+  };
 }
 
 /**

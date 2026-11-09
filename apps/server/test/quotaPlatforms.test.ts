@@ -72,21 +72,51 @@ describe('WorkBuddy 解析（TotalCredits 是字符串小数）', () => {
   });
 });
 
-describe('ZCode 解析（unit/number 是窗口粒度枚举）', () => {
-  it('unit=3 + number=5 → 5 小时窗，字段映射到 total/used/remaining', () => {
+describe('ZCode 编码配额解析（number 表示周期，不是总量）', () => {
+  it('unit=3 + number=5 → 5小时窗；usage/currentValue/remaining 映射真实额度', () => {
     expect(zcodeWindowName(3, 5)).toBe('5h');
     const parsed = parseZcodeQuota({
-      data: { limits: [{ type: 'tokens', unit: 3, number: 5, currentValue: 800, total: 2000, nextResetTime: 1_800_000_000_000 }] },
+      data: { limits: [{
+        type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 2000, currentValue: 800,
+        remaining: 1200, percentage: 40, nextResetTime: 1_800_000_000_000,
+      }] },
     });
+    expect(parsed).toMatchObject({ balance: 1200, unit: '积分' });
     expect(parsed.windows[0]).toMatchObject({ name: '5h', kind: 'rolling', total: 2000, used: 800, remaining: 1200 });
     expect(parsed.windows[0]!.used_percent).toBe(40);
-    expect(parsed.balance).toBe(1200);
   });
 
-  it('percentage 优先于自己算的比例；无 limits 时返回空', () => {
-    const parsed = parseZcodeQuota({ data: { limits: [{ unit: 1, number: 30, remaining: 10, percentage: 66.6 }] } });
-    expect(parsed.windows[0]!.used_percent).toBe(66.6);
-    expect(parseZcodeQuota({ data: {} }).windows).toEqual([]);
+  it('weekly 与 TIME_LIMIT 分开；主余额固定选5小时编码窗，不受数组顺序影响', () => {
+    const parsed = parseZcodeQuota({ data: { limits: [
+      { type: 'TIME_LIMIT', unit: 5, number: 1, usage: 100, currentValue: 30, remaining: 70, percentage: 30 },
+      { type: 'CREDIT_LIMIT', unit: 6, number: 1, usage: 10000, currentValue: 10002, remaining: 0, percentage: 100, nextResetTime: 1_800_000_000_000 },
+      { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 2000, currentValue: 0, remaining: 2000, percentage: 0 },
+    ] } });
+    expect(zcodeWindowName(6, 1)).toBe('weekly');
+    expect(parsed.windows).toHaveLength(3);
+    expect(parsed.windows[0]).toMatchObject({ name: 'MCP工具调用（月）', kind: 'monthly', total: 100, used: 30, remaining: 70 });
+    expect(parsed.windows[1]).toMatchObject({ name: 'weekly', kind: 'weekly', total: 10000, used: 10002, remaining: 0 });
+    expect(parsed).toMatchObject({ balance: 2000, unit: '积分' });
+
+    const toolsOnly = parseZcodeQuota({ data: { limits: [
+      { type: 'TIME_LIMIT', unit: 5, number: 1, usage: 100, currentValue: 30, remaining: 70, percentage: 30 },
+    ] } });
+    expect(toolsOnly).toMatchObject({ balance: null, unit: null });
+    expect(toolsOnly.windows[0]).toMatchObject({ name: 'MCP工具调用（月）', kind: 'monthly', remaining: 70 });
+  });
+
+  it('旧 TOKENS_LIMIT 保持中性额度单位；无足够剩余数据时不伪造0', () => {
+    const legacy = parseZcodeQuota({ data: { limits: [
+      { type: 'TOKENS_LIMIT', unit: 3, number: 5, usage: 1000, currentValue: 250, percentage: 25 },
+    ] } });
+    expect(legacy).toMatchObject({ balance: 750, unit: '额度' });
+    expect(legacy.windows[0]).toMatchObject({ name: '5h', kind: 'rolling', total: 1000, used: 250, remaining: 750 });
+
+    const incomplete = parseZcodeQuota({ data: { limits: [
+      { type: 'CREDIT_LIMIT', unit: 3, number: 5, usage: 2000, percentage: 0 },
+    ] } });
+    expect(incomplete).toEqual({ balance: null, unit: null, windows: [] });
+    expect(parseZcodeQuota({ data: {} })).toEqual({ balance: null, unit: null, windows: [] });
   });
 });
 
