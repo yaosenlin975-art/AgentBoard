@@ -103,6 +103,20 @@ export function isIssueFieldName(value: string): value is IssueFieldName {
   return (ISSUE_FIELD_NAMES as readonly string[]).includes(value);
 }
 
+/**
+ * PERF-4：分页模式的缺省字段集（不含 `description`）。
+ * 与 CLI `list-tasks` 的展示字段同口径；正文改由 `fields=description` 显式索取，
+ * 这样 `limit=50` 的缺省 payload 不再被长正文撑爆（验收 ≤100KB）。
+ */
+export const DEFAULT_PAGE_FIELDS: readonly IssueFieldName[] = [
+  'id', 'workspace_id', 'title', 'priority', 'labels', 'status', 'sort_order',
+  'claimed_by', 'claimed_at', 'session_id', 'parent_issue_id', 'due_date', 'due_time',
+  'comment_count', 'dependency_violation', 'decision_locked', 'open_decision_id',
+  'decision_grace_until', 'decision_waiting_seconds',
+  'blocked_by_count', 'blocked_by_open_count', 'resolved',
+  'created_at', 'updated_at', 'children_total', 'children_closed',
+];
+
 /** 直接落库列：从 `i` 取，白名单命中才进 SELECT */
 const BASE_ISSUE_COLUMNS: ReadonlyArray<readonly [IssueFieldName, string]> = [
   ['id', 'i.id'],

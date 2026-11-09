@@ -50,13 +50,23 @@ describe('PERF-4a：GET /api/issues fields= 白名单', () => {
     }
   }, 30_000);
 
-  it('缺省 fields 仍是完整字段（description / comment_count 都在）', async () => {
+  it('分页缺省走精简字段集：不含 description，含展示必需字段', async () => {
     const res = await request(app).get(`/api/issues?workspace=${wsA}&limit=50`);
     expect(res.status).toBe(200);
     const item = res.body.items[0] as Record<string, unknown>;
+    expect(item.description).toBeUndefined();
+    expect(item.description_truncated).toBeUndefined();
+    expect(item.comment_count).toBe(0);
+    expect(typeof item.title).toBe('string');
+    expect(typeof item.status).toBe('string');
+  }, 30_000);
+
+  it('非分页缺省仍是完整字段（保持旧契约）', async () => {
+    const res = await request(app).get(`/api/issues?workspace=${wsA}`);
+    expect(res.status).toBe(200);
+    const item = (res.body as Array<Record<string, unknown>>)[0]!;
     expect(typeof item.description).toBe('string');
     expect(item.comment_count).toBe(0);
-    expect(item.description_truncated).toBe(false);
   }, 30_000);
 
   it('fields 含未知字段 → 400', async () => {

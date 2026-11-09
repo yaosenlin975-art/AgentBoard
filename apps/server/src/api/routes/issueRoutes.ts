@@ -18,7 +18,7 @@ import { zhZodIssue } from '../zod.js';
 import type { Db } from '../../db/connection.js';
 import { textWindow } from '../../db/pagination.js';
 import { getWorkspace } from '../../db/repos/workspace.js';
-import { deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../../db/repos/issue.js';
+import { DEFAULT_PAGE_FIELDS, deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../../db/repos/issue.js';
 import { getStopState } from '../../db/repos/decision.js';
 import { listCommentsByIssue, listCommentsPage, getCommentContent } from '../../db/repos/comment.js';
 import { listIssueAttachments, listPendingIssueAttachments } from '../../db/repos/attachment.js';
@@ -34,7 +34,7 @@ import {
   type WorkspaceDbDecision,
   type WorkspaceLike,
 } from '../../db/resolver.js';
-import { createIssueCountsRouter, parseIssueFields } from '../issuePayloadRoutes.js';
+import { createIssueCountsRouter, issuesV2Enabled, parseIssueFields } from '../issuePayloadRoutes.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../errors.js';
 import { createIssueInHierarchy, getIssueTreeChildren } from '../../services/taskHierarchy.js';
 import {
@@ -355,12 +355,17 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     // 非法 → 400 并列出可用状态；合法 → 两个分支都真的按它过滤（旧实现非分页分支直接忽略 status）。
     const status = req.query.status === undefined ? undefined : requireWorkspaceStatus(rdb, workspaceId, parseBody(issueStatusSchema, req.query.status));
     // PERF-4a：fields= 白名单（回滚开关关闭时解析结果为 undefined，按旧完整字段返回）
-    const fields = parseIssueFields(typeof req.query.fields === 'string' ? req.query.fields : undefined);
+    const rawFields = typeof req.query.fields === 'string' ? req.query.fields : undefined;
+    const parsedFields = parseIssueFields(rawFields);
+    const paginated = req.query.limit !== undefined || req.query.offset !== undefined;
+    // PERF-4：分页且未显式给 fields 时走精简字段集（不含 description），避免长正文撑爆 payload；
+    // 显式 fields= 优先，非分页保持完整字段兼容，回滚开关关闭时行为不变。
+    const fields = parsedFields ?? (paginated && rawFields === undefined && issuesV2Enabled() ? DEFAULT_PAGE_FIELDS : undefined);
     // OPT-01：kind 集合 / 未占用过滤（缺省查询参数时行为与旧版一致）
     const kinds = parseKindsFilter(req.query.kinds);
     const unclaimed = parseUnclaimedFilter(req.query.unclaimed);
     const filters = { ...(kinds === undefined ? {} : { kinds }), ...(unclaimed === true ? { unclaimed } : {}) };
-    if (req.query.limit !== undefined || req.query.offset !== undefined) {
+    if (paginated) {
       const page = parseBody(pageQuerySchema, req.query);
       res.json(listIssuesPage(rdb, workspaceId, { ...page, status, fields, filters }));
     } else res.json(listIssues(rdb, workspaceId, status, fields, filters));

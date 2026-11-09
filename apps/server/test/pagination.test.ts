@@ -15,7 +15,10 @@ describe('bounded pagination', () => {
     createIssue(t.db, { workspace_id: b, title: 'secret' });
     const first = await request(app).get('/api/issues').query({ workspace: a, limit: 2, offset: 0 });
     expect(first.body.items.map((r: { id: string }) => r.id)).toEqual(ids.slice(0, 2)); expect(first.body.next_offset).toBe(2);
-    expect(first.body.items[0].description.length).toBeLessThanOrEqual(12000); expect(first.body.items[0].description_truncated).toBe(true);
+    // PERF-4：分页缺省不再返回 description；显式 fields=description 时才做文本窗口
+    expect(first.body.items[0].description).toBeUndefined();
+    const withBody = await request(app).get('/api/issues').query({ workspace: a, limit: 2, offset: 0, fields: 'id,description' });
+    expect(withBody.body.items[0].description.length).toBeLessThanOrEqual(12000); expect(withBody.body.items[0].description_truncated).toBe(true);
     const last = await request(app).get('/api/issues').query({ workspace: a, limit: 2, offset: 2 }); expect(last.body.items.map((r: { id: string }) => r.id)).toEqual(ids.slice(2)); expect(last.body.next_offset).toBeNull();
     expect(Array.isArray((await request(app).get('/api/issues').query({ workspace: a })).body)).toBe(true);
     expect((await request(app).get('/api/workspaces').query({ limit: 1 })).body.next_offset).toBe(1);
