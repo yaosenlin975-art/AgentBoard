@@ -214,6 +214,8 @@ export interface PixiGraphHandle {
   host: HTMLElement;
   /** 换数据/换布局：重建节点与连线（颜色缓存保留） */
   update(data: PixiGraphData): void;
+  /** 仅布局 tick：直接刷新已有节点坐标（CR2-7，不走 React state / 不重建对象） */
+  updatePositions(positions: ReadonlyMap<string, { x: number; y: number }>): void;
   /** 键盘/按钮缩放：乘一个倍率（走 1.5^(-Δ/120) 同一套 clamp） */
   zoomBy(factor: number): void;
   /** 适应视图：scale 回 1、pan 居中 */
@@ -998,8 +1000,9 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       next.edges.map((edge) => ({ key: edge.key, source: edge.source, target: edge.target })),
     );
     adjacency = buildAdjacency(next.edges);
-    // 清掉已消失的节点/连线
+    // 清掉已消失的节点/连线（边 key 先建 Set：逐边 some 是 O(E²)，节点多时每次 update 都卡一下）
     const keepNodes = new Set(next.nodes.map((node) => node.id));
+    const nextEdgeKeys = new Set(next.edges.map((edge) => edge.key));
     for (const [id, node] of [...nodeViews]) {
       if (keepNodes.has(id) && next.positions.has(id)) {
         objectStats.reused += 1;
@@ -1015,7 +1018,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       nodeViews.delete(id);
     }
     for (const [key, edge] of [...edgeViews]) {
-      if (next.edges.some((item) => item.key === key) && keepNodes.has(edge.source) && keepNodes.has(edge.target)) continue;
+      if (nextEdgeKeys.has(key) && keepNodes.has(edge.source) && keepNodes.has(edge.target)) continue;
       edge.line.destroy();
       edge.arrow.destroy();
       objectStats.destroyed += 2;
@@ -1035,6 +1038,25 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
     // 清掉会让「悬停 → 重渲染 → 高亮消失」自相矛盾。只在节点已不存在时清。
     if (hoverId !== null && !keepNodes.has(hoverId)) hoverId = null;
     // KB-PANEL-POLISH：未被用户平移/缩放前，坐标变化（含力导向 tick 挪动质心）都保持内容居中
+    if (!userAdjusted) {
+      centerOnContent();
+      return;
+    }
+    changed();
+  }
+
+  /**
+   * 布局 tick 直推（CR2-7）：只刷新已有节点的图坐标，不重建对象、不触发 React 重渲。
+   * 未创建的对象继续由渲染循环按 data.positions 创建，所以这里先把 positions 记进 data。
+   */
+  function updatePositions(positions: ReadonlyMap<string, { x: number; y: number }>): void {
+    data = { ...data, positions };
+    for (const [id, node] of nodeViews) {
+      const point = pinned.get(id) ?? positions.get(id);
+      if (point === undefined) continue;
+      node.x = point.x;
+      node.y = point.y;
+    }
     if (!userAdjusted) {
       centerOnContent();
       return;
@@ -1195,5 +1217,5 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
 
   changed();
 
-  return { host, update, zoomBy, resetView, refreshColors, changed, snapshot, destroy };
+  return { host, update, updatePositions, zoomBy, resetView, refreshColors, changed, snapshot, destroy };
 }

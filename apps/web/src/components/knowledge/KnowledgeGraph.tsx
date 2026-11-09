@@ -256,7 +256,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
   const shown = local?.graph ?? viewFilter.graph;
   const stats = shown === null ? null : graphStats(shown);
   // 布局（KB-GRAPH-P3）：首次用既有自研力学出初始坐标，之后走 D6 差量 + 力导向 tick（Worker，收敛即停）
-  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(() => new Map());
+  // CR2-7：坐标走 ref + 渲染层句柄直推，不再每 4 tick setState（收敛期 ~62 次整组件重渲 → 0）
+  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const layoutClientRef = useRef<ForceLayoutClient | null>(null);
   useEffect(() => {
     if (shown === null || shown.nodes.length === 0) return;
@@ -266,7 +267,10 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
           typeof Worker === 'undefined'
             ? null
             : new Worker(new URL('../../lib/forceLayoutWorker.ts', import.meta.url), { type: 'module' }),
-        onPositions: (next) => setPositions(new Map(next)),
+        onPositions: (next) => {
+          positionsRef.current = next;
+          handleRef.current?.updatePositions?.(next);
+        },
       });
     }
     const neighbours = buildAdjacency(shown.edges);
@@ -282,7 +286,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
       initial,
     );
     // 结构变化：已存在节点保持原坐标 + 新节点落点立刻上屏，随后 tick 回传覆盖
-    if (result.structural) setPositions(new Map(result.positions));
+    positionsRef.current = new Map(result.positions);
+    if (result.structural) {
+      const current = renderDataRef.current;
+      if (current !== null) handleRef.current?.update({ ...current, positions: positionsRef.current });
+    }
   }, [shown]);
 
   useEffect(
@@ -343,10 +351,10 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
           kind: edge.kind,
           weight: edge.weight,
         })),
-      positions,
+      positions: positionsRef.current,
       highlight,
     };
-  }, [showStage, shown, positions, highlight, local, colorScheme, dark]);
+  }, [showStage, shown, highlight, local, colorScheme, dark]);
 
   const pick = useCallback(
     (node: GraphNode): void => {
@@ -449,7 +457,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
             // CDP 验收钩子（与 snapshot() 同一入口，只读）
             (host as unknown as { __kbPixiGraph?: PixiGraphHandle }).__kbPixiGraph = handleRef.current;
             const initial = renderDataRef.current;
-            if (initial !== null) handleRef.current.update(initial);
+            // CR2-7：坐标在 ref 里，可能比 renderData 构建时更新 → 首帧用最新坐标，避免空坐标导致节点不建
+            if (initial !== null) handleRef.current.update({ ...initial, positions: positionsRef.current });
             setGraphError(null);
             setRenderer('webgl');
           } catch (error) {
