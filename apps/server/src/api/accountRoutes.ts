@@ -36,8 +36,8 @@ import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
 import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, deleteCliAccount, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
-import { createQuotaService, type QuotaService } from '../services/quotas/quotaService.js';
-import { resolvePlatformQuotaCredential } from '../services/quotas/platformQuotaCredentials.js';
+import { createQuotaService, type QuotaService, type QuotaSnapshot } from '../services/quotas/quotaService.js';
+import { quotaSourceForAppId, resolvePlatformQuotaCredential } from '../services/quotas/platformQuotaCredentials.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -250,12 +250,13 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   /** ACC-QUOTA-01：单实例缓存（60s TTL + 失败退避），每次服务装配只建一次 */
   // ACC-QUOTA-ALL：平台凭据 fetch 时解析（中心库签到凭据 / zcode 本机文件），凭据导入/轮换即时生效
   const quotas = deps.quotas ?? createQuotaService({
-    platformCredential: (source) => resolvePlatformQuotaCredential({
+    platformCredential: (source, accountId) => resolvePlatformQuotaCredential({
       db,
       vault: deps.vault,
       homeDir: deps.cliAccountHomeDir,
       env: deps.cliAccountEnv,
       source,
+      accountId,
     }),
   });
   /** MINIMAX-PATH：客户端探测单实例缓存（60s TTL），每次装配只建一次 */
@@ -339,7 +340,18 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.get('/managed-account-quotas', async (req, res) => {
     const workspace = z.string().uuid().safeParse(req.query.workspace_id ?? undefined);
     if (req.query.workspace_id !== undefined && !workspace.success) throw new ValidationError('workspace_id 不合法');
-    const snapshot = await quotas.get();
+    const accountId = z.string().uuid().safeParse(req.query.account_id ?? undefined);
+    if (req.query.account_id !== undefined && !accountId.success) throw new ValidationError('account_id 不合法');
+    let snapshot: QuotaSnapshot;
+    if (accountId.success) {
+      const account = getManagedAccount(db, accountId.data);
+      if (!account) throw new NotFoundError('账号不存在');
+      const source = quotaSourceForAppId(account.app_id);
+      if (!source) throw new ValidationError('该账号平台没有额度来源');
+      snapshot = await quotas.get({ accountId: account.id, source });
+    } else {
+      snapshot = await quotas.get();
+    }
     res.json({ ...snapshot, workspace_id: workspace.success ? workspace.data : null });
   });
 

@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { QUOTA_SOURCE_IDS } from '@agentboard/shared';
 import { parseMinimaxCredits, parseQoderQuota, parseTraeUsage, parseWorkbuddyCredits, parseZcodeQuota } from './platformQuotaParsers.js';
 import { traeQuotaUrl, workbuddyQuotaUrl } from '../accounts/platformHosts.js';
-import type { PlatformQuotaCredential } from './platformQuotaCredentials.js';
+import type { AccountQuotaSourceId, PlatformQuotaCredential } from './platformQuotaCredentials.js';
 
 // ACC-KB-A4：额度类型收敛到 packages/shared（此前 server 与 web 各抄一份字面量 union）。
 // 这里 re-export 保持既有 import 路径可用（`accountQuotas.test.ts` 等仍从本模块取类型）。
@@ -31,7 +31,7 @@ export type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindo
 
 
 export interface QuotaService {
-  get(): Promise<QuotaSnapshot>;
+  get(account?: { accountId: string; source: AccountQuotaSourceId }): Promise<QuotaSnapshot>;
   /** 测试用：清空缓存与退避状态 */
   reset(): void;
 }
@@ -65,7 +65,7 @@ export interface QuotaServiceOptions {
    * 实现：`platformQuotaCredentials.resolvePlatformQuotaCredential`（中心库签到凭据 / zcode 本机文件）。
    * 解析器自身不抛错；这里对意外抛错兜底成 `CREDENTIAL_UNAVAILABLE`。
    */
-  platformCredential?: (source: QuotaSourceId) => Promise<PlatformQuotaCredential>;
+  platformCredential?: (source: QuotaSourceId, accountId?: string) => Promise<PlatformQuotaCredential>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
@@ -456,8 +456,8 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   const homeDir = options.homeDir ?? homedir();
   const env = options.env ?? process.env;
 
-  const cache = new Map<QuotaSourceId, Cached>();
-  const inFlight = new Map<QuotaSourceId, Promise<QuotaResult>>();
+  const cache = new Map<string, Cached>();
+  const inFlight = new Map<string, Promise<QuotaResult>>();
 
   /** 上次命中的 DeepSeek key 来源：命中后在同一缓存生命周期内复用，避免每次把 N 个候选全试一遍 */
   let deepseekSuccessSource: DeepseekKeySource | null = null;
@@ -598,16 +598,16 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
    * - 平台请求统一 15s AbortSignal（对齐 httpCheckinProviders 的超时口径）；
    * - 单来源失败不影响其它来源（沿用 load() 的逐来源缓存与退避）。
    */
-  async function fetchPlatform(source: QuotaSourceId): Promise<QuotaResult> {
+  async function fetchPlatform(source: QuotaSourceId, accountId?: string): Promise<QuotaResult> {
     let credential: PlatformQuotaCredential;
     if (options.platformCredential) {
       try {
-        credential = await options.platformCredential(source);
+        credential = await options.platformCredential(source, accountId);
       } catch {
         return empty(source, 'error', now(), 'CREDENTIAL_UNAVAILABLE', '额度凭据解析失败（vault 暂不可用），稍后重试');
       }
     } else {
-      const token = options.platformTokens?.[source] ?? null;
+      const token = accountId === undefined ? options.platformTokens?.[source] ?? null : null;
       credential = token === null
         ? { kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: `本机未找到 ${source} 的额度凭据` }
         : { kind: 'ok', token, accountName: null };
@@ -682,41 +682,42 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     }
   }
 
-  function loaderFor(source: QuotaSourceId): () => Promise<QuotaResult> {
+  function loaderFor(source: QuotaSourceId, accountId?: string): () => Promise<QuotaResult> {
     if (source === 'deepseek') return fetchDeepseek;
     if (source === 'opencode_go') return fetchOpencodeGo;
     if (source === 'codex') return fetchCodexFromRollout;
-    return () => fetchPlatform(source);
+    return () => fetchPlatform(source, accountId);
   }
 
-  async function load(source: QuotaSourceId): Promise<QuotaResult> {
-    const cached = cache.get(source);
+  async function load(source: QuotaSourceId, accountId?: string): Promise<QuotaResult> {
+    const key = accountId === undefined ? source : `${source}:${accountId}`;
+    const cached = cache.get(key);
     if (cached && cached.expiresAt > now()) return cached.result;
-    const running = inFlight.get(source);
+    const running = inFlight.get(key);
     if (running) return running;
     const promise = (async () => {
-      const loader = loaderFor(source);
+      const loader = loaderFor(source, accountId);
       const result = await loader();
-      const previous = cache.get(source);
+      const previous = cache.get(key);
       const failures = result.status === 'error' ? (previous?.failures ?? 0) + 1 : 0;
       const backoff = result.status === 'error'
         ? Math.min(ttlMs * 2 ** Math.max(0, failures - 1), maxBackoffMs)
         : ttlMs;
-      cache.set(source, { result, expiresAt: now() + backoff, failures });
+      cache.set(key, { result, expiresAt: now() + backoff, failures });
       return result;
     })();
-    inFlight.set(source, promise);
+    inFlight.set(key, promise);
     try {
       return await promise;
     } finally {
-      inFlight.delete(source);
+      inFlight.delete(key);
     }
   }
 
   return {
-    async get(): Promise<QuotaSnapshot> {
-      const sources: QuotaSourceId[] = [...QUOTA_SOURCE_IDS];
-      const items = await Promise.all(sources.map((source) => load(source)));
+    async get(account?: { accountId: string; source: AccountQuotaSourceId }): Promise<QuotaSnapshot> {
+      const sources: QuotaSourceId[] = account ? [account.source] : [...QUOTA_SOURCE_IDS];
+      const items = await Promise.all(sources.map((source) => load(source, account?.accountId)));
       return { items, fetched_at: now() };
     },
     reset() {

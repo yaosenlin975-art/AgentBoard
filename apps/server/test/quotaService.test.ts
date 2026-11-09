@@ -440,3 +440,45 @@ describe('Codex 本地 rollout 快照（ACC-CODEX-QUOTA-IMPL）', () => {
     expect(second.items[2]!.windows[0]!.used_percent).toBe(5);
   });
 });
+
+describe('托管账号额度缓存隔离', () => {
+  it('同平台账号并发与缓存各自取数，reset 清理账号缓存', async () => {
+    const accountA = '11111111-1111-4111-8111-111111111111';
+    const accountB = '22222222-2222-4222-8222-222222222222';
+    const selectedAccounts: string[] = [];
+    const platformCredential = async (_source: string, accountId?: string) => {
+      selectedAccounts.push(accountId ?? 'aggregate');
+      return { kind: 'ok' as const, token: accountId === accountA ? 'account-a-secret' : 'account-b-secret', accountName: null };
+    };
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get('authorization');
+      const totalCredits = authorization === 'Bearer account-a-secret' ? '101.25' : '202.5';
+      return new Response(JSON.stringify({ data: { TotalCredits: totalCredits } }), { status: 200 });
+    });
+    const service = createQuotaService({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      platformCredential,
+      homeDir: tempHome({}),
+      env: {},
+      now: () => 1_000,
+    });
+
+    const [firstA, firstB, parallelA] = await Promise.all([
+      service.get({ accountId: accountA, source: 'workbuddy' }),
+      service.get({ accountId: accountB, source: 'workbuddy' }),
+      service.get({ accountId: accountA, source: 'workbuddy' }),
+    ]);
+    const balance = (snapshot: Awaited<ReturnType<typeof service.get>>) => snapshot.items[0]!.balance;
+    expect(balance(firstA)).toBe(101.25);
+    expect(balance(parallelA)).toBe(101.25);
+    expect(balance(firstB)).toBe(202.5);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(selectedAccounts).toEqual([accountA, accountB]);
+
+    await service.get({ accountId: accountB, source: 'workbuddy' });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    service.reset();
+    await service.get({ accountId: accountA, source: 'workbuddy' });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+});

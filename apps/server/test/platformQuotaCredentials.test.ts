@@ -117,6 +117,40 @@ describe('resolvePlatformQuotaCredential（中心库 + vault）', () => {
     } finally { t.cleanup(); }
   });
 
+  it('指定 accountId 时严格读取该账号；禁用、平台不符与无凭据都明确返回 missing', async () => {
+    const t = createTestDb();
+    try {
+      const oldRef = randomUUID();
+      const newRef = randomUUID();
+      const oldId = insertAccount(t, { app_id: 'workbuddy_desktop', display_name: '旧号', checkin_credential_ref: oldRef, client_instance_id: 'protocol' });
+      const newId = insertAccount(t, { app_id: 'workbuddy_desktop', display_name: '新号', checkin_credential_ref: newRef, client_instance_id: 'imported' });
+      t.db.prepare('UPDATE managed_account SET updated_at=updated_at+10 WHERE id=?').run(newId);
+      const vault = fakeVault({ [oldRef]: Buffer.from('account-a-token'), [newRef]: Buffer.from('account-b-token') });
+
+      const oldAccount = await resolvePlatformQuotaCredential({ db: t.db, vault, source: 'workbuddy', accountId: oldId });
+      expect(oldAccount).toEqual({ kind: 'ok', token: 'account-a-token', accountName: '旧号' });
+      expect(vault.calls[0]!.ref).toBe(oldRef);
+
+      const minimaxId = insertAccount(t, { app_id: 'minimax', checkin_credential_ref: randomUUID() });
+      const mismatch = await resolvePlatformQuotaCredential({ db: t.db, vault, source: 'workbuddy', accountId: minimaxId });
+      expect(mismatch).toMatchObject({ kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: '该账号的平台与额度来源不匹配' });
+
+      const disabledId = insertAccount(t, { app_id: 'workbuddy_desktop', checkin_credential_ref: randomUUID() });
+      const { setManagedAccountEnabled } = await import('../src/db/repos/managedAccount.js');
+      setManagedAccountEnabled(t.db, disabledId, false);
+      const disabled = await resolvePlatformQuotaCredential({ db: t.db, vault, source: 'workbuddy', accountId: disabledId });
+      expect(disabled).toMatchObject({ kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: '账号已停用，无法读取额度' });
+
+      const noCredentialId = insertAccount(t, { app_id: 'workbuddy_desktop' });
+      const noCredential = await resolvePlatformQuotaCredential({ db: t.db, vault, source: 'workbuddy', accountId: noCredentialId });
+      expect(noCredential).toMatchObject({ kind: 'missing', reasonCode: 'NO_CREDENTIAL' });
+      expect(noCredential).toMatchObject({ kind: 'missing', detail: expect.stringContaining('未导入') });
+      const missing = await resolvePlatformQuotaCredential({ db: t.db, vault, source: 'workbuddy', accountId: randomUUID() });
+      expect(missing).toMatchObject({ kind: 'missing', reasonCode: 'NO_CREDENTIAL' });
+      expect(missing).toMatchObject({ kind: 'missing', detail: expect.stringContaining('账号不存在') });
+    } finally { t.cleanup(); }
+  });
+
   it('minimax JSON 凭据取 access_token；trae/qoder_cn 裸串凭据 trim 后直用', async () => {
     const t = createTestDb();
     try {
@@ -181,7 +215,11 @@ describe('resolvePlatformQuotaCredential（中心库 + vault）', () => {
       expect(vault.calls).toHaveLength(0); // 本机文件命中时不碰 vault
 
       const ref = randomUUID();
-      insertAccount(t, { app_id: 'zcode', checkin_credential_ref: ref, display_name: '库内号' });
+      const accountId = insertAccount(t, { app_id: 'zcode', checkin_credential_ref: ref, display_name: '库内号' });
+      const accountVault = fakeVault({ [ref]: Buffer.from('vault-zcode-token', 'utf8') });
+      const accountScoped = await resolvePlatformQuotaCredential({ db: t.db, vault: accountVault, source: 'zcode', accountId, homeDir: home, env: { ZCODE_CREDENTIAL_SECRET: SECRET } });
+      expect(accountScoped).toMatchObject({ kind: 'ok', token: 'vault-zcode-token', accountName: '库内号' });
+      expect(accountVault.calls).toHaveLength(1); // 账号模式必须忽略本机 oauth token
       const fallback = await resolvePlatformQuotaCredential({ db: t.db, vault: fakeVault({ [ref]: Buffer.from('vault-zcode-token', 'utf8') }), source: 'zcode', homeDir: mkdtempSync(join(tmpdir(), 'zcodecred-')), env: {} });
       expect(fallback).toMatchObject({ kind: 'ok', token: 'vault-zcode-token' });
     } finally { t.cleanup(); }

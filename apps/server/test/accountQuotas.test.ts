@@ -5,14 +5,20 @@
  * - 响应不含 token / 本机路径 / identity_hash；
  * - 缓存由 quotaService 负责（本文件只验路由装配与形状）。
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
+import express from 'express';
 import type { Express } from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
+import { createAccountRouter } from '../src/api/accountRoutes.js';
+import { errorHandler } from '../src/api/routes.js';
+import { createManagedAccount } from '../src/db/repos/managedAccount.js';
+import { attachCheckinCredential } from '../src/db/repos/checkin.js';
 import type { QuotaSnapshot } from '../src/services/quotas/quotaService.js';
+import { FakeCheckinVault } from './fakeCheckinProvider.js';
 
 const snapshot: QuotaSnapshot = {
   fetched_at: 1_700_000_000_000,
@@ -36,10 +42,12 @@ describe('GET /api/managed-account-quotas', () => {
   let t: TestDb;
   let app: Express;
   let calls: number;
+  let quotaSelections: unknown[];
 
   beforeEach(async () => {
     t = createTestDb();
     calls = 0;
+    quotaSelections = [];
     const adapter = new FakeAdapter();
     const created = await createApp({
       db: t.db,
@@ -50,8 +58,9 @@ describe('GET /api/managed-account-quotas', () => {
       adapters: [adapter],
       refreshClisOnBoot: false,
       quotas: {
-        get: async () => {
+        get: async (selection?: unknown) => {
           calls += 1;
+          quotaSelections.push(selection);
           return snapshot;
         },
       },
@@ -78,6 +87,34 @@ describe('GET /api/managed-account-quotas', () => {
     await request(app).get('/api/managed-account-quotas?workspace_id=not-a-uuid').expect(400);
   });
 
+  it('account_id 校验、找不到账号和不支持平台均不触发额度读取', async () => {
+    await request(app).get('/api/managed-account-quotas?account_id=not-a-uuid').expect(400);
+    await request(app).get(`/api/managed-account-quotas?account_id=${randomUUID()}`).expect(404);
+    const unsupported = createManagedAccount(t.db, {
+      app_id: 'codebuddy_desktop',
+      client_instance_id: `quota-${randomUUID()}`,
+      service_region: 'cn',
+      identity_hash: createHash('sha256').update(randomUUID()).digest('hex'),
+      display_name: 'unsupported-quota-source',
+    });
+    await request(app).get(`/api/managed-account-quotas?account_id=${unsupported.id}`).expect(400);
+    expect(calls).toBe(0);
+  });
+
+  it('account_id 映射为对应平台来源并传给额度服务；无参数聚合仍不变', async () => {
+    const account = createManagedAccount(t.db, {
+      app_id: 'workbuddy_desktop',
+      client_instance_id: `quota-${randomUUID()}`,
+      service_region: 'cn',
+      identity_hash: createHash('sha256').update(randomUUID()).digest('hex'),
+      display_name: 'workbuddy-quota-account',
+    });
+    await request(app).get(`/api/managed-account-quotas?account_id=${account.id}`).expect(200);
+    expect(quotaSelections).toEqual([{ accountId: account.id, source: 'workbuddy' }]);
+    await request(app).get('/api/managed-account-quotas').expect(200);
+    expect(quotaSelections[1]).toBeUndefined();
+  });
+
   it('响应不含 token / 本机路径 / identity_hash', async () => {
     const res = await request(app).get('/api/managed-account-quotas').expect(200);
     const text = JSON.stringify(res.body);
@@ -85,5 +122,63 @@ describe('GET /api/managed-account-quotas', () => {
     expect(text).not.toContain('api_key');
     expect(text).not.toContain('C:\\');
     expect(text).not.toContain('identity_hash');
+  });
+});
+
+describe('GET /api/managed-account-quotas account scope integration', () => {
+  it('真实 account router 通过目标账号凭据返回各自 WorkBuddy 结果', async () => {
+    const t = createTestDb();
+    const vault = new FakeCheckinVault();
+    let fetchCalls = 0;
+    try {
+      const createAccount = async (name: string, credential: string): Promise<string> => {
+        const account = createManagedAccount(t.db, {
+          app_id: 'workbuddy_desktop',
+          client_instance_id: `quota-${name}`,
+          service_region: 'cn',
+          identity_hash: createHash('sha256').update(name).digest('hex'),
+          display_name: name,
+        });
+        const ref = await vault.protect(Buffer.from(credential), {
+          app_id: account.app_id,
+          client_instance_id: account.client_instance_id,
+          identity_hash: account.identity_hash,
+          purpose: 'checkin',
+        });
+        attachCheckinCredential(t.db, account.id, ref);
+        return account.id;
+      };
+      const accountA = await createAccount('quota-a', 'account-a-secret');
+      const accountB = await createAccount('quota-b', 'account-b-secret');
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls += 1;
+        const authorization = new Headers(init?.headers).get('authorization');
+        const totalCredits = authorization === 'Bearer account-a-secret' ? '111.5' : '222.75';
+        return new Response(JSON.stringify({ data: { TotalCredits: totalCredits } }), { status: 200 });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const app = express();
+      app.use('/api', createAccountRouter({ db: t.db, vault }));
+      app.use(errorHandler);
+
+      const [a, b] = await Promise.all([
+        request(app).get(`/api/managed-account-quotas?account_id=${accountA}`).expect(200),
+        request(app).get(`/api/managed-account-quotas?account_id=${accountB}`).expect(200),
+      ]);
+      expect(a.body.items).toHaveLength(1);
+      expect(a.body.items[0]).toMatchObject({ source: 'workbuddy', status: 'ok', balance: 111.5, unit: '积分' });
+      expect(b.body.items).toHaveLength(1);
+      expect(b.body.items[0]).toMatchObject({ source: 'workbuddy', status: 'ok', balance: 222.75, unit: '积分' });
+      expect(fetchCalls).toBe(2);
+      await request(app).get(`/api/managed-account-quotas?account_id=${accountA}`).expect(200);
+      expect(fetchCalls).toBe(2);
+      const responseText = JSON.stringify([a.body, b.body]);
+      expect(responseText).not.toContain('account-a-secret');
+      expect(responseText).not.toContain('account-b-secret');
+      expect(responseText).not.toContain('identity_hash');
+    } finally {
+      vi.unstubAllGlobals();
+      t.cleanup();
+    }
   });
 });
