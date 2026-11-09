@@ -4,7 +4,7 @@ import { addComment as insertCommentRow, listCommentsByIssue } from '../db/repos
 import { getLastSeenCommentId, getIssue, setLastSeenCommentId } from '../db/repos/issue.js';
 import { NotFoundError } from '../errors.js';
 import { assertFenceCurrent } from './claim.js';
-import { bindAttachmentsToComment, bindCommentAttachments, hasUndeliveredCommentAttachments } from '../db/repos/attachment.js';
+import { bindAttachmentsToComment, bindCommentAttachments, undeliveredCommentIds } from '../db/repos/attachment.js';
 import type { SessionSender } from './sessionManager.js';
 
 /** Task 9 装配真实 sendToSession 前的默认 sender：任何唤醒尝试显式失败 */
@@ -97,8 +97,10 @@ export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult 
       cursor === null || cursorIndex === -1
         ? comments.map((c) => c.id)
         : comments.slice(cursorIndex + 1).map((c) => c.id);
-    const firstPendingImage = comments.findIndex((comment) =>
-      unread.includes(comment.id) && hasUndeliveredCommentAttachments(db, issueId, comment.id),
+    // CR2-4：未交付图片评论一次查全（原逐条 EXISTS 是 N+1）
+    const pendingImages = undeliveredCommentIds(db, issueId);
+    const firstPendingImage = comments.findIndex(
+      (comment) => unread.includes(comment.id) && pendingImages.has(comment.id),
     );
     if (firstPendingImage >= 0) {
       const imageId = comments[firstPendingImage]!.id;

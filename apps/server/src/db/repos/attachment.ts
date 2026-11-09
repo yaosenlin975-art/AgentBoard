@@ -133,7 +133,11 @@ export function commentAttachments(db: Db, issueId: string, commentId: string): 
   const rows = db.prepare(`SELECT a.id,a.file_name,a.mime_type,a.size_bytes,ca.delivery_state FROM attachment a
     JOIN comment_attachment ca ON ca.attachment_id=a.id JOIN issue_comment c ON c.id=ca.comment_id
     WHERE c.issue_id=? AND c.id=? ORDER BY ca.position`).all(issueId, commentId) as CommentAttachmentRecord[];
-  return rows.map((row) => ({
+  return rows.map((row) => attachmentMetadata(issueId, row));
+}
+
+function attachmentMetadata(issueId: string, row: CommentAttachmentRecord): AttachmentMetadata {
+  return {
     id: row.id,
     file_name: row.file_name,
     // D7：库里的 mime 已放开为任意字符串；shared 契约的窄类型仅覆盖评论图片通道，超出时按原值透传
@@ -141,13 +145,30 @@ export function commentAttachments(db: Db, issueId: string, commentId: string): 
     size_bytes: row.size_bytes,
     url: `/api/issues/${issueId}/attachments/${row.id}`,
     delivery_state: row.delivery_state,
-  }));
+  };
 }
 
-export function hasUndeliveredCommentAttachments(db: Db, issueId: string, commentId: string): boolean {
-  return Boolean(db.prepare(`SELECT 1 FROM comment_attachment ca
+/** CR2-4：评论列表的附件一次装配（逐条 commentAttachments 在评论多时是 N+1） */
+export function commentAttachmentsByComment(db: Db, issueId: string): Map<string, AttachmentMetadata[]> {
+  const rows = db.prepare(`SELECT ca.comment_id,a.id,a.file_name,a.mime_type,a.size_bytes,ca.delivery_state FROM attachment a
+    JOIN comment_attachment ca ON ca.attachment_id=a.id JOIN issue_comment c ON c.id=ca.comment_id
+    WHERE c.issue_id=? ORDER BY ca.comment_id,ca.position`).all(issueId) as Array<CommentAttachmentRecord & { comment_id: string }>;
+  const grouped = new Map<string, AttachmentMetadata[]>();
+  for (const row of rows) {
+    const list = grouped.get(row.comment_id);
+    const item = attachmentMetadata(issueId, row);
+    if (list === undefined) grouped.set(row.comment_id, [item]);
+    else list.push(item);
+  }
+  return grouped;
+}
+
+/** CR2-4：该任务下仍未交付的图片评论 id（一次查询，替代逐条 EXISTS） */
+export function undeliveredCommentIds(db: Db, issueId: string): Set<string> {
+  const rows = db.prepare(`SELECT DISTINCT ca.comment_id FROM comment_attachment ca
     JOIN issue_comment c ON c.id=ca.comment_id
-    WHERE c.issue_id=? AND c.id=? AND ca.delivered_at IS NULL LIMIT 1`).get(issueId, commentId));
+    WHERE c.issue_id=? AND ca.delivered_at IS NULL`).all(issueId) as Array<{ comment_id: string }>;
+  return new Set(rows.map((row) => row.comment_id));
 }
 
 export function listPendingIssueAttachments(db: Db, issueId: string, input: { limit: number; offset: number }): PageResult<DispatchAttachmentCandidate> {

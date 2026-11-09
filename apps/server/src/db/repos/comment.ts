@@ -4,7 +4,7 @@ import type { Db } from '../connection.js';
 import type { PageResult } from '@agentboard/shared';
 import { pageResult, textWindow, validatePage } from '../pagination.js';
 import { ApiError } from '../../errors.js';
-import { bindCommentAttachments, commentAttachments } from './attachment.js';
+import { bindCommentAttachments, commentAttachmentsByComment } from './attachment.js';
 
 export interface AddCommentInput {
   issue_id: string;
@@ -34,12 +34,19 @@ export function listCommentsByIssue(db: Db, issueId: string): IssueComment[] {
   const rows = db
     .prepare('SELECT * FROM issue_comment WHERE issue_id = ? ORDER BY ts, id')
     .all(issueId) as IssueComment[];
-  return rows.map((row) => bindCommentAttachments(db, issueId, row));
+  // CR2-4：附件一次批量装配（原逐条 commentAttachments 随评论数线性增加查询）
+  const attachmentsByComment = commentAttachmentsByComment(db, issueId);
+  return rows.map((row) => {
+    const attachments = attachmentsByComment.get(row.id);
+    return attachments === undefined ? row : { ...row, attachments };
+  });
 }
 export function listCommentsPage(db: Db, issueId: string, input: { limit: number; offset: number }): PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean; attachments?: import('@agentboard/shared').AttachmentMetadata[] }> {
   validatePage(input.limit, input.offset);
   const rows = db.prepare('SELECT * FROM issue_comment WHERE issue_id=? ORDER BY id ASC LIMIT ? OFFSET ?').all(issueId, input.limit + 1, input.offset) as IssueComment[];
-  return pageResult(rows.map(row => { const window = textWindow(row.content, 0, 500); const attachments = commentAttachments(db, issueId, row.id); return { id: row.id, author: row.author, ts: row.ts, snippet: window.content, has_more: window.truncated, ...(attachments.length ? { attachments } : {}) }; }), input.limit, input.offset);
+  // CR2-4：同一批附件查询复用，避免每行一次 commentAttachments
+  const attachmentsByComment = commentAttachmentsByComment(db, issueId);
+  return pageResult(rows.map(row => { const window = textWindow(row.content, 0, 500); const attachments = attachmentsByComment.get(row.id) ?? []; return { id: row.id, author: row.author, ts: row.ts, snippet: window.content, has_more: window.truncated, ...(attachments.length ? { attachments } : {}) }; }), input.limit, input.offset);
 }
 export function getCommentContent(db: Db, issueId: string, commentId: string, offsetChars = 0, maxChars = 12000) {
   const comment = db.prepare('SELECT * FROM issue_comment WHERE id=? AND issue_id=?').get(commentId, issueId) as IssueComment | undefined;
