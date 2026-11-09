@@ -71,6 +71,12 @@ async function userComment(issueId: string, content: string): Promise<{ id: stri
   return res.body.comment as { id: string };
 }
 
+async function agentComment(issueId: string, content: string, agentId: string): Promise<{ id: string }> {
+  const res = await request(app).post(`/api/issues/${issueId}/comments`).send({ content, agent_id: agentId });
+  expect(res.status).toBe(200);
+  return res.body.comment as { id: string };
+}
+
 async function consume(issueId: string): Promise<{
   comments: Array<{ id: string; content: string }>;
   new_comment_ids: string[];
@@ -121,6 +127,27 @@ describe('POST /api/issues/:id/comments/consume', () => {
 
     const second = await consume(id);
     expect(second.new_comment_ids).toEqual([]);
+  });
+
+  it('占用者自身评论不标新（COMMENT-UNREAD 839cf942）：同一作者评论不进待读集合，他人评论照常标注', async () => {
+    const wsId = await mkSpace();
+    const id = await mkIssue(wsId);
+    await kbClaim(id); // claimed_by = kb-agent
+
+    const own = await agentComment(id, '占用者进度留言', 'kb-agent');
+    const first = await consume(id);
+    expect(first.new_comment_ids).toEqual([]); // 自身评论不标新
+    expect(first.comments.map((c) => c.content)).toEqual(['占用者进度留言']); // 评论仍在列表
+
+    // 时间序在其后的用户评论照常标注，且自身评论不回涨
+    const c2 = await userComment(id, '补充要求');
+    const second = await consume(id);
+    expect(second.new_comment_ids).toEqual([c2.id]);
+
+    // 其他 agent 的评论不是「自身」，仍标新
+    const other = await agentComment(id, '其他 agent 留言', 'other-agent');
+    const third = await consume(id);
+    expect(third.new_comment_ids).toEqual([other.id]);
   });
 
   it('未知 issue → 404', async () => {

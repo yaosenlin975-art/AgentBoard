@@ -77,19 +77,22 @@ export function storeComment(db: Db, issueId: string, author: CommentAuthor, con
 
 export interface ConsumeCommentsResult {
   comments: IssueComment[];
-  /** 当前可交付的新评论 id（遇到未验证图片时停在其前面） */
+  /** 当前可交付的新评论 id（遇到未验证图片时停在其前面；不含占用者自身评论，见 consumeComments） */
   new_comment_ids: string[];
 }
 
 /**
  * 留言消费（kb 占用场景的恰好一次标注，§5.8）：事务内读取评论并推进游标。
  * 含图片评论在图片交付能力验证前阻断游标前进，避免只传递文字后误标已读。
+ * COMMENT-UNREAD（839cf942）：占用者自身（`agent:<claimed_by>`）写的评论不进待读集合；
+ * 游标推进与图片阻断扫描不变（未占用时不过滤，行为与过滤前一致）。
  */
 export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult {
   let comments: IssueComment[] = [];
   let newCommentIds: string[] = [];
   db.transaction(() => {
-    if (!getIssue(db, issueId)) throw new NotFoundError('任务不存在');
+    const issue = getIssue(db, issueId);
+    if (!issue) throw new NotFoundError('任务不存在');
     comments = listCommentsByIssue(db, issueId);
     const cursor = getLastSeenCommentId(db, issueId);
     const cursorIndex = cursor === null ? -1 : comments.findIndex((c) => c.id === cursor);
@@ -97,6 +100,11 @@ export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult 
       cursor === null || cursorIndex === -1
         ? comments.map((c) => c.id)
         : comments.slice(cursorIndex + 1).map((c) => c.id);
+    // COMMENT-UNREAD：自身作者评论不进待读集合；阻断扫描与游标仍按 unread 全集计算
+    const selfAuthor = issue.claimed_by === null ? null : `agent:${issue.claimed_by}`;
+    const authorOf = new Map(comments.map((c) => [c.id, c.author] as const));
+    const notSelf = (ids: string[]): string[] =>
+      selfAuthor === null ? ids : ids.filter((id) => authorOf.get(id) !== selfAuthor);
     // CR2-4：未交付图片评论一次查全（原逐条 EXISTS 是 N+1）
     const pendingImages = undeliveredCommentIds(db, issueId);
     const firstPendingImage = comments.findIndex(
@@ -105,10 +113,10 @@ export function consumeComments(db: Db, issueId: string): ConsumeCommentsResult 
     if (firstPendingImage >= 0) {
       const imageId = comments[firstPendingImage]!.id;
       const beforeImage = unread.indexOf(imageId);
-      newCommentIds = unread.slice(0, beforeImage);
+      newCommentIds = notSelf(unread.slice(0, beforeImage));
       setLastSeenCommentId(db, issueId, firstPendingImage > 0 ? comments[firstPendingImage - 1]!.id : null);
     } else {
-      newCommentIds = unread;
+      newCommentIds = notSelf(unread);
       setLastSeenCommentId(db, issueId, unread.length > 0 ? unread[unread.length - 1]! : cursor);
     }
   })();

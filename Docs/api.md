@@ -484,7 +484,7 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 | `GET /api/issues/:id/pending-attachments` | query：`limit? offset?`（默认 50、最大 100） | `PageResult<DispatchAttachmentCandidate>`：仅返回该 Issue 的 pending/unknown 图片元数据，按评论时间、评论 ID、附件位置升序；每项含作者、500 code point 评论片段，不含路径 | 404 任务不存在；400 分页参数非法 | routes.ts |
 | `GET /api/issues/:id/comments/:commentId` | query：`content_offset_chars?` `content_max_chars?` | 单条评论窗口及 `truncated`、续读 offset；含 `attachments?` | 404 任务不存在；404 `COMMENT_NOT_FOUND` 评论不存在 | routes.ts |
 | `POST /api/issues/:id/comments` | body：`content: string`（可空，仅当有图片）、`workspace_id?`、`attachment_ids?: UUID[]`（唯一，最多 5；有图时 workspace_id 必填）、`agent_id?: string`。幂等 | `{ comment: IssueComment, woke: boolean, warning?: 'WAKE_FAILED'\|'IMAGE_DELIVERY_UNVERIFIED' }`。纯文字沿用用户评论唤醒；含图片时仅在当前 CLI/model 已验证时唤醒。附件元数据带 `delivery_state`：pending、sending、unknown、delivered。未知/失败时评论保持待读。WS comment.added + issue.changed；投递状态经 comment.delivery.changed 刷新 | 400 内容与图片同时空 / 字段非法；404 图片或任务不在指定空间；409 `ATTACHMENT_ALREADY_BOUND`；410 `ATTACHMENT_EXPIRED` | routes.ts |
-| `POST /api/issues/:id/comments/consume` | — | `{ comments: IssueComment[], new_comment_ids: string[] }`。含附件的首条待读评论在 `delivered_at` 为空时阻止游标前进；`new_comment_ids` 不含该图片评论及其后的评论。无图片阻塞时沿用原有恰好一次游标语义 | 404 任务不存在 | routes.ts |
+| `POST /api/issues/:id/comments/consume` | — | `{ comments: IssueComment[], new_comment_ids: string[] }`。含附件的首条待读评论在 `delivered_at` 为空时阻止游标前进；`new_comment_ids` 不含该图片评论及其后的评论，也不含当前占用者（`agent:<claimed_by>`）自身的评论（未占用时不过滤）。无图片阻塞时沿用原有恰好一次游标语义 | 404 任务不存在 | routes.ts |
 
 ### 验收记录 CLI（ACCEPT-1，`kb accept`）
 
