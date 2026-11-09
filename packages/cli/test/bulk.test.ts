@@ -126,6 +126,8 @@ describe('BULK-OPS：close --ids-file', () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'Demo', path: 'D:\\demo', created_at: 1 }] };
       if (m === 'GET' && u.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: [issue(full)] };
+      // CR2-10：前缀扫描只带定位字段，唯一命中后 CLI 会再取一次完整 Issue
+      if (m === 'GET' && u === `/api/issues/${full}`) return { status: 200, body: issue(full) };
       if (m === 'POST' && u === `/api/issues/${full}/close`) return { status: 200, body: issue(full, '已关闭') };
       return undefined;
     };

@@ -281,18 +281,24 @@ async function fetchDecision(ctx: Ctx, id: string): Promise<DecisionDto> {
   return response.decision;
 }
 
-/** ≥8 位前缀只在本命令组解析：逐工作区列出决策再按 id 前缀匹配 */
+/** CR2-10：前缀解析需要「全部决策」，服务端无游标，只能用一个足够大的上限一次性读回 */
+const DECISION_PREFIX_SCAN_LIMIT = 100_000;
+
+/** ≥8 位前缀只在本命令组解析：一次批量拉全部工作区的在途决策再按 id 前缀匹配（不再逐区串行扇出） */
 async function resolveDecisionRef(ctx: Ctx, ref: string): Promise<string> {
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)) return ref;
   if (ref.length < 8) throw new Error('决策 id 前缀至少 8 位（或传完整 UUID）');
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
+  if (spaces.length === 0) throw new Error(`决策不存在：${ref}`);
+  // CR2-10：用 workspace_ids 一次批量读（不再逐区串行）。服务端没有游标/offset，且 repo 在缺省 limit 时只回 200 条，
+  // 所以必须显式传一个大上限，否则历史决策一多就会假阴性「决策不存在」。
+  const list = await request<{ decisions: DecisionListItemDto[] }>(
+    ctx.base,
+    'GET',
+    `/api/decisions?workspace_ids=${spaces.map(space => encodeURIComponent(space.id)).join(',')}&limit=${DECISION_PREFIX_SCAN_LIMIT}`,
+  );
   const matches = new Set<string>();
-  for (const space of spaces) {
-    const list = await request<{ decisions: DecisionListItemDto[] }>(
-      ctx.base, 'GET', `/api/decisions?workspace_id=${encodeURIComponent(space.id)}&limit=500`,
-    );
-    for (const item of list.decisions) if (item.id.startsWith(ref.toLowerCase())) matches.add(item.id);
-  }
+  for (const item of list.decisions) if (item.id.startsWith(ref.toLowerCase())) matches.add(item.id);
   if (matches.size === 0) throw new Error(`决策不存在：${ref}`);
   if (matches.size > 1) throw new Error(`决策前缀命中多条：${[...matches].join(' / ')}`);
   return [...matches][0]!;

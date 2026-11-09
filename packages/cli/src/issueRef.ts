@@ -44,10 +44,16 @@ export interface ResolvedIssueRef {
   issue?: Issue;
 }
 
-async function listAllIssues(ctx: Ctx): Promise<Issue[]> {
+/** CR2-10/PERF-4a：前缀扫描与 404 纠错只要定位字段，避免每个工作区都把 description 全文拉回 CLI */
+const PREFIX_FIELDS = 'id,workspace_id,title,status';
+
+async function listAllIssues(ctx: Ctx, fields?: string): Promise<Issue[]> {
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
+  const fieldQuery = fields === undefined ? '' : `&fields=${encodeURIComponent(fields)}`;
   const lists = await Promise.all(
-    spaces.map(space => request<Issue[]>(ctx.base, 'GET', `/api/issues?workspace=${encodeURIComponent(space.id)}`)),
+    spaces.map(space =>
+      request<Issue[]>(ctx.base, 'GET', `/api/issues?workspace=${encodeURIComponent(space.id)}${fieldQuery}`),
+    ),
   );
   return lists.flat();
 }
@@ -106,7 +112,7 @@ export async function notFoundWithSuggestion(ctx: Ctx, ref: string, message = '�
   if (!ID_LIKE_REF.test(ref.trim())) return new CliHttpError(404, 'NOT_FOUND', message);
   let issues: Issue[] | null = null;
   try {
-    issues = await listAllIssues(ctx);
+    issues = await listAllIssues(ctx, PREFIX_FIELDS);
   } catch {
     // 纠错只是锦上添花：扫描失败保持原文案，不掩盖真实 404
     issues = null;
@@ -135,9 +141,12 @@ export async function resolveIssueByRef(ctx: Ctx, ref: string): Promise<Issue> {
   if (raw.length < MIN_ISSUE_PREFIX) {
     throw new Error(`任务 id 前缀至少 ${MIN_ISSUE_PREFIX} 位（当前 ${raw.length} 位）：请给完整 UUID 或 ≥${MIN_ISSUE_PREFIX} 位前缀`);
   }
-  const issues = await listAllIssues(ctx);
+  const issues = await listAllIssues(ctx, PREFIX_FIELDS);
   const candidates = issues.filter(issue => issue.id.toLowerCase().startsWith(raw.toLowerCase()));
-  if (candidates.length === 1) return candidates[0]!;
+  // 扫描只带定位字段，命中后再取一次完整 Issue，保证调用方拿到的仍是完整对象（show/accept 等依赖正文与评论计数）
+  if (candidates.length === 1) {
+    return request<Issue>(ctx.base, 'GET', `/api/issues/${encodeURIComponent(candidates[0]!.id)}`);
+  }
   if (candidates.length > 1) {
     throw new AmbiguousIssueRefError(raw, candidates.map(({ id, workspace_id, title, status }) => ({ id, workspace_id, title, status })));
   }

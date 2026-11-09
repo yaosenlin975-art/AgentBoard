@@ -356,3 +356,28 @@ describe('kb ask-extend（DEC-V4-API-EXTEND）', () => {
     expect(call?.body).toMatchObject({ workspace_id: 'ws-local' });
   });
 });
+
+describe('CR2-10：决策前缀解析（批量读 + 大上限）', () => {
+  it('历史决策 >500 条时前缀仍能命中，且只发一次 workspace_ids 批量请求', async () => {
+    const target = 'deadbeef-1111-4111-8111-111111111111';
+    // 599 条干扰项在前，目标在末尾：任何 500/200 上限截断都会假阴性
+    const decoys = Array.from({ length: 599 }, (_, i) => ({ id: `a${String(i).padStart(7, '0')}-0000-4000-8000-000000000000` }));
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') {
+        return { status: 200, body: [{ id: 'ws1', name: 'A', path: cwd }, { id: 'ws2', name: 'B', path: cwd }] };
+      }
+      if (method === 'GET' && url.startsWith('/api/decisions?')) {
+        return { status: 200, body: { decisions: [...decoys, { id: target }] } };
+      }
+      if (method === 'GET' && url === `/api/decisions/${target}`) return { status: 200, body: { decision: decision({ id: target }) } };
+      return undefined;
+    };
+    const result = await run(['decision', 'show', 'deadbeef']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain(`id: ${target}`);
+    const listCalls = calls.filter((c) => c.url.startsWith('/api/decisions?'));
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0]!.url).toContain('workspace_ids=ws1,ws2');
+    expect(listCalls[0]!.url).toContain('limit=100000');
+  });
+});
