@@ -282,7 +282,6 @@ describe('OpenCode Go（ACC-QUOTA-02）', () => {
       env,
       platform: 'win32',
       now: () => Date.parse('2026-11-09T08:00:00.000Z'),
-      fetchImpl: vi.fn() as unknown as typeof fetch,
       execFileImpl,
     });
     return { service, execFileImpl };
@@ -310,7 +309,6 @@ describe('OpenCode Go（ACC-QUOTA-02）', () => {
     let capturedArgs: string[] = [];
     let capturedInput = '';
     let capturedTimeout: number | undefined;
-    const fetchImpl = vi.fn() as unknown as typeof fetch;
     const execFileImpl = vi.fn(async (_file: string, args: string[], runnerOptions?: { input?: string; timeoutMs?: number }) => {
       capturedArgs = args;
       capturedInput = runnerOptions?.input ?? '';
@@ -322,7 +320,6 @@ describe('OpenCode Go（ACC-QUOTA-02）', () => {
       env: { XDG_DATA_HOME: xdgData, OPENCODE_DB: 'active.db' },
       platform: 'win32',
       now: () => Date.parse('2026-11-09T08:00:00.000Z'),
-      fetchImpl,
       execFileImpl,
     });
 
@@ -346,9 +343,8 @@ describe('OpenCode Go（ACC-QUOTA-02）', () => {
     expect(script).toContain('$handler.AllowAutoRedirect = $false');
     expect(script).toContain('FromMilliseconds');
     expect(script).toContain('[Console]::In.ReadToEnd()');
-    expect(script).toContain("$request.Headers.Add('x-opencode-org-id'");
+    expect(script).toContain('[string]$inputData.orgHeaderName');
     expect(script).not.toContain('ServerCertificateCustomValidationCallback');
-    expect(fetchImpl).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'ok', balance: null, unit: '%' });
     expect(result.windows).toEqual([
       { name: '5h', remaining: 100, used_percent: 0, reset_at: Date.parse('2026-11-09T09:18:13.247Z') },
@@ -709,5 +705,79 @@ describe('托管账号额度缓存隔离', () => {
     } finally {
       for (const release of releases) release(reply(0));
     }
+  });
+});
+
+describe('Command Code 按账号额度', () => {
+  const accountA = '44444444-4444-4444-8444-444444444444';
+  const accountB = '55555555-5555-4555-8555-555555555555';
+
+  it('按账号取 credits 与 5h/weekly 窗口，USD、reset 毫秒与缓存均隔离', async () => {
+    const calls: Array<{ url: string; token: string; orgHeader: string | null }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const token = new Headers(init?.headers).get('authorization') ?? '';
+      calls.push({ url, token, orgHeader: new Headers(init?.headers).get('x-opencode-org-id') });
+      if (url.includes('/whoami')) return new Response(JSON.stringify({ org: { id: 'org-test' } }), { status: 200 });
+      const zero = token.endsWith('account-b-key');
+      return new Response(JSON.stringify({ credits: {
+        credits: { monthlyCredits: zero ? 0 : 1.25, purchasedCredits: zero ? 0 : 0.5, freeCredits: zero ? 0 : 0.25 },
+        windowLimits: {
+          fiveHour: { used: 0, cap: 0, resetAt: 0 },
+          weekly: { used: 2, cap: 8, resetAt: 1_800_000_000_000 },
+        },
+      } }), { status: 200 });
+    });
+    const credentialIds: string[] = [];
+    const service = createQuotaService({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      commandCodeCredential: async id => {
+        credentialIds.push(id);
+        return { kind: 'ok', token: id === accountA ? 'account-a-key' : 'account-b-key', accountName: null };
+      },
+      now: () => 1_000,
+    });
+    const [a, b] = await Promise.all([
+      service.get({ accountId: accountA, source: 'commandcode' }),
+      service.get({ accountId: accountB, source: 'commandcode' }),
+    ]);
+    await service.get({ accountId: accountA, source: 'commandcode' });
+    expect(a.items).toHaveLength(1);
+    expect(a.items[0]).toMatchObject({ source: 'commandcode', status: 'ok', balance: 2, unit: 'USD' });
+    expect(a.items[0]!.windows).toEqual([
+      { name: '5h', kind: 'rolling', used: 0, total: 0, remaining: 0, used_percent: null, reset_at: null },
+      { name: 'weekly', kind: 'weekly', used: 2, total: 8, remaining: 6, used_percent: 25, reset_at: 1_800_000_000_000 },
+    ]);
+    expect(b.items[0]).toMatchObject({ status: 'ok', balance: 0, unit: 'USD' });
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(credentialIds.sort()).toEqual([accountA, accountB]);
+    expect(calls.every(call => call.orgHeader === null)).toBe(true);
+    expect(calls.filter(call => call.url.includes('/whoami')).every(call => call.url === 'https://api.commandcode.ai/alpha/whoami?limits=1')).toBe(true);
+    expect(calls.filter(call => call.url.includes('/billing/credits')).every(call => call.url === 'https://api.commandcode.ai/alpha/billing/credits?orgId=org-test')).toBe(true);
+    expect(calls.every(call => call.token.startsWith('Bearer account-'))).toBe(true);
+    expect(JSON.stringify([a, b])).not.toContain('account-a-key');
+  });
+
+  it('缺凭据、401/403、网络失败和坏 schema 都不返回伪零余额', async () => {
+    const missingFetch = vi.fn();
+    const missing = createQuotaService({ fetchImpl: missingFetch as unknown as typeof fetch, now: () => 1_000 });
+    expect((await missing.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({
+      status: 'unsupported', reason_code: 'CREDENTIAL_MISSING', balance: null,
+    });
+    expect(missingFetch).not.toHaveBeenCalled();
+
+    const fetchFor = (fetchImpl: unknown) => createQuotaService({
+      fetchImpl: fetchImpl as typeof fetch,
+      commandCodeCredential: async () => ({ kind: 'ok' as const, token: 'temporary-key', accountName: null }),
+      now: () => 1_000,
+    });
+    for (const [status, reason] of [[401, 'CREDENTIAL_INVALID'], [403, 'NO_ALLOWANCE']] as const) {
+      const service = fetchFor(vi.fn(async () => new Response('{}', { status })));
+      expect((await service.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({ status: 'error', reason_code: reason, balance: null });
+    }
+    const network = fetchFor(vi.fn(async () => { throw new Error('offline'); }));
+    expect((await network.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({ status: 'error', reason_code: 'NETWORK_ERROR', balance: null });
+    const badSchema = fetchFor(vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/whoami') ? {} : { credits: { credits: { monthlyCredits: 1 } } }), { status: 200 })));
+    expect((await badSchema.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({ status: 'error', reason_code: 'UPSTREAM_SHAPE_UNEXPECTED', balance: null });
   });
 });

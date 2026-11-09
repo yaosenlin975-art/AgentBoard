@@ -33,7 +33,7 @@ export type { QuotaResult, QuotaSnapshot, QuotaSourceId, QuotaStatus, QuotaWindo
 type ExecFileRunnerOptions = { input?: string; timeoutMs?: number };
 
 export interface QuotaService {
-  get(account?: { accountId: string; source: AccountQuotaSourceId }): Promise<QuotaSnapshot>;
+  get(account?: { accountId: string; source: AccountQuotaSourceId | 'commandcode' }): Promise<QuotaSnapshot>;
   /** 测试用：清空缓存与退避状态 */
   reset(): void;
 }
@@ -70,6 +70,8 @@ export interface QuotaServiceOptions {
    * 解析器自身不抛错；这里对意外抛错兜底成 `CREDENTIAL_UNAVAILABLE`。
    */
   platformCredential?: (source: QuotaSourceId, accountId?: string) => Promise<PlatformQuotaCredential>;
+  /** Command Code CLI 凭据按 cli_account id 精确读取；不参与平台凭据选择。 */
+  commandCodeCredential?: (accountId: string) => Promise<PlatformQuotaCredential>;
 }
 
 const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
@@ -77,6 +79,7 @@ const DEEPSEEK_BALANCE_URL = 'https://api.deepseek.com/user/balance';
 const MINIMAX_QUOTA_URL = 'https://agent.minimaxi.com/matrix/api/v1/commerce/get_membership_info';
 const QODER_QUOTA_URL = 'https://openapi.qoder.com.cn/api/v2/quota/usage';
 const ZCODE_QUOTA_URL = 'https://bigmodel.cn/api/monitor/usage/quota/limit';
+const COMMAND_CODE_API_BASE = 'https://api.commandcode.ai';
 /** 平台请求超时：对齐 httpCheckinProviders 的 15s 口径（平台网络质量差于本地 CLI） */
 const PLATFORM_TIMEOUT_MS = 15_000;
 const PLATFORM_LABEL: Partial<Record<QuotaSourceId, string>> = {
@@ -87,17 +90,19 @@ const DEFAULT_MAX_BACKOFF_MS = 600_000;
 const DEFAULT_TIMEOUT_MS = 8_000;
 const OPENCODE_GO_TIMEOUT_MS = 12_000;
 const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
-const OPENCODE_GO_POWERSHELL_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
+const PLATFORM_GET_POWERSHELL_SCRIPT = String.raw`$ErrorActionPreference = 'Stop'
 [void][Reflection.Assembly]::LoadWithPartialName('System.Net.Http')
-$auth = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$inputData = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $handler = [System.Net.Http.HttpClientHandler]::new()
 $handler.UseProxy = $true
 $handler.AllowAutoRedirect = $false
 $client = [System.Net.Http.HttpClient]::new($handler)
-$client.Timeout = [TimeSpan]::FromMilliseconds([double]$auth.timeoutMs)
-$request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, [string]$auth.url)
-$request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', [string]$auth.token)
-$request.Headers.Add('x-opencode-org-id', [string]$auth.orgId)
+$client.Timeout = [TimeSpan]::FromMilliseconds([double]$inputData.timeoutMs)
+$request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, [string]$inputData.url)
+$request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', [string]$inputData.token)
+if (![string]::IsNullOrWhiteSpace([string]$inputData.orgHeaderName) -and ![string]::IsNullOrWhiteSpace([string]$inputData.orgHeaderValue)) {
+  $request.Headers.Add([string]$inputData.orgHeaderName, [string]$inputData.orgHeaderValue)
+}
 $request.Headers.Accept.Add([System.Net.Http.Headers.MediaTypeWithQualityHeaderValue]::new('application/json'))
 $response = $null
 try {
@@ -536,6 +541,37 @@ const empty = (source: QuotaSourceId, status: QuotaStatus, now: number, reason_c
   source, status, balance: null, unit: null, windows: [], fetched_at: now, reason_code, detail,
 });
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function commandCodeWindows(value: unknown): QuotaWindow[] | null {
+  if (!isPlainRecord(value)) return null;
+  const definitions = [
+    { key: 'fiveHour', name: '5h', kind: 'rolling' as const },
+    { key: 'weekly', name: 'weekly', kind: 'weekly' as const },
+  ];
+  const result: QuotaWindow[] = [];
+  for (const definition of definitions) {
+    const window = value[definition.key];
+    if (!isPlainRecord(window)) return null;
+    const { used, cap, resetAt } = window;
+    if (typeof used !== 'number' || !Number.isFinite(used) || used < 0
+      || typeof cap !== 'number' || !Number.isFinite(cap) || cap < 0
+      || typeof resetAt !== 'number' || !Number.isFinite(resetAt) || resetAt < 0) return null;
+    result.push({
+      name: definition.name,
+      kind: definition.kind,
+      used,
+      total: cap,
+      remaining: Math.max(0, cap - used),
+      used_percent: cap > 0 ? Math.min(100, used / cap * 100) : null,
+      reset_at: resetAt === 0 ? null : resetAt,
+    });
+  }
+  return result;
+}
+
 /** 余额响应解析（导出便于单测）：取 `is_available` + 优先 CNY 的 balance_infos[0] */
 export function parseDeepseekBalance(body: unknown, fetchedAt: number): QuotaResult {
   const record = (body && typeof body === 'object' ? body : {}) as {
@@ -561,6 +597,7 @@ export function parseDeepseekBalance(body: unknown, fetchedAt: number): QuotaRes
 }
 
 export function createQuotaService(options: QuotaServiceOptions = {}): QuotaService {
+  const injectedFetch = options.fetchImpl;
   const fetchImpl = options.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   const execFileImpl = options.execFileImpl ?? ((file: string, args: string[], runnerOptions?: ExecFileRunnerOptions) =>
     new Promise<string>((resolve, reject) => {
@@ -582,6 +619,78 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   const homeDir = options.homeDir ?? homedir();
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
+
+  type ReadOnlyGetResult =
+    | { kind: 'ok'; body: unknown }
+    | { kind: 'status'; status: number }
+    | { kind: 'shape' }
+    | { kind: 'network' };
+
+  /** 只读 Bearer GET：测试走注入 fetch；Windows 生产走系统代理 .NET，并仅经 stdin 传凭据。 */
+  async function readOnlyGetJson(
+    url: string,
+    token: string,
+    requestTimeoutMs: number,
+    orgHeader?: { name: string; value: string },
+  ): Promise<ReadOnlyGetResult> {
+    if (injectedFetch || platform !== 'win32') {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+      try {
+        const response = await fetchImpl(url, {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${token}`,
+            accept: 'application/json',
+            ...(orgHeader ? { [orgHeader.name]: orgHeader.value } : {}),
+          },
+          redirect: 'error',
+          signal: controller.signal,
+        });
+        if (!response.ok) return { kind: 'status', status: response.status };
+        try {
+          return { kind: 'ok', body: await response.json() };
+        } catch {
+          return { kind: 'shape' };
+        }
+      } catch {
+        return { kind: 'network' };
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    try {
+      const output = await execFileImpl('powershell.exe', [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', PLATFORM_GET_POWERSHELL_SCRIPT,
+      ], {
+        input: JSON.stringify({
+          url,
+          token,
+          orgHeaderName: orgHeader?.name,
+          orgHeaderValue: orgHeader?.value,
+          timeoutMs: requestTimeoutMs,
+        }),
+        timeoutMs: requestTimeoutMs,
+      });
+      let response: { status?: unknown; body?: unknown };
+      try {
+        response = JSON.parse(output) as typeof response;
+      } catch {
+        return { kind: 'shape' };
+      }
+      if (typeof response.status !== 'number') return { kind: 'network' };
+      if (response.status !== 200) return { kind: 'status', status: response.status };
+      if (typeof response.body !== 'string') return { kind: 'shape' };
+      try {
+        return { kind: 'ok', body: JSON.parse(response.body) as unknown };
+      } catch {
+        return { kind: 'shape' };
+      }
+    } catch {
+      return { kind: 'network' };
+    }
+  }
 
   const cache = new Map<string, Cached>();
   const inFlight = new Map<string, Promise<QuotaResult>>();
@@ -656,7 +765,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     const at = now();
     if (platform === 'win32' && !env.OPENCODE_SERVER_URL?.trim()) {
       const credential = readOpencodeGoCredential(homeDir, env);
-      if (credential.kind === 'ok') return fetchOpencodeGoDirect(credential, at);
+      if (credential.kind === 'ok') return fetchOpencodeGoDirect(credential);
     }
     return fetchOpencodeGoLocal(at);
   }
@@ -706,44 +815,22 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     }
   }
 
-  async function fetchOpencodeGoDirect(credential: Extract<OpenCodeCredentialLookup, { kind: 'ok' }>, fetchedAt: number): Promise<QuotaResult> {
-    const payload = JSON.stringify({
-      url: OPENCODE_GO_USAGE_URL,
-      token: credential.token,
-      orgId: credential.orgId,
-      timeoutMs: OPENCODE_GO_TIMEOUT_MS,
+  async function fetchOpencodeGoDirect(credential: Extract<OpenCodeCredentialLookup, { kind: 'ok' }>): Promise<QuotaResult> {
+    const result = await readOnlyGetJson(OPENCODE_GO_USAGE_URL, credential.token, OPENCODE_GO_TIMEOUT_MS, {
+      name: 'x-opencode-org-id',
+      value: credential.orgId,
     });
-    try {
-      const output = await execFileImpl('powershell.exe', [
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', OPENCODE_GO_POWERSHELL_SCRIPT,
-      ], { input: payload, timeoutMs: OPENCODE_GO_TIMEOUT_MS });
-      let response: { status?: unknown; body?: unknown; error?: unknown };
-      try {
-        response = JSON.parse(output) as typeof response;
-      } catch {
-        return empty('opencode_go', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 请求结果结构异常');
-      }
-      const at = now();
-      if (typeof response.status !== 'number') {
-        return empty('opencode_go', 'error', at, 'NETWORK_ERROR', '无法连接 OpenCode Go 额度服务（网络或超时）');
-      }
-      if (response.status === 401) {
-        return empty('opencode_go', 'error', at, 'OPENCODE_AUTH_FAILED', 'OpenCode Console 凭据已失效，请在客户端恢复登录后重试');
-      }
-      if (response.status === 403) {
-        return empty('opencode_go', 'unsupported', at, 'OPENCODE_NO_ALLOWANCE', '当前 OpenCode 工作区没有 Go 额度');
-      }
-      if (response.status === 429) return empty('opencode_go', 'error', at, 'RATE_LIMITED', 'OpenCode Go 额度服务限流，稍后重试');
-      if (response.status >= 500) return empty('opencode_go', 'error', at, 'UPSTREAM_ERROR', 'OpenCode Go 额度服务暂时不可用');
-      if (response.status !== 200 || typeof response.body !== 'string') {
-        return empty('opencode_go', 'error', at, 'UPSTREAM_REJECTED', `OpenCode Go 额度服务拒绝了请求（HTTP ${response.status}）`);
-      }
-      let body: unknown = null;
-      try { body = JSON.parse(response.body); } catch { /* parser returns a safe shape error */ }
-      return parseOpencodeGoUsage(body, at, credential.workspaceName ?? undefined);
-    } catch {
-      return empty('opencode_go', 'error', now(), 'NETWORK_ERROR', '无法连接 OpenCode Go 额度服务（网络、命令执行或超时）');
+    const at = now();
+    if (result.kind === 'network') return empty('opencode_go', 'error', at, 'NETWORK_ERROR', '无法连接 OpenCode Go 额度服务（网络或超时）');
+    if (result.kind === 'shape') return empty('opencode_go', 'error', at, 'UPSTREAM_SHAPE_UNEXPECTED', 'OpenCode Go 请求结果结构异常');
+    if (result.kind === 'status') {
+      if (result.status === 401) return empty('opencode_go', 'error', at, 'OPENCODE_AUTH_FAILED', 'OpenCode Console 凭据已失效，请在客户端恢复登录后重试');
+      if (result.status === 403) return empty('opencode_go', 'unsupported', at, 'OPENCODE_NO_ALLOWANCE', '当前 OpenCode 工作区没有 Go 额度');
+      if (result.status === 429) return empty('opencode_go', 'error', at, 'RATE_LIMITED', 'OpenCode Go 额度服务限流，稍后重试');
+      if (result.status >= 500) return empty('opencode_go', 'error', at, 'UPSTREAM_ERROR', 'OpenCode Go 额度服务暂时不可用');
+      return empty('opencode_go', 'error', at, 'UPSTREAM_REJECTED', `OpenCode Go 额度服务拒绝了请求（HTTP ${result.status}）`);
     }
+    return parseOpencodeGoUsage(result.body, at, credential.workspaceName ?? undefined);
   }
 
   /**
@@ -755,6 +842,77 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   async function fetchCodexFromRollout(): Promise<QuotaResult> {
     const scan = options.codexScan ?? (() => scanCodexRollout(homeDir, now));
     return scan();
+  }
+
+  /** Command Code /usage 的最小只读路径：whoami 取 org.id，再取余额和窗口。 */
+  async function fetchCommandCode(accountId?: string): Promise<QuotaResult> {
+    if (!accountId) return empty('commandcode', 'unsupported', now(), 'ACCOUNT_ID_REQUIRED', 'Command Code 额度需要指定账号');
+    let credential: PlatformQuotaCredential;
+    try {
+      credential = options.commandCodeCredential
+        ? await options.commandCodeCredential(accountId)
+        : { kind: 'missing', reasonCode: 'CREDENTIAL_MISSING', detail: '未检测到该账号的额度凭据，请重新导入 API Key' };
+    } catch {
+      return empty('commandcode', 'error', now(), 'CREDENTIAL_UNAVAILABLE', '额度凭据解析失败，请稍后重试');
+    }
+    if (credential.kind === 'missing') {
+      const status: QuotaStatus = credential.reasonCode === 'CREDENTIAL_MISSING' ? 'unsupported' : 'error';
+      return empty('commandcode', status, now(), credential.reasonCode, credential.detail);
+    }
+
+    const requestJson = async (url: string): Promise<{ body: Record<string, unknown> | null; failure: QuotaResult | null }> => {
+      const result = await readOnlyGetJson(url, credential.token, PLATFORM_TIMEOUT_MS);
+      if (result.kind === 'network') {
+        return { body: null, failure: empty('commandcode', 'error', now(), 'NETWORK_ERROR', 'Command Code 额度接口网络不可用或超时') };
+      }
+      if (result.kind === 'shape' || (result.kind === 'ok' && !isPlainRecord(result.body))) {
+        return { body: null, failure: empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code 额度接口返回的数据结构不符合预期') };
+      }
+      if (result.kind === 'status') {
+        const code = result.status === 401 ? 'CREDENTIAL_INVALID'
+          : result.status === 403 ? 'NO_ALLOWANCE'
+            : result.status === 429 ? 'RATE_LIMITED' : 'UPSTREAM_ERROR';
+        const detail = result.status === 403 ? 'Command Code 账号没有可读取的额度权限'
+          : result.status === 401 ? 'Command Code API Key 已失效，请重新导入'
+            : `Command Code 额度接口返回 ${result.status}`;
+        return { body: null, failure: empty('commandcode', 'error', now(), code, detail) };
+      }
+      return { body: result.body as Record<string, unknown>, failure: null };
+    };
+
+    const whoami = await requestJson(`${COMMAND_CODE_API_BASE}/alpha/whoami?limits=1`);
+    if (whoami.failure) return whoami.failure;
+    const org = isPlainRecord(whoami.body?.org) ? whoami.body.org : null;
+    const orgId = typeof org?.id === 'string' || typeof org?.id === 'number' ? String(org.id) : null;
+    const creditsUrl = new URL('/alpha/billing/credits', COMMAND_CODE_API_BASE);
+    if (orgId) creditsUrl.searchParams.set('orgId', orgId);
+    const creditsResponse = await requestJson(creditsUrl.toString());
+    if (creditsResponse.failure) return creditsResponse.failure;
+    const creditEnvelope = isPlainRecord(creditsResponse.body?.credits) ? creditsResponse.body.credits : null;
+    const credits = isPlainRecord(creditEnvelope?.credits) ? creditEnvelope.credits : null;
+    const monthly = credits?.monthlyCredits;
+    const purchased = credits?.purchasedCredits;
+    const free = credits?.freeCredits;
+    if (typeof monthly !== 'number' || !Number.isFinite(monthly)
+      || typeof purchased !== 'number' || !Number.isFinite(purchased)
+      || typeof free !== 'number' || !Number.isFinite(free)) {
+      return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code credits 字段缺失或无效');
+    }
+    const windows = commandCodeWindows(creditEnvelope?.windowLimits)
+      ?? commandCodeWindows(whoami.body?.windowLimits);
+    if (!windows) return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code 5h/weekly 窗口字段缺失或无效');
+    const balance = Math.max(0, monthly) + Math.max(0, purchased) + Math.max(0, free);
+    if (!Number.isFinite(balance)) return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code 余额字段超出有效范围');
+    return {
+      source: 'commandcode',
+      status: 'ok',
+      balance,
+      unit: 'USD',
+      windows,
+      fetched_at: now(),
+      reason_code: null,
+      detail: null,
+    };
   }
 
   /**
@@ -855,6 +1013,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     if (source === 'deepseek') return fetchDeepseek;
     if (source === 'opencode_go') return fetchOpencodeGo;
     if (source === 'codex') return fetchCodexFromRollout;
+    if (source === 'commandcode') return () => fetchCommandCode(accountId);
     return () => fetchPlatform(source, accountId);
   }
 
@@ -887,7 +1046,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
   }
 
   return {
-    async get(account?: { accountId: string; source: AccountQuotaSourceId }): Promise<QuotaSnapshot> {
+    async get(account?: { accountId: string; source: AccountQuotaSourceId | 'commandcode' }): Promise<QuotaSnapshot> {
       const sources: QuotaSourceId[] = account ? [account.source] : [...QUOTA_SOURCE_IDS];
       const items = await Promise.all(sources.map((source) => load(source, account?.accountId)));
       return { items, fetched_at: now() };
