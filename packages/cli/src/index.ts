@@ -592,7 +592,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数时按状态名处理）')
     .argument('[name]', '状态名')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
-    .option('--kind <kind>', '行为类别（默认 open）：open=未开始 / started=进行中 / review=待验收 / done=完成（关闭类）/ deprecated=废弃（关闭类，与 done 同级）')
+    .option('--kind <kind>', '行为类别（默认 open）：open=未开始 / started=进行中 / review=待验收 / done=完成（关闭类）/ deprecated=废弃（关闭类，与 done 同级）/ blocked=阻塞（blocked 只给自定义状态用）')
     .option('--sort-order <n>', '排序值（默认最大值 +10）')
     .action(async (workspaceArg: string | undefined, nameArg: string | undefined, opts: { workspace?: string; kind?: string; sortOrder?: string }) => {
       const name = nameArg ?? workspaceArg;

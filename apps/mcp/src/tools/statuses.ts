@@ -14,7 +14,7 @@ import { registerBoardTool } from './register.js';
 
 const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
 const requestIdField = { request_id: z.string().uuid() };
-const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated']);
+const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated', 'blocked']);
 
 export function registerStatusTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {

@@ -49,6 +49,9 @@ export function statusAccent(kind: WorkspaceStatusKind | undefined): string {
     case 'deprecated':
       // 已废弃要与已关闭区分：给一档更实的石墨，不再借用琥珀（琥珀只留给待验收）
       return 'text-ink-2';
+    case 'blocked':
+      // ARCH-02：阻塞＝等待外部/人工解除，与已废弃同档石墨；不占用唯一强调色
+      return 'text-ink-2';
     case 'done':
       return 'text-ink-3';
     default:

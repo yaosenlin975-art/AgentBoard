@@ -44,9 +44,13 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 ### 3. 排除（硬规则，命中即跳过并记原因）
 
-对候选卡执行 `kb show <id>`，读描述、标签、评论。候选来自 `kb next`（已按 待规划/无占用/前置全解除 预过滤），规则 4 的占用与规则 6 的前置仍须现场复核一次（扫描与派发之间可能被他人 claim / 新增依赖）：
+对候选卡执行 `kb show <id>`，读描述、标签、评论与状态（`status`）；候选来自 `kb next`（已按 待规划/无占用/前置全解除 预过滤），规则 4 的占用与规则 6 的前置仍须现场复核一次（扫描与派发之间可能被他人 claim / 新增依赖）：
 
-1. 标签或标题/描述含：待决策、待确认、待用户、blocked-external、挂账、外发前确认 → 跳过（待人工）；无人值守班次不替用户拍板，已有决策按 `ask-user` 的 `kb decisions --state open --stale` 只读核对后跳过
+1. 该卡 `status` 在状态字典里对应 `kind=blocked` → 跳过（阻塞待人工解除）。**只按 kind 判定，不看标签/标题/描述关键词**：`blocked-external`、待决策之类字样本身不构成排除。班次启动时按工作区取一次阻塞状态集合，后续用 `kb show <id> --json` 的 `status` 比对：
+   ```powershell
+   kb status ls <工作区 id> --json | node -pe "const j=JSON.parse(require('fs').readFileSync(0,'utf8'));const items=j.items||j;items.filter(s=>s.kind==='blocked').map(s=>s.name).join('\n')"
+   ```
+   集合为空 = 该区没有阻塞类状态；有自定义阻塞状态（如「等外部确认」）时其名字会列在输出里。无人值守班次不替用户拍板：`kb decisions --state open --stale` 有 open 决策的卡按 `ask-user` 只读核对后跳过（决策锁不是 kind，仍按决策状态判定）
 2. 验收要求真人参与：目视、听感、人工点击、真机操作、截图对比评审 → 跳过（需人工验收）
 3. 涉及生产密钥、对外发送/发布、push 远端、数据库迁移 → 跳过（需授权）
 4. 占用者非空 → 跳过（他人占用）；目标文件与其他在飞卡重叠 → 跳过（同文件单 owner，不得并行）

@@ -102,6 +102,33 @@ describe('status kind semantics (STATUS-3)', () => {
     expect(res.body.error.message).toContain('未关闭');
   });
 
+  it('自定义 kind=blocked 可建，非法 kind 被拒并列出可用值（ARCH-02）', async () => {
+    const ok = await request(app).post(`/api/workspaces/${ws}/statuses`).send({ name: '等外部确认', kind: 'blocked' });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(ok.body).toMatchObject({ name: '等外部确认', kind: 'blocked', is_builtin: 0 });
+
+    const bad = await request(app).post(`/api/workspaces/${ws}/statuses`).send({ name: '乱写', kind: 'nope' });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.message).toContain('blocked');
+  });
+
+  it('kind=blocked 的卡归入未完成默认收敛（ARCH-02）', async () => {
+    createWorkspaceStatus(t.db, { workspace_id: ws, name: '等外部确认', kind: 'blocked' });
+    const open = await mkIssue('开放卡');
+    const blocked = await mkIssue('阻塞卡');
+    expect((await setStatus(blocked, '等外部确认')).status).toBe(200);
+
+    const list = await request(app).get(`/api/issues?workspace=${ws}&kinds=open,started,review,blocked&unclaimed=1`);
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const ids = (list.body as Array<{ id: string }>).map(row => row.id);
+    expect(ids).toContain(blocked);
+    expect(ids).toContain(open);
+
+    // 旧口径（不含 blocked）仍然排除它，证明归类来自 kinds 参数而非名字
+    const legacy = await request(app).get(`/api/issues?workspace=${ws}&kinds=open,started,review&unclaimed=1`);
+    expect((legacy.body as Array<{ id: string }>).map(row => row.id)).not.toContain(blocked);
+  });
+
   it('blocker 为已废弃时被阻塞卡可以 claim', async () => {
     const blocked = await mkIssue('被阻塞卡');
     const blocker = await mkIssue('前置卡-废弃');

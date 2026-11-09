@@ -250,8 +250,9 @@ export interface Issue {
 /**
  * STATUS-2：工作区状态字典（`workspace_status`）。
  * `kind` 决定行为（关闭类 = `done` | `deprecated`），不靠名字；`is_builtin=1` 的内置状态不可删除、不可改名。
+ * ARCH-02：`blocked` 只用于自定义状态，表示「阻塞」，内置五状态不变。
  */
-export type WorkspaceStatusKind = 'open' | 'started' | 'review' | 'done' | 'deprecated';
+export type WorkspaceStatusKind = 'open' | 'started' | 'review' | 'done' | 'deprecated' | 'blocked';
 export interface WorkspaceStatus {
   id: string; workspace_id: string; name: string; kind: WorkspaceStatusKind;
   sort_order: number; is_builtin: number;

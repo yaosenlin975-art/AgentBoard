@@ -13,18 +13,22 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
-import { CLOSED_KINDS } from '../db/migrations/workspaceStatus.js';
+import { CLOSED_KINDS, type WorkspaceStatusKind } from '../db/migrations/workspaceStatus.js';
 
 export interface WorkspaceStatusRow {
   id: string;
   workspace_id: string;
   name: string;
-  kind: 'open' | 'started' | 'review' | 'done' | 'deprecated';
+  kind: WorkspaceStatusKind;
   sort_order: number;
   is_builtin: number;
 }
 
-export const STATUS_KINDS = ['open', 'started', 'review', 'done', 'deprecated'] as const;
+/**
+ * ARCH-02：`blocked` 是「阻塞」语义的可判定 kind（自定义状态用），内置五状态不变；
+ * `done` / `deprecated` 的关闭类语义不受影响。
+ */
+export const STATUS_KINDS = ['open', 'started', 'review', 'done', 'deprecated', 'blocked'] as const;
 
 /** 该工作区可用状态名（sort_order 升序） */
 export function listWorkspaceStatusNames(db: Db, workspaceId: string): string[] {

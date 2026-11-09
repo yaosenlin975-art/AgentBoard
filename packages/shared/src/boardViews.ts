@@ -95,7 +95,7 @@ export function buildNextItems(
 export const BUILTIN_STATUSES = ['待规划', '进行中', '待验收', '已关闭', '已废弃'] as const;
 export type BuiltinStatus = (typeof BUILTIN_STATUSES)[number];
 
-/** 「未完成」口径与服务端收敛参数 kinds=open,started,review 一致 */
+/** 「未完成」口径（待规划/进行中/待验收）；kind=blocked 的阻塞卡不计入可派统计（需人工解除） */
 const UNFINISHED = new Set<string>(['待规划', '进行中', '待验收']);
 
 export interface StatsResult {

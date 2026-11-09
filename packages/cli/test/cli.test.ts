@@ -305,7 +305,7 @@ describe('list-tasks', () => {
     // PERF-4c：默认带 fields= 裁剪，且白名单不含 description（--json 由 projectForJson 摘正文）
     // OPT-01：缺省收敛参数（kinds/unclaimed）在 fields= 之前下发
     const issuesUrl = calls[1]?.url ?? '';
-    expect(issuesUrl.startsWith('/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1&fields=')).toBe(true);
+    expect(issuesUrl.startsWith('/api/issues?workspace=ws1&kinds=open,started,review,blocked&unclaimed=1&fields=')).toBe(true);
     const fields = new URL(issuesUrl, 'http://x').searchParams.get('fields')!.split(',');
     expect(fields).not.toContain('description');
     expect(fields).toContain('decision_grace_until');

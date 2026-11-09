@@ -234,20 +234,29 @@ let issueFieldsUnsupported = false;
 /** 单测复位回落标志（同一进程连跑多个用例时互不影响） */
 export function resetIssueFieldsFallback(): void {
   issueFieldsUnsupported = false;
+  blockedKindUnsupported = false;
 }
 
 /**
- * OPT-01：缺省收敛口径——未完成（kind ∈ open/started/review）且无主（claimed_by IS NULL）。
+ * OPT-01 / ARCH-02：缺省收敛口径——未完成（kind ∈ open/started/review/blocked）且无主（claimed_by IS NULL）。
+ * `blocked` 属于未完成语义（阻塞卡仍需展示给人处理），因此默认列表包含 kind=blocked 的自定义状态卡。
  * 过滤在服务端 SQL 里做（`GET /api/issues?kinds=…&unclaimed=1`），CLI 不拉全量后本地筛。
  */
-const DEFAULT_CONVERGED_FILTER = '&kinds=open,started,review&unclaimed=1';
+const LEGACY_CONVERGED_FILTER = '&kinds=open,started,review&unclaimed=1';
+const DEFAULT_CONVERGED_FILTER = '&kinds=open,started,review,blocked&unclaimed=1';
+
+/**
+ * ARCH-02：旧服务端不认 `kind=blocked`（会 400），命中一次后本进程内回落到改造前的收敛集合。
+ */
+let blockedKindUnsupported = false;
 
 /**
  * 整区读取：默认带 `fields=` 裁剪；服务端不认（400，旧版/回滚开关）或路由不存在（404）时
  * 静默回落全量请求一次，输出口径不变；其它错误照常抛出。
- * `filterQuery` 为 OPT-01 的缺省收敛参数，回落请求同样携带（旧服务端忽略未知参数，行为不变）。
+ * `filterQuery` 为 OPT-01 的缺省收敛参数，回落请求同样携带；旧服务端不认 `kind=blocked` 时
+ * 由 `readWorkspaceIssues` 整体回落到 `LEGACY_CONVERGED_FILTER`（ARCH-02）。
  */
-async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery = ''): Promise<Issue[]> {
+async function fetchWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery: string): Promise<Issue[]> {
   const path = '/api/issues?workspace=' + encodeURIComponent(workspaceId) + filterQuery;
   if (!withFields || issueFieldsUnsupported) return request<Issue[]>(ctx.base, 'GET', path);
   try {
@@ -256,6 +265,20 @@ async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: bo
     if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
     issueFieldsUnsupported = true;
     return request<Issue[]>(ctx.base, 'GET', path);
+  }
+}
+
+async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery = ''): Promise<Issue[]> {
+  const effective = blockedKindUnsupported && filterQuery !== '' ? LEGACY_CONVERGED_FILTER : filterQuery;
+  try {
+    return await fetchWorkspaceIssues(ctx, workspaceId, withFields, effective);
+  } catch (err) {
+    // ARCH-02：旧服务端不认 kind=blocked → 退回改造前的收敛集合，本次进程内不再尝试
+    if (effective === filterQuery && filterQuery.includes('blocked') && err instanceof CliHttpError && err.status === 400) {
+      blockedKindUnsupported = true;
+      return fetchWorkspaceIssues(ctx, workspaceId, withFields, LEGACY_CONVERGED_FILTER);
+    }
+    throw err;
   }
 }
 

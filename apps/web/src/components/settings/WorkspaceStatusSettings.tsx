@@ -19,6 +19,7 @@ const KIND_OPTIONS: Array<{ value: WorkspaceStatusKind; label: string }> = [
   { value: 'open', label: '开放' },
   { value: 'started', label: '进行中' },
   { value: 'review', label: '待验收' },
+  { value: 'blocked', label: '阻塞' },
   { value: 'done', label: '关闭' },
   { value: 'deprecated', label: '已废弃' },
 ];

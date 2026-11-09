@@ -108,6 +108,8 @@ describe('列字典纯函数', () => {
     // UNSLOP：不再按状态给色相，靠石墨台阶区分（琥珀只留给「待验收」）
     expect(statusAccent('deprecated')).toBe('text-ink-2');
     expect(statusAccent('done')).toBe('text-ink-3');
+    // ARCH-02：blocked 与已废弃同档石墨，不占用强调色
+    expect(statusAccent('blocked')).toBe('text-ink-2');
   });
 });
 
@@ -185,6 +187,11 @@ describe('详情状态下拉的选项（statusOptions）', () => {
     expect(done?.disabled).toBe(true);
     expect(options.find((option) => option.name === '已废弃')?.disabled).toBe(false);
     expect(options.find((option) => option.name === '待规划')?.disabled).toBe(false);
+  });
+
+  it('kind=blocked 自定义状态不被当成关闭类（有未关闭后代时仍可选）', () => {
+    const options = statusOptions([...FIVE, status('等外部确认', 'blocked', 25, 0)], true);
+    expect(options.find((option) => option.name === '等外部确认')?.disabled).toBe(false);
   });
 
   it('兜底字典（无 kind 信息）仍按名字禁用「已关闭」', () => {

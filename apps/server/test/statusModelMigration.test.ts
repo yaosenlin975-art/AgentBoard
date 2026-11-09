@@ -18,6 +18,7 @@ import { mkdtempSync as mkTmp } from 'node:fs';
 import { openDb, type Db } from '../src/db/connection.js';
 import { initSchema } from '../src/db/schema.js';
 import { migrateIssueStatusModel } from '../src/db/migrations/issueStatusModel.js';
+import { migrateWorkspaceStatusKinds } from '../src/db/migrations/workspaceStatus.js';
 import { createTestDb, type TestDb, issuePayload } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
@@ -152,6 +153,43 @@ describe('status model migration (STATUS-1)', () => {
       .run('i-open', 'i-other', 1)).toThrow(/workspace mismatch/);
     db.prepare('INSERT INTO issue_dependency (blocked_issue_id, blocker_issue_id, created_at) VALUES (?,?,?)').run('i-open', 'i-started', 1);
     expect((db.prepare('SELECT COUNT(*) AS n FROM issue_dependency').get() as { n: number }).n).toBe(1);
+  });
+
+  it('rebuildsLegacyWorkspaceStatusCheckToAcceptBlocked', () => {
+    // 旧版 workspace_status：CHECK 只有五 kind，blocked 写不进去
+    db.exec(`
+      CREATE TABLE workspace_status (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('open','started','review','done','deprecated')),
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_builtin INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        UNIQUE (workspace_id, name));
+    `);
+    const now = 1_700_000_000_000;
+    let insert = db.prepare('INSERT INTO workspace_status (id, workspace_id, name, kind, sort_order, is_builtin, created_at) VALUES (?,?,?,?,?,?,?)');
+    insert.run('builtin-ws-legacy-open', 'ws-legacy', '待规划', 'open', 0, 1, now);
+    insert.run('custom-review', 'ws-legacy', '等外部确认', 'review', 50, 0, now + 1);
+    expect(() => insert.run('custom-blocked', 'ws-legacy', '阻塞卡', 'blocked', 60, 0, now + 2)).toThrow(/CHECK/);
+
+    const before = db.prepare('SELECT id, name, kind, sort_order, is_builtin, created_at FROM workspace_status ORDER BY id').all();
+
+    expect(migrateWorkspaceStatusKinds(db)).toBe(true);
+    // 存量行（含 id/kind/sort_order/created_at）原样保留
+    expect(db.prepare('SELECT id, name, kind, sort_order, is_builtin, created_at FROM workspace_status ORDER BY id').all()).toEqual(before);
+    // 幂等：新 CHECK 已含 blocked，不再重建
+    expect(migrateWorkspaceStatusKinds(db)).toBe(false);
+
+    insert = db.prepare('INSERT INTO workspace_status (id, workspace_id, name, kind, sort_order, is_builtin, created_at) VALUES (?,?,?,?,?,?,?)');
+    insert.run('custom-blocked', 'ws-legacy', '阻塞卡', 'blocked', 60, 0, now + 2);
+    expect((db.prepare("SELECT kind FROM workspace_status WHERE id='custom-blocked'").get() as { kind: string }).kind).toBe('blocked');
+    // CHECK 约束仍生效：非法 kind 照旧被拒
+    expect(() => insert.run('custom-bad', 'ws-legacy', '乱写', 'nope', 70, 0, now + 3)).toThrow(/CHECK/);
+    // 完整初始化后内置五状态不会被迁移重复种入
+    initSchema(db);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM workspace_status WHERE workspace_id=?').get('ws-legacy') as { n: number }).n).toBe(7);
   });
 
   it('seedsFiveBuiltinStatusesForEveryWorkspace', () => {

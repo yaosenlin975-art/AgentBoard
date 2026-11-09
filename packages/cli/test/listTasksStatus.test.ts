@@ -100,7 +100,7 @@ describe('kb list-tasks status guard', () => {
     const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
     expect(issueCalls).toHaveLength(1);
     // OPT-01：缺省收敛参数在 fields= 之前下发
-    expect(issueCalls[0]!.url.startsWith('/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1&fields=')).toBe(true);
+    expect(issueCalls[0]!.url.startsWith('/api/issues?workspace=ws1&kinds=open,started,review,blocked&unclaimed=1&fields=')).toBe(true);
 
     calls = [];
     const all = await run(['--json', 'list-tasks', '--all']);
@@ -198,7 +198,7 @@ describe('kb list-tasks status guard', () => {
     const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--full']);
     expect(result.code).toBe(0);
     expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
-      { method: 'GET', url: '/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1' },
+      { method: 'GET', url: '/api/issues?workspace=ws1&kinds=open,started,review,blocked&unclaimed=1' },
     ]);
   });
 
@@ -208,7 +208,7 @@ describe('kb list-tasks status guard', () => {
     expect(result.code).toBe(0);
     expect(result.err.startsWith('默认已收敛为未完成无主卡，全量用 --all-status')).toBe(true);
     const issueCall = calls.find(call => call.url.startsWith('/api/issues?'))!;
-    expect(issueCall.url).toContain('kinds=open,started,review');
+    expect(issueCall.url).toContain('kinds=open,started,review,blocked');
     expect(issueCall.url).toContain('unclaimed=1');
   });
 
@@ -264,5 +264,29 @@ describe('kb list-tasks status guard', () => {
     expect(second.code).toBe(0);
     expect(calls.filter(call => call.url.includes('fields='))).toHaveLength(1);
     expect(second.out).toBe(first.out);
+  });
+
+  it('旧服务端不认 kind=blocked（400）时回落到改造前的收敛集合', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+      if (method === 'GET' && url.includes('blocked')) {
+        return { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: '未知 kind：blocked' } } };
+      }
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
+      return undefined;
+    };
+    const first = await run(['--json', 'list-tasks', '--workspace', 'ws1']);
+    expect(first.code).toBe(0);
+    const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+    expect(issueCalls.at(-1)!.url).toBe('/api/issues?workspace=ws1&kinds=open,started,review&unclaimed=1');
+    expect((JSON.parse(first.out) as { items: Array<{ id: string }> }).items.map(item => item.id)).toEqual(['i1', 'i2', 'i3']);
+
+    // 进程内记住回落：第二次不再尝试 blocked
+    calls = [];
+    const second = await run(['--json', 'list-tasks', '--workspace', 'ws1']);
+    expect(second.code).toBe(0);
+    const secondCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+    expect(secondCalls).toHaveLength(1);
+    expect(secondCalls[0]!.url).not.toContain('blocked');
   });
 });

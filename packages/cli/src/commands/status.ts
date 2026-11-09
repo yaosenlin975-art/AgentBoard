@@ -2,7 +2,7 @@
  * STATUS-2：`kb status ls|add|rm` —— 工作区状态字典的 CLI 通道（设计 §3.2 / D3）。
  *
  * - `ls <workspace>`：列出该工作区状态（名字 / kind / 排序 / 是否内置）。
- * - `add <workspace> <name> [--kind open|started|review|done|deprecated] [--sort-order N]`。
+ * - `add <workspace> <name> [--kind open|started|review|done|deprecated|blocked] [--sort-order N]`。
  * - `rm <workspace> <name|id> --migrate-to <name>`：删除自定义状态；**必须**带 `--migrate-to`，
  *   服务端同事务把该状态下的卡迁到目标再删（未带 → 400 MIGRATION_TARGET_REQUIRED）。
  * workspace 支持 id 或名称（与 `kb list-tasks --workspace` 同款解析）。
