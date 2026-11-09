@@ -720,13 +720,13 @@ describe('Command Code 按账号额度', () => {
       calls.push({ url, token, orgHeader: new Headers(init?.headers).get('x-opencode-org-id') });
       if (url.includes('/whoami')) return new Response(JSON.stringify({ org: { id: 'org-test' } }), { status: 200 });
       const zero = token.endsWith('account-b-key');
-      return new Response(JSON.stringify({ credits: {
+      return new Response(JSON.stringify({
         credits: { monthlyCredits: zero ? 0 : 1.25, purchasedCredits: zero ? 0 : 0.5, freeCredits: zero ? 0 : 0.25 },
         windowLimits: {
           fiveHour: { used: 0, cap: 0, resetAt: 0 },
           weekly: { used: 2, cap: 8, resetAt: 1_800_000_000_000 },
         },
-      } }), { status: 200 });
+      }), { status: 200 });
     });
     const credentialIds: string[] = [];
     const service = createQuotaService({
@@ -777,7 +777,9 @@ describe('Command Code 按账号额度', () => {
     }
     const network = fetchFor(vi.fn(async () => { throw new Error('offline'); }));
     expect((await network.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({ status: 'error', reason_code: 'NETWORK_ERROR', balance: null });
-    const badSchema = fetchFor(vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('/whoami') ? {} : { credits: { credits: { monthlyCredits: 1 } } }), { status: 200 })));
+    const badSchema = fetchFor(vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.includes('/whoami') ? { org: { id: 'org-test' } } : { credits: { monthlyCredits: 1 } },
+    ), { status: 200 })));
     expect((await badSchema.get({ accountId: accountA, source: 'commandcode' })).items[0]).toMatchObject({ status: 'error', reason_code: 'UPSTREAM_SHAPE_UNEXPECTED', balance: null });
   });
 });

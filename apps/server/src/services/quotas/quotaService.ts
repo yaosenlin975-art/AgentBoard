@@ -888,8 +888,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
     if (orgId) creditsUrl.searchParams.set('orgId', orgId);
     const creditsResponse = await requestJson(creditsUrl.toString());
     if (creditsResponse.failure) return creditsResponse.failure;
-    const creditEnvelope = isPlainRecord(creditsResponse.body?.credits) ? creditsResponse.body.credits : null;
-    const credits = isPlainRecord(creditEnvelope?.credits) ? creditEnvelope.credits : null;
+    const credits = isPlainRecord(creditsResponse.body?.credits) ? creditsResponse.body.credits : null;
     const monthly = credits?.monthlyCredits;
     const purchased = credits?.purchasedCredits;
     const free = credits?.freeCredits;
@@ -898,8 +897,7 @@ export function createQuotaService(options: QuotaServiceOptions = {}): QuotaServ
       || typeof free !== 'number' || !Number.isFinite(free)) {
       return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code credits 字段缺失或无效');
     }
-    const windows = commandCodeWindows(creditEnvelope?.windowLimits)
-      ?? commandCodeWindows(whoami.body?.windowLimits);
+    const windows = commandCodeWindows(creditsResponse.body?.windowLimits);
     if (!windows) return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code 5h/weekly 窗口字段缺失或无效');
     const balance = Math.max(0, monthly) + Math.max(0, purchased) + Math.max(0, free);
     if (!Number.isFinite(balance)) return empty('commandcode', 'error', now(), 'UPSTREAM_SHAPE_UNEXPECTED', 'Command Code 余额字段超出有效范围');
