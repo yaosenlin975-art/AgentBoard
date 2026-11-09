@@ -109,7 +109,7 @@ kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--
 kb list-tasks [--workspace <id|名>] [--status <状态>] [--full]  # 缺省按 cwd 解析当前工作区；--all 聚合全部工作空间，仅限跨工作区只读盘点（与 --workspace 互斥），不得据它 claim / done / fail。
 kb show <issue-id> [--mark-read]        # 任务完整字段 + 全部评论；默认只读，不推进已读游标
 kb grep <pattern> [--path <dir>] [--glob <glob>]  # 本地代码/文档检索（不读 .gitignore）；0 命中 / 1 未命中 / 2 出错
-kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--parent <id>|--clear-root]  # 改字段，不含状态
+kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--parent <id>|--clear-root] [--status <状态>]  # 改字段或直接设状态；内置流转优先用专用命令
 kb move-issue <issue-id> (--parent <id>|--clear-root)  # 移动到父卡或恢复根任务
 kb delete-issue <issue-id> --yes        # 删除任务（不可逆；占用中或含子任务被拒）
 # —— 流转 ——
@@ -387,12 +387,12 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 ```
 kb close <issue-id> [--request-id <uuid>]              # 待验收 → 已关闭（占用者=当前 agent 自动释放自有占用；他人占用 409；有未关闭后代 409）
 kb reopen <issue-id> [--to <状态>] [--request-id <uuid>] # 已关闭/已废弃 → 目标状态（默认待规划）
-kb update <issue-id> --title/--description/--priority/--labels/--due-date/--due-time/--parent [--clear-due|--clear-root] [--request-id <uuid>]
+kb update <issue-id> --title/--description/--priority/--labels/--due-date/--due-time/--parent [--status <状态>] [--clear-due|--clear-root] [--request-id <uuid>]
 kb update <issue-id> --description-stdin               # 长文本描述走 stdin
 ```
 
 - `close` 只接受「待验收」；`reopen` 的目标必须是本工作区已定义状态（含自定义状态），非法会列出可用状态。
-- `update` **不含 status**：状态一律用 `claim / done / close / reopen / fail`。
+- `update --status` 的目标须属于本工作区已定义状态（含自定义状态与「已废弃」）；占用中的卡改状态返回 409。内置生命周期流转优先用 `claim / done / release / close / reopen / fail`。
 - 三条 409（占用中 / 状态不允许 / 有未关闭后代或未完成前置）都会原样打印服务端文案并退出 2；400（目标状态非法）退出 1。
 
 ## CLI-UX 变更（2026-11-03）
