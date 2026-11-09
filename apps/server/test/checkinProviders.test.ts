@@ -14,16 +14,16 @@ import {
 const TOKEN = Buffer.from('fake-token-abc', 'utf8');
 const base = { app_id: 'workbuddy_desktop' as const, region: 'cn' as const, provider_version: 'test' };
 
-interface Call { url: string; method: string; body?: string }
-const fakeFetch = (routes: Array<{ match: (url: string, method: string) => boolean; status?: number; body?: unknown }>) => {
+interface Call { url: string; method: string; body?: string; authorization?: string }
+const fakeFetch = (routes: Array<{ match: (url: string, method: string) => boolean; status?: number; body?: unknown; rawBody?: string }>) => {
   const calls: Call[] = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = String(init?.method ?? 'GET').toUpperCase();
-    calls.push({ url, method, body: init?.body === undefined ? undefined : String(init.body) });
+    calls.push({ url, method, body: init?.body === undefined ? undefined : String(init.body), authorization: new Headers(init?.headers).get('authorization') ?? undefined });
     const route = routes.find(item => item.match(url, method));
     const status = route === undefined ? 404 : route.status ?? 200;
-    return new Response(JSON.stringify(route?.body ?? {}), { status, headers: { 'content-type': 'application/json' } });
+    return new Response(route?.rawBody ?? JSON.stringify(route?.body ?? {}), { status, headers: { 'content-type': 'application/json' } });
   }) as unknown as typeof fetch;
   return { impl, calls };
 };
@@ -177,15 +177,39 @@ describe('trae checkin provider', () => {
     return { provider: createTraeCheckinProvider({ app_id: 'trae', region: 'cn', provider_version: 'test', fetchImpl: fake.impl }), calls: fake.calls };
   };
 
-  it('checked_in=true → already_done；false → claim succeeded', async () => {
-    expect(await provider([{ match: url => url.endsWith('/checkin_credits/status'), body: { data: { checked_in: true } } }]).provider.queryStatus(TOKEN)).toBe('already_done');
+  it('uses Cloud-IDE-JWT and the top-level source status contract', async () => {
+    const notDone = provider([{ match: url => url.endsWith('/checkin_credits/status'), body: { code: 0, checked_in: false, enable: true } }]);
+    const done = provider([{ match: url => url.endsWith('/checkin_credits/status'), body: { code: 0, checked_in: true, enable: true } }]);
+    expect(await notDone.provider.queryStatus(TOKEN)).toBe('not_done');
+    expect(await done.provider.queryStatus(TOKEN)).toBe('already_done');
+    expect([...notDone.calls, ...done.calls].map(call => call.authorization)).toEqual(['Cloud-IDE-JWT fake-token-abc', 'Cloud-IDE-JWT fake-token-abc']);
+    expect([...notDone.calls, ...done.calls].every(call => call.method === 'POST')).toBe(true);
+  });
+
+  it('requires a successful business code and a verified post-claim status', async () => {
     const { provider: p, calls } = provider([
-      { match: url => url.endsWith('/checkin_credits/status'), body: { data: { checked_in: false } } },
-      { match: url => url.endsWith('/checkin_credits/claim'), status: 200, body: { data: {} } },
+      { match: url => url.endsWith('/checkin_credits/claim'), body: { code: 0 } },
+      { match: url => url.endsWith('/checkin_credits/status'), body: { code: 0, checked_in: true, enable: true } },
     ]);
-    expect(await p.queryStatus(TOKEN)).toBe('not_done');
     expect(await p.submitCheckin(TOKEN)).toBe('succeeded');
-    expect(calls.every(call => call.method === 'POST')).toBe(true);
+    expect(calls.map(call => call.url)).toEqual([
+      expect.stringContaining('/checkin_credits/claim'),
+      expect.stringContaining('/checkin_credits/status'),
+    ]);
+  });
+
+  it('does not report success for business errors, missing codes, or unconfirmed claims', async () => {
+    expect(await provider([
+      { match: url => url.endsWith('/checkin_credits/claim'), body: { code: 1001, checked_in: false } },
+      { match: url => url.endsWith('/checkin_credits/status'), body: { code: 0, checked_in: false, enable: true } },
+    ]).provider.submitCheckin(TOKEN)).toBe('failed');
+    expect(await provider([{ match: url => url.endsWith('/checkin_credits/claim'), body: {} }]).provider.submitCheckin(TOKEN)).toBe('unknown');
+    expect(await provider([
+      { match: url => url.endsWith('/checkin_credits/claim'), body: { code: 0 } },
+      { match: url => url.endsWith('/checkin_credits/status'), body: { code: 0, checked_in: false, enable: true } },
+    ]).provider.submitCheckin(TOKEN)).toBe('unknown');
+    expect(await provider([{ match: url => url.endsWith('/checkin_credits/claim'), rawBody: 'not json' }]).provider.submitCheckin(TOKEN)).toBe('unknown');
+    expect(await provider([{ match: url => url.endsWith('/checkin_credits/status'), body: { code: 1001, checked_in: false, enable: false } }]).provider.queryStatus(TOKEN)).toBe('unknown');
   });
 
   it('401 → credential invalid；429 → rate_limited', async () => {

@@ -321,31 +321,32 @@ export function parseTraeCredential(credential: Buffer): { token: string; refres
   return { token: raw };
 }
 
-/** trae：`checkin_credits/status` 的 `data.checked_in` */
+/** trae：`checkin_credits/status` 顶层 `code` 与 `checked_in` */
 export function createTraeCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
-    requestJson(config, `${TRAE_BASE}${path}`, { token, ...init });
+    requestJson(config, `${TRAE_BASE}${path}`, { token, ...init, headers: { authorization: `Cloud-IDE-JWT ${token}` } });
+  const queryStatus = async (token: string): Promise<CheckinStatusQuery> => {
+    const result = await request('/checkin_credits/status', token, { method: 'POST', body: '{}' });
+    if (result.status < 200 || result.status >= 300) return 'unknown';
+    const body = asRecord(result.body);
+    if (body.code !== 0) return 'unknown';
+    if (body.checked_in === true) return 'already_done';
+    if (body.checked_in === false) return 'not_done';
+    return 'unknown';
+  };
 
   return baseSpec(config, {
-    // ACC-TOKEN-2：凭据可能是 JSON 载荷（新捕获线）或裸串（旧数据）——统一从这里取 Bearer token
+    // ACC-TOKEN-2：凭据可能是 JSON 载荷（新捕获线）或裸串（旧数据）——统一取身份 token
     token: credential => parseTraeCredential(credential).token,
-    status: async (token) => {
-      const result = await request('/checkin_credits/status', token, { method: 'POST', body: '{}' });
-      const data = dataOf(result.body);
-      const flag = data.checked_in ?? data.today_checked_in ?? data.checkedIn;
-      if (flag === true) return 'already_done';
-      if (flag === false) return 'not_done';
-      return 'unknown';
-    },
+    status: queryStatus,
     claim: async (token) => {
       const result = await request('/checkin_credits/claim', token, { method: 'POST', body: '{}' });
       if (result.status === 429) return 'rate_limited';
-      if (result.status >= 200 && result.status < 300) {
-        const data = dataOf(result.body);
-        if (data.already_checked_in === true || data.checked_in === true) return 'already_done';
-        return 'succeeded';
-      }
-      return classifyFailure(result);
+      if (result.status < 200 || result.status >= 300) return classifyFailure(result);
+      const code = asRecord(result.body).code;
+      if (typeof code !== 'number') return 'unknown';
+      if (code !== 0) return 'failed';
+      return await queryStatus(token) === 'already_done' ? 'succeeded' : 'unknown';
     },
   });
 }

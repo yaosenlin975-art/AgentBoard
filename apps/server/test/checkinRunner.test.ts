@@ -99,6 +99,32 @@ describe('checkin runner', () => {
     expect(operationsForBatch(t.db, batch.id)).toHaveLength(0);
   });
 
+  it('Trae same-day local success is rechecked with the provider', async () => {
+    provider.statusResult = 'already_done';
+    const account = await makeAccount('Trae-local-success', { app_id: 'trae' });
+    const ref = await vault.protect(Buffer.from(CREDENTIAL_MARK), { app_id: 'trae', client_instance_id: account.client_instance_id, identity_hash: account.identity_hash, purpose: 'checkin' });
+    attachCheckinCredential(t.db, account.id, ref);
+    t.db.prepare('UPDATE managed_account SET last_checkin_day=?,last_checkin_status=? WHERE id=?').run(profileLocalDay(), 'succeeded', account.id);
+    const traeProvider = {
+      app_id: 'trae' as const,
+      region: 'cn' as const,
+      provider_version: 'test',
+      startAuthorization: provider.startAuthorization.bind(provider),
+      pollAuthorization: provider.pollAuthorization.bind(provider),
+      queryStatus: provider.queryStatus.bind(provider),
+      submitCheckin: provider.submitCheckin.bind(provider),
+    };
+    const batch = createCheckinBatch(t.db, { app_id: 'trae', account_ids: [account.id], profile_local_day: profileLocalDay() });
+    const finished = await runCheckinBatch({ db: t.db, vault, provider: traeProvider }, batch.id);
+    expect(finished.status).toBe('succeeded');
+    expect(provider.statusCalls).toBe(1);
+    expect(provider.submitCalls).toBe(0);
+    expect(listCheckinBatchItems(t.db, batch.id)[0]).toMatchObject({ state: 'already_done' });
+    expect(listCheckinBatchItems(t.db, batch.id)[0]?.safe_error_code).not.toBe('LOCAL_RECORD');
+    expect(operationsForBatch(t.db, batch.id)).toHaveLength(1);
+    expect(getManagedAccount(t.db, account.id)?.last_checkin_status).toBe('already_done');
+  });
+
   it('checkinCancelQueuedSkipsRemainingAccounts', async () => {
     const accounts = [await boundAccount('A'), await boundAccount('B')];
     const batch = newBatch(accounts.map(account => account.id));
