@@ -420,4 +420,41 @@ describe('resolveWindowsSpawnForm / resolveSpawnForm（win32 .cmd/.bat 垫片）
 
     await expect(resolveSpawnForm('codex')).resolves.toEqual({ cmd: 'node', prefix: [join(root, ...jsRel)] });
   });
+
+  // CR2-9：形态探测成功后按命令缓存，避免每轮 turn 都起 where 子进程
+  it('resolveSpawnForm 缓存：首测成功后第二次不再起 where 子进程', async () => {
+    const jsRel = ['node_modules', '@openai', 'codex', 'bin', 'codex.js'];
+    const shimPath = writeShimFixture(root, 'codex.cmd', STANDARD_NPM_SHIM, jsRel);
+    const whereCalls: string[] = [];
+    setSpawnFn(((cmd: string) => {
+      if (cmd === 'where' || cmd === 'which') {
+        whereCalls.push(cmd);
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${shimPath}\n` }], 0));
+      }
+      return asChild(makeFakeChild());
+    }) as unknown as SpawnFn);
+
+    const first = await resolveSpawnForm('codex');
+    const second = await resolveSpawnForm('codex');
+    expect(second).toEqual(first);
+    expect(whereCalls).toHaveLength(1);
+  });
+
+  it('resolveSpawnForm 不缓存失败：where 无结果后装好 CLI，下一次仍能探测到形态', async () => {
+    const jsRel = ['node_modules', '@openai', 'codex', 'bin', 'codex.js'];
+    const shimPath = writeShimFixture(root, 'codex.cmd', STANDARD_NPM_SHIM, jsRel);
+    let installed = false;
+    setSpawnFn(((cmd: string) => {
+      if (cmd === 'where' || cmd === 'which') {
+        return installed
+          ? asChild(makeAutoChild([{ source: 'stdout', text: `${shimPath}\n` }], 0))
+          : asChild(makeAutoChild([], 1));
+      }
+      return asChild(makeFakeChild());
+    }) as unknown as SpawnFn);
+
+    await expect(resolveSpawnForm('codex')).resolves.toEqual({ cmd: 'codex', prefix: [] });
+    installed = true;
+    await expect(resolveSpawnForm('codex')).resolves.toEqual({ cmd: 'node', prefix: [join(root, ...jsRel)] });
+  });
 });

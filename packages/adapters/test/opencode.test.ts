@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { asChild, closeChild, makeAutoChild, makeFakeChild } from './helpers.js';
-import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
+import { resetSpawnFormCache, resolveSpawnForm, setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import {
   OPENCODE_CMD,
   opencodeAdapter,
@@ -82,11 +82,33 @@ describe('opencode runTurn', () => {
 
     calls.length = 0;
     failWhere = true;
+    // CR2-9：形态探测成功后按命令缓存，模拟「换了一套 where 结果」需显式清缓存
+    resetSpawnFormCache();
     opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi2' });
     await vi.waitFor(() => expect(calls.some((c) => c.cmd === OPENCODE_CMD && c.args[0] === 'run')).toBe(true));
     const fallback = calls.find((c) => c.cmd === OPENCODE_CMD && c.args[0] === 'run')!;
     expect(fallback.cmd).toBe(OPENCODE_CMD);
     expect(fallback.args).toEqual(['run', 'hi2', '--format', 'json']);
+  });
+
+  // CR2-9：detect/上一轮已预热形态缓存时，本轮 turn 不再起 where 子进程（进程审计）
+  it('形态缓存预热后 runTurn 不再 spawn where/which', async () => {
+    const calls: string[] = [];
+    setSpawnFn(((cmd: string) => {
+      calls.push(cmd);
+      if (cmd === 'where' || cmd === 'which') {
+        return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
+      }
+      return asChild(makeAutoChild([], 0));
+    }) as unknown as SpawnFn);
+
+    await resolveSpawnForm(OPENCODE_CMD);
+    calls.length = 0;
+    await opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' }).result;
+
+    expect(calls).not.toContain('where');
+    expect(calls).not.toContain('which');
+    expect(calls).toContain(MOCK_EXE);
   });
 
   it('事件归一：真实事件流 → text/tool/error/end，sessionID 首次提取不被覆盖，非法行忽略，exitCode 透传', async () => {

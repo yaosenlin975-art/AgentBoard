@@ -7,7 +7,8 @@ import {
   spawnLineChild,
   whereCommand,
 } from './spawn.js';
-import type { AgentAdapter, AskOption, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import type { AgentAdapter, AskOption, RunTurnOptions, TurnHandle, UnifiedEvent } from './types.js';
+import { createTurnRunner } from './turnRunner.js';
 import { assertImageInputSupported } from './imageInput.js';
 import { probeCliCapabilities, resolvePermissionArgs } from './capabilityProbe.js';
 
@@ -262,50 +263,25 @@ export const codebuddyAdapter: AgentAdapter = {
     }
 
     const state = createParseState();
-    const eventCbs: Array<(e: UnifiedEvent) => void> = [];
     // 提问回填只在 stream-json 输入模式（--input-format stream-json）可用；其余轮次 stdin 未开放
     const streamJsonInput = hasImages;
     const pendingAsks = new Set<string>();
     const answeredAsks = new Set<string>();
-    let settled = false;
-    let killed = false;
-    let sawEvents = false;
     let sawAssistantText = false;
-    let child: ReturnType<typeof spawnLineChild> | null = null;
-    let resolveResult!: (r: TurnResult) => void;
-    const result = new Promise<TurnResult>((resolve) => {
-      resolveResult = resolve;
+    const runner = createTurnRunner({
+      sessionId: () => state.sessionId,
+      onFinish: ({ code }) => {
+        // 图片轮次 exit 0 但无模型文本 → 视为失败，并给出可读原因
+        const noImageResult = hasImages && code === 0 && !sawAssistantText;
+        if (!noImageResult) return;
+        return { exitCode: -1, errors: ['图片输入轮次未返回模型文本结果'] };
+      },
     });
-
-    const finish = (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      const noImageResult = hasImages && code === 0 && !sawAssistantText;
-      const exitCode = noImageResult ? -1 : code ?? -1; // 被 kill 或图片轮次无文本结果均视为失败
-      const tail = child?.getStderrTail() ?? [];
-      if (noImageResult) {
-        for (const cb of eventCbs) cb({ type: 'error', message: '图片输入轮次未返回模型文本结果' });
-      }
-      // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
-      // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
-      if (
-        tail.length > 0 &&
-        (exitCode !== 0 || (!sawEvents && state.sessionId === null))
-      ) {
-        for (const cb of eventCbs) {
-          cb({ type: 'error', message: `适配器未捕获到结构化输出；stderr 尾部：\n${tail.join('\n')}` });
-        }
-      }
-      for (const cb of eventCbs) cb({ type: 'end', exitCode });
-      const turnResult: TurnResult = { exitCode, adapterSessionId: state.sessionId };
-      if (tail.length > 0) turnResult.stderrTail = tail;
-      resolveResult(turnResult);
-    };
 
     void (async () => {
       const form = await resolveSpawnForm(CODEBUDDY_CMD);
-      if (killed) {
-        finish(-1);
+      if (runner.isKilled()) {
+        runner.finish(-1);
         return;
       }
       // 权限档位注入（探测 5s 超时/失败=不传）：approval_mode 非 inherit 且注入未全关才探测，
@@ -318,34 +294,33 @@ export const codebuddyAdapter: AgentAdapter = {
         const caps = await probeCliCapabilities(CODEBUDDY_CMD);
         args.push(...resolvePermissionArgs(opts.toolPolicy.approval_mode, caps));
       }
-      if (killed) {
-        finish(-1);
+      if (runner.isKilled()) {
+        runner.finish(-1);
         return;
       }
-      child = spawnLineChild(
+      const child = spawnLineChild(
         form.cmd,
         [...form.prefix, ...args],
         opts.cwd,
         stdinText === undefined ? undefined : { stdinText, keepStdinOpen: streamJsonInput },
       );
+      runner.bindChild(child);
       child.onLine((_source, line) => {
         for (const event of parseCodebuddyLine(line, state)) {
-          sawEvents = true;
+          runner.markEvent();
           if (event.type === 'text') sawAssistantText = true;
           // 提问只登记一次；轮次已结束时不再登记（回填入口以 TURN_ENDED 拒绝）
-          if (event.type === 'ask' && !settled) pendingAsks.add(event.request_id);
-          for (const cb of eventCbs) cb(event);
+          if (event.type === 'ask' && !runner.isSettled()) pendingAsks.add(event.request_id);
+          runner.emit(event);
         }
       });
-      child.onClose((code) => finish(code));
+      child.onClose((code) => runner.finish(code));
     })();
 
     return {
-      onEvent(cb) {
-        eventCbs.push(cb);
-      },
+      onEvent: runner.onEvent,
       async answer(requestId: string, answer: string): Promise<void> {
-        if (settled) {
+        if (runner.isSettled()) {
           throw new AskAnswerError('TURN_ENDED', `本轮已结束，无法回填提问 ${requestId} 的回答`);
         }
         if (!streamJsonInput) {
@@ -360,6 +335,7 @@ export const codebuddyAdapter: AgentAdapter = {
         if (!pendingAsks.has(requestId)) {
           throw new AskAnswerError('UNKNOWN_ASK', `未知或已过期的提问 request_id：${requestId}`);
         }
+        const child = runner.getChild();
         if (child === null) {
           throw new AskAnswerError('STDIN_UNAVAILABLE', '子进程尚未就绪，无法回填回答');
         }
@@ -380,11 +356,8 @@ export const codebuddyAdapter: AgentAdapter = {
         pendingAsks.delete(requestId);
         answeredAsks.add(requestId);
       },
-      async kill() {
-        killed = true;
-        await child?.kill();
-      },
-      result,
+      kill: () => runner.kill(),
+      result: runner.result,
     };
   },
 };

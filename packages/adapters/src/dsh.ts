@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
 import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
-import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from './types.js';
+import { createTurnRunner } from './turnRunner.js';
 import { assertImageInputSupported } from './imageInput.js';
 
 export const DSH_CMD = 'dsh';
@@ -128,79 +129,43 @@ export const dshAdapter: AgentAdapter = {
     if (opts.adapterSessionId) args.push('--session-id', opts.adapterSessionId);
 
     const state = createDshParseState();
-    const eventCbs: Array<(e: UnifiedEvent) => void> = [];
-    let settled = false;
-    let killed = false;
-    let sawEvents = false;
-    let probeChild: ReturnType<typeof spawnLineChild> | null = null;
-    let mainChild: ReturnType<typeof spawnLineChild> | null = null;
-    let resolveResult!: (r: TurnResult) => void;
-    const result = new Promise<TurnResult>((resolve) => {
-      resolveResult = resolve;
-    });
-
-    const emit = (e: UnifiedEvent) => {
-      for (const cb of eventCbs) cb(e);
-    };
-    const finish = (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
-      const tail = mainChild?.getStderrTail() ?? [];
-      // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
-      // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
-      if (
-        tail.length > 0 &&
-        (exitCode !== 0 || (!sawEvents && state.sessionId === null))
-      ) {
-        emit({ type: 'error', message: `适配器未捕获到结构化输出；stderr 尾部：\n${tail.join('\n')}` });
-      }
-      emit({ type: 'end', exitCode });
-      const turnResult: TurnResult = { exitCode, adapterSessionId: state.sessionId };
-      if (tail.length > 0) turnResult.stderrTail = tail;
-      resolveResult(turnResult);
-    };
+    const runner = createTurnRunner({ sessionId: () => state.sessionId });
 
     void (async () => {
       await Promise.resolve(); // 让调用方先注册 onEvent
       const form = await resolveSpawnForm(DSH_CMD);
-      probeChild = spawnLineChild(form.cmd, [...form.prefix, '--version'], opts.cwd);
+      const probeChild = spawnLineChild(form.cmd, [...form.prefix, '--version'], opts.cwd);
+      runner.bindKillTarget(probeChild);
       const vlines: string[] = [];
       probeChild.onLine((_source, line) => {
         vlines.push(line);
       });
       await probeChild.exit;
-      probeChild = null;
-      if (killed) {
-        finish(-1);
+      if (runner.isKilled()) {
+        runner.finish(-1);
         return;
       }
       const version = parseDshVersion(vlines);
       if (version !== null && !isSupportedDshVersion(version)) {
-        emit({ type: 'error', message: `dsh 版本 ${version} 不在已适配范围 0.2.x，接口可能已变更` });
-        finish(1);
+        runner.emit({ type: 'error', message: `dsh 版本 ${version} 不在已适配范围 0.2.x，接口可能已变更` });
+        runner.finish(1);
         return;
       }
-      mainChild = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
-      mainChild.onLine((_source, line) => {
+      const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      runner.bindChild(child);
+      child.onLine((_source, line) => {
         for (const event of parseDshLine(line, state)) {
-          sawEvents = true;
-          emit(event);
+          runner.markEvent();
+          runner.emit(event);
         }
       });
-      mainChild.onClose((code) => finish(code));
+      child.onClose((code) => runner.finish(code));
     })();
 
     return {
-      onEvent(cb) {
-        eventCbs.push(cb);
-      },
-      async kill() {
-        killed = true;
-        if (probeChild) await probeChild.kill();
-        if (mainChild) await mainChild.kill();
-      },
-      result,
+      onEvent: runner.onEvent,
+      kill: () => runner.kill(),
+      result: runner.result,
     };
   },
 };

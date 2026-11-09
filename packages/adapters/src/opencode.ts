@@ -1,6 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
 import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
-import type { AgentAdapter, RunTurnOptions, TurnHandle, TurnResult, UnifiedEvent } from './types.js';
+import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from './types.js';
+import { createTurnRunner } from './turnRunner.js';
 import { cachedImageFlag, helpMentionsFlag, imageFlagKey, rememberImageFlag } from './imageFlags.js';
 import { assertImageInputSupported } from './imageInput.js';
 
@@ -150,63 +151,29 @@ export const opencodeAdapter: AgentAdapter = {
     for (const attachment of opts.attachments ?? []) args.push('--file', attachment.path);
 
     const state = createOpencodeParseState();
-    const eventCbs: Array<(e: UnifiedEvent) => void> = [];
-    let settled = false;
-    let killed = false;
-    let sawEvents = false;
-    let child: ReturnType<typeof spawnLineChild> | null = null;
-    let resolveResult!: (r: TurnResult) => void;
-    const result = new Promise<TurnResult>((resolve) => {
-      resolveResult = resolve;
-    });
-
-    const emit = (e: UnifiedEvent) => {
-      for (const cb of eventCbs) cb(e);
-    };
-    const finish = (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      const exitCode = code ?? -1; // 被 kill（信号终止）无退出码，归一为 -1
-      const tail = child?.getStderrTail() ?? [];
-      // 排障诊断：非零退出，或 exit 0 但零事件且无 session id（stderr 有内容才发），
-      // 在 end 之前发一条 error 事件，避免真实 CLI 静默失败无法定位
-      if (
-        tail.length > 0 &&
-        (exitCode !== 0 || (!sawEvents && state.sessionId === null))
-      ) {
-        emit({ type: 'error', message: `适配器未捕获到结构化输出；stderr 尾部：\n${tail.join('\n')}` });
-      }
-      emit({ type: 'end', exitCode });
-      const turnResult: TurnResult = { exitCode, adapterSessionId: state.sessionId };
-      if (tail.length > 0) turnResult.stderrTail = tail;
-      resolveResult(turnResult);
-    };
+    const runner = createTurnRunner({ sessionId: () => state.sessionId });
 
     void (async () => {
       const form = await resolveSpawnForm(OPENCODE_CMD);
-      if (killed) {
-        finish(-1);
+      if (runner.isKilled()) {
+        runner.finish(-1);
         return;
       }
-      child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      runner.bindChild(child);
       child.onLine((_source, line) => {
         for (const event of parseOpencodeLine(line, state)) {
-          sawEvents = true;
-          emit(event);
+          runner.markEvent();
+          runner.emit(event);
         }
       });
-      child.onClose((code) => finish(code));
+      child.onClose((code) => runner.finish(code));
     })();
 
     return {
-      onEvent(cb) {
-        eventCbs.push(cb);
-      },
-      async kill() {
-        killed = true;
-        await child?.kill();
-      },
-      result,
+      onEvent: runner.onEvent,
+      kill: () => runner.kill(),
+      result: runner.result,
     };
   },
 };

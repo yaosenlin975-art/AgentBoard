@@ -67,6 +67,8 @@ let spawnFn: SpawnFn = realSpawn;
 /** 测试注入点：替换底层 spawn 实现，不依赖本机真实 CLI。 */
 export function setSpawnFn(fn: SpawnFn): void {
   spawnFn = fn;
+  // 注入新的 spawn 实现后旧的探测结果不再可信（测试之间也靠这里隔离）
+  spawnFormCache.clear();
 }
 
 const KILL_GRACE_MS = 1000;
@@ -171,11 +173,24 @@ export function resolveWindowsSpawnForm(whereLines: string[], cmd: string): Spaw
   return null;
 }
 
+/** 逻辑命令 → 上次探测成功的可执行形态（进程内缓存，避免每轮 turn 都起 where 子进程） */
+const spawnFormCache = new Map<string, SpawnForm>();
+
 /** 解析逻辑命令的可执行形态：where 无结果或非 win32 时原样返回（ENOENT 由 close 事件归一）。 */
 export async function resolveSpawnForm(cmd: string): Promise<SpawnForm> {
+  const cached = spawnFormCache.get(cmd);
+  if (cached !== undefined) return cached;
   const lines = await whereCommand(cmd);
+  // 未探测到安装路径时不缓存：用户随后装好 CLI，下一轮仍能重新探测
   if (lines.length === 0) return { cmd, prefix: [] };
-  return resolveWindowsSpawnForm(lines, cmd) ?? { cmd, prefix: [] };
+  const form = resolveWindowsSpawnForm(lines, cmd) ?? { cmd, prefix: [] };
+  spawnFormCache.set(cmd, form);
+  return form;
+}
+
+/** 测试用：清空 spawn 形态缓存（模拟「进程内首次探测」或换了一套 where 结果）。 */
+export function resetSpawnFormCache(): void {
+  spawnFormCache.clear();
 }
 
 function delay(ms: number): Promise<void> {
