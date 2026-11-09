@@ -34,10 +34,10 @@ import { startCheckinBatchInBackground } from '../services/accounts/checkinRunne
 import { startAccountRestore } from '../services/accounts/restore.js';
 import type { RestoreHandler } from '../services/accounts/restore.js';
 import { createCredentialImporter, type ExportRunner } from '../services/accounts/credentialImport.js';
-import { CLI_ACCOUNT_APP_IDS, captureCliAccounts, commandCodeCapability, deleteCliAccount, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
+import { CLI_ACCOUNT_APP_IDS, CLI_CLIENT_INSTANCE_ID, captureCliAccounts, commandCodeCapability, deleteCliAccount, importCliCredential, type CliCredentialVault } from '../services/accounts/cliAccounts.js';
 import { CLI_SWITCH_CAPABILITIES, switchCliAccount, type CliSwitchVault } from '../services/accounts/cliSwitch.js';
 import { createQuotaService, type QuotaService, type QuotaSnapshot } from '../services/quotas/quotaService.js';
-import { quotaSourceForAppId, resolvePlatformQuotaCredential } from '../services/quotas/platformQuotaCredentials.js';
+import { quotaSourceForAppId, resolveCliAccountQuotaCredential, resolvePlatformQuotaCredential } from '../services/quotas/platformQuotaCredentials.js';
 import type { WorkbuddyDesktopProvider } from '../services/accounts/workbuddyDesktopProvider.js';
 import { hashPayload, replayIdempotentResult, withIdempotencyResult, type IdempotencyInput } from '../services/idempotency.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
@@ -247,6 +247,8 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
 export function createAccountRouter(deps: AccountRouterDeps): Router {
   const router = Router();
   const { db } = deps;
+  /** CLI-SWITCH / Command Code quota: production reuses SecretVault; each lookup scopes to one cli_account row. */
+  const cliSwitchVault = deps.cliSwitchVault ?? (deps.secretVault as unknown as CliSwitchVault | undefined);
   /** ACC-QUOTA-01：单实例缓存（60s TTL + 失败退避），每次服务装配只建一次 */
   // ACC-QUOTA-ALL：平台凭据 fetch 时解析（中心库签到凭据 / zcode 本机文件），凭据导入/轮换即时生效
   const quotas = deps.quotas ?? createQuotaService({
@@ -258,14 +260,17 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
       source,
       accountId,
     }),
+    commandCodeCredential: accountId => resolveCliAccountQuotaCredential({
+      db,
+      vault: cliSwitchVault,
+      accountId,
+      clientInstanceId: CLI_CLIENT_INSTANCE_ID,
+    }),
   });
   /** MINIMAX-PATH：客户端探测单实例缓存（60s TTL），每次装配只建一次 */
   const minimaxProbe = deps.minimaxClientProbe ?? createMinimaxClientProbe();
   /** ACC-CLI-MULTI：生产复用注入的 SecretVault（`vault` 字段是签到侧的窄类型视图） */
   const cliVault = deps.cliVault ?? (deps.vault as unknown as CliCredentialVault | undefined);
-  /** CLI-SWITCH：生产由 routes.ts 注入完整 SecretVault（此处是窄类型视图，运行时具备 unprotect） */
-  const cliSwitchVault = deps.cliSwitchVault ?? (deps.secretVault as unknown as CliSwitchVault | undefined);
-
   // ---- ACC-CLI-MULTI：CLI 三来源的本机凭据登记（口径 A：只读发现 + 真实计数 + 持久化） ----
   // GET 触发一次幂等登记：界面首屏无需额外按钮即可拿到真实计数；已登记账号只更新 last_seen_at。
   router.get('/cli-accounts', async (_req, res) => {
@@ -285,6 +290,7 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   router.post('/cli-accounts/import', async (req, res) => {
     const body = parseBody(cliImportSchema, req.body);
     const result = await importCliCredential({ db, vault: cliVault, appId: body.app_id, credential: body.credential });
+    if (body.app_id === 'commandcode') quotas.reset?.();
     res.json(result);
   });
 
@@ -318,6 +324,15 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
   // ---- CLI-SWITCH：能力表 + 逐来源切换（默认 dry-run，显式 apply 才写本机配置） ----
   router.get('/cli-accounts/switch-capabilities', (_req, res) => {
     res.json({ items: CLI_SWITCH_CAPABILITIES });
+  });
+
+  // ---- Command Code：按 cli_account 精确读取额度，不触发 CLI 账号捕获或 last_seen_at 更新 ----
+  router.get('/cli-account-quotas', async (req, res) => {
+    const accountId = z.string().uuid().safeParse(req.query.account_id);
+    if (!accountId.success) throw new ValidationError('account_id 必须为 UUID');
+    const account = db.prepare('SELECT app_id FROM cli_account WHERE id=?').get(accountId.data) as { app_id: string } | undefined;
+    if (!account || account.app_id !== 'commandcode') throw new NotFoundError('Command Code 账号不存在');
+    res.json(await quotas.get({ accountId: accountId.data, source: 'commandcode' }));
   });
 
   const cliSwitchBodySchema = z.object({ apply: z.boolean().optional() }).strict();

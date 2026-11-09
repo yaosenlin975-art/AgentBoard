@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import type { ManagedAppId, QuotaSourceId } from '@agentboard/shared';
 import type { Db } from '../../db/connection.js';
 import type { CheckinVault } from '../accounts/checkinProvider.js';
+import type { CliSwitchVault } from '../accounts/cliSwitch.js';
 import { parseMinimaxCredential } from '../accounts/httpCheckinProviders.js';
 
 export interface PlatformQuotaCredentialOk {
@@ -68,6 +69,39 @@ interface ManagedAccountRow {
 }
 
 export type AccountQuotaSourceId = keyof typeof QUOTA_SOURCE_APP_ID;
+
+/** 从指定 cli_account 读取 Command Code key；不发现当前本机账号，也不跨账号回退。 */
+export async function resolveCliAccountQuotaCredential(input: {
+  db: Db;
+  vault?: CliSwitchVault;
+  accountId: string;
+  clientInstanceId: string;
+}): Promise<PlatformQuotaCredential> {
+  const row = input.db.prepare(
+    'SELECT app_id, identity_hash, credential_ref FROM cli_account WHERE id=?',
+  ).get(input.accountId) as { app_id: string; identity_hash: string; credential_ref: string | null } | undefined;
+  if (!row || row.app_id !== 'commandcode') {
+    return { kind: 'missing', reasonCode: 'CREDENTIAL_MISSING', detail: '未找到该 Command Code 账号凭据' };
+  }
+  if (!row.credential_ref) {
+    return { kind: 'missing', reasonCode: 'CREDENTIAL_MISSING', detail: '该账号没有已保存的额度凭据，请重新导入 API Key' };
+  }
+  if (!input.vault) {
+    return { kind: 'missing', reasonCode: 'VAULT_UNAVAILABLE', detail: '额度保险库暂不可用' };
+  }
+  try {
+    const token = (await input.vault.unprotect(row.credential_ref, {
+      app_id: 'commandcode',
+      client_instance_id: input.clientInstanceId,
+      identity_hash: row.identity_hash,
+      purpose: 'cli_credential',
+    })).toString('utf8').trim();
+    if (!token) return { kind: 'missing', reasonCode: 'CREDENTIAL_MISSING', detail: '保险库中的额度凭据为空，请重新导入 API Key' };
+    return { kind: 'ok', token, accountName: null };
+  } catch {
+    return { kind: 'missing', reasonCode: 'VAULT_READ_FAILED', detail: '无法读取该账号的额度凭据，请重新导入 API Key' };
+  }
+}
 
 /** managed_account.app_id → 唯一账号额度来源；其它平台没有账号行额度入口。 */
 export function quotaSourceForAppId(appId: ManagedAppId): AccountQuotaSourceId | null {
@@ -217,7 +251,7 @@ const NO_ACCOUNT_DETAIL: Record<'workbuddy' | 'minimax' | 'trae' | 'qoder_cn' | 
 /** 解析某额度来源的凭据；结果只含 token + 显示名，绝不抛错（失败都落成 missing） */
 export async function resolvePlatformQuotaCredential(input: ResolvePlatformQuotaCredentialInput): Promise<PlatformQuotaCredential> {
   const { db, source } = input;
-  if (source === 'deepseek' || source === 'opencode_go' || source === 'codex') {
+  if (source === 'deepseek' || source === 'opencode_go' || source === 'codex' || source === 'commandcode') {
     return { kind: 'missing', reasonCode: 'NO_CREDENTIAL', detail: `${source} 不是平台额度来源` };
   }
   if (source === 'zcode' && input.accountId === undefined) {

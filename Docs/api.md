@@ -754,6 +754,8 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 
 ## 14b. 额度与余额（`GET /api/managed-account-quotas`，accountRoutes.ts，ACC-QUOTA-01）
 
+`GET /api/cli-account-quotas?account_id=<uuid>` 读取指定 `commandcode` CLI 账号，响应 `{ items: [QuotaResult], fetched_at }` 且仅含该账号的一条额度结果；缺少或非法 UUID 返回 400 `VALIDATION_ERROR`，账号不存在或来源不匹配返回 404 `NOT_FOUND`。
+
 账号页三来源额度/余额聚合：**逐来源独立结果**（单来源失败不影响其它来源），服务端 60s 缓存 + 失败指数退避（60s 起，上限 10min），同来源并发只打一次第三方。取证结论（2026-11-03）：DeepSeek 走官方余额端点；OpenCode Go 走**本地 opencode 服务**的 usage 路由（ACC-QUOTA-02）；Codex 无公开窗口端点，固定 `unsupported`（不编造数据）。响应不含 token / identity_hash / 本机路径。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
@@ -767,6 +769,8 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 - **opencode_go**：走本地 opencode 服务 `GET {url}/api/experimental/usage/limits`（Basic `opencode:<~/.config/opencode/service.json password>`）。响应 `data.go.{rolling,weekly,monthly}={percent,limited,resetsAt}` → 三窗口（`5h`/`weekly`/`monthly`），`remaining = 100 - percent`、`used_percent = percent`、`reset_at = resetsAt`，`unit = '%'`、`detail` 给工作区名或限额提示。服务发现：`OPENCODE_SERVER_URL` 优先，否则 `netstat -ano` LISTENING 端口 ∩ `tasklist` 中名字含 `opencode` 的 PID（Windows）。不可用码：`OPENCODE_NOT_LOGGED_IN`（无 auth.json）/ `OPENCODE_AUTH_UNAVAILABLE`（无 service.json 口令）/ `OPENCODE_SERVER_NOT_RUNNING`（未发现本地服务）/ `OPENCODE_AUTH_FAILED`（401/403）/ `OPENCODE_ROUTE_UNSUPPORTED`（404）。
 - **codex**（ACC-CODEX-QUOTA-IMPL）：只读**本机 rollout 快照**（零网络、零凭据）——扫描 `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` 取 mtime 最新一份，读 `event_msg → payload.rate_limits`：`primary{used_percent, window_minutes:300, resets_at}` → `5h`、`secondary{window_minutes:10080}` → `weekly`（**只映射这两种窗口，Monthly 不展示**）；`resets_at` 为秒级 epoch（×1000 转毫秒）；`credits.balance` → `balance`/`unit=USD`，余额为 0 时 `detail="额度内"`（避免误读成欠费）。不可用码：`NO_CODEX_SESSIONS`（无 `~/.codex/sessions` 或无 rollout 文件）/ `NO_CODEX_RATE_LIMITS`（最新会话里没有 `rate_limits` 或窗口不可用）。不读 token 原文、不写 `.codex`、不请求 ChatGPT 后端（`/backend-api/codex/usage` 需浏览器 UA 才 200，本卡不启用，见 `Docs/research/accounts/2026-11-03-codex-quota.md`）。
 - `windows[].reset_at` 为该窗口重置时刻（epoch ms），前端展示为本地 `HH:mm` + 剩余时长；无窗口概念时 `windows = []`。
+**commandcode**（`GET /api/cli-account-quotas`）：按 `account_id` 精确读取一条 `cli_account` 的 `credential_ref`，使用 vault scope `commandcode` / `CLI_CLIENT_INSTANCE_ID` / 行内 `identity_hash` / `cli_credential`；不触发账号捕获。只读调用官方 `GET https://api.commandcode.ai/alpha/whoami?limits=1` 与 `GET /alpha/billing/credits?orgId=<whoami.org.id>`。credits 响应原始 body 中 `credits.{monthlyCredits,purchasedCredits,freeCredits}` 按官方客户端逐项截为非负后求和，`unit=USD`；同一 body 顶层 `windowLimits.{fiveHour,weekly}` 映射 5h rolling 与 weekly，`resetAt` 为 epoch 毫秒（0 → null）。缺凭据：200 + `unsupported/CREDENTIAL_MISSING`；401/403、网络失败或字段缺失：非 ok 且 `balance=null`；有效真实零值保持 `ok/0`。缓存按来源和 CLI 账号 id 隔离。
+
 ## 14c. 添加账号（协议级加号，`/api/add-account-*`，ACC-KB-B2S）
 
 **不再依赖客户端进程在跑**：走平台自己的授权协议 —— 发起 → 用户在浏览器确认一次 → 轮询/回调 → 凭据落 vault → 建 `managed_account`。授权成功后新账号直接出现在 `GET /api/managed-accounts` 列表，**不需要重启客户端**。

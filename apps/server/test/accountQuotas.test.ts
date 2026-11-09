@@ -17,7 +17,10 @@ import { createAccountRouter } from '../src/api/accountRoutes.js';
 import { errorHandler } from '../src/api/routes.js';
 import { createManagedAccount } from '../src/db/repos/managedAccount.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
-import type { QuotaSnapshot } from '../src/services/quotas/quotaService.js';
+import { createQuotaService, type QuotaSnapshot } from '../src/services/quotas/quotaService.js';
+import { CLI_CLIENT_INSTANCE_ID, cliIdentityHash } from '../src/services/accounts/cliAccounts.js';
+import type { SecretVault } from '../src/services/accounts/secretVault.js';
+import { resolveCliAccountQuotaCredential } from '../src/services/quotas/platformQuotaCredentials.js';
 import { FakeCheckinVault } from './fakeCheckinProvider.js';
 
 const snapshot: QuotaSnapshot = {
@@ -36,6 +39,11 @@ const snapshot: QuotaSnapshot = {
       fetched_at: 1_700_000_000_000, reason_code: 'NO_PUBLIC_QUOTA_ENDPOINT', detail: 'Codex 额度窗口没有公开接口',
     },
   ],
+};
+
+const commandCodeSnapshot: QuotaSnapshot = {
+  fetched_at: 1_700_000_000_000,
+  items: [{ source: 'commandcode', status: 'ok', balance: 2, unit: 'USD', windows: [], fetched_at: 1_700_000_000_000, reason_code: null, detail: null }],
 };
 
 describe('GET /api/managed-account-quotas', () => {
@@ -61,7 +69,7 @@ describe('GET /api/managed-account-quotas', () => {
         get: async (selection?: unknown) => {
           calls += 1;
           quotaSelections.push(selection);
-          return snapshot;
+          return (selection as { source?: string } | undefined)?.source === 'commandcode' ? commandCodeSnapshot : snapshot;
         },
       },
     });
@@ -113,6 +121,28 @@ describe('GET /api/managed-account-quotas', () => {
     expect(quotaSelections).toEqual([{ accountId: account.id, source: 'workbuddy' }]);
     await request(app).get('/api/managed-account-quotas').expect(200);
     expect(quotaSelections[1]).toBeUndefined();
+  });
+
+  it('Command Code 路由要求指定账号，只接受对应 cli_account 且不触发捕获更新', async () => {
+    await request(app).get('/api/cli-account-quotas').expect(400);
+    await request(app).get('/api/cli-account-quotas?account_id=bad').expect(400);
+    await request(app).get(`/api/cli-account-quotas?account_id=${randomUUID()}`).expect(404);
+    const wrongId = randomUUID();
+    t.db.prepare('INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)')
+      .run(wrongId, 'codex', createHash('sha256').update(wrongId).digest('hex'), null, 1, 2);
+    await request(app).get(`/api/cli-account-quotas?account_id=${wrongId}`).expect(404);
+    expect(calls).toBe(0);
+
+    const accountId = randomUUID();
+    const lastSeen = 123;
+    t.db.prepare('INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)')
+      .run(accountId, 'commandcode', createHash('sha256').update(accountId).digest('hex'), null, 1, lastSeen);
+    const response = await request(app).get(`/api/cli-account-quotas?account_id=${accountId}`).expect(200);
+    expect(response.body).toEqual(commandCodeSnapshot);
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0].source).toBe('commandcode');
+    expect(quotaSelections).toEqual([{ accountId, source: 'commandcode' }]);
+    expect((t.db.prepare('SELECT last_seen_at FROM cli_account WHERE id=?').get(accountId) as { last_seen_at: number }).last_seen_at).toBe(lastSeen);
   });
 
   it('响应不含 token / 本机路径 / identity_hash', async () => {
@@ -180,5 +210,54 @@ describe('GET /api/managed-account-quotas account scope integration', () => {
       vi.unstubAllGlobals();
       t.cleanup();
     }
+  });
+});
+
+describe('Command Code import cache invalidation', () => {
+  it('createApp 缓存无凭据结果后导入 key，下一次额度读取即请求上游', async () => {
+    const t = createTestDb();
+    const credential = 'command-code-key-0001';
+    const accountId = randomUUID();
+    const identityHash = cliIdentityHash('commandcode', credential);
+    t.db.prepare('INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)')
+      .run(accountId, 'commandcode', identityHash, null, 1, 2);
+    const entries = new Map<string, { data: Buffer; scope: string }>();
+    const vault = {
+      async protect(data: Buffer, scope: unknown): Promise<string> {
+        const ref = randomUUID();
+        entries.set(ref, { data, scope: JSON.stringify(scope) });
+        return ref;
+      },
+      async unprotect(ref: string, scope: unknown): Promise<Buffer> {
+        const entry = entries.get(ref);
+        if (!entry || entry.scope !== JSON.stringify(scope)) throw new Error('scope mismatch');
+        return entry.data;
+      },
+      async delete(ref: string): Promise<void> { entries.delete(ref); },
+    } as unknown as SecretVault;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes('/whoami') ? { org: { id: 'org-test' } } : {
+        credits: { monthlyCredits: 3, purchasedCredits: 1, freeCredits: 0 },
+        windowLimits: { fiveHour: { used: 1, cap: 5, resetAt: 0 }, weekly: { used: 1, cap: 10, resetAt: 1_800_000_000_000 } },
+      },
+    ), { status: 200 }));
+    const quotaService = createQuotaService({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      commandCodeCredential: id => resolveCliAccountQuotaCredential({ db: t.db, vault, accountId: id, clientInstanceId: CLI_CLIENT_INSTANCE_ID }),
+    });
+    try {
+      const adapter = new FakeAdapter();
+      const app = (await createApp({ db: t.db, secretVault: vault, quotas: quotaService, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false })).app;
+      const before = await request(app).get(`/api/cli-account-quotas?account_id=${accountId}`).expect(200);
+      expect(before.body.items[0]).toMatchObject({ status: 'unsupported', reason_code: 'CREDENTIAL_MISSING', balance: null });
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      await request(app).post('/api/cli-accounts/import').send({ app_id: 'commandcode', credential }).expect(200);
+      const after = await request(app).get(`/api/cli-account-quotas?account_id=${accountId}`).expect(200);
+      expect(after.body.items).toHaveLength(1);
+      expect(after.body.items[0]).toMatchObject({ status: 'ok', source: 'commandcode', balance: 4, unit: 'USD' });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify([before.body, after.body])).not.toContain(credential);
+    } finally { t.cleanup(); }
   });
 });

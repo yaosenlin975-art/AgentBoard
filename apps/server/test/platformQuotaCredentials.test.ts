@@ -15,6 +15,7 @@ import {
   decryptZcodeCredentialValue,
   QUOTA_SOURCE_APP_ID,
   readZcodeOauthToken,
+  resolveCliAccountQuotaCredential,
   resolvePlatformQuotaCredential,
 } from '../src/services/quotas/platformQuotaCredentials.js';
 
@@ -31,14 +32,14 @@ function encryptZcodeValue(plain: string, secret: string): string {
 /** 测试 secret：走 ZCODE_CREDENTIAL_SECRET env 路径，不依赖平台/用户名 */
 const SECRET = 'unit-test-secret';
 
-interface FakeVaultCall { ref: string; scope: { app_id: string; purpose: string } }
+interface FakeVaultCall { ref: string; scope: { app_id: string; purpose: string; client_instance_id: string; identity_hash: string } }
 /** 内存 vault：记录调用（断言不泄露 scope 明文），按 ref 返回凭据字节 */
 function fakeVault(credentials: Record<string, Buffer>, options: { failRefs?: string[] } = {}) {
   const calls: FakeVaultCall[] = [];
   return {
     calls,
-    async unprotect(ref: string, scope: { app_id: string; client_instance_id: string; identity_hash: string; purpose: 'checkin' }): Promise<Buffer> {
-      calls.push({ ref, scope: { app_id: scope.app_id, purpose: scope.purpose } });
+    async unprotect(ref: string, scope: { app_id: string; client_instance_id: string; identity_hash: string; purpose: 'checkin' | 'cli_credential' | 'client_snapshot' | 'pending_credential' }): Promise<Buffer> {
+      calls.push({ ref, scope: { ...scope } });
       if (options.failRefs?.includes(ref)) throw new Error('DPAPI_FAIL');
       const credential = credentials[ref];
       if (!credential) throw new Error('NO_SUCH_REF');
@@ -230,6 +231,31 @@ describe('resolvePlatformQuotaCredential（中心库 + vault）', () => {
     try {
       const result = await resolvePlatformQuotaCredential({ db: t.db, source: 'deepseek' });
       expect(result).toMatchObject({ kind: 'missing', reasonCode: 'NO_CREDENTIAL' });
+    } finally { t.cleanup(); }
+  });
+
+  it('Command Code 凭据只从指定 cli_account ref 与 CLI scope 读取', async () => {
+    const t = createTestDb();
+    try {
+      const id = randomUUID();
+      const identityHash = hex64();
+      const ref = randomUUID();
+      t.db.prepare('INSERT INTO cli_account (id,app_id,identity_hash,credential_ref,created_at,last_seen_at) VALUES (?,?,?,?,?,?)')
+        .run(id, 'commandcode', identityHash, ref, 10, 20);
+      const vault = fakeVault({ [ref]: Buffer.from('command-code-key') });
+      const result = await resolveCliAccountQuotaCredential({
+        db: t.db,
+        vault,
+        accountId: id,
+        clientInstanceId: 'cli-local',
+      });
+      expect(result).toEqual({ kind: 'ok', token: 'command-code-key', accountName: null });
+      expect(vault.calls).toEqual([{
+        ref,
+        scope: { app_id: 'commandcode', client_instance_id: 'cli-local', identity_hash: identityHash, purpose: 'cli_credential' },
+      }]);
+      expect(await resolveCliAccountQuotaCredential({ db: t.db, vault, accountId: randomUUID(), clientInstanceId: 'cli-local' }))
+        .toMatchObject({ kind: 'missing', reasonCode: 'CREDENTIAL_MISSING' });
     } finally { t.cleanup(); }
   });
 });
