@@ -442,18 +442,19 @@ kb dep add <issue-id> <blocker-id>   # 建边；blocker 解除后本卡才可 cl
 kb dep rm <issue-id> <blocker-id>    # 删边；缺边 404
 ```
 
-workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 `kb claim` 手法），写通道因此恒带 `workspace_id`。`--json` 输出原始响应。退出码**由本子命令自带映射，不改全局 `toExit`**：0 成功；2 `DEPENDENCY_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED`；3 `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF` / `VALIDATION_ERROR`；4 `NOT_FOUND` / `TASK_NOT_FOUND`；未映射的码交回全局 `toExit`（409 → 2、其余 → 1，用服务端原文）。每个已映射码一句中文文案，不会被包装成「已被占用（…）」：
+workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 `kb claim` 手法），写通道因此恒带 `workspace_id`。`--json` 输出原始响应。退出码**由本子命令自带映射，不改全局 `toExit`**：0 成功；2 `DEPENDENCY_CYCLE` / `DEPENDENCY_PARENT_CYCLE` / `DEPENDENCY_EXISTS` / `ISSUE_CLAIMED`；3 `CROSS_WORKSPACE_DEPENDENCY` / `DEPENDENCY_SELF` / `VALIDATION_ERROR`；**4 只用于 `dep rm` 的「依赖边不存在」**（任务不存在 `NOT_FOUND` / `TASK_NOT_FOUND` 交回全局口径落 **1**，与 `show` / `claim` 一致）；未映射的码交回全局 `toExit`（409 → 2、其余 → 1，用服务端原文）。每个已映射码一句中文文案，不会被包装成「已被占用（…）」：
 
 | 错误码 | 退出码 | 文案 |
 | --- | --- | --- |
 | `DEPENDENCY_CYCLE` | 2 | 该依赖会让任务成环，已拒绝 |
+| `DEPENDENCY_PARENT_CYCLE` | 2 | 子卡不能依赖其父/祖先卡：父卡要等子卡全完才 done，会形成流程死锁 |
 | `DEPENDENCY_EXISTS` | 2 | 该依赖已存在 |
-| `ISSUE_CLAIMED` | 2 | 任务已被占用，请先释放占用（release）再新增前置 |
-| `CROSS_WORKSPACE_DEPENDENCY` | 3 | 不支持跨工作区依赖 |
+| `ISSUE_CLAIMED` | 2 | 任务已被占用：请先 kb release <issue-id> 再新增前置 |
+| `CROSS_WORKSPACE_DEPENDENCY` | 3 | 不支持跨工作区依赖（依赖边两端必须属于同一工作区） |
 | `DEPENDENCY_SELF` | 3 | 不能依赖自身：被阻塞卡与前置卡是同一张 |
 | `VALIDATION_ERROR` | 3 | 参数不合法（缺少 workspace_id 或前置 id 为空） |
-| `NOT_FOUND` | 4 | 任务或依赖不存在 |
-| `TASK_NOT_FOUND` | 4 | 任务不存在或不属于该工作区 |
+| `NOT_FOUND` / `TASK_NOT_FOUND` | 1 | 任务不存在或不属于该工作区（附 id 与查 id 提示） |
+| `NOT_FOUND`（仅 `dep rm` 的边缺失） | 4 | 依赖边不存在：<issue-id> ← <blocker-id> |
 
 **MCP（DEP-2，`apps/mcp/src/tools/dependencies.ts`）**
 
@@ -629,8 +630,8 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | 端点 | CLI | 必填 | 备注 |
 | --- | --- | --- | --- |
 | `GET /api/knowledge/search` | `kb knowledge search <query>` | `<query>` | `--scope both` 默认；`--limit` 1-20 |
-| `GET /api/knowledge/pages` | `kb knowledge list` | `--scope` | 非 `--json` 每页一行，有下一页时打印 `下一页：--offset <n>` |
-| `GET /api/knowledge/pages/:id` | `kb knowledge show <page-id>` | `--scope` | `--history` 追加版本历史 |
+| `GET /api/knowledge/pages` | `kb knowledge list` | `--scope`（workspace\|common，`requiredOption`，缺省 exit 1，不按 cwd 猜） | 非 `--json` 每页一行，有下一页时打印 `下一页：--offset <n>` |
+| `GET /api/knowledge/pages/:id` | `kb knowledge show <page-id>` | 无（`--scope` 可省略，省略时先 `resolve` 再取页） | `--history` 追加版本历史；显式 `--scope` 时行为与旧版一致 |
 | `POST /api/knowledge/pages` | `kb knowledge create` | `--scope`、`--title`、`--slug`、`--domain`（必填）、`--stdin`、`--sources`/`--sources-file`、`--evidence`/`--evidence-file` | 缺项一次列全；字段级中文报错 |
 | `PUT /api/knowledge/pages/:id` | `kb knowledge revise <page-id>` | `--scope`、`--expected-revision`、至少一个改动字段 | revision 冲突退出码 2 |
 | `POST /api/knowledge/pages/:id/actions` | `kb knowledge action <page-id> <action>` | `--scope`、`--expected-revision` | `action` ∈ `archive\|restore\|delete` |
@@ -663,10 +664,10 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | 码 | 含义 | 典型命令与实测 |
 | --- | --- | --- |
 | 0 | 成功（`--help` / `--version` 同样 0） | `kb --version` / `kb done …` |
-| 1 | 参数或用法错误、服务端非冲突错误（400/404/500）、服务看板不可达；命令未改动数据 | `kb done <不存在 id>` → `任务不存在`；`kb delete-issue <id>` 缺 `--yes` → 只回显标题/状态、不发 DELETE；`kb delete-space <空间>` 缺 `--yes` → 只回显名称/路径；`kb nope` → `unknown command` |
-| 2 | 冲突，命令未改动数据：占用（`已被 <agent> 占用`）/ `未被占用` / 非当前占用者 / 状态不可领取 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞（占用中、含子任务、仍有知识页或运行中会话） | `kb claim <已被占>`、`kb claim <待验收>`、`kb done <未占用>`、`kb delete-space <有知识页> --yes` |
-| 3 | `kb dep` 专用：依赖参数错误（自环 / 跨工作区 / `VALIDATION_ERROR`） | `kb dep add <id> <同一 id>` → `不能依赖自身…` |
-| 4 | `kb dep` 专用：任务或依赖不存在 | `kb dep add <id> <不存在 id>` → `任务或依赖不存在` |
+| 1 | 参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动数据。含 `kb dep` 的「任务不存在」（`NOT_FOUND` / `TASK_NOT_FOUND`）与 `kb answer` 的 403 `DECISION_HUMAN_ONLY` | `kb done <不存在 id>` → `任务不存在`；`kb dep add <不存在 id> <前置>` → `任务不存在或不属于该工作区`；`kb answer <决策> --option 1`（agent 身份）→ `仅人类可回答决策…`；`kb delete-issue <id>` 缺 `--yes` → 只回显标题/状态、不发 DELETE；`kb delete-space <空间>` 缺 `--yes` → 只回显名称/路径；`kb nope` → `unknown command` |
+| 2 | 冲突，命令未改动数据：占用（`已被 <agent> 占用`）/ `未被占用` / 非当前占用者 / 状态不可领取 / 决策锁（`DECISION_LOCKED`）/ 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞（占用中、含子任务、仍有知识页或运行中会话）/ 任务 id 前缀多命中 | `kb claim <已被占>`、`kb claim <待验收>`、`kb claim <有 open 决策的卡>`、`kb done <未占用>`、`kb delete-space <有知识页> --yes` |
+| 3 | `kb dep` 与待决策族（`kb ask` / `kb answer` / `kb ask-extend`）专用：依赖或决策参数错误（自环 / 结构环 / 跨工作区 / `VALIDATION_ERROR` / 选项不足 / 非法 grace 或 seconds） | `kb dep add <id> <同一 id>` → `不能依赖自身…`；`kb ask <id> --grace abc` → 参数非法 |
+| 4 | `kb dep` 专用：依赖边不存在（仅 `dep rm`） | `kb dep rm <id> <无该边的前置>` → `依赖边不存在…` |
 
 **`kb done` 退出码例外（GIT-OBSERVABLE，卡 9fa0d16f）**：done 已生效（状态→待验收；`--close` 时→已关闭）但自动提交未完成时，CLI 把「未提交 + 原因 + 可照抄补救命令」写 stderr 并以 **1** 退出；`--json` 仍只输出单个 issue JSON（读 `git_commit.status/reason`），不改变 stdout 结构。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。`done --close` 遇到阻断性提交缺口会**跳过 close**（退出码 1），修复后执行 `kb close <id>`。
 受影响面：仓库内 `scripts/` 没有解析 `kb done` 退出码的脚本；需要改判的是外部编排（把 `kb done` 放在 `&&` 链里、或把退出码 0 当作「工作树已干净」的 cron / CI / agent 工作流）——改为读 `git_commit.status`。MCP 工具直连 REST（`apps/mcp/src/tools/tasks.ts`），不经 CLI，退出码不变，可直接使用新增的 `git_commit` 字段。
@@ -1052,6 +1053,11 @@ app.use(express.json());
 | 401 | `UNAUTHENTICATED` | 身份头非法（空 / 超长 / 控制字符） |
 | 403 | `WORKSPACE_FORBIDDEN` | 身份有效，但不是目标工作区成员 |
 | 403 | `ROLE_FORBIDDEN` | 是成员，但角色不够 |
+| 403 | `DECISION_HUMAN_ONLY` | **回答口径：仅人类可答**。`POST /api/decisions/:id/answer` 的 body `answered_by` 不等于 `user`（agent 自答）时拒绝；CLI `kb answer` 默认发 `answered_by=<KB_AGENT 或 kb-cli>`、MCP `answer_decision` 配了 `AGENTBOARD_AGENT_ID` 时同样发 agent 身份，因此两端都会被拒 |
+
+**仅人类可答（DEC-HUMAN-ONLY）**：唯一放行条件是 `answered_by=user`。agent 的合法出口只有「等人回答」与 `kb decision withdraw <id> --reason …`；两端错误文案同义（CLI 中文、MCP 英文 + `DECISION_HUMAN_ONLY` 码），都指向「由人在看板『待决策』回答，或 withdraw 后重新 claim」。MCP 在带 `AGENTBOARD_AGENT_ID` 时把 `list/get` 的 `capabilities.can_answer` 覆写为 `false`，避免模型以为能自答。
+
+**决策锁（`DECISION_LOCKED`）**：卡上有 open 决策（宽限超时已落锁）时，`kb claim` / `kb dep add` 等写操作返回 **409 `DECISION_LOCKED`**（CLI 退出码 2，文案说明「占用已释放、卡已回待规划、fence +1」与解锁路径）。它与 `ISSUE_CLAIMED` 不同：不是别人占着，而是必须等人类回答或撤回。
 
 **角色矩阵**（`workspace_member`；迁移期既有工作区均已 seed 为 `user/owner`）：
 
@@ -1065,6 +1071,7 @@ app.use(express.json());
 | 延长宽限 | ✓ | ✓ | 403 | 403 |
 | 提问 `POST /api/issues/:id/ask` | 需持有效 claim | 需持有效 claim | 403 | 403 |
 
+- 上表角色只对**人类**（`answered_by=user` / 身份头缺省 `user`）生效；agent 自答一律 403 `DECISION_HUMAN_ONLY`，不进入角色判断。
 - `capabilities`（`can_answer` / `can_revise` / `can_undo` / `can_withdraw` / `can_extend`）由服务端按「角色 + 当前答案归属」计算，前端只按能力渲染；`can_undo` 只表示有资格，实际还受 6 秒窗口与 `expected_revision` 约束。
 - 权限校验先于状态校验：403 路径不写库、不广播（`apps/server/test/decisionPermission.test.ts` 用逐字段快照 + broadcast spy 作证）。
 
