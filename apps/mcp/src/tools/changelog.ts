@@ -14,9 +14,16 @@ type JsonObject = Record<string, unknown>;
  * 列表只回摘要（正文窗口 300），详情才回正文（窗口 12000）。
  */
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
-const requestIdField = { request_id: z.string().uuid() };
-const changeTypeSchema = z.enum(['新增', '修复', '调整']);
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
+const changeTypeSchema = z.enum(['新增', '修复', '调整'])
+  .describe('Change type: 新增 (added) / 修复 (fixed) / 调整 (changed).');
 
 function boundedBody(value: unknown, max: number) {
   const window = textWindow(typeof value === 'string' ? value : '', 0, max);
@@ -62,10 +69,10 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
     'List workspace change-log entries (newest first). Each entry carries title/type/actor/revision and a 300-character body preview; use get_changelog for the full body.',
     z.object({
       ...workspaceField,
-      limit: z.number().int().min(1).max(100).default(20),
-      offset: z.number().int().min(0).default(0),
+      limit: z.number().int().min(1).max(100).default(20).describe('Max entries, 1-100 (default 20).'),
+      offset: z.number().int().min(0).default(0).describe('Zero-based row offset (default 0).'),
       change_type: changeTypeSchema.optional(),
-      q: z.string().trim().max(200).optional(),
+      q: z.string().trim().max(200).optional().describe('Optional case-insensitive substring filter over title and body.'),
     }).strict(),
     async ({ workspace_id, limit, offset, change_type, q }) => {
       const workspaceId = resolveWorkspaceId(config, workspace_id);
@@ -87,9 +94,10 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
     'Read one change-log entry, including the body windowed at 12000 characters (continuation offset returned when truncated).',
     z.object({
       ...workspaceField,
-      changelog_id: z.string().trim().min(1),
-      body_offset: z.number().int().min(0).default(0),
-      body_max_chars: z.number().int().min(1).max(20000).default(12000),
+      changelog_id: z.string().trim().min(1).describe('Change-log entry UUID from list_changelog.'),
+      body_offset: z.number().int().min(0).default(0).describe('Character offset into body_md (default 0).'),
+      body_max_chars: z.number().int().min(1).max(20000).default(12000)
+        .describe('Max body characters, 1-20000 (default 12000). Continue from next_offset_chars.'),
     }).strict(),
     async ({ workspace_id, changelog_id, body_offset, body_max_chars }) => {
       const workspaceId = resolveWorkspaceId(config, workspace_id);
@@ -116,10 +124,12 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
     z.object({
       ...workspaceField,
       ...requestIdField,
-      title: z.string().trim().min(1).max(200),
-      body_md: z.string().min(1).max(100000),
+      title: z.string().trim().min(1).max(200).describe('Entry title, one line.'),
+      body_md: z.string().min(1).max(100000)
+        .describe('Entry body in Markdown: what changed and why, from the user\'s point of view.'),
       change_type: changeTypeSchema.default('新增'),
-      occurred_at: z.number().int().nonnegative().optional(),
+      occurred_at: z.number().int().nonnegative().optional()
+        .describe('When the change happened, epoch milliseconds (defaults to now).'),
     }).strict(),
     async ({ workspace_id, request_id, title, body_md, change_type, occurred_at }) => {
       const workspaceId = resolveWorkspaceId(config, workspace_id);

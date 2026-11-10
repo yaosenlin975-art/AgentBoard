@@ -10,45 +10,71 @@ import { registerBoardTool } from './register.js';
 
 const MAX_TOOL_RESULT_CHARS = MCP_TOOL_RESULT_LIMIT - 500;
 const MAX_HISTORY = 50;
-const scopeFields = { scope: z.enum(['workspace', 'common']), workspace_id: z.string().trim().min(1).optional() };
-const pageIdField = { page_id: z.string().trim().min(1) };
-const requestIdField = { request_id: z.string().uuid() };
+const scopeFields = {
+  scope: z.enum(['workspace', 'common'])
+    .describe('workspace = pages owned by one workspace; common = shared pages visible to every workspace.'),
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID for scope=workspace. Omit to use the bound workspace; must be omitted for scope=common.'),
+};
+const pageIdField = {
+  page_id: z.string().trim().min(1).describe('Knowledge page UUID (an 8+ char unique prefix is not accepted here — pass the full id).'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
 const snapshotSchema = z.string().refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 2048, 'Evidence snapshot must be non-empty and at most 2 KiB.');
 const sourceSchema = z.object({
-  source_id: z.string().trim().min(1).max(2000),
-  source_type: z.enum(['file', 'url', 'agent']),
-  locator: z.string().trim().min(1).max(2000),
-  captured_at: z.number().int().nonnegative(),
-  content_hash: z.string().regex(/^[0-9a-f]{64}$/i),
-  snapshot: snapshotSchema.optional(),
+  source_id: z.string().trim().min(1).max(2000)
+    .describe('Stable id you invent for this source (e.g. "s1"); evidence entries reference it.'),
+  source_type: z.enum(['file', 'url', 'agent'])
+    .describe('file = repo file (path + sha256), url = external page, agent = another agent/report.'),
+  locator: z.string().trim().min(1).max(2000)
+    .describe('file: repo-relative path; url: full URL; agent: agent or report name. No "file:12-30" fragments.'),
+  captured_at: z.number().int().nonnegative()
+    .describe('When the source was captured, epoch milliseconds.'),
+  content_hash: z.string().regex(/^[0-9a-f]{64}$/i)
+    .describe('SHA-256 of the file content, 64 lowercase hex chars (Get-FileHash → lowercase).'),
+  snapshot: snapshotSchema.optional()
+    .describe('Short excerpt, ≤2 KiB. Not allowed for source_type=file.'),
 }).strict();
 const evidenceSchema = z.object({
-  source_id: z.string().trim().min(1).max(2000),
-  locator: z.string().trim().min(1).max(2000),
-  snapshot: snapshotSchema.optional(),
+  source_id: z.string().trim().min(1).max(2000)
+    .describe('source_id of the source this evidence supports.'),
+  locator: z.string().trim().min(1).max(2000)
+    .describe('Where in the source: repo path plus optional line range (apps/web/src/x.ts:125-137), or cmd:<command> / issue:<uuid> / agent:<name>.'),
+  snapshot: snapshotSchema.optional()
+    .describe('Short excerpt of the cited content, ≤2 KiB.'),
 }).strict();
 const contentFields = {
-  title: z.string().trim().min(1).max(300),
-  body_md: z.string().min(1).max(100000),
-  sources: z.array(sourceSchema).min(1).max(100),
-  evidence: z.array(evidenceSchema).min(1).max(100),
-  expires_at: z.number().int().nonnegative().nullable().optional(),
+  title: z.string().trim().min(1).max(300).describe('Page title.'),
+  body_md: z.string().min(1).max(100000)
+    .describe('Page body in Markdown: reusable design, contract, or pitfall notes — not progress logs.'),
+  sources: z.array(sourceSchema).min(1).max(100)
+    .describe('At least 1 source. Every evidence.source_id must exist here.'),
+  evidence: z.array(evidenceSchema).min(1).max(100)
+    .describe('At least 1 evidence entry pointing at a source.'),
+  expires_at: z.number().int().nonnegative().nullable().optional()
+    .describe('Optional expiry, epoch milliseconds; null clears it.'),
 };
-const offsetField = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
-const limitField = z.number().int().min(1).max(100);
+const offsetField = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).describe('Zero-based item offset.');
+const limitField = z.number().int().min(1).max(100).describe('Page size, 1-100.');
 const readFields = {
   ...scopeFields,
   ...pageIdField,
-  include_history: z.boolean().default(false),
+  include_history: z.boolean().default(false).describe('Set true to also page through previous revisions.'),
   history_offset: offsetField.default(0),
-  history_limit: z.number().int().min(1).max(MAX_HISTORY).default(20),
-  history_body_offset_chars: offsetField.optional(),
-  offset_chars: offsetField.default(0),
-  max_chars: z.number().int().min(1).max(40000).default(12000),
-  sources_offset: offsetField.default(0),
-  sources_limit: limitField.default(10),
-  evidence_offset: offsetField.default(0),
-  evidence_limit: limitField.default(10),
+  history_limit: z.number().int().min(1).max(MAX_HISTORY).default(20)
+    .describe(`Revisions per page, 1-${MAX_HISTORY} (default 20).`),
+  history_body_offset_chars: offsetField.optional()
+    .describe('Character offset into the revision body; requires include_history=true and history_limit=1.'),
+  offset_chars: offsetField.default(0).describe('Character offset into the page body (default 0).'),
+  max_chars: z.number().int().min(1).max(40000).default(12000)
+    .describe('Max body characters to return, 1-40000 (default 12000). Continue from next_offset_chars.'),
+  sources_offset: offsetField.default(0).describe('Source list offset (default 0).'),
+  sources_limit: limitField.default(10).describe('Sources per page, 1-100 (default 10).'),
+  evidence_offset: offsetField.default(0).describe('Evidence list offset (default 0).'),
+  evidence_limit: limitField.default(10).describe('Evidence entries per page, 1-100 (default 10).'),
 };
 
 type ToolResponse = ReturnType<typeof mcpToolSuccess>;
@@ -320,9 +346,10 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
 
   register('search_knowledge', 'Search knowledge in common, one workspace, or that workspace plus common.', z.object({
     ...scopeFields,
-    scope: z.enum(['common', 'workspace', 'both']),
-    query: z.string().trim().min(1).max(500),
-    limit: z.number().int().min(1).max(20).default(5),
+    scope: z.enum(['common', 'workspace', 'both'])
+      .describe('Search scope: common, one workspace, or workspace plus common (both).'),
+    query: z.string().trim().min(1).max(500).describe('Full-text query over page title and body.'),
+    limit: z.number().int().min(1).max(20).default(5).describe('Max hits, 1-20 (default 5).'),
   }).strict(), async ({ scope, workspace_id, query, limit }) => {
     const effective = searchScope(config, scope, workspace_id);
     const items = await api.get<SearchItem[]>('/knowledge/search', { q: query, limit, ...effective }, 'KNOWLEDGE_UNAVAILABLE');
@@ -342,11 +369,15 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
 
   register('list_knowledge', 'List knowledge pages as bounded metadata summaries (no body) in common, one workspace, or that workspace plus common.', z.object({
     ...scopeFields,
-    scope: z.enum(['common', 'workspace', 'both']).default('workspace'),
-    status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'),
-    include_expired: z.boolean().default(false),
+    scope: z.enum(['common', 'workspace', 'both']).default('workspace')
+      .describe('Listing scope: common, one workspace, or both (default workspace).'),
+    status: z.enum(['active', 'archived', 'deleted', 'all']).default('active')
+      .describe('Page status filter (default active).'),
+    include_expired: z.boolean().default(false)
+      .describe('Set true to include pages whose expires_at has passed.'),
     offset: offsetField.default(0),
-    limit: z.number().int().min(1).max(MAX_LIST_LIMIT).default(20),
+    limit: z.number().int().min(1).max(MAX_LIST_LIMIT).default(20)
+      .describe(`Max rows, 1-${MAX_LIST_LIMIT} (default 20).`),
   }).strict(), async ({ scope, workspace_id, status, include_expired, offset, limit }) => {
     const effective = searchScope(config, scope, workspace_id);
     const listing = await api.get<{ items: KnowledgeListRow[]; next_offset: number | null }>('/knowledge/pages', {
@@ -367,8 +398,10 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
 
   register('find_knowledge_sources', 'Find knowledge pages whose current sources reference a file path, content hash, or source id.', z.object({
     ...scopeFields,
-    scope: z.enum(['common', 'workspace', 'both']).default('both'),
-    path: z.string().trim().min(1).max(2000),
+    scope: z.enum(['common', 'workspace', 'both']).default('both')
+      .describe('Search scope for the path (default both).'),
+    path: z.string().trim().min(1).max(2000)
+      .describe('Repo-relative file path (or content hash / source id) to look up in page sources.'),
   }).strict(), async ({ scope, workspace_id, path }) => {
     const effective = searchScope(config, scope, workspace_id);
     const found = await api.get<{ path: string; items: KnowledgeListRow[] }>('/knowledge/find-source', {
@@ -392,8 +425,10 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
   register('create_knowledge', 'Create a knowledge page in the explicitly selected scope.', z.object({
     ...scopeFields,
     ...contentFields,
-    slug: z.string().trim().min(1).max(200),
-    change_note: z.string().max(2000).optional(),
+    slug: z.string().trim().min(1).max(200)
+      .describe('Stable semantic slug (e.g. agentboard-server-data). Must be unique per scope; a duplicate returns 409 KNOWLEDGE_EXISTS — revise that page instead.'),
+    change_note: z.string().max(2000).optional()
+      .describe('Short note recorded in the revision history.'),
     ...requestIdField,
   }).strict(), async ({ scope: rawScope, workspace_id, title, body_md, sources, evidence, expires_at, slug, change_note, request_id }) => {
     const scope = knowledgeScope(config, rawScope, workspace_id);
@@ -410,8 +445,10 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
     ...scopeFields,
     ...pageIdField,
     ...z.object(contentFields).partial().shape,
-    change_note: z.string().max(2000).optional(),
-    expected_revision: z.number().int().positive(),
+    change_note: z.string().max(2000).optional()
+      .describe('Short note recorded in the revision history.'),
+    expected_revision: z.number().int().positive()
+      .describe('CAS guard: revision you last read. A stale value fails with 409 KNOWLEDGE_REVISION_CONFLICT — re-read the page and retry.'),
     ...requestIdField,
   }).strict().refine((input) => ['title', 'body_md', 'sources', 'evidence', 'expires_at'].some((key) => input[key as keyof typeof input] !== undefined), {
     message: 'At least one knowledge field must be provided.',
@@ -428,7 +465,8 @@ export function registerKnowledgeTools(server: McpServer, config: McpConfig, api
     register(name, `${action === 'archive' ? 'Archive' : 'Restore'} a knowledge page using expected_revision compare-and-swap.`, z.object({
       ...scopeFields,
       ...pageIdField,
-      expected_revision: z.number().int().positive(),
+      expected_revision: z.number().int().positive()
+        .describe('CAS guard: revision you last read. A stale value fails with 409 KNOWLEDGE_REVISION_CONFLICT — re-read the page and retry.'),
       ...requestIdField,
     }).strict(), async ({ scope: rawScope, workspace_id, page_id, expected_revision, request_id }) => {
       const scope = knowledgeScope(config, rawScope, workspace_id);

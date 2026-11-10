@@ -70,7 +70,7 @@ type ToolResult = {
   structuredContent?: Record<string, any>;
 };
 
-type ListedTool = { name: string; description?: string; annotations?: Record<string, unknown> };
+type ListedTool = { name: string; description?: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, any> };
 
 /** 三客户端握手 profile（clientInfo 按各客户端真实上报形态） */
 const CLIENT_PROFILES = [
@@ -232,6 +232,43 @@ describe('MCP stdio host 与三客户端 profile 兼容', () => {
     for (const source of [entry, ...toolFiles]) {
       expect(source).not.toMatch(/console\.log\(/);
       expect(source).not.toMatch(/process\.stdout\.write\(/);
+    }
+  });
+
+  it('initialize 下发非空 instructions（空白 agent 靠它拿到调用顺序与硬约束）', async () => {
+    const { harness, init } = await handshake(CLIENT_PROFILES[0]);
+    try {
+      const instructions = init.result?.instructions as string | undefined;
+      expect(typeof instructions).toBe('string');
+      expect(instructions!.length).toBeGreaterThan(80);
+      expect(instructions).toContain('request_id');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('每个工具的每个字段都有非空 description（含 agentboard_ 别名）', async () => {
+    const { harness, list } = await handshake(CLIENT_PROFILES[0]);
+    try {
+      const tools = (list.result?.tools ?? []) as ListedTool[];
+      expect(tools.length).toBeGreaterThan(0);
+      const missing: string[] = [];
+      let described = 0;
+      for (const tool of tools) {
+        const properties = (tool.inputSchema as { properties?: Record<string, { description?: string }> } | undefined)?.properties ?? {};
+        for (const [field, schema] of Object.entries(properties)) {
+          described += 1;
+          if (!schema.description || !schema.description.trim()) missing.push(`${tool.name}.${field}`);
+        }
+      }
+      // 防止 properties 为空导致「全绿误判」：整表至少上百个字段
+      expect(described).toBeGreaterThan(100);
+      expect(missing).toEqual([]);
+      // DELETE 契约：删除类调用不需要幂等键
+      const deleteTask = tools.find((t) => t.name === 'delete_task')!;
+      expect(Object.keys((deleteTask.inputSchema as { properties?: object }).properties ?? {})).not.toContain('request_id');
+    } finally {
+      await harness.close();
     }
   });
 });

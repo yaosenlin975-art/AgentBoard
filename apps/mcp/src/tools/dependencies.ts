@@ -10,10 +10,21 @@ import { resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
-const issueIdField = { task_id: z.string().trim().min(1) };
-const blockerIdField = { blocker_task_id: z.string().trim().min(1) };
-const requestIdField = { request_id: z.string().uuid() };
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
+};
+const issueIdField = {
+  task_id: z.string().trim().min(1).describe('The blocked task UUID (the one waiting on a blocker).'),
+};
+const blockerIdField = {
+  blocker_task_id: z.string().trim().min(1)
+    .describe('The blocker task UUID. It must finish (待验收 or 已关闭) before task_id can be claimed.'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
 
 /** 依赖视图（与 `Docs/api.md` §6 依赖段同构；由服务端算好 resolved） */
 interface DependencyRef { issue_id: string; title: string; status: string; resolved: boolean }
@@ -53,7 +64,7 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
 
   registerBoardTool(server, {
     name: 'remove_dependency',
-    description: 'Remove a blocker edge from a task.',
+    description: 'Remove a blocker edge from a task. DELETE call — takes no request_id.',
     inputSchema: z.object({
       ...workspaceField,
       ...issueIdField,

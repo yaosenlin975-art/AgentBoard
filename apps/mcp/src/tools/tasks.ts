@@ -7,15 +7,29 @@ import { AgentBoardApiClient } from '../apiClient.js';
 import { mcpToolSuccess } from './result.js';
 import { registerBoardTool } from './register.js';
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
-const taskIdField = { task_id: z.string().trim().min(1) };
-const requestIdField = { request_id: z.string().uuid() };
-const pageFields = {
-  limit: z.number().int().min(1).max(100).default(50),
-  offset: z.number().int().min(0).default(0),
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to (AGENTBOARD_WORKSPACE_ID).'),
 };
-const prioritySchema = z.enum(['低', '中', '高']);
-const statusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭']);
+const taskIdField = {
+  task_id: z.string().trim().min(1)
+    .describe('Task UUID (36-char full id; an 8+ char unique prefix is also accepted).'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID) for this write. Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
+const pageFields = {
+  limit: z.number().int().min(1).max(100).default(50).describe('Page size, 1-100 (default 50).'),
+  offset: z.number().int().min(0).default(0).describe('Zero-based row offset for flat pagination (default 0).'),
+};
+const prioritySchema = z.enum(['低', '中', '高']).describe('Priority label: 低 (low) / 中 (medium) / 高 (high).');
+const statusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭'])
+  .describe('Task status: 待规划 (planning) / 进行中 (started) / 待验收 (in review) / 已关闭 (closed).');
+const fenceField = {
+  fence: z.number().int().min(0).optional()
+    .describe('Claim fence/epoch from claim_task. If the task was re-claimed by someone else since, the write fails with 409 STALE_FENCE; omit to skip the check.'),
+};
 
 /**
  * PERF-4d（用户拍板选项 A）：列表类出参不再包含正文，正文由 `get_task` 提供。
@@ -112,9 +126,12 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace. Listings omit task descriptions (description, description_truncated, next_description_offset_chars are absent to keep responses small); call get_task to read one task with its description.', z.object({
     ...workspaceField,
     status: statusSchema.optional(),
-    tree: z.boolean().default(false),
-    parent_issue_id: z.string().trim().min(1).nullable().optional(),
-    cursor: z.string().min(1).max(4096).optional(),
+    tree: z.boolean().default(false)
+      .describe('Set true to page one level of the task tree with cursor pagination instead of a flat list (default false).'),
+    parent_issue_id: z.string().trim().min(1).nullable().optional()
+      .describe('Tree mode only: list children of this task UUID; null lists root tasks. Requires tree=true.'),
+    cursor: z.string().min(1).max(4096).optional()
+      .describe('Tree mode only: opaque cursor from the previous response next_cursor. Tree mode ignores offset.'),
     ...pageFields,
   }).strict()
     .refine((input) => input.tree || (input.parent_issue_id === undefined && input.cursor === undefined), {
@@ -145,8 +162,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('get_task', 'Read one task including a description window from one effective workspace. list_tasks omits descriptions, so use this tool for a task body.', z.object({
     ...workspaceField,
     ...taskIdField,
-    description_offset_chars: z.number().int().min(0).default(0),
-    description_max_chars: z.number().int().min(1).max(40000).default(12000),
+    description_offset_chars: z.number().int().min(0).default(0)
+      .describe('Character offset into the description for windowed reads (default 0). Continue from next_description_offset_chars when description_truncated is true.'),
+    description_max_chars: z.number().int().min(1).max(40000).default(12000)
+      .describe('Maximum description characters to return, 1-40000 (default 12000).'),
   }).strict(), async ({ workspace_id, task_id, description_offset_chars, description_max_chars }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     return api.get<TaskPreview>(`/issues/${encodeURIComponent(task_id)}`, {
@@ -171,9 +190,11 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('get_task_comment', 'Read a comment body window without changing comment read state.', z.object({
     ...workspaceField,
     ...taskIdField,
-    comment_id: z.string().trim().min(1),
-    content_offset_chars: z.number().int().min(0).default(0),
-    content_max_chars: z.number().int().min(1).max(40000).default(12000),
+    comment_id: z.string().trim().min(1).describe('Comment UUID under the given task.'),
+    content_offset_chars: z.number().int().min(0).default(0)
+      .describe('Character offset into the comment body (default 0); continue from next_content_offset_chars.'),
+    content_max_chars: z.number().int().min(1).max(40000).default(12000)
+      .describe('Maximum comment characters to return, 1-40000 (default 12000).'),
   }).strict(), async ({ workspace_id, task_id, comment_id, content_offset_chars, content_max_chars }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const comment = await api.get<IssueComment & { truncated: boolean; next_content_offset_chars: number | null }>(
@@ -194,12 +215,16 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
 
   register('create_task', 'Create a task in one effective workspace.', z.object({
     ...workspaceField,
-    title: z.string().trim().min(1),
-    description: z.string().optional(),
-    allow_empty: z.boolean().optional(),
+    title: z.string().trim().min(1).describe('Task title shown on the board (1 line).'),
+    description: z.string().optional()
+      .describe('Task body in Markdown. Should state 目标 / 范围 / 验收 / 边界; blank bodies are rejected unless allow_empty=true.'),
+    allow_empty: z.boolean().optional()
+      .describe('Set true to skip the blank-description check (batch-created cards or pure parent cards).'),
     priority: prioritySchema.default('中'),
-    labels: z.array(z.string()).default([]),
-    parent_issue_id: z.string().trim().min(1).nullable().optional(),
+    labels: z.array(z.string()).default([])
+      .describe('Label list, up to 4. Use short domain words (web / server / cli / 知识库 / 缺陷); no dates, no spaces.'),
+    parent_issue_id: z.string().trim().min(1).nullable().optional()
+      .describe('Parent task UUID to nest this task under; omit or null for a root task.'),
     ...requestIdField,
   }).strict(), async ({ workspace_id, title, description, allow_empty, priority, labels, parent_issue_id, request_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
@@ -217,15 +242,18 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('update_task', 'Update task fields with the expected task timestamp.', z.object({
     ...workspaceField,
     ...taskIdField,
-    expected_updated_at: z.number().int().nonnegative(),
+    expected_updated_at: z.number().int().nonnegative()
+      .describe('CAS guard: updated_at of the task as you last read it (epoch milliseconds). If the task changed since, the write fails with a conflict — re-read with get_task and retry.'),
     // BORROW-0.3：占用代次软校验（缺席放行；旧 fence → 409 STALE_FENCE）
-    fence: z.number().int().min(0).optional(),
-    title: z.string().trim().min(1).optional(),
-    description: z.string().optional(),
+    fence: z.number().int().min(0).optional()
+      .describe('Claim fence/epoch from claim_task. If another agent re-claimed the task since, the write fails with 409 STALE_FENCE. Omit to skip the check.'),
+    title: z.string().trim().min(1).optional().describe('New task title.'),
+    description: z.string().optional().describe('New task body (Markdown); replaces the current description.'),
     priority: prioritySchema.optional(),
-    labels: z.array(z.string()).optional(),
-    sort_order: z.number().int().optional(),
-    parent_issue_id: z.string().trim().min(1).nullable().optional(),
+    labels: z.array(z.string()).optional().describe('New label list (replaces all labels); up to 4 short domain words.'),
+    sort_order: z.number().int().optional().describe('Manual ordering key among siblings; lower sorts first.'),
+    parent_issue_id: z.string().trim().min(1).nullable().optional()
+      .describe('Move the task under this parent UUID; null moves it back to root.'),
     ...requestIdField,
   }).strict().refine((input) => ['title', 'description', 'priority', 'labels', 'sort_order', 'parent_issue_id'].some((key) => input[key as keyof typeof input] !== undefined), {
     message: 'At least one task field must be provided.',
@@ -253,7 +281,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -265,9 +293,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('add_task_comment', 'Add a task comment under the configured agent audit label.', z.object({
     ...workspaceField,
     ...taskIdField,
-    content: z.string().min(1),
+    content: z.string().min(1).describe('Comment body (Markdown plain text). Long text is fine — it is stored whole.'),
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    fence: z.number().int().min(0).optional()
+      .describe('Claim fence/epoch from claim_task; stale fence → 409 STALE_FENCE. Omit to skip the check.'),
   }).strict(), async ({ workspace_id, task_id, content, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -279,9 +308,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('complete_task', 'Complete a task owned by the configured agent.', z.object({
     ...workspaceField,
     ...taskIdField,
-    notes: z.string().default(''),
+    notes: z.string().default('')
+      .describe('Completion notes: what changed, verification commands and results, knowledge page / changelog ids. Prefer a short self-contained summary.'),
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, notes, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -290,7 +320,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, undefined, undefined, fence);
   }, false);
 
-  register('delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks.', z.object({
+  register('delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks. This is a DELETE call and takes no request_id (idempotency key).', z.object({
     ...workspaceField,
     ...taskIdField,
   }).strict(), async ({ workspace_id, task_id }) => {
@@ -302,9 +332,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('fail_task', 'Return a task to planning with a required failure reason.', z.object({
     ...workspaceField,
     ...taskIdField,
-    reason: z.string().trim().min(1),
+    reason: z.string().trim().min(1)
+      .describe('Why the task could not be finished; required. Be specific (blocked by what, what was verified).'),
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, reason, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -317,7 +348,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -330,8 +361,9 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
-    status: z.string().trim().min(1).optional(),
-    fence: z.number().int().min(0).optional(),
+    status: z.string().trim().min(1).optional()
+      .describe('Target status to reopen into; must be a status defined in this workspace. Defaults to 待规划.'),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, status, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
@@ -343,11 +375,12 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   register('accept_task', 'Record a structured acceptance verdict on a task waiting for review (待验收). Writes a 【验收记录】 comment; it does not change the task status.', z.object({
     ...workspaceField,
     ...taskIdField,
-    verdict: z.enum(['pass', 'fail']).default('pass'),
-    note: z.string().default(''),
-    reviewer: z.string().trim().min(1).optional(),
+    verdict: z.enum(['pass', 'fail']).default('pass').describe('Acceptance verdict: pass or fail (default pass).'),
+    note: z.string().default('').describe('Optional reviewer note appended to the 【验收记录】 comment.'),
+    reviewer: z.string().trim().min(1).optional()
+      .describe('Reviewer label recorded in the comment; defaults to the configured agent id.'),
     ...requestIdField,
-    fence: z.number().int().min(0).optional(),
+    ...fenceField,
   }).strict(), async ({ workspace_id, task_id, verdict, note, reviewer, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);

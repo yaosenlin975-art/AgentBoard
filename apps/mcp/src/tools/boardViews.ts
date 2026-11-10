@@ -20,7 +20,10 @@ import { McpError, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
+};
 
 /** 与 CLI `stats.ts::readIssues` 同口径：新服务端裁剪字段，老服务端 400/404 时回落整对象 */
 async function readStatsIssues(api: AgentBoardApiClient, workspaceId: string): Promise<Issue[]> {
@@ -43,7 +46,8 @@ export function registerBoardViewTools(server: McpServer, config: McpConfig, api
     description: 'List dispatchable tasks (待规划, unclaimed, all blockers resolved) with the fields needed to dispatch: parent, blockers, blocked, sibling ids. Same shape as `kb next --json`; does not claim.',
     inputSchema: z.object({
       ...workspaceField,
-      limit: z.number().int().min(1).default(NEXT_DEFAULT_LIMIT),
+      limit: z.number().int().min(1).default(NEXT_DEFAULT_LIMIT)
+        .describe(`Maximum number of dispatchable tasks to return (default ${NEXT_DEFAULT_LIMIT}).`),
     }).strict(),
   }, async ({ workspace_id, limit }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);

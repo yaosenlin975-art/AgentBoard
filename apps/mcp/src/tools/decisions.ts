@@ -6,11 +6,22 @@ import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
-const taskIdField = { task_id: z.string().trim().min(1) };
-const decisionIdField = { decision_id: z.string().trim().min(1) };
-const requestIdField = { request_id: z.string().uuid() };
-const decisionStateSchema = z.enum(['grace', 'open', 'answered', 'withdrawn']);
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
+};
+const taskIdField = {
+  task_id: z.string().trim().min(1).describe('Task UUID of the task you own and are blocked on.'),
+};
+const decisionIdField = {
+  decision_id: z.string().trim().min(1).describe('Decision UUID (36-char full id; an 8+ char unique prefix is also accepted).'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
+const decisionStateSchema = z.enum(['grace', 'open', 'answered', 'withdrawn'])
+  .describe('Decision state: grace (waiting window) / open (locked) / answered / withdrawn.');
 
 type JsonObject = Record<string, unknown>;
 
@@ -96,10 +107,13 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     description: 'List pending decisions in one workspace with state/issue filters and counts. Use get_decision for full context and answer revisions.',
     inputSchema: z.object({
       ...workspaceField,
-      issue_id: z.string().trim().min(1).optional(),
+      issue_id: z.string().trim().min(1).optional()
+        .describe('Only decisions raised on this task UUID.'),
       state: decisionStateSchema.optional(),
-      stale: z.boolean().optional(),
-      limit: z.number().int().min(1).max(100).default(50),
+      stale: z.boolean().optional()
+        .describe('Set true to list only decisions waiting longer than 72 hours.'),
+      limit: z.number().int().min(1).max(100).default(50)
+        .describe('Maximum decisions to return, 1-100 (default 50).'),
     }).strict(),
   }, async ({ workspace_id, issue_id, state, stale, limit }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
@@ -153,20 +167,31 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       inputSchema: z.object({
         ...taskIdField,
         ...requestIdField,
-        question: z.string().trim().min(1),
+        question: z.string().trim().min(1)
+          .describe('The single question you need a human to decide, phrased so one option is clearly pickable.'),
         options: z.array(
           z.object({
-            label: z.string().trim().min(1),
-            consequence: z.string().trim().min(1),
-            is_default: z.boolean().optional(),
+            label: z.string().trim().min(1)
+              .describe('Short option name shown to the human, e.g. "改用方案 B".'),
+            consequence: z.string().trim().min(1)
+              .describe('What happens if this option is chosen — concrete effect on scope, data or schedule.'),
+            is_default: z.boolean().optional()
+              .describe('Mark at most one option as the default taken when on_expire=unlock_default.'),
           }).strict(),
-        ).min(2),
-        context_md: z.string().optional(),
-        trigger: z.enum(['blocked', 'scope_change', 'irreversible', 'missing_input']).optional(),
-        grace_seconds: z.number().int().min(0).max(600).optional(),
-        checkpoint: z.unknown().optional(),
-        on_expire: z.enum(['stay_locked', 'unlock_default']).optional(),
-        fence: z.number().int().optional(),
+        ).min(2)
+          .describe('At least 2 mutually exclusive options. Shape: [{"label":"方案 A","consequence":"…"},{"label":"方案 B","consequence":"…"}]. Not an array of strings.'),
+        context_md: z.string().optional()
+          .describe('Markdown context the human needs to decide (what was tried, why it is blocked). Keep it short.'),
+        trigger: z.enum(['blocked', 'scope_change', 'irreversible', 'missing_input']).optional()
+          .describe('Why you are asking: blocked / scope_change / irreversible / missing_input.'),
+        grace_seconds: z.number().int().min(0).max(600).optional()
+          .describe('How long the task stays claimable while waiting. 0 locks immediately; default 180; max 600.'),
+        checkpoint: z.unknown().optional()
+          .describe('Optional resume state, e.g. {"tool":"…","completed":["…"],"pending":["…"],"next_step":"…"} so the next agent can continue after unlock.'),
+        on_expire: z.enum(['stay_locked', 'unlock_default']).optional()
+          .describe('After grace expires: stay_locked keeps the task blocked, unlock_default applies the option marked is_default.'),
+        fence: z.number().int().optional()
+          .describe('Claim fence/epoch from claim_task; a stale fence fails with 409 STALE_FENCE.'),
       }).strict(),
       readOnly: false,
     },
@@ -208,10 +233,14 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       inputSchema: z.object({
         ...decisionIdField,
         ...requestIdField,
-        option: z.union([z.number().int().min(1), z.string().trim().min(1)]).optional(),
-        text: z.string().min(1).optional(),
-        expected_revision: z.number().int().min(0).optional(),
-        revise: z.boolean().optional(),
+        option: z.union([z.number().int().min(1), z.string().trim().min(1)]).optional()
+          .describe('Pick an option: 1-based ordinal (number or numeric string) or the exact option label. Provide exactly one of option / text.'),
+        text: z.string().min(1).optional()
+          .describe('Free-text answer, used when no listed option fits. Provide exactly one of option / text.'),
+        expected_revision: z.number().int().min(0).optional()
+          .describe('CAS guard for revise=true: answer_revision you last read. Mismatch → conflict, re-read with get_decision.'),
+        revise: z.boolean().optional()
+          .describe('Set true to overwrite an existing answer; requires expected_revision.'),
       }).strict(),
       readOnly: false,
     },
@@ -269,9 +298,12 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       inputSchema: z.object({
         ...decisionIdField,
         ...requestIdField,
-        seconds: z.number().int().min(1).max(300).default(60),
-        by: z.string().trim().min(1).optional(),
-        fence: z.number().int().min(0).optional(),
+        seconds: z.number().int().min(1).max(300).default(60)
+          .describe('Additional grace seconds, 1-300 (default 60). Original grace plus all extensions cannot exceed 600.'),
+        by: z.string().trim().min(1).optional()
+          .describe('Audit actor recorded for the extension; defaults to the configured agent id.'),
+        fence: z.number().int().min(0).optional()
+          .describe('Claim fence/epoch from claim_task; stale fence → 409 STALE_FENCE.'),
         ...workspaceField,
       }).strict(),
       readOnly: false,
@@ -304,8 +336,10 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       inputSchema: z.object({
         ...decisionIdField,
         ...requestIdField,
-        reason: z.string().trim().min(1),
-        by: z.string().trim().min(1).optional(),
+        reason: z.string().trim().min(1)
+          .describe('Why the question is withdrawn (recorded in the audit trail). Withdrawing releases the decision lock and bumps the claim fence — claim again afterwards.'),
+        by: z.string().trim().min(1).optional()
+          .describe('Audit actor recorded for the withdrawal; defaults to the configured agent id.'),
       }).strict(),
       readOnly: false,
     },

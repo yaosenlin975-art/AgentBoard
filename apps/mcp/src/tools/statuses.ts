@@ -12,9 +12,16 @@ import { resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 
-const workspaceField = { workspace_id: z.string().trim().min(1).optional() };
-const requestIdField = { request_id: z.string().uuid() };
-const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated', 'blocked']);
+const workspaceField = {
+  workspace_id: z.string().trim().min(1).optional()
+    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
+};
+const requestIdField = {
+  request_id: z.string().uuid()
+    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+};
+const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated', 'blocked'])
+  .describe('Behaviour class of the status: open / started / review / done / deprecated / blocked.');
 
 export function registerStatusTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
@@ -34,9 +41,11 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     description: 'Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour.',
     inputSchema: z.object({
       ...workspaceField,
-      name: z.string().trim().min(1).max(50),
+      name: z.string().trim().min(1).max(50)
+        .describe('Status name shown on the board, up to 50 chars, e.g. 等评审. Must be unique in this workspace.'),
       kind: kindSchema.default('open'),
-      sort_order: z.number().int().optional(),
+      sort_order: z.number().int().optional()
+        .describe('Position in the status list; lower shows first. Omit to append.'),
       ...requestIdField,
     }).strict(),
     readOnly: false,
@@ -53,8 +62,10 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     description: 'Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected.',
     inputSchema: z.object({
       ...workspaceField,
-      status_id: z.string().trim().min(1),
-      migrate_to: z.string().trim().min(1),
+      status_id: z.string().trim().min(1)
+        .describe('Status id (or its name) to remove. Builtin statuses are rejected with WORKSPACE_STATUS_BUILTIN.'),
+      migrate_to: z.string().trim().min(1)
+        .describe('Status name that receives every task currently in status_id, applied in the same transaction. Required.'),
     }).strict(),
     readOnly: false,
   }, async ({ workspace_id, status_id, migrate_to }) => {
