@@ -11,6 +11,7 @@ import { HttpResponse, http } from 'msw';
 import type { Issue, Message, Session, Workspace } from '@agentboard/shared';
 import { ChatView } from '../components/chat/ChatView';
 import { ChatPanel } from '../components/chat/ChatPanel';
+import type { PersonaSummary } from '../components/chat/SessionSettingsDialog';
 import { emitWsEvent } from '../api/wsBus';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
@@ -104,8 +105,10 @@ let stopCount = 0;
 // 删除会话可观测态：调用记录 + 可覆盖响应（默认 204 并从 sessionsList 剔除）
 const deleteCalls: string[] = [];
 let deleteResponse: { status: number; body: unknown } | null = null;
-const patchBodies: Array<{ model?: string | null }> = [];
+const patchBodies: Array<Record<string, unknown>> = [];
 const createBodies: Array<Record<string, unknown>> = [];
+/** 新建会话弹窗的人设列表（默认空 = 无人设；用例按需覆盖） */
+let personasList: PersonaSummary[] = [];
 const queueStore: Record<string, string[]> = {};
 // 任务会话「标记待验收」可观测态：GET /api/issues/:id 数据源、done 调用记录、issues GET 次数
 let issueStore: Issue | undefined;
@@ -123,6 +126,7 @@ function resetMocks(): void {
   deleteResponse = null;
   patchBodies.length = 0;
   createBodies.length = 0;
+  personasList = [];
   for (const k of Object.keys(queueStore)) delete queueStore[k];
   issueStore = undefined;
   doneCalls.length = 0;
@@ -196,6 +200,7 @@ function mockChatApi(): void {
       );
     }),
     http.get('/api/workspaces', () => HttpResponse.json(workspacesList)),
+    http.get('/api/personas', () => HttpResponse.json(personasList)),
     http.get('/api/clis', () => HttpResponse.json(clisInstalled)),
     http.get('/api/clis/:id/models', () =>
       HttpResponse.json([{ id: 'm-a', source: 'static' }]),
@@ -829,6 +834,55 @@ describe('ChatPanel 会话切换器与模型', () => {
 
     await user.selectOptions(select, 'm-a');
     await waitFor(() => expect(select).toHaveValue('m-a'));
+  });
+
+  it('新建会话：人设下拉位于工作空间下方，选中后创建会话会 PATCH persona_id', async () => {
+    personasList = [
+      {
+        id: 'p-builtin',
+        name: '严谨工程师',
+        description: '严谨',
+        body_md: '你是严谨工程师',
+        source: 'builtin',
+        package_path: null,
+        created_at: 1,
+      },
+    ];
+    sessionsList = [makeSession()];
+    renderChat();
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('new-session-btn'));
+
+    const workspace = screen.getByTestId('ns-workspace');
+    const persona = await screen.findByTestId('ns-persona');
+    // 位置：工作空间选择之后
+    expect(workspace.compareDocumentPosition(persona) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // 默认值：不使用人设
+    expect(persona).toHaveValue('');
+    expect(screen.getByRole('option', { name: '不使用人设（默认）' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '严谨工程师（内置）' })).toBeInTheDocument();
+
+    await user.selectOptions(persona, 'p-builtin');
+    await waitFor(() => expect(screen.getByTestId('ns-confirm')).toBeEnabled());
+    await user.click(screen.getByTestId('ns-confirm'));
+
+    await waitFor(() => expect(patchBodies).toEqual([{ persona_id: 'p-builtin' }]));
+    expect(createBodies).toHaveLength(1);
+    expect(createBodies[0]).toMatchObject({ cli: 'codebuddy', workspace_id: 'ws-1' });
+    // 人设只走创建后的 PATCH，不塞进创建请求体
+    expect(createBodies[0]).not.toHaveProperty('persona_id');
+  });
+
+  it('新建会话：人设为空时显示提示文案且不留空白下拉', async () => {
+    sessionsList = [makeSession()];
+    renderChat();
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('new-session-btn'));
+
+    expect(await screen.findByTestId('ns-persona-empty')).toHaveTextContent(
+      '暂无人设，可只设置工具/技能。',
+    );
+    expect(screen.queryByTestId('ns-persona')).not.toBeInTheDocument();
   });
 
   it('无选中会话：引导空态 + 新建入口', async () => {

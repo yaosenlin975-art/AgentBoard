@@ -30,6 +30,8 @@ export const server = setupServer(
   http.get('/api/decisions/:id', () =>
     HttpResponse.json({ error: { code: 'NOT_FOUND', message: '决策不存在' } }, { status: 404 }),
   ),
+  // P1-C 人设列表：默认空（新建会话弹窗/会话设置弹窗会拉；各测试按需覆盖）
+  http.get('/api/personas', () => HttpResponse.json([])),
   http.get('/api/clis', () =>
     HttpResponse.json([
       { id: 'codebuddy', displayName: 'CodeBuddy', installed: false, version: null },
