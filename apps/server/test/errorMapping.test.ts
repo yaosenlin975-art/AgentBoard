@@ -99,12 +99,52 @@ describe('CR-7 SQLite 错误映射', () => {
     expect(res.body.error.message).toContain('UNIQUE');
   });
 
-  it('SQLITE_CONSTRAINT_TRIGGER（RAISE(ABORT)）不误报 400：保持 500 INTERNAL', async () => {
+  it('SQLITE_CONSTRAINT_TRIGGER：未知 RAISE 消息仍保持 500 INTERNAL', async () => {
     t = createTestDb();
     t.db.exec('CREATE TABLE cr7_trigger (v INTEGER)');
     t.db.exec("CREATE TRIGGER cr7_abort BEFORE INSERT ON cr7_trigger BEGIN SELECT RAISE(ABORT, 'test rollback'); END;");
     const err = captureError(() => { t!.db.prepare('INSERT INTO cr7_trigger (v) VALUES (?)').run(1); });
     expect(err.code).toBe('SQLITE_CONSTRAINT_TRIGGER');
+
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await request(probeApp(() => err)).get('/api/probe');
+      expect(res.status).toBe(500);
+      expect(res.body.error.code).toBe('INTERNAL');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('TRIGGER 跨工作区拒绝 → 400 WORKSPACE_MISMATCH（CR3-04）', async () => {
+    t = createTestDb();
+    t.db.exec('CREATE TABLE cr3_ws (v INTEGER)');
+    t.db.exec("CREATE TRIGGER cr3_ws_abort BEFORE INSERT ON cr3_ws BEGIN SELECT RAISE(ABORT, 'issue parent workspace mismatch'); END;");
+    const err = captureError(() => { t!.db.prepare('INSERT INTO cr3_ws (v) VALUES (?)').run(1); });
+
+    const res = await request(probeApp(() => err)).get('/api/probe');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('WORKSPACE_MISMATCH');
+  });
+
+  it('TRIGGER 成环拒绝 → 409 DEPENDENCY_CYCLE（CR3-04）', async () => {
+    t = createTestDb();
+    t.db.exec('CREATE TABLE cr3_cycle (v INTEGER)');
+    t.db.exec("CREATE TRIGGER cr3_cycle_abort BEFORE INSERT ON cr3_cycle BEGIN SELECT RAISE(ABORT, 'issue dependency cycle'); END;");
+    const err = captureError(() => { t!.db.prepare('INSERT INTO cr3_cycle (v) VALUES (?)').run(1); });
+
+    const res = await request(probeApp(() => err)).get('/api/probe');
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('DEPENDENCY_CYCLE');
+  });
+
+  it('TRIGGER 知识历史不可变 → 保持 500（服务端不变量，不是调用方错误）', async () => {
+    t = createTestDb();
+    t.db.exec('CREATE TABLE cr3_kb (v INTEGER)');
+    t.db.exec("CREATE TRIGGER cr3_kb_abort BEFORE INSERT ON cr3_kb BEGIN SELECT RAISE(ABORT, 'Knowledge history is immutable'); END;");
+    const err = captureError(() => { t!.db.prepare('INSERT INTO cr3_kb (v) VALUES (?)').run(1); });
 
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {

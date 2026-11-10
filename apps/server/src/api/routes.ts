@@ -398,13 +398,25 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   // CR-7：仓储层的 CHECK / UNIQUE / FK / NOT NULL / PK 违例漏到这里说明请求数据不合法，不是服务故障——
   // 映射成 400，且 message 只带约束类别（不把 SQL 语句、表名、列值回显给调用方）。
   // better-sqlite3 的 code 是扩展码（SQLITE_CONSTRAINT_CHECK / _UNIQUE / _FOREIGNKEY …），按前缀归并。
-  // 例外：SQLITE_CONSTRAINT_TRIGGER 是 schema 里 RAISE(ABORT) 主动拒绝（如附件事务回滚保护），
-  // 属于服务端内部拒绝而非调用方参数错误，保持既有 500 INTERNAL，不误报成 400。
+  // TRIGGER 例外要按 RAISE(ABORT) 的消息分流（CR3-04）：
+  //   issue parent/dependency workspace mismatch → 400 WORKSPACE_MISMATCH（调用方传错工作区）
+  //   issue parent/dependency cycle → 409 DEPENDENCY_CYCLE（与仓储层预检同口径）
+  //   Knowledge history is immutable → 500（服务端不变量，不是调用方错误）
   const sqliteCode = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
   if (typeof sqliteCode === 'string' && sqliteCode.startsWith('SQLITE_CONSTRAINT')) {
     const kind = sqliteCode.slice('SQLITE_CONSTRAINT'.length).replace(/^_/, '') || 'UNKNOWN';
     if (kind !== 'TRIGGER') {
       res.status(400).json({ error: { code: 'CONSTRAINT_VIOLATION', message: `请求违反数据库约束（${kind}）` } });
+      return;
+    }
+    const message = (err as { message?: unknown }).message;
+    const text = typeof message === 'string' ? message.toLowerCase() : '';
+    if (text.includes('workspace mismatch')) {
+      res.status(400).json({ error: { code: 'WORKSPACE_MISMATCH', message: '目标卡不属于同一工作区，无法建立该关系' } });
+      return;
+    }
+    if (text.includes('cycle')) {
+      res.status(409).json({ error: { code: 'DEPENDENCY_CYCLE', message: '该关系会形成环路，已拒绝' } });
       return;
     }
   }
