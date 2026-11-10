@@ -130,7 +130,7 @@ export function NewWorkspaceDialog({ open, onClose }: { open: boolean; onClose: 
           <button
             type="submit"
             disabled={create.isPending || path.trim() === ''}
-            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             创建
           </button>

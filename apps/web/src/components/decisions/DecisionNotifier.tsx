@@ -101,7 +101,7 @@ export function DecisionNotifier() {
             type="button"
             data-testid="decisions-summary-open"
             onClick={() => useNavStore.getState().setView('decisions')}
-            className="ml-auto shrink-0 whitespace-nowrap rounded bg-accent px-2 py-0.5 font-medium text-white transition-colors duration-150 motion-reduce:transition-none hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            className="ml-auto shrink-0 whitespace-nowrap rounded bg-accent px-2 py-0.5 font-medium text-accent-ink transition-colors duration-150 motion-reduce:transition-none hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
           >
             查看
           </button>
@@ -145,7 +145,7 @@ export function DecisionNotifier() {
                     type="button"
                     data-testid={`decision-toast-open-${item.id}`}
                     onClick={() => focusDecision(item.id)}
-                    className="rounded bg-accent px-2 py-0.5 text-xs font-medium text-white transition-colors duration-150 motion-reduce:transition-none hover:opacity-90"
+                    className="rounded bg-accent px-2 py-0.5 text-xs font-medium text-accent-ink transition-colors duration-150 motion-reduce:transition-none hover:opacity-90"
                   >
                     立即回答
                   </button>

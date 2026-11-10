@@ -89,7 +89,7 @@ export function RenameSessionDialog({
             data-testid="rename-session-submit"
             disabled={saving}
             onClick={() => void submit()}
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-accent-ink disabled:opacity-50"
           >
             {saving ? '保存中…' : '保存'}
           </button>

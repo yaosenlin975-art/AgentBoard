@@ -366,7 +366,7 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
             type="button"
             data-testid="empty-new-session-btn"
             onClick={() => onNewSession?.()}
-            className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
+            className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-ink hover:opacity-90"
           >
             ＋ 新建会话
           </button>

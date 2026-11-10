@@ -259,7 +259,7 @@ export function ApprovalDialog({
             data-testid="approval-allow"
             disabled={decide.isPending}
             onClick={() => decide.mutate({ decision: 'allow', scope: selected })}
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-accent-ink hover:opacity-90 disabled:opacity-40"
           >
             {decide.isPending ? '提交中…' : `允许（${TIER_LABEL[selected]}）`}
           </button>

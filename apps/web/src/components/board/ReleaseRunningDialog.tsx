@@ -215,7 +215,7 @@ export function ReleaseRunningDialog({
             data-testid="release-submit"
             disabled={submitDisabled}
             onClick={() => void submit()}
-            className="rounded bg-accent px-3 py-1 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded bg-accent px-3 py-1 text-sm font-medium text-accent-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? '退回中…' : `退回 ${count} 张到待规划`}
           </button>

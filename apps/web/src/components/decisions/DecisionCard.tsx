@@ -679,7 +679,7 @@ export function DecisionCard({
             data-critical={extendCritical ? 'true' : 'false'}
             className={`ml-auto shrink-0 whitespace-nowrap rounded px-1.5 text-xs font-medium tabular-nums transition-colors duration-150 motion-reduce:transition-none ${
               extendFlash
-                ? 'bg-accent text-white'
+                ? 'bg-accent text-accent-ink'
                 : extendCritical
                   ? 'bg-[color-mix(in_srgb,var(--ab-del)_14%,transparent)] text-ab-del'
                   : 'bg-accent-soft text-accent'
@@ -954,7 +954,7 @@ export function DecisionCard({
           className={`whitespace-nowrap rounded-md px-2 py-1 text-xs transition-colors duration-150 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:opacity-50 ${
             isAnswered
               ? 'border border-hairline text-ink-2 hover:bg-surface-raised'
-              : 'bg-accent font-medium text-white hover:opacity-90'
+              : 'bg-accent font-medium text-accent-ink hover:opacity-90'
           } ${narrow ? 'w-full' : ''}`}
         >
           {actionLabel}
