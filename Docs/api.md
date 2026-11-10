@@ -1205,3 +1205,47 @@ WS：以上写操作（建团/加删成员/停团/派活/成员轮次收口）�
 错误：400 `VALIDATION_ERROR`（目录不存在 / 缺 plugin.json 或 agents/*.md / 坏 JSON / 缺 name / `teamInfo` 引用不存在的专家 / 字段超长）、404 `NOT_FOUND`（工作区不存在）、409 `CONFLICT`（同工作区已有同名团队模板 / 同一目录已导入过）。
 
 WS：新建模板广播 `team_update`（`reason='imported'`，`status='stopped'`）。
+
+## 24. 智能体人设 personas（`/api/personas`，personaRoutes.ts，P1-C / PERSONA-LIB）
+
+人设（persona）是**全局资源**：定义落中心库 `personas` 表，不随工作区库下沉。会话与团队成员只保存 `persona_id` 字符串引用（无外键约束）。设置页「智能体人设」是**库管理入口**；某个会话用哪个人设仍到「会话设置 → 人设」绑定，二者不是同一入口。
+
+端点（均挂在 `/api` 下）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/personas` | 列出全部人设（含 `body_md`，按 `created_at` 倒序，新建在前）；数组 |
+| POST | `/personas` | 新建。体：`name`（必填，≤100）/ `description`（≤2000，缺省空串）/ `body_md`（必填，≤100000）。成功 200，返回新行（`source='user'`、`id` 为 uuid） |
+| PATCH | `/personas/:id` | 局部更新。体至少含 `name` / `description` / `body_md` 之一（字段上限同新建）；`source` / `package_path` 不可改。成功 200 返回更新后行 |
+| DELETE | `/personas/:id` | 删除；成功 204 无体 |
+| POST | `/personas/draft` | 智能创建草稿（**不落库**）。体：`requirement`（1–4000 字）/ `adapter`（`dsh` / `codex` / `opencode` / `codebuddy`）。见下 |
+
+字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | string(uuid) | 主键 |
+| `name` | string | ≤100 字，必填 |
+| `description` | string | ≤2000 字；缺省 `''` |
+| `body_md` | string | 人设正文（Markdown），1–100000 字；作为系统提示词注入使用该人设的会话 |
+| `source` | `builtin` \| `user` \| `import` | 内置 / REST 新建 / 专家包导入（§23 写入） |
+| `package_path` | string \| null | `source='import'` 时为专家包目录；其余 `null` |
+| `created_at` | number | 毫秒时间戳 |
+
+语义：
+
+- **builtin 只读**：`PATCH` / `DELETE` 命中 `source='builtin'` 返回 409 `CONFLICT`（文案分别为「builtin persona 不可修改」「builtin persona 不可删除」），包内置定义不可经 REST 篡改。
+- **import 可改可删**：`source='import'` 与 `user` 一样走 PATCH / DELETE；`package_path` 只作来源标记，不参与鉴权。
+- **悬空引用**：`session.persona_id` 无外键。写入侧校验存在——`PATCH /sessions/:id` 传 `persona_id` 时 persona 必须存在（否则 400 `VALIDATION_ERROR`），加团队成员时 `persona_id` 同理；起轮侧按缺失**静默跳过**（查不到就不注入人设，会话照常跑，不报错）。
+- **智能创建草稿**（`POST /personas/draft`）：复用任务卡智能创建的 `DraftRunner`（一次性 `runTurn`，不建会话、不占 claim）与 120s 超时。模型须返回严格 JSON：`{ name, description, role, tone, boundary, domain, warnings[] }`；缺省段落归一化为空串，`role` 必填。结构不合法自动重试 1 次。响应只含草稿字段，**不落库**；用户确认后由前端拼 `## 角色 / ## 语气 / ## 边界与禁忌 / ## 擅长领域` 小节，再走 `POST /personas`。personas 是全局资源，无 workspace 维度，因此不写 `issue_draft_audit`。
+- 交叉引用：§23 专家包导入逐专家写入 `source='import'` 的 persona；团队模板成员的 `persona_id` 指向这些行。
+
+错误码：
+
+- 400 `VALIDATION_ERROR`：字段缺失/超长、PATCH 空体、`adapter` 非法、`requirement` 为空。
+- 404 `NOT_FOUND`：`PATCH` / `DELETE` 的 persona 不存在；`POST /personas/draft` 在路由未加载时表现为统一 404（旧进程）。
+- 409 `CONFLICT`：`builtin` 人设改/删。
+- 503 `ADAPTER_UNAVAILABLE`：草稿生成前探测到执行方式不可用（附原因）。
+- 502 `PERSONA_DRAFT_FAILED`：适配器调用失败。
+- 422 `PERSONA_DRAFT_INVALID`：两次输出都不是合法结构（已重试 1 次）。
+- 504 `DRAFT_TIMEOUT`：草稿生成 120s 未完成。
