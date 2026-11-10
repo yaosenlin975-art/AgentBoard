@@ -121,6 +121,8 @@ describe('新建任务入口（待规划列头 +）', () => {
 
     await userEvent.click(await screen.findByTestId('column-create-待规划'));
     await userEvent.type(await screen.findByTestId('new-issue-title'), '新任务');
+    // CARD-FACE（9bbffd8）起描述必填：补齐有效描述，否则客户端拦截、请求不会发出
+    await userEvent.type(await screen.findByTestId('new-issue-description'), '目标：验证提交体不含 status');
     await userEvent.click(screen.getByTestId('new-issue-submit'));
 
     await waitFor(() => expect(body).not.toBeNull());

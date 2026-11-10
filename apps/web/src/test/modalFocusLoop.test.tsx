@@ -169,6 +169,8 @@ describe('Modal 焦点闭环（AUDIT-P1 / I-03）', () => {
 
     const dialog = await screen.findByRole('dialog', { name: '新建任务' });
     await user.type(within(dialog).getByTestId('new-issue-title'), '新任务');
+    // CARD-FACE（9bbffd8）起描述必填：不填会被客户端拦截，弹窗不会关闭
+    await user.type(within(dialog).getByTestId('new-issue-description'), '目标：验证焦点闭环');
     await user.click(within(dialog).getByTestId('new-issue-submit'));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建任务' })).toBeNull());
     expect(trigger).toHaveFocus();
