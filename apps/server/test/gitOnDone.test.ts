@@ -88,7 +88,7 @@ describe('git on done', () => {
 
     mkdirSync(join(repo, 'src'), { recursive: true });
     writeFileSync(join(repo, 'src', 'feature.ts'), 'export const value = 1;\n');
-    const res = await done(issueId);
+    const res = await done(issueId, { scope_paths: ['src/feature.ts'] });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('待验收');
@@ -103,7 +103,7 @@ describe('git on done', () => {
     const issueId = await makeIssue(title);
     await claim(issueId);
     writeFileSync(join(repo, 'note.md'), 'x\n');
-    await done(issueId);
+    await done(issueId, { scope_paths: ['note.md'] });
     expect(lastSubject()).toBe(`[${issueId.slice(0, 8)}] ${title}`);
   });
 
@@ -112,7 +112,7 @@ describe('git on done', () => {
     const issueId = await makeIssue(title);
     await claim(issueId);
     writeFileSync(join(repo, 'multi.md'), 'x\n');
-    await done(issueId);
+    await done(issueId, { scope_paths: ['multi.md'] });
     // 单参数 -m：完整标题（含换行）原样进入提交信息，不被拆成多个参数或截断
     expect(git(repo, ['log', '-1', '--pretty=%B']).trimEnd()).toBe(
       `[${issueId.slice(0, 8)}] ${title}\n\nAgentBoard-Issue: ${issueId}\nAgentBoard-Claim: fake`,
@@ -127,7 +127,7 @@ describe('git on done', () => {
     await claim(issueId);
 
     unlinkSync(join(repo, 'to-delete.md'));
-    await done(issueId);
+    await done(issueId, { scope_paths: ['to-delete.md'] });
 
     expect(git(repo, ['show', '--name-status', '--pretty=format:', '-1']).trim()).toBe('D\tto-delete.md');
   });
@@ -159,7 +159,7 @@ describe('git on done', () => {
     await claim(issueId);
     writeFileSync(join(repo, 'blocked.txt'), 'x\n');
 
-    const res = await done(issueId);
+    const res = await done(issueId, { scope_paths: ['blocked.txt'] });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('待验收');
     expect(comments(issueId).join('\n')).toContain('自动提交失败');
@@ -175,7 +175,9 @@ describe('git on done', () => {
 
     writeFileSync(join(repo, 'parallel.txt'), 'x\n');
     await done(first);
-    expect(comments(first).join('\n')).toContain('并行占用任务');
+    // NO_SCOPE：并行时同样不猜归属，一个文件都不提交
+    expect(comments(first).join('\n')).toContain('未声明目标文件集');
+    expect(commitCount()).toBe(1);
   });
 
   it('commitsOnlyDeclaredPathsWhenAnotherCardIsInFlight', async () => {
@@ -289,20 +291,24 @@ describe('git on done', () => {
     expect(comments(issueId).join('\n')).toContain('--all：显式纳入工作区全部未提交改动');
   });
 
-  it('warnsExplicitlyWhenNoTargetFileSetDeclared', async () => {
+  it('refusesBroadCommitWhenNoTargetFileSetDeclared', async () => {
     writeFileSync(join(repo, 'preexisting.txt'), 'claim 前就脏\n');
-    const issueId = await makeIssue('老卡无声明');
+    const issueId = await makeIssue('无声明不宽提交');
     await claim(issueId);
     writeFileSync(join(repo, 'work.txt'), '本次改动\n');
 
-    await done(issueId);
+    const res = await done(issueId);
 
-    expect(lastCommitFiles()).toEqual(['work.txt']);
-    expect(git(repo, ['status', '--porcelain'])).toContain('preexisting.txt');
+    // N-01：未声明范围时一个文件都不提交（曾把 claim 前脏文件/他人文件一起卷进提交）
+    expect(res.body.git_commit).toMatchObject({ status: 'not-committed', reason: 'NO_SCOPE' });
+    expect(commitCount()).toBe(1);
+    const status = git(repo, ['status', '--porcelain']);
+    expect(status).toContain('preexisting.txt');
+    expect(status).toContain('work.txt');
     const note = comments(issueId).join('\n');
-    expect(note).toContain('⚠ 未声明目标文件集（旧卡口径）');
+    expect(note).toContain('未声明目标文件集');
     expect(note).toContain('preexisting.txt');
-    expect(note).toContain('--scope 声明本卡文件集');
+    expect(note).toContain('scope');
   });
 
   it('writesNoCommentWhenNothingChanged', async () => {
@@ -319,7 +325,7 @@ describe('git on done', () => {
     await claim(issueId);
     writeFileSync(join(repo, 'once.txt'), 'x\n');
     const key = randomUUID();
-    const body = { agent_id: 'fake', notes: '', workspace_id: workspaceId };
+    const body = { agent_id: 'fake', notes: '', workspace_id: workspaceId, scope_paths: ['once.txt'] };
 
     const first = await request(app).post(`/api/issues/${issueId}/done`).set('Idempotency-Key', key).send(body);
     expect(first.status).toBe(200);
@@ -351,7 +357,7 @@ describe('git on done', () => {
       const issueId = await makeIssue('没有身份配置');
       await claim(issueId);
       writeFileSync(join(repo, 'anonymous.txt'), 'x\n');
-      await done(issueId);
+      await done(issueId, { scope_paths: ['anonymous.txt'] });
       expect(git(repo, ['log', '-1', '--pretty=%an <%ae>'])).toBe('AgentBoard <agentboard@local>');
       expect(comments(issueId).join('\n')).toContain('AgentBoard 默认身份提交');
     } finally {
@@ -366,7 +372,7 @@ describe('git on done', () => {
     const issueId = await makeIssue('trailer 记录领取者');
     await claim(issueId);
     writeFileSync(join(repo, 'trailer.txt'), 'x\n');
-    await done(issueId);
+    await done(issueId, { scope_paths: ['trailer.txt'] });
 
     const body = git(repo, ['log', '-1', '--pretty=%B']);
     expect(body).toContain(`AgentBoard-Issue: ${issueId}`);
@@ -384,7 +390,7 @@ describe('git on done', () => {
     t.db.prepare("UPDATE issue SET status='进行中', claimed_by=NULL WHERE id=?").run(issueId);
     await captureIssueGitBaseline(t.db, issueId);
     writeFileSync(join(repo, 'no-claimer.txt'), 'x\n');
-    await commitIssueChanges(t.db, issueId);
+    await commitIssueChanges(t.db, issueId, ['no-claimer.txt']);
 
     const body = git(repo, ['log', '-1', '--pretty=%B']);
     expect(body).toContain(`AgentBoard-Issue: ${issueId}`);

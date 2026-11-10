@@ -305,18 +305,20 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, undefined, undefined, fence);
   }, false);
 
-  register('complete_task', 'Complete a task owned by the configured agent.', z.object({
+  register('complete_task', 'Complete a task owned by the configured agent. Pass scope to declare which files this task changed; without scope nothing is auto-committed (the server refuses broad commits).', z.object({
     ...workspaceField,
     ...taskIdField,
     notes: z.string().default('')
       .describe('Completion notes: what changed, verification commands and results, knowledge page / changelog ids. Prefer a short self-contained summary.'),
+    scope: z.array(z.string().min(1)).optional()
+      .describe('Repo-relative files or directory prefixes this task changed (e.g. ["apps/server/src", "README.md"]). Only these paths are auto-committed. Omit → no auto-commit at all: the response lists every dirty file plus a copy-paste remedy command. Pass ["."] only when you intentionally include all dirty files.'),
     ...requestIdField,
     ...fenceField,
-  }).strict(), async ({ workspace_id, task_id, notes, request_id, fence }) => {
+  }).strict(), async ({ workspace_id, task_id, notes, scope, request_id, fence }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(task_id)}/done`, {
-      workspace_id: workspaceId, agent_id: agentId, notes,
+      workspace_id: workspaceId, agent_id: agentId, notes, scope_paths: scope,
     }, request_id, undefined, undefined, fence);
   }, false);
 

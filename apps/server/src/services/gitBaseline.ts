@@ -8,8 +8,8 @@
  * - 提交集只看本任务声明的目标文件集（done body 的 `scope_paths`，文件或目录前缀）：
  *   与当前未提交路径取交集，卡外改动一律不提交，改为系统评论列出清单交 owner 处理；
  *   要连同卡外改动一起入库，必须显式声明工作区根（`--all` → `.`）。
- *   未声明范围（老卡）时只提交 claim 基线变化集，并在评论里显式警告「无法排除他人同期改动」
- *   （claim 前就已脏且未变化的文件仍不纳入）；同 workspace 有其它并行占用时仍一律不提交。
+ *   未声明范围时**一律不自动提交**（NO_SCOPE）：无法判定改动归属，改为列出全部脏文件 + 可复制补救命令；
+ *   要提交必须显式声明，`.`（点）= 全部未提交改动（危险，需显式）。这条同时覆盖并行占用场景。
  *   本卡声明范围内、claim 前就已脏且未变化的文件按声明强制提交（否则接手遗留脏文件的卡会静默丢提交）。
  * - 只用 `git add -A -- <paths>`（同时覆盖修改与删除）并配合**路径限定 commit**（`git commit -- <paths>`），
  *   绝不 `git add -A` 全量，也绝不整索引提交（避免把别的卡已暂存的改动卷进来）。
@@ -181,11 +181,6 @@ export async function captureIssueGitBaseline(db: Db, issueId: string): Promise<
   }
 }
 
-function changedPaths(baseline: Record<string, string>, current: Record<string, string>): string[] {
-  const paths = new Set([...Object.keys(baseline), ...Object.keys(current)]);
-  return [...paths].filter(path => baseline[path] !== current[path]).sort();
-}
-
 /**
  * 工作区根声明标记：`--all` 由 CLI 映射成 `.`，归一化后记为 `ROOT_SCOPE`，表示「整个工作区」。
  * 空串不是合法路径，不会与真实文件冲突。
@@ -241,16 +236,9 @@ async function identityConfigured(repo: string): Promise<boolean> {
 
 const firstLine = (text: string): string => text.split('\n').map(line => line.trim()).filter(Boolean)[0] ?? '未知错误';
 
-/** 并行占用提示：同 workspace 还有其它「进行中且被占用」的任务（>0 即改动归属不可判定） */
-function parallelClaimCount(db: Db, workspaceId: string, issueId: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM issue
-    WHERE workspace_id=? AND id<>? AND claimed_by IS NOT NULL AND status='进行中'`).get(workspaceId, issueId) as { n: number };
-  return row.n;
-}
-
 /**
  * 基线内且当前指纹完全一致的路径 = claim 之前就已修改、本任务期间没再动过的文件。
- * 这类路径 `changedPaths` 天然看不见（GIT-BASELINE-BLIND），只有在本卡声明范围内才强制提交。
+ * 这类路径在「基线指纹 ≠ 当前指纹」的差异里天然看不见，只有在本卡声明范围内才强制提交。
  */
 function preexistingDirtyPaths(baseline: Record<string, string>, current: Record<string, string>): string[] {
   return Object.keys(baseline).filter(path => current[path] === baseline[path]).sort();
@@ -260,7 +248,7 @@ function preexistingDirtyPaths(baseline: Record<string, string>, current: Record
  * GIT-OBSERVABLE（卡 9fa0d16f）：done 自动提交的结果必须让调用方可感知。
  * - committed：本次确有变动并已提交（卡外改动只列清单，不影响本状态）；
  * - nothing：无基线变动、无声明范围内脏文件，或有前置条件不满足但没有待提交内容；
- * - not-committed：有声明范围内的改动但本次没提交（无基线 / 提交失败 / scope 零命中 / 并行占用未声明）；
+ * - not-committed：有改动但本次没提交（无基线 / 提交失败 / scope 零命中 / 未声明范围）；
  * - unavailable：仓库不可用（未装 git / 非仓库 / 仓库损坏），自动提交不适用，与「提交失败」分开报。
  */
 export type IssueCommitStatus = 'committed' | 'nothing' | 'not-committed' | 'unavailable';
@@ -269,8 +257,7 @@ export type IssueCommitReason =
   | 'NO_BASELINE'
   | 'COMMIT_FAILED'
   | 'ZERO_HIT'
-  | 'PARALLEL_UNDECLARED'
-  | 'UNDECLARED_PREEXISTING'
+  | 'NO_SCOPE'
   | 'GIT_NOT_INSTALLED'
   | 'NOT_A_GIT_REPO'
   | 'GIT_REPO_UNHEALTHY';
@@ -317,7 +304,7 @@ function baselineRowOf(db: Db, issueId: string): {
  * - `preexisting`：claim 前就已未提交、现在仍未提交 → 指纹相同；只有**声明范围内**的才强制提交
  *   （否则「接手遗留脏文件并收口」的卡会静默丢提交），评论里标注为强制提交；
  * - 越界或无法判定的路径一律不提交，只列清单（附可直接执行的补救命令）。
- * 无基线 / 有改动但提交失败 / scope 零命中 / 并行占用未声明 → `not-committed` + 原因码 + 补救命令。
+ * 无基线 / 有改动但提交失败 / scope 零命中 / 未声明范围 → `not-committed` + 原因码 + 补救命令。
  */
 export async function commitIssueChanges(
   db: Db,
@@ -392,8 +379,6 @@ export async function commitIssueChanges(
         });
       }
       const baseline = baselineRow.paths;
-      const changed = changedPaths(baseline, current.files);
-      const parallel = parallelClaimCount(db, issue.workspace_id, issueId);
       const preexisting = preexistingDirtyPaths(baseline, current.files);
       const forced = declared.length === 0 ? [] : preexisting.filter(path => withinDeclaredScope(path, declared));
 
@@ -410,32 +395,17 @@ export async function commitIssueChanges(
       ].join('\n');
 
       /** 未声明范围时的补救提示：给可直接执行的命令，不再静默 */
-      const undeclaredNote = (paths: readonly string[]): string => {
-        const listed = paths.slice(0, MAX_LISTED_SCOPE_VIOLATIONS);
-        return `未提交 ${paths.length} 个 claim 前就已修改的文件（指纹未变、不在本次变化集，且未声明范围；仍在工作树）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}\n`
-          + `如需入库：git add -- ${listed.join(' ')}; git commit -m "[${shortId}] ${issue.title}" -- ${listed.join(' ')}`
-          + '；或重新 done 时用 scope_paths 声明这些路径';
-      };
-
-      // 并行占用且未声明范围：改动归属不可判定，任何路径都不提交，只把清单交 owner
-      if (declared.length === 0 && !declaredAll && parallel > 0) {
-        const pending = [...new Set([...changed, ...preexisting])].sort();
-        if (pending.length === 0) return dropAndNull(db, issueId);
-        return dropAndNull(db, issueId, {
-          status: 'not-committed',
-          reason: 'PARALLEL_UNDECLARED',
-          pending,
-          note: `检测到 ${parallel} 个并行占用任务，无法判定 ${pending.length} 个改动的归属，本次未自动提交（改动仍在工作树，需 owner 确认；done 时用 scope_paths 声明本任务路径即可按范围提交）：${listPaths(pending, MAX_LISTED_SCOPE_VIOLATIONS)}`,
-        });
-      }
+      const noScopeNote = (paths: readonly string[]): string => [
+        `⚠ 未声明目标文件集，本次未自动提交 ${paths.length} 个文件（done 已生效，工作树未改动）`,
+        `- 未提交的改动：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}`,
+        '- 原因：未声明范围时无法区分本卡改动与他人/遗留改动，服务端不再宽提交。',
+        `- 补救（可直接复制执行）：${remedyCommand(paths)}`,
+        '- 下次收尾请声明范围：CLI `kb done <id> --scope <path>`；MCP `complete_task` 传 `scope`；确认要提交全部改动才用 `.`。',
+      ].join('\n');
 
       // 提交集 = 本卡目标文件集 ∩ 当前未提交路径；卡外改动只列清单，默认不纳入
       const outsideNote = (paths: readonly string[]): string =>
         `卡外改动未提交（${paths.length} 个，仍在工作树，需 owner 处理；要一并纳入请显式 --all）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}`;
-      const undeclaredWarn = (committed: readonly string[], skipped: readonly string[]): string =>
-        `⚠ 未声明目标文件集（旧卡口径）：已按 claim 基线变化集提交 ${committed.length} 个文件，无法排除他人同期改动`
-        + `；另有 ${skipped.length} 个未提交${skipped.length > 0 ? `：${listPaths(skipped, MAX_LISTED_SCOPE_VIOLATIONS)}` : ''}`
-        + '。下次收尾请用 --scope 声明本卡文件集';
 
       let paths: string[];
       let policyNotes: string[];
@@ -457,14 +427,14 @@ export async function commitIssueChanges(
         }
         policyNotes = outside.length === 0 ? [] : [outsideNote(outside)];
       } else {
-        // 老卡无声明：只提交 claim 基线变化集（claim 前就已脏且未变化的文件仍不纳入），并显式警告
-        paths = changed;
-        if (paths.length === 0) {
-          return dropAndNull(db, issueId, preexisting.length > 0
-            ? { status: 'not-committed', reason: 'UNDECLARED_PREEXISTING', note: undeclaredNote(preexisting), pending: preexisting }
-            : {});
-        }
-        policyNotes = [undeclaredWarn(paths, dirty.filter(path => !changed.includes(path)))];
+        // NO_SCOPE：未声明目标文件集时不再猜测归属——一个文件都不提交，列出全部脏文件与补救命令
+        if (dirty.length === 0) return dropAndNull(db, issueId);
+        return dropAndNull(db, issueId, {
+          status: 'not-committed',
+          reason: 'NO_SCOPE',
+          pending: dirty,
+          note: noScopeNote(dirty),
+        });
       }
       pendingOnFailure = paths;
 

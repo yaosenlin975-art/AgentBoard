@@ -125,7 +125,7 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
     expect(commitCount()).toBe(1); // 未产生提交
     expect(git(repo, ['status', '--porcelain'])).toContain('legacy.txt');
     const note = comments(issueId).join('\n');
-    expect(note).toContain('未提交 1 个 claim 前就已修改的文件');
+    expect(note).toContain('未声明目标文件集');
     expect(note).toContain('legacy.txt');
     // 给出可直接执行的补救命令
     expect(note).toContain('git add -- legacy.txt');
@@ -165,12 +165,14 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
     expect(git(repo, ['status', '--porcelain', '-uall'])).toContain('theirs.txt');
   });
 
-  it('stillCommitsClaimTimeChangesWhenNoScopeGivenAndNoParallelClaim', async () => {
+  it('refusesCommitWhenNoScopeGivenEvenWithoutParallelClaim', async () => {
     const issueId = await makeIssue('常规卡');
     await claim(issueId);
     writeFileSync(join(repo, 'work.txt'), '新改动\n');
-    await done(issueId);
-    expect(lastCommitFiles()).toEqual(['work.txt']);
-    expect(comments(issueId).join('\n')).toContain('已自动提交 1 个文件');
+    const res = await done(issueId);
+    expect(res.body.git_commit).toMatchObject({ status: 'not-committed', reason: 'NO_SCOPE' });
+    expect(commitCount()).toBe(1);
+    expect(git(repo, ['status', '--porcelain'])).toContain('work.txt');
+    expect(comments(issueId).join('\n')).toContain('未声明目标文件集');
   });
 });

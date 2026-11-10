@@ -498,6 +498,19 @@ describe('AgentBoard task MCP server', () => {
     expect(headers.get('x-claim-fence')).toBeNull();
   });
 
+  it('forwards complete_task scope as scope_paths (N-01: no broad commit by default)', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', scope: ['apps/server/src', 'README.md'], request_id: '00000000-0000-4000-8000-000000000203' },
+    });
+    const body = JSON.parse(String((fetcher.mock.calls[0]?.[1] as RequestInit | undefined)?.body));
+    expect(body.scope_paths).toEqual(['apps/server/src', 'README.md']);
+  });
+
   it('maps a stale fence rejection to the safe STALE_FENCE message', async () => {
     const fetcher = vi.fn(async () => Response.json({ error: { code: 'STALE_FENCE', message: '占用代次已过期（请求 fence=1，当前=2）' } }, { status: 409 }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);

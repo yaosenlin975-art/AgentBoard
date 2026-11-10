@@ -16,7 +16,7 @@ interface GitCommitInfo {
 }
 
 /** 这些原因意味着「声明范围内确有改动但本次没提交」，须以非 0 退出码提醒调用方 */
-const BLOCKING_COMMIT_REASONS = new Set(['NO_BASELINE', 'COMMIT_FAILED', 'ZERO_HIT', 'PARALLEL_UNDECLARED']);
+const BLOCKING_COMMIT_REASONS = new Set(['NO_BASELINE', 'COMMIT_FAILED', 'ZERO_HIT', 'NO_SCOPE', 'PARALLEL_UNDECLARED']);
 
 export interface DoneArgs {
   notes?: string;
