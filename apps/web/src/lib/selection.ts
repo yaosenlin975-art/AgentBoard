@@ -43,6 +43,23 @@ export function toggleSelectAll(selected: ReadonlySet<string>, scopeIds: readonl
   return allSelected ? new Set() : new Set(scopeIds);
 }
 
+/**
+ * 列头整列 toggle：只增删本列 id —— 本列已全选时清空本列，否则补齐本列。
+ * 其它列的已选 id 原样保留，保证列间互不影响。
+ */
+export function toggleColumnSelected(
+  selected: ReadonlySet<string>,
+  columnIds: readonly string[],
+): Set<string> {
+  const next = new Set(selected);
+  const allSelected = columnIds.length > 0 && columnIds.every((id) => next.has(id));
+  for (const id of columnIds) {
+    if (allSelected) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}
+
 /** 筛选出仍在看板上的已选 id（数据刷新/筛选变化后避免幽灵选择） */
 export function pruneSelection(selected: ReadonlySet<string>, issues: readonly Issue[]): Set<string> {
   const alive = new Set(issues.map((issue) => issue.id));

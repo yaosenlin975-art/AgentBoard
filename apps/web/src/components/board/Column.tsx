@@ -30,6 +30,7 @@ export const Column = memo(function Column({
   selectionScope = null,
   selectedIds,
   onToggleSelect,
+  onToggleSelectColumn,
   loading = false,
 }: {
   /** 列名（STATUS-3-UI：内置五条 + 任意自定义状态） */
@@ -50,6 +51,8 @@ export const Column = memo(function Column({
   selectionScope?: SelectionScope | null;
   selectedIds?: ReadonlySet<string>;
   onToggleSelect?: (id: string) => void;
+  /** 选择态下列头整列 toggle：只增删本列 id（全选本列 / 清空本列） */
+  onToggleSelectColumn?: (ids: readonly string[]) => void;
   /**
    * PERF-9：真实加载中（React Query isPending）才为 true —— 渲染列骨架，不把 `[]` 当真空态。
    * 数据到位立即卸载骨架；空数组且非加载中才渲染「暂无任务」。
@@ -61,6 +64,15 @@ export const Column = memo(function Column({
     data: { type: 'column', status },
   });
   const groups = groupIssuesForDisplay(issues, grouping);
+  // 选择态列头整列 toggle（BOARD-SEL-1）：只统计本列 id；空列不渲染（沿用空列隐藏附加控件的惯例）
+  const columnIds = issues.map((issue) => issue.id);
+  const selectedInColumn = selectionActive
+    ? columnIds.filter((id) => selectedIds?.has(id) ?? false).length
+    : 0;
+  const allSelected = columnIds.length > 0 && selectedInColumn === columnIds.length;
+  const partiallySelected = selectedInColumn > 0 && !allSelected;
+  const showColumnToggle =
+    selectionActive && onToggleSelectColumn !== undefined && !loading && columnIds.length > 0;
   const renderCard = (issue: Issue) => (
     <IssueCard
       key={issue.id}
@@ -98,6 +110,31 @@ export const Column = memo(function Column({
           {sortControl}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {/* BOARD-SEL-1：选择态下列头整列全选 toggle（沿用卡片勾选框的视觉令牌；部分选中显示「−」） */}
+          {showColumnToggle && (
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={allSelected ? true : partiallySelected ? 'mixed' : false}
+              aria-label={`选择本列全部任务（${status}）`}
+              title={
+                allSelected
+                  ? `取消选择本列全部任务（${status}）`
+                  : `选择本列全部任务（${status}）`
+              }
+              data-testid={`column-select-all-${status}`}
+              onClick={() => onToggleSelectColumn(columnIds)}
+              className={`flex h-4 w-4 items-center justify-center rounded border text-[10px] leading-none transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+                allSelected
+                  ? 'border-accent bg-accent text-accent-ink'
+                  : partiallySelected
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline bg-surface-card text-transparent hover:border-ink-3'
+              }`}
+            >
+              {partiallySelected ? '−' : '✓'}
+            </button>
+          )}
           {/* REL-2：进行中列头救火键（小文字按钮，不抢列头视觉；只在有卡时出现） */}
           {onReleaseRunning !== undefined && issues.length > 0 && (
             <button

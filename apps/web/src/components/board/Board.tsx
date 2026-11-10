@@ -47,6 +47,7 @@ import {
   idsInScope,
   issueInScope,
   pruneSelection,
+  toggleColumnSelected,
   toggleSelectAll,
   toggleSelected,
   type SelectionScope,
@@ -206,6 +207,15 @@ export function Board() {
     [issues, selectionScope],
   );
   const scopeIds = idsInScope(visibleIssues, selectionScope);
+  /**
+   * BOARD-SEL-1：列头整列 toggle。
+   * 只增删本列 id，其它列的已选卡片原样保留；范围放大为「整个看板」，
+   * 否则列头 toggle 选中的卡片会因不在当前范围而没有勾选框。
+   */
+  const toggleColumnSelection = useCallback((ids: readonly string[]): void => {
+    setSelectionScope((prev) => (prev?.kind === 'board' ? prev : { kind: 'board' }));
+    setSelectedIds((prev) => toggleColumnSelected(prev, ids));
+  }, []);
   // 数据刷新后剔除已删除卡片，避免批量 PATCH 打到幽灵 id
   useEffect(() => {
     setSelectedIds((prev) => {
@@ -514,6 +524,7 @@ export function Board() {
                 selectionScope={selectionScope}
                 selectedIds={selectedIds}
                 onToggleSelect={toggleCardSelection}
+                onToggleSelectColumn={toggleColumnSelection}
                 {...(status === '待规划' ? { onCreateIssue: openNewIssue } : {})}
                 {...(status === '进行中' ? { onReleaseRunning: openReleaseRunning } : {})}
                 {...(status === '待规划'

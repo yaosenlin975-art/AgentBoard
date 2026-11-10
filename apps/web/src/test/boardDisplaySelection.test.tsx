@@ -162,6 +162,58 @@ describe('两段式选择与批量操作', () => {
   });
 });
 
+describe('BOARD-SEL-1 列头整列全选 toggle', () => {
+  it('仅选择态显示；非空列有 toggle，空列隐藏，退出后消失', async () => {
+    renderBoard();
+    await screen.findByTestId('issue-card-i1');
+    expect(screen.queryByTestId('column-select-all-待规划')).toBeNull();
+
+    await userEvent.click(screen.getByTestId('board-select-toggle'));
+    expect(screen.getByTestId('column-select-all-待规划')).toBeInTheDocument();
+    expect(screen.getByTestId('column-select-all-已关闭')).toBeInTheDocument();
+    // 空列（无卡片）不渲染 toggle
+    expect(screen.queryByTestId('column-select-all-进行中')).toBeNull();
+
+    await userEvent.click(screen.getByTestId('selection-close'));
+    expect(screen.queryByTestId('column-select-all-待规划')).toBeNull();
+  });
+
+  it('点一次全选本列、再点清空本列；只影响本列，部分选中为 mixed', async () => {
+    renderBoard();
+    await screen.findByTestId('issue-card-i1');
+    await userEvent.click(screen.getByTestId('board-select-toggle'));
+
+    const planningToggle = screen.getByTestId('column-select-all-待规划');
+    expect(planningToggle).toHaveAttribute('aria-checked', 'false');
+
+    // 全选本列：只选中 i1/i2，其它列不受影响
+    await userEvent.click(planningToggle);
+    expect(planningToggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 2 / 3');
+    expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByTestId('issue-card-i3')).toHaveAttribute('data-selected', 'false');
+
+    // 再点已关闭列 toggle：只加 i3，待规划列已选保持
+    const closedToggle = screen.getByTestId('column-select-all-已关闭');
+    await userEvent.click(closedToggle);
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 3 / 3');
+    await userEvent.click(closedToggle);
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 2 / 3');
+    expect(screen.getByTestId('issue-card-i1')).toHaveAttribute('data-selected', 'true');
+
+    // 取消单张 → 本列部分选中为 mixed
+    await userEvent.click(screen.getByTestId('issue-card-i2'));
+    expect(planningToggle).toHaveAttribute('aria-checked', 'mixed');
+
+    // 部分选中时再点：补齐本列；再点：清空本列
+    await userEvent.click(planningToggle);
+    expect(planningToggle).toHaveAttribute('aria-checked', 'true');
+    await userEvent.click(planningToggle);
+    expect(planningToggle).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByTestId('selection-count')).toHaveTextContent('已选 0 / 3');
+  });
+});
+
 describe('批量改状态：并发上限与部分失败收敛（CR-4）', () => {
   it('第 3 张卡 409：其余卡全部落库，失败卡保留选中并逐条展示原因，列表缓存刷新', async () => {
     const batch = ['i1', 'i2', 'i3', 'i4', 'i5'].map((id) => makeIssue(id));
