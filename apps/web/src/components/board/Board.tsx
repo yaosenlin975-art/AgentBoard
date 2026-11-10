@@ -29,7 +29,7 @@ import { IssueCardPreview } from './IssueCard';
 import { IssueTreeView } from './IssueTreeView';
 import { useNavStore } from '../../state/navStore';
 import { LabelFilterBar } from './LabelFilterBar';
-import { ViewToolbarShell } from '../ui/ViewToolbarShell';
+import { TopBar } from '../shell/TopBar';
 import {
   readPlanningSort,
   sortPlanning,
@@ -68,10 +68,10 @@ type ActiveDrag = { issue: Issue; width?: number };
 const BATCH_PATCH_CONCURRENCY = 6;
 
 export function Board({
-
+  workspaceName,
 }: {
-  /** 受控时由 App 提供；未传则组件内部自持（单独渲染 Board 的场景） */
-
+  /** 顶栏面包屑用；App 从已加载的工作空间列表传入，未传时只显示视图名 */
+  workspaceName?: string | null;
 } = {}) {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
@@ -357,20 +357,21 @@ export function Board({
           )}
         </div>
       )}
-      {/* TOPBAR-INLINE：视图切换（平铺看板/任务树/知识库/日志）+ 搜索框 + 标签 chips 同在一行。
-          tab 组 `shrink-0` 不被压缩；搜索框 `shrink-0`；chips 容器 `min-w-0 flex-1 overflow-x-auto`
-          空间不足时优先压缩/横滚 chips；≤900 允许 chips 换第二行（wrap），但 tab 与搜索框仍在同一行。
-          外壳与知识库视图共用 ViewToolbarShell，保证三视图下 tab 组位置恒定（TOPBAR-TABS）。 */}
-      <ViewToolbarShell>
-        <div data-testid="board-toolbar-row" className="flex min-w-0 flex-wrap items-center gap-2 max-[900px]:items-start">
-          <div data-testid="board-toolbar-controls" className="flex shrink-0 flex-wrap items-center gap-1">
+      {/* TOPBAR-REDESIGN：46px 单行顶栏（面包屑 + 搜索 + 标签 + 右端显示控件），替换旧双行外壳。
+          ≤920px：面包屑/搜索/控件一行，标签整行换行（LABEL-BAR：不横滚，避免裁掉「更多」浮层）。
+          任务树没有列概念：在同一顶栏右端给同等新建入口（同一弹窗、同样落「待规划」）。 */}
+      <TopBar
+        workspaceName={workspaceName}
+        viewLabel={treeMode ? '任务树' : '看板'}
+        controls={
+          <>
             {/* BORROW-1.1：显示偏好（本地持久化） */}
             <select
               aria-label="显示密度"
               data-testid="display-density"
               value={displayOptions.density}
               onChange={(event) => changeDisplayOptions({ ...displayOptions, density: event.target.value === 'compact' ? 'compact' : 'comfortable' })}
-              className="h-8 shrink-0 rounded-lg border border-hairline bg-surface-raised px-1.5 text-xs text-ink-2"
+              className="h-[30px] shrink-0 rounded-lg border border-hairline bg-transparent px-1.5 text-xs text-ink-2 transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
             >
               <option value="comfortable">舒适密度</option>
               <option value="compact">紧凑密度</option>
@@ -381,7 +382,7 @@ export function Board({
               title={displayOptions.grouping === 'label' ? '按标签分组显示时禁用拖拽排序' : undefined}
               value={displayOptions.grouping}
               onChange={(event) => changeDisplayOptions({ ...displayOptions, grouping: event.target.value === 'label' ? 'label' : 'none' })}
-              className="h-8 shrink-0 rounded-lg border border-hairline bg-surface-raised px-1.5 text-xs text-ink-2"
+              className="h-[30px] shrink-0 rounded-lg border border-hairline bg-transparent px-1.5 text-xs text-ink-2 transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
             >
               <option value="none">不分组</option>
               <option value="label">按标签分组</option>
@@ -391,25 +392,10 @@ export function Board({
               data-testid="board-select-toggle"
               aria-pressed={selectionActive}
               onClick={() => (selectionActive ? exitSelection() : startSelection())}
-              className="h-8 shrink-0 rounded-lg border border-hairline px-2 text-xs text-ink-2 hover:bg-surface-card"
+              className="h-[30px] shrink-0 rounded-lg border border-hairline px-2 text-xs text-ink-2 transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"
             >
               选择
             </button>
-          </div>
-          <div data-testid="board-toolbar-filters" className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <input
-              aria-label="搜索任务"
-              data-testid="board-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索标题/描述/标签"
-              className="h-8 w-40 shrink-0 rounded-lg border border-hairline bg-surface-raised px-2.5 text-xs text-ink outline-none focus:border-accent sm:w-56"
-            />
-            {/* LABEL-BAR：容器不再 overflow-x-auto —— 会裁掉标签「更多」浮层（绝对定位子元素） */}
-            <div data-testid="board-toolbar-chips" className="flex min-w-0 flex-1 items-center gap-1 max-[900px]:basis-full">
-              <LabelFilterBar workspaceId={workspaceId} />
-            </div>
-            {/* 任务树没有列概念：在工具条右侧给同等的新建入口（同一弹窗、同样落「待规划」） */}
             {treeMode && (
               <button
                 type="button"
@@ -419,14 +405,47 @@ export function Board({
                 disabled={workspaceId === null}
                 onClick={() => setNewIssueOpen(true)}
                 // A2：点击反馈只走颜色过渡（≤150ms），reduced-motion 下即时
-                className="shrink-0 rounded-md border border-accent bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink active:bg-accent active:text-accent-ink motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40"
+                className="h-[30px] shrink-0 rounded-lg border border-accent bg-accent-soft px-2 text-xs font-medium text-accent transition-colors duration-150 hover:bg-accent hover:text-accent-ink active:bg-accent active:text-accent-ink motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40"
               >
                 + 新建任务
               </button>
             )}
-          </div>
-        </div>
-      </ViewToolbarShell>
+          </>
+        }
+        filters={
+          <>
+            <div className="flex h-[30px] w-36 shrink-0 items-center gap-1.5 rounded-lg border border-hairline bg-surface-page px-2 transition-colors duration-150 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent-soft motion-reduce:transition-none max-[920px]:order-2 max-[920px]:w-auto max-[920px]:min-w-32 max-[920px]:flex-1">
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+                className="h-3.5 w-3.5 shrink-0 text-ink-3"
+              >
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="M16 16l4 4" />
+              </svg>
+              <input
+                aria-label="搜索任务"
+                data-testid="board-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索标题/描述/标签"
+                className="h-full w-full min-w-0 shrink-0 bg-transparent text-xs text-ink outline-none placeholder:text-ink-3"
+              />
+            </div>
+            {/* LABEL-BAR：容器不再 overflow-x-auto —— 会裁掉标签「更多」浮层（绝对定位子元素） */}
+            <div
+              data-testid="board-toolbar-chips"
+              className="flex min-w-0 flex-1 items-center gap-1 max-[920px]:order-4 max-[920px]:basis-full"
+            >
+              <LabelFilterBar workspaceId={workspaceId} />
+            </div>
+          </>
+        }
+      />
       {/* PERF-9：加载 / 切空间提示 —— 切空间时上一屏保留，但必须显式标明「不是已加载完成的数据」 */}
       {(issuesPending || issuesPlaceholder) && (
         <div

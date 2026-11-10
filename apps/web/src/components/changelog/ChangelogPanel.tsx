@@ -16,7 +16,6 @@ import { ApiError } from '../../api/client';
 import { changelogApi } from '../../api/changelog';
 import { MarkdownView } from '../../lib/markdown';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
-import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { usePrefersReducedMotion } from '../overlay/panelMotion';
 import { ChangelogEntryForm, type ChangelogFormConflict, type ChangelogFormValues } from './ChangelogEntryForm';
 import { groupChangelogByDay, localDateTime, sortChangelog } from './ChangelogTimeline';

@@ -25,28 +25,22 @@ function paddingClasses(element: Element): string[] {
   return element.className.split(/\s+/).filter((cls) => /^p[trblxy]?-/.test(cls));
 }
 
-interface TabShell { wrapper: Element; shell: Element; viewRoot: Element }
+interface TabShell { wrapper: Element; shell: Element | null; viewRoot: Element | null }
 
-/** 向上找到 ViewToolbarShell（TOPBAR-INLINE 之后 tab 组与其外层之间多了一层同行容器） */
-function shellOf(wrapper: Element): Element | null {
-  let node: Element | null = wrapper.parentElement;
-  while (node !== null && !node.className.includes('flex-col')) node = node.parentElement;
-  return node ?? wrapper.parentElement;
-}
-
+/** TOPBAR-REDESIGN：新顶栏是唯一的 view-toolbar-shell 宿主，直接按 testid 向上定位 */
 function tabShell(wrapperTestId: string): TabShell {
   const wrapper = screen.getByTestId(wrapperTestId);
-  const shell = shellOf(wrapper);
-  const viewRoot = shell?.parentElement;
-  if (!shell || !viewRoot) throw new Error(`tab 组包裹层/外壳缺失：${wrapperTestId}`);
-  return { wrapper, shell, viewRoot };
+  const shell = wrapper.closest('[data-testid="view-toolbar-shell"]');
+  return { wrapper, shell, viewRoot: shell?.parentElement ?? null };
 }
 
-function renderBoard(): TabShell {
+function renderBoard(): TabShell & { shell: Element; viewRoot: Element } {
   render(withClient(
     <Board />,
   ));
-  return tabShell('board-toolbar-controls');
+  const result = tabShell('board-toolbar-controls');
+  if (!result.shell || !result.viewRoot) throw new Error('看板顶栏外壳缺失');
+  return result as TabShell & { shell: Element; viewRoot: Element };
 }
 
 function renderKnowledge(): TabShell {

@@ -136,8 +136,7 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <Board
-                />
+                <Board workspaceName={current?.name ?? null} />
               )}
             </main>
             {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}

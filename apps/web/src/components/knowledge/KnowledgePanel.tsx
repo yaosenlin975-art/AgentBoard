@@ -12,7 +12,6 @@ import {
 import { BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { KnowledgePageDetail } from './KnowledgePageDetail';
 import { KnowledgeGraph, prefetchGraphChunk } from './KnowledgeGraph';
-import { ViewToolbarShell } from '../ui/ViewToolbarShell';
 import { Kbd } from '../ui/Kbd';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { EmptyState } from '../ui/EmptyState';
