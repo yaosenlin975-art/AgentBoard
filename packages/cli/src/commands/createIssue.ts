@@ -190,5 +190,10 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
     ? '截止: （未设置）'
     : `截止: ${issue.due_date}${issue.due_time === null || issue.due_time === undefined ? '' : ` ${issue.due_time}`}`;
   const skipLine = skipFaceCheck ? '已跳过空面校验（--allow-empty）\n' : '';
-  ctx.io.write(`${skipLine}${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n${dueLine}\n`);
+  // CLI-05：回显标签/优先级/父卡——标签会被空白和逗号自动拆分，建完当场核对
+  const labelLine = issue.labels.length === 0 ? '标签: （无）' : `标签: ${issue.labels.join(', ')}`;
+  const parentLine = issue.parent_issue_id === null || issue.parent_issue_id === undefined
+    ? '父卡: （根任务）'
+    : `父卡: ${issue.parent_issue_id}`;
+  ctx.io.write(`${skipLine}${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n优先级: ${issue.priority}\n${labelLine}\n${parentLine}\n${dueLine}\n`);
 }

@@ -22,5 +22,6 @@ export async function listSpaces(ctx: Ctx, args: ListSpacesArgs = {}): Promise<v
     ctx.io.write('（无工作空间）\n');
     return;
   }
-  ctx.io.write(table(['id', 'name', 'path'], spaces.map((s) => [s.id.slice(0, 8), s.name, s.path]))); // CLI-09：id 列短 ID
+  // SK-10：工作区 id 是卡面/依赖/提交要抄的坐标，文本模式也给全长（任务列表的 id 列仍短 ID）
+  ctx.io.write(table(['id', 'name', 'path'], spaces.map((s) => [s.id, s.name, s.path])));
 }

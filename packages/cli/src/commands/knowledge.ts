@@ -6,7 +6,7 @@ import { request, CliHttpError } from '../api.js';
 import { writeListJson, writeObjectJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
-import { KNOWLEDGE_DOMAIN_HINT } from '@agentboard/shared';
+import { KNOWLEDGE_DOMAIN_HINT, KNOWLEDGE_DOMAINS } from '@agentboard/shared';
 
 interface ScopeOptions { scope: string; workspace?: string }
 async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{ scope: string; workspace_id?: string }> {
@@ -115,6 +115,12 @@ function validateCategory(value: string | undefined): string | undefined {
 function validateLanded(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (!(LANDED_STATES as readonly string[]).includes(value)) fail(`--landed 只能是 ${LANDED_STATES.join(" | ")}（当前：${preview(value)}）`);
+  return value;
+}
+/** CLI-03：--domain 先于 sources/evidence 校验，非法域先报词表，不被「缺少 sources」抢先盖住 */
+function validateDomain(value: string | undefined): string | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (!(KNOWLEDGE_DOMAINS as readonly string[]).includes(value)) fail(`--domain 只能是 ${KNOWLEDGE_DOMAIN_HINT}（当前：${preview(value)}）`);
   return value;
 }
 const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -594,7 +600,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       ...(evidenceRaw !== undefined ? { evidence: evidenceRaw } : {}),
       ...(opts.expiresAt !== undefined ? { expires_at: JSON.parse(opts.expiresAt) } : {}),
       ...(validateCategory(opts.category) !== undefined ? { category: validateCategory(opts.category) } : {}),
-      ...(opts.domain !== undefined && opts.domain !== '' ? { domain: opts.domain } : {}),
+      ...(validateDomain(opts.domain) !== undefined ? { domain: opts.domain } : {}),
       ...(validateLanded(opts.landed) !== undefined ? { landed: validateLanded(opts.landed) } : {}),
       actor: ctx.agentId,
     };
@@ -603,11 +609,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
   scoped(contentOptions(knowledge.command('create')).description('新建知识页（需要 --stdin/--sources/--evidence）').requiredOption('--title <title>').requiredOption('--slug <slug>'))
     .addHelpText('after', CREATE_HELP)
     .action(async (opts: ScopeOptions & { category?: string; landed?: string; domain?: string; title: string; slug: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
-      // C：先做客户端校验，非法值不发请求
-      validateCategory(opts.category); validateLanded(opts.landed);
+      // C：先做客户端校验，非法值不发请求（CLI-03：domain 先于 sources/evidence 缺项检查）
+      validateCategory(opts.category); validateLanded(opts.landed); validateDomain(opts.domain);
       const ctx = context();
       const missing: string[] = [];
-      if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain design --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md:1-20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
+      if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain knowledge --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md:1-20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
       const data = await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug });
       output(ctx, data);
       assertSnapshotCommitted(ctx, data);

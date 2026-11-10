@@ -56,6 +56,10 @@ export function describeError(err: unknown): DescribedError {
       || err.code === 'STALE_FENCE'
       // DEC-V4-API-EXTEND：非宽限中 / 超上限自带自解释文案，原样透传
       || err.code === 'DECISION_NOT_GRACE' || err.code === 'EXTEND_LIMIT_EXCEEDED'
+      // SK-03：决策锁不是占用，文案自带「谁能回答 + 怎么撤回」，原样透传
+      || err.code === 'DECISION_LOCKED'
+      // SK-02：仅人类可答自带可执行下一步，原样透传
+      || err.code === 'DECISION_HUMAN_ONLY'
       // CLI-SWITCH：切换失败/不支持/预检阻断自带自解释文案，原样透传（避免被包装成「已被占用（…）」）
       || err.code.startsWith('CLI_SWITCH_') || err.code === 'DEEPSEEK_ENV_SHADOWS'
       || err.code === 'CLIENT_STATE_UNREADABLE' || err.code === 'CLI_CREDENTIAL_MISSING'

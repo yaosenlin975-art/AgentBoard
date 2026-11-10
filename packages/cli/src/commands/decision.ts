@@ -271,6 +271,12 @@ function emitAskResult(
     return;
   }
   ctx.io.write(`LOCKED decision=${decision.id}\n`);
+  // SK-01：落锁只说「不能再动手」不够，必须给出卡的状态变化与解锁路径
+  ctx.io.write(
+    `本轮须停手：占用已释放，卡 ${decision.issue_id} 已回「待规划」，claim fence 已 +1。\n`
+      + `解锁：由人在看板「待决策」回答，或 kb decision withdraw ${decision.id} --reason "…" 撤回；\n`
+      + `解锁后必须重新 kb claim ${decision.issue_id} 才能继续（旧 fence 已失效）。\n`,
+  );
   if (serverStillGrace) {
     ctx.io.writeErr('注意：宽限已到但服务端尚未落锁（DEC-9 ticker 未接线时会出现），请用 kb decisions 复核\n');
   }
@@ -368,7 +374,8 @@ export async function showDecision(ctx: Ctx, ref: string): Promise<void> {
   if (decision.state === 'grace') ctx.io.write(`（剩余 ${secondsLeft(decision.grace_until)}s）`);
   ctx.io.write(`\n提问者: ${decision.created_by}\n`);
   for (const option of decision.options) {
-    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${option.is_default === 1 ? '（默认）' : ''}\n`);
+    // SK-09：服务端会在未指定时自动把第 1 项记为默认，标注说清它「只是缺省值」，不是推荐项
+    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${option.is_default === 1 ? '（未指定时的默认项）' : ''}\n`);
   }
   if (decision.answer_revision > 0) {
     ctx.io.write(`回答（revision ${decision.answer_revision}）：${answerText(decision) ?? '（无）'}\n`);

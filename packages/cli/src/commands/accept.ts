@@ -48,7 +48,7 @@ export async function accept(ctx: Ctx, id: string, args: AcceptArgs): Promise<vo
   if (issue.status !== '待验收') {
     throw new CliExitError(
       'ACCEPT_STATUS_NOT_ACCEPTABLE',
-      `只有「待验收」卡可以写验收记录（当前状态：${issue.status}）；待规划卡请用 kb done <issue-id> 提交验收，关闭请用 kb close <issue-id>`,
+      `只有「待验收」卡可以写验收记录（当前状态：${issue.status}）；未占用的待规划卡请先 kb claim <issue-id> 再 kb done <issue-id>，关闭请用 kb close <issue-id>`,
       2,
     );
   }
