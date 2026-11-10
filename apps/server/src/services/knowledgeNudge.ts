@@ -12,18 +12,20 @@ import type { KnowledgeHint, Issue } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 
 const TITLE_MAX = 40;
+const DEFAULT_THEME_SLUG = 'agentboard-pitfalls';
 
 /**
  * N-05 / SK-06：建议 slug 用**稳定的主题页名**，与 using-agentboard / kb-curator 的主题页口径一致；
  * 不再拼「标题+日期」（日期后缀会让同一主题每天长出新页，revise 永远命中不了）。
- * 标签 → 主题页映射；未命中落 agentboard-pitfalls。
+ * 标签 → 主题页映射（N3-07 补齐 cli）；坑/缺陷/规则与未知标签统一落 agentboard-pitfalls。
  */
 const THEME_RULES: ReadonlyArray<{ slug: string; tags: readonly string[] }> = [
   { slug: 'agentboard-server-data', tags: ['server', '服务端', '后端'] },
   { slug: 'agentboard-frontend-ux', tags: ['web', 'ui', '前端'] },
+  { slug: 'agentboard-cli-ux', tags: ['cli', '命令行'] },
   { slug: 'agentboard-testing-gates', tags: ['test', '测试'] },
+  { slug: DEFAULT_THEME_SLUG, tags: ['缺陷', '坑', '规则'] },
 ];
-const DEFAULT_THEME_SLUG = 'agentboard-pitfalls';
 
 function themeSlug(labels: readonly string[]): string {
   const normalized = labels.map(label => label.trim().toLowerCase());

@@ -94,6 +94,8 @@ describe('knowledge nudge on done', () => {
       [['服务端'], 'agentboard-server-data'],
       [['web', 'ui'], 'agentboard-frontend-ux'],
       [['测试'], 'agentboard-testing-gates'],
+      [['cli'], 'agentboard-cli-ux'],
+      [['缺陷'], 'agentboard-pitfalls'],
       [['文档'], 'agentboard-pitfalls'],
     ];
     for (const [labels, expected] of cases) {
