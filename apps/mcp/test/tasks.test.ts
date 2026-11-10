@@ -528,6 +528,39 @@ describe('AgentBoard task MCP server', () => {
     expect(body.scope_paths).toEqual(['apps/server/src', 'README.md']);
   });
 
+  it('complete_task always sends the changelog gate fields (SK-05 / MCP-09)', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', request_id: '00000000-0000-4000-8000-000000000204' },
+    });
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', skip_changelog: true, request_id: '00000000-0000-4000-8000-000000000205' },
+    });
+    const bodies = fetcher.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body)));
+    expect(bodies[0]).toMatchObject({ client: 'mcp', changelog_ack: false });
+    expect(bodies[1]).toMatchObject({ client: 'mcp', changelog_ack: true });
+  });
+
+  it('maps CHANGELOG_ACK_REQUIRED to an actionable changelog message', async () => {
+    const fetcher = vi.fn(async () => Response.json({ error: { code: 'CHANGELOG_ACK_REQUIRED', message: '变更日志门禁：…' } }, { status: 400 }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: { task_id: 'task-1', notes: '', request_id: '00000000-0000-4000-8000-000000000206' },
+    });
+    const text = JSON.stringify(response.result?.content ?? '');
+    expect(text).toContain('Changelog gate');
+    expect(text).toContain('skip_changelog=true');
+    expect(text).not.toContain('变更日志门禁：');
+  });
+
   it('maps a stale fence rejection to the safe STALE_FENCE message', async () => {
     const fetcher = vi.fn(async () => Response.json({ error: { code: 'STALE_FENCE', message: '占用代次已过期（请求 fence=1，当前=2）' } }, { status: 409 }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);

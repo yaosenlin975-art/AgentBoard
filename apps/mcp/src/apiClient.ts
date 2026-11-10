@@ -45,6 +45,7 @@ const SAFE_MESSAGES: Record<string, string> = {
   INVALID_TRANSITION: 'The task status does not allow this transition.',
   ACCEPT_STATUS_NOT_ACCEPTABLE: 'Only tasks in review (待验收) can receive an acceptance record.',
   CHANGELOG_NOT_FOUND: 'The change-log entry does not exist in this workspace.',
+  CHANGELOG_ACK_REQUIRED: 'Changelog gate: write a user-visible changelog with create_changelog first, or pass skip_changelog=true when this task has no user-visible change.',
   WORKSPACE_NOT_FOUND: 'The workspace does not exist.',
 };
 

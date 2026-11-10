@@ -42,6 +42,8 @@ export interface DoneArgs {
   knowledgePage?: string;
   /** ARCH-04：确认本卡不推进关联的设计页（landed=proposed 时写声明进 notes，跳过门禁） */
   designNotAdvanced?: boolean;
+  /** SK-05：显式声明本次没有用户可见变更（不写 changelog），用于纯内部重构 / 仅看板操作 */
+  noChangelog?: boolean;
 }
 
 /** OPT-09：从 done 的 request-id 派生 changelog 幂等键（同一重试复用，不与 done 的 key 撞车） */
@@ -176,7 +178,16 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   // CLI-02：允许 ≥8 位前缀；fence 与接口都用解析后的真实 id
   const target = await normalizeIssueRef(ctx, id);
   const issueId = target.id;
-  const body: { agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number } = { agent_id: ctx.agentId };
+  const body: {
+    agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number;
+    client?: 'cli' | 'mcp'; changelog_ack?: boolean;
+  } = { agent_id: ctx.agentId };
+  // SK-05：agent 入口恒带 client，服务端据此启用变更日志门禁；--close-record 已先写日志、--no-changelog 显式声明无变更
+  if (args.closeRecord === true && args.noChangelog === true) {
+    throw new Error('--close-record 与 --no-changelog 不能同时使用：前者会先写变更日志，后者声明没有变更日志');
+  }
+  body.client = 'cli';
+  body.changelog_ack = args.closeRecord === true || args.noChangelog === true;
   /** 一次收尾里 issue 详情最多取一次（workspace_id / 父链 / 设计页门禁共用） */
   let issueDetail: Issue | undefined = target.issue;
   const loadIssue = async (): Promise<Issue> => {

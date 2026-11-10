@@ -59,6 +59,34 @@ describe('issue transitions (CLI-CLOSE)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('changelogGate：agent 入口（带 client）未声明 changelog_ack → 400 CHANGELOG_ACK_REQUIRED，状态不变', async () => {
+    const id = await mkIssue('门禁卡');
+    await claim(id);
+    const res = await request(app).post(`/api/issues/${id}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '', client: 'cli' });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('CHANGELOG_ACK_REQUIRED');
+    expect(res.body.error.message).toContain('--no-changelog');
+    expect(res.body.error.message).toContain('skip_changelog');
+    const show = await request(app).get(`/api/issues/${id}`);
+    expect(show.body.status).toBe('进行中');
+  });
+
+  it('changelogGate：changelog_ack=true 放行；REST 直调（不带 client）保持旧行为', async () => {
+    const ack = await mkIssue('已写日志');
+    await claim(ack);
+    const ok = await request(app).post(`/api/issues/${ack}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '', client: 'mcp', changelog_ack: true });
+    expect(ok.status).toBe(200);
+    expect(ok.body.status).toBe('待验收');
+
+    const legacy = await mkIssue('REST 直调');
+    await claim(legacy);
+    const rest = await request(app).post(`/api/issues/${legacy}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '' });
+    expect(rest.status).toBe(200);
+  });
+
   it('closesOnly待验收AndReopensToDefault', async () => {
     const id = await mkIssue('链路卡');
     await claim(id);

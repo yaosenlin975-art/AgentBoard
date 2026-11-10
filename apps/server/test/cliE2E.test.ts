@@ -270,7 +270,7 @@ describe('kb 黑盒 e2e', () => {
     expect(claimed.stdout).toContain('领取成功');
     expect(claimed.stdout).toContain('状态: 进行中');
 
-    const done = await runCli(['done', issueId, '--notes', 'CLI e2e 收尾']);
+    const done = await runCli(['done', issueId, '--notes', 'CLI e2e 收尾', '--no-changelog']);
     expect(done.code).toBe(0);
     expect(done.stdout).toContain('状态: 待验收');
     expect(done.stdout).toContain('占用者: （未占用）');

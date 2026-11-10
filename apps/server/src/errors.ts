@@ -30,7 +30,7 @@ export class ForbiddenError extends ApiError {
 }
 
 export class ValidationError extends ApiError {
-  constructor(message = '参数不合法') {
-    super(400, 'VALIDATION_ERROR', message);
+  constructor(message = '参数不合法', code = 'VALIDATION_ERROR') {
+    super(400, code, message);
   }
 }

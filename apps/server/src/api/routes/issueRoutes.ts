@@ -659,6 +659,17 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     const actor = action === 'release' && !workspace ? 'user' : parseBody(claimSchema, req.body).agent_id;
     const fence = readFence(req, req.body as { fence?: number } | undefined);
     const doneBody = action === 'done' ? parseBody(doneSchema, req.body) : undefined;
+    // SK-05 / MCP-09：agent 入口（带 client）必须显式声明变更日志已写，或声明无用户可见变更；
+    // REST 直调不带 client，保持旧行为（兼容存量脚本与测试）。
+    if (action === 'done' && doneBody!.client !== undefined && doneBody!.changelog_ack !== true) {
+      throw new ValidationError(
+        '变更日志门禁：done 前请先写一条用户可见变更（`kb changelog create --title "…" --type 修复`，正文走 --stdin）。'
+        + '若本次没有用户可见变更（纯内部重构 / 仅看板操作），显式声明出口：'
+        + 'CLI `kb done <id> --no-changelog`；MCP `complete_task` 传 `skip_changelog: true`。'
+        + '带 `--close-record` 时视为已写（CLI 会先写日志再 done）。',
+        'CHANGELOG_ACK_REQUIRED',
+      );
+    }
     const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
     // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
     const scopePaths = doneBody?.scope_paths ?? [];

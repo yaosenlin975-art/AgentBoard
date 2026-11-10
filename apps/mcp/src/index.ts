@@ -29,7 +29,7 @@ const MCP_INSTRUCTIONS = [
   '例外：delete_task 与 remove_dependency 是 DELETE 调用，没有幂等键，不要传 request_id。',
   '占用是排他的：claim_task 冲突（409）不要重试，换一张卡。带 fence 的写操作若收到 409 STALE_FENCE 说明卡已被别人重新领取，重新 get_task 后决定是否继续。',
   '决策只有人类能回答：ask_decision 落锁后 agent 只能等待，或用 withdraw_decision 撤回；不要尝试 answer_decision（会被 409/403 拒绝）。',
-  '收尾前自检：写一条 create_changelog；有可复用结论时写 create_knowledge（新建需 scope+domain+category 与各 ≥1 条 sources/evidence）。',
+  '收尾前自检：写一条 create_changelog；有可复用结论时写 create_knowledge（新建需 scope+domain+category 与各 ≥1 条 sources/evidence）。complete_task 会被服务端变更日志门禁拦截（400 CHANGELOG_ACK_REQUIRED）——本次确实没有用户可见变更时传 skip_changelog=true。',
 ].join('\n');
 
 export function createTaskMcpServer(config: McpConfig, fetcher: typeof fetch = fetch): McpServer {

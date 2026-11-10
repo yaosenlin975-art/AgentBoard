@@ -232,8 +232,14 @@ export const claimSchema = z.object({
 export const doneSchema = z.object({
   agent_id: z.string().trim().min(1, 'agent_id 不能为空'),
   notes: z.string().optional(),
-  /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；有并行占用时只提交声明范围内的改动 */
+  /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；未声明时服务端不提交任何文件（NO_SCOPE） */
   scope_paths: z.array(z.string().trim().min(1).max(1000)).max(200).optional(),
+  /**
+   * SK-05 / MCP-09 变更日志门禁：只有 agent 入口（CLI/MCP）带 client 时才校验 changelog_ack，
+   * REST 直调（无 client）保持兼容。ack=true 表示「已写变更日志」或显式声明「无用户可见变更」。
+   */
+  client: z.enum(['cli', 'mcp']).optional(),
+  changelog_ack: z.boolean().optional(),
 });
 
 /** CLI-CLOSE：reopen 的目标状态（缺省待规划；合法性由工作区状态字典判定） */
