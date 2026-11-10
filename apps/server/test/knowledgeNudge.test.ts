@@ -88,6 +88,26 @@ describe('knowledge nudge on done', () => {
     expect(body.knowledge_hint!.message).toContain(body.knowledge_hint!.suggested_slug);
   });
 
+  it('N4-01：门禁已满足（client+ack）时不再催写变更日志', async () => {
+    const issueId = await makeIssue();
+    await claim(issueId);
+    const res = await request(app).post(`/api/issues/${issueId}/done`).send({
+      workspace_id: workspaceId, agent_id: 'fake', notes: '', client: 'cli', changelog_ack: true, board_only: true,
+    });
+    expect(res.status).toBe(200);
+    const hint = (res.body as DoneBody).knowledge_hint;
+    expect(hint).not.toBeNull();
+    expect(hint!.message).not.toContain('另需写变更日志');
+  });
+
+  it('N4-01：REST 直调（无 client、无门禁）仍提示，且示例带本卡 --issue', async () => {
+    const issueId = await makeIssue();
+    await claim(issueId);
+    const body = await done(issueId);
+    expect(body.knowledge_hint!.message).toContain('另需写变更日志');
+    expect(body.knowledge_hint!.message).toContain(`--issue ${issueId}`);
+  });
+
   it('mapsIssueLabelsToStableThemeSlug', async () => {
     const cases: Array<[string[], string]> = [
       [['server'], 'agentboard-server-data'],

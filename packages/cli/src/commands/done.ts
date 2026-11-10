@@ -323,9 +323,10 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     // 软提醒：建议而非错误，不加 ERROR 前缀、不影响退出码
     if (issue.knowledge_hint?.message) ctx.io.write(`提示: ${issue.knowledge_hint.message}\n`);
   };
-  /** 自动提交结果不是 committed/nothing 时落 stderr（reason + 补救命令都在 note 里） */
+  /** 自动提交结果不是 committed/nothing/skipped 时落 stderr（reason + 补救命令都在 note 里） */
   const warnCommit = (): void => {
-    if (gitCommit === null || gitCommit.status === 'committed' || gitCommit.status === 'nothing') return;
+    // N4-02：skipped（BOARD_ONLY）是成功的显式跳过，不是「未知原因」的失败
+    if (gitCommit === null || gitCommit.status === 'committed' || gitCommit.status === 'nothing' || gitCommit.status === 'skipped') return;
     ctx.io.writeErr(`自动提交未完成：${gitCommit.note ?? '未知原因'}\n`);
   };
 

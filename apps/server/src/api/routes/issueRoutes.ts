@@ -703,7 +703,7 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     const outcome = workspace ? mutation(rdb, req, (routedDb) => {
       if (action === 'done') {
         const preFinish = getIssue(routedDb, issueId);
-        const hint = preFinish ? buildKnowledgeHint(routedDb, preFinish) : null;
+        const hint = preFinish ? buildKnowledgeHint(routedDb, preFinish, { changelogSettled: doneBody?.client !== undefined }) : null;
         return { ...finishClaimedIssue(routedDb, issueId, workspace, actor, 'done', detail, fence), knowledge_hint: hint };
       }
       return action === 'release'
@@ -713,7 +713,7 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
       ? await releaseIssue(rdb, issueId, fence) : action === 'done'
         ? await (async () => {
           const preFinish = getIssue(rdb, issueId);
-          const hint = preFinish ? buildKnowledgeHint(rdb, preFinish) : null;
+          const hint = preFinish ? buildKnowledgeHint(rdb, preFinish, { changelogSettled: doneBody?.client !== undefined }) : null;
           return { ...(await doneIssue(rdb, issueId, actor, detail, fence)), knowledge_hint: hint };
         })() : await failIssue(rdb, issueId, actor, detail!, undefined, fence), replayed: false };
     const { issue, comment } = outcome.result;

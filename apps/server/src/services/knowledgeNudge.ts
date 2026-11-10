@@ -33,7 +33,12 @@ function themeSlug(labels: readonly string[]): string {
   return hit?.slug ?? DEFAULT_THEME_SLUG;
 }
 
-export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
+export interface KnowledgeHintOptions {
+  /** N4-01：变更日志门禁已由服务端强制并已满足（CLI/MCP 入口）时不再催写；REST 直调无门禁时仍需提示 */
+  changelogSettled?: boolean;
+}
+
+export function buildKnowledgeHint(db: Db, issue: Issue, options: KnowledgeHintOptions = {}): KnowledgeHint | null {
   if (!issue.claimed_by || issue.claimed_at === null) return null;
   // 检测口径兼容两种写法：旧 handoff-<issue-id> 前缀页，或本次占用期间由占用者更新过的任意页（主题 slug 场景）
   const suggestedSlug = themeSlug(issue.labels);
@@ -63,6 +68,8 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
       + `[{"source_id":"s1","source_type":"file","locator":"apps/server/src/services/decision.ts","captured_at":1730000000000,"content_hash":"<64 位 sha256>"}]，`
       + `evidence.json [{"source_id":"s1","locator":"apps/server/src/services/decision.ts:326-334"}]；`
       + `正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`
-      + `；另需写变更日志：kb changelog create --title "…" --type 修复（正文走 --stdin）`,
+      + (options.changelogSettled === true
+        ? ''
+        : `；另需写变更日志：kb changelog create --workspace ${issue.workspace_id} --issue ${issue.id} --title "…" --type 修复（正文走 --stdin）`),
   };
 }

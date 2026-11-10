@@ -343,6 +343,15 @@ describe('GIT-OBSERVABLE：done 自动提交未完成必须可感知（卡 9fa0d
     expect(result.err).toContain('git add -- src/feature.ts');
   });
 
+  it('N4-02：board-only 跳过提交（skipped/BOARD_ONLY）不产生 stderr，退出码 0', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done'
+      ? { status: 200, body: { ...ISSUE, status: '待验收', git_commit: { status: 'skipped', reason: 'BOARD_ONLY', pending: [], note: null } } }
+      : undefined);
+    const result = await run(['done', 'iss1', '--board-only']);
+    expect(result.code).toBe(0);
+    expect(result.err).toBe('');
+  });
+
   it('done --close 遇提交未完成：不执行 close 并 exit 1', async () => {
     handler = (m, u) => {
       if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', git_commit: NOT_COMMITTED } };

@@ -669,7 +669,7 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | 3 | `kb dep` 与待决策族（`kb ask` / `kb answer` / `kb ask-extend`）专用：依赖或决策参数错误（自环 / 跨工作区 / `VALIDATION_ERROR` / 选项不足 / 非法 grace 或 seconds） | `kb dep add <id> <同一 id>` → `不能依赖自身…`；`kb ask <id> --grace abc` → 参数非法 |
 | 4 | `kb dep` 专用：依赖边不存在（仅 `dep rm`） | `kb dep rm <id> <无该边的前置>` → `依赖边不存在…` |
 
-**`kb done` 退出码例外（GIT-OBSERVABLE，卡 9fa0d16f）**：done 已生效（状态→待验收；`--close` 时→已关闭）但自动提交未完成时，CLI 把「未提交 + 原因 + 可照抄补救命令」写 stderr 并以 **1** 退出；`--json` 仍只输出单个 issue JSON（读 `git_commit.status/reason`），不改变 stdout 结构。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。**纯看板任务用 `kb done --board-only`（MCP `board_only: true`）显式跳过提交**：返回 `status='skipped' / reason='BOARD_ONLY' / pending=[]`，不列脏文件、退出码 0；不带该参数时仍按 `NO_SCOPE` 报错并 exit 1。`done --close` 遇到阻断性提交缺口会**跳过 close**（退出码 1），修复后执行 `kb close <id>`。
+**`kb done` 退出码例外（GIT-OBSERVABLE，卡 9fa0d16f）**：done 已生效（状态→待验收；`--close` 时→已关闭）但自动提交未完成时，CLI 把「未提交 + 原因 + 可照抄补救命令」写 stderr 并以 **1** 退出；`--json` 仍只输出单个 issue JSON（读 `git_commit.status/reason`），不改变 stdout 结构。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。**纯看板任务用 `kb done --board-only`（MCP `board_only: true`）显式跳过提交**：返回 `status='skipped' / reason='BOARD_ONLY' / pending=[]`，不列脏文件、不写 stderr、退出码 0；不带该参数时仍按 `NO_SCOPE` 报错并 exit 1。`done --close` 遇到阻断性提交缺口会**跳过 close**（退出码 1），修复后执行 `kb close <id>`。
 受影响面：仓库内 `scripts/` 没有解析 `kb done` 退出码的脚本；需要改判的是外部编排（把 `kb done` 放在 `&&` 链里、或把退出码 0 当作「工作树已干净」的 cron / CI / agent 工作流）——改为读 `git_commit.status`。MCP 工具直连 REST（`apps/mcp/src/tools/tasks.ts`），不经 CLI，退出码不变，可直接使用新增的 `git_commit` 字段。
 
 约定：原因一律写 stderr（`kb done` 的自动提交警告可多行，含补救命令）；`--json` 只改 stdout 结构，不改退出码。`done` 的「占用 2」与「参数 2」都以 2 上报，区别在文案（`未被占用：如需推进请先 kb claim…` vs 参数错误列表），脚本只按 2 判「当前不可完成」即可。
