@@ -17,6 +17,8 @@ import {
   operationsForBatch,
 } from '../db/repos/checkin.js';
 import { getManagedAccount, publicManagedAccount, setManagedAccountEnabled } from '../db/repos/managedAccount.js';
+// TRAVEL-REC：猫猫旅行自动回收轮次（只读查询端点）
+import { listTravelRounds, type WorkbuddyTravelRound } from '../db/repos/travelRound.js';
 import { refreshAccountCredential, type CredentialRefreshResult } from '../services/accounts/credentialRefresh.js';
 import { getAddAccountSession, listAddAccountSessions, publicAddAccountSession } from '../db/repos/addAccount.js';
 import { accountProviderCapability, accountProviderCapabilities } from '../services/accounts/registry.js';
@@ -246,6 +248,23 @@ function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body ?? {});
   if (!parsed.success) throw new ValidationError(parsed.error.issues.map(issue => `${issue.path.join('.') || 'body'}: ${issue.message}`).join('; '));
   return parsed.data;
+}
+
+/** TRAVEL-REC：旅行轮次的对外投影（不含凭据 ref / token / 远端原文） */
+export function publicTravelRound(round: WorkbuddyTravelRound) {
+  return {
+    id: round.id,
+    account_id: round.account_id,
+    operation_id: round.operation_id,
+    state: round.state,
+    dispatched_at: round.dispatched_at,
+    due_at: round.due_at,
+    attempts: round.attempts,
+    last_attempt_at: round.last_attempt_at,
+    safe_error_code: round.safe_error_code,
+    created_at: round.created_at,
+    updated_at: round.updated_at,
+  };
 }
 
 export function createAccountRouter(deps: AccountRouterDeps): Router {
@@ -658,6 +677,17 @@ export function createAccountRouter(deps: AccountRouterDeps): Router {
     const cancelled = cancelQueuedCheckinItems(db, batch.id);
     const running = (batch.items ?? []).filter(item => item.state === 'running').map(item => item.account_id);
     res.json({ batch_id: batch.id, cancelled, running });
+  });
+
+  // ---- travel-recoveries（TRAVEL-REC：猫猫旅行自动回收轮次，只读）----
+  // 仅返回脱敏字段：不含凭据 ref / token / 远端原文；missed 行如实暴露「已错过」。
+  router.get('/travel-recoveries', (req, res) => {
+    const state = z.enum(['pending', 'claimed', 'missed', 'failed']).optional().safeParse(req.query.state === undefined ? undefined : req.query.state);
+    if (!state.success) throw new ValidationError('state 必须为 pending|claimed|missed|failed');
+    const limit = z.coerce.number().int().min(1).max(200).optional().safeParse(req.query.limit === undefined ? undefined : req.query.limit);
+    if (!limit.success) throw new ValidationError('limit 必须为 1-200 的整数');
+    const items = listTravelRounds(db, { state: state.data, limit: limit.data });
+    res.json({ items: items.map(publicTravelRound), generated_at: Date.now() });
   });
 
   // ---- account-operations ----

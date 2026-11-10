@@ -193,8 +193,8 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库） | — | routes.ts |
-| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
+| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs, travelAutoRecover }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库；`travelAutoRecover` 默认 `true`，见 §14 自动回收） | — | routes.ts |
+| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数、`travelAutoRecover?: boolean`（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发、附件设置与 `travelAutoRecover` 即时生效（ticker 每轮实时读取）；`port` / `dbPath` 重启生效 | 400 未提供字段 / 取值非法 | routes.ts |
 
 ### SKILLS-SYNC 配套技能复制到本机 agent 目录
 
@@ -735,6 +735,9 @@ WorkBuddy Desktop 账号捕获/切换。设计见 `Docs/designs/accounts/2026-11
 | `POST /api/checkin-runs/:batchId/cancel` | — | `{ batch_id, cancelled: uuid[], running: uuid[] }`；只撤销仍 `queued` 的项 | 404 批次不存在；409 `CHECKIN_BATCH_FINISHED` 批次已结束 | accountRoutes.ts:340 |
 | `GET /api/account-operations` | query：`batch_id`（uuid，必填） | `AccountOperation[]`（created_at,id 升序） | 400 `batch_id` 非 UUID | accountRoutes.ts:350 |
 | `GET /api/account-operations/:id` | — | `AccountOperation`（state/stage/safe_error_code，无敏感字段） | 404 `OPERATION_NOT_FOUND` | accountRoutes.ts:356 |
+| `GET /api/travel-recoveries` | query：`state?`（`pending`\|`claimed`\|`missed`\|`failed`）、`limit?`（int 1-200，默认 50） | `{ items: [{ id, account_id, operation_id, state, dispatched_at, due_at, attempts, last_attempt_at, safe_error_code, created_at, updated_at }], generated_at }`；按 created_at 倒序；不含凭据 ref/token/远端原文 | 400 `state` / `limit` 非法 | accountRoutes.ts（TRAVEL-REC） |
+
+**猫猫旅行自动回收（TRAVEL-REC）**：WorkBuddy 签到成功后的「猫猫旅行」分派出与回收两步，必须在派出后 **4 小时**内回收才得分。派出成功（`afterCheckin` 返回 `dispatched`）时 runner 落 `workbuddy_travel_round` 一条 `pending`，`due_at = dispatched_at + 3 小时 45 分`（225 分钟，留 15 分钟安全余量吸收请求延迟与时钟误差）。`startTravelRecoveryTicker` 在 `createApp` 装配后启动：**先跑一次补偿扫描**，之后每 5 分钟一轮；到期行用 provider `claimAfterTravel`（只 status→claim，**绝不重新 depart**）回收，成功落 `claimed`（含远端 `already_done`）；失败保留 `pending` 并累加 `attempts` / 写 `safe_error_code`（如 `TRAVEL_STILL_TRAVELING`、`TRAVEL_RECOVERY_FAILED:<ApiError 码>`、`TRAVEL_CREDENTIAL_MISSING`），下轮重试；超过 `dispatched_at + 4h` 的行直接落 `missed` + `TRAVEL_WINDOW_EXPIRED`，**不发请求、不假装成功**。`pending → claimed/missed/failed` 走 CAS，同一轮不会重复回收。开关 `settings.travelAutoRecover` 默认开，关闭后整轮跳过、不改任何行；无需重启。
 
 **签到凭据自愈（ACC-FIX-3，minimax）**：批次执行中 `queryStatus` / `submitCheckin` 返回 401（`CHECKIN_CREDENTIAL_INVALID`）时，runner 用 vault 内 `refresh_token` 调 `${origin}/oauth2/token`（`grant_type=refresh_token&refresh_token=…&client_id=mcode-public`，默认 15s 超时）续期**一次**；成功则 `vault.protect` 写回新载荷、更新账号 `checkin_credential_ref` 并重试当前动作，失败或无 `refresh_token` 维持 `CHECKIN_CREDENTIAL_INVALID`，不循环重试。日志/响应不含凭据与 refresh_token。
 

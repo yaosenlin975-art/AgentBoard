@@ -8,9 +8,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
 import { createManagedAccount } from '../src/db/repos/managedAccount.js';
 import { attachCheckinCredential } from '../src/db/repos/checkin.js';
-import { createPendingTravelRound, getPendingTravelRound, getTravelRound } from '../src/db/repos/travelRound.js';
+import { createPendingTravelRound, getPendingTravelRound, getTravelRound, transitionTravelRound } from '../src/db/repos/travelRound.js';
 import { initSchema } from '../src/db/schema.js';
 import { ApiError } from '../src/errors.js';
 import { createApp } from '../src/index.js';
@@ -291,5 +292,48 @@ describe('travel recovery ticker wiring (RULE-3)', () => {
 
     expect(sweep.claimed).toBe(1);
     expect(getTravelRound(t.db, round.id)?.state).toBe('claimed');
+  });
+});
+
+describe('GET /api/travel-recoveries (TRAVEL-REC-3)', () => {
+  let t: TestDb;
+  let created: Awaited<ReturnType<typeof createApp>>;
+
+  beforeEach(async () => {
+    t = createTestDb();
+    created = await createApp({ db: t.db, refreshClisOnBoot: false, travelRecovery: false });
+  });
+  afterEach(() => t.cleanup());
+
+  it('returns 200 (not 404) with an empty list on a clean board', async () => {
+    const res = await request(created.app).get('/api/travel-recoveries');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.items)).toBe(true);
+    expect(res.body.items).toHaveLength(0);
+    expect(typeof res.body.generated_at).toBe('number');
+  });
+
+  it('filters by state and honours limit without leaking credential fields', async () => {
+    const pending = createPendingTravelRound(t.db, { account_id: 'acc-http-1', dispatched_at: 1_000 });
+    const missed = createPendingTravelRound(t.db, { account_id: 'acc-http-2', dispatched_at: 2_000 });
+    transitionTravelRound(t.db, missed.id, 'pending', { state: 'missed', safe_error_code: 'TRAVEL_WINDOW_EXPIRED' });
+
+    const pendingRes = await request(created.app).get('/api/travel-recoveries?state=pending');
+    expect(pendingRes.status).toBe(200);
+    expect(pendingRes.body.items.map((item: { id: string }) => item.id)).toEqual([pending.id]);
+    expect(pendingRes.body.items[0]).not.toHaveProperty('checkin_credential_ref');
+
+    const missedRes = await request(created.app).get('/api/travel-recoveries?state=missed&limit=1');
+    expect(missedRes.status).toBe(200);
+    expect(missedRes.body.items).toHaveLength(1);
+    expect(missedRes.body.items[0].state).toBe('missed');
+    expect(missedRes.body.items[0].safe_error_code).toBe('TRAVEL_WINDOW_EXPIRED');
+  });
+
+  it('rejects unknown state and out-of-range limit', async () => {
+    const badState = await request(created.app).get('/api/travel-recoveries?state=done');
+    expect(badState.status).toBe(400);
+    const badLimit = await request(created.app).get('/api/travel-recoveries?limit=0');
+    expect(badLimit.status).toBe(400);
   });
 });
