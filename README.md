@@ -269,7 +269,13 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 }
 ```
 
-工具面按域分组，只列主名并标注读/写；完整清单（含 alias 与 read-only 标记）以 `list-tools` 输出为准，新增工具会先出现在输出里。两个实测口径（2026-11-08）：写工具（如 `create_task`）必传 `request_id`（uuid 幂等键，缺失直接校验失败）；业务数据在 `structuredContent.data`（`content` 只有一句状态文案，从 text 抽不到 id）：
+工具面按域分组，只列主名并标注读/写；完整清单（含 alias 与 read-only 标记）以 `list-tools` 输出为准，新增工具会先出现在输出里。实测口径（2026-11-10 修订）：
+
+- **`request_id`**：写工具（如 `create_task`）必传 uuid 幂等键，缺失直接校验失败；**例外**是 `delete_task`、`remove_dependency`——它们是 DELETE 语义、没有幂等键，传了反而报错，不要给这两个工具补 `request_id`。
+- **返回结构**：业务数据在 `structuredContent.data`（`content` 只有一句状态文案，从 text 抽不到 id）。
+- **错误文案语言**：MCP 侧错误码与文案为英文（如 `DECISION_HUMAN_ONLY`），CLI 为中文；同一业务错误语义一致、措辞不同，属已知差异，按错误码而非文案匹配。
+
+工具清单（按域分组）：
 
 - 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
 - 依赖：读 `list_dependencies`；写 `add_dependency`、`remove_dependency`

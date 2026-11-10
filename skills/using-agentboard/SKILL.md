@@ -100,7 +100,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 # —— 工作空间 ——
 kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
 kb delete-space <workspace>             # 删除工作空间登记（不可逆；不动磁盘目录；占用校验由服务端拒绝，需 --yes）
-kb list-spaces                          # 列工作空间（id/name/path）
+kb list-spaces                          # 列工作空间（id/name/path；文本与 --json 都给全长 36 位 id——任务列表的 id 列才是短 ID）
 kb list-spaces --current                # 只输出 cwd 解析到的当前工作区（绑定工作区主路径；JSON 仍为单元素数组）
 kb workspace-db <子命令>                # 工作区库下沉：状态查询 / 半成品清理 / 反向回迁（<工作区>/.agentboard/agentboard.db）
 # —— 任务 ——
@@ -142,7 +142,8 @@ kb answer <id> (--option N|--label X|--text ...)  # 回答；--revise 需 --expe
 kb ask-extend <decision-id> --seconds N # 延长宽限（1–300 秒/次，累计 ≤600 秒，不续 fence）
 kb stop-check <issue-id>                # 检查协作式停止信号（步骤间 / 写文件前 / 提交前）
 # —— 账号与本机 ——
-kb accounts                             # CLI 三来源（DeepSeek / OpenCode-Go / Codex）账号与当前生效切换
+kb accounts list                        # 列已登记 CLI 账号（id/来源/身份指纹/最近发现时间）；capabilities 看各来源能否切换；switch <id> [--apply] 切换（默认 dry-run）
+                                        # 裸跑 `kb accounts` 只打用法并 exit 1（无默认动作），要结果必须带子命令
 kb autostart                            # 开机自启（Windows：HKCU Run 键经 scripts/agentboard.vbs 隐藏拉起服务）
 kb shortcut                             # 桌面快捷方式（Windows：AgentBoard.lnk 拉起服务并打开看板）
 ```
@@ -151,10 +152,10 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - 输出体积观测（ARCH-06）：设 `KB_METRICS=1` 时命令结束后向 **stderr** 追加一行 `[kb] cmd=<顶层命令> out=<字节数>B lines=<行数>`（统计本次写到 stdout 的 UTF-8 字节数与行数；嵌套命令取顶层名如 `knowledge`，未进入命令时为 `-`）。未设或设 `0` 时不输出，stdout/stderr 与改造前逐字一致；该行不写 stdout，不影响 `--json` 解析与退出码。
 - 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
 - **`kb done` 的 1 是「已生效但没提交」**（GIT-OBSERVABLE）：done 已把卡推进到待验收（或已关闭），但自动提交未完成（`git_commit.status='not-committed'`，原因码 `NO_BASELINE` / `COMMIT_FAILED` / `ZERO_HIT` / `PARALLEL_UNDECLARED`）时，CLI 在 stderr 打「未提交 + 原因 + 可照抄补救命令」并 exit 1；按 stderr 补救，**不要重跑 `kb done`**。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。带 `--close` 且命中阻断性缺口时 CLI 会跳过 close（exit 1），补救后 `kb close <id>`。`--json` 仍输出单个 issue JSON，判定读 `git_commit.status/reason`。
-- `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
+- `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用 / **结构环：让子卡依赖自己的祖先**，文案「会形成环」）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
 - **claim 状态门禁**：`kb claim` 接受「待规划」**或「进行中且无人占用」**（含租约已过期的抢占，`apps/server/src/services/claim.ts`）；待验收/已关闭/已废弃、他人占用、存在 open 决策都会被拒（退出码 2）。当前 CLI 文案已区分「状态不可领取（当前=…）」「已被 <agent> 占用」「决策锁」三类，别一律当撞卡；仍以 `kb show <id>` 的 `status` / `claimed_by` 为准。
-- **知识页 `domain`/`category`/`landed` 有 CLI 入口**（C 段 `57d1ab4c` 落地参数，KB-CR-1 起 `--domain` 必填）：`kb knowledge create/import` 必须带 `--domain accounts|knowledge|board|chat|ui|infra`（缺省/空串/非法值 → 400 中文报错并列出词表；`import` 的 json 条目内可逐条覆盖），`revise` 不传即不改、传 `null`/空串为显式清空。`kb knowledge create/revise` 支持 `--category design|solved|pinned|open` 与 `--landed landed|partial|proposed`；**新建时仍应显式传 `--category`**：缺省落 `open`（KB-CR-1 起不再兜底 `legacy`）。`design` 缺 `--landed` 时服务端默认 `proposed`（实测）。改已有页必须带 `--expected-revision`（CAS；实测旧 revision 被拒，退出码 2「知识页已更新，请重新读取」），`--scope workspace` 仍必填。REST 只在需要 CLI 未暴露的字段时使用。
+- **知识页 `domain`/`category`/`landed` 有 CLI 入口**（C 段 `57d1ab4c` 落地参数，KB-CR-1 起 `--domain` 必填）：`kb knowledge create/import` 必须带 `--domain accounts|knowledge|board|chat|ui|infra`（CLI 先做客户端校验：非法值直接 exit 1 并列出词表，不会被「缺少 sources/evidence」抢先盖住；服务端 400 只作兜底），`revise` 不传即不改、传 `null`/空串为显式清空。`kb knowledge create/revise` 支持 `--category design|solved|pinned|open` 与 `--landed landed|partial|proposed`；**新建时仍应显式传 `--category`**：缺省落 `open`（KB-CR-1 起不再兜底 `legacy`）。`design` 缺 `--landed` 时服务端默认 `proposed`（实测）。改已有页必须带 `--expected-revision`（CAS；实测旧 revision 被拒，退出码 2「知识页已更新，请重新读取」），`--scope workspace` 仍必填。REST 只在需要 CLI 未暴露的字段时使用。
 - **slug 冲突的实际表现**：服务端返回 409 `KNOWLEDGE_EXISTS`，CLI 显示服务端中文 message「范围内已存在该 slug」并 **退出码 2**（`KNOWLEDGE_REVISION_CONFLICT` 同为 2）。处理方式：同 slug 改走 `kb knowledge revise`，不新建重复页。
 - **写什么、不写什么**：内容口径见「知识页写什么（内容口径）」节（本节只讲命令与参数）。
 - **`--stdin`、BOM 与 PowerShell 引号**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM；多行中文用 `Get-Content -Raw file.md | kb comment <id> --stdin`（PowerShell 不支持 `<` 重定向）。标题/描述/评论含 `"`、`&`、`|`、`\` 时，PowerShell 会把后续参数一起吞进字符串并**静默 exit 0**（CLI-01）：一律用单引号包裹（内部单引号写成 `''`），或改走 `--notes-stdin` / `--stdin` / `kb update --description-stdin`。**`kb create-issue` 没有 `--description-stdin`**（实测 `unknown option`，exit 1），标题只能用 `--title-stdin`；长描述先建卡再 `kb update <id> --description-stdin`，或用 `-d $var` 传 PowerShell 变量。
@@ -250,7 +251,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
    这是 bash 写法；PowerShell 用 `Get-Content -Raw notes.md | kb comment <id> --stdin`（`<` 重定向不可用，见「Platform Adaptation」）。
    注意：CLI 领取（kb claim）无实时唤醒；用户留言会按游标标为待读，你的下一次 `kb show` 会以 `[新]` 标注返回——关键节点重拉 `kb show` 并响应；读完不再需要该标注时显式 `kb show <id> --mark-read`。
 4. **收尾**：
-   - **done 前置（CLOSE-RECORD，强制）**：`kb done` 之前先落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`，**新建必须带 `--domain`（accounts|knowledge|board|chat|ui|infra）与 `--category`，且 create 还必须有正文 `--stdin` 与 `--sources`/`--evidence` 各 ≥1**（否则退出 1/400；字段与完整示例见「写知识页」）；无可复用结论则在 notes 显式声明「未沉淀知识页：<原因>」；② **变更日志一律写**：`kb changelog create --workspace <当前工作区> --title '…' --type 新增|修复|调整`（正文走 `--stdin`；无用户可见变更时正文写「本轮无用户可见变更」）。notes 带上知识页 id（未写则带声明）与变更日志 id。沉默不声明、或拿「无变更日志」跳过，视为收尾未完成。
+   - **done 前置自检清单（CLOSE-RECORD）**：`kb done` 对**变更日志与知识页**没有机器门禁——漏写不会失败、没有任何信号，只能靠这条清单自查（设计页另有 ARCH-04 门禁：`landed=proposed` 未回改时会直接失败）。收尾前落两条记录——① 本轮有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写工作区知识页：`kb knowledge create/revise --scope workspace --workspace <当前工作区>`，**新建必须带 `--domain`（accounts|knowledge|board|chat|ui|infra）与 `--category`，且 create 还必须有正文 `--stdin` 与 `--sources`/`--evidence` 各 ≥1**（否则退出 1/400；字段与完整示例见「写知识页」）；无可复用结论则在 notes 显式声明「未沉淀知识页：<原因>」；② **变更日志必须写**：优先用一步式门禁 `kb done <id> --close-record --changelog-title '…' --type 新增|修复|调整 [--knowledge-page <页 id>] --notes-stdin --scope <路径>`（CLI 代写 changelog，子步骤失败不落 done）；也可以先 `kb changelog create --workspace <当前工作区> --title '…' --type 新增|修复|调整`（正文走 `--stdin`；无用户可见变更时正文写「本轮无用户可见变更」）再普通 `kb done`——**但普通 `kb done` 不校验 changelog/知识页，漏写没有任何报错**。notes 带上知识页 id（未写则带声明）与变更日志 id。沉默不声明、或拿「无变更日志」跳过，视为收尾未完成。
    - 完成且自验通过 → `Get-Content -Raw notes.md | kb done <id> --notes-stdin --scope <路径> --scope <路径>`，状态进「待验收」，释放占用。之后不要继续动该任务。`--scope` 逐条传，只声明真正改动的路径；无文件改动则不传并在 notes 写明。
    - 无法完成或自验失败 → `kb fail <id> --reason '<失败原因>'`，状态回「待规划」，释放占用。reason 必填，写清卡在哪。
    - 拿不准/需用户拍板 → 走 `ask-user`：`kb ask` 落决策并同步等一轮宽限（默认 180 秒），返回 `LOCKED` 即停手、不再改文件/提交/`done`；夜间无人值守用 `--grace 0` 立即落锁。**要拍板的取舍必须立项成决策，不得只散落在评论里等人看见**；查现成待决用 `kb decisions --state open`（只看超 72 小时未处理加 `--stale`，锁定某张卡加 `--issue <卡 id>`）。只有确定失败才 `fail`。
@@ -352,6 +353,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 
 - **Windows**：路径用反斜杠；比较前统一分隔符、去尾斜杠、大小写不敏感；junction 先按 target 解成实体路径再比对工作区根。
 - **PowerShell**：含 `"`、`&`、`|`、`\` 的参数用单引号包裹（内部单引号写 `''`）或改走 `--description-stdin` / `--notes-stdin` / `--stdin`（双引号包裹会静默吞掉后续参数，CLI-01）；多行评论用 `Get-Content -Raw file.md | kb comment <id> --stdin`，先设 `$OutputEncoding = New-Object System.Text.UTF8Encoding($false)` 防乱码。
+- **PowerShell 管道提前关闭会把成功命令判成失败**：`kb ... | Select-Object -First 3`（或 `| head -n 3`）在下游关闭管道后写 stdout 会报 `The pipe has been ended`，PowerShell 把 `$LASTEXITCODE` 置为 **-1**——命令本身已成功（服务端已生效）。脚本里不要用「退出码」判定这类被截断的命令：去掉 `| Select-Object -First`、改用 `--json` 后自己截取，或先落盘再读。实测 `kb list-spaces --json | Select-Object -First 3` 即复现。
 - **bash/zsh**：`kb comment <id> --stdin <<'EOF' … EOF`。
 - 服务地址用 `--server` / `KB_SERVER`（见「前置条件」）；多 agent 并行用 `KB_AGENT=<角色名>` 区分身份，避免默认 `kb-cli` 混用。
 

@@ -46,7 +46,11 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
    - `git status` / `git diff --stat` 摘要；
    - 已完成步骤、未完成步骤、`next_step`；
    - 仍在跑的后台进程 PID（没有就写空）。
-   通过 `kb ask --checkpoint-file <path>` 或 `kb ask --checkpoint-stdin` 随提问一起落库。
+   通过 `kb ask --checkpoint-file <path>` 或 `kb ask --checkpoint-stdin` 随提问一起落库。**该字段可选**（服务端不要求、不校验结构），没有断点就省略；有则最小形状：
+   ```json
+   {"tool": "kb ask", "workspace": "<工作区 id>", "issue": "<卡 id>", "completed": ["…"], "pending": ["…"], "next_step": "…"}
+   ```
+   
 2. 提问（默认同步等待一轮宽限，默认 180 秒）：
 
    ```
@@ -60,6 +64,7 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
    - 无人值守 / 夜间批处理用 `--grace 0`：不建宽限期，事务内直接开锁并释放占用，立刻返回 `LOCKED`。
    - 异步模式用 `--no-wait`：拿到 `decision_id` 后先写评论再停手，不得继续跑完整任务。
 3. 返回 `answered`：**立即继续**。不释放占用、不重新 claim，按答案接着做。
+   - `answered` 只可能由**人类**产生：服务端只放行 `answered_by=user`，agent 身份（CLI `kb answer` / MCP `answer_decision`）一律被 403 拒绝（`DECISION_HUMAN_ONLY`）。所以 agent 的两条合法出口只有「等人回答」与「`kb decision withdraw` 撤回」；**不要尝试自答**，也不要因为返回 `answered` 就怀疑自己的身份——那是人在看板答的。
 4. 返回 `LOCKED`：**立即停止**。🔴 CHECKPOINT · 🛑 STOP：不再改文件、不再提交、不 `kb done`；在卡上写一条评论说明停在断点的 `next_step`，结束本轮。
    宽限超时的停止信号由服务端在事务内落锁（释放占用 + bump fence + 写 `stop_requested`），旧 agent 之后的任何收尾都会被 409 拒绝。
 5. 用户回答后（可能几小时后）：
@@ -76,7 +81,7 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
 - **`kb ask` 服务不可达（exit 1 / `fetch failed`）**：一线 → 仓库根 `pnpm server:ensure`，复跑一次；仍失败 → 兜底：保持占用，在卡上写「待问事项 + 断点摘要 + 建议选项」，把阻塞回报父代理后停手。不 `kb fail`（这不是任务失败，是等待用户），不继续改文件。
 - **宽限中途被打断（进程被杀 / 会话崩溃 / error 973 重连）**：不要重跑 `kb ask`（同卡已有在途会 409）。先 `kb decision show <id>` 按状态分支：`answered` → 按答案续跑；`grace` → 重新进入 2 秒轮询等待；`open` → 视同 `LOCKED` 停手。
 - **回答后 `kb claim` 409**：说明卡已被他人占用或 fence 已过期。不抢、不重试 claim；`kb show` 核对 `claimed_by` 与 `status`，若已被他人接手则停手并把答案与断点写进卡评论交回父代理，绝不绕开占用直接改文件。
-- **决策被撤回（`withdrawn`）**：旧答案立即失效。不得按旧答案继续；重跑「何时用」四条自检，仍成立就重新立项（先补断点），不成立就按现有信息继续或回报父代理。
+- **决策被撤回（`withdrawn`）**：旧答案立即失效。撤回会把卡退回「待规划」并 **bump fence**（旧 fence 作废）——必须重新 `kb claim` 拿新 fence 才能继续；重跑「何时用」四条自检，仍成立就重新立项（先补断点），不成立就按现有信息继续或回报父代理。
 - **`kb ask-extend` 返回 409**：`EXTEND_LIMIT_EXCEEDED` → 不再延长，等落锁或让用户回答；`DECISION_NOT_GRACE` → 已不在宽限，按上面「宽限中断」分支处理。
 
 ## 延长宽限（宽限中才可用）
