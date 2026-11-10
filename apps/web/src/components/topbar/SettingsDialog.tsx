@@ -12,6 +12,7 @@ import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { McpSection } from '../settings/McpSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
+import { SkillsSyncSection } from '../settings/SkillsSyncSection';
 import { StorageSection } from '../settings/StorageSection';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
 import { VoiceSection } from '../settings/VoiceSection';
@@ -217,6 +218,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
       <StorageSection />
       {/* MCP：本机 stdio 服务接入配置（mcpServers JSON / 工具清单 / 未构建警示） */}
       <McpSection />
+      {/* SKILLS-SYNC：一键把 8 份配套技能复制到常见 agent skills 目录（含冲突三选与移除） */}
+      <SkillsSyncSection />
       <RestartServerPanel />
     </Modal>
   );
