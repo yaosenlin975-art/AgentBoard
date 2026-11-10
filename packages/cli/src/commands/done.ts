@@ -9,7 +9,7 @@ import { closeIssueWithOwnRelease } from './lifecycle.js';
 
 /** GIT-OBSERVABLE：服务端 done 回传的自动提交结果（同 key 重放返回首次结果） */
 interface GitCommitInfo {
-  status: 'committed' | 'nothing' | 'not-committed' | 'unavailable';
+  status: 'committed' | 'nothing' | 'not-committed' | 'unavailable' | 'skipped';
   reason: string | null;
   note: string | null;
   pending: string[];
