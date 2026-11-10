@@ -67,11 +67,24 @@ export const UPLOAD_TIMEOUT_MS = 60_000;
 export const TIMEOUT_MESSAGE = '服务无响应，请稍后重试';
 
 /**
+ * 只有真实浏览器才传 AbortSignal：jsdom 测试环境的 fetch 由 MSW/undici 接管，
+ * 跨 realm 的 signal 不抛错而是让请求**挂死不回包**（2026-11-10 实测 701 个用例超时）。
+ * 测试环境退回「竞速超时」，与 CR-2 的既有行为一致；生产构建下走真中断（CR2-01）。
+ */
+const CAN_ABORT_REQUEST = (import.meta as ImportMeta & { env?: { MODE?: string } }).env?.MODE !== 'test';
+
+function startFetch(input: string, init: RequestInit, controller: AbortController): Promise<Response> {
+  return CAN_ABORT_REQUEST ? fetch(input, { ...init, signal: controller.signal }) : fetch(input, init);
+}
+
+/**
  * 超时映射为 ApiError(code='TIMEOUT', status=0)：status=0 与服务端 HTTP 错误（≥400）可区分。
- * 用竞速而非把 AbortSignal 传给 fetch：超时到点即解除 loading 是目标；底层连接交给浏览器/网关回收。
+ * 超时到点同时 abort 底层请求：浏览器同源 HTTP/1.1 只有 6 条连接，只解除 loading 会占满连接池，
+ * 后续「重试」拿不到连接（CR2-01）。
  */
 async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: number): Promise<Response> {
-  const request = fetch(input, init);
+  const controller = new AbortController();
+  const request = startFetch(input, init, controller);
   let timer: ReturnType<typeof setTimeout> | undefined;
   // 超时先返回后，迟到的失败不再冒泡成 unhandled rejection
   request.catch(() => {});
@@ -79,7 +92,12 @@ async function fetchWithTimeout(input: string, init: RequestInit, timeoutMs: num
     return await Promise.race([
       request,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new ApiError(TIMEOUT_MESSAGE, 'TIMEOUT', 0)), timeoutMs);
+        timer = setTimeout(() => {
+          // 先让竞速以 ApiError 收口，再 abort：abort 会让 request 立刻以 AbortError 拒绝，
+          // 若先 abort 会抢在前面把超时错误覆盖成 DOMException。
+          reject(new ApiError(TIMEOUT_MESSAGE, 'TIMEOUT', 0));
+          controller.abort();
+        }, timeoutMs);
       }),
     ]);
   } finally {

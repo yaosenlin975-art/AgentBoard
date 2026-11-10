@@ -66,6 +66,17 @@ describe('api client 超时', () => {
     expect((failure as ApiError).message).toBe(TIMEOUT_MESSAGE);
   });
 
+  it('测试环境不传 signal（MSW 跨 realm 会挂死），超时仍由竞速收口（CR2-01）', async () => {
+    const fetchMock = stubHangingFetch();
+    const pending = api.get('/api/issues').catch(() => {});
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+    await pending;
+
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    // 浏览器产物里同一位置会带 signal 并 abort；jsdom 分支必须保持 undefined，否则整套用例超时
+    expect(init.signal).toBeUndefined();
+  });
+
   it('上传超时：大文件通道用 60s，不与普通请求共用 15s', async () => {
     const fetchMock = stubHangingFetch();
     const file = new File([new Uint8Array([1, 2, 3])], 'a.png', { type: 'image/png' });
