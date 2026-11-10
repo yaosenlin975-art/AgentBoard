@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置页 · 智能体人设管理（PERSONA-LIB 原型）</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!--
+  原型说明（评审用，不是产品文案）
+  - 模拟的是「设置」弹窗内的一节，顶部保留一小段既有分组做排版对照；不模拟整套 App。
+  - 所有列表数据为 mock，不发起任何网络请求；视觉令牌照抄 apps/web/src/index.css。
+  - 顶部控制条与右侧说明块都标注为「非产品 UI」，?clean=1 时隐藏，便于截图。
+-->
+
+<div class="proto-bar" id="proto-bar" role="region" aria-label="原型控制条（非产品 UI）">
+  <div class="proto-brand">
+    <span class="proto-dot" aria-hidden="true"></span>
+    <strong>设置页 · 智能体人设</strong>
+    <span class="proto-sub">PERSONA-LIB-1 · 演示控制条（非产品 UI）</span>
+  </div>
+  <div class="proto-group">
+    <button type="button" class="proto-btn" id="btn-theme" aria-pressed="false">深色</button>
+    <span class="proto-sep" aria-hidden="true"></span>
+    <button type="button" class="proto-btn" id="btn-empty">空态演示</button>
+    <button type="button" class="proto-btn" id="btn-reset">重置数据</button>
+    <button type="button" class="proto-btn" id="btn-notes" aria-pressed="true">说明块</button>
+    <span class="proto-memo" id="memo">列表 → 新建 / 编辑抽屉 → 删除确认 → 导入</span>
+  </div>
+</div>
+
+<main class="stage">
+  <!-- ===================== 产品区域：设置弹窗（静态模拟） ===================== -->
+  <section class="product" aria-label="设置弹窗（原型）">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <header class="modal-head">
+        <h2 id="settings-title">设置</h2>
+        <button type="button" class="icon-btn" aria-label="关闭设置">✕</button>
+      </header>
+
+      <div class="modal-body">
+        <!-- 邻近既有分组：只保留排版对照，不复刻完整设置页 -->
+        <section class="settings-section" aria-label="既有分组示例：服务与并发">
+          <h3 class="section-title">服务与并发 <span class="tag">需保存</span></h3>
+          <div class="mini-grid">
+            <label class="mini-field">
+              <span>服务端口</span>
+              <input class="field" value="8787" disabled>
+            </label>
+            <label class="mini-field">
+              <span>并发上限</span>
+              <input class="field" value="3" disabled>
+            </label>
+          </div>
+        </section>
+
+        <!-- ===================== 本次新增：智能体人设 ===================== -->
+        <!--
+          交互取舍 1（入口）：单开一节，不加侧栏入口、不做独立页面。
+          理由：人设是低频全局配置，设置页已有「工作区状态 / 语音 / 存储 / MCP」同类分组；
+          单独加导航会抬高主界面噪声，也让「会话绑定人设」与「库管理」两个概念混淆。
+        -->
+        <section class="settings-section" aria-labelledby="persona-title">
+          <div class="section-head">
+            <h3 class="section-title" id="persona-title">
+              智能体人设
+              <span class="tag tag-instant">全局库 · 即时生效</span>
+            </h3>
+            <div class="section-actions">
+              <button type="button" class="ab-btn ab-btn-secondary" id="btn-import">从专家包导入</button>
+              <button type="button" class="ab-btn ab-btn-primary" id="btn-create">＋ 新建人设</button>
+            </div>
+          </div>
+
+          <!-- 交互取舍 2（职责边界）：这里只管库里有什么；绑定哪个会话仍在会话设置里做。 -->
+          <p class="section-hint">
+            人设是全局资源（落中心库）。这里管理「库里有什么」；某个会话用哪个人设，仍到
+            <strong>聊天 → ⋯ → 会话设置 → 人设</strong> 里选，新建会话弹窗也读同一份列表。
+          </p>
+
+          <div class="persona-list" id="persona-list" aria-label="人设列表"></div>
+
+          <!-- 交互取舍 3（空态）：空态必须给出两条主行动，而不是只写「暂无数据」。 -->
+          <div class="empty-state" id="persona-empty" hidden>
+            <span class="empty-icon" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="8" r="3.2"/><path d="M4.5 20c0-3.3 3.4-5.5 7.5-5.5s7.5 2.2 7.5 5.5"/>
+              </svg>
+            </span>
+            <h4>还没有人设</h4>
+            <p>新建一条人设，或从 WorkBuddy 专家包整包导入。不设人设的会话照常可用。</p>
+            <div class="empty-actions">
+              <button type="button" class="ab-btn ab-btn-secondary" id="btn-empty-import">从专家包导入</button>
+              <button type="button" class="ab-btn ab-btn-primary" id="btn-empty-create">＋ 新建人设</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- 遮罩：抽屉 / 对话框共用 -->
+    <div class="scrim" id="scrim" aria-hidden="true"></div>
+
+    <!--
+      新建 / 编辑抽屉
+      交互取舍 4：用右侧抽屉而不是整页跳转或弹窗套弹窗，保留列表上下文；
+      正文用等宽大文本域，编辑时能直接看出 Markdown 结构。
+    -->
+    <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <header class="drawer-head">
+        <h3 id="drawer-title">新建人设</h3>
+        <button type="button" class="icon-btn" id="drawer-close" aria-label="关闭">✕</button>
+      </header>
+      <div class="drawer-body">
+        <!-- 交互取舍 5：builtin 只读——服务端 PATCH/DELETE 直接 409，界面提前禁用并说明原因。 -->
+        <p class="notice notice-info" id="drawer-readonly" hidden>
+          内置人设由程序包提供，只读。需要定制请「新建人设」复制一份再改。
+        </p>
+
+        <label class="field-label" for="f-name">名称<span class="req">必填</span></label>
+        <input class="field" id="f-name" maxlength="100" placeholder="例如：发布协调员">
+        <p class="field-hint is-error" id="err-name" hidden>名称不能为空（上限 100 字）</p>
+
+        <label class="field-label" for="f-desc">描述<span class="counter">≤ 2000 字</span></label>
+        <input class="field" id="f-desc" maxlength="2000" placeholder="一句话说明这个人在什么时候用">
+
+        <label class="field-label" for="f-body">人设正文（Markdown）<span class="req">必填</span></label>
+        <textarea class="field" id="f-body" spellcheck="false" placeholder="写清角色、工作方式、输出要求……"></textarea>
+        <p class="field-hint is-error" id="err-body" hidden>人设正文不能为空</p>
+        <p class="field-hint">
+          正文会作为系统提示词注入使用该人设的会话；工具与技能开关仍在会话设置里单独配置，不在这里。
+        </p>
+      </div>
+      <footer class="drawer-foot">
+        <button type="button" class="ab-btn ab-btn-secondary" id="drawer-cancel">取消</button>
+        <button type="button" class="ab-btn ab-btn-primary" id="drawer-save">保存</button>
+      </footer>
+    </aside>
+
+    <!-- 删除确认 -->
+    <!--
+      交互取舍 6（删除）：只告知、不阻断。
+      session.persona_id 没有外键；会话分散在各工作区库，前端拿不到引用计数（后端也没有该接口），
+      所以这里不做「有引用就禁止删除」，而是把后果写清楚：会话显示「未知人设」、下一轮不再注入、会话仍可启动。
+    -->
+    <div class="dialog-layer" id="confirm-layer">
+      <div class="dialog-card" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+        <h3 id="confirm-title">删除人设？</h3>
+        <p id="confirm-text">删除后不可恢复。</p>
+        <p class="muted">
+          会话与团队只保存 persona_id，没有外键约束；引用它的会话会显示「未知人设」，下一轮起不再注入该人设，
+          但会话本身仍可正常启动。
+        </p>
+        <p class="muted">
+          当前没有引用计数接口（会话分散在各工作区库），所以这里不做「有引用禁止删除」，只做明确告知。
+        </p>
+        <div class="dialog-foot">
+          <button type="button" class="ab-btn ab-btn-secondary" id="confirm-cancel">取消</button>
+          <button type="button" class="ab-btn ab-btn-danger-filled" id="confirm-ok">删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 从专家包导入 -->
+    <!--
+      交互取舍 7（导入）：整包导入，不做包内专家多选。
+      后端 POST /api/expert-packages/import 是以包为单位的事务写入；同目录 / 同名重复导入返回 409。
+      因此界面只让用户给目录，并需要当前工作区（团队模板按工作区归属）。
+    -->
+    <div class="dialog-layer" id="import-layer">
+      <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="import-title">
+        <h3 id="import-title">从 WorkBuddy 专家包导入</h3>
+        <p class="muted">
+          整包导入：包内每个专家各生成一条人设（来源标记「导入」）；包内带 teamInfo 时，同时生成一个团队模板。
+        </p>
+
+        <label class="field-label" for="f-path">专家包目录</label>
+        <input class="field" id="f-path" placeholder="D:\WorkBuddy\packages\data-analyst">
+        <p class="field-hint">绝对路径优先；相对路径按服务进程 cwd 解析。</p>
+
+        <label class="field-label" for="f-workspace">归属工作区</label>
+        <input class="field" id="f-workspace" value="任务看板（D:\WorkSpaces\任务看板）" disabled>
+        <p class="field-hint">团队模板挂在该工作区；人设本身是全局资源。</p>
+
+        <p class="field-hint is-error" id="import-error" hidden></p>
+
+        <!-- 非产品 UI：仅用于一次演示里切换两种结果，真实实现由服务端 201 / 409 决定 -->
+        <div class="demo-switch">
+          演示结果（非产品 UI）：
+          <button type="button" data-import-result="ok" aria-pressed="true">成功 201</button>
+          <button type="button" data-import-result="conflict" aria-pressed="false">重复导入 409</button>
+        </div>
+
+        <div class="dialog-foot">
+          <button type="button" class="ab-btn ab-btn-secondary" id="import-cancel">取消</button>
+          <button type="button" class="ab-btn ab-btn-primary" id="import-ok">开始导入</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+  </section>
+
+  <!-- ===================== 评审说明（非产品 UI） ===================== -->
+  <aside class="notes" id="notes" aria-label="评审说明（非产品 UI）">
+    <div class="notes-head">
+      <h2>评审说明 · 关键取舍</h2>
+      <span class="tag">非产品 UI</span>
+    </div>
+    <p class="notes-sub">PERSONA-LIB-1 · 页面内说明与 DESIGN-NOTES.md 同口径</p>
+    <ol>
+      <li><strong>入口</strong>：设置页单开一节，不加侧栏导航。人设是低频全局配置，与「工作区状态 / 语音 / 存储」同级。</li>
+      <li><strong>职责边界</strong>：本节只管全局库；会话用哪个人设仍在「会话设置 → 人设」绑定，新建会话弹窗读同一份 <code>GET /api/personas</code>。</li>
+      <li><strong>来源三态</strong>：<code>builtin</code> 只读（服务端 409，界面提前禁用）；<code>import</code> 与 <code>user</code> 可改可删，导入项额外显示包目录。</li>
+      <li><strong>删除</strong>：只告知不阻断。<code>session.persona_id</code> 无外键、会话分散在各工作区库、暂无引用计数接口；删后会话显示「未知人设」，下一轮不再注入，但可正常启动。</li>
+      <li><strong>导入</strong>：整包导入（后端按包事务写入），不做包内多选；同目录 / 同名重复导入按 409 原样展示服务端文案。</li>
+      <li><strong>空态</strong>：给出「新建 / 从专家包导入」两条主行动，并说明不设人设的会话照常可用。</li>
+      <li><strong>刻意不做</strong>：搜索、分页、排序切换、批量操作、引用计数——人设数量少，先把列表 + 增删改跑顺。</li>
+    </ol>
+    <div class="notes-sep"></div>
+    <p class="notes-foot">
+      落地建议（写进 PERSONA-LIB-2）：新增 <code>settings/PersonaSection.tsx</code> 插入 SettingsDialog；
+      复用 <code>queryKey ['personas']</code>，写操作后 invalidate，保证会话设置下拉同步；
+      不改 <code>apps/server</code>。
+    </p>
+  </aside>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
