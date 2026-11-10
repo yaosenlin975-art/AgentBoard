@@ -58,6 +58,11 @@ export interface CheckinProviderSpec {
   refreshCredential?(credential: Buffer): Promise<Buffer | null>;
   /** 可选：签到成功（succeeded/already_done）后的附加活动；异常/失败都不得影响签到结果 */
   afterCheckin?(credential: Buffer): Promise<CheckinAfterActivity | null>;
+  /**
+   * TRAVEL-REC：派出后到期回收。语义 = 只查状态并在到达时领取（claim），**绝不重新派出（depart）**；
+   * 仍然在途返回 dispatched，供调用方下轮重试。
+   */
+  claimAfterTravel?(credential: Buffer): Promise<CheckinAfterActivity | null>;
 }
 
 /** 授权绑定只需要这两个能力；SecretVault 天然满足（测试注入内存替身） */

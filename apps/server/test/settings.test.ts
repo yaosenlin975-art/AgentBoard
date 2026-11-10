@@ -100,6 +100,7 @@ describe('GET /api/settings', () => {
       attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+      travelAutoRecover: true,
     });
     expect(res.body.db_path).toBe(res.body.dbPath);
     // 落盘只写持久化键 dbPath，不写对外别名
@@ -118,6 +119,7 @@ describe('GET /api/settings', () => {
       attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+      travelAutoRecover: true,
     });
     expect(res.body.db_path).toBe(res.body.dbPath);
   });
@@ -157,6 +159,7 @@ describe('PATCH /api/settings', () => {
       attachmentQuotaBytes: 2048,
       attachmentStagedTtlMs: 5000,
       attachmentCleanupIntervalMs: 10000,
+      travelAutoRecover: true,
     });
 
     const again = await request(app).get('/api/settings');

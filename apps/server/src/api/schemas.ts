@@ -557,6 +557,8 @@ export const patchSettingsSchema = z
     attachmentQuotaBytes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     attachmentStagedTtlMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     attachmentCleanupIntervalMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+    // TRAVEL-REC：猫猫旅行自动回收开关（默认 true）
+    travelAutoRecover: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });
 

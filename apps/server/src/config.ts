@@ -20,6 +20,8 @@ export interface AgentBoardConfig {
   attachmentQuotaBytes: number;
   attachmentStagedTtlMs: number;
   attachmentCleanupIntervalMs: number;
+  /** TRAVEL-REC：WorkBuddy 猫猫旅行派出后自动回收（默认开；ticker 每轮实时读取，关闭后不回收） */
+  travelAutoRecover: boolean;
 }
 
 /** WorkBuddy 计费区域（ACC-KB-A1）：决定签到/额度打哪个计费域 */
@@ -99,6 +101,7 @@ function defaultConfig(): AgentBoardConfig {
     attachmentQuotaBytes: DEFAULT_ATTACHMENT_QUOTA_BYTES,
     attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
     attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
+    travelAutoRecover: true,
   };
 }
 
@@ -143,6 +146,9 @@ function mergeValidFields(
   }
   if (Number.isSafeInteger(source.attachmentCleanupIntervalMs) && source.attachmentCleanupIntervalMs! >= 1) {
     target.attachmentCleanupIntervalMs = source.attachmentCleanupIntervalMs!;
+  }
+  if (typeof source.travelAutoRecover === 'boolean') {
+    target.travelAutoRecover = source.travelAutoRecover;
   }
   return target;
 }

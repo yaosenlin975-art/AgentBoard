@@ -13,6 +13,8 @@ import { SecretVault } from './services/accounts/secretVault.js';
 import { recoverAccountOperations } from './services/accounts/operationRunner.js';
 import { WorkbuddyDesktopProvider, defaultWorkbuddyPaths, defaultWorkbuddyProbe } from './services/accounts/workbuddyDesktopProvider.js';
 import type { CheckinProviderSpec } from './services/accounts/checkinProvider.js';
+// TRAVEL-REC：猫猫旅行到期自动回收（ticker 句柄暴露给 CreatedApp 供接线验证）
+import { startTravelRecoveryTicker, type TravelRecoveryHandle } from './services/accounts/travelRecovery.js';
 import { createCheckinProviders } from './services/accounts/httpCheckinProviders.js';
 import { createAddAccountProviders } from './services/accounts/addAccountProvider.js';
 import { ApiError } from './errors.js';
@@ -85,6 +87,11 @@ export interface CreateAppOptions {
   checkinProvider?: CheckinProviderSpec;
   /** ACC-12：三平台签到 provider（测试可注入 fake fetch / 替换 map） */
   checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>;
+  /**
+   * TRAVEL-REC：WorkBuddy 猫猫旅行到期自动回收（默认只在注入 workbuddy 签到 provider 时启动）。
+   * false 显式关闭；对象可注入测试调度器/周期。
+   */
+  travelRecovery?: false | { schedule?: (fn: () => void, ms: number) => unknown; cancel?: (handle: unknown) => void; intervalMs?: number };
   /** ACC-13：按平台的桌面 provider（capture/switch）；测试可注入 fake fs/进程 */
   desktopProviders?: Partial<Record<ManagedAppId, DesktopProvider>>;
   /** ACC-KB-B2S：协议级加号的 provider（默认按五平台协议装配；测试可注入替身） */
@@ -146,6 +153,8 @@ export interface CreatedApp {
   hub: WsHub;
   secretVault: SecretVault;
   attachments: AttachmentStore;
+  /** TRAVEL-REC：自动回收 ticker 句柄（未注入 workbuddy provider 或显式关闭时缺省） */
+  travelRecovery?: TravelRecoveryHandle;
 }
 
 /** 装配 express app 与 WS hub（重复调用即重建 manager/装配，测试隔离安全） */
@@ -293,7 +302,20 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   }
 
   app.use(errorHandler);
-  return { app, hub, secretVault, attachments };
+  // TRAVEL-REC：猫猫旅行到期自动回收——启动先做一次补偿扫描，之后每 5 分钟一轮；
+  // 开关读 settings.travelAutoRecover（默认 true，每轮实时读取，PATCH 后无需重启）。
+  const workbuddyTravelProvider = options.checkinProviders?.workbuddy_desktop ?? options.checkinProvider;
+  const travelRecovery = options.travelRecovery !== false && workbuddyTravelProvider !== undefined
+    ? startTravelRecoveryTicker(
+      { db, vault: secretVault, provider: workbuddyTravelProvider },
+      {
+        enabled: () => readSettings().travelAutoRecover,
+        log: (line: string) => appendServerLog(line),
+        ...(typeof options.travelRecovery === 'object' ? options.travelRecovery : {}),
+      },
+    )
+    : undefined;
+  return { app, hub, secretVault, attachments, ...(travelRecovery === undefined ? {} : { travelRecovery }) };
 }
 
 export interface StartedServer {

@@ -88,6 +88,8 @@ function baseSpec(config: HttpCheckinConfig, parts: {
   status: (token: string) => Promise<CheckinStatusQuery>;
   claim: (token: string) => Promise<CheckinSubmission>;
   afterCheckin?: (token: string) => Promise<CheckinAfterActivity | null>;
+  /** TRAVEL-REC：到期回收（只 status→claim，不 depart） */
+  claimAfterTravel?: (token: string) => Promise<CheckinAfterActivity | null>;
   /** ACC-FIX-3：从凭据字节取 access_token；缺省把凭据当裸串 */
   token?: (credential: Buffer) => string;
   /** ACC-FIX-3：凭据失效时的续期实现 */
@@ -107,6 +109,7 @@ function baseSpec(config: HttpCheckinConfig, parts: {
     submitCheckin: async (credential) => parts.claim(tokenOfCredential(credential)),
     ...(parts.refresh ? { refreshCredential: parts.refresh } : {}),
     ...(parts.afterCheckin ? { afterCheckin: async (credential: Buffer) => parts.afterCheckin!(tokenOfCredential(credential)) } : {}),
+    ...(parts.claimAfterTravel ? { claimAfterTravel: async (credential: Buffer) => parts.claimAfterTravel!(tokenOfCredential(credential)) } : {}),
   };
 }
 
@@ -131,6 +134,21 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
   const travelState = (data: Record<string, unknown>) =>
     typeof data.state === 'string' ? data.state.trim().toLowerCase()
       : typeof data.status === 'string' ? data.status.trim().toLowerCase() : '';
+  /** TRAVEL-REC：到达后领取并回查确认（afterCheckin 与 claimAfterTravel 共用，绝不 depart） */
+  const claimTravel = async (token: string): Promise<CheckinAfterActivity> => {
+    const claimed = await request('/activity/growth/buddy/travel/claim', token, { method: 'POST', body: '{}' });
+    const claimError = travelResponseError('CLAIM', claimed);
+    if (claimError) return travelFailure(claimError);
+    const confirmResult = await request('/activity/growth/buddy/travel/status', token);
+    const confirmError = travelResponseError('CLAIM_CONFIRM', confirmResult);
+    if (confirmError) return travelFailure(confirmError);
+    const confirmed = dataOf(confirmResult.body);
+    const confirmedState = travelState(confirmed);
+    if (confirmed.claimed_today === true || ['claimed', 'done', 'idle'].includes(confirmedState)) {
+      return { kind: 'travel', status: 'claimed' };
+    }
+    return travelFailure('TRAVEL_CLAIM_UNCONFIRMED');
+  };
   const queryCheckinStatus = async (token: string): Promise<CheckinStatusQuery> => {
     const result = await request('/billing/meter/checkin-activity-status', token, { method: 'POST', body: '{}' });
     if (result.status < 200 || result.status >= 300) return 'unknown';
@@ -174,20 +192,7 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
         const status = dataOf(statusResult.body);
         const state = travelState(status);
         if (status.claimed_today === true || state === 'claimed' || state === 'done') return { kind: 'travel', status: 'already_done' };
-        if (state === 'arrived' || state === 'ready') {
-          const claimed = await request('/activity/growth/buddy/travel/claim', token, { method: 'POST', body: '{}' });
-          const claimError = travelResponseError('CLAIM', claimed);
-          if (claimError) return travelFailure(claimError);
-          const confirmResult = await request('/activity/growth/buddy/travel/status', token);
-          const confirmError = travelResponseError('CLAIM_CONFIRM', confirmResult);
-          if (confirmError) return travelFailure(confirmError);
-          const confirmed = dataOf(confirmResult.body);
-          const confirmedState = travelState(confirmed);
-          if (confirmed.claimed_today === true || ['claimed', 'done', 'idle'].includes(confirmedState)) {
-            return { kind: 'travel', status: 'claimed' };
-          }
-          return travelFailure('TRAVEL_CLAIM_UNCONFIRMED');
-        }
+        if (state === 'arrived' || state === 'ready') return claimTravel(token);
         if (state === 'traveling' || state === 'on_the_way') return { kind: 'travel', status: 'dispatched' };
         if (state !== 'idle') return travelFailure('TRAVEL_STATUS_UNKNOWN');
         if (status.daily_limit_reached === true) return { kind: 'travel', status: 'already_done' };
@@ -217,6 +222,25 @@ export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): Check
           return { kind: 'travel', status: 'claimed' };
         }
         return travelFailure('TRAVEL_DEPART_UNCONFIRMED');
+      } catch (error) {
+        const code = error instanceof ApiError ? error.code : 'TRAVEL_FAILED';
+        return travelFailure(code);
+      }
+    },
+    // TRAVEL-REC：到期回收——只查状态并领取，绝不重新派出（idle 视为异常，交给超窗记 missed）
+    claimAfterTravel: async (token) => {
+      try {
+        const statusResult = await request('/activity/growth/buddy/travel/status', token);
+        const statusError = travelResponseError('STATUS', statusResult);
+        if (statusError) return travelFailure(statusError);
+        const status = dataOf(statusResult.body);
+        const state = travelState(status);
+        if (status.claimed_today === true || state === 'claimed' || state === 'done' || state === 'idle') {
+          return { kind: 'travel', status: 'already_done' };
+        }
+        if (state === 'arrived' || state === 'ready') return claimTravel(token);
+        if (state === 'traveling' || state === 'on_the_way') return { kind: 'travel', status: 'dispatched' };
+        return travelFailure('TRAVEL_STATUS_UNKNOWN');
       } catch (error) {
         const code = error instanceof ApiError ? error.code : 'TRAVEL_FAILED';
         return travelFailure(code);
