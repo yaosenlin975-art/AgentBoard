@@ -1,0 +1,7 @@
+{
+  "issue_id": "39ddfd9a-5730-400c-8237-74e665d7b48e",
+  "fence": 1,
+  "agent_id": "kb-cli",
+  "claimed_at": 1794279147471,
+  "base": "http://127.0.0.1:8787"
+}
