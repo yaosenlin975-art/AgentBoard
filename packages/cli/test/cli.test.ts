@@ -1703,6 +1703,21 @@ describe('幂等键透传（CLI-IDEM）', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('N3-10：--board-only 置 board_only=true；与 --scope / --all 互斥', async () => {
+    handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '待验收' } } : undefined);
+    const ok = makeIo();
+    expect(await main(['node', 'kb', '--server', base, 'done', 'iss1', '--board-only', '--no-changelog'], ok.io)).toBe(0);
+    expect(calls[0]!.body).toMatchObject({ client: 'cli', changelog_ack: true, board_only: true });
+    expect(calls[0]!.body).not.toHaveProperty('scope_paths');
+
+    calls.length = 0;
+    const bad = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--board-only', '--scope', 'a.ts'], bad.io);
+    expect(code).toBe(1);
+    expect(bad.err()).toContain('不能同时使用');
+    expect(calls).toHaveLength(0);
+  });
+
   it('claim / fail --request-id：同样带 Key 与 workspace_id', async () => {
     handler = (m, u) => {
       if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: ISSUE };
