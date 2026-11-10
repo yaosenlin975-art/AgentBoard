@@ -83,11 +83,12 @@ export function ModelField({
       data-testid={`${testid}-refresh`}
       onClick={() => void refetchModels()}
       disabled={modelsFetching}
-      className="rounded border border-neutral-300 px-2 py-1 text-xs text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+      className="shrink-0 rounded border border-neutral-300 px-2 py-1 text-xs text-neutral-600 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
     >
       刷新模型列表
     </button>
   ) : null;
+  // 状态行只留提示文案；刷新按钮跟随控件放在同一行右侧（不与下拉内容重叠）
   const status = (
     <div className="mt-1 flex flex-wrap items-center gap-2">
       {modelListStatus !== null && (
@@ -104,7 +105,6 @@ export function ModelField({
           当前模型不在此 CLI 列表中
         </p>
       )}
-      {refreshButton}
     </div>
   );
 
@@ -143,33 +143,36 @@ export function ModelField({
   if (effectiveView === 'select') {
     return (
       <div>
-        <select
-          data-testid={testid}
-          aria-label={ariaLabel}
-          value={value}
-          onChange={(e) => {
-            if (e.target.value === MANUAL_OPTION) {
-              setView('input');
-              return;
-            }
-            if (e.target.value === value && valueNotInList) {
-              setView('select');
-              return;
-            }
-            setView(null);
-            onChange(e.target.value);
-          }}
-          className={fieldCls}
-        >
-          {emptyOptionLabel !== undefined && <option value="">{emptyOptionLabel}</option>}
-          {valueNotInList && <option value={value}>{value}（不在当前列表）</option>}
-          {list.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.id}
-            </option>
-          ))}
-          <option value={MANUAL_OPTION}>手动输入…</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            data-testid={testid}
+            aria-label={ariaLabel}
+            value={value}
+            onChange={(e) => {
+              if (e.target.value === MANUAL_OPTION) {
+                setView('input');
+                return;
+              }
+              if (e.target.value === value && valueNotInList) {
+                setView('select');
+                return;
+              }
+              setView(null);
+              onChange(e.target.value);
+            }}
+            className={`${fieldCls} min-w-0 flex-1`}
+          >
+            {emptyOptionLabel !== undefined && <option value="">{emptyOptionLabel}</option>}
+            {valueNotInList && <option value={value}>{value}（不在当前列表）</option>}
+            {list.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.id}
+              </option>
+            ))}
+            <option value={MANUAL_OPTION}>手动输入…</option>
+          </select>
+          {refreshButton}
+        </div>
         {status}
       </div>
     );
@@ -187,7 +190,7 @@ export function ModelField({
             onChange(e.target.value);
           }}
           placeholder={placeholder}
-          className={fieldCls}
+          className={`${fieldCls} min-w-0 flex-1`}
         />
         {list.length > 0 && (
           <button
@@ -199,6 +202,7 @@ export function ModelField({
             返回列表
           </button>
         )}
+        {refreshButton}
       </div>
       {status}
     </div>

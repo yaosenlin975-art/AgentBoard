@@ -154,6 +154,20 @@ describe('ModelField', () => {
     expect(requests).toBe(2);
   });
 
+  it('刷新按钮在控件行右侧，状态提示行只留文案', async () => {
+    server.use(http.get('/api/clis/:id/models', () => HttpResponse.json([])));
+    renderField('codebuddy');
+
+    const state = await screen.findByTestId('mf-state');
+    const refresh = screen.getByTestId('mf-refresh');
+    const control = screen.getByTestId('mf');
+    // 与主控件同一行容器
+    expect(refresh.parentElement).toBe(control.parentElement);
+    expect(refresh.parentElement).toHaveClass('flex');
+    // 不在状态提示行内
+    expect(state.parentElement).not.toContainElement(refresh);
+  });
+
   it('查询失败时说明错误并保留手输，刷新可恢复模型清单', async () => {
     let requests = 0;
     server.use(
