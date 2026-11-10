@@ -4,30 +4,61 @@
   <meta charset="utf-8" />
   <title>AgentBoard</title>
   <style>
-    :root { color-scheme: dark; }
+    /* WINTITLE-01：无边框窗口的启动页也自带 32px 自绘标题栏（拖拽 + 三键），
+       配暖石墨令牌（与 apps/web 的 --ab-* 同值），启动失败时用户仍能移动/关闭窗口。 */
+    :root { color-scheme: light; --ab-page:#f7f4ee; --ab-card:#fdfbf7; --ab-raised:#efe9df;
+      --ab-hairline:rgba(31,27,22,.1); --ab-ink:#1f1b16; --ab-ink-2:#5e554a; --ab-ink-3:#6b6257;
+      --ab-accent:#a04a08; --ab-del:#a13d3d; --ab-ease:cubic-bezier(.2,0,0,1); --ab-dur:160ms; }
     html, body { height: 100%; margin: 0; }
     body {
       display: grid;
-      place-items: center;
-      background: #16181d;
-      color: #e6e8ec;
+      grid-template-rows: 32px 1fr;
+      background: var(--ab-page);
+      color: var(--ab-ink);
       font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
     }
+    .winbar {
+      display: flex;
+      align-items: center;
+      padding-left: 10px;
+      background: var(--ab-card);
+      border-bottom: 1px solid var(--ab-hairline);
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .winbar-mark {
+      display: grid; place-items: center; width: 16px; height: 16px; margin-right: 6px;
+      border-radius: 3px; background: var(--ab-accent); color: #fff;
+      font-size: 9px; font-weight: 700; line-height: 1;
+    }
+    .winbar-name { font-size: 11.5px; font-weight: 500; letter-spacing: .02em; color: var(--ab-ink-2); }
+    .winbar-drag { flex: 1; height: 100%; }
+    .winbar-actions { display: flex; align-items: stretch; }
+    .winbar-actions button {
+      display: grid; place-items: center; width: 44px; height: 32px;
+      padding: 0; border: 0; background: transparent; color: var(--ab-ink-2);
+      cursor: default; outline: none;
+      transition: background-color var(--ab-dur) var(--ab-ease), color var(--ab-dur) var(--ab-ease);
+    }
+    .winbar-actions button:hover { background: var(--ab-raised); color: var(--ab-ink); }
+    .winbar-actions button:focus-visible { outline: 2px solid var(--ab-accent); outline-offset: -2px; }
+    .winbar-actions button.close:hover { background: #c0362c; color: #fff; }
+    main { display: grid; place-items: center; min-height: 0; padding: 24px; }
     .boot {
       width: 420px;
       padding: 28px 32px;
-      border: 1px solid #2b2f37;
-      border-radius: 12px;
-      background: #1c1f25;
+      border: 1px solid var(--ab-hairline);
+      border-radius: 6px;
+      background: var(--ab-card);
     }
-    h1 { margin: 0 0 6px; font-size: 18px; font-weight: 600; letter-spacing: 0.2px; }
-    .sub { margin: 0 0 18px; font-size: 12px; color: #8b919c; }
+    h1 { margin: 0 0 6px; font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+    .sub { margin: 0 0 18px; font-size: 12px; color: var(--ab-ink-3); }
     #status { margin: 0; font-size: 14px; }
     #detail {
       margin: 12px 0 0;
       font-size: 12px;
       line-height: 1.55;
-      color: #f0a8a8;
+      color: var(--ab-del);
       white-space: pre-wrap;
       word-break: break-all;
     }
@@ -37,21 +68,48 @@
       height: 8px;
       margin-right: 8px;
       border-radius: 50%;
-      background: #6aa6ff;
+      background: var(--ab-accent);
       animation: pulse 1.2s ease-in-out infinite;
       vertical-align: 1px;
     }
     @keyframes pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
-    @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+    @media (prefers-reduced-motion: reduce) {
+      .dot { animation: none; }
+      .winbar-actions button { transition: none; }
+    }
   </style>
 </head>
 <body>
-  <div class="boot">
-    <h1>AgentBoard</h1>
-    <p class="sub">本地服务 · 桌面壳启动中</p>
-    <p id="status"><span class="dot" id="dot"></span>正在启动本地服务…</p>
-    <p id="detail"></p>
-  </div>
+  <header class="winbar" data-tauri-drag-region="deep">
+    <span class="winbar-mark" aria-hidden="true">A</span>
+    <span class="winbar-name">AgentBoard</span>
+    <span class="winbar-drag" aria-hidden="true"></span>
+    <div class="winbar-actions">
+      <button type="button" id="win-min" aria-label="最小化窗口" title="最小化">
+        <svg aria-hidden="true" viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M1.5 5h7" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button type="button" id="win-max" aria-label="最大化窗口" title="最大化">
+        <svg aria-hidden="true" viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2">
+          <rect x="2" y="2" width="6" height="6" rx="0.6" />
+        </svg>
+      </button>
+      <button type="button" id="win-close" class="close" aria-label="关闭窗口" title="关闭">
+        <svg aria-hidden="true" viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2">
+          <path d="M2.2 2.2l5.6 5.6M7.8 2.2L2.2 7.8" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+  </header>
+  <main>
+    <div class="boot">
+      <h1>AgentBoard</h1>
+      <p class="sub">本地服务 · 桌面壳启动中</p>
+      <p id="status"><span class="dot" id="dot"></span>正在启动本地服务…</p>
+      <p id="detail"></p>
+    </div>
+  </main>
   <script>
     // 壳在等待健康检查超时 / 启动失败时由 Rust 侧 eval 调用，把可读原因显示在这张本地页上（不是白屏）。
     window.__setShellError = function (message) {
@@ -60,6 +118,32 @@
       document.getElementById('status').textContent = '本地服务启动失败';
       document.getElementById('detail').textContent = message || '';
     };
+
+    (function () {
+      var internals = window.__TAURI_INTERNALS__;
+      if (!internals) return;
+      function invoke(command) {
+        var label = (internals.metadata && internals.metadata.currentWindow && internals.metadata.currentWindow.label) || 'main';
+        return internals.invoke('plugin:window|' + command, { label: label });
+      }
+      document.getElementById('win-min').addEventListener('click', function () { invoke('minimize'); });
+      document.getElementById('win-max').addEventListener('click', function () { invoke('toggle_maximize'); });
+      document.getElementById('win-close').addEventListener('click', function () { invoke('close'); });
+      // 最大化/还原时换图标与 aria-label（与主页面 WindowTitleBar 同口径）
+      var maxButton = document.getElementById('win-max');
+      var RESTORE_ICON = '<svg aria-hidden="true" viewBox="0 0 10 10" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3.4 3.4h4.2v4.2"/><rect x="2" y="2" width="4.2" height="4.2" rx="0.5"/></svg>';
+      var MAX_ICON = maxButton.innerHTML;
+      function sync() {
+        invoke('is_maximized').then(function (maximized) {
+          if (typeof maximized !== 'boolean') return;
+          maxButton.setAttribute('aria-label', maximized ? '还原窗口' : '最大化窗口');
+          maxButton.setAttribute('title', maximized ? '还原' : '最大化');
+          maxButton.innerHTML = maximized ? RESTORE_ICON : MAX_ICON;
+        });
+      }
+      sync();
+      window.addEventListener('resize', sync);
+    })();
   </script>
 </body>
 </html>

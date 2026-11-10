@@ -232,6 +232,10 @@ fn build_main_window(
         .title("AgentBoard")
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
+        // WINTITLE-01：去掉系统原生标题栏，改由页面自绘（WindowTitleBar / 启动页 winbar）。
+        // macOS 同样走全自绘三键（不保留原生红绿灯），保证三端行为一致；
+        // 若后续要原生红绿灯，再按平台插入 title_bar_style(Overlay) + hidden_title。
+        .decorations(false)
         .center()
         .visible(visible)
         .on_page_load(|webview, payload| {

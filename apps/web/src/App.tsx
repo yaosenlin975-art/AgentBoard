@@ -8,6 +8,7 @@ import { useAppStore } from './state/appStore';
 import { useNavStore, type NavView } from './state/navStore';
 import { isChatExitKey } from './state/navStore';
 import { SideBar } from './components/shell/SideBar';
+import { WindowTitleBar } from './components/shell/WindowTitleBar';
 import { Board } from './components/board/Board';
 import { DecisionNotifier } from './components/decisions/DecisionNotifier';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
@@ -89,68 +90,72 @@ export default function App() {
 
 
   return (
-    <div className="flex h-screen overflow-hidden bg-surface-page text-ink">
+    <div className="flex h-screen flex-col overflow-hidden bg-surface-page text-ink">
+      {/* WINTITLE-01：桌面壳无边框窗口的自绘标题栏；浏览器里返回 null，不占布局 */}
+      <WindowTitleBar />
       <VoiceInputProvider>
-        <SideBar workspace={current} />
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* NAV-TOPBAR-01：顶栏已移除；FIX-1：窄屏也不再保留工作空间 select（由左栏承担） */}
-          {/* DEC-7：待决策汇总条 + 常驻 toast（通知失败时的可靠通道），无待决策时零占位 */}
-          <DecisionNotifier />
-          <div className="relative flex min-h-0 flex-1">
-            <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
-              {view === 'decisions' ? (
-                <Suspense fallback={viewLoading}>
-                  <DecisionsView />
-                </Suspense>
-              ) : view === 'log' ? (
-                workspaceId === null ? (
-                  <p data-testid="log-view-needs-workspace" className="p-6 text-sm text-ink-3">
-                    请先选择工作空间，再查看日志
-                  </p>
-                ) : (
+        <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+          <SideBar workspace={current} />
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            {/* NAV-TOPBAR-01：顶栏已移除；FIX-1：窄屏也不再保留工作空间 select（由左栏承担） */}
+            {/* DEC-7：待决策汇总条 + 常驻 toast（通知失败时的可靠通道），无待决策时零占位 */}
+            <DecisionNotifier />
+            <div className="relative flex min-h-0 flex-1">
+              <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
+                {view === 'decisions' ? (
                   <Suspense fallback={viewLoading}>
-                    <ChangelogPanel
-                      key={workspaceId}
+                    <DecisionsView />
+                  </Suspense>
+                ) : view === 'log' ? (
+                  workspaceId === null ? (
+                    <p data-testid="log-view-needs-workspace" className="p-6 text-sm text-ink-3">
+                      请先选择工作空间，再查看日志
+                    </p>
+                  ) : (
+                    <Suspense fallback={viewLoading}>
+                      <ChangelogPanel
+                        key={workspaceId}
+                        workspaceId={workspaceId}
+                      />
+                    </Suspense>
+                  )
+                ) : view === 'knowledge' ? (
+                  <Suspense fallback={viewLoading}>
+                    <KnowledgePanel
+                      key={workspaceId ?? 'common'}
                       workspaceId={workspaceId}
+                      workspaceName={current?.name ?? null}
+                      deepLinkPageId={deepLink?.pageId ?? null}
                     />
                   </Suspense>
-                )
-              ) : view === 'knowledge' ? (
-                <Suspense fallback={viewLoading}>
-                  <KnowledgePanel
-                    key={workspaceId ?? 'common'}
-                    workspaceId={workspaceId}
-                    workspaceName={current?.name ?? null}
-                    deepLinkPageId={deepLink?.pageId ?? null}
-                  />
-                </Suspense>
-              ) : view === 'chat' ? (
-                // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
-                // 快捷键 Esc / Ctrl(Cmd)+[ 仍保留（lead 裁定：只删可视出口，保留键盘出口）。
-                // Suspense 放在外层容器内：`chat-view` 容器保持同步渲染（视图骨架不闪）。
-                <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
-                  <div className="min-h-0 flex-1">
-                    <Suspense fallback={viewLoading}>
-                      <ChatView />
-                    </Suspense>
+                ) : view === 'chat' ? (
+                  // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
+                  // 快捷键 Esc / Ctrl(Cmd)+[ 仍保留（lead 裁定：只删可视出口，保留键盘出口）。
+                  // Suspense 放在外层容器内：`chat-view` 容器保持同步渲染（视图骨架不闪）。
+                  <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
+                    <div className="min-h-0 flex-1">
+                      <Suspense fallback={viewLoading}>
+                        <ChatView />
+                      </Suspense>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <Board workspaceName={current?.name ?? null} />
+                ) : (
+                  <Board workspaceName={current?.name ?? null} />
+                )}
+              </main>
+              {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}
+              <Suspense fallback={null}>
+                <DrawerPanel />
+                <RightPanel />
+              </Suspense>
+              {restarting && (
+                <div
+                  data-testid="restart-blocker"
+                  aria-hidden="true"
+                  className="absolute inset-0 z-40 cursor-wait bg-white/40 dark:bg-neutral-950/40"
+                />
               )}
-            </main>
-            {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}
-            <Suspense fallback={null}>
-              <DrawerPanel />
-              <RightPanel />
-            </Suspense>
-            {restarting && (
-              <div
-                data-testid="restart-blocker"
-                aria-hidden="true"
-                className="absolute inset-0 z-40 cursor-wait bg-white/40 dark:bg-neutral-950/40"
-              />
-            )}
+            </div>
           </div>
         </div>
       </VoiceInputProvider>
