@@ -19,7 +19,9 @@ export type VoiceErrorCode =
   | 'VOICE_PERMISSION_DENIED'
   | 'VOICE_NO_DEVICE'
   | 'VOICE_UNSUPPORTED'
-  | 'VOICE_SERVER_UNAVAILABLE';
+  | 'VOICE_SERVER_UNAVAILABLE'
+  | 'VOICE_NO_SPEECH'
+  | 'VOICE_INSERT_FAILED';
 
 /** 三态 + 兼容错误的可读中文文案（设计 §错误态） */
 export const VOICE_ERROR_TEXT: Record<VoiceErrorCode, string> = {
@@ -28,6 +30,8 @@ export const VOICE_ERROR_TEXT: Record<VoiceErrorCode, string> = {
   VOICE_NO_DEVICE: '没有检测到麦克风：接入或启用录音设备后重试',
   VOICE_UNSUPPORTED: '当前浏览器不支持本地语音输入（需要 AudioWorklet 与 WebSocket）',
   VOICE_SERVER_UNAVAILABLE: '本地识别服务未就绪：请稍后重试（服务端语音能力未启用）',
+  VOICE_NO_SPEECH: '没有识别到语音：请靠近麦克风再试一次',
+  VOICE_INSERT_FAILED: '语音已识别，但没有插入到输入框：请重新聚焦输入框后再试',
 };
 
 /** 语言：默认跟随系统语言（navigator.language），可手动指定 */

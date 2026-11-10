@@ -25,9 +25,11 @@ function insertIntoInput(el: HTMLInputElement | HTMLTextAreaElement, text: strin
 
   if (typeof document.execCommand === 'function') {
     try {
+      const before = el.value;
       el.setSelectionRange(start, end);
       const ok = document.execCommand('insertText', false, text);
-      if (ok) {
+      // 少数宿主（WebView/权限受限的富文本）会返回 true 但值没变：不能当成插入成功
+      if (ok && el.value !== before) {
         const caret = start + text.length;
         el.setSelectionRange(caret, caret);
         return { ok: true, method: 'execCommand', caret };

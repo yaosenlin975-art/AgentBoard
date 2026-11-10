@@ -135,10 +135,24 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
     try {
       const text = await session.stop();
       const el = targetRef.current;
-      if (el !== null && el.isConnected && text.trim() !== '') {
-        const result = insertVoiceText(el, text);
-        noteDebug({ lastText: text, lastCaret: result.caret, lastError: null });
+      // VOICE-INSERT：转写为空 / 目标丢失 / 插入失败都必须可见，不能静默丢弃
+      if (text.trim() === '') {
+        noteDebug({ lastText: text, lastError: 'VOICE_NO_SPEECH' });
+        setError(VOICE_ERROR_TEXT.VOICE_NO_SPEECH);
+        return;
       }
+      if (el === null || !el.isConnected) {
+        noteDebug({ lastText: text, lastError: 'VOICE_INSERT_FAILED' });
+        setError(VOICE_ERROR_TEXT.VOICE_INSERT_FAILED);
+        return;
+      }
+      const result = insertVoiceText(el, text);
+      if (!result.ok) {
+        noteDebug({ lastText: text, lastCaret: result.caret, lastError: 'VOICE_INSERT_FAILED' });
+        setError(VOICE_ERROR_TEXT.VOICE_INSERT_FAILED);
+        return;
+      }
+      noteDebug({ lastText: text, lastCaret: result.caret, lastError: null });
     } catch (e) {
       const code: VoiceErrorCode | string = e instanceof VoiceInputError ? e.code : 'VOICE_UNSUPPORTED';
       noteDebug({ lastError: code });
@@ -267,19 +281,16 @@ export function VoiceInputProvider({ children }: { children?: React.ReactNode })
     document.addEventListener('pointermove', onPointerMove, true);
     document.addEventListener('pointerup', onPointerUp, true);
     document.addEventListener('pointercancel', onPointerUp, true);
-    // VOICE-UI-2：指针移出可拖动范围也要取消（否则「拖出去再松手」会残留 pending 计时）
+    // VOICE-UI-2：pending 期间指针移出可拖动范围要取消长按计时（否则「拖出去再松手」会残留计时）。
+    // VOICE-INSERT：recording 期间移出输入框**不得取消**——用户仍按住鼠标/手指在说话，
+    // 指针因手抖、浮层遮挡或被移到窗口边缘而离开元素很常见；此时静默 cancel() 会让转写白录。
+    // 录音的结束只由 pointerup / pointercancel / Escape / 取消按钮决定。
     const onPointerLeave = (event: PointerEvent): void => {
-      if (gestureRef.current.phase === 'idle') return;
+      if (gestureRef.current.phase !== 'pending') return;
       const related = event.relatedTarget;
       if (related instanceof Node && related.nodeType === Node.TEXT_NODE) return;
-      const wasRecording = gestureRef.current.phase === 'recording';
       gestureRef.current = IDLE_GESTURE;
       clearTimer();
-      if (wasRecording) {
-        // VOICE-CANCEL：指针移出输入框即视为放弃本次录音（误触发的常见形态），不插入文本
-        stopLevelTimer();
-        void cancel();
-      }
     };
     document.addEventListener('pointerleave', onPointerLeave, true);
     document.addEventListener('keydown', onKeyDown, true);

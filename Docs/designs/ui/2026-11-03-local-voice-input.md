@@ -60,7 +60,7 @@
 
 - 新增 `useLongPressVoice(targetRef)` / `<VoiceInput>` 包装器，**不逐个输入框复制实现**。
 - 判定：`pointerdown` 起计时 400ms；期间 `pointermove` 位移 > 6px 或 `pointerup` 提前 → 取消，让原生选择照常工作；计时到点才 `navigator.mediaDevices.getUserMedia({ audio })`。
-- 录音中：输入框保持焦点，显示小状态条（`正在听…` + 音量条 + `松手结束`），`pointerup`/`pointercancel`/`Escape` 结束。
+- 录音中：输入框保持焦点，显示小状态条（`正在听…` + 音量条 + `松手结束`），`pointerup`/`pointercancel`/`Escape` 结束；指针移出输入框（`pointerleave`）**不结束也不取消**，否则手抖/浮层遮挡会让转写白录。
 - 插入：把 `final` 文本插入 `selectionStart`（有选择则替换），派发一次 `input` 事件保持受控组件同步，并 `setSelectionRange` 落在插入文本末尾。
 - 撤销：一次插入作为一个连续编辑，`Ctrl+Z` 可整体回退（用 `document.execCommand('insertText')` 或原生 setter + `input` 事件，实现时在卡里说明选择理由）。
 
@@ -74,7 +74,7 @@
 
 ### 错误态（必须有中文可读文案）
 
-`VOICE_MODEL_MISSING`（去设置里下载模型）、`VOICE_PERMISSION_DENIED`（浏览器麦克风权限被拒，如何解除）、`VOICE_NO_DEVICE`（未检测到麦克风）、`VOICE_UNSUPPORTED`（浏览器不支持 AudioWorklet/WS 时隐藏入口或提示）。
+`VOICE_MODEL_MISSING`（去设置里下载模型）、`VOICE_PERMISSION_DENIED`（浏览器麦克风权限被拒，如何解除）、`VOICE_NO_DEVICE`（未检测到麦克风）、`VOICE_UNSUPPORTED`（浏览器不支持 AudioWorklet/WS 时隐藏入口或提示）、`VOICE_NO_SPEECH`（转写为空，提示靠近麦克风重试）、`VOICE_INSERT_FAILED`（识别成功但目标输入框已丢失/不可插入）。后两者不得静默丢弃。
 
 ## 验收
 

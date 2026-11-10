@@ -15,6 +15,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { isVoiceEligible } from '../lib/voice/contract';
 import { VOICE_ELIGIBLE_SELECTOR } from '../lib/voice/contract';
 import { voiceLongPressProps, VoiceInputProvider } from '../components/voice/useLongPressVoice';
+import { usePanelStore } from '../state/panelStore';
 
 // VOICE-CANCEL：把采集链路换成可控假会话，只看「取消是否真的停会话且不插入文本」
 const { startSpy, stopSpy } = vi.hoisted(() => {
@@ -138,5 +139,189 @@ describe('录音浮层的取消出口（VOICE-CANCEL）', () => {
     await waitFor(() => expect(screen.queryByTestId('voice-listening')).toBeNull());
     expect(stopSpy).toHaveBeenCalledTimes(1);
     expect(textarea.value).toBe('原始内容');
+  });
+});
+
+/**
+ * VOICE-INSERT：真实浏览器里长按录音期间鼠标移出输入框（很常见：移到浮层、窗口边缘、
+ * 或按住时手抖出 1-2 行高的输入框）会触发 document capture 上的 pointerleave，
+ * 旧实现直接静默 cancel()，转写文本永远到不了输入框。这里用真实事件序列取证。
+ */
+describe('录音中指针移出输入框（VOICE-INSERT 根因）', () => {
+  const enableVoice = (): void => {
+    localStorage.setItem('agentboard.voice', JSON.stringify({ enabled: true, language: 'system', modelId: 'test-model', mock: true }));
+  };
+
+  const startRecording = async (): Promise<HTMLTextAreaElement> => {
+    const textarea = document.createElement('textarea');
+    textarea.value = '原始内容';
+    document.body.appendChild(textarea);
+    render(<VoiceInputProvider />);
+    fireEvent.pointerDown(textarea, { button: 0, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(screen.getByTestId('voice-listening')).toBeTruthy(), { timeout: 3000 });
+    return textarea;
+  };
+
+  beforeEach(() => {
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    enableVoice();
+  });
+
+  it('录音中 pointerleave 不应取消：松手后文本仍插入输入框', async () => {
+    const textarea = await startRecording();
+    textarea.setSelectionRange(4, 4);
+
+    // 指针移出输入框（relatedTarget 是普通元素，不是文本节点）
+    fireEvent.pointerLeave(textarea, { relatedTarget: document.body });
+
+    // 期望：录音不被打断，浮层仍在
+    expect(screen.queryByTestId('voice-listening')).not.toBeNull();
+    expect(stopSpy).not.toHaveBeenCalled();
+
+    fireEvent.pointerUp(document, { button: 0, clientX: 10, clientY: 10 });
+
+    await waitFor(() => expect(stopSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(textarea.value).toBe('原始内容这段文本不应该被插入'));
+    expect(textarea.selectionStart).toBe('原始内容这段文本不应该被插入'.length);
+  });
+
+  it('pending 阶段 pointerleave 仍取消长按计时（不启动录音）', async () => {
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    render(<VoiceInputProvider />);
+    fireEvent.pointerDown(textarea, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerLeave(textarea, { relatedTarget: document.body });
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('voice-listening')).toBeNull();
+  });
+});
+
+/**
+ * VOICE-INSERT：聊天输入框是「React 受控 textarea + panelStore 外部存储」。
+ * 旧测试只覆盖裸 DOM input/textarea，测不出「DOM 改了但 store 没同步、下一次渲染回滚」。
+ */
+describe('受控输入框 + 外部 store 的插入链路（VOICE-INSERT）', () => {
+  const enableVoice = (): void => {
+    localStorage.setItem('agentboard.voice', JSON.stringify({ enabled: true, language: 'system', modelId: 'test-model', mock: true }));
+  };
+
+  function ControlledComposer({ draftKey }: { draftKey: string }): React.ReactElement {
+    const value = usePanelStore((s) => s.chatDrafts[draftKey] ?? '');
+    const setChatDraft = usePanelStore((s) => s.setChatDraft);
+    return (
+      <textarea
+        data-testid="controlled-composer"
+        value={value}
+        onChange={(event) => setChatDraft(draftKey, event.target.value)}
+      />
+    );
+  }
+
+  const holdAndRelease = async (textarea: HTMLTextAreaElement): Promise<void> => {
+    fireEvent.pointerDown(textarea, { button: 0, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(screen.getByTestId('voice-listening')).toBeTruthy(), { timeout: 3000 });
+    fireEvent.pointerUp(document, { button: 0, clientX: 10, clientY: 10 });
+  };
+
+  beforeEach(() => {
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    enableVoice();
+    usePanelStore.setState({ chatDrafts: {} });
+  });
+
+  it('setter 回退分支：插入后 store 与 DOM 同步，光标在末尾', async () => {
+    usePanelStore.setState({ chatDrafts: { t: '前缀 ' } });
+    render(<><VoiceInputProvider /><ControlledComposer draftKey="t" /></>);
+    const textarea = screen.getByTestId('controlled-composer') as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(3, 3);
+
+    await holdAndRelease(textarea);
+
+    const expected = '前缀 这段文本不应该被插入';
+    await waitFor(() => expect(usePanelStore.getState().chatDrafts.t).toBe(expected));
+    expect(textarea.value).toBe(expected);
+    expect(textarea.selectionStart).toBe(expected.length);
+  });
+
+  it('execCommand 分支：浏览器编辑事件同样同步回受控 store', async () => {
+    const doc = document as unknown as { execCommand?: (command: string, showUI: boolean, value?: string) => boolean };
+    const original = doc.execCommand;
+    // 模拟浏览器 execCommand('insertText')：改值 + 派发 input，受控组件应通过 onChange 同步
+    doc.execCommand = (command: string, _showUI: boolean, value?: string): boolean => {
+      if (command !== 'insertText') return false;
+      const active = document.activeElement as HTMLTextAreaElement | null;
+      if (active === null || typeof active.setRangeText !== 'function') return false;
+      const start = active.selectionStart ?? active.value.length;
+      const end = active.selectionEnd ?? start;
+      active.setRangeText(value ?? '', start, end, 'end');
+      active.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    };
+
+    try {
+      usePanelStore.setState({ chatDrafts: { t: '前缀 ' } });
+      render(<><VoiceInputProvider /><ControlledComposer draftKey="t" /></>);
+      const textarea = screen.getByTestId('controlled-composer') as HTMLTextAreaElement;
+      textarea.focus();
+      textarea.setSelectionRange(3, 3);
+
+      await holdAndRelease(textarea);
+
+      const expected = '前缀 这段文本不应该被插入';
+      await waitFor(() => expect(usePanelStore.getState().chatDrafts.t).toBe(expected));
+      expect(textarea.value).toBe(expected);
+      expect(textarea.selectionStart).toBe(expected.length);
+    } finally {
+      if (original === undefined) delete doc.execCommand;
+      else doc.execCommand = original;
+    }
+  });
+});
+
+describe('失败面必须有可见提示（VOICE-INSERT）', () => {
+  const enableVoice = (): void => {
+    localStorage.setItem('agentboard.voice', JSON.stringify({ enabled: true, language: 'system', modelId: 'test-model', mock: true }));
+  };
+
+  const startRecording = async (): Promise<HTMLTextAreaElement> => {
+    const textarea = document.createElement('textarea');
+    textarea.value = '原始内容';
+    document.body.appendChild(textarea);
+    render(<VoiceInputProvider />);
+    fireEvent.pointerDown(textarea, { button: 0, clientX: 10, clientY: 10 });
+    await waitFor(() => expect(screen.getByTestId('voice-listening')).toBeTruthy(), { timeout: 3000 });
+    return textarea;
+  };
+
+  beforeEach(() => {
+    startSpy.mockClear();
+    stopSpy.mockClear();
+    enableVoice();
+  });
+
+  it('空转写（纯空白）→ 不插入且弹出可见提示', async () => {
+    stopSpy.mockResolvedValueOnce('   ');
+    const textarea = await startRecording();
+
+    fireEvent.pointerUp(document, { button: 0, clientX: 10, clientY: 10 });
+
+    await waitFor(() => expect(screen.getByTestId('voice-error')).toBeTruthy());
+    expect(screen.getByTestId('voice-error').textContent).toContain('没有识别到语音');
+    expect(textarea.value).toBe('原始内容');
+  });
+
+  it('插入目标在松手前被移除 → 不静默，弹出可见提示', async () => {
+    const textarea = await startRecording();
+    textarea.remove();
+
+    fireEvent.pointerUp(document, { button: 0, clientX: 10, clientY: 10 });
+
+    await waitFor(() => expect(screen.getByTestId('voice-error')).toBeTruthy());
+    expect(screen.getByTestId('voice-error').textContent).toContain('没有插入到输入框');
   });
 });
