@@ -67,12 +67,7 @@ type ActiveDrag = { issue: Issue; width?: number };
 /** CR-4：批量改状态的并发上限（单测断言不超此值） */
 const BATCH_PATCH_CONCURRENCY = 6;
 
-export function Board({
-  workspaceName,
-}: {
-  /** 顶栏面包屑用；App 从已加载的工作空间列表传入，未传时只显示视图名 */
-  workspaceName?: string | null;
-} = {}) {
+export function Board() {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
   const clearLabels = useAppStore((s) => s.clearLabels);
@@ -357,12 +352,11 @@ export function Board({
           )}
         </div>
       )}
-      {/* TOPBAR-REDESIGN：46px 单行顶栏（面包屑 + 搜索 + 标签 + 右端显示控件），替换旧双行外壳。
-          ≤920px：面包屑/搜索/控件一行，标签整行换行（LABEL-BAR：不横滚，避免裁掉「更多」浮层）。
+      {/* TOPBAR-REDESIGN：46px 单行顶栏（搜索 + 标签 + 右端显示控件），替换旧双行外壳。
+          TOPBAR-02：左侧面包屑已删除（当前工作区/视图由左栏 SideBar 承担）。
+          ≤920px：搜索/控件一行，标签整行换行（LABEL-BAR：不横滚，避免裁掉「更多」浮层）。
           任务树没有列概念：在同一顶栏右端给同等新建入口（同一弹窗、同样落「待规划」）。 */}
       <TopBar
-        workspaceName={workspaceName}
-        viewLabel={treeMode ? '任务树' : '看板'}
         controls={
           <>
             {/* BORROW-1.1：显示偏好（本地持久化） */}

@@ -258,14 +258,14 @@ describe('DEC-V4-QUEUE 处置队列', () => {
   const itemOrder = () =>
     screen.getAllByTestId(/^decision-item-/).map((node) => node.getAttribute('data-testid'));
 
-  it('页头只留标题 + 在途总数徽标；筛选 tab 计数来自完整分组', async () => {
+  it('页头不再有标题与总数徽标（TOPBAR-02）；筛选 tab 计数来自完整分组', async () => {
     server.use(decisionHandler(queueActive, [qAnswered]));
     renderWithQuery(<DecisionsView />);
     await waitFor(() => expect(screen.getByTestId('decision-item-q-g2')).toBeInTheDocument());
 
     expect(screen.queryByTestId('decisions-summary')).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain('宽限 3 · 未回答 2');
-    expect(screen.getByTestId('decisions-total')).toHaveTextContent('6');
+    expect(screen.queryByTestId('decisions-total')).not.toBeInTheDocument();
     expect(screen.getByTestId('decisions-tab-count-all')).toHaveTextContent('7');
     expect(screen.getByTestId('decisions-tab-count-grace')).toHaveTextContent('3');
     expect(screen.getByTestId('decisions-tab-count-open')).toHaveTextContent('2');

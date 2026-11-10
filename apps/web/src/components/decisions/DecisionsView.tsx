@@ -344,15 +344,8 @@ export function DecisionsView() {
   return (
     <section data-testid="decisions-view" className="flex h-full min-h-0 flex-col">
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-hairline px-3 py-2">
-        <h1 className="text-sm font-semibold text-ink">待决策</h1>
-        <span
-          data-testid="decisions-total"
-          title={`当前范围内共 ${total} 条`}
-          className="rounded-full bg-surface-raised px-2 text-xs font-medium tabular-nums text-ink-2"
-        >
-          {total}
-        </span>
-
+        {/* TOPBAR-02：页头不再重复「待决策 + 计数徽标」，与顶栏去面包屑保持同一口径；
+            当前视图与总数由左栏入口高亮 + 下方 tab 分项计数承担。 */}
         <div role="tablist" aria-label="按状态筛选" className="flex flex-wrap items-center gap-1">
           {FILTERS.map(({ key, label }) => {
             const selected = filter === key;
