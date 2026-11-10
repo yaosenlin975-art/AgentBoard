@@ -20,6 +20,7 @@ import { textWindow } from '../../db/pagination.js';
 import { getWorkspace } from '../../db/repos/workspace.js';
 import { DEFAULT_PAGE_FIELDS, deleteIssue, getIssue, listIssues, listIssuesPage, requireNoIssueChildren } from '../../db/repos/issue.js';
 import { getStopState } from '../../db/repos/decision.js';
+import { getActiveChangeLog, hasChangeLogForIssue } from '../../db/repos/workspaceChangeLog.js';
 import { listCommentsByIssue, listCommentsPage, getCommentContent } from '../../db/repos/comment.js';
 import { listIssueAttachments, listPendingIssueAttachments } from '../../db/repos/attachment.js';
 import { deleteSession, getSession, listSessionsByIssue } from '../../db/repos/session.js';
@@ -659,22 +660,38 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     const actor = action === 'release' && !workspace ? 'user' : parseBody(claimSchema, req.body).agent_id;
     const fence = readFence(req, req.body as { fence?: number } | undefined);
     const doneBody = action === 'done' ? parseBody(doneSchema, req.body) : undefined;
-    // SK-05 / MCP-09：agent 入口（带 client）必须显式声明变更日志已写，或声明无用户可见变更；
-    // REST 直调不带 client，保持旧行为（兼容存量脚本与测试）。
-    if (action === 'done' && doneBody!.client !== undefined && doneBody!.changelog_ack !== true) {
-      throw new ValidationError(
-        '变更日志门禁：done 前请先写一条用户可见变更（`kb changelog create --title "…" --type 修复`，正文走 --stdin）。'
-        + '若本次没有用户可见变更（纯内部重构 / 仅看板操作），显式声明出口：'
-        + 'CLI `kb done <id> --no-changelog`；MCP `complete_task` 传 `skip_changelog: true`。'
-        + '带 `--close-record` 时视为已写（CLI 会先写日志再 done）。',
-        'CHANGELOG_ACK_REQUIRED',
-      );
-    }
     const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
     // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
     const scopePaths = doneBody?.scope_paths ?? [];
     // STORE-4a：业务写与 git 基线落 issue 所在库
     const rdb = resolveRequestDb(req, issueId);
+    // SK-05 / MCP-09：agent 入口（带 client）必须满足三者之一才放行：
+    // ① 请求显式 ack（含 --no-changelog / skip_changelog）；
+    // ② changelog_id 指向本工作区一条活动日志（MCP 的 --close-record 等价出口）；
+    // ③ 库中已有本卡 changelog（issue_id=本卡，且 claim 之后创建）。
+    // REST 直调不带 client，保持旧行为（兼容存量脚本与测试）。
+    if (action === 'done' && doneBody!.client !== undefined && doneBody!.changelog_ack !== true) {
+      const issueRow = getIssue(rdb, issueId);
+      if (!issueRow) throw new NotFoundError('任务不存在');
+      // 日志固定落中心库（changelog 路由挂载在 deps.db），不随工作区库下沉
+      if (doneBody!.changelog_id !== undefined) {
+        if (getActiveChangeLog(db, issueRow.workspace_id, doneBody!.changelog_id) === null) {
+          throw new ValidationError(
+            `变更日志门禁：changelog_id ${doneBody!.changelog_id} 不存在或不属于本工作区；请用 kb changelog list 确认 id 后重试。`,
+            'CHANGELOG_NOT_FOUND',
+          );
+        }
+      } else if (!hasChangeLogForIssue(db, issueRow.workspace_id, issueId, issueRow.claimed_at)) {
+        throw new ValidationError(
+          '变更日志门禁：done 前须先写一条用户可见变更（以下任一即可）：① `kb changelog create --issue <卡 id> --title "…" --type 修复`'
+          + '（正文走 --stdin；MCP `create_changelog` 传 `issue_id`）后再 done；'
+          + '② `kb done --close-record --changelog-title "…" --type 修复`（MCP `complete_task` 传 `changelog_id`）；'
+          + '③ 本次确实没有用户可见变更（纯内部重构 / 仅看板操作）→ `kb done --no-changelog`，'
+          + 'MCP `complete_task` 传 `skip_changelog: true`。',
+          'CHANGELOG_ACK_REQUIRED',
+        );
+      }
+    }
     // KB-WRITE-NUDGE：hint 必须在 done 清空 claimed_at/claimed_by 之前算，并随幂等结果一起缓存（重放响应要逐字一致）
     const outcome = workspace ? mutation(rdb, req, (routedDb) => {
       if (action === 'done') {
@@ -703,7 +720,13 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
       broadcast({ type: 'issue.changed', issue });
       // GIT-ON-DONE：done 后按 claim 基线提交本任务改动；幂等重放不重复提交
       if (action === 'done') {
-        gitCommit = await commitIssueChanges(rdb, issueId, scopePaths);
+        // N3-10：纯看板任务显式跳过提交（不产生 NO_SCOPE / exit 1，也不带走工作区脏文件）
+        if (doneBody!.board_only === true) {
+          dropIssueGitBaseline(rdb, issueId);
+          gitCommit = { status: 'skipped', reason: 'BOARD_ONLY', note: null, pending: [] };
+        } else {
+          gitCommit = await commitIssueChanges(rdb, issueId, scopePaths);
+        }
         if (gitCommit.note) {
           const added = await addComment(rdb, issueId, 'system', gitCommit.note);
           broadcast({ type: 'comment.added', comment: added.comment });

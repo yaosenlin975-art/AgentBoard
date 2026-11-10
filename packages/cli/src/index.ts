@@ -398,28 +398,31 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
     .option('--all', '显式纳入工作区全部未提交改动（默认只提交 --scope 声明的卡内文件集，卡外改动只列清单）')
     .option('--close', 'done 成功后串行 close（待验收 → 已关闭），一步收口；close 阶段失败不回滚已完成的 done')
-    .option('--close-record', 'OPT-09：一次完成收尾记录（先写 changelog，再挂 --knowledge-page 引用，最后 done；任一子步骤失败不落 done）')
+    .option('--close-record', 'OPT-09：一次完成收尾记录（先写带本卡 issue_id 的 changelog，再挂 --knowledge-page 引用，最后 done；任一子步骤失败不落 done）')
     .option('--changelog-title <title>', 'CLOSE-RECORD 的变更日志标题（--close-record 时必填）')
     .option('--type <类型>', 'CLOSE-RECORD 的变更日志类型：新增|修复|调整（--close-record 时必填）')
     .option('--changelog-body <text>', 'CLOSE-RECORD 的变更日志正文（缺省复用 notes）')
     .option('--knowledge-page <id>', '已有知识页 id：只挂引用到 notes，不新建页')
     .option('--design-not-advanced', 'ARCH-04：确认本卡不推进关联设计页（landed=proposed 时跳过门禁，声明写入 notes）')
     .option('--no-changelog', 'SK-05：显式声明本次没有用户可见变更（不写变更日志）；与服务端门禁的出口，与 --close-record 互斥')
+    .option('--board-only', 'N3-10：纯看板任务，跳过自动提交（不列脏文件、不 exit 1）；与 --scope / --all 互斥')
     .addHelpText('after', `
 示例：
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
   kb done 0f6ba9ab --scope packages/cli/src/index.ts --scope Docs/api.md
   kb done 0f6ba9ab --notes '改完' --close        # 待验收 + 已关闭一步完成（父卡有未关闭后代时会停在待验收）
   kb done 0f6ba9ab --close-record --changelog-title '某项调整' --type 调整 --knowledge-page <页 id> --scope <路径>
+  kb changelog create --issue 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --title '某项调整' --type 调整 --stdin   # 先写日志再 done
   kb done 0f6ba9ab --design-not-advanced        # 关联设计页仍为 proposed，但本卡确认不推进设计
   kb done 0f6ba9ab --no-changelog               # 本次没有用户可见变更（纯内部重构 / 仅看板操作）
-变更日志门禁（SK-05）：done 前须先 kb changelog create 写一条用户可见变更；没有用户可见变更时用 --no-changelog 显式声明，--close-record 自带 changelog 视为已写。三者都没有 → 服务端 400 CHANGELOG_ACK_REQUIRED（done 未执行）。
+  kb done 0f6ba9ab --board-only                 # 纯看板任务：跳过自动提交，不列脏文件、不 exit 1
+变更日志门禁（SK-05）：以下任一即放行 —— ① 先 kb changelog create --issue <卡 id> 写一条归属本卡的变更日志；② --close-record（自带 changelog）；③ --no-changelog 显式声明没有用户可见变更。都没有 → 服务端 400 CHANGELOG_ACK_REQUIRED（done 未执行）。
 退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误、任务不存在、close-record 子步骤失败（changelog/知识页失败时 done 未执行）、设计页仍为 proposed 且未声明（done 未执行），或**done 已生效但自动提交未完成**（无基线 / 提交失败 / scope 零命中 / 未声明 scope——此时状态已是待验收，按 stderr 里的补救命令执行即可）
 GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
 自动提交未完成时 stderr 输出「未提交 + 原因 + 可照抄的补救命令」；带 --close 时该场景会跳过 close（避免未提交的卡被关闭后无法用 done 补救），修复后执行 kb close <issue-id>。
 非 git 工作区（未装 git / 非仓库 / 仓库损坏）只落 stderr 警告、退出码保持 0（结果状态 unavailable）。
 `)
-    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string; close?: boolean; closeRecord?: boolean; changelogTitle?: string; type?: string; changelogBody?: string; knowledgePage?: string; designNotAdvanced?: boolean; changelog?: boolean }) =>
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; all?: boolean; requestId?: string; close?: boolean; closeRecord?: boolean; changelogTitle?: string; type?: string; changelogBody?: string; knowledgePage?: string; designNotAdvanced?: boolean; changelog?: boolean; boardOnly?: boolean }) =>
       done(makeCtx(program, ctxIo), id, {
         notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope, all: opts.all === true,
         requestId: opts.requestId, close: opts.close === true, closeRecord: opts.closeRecord === true,
@@ -427,6 +430,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
         knowledgePage: opts.knowledgePage, designNotAdvanced: opts.designNotAdvanced === true,
         // --no-changelog 是 commander 的否定选项：传了才是 false，缺省 true
         noChangelog: opts.changelog === false,
+        boardOnly: opts.boardOnly === true,
       }));
 
   program

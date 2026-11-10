@@ -87,6 +87,50 @@ describe('issue transitions (CLI-CLOSE)', () => {
     expect(rest.status).toBe(200);
   });
 
+  it('changelogGate：本卡 changelog（issue_id + claim 之后创建）放行普通 done', async () => {
+    const id = await mkIssue('先写日志');
+    await claim(id);
+    const log = await request(app).post(`/api/workspaces/${ws}/changelog`)
+      .send({ title: '修好了', body_md: '用户可见变化', change_type: '修复', actor: 'fake', issue_id: id });
+    expect(log.status).toBe(201);
+
+    const ok = await request(app).post(`/api/issues/${id}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '', client: 'cli', changelog_ack: false });
+    expect(ok.status).toBe(200);
+    expect(ok.body.status).toBe('待验收');
+  });
+
+  it('changelogGate：claim 之前写的本卡日志不算，仍 400', async () => {
+    const id = await mkIssue('旧日志');
+    await request(app).post(`/api/workspaces/${ws}/changelog`)
+      .send({ title: '上轮日志', body_md: '旧内容', change_type: '修复', actor: 'fake', issue_id: id });
+    await claim(id);
+    const res = await request(app).post(`/api/issues/${id}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '', client: 'cli', changelog_ack: false });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('CHANGELOG_ACK_REQUIRED');
+  });
+
+  it('changelogGate：changelog_id 指向本工作区日志放行；不存在则 400 CHANGELOG_NOT_FOUND', async () => {
+    const id = await mkIssue('按 id 引用');
+    await claim(id);
+    const log = await request(app).post(`/api/workspaces/${ws}/changelog`)
+      .send({ title: '修好了', body_md: '内容', change_type: '修复', actor: 'fake' });
+    const ok = await request(app).post(`/api/issues/${id}/done`)
+      .send({ workspace_id: ws, agent_id: 'fake', notes: '', client: 'mcp', changelog_ack: false, changelog_id: log.body.id });
+    expect(ok.status).toBe(200);
+
+    const other = await mkIssue('错误引用');
+    await claim(other);
+    const bad = await request(app).post(`/api/issues/${other}/done`)
+      .send({
+        workspace_id: ws, agent_id: 'fake', notes: '', client: 'mcp', changelog_ack: false,
+        changelog_id: '00000000-0000-4000-8000-000000000000',
+      });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.code).toBe('CHANGELOG_NOT_FOUND');
+  });
+
   it('closesOnly待验收AndReopensToDefault', async () => {
     const id = await mkIssue('链路卡');
     await claim(id);

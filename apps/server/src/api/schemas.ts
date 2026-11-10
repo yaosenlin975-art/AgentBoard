@@ -81,7 +81,13 @@ const changeLogActor = z.string().trim().min(1).max(100);
 /** 普通新增/修改不接受 `历史`：该类型只由旧 CHANGELOG 导入服务写入 */
 const editableType = changeLogTypeSchema.exclude(['历史']);
 export const changeLogCreateSchema = z
-  .object({ ...changeLogContentFields, change_type: editableType, actor: changeLogActor })
+  .object({
+    ...changeLogContentFields,
+    change_type: editableType,
+    actor: changeLogActor,
+    /** SK-05：可选归属卡；done 门禁据此识别「本卡已有 changelog」 */
+    issue_id: z.string().uuid('issue_id 需为任务 UUID').optional(),
+  })
   .strict();
 export const changeLogPatchSchema = z
   .object({
@@ -235,11 +241,16 @@ export const doneSchema = z.object({
   /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；未声明时服务端不提交任何文件（NO_SCOPE） */
   scope_paths: z.array(z.string().trim().min(1).max(1000)).max(200).optional(),
   /**
-   * SK-05 / MCP-09 变更日志门禁：只有 agent 入口（CLI/MCP）带 client 时才校验 changelog_ack，
-   * REST 直调（无 client）保持兼容。ack=true 表示「已写变更日志」或显式声明「无用户可见变更」。
+   * SK-05 / MCP-09 变更日志门禁：只有 agent 入口（CLI/MCP）带 client 时才校验，
+   * REST 直调（无 client）保持兼容。放行条件（任一）：changelog_ack=true（已写或显式无变更）、
+   * changelog_id 指向本工作区一条活动日志、库中已存在 issue_id=本卡且 claim 之后创建的日志。
    */
   client: z.enum(['cli', 'mcp']).optional(),
   changelog_ack: z.boolean().optional(),
+  /** SK-05：显式指定本次收尾对应的变更日志（须属本工作区） */
+  changelog_id: z.string().uuid('changelog_id 需为变更日志 UUID').optional(),
+  /** N3-10：纯看板任务显式声明「没有文件改动」，跳过 GIT-ON-DONE（不再 NO_SCOPE + exit 1） */
+  board_only: z.boolean().optional(),
 });
 
 /** CLI-CLOSE：reopen 的目标状态（缺省待规划；合法性由工作区状态字典判定） */

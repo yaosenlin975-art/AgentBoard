@@ -44,6 +44,8 @@ export interface DoneArgs {
   designNotAdvanced?: boolean;
   /** SK-05：显式声明本次没有用户可见变更（不写 changelog），用于纯内部重构 / 仅看板操作 */
   noChangelog?: boolean;
+  /** N3-10：纯看板任务显式跳过 GIT-ON-DONE（不列脏文件、不 exit 1、不提交任何文件） */
+  boardOnly?: boolean;
 }
 
 /** OPT-09：从 done 的 request-id 派生 changelog 幂等键（同一重试复用，不与 done 的 key 撞车） */
@@ -180,14 +182,19 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   const issueId = target.id;
   const body: {
     agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number;
-    client?: 'cli' | 'mcp'; changelog_ack?: boolean;
+    client?: 'cli' | 'mcp'; changelog_ack?: boolean; board_only?: boolean;
   } = { agent_id: ctx.agentId };
   // SK-05：agent 入口恒带 client，服务端据此启用变更日志门禁；--close-record 已先写日志、--no-changelog 显式声明无变更
   if (args.closeRecord === true && args.noChangelog === true) {
     throw new Error('--close-record 与 --no-changelog 不能同时使用：前者会先写变更日志，后者声明没有变更日志');
   }
+  // N3-10：纯看板任务不提交文件；与显式提交范围互斥（避免静默忽略）
+  if (args.boardOnly === true && ((args.scope?.length ?? 0) > 0 || args.all === true)) {
+    throw new Error('--board-only 与 --scope / --all 不能同时使用：纯看板任务不提交任何文件');
+  }
   body.client = 'cli';
   body.changelog_ack = args.closeRecord === true || args.noChangelog === true;
+  if (args.boardOnly === true) body.board_only = true;
   /** 一次收尾里 issue 详情最多取一次（workspace_id / 父链 / 设计页门禁共用） */
   let issueDetail: Issue | undefined = target.issue;
   const loadIssue = async (): Promise<Issue> => {
@@ -245,7 +252,10 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   }
   let closeRecordInfo: { changelog_id: string; knowledge_id: string | null } | null = null;
   if (args.closeRecord === true) {
-    const workspaceId = (await loadIssue()).workspace_id;
+    const current = await loadIssue();
+    const workspaceId = current.workspace_id;
+    // SK-05：归属本卡（用服务端返回的全长 UUID，短前缀不能直接当 issue_id），普通 done 的门禁也能识别
+    const changelogIssueId = current.id;
     let knowledgeId: string | null = null;
     if (args.knowledgePage !== undefined) {
       const resolved = await request<{ id: string }>(
@@ -264,6 +274,8 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
         body_md: args.changelogBody ?? body.notes ?? '本轮无用户可见变更',
         change_type: changelogType,
         actor: ctx.agentId,
+        // SK-05：归属本卡，普通 done 的门禁也能识别这条日志
+        issue_id: changelogIssueId,
       },
       args.requestId === undefined ? undefined : derivedRequestId(args.requestId, 'changelog'),
     ).catch((error) => {

@@ -105,6 +105,23 @@ describe('MCP 变更日志工具', () => {
     expect(calls[0].body).toEqual({ title: '新增工具', body_md: 'MCP 增加变更日志工具', change_type: '新增', actor: 'codex' });
   });
 
+  it('create_changelog 传 issue_id 时随请求体透传（done 门禁认本卡日志）', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = harnessWith(calls);
+    harnesses.push(harness);
+    await harness.start();
+    const issueId = '11111111-2222-4333-8444-555555555555';
+    const result = (await call('create_changelog', {
+      title: '本卡变更',
+      body_md: '正文',
+      change_type: '修复',
+      issue_id: issueId,
+      request_id: '6f1b2c34-0000-4000-8000-00000000f003',
+    })).result as ToolResult;
+    expect(result.isError).toBeFalsy();
+    expect(calls[0].body).toMatchObject({ issue_id: issueId });
+  });
+
   it('create_changelog 缺 agent id 时本地拒绝', async () => {
     const calls: Call[] = [];
     const fetcher = vi.fn() as unknown as typeof fetch;

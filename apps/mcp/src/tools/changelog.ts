@@ -120,7 +120,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
 
   register(
     'create_changelog',
-    'Append a workspace change-log entry (title + body_md + change_type 新增/修复/调整). Required before marking a task done; request_id is the idempotency key.',
+    'Append a workspace change-log entry (title + body_md + change_type 新增/修复/调整). Pass issue_id to attribute it to a task — the done changelog gate then recognises it without skip_changelog. request_id is the idempotency key.',
     z.object({
       ...workspaceField,
       ...requestIdField,
@@ -130,8 +130,10 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
       change_type: changeTypeSchema.default('新增'),
       occurred_at: z.number().int().nonnegative().optional()
         .describe('When the change happened, epoch milliseconds (defaults to now).'),
+      issue_id: z.string().uuid().optional()
+        .describe('Task UUID this entry belongs to. Set it so complete_task can pass the changelog gate for that task.'),
     }).strict(),
-    async ({ workspace_id, request_id, title, body_md, change_type, occurred_at }) => {
+    async ({ workspace_id, request_id, title, body_md, change_type, occurred_at, issue_id }) => {
       const workspaceId = resolveWorkspaceId(config, workspace_id);
       const actor = requireAgentId(config);
       const entry = await api.mutate<JsonObject>(
@@ -143,6 +145,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
           change_type,
           actor,
           ...(occurred_at === undefined ? {} : { occurred_at }),
+          ...(issue_id === undefined ? {} : { issue_id }),
         },
         request_id,
         undefined,

@@ -1,11 +1,14 @@
 import type { Db } from '../connection.js';
+import { ensureColumn } from './column.js';
 
 /**
  * LOG01｜工作区变更日志表（设计 §4）。
- * 幂等 DDL：新库与重复启动得到一致 schema；不改既有表。
+ * 幂等 DDL：新库与重复启动得到一致 schema。
  * - workspace_id ON DELETE SET NULL：工作区移除后日志保留为归档，origin 快照不变；
  * - legacy_source_key 仅旧 CHANGELOG 导入写入，用于导入幂等与对账；
- * - updated_at 由触发器保证单调递增。
+ * - updated_at 由触发器保证单调递增；
+ * - issue_id（SK-05）：可选归属卡，用于 done 门禁识别「本卡 changelog」；不建外键，
+ *   因为日志固定落中心库、issue 可能已下沉到工作区库。
  */
 export function migrateWorkspaceChangeLog(db: Db): void {
   db.exec(`
@@ -25,6 +28,7 @@ export function migrateWorkspaceChangeLog(db: Db): void {
       updated_at INTEGER NOT NULL,
       revision INTEGER NOT NULL DEFAULT 1 CHECK(revision>0),
       legacy_source_key TEXT UNIQUE,
+      issue_id TEXT,
       CHECK(workspace_id IS NULL OR workspace_id=origin_workspace_id),
       CHECK(length(title)>0 AND length(body_md)>0),
       CHECK(updated_at>=created_at)
@@ -45,4 +49,8 @@ export function migrateWorkspaceChangeLog(db: Db): void {
       UNIQUE(source_path, origin_workspace_id, source_sha256)
     );
   `);
+  // 存量库补列（CREATE TABLE IF NOT EXISTS 不会改已有表）
+  ensureColumn(db, 'workspace_change_log', 'issue_id', 'issue_id TEXT');
+  // 索引必须等补列之后才能建（老库建表语句里没有 issue_id）
+  db.exec('CREATE INDEX IF NOT EXISTS changelog_issue ON workspace_change_log(issue_id, created_at)');
 }

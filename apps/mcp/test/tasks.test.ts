@@ -546,6 +546,39 @@ describe('AgentBoard task MCP server', () => {
     expect(bodies[1]).toMatchObject({ client: 'mcp', changelog_ack: true });
   });
 
+  it('complete_task forwards changelog_id as the --close-record equivalent', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: {
+        task_id: 'task-1', notes: '', changelog_id: '00000000-0000-4000-8000-000000000777',
+        request_id: '00000000-0000-4000-8000-000000000207',
+      },
+    });
+    const body = JSON.parse(String((fetcher.mock.calls[0]![1] as RequestInit | undefined)?.body));
+    expect(body).toMatchObject({ client: 'mcp', changelog_ack: false, changelog_id: '00000000-0000-4000-8000-000000000777' });
+  });
+
+  it('complete_task forwards board_only for pure board tasks', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: {
+        task_id: 'task-1', notes: '', board_only: true, skip_changelog: true,
+        request_id: '00000000-0000-4000-8000-000000000208',
+      },
+    });
+    const body = JSON.parse(String((fetcher.mock.calls[0]![1] as RequestInit | undefined)?.body));
+    expect(body).toMatchObject({ client: 'mcp', changelog_ack: true, board_only: true });
+    expect(body).not.toHaveProperty('scope_paths');
+  });
+
   it('maps CHANGELOG_ACK_REQUIRED to an actionable changelog message', async () => {
     const fetcher = vi.fn(async () => Response.json({ error: { code: 'CHANGELOG_ACK_REQUIRED', message: '变更日志门禁：…' } }, { status: 400 }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);

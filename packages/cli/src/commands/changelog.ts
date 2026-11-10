@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
+import { normalizeIssueRef } from '../issueRef.js';
 import { formatDateTime } from '../render.js';
 
 /** LOG02：工作区变更日志 CLI（复用 LOG01 的活动/归档 REST 与导入服务端点，不重复实现业务逻辑） */
@@ -150,6 +151,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
     .command('create')
     .description('新增变更日志（正文用 --body 或 --stdin；历史类型仅供导入）')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
+    .option('--issue <id>', '归属任务（写入 issue_id；done 门禁据此识别「本卡已有 changelog」）')
     .requiredOption('--title <title>', '标题')
     .requiredOption('--type <类型>', '新增|修复|调整')
     .option('--body <text>', '正文（Markdown）')
@@ -157,6 +159,8 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
     .option('--occurred-at <ms>', '发生时间（Unix 毫秒，缺省当前时间）')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .addHelpText('after', [
+      '收尾前先写日志再 done（done 门禁认 --issue 归属的本卡日志）：',
+      '  kb changelog create --issue <卡 id> --title "标题" --type 修复 --stdin',
       '示例（Git Bash，heredoc 正文）：',
       "  kb changelog create --workspace <id|名> --title \"标题\" --type 修复 --stdin <<EOF",
       '  - 改动结论一',
@@ -166,11 +170,12 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
       '  Get-Content body.md -Raw -Encoding UTF8 | kb changelog create --workspace <id|名> --title "标题" --type 新增 --stdin',
       '重试幂等：加 --request-id <uuid>，重试复用同一 uuid。',
     ].join('\n'))
-    .action(async (opts: { workspace: string; title: string; type: string; body?: string; stdin?: boolean; occurredAt?: string; requestId?: string }) => {
+    .action(async (opts: { workspace: string; issue?: string; title: string; type: string; body?: string; stdin?: boolean; occurredAt?: string; requestId?: string }) => {
       const ctx = context();
       const workspaceId = await activeWorkspace(ctx, opts.workspace);
       const bodyMd = await bodyOf(ctx, opts);
       if (bodyMd === undefined || bodyMd.trim() === '') throw new Error('缺少正文：用 --body 或 --stdin 提供');
+      const issueId = opts.issue === undefined ? undefined : (await normalizeIssueRef(ctx, opts.issue)).id;
       const record = await request<ChangeLogRecord>(
         ctx.base,
         'POST',
@@ -180,6 +185,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
           body_md: bodyMd,
           change_type: normalizeType(opts.type),
           ...(opts.occurredAt === undefined ? {} : { occurred_at: Number(opts.occurredAt) }),
+          ...(issueId === undefined ? {} : { issue_id: issueId }),
           actor: ctx.agentId,
         },
         opts.requestId,

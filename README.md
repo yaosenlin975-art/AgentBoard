@@ -283,7 +283,7 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 - 知识库：读 `search_knowledge`、`list_knowledge`、`find_knowledge_sources`、`read_knowledge`；写 `create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
 - 待决策：读 `list_decisions`、`get_decision`、`stop_check`；写 `ask_decision`、`answer_decision`、`extend_decision_grace`、`withdraw_decision`
 - 变更日志：读 `list_changelog`、`get_changelog`；写 `create_changelog`
-- 收尾门禁：`complete_task` 前须先 `create_changelog`；本次确实没有用户可见变更时传 `skip_changelog: true`，否则服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
+- 收尾门禁：`complete_task` 前须满足三者之一——① `create_changelog` 传 `issue_id=<本任务>` 先写本卡日志；② `complete_task` 传 `changelog_id=<本工作区已有日志>`；③ 本次确实没有用户可见变更时传 `skip_changelog: true`。都不满足时服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
 
 边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。原裁决要补的收口（close/reopen/accept）、变更日志、待决策读取/答复/宽限、知识 list/find-source 已全部落地（卡 `f504f61d`、`6a2ded57`、`64acde61`、`d6753e4c`、`4e009883`）；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
 

@@ -14,7 +14,7 @@ const SAFE_MESSAGES: Record<string, string> = {
   CROSS_WORKSPACE_DEPENDENCY: 'Dependencies across workspaces are not supported.',
   DEPENDENCY_CYCLE: 'This dependency would create a cycle and was rejected.',
   DEPENDENCY_EXISTS: 'This dependency already exists.',
-  ISSUE_CLAIMED: 'The task is currently claimed by another agent; do not retry — pick another task or wait until it is released. Changing dependencies on a claimed task also requires releasing it first.',
+  ISSUE_CLAIMED: 'The task is currently claimed by another agent; do not retry — pick another task or wait until it is released.',
   KNOWLEDGE_NOT_FOUND: 'The knowledge page does not exist in this scope.',
   KNOWLEDGE_REVISION_CONFLICT: 'The knowledge page changed; read it again before updating.',
   KNOWLEDGE_UNAVAILABLE: 'The local AgentBoard knowledge API is unavailable.',
@@ -45,7 +45,7 @@ const SAFE_MESSAGES: Record<string, string> = {
   INVALID_TRANSITION: 'The task status does not allow this transition.',
   ACCEPT_STATUS_NOT_ACCEPTABLE: 'Only tasks in review (待验收) can receive an acceptance record.',
   CHANGELOG_NOT_FOUND: 'The change-log entry does not exist in this workspace.',
-  CHANGELOG_ACK_REQUIRED: 'Changelog gate: write a user-visible changelog with create_changelog first, or pass skip_changelog=true when this task has no user-visible change.',
+  CHANGELOG_ACK_REQUIRED: 'Changelog gate: satisfy one of — (a) create_changelog with issue_id=<this task>; (b) complete_task with changelog_id=<existing entry of this workspace>; (c) skip_changelog=true when this task has no user-visible change.',
   WORKSPACE_NOT_FOUND: 'The workspace does not exist.',
 };
 

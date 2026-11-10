@@ -21,6 +21,8 @@ export interface CreateChangeLogInput {
   actor: string;
   occurred_at?: number;
   legacy_source_key?: string | null;
+  /** SK-05：可选归属卡；done 门禁据此识别「本卡已有 changelog」 */
+  issue_id?: string | null;
 }
 
 export interface ChangeLogPatch {
@@ -79,9 +81,20 @@ export function createChangeLog(db: Db, workspace: Workspace, input: CreateChang
     legacy_source_key: input.legacy_source_key ?? null,
   };
   db.prepare(
-    `INSERT INTO workspace_change_log (${COLUMNS}) VALUES (@id,@workspace_id,@origin_workspace_id,@origin_workspace_name,@origin_workspace_path,@title,@body_md,@change_type,@occurred_at,@created_by,@updated_by,@created_at,@updated_at,@revision,@legacy_source_key)`,
-  ).run({ ...log });
+    `INSERT INTO workspace_change_log (${COLUMNS},issue_id) VALUES (@id,@workspace_id,@origin_workspace_id,@origin_workspace_name,@origin_workspace_path,@title,@body_md,@change_type,@occurred_at,@created_by,@updated_by,@created_at,@updated_at,@revision,@legacy_source_key,@issue_id)`,
+  ).run({ ...log, issue_id: input.issue_id ?? null });
   return log;
+}
+
+/**
+ * SK-05：本卡是否已有变更日志（claim 之后创建才算，避免把上一轮遗留日志当成本轮 ack）。
+ * `since` 为 claim 时间（毫秒）；为空时只按 issue_id 判定。
+ */
+export function hasChangeLogForIssue(db: Db, workspaceId: string, issueId: string, since?: number | null): boolean {
+  const row = since == null
+    ? db.prepare('SELECT 1 FROM workspace_change_log WHERE workspace_id=? AND issue_id=? LIMIT 1').get(workspaceId, issueId)
+    : db.prepare('SELECT 1 FROM workspace_change_log WHERE workspace_id=? AND issue_id=? AND created_at>=? LIMIT 1').get(workspaceId, issueId, since);
+  return row !== undefined;
 }
 
 export function getActiveChangeLog(db: Db, workspaceId: string, id: string): WorkspaceChangeLog | null {
