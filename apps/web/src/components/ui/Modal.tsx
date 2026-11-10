@@ -1,5 +1,7 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { computeSidePanel } from '../../lib/drawerAnchor';
+import { isTopOverlay, pushOverlay, removeOverlay } from '../../lib/overlayStack';
 
 export interface ModalProps {
   open: boolean;
@@ -14,8 +16,13 @@ export interface ModalProps {
    * （右侧滑出 drawer 用；抽屉自己提供标题、关闭按钮与滚动容器）。
    */
   variant?: 'modal' | 'inline';
-  /** 弹窗落位：center=居中（默认）；right=贴右侧整高抽屉（设置页人设编辑等二级面板） */
-  placement?: 'center' | 'right';
+  /**
+   * 弹窗落位：center=居中（默认）；right=贴右侧整高抽屉（窄屏兜底）；
+   * side=贴在锚定面板（设置抽屉）右缘并排，无深色遮罩；放不下时自动降级为 right。
+   */
+  placement?: 'center' | 'right' | 'side';
+  /** placement="side" 时用来测量右缘的锚定元素选择器 */
+  anchorSelector?: string;
 }
 
 const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
@@ -31,20 +38,38 @@ function tabbablesIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR));
 }
 
-/** 已打开的 modal 栈：嵌套弹窗时只有最上层响应 Esc，避免一次按键把设置页和二级面板一起关掉 */
-const modalStack: symbol[] = [];
-
-export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal', placement = 'center' }: ModalProps) {
+/** 已打开的浮层按打开顺序入共享栈（见 lib/overlayStack）：嵌套时只有最上层响应 Esc */
+export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal', placement = 'center', anchorSelector }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   // 最新 onClose 放 ref：避免父级每次渲染换新函数时重跑 effect（会重新抢焦点）
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  // SETTINGS-LAYOUT：side 模式的落位（视口坐标）；null = 没有锚点或放不下 → 降级 right 覆盖抽屉
+  const [sideLayout, setSideLayout] = useState<{ left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open || variant !== 'modal' || placement !== 'side') return;
+    const measure = (): void => {
+      const anchor = anchorSelector !== null && anchorSelector !== undefined
+        ? document.querySelector(anchorSelector)
+        : document.querySelector('[data-testid="drawer-panel"]');
+      if (anchor === null) {
+        setSideLayout(null);
+        return;
+      }
+      const next = computeSidePanel(anchor.getBoundingClientRect().right, window.innerWidth);
+      setSideLayout(next.mode === 'side' ? { left: next.left, width: next.width } : null);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [open, variant, placement, anchorSelector]);
+
   useEffect(() => {
     if (!open || variant !== 'modal') return;
     const token = Symbol('modal');
-    modalStack.push(token);
+    pushOverlay(token);
     // 打开瞬间记住触发元素，关闭后归还（抽屉不持有触发按钮 ref 时同样成立）
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
@@ -56,8 +81,8 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        // 嵌套场景只让最上层关闭；下层弹窗保持打开
-        if (modalStack[modalStack.length - 1] !== token) return;
+        // 嵌套场景只让最上层关闭；下层弹窗/抽屉保持打开
+        if (!isTopOverlay(token)) return;
         onCloseRef.current();
         return;
       }
@@ -85,8 +110,7 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
-      const index = modalStack.indexOf(token);
-      if (index !== -1) modalStack.splice(index, 1);
+      removeOverlay(token);
     };
   }, [open, variant]);
 
@@ -104,7 +128,47 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
 
   // 挂到 document.body：祖先若有 transform/filter（如侧栏 #workspace-sidebar-content 的 translate-x-0），
   // 会成为 position:fixed 的包含块，导致弹窗偏到祖先左上角而不是视口中心。
-  const isDrawer = placement === 'right';
+  const isSide = placement === 'side' && sideLayout !== null;
+  const isDrawer = placement === 'right' || (placement === 'side' && !isSide);
+  const header = (
+    <div className="mb-4 flex items-center justify-between">
+      <h2 className="text-base font-semibold">{title}</h2>
+      <button
+        type="button"
+        aria-label="关闭"
+        data-modal-close
+        onClick={onClose}
+        className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        关闭
+      </button>
+    </div>
+  );
+
+  // SETTINGS-LAYOUT：并排模式——无深色遮罩（设置面板保持可见可读），贴在锚定面板右缘、
+  // 垂直铺满、仅用 border-l hairline 分隔；层级与遮罩式抽屉相同（z-50，压在设置抽屉 z-40 之上的同层视觉带）。
+  if (isSide) {
+    return createPortal(
+      <div
+        data-testid="modal-side"
+        className="fixed inset-y-0 z-50"
+        style={{ left: sideLayout.left, width: sideLayout.width }}
+      >
+        <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          className="h-full w-full overflow-y-auto overscroll-contain rounded-none border-l border-hairline bg-surface-card p-5 text-ink shadow-xl"
+        >
+          {header}
+          {children}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
   const overlay = (
     <div
       className={`fixed inset-0 z-50 flex bg-black/40 ${isDrawer ? 'justify-end' : 'items-center justify-center p-4'}`}
@@ -123,18 +187,7 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
         }
         onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-base font-semibold">{title}</h2>
-          <button
-            type="button"
-            aria-label="关闭"
-            data-modal-close
-            onClick={onClose}
-            className="rounded px-2 py-1 text-sm text-neutral-500 hover:bg-neutral-100 dark:hover:bg-neutral-800"
-          >
-            关闭
-          </button>
-        </div>
+        {header}
         {children}
       </div>
     </div>

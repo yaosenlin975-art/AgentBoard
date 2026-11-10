@@ -12,6 +12,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import { useNavStore } from '../state/navStore';
 import { DrawerPanel, DRAWER_SQUEEZE_MIN_WIDTH } from '../components/drawer/DrawerPanel';
+import { Modal } from '../components/ui/Modal';
 import { server } from './server';
 
 /** 让 matchMedia 与 innerWidth 按给定宽度工作（jsdom 没有真实视口） */
@@ -167,6 +168,43 @@ describe('drawer 两态', () => {
     expect(screen.getByTestId('drawer-header-actions')).toBeEmptyDOMElement();
     expect(screen.queryByTestId('accounts-one-click-checkin')).toBeNull();
     expect(screen.queryByTestId('accounts-import-local')).toBeNull();
+  });
+
+  it('SETTINGS-LAYOUT：1440 设置抽屉宽度为 accounts 基准 720 的 3/4（540）', () => {
+    stubViewport(1440);
+    renderDrawer();
+    act(() => useNavStore.getState().openDrawer('settings'));
+    expect(screen.getByTestId('drawer-panel').style.width).toBe('540px');
+    act(() => useNavStore.getState().openDrawer('accounts'));
+    expect(screen.getByTestId('drawer-panel').style.width).toBe('720px');
+  });
+});
+
+describe('浮层栈串行（SETTINGS-LAYOUT）', () => {
+  it('并排面板（上层 Modal）打开时 Esc 只关面板，设置抽屉保持打开且焦点在面板内', () => {
+    stubViewport(1440);
+    const onClose = vi.fn();
+    // 先让抽屉处于打开态再渲染，保证入栈顺序：抽屉在下、面板在上
+    act(() => useNavStore.setState({ drawer: 'settings' }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <DrawerPanel />
+        <Modal open title="新建人设" onClose={onClose}>
+          <button type="button">字段</button>
+        </Modal>
+      </QueryClientProvider>,
+    );
+
+    const panel = screen.getByTestId('drawer-panel');
+    const dialog = screen.getByRole('dialog', { name: '新建人设' });
+    // 焦点锁在面板里，不被设置表单抢走
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useNavStore.getState().drawer).toBe('settings');
+    expect(panel.getAttribute('data-state')).toBe('open');
   });
 });
 

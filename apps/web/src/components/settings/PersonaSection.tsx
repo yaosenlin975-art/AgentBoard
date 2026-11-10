@@ -465,12 +465,14 @@ export function PersonaSection() {
         </p>
       )}
 
-      {/* 新建 / 编辑抽屉 */}
+      {/* 新建 / 编辑抽屉：SETTINGS-LAYOUT 起优先与设置面板并排（右侧、无深色遮罩）；
+          剩余空间不足或窄视口时由 Modal 自动降级为覆盖式右侧抽屉 */}
       <Modal
         open={drawer !== null}
         title={drawer?.mode === 'create' ? '新建人设' : readOnly ? '查看内置人设' : '编辑人设'}
         onClose={closeDrawer}
-        placement="right"
+        placement="side"
+        anchorSelector='[data-testid="drawer-panel"]'
       >
         <form onSubmit={submitForm} className="space-y-3" data-testid="persona-drawer">
           {readOnly && (

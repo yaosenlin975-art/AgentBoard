@@ -22,6 +22,7 @@ import { AccountsPanel } from '../settings/AccountsPanel';
 import { SettingsDialog } from '../topbar/SettingsDialog';
 import { DrawerHeaderActionsContext } from './drawerHeaderActions';
 import { computeDrawerAnchor, type DrawerAnchor } from '../../lib/drawerAnchor';
+import { isTopOverlay, pushOverlay, removeOverlay } from '../../lib/overlayStack';
 
 /** 挤压态的最小视口宽度（窄于此改为覆盖态） */
 export const DRAWER_SQUEEZE_MIN_WIDTH = 768;
@@ -54,6 +55,7 @@ export function DrawerPanel() {
   const mode = squeeze ? 'squeeze' : 'overlay';
   // DRAWER-ANCHOR：≥920px 时抽屉贴左栏右边缘（左 = sidebarRight + 8，宽度按内容区自适应）；
   // <920px 维持既有 squeeze / overlay 两态。
+  // SETTINGS-LAYOUT：settings 抽屉宽度再收窄为 accounts 基准的 3/4（下限 420），accounts 不变。
   const [anchor, setAnchor] = useState<DrawerAnchor | null>(null);
   const recomputeAnchor = useCallback(() => {
     const parent = panelRef.current?.offsetParent as HTMLElement | null;
@@ -61,14 +63,14 @@ export function DrawerPanel() {
     const sidebar = document.querySelector('[data-testid="sidebar"]');
     // 没有左栏（独立渲染/测试）时以定位容器左缘为锚点，等价于「紧贴内容区左缘」
     const sidebarRight = sidebar?.getBoundingClientRect().right ?? parentRect?.left ?? 0;
-    const next = computeDrawerAnchor(sidebarRight, window.innerWidth);
+    const next = computeDrawerAnchor(sidebarRight, window.innerWidth, drawer === 'settings' ? 'settings' : 'accounts');
     if (next.mode === 'legacy') {
       setAnchor(next);
       return;
     }
     // 视口坐标 → 定位容器坐标（抽屉的 offsetParent 就是 App 里的 relative 布局壳）
     setAnchor({ ...next, left: next.left - (parentRect?.left ?? 0) });
-  }, []);
+  }, [drawer]);
 
   useLayoutEffect(() => {
     recomputeAnchor();
@@ -105,11 +107,15 @@ export function DrawerPanel() {
     if (!open) return;
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     panelRef.current?.focus();
+    // SETTINGS-LAYOUT：与 Modal 共用浮层栈——设置抽屉开着并排人设面板时，Esc 只关栈顶的人设面板，
+    // 抽屉保持打开（且不 stopPropagation，让 Modal 的 window 监听能收到这一击）。
+    const overlayToken = Symbol('drawer');
+    pushOverlay(overlayToken);
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        closeDrawer();
-      }
+      if (event.key !== 'Escape') return;
+      if (!isTopOverlay(overlayToken)) return;
+      event.stopPropagation();
+      closeDrawer();
     };
     // DRAWER-DISMISS：文档级「点外部关闭」。用捕获阶段 pointerdown 判定落点，
     // 避免 click 冒泡顺序导致「先关再开」（触发按钮的 onClick 会在 click 阶段重新打开）。
@@ -142,6 +148,7 @@ export function DrawerPanel() {
     return () => {
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('pointerdown', onPointerDown, true);
+      removeOverlay(overlayToken);
     };
   }, [open, closeDrawer]);
 

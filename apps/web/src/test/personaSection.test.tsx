@@ -277,4 +277,31 @@ describe('设置页 · 智能体人设', () => {
     expect(screen.getByTestId('persona-body')).toBeInTheDocument();
     expect(within(screen.getByTestId('persona-drawer')).getByText('名称（必填，上限 100 字）')).toBeInTheDocument();
   });
+
+  it('SETTINGS-LAYOUT：设置面板打开时新建人设面板并排贴其右缘（无深色遮罩）', async () => {
+    setup();
+    // jsdom 无真实布局：造一个右缘 788 的锚定面板（1440 视口下设置抽屉 248+540）
+    const anchor = document.createElement('div');
+    anchor.setAttribute('data-testid', 'drawer-panel');
+    anchor.getBoundingClientRect = () => ({
+      right: 788, left: 248, top: 0, bottom: 900, width: 540, height: 900, x: 248, y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+    document.body.appendChild(anchor);
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1440 });
+    try {
+      renderSection();
+      await screen.findByText('通用助手');
+
+      await userEvent.click(screen.getByTestId('persona-create'));
+      const side = await screen.findByTestId('modal-side');
+      expect(side.style.left).toBe('788px');
+      expect(side.style.width).toBe('480px');
+      expect(screen.queryByTestId('modal-overlay')).toBeNull();
+      expect(screen.getByTestId('persona-drawer')).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1024 });
+      anchor.remove();
+    }
+  });
 });
