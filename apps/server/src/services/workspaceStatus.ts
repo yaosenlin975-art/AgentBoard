@@ -53,7 +53,7 @@ export function requireWorkspaceStatus(db: Db, workspaceId: string, status: stri
   if (allowed.includes(trimmed)) return trimmed;
   throw new ValidationError(
     allowed.length > 0
-      ? `status 必须是本工作区已定义的状态：${allowed.join(' / ')}（收到 "${trimmed}"）`
+      ? `状态必须是本工作区已定义的状态：${allowed.join(' / ')}（收到 "${trimmed}"）`
       : `工作区 ${workspaceId} 还没有定义任何状态`,
   );
 }

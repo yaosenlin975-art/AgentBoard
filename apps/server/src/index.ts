@@ -25,6 +25,7 @@ import type { DraftRunner } from './services/smartCreateDraft.js';
 import { spawnDetached, type RestartDeps } from './api/systemRoutes.js';
 import { attachVoiceWebSocket, type VoiceRouterOptions } from './api/voiceRoutes.js';
 import type { BrowserOpenerDeps } from './services/browserOpener.js';
+import type { SkillsSyncOptions } from './services/skillsSync.js';
 import { appendServerLog, resolveServerLogPath } from './services/serverLog.js';
 import { createKnowledgeDeepLinkRoutes } from './api/knowledgeDeepLinkRoutes.js';
 import type { ManagedAppId } from '@agentboard/shared';
@@ -136,6 +137,8 @@ export interface CreateAppOptions {
    * 缺省内置默认，测试不读盘）。
    */
   dispatchPromptTemplate?: string;
+  /** SKILLS-SYNC：home / 技能来源 / 记录目录（仅测试注入；生产按仓库与 ~/.agents/skills 探测） */
+  skillsSync?: SkillsSyncOptions;
 }
 
 export interface CreatedApp {
@@ -244,7 +247,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
-        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...migrationDeps }));
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...migrationDeps }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

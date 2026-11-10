@@ -492,3 +492,12 @@ export const patchSettingsSchema = z
     attachmentCleanupIntervalMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });
+
+/** SKILLS-SYNC：只收目标 id 与覆盖策略，路径一律由服务端枚举（杜绝任意路径写入） */
+export const skillsSyncSchema = z
+  .object({
+    target_ids: z.array(z.string().trim().min(1)).min(1, '至少选择一个目标目录').max(16),
+    conflict: z.enum(['overwrite', 'skip', 'backup']).optional(),
+    workspace_id: z.string().min(1).optional(),
+  })
+  .strict();

@@ -24,7 +24,10 @@ import { AttachmentStore } from '../../services/attachments.js';
 import {
   patchSettingsSchema,
   dbMigrateSchema,
+  skillsSyncSchema,
 } from '../schemas.js';
+import { getWorkspace } from '../../db/repos/workspace.js';
+import { probeTargets, removeSynced, syncSkills, type SkillsSyncOptions } from '../../services/skillsSync.js';
 
 export interface SettingsRouterDeps {
   /** 中心库：存储统计与迁移源库 */
@@ -40,6 +43,8 @@ export interface SettingsRouterDeps {
   dbPathSource?: DbPathSource;
   /** SYSTEM-RESTART：服务自重启依赖（生产 main() 注入；测试可注入 fake） */
   restart?: RestartDeps;
+  /** SKILLS-SYNC：home / 技能来源 / 记录目录（测试注入临时目录；生产用默认探测） */
+  skillsSync?: SkillsSyncOptions;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -180,6 +185,41 @@ export function createSettingsRouter(deps: SettingsRouterDeps): Router {
     const status = getMigrationStatus(migrationStateDir, req.params.migrationId);
     if (status === null) throw new NotFoundError('迁移记录不存在');
     res.json(status);
+  });
+
+  // ---- SKILLS-SYNC：配套技能复制到本机常见 agent skills 目录 ----
+  // 目标目录一律服务端枚举（target id），接口不收任意路径；工作区目标仅在传 workspace_id 时出现。
+  const skillOptions = (workspaceId: string | undefined): SkillsSyncOptions => {
+    const base = deps.skillsSync ?? {};
+    if (workspaceId === undefined || workspaceId === '') return base;
+    const workspace = getWorkspace(db, workspaceId);
+    if (workspace === null) throw new NotFoundError('工作空间不存在');
+    return { ...base, workspacePath: workspace.path };
+  };
+  const workspaceIdOf = (req: { query?: unknown; body?: unknown }): string | undefined => {
+    const fromQuery = (req.query as { workspace_id?: unknown } | undefined)?.workspace_id;
+    if (typeof fromQuery === 'string' && fromQuery !== '') return fromQuery;
+    const fromBody = (req.body as { workspace_id?: unknown } | undefined)?.workspace_id;
+    if (typeof fromBody === 'string' && fromBody !== '') return fromBody;
+    return undefined;
+  };
+
+  router.get('/settings/skills-sync/targets', (req, res) => {
+    res.json(probeTargets(skillOptions(workspaceIdOf(req))));
+  });
+
+  router.post('/settings/skills-sync', (req, res) => {
+    const body = parseBody(skillsSyncSchema, req.body);
+    const options: SkillsSyncOptions = skillOptions(body.workspace_id);
+    res.json(syncSkills({
+      ...options,
+      targetIds: body.target_ids,
+      ...(body.conflict === undefined ? {} : { conflict: body.conflict }),
+    }));
+  });
+
+  router.delete('/settings/skills-sync/:targetId', (req, res) => {
+    res.json(removeSynced(skillOptions(workspaceIdOf(req)), req.params.targetId));
   });
 
   return router;

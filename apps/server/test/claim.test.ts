@@ -8,6 +8,7 @@ import {
   claimIssue,
   doneIssue,
   failIssue,
+  releaseClaimedIssue,
   releaseIssue,
   updateIssueGuarded,
 } from '../src/services/claim.js';
@@ -91,6 +92,19 @@ describe('claimIssue 并发领取', () => {
     const issue = seedIssue();
     claimIssue(t.db, issue.id, 'agent-a', 'session-a');
     expect(() => claimIssue(t.db, issue.id, 'agent-b', 'session-b')).toThrow(ApiError);
+  });
+
+  it('release 未占用卡：文案区分「未被占用」，不冒充「只有当前占用者」', () => {
+    const issue = seedIssue();
+    try {
+      releaseClaimedIssue(t.db, issue.id, wsId, 'agent-a');
+      throw new Error('应当抛出 409');
+    } catch (error) {
+      const api = error as ApiError;
+      expect(api.status).toBe(409);
+      expect(api.message).toContain('未被占用，无需释放');
+      expect(api.message).not.toContain('只有当前占用者');
+    }
   });
 });
 

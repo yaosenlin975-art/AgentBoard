@@ -176,9 +176,9 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
     try {
       stat = statSync(body.path);
     } catch {
-      throw new ValidationError(`路径不存在或不是目录: ${body.path}`);
+      throw new ValidationError(`路径不存在或不是目录：${body.path}；先创建目录再重试`);
     }
-    if (!stat.isDirectory()) throw new ValidationError(`路径不存在或不是目录: ${body.path}`);
+    if (!stat.isDirectory()) throw new ValidationError(`路径不存在或不是目录：${body.path}；先创建目录再重试`);
     // name 留空 → 从 path basename 兜底（路径存在性校验已在前，空路径不会到这里）
     const name = body.name !== '' ? body.name : workspaceNameFromPath(body.path);
     res.json(createWorkspace(db, { name, path: body.path }));

@@ -56,7 +56,13 @@ function scopedFinish(db: Db, issueId: string, workspaceId: string, actorId: str
     // （否则会被「非占用者」抢先报错，掩盖真正的过期原因）
     assertFenceCurrent(db, issueId, fence);
     const leaseExpiredTakeover = isLeaseExpiredTakeover(issue, fence);
-    if (issue.claimed_by !== actorId && !leaseExpiredTakeover) throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
+    if (issue.claimed_by !== actorId && !leaseExpiredTakeover) {
+      // B2：「未占用」与「别人占用」是两件事，不能都报「只有当前占用者」（会让 release 用户以为被抢）
+      if (issue.claimed_by === null && action === 'release') {
+        throw new ConflictError(`未被占用，无需释放（当前状态=${issue.status}）；如需推进请先 kb claim`);
+      }
+      throw new ApiError(409, 'NOT_TASK_OWNER', '只有当前占用者可执行此操作');
+    }
     const nextStatus = action === 'done' ? '待验收' : '待规划';
     const result = leaseExpiredTakeover
       ? db.prepare(`UPDATE issue SET status=?,claimed_by=NULL,claimed_at=NULL,claim_lease_until=NULL,last_heartbeat_at=NULL,session_id=NULL,last_seen_comment_id=NULL,updated_at=MAX(?,updated_at+1) WHERE id=? AND workspace_id=? AND claimed_by IS NULL AND status='进行中'`)
@@ -189,8 +195,12 @@ export function claimIssue(db: Db, issueId: string, agentId: string, sessionId: 
       if (current.claimed_by !== null) {
         throw new ApiError(409, 'ISSUE_CLAIMED', `已被 ${current.claimed_by} 占用；先 release 或换卡，勿重复 claim`);
       }
+      // B3：按状态给下一步——待验收是「先验收/退回」，已关闭/已废弃是「先 reopen」，不能一律套待验收口径
+      const hint = current.status === '待验收'
+        ? '待验收卡由 owner 验收或由父代理退回待规划'
+        : `已关闭/已废弃的卡需先 kb reopen ${issueId}`;
       throw new ApiError(409, 'ISSUE_STATUS_NOT_CLAIMABLE',
-        `状态不可领取（当前=${current.status}，需=待规划 或 进行中）；无人占用，待验收卡由 owner 验收或由父代理退回待规划`);
+        `状态不可领取（当前=${current.status}，需=待规划 或 进行中）；无人占用，${hint}`);
     }
     const fenceRow = db.prepare('SELECT claim_fence FROM issue WHERE id=?').get(issueId) as { claim_fence: number };
     return { ...getIssue(db, issueId)!, claim_fence: fenceRow.claim_fence };

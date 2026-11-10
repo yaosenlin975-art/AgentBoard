@@ -48,6 +48,7 @@ import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { httpMutation } from '../services/idempotency.js';
 import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
+import type { SkillsSyncOptions } from '../services/skillsSync.js';
 
 export interface RouterDeps {
   db: Db;
@@ -92,6 +93,8 @@ export interface RouterDeps {
   browserOpener?: BrowserOpenerDeps;
   /** ARCH-05：启动期解析并缓存的派发默认模板（缺省内置默认） */
   dispatchPromptTemplate?: string;
+  /** SKILLS-SYNC：home / 技能来源 / 记录目录（仅测试注入；生产用默认探测） */
+  skillsSync?: SkillsSyncOptions;
 }
 
 export function createRouter(deps: RouterDeps): Router {
@@ -345,6 +348,7 @@ export function createRouter(deps: RouterDeps): Router {
     migrationStateDir,
     ...(deps.dbPathSource === undefined ? {} : { dbPathSource: deps.dbPathSource }),
     ...(deps.restart === undefined ? {} : { restart: deps.restart }),
+    ...(deps.skillsSync === undefined ? {} : { skillsSync: deps.skillsSync }),
   }));
 
   // ---- sessions 域（CR-10c 自本文件纯搬迁到 routes/sessionRoutes.ts）----
