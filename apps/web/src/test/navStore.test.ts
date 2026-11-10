@@ -53,8 +53,8 @@ beforeEach(() => {
 });
 
 describe('视图枚举与守卫', () => {
-  it('[0] 六视图枚举固定，默认 board', () => {
-    expect(NAV_VIEWS).toEqual(['board', 'decisions', 'tree', 'knowledge', 'log', 'chat']);
+  it('[0] 七视图枚举固定，默认 board', () => {
+    expect(NAV_VIEWS).toEqual(['board', 'decisions', 'tree', 'knowledge', 'log', 'chat', 'experts']);
     expect(useNavStore.getState().view).toBe('board');
     expect(DEFAULT_NAV_VIEW).toBe('board');
   });

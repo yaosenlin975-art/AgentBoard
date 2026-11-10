@@ -611,6 +611,29 @@ export interface TeamMemberSnapshot {
 /** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 + 专家团事件 */
 export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent | TeamUpdateEvent;
 
+/** P3-B：专家团团（REST 响应，与 `teams` 表同形） */
+export interface Team {
+  id: string;
+  workspace_id: string;
+  name: string;
+  lead_session_id: string;
+  status: 'active' | 'stopped';
+  max_turns_per_member: number;
+  budget_tokens: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** P3-B：团队成员详情（`session` 为成员会话元信息；会话已被删除时为 null） */
+export interface TeamMemberDetail extends TeamMemberSnapshot {
+  session: Session | null;
+}
+
+/** P3-B：团详情（GET /api/teams/:id） */
+export interface TeamDetail extends Team {
+  members: TeamMemberDetail[];
+}
+
 /** 工作区变更日志类型；`历史` 仅由旧 CHANGELOG 导入写入，普通 UI/CLI 新增不可选 */
 export type WorkspaceChangeType = '新增' | '修复' | '调整' | '历史';
 

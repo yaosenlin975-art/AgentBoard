@@ -28,6 +28,8 @@ const DecisionsView = lazy(() =>
 const ChangelogPanel = lazy(() =>
   import('./components/changelog/ChangelogPanel').then((m) => ({ default: m.ChangelogPanel })),
 );
+// P3-B：专家组（左侧栏下半部分入口，独立视图；不并入会话设置）
+const ExpertsView = lazy(() => import('./components/experts/ExpertsView').then((m) => ({ default: m.ExpertsView })));
 
 /** 动态视图加载中的占位（每次切换视图时出现一次） */
 const viewLoading = (
@@ -66,6 +68,7 @@ export default function App() {
     knowledge: '知识库',
     log: '日志',
     chat: '聊天',
+    experts: '专家组',
   };
 
   // NAV-CHAT-EXIT：整屏聊天下 Esc / Ctrl(Cmd)+[ 退出回来源视图；有弹窗时让弹窗先处理
@@ -139,6 +142,10 @@ export default function App() {
                       </Suspense>
                     </div>
                   </div>
+                ) : view === 'experts' ? (
+                  <Suspense fallback={viewLoading}>
+                    <ExpertsView />
+                  </Suspense>
                 ) : (
                   <Board />
                 )}

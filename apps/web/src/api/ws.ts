@@ -86,6 +86,9 @@ export function eventToQueryKeys(event: ServerWsEvent): unknown[][] {
       // 会话详情与 turn 列表不走 react-query（经 wsBus → turnStore 增量消费），没有可失效的 query key，
       // 恢复后的增量拉取由消费方从 `resume_after_seq` 继续，不在这里失效。
       return [['sessions']];
+    case 'team_update':
+      // P3-B：专家团快照（成员状态/用量）——列表按前缀失效，详情按团 id 精确失效
+      return [['teams'], ['team', event.team_id]];
     default:
       // 新增 `ServerWsEvent` 类型默认不做缓存失效，确实需要刷新查询的必须在上方显式加 case。
       // 本分支同时保证穷尽 switch 不因联合类型扩展而失去出口（TS2366 已复发两次：decision.*、session.paused/resumed）。

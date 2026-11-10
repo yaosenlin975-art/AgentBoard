@@ -2,7 +2,7 @@
  * 导航状态（S1，设计稿 `Docs/designs/chat/2026-11-04-nav-sidebar-chat-view.md` §4）。
  *
  * 单一视图枚举替代 App 的 `layout + knowledgeOpen + logOpen` 三态组合：
- *   view ∈ { board, decisions, tree, knowledge, log, chat }  —— 六入口互斥（单值即互斥）
+ *   view ∈ { board, decisions, tree, knowledge, log, chat, experts }  —— 七入口互斥（单值即互斥）
  *   drawer ∈ { accounts, settings } | null                  —— 右侧滑出面板，两者互斥
  *
  * DEC-6：`decisions` 是「待决策」视图（设计 v3 §3.7 方案 A，紧随看板、与任务同域）；
@@ -27,12 +27,13 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { DRAWER_ANCHOR_MIN_VIEWPORT } from '../lib/drawerAnchor';
 
-export type NavView = 'board' | 'decisions' | 'tree' | 'knowledge' | 'log' | 'chat';
+/** P3-B：`experts` = 专家组（左侧栏下半部分入口，位于「账号管理」与「设置」之间） */
+export type NavView = 'board' | 'decisions' | 'tree' | 'knowledge' | 'log' | 'chat' | 'experts';
 export type NavDrawer = 'accounts' | 'settings';
 /** SIDEBAR-1：侧栏形态 —— 展开 176px / 收起 56px 图标栏 */
 export type SidebarMode = 'expanded' | 'collapsed';
 
-export const NAV_VIEWS: readonly NavView[] = ['board', 'decisions', 'tree', 'knowledge', 'log', 'chat'];
+export const NAV_VIEWS: readonly NavView[] = ['board', 'decisions', 'tree', 'knowledge', 'log', 'chat', 'experts'];
 export const NAV_DRAWERS: readonly NavDrawer[] = ['accounts', 'settings'];
 export const SIDEBAR_MODES: readonly SidebarMode[] = ['expanded', 'collapsed'];
 export const DEFAULT_NAV_VIEW: NavView = 'board';
@@ -89,7 +90,7 @@ export interface NavState {
    * Board 消费后负责滚动到该卡并清空，避免下次进看板莫名跳过去。
    */
   boardFocus: string | null;
-  /** 切视图（六入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
+  /** 切视图（七入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
   setView: (view: NavView) => void;
   /** DEC-6 深链：切到待决策视图并选中一条决策（通知点击 / 列表跳转） */
   focusDecision: (decisionId: string | null) => void;

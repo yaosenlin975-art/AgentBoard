@@ -396,6 +396,16 @@ const EVENT_FIXTURES = {
       paused_at: null,
     },
   },
+  // P3-B：专家团快照（成员状态/用量）
+  team_update: {
+    type: 'team_update',
+    team_id: 'team-1',
+    status: 'active',
+    members: [
+      { session_id: 's-1', role: '架构', agent_name: 'Alice', status: 'idle', usage: { turns: 0, tokens: 0, tool_calls: 0 } },
+    ],
+    reason: 'member_added',
+  },
 } satisfies Record<ServerWsEvent['type'], ServerWsEvent>;
 
 describe('eventToQueryKeys 类型护栏', () => {
@@ -409,6 +419,6 @@ describe('eventToQueryKeys 类型护栏', () => {
   });
 
   it('夹具覆盖 ServerWsEvent 的全部 type（缺键由 satisfies 编译期拦截）', () => {
-    expect(Object.keys(EVENT_FIXTURES)).toHaveLength(25);
+    expect(Object.keys(EVENT_FIXTURES)).toHaveLength(26);
   });
 });

@@ -33,6 +33,8 @@ const ENTRY_ICON: Record<NavView, string> = {
   knowledge: 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h5',
   log: 'M4 6h16M4 12h16M4 18h10',
   chat: 'M4 5h16v10H9l-5 4z',
+  // P3-B：专家组（三个小人，区别于单人的账号图标）
+  experts: 'M8 11a3 3 0 100-6 3 3 0 000 6M2 19c0-2.2 2.7-4 6-4s6 1.8 6 4M16 11a2.5 2.5 0 100-5M18 14.5c2.4.4 4 1.9 4 3.5',
 };
 
 const ENTRIES: Array<{ view: NavView; label: string }> = [
@@ -339,6 +341,25 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
             <path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6" />
           </svg>
           <span className="ab-sidebar-label truncate">账号</span>
+        </button>
+        {/* P3-B：专家组视图入口（下半部分，位于「账号」与「设置」之间；独立视图，不是抽屉） */}
+        <button
+          type="button"
+          data-testid="sidebar-entry-experts"
+          aria-label="专家组"
+          aria-current={view === 'experts' ? 'page' : undefined}
+          data-active={view === 'experts' ? 'true' : 'false'}
+          onClick={() => {
+            setView('experts');
+            if (narrow && narrowExpanded) closeNarrowOverlay();
+          }}
+          data-tip="专家组"
+          className={`ab-sidebar-tip ab-sidebar-bottom-btn ${BOTTOM_BTN} ${view === 'experts' ? 'text-accent' : ''}`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d={ENTRY_ICON.experts} />
+          </svg>
+          <span className="ab-sidebar-label truncate">专家组</span>
         </button>
         <button
           type="button"
