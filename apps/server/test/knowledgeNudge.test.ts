@@ -77,10 +77,10 @@ describe('knowledge nudge on done', () => {
     await claim(issueId);
     const body = await done(issueId);
     expect(body.status).toBe('待验收');
-    // KB-SRVMSG N-04：主题 slug（handoff-<主题>-<日期>），不再是一次性 handoff-<uuid>
+    // KB-SRVMSG N-04：主题 slug（<主题>-<日期>），不再是一次性 handoff-<uuid>，也不再带 handoff- 前缀
     expect(body.knowledge_hint).toMatchObject({ scope: 'workspace' });
-    expect(body.knowledge_hint!.suggested_slug).toMatch(/^handoff-[\p{L}\p{N}-]+-\d{4}-\d{2}-\d{2}$/u);
-    expect(body.knowledge_hint!.suggested_slug).not.toBe(`handoff-${issueId}`);
+    expect(body.knowledge_hint!.suggested_slug).toMatch(/^[\p{L}\p{N}-]+-\d{4}-\d{2}-\d{2}$/u);
+    expect(body.knowledge_hint!.suggested_slug.startsWith('handoff-')).toBe(false);
     expect(body.knowledge_hint!.message).toContain('kb knowledge create');
     expect(body.knowledge_hint!.message).toContain(body.knowledge_hint!.suggested_slug);
   });

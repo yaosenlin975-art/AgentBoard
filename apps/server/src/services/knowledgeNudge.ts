@@ -22,7 +22,7 @@ function themeSlug(title: string): string {
   const base = words !== '' ? words : 'task';
   const now = new Date();
   const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  return `handoff-${base}-${day}`;
+  return `${base}-${day}`;
 }
 
 export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
@@ -31,10 +31,11 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
   const suggestedSlug = themeSlug(issue.title);
   const hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
     WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
-      AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))
+      AND (slug LIKE ? OR slug LIKE ? OR (updated_by=? AND updated_at>=?))
     LIMIT 1`).get(
     issue.workspace_id,
     `${suggestedSlug}%`,
+    `handoff-${issue.id}%`,
     `agent:${issue.claimed_by}`,
     issue.claimed_at,
   ) as { hit: number } | undefined;
@@ -49,7 +50,10 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
     message: `本任务还没有写知识页。建议：kb knowledge create --scope workspace --workspace ${issue.workspace_id} `
       + `--slug ${suggestedSlug} --title "${title}" --category solved --domain knowledge `
       + `--sources-file sources.json --evidence-file evidence.json --stdin`
-      + `（sources/evidence 各 ≥1 条，字段见 kb knowledge create --help；`
-      + `正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`,
+      + `（sources/evidence 各 ≥1 条；最小示例 sources.json `
+      + `[{"source_id":"s1","source_type":"file","locator":"apps/server/src/services/decision.ts","captured_at":1730000000000,"content_hash":"<64 位 sha256>"}]，`
+      + `evidence.json [{"source_id":"s1","locator":"apps/server/src/services/decision.ts:326-334"}]；`
+      + `正文用 --stdin 传入：目标、关键决策与取舍、验证方式与结果、未验证项）`
+      + `；另需写变更日志：kb changelog create --title "…" --type 修复（正文走 --stdin）`,
   };
 }

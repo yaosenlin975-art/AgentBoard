@@ -276,7 +276,9 @@ export function decisionLockedError(db: Db, issueId: string, decisionId: string,
   return new ApiError(
     409,
     'DECISION_LOCKED',
-    `任务「${title}」已被待决策锁住（decision=${decisionId}），不能${action}；先 kb decision answer ${decisionId} 回答决策`,
+    `决策锁（无占用）：任务「${title}」被待决策锁住（decision=${decisionId}），不能${action}；`
+      + `回答由人在看板「待决策」处理，agent 可 kb decision show ${decisionId} 查看，`
+      + `或 kb decision withdraw ${decisionId} --reason "…" 撤回后重新 claim`,
   );
 }
 

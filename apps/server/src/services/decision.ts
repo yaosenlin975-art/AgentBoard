@@ -325,7 +325,13 @@ export interface AnswerDecisionInput {
  */
 export function answerPendingDecision(db: Db, input: AnswerDecisionInput): DecisionDetail {
   const answeredBy = input.answered_by ?? 'user';
-  if (answeredBy !== 'user') throw new ForbiddenError('当前仅人类可回答决策（answered_by=user）');
+  if (answeredBy !== 'user') {
+    throw new ApiError(
+      403,
+      'DECISION_HUMAN_ONLY',
+      `仅人类可回答决策（answered_by=user）：由人在看板「待决策」回答，或 kb decision withdraw ${input.decision_id} --reason "…" 撤回后重新 claim`,
+    );
+  }
   const source: DecisionSource = input.source ?? 'web';
   if (source !== 'web' && source !== 'cli') throw new ValidationError('source 不合法（需 web/cli）');
   if (input.expected_revision !== undefined && input.expected_revision !== null) {
