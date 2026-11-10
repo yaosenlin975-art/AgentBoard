@@ -9,6 +9,7 @@ import {
   updateCheckinBatchItem,
 } from '../../db/repos/checkin.js';
 import { credentialExpiresAtFromPayload, getManagedAccount, markCredentialInvalid, markCredentialRefreshed } from '../../db/repos/managedAccount.js';
+import { createPendingTravelRound } from '../../db/repos/travelRound.js';
 import { ApiError, NotFoundError } from '../../errors.js';
 import { runAccountOperation } from './operationRunner.js';
 import type { CheckinProviderSpec, CheckinVault } from './checkinProvider.js';
@@ -134,6 +135,15 @@ async function runItem(deps: CheckinRunnerDeps, batchId: string, day: string, ac
           note = activity.status === 'failed'
             ? `travel=failed:${activity.safe_error_code ?? 'TRAVEL_FAILED'}`
             : `travel=${activity.status}`;
+        }
+        // TRAVEL-REC：派出成功即落「待回收」轮次（到期由 travelRecovery ticker 自动回收）。
+        // 本地记录失败不回滚签到结果，但要在 recovery_ref 上留痕，避免静默丢轮次。
+        if (activity !== null && activity !== undefined && activity.kind === 'travel' && activity.status === 'dispatched') {
+          try {
+            createPendingTravelRound(deps.db, { account_id: account.id, operation_id: operation.id, dispatched_at: Date.now() });
+          } catch {
+            note = `${note}:record_failed`;
+          }
         }
       } catch (error) {
         note = `travel=failed:${error instanceof ApiError ? error.code : 'TRAVEL_FAILED'}`;

@@ -10,6 +10,8 @@ import { migrateTaskHierarchy } from './migrations/taskHierarchy.js';
 import { migrateAttachments, migrateAttachmentKind } from './migrations/attachments.js';
 import { migrateWorkspaceChangeLog } from './migrations/workspaceChangeLog.js';
 import { migrateCheckin } from './migrations/checkin.js';
+// TRAVEL-REC：WorkBuddy 猫猫旅行轮次表（纯追加；排在签到表之后，不依赖任何后续重建）
+import { migrateTravelRecovery } from './migrations/travelRecovery.js';
 import { migrateWorkspaceOrder } from './migrations/workspaceOrder.js';
 import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/issueGitBaseline.js';
 import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
@@ -133,6 +135,8 @@ export function initSchema(db: Db): void {
   migrateWorkspaceChangeLog(db);
   migrateCheckin(db);
   migrateCheckinPlatforms(db);
+  // TRAVEL-REC：旅行派出轮次（纯追加表，幂等；重启后可续回收）
+  migrateTravelRecovery(db);
   // ACC-KB-B2S：协议级「添加账号」的授权会话表（纯追加表）
   migrateAddAccount(db);
   // ACC-KB-B6：设备身份字段（幂等；老数据默认 pending）。**必须放在所有「重建 managed_account」的迁移之后**，
