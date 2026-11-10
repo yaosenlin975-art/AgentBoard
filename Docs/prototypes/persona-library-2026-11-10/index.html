@@ -26,6 +26,7 @@
     <span class="proto-sep" aria-hidden="true"></span>
     <button type="button" class="proto-btn" id="btn-empty">空态演示</button>
     <button type="button" class="proto-btn" id="btn-reset">重置数据</button>
+    <button type="button" class="proto-btn" id="btn-fail" aria-pressed="false">下次生成失败</button>
     <button type="button" class="proto-btn" id="btn-notes" aria-pressed="true">说明块</button>
     <span class="proto-memo" id="memo">列表 → 新建 / 编辑抽屉 → 删除确认 → 导入</span>
   </div>
@@ -119,6 +120,46 @@
           内置人设由程序包提供，只读。需要定制请「新建人设」复制一份再改。
         </p>
 
+        <!--
+          智能创建（本次迭代新增，仅新建模式出现）
+          取舍：一句话描述 → 草稿 → 四段结构化字段可改；生成中禁用表单，失败可重试，结果可放弃。
+          手动填写始终保留，智能创建只是可选的加速入口，不替代原有流程。
+        -->
+        <section class="smart-create" id="smart-create" aria-labelledby="smart-title">
+          <div class="smart-head">
+            <span class="smart-title" id="smart-title">智能创建</span>
+            <span class="tag">一句话生成草稿</span>
+          </div>
+          <p class="smart-hint">描述你要的人设，生成后仍可逐字段修改；也可以跳过它直接手填。</p>
+
+          <div id="smart-form">
+            <textarea class="field smart-prompt" id="f-prompt" rows="2"
+              placeholder="例如：一个严谨的技术文档编辑，把口语化笔记改成可发布的说明"></textarea>
+            <div class="smart-chips" id="smart-chips">
+              <button type="button" class="chip" data-chip="严谨的技术文档编辑，把口语化的笔记改写成可发布的说明">技术文档编辑</button>
+              <button type="button" class="chip" data-chip="挑剔的代码评审，先指出会导致错误的问题，再谈风格">严格代码评审</button>
+              <button type="button" class="chip" data-chip="有耐心的新手导师，一次只讲一个概念并给练习">新手导师</button>
+            </div>
+            <p class="field-hint is-error" id="smart-error" hidden></p>
+            <div class="smart-actions">
+              <button type="button" class="ab-btn ab-btn-primary ab-btn-sm" id="btn-generate">生成草稿</button>
+              <span class="field-hint">约 1.2s · 演示数据，不调真实模型</span>
+            </div>
+          </div>
+
+          <div class="smart-generating" id="smart-generating" hidden>
+            <div class="smart-progress-row">
+              <span class="spinner" aria-hidden="true"></span>
+              <span>正在生成草稿… <span id="smart-elapsed">0.0s</span></span>
+            </div>
+            <div class="smart-bar" aria-hidden="true"><i id="smart-bar-fill"></i></div>
+            <div class="smart-generating-foot">
+              <span class="field-hint">生成期间表单暂不可改</span>
+              <button type="button" class="ab-btn ab-btn-secondary ab-btn-sm" id="btn-cancel-generate">取消生成</button>
+            </div>
+          </div>
+        </section>
+
         <label class="field-label" for="f-name">名称<span class="req">必填</span></label>
         <input class="field" id="f-name" maxlength="100" placeholder="例如：发布协调员">
         <p class="field-hint is-error" id="err-name" hidden>名称不能为空（上限 100 字）</p>
@@ -126,12 +167,45 @@
         <label class="field-label" for="f-desc">描述<span class="counter">≤ 2000 字</span></label>
         <input class="field" id="f-desc" maxlength="2000" placeholder="一句话说明这个人在什么时候用">
 
-        <label class="field-label" for="f-body">人设正文（Markdown）<span class="req">必填</span></label>
-        <textarea class="field" id="f-body" spellcheck="false" placeholder="写清角色、工作方式、输出要求……"></textarea>
-        <p class="field-hint is-error" id="err-body" hidden>人设正文不能为空</p>
-        <p class="field-hint">
-          正文会作为系统提示词注入使用该人设的会话；工具与技能开关仍在会话设置里单独配置，不在这里。
-        </p>
+        <!-- 结构化草稿：由智能创建生成，四段拼进 body_md -->
+        <div id="draft-editor" hidden>
+          <div class="draft-banner">
+            <div>
+              <strong>草稿已生成</strong>
+              <span>可逐段修改；保存时按 Markdown 小节拼进人设正文。</span>
+            </div>
+            <div class="draft-banner-actions">
+              <button type="button" class="link-btn" id="btn-regenerate">重新生成</button>
+              <button type="button" class="link-btn link-danger" id="btn-discard">放弃草稿</button>
+            </div>
+          </div>
+
+          <div id="draft-fields">
+            <label class="field-label" for="f-role">角色<span class="req">必填</span></label>
+            <textarea class="field field-compact" id="f-role" rows="3" spellcheck="false"></textarea>
+            <p class="field-hint is-error" id="err-role" hidden>角色不能为空（可点「放弃草稿」回到手填）</p>
+
+            <label class="field-label" for="f-tone">语气</label>
+            <textarea class="field field-compact" id="f-tone" rows="2" spellcheck="false"></textarea>
+
+            <label class="field-label" for="f-boundary">边界与禁忌</label>
+            <textarea class="field field-compact" id="f-boundary" rows="3" spellcheck="false"></textarea>
+
+            <label class="field-label" for="f-domain">擅长领域</label>
+            <textarea class="field field-compact" id="f-domain" rows="3" spellcheck="false"></textarea>
+          </div>
+
+          <button type="button" class="link-btn" id="btn-raw-toggle">改为 Markdown 编辑</button>
+        </div>
+
+        <div id="body-manual">
+          <label class="field-label" for="f-body">人设正文（Markdown）<span class="req">必填</span></label>
+          <textarea class="field" id="f-body" spellcheck="false" placeholder="写清角色、工作方式、输出要求……"></textarea>
+          <p class="field-hint is-error" id="err-body" hidden>人设正文不能为空</p>
+          <p class="field-hint">
+            正文会作为系统提示词注入使用该人设的会话；工具与技能开关仍在会话设置里单独配置，不在这里。
+          </p>
+        </div>
       </div>
       <footer class="drawer-foot">
         <button type="button" class="ab-btn ab-btn-secondary" id="drawer-cancel">取消</button>
@@ -217,6 +291,7 @@
       <li><strong>删除</strong>：只告知不阻断。<code>session.persona_id</code> 无外键、会话分散在各工作区库、暂无引用计数接口；删后会话显示「未知人设」，下一轮不再注入，但可正常启动。</li>
       <li><strong>导入</strong>：整包导入（后端按包事务写入），不做包内多选；同目录 / 同名重复导入按 409 原样展示服务端文案。</li>
       <li><strong>空态</strong>：给出「新建 / 从专家包导入」两条主行动，并说明不设人设的会话照常可用。</li>
+      <li><strong>智能创建</strong>：仅新建抽屉出现。一句话需求 → 四段草稿（角色 / 语气 / 边界与禁忌 / 擅长领域）→ 改完保存；生成中可取消、失败原地重试、草稿可放弃，手动填写全程可达。</li>
       <li><strong>刻意不做</strong>：搜索、分页、排序切换、批量操作、引用计数——人设数量少，先把列表 + 增删改跑顺。</li>
     </ol>
     <div class="notes-sep"></div>
