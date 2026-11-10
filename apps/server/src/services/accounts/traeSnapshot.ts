@@ -81,7 +81,25 @@ export const defaultTraeFs: TraeFileSystem = {
 
 /** dataDir 相对路径 → 绝对路径（manifest 统一存 posix 分隔符） */
 export function traeAbsPath(dataDir: string, relPath: string): string {
+  assertSafeSnapshotPath(relPath);
   return join(dataDir, ...relPath.split('/'));
+}
+
+/**
+ * CR3-05：manifest 内的相对路径必须留在 dataDir 内。
+ * 清单来自加密 vault、由本机生成，正常不可注入；但清单损坏/被改写时
+ * `../` 会让 restore 的删除动作逃出 dataDir，这里解析阶段就整份判无效。
+ */
+export function assertSafeSnapshotPath(relPath: string): void {
+  const unsafe = typeof relPath !== 'string'
+    || relPath.length === 0
+    || relPath.includes('\0')
+    || relPath.startsWith('/')
+    || relPath.startsWith('\\')
+    || /^[a-zA-Z]:/.test(relPath)
+    || relPath.split('/').includes('..')
+    || relPath.split('\\').includes('..');
+  if (unsafe) throw new ApiError(409, 'TARGET_SNAPSHOT_INVALID', `快照清单含非法路径：${relPath}`);
 }
 
 /** 快照条目清单（KB 15 条按本机实测路径落定；Partitions 两条用前缀匹配实际分区名） */
@@ -229,6 +247,12 @@ export function parseTraeSnapshotManifest(raw: Buffer): TraeSnapshotManifest {
   const manifest = parsed as TraeSnapshotManifest;
   if (!manifest || manifest.version !== 1 || !Array.isArray(manifest.entries)) {
     throw new ApiError(409, 'TARGET_SNAPSHOT_INVALID', '快照 manifest 版本或结构不符合预期');
+  }
+  for (const rel of manifest.residual_dirs ?? []) assertSafeSnapshotPath(rel);
+  for (const rel of manifest.residual_files ?? []) assertSafeSnapshotPath(rel);
+  for (const entry of manifest.entries) {
+    assertSafeSnapshotPath(entry.path);
+    for (const file of entry.files ?? []) assertSafeSnapshotPath(file.path);
   }
   return manifest;
 }

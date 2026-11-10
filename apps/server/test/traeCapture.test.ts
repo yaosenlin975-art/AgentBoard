@@ -18,6 +18,7 @@ import {
   defaultTraeStoragePath,
   traeStorageAvailable,
 } from '../src/services/accounts/traeProvider.js';
+import { parseTraeSnapshotManifest } from '../src/services/accounts/traeSnapshot.js';
 import type { SecretVault } from '../src/services/accounts/secretVault.js';
 import { FakeCheckinVault } from './fakeCheckinProvider.js';
 import { createTestDb } from './helpers.js';
@@ -237,5 +238,31 @@ describe('TraeDesktopProvider captureCurrent (ACC-GET)', () => {
   it('token 与 payload 都无稳定身份 → 409 TRAE_IDENTITY_UNAVAILABLE', async () => {
     writeEnvelope({ token: 'not-a-jwt' });
     await expect(mkProvider().captureCurrent()).rejects.toMatchObject({ code: 'TRAE_IDENTITY_UNAVAILABLE' });
+  });
+});
+
+describe('CR3-05 快照清单路径包含校验', () => {
+  const manifest = (entries: unknown[], extra: Record<string, unknown> = {}): Buffer => Buffer.from(JSON.stringify({
+    version: 1,
+    created_at: 1,
+    residual_dirs: ['logs'],
+    residual_files: ['code.lock'],
+    entries,
+    ...extra,
+  }));
+
+  it('合法清单照常解析', () => {
+    const parsed = parseTraeSnapshotManifest(manifest([{ path: 'User/globalStorage/storage.json', kind: 'file', status: 'ok', files: [{ path: 'User/globalStorage/storage.json', bytes: 1, sha256: 'a'.repeat(64) }] }]));
+    expect(parsed.entries).toHaveLength(1);
+  });
+
+  it('entry 路径含 .. → 409 TARGET_SNAPSHOT_INVALID', () => {
+    expect(() => parseTraeSnapshotManifest(manifest([{ path: '../../Users/x', kind: 'file', status: 'absent' }])))
+      .toThrowError(/非法路径/);
+  });
+
+  it('文件路径是绝对路径/盘符 → 409', () => {
+    expect(() => parseTraeSnapshotManifest(manifest([{ path: 'ok', kind: 'dir', status: 'ok', files: [{ path: 'C:/Windows/System32/x.dll', bytes: 1, sha256: 'a'.repeat(64) }] }])))
+      .toThrowError(/非法路径/);
   });
 });
