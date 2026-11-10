@@ -363,8 +363,9 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 | `swing-dev` | 流程：批量巡检 + 多 worker 调度 | 引用本技能的命令、边界与收尾口径；worker 领卡是父代理显式授权的例外 |
 | `ask-user` | 流程：待决策提问 → 宽限等待 → `LOCKED` 停手 / 断点续跑 | 引用本技能的命令与边界；默认宽限 180 秒（可配 0–600），`--grace 0` 立即落锁，不新造状态机 |
 | `brainstorming` | 流程：需求澄清 → 设计批准 | 批准后交 `writing-task`；设计页按本技能的知识页口径落 `design/landed=proposed` |
+| `kb-curator` | 流程：知识库运营（链接摘要 / 征询入库 / 主题页追加与合并） | 引用本技能的命令、边界与知识页口径；只管知识页，不动任务状态 |
 
-- 七份技能（`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming` 与本技能）对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）；依赖关系见「看板概念」的「依赖」条。
+- 八份技能（`writing-task`、`executing-task`、`handoff`、`swing-dev`、`ask-user`、`brainstorming`、`kb-curator` 与本技能）对工作区绑定、领取/关闭口径、验收证据、提交规范、交接口径的定义必须一致；出现分歧以本技能为准（本技能文档的定位按「权威来源解析」执行）；依赖关系见「看板概念」的「依赖」条。
 
 ## User Instructions
 
