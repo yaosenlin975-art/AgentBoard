@@ -321,6 +321,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, notes, scope, changelog_id, skip_changelog, board_only, request_id, fence }) => {
+    // N4-04：与 CLI 同口径显式互斥，不做静默取舍（board_only 会跳过提交，scope 会被无声丢弃）
+    if (board_only === true && (scope?.length ?? 0) > 0) {
+      throw new McpError('INVALID_ARGUMENT', 'board_only 与 scope 不能同时使用：纯看板任务不提交任何文件。要提交文件请去掉 board_only；纯看板任务请去掉 scope。');
+    }
     const workspaceId = resolveWorkspaceId(config, workspace_id);
     const agentId = requireAgentId(config);
     return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(task_id)}/done`, {

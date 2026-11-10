@@ -256,6 +256,21 @@ describe('git on done', () => {
   });
 
 
+  // N4-04：board_only 与 scope 显式互斥，不静默按 BOARD_ONLY 成功
+  it('rejectsBoardOnlyWithScope', async () => {
+    const issueId = await makeIssue('互斥参数');
+    await claim(issueId);
+    const res = await done(issueId, { board_only: true, scope_paths: ['README.md'], client: 'cli', changelog_ack: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('BOARD_ONLY_SCOPE_CONFLICT');
+    expect(res.body.error.message).toContain('board_only 与 scope 不能同时使用');
+    // 拒绝即未生效：状态与占用不变
+    const row = t.db.prepare('SELECT status, claimed_by FROM issue WHERE id=?').get(issueId) as { status: string; claimed_by: string | null };
+    expect(row.status).toBe('进行中');
+    expect(row.claimed_by).toBe('fake');
+  });
+
+
   // KB-DONE-STAGE：卡外脏文件（含被别的卡预暂存的）不得卷进本卡提交
   it('commitsOnlyCardScopeEvenWhenOutsideFileIsPreStaged', async () => {
     const issueId = await makeIssue('本卡范围收尾');

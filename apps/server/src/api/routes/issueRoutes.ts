@@ -663,6 +663,13 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     const detail = action === 'done' ? doneBody!.notes : action === 'fail' ? parseBody(failSchema, req.body).reason : undefined;
     // GIT-ON-DONE 提交范围：只有 done 认 scope_paths（文件路径或目录前缀），其余动作忽略
     const scopePaths = doneBody?.scope_paths ?? [];
+    // N4-04：board_only 与 scope 显式互斥（不静默择一；CLI / MCP 客户端已先拦，这里兜底 REST 直调）
+    if (action === 'done' && doneBody!.board_only === true && scopePaths.length > 0) {
+      throw new ValidationError(
+        'board_only 与 scope 不能同时使用：纯看板任务不提交任何文件。',
+        'BOARD_ONLY_SCOPE_CONFLICT',
+      );
+    }
     // STORE-4a：业务写与 git 基线落 issue 所在库
     const rdb = resolveRequestDb(req, issueId);
     // SK-05 / MCP-09：agent 入口（带 client）必须满足三者之一才放行：

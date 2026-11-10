@@ -579,6 +579,24 @@ describe('AgentBoard task MCP server', () => {
     expect(body).not.toHaveProperty('scope_paths');
   });
 
+  it('complete_task rejects board_only combined with scope (N4-04)', async () => {
+    const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'complete_task',
+      arguments: {
+        task_id: 'task-1', notes: '', board_only: true, scope: ['declared.txt'], skip_changelog: true,
+        request_id: '00000000-0000-4000-8000-000000000209',
+      },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(JSON.stringify(response.result?.content ?? '')).toContain('board_only 与 scope 不能同时使用');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('maps CHANGELOG_ACK_REQUIRED to an actionable changelog message', async () => {
     const fetcher = vi.fn(async () => Response.json({ error: { code: 'CHANGELOG_ACK_REQUIRED', message: '变更日志门禁：…' } }, { status: 400 }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);
