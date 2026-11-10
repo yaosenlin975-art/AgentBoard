@@ -5,17 +5,21 @@
 export interface ApiErrorPayload {
   code: string;
   message: string;
+  /** 服务端附带的机器可读明细（如 SKILLS_SYNC_CONFLICT 的 conflicts 清单） */
+  details?: unknown;
 }
 
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
+  readonly details: unknown;
 
-  constructor(message: string, code: string, status: number) {
+  constructor(message: string, code: string, status: number, details?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -104,6 +108,7 @@ async function request<T>(method: Method, path: string, body?: unknown, extraHea
       err?.message ?? `请求失败（HTTP ${res.status}）`,
       err?.code ?? 'UNKNOWN',
       res.status,
+      err?.details,
     );
   }
   return data as T;
