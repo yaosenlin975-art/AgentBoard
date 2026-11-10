@@ -54,6 +54,8 @@ const SKIP_DIRS = new Set([
   'coverage',
   'refs',
   'gui-test-screenshots',
+  // CR2-06：界面验证的临时产物目录（截图/草稿），不属于仓库源码，不应阻断 build 门禁
+  '.qa-temp',
 ]);
 
 const args = process.argv.slice(2);
