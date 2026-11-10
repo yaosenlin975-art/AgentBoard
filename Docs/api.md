@@ -1172,9 +1172,36 @@ WS：以上写操作（建团/加删成员/停团/派活/成员轮次收口）�
 ```json
 { "type": "team_update", "team_id": "<uuid>", "status": "active|stopped",
   "members": [{ "session_id": "...", "role": "...", "agent_name": "...", "status": "idle|working|done|failed", "usage": { "turns": 0, "tokens": 0, "tool_calls": 0 } }],
-  "reason": "created|member_added|member_removed|stopped|dispatch|member_done|member_failed|guardrail|snapshot" }
+  "reason": "created|member_added|member_removed|stopped|dispatch|member_done|member_failed|guardrail|snapshot|imported" }
 ```
 
-`team_update` 目前只在服务端 `ServerWsEvent` 联合里（前端 `WsEvent` 尚未并入，P3-B 消费后再并）。
+`team_update` 已并入前端 `WsEvent`（P3-B：`apps/web/src/api/ws.ts` 收到后失效 teams 查询）。
 
 退出码：沿用统一错误响应 —— 400 `VALIDATION_ERROR`（字段非法 / lead 或 persona 不存在 / lead 不属于该工作区）、404 `NOT_FOUND`（团/工作区/成员不存在）、409 `CONFLICT`（lead 已属其他团 / 团队已停止 / 成员轮次上限 / token 预算用尽）。
+
+## 23. 专家包导入（`POST /api/expert-packages/import`，`services/expertPackage.ts`，P3-C）
+
+从服务端本机目录解析 **WorkBuddy 专家包**，落成 AgentBoard 的 `personas` 与团队模板（`teams` / `team_members`），供专家组复用。只做格式兼容，不复制 WorkBuddy 代码。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/expert-packages/import` | 体：`workspace_id`（必须存在，uuid）/ `path`（专家包目录，绝对路径优先；相对路径按服务进程 cwd 解析，≤4096 字）。成功 201 |
+
+兼容包结构（下列文件在包根目录或 `.codebuddy-plugin/` 子目录均可）：
+
+- `plugin.json`（必填）：`name`（必填，≤50 字）、`expertType`（`agent`/`team`，可省）、`teamInfo.leadAgent`（`team` 必填）+ `teamInfo.memberAgents`（字符串数组，可省）
+- `agents/*.md`（必填，≥1 个）：YAML frontmatter（`name` 必填且包内唯一；`displayName` / `description` / `profession` / `maxTurns` 可选）+ 正文即 persona 正文
+- `settings.json`（可选）：合法 JSON 对象；`maxTurnsPerMember` / `maxTurns`（1–200）映射团队轮次上限
+
+写入语义（**先整包校验再单事务落库**，任一步失败整包回滚）：
+
+- 每个专家 → 一行 `personas`：`source='import'`、`package_path=专家包目录`、`name=displayName||name`（≤100）、`description`、`body_md=frontmatter 之后正文`（≤100000 字）
+- 有 `teamInfo` → 一行 `teams` 模板：`source='import'`、`status='stopped'`、`package_path=目录`、`lead_session_id='import:<team-id>'` 占位、`max_turns_per_member=settings 值 ?? 20`
+- 对应 `team_members`：`session_id='import:<team-id>:<序号>'` 占位、`role=profession||主理人|成员`（≤30）、`agent_name=displayName||name`（≤30）、`persona_id=导入的 persona`；成员 = `leadAgent` + `memberAgents`（去重，主理人在首位）
+- 模板**无真实会话**（`import:` 前缀占位只为满足 NOT NULL/唯一索引，列表接口里 `session=null`），`status='stopped'` 使派活/加成员被 409 挡住——按模板开真实团由后续卡片负责，不在本端点内建会话
+
+响应：`{ package: { name, path, type }, personas: [{id,name}], team: 团详情|null }`（`team` 详情与 `GET /teams/:id` 同形）。
+
+错误：400 `VALIDATION_ERROR`（目录不存在 / 缺 plugin.json 或 agents/*.md / 坏 JSON / 缺 name / `teamInfo` 引用不存在的专家 / 字段超长）、404 `NOT_FOUND`（工作区不存在）、409 `CONFLICT`（同工作区已有同名团队模板 / 同一目录已导入过）。
+
+WS：新建模板广播 `team_update`（`reason='imported'`，`status='stopped'`）。

@@ -431,6 +431,15 @@ export const createTeamSchema = z.object({
   budget_tokens: z.number().int().min(1000, 'budget_tokens 至少为 1000').max(50_000_000, 'budget_tokens 不能超过 50000000').optional(),
 });
 
+/**
+ * POST /api/expert-packages/import（P3-C）：解析本地 WorkBuddy 专家包并落 personas + 团队模板。
+ * path 为服务端本机目录（绝对路径；相对路径按服务进程 cwd 解析）；解析失败 400、同名重复 409。
+ */
+export const importExpertPackageSchema = z.object({
+  workspace_id: z.string().uuid('workspace_id 必须是 uuid'),
+  path: z.string().trim().min(1, 'path 不能为空').max(4096, 'path 不能超过 4096 字'),
+});
+
 /** PATCH /api/personas/:id：三个字段全可选，至少提供一个 */
 export const patchPersonaSchema = z
   .object({

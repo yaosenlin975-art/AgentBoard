@@ -54,6 +54,8 @@ import { migrateChatIndex } from './migrations/chatIndex.js';
 import { migratePersonaInjection } from './migrations/personaInjection.js';
 // P3-A：专家团（teams / team_members；纯追加表，幂等，放 persona 之后）
 import { migrateTeams } from './migrations/teams.js';
+// P3-C：专家包导入（teams.source/package_path、team_members.persona_id；纯加列，放 teams 之后）
+import { migrateExpertPackage } from './migrations/expertPackage.js';
 
 /**
  * DDL：新库直接按最新结构建表。
@@ -183,6 +185,8 @@ export function initSchema(db: Db): void {
   migratePersonaInjection(db);
   // P3-A：专家团两表（纯追加 + 唯一索引；不重建 session，成员会话 id 只做引用）
   migrateTeams(db);
+  // P3-C：专家包导入增量列（teams.source/package_path、team_members.persona_id；纯加列，须在 migrateTeams 之后）
+  migrateExpertPackage(db);
   // One transactional guard covers edits, comments, claims and session recovery paths.
   createIssueMonotonicTimeTrigger(db);
 }

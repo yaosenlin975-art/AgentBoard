@@ -11,6 +11,10 @@ export interface TeamRow {
   status: 'active' | 'stopped';
   max_turns_per_member: number;
   budget_tokens: number;
+  /** P3-C：runtime=运行期团（P3-A）；import=专家包导入的团队模板（无真实会话） */
+  source: 'runtime' | 'import';
+  /** P3-C：导入来源目录（仅 source='import' 有值） */
+  package_path: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -24,6 +28,8 @@ export interface TeamMemberRow {
   status: 'idle' | 'working' | 'done' | 'failed';
   usage_json: string;
   turns: number;
+  /** P3-C：模板成员指向导入生成的 persona（运行期成员仍以 session.persona_id 为准） */
+  persona_id: string | null;
   created_at: number;
 }
 
@@ -158,6 +164,57 @@ export function insertMember(db: Db, input: AddMemberInput): TeamMemberRow {
     throw err;
   }
   return getMember(db, input.team_id, input.session_id)!;
+}
+
+/** P3-C：按包名查已导入的团队模板（同工作区 + source='import'） */
+export function findImportedTeamByName(db: Db, workspaceId: string, name: string): TeamRow | null {
+  return (
+    (db
+      .prepare("SELECT * FROM teams WHERE workspace_id = ? AND source = 'import' AND name = ?")
+      .get(workspaceId, name) as TeamRow | undefined) ?? null
+  );
+}
+
+export interface ImportedTeamTemplateInput {
+  workspace_id: string;
+  name: string;
+  package_path: string;
+  max_turns_per_member?: number;
+  members: Array<{ role: string; agent_name: string; persona_id: string }>;
+}
+
+/**
+ * P3-C：专家包团队模板落行。
+ *
+ * 模板没有真实会话：`lead_session_id` 存 `import:<team-id>`、成员 `session_id` 存 `import:<team-id>:<序号>`，
+ * 只为满足 NOT NULL 与唯一索引（会话按 id 定位时自然返回 null）；`status` 固定 `stopped`——
+ * 模板不可派活，避免对不存在的会话起轮。真正开团由后续卡片按模板建真实会话。
+ */
+export function createImportedTeamTemplate(db: Db, input: ImportedTeamTemplateInput): TeamRow {
+  const id = randomUUID();
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO teams (id, workspace_id, name, lead_session_id, status, max_turns_per_member, budget_tokens, created_at, updated_at, source, package_path)
+     VALUES (?, ?, ?, ?, 'stopped', ?, ?, ?, ?, 'import', ?)`,
+  ).run(
+    id,
+    input.workspace_id,
+    input.name,
+    `import:${id}`,
+    input.max_turns_per_member ?? 20,
+    200_000,
+    now,
+    now,
+    input.package_path,
+  );
+  const insert = db.prepare(
+    `INSERT INTO team_members (team_id, session_id, role, agent_name, status, usage_json, turns, created_at, persona_id)
+     VALUES (?, ?, ?, ?, 'idle', '{}', 0, ?, ?)`,
+  );
+  input.members.forEach((member, index) => {
+    insert.run(id, `import:${id}:${index}`, member.role, member.agent_name, now, member.persona_id);
+  });
+  return getTeam(db, id)!;
 }
 
 export function updateMemberStatus(

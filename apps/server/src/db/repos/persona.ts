@@ -50,6 +50,15 @@ export function getPersona(db: Db, id: string): PersonaRow | null {
   return (db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as PersonaRow | undefined) ?? null;
 }
 
+/** P3-C：按来源目录找导入生成的首个 persona（同一目录重复导入判重） */
+export function findImportedPersonaByPackagePath(db: Db, packagePath: string): PersonaRow | null {
+  return (
+    (db
+      .prepare("SELECT * FROM personas WHERE source = 'import' AND package_path = ? ORDER BY created_at, id LIMIT 1")
+      .get(packagePath) as PersonaRow | undefined) ?? null
+  );
+}
+
 export type PersonaPatch = Partial<{
   name: string;
   description: string | null;

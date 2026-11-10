@@ -17,6 +17,8 @@ import { createSettingsRouter } from './routes/settingsRoutes.js';
 import { createPersonaRouter } from './routes/personaRoutes.js';
 // P3-A：专家团 REST 与编排装配（teams / team_members；WS team_update）
 import { createTeamRouter } from './routes/teamRoutes.js';
+// P3-C：专家包导入 REST（WorkBuddy 包格式 → personas + 团队模板）
+import { createExpertPackageRouter } from './routes/expertPackageRoutes.js';
 import { handleSessionTurnEnded, initTeamOrchestration } from '../services/teamOrchestration.js';
 import { setTurnEndedListener } from '../services/sessionManager.js';
 import { createSystemMiscRouter } from './routes/systemMiscRoutes.js';
@@ -382,6 +384,9 @@ export function createRouter(deps: RouterDeps): Router {
     void handleSessionTurnEnded(info).catch(() => undefined);
   });
   router.use(createTeamRouter({ db, broadcast, dbForWorkspace, locateSessionRouted }));
+  // P3-C：专家包导入（本地 WorkBuddy 包 → personas + 团队模板）；广播 team_update，
+  // 因此必须排在 initTeamOrchestration 之后（与团队路由同一挂载段）。
+  router.use(createExpertPackageRouter({ db }));
   return router;
 }
 
