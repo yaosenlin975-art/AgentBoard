@@ -76,7 +76,7 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 
 操作顺序：
 
-1. 按依赖顺序逐条建子卡：`kb create-issue <ws> '<子卡标题>' -d '<目标/范围/边界/验收>' --parent <本卡 id>`（含双引号时用单引号或 `--description-stdin`）；
+1. 按依赖顺序逐条建子卡：`kb create-issue <ws> '<子卡标题>' -d '<目标/范围/边界/验收>' --parent <本卡 id>`（标题含双引号时用单引号或 `--title-stdin`；`create-issue` **没有** `--description-stdin`，长描述先建卡再 `kb update <子卡 id> --description-stdin`）；
 2. `kb comment <本卡>` 写拆分理由、子卡 id 列表与顺序；
 3. 本卡保持占用作为父卡（不 done、不 fail），继续 claim 并执行顺序上的第一张子卡；子卡目标文件互不相交时，可按「并行执行（最多 3 路）」把多张子卡分给不同 worker，父卡保持占用、不参与实现；
 4. 子卡全部 done 且验收通过后，才 `kb close` 子卡、再对父卡 `kb done --notes "已由子卡 N 完成：…"`；父卡 `close` 前必须所有后代已关闭。

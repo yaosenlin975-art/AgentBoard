@@ -11,8 +11,8 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 - `--scope` 首选**逐条重复传参**：`kb done <id> --scope a --scope b`。
 - 逗号串 `--scope "a,b"` 当前 CLI 会吞下并按逗号拆分（2026-11-04 实测提交成功），但不要依赖它：含空格的参数仍会触发 SCOPE-GUARD 警告；声明范围与实际改动不一致时仍会零命中、不提交。脚本里一律逐条传。
-- **issue id 支持 ≥8 位唯一前缀（CLI-02）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 同口径。实测 `kb show 230c15de` → 完整卡详情（exit 0）；7 位 `kb show 230c15d` → 「任务 id 前缀至少 8 位」（exit 1）；前缀命中多张卡 → exit 2 并列出候选，需补全区分。**写卡面 / 建依赖 / 写提交信息时仍用完整 36 位 UUID**（人对人可读、可复算），前缀只在手敲命令时图省事。`kb dep add` 传不存在的前缀 → 「任务或依赖不存在」（退出 4）。
-- `kb knowledge resolve` / `kb knowledge link`、`kb decision` / `kb ask-extend` 同样支持 id 的 ≥8 位前缀；`--parent` 也接受唯一前缀（`kb create-issue --help`）。
+- **issue id 支持 ≥8 位唯一前缀（CLI-02）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 同口径。实测 `kb show 230c15de` → 完整卡详情（exit 0）；7 位 `kb show 230c15d` → 「任务 id 前缀至少 8 位」（exit 1）；前缀命中多张卡 → exit 2 并列出候选，需补全区分。**写卡面 / 建依赖 / 写提交信息时仍用完整 36 位 UUID**（人对人可读、可复算），前缀只在手敲命令时图省事。`kb dep add/ls/rm` 传不存在的任务 → **exit 1**「任务不存在或不属于当前工作区：<ref>」；exit 4 只留给 `dep rm` 的「依赖边不存在」。
+- `kb knowledge resolve` / `kb knowledge link` / `kb knowledge show`、`kb decision show`（`kb decision <id>` 缺省等价 show）、`kb ask-extend` 同样支持 id 的 ≥8 位前缀；`--parent` 也接受唯一前缀（`kb create-issue --help`）。
 - 服务端在「声明了范围却零命中」时会写一条 `⚠ 声明范围零命中，本次未自动提交` 的系统评论，并给出可直接复制执行的 `git add -- <paths>; git commit -m "..." -- <paths>` 补救命令；照抄执行即可（该评论里「逗号串被拆」只是常见原因之一，不是唯一原因，先核对你声明的路径是否真的改过）。
 - 看到这条评论＝你的改动没进 git，不要当成已完成；先执行补救命令，再看 `git log -1`。
 
@@ -106,11 +106,13 @@ kb workspace-db <子命令>                # 工作区库下沉：状态查询 /
 # —— 任务 ——
 kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--parent <id>] [--status 待规划|待验收] [--allow-empty]
                                         # 建任务；-d 必填；标题含引号被拒时用 --title-stdin；无 --description-stdin（长描述先建后 update）
-kb list-tasks [--workspace <id|名>] [--status <状态>] [--full]  # 缺省按 cwd 解析当前工作区；--all 聚合全部工作空间，仅限跨工作区只读盘点（与 --workspace 互斥），不得据它 claim / done / fail。
+kb list-tasks [--workspace <id|名>] [--status <状态>] [--full] [--all-status]  # 缺省按 cwd 解析当前工作区，且缺省收敛为「未完成 + 无主」；看全量（含已关闭/已占用）加 --all-status。--all 聚合全部工作空间，仅限跨工作区只读盘点（与 --workspace 互斥），不得据它 claim / done / fail。
+kb next [--workspace <id|名>] [--limit N]  # 推荐下一张可领取的卡（按依赖/状态过滤）
+kb stats --workspace <id>               # 单请求给五状态计数 + 未完成无主 + 被阻塞（收尾数字优先用它复算）
 kb show <issue-id> [--mark-read]        # 任务完整字段 + 全部评论；默认只读，不推进已读游标
 kb grep <pattern> [--path <dir>] [--glob <glob>]  # 本地代码/文档检索（不读 .gitignore）；0 命中 / 1 未命中 / 2 出错
-kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--parent <id>|--clear-root] [--status <状态>]  # 改字段或直接设状态；内置流转优先用专用命令
-kb move-issue <issue-id> (--parent <id>|--clear-root)  # 移动到父卡或恢复根任务
+kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--due-time <HH:mm>|--clear-due] [--parent <id>|--clear-root] [--status <状态>]  # 改字段或直接设状态；内置流转优先用专用命令
+kb move-issue <issue-id> (--parent <id>|--root|--clear-root)  # 移动到父卡或恢复根任务（--root 与 --clear-root 同义）
 kb delete-issue <issue-id> --yes        # 删除任务（不可逆；占用中或含子任务被拒）
 # —— 流转 ——
 kb claim <issue-id>                     # 原子领取（待规划，或进行中且无人占用）；输出任务详情+评论+工作空间路径
@@ -129,12 +131,13 @@ kb dep add <issue-id> <blocker-id>      # 新增前置：blocker 解除（待验
 kb dep rm <issue-id> <blocker-id>       # 移除前置
 # —— 评论与知识 ——
 kb comment <issue-id> "内容"            # 写评论；中文/长文用 --stdin；可附 ≤5 张 PNG/JPEG/WebP
-kb knowledge create|import|revise|show|list|search|resolve|link|find-source|action  # 知识页全族，见下
+kb knowledge create|import|revise|show|list|search|resolve|link|find-source|action  # 知识页全族，见下；list 的 --scope（workspace|common）必填
 kb changelog list|create                # 工作区变更日志（活动工作区缺省按 cwd 解析）
 # —— 待决策 ——
 kb ask <issue-id>                       # 提问并等待宽限（默认 180 秒）；--grace 0 立即落锁
 kb decisions [--state open|grace|answered] [--issue <id>] [--stale]  # 列待决策
-kb decision <id|前缀>                   # 决策详情 / 撤回
+kb decision show <id|前缀>              # 决策详情（`kb decision <id>` 缺省等价 show）
+kb decision withdraw <id|前缀> --reason "..."  # 撤回问题并解锁
 kb answer <id> (--option N|--label X|--text ...)  # 回答；--revise 需 --expected-revision
 kb ask-extend <decision-id> --seconds N # 延长宽限（1–300 秒/次，累计 ≤600 秒，不续 fence）
 kb stop-check <issue-id>                # 检查协作式停止信号（步骤间 / 写文件前 / 提交前）

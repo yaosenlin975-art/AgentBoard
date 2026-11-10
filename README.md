@@ -212,13 +212,16 @@ cd packages/cli && npm link   # 或直接 node packages/cli/dist/index.js <命�
 
 ```bash
 kb create-space <name> <path>        # 创建工作空间；path 必须已存在且是目录
-kb create-issue <workspace> <title>  # 创建任务；workspace 用 id 或名称
+kb create-issue <workspace> <title> -d '<描述>'  # 创建任务；workspace 用 id 或名称，描述必填（长描述先建卡再 kb update --description-stdin）
 kb list-spaces
-kb list-tasks [--workspace <id|名>] [--status 待规划]
-kb show <issue-id>
+kb list-tasks [--workspace <id|名>] [--status 待规划] [--all-status]  # 缺省只列未完成无主卡
+kb next [--workspace <id|名>]      # 下一张可领取的卡
+kb stats --workspace <id>          # 五状态计数 + 未完成无主 + 被阻塞（收尾复算用）
+kb show <issue-id> [--mark-read]
 kb claim <issue-id>                # 原子领取；已被占用退出码 2
 kb comment <issue-id> "内容"       # 长文/中文用 --stdin
-kb done <issue-id> --notes "..."   # 完成 → 待验收（非 git 工作区时状态仍转、exit 1 附补救命令）
+kb accept <issue-id>               # 待验收卡写结构化验收记录（不改状态）
+kb done <issue-id> --notes "..."   # 完成 → 待验收；自动提交未完成时 exit 1 并附补救命令（非 git 仓库只警告、exit 0）
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
 ```
 

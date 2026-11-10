@@ -64,7 +64,7 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
    宽限超时的停止信号由服务端在事务内落锁（释放占用 + bump fence + 写 `stop_requested`），旧 agent 之后的任何收尾都会被 409 拒绝。
 5. 用户回答后（可能几小时后）：
    - 重新 `kb claim` 拿新 fence；
-   - `kb decision <id|前缀>` 读答案与修订历史；
+   - `kb decision show <id|前缀>` 读答案与修订历史（`kb decision <id>` 缺省等价 show）；
    - `git status` 复核工作树（断点可能被人动过）；
    - 从 checkpoint 的 `next_step` 续跑。
 6. 若答案在开工后被修订（卡面标记 `answer_stale`），必须重读最新 `revision` 再继续。
@@ -74,7 +74,7 @@ description: 在 AgentBoard 任务执行中遇到只有用户能拍板的取舍�
 失败时按「一线 → 兜底」处置；不得因为问不出去就自己拍板答案，也不得改用评论/内置提问工具绕道（唯一通道硬约束）。
 
 - **`kb ask` 服务不可达（exit 1 / `fetch failed`）**：一线 → 仓库根 `pnpm server:ensure`，复跑一次；仍失败 → 兜底：保持占用，在卡上写「待问事项 + 断点摘要 + 建议选项」，把阻塞回报父代理后停手。不 `kb fail`（这不是任务失败，是等待用户），不继续改文件。
-- **宽限中途被打断（进程被杀 / 会话崩溃 / error 973 重连）**：不要重跑 `kb ask`（同卡已有在途会 409）。先 `kb decision <id>` 按状态分支：`answered` → 按答案续跑；`grace` → 重新进入 2 秒轮询等待；`open` → 视同 `LOCKED` 停手。
+- **宽限中途被打断（进程被杀 / 会话崩溃 / error 973 重连）**：不要重跑 `kb ask`（同卡已有在途会 409）。先 `kb decision show <id>` 按状态分支：`answered` → 按答案续跑；`grace` → 重新进入 2 秒轮询等待；`open` → 视同 `LOCKED` 停手。
 - **回答后 `kb claim` 409**：说明卡已被他人占用或 fence 已过期。不抢、不重试 claim；`kb show` 核对 `claimed_by` 与 `status`，若已被他人接手则停手并把答案与断点写进卡评论交回父代理，绝不绕开占用直接改文件。
 - **决策被撤回（`withdrawn`）**：旧答案立即失效。不得按旧答案继续；重跑「何时用」四条自检，仍成立就重新立项（先补断点），不成立就按现有信息继续或回报父代理。
 - **`kb ask-extend` 返回 409**：`EXTEND_LIMIT_EXCEEDED` → 不再延长，等落锁或让用户回答；`DECISION_NOT_GRACE` → 已不在宽限，按上面「宽限中断」分支处理。
@@ -101,7 +101,7 @@ kb ask-extend <decision-id|≥8 位前缀> --seconds 60 [--by <actor>] [--fence 
 | --- | --- |
 | `kb ask <issue-uuid> ...` | 建决策；`grace` 默认 180 秒，`--grace 0` 立即落锁；默认同步等待 |
 | `kb decisions [--state grace\|open\|answered\|withdrawn] [--stale]` | 列待决策（宽限剩余秒数由 `grace_until` 派生） |
-| `kb decision <id\|前缀>` | 详情：选项、答案、修订历史、断点摘要 |
+| `kb decision show <id\|前缀>` | 详情：选项、答案、修订历史、断点摘要（`kb decision <id>` 缺省等价 show） |
 | `kb ask-extend <id\|前缀> [--seconds 60]` | 延长宽限（仅 `grace`；1–300 秒/次，累计 ≤600 秒；不续 fence） |
 | `kb answer <id> --option <ord\|label>` | 首次回答；`grace` 内放行，`open` 后解锁 |
 | `kb answer <id> --revise --expected-revision <n>` | 修订答案（CAS，冲突退出码 2） |
