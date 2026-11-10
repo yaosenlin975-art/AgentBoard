@@ -1,0 +1,7 @@
+{
+  "issue_id": "5240d703-207b-49ca-aef4-56393b112f1c",
+  "fence": 1,
+  "agent_id": "probe-a",
+  "claimed_at": 1794272913946,
+  "base": "http://127.0.0.1:8799"
+}
