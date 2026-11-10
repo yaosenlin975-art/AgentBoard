@@ -53,6 +53,7 @@ function changeLog(overrides: Partial<WorkspaceChangeLog> = {}): WorkspaceChange
     updated_at: 1,
     revision: 2,
     legacy_source_key: null,
+    issue_id: null,
     ...overrides,
   };
 }

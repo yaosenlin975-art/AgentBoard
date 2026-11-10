@@ -29,6 +29,7 @@ function entry(overrides: Partial<WorkspaceChangeLog> = {}): WorkspaceChangeLog 
     updated_at: BASE_TS,
     revision: 1,
     legacy_source_key: null,
+    issue_id: null,
     ...overrides,
   };
 }

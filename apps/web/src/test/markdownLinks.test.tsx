@@ -42,6 +42,7 @@ function changeLog(): WorkspaceChangeLog {
     updated_at: 1,
     revision: 1,
     legacy_source_key: null,
+    issue_id: null,
   };
 }
 
