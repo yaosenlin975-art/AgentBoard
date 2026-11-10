@@ -26,7 +26,11 @@ export interface RequestIdArg { requestId?: string }
  */
 const mapConflict = (ctx: Ctx, error: unknown): never => {
   if (error instanceof CliHttpError && error.status === 409) {
-    ctx.io.writeErr(`${releaseAdvice(error.message)}\n`);
+    // B7：close 撞状态门禁时补下一步（原先只说「只有待验收可以关闭」，不说怎么到待验收）
+    const message = error.message.includes('只有「待验收」的任务可以关闭')
+      ? `${error.message}；若卡仍在待规划/进行中，请先 kb done <issue-id> 提交验收`
+      : error.message;
+    ctx.io.writeErr(`${releaseAdvice(message)}\n`);
     throw new CommanderError(2, 'agentboard.lifecycle', '');
   }
   throw error;

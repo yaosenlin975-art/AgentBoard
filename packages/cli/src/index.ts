@@ -76,7 +76,7 @@ const EXIT_CODE_HELP = `
   1  参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动任何数据
   2  冲突：占用（已被 <agent> 占用 / 未被占用 / 非当前占用者）、状态不可领取、知识页 revision 冲突、
      幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）、任务 id 前缀多命中；命令未改动数据，按提示处置后重试
-  3  kb dep 专用：依赖参数错误（自环 / 跨工作区 / VALIDATION_ERROR）
+  3  kb dep 与待决策族（kb ask / answer / ask-extend）专用：依赖或决策参数错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds）
   4  kb dep 专用：依赖边不存在
 kb grep（本地检索，不适用上表）：0 命中；1 未命中；2 出错（参数非法 / 根目录不存在 / 正则无效）
 约定：原因一律写 stderr（单行可读）；--json 时错误写 stdout 的 {"error":{"code","message","details"}}，退出码不变。
@@ -86,6 +86,27 @@ kb grep（本地检索，不适用上表）：0 命中；1 未命中；2 出错�
 /** commander 可重复选项收集器（--glob / --ignore） */
 function collectValue(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+/**
+ * B6：commander 自带报错本地化。此前缺参/未知选项/未知命令直接吐英文，
+ * 与命令自身的中文报错混排；这里按同一套措辞改写并附下一步（--help）。
+ * 未识别的模式保留原文，只补下一步，不吞错。
+ */
+function localizeCommanderError(text: string, argv: string[]): string {
+  const first = argv.slice(2).find(arg => !arg.startsWith('-'));
+  const help = first === undefined ? 'kb --help' : `kb ${first} --help`;
+  return text.replace(/^error: (.*)$/gm, (_line, raw: string) => {
+    const msg = raw.trim();
+    let m: RegExpExecArray | null;
+    if ((m = /^unknown option '(.+)'$/.exec(msg)) !== null) return `错误：未知选项 ${m[1]}；用 ${help} 查看可用选项`;
+    if ((m = /^unknown command '(.+)'$/.exec(msg)) !== null) return `错误：未知命令 ${m[1]}；用 kb --help 查看命令列表`;
+    if ((m = /^missing required argument '(.+)'$/.exec(msg)) !== null) return `错误：缺少必填参数 <${m[1]}>；用 ${help} 查看用法`;
+    if ((m = /^required option '(.+)' not specified$/.exec(msg)) !== null) return `错误：缺少必填参数 ${m[1]}；用 ${help} 查看用法`;
+    if ((m = /^option '(.+)' argument missing$/.exec(msg)) !== null) return `错误：选项 ${m[1]} 缺少取值；用 ${help} 查看用法`;
+    if (/^too many arguments/.test(msg)) return `错误：参数过多（含空格或引号的内容请用单引号包裹，或改用 --stdin）；用 ${help} 查看用法`;
+    return `错误：${msg}；用 ${help} 查看用法`;
+  });
 }
 
 function makeCtx(program: Command, io: Io): Ctx {
@@ -115,7 +136,10 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .exitOverride()
     // KBGUIDE：把 commander 的 help/version 输出也接到注入的 io 上（生产 io 就是 process 流，行为不变；
     // 进程内调用可捕获 --help，help 文案才可被单测覆盖）
-    .configureOutput({ writeOut: (text: string) => ctxIo.write(text), writeErr: (text: string) => ctxIo.writeErr(text) })
+    .configureOutput({
+      writeOut: (text: string) => ctxIo.write(text),
+      writeErr: (text: string) => ctxIo.writeErr(localizeCommanderError(text, argv)),
+    })
     .option('--server <url>', '看板服务基址（默认取 KB_SERVER，再默认 http://127.0.0.1:8787）', process.env.KB_SERVER)
     .option('--json', '输出原始 JSON 响应')
     .addHelpText('after', EXIT_CODE_HELP);
@@ -544,11 +568,12 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--parent <issue-id>', '新父任务 id：完整 UUID，或 ≥8 位唯一前缀')
     .option('--root', '移动为根任务')
+    .option('--clear-root', '移动为根任务（与 --root 同义，兼容 kb update 的同名选项）')
     .option('--expected-updated-at <timestamp>', 'CAS 版本；重试时复用原值')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
-    .action(async (id: string, opts: { parent?: string; root?: boolean; expectedUpdatedAt?: string; requestId?: string }) =>
+    .action(async (id: string, opts: { parent?: string; root?: boolean; clearRoot?: boolean; expectedUpdatedAt?: string; requestId?: string }) =>
       moveIssue(makeCtx(program, ctxIo), id, {
-        parentIssueId: opts.parent, root: opts.root,
+        parentIssueId: opts.parent, root: opts.root === true || opts.clearRoot === true,
         expectedUpdatedAt: opts.expectedUpdatedAt === undefined ? undefined : Number(opts.expectedUpdatedAt),
         requestId: opts.requestId,
       }));

@@ -59,12 +59,19 @@ export function depErrorMessage(code: string): string | undefined {
   return MESSAGES[code];
 }
 
-/** 统一失败处理：已映射的依赖错误就地打印并返回退出码，其余原样抛出交全局 toExit */
-function handleFailure(ctx: Ctx, error: unknown): number {
+/**
+ * 统一失败处理：已映射的依赖错误就地打印并返回退出码，其余原样抛出交全局 toExit。
+ * B4：任务不存在时把出错的那一个 ref 一并回报，并给下一步（原先不说是哪个 id、也不给查法）。
+ */
+function handleFailure(ctx: Ctx, error: unknown, ref?: string): number {
   const code = error instanceof CliHttpError ? error.code : undefined;
   const exitCode = code === undefined ? undefined : depExitCode(code);
   if (code === undefined || exitCode === undefined) throw error;
-  ctx.io.writeErr(`${depErrorMessage(code) ?? (error as CliHttpError).message}\n`);
+  const mapped = depErrorMessage(code) ?? (error as CliHttpError).message;
+  const message = ref !== undefined && (code === 'NOT_FOUND' || code === 'TASK_NOT_FOUND')
+    ? `${mapped}：${ref}（用 kb list-tasks --all-status 查 id；跨区操作需显式授权）`
+    : mapped;
+  ctx.io.writeErr(`${message}\n`);
   return exitCode;
 }
 
@@ -114,7 +121,7 @@ export async function depLs(ctx: Ctx, issueId: string): Promise<number> {
     ctx.io.write(`${dependencyLines(view).join('\n')}\n`);
     return 0;
   } catch (error) {
-    return handleFailure(ctx, error);
+    return handleFailure(ctx, error, issueId);
   }
 }
 
@@ -129,9 +136,19 @@ export async function depAdd(ctx: Ctx, issueId: string, blockerId: string, opts:
     }
     relation = opts.type;
   }
+  let target: { id: string; workspaceId: string };
   try {
-    const target = await issueTarget(ctx, issueId);
-    const blocker = await normalizeIssueIdArg(ctx, blockerId);
+    target = await issueTarget(ctx, issueId);
+  } catch (error) {
+    return handleFailure(ctx, error, issueId);
+  }
+  let blocker: string;
+  try {
+    blocker = await normalizeIssueIdArg(ctx, blockerId);
+  } catch (error) {
+    return handleFailure(ctx, error, blockerId);
+  }
+  try {
     const view = await request<DependencyView>(
       ctx.base, 'POST',
       `/api/issues/${encodeURIComponent(target.id)}/dependencies`,
@@ -151,9 +168,19 @@ export async function depAdd(ctx: Ctx, issueId: string, blockerId: string, opts:
 
 /** kb dep rm <issue-id> <blocker-id>：删边 */
 export async function depRemove(ctx: Ctx, issueId: string, blockerId: string): Promise<number> {
+  let target: { id: string; workspaceId: string };
   try {
-    const target = await issueTarget(ctx, issueId);
-    const blocker = await normalizeIssueIdArg(ctx, blockerId);
+    target = await issueTarget(ctx, issueId);
+  } catch (error) {
+    return handleFailure(ctx, error, issueId);
+  }
+  let blocker: string;
+  try {
+    blocker = await normalizeIssueIdArg(ctx, blockerId);
+  } catch (error) {
+    return handleFailure(ctx, error, blockerId);
+  }
+  try {
     try {
       await request<void>(
         ctx.base, 'DELETE',

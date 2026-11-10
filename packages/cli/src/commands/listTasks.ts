@@ -290,11 +290,12 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
   // OPT-01：缺省收敛为「当前工作区 · 未完成 · 无主」；`--status` 显式覆盖，`--tree` 保留整树上下文，
   // 需要改造前的整区全状态口径时用 `--all-status`。
   const converged = args.allStatus !== true && args.status === undefined && args.tree !== true;
-  if (converged) ctx.io.writeErr('默认已收敛为未完成无主卡，全量用 --all-status\n');
   const spaces = await request<Workspace[]>(ctx.base, 'GET', '/api/workspaces');
   const selected = args.all === true
     ? spaces
     : [args.workspace === undefined ? matchCurrentWorkspace(spaces) : matchWorkspace(spaces, args.workspace)];
+  // B1：收敛提示必须排在工作区解析之后——解析失败时先打这句会盖住真正的错误
+  if (converged) ctx.io.writeErr('默认已收敛为未完成无主卡，全量用 --all-status\n');
   // KB-CLI-4：多工作区（--all）先一次性预热状态字典，避免每区一次 GET /statuses
   if (selected.length > 1) await prefetchStatuses(ctx, selected.map(space => space.id));
   if (args.tree) {

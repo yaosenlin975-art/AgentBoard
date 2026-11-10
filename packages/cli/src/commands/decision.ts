@@ -475,7 +475,15 @@ export async function askExtend(ctx: Ctx, ref: string, args: AskExtendArgs): Pro
   try {
     id = await resolveDecisionRef(ctx, ref);
   } catch (err) {
-    fail3(ctx, err instanceof Error ? err.message : String(err), 'DECISION_NOT_FOUND');
+    const message = err instanceof Error ? err.message : String(err);
+    // B5：决策不存在是「对象不存在」→ 1（与 show/answer 一致）；3 只留给参数/前缀非法
+    if (message.startsWith('决策不存在')) {
+      const text = `${message}（用 kb decisions 查看）`;
+      if (ctx.json) ctx.io.write(`${JSON.stringify({ error: { code: 'DECISION_NOT_FOUND', message: text } })}\n`);
+      else ctx.io.writeErr(`${text}\n`);
+      throw new CommanderError(1, 'agentboard.decision', '');
+    }
+    fail3(ctx, message, 'DECISION_NOT_FOUND');
   }
   // 跨区守卫：显式带当前工作区；cwd 不绑定工作区时省略（由服务端按无 workspace_id 处理）
   let workspaceId: string | undefined;
@@ -572,7 +580,22 @@ export function registerDecisionCommands(program: Command, io: Io, makeCtx: (pro
     .option('--limit <n>', '条数上限（≥1）')
     .action(async (opts: DecisionsArgs) => decisions(makeCtx(program, io), opts));
 
-  const decision = program.command('decision').description('决策详情 / 撤回（id 支持 ≥8 位前缀）');
+  const decision = program.command('decision')
+    .description('决策详情 / 撤回（id 支持 ≥8 位前缀；省略子命令时等价 decision show）')
+    .argument('[id]', '决策 id 或 ≥8 位前缀（省略子命令时等价 `decision show <id>`）')
+    .addHelpText('after', `
+用法：
+  kb decision <id>                 # 详情（等价 decision show <id>）
+  kb decision show <id>
+  kb decision withdraw <id> --reason '...'
+`)
+    .action(async (id: string | undefined) => {
+      if (id === undefined) {
+        decision.outputHelp();
+        return;
+      }
+      await showDecision(makeCtx(program, io), id);
+    });
   decision
     .command('show')
     .argument('<id>', '决策 id 或 ≥8 位前缀')

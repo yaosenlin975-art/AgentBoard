@@ -1641,12 +1641,12 @@ describe('退出码表（help）', () => {
     return { code, text: stream.out() };
   };
 
-  it('kb --help 带退出码表：0/1/2 与 dep 专用 3/4', async () => {
+  it('kb --help 带退出码表：0/1/2 与 dep/决策族 3、dep 边不存在 4', async () => {
     const { code, text } = await help(['node', 'kb', '--help']);
     expect(code).toBe(0);
     expect(text).toContain('退出码：');
     expect(text).toContain('2  冲突：占用');
-    expect(text).toContain('3  kb dep 专用');
+    expect(text).toContain('3  kb dep 与待决策族');
     expect(text).toContain('4  kb dep 专用');
   });
 
