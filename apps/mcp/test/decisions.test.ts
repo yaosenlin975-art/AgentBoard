@@ -282,7 +282,7 @@ describe('MCP 待决策工具', () => {
         `POST /api/decisions/${DECISION_ID}/answer`,
       ]);
       expect(calls[1].headers.get('Idempotency-Key')).toBe(requestId);
-      expect(calls[1].body).toEqual({ answered_by: 'user', source: 'cli', option_id: 'o2' });
+      expect(calls[1].body).toEqual({ answered_by: 'codex', source: 'cli', option_id: 'o2' });
     } finally {
       await harness.close();
     }
@@ -300,7 +300,7 @@ describe('MCP 待决策工具', () => {
         expected_revision: 1,
       })).result as ToolResult;
       expect(result.isError).toBeFalsy();
-      expect(calls[1].body).toEqual({ answered_by: 'user', source: 'cli', option_ord: 2, expected_revision: 1 });
+      expect(calls[1].body).toEqual({ answered_by: 'codex', source: 'cli', option_ord: 2, expected_revision: 1 });
     } finally {
       await harness.close();
     }
@@ -406,6 +406,60 @@ describe('MCP 待决策工具', () => {
       expect(calls[0].path).toBe(`/api/decisions/${DECISION_ID}`);
       expect(calls[1].body).toEqual({ reason: '不再需要', by: 'codex' });
       expect(calls[1].headers.get('Idempotency-Key')).toBe(requestId);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('answer_decision 用 agent 身份作答被服务端拒绝：code=DECISION_HUMAN_ONLY 且文案指向正确入口', async () => {
+    // 服务端「仅人类可答」403：MCP 侧不改写 code 与文案
+    const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const json = (body: unknown, status: number) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      if (`${init?.method ?? 'GET'} ${url.pathname}` === `GET /api/decisions/${DECISION_ID}`) return json({ decision: decision() }, 200);
+      return json({ error: { code: 'DECISION_HUMAN_ONLY', message: '仅人类可回答决策' } }, 403);
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ baseUrl: 'http://127.0.0.1:8787', workspaceId: WORKSPACE_ID, agentId: 'codex' }, fetcher);
+    await harness.start();
+    try {
+      const result = (await harness.request('tools/call', {
+        name: 'answer_decision',
+        arguments: { decision_id: DECISION_ID, request_id: '5f1b2c34-0000-4000-8000-00000000e017', option: 2 },
+      })).result as ToolResult;
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ ok: false, error: { code: 'DECISION_HUMAN_ONLY' } });
+      const message = (result.structuredContent!.error as { message: string }).message;
+      expect(message).toContain('仅人类可回答决策');
+      expect(message).toContain('kb decision withdraw');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('未配置 AGENTBOARD_AGENT_ID 时 answer_decision 按人类作答（answered_by=user）', async () => {
+    const calls: Call[] = [];
+    const harness = createHarness({ baseUrl: 'http://127.0.0.1:8787', workspaceId: WORKSPACE_ID }, fakeFetcher(calls));
+    await harness.start();
+    try {
+      const result = (await harness.request('tools/call', {
+        name: 'answer_decision',
+        arguments: { decision_id: DECISION_ID, request_id: '5f1b2c34-0000-4000-8000-00000000e018', option: 2 },
+      })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(calls[1].body).toEqual({ answered_by: 'user', source: 'cli', option_ord: 2 });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('配置了 agent 身份时 list_decisions 的 capabilities.can_answer 覆写为 false', async () => {
+    const calls: Call[] = [];
+    const { harness, call } = await harnessWith(calls);
+    try {
+      const result = (await call('list_decisions', { workspace_id: WORKSPACE_ID })).result as ToolResult;
+      expect(result.isError).toBeFalsy();
+      expect(result.structuredContent!.data.capabilities).toMatchObject({ can_answer: false });
     } finally {
       await harness.close();
     }

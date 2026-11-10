@@ -14,7 +14,7 @@ const SAFE_MESSAGES: Record<string, string> = {
   CROSS_WORKSPACE_DEPENDENCY: 'Dependencies across workspaces are not supported.',
   DEPENDENCY_CYCLE: 'This dependency would create a cycle and was rejected.',
   DEPENDENCY_EXISTS: 'This dependency already exists.',
-  ISSUE_CLAIMED: 'The task is currently claimed; release it before adding a blocker.',
+  ISSUE_CLAIMED: 'The task is currently claimed by another agent; do not retry — pick another task or wait until it is released. Changing dependencies on a claimed task also requires releasing it first.',
   KNOWLEDGE_NOT_FOUND: 'The knowledge page does not exist in this scope.',
   KNOWLEDGE_REVISION_CONFLICT: 'The knowledge page changed; read it again before updating.',
   KNOWLEDGE_UNAVAILABLE: 'The local AgentBoard knowledge API is unavailable.',
@@ -33,6 +33,8 @@ const SAFE_MESSAGES: Record<string, string> = {
   DECISION_NOT_ACTIVE: 'The decision is no longer active; read it again before acting.',
   DECISION_WITHDRAWN: 'The decision was withdrawn and can no longer be answered.',
   DECISION_NOT_GRACE: 'The decision is not in its grace window; only grace decisions can be extended.',
+  // 与 CLI（服务端 DECISION_HUMAN_ONLY）同句：agent 不得自答，只有人类能回答
+  DECISION_HUMAN_ONLY: '仅人类可回答决策（answered_by=user）：由人在看板「待决策」回答，或 kb decision withdraw <decision_id> --reason "…" 撤回后重新 claim。',
   ASK_TOO_FEW_OPTIONS: 'At least two options with non-empty label and consequence are required.',
   ASK_RATE_LIMITED: 'Too many in-flight or recent decisions for this agent; wait before asking again.',
   ISSUE_STATUS_NOT_RUNNING: 'Only a running task owned by this agent can ask a decision.',

@@ -80,6 +80,16 @@ function assertWorkspaceMatches(config: McpConfig, decision: JsonObject): void {
   }
 }
 
+/**
+ * MCP 不发送身份头，服务端按 `user` 计算 capabilities，会返回 can_answer=true。
+ * 但本进程配置了 AGENTBOARD_AGENT_ID 时它就是 agent，agent 不能回答决策——
+ * 这里按同一口径覆写，避免 capability 继续误导调用方。
+ */
+function agentCapabilities(config: McpConfig, raw: unknown): unknown {
+  if (!config.agentId || !raw || typeof raw !== 'object') return raw;
+  return { ...(raw as Record<string, unknown>), can_answer: false };
+}
+
 export function registerDecisionTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
     name: 'list_decisions',
@@ -105,9 +115,12 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       'DECISION_NOT_FOUND',
     );
     return {
-      items: page.decisions.map(summarizeDecision),
+      items: page.decisions.map(d => {
+        const item = summarizeDecision(d);
+        return config.agentId ? { ...item, capabilities: agentCapabilities(config, item.capabilities) } : item;
+      }),
       counts: page.counts,
-      capabilities: page.capabilities,
+      capabilities: agentCapabilities(config, page.capabilities),
     };
   });
 
@@ -122,7 +135,8 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       'DECISION_NOT_FOUND',
     );
     assertWorkspaceMatches(config, response.decision);
-    return { decision: detailDecision(response.decision) };
+    const detail = detailDecision(response.decision);
+    return { decision: { ...detail, capabilities: agentCapabilities(config, detail.capabilities) } };
   });
 
   registerBoardTool(server, {
@@ -190,7 +204,7 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     server,
     {
       name: 'answer_decision',
-      description: 'Answer a pending decision as the human operator (option ordinal or label, or free text). Revising an existing answer requires expected_revision (CAS). Server rejects non-human answered_by.',
+      description: 'Answer a pending decision. Only a human may answer: with AGENTBOARD_AGENT_ID configured this tool is rejected (DECISION_HUMAN_ONLY) — the agent must wait or withdraw the decision instead. Revising an existing answer requires expected_revision (CAS).',
       inputSchema: z.object({
         ...decisionIdField,
         ...requestIdField,
@@ -214,7 +228,8 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
         'DECISION_NOT_FOUND',
       );
       assertWorkspaceMatches(config, detail.decision);
-      const body: JsonObject = { answered_by: 'user', source: 'cli' };
+      // 与 CLI 同口径：带 agent 身份时服务端拒绝（仅有 answered_by=user 放行）；未配置身份才按人类操作
+      const body: JsonObject = { answered_by: config.agentId ?? 'user', source: 'cli' };
       if (option !== undefined) {
         if (typeof option === 'number' || /^\d+$/.test(option)) {
           body.option_ord = typeof option === 'number' ? option : Number(option);
