@@ -605,6 +605,8 @@ export interface WorkspaceChangeLog {
   updated_at: number;
   revision: number;
   legacy_source_key: string | null;
+  /** SK-05：可选归属卡；done 门禁据此识别「本卡已有 changelog」 */
+  issue_id: string | null;
 }
 
 /** 归档工作区摘要：仍有日志的已移除工作区快照与条数 */

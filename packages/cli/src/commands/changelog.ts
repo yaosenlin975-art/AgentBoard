@@ -23,6 +23,7 @@ interface ChangeLogRecord {
   updated_at: number;
   revision: number;
   legacy_source_key: string | null;
+  issue_id?: string | null;
 }
 
 interface PageResponse<T> { items: T[]; next_offset: number | null }
@@ -70,7 +71,7 @@ const query = (params: Record<string, string | number | undefined>): string =>
 
 function printRecord(ctx: Ctx, record: ChangeLogRecord): void {
   const origin = record.workspace_id === null ? `（归档，原空间 ${record.origin_workspace_name}）` : '';
-  ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} by:${record.updated_by}${origin}\n`);
+  ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} by:${record.updated_by} 归属:${record.issue_id ?? '-'}${origin}\n`);
   ctx.io.write(`${record.title}\n`);
   ctx.io.write(`${record.body_md}\n`);
 }
@@ -80,7 +81,7 @@ function printPage(ctx: Ctx, page: PageResponse<ChangeLogRecord>): void {
     ctx.io.write('（无变更日志）\n');
   } else {
     for (const record of page.items) {
-      ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} ${record.title}\n`);
+      ctx.io.write(`${record.id} [${record.change_type}] ${formatDateTime(record.occurred_at)} rev:${record.revision} 归属:${record.issue_id ?? '-'} ${record.title}\n`);
     }
   }
   if (page.next_offset !== null) ctx.io.write(`下一页：--offset ${page.next_offset}\n`);

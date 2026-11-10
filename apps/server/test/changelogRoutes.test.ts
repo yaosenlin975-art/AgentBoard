@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createTestDb, type TestDb } from './helpers.js';
+import { createTestDb, issuePayload, type TestDb } from './helpers.js';
 import { createWorkspace, deleteWorkspace } from '../src/db/repos/workspace.js';
 import { createRouter, errorHandler } from '../src/api/routes.js';
 import { applyLegacyChangelog, previewLegacyChangelog } from '../src/services/changelogImport.js';
@@ -134,6 +134,29 @@ describe('活动变更日志 REST', () => {
     const reused = await post(wsA, body({ title: '换了内容' }), key);
     expect(reused.status).toBe(409);
     expect(reused.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+  });
+
+  it('N4-03：issue_id 在创建/列表/详情回显，且必须是本工作区真实任务', async () => {
+    const card = await request(app).post('/api/issues').send(issuePayload(wsA, { title: '归属卡' }));
+    expect(card.status).toBe(200);
+    const issueId = card.body.id as string;
+
+    const created = await post(wsA, body({ issue_id: issueId }));
+    expect(created.status).toBe(201);
+    expect(created.body.issue_id).toBe(issueId);
+    expect((await request(app).get(`/api/workspaces/${wsA}/changelog`)).body.items[0].issue_id).toBe(issueId);
+    expect((await request(app).get(`/api/workspaces/${wsA}/changelog/${created.body.id}`)).body.issue_id).toBe(issueId);
+
+    // 不存在的卡 → 400，不落库
+    const ghost = await post(wsA, body({ title: '幽灵归属', issue_id: uuid('999') }));
+    expect(ghost.status).toBe(400);
+    // 别的空间的卡 → 400
+    const other = await request(app).post('/api/issues').send(issuePayload(wsB, { title: 'B 卡' }));
+    expect((await post(wsA, body({ issue_id: other.body.id }))).status).toBe(400);
+    // 不带 issue_id 仍然允许，回显 null
+    const plain = await post(wsA, body({ title: '无归属' }));
+    expect(plain.status).toBe(201);
+    expect(plain.body.issue_id).toBeNull();
   });
 
   it('分页与筛选：limit+1 探测 next_offset、q 字面搜索、change_type 组合、越界 400', async () => {

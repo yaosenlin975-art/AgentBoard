@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { getWorkspace } from '../db/repos/workspace.js';
+import { getIssue } from '../db/repos/issue.js';
 import {
   createChangeLog,
   deleteChangeLog,
@@ -61,6 +62,12 @@ export function createChangelogRouter(db: Db): Router {
   router.post('/', (req, res) => {
     const workspaceId = requireWorkspace((req.params as Record<string, string>).workspaceId);
     const body = parse(changeLogCreateSchema, req.body);
+    // N4-03：--issue 归属必须真实存在且属于本工作区，避免写出不会过 done 门禁的「幽灵归属」
+    if (body.issue_id !== undefined && getIssue(db, body.issue_id, workspaceId) === null) {
+      throw new ValidationError(
+        `issue_id ${body.issue_id} 不存在或不属于本工作区；请先用 kb show <id> 确认任务 id，或省略 --issue 写无归属日志。`,
+      );
+    }
     const workspace = getWorkspace(db, workspaceId)!;
     const { result } = httpMutation(db, req, () => createChangeLog(db, workspace, body));
     res.status(201).json(result);

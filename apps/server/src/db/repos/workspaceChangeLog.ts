@@ -32,7 +32,7 @@ export interface ChangeLogPatch {
   occurred_at?: number;
 }
 
-const COLUMNS = `id,workspace_id,origin_workspace_id,origin_workspace_name,origin_workspace_path,title,body_md,change_type,occurred_at,created_by,updated_by,created_at,updated_at,revision,legacy_source_key`;
+const COLUMNS = `id,workspace_id,origin_workspace_id,origin_workspace_name,origin_workspace_path,title,body_md,change_type,occurred_at,created_by,updated_by,created_at,updated_at,revision,legacy_source_key,issue_id`;
 const ORDER = 'ORDER BY occurred_at DESC, id DESC';
 const CHANGE_TYPES: readonly WorkspaceChangeType[] = ['新增', '修复', '调整', '历史'];
 
@@ -79,10 +79,11 @@ export function createChangeLog(db: Db, workspace: Workspace, input: CreateChang
     updated_at: now,
     revision: 1,
     legacy_source_key: input.legacy_source_key ?? null,
+    issue_id: input.issue_id ?? null,
   };
   db.prepare(
-    `INSERT INTO workspace_change_log (${COLUMNS},issue_id) VALUES (@id,@workspace_id,@origin_workspace_id,@origin_workspace_name,@origin_workspace_path,@title,@body_md,@change_type,@occurred_at,@created_by,@updated_by,@created_at,@updated_at,@revision,@legacy_source_key,@issue_id)`,
-  ).run({ ...log, issue_id: input.issue_id ?? null });
+    `INSERT INTO workspace_change_log (${COLUMNS}) VALUES (@id,@workspace_id,@origin_workspace_id,@origin_workspace_name,@origin_workspace_path,@title,@body_md,@change_type,@occurred_at,@created_by,@updated_by,@created_at,@updated_at,@revision,@legacy_source_key,@issue_id)`,
+  ).run(log);
   return log;
 }
 

@@ -147,6 +147,19 @@ describe('kb changelog 活动日志', () => {
     expect(stream.out.join('')).toContain('正文内容');
   });
 
+  it('N4-03：list/show 文本模式显示归属（无归属显示 -）', async () => {
+    const issueId = '11111111-1111-4111-8111-111111111111';
+    stubFetch(withWorkspaces([{ body: { items: [{ ...RECORD, issue_id: issueId }], next_offset: null } }]));
+    const listStream = io();
+    expect(await main(['node', 'kb', 'changelog', 'list', '--workspace', 'w1'], listStream)).toBe(0);
+    expect(listStream.out.join('')).toContain(`归属:${issueId}`);
+
+    stubFetch(withWorkspaces([{ body: RECORD }]));
+    const showStream = io();
+    expect(await main(['node', 'kb', 'changelog', 'show', 'log-1', '--workspace', 'w1'], showStream)).toBe(0);
+    expect(showStream.out.join('')).toContain('归属:-');
+  });
+
   it('create 从 stdin 读正文，actor 取 KB_AGENT，--request-id 透传幂等键', async () => {
     stubFetch(withWorkspaces([{ body: { ...RECORD, revision: 1 } }]));
     const stream = io('多行\n正文');
