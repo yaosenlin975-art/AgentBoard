@@ -100,6 +100,25 @@ describe('AgentBoard dependency MCP tools', () => {
     }
   });
 
+  it('N4-05：自己占用的卡提示 claimed by you，不再说 another agent', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? Response.json({ error: { code: 'ISSUE_CLAIMED', message: 'srv' } }, { status: 409 })
+        : Response.json({ id: 'iss1', claimed_by: 'codex', status: '进行中', labels: [] })
+    ));
+    const harness = createHarness(baseConfig, fetchMock as unknown as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'add_dependency',
+      arguments: { task_id: 'iss1', blocker_task_id: 'blk1', request_id: '9f0d3c8a-5b1e-4a26-8c7d-1f2b3a4c5d6e' },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'ISSUE_CLAIMED' } });
+    expect(JSON.stringify(response.result?.structuredContent)).toContain('claimed by you (codex)');
+    expect(JSON.stringify(response.result?.structuredContent)).not.toContain('another agent');
+  });
+
   it('rejects a workspace override when the server is bound', async () => {
     const fetchMock = vi.fn();
     const harness = createHarness(baseConfig, fetchMock as unknown as typeof fetch);

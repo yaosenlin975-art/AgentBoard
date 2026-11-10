@@ -674,7 +674,7 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 
 约定：原因一律写 stderr（`kb done` 的自动提交警告可多行，含补救命令）；`--json` 只改 stdout 结构，不改退出码。`done` 的「占用 2」与「参数 2」都以 2 上报，区别在文案（`未被占用：如需推进请先 kb claim…` vs 参数错误列表），脚本只按 2 判「当前不可完成」即可。
 
-**`kb done` 收尾选项与变更日志门禁（SK-05）**：`--close-record`（CLI 先写一条带本卡 `issue_id` 的 changelog，再 done，子步骤失败不落 done）、`--no-changelog`（显式声明没有用户可见变更，与 `--close-record` 互斥）、`--all`（显式纳入全部未提交改动）。CLI 调 `POST /api/issues/:id/done` 时带 `client:'cli'` 与 `changelog_ack`（`--close-record` / `--no-changelog` 时为 true）。不带 ack 时服务端按顺序检查：请求里的 `changelog_id`（不存在 → 400 `CHANGELOG_NOT_FOUND`）、库中 `issue_id=本卡` 且 claim 之后创建的日志；都不满足 → 400 `CHANGELOG_ACK_REQUIRED`（CLI 退出码 1，done 未执行、状态不变）。先写日志走 `kb changelog create --issue <卡 id> --title … --type 修复 --stdin`。MCP 对应 `create_changelog` 的 `issue_id`、`complete_task` 的 `changelog_id` / `skip_changelog`。
+**`kb done` 收尾选项与变更日志门禁（SK-05）**：`--close-record`（CLI 先写一条带本卡 `issue_id` 的 changelog，再 done，子步骤失败不落 done）、`--no-changelog`（显式声明没有用户可见变更，与 `--close-record` 互斥）、`--board-only`（纯看板任务跳过自动提交，与 `--scope` / `--all` 互斥，返回 `skipped/BOARD_ONLY` 且退出码 0、不写 stderr）、`--all`（显式纳入全部未提交改动）。CLI 调 `POST /api/issues/:id/done` 时带 `client:'cli'` 与 `changelog_ack`（`--close-record` / `--no-changelog` 时为 true）。不带 ack 时服务端按顺序检查：请求里的 `changelog_id`（不存在 → 400 `CHANGELOG_NOT_FOUND`）、库中 `issue_id=本卡` 且 claim 之后创建的日志；都不满足 → 400 `CHANGELOG_ACK_REQUIRED`（CLI 退出码 1，done 未执行、状态不变）。先写日志走 `kb changelog create --issue <卡 id> --title … --type 修复 --stdin`。MCP 对应 `create_changelog` 的 `issue_id`、`complete_task` 的 `changelog_id` / `skip_changelog`。
 
 ## 12. WebSocket 事件（`/ws`，`packages/shared/src/types.ts:73-82`）
 
@@ -1119,7 +1119,7 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 | `kb release` | 有 | `release_task` | 释放占用 → 待规划 |
 | `kb comment` | 有 | `add_task_comment` | 文本评论；图片附件仅 CLI/HTTP 提供 |
 | `kb accept` | 有 | `accept_task` | 结构化验收记录，不改卡状态 |
-| `kb done` | 有 | `complete_task` | 完成 → 待验收；`scope`（string[]）同 CLI `--scope`，未声明时服务端不自动提交（`NO_SCOPE`），不是「只在 CLI 侧」；收尾门禁同 CLI：`changelog_id` 等价 `--close-record` 的引用、`skip_changelog` 等价 `--no-changelog` |
+| `kb done` | 有 | `complete_task` | 完成 → 待验收；`scope`（string[]）同 CLI `--scope`，未声明时服务端不自动提交（`NO_SCOPE`），不是「只在 CLI 侧」；`board_only`（boolean）同 `--board-only`，与 `scope` 互斥（同传 400 `BOARD_ONLY_SCOPE_CONFLICT`，不静默取舍）；收尾门禁同 CLI：`changelog_id` 引用本工作区已有日志（**不等价** `--close-record`——后者是新建一条）、`skip_changelog` 等价 `--no-changelog` |
 | `kb close` | 有 | `close_task` | 待验收 → 已关闭 |
 | `kb reopen` | 有 | `reopen_task` | 已关闭/已废弃 → 指定状态 |
 | `kb update` | 有 | `update_task` | 字段与状态更新，带 CAS |

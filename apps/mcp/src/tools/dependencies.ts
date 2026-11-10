@@ -4,9 +4,10 @@
  * 错误码由 `apiClient` 透传（`DEPENDENCY_*` / `CROSS_WORKSPACE_DEPENDENCY` / `ISSUE_CLAIMED`），不吞错。
  */
 import type { McpServer } from '@modelcontextprotocol/server';
+import type { Issue } from '@agentboard/shared';
 import { z } from 'zod/v4';
 import type { McpConfig } from '../config.js';
-import { resolveWorkspaceId } from '../config.js';
+import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 
@@ -56,10 +57,22 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
     readOnly: false,
   }, async ({ workspace_id, task_id, blocker_task_id, request_id }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id);
-    const view = await api.mutate<DependencyView>('POST', `/issues/${encodeURIComponent(task_id)}/dependencies`, {
-      workspace_id: workspaceId, blocker_issue_id: blocker_task_id,
-    }, request_id);
-    return { ...view, workspace_id: workspaceId };
+    try {
+      const view = await api.mutate<DependencyView>('POST', `/issues/${encodeURIComponent(task_id)}/dependencies`, {
+        workspace_id: workspaceId, blocker_issue_id: blocker_task_id,
+      }, request_id);
+      return { ...view, workspace_id: workspaceId };
+    } catch (error) {
+      // N4-05：ISSUE_CLAIMED 区分「自己占用」与「他人占用」，别让本人也被告知 another agent
+      if (error instanceof McpError && error.code === 'ISSUE_CLAIMED') {
+        const claimedBy = await api.get<Issue>(`/issues/${encodeURIComponent(task_id)}`, { workspace_id: workspaceId })
+          .then(task => task.claimed_by).catch(() => null);
+        if (claimedBy !== null && claimedBy === requireAgentId(config)) {
+          throw new McpError('ISSUE_CLAIMED', `The task is claimed by you (${claimedBy}); finish it with complete_task / fail_task, or release_task, before adding a blocker.`);
+        }
+      }
+      throw error;
+    }
   });
 
   registerBoardTool(server, {

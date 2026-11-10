@@ -128,6 +128,22 @@ describe('knowledge nudge on done', () => {
     }
   });
 
+  it('N4-07：标签未命中时按标题/描述领域词兜底', async () => {
+    const cases: Array<[string, string]> = [
+      ['修复命令行输出', 'agentboard-cli-ux'],
+      ['服务端接口 500', 'agentboard-server-data'],
+      ['测试用例补齐', 'agentboard-testing-gates'],
+    ];
+    for (const [title, expected] of cases) {
+      const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
+      expect(res.status).toBe(200);
+      const issueId = res.body.id as string;
+      await claim(issueId);
+      const body = await done(issueId);
+      expect(body.knowledge_hint?.suggested_slug).toBe(expected);
+    }
+  });
+
   it('suggestedSlugIsLegalAndCategorySupplied', async () => {
     const issueId = await makeIssue('缓存失效方案（B/S 两端）');
     await claim(issueId);

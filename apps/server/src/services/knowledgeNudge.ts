@@ -17,7 +17,7 @@ const DEFAULT_THEME_SLUG = 'agentboard-pitfalls';
 /**
  * N-05 / SK-06：建议 slug 用**稳定的主题页名**，与 using-agentboard / kb-curator 的主题页口径一致；
  * 不再拼「标题+日期」（日期后缀会让同一主题每天长出新页，revise 永远命中不了）。
- * 标签 → 主题页映射（N3-07 补齐 cli）；坑/缺陷/规则与未知标签统一落 agentboard-pitfalls。
+ * 标签 → 主题页映射（N3-07 补齐 cli；N4-07 标签未命中时再按标题/描述领域词兜底）。
  */
 const THEME_RULES: ReadonlyArray<{ slug: string; tags: readonly string[] }> = [
   { slug: 'agentboard-server-data', tags: ['server', '服务端', '后端'] },
@@ -27,10 +27,22 @@ const THEME_RULES: ReadonlyArray<{ slug: string; tags: readonly string[] }> = [
   { slug: DEFAULT_THEME_SLUG, tags: ['缺陷', '坑', '规则'] },
 ];
 
-function themeSlug(labels: readonly string[]): string {
-  const normalized = labels.map(label => label.trim().toLowerCase());
-  const hit = THEME_RULES.find(rule => rule.tags.some(tag => normalized.includes(tag)));
-  return hit?.slug ?? DEFAULT_THEME_SLUG;
+function themeSlug(issue: Pick<Issue, 'labels' | 'title' | 'description'>): string {
+  const labelText = issue.labels.map(label => label.trim().toLowerCase()).join(' ');
+  const hitByLabel = THEME_RULES.find(rule => rule.tags.some(tag => matchesTopic(labelText, tag)));
+  if (hitByLabel) return hitByLabel.slug;
+  // N4-07：没有命中标签时，标题/描述里的领域词也参与映射（ASCII 词按独立 token 匹配，避免 click 命中 cli）
+  const bodyText = `${issue.title} ${issue.description ?? ''}`.toLowerCase();
+  const hitByText = THEME_RULES.find(rule => rule.tags.some(tag => matchesTopic(bodyText, tag)));
+  return hitByText?.slug ?? DEFAULT_THEME_SLUG;
+}
+
+/** ASCII 领域词要求独立 token（前后非字母数字），中文词直接子串匹配 */
+function matchesTopic(text: string, tag: string): boolean {
+  if (!text) return false;
+  const needle = tag.toLowerCase();
+  if (/^[a-z0-9]+$/.test(needle)) return new RegExp(`(^|[^a-z0-9])${needle}([^a-z0-9]|$)`).test(text);
+  return text.includes(needle);
 }
 
 export interface KnowledgeHintOptions {
@@ -41,7 +53,7 @@ export interface KnowledgeHintOptions {
 export function buildKnowledgeHint(db: Db, issue: Issue, options: KnowledgeHintOptions = {}): KnowledgeHint | null {
   if (!issue.claimed_by || issue.claimed_at === null) return null;
   // 检测口径兼容两种写法：旧 handoff-<issue-id> 前缀页，或本次占用期间由占用者更新过的任意页（主题 slug 场景）
-  const suggestedSlug = themeSlug(issue.labels);
+  const suggestedSlug = themeSlug(issue);
   const hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
     WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
       AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))

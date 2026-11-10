@@ -313,7 +313,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     scope: z.array(z.string().min(1)).optional()
       .describe('Repo-relative files or directory prefixes this task changed (e.g. ["apps/server/src", "README.md"]). Only these paths are auto-committed. Omit → no auto-commit: the response lists every dirty file plus a copy-paste remedy command. For board-only tasks pass board_only instead; pass ["."] only when you intentionally include all dirty files.'),
     changelog_id: z.string().uuid().optional()
-      .describe('UUID of an existing change-log entry of this workspace that covers this task (equivalent to CLI --close-record). Takes precedence over the issue_id auto-match.'),
+      .describe('UUID of an EXISTING change-log entry of this workspace that covers this task. Not the same as CLI --close-record (that CREATES a new entry); use this to reference one you already created via create_changelog. Takes precedence over the issue_id auto-match.'),
     skip_changelog: z.boolean().optional()
       .describe('Set true only when this task has no user-visible change (pure internal refactor / board-only operation). Without a changelog and without this flag the server rejects the call with 400 CHANGELOG_ACK_REQUIRED.'),
     board_only: z.boolean().optional()
