@@ -89,12 +89,33 @@ function collectValue(value: string, previous: string[]): string[] {
 }
 
 /**
+ * N-04：从 argv 取第一个真实子命令名。不能只找「第一个不以 - 开头的 token」——
+ * `kb --server http://x knowledge list` 里 URL 是 `--server` 的取值，会被误当命令名，
+ * 提示就成了「用 kb http://x --help 查看用法」。这里跳过全局选项及其取值。
+ */
+const GLOBAL_OPTIONS_WITH_VALUE = new Set(['--server', '-s']);
+
+function firstCommandToken(argv: string[]): string | undefined {
+  const args = argv.slice(2);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === undefined) break;
+    if (arg === '--') return args.slice(i + 1).find(next => !next.startsWith('-'));
+    if (GLOBAL_OPTIONS_WITH_VALUE.has(arg)) { i += 1; continue; }
+    if (arg.startsWith('--server=') || arg.startsWith('-s=')) continue;
+    if (arg.startsWith('-')) continue;
+    return arg;
+  }
+  return undefined;
+}
+
+/**
  * B6：commander 自带报错本地化。此前缺参/未知选项/未知命令直接吐英文，
  * 与命令自身的中文报错混排；这里按同一套措辞改写并附下一步（--help）。
  * 未识别的模式保留原文，只补下一步，不吞错。
  */
 function localizeCommanderError(text: string, argv: string[]): string {
-  const first = argv.slice(2).find(arg => !arg.startsWith('-'));
+  const first = firstCommandToken(argv);
   const help = first === undefined ? 'kb --help' : `kb ${first} --help`;
   return text.replace(/^error: (.*)$/gm, (_line, raw: string) => {
     const msg = raw.trim();
@@ -390,7 +411,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   kb done 0f6ba9ab --notes '改完' --close        # 待验收 + 已关闭一步完成（父卡有未关闭后代时会停在待验收）
   kb done 0f6ba9ab --close-record --changelog-title '某项调整' --type 调整 --knowledge-page <页 id> --scope <路径>
   kb done 0f6ba9ab --design-not-advanced        # 关联设计页仍为 proposed，但本卡确认不推进设计
-退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误、任务不存在、close-record 子步骤失败（changelog/知识页失败时 done 未执行）、设计页仍为 proposed 且未声明（done 未执行），或**done 已生效但自动提交未完成**（无基线 / 提交失败 / scope 零命中 / 并行占用未声明——此时状态已是待验收，按 stderr 里的补救命令执行即可）
+退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误、任务不存在、close-record 子步骤失败（changelog/知识页失败时 done 未执行）、设计页仍为 proposed 且未声明（done 未执行），或**done 已生效但自动提交未完成**（无基线 / 提交失败 / scope 零命中 / 未声明 scope——此时状态已是待验收，按 stderr 里的补救命令执行即可）
 GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
 自动提交未完成时 stderr 输出「未提交 + 原因 + 可照抄的补救命令」；带 --close 时该场景会跳过 close（避免未提交的卡被关闭后无法用 done 补救），修复后执行 kb close <issue-id>。
 非 git 工作区（未装 git / 非仓库 / 仓库损坏）只落 stderr 警告、退出码保持 0（结果状态 unavailable）。

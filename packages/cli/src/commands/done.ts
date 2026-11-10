@@ -22,7 +22,7 @@ export interface DoneArgs {
   notes?: string;
   /** 从 stdin 读取 notes（多行、或含 `- ` 开头的行时更安全；与 --notes 二选一，stdin 优先） */
   notesStdin?: boolean;
-  /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；有并行占用时只提交声明范围内的改动 */
+  /** GIT-ON-DONE 提交范围声明：文件路径或目录前缀；未声明时服务端不提交任何文件（NO_SCOPE） */
   scope?: string[];
   /** 显式纳入工作区全部未提交改动（默认只提交 scope 声明的卡内文件集，卡外改动只列清单） */
   all?: boolean;

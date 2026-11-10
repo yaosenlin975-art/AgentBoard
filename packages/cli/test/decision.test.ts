@@ -411,4 +411,18 @@ describe('CR2-10：决策前缀解析（批量读 + 大上限）', () => {
     expect(listCalls[0]!.url).toContain('workspace_ids=ws1,ws2');
     expect(listCalls[0]!.url).toContain('limit=100000');
   });
+
+  it('N-06：默认项标注说明它只在 on_expire=unlock_default 时生效，不暗示 CLI 可回车即答', async () => {
+    const target = 'deadbeef-2222-4222-8222-222222222222';
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'A', path: cwd }] };
+      if (method === 'GET' && url.startsWith('/api/decisions?')) return { status: 200, body: { decisions: [{ id: target }] } };
+      if (method === 'GET' && url === `/api/decisions/${target}`) return { status: 200, body: { decision: decision({ id: target }) } };
+      return undefined;
+    };
+    const result = await run(['decision', 'show', 'deadbeef']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('on_expire=unlock_default 时宽限到期自动采用');
+    expect(result.out).not.toContain('未指定时的默认项');
+  });
 });

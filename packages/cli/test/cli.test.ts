@@ -1876,3 +1876,22 @@ describe('CLI-RECEIPT：comment/update 回执回显卡标题 + id 写错给候�
     expect(t.err()).not.toContain('你是不是想写');
   });
 });
+
+describe('CLI-UX 缺参提示命令名（N-04）', () => {
+  it('--server 的取值不会被当成命令名：提示 kb knowledge --help，不含 URL', async () => {
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'knowledge', 'list'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('kb knowledge --help');
+    expect(t.err()).not.toContain(base);
+    expect(t.err()).not.toContain('127.0.0.1');
+  });
+
+  it('--server=<url> 等号写法同样跳过', async () => {
+    const t = makeIo();
+    const code = await main(['node', 'kb', `--server=${base}`, 'knowledge', 'list'], t.io);
+    expect(code).toBe(1);
+    expect(t.err()).toContain('kb knowledge --help');
+    expect(t.err()).not.toContain(base);
+  });
+});

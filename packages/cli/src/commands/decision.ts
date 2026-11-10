@@ -374,8 +374,9 @@ export async function showDecision(ctx: Ctx, ref: string): Promise<void> {
   if (decision.state === 'grace') ctx.io.write(`（剩余 ${secondsLeft(decision.grace_until)}s）`);
   ctx.io.write(`\n提问者: ${decision.created_by}\n`);
   for (const option of decision.options) {
-    // SK-09：服务端会在未指定时自动把第 1 项记为默认，标注说清它「只是缺省值」，不是推荐项
-    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${option.is_default === 1 ? '（未指定时的默认项）' : ''}\n`);
+    // SK-09 / N-06：服务端会在未指定 --default 时把第 1 项记为缺省值；但 CLI 没有「回车即答」入口，
+    // 这个缺省值只在提问时显式 on_expire=unlock_default 的情况下才会被宽限到期自动采用。
+    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${option.is_default === 1 ? '（on_expire=unlock_default 时宽限到期自动采用）' : ''}\n`);
   }
   if (decision.answer_revision > 0) {
     ctx.io.write(`回答（revision ${decision.answer_revision}）：${answerText(decision) ?? '（无）'}\n`);
