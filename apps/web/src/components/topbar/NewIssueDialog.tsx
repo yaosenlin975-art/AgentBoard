@@ -24,6 +24,7 @@ import {
   type IssueDraft,
 } from '../../lib/smartDraft';
 import { Modal } from '../ui/Modal';
+import { BUTTON_PRIMARY, BUTTON_SECONDARY } from '../ui/buttonStyles';
 
 const inputCls =
   'w-full rounded border border-hairline bg-surface-card px-2 py-1.5 text-sm text-ink outline-none transition-colors duration-150 focus:border-accent motion-reduce:transition-none';
@@ -572,7 +573,7 @@ export function NewIssueDialog({
                 data-testid="draft-cards-create"
                 onClick={() => void createCards()}
                 disabled={creatingCards}
-                className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className={BUTTON_PRIMARY}
               >
                 创建 {multiCards.filter((card) => !canceledCards.includes(card.localId) && card.title.trim() !== '').length} 张
               </button>
@@ -699,7 +700,7 @@ export function NewIssueDialog({
             <button
               type="button"
               onClick={onClose}
-              className="rounded px-3 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className="rounded px-3 py-1.5 text-sm text-ink-2 hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-40"
             >
               取消
             </button>
@@ -708,7 +709,7 @@ export function NewIssueDialog({
                 type="button"
                 data-testid="smart-cancel"
                 onClick={cancelGenerate}
-                className="rounded border border-amber-400 px-3 py-1.5 text-sm text-amber-700 hover:bg-amber-50 dark:border-amber-600 dark:text-amber-300 dark:hover:bg-amber-950/40"
+                className={BUTTON_SECONDARY}
               >
                 取消生成
               </button>
@@ -719,7 +720,7 @@ export function NewIssueDialog({
                 data-testid="smart-generate"
                 onClick={() => void generate()}
                 disabled={requirement.trim() === '' || adapterUnavailable}
-                className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-accent-ink ab-transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 生成草稿
               </button>
