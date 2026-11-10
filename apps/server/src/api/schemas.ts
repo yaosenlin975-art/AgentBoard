@@ -399,6 +399,38 @@ export const createPersonaSchema = z.object({
   body_md: z.string().min(1, 'body_md 不能为空').max(PERSONA_BODY_MAX_CHARS, `body_md 不能超过 ${PERSONA_BODY_MAX_CHARS} 字`),
 });
 
+/**
+ * POST /api/teams/:id/dispatch：向成员派活（护栏由服务端在 teamOrchestration 判定）
+ */
+export const dispatchTeamTaskSchema = z.object({
+  session_id: z.string().uuid('session_id 必须是成员会话 uuid'),
+  prompt: z.string().trim().min(1, 'prompt 不能为空').max(20_000, 'prompt 不能超过 20000 字'),
+});
+
+/**
+ * POST /api/teams/:id/members：新建成员会话并挂到团队。
+ * cli / role / agent_name 必填；persona_id 可选（必须已存在），model 可选（缺省由适配器分派）。
+ */
+export const addTeamMemberSchema = z.object({
+  cli: z.string().trim().min(1, 'cli 不能为空').max(100, 'cli 不能超过 100 字'),
+  role: z.string().trim().min(1, 'role 不能为空').max(30, 'role 不能超过 30 字'),
+  agent_name: z.string().trim().min(1, 'agent_name 不能为空').max(30, 'agent_name 不能超过 30 字'),
+  persona_id: z.string().uuid('persona_id 必须是 uuid').optional(),
+  model: z.string().trim().min(1, 'model 不能为空').max(100, 'model 不能超过 100 字').optional(),
+});
+
+/**
+ * POST /api/teams：建团。
+ * lead_session_id 必须存在且与 workspace_id 同属一个工作区；成本护栏两字段可选（默认 20 轮 / 20 万 token）。
+ */
+export const createTeamSchema = z.object({
+  workspace_id: z.string().uuid('workspace_id 必须是 uuid'),
+  name: z.string().trim().min(1, 'name 不能为空').max(50, 'name 不能超过 50 字'),
+  lead_session_id: z.string().uuid('lead_session_id 必须是会话 uuid'),
+  max_turns_per_member: z.number().int().min(1, 'max_turns_per_member 至少为 1').max(200, 'max_turns_per_member 不能超过 200').optional(),
+  budget_tokens: z.number().int().min(1000, 'budget_tokens 至少为 1000').max(50_000_000, 'budget_tokens 不能超过 50000000').optional(),
+});
+
 /** PATCH /api/personas/:id：三个字段全可选，至少提供一个 */
 export const patchPersonaSchema = z
   .object({

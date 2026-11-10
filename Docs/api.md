@@ -1143,3 +1143,38 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 | `kb answer` | 有 | `answer_decision` | 回答或修订决策答案 |
 | `kb ask-extend` | 有 | `extend_decision_grace` | 延长宽限窗口 |
 | `kb stop-check` | 有 | `stop_check` | 协作式停止检查 |
+
+## 22. 专家团 teams（P3-A）
+
+数据：`teams` / `team_members` 两张表落**中心库**（与 personas 同层，`workspace_id` 标归属）；成员会话行仍落归属工作区库，本表只存 `session_id` 引用。迁移 `apps/server/src/db/migrations/teams.ts`（纯追加、幂等）。
+
+端点（均挂在 `/api` 下）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/teams` | 建团。体：`workspace_id` / `name`（≤50）/ `lead_session_id` / 可选 `max_turns_per_member`（1–200，默认 20）/ `budget_tokens`（≥1000，默认 200000）。lead 会话必须存在且属于同一工作区；一个 lead 会话最多带一个团（409）。成功 201，返回团详情 |
+| GET | `/teams?workspace=<id>` | 按工作区列团（含成员快照），数组；缺 `workspace` 400 |
+| GET | `/teams/:id` | 团详情：`{...team, members:[{session_id, role, agent_name, status, usage:{turns,tokens,tool_calls}, session}]}`；不存在 404 |
+| POST | `/teams/:id/members` | 加成员。体：`cli` / `role`（≤30）/ `agent_name`（≤30）/ 可选 `persona_id`（必须存在）/ `model`。服务端按 `createSession` 建**自由会话**（`issue_id=null`，不绑任务），再补 persona；成功 201 返回团详情。团队已停止 409 |
+| DELETE | `/teams/:id/members/:sessionId` | 移除成员：先停成员会话（不可用则跳过）再解绑；**不删会话历史**。成员不存在 404 |
+| POST | `/teams/:id/stop` | 停团：`status='stopped'`，成员统一停轮；之后派活 409 |
+| POST | `/teams/:id/dispatch` | 向成员派活。体：`session_id`（必须是本团成员）/ `prompt`（1–20000 字）。成功 202 `{team_id, member, queued, usage}` |
+
+编排语义：
+
+- **lead 每轮注入名册**：对「作为 lead 的会话」调 `POST /sessions/:id/messages` 时，服务端在用户消息前拼一段 `## 专家团「<name>」…` 名册块（成员角色/名/状态/轮次/tokens/session_id）。非 lead 会话原文不变。
+- **派活指令**：lead 原消息中单独一行 `@成员名: 任务内容` 会被解析（按成员 `agent_name` 精确匹配），后台为该成员会话起一轮；成员结果（assistant 正文）在本轮收口后以 `## 成员回报（角色「名」）` 形式回传 lead（lead 运行中则排队）。派活指令**不**从注入的名册块解析（名册含示例，避免自触发）。
+- **成本护栏**：派活前校验 ① 团队 `status=active` ② 成员 `turns < max_turns_per_member` ③ 团队累计 tokens `< budget_tokens`；任一不满足返回 409，文案说明具体原因。tokens 取该成员最后一轮 `session_turn.usage_json` 的 `input+output`，`tool_calls` 取该轮计划步骤数。
+- **不使用 CLI 内生子代理**：成员一律独立会话，成员消息不经 lead 之外的通道外发（v1 口径）。
+
+WS：以上写操作（建团/加删成员/停团/派活/成员轮次收口）广播 `team_update`：
+
+```json
+{ "type": "team_update", "team_id": "<uuid>", "status": "active|stopped",
+  "members": [{ "session_id": "...", "role": "...", "agent_name": "...", "status": "idle|working|done|failed", "usage": { "turns": 0, "tokens": 0, "tool_calls": 0 } }],
+  "reason": "created|member_added|member_removed|stopped|dispatch|member_done|member_failed|guardrail|snapshot" }
+```
+
+`team_update` 目前只在服务端 `ServerWsEvent` 联合里（前端 `WsEvent` 尚未并入，P3-B 消费后再并）。
+
+退出码：沿用统一错误响应 —— 400 `VALIDATION_ERROR`（字段非法 / lead 或 persona 不存在 / lead 不属于该工作区）、404 `NOT_FOUND`（团/工作区/成员不存在）、409 `CONFLICT`（lead 已属其他团 / 团队已停止 / 成员轮次上限 / token 预算用尽）。

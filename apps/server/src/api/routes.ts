@@ -15,6 +15,10 @@ import { createWorkspaceRouter } from './routes/workspaceRoutes.js';
 import { createSessionRouter } from './routes/sessionRoutes.js';
 import { createSettingsRouter } from './routes/settingsRoutes.js';
 import { createPersonaRouter } from './routes/personaRoutes.js';
+// P3-A：专家团 REST 与编排装配（teams / team_members；WS team_update）
+import { createTeamRouter } from './routes/teamRoutes.js';
+import { handleSessionTurnEnded, initTeamOrchestration } from '../services/teamOrchestration.js';
+import { setTurnEndedListener } from '../services/sessionManager.js';
 import { createSystemMiscRouter } from './routes/systemMiscRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
 import { createBrowserRouter } from './browserRoutes.js';
@@ -367,6 +371,17 @@ export function createRouter(deps: RouterDeps): Router {
   // ---- personas 域（P1-C）----
   // persona CRUD（builtin 409）与 CLI 能力探测（probeCliCapabilities，60s 缓存在 adapters 侧）
   router.use(createPersonaRouter({ db }));
+
+  // ---- 专家团域（P3-A）----
+  // teams / team_members 落中心库；成员会话行落归属工作区库（dbForWorkspace）。
+  // 编排装配在这里做（与 createApp 同生命周期）：initTeamOrchestration 供广播与成员库解析，
+  // 轮次结束监听把成员结果回传 lead（非团队成员会话由服务忽略）。
+  initTeamOrchestration({ center: db, getDbForWorkspace: dbForWorkspace, broadcast });
+  setTurnEndedListener((info) => {
+    // 结果回传是旁路：失败（库已关、lead 会话已删等）不得冒泡成未处理拒绝
+    void handleSessionTurnEnded(info).catch(() => undefined);
+  });
+  router.use(createTeamRouter({ db, broadcast, dbForWorkspace, locateSessionRouted }));
   return router;
 }
 

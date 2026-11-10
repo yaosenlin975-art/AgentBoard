@@ -31,6 +31,8 @@ import { answerAwaitingTurn } from '../../services/turnAwaiting.js';
 import { decideTurnApproval } from '../../services/turnApproval.js';
 import { retryFailedStep } from '../../services/turnStepRetry.js';
 import { createSession, forgetSession, getSessionRuntime, pauseSession, resumeSession, sendToSession, stopSession, runRetriedStep } from '../../services/sessionManager.js';
+// P3-A：lead 每轮注入成员名册 + 解析 `@成员: 任务` 派活指令
+import { buildRosterBlock, dispatchLeadDirectives } from '../../services/teamOrchestration.js';
 import { rollbackPersonaBlock } from '../../services/personaInjection.js';
 import { dispatchIssue } from '../../services/dispatch.js';
 import { hashPayload } from '../../services/idempotency.js';
@@ -241,8 +243,14 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
   router.post('/sessions/:id/messages', async (req, res) => {
     const body = parseBody(sendMessageSchema, req.body);
     const attachmentIds = body.attachment_ids ?? [];
+    // P3-A：lead 会话每轮在用户消息前注入成员名册与状态（非 lead 会话 roster 为 null，原文不变）
+    const roster = buildRosterBlock(db, req.params.id!);
+    const text = roster === null ? body.text : `${roster}\n\n---\n\n${body.text}`;
     if (attachmentIds.length === 0) {
-      res.json(await sendToSession(req.params.id!, body.text));
+      const result = await sendToSession(req.params.id!, text);
+      // 派活指令按**原消息**解析（名册里含 @成员名 示例，不能当指令）
+      dispatchLeadDirectives(db, req.params.id!, body.text);
+      res.json(result);
       return;
     }
     // CHAT-ATTACH-ANY：先按 DB 里的 kind 分流——图片仍走 image 通道（需要 CLI 图片能力验证），
@@ -285,20 +293,22 @@ export function createSessionRouter(deps: SessionRouterDeps): Router {
       mimeType: attachments.sessionMime(session.id, id) as 'image/png' | 'image/jpeg' | 'image/webp',
     }));
     const prompt = fileIds.length === 0
-      ? body.text
-      : [body.text, fileAttachmentPromptBlock(fileIds.map((id) => ({
+      ? text
+      : [text, fileAttachmentPromptBlock(fileIds.map((id) => ({
         name: attachments.workspaceName(session.workspace_id, id),
         mime: attachments.workspaceMime(session.workspace_id, id),
         bytes: attachments.workspaceSize(session.workspace_id, id),
         path: attachments.sessionPath(session.id, id),
       })))].filter((part) => part.trim() !== '').join('\n\n');
-    res.json(await sendToSession(session.id, prompt, {
+    const sent = await sendToSession(session.id, prompt, {
       attachments: imageAttachments,
       deliveredAttachmentIds: imageIds,
       fileAttachmentIds: fileIds,
       ...(verifiedCliVersion ? { verifiedCliVersion } : {}),
       sessionAttachment: true,
-    }));
+    });
+    dispatchLeadDirectives(db, session.id, body.text);
+    res.json(sent);
   });
 
   router.post('/sessions/:id/stop', async (req, res) => {

@@ -582,8 +582,34 @@ export interface DecisionCapabilities {
   can_extend: boolean;
 }
 
-/** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 */
-export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent;
+/**
+ * P3-A：专家团状态/用量快照（WS）。
+ *
+ * 刻意**不并入 `WsEvent`**：`apps/web/src/api/ws.ts::eventToQueryKeys` 是无 default 的穷尽 switch，
+ * 并入会让 `apps/web` 立刻编译失败；团队视图消费归 P3-B（届时加入 `WsEvent` 并补 case）。
+ * 服务端广播侧经 `ServerWsEvent` 已可发出。
+ */
+export interface TeamUpdateEvent {
+  type: 'team_update';
+  team_id: string;
+  /** active=可派活；stopped=已停止（成员不再接受新派活） */
+  status: 'active' | 'stopped';
+  members: TeamMemberSnapshot[];
+  /** 本次变更原因：member_added / member_removed / dispatch / member_done / member_failed / stopped / guardrail */
+  reason: string;
+}
+/** 团队成员快照（team_update 载荷与 REST 详情同形） */
+export interface TeamMemberSnapshot {
+  session_id: string;
+  role: string;
+  agent_name: string;
+  status: 'idle' | 'working' | 'done' | 'failed';
+  /** 累计用量：轮次 / token（input+output，未知按 0 计）/ 工具调用数 */
+  usage: { turns: number; tokens: number; tool_calls: number };
+}
+
+/** 服务端实际广播的联合类型 = 前端可见的 `WsEvent` + 轮次观测事件 + 决策事件 + 会话控制事件 + 专家团事件 */
+export type ServerWsEvent = WsEvent | TurnObservationEvent | DecisionEvent | SessionControlEvent | TeamUpdateEvent;
 
 /** 工作区变更日志类型；`历史` 仅由旧 CHANGELOG 导入写入，普通 UI/CLI 新增不可选 */
 export type WorkspaceChangeType = '新增' | '修复' | '调整' | '历史';

@@ -358,6 +358,8 @@ export function resetSessionManager(): void {
   activeTurns = 0;
   slotWaiters.length = 0;
   broadcaster = null;
+  // P3-A：监听方随会话管理器一起清（测试/重启后不残留指向旧库的监听）
+  turnEndedListener = null;
 }
 
 /** 运行时调整并发上限（PATCH /api/settings）：校验同 init；未装配时按装配门槛报错 */
@@ -376,6 +378,21 @@ export function setBroadcaster(fn: (event: ServerWsEvent) => void): void {
 
 function broadcast(event: ServerWsEvent): void {
   broadcaster?.(event);
+}
+
+/** P3-A：轮次正常收口通知（专家团把成员结果回传 lead 用；替代在 sessionManager 内直连团队服务，避免循环依赖） */
+export interface SessionTurnEndedInfo {
+  session_id: string;
+  /** 适配器退出码为 0 即 true（stop / 被新轮次取代的旧轮不通知） */
+  ok: boolean;
+  /** 本轮 assistant 正文（多次 flush 拼接；无正文为空串） */
+  assistant_text: string;
+}
+
+let turnEndedListener: ((info: SessionTurnEndedInfo) => void) | null = null;
+
+export function setTurnEndedListener(fn: ((info: SessionTurnEndedInfo) => void) | null): void {
+  turnEndedListener = fn;
 }
 
 function markImageDelivery(
@@ -1107,6 +1124,8 @@ async function executeTurn(
   // 连续 text delta 聚合为一条 assistant 消息；thinking delta 并列聚合为一条 kind:thinking event 消息；tool/error/end 切分
   let textBuf = '';
   let thinkingBuf = '';
+  // P3-A：本轮 assistant 正文累计（专家团成员结果回传 lead 用；不落库、不进事件流）
+  let turnAssistantText = '';
   const flushText = () => {
     if (textBuf === '') return;
     const content = textBuf;
@@ -1118,6 +1137,7 @@ async function executeTurn(
       return;
     }
     persistMessage(database, sessionId, 'assistant', content, undefined, inTurn());
+    turnAssistantText += content;
   };
   const flushThinking = () => {
     if (thinkingBuf === '') return;
@@ -1268,6 +1288,14 @@ async function executeTurn(
       ? { state: 'failed', reason: 'adapter_exit_nonzero', message: `适配器退出码 ${result.exitCode}` }
       : { state: 'done' },
   );
+
+  // P3-A：轮次正常收口后通知监听方（专家团把成员结果回传 lead；监听方自行忽略非成员会话）。
+  // stop / superseded 两处提前 return，不会走到这里——被中断的轮不算成员交付。
+  try {
+    turnEndedListener?.({ session_id: sessionId, ok: result.exitCode === 0, assistant_text: turnAssistantText });
+  } catch {
+    // 监听方异常不影响会话收尾
+  }
 
   // BORROW-4.3：暂停期间不自动消费队列（不开始新步骤）；队列保留，恢复时由 resumeSession 统一交付
   const pending = isSessionPaused(database, sessionId) ? null : dequeueMergedInput(state);
