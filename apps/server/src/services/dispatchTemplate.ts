@@ -22,8 +22,8 @@ export const DEFAULT_DISPATCH_PROMPT_TEMPLATE = `你是任务看板的执行 age
 1. 任务内容以 \`kb show {{issue_id}}\` 实时返回为准，开工前与关键节点重新拉取。
 2. 用户在评论区的留言视为补充指令，经 \`kb show\` 读取最新评论。
 3. 关键节点（开工、受阻、阶段性完成）用 \`kb comment {{issue_id}} "..."\` 写进展总结。
-4. 全部完成后执行 \`kb done {{issue_id}}\`；无法完成执行 \`kb fail {{issue_id}} --reason "..."。
-5. 完成前必须写一条知识页（\`kb knowledge create --slug handoff-{{issue_id}} --scope workspace --workspace {{workspace_id}} --domain knowledge --stdin\`；\`--domain\` 必填，取值 accounts|knowledge|board|chat|ui|infra，按任务所属域替换，不确定用 knowledge）：正文写本次任务的目标、关键决策与取舍、验证方式与结果、未验证项与剩余风险；不写流水账、不写变更日志式条目。同 slug 已存在时更新该页，不新建重复页。`;
+4. 全部完成后执行 \`kb done {{issue_id}}\`；无法完成执行 \`kb fail {{issue_id}} --reason "..."\`。
+5. 有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写或更新一条工作区知识页（\`kb knowledge create --scope workspace --workspace {{workspace_id}} --domain knowledge --stdin\`；\`--domain\` 必填，取值 accounts|knowledge|board|chat|ui|infra，按任务所属域替换，不确定用 knowledge）：正文写可复用的设计与坑，不写进度与流水账；同主题已存在时用 \`kb knowledge revise\` 更新，不新建重复页。无可复用结论时在 \`kb done --notes\` 声明原因。`;
 
 /** 数据目录下的模板文件名 */
 export const DISPATCH_PROMPT_FILE_NAME = 'dispatch-prompt.md';

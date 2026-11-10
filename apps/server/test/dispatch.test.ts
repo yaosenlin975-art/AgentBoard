@@ -135,9 +135,9 @@ describe('模板渲染', () => {
     expect(adapter.calls[0]!.prompt).toContain('标题：实现登录');
     expect(adapter.calls[0]!.prompt).toContain('支持邮箱登录');
     expect(adapter.calls[0]!.prompt).toContain('工作目录：D:\\ws\\demo');
-    expect(adapter.calls[0]!.prompt).toContain('5. 完成前必须写一条知识页');
-    expect(adapter.calls[0]!.prompt).toContain(`--slug handoff-${issue.id}`);
+    expect(adapter.calls[0]!.prompt).toContain('5. 有可复用结论（踩坑、验证方法、接口事实、口径裁决）时写或更新一条工作区知识页');
     expect(adapter.calls[0]!.prompt).toContain(`--workspace ${wsId} --domain knowledge --stdin`);
+    expect(adapter.calls[0]!.prompt).not.toContain('handoff-');
     expect(adapter.calls[0]!.prompt).not.toContain('历史备注');
 
     expect(claimed.status).toBe('进行中');
