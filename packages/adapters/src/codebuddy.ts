@@ -18,6 +18,12 @@ const VERIFIED_IMAGE_MODEL = 'minimax-m3.1-flash';
 
 /** 精确白名单：只有这些 tool_use 工具名升级为 ask 事件，其余 tool_use 仍走普通 tool 事件 */
 export const ASK_TOOL_NAMES: ReadonlySet<string> = new Set(['AskUserQuestion']);
+/**
+ * CHAT-ASK-DEFER：本机 codebuddy 2.179.2 会把 AskUserQuestion 当「延迟工具」派发，
+ * stdout 里 tool_use 名是 DeferExecuteTool，入参 `{toolName:'AskUserQuestion', params:{question,options}}`。
+ * 这类块同样归一为 ask 事件（否则真机永远等不到 ask）。
+ */
+const DEFERRED_TOOL_NAME = 'DeferExecuteTool';
 
 export type AskAnswerErrorCode =
   | 'TURN_ENDED'
@@ -74,6 +80,23 @@ function parseAskOptions(value: unknown): AskOption[] {
     options.push(option);
   }
   return options;
+}
+
+/**
+ * deferred 形态识别：`DeferExecuteTool{toolName:'AskUserQuestion', params:{question,options}}`
+ * → 伪造一个 tool_use 块（id 沿用外层 id，input 换成 params），供 parseAskEvent 复用。
+ * 非 deferred 或 toolName 不是提问工具时返回 null（继续走普通 tool 事件）。
+ */
+function asDeferredAskBlock(block: Record<string, unknown>): Record<string, unknown> | null {
+  if (block.name !== DEFERRED_TOOL_NAME) return null;
+  const input = asRecord(block.input);
+  if (input === null) return null;
+  const toolName = typeof input.toolName === 'string' ? input.toolName : '';
+  // 兼容 MCP 前缀（mcp__server__AskUserQuestion）与直接裸名两种写法
+  const bare = toolName.includes('__') ? toolName.slice(toolName.lastIndexOf('__') + 2) : toolName;
+  if (!ASK_TOOL_NAMES.has(toolName) && !ASK_TOOL_NAMES.has(bare)) return null;
+  const params = asRecord(input.params) ?? input;
+  return { id: block.id, input: params };
 }
 
 /**
@@ -155,7 +178,11 @@ export function parseCodebuddyLine(line: string, state: CodebuddyParseState): Un
         if (b.type === 'text' && typeof b.text === 'string' && b.text !== '') {
           if (!state.sawTextDelta) events.push({ type: 'text', delta: b.text });
         } else if (b.type === 'tool_use' && typeof b.name === 'string') {
-          if (ASK_TOOL_NAMES.has(b.name)) {
+          const deferredAsk = asDeferredAskBlock(b);
+          if (deferredAsk !== null) {
+            state.askSeq += 1;
+            events.push(parseAskEvent(deferredAsk, messageId, state.askSeq));
+          } else if (ASK_TOOL_NAMES.has(b.name)) {
             state.askSeq += 1;
             events.push(parseAskEvent(b, messageId, state.askSeq));
           } else {

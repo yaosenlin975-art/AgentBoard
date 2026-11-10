@@ -482,6 +482,43 @@ describe('ask 事件与回答回填', () => {
     ]);
   });
 
+  it('CHAT-ASK-DEFER：真实 stdout 的 DeferExecuteTool{toolName:"AskUserQuestion"} 归一为 ask（codebuddy 2.179.2）', () => {
+    const state = createParseState();
+    // 整行取自本机 codebuddy 2.179.2 实跑（-p 触发提问，--output-format stream-json --verbose）
+    const events = parseCodebuddyLine(
+      '{"type":"assistant","uuid":"01a1c32e-97e4-7dd8-b28d-1a5a3fdb16a6","message":{"id":"01a1c32e83717a919e26c514b43d79d2","content":[{"type":"tool_use","id":"call_ff2718d553bf0778f3cdf71f","name":"DeferExecuteTool","input":{"params":{"options":["继续","停止"],"question":"继续吗？"},"toolName":"AskUserQuestion"}}],"model":"minimax-m3.1-flash","role":"assistant","stop_reason":"tool_use","type":"message"}}',
+      state,
+    );
+    expect(events).toEqual([
+      {
+        type: 'ask',
+        request_id: 'call_ff2718d553bf0778f3cdf71f',
+        question: '继续吗？',
+        options: [{ label: '继续' }, { label: '停止' }],
+        step_id: '01a1c32e83717a919e26c514b43d79d2',
+      },
+    ]);
+  });
+
+  it('deferred 形态只认提问工具：其他 toolName 与缺 params 仍走普通 tool 事件', () => {
+    const state = createParseState();
+    const events = parseCodebuddyLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'msg_def',
+          content: [
+            { type: 'tool_use', id: 'call_a', name: 'DeferExecuteTool', input: { toolName: 'Bash', params: { cmd: 'ls' } } },
+            { type: 'tool_use', id: 'call_b', name: 'DeferExecuteTool', input: { toolName: 'AskUserQuestion' } },
+          ],
+        },
+      }),
+      state,
+    );
+    expect(events[0]).toEqual({ type: 'tool', name: 'DeferExecuteTool', input: '{"toolName":"Bash","params":{"cmd":"ls"}}' });
+    expect(events[1]?.type).toBe('ask');
+  });
+
   it('扁平入参 {question, options} 与缺字段兜底；无 tool_use id 时用本轮序号生成 request_id', () => {
     const state = createParseState();
     const first = parseCodebuddyLine(
