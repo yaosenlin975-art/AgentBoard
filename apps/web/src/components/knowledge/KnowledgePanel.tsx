@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Fragment, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { KnowledgePage } from '@agentboard/shared';
 import { api } from '../../api/client';
 import {
@@ -34,6 +34,12 @@ const CATEGORY_LABEL: Record<KnowledgeCategory, string> = {
   legacy: CATEGORY_STYLES.legacy.label,
 };
 
+/** KB-INFINITE：与日志列表同口径——首屏 20 条，后续每页 40 条（服务端列表 limit 允许 20–100） */
+const FIRST_PAGE = 20;
+const NEXT_PAGE = 40;
+/** 距底部多少像素开始预取下一页 */
+const PREFETCH_PX = 240;
+
 export function KnowledgePanel({
   workspaceId,
   workspaceName = null,
@@ -51,7 +57,6 @@ export function KnowledgePanel({
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('active');
   const [expired, setExpired] = useState(false);
-  const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<PageItem | null>(null);
   const [view, setView] = useState<'list' | 'graph'>('list');
   // KBIMP-2：导入对话框开关 + 刚导入页高亮（成功后刷新列表并把新建页标出来）
@@ -59,19 +64,38 @@ export function KnowledgePanel({
   const [highlightIds, setHighlightIds] = useState<string[]>([]);
   const queryClient = useQueryClient();
   const params = new URLSearchParams({ scope, ...(scope !== 'common' && workspaceId ? { workspace_id: workspaceId } : {}) });
-  const list = useQuery({
-    queryKey: ['knowledge', workspaceId, scope, query, status, expired, offset],
-    queryFn: async () => {
+  // KB-INFINITE：offset 交给 useInfiniteQuery 的 pageParam 管理；筛选/搜索变化即换 queryKey 从首屏重来
+  const list = useInfiniteQuery({
+    queryKey: ['knowledge', workspaceId, scope, query, status, expired],
+    queryFn: async ({ pageParam }) => {
       if (query) {
-        params.set('q', query); params.set('limit', '20');
+        // 搜索接口一次返回命中集（无分页）：next_offset 恒为 null，列表等价于单页到底
+        params.set('q', query); params.set('limit', String(FIRST_PAGE));
         const rows = await api.get<SearchItem[]>(`/api/knowledge/search?${params}`);
-        return { items: rows.map(r => ({ ...r, id: r.page_id })), next_offset: null };
+        return { items: rows.map(r => ({ ...r, id: r.page_id })), next_offset: null as number | null };
       }
-      params.set('status', status); params.set('include_expired', String(expired)); params.set('limit', '20'); params.set('offset', String(offset));
+      params.set('status', status); params.set('include_expired', String(expired));
+      params.set('limit', String(pageParam === 0 ? FIRST_PAGE : NEXT_PAGE)); params.set('offset', String(pageParam));
       return api.get<{ items: Array<PageItem & { snippet?: string }>; next_offset: number | null }>(`/api/knowledge/pages?${params}`);
     },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.next_offset ?? undefined,
+    // 视图切走再回来时保留已加载页
+    gcTime: 30 * 60 * 1000,
   });
-  const items = list.data?.items ?? [];
+  // 翻页期间可能有新页插到顶部导致 offset 位移，按 id 去重保证列表不出现重复条目
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: Array<PageItem & { snippet?: string }> = [];
+    for (const page of list.data?.pages ?? []) {
+      for (const item of page.items) {
+        if (seen.has(item.id)) continue;
+        seen.add(item.id);
+        merged.push(item);
+      }
+    }
+    return merged;
+  }, [list.data]);
 
   // BORROW-3.2：深链定位——resolve 拿 scope/workspace 后选中详情；失败原因显式呈现
   // （403 文案由服务端保证不含标题）。同一引用只消费一次，避免列表交互中被重复拉起。
@@ -113,7 +137,7 @@ export function KnowledgePanel({
       return api.get<{ items: PageItem[] }>(`/api/knowledge/pages?${recentParams}`);
     },
   });
-  // AUDIT-KB（F-14）：选中项不在当前列表页（翻页后）→ 保持旧内容并标注，不清空
+  // AUDIT-KB（F-14）：选中项不在当前已加载列表里（列表刷新/筛选变化）→ 保持旧内容并标注，不清空
   const selectedOutside = selected !== null && !items.some(item => item.id === selected.id);
   useEffect(() => {
     if (deepLinkPageId === null || deepLinkConsumed === deepLinkPageId) return;
@@ -132,6 +156,21 @@ export function KnowledgePanel({
     })();
   }, [deepLinkPageId, workspaceId, deepLinkConsumed]);
 
+  /** KB-INFINITE：列表列自身就是滚动容器（与日志列表一致），到底预取下一页 */
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const onListScroll = (event: UIEvent<HTMLDivElement>): void => {
+    const el = event.currentTarget;
+    if (!list.hasNextPage || list.isFetchingNextPage) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > PREFETCH_PX) return;
+    void list.fetchNextPage();
+  };
+  // 首屏不足一屏时自动续拉，避免列表没满就没有滚动条、也就永远触发不了预取
+  useEffect(() => {
+    const el = listRef.current;
+    if (el === null || !list.hasNextPage || list.isFetchingNextPage) return;
+    if (el.clientHeight > 0 && el.scrollHeight <= el.clientHeight + PREFETCH_PX) void list.fetchNextPage();
+  }, [items.length, list.hasNextPage, list.isFetchingNextPage, list.fetchNextPage]);
+
   return <section aria-label="共享知识库" className="flex h-full min-h-0 flex-col bg-surface-page text-ink">
     {/* TOOLBAR-BLANK：FIX-2 删掉 ViewSwitcher 后壳内已无控件，空壳会渲染约 40px 空白带 →
         这里不再挂 ViewToolbarShell（它在无可见内容时会自己返回 null），
@@ -143,7 +182,7 @@ export function KnowledgePanel({
         单行约需 800px 内容宽：≥1024px（实测可用 816px）稳定单行；搜索框最先收缩，Enter 提示在 <1280px 退让；
         宽度不足时「密度/分组」整组换行，<900px 由零高整行断点固定成两行（筛选组 / 显示偏好组）。
         全档只用 flex-wrap，不出现横向滚动，也不压扁控件。 */}
-    <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
+    <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setSelected(null); }}>
       <span className="flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
         <button
           type="button"
@@ -170,7 +209,7 @@ export function KnowledgePanel({
         </button>
       </span>
       <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">范围
-        <select aria-label="知识范围" value={scope} onChange={e => { const next = e.target.value as KnowledgeScope; setScope(next); persistKnowledgeScope(next); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+        <select aria-label="知识范围" value={scope} onChange={e => { const next = e.target.value as KnowledgeScope; setScope(next); persistKnowledgeScope(next); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
         </select>
       </label>
@@ -185,11 +224,11 @@ export function KnowledgePanel({
       <button type="button" data-testid="knowledge-import-open" className={BUTTON_SECONDARY} onClick={() => setImportOpen(true)}>添加</button>
       {query && <button type="button" className={BUTTON_SECONDARY} onClick={() => { setQuery(''); setDraft(''); }}>清除搜索</button>}
       {!query && <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">状态
-        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
+        <select aria-label="知识状态" value={status} onChange={e => { setStatus(e.target.value); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="active">有效</option><option value="archived">归档</option><option value="deleted">已删除</option><option value="all">全部</option>
         </select>
       </label>}
-      {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-ink-2"><input type="checkbox" checked={expired} onChange={e => { setExpired(e.target.checked); setOffset(0); }} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
+      {!query && <label className="flex h-8 shrink-0 items-center gap-1 text-xs text-ink-2"><input type="checkbox" checked={expired} onChange={e => setExpired(e.target.checked)} className="size-3.5 accent-[var(--ab-accent)]" /> 包含过期</label>}
       {/* <900px 的整行断点：零高、铺满整行，把「密度/分组」压到下一行，形成固定的两行降级 */}
       <span aria-hidden="true" data-testid="knowledge-toolbar-break" className="hidden h-0 w-full basis-full max-[900px]:block" />
       {/* BORROW-3.3：列表显示偏好（独立键；density 作用于行内边距，grouping 按分类分段不重排）。
@@ -235,7 +274,7 @@ export function KnowledgePanel({
           <KnowledgeDeepLinkHistory pageId={deepLinkPageId} workspaceId={workspaceId} onBack={() => setDeepLinkHistoryOpen(false)} />
         </div>
       ) : (
-      <div className="min-h-0 min-w-0 lg:h-full lg:w-80 lg:flex-none lg:overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-col lg:h-full lg:w-80 lg:flex-none">
         {/* UNSLOP-5 定性：animate-pulse 只用于「真实加载中」的骨架屏（list.isPending），数据到位即卸载；画法统一走 Skeleton 基元 */}
         {list.isPending && <Skeleton testId="knowledge-skeleton" rows={3} />}
         {list.isPending && <p className="sr-only">加载中…</p>}
@@ -252,7 +291,16 @@ export function KnowledgePanel({
                 : <EmptyState testId="knowledge-empty" title="暂无知识" hint="调整范围或状态后再试" />
         )}
 
-        {items.length > 0 && <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
+        {items.length > 0 && (
+          /* KB-INFINITE：列表列自身是唯一滚动容器（对齐日志列表），加载态/到底提示随内容滚动 */
+          <div
+            ref={listRef}
+            data-testid="knowledge-list"
+            aria-busy={list.isFetchingNextPage}
+            onScroll={onListScroll}
+            className="min-h-0 max-h-[60vh] flex-1 overflow-auto lg:max-h-none"
+          >
+            <ul className="divide-y divide-hairline overflow-hidden rounded-2xl border border-hairline bg-surface-card">
           {(grouped ?? items.map(page => ({ category: null as ReturnType<typeof normalizeCategory> | null, items: [page] }))).map((group, groupIndex) => (
             <Fragment key={group.category ?? `flat:${groupIndex}`}>
               {group.category !== null && (
@@ -289,13 +337,21 @@ export function KnowledgePanel({
               })}
             </Fragment>
           ))}
-        </ul>}
-
-        {!query && items.length > 0 && <div className="mt-3 flex items-center gap-2">
-          {/* AUDIT-KB（F-14）：翻页不清空选中——阅读中的详情保持 */}
-          <button type="button" className={BUTTON_SECONDARY} disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 20))}>上一页</button>
-          <button type="button" className={BUTTON_SECONDARY} disabled={list.data?.next_offset == null} onClick={() => setOffset(list.data?.next_offset ?? offset)}>下一页</button>
-        </div>}
+            </ul>
+            {/* 与日志列表同口径：加载中占位 / 失败可重试 / 到底明确提示，作为列表内容的最后一块随内容滚动 */}
+            <p data-testid="knowledge-list-status" className="mt-3 text-center text-xs text-ink-3">
+              {list.isFetchingNextPage ? (
+                <span role="status" aria-live="polite">加载更多…</span>
+              ) : list.isFetchNextPageError ? (
+                <span role="alert">加载失败，<button type="button" className="underline" onClick={() => void list.fetchNextPage()}>重试</button></span>
+              ) : list.hasNextPage ? (
+                <span role="status" aria-live="polite">继续向下滚动加载更多</span>
+              ) : (
+                <span role="status" aria-live="polite">已到底 · 共 {items.length} 条</span>
+              )}
+            </p>
+          </div>
+        )}
       </div>
       )}
 
@@ -314,7 +370,7 @@ export function KnowledgePanel({
         <button type="button" className={`${BUTTON_PRIMARY} mt-4`} onClick={() => setImportOpen(true)}>新建知识页</button>
       </div>}
       {selected && <div className="min-h-0 min-w-0 flex-1 lg:h-full lg:overflow-y-auto">
-        {selectedOutside && <p data-testid="knowledge-selected-stale" className="mb-1 text-xs text-ink-3">选中项来自上一页，此处仍显示其内容</p>}
+        {selectedOutside && <p data-testid="knowledge-selected-stale" className="mb-1 text-xs text-ink-3">选中项不在当前列表中，此处仍显示其内容</p>}
         <KnowledgePageDetail key={`${selected.scope}:${selected.id}`} pageId={selected.id} scope={selected.scope} workspaceId={selected.workspace_id} onChanged={() => void list.refetch()} onViewInGraph={selected.status !== 'deleted' ? () => { setGraphFocus({ id: selected.id }); setView('graph'); } : undefined} />
       </div>}
       <KnowledgeImportDialog

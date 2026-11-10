@@ -106,6 +106,69 @@ describe('knowledge UI', () => {
     expect(await screen.findByText('任务已派发，但知识检索不可用；本次沿用原任务上下文。')).toBeInTheDocument();
     expect(sent).toMatchObject({ knowledge_enabled: true, knowledge_query: '缓存失效' }); expect(onClose).not.toHaveBeenCalled();
   });
+  // KB-INFINITE：列表改无限滚动（对齐日志列表）——首屏 20、后续 40、距底 240px 预取、按 id 去重、到底提示
+  const second = { ...page, id: 'q', slug: 'second', title: '第二条知识' };
+  function mockPagedList(respond: (params: URLSearchParams) => Response) {
+    server.use(http.get('/api/knowledge/pages', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      // 未选中详情时的「最近更新 3 条」也走同一端点，按 limit=3 分流，不计入列表调用
+      if (params.get('limit') === '3') return HttpResponse.json({ items: [], next_offset: null });
+      return respond(params);
+    }));
+  }
+  function mountPanel() {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><KnowledgePanel workspaceId="A" /></QueryClientProvider>);
+  }
+  function fakeScroll(el: HTMLElement) {
+    Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true });
+    Object.defineProperty(el, 'scrollTop', { value: 500, writable: true, configurable: true });
+    fireEvent.scroll(el);
+  }
+  it('知识列表无限滚动：距底预取下一页并按 id 去重，加载完给出到底提示', async () => {
+    const calls: URLSearchParams[] = [];
+    mockPagedList((params) => {
+      calls.push(params);
+      // 第二页故意重复返回 p，验证客户端按 id 去重（并发新增会让 offset 位移）
+      if (params.get('offset') === '0') return HttpResponse.json({ items: [page], next_offset: 20 });
+      return HttpResponse.json({ items: [page, second], next_offset: null });
+    });
+    mountPanel();
+
+    const list = await screen.findByTestId('knowledge-list');
+    await waitFor(() => expect(calls.at(-1)?.get('offset')).toBe('0'));
+    expect(calls.at(-1)?.get('limit')).toBe('20');
+    expect(screen.getByTestId('knowledge-list-status')).toHaveTextContent('继续向下滚动加载更多');
+
+    fakeScroll(list);
+
+    await waitFor(() => expect(calls.at(-1)?.get('offset')).toBe('20'));
+    expect(calls.at(-1)?.get('limit')).toBe('40');
+    await waitFor(() => expect(screen.getByTestId('knowledge-list-status')).toHaveTextContent('已到底 · 共 2 条'));
+    expect(screen.getAllByTestId('knowledge-item-p')).toHaveLength(1);
+    expect(screen.getByTestId('knowledge-item-q')).toBeInTheDocument();
+  });
+  it('知识列表无限滚动：下一页失败显示可重试错误，重试后继续加载', async () => {
+    let attempts = 0;
+    mockPagedList((params) => {
+      if (params.get('offset') === '0') return HttpResponse.json({ items: [page], next_offset: 20 });
+      attempts += 1;
+      if (attempts === 1) return new HttpResponse(null, { status: 500 });
+      return HttpResponse.json({ items: [page, second], next_offset: null });
+    });
+    mountPanel();
+
+    const list = await screen.findByTestId('knowledge-list');
+    fakeScroll(list);
+
+    const retry = await screen.findByRole('button', { name: '重试' });
+    expect(screen.getByTestId('knowledge-list-status')).toHaveTextContent('加载失败');
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(screen.getByTestId('knowledge-item-q')).toBeInTheDocument());
+    expect(screen.getByTestId('knowledge-list-status')).toHaveTextContent('已到底 · 共 2 条');
+  });
 });
 
 
