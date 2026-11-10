@@ -273,7 +273,7 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 
 - **`request_id`**：写工具（如 `create_task`）必传 uuid 幂等键，缺失直接校验失败；**例外**是 `delete_task`、`remove_dependency`——它们是 DELETE 语义、没有幂等键，传了反而报错，不要给这两个工具补 `request_id`。
 - **返回结构**：业务数据在 `structuredContent.data`（`content` 只有一句状态文案，从 text 抽不到 id）。
-- **错误文案语言**：MCP 侧错误码与文案为英文（如 `DECISION_HUMAN_ONLY`），CLI 为中文；同一业务错误语义一致、措辞不同，属已知差异，按错误码而非文案匹配。
+- **错误文案语言**：MCP 侧**中英混排**（实测）——`DECISION_HUMAN_ONLY` / `DECISION_LOCKED` 的 message 与 CLI 同为中文；`ISSUE_CLAIMED` 与 zod 参数校验（`request_id` / `task_id` 等）为英文。同一业务错误语义与 CLI 一致、措辞可能不同，**一律按 `error.code` 匹配，不按语言或文案判断**（zod 校验错误没有业务 code，按 message 关键字兜底）。
 
 工具清单（按域分组）：
 
