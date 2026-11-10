@@ -18,7 +18,7 @@ import { ensureProxyEnv, resolveProxyEnv } from '@agentboard/shared';
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { statfs } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Db } from '../db/connection.js';
@@ -143,6 +143,36 @@ function fileSize(path: string): number {
   }
 }
 
+/**
+ * CR2-02：就绪判定的进程内缓存，键为绝对路径。
+ * SSE 每 250ms 调一次 statusOf，若每次都 readFileSync 整文件算 sha256，
+ * 200MB 模型会被反复读进内存（主线程）。这里用 (size, mtimeMs) 判失效：
+ * 只有文件真被改写（下载完成改名）时才重算一次。
+ */
+interface ReadyCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ok: boolean;
+}
+
+const readyCache = new Map<string, ReadyCacheEntry>();
+const READY_CACHE_LIMIT = 256;
+
+function rememberReady(path: string, entry: ReadyCacheEntry): void {
+  if (readyCache.size >= READY_CACHE_LIMIT && !readyCache.has(path)) {
+    const oldest = readyCache.keys().next().value;
+    if (oldest !== undefined) readyCache.delete(oldest);
+  }
+  readyCache.set(path, entry);
+}
+
+function forgetModelCache(dir: string): void {
+  const prefix = `${dir}${sep}`;
+  for (const key of [...readyCache.keys()]) {
+    if (key.startsWith(prefix)) readyCache.delete(key);
+  }
+}
+
 async function defaultFreeBytes(dir: string): Promise<number | null> {
   try {
     const stats = await statfs(dir);
@@ -170,14 +200,30 @@ export function weakFileLooksValid(path: string, expectedBytes: number): boolean
 /** 单文件是否已就绪：有 sha256 的必须哈希一致；没有的走弱校验 */
 function fileReady(dir: string, file: VoiceModelFile, weakVerify: boolean): boolean {
   const path = join(dir, file.path);
-  if (!existsSync(path)) return false;
-  if (file.sha256 === null) return weakVerify ? weakFileLooksValid(path, file.bytes) : fileSize(path) === file.bytes;
+  let stat;
   try {
-    const hash = createHash('sha256').update(readFileSync(path)).digest('hex');
-    return hash === file.sha256.toLowerCase();
+    stat = statSync(path);
   } catch {
+    readyCache.delete(path);
     return false;
   }
+  // 字节数不符必然不通过，省掉整文件读取
+  if (stat.size !== file.bytes) return false;
+  const cached = readyCache.get(path);
+  if (cached !== undefined && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.ok;
+  let ok: boolean;
+  if (file.sha256 === null) {
+    ok = weakVerify ? weakFileLooksValid(path, file.bytes) : true;
+  } else {
+    try {
+      const hash = createHash('sha256').update(readFileSync(path)).digest('hex');
+      ok = hash === file.sha256.toLowerCase();
+    } catch {
+      ok = false;
+    }
+  }
+  rememberReady(path, { size: stat.size, mtimeMs: stat.mtimeMs, ok });
+  return ok;
 }
 
 function statusOf(root: string, entry: VoiceModelCatalogEntry, deps: VoiceModelDeps): VoiceModelStatus {
@@ -187,7 +233,15 @@ function statusOf(root: string, entry: VoiceModelCatalogEntry, deps: VoiceModelD
   const task = taskId === undefined ? undefined : tasks.get(taskId);
   const meta = readMeta(root, entry.id);
   const weakVerify = deps.weakVerify ?? true;
-  const present = files.filter((file) => fileReady(dir, file, weakVerify)).map((file) => file.path);
+  // meta 只在校验全通过后才写；清单内每个文件字节数与落盘一致时直接信任，
+  // 避免重启后首次 list/SSE 又对整模型做一遍 sha256（CR2-02）
+  const metaTrusted = meta !== null && files.every((file) => {
+    const record = meta.files.find((item) => item.path === file.path);
+    return record !== undefined && record.bytes === file.bytes && fileSize(join(dir, file.path)) === file.bytes;
+  });
+  const present = metaTrusted
+    ? files.map((file) => file.path)
+    : files.filter((file) => fileReady(dir, file, weakVerify)).map((file) => file.path);
   const missing = files.filter((file) => !present.includes(file.path)).map((file) => file.path);
   const bytesTotal = files.reduce((sum, file) => sum + file.bytes, 0);
   const base = {
@@ -593,6 +647,7 @@ export function deleteVoiceModel(db: Db, id: string, deps: VoiceModelDeps = {}):
     freed += fileSize(join(dir, file.path)) + fileSize(join(dir, `${file.path}${PART_SUFFIX}`));
   }
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+  forgetModelCache(dir);
   lastTask.delete(entry.id);
   if (taskId !== undefined) tasks.delete(taskId);
   return { deleted: true, freed_bytes: freed };
@@ -602,4 +657,5 @@ export function deleteVoiceModel(db: Db, id: string, deps: VoiceModelDeps = {}):
 export function resetVoiceModelTasks(): void {
   tasks.clear();
   lastTask.clear();
+  readyCache.clear();
 }
