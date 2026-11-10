@@ -249,15 +249,17 @@ function preexistingDirtyPaths(baseline: Record<string, string>, current: Record
  * - committed：本次确有变动并已提交（卡外改动只列清单，不影响本状态）；
  * - nothing：无基线变动、无声明范围内脏文件，或有前置条件不满足但没有待提交内容；
  * - not-committed：有改动但本次没提交（无基线 / 提交失败 / scope 零命中 / 未声明范围）；
- * - unavailable：仓库不可用（未装 git / 非仓库 / 仓库损坏），自动提交不适用，与「提交失败」分开报。
+ * - unavailable：仓库不可用（未装 git / 非仓库 / 仓库损坏），自动提交不适用，与「提交失败」分开报；
+ * - skipped：显式声明纯看板任务（done 的 board_only / CLI --board-only），跳过自动提交。
  */
-export type IssueCommitStatus = 'committed' | 'nothing' | 'not-committed' | 'unavailable';
+export type IssueCommitStatus = 'committed' | 'nothing' | 'not-committed' | 'unavailable' | 'skipped';
 
 export type IssueCommitReason =
   | 'NO_BASELINE'
   | 'COMMIT_FAILED'
   | 'ZERO_HIT'
   | 'NO_SCOPE'
+  | 'BOARD_ONLY'
   | 'GIT_NOT_INSTALLED'
   | 'NOT_A_GIT_REPO'
   | 'GIT_REPO_UNHEALTHY';
@@ -405,9 +407,11 @@ export async function commitIssueChanges(
 
       // 提交集 = 本卡目标文件集 ∩ 当前未提交路径；卡外改动只列清单，默认不纳入
       const outsideNote = (paths: readonly string[]): string =>
-        `卡外改动未提交（${paths.length} 个，仍在工作树，需 owner 处理；要一并纳入请显式 --all）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}`;
+        `卡外改动未提交（${paths.length} 个，仍在工作树，需 owner 处理；要一并纳入：CLI 加 \`--all\` 或 \`--scope .\`，MCP 传 \`scope: ["."]\`）：${listPaths(paths, MAX_LISTED_SCOPE_VIOLATIONS)}`;
 
       let paths: string[];
+      /** 提交后仍未提交的路径（Outside 声明范围 / 不该被本卡带走的改动） */
+      let remaining: string[] = [];
       let policyNotes: string[];
       if (declaredAll) {
         // 显式 --all：只影响「纳入全部未提交改动」，仍然按路径限定提交
@@ -425,6 +429,7 @@ export async function commitIssueChanges(
             pending: outside,
           });
         }
+        remaining = outside;
         policyNotes = outside.length === 0 ? [] : [outsideNote(outside)];
       } else {
         // NO_SCOPE：未声明目标文件集时不再猜测归属——一个文件都不提交，列出全部脏文件与补救命令
@@ -462,7 +467,7 @@ export async function commitIssueChanges(
         ? null
         : `其中 ${forced.length} 个是 claim 前就已修改（基线内未提交）、按声明范围强制提交：${listPaths(forced, MAX_LISTED_SCOPE_VIOLATIONS)}`;
       const lines = [commitNote, forcedNote, ...policyNotes].filter((line): line is string => typeof line === 'string');
-      return dropAndNull(db, issueId, { status: 'committed', note: lines.join('\n') });
+      return dropAndNull(db, issueId, { status: 'committed', note: lines.join('\n'), pending: remaining });
     } catch (error) {
       const detail = firstLine((error as { stderr?: string; message?: string }).stderr ?? (error as Error).message ?? '');
       return dropAndNull(db, issueId, {

@@ -43,6 +43,8 @@ export interface DecisionDto {
   expires_at: number | null; on_expire: string;
   remaining_grace_seconds: number | null; waiting_seconds: number | null;
   options: DecisionOptionDto[]; answers: DecisionAnswerDto[];
+  /** 服务端按调用身份算的资格；CLI 始终是 agent，会按 N3-05 覆写 can_answer */
+  capabilities?: Record<string, unknown>;
 }
 export interface DecisionListItemDto extends Omit<DecisionDto, 'options' | 'answers' | 'context_md'> {
   issue_title: string; issue_status: string; option_count: number;
@@ -55,6 +57,11 @@ export interface StopCheckDto {
 const TRIGGERS = ['blocked', 'scope_change', 'irreversible', 'missing_input'];
 const ON_EXPIRE = ['stay_locked', 'unlock_default'];
 const EXIT3_CODES: ReadonlySet<string> = new Set(['ASK_TOO_FEW_OPTIONS', 'INVALID_GRACE', 'INVALID_SECONDS']);
+
+/** N3-05：agent 身份不能回答决策；服务端看不到 CLI 身份头时会返回 can_answer=true，这里覆写。 */
+function agentCapabilities(raw: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return raw === undefined ? undefined : { ...raw, can_answer: false };
+}
 
 /** 退出码 3 的客户端校验失败：先写错误（--json 走结构化体），再抛 CommanderError(3) */
 function fail3(ctx: Ctx, message: string, code = 'INVALID_ARGUMENT', details?: unknown): never {
@@ -341,11 +348,18 @@ export async function decisions(ctx: Ctx, args: DecisionsArgs): Promise<void> {
   if (args.state !== undefined) query.set('state', args.state);
   if (args.stale === true) query.set('stale', 'true');
   if (limit !== undefined) query.set('limit', String(limit));
-  const response = await request<{ decisions: DecisionListItemDto[]; counts: unknown }>(
+  const response = await request<{ decisions: DecisionListItemDto[]; counts: unknown; capabilities?: Record<string, unknown> }>(
     ctx.base, 'GET', `/api/decisions?${query.toString()}`,
   );
   if (ctx.json) {
-    ctx.io.write(`${JSON.stringify(response, null, 2)}\n`);
+    // N3-05：CLI 始终以 agent 身份运行（KB_AGENT 缺省 kb-cli），服务端按 user 算出的 can_answer=true 会误导；
+    // 与 MCP list_decisions 同口径覆写，判定以退出码/状态为准，能力位只作展示。
+    const shaped = {
+      ...response,
+      capabilities: agentCapabilities(response.capabilities),
+      decisions: response.decisions.map(item => ({ ...item, capabilities: agentCapabilities(item.capabilities) })),
+    };
+    ctx.io.write(`${JSON.stringify(shaped, null, 2)}\n`);
     return;
   }
   if (response.decisions.length === 0) {
@@ -373,10 +387,19 @@ export async function showDecision(ctx: Ctx, ref: string): Promise<void> {
   ctx.io.write(`宽限: ${decision.grace_seconds}s`);
   if (decision.state === 'grace') ctx.io.write(`（剩余 ${secondsLeft(decision.grace_until)}s）`);
   ctx.io.write(`\n提问者: ${decision.created_by}\n`);
+  // N3-06：显示实际 on_expire；stay_locked 时缺省项不会被自动采用，避免误读
+  ctx.io.write(`过期策略: ${decision.on_expire}`
+    + (decision.on_expire === 'unlock_default'
+      ? '（宽限到期后自动采用缺省项）'
+      : '（宽限到期后保持锁定，等人回答；缺省项不会被自动采用）')
+    + '\n');
   for (const option of decision.options) {
-    // SK-09 / N-06：服务端会在未指定 --default 时把第 1 项记为缺省值；但 CLI 没有「回车即答」入口，
+    // SK-09 / N-06：服务端会在未指定 --default 时把第 1 项记为缺省值；CLI 没有「回车即答」入口，
     // 这个缺省值只在提问时显式 on_expire=unlock_default 的情况下才会被宽限到期自动采用。
-    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${option.is_default === 1 ? '（on_expire=unlock_default 时宽限到期自动采用）' : ''}\n`);
+    const autoAdopt = option.is_default === 1 && decision.on_expire === 'unlock_default'
+      ? '（on_expire=unlock_default，宽限到期自动采用）'
+      : '';
+    ctx.io.write(`  [${option.ord}] ${option.label} → ${option.consequence}${autoAdopt}\n`);
   }
   if (decision.answer_revision > 0) {
     ctx.io.write(`回答（revision ${decision.answer_revision}）：${answerText(decision) ?? '（无）'}\n`);

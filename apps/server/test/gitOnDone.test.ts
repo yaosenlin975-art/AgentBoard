@@ -241,6 +241,21 @@ describe('git on done', () => {
     expect(comments(issueId).join('\n')).toContain('other/out.ts');
   });
 
+  // N3-10：纯看板任务显式跳过提交，脏工作区也不列他人文件、不产生 NO_SCOPE
+  it('boardOnlySkipsCommitEvenInDirtyWorktree', async () => {
+    const issueId = await makeIssue('纯看板任务');
+    writeFileSync(join(repo, 'someone-else.txt'), 'dirty\n');
+    const before = commitCount();
+    await claim(issueId);
+    const res = await done(issueId, { board_only: true, client: 'cli', changelog_ack: true });
+    expect(res.status).toBe(200);
+    expect(res.body.git_commit).toMatchObject({ status: 'skipped', reason: 'BOARD_ONLY', pending: [] });
+    expect(commitCount()).toBe(before);
+    expect(git(repo, ['status', '--porcelain'])).toContain('someone-else.txt');
+    expect(comments(issueId).join('\n')).not.toContain('NO_SCOPE');
+  });
+
+
   // KB-DONE-STAGE：卡外脏文件（含被别的卡预暂存的）不得卷进本卡提交
   it('commitsOnlyCardScopeEvenWhenOutsideFileIsPreStaged', async () => {
     const issueId = await makeIssue('本卡范围收尾');
@@ -261,6 +276,10 @@ describe('git on done', () => {
     expect(note).toContain('已自动提交 1 个文件');
     expect(note).toContain('卡外改动未提交');
     expect(note).toContain('b-card.txt');
+    // N3-03：MCP 没有 --all，提示里给出 MCP 可用的 scope 写法
+    expect(note).toContain('MCP 传 `scope: ["."]`');
+    // N3-04：committed 时 pending 仍是「仍未提交的路径」，与 note 列出的卡外文件一致
+    expect(res.body.git_commit).toMatchObject({ status: 'committed', pending: ['b-card.txt'] });
   });
 
   it('commitsEveryFileInsideDeclaredScope', async () => {

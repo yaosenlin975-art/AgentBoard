@@ -412,7 +412,7 @@ describe('CR2-10：决策前缀解析（批量读 + 大上限）', () => {
     expect(listCalls[0]!.url).toContain('limit=100000');
   });
 
-  it('N-06：默认项标注说明它只在 on_expire=unlock_default 时生效，不暗示 CLI 可回车即答', async () => {
+  it('N-06：显示实际 on_expire；stay_locked 时缺省项不再暗示会自动采用', async () => {
     const target = 'deadbeef-2222-4222-8222-222222222222';
     handler = (method, url) => {
       if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'A', path: cwd }] };
@@ -422,7 +422,47 @@ describe('CR2-10：决策前缀解析（批量读 + 大上限）', () => {
     };
     const result = await run(['decision', 'show', 'deadbeef']);
     expect(result.code).toBe(0);
-    expect(result.out).toContain('on_expire=unlock_default 时宽限到期自动采用');
+    expect(result.out).toContain('过期策略: stay_locked（宽限到期后保持锁定');
+    expect(result.out).not.toContain('宽限到期自动采用');
     expect(result.out).not.toContain('未指定时的默认项');
+  });
+
+  it('N-06：on_expire=unlock_default 时才标注缺省项会被自动采用', async () => {
+    const target = 'deadbeef-2222-4222-8222-222222222222';
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'A', path: cwd }] };
+      if (method === 'GET' && url.startsWith('/api/decisions?')) return { status: 200, body: { decisions: [{ id: target }] } };
+      if (method === 'GET' && url === `/api/decisions/${target}`) {
+        return { status: 200, body: { decision: { ...decision({ id: target }), on_expire: 'unlock_default' } } };
+      }
+      return undefined;
+    };
+    const result = await run(['decision', 'show', 'deadbeef']);
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('过期策略: unlock_default（宽限到期后自动采用缺省项）');
+    expect(result.out).toContain('on_expire=unlock_default，宽限到期自动采用');
+  });
+
+  it('N3-05：decisions --json 对 agent 身份把 capabilities.can_answer 覆写为 false', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [{ id: 'ws1', name: 'A', path: cwd }] };
+      if (method === 'GET' && url.startsWith('/api/decisions?')) {
+        return {
+          status: 200,
+          body: {
+            decisions: [{ ...decision({ id: 'deadbeef-3333-4333-8333-333333333333' }), capabilities: { can_answer: true, can_revise: true } }],
+            counts: {},
+            capabilities: { can_answer: true, can_revise: true },
+          },
+        };
+      }
+      return undefined;
+    };
+    const result = await run(['decisions', '--json']);
+    expect(result.code).toBe(0);
+    const body = JSON.parse(result.out);
+    expect(body.capabilities.can_answer).toBe(false);
+    expect(body.decisions[0].capabilities.can_answer).toBe(false);
+    expect(body.capabilities.can_revise).toBe(true);
   });
 });

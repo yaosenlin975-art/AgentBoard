@@ -46,7 +46,7 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
 
   registerBoardTool(server, {
     name: 'add_dependency',
-    description: 'Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed).',
+    description: 'Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed). Adding a blocker to a currently claimed task is rejected with ISSUE_CLAIMED — release or finish the claim first.',
     inputSchema: z.object({
       ...workspaceField,
       ...issueIdField,
