@@ -138,7 +138,13 @@ export function KnowledgePanel({
         knowledge-toolbar-controls 锚点迁到内容区顶部，测试仍可按 testid 定位。 */}
     <span data-testid="knowledge-toolbar-controls" aria-hidden="true" className="sr-only" />
     <div className="flex min-h-0 flex-1 flex-col p-4">
-    <header className="mb-2 flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
+    {/* KB-TOOLBAR-ONE-LINE / KB-TOOLBAR-ONE：视图切换（列表/星图）+ 9 个筛选/显示控件同属一行。
+        视图切换在「范围」左侧、同属 form，原独立第一行整行删除（两栏并一栏，不留空行与分隔线）。
+        单行约需 800px 内容宽：≥1024px（实测可用 816px）稳定单行；搜索框最先收缩，Enter 提示在 <1280px 退让；
+        宽度不足时「密度/分组」整组换行，<900px 由零高整行断点固定成两行（筛选组 / 显示偏好组）。
+        全档只用 flex-wrap，不出现横向滚动，也不压扁控件。 */}
+    <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
+      <span className="flex shrink-0 items-center gap-1.5 text-xs" role="tablist" aria-label="知识视图">
         <button
           type="button"
           role="tab"
@@ -162,13 +168,7 @@ export function KnowledgePanel({
         >
           星图
         </button>
-    </header>
-
-    {/* KB-TOOLBAR-ONE-LINE：9 个控件同属一个容器、顺序不变。
-        单行约需 800px 内容宽：≥1024px（实测可用 816px）稳定单行；搜索框最先收缩，Enter 提示在 <1280px 退让；
-        宽度不足时「密度/分组」整组换行，<900px 由零高整行断点固定成两行（筛选组 / 显示偏好组）。
-        全档只用 flex-wrap，不出现横向滚动，也不压扁控件。 */}
-    <form className="flex shrink-0 flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); setOffset(0); setSelected(null); }}>
+      </span>
       <label className="flex shrink-0 items-center gap-1 text-xs text-ink-2">范围
         <select aria-label="知识范围" value={scope} onChange={e => { const next = e.target.value as KnowledgeScope; setScope(next); persistKnowledgeScope(next); setOffset(0); setSelected(null); }} className="h-8 rounded-lg border border-hairline bg-surface-card px-2 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent">
           <option value="both" disabled={!workspaceId}>当前项目＋公共</option><option value="workspace" disabled={!workspaceId}>当前项目</option><option value="common">公共经验</option>
