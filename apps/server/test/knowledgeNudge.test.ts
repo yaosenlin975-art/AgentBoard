@@ -77,12 +77,33 @@ describe('knowledge nudge on done', () => {
     await claim(issueId);
     const body = await done(issueId);
     expect(body.status).toBe('待验收');
-    // KB-SRVMSG N-04：主题 slug（<主题>-<日期>），不再是一次性 handoff-<uuid>，也不再带 handoff- 前缀
+    // N-05：稳定主题 slug（无日期），未命中标签时落 agentboard-pitfalls
     expect(body.knowledge_hint).toMatchObject({ scope: 'workspace' });
-    expect(body.knowledge_hint!.suggested_slug).toMatch(/^[\p{L}\p{N}-]+-\d{4}-\d{2}-\d{2}$/u);
+    expect(body.knowledge_hint!.suggested_slug).toBe('agentboard-pitfalls');
+    expect(body.knowledge_hint!.suggested_slug).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     expect(body.knowledge_hint!.suggested_slug.startsWith('handoff-')).toBe(false);
+    expect(body.knowledge_hint!.message).toContain('kb knowledge list --scope workspace');
+    expect(body.knowledge_hint!.message).toContain('kb knowledge revise');
     expect(body.knowledge_hint!.message).toContain('kb knowledge create');
     expect(body.knowledge_hint!.message).toContain(body.knowledge_hint!.suggested_slug);
+  });
+
+  it('mapsIssueLabelsToStableThemeSlug', async () => {
+    const cases: Array<[string[], string]> = [
+      [['server'], 'agentboard-server-data'],
+      [['服务端'], 'agentboard-server-data'],
+      [['web', 'ui'], 'agentboard-frontend-ux'],
+      [['测试'], 'agentboard-testing-gates'],
+      [['文档'], 'agentboard-pitfalls'],
+    ];
+    for (const [labels, expected] of cases) {
+      const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title: '主题映射', labels }));
+      expect(res.status).toBe(200);
+      const issueId = res.body.id as string;
+      await claim(issueId);
+      const body = await done(issueId);
+      expect(body.knowledge_hint?.suggested_slug).toBe(expected);
+    }
   });
 
   it('suggestedSlugIsLegalAndCategorySupplied', async () => {

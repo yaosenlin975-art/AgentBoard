@@ -14,27 +14,32 @@ import type { Db } from '../db/connection.js';
 const TITLE_MAX = 40;
 
 /**
- * KB-SRVMSG N-04：主题 slug——标题词段（字母/数字连续段）连字拼接 + 当天日期。
- * 合法（符合 createKnowledgePage 的 slug 规则）且非一次性；同一主题多日多页由日期区分。
+ * N-05 / SK-06：建议 slug 用**稳定的主题页名**，与 using-agentboard / kb-curator 的主题页口径一致；
+ * 不再拼「标题+日期」（日期后缀会让同一主题每天长出新页，revise 永远命中不了）。
+ * 标签 → 主题页映射；未命中落 agentboard-pitfalls。
  */
-function themeSlug(title: string): string {
-  const words = (title.match(/[\p{L}\p{N}]+/gu) ?? []).join('-').slice(0, 40).replace(/^-+|-+$/g, '');
-  const base = words !== '' ? words : 'task';
-  const now = new Date();
-  const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  return `${base}-${day}`;
+const THEME_RULES: ReadonlyArray<{ slug: string; tags: readonly string[] }> = [
+  { slug: 'agentboard-server-data', tags: ['server', '服务端', '后端'] },
+  { slug: 'agentboard-frontend-ux', tags: ['web', 'ui', '前端'] },
+  { slug: 'agentboard-testing-gates', tags: ['test', '测试'] },
+];
+const DEFAULT_THEME_SLUG = 'agentboard-pitfalls';
+
+function themeSlug(labels: readonly string[]): string {
+  const normalized = labels.map(label => label.trim().toLowerCase());
+  const hit = THEME_RULES.find(rule => rule.tags.some(tag => normalized.includes(tag)));
+  return hit?.slug ?? DEFAULT_THEME_SLUG;
 }
 
 export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
   if (!issue.claimed_by || issue.claimed_at === null) return null;
   // 检测口径兼容两种写法：旧 handoff-<issue-id> 前缀页，或本次占用期间由占用者更新过的任意页（主题 slug 场景）
-  const suggestedSlug = themeSlug(issue.title);
+  const suggestedSlug = themeSlug(issue.labels);
   const hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
     WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
-      AND (slug LIKE ? OR slug LIKE ? OR (updated_by=? AND updated_at>=?))
+      AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))
     LIMIT 1`).get(
     issue.workspace_id,
-    `${suggestedSlug}%`,
     `handoff-${issue.id}%`,
     `agent:${issue.claimed_by}`,
     issue.claimed_at,
@@ -47,7 +52,9 @@ export function buildKnowledgeHint(db: Db, issue: Issue): KnowledgeHint | null {
     suggested_slug: suggestedSlug,
     scope: 'workspace',
     // N-04：带 --category（不落 legacy）与来源/证据要求，照抄即可执行
-    message: `本任务还没有写知识页。建议：kb knowledge create --scope workspace --workspace ${issue.workspace_id} `
+    message: `本任务还没有写知识页。建议：先 kb knowledge list --scope workspace 找同主题页——有则 `
+      + `kb knowledge revise <页 id> --expected-revision <当前 revision> 追加；无则用下面的 slug 新建：`
+      + `kb knowledge create --scope workspace --workspace ${issue.workspace_id} `
       + `--slug ${suggestedSlug} --title "${title}" --category solved --domain knowledge `
       + `--sources-file sources.json --evidence-file evidence.json --stdin`
       + `（sources/evidence 各 ≥1 条；最小示例 sources.json `
