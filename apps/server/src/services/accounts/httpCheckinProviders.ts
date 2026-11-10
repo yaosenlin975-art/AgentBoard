@@ -20,7 +20,7 @@ import type {
   CheckinSubmission,
 } from './checkinProvider.js';
 import type { ManagedAppId } from '@agentboard/shared';
-import { workbuddyBillingUrl } from './platformHosts.js';
+import { workbuddyBillingOrigin, workbuddyBillingUrl } from './platformHosts.js';
 
 const MINIMAX_BASE = 'https://agent.minimaxi.com/minimax-cloud/api/v1';
 /**
@@ -112,6 +112,8 @@ function baseSpec(config: HttpCheckinConfig, parts: {
 
 /** workbuddy：签到 + 猫猫旅行 */
 export function createWorkbuddyCheckinProvider(config: HttpCheckinConfig): CheckinProviderSpec {
+  // ACC-KB-A1：装配期解析一次 origin——未知 region 在这里就抛错，不推迟到首次请求（不落到任何 host）
+  workbuddyBillingOrigin(config.region);
   const request = (path: string, token: string, init: Partial<RequestInit> = {}) =>
     requestJson(config, workbuddyBillingUrl(config.region, path), { token, ...init });
   const travelResponseError = (stage: string, result: HttpResult): string | null => {

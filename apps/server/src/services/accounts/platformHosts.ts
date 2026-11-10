@@ -26,8 +26,8 @@ export const WORKBUDDY_BILLING_ORIGIN: Readonly<Record<'cn' | 'global', string>>
   global: 'https://www.workbuddy.cn',
 };
 
-/** `/billing/meter/*` 各端点用的完整 URL */
-export function workbuddyBillingUrl(region: CheckinRegion, path: string): string {
+/** 区域 → origin；未知区域立即抛错（URL 拼接与装配期 fail-fast 共用同一判定） */
+export function workbuddyBillingOrigin(region: CheckinRegion): string {
   const origin = WORKBUDDY_BILLING_ORIGIN[region as 'cn' | 'global'];
   if (origin === undefined) {
     throw new ApiError(
@@ -36,6 +36,12 @@ export function workbuddyBillingUrl(region: CheckinRegion, path: string): string
       `WorkBuddy 计费域不支持该区域：${String(region)}（可选 cn / global；unknown 需先补区域证据）`,
     );
   }
+  return origin;
+}
+
+/** `/billing/meter/*` 各端点用的完整 URL */
+export function workbuddyBillingUrl(region: CheckinRegion, path: string): string {
+  const origin = workbuddyBillingOrigin(region);
   return `${origin}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
