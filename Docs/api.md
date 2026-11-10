@@ -196,7 +196,24 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 | `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库） | — | routes.ts |
 | `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发和附件设置即时生效；迁移进行中改 db 路径 → 409 `DB_MIGRATION_BUSY` | 400 未提供字段 / 取值非法 | routes.ts |
 
-﻿### 后端改动上线口径（源码新 ≠ 运行新）
+### SKILLS-SYNC 配套技能复制到本机 agent 目录
+
+把仓库 `skills/` 下 8 份配套技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`）复制到本机常见 agent skills 目录。**目标目录只由服务端固定枚举，接口只收 `target_id`，不接受任意路径**；写入/删除范围仅限 `<目标>/<8 个技能名>`。
+
+| 方法 路径 | 请求 | 响应 | 错误 |
+| --- | --- | --- | --- |
+| `GET /api/settings/skills-sync/targets` | query：`workspace_id?`（传入时才枚举 `<工作区>/.agentboard/skills`） | `{ source: { root, skill_count, file_count, skills:[{name,files}], hash }, targets:[{ id, label, path, resolved_path, exists, creatable, shared_with:[id], is_source, status, skills_present, synced_at }] }`；`status`：`synced`（8 技能内容与源逐文件一致）｜`stale`（有同名技能但内容不同/不全）｜`never`（不存在或没有同名技能）｜`unavailable`（不存在且祖先生效目录不可用）；`resolved_path` 按 junction/软链接实体路径解析，多个目标同物理目录时互相列进 `shared_with`；`is_source=true` 表示该目标就是技能来源（禁止复制/移除）；`synced_at` 来自 `<configDir>/skills-sync.json`，无记录为 `null` | 404 工作区不存在 |
+| `POST /api/settings/skills-sync` | body（strict）：`target_ids: string[]`（1–16，必须是枚举 id）、`conflict?: 'overwrite'\|'skip'\|'backup'`、`workspace_id?: string` | `{ results:[{ target_id, path, resolved_path, action: 'copied'\|'skipped'\|'nothing', backup_dir, skills:[{name,files,bytes,status: copied\|overwritten\|backup_overwritten\|unchanged\|skipped}], errors:[{skill,file,message}] }], summary:{ targets, copied, skipped, errors, total_files } }`；`backup` 把冲突技能先备份到 `<目标>/.agentboard-backup-<yyyyMMdd-HHmmss>/` 再覆盖；复制后逐文件校验数量/大小/sha256，错误精确到技能与文件；只有整目标无错误才写同步时间 | 400 `VALIDATION_ERROR`（未知 id / 空数组 / 路径穿越式 id）；409 `SKILLS_SYNC_CONFLICT`（目标已有同名技能且未传 `conflict`，details.conflicts 列 `{target_id,skill,reason}`）；409 `SKILLS_SYNC_SOURCE_INCOMPLETE`（源缺任一 `SKILL.md`） |
+| `DELETE /api/settings/skills-sync/:targetId` | query：`workspace_id?` | `{ target_id, path, removed:[技能名], errors:[{skill,file,message}], also_cleared:[同物理目录的其它目标 id], state_cleared }`；只删除本工具真实写入过的技能（记录在 `<configDir>/skills-sync.json` 的 `written` 里），目标里用户原有的 junction / 手工安装不动 | 400 未知目标；409 `SKILLS_SYNC_SOURCE_TARGET` 目标是技能来源目录（拒绝删除） |
+
+口径：
+
+- 目标清单（实测本机）：`~/.agents/skills`、`~/.claude/skills`、`~/.cursor/skills-cursor`（本机 Cursor 实际目录，实测为 junction → `~/.agents/skills`；不是网传的 `~/.cursor/skills`）、`~/.trae-cn/skills`、`~/.trae/skills`、`~/.codex/skills`、`~/.qoder/skills`、`~/.codeium/windsurf/skills`，以及传 `workspace_id` 时的 `<工作区>/.agentboard/skills`。
+- 技能来源解析顺序：`AGENTBOARD_SKILLS_SRC` → 仓库 `skills/` → 便携包 `rules/skills` → `~/.agents/skills`。
+- 安全：不写工作区外未声明位置（只写枚举目标）；源/目标同一实体路径时**直接拒绝**，绝不先删后拷；复制前校验源 8 技能齐全。
+- junction/软链接：本机 `~/.agents/skills` 里 7 个技能本身就是指向仓库 `skills/` 的 junction。目标技能目录是链接时，覆盖/备份只删链接本身（不跟进去删真实目录），随后落真实复制；移除只删本工具写入过的条目。
+
+### 后端改动上线口径（源码新 ≠ 运行新）
 
 后端改动必须 **重建 dist + 重启服务**，否则端口上跑的仍是旧代码（RESTART-PROXY 的起因就是 8787 上跑旧 dist，`/api/version` 连 `instance_id` / `proxy_env` 都没有）。
 
@@ -232,7 +249,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | 关闭 | 宿主设 `NODE_USE_ENV_PROXY=0` → **不覆盖**（尊重显式关闭） |
 | 日志 | `[server] proxy_env=on host=127.0.0.1:7897（源 HTTPS_PROXY，已注入 NODE_USE_ENV_PROXY=1）`；只打 host:port，**丢 userinfo、不打印凭据** |
 | `GET /api/version` | 新增只读 `proxy_env: { enabled, proxy_var, proxy_host, node_env_proxy }`；`proxy_host` 已脱敏 |
-﻿﻿| 两条拉起路径 | `pnpm server:ensure`（启动器）与 `POST /api/system/restart`（服务内 `performRestart` → `spawnDetached` → `restartChildEnv`）**共用 `@agentboard/shared` 的 `ensureProxyEnv`**：宿主有代理变量且未显式设 `NODE_USE_ENV_PROXY=0` → 子进程 env 注入 `=1`。RESTART-PROXY（`8d0bb480`）之前只有启动器注入，任何一次 restart 都会丢代理 |
+| 两条拉起路径 | `pnpm server:ensure`（启动器）与 `POST /api/system/restart`（服务内 `performRestart` → `spawnDetached` → `restartChildEnv`）**共用 `@agentboard/shared` 的 `ensureProxyEnv`**：宿主有代理变量且未显式设 `NODE_USE_ENV_PROXY=0` → 子进程 env 注入 `=1`。RESTART-PROXY（`8d0bb480`）之前只有启动器注入，任何一次 restart 都会丢代理 |
 | `enabled` 语义 | `proxy_env.enabled` 只有 `NODE_USE_ENV_PROXY=1` 且存在代理变量时才为 true（Node 缺省/为 0 都直连，实测三态）；每次请求实时解析，**不是启动快照** |
 | 手工启动 | 直接 `node apps/server/dist/index.js` 起的实例**不会**带该变量（启动器才注入；此时 `/api/version.proxy_env.enabled=false`）；该实例**经 `POST /api/system/restart` 换代后**，新进程会被注入 `=1`（RESTART-PROXY）。其它出站请求（额度等）同样受益于这次注入 |
 | 唯一实现 | `packages/shared/src/proxyEnv.ts`（`resolveProxyEnv` / `ensureProxyEnv` / `maskProxyHost`）：启动器与服务端共用，不各写一份 |
@@ -288,7 +305,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 - 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
 - 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
-﻿﻿### KB-PAGE-3 `domain`（域词表）与回填状态
+### KB-PAGE-3 `domain`（域词表）与回填状态
 
 | 项 | 口径 |
 | --- | --- |
@@ -325,7 +342,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 
 ### KB-PAGE-1 知识页读语义与 slug 解析（缺陷修复）
 
-﻿| 项 | 变化 |
+| 项 | 变化 |
 | --- | --- |
 | `GET /api/knowledge/pages/:id` | 软删页（`status='deleted'`）→ **410 `KNOWLEDGE_DELETED`**（附 `details.revision`，提示可看历史）；不存在 → 仍 404 `KNOWLEDGE_NOT_FOUND`；归档页 → 200 且响应带 `status='archived'` |
 | `GET /api/knowledge/search` | 每条结果**新增** `slug` 与 `status`（只加字段，既有 `page_id/scope/revision/title/snippet/sources/evidence/score` 不变）；当前 SQL 仍只返回 `active` 页 |
@@ -334,7 +351,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 
 ### IMPORT-LIMIT-S 导入上限（单文件 10MB / 单页正文 200 万字符）
 
-﻿| 项 | 口径 |
+| 项 | 口径 |
 | --- | --- |
 | 请求体上限（导入路径） | `12 MiB`（`apps/server/src/index.ts` 的路径级 parser + `knowledgeRoutes.ts` 路由级 parser 同一值）；10MB 文件经 JSON 转义膨胀 1.1–1.4 倍留余量。其余端点仍 100kb |
 | 单文件上限 | `10MB`（`services/knowledgeImport.ts` 的 `IMPORT_MAX_BYTES`）→ 超限 `413 IMPORT_TOO_LARGE`，文案写明「10MB」 |
@@ -400,7 +417,7 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 
 ### 依赖（DEP-1，`services/dependency.ts`）
 
-﻿| `POST /api/issues/:id/dependencies` | — | — | 400 `DEPENDENCY_SELF`（依赖自身）/ `CROSS_WORKSPACE_DEPENDENCY`（跨工作区）；409 `DEPENDENCY_EXISTS`（重复）/ `ISSUE_CLAIMED`（被阻塞卡占用中）/ **`DEPENDENCY_PARENT_CYCLE`**（被阻塞卡是前置卡的**子孙**：父卡要等子卡全完才 done，再让子卡依赖父卡会双向互等 → 流程死锁）/ `DEPENDENCY_CYCLE`（依赖环，含多跳与长链） |
+| `POST /api/issues/:id/dependencies` | — | — | 400 `DEPENDENCY_SELF`（依赖自身）/ `CROSS_WORKSPACE_DEPENDENCY`（跨工作区）；409 `DEPENDENCY_EXISTS`（重复）/ `ISSUE_CLAIMED`（被阻塞卡占用中）/ **`DEPENDENCY_PARENT_CYCLE`**（被阻塞卡是前置卡的**子孙**：父卡要等子卡全完才 done，再让子卡依赖父卡会双向互等 → 流程死锁）/ `DEPENDENCY_CYCLE`（依赖环，含多跳与长链） |
 
 - **允许方向**：**父卡依赖子卡**（`blocked` 是 `blocker` 的祖先）语义合理，放行；只有「子卡依赖父/祖先卡」被拒（`DEPENDENCY_PARENT_CYCLE`）。
 - 祖先判定与父子改挂共用同一实现：`services/taskHierarchy.ts` 的 `isIssueDescendant`（递归 CTE），不在依赖模块里另写一份。
