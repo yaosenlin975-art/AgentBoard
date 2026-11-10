@@ -1,6 +1,5 @@
-import { useEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { KnowledgePanel } from './components/knowledge/KnowledgePanel';
 import { parseKnowledgeDeepLink } from './lib/knowledgeDeepLink';
 import type { Workspace } from '@agentboard/shared';
 import { api } from './api/client';
@@ -9,15 +8,32 @@ import { useAppStore } from './state/appStore';
 import { useNavStore, type NavView } from './state/navStore';
 import { isChatExitKey } from './state/navStore';
 import { SideBar } from './components/shell/SideBar';
-import { DrawerPanel } from './components/drawer/DrawerPanel';
 import { Board } from './components/board/Board';
-import { ChangelogPanel } from './components/changelog/ChangelogPanel';
-import { ChatView } from './components/chat/ChatView';
-import { DecisionsView } from './components/decisions/DecisionsView';
 import { DecisionNotifier } from './components/decisions/DecisionNotifier';
-import { RightPanel } from './components/right/RightPanel';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import { useRestartStore } from './state/restartStore';
+
+// WEB-BUNDLE（3451075e）：重视图改成动态导入，避免它们进首屏 modulepreload。
+// 只改加载时机，不改加载图：这些模块原本就只由主区/抽屉/右栏渲染，切换视图时才拉取。
+const KnowledgePanel = lazy(() =>
+  import('./components/knowledge/KnowledgePanel').then((m) => ({ default: m.KnowledgePanel })),
+);
+const ChatView = lazy(() => import('./components/chat/ChatView').then((m) => ({ default: m.ChatView })));
+const DrawerPanel = lazy(() => import('./components/drawer/DrawerPanel').then((m) => ({ default: m.DrawerPanel })));
+const RightPanel = lazy(() => import('./components/right/RightPanel').then((m) => ({ default: m.RightPanel })));
+const DecisionsView = lazy(() =>
+  import('./components/decisions/DecisionsView').then((m) => ({ default: m.DecisionsView })),
+);
+const ChangelogPanel = lazy(() =>
+  import('./components/changelog/ChangelogPanel').then((m) => ({ default: m.ChangelogPanel })),
+);
+
+/** 动态视图加载中的占位（每次切换视图时出现一次） */
+const viewLoading = (
+  <p data-testid="view-loading" className="p-6 text-sm text-ink-3">
+    加载中…
+  </p>
+);
 
 /**
  * 布局（导航重构 S2a）：左栏 SideBar + 主内容。
@@ -83,31 +99,40 @@ export default function App() {
           <div className="relative flex min-h-0 flex-1">
             <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
               {view === 'decisions' ? (
-                <DecisionsView />
+                <Suspense fallback={viewLoading}>
+                  <DecisionsView />
+                </Suspense>
               ) : view === 'log' ? (
                 workspaceId === null ? (
                   <p data-testid="log-view-needs-workspace" className="p-6 text-sm text-ink-3">
                     请先选择工作空间，再查看日志
                   </p>
                 ) : (
-                  <ChangelogPanel
-                    key={workspaceId}
-                    workspaceId={workspaceId}
-                  />
+                  <Suspense fallback={viewLoading}>
+                    <ChangelogPanel
+                      key={workspaceId}
+                      workspaceId={workspaceId}
+                    />
+                  </Suspense>
                 )
               ) : view === 'knowledge' ? (
-                <KnowledgePanel
-                  key={workspaceId ?? 'common'}
-                  workspaceId={workspaceId}
-                  workspaceName={current?.name ?? null}
-                  deepLinkPageId={deepLink?.pageId ?? null}
-                />
+                <Suspense fallback={viewLoading}>
+                  <KnowledgePanel
+                    key={workspaceId ?? 'common'}
+                    workspaceId={workspaceId}
+                    workspaceName={current?.name ?? null}
+                    deepLinkPageId={deepLink?.pageId ?? null}
+                  />
+                </Suspense>
               ) : view === 'chat' ? (
                 // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
                 // 快捷键 Esc / Ctrl(Cmd)+[ 仍保留（lead 裁定：只删可视出口，保留键盘出口）。
+                // Suspense 放在外层容器内：`chat-view` 容器保持同步渲染（视图骨架不闪）。
                 <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
                   <div className="min-h-0 flex-1">
-                    <ChatView />
+                    <Suspense fallback={viewLoading}>
+                      <ChatView />
+                    </Suspense>
                   </div>
                 </div>
               ) : (
@@ -116,8 +141,10 @@ export default function App() {
               )}
             </main>
             {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}
-            <DrawerPanel />
-            <RightPanel />
+            <Suspense fallback={null}>
+              <DrawerPanel />
+              <RightPanel />
+            </Suspense>
             {restarting && (
               <div
                 data-testid="restart-blocker"

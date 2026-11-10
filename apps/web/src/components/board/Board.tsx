@@ -3,7 +3,7 @@
  * 拖放经 resolveDrop 结算 → 乐观更新 → PATCH（跨列带 status，列内只带 sort_order）；
  * PATCH 失败（如 409 占用冲突）回滚缓存并提示。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
@@ -30,7 +30,6 @@ import { IssueTreeView } from './IssueTreeView';
 import { useNavStore } from '../../state/navStore';
 import { LabelFilterBar } from './LabelFilterBar';
 import { ViewToolbarShell } from '../ui/ViewToolbarShell';
-import { NewIssueDialog } from '../topbar/NewIssueDialog';
 import {
   readPlanningSort,
   sortPlanning,
@@ -54,7 +53,14 @@ import {
 } from '../../lib/selection';
 import { SelectionBar } from './SelectionBar';
 import { ErrorState } from '../ui/ErrorState';
-import { ReleaseRunningDialog } from './ReleaseRunningDialog';
+
+// WEB-BUNDLE（3451075e）：弹窗只在用户点开时才需要，从首屏静态依赖里摘出去。
+const NewIssueDialog = lazy(() =>
+  import('../topbar/NewIssueDialog').then((m) => ({ default: m.NewIssueDialog })),
+);
+const ReleaseRunningDialog = lazy(() =>
+  import('./ReleaseRunningDialog').then((m) => ({ default: m.ReleaseRunningDialog })),
+);
 
 type ActiveDrag = { issue: Issue; width?: number };
 
@@ -483,17 +489,21 @@ export function Board({
       )}
       {/* 新建任务入口（NEW-ISSUE-PLUS）：平铺看板在「待规划」列头，任务树在工具条（树没有列） */}
       {workspaceId !== null && (
-        <NewIssueDialog open={newIssueOpen} workspaceId={workspaceId} onClose={() => setNewIssueOpen(false)} />
+        <Suspense fallback={null}>
+          <NewIssueDialog open={newIssueOpen} workspaceId={workspaceId} onClose={() => setNewIssueOpen(false)} />
+        </Suspense>
       )}
       {/* REL-2：预览弹窗（dry_run 清单 → 勾选 → 提交） */}
       {workspaceId !== null && (
-        <ReleaseRunningDialog
-          open={releaseOpen}
-          workspaceId={workspaceId}
-          issues={issues ?? []}
-          onClose={() => setReleaseOpen(false)}
-          onReleased={handleReleased}
-        />
+        <Suspense fallback={null}>
+          <ReleaseRunningDialog
+            open={releaseOpen}
+            workspaceId={workspaceId}
+            issues={issues ?? []}
+            onClose={() => setReleaseOpen(false)}
+            onReleased={handleReleased}
+          />
+        </Suspense>
       )}
     </div>
   );
