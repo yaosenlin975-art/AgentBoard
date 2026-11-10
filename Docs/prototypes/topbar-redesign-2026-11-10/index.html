@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>看板顶栏重绘 · 高保真原型（TOPBAR-REDESIGN）</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- 原型控制条：明确不是产品 UI；?clean=1 时隐藏，供截图用 -->
+<div class="proto-bar" id="proto-bar" role="region" aria-label="原型演示控制条（不属于产品界面）">
+  <div class="proto-brand">
+    <span class="proto-dot" aria-hidden="true"></span>
+    <strong>看板顶栏重绘</strong>
+    <span class="proto-sub">TOPBAR-REDESIGN · 演示控制条（非产品 UI）</span>
+  </div>
+  <div class="proto-group" role="group" aria-label="演示设置">
+    <span class="proto-label">方向</span>
+    <button type="button" class="proto-btn" data-direction="a" aria-pressed="true">A · 极简单行</button>
+    <button type="button" class="proto-btn" data-direction="b" aria-pressed="false">B · 分段浮层</button>
+    <span class="proto-sep" aria-hidden="true"></span>
+    <span class="proto-label">侧栏</span>
+    <button type="button" class="proto-btn" data-sidebar="expanded" aria-pressed="true">176</button>
+    <button type="button" class="proto-btn" data-sidebar="collapsed" aria-pressed="false">56</button>
+    <span class="proto-sep" aria-hidden="true"></span>
+    <button type="button" class="proto-btn" id="btn-narrow" aria-pressed="false">窄屏 900</button>
+    <button type="button" class="proto-btn" id="btn-theme" aria-pressed="false">深色</button>
+    <button type="button" class="proto-btn" id="btn-reduce" aria-pressed="false">减弱动效</button>
+    <span class="proto-memo" id="memo">方向 A · 顶栏 46px · 侧栏 176px</span>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="app-shell" id="app-shell" data-direction="a" data-sidebar="expanded">
+
+    <!-- 侧栏：与生产 SideBar.tsx 同结构（工作空间 → 六入口 → 账号/设置 → 状态行），仅作背景参照 -->
+    <nav class="sb" id="sb" aria-label="主导航">
+      <div class="sb-head">
+        <button type="button" class="sb-ws tip" data-tip="任务看板 · D:\WorkSpaces\任务看板" title="切换工作空间">
+          <span class="sb-caret" aria-hidden="true">▾</span>
+          <span class="sb-ws-text">
+            <span class="sb-ws-name">任务看板</span>
+            <span class="sb-ws-path">D:\WorkSpaces\任务看板</span>
+          </span>
+          <span class="sb-ws-initial" aria-hidden="true">任</span>
+        </button>
+        <button type="button" class="sb-toggle tip" data-tip="收起侧栏（Ctrl+B）" aria-label="收起侧栏（Ctrl+B）">
+          <svg class="ico-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/><path d="M19 4v16"/></svg>
+          <svg class="ico-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 6l6 6-6 6"/><path d="M19 4v16"/></svg>
+        </button>
+      </div>
+      <ul class="sb-nav" role="list">
+        <li class="tip" data-tip="任务看板"><button type="button" class="sb-item is-active" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg><span class="sb-label">任务看板</span></button></li>
+        <li class="tip" data-tip="待决策 · 3"><button type="button" class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 4v10l-7 4-7-4V7zM5 7l7 4 7-4M12 11v10"/></svg><span class="sb-label">待决策</span><span class="sb-badge">3</span></button></li>
+        <li class="tip" data-tip="任务树"><button type="button" class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h6v4H4zM14 10h6v4h-6zM14 16h6v4h-6zM7 8v10h7M7 10h7"/></svg><span class="sb-label">任务树</span></button></li>
+        <li class="tip" data-tip="知识库"><button type="button" class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/></svg><span class="sb-label">知识库</span></button></li>
+        <li class="tip" data-tip="日志"><button type="button" class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span class="sb-label">日志</span></button></li>
+        <li class="tip" data-tip="聊天 · 4"><button type="button" class="sb-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16v10H9l-5 4z"/></svg><span class="sb-label">聊天</span><span class="sb-badge">4</span></button></li>
+      </ul>
+      <div class="sb-bottom">
+        <button type="button" class="sb-bottom-btn tip" data-tip="账号管理"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 16c0-2.2 3.6-4 8-4s8 1.8 8 4v2H4zM12 10a3 3 0 100-6 3 3 0 000 6"/></svg><span class="sb-label">账号</span></button>
+        <button type="button" class="sb-bottom-btn tip" data-tip="设置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 100-6 3 3 0 000 6M4 12h2M18 12h2M12 4v2M12 18v2M6.5 6.5l1.4 1.4M16.1 16.1l1.4 1.4M17.5 6.5l-1.4 1.4M7.9 16.1l-1.4 1.4"/></svg><span class="sb-label">设置</span></button>
+      </div>
+      <div class="sb-status tip" data-tip="服务运行中 · 跟随系统">
+        <span class="sb-dot" aria-hidden="true"></span>
+        <span class="sb-label">服务运行中</span>
+        <span class="sb-status-sep" aria-hidden="true">·</span>
+        <span class="sb-label sb-theme">跟随系统</span>
+      </div>
+    </nav>
+
+    <!-- 主区 -->
+    <div class="main">
+
+      <!-- ============ 方向 A：极简单行（46px） ============ -->
+      <header class="tb tb-a" data-panel="topbar-a" aria-label="看板顶栏">
+        <div class="tb-crumb">
+          <span class="tb-crumb-ws">任务看板</span>
+          <span class="tb-crumb-sep" aria-hidden="true">›</span>
+          <span class="tb-crumb-view">看板</span>
+        </div>
+        <div class="tb-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+          <input type="search" aria-label="搜索任务" placeholder="搜索标题/描述/标签">
+          <kbd>/</kbd>
+        </div>
+        <div class="tb-chips" aria-label="标签筛选">
+          <button type="button" class="chip is-on">web<i>32</i></button>
+          <button type="button" class="chip">功能<i>18</i></button>
+          <button type="button" class="chip">server<i>12</i></button>
+          <button type="button" class="chip">缺陷<i>9</i></button>
+          <button type="button" class="chip">账号管理<i>8</i></button>
+          <button type="button" class="chip">知识库<i>6</i></button>
+          <button type="button" class="chip">cli<i>5</i></button>
+          <button type="button" class="chip">文档<i>4</i></button>
+          <button type="button" class="chip chip-more">更多 +8</button>
+        </div>
+        <div class="tb-actions">
+          <label class="tb-select" title="显示密度">
+            <span class="sr-only">显示密度</span>
+            <select aria-label="显示密度"><option>舒适密度</option><option>紧凑密度</option></select>
+          </label>
+          <label class="tb-select" title="分组方式">
+            <span class="sr-only">分组方式</span>
+            <select aria-label="分组方式"><option>不分组</option><option>按标签分组</option></select>
+          </label>
+          <button type="button" class="tb-btn" aria-pressed="false">选择</button>
+        </div>
+      </header>
+
+      <!-- ============ 方向 B：分段浮层（40px） ============ -->
+      <header class="tb tb-b" data-panel="topbar-b" aria-label="看板顶栏">
+        <div class="tb-crumb">
+          <span class="tb-crumb-ws">任务看板</span>
+          <span class="tb-crumb-sep" aria-hidden="true">›</span>
+          <span class="tb-crumb-view">看板</span>
+        </div>
+        <div class="tb-search tb-search--compact">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+          <input type="search" aria-label="搜索任务" placeholder="搜索任务">
+        </div>
+        <div class="tb-actions">
+          <button type="button" class="tb-btn tb-btn--filter" id="btn-filters" aria-expanded="false" aria-controls="filter-panel">
+            筛选<i class="tb-filter-count">1</i>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <button type="button" class="tb-btn" aria-pressed="false">选择</button>
+        </div>
+
+        <!-- 浮层面板：密度 / 分组 / 标签全部收进来 -->
+        <div class="tb-panel" id="filter-panel" role="dialog" aria-label="筛选与显示" hidden>
+          <div class="tb-panel-head">
+            <strong>筛选与显示</strong>
+            <button type="button" class="tb-iconbtn" id="btn-close-filters" aria-label="关闭筛选"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6l-12 12"/></svg></button>
+          </div>
+          <div class="tb-panel-row">
+            <label class="tb-select tb-select--block"><span>显示密度</span><select aria-label="显示密度"><option>舒适密度</option><option>紧凑密度</option></select></label>
+            <label class="tb-select tb-select--block"><span>分组方式</span><select aria-label="分组方式"><option>不分组</option><option>按标签分组</option></select></label>
+          </div>
+          <div class="tb-panel-label">标签筛选 <button type="button" class="tb-link">清除</button></div>
+          <div class="tb-chips tb-chips--panel" aria-label="标签筛选">
+            <button type="button" class="chip is-on">web<i>32</i></button>
+            <button type="button" class="chip">功能<i>18</i></button>
+            <button type="button" class="chip">server<i>12</i></button>
+            <button type="button" class="chip">缺陷<i>9</i></button>
+            <button type="button" class="chip">账号管理<i>8</i></button>
+            <button type="button" class="chip">知识库<i>6</i></button>
+            <button type="button" class="chip">cli<i>5</i></button>
+            <button type="button" class="chip">文档<i>4</i></button>
+            <button type="button" class="chip">测试<i>4</i></button>
+            <button type="button" class="chip">调研<i>3</i></button>
+            <button type="button" class="chip">规则<i>3</i></button>
+            <button type="button" class="chip">跨平台<i>2</i></button>
+          </div>
+        </div>
+      </header>
+
+      <!-- 看板内容（仅作顶栏的背景参照，不是本卡设计对象） -->
+      <main class="board" aria-label="任务看板内容">
+        <section class="col">
+          <div class="col-head"><span class="col-name">待规划 <i>7</i></span><button type="button" class="col-add">+</button></div>
+          <article class="card"><h4>【CHAT-ASK-1A】适配器层：ask 事件 + 子进程 stdin 回填</h4><div class="tags"><span>server</span><span>功能</span><span>测试</span></div><div class="meta"><span class="dot"></span>5 · 等 1 项</div></article>
+          <article class="card"><h4>[accounts][授权抽屉] 开始授权/授权地址改无痕窗口 + 取消刷新收起</h4><div class="tags"><span>账号管理</span><span>web</span><span>server</span></div><div class="meta"><span class="dot"></span>6 · 等 2 项</div></article>
+          <article class="card"><h4>【CHAT-MICPOP】输入框麦克风提示随滚动错位</h4><div class="tags"><span>缺陷</span><span>web</span></div><div class="meta"><span class="dot"></span>9 · 等 2 项</div></article>
+        </section>
+        <section class="col">
+          <div class="col-head"><span class="col-name">进行中 <i>2</i></span></div>
+          <article class="card"><h4>【TOPBAR-REDESIGN】看板顶栏重绘：原型两方向 + 落地</h4><div class="tags"><span>web</span><span>功能</span></div><div class="meta"><span class="dot"></span>6 · 等 2 项</div></article>
+          <article class="card"><h4>【CHAT-ASK-1B】服务端观测层：把 ask 事件接到 markTurnAwaiting</h4><div class="tags"><span>server</span><span>功能</span></div><div class="meta"><span class="dot"></span>6 · 等 2 项</div></article>
+        </section>
+        <section class="col">
+          <div class="col-head"><span class="col-name">待验收 <i>3</i></span></div>
+          <article class="card"><h4>【MCP-COVERAGE】MCP 能力缺口盘点与可发现性</h4><div class="tags"><span>文档</span><span>功能</span><span>调研</span></div><div class="meta"><span class="dot"></span>4</div></article>
+          <article class="card"><h4>【DEC-JUMP-WS】待决策跳任务详情：先切决策所属工作区并定位选中看板卡</h4><div class="tags"><span>web</span><span>缺陷</span><span>决策</span></div><div class="meta"><span class="dot"></span>4</div></article>
+        </section>
+        <section class="col">
+          <div class="col-head"><span class="col-name">已关闭 <i>5</i></span></div>
+          <article class="card"><h4>删除 issue 时级联清理关联会话与消息</h4><div class="tags"><span>缺陷</span><span>server</span></div><div class="meta"><span class="dot"></span>4</div></article>
+          <article class="card"><h4>【ACC-B】账号管理方向 B「工作台」重构（父卡）</h4><div class="tags"><span>账号管理</span><span>web</span><span>server</span></div><div class="meta"><span class="dot"></span>21</div></article>
+        </section>
+      </main>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
