@@ -152,6 +152,15 @@ export const draftRequestSchema = z.object({
 }).strict();
 
 /**
+ * PERSONA-LIB：智能创建人设草稿请求（不落库）。personas 是全局资源，不带 workspace_id；
+ * adapter 与任务卡草稿同源（DRAFT_ADAPTERS），requirement 上限 4000 字。
+ */
+export const personaDraftRequestSchema = z.object({
+  requirement: z.string().trim().min(1, 'requirement 不能为空').max(4000),
+  adapter: z.enum(DRAFT_ADAPTERS),
+}).strict();
+
+/**
  * CARD-FACE：描述「空」的唯一权威判定。
  * 空 = 去掉 markdown 标题、模板段名（目标 / 范围 / 验收 / 验收标准 / 边界 …）、空列表项与空白后无实质内容；
  * 描述很短但有正文不算空，不做长度阈值。

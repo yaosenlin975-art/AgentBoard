@@ -14,6 +14,8 @@ export interface ModalProps {
    * （右侧滑出 drawer 用；抽屉自己提供标题、关闭按钮与滚动容器）。
    */
   variant?: 'modal' | 'inline';
+  /** 弹窗落位：center=居中（默认）；right=贴右侧整高抽屉（设置页人设编辑等二级面板） */
+  placement?: 'center' | 'right';
 }
 
 const SIZE_CLASS: Record<NonNullable<ModalProps['size']>, string> = {
@@ -29,7 +31,10 @@ function tabbablesIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(TABBABLE_SELECTOR));
 }
 
-export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal' }: ModalProps) {
+/** 已打开的 modal 栈：嵌套弹窗时只有最上层响应 Esc，避免一次按键把设置页和二级面板一起关掉 */
+const modalStack: symbol[] = [];
+
+export function Modal({ open, title, onClose, children, scrollable = false, size = 'md', variant = 'modal', placement = 'center' }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   // 最新 onClose 放 ref：避免父级每次渲染换新函数时重跑 effect（会重新抢焦点）
@@ -38,6 +43,8 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
 
   useEffect(() => {
     if (!open || variant !== 'modal') return;
+    const token = Symbol('modal');
+    modalStack.push(token);
     // 打开瞬间记住触发元素，关闭后归还（抽屉不持有触发按钮 ref 时同样成立）
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const dialog = dialogRef.current;
@@ -49,6 +56,8 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // 嵌套场景只让最上层关闭；下层弹窗保持打开
+        if (modalStack[modalStack.length - 1] !== token) return;
         onCloseRef.current();
         return;
       }
@@ -74,7 +83,11 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const index = modalStack.indexOf(token);
+      if (index !== -1) modalStack.splice(index, 1);
+    };
   }, [open, variant]);
 
   // 关闭后焦点回到触发元素；触发元素已卸载则放弃，不做隐式转移
@@ -91,9 +104,10 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
 
   // 挂到 document.body：祖先若有 transform/filter（如侧栏 #workspace-sidebar-content 的 translate-x-0），
   // 会成为 position:fixed 的包含块，导致弹窗偏到祖先左上角而不是视口中心。
+  const isDrawer = placement === 'right';
   const overlay = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className={`fixed inset-0 z-50 flex bg-black/40 ${isDrawer ? 'justify-end' : 'items-center justify-center p-4'}`}
       data-testid="modal-overlay"
       onMouseDown={onClose}
     >
@@ -102,7 +116,11 @@ export function Modal({ open, title, onClose, children, scrollable = false, size
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full ${SIZE_CLASS[size]} rounded-lg border border-hairline bg-surface-card p-5 text-ink shadow-xl${scrollable ? ' max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain' : ''}`}
+        className={
+          isDrawer
+            ? 'h-full w-full max-w-[30rem] overflow-y-auto overscroll-contain rounded-none border-l border-hairline bg-surface-card p-5 text-ink shadow-xl'
+            : `w-full ${SIZE_CLASS[size]} rounded-lg border border-hairline bg-surface-card p-5 text-ink shadow-xl${scrollable ? ' max-h-[calc(100dvh-2rem)] overflow-y-auto overscroll-contain' : ''}`
+        }
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

@@ -10,7 +10,7 @@ import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter } from './changelogRoutes.js';
 import { createStatusesAggregateRouter } from './workspaceStatusRoutes.js';
-import { createIssueRouter } from './routes/issueRoutes.js';
+import { createIssueRouter, defaultDraftRunner, draftAdapterDetector } from './routes/issueRoutes.js';
 import { createWorkspaceRouter } from './routes/workspaceRoutes.js';
 import { createSessionRouter } from './routes/sessionRoutes.js';
 import { createSettingsRouter } from './routes/settingsRoutes.js';
@@ -20,6 +20,7 @@ import { createTeamRouter } from './routes/teamRoutes.js';
 // P3-C：专家包导入 REST（WorkBuddy 包格式 → personas + 团队模板）
 import { createExpertPackageRouter } from './routes/expertPackageRoutes.js';
 import { handleSessionTurnEnded, initTeamOrchestration } from '../services/teamOrchestration.js';
+import { createPersonaDraftService } from '../services/personaDraft.js';
 import { setTurnEndedListener } from '../services/sessionManager.js';
 import { createSystemMiscRouter } from './routes/systemMiscRoutes.js';
 import { createVoiceRouter, type VoiceRouterOptions } from './voiceRoutes.js';
@@ -372,7 +373,16 @@ export function createRouter(deps: RouterDeps): Router {
 
   // ---- personas 域（P1-C）----
   // persona CRUD（builtin 409）与 CLI 能力探测（probeCliCapabilities，60s 缓存在 adapters 侧）
-  router.use(createPersonaRouter({ db }));
+  // PERSONA-LIB：草稿生成与任务卡草稿共用 DraftRunner / 错误码口径（不落库、不建 session）
+  router.use(createPersonaRouter({
+    db,
+    draft: createPersonaDraftService({
+      run: deps.draftRunner ?? defaultDraftRunner(getAdapter),
+      detectAdapter: draftAdapterDetector(getAdapter),
+      cwd: process.cwd(),
+      ...(deps.draftTimeoutMs === undefined ? {} : { timeoutMs: deps.draftTimeoutMs }),
+    }),
+  }));
 
   // ---- 专家团域（P3-A）----
   // teams / team_members 落中心库；成员会话行落归属工作区库（dbForWorkspace）。

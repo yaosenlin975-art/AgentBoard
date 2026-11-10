@@ -11,6 +11,7 @@ import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
 import { McpSection } from '../settings/McpSection';
+import { PersonaSection } from '../settings/PersonaSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 import { SkillsSyncSection } from '../settings/SkillsSyncSection';
 import { StorageSection } from '../settings/StorageSection';
@@ -202,6 +203,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           </button>
         </div>
       </form>
+      {/* PERSONA-LIB-2：智能体人设（全局库列表 / 新建编辑抽屉 / 删除 / 专家包导入 / 智能创建） */}
+      <PersonaSection />
       {/* STATUS-3-UI：自定义状态增删（删除必须选迁移目标）；成功后失效状态字典与任务列表 */}
       <section data-testid="settings-statuses" className="mt-4 border-t border-hairline pt-3">
         <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-3">

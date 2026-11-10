@@ -1,6 +1,7 @@
 /**
  * personas 域 REST（P1-C）。
  * 覆盖：GET/POST /api/personas、PATCH/DELETE /api/personas/:id（builtin 只读：409）、
+ * POST /api/personas/draft（PERSONA-LIB：一句话 → 结构化人设草稿，不落库）、
  * GET /api/cli-capabilities?adapter=<id>（probeCliCapabilities 能力探测；探测结果在 adapters 侧
  * 按命令名缓存 60s，本路由不重复缓存）。
  * persona 定义落中心库（全局资源，不随工作区库下沉；会话侧 persona_id 引用此处行）。
@@ -19,11 +20,14 @@ import { zhZodIssue } from '../zod.js';
 import type { Db } from '../../db/connection.js';
 import { ConflictError, NotFoundError, ValidationError } from '../../errors.js';
 import { createPersona, deletePersona, getPersona, listPersonas, updatePersona } from '../../db/repos/persona.js';
-import { createPersonaSchema, patchPersonaSchema } from '../schemas.js';
+import { createPersonaSchema, patchPersonaSchema, personaDraftRequestSchema } from '../schemas.js';
+import type { PersonaDraftService } from '../../services/personaDraft.js';
 
 export interface PersonaRouterDeps {
   /** 中心库：personas 全局表 */
   db: Db;
+  /** PERSONA-LIB：智能创建草稿（与任务卡草稿共用 DraftRunner；不落库） */
+  draft: PersonaDraftService;
 }
 
 /** zod 校验：失败抛 ValidationError（错误中间件 → 400） */
@@ -60,6 +64,13 @@ export function createPersonaRouter(deps: PersonaRouterDeps): Router {
     const body = parseBody(createPersonaSchema, req.body);
     // id 用 randomUUID；路由只建 user 来源 persona（builtin/import 由包/导入流程落库）
     res.json(createPersona(db, { name: body.name, description: body.description, body_md: body.body_md, source: 'user' }));
+  });
+
+  // PERSONA-LIB：智能创建草稿（不落库；成功后由前端确认再走 POST /personas）
+  // 只返回结构化字段，body_md 由前端按「## 角色 / ## 语气 / ## 边界与禁忌 / ## 擅长领域」拼装。
+  router.post('/personas/draft', async (req, res) => {
+    const body = parseBody(personaDraftRequestSchema, req.body);
+    res.json(await deps.draft.generate({ requirement: body.requirement, adapter: body.adapter }));
   });
 
   router.patch('/personas/:id', (req, res) => {

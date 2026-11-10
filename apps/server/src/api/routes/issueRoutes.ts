@@ -206,7 +206,7 @@ async function wakeStoredComment(
  * 默认草稿 runner：直接调适配器的 runTurn（一次性进程），只收集 text 事件。
  * 不建 session 行、不占 claim 槽位；超时由 smartCreateDraft 的 AbortSignal 触发 kill。
  */
-function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftRunner {
+export function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftRunner {
   return ({ adapter, prompt, cwd, signal }) => new Promise<string>((resolve, reject) => {
     let handle: ReturnType<AgentAdapter['runTurn']>;
     try {
@@ -238,6 +238,20 @@ function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter): DraftR
   });
 }
 
+/** 草稿适配器可用性探测（任务卡草稿与 persona 草稿共用）：不可用时给 installed=false + 原因 */
+export type DraftAdapterDetector = (cliId: string) => Promise<{ installed: boolean; version: string | null; message?: string }>;
+
+export function draftAdapterDetector(getAdapter: (cliId: string) => AgentAdapter): DraftAdapterDetector {
+  return async (cliId) => {
+    try {
+      const detected = await getAdapter(cliId).detect();
+      return { installed: detected.installed, version: detected.version, ...(detected.message === undefined ? {} : { message: detected.message }) };
+    } catch (error) {
+      return { installed: false, version: null, message: `适配器 ${cliId} 探测失败：${error instanceof Error ? error.message : String(error)}` };
+    }
+  };
+}
+
 export function createIssueRouter(deps: IssueRouterDeps): Router {
   const {
     db,
@@ -260,14 +274,7 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
   const draftService = createDraftService({
     db,
     run: deps.draftRunner ?? defaultDraftRunner(getAdapter),
-    detectAdapter: async (cliId) => {
-      try {
-        const detected = await deps.getAdapter(cliId).detect();
-        return { installed: detected.installed, version: detected.version, ...(detected.message === undefined ? {} : { message: detected.message }) };
-      } catch (error) {
-        return { installed: false, version: null, message: `适配器 ${cliId} 探测失败：${error instanceof Error ? error.message : String(error)}` };
-      }
-    },
+    detectAdapter: draftAdapterDetector(deps.getAdapter),
     existingLabels: (workspaceId) => {
       const rows = db.prepare('SELECT labels FROM issue WHERE workspace_id=?').all(workspaceId) as Array<{ labels: string }>;
       const set = new Set<string>();
