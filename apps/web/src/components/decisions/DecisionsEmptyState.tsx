@@ -30,7 +30,7 @@ function RecentAnsweredRow({
   onOpenIssue,
 }: {
   item: DecisionListItemDto;
-  onOpenIssue: (issueId: string) => void;
+  onOpenIssue: (issueId: string, issueWorkspaceId: string) => void;
 }) {
   const { data } = useQuery({
     queryKey: ['decision', item.id],
@@ -48,7 +48,7 @@ function RecentAnsweredRow({
     <li data-testid={`decisions-empty-recent-${item.id}`}>
       <button
         type="button"
-        onClick={() => onOpenIssue(item.issue_id)}
+        onClick={() => onOpenIssue(item.issue_id, item.workspace_id)}
         className="flex w-full min-w-0 flex-col items-start gap-0.5 rounded border border-hairline bg-surface-card px-1.5 py-1 text-left hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
       >
         <span className="w-full truncate text-xs text-ink" title={item.issue_title}>
@@ -76,7 +76,8 @@ export interface DecisionsEmptyStateProps {
   scope: DecisionsScope;
   /** 24h 内已回答（已按回答时间倒序） */
   answered: DecisionListItemDto[];
-  onOpenIssue: (issueId: string) => void;
+  /** DEC-JUMP-WS：打开任务卡前先切到它所属的工作区 */
+  onOpenIssue: (issueId: string, issueWorkspaceId: string) => void;
   onGoBoard: () => void;
 }
 

@@ -75,6 +75,10 @@ export function Board({
 } = {}) {
   const workspaceId = useAppStore((s) => s.workspaceId);
   const selectedLabels = useAppStore((s) => s.selectedLabelsByWorkspace[workspaceId ?? ''] ?? NO_SELECTED_LABELS);
+  const clearLabels = useAppStore((s) => s.clearLabels);
+  // DEC-JUMP-WS：待决策跳过来的定位目标（瞬态；消费后清空）
+  const boardFocus = useNavStore((s) => s.boardFocus);
+  const clearBoardFocus = useNavStore((s) => s.clearBoardFocus);
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   // FIX-2：视图（平铺看板 / 任务树）由 navStore（左栏五入口）单一决定，工具条不再有 ViewSwitcher
@@ -214,6 +218,38 @@ export function Board({
       return next.size === prev.size ? prev : next;
     });
   }, [issues]);
+  /**
+   * DEC-JUMP-WS：待决策「卡详情」跳转后的看板定位。
+   * 先清掉会隐藏目标卡的本地筛选（搜索词 / 标签 / 仅看本次退回），等本工作区数据就绪后
+   * 把卡滚进视口；高亮由入口同时打开的详情浮窗（IssueCard 的 detailOpen 态）承担。
+   * 数据就绪但找不到该卡（已删除 / 不属于本工作区）也清空焦点，不留下次误跳。
+   */
+  useEffect(() => {
+    if (boardFocus === null || workspaceId === null) return;
+    if (query !== '') setSearchState({ workspaceId, query: '' });
+    if (selectedLabels.length > 0) clearLabels(workspaceId);
+    if (onlyReleased) setOnlyReleased(false);
+    if (issues === undefined || issuesPending || issuesPlaceholder) return;
+    if (issues.some((issue) => issue.id === boardFocus)) {
+      requestAnimationFrame(() => {
+        document
+          .querySelector<HTMLElement>(`[data-testid="issue-card-${boardFocus}"]`)
+          ?.scrollIntoView?.({ block: 'center' });
+      });
+    }
+    clearBoardFocus();
+  }, [
+    boardFocus,
+    workspaceId,
+    issues,
+    issuesPending,
+    issuesPlaceholder,
+    query,
+    selectedLabels,
+    onlyReleased,
+    clearLabels,
+    clearBoardFocus,
+  ]);
   // CR-4：批量改状态有限并发（≤6），避免选 N 张就并发 N 个写请求放大 SQLite 写锁排队
   const applyBatchStatus = async (status: string): Promise<void> => {
     if (workspaceId === null || selectedIds.size === 0) return;

@@ -99,7 +99,8 @@ export interface BlockedDownstreamProps {
   workspaceId: string;
   /** 列表投影的直接下游数（按钮文案）；真实明细展开后再拉 */
   count: number;
-  onOpenIssue: (issueId: string) => void;
+  /** DEC-JUMP-WS：下游卡与决策同库，打开前先切到该工作区 */
+  onOpenIssue: (issueId: string, issueWorkspaceId: string) => void;
 }
 
 export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: BlockedDownstreamProps) {
@@ -183,7 +184,7 @@ export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: 
               className="flex flex-col"
             >
               {visibleDirect.map((item) => (
-                <DownstreamRow key={`direct-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} closed={isItemClosed(item.status)} />
+                <DownstreamRow key={`direct-${item.issue_id}`} item={item} onOpenIssue={(id) => onOpenIssue(id, workspaceId)} closed={isItemClosed(item.status)} />
               ))}
             </ul>
           )}
@@ -211,7 +212,7 @@ export function BlockedDownstream({ issueId, workspaceId, count, onOpenIssue }: 
                   className="flex flex-col"
                 >
                   {visibleIndirect.map((item) => (
-                    <DownstreamRow key={`indirect-${item.issue_id}`} item={item} onOpenIssue={onOpenIssue} closed={isItemClosed(item.status)} />
+                    <DownstreamRow key={`indirect-${item.issue_id}`} item={item} onOpenIssue={(id) => onOpenIssue(id, workspaceId)} closed={isItemClosed(item.status)} />
                   ))}
                 </ul>
               )}

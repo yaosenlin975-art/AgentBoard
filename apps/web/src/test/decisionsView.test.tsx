@@ -107,7 +107,7 @@ beforeEach(() => {
   cleanup();
   localStorage.clear();
   useAppStore.setState({ workspaceId: WORKSPACE_ID });
-  useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null, decisionFocus: null });
+  useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null, decisionFocus: null, boardFocus: null });
   usePanelStore.setState({ view: null, issueId: null, sessionId: null, chatSession: null, unread: {}, rightOpen: false });
 });
 
@@ -984,6 +984,35 @@ describe('P5 跨区范围', () => {
     expect(screen.queryByTestId('decision-workspace-p5-home')).toBeNull();
     // 只渲染服务端返回的可访问区条目（不存在第三区）
     expect(screen.getAllByTestId(/^decision-item-/)).toHaveLength(2);
+  });
+
+  it('DETAIL-JUMP：跨区卡点「卡详情」先切工作区、进看板并定位该卡，再开详情浮窗', async () => {
+    const calls: string[] = [];
+    server.use(scopedHandler(calls, [homeItem], [homeItem, crossItem]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    fireEvent.change(screen.getByTestId('decisions-scope'), { target: { value: 'all' } });
+    await screen.findByTestId('decision-item-p5-cross');
+
+    fireEvent.click(screen.getByTestId('decision-open-p5-cross'));
+
+    // 修复前：只 openDetail，workspaceId 仍是 ws-1、view 仍是 decisions
+    expect(useAppStore.getState().workspaceId).toBe('ws-2');
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', boardFocus: crossItem.issue_id });
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: crossItem.issue_id });
+  });
+
+  it('DETAIL-JUMP：同区卡点卡号也切到看板并定位（不再停待决策列表）', async () => {
+    server.use(scopedHandler([], [homeItem], [homeItem, crossItem]));
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-p5-home');
+
+    fireEvent.click(screen.getByTestId('decision-issue-id-p5-home'));
+
+    expect(useAppStore.getState().workspaceId).toBe('ws-1');
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', boardFocus: homeItem.issue_id });
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: homeItem.issue_id });
   });
 
   it('空态文案：本区提示其它工作区；切到全部后该提示消失', async () => {

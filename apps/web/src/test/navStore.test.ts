@@ -28,6 +28,7 @@ function resetNav(): void {
     sidebarModeExplicit: false,
     chatOrigin: null,
     decisionFocus: null,
+    boardFocus: null,
   });
 }
 
@@ -186,6 +187,21 @@ describe('视图互斥切换（单值即互斥）', () => {
     // 切走清空，避免下次进入莫名高亮
     useNavStore.getState().setView('board');
     expect(useNavStore.getState().decisionFocus).toBeNull();
+  });
+
+  it('[6c] DEC-JUMP-WS 深链：focusIssue 切看板并记下定位目标；离开看板清空；可单独消费清空', () => {
+    useNavStore.getState().setView('decisions');
+    useNavStore.getState().focusIssue('issue-9');
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', boardFocus: 'issue-9', decisionFocus: null });
+
+    // 离开看板丢弃未消费的目标，避免下次进看板莫名滚动
+    useNavStore.getState().setView('knowledge');
+    expect(useNavStore.getState().boardFocus).toBeNull();
+
+    // Board 消费后清空
+    useNavStore.getState().focusIssue('issue-9');
+    useNavStore.getState().clearBoardFocus();
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', boardFocus: null });
   });
 });
 

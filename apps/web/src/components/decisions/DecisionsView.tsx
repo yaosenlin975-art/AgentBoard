@@ -100,6 +100,8 @@ export function DecisionsView() {
   const workspaceId = useAppStore((state) => state.workspaceId);
   const focus = useNavStore((state) => state.decisionFocus);
   const setView = useNavStore((state) => state.setView);
+  const focusIssue = useNavStore((state) => state.focusIssue);
+  const selectWorkspace = useAppStore((state) => state.selectWorkspace);
   const openDetail = usePanelStore((state) => state.openDetail);
   const queryClient = useQueryClient();
   const now = useDecisionClock();
@@ -200,6 +202,16 @@ export function DecisionsView() {
     setDecisionsScope(next);
     // 换范围等价于换列表上下文：收起展开卡，避免跨区确认态残留
     setExpandedId(null);
+  };
+  /**
+   * DEC-JUMP-WS：待决策 → 看板卡详情。
+   * 跨工作区决策（「所有工作区」范围）必须先把主工作区切到决策所属工作区，否则看板里根本没有这张卡；
+   * 再切到看板并让 Board 清筛选 + 滚动定位，最后打开详情浮窗（高亮即选中态）。
+   */
+  const openIssueInBoard = (issueId: string, issueWorkspaceId: string) => {
+    if (issueWorkspaceId !== workspaceId) selectWorkspace(issueWorkspaceId);
+    focusIssue(issueId);
+    openDetail(issueId);
   };
   const groups = groupDecisions(active, answered, now, sort);
   // DEC-SIBLING：同一 issue 的决策聚合（在途 + 24h 已回答）。
@@ -430,7 +442,7 @@ export function DecisionsView() {
           <DecisionsEmptyState
             scope={scope}
             answered={groups.answered}
-            onOpenIssue={openDetail}
+            onOpenIssue={openIssueInBoard}
             onGoBoard={() => setView('board')}
           />
         )}
@@ -465,7 +477,7 @@ export function DecisionsView() {
             resetSignal={`${filter}:${scope}`}
             leavingId={leavingId}
             onToggle={toggleExpanded}
-            onOpen={openDetail}
+            onOpen={openIssueInBoard}
             siblingsByIssue={siblingsByIssue}
             onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
@@ -486,7 +498,7 @@ export function DecisionsView() {
             resetSignal={`${filter}:${scope}`}
             leavingId={leavingId}
             onToggle={toggleExpanded}
-            onOpen={openDetail}
+            onOpen={openIssueInBoard}
             siblingsByIssue={siblingsByIssue}
             onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
@@ -507,7 +519,7 @@ export function DecisionsView() {
             resetSignal={`${filter}:${scope}`}
             leavingId={leavingId}
             onToggle={toggleExpanded}
-            onOpen={openDetail}
+            onOpen={openIssueInBoard}
             siblingsByIssue={siblingsByIssue}
             onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
@@ -528,7 +540,7 @@ export function DecisionsView() {
             resetSignal={`${filter}:${scope}`}
             leavingId={leavingId}
             onToggle={toggleExpanded}
-            onOpen={openDetail}
+            onOpen={openIssueInBoard}
             siblingsByIssue={siblingsByIssue}
             onJumpDecision={consumeFocus}
             onAnswered={handleAnswered}
@@ -644,7 +656,8 @@ interface GroupProps {
   /** DEC-SIBLING：issue_id → 同卡全部决策（含自身），卡片内排除自身后展示 */
   siblingsByIssue: ReadonlyMap<string, DecisionListItemDto[]>;
   onToggle: (decisionId: string) => void;
-  onOpen: (issueId: string) => void;
+  /** DEC-JUMP-WS：打开任务卡前先切到它所属的工作区 */
+  onOpen: (issueId: string, issueWorkspaceId: string) => void;
   /** 同卡决策互跳（复用 focusDecision） */
   onJumpDecision: (decisionId: string) => void;
   onAnswered: (payload: DecisionAnsweredPayload) => void;

@@ -256,7 +256,7 @@ beforeEach(() => {
   useAppStore.setState({ workspaceId: null, selectedLabelsByWorkspace: {} });
   usePanelStore.setState({ view: null, issueId: null, sessionId: null });
   // FIX-2：视图状态在 navStore，用例间必须重置，否则前一个用例切到 tree/log 会串味
-  useNavStore.setState({ view: 'board', chatOrigin: null });
+  useNavStore.setState({ view: 'board', chatOrigin: null, boardFocus: null });
 });
 
 describe('Board 组件', () => {
@@ -557,6 +557,33 @@ describe('顶栏标签筛选（UI-FILTER01）', () => {
     // tab 组与搜索框都不允许被压缩（shrink-0）
     expect(controls.className).toContain('shrink-0');
     expect(search.className).toContain('shrink-0');
+  });
+
+  it('DEC-JUMP-WS：消费 boardFocus 时清掉隐藏该卡的搜索词与标签筛选，滚动定位后清空焦点', async () => {
+    mockBoardData(labelIssues, []);
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      useAppStore.setState({ workspaceId: 'ws-1', selectedLabelsByWorkspace: { 'ws-1': ['前端'] } });
+      renderBoard();
+
+      const search = await screen.findByTestId('board-search');
+      fireEvent.change(search, { target: { value: '完全不匹配' } });
+      expect(screen.queryByTestId('issue-card-l2')).not.toBeInTheDocument();
+
+      // 待决策跳转：定位一张被筛选隐藏的卡（l2 无「前端」标签）
+      act(() => useNavStore.getState().focusIssue('l2'));
+
+      expect(await screen.findByTestId('issue-card-l2')).toBeInTheDocument();
+      expect(screen.getByTestId('board-search')).toHaveValue('');
+      expect(useAppStore.getState().selectedLabelsByWorkspace['ws-1']).toEqual([]);
+      await waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+      expect(useNavStore.getState().boardFocus).toBeNull();
+    } finally {
+      if (originalScrollIntoView) Element.prototype.scrollIntoView = originalScrollIntoView;
+      else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
   });
 
   it('标签集合覆盖整个 workspace：请求不带分页参数，尾部 issue 的标签也进入筛选条', async () => {

@@ -84,10 +84,19 @@ export interface NavState {
   chatOrigin: NavView | null;
   /** DEC-6 深链：待决策视图要选中的决策 id（切走即清空；不持久化） */
   decisionFocus: string | null;
+  /**
+   * DEC-JUMP-WS：待决策跳任务详情时要定位的看板卡 id（切走看板即清空；不持久化）。
+   * Board 消费后负责滚动到该卡并清空，避免下次进看板莫名跳过去。
+   */
+  boardFocus: string | null;
   /** 切视图（六入口互斥）；非法值回落默认视图。切到 chat 记来源，切到其它视图清来源 */
   setView: (view: NavView) => void;
   /** DEC-6 深链：切到待决策视图并选中一条决策（通知点击 / 列表跳转） */
   focusDecision: (decisionId: string | null) => void;
+  /** DEC-JUMP-WS：切到看板并定位一张卡（工作区切换由调用方先行完成） */
+  focusIssue: (issueId: string | null) => void;
+  /** Board 消费完定位后清空 */
+  clearBoardFocus: () => void;
   /** NAV-CHAT-EXIT：退出整屏聊天，回到来源视图（来源缺失/非法 → board） */
   exitChat: () => void;
   /** 打开滑出面板（与另一个面板互斥，不影响 view） */
@@ -123,6 +132,7 @@ export const useNavStore = create<NavState>()(
       sidebarModeExplicit: false,
       chatOrigin: null,
       decisionFocus: null,
+      boardFocus: null,
       setSidebarMode: (mode) =>
         set({ sidebarMode: normalizeSidebarMode(mode), sidebarModeExplicit: true }),
       toggleSidebar: () =>
@@ -139,12 +149,22 @@ export const useNavStore = create<NavState>()(
               view: next,
               chatOrigin: state.view === 'chat' ? state.chatOrigin : state.view,
               decisionFocus: null,
+              boardFocus: null,
             };
           }
           // 离开待决策视图时清空深链选中（保留焦点会让下次进入莫名高亮一条）
-          return { view: next, chatOrigin: null, decisionFocus: next === 'decisions' ? state.decisionFocus : null };
+          return {
+            view: next,
+            chatOrigin: null,
+            decisionFocus: next === 'decisions' ? state.decisionFocus : null,
+            // DEC-JUMP-WS：离开看板即丢弃未消费的定位目标
+            boardFocus: next === 'board' ? state.boardFocus : null,
+          };
         }),
-      focusDecision: (decisionId) => set({ view: 'decisions', decisionFocus: decisionId }),
+      focusDecision: (decisionId) => set({ view: 'decisions', decisionFocus: decisionId, boardFocus: null }),
+      focusIssue: (issueId) =>
+        set({ view: 'board', boardFocus: issueId, decisionFocus: null, chatOrigin: null }),
+      clearBoardFocus: () => set({ boardFocus: null }),
       exitChat: () => set((state) => ({ view: normalizeChatOrigin(state.chatOrigin) ?? DEFAULT_NAV_VIEW, chatOrigin: null })),
       openDrawer: (drawer) => set({ drawer }),
       closeDrawer: () => set({ drawer: null }),
@@ -172,6 +192,7 @@ export const useNavStore = create<NavState>()(
           drawer: null,
           chatOrigin: null,
           decisionFocus: null,
+          boardFocus: null,
         };
       },
     },

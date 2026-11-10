@@ -148,7 +148,8 @@ export interface DecisionCardProps {
   /** 切 tab / 切范围时递增的复位信号：清掉跨区二次确认 */
   resetSignal: string;
   onToggle: (decisionId: string) => void;
-  onOpenIssue: (issueId: string) => void;
+  /** DEC-JUMP-WS：打开任务卡前先切到它所属的工作区（跨区决策必须先把主工作区切过去） */
+  onOpenIssue: (issueId: string, issueWorkspaceId: string) => void;
   /** 同卡决策互跳：交给视图 focusDecision，复用深链定位/展开/高亮 */
   onJumpDecision: (decisionId: string) => void;
   /** DEC-V4-UNDO：提交成功 → 视图接管撤销条与移出节奏（答案已在服务端落库） */
@@ -637,7 +638,7 @@ export function DecisionCard({
         <button
           type="button"
           data-testid={`decision-issue-id-${item.id}`}
-          onClick={() => onOpenIssue(item.issue_id)}
+          onClick={() => onOpenIssue(item.issue_id, item.workspace_id)}
           title={`任务 ${item.issue_id}（点击打开详情）`}
           className="shrink-0 rounded font-mono text-[11px] tabular-nums text-ink-3 hover:text-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
@@ -645,7 +646,7 @@ export function DecisionCard({
         </button>
         <button
           type="button"
-          onClick={() => onOpenIssue(item.issue_id)}
+          onClick={() => onOpenIssue(item.issue_id, item.workspace_id)}
           title={`打开卡详情：${item.issue_title}`}
           className="min-w-0 truncate text-left text-sm text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
@@ -723,7 +724,7 @@ export function DecisionCard({
           data-testid={`decision-jump-${item.id}`}
           aria-label={`打开任务卡 ${item.issue_id}`}
           title="打开任务卡 ↗"
-          onClick={() => onOpenIssue(item.issue_id)}
+          onClick={() => onOpenIssue(item.issue_id, item.workspace_id)}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-3 hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
         >
           <svg aria-hidden="true" viewBox="0 0 16 16" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.5]">
@@ -983,7 +984,7 @@ export function DecisionCard({
         <button
           type="button"
           data-testid={`decision-open-${item.id}`}
-          onClick={() => onOpenIssue(item.issue_id)}
+          onClick={() => onOpenIssue(item.issue_id, item.workspace_id)}
           className={`whitespace-nowrap rounded-md border border-hairline px-2 py-1 text-xs text-ink-2 hover:bg-surface-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
             narrow ? 'w-full' : 'ml-auto'
           }`}
