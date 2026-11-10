@@ -592,7 +592,7 @@ describe('AgentBoard task MCP server', () => {
       },
     });
     expect(response.result?.isError).toBe(true);
-    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'BOARD_ONLY_SCOPE_CONFLICT' } });
     expect(JSON.stringify(response.result?.content ?? '')).toContain('board_only 与 scope 不能同时使用');
     expect(fetcher).not.toHaveBeenCalled();
   });

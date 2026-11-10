@@ -3,6 +3,7 @@ import { createHarness } from './helpers.js';
 
 const WORKSPACE_ID = '5f1b2c34-0000-4000-8000-00000000a001';
 const ENTRY_ID = '5f1b2c34-0000-4000-8000-00000000d001';
+const ISSUE_ID = '5f1b2c34-0000-4000-8000-00000000c001';
 
 type Call = { method: string; path: string; query: Record<string, string>; headers: Headers; body: any };
 type ToolResult = { isError?: boolean; content?: Array<{ type: string; text?: string }>; structuredContent?: Record<string, any> };
@@ -17,6 +18,7 @@ function entry(overrides: Record<string, unknown> = {}) {
     occurred_at: 1_700_000_000_000,
     created_by: 'kb-cli',
     revision: 1,
+    issue_id: ISSUE_ID,
     created_at: 1_700_000_000_000,
     updated_at: 1_700_000_000_000,
     ...overrides,
@@ -63,7 +65,7 @@ describe('MCP 变更日志工具', () => {
     const result = (await call('list_changelog', { limit: 5, offset: 10, change_type: '修复' })).result as ToolResult;
     expect(result.isError).toBeFalsy();
     const item = result.structuredContent!.data.items[0];
-    expect(item).toMatchObject({ id: ENTRY_ID, title: 'MCP 收口', change_type: '新增' });
+    expect(item).toMatchObject({ id: ENTRY_ID, title: 'MCP 收口', change_type: '新增', issue_id: ISSUE_ID });
     expect(item.body_md).toHaveLength(300);
     expect(item.body_truncated).toBe(true);
     expect(Array.from(item.body_md).length).toBe(300);
@@ -98,7 +100,7 @@ describe('MCP 变更日志工具', () => {
       request_id: requestId,
     })).result as ToolResult;
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent!.data.entry).toMatchObject({ id: ENTRY_ID, title: 'MCP 收口' });
+    expect(result.structuredContent!.data.entry).toMatchObject({ id: ENTRY_ID, title: 'MCP 收口', issue_id: ISSUE_ID });
     expect(calls[0].method).toBe('POST');
     expect(calls[0].path).toBe(`/api/workspaces/${WORKSPACE_ID}/changelog`);
     expect(calls[0].headers.get('Idempotency-Key')).toBe(requestId);

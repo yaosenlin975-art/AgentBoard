@@ -40,6 +40,7 @@ function summarizeEntry(entry: JsonObject): JsonObject {
     occurred_at: entry.occurred_at,
     created_by: entry.created_by,
     revision: entry.revision,
+    issue_id: entry.issue_id ?? null,
     ...body,
   };
 }

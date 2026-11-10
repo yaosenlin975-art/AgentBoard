@@ -690,10 +690,11 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
         }
       } else if (!hasChangeLogForIssue(db, issueRow.workspace_id, issueId, issueRow.claimed_at)) {
         throw new ValidationError(
-          '变更日志门禁：done 前须先写一条用户可见变更（以下任一即可）：① `kb changelog create --issue <卡 id> --title "…" --type 修复`'
+          '变更日志门禁：done 前须先写一条用户可见变更（以下任一即可）：① `kb changelog create --issue <卡 id> --workspace <当前工作区> --title "…" --type 修复`'
           + '（正文走 --stdin；MCP `create_changelog` 传 `issue_id`）后再 done；'
-          + '② `kb done --close-record --changelog-title "…" --type 修复`（MCP `complete_task` 传 `changelog_id`）；'
-          + '③ 本次确实没有用户可见变更（纯内部重构 / 仅看板操作）→ `kb done --no-changelog`，'
+          + '② `kb done --close-record --changelog-title "…" --type 修复`（一步式：CLI 先新建一条归属本卡的日志再 done）；'
+          + '③ MCP `complete_task` 传 `changelog_id` 引用一条**已有**日志（不是新建，区别于 ②）；'
+          + '④ 本次确实没有用户可见变更（纯内部重构 / 仅看板操作）→ `kb done --no-changelog`，'
           + 'MCP `complete_task` 传 `skip_changelog: true`。',
           'CHANGELOG_ACK_REQUIRED',
         );
