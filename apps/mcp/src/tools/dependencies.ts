@@ -22,7 +22,7 @@ const blockerIdField = {
     .describe('The blocker task UUID. It must finish (待验收 or 已关闭) before task_id can be claimed.'),
 };
 const requestIdField = {
-  request_id: z.string().uuid()
+  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
     .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
 };
 

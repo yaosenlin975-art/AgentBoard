@@ -86,6 +86,23 @@ describe('AgentBoard task MCP server', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it('N-07: missing request_id explains what an idempotency key is (not raw zod text)', async () => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'claim_task',
+      arguments: { task_id: 'task-1' },
+    });
+    expect(response.result?.isError).toBe(true);
+    const text = JSON.stringify(response.result?.content ?? '');
+    expect(text).toContain('request_id is required');
+    expect(text).toContain('idempotency key');
+    expect(text).toContain('00000000-0000-4000-8000-000000000000');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('boundWorkspaceRejectsOverride', async () => {
     const fetcher = vi.fn() as unknown as typeof fetch;
     const harness = createHarness(baseConfig, fetcher);
