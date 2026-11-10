@@ -11,6 +11,7 @@
   - `grep -n "description-stdin" skills` 不再出现 `create-issue … --description-stdin`
   - `grep -n "kb decision" skills` 均带 `show`
   - `node scripts/check-bom.mjs` exit 0
+- 未随本批：`Docs/api.md`（A3/A4/A5/A11 的落点）由在飞卡 9dd37e2a 持有，已建卡 cee20cb8 并以 `blocks` 边排队，待其关闭后执行。
 
 ## [x] T2 · CLI 实现与报错修正（依赖：无；与 T1 并行时 T1 以 T2 最终行为为准）
 - 改动：`packages/cli/src/commands/{listTasks,decision,dep,close,createSpace}.ts`、`packages/cli/src/index.ts`、`packages/cli/test/*`
@@ -18,12 +19,12 @@
 - 验收：spec §4 批 2 的 5 条命令探针 + `pnpm --filter @agentboard/cli test`
 - 完成前证据：每条探针记录「命令 / exit / 首行文案」
 
-## T3 · 服务端 claim/release 文案（依赖：T2 完成后复测更顺，但可独立）
+## [x] T3 · 服务端 claim/release 文案（依赖：T2 完成后复测更顺，但可独立）
 - 改动：`apps/server/src/services/claim.ts`、对应测试
 - 内容：B2、B3
 - 验收：`kb release <未占用>` → `未被占用，无需释放…`；`kb claim <已关闭>` → 含 `kb reopen`；两者 exit 2；`pnpm --filter @agentboard/server test`
 
-## [ ] T4 · 打包同源核对与终检（依赖：T1、T2、T3）
+## [x] T4 · 打包同源核对与终检（依赖：T1、T2、T3）
 - 改动：默认零改动；若清单需变，同步 `AGENTS.md`、`scripts/package-portable.mjs`、`scripts/portable/verify-rules.mjs`、`scripts/portable/README.txt`
 - 验收：
   - `node scripts/check-bom.mjs`
