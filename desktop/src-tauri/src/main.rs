@@ -6,8 +6,9 @@
 //! - 单例：Tauri 官方 `tauri-plugin-single-instance`（第二个实例直接退出，回调聚焦已有窗口）；
 //! - 生命周期：目标端口未起时由壳用 node 拉起 server（见 `server_process.rs`），托盘「退出」时停服并释放 `server.lock`。
 //!
-//! 平台：仅 Windows 实现。macOS 的窗口/菜单栏托盘/node 二进制差异留给 DESKTOP-3，
-//! 本文件只在单例与托盘处保留注释，不写 mac 实现代码。
+//! 平台：Windows 与 macOS 共用同一套生命周期代码；窗口外观按平台分叉（B06）：
+//! Windows 保留 `decorations(false)` 全自绘 ─□×，macOS 走原生红绿灯 overlay（`TitleBarStyle::Overlay`
+//! + `hidden_title`），页面侧按壳注入的 `window.__AGENTBOARD_SHELL__` 隐藏自绘三键。
 
 mod server_process;
 
@@ -222,20 +223,59 @@ fn recreate_main_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 窗口外观分叉（B06）：Windows 全自绘，macOS 原生红绿灯 overlay。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WindowChrome {
+    /// 是否保留系统原生窗口装饰（标题栏 + 边框）。
+    decorations: bool,
+    /// 是否把标题栏设为 overlay（红绿灯浮在内容上、标题隐藏）；仅 macOS 生效。
+    overlay_titlebar: bool,
+}
+
+/// 由目标平台推导窗口外观。抽成纯函数便于在 Windows 上断言 mac 分支的取值。
+fn window_chrome(target_os: &str) -> WindowChrome {
+    match target_os {
+        // macOS：保留原生装饰，红绿灯悬浮左上角；页面自绘三键由注入的 nativeTitleBar 关闭。
+        "macos" => WindowChrome {
+            decorations: true,
+            overlay_titlebar: true,
+        },
+        // Windows（及其它平台）：无边框 + 页面自绘 ─□×（WINTITLE-01 既有行为）。
+        _ => WindowChrome {
+            decorations: false,
+            overlay_titlebar: false,
+        },
+    }
+}
+
+/// 页面侧读取的壳信息（`window.__AGENTBOARD_SHELL__`）。抽函数便于断言两平台取值。
+fn shell_init_script(platform: &str, chrome: WindowChrome) -> String {
+    format!(
+        "window.__AGENTBOARD_SHELL__ = {{ platform: \"{platform}\", nativeTitleBar: {} }};",
+        chrome.overlay_titlebar
+    )
+}
+
 /// 建主窗口并挂关窗隐藏/页面加载回调；首次启动与重建共用，保证两条路径窗口行为一致。
 fn build_main_window(
     app: &AppHandle,
     url: WebviewUrl,
     visible: bool,
 ) -> tauri::Result<WebviewWindow> {
-    let window = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
+    let chrome = window_chrome(std::env::consts::OS);
+    // mut 只在 macOS 目标用到（下面 overlay 分支重绑 builder）；Windows 编译时该分支不编译。
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, url)
         .title("AgentBoard")
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
-        // WINTITLE-01：去掉系统原生标题栏，改由页面自绘（WindowTitleBar / 启动页 winbar）。
-        // macOS 同样走全自绘三键（不保留原生红绿灯），保证三端行为一致；
-        // 若后续要原生红绿灯，再按平台插入 title_bar_style(Overlay) + hidden_title。
-        .decorations(false)
+        // B06：窗口外观按平台分叉——
+        // Windows：去掉系统原生标题栏，改由页面自绘（WindowTitleBar / 启动页 winbar），三键行为保持一致；
+        // macOS：保留原生装饰并把标题栏设为 overlay（红绿灯浮在内容左上角、标题隐藏），
+        //        页面侧据初始化脚本注入的 `nativeTitleBar` 隐藏自绘 ─□×，避免双份控件。
+        .decorations(chrome.decorations)
+        // 页面侧判断依据：由壳注入，不靠 UA 嗅探（WKWebView/WebView2 的 UA 会随系统版本漂移）。
+        .initialization_script(shell_init_script(std::env::consts::OS, chrome))
         .center()
         .visible(visible)
         .on_page_load(|webview, payload| {
@@ -248,8 +288,15 @@ fn build_main_window(
                     .store(true, Ordering::SeqCst);
                 apply_boot(&handle);
             }
-        })
-        .build()?;
+        });
+    // overlay 标题栏 API 只在 macOS 目标上存在（tauri 源码用 cfg 门禁），其它平台不编译这段。
+    #[cfg(target_os = "macos")]
+    if chrome.overlay_titlebar {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    let window = builder.build()?;
 
     // 关窗 = 隐藏到托盘；服务继续跑（不触发退出）。
     let window_for_close = window.clone();
@@ -441,7 +488,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{wake_steps, WakeStep, WindowPhase};
+    use super::{shell_init_script, wake_steps, window_chrome, WakeStep, WindowPhase};
 
     #[test]
     fn hidden_window_shows_unminimizes_and_focuses() {
@@ -484,5 +531,28 @@ mod tests {
         ] {
             assert_eq!(wake_steps(phase, true), vec![WakeStep::Abort]);
         }
+    }
+
+    #[test]
+    fn macos_keeps_native_traffic_lights() {
+        let chrome = window_chrome("macos");
+        assert!(chrome.decorations, "macOS 必须保留原生装饰才有红绿灯");
+        assert!(chrome.overlay_titlebar, "macOS 标题栏应为 overlay");
+    }
+
+    #[test]
+    fn windows_keeps_self_drawn_titlebar() {
+        let chrome = window_chrome("windows");
+        assert!(!chrome.decorations, "Windows 保持无边框自绘标题栏");
+        assert!(!chrome.overlay_titlebar);
+    }
+
+    #[test]
+    fn init_script_exposes_native_titlebar_flag() {
+        let mac = shell_init_script("macos", window_chrome("macos"));
+        assert!(mac.contains("platform: \"macos\""), "{mac}");
+        assert!(mac.contains("nativeTitleBar: true"), "{mac}");
+        let win = shell_init_script("windows", window_chrome("windows"));
+        assert!(win.contains("nativeTitleBar: false"), "{win}");
     }
 }

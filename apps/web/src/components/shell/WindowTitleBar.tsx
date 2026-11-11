@@ -7,6 +7,9 @@
  * 按钮是 BUTTON（clickable），drag.js 会自动排除，**不要**再加 dblclick 处理器，否则会二次切换。
  *
  * 关闭沿用壳的语义：Rust 侧拦截 CloseRequested → 隐藏到托盘，不退出进程。
+ *
+ * 平台（B06）：壳注入 `window.__AGENTBOARD_SHELL__.nativeTitleBar`。macOS 为 true（原生红绿灯 overlay），
+ * 此时只留拖拽区与标题、不渲染自绘三键；Windows 为 false（无边框），保持 ─□×。
  */
 import { useCallback, useEffect, useState } from 'react';
 
@@ -15,9 +18,16 @@ interface TauriInternals {
   metadata?: { currentWindow?: { label?: string } };
 }
 
+/** 壳注入的运行时信息（B06）：macOS 走原生红绿灯时页面隐藏自绘三键。 */
+interface ShellInfo {
+  platform?: string;
+  nativeTitleBar?: boolean;
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: TauriInternals;
+    __AGENTBOARD_SHELL__?: ShellInfo;
   }
 }
 
@@ -26,6 +36,14 @@ export const WINDOW_TITLE_BAR_HEIGHT = 32;
 
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined;
+}
+
+/**
+ * 读取壳注入的窗口外观信息。旧壳 / 浏览器里为 undefined，
+ * 调用方按「Windows 自绘三键」处理，保证升级前后行为连续。
+ */
+export function shellChrome(): ShellInfo | undefined {
+  return typeof window === 'undefined' ? undefined : window.__AGENTBOARD_SHELL__;
 }
 
 /** 调 Tauri window 插件命令；浏览器内是无副作用的 undefined（组件已在浏览器里提前返回） */
@@ -75,6 +93,7 @@ function CloseIcon() {
 export function WindowTitleBar() {
   const [maximized, setMaximized] = useState(false);
   const [tauri] = useState(isTauriRuntime);
+  const [chrome] = useState(shellChrome);
 
   const syncMaximized = useCallback(() => {
     void windowInvoke<boolean>('is_maximized').then((value) => {
@@ -92,11 +111,18 @@ export function WindowTitleBar() {
 
   if (!tauri) return null;
 
+  // B06：macOS 壳用原生红绿灯（overlay），页面不再画 ─□×；左侧留出 84px 给红绿灯，
+  // Windows（及旧壳无该字段）保持三键与 12px 左内距。
+  const nativeTitleBar = chrome?.nativeTitleBar === true;
+
   return (
     <header
       data-testid="window-titlebar"
+      data-native-titlebar={nativeTitleBar ? 'true' : 'false'}
       data-tauri-drag-region="deep"
-      className="flex shrink-0 select-none items-center border-b border-hairline bg-surface-card pl-3 text-ink"
+      className={`flex shrink-0 select-none items-center border-b border-hairline bg-surface-card text-ink ${
+        nativeTitleBar ? 'pl-[84px]' : 'pl-3'
+      }`}
       style={{ height: WINDOW_TITLE_BAR_HEIGHT }}
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -112,30 +138,32 @@ export function WindowTitleBar() {
       </span>
       {/* 拖拽填充区：自身无内容，保证标题栏空档也能拖动 */}
       <span aria-hidden="true" className="h-full min-w-0 flex-1" />
-      <div className="flex shrink-0 items-stretch">
-        <button type="button" aria-label="最小化窗口" title="最小化" className={CONTROL_BASE} onClick={() => void windowInvoke('minimize')}>
-          <MinimizeIcon />
-        </button>
-        <button
-          type="button"
-          aria-label={maximized ? '还原窗口' : '最大化窗口'}
-          title={maximized ? '还原' : '最大化'}
-          className={CONTROL_BASE}
-          onClick={() => void windowInvoke('toggle_maximize')}
-        >
-          {maximized ? <RestoreIcon /> : <MaximizeIcon />}
-        </button>
-        {/* 关闭 hover 用深红：亮/暗主题下白图标都够对比（--ab-del 在暗色是浅红，白字对比不足） */}
-        <button
-          type="button"
-          aria-label="关闭窗口"
-          title="关闭"
-          className={`${CONTROL_BASE} hover:bg-[#c0362c] hover:text-white`}
-          onClick={() => void windowInvoke('close')}
-        >
-          <CloseIcon />
-        </button>
-      </div>
+      {nativeTitleBar ? null : (
+        <div className="flex shrink-0 items-stretch">
+          <button type="button" aria-label="最小化窗口" title="最小化" className={CONTROL_BASE} onClick={() => void windowInvoke('minimize')}>
+            <MinimizeIcon />
+          </button>
+          <button
+            type="button"
+            aria-label={maximized ? '还原窗口' : '最大化窗口'}
+            title={maximized ? '还原' : '最大化'}
+            className={CONTROL_BASE}
+            onClick={() => void windowInvoke('toggle_maximize')}
+          >
+            {maximized ? <RestoreIcon /> : <MaximizeIcon />}
+          </button>
+          {/* 关闭 hover 用深红：亮/暗主题下白图标都够对比（--ab-del 在暗色是浅红，白字对比不足） */}
+          <button
+            type="button"
+            aria-label="关闭窗口"
+            title="关闭"
+            className={`${CONTROL_BASE} hover:bg-[#c0362c] hover:text-white`}
+            onClick={() => void windowInvoke('close')}
+          >
+            <CloseIcon />
+          </button>
+        </div>
+      )}
     </header>
   );
 }

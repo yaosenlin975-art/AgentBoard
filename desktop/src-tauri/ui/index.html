@@ -43,6 +43,9 @@
     .winbar-actions button:hover { background: var(--ab-raised); color: var(--ab-ink); }
     .winbar-actions button:focus-visible { outline: 2px solid var(--ab-accent); outline-offset: -2px; }
     .winbar-actions button.close:hover { background: #c0362c; color: #fff; }
+    /* B06：macOS 原生红绿灯 overlay 时隐藏自绘三键，左侧留出红绿灯宽度（与主页面 WindowTitleBar 同口径） */
+    .winbar.native-titlebar { padding-left: 84px; }
+    .winbar.native-titlebar .winbar-actions { display: none; }
     main { display: grid; place-items: center; min-height: 0; padding: 24px; }
     .boot {
       width: 420px;
@@ -81,6 +84,12 @@
 </head>
 <body>
   <header class="winbar" data-tauri-drag-region="deep">
+    <!-- B06：壳初始化脚本注入 __AGENTBOARD_SHELL__.nativeTitleBar（macOS true）时走原生红绿灯，隐藏自绘三键 -->
+    <script>
+      if (window.__AGENTBOARD_SHELL__ && window.__AGENTBOARD_SHELL__.nativeTitleBar) {
+        document.currentScript.parentElement.classList.add('native-titlebar');
+      }
+    </script>
     <span class="winbar-mark" aria-hidden="true">A</span>
     <span class="winbar-name">AgentBoard</span>
     <span class="winbar-drag" aria-hidden="true"></span>
