@@ -54,7 +54,83 @@ DB 默认路径在非 Windows 回退 `~/.config/AgentBoard/agentboard.db`，附�
 nohup node apps/server/dist/index.js > server.log 2>&1 &
 ```
 
-`kb autostart` / `kb shortcut` 是 Windows-only（见「后台常驻（Windows）」节），macOS 用上面的 nohup 或自写 launchd plist（LaunchAgent 属规划未实现）。已知缺口（均属「暂时不支持」清单）：账号凭据 vault 走 Windows DPAPI，非 Windows 一律 503，账号相关功能（凭据捕获/切换/签到）不可用，服务本体可正常启动；WorkBuddy 桌面探针（user32/UIA）不可用；MiniMax 客户端探测走注册表/盘符不可用。
+`kb autostart` 已支持 macOS（写 `~/Library/LaunchAgents/com.agentboard.server.plist` 并 `launchctl bootstrap`，见下文「macOS 开机自启」）；`kb shortcut` 仍是 Windows-only。macOS 也可临时用上面的 nohup。已知缺口（均属「暂时不支持」清单）：账号凭据 vault 走 Windows DPAPI，非 Windows 一律 503，账号相关功能（凭据捕获/切换/签到）不可用，服务本体可正常启动；WorkBuddy 桌面探针（user32/UIA）不可用；MiniMax 客户端探测走注册表/盘符不可用。
+
+### 桌面壳打包与分发（macOS）
+
+桌面壳是 Tauri v2 工程（`desktop/src-tauri`），macOS 打包统一走 `scripts/desktop/build-macos.mjs`。先明确手上产物属于哪条路径：
+
+| 路径 | 用途 | 凭据 | 产物能给别人吗 |
+| --- | --- | --- | --- |
+| 本机自用（未签名） | 自己这台 Mac 上用 | 不需要 | 不能：外部分发会被 Gatekeeper 拦 |
+| 外部分发（Developer ID + 公证） | 发给别人 / 公开下载 | `APPLE_SIGNING_IDENTITY` + 公证凭据 | 能：签名 + notarize + staple 后 `spctl` 判 accepted |
+
+**本机自用（未签名）**
+
+```bash
+node scripts/desktop/build-macos.mjs --dry-run   # 任意平台可跑：只核查并打印计划，不构建
+node scripts/desktop/build-macos.mjs             # 仅 macOS：构建 → 尝试签名/公证（无凭据则跳过）
+```
+
+- 不设任何 Apple 凭据时脚本会 skip 签名与公证，产物是未签名 `.app` / `.dmg`。**本机构建、本机安装没有 quarantine 属性，可直接运行**；Gatekeeper 拦截只发生在「下载来的文件」场景，所以这条路径不能用于外部分发。
+- 产物位置：`desktop/src-tauri/target/<rust-target>/release/bundle/macos/AgentBoard.app` 与 `.../bundle/dmg/*.dmg`（`<rust-target>` 为 `aarch64-apple-darwin` / `x86_64-apple-darwin`）。
+- 只要 `.app`/`.dmg` 但不想走公证时用 `--no-notarize`（dmg 仍会构建；有签名身份时签名照常）。
+
+**外部分发（Developer ID 签名 + notarytool 公证）**
+
+前置：Apple Developer Program 账号，钥匙串里有 `Developer ID Application: <你的名字> (<TEAMID>)` 证书。
+
+```bash
+# 1) 签名身份（脚本在 bundle 完成后用它 codesign --force 重签，并加 hardened runtime）
+export APPLE_SIGNING_IDENTITY='Developer ID Application: Your Name (TEAMID)'
+
+# 2) 公证凭据：二选一
+export APPLE_ID='you@example.com'
+export APPLE_TEAM_ID='TEAMID'
+export APPLE_APP_SPECIFIC_PASSWORD='xxxx-xxxx-xxxx-xxxx'   # appleid.apple.com 生成的 App 专用密码
+
+# 或者 API Key 三件套（CI 推荐）
+export APPLE_API_KEY='/path/to/AuthKey_XXXX.p8'
+export APPLE_API_KEY_ID='XXXXXXXXXX'
+export APPLE_API_ISSUER='xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+
+# 3) 构建 + 签名 + 公证 + staple（脚本内依次执行）
+node scripts/desktop/build-macos.mjs --arch universal
+```
+
+脚本实际执行的动作（与代码逐条对应）：
+
+1. `pnpm --dir desktop exec tauri build --bundles app,dmg --target <target>`（`--arch arm64|x64|universal`；universal 会按 `aarch64-apple-darwin` + `x86_64-apple-darwin` 各跑一次）；
+2. `codesign --force --deep --options runtime --sign <APPLE_SIGNING_IDENTITY> AgentBoard.app`（存在 `desktop/src-tauri/entitlements.plist` 时附带 `--entitlements`）；
+3. `xcrun notarytool submit <dmg> --wait` + `xcrun stapler staple <dmg>`（凭据取上面的 Apple ID 三件套或 API Key 三件套；都没有则跳过公证并打 `SKIP`）。
+
+**判定产物属于哪条路径**（在 mac 上可复算）：
+
+```bash
+codesign --verify --deep --strict --verbose=2 AgentBoard.app
+# 已签名：AgentBoard.app: valid on disk / satisfies its Designated Requirement
+# 未签名：code object is not signed at all
+
+spctl -a -vv AgentBoard.app
+# 已签名+公证：accepted / source=Notarized Developer ID
+# 未签名或被拦：rejected
+
+xcrun stapler validate AgentBoard_*.dmg
+# 已 staple：The validate action worked!
+# 未 staple：does not have a ticket stapled or stapling check failed
+```
+
+退出码：`0` 成功 / `1` 前置缺失或步骤失败 / `2` 非 darwin 且未加 `--dry-run`。`--json` 输出机器可读步骤报告。
+
+**macOS 开机自启**
+
+```bash
+kb autostart install     # 写 ~/Library/LaunchAgents/com.agentboard.server.plist 并 launchctl bootstrap gui/<uid>
+kb autostart status      # plist/加载状态 + 服务可达性 + 日志路径
+kb autostart uninstall   # launchctl bootout 后删除 plist
+```
+
+端口取自 `~/.config/AgentBoard/config.json`（缺失回 8787），日志在 `~/.config/AgentBoard/logs/server.log`；前置是 `apps/server/dist` 已构建。`kb shortcut` 仍只支持 Windows。
 
 ## 启动
 
