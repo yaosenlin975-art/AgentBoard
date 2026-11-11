@@ -17,6 +17,7 @@
  * 退出码：0 成功 / 1 前置缺失或步骤失败 / 2 平台不支持（非 darwin 且未加 --dry-run）
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnFailure } from './spawn-failure.mjs';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,8 +73,9 @@ function runOrFail(cmd, cmdArgs, label) {
   }
   if (!asJson) console.log(`[mac] $ ${cmd} ${cmdArgs.join(' ')}`);
   const r = spawnSync(cmd, cmdArgs, { stdio: 'inherit', cwd: ROOT });
-  if (r.status !== 0) {
-    step(label, 'fail', `${cmd} 退出码 ${r.status}`);
+  const failure = spawnFailure(cmd, r);
+  if (failure) {
+    step(label, 'fail', failure);
     finish(1);
   }
 }
