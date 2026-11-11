@@ -22,6 +22,8 @@ export interface AgentBoardConfig {
   attachmentCleanupIntervalMs: number;
   /** TRAVEL-REC：WorkBuddy 猫猫旅行派出后自动回收（默认开；ticker 每轮实时读取，关闭后不回收） */
   travelAutoRecover: boolean;
+  /** CLI-DEFAULT-MODEL：各 CLI 默认模型（键=adapter id，值=模型 id；无全局默认、无兜底） */
+  cliDefaultModels: Record<string, string>;
 }
 
 /** WorkBuddy 计费区域（ACC-KB-A1）：决定签到/额度打哪个计费域 */
@@ -102,6 +104,7 @@ function defaultConfig(): AgentBoardConfig {
     attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
     attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
     travelAutoRecover: true,
+    cliDefaultModels: {},
   };
 }
 
@@ -149,6 +152,19 @@ function mergeValidFields(
   }
   if (typeof source.travelAutoRecover === 'boolean') {
     target.travelAutoRecover = source.travelAutoRecover;
+  }
+  // CLI-DEFAULT-MODEL：只收普通对象、键值均为 string、值 trim 后 1-100；非法键值丢弃；'' 不写入该键
+  // （routes 层先做按键合并与删键，这里兜底结构容错：历史非法值读侧丢弃，不抛错）
+  const rawModels = source.cliDefaultModels;
+  if (rawModels !== null && typeof rawModels === 'object' && !Array.isArray(rawModels)) {
+    const models: Record<string, string> = {};
+    for (const [cli, model] of Object.entries(rawModels)) {
+      if (typeof model !== 'string') continue;
+      const trimmed = model.trim();
+      if (cli === '' || trimmed === '' || trimmed.length > 100) continue;
+      models[cli] = trimmed;
+    }
+    target.cliDefaultModels = models;
   }
   return target;
 }
@@ -216,6 +232,12 @@ export function readSettings(): AgentBoardSettings {
  *  CR-8：原子写——先写同目录临时文件（config.json.tmp）再 renameSync 原子替换；
  *  写进程被杀/断电最多留下半截临时文件，config.json 本身要么是旧内容要么是新内容；
  *  临时文件写失败或替换失败都不触碰原文件，替换失败时尽力清理临时文件。 */
+/** CLI-DEFAULT-MODEL：读某 CLI 的默认模型；未配置/空返回 null（只查该 CLI，不做任何回落） */
+export function configuredModelFor(cli: string): string | null {
+  const model = readSettings().cliDefaultModels[cli];
+  return typeof model === 'string' && model.trim() !== '' ? model : null;
+}
+
 export function writeSettings(patch: Partial<AgentBoardSettings>): AgentBoardSettings {
   const merged = mergeValidFields(readSettings(), patch);
   const target = configFilePath();

@@ -7,6 +7,8 @@
  */
 import { Router } from 'express';
 import type { ZodType } from 'zod';
+import type { AgentAdapter } from '@agentboard/adapters';
+import type { ModelInfo } from '@agentboard/shared';
 import { zhZodIssue } from '../zod.js';
 import type { Db } from '../../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../../errors.js';
@@ -33,6 +35,8 @@ export interface SettingsRouterDeps {
   /** 中心库：存储统计与迁移源库 */
   db: Db;
   attachments: AttachmentStore;
+  /** CLI-DEFAULT-MODEL：adapter 注册表（PATCH cliDefaultModels 校验 CLI 存在性/能力位/模型清单） */
+  getAdapter: (cliId: string) => AgentAdapter;
   /** DB-2B：当前进程实际使用的库路径（缺省 db.name；测试注入） */
   currentDbPath: string | null;
   /** 当前进程的附件目录解析（缺省 attachmentsDirFor(dbPath)；测试注入） */
@@ -58,6 +62,49 @@ function parseBody<T>(schema: ZodType<T>, body: unknown): T {
     throw new ValidationError(zhZodIssue(result.error.issues[0] ?? {}));
   }
   return result.data;
+}
+
+/**
+ * CLI-DEFAULT-MODEL：PATCH 的 cliDefaultModels 校验与按键合并。
+ * - CLI id 不在 adapter 注册表 → 400 VALIDATION_ERROR；
+ * - supportsModelSelection=false（如 dsh，模型由 profile 配置决定）→ 400 VALIDATION_ERROR；
+ * - 值非空时对该 CLI 调一次 listModels()：清单非空且不含该值 → 422 MODEL_UNAVAILABLE；
+ *   清单为空/探测失败 → 放行保存，由 CLI 运行时校验；
+ * - '' 为删键：跳过校验，合并时从当前 map 删除；其余按键覆盖当前 map。
+ */
+async function resolveCliDefaultModels(
+  delta: Record<string, string>,
+  current: Record<string, string>,
+  getAdapter: (cliId: string) => AgentAdapter,
+): Promise<Record<string, string>> {
+  const merged: Record<string, string> = { ...current };
+  for (const [cliId, rawValue] of Object.entries(delta)) {
+    let adapter: AgentAdapter;
+    try {
+      adapter = getAdapter(cliId);
+    } catch {
+      throw new ValidationError(`未知 CLI: ${cliId}`);
+    }
+    if (adapter.supportsModelSelection === false) {
+      throw new ValidationError(`该 CLI 的模型由 profile 配置决定：${cliId}`);
+    }
+    const value = rawValue.trim();
+    if (value === '') {
+      delete merged[cliId];
+      continue;
+    }
+    let models: ModelInfo[] = [];
+    try {
+      models = await adapter.listModels();
+    } catch {
+      models = []; // 探测失败放行，由 CLI 运行时校验
+    }
+    if (models.length > 0 && !models.some((m) => m.id === value)) {
+      throw new ApiError(422, 'MODEL_UNAVAILABLE', `模型 ${value} 不在 ${cliId} 的可用清单中`);
+    }
+    merged[cliId] = value;
+  }
+  return merged;
 }
 
 export function createSettingsRouter(deps: SettingsRouterDeps): Router {
@@ -95,7 +142,7 @@ export function createSettingsRouter(deps: SettingsRouterDeps): Router {
   });
 
   // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
-  router.patch('/settings', (req, res) => {
+  router.patch('/settings', async (req, res) => {
     const body = parseBody(patchSettingsSchema, req.body);
     // DB-2B：迁移进行中不接受直接改 db 路径（否则与新库切换打架）
     if ((body.db_path !== undefined || body.dbPath !== undefined) && isMigrationActive(migrationStateDir)) {
@@ -109,6 +156,10 @@ export function createSettingsRouter(deps: SettingsRouterDeps): Router {
     const patch: Partial<typeof body> = { ...body, ...(body.db_path !== undefined ? { dbPath: body.db_path } : {}) };
     delete (patch as { db_path?: string }).db_path;
     const current = readSettings();
+    // CLI-DEFAULT-MODEL：先校验（400/422）再按键合并成全量 map 写回（'' 删键）
+    if (body.cliDefaultModels !== undefined) {
+      patch.cliDefaultModels = await resolveCliDefaultModels(body.cliDefaultModels, current.cliDefaultModels, deps.getAdapter);
+    }
     const next = writeSettings(patch);
     if (body.maxConcurrentTurns !== undefined && body.maxConcurrentTurns !== current.maxConcurrentTurns) {
       setMaxConcurrentTurns(body.maxConcurrentTurns);

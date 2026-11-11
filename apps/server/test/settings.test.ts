@@ -101,6 +101,7 @@ describe('GET /api/settings', () => {
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
       travelAutoRecover: true,
+      cliDefaultModels: {},
     });
     expect(res.body.db_path).toBe(res.body.dbPath);
     // 落盘只写持久化键 dbPath，不写对外别名
@@ -120,6 +121,7 @@ describe('GET /api/settings', () => {
       attachmentStagedTtlMs: DEFAULT_ATTACHMENT_STAGED_TTL_MS,
       attachmentCleanupIntervalMs: DEFAULT_ATTACHMENT_CLEANUP_INTERVAL_MS,
       travelAutoRecover: true,
+      cliDefaultModels: {},
     });
     expect(res.body.db_path).toBe(res.body.dbPath);
   });
@@ -160,6 +162,7 @@ describe('PATCH /api/settings', () => {
       attachmentStagedTtlMs: 5000,
       attachmentCleanupIntervalMs: 10000,
       travelAutoRecover: true,
+      cliDefaultModels: {},
     });
 
     const again = await request(app).get('/api/settings');

@@ -350,6 +350,7 @@ export function createRouter(deps: RouterDeps): Router {
   router.use(createSettingsRouter({
     db,
     attachments,
+    getAdapter,
     currentDbPath,
     attachmentsDirOf,
     migrationStateDir,

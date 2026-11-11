@@ -559,6 +559,9 @@ export const patchSettingsSchema = z
     attachmentCleanupIntervalMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     // TRAVEL-REC：猫猫旅行自动回收开关（默认 true）
     travelAutoRecover: z.boolean().optional(),
+    // CLI-DEFAULT-MODEL：各 CLI 默认模型（键=CLI id，值=模型 id；'' 删键；
+    // 存在性/能力位/清单校验在 routes 层，zod 只管形状与长度）
+    cliDefaultModels: z.record(z.string(), z.string().trim().max(100, '模型名长度不能超过 100')).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });
 
