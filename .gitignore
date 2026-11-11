@@ -28,3 +28,7 @@ unslop/after/
 # Trae HTML 分享包的解包残留（外部工具产物，可随时再生）
 .trae-html-share-packages/
 /.screenshots
+
+# tauri icon 顺带生成的移动端图标（本项目无 android/ios 目标，可再生；MAC-TRIAL-B03）
+desktop/src-tauri/icons/android/
+desktop/src-tauri/icons/ios/
