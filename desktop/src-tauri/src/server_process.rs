@@ -207,6 +207,7 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
 
 /// 取 `GET <path>` 的 JSON 体（本地服务，`Connection: close` 读到 EOF；非 200 或解析失败返回 None）。
 /// E1（Dock 角标）取数用；与 `is_healthy` 同一套 std TcpStream 最小 HTTP 实现，不引入 HTTP 依赖。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn http_get_json(port: u16, path: &str) -> Option<serde_json::Value> {
     let Ok(addr) = format!("{HOST}:{port}").parse::<SocketAddr>() else {
         return None;

@@ -123,12 +123,195 @@ fn shutdown(app: &AppHandle) {
     }
 }
 
+/// E2（MAC-TRIAL-E2）：系统通知会话去重状态。首轮取数只建基线（不弹通知，避免应用启动把
+/// 存量待验收/宽限全部重弹一遍）；之后只对「新进入」的 id 弹一次。前台聚焦时 web 内提醒
+/// 已覆盖，同样并入集合（失焦后不补弹）——去重口径见卡 062f2bbb 评论。
+#[derive(Default)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct NotifiedSet {
+    seeded: AtomicBool,
+    review: Mutex<std::collections::HashSet<String>>,
+    grace: Mutex<std::collections::HashSet<String>>,
+}
+
+/// E2：一轮取数发现的新事件（标题已截断），空表示无新增。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct NotificationEvents {
+    reviews: Vec<String>,
+    graces: Vec<String>,
+}
+
+/// E2：差分纯函数（单测直接驱动）：本轮全量 (id, 标题) 与去重集合比较。
+/// 首轮（未建基线）只入集合、返回空事件；决策问题文本截断到 80 字符。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn diff_notification_events(
+    notified: &NotifiedSet,
+    reviews: Vec<(String, String)>,
+    graces: Vec<(String, String)>,
+) -> NotificationEvents {
+    let first_round = !notified.seeded.load(Ordering::SeqCst);
+    let mut review_set = notified.review.lock().unwrap();
+    let mut grace_set = notified.grace.lock().unwrap();
+    if first_round {
+        review_set.extend(reviews.into_iter().map(|(id, _)| id));
+        grace_set.extend(graces.into_iter().map(|(id, _)| id));
+        notified.seeded.store(true, Ordering::SeqCst);
+        return NotificationEvents { reviews: Vec::new(), graces: Vec::new() };
+    }
+    let new_reviews = reviews
+        .into_iter()
+        .filter(|(id, _)| review_set.insert(id.clone()))
+        .map(|(_, title)| title)
+        .collect();
+    let new_graces = graces
+        .into_iter()
+        .filter(|(id, _)| grace_set.insert(id.clone()))
+        .map(|(_, question)| question.chars().take(80).collect())
+        .collect();
+    NotificationEvents { reviews: new_reviews, graces: new_graces }
+}
+
+/// E2：拉取全部工作区里「新进入待验收」的卡与「新进入宽限」的决策。
+/// 与 E1 同源端点：/api/workspaces、/api/issues?fields=id,title,status、/api/decisions?state=grace。
+/// 任一请求失败返回 None（本轮跳过，不动去重集合）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn poll_notification_events(
+    port: u16,
+    notified: &NotifiedSet,
+) -> Option<NotificationEvents> {
+    let workspaces = server_process::http_get_json(port, "/api/workspaces")?;
+    let mut reviews: Vec<(String, String)> = Vec::new();
+    let mut graces: Vec<(String, String)> = Vec::new();
+    for workspace in workspaces.as_array()? {
+        let id = workspace.get("id")?.as_str()?;
+        let issues = server_process::http_get_json(
+            port,
+            &format!("/api/issues?workspace={id}&fields=id,title,status"),
+        )?;
+        for issue in issues.as_array()? {
+            if issue.get("status").and_then(|s| s.as_str()) == Some("待验收") {
+                let id = issue.get("id")?.as_str()?.to_string();
+                let title = issue
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("（无标题）")
+                    .to_string();
+                reviews.push((id, title));
+            }
+        }
+        let decisions = server_process::http_get_json(
+            port,
+            &format!("/api/decisions?workspace_id={id}&state=grace"),
+        )?;
+        for decision in decisions.get("decisions")?.as_array()? {
+            let id = decision.get("id")?.as_str()?.to_string();
+            let question = decision
+                .get("question")
+                .and_then(|q| q.as_str())
+                .unwrap_or("（无问题文本）")
+                .to_string();
+            graces.push((id, question));
+        }
+    }
+    Some(diff_notification_events(notified, reviews, graces))
+}
+
+/// E2：发一条系统通知（tauri-plugin-notification，mac 落到通知中心 UNNotification）。
+/// 权限被拒时 show() 报错：仅打日志不静默吞（降级 = Dock 角标 + web 内提醒仍可用，口径见卡评论）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn send_desktop_notification(app: &AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+    {
+        eprintln!("系统通知发送失败（权限被拒？降级为角标+web 内提醒）：{error}");
+    }
+}
+
+/// E2：系统通知轮询线程（mac-only）。30s 一轮；失败 5s 退避；主窗口前台聚焦时不弹
+/// （web 内提醒已覆盖，且仍计入去重集合）。
+fn spawn_notification_poller(app: AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::time::{Duration, Instant};
+        let port = app.state::<ShellState>().port;
+        std::thread::spawn(move || {
+            let mut next_wait = Duration::from_secs(5);
+            loop {
+                let quit = || app.state::<ShellState>().quitting.load(Ordering::SeqCst);
+                let notified = app.state::<NotifiedSet>();
+                match poll_notification_events(port, notified.inner()) {
+                    Some(events) => {
+                        next_wait = Duration::from_secs(30);
+                        let focused = app
+                            .get_webview_window(MAIN_WINDOW)
+                            .map(|window| window.is_focused().unwrap_or(false))
+                            .unwrap_or(false);
+                        // 前台聚焦：web 内提醒负责，系统通知跳过（事件已在 poll 中并入去重集合）。
+                        if !focused {
+                            if !events.graces.is_empty() {
+                                send_desktop_notification(
+                                    &app,
+                                    "AgentBoard 待决策进入宽限",
+                                    &summarize_titles(&events.graces),
+                                );
+                            }
+                            if !events.reviews.is_empty() {
+                                send_desktop_notification(
+                                    &app,
+                                    "AgentBoard 卡进入待验收",
+                                    &summarize_titles(&events.reviews),
+                                );
+                            }
+                        }
+                    }
+                    None => {
+                        next_wait = Duration::from_secs(5);
+                    }
+                }
+                let deadline = Instant::now() + next_wait;
+                while Instant::now() < deadline {
+                    if quit() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                if quit() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
+/// E2：多条事件合成一条通知正文（首条全文 + 其余计数，避免轮询窗口内连发多条）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn summarize_titles(titles: &[String]) -> String {
+    let mut summary = String::new();
+    if let Some(first) = titles.first() {
+        summary.push_str(first);
+    }
+    if titles.len() > 1 {
+        summary.push_str(&format!("（等 {} 条）", titles.len()));
+    }
+    summary
+}
+
 /// E1（MAC-TRIAL-E1）：Dock 角标数 = 所有工作区的「待验收」issue 数 + 「open」待决策数之和。
 /// 取数端点（全部只读 GET，与 kb stats / kb decisions 同源）：
 /// - `GET /api/workspaces`：全部工作区 id；
 /// - `GET /api/issues?workspace=<id>&fields=status`：逐区数 `status == "待验收"`；
 /// - `GET /api/decisions?workspace_id=<id>&state=open&limit=1`：取 `counts.open`。
 /// 任一请求失败返回 None（本轮不更新角标，不清零、不报错）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn dock_badge_count(port: u16) -> Option<i64> {
     let workspaces = server_process::http_get_json(port, "/api/workspaces")?;
     let mut total: i64 = 0;
@@ -149,6 +332,7 @@ fn dock_badge_count(port: u16) -> Option<i64> {
 }
 
 /// `GET /api/issues?…&fields=status` 的数组 → 「待验收」条数（非数组返回 None）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn review_issue_count(issues: &serde_json::Value) -> Option<i64> {
     Some(
         issues
@@ -160,12 +344,14 @@ fn review_issue_count(issues: &serde_json::Value) -> Option<i64> {
 }
 
 /// `GET /api/decisions?…&state=open` 的响应 → `counts.open`（缺失返回 None）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn open_decision_count(decisions: &serde_json::Value) -> Option<i64> {
     decisions.pointer("/counts/open")?.as_i64()
 }
 
 /// E1：把角标数挂到 mac Dock（`set_badge_count`：0/None 都会移除角标，归零即消失）。
 /// 仅 mac 实装（tao 只在 mac 实现 Dock badge；Windows 任务栏对应的是 overlay icon，不在本卡范围）。
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn apply_dock_badge(app: &AppHandle, count: i64) {
     #[cfg(target_os = "macos")]
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
@@ -694,6 +880,10 @@ fn main() {
             // E1：Dock 角标轮询（仅 mac 起线程）：服务未就绪时线程内部自行退避重试。
             spawn_dock_badge_poller(app.handle().clone());
 
+            // E2：系统通知（mac 通知中心）：卡进入待验收 / 待决策进入宽限时弹系统通知。
+            app.manage(NotifiedSet::default());
+            spawn_notification_poller(app.handle().clone());
+
             // 验收辅助（默认不启用）：无 GUI 抓屏权限时，用 `--quit-after-ms <n>` 定时触发
             // 与托盘「退出」完全相同的 shutdown + exit 路径，便于自动化验证「退出后进程消失、锁释放、端口关闭」。
             // 该参数只影响触发时机，不改变停服语义；不带参数时行为与正常托盘退出一致。
@@ -839,5 +1029,46 @@ mod tests {
         let count = super::dock_badge_count(8787);
         assert!(count.is_some(), "取数失败：workspaces/issues/decisions 任一请求未通过");
         assert!(count.unwrap() >= 0);
+    }
+
+    #[test]
+    fn notification_first_round_seeds_baseline_without_events() {
+        let notified = super::NotifiedSet::default();
+        let events = super::diff_notification_events(
+            &notified,
+            vec![("card-1".into(), "存量卡".into())],
+            vec![("dec-1".into(), "存量决策？".into())],
+        );
+        assert!(events.reviews.is_empty() && events.graces.is_empty());
+        assert!(notified.seeded.load(std::sync::atomic::Ordering::SeqCst));
+        // 同一批再次差分：已入基线，不重复弹
+        let again = super::diff_notification_events(
+            &notified,
+            vec![("card-1".into(), "存量卡".into())],
+            vec![("dec-1".into(), "存量决策？".into())],
+        );
+        assert!(again.reviews.is_empty() && again.graces.is_empty());
+    }
+
+    #[test]
+    fn notification_new_ids_appear_once_and_grace_question_truncates() {
+        let notified = super::NotifiedSet::default();
+        super::diff_notification_events(&notified, vec![], vec![]); // 建基线
+        let long_question = "问".repeat(120);
+        let events = super::diff_notification_events(
+            &notified,
+            vec![("card-2".into(), "新完成的卡".into())],
+            vec![("dec-2".into(), long_question.clone())],
+        );
+        assert_eq!(events.reviews, vec!["新完成的卡".to_string()]);
+        assert_eq!(events.graces.len(), 1);
+        assert_eq!(events.graces[0].chars().count(), 80);
+        // 重复出现同一 id：不再弹
+        let repeat = super::diff_notification_events(
+            &notified,
+            vec![("card-2".into(), "新完成的卡".into())],
+            vec![("dec-2".into(), long_question)],
+        );
+        assert!(repeat.reviews.is_empty() && repeat.graces.is_empty());
     }
 }
