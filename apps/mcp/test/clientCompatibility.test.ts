@@ -67,10 +67,14 @@ function fakeFetcher(calls: string[]): typeof fetch {
 type ToolResult = {
   isError?: boolean;
   content?: Array<{ type: string; text?: string }>;
-  structuredContent?: Record<string, any>;
+  structuredContent?: {
+    ok?: boolean;
+    data?: { items?: Array<Record<string, unknown>> } & Record<string, unknown>;
+    error?: { code?: string };
+  };
 };
 
-type ListedTool = { name: string; description?: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, any> };
+type ListedTool = { name: string; description?: string; annotations?: Record<string, unknown>; inputSchema?: Record<string, unknown> };
 
 /** 三客户端握手 profile（clientInfo 按各客户端真实上报形态） */
 const CLIENT_PROFILES = [

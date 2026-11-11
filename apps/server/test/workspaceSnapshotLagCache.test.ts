@@ -20,7 +20,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
-import { createTestDb, issuePayload, type TestDb } from './helpers.js';
+import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';

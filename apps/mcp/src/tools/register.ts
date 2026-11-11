@@ -2,10 +2,10 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod/v4';
 import { mcpToolFailure, mcpToolSuccess, type McpToolResponse } from './result.js';
 
-export interface BoardToolSpec {
+export interface BoardToolSpec<Schema extends z.ZodTypeAny = z.ZodTypeAny> {
   name: string;
   description: string;
-  inputSchema: z.ZodTypeAny;
+  inputSchema: Schema;
   /** 默认 true（readOnlyHint 注解）；写工具传 false */
   readOnly?: boolean;
   /** 缺省 `mcpToolSuccess(data, summary)`；域内需再加工（写结果裁剪、体积闸）时覆写 */
@@ -16,17 +16,21 @@ export interface BoardToolSpec {
  * CR2-8 注册收敛：handler try/catch、成功包装与 `agentboard_<name>` alias 注册六域共用一份；
  * alias 去留归既有卡 f78d7465，此处保持现状。
  */
-export function registerBoardTool(server: McpServer, spec: BoardToolSpec, run: (input: any) => Promise<unknown>): void {
+export function registerBoardTool<Schema extends z.ZodTypeAny>(
+  server: McpServer,
+  spec: BoardToolSpec<Schema>,
+  run: (input: z.infer<Schema>) => Promise<unknown>,
+): void {
   const { name, description, inputSchema, readOnly = true, onResult } = spec;
-  const handler = async (input: any) => {
+  const handler = async (input: unknown) => {
     try {
-      const data = await run(input);
+      const data = await run(input as z.infer<Schema>);
       return onResult ? onResult(data, `${name} succeeded.`) : mcpToolSuccess(data, `${name} succeeded.`);
     } catch (error) {
       return mcpToolFailure(error);
     }
   };
-  const meta = { description, inputSchema, annotations: { readOnlyHint: readOnly } };
+  const meta = { description, inputSchema: inputSchema as z.ZodTypeAny, annotations: { readOnlyHint: readOnly } };
   server.registerTool(name, meta, handler);
   // 向后兼容：旧名 agentboard_<name> 保留为 alias，下个大版本移除
   server.registerTool(`agentboard_${name}`, meta, handler);

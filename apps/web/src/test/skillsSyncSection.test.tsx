@@ -3,7 +3,7 @@
  * 覆盖：目标清单渲染（状态徽标 / 同物理目录提示 / 来源目录禁用）、
  * 勾选后复制提交体、409 冲突三选（备份后覆盖重提）、移除调用与结果渲染。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

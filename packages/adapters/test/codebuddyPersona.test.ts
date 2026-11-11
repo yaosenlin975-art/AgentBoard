@@ -3,7 +3,7 @@ import { asChild, makeAutoChild, makeFakeChild } from './helpers.js';
 import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import { codebuddyAdapter } from '../src/codebuddy.js';
 import { resetCapabilityProbeCache } from '../src/capabilityProbe.js';
-import type { RunTurnOptions, SessionPersona, SessionToolPolicy } from '../src/types.js';
+import type { SessionPersona, SessionToolPolicy } from '../src/types.js';
 
 const MOCK_EXE = 'C:\\mock\\bin\\codebuddy.exe';
 

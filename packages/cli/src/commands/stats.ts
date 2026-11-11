@@ -9,10 +9,7 @@
 import {
   BUILTIN_STATUSES,
   computeStats,
-  localTimestamp,
-  type BuiltinStatus,
   type Issue,
-  type StatsResult,
 } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';

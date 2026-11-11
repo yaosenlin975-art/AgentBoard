@@ -134,7 +134,7 @@ describe('POST /api/issues/:id/comments/consume', () => {
     const id = await mkIssue(wsId);
     await kbClaim(id); // claimed_by = kb-agent
 
-    const own = await agentComment(id, '占用者进度留言', 'kb-agent');
+    await agentComment(id, '占用者进度留言', 'kb-agent');
     const first = await consume(id);
     expect(first.new_comment_ids).toEqual([]); // 自身评论不标新
     expect(first.comments.map((c) => c.content)).toEqual(['占用者进度留言']); // 评论仍在列表
