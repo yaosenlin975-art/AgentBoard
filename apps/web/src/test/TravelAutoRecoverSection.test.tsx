@@ -3,7 +3,7 @@
  * 断言：读 GET /api/settings 显示真实值（缺省 true）；点击只 PATCH travelAutoRecover；
  * 请求失败保留原值并显示错误。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
