@@ -166,7 +166,7 @@ function build() {
   const targets = RUST_TARGETS[arch];
   const bundleDirs = [];
   for (const target of targets) {
-    runOrFail('pnpm', ['--dir', DESKTOP, 'run', 'build', '--', '--target', target, '--bundles', 'app,dmg'], `tauri build (${target})`);
+    runOrFail('pnpm', ['--dir', DESKTOP, 'exec', 'tauri', 'build', '--bundles', 'app,dmg', '--target', target], `tauri build (${target})`);
     bundleDirs.push(join(TAURI_DIR, 'target', target, 'release', 'bundle'));
   }
   const primary = bundleDirs[0] ?? join(TAURI_DIR, 'target', 'release', 'bundle');
@@ -242,7 +242,7 @@ if (process.platform !== 'darwin' && !dryRun) {
 preflight();
 
 if (dryRun) {
-  step('构建', 'info', `计划：pnpm --dir desktop run build -- --target ${RUST_TARGETS[arch].join(' / ')}${arch === 'universal' ? ` + ${UNIVERSAL_TARGET}` : ''} --bundles app,dmg`);
+  step('构建', 'info', `计划：pnpm --dir desktop exec tauri build --bundles app,dmg --target ${RUST_TARGETS[arch].join(' / ')}${arch === 'universal' ? ` + ${UNIVERSAL_TARGET}` : ''}`);
   step('签名', 'info', 'codesign --force --deep --options runtime --sign <APPLE_SIGNING_IDENTITY> AgentBoard.app');
   step('公证', 'info', 'xcrun notarytool submit <dmg> --wait；xcrun stapler staple <dmg>');
   step('WKWebView / 托盘', 'info', 'Tauri v2 在 macOS 走 wry → WKWebView；托盘用官方 API 的菜单栏分支，本脚本无需平台开关');
