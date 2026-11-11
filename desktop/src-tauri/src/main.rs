@@ -15,7 +15,10 @@ mod server_process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{
+    AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+    WINDOW_SUBMENU_ID,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
@@ -256,6 +259,93 @@ fn shell_init_script(platform: &str, chrome: WindowChrome) -> String {
     )
 }
 
+/// B05：macOS 应用菜单中文化（默认菜单 File/Edit/View/Window/Help 全英文）。
+/// 结构对齐 Tauri `Menu::default` 的 mac 段（App/文件/编辑/显示/窗口/帮助），全部用 PredefinedMenuItem
+/// 保留系统默认行为与快捷键，只改文案；「帮助」与官方默认同为空子菜单。
+/// 菜单在所有平台构造（Windows 编译期即校验本函数），仅 macOS 挂为菜单栏应用菜单。
+fn localized_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let app_name = app.package_info().name.clone();
+    let version = app.package_info().version.to_string();
+    let app_submenu = Submenu::with_items(
+        app,
+        app_name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(
+                app,
+                None,
+                Some(AboutMetadata {
+                    name: Some(app_name.clone()),
+                    version: Some(version),
+                    ..Default::default()
+                }),
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, Some("服务"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, Some(&format!("隐藏 {app_name}")))?,
+            &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
+            &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some(&format!("退出 {app_name}")))?,
+        ],
+    )?;
+    let file_submenu = Submenu::with_items(
+        app,
+        "文件",
+        true,
+        &[&PredefinedMenuItem::close_window(app, Some("关闭窗口"))?],
+    )?;
+    let edit_submenu = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, Some("撤销"))?,
+            &PredefinedMenuItem::redo(app, Some("重做"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, Some("剪切"))?,
+            &PredefinedMenuItem::copy(app, Some("复制"))?,
+            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
+            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+        ],
+    )?;
+    let view_submenu = Submenu::with_items(
+        app,
+        "显示",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?],
+    )?;
+    // 窗口/帮助子菜单必须用官方同款 id（WINDOW_SUBMENU_ID / HELP_SUBMENU_ID）：
+    // macOS 挂菜单时 Tauri 按这两个 id 调 set_as_windows_menu_for_nsapp / set_as_help_menu_for_nsapp，
+    // 换成自动 id 会导致「窗口」菜单失去系统自动窗口列表、「帮助」失去 NSApp 关联（丢系统默认项）。
+    let window_submenu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
+            &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+        ],
+    )?;
+    // 「帮助」与官方默认菜单一致：mac 上为空子菜单（占位保持五项齐全）。
+    let help_submenu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "帮助", true, &[])?;
+    Menu::with_items(
+        app,
+        &[
+            &app_submenu,
+            &file_submenu,
+            &edit_submenu,
+            &view_submenu,
+            &window_submenu,
+            &help_submenu,
+        ],
+    )
+}
+
 /// 建主窗口并挂关窗隐藏/页面加载回调；首次启动与重建共用，保证两条路径窗口行为一致。
 fn build_main_window(
     app: &AppHandle,
@@ -404,6 +494,14 @@ fn main() {
                 // CR-6：启动时解析一次端口；探活/导航/重建窗口统一取这里，不再硬编码 8787。
                 port: server_process::resolve_port(),
             });
+
+            // B05：macOS 应用菜单中文化。所有平台都构造（Windows 编译期校验），
+            // 仅 mac 挂为菜单栏应用菜单；Windows 无菜单栏，构造后丢弃不挂（行为不变）。
+            let app_menu = localized_app_menu(app.handle())?;
+            #[cfg(target_os = "macos")]
+            app.set_menu(app_menu)?;
+            #[cfg(not(target_os = "macos"))]
+            drop(app_menu);
 
             // 托盘：菜单「显示 / 退出」。
             let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
