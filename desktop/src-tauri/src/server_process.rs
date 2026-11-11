@@ -4,11 +4,12 @@
 //! 因此不涉及 Tauri/WebView2 内置运行时与 better-sqlite3 的 ABI 问题，也不把 server 跑进 WebView。
 //!
 //! 替换点（DESKTOP-2 便携包接线时只需要改下面两个候选列表）：
-//! - `resolve_server_entry`：仓库内 = `apps/server/dist/index.js`；便携包 = `<stage>/app/apps/server/dist/index.js`
-//! - `resolve_node`：仓库内 = PATH 上的 `node`；便携包 = `<stage>/runtime/node.exe`
+//! - `resolve_server_entry`：仓库内 = `apps/server/dist/index.js`；便携包 = `<stage>/app/apps/server/dist/index.js`；
+//!   macOS .app（B10）= `Contents/Resources/payload/app/apps/server/dist/index.js`
+//! - `resolve_node`：仓库内 = PATH 上的 `node`；便携包 = `<stage>/runtime/node.exe`；
+//!   macOS .app（B10）= `Contents/Resources/payload/runtime/node`（darwin 版 node 随包）
 //!
-//! 平台：仅 Windows 实现。macOS（WKWebView、菜单栏托盘、darwin 版 node）留给 DESKTOP-3，
-//! 本文件与壳层只保留配置/接口注释，不写实现代码。
+//! 平台：壳层代码全平台编译（macOS 分支见上述候选与 main.rs 的平台 cfg）。
 
 use std::env;
 use std::fs;
@@ -207,6 +208,9 @@ fn resolve_server_entry() -> Result<PathBuf, String> {
         // 便携包（DESKTOP-2 接线）：<stage>/app/desktop/agentboard-desktop.exe → <stage>/app/apps/server/dist/index.js
         exe_dir.join("../apps/server/dist/index.js"),
         exe_dir.join("apps/server/dist/index.js"),
+        // macOS .app（B10）：AgentBoard.app/Contents/Resources/payload/app/…
+        // （build-macos.mjs 组装、tauri.macos.conf.json 的 bundle.resources 落位，与 Windows 便携包同布局）
+        exe_dir.join("../Resources/payload/app/apps/server/dist/index.js"),
     ];
     for candidate in candidates.iter() {
         if candidate.exists() {
@@ -219,7 +223,9 @@ fn resolve_server_entry() -> Result<PathBuf, String> {
     ))
 }
 
-/// node 候选：环境变量 `AGENTBOARD_NODE` → 包内 `runtime/node.exe` → PATH 上的 `node`。
+/// node 候选：环境变量 `AGENTBOARD_NODE` → 包内 runtime（平台对应二进制名）→ PATH 上的 `node`。
+/// 名字按平台取（Windows `node.exe`，macOS/Linux `node`）；macOS .app 额外查
+/// `Contents/Resources/payload/runtime/node`（B10 随包 runtime，build-macos.mjs 落位）。
 fn resolve_node() -> PathBuf {
     if let Some(raw) = env::var_os("AGENTBOARD_NODE") {
         let path = PathBuf::from(raw);
@@ -228,16 +234,25 @@ fn resolve_node() -> PathBuf {
         }
     }
     let exe_dir = current_exe_dir();
-    let candidates = [
-        exe_dir.join("node.exe"),
-        // 便携包：<stage>/app/desktop/... → <stage>/runtime/node.exe
-        exe_dir.join("../../runtime/node.exe"),
-        exe_dir.join("../runtime/node.exe"),
-        exe_dir.join("runtime/node.exe"),
+    let dirs = [
+        exe_dir.clone(),
+        // 便携包：<stage>/app/desktop/... → <stage>/runtime/
+        exe_dir.join("../../runtime"),
+        exe_dir.join("../runtime"),
+        exe_dir.join("runtime"),
+        // macOS .app（B10）：AgentBoard.app/Contents/Resources/payload/runtime/node
+        exe_dir.join("../Resources/payload/runtime"),
     ];
-    for candidate in candidates.iter() {
-        if candidate.exists() {
-            return candidate.clone();
+    #[cfg(windows)]
+    let names = ["node.exe"];
+    #[cfg(not(windows))]
+    let names = ["node"];
+    for dir in dirs.iter() {
+        for name in names.iter() {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return candidate;
+            }
         }
     }
     PathBuf::from("node")

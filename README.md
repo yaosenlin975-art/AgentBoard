@@ -78,6 +78,16 @@ node scripts/desktop/build-macos.mjs             # 仅 macOS：构建 → 尝试
 - 产物位置：`desktop/src-tauri/target/<rust-target>/release/bundle/macos/AgentBoard.app` 与 `.../bundle/dmg/*.dmg`（`<rust-target>` 为 `aarch64-apple-darwin` / `x86_64-apple-darwin`）。
 - 只要 `.app`/`.dmg` 但不想走公证时用 `--no-notarize`（dmg 仍会构建；有签名身份时签名照常）。
 
+**随包 node runtime（免装 Node，B10）**
+
+- mac 产物自带 server payload（server bundle + web dist + darwin 原生模块，与 Windows 便携包同一布局，组装逻辑在 `scripts/assemble-payload.mjs`），并按需自带 darwin 版 node。
+- node 来源只认两种，命中即随包（复制到 `.app` 的 `Contents/Resources/payload/runtime/node`）：
+  1. 环境变量 `AGENTBOARD_NODE_DARWIN=<darwin node 可执行文件路径>`；
+  2. 仓库 `runtime/darwin-<arch>/node`（`<arch>` 为 `arm64` / `x64`；nodejs.org 官方 tarball 解压出的 Mach-O 二进制，必须是 darwin 版，`.exe` 会被脚本拒绝）。
+  PATH 上的 node 仅作构建期兜底，**不随包**——此时目标机需自备 Node；要免装 Node 就把 node 放进上述任一来源。
+- 落位机制：`scripts/desktop/build-macos.mjs` 先把 payload 组装到 `desktop/src-tauri/payload/`，`desktop/src-tauri/tauri.macos.conf.json` 把它声明为 `bundle.resources`，tauri build 时复制进 `.app` 与 `.dmg` 的 `Contents/Resources/payload/`（两产物同源）；壳启动时按该路径找 node 与服务入口（`desktop/src-tauri/src/server_process.rs` 的 mac 候选）。Windows 便携包不受影响（平台覆盖配置只在 mac 构建时合并，Windows 仍走 `runtime/node.exe`）。
+- 免装 Node 验收口径：PATH 不含 node 的 mac 上 `open AgentBoard.app` 后 `curl -s -o /dev/null -w %{http_code} http://127.0.0.1:8787/api/version` 返回 200。
+
 **外部分发（Developer ID 签名 + notarytool 公证）**
 
 前置：Apple Developer Program 账号，钥匙串里有 `Developer ID Application: <你的名字> (<TEAMID>)` 证书。

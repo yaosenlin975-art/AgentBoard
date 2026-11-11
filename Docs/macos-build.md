@@ -71,7 +71,22 @@ rustup target list --installed               # 含 aarch64-apple-darwin
 node scripts/desktop/build-macos.mjs --dry-run --json
 ```
 
-`--dry-run` 退出码应为 0；报告里 `Xcode Command Line Tools` / `rustc` / `cargo` / `rust target ...` / `node 二进制` 为 `ok`。未设置 `APPLE_SIGNING_IDENTITY` 时「签名身份」为 `missing`、未提供公证凭据时「公证凭据」为 `missing`——这只是说明产物不能外部分发，不影响本机构建与自用（见根 README 的两条分发路径）。
+`--dry-run` 退出码应为 0；报告里 `Xcode Command Line Tools` / `rustc` / `cargo` / `rust target ...` / `node 二进制` / `mac 平台覆盖配置` / `server 构建产物` / `web 构建产物` 为 `ok`。未设置 `APPLE_SIGNING_IDENTITY` 时「签名身份」为 `missing`、未提供公证凭据时「公证凭据」为 `missing`——这只是说明产物不能外部分发，不影响本机构建与自用（见根 README 的两条分发路径）。
+
+## 4.1 随包 node runtime（免装 Node，B10）
+
+构建前把 darwin 版 node 放进下列任一来源，`build-macos.mjs` 会把它与 server payload 一起打进 `.app`/`.dmg`（`Contents/Resources/payload/`）：
+
+```bash
+# 方式一：仓库内固定位置（<arch> 为 arm64 / x64；nodejs.org 官方 tarball 解压出的 Mach-O 二进制）
+mkdir -p runtime/darwin-arm64 && cp <解压路径>/bin/node runtime/darwin-arm64/node
+chmod +x runtime/darwin-arm64/node
+
+# 方式二：环境变量指到任意路径
+export AGENTBOARD_NODE_DARWIN=/path/to/darwin-node
+```
+
+不放也可以构建：PATH 上的 node 仅作构建期兜底，不随包，目标机需自备 Node。`.exe` 会被脚本直接拒绝。验收口径：PATH 不含 node 的 mac 上 `open AgentBoard.app` 后 `curl http://127.0.0.1:8787/api/version` 返回 200（详见根 README「随包 node runtime」）。
 
 ## 5. macOS 与 Windows 的差异
 

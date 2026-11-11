@@ -32,3 +32,6 @@ unslop/after/
 # tauri icon 顺带生成的移动端图标（本项目无 android/ios 目标，可再生；MAC-TRIAL-B03）
 desktop/src-tauri/icons/android/
 desktop/src-tauri/icons/ios/
+
+# B10：mac 随包 payload 组装产物（build-macos.mjs 生成，gitignore；tauri.macos.conf.json 引用其内容）
+desktop/src-tauri/payload/
