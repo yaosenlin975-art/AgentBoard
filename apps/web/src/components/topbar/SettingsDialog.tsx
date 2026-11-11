@@ -15,6 +15,7 @@ import { PersonaSection } from '../settings/PersonaSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 import { SkillsSyncSection } from '../settings/SkillsSyncSection';
 import { StorageSection } from '../settings/StorageSection';
+import { TravelAutoRecoverSection } from '../settings/TravelAutoRecoverSection';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
 import { VoiceSection } from '../settings/VoiceSection';
 import { useAppStore } from '../../state/appStore';
@@ -224,6 +225,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
       {/* SKILLS-SYNC：一键把 8 份配套技能复制到常见 agent skills 目录（含冲突三选与移除） */}
       <SkillsSyncSection />
       <RestartServerPanel />
+      {/* SETTINGS-TRAVEL：猫猫旅行自动回收开关（读写 settings.travelAutoRecover，PATCH 即时生效） */}
+      <TravelAutoRecoverSection />
     </Modal>
   );
 }
