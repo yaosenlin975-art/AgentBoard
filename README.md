@@ -58,6 +58,8 @@ nohup node apps/server/dist/index.js > server.log 2>&1 &
 
 `kb autostart` 已支持 macOS（写 `~/Library/LaunchAgents/com.agentboard.server.plist` 并 `launchctl bootstrap`，见下文「macOS 开机自启」）；`kb shortcut` 仍是 Windows-only。macOS 也可临时用上面的 nohup。已知缺口（均属「暂时不支持」清单）：账号凭据 vault 走 Windows DPAPI，非 Windows 一律 503，账号相关功能（凭据捕获/切换/签到）不可用，服务本体可正常启动；WorkBuddy 桌面探针（user32/UIA）不可用；MiniMax 客户端探测走注册表/盘符不可用。
 
+**托盘「退出」与 LaunchAgent 托管的口径（B11）**：桌面壳退出只停「壳自己拉起的 server」；启动时端口已健康（如 LaunchAgent 开机拉起、或手动先起的服务）则为附着态，退出只断开不停服，服务 pid 不变。LaunchAgent 托管下壳启动若遇端口未就绪，先给 launchd 15s 宽限再回落自拉（避免与 launchd 抢端口/单例锁）。自拉场景退出停服后，若 plist 设了 `KeepAlive=true`（仓库 `kb autostart` 默认 `KeepAlive=false`，不会复活），launchd 会按其语义再拉起——这是自启配置行为，不是拉锯；要彻底停服并取消自启：`kb autostart uninstall`，或临时停当前实例 `launchctl bootout gui/$(id -u) com.agentboard.server`。
+
 ### 桌面壳打包与分发（macOS）
 
 桌面壳是 Tauri v2 工程（`desktop/src-tauri`），macOS 打包统一走 `scripts/desktop/build-macos.mjs`。先明确手上产物属于哪条路径：

@@ -68,6 +68,11 @@ pub struct ServerHandle {
 impl ServerHandle {
     /// 退出时停服。
     ///
+    /// 口径（B11）：只停「壳自己拉起的 server」（`child: Some`）；附着态（启动时端口已健康，
+    /// 如 LaunchAgent/手动先起的服务）`child: None`，退出只断开不停服，服务 pid 不变。
+    /// 自拉场景退出停服后，若外部 LaunchAgent 设 KeepAlive=true，launchd 会按其语义再拉起
+    /// （这是自启配置的行为，不是拉锯；彻底停自启用 `kb autostart uninstall`）。
+    ///
     /// Windows 上 Node 的 SIGINT/SIGTERM 处理器无法跨进程投递（`Child::kill` 走 TerminateProcess，
     /// 不会触发 `process.on('exit')`），所以壳按「终止自己的子进程 + 壳侧补删锁」收尾：
     /// 1. 终止子进程并等待其真正消失；
@@ -112,13 +117,46 @@ impl ServerHandle {
     }
 }
 
+/// 是否存在 LaunchAgent 托管（B11）：`~/Library/LaunchAgents/com.agentboard.server.plist` 存在
+/// （`kb autostart install` 写入，label 固定 `com.agentboard.server`；手写 KeepAlive 变体同名同路径）。
+/// 仅 macOS 有意义，其它平台一律 false（编译期分支，Windows 行为不变）。
+fn launchagent_custody() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(home) = env::var_os("HOME") else {
+            return false;
+        };
+        std::path::Path::new(&home)
+            .join("Library/LaunchAgents/com.agentboard.server.plist")
+            .exists()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// 确保服务在跑：已健康则复用；否则用 node 拉起 `apps/server/dist/index.js` 并等待健康检查通过。
 ///
 /// 单例口径：壳自身由 `tauri-plugin-single-instance` 保证唯一；server 由 `server.lock` 保证唯一。
 /// 因此第二个壳不会走到这里，而这里若发现目标端口已健康，也不会再起第二个 server 进程。
+///
+/// LaunchAgent 托管宽限（B11）：plist 存在但端口未健康时，先等 launchd 把服务拉起来（KeepAlive
+/// 重启有 ~10s 节流，宽限 15s 覆盖一个周期）而不是立刻自拉 server——避免壳与 launchd 抢端口/单例锁
+/// 形成拉锯。宽限过后仍未健康则回落自拉（托管失效场景壳仍能起服）。
 pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     if is_healthy(Duration::from_millis(1200), port) {
         return Ok(ServerHandle { child: None, port });
+    }
+
+    if launchagent_custody() {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(500));
+            if is_healthy(Duration::from_millis(800), port) {
+                return Ok(ServerHandle { child: None, port });
+            }
+        }
     }
 
     let entry = resolve_server_entry()?;

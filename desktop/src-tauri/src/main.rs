@@ -123,6 +123,23 @@ fn shutdown(app: &AppHandle) {
     }
 }
 
+/// 退出前等启动线程收口（B11）：壳刚启动、server 还没健康就点退出时，`shutdown` 抢不到句柄
+/// （还在 `ensure_server` 的健康等待里），靠 `start_server` 线程的竞态分支停掉刚拉起的 server；
+/// 若不等它出结果就 `exit`，后台线程随进程死亡，刚 spawn 的 server 成孤儿（端口/`server.lock`
+/// 不释放；LaunchAgent KeepAlive 场景还会与 launchd 再拉起的实例争端口形成拉锯）。
+/// `boot.outcome` 置位时竞态分支已执行完毕，此时退出是安全的。上限 70s 覆盖 `ensure_server`
+/// 自身的 60s 健康超时；只在退出线程里调用，不进 `RunEvent::Exit`（事件线程不可阻塞）。
+fn wait_boot_settled(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(70);
+    while std::time::Instant::now() < deadline {
+        if state.boot.outcome.lock().unwrap().is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// 窗口当前所处的可观察状态。托盘点击/菜单「显示」/第二实例启动都先判这一态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowPhase {
@@ -489,6 +506,7 @@ fn run_tray_probe(app: AppHandle, delay_ms: u64, out_path: std::path::PathBuf) {
             Err(error) => eprintln!("托盘探针结果写入失败：{error}"),
         }
         shutdown(&app);
+        wait_boot_settled(&app);
         app.exit(0);
     });
 }
@@ -552,6 +570,7 @@ fn main() {
                         // 停服可能等待数秒：放到后台线程，避免冻结托盘/窗口事件循环。
                         std::thread::spawn(move || {
                             shutdown(&handle);
+                            wait_boot_settled(&handle);
                             handle.exit(0);
                         });
                     }
@@ -585,6 +604,7 @@ fn main() {
                 std::thread::spawn(move || {
                     std::thread::sleep(std::time::Duration::from_millis(delay_ms));
                     shutdown(&handle);
+                    wait_boot_settled(&handle);
                     handle.exit(0);
                 });
             }
