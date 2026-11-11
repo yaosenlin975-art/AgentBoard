@@ -219,11 +219,20 @@ export function defaultDraftRunner(getAdapter: (cliId: string) => AgentAdapter):
     handle.onEvent((event) => {
       if (event.type === 'text') text += event.delta;
     });
-    const onAbort = (): void => { void handle.kill().catch(() => {}); };
-    signal.addEventListener('abort', onAbort, { once: true });
+    // 超时/取消必须让调用方拿到结算：只 kill 不 reject 时，deps.run 的 Promise 永不 settle，
+    // personaDraft / smartCreateDraft 的 catch 永不进入，504 DRAFT_TIMEOUT 分支不可达，请求一直挂着。
+    const onAbort = (): void => {
+      void handle.kill().catch(() => {});
+      reject(new Error('草稿生成已取消'));
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
     handle.result.then((result) => {
       signal.removeEventListener('abort', onAbort);
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        reject(new Error('草稿生成已取消'));
+        return;
+      }
       if (result.exitCode !== 0) {
         // stderr 尾部最后一行常是 Node 版本横幅，取最后 3 行非空内容更可解释
         const tail = (result.stderrTail ?? []).map(line => line.trim()).filter(line => line !== '').slice(-3).join(' | ');

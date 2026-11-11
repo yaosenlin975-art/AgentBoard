@@ -10,10 +10,11 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import type { Express } from 'express';
-import type { AgentAdapter } from '@agentboard/adapters';
+import type { AgentAdapter, TurnResult } from '@agentboard/adapters';
 import { createTestDb, type TestDb } from './helpers.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp, type CreatedApp } from '../src/index.js';
+import { defaultDraftRunner } from '../src/api/routes/issueRoutes.js';
 import { resetSessionManager } from '../src/services/sessionManager.js';
 import type { DraftRunner } from '../src/services/smartCreateDraft.js';
 
@@ -38,6 +39,31 @@ function makeApp(runner: DraftRunner, timeoutMs?: number): Promise<CreatedApp> {
     ...(timeoutMs === undefined ? {} : { draftTimeoutMs: timeoutMs }),
   });
 }
+
+/** 不注入 draftRunner：走生产默认链路（getAdapter(adapter).runTurn → CLI 子进程） */
+function makeDefaultApp(adapter: FakeAdapter, timeoutMs?: number): Promise<CreatedApp> {
+  return createApp({
+    db: t.db,
+    getAdapter: (id: string): AgentAdapter => {
+      if (id === adapter.id) return adapter;
+      throw new Error(`未知适配器 id: ${id}`);
+    },
+    adapters: [adapter],
+    maxConcurrentTurns: 3,
+    refreshClisOnBoot: false,
+    ...(timeoutMs === undefined ? {} : { draftTimeoutMs: timeoutMs }),
+  });
+}
+
+const PERSONA_JSON = JSON.stringify({
+  name: '技术文档编辑',
+  description: '把口语化笔记改成可发布的说明',
+  role: '你是严谨的技术文档编辑。',
+  tone: '冷静、克制。',
+  boundary: '- 不改动原意',
+  domain: '发布说明与使用指南。',
+  warnings: [],
+});
 
 beforeEach(() => {
   t = createTestDb();
@@ -131,5 +157,64 @@ describe('POST /api/personas/draft', () => {
     app = created.app;
     const res = await request(app).post('/api/personas/draft').send({ requirement: 'x', adapter: 'codebuddy' });
     expect(res.status).toBe(504);
+  });
+});
+
+describe('POST /api/personas/draft（默认 runner，不注入）', () => {
+  it('走 getAdapter(adapter).runTurn 的 CLI 通道，并带人设提示词', async () => {
+    const adapter = new FakeAdapter();
+    adapter.script = (control) => {
+      control.emit({ type: 'text', delta: PERSONA_JSON });
+      control.finish(0);
+    };
+    created = await makeDefaultApp(adapter);
+    app = created.app;
+
+    const res = await request(app)
+      .post('/api/personas/draft')
+      .send({ requirement: '把口语笔记改成发布说明', adapter: 'codebuddy' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ name: '技术文档编辑' });
+    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls[0]!.prompt).toContain('把口语笔记改成发布说明');
+    expect(adapter.calls[0]!.prompt).toContain('智能体人设草稿生成器');
+  });
+
+  it('适配器不结束时按超时返回 504，而不是挂起', async () => {
+    const adapter = new FakeAdapter();
+    adapter.script = () => {}; // 模拟卡住的 CLI 子进程
+    created = await makeDefaultApp(adapter, 30);
+    app = created.app;
+
+    const res = await request(app)
+      .post('/api/personas/draft')
+      .send({ requirement: 'x', adapter: 'codebuddy' });
+
+    expect(res.status).toBe(504);
+    expect(res.body.error.code).toBe('DRAFT_TIMEOUT');
+  });
+});
+
+describe('defaultDraftRunner', () => {
+  it('abort 后立即结算（子进程被 kill 后不回报结束也不影响）', async () => {
+    // 真实 CLI 经 cmd.exe 包装时，kill 后 result 可能永不结算；这里复刻该形态，
+    // 要求 abort 本身就能让调用方拿到结算，否则 504 分支不可达、请求一直挂着。
+    const adapter = new FakeAdapter();
+    adapter.runTurn = () => ({
+      onEvent: () => {},
+      kill: async () => {},
+      result: new Promise<TurnResult>(() => {}),
+    });
+    const controller = new AbortController();
+    const pending = defaultDraftRunner(() => adapter)({
+      adapter: 'codebuddy',
+      prompt: 'x',
+      cwd: process.cwd(),
+      signal: controller.signal,
+    });
+    const expectation = expect(pending).rejects.toThrow('草稿生成已取消');
+    controller.abort();
+    await expectation;
   });
 });
