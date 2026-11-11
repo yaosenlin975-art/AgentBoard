@@ -1160,7 +1160,11 @@ describe('服务不可达', () => {
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  LAUNCH_LABEL,
   applyVbsConstants,
+  buildBootoutArgs,
+  buildBootstrapArgs,
+  buildLaunchAgentPlist,
   buildRegAddArgs,
   buildRegDeleteArgs,
   buildRunValue,
@@ -1171,10 +1175,12 @@ import {
   parseRegQueryValue,
   readVbsText,
   resolveAutostartPaths,
+  resolveLaunchAgentPaths,
   statusAutostart,
   uninstallAutostart,
   writeVbsText,
   type AutostartPaths,
+  type LaunchAgentPaths,
   type Runner,
 } from '../src/commands/autostart.js';
 import {
@@ -1344,7 +1350,7 @@ describe('autostart install / uninstall（假 Runner + 临时仓库）', () => {
     const { runner, calls } = fakeRunner();
     const t = makeIo();
     try {
-      await installAutostart(t.io, { runner, paths: env.paths, nodePath: 'C:\\n\\node.exe' });
+      await installAutostart(t.io, { runner, paths: env.paths, nodePath: 'C:\\n\\node.exe', platform: 'win32' });
       const add = calls.filter((c) => c.cmd === 'reg.exe' && c.args[0] === 'add');
       expect(add).toHaveLength(1);
       const dIdx = add[0]!.args.indexOf('/d');
@@ -1373,7 +1379,7 @@ describe('autostart install / uninstall（假 Runner + 临时仓库）', () => {
     const { runner, calls } = fakeRunner({ regQueryReply: { code: 0, stdout } });
     const t = makeIo();
     try {
-      await installAutostart(t.io, { runner, paths: env.paths, nodePath: 'C:\\n\\node.exe' });
+      await installAutostart(t.io, { runner, paths: env.paths, nodePath: 'C:\\n\\node.exe', platform: 'win32' });
       expect(calls.filter((c) => c.cmd === 'reg.exe' && c.args[0] === 'add')).toHaveLength(0);
       expect(t.out()).toContain('已安装');
       expect(readVbsText(env.paths.vbsPath)).toContain('Const PORT = "9000"');
@@ -1388,7 +1394,7 @@ describe('autostart install / uninstall（假 Runner + 临时仓库）', () => {
     const t = makeIo();
     try {
       rmSync(env.paths.serverEntry, { force: true });
-      await expect(installAutostart(t.io, { runner, paths: env.paths })).rejects.toThrow('corepack pnpm -r build');
+      await expect(installAutostart(t.io, { runner, paths: env.paths, platform: 'win32' })).rejects.toThrow('corepack pnpm -r build');
     } finally {
       env.cleanup();
     }
@@ -1399,18 +1405,18 @@ describe('autostart install / uninstall（假 Runner + 临时仓库）', () => {
     const own = `wscript.exe "${join(env.repoRoot, 'scripts', 'agentboard.vbs')}" autostart`;
     const t1 = makeIo();
     const r1 = fakeRunner({ regQueryReply: { code: 0, stdout: `    AgentBoard    REG_SZ    ${own}\r\n` } });
-    await uninstallAutostart(t1.io, { runner: r1.runner, paths: env.paths });
+    await uninstallAutostart(t1.io, { runner: r1.runner, paths: env.paths, platform: 'win32' });
     expect(r1.calls.filter((c) => c.cmd === 'reg.exe' && c.args[0] === 'delete')).toHaveLength(1);
     expect(t1.out()).toContain('已移除');
 
     const t2 = makeIo();
     const r2 = fakeRunner({ regQueryReply: { code: 0, stdout: '    AgentBoard    REG_SZ    C:\\other\\tool.exe /run\r\n' } });
-    await expect(uninstallAutostart(t2.io, { runner: r2.runner, paths: env.paths })).rejects.toThrow('未删除');
+    await expect(uninstallAutostart(t2.io, { runner: r2.runner, paths: env.paths, platform: 'win32' })).rejects.toThrow('未删除');
     expect(r2.calls.filter((c) => c.cmd === 'reg.exe' && c.args[0] === 'delete')).toHaveLength(0);
 
     const t3 = makeIo();
     const r3 = fakeRunner();
-    await uninstallAutostart(t3.io, { runner: r3.runner, paths: env.paths });
+    await uninstallAutostart(t3.io, { runner: r3.runner, paths: env.paths, platform: 'win32' });
     expect(t3.out()).toContain('未安装');
     env.cleanup();
   });
@@ -1430,7 +1436,7 @@ describe('autostart status（mock HTTP + 假 Runner）', () => {
     const { runner } = fakeRunner({ regQueryReply: { code: 0, stdout: '    AgentBoard    REG_SZ    wscript.exe "D:\\x\\agentboard.vbs" autostart\r\n' } });
     const t = makeIo();
     try {
-      await statusAutostart(ctx(t.io), { runner, paths: env.paths });
+      await statusAutostart(ctx(t.io), { runner, paths: env.paths, platform: 'win32' });
       expect(t.out()).toContain('自启: 已安装');
       expect(t.out()).toContain('agentboard.vbs');
       expect(t.out()).toContain('服务: 可达');
@@ -1450,7 +1456,7 @@ describe('autostart status（mock HTTP + 假 Runner）', () => {
     const { runner } = fakeRunner();
     const t = makeIo();
     try {
-      await statusAutostart(ctx(t.io), { runner, paths: env.paths });
+      await statusAutostart(ctx(t.io), { runner, paths: env.paths, platform: 'win32' });
       expect(t.out()).toContain('自启: 未安装');
       expect(t.out()).toContain('服务: 不可达');
       expect(t.out()).toContain(`http://127.0.0.1:${deadPort}`);
@@ -1468,12 +1474,187 @@ describe('autostart status（mock HTTP + 假 Runner）', () => {
     const { runner } = fakeRunner({ regQueryReply: { code: 0, stdout: '    AgentBoard    REG_SZ    V1\r\n' } });
     const t = makeIo();
     try {
-      await statusAutostart(ctx(t.io, true), { runner, paths: env.paths });
+      await statusAutostart(ctx(t.io, true), { runner, paths: env.paths, platform: 'win32' });
       const data = JSON.parse(t.out()) as { autostart: { installed: boolean; value: string }; service: { reachable: boolean; version: string }; log: string };
       expect(data.autostart.installed).toBe(true);
       expect(data.autostart.value).toBe('V1');
       expect(data.service.reachable).toBe(true);
       expect(data.service.version).toBe('0.1.0');
+      expect(data.log).toBe(env.paths.logFile);
+    } finally {
+      env.cleanup();
+    }
+  });
+});
+
+/** 临时 mac 仓库脚手架：home + 服务端产物 + ~/.config/AgentBoard/config.json */
+function scaffoldLaunch(overrides: { port?: number } = {}): { paths: LaunchAgentPaths; cleanup: () => void } {
+  const root = mkdtempSync(join(tmpdir(), 'kb-launchd-'));
+  const home = join(root, 'home');
+  const repoRoot = join(root, 'repo');
+  mkdirSync(join(repoRoot, 'apps', 'server', 'dist'), { recursive: true });
+  mkdirSync(join(home, '.config', 'AgentBoard'), { recursive: true });
+  writeFileSync(join(repoRoot, 'apps', 'server', 'dist', 'index.js'), '// built\n', 'utf8');
+  writeFileSync(join(home, '.config', 'AgentBoard', 'config.json'), JSON.stringify({ port: overrides.port ?? 8787 }), 'utf8');
+  return { paths: resolveLaunchAgentPaths(repoRoot, home), cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/** 假 launchctl：list 按 loaded 应答，bootstrap/bootout 按预设退出码应答 */
+function fakeLaunchRunner(opts: { loaded?: boolean; bootstrapCode?: number; bootoutCode?: number } = {}): {
+  runner: Runner;
+  calls: RecordedCall[];
+} {
+  const calls: RecordedCall[] = [];
+  const runner: Runner = async (cmd, args) => {
+    calls.push({ cmd, args });
+    const sub = args[0];
+    if (sub === 'list') {
+      return opts.loaded ? { code: 0, stdout: '', stderr: '' } : { code: 1, stdout: '', stderr: 'Could not find service' };
+    }
+    if (sub === 'bootstrap') {
+      return opts.bootstrapCode === undefined
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: opts.bootstrapCode, stdout: '', stderr: 'Bootstrap failed: 5: Input/output error' };
+    }
+    if (sub === 'bootout') {
+      return opts.bootoutCode === undefined
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: opts.bootoutCode, stdout: '', stderr: 'Boot-out failed: 3: No such process' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  return { runner, calls };
+}
+
+describe('autostart launchd（mac 分支纯逻辑 + 假 Runner）', () => {
+  it('buildLaunchAgentPlist：Label/ProgramArguments/WorkingDirectory/RunAtLoad/日志路径', () => {
+    const plist = buildLaunchAgentPlist({
+      nodePath: '/opt/homebrew/bin/node',
+      serverEntry: '/r/apps/server/dist/index.js',
+      repoRoot: '/r',
+      logFile: '/h/.config/AgentBoard/logs/server.log',
+    });
+    expect(plist.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true);
+    expect(plist).toContain('<key>Label</key>\n  <string>com.agentboard.server</string>');
+    expect(plist).toContain('<key>ProgramArguments</key>\n  <array>\n    <string>/opt/homebrew/bin/node</string>\n    <string>/r/apps/server/dist/index.js</string>\n  </array>');
+    expect(plist).toContain('<key>WorkingDirectory</key>\n  <string>/r</string>');
+    expect(plist).toContain('<key>RunAtLoad</key>\n  <true/>');
+    expect(plist).toContain('<key>StandardOutPath</key>\n  <string>/h/.config/AgentBoard/logs/server.log</string>');
+    expect(plist).toContain('<key>StandardErrorPath</key>\n  <string>/h/.config/AgentBoard/logs/server.log</string>');
+    // 路径含 XML 元字符时转义，避免 plist 解析失败
+    expect(buildLaunchAgentPlist({ nodePath: '/a&b/node', serverEntry: '/r/s.js', repoRoot: '/r', logFile: '/l.log' })).toContain('<string>/a&amp;b/node</string>');
+  });
+
+  it('resolveLaunchAgentPaths：plist 在 ~/Library/LaunchAgents，config 走 ~/.config/AgentBoard（非 APPDATA）', () => {
+    const p = resolveLaunchAgentPaths('/repo', '/Users/alice');
+    expect(p.plistPath).toBe(join('/Users/alice', 'Library', 'LaunchAgents', 'com.agentboard.server.plist'));
+    expect(p.configPath).toBe(join('/Users/alice', '.config', 'AgentBoard', 'config.json'));
+    expect(p.logFile).toBe(join('/Users/alice', '.config', 'AgentBoard', 'logs', 'server.log'));
+    expect(p.serverEntry).toBe(join('/repo', 'apps', 'server', 'dist', 'index.js'));
+    expect(() => resolveLaunchAgentPaths('/repo', undefined)).toThrow('HOME');
+  });
+
+  it('launchctl 参数：bootstrap gui/<uid> <plist> / bootout gui/<uid>/<label>', () => {
+    expect(buildBootstrapArgs(501, '/p.plist')).toEqual(['bootstrap', 'gui/501', '/p.plist']);
+    expect(buildBootoutArgs(501)).toEqual(['bootout', `gui/501/${LAUNCH_LABEL}`]);
+  });
+
+  it('install（darwin 分派）：写 plist + bootstrap；重复 install 先 bootout 再 bootstrap', async () => {
+    const env = scaffoldLaunch({ port: 9123 });
+    try {
+      const r1 = fakeLaunchRunner();
+      const t1 = makeIo();
+      await installAutostart(t1.io, { platform: 'darwin', runner: r1.runner, launchPaths: env.paths, nodePath: '/usr/local/bin/node', uid: 501 });
+      expect(existsSync(env.paths.plistPath)).toBe(true);
+      const plist = readFileSync(env.paths.plistPath, 'utf8');
+      expect(plist).toContain('<string>/usr/local/bin/node</string>');
+      expect(plist).toContain(env.paths.serverEntry);
+      expect(r1.calls.find((c) => c.cmd === 'launchctl' && c.args[0] === 'bootstrap')!.args).toEqual(['bootstrap', 'gui/501', env.paths.plistPath]);
+      expect(t1.out()).toContain('已安装开机自启');
+      expect(t1.out()).toContain(env.paths.logFile);
+      expect(t1.out()).toContain(LAUNCH_LABEL);
+
+      // 已加载：先 bootout 再 bootstrap（否则 bootstrap 会因重复失败）
+      const r2 = fakeLaunchRunner({ loaded: true });
+      const t2 = makeIo();
+      await installAutostart(t2.io, { platform: 'darwin', runner: r2.runner, launchPaths: env.paths, uid: 501 });
+      const subs = r2.calls.filter((c) => c.cmd === 'launchctl' && c.args[0] !== 'list').map((c) => c.args[0]);
+      expect(subs).toEqual(['bootout', 'bootstrap']);
+      expect(t2.out()).toContain('覆盖已有 plist');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('install 前置：服务未构建报错并提示 corepack pnpm -r build', async () => {
+    const env = scaffoldLaunch();
+    try {
+      rmSync(env.paths.serverEntry, { force: true });
+      const { runner } = fakeLaunchRunner();
+      const t = makeIo();
+      await expect(installAutostart(t.io, { platform: 'darwin', runner, launchPaths: env.paths, uid: 501 })).rejects.toThrow('corepack pnpm -r build');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('uninstall：bootout + 删 plist；未装提示；bootout 非「未加载」失败报错且不删', async () => {
+    const env = scaffoldLaunch();
+    try {
+      const t0 = makeIo();
+      await uninstallAutostart(t0.io, { platform: 'darwin', runner: fakeLaunchRunner().runner, launchPaths: env.paths, uid: 501 });
+      expect(t0.out()).toContain('未安装');
+
+      const { runner, calls } = fakeLaunchRunner();
+      const t1 = makeIo();
+      await installAutostart(t1.io, { platform: 'darwin', runner, launchPaths: env.paths, uid: 501 });
+      calls.length = 0;
+      await uninstallAutostart(t1.io, { platform: 'darwin', runner, launchPaths: env.paths, uid: 501 });
+      expect(calls.find((c) => c.args[0] === 'bootout')!.args).toEqual(['bootout', `gui/501/${LAUNCH_LABEL}`]);
+      expect(existsSync(env.paths.plistPath)).toBe(false);
+      expect(t1.out()).toContain('已移除开机自启');
+
+      // 非「未加载」类失败：报错且 plist 保留（避免卸载失败却以为成功）
+      const env2 = scaffoldLaunch();
+      try {
+        await installAutostart(makeIo().io, { platform: 'darwin', runner: fakeLaunchRunner().runner, launchPaths: env2.paths, uid: 501 });
+        const runnerBad: Runner = async (cmd, args) => {
+          if (args[0] === 'bootout') return { code: 1, stdout: '', stderr: 'Boot-out failed: 1: Operation not permitted' };
+          return { code: 0, stdout: '', stderr: '' };
+        };
+        await expect(uninstallAutostart(makeIo().io, { platform: 'darwin', runner: runnerBad, launchPaths: env2.paths, uid: 501 })).rejects.toThrow('bootout 失败');
+        expect(existsSync(env2.paths.plistPath)).toBe(true);
+      } finally {
+        env2.cleanup();
+      }
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('status：plist + 已加载 + 服务可达；--json 结构化', async () => {
+    const port = Number(base.split(':').pop());
+    const env = scaffoldLaunch({ port });
+    handler = (m, u) =>
+      m === 'GET' && u === '/api/version'
+        ? { status: 200, body: { name: 'agentboard-server', version: '0.1.0' }, headers: { [SERVER_VERSION_HEADER]: CLI_VERSION } }
+        : undefined;
+    try {
+      const t = makeIo();
+      const ctx = { base: '', json: false, agentId: 't', io: t.io };
+      await installAutostart(t.io, { platform: 'darwin', runner: fakeLaunchRunner().runner, launchPaths: env.paths, uid: 501 });
+      const t2 = makeIo();
+      await statusAutostart({ ...ctx, io: t2.io }, { platform: 'darwin', runner: fakeLaunchRunner({ loaded: true }).runner, launchPaths: env.paths });
+      expect(t2.out()).toContain('LaunchAgent');
+      expect(t2.out()).toContain('已加载');
+      expect(t2.out()).toContain('服务: 可达');
+      expect(t2.out()).toContain(env.paths.plistPath);
+
+      const t3 = makeIo();
+      await statusAutostart({ base: '', json: true, agentId: 't', io: t3.io }, { platform: 'darwin', runner: fakeLaunchRunner({ loaded: true }).runner, launchPaths: env.paths });
+      const data = JSON.parse(t3.out()) as { autostart: { installed: boolean; provider: string; label: string; plist: string; loaded: boolean }; service: { reachable: boolean }; log: string };
+      expect(data.autostart).toMatchObject({ installed: true, provider: 'launchagent', label: LAUNCH_LABEL, plist: env.paths.plistPath, loaded: true });
+      expect(data.service.reachable).toBe(true);
       expect(data.log).toBe(env.paths.logFile);
     } finally {
       env.cleanup();
@@ -1512,7 +1693,7 @@ describe('shortcut（纯构造 + 假 Runner）', () => {
       writeFileSync(env.paths.iconPath, '// icon\n', 'utf8');
       await expect(createShortcut(ctxObj, { runner: ps.runner, paths: env.paths })).rejects.toThrow('kb autostart install');
       const reg = fakeRunner();
-      await installAutostart(t.io, { runner: reg.runner, paths: env.paths, nodePath: 'C:\\n\\node.exe' });
+      await installAutostart(t.io, { runner: reg.runner, paths: env.paths, nodePath: 'C:\\n\\node.exe', platform: 'win32' });
       const t2 = makeIo();
       await createShortcut({ base: '', json: false, agentId: 't', io: t2.io }, { runner: ps.runner, paths: env.paths });
       expect(t2.out()).toContain('已创建桌面快捷方式');
