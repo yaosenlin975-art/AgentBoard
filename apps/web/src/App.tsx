@@ -30,6 +30,8 @@ const ChangelogPanel = lazy(() =>
 );
 // P3-B：专家组（左侧栏下半部分入口，独立视图；不并入会话设置）
 const ExpertsView = lazy(() => import('./components/experts/ExpertsView').then((m) => ({ default: m.ExpertsView })));
+// GUIDE-1：教程（左栏第 7 个主入口，与其余六个平级）
+const GuideView = lazy(() => import('./components/guide/GuideView').then((m) => ({ default: m.GuideView })));
 
 /** 动态视图加载中的占位（每次切换视图时出现一次） */
 const viewLoading = (
@@ -68,6 +70,7 @@ export default function App() {
     knowledge: '知识库',
     log: '日志',
     chat: '聊天',
+    guide: '教程',
     experts: '专家组',
   };
 
@@ -142,6 +145,10 @@ export default function App() {
                       </Suspense>
                     </div>
                   </div>
+                ) : view === 'guide' ? (
+                  <Suspense fallback={viewLoading}>
+                    <GuideView />
+                  </Suspense>
                 ) : view === 'experts' ? (
                   <Suspense fallback={viewLoading}>
                     <ExpertsView />

@@ -33,6 +33,8 @@ const ENTRY_ICON: Record<NavView, string> = {
   knowledge: 'M4 4h16v16H4zM8 8h8M8 12h8M8 16h5',
   log: 'M4 6h16M4 12h16M4 18h10',
   chat: 'M4 5h16v10H9l-5 4z',
+  // GUIDE-1：教程（摊开的书，区别于知识库的文档图标）
+  guide: 'M4 5a2 2 0 012-2h5v16H6a2 2 0 01-2-2zM20 5a2 2 0 00-2-2h-5v16h5a2 2 0 002-2z',
   // P3-B：专家组（三个小人，区别于单人的账号图标）
   experts: 'M8 11a3 3 0 100-6 3 3 0 000 6M2 19c0-2.2 2.7-4 6-4s6 1.8 6 4M16 11a2.5 2.5 0 100-5M18 14.5c2.4.4 4 1.9 4 3.5',
 };
@@ -44,6 +46,8 @@ const ENTRIES: Array<{ view: NavView; label: string }> = [
   { view: 'knowledge', label: '知识库' },
   { view: 'log', label: '日志' },
   { view: 'chat', label: '聊天' },
+  // GUIDE-1：第 7 个主入口，与其余六个平级（专家组仍在底部组，不在此列）
+  { view: 'guide', label: '教程' },
 ];
 
 const WS_DOT: Record<WsStatus, string> = {
@@ -245,7 +249,7 @@ export function SideBar({ workspace }: { workspace: Workspace | null }) {
         <WorkspaceSidebarOverlay triggerRef={workspaceTriggerRef} />
       </div>
 
-      {/* ② 六入口（聊天只在这里出现一次，未读徽标挂本项；待决策分项徽标见 DEC-BADGE） */}
+      {/* ② 主入口（聊天只在这里出现一次，未读徽标挂本项；待决策分项徽标见 DEC-BADGE） */}
       <ul className="ab-sidebar-nav flex flex-col gap-0.5 p-2" role="list">
         {ENTRIES.map((entry) => {
           const active = view === entry.view;

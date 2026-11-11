@@ -53,14 +53,15 @@ beforeEach(() => {
 });
 
 describe('视图枚举与守卫', () => {
-  it('[0] 七视图枚举固定，默认 board', () => {
-    expect(NAV_VIEWS).toEqual(['board', 'decisions', 'tree', 'knowledge', 'log', 'chat', 'experts']);
+  it('[0] 视图枚举固定，默认 board', () => {
+    expect(NAV_VIEWS).toEqual(['board', 'decisions', 'tree', 'knowledge', 'log', 'chat', 'guide', 'experts']);
     expect(useNavStore.getState().view).toBe('board');
     expect(DEFAULT_NAV_VIEW).toBe('board');
   });
 
   it('[0b] isNavView / isNavDrawer / normalizeNavView 的边界', () => {
     expect(isNavView('chat')).toBe(true);
+    expect(isNavView('guide')).toBe(true);
     expect(isNavView('detail')).toBe(false); // RightPanel 的浮窗视图不属于导航视图
     expect(isNavView(undefined)).toBe(false);
     expect(isNavDrawer('accounts')).toBe(true);
