@@ -205,6 +205,31 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     }
 }
 
+/// 取 `GET <path>` 的 JSON 体（本地服务，`Connection: close` 读到 EOF；非 200 或解析失败返回 None）。
+/// E1（Dock 角标）取数用；与 `is_healthy` 同一套 std TcpStream 最小 HTTP 实现，不引入 HTTP 依赖。
+pub fn http_get_json(port: u16, path: &str) -> Option<serde_json::Value> {
+    let Ok(addr) = format!("{HOST}:{port}").parse::<SocketAddr>() else {
+        return None;
+    };
+    let Ok(mut socket) = TcpStream::connect_timeout(&addr, Duration::from_millis(2000)) else {
+        return None;
+    };
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(4000)));
+    let _ = socket.set_write_timeout(Some(Duration::from_millis(2000)));
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {HOST}\r\nConnection: close\r\n\r\n");
+    socket.write_all(request.as_bytes()).ok()?;
+    let mut raw = Vec::new();
+    socket.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    let status_ok = text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200");
+    if !status_ok {
+        return None;
+    }
+    // 响应带 Content-Length（express res.json），无 chunked；按首个空行切头，余下即 JSON 体。
+    let body = text.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str(body.trim()).ok()
+}
+
 /// 健康探活：请求 `GET /api/version`，要求 200 且 `name=agentboard-server`。
 ///
 /// 项目没有 `/api/health` 端点（卡面已核对），`/api/version` 是现存探活口径；

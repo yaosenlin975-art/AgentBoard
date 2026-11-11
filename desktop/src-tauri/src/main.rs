@@ -123,6 +123,101 @@ fn shutdown(app: &AppHandle) {
     }
 }
 
+/// E1（MAC-TRIAL-E1）：Dock 角标数 = 所有工作区的「待验收」issue 数 + 「open」待决策数之和。
+/// 取数端点（全部只读 GET，与 kb stats / kb decisions 同源）：
+/// - `GET /api/workspaces`：全部工作区 id；
+/// - `GET /api/issues?workspace=<id>&fields=status`：逐区数 `status == "待验收"`；
+/// - `GET /api/decisions?workspace_id=<id>&state=open&limit=1`：取 `counts.open`。
+/// 任一请求失败返回 None（本轮不更新角标，不清零、不报错）。
+fn dock_badge_count(port: u16) -> Option<i64> {
+    let workspaces = server_process::http_get_json(port, "/api/workspaces")?;
+    let mut total: i64 = 0;
+    for workspace in workspaces.as_array()? {
+        let id = workspace.get("id")?.as_str()?;
+        let issues = server_process::http_get_json(
+            port,
+            &format!("/api/issues?workspace={id}&fields=status"),
+        )?;
+        total += review_issue_count(&issues)?;
+        let decisions = server_process::http_get_json(
+            port,
+            &format!("/api/decisions?workspace_id={id}&state=open&limit=1"),
+        )?;
+        total += open_decision_count(&decisions)?;
+    }
+    Some(total)
+}
+
+/// `GET /api/issues?…&fields=status` 的数组 → 「待验收」条数（非数组返回 None）。
+fn review_issue_count(issues: &serde_json::Value) -> Option<i64> {
+    Some(
+        issues
+            .as_array()?
+            .iter()
+            .filter(|issue| issue.get("status").and_then(|s| s.as_str()) == Some("待验收"))
+            .count() as i64,
+    )
+}
+
+/// `GET /api/decisions?…&state=open` 的响应 → `counts.open`（缺失返回 None）。
+fn open_decision_count(decisions: &serde_json::Value) -> Option<i64> {
+    decisions.pointer("/counts/open")?.as_i64()
+}
+
+/// E1：把角标数挂到 mac Dock（`set_badge_count`：0/None 都会移除角标，归零即消失）。
+/// 仅 mac 实装（tao 只在 mac 实现 Dock badge；Windows 任务栏对应的是 overlay icon，不在本卡范围）。
+fn apply_dock_badge(app: &AppHandle, count: i64) {
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.set_badge_count(Some(count));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, count);
+    }
+}
+
+/// E1：Dock 角标轮询线程。成功取数后 30s 一轮；服务未就绪/瞬时失败 5s 退避重试（不清角标）。
+/// 轮询期间每秒检查 `quitting`，退出即时收线。非 mac 平台不起线程（无 Dock 可挂）。
+fn spawn_dock_badge_poller(app: AppHandle) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::time::{Duration, Instant};
+        let port = app.state::<ShellState>().port;
+        std::thread::spawn(move || {
+            let poll_every = Duration::from_secs(30);
+            let retry_every = Duration::from_secs(5);
+            let mut next_wait = retry_every;
+            loop {
+                let quit = || app.state::<ShellState>().quitting.load(Ordering::SeqCst);
+                match dock_badge_count(port) {
+                    Some(count) => {
+                        apply_dock_badge(&app, count);
+                        next_wait = poll_every;
+                    }
+                    None => {
+                        next_wait = retry_every;
+                    }
+                }
+                let deadline = Instant::now() + next_wait;
+                while Instant::now() < deadline {
+                    if quit() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                if quit() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
 /// 退出前等启动线程收口（B11）：壳刚启动、server 还没健康就点退出时，`shutdown` 抢不到句柄
 /// （还在 `ensure_server` 的健康等待里），靠 `start_server` 线程的竞态分支停掉刚拉起的 server；
 /// 若不等它出结果就 `exit`，后台线程随进程死亡，刚 spawn 的 server 成孤儿（端口/`server.lock`
@@ -596,6 +691,9 @@ fn main() {
 
             start_server(app.handle().clone());
 
+            // E1：Dock 角标轮询（仅 mac 起线程）：服务未就绪时线程内部自行退避重试。
+            spawn_dock_badge_poller(app.handle().clone());
+
             // 验收辅助（默认不启用）：无 GUI 抓屏权限时，用 `--quit-after-ms <n>` 定时触发
             // 与托盘「退出」完全相同的 shutdown + exit 路径，便于自动化验证「退出后进程消失、锁释放、端口关闭」。
             // 该参数只影响触发时机，不改变停服语义；不带参数时行为与正常托盘退出一致。
@@ -633,7 +731,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{shell_init_script, wake_steps, window_chrome, WakeStep, WindowPhase};
+    use super::{
+        open_decision_count, review_issue_count, shell_init_script, wake_steps, window_chrome,
+        WakeStep, WindowPhase,
+    };
 
     #[test]
     fn hidden_window_shows_unminimizes_and_focuses() {
@@ -699,5 +800,44 @@ mod tests {
         assert!(mac.contains("nativeTitleBar: true"), "{mac}");
         let win = shell_init_script("windows", window_chrome("windows"));
         assert!(win.contains("nativeTitleBar: false"), "{win}");
+    }
+
+    #[test]
+    fn dock_badge_counts_review_issues_from_fields_status_array() {
+        let issues = serde_json::json!([
+            { "status": "待验收" },
+            { "status": "已关闭" },
+            { "status": "待验收" },
+            { "status": "进行中" },
+            { "status": "待规划" }
+        ]);
+        assert_eq!(review_issue_count(&issues), Some(2));
+        assert_eq!(review_issue_count(&serde_json::json!([])), Some(0));
+        // 非 JSON 数组（接口形态变化）→ None：本轮不更新角标
+        assert_eq!(review_issue_count(&serde_json::json!({ "items": [] })), None);
+    }
+
+    #[test]
+    fn dock_badge_reads_open_decisions_from_counts() {
+        let decisions = serde_json::json!({
+            "decisions": [],
+            "counts": { "grace": 1, "open": 3, "stale_open": 0, "answered_recent": 0 }
+        });
+        assert_eq!(open_decision_count(&decisions), Some(3));
+        assert_eq!(
+            open_decision_count(&serde_json::json!({ "decisions": [] })),
+            None
+        );
+    }
+
+    /// E1 取数链路对账（只读 GET，依赖本机 8787 看板服务在跑；CI/无服务环境跳过：
+    /// `cargo test -- --ignored` 显式执行）。与 `kb stats --workspace <id>` 的待验收 +
+    /// `kb decisions --state open` 条数同源，数字一致（角标为全部工作区之和）。
+    #[test]
+    #[ignore = "依赖本机 8787 看板服务（只读 GET）"]
+    fn dock_badge_count_against_live_server() {
+        let count = super::dock_badge_count(8787);
+        assert!(count.is_some(), "取数失败：workspaces/issues/decisions 任一请求未通过");
+        assert!(count.unwrap() >= 0);
     }
 }
