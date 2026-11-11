@@ -193,8 +193,25 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs, travelAutoRecover }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库；`travelAutoRecover` 默认 `true`，见 §14 自动回收） | — | routes.ts |
-| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数、`travelAutoRecover?: boolean`（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发、附件设置与 `travelAutoRecover` 即时生效（ticker 每轮实时读取）；`port` / `dbPath` 重启生效 | 400 未提供字段 / 取值非法 | routes.ts |
+| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs, travelAutoRecover, cliDefaultModels }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库；`travelAutoRecover` 默认 `true`，见 §14 自动回收；`cliDefaultModels: Record<string,string>` 为各 CLI 默认模型，键=CLI id、值=模型 id，**没有全局 defaultModel**、不做跨 CLI 兜底；旧配置缺该字段或字段非法时读出 `{}`） | — | settingsRoutes.ts:138 |
+| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数、`travelAutoRecover?: boolean`、`cliDefaultModels?: Record<string,string>`（按键**合并**进当前 map，非全量替换；`''` = 清除该键且跳过可用性校验；键必须是已注册 CLI，未知 → 400；`supportsModelSelection=false` 的 CLI（如 dsh，模型由 profile 配置决定）→ 400；非空值 trim 后 ≤100 字（超长 → 400），再对该 CLI 调一次 `listModels()` 校验：清单非空且不含该值 → 422 `MODEL_UNAVAILABLE`，清单为空 / 探测失败 → 放行保存；至少一个字段；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发、附件设置与 `travelAutoRecover` 即时生效（ticker 每轮实时读取）；`port` / `dbPath` 重启生效；校验失败时整个 PATCH 拒绝，`cliDefaultModels` 不落盘 | 400 `VALIDATION_ERROR` 未提供字段 / 取值非法 / 未知 CLI / CLI 不支持模型选择 / 模型名超 100 字；422 `MODEL_UNAVAILABLE` 模型不在该 CLI 可用清单 | settingsRoutes.ts:145 |
+
+### CLI 默认模型（CLI-DEFAULT-MODEL）
+
+`settings.cliDefaultModels`（`Record<CLI id, 模型 id>`）只在**新建会话**（`POST /api/sessions`）解析 model 时读取；既有会话不受设置变更影响。
+
+```
+# 设置某 CLI 默认模型（按键合并；未知 CLI / CLI 不支持模型选择 → 400；不在清单 → 422）
+curl -X PATCH http://127.0.0.1:8787/api/settings -H "Content-Type: application/json" -d '{"cliDefaultModels":{"codex":"gpt-5"}}'
+# 清除该 CLI 的默认模型（'' 删键）
+curl -X PATCH http://127.0.0.1:8787/api/settings -H "Content-Type: application/json" -d '{"cliDefaultModels":{"codex":""}}'
+# 新建会话不带 model：读 cliDefaultModels[cli]；未配置 → null（使用 CLI 自身默认）
+curl -X POST http://127.0.0.1:8787/api/sessions -H "Content-Type: application/json" -d '{"cli":"codex","workspace_id":"<id>","prompt":"hi"}'
+# 新建会话显式 model：优先于设置默认；不在清单 / CLI 不支持模型选择 → 422，不建会话
+curl -X POST http://127.0.0.1:8787/api/sessions -H "Content-Type: application/json" -d '{"cli":"codex","model":"gpt-5","workspace_id":"<id>","prompt":"hi"}'
+```
+
+错误码：400 `VALIDATION_ERROR`（未知 CLI；CLI 不支持模型选择，如 dsh；模型名超 100 字）；422 `MODEL_UNAVAILABLE`（模型不在该 CLI 可用清单——settings PATCH 整体拒绝不落盘，`POST /api/sessions` 不建会话、不 claim issue）。
 
 ### SKILLS-SYNC 配套技能复制到本机 agent 目录
 
@@ -557,10 +574,10 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `GET /api/sessions/:id/queue` | — | `{ texts: string[] }`：当前内存排队文本副本（只读，无编辑接口） | 404 会话不存在 | routes.ts:439 |
 | `GET /api/sessions/:id/messages` | query：`after?: 非负整数毫秒时间戳`（默认 0） | `Message[]`（ts 升序，ts>after） | 400 after 非法；404 会话不存在 | routes.ts:444 |
 | `GET /api/sessions/:id/events` | query：`after_seq?: 非负整数`（默认 0） | `SessionEvent[]`（`session_id` `seq` `type` `payload` `created_at`，seq 升序、seq>after_seq）；BORROW-4.2：本表上线前的老会话返回 `[]`，不回填历史 | 400 after_seq 非法；404 会话不存在 | routes.ts:1231 |
-| `POST /api/sessions` | body：`cli: string 非空`、`model?: string\|null`、`issue_id?: string`、`workspace_id?: string`（**issue_id 为空时必填**）、`prompt?: string`、`reuse_session?: 'last'\|'new'`（'last' 复用该任务已绑定会话的 adapter_session_id）、`knowledge_enabled?: boolean`、`knowledge_query?: string 1-500`、`selected_attachment_ids?: UUID[]`（仅 issue-bound session 可用，最多 100 个）、`retry_unknown_images?: boolean`（实际投递前缀含 unknown 时必须为 true） | 绑 issue：派发（自动 claim + 起首轮）；按评论顺序把所选图片截断为最多 5 张、总计 ≤20 MiB 的前缀；其余图片保持待读并追加 `另有 N 张未附`，返回 `{ ...session, knowledge, remaining_attachment_count }`。知识参考块（`knowledge_enabled` 默认开）只列 `id + knowledge:<id> + 标题 + scope/revision`，不内联正文，会话按需 `kb knowledge show <id>` 读取；无命中时 prompt 不含该块。图片输入能力未验证时不派发所选图片。自由会话返回 `Session`，不含剩余图片计数。WS：绑 issue 先 issue.changed，再 session.changed | 400 issue_id 为空未给 workspace_id 或图片ID未绑定 issue；400 未知字段（body 为 strict，含把 `prompt` 误写成 `promptTemplate` 的反例）；400 未知 CLI、选择 ID 超过 100、`IMAGE_DELIVERY_IN_PROGRESS`、`IMAGE_DELIVERY_UNKNOWN_RETRY_REQUIRED` 或 `IMAGE_DELIVERY_UNVERIFIED`；404 任务 / 工作空间 / 图片不存在；409 `ISSUE_CLAIMED` 已被占用（CLAIM-MSG，文案含占用者） | routes.ts:456 |
+| `POST /api/sessions` | body：`cli: string 非空`、`model?: string\|null`（解析优先级写死：显式 `model` > `settings.cliDefaultModels[cli]` > `null`，无第三级回落；显式值与配置的默认值做同样校验——CLI `supportsModelSelection=false` 或清单非空且不含该值 → 422 `MODEL_UNAVAILABLE`，**不降级**（不改成 CLI 默认、不沿用上一次选择），校验失败不建会话、不 claim issue；未配置 → `null` = 使用 CLI 自身默认（这是未配置语义，不是失败兜底）；模型在创建时解析并落库，之后改设置不影响既有会话）、`issue_id?: string`、`workspace_id?: string`（**issue_id 为空时必填**）、`prompt?: string`、`reuse_session?: 'last'\|'new'`（'last' 复用该任务已绑定会话的 adapter_session_id）、`knowledge_enabled?: boolean`、`knowledge_query?: string 1-500`、`selected_attachment_ids?: UUID[]`（仅 issue-bound session 可用，最多 100 个）、`retry_unknown_images?: boolean`（实际投递前缀含 unknown 时必须为 true） | 绑 issue：派发（自动 claim + 起首轮）；按评论顺序把所选图片截断为最多 5 张、总计 ≤20 MiB 的前缀；其余图片保持待读并追加 `另有 N 张未附`，返回 `{ ...session, knowledge, remaining_attachment_count }`。知识参考块（`knowledge_enabled` 默认开）只列 `id + knowledge:<id> + 标题 + scope/revision`，不内联正文，会话按需 `kb knowledge show <id>` 读取；无命中时 prompt 不含该块。图片输入能力未验证时不派发所选图片。自由会话返回 `Session`，不含剩余图片计数。WS：绑 issue 先 issue.changed，再 session.changed | 400 issue_id 为空未给 workspace_id 或图片ID未绑定 issue；400 未知字段（body 为 strict，含把 `prompt` 误写成 `promptTemplate` 的反例）；400 未知 CLI、选择 ID 超过 100、`IMAGE_DELIVERY_IN_PROGRESS`、`IMAGE_DELIVERY_UNKNOWN_RETRY_REQUIRED` 或 `IMAGE_DELIVERY_UNVERIFIED`；404 任务 / 工作空间 / 图片不存在；422 `MODEL_UNAVAILABLE`（model 或 `cliDefaultModels[cli]` 不在该 CLI 可用清单，或该 CLI 不支持模型选择）；409 `ISSUE_CLAIMED` 已被占用（CLAIM-MSG，文案含占用者） | sessionRoutes.ts:234 |
 | `POST /api/sessions/:id/messages` | body：`text: string 非空` | `{ queued: boolean }`；false=空闲立即起轮（状态回运行中），true=入队待合并（运行时变化经 WS session.runtime）。两种情况均先落 user 消息（WS message.added）。BORROW-4.3：会话已暂停（`paused_at` 非空）时恒返回 `true`，消息落库并入队，等恢复后按序交付 | 400 text 为空；404 会话不存在 | routes.ts:1453 |
 | `POST /api/sessions/:id/stop` | — | `Session`（status=已结束）；kill 当前轮，队列保留（暂停标记不变） | 404 会话不存在 | routes.ts:1498 |
-| `PATCH /api/sessions/:id` | body：`model?: 非空 string\|null`、`title?: 1-50 字 string\|null`（两者可同时给；null 均表示清空——model 回落 CLI 默认、title 回落派生标题）、`archived?: boolean`、`paused?: boolean`（BORROW-4.3，必须单独提交，不能与前三者同批） | 非 paused：`Session`（含派生 `paused`），WS session.changed；`paused=true`：`Session`（`paused=true`）并写 `session_event(type=session.paused)` + WS `session.paused`；`paused=false`：`Session`（`paused=false`，附加 `resume_after_seq`）并写 `session_event(type=session.resumed)` + WS `session.resumed`，随后消费暂停期队列 | 400 四键都缺 / model 空串 / title trim 后为空或超 50 字 / paused 与其它键同批；404 会话不存在 | routes.ts:1538 |
+| `PATCH /api/sessions/:id` | body：`model?: 非空 string\|null`、`title?: 1-50 字 string\|null`（两者可同时给；null 均表示清空——model 清空后后续轮次用 CLI 自身默认，**不读设置页 `cliDefaultModels`**（该默认只在新建会话解析，两者不冲突）、title 回落派生标题）、`archived?: boolean`、`paused?: boolean`（BORROW-4.3，必须单独提交，不能与前三者同批） | 非 paused：`Session`（含派生 `paused`），WS session.changed；`paused=true`：`Session`（`paused=true`）并写 `session_event(type=session.paused)` + WS `session.paused`；`paused=false`：`Session`（`paused=false`，附加 `resume_after_seq`）并写 `session_event(type=session.resumed)` + WS `session.resumed`，随后消费暂停期队列 | 400 四键都缺 / model 空串 / title trim 后为空或超 50 字 / paused 与其它键同批；404 会话不存在 | sessionRoutes.ts:403 |
 
 ### 会话暂停 / 恢复（BORROW-4.3，`session.paused_at`，不重建表）
 
