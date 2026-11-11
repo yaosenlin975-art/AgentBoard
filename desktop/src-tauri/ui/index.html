@@ -6,9 +6,18 @@
   <style>
     /* WINTITLE-01：无边框窗口的启动页也自带 32px 自绘标题栏（拖拽 + 三键），
        配暖石墨令牌（与 apps/web 的 --ab-* 同值），启动失败时用户仍能移动/关闭窗口。 */
-    :root { color-scheme: light; --ab-page:#f7f4ee; --ab-card:#fdfbf7; --ab-raised:#efe9df;
+    /* E3（MAC-TRIAL-E3）：启动页随系统外观。本页与主站不同源（tauri 资产源 ≠ 127.0.0.1 服务源），
+       读不到主站 localStorage 的主题选择，只能跟系统 prefers-color-scheme——启动瞬间与系统一致，
+       主站加载后回到用户主题（显式浅/深优先于系统，口径见卡 104300b2）。
+       color-scheme: light dark 同时让 WKWebView 的 under-page 背景随外观，消除深色下白闪。 */
+    :root { color-scheme: light dark; --ab-page:#f7f4ee; --ab-card:#fdfbf7; --ab-raised:#efe9df;
       --ab-hairline:rgba(31,27,22,.1); --ab-ink:#1f1b16; --ab-ink-2:#5e554a; --ab-ink-3:#6b6257;
       --ab-accent:#a04a08; --ab-del:#a13d3d; --ab-ease:cubic-bezier(.2,0,0,1); --ab-dur:160ms; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ab-page:#161513; --ab-card:#1c1a18; --ab-raised:#262421;
+        --ab-hairline:rgba(239,233,222,.12); --ab-ink:#efe9de; --ab-ink-2:#aaa398; --ab-ink-3:#a09a90;
+        --ab-accent:#f0a01e; --ab-del:#f08a7a; }
+    }
     html, body { height: 100%; margin: 0; }
     body {
       display: grid;
