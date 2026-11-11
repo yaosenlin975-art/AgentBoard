@@ -40,6 +40,8 @@
 
 ### macOS 宿主（未实测）
 
+前置依赖（Xcode CLT / rustup + apple target / Node ≥20 / pnpm 11.18.0）与「独立 Node 无 corepack」的安装口径见 [Docs/macos-build.md](Docs/macos-build.md)，本节命令与该文档一致。
+
 安装/构建/启动命令与 Windows 同款：
 
 ```bash
