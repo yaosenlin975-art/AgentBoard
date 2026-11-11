@@ -346,6 +346,29 @@ fn localized_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
+/// B07：托盘图标字节按平台分流。Windows 沿用 tray.ico（HICON 多帧，按 DPI 缩放）；
+/// macOS 用单色 Template PNG（黑 + alpha，icon_as_template 由系统按菜单栏深浅色自动反色），
+/// 按 ScaleFactor 选 1x/@2x 贴物理像素。两侧签名一致，调用点在所有平台编译。
+#[cfg(target_os = "macos")]
+fn tray_icon_bytes(app: &AppHandle) -> &'static [u8] {
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0);
+    if scale >= 2.0 {
+        include_bytes!("../icons/tray@2x.png")
+    } else {
+        include_bytes!("../icons/tray.png")
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tray_icon_bytes(_app: &AppHandle) -> &'static [u8] {
+    include_bytes!("../icons/tray.ico")
+}
+
 /// 建主窗口并挂关窗隐藏/页面加载回调；首次启动与重建共用，保证两条路径窗口行为一致。
 fn build_main_window(
     app: &AppHandle,
@@ -507,14 +530,18 @@ fn main() {
             let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-            // 托盘用独立资源 icons/tray.ico（16/20/24/32/40/48/64 多帧，专为小尺寸重绘的看板剪影），
-            // 不再拿 1024×1024 的应用图标当托盘图（那在小尺寸缩放后细节全糊）。
-            // 取舍：Windows 托盘走 HICON，Tauri 的 ico 解码（image crate）取「位深最高 + 面积最大」的一帧（这里是 64×64），
-            // 再由系统按 DPI 缩到 16/20/24/32；多帧保留是为了同一文件可直接交给 Windows/安装器与未来按 DPI 选帧，
-            // 不需要为每种缩放再生成一套资源。
-            let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.ico"))?;
+            // 托盘图标按平台分流（B07）：
+            // - Windows 沿用 icons/tray.ico（16/20/24/32/40/48/64 多帧，专为小尺寸重绘的看板剪影；HICON 按位深+面积取帧），
+            //   不再拿 1024×1024 的应用图标当托盘图（那在小尺寸缩放后细节全糊）。
+            // - macOS 菜单栏惯例是单色 Template Image（黑 + alpha）：配合 icon_as_template 由系统按菜单栏深浅色自动反色，
+            //   彩色 ico 在 mac 菜单栏会被压到极小且与菜单栏前景色无关，几乎不可见（本卡现象）。
+            //   按 ScaleFactor 选 tray.png（1x=16px）/ tray@2x.png（2x=32px）；tray-icon 恒把托盘高度归一到 18pt，
+            //   两档贴物理像素（18/36px）避免 1x 资产在 retina 上放大发糊。
+            let tray_icon = tauri::image::Image::from_bytes(tray_icon_bytes(app.handle()))?;
             let tray = TrayIconBuilder::new()
                 .icon(tray_icon)
+                // B07：mac 上作为 Template Image 渲染（自动适配深浅色菜单栏）；其它平台该开关无效。
+                .icon_as_template(cfg!(target_os = "macos"))
                 .menu(&menu)
                 // 左键不再弹菜单：左键 = 显示并聚焦窗口；右键仍是菜单。
                 .show_menu_on_left_click(false)
