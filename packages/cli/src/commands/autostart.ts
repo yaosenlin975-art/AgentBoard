@@ -205,24 +205,66 @@ export interface AutostartOptions {
   launchPaths?: LaunchAgentPaths;
   /** launchctl 的 gui/<uid> 会话（测试注入；默认 process.getuid） */
   uid?: number;
+  /** 覆盖 systemd user unit 路径（测试注入临时目录）；默认按 HOME 推导 */
+  systemdPaths?: SystemdPaths;
 }
 
-/** 安装：前置检查 → 写 vbs 常量 → reg add（幂等：同值直接成功；异值覆盖提示） */
+/** 三平台自启实现名；status --json 的 provider 字段取值 */
+export type AutostartProvider = 'hkcu-run' | 'launchagent' | 'systemd-user';
+
+/** 统一抽象：同一组 install/uninstall/status 背后按平台落不同机制 */
+export interface AutostartBackend {
+  readonly provider: AutostartProvider;
+  install(io: Io): Promise<void>;
+  uninstall(io: Io): Promise<void>;
+  status(ctx: Ctx): Promise<void>;
+}
+
+/**
+ * 平台 → 自启后端。darwin=LaunchAgent，linux=systemd user unit，win32=HKCU Run + vbs。
+ * 其余平台直接报错（不静默退化），便于用户明确知道不支持。
+ */
+export function createAutostartBackend(platform: NodeJS.Platform, opts: AutostartOptions = {}): AutostartBackend {
+  if (platform === 'darwin') {
+    return {
+      provider: 'launchagent',
+      install: (io) => installLaunchAgent(io, opts),
+      uninstall: (io) => uninstallLaunchAgent(io, opts),
+      status: (ctx) => statusLaunchAgent(ctx, opts),
+    };
+  }
+  if (platform === 'linux') {
+    return {
+      provider: 'systemd-user',
+      install: (io) => installSystemdUnit(io, opts),
+      uninstall: (io) => uninstallSystemdUnit(io, opts),
+      status: (ctx) => statusSystemdUnit(ctx, opts),
+    };
+  }
+  if (platform === 'win32') {
+    return {
+      provider: 'hkcu-run',
+      install: (io) => installWindowsAutostart(io, opts),
+      uninstall: (io) => uninstallWindowsAutostart(io, opts),
+      status: (ctx) => statusWindowsAutostart(ctx, opts),
+    };
+  }
+  throw new Error(`不支持的开机自启平台：${platform}（仅 Windows / macOS / Linux）`);
+}
+
+/** 安装：按平台分派到 LaunchAgent / systemd user unit / HKCU Run */
 export async function installAutostart(io: Io, opts: AutostartOptions = {}): Promise<void> {
-  if ((opts.platform ?? process.platform) === 'darwin') return installLaunchAgent(io, opts);
-  return installWindowsAutostart(io, opts);
+  return createAutostartBackend(opts.platform ?? process.platform, opts).install(io);
 }
 
-/** 卸载：仅当 Run 键值含 agentboard.vbs 才删（非自家值不动）；vbs 文件保留 */
+/** 卸载：按平台分派；三平台都要求撤销后无残留自启项 */
 export async function uninstallAutostart(io: Io, opts: AutostartOptions = {}): Promise<void> {
-  if ((opts.platform ?? process.platform) === 'darwin') return uninstallLaunchAgent(io, opts);
-  return uninstallWindowsAutostart(io, opts);
+  return createAutostartBackend(opts.platform ?? process.platform, opts).uninstall(io);
 }
 
 /** 状态：安装情况 + 服务可达性 + 日志路径 */
 export async function statusAutostart(ctx: Ctx, opts: AutostartOptions = {}): Promise<void> {
-  if ((opts.platform ?? process.platform) === 'darwin') return statusLaunchAgent(ctx, opts);
-  return statusWindowsAutostart(ctx, opts);
+  return createAutostartBackend(opts.platform ?? process.platform, opts).status(ctx);
 }
 
 async function installWindowsAutostart(io: Io, opts: AutostartOptions): Promise<void> {
@@ -488,7 +530,175 @@ async function statusLaunchAgent(ctx: Ctx, opts: AutostartOptions): Promise<void
   ctx.io.write(`日志: ${paths.logFile}\n`);
 }
 
-/** GET /api/version 探测（两平台状态命令共用） */
+// ---- Linux systemd（user unit）----
+
+/** systemd user unit 名 */
+export const SYSTEMD_UNIT_NAME = 'agentboard.service';
+
+export interface SystemdPaths {
+  repoRoot: string;
+  /** ~/.config/systemd/user/agentboard.service */
+  unitPath: string;
+  /** 服务端构建产物（前置检查） */
+  serverEntry: string;
+  /** ~/.config/AgentBoard/config.json（端口来源；与服务端 appDataDir 同口径） */
+  configPath: string;
+  logDir: string;
+  logFile: string;
+}
+
+export function resolveSystemdPaths(repoRoot: string, home: string | undefined): SystemdPaths {
+  if (!home) throw new Error('HOME 环境变量未设置，无法定位 ~/.config/systemd/user');
+  const configBase = join(home, '.config');
+  return {
+    repoRoot,
+    unitPath: join(configBase, 'systemd', 'user', SYSTEMD_UNIT_NAME),
+    serverEntry: join(repoRoot, 'apps', 'server', 'dist', 'index.js'),
+    configPath: join(configBase, 'AgentBoard', 'config.json'),
+    logDir: join(configBase, 'AgentBoard', 'logs'),
+    logFile: join(configBase, 'AgentBoard', 'logs', 'server.log'),
+  };
+}
+
+export function defaultSystemdPaths(): SystemdPaths {
+  return resolveSystemdPaths(findRepoRoot(dirname(fileURLToPath(import.meta.url))), homedir());
+}
+
+export interface SystemdUnitConfig {
+  nodePath: string;
+  serverEntry: string;
+  repoRoot: string;
+  logFile: string;
+}
+
+/** systemd 参数含空格时用双引号；内部 \ 与 " 转义 */
+function systemdQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * 生成 systemd user unit（纯函数，便于单测断言）。
+ * Restart=no 与 LaunchAgent 的 KeepAlive=false 同口径：服务自身单例锁，不在这里做崩溃重启。
+ */
+export function buildSystemdUnit(cfg: SystemdUnitConfig): string {
+  return `[Unit]
+Description=AgentBoard server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${systemdQuote(cfg.repoRoot)}
+ExecStart=${systemdQuote(cfg.nodePath)} ${systemdQuote(cfg.serverEntry)}
+Restart=no
+StandardOutput=append:${cfg.logFile}
+StandardError=append:${cfg.logFile}
+
+[Install]
+WantedBy=default.target
+`;
+}
+
+export function buildSystemctlDaemonReloadArgs(): string[] {
+  return ['--user', 'daemon-reload'];
+}
+
+export function buildSystemctlEnableArgs(unit: string = SYSTEMD_UNIT_NAME): string[] {
+  return ['--user', 'enable', '--now', unit];
+}
+
+export function buildSystemctlDisableArgs(unit: string = SYSTEMD_UNIT_NAME): string[] {
+  return ['--user', 'disable', '--now', unit];
+}
+
+export function buildSystemctlIsEnabledArgs(unit: string = SYSTEMD_UNIT_NAME): string[] {
+  return ['--user', 'is-enabled', unit];
+}
+
+export function buildSystemctlIsActiveArgs(unit: string = SYSTEMD_UNIT_NAME): string[] {
+  return ['--user', 'is-active', unit];
+}
+
+/** disable 报「未加载/不存在」不算失败：后续删 unit 文件已达成「不再自启」 */
+function isSystemdNotLoaded(stderr: string): boolean {
+  return /not loaded|no such file|does not exist|could not be found/i.test(stderr);
+}
+
+async function installSystemdUnit(io: Io, opts: AutostartOptions): Promise<void> {
+  const run = opts.runner ?? spawnRunner;
+  const paths = opts.systemdPaths ?? defaultSystemdPaths();
+  const nodePath = opts.nodePath ?? process.execPath;
+  if (!existsSync(paths.serverEntry)) {
+    throw new Error(`服务未构建：${paths.serverEntry} 不存在，先 corepack pnpm -r build`);
+  }
+  mkdirSync(paths.logDir, { recursive: true });
+  mkdirSync(dirname(paths.unitPath), { recursive: true });
+  const existed = existsSync(paths.unitPath);
+  writeFileSync(
+    paths.unitPath,
+    buildSystemdUnit({ nodePath, serverEntry: paths.serverEntry, repoRoot: paths.repoRoot, logFile: paths.logFile }),
+    'utf8',
+  );
+  const reload = await run('systemctl', buildSystemctlDaemonReloadArgs());
+  if (reload.code !== 0) throw new Error(`systemctl --user daemon-reload 失败：${firstLine(reload.stderr)}`);
+  const res = await run('systemctl', buildSystemctlEnableArgs());
+  if (res.code !== 0) {
+    throw new Error(`systemctl --user enable --now 失败：${firstLine(res.stderr)}（无用户 systemd 会话的容器/WSL 环境不可用）`);
+  }
+  io.write(`已安装开机自启：systemd user unit ${SYSTEMD_UNIT_NAME}${existed ? '（覆盖已有 unit）' : ''}\n`);
+  io.write(`unit: ${paths.unitPath}\n`);
+  io.write(`启动: ${nodePath} ${paths.serverEntry}\n`);
+  io.write(`日志: ${paths.logFile}\n`);
+  io.write(`检查: systemctl --user status ${SYSTEMD_UNIT_NAME}\n`);
+}
+
+/** 卸载：disable --now → 删 unit 文件 → daemon-reload；日志目录保留 */
+async function uninstallSystemdUnit(io: Io, opts: AutostartOptions): Promise<void> {
+  const run = opts.runner ?? spawnRunner;
+  const paths = opts.systemdPaths ?? defaultSystemdPaths();
+  if (!existsSync(paths.unitPath)) {
+    io.write('未安装开机自启\n');
+    return;
+  }
+  const res = await run('systemctl', buildSystemctlDisableArgs());
+  if (res.code !== 0 && !isSystemdNotLoaded(res.stderr)) {
+    throw new Error(`systemctl --user disable 失败：${firstLine(res.stderr)}`);
+  }
+  unlinkSync(paths.unitPath);
+  const reload = await run('systemctl', buildSystemctlDaemonReloadArgs());
+  if (reload.code !== 0) io.write(`提示：daemon-reload 未生效（${firstLine(reload.stderr)}），unit 文件已删除\n`);
+  io.write('已移除开机自启（systemd unit 已删除）\n');
+}
+
+async function statusSystemdUnit(ctx: Ctx, opts: AutostartOptions): Promise<void> {
+  const run = opts.runner ?? spawnRunner;
+  const paths = opts.systemdPaths ?? defaultSystemdPaths();
+  const port = readPortFile(paths.configPath);
+  const base = `http://127.0.0.1:${port}`;
+  const installed = existsSync(paths.unitPath);
+  const enabled = installed ? (await run('systemctl', buildSystemctlIsEnabledArgs())).code === 0 : false;
+  const active = installed ? (await run('systemctl', buildSystemctlIsActiveArgs())).code === 0 : false;
+  const probe = await probeService(base);
+  if (ctx.json) {
+    ctx.io.write(
+      `${JSON.stringify(
+        {
+          autostart: { installed, provider: 'systemd-user', unit: SYSTEMD_UNIT_NAME, unit_path: paths.unitPath, enabled, active },
+          service: { base, ...probe },
+          log: paths.logFile,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    return;
+  }
+  ctx.io.write(`自启: ${installed ? `已安装（systemd ${SYSTEMD_UNIT_NAME}，${enabled ? '已启用' : '未启用'}，${active ? '运行中' : '未运行'}）` : '未安装'}\n`);
+  ctx.io.write(`服务: ${probe.reachable ? `可达 ${base}${probe.version !== null ? `（版本 ${probe.version}）` : ''}` : `不可达 ${base}（${probe.error}）`}\n`);
+  ctx.io.write(`unit: ${paths.unitPath}\n`);
+  ctx.io.write(`日志: ${paths.logFile}\n`);
+}
+
+/** GET /api/version 探测（三平台状态命令共用） */
 async function probeService(base: string): Promise<{ reachable: boolean; version: string | null; error?: string }> {
   try {
     const data = await request<{ version?: unknown }>(base, 'GET', '/api/version');

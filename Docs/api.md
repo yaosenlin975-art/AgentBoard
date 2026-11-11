@@ -1137,7 +1137,7 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 | `kb accounts` | 永不提供 | — | 本机 CLI 账号与凭据切换：涉及本机凭据文件，MCP 远程语义下无凭据上下文且越权 |
 | `kb dep` | 有 | `list_dependencies` / `add_dependency` / `remove_dependency` | 依赖边读写 |
 | `kb status` | 有 | `list_statuses` / `add_status` / `remove_status` | 工作区状态字典 |
-| `kb autostart` | 永不提供 | — | 本机开机自启（Windows：HKCU Run + vbs；macOS：LaunchAgent plist），远程调用无意义 |
+| `kb autostart` | 永不提供 | — | 本机开机自启（Windows：HKCU Run + vbs；macOS：LaunchAgent plist；Linux：systemd user unit），远程调用无意义 |
 | `kb shortcut` | 永不提供 | — | 本机桌面快捷方式（.lnk），远程调用无意义 |
 | `kb workspace-db` | 永不提供 | — | 本机数据库下沉 / 回迁 / 快照：直接操作本机库与工作区目录，MCP 远程语义无意义 |
 | `kb ask` | 有 | `ask_decision` | 提问并等待宽限 |

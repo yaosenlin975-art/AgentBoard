@@ -1161,6 +1161,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   LAUNCH_LABEL,
+  SYSTEMD_UNIT_NAME,
   applyVbsConstants,
   buildBootoutArgs,
   buildBootstrapArgs,
@@ -1168,6 +1169,13 @@ import {
   buildRegAddArgs,
   buildRegDeleteArgs,
   buildRunValue,
+  buildSystemctlDaemonReloadArgs,
+  buildSystemctlDisableArgs,
+  buildSystemctlEnableArgs,
+  buildSystemctlIsActiveArgs,
+  buildSystemctlIsEnabledArgs,
+  buildSystemdUnit,
+  createAutostartBackend,
   installAutostart,
   isVbsConfigured,
   ownsAutostartValue,
@@ -1176,12 +1184,14 @@ import {
   readVbsText,
   resolveAutostartPaths,
   resolveLaunchAgentPaths,
+  resolveSystemdPaths,
   statusAutostart,
   uninstallAutostart,
   writeVbsText,
   type AutostartPaths,
   type LaunchAgentPaths,
   type Runner,
+  type SystemdPaths,
 } from '../src/commands/autostart.js';
 import {
   buildShortcutScript,
@@ -1659,6 +1669,171 @@ describe('autostart launchd（mac 分支纯逻辑 + 假 Runner）', () => {
     } finally {
       env.cleanup();
     }
+  });
+});
+
+/** 临时 linux home 脚手架：~/.config/AgentBoard + 服务端产物 */
+function scaffoldSystemd(overrides: { port?: number } = {}): { paths: SystemdPaths; cleanup: () => void } {
+  const root = mkdtempSync(join(tmpdir(), 'kb-systemd-'));
+  const home = join(root, 'home');
+  const repoRoot = join(root, 'repo');
+  mkdirSync(join(repoRoot, 'apps', 'server', 'dist'), { recursive: true });
+  mkdirSync(join(home, '.config', 'AgentBoard'), { recursive: true });
+  writeFileSync(join(repoRoot, 'apps', 'server', 'dist', 'index.js'), '// built\n', 'utf8');
+  writeFileSync(join(home, '.config', 'AgentBoard', 'config.json'), JSON.stringify({ port: overrides.port ?? 8787 }), 'utf8');
+  return { paths: resolveSystemdPaths(repoRoot, home), cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+/** 假 systemctl：按子命令与预设状态应答 */
+function fakeSystemctl(opts: { enabled?: boolean; active?: boolean; disableCode?: number; enableCode?: number } = {}): {
+  runner: Runner;
+  calls: RecordedCall[];
+} {
+  const calls: RecordedCall[] = [];
+  const runner: Runner = async (cmd, args) => {
+    calls.push({ cmd, args });
+    const sub = args[1];
+    if (sub === 'is-enabled') return { code: opts.enabled === false ? 1 : 0, stdout: '', stderr: '' };
+    if (sub === 'is-active') return { code: opts.active === false ? 1 : 0, stdout: '', stderr: '' };
+    if (sub === 'disable') {
+      return opts.disableCode === undefined
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: opts.disableCode, stdout: '', stderr: 'Failed to disable unit: Operation not permitted' };
+    }
+    if (sub === 'enable') {
+      return opts.enableCode === undefined
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: opts.enableCode, stdout: '', stderr: 'Failed to connect to bus: No medium found' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  return { runner, calls };
+}
+
+describe('autostart systemd（Linux user unit，单元级）', () => {
+  it('buildSystemdUnit：Unit/Service/Install 结构与 ExecStart/WorkingDirectory 引号', () => {
+    const unit = buildSystemdUnit({
+      nodePath: '/usr/local/bin/node',
+      serverEntry: '/r/apps/server/dist/index.js',
+      repoRoot: '/r',
+      logFile: '/h/.config/AgentBoard/logs/server.log',
+    });
+    expect(unit).toContain('[Unit]\nDescription=AgentBoard server\nAfter=network.target');
+    expect(unit).toContain('[Service]\nType=simple');
+    expect(unit).toContain('WorkingDirectory="/r"');
+    expect(unit).toContain('ExecStart="/usr/local/bin/node" "/r/apps/server/dist/index.js"');
+    expect(unit).toContain('Restart=no');
+    expect(unit).toContain('StandardOutput=append:/h/.config/AgentBoard/logs/server.log');
+    expect(unit).toContain('[Install]\nWantedBy=default.target');
+    // 空格路径必须引号化，否则 systemd 会拆成多个参数
+    expect(buildSystemdUnit({ nodePath: '/a b/node', serverEntry: '/r/s.js', repoRoot: '/r', logFile: '/l.log' })).toContain('ExecStart="/a b/node" "/r/s.js"');
+  });
+
+  it('resolveSystemdPaths：unit 在 ~/.config/systemd/user，config 在 ~/.config/AgentBoard', () => {
+    const p = resolveSystemdPaths('/repo', '/home/alice');
+    expect(p.unitPath).toBe(join('/home/alice', '.config', 'systemd', 'user', SYSTEMD_UNIT_NAME));
+    expect(p.configPath).toBe(join('/home/alice', '.config', 'AgentBoard', 'config.json'));
+    expect(p.logFile).toBe(join('/home/alice', '.config', 'AgentBoard', 'logs', 'server.log'));
+    expect(() => resolveSystemdPaths('/repo', undefined)).toThrow('HOME');
+  });
+
+  it('systemctl 参数统一带 --user', () => {
+    expect(buildSystemctlDaemonReloadArgs()).toEqual(['--user', 'daemon-reload']);
+    expect(buildSystemctlEnableArgs()).toEqual(['--user', 'enable', '--now', SYSTEMD_UNIT_NAME]);
+    expect(buildSystemctlDisableArgs()).toEqual(['--user', 'disable', '--now', SYSTEMD_UNIT_NAME]);
+    expect(buildSystemctlIsEnabledArgs()).toEqual(['--user', 'is-enabled', SYSTEMD_UNIT_NAME]);
+    expect(buildSystemctlIsActiveArgs()).toEqual(['--user', 'is-active', SYSTEMD_UNIT_NAME]);
+  });
+
+  it('install（linux 分派）：写 unit → daemon-reload → enable --now', async () => {
+    const env = scaffoldSystemd();
+    try {
+      const { runner, calls } = fakeSystemctl();
+      const t = makeIo();
+      await installAutostart(t.io, { platform: 'linux', runner, systemdPaths: env.paths, nodePath: '/usr/local/bin/node' });
+      expect(existsSync(env.paths.unitPath)).toBe(true);
+      expect(readFileSync(env.paths.unitPath, 'utf8')).toContain('ExecStart="/usr/local/bin/node"');
+      expect(calls.map((c) => c.args[1])).toEqual(['daemon-reload', 'enable']);
+      expect(t.out()).toContain('已安装开机自启');
+      expect(t.out()).toContain(env.paths.unitPath);
+
+      // enable 失败必须报错（无用户 systemd 会话的容器/WSL 常见）
+      const bad = fakeSystemctl({ enableCode: 1 });
+      await expect(installAutostart(makeIo().io, { platform: 'linux', runner: bad.runner, systemdPaths: env.paths })).rejects.toThrow('enable --now 失败');
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('uninstall：disable --now → 删 unit → daemon-reload；未装提示；非「未加载」失败报错且不删', async () => {
+    const env = scaffoldSystemd();
+    try {
+      const t0 = makeIo();
+      await uninstallAutostart(t0.io, { platform: 'linux', runner: fakeSystemctl().runner, systemdPaths: env.paths });
+      expect(t0.out()).toContain('未安装');
+
+      const ok = fakeSystemctl();
+      await installAutostart(makeIo().io, { platform: 'linux', runner: ok.runner, systemdPaths: env.paths });
+      ok.calls.length = 0;
+      const t1 = makeIo();
+      await uninstallAutostart(t1.io, { platform: 'linux', runner: ok.runner, systemdPaths: env.paths });
+      expect(ok.calls.map((c) => c.args[1])).toEqual(['disable', 'daemon-reload']);
+      expect(existsSync(env.paths.unitPath)).toBe(false);
+      expect(t1.out()).toContain('已移除开机自启');
+
+      const env2 = scaffoldSystemd();
+      try {
+        await installAutostart(makeIo().io, { platform: 'linux', runner: fakeSystemctl().runner, systemdPaths: env2.paths });
+        const runnerBad: Runner = async (cmd, args) => {
+          if (args[1] === 'disable') return { code: 1, stdout: '', stderr: 'Failed to disable unit: Operation not permitted' };
+          return { code: 0, stdout: '', stderr: '' };
+        };
+        await expect(uninstallAutostart(makeIo().io, { platform: 'linux', runner: runnerBad, systemdPaths: env2.paths })).rejects.toThrow('disable 失败');
+        expect(existsSync(env2.paths.unitPath)).toBe(true);
+      } finally {
+        env2.cleanup();
+      }
+    } finally {
+      env.cleanup();
+    }
+  });
+
+  it('status：unit + enabled/active + 服务可达；--json 结构化', async () => {
+    const port = Number(base.split(':').pop());
+    const env = scaffoldSystemd({ port });
+    handler = (m, u) =>
+      m === 'GET' && u === '/api/version'
+        ? { status: 200, body: { name: 'agentboard-server', version: '0.1.0' }, headers: { [SERVER_VERSION_HEADER]: CLI_VERSION } }
+        : undefined;
+    try {
+      await installAutostart(makeIo().io, { platform: 'linux', runner: fakeSystemctl().runner, systemdPaths: env.paths });
+      const t = makeIo();
+      await statusAutostart({ base: '', json: false, agentId: 't', io: t.io }, { platform: 'linux', runner: fakeSystemctl().runner, systemdPaths: env.paths });
+      expect(t.out()).toContain('systemd');
+      expect(t.out()).toContain('已启用');
+      expect(t.out()).toContain('运行中');
+      expect(t.out()).toContain('服务: 可达');
+
+      const t2 = makeIo();
+      await statusAutostart({ base: '', json: true, agentId: 't', io: t2.io }, { platform: 'linux', runner: fakeSystemctl().runner, systemdPaths: env.paths });
+      const data = JSON.parse(t2.out()) as {
+        autostart: { installed: boolean; provider: string; unit: string; unit_path: string; enabled: boolean; active: boolean };
+        service: { reachable: boolean };
+      };
+      expect(data.autostart).toMatchObject({ installed: true, provider: 'systemd-user', unit: SYSTEMD_UNIT_NAME, unit_path: env.paths.unitPath, enabled: true, active: true });
+      expect(data.service.reachable).toBe(true);
+    } finally {
+      env.cleanup();
+    }
+  });
+});
+
+describe('autostart 统一抽象（平台 → 后端）', () => {
+  it('createAutostartBackend：三平台映射与不支持平台报错', () => {
+    expect(createAutostartBackend('win32').provider).toBe('hkcu-run');
+    expect(createAutostartBackend('darwin').provider).toBe('launchagent');
+    expect(createAutostartBackend('linux').provider).toBe('systemd-user');
+    expect(() => createAutostartBackend('freebsd' as NodeJS.Platform)).toThrow('不支持的开机自启平台');
   });
 });
 

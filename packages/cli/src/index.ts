@@ -686,12 +686,12 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
       await statusRemove(makeCtx(program, ctxIo), workspace, target, { migrateTo: opts.migrateTo });
     });
 
-  const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 经 scripts/agentboard.vbs 拉起服务；macOS：LaunchAgent ~/Library/LaunchAgents/com.agentboard.server.plist）');
-  autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；Windows 写 Run 键 + vbs 常量，macOS 写 LaunchAgent plist 并 bootstrap）')
+  const autostart = program.command('autostart').description('开机自启（Windows：HKCU Run 经 scripts/agentboard.vbs 拉起；macOS：LaunchAgent ~/Library/LaunchAgents/com.agentboard.server.plist；Linux：systemd user unit ~/.config/systemd/user/agentboard.service）');
+  autostart.command('install').description('安装自启（前置 apps/server/dist 已构建；Windows 写 Run 键 + vbs 常量，macOS 写 plist 后 bootstrap，Linux 写 unit 后 enable --now）')
     .action(async () => installAutostart(ctxIo));
-  autostart.command('uninstall').description('移除自启（Windows 仅删自家 Run 键值；macOS bootout 并删 plist）')
+  autostart.command('uninstall').description('移除自启（Windows 仅删自家 Run 键值；macOS bootout 并删 plist；Linux disable 并删 unit）')
     .action(async () => uninstallAutostart(ctxIo));
-  autostart.command('status').description('自启安装状态 + 服务可达性 + 日志路径')
+  autostart.command('status').description('自启安装状态（provider/加载态）+ 服务可达性 + 日志路径，支持 --json')
     .action(async () => statusAutostart(makeCtx(program, ctxIo)));
 
   const shortcut = program.command('shortcut').description('桌面快捷方式（Windows：AgentBoard.lnk 双击拉起服务并打开看板）');
