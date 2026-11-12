@@ -10,6 +10,7 @@
 //! Windows 保留 `decorations(false)` 全自绘 ─□×，macOS 走原生红绿灯 overlay（`TitleBarStyle::Overlay`
 //! + `hidden_title`），页面侧按壳注入的 `window.__AGENTBOARD_SHELL__` 隐藏自绘三键。
 
+mod autostart;
 mod server_process;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +39,8 @@ struct ShellState {
     quitting: AtomicBool,
     /// CR-6：启动时解析一次的服务端口（config.json 的 port，非法/缺失退回 8787）；探活与导航都用它。
     port: u16,
+    /// `--autostart`（登录自启拉起）：启动完成后不显示窗口，最小化到托盘；服务仍由壳既有逻辑启动。
+    autostart: bool,
 }
 
 struct BootState {
@@ -82,8 +85,11 @@ fn apply_boot(app: &AppHandle) {
             let _ = window.eval(&format!("window.__setShellError({json});"));
         }
     }
-    let _ = window.show();
-    let _ = window.set_focus();
+    // `--autostart`：登录拉起后最小化到托盘，用户手动点托盘才显示（设置页可在壳内关掉自启）。
+    if !state.autostart {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// 启动线程：探活/拉起 server，结果写回 BootState 并尝试落地。
@@ -926,6 +932,11 @@ fn auto_probe_tray_ms() -> Option<u64> {
     arg_value("--probe-tray-ms").and_then(|value| value.parse::<u64>().ok())
 }
 
+/// `--flag` 形式的开关参数是否存在（不带值）。
+fn has_flag(name: &str) -> bool {
+    std::env::args().skip(1).any(|arg| arg == name)
+}
+
 /// 读取 `--name value` 或 `--name=value` 形式的参数值。
 fn arg_value(name: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
@@ -997,6 +1008,15 @@ fn main() {
         // DEC-7：系统通知插件。Tauri v2 的插件必须在 builder 上注册，仅给 capabilities 权限不够；
         // 权限范围见 capabilities/decision-notifications.json（只覆盖 main 窗口与 127.0.0.1:8787）。
         .plugin(tauri_plugin_notification::init())
+        // DESKTOP-AUTOSTART：自启状态读写命令（设置页调用）。
+        // 这里只负责把命令挂进 handler；本应用定义了 capability（ACL manifest），应用自定义命令
+        // 默认被拒（实测「autostart_status not allowed. Plugin not found」），放行靠
+        // permissions/autostart.toml 生成 allow-* 并在 capabilities 里引用。
+        // 不引入 tauri-plugin-autostart：它另建注册入口，与 CLI 不是同一入口。
+        .invoke_handler(tauri::generate_handler![
+            autostart::autostart_status,
+            autostart::autostart_set
+        ])
         .setup(|app| {
             app.manage(ShellState {
                 boot: BootState {
@@ -1010,6 +1030,8 @@ fn main() {
                 quitting: AtomicBool::new(false),
                 // CR-6：启动时解析一次端口；探活/导航/重建窗口统一取这里，不再硬编码 8787。
                 port: server_process::resolve_port(),
+                // DESKTOP-AUTOSTART：登录自启拉起的实例只驻留托盘，不抢前台。
+                autostart: has_flag("--autostart"),
             });
 
             // B05：macOS 应用菜单中文化。所有平台都构造（Windows 编译期校验），

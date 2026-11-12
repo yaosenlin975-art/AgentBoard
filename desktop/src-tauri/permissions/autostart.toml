@@ -1,0 +1,12 @@
+# 桌面自启壳侧命令（app 自定义命令）。
+# Tauri v2 在应用定义了 capability（ACL manifest）后，自定义命令默认被拒：
+# 必须在这里生成 allow-* 权限，并在 capability 的 permissions 里显式引用。
+[[permission]]
+identifier = "allow-autostart-status"
+description = "允许前端读取开机自启状态（只读）"
+commands.allow = ["autostart_status"]
+
+[[permission]]
+identifier = "allow-autostart-set"
+description = "允许前端开启/关闭桌面开机自启"
+commands.allow = ["autostart_set"]

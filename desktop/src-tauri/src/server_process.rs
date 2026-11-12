@@ -124,6 +124,8 @@ impl ServerHandle {
 
 /// 是否存在 LaunchAgent 托管（B11）：`~/Library/LaunchAgents/com.agentboard.server.plist` 存在
 /// （`kb autostart install` 写入，label 固定 `com.agentboard.server`；手写 KeepAlive 变体同名同路径）。
+/// **DESKTOP-AUTOSTART 起同一 label 改为拉起桌面应用（ProgramArguments 含 `--autostart`）**：那种
+/// plist 由壳自己拉 server，不再等 launchd 拉起 node——否则每次登录启动都要空等 15s 宽限。
 /// 仅 macOS 有意义，其它平台一律 false（编译期分支，Windows 行为不变）。
 fn launchagent_custody() -> bool {
     #[cfg(target_os = "macos")]
@@ -131,9 +133,13 @@ fn launchagent_custody() -> bool {
         let Some(home) = env::var_os("HOME") else {
             return false;
         };
-        std::path::Path::new(&home)
-            .join("Library/LaunchAgents/com.agentboard.server.plist")
-            .exists()
+        let path = std::path::Path::new(&home)
+            .join("Library/LaunchAgents/com.agentboard.server.plist");
+        match fs::read_to_string(&path) {
+            Ok(content) => !content.contains("--autostart"),
+            // 存在但不可读：沿用旧口径按托管处理（宁可宽限，不去抢 launchd）。
+            Err(_) => path.exists(),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "decision-notifications",
-  "description": "DEC-7：主窗口（远程 127.0.0.1:8787 页面）可用系统通知；只授予通知与 core 默认权限",
+  "description": "DEC-7：主窗口（远程 127.0.0.1:8787 页面）可用系统通知；DESKTOP-AUTOSTART：另放行两个自启命令；只授予通知、自启与 core 默认权限",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:8787"]
@@ -9,6 +9,8 @@
   "permissions": [
     "core:default",
     "notification:default",
+    "allow-autostart-status",
+    "allow-autostart-set",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
