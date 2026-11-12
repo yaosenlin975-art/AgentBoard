@@ -917,6 +917,8 @@ fn main() {
                 .icon(tray_icon)
                 // B07：mac 上作为 Template Image 渲染（自动适配深浅色菜单栏）；其它平台该开关无效。
                 .icon_as_template(cfg!(target_os = "macos"))
+                // 中文 tooltip：Windows 溢出区里 UIA 的 Name 直接取它（此前为空，读屏/自动化都认不出这个图标）。
+                .tooltip("AgentBoard 任务看板")
                 .menu(&menu)
                 // 左键不再弹菜单：左键 = 显示并聚焦窗口；右键仍是菜单。
                 .show_menu_on_left_click(false)
