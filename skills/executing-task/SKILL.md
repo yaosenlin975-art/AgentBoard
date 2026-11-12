@@ -13,7 +13,7 @@ Read and follow the AgentBoard operating guide before board operations. 该文�
 
 The assigned AgentBoard issue is the current execution source. Project code, design documents, logs, and test results are evidence; do not require a plan file, ledger, task brief, or local plan workspace.
 
-本技能默认执行被指派的一张卡；并行推进多张卡时按「并行执行（最多 3 路）」一节执行，单卡流程不变。
+worker 默认只执行父代理明确派发的一张卡；父代理并行管理多条任务线时按「并行执行（最多 3 路）」执行。
 
 ## 工作区边界与执行环境（强制）
 
@@ -28,14 +28,14 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 ## Roles and assignment
 
 - The parent owns planning, assignment, acceptance, and summary, delegating board operations and implementation to at most 3 child workers (per 「并行执行」). A worker executes only the issue ID + workspace assigned to it, never touches another worker's card, and does not recursively delegate or claim by guessing; parallel runs are allowed only under 「并行执行（最多 3 路）」.
-- worker 回合结束/回到 inactive 不等于卡完成；续做同一张还是续派下一张由父代理按 `swing-dev` 第 7 节「续派判定」以 `kb show` 的 `status` 为准决定，worker 不自行判断下一张。
+- worker 回合结束/回到 inactive 不等于卡完成；父代理按「worker 完成后的滚动续派」回读卡状态并决定续做或续派，worker 不自行判断下一张。
 - If the parent only requests a plan, do not claim or execute; follow dependencies recorded as issue IDs (`kb show`), and report an unready or unclear prerequisite to the parent before claiming.
 
 ## 并行执行（最多 3 路，强制）
 
-默认一卡一 worker；父会话在准入通过后可同时推进最多 3 张卡，单卡流程（claim → 执行 → 收尾）不变。
+默认一卡一 worker；父代理可同时向最多 3 个 child workers 派发 3 张卡。worker 只 claim 父代理明确指定的 issue id 与 workspace，不自行选卡或 claim 下一张。一个 worker 完成当前卡后，父代理立即按「worker 完成后的滚动续派」检查并复用该 worker；不等其他 worker 一起结束。
 
-- **并发上限硬性为 3**（含父会话自己执行的那张）：第 4 张一律排队，不得因为「卡小 / 看起来简单」而超限。同一工作区若已有别的会话在飞、且改同一批文件，即使允许 3 路也必须降级为串行或跳过；跨工作区并行需逐区授权，不得借并行绕过。
+- **并发上限硬性为 3 个 child workers**：第 4 条任务线一律排队，不得因为「卡小 / 看起来简单」而超限。同一工作区若已有别的会话在飞、且改同一批文件，即使允许 3 路也必须降级为串行或跳过；跨工作区并行需逐区授权，不得借并行绕过。
 - **准入：目标文件集不相交**。领取前逐卡列出「目标/禁止文件」清单并两两做交集；交集非空 → 排队串行。目录前缀按重叠计，样例：`apps/web/src/components/settings/**`、`apps/server/src/db/repos/knowledge.ts`、`apps/server/src/api/routes.ts`、`packages/cli/src/index.ts` 任一两两不得同时在飞。
 - **一卡一 worker，worker 不跨卡**：每个 worker 只 claim 自己那张、只改本卡文件、只提交本卡路径；不得帮别的 worker 收尾、改卡或顺手修它范围内的文件。卡面确实要求动归属别的卡 / 别的 agent 的文件或目录时（同一工作区内也算），动手前在相关卡 `kb comment` 留一行 `改动声明：<文件> ｜ <YYYY-MM-DD HH:mm 本地> ｜ <意图>`，并把这行原文带进收尾回报；没这行就改别人的地盘，视同越界。
 - **领取纪律**：`kb show <全长 UUID>` 核对 status 与 claimed_by；已被他人占用且租约未过期 → 跳过，不抢。僵尸租约按 `using-agentboard` 口径处理，需用户授权才能强制释放，本技能不自行释放。close/done/fail 一律全长 UUID，禁止短码。
@@ -45,13 +45,35 @@ The assigned AgentBoard issue is the current execution source. Project code, des
 - **输出纪律**：worker 只回「卡号 / 结果 / 提交短 hash / 一句话阻塞」，禁止贴测试日志、整段 diff 或大段命令输出；父会话汇总按同一格式逐卡一行。单轮输出失控会直接废掉整轮（此前一次推 5 张卡的日志把窗口撑爆），宁可不并行也不放大输出。
 - **并发不等于抢占**：见「并发上限硬性为 3」的末句（同区撞文件降级串行、跨区逐区授权）。
 
+## worker 完成后的滚动续派（父代理）
+
+worker 回合结束或报告完成后，父代理立即按当前看板状态补位，不等其他 worker 一起结束，也不按旧队列快照派卡。
+
+1. 回读当前卡：`kb show <issue-id> --json`，核对 `status`、`claimed_by`、`decision_locked` 与 `open_decision_id`。
+   - `decision_locked=true` → 按 `ask-user` 停线，不 claim、不续做。
+   - `status=进行中` 且 `claimed_by` 为当前 worker → 同一 worker 继续同一张卡，不当成完成或另派其后继。
+   - `status=进行中` 且 `claimed_by` 为空 → 重新核对依赖与文件 owner；通过 claim 门禁后由同一 worker claim 此卡再继续。
+   - `status=进行中` 且 `claimed_by` 为其他人 → 跳过此卡，不接管；可检查本次已授权范围内其他合格卡。
+   - `status=待验收` 或 `已关闭` → 当前卡完成，进入下步。
+   - `status=待规划`（包括 fail / release 后）→ 当前卡仍未完成；保留其状态和失败语义，不派发依赖后继、不自动重试。父代理可在本次已授权范围内选择其他合格卡。
+   - 其他状态（含已废弃）→ 不推断为完成或解锁后继，回报父代理按该工作区状态门禁处理。
+2. 取当前工作区的 `kb next --workspace <workspace-id> --json`，并用 `kb dep ls <completed-issue-id>` 及候选卡的 `kb dep ls <candidate-id>` 检查最新结构化依赖。按以下顺序选一张候选：
+   1. 当前卡的已就绪下游任务；
+   2. 若下游仍被其他前置阻塞，选择其中一张可 claim 的未完成前置；
+   3. 相关候选都不合格时，本次任务图或父代理已授权派发范围内的其他可 claim 卡。
+3. 核对看板门禁：对每个候选用 `kb show <candidate-id> --json` 确认工作区、可 claim 状态、`claimed_by` 与决策锁，并用 `kb dep ls <candidate-id>` 确认前置已解除。占用、未解除依赖或待决策的候选跳过，继续检查下一张；不 release 他人占用或删边解锁。
+4. 核对文件和范围门禁：检查候选目标文件与所有在飞任务文件集不重叠，且卡属于本次已授权范围；同一文件冲突时排队或跳过，跨工作区逐区授权。
+5. 将选中卡的完整 UUID、工作区和本卡验收范围明确发给同一 worker。worker 不自行领取其他卡；没有候选通过门禁时让该 worker 空闲，不创建新任务或扩大授权范围。
+
+**依赖例子**：A、B 都是 C 的结构化前置。A 完成后，若 C 已就绪则将 C 派给同一 worker；若 C 仍被 B 阻塞且 B 当前可 claim，则先将 B 派给同一 worker。前置状态以 `kb dep ls` 和 `kb show` 回读为准。
+
 ## Claim the assigned issue
 
 🔴 CHECKPOINT · 🛑 STOP：工作区未绑定或执行环境归属校验未过即停手，不进入第 1 步。启动时先按 `using-agentboard` 的「权威来源解析」确认权威文档可读（不可读即停手报「权威文档缺失」），再绑定工作区并完成执行环境校验。
 开工前按 `using-agentboard` 的「开工前必读（项目上下文）」读三样：当前工作区知识（`--scope workspace`）、公共范围知识（`--scope common`）、最近变更日志；claim 后再核一次目标区域是否已被他人改过；判据同该节——`category=open` 或 `landed=proposed|partial` 的页不得当成已实现事实。细节见该节，不在此复制。
 
-1. Confirm the exact issue ID from the parent. CLI 接受 ≥8 位唯一前缀（实测 `kb show 230c15de` → 详情，exit 0；7 位 → 任务不存在，exit 1；多命中 exit 2），但**卡面、依赖、提交信息一律用完整 36 字符 UUID**（8-4-4-4-12）；父代理只给短前缀时先 `kb show <前缀>` 解析出完整 id 再记录，不猜。Run kb show <issue-id> and read the current description, status, comments, and workspace. Then run kb dep ls <issue-id>: unresolved blockers mean the issue cannot be claimed yet. **状态门禁**按 `using-agentboard` 的「claim 状态门禁」执行（接受「待规划」或「进行中且无人占用」；其余状态、他人占用、决策锁均退出码 2），并以其分支文案区分三类原因；仍以 `kb show` 的真实 status / claimed_by 为准，别把状态拒绝误判成他人占用。
-2. Claim only that issue with kb claim <issue-id>. A successful claim is exclusive. Use the returned workspace path.
+1. Confirm the exact issue ID assigned by the parent; do not choose another card. CLI 接受 ≥8 位唯一前缀（实测 `kb show 230c15de` → 详情，exit 0；7 位 → 任务不存在，exit 1；多命中 exit 2），但**卡面、依赖、提交信息一律用完整 36 字符 UUID**（8-4-4-4-12）；父代理只给短前缀时先 `kb show <前缀>` 解析出完整 id 再记录，不猜。Run `kb show <issue-id>` and read the current description, status, comments, workspace, `claimed_by`, and decision lock; then run `kb dep ls <issue-id>`. **状态门禁**按 `using-agentboard` 的「claim 状态门禁」执行（接受「待规划」或「进行中且无人占用」；其余状态、他人占用、决策锁均退出码 2），并以 `kb show` 的真实 status / claimed_by 为准，别把状态拒绝误判成他人占用。
+2. Claim only that assigned issue with `kb claim <issue-id>` when it is a new assignment or the parent explicitly reissues an unowned in-progress card. If `status=进行中` and `claimed_by` is this worker, keep the existing claim and resume without claiming again. If another agent owns it, a decision lock is active, or a blocker is unresolved, stop and report the exact gate; do not take over or unlock it. A successful new claim is exclusive; use the returned workspace path and reread with `kb show`.
 3. 被 blocker 挡住时（退出码 2，文案「存在未完成的前置任务」）→ 报告父代理并停手；**不得** release 他人占用，**不得** 用 `kb dep rm` 或自行补边解锁；等 blocker 到「待验收/已关闭」后再 claim。🔴 CHECKPOINT · 🛑 STOP：遇到未解除 blocker 即停手，不 claim、不 release 他人占用、不删边解锁。不按本卡「一次性 claim」重试，也不改选别的卡。
 4. If `kb claim` exits 2, read stderr text and branch (文本模式原因写 stderr；`--json` 时错误体是 stdout 的 `{"error":{"code","message","details"}}`，退出码不变 — CLI-04): 「已被 … 占用」→ occupied; 「状态不可领取（当前=…）」→ status gate; 「存在未完成的前置任务」→ blocked; 「决策锁」→ open decision. Stop and report the exact conflict to the parent; do not retry, choose another issue, or force-release another agent's claim. 释放自有占用用 `kb release <issue-id>`（退回待规划，不算失败）；他人的占用只能等 `done`/`fail`，或用户授权后走 REST 强制释放。Claim 成功后先 `kb show` 重读再实施。
 
