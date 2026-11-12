@@ -146,6 +146,10 @@ kb autostart uninstall   # launchctl bootout 后删除 plist
 
 端口取自 `~/.config/AgentBoard/config.json`（缺失回 8787），日志在 `~/.config/AgentBoard/logs/server.log`；前置是 `apps/server/dist` 已构建。`kb shortcut` 仍只支持 Windows。
 
+**自动更新（当前未启用）**
+
+选型为 Tauri updater v2（不选 Sparkle），但插件尚未接线、更新端点与签名密钥未配置：`desktop/src-tauri/tauri.conf.json` 现在是 `bundle.createUpdaterArtifacts: false`。发布新版本要改哪些文件、签名/公证怎么做、启用时要补哪些配置项，见 `Docs/updater.md`。
+
 ## 启动
 
 ```bash
