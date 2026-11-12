@@ -25,6 +25,9 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWind
 /// 主窗口 label：托盘 / 菜单 / 单例 / 重建都按这一个 key 找窗口。
 const MAIN_WINDOW: &str = "main";
 
+/// 托盘 id：菜单状态需要随启动结果变化，「停止服务」要按占用情况改写文案/可用性，得靠它回取托盘。
+const TRAY_ID: &str = "main-tray";
+
 use server_process::ServerHandle;
 
 /// 壳全局状态：启动结果、server 句柄、退出标记。
@@ -107,6 +110,8 @@ fn start_server(app: AppHandle) {
             // 竞态分支已执行完、结果已写回：退出等待从此刻起可安全返回（不依赖随后会被 take 的 outcome）。
             state.boot.settled.store(true, Ordering::SeqCst);
         }
+        // 启动结果已落地：按「自拉 / 附着外部」刷新「停止服务」的文案与可用性。
+        refresh_tray_menu(&app);
         apply_boot(&app);
     });
 }
@@ -515,6 +520,120 @@ fn wake_main_window(app: &AppHandle) {
     }
 }
 
+/// 托盘「打开看板」：先复用唯一唤醒入口把窗口捞到前台，再把页面切回看板视图。
+fn open_board(app: &AppHandle) {
+    wake_main_window(app);
+    ensure_board_view(app);
+}
+
+/// 把页面切回看板视图：复用 web 端 navStore 的持久化键（`agentboard.nav`，`{state:{view},version}`），
+/// 只在当前视图不是 board 时改写并重载；已是 board 就不打扰（避免每次点菜单都打断页面状态）。
+/// 只读/写 localStorage，不改 apps/web 代码、不加新的前后端契约；本地启动页没有该键，直接跳过。
+const BOARD_VIEW_JS: &str = r#"(function(){try{var k='agentboard.nav';var raw=localStorage.getItem(k);if(!raw)return;var s=JSON.parse(raw);if(!s||typeof s!=='object')return;var st=s.state||{};if(st.view==='board')return;st.view='board';s.state=st;if(typeof s.version!=='number')s.version=0;localStorage.setItem(k,JSON.stringify(s));location.reload();}catch(e){}})()"#;
+
+fn ensure_board_view(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        let _ = window.eval(BOARD_VIEW_JS);
+    }
+}
+
+/// 「停止服务」菜单项文案与可用性：附着外部服务时置灰并写明原因（B11 口径：壳不停外部实例）。
+fn service_menu_label(self_launched: Option<bool>) -> (&'static str, bool) {
+    match self_launched {
+        Some(true) => ("停止服务", true),
+        Some(false) => ("停止服务（当前连接外部服务）", false),
+        None => ("停止服务（服务未启动）", false),
+    }
+}
+
+fn build_tray_menu(app: &AppHandle, self_launched: Option<bool>) -> tauri::Result<Menu<tauri::Wry>> {
+    let open_item = MenuItem::with_id(app, "open-board", "打开看板", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
+    let (stop_text, stop_enabled) = service_menu_label(self_launched);
+    let stop_item = MenuItem::with_id(app, "stop-service", stop_text, stop_enabled, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    Menu::with_items(app, &[&open_item, &show_item, &stop_item, &quit_item])
+}
+
+/// 当前服务归属：Some(true)=壳自拉，Some(false)=附着外部实例，None=服务未起来。
+fn current_launch_state(app: &AppHandle) -> Option<bool> {
+    let state = app.state::<ShellState>();
+    let slot = state.server.lock().unwrap();
+    slot.as_ref().map(|handle| handle.is_self_launched())
+}
+
+/// 启动结果 / 停服后刷新托盘菜单（「停止服务」的文案与可用性随归属变化）。
+/// 菜单对象的创建/挂载统一回主线程做（启动线程与停服线程都会调用）。
+fn refresh_tray_menu(app: &AppHandle) {
+    let handle = app.clone();
+    if let Err(error) = app.run_on_main_thread(move || {
+        let Some(tray) = handle.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        match build_tray_menu(&handle, current_launch_state(&handle)) {
+            Ok(menu) => {
+                let _ = tray.set_menu(Some(menu));
+            }
+            Err(error) => eprintln!("托盘菜单刷新失败：{error}"),
+        }
+    }) {
+        eprintln!("托盘菜单刷新排队失败：{error}");
+    }
+}
+
+/// 托盘「停止服务」：只停壳自己拉起的 server（附着态菜单已置灰，这里再兜底放回句柄、不动外部服务）。
+/// 停完把窗口切回本地状态页并刷新菜单 —— 不白屏，也不出现「点了没反应」。
+fn stop_service(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    let taken = {
+        let mut slot = state.server.lock().unwrap();
+        slot.take()
+    };
+    let Some(mut handle) = taken else {
+        return;
+    };
+    if !handle.is_self_launched() {
+        // 兜底：附着态本应被菜单置灰挡住；句柄放回，外部服务与它的锁都不碰。
+        *state.server.lock().unwrap() = Some(handle);
+        return;
+    }
+    let port = state.port;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let stopped = handle.stop();
+        let message = if stopped {
+            format!(
+                "服务已停止（端口 {port}）：壳已终止自己拉起的 server，端口与 server.lock 已释放。\n重新启动：托盘「退出」后重新打开 AgentBoard。"
+            )
+        } else {
+            format!(
+                "服务已停止（端口 {port}）：子进程已退出，但收尾存在未完成项（详见日志）。\n重新启动：托盘「退出」后重新打开 AgentBoard。"
+            )
+        };
+        {
+            let state = app.state::<ShellState>();
+            state.boot.boot_ok.store(false, Ordering::SeqCst);
+            *state.boot.boot_error.lock().unwrap() = Some(message);
+        }
+        refresh_tray_menu(&app);
+        // 切回本地状态页：销毁后重建（destroy 绕过「关窗=隐藏到托盘」的 CloseRequested）。
+        if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+            let _ = window.destroy();
+        }
+        let mut last_error = String::new();
+        for _ in 0..5 {
+            match recreate_main_window(&app) {
+                Ok(()) => return,
+                Err(error) => {
+                    last_error = error;
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
+            }
+        }
+        eprintln!("停止服务后重建窗口失败：{last_error}");
+    });
+}
+
 /// 窗口被销毁后的重建路径：同一进程内重新建 `main` 窗口。
 /// 启动已成功则直接加载服务页（端口取 ShellState.port）；启动失败则回到本地页并复现同一错误文案；启动未完成则等启动线程落地。
 fn recreate_main_window(app: &AppHandle) -> Result<(), String> {
@@ -901,10 +1020,9 @@ fn main() {
             #[cfg(not(target_os = "macos"))]
             drop(app_menu);
 
-            // 托盘：菜单「显示 / 退出」。
-            let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            // 托盘菜单：「打开看板 / 显示 / 停止服务 / 退出」。开机自启不进托盘（自启由设置页 UI 卡负责）。
+            // 「停止服务」的文案与可用性随服务归属变化：启动结果落地后由 refresh_tray_menu 重建一次菜单。
+            let menu = build_tray_menu(app.handle(), None)?;
             // 托盘图标按平台分流（B07）：
             // - Windows 沿用 icons/tray.ico（16/20/24/32/40/48/64 多帧，专为小尺寸重绘的看板剪影；HICON 按位深+面积取帧），
             //   不再拿 1024×1024 的应用图标当托盘图（那在小尺寸缩放后细节全糊）。
@@ -913,7 +1031,7 @@ fn main() {
             //   按 ScaleFactor 选 tray.png（1x=16px）/ tray@2x.png（2x=32px）；tray-icon 恒把托盘高度归一到 18pt，
             //   两档贴物理像素（18/36px）避免 1x 资产在 retina 上放大发糊。
             let tray_icon = tauri::image::Image::from_bytes(tray_icon_bytes(app.handle()))?;
-            let tray = TrayIconBuilder::new()
+            let tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 // B07：mac 上作为 Template Image 渲染（自动适配深浅色菜单栏）；其它平台该开关无效。
                 .icon_as_template(cfg!(target_os = "macos"))
@@ -923,7 +1041,9 @@ fn main() {
                 // 左键不再弹菜单：左键 = 显示并聚焦窗口；右键仍是菜单。
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open-board" => open_board(app),
                     "show" => wake_main_window(app),
+                    "stop-service" => stop_service(app),
                     "quit" => {
                         let handle = app.clone();
                         // 停服可能等待数秒：放到后台线程，避免冻结托盘/窗口事件循环。
@@ -1000,9 +1120,31 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_decision_count, poll_until, review_issue_count, shell_init_script, wake_steps,
-        window_chrome, WakeStep, WindowPhase,
+        open_decision_count, poll_until, review_issue_count, service_menu_label, shell_init_script,
+        wake_steps, window_chrome, WakeStep, WindowPhase, BOARD_VIEW_JS,
     };
+
+    #[test]
+    fn stop_service_item_is_enabled_only_for_self_launched_server() {
+        // 托盘「停止服务」：自拉可停；附着外部实例置灰并写明原因；服务未起来也置灰。
+        assert_eq!(service_menu_label(Some(true)), ("停止服务", true));
+        assert_eq!(
+            service_menu_label(Some(false)),
+            ("停止服务（当前连接外部服务）", false)
+        );
+        assert_eq!(
+            service_menu_label(None),
+            ("停止服务（服务未启动）", false)
+        );
+    }
+
+    #[test]
+    fn board_view_script_targets_persisted_nav_key() {
+        // 「打开看板」只改 navStore 持久化键（apps/web 源码里的 NAV_STORAGE_KEY）并重载，不引入新契约。
+        assert!(BOARD_VIEW_JS.contains("agentboard.nav"));
+        assert!(BOARD_VIEW_JS.contains("st.view='board'"));
+        assert!(BOARD_VIEW_JS.contains("location.reload()"));
+    }
 
     #[test]
     fn poll_until_returns_immediately_when_already_settled() {

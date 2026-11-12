@@ -66,6 +66,11 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
+    /// 是否是「壳自己拉起的 server」（`child: Some`）。附着外部实例时为 false —— 托盘「停止服务」据此置灰。
+    pub fn is_self_launched(&self) -> bool {
+        self.child.is_some()
+    }
+
     /// 退出时停服。
     ///
     /// 口径（B11）：只停「壳自己拉起的 server」（`child: Some`）；附着态（启动时端口已健康，
