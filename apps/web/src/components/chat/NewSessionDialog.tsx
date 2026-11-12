@@ -5,7 +5,7 @@
  * 确认 → POST /api/sessions {cli, model, workspace_id}（不带 issue_id / prompt，首条消息由输入框发起）；
  * 选了人设时紧接着 PATCH /api/sessions/:id {persona_id}（服务端 patchSessionSchema 校验人设存在）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CliInfo, Session, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
@@ -42,6 +42,14 @@ export function NewSessionDialog({
     queryKey: ['workspaces'],
     queryFn: () => api.get<Workspace[]>('/api/workspaces'),
   });
+  // CLI-DEFAULT-MODEL-3：服务端默认模型配置（与设置页共享 ['settings'] 缓存）
+  const {
+    data: settings,
+    isError: settingsError,
+  } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.get<{ cliDefaultModels?: Record<string, string> }>('/api/settings'),
+  });
   // 人设与会话设置弹窗共用 queryKey（同一份缓存，无额外请求）
   const {
     data: personas,
@@ -61,11 +69,19 @@ export function NewSessionDialog({
     if (first !== undefined) setCliId(first.id);
   }, [clis, cliId]);
 
-  // 切 CLI：模型回该 CLI 上次使用值（localStorage），无则清空
+  // 切 CLI：模型预填优先级（CLI-DEFAULT-MODEL-3，已裁决）——
+  // settings.cliDefaultModels[cli]（服务端配置了就以服务端为准，否则出现「设置页配了但没生效」的错觉）
+  // → loadLastModel(cli)（未配置时记「用户上次手选」，不覆盖显式配置）→ ''。
+  // 等 settings 就绪后一次定值（拉取失败也放行走后续链）；定值后本轮 CLI 不再覆盖（用户可能已改）。
+  const prefillCliRef = useRef('');
   useEffect(() => {
     if (cliId === '') return;
-    setModel(loadLastModel(cliId) ?? '');
-  }, [cliId]);
+    if (!settingsError && settings === undefined) return;
+    if (prefillCliRef.current === cliId) return;
+    prefillCliRef.current = cliId;
+    const configured = settings?.cliDefaultModels?.[cliId]?.trim();
+    setModel(configured ? configured : (loadLastModel(cliId) ?? ''));
+  }, [cliId, settings, settingsError]);
 
   const create = useMutation({
     mutationFn: async () => {

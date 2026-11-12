@@ -141,6 +141,9 @@ describe('SettingsDialog', () => {
         db_path: 'C:\\x\\agentboard.db', db_path_source: 'default', attachments_dir: 'C:\\x\\attachments',
         usage: null, migration_estimate: null, truncated: false,
       })),
+      // CLI-DEFAULT-MODEL-3：新增「各 CLI 默认模型」分区会拉 /api/clis 与模型清单；
+      // 这里返回空清单，避免各 CLI 行的「模型列表加载失败」alert 干扰「版本失败不应报错」的断言
+      http.get('/api/clis', () => HttpResponse.json([])),
       http.get('/api/version', () =>
         HttpResponse.json({ error: { code: 'NOT_FOUND', message: '接口不存在' } }, { status: 404 }),
       ),

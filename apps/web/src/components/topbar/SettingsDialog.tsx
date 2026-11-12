@@ -10,6 +10,7 @@ import { api } from '../../api/client';
 import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
+import { CliDefaultModelSection } from '../settings/CliDefaultModelSection';
 import { McpSection } from '../settings/McpSection';
 import { PersonaSection } from '../settings/PersonaSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
@@ -25,6 +26,8 @@ interface Settings {
   /** SETTINGS-DB-DEDUP：响应仍带 dbPath（只读展示用），但保存体不再发送 */
   dbPath: string;
   maxConcurrentTurns: number;
+  /** MODEL-1：各 CLI 默认模型（GET 恒返回；旧服务端无该字段按未配置处理） */
+  cliDefaultModels?: Record<string, string>;
 }
 
 const inputCls =
@@ -204,6 +207,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
           </button>
         </div>
       </form>
+      {/* CLI-DEFAULT-MODEL-3：各 CLI 默认模型（独立保存，不并入主表单；位于「服务与并发」之后） */}
+      <CliDefaultModelSection />
       {/* PERSONA-LIB-2：智能体人设（全局库列表 / 新建编辑抽屉 / 删除 / 专家包导入 / 智能创建） */}
       <PersonaSection />
       {/* STATUS-3-UI：自定义状态增删（删除必须选迁移目标）；成功后失效状态字典与任务列表 */}

@@ -85,6 +85,14 @@ export function DispatchDialog({
     queryKey: ['sessions', issue.workspace_id],
     queryFn: () => api.get<Session[]>(`/api/sessions?workspace=${encodeURIComponent(issue.workspace_id)}`),
   });
+  // CLI-DEFAULT-MODEL-3：服务端默认模型配置（与设置页共享 ['settings'] 缓存）
+  const {
+    data: settings,
+    isError: settingsError,
+  } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.get<{ cliDefaultModels?: Record<string, string> }>('/api/settings'),
+  });
   const issueSessions = (allSessions ?? []).filter((s) => s.issue_id === issue.id);
   // 模型只读：所选 CLI supportsModelSelection=false（如 dsh，模型由 CLI profile 配置决定）
   const modelReadOnly = (clis ?? []).find((c) => c.id === cliId)?.supportsModelSelection === false;
@@ -162,6 +170,8 @@ export function DispatchDialog({
   };
 
   const modelTouchedRef = useRef(false);
+  // CLI-DEFAULT-MODEL-3：本轮 CLI 的预填是否已定值（等 settings+models 双就绪一次决策，避免 last-model 先填挡住后到的服务端配置）
+  const modelPrefilledRef = useRef(false);
   const historyNotesAppendedRef = useRef(false);
 
   // 评论加载完成后一次性把历史备注段追加到预填 prompt 末尾（仅一次，保留用户已做的编辑）；无评论不追加
@@ -185,16 +195,27 @@ export function DispatchDialog({
     setModel('');
     setManual(false);
     modelTouchedRef.current = false;
+    modelPrefilledRef.current = false;
   }, [cliId]);
 
-  // 默认模型：上次使用（在清单内），否则第一项；用户已手动选择/输入则不覆盖；模型只读（dsh）不预填
+  // 默认模型预填优先级（CLI-DEFAULT-MODEL-3，已裁决）：settings.cliDefaultModels[cli]（服务端配置优先，
+  // 不在清单也照填——selectOptions 会把当前值并入选项）→ 上次使用（在清单内）→ 第一项。
+  // 等 settings 与 models 双就绪后一次性定值（settings 拉取失败也放行走后续链），
+  // 定值后本轮不再改；用户已手动选择/输入则完全不预填；模型只读（dsh）不预填。
   useEffect(() => {
-    if (cliId === '' || models === undefined || modelTouchedRef.current || model !== '') return;
+    if (cliId === '' || models === undefined || !settingsError && settings === undefined) return;
+    if (modelTouchedRef.current || modelPrefilledRef.current || model !== '') return;
     if (modelReadOnly) return;
+    modelPrefilledRef.current = true;
+    const configured = settings?.cliDefaultModels?.[cliId]?.trim();
+    if (configured) {
+      setModel(configured);
+      return;
+    }
     const last = loadLastModel(cliId);
     const restored = last !== null && models.some((m) => m.id === last) ? last : (models[0]?.id ?? '');
     if (restored !== '') setModel(restored);
-  }, [cliId, models, model, modelReadOnly]);
+  }, [cliId, models, model, modelReadOnly, settings, settingsError]);
 
   const changeModel = (value: string): void => {
     modelTouchedRef.current = true;
