@@ -46,6 +46,9 @@ struct BootState {
     /// 启动结论留档：窗口被销毁后重建时用它复现同一落地动作（`outcome` 已被 take 消费掉）。
     boot_ok: AtomicBool,
     boot_error: Mutex<Option<String>>,
+    /// 启动线程是否已收口（写回结果、竞态分支已执行完）。退出等待只认这个只增不减的标记：
+    /// `outcome` 会被 `apply_boot` 用 `take()` 消费掉，拿它当判据会让退出空间恒等满上限（063c0ca5）。
+    settled: AtomicBool,
 }
 
 /// 启动结果落地：页面已加载且结果已产生时，导航到服务页或把错误显示在本地页上，然后显示窗口。
@@ -101,6 +104,8 @@ fn start_server(app: AppHandle) {
         {
             let state = app.state::<ShellState>();
             *state.boot.outcome.lock().unwrap() = Some(result);
+            // 竞态分支已执行完、结果已写回：退出等待从此刻起可安全返回（不依赖随后会被 take 的 outcome）。
+            state.boot.settled.store(true, Ordering::SeqCst);
         }
         apply_boot(&app);
     });
@@ -408,17 +413,25 @@ fn spawn_dock_badge_poller(app: AppHandle) {
 /// （还在 `ensure_server` 的健康等待里），靠 `start_server` 线程的竞态分支停掉刚拉起的 server；
 /// 若不等它出结果就 `exit`，后台线程随进程死亡，刚 spawn 的 server 成孤儿（端口/`server.lock`
 /// 不释放；LaunchAgent KeepAlive 场景还会与 launchd 再拉起的实例争端口形成拉锯）。
-/// `boot.outcome` 置位时竞态分支已执行完毕，此时退出是安全的。上限 70s 覆盖 `ensure_server`
+/// `boot.settled` 置位时竞态分支已执行完毕，此时退出是安全的。上限 70s 覆盖 `ensure_server`
 /// 自身的 60s 健康超时；只在退出线程里调用，不进 `RunEvent::Exit`（事件线程不可阻塞）。
 fn wait_boot_settled(app: &AppHandle) {
     let state = app.state::<ShellState>();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(70);
+    poll_until(deadline, || state.boot.settled.load(Ordering::SeqCst));
+}
+
+/// 轮询到条件成立或超时，返回是否在超时前成立。
+/// 独立成纯函数便于单测（真实 `AppHandle` 无法在单测里构造）；
+/// 判定条件必须是**只增不减的持久状态**，不能用被 `take()` 消费的槽位（063c0ca5 修复点）。
+fn poll_until(deadline: std::time::Instant, mut ready: impl FnMut() -> bool) -> bool {
     while std::time::Instant::now() < deadline {
-        if state.boot.outcome.lock().unwrap().is_some() {
-            return;
+        if ready() {
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
+    false
 }
 
 /// 窗口当前所处的可观察状态。托盘点击/菜单「显示」/第二实例启动都先判这一态。
@@ -872,6 +885,7 @@ fn main() {
                     outcome: Mutex::new(None),
                     boot_ok: AtomicBool::new(false),
                     boot_error: Mutex::new(None),
+                    settled: AtomicBool::new(false),
                 },
                 server: Mutex::new(None),
                 quitting: AtomicBool::new(false),
@@ -984,9 +998,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_decision_count, review_issue_count, shell_init_script, wake_steps, window_chrome,
-        WakeStep, WindowPhase,
+        open_decision_count, poll_until, review_issue_count, shell_init_script, wake_steps,
+        window_chrome, WakeStep, WindowPhase,
     };
+
+    #[test]
+    fn poll_until_returns_immediately_when_already_settled() {
+        // 063c0ca5：启动已落地时必须立刻返回，不能等满上限（旧实现恒等 70s 的回归防线）。
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(10);
+        assert!(poll_until(deadline, || true));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[test]
+    fn poll_until_times_out_when_never_settled() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        assert!(!poll_until(deadline, || false));
+    }
 
     #[test]
     fn hidden_window_shows_unminimizes_and_focuses() {
