@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use tauri::menu::{
-    AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
+    AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
     WINDOW_SUBMENU_ID,
 };
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -557,62 +557,124 @@ fn shell_init_script(platform: &str, chrome: WindowChrome) -> String {
     )
 }
 
+/// E4：菜单文案集中定义（本地化收尾）。抽成纯数据便于在 Windows 上单测，
+/// 防止后续改菜单时把文案回退成英文或漏掉「服务」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MenuLabels {
+    services: &'static str,
+    hide_template: &'static str,
+    hide_others: &'static str,
+    show_all: &'static str,
+    quit_template: &'static str,
+    close_window: &'static str,
+    undo: &'static str,
+    redo: &'static str,
+    cut: &'static str,
+    copy: &'static str,
+    paste: &'static str,
+    select_all: &'static str,
+    fullscreen: &'static str,
+    minimize: &'static str,
+    maximize: &'static str,
+}
+
+/// 菜单文案（简体中文，与页面 UI 语言一致；`{app}` 为应用名占位）。
+fn menu_labels() -> MenuLabels {
+    MenuLabels {
+        services: "服务",
+        hide_template: "隐藏 {app}",
+        hide_others: "隐藏其他",
+        show_all: "全部显示",
+        quit_template: "退出 {app}",
+        close_window: "关闭窗口",
+        undo: "撤销",
+        redo: "重做",
+        cut: "剪切",
+        copy: "复制",
+        paste: "粘贴",
+        select_all: "全选",
+        fullscreen: "进入全屏",
+        minimize: "最小化",
+        maximize: "缩放",
+    }
+}
+
+/// 把 `{app}` 占位替换为应用名。
+fn fill_app(template: &str, app_name: &str) -> String {
+    template.replace("{app}", app_name)
+}
+
 /// B05：macOS 应用菜单中文化（默认菜单 File/Edit/View/Window/Help 全英文）。
 /// 结构对齐 Tauri `Menu::default` 的 mac 段（App/文件/编辑/显示/窗口/帮助），全部用 PredefinedMenuItem
 /// 保留系统默认行为与快捷键，只改文案；「帮助」与官方默认同为空子菜单。
+/// E4：「服务」子菜单只在 macOS 构造（系统服务是 App 菜单的 mac 惯例位置；Windows 无菜单栏、不构造该项），
+/// 文案统一走 `menu_labels()`。
 /// 菜单在所有平台构造（Windows 编译期即校验本函数），仅 macOS 挂为菜单栏应用菜单。
 fn localized_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let app_name = app.package_info().name.clone();
     let version = app.package_info().version.to_string();
-    let app_submenu = Submenu::with_items(
+    let labels = menu_labels();
+
+    let about_item = PredefinedMenuItem::about(
         app,
-        app_name.clone(),
-        true,
-        &[
-            &PredefinedMenuItem::about(
-                app,
-                None,
-                Some(AboutMetadata {
-                    name: Some(app_name.clone()),
-                    version: Some(version),
-                    ..Default::default()
-                }),
-            )?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::services(app, Some("服务"))?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, Some(&format!("隐藏 {app_name}")))?,
-            &PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?,
-            &PredefinedMenuItem::show_all(app, Some("全部显示"))?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, Some(&format!("退出 {app_name}")))?,
-        ],
+        None,
+        Some(AboutMetadata {
+            name: Some(app_name.clone()),
+            version: Some(version),
+            ..Default::default()
+        }),
     )?;
+    let sep_about = PredefinedMenuItem::separator(app)?;
+    // 服务子菜单由 AppKit 提供（mac 才有），Windows 上不构造。
+    #[cfg(target_os = "macos")]
+    let services_item = PredefinedMenuItem::services(app, Some(labels.services))?;
+    #[cfg(target_os = "macos")]
+    let sep_services = PredefinedMenuItem::separator(app)?;
+    let hide_template = fill_app(labels.hide_template, &app_name);
+    let hide_item = PredefinedMenuItem::hide(app, Some(&hide_template))?;
+    let hide_others_item = PredefinedMenuItem::hide_others(app, Some(labels.hide_others))?;
+    let show_all_item = PredefinedMenuItem::show_all(app, Some(labels.show_all))?;
+    let sep_hide = PredefinedMenuItem::separator(app)?;
+    let quit_template = fill_app(labels.quit_template, &app_name);
+    let quit_item = PredefinedMenuItem::quit(app, Some(&quit_template))?;
+
+    let mut app_items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![&about_item, &sep_about];
+    #[cfg(target_os = "macos")]
+    {
+        app_items.push(&services_item);
+        app_items.push(&sep_services);
+    }
+    app_items.push(&hide_item);
+    app_items.push(&hide_others_item);
+    app_items.push(&show_all_item);
+    app_items.push(&sep_hide);
+    app_items.push(&quit_item);
+    let app_submenu = Submenu::with_items(app, app_name.clone(), true, &app_items)?;
     let file_submenu = Submenu::with_items(
         app,
         "文件",
         true,
-        &[&PredefinedMenuItem::close_window(app, Some("关闭窗口"))?],
+        &[&PredefinedMenuItem::close_window(app, Some(labels.close_window))?],
     )?;
     let edit_submenu = Submenu::with_items(
         app,
         "编辑",
         true,
         &[
-            &PredefinedMenuItem::undo(app, Some("撤销"))?,
-            &PredefinedMenuItem::redo(app, Some("重做"))?,
+            &PredefinedMenuItem::undo(app, Some(labels.undo))?,
+            &PredefinedMenuItem::redo(app, Some(labels.redo))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, Some("剪切"))?,
-            &PredefinedMenuItem::copy(app, Some("复制"))?,
-            &PredefinedMenuItem::paste(app, Some("粘贴"))?,
-            &PredefinedMenuItem::select_all(app, Some("全选"))?,
+            &PredefinedMenuItem::cut(app, Some(labels.cut))?,
+            &PredefinedMenuItem::copy(app, Some(labels.copy))?,
+            &PredefinedMenuItem::paste(app, Some(labels.paste))?,
+            &PredefinedMenuItem::select_all(app, Some(labels.select_all))?,
         ],
     )?;
     let view_submenu = Submenu::with_items(
         app,
         "显示",
         true,
-        &[&PredefinedMenuItem::fullscreen(app, Some("进入全屏"))?],
+        &[&PredefinedMenuItem::fullscreen(app, Some(labels.fullscreen))?],
     )?;
     // 窗口/帮助子菜单必须用官方同款 id（WINDOW_SUBMENU_ID / HELP_SUBMENU_ID）：
     // macOS 挂菜单时 Tauri 按这两个 id 调 set_as_windows_menu_for_nsapp / set_as_help_menu_for_nsapp，
@@ -623,10 +685,10 @@ fn localized_app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         "窗口",
         true,
         &[
-            &PredefinedMenuItem::minimize(app, Some("最小化"))?,
-            &PredefinedMenuItem::maximize(app, Some("缩放"))?,
+            &PredefinedMenuItem::minimize(app, Some(labels.minimize))?,
+            &PredefinedMenuItem::maximize(app, Some(labels.maximize))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::close_window(app, Some("关闭窗口"))?,
+            &PredefinedMenuItem::close_window(app, Some(labels.close_window))?,
         ],
     )?;
     // 「帮助」与官方默认菜单一致：mac 上为空子菜单（占位保持五项齐全）。
@@ -990,6 +1052,37 @@ mod tests {
         assert!(mac.contains("nativeTitleBar: true"), "{mac}");
         let win = shell_init_script("windows", window_chrome("windows"));
         assert!(win.contains("nativeTitleBar: false"), "{win}");
+    }
+
+    /// E4：菜单文案必须保持中文且包含「服务」；`{app}` 占位要能替换成应用名。
+    #[test]
+    fn menu_labels_stay_localized_and_include_services() {
+        let labels = super::menu_labels();
+        assert_eq!(labels.services, "服务");
+        assert_eq!(super::fill_app(labels.hide_template, "AgentBoard"), "隐藏 AgentBoard");
+        assert_eq!(super::fill_app(labels.quit_template, "AgentBoard"), "退出 AgentBoard");
+        let all = [
+            ("services", labels.services),
+            ("hide_others", labels.hide_others),
+            ("show_all", labels.show_all),
+            ("close_window", labels.close_window),
+            ("undo", labels.undo),
+            ("redo", labels.redo),
+            ("cut", labels.cut),
+            ("copy", labels.copy),
+            ("paste", labels.paste),
+            ("select_all", labels.select_all),
+            ("fullscreen", labels.fullscreen),
+            ("minimize", labels.minimize),
+            ("maximize", labels.maximize),
+        ];
+        for (name, value) in all {
+            assert!(!value.is_empty(), "{name} 不能为空");
+            assert!(
+                value.chars().any(|c| c as u32 > 0x2E80),
+                "{name} 必须是中文：{value}"
+            );
+        }
     }
 
     #[test]
