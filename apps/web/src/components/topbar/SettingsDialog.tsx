@@ -10,6 +10,7 @@ import { api } from '../../api/client';
 import { useServerVersion, WEB_VERSION } from '../../api/version';
 import { setTheme, useTheme, type Theme } from '../../theme';
 import { Modal } from '../ui/Modal';
+import { AutostartSection } from '../settings/AutostartSection';
 import { CliDefaultModelSection } from '../settings/CliDefaultModelSection';
 import { McpSection } from '../settings/McpSection';
 import { PersonaSection } from '../settings/PersonaSection';
@@ -232,6 +233,8 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
       <RestartServerPanel />
       {/* SETTINGS-TRAVEL：猫猫旅行自动回收开关（读写 settings.travelAutoRecover，PATCH 即时生效） */}
       <TravelAutoRecoverSection />
+      {/* SETTINGS-AUTOSTART：开机自启（桌面壳 IPC；浏览器环境显示不可用） */}
+      <AutostartSection />
     </Modal>
   );
 }
