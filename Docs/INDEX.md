@@ -100,6 +100,7 @@
 | 2026-11-04 | [知识卡：产品体检 2026-11-04](knowledge:bdb81648-5bec-4746-839e-b8c325daf499) | 产品体检跨模块一致性原则与未闭环项（原 md 与截图目录已清退，全文在该页 rev1 历史） |
 | 2026-11-04 | [guide-2026-11-04-cli-knowledge-tasks.md](Docs/guide-2026-11-04-cli-knowledge-tasks.md) | 当前工作区 CLI / 知识 / 任务操作指引 |
 | 2026-11-04 | [kb-cli-newcomer-report.md](Docs/kb-cli-newcomer-report.md) | `kb` CLI 新人可用性实测 |
+| 2026-11-13 | [desktop-build-pitfalls.md](Docs/desktop-build-pitfalls.md) | Windows 桌面端构建三坑与产物校验口径（D12） |
 | 长期 | [agentboard测试问题记录.md](Docs/agentboard测试问题记录.md) | 测试问题流水 |
 
 **其它目录**

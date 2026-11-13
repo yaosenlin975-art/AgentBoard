@@ -14,6 +14,9 @@
  *   node scripts/desktop/build-windows.mjs                # 只出 exe（tauri build --no-bundle）
  *   node scripts/desktop/build-windows.mjs --bundles nsis # 出 exe + NSIS 安装包（含运行时）
  *   node scripts/desktop/build-windows.mjs --dry-run      # 只做前置核查并打印计划（同 --check）
+ *
+ * 环境坑（pnpm 非 TTY 阻塞、corepack spawn 陷阱）与安装包内嵌 exe 的新旧判定方法见
+ * `Docs/desktop-build-pitfalls.md`。
  *   node scripts/desktop/build-windows.mjs --skip-runtime # 跳过运行时预置（只验壳本体编译）
  *
  * 退出码：0 成功 / 1 前置缺失或构建失败 / 2 平台不支持
@@ -24,16 +27,7 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnFailure } from './spawn-failure.mjs';
@@ -274,7 +268,8 @@ function deployServer() {
   }
 
   // 部署树里可能混入测试/源码残留，清掉免得进包
-  for (const junk of ['src', 'test', 'scripts', 'B']) rmSync(join(STAGE_SERVER, junk), { recursive: true, force: true });
+  for (const junk of ['src', 'test', 'scripts', 'B'])
+    rmSync(join(STAGE_SERVER, junk), { recursive: true, force: true });
   rmSync(staging, { recursive: true, force: true });
 
   const bytes = dirSize(STAGE_SERVER);

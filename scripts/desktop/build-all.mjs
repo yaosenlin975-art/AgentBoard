@@ -2,6 +2,10 @@
 /**
  * 一键重打桌面端两条分发产物（D9）：便携包 zip + NSIS 安装包。
  *
+ * 环境坑与校验口径的完整说明见 `Docs/desktop-build-pitfalls.md`：
+ * pnpm 非 TTY 阻塞（CI=true 会静默删光 devDependencies）、corepack 三层 spawn 陷阱、
+ * 产物归档约定、zip 双判据、安装包内嵌 exe 的新旧判定。
+ *
  * 只做编排，不重写既有逻辑：
  *   pnpm -r build
  *   → node scripts/package-portable.mjs                        （便携包，先出）
@@ -124,7 +128,8 @@ function git(gitArgs) {
 
 /**
  * 解析 pnpm 的真实 JS 入口，让本脚本能用 `node <pnpm.js>` 的方式调用 pnpm，
- * 完全绕开 corepack.cmd / pnpm.cmd 在 Windows 上的三层陷阱：
+ * 完全绕开 corepack.cmd / pnpm.cmd 在 Windows 上的三层陷阱（详见
+ * `Docs/desktop-build-pitfalls.md` 坑 2）：
  *   1) spawnSync 直接调 `corepack` 报 ENOENT（PATH 里那份无扩展名，不是 exe）；
  *   2) 解析到 `corepack.cmd` 后必须经 cmd.exe 包装（.cmd 不能 CreateProcess）；
  *   3) 经 cmd /c 时路径含空格会被截断（"'C:\Program' is not recognized"），
@@ -357,6 +362,8 @@ function verifyPortable(expected, portableStepStartMs) {
   /**
    * 找便携包 zip。仓库根可能残留多个（历史包），取 mtime 最新的那个，
    * 再靠下面的 mtime 判据确认它确实由当前 bundle 产出。
+   * 归档约定（旧包移入 `.logs/archive/`，仓库根只留当前有效产物）见
+   * `Docs/desktop-build-pitfalls.md` 坑 3。
    */
   const zipCandidates = readdirSync(ROOT)
     .filter((name) => /^AgentBoard-win-x64-[^\\/]+\.zip$/.test(name))
@@ -498,6 +505,8 @@ function main() {
     // pnpm 的 deps-status 检查会在 build 前尝试 `pnpm install --production`；
     // 在非 TTY（后台/CI/被父进程 spawn）下它会以 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY
     // 中止。环境变量 npm_config_verify_deps_before_run 不生效（实测），必须走 --config 参数。
+    // 切勿改用 CI=true：那会真的执行 install --production 并静默删光 devDependencies。
+    // 详见 `Docs/desktop-build-pitfalls.md` 坑 1。
     if (!skipBuild) {
       runPnpm('构建 workspace', ['--config.verify-deps-before-run=false', '-r', 'build']);
     } else {
