@@ -275,6 +275,37 @@ fn recreate_main_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 编译期平台标识：前端顶栏据此决定形态（Windows 右侧三键 / macOS 左侧三圆点）。
+///
+/// 为什么由壳注入、不靠 UA 嗅探：
+/// - wry 只在**显式** `with_user_agent` 时改 UA（Windows `SetUserAgent`、macOS `setCustomUserAgent`），
+///   本项目没有设置，所以两边 UA 都是系统 WebView 默认值，**由系统版本决定**；
+/// - macOS WKWebView 的 UA 虽通常含 `Macintosh; Intel Mac OS X`，但该串受系统与
+///   `applicationNameForUserAgent` 影响，不是稳定契约；
+/// - `cfg!(target_os)` 是编译期事实，零猜测。
+///
+/// 前端读取优先级：`window.__AB_PLATFORM_OVERRIDE__` → `userAgentData.platform` → UA 正则 → 兜底 windows。
+/// 注入的就是第一优先级的那个值。
+fn platform_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
+/// 注入脚本：在任何页面脚本执行前设置 `window.__AB_PLATFORM_OVERRIDE__`。
+///
+/// 用 initialization script 而不是 `eval`：后者要等页面加载完才能跑，前端首屏渲染时
+/// 读到的仍是 `undefined`，会先按 UA 兜底渲染一次再跳变。初始化脚本在文档解析前执行，
+/// 首屏即正确。
+fn platform_init_script() -> String {
+    format!(
+        "Object.defineProperty(window, '__AB_PLATFORM_OVERRIDE__', {{ value: '{}', writable: false, configurable: false }});",
+        platform_id()
+    )
+}
+
 /// 建主窗口并挂关窗隐藏/页面加载回调；首次启动与重建共用，保证两条路径窗口行为一致。
 fn build_main_window(
     app: &AppHandle,
@@ -285,9 +316,20 @@ fn build_main_window(
         .title("AgentBoard")
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
+        // 平台标识注入：首次创建与销毁后重建都走这里，两条路径一致。
+        .initialization_script(platform_init_script())
         // WINTITLE-01：去掉系统原生标题栏，改由页面自绘（WindowTitleBar / 启动页 winbar）。
-        // macOS 同样走全自绘三键（不保留原生红绿灯），保证三端行为一致；
-        // 若后续要原生红绿灯，再按平台插入 title_bar_style(Overlay) + hidden_title。
+        //
+        // macOS 走全自绘的**依据**（tao 0.37.2 platform_impl/macos/window.rs:206-218）：
+        // `decorations(false)` 且未设 `titlebar_hidden` 时，styleMask 取
+        // `Borderless | Resizable | Miniaturizable` —— 保留可缩放与可最小化，但**不含 `Titled`**。
+        // macOS 的红绿灯按钮属于 `Titled` 的 titlebar，因此 Borderless 下原生按钮不渲染，
+        // 全自绘三圆点不会与原生按钮重叠，无需 `title_bar_style(Overlay)` + `hidden_title`。
+        // 这两种 API 只在「保留原生红绿灯并叠加内容」时才需要（tao window.rs:206 另一分支）。
+        //
+        // Borderless 的已知行为：窗口无系统圆角与阴影（阴影默认仍在，仅 `has_shadow=false` 才关，
+        // 见 window.rs:314-316），四角为直角；拖动只能用 `data-tauri-drag-region`
+        // （启动页 winbar 与主页面 WindowTitleBar 都已带），不能拖系统 titlebar。
         .decorations(false)
         .center()
         .visible(visible)
@@ -429,14 +471,20 @@ fn main() {
                 .unwrap_or_else(|| "(unknown)".to_string());
             let layout = server_process::describe_layout();
             diagnostics::info(format!(
-                "==== 启动 mode={} version={} ====",
+                "==== 启动 mode={} platform={} version={} ====",
                 if cfg!(debug_assertions) { "dev" } else { "packaged" },
+                platform_id(),
                 app.package_info().version
             ));
             diagnostics::info(format!("exe_dir={exe_dir}"));
             diagnostics::info(format!("config_dir={}", config_dir.display()));
             diagnostics::info(format!("日志={}", diagnostics::log_path(&config_dir).display()));
             diagnostics::info(format!("layout={layout}"));
+            // 前端平台判定应与壳一致：记下注入值，验收可直接比对。
+            diagnostics::info(format!(
+                "platform_override={}（initialization_script 注入 window.__AB_PLATFORM_OVERRIDE__）",
+                platform_id()
+            ));
 
             app.manage(ShellState {
                 boot: BootState {
@@ -546,7 +594,47 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{wake_steps, WakeStep, WindowPhase};
+    use super::{platform_id, platform_init_script, wake_steps, WakeStep, WindowPhase};
+
+    // ---- D16：平台标识注入 ----
+
+    #[test]
+    fn platform_id_matches_target_os() {
+        // 编译期事实：Windows 构建必须是 "windows"，macOS 构建必须是 "macos"。
+        // 同一份断言在两种目标上都成立（条件断言）。
+        #[cfg(target_os = "windows")]
+        assert_eq!(platform_id(), "windows");
+        #[cfg(target_os = "macos")]
+        assert_eq!(platform_id(), "macos");
+        // 值域受限：前端只认这两个字符串
+        assert!(matches!(platform_id(), "windows" | "macos"));
+    }
+
+    #[test]
+    fn init_script_sets_override_with_platform_value() {
+        let script = platform_init_script();
+        // 必须设置前端读的那个键，且值等于 platform_id()
+        assert!(
+            script.contains("__AB_PLATFORM_OVERRIDE__"),
+            "脚本应设置 __AB_PLATFORM_OVERRIDE__，实际 {script}"
+        );
+        assert!(
+            script.contains(&format!("'{}'", platform_id())),
+            "脚本值应与 platform_id() 一致，实际 {script}"
+        );
+        // 只读 + 不可配置：防止页面脚本改掉壳注入的事实
+        assert!(script.contains("writable: false"), "实际 {script}");
+        assert!(script.contains("configurable: false"), "实际 {script}");
+    }
+
+    #[test]
+    fn init_script_is_valid_js_shape() {
+        // 只做形态断言：单行、以分号结尾、无换行（避免 Tauri 注入时被截断）
+        let script = platform_init_script();
+        assert!(!script.contains('\n'), "注入脚本不应含换行");
+        assert!(script.trim_end().ends_with(';'), "应以分号结尾，实际 {script}");
+        assert!(script.starts_with("Object.defineProperty("), "实际 {script}");
+    }
 
     #[test]
     fn hidden_window_shows_unminimizes_and_focuses() {
