@@ -415,6 +415,69 @@ $ok = ($visible.Count -eq 0) -and ((Get-Process -Id $shell.Id).MainWindowHandle 
 
 见禁止事项 **P6** 与 §9.12。核心是**跑验收前先断言产物比 src 新**，而不是跑完再去解释为什么全红。
 
+#### 坑 4：`WindowTitleBar` 在浏览器里 `return null` —— 光注入平台值不够
+
+验顶栏平台自适应时，只注入 `window.__AB_PLATFORM_OVERRIDE__` 会让断言全 FAIL，但**不是产品缺陷**：
+
+```tsx
+// WindowTitleBar.tsx
+const [tauri] = useState(isTauriRuntime);   // = window.__TAURI_INTERNALS__ !== undefined
+if (!tauri) return null;                    // 浏览器里直接不渲染，不占布局
+```
+
+**正确做法**：同时注入一个最小 Tauri 桩，覆盖组件实际用到的两处：
+
+```js
+window.__AB_PLATFORM_OVERRIDE__ = platform;
+window.__TAURI_INTERNALS__ = {
+  metadata: { currentWindow: { label: 'main' } },
+  invoke: (cmd) => cmd === 'plugin:window|is_maximized'
+    ? Promise.resolve(false)      // 组件靠它同步最大化状态
+    : Promise.resolve(undefined),
+};
+```
+
+已实现于 `tests/desktop/d15-titlebar-platform.mjs` 的 `tauriStub`。首版脚本 W0/M0 全 FAIL 即此原因。
+
+#### 坑 5：Tailwind v4 的 `rounded-full` 算出来是 `3.35544e+07px`，不能匹配字面值
+
+`rounded-full` 在 Tailwind v4 里编译成 `border-radius: calc(infinity * 1px)`，`getComputedStyle` 读出 `"3.35544e+07px"` —— **既不是 `50%` 也不是 `9999px`**。
+
+```js
+// 错：字面值匹配
+/50%|9999px|6px/.test(borderRadius)
+
+// 对：按几何关系判圆
+const raw = parseFloat(String(borderRadius).replace('px', ''));
+const isCircle = raw >= Math.min(width, height) / 2;
+```
+
+同类风险：任何依赖 Tailwind 生成值的断言都应按**几何/语义**判，不要锚定具体字面值。
+
+#### 坑 6：`%TEMP%` 是 8.3 短名，`Get-ChildItem` 给长名 → `Substring` 切错
+
+`$env:TEMP` 常返回 `C:\Users\ADMINI~1\AppData\Local\Temp`，而 `Get-ChildItem -Recurse` 的 `FullName` 是长名 `C:\Users\Administrator\...`。长度不同，`$f.FullName.Substring($Dir.Length)` 会切在路径中间，算出垃圾前缀 → **两棵本该相同的树指纹必然不等**。
+
+`d4-run.ps1` 的 V12 因此连报两次 WARN（误报），改用「按路径组件数剥离」后 PASS：
+
+```powershell
+$sep = [char[]]@('\', '/')
+$rootDepth = ([System.IO.Path]::GetFullPath($Dir).TrimEnd($sep).Split($sep) | Where-Object { $_ -ne '' }).Count
+$rel = ($f.FullName.Split($sep) | Where-Object { $_ -ne '' })[$rootDepth..] -join '/'
+```
+
+另注意：`Split('\', '/')` 在 PowerShell 里会被解析成 `Split(char, int)` 重载并抛 `Cannot convert "/" to Int32`；必须显式 `[char[]]@(...)`。
+
+#### 坑 7：zip 条目解包两个必跳条件
+
+```powershell
+# 1) 目录条目（Name 为空或以 / 结尾）：ExtractToFile 会报「目录名称无效」
+if ($e.Name -eq '' -or $rel.EndsWith('/')) { continue }
+# 2) 相对路径用 IndexOf 截取，不要用正则 -replace '^.*?apps/web/dist/'
+#    某些条目路径前面也带 dist 字样，非贪婪正则会截错位置，解出多一层目录（实测多出 5ff5a\）
+$idx = $e.FullName.IndexOf('apps/web/dist/', [System.StringComparison]::OrdinalIgnoreCase)
+```
+
 ### 9.12 产物新鲜度门禁（`d4-run.ps1` 开头）
 
 ```powershell

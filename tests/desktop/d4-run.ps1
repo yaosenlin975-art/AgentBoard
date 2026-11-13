@@ -194,6 +194,102 @@ function Get-PeBuildTimeFromNsis {
     }
 }
 
+# 目录整树指纹：把所有文件的相对路径 + 内容 sha256 排序后拼起来再哈希。
+# 与 build-all.mjs 的 treeSha256 同思路，但这是给验收侧独立算的（不信任构建侧记录）。
+#
+# 相对路径按「路径组件数」剥离，不用 Substring($Dir.Length)：
+# %TEMP% 可能返回 8.3 短名（C:\Users\ADMINI~1\...），而 Get-ChildItem 的 FullName 是长名
+# （C:\Users\Administrator\...）—— 长度不同，Substring 会切在路径中间，
+# 算出 garbage 前缀导致两棵树的指纹必然不等（实测踩过，V12 因此误报 WARN）。
+function Get-TreeFingerprint {
+    param([string]$Dir)
+    if (-not (Test-Path $Dir)) { return $null }
+    $sep = [char[]]@('\', '/')
+    $rootParts = [System.IO.Path]::GetFullPath($Dir).TrimEnd($sep).Split($sep) | Where-Object { $_ -ne '' }
+    $rootDepth = $rootParts.Count
+    $files = Get-ChildItem $Dir -Recurse -File -EA SilentlyContinue | Sort-Object FullName
+    $sb = New-Object System.Text.StringBuilder
+    $count = 0
+    foreach ($f in $files) {
+        $allParts = $f.FullName.Split($sep) | Where-Object { $_ -ne '' }
+        if ($allParts.Count -le $rootDepth) { continue }
+        $rel = ($allParts[$rootDepth..($allParts.Count - 1)] -join '/')
+        $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+        [void]$sb.AppendLine("$rel`t$h")
+        $count++
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($sb.ToString())
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $tree = ([BitConverter]::ToString($sha.ComputeHash($bytes)) -replace '-', '').ToLower()
+    $sha.Dispose()
+    return [pscustomobject]@{ TreeSha256 = $tree; FileCount = $count }
+}
+
+# 便携包内 web dist 与仓库 apps/web/dist 的整树指纹比对。
+#
+# 为什么需要（D15/D16 实测暴露）：两份 dist 的 bundle 文件名可能完全相同（都叫 index-sfJdwciV.js），
+# 但内容可以不同 —— 仓库 dist 是 pnpm build 的副作用产物，未走 publish:web；
+# 8787 现网托管的正是它。拿它当验收证据会验到错误的 bundle。
+# 文件名相同不代表同一份，必须比内容。
+#
+# 判据来源优先级：
+#   1) .logs/build-all-record.json 若含 web dist 整树指纹 → 与包内比（构建侧权威记录）
+#   2) 否则退化为「包内 vs 仓库 apps/web/dist」整树比对（本函数默认路径，不依赖记录字段）
+# 当前 build-all 只记 webMarkerHits、未记 web 整树指纹，所以走 2)。
+function Compare-PackagedWebDist {
+    param([string]$ZipPath)
+    try {
+        $repoWebDist = Join-Path $repoRoot 'apps\web\dist'
+        if (-not (Test-Path $repoWebDist)) {
+            return [pscustomobject]@{ Ok = $null; Evidence = '仓库 apps/web/dist 不存在，跳过比对' }
+        }
+        $repo = Get-TreeFingerprint -Dir $repoWebDist
+
+        $tmp = Join-Path $env:TEMP ('ab-webdist-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        try {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -EA SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+            try {
+                # 便携包内 web dist 位于 AgentBoard/app/apps/web/dist/
+                $entries = $zip.Entries | Where-Object { $_.FullName -match 'apps/web/dist/.+' }
+                if (-not $entries -or $entries.Count -eq 0) {
+                    return [pscustomobject]@{ Ok = $null; Evidence = '包内未找到 apps/web/dist' }
+                }
+                foreach ($e in $entries) {
+                    # 用 IndexOf 精确截取，不用正则 -replace：
+                    # 某些 zip 条目路径里前面也带 "dist" 字样，非贪婪正则会截错位置，
+                    # 导致解出多一层目录、整树比对必然不等（实测踩过：多出 5ff5a\ 一层）。
+                    $marker = 'apps/web/dist/'
+                    $idx = $e.FullName.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase)
+                    if ($idx -lt 0) { continue }
+                    $rel = $e.FullName.Substring($idx + $marker.Length)
+                    if ([string]::IsNullOrWhiteSpace($rel)) { continue }
+                    # zip 里的目录条目：Name 为空 / FullName 以 / 结尾。必须跳过，
+                    # 否则 ExtractToFile 会拿目录路径去建文件 → 「目录名称无效」。
+                    if ($e.Name -eq '' -or $rel.EndsWith('/')) { continue }
+                    $dest = Join-Path $tmp ($rel -replace '/', '\')
+                    $parent = Split-Path $dest -Parent
+                    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+                    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true)
+                }
+            } finally { $zip.Dispose() }
+
+            $pkg = Get-TreeFingerprint -Dir $tmp
+            if ($null -eq $pkg) { return [pscustomobject]@{ Ok = $null; Evidence = '解包后 web dist 为空' } }
+            $same = ($pkg.TreeSha256 -eq $repo.TreeSha256) -and ($pkg.FileCount -eq $repo.FileCount)
+            return [pscustomobject]@{
+                Ok = $same
+                Evidence = "包内 tree=$($pkg.TreeSha256.Substring(0,12))…/$($pkg.FileCount) 文件；仓库 tree=$($repo.TreeSha256.Substring(0,12))…/$($repo.FileCount) 文件"
+            }
+        } finally {
+            if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp -EA SilentlyContinue }
+        }
+    } catch {
+        return [pscustomobject]@{ Ok = $null; Evidence = "比对异常：$($_.Exception.Message)" }
+    }
+}
+
 function Add-Result {
     param([string]$Id, [string]$Title, [string]$Status, [string]$Evidence)
     [void]$results.Add([pscustomobject]@{ Id = $Id; Title = $Title; Status = $Status; Evidence = $Evidence })
@@ -501,7 +597,7 @@ if (Should-Run 'V7-pe') {
 $latestZipForRun = Get-ChildItem -Path $repoRoot -Filter 'AgentBoard-win-x64-*.zip' -File -EA SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
-if ($latestZipForRun -and (Any-Run @('V8', 'V9', 'V10', 'V11'))) {
+if ($latestZipForRun -and (Any-Run @('V8', 'V9', 'V10', 'V11', 'V12'))) {
     $pkgExtract = Join-Path $env:TEMP ("ab-d4-pkg-" + [guid]::NewGuid().ToString('N').Substring(0, 6))
     try {
         Expand-Archive -Path $latestZipForRun.FullName -DestinationPath $pkgExtract -Force
@@ -599,10 +695,27 @@ if ($latestZipForRun -and (Any-Run @('V8', 'V9', 'V10', 'V11'))) {
                 if (Test-Path $dotBase) { Remove-Item -Recurse -Force $dotBase -EA SilentlyContinue }
             }
         }
+        # V12 包内 web dist 与仓库 web dist 整树一致性（只告警，不阻断）
+        #
+        # 风险场景：bundle 文件名相同（都是 index-XXXX.js）但内容不同。
+        # 仓库 apps/web/dist 是 pnpm build 的副作用产物，未走 publish:web；
+        # 现网 8787 托管的正是它 —— 拿它当证据会验到错误的 bundle。
+        if (Should-Run 'V12') {
+            $webDiff = Compare-PackagedWebDist -ZipPath $latestZipForRun.FullName
+            if ($null -eq $webDiff.Ok) {
+                Add-Result 'V12' '包内 web dist 与仓库 dist 整树一致' 'UNVERIFIED' $webDiff.Evidence
+            } elseif ($webDiff.Ok) {
+                Add-Result 'V12' '包内 web dist 与仓库 dist 整树一致' 'PASS' $webDiff.Evidence
+            } else {
+                Add-Result 'V12' '包内 web dist 与仓库 dist 整树一致' 'WARN' (
+                    "$($webDiff.Evidence) —— 仓库 dist 与包内 dist 不一致，可能未走 publish:web 流程；文件名相同不代表同一份。此告警不阻断。"
+                )
+            }
+        }
     } finally {
         if (Test-Path $pkgExtract) { Remove-Item -Recurse -Force $pkgExtract -EA SilentlyContinue }
     }
-} elseif (Any-Run @('V8', 'V9', 'V10', 'V11')) {
+} elseif (Any-Run @('V8', 'V9', 'V10', 'V11', 'V12')) {
     Add-Result 'V8-V11' '便携包验收组' 'SKIP' '仓库根无 AgentBoard-win-x64-*.zip'
 }
 
