@@ -9,6 +9,10 @@
 //! 平台：仅 Windows 实现。macOS 的窗口/菜单栏托盘/node 二进制差异留给 DESKTOP-3，
 //! 本文件只在单例与托盘处保留注释，不写 mac 实现代码。
 
+// release 用窗口子系统：不带此项时 exe 是 console 子系统，双击会先弹一个控制台黑窗。
+// debug 保留控制台，排障时 stdout/stderr 可见。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod server_process;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,7 +90,8 @@ fn start_server(app: AppHandle) {
                 if state.quitting.load(Ordering::SeqCst) {
                     // 退出与启动竞态：用户已点退出，刚拉起的 server 必须立刻停掉。
                     let mut handle = handle;
-                    let _ = handle.stop();
+                    let outcome = handle.stop();
+                    eprintln!("停服结果（退出竞态）：{outcome:?}");
                 } else {
                     *state.server.lock().unwrap() = Some(handle);
                 }
@@ -115,7 +120,9 @@ fn shutdown(app: &AppHandle) {
     };
     if let Some(mut handle) = handle {
         // 外部实例（child=None）不终止；壳只停自己拉起的进程。
-        let _ = handle.stop();
+        // 返回三种结果：停了自己的子进程 / 停了 restart 后的接管者 / 什么都没停。
+        let outcome = handle.stop();
+        eprintln!("停服结果：{outcome:?}");
     }
 }
 

@@ -64,22 +64,38 @@ pub struct ServerHandle {
     port: u16,
 }
 
+/// `stop()` 的结果，区分「停了谁」，供调用方与验收判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// 停掉了壳自己 spawn 的子进程。
+    StoppedChild { pid: u32 },
+    /// 子进程句柄已失效，按 `server.lock` 里的当前 pid 停掉了接管者（服务自重启换 pid 后）。
+    StoppedTakeover { pid: u32 },
+    /// 什么都没停：外部实例复用（child=None），或没有可停的进程。
+    NothingToStop,
+}
+
 impl ServerHandle {
     /// 退出时停服。
     ///
     /// Windows 上 Node 的 SIGINT/SIGTERM 处理器无法跨进程投递（`Child::kill` 走 TerminateProcess，
-    /// 不会触发 `process.on('exit')`），所以壳按「终止自己的子进程 + 壳侧补删锁」收尾：
+    /// 不会触发 `process.on('exit')`），所以壳按「终止进程 + 壳侧补删锁」收尾：
     /// 1. 终止子进程并等待其真正消失；
-    /// 2. 等待端口不再响应 `/api/version`；
-    /// 3. 删除「本子进程写入的 server.lock」或「持有者已死的陈旧锁」；持有者仍活着时一律不碰。
+    /// 2. 补一次「锁的第二意见」：`POST /api/system/restart` 会让服务换 pid 并接管 `server.lock`，
+    ///    此时壳手里的 `Child` 是死句柄。若锁里是**另一个存活的 pid** 且端口对得上，按该 pid 终止接管者；
+    /// 3. 等待端口不再响应 `/api/version`；
+    /// 4. 删除「本次终止的那个 pid 写入的锁」或「持有者已死的陈旧锁」；持有者仍活着时一律不碰。
+    ///
+    /// 接管者二次终止只在本壳**确实 spawn 过**服务（`child.is_some()`）时执行：
+    /// 外部实例（`child=None`）的复用语义不变——壳不终止它，也不碰它的锁。
     ///
     /// 这样退出后不会留下孤儿进程或陈旧锁，也不做「按名字杀 node」这类链式暴力清理。
-    pub fn stop(&mut self) -> bool {
+    pub fn stop(&mut self) -> StopOutcome {
         let Some(mut child) = self.child.take() else {
             // 外部实例：壳只复用，退出时不终止它，也不碰它的锁。
-            return false;
+            return StopOutcome::NothingToStop;
         };
-        let pid = child.id();
+        let child_pid = child.id();
         let _ = child.kill();
 
         // 等待进程退出：最多 8s，超时再补一次 kill（避免留下僵尸句柄）。
@@ -100,14 +116,32 @@ impl ServerHandle {
         }
         drop(child);
 
+        // 第二意见：restart 之后锁里是新 pid，且它仍在监听本端口。
+        // 只在「锁 pid ≠ 子进程 pid」且「该 pid 存活」且「锁里 port 是本壳端口」时接管终止。
+        let takeover_pid = decide_takeover(
+            read_lock_info(&server_lock_path()),
+            child_pid,
+            self.port,
+            is_pid_alive,
+        );
+        if let Some(pid) = takeover_pid {
+            terminate_pid(pid);
+        }
+
         // 端口应随进程消失；给 Windows 最多 5s 释放监听。
         let deadline = Instant::now() + Duration::from_secs(5);
         while is_healthy(Duration::from_millis(400), self.port) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(200));
         }
 
-        // 返回 server.lock 是否已释放（供调用方/验收排障使用）。
-        remove_lock_owned_by(pid)
+        // 删锁：优先按「实际终止的那个 pid」——接管者被停后它的锁就是可删的。
+        let terminated_pid = takeover_pid.unwrap_or(child_pid);
+        remove_lock_owned_by(terminated_pid);
+
+        match takeover_pid {
+            Some(pid) => StopOutcome::StoppedTakeover { pid },
+            None => StopOutcome::StoppedChild { pid: child_pid },
+        }
     }
 }
 
@@ -295,11 +329,48 @@ fn server_lock_path() -> PathBuf {
 #[derive(Deserialize)]
 struct LockFile {
     pid: u32,
+    /// 缺省容忍：旧锁或坏锁没有 port 时不参与「接管者二次终止」判定（保守不终止）。
+    #[serde(default)]
+    port: Option<u16>,
 }
 
 fn read_lock_pid(path: &Path) -> Option<u32> {
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str::<LockFile>(&raw).ok().map(|lock| lock.pid)
+}
+
+/// 读锁里的 `pid` + `port`（第二意见判定用）；不存在/损坏返回 None。
+fn read_lock_info(path: &Path) -> Option<LockFile> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<LockFile>(&raw).ok()
+}
+
+/// 「第二意见」判定：该不该按锁里的 pid 再终止一次。
+///
+/// 只在这三条同时成立时返回 `Some(pid)`：
+/// 1. 锁存在且可解析；
+/// 2. `pid` 与壳手里的子进程 pid **不同**（相同说明就是自己的子进程，走 Child::kill 已覆盖）；
+/// 3. 锁里的 `port` 与本壳端口一致（防止误杀另一个 AgentBoard 实例）；
+/// 4. 该 pid 存活（已死则只是陈旧锁，交给 remove_lock_owned_by 清）。
+///
+/// `alive` 注入是为了可单测（真实调用传 `is_pid_alive`）。
+fn decide_takeover(
+    lock: Option<LockFile>,
+    child_pid: u32,
+    port: u16,
+    alive: impl Fn(u32) -> bool,
+) -> Option<u32> {
+    let lock = lock?;
+    if lock.pid == child_pid {
+        return None;
+    }
+    if lock.port != Some(port) {
+        return None;
+    }
+    if !alive(lock.pid) {
+        return None;
+    }
+    Some(lock.pid)
 }
 
 /// 只删除「本子进程写入的锁」或「持有者已死的陈旧锁」；持有者仍活着时一律不动（避免误删接管者的锁）。
@@ -367,9 +438,29 @@ fn is_pid_alive(pid: u32) -> bool {
     })
 }
 
+/// 按 pid 终止「非本壳 Child 句柄」的进程（restart 后的接管者）。
+///
+/// 用 `taskkill /PID <pid> /T /F`：`/T` 连带该进程的子进程（agent CLI），`/F` 强制，
+/// 等价于 `Child::kill` 的 TerminateProcess，不引入额外 crate。
+/// 只按精确 pid 收，不做「按映像名杀 node」。
+fn terminate_pid(pid: u32) {
+    let mut command = Command::new("taskkill");
+    command
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = command.status();
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_config_port, DEFAULT_PORT};
+    use super::{decide_takeover, parse_config_port, LockFile, DEFAULT_PORT};
 
     #[test]
     fn valid_port_is_parsed() {
@@ -394,5 +485,40 @@ mod tests {
         assert_eq!(parse_config_port("{ \"port\": 65536 }"), None);
         assert_eq!(parse_config_port("{ \"port\": \"8790\" }"), None);
         assert_eq!(parse_config_port("{ \"port\": 1.5 }"), None);
+    }
+
+    fn lock(pid: u32, port: Option<u16>) -> Option<LockFile> {
+        Some(LockFile { pid, port })
+    }
+
+    #[test]
+    fn takeover_detected_when_lock_pid_differs_and_alive() {
+        // restart 后：壳的 child=100（死句柄），锁里是接管者 200 且在跑 → 应按 200 二次终止
+        assert_eq!(decide_takeover(lock(200, Some(8787)), 100, 8787, |_| true), Some(200));
+    }
+
+    #[test]
+    fn no_takeover_when_lock_pid_is_own_child() {
+        // 锁里就是自己的子进程：Child::kill 已覆盖，不重复终止
+        assert_eq!(decide_takeover(lock(100, Some(8787)), 100, 8787, |_| true), None);
+    }
+
+    #[test]
+    fn no_takeover_when_lock_holder_is_dead() {
+        // 陈旧锁：pid 已死，只交给 remove_lock_owned_by 清理，不 kill
+        assert_eq!(decide_takeover(lock(200, Some(8787)), 100, 8787, |_| false), None);
+    }
+
+    #[test]
+    fn no_takeover_for_other_port() {
+        // 锁指向另一个端口（另一个 AgentBoard 实例）：不碰，避免误杀
+        assert_eq!(decide_takeover(lock(200, Some(9000)), 100, 8787, |_| true), None);
+    }
+
+    #[test]
+    fn no_takeover_when_lock_missing_or_port_absent() {
+        assert_eq!(decide_takeover(None, 100, 8787, |_| true), None);
+        // 旧锁/坏锁没有 port：保守不终止
+        assert_eq!(decide_takeover(lock(200, None), 100, 8787, |_| true), None);
     }
 }
