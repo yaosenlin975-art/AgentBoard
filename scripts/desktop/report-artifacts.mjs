@@ -80,7 +80,17 @@ for (const [label, info] of [
   console.log(`  ${label.padEnd(18)} ${info === null ? '（不存在）' : `PE ${info.local}  ${info.size} B`}`);
 }
 if (refPe !== null && pkgPe !== null) {
-  console.log(`  → 包内壳与源码壳同一次编译: ${refPe.iso === pkgPe.iso ? '✔ 是' : '✘ 否（旧壳被打进包）'}`);
+  // 判据：包内壳必须由当前壳源码编译（PE ≥ 壳源码最新 mtime）。
+  // 不比「与源码 release 壳相等」——Tauri 在 --no-bundle 与 --bundles nsis 两步各编译一次，
+  // 两次 PE 天然相差几十秒、大小相同。要求相等会稳定误报（D13 第一版判据的设计错误）。
+  const srcMs = srcRust?.mtimeMs ?? 0;
+  const innerMs = new Date(pkgPe.iso).getTime();
+  const fresh = srcMs === 0 || innerMs >= srcMs;
+  const sameByteSize = refPe.size === pkgPe.size;
+  console.log(`  → 包内壳由当前源码编译: ${fresh ? '✔ 是' : '✘ 否（旧壳被打进包）'}`);
+  console.log(
+    `  → 与 release 壳字节大小相同: ${sameByteSize ? '✔' : '✘'}（PE 差 ${Math.abs(new Date(refPe.iso).getTime() - innerMs) / 1000}s，属 Tauri 二次编译，正常）`,
+  );
 }
 
 console.log('\n── 产物文件 ──');

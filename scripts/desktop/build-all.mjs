@@ -40,7 +40,7 @@
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -345,27 +345,33 @@ function assertShellFresh() {
 }
 
 /**
- * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须与源码 release 壳
- * 来自同一次编译。
+ * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须由**当前壳源码**编译。
  *
- * 比 PE 时间戳，不比 sha256：Tauri 打包会写 bundle 类型标记（`_NSIS` / `_UNK`，3 字节），
- * 同一次编译的两个副本 sha256 也不同。
+ * 判据是「包内壳 PE ≥ 壳源码最新 mtime」，不是「包内壳 PE == 源码 release 壳 PE」。
+ *
+ * 为什么不能要求相等（D13 第一版踩的坑）：
+ * Tauri 在 `--no-bundle` 与 `--bundles nsis` 两个步骤里**各编译一次**（日志可见两次
+ * `Compiling agentboard-desktop`，各 ~18s）。两次链接产物的 PE 必然相差几十秒，字节大小相同。
+ * 要求相等的话，NSIS 步骤一跑完，便携包侧的校验就必然误报——这是判据设计错误，不是产物问题。
+ *
+ * 要防的是「上一轮留下的旧壳被打进新 zip」。那个场景里包内壳 PE 早于壳源码 mtime，本判据能抓住。
  */
-function assertPackagedShellMatches(referencePe, label = '便携包内层壳') {
+function assertPackagedShellMatches(srcMtimeMs, label = '便携包内层壳') {
   const inner = readPeTimestamp(PKG_DESKTOP_EXE);
   if (inner === null) {
     fail(`${label}缺少或不是有效 PE：${PKG_DESKTOP_EXE}\n  → 便携包未产出或布局变了`);
   }
-  if (inner.seconds !== referencePe.seconds) {
+  const innerMs = inner.seconds * 1000;
+  if (srcMtimeMs > 0 && innerMs < srcMtimeMs) {
     fail(
-      `${label}与源码 release 壳不是同一次编译：\n` +
+      `${label}比壳源码旧，说明被打进了旧壳：\n` +
         `  包内壳      PE ${inner.iso}  ${inner.size} B\n` +
-        `  源码 release PE ${referencePe.iso}  ${referencePe.size} B\n` +
-        `  → 便携包被打进了旧壳（zip 外层 mtime 是打包时刻，不代表内层是新的）。\n` +
+        `  壳源码最新  ${new Date(srcMtimeMs).toISOString()}\n` +
+        `  → zip 外层 mtime 是打包时刻，不代表内层是新的（D13 故障模式）。\n` +
         `  → 重新执行本脚本；它会先构建壳再打包。`,
     );
   }
-  log(`✔ ${label}：PE ${inner.iso} 与源码 release 一致（${inner.size} B）`);
+  log(`✔ ${label}：PE ${inner.iso} ≥ 壳源码最新（${inner.size} B）`);
   return inner;
 }
 
@@ -474,13 +480,9 @@ function verifyPortable(expected, portableStepStartMs) {
   assertBundleContainsSource(PKG_SERVER_DIST);
   const dotfilesAllow = warnBundleDotfilesAllow(PKG_SERVER_DIST);
 
-  // D13：包内壳必须与源码 release 壳同一次编译。zip 外层 mtime 是打包时刻，
+  // D13：包内壳必须由当前壳源码编译。zip 外层 mtime 是打包时刻，
   // 只比外层会把「新容器装旧内容」判成通过（D11 就漏了这里）。
-  const referencePe = readPeTimestamp(DESKTOP_EXE);
-  if (referencePe === null) {
-    fail(`缺少桌面壳产物：${DESKTOP_EXE}\n  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle`);
-  }
-  const packagedPe = assertPackagedShellMatches(referencePe);
+  const packagedPe = assertPackagedShellMatches(newestDesktopSrcMtimeMs());
 
   /**
    * 找便携包 zip。仓库根可能残留多个（历史包），取 mtime 最新的那个，
@@ -570,30 +572,28 @@ function verifyNsis(expected) {
   }
   assertTreeSame('NSIS 暂存树 apps/server/dist', expected, fingerprintDist(STAGE_SERVER_DIST));
 
-  // D13 第 4 条：NSIS 内嵌的壳同样必须来自本次编译。
-  // 判据用 PE 时间戳：Tauri 会给内嵌副本写 bundle 类型标记（`_NSIS`），sha256 必然不同。
-  const referencePe = readPeTimestamp(DESKTOP_EXE);
-  if (referencePe === null) {
-    fail(`缺少桌面壳产物：${DESKTOP_EXE}\n  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle`);
-  }
-
+  // D13 第 4 条：NSIS 内嵌的壳同样必须由当前壳源码编译。
+  // 判据是「内嵌壳 PE ≥ 壳源码最新 mtime」，不比与 release 相等（见 assertPackagedShellMatches）。
   const setup = findFile(NSIS_DIR, /-setup\.exe$/);
   if (setup === null) fail(`NSIS 安装包不存在：${NSIS_DIR} 下没有 *-setup.exe`);
-  const nsisPe = assertNsisEmbedsShell(setup, referencePe);
+  const nsisPe = assertNsisEmbedsShell(setup, newestDesktopSrcMtimeMs());
   return { kind: 'nsis', path: setup, size: statSync(setup).size, embeddedShellPe: nsisPe.iso };
 }
 
 /**
- * 从 NSIS 安装包里取出内嵌的 `agentboard-desktop.exe` 并比对 PE 时间戳。
+ * 从 NSIS 安装包里取出内嵌的 `agentboard-desktop.exe`，校验它由当前壳源码编译。
+ *
+ * 判据同便携包：**内嵌壳 PE ≥ 壳源码最新 mtime**。Tauri 在 `--no-bundle` 与 `--bundles nsis`
+ * 两步各编译一次，PE 天然相差几十秒；要求与 release 目录相等必然误报。
  *
  * 用 7-Zip 静态解包（无需真机安装），只取那一个条目。7-Zip 不在时降级为警告：
  * 这条校验的目标是抓「旧壳被打进包」，不能因为缺工具就让整个校验崩掉。
  */
-function assertNsisEmbedsShell(setupPath, referencePe) {
+function assertNsisEmbedsShell(setupPath, srcMtimeMs) {
   const sevenZip = ['C:/Program Files/7-Zip/7z.exe', 'C:/Program Files (x86)/7-Zip/7z.exe'].find((p) => existsSync(p));
   if (sevenZip === undefined) {
     log('⚠ 未找到 7-Zip，跳过 NSIS 内嵌壳校验（建议装 7-Zip 以启用该判据）');
-    return referencePe;
+    return { iso: '（未校验）', size: 0 };
   }
   const tempDir = join(LOG_DIR, '.nsis-pe-probe');
   rmSync(tempDir, { recursive: true, force: true });
@@ -617,15 +617,16 @@ function assertNsisEmbedsShell(setupPath, referencePe) {
   rmSync(tempDir, { recursive: true, force: true });
   if (embedded === null) fail(`NSIS 内嵌的 agentboard-desktop.exe 不是有效 PE`);
 
-  if (embedded.seconds !== referencePe.seconds) {
+  const embeddedMs = embedded.seconds * 1000;
+  if (srcMtimeMs > 0 && embeddedMs < srcMtimeMs) {
     fail(
-      `NSIS 内嵌壳与源码 release 壳不是同一次编译：\n` +
+      `NSIS 内嵌壳比壳源码旧，说明被打进了旧壳：\n` +
         `  安装包内嵌   PE ${embedded.iso}  ${embedded.size} B\n` +
-        `  源码 release PE ${referencePe.iso}  ${referencePe.size} B\n` +
-        `  → 安装包被打进了旧壳。重新执行本脚本。`,
+        `  壳源码最新   ${new Date(srcMtimeMs).toISOString()}\n` +
+        `  → 重新执行本脚本。`,
     );
   }
-  log(`✔ NSIS 内嵌壳：PE ${embedded.iso} 与源码 release 一致（${embedded.size} B）`);
+  log(`✔ NSIS 内嵌壳：PE ${embedded.iso} ≥ 壳源码最新（${embedded.size} B）`);
   return embedded;
 }
 
