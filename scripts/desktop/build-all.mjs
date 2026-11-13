@@ -50,6 +50,20 @@ const SERVER_DIST = join(SERVER_DIST_DIR, 'index.js');
 const STAGE_SERVER_DIST = join(ROOT, 'desktop', 'src-tauri', 'bundle-stage', 'apps', 'server', 'dist');
 const PKG_ROOT = join(ROOT, 'dist-package', 'AgentBoard');
 const PKG_SERVER_DIST = join(PKG_ROOT, 'app', 'apps', 'server', 'dist', 'index.js');
+/** web 产物目录：源码侧与两份产物内层各一份 */
+const WEB_DIST = join(ROOT, 'apps', 'web', 'dist');
+const PKG_WEB_DIST = join(PKG_ROOT, 'app', 'apps', 'web', 'dist');
+const STAGE_WEB_DIST = join(ROOT, 'desktop', 'src-tauri', 'bundle-stage', 'apps', 'web', 'dist');
+/**
+ * 前端关键串：壳通过 initialization_script 注入，前端据此判定平台。
+ *
+ * 为什么需要这条校验（D15/D16 暴露的问题）：zip / NSIS 外层 mtime 新不代表内层 web dist 新，
+ * 与「包内壳是旧构建」同源。z-index 哈希文件名会变，但注入的全局变量名是稳定标识，
+ * 用它判断「这次前端改动是否真进了产物」。
+ *
+ * 注意不能拿函数名（如 detectPlatform）当判据：vite 会压缩重命名，产物里查不到。
+ */
+const WEB_DIST_MARKER = '__AB_PLATFORM_OVERRIDE__';
 const LOG_DIR = join(ROOT, '.logs');
 const RECORD_PATH = join(LOG_DIR, 'build-all-record.json');
 const NSIS_DIR = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
@@ -347,6 +361,57 @@ function assertShellFresh() {
 /**
  * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须由**当前壳源码**编译。
  *
+/**
+ * 前端关键串校验（第 10 项一致性校验）。
+ *
+ * 与「包内壳是旧构建」同源：zip / NSIS 外层 mtime 新，不代表内层 web dist 新。
+ * 前端改动的唯一可靠证据是产物 JS 里含壳注入的全局变量名 `__AB_PLATFORM_OVERRIDE__`。
+ *
+ * 不能拿函数名当判据（如 `detectPlatform`）：vite 会压缩重命名，产物里查不到。
+ * 也不能只看 `apps/web/dist`：那目录可能已被刷新，但打进包的仍是旧副本。
+ */
+function assertWebDistHasMarker(webDistDir, label) {
+  if (!existsSync(webDistDir)) {
+    fail(`${label}：web dist 目录不存在：${webDistDir}`);
+  }
+  const assetsDir = join(webDistDir, 'assets');
+  const scanRoot = existsSync(assetsDir) ? assetsDir : webDistDir;
+  let total = 0;
+  let filesWithMarker = 0;
+  const scanned = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.js')) {
+        scanned.push(entry.name);
+        const count = (readFileSync(full, 'utf8').match(new RegExp(WEB_DIST_MARKER, 'g')) ?? []).length;
+        if (count > 0) {
+          filesWithMarker += 1;
+          total += count;
+        }
+      }
+    }
+  };
+  walk(scanRoot);
+
+  if (total === 0) {
+    fail(
+      `${label}：web dist 不含平台注入标记，前端改动未进产物\n` +
+        `  标记      ${WEB_DIST_MARKER}\n` +
+        `  扫描目录  ${scanRoot}\n` +
+        `  扫描文件  ${scanned.length} 个 .js，命中 0\n` +
+        `  → 前端壳注入改动（D15/D16）没有被打进产物；外层 mtime 新不代表内层新。\n` +
+        `  → 先确认 apps/web/dist 已重建（pnpm -r build），再重跑本脚本。`,
+    );
+  }
+  log(`✔ ${label}：${WEB_DIST_MARKER} 命中 ${total} 处（${filesWithMarker} 个文件，共扫 ${scanned.length} 个 .js）`);
+  return { total, filesWithMarker, scanned: scanned.length };
+}
+
+/**
+ * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须由**当前壳源码**编译。
+ *
  * 判据是「包内壳 PE ≥ 壳源码最新 mtime」，不是「包内壳 PE == 源码 release 壳 PE」。
  *
  * 为什么不能要求相等（D13 第一版踩的坑）：
@@ -483,6 +548,8 @@ function verifyPortable(expected, portableStepStartMs) {
   // D13：包内壳必须由当前壳源码编译。zip 外层 mtime 是打包时刻，
   // 只比外层会把「新容器装旧内容」判成通过（D11 就漏了这里）。
   const packagedPe = assertPackagedShellMatches(newestDesktopSrcMtimeMs());
+  // 第 10 项：包内 web dist 必须含前端平台注入标记（D15/D16 的改动证据）
+  const packagedWeb = assertWebDistHasMarker(PKG_WEB_DIST, '便携包 web dist');
 
   /**
    * 找便携包 zip。仓库根可能残留多个（历史包），取 mtime 最新的那个，
@@ -563,6 +630,7 @@ function verifyPortable(expected, portableStepStartMs) {
     bundleSha256: bundle.sha256,
     dotfilesAllow,
     zipHead: nameHead,
+    webMarkerHits: packagedWeb.total,
   };
 }
 
@@ -577,7 +645,73 @@ function verifyNsis(expected) {
   const setup = findFile(NSIS_DIR, /-setup\.exe$/);
   if (setup === null) fail(`NSIS 安装包不存在：${NSIS_DIR} 下没有 *-setup.exe`);
   const nsisPe = assertNsisEmbedsShell(setup, newestDesktopSrcMtimeMs());
-  return { kind: 'nsis', path: setup, size: statSync(setup).size, embeddedShellPe: nsisPe.iso };
+
+  // 第 10 项：NSIS 内层的 web dist 也必须含平台注入标记。
+  // 先看暂存树（makensis 的实际输入），再从安装包里抽一份核对，两者都要过。
+  const stagedWeb = assertWebDistHasMarker(STAGE_WEB_DIST, 'NSIS 暂存树 web dist');
+  const nsisWeb = assertNsisEmbedsWebMarker(setup);
+
+  return {
+    kind: 'nsis',
+    path: setup,
+    size: statSync(setup).size,
+    embeddedShellPe: nsisPe.iso,
+    stagedWebMarkerHits: stagedWeb.total,
+    embeddedWebMarkerHits: nsisWeb.total,
+  };
+}
+
+/**
+ * 从 NSIS 安装包里抽出 `apps/web/dist/assets/*.js`，校验含平台注入标记。
+ *
+ * 为什么要抽包而不是只看暂存树：暂存树是 makensis 的输入，但安装包里到底装了什么，
+ * 只有解包才能证明。这与「包内壳」是同一条原则——验内层，不认外层时间戳。
+ */
+function assertNsisEmbedsWebMarker(setupPath) {
+  const sevenZip = ['C:/Program Files/7-Zip/7z.exe', 'C:/Program Files (x86)/7-Zip/7z.exe'].find((p) => existsSync(p));
+  if (sevenZip === undefined) {
+    log('⚠ 未找到 7-Zip，跳过 NSIS 内嵌 web dist 校验');
+    return { total: 0 };
+  }
+  const tempDir = join(LOG_DIR, '.nsis-web-probe');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true });
+  const result = spawnSync(sevenZip, ['e', setupPath, `-o${tempDir}`, 'apps/web/dist/assets/*.js', '-y', '-r'], {
+    encoding: 'utf8',
+  });
+  const found = existsSync(tempDir) ? readdirSync(tempDir).filter((n) => n.endsWith('.js')) : [];
+  if (found.length === 0) {
+    rmSync(tempDir, { recursive: true, force: true });
+    fail(
+      `从 NSIS 安装包取 web dist 失败（7-Zip exit=${result.status}，抽出 0 个 .js）：\n` +
+        `  ${String(result.stderr ?? '')
+          .trim()
+          .split('\n')
+          .slice(-2)
+          .join('\n  ')}`,
+    );
+  }
+  let total = 0;
+  let filesWithMarker = 0;
+  for (const name of found) {
+    const count = (readFileSync(join(tempDir, name), 'utf8').match(new RegExp(WEB_DIST_MARKER, 'g')) ?? []).length;
+    if (count > 0) {
+      filesWithMarker += 1;
+      total += count;
+    }
+  }
+  rmSync(tempDir, { recursive: true, force: true });
+
+  if (total === 0) {
+    fail(
+      `NSIS 安装包：web dist 不含平台注入标记，前端改动未进产物\n` +
+        `  标记      ${WEB_DIST_MARKER}\n` +
+        `  抽出文件  ${found.length} 个 .js，命中 0\n` +
+        `  → 前端壳注入改动（D15/D16）没有被打进安装包。`,
+    );
+  }
+  log(`✔ NSIS 内嵌 web dist：${WEB_DIST_MARKER} 命中 ${total} 处（${filesWithMarker}/${found.length} 个文件）`);
+  return { total, filesWithMarker, scanned: found.length };
 }
 
 /**
@@ -771,6 +905,8 @@ function main() {
   assertDistFresh();
   // D13 第 5 条：壳新鲜度也要在 verify-only 下查，不能只在构建期查
   assertShellFresh();
+  // 第 10 项：源码侧 web dist 也必须含平台注入标记（包内两层在校验产物时查）
+  assertWebDistHasMarker(WEB_DIST, '源码 web dist');
   const expected = fingerprintDist(SERVER_DIST_DIR);
   if (expected === null) fail(`缺少 ${SERVER_DIST_DIR}`);
   const previous = existsSync(RECORD_PATH) ? JSON.parse(readFileSync(RECORD_PATH, 'utf8')) : null;
