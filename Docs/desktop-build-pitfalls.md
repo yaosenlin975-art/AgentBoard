@@ -72,6 +72,70 @@ node scripts/desktop/build-all.mjs --verify-only
 
 ---
 
+## 坑 5：同一构建链路可能多次编译同一目标，PE 只可在同目标内比
+
+### 现象
+
+四段式构建里，壳被编译了**两次**：
+
+```
+▶ 构建桌面壳：tauri build --no-bundle     → Compiling agentboard-desktop（18.5s）
+▶ 打 NSIS：  tauri build --bundles nsis   → Compiling agentboard-desktop（18.2s）
+```
+
+两次产物：
+
+```
+包内壳（便携包）  PE 08:55:13  12,344,320 B
+源码 release 壳   PE 08:55:47  12,344,320 B   ← 同一份源码，仅重链接
+```
+
+**字节大小完全相同，PE 相差 34 秒。**
+
+### 判据原则
+
+**同一构建链路可能多次编译同一目标，PE 时间戳只在同一目标内可比。**
+
+跨目标比对 PE，正确判据是「**PE ≥ 该目标的源码最新 mtime**」，不是「两个目标的 PE 相等」。
+
+| 比较对象 | 错误判据 | 正确判据 |
+|---|---|---|
+| 包内壳 vs 源码 release 壳 | PE 相等 → **必失败** | 各自 PE ≥ 壳源码 mtime |
+| NSIS 内嵌壳 vs 源码 release 壳 | PE 相等 → **必失败** | 内嵌壳 PE ≥ 壳源码 mtime |
+| 同一个 exe 的两次读取 | — | PE 相等（同目标内可比）|
+
+### 无效尝试
+
+- 比 sha256：Tauri 打包会写 bundle 类型标记（`_NSIS` / `_UNK`），同一次编译的两个副本 sha256 也不同
+- 比 PE 相等：如上，双编译导致必不相等
+- 比字节大小：两次编译大小确实相同，但**大小相同不代表内容相同**，无法区分新旧源码
+
+### 危险操作
+
+无（本坑只导致校验误报，不破坏环境）。误报的代价是把好的产物判成坏的，逼人反复重打。
+
+### 有效解法
+
+```
+包内壳 PE  >= 壳源码最新 mtime   ✔ 能抓「上一轮旧壳被打进新包」
+                                ✔ 不受双编译影响
+```
+
+实现位置：`scripts/desktop/build-all.mjs` 的 `assertPackagedShellMatches()` 与
+`assertNsisEmbedsShell()`。
+
+### 复现命令
+
+```
+# 观察两次编译（日志里应有两条 Compiling agentboard-desktop）
+node scripts/desktop/build-all.mjs 2>&1 | Select-String 'Compiling agentboard-desktop'
+
+# 看两次 PE 差多少
+node scripts/desktop/report-artifacts.mjs
+```
+
+---
+
 ## 坑 1：pnpm 非 TTY 构建阻塞【危险级】
 
 ### 现象
