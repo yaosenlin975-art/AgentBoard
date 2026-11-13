@@ -20,6 +20,7 @@
     "publish:web": "node scripts/rebuild-web-dist.mjs",
     "package:portable": "node scripts/package-portable.mjs",
     "build:desktop:all": "node scripts/desktop/build-all.mjs",
+    "report:artifacts": "node scripts/desktop/report-artifacts.mjs",
     "shortcut:test-page": "powershell -ExecutionPolicy Bypass -File scripts/create-test-page-shortcut.ps1"
   },
   "devDependencies": {
