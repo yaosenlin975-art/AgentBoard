@@ -187,6 +187,34 @@ function assertDistFresh() {
   );
 }
 
+/**
+ * D8 修复旁证：bundle 里 `dotfiles: "allow"` 的出现次数。
+ *
+ * 为什么是旁证而不是门禁（lead 裁决：≥5 通过 / <5 只警告）：
+ * - esbuild 会把单引号统一成双引号（实测 0.28.2），所以源码的 `dotfiles: 'allow'`
+ *   在 bundle 里变成 `dotfiles: "allow"`；计数依赖这个行为。
+ * - 未来 esbuild 升级、换 minify 配置或改用别的打包器，计数就会失效。
+ * - 真正的门禁是「点开头路径实跑 GET / 返 200」，那条不依赖任何打包器行为。
+ *
+ * 实测基线：旧 bundle（无 D8）= 3 处；含 D8 的 dist 经 esbuild = 5 处。
+ * 因此重打后的期望值是 5。
+ */
+const DOTFILES_ALLOW_EXPECTED = 5;
+
+function warnBundleDotfilesAllow(bundleFile) {
+  const text = readFileSync(bundleFile, 'utf8');
+  const actual = (text.match(/dotfiles:\s*"allow"/g) ?? []).length;
+  if (actual >= DOTFILES_ALLOW_EXPECTED) {
+    log(`✔ 旁证：bundle 中 dotfiles: "allow" = ${actual} 处（期望 ≥${DOTFILES_ALLOW_EXPECTED}）`);
+  } else {
+    log(
+      `⚠ 旁证不足：bundle 中 dotfiles: "allow" = ${actual} 处，低于期望 ${DOTFILES_ALLOW_EXPECTED} 处。` +
+        `可能是打包器行为变化使本项失效——以实跑 GET / 200 为准。`,
+    );
+  }
+  return actual;
+}
+
 /** 严格相等：整树指纹比对（NSIS 暂存树是 dist 的字节拷贝） */
 function assertTreeSame(label, expected, actual) {
   if (actual === null) fail(`${label}：目录不存在（${label}）`);
@@ -290,6 +318,7 @@ function verifyPortable(expected, portableStepStartMs) {
   }
 
   assertBundleContainsSource(PKG_SERVER_DIST);
+  const dotfilesAllow = warnBundleDotfilesAllow(PKG_SERVER_DIST);
 
   const zip = findFile(ROOT, /^AgentBoard-win-x64-[^\\/]+\.zip$/);
   if (zip === null) fail(`便携包 zip 不存在：仓库根下没有 AgentBoard-win-x64-*.zip`);
@@ -306,7 +335,7 @@ function verifyPortable(expected, portableStepStartMs) {
 
   log(`✔ 便携包 server bundle：${bundle.size} B（源码 dist ${expected.fileCount} 个文件）`);
   log(`✔ 便携包 zip：文件名 HEAD=${nameHead} 与当前 HEAD 一致`);
-  return { kind: 'portable', path: zip, size: statSync(zip).size, bundleSha256: bundle.sha256 };
+  return { kind: 'portable', path: zip, size: statSync(zip).size, bundleSha256: bundle.sha256, dotfilesAllow };
 }
 
 function verifyNsis(expected) {
