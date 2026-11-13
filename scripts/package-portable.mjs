@@ -27,12 +27,13 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -171,15 +172,49 @@ function logSymlinkStats() {
   if (dereferenced.length > 20 || skipped.length > 20) log('  （仅展示前 20 条）');
 }
 
-/** pnpm 虚拟仓库中按包名取一个已安装目录（多个版本时取字典序最后，即最高版本）。 */
+/**
+ * pnpm 虚拟仓库中按包名取一个已安装目录。
+ *
+ * 解析顺序（DESKTOP-WIN/D3）：
+ *  1) 跟随**真实依赖链**：从 <ROOT>/node_modules/<name> 与各 workspace 包的 node_modules/<name>
+ *     取 linkTarget（pnpm 符号链接指向 .pnpm/<pkg>@<ver>/node_modules/<pkg>），命中即用。
+ *     这修掉了「多个版本并存时按字典序取最高版」的错选——13.1.1 曾是孤儿目录，
+ *     而 apps/server 实际链接的是 12.11.1。
+ *  2) 解析不到链接时回退字典序最后（最高版本），并打印警告说明可能选到非链接版本。
+ */
 function pnpmPackage(name) {
   const store = join(ROOT, 'node_modules', '.pnpm');
   if (!existsSync(store)) fail('缺少 node_modules/.pnpm，请先执行 pnpm install');
+
+  const lookups = [
+    join(ROOT, 'node_modules', name),
+    ...['apps/server', 'apps/web', 'apps/mcp', 'packages/cli', 'packages/adapters', 'packages/shared'].map((p) =>
+      join(ROOT, p, 'node_modules', name),
+    ),
+    join(ROOT, 'desktop', 'node_modules', name),
+  ];
+  for (const candidate of lookups) {
+    let target;
+    try {
+      target = lstatSync(candidate).isSymbolicLink() ? realpathSync(candidate) : null;
+    } catch {
+      continue;
+    }
+    if (target !== null && existsSync(join(target, 'package.json')) && target.includes(`${name}`)) {
+      return target;
+    }
+  }
+
   const dirs = readdirSync(store)
     .filter((entry) => entry.startsWith(`${name}@`))
     .sort();
   if (dirs.length === 0) fail(`node_modules/.pnpm 中找不到 ${name}，请先执行 pnpm install`);
-  return join(store, dirs[dirs.length - 1], 'node_modules', name);
+  const fallback = join(store, dirs[dirs.length - 1], 'node_modules', name);
+  log(
+    `[WARN] ${name} 未在依赖链中找到符号链接，回退为字典序最高版本 ${dirs[dirs.length - 1]}` +
+      `（可能选到非当前依赖的版本）：${relative(ROOT, fallback)}`,
+  );
+  return fallback;
 }
 
 function findEsbuild() {
@@ -337,13 +372,42 @@ copyTree(join(ROOT, 'apps', 'web', 'dist'), join(appDir, 'apps', 'web', 'dist'))
 copyFileSync(join(ROOT, 'apps', 'server', 'package.json'), join(appDir, 'apps', 'server', 'package.json'));
 
 const betterSqlite = pnpmPackage('better-sqlite3');
-const nativeNode = join(betterSqlite, 'build', 'Release', 'better_sqlite3.node');
-if (!existsSync(nativeNode)) fail(`缺少 better_sqlite3.node：${nativeNode}（请先 pnpm install / 重新编译）`);
-mkdirSync(join(appDir, 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true });
+
+/**
+ * better-sqlite3 原生二进制的候选位置（DESKTOP-WIN/D3）。
+ * 顺序按「未来更可能」排：13.x 起 npm 包自带 Node-API 预编译 prebuilds/，12.x 才是 node-gyp 的 build/Release。
+ * 找不到时把全部候选逐条列出，避免只报一条让人误判目录不存在。
+ */
+const NATIVE_CANDIDATES = [
+  join(betterSqlite, 'prebuilds', 'win32-x64.node'),
+  join(betterSqlite, 'build', 'Release', 'better_sqlite3.node'),
+];
+const nativeNode = NATIVE_CANDIDATES.find((candidate) => existsSync(candidate));
+if (nativeNode === undefined) {
+  fail(
+    `找不到 better-sqlite3 原生二进制（包目录 ${relative(ROOT, betterSqlite)}）。已尝试：\n` +
+      NATIVE_CANDIDATES.map((candidate) => `  - ${relative(ROOT, candidate)}`).join('\n') +
+      '\n请在仓库根执行 pnpm install（12.x 会生成 build/Release，13.x 自带 prebuilds）。',
+  );
+}
+
+mkdirSync(join(appDir, 'node_modules', 'better-sqlite3'), { recursive: true });
 copyTree(join(betterSqlite, 'lib'), join(appDir, 'node_modules', 'better-sqlite3', 'lib'));
 copyFileSync(join(betterSqlite, 'package.json'), join(appDir, 'node_modules', 'better-sqlite3', 'package.json'));
 copyFileSync(join(betterSqlite, 'binding.gyp'), join(appDir, 'node_modules', 'better-sqlite3', 'binding.gyp'));
-copyFileSync(nativeNode, join(appDir, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'));
+
+// 两种布局都按原相对位置复制：lib/binding.js 是按「包根下 prebuilds/ 或 build/Release/」找二进制的
+if (nativeNode.includes(`${sep}prebuilds${sep}`)) {
+  mkdirSync(join(appDir, 'node_modules', 'better-sqlite3', 'prebuilds'), { recursive: true });
+  copyTree(
+    join(betterSqlite, 'prebuilds'),
+    join(appDir, 'node_modules', 'better-sqlite3', 'prebuilds'),
+  );
+} else {
+  mkdirSync(join(appDir, 'node_modules', 'better-sqlite3', 'build', 'Release'), { recursive: true });
+  copyFileSync(nativeNode, join(appDir, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node'));
+}
+log(`better-sqlite3 原生二进制：${relative(ROOT, nativeNode)}`);
 const depFilter = (path) => !['test', 'tests', '__tests__'].includes(basename(path)) && !/\.bak$/i.test(basename(path));
 copyTree(pnpmPackage('bindings'), join(appDir, 'node_modules', 'bindings'), depFilter);
 copyTree(pnpmPackage('file-uri-to-path'), join(appDir, 'node_modules', 'file-uri-to-path'), depFilter);
