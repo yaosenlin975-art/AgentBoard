@@ -145,6 +145,41 @@ impl ServerHandle {
     }
 }
 
+/// 子进程 `AGENTBOARD_PORT` 的取值：**永远等于壳解析出的端口**。
+///
+/// 背景（D6）：`scripts/portable/start.cmd` 在调用壳**之前**就 `set "AGENTBOARD_PORT=8787"`，
+/// 而壳只读 `config.json`（`resolve_port`）。两端对同一变量的态度不一致：
+/// - 壳探 `config.json` 的端口（如 8899）
+/// - 服务读环境变量且 env 优先于 `config.json`（`apps/server/src/config.ts` 的 `loadConfig`）→ 绑 8787
+/// 于是壳永远探不到自己拉起的服务，60s 后假超时，而服务在 8787 继续跑成孤儿进程。
+///
+/// 修法：spawn 时显式把 `AGENTBOARD_PORT` 覆盖为壳端口，强制两端一致。
+///
+/// 为什么是「显式对齐」而不是「删除该变量」：`config.ts` 明确支持用 `AGENTBOARD_PORT`
+/// 临时改端口（注释写的是「不写回 config.json」），删除会让用户的环境变量静默失效；
+/// 对齐既消除冲突，又保住「服务监听端口 == 壳探测端口」这个不变量。
+fn child_port_env(shell_port: u16) -> String {
+    shell_port.to_string()
+}
+
+/// 外部传入的 `AGENTBOARD_PORT`（若存在且与壳端口不同），用于在错误文案里点明「被对齐过」。
+fn ambient_port_mismatch(shell_port: u16) -> Option<String> {
+    parse_ambient_port(env::var("AGENTBOARD_PORT").ok().as_deref(), shell_port)
+}
+
+/// `ambient_port_mismatch` 的纯函数内核（可单测，不读真实环境）。
+fn parse_ambient_port(raw: Option<&str>, shell_port: u16) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<u16>().ok()?;
+    if parsed == shell_port {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// 确保服务在跑：已健康则复用；否则用 node 拉起 `apps/server/dist/index.js` 并等待健康检查通过。
 ///
 /// 单例口径：壳自身由 `tauri-plugin-single-instance` 保证唯一；server 由 `server.lock` 保证唯一。
@@ -162,6 +197,10 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     command
         .arg(&entry)
         .current_dir(&cwd)
+        // D6：显式对齐端口，不让外部 AGENTBOARD_PORT 把服务带到别的端口上
+        .env("AGENTBOARD_PORT", child_port_env(port))
+        // D6-2：服务日志落 APPDATA，不在安装根产生 .logs（卸载残留）
+        .env("AGENTBOARD_LOG", server_log_path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -174,6 +213,7 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动服务进程（{}）：{error}", node.display()))?;
+    let child_pid = child.id();
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -182,22 +222,59 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
         }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
-                "服务进程启动后立即退出（{status}）。入口：{}\n日志：{}",
-                entry.display(),
-                log_path_display(&cwd)
+                "服务进程启动后立即退出（{status}）。\n{}",
+                startup_diagnostics(port, child_pid, &entry)
             ));
         }
         if Instant::now() >= deadline {
+            // 不静默 kill：先记下要停的 PID，杀掉后在文案里明确告知是否真的停干净。
             let _ = child.kill();
-            return Err(format!(
-                "等待服务健康检查超时（60 秒）。地址：{}\n入口：{}\n日志：{}",
-                base_url(port),
-                entry.display(),
-                log_path_display(&cwd)
-            ));
+            let _ = child.wait();
+            // 杀完再探一次端口：杀不干净时文案必须升级，不能谎报「已停止」。
+            let port_still_held = is_port_listening(port);
+            let head = if port_still_held {
+                format!(
+                    "等待服务健康检查超时（60 秒）。已尝试停止本次启动的服务进程（PID {child_pid}），\
+                     但端口仍被占用，可能需要手动结束 PID {child_pid} 或占用该端口的其它进程。"
+                )
+            } else {
+                format!("等待服务健康检查超时（60 秒）。已停止本次启动的服务进程（PID {child_pid}）。")
+            };
+            return Err(format!("{head}\n{}", startup_diagnostics(port, child_pid, &entry)));
         }
         thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// 启动失败的诊断文案：壳期望端口、被对齐掉的外部端口、入口、日志、以及人工兜底指引。
+fn startup_diagnostics(port: u16, child_pid: u32, entry: &Path) -> String {
+    let mut lines = vec![
+        format!("壳期望端口：{port}（来自 config.json 的 port，缺省 {DEFAULT_PORT}）"),
+        format!("服务地址：{}", base_url(port)),
+        format!("服务入口：{}", entry.display()),
+        format!("服务日志：{}", log_path_display()),
+        format!("子进程 PID：{child_pid}"),
+    ];
+    if let Some(ambient) = ambient_port_mismatch(port) {
+        lines.push(format!(
+            "注意：外部环境变量 AGENTBOARD_PORT={ambient} 与壳端口 {port} 不一致，已按壳端口对齐后启动服务"
+        ));
+    }
+    lines.push(format!(
+        "排查建议：确认 {port} 端口未被其它程序占用；若你从 start.cmd 启动，请改用 start-server.cmd <端口> 显式指定端口"
+    ));
+    lines.join("\n")
+}
+
+/// 端口是否仍有人监听（只要能建立 TCP 连接就算，不管对方是什么程序）。
+///
+/// 与 `is_healthy` 的区别：这里不校验 HTTP 响应，只回答「端口还被占着吗」，
+/// 用于 kill 之后判断是否真的停干净——被杀进程的 socket 有时会短暂残留。
+fn is_port_listening(port: u16) -> bool {
+    let Ok(addr) = format!("{HOST}:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok()
 }
 
 /// 健康探活：请求 `GET /api/version`，要求 200 且 `name=agentboard-server`。
@@ -296,8 +373,23 @@ fn repo_root_for(entry: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-fn log_path_display(cwd: &Path) -> String {
-    cwd.join(".logs").join("server.log").display().to_string()
+/// 服务日志路径：`<configDir>/logs/server.log`，即 `%APPDATA%\AgentBoard\logs\server.log`。
+///
+/// 为什么不在 cwd：壳把子进程 cwd 设为安装根（`repo_root_for`），服务端默认日志是
+/// `<cwd>/.logs/server.log`（`apps/server/src/services/serverLog.ts`），于是日志落进**安装目录**，
+/// 卸载时因文件仍被持有而留下空的 `.logs` 目录残留。
+///
+/// 改到 APPDATA 后有两点一致性收益：
+/// - 与壳自身的 `main.log` 同目录（`%APPDATA%\AgentBoard\logs\`），排障只看一处；
+/// - 与 `scripts/portable/start.cmd` 的既有约定一致（它本来就设
+///   `AGENTBOARD_LOG=%APPDATA%\AgentBoard\logs\server.log`），两种启动方式不再产生两处日志。
+fn server_log_path() -> PathBuf {
+    config_dir().join("logs").join("server.log")
+}
+
+/// 文案里展示的服务日志路径。
+fn log_path_display() -> String {
+    server_log_path().display().to_string()
 }
 
 /// 配置目录：与 `apps/server/src/config.ts` 的 `configDir()` 同口径（`%APPDATA%\AgentBoard`）。
@@ -460,7 +552,10 @@ fn terminate_pid(pid: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{decide_takeover, parse_config_port, LockFile, DEFAULT_PORT};
+    use super::{
+        child_port_env, decide_takeover, log_path_display, parse_ambient_port, parse_config_port,
+        server_log_path, LockFile, DEFAULT_PORT,
+    };
 
     #[test]
     fn valid_port_is_parsed() {
@@ -520,5 +615,57 @@ mod tests {
         assert_eq!(decide_takeover(None, 100, 8787, |_| true), None);
         // 旧锁/坏锁没有 port：保守不终止
         assert_eq!(decide_takeover(lock(200, None), 100, 8787, |_| true), None);
+    }
+
+    // ---- D6：端口对齐 ----
+
+    #[test]
+    fn child_port_env_equals_shell_port() {
+        // spawn 时注入的 AGENTBOARD_PORT 必须等于壳解析出的端口（覆盖外部传入的任何值）
+        assert_eq!(child_port_env(8899), "8899");
+        assert_eq!(child_port_env(DEFAULT_PORT), "8787");
+    }
+
+    #[test]
+    fn ambient_port_mismatch_flags_conflicting_value() {
+        // start.cmd 预设 8787、壳端口 8899 → 文案里要点明被对齐，便于排障
+        assert_eq!(parse_ambient_port(Some("8787"), 8899), Some("8787".to_string()));
+    }
+
+    #[test]
+    fn ambient_port_mismatch_ignores_same_value() {
+        // 两边一致：不是问题，不写进文案
+        assert_eq!(parse_ambient_port(Some("8899"), 8899), None);
+        assert_eq!(parse_ambient_port(Some(" 8899 "), 8899), None);
+    }
+
+    #[test]
+    fn ambient_port_mismatch_ignores_unset_or_garbage() {
+        assert_eq!(parse_ambient_port(None, 8787), None);
+        assert_eq!(parse_ambient_port(Some(""), 8787), None);
+        assert_eq!(parse_ambient_port(Some("   "), 8787), None);
+        // 非法值不参与对齐提示（服务端也会忽略它）
+        assert_eq!(parse_ambient_port(Some("abc"), 8787), None);
+        assert_eq!(parse_ambient_port(Some("70000"), 8787), None);
+    }
+
+    // ---- D6-2：服务日志落点 ----
+
+    #[test]
+    fn server_log_path_is_under_appdata_not_install_root() {
+        let path = server_log_path();
+        let text = path.to_string_lossy().replace('\\', "/");
+        // 必须在 AgentBoard 配置目录下的 logs/server.log
+        assert!(
+            text.ends_with("AgentBoard/logs/server.log"),
+            "服务日志应落在 <配置目录>/logs/server.log，实际 {text}"
+        );
+        // 不得再是 <cwd>/.logs/server.log（安装根残留的根因）
+        assert!(!text.contains("/.logs/"), "不应落在兜底 .logs 目录，实际 {text}");
+    }
+
+    #[test]
+    fn log_path_display_matches_server_log_path() {
+        assert_eq!(log_path_display(), server_log_path().display().to_string());
     }
 }
