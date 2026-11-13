@@ -42,3 +42,5 @@ desktop/src-tauri/bundle-stage/
 # 临时验证残留（D3 便携包点路径测试等）
 .qa-temp/
 .tmp/
+# 临时解包/探针（NSIS 解包树、PE 时间戳探针等，前缀式命名不进历史）
+.tmp-*
