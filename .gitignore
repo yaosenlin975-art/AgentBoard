@@ -32,3 +32,13 @@ unslop/after/
 # tauri icon 顺带生成的移动端图标（本项目无 android/ios 目标，可再生；MAC-TRIAL-B03）
 desktop/src-tauri/icons/android/
 desktop/src-tauri/icons/ios/
+
+# 桌面端打包产物（可再生产物：便携包解压树 127MB + zip 46MB，不进历史）
+dist-package/
+AgentBoard-win-x64-*.zip
+# tauri 打安装包前的运行时暂存树（build-windows.mjs 生成）
+desktop/src-tauri/bundle-stage/
+
+# 临时验证残留（D3 便携包点路径测试等）
+.qa-temp/
+.tmp/
