@@ -53,12 +53,19 @@ const PKG_SERVER_DIST = join(PKG_ROOT, 'app', 'apps', 'server', 'dist', 'index.j
 const LOG_DIR = join(ROOT, '.logs');
 const RECORD_PATH = join(LOG_DIR, 'build-all-record.json');
 const NSIS_DIR = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
+const DESKTOP_EXE = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'agentboard-desktop.exe');
+/** 便携包内层的壳（portable-package 布局：AgentBoard/app/desktop/agentboard-desktop.exe） */
+const PKG_DESKTOP_EXE = join(PKG_ROOT, 'app', 'desktop', 'agentboard-desktop.exe');
+/** 壳源码目录：判定壳产物是否新鲜时的基准 */
+const DESKTOP_SRC_DIR = join(ROOT, 'desktop', 'src-tauri', 'src');
 
 const args = new Set(process.argv.slice(2));
 const skipBuild = args.has('--skip-build');
 const verifyOnly = args.has('--verify-only');
 const portableOnly = args.has('--portable-only');
 const nsisOnly = args.has('--nsis-only');
+/** 跳过壳编译（壳已在别处编好时用）；此时会强制做壳新鲜度校验，旧壳直接 fail */
+const skipShellBuild = args.has('--skip-shell-build');
 
 const startedAt = Date.now();
 const steps = [];
@@ -119,6 +126,56 @@ function fingerprintFile(file) {
   if (!existsSync(file)) return null;
   const stats = statSync(file);
   return { file, sha256: sha256File(file), size: stats.size, mtimeMs: Math.round(stats.mtimeMs) };
+}
+
+/**
+ * 读 PE 头里的编译时间戳（COFF TimeDateStamp，位于 PE 签名后 +8 处，Unix 秒）。
+ *
+ * 为什么不用文件 mtime / sha256 判壳产物的新旧（D13 的教训）：
+ * - 文件 mtime 会被打包改写：Tauri 打 NSIS 时会 `Patching … with bundle type information`
+ *   重写 exe（实测与 release 只差 3 字节，`_NSIS` vs `_UNK`），mtime 随之后移。
+ * - sha256 对同一次编译的两个副本可能不同（上述 3 字节），拿来比对会误判成「旧构建」。
+ * - PE 时间戳代表**编译时刻**，不随打包改写，是唯一可靠判据。
+ *
+ * 跨容器更要看内层：zip 外层 mtime 是打包时刻（永远是新的），只有内层 exe 的 PE 才说明
+ * 里面装的是哪次编译。详见 `Docs/desktop-build-pitfalls.md`。
+ */
+function readPeTimestamp(file) {
+  if (!existsSync(file)) return null;
+  const buffer = readFileSync(file);
+  if (buffer.length < 0x40) return null;
+  if (buffer[0] !== 0x4d || buffer[1] !== 0x5a) return null; // "MZ"
+  const peOffset = buffer.readInt32LE(0x3c);
+  if (peOffset <= 0 || peOffset + 12 > buffer.length) return null;
+  const seconds = buffer.readUInt32LE(peOffset + 8);
+  if (seconds === 0) return null;
+  return { file, seconds, iso: new Date(seconds * 1000).toISOString(), size: buffer.length };
+}
+
+/** 壳源码里最新的 mtime（判定壳产物是否对应当前源码） */
+function newestDesktopSrcMtimeMs() {
+  if (!existsSync(DESKTOP_SRC_DIR)) return 0;
+  let newest = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        const mtimeMs = statSync(full).mtimeMs;
+        if (mtimeMs > newest) newest = mtimeMs;
+      }
+    }
+  };
+  walk(DESKTOP_SRC_DIR);
+  // Cargo.toml / tauri.conf.json 变动同样要求重编
+  for (const extra of ['desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/tauri.conf.json']) {
+    const full = join(ROOT, extra);
+    if (existsSync(full)) {
+      const mtimeMs = statSync(full).mtimeMs;
+      if (mtimeMs > newest) newest = mtimeMs;
+    }
+  }
+  return Math.round(newest);
 }
 
 function git(gitArgs) {
@@ -254,6 +311,64 @@ function warnBundleDotfilesAllow(bundleFile) {
   return actual;
 }
 
+/**
+ * 壳产物新鲜度门禁（D13）：`target/release/agentboard-desktop.exe` 必须对应当前壳源码。
+ *
+ * 这个检查存在的原因：`package-portable.mjs` 的 `ensureDesktopExe()` 原先只判 `existsSync`，
+ * 壳文件在就直接用——于是「上一轮编译的旧壳」被打进新 zip，而 zip 外层 mtime 是打包时刻，
+ * 看起来完全正常。D11 就是这样漏掉了便携包里的旧壳（PE 14:52 vs 源码 release 16:11）。
+ *
+ * 判据用 PE 时间戳而非 mtime：打包会改写 exe 的字节与 mtime（见 readPeTimestamp 注释）。
+ */
+function assertShellFresh() {
+  const exe = readPeTimestamp(DESKTOP_EXE);
+  if (exe === null) {
+    fail(`缺少桌面壳产物或不是有效 PE：${DESKTOP_EXE}\n  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle`);
+  }
+  const srcMs = newestDesktopSrcMtimeMs();
+  if (srcMs === 0) {
+    log('壳源码目录不可读，跳过新鲜度判定');
+    return exe;
+  }
+  const exeMs = exe.seconds * 1000;
+  if (exeMs < srcMs) {
+    fail(
+      `桌面壳产物比壳源码旧（PE 编译时刻早于源码最后修改）：\n` +
+        `  壳 PE      ${exe.iso}（${new Date(exeMs).toLocaleString('zh-CN', { hour12: false })}）\n` +
+        `  源码最新   ${new Date(srcMs).toISOString()}\n` +
+        `  → 重编壳：node scripts/desktop/build-windows.mjs --no-bundle\n` +
+        `  → 否则便携包会被打进旧壳（D13 的故障模式：zip 外层新、内层壳旧）。`,
+    );
+  }
+  log(`✔ 壳新鲜度：PE ${exe.iso} ≥ 壳源码最新 ${new Date(srcMs).toISOString()}`);
+  return exe;
+}
+
+/**
+ * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须与源码 release 壳
+ * 来自同一次编译。
+ *
+ * 比 PE 时间戳，不比 sha256：Tauri 打包会写 bundle 类型标记（`_NSIS` / `_UNK`，3 字节），
+ * 同一次编译的两个副本 sha256 也不同。
+ */
+function assertPackagedShellMatches(referencePe, label = '便携包内层壳') {
+  const inner = readPeTimestamp(PKG_DESKTOP_EXE);
+  if (inner === null) {
+    fail(`${label}缺少或不是有效 PE：${PKG_DESKTOP_EXE}\n  → 便携包未产出或布局变了`);
+  }
+  if (inner.seconds !== referencePe.seconds) {
+    fail(
+      `${label}与源码 release 壳不是同一次编译：\n` +
+        `  包内壳      PE ${inner.iso}  ${inner.size} B\n` +
+        `  源码 release PE ${referencePe.iso}  ${referencePe.size} B\n` +
+        `  → 便携包被打进了旧壳（zip 外层 mtime 是打包时刻，不代表内层是新的）。\n` +
+        `  → 重新执行本脚本；它会先构建壳再打包。`,
+    );
+  }
+  log(`✔ ${label}：PE ${inner.iso} 与源码 release 一致（${inner.size} B）`);
+  return inner;
+}
+
 /** 严格相等：整树指纹比对（NSIS 暂存树是 dist 的字节拷贝） */
 function assertTreeSame(label, expected, actual) {
   if (actual === null) fail(`${label}：目录不存在（${label}）`);
@@ -359,6 +474,14 @@ function verifyPortable(expected, portableStepStartMs) {
   assertBundleContainsSource(PKG_SERVER_DIST);
   const dotfilesAllow = warnBundleDotfilesAllow(PKG_SERVER_DIST);
 
+  // D13：包内壳必须与源码 release 壳同一次编译。zip 外层 mtime 是打包时刻，
+  // 只比外层会把「新容器装旧内容」判成通过（D11 就漏了这里）。
+  const referencePe = readPeTimestamp(DESKTOP_EXE);
+  if (referencePe === null) {
+    fail(`缺少桌面壳产物：${DESKTOP_EXE}\n  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle`);
+  }
+  const packagedPe = assertPackagedShellMatches(referencePe);
+
   /**
    * 找便携包 zip。仓库根可能残留多个（历史包），取 mtime 最新的那个，
    * 再靠下面的 mtime 判据确认它确实由当前 bundle 产出。
@@ -446,9 +569,64 @@ function verifyNsis(expected) {
     fail(`NSIS 暂存树未就绪：${STAGE_SERVER_DIST} 不存在（先跑一次不带 --verify-only 的完整构建）`);
   }
   assertTreeSame('NSIS 暂存树 apps/server/dist', expected, fingerprintDist(STAGE_SERVER_DIST));
+
+  // D13 第 4 条：NSIS 内嵌的壳同样必须来自本次编译。
+  // 判据用 PE 时间戳：Tauri 会给内嵌副本写 bundle 类型标记（`_NSIS`），sha256 必然不同。
+  const referencePe = readPeTimestamp(DESKTOP_EXE);
+  if (referencePe === null) {
+    fail(`缺少桌面壳产物：${DESKTOP_EXE}\n  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle`);
+  }
+
   const setup = findFile(NSIS_DIR, /-setup\.exe$/);
   if (setup === null) fail(`NSIS 安装包不存在：${NSIS_DIR} 下没有 *-setup.exe`);
-  return { kind: 'nsis', path: setup, size: statSync(setup).size };
+  const nsisPe = assertNsisEmbedsShell(setup, referencePe);
+  return { kind: 'nsis', path: setup, size: statSync(setup).size, embeddedShellPe: nsisPe.iso };
+}
+
+/**
+ * 从 NSIS 安装包里取出内嵌的 `agentboard-desktop.exe` 并比对 PE 时间戳。
+ *
+ * 用 7-Zip 静态解包（无需真机安装），只取那一个条目。7-Zip 不在时降级为警告：
+ * 这条校验的目标是抓「旧壳被打进包」，不能因为缺工具就让整个校验崩掉。
+ */
+function assertNsisEmbedsShell(setupPath, referencePe) {
+  const sevenZip = ['C:/Program Files/7-Zip/7z.exe', 'C:/Program Files (x86)/7-Zip/7z.exe'].find((p) => existsSync(p));
+  if (sevenZip === undefined) {
+    log('⚠ 未找到 7-Zip，跳过 NSIS 内嵌壳校验（建议装 7-Zip 以启用该判据）');
+    return referencePe;
+  }
+  const tempDir = join(LOG_DIR, '.nsis-pe-probe');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true });
+  const result = spawnSync(sevenZip, ['e', setupPath, `-o${tempDir}`, 'agentboard-desktop.exe', '-y'], {
+    encoding: 'utf8',
+  });
+  const extracted = join(tempDir, 'agentboard-desktop.exe');
+  if (!existsSync(extracted)) {
+    rmSync(tempDir, { recursive: true, force: true });
+    fail(
+      `从 NSIS 安装包取内嵌壳失败（7-Zip exit=${result.status}）：\n` +
+        `  ${String(result.stderr ?? '')
+          .trim()
+          .split('\n')
+          .slice(-2)
+          .join('\n  ')}`,
+    );
+  }
+  const embedded = readPeTimestamp(extracted);
+  rmSync(tempDir, { recursive: true, force: true });
+  if (embedded === null) fail(`NSIS 内嵌的 agentboard-desktop.exe 不是有效 PE`);
+
+  if (embedded.seconds !== referencePe.seconds) {
+    fail(
+      `NSIS 内嵌壳与源码 release 壳不是同一次编译：\n` +
+        `  安装包内嵌   PE ${embedded.iso}  ${embedded.size} B\n` +
+        `  源码 release PE ${referencePe.iso}  ${referencePe.size} B\n` +
+        `  → 安装包被打进了旧壳。重新执行本脚本。`,
+    );
+  }
+  log(`✔ NSIS 内嵌壳：PE ${embedded.iso} 与源码 release 一致（${embedded.size} B）`);
+  return embedded;
 }
 
 function findFile(dir, pattern) {
@@ -532,6 +710,36 @@ function main() {
       steps: [],
     };
 
+    /**
+     * D13：壳必须在打便携包**之前**编译好。
+     *
+     * 原顺序「便携包先、NSIS 后」有个致命问题：打便携包时 `tauri build` 还没跑，
+     * `target/release/agentboard-desktop.exe` 是上一轮留下的；只有 NSIS 步骤内部才 cargo build。
+     * 结果 zip 外层 mtime 是新的、里面装的却是旧壳（D11 实测 PE 14:52 vs 源码 release 16:11）。
+     *
+     * 现在拆成四段：pnpm -r build → 构建壳 → 便携包 → NSIS。
+     * 壳步骤用 `--no-bundle`：只编译 exe，不预置运行时树也不打安装包。
+     */
+    let shellPe = null;
+    if (!skipShellBuild) {
+      const shellStepStart = Date.now();
+      run('构建桌面壳', process.execPath, [join(ROOT, 'scripts', 'desktop', 'build-windows.mjs'), '--no-bundle']);
+      const builtPe = readPeTimestamp(DESKTOP_EXE);
+      if (builtPe === null || builtPe.seconds * 1000 < shellStepStart) {
+        fail(
+          `桌面壳构建后产物不新鲜：${DESKTOP_EXE}\n` +
+            `  PE ${builtPe === null ? '（读不到）' : builtPe.iso}\n` +
+            `  步骤启动 ${new Date(shellStepStart).toISOString()}\n` +
+            `  → cargo 可能因缓存跳过了编译。检查 desktop/src-tauri/src 是否真的改过。`,
+        );
+      }
+      shellPe = builtPe;
+      log(`✔ 桌面壳 PE ${shellPe.iso}（${shellPe.size} B）`);
+    } else {
+      log('跳过桌面壳构建（--skip-shell-build）：接下来会校验壳与源码是否匹配');
+      shellPe = assertShellFresh();
+    }
+
     let portableStepStartMs = null;
     if (!nsisOnly) {
       portableStepStartMs = Date.now();
@@ -549,6 +757,7 @@ function main() {
     }
 
     record.artifacts = verifyArtifacts(expected, portableStepStartMs);
+    record.shell = shellPe;
     record.totalMs = Date.now() - startedAt;
     record.steps = steps;
     writeFileSync(RECORD_PATH, `${JSON.stringify(record, null, 2)}\n`, 'utf8');
@@ -559,6 +768,8 @@ function main() {
   log('verify-only：只校验既有产物，不重打');
   // verify-only 也要查新鲜度：产物再自洽，dist 本身是旧的也白搭
   assertDistFresh();
+  // D13 第 5 条：壳新鲜度也要在 verify-only 下查，不能只在构建期查
+  assertShellFresh();
   const expected = fingerprintDist(SERVER_DIST_DIR);
   if (expected === null) fail(`缺少 ${SERVER_DIST_DIR}`);
   const previous = existsSync(RECORD_PATH) ? JSON.parse(readFileSync(RECORD_PATH, 'utf8')) : null;

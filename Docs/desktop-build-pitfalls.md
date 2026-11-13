@@ -1,7 +1,74 @@
 # 桌面端构建环境坑（Windows）
 
 适用：在 Windows 本机执行 `node scripts/desktop/build-all.mjs`（便携包 + NSIS）或任何带 `pnpm -r build` 的构建。
-关联卡：D11（重打两份分发产物）、D12（本文档）。
+关联卡：D11（重打两份分发产物）、D12（本文档）、D13（容器内层校验）。
+
+**首要原则：所有「容器套内容」的产物都必须验内层。** 外层时间戳只代表容器生成时刻，
+zip 里的 exe、NSIS 里的 exe、asar 里的 node_modules 都属此类。见坑 4。
+
+---
+
+## 坑 4：容器套内容——外层时间戳永远是新的
+
+### 现象
+
+便携包 zip 外层 mtime 是**打包时刻**，看起来永远是新的。但里面可能装着上一轮编译的旧壳：
+
+```
+zip 外层 mtime     16:09:59   ← 打包时刻，新
+zip 内层壳 PE      14:52:49   ← 实际编译时刻，旧
+源码 release 壳 PE 16:11:22
+```
+
+内层壳缺失的界面文案（D7 的「正在停止服务」/「已在运行」、D10 的「逃出了资源根」）在 `strings` 检索中全部为 False。
+
+### 判据原则
+
+**所有「容器套内容」的产物都必须验内层，外层时间戳只代表容器生成时刻。**
+
+| 产物 | 容器 | 必须验的内层 |
+|---|---|---|
+| 便携包 zip | zip 外层 mtime | `app/desktop/agentboard-desktop.exe` 的 PE |
+| 便携包 zip | zip 外层 mtime | `app/apps/server/dist/index.js` 的 bundle 内容 |
+| NSIS 安装包 | setup.exe mtime | 内嵌 `agentboard-desktop.exe` 的 PE |
+| NSIS 安装包 | setup.exe mtime | `bundle-stage/apps/server/dist` 整树 |
+| 任意 asar / tar | 归档文件 mtime | 归档内的 `node_modules` 与二进制 |
+
+### 无效尝试
+
+- 只比「产物 mtime vs 源码 mtime」：zip 外层 mtime 是打包时刻，必然通过，**漏掉内层**
+- 只判 `existsSync(壳)` 就复用：旧壳文件一直存在，永远通过
+- 比 sha256：打包会改写 exe 字节（见下文 `_NSIS` / `_UNK`），同一次编译也判不等
+
+### 危险操作
+
+无（本坑不破坏环境，只让缺陷静默通过）。
+
+### 有效解法
+
+1. **构建顺序**：`pnpm -r build` → **构建壳（`--no-bundle`）** → 打便携包 → 打 NSIS
+   - 壳必须在打便携包**之前**编好；否则打便携包时 `target/release/` 还是上一轮的
+2. **壳产物新鲜度门禁**（`package-portable.mjs` 的 `ensureDesktopExe`）：
+   - 判据用 **PE 编译时刻 vs 壳源码最新 mtime**，不用文件 mtime
+   - 不新鲜：非 `--skip-build` 重建；`--skip-build` 则 **fail 并说明**
+3. **包内壳一致性校验**（`build-all.mjs` 的 `assertPackagedShellMatches`）：
+   - 包内壳 PE 必须等于源码 release 壳 PE
+   - 便携包与 NSIS 两侧都查
+   - `--verify-only` 下同样查，不能只在构建期查
+
+### 复现命令
+
+```
+# 看 zip 内层壳的编译时刻（7-Zip 直接列）
+& 'C:\Program Files\7-Zip\7z.exe' l <zip> | Select-String 'agentboard-desktop'
+
+# 解出并读 PE
+& 'C:\Program Files\7-Zip\7z.exe' e <zip> -o<目录> 'AgentBoard\app\desktop\agentboard-desktop.exe' -y
+# 再用 PE 读取法比对（见文末「安装包内嵌 exe 的新旧判定」）
+
+# 校验（会同时查壳新鲜度与包内壳一致性）
+node scripts/desktop/build-all.mjs --verify-only
+```
 
 ---
 
