@@ -347,28 +347,157 @@ fn server_entry_candidates(exe_dir: &Path, allow_dev: bool) -> Vec<PathBuf> {
     candidates
 }
 
+/// 去掉 Windows verbatim 前缀 `\\?\`（canonicalize 在 Windows 上会加它）。
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// 子路径是否在 `base` 之内（含相等）。
+///
+/// Windows 路径大小写不敏感，且分隔符可能是 `\` 或 `/`，所以按小写 + 双分隔符比较，
+/// 并额外要求「base 之后紧跟分隔符」，避免 `C:\app2` 被 `C:\app` 误判为在内部。
+fn is_within(child: &Path, base: &Path) -> bool {
+    let c = strip_verbatim(child).to_string_lossy().to_lowercase().replace('/', "\\");
+    let b = strip_verbatim(base).to_string_lossy().to_lowercase().replace('/', "\\");
+    if b.is_empty() {
+        return false;
+    }
+    let b = b.trim_end_matches('\\');
+    c == b || c.starts_with(&format!("{b}\\"))
+}
+
+/// 由 exe 目录与「是否便携包布局」推导资源根（纯函数，可单测）。
+///
+/// 三种布局的根：
+/// - **dev**（`target/{debug,release}`）：仓库根 = `exe_dir/../../../..`
+/// - **便携包**（`<pkg>/app/desktop`）：包根 `<pkg>` = `exe_dir/../..`
+///   （包根同时含 `app\` 与 `runtime\`；`exe_dir/..` 只是 `<pkg>/app`，不含 runtime）
+/// - **安装版**（其它）：`exe_dir` 自身（resources 映射到 exe 同级）
+///
+/// 注意必须由**布局**推导出单一根，不能按候选各自算根：否则 4 级上溯候选
+/// 会恰好落在「它自己的 4 级上溯根」内而被放行（假阴性）。
+fn resource_root_assuming(exe_dir: &Path, portable_layout: bool) -> PathBuf {
+    if is_target_layout(exe_dir) {
+        return exe_dir.join("../../../../");
+    }
+    if portable_layout {
+        return exe_dir.join("../..");
+    }
+    exe_dir.to_path_buf()
+}
+
+/// 探测是否为便携包布局：`<pkg>/app/desktop/` 且 `<pkg>/app/apps/server` 存在。
+///
+/// 只认 `<pkg>/app/apps/server`（exe_dir/../apps/server），不要写成包根下的 `apps/server`——
+/// 便携包里 server 在 `app\` 之内，包根下只有 `app\` 与 `runtime\`。
+fn detect_portable_layout(exe_dir: &Path) -> bool {
+    let named_desktop = exe_dir
+        .file_name()
+        .map(|name| name.eq_ignore_ascii_case("desktop"))
+        .unwrap_or(false);
+    named_desktop && exe_dir.join("../apps/server").exists()
+}
+
+/// 当前布局的资源根。
+fn resource_root(exe_dir: &Path) -> PathBuf {
+    resource_root_assuming(exe_dir, detect_portable_layout(exe_dir))
+}
+
+/// 候选入口被拒的原因（用于文案逐条列出）。
+enum EntryReject {
+    /// 文件不存在（正常情况：该布局没有这套运行时）。
+    Missing,
+    /// 存在但逃出了资源根：`escaped_to` 是它实际落到的位置。
+    OutsideRoot { escaped_to: PathBuf },
+    /// canonicalize 失败（权限/断链/被占用）：按保守拒绝，不放行。
+    Unresolvable,
+}
+
+fn check_entry(candidate: &Path, root: &Path) -> Result<PathBuf, EntryReject> {
+    if !candidate.exists() {
+        return Err(EntryReject::Missing);
+    }
+    // 保守拒绝：无法解析真实路径就不放行（可能是指向包外的符号链接/junction）。
+    let Ok(real_candidate) = fs::canonicalize(candidate) else {
+        return Err(EntryReject::Unresolvable);
+    };
+    let Ok(real_root) = fs::canonicalize(root) else {
+        return Err(EntryReject::Unresolvable);
+    };
+    if !is_within(&real_candidate, &real_root) {
+        return Err(EntryReject::OutsideRoot {
+            escaped_to: strip_verbatim(&real_candidate),
+        });
+    }
+    Ok(candidate.to_path_buf())
+}
+
 fn resolve_server_entry() -> Result<PathBuf, String> {
+    let exe_dir = current_exe_dir();
+    let root = resource_root(&exe_dir);
+
+    // 显式指定也走同一道包含性校验：排障口不该成为绕过「不许逃出资源根」的通道。
     if let Some(raw) = env::var_os("AGENTBOARD_SERVER_ENTRY") {
         let path = PathBuf::from(raw);
-        if path.exists() {
-            return Ok(path);
+        match check_entry(&path, &root) {
+            Ok(entry) => return Ok(entry),
+            Err(EntryReject::Missing) => {}
+            Err(EntryReject::OutsideRoot { escaped_to }) => {
+                return Err(format!(
+                    "AGENTBOARD_SERVER_ENTRY 指向的服务入口逃出了资源根，拒绝使用。\n\
+                     指定入口：{}\n资源根：{}\n实际落到：{}",
+                    path.display(),
+                    strip_verbatim(&root).display(),
+                    escaped_to.display()
+                ));
+            }
+            Err(EntryReject::Unresolvable) => {
+                return Err(format!(
+                    "AGENTBOARD_SERVER_ENTRY 无法解析真实路径，拒绝使用：{}",
+                    path.display()
+                ));
+            }
         }
     }
-    let exe_dir = current_exe_dir();
+
     let allow_dev = dev_candidate_enabled(cfg!(debug_assertions), &exe_dir);
     let candidates = server_entry_candidates(&exe_dir, allow_dev);
+
+    let mut rejected = Vec::new();
     for candidate in candidates.iter() {
-        if candidate.exists() {
-            return Ok(candidate.clone());
+        match check_entry(candidate, &root) {
+            Ok(entry) => return Ok(entry),
+            Err(EntryReject::Missing) => {}
+            Err(EntryReject::OutsideRoot { escaped_to }) => rejected.push(format!(
+                "{} → 逃出资源根，实际落到 {}",
+                candidate.display(),
+                escaped_to.display()
+            )),
+            Err(EntryReject::Unresolvable) => rejected.push(format!(
+                "{} → 无法解析真实路径（权限/断链/被占用）",
+                candidate.display()
+            )),
         }
     }
+
+    if rejected.is_empty() {
+        return Err(format!(
+            "未找到服务入口 apps/server/dist/index.js（已查找：{}）。请先在仓库根构建 server（pnpm -r build）。",
+            candidates
+                .iter()
+                .map(|c| c.display().to_string())
+                .collect::<Vec<_>>()
+                .join("；")
+        ));
+    }
     Err(format!(
-        "未找到服务入口 apps/server/dist/index.js（已查找：{}）。请先在仓库根构建 server（pnpm -r build）。",
-        candidates
-            .iter()
-            .map(|c| c.display().to_string())
-            .collect::<Vec<_>>()
-            .join("；")
+        "所有候选入口都不在当前资源根内，拒绝启动。\n资源根：{}\n逐条原因：\n  {}",
+        strip_verbatim(&root).display(),
+        rejected.join("\n  ")
     ))
 }
 
@@ -595,10 +724,39 @@ fn terminate_pid(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        child_port_env, decide_takeover, dev_candidate_enabled, log_path_display, parse_ambient_port,
-        parse_config_port, server_entry_candidates, server_log_path, LockFile, DEFAULT_PORT,
+        check_entry, child_port_env, decide_takeover, dev_candidate_enabled, is_within,
+        log_path_display, parse_ambient_port, parse_config_port, resource_root_assuming,
+        server_entry_candidates, server_log_path, EntryReject, LockFile, DEFAULT_PORT,
     };
     use std::path::Path;
+
+    /// 纯路径归一（不经文件系统）：消解 `.` / `..`，供不依赖真实磁盘的单测使用。
+    fn normalize_for_test(path: &Path) -> PathBuf {
+        let mut out: Vec<String> = Vec::new();
+        let text = path.to_string_lossy().replace('/', "\\");
+        for part in text.split('\\') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if out.len() > 1 {
+                        out.pop();
+                    }
+                }
+                other => out.push(other.to_string()),
+            }
+        }
+        PathBuf::from(out.join("\\"))
+    }
+
+    fn describe_reject(reject: &EntryReject) -> String {
+        match reject {
+            EntryReject::Missing => "missing".to_string(),
+            EntryReject::OutsideRoot { escaped_to } => format!("outside:{}", escaped_to.display()),
+            EntryReject::Unresolvable => "unresolvable".to_string(),
+        }
+    }
+
+    use std::path::PathBuf;
 
     #[test]
     fn valid_port_is_parsed() {
@@ -765,5 +923,113 @@ mod tests {
         assert_eq!(candidates[0], exe_dir.join("../apps/server/dist/index.js"));
         // 安装版：exe 同级 apps/server（resources 映射）
         assert_eq!(candidates[1], exe_dir.join("apps/server/dist/index.js"));
+    }
+
+    // ---- D10：入口包含性校验 ----
+
+    #[test]
+    fn portable_layout_root_is_app_dir() {
+        // 便携包：<stage>/app/desktop → 资源根 = <stage>/app
+        let exe_dir = Path::new("D:\\stage\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        assert_eq!(
+            root.to_string_lossy().replace('\\', "/"),
+            "D:/stage/AgentBoard/app/desktop/../.."
+        );
+        // 安装版：资源根 = exe_dir 自身
+        assert_eq!(resource_root_assuming(exe_dir, false), exe_dir);
+    }
+
+    #[test]
+    fn dev_layout_root_is_repo_root() {
+        // target/release → 仓库根，与服务入口同级
+        let exe_dir = Path::new("D:\\repo\\desktop\\src-tauri\\target\\release");
+        let root = resource_root_assuming(exe_dir, false);
+        assert!(root.to_string_lossy().replace('\\', "/").ends_with("release/../../../../"));
+    }
+
+    #[test]
+    fn four_level_candidate_escapes_portable_root() {
+        // qa 现场证据：包解在仓库根下时，4 级上溯候选逃出 stage
+        let exe_dir = Path::new("D:\\Workspaces\\AgentBoard\\dist-package\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        let dev_candidate = exe_dir.join("../../../../apps/server/dist/index.js");
+
+        // 用纯路径归一（不经文件系统）模拟 canonicalize 结果
+        let normalized = normalize_for_test(&dev_candidate);
+        let root_normalized = normalize_for_test(&root);
+        assert!(
+            !is_within(&normalized, &root_normalized),
+            "4 级候选必须被判为逃出资源根；root={}",
+            root_normalized.display()
+        );
+        // 它实际落到了仓库根，而不是 stage 内
+        assert!(normalized.to_string_lossy().to_lowercase().contains("workspaces\\agentboard\\apps\\server"));
+    }
+
+    #[test]
+    fn in_package_candidates_pass_containment() {
+        // 便携包两候选都应在 <stage>/app 之内
+        let exe_dir = Path::new("D:\\stage\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        for rel in ["../apps/server/dist/index.js", "apps/server/dist/index.js"] {
+            let candidate = normalize_for_test(&exe_dir.join(rel));
+            assert!(
+                is_within(&candidate, &normalize_for_test(&root)),
+                "{rel} 应落在资源根内"
+            );
+        }
+    }
+
+    #[test]
+    fn installed_layout_entry_passes_containment() {
+        // 安装版：entry 在 exe_dir/apps/server，根就是 exe_dir
+        let exe_dir = Path::new("C:\\Users\\u\\AppData\\Local\\AgentBoard");
+        let root = resource_root_assuming(exe_dir, false);
+        let entry = normalize_for_test(&exe_dir.join("apps/server/dist/index.js"));
+        assert!(is_within(&entry, &normalize_for_test(&root)));
+    }
+
+    #[test]
+    fn is_within_rejects_sibling_prefix() {
+        // `C:\app2` 不得被判为在 `C:\app` 内
+        assert!(!is_within(Path::new("C:\\app2\\x.js"), Path::new("C:\\app")));
+        // 相等算在内
+        assert!(is_within(Path::new("C:\\app"), Path::new("C:\\app")));
+        // 大小写与分隔符不敏感
+        assert!(is_within(Path::new("c:/APP/sub/x.js"), Path::new("C:\\app")));
+    }
+
+    #[test]
+    fn is_within_strips_verbatim_prefix() {
+        // canonicalize 在 Windows 会加 \\?\ 前缀，必须归一后再比较
+        assert!(is_within(
+            Path::new(r"\\?\C:\app\sub\x.js"),
+            Path::new(r"C:\app")
+        ));
+        assert!(is_within(
+            Path::new(r"C:\app\sub\x.js"),
+            Path::new(r"\\?\C:\app")
+        ));
+    }
+
+    #[test]
+    fn canonicalize_failure_is_conservatively_rejected() {
+        // 不存在的路径：check_entry 必须先判 Missing（不是 Unresolvable）
+        let root = Path::new("D:\\repo");
+        match check_entry(Path::new("D:\\repo\\nope\\index.js"), root) {
+            Err(EntryReject::Missing) => {}
+            other => panic!("应报 Missing，实际 {:?}", other.err().map(|e| describe_reject(&e))),
+        }
+        // 根不可解析（不存在）时，即便候选存在也保守拒绝
+        if let Err(reject) = check_entry(
+            Path::new("D:\\repo\\apps\\server\\dist\\index.js"),
+            Path::new("D:\\repo\\does-not-exist-root"),
+        ) {
+            assert!(
+                !matches!(reject, EntryReject::OutsideRoot { .. }),
+                "根不可解析时应报 Unresolvable 而不是逃逸"
+            );
+        }
     }
 }
