@@ -354,22 +354,84 @@ function verifyPortable(expected, portableStepStartMs) {
   assertBundleContainsSource(PKG_SERVER_DIST);
   const dotfilesAllow = warnBundleDotfilesAllow(PKG_SERVER_DIST);
 
-  const zip = findFile(ROOT, /^AgentBoard-win-x64-[^\\/]+\.zip$/);
-  if (zip === null) fail(`便携包 zip 不存在：仓库根下没有 AgentBoard-win-x64-*.zip`);
+  /**
+   * 找便携包 zip。仓库根可能残留多个（历史包），取 mtime 最新的那个，
+   * 再靠下面的 mtime 判据确认它确实由当前 bundle 产出。
+   */
+  const zipCandidates = readdirSync(ROOT)
+    .filter((name) => /^AgentBoard-win-x64-[^\\/]+\.zip$/.test(name))
+    .map((name) => join(ROOT, name))
+    .map((file) => ({ file, mtimeMs: statSync(file).mtimeMs }))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (zipCandidates.length === 0) fail(`便携包 zip 不存在：仓库根下没有 AgentBoard-win-x64-*.zip`);
+  const zip = zipCandidates[0].file;
+  if (zipCandidates.length > 1) {
+    log(
+      `注意：仓库根有 ${zipCandidates.length} 个便携包 zip，取最新的 ${relative(ROOT, zip)}；` +
+        `其余：${zipCandidates
+          .slice(1)
+          .map((c) => relative(ROOT, c.file))
+          .join('、')}`,
+    );
+  }
 
   const head = git(['rev-parse', '--short', 'HEAD']);
   const nameHead = /AgentBoard-win-x64-(.+)\.zip$/.exec(zip)?.[1] ?? '';
-  if (head !== null && nameHead !== head) {
+
+  /**
+   * zip 名里的 HEAD 用「祖先」而不是「相等」判定。
+   *
+   * 为什么不能要求相等：`package-portable.mjs` 用**构建那一刻**的 HEAD 给 zip 命名，
+   * 而构建完成后提交（如 D11 提交脚本修复）会产生新 HEAD。要求相等的话，
+   * 每次「构建 → 提交 → 复验」都必然报失败——产物永远落后于它自己的提交。
+   *
+   * 祖先判定能接受「包里是当前 HEAD 的某个祖先提交」，同时仍能拒绝
+   * 来自其它分支 / 未合并提交打出的包（那种 zip 名不是 HEAD 的祖先）。
+   * 提交对象不存在（exit 128）视为无效名，直接失败。
+   */
+  if (head !== null && nameHead !== '') {
+    const ancestor = spawnSync('git', ['merge-base', '--is-ancestor', nameHead, 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    if (ancestor.status !== 0) {
+      fail(
+        `便携包 zip 的 HEAD 不是当前 HEAD 的祖先：\n` +
+          `  文件名   ${nameHead}\n  当前 HEAD ${head}\n` +
+          `  → 这份 zip 来自其它分支或未合并的提交。用当前分支重新执行本脚本。`,
+      );
+    }
+    log(
+      nameHead === head
+        ? `✔ 便携包 zip：文件名 HEAD=${nameHead} 与当前 HEAD 一致`
+        : `✔ 便携包 zip：文件名 HEAD=${nameHead} 是当前 HEAD=${head} 的祖先（构建后又有提交，属正常）`,
+    );
+  }
+
+  /**
+   * zip 必须由当前这次构建产出，而不是仓库根残留的旧包。
+   * 单靠祖先判定会放过旧包——旧包的 HEAD 同样是祖先（实测 b83a269 也是祖先）。
+   * 用 mtime 排除：zip 不能早于它内部 bundle 的 mtime。
+   */
+  const zipMtimeMs = statSync(zip).mtimeMs;
+  if (zipMtimeMs < bundle.mtimeMs) {
     fail(
-      `便携包 zip 的文件名带的是旧 HEAD：\n` +
-        `  文件名   ${nameHead}\n  当前 HEAD ${head}\n` +
-        `  → 这份 zip 是别的提交打出来的。重新执行本脚本。`,
+      `便携包 zip 比它自己的 bundle 还旧，说明是残留的旧包：\n` +
+        `  zip     ${zip}\n          ${new Date(Math.round(zipMtimeMs)).toISOString()}\n` +
+        `  bundle  ${new Date(bundle.mtimeMs).toISOString()}\n` +
+        `  → 仓库根有旧 zip 干扰判定。删掉或移到 .logs/archive/ 后重试。`,
     );
   }
 
   log(`✔ 便携包 server bundle：${bundle.size} B（源码 dist ${expected.fileCount} 个文件）`);
-  log(`✔ 便携包 zip：文件名 HEAD=${nameHead} 与当前 HEAD 一致`);
-  return { kind: 'portable', path: zip, size: statSync(zip).size, bundleSha256: bundle.sha256, dotfilesAllow };
+  return {
+    kind: 'portable',
+    path: zip,
+    size: statSync(zip).size,
+    bundleSha256: bundle.sha256,
+    dotfilesAllow,
+    zipHead: nameHead,
+  };
 }
 
 function verifyNsis(expected) {
