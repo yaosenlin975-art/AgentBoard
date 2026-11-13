@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# D14：壳侧诊断日志的时间戳格式（ISO-8601 UTC，与 server.log 同形便于对齐时间轴）。
+# tauri 已通过传递依赖引入 time 0.3，这里显式声明是因为 Rust 不允许直接使用传递依赖。
+time = { version = "0.3", features = ["macros", "formatting"] }
 # tray-icon 提供托盘；image-png 用于托盘图标解码（显式读 icons/icon.png，不依赖 config 图标兜底）
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 # 单例：Tauri 官方插件（Windows 上用命名互斥体，第二个实例直接退出，回调里聚焦已有窗口）。

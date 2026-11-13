@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::diagnostics;
+
 /// 端口默认值：与 `apps/server/src/config.ts` 的 `DEFAULT_PORT` 保持一致。
 /// 实际端口在启动时由 `resolve_port()` 从 `<configDir>/config.json` 读取（CR-6），读不到/非法时退回本值。
 pub const DEFAULT_PORT: u16 = 8787;
@@ -50,6 +52,38 @@ pub fn resolve_port() -> u16 {
         .ok()
         .and_then(|raw| parse_config_port(&raw))
         .unwrap_or(DEFAULT_PORT)
+}
+
+/// 端口是否真的来自 config.json（供日志标注来源）。与 `resolve_port` 同源同口径。
+pub fn port_from_config() -> bool {
+    let path = config_dir().join("config.json");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| parse_config_port(&raw))
+        .is_some()
+}
+
+/// 配置目录（`%APPDATA%\AgentBoard`）；日志与锁共用，供 main.rs 初始化 main.log 用。
+pub fn config_dir_for_logs() -> PathBuf {
+    config_dir()
+}
+
+/// 当前布局的可读描述（供启动序列落盘）：dev / 便携包 / 安装版 + 资源根。
+pub fn describe_layout() -> String {
+    let exe_dir = current_exe_dir();
+    let portable = detect_portable_layout(&exe_dir);
+    let root = resource_root_assuming(&exe_dir, portable);
+    let kind = if is_target_layout(&exe_dir) {
+        "dev"
+    } else if portable {
+        "portable"
+    } else {
+        "installed"
+    };
+    format!(
+        "{kind}（资源根={}）",
+        strip_verbatim(&root).display()
+    )
 }
 
 /// 命令行创建标志：CREATE_NO_WINDOW，避免 node 子进程弹出控制台黑窗。
@@ -93,6 +127,10 @@ impl ServerHandle {
     pub fn stop(&mut self) -> StopOutcome {
         let Some(mut child) = self.child.take() else {
             // 外部实例：壳只复用，退出时不终止它，也不碰它的锁。
+            diagnostics::info(format!(
+                "停服：NothingToStop —— 复用的是外部实例（child=None），不终止端口 {} 上的服务",
+                self.port
+            ));
             return StopOutcome::NothingToStop;
         };
         let child_pid = child.id();
@@ -139,8 +177,16 @@ impl ServerHandle {
         remove_lock_owned_by(terminated_pid);
 
         match takeover_pid {
-            Some(pid) => StopOutcome::StoppedTakeover { pid },
-            None => StopOutcome::StoppedChild { pid: child_pid },
+            Some(pid) => {
+                diagnostics::info(format!(
+                    "停服：StoppedTakeover —— child pid {child_pid} 已失效，按 server.lock 终止了接管者 pid {pid}"
+                ));
+                StopOutcome::StoppedTakeover { pid }
+            }
+            None => {
+                diagnostics::info(format!("停服：StoppedChild —— 已终止自己的子进程 pid {child_pid}"));
+                StopOutcome::StoppedChild { pid: child_pid }
+            }
         }
     }
 }
@@ -186,12 +232,39 @@ fn parse_ambient_port(raw: Option<&str>, shell_port: u16) -> Option<String> {
 /// 因此第二个壳不会走到这里，而这里若发现目标端口已健康，也不会再起第二个 server 进程。
 pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     if is_healthy(Duration::from_millis(1200), port) {
+        let holder = read_lock_info(&server_lock_path())
+            .filter(|lock| lock.port == Some(port))
+            .map(|lock| format!(" pid={}（据 server.lock）", lock.pid))
+            .unwrap_or_default();
+        diagnostics::info(format!(
+            "端口探测：agentboard —— {port} 上已有 AgentBoard 服务，复用不 spawn{holder}"
+        ));
         return Ok(ServerHandle { child: None, port });
     }
+    // 第三态：端口有监听但不是 AgentBoard（下一个 shell 拉起服务会撞 EADDRINUSE）。
+    // 之前无此判定，失败只表现为「启动后立即退出」，日志里看不出根因。
+    if is_port_listening(port) {
+        diagnostics::warn(format!(
+            "端口探测：foreign —— {port} 已被其它程序监听，且不响应 AgentBoard 的 /api/version；\
+             继续 spawn 预计会 EADDRINUSE"
+        ));
+    } else {
+        diagnostics::info(format!("端口探测：free —— {port} 无监听，进入 spawn 分支"));
+    }
 
-    let entry = resolve_server_entry()?;
+    let entry = match resolve_server_entry() {
+        Ok(entry) => entry,
+        Err(message) => {
+            // 包含性校验拒绝的逐条理由在这里落盘（D10 的取证入口）。
+            diagnostics::error(format!("入口解析失败：{message}"));
+            return Err(message);
+        }
+    };
     let node = resolve_node();
     let cwd = repo_root_for(&entry);
+    diagnostics::info(format!("entry={}", entry.display()));
+    diagnostics::info(format!("node={}", node.display()));
+    diagnostics::info(format!("cwd={}", cwd.display()));
 
     let mut command = Command::new(&node);
     command
@@ -210,21 +283,30 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("无法启动服务进程（{}）：{error}", node.display()))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let message = format!("无法启动服务进程（{}）：{error}", node.display());
+            diagnostics::error(format!("spawn 失败：{message}"));
+            return Err(message);
+        }
+    };
     let child_pid = child.id();
+    diagnostics::info(format!("spawned pid={child_pid}（等待 /api/version 就绪，上限 60s）"));
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if is_healthy(Duration::from_millis(1200), port) {
+            diagnostics::info(format!("服务就绪 http://{HOST}:{port} pid={child_pid}"));
             return Ok(ServerHandle { child: Some(child), port });
         }
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
+            let message = format!(
                 "服务进程启动后立即退出（{status}）。\n{}",
                 startup_diagnostics(port, child_pid, &entry)
-            ));
+            );
+            diagnostics::error(format!("启动失败 pid={child_pid} status={status}"));
+            return Err(message);
         }
         if Instant::now() >= deadline {
             // 不静默 kill：先记下要停的 PID，杀掉后在文案里明确告知是否真的停干净。
@@ -240,6 +322,9 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
             } else {
                 format!("等待服务健康检查超时（60 秒）。已停止本次启动的服务进程（PID {child_pid}）。")
             };
+            diagnostics::error(format!(
+                "启动超时 pid={child_pid} 端口仍被占用={port_still_held}"
+            ));
             return Err(format!("{head}\n{}", startup_diagnostics(port, child_pid, &entry)));
         }
         thread::sleep(Duration::from_millis(500));

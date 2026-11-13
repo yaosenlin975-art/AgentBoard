@@ -1,0 +1,13 @@
+{
+  "name": "agentboard-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "AgentBoard 桌面端端到端验收脚本（独立 npm 项目，不进 pnpm workspace）",
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "playwright test specs/desktop-smoke.spec.js --reporter=list"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  }
+}

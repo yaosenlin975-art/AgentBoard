@@ -13,6 +13,7 @@
 // debug 保留控制台，排障时 stdout/stderr 可见。
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod diagnostics;
 mod server_process;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -417,6 +418,26 @@ fn main() {
         // 权限范围见 capabilities/decision-notifications.json（只覆盖 main 窗口与 127.0.0.1:8787）。
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
+            // D14：先初始化日志，后面的启动序列才有地方落盘。
+            let config_dir = server_process::config_dir_for_logs();
+            diagnostics::init(&config_dir);
+
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "(unknown)".to_string());
+            let layout = server_process::describe_layout();
+            diagnostics::info(format!(
+                "==== 启动 mode={} version={} ====",
+                if cfg!(debug_assertions) { "dev" } else { "packaged" },
+                app.package_info().version
+            ));
+            diagnostics::info(format!("exe_dir={exe_dir}"));
+            diagnostics::info(format!("config_dir={}", config_dir.display()));
+            diagnostics::info(format!("日志={}", diagnostics::log_path(&config_dir).display()));
+            diagnostics::info(format!("layout={layout}"));
+
             app.manage(ShellState {
                 boot: BootState {
                     page_loaded: AtomicBool::new(false),
@@ -429,6 +450,11 @@ fn main() {
                 // CR-6：启动时解析一次端口；探活/导航/重建窗口统一取这里，不再硬编码 8787。
                 port: server_process::resolve_port(),
             });
+            let port = app.state::<ShellState>().port;
+            diagnostics::info(format!(
+                "port={port}（来源 {}）",
+                if server_process::port_from_config() { "config.json" } else { "默认 8787（config.json 缺失/非法）" }
+            ));
 
             // 托盘：菜单「显示 / 退出」。
             let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
