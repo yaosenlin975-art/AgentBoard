@@ -283,9 +283,12 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     app.use(createKnowledgeDeepLinkRoutes(db, webDist));
     // SPA fallback：非 /api 的 GET 落 index.html（HTML 一律 no-cache，允许 304）
     // 根路径显式给 index.html：serve-static 关掉 index 后 `/` 不进 fallback（实测 404），这里补一条
+    // D8：sendFile 的 dotfiles 默认 'ignore'，webDist 路径里只要有一段以点开头（便携包解压到 .tmp/.local/隐藏目录）
+    // 就被判成隐藏文件 → 首页 404 / 深路由 500。只对 SPA 入口这一个文件显式放开，
+    // express.static 保持默认（隐藏文件不可下载）。
     app.get('/', (_req, res) => {
       res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(join(webDist, 'index.html'), (err) => {
+      res.sendFile(join(webDist, 'index.html'), { dotfiles: 'allow' }, (err) => {
         if (err) res.status(404).type('text/plain').send('index.html missing');
       });
     });
@@ -295,7 +298,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
         return;
       }
       res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(join(webDist, 'index.html'), (err) => {
+      res.sendFile(join(webDist, 'index.html'), { dotfiles: 'allow' }, (err) => {
         if (err) next(err);
       });
     });
