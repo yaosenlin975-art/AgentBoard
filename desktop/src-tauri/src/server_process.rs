@@ -304,6 +304,49 @@ pub fn is_healthy(timeout: Duration, port: u16) -> bool {
 }
 
 /// 服务入口候选（第一个存在即用）。环境变量 `AGENTBOARD_SERVER_ENTRY` 供测试/排障显式指定。
+/// 是否处在 `target/debug` 或 `target/release` 构建目录（cargo 的产物布局）。
+///
+/// 只用于判断「要不要启用 dev 候选」：cargo 布局下 4 级上溯到仓库根才成立，
+/// 打包态（安装目录 / 便携包）不该再走这条路。
+fn is_target_layout(exe_dir: &Path) -> bool {
+    let parts: Vec<String> = exe_dir
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    parts
+        .windows(2)
+        .any(|pair| pair[0] == "target" && (pair[1] == "debug" || pair[1] == "release"))
+}
+
+/// dev 候选（4 级上溯到仓库根）是否启用。
+///
+/// 该候选只在开发期成立：`target/{debug,release}/agentboard-desktop.exe → 仓库根`。
+/// 打包态若仍参与判定且排第一，一旦安装目录上方四级碰巧存在 `apps/server/dist/index.js`
+/// （例如把应用装进某个仓库子目录），壳会静默加载**外部** server。
+///
+/// `debug_build` 传 `cfg!(debug_assertions)`，`exe_dir` 传当前 exe 目录；
+/// 抽成纯函数是为了让「release 下 dev 候选不参与」可单测。
+fn dev_candidate_enabled(debug_build: bool, exe_dir: &Path) -> bool {
+    debug_build || is_target_layout(exe_dir)
+}
+
+/// 服务入口候选（按顺序取第一个存在的）。
+///
+/// 顺序语义：**就近优先**——先找与 exe 同一棵树的 server，避免跨版本混搭。
+/// dev 候选按 `allow_dev` 决定是否参与（见 `dev_candidate_enabled`）。
+fn server_entry_candidates(exe_dir: &Path, allow_dev: bool) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if allow_dev {
+        // 开发期：target/{debug,release}/agentboard-desktop.exe → 仓库根
+        candidates.push(exe_dir.join("../../../../apps/server/dist/index.js"));
+    }
+    // 便携包：<stage>/app/desktop/agentboard-desktop.exe → <stage>/app/apps/server/dist/index.js
+    candidates.push(exe_dir.join("../apps/server/dist/index.js"));
+    // 安装版：resources 映射到 exe 同级（tauri.conf bundle.resources）
+    candidates.push(exe_dir.join("apps/server/dist/index.js"));
+    candidates
+}
+
 fn resolve_server_entry() -> Result<PathBuf, String> {
     if let Some(raw) = env::var_os("AGENTBOARD_SERVER_ENTRY") {
         let path = PathBuf::from(raw);
@@ -312,13 +355,8 @@ fn resolve_server_entry() -> Result<PathBuf, String> {
         }
     }
     let exe_dir = current_exe_dir();
-    let candidates = [
-        // 开发期：desktop/src-tauri/target/{debug,release}/agentboard-desktop.exe → 仓库根
-        exe_dir.join("../../../../apps/server/dist/index.js"),
-        // 便携包（DESKTOP-2 接线）：<stage>/app/desktop/agentboard-desktop.exe → <stage>/app/apps/server/dist/index.js
-        exe_dir.join("../apps/server/dist/index.js"),
-        exe_dir.join("apps/server/dist/index.js"),
-    ];
+    let allow_dev = dev_candidate_enabled(cfg!(debug_assertions), &exe_dir);
+    let candidates = server_entry_candidates(&exe_dir, allow_dev);
     for candidate in candidates.iter() {
         if candidate.exists() {
             return Ok(candidate.clone());
@@ -326,7 +364,11 @@ fn resolve_server_entry() -> Result<PathBuf, String> {
     }
     Err(format!(
         "未找到服务入口 apps/server/dist/index.js（已查找：{}）。请先在仓库根构建 server（pnpm -r build）。",
-        candidates[0].display()
+        candidates
+            .iter()
+            .map(|c| c.display().to_string())
+            .collect::<Vec<_>>()
+            .join("；")
     ))
 }
 
@@ -553,9 +595,10 @@ fn terminate_pid(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::{
-        child_port_env, decide_takeover, log_path_display, parse_ambient_port, parse_config_port,
-        server_log_path, LockFile, DEFAULT_PORT,
+        child_port_env, decide_takeover, dev_candidate_enabled, log_path_display, parse_ambient_port,
+        parse_config_port, server_entry_candidates, server_log_path, LockFile, DEFAULT_PORT,
     };
+    use std::path::Path;
 
     #[test]
     fn valid_port_is_parsed() {
@@ -667,5 +710,60 @@ mod tests {
     #[test]
     fn log_path_display_matches_server_log_path() {
         assert_eq!(log_path_display(), server_log_path().display().to_string());
+    }
+
+    // ---- D7-1：打包态跳过 dev 候选 ----
+
+    #[test]
+    fn release_build_outside_target_skips_dev_candidate() {
+        // 安装目录（不在 target/ 下）+ release → dev 候选不参与，只剩包内两条
+        let exe_dir = Path::new("C:\\Users\\u\\AppData\\Local\\AgentBoard");
+        assert!(!dev_candidate_enabled(false, exe_dir));
+        let candidates = server_entry_candidates(exe_dir, false);
+        assert_eq!(candidates.len(), 2);
+        assert!(
+            !candidates.iter().any(|c| c.to_string_lossy().contains("../../../../")),
+            "release 下不得出现 4 级 dev 候选：{candidates:?}"
+        );
+    }
+
+    #[test]
+    fn debug_build_keeps_dev_candidate_first() {
+        // 开发期：debug 构建 + target/debug 布局 → dev 候选参与且排第一（就近优先）
+        let exe_dir = Path::new("D:\\repo\\desktop\\src-tauri\\target\\debug");
+        assert!(dev_candidate_enabled(true, exe_dir));
+        let candidates = server_entry_candidates(exe_dir, true);
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates[0].to_string_lossy().contains("../../../../"));
+    }
+
+    #[test]
+    fn target_layout_enables_dev_candidate_even_without_debug_assertions() {
+        // cargo release 产物（target/release）仍属开发布局，保留 dev 候选便于 `cargo run --release` 调试
+        assert!(dev_candidate_enabled(false, Path::new("D:\\repo\\desktop\\src-tauri\\target\\release")));
+        // 大小写与盘符差异不影响判定
+        assert!(dev_candidate_enabled(false, Path::new("c:\\repo\\TARGET\\Release")));
+    }
+
+    #[test]
+    fn packaged_layouts_never_enable_dev_candidate() {
+        // 便携包与安装版都不在 target/ 下
+        for dir in [
+            "D:\\portable\\app\\desktop",
+            "C:\\Users\\u\\AppData\\Local\\AgentBoard",
+            "C:\\Program Files\\AgentBoard",
+        ] {
+            assert!(!dev_candidate_enabled(false, Path::new(dir)), "{dir} 不应启用 dev 候选");
+        }
+    }
+
+    #[test]
+    fn packaged_candidates_are_nearby_only() {
+        let exe_dir = Path::new("D:\\portable\\app\\desktop");
+        let candidates = server_entry_candidates(exe_dir, false);
+        // 便携包：../apps/server（同 app 树）
+        assert_eq!(candidates[0], exe_dir.join("../apps/server/dist/index.js"));
+        // 安装版：exe 同级 apps/server（resources 映射）
+        assert_eq!(candidates[1], exe_dir.join("apps/server/dist/index.js"));
     }
 }

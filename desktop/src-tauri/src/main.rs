@@ -22,10 +22,40 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
+use server_process::ServerHandle;
+
 /// 主窗口 label：托盘 / 菜单 / 单例 / 重建都按这一个 key 找窗口。
 const MAIN_WINDOW: &str = "main";
 
-use server_process::ServerHandle;
+/// 托盘 id：托盘句柄在 setup 里 `mem::forget`（必须活到进程结束），
+/// 需要反查时统一用 `app.tray_by_id(TRAY_ID)`。
+const TRAY_ID: &str = "main-tray";
+
+/// 在托盘上给一条可见反馈（不新增权限：走 tray tooltip + 系统通知）。
+///
+/// 用途有两处：退出时告知「正在停止服务…」、第二实例被拦时告知「已切到现有窗口」。
+/// 两者都是「窗口已经消失/被抢焦点，用户需要一句解释」的场景。
+///
+/// 实现取舍：
+/// - **先改 tooltip**：无条件生效，不依赖 Windows 通知中心设置，鼠标悬停托盘即可读到；
+/// - **再发系统通知**：`tauri-plugin-notification` 的 Rust 侧 `show()` 在桌面端不需运行时授权
+///   （capability 只约束 webview 的 IPC 调用），发送失败（被系统勿扰/策略禁用）时静默忽略，
+///   不能让提示失败影响退出流程。
+fn notify_user(app: &AppHandle, title: &str, body: &str) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(format!("AgentBoard — {body}")));
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// 恢复托盘默认 tooltip（退出流程被取消或提示过期时用）。
+fn reset_tray_tooltip(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some("AgentBoard"));
+    }
+}
+
 
 /// 壳全局状态：启动结果、server 句柄、退出标记。
 struct ShellState {
@@ -107,11 +137,25 @@ fn start_server(app: AppHandle) {
     });
 }
 
-/// 停服收尾（幂等）：先隐藏窗口，再终止壳自己拉起的 server 并确认 `server.lock` 释放。
+/// 停服收尾（幂等）：先给可见反馈，再隐藏窗口，然后终止壳自己拉起的 server 并确认 `server.lock` 释放。
+///
+/// **幂等性（D7-4 硬约束，不要「优化」掉）**：`RunEvent::Exit` 会二次调用本函数。
+/// 第二次进来时 `server.lock().take()` 已是 `None`，`stop()` 不再执行，无副作用；
+/// 托盘「退出」路径先 `shutdown` 再 `app.exit(0)`，后者触发 `RunEvent::Exit`，正是这条二次调用。
+/// 去掉这次的兜底会导致「非托盘路径导致的退出（系统关机、进程被要求退出）」不停服。
+///
+/// **为什么先给反馈**：`window.hide()` 让窗口立刻消失，但后台线程还要等停服
+/// （等 child ≤8s + 等端口 ≤5s + 删锁 ≤3s，常态约 1s）。用户以为已关完，
+/// 去任务管理器强杀 → 制造孤儿进程与残留锁。所以先告知「正在停止服务…」。
 fn shutdown(app: &AppHandle) {
     let state = app.state::<ShellState>();
     state.quitting.store(true, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("main") {
+    // 只在真的还有服务要停时才提示，避免二次 shutdown 再弹一次。
+    let has_server = state.server.lock().map(|slot| slot.is_some()).unwrap_or(false);
+    if has_server {
+        notify_user(app, "AgentBoard", "正在停止服务…");
+    }
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.hide();
     }
     let handle = {
@@ -124,6 +168,7 @@ fn shutdown(app: &AppHandle) {
         let outcome = handle.stop();
         eprintln!("停服结果：{outcome:?}");
     }
+    reset_tray_tooltip(app);
 }
 
 /// 窗口当前所处的可观察状态。托盘点击/菜单「显示」/第二实例启动都先判这一态。
@@ -344,9 +389,29 @@ fn main() {
     let builder = tauri::Builder::default()
         // 单例必须最先注册：第二个实例在插件初始化阶段就退出，不会进入 setup（也就不会拉起第二个 server）。
         // macOS 预留（DESKTOP-3）：同一插件在 mac 上同样可用，无需平台私有实现。
+        //
+        // 【硬约束·禁止启用 semver feature（D7-4）】
+        // 插件在 Windows 上用命名互斥体实现，当前名字是 `{identifier}-sim`
+        // （见 tauri-plugin-single-instance 的 platform_impl/windows.rs:90）。
+        //
+        // 一旦为此插件启用 `semver` feature，名字会插入 semver 兼容串（windows.rs:82-86）：
+        //   `{identifier}_{semver_compat_string}-sim`
+        // 其中 semver_compat_string 只保留主/次版本（semver_compat.rs）：
+        //   1.x.y → "1_x_x"，0.2.x → "0_2_x"，0.0.z → "0_0_z"（含预发布则整串替换下划线）。
+        // 后果：**次版本不同即互斥失效** —— 例如 0.1.0 与 0.2.0 会各自成功创建一个实例，
+        // 绕过「共用 %APPDATA%\AgentBoard 与 server.lock」的保护 → 同库双写 + 端口冲突。
+        // 数据损坏风险，绝不可开。
+        // 若将来确实需要多版本并存，必须同时隔离 APPDATA（或 AGENTBOARD_DB）、端口与互斥体名，
+        // 那是产品决策而非改一行 feature。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二实例：不新建窗口，只把已有窗口唤到前台（与托盘/菜单同一函数）。
+            // 再给一句说明：便携包与安装版共用 identifier 与数据目录，用户可能以为自己点开了另一份。
             wake_main_window(app);
+            notify_user(
+                app,
+                "AgentBoard 已在运行",
+                "已切换到正在运行的窗口（便携包与安装版共用同一份数据）",
+            );
         }))
         // DEC-7：系统通知插件。Tauri v2 的插件必须在 builder 上注册，仅给 capabilities 权限不够；
         // 权限范围见 capabilities/decision-notifications.json（只覆盖 main 窗口与 127.0.0.1:8787）。
@@ -375,7 +440,7 @@ fn main() {
             // 再由系统按 DPI 缩到 16/20/24/32；多帧保留是为了同一文件可直接交给 Windows/安装器与未来按 DPI 选帧，
             // 不需要为每种缩放再生成一套资源。
             let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.ico"))?;
-            let tray = TrayIconBuilder::new()
+            let tray = TrayIconBuilder::with_id(TRAY_ID)
                 .icon(tray_icon)
                 .menu(&menu)
                 // 左键不再弹菜单：左键 = 显示并聚焦窗口；右键仍是菜单。
@@ -440,6 +505,13 @@ fn main() {
         .expect("构建 AgentBoard 桌面壳失败")
         .run(|app, event| {
             // 兜底：任何非托盘路径导致的退出，也先停服再走。
+            //
+            // 【硬约束·不要删这次调用（D7-4）】托盘「退出」路径是先 `shutdown` 再 `app.exit(0)`，
+            // 后者会在这里再触发一次 `shutdown`。看着像重复，实际必须保留：
+            //   - 托盘路径：第一次已经 `server.take()` 拿走句柄并停服，第二次 `take()` 得到 None，
+            //     不会重复 kill，也不会重复弹「正在停止服务…」（有 `has_server` 判据）；
+            //   - 非托盘路径（系统关机、会话结束、外部要求退出）：只有这一次调用能停服，
+            //     删掉就会留下孤儿 node 进程与陈旧 server.lock。
             if let RunEvent::Exit = event {
                 shutdown(app);
             }
