@@ -122,19 +122,53 @@ function git(gitArgs) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
+/**
+ * 解析 pnpm 的真实 JS 入口，让本脚本能用 `node <pnpm.js>` 的方式调用 pnpm，
+ * 完全绕开 corepack.cmd / pnpm.cmd 在 Windows 上的三层陷阱：
+ *   1) spawnSync 直接调 `corepack` 报 ENOENT（PATH 里那份无扩展名，不是 exe）；
+ *   2) 解析到 `corepack.cmd` 后必须经 cmd.exe 包装（.cmd 不能 CreateProcess）；
+ *   3) 经 cmd /c 时路径含空格会被截断（"'C:\Program' is not recognized"），
+ *      而加引号在 spawnSync 的数组参数里又被二次包裹，依然失败。
+ * 直接 `node pnpm.js` 实测可用，且不依赖 corepack 的 shim 形式。
+ */
+function resolvePnpmEntry() {
+  const candidates = [];
+  // corepack 随 Node 附带的标准位置
+  if (process.platform === 'win32') {
+    const nodeDir = dirname(process.execPath);
+    candidates.push(join(nodeDir, 'node_modules', 'corepack', 'dist', 'pnpm.js'));
+  }
+  // 已解出的 corepack 缓存（`corepack enable` 后的 pnpm 实际入口）
+  const store = join(process.env.LOCALAPPDATA ?? '', 'node', 'corepack', 'v1', 'pnpm');
+  if (existsSync(store)) {
+    for (const version of readdirSync(store).sort().reverse()) {
+      candidates.push(join(store, version, 'dist', 'pnpm.mjs'));
+    }
+  }
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * 调用 pnpm：优先 `node <pnpm.js>`（无 shim 陷阱），解析不到才回退 `corepack`。
+ */
+function runPnpm(label, pnpmArgs) {
+  const entry = resolvePnpmEntry();
+  if (entry === null) {
+    log(`未解析到 pnpm 入口，回退 corepack shim`);
+    run(label, 'corepack', ['pnpm', ...pnpmArgs]);
+    return;
+  }
+  run(label, process.execPath, [entry, ...pnpmArgs]);
+}
+
 function run(label, command, commandArgs) {
   const stepStart = Date.now();
   log(`▶ ${label}：${command} ${commandArgs.join(' ')}`);
 
-  // 两级显式处理，避免两条 Windows 陷阱：
-  //  1) .cmd/.bat（corepack、pnpm）不能直接 CreateProcess，必须经 cmd.exe 包装；
-  //  2) spawnSync(shell:true) 会触发 Node DEP0190（参数拼接不转义），所以显式走 cmd /d /s /c。
-  const isCmdShim = /\.(cmd|bat)$/i.test(command);
-  const [realCommand, realArgs] = isCmdShim
-    ? [process.env.COMSPEC ?? 'cmd.exe', ['/d', '/s', '/c', command, ...commandArgs]]
-    : [command, commandArgs];
-
-  const result = spawnSync(realCommand, realArgs, {
+  const result = spawnSync(command, commandArgs, {
     cwd: ROOT,
     stdio: 'inherit',
     shell: false,
@@ -399,8 +433,14 @@ function main() {
     log(`构建基准 HEAD=${head}`);
     log(`基线 server dist：tree ${baseline.treeSha256.slice(0, 12)}…（${baseline.fileCount} 个文件）`);
 
-    if (!skipBuild) run('构建 workspace', 'corepack', ['pnpm', '-r', 'build']);
-    else log('跳过 pnpm -r build（--skip-build）');
+    // pnpm 的 deps-status 检查会在 build 前尝试 `pnpm install --production`；
+    // 在非 TTY（后台/CI/被父进程 spawn）下它会以 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY
+    // 中止。环境变量 npm_config_verify_deps_before_run 不生效（实测），必须走 --config 参数。
+    if (!skipBuild) {
+      runPnpm('构建 workspace', ['--config.verify-deps-before-run=false', '-r', 'build']);
+    } else {
+      log('跳过 pnpm -r build（--skip-build）');
+    }
 
     // --skip-build 时最容易踩「dist 比源码旧」，所以只在跳过构建时强制检查
     if (skipBuild) assertDistFresh();

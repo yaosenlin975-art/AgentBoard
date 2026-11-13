@@ -12,7 +12,7 @@
     "lint:update-baseline": "node scripts/run-lint.mjs --update-baseline",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build": "pnpm -r build",
+    "build": "pnpm --config.verify-deps-before-run=false -r build",
     "test": "pnpm -r test",
     "server:ensure": "node scripts/server-detached.mjs",
     "check:stale": "node scripts/check-stale.mjs",

@@ -232,7 +232,16 @@ function deployServer() {
 
   runCmdShim(
     'pnpm.cmd',
-    ['--filter', '@agentboard/server', 'deploy', staging, '--prod', '--legacy', '--config.node-linker=hoisted'],
+    [
+      '--config.verify-deps-before-run=false',
+      '--filter',
+      '@agentboard/server',
+      'deploy',
+      staging,
+      '--prod',
+      '--legacy',
+      '--config.node-linker=hoisted',
+    ],
     { cwd: ROOT },
   );
 
