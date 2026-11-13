@@ -342,13 +342,16 @@ const assertions = [
   },
   {
     id: 'A19',
-    title: '壳自身没有 main.log 写入实现（「看 main.log」不可当健康判据）',
+    title: '壳自身有 main.log 写入实现（D14：诊断日志落盘）',
     expect: 'absent',
     file: F.main,
     check: () => {
       // 壳侧是否真的往 <configDir>/logs/main.log 追加内容：
       // 需要同时具备「写文件」与「文件名 main.log」两件事，注释里提到不算。
-      const files = [F.main, F.serverProcess, F.buildRs];
+      //
+      // D14 把实现放在新模块 diagnostics.rs 里，所以扫描范围必须包含它——
+      // 早先只扫 main.rs / server_process.rs / build.rs，会漏掉真实写入者而误报「缺口仍在」。
+      const files = [F.main, F.serverProcess, F.buildRs, 'desktop/src-tauri/src/diagnostics.rs'];
       let writer = null;
       for (const rel of files) {
         const src = text(rel) ?? '';
@@ -363,11 +366,15 @@ const assertions = [
       }
       const cargo = text(F.cargoToml) ?? '';
       const logPlugin = /tauri-plugin-log/.test(cargo);
+      // D14 关键判据补充：必须真的被调用，否则「有实现但不接线」等于没有（RULE-3）。
+      const mainSrc = text(F.main) ?? '';
+      const wired = /diagnostics::init\s*\(/.test(mainSrc) && /diagnostics::info\s*\(/.test(mainSrc);
+      const ok = (writer !== null && wired) || logPlugin;
       return {
-        ok: writer !== null || logPlugin,
+        ok,
         evidence: writer !== null
-          ? `发现写入者：${writer}（缺口已修）`
-          : `三文件均无 main.log 写入实现，Cargo.toml 也无声明的日志插件（缺口存在：Tauri 壳不写 main.log）`,
+          ? `发现写入者：${writer}；main.rs 已接线 init+info=${wired}（缺口已修）`
+          : `扫描 ${files.length} 个文件均无 main.log 写入实现，Cargo.toml 也无声明的日志插件（缺口存在：Tauri 壳不写 main.log）`,
       };
     },
   },

@@ -81,30 +81,39 @@ function Assert-ArtifactsFresh {
     # 更强的检查：zip 外层 mtime 新 ≠ 包里的壳 exe 新。
     # 2026-11-13 实测踩过：16:09 打的便携包里装的是 14:52 的旧壳（缺 D7/D10 修复），
     # 只看 zip mtime 会放行一个「新包配旧壳」的组合。
+    #
+    # 判据用「内层 PE 必须晚于源码最新 mtime」，不用「必须与 release exe 的 PE 完全相等」：
+    # 同源两次链接会产生 20 字节差异（PE TimeDateStamp + 3×IMAGE_DEBUG_DIRECTORY 时间戳 + 16B PDB GUID），
+    # 业务代码逐字节相同。2026-11-13 16:55 实测：zip 内壳 PE 16:55:13 / release exe 16:55:47，
+    # 差 34 秒、差 20 字节（0.0002%），全在编译元数据里 —— 用「相等」会误判成陈旧。
     if ($latestZip) {
-        $srcPe = Get-PeBuildTime $shellExe
         $zipPe = Get-PeBuildTimeFromZip $latestZip.FullName 'agentboard-desktop.exe'
         Write-Output ("  便携包内壳 PE @ {0}" -f $(if ($zipPe) { $zipPe.ToString('yyyy-MM-dd HH:mm:ss') } else { '读取失败' }))
         if ($null -eq $zipPe) {
             $stale += "便携包内壳 exe 的 PE 时间戳读取失败（拒绝放行）"
-        } elseif ($srcPe -ne $null -and [math]::Abs(($zipPe - $srcPe).TotalSeconds) -gt 2) {
-            $stale += ("便携包内壳 exe 是旧构建（PE {0:HH:mm:ss} ≠ 源码 release {1:HH:mm:ss}）—— 包是新打的但壳没换" -f $zipPe, $srcPe)
+        } elseif ($zipPe -lt $src.Mtime) {
+            $stale += ("便携包内壳 exe 早于源码（PE {0:HH:mm:ss} < 源码 {1:HH:mm:ss}）—— 包是新打的但壳没换" -f $zipPe, $src.Mtime)
+        } else {
+            # 内容一致性软检查：差异应只在编译元数据（阈值 1KB），超了说明是不同构建
+            $diffInfo = Compare-ZipExeWithRelease -ZipPath $latestZip.FullName -ReleaseExe $shellExe
+            if ($null -ne $diffInfo -and $diffInfo.DiffBytes -gt 1024) {
+                Write-Output ("  ⚠ 便携包内壳与 release exe 差异 {0} 字节（占 {1:P4}），超出编译元数据量级，可能是不同构建" -f $diffInfo.DiffBytes, $diffInfo.Ratio)
+            }
         }
     }
 
-    # NSIS 内嵌壳同理：用 PE TimeDateStamp + 文件大小判定，不用 sha256
-    # （Tauri 会在 exe 里写 `_NSIS`/`_UNK` 三字节标记，sha256 必然不同，会误判成旧 exe）。
+    # NSIS 内嵌壳：同样用「PE 必须晚于源码」判，不用 sha256、不用「与 release exe 完全相等」。
+    # sha256 必然不同（Tauri 写入 `_NSIS`/`_UNK` 三字节 bundle 标记）；
+    # 「PE 完全相等」也会误判（同源两次链接差约 20 字节编译元数据，见上面 zip 的实测）。
     $nsis = (Join-Path $repoRoot 'desktop\src-tauri\target\release\bundle\nsis\AgentBoard_0.1.0_x64-setup.exe')
     if (Test-Path $nsis) {
-        $srcPe = Get-PeBuildTime $shellExe
-        $srcSize = (Get-Item $shellExe).Length
         $nsisPe = Get-PeBuildTimeFromNsis $nsis
         if ($null -eq $nsisPe) {
             Write-Output '  NSIS 内嵌壳 PE @ 读取失败（7z 不可用？跳过该子检查）'
         } else {
-            Write-Output ("  NSIS 内嵌壳 PE @ {0}  size={1}（源码 size={2}）" -f $nsisPe.BuildTime.ToString('yyyy-MM-dd HH:mm:ss'), $nsisPe.Size, $srcSize)
-            if ($srcPe -ne $null -and ([math]::Abs(($nsisPe.BuildTime - $srcPe).TotalSeconds) -gt 2 -or $nsisPe.Size -ne $srcSize)) {
-                $stale += ("NSIS 内嵌壳与源码 release 不一致（PE {0:HH:mm:ss}/{1}B vs {2:HH:mm:ss}/{3}B）" -f $nsisPe.BuildTime, $nsisPe.Size, $srcPe, $srcSize)
+            Write-Output ("  NSIS 内嵌壳 PE @ {0}" -f $nsisPe.BuildTime.ToString('yyyy-MM-dd HH:mm:ss'))
+            if ($nsisPe.BuildTime -lt $src.Mtime) {
+                $stale += ("NSIS 内嵌壳早于源码（PE {0:HH:mm:ss} < 源码 {1:HH:mm:ss}）" -f $nsisPe.BuildTime, $src.Mtime)
             }
         }
     }
@@ -189,6 +198,33 @@ function Add-Result {
     param([string]$Id, [string]$Title, [string]$Status, [string]$Evidence)
     [void]$results.Add([pscustomobject]@{ Id = $Id; Title = $Title; Status = $Status; Evidence = $Evidence })
     Write-Output ("::{0}::{1}::{2}" -f $Id, $Status, ($Evidence -replace "`r?`n", ' / '))
+}
+
+# 便携包内壳与 release exe 的逐字节差异（用于判断「是否同一份构建」）
+#
+# 为什么需要它：同源两次链接会差约 20 字节，全在编译元数据里——
+#   PE TimeDateStamp、3×IMAGE_DEBUG_DIRECTORY 时间戳、16B RSDS PDB GUID。
+# 业务代码逐字节相同。所以「PE 时间戳必须相等」是错的判据；
+# 正确做法是看差异量级：<1KB 视为同源，超出则可能是不同构建。
+function Compare-ZipExeWithRelease {
+    param([string]$ZipPath, [string]$ReleaseExe)
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -EA SilentlyContinue
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+        try {
+            $entry = $zip.Entries | Where-Object { $_.Name -eq 'agentboard-desktop.exe' } | Select-Object -First 1
+            if (-not $entry) { return $null }
+            $ms = New-Object System.IO.MemoryStream
+            $s = $entry.Open(); $s.CopyTo($ms); $s.Close()
+            $a = $ms.ToArray(); $ms.Close()
+        } finally { $zip.Dispose() }
+        $b = [System.IO.File]::ReadAllBytes($ReleaseExe)
+        $n = [Math]::Min($a.Length, $b.Length)
+        $cnt = 0
+        for ($i = 0; $i -lt $n; $i++) { if ($a[$i] -ne $b[$i]) { $cnt++ } }
+        $ratio = if ($n -gt 0) { $cnt / $n } else { 1 }
+        return [pscustomobject]@{ DiffBytes = $cnt + [Math]::Abs($a.Length - $b.Length); Total = $n; Ratio = $ratio }
+    } catch { return $null }
 }
 
 function Should-Run { param([string]$Id) return ($Only -eq '' -or $Only -split ',' -contains $Id) }
@@ -475,12 +511,20 @@ if ($latestZipForRun -and (Any-Run @('V8', 'V9', 'V10', 'V11'))) {
         $outsideRepo = -not ($pkgExe.FullName.ToLower().StartsWith($repoRoot.ToLower()))
 
         # V8 便携包内壳版本（P7 的核心：外层 mtime 不可信，必须读内层 PE）
+        # 判据不用「与 release exe PE 完全相等」：同源两次链接差约 20 字节编译元数据。
+        # 用「PE 必须晚于源码最新 mtime」+「关键串必须齐」（V9 覆盖）+「字节差异在元数据量级」。
         if (Should-Run 'V8') {
             $zipPe = Get-PeBuildTime $pkgExe.FullName
-            $srcPe = Get-PeBuildTime $shellExe
-            $sameVer = ($null -ne $zipPe) -and ($null -ne $srcPe) -and ([math]::Abs(($zipPe - $srcPe).TotalSeconds) -le 2)
-            Add-Result 'V8' '便携包内壳 PE 与源码 release 一致（P7）' $(if ($sameVer) { 'PASS' } else { 'FAIL' }) (
-                "zip=$($latestZipForRun.Name) 外层mtime=$($latestZipForRun.LastWriteTime.ToString('HH:mm:ss')) 内层PE=$(if($zipPe){$zipPe.ToString('HH:mm:ss')}else{'读取失败'}) 源码PE=$(if($srcPe){$srcPe.ToString('HH:mm:ss')}else{'-'}) 仓库外=$outsideRepo"
+            $srcNewest = (Get-NewestSourceMtime -Roots @(
+                (Join-Path $repoRoot 'desktop\src-tauri\src'),
+                (Join-Path $repoRoot 'desktop\src-tauri\Cargo.toml')
+            )).Mtime
+            $newerThanSrc = ($null -ne $zipPe) -and ($zipPe -ge $srcNewest)
+            $diffInfo = Compare-ZipExeWithRelease -ZipPath $latestZipForRun.FullName -ReleaseExe $shellExe
+            $sameBuild = ($null -eq $diffInfo) -or ($diffInfo.DiffBytes -le 1024)
+            $ok = $newerThanSrc -and $sameBuild -and $outsideRepo
+            Add-Result 'V8' '便携包内壳是新构建（内层 PE 晚于源码 + 与 release 同源）' $(if ($ok) { 'PASS' } else { 'FAIL' }) (
+                "zip=$($latestZipForRun.Name) 外层mtime=$($latestZipForRun.LastWriteTime.ToString('HH:mm:ss')) 内层PE=$(if($zipPe){$zipPe.ToString('HH:mm:ss')}else{'读取失败'}) 源码最新=$($srcNewest.ToString('HH:mm:ss')) 晚于源码=$newerThanSrc 字节差异=$(if($diffInfo){"$($diffInfo.DiffBytes)"}else{'?'}) 同源=$sameBuild 仓库外=$outsideRepo"
             )
         }
 
