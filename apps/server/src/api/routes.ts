@@ -52,6 +52,11 @@ import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { httpMutation } from '../services/idempotency.js';
 import { attachmentsDirFor, readSettings } from '../config.js';
 import type { SkillsSyncOptions } from '../services/skillsSync.js';
+// P2-01：知识路由的 legacy 图片存储与旧库只读探测
+import { createScopedKnowledgeImageStore } from '../services/knowledgeImages.js';
+import { findKnowledgePageOwner } from '../services/knowledgeResolve.js';
+import { knowledgeDocsStore } from '../knowledge/store.js';
+import { resolveDocsDir, type DocsDirOverrides } from '../knowledge/paths.js';
 
 export interface RouterDeps {
   db: Db;
@@ -64,6 +69,8 @@ export interface RouterDeps {
   accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe; addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>; restoreHandlers?: Partial<Record<ManagedAppId, RestoreHandler>> };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
   knowledgeGraphPageLimit?: number;
+  /** P2-01：知识 Docs 目录覆盖（仅测试注入；生产用默认 <工作区>/.agentboard/Docs 与 ~/.agentboard/Docs） */
+  knowledgeDocsPaths?: DocsDirOverrides;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
   /** SYSTEM-RESTART：服务自重启依赖（生产 main() 注入；测试可注入 fake） */
@@ -243,23 +250,60 @@ export function createRouter(deps: RouterDeps): Router {
     ...(deps.skillsRoot === undefined ? {} : { skillsRoot: deps.skillsRoot }),
   }));
 
-  // STORE-4a：知识路由按请求取库——common→中心库、workspace→工作区库（判定走 resolver）；
-  // 跨区 owner 探测的 fan-out 候选 = 全部已下沉区（单区打不开跳过，命中即事实）。
-  router.use('/knowledge', createKnowledgeRouter(deps.db, {
+  // P2-01（方向 B）：知识路由换文件仓储——不再注入 getWorkspaceDb/listWorkspaceDbs（知识数据不走 SQLite）。
+  // 保留的注入：工作区注册表（M13 中心库只存注册表）、legacy 图片兼容存储（P2-03 接管前）、
+  // 写幂等记录库（idempotency 表属服务基础设施）、旧库只读探测（图片可见性 403/404 区分）。
+  router.use('/knowledge', createKnowledgeRouter({
     maxGraphPages: deps.knowledgeGraphPageLimit,
-    // STORE-4b：工作区句柄绑中心库——repos/knowledge 的定位索引维护要知道往哪个中心库写
-    getWorkspaceDb: (workspaceId) => {
-      const workspaceDb = dbForWorkspace(workspaceId);
-      bindEntityLocatorCenter(workspaceDb, db);
-      return workspaceDb;
+    getWorkspaceRow: (workspaceId) => {
+      const row = getWorkspace(deps.db, workspaceId);
+      return row === null ? null : { id: row.id, name: row.name, path: row.path };
     },
-    listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
-      try {
-        return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
-      } catch {
-        return [];
-      }
+    listWorkspaceRows: () => (db.prepare('SELECT id, path FROM workspace WHERE path IS NOT NULL AND path != \'\'').all() as Array<{ id: string; path: string }>),
+    imageStore: createScopedKnowledgeImageStore({
+      center: db,
+      getWorkspaceDb: (workspaceId) => dbForWorkspace(workspaceId),
+      listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
+        try {
+          return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
+        } catch {
+          return [];
+        }
+      }),
     }),
+    legacyPageOwner: (pageId) => {
+      // 文件事实源：页不在当前范围时扫**全部已注册工作区**的 Docs 判归属（403 不回显标题）；
+      // 文件索引没有再退旧库只读行（未导出的 legacy 页）。
+      const allWorkspaces = (db.prepare('SELECT id, path FROM workspace').all() as Array<{ id: string; path: string }>)
+        .filter(row => row.path !== '');
+      for (const wsRow of allWorkspaces) {
+        try {
+          const wsDir = resolveDocsDir(undefined, 'workspace', wsRow.path);
+          const index = knowledgeDocsStore.indexFor(wsDir, { scope: 'workspace', workspace_id: wsRow.id });
+          index.ensureFresh();
+          const entry = index.getByIdAny(pageId);
+          if (entry !== null && entry.meta !== undefined) {
+            return { scope: 'workspace', workspace_id: wsRow.id };
+          }
+        } catch { /* 单区失败跳过 */ }
+      }
+      // 旧库只读兜底（未导出的 legacy 页）；新库无知识表 → 探测自然落空
+      const hasLegacyKnowledge = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+      if (hasLegacyKnowledge) {
+        const inCenter = findKnowledgePageOwner(db, pageId);
+        if (inCenter !== null) return inCenter;
+        for (const wsRow of listLocalizedWorkspaces()) {
+          try {
+            const owner = findKnowledgePageOwner(getDbForWorkspace(workspaceResolverDeps, wsRow).db, pageId);
+            if (owner !== null) return owner;
+          } catch { /* 该区库打不开：跳过 */ }
+        }
+      }
+      return null;
+    },
+    mutationDb: db,
+    ...(deps.instance === undefined ? {} : { instanceId: deps.instance.instanceId }),
+    ...(deps.knowledgeDocsPaths === undefined ? {} : { docsPaths: deps.knowledgeDocsPaths }),
   }));
 
   // ---- workspaces 域（CR-10b 自本文件纯搬迁到 routes/workspaceRoutes.ts）----

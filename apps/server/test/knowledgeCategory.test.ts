@@ -1,4 +1,7 @@
 import express, { type Express } from 'express';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/index.js';
@@ -12,20 +15,23 @@ import { normalizePageCategory } from '../src/db/repos/knowledge.js';
  * KB-MODEL 服务端：category / landed 的落库、校验、投影（列表 / 详情 / 星图）。
  * 落库规则见 `normalizePageCategory`：缺省 category → open；design 缺 landed → proposed；
  * KB-LANDED 起 category 与 landed 解耦：显式 landed 对任何 category 都原样落库。
+ * P2-01：数据源是 Docs/*.md——工作区用临时绝对目录（文件事实源按注册表路径落 Docs）。
  */
 describe('knowledge category / landed（KB-MODEL）', () => {
   let t: TestDb;
   let app: Express;
   let workspaceId: string;
+  let wsRoot: string;
   beforeEach(() => {
     t = createTestDb();
-    workspaceId = createWorkspace(t.db, { name: 'A', path: 'A' }).id;
+    wsRoot = mkdtempSync(join(tmpdir(), 'agentboard-kb-cat-'));
+    workspaceId = createWorkspace(t.db, { name: 'A', path: wsRoot }).id;
     app = express();
     app.use(express.json());
     app.use('/api', createRouter({ db: t.db, getAdapter: () => { throw Error('unused'); }, broadcast: () => {} }));
     app.use(errorHandler);
   });
-  afterEach(() => t.cleanup());
+  afterEach(() => { t.cleanup(); rmSync(wsRoot, { recursive: true, force: true }); });
 
   const base = (slug: string, extra: Record<string, unknown> = {}) => ({
     domain: 'knowledge',
@@ -140,9 +146,10 @@ describe('knowledge category / landed（KB-MODEL）', () => {
 describe('KB-LANDED 接线（真实 createApp）', () => {
   it('open+partial 组合经真实 app 创建与修订均 200', async () => {
     const t = createTestDb();
+    const wsRoot = mkdtempSync(join(tmpdir(), 'agentboard-kb-cat-app-'));
     try {
-      const workspaceId = createWorkspace(t.db, { name: 'A', path: 'A' }).id;
-      const { app } = await createApp({ db: t.db, refreshClisOnBoot: false });
+      const workspaceId = createWorkspace(t.db, { name: 'A', path: wsRoot }).id;
+      const { app } = await createApp({ db: t.db, refreshClisOnBoot: false, knowledgeDocsPaths: { commonDocsDir: () => join(wsRoot, 'common-docs') } });
       const payload = {
         domain: 'knowledge',
         scope: 'workspace',
@@ -167,6 +174,7 @@ describe('KB-LANDED 接线（真实 createApp）', () => {
     } finally {
       resetSessionManager();
       t.cleanup();
+      rmSync(wsRoot, { recursive: true, force: true });
     }
   });
 });

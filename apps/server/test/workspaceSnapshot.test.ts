@@ -11,7 +11,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
@@ -34,7 +37,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
 
   beforeEach(async () => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store5-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -148,8 +151,8 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       expect(result.backupPath).toBeNull();
       const count = (table: string) => (target.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
       expect(count('issue')).toBe(3);
-      // 一期缩表：知识页仍由库自身承载，快照不再导入知识表行
-      expect(count('knowledge_page')).toBe(0);
+      // P2-01 一期缩表：新库不再建知识页表，知识页由 Docs/*.md 承载，快照不导入知识表行
+      expect(target.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get()).toEqual({ n: 0 });
       expect(result.tables.map(item => item.table)).not.toContain('knowledge_page');
       expect(count('workspace_status')).toBeGreaterThan(0);
       const checked = validateWorkspaceSnapshot(snapshotDir());

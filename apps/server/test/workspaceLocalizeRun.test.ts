@@ -8,7 +8,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）localize 全链路落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
@@ -51,7 +54,7 @@ describe('STORE-2（M2a）八阶段状态机', () => {
 
   beforeEach(() => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store2run-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -77,7 +80,8 @@ describe('STORE-2（M2a）八阶段状态机', () => {
     expect(result.state).toBe('localized');
     expect(result.stages).toEqual([...LOCALIZE_STAGES]);
     expect(result.counts.issue).toBe(3);
-    expect(result.counts.knowledge_page).toBe(1);
+    // P2-01：知识表退出迁移管线——键集保留恒 0（旧库知识行原地只读保留）
+    expect(result.counts.knowledge_page).toBe(0);
     expect(existsSync(result.target_db_path)).toBe(true);
     // STORE-4e：终态 counts 与 dry-run 同一键集；rows_total = Σ scoped 表；聚合键取实盘（本例无附件）
     expect(Object.keys(result.counts).sort()).toEqual(UNIFIED_COUNT_KEYS.slice().sort());
@@ -91,9 +95,9 @@ describe('STORE-2（M2a）八阶段状态机', () => {
     const mode = t.db.prepare('SELECT db_mode, localized_at FROM workspace WHERE id = ?').get(ws) as { db_mode: string; localized_at: number | null };
     expect(mode.db_mode).toBe('localized');
     expect(mode.localized_at).toBeGreaterThan(0);
-    // 中心已无该区 scoped 行（守恒式右端为 0）
+    // 中心已无该区 scoped 行（守恒式右端为 0）；P2-01：知识行原地只读保留（不被清空）
     expect((t.db.prepare('SELECT COUNT(*) AS n FROM issue WHERE workspace_id = ?').get(ws) as { n: number }).n).toBe(0);
-    expect((t.db.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?").get(ws) as { n: number }).n).toBe(0);
+    expect((t.db.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?").get(ws) as { n: number }).n).toBe(1);
   });
 
   it('幂等：再跑一次返回 already_localized，行数不变（验收 4）', async () => {
@@ -136,14 +140,18 @@ describe('STORE-2（M2a）八阶段状态机', () => {
     }
   });
 
-  it('同构校验：工作区库含中心库全部列（含 KB-PAGE-3 的 domain）', async () => {
+  it('同构校验：工作区库含中心库全部列；P2-01 起知识表不进工作区库', async () => {
     mkdirSync(join(root, 'attachments'), { recursive: true });
     const result = await run();
     const Database = (await import('better-sqlite3')).default;
     const target = new Database(result.target_db_path, { readonly: true });
     try {
-      const cols = (target.prepare('PRAGMA table_info(knowledge_page)').all() as Array<{ name: string }>).map((c) => c.name);
-      expect(cols).toContain('domain');
+      // P2-01：knowledge_page/revision/link 已退出迁移管线——新工作区库不再建这三张表
+      //（knowledge_attachment 仍注册：legacy 图片端点的兼容存储）
+      const tables = (target.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'knowledge%'").all() as Array<{ name: string }>).map((row) => row.name);
+      expect(tables).toEqual(['knowledge_attachment']);
+      const issueCols = (target.prepare('PRAGMA table_info(issue)').all() as Array<{ name: string }>).map((c) => c.name);
+      expect(issueCols.length).toBeGreaterThan(0);
       const meta = new Map((target.prepare('SELECT key, value FROM meta').all() as Array<{ key: string; value: string }>).map((r) => [r.key, r.value]));
       expect(meta.get('localized')).toBe('1');
       expect(meta.get('workspace_id')).toBe(ws);

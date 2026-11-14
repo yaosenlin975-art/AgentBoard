@@ -230,6 +230,10 @@ export interface WorkspaceKnowledgeOccupancy {
 }
 
 export function getWorkspaceKnowledgeOccupancy(db: Db, workspaceId: string): WorkspaceKnowledgeOccupancy {
+  // P2-01：新库不再建知识表（权威数据已迁 Docs/*.md）——缺表按 0 占用计，不阻断删空间；
+  // 旧库（只读保留）行为不变：行仍在即照常占用。
+  const hasKnowledgeTables = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+  if (!hasKnowledgeTables) return { pages: 0, revisions: 0, pageIds: [] };
   const pageIds = (db.prepare(
     `SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id=@workspace AND status<>'deleted' ORDER BY updated_at DESC, id`,
   ).all({ workspace: workspaceId }) as Array<{ id: string }>).map(row => row.id);

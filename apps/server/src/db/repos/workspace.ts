@@ -96,14 +96,17 @@ export function getWorkspace(db: Db, id: string): Workspace | null {
   return (db.prepare('SELECT * FROM workspace WHERE id = ?').get(id) as Workspace | undefined) ?? null;
 }
 
-/** 只读统计；不含改写，供删除路由在动数据前给出可操作拒绝原因 */
+/** 只读统计；不含改写，供删除路由在动数据前给出可操作拒绝原因。
+ * P2-01：新库不再建 knowledge_page/revision（权威数据已迁 Docs/*.md）——缺表按 0 计，不阻断删空间 */
 export function getWorkspaceDeleteBlockers(db: Db, id: string): WorkspaceDeleteBlockers {
+  const knowledgeTablesPresent = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined
+    && db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_revision'").get() !== undefined;
   const count = (sql: string): number => (db.prepare(sql).get(id) as { n: number }).n;
   return {
-    knowledgePages: count('SELECT COUNT(*) AS n FROM knowledge_page WHERE workspace_id = ?'),
-    knowledgeRevisions: count(
+    knowledgePages: knowledgeTablesPresent ? count('SELECT COUNT(*) AS n FROM knowledge_page WHERE workspace_id = ?') : 0,
+    knowledgeRevisions: knowledgeTablesPresent ? count(
       'SELECT COUNT(*) AS n FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.workspace_id = ?',
-    ),
+    ) : 0,
     runningSessions: count("SELECT COUNT(*) AS n FROM session WHERE workspace_id = ? AND status = '运行中'"),
     childIssues: count('SELECT COUNT(*) AS n FROM issue WHERE workspace_id = ? AND parent_issue_id IS NOT NULL'),
   };

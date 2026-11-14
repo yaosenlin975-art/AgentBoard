@@ -40,7 +40,7 @@ function fakeResolver(id: string): AgentAdapter {
 }
 
 beforeEach(async () => {
-  t = createTestDb();
+  t = createTestDb({ legacyKnowledge: true });
   adapter = new FakeAdapter();
   spaceDir = mkdtempSync(join(tmpdir(), 'agentboard-space-'));
   created = await createApp({
@@ -169,15 +169,11 @@ describe('DELETE /api/workspaces/:id 移除工作空间', () => {
     expect(held[0]!.killed).toBe(false);
   });
 
-  it('知识页与历史 revision → 409，知识页与历史原样保留', async () => {
+  it('知识页与历史 revision → 409，知识页与历史原样保留（legacy db 行仍计入占用）', async () => {
     const wsId = await mkSpace('knowledge');
-    const page = await request(app).post('/api/knowledge/pages').send(knowledgeBody(wsId));
-    expect(page.status).toBe(200);
-    expect(
-      (await request(app)
-        .put(`/api/knowledge/pages/${page.body.id}`)
-        .send({ scope: 'workspace', workspace_id: wsId, expected_revision: 1, body_md: '第二版', actor: 'dsh' })).status,
-    ).toBe(200);
+    // P2-01：占用口径读旧库行——用 legacy repo 造页（REST 页走文件，不进 db 占用）
+    const page = createKnowledgePage(t.db, { ...knowledgeBody(wsId) } as never);
+    reviseKnowledgePage(t.db, page.id, { scope: 'workspace', workspace_id: wsId }, 1, { body_md: '第二版', actor: 'dsh' });
     const revisionsBefore = t.db.prepare('SELECT COUNT(*) AS n FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.workspace_id = ?').get(wsId);
 
     const del = await request(app).delete(`/api/workspaces/${wsId}`);
@@ -187,7 +183,7 @@ describe('DELETE /api/workspaces/:id 移除工作空间', () => {
     expect(del.body.error.message).toContain('2 条历史 revision');
     expect(del.body.error.message).toContain('迁移知识页');
     // KB-DEL 验收 2：拒绝时点名剩余页 id，用户能直接去删/迁这几页
-    expect(del.body.error.message).toContain(page.body.id as string);
+    expect(del.body.error.message).toContain(page.id as string);
 
     expect(getWorkspace(t.db, wsId)).not.toBeNull();
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM knowledge_page WHERE workspace_id = ?').get(wsId)).toEqual({ n: 1 });
@@ -199,7 +195,8 @@ describe('DELETE /api/workspaces/:id 移除工作空间', () => {
     const parentId = await mkIssue(wsId, '父任务');
     await mkIssue(wsId, '子任务', parentId);
     createSession(t.db, { workspace_id: wsId, issue_id: null, cli: 'fake', status: '运行中' });
-    await request(app).post('/api/knowledge/pages').send(knowledgeBody(wsId));
+    // P2-01：知识阻塞用 legacy 行表达（文件页不进占用口径）
+    createKnowledgePage(t.db, { ...knowledgeBody(wsId) } as never);
 
     const del = await request(app).delete(`/api/workspaces/${wsId}`);
     expect(del.status).toBe(409);
@@ -231,18 +228,13 @@ describe('DELETE /api/workspaces/:id 知识页软删口径（KB-DEL N-03）', ()
   });
   const ftsRows = (pageId: string) => countIn('SELECT COUNT(*) AS n FROM knowledge_fts WHERE page_id = ?', pageId);
 
-  /** 建页 → 软删（走真实 HTTP，revision 递增与历史追加都按线上路径） */
-  async function mkPage(workspaceId: string, slug: string): Promise<string> {
-    const res = await request(app).post('/api/knowledge/pages').send({ ...knowledgeBody(workspaceId), slug, title: `页 ${slug}` });
-    expect(res.status).toBe(200);
-    return res.body.id as string;
+  /** P2-01：占用/清除口径属旧库只读回退层——本组用例经 legacy repo 建页（REST 页走文件，无 db 行，不进占用） */
+  function mkPage(workspaceId: string, slug: string): string {
+    return createKnowledgePage(t.db, { ...knowledgeBody(workspaceId), slug, title: `页 ${slug}` }).id;
   }
-  async function softDeletePage(workspaceId: string, pageId: string, expectedRevision: number): Promise<void> {
-    const res = await request(app).post(`/api/knowledge/pages/${pageId}/actions`).send({
-      scope: 'workspace', workspace_id: workspaceId, expected_revision: expectedRevision, action: 'delete', actor: 'user',
-    });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('deleted');
+  function softDeletePage(workspaceId: string, pageId: string, expectedRevision: number): void {
+    const page = setKnowledgePageStatus(t.db, pageId, { scope: 'workspace', workspace_id: workspaceId }, expectedRevision, 'delete', 'user');
+    expect(page.status).toBe('deleted');
   }
 
   it('占用口径单测：软删前计入，软删后页与其 revision 归零（行数不变、只改口径）', () => {
@@ -323,11 +315,9 @@ describe('DELETE /api/workspaces/:id 知识页软删口径（KB-DEL N-03）', ()
 
   it('归档页仍计入占用 → 409（只有 status=deleted 被排除）', async () => {
     const wsId = await mkSpace('archived');
-    const pageId = await mkPage(wsId, 'archived-page');
-    const res = await request(app).post(`/api/knowledge/pages/${pageId}/actions`).send({
-      scope: 'workspace', workspace_id: wsId, expected_revision: 1, action: 'archive', actor: 'user',
-    });
-    expect(res.status).toBe(200);
+    const pageId = mkPage(wsId, 'archived-page');
+    // P2-01：legacy 行走 repo 归档（REST 页在文件层，不进占用）
+    setKnowledgePageStatus(t.db, pageId, { scope: 'workspace', workspace_id: wsId }, 1, 'archive', 'user');
     // archive 会追加一条 change_kind='archive' 的历史，所以是 1 页 / 2 revision，且仍被点名
     expect(getWorkspaceKnowledgeOccupancy(t.db, wsId)).toMatchObject({ pages: 1, revisions: 2, pageIds: [pageId] });
 

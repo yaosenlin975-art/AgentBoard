@@ -53,7 +53,11 @@ describe('idempotent mutations', () => {
     const first = await create(); expect(first.status).toBe(200); expect((await create()).body).toEqual(first.body);
     const editKey = randomUUID(); const edit = () => request(app).put(`/api/knowledge/pages/${first.body.id}`).set('Idempotency-Key', editKey).send({ scope: 'common', expected_revision: 1, actor: 'codex', title: 'changed' });
     const edited = await edit(); expect(edited.body.revision).toBe(2); expect((await edit()).body).toEqual(edited.body);
-    expect(t.db.prepare('SELECT count(*) AS n FROM knowledge_revision').get()).toEqual({ n: 2 });
+    // P2-01：无 revision 表——幂等重放断言改为「不产生重复页 / revision 不再递增」
+    const listed = await request(app).get('/api/knowledge/pages').query({ scope: 'common', status: 'all' });
+    expect((listed.body.items as Array<{ slug: string }>).filter(item => item.slug === 'cache')).toHaveLength(1);
+    const reread = await request(app).get(`/api/knowledge/pages/${first.body.id}`).query({ scope: 'common' });
+    expect(reread.body.revision).toBe(2);
   });
   it('claim and CAS and owner completion replay the original result', async () => {
     const issue = createIssue(t.db, { workspace_id: a, title: 'task' });

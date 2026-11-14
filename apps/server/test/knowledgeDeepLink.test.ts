@@ -34,7 +34,7 @@ describe('BORROW-3.2 知识深链', () => {
   });
 
   beforeEach(async () => {
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-kdl-'));
     // 假 dist：深链路由回壳用（与 webDist 托管条件一致）
     webDist = join(root, 'dist');

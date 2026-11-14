@@ -17,7 +17,10 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
@@ -80,7 +83,7 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
     probes = [];
     resetLocalizeJobs();
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store4a-'));
     wsPath = join(root, 'ws');
     otherPath = join(root, 'other');
@@ -92,6 +95,8 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
       getAdapter: (_id: string): AgentAdapter => adapter,
       adapters: [adapter],
       refreshClisOnBoot: false,
+      // P2-01：公共 Docs 注入每用例固定临时目录（进程默认目录会跨用例残留 slug）
+      knowledgeDocsPaths: { commonDocsDir: () => join(root, 'common-docs') },
     });
     app = created.app;
     ws = createWorkspace(t.db, { name: '下沉区', path: wsPath }).id;
@@ -183,19 +188,20 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
     expect(otherId).toBeTypeOf('string');
   });
 
-  it('localized 工作区：知识 workspace 页落工作区库、common 页落中心库；按请求 scope 取库读写一致', async () => {
+  it('localized 工作区：知识 workspace 页落工作区 Docs、common 页落公共 Docs；scope 读写一致（P2-01 文件事实源）', async () => {
     await localize();
 
-    // workspace 页：建到已下沉区 → 必须落工作区库
+    // workspace 页：建到已下沉区 → 必须落工作区 Docs
     const wsPage = await request(app).post('/api/knowledge/pages').send(pageBody({ scope: 'workspace', workspace_id: ws }));
     expect(wsPage.status).toBe(200);
     const wsPageId = wsPage.body.id as string;
 
-    const wsDb = probeWsDb(wsPath);
-    expect((wsDb.prepare('SELECT COUNT(*) AS n FROM knowledge_page WHERE id=?').get(wsPageId) as { n: number }).n).toBe(1);
-    expect((t.db.prepare('SELECT COUNT(*) AS n FROM knowledge_page WHERE id=?').get(wsPageId) as { n: number }).n).toBe(0);
+    const { existsSync, readFileSync } = await import('node:fs');
+    const wsDocsDir = join(wsPath, '.agentboard', 'Docs');
+    expect(existsSync(join(wsDocsDir, wsPage.body.slug + '.md'))).toBe(true);
+    expect(readFileSync(join(wsDocsDir, wsPage.body.slug + '.md'), 'utf8')).toContain('切库验收');
 
-    // workspace scope 读：按请求取工作区库
+    // workspace scope 读：按目录定位
     const detail = await request(app).get(`/api/knowledge/pages/${wsPageId}`).query({ scope: 'workspace', workspace_id: ws });
     expect(detail.status).toBe(200);
     expect(detail.body.title).toBe('切库区页标题机密');
@@ -203,16 +209,16 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
     expect(search.status).toBe(200);
     expect(search.body.some((row: { page_id: string }) => row.page_id === wsPageId)).toBe(true);
 
-    // workspace 页修订：写走工作区库（revision 推进且落位正确）
+    // workspace 页修订：写走工作区 Docs（revision 推进且落位正确）
     const revised = await request(app).put(`/api/knowledge/pages/${wsPageId}`).send({ scope: 'workspace', workspace_id: ws, expected_revision: 1, body_md: '改在工作区库', actor: 'tester' });
     expect(revised.status).toBe(200);
     expect(revised.body.revision).toBe(2);
+    expect(readFileSync(join(wsDocsDir, wsPage.body.slug + '.md'), 'utf8')).toContain('改在工作区库');
 
-    // common 页：始终落中心库
+    // common 页：始终落公共 Docs
     const commonPage = await request(app).post('/api/knowledge/pages').send(pageBody({ scope: 'common', title: '中心共页', slug: 'common-page' }));
     expect(commonPage.status).toBe(200);
     const commonPageId = commonPage.body.id as string;
-    expect((t.db.prepare('SELECT COUNT(*) AS n FROM knowledge_page WHERE id=?').get(commonPageId) as { n: number }).n).toBe(1);
     const commonSearch = await request(app).get('/api/knowledge/search').query({ scope: 'common', q: '中心共页' });
     expect(commonSearch.status).toBe(200);
     expect(commonSearch.body.some((row: { page_id: string }) => row.page_id === commonPageId)).toBe(true);

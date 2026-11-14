@@ -53,6 +53,7 @@ import { sweepExpiredLeases } from './services/claim.js';
 import { inspectIssueLabels } from './services/labelIntegrity.js';
 import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
+import type { DocsDirOverrides } from './knowledge/paths.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
 import { startAwaitingSweeper } from './services/turnAwaiting.js';
 import { startDecisionReminderTicker } from './services/decisionReminder.js';
@@ -65,6 +66,8 @@ import {
   DEFAULT_ATTACHMENT_STAGED_TTL_MS,
 } from './services/attachments.js';
 import { loadDispatchPromptTemplate } from './services/dispatchTemplate.js';
+// P2-01：知识文件索引启动预热与 reconcile 只读报告
+import { warmKnowledgeIndexes } from './knowledge/store.js';
 
 export interface CreateAppOptions {
   db: Db;
@@ -100,6 +103,8 @@ export interface CreateAppOptions {
   restart?: RestartDeps;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
   knowledgeGraphPageLimit?: number;
+  /** P2-01：知识 Docs 目录覆盖（仅测试注入；生产用默认 <工作区>/.agentboard/Docs 与 ~/.agentboard/Docs） */
+  knowledgeDocsPaths?: DocsDirOverrides;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
   /** ACC-11 凭据导出 runner（仅测试注入） */
@@ -231,8 +236,14 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
-        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...(options.instance === undefined ? {} : { instance: options.instance }), ...(options.attachmentStorageDir === undefined ? {} : { attachmentStorageDir: options.attachmentStorageDir }) }));
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, ...(options.knowledgeDocsPaths === undefined ? {} : { knowledgeDocsPaths: options.knowledgeDocsPaths }), skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...(options.instance === undefined ? {} : { instance: options.instance }), ...(options.attachmentStorageDir === undefined ? {} : { attachmentStorageDir: options.attachmentStorageDir }) }));
   app.use('/api', apiNotFound);
+
+  // P2-01（方向 B §7.3）：启动扫两目录建内存索引 + reconcile 只读报告（fire-and-forget，失败不阻断启动）。
+  // vitest 进程跳过：测试夹具的公共 Docs 指向真实用户目录，预热会拖慢每个用例并产生真实目录副作用
+  if (process.env.VITEST === undefined) {
+    void warmKnowledgeIndexes({ centerDb: db });
+  }
 
   const webDist = options.webDist ?? null;
   if (webDist && existsSync(webDist)) {

@@ -3,8 +3,10 @@
  *
  * 只做回归，不改 workspaceDb 实现：在临时工作区目录 + 临时中心库上完整走一遍
  * 下沉（localize）→ 状态查询 → 回迁（revert），断言 issue / issue_comment /
- * knowledge_page / workspace_change_log（卡面称作 changelog）四张表的行数与业务内容
- * 在回迁后与下沉前一致。
+ * workspace_change_log（卡面称作 changelog）三张表的行数与业务内容在回迁后与下沉前一致。
+ *
+ * P2-01：knowledge_page 退出迁移管线——旧库知识行原地只读保留（下沉不清空、回迁不回写），
+ * 工作区库不再建知识页表；知识内容一致性由 P2-02 export-legacy 承担。
  *
  * 不覆盖：中断恢复（job 状态机另立）、附件二进制。
  */
@@ -12,7 +14,10 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）localize 全链路落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
@@ -26,8 +31,8 @@ import { buildWorkspaceDbStatus } from '../src/services/workspaceDbStatus.js';
 import { revertWorkspace } from '../src/services/workspaceDbOps.js';
 import { WORKSPACE_TABLE_QUERIES } from '../src/services/workspaceScopedQueries.js';
 
-/** 四张必测表（changelog 的真实表名是 workspace_change_log） */
-const TABLES = ['issue', 'issue_comment', 'knowledge_page', 'workspace_change_log'] as const;
+/** 三张必测表（changelog 的真实表名是 workspace_change_log）；P2-01 起知识表退出管线另断言 */
+const TABLES = ['issue', 'issue_comment', 'workspace_change_log'] as const;
 type TableName = (typeof TABLES)[number];
 
 /**
@@ -37,7 +42,6 @@ type TableName = (typeof TABLES)[number];
 const CONTENT_COLUMNS: Record<TableName, string[]> = {
   issue: ['id', 'workspace_id', 'title', 'description', 'priority', 'labels', 'status', 'sort_order', 'parent_issue_id', 'due_date', 'due_time', 'created_at'],
   issue_comment: ['id', 'issue_id', 'author', 'content', 'ts'],
-  knowledge_page: ['id', 'scope', 'workspace_id', 'slug', 'title', 'body_md', 'status', 'revision', 'category', 'landed', 'domain', 'created_at'],
   workspace_change_log: ['id', 'workspace_id', 'origin_workspace_id', 'origin_workspace_name', 'origin_workspace_path', 'title', 'body_md', 'change_type', 'occurred_at', 'created_by', 'updated_by', 'revision'],
 };
 
@@ -132,7 +136,7 @@ describe('ARCH-08 数据下沉主干回归：enable → status → revert', () =
 
   beforeEach(() => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-arch08-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -148,9 +152,9 @@ describe('ARCH-08 数据下沉主干回归：enable → status → revert', () =
     rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   });
 
-  it('四表行数与内容：下沉前 = 下沉后（工作区库）= 回迁后（中心库）', async () => {
+  it('三表行数与内容：下沉前 = 下沉后（工作区库）= 回迁后（中心库）；知识行原地只读保留', async () => {
     const before = snapshot(t.db, ws);
-    expect(before.counts).toMatchObject({ issue: 3, issue_comment: 3, knowledge_page: 2, workspace_change_log: 2 });
+    expect(before.counts).toMatchObject({ issue: 3, issue_comment: 3, workspace_change_log: 2 });
 
     // ---- enable ----
     const localized = await localizeWorkspace(
@@ -160,10 +164,21 @@ describe('ARCH-08 数据下沉主干回归：enable → status → revert', () =
     );
     expect(localized.state).toBe('localized');
     expect(existsSync(workspaceDbPath(wsPath))).toBe(true);
-    // 下沉后中心库该区四表清空，数据只应存在于工作区库
+    // P2-01：知识表退出管线——counts 键保留恒 0
+    expect(localized.counts.knowledge_page).toBe(0);
+    // 下沉后中心库该区三表清空，数据只应存在于工作区库
     const centerAfterEnable = snapshot(t.db, ws);
     for (const table of TABLES) expect(centerAfterEnable.counts[table]).toBe(0);
     const duringLocalized = withReadonlyDb(workspaceDbPath(wsPath), (db) => snapshot(db, ws));
+    // 知识行原地只读保留：下沉不清空、工作区库不建知识页表
+    expect((t.db.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?").get(ws) as { n: number }).n).toBe(2);
+    {
+      const targetTables = new Database(workspaceDbPath(wsPath), { readonly: true });
+      try {
+        const names = (targetTables.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'knowledge%'").all() as Array<{ name: string }>).map((row) => row.name);
+        expect(names).toEqual(['knowledge_attachment']);
+      } finally { targetTables.close(); }
+    }
 
     // ---- status ----
     const status = buildWorkspaceDbStatus(t.db, { workspaceId: ws }, { disabled: false });

@@ -140,10 +140,12 @@ export function countWorkspacePayload(
     issue_git_baseline: count('SELECT COUNT(*) AS n FROM issue_git_baseline b JOIN issue i ON i.id = b.issue_id WHERE i.workspace_id = ?', workspace.id),
     issue_draft_audit: count('SELECT COUNT(*) AS n FROM issue_draft_audit WHERE workspace_id = ?', workspace.id),
     attachment: count('SELECT COUNT(*) AS n FROM attachment WHERE workspace_id = ?', workspace.id),
-    knowledge_page: count("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?", workspace.id),
-    knowledge_revision: count("SELECT COUNT(*) AS n FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
-    knowledge_link: count("SELECT COUNT(*) AS n FROM knowledge_link l JOIN knowledge_page p ON p.id = l.source_page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
-    knowledge_attachment: count("SELECT COUNT(*) AS n FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?", workspace.id),
+    // P2-01：知识表退出迁移管线——键集保留（shared WorkspaceLocalizeJobView.counts 契约）恒 0：
+    // 旧行原地只读保留（不搬、不删），导出走 P2-02 export-legacy
+    knowledge_page: 0,
+    knowledge_revision: 0,
+    knowledge_link: 0,
+    knowledge_attachment: 0,
     workspace_change_log: count('SELECT COUNT(*) AS n FROM workspace_change_log WHERE origin_workspace_id = ?', workspace.id),
   };
   const attachmentsDir = deps.attachmentsDir ?? join(dirname(centerDb.name), 'attachments');
@@ -177,7 +179,12 @@ export function safeSize(path: string): number {
 export function collectWorkspaceAttachmentKeys(db: Db, workspaceId: string): string[] {
   const keys = new Set<string>();
   for (const row of db.prepare('SELECT storage_key FROM attachment WHERE workspace_id = ?').all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
-  for (const row of db.prepare("SELECT a.storage_key FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?").all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
+  // P2-01：knowledge_attachment 缺表（新库）或 JOIN 的 knowledge_page 缺表都跳过——legacy 图片文件盘点只对旧库有意义
+  const hasLegacyKnowledgeAttachment = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_attachment'").get() !== undefined
+    && db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+  if (hasLegacyKnowledgeAttachment) {
+    for (const row of db.prepare("SELECT a.storage_key FROM knowledge_attachment a JOIN knowledge_page p ON p.id = a.page_id WHERE p.scope='workspace' AND p.workspace_id = ?").all(workspaceId) as Array<{ storage_key: string }>) keys.add(row.storage_key);
+  }
   return [...keys];
 }
 

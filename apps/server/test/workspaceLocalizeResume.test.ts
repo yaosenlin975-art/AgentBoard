@@ -37,7 +37,7 @@ describe('STORE-3a resume 崩溃矩阵', () => {
 
   beforeEach(() => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store3resume-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });

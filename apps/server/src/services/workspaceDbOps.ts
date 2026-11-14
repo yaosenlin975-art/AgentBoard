@@ -19,6 +19,8 @@ import { clearLocalizeState, localizeError } from './workspaceLocalize.js';
 import { getMeta, ensureMetaTable, setMeta } from './workspaceLocalizeRun.js';
 import {
   WORKSPACE_TABLE_QUERIES,
+  availableTableQueries,
+  tableExists,
   collectWorkspaceAttachmentKeys,
   countScopedRowsByTable,
   centerRevertBlockingRows,
@@ -261,11 +263,20 @@ export async function revertWorkspace(centerDb: Db, input: { workspaceId: string
     const counts: Record<string, number> = {};
     centerDb.transaction(() => {
       deleteWorkspaceScopedRows(centerDb, row.id); // 干净 localized 下是空删；revert 提交后中断的重跑在此自愈
+      // P2-01：两侧依赖表齐全的查询才拷（新库不再建知识页/revision/link 表，按 0 行计，与 count 同口径）
+      const queries = availableTableQueries(wsDb!).filter(query => query.tables.every(table => tableExists(centerDb, table)));
+      const executable = new Set(queries.map(query => query.table));
       for (const query of WORKSPACE_TABLE_QUERIES) {
+        if (!executable.has(query.table)) { counts[query.table] = 0; continue; }
         const rows = wsDb!.prepare(query.sql).all(row.id) as Array<Record<string, unknown>>;
         insertRows(centerDb, query.table, rows);
         counts[query.table] = rows.length;
       }
+      // P2-01：知识表退出迁移管线——键集与 LocalizeCounts 契约一致，恒 0（行原地只读保留，不回写）
+      counts.knowledge_page = 0;
+      counts.knowledge_revision = 0;
+      counts.knowledge_link = 0;
+      counts.knowledge_attachment = 0;
       // 行数守恒（复用 verify 的守恒语义）：逐表「工作区库 = 中心库」
       const centerCounts = countScopedRowsByTable(centerDb, row.id);
       for (const query of WORKSPACE_TABLE_QUERIES) {

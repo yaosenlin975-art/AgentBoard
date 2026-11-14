@@ -31,8 +31,12 @@ export interface PurgedKnowledgeCounts {
   revisions: number;
 }
 
-/** 只读计数：该空间已软删的页与这些页的全部历史 revision（purge 前后都可用它核对） */
+/** 只读计数：该空间已软删的页与这些页的全部历史 revision（purge 前后都可用它核对）。
+ * P2-01：新库不再建知识表（权威数据已迁 Docs/*.md）——缺表按 0 计，不阻断删空间 */
 export function countDeletedKnowledgeForWorkspace(db: Db, workspaceId: string): PurgedKnowledgeCounts {
+  const hasTables = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined
+    && db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_revision'").get() !== undefined;
+  if (!hasTables) return { pages: 0, revisions: 0 };
   const q = (sql: string): number => (db.prepare(sql).get(workspaceId) as { n: number }).n;
   return {
     pages: q("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='workspace' AND workspace_id=? AND status='deleted'"),

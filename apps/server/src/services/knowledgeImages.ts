@@ -125,8 +125,13 @@ export function createKnowledgeImageStore(deps: KnowledgeImageStoreDeps): Knowle
         throw new ApiError(409, 'IMAGE_LIMIT_EXCEEDED', `每个知识页图片总量不能超过 ${KNOWLEDGE_IMAGE_MAX_PAGE_TOTAL_BYTES / (1024 * 1024)} MiB`);
       }
 
-      const pageExists = db.prepare('SELECT 1 FROM knowledge_page WHERE id=?').get(input.page_id);
-      if (!pageExists) throw new NotFoundError('知识页不存在');
+      // P2-01：knowledge_page 表已退出 initSchema（知识页权威数据在 Docs/*.md）——
+      // 旧库（有表）保留存在性校验；新库（无表）由路由层 requireVisiblePage（文件索引）负责可见性
+      const hasLegacyPageTable = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+      if (hasLegacyPageTable) {
+        const pageExists = db.prepare('SELECT 1 FROM knowledge_page WHERE id=?').get(input.page_id);
+        if (!pageExists) throw new NotFoundError('知识页不存在');
+      }
 
       const id = randomUUID();
       const storageKey = `knowledge/${input.page_id}/${id}.${extensionOf(mime)}`;
@@ -169,6 +174,8 @@ export function createKnowledgeImageStore(deps: KnowledgeImageStoreDeps): Knowle
     },
 
     async removePageFiles(pageId) {
+      // P2-01：旧 FK CASCADE（随 knowledge_page 行删除）已不可用（新库无知识页表）——显式删行 + 删文件
+      db.prepare('DELETE FROM knowledge_attachment WHERE page_id=?').run(pageId);
       await nodeFs.rm(join(knowledgeImagesSubdir(root), pageId), { recursive: true, force: true });
     },
 

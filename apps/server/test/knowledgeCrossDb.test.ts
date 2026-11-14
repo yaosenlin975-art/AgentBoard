@@ -1,96 +1,96 @@
 /**
- * STORE-4c：知识读路径 both 跨库合并 + knowledge_link 外键松绑后的跨库链接语义。
+ * P2-01（方向 B §8 #4）：scope=both = 工作区 Docs + 公共 Docs 两目录合并（旧跨库 fan-out 已放弃）。
  *
- * 真双库（中心库 + 工作区库文件）+ createKnowledgeRouter 按 4a 选项装配：
- * - /search both：两库命中合并、统一 (updated_at desc, id asc) 排序、X-Knowledge-Truncated 置位；
+ * - /search both：两目录命中合并、统一 (updated_at desc, id asc) 排序、X-Knowledge-Truncated 置位；
  * - /pages both：合并排序切片、next_offset 精确（窗口法，不报假总数）；
- * - /resolve both：common 与 workspace 两路命中、跨库同 slug 歧义 409；
- * - /backlinks both：工作区页双链到 common 页的反链跨库合并、page_total 精确求和；
- * - /graph both：跨库 link 边存在（resolved 语义）；目标页软删后边消失且不报错；
- * - 升级路径：老结构（target 外键）工作区库首个知识请求处自动松绑，随后跨库链接可建可解析；
- * - /reparse：跨库未解析链接回填（工作区库带中心库句柄）；
- * - 图片按 page.scope 落中心/工作区目录，跨库 locate 可读。
+ * - /resolve both：common 与 workspace 两路命中、跨目录同 slug 歧义 409；
+ * - /backlinks both：工作页双链到公共页的反链跨目录合并；
+ * - /graph both：跨目录 link 边存在；目标页删除（撤文件）后边消失；
+ * - /reparse：语义改为重建两目录扫描索引（晚建目标的链接随之解析）。
+ * 页面经 REST 创建落文件；需要精确 updated_at 的用例直接写合法 md（renderDocWithHash）。
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
-import { createKnowledgePage } from '../src/db/repos/knowledge.js';
 import { createKnowledgeRouter } from '../src/api/knowledgeRoutes.js';
 import { errorHandler } from '../src/api/routes.js';
-import { openDb, type Db } from '../src/db/connection.js';
-import { initSchema } from '../src/db/schema.js';
-import { bindEntityLocatorCenter } from '../src/db/repos/entityLocator.js';
 import { mergeKnowledgeRowsByRecency } from '../src/db/repos/knowledgeSearch.js';
-import { knowledgeAttachmentsRoot } from '../src/services/knowledgeImages.js';
+import { renderDocWithHash } from '../src/knowledge/frontMatter.js';
+import { docFileNameFor } from '@agentboard/shared';
 
 const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
 const evidence = [{ source_id: 's', locator: 'issue:1' }];
 
-/** 最小 PNG（签名 + IHDR），尺寸读取只依赖这两段 */
-function png(): Buffer {
-  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  const ihdr = Buffer.alloc(17);
-  ihdr.writeUInt32BE(13, 0);
-  ihdr.write('IHDR', 4, 'ascii');
-  ihdr.writeUInt32BE(2, 8);
-  ihdr.writeUInt32BE(2, 12);
-  ihdr[16] = 8;
-  return Buffer.concat([sig, ihdr]);
-}
-
-function multipartBody(fields: Record<string, string>, file: { filename: string; contentType: string; data: Buffer }, boundary = '----agentboard-4c'): { body: Buffer; contentType: string } {
-  const chunks: Buffer[] = [];
-  for (const [name, value] of Object.entries(fields)) {
-    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`));
-  }
-  chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${file.filename}"\r\nContent-Type: ${file.contentType}\r\n\r\n`));
-  chunks.push(file.data);
-  chunks.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-  return { body: Buffer.concat(chunks), contentType: `multipart/form-data; boundary=${boundary}` };
-}
-
-describe('STORE-4c 知识 both 跨库合并', () => {
+describe('knowledge both 两目录合并（P2-01，替代旧 STORE-4c 跨库合并）', () => {
   let t: TestDb;
-  let wsDir: string;
-  let wsDb: Db;
+  let root: string;
+  let commonDocs: string;
+  let wsPath: string;
   let ws: string;
   let app: Express;
+
   const pageInput = (over: Record<string, unknown>) => ({
     domain: 'knowledge', actor: 'tester', sources, evidence, ...over,
   });
-  const createCommon = (slug: string, body = '缓存失效后 WAL checkpoint') =>
-    createKnowledgePage(t.db, pageInput({ scope: 'common', slug, title: `公共-${slug}`, body_md: body }));
-  const createWs = (slug: string, body = '缓存失效后 WAL checkpoint') =>
-    createKnowledgePage(wsDb, pageInput({ scope: 'workspace', workspace_id: ws, slug, title: `区页-${slug}`, body_md: body }));
-  /** 直接控制 updated_at（Date.now() 同毫秒会让 revise 无法制造严格递增，fixture 直改是确定性做法） */
-  const setUpdatedAt = (db: Db, id: string, ts: number) => {
-    db.prepare('UPDATE knowledge_page SET updated_at=? WHERE id=?').run(ts, id);
+  const createCommon = async (slug: string, body = '缓存失效后 WAL checkpoint') => {
+    const res = await request(app).post('/api/knowledge/pages').send(pageInput({ scope: 'common', slug, title: `公共-${slug}`, body_md: body }));
+    expect(res.status).toBe(200);
+    return res.body as { id: string; slug: string; revision: number; created_at: number };
+  };
+  const createWs = async (slug: string, body = '缓存失效后 WAL checkpoint') => {
+    const res = await request(app).post('/api/knowledge/pages').send(pageInput({ scope: 'workspace', workspace_id: ws, slug, title: `区页-${slug}`, body_md: body }));
+    expect(res.status).toBe(200);
+    return res.body as { id: string; slug: string; revision: number; created_at: number };
+  };
+  /** 直接写两目录的合法 md（控制 updated_at / id；正文与 hash 一致，索引按有效页收录） */
+  const writeDoc = (dir: string, over: { id: string; slug: string; title: string; updated_at: number; body?: string }) => {
+    const meta = {
+      id: over.id, slug: over.slug, title: over.title, revision: 1,
+      scope: dir === commonDocs ? 'common' as const : 'workspace' as const,
+      workspace_id: dir === commonDocs ? null : ws,
+      status: 'active' as const, domain: 'knowledge', category: 'open', landed: null,
+      sources, evidence,
+      expires_at: null, created_at: over.updated_at, updated_at: over.updated_at,
+      created_by: 'tester', updated_by: 'tester', change_note: '',
+    } as unknown as Parameters<typeof renderDocWithHash>[0];
+    const { content } = renderDocWithHash(meta, over.body ?? '缓存失效后 WAL checkpoint');
+    const target = join(dir, docFileNameFor(over.slug));
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(target, content, 'utf8');
+    return over.id;
   };
 
   beforeEach(() => {
     t = createTestDb();
-    wsDir = mkdtempSync(join(tmpdir(), 'agentboard-4c-ws-'));
-    wsDb = openDb(join(wsDir, 'ws.db'));
-    initSchema(wsDb);
-    bindEntityLocatorCenter(wsDb, t.db);
-    ws = createWorkspace(t.db, { name: 'A', path: 'A' }).id;
-    // 工作区行副本（localize 的 create 阶段同款；createKnowledgePage 的存在性校验需要）
-    const row = t.db.prepare('SELECT * FROM workspace WHERE id=?').get(ws) as Record<string, unknown>;
-    const cols = Object.keys(row);
-    wsDb.prepare(`INSERT INTO workspace (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map(c => row[c] as never));
+    root = mkdtempSync(join(tmpdir(), 'agentboard-both-'));
+    commonDocs = join(root, 'common-docs');
+    mkdirSync(commonDocs, { recursive: true });
+    wsPath = join(root, 'ws-a');
+    mkdirSync(wsPath, { recursive: true });
+    ws = createWorkspace(t.db, { name: 'A', path: wsPath }).id;
     app = express();
     app.use(express.json());
-    app.use('/api/knowledge', createKnowledgeRouter(t.db, { getWorkspaceDb: () => wsDb, listWorkspaceDbs: () => [wsDb] }));
+    // P2-01：两目录装配（不再有 getWorkspaceDb/listWorkspaceDbs 跨库注入）
+    app.use('/api/knowledge', createKnowledgeRouter({
+      getWorkspaceRow: (workspaceId) => {
+        const row = t.db.prepare('SELECT id, name, path FROM workspace WHERE id=?').get(workspaceId) as { id: string; name: string; path: string } | undefined;
+        return row ?? null;
+      },
+      listWorkspaceRows: () => [{ id: ws, path: wsPath }],
+      docsPaths: { commonDocsDir: () => commonDocs },
+    }));
     app.use(errorHandler);
   });
   afterEach(() => {
-    wsDb.close();
-    rmSync(wsDir, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
     t.cleanup();
   });
 
@@ -101,57 +101,65 @@ describe('STORE-4c 知识 both 跨库合并', () => {
     expect(mergeKnowledgeRowsByRecency([rows.slice(0, 2), rows.slice(2)]).map(row => row.id)).toEqual(['z', 'a', 'b', 'c']);
   });
 
-  it('search both merges two dbs with unified recency order and truncated header', async () => {
-    const common = createCommon('shared');
-    const local = createWs('local');
-    setUpdatedAt(wsDb, local.id, 1000);
-    setUpdatedAt(t.db, common.id, 2000);
+  it('search both merges two dirs with unified recency order and truncated header', async () => {
+    const commonId = writeDoc(commonDocs, { id: '11111111-1111-4111-8111-000000000001', slug: 'shared', title: '公共-shared', updated_at: 2000 });
+    const localId = writeDoc(join(wsPath, '.agentboard', 'Docs'), { id: '11111111-1111-4111-8111-000000000002', slug: 'local', title: '区-local', updated_at: 1000 });
     const long = await request(app).get('/api/knowledge/search').query({ scope: 'both', workspace_id: ws, q: '缓存失效' });
     expect(long.status).toBe(200);
     expect(long.headers['x-knowledge-truncated']).toBe('false');
-    expect(long.body.map((row: { page_id: string }) => row.page_id)).toEqual([common.id, local.id]);
+    expect(long.body.map((row: { page_id: string }) => row.page_id)).toEqual([commonId, localId]);
     const short = await request(app).get('/api/knowledge/search').query({ scope: 'both', workspace_id: ws, q: '缓存' });
-    expect(short.body.map((row: { page_id: string }) => row.page_id)).toEqual([common.id, local.id]);
-    // 反转时间序：公共页改旧 → 工作区页排前面（跨库统一排序键，两次调用一致）
-    setUpdatedAt(t.db, common.id, 500);
+    expect(short.body.map((row: { page_id: string }) => row.page_id)).toEqual([commonId, localId]);
+    // 反转时间序：公共页改旧 → 工作区页排前面（两目录统一排序键，两次调用一致）
+    writeDoc(commonDocs, { id: commonId, slug: 'shared', title: '公共-shared', updated_at: 500 });
     const again = await request(app).get('/api/knowledge/search').query({ scope: 'both', workspace_id: ws, q: '缓存失效' });
-    expect(again.body.map((row: { page_id: string }) => row.page_id)).toEqual([local.id, common.id]);
-    // 截断：中心库命中数超过 limit → truncated 置位（合并后无精确总数，不报假总数）
-    createCommon('shared-2');
+    expect(again.body.map((row: { page_id: string }) => row.page_id)).toEqual([localId, commonId]);
+    // 截断：命中数超过 limit → truncated 置位（合并后无精确总数，不报假总数）
+    writeDoc(commonDocs, { id: '11111111-1111-4111-8111-000000000003', slug: 'shared-2', title: '公共-shared-2', updated_at: 3000 });
     const truncated = await request(app).get('/api/knowledge/search').query({ scope: 'both', workspace_id: ws, q: '缓存失效', limit: 1 });
     expect(truncated.body).toHaveLength(1);
     expect(truncated.headers['x-knowledge-truncated']).toBe('true');
   });
 
-  it('pages both merges with exact next_offset across dbs', async () => {
-    const c1 = createCommon('c1');
-    const w1 = createWs('w1');
-    const c2 = createCommon('c2');
-    const w2 = createWs('w2');
-    setUpdatedAt(t.db, c1.id, 1000);
-    setUpdatedAt(wsDb, w1.id, 2000);
-    setUpdatedAt(t.db, c2.id, 3000);
-    setUpdatedAt(wsDb, w2.id, 4000);
+  it('pages both merges with exact next_offset across dirs', async () => {
+    writeDoc(commonDocs, { id: '22222222-2222-4222-8222-000000000001', slug: 'c1', title: '公共 c1', updated_at: 1000 });
+    writeDoc(join(wsPath, '.agentboard', 'Docs'), { id: '22222222-2222-4222-8222-000000000002', slug: 'w1', title: '区 w1', updated_at: 2000 });
+    writeDoc(commonDocs, { id: '22222222-2222-4222-8222-000000000003', slug: 'c2', title: '公共 c2', updated_at: 3000 });
+    writeDoc(join(wsPath, '.agentboard', 'Docs'), { id: '22222222-2222-4222-8222-000000000004', slug: 'w2', title: '区 w2', updated_at: 4000 });
     const all = await request(app).get('/api/knowledge/pages').query({ scope: 'both', workspace_id: ws, limit: 10 });
     expect(all.status).toBe(200);
-    expect(all.body.items.map((row: { id: string }) => row.id)).toEqual([w2.id, c2.id, w1.id, c1.id]);
+    expect(all.body.items.map((row: { id: string }) => row.id)).toEqual([
+      '22222222-2222-4222-8222-000000000004',
+      '22222222-2222-4222-8222-000000000003',
+      '22222222-2222-4222-8222-000000000002',
+      '22222222-2222-4222-8222-000000000001',
+    ]);
     expect(all.body.next_offset).toBeNull();
     const first = await request(app).get('/api/knowledge/pages').query({ scope: 'both', workspace_id: ws, limit: 2 });
-    expect(first.body.items.map((row: { id: string }) => row.id)).toEqual([w2.id, c2.id]);
+    expect(first.body.items.map((row: { id: string }) => row.id)).toEqual([
+      '22222222-2222-4222-8222-000000000004',
+      '22222222-2222-4222-8222-000000000003',
+    ]);
     expect(first.body.next_offset).toBe(2);
     const second = await request(app).get('/api/knowledge/pages').query({ scope: 'both', workspace_id: ws, limit: 2, offset: 2 });
-    expect(second.body.items.map((row: { id: string }) => row.id)).toEqual([w1.id, c1.id]);
+    expect(second.body.items.map((row: { id: string }) => row.id)).toEqual([
+      '22222222-2222-4222-8222-000000000002',
+      '22222222-2222-4222-8222-000000000001',
+    ]);
     expect(second.body.next_offset).toBeNull();
-    // 单库路径不变：common 只看中心库
+    // 单目录路径不变：common 只看公共 Docs
     const commonOnly = await request(app).get('/api/knowledge/pages').query({ scope: 'common', limit: 10 });
-    expect(commonOnly.body.items.map((row: { id: string }) => row.id)).toEqual([c2.id, c1.id]);
+    expect(commonOnly.body.items.map((row: { id: string }) => row.id)).toEqual([
+      '22222222-2222-4222-8222-000000000003',
+      '22222222-2222-4222-8222-000000000001',
+    ]);
   });
 
-  it('resolve both finds pages across dbs and flags cross-db slug ambiguity', async () => {
-    const common = createCommon('shared');
-    const local = createWs('local');
-    const dupCommon = createCommon('dup');
-    const dupLocal = createWs('dup');
+  it('resolve both finds pages across dirs and flags cross-dir slug ambiguity', async () => {
+    const common = await createCommon('shared');
+    const local = await createWs('local');
+    const dupCommon = await createCommon('dup');
+    const dupLocal = await createWs('dup');
     const bySlugCommon = await request(app).get('/api/knowledge/resolve').query({ ref: 'shared', scope: 'both', workspace_id: ws });
     expect(bySlugCommon.status).toBe(200);
     expect(bySlugCommon.body.id).toBe(common.id);
@@ -167,18 +175,11 @@ describe('STORE-4c 知识 both 跨库合并', () => {
     expect(byWsId.body.id).toBe(dupLocal.id);
   });
 
-  it('workspace page links to common page: link resolves cross-db, backlinks and graph merge', async () => {
-    const common = createCommon('shared');
-    const w1 = createWs('w1', '参见 [[shared]] 与缓存');
-    const w2 = createWs('w2', '也参见 [[shared]]');
-    // 写路径跨库解析：ws 库的 link 行存中心库目标 id 且 resolved=1（按 source id 排序比对，与创建序无关）
-    const linkRows = (wsDb.prepare('SELECT source_page_id, target_page_id, resolved FROM knowledge_link').all() as Array<{ source_page_id: string; target_page_id: string; resolved: number }>)
-      .sort((left, right) => (left.source_page_id < right.source_page_id ? -1 : 1));
-    expect(linkRows).toEqual([
-      { source_page_id: w1.id, target_page_id: common.id, resolved: 1 },
-      { source_page_id: w2.id, target_page_id: common.id, resolved: 1 },
-    ].sort((left, right) => (left.source_page_id < right.source_page_id ? -1 : 1)));
-    // 反链 both：两路合并 + page_total 精确求和 + 窗口翻页
+  it('workspace page links to common page: link resolves cross-dir, backlinks and graph merge; deleted target drops edges', async () => {
+    const common = await createCommon('shared');
+    const w1 = await createWs('w1', '参见 [[shared]] 与缓存');
+    const w2 = await createWs('w2', '也参见 [[shared]]');
+    // 反链 both：两目录合并 + page_total 精确求和 + 窗口翻页
     const backlinks = await request(app).get(`/api/knowledge/pages/${common.id}/backlinks`).query({ scope: 'both', workspace_id: ws });
     expect(backlinks.status).toBe(200);
     expect(backlinks.body.page_total).toBe(2);
@@ -186,10 +187,10 @@ describe('STORE-4c 知识 both 跨库合并', () => {
     const windowed = await request(app).get(`/api/knowledge/pages/${common.id}/backlinks`).query({ scope: 'both', workspace_id: ws, limit: 1, offset: 1 });
     expect(windowed.body.page_total).toBe(2);
     expect(windowed.body.items).toHaveLength(1);
-    // 单库边界：scope=common 反链只查中心库（跨库反链走 both）
+    // 单目录边界：scope=common 反链只看公共 Docs（跨目录反链走 both）
     const commonOnly = await request(app).get(`/api/knowledge/pages/${common.id}/backlinks`).query({ scope: 'common' });
     expect(commonOnly.body.page_total).toBe(0);
-    // 图谱 both：跨库 link 边存在（两端都在加载集合里）。边方向经 pairKey 字典序归一（既有行为），按无序对断言
+    // 图谱 both：跨目录 link 边存在。边方向经 pairKey 字典序归一（既有行为），按无序对断言
     const graph = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
     expect(graph.status).toBe(200);
     const linkEdges = graph.body.edges.filter((edge: { kind: string }) => edge.kind === 'link');
@@ -197,82 +198,32 @@ describe('STORE-4c 知识 both 跨库合并', () => {
       (edge.source === left && edge.target === right) || (edge.source === right && edge.target === left));
     expect(hasLinkEdge(w1.id, common.id)).toBe(true);
     expect(hasLinkEdge(w2.id, common.id)).toBe(true);
-    // 目标页软删：图谱边消失（读时解析在端点层收口）、不报错；reparse 后存疑 resolved 行收敛为 0
+    // 目标页删除（撤文件）：图谱边消失，不报错
     const deleted = await request(app).post(`/api/knowledge/pages/${common.id}/actions`)
       .send({ scope: 'common', action: 'delete', expected_revision: 1, actor: 'tester' });
     expect(deleted.status).toBe(200);
     const graphAfter = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
     expect(graphAfter.status).toBe(200);
     expect(graphAfter.body.edges.filter((edge: { kind: string }) => edge.kind === 'link')).toEqual([]);
-    expect((wsDb.prepare('SELECT resolved FROM knowledge_link WHERE source_page_id=?').get(w1.id) as { resolved: number }).resolved).toBe(1);
-    const reparse = await request(app).post('/api/knowledge/reparse').send({});
-    expect(reparse.status).toBe(200);
-    expect((wsDb.prepare('SELECT resolved, target_page_id FROM knowledge_link WHERE source_page_id=?').get(w1.id) as { resolved: number; target_page_id: string | null }).resolved).toBe(0);
     // 已删目标页的反链查询保持 404（不 500）
     const backlinksAfter = await request(app).get(`/api/knowledge/pages/${common.id}/backlinks`).query({ scope: 'both', workspace_id: ws });
     expect(backlinksAfter.status).toBe(404);
   });
 
-  it('reparse resolves late-created cross-db target via center handle', async () => {
-    const w1 = createWs('late-link', '参见 [[late]]');
-    expect((wsDb.prepare('SELECT resolved FROM knowledge_link WHERE source_page_id=?').get(w1.id) as { resolved: number }).resolved).toBe(0);
-    const late = createCommon('late');
+  it('reparse rebuilds both dir indexes and resolves late-created target', async () => {
+    const w1 = await createWs('late-link', '参见 [[late]]');
+    // 目标未建：unresolved
+    const graphBefore = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
+    expect(graphBefore.body.edges.filter((edge: { kind: string }) => edge.kind === 'link')).toEqual([]);
+    const late = await createCommon('late');
     const reparse = await request(app).post('/api/knowledge/reparse').send({});
     expect(reparse.status).toBe(200);
-    const row = wsDb.prepare('SELECT target_page_id, resolved FROM knowledge_link WHERE source_page_id=?').get(w1.id) as { target_page_id: string; resolved: number };
-    expect(row).toEqual({ target_page_id: late.id, resolved: 1 });
-  });
-
-  it('legacy fk workspace db is relaxed on first knowledge request, then cross-db links work', async () => {
-    // 模拟升级前 localize 的工作区库：knowledge_link 仍是老结构（target 外键）
-    wsDb.exec('DROP TABLE knowledge_link');
-    wsDb.exec(`CREATE TABLE knowledge_link (
-      id TEXT PRIMARY KEY,
-      source_page_id TEXT NOT NULL REFERENCES knowledge_page(id) ON DELETE CASCADE,
-      revision INTEGER NOT NULL, target_slug_norm TEXT NOT NULL, raw_target TEXT NOT NULL,
-      alias TEXT, heading TEXT,
-      target_page_id TEXT REFERENCES knowledge_page(id) ON DELETE SET NULL,
-      resolved INTEGER NOT NULL CHECK(resolved IN (0,1)), weight INTEGER NOT NULL DEFAULT 1 CHECK(weight>0),
-      created_at INTEGER NOT NULL)`);
-    const common = createCommon('shared');
-    const probe = await request(app).get('/api/knowledge/search').query({ scope: 'workspace', workspace_id: ws, q: '缓存' });
-    expect(probe.status).toBe(200);
-    const sql = (wsDb.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='knowledge_link'").get() as { sql: string }).sql;
-    expect(sql).not.toMatch(/target_page_id\s+TEXT\s+REFERENCES/i);
-    // 松绑后：工作区页双链 common 页可建且跨库解析
-    const created = await request(app).post('/api/knowledge/pages').send(pageInput({
-      scope: 'workspace', workspace_id: ws, slug: 'after-relax', title: '松绑后', body_md: '参见 [[shared]]',
-    }));
-    expect(created.status).toBe(200);
-    const row = wsDb.prepare('SELECT target_page_id, resolved FROM knowledge_link WHERE source_page_id=?').get(created.body.id) as { target_page_id: string; resolved: number };
-    expect(row).toEqual({ target_page_id: common.id, resolved: 1 });
-  });
-
-  it('images follow page scope: common into center dir, workspace into ws dir, cross-db locate serves both', async () => {
-    const common = createCommon('img-common');
-    const local = createWs('img-local');
-    const upload = async (pageId: string, scope: 'common' | 'workspace') => {
-      const { body, contentType } = multipartBody(
-        scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: ws },
-        { filename: 'px.png', contentType: 'image/png', data: png() },
-      );
-      return request(app).post(`/api/knowledge/pages/${pageId}/images`)
-        .set('Content-Type', contentType)
-        .send(body);
-    };
-    const commonImg = await upload(common.id, 'common');
-    expect(commonImg.status).toBe(201);
-    const localImg = await upload(local.id, 'workspace');
-    expect(localImg.status).toBe(201);
-    const centerRoot = knowledgeAttachmentsRoot(t.db);
-    const wsRoot = knowledgeAttachmentsRoot(wsDb);
-    expect(centerRoot).not.toBe(wsRoot);
-    expect(existsSync(join(centerRoot, 'knowledge', common.id, `${commonImg.body.id}.png`))).toBe(true);
-    expect(existsSync(join(wsRoot, 'knowledge', local.id, `${localImg.body.id}.png`))).toBe(true);
-    // 工作区图片行在工作区库：locate 跨库找到并返回
-    const servedCommon = await request(app).get(`/api/knowledge/images/${commonImg.body.id}`).query({ scope: 'common' });
-    expect(servedCommon.status).toBe(200);
-    const servedLocal = await request(app).get(`/api/knowledge/images/${localImg.body.id}`).query({ scope: 'workspace', workspace_id: ws });
-    expect(servedLocal.status).toBe(200);
+    expect(reparse.body.pages).toBeGreaterThan(0);
+    expect(reparse.body.links).toBeGreaterThan(0);
+    // 晚建目标：重建索引后链接解析（重扫是幂等全量重建）
+    const graph = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
+    const linkEdges = graph.body.edges.filter((edge: { kind: string }) => edge.kind === 'link');
+    expect(linkEdges.some((edge: { source: string; target: string }) =>
+      (edge.source === w1.id && edge.target === late.id) || (edge.source === late.id && edge.target === w1.id))).toBe(true);
   });
 });

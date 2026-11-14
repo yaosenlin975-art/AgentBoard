@@ -11,6 +11,9 @@ import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createKnowledgePage } from '../src/db/repos/knowledge.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { searchKnowledge } from '../src/db/repos/knowledgeSearch.js';
 
 const hex = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -19,6 +22,7 @@ describe('知识读路径（PERF-2）', () => {
   let t: TestDb;
   let app: Express;
   let workspaceId: string;
+  let wsDir: string;
 
   const writePage = (slug: string, body: string): string => {
     const sourceId = randomUUID();
@@ -30,15 +34,17 @@ describe('知识读路径（PERF-2）', () => {
   };
 
   beforeEach(async () => {
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     const adapter = new FakeAdapter();
-    const created = await createApp({ db: t.db, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false });
+    const created = await createApp({ db: t.db, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false, knowledgeDocsPaths: { commonDocsDir: () => join(wsDir ?? mkdtempSync(join(tmpdir(), 'agentboard-perf-')), 'common') } });
     app = created.app;
-    workspaceId = createWorkspace(t.db, { name: 'perf', path: 'D:\\ws-perf' }).id;
+    wsDir = mkdtempSync(join(tmpdir(), 'agentboard-perf-'));
+    workspaceId = createWorkspace(t.db, { name: 'perf', path: wsDir }).id;
   });
 
   afterEach(() => {
     t.cleanup();
+    if (wsDir !== undefined) rmSync(wsDir, { recursive: true, force: true });
   });
 
   /** prepare 调用计数探针：统计执行窗内的查询条数 */
@@ -66,18 +72,24 @@ describe('知识读路径（PERF-2）', () => {
     expect(twenty.count).toBeLessThanOrEqual(3);
   });
 
-  it('详情路由 ≤2 查询且三个链接字段值正确（返回字段不变）', async () => {
-    const detailId = writePage('perf-detail', '详情正文，引用 [[perf-other]] 与 [[缺失页]]。');
-    writePage('perf-other', '被引用页。');
-    // 重建链接（V2-4 存量回填走 reparse 端点）
+  it('详情路由三个链接字段值正确（返回字段不变；P2-01 数据源为文件索引，查询计数不再适用）', async () => {
+    const restPage = async (slug: string, body: string): Promise<string> => {
+      const res = await request(app).post('/api/knowledge/pages').send({
+        domain: 'knowledge', scope: 'workspace', workspace_id: workspaceId, slug, title: slug, body_md: body,
+        sources: [{ source_id: 's', source_type: 'file', locator: `file:${slug}.md`, captured_at: 1, content_hash: hex(slug) }],
+        evidence: [{ source_id: 's', locator: `file:${slug}.md` }], actor: 'agent:t',
+      });
+      expect(res.status).toBe(200);
+      return res.body.id as string;
+    };
+    const detailId = await restPage('perf-detail', '详情正文，引用 [[perf-other]] 与 [[缺失页]]。');
+    await restPage('perf-other', '被引用页。');
+    // 重建索引（/reparse 语义 = 重扫两目录）
     const reparse = await request(app).post('/api/knowledge/reparse').send({});
-    if (reparse.status !== 200) console.error('reparse:', reparse.status, JSON.stringify(reparse.body));
     expect(reparse.status).toBe(200);
 
-    const probe = countQueries(() => request(app).get(`/api/knowledge/pages/${detailId}`).query({ scope: 'workspace', workspace_id: workspaceId }));
-    const res = await probe.result;
+    const res = await request(app).get(`/api/knowledge/pages/${detailId}`).query({ scope: 'workspace', workspace_id: workspaceId });
     expect(res.status).toBe(200);
-    expect(probe.count).toBeLessThanOrEqual(2);
     expect(res.body).toMatchObject({
       slug: 'perf-detail',
       links_out_count: 2,

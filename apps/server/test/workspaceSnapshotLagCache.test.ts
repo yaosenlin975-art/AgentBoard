@@ -47,9 +47,10 @@ vi.mock('better-sqlite3', async (importOriginal) => {
 const sqliteMockState = ((await import('better-sqlite3')) as unknown as { __countingState: { readonlyOpens: number } }).__countingState;
 const readonlyOpens = (): number => sqliteMockState.readonlyOpens;
 
-// ---- lag COUNT 执行计数：包 prepare，只认 knowledge_attachment 聚合语句 ----
-/** countScopedRowsByTable 独有片段：`SELECT COUNT(*) AS n FROM (<knowledge_attachment 查询>)` */
-const LAG_COUNT_MARKER = 'SELECT COUNT(*) AS n FROM (SELECT a.* FROM knowledge_attachment a JOIN knowledge_page';
+// ---- lag COUNT 执行计数：包 prepare，只认 issue 聚合语句 ----
+/** countScopedRowsByTable 独有片段：`SELECT COUNT(*) AS n FROM (<issue 查询>)`。
+ * P2-01：knowledge_attachment 已退出迁移管线（不再参与 lag 计数），计数探针改锚 issue 聚合 */
+const LAG_COUNT_MARKER = 'SELECT COUNT(*) AS n FROM (SELECT * FROM issue WHERE workspace_id';
 type PrepareFn = typeof Database.prototype.prepare;
 let lagCountExecs = 0;
 let originalPrepare: PrepareFn | null = null;
@@ -81,7 +82,7 @@ afterAll(() => {
 
 /** 建一个已下沉（localized）工作区：中心库 2 条 issue，enable 后自动落 snapshot/manifest.json */
 async function makeLocalizedFixture(prefix: string): Promise<{ t: TestDb; root: string; ws: string; wsPath: string }> {
-  const t = createTestDb();
+  const t = createTestDb({ legacyKnowledge: true });
   const root = mkdtempSync(join(tmpdir(), `agentboard-cr23-${prefix}-`));
   const wsPath = join(root, 'ws');
   mkdirSync(wsPath, { recursive: true });

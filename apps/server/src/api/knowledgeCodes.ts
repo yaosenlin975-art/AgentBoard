@@ -12,4 +12,6 @@ export const KnowledgeErrorCode = {
   SCOPE_FORBIDDEN: 'KNOWLEDGE_SCOPE_FORBIDDEN',
   STATE_CONFLICT: 'KNOWLEDGE_STATE_CONFLICT',
   UNAVAILABLE: 'KNOWLEDGE_UNAVAILABLE',
+  /** P2-01：外部编辑/跨进程写冲突（写前 content_hash 比对或锁等待超时）；CLI 409 → exit 2 */
+  FILE_CONFLICT: 'KNOWLEDGE_FILE_CONFLICT',
 } as const;

@@ -17,6 +17,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
 import { createTestDb, type TestDb, issuePayload } from './helpers.js';
+import { createKnowledgePage } from '../src/db/repos/knowledge.js';
 import { FakeAdapter } from './fakeAdapter.js';
 import { createApp } from '../src/index.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -79,7 +80,7 @@ describe('STORE-4b entity_locator 定位索引', () => {
     probes = [];
     resetLocalizeJobs();
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store4b-'));
     wsPath = join(root, 'ws');
     otherPath = join(root, 'other');
@@ -176,39 +177,40 @@ describe('STORE-4b entity_locator 定位索引', () => {
     expect((await request(app).get(`/api/sessions/${sid}`)).status).toBe(404);
   });
 
-  it('知识页：common 页索引 workspace_id=NULL、workspace 页指向该区；软删清索引、归档不动、恢复回填', async () => {
+  it('知识页（P2-01）：REST 页走文件事实源不经实体定位索引；legacy 直建仍写索引（旧库回退语义）', async () => {
     await localize(ws);
     const created = await request(app).post('/api/knowledge/pages')
       .send(pageBody({ scope: 'common' }));
     expect(created.status).toBe(200);
     const commonId = created.body.id as string;
-    expect(locatorRow(t.db, commonId)).toEqual({ kind: 'knowledge_page', workspace_id: null });
+    // 文件层按 Docs 目录寻址，不再经 entity_locator
+    expect(locatorRow(t.db, commonId)).toBeUndefined();
 
-    // 归档：行仍在原库可寻址，索引不动
+    // 归档/删除同样不触碰索引
     const archived = await request(app).post(`/api/knowledge/pages/${commonId}/actions`)
       .send({ scope: 'common', action: 'archive', expected_revision: 1, actor: 'tester' });
     expect(archived.status).toBe(200);
-    expect(locatorRow(t.db, commonId)).toEqual({ kind: 'knowledge_page', workspace_id: null });
-
-    // 软删：不再可按 id 寻址，清索引
+    expect(locatorRow(t.db, commonId)).toBeUndefined();
     const deleted = await request(app).post(`/api/knowledge/pages/${commonId}/actions`)
       .send({ scope: 'common', action: 'delete', expected_revision: 2, actor: 'tester' });
     expect(deleted.status).toBe(200);
     expect(locatorRow(t.db, commonId)).toBeUndefined();
 
-    // workspace 页（localized 区）落工作区库，索引指向该区
-    const wsPage = await request(app).post('/api/knowledge/pages')
-      .send(pageBody({ scope: 'workspace', workspace_id: ws, slug: 'locator-ws-page' }));
-    expect(wsPage.status).toBe(200);
-    expect(locatorRow(t.db, wsPage.body.id as string)).toEqual({ kind: 'knowledge_page', workspace_id: ws });
+    // legacy 直建（旧库只读回退层）：repos/knowledge 的索引挂钩原样保留
+    const legacy = createKnowledgePage(t.db, {
+      domain: 'knowledge', scope: 'workspace', workspace_id: ws, slug: 'locator-legacy', title: '旧库页', body_md: '正文',
+      sources: [{ source_id: 's', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      evidence: [{ source_id: 's', locator: 'README.md' }], actor: 'tester',
+    });
+    expect(locatorRow(t.db, legacy.id)).toEqual({ kind: 'knowledge_page', workspace_id: ws });
   });
 
   it('删表重建可重入：DROP 后读侧回退扫描仍可读；migrate+rebuild 回填且重复执行结果一致', async () => {
     const id = await mkIssue(otherWs, '重建路径卡');
     const page = await request(app).post('/api/knowledge/pages').send(pageBody({ scope: 'common', slug: 'rebuild-page' }));
     expect(page.status).toBe(200);
-    const pageId = page.body.id as string;
-    expect((t.db.prepare('SELECT COUNT(*) AS n FROM entity_locator').get() as { n: number }).n).toBe(2);
+    // P2-01：REST 知识页不进定位索引——只有 issue 一行
+    expect((t.db.prepare('SELECT COUNT(*) AS n FROM entity_locator').get() as { n: number }).n).toBe(1);
 
     // 删表（模拟索引损坏/重建起点）：读侧不报错，回退 fan-out 扫描
     t.db.exec('DROP TABLE entity_locator');
@@ -219,7 +221,7 @@ describe('STORE-4b entity_locator 定位索引', () => {
     rebuildEntityLocator(t.db, [t.db]);
     rebuildEntityLocator(t.db, [t.db]);
     expect(locatorRow(t.db, id)).toEqual({ kind: 'issue', workspace_id: otherWs });
-    expect(locatorRow(t.db, pageId)).toEqual({ kind: 'knowledge_page', workspace_id: null });
+    expect(locatorRow(t.db, page.body.id as string)).toBeUndefined();
     expect((await request(app).get(`/api/issues/${id}`)).status).toBe(200);
   });
 
@@ -233,7 +235,7 @@ describe('STORE-4b entity_locator 定位索引', () => {
   });
 
   it('resolver.locateDbForEntity：索引命中不需要候选（candidates=[]）；无索引/过期索引/异 kind 行均回退扫描', () => {
-    const wsDb = createTestDb();
+    const wsDb = createTestDb({ legacyKnowledge: true });
     // 工作区路径必须是真实可写目录：索引命中路径会经 getDbForWorkspace 真实获取每工作区锁
     const fakeWsPath = join(root, 'wsfake');
     mkdirSync(join(fakeWsPath, '.agentboard'), { recursive: true });

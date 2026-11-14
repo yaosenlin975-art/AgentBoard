@@ -74,7 +74,7 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
 
   beforeEach(() => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store6-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -197,9 +197,9 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       target.prepare('INSERT INTO workspace (id, name, path, created_at, sort_order) VALUES (?, ?, ?, ?, ?)').run(ws, 'clone', cloneWs, Date.now(), 0);
       target.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?)").run(ws);
       const imported = importWorkspaceSnapshot({ db: target, dir: result.dir, workspaceId: ws, workspacePath: cloneWs });
-      // 导入未触碰知识表：知识页仍由库自身承载，只是快照不再搬运（一期两期中间态可用）
+      // 导入未触碰知识表：P2-01 起新库不再建知识页表，知识页由 Docs/*.md 承载
       expect(imported.tables.map(item => item.table)).not.toContain('knowledge_page');
-      expect((target.prepare('SELECT COUNT(*) AS n FROM knowledge_page').get() as { n: number }).n).toBe(0);
+      expect((target.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() as { n: number }).n).toBe(0);
 
       app = await createApp({ db: target, refreshClisOnBoot: false });
       const pages = await request(app.app).get('/api/knowledge/pages').query({ scope: 'workspace', workspace_id: ws });
