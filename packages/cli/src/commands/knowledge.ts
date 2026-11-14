@@ -311,11 +311,15 @@ const ACTION_HELP = `合法动作（第 2 个位置参数，只能取）：
   archive   归档（status → archived；front matter 重写，文件保留）
   restore   恢复（status → active）
   delete    删除（撤文件，不可逆：文件事实源下软删即删除 Docs/<slug>.md；旧库只读历史可用 export-legacy 兜底）
-必填：<page-id> <action> --scope <workspace|common> [--workspace <id|名>] --expected-revision <n>（CAS，比对 front matter revision）
+必填：<page-id> <action> --expected-revision <n>（CAS，比对 front matter revision）
+可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 先解析 id / ≥8 位前缀 / slug，歧义 409 不猜；
+      显式给出 --scope 时行为与旧版一致）、--workspace <id|名>
 示例：
   kb knowledge action <page-id> archive --scope common --expected-revision 2
   kb knowledge action <page-id> restore --scope workspace --workspace 任务看板 --expected-revision 3
-退出码：0 成功；1 参数/服务端错误；2 版本冲突或文件冲突（KNOWLEDGE_REVISION_CONFLICT / KNOWLEDGE_FILE_CONFLICT，409）
+  kb knowledge action <page-id> archive --expected-revision 2（省略 --scope，自动 resolve）
+退出码：0 成功；1 参数/服务端错误；2 版本冲突或文件冲突（KNOWLEDGE_REVISION_CONFLICT / KNOWLEDGE_FILE_CONFLICT，409）；
+        resolve 歧义或跨范围也返回 2（仅省略 --scope 时会发生）
 `;
 
 /** P2-04（M10）：rename 帮助 */
@@ -565,10 +569,13 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .action(async (id: string, opts: { scope?: string; workspace?: string; history?: boolean }) => {
       const ctx = context();
       let scope: { scope: string; workspace_id?: string };
+      // P2-04b：自动 resolve 拿到的 id 必须替换原始输入（slug / ≥8 位前缀）——GET /pages/:id 只认完整 uuid，原样透传必 404
+      let pageId = id;
       if (opts.scope === undefined) {
         try {
-          const resolved = await request<{ scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
+          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
           scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
+          pageId = resolved.id;
         } catch (error) {
           ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
           throw new CommanderError(resolveExit(error), 'agentboard.knowledge.show', '');
@@ -576,7 +583,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       } else {
         scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
       }
-      const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
+      const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(pageId)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
       if (!opts.history) { output(ctx, page); return; }
       // KB-CLI-3a（CLI-06/L-04）：文本模式逐条 rev 行（每页 1 行），不再倒整包 JSON；--json 仍整包供脚本消费
@@ -656,13 +663,30 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const data = await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) });
       output(ctx, data);
     });
-  scoped(knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致'))
+  // P2-04b：--scope 可省略（与 show 同一 resolve 路径）——解析出的 id 替换原始输入调 action 端点；显式给出时行为与旧版一致
+  knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete（--scope 可省略，自动 resolve）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致')
+    .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
+    .option('--workspace <id|名>')
     .addHelpText('after', ACTION_HELP)
-    .action(async (id: string, action: string, opts: ScopeOptions & { expectedRevision: string }) => {
+    .action(async (id: string, action: string, opts: { scope?: string; workspace?: string; expectedRevision: string }) => {
       const allowed = ['archive', 'restore', 'delete'];
       if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
       const ctx = context();
-      const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
+      let scope: { scope: string; workspace_id?: string };
+      let pageId = id;
+      if (opts.scope === undefined) {
+        try {
+          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
+          scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
+          pageId = resolved.id;
+        } catch (error) {
+          ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+          throw new CommanderError(resolveExit(error), 'agentboard.knowledge.action', '');
+        }
+      } else {
+        scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+      }
+      const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(pageId)}/actions`, { ...scope, action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
       output(ctx, data);
     });
 

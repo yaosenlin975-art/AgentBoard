@@ -451,6 +451,92 @@ describe('knowledge CLI：show 省略 scope / find-source / create-revise link�
   });
 });
 
+/**
+ * P2-04b：show / action 省略 --scope 走自动 resolve 时，必须用 resolve 响应里的 id
+ * 调后续端点（GET /pages/:id 与 actions 只认完整 uuid），不能再透传 slug / ≥8 位前缀原输入。
+ */
+describe('knowledge CLI：show/action 自动 resolve 用解析 id（P2-04b）', () => {
+  const ws = { id: 'w1', name: '项目', path: process.cwd(), created_at: 1 };
+  const resolved = {
+    state: 'resolved', id: 'p-real', title: '缓存策略', slug: 'cache-policy', scope: 'common', workspace_id: null,
+    status: 'active', revision: 2, redirect_to: null, link: 'knowledge:p-real',
+    link_info: { ref: 'knowledge:p-real', markdown: '[缓存策略](knowledge:p-real)', text: '知识卡《缓存策略》 knowledge:p-real · rev:2' },
+  };
+  const pageReal = { id: 'p-real', scope: 'common', revision: 2, title: '缓存策略', body_md: '正文', link: 'knowledge:p-real' };
+  /** 统一 mock：workspaces（cwd 解析）/ resolve / 其余端点（页详情、revisions、actions） */
+  const mockFetch = (overrides: { revisions?: unknown } = {}) => vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes('/api/workspaces')) return new Response(JSON.stringify([ws]));
+    if (u.includes('/api/knowledge/resolve')) return new Response(JSON.stringify(resolved));
+    if (u.includes('/revisions') && overrides.revisions !== undefined) return new Response(JSON.stringify(overrides.revisions));
+    return new Response(JSON.stringify(pageReal));
+  });
+
+  it('show <slug> 省略 --scope：resolve 后用解析出的 id 取页，不再透传 slug', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'cache-policy'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.some(url => url.includes('/api/knowledge/resolve?') && url.includes('ref=cache-policy'))).toBe(true);
+    const last = urls.at(-1)!;
+    expect(last).toContain('/api/knowledge/pages/p-real?');
+    expect(last).toContain('scope=common');
+    expect(last).not.toContain('cache-policy');
+    expect(stream.out.join('')).toContain('p-real [common] rev:2 缓存策略');
+  });
+
+  it('show <8位前缀> 省略 --scope：同样用解析 id 取页', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'p-real12'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.at(-1)).toContain('/api/knowledge/pages/p-real?');
+    expect(urls.at(-1)).not.toContain('p-real12');
+  });
+
+  it('show <slug> --history 省略 --scope：详情与 revisions 都用解析 id', async () => {
+    const revisions = { items: [{ revision: 2, title_snapshot: '缓存策略', change_kind: 'edit', actor: 'agent:t', created_at: Date.UTC(2026, 10, 15, 0, 0, 0) }] };
+    const fetch = mockFetch({ revisions }); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'cache-policy', '--history'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.filter(url => url.includes('/api/knowledge/pages/'))).toHaveLength(2);
+    for (const url of urls.filter(url => url.includes('/api/knowledge/pages/'))) {
+      expect(url).toContain('/api/knowledge/pages/p-real');
+      expect(url).not.toContain('cache-policy');
+    }
+    expect(stream.out.join('')).toContain('rev:2  edit  agent:t');
+  });
+
+  it('action <slug> 省略 --scope：resolve 后 POST /pages/<解析id>/actions，body 带解析 scope', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'cache-policy', 'archive', '--expected-revision', '2'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.some(url => url.includes('/api/knowledge/resolve?') && url.includes('ref=cache-policy'))).toBe(true);
+    const last = urls.at(-1)!;
+    expect(last).toContain('/api/knowledge/pages/p-real/actions');
+    expect(last).not.toContain('cache-policy');
+    const [, init] = fetch.mock.calls.at(-1)!;
+    expect(JSON.parse(String(init.body))).toMatchObject({ scope: 'common', action: 'archive', expected_revision: 2 });
+    expect(stream.out.join('')).toContain('缓存策略');
+  });
+
+  it('action <slug> 省略 --scope 且 resolve 409：exit 2（不猜第一条）', async () => {
+    const fetch = vi.fn(async (url: string) => String(url).includes('/api/workspaces')
+      ? new Response(JSON.stringify([ws]))
+      : new Response(JSON.stringify({ error: { code: 'KNOWLEDGE_REF_AMBIGUOUS', message: 'slug「dup」命中 2 页' } }), { status: 409 }));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'dup', 'archive', '--expected-revision', '1'], stream)).toBe(2);
+    expect(stream.err.join('')).toContain('命中 2 页');
+  });
+
+  it('回归：action <uuid> 显式 --scope 行为与旧版一致，不发 resolve', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(pageReal)));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'p-real', 'archive', '--scope', 'common', '--expected-revision', '2'], stream)).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:8787/api/knowledge/pages/p-real/actions');
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toMatchObject({ scope: 'common', action: 'archive', expected_revision: 2 });
+  });
+});
+
 describe('KB-CREATE-ERGO：JSON 文件 BOM、--hash-from-file、domain/scope 说明', () => {
   const BOM = '\ufeff';
   const sourceRow = { source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1763000000000, content_hash: 'b'.repeat(64) };
