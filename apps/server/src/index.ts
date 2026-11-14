@@ -118,17 +118,8 @@ export interface CreateAppOptions {
   browserOpener?: BrowserOpenerDeps;
   /** SERVER-SINGLETON：实例标识（`/api/version` 的 instance_id / db_path / started_at） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
-  /** 启动期解析出的 db 路径来源（存储统计/迁移端点按它报，不在请求期重新解析） */
+  /** 启动期解析出的 db 路径来源（不在请求期重新解析；供启动日志 db_source= 排障） */
   dbPathSource?: DbPathSource;
-  /** DB-2B：迁移编排注入（生产全部走默认值；测试注入临时状态目录/退出 spy） */
-  dbMigration?: {
-    stateDir?: string;
-    dbPath?: string;
-    attachmentStorageDir?: string;
-    dbPathSource?: DbPathSource;
-    exit?: (code: number) => void;
-    schedule?: (fn: () => void, ms: number) => void;
-  };
   /** Private image storage directory; production defaults under AgentBoard config dir. */
   attachmentStorageDir?: string;
   attachmentQuotaBytes?: number;
@@ -208,22 +199,6 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   // ACC-SW-TRAE：Trae 登录态切换（15 条目录级快照）；restore 端点的回滚处理器要用同一个实例，故先建好再装配
   const traeProvider = new TraeDesktopProvider({ db, vault: secretVault });
 
-  // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
-  const migration = options.dbMigration ?? {};
-  const migrationDeps = {
-    // 附件目录与 AttachmentStore 用同一个值（存储统计/迁移都按它算，不各自推导）
-    attachmentStorageDir: migration.attachmentStorageDir ?? attachments.storageDir,
-    // 来源取启动期解析结果：readSettings 首读会把默认值写回 config.json（含 dbPath），
-    // 请求期再 loadConfig 会把 default 误判成 settings。
-    ...(options.dbPathSource !== undefined ? { dbPathSource: options.dbPathSource } : {}),
-    ...(options.instance !== undefined ? { instance: options.instance } : {}),
-    ...(migration.stateDir !== undefined ? { dbMigrationStateDir: migration.stateDir } : {}),
-    ...(migration.dbPath !== undefined ? { dbPath: migration.dbPath } : {}),
-    ...(migration.dbPathSource !== undefined ? { dbPathSource: migration.dbPathSource } : {}),
-    ...(migration.exit !== undefined ? { dbMigrationExit: migration.exit } : {}),
-    ...(migration.schedule !== undefined ? { dbMigrationSchedule: migration.schedule } : {}),
-  };
-
   if (options.refreshClisOnBoot !== false) {
     await refreshClis(options.adapters ?? ADAPTERS);
     hub.broadcast({ type: 'clis.changed', clis: getCachedClis() });
@@ -256,7 +231,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
-        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...migrationDeps }));
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...(options.instance === undefined ? {} : { instance: options.instance }), ...(options.attachmentStorageDir === undefined ? {} : { attachmentStorageDir: options.attachmentStorageDir }) }));
   app.use('/api', apiNotFound);
 
   const webDist = options.webDist ?? null;

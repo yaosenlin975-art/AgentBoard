@@ -496,17 +496,6 @@ export const approvalDecisionSchema = z.object({
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
  * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
  */
-/**
- * DB-2B：迁移编排请求体。
- * target_db_path 是目标库文件全路径（目录不存在会创建）；overwrite 覆盖同名目标库。
- */
-export const dbMigrateSchema = z
-  .object({
-    target_db_path: z.string().trim().min(1, 'target_db_path 不能为空'),
-    overwrite: z.boolean().optional(),
-  })
-  .strict();
-
 /** STORE-2a/3a：工作区库下沉（localize）请求体；字段名与 packages/shared 的 WorkspaceLocalizeRequest 同源 */
 export const workspaceLocalizeSchema = z
   .object({

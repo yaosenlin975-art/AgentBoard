@@ -1,7 +1,7 @@
 /**
  * 第 10 章：设置（GUIDE-6）。
  * 文案取自 SettingsDialog.tsx / PersonaSection.tsx / SkillsSyncSection.tsx / McpSection.tsx /
- * VoiceSection.tsx / StorageSection.tsx / RestartServerPanel.tsx / TravelAutoRecoverSection.tsx。
+ * VoiceSection.tsx / RestartServerPanel.tsx / TravelAutoRecoverSection.tsx。
  */
 import type { GuideChapter } from '../types';
 

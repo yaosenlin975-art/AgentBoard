@@ -43,10 +43,6 @@ import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
 import { getSession } from '../db/repos/session.js';
 import { ApiError, NotFoundError } from '../errors.js';
-import {
-  isMigrationActive,
-  runBootSelfCheck,
-} from '../services/dbMigration.js';
 import { WORKSPACE_DB_MODES, getDbForWorkspace, isWorkspaceDbDisabled, locateDbForEntity, readWorkspaceMetaCached, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
 // STORE-4b：entity_locator 定位索引维护（repos 挂钩的中心库句柄绑定与创建/删除写入、删表重建路径）
 import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, rebuildEntityLocator } from '../db/repos/entityLocator.js';
@@ -54,7 +50,7 @@ import { requireIssueInWorkspace } from '../services/claim.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { httpMutation } from '../services/idempotency.js';
-import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
+import { attachmentsDirFor, readSettings } from '../config.js';
 import type { SkillsSyncOptions } from '../services/skillsSync.js';
 
 export interface RouterDeps {
@@ -82,18 +78,10 @@ export interface RouterDeps {
   workspaceDbResolver?: boolean;
   /** SERVER-SINGLETON：实例标识（`/api/version` 输出；测试可注入） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
-  /** DB-2B：迁移编排的固定状态目录（缺省 configDir()；测试注入临时目录） */
-  dbMigrationStateDir?: string;
   /** DB-2B：当前进程实际使用的库路径（缺省 db.name；测试注入） */
   dbPath?: string;
   /** DB-2B：当前进程的附件目录（缺省 attachmentsDirFor(dbPath)） */
   attachmentStorageDir?: string;
-  /** DB-2B：dbPath 来源（缺省按 AGENTBOARD_DB 是否设置推断） */
-  dbPathSource?: DbPathSource;
-  /** DB-2B：自检失败时的进程退出（缺省 process.exit；测试注入 spy） */
-  dbMigrationExit?: (code: number) => void;
-  /** DB-2B：自检通过后旧文件清理的重试调度（缺省 setTimeout；测试注入） */
-  dbMigrationSchedule?: (fn: () => void, ms: number) => void;
   /** VOICE-1：语音模型管理依赖（仅测试注入 catalog/fetch/freeBytes/rootDir；生产用默认值） */
   voice?: VoiceRouterOptions;
   /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
@@ -230,27 +218,10 @@ export function createRouter(deps: RouterDeps): Router {
     return db;
   };
 
-  // ---- DB-2B：迁移编排上下文 ----
-  // 状态目录固定（configDir），不随库路径漂移：新进程靠它读到旧进程写的待自检意图。
-  const migrationStateDir = deps.dbMigrationStateDir ?? configDir();
-  // db 可能是最小装配的替身（无 name）：此时迁移端点明确 503，不在构造期抛错
+  // ---- 装配上下文：库路径 / 附件目录 / 工作区解析 ----
+  // db 可能是最小装配的替身（无 name）：此时 currentDbPath 为 null（下游自行判空）。
   const currentDbPath: string | null = deps.dbPath ?? (typeof db.name === 'string' && db.name !== '' ? db.name : null);
   const attachmentsDirOf = (dbPath: string): string => deps.attachmentStorageDir ?? attachmentsDirFor(dbPath);
-
-  // 新进程启动钩子：有 pending 意图就自检；失败则回滚设置并退出本进程
-  // （旧进程健康判定会失败 → 重新监听旧库继续服务，即「重启回旧库」）。
-  if (currentDbPath !== null && isMigrationActive(migrationStateDir)) {
-    const boot = runBootSelfCheck({
-      stateDir: migrationStateDir,
-      currentDbPath,
-      sourceDb: db,
-      applySettings: (path) => { writeSettings({ dbPath: path }); },
-      ...(deps.dbMigrationSchedule !== undefined ? { schedule: deps.dbMigrationSchedule } : {}),
-    });
-    if (boot.handled && !boot.ok && boot.needsRestartToOldDb) {
-      (deps.dbMigrationExit ?? ((code: number) => process.exit(code)))(1);
-    }
-  }
   const effectiveWorkspace = (req: Request): string | undefined => req.body?.workspace_id ?? req.query.workspace_id;
   // STORE-4a：mutation 的业务写与幂等记录都落「本请求解析出的库」（幂等表随库走，重放在同一库命中）
   function mutation<T>(rdb: Db, req: Request, perform: (routedDb: Db) => T) {
@@ -345,15 +316,12 @@ export function createRouter(deps: RouterDeps): Router {
   }));
 
   // ---- settings 域（CR-10d 自本文件纯搬迁到 routes/settingsRoutes.ts）----
-  // GET/PATCH /settings、storage 只读汇总、db-path 迁移编排与状态查询；
-  // resolveDbPathSource / triggerRestart 闭包仅本域消费，随域迁入（deps 注入 dbPathSource/restart）。
+  // GET/PATCH /settings 与 SKILLS-SYNC；P1-02：storage 只读汇总、db-path 迁移编排端点已下线。
   router.use(createSettingsRouter({
     db,
     attachments,
     currentDbPath,
     attachmentsDirOf,
-    migrationStateDir,
-    ...(deps.dbPathSource === undefined ? {} : { dbPathSource: deps.dbPathSource }),
     ...(deps.restart === undefined ? {} : { restart: deps.restart }),
     ...(deps.skillsSync === undefined ? {} : { skillsSync: deps.skillsSync }),
   }));

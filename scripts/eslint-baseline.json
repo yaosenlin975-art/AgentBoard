@@ -34,8 +34,6 @@
   "apps/server/test/cliDetect.test.ts::@typescript-eslint/no-unused-vars": 1,
   "apps/server/test/commandCode.test.ts::@typescript-eslint/no-unused-vars": 1,
   "apps/server/test/credentialImport.test.ts::@typescript-eslint/no-unused-vars": 1,
-  "apps/server/test/dbMigration.test.ts::@typescript-eslint/no-unused-vars": 1,
-  "apps/server/test/dbMigrationOrchestration.test.ts::@typescript-eslint/no-unused-vars": 2,
   "apps/server/test/deviceIdentity.test.ts::@typescript-eslint/no-unused-vars": 1,
   "apps/server/test/dispatch.test.ts::@typescript-eslint/no-explicit-any": 1,
   "apps/server/test/dispatch.test.ts::@typescript-eslint/no-unused-vars": 1,

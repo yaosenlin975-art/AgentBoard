@@ -14,7 +14,6 @@ import { McpSection } from '../settings/McpSection';
 import { PersonaSection } from '../settings/PersonaSection';
 import { RestartServerPanel } from '../settings/RestartServerPanel';
 import { SkillsSyncSection } from '../settings/SkillsSyncSection';
-import { StorageSection } from '../settings/StorageSection';
 import { TravelAutoRecoverSection } from '../settings/TravelAutoRecoverSection';
 import { WorkspaceStatusSettings } from '../settings/WorkspaceStatusSettings';
 import { VoiceSection } from '../settings/VoiceSection';
@@ -218,8 +217,6 @@ export function SettingsDialog({ open, onClose, variant = 'modal' }: { open: boo
         <h3 className="mb-2 text-xs font-medium text-ink-2">语音输入</h3>
         <VoiceSection />
       </section>
-      {/* DB-3：数据存储（当前路径/来源/占用/附件目录 + 迁移确认与阶段进度；端点待 DB-2B） */}
-      <StorageSection />
       {/* MCP：本机 stdio 服务接入配置（mcpServers JSON / 工具清单 / 未构建警示） */}
       <McpSection />
       {/* SKILLS-SYNC：一键把 8 份配套技能复制到常见 agent skills 目录（含冲突三选与移除） */}
