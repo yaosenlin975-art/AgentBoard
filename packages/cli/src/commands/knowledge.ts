@@ -384,6 +384,30 @@ KB-PAGE-2b：只读反查「哪些知识页的 sources 引用了这个文件」�
   kb knowledge find-source docs/design-2026-11-04-knowledge-taxonomy.md --scope common
 `;
 
+/** P2-02 export-legacy：一次性迁移（旧库行集 → Docs/*.md；fan-out 中心库 + 各 localized 工作区库） */
+const EXPORT_HELP = `
+P2-02：把旧库知识页一次性导出为文件事实源 Docs/*.md（§7.7 / M12 / C8 / US-7 / R3 混合态迁移）。
+数据源（fan-out，防丢页）：中心库（common 页 + 未下沉工作区的区页）+ 每个 db_mode=localized 的工作区库。
+目标布局：common 页 → ~/.agentboard/Docs；工作区页 → <工作区>/.agentboard/Docs；文件名 = slug 归一.md。
+可选参数：
+  --scope <all|center|workspace>  导出范围（默认 all）
+                                  center=只导中心库；workspace=只导指定工作区（需 --workspace）
+  --workspace <id|名>             scope=workspace 时必填
+  --to <dir>                      重定向输出根（默认按标准布局）：common → <dir>/Docs，
+                                  工作区 → <dir>/ws-<工作区id>/Docs（便于演练/验证，不进真实目录）
+  --dry-run                       只打印待导出清单与源库分布，不写任何文件
+行为约定：
+  - 写后逐文件回读校验（正文逐字节 + front matter 字段逐项），manifest（sha256）落 <Docs>/.export-manifest.json；
+  - 幂等：重复跑目标文件已一致 → 跳过不新增；冲突（目标已存在且内容不同）→ 备份到
+    <Docs>/.export-backup/<时间>/ 后整体暂停（退出码 2），绝不静默覆盖；
+  - 旧库只读保留：不 DROP 表、不删行、不 UPDATE；回退靠旧库 + manifest 兜底（不做反向导入）。
+示例：
+  kb knowledge export-legacy --dry-run          # 待导出清单 + 源库分布
+  kb knowledge export-legacy                    # 真实导出（幂等可重跑）
+  kb knowledge export-legacy --scope center --to D:/tmp/export-staging --dry-run
+退出码：0 成功（含 dry-run）；1 参数/服务端错误；2 目标文件冲突（KNOWLEDGE_EXPORT_CONFLICT，409）
+`;
+
 const LIST_HELP = `
 必填：--scope <workspace|common>（workspace 范围缺省按 cwd 解析，可用 --workspace 覆盖）
 可选：--status active|archived|deleted|all（默认 active）、--offset <n>（默认 0，≥0 整数）、--limit <n>（默认 20，1–100 整数）、--include-expired
@@ -635,6 +659,98 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
       output(ctx, data);
       assertSnapshotCommitted(ctx, data);
+    });
+
+  // P2-02：export-legacy 一次性迁移（旧库行集 → Docs/*.md；fan-out 中心库 + 各 localized 工作区库）
+  knowledge.command('export-legacy')
+    .description('一次性迁移：把旧库知识页导出为 Docs/*.md（fan-out 中心库 + 各 localized 工作区库；manifest + 回读校验）')
+    .option('--scope <scope>', 'all|center|workspace（默认 all）', 'all')
+    .option('--workspace <id|名>', 'scope=workspace 时必填：工作空间 id 或名称')
+    .option('--to <dir>', '重定向输出根（common → <dir>/Docs，工作区 → <dir>/ws-<id>/Docs）')
+    .option('--dry-run', '只打印待导出清单与源库分布，不写任何文件')
+    .addHelpText('after', EXPORT_HELP)
+    .action(async (opts: { scope: string; workspace?: string; to?: string; dryRun?: boolean }) => {
+      const EXPORT_SCOPES = ['all', 'center', 'workspace'];
+      if (!EXPORT_SCOPES.includes(opts.scope)) {
+        fail(`--scope 只能是 ${EXPORT_SCOPES.join(' | ')}（当前：${preview(opts.scope)}）；详见 kb knowledge export-legacy --help`);
+      }
+      let workspaceId: string | undefined;
+      if (opts.scope === 'workspace') {
+        if (opts.workspace === undefined) fail('--scope workspace 必须配 --workspace <id|名>');
+        const ctx = context();
+        workspaceId = await resolveWorkspaceId(ctx.base, opts.workspace);
+      } else if (opts.workspace !== undefined) {
+        fail('--workspace 只在 --scope workspace 时接受（all/center 的源库由服务端 fan-out 枚举）');
+      }
+      const ctx = context();
+      const body = {
+        scope: opts.scope,
+        dry_run: opts.dryRun === true,
+        ...(workspaceId !== undefined ? { workspace_id: workspaceId } : {}),
+        ...(opts.to !== undefined ? { to: resolve(opts.to) } : {}),
+      };
+      interface ExportReport {
+        dry_run: boolean;
+        scope: string;
+        workspace_id: string | null;
+        sources: Array<{ source_db: string; path: string | null; pages: number }>;
+        targets: Array<{ dir: string; create: number; unchanged: number; conflicts: number; skipped: number }>;
+        pages: Array<{ id: string; slug: string; title: string; scope: string; workspace_id: string | null; status: string; revision: number; source_db: string; target_dir: string; file: string; action: string; reason?: string }>;
+        conflicts: Array<{ dir: string; file: string; page_id: string; source_db: string; existing_sha256: string; incoming_sha256: string; backup_path?: string }>;
+        manifests: Array<{ dir: string; file: string; files: number; written: boolean }>;
+        summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number };
+      }
+      const actionLabel = (action: string): string => ({
+        'create': '新增', 'skip-unchanged': '已一致', 'conflict': '冲突',
+        'skip-deleted': '软删跳过', 'skip-invalid': '契约跳过', 'skip-duplicate': '重复跳过',
+      }[action] ?? action);
+      try {
+        const report = await request<ExportReport>(ctx.base, 'POST', '/api/knowledge/export-legacy', body);
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(report, null, 2)}\n`); return; }
+        const mode = report.dry_run ? '（dry-run 预览，未写入任何文件）' : '（已写入）';
+        ctx.io.write(`export-legacy ${mode}  scope=${report.scope}${report.workspace_id !== null ? ` workspace=${report.workspace_id}` : ''}\n`);
+        ctx.io.write('源库分布：\n');
+        for (const source of report.sources) {
+          ctx.io.write(`  ${source.source_db}${source.path !== null ? `  ${source.path}` : ''}：${source.pages} 行\n`);
+        }
+        ctx.io.write('目标：\n');
+        if (report.targets.length === 0) ctx.io.write('  （无待导出目标）\n');
+        for (const target of report.targets) {
+          ctx.io.write(`  ${target.dir}：新增 ${target.create} / 已一致 ${target.unchanged} / 冲突 ${target.conflicts} / 跳过 ${target.skipped}\n`);
+        }
+        ctx.io.write('待导出清单：\n');
+        const pages = report.pages.filter(item => item.id !== '');
+        if (pages.length === 0) ctx.io.write('  （旧库无知识页行集）\n');
+        for (const item of pages) {
+          ctx.io.write(`  ${item.id.slice(0, 8)} [${item.scope}${item.workspace_id !== null ? ` ${item.workspace_id.slice(0, 8)}` : ''}] rev:${item.revision} ${item.slug} → ${item.target_dir !== '' ? `${item.target_dir}/${item.file}` : '（无目标）'}（${actionLabel(item.action)}${item.reason !== undefined ? `：${item.reason}` : ''}）\n`);
+        }
+        if (report.conflicts.length > 0) {
+          ctx.io.writeErr(`⚠ ${report.conflicts.length} 个冲突（未写入任何文件）：\n`);
+          for (const conflict of report.conflicts) {
+            ctx.io.writeErr(`  ${conflict.dir}/${conflict.file}  已有 ${conflict.existing_sha256.slice(0, 12)}… / 导入 ${conflict.incoming_sha256.slice(0, 12)}…（页 ${conflict.page_id}，源 ${conflict.source_db}）${conflict.backup_path !== undefined ? `  已备份：${conflict.backup_path}` : ''}\n`);
+          }
+        }
+        if (!report.dry_run) {
+          for (const manifest of report.manifests) {
+            ctx.io.write(`manifest：${manifest.dir}/${manifest.file}（${manifest.files} 个文件${manifest.written ? '，已更新' : '，未变化'}）\n`);
+          }
+        }
+        ctx.io.write(`汇总：行集 ${report.summary.total} 页 = 新增 ${report.summary.create} + 已一致 ${report.summary.unchanged} + 冲突 ${report.summary.conflicts} + 跳过 ${report.summary.skipped}\n`);
+        if (report.conflicts.length > 0) throw new CommanderError(2, 'agentboard.knowledge.export', '');
+      } catch (error) {
+        if (error instanceof CommanderError) throw error;
+        ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        if (error instanceof CliHttpError && error.code === 'KNOWLEDGE_EXPORT_CONFLICT') {
+          const conflicts = (error.details as { conflicts?: ExportReport['conflicts'] } | undefined)?.conflicts;
+          if (Array.isArray(conflicts)) {
+            for (const conflict of conflicts) {
+              ctx.io.writeErr(`  ${conflict.dir}/${conflict.file}（页 ${conflict.page_id}，源 ${conflict.source_db}）${conflict.backup_path !== undefined ? `  已备份：${conflict.backup_path}` : ''}\n`);
+            }
+          }
+          throw new CommanderError(2, 'agentboard.knowledge.export.conflict', '');
+        }
+        throw new CommanderError(1, 'agentboard.knowledge.export', '');
+      }
     });
 
   // KB-CLI-IMPORT：把本地文件导入为知识页（服务端 KBIMP-1 已有能力，这里只做 CLI 封装）

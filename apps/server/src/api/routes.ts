@@ -6,6 +6,7 @@
  */
 import { Router } from 'express';
 import { createKnowledgeRouter } from './knowledgeRoutes.js';
+import { createKnowledgeExportRouter } from './knowledgeExportRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter } from './changelogRoutes.js';
@@ -303,6 +304,23 @@ export function createRouter(deps: RouterDeps): Router {
     },
     mutationDb: db,
     ...(deps.instance === undefined ? {} : { instanceId: deps.instance.instanceId }),
+    ...(deps.knowledgeDocsPaths === undefined ? {} : { docsPaths: deps.knowledgeDocsPaths }),
+  }));
+
+  // P2-02：export-legacy 一次性迁移端点（fan-out 中心库 + localized 工作区库 → Docs/*.md；旧库只读）
+  router.use('/knowledge', createKnowledgeExportRouter({
+    db,
+    listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
+      try {
+        return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
+      } catch {
+        return [];
+      }
+    }),
+    getWorkspaceRow: (workspaceId) => {
+      const row = getWorkspace(deps.db, workspaceId);
+      return row === null ? null : { id: row.id, path: row.path };
+    },
     ...(deps.knowledgeDocsPaths === undefined ? {} : { docsPaths: deps.knowledgeDocsPaths }),
   }));
 
