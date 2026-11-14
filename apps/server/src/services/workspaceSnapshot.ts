@@ -54,9 +54,11 @@ interface SnapshotTableSpec {
 /**
  * 固定表清单（导出顺序）：与知识页 §5.8.2 对齐，文件用复数名，表用库内单数名。
  * 插入顺序已按外键依赖排好（被引用表在前）；删除时倒序。
- * STORE-6：附件三表放在 session 之后（attachment 引用 workspace、comment_attachment 引用
- * issue_comment+attachment、knowledge_attachment 引用 knowledge_page），含二进制与否由
- * manifest.attachments 决定，故旧快照（无这三表）仍然合法。
+ * STORE-6：附件两表放在 session 之后（attachment 引用 workspace、comment_attachment 引用
+ * issue_comment+attachment），含二进制与否由 manifest.attachments 决定，故旧快照（无这两表）仍然合法。
+ * 一期缩表（P1-03）：知识页/知识 revision/知识链接/知识附件四表不再进快照——知识页仍在库中
+ * 正常读写（两期中间态），二期才由 Docs/*.md 承载；这样新库/未来去掉知识表时快照不会因
+ * 「表不存在」报错。旧快照若含这四张表，需重新导出后再 validate/import。
  */
 const SNAPSHOT_TABLES: readonly SnapshotTableSpec[] = [
   { file: 'issues', table: 'issue' },
@@ -66,13 +68,9 @@ const SNAPSHOT_TABLES: readonly SnapshotTableSpec[] = [
   { file: 'issue_draft_audit', table: 'issue_draft_audit' },
   { file: 'workspace_status', table: 'workspace_status' },
   { file: 'workspace_change_log', table: 'workspace_change_log' },
-  { file: 'knowledge_pages', table: 'knowledge_page' },
-  { file: 'knowledge_revisions', table: 'knowledge_revision' },
-  { file: 'knowledge_links', table: 'knowledge_link' },
   { file: 'sessions', table: 'session' },
   { file: 'attachments', table: 'attachment', needs: 'attachments' },
   { file: 'comment_attachments', table: 'comment_attachment', needs: 'attachments' },
-  { file: 'knowledge_attachments', table: 'knowledge_attachment', needs: 'attachments' },
   { file: 'messages', table: 'message', needs: 'messages' },
 ];
 

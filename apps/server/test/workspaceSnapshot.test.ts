@@ -101,7 +101,10 @@ describe('STORE-5（M4a）工作区文本快照', () => {
     const checked = validateWorkspaceSnapshot(snapshotDir());
     expect(checked.manifest.included_tables).not.toContain('message');
     expect(checked.rows.get('issue')?.length).toBe(3);
-    expect(checked.rows.get('knowledge_page')?.length).toBe(1);
+    // P1-03 一期缩表：知识表不再进快照（知识页仍在库中正常读写）
+    expect(checked.manifest.included_tables).not.toContain('knowledge_page');
+    expect(checked.manifest.included_tables).not.toContain('knowledge_attachment');
+    expect(checked.rows.has('knowledge_page')).toBe(false);
     expect(existsSync(join(snapshotDir(), 'messages.jsonl'))).toBe(false);
     // 时间列落 ISO：issue 的 created_at 是字符串
     expect(typeof checked.rows.get('issue')?.[0]?.['created_at']).toBe('string');
@@ -137,7 +140,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
     }
   });
 
-  it('② 空工作区库 import 成功，行数与快照一致（status/issue/knowledge 全还原）', () => {
+  it('② 空工作区库 import 成功，行数与快照一致（一期缩表：status/issue 还原，知识表不进快照）', () => {
     const target = freshTarget('import-empty');
     try {
       const result = importWorkspaceSnapshot({ db: target.db, dir: snapshotDir(), workspaceId: ws, workspacePath: target.wsDir });
@@ -145,7 +148,9 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       expect(result.backupPath).toBeNull();
       const count = (table: string) => (target.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
       expect(count('issue')).toBe(3);
-      expect(count('knowledge_page')).toBe(1);
+      // 一期缩表：知识页仍由库自身承载，快照不再导入知识表行
+      expect(count('knowledge_page')).toBe(0);
+      expect(result.tables.map(item => item.table)).not.toContain('knowledge_page');
       expect(count('workspace_status')).toBeGreaterThan(0);
       const checked = validateWorkspaceSnapshot(snapshotDir());
       expect(count('issue')).toBe(checked.rows.get('issue')?.length);

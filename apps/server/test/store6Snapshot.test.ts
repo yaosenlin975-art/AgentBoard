@@ -134,8 +134,12 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
     const issues = readFileSync(join(result.dir, 'issues.jsonl'), 'utf8').trim().split('\n');
     expect(issues).toHaveLength(2);
     expect(issues.join('\n')).not.toContain('别区卡');
-    // 公共知识页不属于本工作区快照
-    expect(readFileSync(join(result.dir, 'knowledge_pages.jsonl'), 'utf8')).not.toContain('公共页');
+    // P1-03 一期缩表：知识表整族不再进工作区快照（知识页仍在库中正常读写）
+    expect(result.manifest.included_tables).not.toContain('knowledge_page');
+    expect(result.manifest.included_tables).not.toContain('knowledge_revision');
+    expect(result.manifest.included_tables).not.toContain('knowledge_link');
+    expect(result.manifest.included_tables).not.toContain('knowledge_attachment');
+    expect(result.manifest.files.map(item => item.file)).not.toContain('knowledge_pages');
 
     const stateDir = workspaceStateDir(wsPath);
     const gitignore = readFileSync(join(stateDir, '.gitignore'), 'utf8');
@@ -146,11 +150,13 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
     expect(validateWorkspaceSnapshot(snapshotDir()).rows.get('issue')?.length).toBe(2);
   });
 
-  it('③ --include-attachments：导出清单 + 本体，import 后文件与行都在', () => {
+  it('③ --include-attachments：导出清单 + 本体（一期缩表后仅普通附件），import 后文件与行都在', () => {
     const result = exportFromCenter({ includeAttachments: true });
-    expect(result.manifest.included_tables).toEqual(expect.arrayContaining(['attachment', 'knowledge_attachment']));
+    expect(result.manifest.included_tables).toContain('attachment');
+    expect(result.manifest.included_tables).not.toContain('knowledge_attachment');
     const attachments = result.manifest.attachments ?? [];
-    expect(attachments.map(item => item.storage_key).sort()).toEqual([ATT_KEY, KB_KEY].sort());
+    // 知识附件表不再进快照 → 附件清单只剩普通 attachment 的 key
+    expect(attachments.map(item => item.storage_key)).toEqual([ATT_KEY]);
     for (const entry of attachments) expect(existsSync(join(result.dir, entry.file))).toBe(true);
 
     const dir = join(root, 'clone');
@@ -164,17 +170,21 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       target.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?), ('localized', '1')").run(ws);
       const imported = importWorkspaceSnapshot({ db: target, dir: result.dir, workspaceId: ws, workspacePath: wsDir });
       expect(imported.tables.find(item => item.table === 'attachment')?.rows).toBe(1);
-      expect(imported.tables.find(item => item.table === 'knowledge_attachment')?.rows).toBe(1);
+      expect(imported.tables.map(item => item.table)).not.toContain('knowledge_attachment');
       const targetAttachments = join(workspaceStateDir(wsDir), 'attachments');
       expect(readFileSync(join(targetAttachments, ATT_KEY), 'utf8')).toBe('fake-png-bytes-for-sha');
-      expect(readFileSync(join(targetAttachments, KB_KEY), 'utf8')).toBe('fake-knowledge-image');
+      expect(existsSync(join(targetAttachments, KB_KEY))).toBe(false);
     } finally {
       target.close();
     }
   });
 
-  it('③b 导入后真实 app 打开知识页图片返回 200（卡面验收 3）', async () => {
+  it('③b 一期缩表：快照 validate/import 不含知识表，真实 app 仍可在库中正常读写知识页', async () => {
     const result = exportFromCenter({ includeAttachments: true });
+    const checked = validateWorkspaceSnapshot(result.dir);
+    expect(checked.manifest.included_tables).not.toContain('knowledge_page');
+    expect(checked.manifest.included_tables).not.toContain('knowledge_attachment');
+    expect(checked.rows.has('knowledge_page')).toBe(false);
     const cloneRoot = join(root, 'clone-http');
     const cloneWs = join(cloneRoot, 'workspace');
     const stateDir = workspaceStateDir(cloneWs);
@@ -186,13 +196,15 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       target.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
       target.prepare('INSERT INTO workspace (id, name, path, created_at, sort_order) VALUES (?, ?, ?, ?, ?)').run(ws, 'clone', cloneWs, Date.now(), 0);
       target.prepare("INSERT INTO meta (key, value) VALUES ('workspace_id', ?)").run(ws);
-      importWorkspaceSnapshot({ db: target, dir: result.dir, workspaceId: ws, workspacePath: cloneWs });
+      const imported = importWorkspaceSnapshot({ db: target, dir: result.dir, workspaceId: ws, workspacePath: cloneWs });
+      // 导入未触碰知识表：知识页仍由库自身承载，只是快照不再搬运（一期两期中间态可用）
+      expect(imported.tables.map(item => item.table)).not.toContain('knowledge_page');
+      expect((target.prepare('SELECT COUNT(*) AS n FROM knowledge_page').get() as { n: number }).n).toBe(0);
 
       app = await createApp({ db: target, refreshClisOnBoot: false });
-      const hit = await request(app.app).get('/api/knowledge/images/kb-att-1').query({ workspace_id: ws });
-      expect(hit.status).toBe(200);
-      expect(hit.type).toBe('image/png');
-      expect(Buffer.from(hit.body).toString()).toBe('fake-knowledge-image');
+      const pages = await request(app.app).get('/api/knowledge/pages').query({ scope: 'workspace', workspace_id: ws });
+      expect(pages.status).toBe(200);
+      expect(pages.body.items).toHaveLength(0);
     } finally {
       resetSessionManager();
       target.close();
@@ -201,9 +213,10 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
 
   it('④ 缺附件：文件被删 → validate 明确报缺 storage_key；清单与行不一致 → import 拒绝', () => {
     const result = exportFromCenter({ includeAttachments: true });
-    rmSync(join(result.dir, 'attachments', KB_KEY));
+    // 一期缩表后附件清单只含普通 attachment 的 key（知识附件不再进快照）
+    rmSync(join(result.dir, 'attachments', ATT_KEY));
     expect(() => validateWorkspaceSnapshot(result.dir)).toThrowError(/附件文件缺失/);
-    expect(() => validateWorkspaceSnapshot(result.dir)).toThrowError(new RegExp(KB_KEY.replace(/[/.]/g, '\\$&')));
+    expect(() => validateWorkspaceSnapshot(result.dir)).toThrowError(new RegExp(ATT_KEY.replace(/[/.]/g, '\\$&')));
 
     // 行在、manifest.attachments 被摘掉（等价「只导了清单」的坏快照）→ import 必须拒绝
     const second = exportFromCenter({ includeAttachments: true });
@@ -227,7 +240,7 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
     }
   });
 
-  it('⑤ 中心库快照：注册表/成员/账号元数据/公共知识，引用脱敏为 ***', () => {
+  it('⑤ 中心库快照：注册表/成员/账号元数据（一期缩表已去公共知识页），引用脱敏为 ***', () => {
     const result = exportCenterSnapshot({ db: t.db, centerDbPath: t.db.name });
     expect(result.dir).toBe(centerSnapshotDir(t.db.name));
     expect(result.manifest.files.map(item => item.file)).toEqual([
@@ -235,8 +248,6 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       'workspace_members',
       'managed_accounts',
       'account_operations',
-      'common_knowledge_pages',
-      'common_knowledge_revisions',
     ]);
     const accounts = readFileSync(join(result.dir, 'managed_accounts.jsonl'), 'utf8');
     expect(accounts).toContain('***');
@@ -244,15 +255,16 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
     expect(accounts).not.toContain('cred-plain-123');
     const operations = readFileSync(join(result.dir, 'account_operations.jsonl'), 'utf8');
     expect(operations).not.toContain('recovery.json');
-    const pages = readFileSync(join(result.dir, 'common_knowledge_pages.jsonl'), 'utf8');
-    expect(pages).toContain('公共页');
-    expect(pages).not.toContain('本区页');
+    // P1-03 一期缩表：common 知识页/历史版本不再进中心库快照（知识页仍在库中正常读写）
+    expect(result.manifest.included_tables).not.toContain('knowledge_page');
+    expect(result.manifest.included_tables).not.toContain('knowledge_revision');
+    expect(existsSync(join(result.dir, 'common_knowledge_pages.jsonl'))).toBe(false);
     const workspaces = readFileSync(join(result.dir, 'workspaces.jsonl'), 'utf8');
     expect(workspaces).toContain('本区');
     expect(workspaces).toContain('别区');
 
     const checked = validateCenterSnapshot(result.dir);
-    expect(checked.tables.find(item => item.table === 'knowledge_page')?.rows).toBe(1);
+    expect(checked.tables.find(item => item.table === 'knowledge_page')).toBeUndefined();
   });
 
   it('⑤b 中心库快照校验：哈希/行数篡改 → SNAPSHOT_INVALID', () => {

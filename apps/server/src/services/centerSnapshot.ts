@@ -3,8 +3,10 @@
  *
  * 与工作区快照（workspaceSnapshot.ts）互补：
  * - 工作区快照：一个工作区的业务数据（库为准），可进该工作区仓库的 `.agentboard/`；
- * - 中心库快照：**全局**元数据——工作区注册表、成员、账号/签到元数据、scope=common 知识页及
- *   历史版本。它落在中心库同级的 `center-snapshot/`，不随单个工作区仓库走。
+ * - 中心库快照：**全局**元数据——工作区注册表、成员、账号/签到元数据。它落在中心库同级的
+ *   `center-snapshot/`，不随单个工作区仓库走。
+ * 一期缩表（P1-03）：common 知识页/历史版本不再进中心库快照（知识页仍在库中正常读写，
+ * 二期由 Docs/*.md 承载），避免知识表移除后导出因「表不存在」报错。
  *
  * 安全：账号凭据/快照引用一律脱敏（`***`），导出后自校验会再扫一遍，防止把密钥写进 git。
  * 本版本只导出 + 校验，不提供导入（中心库重建仍走库备份；避免半吊子合并）。
@@ -29,7 +31,7 @@ interface CenterTableSpec {
   redact?: string[];
 }
 
-/** 导出顺序按外键：workspace → member → account → operation → 知识页 → revision */
+/** 导出顺序按外键：workspace → member → account → operation（一期缩表已去 common 知识页/revision） */
 const CENTER_TABLES: readonly CenterTableSpec[] = [
   { file: 'workspaces', table: 'workspace', sql: 'SELECT * FROM workspace' },
   { file: 'workspace_members', table: 'workspace_member', sql: 'SELECT * FROM workspace_member' },
@@ -44,12 +46,6 @@ const CENTER_TABLES: readonly CenterTableSpec[] = [
     table: 'account_operation',
     sql: 'SELECT * FROM account_operation',
     redact: ['recovery_ref'],
-  },
-  { file: 'common_knowledge_pages', table: 'knowledge_page', sql: "SELECT * FROM knowledge_page WHERE scope='common'" },
-  {
-    file: 'common_knowledge_revisions',
-    table: 'knowledge_revision',
-    sql: "SELECT r.* FROM knowledge_revision r JOIN knowledge_page p ON p.id = r.page_id WHERE p.scope='common'",
   },
 ];
 

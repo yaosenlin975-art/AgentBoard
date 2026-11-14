@@ -81,11 +81,13 @@ function formatBytes(n: number | undefined): string {
   return `${text} ${units[unit]}`;
 }
 
-/** 行类计数键：STORE-4e 起两侧键集已统一（workspace_change_log）；change_log 为旧服务端兼容保留 */
+/**
+ * 行类计数键：STORE-4e 起两侧键集已统一（workspace_change_log）；change_log 为旧服务端兼容保留。
+ * 一期缩表：快照导出不再含知识表行（知识页仍在库中正常读写），行数合计的回退求和也不再计知识表键。
+ */
 const ROW_COUNT_KEYS = [
   'issue', 'issue_comment', 'session', 'message', 'issue_dependency', 'issue_git_baseline', 'issue_draft_audit',
-  'attachment', 'knowledge_page', 'knowledge_revision', 'knowledge_link', 'knowledge_attachment',
-  'workspace_status', 'change_log', 'workspace_change_log',
+  'attachment', 'workspace_status', 'change_log', 'workspace_change_log',
 ] as const;
 
 /** 行数合计行：优先 rows_total，缺省按行类键求和；附主要表明细（缺键省略不硬编 0） */
@@ -124,6 +126,10 @@ export interface WorkspaceDbEnableArgs extends WorkspaceDbPollArgs {
   overwrite?: boolean;
   /** STORE-3b：从 localize.json 记录的阶段续跑（dry-run 时服务端忽略 resume；resume 时服务端忽略 overwrite） */
   resume?: boolean;
+  /** 存量批量：对全部 db_mode=center 的工作区依次 enable（与位置参数/--workspace 互斥，优先于二者） */
+  all?: boolean;
+  /** 内部用：create-space 自动 enable——不渲染进度/结果、不设置退出码，失败以 Error 抛出 */
+  quiet?: boolean;
 }
 
 /** 三类任务视图（localize / cleanup / revert）共有的轮询面 */
@@ -172,11 +178,13 @@ async function waitForTerminal<T extends PolledJob>(
   profile: JobProfile,
   pollMs: number,
   timeoutMs: number,
+  quiet = false,
 ): Promise<T> {
   let job = started;
   if (job.status !== 'running') return job;
   const path = `${dbPath(job.workspaceId)}/localize/${encodeURIComponent(job.jobId)}`;
-  const progress = progressWriter(ctx);
+  // quiet（create-space 自动 enable / --all 批量）：不渲染逐阶段进度，避免污染 stdout（尤其 --json）
+  const progress = quiet ? (_text: string): void => {} : progressWriter(ctx);
   progress(`${profile.action}已受理（jobId ${job.jobId}），轮询进度中（每 ${Math.round(pollMs / 100) / 10}s 一次，最长 ${Math.round(timeoutMs / 60000)} 分钟）…`);
   let lastStage: string | null = null;
   // 同步任务阻塞服务端事件循环时轮询会慢；网络层偶发抖动容忍连续重试，连不上才算失败
@@ -248,18 +256,94 @@ async function readResumeStage(base: string, workspaceId: string): Promise<strin
   }
 }
 
-/** kb workspace-db enable [workspace] [--dry-run] [--overwrite] [--resume] */
-export async function workspaceDbEnable(ctx: Ctx, workspace: string | undefined, args: WorkspaceDbEnableArgs = {}): Promise<void> {
-  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => ctx.io.writeErr(text));
+/** 单次 enable 的「建任务 → 轮询到终态」；quiet 时只返回终态视图，不渲染进度、不设退出码 */
+async function runEnableJob(ctx: Ctx, workspaceId: string, args: WorkspaceDbEnableArgs, quiet: boolean): Promise<WorkspaceLocalizeJobView> {
   const body: Record<string, boolean> = {};
   if (args.dryRun === true) body.dryRun = true;
   if (args.overwrite === true) body.overwrite = true;
   if (args.resume === true) body.resume = true;
   // dry-run 优先于 resume（服务端忽略 resume），此时不提示续跑阶段
-  const resumeStage = args.resume === true && args.dryRun !== true ? await readResumeStage(ctx.base, workspaceId) : null;
+  const resumeStage = args.resume === true && args.dryRun !== true && !quiet ? await readResumeStage(ctx.base, workspaceId) : null;
   const started = await postJob<WorkspaceLocalizeJobView>(ctx, `${dbPath(workspaceId)}/localize`, body);
   if (resumeStage !== null) progressWriter(ctx)(`从${stageLabel(LOCALIZE, resumeStage)}阶段继续（localize.json 记录的中断点）`);
-  const final = await waitForTerminal(ctx, started, LOCALIZE, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS);
+  return waitForTerminal(ctx, started, LOCALIZE, args.pollMs ?? DEFAULT_POLL_MS, args.timeoutMs ?? DEFAULT_POLL_TIMEOUT_MS, quiet);
+}
+
+/**
+ * create-space 自动 enable 的内部入口：工作区 id 已知，静默（不写 stdout，--json 不被污染）、
+ * 失败抛 Error 交由 createSpace 降级提示（登记已成功）。复用 enable 的八阶段状态机建空库。
+ */
+export async function autoEnableWorkspaceDb(ctx: Ctx, workspaceId: string): Promise<void> {
+  await workspaceDbEnable(ctx, workspaceId, { quiet: true });
+}
+
+interface WorkspaceRowLite {
+  id: string;
+  name: string;
+  path: string;
+  db_mode?: string | null;
+}
+
+/** 存量批量入口：对全部 db_mode=center 的工作区依次 enable；--dry-run 只预览不改数据 */
+async function enableAll(ctx: Ctx, args: WorkspaceDbEnableArgs): Promise<void> {
+  const spaces = await request<WorkspaceRowLite[]>(ctx.base, 'GET', '/api/workspaces');
+  const modeOf = (row: WorkspaceRowLite): string => row.db_mode ?? 'center';
+  const targets = spaces.filter(row => modeOf(row) === 'center');
+  const skipped = spaces.filter(row => modeOf(row) !== 'center');
+  const results: Array<Record<string, unknown>> = [];
+  let failed = 0;
+  if (!ctx.json) {
+    ctx.io.write(`批量 enable：中心库共 ${spaces.length} 个工作区，待下沉（db_mode=center）${targets.length} 个，跳过 ${skipped.length} 个\n`);
+    for (const row of skipped) ctx.io.write(`  跳过：${row.name}（${row.id}）当前 ${modeOf(row)}\n`);
+  }
+  for (const row of targets) {
+    if (!ctx.json) ctx.io.write(`\n→ ${row.name}（${row.id}）\n`);
+    try {
+      const final = await runEnableJob(ctx, row.id, args, true);
+      const ok = final.status === 'done' || final.status === 'already_localized';
+      if (!ok) failed += 1;
+      results.push({ workspaceId: row.id, name: row.name, status: final.status, dryRun: final.dryRun, errorCode: final.errorCode, lastError: final.lastError });
+      if (!ctx.json) {
+        ctx.io.write(ok
+          ? `  ✓ ${final.dryRun ? 'dry-run 预览完成（未产生任何变更）' : '已启用工作区库'}（${final.status}）\n`
+          : `  ✗ 失败（${final.status}）：${final.lastError ?? '服务端未给出原因'}\n`);
+      }
+    } catch (error) {
+      failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      results.push({ workspaceId: row.id, name: row.name, status: 'failed', lastError: message });
+      if (!ctx.json) ctx.io.write(`  ✗ 失败：${message}\n`);
+    }
+  }
+  if (ctx.json) {
+    writeJson(ctx, {
+      total: spaces.length,
+      targetCount: targets.length,
+      skipped: skipped.map(row => ({ workspaceId: row.id, name: row.name, dbMode: modeOf(row) })),
+      failed,
+      results,
+    });
+  } else {
+    ctx.io.write(`\n批量 enable 结束：成功 ${targets.length - failed} / ${targets.length}，失败 ${failed}\n`);
+  }
+  exitWith(failed > 0 ? 1 : 0);
+}
+
+/** kb workspace-db enable [workspace] [--all] [--dry-run] [--overwrite] [--resume] */
+export async function workspaceDbEnable(ctx: Ctx, workspace: string | undefined, args: WorkspaceDbEnableArgs = {}): Promise<void> {
+  if (args.all === true) {
+    await enableAll(ctx, args);
+    return;
+  }
+  const quiet = args.quiet === true;
+  const workspaceId = await resolveWorkspaceWithHint(ctx.base, workspace, text => { if (!quiet) ctx.io.writeErr(text); });
+  const final = await runEnableJob(ctx, workspaceId, args, quiet);
+  if (quiet) {
+    if (final.status === 'failed') {
+      throw new Error(`自动启用工作区库失败（错误码 ${final.errorCode ?? '未知'}）：${final.lastError ?? '服务端未给出原因'}`);
+    }
+    return;
+  }
   exitWith(renderLocalize(ctx, final));
 }
 
