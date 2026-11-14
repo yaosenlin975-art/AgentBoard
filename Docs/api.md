@@ -13,10 +13,10 @@
 - 监听地址：仅 `127.0.0.1:<port>`（`index.ts:122`），REST 前缀 `/api`，WebSocket 路径 `/ws`。
 - 默认：端口 8787，并发上限 3，图片配额 1 GiB、暂存 TTL 24h、清理周期 1h，DB `%APPDATA%\AgentBoard\agentboard.db`（`config.ts`）。
 - 端口误判：DSH 桌面端插件经 DSH web server 暴露独立数据源，对其请求返回 401 时见 `README.md`「与 DSH 任务看板插件的边界」。
-- 配置文件 `%APPDATA%\AgentBoard\config.json`（非 Windows 回退 `~/.config/AgentBoard/`），字段 `port` / `dbPath` / `maxConcurrentTurns` / `attachmentQuotaBytes` / `attachmentStagedTtlMs` / `attachmentCleanupIntervalMs`；首次启动写回默认值，文件损坏按默认处理且不覆盖原文件（`config.ts`）。
+- 配置文件 `%APPDATA%\AgentBoard\config.json`（非 Windows 回退 `~/.config/AgentBoard/`），字段 `port` / `dbPath` / `maxConcurrentTurns` / `attachmentQuotaBytes` / `attachmentStagedTtlMs` / `attachmentCleanupIntervalMs`；首次启动写回默认值，文件损坏按默认处理且不覆盖原文件（`config.ts`）。`dbPath` 是兼容持久化键，`loadConfig` 已忽略该字段（残留非默认值时启动打一次性 warning，数据不丢）；实际库路径恒为中心默认 `configDir()/agentboard.db`（Windows 即 `%APPDATA%\AgentBoard\agentboard.db`），仅只读环境变量 `AGENTBOARD_DB` 可覆盖。
 - 环境变量 `AGENTBOARD_PORT`（正整数）、`AGENTBOARD_DB`（非空路径）：仅启动期覆盖，不写回 config.json；`GET /api/settings` 不回显 env 覆盖值（`config.ts:88-95, 98-105`）。
 - 环境变量 `AGENTBOARD_WORKBUDDY_REGION`（`cn` / `global`，缺省 `cn`；非法值启动即报错）：决定 WorkBuddy 签到与额度请求的计费域，同样仅启动期生效、不写回 config.json、`/api/settings` 不回显（`config.ts`、`services/accounts/platformHosts.ts`）。CN = `https://www.codebuddy.cn`（有业务成功证据），Global = `https://www.workbuddy.cn`（区域备用线路）；`unknown` 区域在装配期直接抛 `CHECKIN_REGION_UNSUPPORTED`，不回落默认域。
-- `PATCH /api/settings` 写回 config.json：`maxConcurrentTurns` 与附件设置即时生效，`port` / `dbPath` 重启生效（`routes.ts`）。
+- `PATCH /api/settings` 写回 config.json：`maxConcurrentTurns` 与附件设置即时生效，`port` 重启生效（`routes.ts`）。
 
 ### 派发 prompt 模板（ARCH-05，`services/dispatchTemplate.ts`）
 
@@ -145,10 +145,10 @@
 
 - `export` 对两种形态都可用：已 localized 读工作区库；未 enable 时从**中心库按 `workspace_id` 过滤**导出同一行集（STORE-6，行集与迁移/status 共用 `workspaceScopedQueries.ts`），因此「没 enable 也能把看板提交进 git」。迁移进行中（`db_mode=localizing`）回答 409 `SNAPSHOT_MIGRATING`。
 - `import` 仍只对 **localized** 工作区库生效；中心库模式回答 409 `SNAPSHOT_NOT_LOCALIZED`。`validate` 只读快照文件、不碰库。
-- 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues` / `issue_comments` / `issue_dependencies` / `issue_git_baseline` / `issue_draft_audit` / `workspace_status` / `workspace_change_log` / `knowledge_pages` / `knowledge_revisions` / `knowledge_links` / `sessions`，可选 `attachments` / `comment_attachments` / `knowledge_attachments`（`--include-attachments`）与 `messages`（`--include-messages`））。
+- 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues` / `issue_comments` / `issue_dependencies` / `issue_git_baseline` / `issue_draft_audit` / `workspace_status` / `workspace_change_log` / `sessions`，可选 `attachments` / `comment_attachments`（`--include-attachments`）与 `messages`（`--include-messages`））。一期缩表（P1-03）：知识页/revision/链接/附件四表不再进快照导出——知识表仍在库中正常读写，二期才由 `Docs/*.md` 承载。
 - manifest：`format:'agentboard.workspace-snapshot/1'`、`workspace_id`、`schema_version:1`、`exported_at`（ISO）、`generator_version`、`source_db`、`included_tables`（库内单数表名）、`files:[{ file, table, rows, sha256 }]`、可选 `attachments:[{ storage_key, file, bytes, sha256 }]`；JSONL 每行一个对象，列序固定、按主键升序，保证同样数据两次导出除 `exported_at` 外逐字节一致。
 - 时间列（`ts` 与 `*_at`）导出为 ISO 字符串，导入时还原为 epoch ms；列已存在则忽略导出侧多出的列，缺列 / 字段不一致 / 哈希或行数不符一律 422。
-- 附件（STORE-6）：`--include-attachments` 把 `attachment` / `knowledge_attachment` 行引用的本体复制到 `snapshot/attachments/<storage_key>` 并记 sha256；导入前逐个校验，缺文件 → 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key；通过后落到 `<ws>/.agentboard/attachments/`，图片路由即可 200。
+- 附件（STORE-6）：`--include-attachments` 把 `attachment` 行引用的本体复制到 `snapshot/attachments/<storage_key>` 并记 sha256；导入前逐个校验，缺文件 → 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key；通过后落到 `<ws>/.agentboard/attachments/`，图片路由即可 200。
 - 目录边界：缺省 `<ws>/.agentboard/snapshot`；`dir` 允许相对工作区根或绝对路径，但必须落在工作区内，否则 400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`。
 - git 接线（STORE-6）：导出（含 enable 后自动导出）会同时写 `<ws>/.agentboard/.gitignore`（`*.db`、`*.db-wal`、`*.db-shm`、`localize.json`、`attachments/`）与 `<ws>/.agentboard/README.md`（事实源、恢复命令、附件开关说明）；内容不变不重写。根 `.gitignore` 不改（已有 `*.db`）。
 
@@ -170,7 +170,7 @@
 
 #### 中心库全局快照（STORE-6，`/api/system/center-snapshot/*`，`apps/server/src/services/centerSnapshot.ts`）
 
-- 内容：`workspaces`（注册表）、`workspace_members`、`managed_accounts`（账号元数据）、`account_operations`（签到/切换等操作元数据）、`common_knowledge_pages`、`common_knowledge_revisions`（`scope='common'`）。
+- 内容：`workspaces`（注册表）、`workspace_members`、`managed_accounts`（账号元数据）、`account_operations`（签到/切换等操作元数据）。一期缩表：common 知识页/revision 两表不再进中心快照（P1-03）。
 - 位置：**中心库同级的 `center-snapshot/`**（不跟随单个工作区仓库）；格式 `agentboard.center-snapshot/1`，manifest 多一个 `scope:'center'`、无 `workspace_id`。
 - 脱敏：`managed_account.client_snapshot_ref` / `checkin_credential_ref` 与 `account_operation.recovery_ref` 一律写 `***`；导出后自检，发现非空未脱敏值直接 500 `CENTER_SNAPSHOT_SECRET_LEAK`（防未来改列名后静默泄露）。
 - 只导出 + 校验，不提供导入（中心库重建走库备份）。
@@ -193,8 +193,8 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs, travelAutoRecover }`（仅 config.json 持久化值；`db_path` 是对外规范名、`dbPath` 是持久化键，两者同值同出；`db_path` 语义为**中心库路径**，不代表工作区库；`travelAutoRecover` 默认 `true`，见 §14 自动回收） | — | routes.ts |
-| `PATCH /api/settings` | body：`port?: int 1-65535`、`db_path?: string 非空`（对外名，`dbPath` 为兼容别名；两者同时出现且不一致 → 400）、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数、`travelAutoRecover?: boolean`（至少一个；未知键忽略） | 与 `GET /api/settings` **同形**的新配置（含 `db_path`）；并发、附件设置与 `travelAutoRecover` 即时生效（ticker 每轮实时读取）；`port` / `dbPath` 重启生效 | 400 未提供字段 / 取值非法 | routes.ts |
+| `GET /api/settings` | — | `{ port, dbPath, db_path, maxConcurrentTurns, attachmentQuotaBytes, attachmentStagedTtlMs, attachmentCleanupIntervalMs, travelAutoRecover }`（仅 config.json 持久化值；`db_path` 为**只读回显**（排障用，与 `dbPath` 同值），不可经 PATCH 修改；`dbPath` 为兼容持久化键，`loadConfig` 已忽略；`db_path` 语义为**中心库路径**，不代表工作区库；`travelAutoRecover` 默认 `true`，见 §14 自动回收） | — | routes.ts |
+| `PATCH /api/settings` | body：`port?: int 1-65535`、`maxConcurrentTurns?: int ≥1`、附件数值设置均为安全正整数、`travelAutoRecover?: boolean`（至少一个）；`db_path` / `dbPath` 已从可写设置下线——schema 为 `.strict()`，传入这两个键或任何未知键 → 400 `VALIDATION_ERROR` | 与 `GET /api/settings` **同形**的新配置（仍带 `db_path` 只读回显，避免同一资源两种形状）；并发、附件设置与 `travelAutoRecover` 即时生效（ticker 每轮实时读取）；`port` 重启生效 | 400 未提供字段 / 取值非法 / 传入已下线键 | routes.ts |
 
 ### SKILLS-SYNC 配套技能复制到本机 agent 目录
 
@@ -253,57 +253,6 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | `enabled` 语义 | `proxy_env.enabled` 只有 `NODE_USE_ENV_PROXY=1` 且存在代理变量时才为 true（Node 缺省/为 0 都直连，实测三态）；每次请求实时解析，**不是启动快照** |
 | 手工启动 | 直接 `node apps/server/dist/index.js` 起的实例**不会**带该变量（启动器才注入；此时 `/api/version.proxy_env.enabled=false`）；该实例**经 `POST /api/system/restart` 换代后**，新进程会被注入 `=1`（RESTART-PROXY）。其它出站请求（额度等）同样受益于这次注入 |
 | 唯一实现 | `packages/shared/src/proxyEnv.ts`（`resolveProxyEnv` / `ensureProxyEnv` / `maskProxyHost`）：启动器与服务端共用，不各写一份 |
-
-## 5b. 数据库位置（DB-1，`config.ts` + `GET/PATCH /api/settings`）
-
-生效顺序：**`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项）→ 默认 `%APPDATA%\AgentBoard\agentboard.db`**。env 存在时设置项被忽略（但仍留在 config.json，env 去掉后自动回到设置值）。
-
-| 端点 | 请求 | 响应 |
-| --- | --- | --- |
-| `GET /api/settings` | — | 配置快照；除既有字段外新增 `db_path`（对外规范名，与 `dbPath` 同值，保留 `dbPath` 兼容既有前端） |
-| `PATCH /api/settings` | `{ db_path?: string, ... }`（`db_path` 与 `dbPath` 二选一；同时出现且不一致 → 400） | 写回 config.json 后的完整配置；**只改配置，不搬数据**（搬迁属 DB-2）；DB 路径变更需重启生效 |
-
-启动首行日志会打印实际生效的库路径与来源：`listening http://… db=<path> db_source=<env|settings|default> attachments=<dir>`；附件目录恒为 `dirname(db)/attachments`，DB 路径一变自动跟随。
-
-存储引擎口径（CR-12，2026-11-08 定案）：WAL + `synchronous=FULL`（SQLite 默认，不显式降级）。掉电语义：每个事务提交都 FlushFileBuffers，**掉电/断电不丢任何已提交事务、库不损坏**；实测本机 NVMe 下 FULL 的逐提交 fsync 开销约 20µs/事务（吞吐 ~14k tx/s，better-sqlite3 同步 API），`synchronous=NORMAL` 两轮 5 次采样中位无可测收益（0.96x/0.98x，噪声内），不改默认——评估数据与采样方法见知识页 `kb-synchronous-full-vs-normal`。
-
-### DB-2 迁移引擎（`services/dbMigration.ts`，服务层；无新增端点）
-
-把「当前库 + 附件目录」整体搬到新位置：**前置检查 → 一致性快照 → 附件逐文件校验 → 写设置 → 重启 → 自检**。
-
-| 阶段 | 行为 | 失败码 |
-| --- | --- | --- |
-| 前置检查 | 目标目录可写（写探针）、剩余空间 ≥ (db + `-wal` + `-shm` + attachments) × **1.2**、目标已有同名库必须显式 `overwrite=true` | `DB_MIGRATION_TARGET_UNWRITABLE` / `DB_MIGRATION_NO_SPACE` / `DB_MIGRATION_TARGET_EXISTS` |
-| 一致性快照 | SQLite 用 **`VACUUM INTO`**（带 WAL 未 checkpoint 内容，不改源库）；无句柄时退化为 copy + `-wal`/`-shm` **成对复制**（绝不只拷主文件） | `DB_MIGRATION_COPY_FAILED` |
-| 附件 | 整目录复制 + **逐文件 sha256**，文件数与总字节都要对上 | `DB_MIGRATION_VERIFY_FAILED` |
-| 切换 | 写设置（持久化键 `dbPath`，对外 `db_path`）→ `POST /api/system/restart` → 启动后自检（表数/卡数/附件数） | 自检不过 → 回滚到旧路径 |
-| 失败 | **旧路径不变**：目标侧半成品（库 + sidecar + 目标附件目录）被清掉，`.bak-<ts>.json` 不生成；全部失败态 `retryable: true` | 上述固定码 |
-| 成功 | 生成 `<newDbPath>.bak-<ts>.json` 标记；旧文件由 `cleanupOldDbFiles` 移入 `<bak>.old/`（保留供回滚），**自检通过后才清理** | — |
-
-命名边界：`.bak-<ts>` / 本文件的迁移快照属**数据库迁移域**；`security/<uuid>`（B6）属设备身份域；`ClientSnapshotManifest`（B4S-2）属客户端账号域，三者不复用类型。
-
-### DB-2B 迁移编排端点（`POST/GET /api/settings/db-path/migrate`，`services/dbMigration.ts` 编排段）
-
-自检必须跑在**新进程**里（旧进程没有新库的句柄），所以编排拆成两段：旧进程跑到 `restart` 为止，`selfcheck → cleanup | rolled_back` 由新进程启动钩子完成。
-
-| 阶段 | 谁执行 | 行为 | 失败处理 |
-| --- | --- | --- | --- |
-| `preflight` | 旧进程 | 采集期望值（表数/卡数/附件数/附件字节/附件抽样 sha256）+ 引擎前置检查 | 直接失败，不动源数据 |
-| `snapshot` | 旧进程 | `VACUUM INTO` 一致性快照 + 附件整目录复制 | 目标侧半成品清掉 |
-| `verify` | 旧进程 | 附件逐文件 sha256、文件数、总字节 | `DB_MIGRATION_VERIFY_FAILED` |
-| `switch` | 旧进程 | 写意图文件（`<configDir>/db-migration-pending.json`）+ 写设置 `dbPath` | — |
-| `restart` | 旧进程 | 内部调用 `performRestart`（与 `POST /api/system/restart` 同一实现） | 重启失败 → 设置回滚旧路径 + `DB_MIGRATION_ROLLED_BACK` |
-| `selfcheck` | **新进程** | 读意图 → 比对表数/卡数/附件数/字节/抽样 sha256 | 不过 → 设置回滚旧库 + 清意图 + 本进程退出（旧进程健康判定失败后重新监听旧库）→ `DB_MIGRATION_ROLLED_BACK` |
-| `cleanup` | 新进程 | 自检通过才把旧库 + sidecar 移入 `<bak>.old/`（旧进程可能仍占用，失败延迟 3s 重试一次） | 清理失败只影响归档，迁移仍算成功 |
-| `done` | 新进程 | 终态 | — |
-
-| 端点 | 请求 | 响应 | 错误 |
-| --- | --- | --- | --- |
-| `POST /api/settings/db-path/migrate` | `{ target_db_path: string 非空, overwrite?: boolean }`（严格模式，未知键 400） | **202** `{ migration_id, backup_dir, stages, stage, message }`（此时只到 `restart`，自检结果用 GET 查） | 400 参数非法；409 `DB_MIGRATION_BUSY`（已有迁移或待自检意图）/ `DB_MIGRATION_ENV_OVERRIDDEN`（`AGENTBOARD_DB` 生效时改设置无效）/ `DB_MIGRATION_NO_SPACE` / `DB_MIGRATION_TARGET_EXISTS` / `DB_MIGRATION_ROLLED_BACK`；500 `DB_MIGRATION_VERIFY_FAILED` / `DB_MIGRATION_COPY_FAILED`；503 `DB_MIGRATION_RESTART_UNAVAILABLE` |
-| `GET /api/settings/db-path/migrate/:migrationId` | — | `{ migration_id, stage, stages: [{stage, at, detail?}], ok: boolean\|null, code, message, retryable, backup_dir, from_db_path, to_db_path }`；`ok=null` 表示已切换、等新进程自检；**状态落盘**（`<configDir>/db-migration-status-<id>.json`），重启后仍可查 | 404 迁移记录不存在 |
-
-- 错误码文案与 `retryable` 由 `DB_MIGRATION_ERROR_TEXT` 统一给出，引擎细节以「标准文案：细节」拼接，前端不拼文案。
-- 单并发：进程内有活跃迁移或状态目录存在待自检意图 → 后续迁移与 `PATCH /api/settings` 改 db 路径都 409。
 
 ### KB-PAGE-3 `domain`（域词表）与回填状态
 
@@ -374,21 +323,6 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 缺省归一规则：缺失/未知 `category` → `legacy`；`design` 缺 `landed` → `proposed`；非 `design` 类未显式传 `landed` 时为 `null`。
 
 > KB-LANDED（卡 `e0f324d0`）：`category` 与 `landed` 相互独立、可任意组合。显式传入合法 `landed`（`landed`/`partial`/`proposed`）时，**任何分类都原样落库**（`open` / `solved` / `pinned` / `legacy` 也可以带落地进度）；不再把非 `design` 的 `landed` 强制置 `null`。上文的缺省规则只在未传 `landed` 时生效。
-
-### DB-3B-S 存储位置汇总（`GET /api/settings/storage`，只读）
-
-只读端点：不改配置、不触发迁移。所有数字由服务端算，前端只格式化（不许前后端各算一套）。
-
-| 字段 | 含义 |
-| --- | --- |
-| `db_path` | 本进程实际打开的库（= 启动日志 `db=`） |
-| `db_path_source` | `env`（`AGENTBOARD_DB`）｜`settings`（config.json 的 `dbPath`）｜`default`；**取启动期解析值**（= 启动日志 `db_source=`）。请求期再 `loadConfig` 会把 `default` 误判成 `settings`：首次启动会把默认值（含 `dbPath`）写回 config.json |
-| `attachments_dir` | 附件目录（与 `AttachmentStore.storageDir` 同值） |
-| `usage` | `{ db_bytes, wal_bytes, shm_bytes, attachments_bytes, attachments_files, total_bytes }`；附件目录不存在按 0；`total_bytes = db + -wal + -shm + 附件` |
-| `migration_estimate` | `{ issue_count, attachment_count, estimated_bytes, required_bytes }`；`estimated_bytes` 与 `preflightMigration` 的 `plan.totalBytes` **同源同值**（db + sidecar + 附件字节），`required_bytes = ceil(estimated_bytes × 1.2)`（与前置检查同一个 `DB_MIGRATION_SPACE_MARGIN`） |
-| `truncated` | 附件遍历达到 `STORAGE_SCAN_MAX_FILES`（50000）即停；此时 `attachments_files`/`attachments_bytes`/`total_bytes`/`attachment_count`/`estimated_bytes`/`required_bytes` 全为 `null`，`truncated: true`（宁可报未知，也不长时间占着请求） |
-
-错误：503 `DB_STORAGE_UNAVAILABLE`（最小装配拿不到库路径）。
 
 ### VOICE-DL-FAIL 语音模型下载：代理 / 可读错误 / 断点续传
 

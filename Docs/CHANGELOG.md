@@ -1,5 +1,12 @@
 # CHANGELOG.md
 
+## [2026-11-14] 一期文档与分发链路同步：数据存储描述收口（P1-04）
+
+- Docs/api.md 删除已下线的存储端点章节（`## 5b 数据库位置`、`### DB-2 迁移引擎`、`### DB-2B 迁移编排端点`、`### DB-3B-S 存储位置汇总`），同步 settings 域描述（PATCH 不再接受 db_path，db_source 只剩 env|default）；快照表清单与一期缩表对齐（工作区快照去知识四表、中心快照去 common 知识页/revision）。
+- README.md 数据存储口径改为下沉默认形态：create-space 后自动启用本地库；删 config.json dbPath 可配链；AGENTBOARD_DB 为只读覆盖中心库。
+- 引导文档（guide settings 章）删除「数据存储/迁移」步骤项；便携包 start-server.cmd 与 README.txt 同步中心库/下沉口径。
+- 文档内容变更后重跑打包脚本重新生成 rules-manifest.json（清单内 README.md/Docs/api.md 哈希更新）。
+
 ## [2026-11-02] 前端顶栏与设置弹窗显示版本号（issue 287c2893 退回修复）
 
 - 顶栏工作空间名旁显示服务端版本 `v0.1.0`（GET /api/version，react-query `['version']`，staleTime Infinity）；不可达/加载中显示 `v?`，不报错；title 含服务端名称与前端版本，两者不一致时追加警告。

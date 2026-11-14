@@ -146,7 +146,7 @@ node apps/server/dist/index.js
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失／4 已健康但需重启（dist 早于源码，或运行进程早于 dist／未上报 `started_at`）。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
 - **产物陈旧自检用 `pnpm check:stale`**（= `node scripts/check-stale.mjs`）：跑 5 条 `--help` 冒烟（`kb` / `knowledge` / `create-issue` / `dep` / `list-spaces`），并比对各包 `dist` 与 `src` 的 mtime；产物缺失/陈旧时 exit 1 并打印重建命令（`pnpm -r build` 或单包 `pnpm --filter <包名> build`）。
-- 中心库默认 `%APPDATA%\AgentBoard\agentboard.db`（界面与文档称「中心库路径」）；工作区库在 `<workspace>/.agentboard/agentboard.db`，用 `kb workspace-db enable` 开启后才存在，未开启时该工作区数据仍在中心库。配置 `config.json` 与中心库同目录。生效顺序：`AGENTBOARD_DB`（env）→ `config.json` 的 `dbPath`（设置项 / `PATCH /api/settings` 的 `db_path`，字段名不变）→ 默认路径；启动首行日志会打印实际生效路径与 `db_source=<env|settings|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
+- 中心库默认 `%APPDATA%\AgentBoard\agentboard.db`（界面与文档称「中心库路径」）；工作区库在 `<workspace>/.agentboard/agentboard.db`，下沉是默认形态：`kb create-space` 后自动启用本地库（复用 enable 八阶段状态机；自动启用失败降级为中心库模式并提示补做），存量工作区可用 `kb workspace-db enable`（单区或 `--all` 批量）下沉，未下沉的工作区数据仍在中心库。设置界面已移除数据存储配置：中心库路径不再由 config.json 的 `dbPath` 或设置项决定（残留值不生效，启动打一次性 warning），只受只读环境变量 `AGENTBOARD_DB` 覆盖；启动首行日志会打印实际生效路径与 `db_source=<env|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
 - 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
 

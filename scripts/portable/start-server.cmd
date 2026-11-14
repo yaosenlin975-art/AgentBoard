@@ -12,7 +12,7 @@ if not defined AGENTBOARD_LOG set "AGENTBOARD_LOG=%APPDATA%\AgentBoard\logs\serv
 
 echo AgentBoard
 echo   URL   : http://127.0.0.1:%AGENTBOARD_PORT%
-echo   DB    : %APPDATA%\AgentBoard\agentboard.db
+echo   DB    : %APPDATA%\AgentBoard\agentboard.db (center DB; workspaces auto-localize to .agentboard)
 echo   Log   : %AGENTBOARD_LOG%
 echo   Rules : app\rules\ (run check-rules.cmd to verify)
 echo   Stop  : close this window or press Ctrl+C
