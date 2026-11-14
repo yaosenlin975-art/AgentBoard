@@ -90,26 +90,16 @@ export function createSettingsRouter(deps: SettingsRouterDeps): Router {
   // 读侧只反映 config.json 持久化值（环境变量覆盖不参与，见 config.readSettings 注释）
   router.get('/settings', (_req, res) => {
     const settings = readSettings();
-    // DB-1：对外规范名是 db_path；dbPath 保留给既有前端字段（同值，避免破坏已有设置界面）
+    // P1-01：db_path 仅作只读回显（排障用，dbPath 仍随 readSettings 持久化值回显），不可通过 PATCH 修改
     res.json({ ...settings, db_path: settings.dbPath });
   });
 
-  // 写侧：端口/DB 路径重启生效（启动时 loadConfig 读取）；并发上限即时生效
+  // 写侧：端口重启生效（启动时 loadConfig 读取）；并发上限即时生效。
+  // P1-01：dbPath / db_path 已从可写设置下线，由 patchSettingsSchema.strict() 在校验层拒掉，本分支不再处理 db 路径。
   router.patch('/settings', (req, res) => {
     const body = parseBody(patchSettingsSchema, req.body);
-    // DB-2B：迁移进行中不接受直接改 db 路径（否则与新库切换打架）
-    if ((body.db_path !== undefined || body.dbPath !== undefined) && isMigrationActive(migrationStateDir)) {
-      const text = describeMigrationError('DB_MIGRATION_BUSY');
-      throw new ApiError(409, text.code, '迁移进行中，暂不接受直接修改 db 路径；请等迁移结束：' + text.message);
-    }
-    // DB-1：db_path 是对外规范名；与 dbPath 同时出现且不一致时明确报错（不静默取一个）
-    if (body.db_path !== undefined && body.dbPath !== undefined && body.db_path !== body.dbPath) {
-      throw new ValidationError('db_path 与 dbPath 同时出现且不一致：请只传 db_path');
-    }
-    const patch: Partial<typeof body> = { ...body, ...(body.db_path !== undefined ? { dbPath: body.db_path } : {}) };
-    delete (patch as { db_path?: string }).db_path;
     const current = readSettings();
-    const next = writeSettings(patch);
+    const next = writeSettings(body);
     if (body.maxConcurrentTurns !== undefined && body.maxConcurrentTurns !== current.maxConcurrentTurns) {
       setMaxConcurrentTurns(body.maxConcurrentTurns);
     }
@@ -118,7 +108,7 @@ export function createSettingsRouter(deps: SettingsRouterDeps): Router {
       attachmentStagedTtlMs: next.attachmentStagedTtlMs,
       attachmentCleanupIntervalMs: next.attachmentCleanupIntervalMs,
     });
-    // DB-1：响应与 GET /settings 同形（都带对外 db_path），避免同一资源两种形状
+    // DB-1：响应与 GET /settings 同形（都带对外 db_path 只读回显），避免同一资源两种形状
     res.json({ ...next, db_path: next.dbPath });
   });
 

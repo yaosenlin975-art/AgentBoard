@@ -41,6 +41,8 @@ describe('CR-8 config.json 原子写与损坏提示', () => {
     try {
       const config = loadConfig({ APPDATA: appData });
       expect(config.dbPath).toBe(join(configDir(), 'agentboard.db'));
+      // P1-01：损坏文件按默认处理，dbPath 来源只可能是 default（settings 来源已下线）
+      expect(config.dbPathSource).toBe('default');
       expect(config.port).toBe(8787);
       expect(errs.join('\n')).toContain('配置文件损坏');
       expect(errs.join('\n')).toContain('已按默认值启动');

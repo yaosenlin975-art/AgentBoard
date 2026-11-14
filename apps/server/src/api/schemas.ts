@@ -542,6 +542,8 @@ export const transferIssueSchema = z
   })
   .strict();
 
+/** P1-01：dbPath / db_path 已从可写设置下线（中心库只读默认，仅 AGENTBOARD_DB env 可覆盖）。
+ *  .strict() 保证这两个（及任何未识别）字段被拒而非被静默剥离，PATCH 返回 400 VALIDATION_ERROR。 */
 export const patchSettingsSchema = z
   .object({
     port: z
@@ -550,9 +552,6 @@ export const patchSettingsSchema = z
       .min(1, '端口必须为 1-65535 的整数')
       .max(65535, '端口必须为 1-65535 的整数')
       .optional(),
-    dbPath: z.string().trim().min(1, 'dbPath 不能为空').optional(),
-    // DB-1：对外规范名 db_path（与 dbPath 等价；两个都传且不一致 → 400，避免静默取一个）
-    db_path: z.string().trim().min(1, 'db_path 不能为空').optional(),
     maxConcurrentTurns: z.number().int('并发上限必须为 ≥1 的整数').min(1, '并发上限必须为 ≥1 的整数').optional(),
     attachmentQuotaBytes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     attachmentStagedTtlMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -560,6 +559,7 @@ export const patchSettingsSchema = z
     // TRAVEL-REC：猫猫旅行自动回收开关（默认 true）
     travelAutoRecover: z.boolean().optional(),
   })
+  .strict()
   .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });
 
 /** SKILLS-SYNC：只收目标 id 与覆盖策略，路径一律由服务端枚举（杜绝任意路径写入） */

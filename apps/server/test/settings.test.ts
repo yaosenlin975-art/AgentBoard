@@ -138,23 +138,22 @@ describe('GET /api/settings', () => {
 });
 
 describe('PATCH /api/settings', () => {
-  it('合法值 → 200 返回新值并持久化（再 GET 可见、文件落盘）', async () => {
+  it('合法值 → 200 返回新值并持久化（再 GET 可见、文件落盘）；db_path 不再可写', async () => {
     const res = await request(app)
       .patch('/api/settings')
       .send({
         port: 9001,
-        dbPath: 'D:\\db\\new.db',
         maxConcurrentTurns: 2,
         attachmentQuotaBytes: 2048,
         attachmentStagedTtlMs: 5000,
         attachmentCleanupIntervalMs: 10000,
       });
     expect(res.status).toBe(200);
-    // PATCH 响应与 GET 同形（含对外 db_path），二者可直接比较
+    // PATCH 响应与 GET 同形（含只读回显 db_path，值为中心库默认路径，不可写）
     expect(res.body).toEqual({
       port: 9001,
-      dbPath: 'D:\\db\\new.db',
-      db_path: 'D:\\db\\new.db',
+      dbPath: defaultDbPath(),
+      db_path: defaultDbPath(),
       maxConcurrentTurns: 2,
       attachmentQuotaBytes: 2048,
       attachmentStagedTtlMs: 5000,
