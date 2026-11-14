@@ -1,6 +1,8 @@
 /**
  * 知识页导出（KB-EXPORT）：Markdown 文本拼装 + 文件名净化 + 浏览器下载。
  * 零依赖：不引入 PDF 库；PDF 走浏览器打印路径（见 KnowledgePrintView，待批准后接线）。
+ * P2-04：文件事实源下正文即 Docs/<slug>.md 的文件内容，本导出是该文件副本的浏览器侧拼装
+ * （正文原样 + 元信息头），不改变文件事实源本身。
  */
 
 import { KNOWLEDGE_SHORT_ID_LEN, type KnowledgePage } from '@agentboard/shared';

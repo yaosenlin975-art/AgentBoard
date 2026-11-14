@@ -32,7 +32,7 @@ describe('kb knowledge import：格式与请求体', () => {
     vi.stubGlobal('fetch', fetch);
     const path = fileOf('a.md', '# 标题\n正文');
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(0);
     const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
     expect(body).toMatchObject({ format: 'md', scope: 'common', filename: path });
     expect(String(stream.out.join(''))).toContain('p1');
@@ -44,13 +44,13 @@ describe('kb knowledge import：格式与请求体', () => {
     vi.stubGlobal('fetch', fetch);
     const path = fileOf('a.txt', '纯文本');
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(0);
     expect(JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body)).format).toBe('txt');
 
     const fetch2 = vi.fn().mockResolvedValue(new Response(JSON.stringify({ pages: [{ id: 'p3', scope: 'common', slug: 's', body_md: 'x', revision: 1 }] })));
     vi.stubGlobal('fetch', fetch2);
     const stream2 = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--format', 'md'], stream2)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge', '--format', 'md'], stream2)).toBe(0);
     expect(JSON.parse(String((fetch2.mock.calls[0]![1] as { body: string }).body)).format).toBe('md');
   });
 
@@ -63,7 +63,7 @@ describe('kb knowledge import：格式与请求体', () => {
     vi.stubGlobal('fetch', fetch);
     const path = fileOf('a.json', JSON.stringify([{ title: 'A', body_md: 'aaa' }, { title: 'B', body_md: 'bb' }]));
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--category', 'design', '--landed', 'proposed', '--labels', '缓存,导入'], stream)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge', '--category', 'design', '--landed', 'proposed', '--labels', '缓存,导入'], stream)).toBe(0);
     const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
     expect(body).toMatchObject({ format: 'json', category: 'design', landed: 'proposed', labels: ['缓存', '导入'] });
     const text = stream.out.join('');
@@ -78,7 +78,7 @@ describe('kb knowledge import：错误态', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'KNOWLEDGE_EXISTS', message: '范围内已存在 slug「x」' } }), { status: 409 })));
     const path = fileOf('c.md', '# x\n正文');
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(2);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(2);
     expect(stream.err.join('')).toContain('slug');
   });
 
@@ -88,7 +88,7 @@ describe('kb knowledge import：错误态', () => {
     const path = join(dir, 'big.md');
     writeFileSync(path, Buffer.alloc(11 * 1024 * 1024, 0x61));
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(1);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(1);
     expect(fetch).not.toHaveBeenCalled();
     expect(stream.err.join('')).toContain('文件过大');
   });
@@ -98,36 +98,35 @@ describe('kb knowledge import：错误态', () => {
     vi.stubGlobal('fetch', fetch);
     const path = fileOf('a.pdf', 'x');
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(1);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(1);
     expect(fetch).not.toHaveBeenCalled();
     expect(stream.err.join('')).toContain('--format');
   });
 });
 
-describe('KB-SNAP-IMPORT（方案 3）：导入不落快照的显式信号', () => {
+describe('P2-04：文件事实源下导入不再有 page_commit 语义', () => {
   const payload = {
     pages: [{ id: 'p9', scope: 'common', slug: 's9', body_md: 'x', revision: 1 }],
-    page_commit: { path: '', relative_path: '', committed: false, commit: null, reason: '批量导入不落每页快照（BORROW-5.1 一次提交只含该页路径）', skipped: true },
+    page_commit: { path: '', relative_path: '', committed: false, commit: null, reason: '文件事实源：导入落盘即提交', skipped: true },
   };
 
-  it('文本模式：stderr 一行可见提示（不落快照），退出码 0（skipped=true 不是失败）', async () => {
+  it('文本模式：page_commit 字段被忽略，stderr 只剩 warnings（可为空），退出码 0', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
     const path = fileOf('a.md', '# 标题');
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
-    const err = String(stream.err.join(''));
-    expect(err).toContain('批量导入不落每页快照');
-    expect(err.split('\n').filter((line) => line.trim() !== '')).toHaveLength(1);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(0);
+    expect(String(stream.err.join(''))).toBe('');
+    expect(String(stream.out.join(''))).toContain('p9');
   });
 
-  it('--json：page_commit 进 stdout 机器可读，stderr 不加提示', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
-    const path = fileOf('b.md', '# 标题');
+  it('缺 --domain → 本地报错退出码 1（导入即建页，domain 必填进 front matter）', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const path = fileOf('d.md', '# 标题');
     const stream = io();
-    expect(await main(['node', 'kb', '--json', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
-    const parsed = JSON.parse(String(stream.out.join('')));
-    expect(parsed.page_commit).toMatchObject({ committed: false, skipped: true });
-    expect(String(stream.err.join(''))).toBe('');
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(String(stream.err.join(''))).toContain('--domain');
   });
 });
 
@@ -150,7 +149,7 @@ describe('IMPORT-BOM（N-02）：导入前剥离 UTF-8 BOM', () => {
     const path = join(dir, 'bom.md');
     writeFileSync(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('# 标题\n正文', 'utf8')]));
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(0);
     const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
     expect(body.content.startsWith('\uFEFF')).toBe(false);
     expect(body.content.split('\n')[0]).toBe('# 标题');
@@ -162,7 +161,7 @@ describe('IMPORT-BOM（N-02）：导入前剥离 UTF-8 BOM', () => {
     const path = join(dir, 'bom.json');
     writeFileSync(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(JSON.stringify([{ title: 'BOM 数组', body_md: '正文' }]), 'utf8')]));
     const stream = io();
-    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common'], stream)).toBe(0);
+    expect(await main(['node', 'kb', 'knowledge', 'import', path, '--scope', 'common', '--domain', 'knowledge'], stream)).toBe(0);
     const body = JSON.parse(String((fetch.mock.calls[0]![1] as { body: string }).body));
     expect(body.content.charCodeAt(0)).not.toBe(0xfeff);
     expect(() => JSON.parse(body.content)).not.toThrow();

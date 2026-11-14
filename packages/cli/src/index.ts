@@ -74,7 +74,8 @@ const EXIT_CODE_HELP = `
 退出码：
   0  成功（--help / --version 同样 0）
   1  参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动任何数据
-  2  冲突：占用（已被 <agent> 占用 / 未被占用 / 非当前占用者）、状态不可领取、知识页 revision 冲突、
+  2  冲突：占用（已被 <agent> 占用 / 未被占用 / 非当前占用者）、状态不可领取、知识页 revision 冲突与文件冲突
+     （KNOWLEDGE_FILE_CONFLICT：外部编辑 / 改名 slug 冲突 / 锁等待超时，409）、
      幂等键复用、删除被阻塞（含子任务 / 知识页 / 运行中会话 / 占用中）、任务 id 前缀多命中；命令未改动数据，按提示处置后重试
   3  kb dep 与待决策族（kb ask / answer / ask-extend）专用：依赖或决策参数错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds）
   4  kb dep 专用：依赖边不存在

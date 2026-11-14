@@ -270,13 +270,13 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | --- | --- | --- | --- |
 | `GET /api/knowledge/resolve` | `ref`（**完整 id / ≥8 位 id 前缀 / slug**）、`scope?`=`workspace\|common\|both`（**缺省 both**，需 `workspace_id`） | 200 `{ state:'resolved', id, title, scope, workspace_id, status, revision, link, redirect_to:null }` | 404 `KNOWLEDGE_NOT_FOUND` / 403 `KNOWLEDGE_SCOPE_FORBIDDEN`（跨范围/跨工作区，**不回显标题**）/ 409 `KNOWLEDGE_REF_AMBIGUOUS`（附 `details.candidates`，**不猜第一条**）/ 410 `KNOWLEDGE_DELETED` |
 
-- **权威标识是 page.id**；slug 与前缀只是输入别名，agent 输出一律用 `link.ref = knowledge:<uuid>`。
+- **稳定标识是 page.id（uuid）**；slug 是 wikilink 主键的输入别名。**新引用的输出口径是 `[[wikilink]]`（M5，`kb knowledge link` 默认）**；`knowledge:<uuid>` 保留作跨改名稳定标识与输入别名（历史正文里的 `knowledge:` 引用不批量改写，照常解析）。
 - `link` 形状（show / search / resolve 三处同源产出，前端与 CLI 不再拼串）：
   ```json
   { "id": "<uuid>", "scope": "common|workspace", "workspace_id": null, "slug": "cache-policy",
-    "ref": "knowledge:<uuid>", "markdown": "[标题](knowledge:<uuid>)" }
+    "ref": "knowledge:<uuid>", "markdown": "[知识卡：标题](knowledge:<uuid>)" }
   ```
-- CLI：`kb knowledge resolve <ref>`（默认 both）/ `kb knowledge link <id|slug> --format token|markdown|plain`；退出码沿用既有约定 **404→1、409/403→2**（实现走 `CommanderError`，与 `kb dep` 同一套）。
+- CLI：`kb knowledge resolve <ref>`（默认 both）/ `kb knowledge link <id|slug> --format wikilink|token|markdown|plain`（**默认 wikilink**，输出 `[[slug]]`）；退出码沿用既有约定 **404→1、409/403→2**（实现走 `CommanderError`，与 `kb dep` 同一套）。
 
 ### KB-PAGE-2b link 全覆盖 / find-source / show 省略 --scope
 
@@ -284,12 +284,14 @@ Node 24 的内置 `fetch` **默认不读** `HTTPS_PROXY`：必须 `NODE_USE_ENV_
 | --- | --- | --- | --- |
 | `GET /api/knowledge/pages` | 同列表 | 每个列表项**新增** `link`（形状同上） | 列表文本与 `--json` 都能直接拿到引用串 |
 | `POST /api/knowledge/pages`、`PUT /api/knowledge/pages/:id` | 同创建/修订 | 响应新增 `link` | CLI 文本输出在标题后补一行 `link: knowledge:<uuid>` |
-| `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`=`workspace\|common\|both`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | **只读**：只扫页面**当前 revision** 的 `sources_json`（历史版本不参与），软删页排除；不建表、不做全表反序列化 |
+| `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`=`workspace\|common\|both`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | **只读**：扫 front matter `sources[]`（文件事实源，P2-04）；归档页排除（软删即文件已撤）；不建表 |
 
 - CLI：`kb knowledge find-source <path>`（默认 both）；`kb knowledge show <page-id>` 的 `--scope` **可省略**——省略时先调 `resolve`（both + 当前工作区）再按解析结果取页，显式给出 `--scope` 时行为与旧版逐字一致。
 - `show` 省略 scope 的退出码沿用 resolve 约定：404→1、409 歧义/403 跨范围→2。
 
 ### KB-PAGE-1 知识页读语义与 slug 解析（缺陷修复）
+
+> P2-04 文件事实源下的现状：软删即撤文件（文件不存在 → 404 `KNOWLEDGE_NOT_FOUND`，**不再是 410**；`410 KNOWLEDGE_DELETED` 仅保留给 id 前缀解析到唯一已删页的兼容路径）；归档页 200 带 `status='archived'`。下表保留历史口径供对照旧库只读层。
 
 | 项 | 变化 |
 | --- | --- |
@@ -537,38 +539,67 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 ## 11. knowledge（`/api/knowledge`，routes.ts:188 挂载）
 
+**文件事实源（P2-01/P2-04，方向 B）**：知识页的唯一事实源是 markdown 文件——工作区页 `<工作区>/.agentboard/Docs/<slug 归一>.md`、公共页 `~/.agentboard/Docs/<slug 归一>.md`；SQLite 知识表不再读写（旧库只读保留，`export-legacy` 兜底迁移）。要点：
+
+- **front matter 契约**（`packages/shared/src/knowledgeFile.ts`）：字段固定顺序 `id/slug/title/revision/scope/workspace_id/status/domain/category/landed/sources/evidence/content_hash/expires_at/created_at/updated_at/created_by/updated_by/change_note`；`id` 是稳定 uuid（改名不变）；`content_hash = sha256(去掉 content_hash 行的完整文档)`，外部编辑（Obsidian 手改）后不符即写路径 409。正文原样落盘（不自动补尾换行）。
+- **主键形态 `[[wikilink]]`**（M5）：slug（文件名）是 wikilink 主键；`knowledge:<uuid>` 是稳定标识，输入别名照常解析到同一页；历史正文里的 `knowledge:` 引用**不批量改写**。`[[...]]` 语法表：
+
+| 语法 | 解析 |
+| --- | --- |
+| `[[a]]` | 跳 `a`（slug 归一：NFKC → trim → 空白折叠 `-` → 小写，与文件名同一函数） |
+| `[[a\|b]]` | 显示别名 `b`，跳 `a` |
+| `[[a#h]]` / `[[a#h\|b]]` | 边归一到页级 `a`，`h` 只用于展示 |
+| `![[a]]` | 页嵌入；`![[x.png]]` 附件（`<Docs>/_attachments/`，P2-03） |
+| 代码块 / 行内代码内 `[[` | 不解析、不产生边、web 不转换 |
+| 自链接、未闭合、`[[a]]]`、超长（>200） | 不解析 |
+| `knowledge:<uuid>` | 兼容 scheme：web 渲染与 resolve 输入别名照常解析，不再是新引用的输出口径 |
+
+- **uuid→文件路径映射**由内存索引维护（启动扫两目录建 `id→{path,slug,scope,revision,content_hash}`，每请求 readdir+stat 差量刷新；索引非事实源，`.index.json` 落盘可全量重建承载检索）。
+- **错误码**：在 `KNOWLEDGE_NOT_FOUND / REVISION_CONFLICT / REF_AMBIGUOUS / DELETED / SCOPE_FORBIDDEN / STATE_CONFLICT / EXISTS` 基础上新增 **`KNOWLEDGE_FILE_CONFLICT`（409；CLI 退出码 2）**——外部编辑 content_hash 不符、文件解析失败、跨进程写锁等待超时；提示先 `reconcile`，冲突由人裁决。
+- **单页历史退役**（§8 #5）：`GET /pages/:id/revisions` 返回空集；`GET /pages/:id/revisions/:revision` 404 `KNOWLEDGE_REVISION_NOT_FOUND`；旧库历史走 `kb knowledge export-legacy` 只读导出。
+- **每页 git 快照（page_commit）与「快照没进 git 即失败」（BORROW-5.1）整体退役**：文件写成功即端点成功；响应中的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），客户端不再读取。
+- **reconcile**（M12）：启动逐目录只读报告（front matter 必填/类型、文件名 vs slug 不一致、id 重复、content_hash 不符、`[[...]]` 目标缺失、残留 tmp/lock）；`--fix` 只清残留 tmp/lock/索引，绝不自动改写正文。直接改文件名（不走 rename 命令）→ reconcile 报「slug 与文件名不一致」冲突。
+- **检索评分语义（bm25，P2-01 偏离项登记）**：`GET /search` 的 `score` 为**负值、越小越相关**（对齐 FTS5 bm25 的 `ORDER BY score ASC` 口径），但**数值与旧 FTS5 不逐字节相等**：新实现是文件索引上的 bm25（title 权重 5 / body 权重 1，k1=1.2 b=0.75），短查询在负值上加一项「完整子串加权」保持精确命中优先；1–2 码点查询走大小写不敏感子串（title 命中 score=-1）。客户端只应比较同一次请求内 score 的相对大小，不得对 score 绝对值做语义判断。
+
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；strict（未知 query 键 400） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/score）；仅 status=active 且未过期页；≥3 字符走 FTS bm25，1-2 字符走 LIKE 子串 | 400 校验失败（q 为空/超长、scope 与 workspace_id 不一致，`knowledgeSearch.ts:16-19`） | knowledgeRoutes.ts:25 |
-| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active）、`include_expired? true\|false`（默认 false）、`offset?`、`limit? 1-100`（默认 20）；strict（未知 query 键 400） | `PageResult<摘要行>`（updated_at DESC,id；摘要行不含正文） | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts:29 |
-| `GET /api/knowledge/pages/:id/revisions` | query：`scope`（workspace\|common）、`workspace_id?`、`limit? 1-50`（默认 20）、`offset?`、**`include_body? true\|false`（默认 false）** | `{ items: KnowledgeRevisionSummary[], next_offset }`（revision 降序；next_offset 在本页满 limit 时为 offset+limit，不预读下一页）。**列表项不含 `body_snapshot`（正文），只给 `body_bytes` / `body_chars` 摘要**；`include_body=true` 时才带 `body_snapshot`（兼容旧调用方） | 404 `KNOWLEDGE_NOT_FOUND`；400 分页参数 | knowledgeRoutes.ts:136 |
-| `GET /api/knowledge/pages/:id/revisions/:revision` | query：`scope`、`workspace_id?`；路径参数 `revision` 为正整数 | `KnowledgeRevision` **全量快照**（含 `body_snapshot`、`sources`、`evidence`），供「点某版本看 diff」按需取单条 | 404 `KNOWLEDGE_NOT_FOUND` / `KNOWLEDGE_REVISION_NOT_FOUND`；400 `revision` 不合法 | knowledgeRoutes.ts:148 |
-| `GET /api/knowledge/pages/:id` | query：`scope`、`workspace_id?` | `KnowledgePage` 全量 | 404 `KNOWLEDGE_NOT_FOUND` | knowledgeRoutes.ts:47 |
-| `POST /api/knowledge/pages`（幂等） | body：`scope`、`workspace_id?`、`slug: string`（1-200，`/^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,199}$/`，禁 `..`）、`title`（1-300）、`body_md`（1-100000）、`sources: 1-100`、`evidence: 1-100`、`actor`（1-100）、`change_note?`（≤2000）、`expires_at?: number\|null` | `KnowledgePage`（status=active、revision=1）。sources/evidence 规则：来源 id 唯一、证据须引用本版本来源、非 file 来源必须带 snapshot 摘录（≤2 KiB）、file 来源只存路径与 sha256 | 400 校验 / slug 非法 / 工作空间不存在；409 `KNOWLEDGE_EXISTS` 范围内 slug 重复 | knowledgeRoutes.ts:52 |
-| `PUT /api/knowledge/pages/:id`（幂等） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`、`title? body_md? sources? evidence? expires_at?`（至少一个）、`actor`、`change_note?` | `KnowledgePage`（revision+1） | 400 校验（含合并后内容规则复验）；404 `KNOWLEDGE_NOT_FOUND`；409 `KNOWLEDGE_REVISION_CONFLICT`（details `current_revision`）；409 `KNOWLEDGE_STATE_CONFLICT` 页已 deleted（archived 页可修订，`knowledge.ts:56`） | knowledgeRoutes.ts:58 |
-| `POST /api/knowledge/pages/:id/actions`（幂等） | body：`scope`、`workspace_id?`、`action: archive\|restore\|delete`、`expected_revision: int ≥1`、`actor` | `KnowledgePage` | 400 未知操作；404 `KNOWLEDGE_NOT_FOUND`；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_STATE_CONFLICT`（前置：archive←active、restore←archived、delete←active\|archived；deleted 页拒绝一切操作，`knowledge.ts:56`） | knowledgeRoutes.ts:62 |
+| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；strict（未知 query 键 400） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/**score 负值，越小越相关，见上**）；仅 status=active 且未过期页；≥3 码点走文件索引 bm25（trigram 预筛 + 子串确认），1–2 码点走子串 | 400 校验失败 | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active；deleted 恒空集——软删即撤文件）、`include_expired? true\|false`（默认 false）、`offset?`、`limit? 1-100`（默认 20）；strict（未知 query 键 400） | `PageResult<摘要行>`（跨目录合并 (updated_at DESC, id)） | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages/:id/revisions` | query：`scope`、`workspace_id?`（兼容保留） | `{ items: [], next_offset: null }`（单页历史已退役，§8 #5） | — | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages/:id/revisions/:revision` | query：`scope`、`workspace_id?` | — | 404 `KNOWLEDGE_REVISION_NOT_FOUND`（文件事实源不保留单页历史；旧库历史走 export-legacy） | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages/:id` | query：`scope`、`workspace_id?` | `KnowledgePage` 全量（软删页文件已撤 → 404 `KNOWLEDGE_NOT_FOUND`；归档页 200 带 `status='archived'`） | 404 `KNOWLEDGE_NOT_FOUND`；坏文件（解析失败/外部编辑）同 404，reconcile 报告 | knowledgeRoutes.ts |
+| `POST /api/knowledge/pages`（幂等） | body：`scope`、`workspace_id?`、`slug: string`（1-200，`/^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,199}$/`，禁 `..`）、`title`（1-300）、`body_md`（1-100000）、`sources: 1-100`、`evidence: 1-100`、`actor`（1-100）、`change_note?`（≤2000）、`expires_at?: number\|null` | `KnowledgePage`（status=active、revision=1）。sources/evidence 规则：来源 id 唯一、证据须引用本版本来源、非 file 来源必须带 snapshot 摘录（≤2 KiB）、file 来源只存路径与 sha256 | 400 校验 / slug 非法 / 工作空间不存在；409 `KNOWLEDGE_EXISTS` 范围内 slug 重复 | knowledgeRoutes.ts |
+| `PUT /api/knowledge/pages/:id`（幂等） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`（CAS 比对 front matter `revision`）、`title? body_md? sources? evidence? expires_at?`（至少一个）、`actor`、`change_note?` | `KnowledgePage`（revision+1，front matter 重写落盘） | 400 校验（含合并后内容规则复验）；404 `KNOWLEDGE_NOT_FOUND`；409 `KNOWLEDGE_REVISION_CONFLICT`（details `current_revision`）；409 `KNOWLEDGE_STATE_CONFLICT`；409 `KNOWLEDGE_FILE_CONFLICT` 外部编辑/锁冲突（**CLI 409 → exit 2**） | knowledgeRoutes.ts |
+| `POST /api/knowledge/pages/:id/actions`（幂等） | body：`scope`、`workspace_id?`、`action: archive\|restore\|delete`、`expected_revision: int ≥1`、`actor` | `KnowledgePage`。archive/restore 重写 front matter `status`；**delete 撤文件**（删除 `Docs/<slug>.md`，软删即文件消失，不可寻址） | 400 未知操作；404；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_STATE_CONFLICT` / `KNOWLEDGE_FILE_CONFLICT`（前置：archive←active、restore←archived、delete←active\|archived） | knowledgeRoutes.ts |
+| `POST /api/knowledge/pages/:id/rename`（幂等；P2-04 M10） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`、`new_slug: string`（1-200，同 create 规则）、`actor` | 改名后的 `KnowledgePage` + `old_slug` + `rewritten: [{ dir, file_name, page_id, slug }]`（全库扫描重写 `[[old]]→[[new]]` 的文件清单，含 alias/heading 形态与页嵌入；id 不变；跨目录只在目标区无同名页时重写）。目标区已有自己的同名页时不改写（指向不归本页管） | 400 校验；404；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_EXISTS`（新 slug 已占用）/ `KNOWLEDGE_STATE_CONFLICT`（归一后相同）/ `KNOWLEDGE_FILE_CONFLICT` | knowledgeRoutes.ts |
+| `GET /api/knowledge/resolve` | `ref`（完整 id / ≥8 位 id 前缀 / slug）、`scope?`=`workspace\|common\|both`（缺省 both，需 `workspace_id`）；`knowledge:<uuid>` 去掉前缀后按 uuid 解析（输入别名兼容） | 200 `{ state:'resolved', id, title, scope, workspace_id, slug, status, revision, link, redirect_to:null }` | 404 `KNOWLEDGE_NOT_FOUND` / 403 `KNOWLEDGE_SCOPE_FORBIDDEN`（跨范围/跨工作区，**不回显标题**）/ 409 `KNOWLEDGE_REF_AMBIGUOUS`（附 `details.candidates`，**不猜第一条**；同 slug 在 workspace 与 common 都命中时 409）/ 410 `KNOWLEDGE_DELETED` | knowledgeRoutes.ts |
+| `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | 400 校验 | knowledgeRoutes.ts |
 
-**BORROW-5.1 每页快照与单页提交**（决策 c0cb9509 选项 A，`services/knowledgePageCommit.ts`）：`POST /pages`、`PUT /pages/:id`、`POST /pages/:id/actions` 三个写端点成功后，把该页写成 `<ws>/.agentboard/snapshot/knowledge/<page_id>.md`（front matter：`id/slug/title/scope/revision/status/updated_at` + 正文），并只提交这一个路径（`git add -A -- <path>` + `git commit -- <path>`）。响应新增 `page_commit`：
+> `link` 形状（show / search / resolve / 列表同源产出）：`{ id, scope, workspace_id, slug, ref: "knowledge:<uuid>", markdown: "[知识卡：标题](knowledge:<uuid>)", text }`。**新引用的输出口径是 `[[wikilink]]`（`kb knowledge link` 默认）**；`knowledge:<uuid>` 保留作稳定标识（改名不变）。
 
-- `{ path, relative_path, committed, commit, reason, skipped?, rollback_failed? }`；`scope=common` 或无对应工作区时为 `null`；
-- 提交失败**不回滚知识页本身**（库是事实源），只在 `reason` 里给出原因（形如 `<阶段> 失败：<git stderr 首行>`，能直接看到 `index.lock` 等真因），且文件回滚到改动前（新建的删掉、已有的还原），不留半提交；
-- 回滚自身失败（KB-SNAP-ROLLBACK）：`rollback_failed=true`，原因以 `；回滚失败（<还原快照文件|清暂存>）：<git stderr>` 拼进同一 `reason`，服务端另 `console.error` 一条含 `relative_path` 的日志；此时工作树/索引可能残留该页路径，需人工 `git status` 检查（不重试，可观测优先）。`git add` 未成功时不调 reset、不算回滚失败（索引里没有本次内容，锁未释放导致的 reset 失败是噪音）；
-- `committed=false` 且 `skipped=true` 表示**不是失败**（无快照可提交 / 无变更），客户端不应报警；缺失 `skipped` 视为真实失败；
-- CLI（KB-SNAP-SILENT）：`page_commit.committed=false && skipped!==true` 时，文本与 `--json` 模式都在 **stderr** 打印快照路径与 `reason`，并 **exit 1**；`--json` 的 stdout 仍是单个页面 JSON 文档（失败信号看退出码与 `page_commit`，不插入错误 JSON）；
-- `archive`/`restore` 重写同一路径并由 front matter 的 `status` 标注归档态；`delete`（软删）则删除该页快照并提交删除；
-- 内容未变化时不造空提交（`committed=true` 但 `commit` 指向已有 HEAD）；批量导入 `/pages/import` 不接线（一次请求多页，与「只含该页路径」冲突；KB-SNAP-IMPORT 方案 3 定案）：响应带显式跳过信号 `page_commit: { committed: false, skipped: true, reason, path: "", relative_path: "", commit: null }`，不是失败；CLI `kb knowledge import` 文本模式在 stderr 打印一行该 reason，`--json` 保持机器可读。
+**P2-04 兼容层与写语义（M5/M10/M11）**：
+
+- **page_commit 退役（BORROW-5.1 随文件事实源退出）**：`POST /pages`、`PUT /pages/:id`、`POST /pages/:id/actions` 的响应里 `page_commit` 仅作兼容形状（`{ path, relative_path, committed: false, commit: null, reason, skipped: true }`），**客户端不读取、不报警**；写文件成败即端点成败（工作区页带标记、common 页为 `null`）。历史上「快照没进 git 即失败」（KB-SNAP-SILENT exit 1）语义同步删除。
+- **CAS 基线**：`expected_revision` 比对的是 front matter `revision`（文件真值，锁内直读），不再是库内行 revision；旧值 → 409 `KNOWLEDGE_REVISION_CONFLICT`（details `current_revision`），CLI 退出码 2。
+- **rename（M10）**：唯一合法的 slug 变更入口是 `POST /pages/:id/rename`（`kb knowledge rename`）——原子换文件 + 全库扫描批量重写 `[[old]]→[[new]]`（`[[a|b]]` / `[[a#h]]` / `[[a#h|b]]` / 页嵌入 `![[a]]` 形态都跟随；代码块/行内代码不重写；`![[x.png]]` 附件不重写），页面 `id` 不变，被重写引用的文件仅更新正文与 `content_hash`、revision 不动。**直接改文件名（手动 rename 文件）→ reconcile 报「slug 与文件名不一致」（`file_name_mismatch`）冲突，由人裁决**。
+- **双轨引用**：历史正文里的 `knowledge:<uuid>` 引用**不批量改写**，web 渲染与 resolve 输入别名照常解析到同一页；新产出引用一律 `[[wikilink]]`（M5）。
 
 
 ### 11.1 CLI 对应命令（`kb knowledge *`，`packages/cli/src/commands/knowledge.ts`）
+
+数据源随文件事实源切换（P2-04）：`list/show/search` 读文件扫描（经 REST，响应形状不变）；`create/revise/action` 的 `--expected-revision` 比对 front matter `revision`；`--stdin`/`--sources-file`/`--evidence-file`/`--domain`/`--category`/`--landed` 参数面不变；`resolve/find-source` 保留（`find-source` 扫 front matter `sources[]`）；`link` **默认输出 `[[wikilink]]`**（`--format wikilink|token|markdown|plain`）；`action delete` 撤文件；新增 `rename`。
 
 | 端点 | CLI | 必填 | 备注 |
 | --- | --- | --- | --- |
 | `GET /api/knowledge/search` | `kb knowledge search <query>` | `<query>` | `--scope both` 默认；`--limit` 1-20 |
 | `GET /api/knowledge/pages` | `kb knowledge list` | `--scope`（workspace\|common，`requiredOption`，缺省 exit 1，不按 cwd 猜） | 非 `--json` 每页一行，有下一页时打印 `下一页：--offset <n>` |
-| `GET /api/knowledge/pages/:id` | `kb knowledge show <page-id>` | 无（`--scope` 可省略，省略时先 `resolve` 再取页） | `--history` 追加版本历史；显式 `--scope` 时行为与旧版一致 |
+| `GET /api/knowledge/pages/:id` | `kb knowledge show <page-id>` | 无（`--scope` 可省略，省略时先 `resolve` 再取页） | `--history` 输出空历史（单页历史已退役）；显式 `--scope` 时行为与旧版一致 |
 | `POST /api/knowledge/pages` | `kb knowledge create` | `--scope`、`--title`、`--slug`、`--domain`（必填）、`--stdin`、`--sources`/`--sources-file`、`--evidence`/`--evidence-file` | 缺项一次列全；字段级中文报错 |
-| `PUT /api/knowledge/pages/:id` | `kb knowledge revise <page-id>` | `--scope`、`--expected-revision`、至少一个改动字段 | revision 冲突退出码 2 |
-| `POST /api/knowledge/pages/:id/actions` | `kb knowledge action <page-id> <action>` | `--scope`、`--expected-revision` | `action` ∈ `archive\|restore\|delete` |
+| `PUT /api/knowledge/pages/:id` | `kb knowledge revise <page-id>` | `--scope`、`--expected-revision`、至少一个改动字段 | revision 冲突 / 文件冲突退出码 2 |
+| `POST /api/knowledge/pages/:id/actions` | `kb knowledge action <page-id> <action>` | `--scope`、`--expected-revision` | `action` ∈ `archive\|restore\|delete`；delete 撤文件不可逆 |
+| `POST /api/knowledge/pages/:id/rename` | `kb knowledge rename <page-id> <new-slug>` | `--scope`、`--expected-revision` | 全库重写 `[[old]]→[[new]]`（含 alias/heading 形态），id 不变；文本输出重写文件清单；409 → exit 2 |
+| `GET /api/knowledge/resolve` | `kb knowledge resolve <ref>` | `--scope` 可省（默认 both） | 退出码 404→1、409/403→2 |
+| `GET /api/knowledge/find-source` | `kb knowledge find-source <path>` | `--scope` 可省（默认 both） | 只读反查 front matter `sources[]` |
 
 create 最小用法（PowerShell 复制可用；`sources.json`/`evidence.json` 见 `kb knowledge create --help`）：
 
@@ -577,13 +608,17 @@ Get-Content body.md -Raw | kb knowledge create --scope common --title '缓存策
 kb knowledge show <page-id> --scope common
 Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin --title '缓存策略 v2'
 kb knowledge action <page-id> archive --scope common --expected-revision 2
+kb knowledge rename <page-id> cache-policy-v2 --scope common --expected-revision 3
+kb knowledge link cache-policy --scope common   # 默认输出 [[cache-policy]]；--format token 取 knowledge:<uuid>
 ```
 
 `--sources[].content_hash` 取文件 sha256：`(Get-FileHash README.md -Algorithm SHA256).Hash.ToLower()`；或用 `--hash-from-file <source_id>=<path>`（可重复）自动按 source_id 精确回填，未匹配/文件不存在退出码 1 并点名。`captured_at` 取 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
 
 `--sources-file` / `--evidence-file` 读文件时先按字节剥 UTF-8 BOM 再 `JSON.parse`，命中时 stderr 打印「检测到 UTF-8 BOM，已剥离后解析」。
 
-`--domain`（知识领域：accounts/knowledge/board/chat/ui/infra，create 必填）与 `--scope`（页归属：workspace/common）是两个独立维度，互不替代；示例 `--scope common --domain infra`。
+`--domain`（知识领域：accounts/knowledge/board/chat/ui/infra，create/import 必填）与 `--scope`（页归属：workspace/common）是两个独立维度，互不替代；示例 `--scope common --domain infra`。
+
+`import`（M11 语义反转）与 `export-legacy` 见 §18 与对应 `--help`：import 把外部 md 规范化为 `Docs/<slug>.md` 并补齐 front matter；`page_commit` 相关输出（KB-SNAP-SILENT / KB-SNAP-IMPORT）已整体删除，写文件成败即命令成败。
 
 ### 11.1b CLI `--json` 输出形状（KB-CLI-3c，契约 knowledge:bb929054-1d44-4542-bb96-4530e42b0546）
 
@@ -599,7 +634,7 @@ kb knowledge action <page-id> archive --scope common --expected-revision 2
 | --- | --- | --- |
 | 0 | 成功（`--help` / `--version` 同样 0） | `kb --version` / `kb done …` |
 | 1 | 参数或用法错误、服务端非冲突错误（400/404/500）、看板服务不可达；命令未改动数据。含 `kb dep` 的「任务不存在」（`NOT_FOUND` / `TASK_NOT_FOUND`）与 `kb answer` 的 403 `DECISION_HUMAN_ONLY` | `kb done <不存在 id>` → `任务不存在`；`kb dep add <不存在 id> <前置>` → `任务不存在或不属于该工作区`；`kb answer <决策> --option 1`（agent 身份）→ `仅人类可回答决策…`；`kb delete-issue <id>` 缺 `--yes` → 只回显标题/状态、不发 DELETE；`kb delete-space <空间>` 缺 `--yes` → 只回显名称/路径；`kb nope` → `unknown command` |
-| 2 | 冲突，命令未改动数据：占用（`已被 <agent> 占用`）/ `未被占用` / 非当前占用者 / 状态不可领取 / 决策锁（`DECISION_LOCKED`）/ 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞（占用中、含子任务、仍有知识页或运行中会话）/ 任务 id 前缀多命中 / **结构环（`DEPENDENCY_PARENT_CYCLE`）** | `kb claim <已被占>`、`kb claim <待验收>`、`kb claim <有 open 决策的卡>`、`kb done <未占用>`、`kb delete-space <有知识页> --yes`、`kb dep add <子卡> <其祖先>` |
+| 2 | 冲突，命令未改动数据：占用（`已被 <agent> 占用`）/ `未被占用` / 非当前占用者 / 状态不可领取 / 决策锁（`DECISION_LOCKED`）/ 知识页 revision 冲突与文件冲突（`KNOWLEDGE_FILE_CONFLICT`：外部编辑、改名 slug 冲突、锁等待超时）/ 幂等键复用 / 删除被阻塞（占用中、含子任务、仍有知识页或运行中会话）/ 任务 id 前缀多命中 / **结构环（`DEPENDENCY_PARENT_CYCLE`）** | `kb claim <已被占>`、`kb claim <待验收>`、`kb claim <有 open 决策的卡>`、`kb done <未占用>`、`kb delete-space <有知识页> --yes`、`kb dep add <子卡> <其祖先>`、`kb knowledge rename <页> <已占用 slug>` |
 | 3 | `kb dep` 与待决策族（`kb ask` / `kb answer` / `kb ask-extend`）专用：依赖或决策参数错误（自环 / 跨工作区 / `VALIDATION_ERROR` / 选项不足 / 非法 grace 或 seconds） | `kb dep add <id> <同一 id>` → `不能依赖自身…`；`kb ask <id> --grace abc` → 参数非法 |
 | 4 | `kb dep` 专用：依赖边不存在（仅 `dep rm`） | `kb dep rm <id> <无该边的前置>` → `依赖边不存在…` |
 
@@ -901,9 +936,10 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 | `title` / `slug` | string? | 显式指定，优先于自动推导 |
 | `category` / `landed` | enum? | 与知识页同一套枚举 |
 | `labels` | string[]? | 知识页无 labels 字段，导入时忽略并回 `warnings` |
-| `actor` / `change_note` | string? | 审计字段 |
+| `domain` | string | **必填**（KB-CR-1）：知识领域词表 `accounts/knowledge/board/chat/ui/infra`，写入 front matter；非法值 400 且文案列出可选域 |
+| `actor` / `change_note` | string? | 审计字段（front matter `created_by`/`updated_by` 与 `change_note`） |
 
-响应：`{ pages: KnowledgePage[], warnings: string[], page_commit }`（json 数组会返回多条）。`page_commit` 恒为跳过信号 `{ committed: false, skipped: true, reason: '批量导入不落每页快照（…）', path: "", relative_path: "", commit: null }`（KB-SNAP-IMPORT 方案 3：本端点不接线 BORROW-5.1 每页快照，导入页在 git 审计链里无对应提交，属显式既定决策不是失败；接线与否以 `skipped` 字段判断，未来接线后该值自动变为真实提交结果）。
+响应：`{ pages: KnowledgePage[], warnings: string[] }`（json 数组会返回多条）。**P2-04（M11）语义反转**：导入不再是「建 DB 行」，而是把每条内容规范化为 `Docs/<slug 归一>.md` 并补齐 front matter（sources/evidence/revision/content_hash 由服务端生成）；落盘成功即导入成功，无每页快照语义（历史上本端点响应里的 `page_commit` 跳过信号已随 BORROW-5.1 退役）。`domain` **必填**（KB-CR-1，写入 front matter；json 条目内可逐条覆盖）。
 
 推导规则：
 
@@ -930,7 +966,7 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 | slug 冲突 | 409 | `KNOWLEDGE_EXISTS`（消息里给 `slug-2` 之类建议） |
 | 请求体超过全局 JSON 上限 | 413 | 由 `express.json()` 默认 100kb 先拒（见下「已知限制」） |
 
-落库：逐条复用 `createKnowledgePage`（页面行 + 首发修订 + 双链同步在同一事务内），失败不留半成品。
+落盘：逐条走文件仓储 `create`（写 `<Docs>/<slug>.md`，front matter 契约见 §11「文件事实源」），失败不留半成品；slug 冲突按 `suggestSlug`（`x` → `x-2`…）给建议。
 
 **已知限制（KBIMP-1B 实测）**：本路由已挂**路由级** `express.json({ limit: '2mb' })`，但 >100kb 仍会被**先执行的全局 parser** 拒：
 

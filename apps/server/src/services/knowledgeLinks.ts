@@ -46,8 +46,8 @@ export function normalizeLinkTarget(raw: string): string {
     .toLowerCase();
 }
 
-/** 把代码块与行内代码区间替换成空格，保留字符偏移，便于按 index 取原文 */
-function maskCode(body: string): string {
+/** 把代码块与行内代码区间替换成空格，保留字符偏移，便于按 index 取原文（P2-04 rename 重写链路复用） */
+export function maskCode(body: string): string {
   const chars = [...body];
   const blank = (from: number, to: number): void => {
     for (let index = from; index < to && index < chars.length; index += 1) {

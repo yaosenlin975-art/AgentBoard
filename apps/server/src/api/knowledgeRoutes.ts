@@ -333,10 +333,10 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     throw new ApiError(404, KnowledgeErrorCode.REVISION_NOT_FOUND, '文件事实源不保留单页历史；旧库历史可通过 export-legacy 只读导出');
   });
 
-  // ---- 引用解析（四态；uuid/短前缀/slug）----
+  // ---- 引用解析（四态；uuid/短前缀/slug；`knowledge:<uuid|slug>` 输入别名剥前缀后同轨解析）----
   router.get('/resolve', (req, res) => {
-    const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
-    if (ref.trim() === '') throw new ValidationError('ref 不能为空');
+    const ref = (typeof req.query.ref === 'string' ? req.query.ref : '').trim().replace(/^knowledge:/i, '').trim();
+    if (ref === '') throw new ValidationError('ref 不能为空');
     const rawScope = typeof req.query.scope === 'string' ? req.query.scope : 'both';
     if (!['common', 'workspace', 'both'].includes(rawScope)) throw new ValidationError('scope 取值必须是：workspace / common / both');
     const workspaceId = typeof req.query.workspace_id === 'string' ? req.query.workspace_id : undefined;
@@ -356,7 +356,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       throw new ApiError(409, KnowledgeErrorCode.REF_AMBIGUOUS, result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
     }
     // not_found：uuid 引用若存在但属于别的范围/别的工作区 → 403（**不回显标题**）
-    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref.trim())) {
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref)) {
       const id = ref.trim();
       const crossEntry = scope.scope === 'workspace' ? view.common.getByIdIncludeArchived(id) : null;
       const legacy = options.legacyPageOwner?.(id) ?? null;
@@ -629,6 +629,46 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     });
   });
 
+  // ---- P2-04（M10）rename：原子换文件 + 全库扫描重写 [[old]]→[[new]]（含 alias/heading 形态；id 不变）----
+  router.post('/pages/:id/rename', (req, res) => {
+    const body = parse(z.object({
+      scope: z.enum(['workspace', 'common']),
+      workspace_id: z.string().min(1).optional(),
+      expected_revision: z.number().int().positive(),
+      new_slug: z.string().min(1).max(200),
+      actor: z.string().trim().min(1).max(100),
+    }).strict(), req.body);
+    const scope = scopeOf(body);
+    const { repo } = targetFor(scope.scope, scope.workspace_id);
+    const result = mutation(req, () => repo.rename(req.params.id!, scope, body.expected_revision, body.new_slug, body.actor));
+    // 全库重写引用：改名页所在目录 + 跨目录（M2）可能解析到本页的目录。
+    // 跨目录守卫：目标目录若已有同 norm 的自有页，其 [[old]] 指向的是它自己的页，不改写。
+    const rewritten: Array<{ dir: string; file_name: string; page_id: string; slug: string }> = [];
+    const collect = (rewriteRepo: ReturnType<typeof knowledgeDocsStore.repoFor>, guardHasOwn: boolean): void => {
+      if (guardHasOwn) return;
+      for (const item of rewriteRepo.rewriteSlugTargets(result.old_slug_norm, result.page.slug)) {
+        rewritten.push({ dir: rewriteRepo.docsDir.replace(/\\/g, '/'), ...item });
+      }
+    };
+    collect(repo, false);
+    if (scope.scope === 'common' && options.listWorkspaceRows !== undefined) {
+      // 公共页改名：工作区文档里的 [[old]] 经 M2 解析到公共页（本区无同名页时）——逐区重写
+      for (const row of options.listWorkspaceRows()) {
+        try {
+          const wsDir = knowledgeDocsStore.resolveDir({ scope: 'workspace', workspace_id: row.id }, row.path, options.docsPaths);
+          const wsRepo = knowledgeDocsStore.repoFor(wsDir, { scope: 'workspace', workspace_id: row.id });
+          collect(wsRepo, wsRepo.hasSlugNorm(result.old_slug_norm));
+        } catch { /* 单区失败不阻断改名 */ }
+      }
+    }
+    res.json({
+      ...result.page,
+      ...knowledgeLinkFields(result.page),
+      rewritten,
+      old_slug: result.old_slug,
+    });
+  });
+
   // ---- KB-IMG-1：知识页图片（legacy 兼容存储；vault 自包含布局 <Docs>/_attachments/ 由 P2-03 接管）----
   router.post('/pages/:id/images', express.raw({ type: () => true, limit: KNOWLEDGE_IMAGE_MAX_BYTES + 7 * 1024 * 1024 }), async (req, res) => {
     if (!Buffer.isBuffer(req.body)) throw new ValidationError('图片请求体必须为 multipart/form-data');
@@ -710,7 +750,8 @@ function resolveRefInFiles(
   view: ReturnType<typeof knowledgeDocsStore.view>,
   legacyOwner: KnowledgeRouterOptions['legacyPageOwner'] | null,
 ): KnowledgeResolveResult {
-  const trimmed = ref.trim();
+  // P2-04（M5 兼容层）：`knowledge:<uuid|slug>` 输入别名照常解析——剥掉 scheme 前缀再走统一解析
+  const trimmed = (ref.trim().replace(/^knowledge:/i, '')).trim();
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const indexes = scope.scope === 'common'
     ? [view.common]

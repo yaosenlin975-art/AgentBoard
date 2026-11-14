@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   docFileNameFor,
+  normalizeDocSlug,
   type KnowledgeFileMeta,
 } from '@agentboard/shared';
 import type { KnowledgeEvidence, KnowledgePage, KnowledgeSource } from '@agentboard/shared';
@@ -27,6 +28,7 @@ import { normalizeKnowledgeDomain, normalizePageCategory, requireKnowledgeDomain
 import { computeContentHash, renderDocWithHash, validateForWrite } from './frontMatter.js';
 import { docFilePathFor, lockPathFor } from './paths.js';
 import { readDocFile } from './scanner.js';
+import { maskCode, normalizeLinkTarget } from '../services/knowledgeLinks.js';
 import type { DocsIndex } from './index.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
@@ -127,7 +129,7 @@ export class KnowledgeFileRepo {
   private withLock<T>(slug: string, fn: () => T): T {
     const lockPath = lockPathFor(this.docsDir, slug);
     mkdirSync(dirname(lockPath), { recursive: true });
-    const acquired = this.acquireLock(lockPath);
+    this.acquireLock(lockPath);
     try {
       return fn();
     } finally {
@@ -371,10 +373,125 @@ export class KnowledgeFileRepo {
     return null;
   }
 
+  // ---- P2-04（M10）：rename —— 原子换文件 + 全库重写 [[old]]→[[new]]（id 不变） ----
+
+  /**
+   * 重命名页 slug：写新文件（front matter slug 更新、revision+1、content_hash 重算）→ 删旧文件。
+   * id 不变；旧 slug 归一结果返回给调用方做全库 wikilink 重写。
+   * 直接改文件名（不走本命令）→ readFresh 按 slug 找不到文件 404 / reconcile 报 file_name_mismatch。
+   */
+  rename(pageId: string, scope: { scope: 'workspace' | 'common'; workspace_id?: string | null }, expectedRevision: number, newSlug: string, actor: string): { page: RepoPage; old_slug: string; old_slug_norm: string } {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new ValidationError('expected_revision 必须为正整数');
+    // 只校验新 slug 格式（标题/正文/来源沿用页上现值，不再整套 validateForWrite）
+    if (!/^[\p{L}\p{N}][\p{L}\p{N}._/-]{0,199}$/u.test(newSlug) || newSlug.split('/').includes('..')) {
+      throw new ValidationError('slug 格式不合法');
+    }
+    const newNorm = normalizeDocSlug(newSlug);
+    return this.withLockByPage(pageId, scope, (fresh) => {
+      const old = fresh.meta;
+      if (!this.scopeMatches(old, scope)) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
+      this.assertNotExternallyEdited(old, fresh.body);
+      if (normalizeDocSlug(old.slug) === newNorm) {
+        throw new ApiError(409, KnowledgeErrorCode.STATE_CONFLICT, `新 slug「${newSlug}」与当前 slug「${old.slug}」归一后相同，无需改名`);
+      }
+      if (old.revision !== expectedRevision) {
+        throw new ApiError(409, KnowledgeErrorCode.REVISION_CONFLICT, '知识页已更新，请重新读取', { current_revision: old.revision });
+      }
+      const newFilePath = docFilePathFor(this.docsDir, newSlug);
+      if (existsSync(newFilePath)) throw new ApiError(409, KnowledgeErrorCode.EXISTS, '范围内已存在该 slug');
+      const nextMeta: KnowledgeFileMeta = {
+        ...old,
+        slug: newSlug,
+        revision: old.revision + 1,
+        updated_by: actor,
+        updated_at: Math.max(this.now(), old.updated_at + 1),
+        change_note: `rename ${old.slug} → ${newSlug}`,
+      };
+      const { content, meta } = renderDocWithHash(nextMeta, fresh.body);
+      this.atomicWrite(newFilePath, content);
+      try {
+        rmSync(fresh.filePath, { force: true });
+      } catch (error) {
+        // 新文件已写、旧文件删失败：立即回滚删除新文件，保持「要么成功要么不变」
+        try { rmSync(newFilePath, { force: true }); } catch { /* 人工 reconcile 兜底 */ }
+        throw error;
+      }
+      this.index.notifyChanged(fresh.fileName);
+      this.index.notifyChanged(docFileNameFor(newSlug));
+      this.index.persist();
+      return { page: this.toPage({ meta, body: fresh.body }), old_slug: old.slug, old_slug_norm: normalizeDocSlug(old.slug) };
+    });
+  }
+
+  /**
+   * 全库（本目录）扫描重写 `[[old]]→[[new]]`：含 `[[a|b]]` / `[[a#h]]` / `[[a#h|b]]` 与页嵌入
+   * `![[a]]`（附件 `![[x.png]]` 按扩展名跳过）；代码块/行内代码不重写（maskCode 同解析口径）。
+   * 被重写文件仅更新正文与 content_hash，**revision 不变**（无 API 写语义），updated_* 不动。
+   * 返回重写文件清单（未命中任何引用的文件不动）。
+   */
+  rewriteSlugTargets(fromSlugNorm: string, toSlug: string): Array<{ file_name: string; page_id: string; slug: string }> {
+    this.index.ensureFresh();
+    const rewritten: Array<{ file_name: string; page_id: string; slug: string }> = [];
+    // 只重写干净文件（allEntries = issues 为空）；坏文件（外部编辑/解析失败）冲突由人裁决，不自动改写
+    for (const entry of this.index.allEntries()) {
+      const nextBody = rewriteWikilinkTargets(entry.body, fromSlugNorm, toSlug);
+      if (nextBody === entry.body) continue;
+      const { content } = renderDocWithHash(entry.meta, nextBody);
+      const filePath = join(this.docsDir, entry.fileName);
+      this.atomicWrite(filePath, content);
+      this.index.notifyChanged(entry.fileName);
+      rewritten.push({ file_name: entry.fileName, page_id: entry.meta.id, slug: entry.meta.slug });
+    }
+    if (rewritten.length > 0) this.index.persist();
+    return rewritten;
+  }
+
+  /** 本目录是否存在归一后等于该 norm 的页（跨目录重写守卫用：命中说明本区有自己的同名页，不能重写） */
+  hasSlugNorm(slugNorm: string): boolean {
+    this.index.ensureFresh();
+    return this.index.getBySlug(slugNorm).length > 0;
+  }
+
   /** 附件目录（<Docs>/_attachments/，vault 自包含布局；本卡只保证目录约定，节点/渲染归 P2-03） */
   ensureAttachmentsDir(): string {
     const dir = join(this.docsDir, '_attachments');
     mkdirSync(dir, { recursive: true });
     return dir;
   }
+}
+
+// ---- 模块级纯函数（P2-04 rename 链路） ----
+
+/** 附件目标扩展名（与 services/knowledgeLinks.ts 的 ATTACHMENT_EXT_PATTERN 同口径） */
+const ATTACHMENT_EXT_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+
+/**
+ * 重写正文里指向 `fromSlugNorm` 的 wikilink 目标为 `toSlug`，保留 `#heading` 与 `|alias`：
+ * `[[a]]` / `[[a|b]]` / `[[a#h]]` / `[[a#h|b]]` / `![[a]]`（页嵌入）都会跟随改名；
+ * `![[x.png]]` 附件、代码块/行内代码、未闭合与 `[[a]]]` 越界形态不动。
+ * 在 maskCode 后的文本上定位（偏移与原串一致），替换按原串切片拼装。
+ */
+function rewriteWikilinkTargets(body: string, fromSlugNorm: string, toSlug: string): string {
+  const masked = maskCode(body);
+  let out = '';
+  let last = 0;
+  for (const match of masked.matchAll(/\[\[([^\[\]\n]+)\]\](?!\])/g)) {
+    const start = match.index;
+    // `!` 在 `[[` 之前：页嵌入跟随改名；附件嵌入（图片扩展名）不动
+    const isEmbed = start > 0 && body[start - 1] === '!';
+    const inner = match[1]!;
+    const pipe = inner.indexOf('|');
+    const aliasPart = pipe >= 0 ? inner.slice(pipe) : '';
+    const targetPart = pipe >= 0 ? inner.slice(0, pipe) : inner;
+    const hash = targetPart.indexOf('#');
+    const headingPart = hash >= 0 ? targetPart.slice(hash) : '';
+    const target = (hash >= 0 ? targetPart.slice(0, hash) : targetPart).trim();
+    if (target === '' || target.length > 200) continue;
+    if (isEmbed && ATTACHMENT_EXT_RE.test(target)) continue;
+    if (normalizeLinkTarget(target) !== fromSlugNorm) continue;
+    out += body.slice(last, start) + `[[${toSlug}${headingPart}${aliasPart}]]`;
+    last = start + match[0].length;
+  }
+  if (last === 0) return body;
+  return out + body.slice(last);
 }

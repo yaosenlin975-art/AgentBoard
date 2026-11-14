@@ -4,7 +4,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { server } from './server';
 import { attachmentNameOf, imageSegmentToMarkdown, splitKnowledgeBody, KnowledgeBodyView } from '../components/knowledge/knowledgeEmbed';
 

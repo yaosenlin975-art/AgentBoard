@@ -1,10 +1,13 @@
 /**
- * markdown 软链接（MD-LINKS-2）：`issue:<uuid>` / `knowledge:<slug|id>` / `log:<id>`。
+ * markdown 软链接（MD-LINKS-2 / P2-04 双 scheme）：`issue:<uuid>` / `knowledge:<uuid|slug>` / `log:<id>` / `[[wikilink]]`。
  *
  * 只在渲染层做（知识引用走服务端 `GET /api/knowledge/resolve`，各端同一套错误语义）：
  * - `issue:`：任务链接，点击用 panelStore.openDetail 打开任务详情浮窗；
  * - `knowledge:`：知识链接，只解析 common + 当前工作区；跨区/不存在/歧义/已删除 → 不可点 + 对应 tooltip；
  * - `log:`：当前工作区的日志，按 id 拉 changelog 详情，不存在 → 同一文案；
+ * - `[[wikilink]]`：markdownRenderer 的 remark 插件把 `[[target]]`（含 `|alias` / `#heading` 形态）
+ *   转成 `knowledge:<target>` 软链接（target 为 slug；服务端 resolve 按 id/前缀/slug 统一解析），
+ *   点击打开目标页；代码块/行内代码内不转换（remark 节点层面天然跳过）；
  * - `http(s)` / `mailto`：保持普通外链；
  * - 其它未知 scheme：调用方（markdownRenderer）渲染为纯文本，不外链、不静默。
  *
@@ -28,6 +31,33 @@ export interface MarkdownRef {
 
 const SCHEME = /^(issue|knowledge|log):(.+)$/i;
 const EXTERNAL = /^(https?:|mailto:)/i;
+
+/** P2-04：wikilink 语态正则（`[[a]]` / `[[a|b]]` / `[[a#h]]` / `[[a#h|b]]`；`[[a]]]` 越界不命中） */
+export const WIKILINK_PATTERN = /\[\[([^\[\]\n]+)\]\](?!\])/g;
+
+/** P2-04：wikilink 内部文本解析（target 是 slug 输入别名；alias/heading 只影响展示） */
+export interface WikilinkRef {
+  target: string;
+  alias: string | null;
+  heading: string | null;
+}
+
+export function parseWikilink(inner: string): WikilinkRef | null {
+  const text = inner.trim();
+  if (text === '' || text.length > 200) return null;
+  const pipe = text.indexOf('|');
+  const aliasRaw = pipe >= 0 ? text.slice(pipe + 1).trim() : '';
+  const targetPart = (pipe >= 0 ? text.slice(0, pipe) : text).trim();
+  const hash = targetPart.indexOf('#');
+  const headingRaw = hash >= 0 ? targetPart.slice(hash + 1).trim() : '';
+  const target = (hash >= 0 ? targetPart.slice(0, hash) : targetPart).trim();
+  if (target === '') return null;
+  return {
+    target,
+    alias: aliasRaw !== '' ? aliasRaw : null,
+    heading: headingRaw !== '' ? headingRaw : null,
+  };
+}
 
 /** 解析软链接 scheme；不是这三种之一返回 null */
 export function parseMarkdownRef(href: string | undefined): MarkdownRef | null {

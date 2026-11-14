@@ -158,6 +158,7 @@ describe('P2-01 knowledge fileRepo / front matter / index / reconcile', () => {
     expect(index.search({ query: '缓存', limit: 5, now: Date.now() })).toEqual(twoChar);
     void subBefore;
     void first;
+    void after;
     // snippet：命中位置前 100 起、≤1200
     const hit = index.search({ query: '星图', limit: 5, now: Date.now() })[0]!;
     expect(hit.snippet).toContain('星图');
@@ -232,5 +233,92 @@ describe('P2-01 knowledge fileRepo / front matter / index / reconcile', () => {
     expect(repo.ensureAttachmentsDir()).toBe(join(wsDocs, '_attachments'));
     expect(existsSync(join(wsDocs, '_attachments'))).toBe(true);
     void page;
+  });
+});
+
+describe('P2-04 fileRepo.rename：原子换文件 + 全库重写 [[old]]→[[new]]（id 不变）', () => {
+  let root: string;
+  let docsDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'agentboard-kb-rename-'));
+    docsDir = join(root, 'Docs');
+    mkdirSync(docsDir, { recursive: true });
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const identity = { scope: 'common' as const, workspace_id: null };
+
+  function newRepo(instanceId = 'r1'): KnowledgeFileRepo {
+    const index = new DocsIndex(docsDir, identity);
+    index.hydrateOrRebuild();
+    return new KnowledgeFileRepo(docsDir, index, { instanceId, lockTimeoutMs: 0 });
+  }
+
+  const validBody = () => ({ slug: 'cache', title: '缓存知识', body_md: '见 [[cache]] 与 [[cache|别名]] [[cache#标题]]', domain: 'knowledge', sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }], actor: 'tester', expires_at: null });
+
+  it('rename：新文件落盘（slug/revision+1/content_hash 重算）、旧文件删除、id 不变', () => {
+    const repo = newRepo();
+    const page = repo.create({ ...validBody(), scope: 'common' });
+    const result = repo.rename(page.id, { scope: 'common' }, 1, 'cache-v2', 'renamer');
+    expect(result.page.slug).toBe('cache-v2');
+    expect(result.page.id).toBe(page.id);
+    expect(result.page.revision).toBe(2);
+    expect(existsSync(join(docsDir, docFileNameFor('cache')))).toBe(false);
+    expect(existsSync(join(docsDir, docFileNameFor('cache-v2')))).toBe(true);
+    const parsed = parseKnowledgeDocument(readFileSync(join(docsDir, docFileNameFor('cache-v2')), 'utf8'));
+    expect(parsed.meta.slug).toBe('cache-v2');
+    expect(parsed.meta.id).toBe(page.id);
+    expect(parsed.meta.revision).toBe(2);
+  });
+
+  it('rewriteSlugTargets：只改命中文件，revision 不变，content_hash 重算且解析干净', () => {
+    const repo = newRepo();
+    const page = repo.create({ ...validBody(), scope: 'common' });
+    const refA = repo.create({ ...validBody(), slug: 'reader-a', title: '读者A', body_md: '读 [[cache]] 与 [[cache|缓存页]] 与 [[cache#标题|跳转]] 与 ![[cache]]；`[[cache]]` 行内代码不动：\n\n```\n[[cache]]\n```', scope: 'common' });
+    const refB = repo.create({ ...validBody(), slug: 'reader-b', title: '读者B', body_md: '无引用', scope: 'common' });
+    repo.rename(page.id, { scope: 'common' }, 1, 'cache-v2', 'renamer');
+    const rewritten = repo.rewriteSlugTargets('cache', 'cache-v2');
+    expect(rewritten.map(item => item.file_name).sort()).toEqual([docFileNameFor('cache-v2'), docFileNameFor('reader-a')].sort());
+    const docA = readFileSync(join(docsDir, docFileNameFor('reader-a')), 'utf8');
+    const parsed = parseKnowledgeDocument(docA);
+    expect(parsed.body_md).toContain('[[cache-v2]]');
+    expect(parsed.body_md).toContain('[[cache-v2|缓存页]]');
+    expect(parsed.body_md).toContain('[[cache-v2#标题|跳转]]');
+    expect(parsed.body_md).toContain('![[cache-v2]]');
+    expect(parsed.body_md).toContain('`[[cache]]`');
+    expect(parsed.body_md).toContain('[[cache]]'); // 代码块内保留
+    expect(parsed.body_md).not.toContain('[[cache]]与');
+    // revision 与 updated_at 不变（无 API 写语义）
+    const fresh = repo.getPage(refA.id, { scope: 'common' });
+    expect(fresh?.revision).toBe(1);
+    expect(fresh?.updated_at).toBe(refA.updated_at);
+    // refB 无引用未重写
+    expect(rewritten.some(item => item.page_id === refB.id)).toBe(false);
+    const docB = parseKnowledgeDocument(readFileSync(join(docsDir, docFileNameFor('reader-b')), 'utf8'));
+    expect(docB.body_md).toBe('无引用');
+  });
+
+  it('CAS 与冲突：expected_revision 旧值 → REVISION_CONFLICT；新 slug 已存在 → EXISTS；归一相同 → STATE_CONFLICT', () => {
+    const repo = newRepo();
+    const page = repo.create({ ...validBody(), scope: 'common' });
+    repo.create({ ...validBody(), slug: 'taken', title: '占用', scope: 'common' });
+    try {
+      repo.rename(page.id, { scope: 'common' }, 99, 'cache-v2', 'renamer');
+      expect.unreachable('应抛 409');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('KNOWLEDGE_REVISION_CONFLICT');
+    }
+    try {
+      repo.rename(page.id, { scope: 'common' }, 1, 'taken', 'renamer');
+      expect.unreachable('应抛 409');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('KNOWLEDGE_EXISTS');
+    }
+    try {
+      repo.rename(page.id, { scope: 'common' }, 1, 'Cache', 'renamer');
+      expect.unreachable('应抛 409');
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('KNOWLEDGE_STATE_CONFLICT');
+    }
   });
 });

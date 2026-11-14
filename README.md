@@ -169,7 +169,7 @@ clone 后取回数据与图片：
 2. `kb workspace-db snapshot import <工作区> --replace` 导入行集，`--include-attachments` 导出的快照会把附件本体还原到 `<工作区>/.agentboard/attachments/<storage_key>`，图片接口即可 200；缺文件时 import 直接 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key，不做「尽量导入」；
 3. 快照里没有附件本体（未加 `--include-attachments`）时，行在而文件不在，图片仍是 404 —— 需要图片就重新带开关导出/导入。
 
-中心库（注册表、成员、账号元数据、公共知识页）另有一套只读快照：`kb workspace-db snapshot center-export` / `center-validate`，落在中心库同级的 `center-snapshot/`，账号凭据引用一律脱敏为 `***`，不提供导入。
+中心库（注册表、成员、账号元数据）另有一套只读快照：`kb workspace-db snapshot center-export` / `center-validate`，落在中心库同级的 `center-snapshot/`，账号凭据引用一律脱敏为 `***`，不提供导入。公共知识页不进快照——知识已是文件事实源（公共页在 `~/.agentboard/Docs/`，工作区页在 `<工作区>/.agentboard/Docs/`，P2-01/P2-04），clone 后随文件系统与 git 直接取回。
 
 ### Docker（单容器）
 

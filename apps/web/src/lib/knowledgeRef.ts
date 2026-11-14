@@ -1,10 +1,13 @@
 /**
- * 知识页按 id 读取（MD-LINKS 公共实现）。
+ * 知识页按 id 读取（MD-LINKS 公共实现；P2-04 文件事实源）。
  *
  * 服务端 `GET /api/knowledge/pages/:id` 的 `scope` 只接受 `workspace` / `common`（不是 `both`）：
  * - 先按 `scope=workspace&workspace_id=<当前>` 取（当前工作区的页）；
  * - 失败再按 `scope=common` 取（公共知识）；
  * - 都失败抛最后一次错误（调用方把 404 显示成「无权限或不存在」）。
+ *
+ * `resolveKnowledgeRef` 的 ref 接受完整 uuid / ≥8 位前缀 / slug（文件事实源下 slug 是
+ * wikilink 主键的输入别名：`[[slug]]` 与历史 `knowledge:<uuid>` 都解析到同一页）。
  *
  * markdown 软链接（MarkdownSmartLink）与右侧浮窗（RefPanel）共用，避免两处各写一套 scope 组合。
  */
