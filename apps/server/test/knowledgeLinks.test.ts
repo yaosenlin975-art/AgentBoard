@@ -214,7 +214,12 @@ describe('knowledge link HTTP surface (V2-4)', () => {
 
       const graph = await request(app).get('/api/knowledge/graph').query({ scope: 'workspace', workspace_id: workspace.id });
       expect(graph.status).toBe(200);
-      expect(graph.body.edges.map((edge: { kind: string }) => edge.kind)).toEqual(['link']);
+      // P2-03（S-5）：unresolved 目标画独立节点（target 为 `unresolved:<slug>` 合成节点），
+      // 其边同为 kind:'link'；已解析双链边（source→target）仍在。
+      const graphEdges = graph.body.edges as Array<{ source: string; target: string; kind: string }>;
+      expect(graphEdges.map((edge) => edge.kind)).toEqual(['link', 'link']);
+      expect(graphEdges.every((edge) => edge.kind === 'link')).toBe(true);
+      expect(graphEdges.some((edge) => edge.target.startsWith('unresolved:'))).toBe(true);
 
       const onlyKeyword = await request(app).get('/api/knowledge/graph').query({ scope: 'workspace', workspace_id: workspace.id, edge_kinds: 'keyword' });
       // 关闭 link 后不允许再出现 link 边（keyword 边是否存在取决于正文相似度）

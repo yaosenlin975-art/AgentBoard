@@ -15,13 +15,14 @@
  */
 import express, { Router } from 'express';
 import { z } from 'zod';
-import { relative } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import type { KnowledgePage, KnowledgeScope } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { ApiError, ValidationError } from '../errors.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
 import { zhZodIssue } from './zod.js';
-import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph } from '../services/knowledgeGraph.js';
+import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
 import { knowledgeLinkFields } from '../services/knowledgeResolve.js';
 import type { KnowledgeResolveResult, ResolveScope } from '../services/knowledgeResolve.js';
 import { KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
@@ -38,10 +39,11 @@ import { parseMultipart } from '../services/multipart.js';
 import { knowledgeCreateSchema, knowledgeReviseSchema, knowledgeActionSchema, knowledgeImportSchema, knowledgeScopeFields } from './schemas.js';
 import { planImport, buildSources, slugifyTitle } from '../services/knowledgeImport.js';
 import { validateKnowledgeScope } from '../services/knowledge.js';
-import { parseKnowledgeLinks } from '../services/knowledgeLinks.js';
+import { parseKnowledgeRefs } from '../services/knowledgeLinks.js';
 import type { KnowledgePageListRow } from '../db/repos/knowledgeSearch.js';
 import { knowledgeDocsStore, type ScopeSelector } from '../knowledge/store.js';
 import { reconcileDocsDir } from '../knowledge/reconcile.js';
+import { ATTACHMENTS_DIR_NAME, assertInsideDocsDir } from '../knowledge/paths.js';
 import { docFileNameFor, type KnowledgeFileMeta } from '@agentboard/shared';
 import type { DocsDirOverrides } from '../knowledge/paths.js';
 import type { DocsIndex } from '../knowledge/index.js';
@@ -152,19 +154,20 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     throw new ApiError(404, 'PAGE_NOT_FOUND', '知识页不存在');
   }
 
-  /** 页面出链统计（详情页 linkStats；从索引取，不落库） */
+  /** 页面出链统计（详情页 linkStats；从索引取，不落库。embed 未命中也计入 unresolved，P2-03） */
   function linkStatsOf(page: KnowledgePage, view: ReturnType<typeof viewFor>): { backlinks_count: number; links_out_count: number; unresolved_links: Array<{ raw_target: string; alias: string | null; heading: string | null }> } {
     const index = page.scope === 'common' ? view.common : view.requireWorkspace();
     const entry = index.getByIdIncludeArchived(page.id);
-    const parsed = entry !== null ? parseKnowledgeLinks(entry.body, entry.meta.slug) : [];
-    const unresolved = parsed
+    const parsed = entry !== null ? parseKnowledgeRefs(entry.body, entry.meta.slug) : null;
+    const pageRefs = parsed === null ? [] : [...parsed.links, ...parsed.embeds];
+    const unresolved = pageRefs
       .filter(link => index.lookupTarget(link.target_slug_norm) === null
         && (page.scope === 'common' || view.common.lookupTarget(link.target_slug_norm) === null))
-      .map(link => ({ raw_target: link.raw_target, alias: link.alias, heading: link.heading }))
+      .map(link => ({ raw_target: link.raw_target, alias: link.alias, heading: 'heading' in link ? (link.heading as string | null) : null }))
       .sort((a, b) => a.raw_target.localeCompare(b.raw_target));
     return {
       backlinks_count: view.backlinks(page.id).length,
-      links_out_count: parsed.length,
+      links_out_count: pageRefs.length,
       unresolved_links: unresolved,
     };
   }
@@ -194,7 +197,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     res.json(items.map(withLink));
   });
 
-  // ---- 图聚合（rows 从索引；links 由 [[...]] 解析，M2 跨目录解析）----
+  // ---- 图聚合（rows 从索引；links/embeds 由正文引用解析，tag/attachment/unresolved 合成节点，P2-03）----
   router.get('/graph', (req, res) => {
     const input = parse(z.object({
       scope: z.enum(['common', 'workspace', 'both']).default('both'),
@@ -206,9 +209,9 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     }).strict(), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('该 scope 必须提供 workspace_id');
     const kinds = input.edge_kinds.split(',').map(kind => kind.trim()).filter(kind => kind !== '');
-    const allowedKinds = ['link', 'source', 'keyword'] as const;
-    if (kinds.length === 0 || kinds.some(kind => !allowedKinds.includes(kind as typeof allowedKinds[number]))) throw new ValidationError('edge_kinds 仅支持 link,source,keyword');
-    const uniqueKinds = [...new Set(kinds)] as Array<'link' | 'source' | 'keyword'>;
+    const allowedKinds = ['link', 'source', 'keyword', 'embed'] as const;
+    if (kinds.length === 0 || kinds.some(kind => !allowedKinds.includes(kind as typeof allowedKinds[number]))) throw new ValidationError('edge_kinds 仅支持 link,source,keyword,embed');
+    const uniqueKinds = [...new Set(kinds)] as Array<'link' | 'source' | 'keyword' | 'embed'>;
     const view = viewFor({ scope: input.scope, workspace_id: input.workspace_id ?? null }, input.workspace_id);
     // rows：两目录合并去重（按 id 排序，对齐旧跨库合并口径），pageTotal 求和
     const workspaceRows = input.scope === 'common' ? null : view.requireWorkspace().graphRows(maxGraphPages);
@@ -224,12 +227,65 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
         scope: input.scope, workspace_id: input.workspace_id ?? null, loaded: mergedRows.length, limit: maxGraphPages,
       });
     }
-    const { links } = view.resolvedLinks();
-    res.json(buildKnowledgeGraph(mergedRows, {
+    // P2-03：合成节点（tag/attachment/unresolved）与 tag/attachment 边；unresolved 边并入 links（kind:'link'）
+    const { links, unresolved, tags, attachments } = view.graphLinks();
+    const unresolvedById = new Map<string, { ref: string; raw_target: string }>();
+    const unresolvedEdges: Array<{ source: string; target: string; weight: number; kind: 'link' }> = [];
+    for (const item of unresolved) {
+      const nodeId = `unresolved:${item.ref}`;
+      const existing = unresolvedById.get(nodeId);
+      if (existing === undefined) unresolvedById.set(nodeId, { ref: item.ref, raw_target: item.raw_target });
+      unresolvedEdges.push({ source: item.source, target: nodeId, weight: item.weight, kind: 'link' });
+    }
+    const tagRows: GraphInputRow[] = tags.map(tag => ({
+      id: `tag:${tag.tag_norm}`,
+      title: `#${tag.raw_tag}`,
+      scope: 'common' as const,
+      workspace_id: null,
+      body_md: '',
+      body_chars: 0,
+      sources: [],
+      category: null,
+      landed: null,
+      node_type: 'tag' as const,
+    }));
+    const attachmentRows: GraphInputRow[] = attachments.map(attachment => ({
+      id: attachment.node_id,
+      title: attachment.name,
+      scope: attachment.scope,
+      workspace_id: attachment.workspace_id,
+      body_md: '',
+      body_chars: 0,
+      sources: [],
+      category: null,
+      landed: null,
+      node_type: 'attachment' as const,
+    }));
+    const unresolvedRows: GraphInputRow[] = [...unresolvedById.entries()].map(([id, value]) => ({
+      id,
+      title: value.raw_target,
+      scope: 'common' as const,
+      workspace_id: null,
+      body_md: '',
+      body_chars: 0,
+      sources: [],
+      category: null,
+      landed: null,
+      node_type: 'unresolved' as const,
+    }));
+    const tagEdges = tags.flatMap(tag => tag.refs.map(ref => ({ source: ref.source, target: `tag:${tag.tag_norm}`, weight: ref.weight, kind: 'link' as const })));
+    const attachmentEdges = attachments.flatMap(attachment => attachment.refs.map(ref => ({ source: ref.source, target: attachment.node_id, weight: ref.weight, kind: 'embed' as const })));
+    const syntheticRows: GraphInputRow[] = [...tagRows, ...attachmentRows, ...unresolvedRows];
+    res.json(buildKnowledgeGraph([...mergedRows, ...syntheticRows], {
       pagesTruncated,
       pageTotal,
       edgeKinds: uniqueKinds,
-      links: uniqueKinds.includes('link') ? links : [],
+      links: [
+        ...links.map(({ source, target, weight, kind }) => ({ source, target, weight, kind })),
+        ...unresolvedEdges,
+        ...tagEdges,
+        ...attachmentEdges,
+      ],
       includeIsolated: input.include_isolated === 'true',
       limitNodes: Math.min(input.limit_nodes, GRAPH_MAX_NODES),
       limitEdges: Math.min(input.limit_edges, GRAPH_MAX_EDGES),
@@ -391,6 +447,75 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     });
   });
 
+  // ---- 未解析出链（S-5：unresolved 端点返回未命中目标；与详情端点 unresolved_links 同口径）----
+  router.get('/pages/:id/unresolved', (req, res) => {
+    const scope = scopeOf(req.query);
+    const view = viewFor(scope, scope.workspace_id);
+    const found = scope.scope === 'common'
+      ? view.common.getById(req.params.id!)
+      : scope.scope === 'workspace'
+        ? view.requireWorkspace().getById(req.params.id!)
+        : (view.common.getById(req.params.id!) ?? view.requireWorkspace().getById(req.params.id!));
+    if (!found || found.issues.length > 0) throw new ApiError(404, KnowledgeErrorCode.NOT_FOUND, '知识页不存在');
+    const index = found.meta.scope === 'common' ? view.common : view.requireWorkspace();
+    const parsed = parseKnowledgeRefs(found.body, found.meta.slug);
+    const items = [...parsed.links, ...parsed.embeds]
+      .filter(link => index.lookupTarget(link.target_slug_norm) === null
+        && (found.meta.scope === 'common' || view.common.lookupTarget(link.target_slug_norm) === null))
+      .map(link => ({ raw_target: link.raw_target, alias: link.alias, heading: 'heading' in link ? (link.heading as string | null) : null }))
+      .sort((a, b) => a.raw_target.localeCompare(b.raw_target));
+    res.json({ items });
+  });
+
+  // ---- P2-03：vault 附件上传（本体落 <Docs>/_attachments/，正文用相对路径 ![[_attachments/x.png]]，§8 #3）----
+  router.post('/pages/:id/attachments', express.raw({ type: () => true, limit: KNOWLEDGE_IMAGE_MAX_BYTES + 7 * 1024 * 1024 }), (req, res) => {
+    if (!Buffer.isBuffer(req.body)) throw new ValidationError('附件请求体必须为 multipart/form-data');
+    const parts = parseMultipart(req.body, req.get('Content-Type'));
+    const file = parts.files[0];
+    if (!file) throw new ValidationError('multipart 里没有附件文件（字段名任意，需带 filename）');
+    const page = requireVisiblePage(req.params.id!, parts.fields.scope, parts.fields.workspace_id);
+    const { repo, docsDir } = targetFor(page.scope, page.workspace_id);
+    const attachmentsDir = repo.ensureAttachmentsDir();
+    const base = attachmentFileNameFor(file.filename ?? 'attachment');
+    // 重名自动加序号（x.png → x-2.png，最多 20 次；vault 内不覆盖既有文件）
+    let fileName = base;
+    for (let i = 2; i <= 20 && existsSync(join(attachmentsDir, fileName)); i += 1) {
+      const dot = base.lastIndexOf('.');
+      fileName = dot <= 0 ? `${base}-${i}` : `${base.slice(0, dot)}-${i}${base.slice(dot)}`;
+    }
+    writeFileSync(join(attachmentsDir, fileName), file.data);
+    const query = new URLSearchParams({ scope: page.scope, ...(page.scope === 'workspace' && page.workspace_id !== null ? { workspace_id: page.workspace_id } : {}) }).toString();
+    res.status(201).json({
+      file_name: fileName,
+      bytes: file.data.length,
+      mime: file.contentType,
+      path: `${ATTACHMENTS_DIR_NAME}/${fileName}`,
+      url: `/api/knowledge/attachments/${encodeURIComponent(fileName)}?${query}`,
+    });
+  });
+
+  // ---- P2-03：附件读取（相对路径正文渲染的数据源；仅认 <Docs>/_attachments/ 内文件，防路径逃逸）----
+  router.get('/attachments/:fileName', (req, res) => {
+    const rawScope = typeof req.query.scope === 'string' ? req.query.scope : '';
+    if (rawScope !== 'workspace' && rawScope !== 'common') throw new ValidationError('scope 取值必须是：workspace / common');
+    const workspaceId = typeof req.query.workspace_id === 'string' && req.query.workspace_id !== '' ? req.query.workspace_id : null;
+    if (rawScope === 'workspace' && workspaceId === null) throw new ValidationError('scope=workspace 时必须提供 workspace_id');
+    const { docsDir } = targetFor(rawScope, workspaceId);
+    const fileName = attachmentFileNameFor(req.params.fileName ?? '');
+    const filePath = join(docsDir, ATTACHMENTS_DIR_NAME, fileName);
+    assertInsideDocsDir(docsDir, filePath);
+    let data: Buffer;
+    try {
+      data = readFileSync(filePath);
+    } catch {
+      throw new ApiError(404, 'ATTACHMENT_NOT_FOUND', '附件不存在');
+    }
+    res.type(attachmentMimeOf(fileName));
+    res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.send(data);
+  });
+
   // ---- 重扫（语义改为：重建两目录扫描索引 + reconcile 只读报告）----
   router.post('/reparse', (req, res) => {
     parse(z.object({ batch_size: z.number().int().min(1).max(2000).optional() }).strict(), req.body ?? {});
@@ -549,6 +674,24 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
 }
 
 // ---- 模块级辅助 ----
+
+/** 附件文件名清洗：取 basename、去路径成分与非法字符（防逃逸；Windows 保留字符替换为 `-`） */
+function attachmentFileNameFor(raw: string): string {
+  const base = (raw.split(/[\\/]/).pop() ?? '').replace(/[\u0000-\u001f<>:"|?*]/g, '-').trim();
+  if (base === '' || base === '.' || base === '..') throw new ValidationError('附件文件名不能为空');
+  return base.slice(0, 120);
+}
+
+/** 附件 Content-Type（按扩展名；未知 → application/octet-stream） */
+function attachmentMimeOf(fileName: string): string {
+  const ext = (/\.([a-z0-9]+)$/i.exec(fileName)?.[1] ?? '').toLowerCase();
+  const table: Record<string, string> = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+    pdf: 'application/pdf', txt: 'text/plain', md: 'text/markdown', json: 'application/json',
+  };
+  return table[ext] ?? 'application/octet-stream';
+}
 
 function entryToRow(entry: { meta: KnowledgeFileMeta }): KnowledgePageListRow {
   const meta = entry.meta;

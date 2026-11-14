@@ -4,14 +4,17 @@
  * - 粘贴：监听 textarea 的 paste 事件里的 image/* 项；
  * - 拖拽：整个编辑区的 dragover/drop；
  * - 按钮：隐藏 file input。
- * 三者统一走「必要时 canvas 压缩 → POST /images → 在光标处插入 `![说明](url)`」。
+ * 三者统一走「必要时 canvas 压缩 → POST /attachments → 在光标处插入 `![[_attachments/x.png]]`」。
+ * P2-03（§8 #3 vault 自包含）：附件本体落 <Docs>/_attachments/，正文用相对路径；
+ * 旧图片（/api/knowledge/images/:id）在正文里照常渲染（MarkdownImage 兼容读取）。
  * 压缩中显示「压缩中…原始 7.2MB → 3.1MB」；压缩后仍 > 5MiB 直接中止并给中文原因。
  */
 import { useRef, useState } from 'react';
 import { IMAGE_MAX_BYTES, compressImage, formatBytes } from '../../lib/imageCompress';
 
 interface UploadedImage {
-  id: string;
+  /** P2-03：vault 附件名（_attachments/ 内实际文件名） */
+  file_name: string;
   url: string;
   bytes: number;
   width: number;
@@ -91,24 +94,21 @@ export function KnowledgeImageComposer({ scope, workspaceId, pageId, value, onCh
       form.append('file', result.blob, file.name || `image-${Date.now()}.${result.mime === 'image/png' ? 'png' : result.mime === 'image/webp' ? 'webp' : 'jpg'}`);
       // KB-IMG-2-VERIFY：api.post 会强制 `Content-Type: application/json` + JSON.stringify，
       // multipart 必须直接用 fetch（让浏览器自己带 boundary），否则服务端报「请求体必须为 multipart/form-data」。
-      const response = await fetch(`/api/knowledge/pages/${encodeURIComponent(pageId)}/images`, { method: 'POST', body: form });
+      // P2-03：上传落 vault 附件端点（POST /attachments → <Docs>/_attachments/）
+      const response = await fetch(`/api/knowledge/pages/${encodeURIComponent(pageId)}/attachments`, { method: 'POST', body: form });
       const payload = (await response.json().catch(() => null)) as (UploadedImage & { error?: { code?: string; message?: string } }) | null;
       if (!response.ok || payload === null || payload.error !== undefined) {
         throw new Error(payload?.error?.code ?? payload?.error?.message ?? `HTTP ${response.status}`);
       }
       const uploaded = payload;
-      const alt = (file.name || '图片').replace(/\.[^.]+$/u, '').slice(0, 60);
-      // KB-IMG-3：GET /api/knowledge/images/:id 用 requireVisiblePage(query.scope, query.workspace_id)，
-      // 裸 URL 会 404 IMAGE_* → 正文图片变加载失败占位；插入时带上作用域参数。
-      const imageUrl = `${uploaded.url}${uploaded.url.includes('?') ? '&' : '?'}scope=${encodeURIComponent(scope)}${
-        scope === 'workspace' && workspaceId !== null ? `&workspace_id=${encodeURIComponent(workspaceId)}` : ''
-      }`;
-      insertAtCursor(`\n![${alt}](${imageUrl})\n`);
       const elapsed = Math.round(performance.now() - startedAt);
+      // §8 #3：正文用相对路径 ![[_attachments/x.png]]（Obsidian 兼容；图数据源生成 attachment 节点）
+      insertAtCursor(`\n![[_attachments/${uploaded.file_name}]]\n`);
+      const sizeLabel = `${formatBytes(uploaded.bytes)}（${uploaded.width}×${uploaded.height}）`;
       setStatus(
         result.skipped
-          ? `已插入 ${formatBytes(uploaded.bytes)}（${uploaded.width}×${uploaded.height}，${elapsed}ms）`
-          : `已插入：原始 ${formatBytes(result.beforeBytes)} → ${formatBytes(uploaded.bytes)}（${uploaded.width}×${uploaded.height}，${elapsed}ms）`,
+          ? `已插入 ${sizeLabel}（${elapsed}ms）`
+          : `已插入：原始 ${formatBytes(result.beforeBytes)} → ${sizeLabel}（${elapsed}ms）`,
       );
       onUploaded?.(uploaded);
     } catch (cause) {

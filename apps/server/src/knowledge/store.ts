@@ -122,6 +122,51 @@ export class KnowledgeDocsView {
     return { links, unresolved };
   }
 
+  /**
+   * P2-03：图引用全量（link/embed 边 + tag/attachment/unresolved 合成节点数据）。
+   * 跨目录聚合：tag 同 norm 合并（weight 求和）；attachment 按目录身份分节点（ws 与 common 各自的
+   * `_attachments/` 是不同文件集）；unresolved 按 ref 去重（同一缺失目标只画一个节点，weight 求和）。
+   * attachment 节点 id 携带目录身份：`att:ws:<workspace_id>:<key>` / `att:common:<key>`。
+   */
+  graphLinks(): {
+    links: Array<{ source: string; target: string; weight: number; kind: 'link' | 'embed' }>;
+    unresolved: Array<{ source: string; ref: string; raw_target: string; alias: string | null; heading: string | null; weight: number }>;
+    tags: Array<{ tag_norm: string; raw_tag: string; weight: number; refs: Array<{ source: string; weight: number }> }>;
+    attachments: Array<{ key: string; name: string; node_id: string; scope: 'workspace' | 'common'; workspace_id: string | null; refs: Array<{ source: string; weight: number }> }>;
+  } {
+    const links: Array<{ source: string; target: string; weight: number; kind: 'link' | 'embed' }> = [];
+    const unresolved: Array<{ source: string; ref: string; raw_target: string; alias: string | null; heading: string | null; weight: number }> = [];
+    const tags = new Map<string, { raw_tag: string; weight: number; refs: Array<{ source: string; weight: number }> }>();
+    const attachments = new Map<string, { key: string; name: string; node_id: string; scope: 'workspace' | 'common'; workspace_id: string | null; refs: Array<{ source: string; weight: number }> }>();
+    for (const index of this.indexesInScope()) {
+      const identity = index.scopeIdentity;
+      const attachmentNodeId = (key: string): string => identity.scope === 'workspace' ? `att:ws:${identity.workspace_id ?? ''}:${key}` : `att:common:${key}`;
+      const refs = index.graphRefs(index === this.commonIndex ? null : this.commonIndex);
+      links.push(...refs.links);
+      unresolved.push(...refs.unresolved);
+      for (const tag of refs.tags) {
+        const bucket = tags.get(tag.tag_norm);
+        if (bucket === undefined) tags.set(tag.tag_norm, { raw_tag: tag.raw_tag, weight: tag.weight, refs: [...tag.refs] });
+        else {
+          bucket.weight += tag.weight;
+          bucket.refs.push(...tag.refs);
+        }
+      }
+      for (const attachment of refs.attachments) {
+        const nodeId = attachmentNodeId(attachment.key);
+        const bucket = attachments.get(nodeId);
+        if (bucket === undefined) attachments.set(nodeId, { key: attachment.key, name: attachment.name, node_id: nodeId, scope: identity.scope, workspace_id: identity.workspace_id, refs: [...attachment.refs] });
+        else bucket.refs.push(...attachment.refs);
+      }
+    }
+    return {
+      links,
+      unresolved,
+      tags: [...tags.entries()].map(([tag_norm, value]) => ({ tag_norm, ...value })),
+      attachments: [...attachments.values()],
+    };
+  }
+
   /** 反链（跨两目录合并；工作区页 → 公共页的跨目录目标按 M2 解析；排序稳定 (page_id)） */
   backlinks(pageId: string): Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> {
     const items: Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> = [];

@@ -22,7 +22,7 @@ import { KnowledgeFileParseError, type KnowledgeFileMeta } from '@agentboard/sha
 import { computeContentHash } from './frontMatter.js';
 import { indexPathFor } from './paths.js';
 import { listDocFiles, readDocFile, type ScannedFileInfo } from './scanner.js';
-import { parseKnowledgeLinks, type ParsedLink } from '../services/knowledgeLinks.js';
+import { parseKnowledgeRefs, type KnowledgeRefs } from '../services/knowledgeLinks.js';
 
 export interface DocEntry {
   fileName: string;
@@ -233,18 +233,63 @@ export class DocsIndex {
    * 返回 { source, target, weight }（target 为页 id）与 unresolved 清单。
    */
   resolveLinks(cross: DocsIndex | null): { links: Array<{ source: string; target: string; weight: number }>; unresolved: Array<{ source: string; raw_target: string; alias: string | null; heading: string | null }> } {
+    const refs = this.graphRefs(cross);
+    return {
+      links: refs.links.filter(link => link.kind === 'link').map(({ source, target, weight }) => ({ source, target, weight })),
+      unresolved: refs.unresolved.map(({ source, raw_target, alias, heading }) => ({ source, raw_target, alias, heading })),
+    };
+  }
+
+  // ---- P2-03：图引用全量（link/embed 边、tag/attachment/unresolved 节点数据） ----
+
+  /** P2-03 图边/节点引用行（weight 已按出现次数合并；M2 跨目录解析同 resolveLinks） */
+  graphRefs(cross: DocsIndex | null): {
+    links: Array<{ source: string; target: string; weight: number; kind: 'link' | 'embed' }>;
+    /** 未命中目标（含页嵌入未命中）：ref = 归一目标（页面 slug 或附件 key） */
+    unresolved: Array<{ source: string; ref: string; raw_target: string; alias: string | null; heading: string | null; weight: number }>;
+    /** 本目录正文引用的附件（key = 归一 basename；scope/workspace_id 按目录身份） */
+    attachments: Array<{ key: string; name: string; weight: number; refs: Array<{ source: string; weight: number }> }>;
+    /** 本目录正文里的标签（weight = 出现次数合计） */
+    tags: Array<{ tag_norm: string; raw_tag: string; weight: number; refs: Array<{ source: string; weight: number }> }>;
+  } {
     this.ensureFresh();
-    const links: Array<{ source: string; target: string; weight: number }> = [];
-    const unresolved: Array<{ source: string; raw_target: string; alias: string | null; heading: string | null }> = [];
+    const links: Array<{ source: string; target: string; weight: number; kind: 'link' | 'embed' }> = [];
+    const unresolved: Array<{ source: string; ref: string; raw_target: string; alias: string | null; heading: string | null; weight: number }> = [];
+    const attachmentRefs = new Map<string, { name: string; refs: Array<{ source: string; weight: number }> }>();
+    const tagRefs = new Map<string, { raw_tag: string; refs: Array<{ source: string; weight: number }> }>();
+    const resolvePage = (slugNorm: string): string | null =>
+      this.lookupTarget(slugNorm) ?? (this.scopeIdentity.scope === 'workspace' ? cross?.lookupTarget(slugNorm) ?? null : null);
     for (const entry of this.entries.values()) {
       if (entry.meta.status !== 'active') continue;
-      for (const parsed of parseLinksCached(entry)) {
-        const target = this.lookupTarget(parsed.target_slug_norm) ?? (this.scopeIdentity.scope === 'workspace' ? cross?.lookupTarget(parsed.target_slug_norm) ?? null : null);
-        if (target !== null) links.push({ source: entry.meta.id, target, weight: parsed.weight });
-        else unresolved.push({ source: entry.meta.id, raw_target: parsed.raw_target, alias: parsed.alias, heading: parsed.heading });
+      const source = entry.meta.id;
+      const refs = parseRefsCached(entry);
+      for (const parsed of refs.links) {
+        const target = resolvePage(parsed.target_slug_norm);
+        if (target !== null) links.push({ source, target, weight: parsed.weight, kind: 'link' });
+        else unresolved.push({ source, ref: parsed.target_slug_norm, raw_target: parsed.raw_target, alias: parsed.alias, heading: parsed.heading, weight: parsed.weight });
+      }
+      for (const parsed of refs.embeds) {
+        const target = resolvePage(parsed.target_slug_norm);
+        if (target !== null) links.push({ source, target, weight: parsed.weight, kind: 'embed' });
+        else unresolved.push({ source, ref: parsed.target_slug_norm, raw_target: parsed.raw_target, alias: parsed.alias, heading: null, weight: parsed.weight });
+      }
+      for (const parsed of refs.attachments) {
+        const bucket = attachmentRefs.get(parsed.target_slug_norm);
+        if (bucket === undefined) attachmentRefs.set(parsed.target_slug_norm, { name: parsed.raw_target.split(/[\\/]/).pop() ?? parsed.raw_target, refs: [{ source, weight: parsed.weight }] });
+        else bucket.refs.push({ source, weight: parsed.weight });
+      }
+      for (const parsed of refs.tags) {
+        const bucket = tagRefs.get(parsed.tag_norm);
+        if (bucket === undefined) tagRefs.set(parsed.tag_norm, { raw_tag: parsed.raw_tag, refs: [{ source, weight: parsed.weight }] });
+        else bucket.refs.push({ source, weight: parsed.weight });
       }
     }
-    return { links, unresolved };
+    return {
+      links,
+      unresolved,
+      attachments: [...attachmentRefs.entries()].map(([key, value]) => ({ key, name: value.name, weight: value.refs.reduce((sum, ref) => sum + ref.weight, 0), refs: value.refs })),
+      tags: [...tagRefs.entries()].map(([tag_norm, value]) => ({ tag_norm, raw_tag: value.raw_tag, weight: value.refs.reduce((sum, ref) => sum + ref.weight, 0), refs: value.refs })),
+    };
   }
 
   /** M2 解析顺序的目录内一跳（返回页 id） */
@@ -255,21 +300,28 @@ export class DocsIndex {
     return active?.meta.id ?? null;
   }
 
-  /** 反链：指向 pageId 的活跃源页；`cross` 供工作区目录解析跨目录目标（M2：ws → 公共 Docs） */
-  backlinks(pageId: string, cross: DocsIndex | null = null): Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> {
+  /**
+   * 反链：指向 pageId 的活跃源页（`[[...]]` 双链与 `![[page]]` 页嵌入都算引用，S-4/S-7）；
+   * 同一源页只一行（对齐旧 knowledge_link 行语义：link 命中优先于 embed）；`cross` 供工作区目录
+   * 解析跨目录目标（M2：ws → 公共 Docs）
+   */
+  backlinks(pageId: string, cross: DocsIndex | null = null): Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null; kind: 'link' | 'embed' }> {
     this.ensureFresh();
-    const items: Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> = [];
+    const byPage = new Map<string, { page_id: string; slug: string; title: string; alias: string | null; heading: string | null; kind: 'link' | 'embed' }>();
     for (const entry of this.entries.values()) {
       if (entry.meta.status !== 'active') continue;
-      for (const parsed of parseLinksCached(entry)) {
-        const target = this.lookupTarget(parsed.target_slug_norm)
-          ?? (this.scopeIdentity.scope === 'workspace' ? cross?.lookupTarget(parsed.target_slug_norm) ?? null : null);
-        if (target === pageId) {
-          items.push({ page_id: entry.meta.id, slug: entry.meta.slug, title: entry.meta.title, alias: parsed.alias, heading: parsed.heading });
+      const refs = parseRefsCached(entry);
+      const hit = (targetSlugNorm: string, alias: string | null, heading: string | null, kind: 'link' | 'embed'): void => {
+        const target = this.lookupTarget(targetSlugNorm)
+          ?? (this.scopeIdentity.scope === 'workspace' ? cross?.lookupTarget(targetSlugNorm) ?? null : null);
+        if (target === pageId && !byPage.has(entry.meta.id)) {
+          byPage.set(entry.meta.id, { page_id: entry.meta.id, slug: entry.meta.slug, title: entry.meta.title, alias, heading, kind });
         }
-      }
+      };
+      for (const parsed of refs.links) hit(parsed.target_slug_norm, parsed.alias, parsed.heading, 'link');
+      for (const parsed of refs.embeds) hit(parsed.target_slug_norm, parsed.alias, null, 'embed');
     }
-    return items.sort((a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0));
+    return [...byPage.values()].sort((a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0));
   }
 
   // ---- 检索 ----
@@ -477,13 +529,13 @@ function snippetOf(body: string, lowerQuery: string): string {
   return body.slice(start, start + 1200);
 }
 
-// parseKnowledgeLinks 缓存（边按 weight 合并由 parseKnowledgeLinks 完成）
-const linkCache = new WeakMap<DocEntry, ParsedLink[]>();
-function parseLinksCached(entry: DocEntry): ParsedLink[] {
-  let links = linkCache.get(entry);
-  if (links === undefined) {
-    links = parseKnowledgeLinks(entry.body, entry.meta.slug);
-    linkCache.set(entry, links);
+// parseKnowledgeRefs 缓存（link/embed/attachment/tag 的 weight 合并由 parseKnowledgeRefs 完成）
+const linkCache = new WeakMap<DocEntry, KnowledgeRefs>();
+function parseRefsCached(entry: DocEntry): KnowledgeRefs {
+  let refs = linkCache.get(entry);
+  if (refs === undefined) {
+    refs = parseKnowledgeRefs(entry.body, entry.meta.slug);
+    linkCache.set(entry, refs);
   }
-  return links;
+  return refs;
 }

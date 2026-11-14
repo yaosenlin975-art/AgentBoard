@@ -42,9 +42,11 @@ export interface KnowledgeGraphNode {
   /** KB-MODEL：前端按 category 着色（缺省 legacy） */
   category?: string | null;
   landed?: string | null;
+  /** P2-03：节点类型（缺省 page；tag/attachment/unresolved 为合成节点） */
+  node_type?: 'page' | 'tag' | 'attachment' | 'unresolved';
   source_count: number; degree: number;
 }
-export interface KnowledgeGraphEdge { source: string; target: string; kind: 'link' | 'source' | 'keyword'; weight: number }
+export interface KnowledgeGraphEdge { source: string; target: string; kind: 'link' | 'source' | 'keyword' | 'embed'; weight: number }
 export interface KnowledgeGraph {
   nodes: KnowledgeGraphNode[];
   edges: KnowledgeGraphEdge[];
@@ -103,7 +105,6 @@ const pairKey = (left: string, right: string): string => (left < right ? `${left
 const TERM_DF_LIMIT = 64; // 词出现在过多页时跳过，避免 O(n²) 爆炸（这些词区分度也低）
 
 type PairState = {
-  linkWeight: number;
   sourceWeight: number;
   termHits: number;
   trigramHits: number;
@@ -114,7 +115,7 @@ type PairState = {
 
 function addPair(map: Map<string, PairState>, left: string, right: string, apply: (state: PairState) => void): void {
   const key = pairKey(left, right);
-  const state = map.get(key) ?? { linkWeight: 0, sourceWeight: 0, termHits: 0, trigramHits: 0, termFloor: 0, gramFloor: 0 };
+  const state = map.get(key) ?? { sourceWeight: 0, termHits: 0, trigramHits: 0, termFloor: 0, gramFloor: 0 };
   apply(state);
   map.set(key, state);
 }
@@ -142,9 +143,13 @@ function indexBy(rows: KnowledgeGraphRow[], keysOf: (row: KnowledgeGraphRow) => 
 }
 
 export interface BuildGraphOptions {
-  edgeKinds: Array<'link' | 'source' | 'keyword'>;
-  /** V2-4：显式 `[[双链]]` 边（由调用方从 knowledge_link 读出）；缺省视为无 */
-  links?: Array<{ source: string; target: string; weight: number }>;
+  edgeKinds: Array<'link' | 'source' | 'keyword' | 'embed'>;
+  /**
+   * 显式 `[[双链]]` / `![[嵌入]]` 边（P2-03：由调用方从扫描索引读出；kind 缺省 'link'）。
+   * target 可以是页 id，也可以是合成节点 id（`tag:` / `att:` / `unresolved:` 前缀——对应
+   * 合成 row 已并入 rows）。缺省视为无。
+   */
+  links?: Array<{ source: string; target: string; weight: number; kind?: 'link' | 'embed' }>;
   includeIsolated: boolean;
   limitNodes: number;
   limitEdges: number;
@@ -154,17 +159,36 @@ export interface BuildGraphOptions {
   pageTotal?: number;
 }
 
-export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGraphOptions): KnowledgeGraph {
+/** 合成节点 row 允许携带 node_type（页 row 无此字段，按 'page' 处理） */
+export type GraphInputRow = KnowledgeGraphRow & { node_type?: KnowledgeGraphNode['node_type'] };
+
+export function buildKnowledgeGraph(rows: GraphInputRow[], options: BuildGraphOptions): KnowledgeGraph {
   const byId = new Map(rows.map(row => [row.id, row]));
   const pairs = new Map<string, PairState>();
+  /**
+   * P2-03：显式 link/embed 边**有向**（source=出链页），不再并入无向 pairs——
+   * 旧 knowledge_link 链路边方向 = 引用页 → 被引页（S-8 契约），无序 pairKey 会丢方向。
+   */
+  const linkPairs = new Map<string, number>();
+  const embedPairs = new Map<string, number>();
+  /** 有 link 边的无向对（E1/E2 不再为该对生成第二条边，保持旧「同一对只一条边、link 优先」契约） */
+  const undirectedLinkKeys = new Set<string>();
   const wantLink = options.edgeKinds.includes('link');
+  const wantEmbed = options.edgeKinds.includes('embed');
   const wantSource = options.edgeKinds.includes('source');
   const wantKeyword = options.edgeKinds.includes('keyword');
 
-  if (wantLink) {
-    for (const link of options.links ?? []) {
-      if (!byId.has(link.source) || !byId.has(link.target)) continue;
-      addPair(pairs, link.source, link.target, state => { state.linkWeight += link.weight; });
+  for (const link of options.links ?? []) {
+    if (!byId.has(link.source) || !byId.has(link.target)) continue;
+    if (link.kind === 'embed') {
+      if (!wantEmbed) continue;
+      const key = `${link.source}\u0000${link.target}`;
+      embedPairs.set(key, (embedPairs.get(key) ?? 0) + link.weight);
+    } else {
+      if (!wantLink) continue;
+      const key = `${link.source}\u0000${link.target}`;
+      linkPairs.set(key, (linkPairs.get(key) ?? 0) + link.weight);
+      undirectedLinkKeys.add(pairKey(link.source, link.target));
     }
   }
 
@@ -206,11 +230,8 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
   for (const [key, state] of pairs) {
     const [left, right] = key.split('\u0000') as [string, string];
     if (!byId.has(left) || !byId.has(right)) continue;
-    // 合并优先级：显式双链 > 共享来源 > 关键词共现
-    if (state.linkWeight > 0) {
-      edges.push({ source: left, target: right, kind: 'link', weight: state.linkWeight });
-      continue;
-    }
+    // 该对已有显式双链 → link 边已在下方按引用方向独立输出（保持旧「同一对只一条边、link 优先」契约）
+    if (undirectedLinkKeys.has(key)) continue;
     if (state.sourceWeight > 0) {
       edges.push({ source: left, target: right, kind: 'source', weight: state.sourceWeight });
       continue;
@@ -221,6 +242,38 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
     const gramOk = state.trigramHits >= GRAPH_KEYWORD_MIN_TRIGRAMS && gramRatioOk;
     if (wantKeyword && (termOk || gramOk)) {
       edges.push({ source: left, target: right, kind: 'keyword', weight: GRAPH_KEYWORD_WEIGHT });
+    }
+  }
+
+  // P2-03：显式双链边（对齐旧 knowledge_link 语义：单向边保留引用方向 source=引用页 → target=被引页；
+  // A↔B 互链双向合并成一条、weight 累加——GRAPH-EDGE-BUG 既有契约）
+  const consumedLinks = new Set<string>();
+  for (const [key, weight] of linkPairs) {
+    if (consumedLinks.has(key)) continue;
+    const [source, target] = key.split('\u0000') as [string, string];
+    const reverseKey = `${target}\u0000${source}`;
+    const reverseWeight = linkPairs.get(reverseKey);
+    if (reverseWeight !== undefined) {
+      consumedLinks.add(reverseKey);
+      const [left, right] = pairKey(source, target).split('\u0000') as [string, string];
+      edges.push({ source: left, target: right, kind: 'link', weight: weight + reverseWeight });
+    } else {
+      edges.push({ source, target, kind: 'link', weight });
+    }
+  }
+  // P2-03：embed 边独立追加（同一对节点已有 link/source/keyword 边时也保留，S-7「独立边」；互嵌双向合并）
+  const consumedEmbeds = new Set<string>();
+  for (const [key, weight] of embedPairs) {
+    if (consumedEmbeds.has(key)) continue;
+    const [source, target] = key.split('\u0000') as [string, string];
+    const reverseKey = `${target}\u0000${source}`;
+    const reverseWeight = embedPairs.get(reverseKey);
+    if (reverseWeight !== undefined) {
+      consumedEmbeds.add(reverseKey);
+      const [left, right] = pairKey(source, target).split('\u0000') as [string, string];
+      edges.push({ source: left, target: right, kind: 'embed', weight: weight + reverseWeight });
+    } else {
+      edges.push({ source, target, kind: 'embed', weight });
     }
   }
 
@@ -237,6 +290,7 @@ export function buildKnowledgeGraph(rows: KnowledgeGraphRow[], options: BuildGra
       category: row.category ?? 'legacy',
       landed: row.landed ?? null,
       workspace_id: row.workspace_id,
+      node_type: row.node_type ?? ('page' as const),
       source_count: new Set(row.sources.map((source: KnowledgeSource) => source.locator)).size,
       degree: degree.get(row.id) ?? 0,
     }))

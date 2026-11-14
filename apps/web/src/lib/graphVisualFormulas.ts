@@ -152,7 +152,7 @@ export function duplicateEdgeKeys(
   return set;
 }
 
-/** 11 个语义色的 CSS 变量类名（取值靠临时插 div + getComputedStyle，不硬编码） */
+/** 12 个语义色的 CSS 变量类名（取值靠临时插 div + getComputedStyle，不硬编码） */
 export const GRAPH_SEMANTIC_CLASSES = {
   fill: 'color-fill',
   fillFocused: 'color-fill-focused',
@@ -162,6 +162,8 @@ export const GRAPH_SEMANTIC_CLASSES = {
   arrow: 'color-arrow',
   circle: 'color-circle',
   line: 'color-line',
+  /** P2-03：embed 边语义色（![[嵌入]] 边与普通 link 边区分） */
+  lineEmbed: 'color-line-embed',
   text: 'color-text',
   fillHighlight: 'color-fill-highlight',
   lineHighlight: 'color-line-highlight',

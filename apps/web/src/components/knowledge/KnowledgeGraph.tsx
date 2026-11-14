@@ -22,6 +22,7 @@ import {
   normalizeLanded,
   PRESET_UNLANDED_DESIGN,
   searchMatches,
+  syntheticNodeColor,
   type GraphEdgeKind,
   type GraphNode,
   type GraphPayload,
@@ -106,7 +107,8 @@ function graphParams(workspaceId: string | null, scope: Props['scope']): URLSear
     limit_nodes: '300',
     limit_edges: '900',
     // GRAPH-KEYWORD-ALIGN：真实双链（link）必须默认带上，否则页间 `[[双链]]` 在星图上完全不可见
-    edge_kinds: 'link,source,keyword',
+    // P2-03：embed（`![[嵌入]]`）默认带上（附件/嵌入关系可见）
+    edge_kinds: 'link,embed,source,keyword',
     include_isolated: 'true',
   });
   if (scope !== 'common' && workspaceId !== null) params.set('workspace_id', workspaceId);
@@ -122,7 +124,7 @@ export function prefetchGraphChunk(): void {
 }
 
 export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageId = null, onExitFocus }: Props) {
-  const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ link: true, source: true, keyword: true });
+  const [kinds, setKinds] = useState<Record<GraphEdgeKind, boolean>>({ link: true, source: true, keyword: true, embed: true });
   const [showIsolated, setShowIsolated] = useState(true);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const handleRef = useRef<PixiGraphHandle | null>(null);
@@ -205,7 +207,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
   }, [raw]);
 
   const enabledKinds = useMemo<GraphEdgeKind[]>(
-    () => (['link', 'source', 'keyword'] as GraphEdgeKind[]).filter((k) => kinds[k]),
+    () => (['link', 'embed', 'source', 'keyword'] as GraphEdgeKind[]).filter((k) => kinds[k]),
     [kinds],
   );
 
@@ -340,7 +342,12 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
         title: node.title,
         weight: local?.weights.get(node.id) ?? weights.get(node.id) ?? 0,
         // KB-MODEL：category 固定五色；缺失一律 legacy 灰。scope 方案时退回语义色（不传 tint）
-        ...(colorScheme === 'category' ? { tint: tintFromCssColor(categoryColor(node.category, dark)) } : {}),
+        // P2-03：合成节点（tag/attachment/unresolved）固定语义色，优先于 category/scope 方案
+        ...(() => {
+          const synthetic = syntheticNodeColor(node.node_type, dark);
+          if (synthetic !== null) return { tint: tintFromCssColor(synthetic) };
+          return colorScheme === 'category' ? { tint: tintFromCssColor(categoryColor(node.category, dark)) } : {};
+        })(),
       })),
       edges: shown.edges
         .filter((edge) => keep.has(edge.source) && keep.has(edge.target))
@@ -358,6 +365,8 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
 
   const pick = useCallback(
     (node: GraphNode): void => {
+      // S-5：unresolved 节点点击不跳转；tag/attachment 不是页，同样不进详情
+      if (node.node_type !== undefined && node.node_type !== 'page') return;
       onSelect({
         id: node.id,
         scope: node.scope,
@@ -603,6 +612,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
         <label className="flex items-center gap-1">
           <input
             type="checkbox"
+            data-testid="graph-edge-embed"
+            checked={kinds.embed}
+            onChange={(e) => setKinds((prev) => ({ ...prev, embed: e.target.checked }))}
+            className="size-3.5 accent-accent"
+          />
+          嵌入
+        </label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
             data-testid="graph-edge-source"
             checked={kinds.source}
             onChange={(e) => setKinds((prev) => ({ ...prev, source: e.target.checked }))}
@@ -674,7 +693,7 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
         </button>
         {stats !== null && (
           <span data-testid="knowledge-graph-stats" className="ml-auto tabular-nums">
-            {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（双链 {stats.linkEdges} / 来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
+            {stats.nodeCount} 个节点 · {stats.edgeCount} 条关联（双链 {stats.linkEdges} / 嵌入 {stats.embedEdges} / 来源 {stats.sourceEdges} / 关键词 {stats.keywordEdges}）
           </span>
         )}
       </div>
@@ -733,6 +752,23 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
         <span className="flex items-center gap-1">
           <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('keyword', dark).color} strokeWidth={edgeStyle('keyword', dark).width} strokeDasharray="4 3" /></svg>
           关键词关联（虚线）
+        </span>
+        {/* P2-03：embed 边与合成节点图例（语义色与画布一致） */}
+        <span className="flex items-center gap-1">
+          <svg aria-hidden width="22" height="8"><line x1="0" y1="4" x2="22" y2="4" stroke={edgeStyle('embed', dark).color} strokeWidth={edgeStyle('embed', dark).width} strokeDasharray="2 3" /></svg>
+          嵌入（点划线）
+        </span>
+        <span data-testid="graph-legend-tag" className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: syntheticNodeColor('tag', dark) ?? undefined }} />
+          标签
+        </span>
+        <span data-testid="graph-legend-attachment" className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full" style={{ background: syntheticNodeColor('attachment', dark) ?? undefined }} />
+          附件
+        </span>
+        <span data-testid="graph-legend-unresolved" className="flex items-center gap-1">
+          <span aria-hidden className="inline-block size-2.5 rounded-full opacity-50" style={{ background: syntheticNodeColor('unresolved', dark) ?? undefined }} />
+          未解析
         </span>
         {/* UNSLOP-5：画布真实支持的快捷键（pixiGraph keydown：方向键平移、+/- 缩放、Esc 关右键菜单）用键帽呈现 */}
         <span data-testid="graph-keyboard-hints" className="ml-auto flex items-center gap-1">
