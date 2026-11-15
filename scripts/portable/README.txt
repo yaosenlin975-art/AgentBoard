@@ -82,6 +82,8 @@ AgentBoard 便携版（Windows x64）
   app\cli\kb.cmd --server http://127.0.0.1:8899 list-spaces   (服务不是默认端口时)
   app\cli\kb.cmd knowledge --help / create-issue --help / dep --help   分族帮助
 注意：kb 的全局选项（--server / --json）要放在子命令前面。
+知识页是文件事实源（公共页 <你的数据目录>\Docs\，工作区页 <工作区>\.agentboard\Docs\）；
+对外引用用 kb knowledge link（默认 [[wikilink]]），禁止裸文件路径；旧库迁移用 kb knowledge export-legacy。
 kb claim 成功会在“当前工作目录”下写 .agentboard\claims\ 记录，属于本地状态，可随时删除。
 
 六、已知限制

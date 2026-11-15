@@ -188,15 +188,16 @@ describe('KB-HIST-UI 历史抽屉', () => {
 });
 
 describe('知识页创建/最后修改时间展示', () => {
-  it('头部元信息显示两个时间，格式与 revision 历史一致（toLocaleString）', async () => {
+  it('头部元信息显示两个时间，文案为「创建于/最后修改于」，时间格式为 zh-CN 两分钟位（P2-03 后组件口径）', async () => {
     const created = 1_700_000_000_000;
     const updated = 1_700_000_006_000;
     server.use(
       http.get('/api/knowledge/pages/p1', () => HttpResponse.json({ ...page(3, '当前标题', '当前正文'), created_at: created, updated_at: updated })),
     );
     mount();
-    expect(await screen.findByTestId('knowledge-page-created-at')).toHaveTextContent(`创建时间 ${new Date(created).toLocaleString()}`);
-    expect(screen.getByTestId('knowledge-page-updated-at')).toHaveTextContent(`最后修改时间 ${new Date(updated).toLocaleString()}`);
+    const fmt = (ts: number): string => new Date(ts).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+    expect(await screen.findByTestId('knowledge-page-created-at')).toHaveTextContent(`创建于 ${fmt(created)}`);
+    expect(screen.getByTestId('knowledge-page-updated-at')).toHaveTextContent(`更新于 ${fmt(updated)}`);
   });
 });
 

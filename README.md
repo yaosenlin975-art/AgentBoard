@@ -169,7 +169,7 @@ clone 后取回数据与图片：
 2. `kb workspace-db snapshot import <工作区> --replace` 导入行集，`--include-attachments` 导出的快照会把附件本体还原到 `<工作区>/.agentboard/attachments/<storage_key>`，图片接口即可 200；缺文件时 import 直接 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key，不做「尽量导入」；
 3. 快照里没有附件本体（未加 `--include-attachments`）时，行在而文件不在，图片仍是 404 —— 需要图片就重新带开关导出/导入。
 
-中心库（注册表、成员、账号元数据）另有一套只读快照：`kb workspace-db snapshot center-export` / `center-validate`，落在中心库同级的 `center-snapshot/`，账号凭据引用一律脱敏为 `***`，不提供导入。公共知识页不进快照——知识已是文件事实源（公共页在 `~/.agentboard/Docs/`，工作区页在 `<工作区>/.agentboard/Docs/`，P2-01/P2-04），clone 后随文件系统与 git 直接取回。
+中心库（注册表、成员、账号元数据）另有一套只读快照：`kb workspace-db snapshot center-export` / `center-validate`，落在中心库同级的 `center-snapshot/`，账号凭据引用一律脱敏为 `***`，不提供导入。公共知识页不进快照——知识已是文件事实源（公共页在 `~/.agentboard/Docs/`，工作区页在 `<工作区>/.agentboard/Docs/`，P2-01/P2-04），clone 后随文件系统与 git 直接取回。存量旧库知识页用 `kb knowledge export-legacy` 一次性导出为 `Docs/*.md`（fan-out 中心库 + 各 localized 工作区库，`--dry-run` 先看清单，manifest sha256 兜底，旧库只读保留）。
 
 ### Docker（单容器）
 
@@ -301,6 +301,8 @@ kb comment <issue-id> "内容"       # 长文/中文用 --stdin
 kb accept <issue-id>               # 待验收卡写结构化验收记录（不改状态）
 kb done <issue-id> --notes "..."   # 完成 → 待验收；自动提交未完成时 exit 1 并附补救命令（非 git 仓库只警告、exit 0）
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
+kb knowledge list --scope common   # 知识页（文件事实源 Docs/*.md，P2-01/P2-04）；create/revise/rename/export-legacy 等全族见 kb knowledge --help
+kb workspace-db status             # 工作区库下沉状态（enable/cleanup/revert/snapshot 子命令见 kb workspace-db --help）
 ```
 
 - 服务地址：`--server <url>` 或环境变量 `KB_SERVER`（默认 `http://127.0.0.1:8787`）。

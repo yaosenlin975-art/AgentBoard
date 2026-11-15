@@ -102,7 +102,8 @@ kb create-space <name> <path>           # 创建工作空间（path 必须已存
 kb delete-space <workspace>             # 删除工作空间登记（不可逆；不动磁盘目录；占用校验由服务端拒绝，需 --yes）
 kb list-spaces                          # 列工作空间（id/name/path；文本与 --json 都给全长 36 位 id——任务列表的 id 列才是短 ID）
 kb list-spaces --current                # 只输出 cwd 解析到的当前工作区（绑定工作区主路径；JSON 仍为单元素数组）
-kb workspace-db <子命令>                # 工作区库下沉：状态查询 / 半成品清理 / 反向回迁（<工作区>/.agentboard/agentboard.db）
+kb workspace-db <子命令>                # 工作区库下沉（<工作区>/.agentboard/agentboard.db）：enable 启用迁移（新建区自动启用）/ status 只读状态 / cleanup 清半成品 / revert 反向回迁
+kb workspace-db snapshot export|validate|import <工作区>  # 文本快照（JSONL+manifest，随 git）；另有 center-export / center-validate 中心库快照
 # —— 任务 ——
 kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--parent <id>] [--status 待规划|待验收] [--allow-empty]
                                         # 建任务；-d 必填；标题含引号被拒时用 --title-stdin；无 --description-stdin（长描述先建后 update）
@@ -131,7 +132,7 @@ kb dep add <issue-id> <blocker-id>      # 新增前置：blocker 解除（待验
 kb dep rm <issue-id> <blocker-id>       # 移除前置
 # —— 评论与知识 ——
 kb comment <issue-id> "内容"            # 写评论；中文/长文用 --stdin；可附 ≤5 张 PNG/JPEG/WebP
-kb knowledge create|import|revise|show|list|search|resolve|link|find-source|action  # 知识页全族，见下；list 的 --scope（workspace|common）必填
+kb knowledge create|import|revise|show|list|search|resolve|link|find-source|action|rename|export-legacy  # 知识页全族（文件事实源 Docs/*.md），见下；list 的 --scope（workspace|common）必填
 kb changelog list|create                # 工作区变更日志（活动工作区缺省按 cwd 解析）
 # —— 待决策 ——
 kb ask <issue-id>                       # 提问并等待宽限（默认 180 秒）；--grace 0 立即落锁
@@ -150,7 +151,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 
 - 全局选项：`--server <url>`（覆盖 `KB_SERVER`）、`--json`（输出原始 JSON）。
 - 输出体积观测（ARCH-06）：设 `KB_METRICS=1` 时命令结束后向 **stderr** 追加一行 `[kb] cmd=<顶层命令> out=<字节数>B lines=<行数>`（统计本次写到 stdout 的 UTF-8 字节数与行数；嵌套命令取顶层名如 `knowledge`，未进入命令时为 `-`）。未设或设 `0` 时不输出，stdout/stderr 与改造前逐字一致；该行不写 stdout，不影响 `--json` 解析与退出码。
-- 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突 / 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
+- 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突与文件冲突 `KNOWLEDGE_FILE_CONFLICT`（409：外部编辑 content_hash 不符 / slug 冲突 / 锁等待超时，先跑 `kb knowledge reconcile` 再裁决）/ 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
 - **`kb done` 的 1 是「已生效但没提交」**（GIT-OBSERVABLE）：done 已把卡推进到待验收（或已关闭），但自动提交未完成（`git_commit.status='not-committed'`，原因码 `NO_BASELINE` / `COMMIT_FAILED` / `ZERO_HIT` / `NO_SCOPE`）时，CLI 在 stderr 打「未提交 + 原因 + 可照抄补救命令」并 exit 1；按 stderr 补救，**不要重跑 `kb done`**。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0；`status='skipped'`（`reason='BOARD_ONLY'`）是成功跳过，不写 stderr、退出码 0。带 `--close` 且命中阻断性缺口时 CLI 会跳过 close（exit 1），补救后 `kb close <id>`。`--json` 仍输出单个 issue JSON，判定读 `git_commit.status/reason`。
 - `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用 / **结构环：让子卡依赖自己的祖先**，文案「会形成环」）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
@@ -161,9 +162,11 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - **`--stdin`、BOM 与 PowerShell 引号**：CLI 已在 `packages/cli/src/io.ts` 剥离 UTF-8 BOM；多行中文用 `Get-Content -Raw file.md | kb comment <id> --stdin`（PowerShell 不支持 `<` 重定向）。标题/描述/评论含 `"`、`&`、`|`、`\` 时，PowerShell 会把后续参数一起吞进字符串并**静默 exit 0**（CLI-01）：一律用单引号包裹（内部单引号写成 `''`），或改走 `--notes-stdin` / `--stdin` / `kb update --description-stdin`。**`kb create-issue` 没有 `--description-stdin`**（实测 `unknown option`，exit 1），标题只能用 `--title-stdin`；长描述先建卡再 `kb update <id> --description-stdin`，或用 `-d $var` 传 PowerShell 变量。
 - `kb knowledge resolve <ref>`：按 id / ≥8 位 id 前缀 / slug 解析知识页（默认跨 common + 当前工作区）；歧义 409（不猜第一条）、已删 410、不存在 404。退出码 0 / 1(404,410) / 2(409,403)。
   - **服务端进程陈旧时会报 `接口不存在: GET /knowledge/resolve`**（路由晚于服务进程启动；CLI 报告 §0.1）。此时不是命令写错：先 `kb knowledge show <全 id>` / `kb knowledge list` 顶替，再由用户决定 `POST /api/system/restart` 或重启服务；`pnpm server:ensure` 只探活复用，不会自动换新构建。
-- 文档转知识卡：`kb knowledge import <file>`（md/txt/json 自动推断，--format 可覆盖；sources 自动构造 file+sha256；单文件 ≤10MB、正文 ≤200 万字符；409 冲突退出码 2，用 --title/--slug 换值）——kb knowledge import --help 有完整口径。
+- 文档转知识卡：`kb knowledge import <file>`（md/txt/json 自动推断，--format 可覆盖；单文件 ≤10MB、正文 ≤200 万字符；409 冲突退出码 2，用 --title/--slug 换值）。**P2-04 起导入语义反转（M11）**：不再是「导入到 DB」，而是把外部 md/txt/json **规范化为 `Docs/<slug>.md` 并补齐 front matter**（sources/evidence/revision/content_hash 由服务端生成；json 数组 ≤100 条逐条建页）——kb knowledge import --help 有完整口径。
 - **`kb knowledge import` 会自动剥离 UTF-8 BOM**（N-02）：文件前三字节是 `EF BB BF` 就先剥再解码，正文首字符不会是 `U+FEFF`，标题解析与 diff/搜索不受影响；命中时 stderr 会提示一行。
-- `kb knowledge link <id|slug> [--format token|markdown|plain]`：产出引用串；**agent 输出一律用 `knowledge:<uuid>`**（slug 只作输入别名）。`--json` 可用。
+- `kb knowledge link <id|slug> [--format wikilink|token|markdown|plain]`：产出引用串；**wikilink 已是主键形态，默认输出 `[[slug]]`**；`knowledge:<uuid>` 是稳定标识（改名不变，token 格式保留给需要跨改名的场景）。`--json` 可用。
+- **`kb knowledge rename <page-id> <new-slug> --scope <s> --expected-revision <n>`**：唯一合法的 slug 变更入口——原子换文件名 + 全库扫描批量重写 `[[old]]→[[new]]`（含 `[[a|b]]` / `[[a#h]]` / `[[a#h|b]]` 与页嵌入 `![[a]]` 形态），页面 id 不变；**直接改文件名（不走本命令）→ `kb knowledge` reconcile 报「slug 与文件名不一致」冲突，由人裁决**。
+- **`kb knowledge export-legacy`**（P2-02 一次性迁移）：把旧库知识页导出为 `Docs/*.md`（fan-out 中心库 + 各 localized 工作区库，防丢页）；`--dry-run` 只打清单，`manifest`（sha256）落 `<Docs>/.export-manifest.json`；幂等可重跑，冲突备份后暂停不静默覆盖；旧库只读保留。
 - **`--json` 只改成功体，不改退出码；失败体也走 JSON**：成功时 stdout 是原始 JSON；失败时 stdout 是 `{"error":{"code","message","details"}}`（实测 `kb show 00000000-0000-4000-8000-000000000000 --json` → `{"error":{"code":"NOT_FOUND","message":"任务不存在"}}`，exit 1）。退出码口径与文本模式完全一致，分支仍以退出码为主、`error.code` 为辅。
 
 ## 服务重启（SERVER-STABILITY，强制）
@@ -203,7 +206,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace <当前工作区> --expected-revision 1 --stdin
   kb knowledge action <page-id> archive --scope workspace --workspace <当前工作区> --expected-revision 2
   ```
-  正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。**`create` 必须有正文 `--stdin` 且 `--sources`/`--evidence` 各 ≥1（缺任一实测退出 1「create 缺少必填项」）**；一次性把已有的 md/txt 建成页可用更短的 `kb knowledge import <file> --scope workspace --workspace <当前工作区> --domain … --category … --landed …`（sources 自动构造，无需手写 JSON；文本输出只回一行 id/大小，不会倾倒正文）。**`import` 不剥文件 BOM**（实测 UTF-8 BOM 文件导入后正文以 U+FEFF 开头，属 CLI 待修）：导入前把文件存成 UTF-8 无 BOM。**`create` 与 `import` 都必须带 `--domain`（accounts/knowledge/board/chat/ui/infra；KB-CR-1）**；`--category` 缺省落 `open`，`design` 用 `--landed proposed|partial|landed`。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。
+  正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。**`create` 必须有正文 `--stdin` 且 `--sources`/`--evidence` 各 ≥1（缺任一实测退出 1「create 缺少必填项」）**；一次性把已有的 md/txt 建成页可用更短的 `kb knowledge import <file> --scope workspace --workspace <当前工作区> --domain … --category … --landed …`（front matter 由服务端生成，无需手写 JSON；文本输出只回一行 id/大小，不会倾倒正文）。**`create` 与 `import` 都必须带 `--domain`（accounts/knowledge/board/chat/ui/infra；KB-CR-1）**；`--category` 缺省落 `open`，`design` 用 `--landed proposed|partial|landed`。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。改 slug 用 `kb knowledge rename <page-id> <new-slug> --expected-revision <n>`（全库重写 `[[old]]→[[new]]`），不要手工改文件名。知识页文件坏了/外部编辑冲突时先跑 `kb knowledge reconcile`（只读报告，`--fix` 只清残留 tmp/lock 与重建索引，绝不自动改写正文）。
 - **不要用 `kb knowledge show --history` 做交接阅读**：文本模式会倾倒整段 JSON（本次约 46KB，CLI-06）。要看历史用 `--json` 并只取需要的 revision。
 - **命令细节与实测坑**：完整示例（知识页建/读/改/归档、变更日志、任务全生命周期）、`--sources-file` 的 JSON 路径必须用正斜杠、`knowledge action` 必须带 `--expected-revision`、以及 `1cb07910` 三阶段（A 已落地 / B、C 未落地）的现状对照，见 `Docs/guide-2026-11-04-cli-knowledge-tasks.md`；本文只写口径，不复述命令。
 
@@ -222,18 +225,20 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
   - `snapshot` 只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入；服务端只查「非空且 ≤2 KiB」，不校验格式。`file` 类型来源（及指向它的 evidence）不许带 snapshot——带了服务端直接拒「本地代码来源只保存路径和 hash」，所以 snapshot 只可能出现在 url / agent 来源上。
   - 同一 evidence 不重复登记；同一提交（同一 content_hash）有多条时只保留一条。
 - **写完回读**：`kb knowledge show <page-id> --scope workspace --workspace <当前工作区>` 确认 id / scope / revision / 内容；回读失败如实报「未保存」，不得声称已保存。
-- **快照没进 git 就是失败**：`kb knowledge create/revise/action` 正文已保存但快照未提交时，命令 **exit 1** 并在 stderr 打印快照路径与 `原因：<git stderr 首行>`（`--json` 时 stdout 仍是单个页面 JSON，判断 `page_commit.committed`）。不要原样重跑——revision 已前进，会撞 CAS（exit 2）；先修 git（常见 `.git/index.lock` 残留），再按新 revision 重跑。`page_commit.skipped=true` 是无快照可提交的正常情况，不算失败。
+- **每页 git 快照（page_commit）已整体退役（P2-01/P2-04，方向 B）**：知识页唯一事实源是 markdown 文件（工作区页 `<工作区>/.agentboard/Docs/<slug>.md`、公共页 `~/.agentboard/Docs/<slug>.md`），**文件写成功即命令成功**；旧「快照没进 git 即 exit 1」语义已删除，响应里的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），不要读取。工作区 `Docs/` 随仓库进 git，提交由 `kb done --scope` 统一管。
 
-## 知识卡链接（KCLINK，强制）
+## 知识卡链接（KCLINK，强制 · P2-03/P2-04 起主键为 wikilink）
 
-给用户或其他 agent 引用知识页时**发知识卡链接，不发文件路径**。文件会迁移、改名、重构，路径链接必然过期；`knowledge:<page.id>` 不受目录结构影响（2026-11-04 已发生一次真实事故：发出 `file:///Docs/*.md` 链接，文档搬迁后链接失效，知识页其实还在）。
+知识页唯一事实源是 markdown 文件（`Docs/<slug>.md`），**`[[wikilink]]` 是引用主键**（slug=文件名）；`knowledge:<uuid>` 是稳定标识（改名不变，front matter `id`）；**任何形态下都禁止裸文件路径**——文件会迁移、改名、重构，路径链接必然过期（2026-11-04 已发生一次真实事故：发出 `file:///Docs/*.md` 链接，文档搬迁后链接失效，知识页其实还在）。
 
-- **先取 id 再拼链接**：用 `kb knowledge resolve <ref>` 或 `kb knowledge link <id|slug>` 拿到 `id`，不要手写 slug 冒充 id，也不要按搜索结果第一条兜底。
-- **Markdown 形态**：`[知识卡：{title}](knowledge:{id})`
+- **看板内 / 知识正文引用**：写 `[[slug]]`（web 渲染可点、Obsidian 可点、星图建边）；显示别名用 `[[slug|别名]]`。改名不是手工改文件，是 `kb knowledge rename`——原子换文件名 + 全库重写 `[[old]]→[[new]]`，所以 `[[slug]]` 不会因改名失效。
+- **跨改名稳定引用或机器可读**：`knowledge:<uuid>`（uuid 是稳定标识，改名不变）。先 `kb knowledge resolve <ref>` 或 `kb knowledge link <id|slug> --format token` 拿到 id，不要手写 slug 冒充 id，也不要按搜索结果第一条兜底。
+- **Markdown 形态**：`[知识卡：{title}](knowledge:{id})`（markdown 格式保留给对外富文本场景）
 - **纯文本降级**（飞书消息 / 日志 / 终端）：`知识卡《{title}》 knowledge:{id} · rev:{n}`
-- **禁止**：用 `file:///Docs/*.md` 或 `Docs/xxx.md` 当“知识引用”（文件路径只用于「改这个文件」的代码定位，须显式说明）；对外输出 `knowledge:<slug>` 或裸 slug（slug 只是输入别名、可能歧义）；只发裸 token 就指望对方能点开（至少要给可读标题，A8 最差形态）。
-- **反查**：文档迁移或重构后，先 `kb knowledge find-source <path>` 找出引用了该文件的知识页，再逐页 `kb knowledge revise --expected-revision <n>` 更新；不要批量改历史消息里的旧路径（过渡口径见设计 §9）。
-- **解析与展示**：`kb knowledge show <page-id>` 的 `--scope` 可省略（内部 resolve）；`--json` 里的 `link.ref` 可直接用于拼串。
+- **禁止**：用 `file:///Docs/*.md` 或 `Docs/xxx.md` 当“知识引用”（文件路径只用于「改这个文件」的代码定位，须显式说明）；对外输出 `knowledge:<slug>` 或裸 slug（slug 是文件名主键、可能歧义）；只发裸 token 就指望对方能点开（至少要给可读标题，A8 最差形态）。
+- **语法边界**：`[[a#h]]` / `[[a#^blk]]` 边归一到页级；`![[embed]]` 是页嵌入（星图独立边）、`![[x.png]]` 是附件；代码块/行内代码里的 `[[` 不解析、不建边。
+- **反查**：文档迁移或重构后，先 `kb knowledge find-source <path>` 找出 sources 引用了该文件的知识页（扫 front matter `sources[]`），再逐页 `kb knowledge revise --expected-revision <n>` 更新；正文里的旧 `knowledge:<uuid>` 引用**不批量改写**（兼容解析照常跳转，双轨口径见 `Docs/api.md` §11）。
+- **解析与展示**：`kb knowledge show <page-id>` 的 `--scope` 可省略（内部 resolve）；`kb knowledge link` 缺省输出 `[[wikilink]]`，`--format token|markdown|plain` 显式切换。
 
 ## 领任务 → 执行 → 汇报
 

@@ -43,11 +43,11 @@ Docs/               设计、变更、待测文档
 
 ## 4. 技术选型
 
-知识存储：新增 `knowledge_page` 与不可变 `knowledge_revision`；Workspace/公共范围由表约束与带范围的 repository 共同校验。每次改动在事务内以 revision CAS 更新页面并保存完整来源、证据与状态快照；归档、恢复和软删除均追加版本。知识引用阻止工作空间级联删除。
+知识存储（P2-01 起，方向 B）：**markdown 文件是唯一事实源**——工作区页 `<工作区>/.agentboard/Docs/<slug 归一>.md`、公共页 `~/.agentboard/Docs/<slug>.md`；front matter 契约（字段固定顺序、`content_hash=sha256`、CAS 基线）在 `packages/shared/src/knowledgeFile.ts`，服务端仓储层 `apps/server/src/knowledge/`（paths/frontMatter/fileRepo/index/reconcile）。写协议：读文件→比对 `expected_revision`→tmp+fsync+rename 原子替换→更新索引；外部编辑 content_hash 不符抛 409 `KNOWLEDGE_FILE_CONFLICT`。归档保留文件，软删撤文件；旧 SQLite 知识表只读保留，`kb knowledge export-legacy` 一次性迁移。
 
-知识检索：SQLite FTS5 trigram 索引由页面触发器同步；至少三个 Unicode 字符按字面 phrase 检索，一至两个字符在限定范围内以转义 LIKE 查询。SQL 统一过滤 Workspace/common、状态和有效期，标题权重 5、正文 1，返回来源与证据。
+知识检索（P2-01 起）：`<Docs>/.index.json` 落盘可重建索引承载检索——≥3 码点走文件索引 bm25（title 权重 5 / body 权重 1，`score` 负值越小越相关，数值与旧 FTS5 不逐字节相等）、1–2 码点走大小写不敏感子串（title 命中 score=-1）、snippet ≤1200；索引非事实源，可全量重建。
 
-知识入口：`/api/knowledge` 提供搜索、分页列表、页面、历史和版本写入，`kb knowledge` 经 HTTP 调用同一 repository。按页面 ID 的操作必须显式指定项目或公共范围；来源和证据在事务写入前统一校验。
+知识入口（P2-04 起）：`/api/knowledge` 端点路径与响应形状不变，数据源切换为文件扫描；`kb knowledge` 全族经 HTTP 调同一路由。引用主键是 `[[wikilink]]`（slug=文件名），`knowledge:<uuid>` 保留为稳定标识与输入别名；单页历史与每页 git 快照（page_commit）退役；`rename` 原子换文件名并全库重写 `[[old]]→[[new]]`。
 
 任务知识：派发与 claim 共用 `getTaskKnowledge`，默认以标题、标签、描述进行最多五个本地字面查询并去重，上限五页；自定义查询只执行一个查询。派发引用块不超过 6,000 字符，已有引用区块不重复追加。检索失败返回安全警告，不撤销领取或阻止派发。自由聊天与 show 不自动查询。
 
@@ -108,7 +108,7 @@ kb autostart / kb shortcut 零 npm 依赖，全部经 winrun.ts 封装 spawn（s
 
 ## 8. 知识星图 PIXI 渲染层
 
-知识星图按 Obsidian 星图逆向文档用 `pixi.js@7.2.4` 重建，取代已废弃的 sigma 路线（sigma 4 是 instanced WebGL、没有 display object 树，做不出每帧收敛的透明度插值、逐帧文字淡出、节点反向缩放与线宽反比）。渲染层在 `apps/web/src/components/knowledge/pixiGraph.ts`（1102 行）；布局与数据在 React 侧与 worker，渲染层只负责画。
+知识星图按 Obsidian 星图逆向文档用 `pixi.js@7.2.4` 重建，取代已废弃的 sigma 路线（sigma 4 是 instanced WebGL、没有 display object 树，做不出每帧收敛的透明度插值、逐帧文字淡出、节点反向缩放与线宽反比）。渲染层在 `apps/web/src/components/knowledge/pixiGraph.ts`（1102 行）；布局与数据在 React 侧与 worker，渲染层只负责画。P2-03 起边数据源切换为扫 `Docs/*.md`：`[[a]]`/`[[a|b]]`/`[[a#h]]` 四形态、`![[embed]]` 独立边、块引用、`#tag` 标签节点、`![[image.png]]` 附件节点、unresolved 独立节点；`knowledge_link` 表停用（新代码不读不写），反链与 linkStats 从内存索引取。
 
 - **三层容器与骨架**（`createPixiGraph(host, options)` → handle `{ host, update, zoomBy, resetView, refreshColors, changed, snapshot, destroy }`）：`Application`（`backgroundAlpha:0`、`antialias:true`、`autoStart:false`、`resolution:1`）把 canvas 挂到 host；`stage` 下三层——`background`（`Graphics.drawRect(0,0,1e4,1e4)`，alpha 0，`eventMode:'static'`）、`hanger`（`Container`，节点与连线全挂这里）、`watermark`（`Text('Powered by AgentBoard')`，`anchor(1,1)`，alpha 0.5，`zIndex 3`）。圆固定画在 (100,100) 半径 100，靠 scale 缩放、不重建 geometry；每帧顺序为逐节点 → 逐连线 → 水印 → `sortChildren()` → WebGL 绘制。
 - **帧循环**：`requestAnimationFrame` 自绘；无变化 61 帧后停帧（`IDLE_FRAME_LIMIT=60`），一次 `changed()` 跑 62 帧；每帧按「离屏幕中心最近」补建最多 50 个节点（`MAX_CREATE_PER_FRAME`）。透明度与平移每帧收敛 10%（`FADE_RATIO=0.9`）。
