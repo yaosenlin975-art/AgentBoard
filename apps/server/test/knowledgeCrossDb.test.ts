@@ -5,7 +5,7 @@
  * - /pages both：合并排序切片、next_offset 精确（窗口法，不报假总数）；
  * - /resolve both：common 与 workspace 两路命中、跨目录同 slug 歧义 409；
  * - /backlinks both：工作页双链到公共页的反链跨目录合并；
- * - /graph both：跨目录 link 边存在；目标页删除（撤文件）后边消失；
+ * - /graph both：跨目录 link 边存在；目标页删除（撤文件）后边转 unresolved:<slug> 合成节点（P2-03 S-5）；
  * - /reparse：语义改为重建两目录扫描索引（晚建目标的链接随之解析）。
  * 页面经 REST 创建落文件；需要精确 updated_at 的用例直接写合法 md（renderDocWithHash）。
  */
@@ -198,13 +198,18 @@ describe('knowledge both 两目录合并（P2-01，替代旧 STORE-4c 跨库合�
       (edge.source === left && edge.target === right) || (edge.source === right && edge.target === left));
     expect(hasLinkEdge(w1.id, common.id)).toBe(true);
     expect(hasLinkEdge(w2.id, common.id)).toBe(true);
-    // 目标页删除（撤文件）：图谱边消失，不报错
+    // 目标页删除（撤文件）：P2-03 S-5——边转 unresolved:<slug> 合成节点（kind:'link'），不报错
     const deleted = await request(app).post(`/api/knowledge/pages/${common.id}/actions`)
       .send({ scope: 'common', action: 'delete', expected_revision: 1, actor: 'tester' });
     expect(deleted.status).toBe(200);
     const graphAfter = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
     expect(graphAfter.status).toBe(200);
-    expect(graphAfter.body.edges.filter((edge: { kind: string }) => edge.kind === 'link')).toEqual([]);
+    const linkEdgesAfter = graphAfter.body.edges.filter((edge: { kind: string }) => edge.kind === 'link');
+    expect(linkEdgesAfter).toHaveLength(2);
+    expect(linkEdgesAfter).toContainEqual({ source: w1.id, target: 'unresolved:shared', weight: 1, kind: 'link' });
+    expect(linkEdgesAfter).toContainEqual({ source: w2.id, target: 'unresolved:shared', weight: 1, kind: 'link' });
+    const unresolvedAfter = graphAfter.body.nodes.find((node: { id: string }) => node.id === 'unresolved:shared');
+    expect(unresolvedAfter).toMatchObject({ title: 'shared', node_type: 'unresolved' });
     // 已删目标页的反链查询保持 404（不 500）
     const backlinksAfter = await request(app).get(`/api/knowledge/pages/${common.id}/backlinks`).query({ scope: 'both', workspace_id: ws });
     expect(backlinksAfter.status).toBe(404);
@@ -212,9 +217,14 @@ describe('knowledge both 两目录合并（P2-01，替代旧 STORE-4c 跨库合�
 
   it('reparse rebuilds both dir indexes and resolves late-created target', async () => {
     const w1 = await createWs('late-link', '参见 [[late]]');
-    // 目标未建：unresolved
+    // 目标未建：P2-03 S-5——边指向 unresolved:<slug> 合成节点（而非无边）
     const graphBefore = await request(app).get('/api/knowledge/graph').query({ scope: 'both', workspace_id: ws, edge_kinds: 'link' });
-    expect(graphBefore.body.edges.filter((edge: { kind: string }) => edge.kind === 'link')).toEqual([]);
+    expect(graphBefore.status).toBe(200);
+    expect(graphBefore.body.edges.filter((edge: { kind: string }) => edge.kind === 'link')).toEqual([
+      { source: w1.id, target: 'unresolved:late', weight: 1, kind: 'link' },
+    ]);
+    const unresolvedBefore = graphBefore.body.nodes.find((node: { id: string }) => node.id === 'unresolved:late');
+    expect(unresolvedBefore).toMatchObject({ title: 'late', node_type: 'unresolved' });
     const late = await createCommon('late');
     const reparse = await request(app).post('/api/knowledge/reparse').send({});
     expect(reparse.status).toBe(200);
@@ -225,5 +235,6 @@ describe('knowledge both 两目录合并（P2-01，替代旧 STORE-4c 跨库合�
     const linkEdges = graph.body.edges.filter((edge: { kind: string }) => edge.kind === 'link');
     expect(linkEdges.some((edge: { source: string; target: string }) =>
       (edge.source === w1.id && edge.target === late.id) || (edge.source === late.id && edge.target === w1.id))).toBe(true);
+    expect(graph.body.nodes.some((node: { id: string }) => node.id === 'unresolved:late')).toBe(false);
   });
 });

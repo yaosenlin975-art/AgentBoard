@@ -1,5 +1,9 @@
 # CHANGELOG.md
 
+## [2026-11-15] knowledgeCrossDb 测试断言适配 P2-03 S-5 unresolved 语义（P2-05b）
+
+- apps/server/test/knowledgeCrossDb.test.ts：2 例 P2-01 旧语义断言（目标缺失/删除 → link 边应全空）更新为 P2-03 S-5 语义——目标缺失/删除后断言出现 `unresolved:<slug>` 合成节点（node_type:'unresolved'，title 为 raw slug）及 kind:'link' 边（source=引用页、target=`unresolved:<slug>`）；reparse 用例补「晚建目标解析后 unresolved 合成节点消失」断言；文件头注释同步。产品代码零改动。
+
 ## [2026-11-15] 技能文档与打包收口：知识库文件事实源全量同步（P2-05）
 
 - skills/using-agentboard/SKILL.md：命令速查补 `kb workspace-db enable/snapshot` 与 `kb knowledge rename/export-legacy`；KCLINK 全节改写为「wikilink 主键 + uuid 稳定标识 + 禁止裸文件路径」（P2-03/P2-04 口径）；退出码 2 补 `KNOWLEDGE_FILE_CONFLICT`；写知识页示例补 rename/reconcile；page_commit「快照没进 git 即失败」条目改为退役说明。
