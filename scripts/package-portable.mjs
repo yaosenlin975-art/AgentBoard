@@ -33,7 +33,16 @@ const TEMPLATES = join(ROOT, 'scripts', 'portable');
 const PKG_NAME = 'AgentBoard';
 /** Tauri 壳的 release 产物（来源只读；壳按相对路径找 ../apps/server/dist 与 ../../runtime/node.exe）。 */
 const DESKTOP_EXE = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'agentboard-desktop.exe');
-const REQUIRED_SKILLS = ['using-agentboard', 'writing-task', 'executing-task', 'handoff', 'swing-dev', 'ask-user', 'brainstorming', 'kb-curator'];
+const REQUIRED_SKILLS = [
+  'using-agentboard',
+  'writing-task',
+  'executing-task',
+  'handoff',
+  'swing-dev',
+  'ask-user',
+  'brainstorming',
+  'kb-curator',
+];
 const RULE_DOCS = [
   { src: 'AGENTS.md', dest: 'AGENTS.md' },
   { src: 'README.md', dest: 'README.md' },
@@ -168,13 +177,75 @@ function dirtyFiles() {
 }
 
 /**
- * 桌面壳 release 产物：有就直接复用；没有时非 --skip-build 才尝试 cargo 构建。
+ * 读 PE 头 TimeDateStamp（COFF，PE 签名后 +8，Unix 秒）。
+ * 判壳产物新鲜度用它而不是文件 mtime：Tauri 打包会改写 exe 字节与 mtime，
+ * PE 编译时刻才稳定。详见 `Docs/desktop-build-pitfalls.md`。
+ */
+function readPeTimestamp(file) {
+  if (!existsSync(file)) return null;
+  const buffer = readFileSync(file);
+  if (buffer.length < 0x40 || buffer[0] !== 0x4d || buffer[1] !== 0x5a) return null;
+  const peOffset = buffer.readInt32LE(0x3c);
+  if (peOffset <= 0 || peOffset + 12 > buffer.length) return null;
+  const seconds = buffer.readUInt32LE(peOffset + 8);
+  if (seconds === 0) return null;
+  return { seconds, iso: new Date(seconds * 1000).toISOString() };
+}
+
+/** 壳源码（含 Cargo.toml / tauri.conf.json）的最新 mtime */
+function newestDesktopSrcMtimeMs() {
+  const srcDir = join(ROOT, 'desktop', 'src-tauri', 'src');
+  let newest = 0;
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile()) {
+        const mtimeMs = statSync(full).mtimeMs;
+        if (mtimeMs > newest) newest = mtimeMs;
+      }
+    }
+  };
+  walk(srcDir);
+  for (const extra of ['desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/tauri.conf.json']) {
+    const full = join(ROOT, extra);
+    if (existsSync(full)) {
+      const mtimeMs = statSync(full).mtimeMs;
+      if (mtimeMs > newest) newest = mtimeMs;
+    }
+  }
+  return Math.round(newest);
+}
+
+/**
+ * 桌面壳 release 产物：必须对应当前壳源码，否则重新构建。
  * 壳不随 `pnpm -r build` 构建（desktop 是独立子工程，不在根 workspace 内）。
+ *
+ * D13：原实现只判 `existsSync(DESKTOP_EXE)`，壳文件在就直接用，于是「上一轮编译的旧壳」
+ * 被打进新 zip——而 zip 外层 mtime 是打包时刻，看起来完全正常，实际装的是旧壳。
+ * 现在改为按 PE 编译时刻判定新鲜度：早于壳源码最新 mtime 就重建（--skip-build 时 fail）。
  */
 function ensureDesktopExe() {
-  if (existsSync(DESKTOP_EXE)) return;
+  const srcMtimeMs = newestDesktopSrcMtimeMs();
+  const exePe = readPeTimestamp(DESKTOP_EXE);
+
+  if (exePe !== null && exePe.seconds * 1000 >= srcMtimeMs) {
+    log(`桌面壳产物新鲜（PE ${exePe.iso}）`);
+    return;
+  }
+
+  if (exePe !== null) {
+    log(`桌面壳产物过期：PE ${exePe.iso} 早于壳源码最新 ${new Date(srcMtimeMs).toISOString()}，需要重建`);
+  }
+
   if (opts.skipBuild) {
-    fail(`缺少桌面壳产物：${relative(ROOT, DESKTOP_EXE)}（先在 desktop 构建，或去掉 --skip-build）`);
+    fail(
+      `桌面壳产物${exePe === null ? '缺失' : '过期'}且指定了 --skip-build：${relative(ROOT, DESKTOP_EXE)}\n` +
+        `  ${exePe === null ? '文件不存在' : `PE ${exePe.iso} < 源码 ${new Date(srcMtimeMs).toISOString()}`}\n` +
+        `  → 先跑 node scripts/desktop/build-windows.mjs --no-bundle，或去掉 --skip-build。\n` +
+        `  → 否则便携包会被打进旧壳（D13 故障模式）。`,
+    );
   }
   log('构建桌面壳（cargo build --release）…');
   run(process.env.CARGO || 'cargo', [

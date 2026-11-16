@@ -12,13 +12,15 @@
     "lint:update-baseline": "node scripts/run-lint.mjs --update-baseline",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build": "pnpm -r build",
+    "build": "pnpm --config.verify-deps-before-run=false -r build",
     "test": "pnpm -r test",
     "server:ensure": "node scripts/server-detached.mjs",
     "check:stale": "node scripts/check-stale.mjs",
     "dev:test-page": "node scripts/dev-page.mjs",
     "publish:web": "node scripts/rebuild-web-dist.mjs",
     "package:portable": "node scripts/package-portable.mjs",
+    "build:desktop:all": "node scripts/desktop/build-all.mjs",
+    "report:artifacts": "node scripts/desktop/report-artifacts.mjs",
     "shortcut:test-page": "powershell -ExecutionPolicy Bypass -File scripts/create-test-page-shortcut.ps1"
   },
   "devDependencies": {

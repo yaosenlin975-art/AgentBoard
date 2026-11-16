@@ -1,32 +1,31 @@
 #!/usr/bin/env node
 /**
- * DB-4 端到端验收：改中心库路径 → 迁移 → 重启 → 新进程自检 → 旧库归档 → 回滚演练。
+ * P2 知识文件事实源端到端验收（P2-05）：
+ * 起隔离实例 → 建工作区（自动下沉）→ kb knowledge create 落盘 Docs/<slug>.md →
+ * 回读一致 → 外部编辑 409 KNOWLEDGE_FILE_CONFLICT → rename 全库重写 → 星图建边 → 软删撤文件。
  *
  * 可复现：`node scripts/verify/db-home-e2e.mjs`（默认端口 18830；不改 8787 上正在跑的服务）
  *
- * 隔离口径：
- * - 独立 `APPDATA`（临时目录）+ 独立端口 → `GET /api/settings/storage` 的 `db_path_source` 为 `default`；
- * - **子进程必须继承完整环境**：最小 env 会让启动期 `defaultWorkbuddyPaths()` 抛
- *   `ApiError: 无法解析本机 WorkBuddy 契约路径` → 进程 exit 1、端口从未监听 → 首次请求 ECONNREFUSED
- *   （DB-4 前任卡点的真实原因，见 Docs/evidence/db-home-e2e-2026-11-04.md）；
+ * 隔离口径（沿用 DB-4 先例，见 Docs/evidence/db-home-e2e-2026-11-04.md）：
+ * - 独立 `APPDATA`（临时目录）+ 独立端口，不设 `AGENTBOARD_DB`；
+ * - 子进程必须继承完整环境（最小 env 会让启动期契约路径解析抛错 → 端口从未监听）；
  * - 循环回请求不走代理：给子进程与自身都显式设置 `NO_PROXY=127.0.0.1,localhost`；
- * - 跑前清掉临时 APPDATA 里的 `server.lock` 与 `db-migration-status-*.json`（陈旧锁会导致 exit 4）。
+ * - 跑前清掉临时 APPDATA 里的 `server.lock`（陈旧锁会导致启动被拒）。
  *
  * 退出码：0 全绿 / 1 有失败项。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const STAMP = new Date().toISOString().replace(/[:.]/g, '-');
-const WORK = join(process.env.TEMP ?? 'D:\\tools\\tmp', `db4-e2e-${STAMP}`);
+const WORK = join(process.env.TEMP ?? process.env.TMP ?? '.', `kbfile-e2e-${STAMP}`);
 const APPDATA = join(WORK, 'appdata');
-const PORT = Number(process.env.DB4_PORT ?? 18830);
+const PORT = Number(process.env.KBFILE_E2E_PORT ?? 18830);
 const BASE = `http://127.0.0.1:${PORT}`;
-const TARGET_DB = join(WORK, 'target-home', 'agentboard.db');
 
 const results = [];
 const check = (name, ok, detail = '') => {
@@ -34,6 +33,7 @@ const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail === '' ? '' : `  — ${detail}`}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
 async function api(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
@@ -56,43 +56,32 @@ async function version() {
   }
 }
 
-async function waitVersion(predicate, timeoutMs = 40_000) {
+async function waitVersion(timeoutMs = 40_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const v = await version();
-    if (v !== null && predicate(v)) return v;
+    if (v !== null) return v;
     await sleep(300);
   }
   return null;
 }
 
-const walk = (dir) => {
-  if (!existsSync(dir)) return [];
-  const out = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walk(path));
-    else out.push({ path, bytes: statSync(path).size, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') });
-  }
-  return out;
-};
 const killPort = () => {
   spawnSync('powershell', ['-NoProfile', '-Command', `Get-NetTCPConnection -State Listen -LocalPort ${PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }`], { encoding: 'utf8' });
 };
 
-// ── 准备：隔离目录 + 清陈旧锁/状态 ───────────────────────────────
+// ── 准备：隔离目录 + 清陈旧锁 ───────────────────────────────
 rmSync(WORK, { recursive: true, force: true, maxRetries: 8, retryDelay: 300 });
 mkdirSync(join(APPDATA, 'AgentBoard'), { recursive: true });
 mkdirSync(join(WORK, 'space'), { recursive: true });
-for (const stale of ['server.lock']) {
-  const p = join(APPDATA, 'AgentBoard', stale);
-  if (existsSync(p)) rmSync(p, { force: true });
-}
+const staleLock = join(APPDATA, 'AgentBoard', 'server.lock');
+if (existsSync(staleLock)) rmSync(staleLock, { force: true });
+
 console.log(`工作目录：${WORK}\n端口：${PORT}\n`);
 
 // ── 启动（完整 env 继承；loopback 不走代理）──────────────────────
 const childEnv = { ...process.env, APPDATA, AGENTBOARD_PORT: String(PORT), NO_PROXY: '127.0.0.1,localhost,::1', no_proxy: '127.0.0.1,localhost,::1' };
-delete childEnv.AGENTBOARD_DB; // 让 db 走 default（APPDATA 下的默认库）
+delete childEnv.AGENTBOARD_DB;
 process.env.NO_PROXY = '127.0.0.1,localhost,::1';
 process.env.no_proxy = '127.0.0.1,localhost,::1';
 
@@ -108,98 +97,103 @@ child.unref();
 let exitCode = null;
 child.once('exit', (code) => { exitCode = code; });
 
-let ok = true;
 try {
-  const v1 = await waitVersion(() => true);
+  const v1 = await waitVersion();
   if (v1 === null) {
     check('服务启动并可达', false, `exitCode=${exitCode}；子进程输出：${childOut.split('\n').filter((l) => l.trim() !== '').slice(0, 3).join(' | ')}`);
     throw new Error('服务未起来');
   }
-  const pid1 = v1.pid;
-  check('服务启动并可达', true, `pid=${pid1} instance=${v1.instance_id}`);
+  check('服务启动并可达', true, `pid=${v1.pid} instance=${v1.instance_id}`);
 
-  const settings = await api('GET', '/api/settings');
-  const storage0 = await api('GET', '/api/settings/storage');
-  check('库来源为 default（未设 AGENTBOARD_DB，独立 APPDATA）', storage0.body?.db_path_source === 'default', `db=${storage0.body?.db_path} source=${storage0.body?.db_path_source}`);
-  check('settings 对外字段与持久化键同值', settings.body?.db_path === settings.body?.dbPath, `${settings.body?.db_path}`);
-  const oldDb = storage0.body?.db_path;
-  const oldAttach = storage0.body?.attachments_dir;
+  // ── 工作区（新建区自动下沉 localized）────────────────────────
+  const ws = await api('POST', '/api/workspaces', { name: 'kbfile-e2e', path: join(WORK, 'space') });
+  check('建工作区', ws.status === 200 || ws.status === 201, `status=${ws.status} ${JSON.stringify(ws.body?.error ?? {}).slice(0, 200)}`);
+  const workspaceId = ws.body.id;
+  const wsDocs = join(join(WORK, 'space'), '.agentboard', 'Docs');
+  const detail = (r) => JSON.stringify(r.body?.error ?? {}).slice(0, 240);
 
-  // ── 造数据：1 工作区 + 3 卡 + 1 附件 ─────────────────────────
-  const ws = await api('POST', '/api/workspaces', { name: 'db4', path: join(WORK, 'space') });
-  for (const title of ['DB4 卡一', 'DB4 卡二', 'DB4 卡三']) await api('POST', '/api/issues', { workspace_id: ws.body.id, title });
-  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea735d0d10000000049454e44ae426082', 'hex');
-  const up = await fetch(`${BASE}/api/workspaces/${ws.body.id}/attachments`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: png });
-  check('造数据：1 工作区 + 3 卡 + 1 附件', up.status === 201, `attachment=${up.status}`);
-  const issuesBefore = (await api('GET', `/api/issues?workspace=${ws.body.id}`)).body;
-  const attachBefore = walk(oldAttach);
-  const estimate = (await api('GET', '/api/settings/storage')).body?.migration_estimate;
+  // ── create → Docs/<slug>.md 落盘（front matter + content_hash）────
+  const bodyMd = '# e2e 源页\n\n这是知识文件事实源 e2e 的正文。\n\n参见 [[kbfile-target]]。\n';
+  // content_hash 用真实 sha256 形态（十六进制混合字母）；全零/纯数字串会被 YAML 解析成 number，round-trip 即坏
+  const fakeHash = Array.from({ length: 64 }, (_, i) => '0123456789abcdef'[(i * 7 + 3) % 16]).join('');
+  const sources = [{ source_id: 'agent:e2e', source_type: 'agent', locator: 'agent:e2e', captured_at: Date.now(), content_hash: fakeHash, snapshot: 'db-home-e2e 冒烟' }];
+  const evidence = [{ source_id: 'agent:e2e', locator: 'agent:e2e', snapshot: 'create via REST' }];
+  const created = await api('POST', '/api/knowledge/pages', {
+    scope: 'workspace', workspace_id: workspaceId,
+    slug: 'kbfile-source', title: 'e2e 源页', body_md: bodyMd, domain: 'knowledge',
+    sources, evidence, actor: 'e2e', change_note: 'db-home-e2e',
+  });
+  check('create 知识页 200', created.status === 200 || created.status === 201, `status=${created.status} ${detail(created)}`);
+  const pageId = created.body?.id;
+  const createdFile = join(wsDocs, 'kbfile-source.md');
+  check('Docs/<slug>.md 真实落盘', existsSync(createdFile), createdFile);
+  const fileText = existsSync(createdFile) ? readFileSync(createdFile, 'utf8') : '';
+  const fmMatch = /^---\n([\s\S]*?)\n---\n/.exec(fileText);
+  check('front matter 含 id/revision/content_hash',
+    fmMatch !== null && /id: /.test(fmMatch[1]) && /revision: 1/.test(fmMatch[1]) && /content_hash: /.test(fmMatch[1]),
+    fmMatch === null ? '无 front matter' : fmMatch[1].split('\n').slice(0, 6).join(' / '));
 
-  // ── 迁移 ────────────────────────────────────────────────────
-  const migrate = await api('POST', '/api/settings/db-path/migrate', { target_db_path: TARGET_DB });
-  check('迁移受理 202（蛇形 target_db_path）', migrate.status === 202 && typeof migrate.body?.migration_id === 'string', `status=${migrate.status} id=${migrate.body?.migration_id}`);
-  const migrationId = migrate.body?.migration_id;
+  // ── show 回读一致 ──────────────────────────────────────────
+  const shown = await api('GET', `/api/knowledge/pages/${pageId}?scope=workspace&workspace_id=${workspaceId}`);
+  check('show 回读 title/revision 一致', shown.status === 200 && shown.body?.title === 'e2e 源页' && shown.body?.revision === 1,
+    `status=${shown.status} pageId=${pageId} ${detail(shown)}`);
 
-  const v2 = await waitVersion((v) => v.pid !== pid1, 60_000);
-  check('重启后新进程接管', v2 !== null && v2.pid !== pid1, `${pid1} → ${v2?.pid}`);
+  // ── 外部编辑 → 409 KNOWLEDGE_FILE_CONFLICT ─────────────────
+  writeFileSync(createdFile, `${fileText}外部追加的一行\n`, 'utf8');
+  const revise = await api('PUT', `/api/knowledge/pages/${pageId}`, {
+    scope: 'workspace', workspace_id: workspaceId, expected_revision: 1,
+    body_md: `${bodyMd}经 API 的修订\n`, actor: 'e2e',
+  });
+  check('外部编辑后 CAS 写 → 409 KNOWLEDGE_FILE_CONFLICT', revise.status === 409 && revise.body?.error?.code === 'KNOWLEDGE_FILE_CONFLICT',
+    `status=${revise.status} code=${revise.body?.error?.code}`);
+  // 模拟人裁决后恢复原文（内容逐字节还原），后续 rename 等写操作才能继续
+  writeFileSync(createdFile, fileText, 'utf8');
 
-  let status = null;
-  for (let i = 0; i < 120; i += 1) {
-    const res = await api('GET', `/api/settings/db-path/migrate/${migrationId}`);
-    if (res.status === 200) status = res.body;
-    if (status?.stage === 'done') break;
-    await sleep(300);
-  }
-  const stageChain = (status?.stages ?? []).map((s) => s.stage);
-  check('五阶段 + 自检 + 归档，终态 done',
-    status?.ok === true && JSON.stringify(stageChain) === JSON.stringify(['preflight', 'snapshot', 'verify', 'switch', 'restart', 'selfcheck', 'cleanup', 'done']),
-    stageChain.join(' → '));
-  check('自检通过（summary 无 problems）', status?.message?.includes('自检通过') === true, status?.message);
+  // ── 目标页 + wikilink 建边（星图）────────────────────────────
+  const target = await api('POST', '/api/knowledge/pages', {
+    scope: 'workspace', workspace_id: workspaceId,
+    slug: 'kbfile-target', title: 'e2e 目标页', domain: 'knowledge',
+    body_md: '# e2e 目标页\n\n被 [[kbfile-source]] 引用。\n',
+    sources, evidence, actor: 'e2e',
+  });
+  check('目标页落盘', (target.status === 200 || target.status === 201) && existsSync(join(wsDocs, 'kbfile-target.md')), `status=${target.status} ${detail(target)}`);
+  const graph = await api('GET', `/api/knowledge/graph?scope=workspace&workspace_id=${workspaceId}`);
+  const edges = graph.body?.edges ?? [];
+  const linkEdge = edges.find((e) => e.kind === 'link' && (e.source === pageId || e.target === pageId || e.source === target.body?.id || e.target === target.body?.id));
+  check('星图建边：[[wikilink]] → link 边', graph.status === 200 && linkEdge !== undefined,
+    `status=${graph.status} edges=${edges.length}`);
 
-  // ── 数据完整性前后对照 ──────────────────────────────────────
-  const after = await api('GET', '/api/settings/storage');
-  const issuesAfter = (await api('GET', `/api/issues?workspace=${ws.body.id}`)).body;
-  const attachAfter = walk(after.body?.attachments_dir);
-  check('库路径切到目标', after.body?.db_path === TARGET_DB, after.body?.db_path);
-  check('卡数前后一致', issuesBefore.length === issuesAfter.length && issuesAfter.length === 3, `${issuesBefore.length} → ${issuesAfter.length}`);
-  check('附件数/字节/sha256 前后一致',
-    attachBefore.length === attachAfter.length
-      && attachBefore.every((f) => { const m = attachAfter.find((g) => g.path.endsWith(f.path.split('\\').pop())); return m !== undefined && m.bytes === f.bytes && m.sha256 === f.sha256; }),
-    `${attachBefore.length} 个（${attachBefore.map((f) => `${f.bytes}B`).join(',')}）`);
-  check('旧库归档进 <bak>.old/，旧路径文件已移走', existsSync(join(`${migrate.body?.backup_dir}.old`, 'agentboard.db')) && !existsSync(oldDb), `${migrate.body?.backup_dir}.old`);
-  check('估算字节与实际迁移口径一致', typeof estimate?.estimated_bytes === 'number' && estimate.estimated_bytes > 0, `estimated_bytes=${estimate?.estimated_bytes} required=${estimate?.required_bytes}`);
+  // ── rename：换文件名 + 全库重写 [[old]]→[[new]] ──────────────
+  const renamed = await api('POST', `/api/knowledge/pages/${pageId}/rename`, {
+    scope: 'workspace', workspace_id: workspaceId, expected_revision: 1, new_slug: 'kbfile-source-v2', actor: 'e2e',
+  });
+  check('rename 成功且 id 不变', renamed.status === 200 && renamed.body?.id === pageId && renamed.body?.slug === 'kbfile-source-v2',
+    `status=${renamed.status}`);
+  const oldGone = !existsSync(createdFile);
+  const newFile = join(wsDocs, 'kbfile-source-v2.md');
+  const rewritten = existsSync(newFile) ? readFileSync(newFile, 'utf8') : '';
+  const targetAfter = existsSync(join(wsDocs, 'kbfile-target.md')) ? readFileSync(join(wsDocs, 'kbfile-target.md'), 'utf8') : '';
+  check('旧文件名消失、新文件名出现', oldGone && existsSync(newFile), `${oldGone}/${existsSync(newFile)}`);
+  check('目标页正文 [[kbfile-source]] 重写为 [[kbfile-source-v2]]',
+    targetAfter.includes('[[kbfile-source-v2]]') && !targetAfter.includes('[[kbfile-source]]'),
+    '目标页正文引用已跟随');
+  check('rename 后 front matter revision +1', /revision: 2/.test(rewritten), 'rev=2');
 
-  // ── 回滚演练（三次拒绝都不动当前库）─────────────────────────
-  const dbPathNow = (await api('GET', '/api/settings')).body?.dbPath;
-  const unwritable = await api('POST', '/api/settings/db-path/migrate', { target_db_path: 'Z:\\no-such-drive\\agentboard.db' });
-  check('目标不可写 → 拒绝且给固定错误码', [409, 500].includes(unwritable.status) && String(unwritable.body?.error?.code ?? '').startsWith('DB_MIGRATION_'), `status=${unwritable.status} code=${unwritable.body?.error?.code}`);
-  const existingTarget = join(WORK, 'occupied', 'agentboard.db');
-  mkdirSync(dirname(existingTarget), { recursive: true });
-  writeFileSync(existingTarget, 'occupied');
-  const exists = await api('POST', '/api/settings/db-path/migrate', { target_db_path: existingTarget });
-  check('目标已存在同名库 → DB_MIGRATION_TARGET_EXISTS', exists.body?.error?.code === 'DB_MIGRATION_TARGET_EXISTS', `status=${exists.status}`);
-  // 目标 db 路径本身是个目录：VACUUM INTO 无法写 → 复制失败（且必须回滚到旧路径）
-  const dirAsDbParent = join(WORK, 'dir-as-db');
-  mkdirSync(join(dirAsDbParent, 'agentboard.db'), { recursive: true });
-  const copyFail = await api('POST', '/api/settings/db-path/migrate', { target_db_path: join(dirAsDbParent, 'agentboard.db') });
-  // 目标路径已被一个**目录**占住：preflight 的 existsSync 先命中 → TARGET_EXISTS（拒绝且不动当前库）
-  check('目标 db 路径被目录占住 → 拒绝（TARGET_EXISTS），不是静默成功',
-    ['DB_MIGRATION_TARGET_EXISTS', 'DB_MIGRATION_COPY_FAILED', 'DB_MIGRATION_VERIFY_FAILED', 'DB_MIGRATION_TARGET_UNWRITABLE'].includes(copyFail.body?.error?.code),
-    `status=${copyFail.status} code=${copyFail.body?.error?.code} msg=${copyFail.body?.error?.message}`);
-
-  const settingsAfterRollback = await api('GET', '/api/settings');
-  const v3 = await version();
-  const issuesStill = (await api('GET', `/api/issues?workspace=${ws.body.id}`)).body;
-  check('回滚演练后旧路径不变、服务仍可用、数据未丢',
-    settingsAfterRollback.body?.dbPath === dbPathNow && v3 !== null && issuesStill.length === 3,
-    `dbPath=${settingsAfterRollback.body?.dbPath} pid=${v3?.pid} issues=${issuesStill.length}`);
+  // ── 软删撤文件 ─────────────────────────────────────────────
+  const del = await api('POST', `/api/knowledge/pages/${target.body?.id}/actions`, {
+    scope: 'workspace', workspace_id: workspaceId, action: 'delete', expected_revision: 1, actor: 'e2e',
+  });
+  const targetFileGone = !existsSync(join(wsDocs, 'kbfile-target.md'));
+  check('action=delete 撤文件', del.status === 200 && targetFileGone, `status=${del.status} fileGone=${targetFileGone}`);
+  const deletedGet = await api('GET', `/api/knowledge/pages/${target.body?.id}?scope=workspace&workspace_id=${workspaceId}`);
+  check('软删页不可寻址', deletedGet.status === 404 || deletedGet.status === 410, `status=${deletedGet.status}`);
 } catch (error) {
   if (results.every((r) => r.ok)) check('脚本未抛错', false, error instanceof Error ? error.message : String(error));
 } finally {
   const failed = results.filter((r) => !r.ok).length;
-  ok = failed === 0;
+  const ok = failed === 0;
   console.log(`\n合计 ${results.length} 项，失败 ${failed} 项`);
-  writeFileSync(join(WORK, 'result.json'), `${JSON.stringify({ port: PORT, work: WORK, results }, null, 2)}\n`, 'utf8');
+  try { writeFileSync(join(WORK, 'result.json'), `${JSON.stringify({ port: PORT, work: WORK, results }, null, 2)}\n`, 'utf8'); } catch { /* 忽略 */ }
   console.log(`结果文件：${join(WORK, 'result.json')}`);
   killPort();
   if (child.exitCode === null) { try { child.kill('SIGKILL'); } catch { /* 忽略 */ } }

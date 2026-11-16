@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   cleanupOldDbFiles,
-  copyAttachmentsVerified,
   listFilesRecursive,
   measureMigrationSource,
   preflightMigration,

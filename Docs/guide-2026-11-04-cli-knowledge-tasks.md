@@ -32,7 +32,7 @@ id                                    状态   优先级  labels       占用者
 | `kb list-tasks` / `kb list-spaces` | **已按 cwd 解析** | 不带 `--workspace` 即当前工作区；跨区用 `--all`（只读） |
 | `kb knowledge list/show/search/create/revise/action` | **仍必须显式传参** | `--scope workspace --workspace <id>` 两个都要 |
 | `kb changelog list/create/show` | **仍必须显式传参** | `--workspace <id|名>` 必填 |
-| 知识页 `--category` / `--landed` | **只能走 REST** | CLI 无这两个参数（见 §5 待落地） |
+| 知识页 `--category` / `--landed` | **已有 CLI 参数** | C 段（`57d1ab4c`）落地；`create` 必须带 `--domain`（KB-CR-1） |
 
 实测报错（说明 B 阶段尚未落地）：
 
@@ -86,16 +86,19 @@ kb knowledge action <page-id> archive --scope workspace --workspace "$WS"
 
 ## 2.5 知识卡链接与反查（KB-PAGE-2 / 2b / 4 真跑口径）
 
-对外引用知识页一律发 **`knowledge:<page.id>`**，不发 `Docs/*.md` 文件路径（文件会迁移，路径链接必然过期）。
+> **2026-11-15 更新（P2-03/P2-04，方向 B）**：知识页唯一事实源是 markdown 文件（`Docs/<slug>.md`），引用主键改为 **`[[wikilink]]`**（slug=文件名，`kb knowledge link` 默认输出）；`knowledge:<page.id>` 降为稳定标识（改名不变），历史正文里的 `knowledge:` 引用不批量改写、照常解析。**裸文件路径（`file:///Docs/*.md` / `Docs/xxx.md`）在任何形态下仍然禁止**——文件会迁移，路径链接必然过期。
 
 ```bash
-# 解析 / 取引用串（权威标识是 page.id；slug 只作输入别名）
+# 解析 / 取引用串（wikilink 主键；uuid 是稳定标识，token 格式跨改名稳定）
 kb knowledge resolve cache-policy --scope both --workspace <工作区>
-kb knowledge link <page-id> --scope common --format markdown
+kb knowledge link <page-id> --scope common              # 默认输出 [[slug]]
+kb knowledge link <page-id> --scope common --format token   # knowledge:<uuid>
 # 读页可省略 --scope（内部 resolve；显式给出时行为不变）
 kb knowledge show <page-id>
-# 反查哪些知识页引用了某文件（只扫当前 revision，历史版本不参与）
+# 反查哪些知识页引用了某文件（P2-04 起扫 front matter sources[]，只读）
 kb knowledge find-source Docs/api.md
+# 改 slug（唯一合法入口：原子换文件名 + 全库重写 [[old]]→[[new]]，id 不变）
+kb knowledge rename <page-id> <new-slug> --scope workspace --workspace <工作区> --expected-revision <n>
 ```
 
 - Markdown：`[知识卡：{title}](knowledge:{id})`；纯文本：`知识卡《{title}》 knowledge:{id} · rev:{n}`。
@@ -158,7 +161,7 @@ kb delete-issue <issue-id> --yes
 | --- | --- | --- | --- |
 | A | 统一 cwd 解析（`list-spaces --current`、`list-tasks` 缺省按 cwd、`--all` 只读） | **已落地**（实测通过） | §0 |
 | B | 知识与日志复用当前工作区（`knowledge`/`changelog` 不再强制 `--workspace`） | **未落地** | §1、§2、§3 —— 当前仍必须显式 `--scope workspace --workspace <id>` / `--workspace <id>` |
-| C | 知识页 `--category` / `--landed` CLI 参数 | **未落地** | §1 末行；当前只能走 REST：`POST /api/knowledge/pages`、`PATCH /api/knowledge/pages/:id` |
+| C | 知识页 `--category` / `--landed` CLI 参数 | **已落地**（2026-11-10 `57d1ab4c`） | §1 末行 |
 
 B/C 落地后，本文档 §2、§3 里的 `--workspace`/`--scope` 可省略；在那之前**不要省略**，否则 CLI 直接报 `required option` 错误。
 
@@ -257,3 +260,20 @@ $ kb show 0ae9aad0-…
 | A | `list-spaces --current`、`list-tasks` 缺省按 cwd、`--all` 只读 | **已落地**：`kb list-spaces --current` 返回本工作区；`kb list-tasks` 不带 `--workspace` 直接输出本工作区任务 |
 | B | knowledge/changelog 复用当前工作区 | **未落地**：两条命令仍报 `required option` |
 | C | 知识页 `--category`/`--landed` | **未落地**：`kb knowledge create --help` 无这两个参数；只能走 REST |
+
+## 9. 2026-11-15 更新：知识库文件事实源（P2-01~P2-05，方向 B）
+
+二期收口后知识子系统整体切换为 markdown 文件事实源，本文 §2/§8 的命令参数面不变，以下几点口径已变：
+
+| 变化 | 旧口径 | 现口径 |
+| --- | --- | --- |
+| 事实源 | SQLite `knowledge_page` 表 | `Docs/*.md`（工作区页 `<工作区>/.agentboard/Docs/<slug>.md`、公共页 `~/.agentboard/Docs/<slug>.md`），front matter 承载 id/revision/CAS/content_hash |
+| 引用主键 | `knowledge:<uuid>` | `[[wikilink]]`（slug=文件名）；uuid 是稳定标识，历史引用兼容解析不批量改写 |
+| 单页历史 | `show --history` 可回看 | 已退役：`--history` 返回空集；旧库历史走 `kb knowledge export-legacy` 只读导出 |
+| 每页 git 快照 | 「快照没进 git 即 exit 1」 | 已退役：文件写成功即命令成功，`page_commit` 仅兼容形状 |
+| 改 slug | 无命令（手工改会撞唯一索引） | `kb knowledge rename`（原子换文件名 + 全库重写 `[[old]]→[[new]]`）；手工改文件名 → reconcile 报冲突 |
+| 一次性迁移 | 无 | `kb knowledge export-legacy`（fan-out 中心库 + localized 工作区库，manifest sha256，旧库只读） |
+| 外部编辑 | 会被覆盖 | content_hash 不符 → 409 `KNOWLEDGE_FILE_CONFLICT`（exit 2），先 `kb knowledge reconcile` 再裁决 |
+| `action delete` | 软删留行 | 撤文件（`Docs/<slug>.md` 消失，不可寻址） |
+
+新增命令速查：`kb knowledge rename <page-id> <new-slug> --scope <s> --expected-revision <n>`；`kb knowledge export-legacy [--scope all|center|workspace] [--to <dir>] [--dry-run]`。完整契约见 `Docs/api.md` §11「文件事实源」。

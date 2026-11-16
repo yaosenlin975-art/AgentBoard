@@ -1,6 +1,12 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import { createRouter, errorHandler } from '../src/api/routes.js';
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -10,20 +16,23 @@ import { buildKnowledgeGraph, GRAPH_KEYWORD_MIN_TERMS } from '../src/services/kn
  * GRAPH-EDGE-BUG：「不管有没有联系都连成一团」。
  * 根因是关键词共现门槛（旧 2 词 / 3 trigram）在长文档上必然命中 → 完全图；
  * 修复后：稀有项过滤 + 阈值 3 词 / 6 trigram + 相对重叠率（词 25% / trigram 20%）。
+ * P2-01：图数据源是 Docs/*.md——工作区用临时绝对目录。
  */
 describe('GRAPH-EDGE-BUG：4 页 fixture（A↔B 互链，C/D 孤立）', () => {
   let t: TestDb;
   let app: Express;
   let workspaceId: string;
+  let wsRoot: string;
   beforeEach(() => {
     t = createTestDb();
-    workspaceId = createWorkspace(t.db, { name: 'A', path: 'A' }).id;
+    wsRoot = mkdtempSync(join(tmpdir(), 'agentboard-edgebug-'));
+    workspaceId = createWorkspace(t.db, { name: 'A', path: wsRoot }).id;
     app = express();
     app.use(express.json());
     app.use('/api', createRouter({ db: t.db, getAdapter: () => { throw Error('unused'); }, broadcast: () => {} }));
     app.use(errorHandler);
   });
-  afterEach(() => t.cleanup());
+  afterEach(() => { t.cleanup(); rmSync(wsRoot, { recursive: true, force: true }); });
 
   const createPage = (slug: string, title: string, body: string) =>
     request(app).post('/api/knowledge/pages').send({

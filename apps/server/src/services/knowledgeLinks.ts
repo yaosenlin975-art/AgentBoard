@@ -8,11 +8,17 @@
  * 3. 代码块（``` / ~~~ 围栏）与行内代码（`` ` ``）里的 `[[` 不解析
  * 4. 非法跳过：未闭合、空 target、跨行、超长（> MAX_TARGET_CHARS）
  * 5. 自链接跳过（归一后等于源页 slug）
- * 6. `#heading` 只用于展示，边归一到页级；`|alias` 同理
+ * 6. `#heading` 只用于展示，边归一到页级；`|alias` 同理；`#^block` 块引用同 heading 通道（锚点保留在 heading 字段）
  * 7. 同一源页对同一 target 重复出现 → 合并为一条边，权重 = 出现次数
  *
  * 边存新表 `knowledge_link`，按 (source_page_id, revision) 绑定页面版本：
  * 读取一律过滤当前 revision，旧 revision 的行保留但永不重算。
+ *
+ * P2-03（方向 B §7.4）：新增 `parseKnowledgeRefs`——较完整 Obsidian 语法：
+ * - `![[page]]` 页嵌入（kind:'embed' 边）；`![[image.png]]` / `![[_attachments/x.png]]` 附件（attachment 节点）
+ * - `#tag` 标签（tag 节点）；代码块/行内代码内 `![[` 与 `#` 同样不解析
+ * - 旧表写入（syncPageLinks 等）仅供旧库只读回退层（db/repos/knowledge.ts）使用；
+ *   文件事实源链路（knowledge/*）只读解析器，不再写 knowledge_link。
  */
 import { createHash } from 'node:crypto';
 import type { Db } from '../db/connection.js';
@@ -40,8 +46,8 @@ export function normalizeLinkTarget(raw: string): string {
     .toLowerCase();
 }
 
-/** 把代码块与行内代码区间替换成空格，保留字符偏移，便于按 index 取原文 */
-function maskCode(body: string): string {
+/** 把代码块与行内代码区间替换成空格，保留字符偏移，便于按 index 取原文（P2-04 rename 重写链路复用） */
+export function maskCode(body: string): string {
   const chars = [...body];
   const blank = (from: number, to: number): void => {
     for (let index = from; index < to && index < chars.length; index += 1) {
@@ -80,13 +86,101 @@ function maskCode(body: string): string {
 
 /** 解析正文里的双链；selfSlug 用于自链接跳过 */
 export function parseKnowledgeLinks(body: string, selfSlug: string): ParsedLink[] {
+  return parseKnowledgeRefs(body, selfSlug).links;
+}
+
+// ---- P2-03：较完整 Obsidian 语法（§7.4 语法处置表） ----
+
+/** 附件判定扩展名（§8 #3：图片类；其余 ![[x]] 按页嵌入处理） */
+const ATTACHMENT_EXT_PATTERN = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
+
+export interface ParsedEmbed {
+  raw_target: string;
+  alias: string | null;
+  /** 页嵌入：归一页 slug；附件：归一文件名（basename，`_attachments/x.png` → `x.png`） */
+  target_slug_norm: string;
+  weight: number;
+}
+
+export interface ParsedTag {
+  raw_tag: string;
+  tag_norm: string;
+  weight: number;
+}
+
+export interface KnowledgeRefs {
+  /** `[[...]]` 四形态（含 `[[a#^block]]`，锚点保留在 heading） */
+  links: ParsedLink[];
+  /** `![[page]]` 页嵌入（非图片目标） */
+  embeds: ParsedEmbed[];
+  /** `![[image.png]]` / `![[_attachments/x.png]]` 附件引用（target_slug_norm = 归一 basename） */
+  attachments: ParsedEmbed[];
+  /** `#tag` 标签（按出现次数合并） */
+  tags: ParsedTag[];
+}
+
+/** tag 字符集：字母/数字/汉字/`-`/`_`；排除纯数字（Obsidian 规则） */
+const TAG_PATTERN = /(^|[\s(\[{>「【『,;，；：、])#([\p{L}\p{N}][\p{L}\p{N}_-]*)/gu;
+
+function isAttachmentTarget(target: string): boolean {
+  return ATTACHMENT_EXT_PATTERN.test(target);
+}
+
+/** 附件目标归一：取路径最后一段（正文相对路径 `![[_attachments/x.png]]` 与短路径 `![[x.png]]` 归一到同一附件） */
+function attachmentKeyOf(target: string): string {
+  const base = target.split(/[\\/]/).pop() ?? target;
+  return normalizeLinkTarget(base);
+}
+
+/**
+ * 解析正文里全部 Obsidian 引用（P2-03）：一次 maskCode 扫描拆出
+ * `[[...]]` 双链 / `![[...]]` 嵌入与附件 / `#tag` 标签。
+ * 跳过规则与 parseKnowledgeLinks 完全同源：代码块（围栏+行内）、自链接（页目标=自身 slug）、
+ * 未闭合、空 target、超长；`[[a]]]` 越界不解析。
+ */
+export function parseKnowledgeRefs(body: string, selfSlug: string): KnowledgeRefs {
   const masked = maskCode(body);
   const selfNorm = normalizeLinkTarget(selfSlug);
-  const merged = new Map<string, ParsedLink>();
-  // 末尾负向断言：`[[a]]]` 这种多一个右括号的越界写法不解析
-  const pattern = /\[\[([^\[\]\n]+)\]\](?!\])/g;
+  const links = new Map<string, ParsedLink>();
+  const embeds = new Map<string, ParsedEmbed>();
+  const attachments = new Map<string, ParsedEmbed>();
+  const tags = new Map<string, ParsedTag>();
+
+  // 1) embed 先扫：`![[...]]`，命中区间从 wikilink 扫描中剔除（避免 `![[b]]` 同时计入 [[b]] link）
+  const embedRanges: Array<[number, number]> = [];
+  const embedPattern = /!\[\[([^\[\]\n]+)\]\](?!\])/g;
   let match: RegExpExecArray | null;
+  while ((match = embedPattern.exec(masked)) !== null) {
+    embedRanges.push([match.index, match.index + match[0].length]);
+    const inner = body.slice(match.index + 3, match.index + 3 + match[1]!.length);
+    const pipe = inner.indexOf('|');
+    const alias = pipe >= 0 ? inner.slice(pipe + 1).trim() : null;
+    const targetPart = (pipe >= 0 ? inner.slice(0, pipe) : inner).trim();
+    // 嵌入可带锚点（![[page#heading]]）：图边归到页级，锚点进 alias 通道供详情渲染定位
+    const hash = targetPart.indexOf('#');
+    const heading = hash >= 0 ? targetPart.slice(hash + 1).trim() : null;
+    const rawTarget = (hash >= 0 ? targetPart.slice(0, hash) : targetPart).trim();
+    if (!rawTarget || rawTarget.length > MAX_TARGET_CHARS) continue;
+    if (isAttachmentTarget(rawTarget)) {
+      const key = attachmentKeyOf(rawTarget);
+      if (!key) continue;
+      const existing = attachments.get(key);
+      if (existing) existing.weight += 1;
+      else attachments.set(key, { raw_target: rawTarget, alias: heading || alias, target_slug_norm: key, weight: 1 });
+      continue;
+    }
+    const slugNorm = normalizeLinkTarget(rawTarget);
+    if (!slugNorm || slugNorm === selfNorm) continue;
+    const existing = embeds.get(slugNorm);
+    if (existing) existing.weight += 1;
+    else embeds.set(slugNorm, { raw_target: rawTarget, alias: heading || alias, target_slug_norm: slugNorm, weight: 1 });
+  }
+  const inEmbed = (start: number, end: number): boolean => embedRanges.some(([from, to]) => start < to && end > from);
+
+  // 2) wikilink（同 parseKnowledgeLinks 原逻辑）
+  const pattern = /\[\[([^\[\]\n]+)\]\](?!\])/g;
   while ((match = pattern.exec(masked)) !== null) {
+    if (inEmbed(match.index, match.index + match[0].length)) continue;
     const inner = body.slice(match.index + 2, match.index + 2 + match[1]!.length);
     const pipe = inner.indexOf('|');
     const alias = pipe >= 0 ? inner.slice(pipe + 1).trim() : null;
@@ -97,11 +191,28 @@ export function parseKnowledgeLinks(body: string, selfSlug: string): ParsedLink[
     if (!rawTarget || rawTarget.length > MAX_TARGET_CHARS) continue;
     const slugNorm = normalizeLinkTarget(rawTarget);
     if (!slugNorm || slugNorm === selfNorm) continue;
-    const existing = merged.get(slugNorm);
+    const existing = links.get(slugNorm);
     if (existing) existing.weight += 1;
-    else merged.set(slugNorm, { raw_target: rawTarget, alias: alias || null, heading: heading || null, target_slug_norm: slugNorm, weight: 1 });
+    else links.set(slugNorm, { raw_target: rawTarget, alias: alias || null, heading: heading || null, target_slug_norm: slugNorm, weight: 1 });
   }
-  return [...merged.values()];
+
+  // 3) tags（masked 上扫：代码块内 # 不解析；# 前须是分隔符，排除 URL fragment / 十六进制色值）
+  for (const tagMatch of masked.matchAll(TAG_PATTERN)) {
+    const rawTag = tagMatch[2]!;
+    if (/^\d+$/.test(rawTag)) continue; // 纯数字不是 tag（Obsidian 规则）
+    const norm = normalizeLinkTarget(rawTag);
+    if (!norm) continue;
+    const existing = tags.get(norm);
+    if (existing) existing.weight += 1;
+    else tags.set(norm, { raw_tag: rawTag, tag_norm: norm, weight: 1 });
+  }
+
+  return {
+    links: [...links.values()],
+    embeds: [...embeds.values()],
+    attachments: [...attachments.values()],
+    tags: [...tags.values()],
+  };
 }
 
 const linkId = (pageId: string, revision: number, slugNorm: string): string =>

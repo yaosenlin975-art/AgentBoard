@@ -8,8 +8,12 @@
  *
  * 关闭沿用壳的语义：Rust 侧拦截 CloseRequested → 隐藏到托盘，不退出进程。
  *
- * 平台（B06）：壳注入 `window.__AGENTBOARD_SHELL__.nativeTitleBar`。macOS 为 true（原生红绿灯 overlay），
- * 此时只留拖拽区与标题、不渲染自绘三键；Windows 为 false（无边框），保持 ─□×。
+ * 平台形态两级判定（B06 优先于 D15）：
+ * - B06：壳注入 `window.__AGENTBOARD_SHELL__.nativeTitleBar` 为 true（macOS 原生红绿灯 overlay）
+ *   时只留拖拽区与标题、不渲染任何自绘窗口控件，左侧留 84px 给红绿灯。
+ * - D15：其余情况按平台切换窗口控制区形态（`.decorations(false)` 全自绘）：
+ *   - windows：右侧「— □ ×」三个方形按钮（原实现，逐像素不变）
+ *   - macos：左侧三圆点（关红 / 最小化黄 / 最大化绿），悬停该组才显示 × − +
  */
 import { useCallback, useEffect, useState } from 'react';
 
@@ -28,11 +32,67 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: TauriInternals;
     __AGENTBOARD_SHELL__?: ShellInfo;
+    /** 壳注入的平台值（开发预览用；见 D16），取值 'macos' | 'windows' */
+    __AB_PLATFORM_OVERRIDE__?: string;
   }
 }
 
 /** 标题栏高度（px）：与 App 顶部流式布局共用，改这里即可整体调整 */
 export const WINDOW_TITLE_BAR_HEIGHT = 32;
+
+export type TitleBarPlatform = 'macos' | 'windows';
+
+function normalizePlatform(value: unknown): TitleBarPlatform | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'macos' || normalized === 'mac') return 'macos';
+  if (normalized === 'windows' || normalized === 'win') return 'windows';
+  return null;
+}
+
+/** `?platform=macos` 开发预览；只在 DEV 生效，正式构建直接跳过 */
+let previewAnnounced = false;
+function devPreviewPlatform(): TitleBarPlatform | null {
+  if (!import.meta.env.DEV) return null;
+  if (typeof window === 'undefined' || typeof window.location?.search !== 'string') return null;
+  const raw = new URLSearchParams(window.location.search).get('platform');
+  const platform = normalizePlatform(raw);
+  if (platform === null) return null;
+  if (!previewAnnounced) {
+    previewAnnounced = true;
+    console.info(`[WindowTitleBar] 开发预览：按 ${platform} 形态渲染标题栏（?platform 仅在 DEV 生效）`);
+  }
+  return platform;
+}
+
+/**
+ * 平台判定纯函数（不依赖 React、不新增运行时依赖）。优先级：
+ * 1. `window.__AB_PLATFORM_OVERRIDE__`（壳注入）
+ * 2. `?platform=` 开发预览（仅 `import.meta.env.DEV`；正式构建里这段被常量折叠掉）
+ * 3. `navigator.userAgentData?.platform`
+ * 4. `navigator.userAgent` 正则
+ * 5. 兜底 'windows'（保持历史行为）
+ */
+export function detectPlatform(): TitleBarPlatform {
+  if (typeof window === 'undefined') return 'windows';
+
+  const override = normalizePlatform(window.__AB_PLATFORM_OVERRIDE__);
+  if (override !== null) return override;
+
+  const preview = devPreviewPlatform();
+  if (preview !== null) return preview;
+
+  const navigatorLike = typeof navigator === 'undefined' ? undefined : navigator;
+  const dataPlatform = normalizePlatform(
+    (navigatorLike as (Navigator & { userAgentData?: { platform?: string } }) | undefined)?.userAgentData?.platform,
+  );
+  if (dataPlatform !== null) return dataPlatform;
+
+  const ua = navigatorLike?.userAgent ?? '';
+  if (/Macintosh|Mac OS X/i.test(ua)) return 'macos';
+  if (/Windows/i.test(ua)) return 'windows';
+  return 'windows';
+}
 
 export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined;
@@ -56,6 +116,13 @@ function windowInvoke<T>(command: string): Promise<T | undefined> {
 
 const CONTROL_BASE =
   'grid h-8 w-11 place-items-center text-ink-2 outline-none transition-colors duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none';
+
+/** mac 圆点：12×12，符号默认透明，仅在悬停该组时出现 */
+const MAC_DOT_BASE =
+  'grid h-3 w-3 shrink-0 place-items-center rounded-full p-0 outline-none transition-colors duration-[160ms] ease-[cubic-bezier(0.2,0,0,1)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none';
+// 悬停整组才露出符号：卡面规定非悬停态不得有可见符号（与 mac 原生一致）
+const MAC_DOT_SYMBOL =
+  'opacity-0 transition-opacity duration-[120ms] group-hover/dots:opacity-100 motion-reduce:transition-none';
 
 function MinimizeIcon() {
   return (
@@ -90,10 +157,59 @@ function CloseIcon() {
   );
 }
 
+/** mac 圆点里的符号（× / − / +；悬停该组才显示，深色描边压在亮色圆点上） */
+function MacGlyph({ kind }: { kind: 'close' | 'minimize' | 'maximize' }) {
+  const common = {
+    'aria-hidden': true,
+    viewBox: '0 0 12 12',
+    className: `h-[7px] w-[7px] ${MAC_DOT_SYMBOL}`,
+    fill: 'none',
+    stroke: 'rgba(0,0,0,0.55)',
+    strokeWidth: 1.5,
+  } as const;
+  if (kind === 'close') {
+    return (
+      <svg {...common} strokeLinecap="round">
+        <path d="M3.4 3.4l5.2 5.2M8.6 3.4L3.4 8.6" />
+      </svg>
+    );
+  }
+  if (kind === 'minimize') {
+    return (
+      <svg {...common} strokeLinecap="round">
+        <path d="M2.8 6h6.4" />
+      </svg>
+    );
+  }
+  return (
+    <svg {...common} strokeLinecap="round">
+      <path d="M2.8 6h6.4M6 2.8v6.4" />
+    </svg>
+  );
+}
+
+/** 标题左侧的 A 图标 + 文字；两分支共用同一套视觉 */
+function BrandMark() {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span
+        aria-hidden="true"
+        className="grid h-4 w-4 shrink-0 place-items-center rounded-[3px] bg-accent text-[9px] font-bold leading-none text-accent-ink"
+      >
+        A
+      </span>
+      <span className="truncate text-[11.5px] font-medium tracking-wide text-ink-2 max-[560px]:hidden">
+        AgentBoard
+      </span>
+    </span>
+  );
+}
+
 export function WindowTitleBar() {
   const [maximized, setMaximized] = useState(false);
   const [tauri] = useState(isTauriRuntime);
   const [chrome] = useState(shellChrome);
+  const [platform] = useState<TitleBarPlatform>(detectPlatform);
 
   const syncMaximized = useCallback(() => {
     void windowInvoke<boolean>('is_maximized').then((value) => {
@@ -111,59 +227,115 @@ export function WindowTitleBar() {
 
   if (!tauri) return null;
 
-  // B06：macOS 壳用原生红绿灯（overlay），页面不再画 ─□×；左侧留出 84px 给红绿灯，
-  // Windows（及旧壳无该字段）保持三键与 12px 左内距。
+  const headerStyle = { height: WINDOW_TITLE_BAR_HEIGHT };
+  const maximizeLabel = maximized ? '还原窗口' : '最大化窗口';
+
+  // B06：macOS 壳用原生红绿灯（overlay），页面不再画任何窗口控件；左侧留出 84px 给红绿灯。
+  // Windows（及旧壳无该字段）保持全自绘，落到下方 D15 平台分支。
   const nativeTitleBar = chrome?.nativeTitleBar === true;
 
-  return (
-    <header
-      data-testid="window-titlebar"
-      data-native-titlebar={nativeTitleBar ? 'true' : 'false'}
-      data-tauri-drag-region="deep"
-      className={`flex shrink-0 select-none items-center border-b border-hairline bg-surface-card text-ink ${
-        nativeTitleBar ? 'pl-[84px]' : 'pl-3'
-      }`}
-      style={{ height: WINDOW_TITLE_BAR_HEIGHT }}
-    >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          aria-hidden="true"
-          className="grid h-4 w-4 shrink-0 place-items-center rounded-[3px] bg-accent text-[9px] font-bold leading-none text-accent-ink"
-        >
-          A
-        </span>
-        <span className="truncate text-[11.5px] font-medium tracking-wide text-ink-2 max-[560px]:hidden">
-          AgentBoard
-        </span>
-      </span>
-      {/* 拖拽填充区：自身无内容，保证标题栏空档也能拖动 */}
-      <span aria-hidden="true" className="h-full min-w-0 flex-1" />
-      {nativeTitleBar ? null : (
-        <div className="flex shrink-0 items-stretch">
-          <button type="button" aria-label="最小化窗口" title="最小化" className={CONTROL_BASE} onClick={() => void windowInvoke('minimize')}>
-            <MinimizeIcon />
-          </button>
-          <button
-            type="button"
-            aria-label={maximized ? '还原窗口' : '最大化窗口'}
-            title={maximized ? '还原' : '最大化'}
-            className={CONTROL_BASE}
-            onClick={() => void windowInvoke('toggle_maximize')}
-          >
-            {maximized ? <RestoreIcon /> : <MaximizeIcon />}
-          </button>
-          {/* 关闭 hover 用深红：亮/暗主题下白图标都够对比（--ab-del 在暗色是浅红，白字对比不足） */}
+  if (nativeTitleBar) {
+    return (
+      <header
+        data-testid="window-titlebar"
+        data-platform="macos"
+        data-native-titlebar="true"
+        data-tauri-drag-region="deep"
+        className="flex shrink-0 select-none items-center border-b border-hairline bg-surface-card pl-[84px] text-ink"
+        style={headerStyle}
+      >
+        <BrandMark />
+        {/* 拖拽填充区：自身无内容，保证标题栏空档也能拖动 */}
+        <span aria-hidden="true" className="h-full min-w-0 flex-1" />
+      </header>
+    );
+  }
+
+  if (platform === 'macos') {
+    return (
+      <header
+        data-testid="window-titlebar"
+        data-platform="macos"
+        data-native-titlebar="false"
+        data-tauri-drag-region="deep"
+        className="flex shrink-0 select-none items-center border-b border-hairline bg-surface-card text-ink"
+        style={headerStyle}
+      >
+        {/* 左侧三圆点：mac 原生顺序 = 关 / 最小化 / 最大化；悬停整组才露出符号 */}
+        <div className="group/dots flex shrink-0 items-center gap-2 pl-[13px]">
           <button
             type="button"
             aria-label="关闭窗口"
             title="关闭"
-            className={`${CONTROL_BASE} hover:bg-[#c0362c] hover:text-white`}
+            className={`${MAC_DOT_BASE} bg-[#FF5F57] hover:bg-[#ff4d44]`}
             onClick={() => void windowInvoke('close')}
           >
-            <CloseIcon />
+            <MacGlyph kind="close" />
+          </button>
+          <button
+            type="button"
+            aria-label="最小化窗口"
+            title="最小化"
+            className={`${MAC_DOT_BASE} bg-[#FEBC2E] hover:bg-[#f2b01f]`}
+            onClick={() => void windowInvoke('minimize')}
+          >
+            <MacGlyph kind="minimize" />
+          </button>
+          <button
+            type="button"
+            aria-label={maximizeLabel}
+            title={maximized ? '还原' : '最大化'}
+            className={`${MAC_DOT_BASE} bg-[#28C840] hover:bg-[#21b836]`}
+            onClick={() => void windowInvoke('toggle_maximize')}
+          >
+            <MacGlyph kind="maximize" />
           </button>
         </div>
-      )}
+        <span className="ml-3 flex min-w-0 items-center">
+          <BrandMark />
+        </span>
+        {/* 拖拽填充区：自身无内容，保证标题栏空档也能拖动 */}
+        <span aria-hidden="true" className="h-full min-w-0 flex-1" />
+      </header>
+    );
+  }
+
+  return (
+    <header
+      data-testid="window-titlebar"
+      data-platform="windows"
+      data-native-titlebar="false"
+      data-tauri-drag-region="deep"
+      className="flex shrink-0 select-none items-center border-b border-hairline bg-surface-card pl-3 text-ink"
+      style={headerStyle}
+    >
+      <BrandMark />
+      {/* 拖拽填充区：自身无内容，保证标题栏空档也能拖动 */}
+      <span aria-hidden="true" className="h-full min-w-0 flex-1" />
+      <div className="flex shrink-0 items-stretch">
+        <button type="button" aria-label="最小化窗口" title="最小化" className={CONTROL_BASE} onClick={() => void windowInvoke('minimize')}>
+          <MinimizeIcon />
+        </button>
+        <button
+          type="button"
+          aria-label={maximizeLabel}
+          title={maximized ? '还原' : '最大化'}
+          className={CONTROL_BASE}
+          onClick={() => void windowInvoke('toggle_maximize')}
+        >
+          {maximized ? <RestoreIcon /> : <MaximizeIcon />}
+        </button>
+        {/* 关闭 hover 用深红：亮/暗主题下白图标都够对比（--ab-del 在暗色是浅红，白字对比不足） */}
+        <button
+          type="button"
+          aria-label="关闭窗口"
+          title="关闭"
+          className={`${CONTROL_BASE} hover:bg-[#c0362c] hover:text-white`}
+          onClick={() => void windowInvoke('close')}
+        >
+          <CloseIcon />
+        </button>
+      </div>
     </header>
   );
 }

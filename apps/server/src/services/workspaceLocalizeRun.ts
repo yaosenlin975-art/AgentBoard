@@ -39,10 +39,13 @@ import {
 } from './workspaceLocalize.js';
 
 // STORE-6：行集 SQL 抽到 workspaceScopedQueries.ts（快照与迁移共用同一份口径），此处原样转发。
-import { LOCALIZE_COPY_ORDER, WORKSPACE_TABLE_QUERIES } from './workspaceScopedQueries.js';
+// P2-01：availableTableQueries / tableExists 一并转发（新库不再建知识表，copy/verify 需缺表容忍）。
+import { LOCALIZE_COPY_ORDER, WORKSPACE_TABLE_QUERIES, availableTableQueries, tableExists } from './workspaceScopedQueries.js';
 export {
   LOCALIZE_COPY_ORDER,
   WORKSPACE_TABLE_QUERIES,
+  availableTableQueries,
+  tableExists,
   countScopedRowsByTable,
   centerRevertBlockingRows,
   type WorkspaceTableQuery,
@@ -106,12 +109,23 @@ export function insertRows(target: Db, table: string, rows: Array<Record<string,
   }
 }
 
-/** 复制该工作区的行（只读中心库；返回每表行数）。表序与 SQL 由 WORKSPACE_TABLE_QUERIES 统一供 reverse/status 复用 */
+/** 复制该工作区的行（只读中心库；返回每表行数）。表序与 SQL 由 WORKSPACE_TABLE_QUERIES 统一供 reverse/status 复用。
+ * P2-01：源库或目标库缺依赖表的查询整条跳过（新库不再建知识页/revision/link 表，按 0 行计，与 count 同口径） */
 function copyScopedRows(centerDb: Db, target: Db, workspaceId: string): Record<string, number> {
   const counts: Record<string, number> = {};
+  const queries = availableTableQueries(centerDb).filter(query => query.tables.every(table => tableExists(target, table)));
+  const executable = new Set(queries.map(query => query.table));
+  for (const query of WORKSPACE_TABLE_QUERIES) {
+    if (!executable.has(query.table)) counts[query.table] = 0; // 缺表：与 countScopedRowsByTable 同口径按 0 行计
+  }
+  // P2-01：知识表退出迁移管线——键集仍保留（LocalizeCounts 契约），恒 0（行原地只读保留，不搬不删）
+  counts.knowledge_page = 0;
+  counts.knowledge_revision = 0;
+  counts.knowledge_link = 0;
+  counts.knowledge_attachment = 0;
   target.exec('PRAGMA defer_foreign_keys = ON');
   target.transaction(() => {
-    for (const query of WORKSPACE_TABLE_QUERIES) {
+    for (const query of queries) {
       const rows = centerDb.prepare(query.sql).all(workspaceId) as Array<Record<string, unknown>>;
       insertRows(target, query.table, rows);
       counts[query.table] = rows.length;
@@ -163,29 +177,11 @@ function copyAttachmentFiles(
 }
 
 /**
- * 删中心库里该工作区的知识页（先 revision，再页面）。
- * 两个坑必须处理：
- * - `knowledge_revision.page_id` 是 `ON DELETE RESTRICT`，页面不能直接删；
- * - `knowledge_revision` 上有不可变历史触发器（RAISE ABORT），删 revision 前要临时摘掉、事后再原样建回。
- */
-function deleteWorkspaceKnowledgeRows(centerDb: Db, workspaceId: string): void {
-  const triggers = centerDb
-    .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN ('knowledge_revision_no_update','knowledge_revision_no_delete') AND sql IS NOT NULL")
-    .all() as Array<{ name: string; sql: string }>;
-  for (const trigger of triggers) centerDb.exec(`DROP TRIGGER ${trigger.name}`);
-  try {
-    centerDb.prepare("DELETE FROM knowledge_revision WHERE page_id IN (SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?)").run(workspaceId);
-    centerDb.prepare("DELETE FROM knowledge_link WHERE source_page_id IN (SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?)").run(workspaceId);
-    centerDb.prepare("DELETE FROM knowledge_attachment WHERE page_id IN (SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?)").run(workspaceId);
-    centerDb.prepare("DELETE FROM knowledge_page WHERE scope='workspace' AND workspace_id = ?").run(workspaceId);
-  } finally {
-    for (const trigger of triggers) centerDb.exec(trigger.sql);
-  }
-}
-
-/**
- * 删中心库里该工作区的全部 scoped 行（switch 前向迁移与 revert 反向迁移的清场共用；STORE-3a 提取）。
- * 调用方负责自己的事务；revert 场景调用前必须确认该区行已在工作区库（唯一副本不落地不删）。
+ * P2-01（方向 B AG1/§7.7）：知识表已退出迁移管线——前向迁移与 revert 的清场都**不再触碰**知识行。
+ * 旧库（只读保留）的 knowledge_page/revision/link/attachment 行原地不动：知识页权威数据在
+ * Docs/*.md，导出走 P2-02 export-legacy（显式、带 manifest），迁移/回迁都不得改写旧库行。
+ * （原 deleteWorkspaceKnowledgeRows「摘触发器 → revision→link→attachment→page 逐表删」随管线退出而移除；
+ *   revert 也不回写知识行——两侧副本原地保留，避免与中心库残留行撞 UNIQUE 主键。）
  *
  * STORE-3a：子表必须先显式删、父表最后删——issue_comment / issue_git_baseline / issue_dependency /
  * issue_decision / approval_rule / message 等子表没有 (issue_id / session_id) 索引，靠外键级联逐行
@@ -211,7 +207,6 @@ export function deleteWorkspaceScopedRows(centerDb: Db, workspaceId: string): vo
   centerDb.prepare('DELETE FROM workspace_status WHERE workspace_id = ?').run(workspaceId);
   centerDb.prepare('DELETE FROM issue_draft_audit WHERE workspace_id = ?').run(workspaceId);
   centerDb.prepare('DELETE FROM workspace_change_log WHERE origin_workspace_id = ?').run(workspaceId);
-  deleteWorkspaceKnowledgeRows(centerDb, workspaceId); // revision→link→attachment→page（先摘不可变历史触发器）
 }
 
 /** verify 七项（设计 §6.4）；返回 problems，空数组 = 通过 */
@@ -234,20 +229,29 @@ export function verifyLocalizedWorkspace(options: {
   for (const table of LOCALIZE_COPY_ORDER) {
     const n = expected[table];
     if (n === undefined) continue;
+    // P2-01：目标库缺表（新库无知识页/revision/link 表）只核对期望为 0，不查行数
+    if (!tableExists(targetDb, table)) {
+      if (n !== 0) problems.push(`${table} 缺表但期望 ${n} 行`);
+      continue;
+    }
     const got = Number((targetDb.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n);
     if (got !== n) problems.push(`${table} 行数 ${got} != ${n}`);
   }
   // workspace 恰 1 行且 id 正确、无 common 知识页
   const wsRows = targetDb.prepare('SELECT id FROM workspace').all() as Array<{ id: string }>;
   if (wsRows.length !== 1 || wsRows[0]!.id !== workspaceId) problems.push(`workspace 行 ${wsRows.length} 条`);
-  const commonPages = Number((targetDb.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='common'").get() as { n: number }).n);
-  if (commonPages !== 0) problems.push(`工作区库不应含 common 知识页（${commonPages}）`);
-  // fts 行数 = 知识页数
-  const fts = Number((targetDb.prepare('SELECT COUNT(*) AS n FROM knowledge_fts').get() as { n: number }).n);
-  const pages = Number((targetDb.prepare('SELECT COUNT(*) AS n FROM knowledge_page').get() as { n: number }).n);
-  if (fts !== pages) problems.push(`fts ${fts} != 知识页 ${pages}`);
+  if (tableExists(targetDb, 'knowledge_page')) {
+    const commonPages = Number((targetDb.prepare("SELECT COUNT(*) AS n FROM knowledge_page WHERE scope='common'").get() as { n: number }).n);
+    if (commonPages !== 0) problems.push(`工作区库不应含 common 知识页（${commonPages}）`);
+    // fts 行数 = 知识页数
+    const fts = Number((targetDb.prepare('SELECT COUNT(*) AS n FROM knowledge_fts').get() as { n: number }).n);
+    const pages = Number((targetDb.prepare('SELECT COUNT(*) AS n FROM knowledge_page').get() as { n: number }).n);
+    if (fts !== pages) problems.push(`fts ${fts} != 知识页 ${pages}`);
+  }
   // 同构校验（第 ⑦ 条）：工作区库必须含中心库的全部列（含 KB-PAGE-3 的 domain）
   for (const table of ['knowledge_page', 'issue', 'workspace'] as const) {
+    // P2-01：目标库缺知识表（新库）跳过——知识表已退出迁移管线，行不搬、列不比对
+    if (table === 'knowledge_page' && !tableExists(targetDb, table)) continue;
     const centerCols = new Set(tableColumns(centerDb, table));
     const targetCols = new Set(tableColumns(targetDb, table));
     for (const col of centerCols) if (!targetCols.has(col)) problems.push(`${table} 缺列 ${col}`);

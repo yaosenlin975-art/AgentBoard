@@ -13,7 +13,10 @@ import { GRAPH_KEYWORD_RULES } from '@agentboard/shared';
  * - E3 正文双链 `[[page]]` 不在本文件范围（独立卡）。
  */
 
-export type GraphEdgeKind = 'link' | 'source' | 'keyword';
+export type GraphEdgeKind = 'link' | 'source' | 'keyword' | 'embed';
+
+/** P2-03：节点类型（服务端合成节点 tag/attachment/unresolved；缺省按 page 处理） */
+export type GraphNodeType = 'page' | 'tag' | 'attachment' | 'unresolved';
 
 export interface GraphNode {
   id: string;
@@ -27,6 +30,8 @@ export interface GraphNode {
   category?: string;
   /** design 类的落地状态 */
   landed?: string;
+  /** P2-03：节点类型（缺省 page；tag/attachment/unresolved 点击不跳转、按语义色呈现） */
+  node_type?: GraphNodeType;
 }
 
 export interface GraphEdge {
@@ -351,6 +356,8 @@ export function normalizeGraph(raw: unknown, options: ComposeOptions = {}): Comp
       // KB-MODEL：服务端返回则透传，缺失一律 undefined（读取方按 legacy 灰显）
       ...(typeof n.category === 'string' ? { category: n.category } : {}),
       ...(typeof n.landed === 'string' ? { landed: n.landed } : {}),
+      // P2-03：合成节点类型透传（tag/attachment/unresolved；未知值忽略按 page）
+      ...(n.node_type === 'tag' || n.node_type === 'attachment' || n.node_type === 'unresolved' ? { node_type: n.node_type } : {}),
     });
   }
 
@@ -358,7 +365,8 @@ export function normalizeGraph(raw: unknown, options: ComposeOptions = {}): Comp
   for (const item of rawEdges) {
     const e = (item ?? {}) as Record<string, unknown>;
     // GRAPH-KEYWORD-ALIGN：link（`[[双链]]`）是合法边类型，不再当畸形数据丢弃
-    const kind = e.kind === 'keyword' ? 'keyword' : e.kind === 'source' ? 'source' : e.kind === 'link' ? 'link' : null;
+    // P2-03：embed（`![[嵌入]]`）同为合法边类型
+    const kind = e.kind === 'keyword' ? 'keyword' : e.kind === 'source' ? 'source' : e.kind === 'link' ? 'link' : e.kind === 'embed' ? 'embed' : null;
     if (kind === null || typeof e.source !== 'string' || typeof e.target !== 'string') { malformed += 1; continue; }
     if (!nodes.has(e.source) || !nodes.has(e.target) || e.source === e.target) { malformed += 1; continue; }
     const weight = typeof e.weight === 'number' && Number.isFinite(e.weight) && e.weight > 0 ? e.weight : 1;
@@ -440,6 +448,8 @@ export interface GraphStats {
   keywordEdges: number;
   /** V2-4 显式双链边（来自 knowledge_link） */
   linkEdges: number;
+  /** P2-03：`![[嵌入]]` 独立边（含附件节点边） */
+  embedEdges: number;
 }
 
 export function graphStats(graph: GraphPayload): GraphStats {
@@ -450,6 +460,7 @@ export function graphStats(graph: GraphPayload): GraphStats {
     sourceEdges: graph.edges.filter((e) => e.kind === 'source').length,
     keywordEdges: graph.edges.filter((e) => e.kind === 'keyword').length,
     linkEdges: graph.edges.filter((e) => e.kind === 'link').length,
+    embedEdges: graph.edges.filter((e) => e.kind === 'embed').length,
   };
 }
 
@@ -993,10 +1004,17 @@ export const GRAPH_PALETTE = {
   node: {
     workspace: { light: '#3b82f6', dark: '#60a5fa' },
     common: { light: '#94a3b8', dark: '#cbd5e1' },
+    // P2-03：合成节点语义色（与 index.css --kb-graph-node-* 同值，供图例/降级路径用）
+    tag: { light: '#08b94e', dark: '#44cf6e' },
+    attachment: { light: '#e0ac00', dark: '#e0de71' },
+    unresolved: { light: '#ababab', dark: '#666666' },
   },
   edge: {
     source: { light: 'rgba(59,130,246,0.55)', dark: 'rgba(96,165,250,0.6)', width: 1.6, dash: [] as number[] },
     keyword: { light: 'rgba(148,163,184,0.55)', dark: 'rgba(203,213,225,0.5)', width: 1, dash: [4, 3] as number[] },
+    // P2-03：embed 边（点划线，颜色与 link 区分）
+    link: { light: 'rgba(13,148,136,0.6)', dark: 'rgba(45,212,191,0.6)', width: 1.4, dash: [] as number[] },
+    embed: { light: 'rgba(217,119,6,0.6)', dark: 'rgba(251,191,36,0.6)', width: 1.4, dash: [2, 3] as number[] },
   },
   label: { light: 'rgba(82,82,82,1)', dark: 'rgba(212,212,212,1)' },
   pinnedRing: '#f59e0b',
@@ -1009,9 +1027,23 @@ export function nodeColor(scope: string, dark: boolean): string {
   return scope === 'common' ? GRAPH_PALETTE.node.common[dark ? 'dark' : 'light'] : GRAPH_PALETTE.node.workspace[dark ? 'dark' : 'light'];
 }
 
+/** P2-03：合成节点（tag/attachment/unresolved）的语义色；page 返回 null 走既有着色 */
+export function syntheticNodeColor(nodeType: string | undefined, dark: boolean): string | null {
+  if (nodeType === 'tag') return GRAPH_PALETTE.node.tag[dark ? 'dark' : 'light'];
+  if (nodeType === 'attachment') return GRAPH_PALETTE.node.attachment[dark ? 'dark' : 'light'];
+  if (nodeType === 'unresolved') return GRAPH_PALETTE.node.unresolved[dark ? 'dark' : 'light'];
+  return null;
+}
+
 /** 按暗色与否取边样式 */
 export function edgeStyle(kind: string, dark: boolean): { color: string; width: number; dash: number[] } {
-  const entry = kind === 'source' ? GRAPH_PALETTE.edge.source : GRAPH_PALETTE.edge.keyword;
+  const entry = kind === 'source'
+    ? GRAPH_PALETTE.edge.source
+    : kind === 'keyword'
+      ? GRAPH_PALETTE.edge.keyword
+      : kind === 'embed'
+        ? GRAPH_PALETTE.edge.embed
+        : GRAPH_PALETTE.edge.link;
   return { color: entry[dark ? 'dark' : 'light'], width: entry.width, dash: [...entry.dash] };
 }
 

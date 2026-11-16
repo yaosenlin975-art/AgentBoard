@@ -364,6 +364,8 @@ optgroup {
   --kb-graph-node-attachment: #e0ac00;
   --kb-graph-node-unresolved: #ababab;
   --kb-graph-line: #d4d4d4;
+  /* P2-03：embed 边语义色（琥珀，与 link 灰线区分） */
+  --kb-graph-line-embed: #d97706;
   --kb-graph-text: #222222;
   --kb-graph-highlight: #9873f7;
   --kb-cat-design: #6366f1;
@@ -382,6 +384,7 @@ optgroup {
   --kb-graph-node-attachment: #e0de71;
   --kb-graph-node-unresolved: #666666;
   --kb-graph-line: #3f3f3f;
+  --kb-graph-line-embed: #fbbf24;
   --kb-graph-text: #dadada;
   --kb-graph-highlight: #8a5cf5;
   --kb-cat-design: #a5b4fc;
@@ -419,6 +422,10 @@ optgroup {
 }
 .graph-view.color-line {
   color: var(--kb-graph-line);
+}
+/* P2-03：embed 边语义色（![[嵌入]] 独立边） */
+.graph-view.color-line-embed {
+  color: var(--kb-graph-line-embed);
 }
 .graph-view.color-text {
   color: var(--kb-graph-text);

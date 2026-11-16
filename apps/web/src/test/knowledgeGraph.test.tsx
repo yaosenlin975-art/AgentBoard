@@ -342,7 +342,8 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
         expect(params.get('scope')).toBe('both');
         expect(params.get('workspace_id')).toBe('A');
         // GRAPH-KEYWORD-ALIGN：默认请求必须带 link
-        expect(params.get('edge_kinds')).toBe('link,source,keyword');
+        // P2-03：默认请求带 link + embed
+        expect(params.get('edge_kinds')).toBe('link,embed,source,keyword');
         return HttpResponse.json(
           remoteGraph(
             [node('p1', '缓存策略'), node('p2', '缓存失效')],
@@ -352,7 +353,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
       }),
     );
     const onSelect = mountGraph();
-    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 来源 1 / 关键词 0）');
+    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 嵌入 0 / 来源 1 / 关键词 0）');
     expect(screen.getByTestId('knowledge-graph-stage')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('graph-node-p1'));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', title: '缓存策略', scope: 'workspace' }));
@@ -443,11 +444,11 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
       ),
     );
     mountGraph();
-    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 条关联（双链 0 / 来源 1 / 关键词 1）');
+    expect(await screen.findByTestId('knowledge-graph-stats')).toHaveTextContent('2 条关联（双链 0 / 嵌入 0 / 来源 1 / 关键词 1）');
     expect(screen.getByTestId('graph-edge-keyword')).toBeChecked();
     fireEvent.click(screen.getByTestId('graph-edge-keyword'));
     await waitFor(() =>
-      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('1 条关联（双链 0 / 来源 1 / 关键词 0）'),
+      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('1 条关联（双链 0 / 嵌入 0 / 来源 1 / 关键词 0）'),
     );
   });
 
@@ -484,7 +485,7 @@ describe('KnowledgeGraph 组件（契约 / 空态 / 交互）', () => {
     mountGraph();
     expect(await screen.findByTestId('graph-fallback-notice')).toHaveTextContent('服务端星图接口未就绪');
     await waitFor(() =>
-      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 来源 1 / 关键词 0）'),
+      expect(screen.getByTestId('knowledge-graph-stats')).toHaveTextContent('2 个节点 · 1 条关联（双链 0 / 嵌入 0 / 来源 1 / 关键词 0）'),
     );
     expect(graphStats((await Promise.resolve({ nodes: [], edges: [] })) as unknown as GraphPayload).nodeCount).toBe(0);
   });

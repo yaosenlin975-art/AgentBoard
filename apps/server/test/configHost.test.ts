@@ -26,6 +26,8 @@ describe('AGENTBOARD_HOST', () => {
     const config = loadConfig({});
     expect(config.host).toBe(DEFAULT_HOST);
     expect(config.host).toBe('127.0.0.1');
+    // P1-01：无 env、无设置项时 dbPath 来源为 default（settings 来源已下线）
+    expect(config.dbPathSource).toBe('default');
   });
 
   it('显式设 0.0.0.0：监听全部接口', () => {

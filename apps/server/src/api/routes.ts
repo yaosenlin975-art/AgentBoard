@@ -6,6 +6,7 @@
  */
 import { Router } from 'express';
 import { createKnowledgeRouter } from './knowledgeRoutes.js';
+import { createKnowledgeExportRouter } from './knowledgeExportRoutes.js';
 import { createAccountRouter } from './accountRoutes.js';
 import { createSystemRouter, type RestartDeps } from './systemRoutes.js';
 import { createArchivedChangelogRouter } from './changelogRoutes.js';
@@ -43,10 +44,6 @@ import { getWorkspace } from '../db/repos/workspace.js';
 import { getIssue } from '../db/repos/issue.js';
 import { getSession } from '../db/repos/session.js';
 import { ApiError, NotFoundError } from '../errors.js';
-import {
-  isMigrationActive,
-  runBootSelfCheck,
-} from '../services/dbMigration.js';
 import { WORKSPACE_DB_MODES, getDbForWorkspace, isWorkspaceDbDisabled, locateDbForEntity, readWorkspaceMetaCached, type EntityLocation, type WorkspaceDbMode, type WorkspaceLike } from '../db/resolver.js';
 // STORE-4b：entity_locator 定位索引维护（repos 挂钩的中心库句柄绑定与创建/删除写入、删表重建路径）
 import { bindEntityLocatorCenter, entityLocatorNeedsBackfill, rebuildEntityLocator } from '../db/repos/entityLocator.js';
@@ -54,8 +51,13 @@ import { requireIssueInWorkspace } from '../services/claim.js';
 import type { MinimaxClientProbe } from '../services/accounts/minimaxClientProbe.js';
 import type { ExportRunner } from '../services/accounts/credentialImport.js';
 import { httpMutation } from '../services/idempotency.js';
-import { attachmentsDirFor, configDir, readSettings, writeSettings, type DbPathSource } from '../config.js';
+import { attachmentsDirFor, readSettings } from '../config.js';
 import type { SkillsSyncOptions } from '../services/skillsSync.js';
+// P2-01：知识路由的 legacy 图片存储与旧库只读探测
+import { createScopedKnowledgeImageStore } from '../services/knowledgeImages.js';
+import { findKnowledgePageOwner } from '../services/knowledgeResolve.js';
+import { knowledgeDocsStore } from '../knowledge/store.js';
+import { resolveDocsDir, type DocsDirOverrides } from '../knowledge/paths.js';
 
 export interface RouterDeps {
   db: Db;
@@ -68,6 +70,8 @@ export interface RouterDeps {
   accounts?: { workbuddy?: WorkbuddyDesktopProvider; checkinProvider?: CheckinProviderSpec; checkinProviders?: Partial<Record<ManagedAppId, CheckinProviderSpec>>; vault?: CheckinVault; desktopProviders?: Partial<Record<ManagedAppId, Pick<WorkbuddyDesktopProvider, 'captureCurrent' | 'switchAccount'>>>; quotas?: Pick<QuotaService, 'get'>; minimaxClientProbe?: MinimaxClientProbe; addAccountProviders?: Partial<Record<ManagedAppId, AddAccountProviderSpec>>; restoreHandlers?: Partial<Record<ManagedAppId, RestoreHandler>> };
   /** KB-GRAPH 页面加载上限（仅测试注入；生产用 GRAPH_MAX_PAGES） */
   knowledgeGraphPageLimit?: number;
+  /** P2-01：知识 Docs 目录覆盖（仅测试注入；生产用默认 <工作区>/.agentboard/Docs 与 ~/.agentboard/Docs） */
+  knowledgeDocsPaths?: DocsDirOverrides;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
   /** SYSTEM-RESTART：服务自重启依赖（生产 main() 注入；测试可注入 fake） */
@@ -82,18 +86,10 @@ export interface RouterDeps {
   workspaceDbResolver?: boolean;
   /** SERVER-SINGLETON：实例标识（`/api/version` 输出；测试可注入） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
-  /** DB-2B：迁移编排的固定状态目录（缺省 configDir()；测试注入临时目录） */
-  dbMigrationStateDir?: string;
   /** DB-2B：当前进程实际使用的库路径（缺省 db.name；测试注入） */
   dbPath?: string;
   /** DB-2B：当前进程的附件目录（缺省 attachmentsDirFor(dbPath)） */
   attachmentStorageDir?: string;
-  /** DB-2B：dbPath 来源（缺省按 AGENTBOARD_DB 是否设置推断） */
-  dbPathSource?: DbPathSource;
-  /** DB-2B：自检失败时的进程退出（缺省 process.exit；测试注入 spy） */
-  dbMigrationExit?: (code: number) => void;
-  /** DB-2B：自检通过后旧文件清理的重试调度（缺省 setTimeout；测试注入） */
-  dbMigrationSchedule?: (fn: () => void, ms: number) => void;
   /** VOICE-1：语音模型管理依赖（仅测试注入 catalog/fetch/freeBytes/rootDir；生产用默认值） */
   voice?: VoiceRouterOptions;
   /** ACC-INCOGNITO：无痕浏览器打开依赖（仅测试注入 spawn/existsSync；生产用系统探测） */
@@ -230,27 +226,10 @@ export function createRouter(deps: RouterDeps): Router {
     return db;
   };
 
-  // ---- DB-2B：迁移编排上下文 ----
-  // 状态目录固定（configDir），不随库路径漂移：新进程靠它读到旧进程写的待自检意图。
-  const migrationStateDir = deps.dbMigrationStateDir ?? configDir();
-  // db 可能是最小装配的替身（无 name）：此时迁移端点明确 503，不在构造期抛错
+  // ---- 装配上下文：库路径 / 附件目录 / 工作区解析 ----
+  // db 可能是最小装配的替身（无 name）：此时 currentDbPath 为 null（下游自行判空）。
   const currentDbPath: string | null = deps.dbPath ?? (typeof db.name === 'string' && db.name !== '' ? db.name : null);
   const attachmentsDirOf = (dbPath: string): string => deps.attachmentStorageDir ?? attachmentsDirFor(dbPath);
-
-  // 新进程启动钩子：有 pending 意图就自检；失败则回滚设置并退出本进程
-  // （旧进程健康判定会失败 → 重新监听旧库继续服务，即「重启回旧库」）。
-  if (currentDbPath !== null && isMigrationActive(migrationStateDir)) {
-    const boot = runBootSelfCheck({
-      stateDir: migrationStateDir,
-      currentDbPath,
-      sourceDb: db,
-      applySettings: (path) => { writeSettings({ dbPath: path }); },
-      ...(deps.dbMigrationSchedule !== undefined ? { schedule: deps.dbMigrationSchedule } : {}),
-    });
-    if (boot.handled && !boot.ok && boot.needsRestartToOldDb) {
-      (deps.dbMigrationExit ?? ((code: number) => process.exit(code)))(1);
-    }
-  }
   const effectiveWorkspace = (req: Request): string | undefined => req.body?.workspace_id ?? req.query.workspace_id;
   // STORE-4a：mutation 的业务写与幂等记录都落「本请求解析出的库」（幂等表随库走，重放在同一库命中）
   function mutation<T>(rdb: Db, req: Request, perform: (routedDb: Db) => T) {
@@ -272,16 +251,65 @@ export function createRouter(deps: RouterDeps): Router {
     ...(deps.skillsRoot === undefined ? {} : { skillsRoot: deps.skillsRoot }),
   }));
 
-  // STORE-4a：知识路由按请求取库——common→中心库、workspace→工作区库（判定走 resolver）；
-  // 跨区 owner 探测的 fan-out 候选 = 全部已下沉区（单区打不开跳过，命中即事实）。
-  router.use('/knowledge', createKnowledgeRouter(deps.db, {
+  // P2-01（方向 B）：知识路由换文件仓储——不再注入 getWorkspaceDb/listWorkspaceDbs（知识数据不走 SQLite）。
+  // 保留的注入：工作区注册表（M13 中心库只存注册表）、legacy 图片兼容存储（P2-03 接管前）、
+  // 写幂等记录库（idempotency 表属服务基础设施）、旧库只读探测（图片可见性 403/404 区分）。
+  router.use('/knowledge', createKnowledgeRouter({
     maxGraphPages: deps.knowledgeGraphPageLimit,
-    // STORE-4b：工作区句柄绑中心库——repos/knowledge 的定位索引维护要知道往哪个中心库写
-    getWorkspaceDb: (workspaceId) => {
-      const workspaceDb = dbForWorkspace(workspaceId);
-      bindEntityLocatorCenter(workspaceDb, db);
-      return workspaceDb;
+    getWorkspaceRow: (workspaceId) => {
+      const row = getWorkspace(deps.db, workspaceId);
+      return row === null ? null : { id: row.id, name: row.name, path: row.path };
     },
+    listWorkspaceRows: () => (db.prepare('SELECT id, path FROM workspace WHERE path IS NOT NULL AND path != \'\'').all() as Array<{ id: string; path: string }>),
+    imageStore: createScopedKnowledgeImageStore({
+      center: db,
+      getWorkspaceDb: (workspaceId) => dbForWorkspace(workspaceId),
+      listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
+        try {
+          return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
+        } catch {
+          return [];
+        }
+      }),
+    }),
+    legacyPageOwner: (pageId) => {
+      // 文件事实源：页不在当前范围时扫**全部已注册工作区**的 Docs 判归属（403 不回显标题）；
+      // 文件索引没有再退旧库只读行（未导出的 legacy 页）。
+      const allWorkspaces = (db.prepare('SELECT id, path FROM workspace').all() as Array<{ id: string; path: string }>)
+        .filter(row => row.path !== '');
+      for (const wsRow of allWorkspaces) {
+        try {
+          const wsDir = resolveDocsDir(undefined, 'workspace', wsRow.path);
+          const index = knowledgeDocsStore.indexFor(wsDir, { scope: 'workspace', workspace_id: wsRow.id });
+          index.ensureFresh();
+          const entry = index.getByIdAny(pageId);
+          if (entry !== null && entry.meta !== undefined) {
+            return { scope: 'workspace', workspace_id: wsRow.id };
+          }
+        } catch { /* 单区失败跳过 */ }
+      }
+      // 旧库只读兜底（未导出的 legacy 页）；新库无知识表 → 探测自然落空
+      const hasLegacyKnowledge = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+      if (hasLegacyKnowledge) {
+        const inCenter = findKnowledgePageOwner(db, pageId);
+        if (inCenter !== null) return inCenter;
+        for (const wsRow of listLocalizedWorkspaces()) {
+          try {
+            const owner = findKnowledgePageOwner(getDbForWorkspace(workspaceResolverDeps, wsRow).db, pageId);
+            if (owner !== null) return owner;
+          } catch { /* 该区库打不开：跳过 */ }
+        }
+      }
+      return null;
+    },
+    mutationDb: db,
+    ...(deps.instance === undefined ? {} : { instanceId: deps.instance.instanceId }),
+    ...(deps.knowledgeDocsPaths === undefined ? {} : { docsPaths: deps.knowledgeDocsPaths }),
+  }));
+
+  // P2-02：export-legacy 一次性迁移端点（fan-out 中心库 + localized 工作区库 → Docs/*.md；旧库只读）
+  router.use('/knowledge', createKnowledgeExportRouter({
+    db,
     listWorkspaceDbs: () => listLocalizedWorkspaces().flatMap((wsRow) => {
       try {
         return [getDbForWorkspace(workspaceResolverDeps, wsRow).db];
@@ -289,6 +317,11 @@ export function createRouter(deps: RouterDeps): Router {
         return [];
       }
     }),
+    getWorkspaceRow: (workspaceId) => {
+      const row = getWorkspace(deps.db, workspaceId);
+      return row === null ? null : { id: row.id, path: row.path };
+    },
+    ...(deps.knowledgeDocsPaths === undefined ? {} : { docsPaths: deps.knowledgeDocsPaths }),
   }));
 
   // ---- workspaces 域（CR-10b 自本文件纯搬迁到 routes/workspaceRoutes.ts）----
@@ -345,16 +378,13 @@ export function createRouter(deps: RouterDeps): Router {
   }));
 
   // ---- settings 域（CR-10d 自本文件纯搬迁到 routes/settingsRoutes.ts）----
-  // GET/PATCH /settings、storage 只读汇总、db-path 迁移编排与状态查询；
-  // resolveDbPathSource / triggerRestart 闭包仅本域消费，随域迁入（deps 注入 dbPathSource/restart）。
+  // GET/PATCH /settings 与 SKILLS-SYNC；P1-02：storage 只读汇总、db-path 迁移编排端点已下线。
   router.use(createSettingsRouter({
     db,
     attachments,
     getAdapter,
     currentDbPath,
     attachmentsDirOf,
-    migrationStateDir,
-    ...(deps.dbPathSource === undefined ? {} : { dbPathSource: deps.dbPathSource }),
     ...(deps.restart === undefined ? {} : { restart: deps.restart }),
     ...(deps.skillsSync === undefined ? {} : { skillsSync: deps.skillsSync }),
   }));

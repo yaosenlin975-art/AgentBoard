@@ -230,6 +230,10 @@ export interface WorkspaceKnowledgeOccupancy {
 }
 
 export function getWorkspaceKnowledgeOccupancy(db: Db, workspaceId: string): WorkspaceKnowledgeOccupancy {
+  // P2-01：新库不再建知识表（权威数据已迁 Docs/*.md）——缺表按 0 占用计，不阻断删空间；
+  // 旧库（只读保留）行为不变：行仍在即照常占用。
+  const hasKnowledgeTables = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+  if (!hasKnowledgeTables) return { pages: 0, revisions: 0, pageIds: [] };
   const pageIds = (db.prepare(
     `SELECT id FROM knowledge_page WHERE scope='workspace' AND workspace_id=@workspace AND status<>'deleted' ORDER BY updated_at DESC, id`,
   ).all({ workspace: workspaceId }) as Array<{ id: string }>).map(row => row.id);
@@ -275,6 +279,54 @@ export function getKnowledgeRevision(db: Db, pageId: string, revision: number, s
   if (row === undefined) throw new ApiError(404, KnowledgeErrorCode.REVISION_NOT_FOUND, `版本 ${revision} 不存在`);
   const { sources_json, evidence_json, ...revisionRow } = row;
   return { ...revisionRow, sources: JSON.parse(sources_json), evidence: JSON.parse(evidence_json) };
+}
+
+/**
+ * P2-02 export-legacy：旧库知识页行集（当前 revision JOIN，**只读**，不写不动行）。
+ *
+ * - 数据源与 selectPage 同口径：`knowledge_page JOIN knowledge_revision ON 当前 revision`，
+ *   sources/evidence 取自 revision（不是 page 列），另带当前 revision 的 change_note（front matter 用）；
+ * - 新库（P2-01 后不再建知识表）按空集处理，不阻断导出；旧行（含 archived）原样带出，软删行也返回
+ *   ——由导出侧决定撤文件不落盘，本查询不做状态过滤（行集口径 = 旧库全部行）；
+ * - 不做 DROP / DELETE / UPDATE：export-legacy 的旧库只读保留边界在这里兜底。
+ */
+export interface LegacyKnowledgeRow {
+  id: string;
+  scope: 'workspace' | 'common';
+  workspace_id: string | null;
+  slug: string;
+  title: string;
+  body_md: string;
+  status: KnowledgePage['status'];
+  revision: number;
+  expires_at: number | null;
+  created_by: string | null;
+  updated_by: string | null;
+  created_at: number;
+  updated_at: number;
+  category: string | null;
+  landed: string | null;
+  domain: string | null;
+  sources: KnowledgeSource[];
+  evidence: KnowledgeEvidence[];
+  change_note: string | null;
+}
+
+export function listLegacyKnowledgeRows(db: Db): LegacyKnowledgeRow[] {
+  const hasKnowledgeTables = db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get() !== undefined;
+  if (!hasKnowledgeTables) return [];
+  const rows = db.prepare(
+    `SELECT p.id,p.scope,p.workspace_id,p.slug,p.title,p.body_md,p.status,p.revision,p.expires_at,
+            p.created_by,p.updated_by,p.created_at,p.updated_at,p.category,p.landed,p.domain,
+            r.sources_json,r.evidence_json,r.change_note
+     FROM knowledge_page p JOIN knowledge_revision r ON r.page_id=p.id AND r.revision=p.revision
+     ORDER BY p.id`,
+  ).all() as Array<Omit<LegacyKnowledgeRow, 'sources' | 'evidence'> & { sources_json: string; evidence_json: string }>;
+  return rows.map(({ sources_json, evidence_json, ...row }) => ({
+    ...row,
+    sources: JSON.parse(sources_json) as KnowledgeSource[],
+    evidence: JSON.parse(evidence_json) as KnowledgeEvidence[],
+  }));
 }
 
 /** KB-GRAPH：一次查询取「活跃页 + 最新 revision 的 sources」，供图聚合使用（只读，不做 N+1） */

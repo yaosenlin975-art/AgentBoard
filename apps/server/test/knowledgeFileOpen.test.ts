@@ -18,7 +18,7 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createKnowledgeRouter } from '../src/api/knowledgeRoutes.js';
 import { errorHandler } from '../src/api/routes.js';
-import { createWorkspace } from '../src/db/repos/workspace.js';
+import { createWorkspace, getWorkspace } from '../src/db/repos/workspace.js';
 import { ApiError } from '../src/errors.js';
 import {
   FileOpenErrorCode,
@@ -351,7 +351,14 @@ describe('PROV-B ③：POST /api/knowledge/files/open 的响应契约', () => {
     calls = proc.calls;
     app = express();
     app.use(express.json());
-    app.use('/api/knowledge', createKnowledgeRouter(t.db, { openProcess: proc.deps }));
+    // P2-01：createKnowledgeRouter 不再收 Db；工作区根经注册表注入
+    app.use('/api/knowledge', createKnowledgeRouter({
+      openProcess: proc.deps,
+      getWorkspaceRow: (workspaceId) => {
+        const row = getWorkspace(t.db, workspaceId);
+        return row === null ? null : { id: row.id, name: row.name, path: row.path };
+      },
+    }));
     app.use(errorHandler);
   }
 

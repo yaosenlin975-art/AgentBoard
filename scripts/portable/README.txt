@@ -22,15 +22,17 @@ AgentBoard 便携版（Windows x64）
    桌面窗口：点关闭 = 收进系统托盘（服务继续跑）；右键托盘图标 →「退出」= 停服并释放单例锁。
    前台模式：关闭那个黑窗口，或在窗口里按 Ctrl+C。
 
-首次启动会自动建库、自动执行数据库迁移，不需要任何登录或初始化操作。
+首次启动会自动建库建表，不需要任何登录或初始化操作。新建工作区会自动启用该工作区自己的
+本地库（下沉是默认形态），无需手动开启。
 
 二、数据存在哪
 --------------
 默认全部在 %APPDATA%\AgentBoard\ 下（即 C:\Users\<你>\AppData\Roaming\AgentBoard）：
-  agentboard.db          主数据库
+  agentboard.db          中心库（所有未下沉工作区的数据都在这里）
   attachments\           附件
   config.json            端口等设置
   logs\server.log        服务日志
+已下沉的工作区另有独立库：<工作区>\.agentboard\agentboard.db（新建工作区自动下沉）。
 
 换机器/换目录不影响数据；卸载时删掉这个文件夹即可（不可恢复）。
 不要把这个数据目录放进网盘同步或同时被两个进程使用。
@@ -41,7 +43,7 @@ AgentBoard 便携版（Windows x64）
   - 新建工作区（工作区路径必须是一个已存在的目录）；
   - 或在命令行用 kb 创建（见第五节）。
 可选设置：设置页里可改端口、并发数、附件配额等（写入 config.json）。
-环境变量可临时覆盖：AGENTBOARD_PORT、AGENTBOARD_DB、AGENTBOARD_HOST、AGENTBOARD_LOG。
+环境变量可临时覆盖：AGENTBOARD_PORT、AGENTBOARD_DB（只读覆盖中心库路径）、AGENTBOARD_HOST、AGENTBOARD_LOG。
 
 四、携带的规则（让对方的 agent 按同一套工作流作业）
 --------------------------------------------------
@@ -80,6 +82,8 @@ AgentBoard 便携版（Windows x64）
   app\cli\kb.cmd --server http://127.0.0.1:8899 list-spaces   (服务不是默认端口时)
   app\cli\kb.cmd knowledge --help / create-issue --help / dep --help   分族帮助
 注意：kb 的全局选项（--server / --json）要放在子命令前面。
+知识页是文件事实源（公共页 <你的数据目录>\Docs\，工作区页 <工作区>\.agentboard\Docs\）；
+对外引用用 kb knowledge link（默认 [[wikilink]]），禁止裸文件路径；旧库迁移用 kb knowledge export-legacy。
 kb claim 成功会在“当前工作目录”下写 .agentboard\claims\ 记录，属于本地状态，可随时删除。
 
 六、已知限制
@@ -89,7 +93,7 @@ kb claim 成功会在“当前工作目录”下写 .agentboard\claims\ 记录�
 - 桌面入口依赖系统的 WebView2 Runtime，包内不携带该运行时；缺失时给出提示并退回浏览器模式。
 - 端口被占用时服务会启动失败：改用 start.cmd 8899 换端口，或先释放 8787。
 - 同一台机器、同一 %APPDATA% 只允许一个实例（单例锁）。要多开：复制一份 APPDATA 指向不同目录，
-  再配合不同的 AGENTBOARD_DB 与端口。
+  再配合不同的 AGENTBOARD_DB（只读覆盖中心库路径）与端口。
 - 语音识别：内置了 sherpa-onnx 原生模块，但仍需在界面里下载模型后才能用；模型不在包内。
 - 账户 / 秘书类功能依赖本机已安装的对应客户端（WorkBuddy、MiniMax 等）及其路径；
   凭据导出功能还需要本机 Python 与仓库里的 scripts\accounts 脚本，本包未附带，会不可用。

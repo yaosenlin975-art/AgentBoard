@@ -53,6 +53,7 @@ import { sweepExpiredLeases } from './services/claim.js';
 import { inspectIssueLabels } from './services/labelIntegrity.js';
 import { getCachedClis, refreshClis } from './services/cliDetect.js';
 import { apiNotFound, createRouter, errorHandler } from './api/routes.js';
+import type { DocsDirOverrides } from './knowledge/paths.js';
 import { createWsHub, type WsHub } from './ws/hub.js';
 import { startAwaitingSweeper } from './services/turnAwaiting.js';
 import { startDecisionReminderTicker } from './services/decisionReminder.js';
@@ -65,6 +66,8 @@ import {
   DEFAULT_ATTACHMENT_STAGED_TTL_MS,
 } from './services/attachments.js';
 import { loadDispatchPromptTemplate } from './services/dispatchTemplate.js';
+// P2-01：知识文件索引启动预热与 reconcile 只读报告
+import { warmKnowledgeIndexes } from './knowledge/store.js';
 
 export interface CreateAppOptions {
   db: Db;
@@ -100,6 +103,8 @@ export interface CreateAppOptions {
   restart?: RestartDeps;
   /** KB-GRAPH 单次页面加载上限（仅测试注入；生产默认 GRAPH_MAX_PAGES=5000） */
   knowledgeGraphPageLimit?: number;
+  /** P2-01：知识 Docs 目录覆盖（仅测试注入；生产用默认 <工作区>/.agentboard/Docs 与 ~/.agentboard/Docs） */
+  knowledgeDocsPaths?: DocsDirOverrides;
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
   /** ACC-11 凭据导出 runner（仅测试注入） */
@@ -118,17 +123,8 @@ export interface CreateAppOptions {
   browserOpener?: BrowserOpenerDeps;
   /** SERVER-SINGLETON：实例标识（`/api/version` 的 instance_id / db_path / started_at） */
   instance?: { instanceId: string; dbPath: string; startedAt: number };
-  /** 启动期解析出的 db 路径来源（存储统计/迁移端点按它报，不在请求期重新解析） */
+  /** 启动期解析出的 db 路径来源（不在请求期重新解析；供启动日志 db_source= 排障） */
   dbPathSource?: DbPathSource;
-  /** DB-2B：迁移编排注入（生产全部走默认值；测试注入临时状态目录/退出 spy） */
-  dbMigration?: {
-    stateDir?: string;
-    dbPath?: string;
-    attachmentStorageDir?: string;
-    dbPathSource?: DbPathSource;
-    exit?: (code: number) => void;
-    schedule?: (fn: () => void, ms: number) => void;
-  };
   /** Private image storage directory; production defaults under AgentBoard config dir. */
   attachmentStorageDir?: string;
   attachmentQuotaBytes?: number;
@@ -208,22 +204,6 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
   // ACC-SW-TRAE：Trae 登录态切换（15 条目录级快照）；restore 端点的回滚处理器要用同一个实例，故先建好再装配
   const traeProvider = new TraeDesktopProvider({ db, vault: secretVault });
 
-  // DB-2B：迁移编排依赖（缺省由路由自行推导：stateDir=configDir、dbPath=db.name）
-  const migration = options.dbMigration ?? {};
-  const migrationDeps = {
-    // 附件目录与 AttachmentStore 用同一个值（存储统计/迁移都按它算，不各自推导）
-    attachmentStorageDir: migration.attachmentStorageDir ?? attachments.storageDir,
-    // 来源取启动期解析结果：readSettings 首读会把默认值写回 config.json（含 dbPath），
-    // 请求期再 loadConfig 会把 default 误判成 settings。
-    ...(options.dbPathSource !== undefined ? { dbPathSource: options.dbPathSource } : {}),
-    ...(options.instance !== undefined ? { instance: options.instance } : {}),
-    ...(migration.stateDir !== undefined ? { dbMigrationStateDir: migration.stateDir } : {}),
-    ...(migration.dbPath !== undefined ? { dbPath: migration.dbPath } : {}),
-    ...(migration.dbPathSource !== undefined ? { dbPathSource: migration.dbPathSource } : {}),
-    ...(migration.exit !== undefined ? { dbMigrationExit: migration.exit } : {}),
-    ...(migration.schedule !== undefined ? { dbMigrationSchedule: migration.schedule } : {}),
-  };
-
   if (options.refreshClisOnBoot !== false) {
     await refreshClis(options.adapters ?? ADAPTERS);
     hub.broadcast({ type: 'clis.changed', clis: getCachedClis() });
@@ -256,8 +236,14 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
           minimax: async ({ account, snapshotRef }) => { if (!snapshotRef) throw new ApiError(409, 'SNAPSHOT_MISSING', '缺少恢复依据快照，无法回滚'); await minimaxProvider.restoreFromSnapshot({ account, snapshotRef }); },
           // ACC-SW-TRAE：trae 回滚重放（快照目录 + manifest ref 都在 provider 内解析）
           trae: async ({ account, snapshotRef }) => { await traeProvider.restoreFromSnapshot({ account, snapshotRef }); },
-        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...migrationDeps }));
+        } }, knowledgeGraphPageLimit: options.knowledgeGraphPageLimit, ...(options.knowledgeDocsPaths === undefined ? {} : { knowledgeDocsPaths: options.knowledgeDocsPaths }), skillsRoot: options.skillsRoot, credentialRunner: options.credentialRunner, restart: options.restart, draftRunner: options.draftRunner, draftTimeoutMs: options.draftTimeoutMs, voice: options.voice, browserOpener: options.browserOpener, ...(options.skillsSync === undefined ? {} : { skillsSync: options.skillsSync }), ...(options.instance === undefined ? {} : { instance: options.instance }), ...(options.attachmentStorageDir === undefined ? {} : { attachmentStorageDir: options.attachmentStorageDir }) }));
   app.use('/api', apiNotFound);
+
+  // P2-01（方向 B §7.3）：启动扫两目录建内存索引 + reconcile 只读报告（fire-and-forget，失败不阻断启动）。
+  // vitest 进程跳过：测试夹具的公共 Docs 指向真实用户目录，预热会拖慢每个用例并产生真实目录副作用
+  if (process.env.VITEST === undefined) {
+    void warmKnowledgeIndexes({ centerDb: db });
+  }
 
   const webDist = options.webDist ?? null;
   if (webDist && existsSync(webDist)) {
@@ -283,9 +269,12 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
     app.use(createKnowledgeDeepLinkRoutes(db, webDist));
     // SPA fallback：非 /api 的 GET 落 index.html（HTML 一律 no-cache，允许 304）
     // 根路径显式给 index.html：serve-static 关掉 index 后 `/` 不进 fallback（实测 404），这里补一条
+    // D8：sendFile 的 dotfiles 默认 'ignore'，webDist 路径里只要有一段以点开头（便携包解压到 .tmp/.local/隐藏目录）
+    // 就被判成隐藏文件 → 首页 404 / 深路由 500。只对 SPA 入口这一个文件显式放开，
+    // express.static 保持默认（隐藏文件不可下载）。
     app.get('/', (_req, res) => {
       res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(join(webDist, 'index.html'), (err) => {
+      res.sendFile(join(webDist, 'index.html'), { dotfiles: 'allow' }, (err) => {
         if (err) res.status(404).type('text/plain').send('index.html missing');
       });
     });
@@ -295,7 +284,7 @@ export async function createApp(options: CreateAppOptions): Promise<CreatedApp> 
         return;
       }
       res.setHeader('Cache-Control', 'no-cache');
-      res.sendFile(join(webDist, 'index.html'), (err) => {
+      res.sendFile(join(webDist, 'index.html'), { dotfiles: 'allow' }, (err) => {
         if (err) next(err);
       });
     });

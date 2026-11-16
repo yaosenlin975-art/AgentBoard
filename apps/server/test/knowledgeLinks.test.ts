@@ -2,6 +2,9 @@
  * KB-GRAPH-V2-4：双链解析、反向链接、图 link 边、存量回填。
  * 解析规则逐条覆盖（含 lead 补的三条：重复权重、跨行、超长 target），并测 100KB 正文的解析耗时。
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
@@ -84,7 +87,7 @@ describe('link parsing rules (V2-4)', () => {
 
 describe('link persistence, backlinks and revision binding (V2-4)', () => {
   const setup = (): { t: TestDb; workspaceId: string } => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     const workspace = createWorkspace(t.db, { name: 'ws', path: 'C:/ws-v24' });
     return { t, workspaceId: workspace.id };
   };
@@ -176,9 +179,10 @@ describe('knowledge link HTTP surface (V2-4)', () => {
   };
 
   it('detailBacklinksGraphAndReparse', async () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
+    const wsPath = mkdtempSync(join(tmpdir(), 'agentboard-kblinks-'));
     try {
-      const workspace = createWorkspace(t.db, { name: 'ws', path: 'C:/ws-v24-http' });
+      const workspace = createWorkspace(t.db, { name: 'ws', path: wsPath });
       const { app } = await openApp(t);
       const target = await request(app).post('/api/knowledge/pages').send({
         domain: 'knowledge', scope: 'workspace', workspace_id: workspace.id, slug: 'target-page', title: 'target',
@@ -210,7 +214,12 @@ describe('knowledge link HTTP surface (V2-4)', () => {
 
       const graph = await request(app).get('/api/knowledge/graph').query({ scope: 'workspace', workspace_id: workspace.id });
       expect(graph.status).toBe(200);
-      expect(graph.body.edges.map((edge: { kind: string }) => edge.kind)).toEqual(['link']);
+      // P2-03（S-5）：unresolved 目标画独立节点（target 为 `unresolved:<slug>` 合成节点），
+      // 其边同为 kind:'link'；已解析双链边（source→target）仍在。
+      const graphEdges = graph.body.edges as Array<{ source: string; target: string; kind: string }>;
+      expect(graphEdges.map((edge) => edge.kind)).toEqual(['link', 'link']);
+      expect(graphEdges.every((edge) => edge.kind === 'link')).toBe(true);
+      expect(graphEdges.some((edge) => edge.target.startsWith('unresolved:'))).toBe(true);
 
       const onlyKeyword = await request(app).get('/api/knowledge/graph').query({ scope: 'workspace', workspace_id: workspace.id, edge_kinds: 'keyword' });
       // 关闭 link 后不允许再出现 link 边（keyword 边是否存在取决于正文相似度）
@@ -219,11 +228,14 @@ describe('knowledge link HTTP surface (V2-4)', () => {
       const bad = await request(app).get('/api/knowledge/graph').query({ scope: 'workspace', workspace_id: workspace.id, edge_kinds: 'bogus' });
       expect(bad.status).toBe(400);
 
-      t.db.prepare('DELETE FROM knowledge_link').run();
+      // P2-01：/reparse = 重建两目录扫描索引（幂等）；pages = 扫到的文件数，links = 已解析的双链数
       const reparse = await request(app).post('/api/knowledge/reparse').send({});
       expect(reparse.status).toBe(200);
       expect(reparse.body.pages).toBe(2);
-      expect(reparse.body.links).toBe(2);
-    } finally { t.cleanup(); }
-  }, 30000);
+      expect(reparse.body.links).toBe(1);
+    } finally {
+      t.cleanup();
+      rmSync(wsPath, { recursive: true, force: true });
+    }
+  }, 60000);
 });

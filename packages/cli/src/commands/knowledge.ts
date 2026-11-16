@@ -43,25 +43,9 @@ function output(ctx: Ctx, data: unknown): void {
   ctx.io.write(renderPageDetail(data));
 }
 /**
- * KB-SNAP-SILENT：正文写入成功但快照没进 git 时必须可观测（此前文本模式只打印 rev，失败与成功同形）。
- * - 文本模式：stderr 打印原因 + 非 0 退出码（正文已保存，不能只报成功）；
- * - `--json`：stdout 仍是单个 JSON 文档（含 `page_commit.committed=false`），失败信号走 stderr + 退出码；
- * - `skipped=true`（无快照可提交 / 无变更）不算失败，不打扰调用方。
+ * P2-04（方向 B §7.2）：文件事实源下「写文件成败即命令成败」，每页 git 快照（page_commit）与
+ * 「快照没进 git 即失败」语义随 BORROW-5.1 退役——CLI 不再读 page_commit 字段。
  */
-function assertSnapshotCommitted(ctx: Ctx, data: unknown): void {
-  const raw = (data as { page_commit?: unknown }).page_commit;
-  if (!raw || typeof raw !== 'object') return;
-  const commit = raw as { committed?: unknown; skipped?: unknown; reason?: unknown; relative_path?: unknown; path?: unknown };
-  if (commit.committed !== false || commit.skipped === true) return;
-  const target = [commit.relative_path, commit.path].find((v): v is string => typeof v === 'string' && v !== '') ?? '（路径未知）';
-  const reason = typeof commit.reason === 'string' && commit.reason.trim() !== '' ? commit.reason.trim() : '（服务端未返回原因）';
-  ctx.io.writeErr(
-    `⚠ 知识页正文已保存，但快照未提交：${target}\n` +
-    `原因：${reason}\n` +
-    '库内 revision 已前进、git 侧没有对应提交；修好 git 后按新 revision 重跑 kb knowledge revise（--json 时判断 page_commit.committed）。\n',
-  );
-  throw new CommanderError(1, 'agentboard.knowledge.snapshot', '知识页快照未提交');
-}
 /** KB-CLI-3a（CLI-06）：详情文本渲染单点（show --history 复用，页后追加逐条 rev 行） */
 function renderPageDetail(data: unknown): string {
   const p = data as Record<string, unknown>;
@@ -87,7 +71,8 @@ function fail(message: string): never { throw new Error(message); }
 // C：知识页分类与落地状态（服务端 KB-MODEL 已支持；legacy 只由历史数据产生，不接受 CLI 写入）
 const CATEGORIES = ['design', 'solved', 'pinned', 'open'] as const;
 const LANDED_STATES = ['landed', 'partial', 'proposed'] as const;
-const LINK_FORMATS = ['token', 'markdown', 'plain'] as const;
+// P2-04（M5）：link 默认产出 [[wikilink]]；token（knowledge:<uuid>）/markdown/plain 兼容保留
+const LINK_FORMATS = ['wikilink', 'token', 'markdown', 'plain'] as const;
 
 function validateLimit(value: string, max = 100): string {
   const n = Number(value);
@@ -103,7 +88,7 @@ function validateOffset(value: string): string {
 }
 function validateFormat(value: string): string {
   if (!(LINK_FORMATS as readonly string[]).includes(value)) {
-    fail(`--format 只能是 ${LINK_FORMATS.join(' | ')}（当前：${preview(value)}）；省略时为 token`);
+    fail(`--format 只能是 ${LINK_FORMATS.join(' | ')}（当前：${preview(value)}）；省略时为 wikilink`);
   }
   return value;
 }
@@ -288,8 +273,8 @@ const CREATE_HELP = `${FIELD_HELP}
   [{"source_id":"file:README.md","locator":"README.md:1-20"}]
 
 输出：文本模式在标题后补一行 link: knowledge:<uuid>（--json 中为 link 对象，可直接发给别人打开）；
-      引用串也可单独用 kb knowledge link <page-id> 生成。
-退出码：0 成功；1 参数/服务端错误（含字段级提示）；2 任务占用或知识 revision 冲突（KNOWLEDGE_*）
+      引用串也可单独用 kb knowledge link <page-id> 生成（P2-04：默认产出 [[wikilink]]，--format token 取 knowledge:<uuid>）。
+退出码：0 成功；1 参数/服务端错误（含字段级提示）；2 任务占用、知识 revision 冲突或文件冲突（KNOWLEDGE_*，409）
 
 ${CONTENT_GUIDE}
 ${GUIDE_POINTER}
@@ -323,18 +308,39 @@ function detectImportFormat(file: string): string {
 }
 
 const ACTION_HELP = `合法动作（第 2 个位置参数，只能取）：
-  archive   归档（status → archived）
+  archive   归档（status → archived；front matter 重写，文件保留）
   restore   恢复（status → active）
-  delete    删除（status → deleted；不可逆，服务端会保留历史）
-必填：<page-id> <action> --scope <workspace|common> [--workspace <id|名>] --expected-revision <n>（CAS）
+  delete    删除（撤文件，不可逆：文件事实源下软删即删除 Docs/<slug>.md；旧库只读历史可用 export-legacy 兜底）
+必填：<page-id> <action> --expected-revision <n>（CAS，比对 front matter revision）
+可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 先解析 id / ≥8 位前缀 / slug，歧义 409 不猜；
+      显式给出 --scope 时行为与旧版一致）、--workspace <id|名>
 示例：
   kb knowledge action <page-id> archive --scope common --expected-revision 2
   kb knowledge action <page-id> restore --scope workspace --workspace 任务看板 --expected-revision 3
-退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT）
+  kb knowledge action <page-id> archive --expected-revision 2（省略 --scope，自动 resolve）
+退出码：0 成功；1 参数/服务端错误；2 版本冲突或文件冲突（KNOWLEDGE_REVISION_CONFLICT / KNOWLEDGE_FILE_CONFLICT，409）；
+        resolve 歧义或跨范围也返回 2（仅省略 --scope 时会发生）
 `;
 
-/** KB-CLI-IMPORT：导入本地文件为知识页（服务端 KBIMP-1 已支持 md/txt/json） */
+/** P2-04（M10）：rename 帮助 */
+const RENAME_HELP = `
+P2-04（M10）：重命名知识页 slug——原子 rename 文件 + 全库扫描批量重写 [[old]]→[[new]]（含 [[a|b]] / [[a#h]] / [[a#h|b]] 与页嵌入 ![[a]] 形态），页面 id 不变，revision +1（CAS）。
+必填：<page-id> <new-slug> --scope <workspace|common> --expected-revision <n>
+行为约定：
+  - 页面 id 不变：历史 knowledge:<uuid> 引用继续解析到同一页；
+  - 引用重写覆盖改名页所在目录与（公共页改名时）各工作区目录里解析到本页的引用；
+    目标目录若存在自己的同名页，其 [[old]] 指向它自己的页，不改写；
+  - 代码块/行内代码里的 [[...]] 不重写；![[x.png]] 附件引用不重写；
+  - 直接改文件名（不走本命令）→ reconcile 报「slug 与文件名不一致」冲突，由人裁决。
+示例：
+  kb knowledge rename <page-id> cache-policy-v2 --scope common --expected-revision 3
+退出码：0 成功；1 参数/服务端错误；2 版本冲突 / slug 冲突 / 文件冲突（409 KNOWLEDGE_*）
+`;
+
+/** KB-CLI-IMPORT：P2-04（M11）语义反转：外部 md 规范化为 Docs/<slug>.md 并补齐 front matter */
 const IMPORT_HELP = `
+P2-04（M11）：导入语义已反转——不再是「导入到 DB」，而是把外部 md/txt/json **规范化为 Docs/<slug>.md 并补齐 front matter**（sources/evidence/revision/content_hash 等字段由服务端生成）。
+
 支持格式：
   md / markdown  → format=md（标题取第一个 # 标题，兜底文件名）
   txt            → format=txt（标题取首行，兜底文件名）
@@ -345,10 +351,10 @@ const IMPORT_HELP = `
   单文件 ≤ 10 MB（UTF-8 字节，超了本地就拦，不会发请求）
   单页正文 ≤ 200 万字符
 
-sources 自动构造：
-  CLI 把文件的**绝对路径**作为 filename 传给服务端，服务端据此生成
-  { source_type: 'file', locator: <路径>, content_hash: <sha256>, captured_at }，
-  file 来源不带 snapshot（带了会被拒）。所以这里没有 --sources 参数。
+落盘（文件事实源）：
+  服务端把每条内容写成 <Docs>/<slug 归一>.md（front matter 契约见 kb knowledge create --help 与 Docs/api.md「文件事实源」章节）；
+  sources 自动构造：{ source_type: 'file', locator: <文件路径>, content_hash: <sha256>, captured_at }，file 来源不带 snapshot。
+  落盘成功即导入成功，不再有 page_commit 快照语义。
 
 slug 冲突（409 KNOWLEDGE_EXISTS）怎么办：
   - 传 --title 换标题（标题不同即生成不同 slug）
@@ -356,9 +362,9 @@ slug 冲突（409 KNOWLEDGE_EXISTS）怎么办：
   - 或先 ` + '`kb knowledge show <slug> --scope ...`' + ` 看已有页要不要直接 revise
 
 示例：
-  kb knowledge import Docs/写时复制.md
-  kb knowledge import notes.json --scope common --category design --landed proposed
-  kb knowledge import a.txt --format md --title 自定义标题 --labels 设计,缓存
+  kb knowledge import Docs/写时复制.md --domain knowledge
+  kb knowledge import notes.json --scope common --category design --landed proposed --domain infra
+  kb knowledge import a.txt --format md --title 自定义标题 --labels 设计,缓存 --domain board
 退出码：0 成功；1 参数/文件/服务端错误（含 413 IMPORT_TOO_LARGE / IMPORT_BODY_TOO_LONG）；2 slug 冲突（KNOWLEDGE_EXISTS）
 `;
 
@@ -382,6 +388,30 @@ KB-PAGE-2b：只读反查「哪些知识页的 sources 引用了这个文件」�
 示例：
   kb knowledge find-source Docs/api.md
   kb knowledge find-source docs/design-2026-11-04-knowledge-taxonomy.md --scope common
+`;
+
+/** P2-02 export-legacy：一次性迁移（旧库行集 → Docs/*.md；fan-out 中心库 + 各 localized 工作区库） */
+const EXPORT_HELP = `
+P2-02：把旧库知识页一次性导出为文件事实源 Docs/*.md（§7.7 / M12 / C8 / US-7 / R3 混合态迁移）。
+数据源（fan-out，防丢页）：中心库（common 页 + 未下沉工作区的区页）+ 每个 db_mode=localized 的工作区库。
+目标布局：common 页 → ~/.agentboard/Docs；工作区页 → <工作区>/.agentboard/Docs；文件名 = slug 归一.md。
+可选参数：
+  --scope <all|center|workspace>  导出范围（默认 all）
+                                  center=只导中心库；workspace=只导指定工作区（需 --workspace）
+  --workspace <id|名>             scope=workspace 时必填
+  --to <dir>                      重定向输出根（默认按标准布局）：common → <dir>/Docs，
+                                  工作区 → <dir>/ws-<工作区id>/Docs（便于演练/验证，不进真实目录）
+  --dry-run                       只打印待导出清单与源库分布，不写任何文件
+行为约定：
+  - 写后逐文件回读校验（正文逐字节 + front matter 字段逐项），manifest（sha256）落 <Docs>/.export-manifest.json；
+  - 幂等：重复跑目标文件已一致 → 跳过不新增；冲突（目标已存在且内容不同）→ 备份到
+    <Docs>/.export-backup/<时间>/ 后整体暂停（退出码 2），绝不静默覆盖；
+  - 旧库只读保留：不 DROP 表、不删行、不 UPDATE；回退靠旧库 + manifest 兜底（不做反向导入）。
+示例：
+  kb knowledge export-legacy --dry-run          # 待导出清单 + 源库分布
+  kb knowledge export-legacy                    # 真实导出（幂等可重跑）
+  kb knowledge export-legacy --scope center --to D:/tmp/export-staging --dry-run
+退出码：0 成功（含 dry-run）；1 参数/服务端错误；2 目标文件冲突（KNOWLEDGE_EXPORT_CONFLICT，409）
 `;
 
 const LIST_HELP = `
@@ -422,17 +452,19 @@ KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 re
 `;
 
 const LINK_HELP = `
-KB-PAGE-2：产出知识页的引用串（权威标识是 page.id，slug 只作输入别名）。
-必填：<page-id|slug> --scope <workspace|common>；--format token|markdown|plain（默认 token，其它值本地报错不请求）
-输出：token = knowledge:<uuid>；markdown = [标题](knowledge:<uuid>)；plain = 标题 + 空格 + token
-agent 对外约定（A8）：
-  Markdown：[知识卡：{title}](knowledge:{id})
-  纯文本：知识卡《{title}》 knowledge:{id} · rev:{n}
-  禁止用 knowledge:<slug> 或 Docs 文件路径当知识引用；slug 只作输入别名。
+P2-04（M5）：产出知识页的引用串。wikilink 已是主键形态，**默认 --format wikilink** 输出 [[slug]]；
+uuid 仍是稳定标识（改名不变），token 格式保留给需要跨改名的场景。
+可选：--format wikilink|token|markdown|plain（缺省 wikilink，其它值本地报错不请求）
+输出：wikilink = [[slug]]（Obsidian 可点）；token = knowledge:<uuid>；
+      markdown = [知识卡：标题](knowledge:<uuid>)；plain = 标题 + 空格 + token
+agent 对外约定（A8 / M5）：
+  看板内/知识正文引用：[[slug]]（wikilink 主键；改名由 kb knowledge rename 全库重写）
+  跨改名稳定引用或机器可读：knowledge:<uuid>（uuid 是稳定标识，改名不变）
+  禁止用 Docs 文件路径当知识引用。
 示例：
-  kb knowledge link 3f8da34e --scope common
-  kb knowledge link cache-policy --scope workspace --format markdown
-  kb knowledge link 缓存策略 --scope workspace --format plain
+  kb knowledge link cache-policy --scope common            # → [[cache-policy]]
+  kb knowledge link cache-policy --scope common --format token
+  kb knowledge link 3f8da34e --scope workspace --format markdown
 `;
 
 export function registerKnowledgeCommands(program: Command, context: () => Ctx): void {
@@ -443,8 +475,9 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
   2) kb knowledge show <page-id> --scope common
   3) Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 1 --stdin
   4) kb knowledge action <page-id> archive --scope common --expected-revision 2
-  5) kb knowledge show <page-id>（可省 --scope，自动 resolve）；引用串用 kb knowledge link <page-id>
+  5) kb knowledge show <page-id>（可省 --scope，自动 resolve）；引用串用 kb knowledge link <page-id>（默认 [[wikilink]]）
   6) kb knowledge find-source Docs/api.md（反查哪些知识页引用了该文件）
+  7) kb knowledge rename <page-id> <new-slug> --scope common --expected-revision 3（改名 + 全库重写引用）
 字段说明：kb knowledge create --help（含 --sources/--evidence 每个字段与三种引号写法）
 `);
   knowledge.command('search <query>').description('按文本检索知识页（默认 both）').option('--scope <scope>', 'workspace|common|both', 'both').option('--workspace <id|名>').option('--limit <n>', '结果数量', '5')
@@ -483,22 +516,25 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       }
     });
 
-  // KB-PAGE-2：产出引用串（token / markdown / plain）——不手拼串，统一由服务端给 link
-  knowledge.command('link <page-id>').description('产出知识页引用串（token / markdown / plain，默认跨 common + 当前工作区）')
+  // P2-04（M5）：产出引用串——默认 [[wikilink]]；token/markdown/plain 兼容保留（统一由服务端给 link）
+  knowledge.command('link <page-id>').description('产出知识页引用串（wikilink / token / markdown / plain，默认 wikilink，默认跨 common + 当前工作区）')
     .option('--scope <scope>', 'workspace|common|both', 'both')
     .option('--workspace <id|名>')
-    .option('--format <fmt>', 'token|markdown|plain', 'token')
+    .option('--format <fmt>', 'wikilink|token|markdown|plain', 'wikilink')
     .addHelpText('after', LINK_HELP)
     .action(async (refOrId: string, opts: ScopeOptions & { format: string }) => {
       const ctx = context();
       const format = validateFormat(opts.format);
       try {
         const scope = await scopeFor(ctx, opts, true);
-        const res = await request<{ id: string; title: string; link: string; link_info: { markdown: string; text: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
+        const res = await request<{ id: string; title: string; slug: string; link: string; link_info: { markdown: string; text: string } }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: refOrId })}`);
         if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
         const info = (res as { link_info?: { markdown: string; text: string } }).link_info;
         const ref = linkRef(res) ?? '';
-        const text = format === 'markdown'
+        const slug = (res as { slug?: string }).slug ?? info?.markdown ?? '';
+        const text = format === 'wikilink'
+          ? `[[${slug}]]`
+          : format === 'markdown'
           ? (info?.markdown ?? `[知识卡：${res.title}](${ref})`)
           : format === 'plain'
             ? (info?.text ?? `知识卡《${res.title}》 ${ref}`)
@@ -533,10 +569,13 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .action(async (id: string, opts: { scope?: string; workspace?: string; history?: boolean }) => {
       const ctx = context();
       let scope: { scope: string; workspace_id?: string };
+      // P2-04b：自动 resolve 拿到的 id 必须替换原始输入（slug / ≥8 位前缀）——GET /pages/:id 只认完整 uuid，原样透传必 404
+      let pageId = id;
       if (opts.scope === undefined) {
         try {
-          const resolved = await request<{ scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
+          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
           scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
+          pageId = resolved.id;
         } catch (error) {
           ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
           throw new CommanderError(resolveExit(error), 'agentboard.knowledge.show', '');
@@ -544,7 +583,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       } else {
         scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
       }
-      const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(id)}`;
+      const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(pageId)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
       if (!opts.history) { output(ctx, page); return; }
       // KB-CLI-3a（CLI-06/L-04）：文本模式逐条 rev 行（每页 1 行），不再倒整包 JSON；--json 仍整包供脚本消费
@@ -616,7 +655,6 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       if (!opts.stdin) missing.push('--stdin：正文（最小例：Get-Content body.md -Raw -Encoding UTF8 | kb knowledge create --scope common --title "标题" --slug some-slug --domain knowledge --stdin --sources-file sources.json --evidence-file evidence.json --category design）');      if (opts.sources === undefined && opts.sourcesFile === undefined) missing.push('--sources-file sources.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","source_type":"file","locator":"Docs/api.md","captured_at":1763000000000,"content_hash":"<64 位 hex>"}]（也可用 --sources \'<同一 JSON>\'）');      if (opts.evidence === undefined && opts.evidenceFile === undefined) missing.push('--evidence-file evidence.json：文件内容是最小数组 [{"source_id":"file:Docs/api.md","locator":"Docs/api.md:1-20"}]（也可用 --evidence \'<同一 JSON>\'）');      if (missing.length > 0) fail(`create 缺少必填项（逐项补齐后重跑）：\n  - ${missing.join('\n  - ')}\n完整字段说明：kb knowledge create --help`);
       const data = await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug });
       output(ctx, data);
-      assertSnapshotCommitted(ctx, data);
     });
   scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))
     .addHelpText('after', REVISE_HELP)
@@ -624,17 +662,152 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const ctx = context();
       const data = await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) });
       output(ctx, data);
-      assertSnapshotCommitted(ctx, data);
     });
-  scoped(knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致'))
+  // P2-04b：--scope 可省略（与 show 同一 resolve 路径）——解析出的 id 替换原始输入调 action 端点；显式给出时行为与旧版一致
+  knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete（--scope 可省略，自动 resolve）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致')
+    .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
+    .option('--workspace <id|名>')
     .addHelpText('after', ACTION_HELP)
-    .action(async (id: string, action: string, opts: ScopeOptions & { expectedRevision: string }) => {
+    .action(async (id: string, action: string, opts: { scope?: string; workspace?: string; expectedRevision: string }) => {
       const allowed = ['archive', 'restore', 'delete'];
       if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
       const ctx = context();
-      const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/actions`, { ...await scopeFor(ctx, opts), action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
+      let scope: { scope: string; workspace_id?: string };
+      let pageId = id;
+      if (opts.scope === undefined) {
+        try {
+          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
+          scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
+          pageId = resolved.id;
+        } catch (error) {
+          ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+          throw new CommanderError(resolveExit(error), 'agentboard.knowledge.action', '');
+        }
+      } else {
+        scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+      }
+      const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(pageId)}/actions`, { ...scope, action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
       output(ctx, data);
-      assertSnapshotCommitted(ctx, data);
+    });
+
+  // P2-04（M10）：rename——原子换文件 + 全库扫描重写 [[old]]→[[new]]（含 alias/heading 形态；id 不变）
+  knowledge.command('rename <page-id> <new-slug>')
+    .description('重命名知识页 slug：换文件名 + 全库重写 [[old]]→[[new]]（id 不变；CAS）')
+    .requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致')
+    .option('--scope <scope>', 'workspace|common', 'workspace')
+    .option('--workspace <id|名>')
+    .addHelpText('after', RENAME_HELP)
+    .action(async (id: string, newSlug: string, opts: ScopeOptions & { expectedRevision: string }) => {
+      const ctx = context();
+      interface RenameReport { id: string; slug: string; old_slug: string; scope: string; revision: number; title: string; link: string; rewritten: Array<{ dir: string; file_name: string; page_id: string; slug: string }> }
+      try {
+        const report = await request<RenameReport>(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/rename`, { ...await scopeFor(ctx, opts), expected_revision: Number(opts.expectedRevision), new_slug: newSlug, actor: ctx.agentId });
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(report, null, 2)}\n`); return; }
+        ctx.io.write(`${report.id} [${report.scope}] rev:${report.revision} ${report.slug}（原 slug：${report.old_slug}；id 不变）\n`);
+        ctx.io.write(`link: ${report.link}\n`);
+        if (report.rewritten.length === 0) ctx.io.write('全库没有引用旧 slug 的 wikilink，未改写任何文件\n');
+        else {
+          ctx.io.write(`已重写 ${report.rewritten.length} 个文件的 [[${report.old_slug}]] 引用：\n`);
+          for (const item of report.rewritten) ctx.io.write(`  ${item.file_name}（页 ${item.page_id.slice(0, 8)} ${item.slug}）\n`);
+        }
+        ctx.io.write('提示：直接改文件名（不走本命令）会由 reconcile 报「slug 与文件名不一致」冲突\n');
+      } catch (error) {
+        ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        const status = (error as { status?: number }).status;
+        throw new CommanderError(status === 409 || status === 403 ? 2 : 1, 'agentboard.knowledge.rename', '');
+      }
+    });
+
+  // P2-02：export-legacy 一次性迁移（旧库行集 → Docs/*.md；fan-out 中心库 + 各 localized 工作区库）
+  knowledge.command('export-legacy')
+    .description('一次性迁移：把旧库知识页导出为 Docs/*.md（fan-out 中心库 + 各 localized 工作区库；manifest + 回读校验）')
+    .option('--scope <scope>', 'all|center|workspace（默认 all）', 'all')
+    .option('--workspace <id|名>', 'scope=workspace 时必填：工作空间 id 或名称')
+    .option('--to <dir>', '重定向输出根（common → <dir>/Docs，工作区 → <dir>/ws-<id>/Docs）')
+    .option('--dry-run', '只打印待导出清单与源库分布，不写任何文件')
+    .addHelpText('after', EXPORT_HELP)
+    .action(async (opts: { scope: string; workspace?: string; to?: string; dryRun?: boolean }) => {
+      const EXPORT_SCOPES = ['all', 'center', 'workspace'];
+      if (!EXPORT_SCOPES.includes(opts.scope)) {
+        fail(`--scope 只能是 ${EXPORT_SCOPES.join(' | ')}（当前：${preview(opts.scope)}）；详见 kb knowledge export-legacy --help`);
+      }
+      let workspaceId: string | undefined;
+      if (opts.scope === 'workspace') {
+        if (opts.workspace === undefined) fail('--scope workspace 必须配 --workspace <id|名>');
+        const ctx = context();
+        workspaceId = await resolveWorkspaceId(ctx.base, opts.workspace);
+      } else if (opts.workspace !== undefined) {
+        fail('--workspace 只在 --scope workspace 时接受（all/center 的源库由服务端 fan-out 枚举）');
+      }
+      const ctx = context();
+      const body = {
+        scope: opts.scope,
+        dry_run: opts.dryRun === true,
+        ...(workspaceId !== undefined ? { workspace_id: workspaceId } : {}),
+        ...(opts.to !== undefined ? { to: resolve(opts.to) } : {}),
+      };
+      interface ExportReport {
+        dry_run: boolean;
+        scope: string;
+        workspace_id: string | null;
+        sources: Array<{ source_db: string; path: string | null; pages: number }>;
+        targets: Array<{ dir: string; create: number; unchanged: number; conflicts: number; skipped: number }>;
+        pages: Array<{ id: string; slug: string; title: string; scope: string; workspace_id: string | null; status: string; revision: number; source_db: string; target_dir: string; file: string; action: string; reason?: string }>;
+        conflicts: Array<{ dir: string; file: string; page_id: string; source_db: string; existing_sha256: string; incoming_sha256: string; backup_path?: string }>;
+        manifests: Array<{ dir: string; file: string; files: number; written: boolean }>;
+        summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number };
+      }
+      const actionLabel = (action: string): string => ({
+        'create': '新增', 'skip-unchanged': '已一致', 'conflict': '冲突',
+        'skip-deleted': '软删跳过', 'skip-invalid': '契约跳过', 'skip-duplicate': '重复跳过',
+      }[action] ?? action);
+      try {
+        const report = await request<ExportReport>(ctx.base, 'POST', '/api/knowledge/export-legacy', body);
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(report, null, 2)}\n`); return; }
+        const mode = report.dry_run ? '（dry-run 预览，未写入任何文件）' : '（已写入）';
+        ctx.io.write(`export-legacy ${mode}  scope=${report.scope}${report.workspace_id !== null ? ` workspace=${report.workspace_id}` : ''}\n`);
+        ctx.io.write('源库分布：\n');
+        for (const source of report.sources) {
+          ctx.io.write(`  ${source.source_db}${source.path !== null ? `  ${source.path}` : ''}：${source.pages} 行\n`);
+        }
+        ctx.io.write('目标：\n');
+        if (report.targets.length === 0) ctx.io.write('  （无待导出目标）\n');
+        for (const target of report.targets) {
+          ctx.io.write(`  ${target.dir}：新增 ${target.create} / 已一致 ${target.unchanged} / 冲突 ${target.conflicts} / 跳过 ${target.skipped}\n`);
+        }
+        ctx.io.write('待导出清单：\n');
+        const pages = report.pages.filter(item => item.id !== '');
+        if (pages.length === 0) ctx.io.write('  （旧库无知识页行集）\n');
+        for (const item of pages) {
+          ctx.io.write(`  ${item.id.slice(0, 8)} [${item.scope}${item.workspace_id !== null ? ` ${item.workspace_id.slice(0, 8)}` : ''}] rev:${item.revision} ${item.slug} → ${item.target_dir !== '' ? `${item.target_dir}/${item.file}` : '（无目标）'}（${actionLabel(item.action)}${item.reason !== undefined ? `：${item.reason}` : ''}）\n`);
+        }
+        if (report.conflicts.length > 0) {
+          ctx.io.writeErr(`⚠ ${report.conflicts.length} 个冲突（未写入任何文件）：\n`);
+          for (const conflict of report.conflicts) {
+            ctx.io.writeErr(`  ${conflict.dir}/${conflict.file}  已有 ${conflict.existing_sha256.slice(0, 12)}… / 导入 ${conflict.incoming_sha256.slice(0, 12)}…（页 ${conflict.page_id}，源 ${conflict.source_db}）${conflict.backup_path !== undefined ? `  已备份：${conflict.backup_path}` : ''}\n`);
+          }
+        }
+        if (!report.dry_run) {
+          for (const manifest of report.manifests) {
+            ctx.io.write(`manifest：${manifest.dir}/${manifest.file}（${manifest.files} 个文件${manifest.written ? '，已更新' : '，未变化'}）\n`);
+          }
+        }
+        ctx.io.write(`汇总：行集 ${report.summary.total} 页 = 新增 ${report.summary.create} + 已一致 ${report.summary.unchanged} + 冲突 ${report.summary.conflicts} + 跳过 ${report.summary.skipped}\n`);
+        if (report.conflicts.length > 0) throw new CommanderError(2, 'agentboard.knowledge.export', '');
+      } catch (error) {
+        if (error instanceof CommanderError) throw error;
+        ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
+        if (error instanceof CliHttpError && error.code === 'KNOWLEDGE_EXPORT_CONFLICT') {
+          const conflicts = (error.details as { conflicts?: ExportReport['conflicts'] } | undefined)?.conflicts;
+          if (Array.isArray(conflicts)) {
+            for (const conflict of conflicts) {
+              ctx.io.writeErr(`  ${conflict.dir}/${conflict.file}（页 ${conflict.page_id}，源 ${conflict.source_db}）${conflict.backup_path !== undefined ? `  已备份：${conflict.backup_path}` : ''}\n`);
+            }
+          }
+          throw new CommanderError(2, 'agentboard.knowledge.export.conflict', '');
+        }
+        throw new CommanderError(1, 'agentboard.knowledge.export', '');
+      }
     });
 
   // KB-CLI-IMPORT：把本地文件导入为知识页（服务端 KBIMP-1 已有能力，这里只做 CLI 封装）
@@ -678,21 +851,24 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         fail(`--format 只能是 ${IMPORT_FORMATS.join(' | ')}（当前：${preview(opts.format)}）；也可用 .md/.txt/.json 扩展名自动推断`);
       }
       const ctx = context();
+      // KB-CR-1：导入即建页，domain 必填（文件事实源下同样进 front matter）
+      const domain = validateDomain(opts.domain);
+      if (domain === undefined) fail('import 缺少 --domain（导入即建页必填）：--domain 只能是 ' + KNOWLEDGE_DOMAIN_HINT);
       // sources 由服务端依 filename 构造（source_type=file、locator=路径、content_hash=sha256、无 snapshot）
       const body = {
         ...await scopeFor(ctx, opts),
         format,
         content,
         filename: absolute,
+        domain,
         ...(opts.title !== undefined ? { title: opts.title } : {}),
         ...(opts.slug !== undefined ? { slug: opts.slug } : {}),
         ...(opts.category !== undefined ? { category: opts.category } : {}),
         ...(opts.landed !== undefined ? { landed: opts.landed } : {}),
-        ...(opts.domain !== undefined ? { domain: opts.domain } : {}),
         ...(opts.labels !== undefined ? { labels: opts.labels.split(',').map((label) => label.trim()).filter((label) => label !== '') } : {}),
         actor: ctx.agentId,
       };
-      const result = await request<{ pages?: unknown[]; warnings?: string[]; page_commit?: { committed?: boolean; skipped?: boolean; reason?: string } }>(ctx.base, 'POST', '/api/knowledge/pages/import', body);
+      const result = await request<{ pages?: unknown[]; warnings?: string[] }>(ctx.base, 'POST', '/api/knowledge/pages/import', body);
       if (ctx.json) {
         ctx.io.write(`${JSON.stringify(result, null, 2)}\n`);
         return;
@@ -706,11 +882,6 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
           const body = String(page.body_md ?? '');
           ctx.io.write(`${page.id} [${page.scope}] ${page.slug} ${body.length} 字符  rev:${page.revision}\n`);
         }
-      }
-      // KB-SNAP-IMPORT（方案 3）：批量导入不落每页快照（page_commit.skipped），文本模式给一行可见提示；--json 保持机器可读
-      const batchCommit = result.page_commit;
-      if (batchCommit && batchCommit.committed === false && batchCommit.skipped === true) {
-        ctx.io.writeErr(`提示：${batchCommit.reason ?? '批量导入不落每页快照（git 审计链无对应提交）'}\n`);
       }
       for (const warning of result.warnings ?? []) ctx.io.writeErr(`warning: ${warning}\n`);
     }));

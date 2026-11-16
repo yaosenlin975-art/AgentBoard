@@ -7,12 +7,18 @@
  * MD-LINKS：`a` 走自定义渲染 —— `issue:` / `knowledge:` / `log:` 三种软链接交给 MarkdownSmartLink
  * （点击开右侧浮窗、知识按 common + 当前工作区鉴权）；http(s)/mailto 保持普通外链；
  * 其它未知 scheme 渲染为纯文本，不外链也不静默变成可点内容。
+ *
+ * P2-04（M5/US-2）：`[[wikilink]]` 双 scheme——remark 插件把文本节点里的 `[[target]]`（含
+ * `[[target|alias]]` / `[[target#heading]]` / `[[target#heading|alias]]`）转成 href=`knowledge:<target>`
+ * 的链接节点（target 为 slug，服务端 resolve 统一解析），由 MarkdownSmartLink 渲染并可点击打开目标页。
+ * 代码块（code）与行内代码（inlineCode）不是 text 节点，天然跳过；`![[embed]]` 前缀 `!` 不转换
+ * （详情页嵌入渲染由 knowledgeEmbed 负责）；`[[a]]]` 越界形态由负向断言排除。
  */
 import { memo, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { MarkdownSmartLink, isExternalLink, parseMarkdownRef } from './markdownLinks';
+import { MarkdownSmartLink, isExternalLink, parseMarkdownRef, parseWikilink, WIKILINK_PATTERN } from './markdownLinks';
 import { ImageLightbox } from '../components/ui/ImageLightbox';
 // highlight.js 主题样式（浅色）；vitest css:false 忽略，vite build 随本 chunk 打包
 import 'highlight.js/styles/github.css';
@@ -93,8 +99,66 @@ const components: Components = {
   },
 };
 
-const REMARK_PLUGINS = [remarkGfm];
+const REMARK_PLUGINS = [remarkGfm, remarkWikilinks];
 const REHYPE_PLUGINS = [rehypeHighlight];
+
+// ---- P2-04：wikilink remark 插件（mdast 文本节点级转换，无第三方依赖） ----
+
+interface MdastNode {
+  type: string;
+  value?: string;
+  url?: string;
+  title?: string | null;
+  children?: MdastNode[];
+}
+
+/** text 节点按 wikilink 切片；无命中返回 null（避免无谓重建 children 数组） */
+function splitWikilinkText(value: string): MdastNode[] | null {
+  const out: MdastNode[] = [];
+  let last = 0;
+  for (const match of value.matchAll(WIKILINK_PATTERN)) {
+    const index = match.index ?? 0;
+    if (index > 0 && value[index - 1] === '!') continue; // `![[embed]]`：嵌入归 knowledgeEmbed/markdownLinks 既有链路
+    const parsed = parseWikilink(match[1]!);
+    if (parsed === null) continue;
+    if (index > last) out.push({ type: 'text', value: value.slice(last, index) });
+    out.push({
+      type: 'link',
+      url: `knowledge:${parsed.target}`,
+      title: null,
+      children: [{ type: 'text', value: parsed.alias ?? match[1]!.trim() }],
+    });
+    last = index + match[0].length;
+  }
+  if (out.length === 0) return null;
+  if (last < value.length) out.push({ type: 'text', value: value.slice(last) });
+  return out;
+}
+
+function transformWikilinks(node: MdastNode): void {
+  if (node.children === undefined) return;
+  const next: MdastNode[] = [];
+  let changed = false;
+  for (const child of node.children) {
+    if (child.type === 'text' && typeof child.value === 'string') {
+      const parts = splitWikilinkText(child.value);
+      if (parts !== null) {
+        next.push(...parts);
+        changed = true;
+        continue;
+      }
+    }
+    transformWikilinks(child);
+    next.push(child);
+  }
+  if (changed) node.children = next;
+}
+
+function remarkWikilinks() {
+  return (tree: MdastNode): void => {
+    transformWikilinks(tree);
+  };
+}
 // 默认 urlTransform 只放行 http/https/mailto/tel 与相对路径，会把 issue:/knowledge:/log: 抹成空串。
 // 原样透传是安全的：未知 scheme 在 components.a 里被渲染成纯文本（不带 href），不会变成可点的危险链接。
 const KEEP_URL = (url: string) => url;

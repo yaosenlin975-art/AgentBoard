@@ -34,7 +34,7 @@ export type WorkbuddyRegion = 'cn' | 'global';
 export type DbPathSource = 'env' | 'settings' | 'default';
 
 export interface AgentBoardRuntimeConfig extends AgentBoardConfig {
-  /** dbPath 来源：env（AGENTBOARD_DB）/ settings（config.json 的 dbPath）/ default（%APPDATA%） */
+  /** dbPath 来源：env（只读 AGENTBOARD_DB）/ default（configDir()/agentboard.db）；'settings' 仅为迁移端点兼容保留，loadConfig 不再产生 */
   dbPathSource: DbPathSource;
   host: string;
   workbuddyRegion: WorkbuddyRegion;
@@ -184,16 +184,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentBoardRunt
   }
 
   const config = mergeValidFields(defaultConfig(), fileConfig);
-  // DB-1：来源判定顺序 = env（下面覆盖）→ settings（config.json 有 dbPath）→ default
-  let dbPathSource: DbPathSource = typeof fileConfig.dbPath === 'string' && fileConfig.dbPath !== '' ? 'settings' : 'default';
+  // P1-01 / M13：dbPath 不再由 config.json/settings 决定——恒为中心库默认路径 configDir()/agentboard.db，
+  // 只有只读环境变量 AGENTBOARD_DB 能覆盖。保留 dbPath 字段与 DbPathSource 类型（迁移端点 P1-02 删除前
+  // 仍依赖 writeSettings({ dbPath })，见 api/routes.ts:247），但 loadConfig 忽略 fileConfig.dbPath。
+  const defaultDb = defaultDbPath();
+  // M4：config.json 里残留且与默认不一致的 dbPath 兼容读取但忽略；启动时打一行一次性 warning（数据不丢、不静默迁移）
+  if (typeof fileConfig.dbPath === 'string' && fileConfig.dbPath !== '' && fileConfig.dbPath !== defaultDb) {
+    console.warn(`[agentboard] config.json 中的 dbPath（${fileConfig.dbPath}）已不再生效：中心库固定为 ${defaultDb}；原数据库文件未改动、数据不丢失，如需指定请用只读环境变量 AGENTBOARD_DB。`);
+  }
+  config.dbPath = defaultDb;
+  // DB-1：来源判定 = env（AGENTBOARD_DB）/ default；'settings' 来源已下线（config.json 的 dbPath 被忽略）
+  let dbPathSource: DbPathSource = 'default';
 
   if (env.AGENTBOARD_PORT !== undefined && env.AGENTBOARD_PORT !== '') {
     const port = Number(env.AGENTBOARD_PORT);
     if (Number.isInteger(port) && port > 0) config.port = port;
   }
   if (env.AGENTBOARD_DB !== undefined && env.AGENTBOARD_DB !== '') {
+    // DB-1 / M13 / C5：只读 AGENTBOARD_DB 覆盖中心库（Docker 单卷兼容）
     config.dbPath = env.AGENTBOARD_DB;
-    // DB-1：env 优先于设置项（设置项仍保留在 config.json 里，只是本次启动不生效）
     dbPathSource = 'env';
   }
   // DOCKER-1：监听地址只由 env 提供（不写回 config.json）；非法值直接抛错，启动即退出，不静默回落

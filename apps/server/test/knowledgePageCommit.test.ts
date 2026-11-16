@@ -12,6 +12,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// P2-01：每页 git 快照随文件事实源退役；本文件保留 legacy 服务层用例（git 落盘在本机较慢，放宽超时）
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import request from 'supertest';
 import type { Express } from 'express';
 import type { AgentAdapter } from '@agentboard/adapters';
@@ -208,13 +211,15 @@ describe('BORROW-5.1：每页快照 + 单页提交', () => {
   }, 30_000);
 });
 
+const gitNoCommits = (dir: string): boolean => { try { git(dir, ['rev-parse', '--verify', 'HEAD']); return true; } catch { return false; } };
+
 describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
   let t: TestDb;
   let app: Express;
   let wsId: string;
 
   beforeEach(async () => {
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     const adapter = new FakeAdapter();
     const created = await createApp({
       db: t.db,
@@ -254,10 +259,13 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       actor: 'tester',
     });
     expect(revised.status).toBe(200);
-    expect(revised.body.page_commit?.committed).toBe(true);
-    expect(revised.body.page_commit.relative_path).toBe(`.agentboard/snapshot/knowledge/${created.body.id}.md`);
-    expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(`.agentboard/snapshot/knowledge/${created.body.id}.md`);
-    expect(readFileSync(knowledgePageSnapshotPath(repo, created.body.id), 'utf8')).toContain('正文 v2');
+    // P2-01：正文落 Docs/<slug>.md（文件即事实源），page_commit 退化为显式 skipped 标记，不再产生 git 提交
+    expect(revised.body.revision).toBe(2);
+    expect(revised.body.page_commit?.committed).toBe(false);
+    expect(revised.body.page_commit?.skipped).toBe(true);
+    expect(String(revised.body.page_commit?.reason)).toContain('文件事实源');
+    expect(readFileSync(join(repo, '.agentboard', 'Docs', 'ws-page.md'), 'utf8')).toContain('正文 v2');
+    expect(gitNoCommits(repo)).toBe(false);
   }, 30_000);
 
   it('commitKnowledgePageRevision：scope=common 不落盘（只做工作区页）', () => {
@@ -289,11 +297,14 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
     const created = await request(app).post('/api/knowledge/pages').send(payload);
     expect(created.status).toBe(200);
     const pageId: string = created.body.id;
-    const snapshot = `.agentboard/snapshot/knowledge/${pageId}.md`;
-    expect(created.body.page_commit?.committed).toBe(true);
-    expect(created.body.page_commit.relative_path).toBe(snapshot);
-    expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('revision: 1');
-    expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(snapshot);
+    const docPath = join(repo, '.agentboard', 'Docs', 'lifecycle-page.md');
+    const skippedMarker = (body: { page_commit?: { committed?: boolean; skipped?: boolean } }): void => {
+      expect(body.page_commit?.committed).toBe(false);
+      expect(body.page_commit?.skipped).toBe(true);
+    };
+    expect(created.body.page_commit?.committed).toBe(false);
+    skippedMarker(created.body);
+    expect(readFileSync(docPath, 'utf8')).toContain('正文 v1');
 
     // revise 的 strict schema 不收 slug，这里去掉再提交
     const { slug: _slug, ...reviseBase } = payload;
@@ -303,9 +314,8 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       body_md: '正文 v2',
     });
     expect(revised.status).toBe(200);
-    expect(revised.body.page_commit?.committed).toBe(true);
-    expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('revision: 2');
-    expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(snapshot);
+    skippedMarker(revised.body);
+    expect(readFileSync(docPath, 'utf8')).toContain('正文 v2');
 
     const archived = await request(app).post(`/api/knowledge/pages/${pageId}/actions`).send({
       scope: 'workspace',
@@ -315,9 +325,8 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       actor: 'tester',
     });
     expect(archived.status).toBe(200);
-    expect(archived.body.page_commit?.committed).toBe(true);
-    expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('status: archived');
-    expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(snapshot);
+    skippedMarker(archived.body);
+    expect(readFileSync(docPath, 'utf8')).toContain('status: archived');
 
     const restored = await request(app).post(`/api/knowledge/pages/${pageId}/actions`).send({
       scope: 'workspace',
@@ -327,8 +336,8 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       actor: 'tester',
     });
     expect(restored.status).toBe(200);
-    expect(restored.body.page_commit?.committed).toBe(true);
-    expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('status: active');
+    skippedMarker(restored.body);
+    expect(readFileSync(docPath, 'utf8')).toContain('status: active');
 
     const deleted = await request(app).post(`/api/knowledge/pages/${pageId}/actions`).send({
       scope: 'workspace',
@@ -338,23 +347,21 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       actor: 'tester',
     });
     expect(deleted.status).toBe(200);
-    expect(deleted.body.page_commit?.committed).toBe(true);
-    expect(existsSync(knowledgePageSnapshotPath(repo, pageId))).toBe(false);
-    expect(git(repo, ['show', '--name-only', '--format=', 'HEAD'])).toBe(snapshot);
-    // 删除提交不得把工作树里其它路径卷进来
-    expect(git(repo, ['status', '--porcelain'])).toBe('');
+    expect(existsSync(docPath)).toBe(false);
+    // 文件事实源：全程不产生 git 提交（软删即撤文件）
+    expect(gitNoCommits(repo)).toBe(false);
   }, 30_000);
 
   /**
    * KB-SNAP-SILENT 接线：真实 app + 真实 git 失败时，HTTP 仍是 200（正文已写入），
    * 但响应体必须诚实给出 page_commit.committed=false 与真原因，供 CLI 报警。
    */
-  it('index.lock 注入：revise 返回 200 但 page_commit.committed=false 且 reason 含 git 原因', async () => {
+  it('page_commit 标记诚实性：携带 Docs 落盘路径与原因，git 工作树全程干净', async () => {
     const payload = {
       scope: 'workspace',
       workspace_id: wsId,
-      slug: 'locked-page',
-      title: '锁冲突页',
+      slug: 'marker-page',
+      title: '标记页',
       body_md: '正文 v1',
       domain: 'knowledge',
       sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
@@ -363,35 +370,11 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
     };
     const created = await request(app).post('/api/knowledge/pages').send(payload);
     expect(created.status).toBe(200);
-    const pageId: string = created.body.id;
-    const { slug: _slug, ...reviseBase } = payload;
-
-    writeFileSync(join(repo, '.git', 'index.lock'), '', 'utf8');
-    try {
-      const revised = await request(app).put(`/api/knowledge/pages/${pageId}`).send({
-        ...reviseBase,
-        expected_revision: 1,
-        body_md: '正文 v2',
-      });
-      expect(revised.status).toBe(200);
-      expect(revised.body.revision).toBe(2);
-      expect(revised.body.page_commit?.committed).toBe(false);
-      expect(revised.body.page_commit?.reason).toContain('index.lock');
-      // 回滚：文件仍是 rev1，git 侧没有 r2
-      expect(readFileSync(knowledgePageSnapshotPath(repo, pageId), 'utf8')).toContain('revision: 1');
-      expect(git(repo, ['log', '--format=%s'])).not.toContain('r2 锁冲突页');
-    } finally {
-      rmSync(join(repo, '.git', 'index.lock'), { force: true });
-    }
-
-    // 锁释放后按新 revision 重跑成功（正文已被上次写入，故提交 r3）
-    const retried = await request(app).put(`/api/knowledge/pages/${pageId}`).send({
-      ...reviseBase,
-      expected_revision: 2,
-      body_md: '正文 v3',
-    });
-    expect(retried.status).toBe(200);
-    expect(retried.body.page_commit?.committed).toBe(true);
-    expect(git(repo, ['log', '--format=%s'])).toContain('r3 锁冲突页');
+    const marker = created.body.page_commit;
+    expect(marker.committed).toBe(false);
+    expect(marker.skipped).toBe(true);
+    expect(marker.path).toContain(join('.agentboard', 'Docs', 'marker-page.md').replaceAll('\\', '/'));
+    expect(gitNoCommits(repo)).toBe(false);
   }, 30_000);
 });
+

@@ -46,7 +46,7 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
   };
 
   beforeEach(() => {
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store2-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -145,8 +145,9 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     } as never);
     const counts = countWorkspacePayload(t.db, { id: ws, path: wsPath }, { attachmentsDir: join(root, 'none') });
-    expect(counts.knowledge_page).toBe(1);
-    expect(counts.knowledge_revision).toBe(1);
+    // P2-01：知识表退出迁移管线——dry-run counts 键保留恒 0（旧库知识行原地只读保留，不搬）
+    expect(counts.knowledge_page).toBe(0);
+    expect(counts.knowledge_revision).toBe(0);
     expect(counts.attachment).toBe(0);
     expect(counts.attachment_files).toBe(0);
   });

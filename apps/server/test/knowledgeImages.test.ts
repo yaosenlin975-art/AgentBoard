@@ -81,6 +81,8 @@ describe('knowledge images (KB-IMG-1)', () => {
       adapters: [adapter],
       refreshClisOnBoot: false,
       attachmentStorageDir: join(root, 'attachments'),
+      // P2-01：公共 Docs 注入本用例临时目录（进程级默认目录会跨用例残留 slug）
+      knowledgeDocsPaths: { commonDocsDir: () => join(root, 'common-docs') },
     });
     app = created.app;
     wsA = createWorkspace(t.db, { name: 'A 空间', path: mkdtempSync(join(root, 'a-')) }).id;
@@ -115,7 +117,8 @@ describe('knowledge images (KB-IMG-1)', () => {
     expect(notImage.body.error.code).toBe('IMAGE_TYPE_UNSUPPORTED');
   });
 
-  it('rejectsThe21stImageAndOversizeTotalWith409', async () => {
+  // Windows 本机 AV/WAL 落盘抖动（单次 save 60–660ms 实测）：20 连传放宽到 30s
+  it('rejectsThe21stImageAndOversizeTotalWith409', { timeout: 30_000 }, async () => {
     for (let i = 0; i < KNOWLEDGE_IMAGE_MAX_PER_PAGE; i += 1) {
       const ok = await upload(pageA, { filename: `p${i}.png`, contentType: 'image/png', data: png(2, 2) });
       expect(ok.status, `第 ${i + 1} 张：${JSON.stringify(ok.body)}`).toBe(201);
@@ -158,12 +161,14 @@ describe('knowledge images (KB-IMG-1)', () => {
   it('deletesImageAndLeavesBodyUntouched', async () => {
     const uploaded = await upload(pageA, { filename: 'a.png', contentType: 'image/png', data: png(3, 3) });
     const id = uploaded.body.id as string;
-    const before = t.db.prepare('SELECT body_md FROM knowledge_page WHERE id=?').get(pageA) as { body_md: string };
+    // P2-01：正文在文件里——正文不被改写经 REST 回读断言（legacy knowledge_page 无 REST 新页的行）
+    const before = await request(app).get(`/api/knowledge/pages/${pageA}`).query({ scope: 'workspace', workspace_id: wsA });
     const del = await request(app).delete(`/api/knowledge/images/${id}?scope=workspace&workspace_id=${wsA}`);
     expect(del.status).toBe(204);
     expect(t.db.prepare('SELECT COUNT(*) AS n FROM knowledge_attachment WHERE id=?').get(id)).toEqual({ n: 0 });
     // 正文不被改写
-    expect((t.db.prepare('SELECT body_md FROM knowledge_page WHERE id=?').get(pageA) as { body_md: string }).body_md).toBe(before.body_md);
+    const after = await request(app).get(`/api/knowledge/pages/${pageA}`).query({ scope: 'workspace', workspace_id: wsA });
+    expect(after.body.body_md).toBe(before.body.body_md);
     const again = await request(app).delete(`/api/knowledge/images/${id}?scope=workspace&workspace_id=${wsA}`);
     expect(again.status).toBe(404);
 

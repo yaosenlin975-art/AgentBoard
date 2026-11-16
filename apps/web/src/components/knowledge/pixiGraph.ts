@@ -130,6 +130,8 @@ interface EdgeView {
   key: string;
   source: string;
   target: string;
+  /** P2-03：边类型（embed 边用独立语义色） */
+  kind: GraphEdgeKind;
   line: Sprite;
   arrow: Graphics;
   alpha: number;
@@ -250,6 +252,7 @@ function readColorMap(): ColorMap {
     arrow: cssColorToTint(raw.arrow, 0x222222, 0.5),
     circle: cssColorToTint(raw.circle, 0x8a5cf5, 1),
     line: cssColorToTint(raw.line, 0xd4d4d4, 1),
+    lineEmbed: cssColorToTint(raw.lineEmbed, 0xd97706, 1),
     text: cssColorToTint(raw.text, 0x222222, 1),
     fillHighlight: cssColorToTint(raw.fillHighlight, 0x9873f7, 1),
     lineHighlight: cssColorToTint(raw.lineHighlight, 0x9873f7, 1),
@@ -558,9 +561,10 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       const to = nodeViews.get(edge.target);
       if (from === undefined || to === undefined) continue;
       const line = new Sprite(Texture.WHITE);
+      const lineColor = colors.lineEmbed ?? colors.line;
       line.eventMode = 'none';
-      line.alpha = FQ * colors.line.alpha;
-      line.tint = colors.line.tint;
+      line.alpha = FQ * (edge.kind === 'embed' ? lineColor.alpha : colors.line.alpha);
+      line.tint = edge.kind === 'embed' ? lineColor.tint : colors.line.tint;
       hanger.addChild(line);
 
       const arrow = new Graphics();
@@ -584,7 +588,8 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
         target: edge.target,
         line,
         arrow,
-        alpha: FQ * colors.line.alpha,
+        kind: edge.kind,
+        alpha: FQ * (edge.kind === 'embed' ? lineColor.alpha : colors.line.alpha),
         arrowAlpha: FQ * colors.arrow.alpha,
       });
     }
@@ -630,7 +635,8 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       const to = nodeViews.get(edge.target);
       if (from === undefined || to === undefined) continue;
       const lit = !active || isEdgeLit(edge);
-      const targetAlpha = (lit ? 1 : FQ) * colors.line.alpha;
+      const lineColor = edge.kind === 'embed' ? (colors.lineEmbed ?? colors.line) : colors.line;
+      const targetAlpha = (lit ? 1 : FQ) * lineColor.alpha;
       const targetArrow = (lit ? 1 : FQ) * Math.max(0, Math.min(1, 2 * (scale - 0.3))) * colors.arrow.alpha;
       edge.alpha = dampen(edge.alpha, targetAlpha, FADE_RATIO);
       edge.arrowAlpha = dampen(edge.arrowAlpha, targetArrow, FADE_RATIO);
@@ -657,7 +663,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       edge.line.rotation = Math.atan2(dy, dx);
       edge.line.width = Math.max(0, distance - rFrom - rTo);
       edge.line.height = thickness;
-      edge.line.tint = lit && active ? colors.lineHighlight.tint : colors.line.tint;
+      edge.line.tint = lit && active ? colors.lineHighlight.tint : lineColor.tint;
       // 箭头：目标边缘外 1px
       const offset = rTo + 1;
       edge.arrow.position.set(to.x - (dx * offset) / distance, to.y - (dy * offset) / distance);
@@ -1106,7 +1112,7 @@ export function createPixiGraph(host: HTMLElement, options: PixiGraphOptions = {
       node.label.style.fill = colors.text.tint;
     }
     for (const edge of edgeViews.values()) {
-      edge.line.tint = colors.line.tint;
+      edge.line.tint = edge.kind === 'embed' ? (colors.lineEmbed ?? colors.line).tint : colors.line.tint;
       edge.arrow.tint = colors.arrow.tint;
     }
     changed();

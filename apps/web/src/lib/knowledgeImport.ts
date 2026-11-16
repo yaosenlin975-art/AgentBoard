@@ -2,9 +2,12 @@
  * KBIMP-2：知识库导入的**纯前端解析层**（不触 DOM、不触网络，便于单测）。
  *
  * 契约来自服务端 `POST /api/knowledge/pages/import`（KBIMP-1，`9a4e06a`）：
- * body `{ scope, workspace_id?, title?, format: md|txt|json, content, category?, landed?, labels? }`，
+ * body `{ scope, workspace_id?, title?, format: md|txt|json, content, category?, landed?, domain?, labels? }`，
  * json 支持**单对象或数组（≤100 条）**，多余字段进 `warnings`；语言侧错误码
  * `IMPORT_BODY_TOO_LONG`(413) / `KNOWLEDGE_EXISTS`(409) / 400 结构错误。
+ *
+ * P2-04（M11）：导入语义已反转为「外部 md 规范化为 Docs/<slug>.md 并补齐 front matter」——
+ * domain 必填（KB-CR-1，进 front matter）；落盘成功即导入成功，无 page_commit 快照语义。
  *
  * 前端自己做的那部分：1MB 上限预检、格式识别、预览草稿、json 数组逐条可取消、错误文案。
  * **不替服务端做业务校验**（slug 冲突、正文长度上限都以服务端返回为准）。

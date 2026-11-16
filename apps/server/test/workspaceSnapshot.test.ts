@@ -11,7 +11,10 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
@@ -34,7 +37,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
 
   beforeEach(async () => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store5-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -101,7 +104,10 @@ describe('STORE-5（M4a）工作区文本快照', () => {
     const checked = validateWorkspaceSnapshot(snapshotDir());
     expect(checked.manifest.included_tables).not.toContain('message');
     expect(checked.rows.get('issue')?.length).toBe(3);
-    expect(checked.rows.get('knowledge_page')?.length).toBe(1);
+    // P1-03 一期缩表：知识表不再进快照（知识页仍在库中正常读写）
+    expect(checked.manifest.included_tables).not.toContain('knowledge_page');
+    expect(checked.manifest.included_tables).not.toContain('knowledge_attachment');
+    expect(checked.rows.has('knowledge_page')).toBe(false);
     expect(existsSync(join(snapshotDir(), 'messages.jsonl'))).toBe(false);
     // 时间列落 ISO：issue 的 created_at 是字符串
     expect(typeof checked.rows.get('issue')?.[0]?.['created_at']).toBe('string');
@@ -137,7 +143,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
     }
   });
 
-  it('② 空工作区库 import 成功，行数与快照一致（status/issue/knowledge 全还原）', () => {
+  it('② 空工作区库 import 成功，行数与快照一致（一期缩表：status/issue 还原，知识表不进快照）', () => {
     const target = freshTarget('import-empty');
     try {
       const result = importWorkspaceSnapshot({ db: target.db, dir: snapshotDir(), workspaceId: ws, workspacePath: target.wsDir });
@@ -145,7 +151,9 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       expect(result.backupPath).toBeNull();
       const count = (table: string) => (target.db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
       expect(count('issue')).toBe(3);
-      expect(count('knowledge_page')).toBe(1);
+      // P2-01 一期缩表：新库不再建知识页表，知识页由 Docs/*.md 承载，快照不导入知识表行
+      expect(target.db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='knowledge_page'").get()).toEqual({ n: 0 });
+      expect(result.tables.map(item => item.table)).not.toContain('knowledge_page');
       expect(count('workspace_status')).toBeGreaterThan(0);
       const checked = validateWorkspaceSnapshot(snapshotDir());
       expect(count('issue')).toBe(checked.rows.get('issue')?.length);

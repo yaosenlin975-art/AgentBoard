@@ -250,7 +250,7 @@ describe('knowledge CLI：C category/landed', () => {
  */
 describe('knowledge CLI：resolve / link（KB-PAGE-2）', () => {
   const resolved = {
-    state: 'resolved', id: 'p-1', title: '缓存策略', scope: 'common', workspace_id: null,
+    state: 'resolved', id: 'p-1', title: '缓存策略', slug: 'cache-policy', scope: 'common', workspace_id: null,
     status: 'active', revision: 3, redirect_to: null,
     // BORROW-3.1（D10）：link 为引用串；旧对象字段移入 link_info（D9 知识卡前缀）
     link: 'knowledge:p-1',
@@ -275,8 +275,13 @@ describe('knowledge CLI：resolve / link（KB-PAGE-2）', () => {
     expect(parsed.link_info).toMatchObject({ ref: 'knowledge:p-1', markdown: '[知识卡：缓存策略](knowledge:p-1)' });
   });
 
-  it('link：token / markdown / plain 三形态', async () => {
-    for (const [format, expected] of [['token', 'knowledge:p-1'], ['markdown', '[知识卡：缓存策略](knowledge:p-1)'], ['plain', '知识卡《缓存策略》 knowledge:p-1 · rev:3']] as const) {
+  it('link：wikilink（默认）/ token / markdown / plain 四形态', async () => {
+    // P2-04（M5）：默认产出 [[wikilink]]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(resolved))));
+    const def = io();
+    expect(await main(['node', 'kb', 'knowledge', 'link', 'p-1', '--scope', 'common'], def)).toBe(0);
+    expect(def.out.join('').trim()).toBe('[[cache-policy]]');
+    for (const [format, expected] of [['wikilink', '[[cache-policy]]'], ['token', 'knowledge:p-1'], ['markdown', '[知识卡：缓存策略](knowledge:p-1)'], ['plain', '知识卡《缓存策略》 knowledge:p-1 · rev:3']] as const) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(resolved))));
       const stream = io();
       expect(await main(['node', 'kb', 'knowledge', 'link', 'p-1', '--scope', 'common', '--format', format], stream)).toBe(0);
@@ -294,6 +299,52 @@ describe('knowledge CLI：resolve / link（KB-PAGE-2）', () => {
     const ambiguous = io();
     expect(await main(['node', 'kb', 'knowledge', 'resolve', 'dup', '--scope', 'common'], ambiguous)).toBe(2);
     expect(ambiguous.err.join('')).toContain('命中 2 页');
+  });
+});
+
+/**
+ * P2-04（M10）：`kb knowledge rename`——POST /pages/:id/rename；文本输出改名结果与重写清单；
+ * 退出码沿用 resolve 约定（409 冲突 → 2）。
+ */
+describe('knowledge CLI：rename（P2-04 M10）', () => {
+  const renamed = {
+    id: 'p-1', slug: 'cache-policy-v2', old_slug: 'cache-policy', scope: 'common', revision: 4, title: '缓存策略',
+    link: 'knowledge:p-1',
+    rewritten: [
+      { dir: '/tmp/common-docs', file_name: 'reader.md', page_id: 'p-2', slug: 'reader' },
+      { dir: '/tmp/ws-docs', file_name: 'overview.md', page_id: 'p-3', slug: 'overview' },
+    ],
+  };
+
+  it('成功：打印新旧 slug、id 不变、重写文件清单', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(renamed)));
+    vi.stubGlobal('fetch', fetch);
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'rename', 'p-1', 'cache-policy-v2', '--scope', 'common', '--expected-revision', '3'], stream)).toBe(0);
+    const [, init] = (fetch.mock.calls as Array<[string, { body: string }]>)[0]!;
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ scope: 'common', expected_revision: 3, new_slug: 'cache-policy-v2' });
+    const out = stream.out.join('');
+    expect(out).toContain('cache-policy-v2（原 slug：cache-policy；id 不变）');
+    expect(out).toContain('已重写 2 个文件');
+    expect(out).toContain('reader.md');
+    expect(out).toContain('reconcile');
+  });
+
+  it('--json：整包报告直出', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(renamed))));
+    const stream = io();
+    expect(await main(['node', 'kb', '--json', 'knowledge', 'rename', 'p-1', 'cache-policy-v2', '--scope', 'common', '--expected-revision', '3'], stream)).toBe(0);
+    const parsed = JSON.parse(stream.out.join('')) as { rewritten: unknown[]; old_slug: string };
+    expect(parsed.old_slug).toBe('cache-policy');
+    expect(parsed.rewritten).toHaveLength(2);
+  });
+
+  it('409 revision 冲突 → exit 2', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'KNOWLEDGE_REVISION_CONFLICT', message: '知识页已更新，请重新读取' } }), { status: 409 })));
+    const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'rename', 'p-1', 'cache-policy-v2', '--scope', 'common', '--expected-revision', '3'], stream)).toBe(2);
+    expect(stream.err.join('')).toContain('已更新');
   });
 });
 
@@ -400,6 +451,92 @@ describe('knowledge CLI：show 省略 scope / find-source / create-revise link�
   });
 });
 
+/**
+ * P2-04b：show / action 省略 --scope 走自动 resolve 时，必须用 resolve 响应里的 id
+ * 调后续端点（GET /pages/:id 与 actions 只认完整 uuid），不能再透传 slug / ≥8 位前缀原输入。
+ */
+describe('knowledge CLI：show/action 自动 resolve 用解析 id（P2-04b）', () => {
+  const ws = { id: 'w1', name: '项目', path: process.cwd(), created_at: 1 };
+  const resolved = {
+    state: 'resolved', id: 'p-real', title: '缓存策略', slug: 'cache-policy', scope: 'common', workspace_id: null,
+    status: 'active', revision: 2, redirect_to: null, link: 'knowledge:p-real',
+    link_info: { ref: 'knowledge:p-real', markdown: '[缓存策略](knowledge:p-real)', text: '知识卡《缓存策略》 knowledge:p-real · rev:2' },
+  };
+  const pageReal = { id: 'p-real', scope: 'common', revision: 2, title: '缓存策略', body_md: '正文', link: 'knowledge:p-real' };
+  /** 统一 mock：workspaces（cwd 解析）/ resolve / 其余端点（页详情、revisions、actions） */
+  const mockFetch = (overrides: { revisions?: unknown } = {}) => vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes('/api/workspaces')) return new Response(JSON.stringify([ws]));
+    if (u.includes('/api/knowledge/resolve')) return new Response(JSON.stringify(resolved));
+    if (u.includes('/revisions') && overrides.revisions !== undefined) return new Response(JSON.stringify(overrides.revisions));
+    return new Response(JSON.stringify(pageReal));
+  });
+
+  it('show <slug> 省略 --scope：resolve 后用解析出的 id 取页，不再透传 slug', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'cache-policy'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.some(url => url.includes('/api/knowledge/resolve?') && url.includes('ref=cache-policy'))).toBe(true);
+    const last = urls.at(-1)!;
+    expect(last).toContain('/api/knowledge/pages/p-real?');
+    expect(last).toContain('scope=common');
+    expect(last).not.toContain('cache-policy');
+    expect(stream.out.join('')).toContain('p-real [common] rev:2 缓存策略');
+  });
+
+  it('show <8位前缀> 省略 --scope：同样用解析 id 取页', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'p-real12'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.at(-1)).toContain('/api/knowledge/pages/p-real?');
+    expect(urls.at(-1)).not.toContain('p-real12');
+  });
+
+  it('show <slug> --history 省略 --scope：详情与 revisions 都用解析 id', async () => {
+    const revisions = { items: [{ revision: 2, title_snapshot: '缓存策略', change_kind: 'edit', actor: 'agent:t', created_at: Date.UTC(2026, 10, 15, 0, 0, 0) }] };
+    const fetch = mockFetch({ revisions }); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'show', 'cache-policy', '--history'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.filter(url => url.includes('/api/knowledge/pages/'))).toHaveLength(2);
+    for (const url of urls.filter(url => url.includes('/api/knowledge/pages/'))) {
+      expect(url).toContain('/api/knowledge/pages/p-real');
+      expect(url).not.toContain('cache-policy');
+    }
+    expect(stream.out.join('')).toContain('rev:2  edit  agent:t');
+  });
+
+  it('action <slug> 省略 --scope：resolve 后 POST /pages/<解析id>/actions，body 带解析 scope', async () => {
+    const fetch = mockFetch(); vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'cache-policy', 'archive', '--expected-revision', '2'], stream)).toBe(0);
+    const urls = fetch.mock.calls.map(call => String(call[0]));
+    expect(urls.some(url => url.includes('/api/knowledge/resolve?') && url.includes('ref=cache-policy'))).toBe(true);
+    const last = urls.at(-1)!;
+    expect(last).toContain('/api/knowledge/pages/p-real/actions');
+    expect(last).not.toContain('cache-policy');
+    const [, init] = fetch.mock.calls.at(-1)!;
+    expect(JSON.parse(String(init.body))).toMatchObject({ scope: 'common', action: 'archive', expected_revision: 2 });
+    expect(stream.out.join('')).toContain('缓存策略');
+  });
+
+  it('action <slug> 省略 --scope 且 resolve 409：exit 2（不猜第一条）', async () => {
+    const fetch = vi.fn(async (url: string) => String(url).includes('/api/workspaces')
+      ? new Response(JSON.stringify([ws]))
+      : new Response(JSON.stringify({ error: { code: 'KNOWLEDGE_REF_AMBIGUOUS', message: 'slug「dup」命中 2 页' } }), { status: 409 }));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'dup', 'archive', '--expected-revision', '1'], stream)).toBe(2);
+    expect(stream.err.join('')).toContain('命中 2 页');
+  });
+
+  it('回归：action <uuid> 显式 --scope 行为与旧版一致，不发 resolve', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(pageReal)));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'action', 'p-real', 'archive', '--scope', 'common', '--expected-revision', '2'], stream)).toBe(0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0]![0])).toBe('http://127.0.0.1:8787/api/knowledge/pages/p-real/actions');
+    expect(JSON.parse(String(fetch.mock.calls[0]![1].body))).toMatchObject({ scope: 'common', action: 'archive', expected_revision: 2 });
+  });
+});
+
 describe('KB-CREATE-ERGO：JSON 文件 BOM、--hash-from-file、domain/scope 说明', () => {
   const BOM = '\ufeff';
   const sourceRow = { source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1763000000000, content_hash: 'b'.repeat(64) };
@@ -476,10 +613,10 @@ describe('KB-CREATE-ERGO：JSON 文件 BOM、--hash-from-file、domain/scope 说
 });
 
 /**
- * KB-SNAP-SILENT：正文写入成功但快照没进 git 时不能再「看着像成功」。
- * 现场（2026-11-07）：revise exit 0、打印 rev:3，但无 r3 提交、快照仍是 rev2。
+ * P2-04：文件事实源下「写文件成败即命令成败」——page_commit / KB-SNAP-SILENT 语义退役。
+ * 服务端响应里即使残留 page_commit 字段，CLI 也不读取、不改变退出码与 stderr。
  */
-describe('knowledge CLI：快照未提交必须可观测（KB-SNAP-SILENT）', () => {
+describe('knowledge CLI：page_commit 字段不再被读取（P2-04 文件事实源）', () => {
   const failing = {
     ...page,
     revision: 2,
@@ -492,43 +629,22 @@ describe('knowledge CLI：快照未提交必须可观测（KB-SNAP-SILENT）', (
     },
   };
 
-  it('文本模式：正文仍渲染，stderr 打印路径与 git 原因，退出码非 0', async () => {
+  it('文本模式：正文渲染、退出码 0、stderr 为空（不再有「快照未提交」失败信号）', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failing))));
     const stream = io();
     const code = await main(['node', 'kb', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
-    expect(code).toBe(1);
-    expect(stream.out.join('')).toContain('缓存');
-    const err = stream.err.join('');
-    expect(err).toContain('快照未提交');
-    expect(err).toContain('.agentboard/snapshot/knowledge/p.md');
-    expect(err).toContain('index.lock');
-  });
-
-  it('--json：stdout 仍是单个 JSON 文档，失败信号走 stderr + 退出码', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failing))));
-    const stream = io();
-    const code = await main(['node', 'kb', '--json', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
-    expect(code).toBe(1);
-    const body = JSON.parse(stream.out.join('')) as Record<string, unknown>;
-    expect((body.page_commit as { committed: boolean }).committed).toBe(false);
-    expect(stream.err.join('')).toContain('index.lock');
-  });
-
-  it('skipped=true（无快照可提交）不算失败：退出码 0、stderr 为空', async () => {
-    const skipped = { ...page, revision: 3, page_commit: { path: 'D:/ws/x.md', relative_path: '.agentboard/snapshot/knowledge/p.md', committed: false, commit: null, reason: '快照文件不存在，无需提交删除', skipped: true } };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(skipped))));
-    const stream = io();
-    const code = await main(['node', 'kb', 'knowledge', 'action', 'p', 'delete', '--scope', 'common', '--expected-revision', '2'], stream);
     expect(code).toBe(0);
+    expect(stream.out.join('')).toContain('缓存');
     expect(stream.err.join('')).toBe('');
   });
 
-  it('committed=true 不打扰：退出码 0、stderr 为空', async () => {
-    const ok = { ...page, revision: 2, page_commit: { path: 'D:/ws/x.md', relative_path: '.agentboard/snapshot/knowledge/p.md', committed: true, commit: 'abc1234', reason: null } };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(ok))));
+  it('--json：stdout 仍是单个 JSON 文档，退出码 0', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failing))));
     const stream = io();
-    const code = await main(['node', 'kb', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
+    const code = await main(['node', 'kb', '--json', 'knowledge', 'revise', 'p', '--scope', 'common', '--expected-revision', '1'], stream);
     expect(code).toBe(0);
+    const body = JSON.parse(stream.out.join('')) as Record<string, unknown>;
+    expect((body.page_commit as { committed: boolean }).committed).toBe(false);
     expect(stream.err.join('')).toBe('');
   });
 });

@@ -97,7 +97,7 @@ function seedIssue(overrides: Partial<Parameters<typeof createIssue>[1]> = {}) {
 }
 
 beforeEach(() => {
-  t = createTestDb();
+  t = createTestDb({ legacyKnowledge: true });
   wsId = createWorkspace(t.db, { name: 'ws', path: 'D:\\ws\\demo' }).id;
   adapter = new FakeAdapter();
   initSessionManager(t.db, fakeResolver, { maxConcurrentTurns: 3 });

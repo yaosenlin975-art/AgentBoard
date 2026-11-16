@@ -2,10 +2,13 @@
  * KBIMP-2：知识库导入对话框。
  *
  * 流程：选文件或拖拽 → 本地解析预览（标题/字符数/前 20 行/识别到的 category 与 labels）
- * → 可改标题/分类/落地状态 → json 数组**逐条列出并可取消**（不允许静默批量建页）→ 确认导入。
+ * → 可改标题/分类/落地状态/domain → json 数组**逐条列出并可取消**（不允许静默批量建页）→ 确认导入。
  * 错误态：格式不支持 / >1MB / `KNOWLEDGE_EXISTS`（给「改标题」「加后缀」两条建议）/ 网络失败。
+ * P2-04（M11 + KB-CR-1）：导入语义 = 外部 md 规范化为 Docs/<slug>.md 并补齐 front matter；
+ * domain 是 front matter 必填字段，对话框提供必选下拉（缺省未选时禁止提交）。
  */
 import { useMemo, useRef, useState } from 'react';
+import { KNOWLEDGE_DOMAINS } from '@agentboard/shared';
 import { Modal } from '../ui/Modal';
 import {
   IMPORT_FORMAT_LABEL,
@@ -19,6 +22,16 @@ import {
   type ParsedImport,
 } from '../../lib/knowledgeImport';
 import { api } from '../../api/client';
+
+/** P2-04（KB-CR-1）：domain 词表展示名（词表单一来源 @agentboard/shared） */
+const DOMAIN_LABEL: Record<string, string> = {
+  accounts: '账号（accounts）',
+  knowledge: '知识（knowledge）',
+  board: '看板（board）',
+  chat: '会话（chat）',
+  ui: '界面（ui）',
+  infra: '基础设施（infra）',
+};
 
 const CATEGORY_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: '不指定分类' },
@@ -62,6 +75,8 @@ export function KnowledgeImportDialog({
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState('');
   const [landed, setLanded] = useState('');
+  /** P2-04（KB-CR-1）：domain 必填（进 front matter）；'' = 未选，禁止提交 */
+  const [domain, setDomain] = useState('');
   const [title, setTitle] = useState('');
   const [dragging, setDragging] = useState(false);
   /** IMPORT-LIMIT-W：大文件（>2MB）解析前先亮「解析中…」，避免主线程被同步解析占满时界面像卡死 */
@@ -76,7 +91,7 @@ export function KnowledgeImportDialog({
   );
 
   const reset = (): void => {
-    setParsed(null); setCancelled([]); setFailure(null); setErrorView(null); setTitle(''); setCategory(''); setLanded(''); setResults([]);
+    setParsed(null); setCancelled([]); setFailure(null); setErrorView(null); setTitle(''); setCategory(''); setLanded(''); setDomain(''); setResults([]);
   };
 
   const readFile = async (file: File): Promise<void> => {
@@ -108,6 +123,10 @@ export function KnowledgeImportDialog({
    */
   const submit = async (): Promise<void> => {
     if (parsed === null || activeDrafts.length === 0) return;
+    if (domain === '') {
+      setErrorView({ text: '请先选择知识领域（domain）——文件事实源下 domain 写入 front matter，必填', suggestions: [] });
+      return;
+    }
     setBusy(true);
     setErrorView(null);
     setFailure(null);
@@ -130,6 +149,7 @@ export function KnowledgeImportDialog({
             format: parsed.format,
             content,
             filename: parsed.filename,
+            domain,
             ...(title.trim() !== '' && parsed.format !== 'json' ? { title: title.trim() } : {}),
             ...(category === '' ? {} : { category }),
             ...(landed === '' ? {} : { landed }),
@@ -238,6 +258,13 @@ export function KnowledgeImportDialog({
             )}
 
             <div className="flex flex-wrap gap-2 text-xs">
+              <label className="flex items-center gap-1 text-ink-2">领域
+                <select data-testid="kb-import-domain" value={domain} onChange={(event) => setDomain(event.target.value)}
+                  className={`rounded-md border bg-surface-card px-1.5 py-0.5 text-xs text-ink outline-none ${domain === '' ? 'border-accent' : 'border-hairline'}`}>
+                  <option value="">请选择（必填）</option>
+                  {KNOWLEDGE_DOMAINS.map((value) => <option key={value} value={value}>{DOMAIN_LABEL[value] ?? value}</option>)}
+                </select>
+              </label>
               <label className="flex items-center gap-1 text-ink-2">分类
                 <select data-testid="kb-import-category" value={category} onChange={(event) => setCategory(event.target.value)}
                   className="rounded-md border border-hairline bg-surface-card px-1.5 py-0.5 text-xs text-ink">

@@ -11,7 +11,7 @@ describe('knowledge search', () => {
   const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
   const evidence = [{ source_id: 's', locator: 'issue:1' }];
   const create = (workspace_id: string | null, slug: string, title = '存储', body_md = '缓存失效后 WAL checkpoint') => createKnowledgePage(t.db, { domain: 'knowledge', scope: workspace_id ? 'workspace' : 'common', workspace_id, slug, title, body_md, actor: 'codex', sources, evidence } as any);
-  beforeEach(() => { t = createTestDb(); a = createWorkspace(t.db, { name: 'A', path: 'A' }).id; b = createWorkspace(t.db, { name: 'B', path: 'B' }).id; });
+  beforeEach(() => { t = createTestDb({ legacyKnowledge: true }); a = createWorkspace(t.db, { name: 'A', path: 'A' }).id; b = createWorkspace(t.db, { name: 'B', path: 'B' }).id; });
   afterEach(() => t.cleanup());
   it('ftsTrigramCapabilityGate', () => {
     t.db.exec("CREATE VIRTUAL TABLE temp.kb_fts USING fts5(body, tokenize='trigram')");

@@ -1,5 +1,4 @@
 import type { Db } from './connection.js';
-import { migrateKnowledge } from './migrations/knowledge.js';
 import { migrateIdempotency } from './migrations/idempotency.js';
 import { migrateAccounts } from './migrations/accounts.js';
 import { migrateDeviceIdentity } from './migrations/deviceIdentity.js';
@@ -17,7 +16,7 @@ import { migrateIssueGitBaseline, pruneIssueGitBaselines } from './migrations/is
 import { migrateAccountPlatforms } from './migrations/accountPlatforms.js';
 import { migrateCheckinPlatforms } from './migrations/checkinPlatforms.js';
 import { migrateAddAccount } from './migrations/addAccount.js';
-import { migrateKnowledgeLinks } from './migrations/knowledgeLinks.js';
+
 import { migrateIssueDependency } from './migrations/issueDependency.js';
 import { migrateIssueStatusModel } from './migrations/issueStatusModel.js';
 import { createIssueMonotonicTimeTrigger } from './migrations/taskHierarchy.js';
@@ -124,8 +123,10 @@ export function initSchema(db: Db): void {
   migrateIssueDependency(db);
   migrateDraftAudit(db);
   migrateKnowledgeAttachment(db);
-  migrateKnowledge(db);
-  migrateKnowledgeLinks(db);
+  // P2-01（方向 B AG1）：knowledge_page/revision/fts 与 knowledge_link 不再注册——SQLite 不再持有
+  // 知识页权威数据，md（Docs/*.md）是唯一事实源。migrateKnowledge/migrateKnowledgeLinks 保留在
+  // migrations/ 下供旧库只读回退显式调用（P2-02 export-legacy 与旧库层测试用），新库不再建这些表。
+  // knowledgeAttachment 仍注册：知识页图片行是 legacy 图片端点的兼容存储（M8），非知识页权威数据。
   migrateIdempotency(db);
   migrateAccounts(db);
   migrateAccountPlatforms(db);

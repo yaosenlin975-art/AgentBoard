@@ -13,7 +13,10 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import { createTestDb, type TestDb } from './helpers.js';
 import { createWorkspace } from '../src/db/repos/workspace.js';
 import { createIssue } from '../src/db/repos/issue.js';
@@ -67,7 +70,7 @@ describe('STORE-3a cleanup / revert（服务层）', () => {
 
   beforeEach(() => {
     resetResolverState();
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-store3ops-'));
     wsPath = join(root, 'ws');
     mkdirSync(wsPath, { recursive: true });
@@ -93,7 +96,8 @@ describe('STORE-3a cleanup / revert（服务层）', () => {
     const result = await revert();
     expect(result.stages).toEqual(['preflight', 'copy_attachments_back', 'copy_back', 'finalize']);
     expect(result.counts.issue).toBe(before.issue);
-    expect(result.counts.knowledge_page).toBe(before.page);
+    // P2-01：知识表退出迁移管线——revert 不回写知识行，counts 键保留恒 0（旧库行原地只读保留）
+    expect(result.counts.knowledge_page).toBe(0);
     expect(centerMode()).toBe('center');
     expect(centerIssueCount()).toBe(before.issue);
     // 工作区库已移入 backup，原路径清空

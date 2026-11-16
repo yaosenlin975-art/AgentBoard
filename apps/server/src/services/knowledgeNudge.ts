@@ -54,15 +54,21 @@ export function buildKnowledgeHint(db: Db, issue: Issue, options: KnowledgeHintO
   if (!issue.claimed_by || issue.claimed_at === null) return null;
   // 检测口径兼容两种写法：旧 handoff-<issue-id> 前缀页，或本次占用期间由占用者更新过的任意页（主题 slug 场景）
   const suggestedSlug = themeSlug(issue);
-  const hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
-    WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
-      AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))
-    LIMIT 1`).get(
-    issue.workspace_id,
-    `handoff-${issue.id}%`,
-    `agent:${issue.claimed_by}`,
-    issue.claimed_at,
-  ) as { hit: number } | undefined;
+  let hit: { hit: number } | undefined;
+  try {
+    hit = db.prepare(`SELECT 1 AS hit FROM knowledge_page
+      WHERE scope='workspace' AND workspace_id=? AND status IN ('active','archived')
+        AND (slug LIKE ? OR (updated_by=? AND updated_at>=?))
+      LIMIT 1`).get(
+      issue.workspace_id,
+      `handoff-${issue.id}%`,
+      `agent:${issue.claimed_by}`,
+      issue.claimed_at,
+    ) as { hit: number } | undefined;
+  } catch {
+    // P2-01：新库不再建 knowledge_page（权威数据已迁 Docs/*.md）——缺表视为「没写过」，继续提示
+    hit = undefined;
+  }
   if (hit) return null;
   // 展示用标题去引号（照抄不破命令）
   const title = (issue.title.length > TITLE_MAX ? `${issue.title.slice(0, TITLE_MAX)}…` : issue.title)

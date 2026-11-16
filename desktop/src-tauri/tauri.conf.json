@@ -16,6 +16,11 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.icns", "icons/icon.ico", "icons/icon.png"],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "resources": {
+      "bundle-stage/apps/server": "apps/server",
+      "bundle-stage/apps/web/dist": "apps/web/dist",
+      "bundle-stage/runtime/node.exe": "runtime/node.exe"
+    }
   }
 }

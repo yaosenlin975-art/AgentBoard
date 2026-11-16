@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::diagnostics;
+
 /// 端口默认值：与 `apps/server/src/config.ts` 的 `DEFAULT_PORT` 保持一致。
 /// 实际端口在启动时由 `resolve_port()` 从 `<configDir>/config.json` 读取（CR-6），读不到/非法时退回本值。
 pub const DEFAULT_PORT: u16 = 8787;
@@ -53,6 +55,38 @@ pub fn resolve_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
+/// 端口是否真的来自 config.json（供日志标注来源）。与 `resolve_port` 同源同口径。
+pub fn port_from_config() -> bool {
+    let path = config_dir().join("config.json");
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| parse_config_port(&raw))
+        .is_some()
+}
+
+/// 配置目录（`%APPDATA%\AgentBoard`）；日志与锁共用，供 main.rs 初始化 main.log 用。
+pub fn config_dir_for_logs() -> PathBuf {
+    config_dir()
+}
+
+/// 当前布局的可读描述（供启动序列落盘）：dev / 便携包 / 安装版 + 资源根。
+pub fn describe_layout() -> String {
+    let exe_dir = current_exe_dir();
+    let portable = detect_portable_layout(&exe_dir);
+    let root = resource_root_assuming(&exe_dir, portable);
+    let kind = if is_target_layout(&exe_dir) {
+        "dev"
+    } else if portable {
+        "portable"
+    } else {
+        "installed"
+    };
+    format!(
+        "{kind}（资源根={}）",
+        strip_verbatim(&root).display()
+    )
+}
+
 /// 命令行创建标志：CREATE_NO_WINDOW，避免 node 子进程弹出控制台黑窗。
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -63,6 +97,17 @@ pub struct ServerHandle {
     child: Option<Child>,
     /// 本次启动使用的端口（停服后等端口释放用）。
     port: u16,
+}
+
+/// `stop()` 的结果，区分「停了谁」，供调用方与验收判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// 停掉了壳自己 spawn 的子进程。
+    StoppedChild { pid: u32 },
+    /// 子进程句柄已失效，按 `server.lock` 里的当前 pid 停掉了接管者（服务自重启换 pid 后）。
+    StoppedTakeover { pid: u32 },
+    /// 什么都没停：外部实例复用（child=None），或没有可停的进程。
+    NothingToStop,
 }
 
 impl ServerHandle {
@@ -79,18 +124,27 @@ impl ServerHandle {
     /// （这是自启配置的行为，不是拉锯；彻底停自启用 `kb autostart uninstall`）。
     ///
     /// Windows 上 Node 的 SIGINT/SIGTERM 处理器无法跨进程投递（`Child::kill` 走 TerminateProcess，
-    /// 不会触发 `process.on('exit')`），所以壳按「终止自己的子进程 + 壳侧补删锁」收尾：
+    /// 不会触发 `process.on('exit')`），所以壳按「终止进程 + 壳侧补删锁」收尾：
     /// 1. 终止子进程并等待其真正消失；
-    /// 2. 等待端口不再响应 `/api/version`；
-    /// 3. 删除「本子进程写入的 server.lock」或「持有者已死的陈旧锁」；持有者仍活着时一律不碰。
+    /// 2. 补一次「锁的第二意见」：`POST /api/system/restart` 会让服务换 pid 并接管 `server.lock`，
+    ///    此时壳手里的 `Child` 是死句柄。若锁里是**另一个存活的 pid** 且端口对得上，按该 pid 终止接管者；
+    /// 3. 等待端口不再响应 `/api/version`；
+    /// 4. 删除「本次终止的那个 pid 写入的锁」或「持有者已死的陈旧锁」；持有者仍活着时一律不碰。
+    ///
+    /// 接管者二次终止只在本壳**确实 spawn 过**服务（`child.is_some()`）时执行：
+    /// 外部实例（`child=None`）的复用语义不变——壳不终止它，也不碰它的锁。
     ///
     /// 这样退出后不会留下孤儿进程或陈旧锁，也不做「按名字杀 node」这类链式暴力清理。
-    pub fn stop(&mut self) -> bool {
+    pub fn stop(&mut self) -> StopOutcome {
         let Some(mut child) = self.child.take() else {
             // 外部实例：壳只复用，退出时不终止它，也不碰它的锁。
-            return false;
+            diagnostics::info(format!(
+                "停服：NothingToStop —— 复用的是外部实例（child=None），不终止端口 {} 上的服务",
+                self.port
+            ));
+            return StopOutcome::NothingToStop;
         };
-        let pid = child.id();
+        let child_pid = child.id();
         let _ = child.kill();
 
         // 等待进程退出：最多 8s，超时再补一次 kill（避免留下僵尸句柄）。
@@ -111,14 +165,40 @@ impl ServerHandle {
         }
         drop(child);
 
+        // 第二意见：restart 之后锁里是新 pid，且它仍在监听本端口。
+        // 只在「锁 pid ≠ 子进程 pid」且「该 pid 存活」且「锁里 port 是本壳端口」时接管终止。
+        let takeover_pid = decide_takeover(
+            read_lock_info(&server_lock_path()),
+            child_pid,
+            self.port,
+            is_pid_alive,
+        );
+        if let Some(pid) = takeover_pid {
+            terminate_pid(pid);
+        }
+
         // 端口应随进程消失；给 Windows 最多 5s 释放监听。
         let deadline = Instant::now() + Duration::from_secs(5);
         while is_healthy(Duration::from_millis(400), self.port) && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(200));
         }
 
-        // 返回 server.lock 是否已释放（供调用方/验收排障使用）。
-        remove_lock_owned_by(pid)
+        // 删锁：优先按「实际终止的那个 pid」——接管者被停后它的锁就是可删的。
+        let terminated_pid = takeover_pid.unwrap_or(child_pid);
+        remove_lock_owned_by(terminated_pid);
+
+        match takeover_pid {
+            Some(pid) => {
+                diagnostics::info(format!(
+                    "停服：StoppedTakeover —— child pid {child_pid} 已失效，按 server.lock 终止了接管者 pid {pid}"
+                ));
+                StopOutcome::StoppedTakeover { pid }
+            }
+            None => {
+                diagnostics::info(format!("停服：StoppedChild —— 已终止自己的子进程 pid {child_pid}"));
+                StopOutcome::StoppedChild { pid: child_pid }
+            }
+        }
     }
 }
 
@@ -147,6 +227,41 @@ fn launchagent_custody() -> bool {
     }
 }
 
+/// 子进程 `AGENTBOARD_PORT` 的取值：**永远等于壳解析出的端口**。
+///
+/// 背景（D6）：`scripts/portable/start.cmd` 在调用壳**之前**就 `set "AGENTBOARD_PORT=8787"`，
+/// 而壳只读 `config.json`（`resolve_port`）。两端对同一变量的态度不一致：
+/// - 壳探 `config.json` 的端口（如 8899）
+/// - 服务读环境变量且 env 优先于 `config.json`（`apps/server/src/config.ts` 的 `loadConfig`）→ 绑 8787
+/// 于是壳永远探不到自己拉起的服务，60s 后假超时，而服务在 8787 继续跑成孤儿进程。
+///
+/// 修法：spawn 时显式把 `AGENTBOARD_PORT` 覆盖为壳端口，强制两端一致。
+///
+/// 为什么是「显式对齐」而不是「删除该变量」：`config.ts` 明确支持用 `AGENTBOARD_PORT`
+/// 临时改端口（注释写的是「不写回 config.json」），删除会让用户的环境变量静默失效；
+/// 对齐既消除冲突，又保住「服务监听端口 == 壳探测端口」这个不变量。
+fn child_port_env(shell_port: u16) -> String {
+    shell_port.to_string()
+}
+
+/// 外部传入的 `AGENTBOARD_PORT`（若存在且与壳端口不同），用于在错误文案里点明「被对齐过」。
+fn ambient_port_mismatch(shell_port: u16) -> Option<String> {
+    parse_ambient_port(env::var("AGENTBOARD_PORT").ok().as_deref(), shell_port)
+}
+
+/// `ambient_port_mismatch` 的纯函数内核（可单测，不读真实环境）。
+fn parse_ambient_port(raw: Option<&str>, shell_port: u16) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = trimmed.parse::<u16>().ok()?;
+    if parsed == shell_port {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// 确保服务在跑：已健康则复用；否则用 node 拉起 `apps/server/dist/index.js` 并等待健康检查通过。
 ///
 /// 单例口径：壳自身由 `tauri-plugin-single-instance` 保证唯一；server 由 `server.lock` 保证唯一。
@@ -157,7 +272,24 @@ fn launchagent_custody() -> bool {
 /// 形成拉锯。宽限过后仍未健康则回落自拉（托管失效场景壳仍能起服）。
 pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
     if is_healthy(Duration::from_millis(1200), port) {
+        let holder = read_lock_info(&server_lock_path())
+            .filter(|lock| lock.port == Some(port))
+            .map(|lock| format!(" pid={}（据 server.lock）", lock.pid))
+            .unwrap_or_default();
+        diagnostics::info(format!(
+            "端口探测：agentboard —— {port} 上已有 AgentBoard 服务，复用不 spawn{holder}"
+        ));
         return Ok(ServerHandle { child: None, port });
+    }
+    // 第三态：端口有监听但不是 AgentBoard（下一个 shell 拉起服务会撞 EADDRINUSE）。
+    // 之前无此判定，失败只表现为「启动后立即退出」，日志里看不出根因。
+    if is_port_listening(port) {
+        diagnostics::warn(format!(
+            "端口探测：foreign —— {port} 已被其它程序监听，且不响应 AgentBoard 的 /api/version；\
+             继续 spawn 预计会 EADDRINUSE"
+        ));
+    } else {
+        diagnostics::info(format!("端口探测：free —— {port} 无监听，进入 spawn 分支"));
     }
 
     if launchagent_custody() {
@@ -170,14 +302,28 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
         }
     }
 
-    let entry = resolve_server_entry()?;
+    let entry = match resolve_server_entry() {
+        Ok(entry) => entry,
+        Err(message) => {
+            // 包含性校验拒绝的逐条理由在这里落盘（D10 的取证入口）。
+            diagnostics::error(format!("入口解析失败：{message}"));
+            return Err(message);
+        }
+    };
     let node = resolve_node();
     let cwd = repo_root_for(&entry);
+    diagnostics::info(format!("entry={}", entry.display()));
+    diagnostics::info(format!("node={}", node.display()));
+    diagnostics::info(format!("cwd={}", cwd.display()));
 
     let mut command = Command::new(&node);
     command
         .arg(&entry)
         .current_dir(&cwd)
+        // D6：显式对齐端口，不让外部 AGENTBOARD_PORT 把服务带到别的端口上
+        .env("AGENTBOARD_PORT", child_port_env(port))
+        // D6-2：服务日志落 APPDATA，不在安装根产生 .logs（卸载残留）
+        .env("AGENTBOARD_LOG", server_log_path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -187,30 +333,49 @@ pub fn ensure_server(port: u16) -> Result<ServerHandle, String> {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("无法启动服务进程（{}）：{error}", node.display()))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let message = format!("无法启动服务进程（{}）：{error}", node.display());
+            diagnostics::error(format!("spawn 失败：{message}"));
+            return Err(message);
+        }
+    };
+    let child_pid = child.id();
+    diagnostics::info(format!("spawned pid={child_pid}（等待 /api/version 就绪，上限 60s）"));
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if is_healthy(Duration::from_millis(1200), port) {
+            diagnostics::info(format!("服务就绪 http://{HOST}:{port} pid={child_pid}"));
             return Ok(ServerHandle { child: Some(child), port });
         }
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "服务进程启动后立即退出（{status}）。入口：{}\n日志：{}",
-                entry.display(),
-                log_path_display(&cwd)
-            ));
+            let message = format!(
+                "服务进程启动后立即退出（{status}）。\n{}",
+                startup_diagnostics(port, child_pid, &entry)
+            );
+            diagnostics::error(format!("启动失败 pid={child_pid} status={status}"));
+            return Err(message);
         }
         if Instant::now() >= deadline {
+            // 不静默 kill：先记下要停的 PID，杀掉后在文案里明确告知是否真的停干净。
             let _ = child.kill();
-            return Err(format!(
-                "等待服务健康检查超时（60 秒）。地址：{}\n入口：{}\n日志：{}",
-                base_url(port),
-                entry.display(),
-                log_path_display(&cwd)
+            let _ = child.wait();
+            // 杀完再探一次端口：杀不干净时文案必须升级，不能谎报「已停止」。
+            let port_still_held = is_port_listening(port);
+            let head = if port_still_held {
+                format!(
+                    "等待服务健康检查超时（60 秒）。已尝试停止本次启动的服务进程（PID {child_pid}），\
+                     但端口仍被占用，可能需要手动结束 PID {child_pid} 或占用该端口的其它进程。"
+                )
+            } else {
+                format!("等待服务健康检查超时（60 秒）。已停止本次启动的服务进程（PID {child_pid}）。")
+            };
+            diagnostics::error(format!(
+                "启动超时 pid={child_pid} 端口仍被占用={port_still_held}"
             ));
+            return Err(format!("{head}\n{}", startup_diagnostics(port, child_pid, &entry)));
         }
         thread::sleep(Duration::from_millis(500));
     }
@@ -242,6 +407,37 @@ pub fn http_get_json(port: u16, path: &str) -> Option<serde_json::Value> {
     serde_json::from_str(body.trim()).ok()
 }
 
+/// 启动失败的诊断文案：壳期望端口、被对齐掉的外部端口、入口、日志、以及人工兜底指引。
+fn startup_diagnostics(port: u16, child_pid: u32, entry: &Path) -> String {
+    let mut lines = vec![
+        format!("壳期望端口：{port}（来自 config.json 的 port，缺省 {DEFAULT_PORT}）"),
+        format!("服务地址：{}", base_url(port)),
+        format!("服务入口：{}", entry.display()),
+        format!("服务日志：{}", log_path_display()),
+        format!("子进程 PID：{child_pid}"),
+    ];
+    if let Some(ambient) = ambient_port_mismatch(port) {
+        lines.push(format!(
+            "注意：外部环境变量 AGENTBOARD_PORT={ambient} 与壳端口 {port} 不一致，已按壳端口对齐后启动服务"
+        ));
+    }
+    lines.push(format!(
+        "排查建议：确认 {port} 端口未被其它程序占用；若你从 start.cmd 启动，请改用 start-server.cmd <端口> 显式指定端口"
+    ));
+    lines.join("\n")
+}
+
+/// 端口是否仍有人监听（只要能建立 TCP 连接就算，不管对方是什么程序）。
+///
+/// 与 `is_healthy` 的区别：这里不校验 HTTP 响应，只回答「端口还被占着吗」，
+/// 用于 kill 之后判断是否真的停干净——被杀进程的 socket 有时会短暂残留。
+fn is_port_listening(port: u16) -> bool {
+    let Ok(addr) = format!("{HOST}:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok()
+}
+
 /// 健康探活：请求 `GET /api/version`，要求 200 且 `name=agentboard-server`。
 ///
 /// 项目没有 `/api/health` 端点（卡面已核对），`/api/version` 是现存探活口径；
@@ -269,32 +465,229 @@ pub fn is_healthy(timeout: Duration, port: u16) -> bool {
 }
 
 /// 服务入口候选（第一个存在即用）。环境变量 `AGENTBOARD_SERVER_ENTRY` 供测试/排障显式指定。
+/// 是否处在 `target/debug` 或 `target/release` 构建目录（cargo 的产物布局）。
+///
+/// 只用于判断「要不要启用 dev 候选」：cargo 布局下 4 级上溯到仓库根才成立，
+/// 打包态（安装目录 / 便携包）不该再走这条路。
+fn is_target_layout(exe_dir: &Path) -> bool {
+    let parts: Vec<String> = exe_dir
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    parts
+        .windows(2)
+        .any(|pair| pair[0] == "target" && (pair[1] == "debug" || pair[1] == "release"))
+}
+
+/// dev 候选（4 级上溯到仓库根）是否启用。
+///
+/// 该候选只在开发期成立：`target/{debug,release}/agentboard-desktop.exe → 仓库根`。
+/// 打包态若仍参与判定且排第一，一旦安装目录上方四级碰巧存在 `apps/server/dist/index.js`
+/// （例如把应用装进某个仓库子目录），壳会静默加载**外部** server。
+///
+/// `debug_build` 传 `cfg!(debug_assertions)`，`exe_dir` 传当前 exe 目录；
+/// 抽成纯函数是为了让「release 下 dev 候选不参与」可单测。
+fn dev_candidate_enabled(debug_build: bool, exe_dir: &Path) -> bool {
+    debug_build || is_target_layout(exe_dir)
+}
+
+/// 服务入口候选（按顺序取第一个存在的）。
+///
+/// 顺序语义：**就近优先**——先找与 exe 同一棵树的 server，避免跨版本混搭。
+/// dev 候选按 `allow_dev` 决定是否参与（见 `dev_candidate_enabled`）。
+fn server_entry_candidates(exe_dir: &Path, allow_dev: bool) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if allow_dev {
+        // 开发期：target/{debug,release}/agentboard-desktop.exe → 仓库根
+        candidates.push(exe_dir.join("../../../../apps/server/dist/index.js"));
+    }
+    // 便携包：<stage>/app/desktop/agentboard-desktop.exe → <stage>/app/apps/server/dist/index.js
+    candidates.push(exe_dir.join("../apps/server/dist/index.js"));
+    // 安装版：resources 映射到 exe 同级（tauri.conf bundle.resources）
+    candidates.push(exe_dir.join("apps/server/dist/index.js"));
+    // macOS .app（B10）：AgentBoard.app/Contents/Resources/payload/app/…
+    // （build-macos.mjs 组装、tauri.macos.conf.json 的 bundle.resources 落位，与 Windows 便携包同布局；
+    //   非 mac 布局该路径不存在，按 Missing 跳过）
+    candidates.push(exe_dir.join("../Resources/payload/app/apps/server/dist/index.js"));
+    candidates
+}
+
+/// 去掉 Windows verbatim 前缀 `\\?\`（canonicalize 在 Windows 上会加它）。
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
+/// 子路径是否在 `base` 之内（含相等）。
+///
+/// Windows 路径大小写不敏感，且分隔符可能是 `\` 或 `/`，所以按小写 + 双分隔符比较，
+/// 并额外要求「base 之后紧跟分隔符」，避免 `C:\app2` 被 `C:\app` 误判为在内部。
+fn is_within(child: &Path, base: &Path) -> bool {
+    let c = strip_verbatim(child).to_string_lossy().to_lowercase().replace('/', "\\");
+    let b = strip_verbatim(base).to_string_lossy().to_lowercase().replace('/', "\\");
+    if b.is_empty() {
+        return false;
+    }
+    let b = b.trim_end_matches('\\');
+    c == b || c.starts_with(&format!("{b}\\"))
+}
+
+/// 由 exe 目录与「是否便携包布局」推导资源根（纯函数，可单测）。
+///
+/// 四种布局的根：
+/// - **dev**（`target/{debug,release}`）：仓库根 = `exe_dir/../../../..`
+/// - **便携包**（`<pkg>/app/desktop`）：包根 `<pkg>` = `exe_dir/../..`
+///   （包根同时含 `app\` 与 `runtime\`；`exe_dir/..` 只是 `<pkg>/app`，不含 runtime）
+/// - **macOS .app**（B10，`<App>.app/Contents/MacOS`）：`Contents` = `exe_dir/..`
+///   （MacOS 与 Resources/payload 都在它之内）
+/// - **安装版**（其它）：`exe_dir` 自身（resources 映射到 exe 同级）
+///
+/// 注意必须由**布局**推导出单一根，不能按候选各自算根：否则 4 级上溯候选
+/// 会恰好落在「它自己的 4 级上溯根」内而被放行（假阴性）。
+fn resource_root_assuming(exe_dir: &Path, portable_layout: bool) -> PathBuf {
+    if is_target_layout(exe_dir) {
+        return exe_dir.join("../../../../");
+    }
+    if portable_layout {
+        return exe_dir.join("../..");
+    }
+    // macOS .app（B10）：资源根是 `Contents`——MacOS 与 Resources/payload 都在它之内，
+    // 候选 `../Resources/payload/app/...` 才能通过包含性校验。
+    if detect_app_bundle_layout(exe_dir) {
+        return exe_dir.join("..");
+    }
+    exe_dir.to_path_buf()
+}
+
+/// 探测是否为便携包布局：`<pkg>/app/desktop/` 且 `<pkg>/app/apps/server` 存在。
+///
+/// 只认 `<pkg>/app/apps/server`（exe_dir/../apps/server），不要写成包根下的 `apps/server`——
+/// 便携包里 server 在 `app\` 之内，包根下只有 `app\` 与 `runtime\`。
+fn detect_portable_layout(exe_dir: &Path) -> bool {
+    let named_desktop = exe_dir
+        .file_name()
+        .map(|name| name.eq_ignore_ascii_case("desktop"))
+        .unwrap_or(false);
+    named_desktop && exe_dir.join("../apps/server").exists()
+}
+
+/// 当前布局的资源根。
+fn resource_root(exe_dir: &Path) -> PathBuf {
+    resource_root_assuming(exe_dir, detect_portable_layout(exe_dir))
+}
+
+/// 探测是否为 macOS .app 布局（B10）：exe 在 `<App>.app/Contents/MacOS/` 且
+/// `Contents/Resources/payload/app` 存在（build-macos.mjs 组装、bundle.resources 落位）。
+/// 仅 macOS 有意义，其它平台一律 false（编译期分支，Windows 行为不变）。
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn detect_app_bundle_layout(exe_dir: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let in_macos_dir = exe_dir
+            .file_name()
+            .map(|name| name.eq_ignore_ascii_case("MacOS"))
+            .unwrap_or(false);
+        in_macos_dir && exe_dir.join("../Resources/payload/app").exists()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// 候选入口被拒的原因（用于文案逐条列出）。
+enum EntryReject {
+    /// 文件不存在（正常情况：该布局没有这套运行时）。
+    Missing,
+    /// 存在但逃出了资源根：`escaped_to` 是它实际落到的位置。
+    OutsideRoot { escaped_to: PathBuf },
+    /// canonicalize 失败（权限/断链/被占用）：按保守拒绝，不放行。
+    Unresolvable,
+}
+
+fn check_entry(candidate: &Path, root: &Path) -> Result<PathBuf, EntryReject> {
+    if !candidate.exists() {
+        return Err(EntryReject::Missing);
+    }
+    // 保守拒绝：无法解析真实路径就不放行（可能是指向包外的符号链接/junction）。
+    let Ok(real_candidate) = fs::canonicalize(candidate) else {
+        return Err(EntryReject::Unresolvable);
+    };
+    let Ok(real_root) = fs::canonicalize(root) else {
+        return Err(EntryReject::Unresolvable);
+    };
+    if !is_within(&real_candidate, &real_root) {
+        return Err(EntryReject::OutsideRoot {
+            escaped_to: strip_verbatim(&real_candidate),
+        });
+    }
+    Ok(candidate.to_path_buf())
+}
+
 fn resolve_server_entry() -> Result<PathBuf, String> {
+    let exe_dir = current_exe_dir();
+    let root = resource_root(&exe_dir);
+
+    // 显式指定也走同一道包含性校验：排障口不该成为绕过「不许逃出资源根」的通道。
     if let Some(raw) = env::var_os("AGENTBOARD_SERVER_ENTRY") {
         let path = PathBuf::from(raw);
-        if path.exists() {
-            return Ok(path);
+        match check_entry(&path, &root) {
+            Ok(entry) => return Ok(entry),
+            Err(EntryReject::Missing) => {}
+            Err(EntryReject::OutsideRoot { escaped_to }) => {
+                return Err(format!(
+                    "AGENTBOARD_SERVER_ENTRY 指向的服务入口逃出了资源根，拒绝使用。\n\
+                     指定入口：{}\n资源根：{}\n实际落到：{}",
+                    path.display(),
+                    strip_verbatim(&root).display(),
+                    escaped_to.display()
+                ));
+            }
+            Err(EntryReject::Unresolvable) => {
+                return Err(format!(
+                    "AGENTBOARD_SERVER_ENTRY 无法解析真实路径，拒绝使用：{}",
+                    path.display()
+                ));
+            }
         }
     }
-    let exe_dir = current_exe_dir();
-    let candidates = [
-        // 开发期：desktop/src-tauri/target/{debug,release}/agentboard-desktop.exe → 仓库根
-        exe_dir.join("../../../../apps/server/dist/index.js"),
-        // 便携包（DESKTOP-2 接线）：<stage>/app/desktop/agentboard-desktop.exe → <stage>/app/apps/server/dist/index.js
-        exe_dir.join("../apps/server/dist/index.js"),
-        exe_dir.join("apps/server/dist/index.js"),
-        // macOS .app（B10）：AgentBoard.app/Contents/Resources/payload/app/…
-        // （build-macos.mjs 组装、tauri.macos.conf.json 的 bundle.resources 落位，与 Windows 便携包同布局）
-        exe_dir.join("../Resources/payload/app/apps/server/dist/index.js"),
-    ];
+    let allow_dev = dev_candidate_enabled(cfg!(debug_assertions), &exe_dir);
+    let candidates = server_entry_candidates(&exe_dir, allow_dev);
+
+    let mut rejected = Vec::new();
     for candidate in candidates.iter() {
-        if candidate.exists() {
-            return Ok(candidate.clone());
+        match check_entry(candidate, &root) {
+            Ok(entry) => return Ok(entry),
+            Err(EntryReject::Missing) => {}
+            Err(EntryReject::OutsideRoot { escaped_to }) => rejected.push(format!(
+                "{} → 逃出资源根，实际落到 {}",
+                candidate.display(),
+                escaped_to.display()
+            )),
+            Err(EntryReject::Unresolvable) => rejected.push(format!(
+                "{} → 无法解析真实路径（权限/断链/被占用）",
+                candidate.display()
+            )),
         }
+    }
+
+    if rejected.is_empty() {
+        return Err(format!(
+            "未找到服务入口 apps/server/dist/index.js（已查找：{}）。请先在仓库根构建 server（pnpm -r build）。",
+            candidates
+                .iter()
+                .map(|c| c.display().to_string())
+                .collect::<Vec<_>>()
+                .join("；")
+        ));
     }
     Err(format!(
-        "未找到服务入口 apps/server/dist/index.js（已查找：{}）。请先在仓库根构建 server（pnpm -r build）。",
-        candidates[0].display()
+        "所有候选入口都不在当前资源根内，拒绝启动。\n资源根：{}\n逐条原因：\n  {}",
+        strip_verbatim(&root).display(),
+        rejected.join("\n  ")
     ))
 }
 
@@ -352,8 +745,23 @@ fn repo_root_for(entry: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-fn log_path_display(cwd: &Path) -> String {
-    cwd.join(".logs").join("server.log").display().to_string()
+/// 服务日志路径：`<configDir>/logs/server.log`，即 `%APPDATA%\AgentBoard\logs\server.log`。
+///
+/// 为什么不在 cwd：壳把子进程 cwd 设为安装根（`repo_root_for`），服务端默认日志是
+/// `<cwd>/.logs/server.log`（`apps/server/src/services/serverLog.ts`），于是日志落进**安装目录**，
+/// 卸载时因文件仍被持有而留下空的 `.logs` 目录残留。
+///
+/// 改到 APPDATA 后有两点一致性收益：
+/// - 与壳自身的 `main.log` 同目录（`%APPDATA%\AgentBoard\logs\`），排障只看一处；
+/// - 与 `scripts/portable/start.cmd` 的既有约定一致（它本来就设
+///   `AGENTBOARD_LOG=%APPDATA%\AgentBoard\logs\server.log`），两种启动方式不再产生两处日志。
+fn server_log_path() -> PathBuf {
+    config_dir().join("logs").join("server.log")
+}
+
+/// 文案里展示的服务日志路径。
+fn log_path_display() -> String {
+    server_log_path().display().to_string()
 }
 
 /// 配置目录：与 `apps/server/src/config.ts` 的 `configDir()` 同口径（`%APPDATA%\AgentBoard`）。
@@ -385,11 +793,48 @@ fn server_lock_path() -> PathBuf {
 #[derive(Deserialize)]
 struct LockFile {
     pid: u32,
+    /// 缺省容忍：旧锁或坏锁没有 port 时不参与「接管者二次终止」判定（保守不终止）。
+    #[serde(default)]
+    port: Option<u16>,
 }
 
 fn read_lock_pid(path: &Path) -> Option<u32> {
     let raw = fs::read_to_string(path).ok()?;
     serde_json::from_str::<LockFile>(&raw).ok().map(|lock| lock.pid)
+}
+
+/// 读锁里的 `pid` + `port`（第二意见判定用）；不存在/损坏返回 None。
+fn read_lock_info(path: &Path) -> Option<LockFile> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<LockFile>(&raw).ok()
+}
+
+/// 「第二意见」判定：该不该按锁里的 pid 再终止一次。
+///
+/// 只在这三条同时成立时返回 `Some(pid)`：
+/// 1. 锁存在且可解析；
+/// 2. `pid` 与壳手里的子进程 pid **不同**（相同说明就是自己的子进程，走 Child::kill 已覆盖）；
+/// 3. 锁里的 `port` 与本壳端口一致（防止误杀另一个 AgentBoard 实例）；
+/// 4. 该 pid 存活（已死则只是陈旧锁，交给 remove_lock_owned_by 清）。
+///
+/// `alive` 注入是为了可单测（真实调用传 `is_pid_alive`）。
+fn decide_takeover(
+    lock: Option<LockFile>,
+    child_pid: u32,
+    port: u16,
+    alive: impl Fn(u32) -> bool,
+) -> Option<u32> {
+    let lock = lock?;
+    if lock.pid == child_pid {
+        return None;
+    }
+    if lock.port != Some(port) {
+        return None;
+    }
+    if !alive(lock.pid) {
+        return None;
+    }
+    Some(lock.pid)
 }
 
 /// 只删除「本子进程写入的锁」或「持有者已死的陈旧锁」；持有者仍活着时一律不动（避免误删接管者的锁）。
@@ -457,9 +902,62 @@ fn is_pid_alive(pid: u32) -> bool {
     })
 }
 
+/// 按 pid 终止「非本壳 Child 句柄」的进程（restart 后的接管者）。
+///
+/// 用 `taskkill /PID <pid> /T /F`：`/T` 连带该进程的子进程（agent CLI），`/F` 强制，
+/// 等价于 `Child::kill` 的 TerminateProcess，不引入额外 crate。
+/// 只按精确 pid 收，不做「按映像名杀 node」。
+fn terminate_pid(pid: u32) {
+    let mut command = Command::new("taskkill");
+    command
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = command.status();
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_config_port, DEFAULT_PORT};
+    use super::{
+        check_entry, child_port_env, decide_takeover, dev_candidate_enabled, is_within,
+        log_path_display, parse_ambient_port, parse_config_port, resource_root_assuming,
+        server_entry_candidates, server_log_path, EntryReject, LockFile, DEFAULT_PORT,
+    };
+    use std::path::Path;
+
+    /// 纯路径归一（不经文件系统）：消解 `.` / `..`，供不依赖真实磁盘的单测使用。
+    fn normalize_for_test(path: &Path) -> PathBuf {
+        let mut out: Vec<String> = Vec::new();
+        let text = path.to_string_lossy().replace('/', "\\");
+        for part in text.split('\\') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if out.len() > 1 {
+                        out.pop();
+                    }
+                }
+                other => out.push(other.to_string()),
+            }
+        }
+        PathBuf::from(out.join("\\"))
+    }
+
+    fn describe_reject(reject: &EntryReject) -> String {
+        match reject {
+            EntryReject::Missing => "missing".to_string(),
+            EntryReject::OutsideRoot { escaped_to } => format!("outside:{}", escaped_to.display()),
+            EntryReject::Unresolvable => "unresolvable".to_string(),
+        }
+    }
+
+    use std::path::PathBuf;
 
     #[test]
     fn valid_port_is_parsed() {
@@ -484,5 +982,255 @@ mod tests {
         assert_eq!(parse_config_port("{ \"port\": 65536 }"), None);
         assert_eq!(parse_config_port("{ \"port\": \"8790\" }"), None);
         assert_eq!(parse_config_port("{ \"port\": 1.5 }"), None);
+    }
+
+    fn lock(pid: u32, port: Option<u16>) -> Option<LockFile> {
+        Some(LockFile { pid, port })
+    }
+
+    #[test]
+    fn takeover_detected_when_lock_pid_differs_and_alive() {
+        // restart 后：壳的 child=100（死句柄），锁里是接管者 200 且在跑 → 应按 200 二次终止
+        assert_eq!(decide_takeover(lock(200, Some(8787)), 100, 8787, |_| true), Some(200));
+    }
+
+    #[test]
+    fn no_takeover_when_lock_pid_is_own_child() {
+        // 锁里就是自己的子进程：Child::kill 已覆盖，不重复终止
+        assert_eq!(decide_takeover(lock(100, Some(8787)), 100, 8787, |_| true), None);
+    }
+
+    #[test]
+    fn no_takeover_when_lock_holder_is_dead() {
+        // 陈旧锁：pid 已死，只交给 remove_lock_owned_by 清理，不 kill
+        assert_eq!(decide_takeover(lock(200, Some(8787)), 100, 8787, |_| false), None);
+    }
+
+    #[test]
+    fn no_takeover_for_other_port() {
+        // 锁指向另一个端口（另一个 AgentBoard 实例）：不碰，避免误杀
+        assert_eq!(decide_takeover(lock(200, Some(9000)), 100, 8787, |_| true), None);
+    }
+
+    #[test]
+    fn no_takeover_when_lock_missing_or_port_absent() {
+        assert_eq!(decide_takeover(None, 100, 8787, |_| true), None);
+        // 旧锁/坏锁没有 port：保守不终止
+        assert_eq!(decide_takeover(lock(200, None), 100, 8787, |_| true), None);
+    }
+
+    // ---- D6：端口对齐 ----
+
+    #[test]
+    fn child_port_env_equals_shell_port() {
+        // spawn 时注入的 AGENTBOARD_PORT 必须等于壳解析出的端口（覆盖外部传入的任何值）
+        assert_eq!(child_port_env(8899), "8899");
+        assert_eq!(child_port_env(DEFAULT_PORT), "8787");
+    }
+
+    #[test]
+    fn ambient_port_mismatch_flags_conflicting_value() {
+        // start.cmd 预设 8787、壳端口 8899 → 文案里要点明被对齐，便于排障
+        assert_eq!(parse_ambient_port(Some("8787"), 8899), Some("8787".to_string()));
+    }
+
+    #[test]
+    fn ambient_port_mismatch_ignores_same_value() {
+        // 两边一致：不是问题，不写进文案
+        assert_eq!(parse_ambient_port(Some("8899"), 8899), None);
+        assert_eq!(parse_ambient_port(Some(" 8899 "), 8899), None);
+    }
+
+    #[test]
+    fn ambient_port_mismatch_ignores_unset_or_garbage() {
+        assert_eq!(parse_ambient_port(None, 8787), None);
+        assert_eq!(parse_ambient_port(Some(""), 8787), None);
+        assert_eq!(parse_ambient_port(Some("   "), 8787), None);
+        // 非法值不参与对齐提示（服务端也会忽略它）
+        assert_eq!(parse_ambient_port(Some("abc"), 8787), None);
+        assert_eq!(parse_ambient_port(Some("70000"), 8787), None);
+    }
+
+    // ---- D6-2：服务日志落点 ----
+
+    #[test]
+    fn server_log_path_is_under_appdata_not_install_root() {
+        let path = server_log_path();
+        let text = path.to_string_lossy().replace('\\', "/");
+        // 必须在 AgentBoard 配置目录下的 logs/server.log
+        assert!(
+            text.ends_with("AgentBoard/logs/server.log"),
+            "服务日志应落在 <配置目录>/logs/server.log，实际 {text}"
+        );
+        // 不得再是 <cwd>/.logs/server.log（安装根残留的根因）
+        assert!(!text.contains("/.logs/"), "不应落在兜底 .logs 目录，实际 {text}");
+    }
+
+    #[test]
+    fn log_path_display_matches_server_log_path() {
+        assert_eq!(log_path_display(), server_log_path().display().to_string());
+    }
+
+    // ---- D7-1：打包态跳过 dev 候选 ----
+
+    #[test]
+    fn release_build_outside_target_skips_dev_candidate() {
+        // 安装目录（不在 target/ 下）+ release → dev 候选不参与，只剩包内两条 + mac .app payload 候选（B10，非 mac 布局按 Missing 跳过）
+        let exe_dir = Path::new("C:\\Users\\u\\AppData\\Local\\AgentBoard");
+        assert!(!dev_candidate_enabled(false, exe_dir));
+        let candidates = server_entry_candidates(exe_dir, false);
+        assert_eq!(candidates.len(), 3);
+        assert!(
+            !candidates.iter().any(|c| c.to_string_lossy().contains("../../../../")),
+            "release 下不得出现 4 级 dev 候选：{candidates:?}"
+        );
+    }
+
+    #[test]
+    fn debug_build_keeps_dev_candidate_first() {
+        // 开发期：debug 构建 + target/debug 布局 → dev 候选参与且排第一（就近优先）
+        let exe_dir = Path::new("D:\\repo\\desktop\\src-tauri\\target\\debug");
+        assert!(dev_candidate_enabled(true, exe_dir));
+        let candidates = server_entry_candidates(exe_dir, true);
+        assert_eq!(candidates.len(), 4);
+        assert!(candidates[0].to_string_lossy().contains("../../../../"));
+    }
+
+    #[test]
+    fn target_layout_enables_dev_candidate_even_without_debug_assertions() {
+        // cargo release 产物（target/release）仍属开发布局，保留 dev 候选便于 `cargo run --release` 调试
+        assert!(dev_candidate_enabled(false, Path::new("D:\\repo\\desktop\\src-tauri\\target\\release")));
+        // 大小写与盘符差异不影响判定
+        assert!(dev_candidate_enabled(false, Path::new("c:\\repo\\TARGET\\Release")));
+    }
+
+    #[test]
+    fn packaged_layouts_never_enable_dev_candidate() {
+        // 便携包与安装版都不在 target/ 下
+        for dir in [
+            "D:\\portable\\app\\desktop",
+            "C:\\Users\\u\\AppData\\Local\\AgentBoard",
+            "C:\\Program Files\\AgentBoard",
+        ] {
+            assert!(!dev_candidate_enabled(false, Path::new(dir)), "{dir} 不应启用 dev 候选");
+        }
+    }
+
+    #[test]
+    fn packaged_candidates_are_nearby_only() {
+        let exe_dir = Path::new("D:\\portable\\app\\desktop");
+        let candidates = server_entry_candidates(exe_dir, false);
+        // 便携包：../apps/server（同 app 树）
+        assert_eq!(candidates[0], exe_dir.join("../apps/server/dist/index.js"));
+        // 安装版：exe 同级 apps/server（resources 映射）
+        assert_eq!(candidates[1], exe_dir.join("apps/server/dist/index.js"));
+    }
+
+    // ---- D10：入口包含性校验 ----
+
+    #[test]
+    fn portable_layout_root_is_app_dir() {
+        // 便携包：<stage>/app/desktop → 资源根 = <stage>/app
+        let exe_dir = Path::new("D:\\stage\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        assert_eq!(
+            root.to_string_lossy().replace('\\', "/"),
+            "D:/stage/AgentBoard/app/desktop/../.."
+        );
+        // 安装版：资源根 = exe_dir 自身
+        assert_eq!(resource_root_assuming(exe_dir, false), exe_dir);
+    }
+
+    #[test]
+    fn dev_layout_root_is_repo_root() {
+        // target/release → 仓库根，与服务入口同级
+        let exe_dir = Path::new("D:\\repo\\desktop\\src-tauri\\target\\release");
+        let root = resource_root_assuming(exe_dir, false);
+        assert!(root.to_string_lossy().replace('\\', "/").ends_with("release/../../../../"));
+    }
+
+    #[test]
+    fn four_level_candidate_escapes_portable_root() {
+        // qa 现场证据：包解在仓库根下时，4 级上溯候选逃出 stage
+        let exe_dir = Path::new("D:\\Workspaces\\AgentBoard\\dist-package\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        let dev_candidate = exe_dir.join("../../../../apps/server/dist/index.js");
+
+        // 用纯路径归一（不经文件系统）模拟 canonicalize 结果
+        let normalized = normalize_for_test(&dev_candidate);
+        let root_normalized = normalize_for_test(&root);
+        assert!(
+            !is_within(&normalized, &root_normalized),
+            "4 级候选必须被判为逃出资源根；root={}",
+            root_normalized.display()
+        );
+        // 它实际落到了仓库根，而不是 stage 内
+        assert!(normalized.to_string_lossy().to_lowercase().contains("workspaces\\agentboard\\apps\\server"));
+    }
+
+    #[test]
+    fn in_package_candidates_pass_containment() {
+        // 便携包两候选都应在 <stage>/app 之内
+        let exe_dir = Path::new("D:\\stage\\AgentBoard\\app\\desktop");
+        let root = resource_root_assuming(exe_dir, true);
+        for rel in ["../apps/server/dist/index.js", "apps/server/dist/index.js"] {
+            let candidate = normalize_for_test(&exe_dir.join(rel));
+            assert!(
+                is_within(&candidate, &normalize_for_test(&root)),
+                "{rel} 应落在资源根内"
+            );
+        }
+    }
+
+    #[test]
+    fn installed_layout_entry_passes_containment() {
+        // 安装版：entry 在 exe_dir/apps/server，根就是 exe_dir
+        let exe_dir = Path::new("C:\\Users\\u\\AppData\\Local\\AgentBoard");
+        let root = resource_root_assuming(exe_dir, false);
+        let entry = normalize_for_test(&exe_dir.join("apps/server/dist/index.js"));
+        assert!(is_within(&entry, &normalize_for_test(&root)));
+    }
+
+    #[test]
+    fn is_within_rejects_sibling_prefix() {
+        // `C:\app2` 不得被判为在 `C:\app` 内
+        assert!(!is_within(Path::new("C:\\app2\\x.js"), Path::new("C:\\app")));
+        // 相等算在内
+        assert!(is_within(Path::new("C:\\app"), Path::new("C:\\app")));
+        // 大小写与分隔符不敏感
+        assert!(is_within(Path::new("c:/APP/sub/x.js"), Path::new("C:\\app")));
+    }
+
+    #[test]
+    fn is_within_strips_verbatim_prefix() {
+        // canonicalize 在 Windows 会加 \\?\ 前缀，必须归一后再比较
+        assert!(is_within(
+            Path::new(r"\\?\C:\app\sub\x.js"),
+            Path::new(r"C:\app")
+        ));
+        assert!(is_within(
+            Path::new(r"C:\app\sub\x.js"),
+            Path::new(r"\\?\C:\app")
+        ));
+    }
+
+    #[test]
+    fn canonicalize_failure_is_conservatively_rejected() {
+        // 不存在的路径：check_entry 必须先判 Missing（不是 Unresolvable）
+        let root = Path::new("D:\\repo");
+        match check_entry(Path::new("D:\\repo\\nope\\index.js"), root) {
+            Err(EntryReject::Missing) => {}
+            other => panic!("应报 Missing，实际 {:?}", other.err().map(|e| describe_reject(&e))),
+        }
+        // 根不可解析（不存在）时，即便候选存在也保守拒绝
+        if let Err(reject) = check_entry(
+            Path::new("D:\\repo\\apps\\server\\dist\\index.js"),
+            Path::new("D:\\repo\\does-not-exist-root"),
+        ) {
+            assert!(
+                !matches!(reject, EntryReject::OutsideRoot { .. }),
+                "根不可解析时应报 Unresolvable 而不是逃逸"
+            );
+        }
     }
 }

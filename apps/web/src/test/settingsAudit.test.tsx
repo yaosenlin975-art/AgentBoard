@@ -6,7 +6,7 @@
  * 2. 保存成功给一次可见提示（`settings-saved`），不再静默关闭；
  * 3. 有未保存改动时关闭要确认（window.confirm），未确认则不关；
  * 4. 主题唯一入口在设置内（三选一按钮），左栏状态行只读（非 button、点击不改主题）；
- * 5. 长表单分区：服务与并发 / 主题 / 数据存储 / MCP 各自有 section，且数据存储的危险按钮可见（不被折叠）。
+ * 5. 长表单分区：服务与并发 / 主题 / MCP 各自有 section（不被折叠）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -80,12 +80,13 @@ describe('AUDIT-SETTINGS 未保存改动确认', () => {
 });
 
 describe('AUDIT-SETTINGS 长表单分区', () => {
-  it('服务与并发 / 主题两组存在，且数据存储分区的迁移入口可见（不折叠）', async () => {
+  it('服务与并发 / 主题两组存在（不折叠）', async () => {
     renderSettings();
     await screen.findByDisplayValue('9000');
     expect(screen.getByTestId('settings-section-server')).toBeInTheDocument();
     expect(screen.getByTestId('settings-section-theme')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-storage')).toBeInTheDocument();
     expect(screen.getByTestId('settings-section-mcp')).toBeInTheDocument();
+    // P1-02：数据存储分区（路径输入 / 目录选择 / 迁移进度）已整体下线
+    expect(screen.queryByTestId('settings-storage')).not.toBeInTheDocument();
   });
 });

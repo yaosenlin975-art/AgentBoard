@@ -1,7 +1,7 @@
 /**
  * 第 10 章：设置（GUIDE-6）。
  * 文案取自 SettingsDialog.tsx / PersonaSection.tsx / SkillsSyncSection.tsx / McpSection.tsx /
- * VoiceSection.tsx / StorageSection.tsx / RestartServerPanel.tsx / TravelAutoRecoverSection.tsx。
+ * VoiceSection.tsx / RestartServerPanel.tsx / TravelAutoRecoverSection.tsx。
  */
 import type { GuideChapter } from '../types';
 
@@ -46,10 +46,6 @@ export const chapter: GuideChapter = {
         {
           do: '到「猫猫旅行」找到「自动回收猫猫旅行」开关。',
           result: '开关默认开启，属于「即时生效，无需保存」：关掉后签到派出的猫猫不再自动回收（侧栏状态仍显示「已派出」）；要恢复自动回收再打开即可。',
-        },
-        {
-          do: '需要迁移数据时用「数据存储」：看清「中心库路径」，填「新的中心库路径」后在确认框里决定是否「覆盖目标位置的同名数据库」。',
-          result: '迁移完成会显示新路径与备份目录；失败会给出中文原因和是否已回滚。',
         },
         {
           do: '最后是「服务重启」：点「重启服务器」后再点「确认重启」。',

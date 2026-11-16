@@ -7,7 +7,8 @@ import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkspaceDbOpJobView, WorkspaceDbStatusView, WorkspaceLocalizeJobView } from '@agentboard/shared';
 import { main } from '../src/index.js';
-import { workspaceDbCleanup, workspaceDbEnable, workspaceDbRevert } from '../src/commands/workspaceDb.js';
+import { autoEnableWorkspaceDb, workspaceDbCleanup, workspaceDbEnable, workspaceDbRevert } from '../src/commands/workspaceDb.js';
+import { createSpace } from '../src/commands/createSpace.js';
 import type { Ctx } from '../src/io.js';
 
 interface Recorded { method: string; url: string; body: unknown }
@@ -614,5 +615,92 @@ describe('kb workspace-db revert', () => {
     expect(result.code).toBe(2);
     expect(result.err).toContain('本进程已有任务 loc-1（localize）在跑');
     expect(result.err).not.toContain('已被占用（');
+  });
+});
+
+describe('kb workspace-db enable --all（存量批量 · P1-03）', () => {
+  const centerWs = { id: 'ws1', name: '下沉空间', path: 'D:/ws/localize', created_at: 1, db_mode: 'center' };
+  const localizedWs = { id: 'ws2', name: '已下沉', path: 'D:/ws/done', created_at: 2, db_mode: 'localized' };
+  const failedWs = { id: 'ws3', name: '失败区', path: 'D:/ws/failed', created_at: 3, db_mode: 'failed' };
+
+  it('--all --dry-run：只挑 db_mode=center 的存量区，跳过其余；dry-run 请求体透传', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [centerWs, localizedWs, failedWs] };
+      if (method === 'POST' && url === LOCALIZE_PATH) {
+        return { status: 202, body: job({ dryRun: true, status: 'done', stage: null, result: 'dry_run', counts: COUNTS, finishedAt: 2 }) };
+      }
+      return undefined;
+    };
+    const result = await run(['workspace-db', 'enable', '--all', '--dry-run']);
+    expect(result.code).toBe(0);
+    const posts = calls.filter(call => call.method === 'POST' && call.url.includes('/db/localize'));
+    expect(posts).toEqual([{ method: 'POST', url: LOCALIZE_PATH, body: { dryRun: true } }]);
+    expect(result.out).toContain('待下沉（db_mode=center）1 个，跳过 2 个');
+    expect(result.out).toContain('跳过：已下沉（ws2）当前 localized');
+    expect(result.out).toContain('跳过：失败区（ws3）当前 failed');
+    expect(result.out).toContain('dry-run 预览完成');
+    expect(result.out).toContain('批量 enable 结束：成功 1 / 1，失败 0');
+  });
+
+  it('--all 真实：单区失败汇总后整体退出 1', async () => {
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [centerWs] };
+      if (method === 'POST' && url === LOCALIZE_PATH) {
+        return { status: 202, body: job({ status: 'failed', stage: 'preflight', lastError: '预检拒绝', errorCode: 'WORKSPACE_PATH_NOT_LOCAL', finishedAt: 2 }) };
+      }
+      return undefined;
+    };
+    const result = await run(['workspace-db', 'enable', '--all']);
+    expect(result.code).toBe(1);
+    expect(result.out).toContain('批量 enable 结束：成功 0 / 1，失败 1');
+    expect(result.out).toContain('预检拒绝');
+  });
+});
+
+describe('create-space 自动 enable（下沉默认化 · P1-03）', () => {
+  const newWs = { id: 'ws1', name: '新区', path: 'D:/ws/new', created_at: 1, sort_order: 0 };
+
+  const createHandler = (localizeBody: WorkspaceLocalizeJobView): Handler => (method, url) => {
+    if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+    if (method === 'POST' && url === '/api/workspaces') return { status: 200, body: newWs };
+    if (method === 'POST' && url === LOCALIZE_PATH) return { status: 202, body: localizeBody };
+    return undefined;
+  };
+
+  it('POST /api/workspaces 后自动跑 enable；静默不渲染迁移文案', async () => {
+    handler = createHandler(job({ status: 'done', stage: 'finalize', result: 'localized', counts: COUNTS, finishedAt: 2 }));
+    const t = makeIo();
+    const ctx: Ctx = { base, json: false, agentId: 'test', io: t.io };
+    await createSpace(ctx, { name: '新区', path: 'D:/ws/new' });
+    expect(t.out()).toContain('已创建工作空间: ws1 新区（D:/ws/new）');
+    expect(t.out()).not.toContain('迁移完成');
+    expect(t.out()).not.toContain('轮询进度');
+    const posts = calls.filter(call => call.method === 'POST' && call.url.includes('/db/localize'));
+    expect(posts).toEqual([{ method: 'POST', url: LOCALIZE_PATH, body: {} }]);
+  });
+
+  it('--json：stdout 只有单个工作区 JSON，不被 enable 输出污染', async () => {
+    handler = createHandler(job({ status: 'done', stage: null, result: 'localized', counts: COUNTS, finishedAt: 2 }));
+    const t = makeIo();
+    const ctx: Ctx = { base, json: true, agentId: 'test', io: t.io };
+    await createSpace(ctx, { name: '新区', path: 'D:/ws/new' });
+    expect(JSON.parse(t.out())).toEqual(newWs);
+  });
+
+  it('autoEnableWorkspaceDb：失败抛 Error（供 createSpace 降级）', async () => {
+    handler = createHandler(job({ status: 'failed', stage: 'preflight', lastError: '预检失败', finishedAt: 2 }));
+    const t = makeIo();
+    const ctx: Ctx = { base, json: false, agentId: 'test', io: t.io };
+    await expect(autoEnableWorkspaceDb(ctx, 'ws1')).rejects.toThrow(/自动启用工作区库失败/);
+  });
+
+  it('autoEnable 失败：登记仍成功，stderr 给出可补做的 enable 命令', async () => {
+    handler = createHandler(job({ status: 'failed', stage: 'preflight', lastError: '目标库已存在', finishedAt: 2 }));
+    const t = makeIo();
+    const ctx: Ctx = { base, json: false, agentId: 'test', io: t.io };
+    await createSpace(ctx, { name: '新区', path: 'D:/ws/new' });
+    expect(t.out()).toContain('已创建工作空间: ws1 新区');
+    expect(t.err()).toContain('自动启用工作区库失败');
+    expect(t.err()).toContain('kb workspace-db enable --all');
   });
 });

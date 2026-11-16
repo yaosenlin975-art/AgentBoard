@@ -4,6 +4,7 @@ import type { KnowledgePage, KnowledgeRevision } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { MarkdownView } from '../../lib/markdown';
 import { KnowledgeImageComposer } from './KnowledgeImageComposer';
+import { KnowledgeBodyView } from './knowledgeEmbed';
 import { Badge, type BadgeTone } from '../ui/Badge';
 import { BUTTON_DANGER, BUTTON_PRIMARY, BUTTON_SECONDARY, FIELD_CLASS } from '../ui/buttonStyles';
 import { downloadKnowledgeMarkdown } from '../../lib/knowledgeExport';
@@ -515,7 +516,8 @@ export function KnowledgePageDetail({ pageId, scope, workspaceId, onChanged, onV
         「来源与证据」「归档/历史」共用同一条左边线），宽度上限在原 88ch 基础上 +100px；
         外层 min(...,100%) 保证窄屏不横向溢出 */}
     <div data-testid="knowledge-body" className="mr-auto mt-3 w-full max-w-[min(calc(88ch+100px),100%)] text-sm text-ink">
-      <MarkdownView>{p.body_md}</MarkdownView>
+      {/* P2-03：嵌入渲染（![[页]] 嵌入块 / ![[图片]] 附件图）；无嵌入语法时与 MarkdownView 等价 */}
+      <KnowledgeBodyView body={p.body_md} scope={scope} workspaceId={workspaceId} />
     </div>
 
     {/* KB-IMG-2：正文编辑 + 图片（粘贴/拖拽/按钮）压缩上传，插入到光标处 */}

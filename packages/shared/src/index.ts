@@ -8,3 +8,4 @@ export * from './proxyEnv.js';
 export * from './domain.js';
 export * from './workspaceLocalize.js';
 export * from './boardViews.js';
+export * from './knowledgeFile.js';

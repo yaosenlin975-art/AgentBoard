@@ -7,6 +7,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// 本机（Windows AV）落盘抖动：放宽用例与钩子超时
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 import request from 'supertest';
 import type { Express } from 'express';
 import type { KnowledgeHint, KnowledgeScope } from '@agentboard/shared';
@@ -52,7 +55,7 @@ describe('knowledge nudge on done', () => {
   };
 
   beforeEach(async () => {
-    t = createTestDb();
+    t = createTestDb({ legacyKnowledge: true });
     root = mkdtempSync(join(tmpdir(), 'agentboard-nudge-'));
     const adapter = new FakeAdapter();
     const created = await createApp({

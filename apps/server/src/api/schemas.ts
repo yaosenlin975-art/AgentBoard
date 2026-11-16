@@ -496,17 +496,6 @@ export const approvalDecisionSchema = z.object({
  * PATCH /api/settings：端口 / DB 路径 / 并发上限全可选，至少提供一个；
  * 未知键跟随项目 schema 惯例忽略（zod 默认 strip）。
  */
-/**
- * DB-2B：迁移编排请求体。
- * target_db_path 是目标库文件全路径（目录不存在会创建）；overwrite 覆盖同名目标库。
- */
-export const dbMigrateSchema = z
-  .object({
-    target_db_path: z.string().trim().min(1, 'target_db_path 不能为空'),
-    overwrite: z.boolean().optional(),
-  })
-  .strict();
-
 /** STORE-2a/3a：工作区库下沉（localize）请求体；字段名与 packages/shared 的 WorkspaceLocalizeRequest 同源 */
 export const workspaceLocalizeSchema = z
   .object({
@@ -542,6 +531,8 @@ export const transferIssueSchema = z
   })
   .strict();
 
+/** P1-01：dbPath / db_path 已从可写设置下线（中心库只读默认，仅 AGENTBOARD_DB env 可覆盖）。
+ *  .strict() 保证这两个（及任何未识别）字段被拒而非被静默剥离，PATCH 返回 400 VALIDATION_ERROR。 */
 export const patchSettingsSchema = z
   .object({
     port: z
@@ -550,9 +541,6 @@ export const patchSettingsSchema = z
       .min(1, '端口必须为 1-65535 的整数')
       .max(65535, '端口必须为 1-65535 的整数')
       .optional(),
-    dbPath: z.string().trim().min(1, 'dbPath 不能为空').optional(),
-    // DB-1：对外规范名 db_path（与 dbPath 等价；两个都传且不一致 → 400，避免静默取一个）
-    db_path: z.string().trim().min(1, 'db_path 不能为空').optional(),
     maxConcurrentTurns: z.number().int('并发上限必须为 ≥1 的整数').min(1, '并发上限必须为 ≥1 的整数').optional(),
     attachmentQuotaBytes: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
     attachmentStagedTtlMs: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -563,6 +551,7 @@ export const patchSettingsSchema = z
     // 存在性/能力位/清单校验在 routes 层，zod 只管形状与长度）
     cliDefaultModels: z.record(z.string(), z.string().trim().max(100, '模型名长度不能超过 100')).optional(),
   })
+  .strict()
   .refine((v) => Object.keys(v).length > 0, { message: '至少提供一个更新字段' });
 
 /** SKILLS-SYNC：只收目标 id 与覆盖策略，路径一律由服务端枚举（杜绝任意路径写入） */

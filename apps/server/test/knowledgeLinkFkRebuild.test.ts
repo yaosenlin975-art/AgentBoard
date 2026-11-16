@@ -34,7 +34,7 @@ const evidence = [{ source_id: 's', locator: 'issue:1' }];
 
 describe('knowledge_link 外键松绑迁移（STORE-4c）', () => {
   it('newDbCreatesRelaxedSchemaDirectly and rerun is no-op', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     try {
       expect(tableSql(t.db)).not.toMatch(/target_page_id\s+TEXT\s+REFERENCES/i);
       expect(tableSql(t.db)).toMatch(/source_page_id TEXT NOT NULL REFERENCES/);
@@ -46,7 +46,7 @@ describe('knowledge_link 外键松绑迁移（STORE-4c）', () => {
   });
 
   it('rebuildsLegacyTablePreservingRows and removes target fk', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     try {
       const page = createKnowledgePage(t.db, { domain: 'knowledge', scope: 'common', slug: 'src', title: '源页', body_md: '正文', actor: 'tester', sources, evidence });
       const target = createKnowledgePage(t.db, { domain: 'knowledge', scope: 'common', slug: 'tgt', title: '目标页', body_md: '正文', actor: 'tester', sources, evidence });
@@ -83,7 +83,7 @@ describe('knowledge_link 外键松绑迁移（STORE-4c）', () => {
   });
 
   it('relaxedSchemaAcceptsCrossDbDanglingTarget while source fk and cascade remain', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     try {
       const page = createKnowledgePage(t.db, { domain: 'knowledge', scope: 'common', slug: 'src', title: '源页', body_md: '正文', actor: 'tester', sources, evidence });
       // 目标 id 属于另一个库（本库无此页）——老外键会拒，松绑后允许（读时解析兜底）

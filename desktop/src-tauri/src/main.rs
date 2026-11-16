@@ -10,7 +10,12 @@
 //! Windows 保留 `decorations(false)` 全自绘 ─□×，macOS 走原生红绿灯 overlay（`TitleBarStyle::Overlay`
 //! + `hidden_title`），页面侧按壳注入的 `window.__AGENTBOARD_SHELL__` 隐藏自绘三键。
 
+// release 用窗口子系统：不带此项时 exe 是 console 子系统，双击会先弹一个控制台黑窗。
+// debug 保留控制台，排障时 stdout/stderr 可见。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod autostart;
+mod diagnostics;
 mod server_process;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,13 +28,40 @@ use tauri::menu::{
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
+use server_process::ServerHandle;
+
 /// 主窗口 label：托盘 / 菜单 / 单例 / 重建都按这一个 key 找窗口。
 const MAIN_WINDOW: &str = "main";
 
-/// 托盘 id：菜单状态需要随启动结果变化，「停止服务」要按占用情况改写文案/可用性，得靠它回取托盘。
+/// 托盘 id：托盘句柄在 setup 里 `mem::forget`（必须活到进程结束），
+/// 需要反查时统一用 `app.tray_by_id(TRAY_ID)`；菜单状态需要随启动结果变化时也靠它回取托盘。
 const TRAY_ID: &str = "main-tray";
 
-use server_process::ServerHandle;
+/// 在托盘上给一条可见反馈（不新增权限：走 tray tooltip + 系统通知）。
+///
+/// 用途有两处：退出时告知「正在停止服务…」、第二实例被拦时告知「已切到现有窗口」。
+/// 两者都是「窗口已经消失/被抢焦点，用户需要一句解释」的场景。
+///
+/// 实现取舍：
+/// - **先改 tooltip**：无条件生效，不依赖 Windows 通知中心设置，鼠标悬停托盘即可读到；
+/// - **再发系统通知**：`tauri-plugin-notification` 的 Rust 侧 `show()` 在桌面端不需运行时授权
+///   （capability 只约束 webview 的 IPC 调用），发送失败（被系统勿扰/策略禁用）时静默忽略，
+///   不能让提示失败影响退出流程。
+fn notify_user(app: &AppHandle, title: &str, body: &str) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(format!("AgentBoard — {body}")));
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// 恢复托盘默认 tooltip（退出流程被取消或提示过期时用）。
+fn reset_tray_tooltip(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some("AgentBoard"));
+    }
+}
+
 
 /// 壳全局状态：启动结果、server 句柄、退出标记。
 struct ShellState {
@@ -102,7 +134,8 @@ fn start_server(app: AppHandle) {
                 if state.quitting.load(Ordering::SeqCst) {
                     // 退出与启动竞态：用户已点退出，刚拉起的 server 必须立刻停掉。
                     let mut handle = handle;
-                    let _ = handle.stop();
+                    let outcome = handle.stop();
+                    eprintln!("停服结果（退出竞态）：{outcome:?}");
                 } else {
                     *state.server.lock().unwrap() = Some(handle);
                 }
@@ -122,11 +155,25 @@ fn start_server(app: AppHandle) {
     });
 }
 
-/// 停服收尾（幂等）：先隐藏窗口，再终止壳自己拉起的 server 并确认 `server.lock` 释放。
+/// 停服收尾（幂等）：先给可见反馈，再隐藏窗口，然后终止壳自己拉起的 server 并确认 `server.lock` 释放。
+///
+/// **幂等性（D7-4 硬约束，不要「优化」掉）**：`RunEvent::Exit` 会二次调用本函数。
+/// 第二次进来时 `server.lock().take()` 已是 `None`，`stop()` 不再执行，无副作用；
+/// 托盘「退出」路径先 `shutdown` 再 `app.exit(0)`，后者触发 `RunEvent::Exit`，正是这条二次调用。
+/// 去掉这次的兜底会导致「非托盘路径导致的退出（系统关机、进程被要求退出）」不停服。
+///
+/// **为什么先给反馈**：`window.hide()` 让窗口立刻消失，但后台线程还要等停服
+/// （等 child ≤8s + 等端口 ≤5s + 删锁 ≤3s，常态约 1s）。用户以为已关完，
+/// 去任务管理器强杀 → 制造孤儿进程与残留锁。所以先告知「正在停止服务…」。
 fn shutdown(app: &AppHandle) {
     let state = app.state::<ShellState>();
     state.quitting.store(true, Ordering::SeqCst);
-    if let Some(window) = app.get_webview_window("main") {
+    // 只在真的还有服务要停时才提示，避免二次 shutdown 再弹一次。
+    let has_server = state.server.lock().map(|slot| slot.is_some()).unwrap_or(false);
+    if has_server {
+        notify_user(app, "AgentBoard", "正在停止服务…");
+    }
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         let _ = window.hide();
     }
     let handle = {
@@ -135,8 +182,11 @@ fn shutdown(app: &AppHandle) {
     };
     if let Some(mut handle) = handle {
         // 外部实例（child=None）不终止；壳只停自己拉起的进程。
-        let _ = handle.stop();
+        // 返回三种结果：停了自己的子进程 / 停了 restart 后的接管者 / 什么都没停。
+        let outcome = handle.stop();
+        eprintln!("停服结果：{outcome:?}");
     }
+    reset_tray_tooltip(app);
 }
 
 /// E2（MAC-TRIAL-E2）：系统通知会话去重状态。首轮取数只建基线（不弹通知，避免应用启动把
@@ -606,7 +656,10 @@ fn stop_service(app: &AppHandle) {
     let port = state.port;
     let app = app.clone();
     std::thread::spawn(move || {
-        let stopped = handle.stop();
+        let outcome = handle.stop();
+        diagnostics::info(format!("停服结果（托盘「停止服务」）：{outcome:?}"));
+        // StopOutcome（D7）：停了子进程/接管者都算「停干净」；NothingToStop 走未完成文案（理论上到不了这里）。
+        let stopped = !matches!(outcome, server_process::StopOutcome::NothingToStop);
         let message = if stopped {
             format!(
                 "服务已停止（端口 {port}）：壳已终止自己拉起的 server，端口与 server.lock 已释放。\n重新启动：托盘「退出」后重新打开 AgentBoard。"
@@ -867,6 +920,37 @@ fn tray_icon_bytes(_app: &AppHandle) -> &'static [u8] {
     include_bytes!("../icons/tray.ico")
 }
 
+/// 编译期平台标识：前端顶栏据此决定形态（Windows 右侧三键 / macOS 左侧三圆点）。
+///
+/// 为什么由壳注入、不靠 UA 嗅探：
+/// - wry 只在**显式** `with_user_agent` 时改 UA（Windows `SetUserAgent`、macOS `setCustomUserAgent`），
+///   本项目没有设置，所以两边 UA 都是系统 WebView 默认值，**由系统版本决定**；
+/// - macOS WKWebView 的 UA 虽通常含 `Macintosh; Intel Mac OS X`，但该串受系统与
+///   `applicationNameForUserAgent` 影响，不是稳定契约；
+/// - `cfg!(target_os)` 是编译期事实，零猜测。
+///
+/// 前端读取优先级：`window.__AB_PLATFORM_OVERRIDE__` → `userAgentData.platform` → UA 正则 → 兜底 windows。
+/// 注入的就是第一优先级的那个值。
+fn platform_id() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "windows"
+    }
+}
+
+/// 注入脚本：在任何页面脚本执行前设置 `window.__AB_PLATFORM_OVERRIDE__`。
+///
+/// 用 initialization script 而不是 `eval`：后者要等页面加载完才能跑，前端首屏渲染时
+/// 读到的仍是 `undefined`，会先按 UA 兜底渲染一次再跳变。初始化脚本在文档解析前执行，
+/// 首屏即正确。
+fn platform_init_script() -> String {
+    format!(
+        "Object.defineProperty(window, '__AB_PLATFORM_OVERRIDE__', {{ value: '{}', writable: false, configurable: false }});",
+        platform_id()
+    )
+}
+
 /// 建主窗口并挂关窗隐藏/页面加载回调；首次启动与重建共用，保证两条路径窗口行为一致。
 fn build_main_window(
     app: &AppHandle,
@@ -881,12 +965,17 @@ fn build_main_window(
         .inner_size(1280.0, 860.0)
         .min_inner_size(900.0, 600.0)
         // B06：窗口外观按平台分叉——
-        // Windows：去掉系统原生标题栏，改由页面自绘（WindowTitleBar / 启动页 winbar），三键行为保持一致；
+        // Windows：去掉系统原生标题栏（`decorations(false)`，Borderless 不含 `Titled`，原生按钮不渲染），
+        //          改由页面自绘（WindowTitleBar / 启动页 winbar），三键行为保持一致；
         // macOS：保留原生装饰并把标题栏设为 overlay（红绿灯浮在内容左上角、标题隐藏），
         //        页面侧据初始化脚本注入的 `nativeTitleBar` 隐藏自绘 ─□×，避免双份控件。
         .decorations(chrome.decorations)
         // 页面侧判断依据：由壳注入，不靠 UA 嗅探（WKWebView/WebView2 的 UA 会随系统版本漂移）。
         .initialization_script(shell_init_script(std::env::consts::OS, chrome))
+        // D16：平台标识注入（`window.__AB_PLATFORM_OVERRIDE__`，页面 D15 平台分支的第一优先级）；
+        // 首次创建与销毁后重建都走这里，两条路径一致。与 B06 的 `__AGENTBOARD_SHELL__` 并存：
+        // `nativeTitleBar=true` 优先于平台分支（见 WindowTitleBar 两级判定）。
+        .initialization_script(platform_init_script())
         .center()
         .visible(visible)
         .on_page_load(|webview, payload| {
@@ -1001,9 +1090,29 @@ fn main() {
     let builder = tauri::Builder::default()
         // 单例必须最先注册：第二个实例在插件初始化阶段就退出，不会进入 setup（也就不会拉起第二个 server）。
         // macOS 预留（DESKTOP-3）：同一插件在 mac 上同样可用，无需平台私有实现。
+        //
+        // 【硬约束·禁止启用 semver feature（D7-4）】
+        // 插件在 Windows 上用命名互斥体实现，当前名字是 `{identifier}-sim`
+        // （见 tauri-plugin-single-instance 的 platform_impl/windows.rs:90）。
+        //
+        // 一旦为此插件启用 `semver` feature，名字会插入 semver 兼容串（windows.rs:82-86）：
+        //   `{identifier}_{semver_compat_string}-sim`
+        // 其中 semver_compat_string 只保留主/次版本（semver_compat.rs）：
+        //   1.x.y → "1_x_x"，0.2.x → "0_2_x"，0.0.z → "0_0_z"（含预发布则整串替换下划线）。
+        // 后果：**次版本不同即互斥失效** —— 例如 0.1.0 与 0.2.0 会各自成功创建一个实例，
+        // 绕过「共用 %APPDATA%\AgentBoard 与 server.lock」的保护 → 同库双写 + 端口冲突。
+        // 数据损坏风险，绝不可开。
+        // 若将来确实需要多版本并存，必须同时隔离 APPDATA（或 AGENTBOARD_DB）、端口与互斥体名，
+        // 那是产品决策而非改一行 feature。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // 第二实例：不新建窗口，只把已有窗口唤到前台（与托盘/菜单同一函数）。
+            // 再给一句说明：便携包与安装版共用 identifier 与数据目录，用户可能以为自己点开了另一份。
             wake_main_window(app);
+            notify_user(
+                app,
+                "AgentBoard 已在运行",
+                "已切换到正在运行的窗口（便携包与安装版共用同一份数据）",
+            );
         }))
         // DEC-7：系统通知插件。Tauri v2 的插件必须在 builder 上注册，仅给 capabilities 权限不够；
         // 权限范围见 capabilities/decision-notifications.json（只覆盖 main 窗口与 127.0.0.1:8787）。
@@ -1018,6 +1127,32 @@ fn main() {
             autostart::autostart_set
         ])
         .setup(|app| {
+            // D14：先初始化日志，后面的启动序列才有地方落盘。
+            let config_dir = server_process::config_dir_for_logs();
+            diagnostics::init(&config_dir);
+
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "(unknown)".to_string());
+            let layout = server_process::describe_layout();
+            diagnostics::info(format!(
+                "==== 启动 mode={} platform={} version={} ====",
+                if cfg!(debug_assertions) { "dev" } else { "packaged" },
+                platform_id(),
+                app.package_info().version
+            ));
+            diagnostics::info(format!("exe_dir={exe_dir}"));
+            diagnostics::info(format!("config_dir={}", config_dir.display()));
+            diagnostics::info(format!("日志={}", diagnostics::log_path(&config_dir).display()));
+            diagnostics::info(format!("layout={layout}"));
+            // 前端平台判定应与壳一致：记下注入值，验收可直接比对。
+            diagnostics::info(format!(
+                "platform_override={}（initialization_script 注入 window.__AB_PLATFORM_OVERRIDE__）",
+                platform_id()
+            ));
+
             app.manage(ShellState {
                 boot: BootState {
                     page_loaded: AtomicBool::new(false),
@@ -1033,6 +1168,11 @@ fn main() {
                 // DESKTOP-AUTOSTART：登录自启拉起的实例只驻留托盘，不抢前台。
                 autostart: has_flag("--autostart"),
             });
+            let port = app.state::<ShellState>().port;
+            diagnostics::info(format!(
+                "port={port}（来源 {}）",
+                if server_process::port_from_config() { "config.json" } else { "默认 8787（config.json 缺失/非法）" }
+            ));
 
             // B05：macOS 应用菜单中文化。所有平台都构造（Windows 编译期校验），
             // 仅 mac 挂为菜单栏应用菜单；Windows 无菜单栏，构造后丢弃不挂（行为不变）。
@@ -1133,6 +1273,13 @@ fn main() {
         .expect("构建 AgentBoard 桌面壳失败")
         .run(|app, event| {
             // 兜底：任何非托盘路径导致的退出，也先停服再走。
+            //
+            // 【硬约束·不要删这次调用（D7-4）】托盘「退出」路径是先 `shutdown` 再 `app.exit(0)`，
+            // 后者会在这里再触发一次 `shutdown`。看着像重复，实际必须保留：
+            //   - 托盘路径：第一次已经 `server.take()` 拿走句柄并停服，第二次 `take()` 得到 None，
+            //     不会重复 kill，也不会重复弹「正在停止服务…」（有 `has_server` 判据）；
+            //   - 非托盘路径（系统关机、会话结束、外部要求退出）：只有这一次调用能停服，
+            //     删掉就会留下孤儿 node 进程与陈旧 server.lock。
             if let RunEvent::Exit = event {
                 shutdown(app);
             }
@@ -1142,8 +1289,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        open_decision_count, poll_until, review_issue_count, service_menu_label, shell_init_script,
-        wake_steps, window_chrome, WakeStep, WindowPhase, BOARD_VIEW_JS,
+        open_decision_count, platform_id, platform_init_script, poll_until,
+        review_issue_count, service_menu_label, shell_init_script, wake_steps, window_chrome,
+        WakeStep, WindowPhase, BOARD_VIEW_JS,
     };
 
     #[test]
@@ -1181,6 +1329,46 @@ mod tests {
     fn poll_until_times_out_when_never_settled() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
         assert!(!poll_until(deadline, || false));
+    }
+
+    // ---- D16：平台标识注入 ----
+
+    #[test]
+    fn platform_id_matches_target_os() {
+        // 编译期事实：Windows 构建必须是 "windows"，macOS 构建必须是 "macos"。
+        // 同一份断言在两种目标上都成立（条件断言）。
+        #[cfg(target_os = "windows")]
+        assert_eq!(platform_id(), "windows");
+        #[cfg(target_os = "macos")]
+        assert_eq!(platform_id(), "macos");
+        // 值域受限：前端只认这两个字符串
+        assert!(matches!(platform_id(), "windows" | "macos"));
+    }
+
+    #[test]
+    fn init_script_sets_override_with_platform_value() {
+        let script = platform_init_script();
+        // 必须设置前端读的那个键，且值等于 platform_id()
+        assert!(
+            script.contains("__AB_PLATFORM_OVERRIDE__"),
+            "脚本应设置 __AB_PLATFORM_OVERRIDE__，实际 {script}"
+        );
+        assert!(
+            script.contains(&format!("'{}'", platform_id())),
+            "脚本值应与 platform_id() 一致，实际 {script}"
+        );
+        // 只读 + 不可配置：防止页面脚本改掉壳注入的事实
+        assert!(script.contains("writable: false"), "实际 {script}");
+        assert!(script.contains("configurable: false"), "实际 {script}");
+    }
+
+    #[test]
+    fn init_script_is_valid_js_shape() {
+        // 只做形态断言：单行、以分号结尾、无换行（避免 Tauri 注入时被截断）
+        let script = platform_init_script();
+        assert!(!script.contains('\n'), "注入脚本不应含换行");
+        assert!(script.trim_end().ends_with(';'), "应以分号结尾，实际 {script}");
+        assert!(script.starts_with("Object.defineProperty("), "实际 {script}");
     }
 
     #[test]

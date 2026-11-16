@@ -118,9 +118,26 @@ describe('对话框行为', () => {
     upload('# 新页标题\n正文内容');
     await waitFor(() => expect(screen.getByTestId('kb-import-meta')).toBeInTheDocument());
     expect((screen.getByTestId('kb-import-title') as HTMLInputElement).value).toBe('新页标题');
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(['p-new']));
     expect(post).toHaveBeenCalledWith('/api/knowledge/pages/import', expect.objectContaining({ format: 'md' }));
+  });
+
+  it('P2-04（KB-CR-1）：未选 domain 时禁止提交；选定后请求体带 domain', async () => {
+    const post = vi.spyOn(client.api, 'post' as never).mockResolvedValue({ pages: [{ id: 'p-new' }] } as never);
+    render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
+    upload('# 标题\n正文');
+    await waitFor(() => expect(screen.getByTestId('kb-import-meta')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('kb-import-submit'));
+    expect(await screen.findByTestId('kb-import-error')).toHaveTextContent('domain');
+    expect(post).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'infra' } });
+    fireEvent.click(screen.getByTestId('kb-import-submit'));
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    const body = (post.mock.calls[0] as unknown as [string, { domain: string }])[1];
+    expect(body.domain).toBe('infra');
   });
 
   it('IMPORT-LIMIT-W：大文件（>2MB）先显示「解析中…」，解析完成后进入预览', async () => {
@@ -144,6 +161,8 @@ describe('对话框行为', () => {
     await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('kb-import-cancel-draft-1'));
     expect(screen.getByTestId('kb-import-item-draft-1').getAttribute('data-cancelled')).toBe('true');
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
     await waitFor(() => expect(post).toHaveBeenCalled());
     const body = (post.mock.calls[0] as unknown as [string, { content: string }])[1];
@@ -158,6 +177,8 @@ describe('对话框行为', () => {
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
     upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }, { title: 'C', body_md: '3' }]), 'x.json');
     await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
 
     const results = await screen.findByTestId('kb-import-results');
@@ -176,6 +197,8 @@ describe('对话框行为', () => {
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
     upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }]), 'x.json');
     await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
     expect(await screen.findByTestId('kb-import-summary')).toHaveTextContent('成功 2 / 失败 0');
   });
@@ -185,6 +208,8 @@ describe('对话框行为', () => {
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
     upload(JSON.stringify([{ title: 'A', body_md: '1' }, { title: 'B', body_md: '2' }]), 'x.json');
     await waitFor(() => expect(screen.getByTestId('kb-import-items')).toBeInTheDocument());
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
     expect(await screen.findByTestId('kb-import-summary')).toHaveTextContent('成功 0 / 失败 2');
     expect(screen.getByTestId('kb-import-result-row-draft-0').getAttribute('data-status')).toBe('failed');
@@ -200,6 +225,8 @@ describe('对话框行为', () => {
     render(<KnowledgeImportDialog open onClose={() => {}} onImported={() => {}} />);
     upload('# dup\nbody');
     await waitFor(() => expect(screen.getByTestId('kb-import-title')).toBeInTheDocument());
+    // P2-04（KB-CR-1）：domain 必填，提交前先选领域
+    fireEvent.change(screen.getByTestId('kb-import-domain'), { target: { value: 'knowledge' } });
     fireEvent.click(screen.getByTestId('kb-import-submit'));
     // KBIMP-2B 起失败按条呈现（不再是整批 errorView）：提醒行仍带两条建议
     const message = await screen.findByTestId('kb-import-result-message-draft-0');

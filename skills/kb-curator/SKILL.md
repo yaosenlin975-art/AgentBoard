@@ -93,10 +93,10 @@ Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --wor
 ```powershell
 kb knowledge search "<关键词>" --scope workspace --workspace <id>
 kb knowledge show <page-id> --scope workspace --workspace <id>
-kb knowledge link <page-id>          # 对外引用一律 knowledge:<uuid>
+kb knowledge link <page-id>          # 默认输出 [[wikilink]]（主键）；跨改名稳定引用用 --format token（knowledge:<uuid>）
 ```
 
-查找结果要能落到正文片段：先 `search` 命中 id/title，再 `show` 并引用具体章节；不要只回一个 slug 或文件路径。
+查找结果要能落到正文片段：先 `search` 命中 id/title，再 `show` 并引用具体章节；不要只回一个 slug 或文件路径。引用口径同 `using-agentboard` 的「知识卡链接（KCLINK）」节：正文引用写 `[[slug]]`，禁止裸文件路径。
 
 ## 9. 命令映射
 
@@ -104,10 +104,12 @@ kb knowledge link <page-id>          # 对外引用一律 knowledge:<uuid>
 | --- | --- |
 | 判重/找主题 | `kb knowledge search` / `list` / `resolve` |
 | 新建主题页 | `kb knowledge create`（`--domain`、`--category`、`--sources-file`、`--evidence-file`、`--stdin`） |
-| 追加来源/正文 | `kb knowledge revise --expected-revision` |
+| 追加来源/正文 | `kb knowledge revise --expected-revision`（CAS 比对 front matter `revision`） |
 | 归档重复页 | `kb knowledge action <id> archive --expected-revision` |
 | 读正文 | `kb knowledge show <id>` |
-| 对外引用 | `kb knowledge link <id>` → `knowledge:<uuid>` |
+| 对外引用 | `kb knowledge link <id>` → 默认 `[[wikilink]]`；跨改名稳定引用 `--format token` → `knowledge:<uuid>` |
+| 改 slug | `kb knowledge rename <id> <new-slug> --expected-revision`（全库重写 `[[old]]→[[new]]`，id 不变） |
+| 旧库迁移 | `kb knowledge export-legacy`（一次性；旧库只读，manifest sha256 兜底） |
 
 ## 10. 质量红线
 

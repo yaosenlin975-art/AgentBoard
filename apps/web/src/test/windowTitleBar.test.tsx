@@ -1,33 +1,220 @@
 /**
- * B06（MAC-TRIAL）：壳注入 `window.__AGENTBOARD_SHELL__.nativeTitleBar` 的两平台分支。
- * Windows / 旧壳（无字段或 false）→ 渲染自绘 ─□× 三键；
- * macOS（true，原生红绿灯 overlay）→ 隐藏自绘三键、data-native-titlebar 标记为 true。
+ * 顶栏平台自适应（B06 + D15 合并口径）：
+ *
+ * 1. D15 `detectPlatform()` 的优先级（override → userAgentData → UA → 兜底 windows）与 DEV-only 预览；
+ *    两平台分支的窗口控制顺序 —— mac 左起 close/minimize/maximize，windows 仍是 minimize/maximize/close；
+ * 2. B06（MAC-TRIAL）：壳注入 `window.__AGENTBOARD_SHELL__.nativeTitleBar=true`（macOS 原生红绿灯 overlay）
+ *    优先于平台分支 → 页面不渲染任何自绘窗口控件、data-native-titlebar=true。
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
-import { WindowTitleBar } from '../components/shell/WindowTitleBar';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { WindowTitleBar, detectPlatform } from '../components/shell/WindowTitleBar';
 
-function installShellRuntime(shell: Record<string, unknown> | undefined): void {
-  window.__TAURI_INTERNALS__ = {
-    metadata: { currentWindow: { label: 'main' } },
-    invoke: () => Promise.resolve(undefined),
-  } as unknown as NonNullable<typeof window.__TAURI_INTERNALS__>;
-  if (shell === undefined) {
-    delete window.__AGENTBOARD_SHELL__;
+const MAC_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/17.0';
+const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const LINUX_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+type GlobalWithPlatform = {
+  __TAURI_INTERNALS__?: { invoke: ReturnType<typeof vi.fn> };
+  __AB_PLATFORM_OVERRIDE__?: string;
+  __AGENTBOARD_SHELL__?: Record<string, unknown>;
+};
+
+const globals = window as unknown as GlobalWithPlatform;
+
+function setTauriRuntime(on: boolean): void {
+  if (on) {
+    globals.__TAURI_INTERNALS__ = { invoke: vi.fn(async () => undefined) };
   } else {
-    window.__AGENTBOARD_SHELL__ = shell as typeof window.__AGENTBOARD_SHELL__;
+    delete globals.__TAURI_INTERNALS__;
   }
 }
 
-afterEach(() => {
+function setUserAgent(ua: string): void {
+  Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: ua });
+}
+
+function setUserAgentData(platform: string | null): void {
+  Object.defineProperty(window.navigator, 'userAgentData', {
+    configurable: true,
+    value: platform === null ? undefined : { platform },
+  });
+}
+
+function setOverride(value: string | null): void {
+  if (value === null) {
+    delete globals.__AB_PLATFORM_OVERRIDE__;
+  } else {
+    globals.__AB_PLATFORM_OVERRIDE__ = value;
+  }
+}
+
+function setShellChrome(shell: Record<string, unknown> | null): void {
+  if (shell === null) {
+    delete globals.__AGENTBOARD_SHELL__;
+  } else {
+    globals.__AGENTBOARD_SHELL__ = shell;
+  }
+}
+
+function setSearch(search: string): void {
+  window.history.replaceState(null, '', `/${search}`);
+}
+
+/** 顶栏内按钮的无障碍名序列：既是顺序断言，也是两分支形态的区分点 */
+function controlLabels(): string[] {
+  const header = screen.getByTestId('window-titlebar');
+  return Array.from(header.querySelectorAll('button')).map((node) => node.getAttribute('aria-label') ?? '');
+}
+
+beforeEach(() => {
   cleanup();
-  delete window.__TAURI_INTERNALS__;
-  delete window.__AGENTBOARD_SHELL__;
+  setTauriRuntime(true);
+  setOverride(null);
+  setShellChrome(null);
+  setUserAgentData(null);
+  setUserAgent(WINDOWS_UA);
+  setSearch('');
 });
 
-describe('WindowTitleBar 平台分叉（B06）', () => {
+afterEach(() => {
+  cleanup();
+  setTauriRuntime(false);
+  setOverride(null);
+  setShellChrome(null);
+  setUserAgentData(null);
+  setSearch('');
+  vi.unstubAllEnvs();
+});
+
+describe('detectPlatform()', () => {
+  it('override 优先于 UA 与 userAgentData', () => {
+    setUserAgent(MAC_UA);
+    setUserAgentData('Windows');
+    setOverride('windows');
+    expect(detectPlatform()).toBe('windows');
+
+    setUserAgent(WINDOWS_UA);
+    setUserAgentData('macOS');
+    setOverride('macos');
+    expect(detectPlatform()).toBe('macos');
+  });
+
+  it('override 非法值被忽略，继续走后续判定', () => {
+    setUserAgent(MAC_UA);
+    setOverride('linux');
+    expect(detectPlatform()).toBe('macos');
+  });
+
+  it('override 优先于 ?platform 预览参数', () => {
+    setSearch('?platform=macos');
+    setOverride('windows');
+    expect(detectPlatform()).toBe('windows');
+  });
+
+  it('无 override 时用 userAgentData.platform', () => {
+    setUserAgent(WINDOWS_UA);
+    setUserAgentData('macOS');
+    expect(detectPlatform()).toBe('macos');
+  });
+
+  it('userAgentData 缺失或无法识别时回落到 UA 正则', () => {
+    setUserAgentData('');
+    setUserAgent(MAC_UA);
+    expect(detectPlatform()).toBe('macos');
+
+    setUserAgent(WINDOWS_UA);
+    expect(detectPlatform()).toBe('windows');
+  });
+
+  it('未知平台兜底 windows', () => {
+    setUserAgent(LINUX_UA);
+    setUserAgentData('Linux');
+    expect(detectPlatform()).toBe('windows');
+  });
+
+  it('?platform=macos 只在 DEV 生效', () => {
+    setSearch('?platform=macos');
+    expect(detectPlatform()).toBe('macos');
+
+    vi.stubEnv('DEV', false);
+    expect(detectPlatform()).toBe('windows');
+  });
+});
+
+/** 点击产生的窗口控制命令（排除挂载时同步最大化状态用的 is_maximized） */
+function controlCommands(): string[] {
+  const internals = (window as unknown as { __TAURI_INTERNALS__?: { invoke: ReturnType<typeof vi.fn> } })
+    .__TAURI_INTERNALS__;
+  return (internals?.invoke.mock.calls ?? [])
+    .map((call) => call[0] as string)
+    .filter((command) => command !== 'plugin:window|is_maximized');
+}
+
+describe('WindowTitleBar 平台分支（D15）', () => {
+  it('macOS：左侧三圆点，顺序 close → minimize → maximize', () => {
+    setUserAgent(MAC_UA);
+    render(<WindowTitleBar />);
+
+    expect(controlLabels()).toEqual(['关闭窗口', '最小化窗口', '最大化窗口']);
+    // 圆点容器在标题之前（视觉上左侧）
+    const header = screen.getByTestId('window-titlebar');
+    expect(header.firstElementChild?.querySelectorAll('button')).toHaveLength(3);
+    expect(header.textContent).toContain('AgentBoard');
+  });
+
+  it('Windows：右侧三键，顺序 minimize → maximize → close（无 mac 圆点组）', () => {
+    setUserAgent(WINDOWS_UA);
+    render(<WindowTitleBar />);
+
+    expect(controlLabels()).toEqual(['最小化窗口', '最大化窗口', '关闭窗口']);
+    const header = screen.getByTestId('window-titlebar');
+    // 左侧首个子节点是标题（A 图标 + 文字），不是控制按钮
+    expect(header.firstElementChild?.querySelectorAll('button')).toHaveLength(0);
+  });
+
+  it('macOS：圆点符号默认不可见，悬停该组才出现', () => {
+    setUserAgent(MAC_UA);
+    render(<WindowTitleBar />);
+    const dots = screen.getByTestId('window-titlebar').firstElementChild as HTMLElement;
+    expect(dots.className).toContain('group/dots');
+    for (const svg of Array.from(dots.querySelectorAll('svg'))) {
+      expect(svg.getAttribute('class')).toContain('opacity-0');
+      expect(svg.getAttribute('class')).toContain('group-hover/dots:opacity-100');
+    }
+  });
+
+  it('macOS：点击三圆点分别走 close / minimize / toggle_maximize', () => {
+    setUserAgent(MAC_UA);
+    render(<WindowTitleBar />);
+    for (const label of ['关闭窗口', '最小化窗口', '最大化窗口']) {
+      fireEvent.click(screen.getByLabelText(label));
+    }
+    expect(controlCommands()).toEqual(['plugin:window|close', 'plugin:window|minimize', 'plugin:window|toggle_maximize']);
+  });
+
+  it('Windows：点击三键仍是 minimize / toggle_maximize / close', () => {
+    setUserAgent(WINDOWS_UA);
+    render(<WindowTitleBar />);
+    for (const label of ['最小化窗口', '最大化窗口', '关闭窗口']) {
+      fireEvent.click(screen.getByLabelText(label));
+    }
+    expect(controlCommands()).toEqual(['plugin:window|minimize', 'plugin:window|toggle_maximize', 'plugin:window|close']);
+  });
+
+  it('拖拽区在标题与控制区之间，且控制按钮不参与拖拽区', () => {
+    setUserAgent(MAC_UA);
+    render(<WindowTitleBar />);
+    const header = screen.getByTestId('window-titlebar');
+    expect(header).toHaveAttribute('data-tauri-drag-region', 'deep');
+    const dragFill = header.querySelector('[aria-hidden="true"].flex-1');
+    expect(dragFill).not.toBeNull();
+  });
+});
+
+describe('WindowTitleBar 原生红绿灯分叉（B06）', () => {
   it('Windows / 旧壳（无 __AGENTBOARD_SHELL__）→ 渲染 ─□× 三键，data-native-titlebar=false', () => {
-    installShellRuntime(undefined);
+    setShellChrome(null);
     render(<WindowTitleBar />);
     const bar = screen.getByTestId('window-titlebar');
     expect(bar).toHaveAttribute('data-native-titlebar', 'false');
@@ -37,14 +224,15 @@ describe('WindowTitleBar 平台分叉（B06）', () => {
   });
 
   it('显式 nativeTitleBar=false → 与旧壳一致，三键仍在', () => {
-    installShellRuntime({ platform: 'windows', nativeTitleBar: false });
+    setShellChrome({ platform: 'windows', nativeTitleBar: false });
     render(<WindowTitleBar />);
     expect(screen.getByTestId('window-titlebar')).toHaveAttribute('data-native-titlebar', 'false');
     expect(screen.getAllByRole('button')).toHaveLength(3);
   });
 
-  it('macOS（nativeTitleBar=true）→ 不渲染自绘三键，data-native-titlebar=true', () => {
-    installShellRuntime({ platform: 'macos', nativeTitleBar: true });
+  it('macOS（nativeTitleBar=true）→ 不渲染自绘三键，data-native-titlebar=true（优先于平台分支）', () => {
+    setUserAgent(MAC_UA);
+    setShellChrome({ platform: 'macos', nativeTitleBar: true });
     render(<WindowTitleBar />);
     const bar = screen.getByTestId('window-titlebar');
     expect(bar).toHaveAttribute('data-native-titlebar', 'true');

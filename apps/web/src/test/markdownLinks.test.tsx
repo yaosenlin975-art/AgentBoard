@@ -230,3 +230,52 @@ describe('未知 scheme 与普通外链', () => {
     await waitFor(() => expect(screen.getByTestId('md-link-log-log-1')).toHaveAttribute('data-link-state', 'ok'));
   });
 });
+
+describe('P2-04：[[wikilink]] 双 scheme 渲染（US-2）', () => {
+  it('[[slug]] 渲染为可点知识链接，点击打开目标页', async () => {
+    server.use(http.get('/api/knowledge/resolve', () => HttpResponse.json(resolvedRef())));
+    renderMarkdown(`见 [[bom-guard]]`);
+    await screen.findByTestId('md-link-knowledge-bom-guard');
+    await waitFor(() => expect(screen.getByTestId('md-link-knowledge-bom-guard')).toHaveAttribute('data-link-state', 'ok'));
+    expect(screen.getByTestId('md-link-knowledge-bom-guard').textContent).toContain('bom-guard');
+
+    await userEvent.click(screen.getByTestId('md-link-knowledge-bom-guard'));
+    expect(usePanelStore.getState()).toMatchObject({
+      view: 'ref',
+      refPanel: { kind: 'knowledge', id: 'kp-common', title: 'BOM 守卫' },
+    });
+  });
+
+  it('[[slug|别名]] 显示别名并跳 slug；[[slug#h]] 归一到页级；resolve 歧义 → 灰文本', async () => {
+    server.use(http.get('/api/knowledge/resolve', ({ request }) => {
+      const ref = new URL(request.url).searchParams.get('ref');
+      if (ref === 'alias-page') return HttpResponse.json(resolvedRef({ id: 'kp-alias', title: '别名页' }));
+      return new HttpResponse(null, { status: 409 });
+    }));
+    renderMarkdown(`一 [[alias-page|看这个]] 二 [[alias-page#章节]]`);
+    // 两个 wikilink 的 href 都归一到 knowledge:alias-page（heading 只展示）→ 同名 testid 两个元素
+    await waitFor(() => {
+      const nodes = screen.getAllByTestId('md-link-knowledge-alias-page');
+      expect(nodes).toHaveLength(2);
+      expect(nodes[0]).toHaveAttribute('data-link-state', 'ok');
+    });
+    expect(screen.getAllByTestId('md-link-knowledge-alias-page')[0]!.textContent).toContain('看这个');
+    await userEvent.click(screen.getAllByTestId('md-link-knowledge-alias-page')[0]!);
+    expect(usePanelStore.getState()).toMatchObject({ refPanel: { kind: 'knowledge', id: 'kp-alias' } });
+  });
+
+  it('代码块与行内代码里的 [[...]] 不转换', async () => {
+    renderMarkdown('行内 `[[not-a-link]]` 与：\n\n```\n[[still-not-a-link]]\n```');
+    expect(screen.queryByTestId('md-link-knowledge-not-a-link')).toBeNull();
+    expect(screen.queryByTestId('md-link-knowledge-still-not-a-link')).toBeNull();
+    await waitFor(() => expect(document.body.textContent).toContain('[[not-a-link]]'));
+    expect(document.body.textContent).toContain('[[still-not-a-link]]');
+  });
+
+  it('未命中 slug：resolve 404 → 灰文本降级（不静默打开错页）', async () => {
+    server.use(http.get('/api/knowledge/resolve', () => new HttpResponse(null, { status: 404 })));
+    renderMarkdown(`见 [[missing-page]]`);
+    const node = await screen.findByTestId('md-link-knowledge-missing-page');
+    await waitFor(() => expect(node).toHaveAttribute('data-link-state', 'denied'));
+  });
+});

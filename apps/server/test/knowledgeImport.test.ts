@@ -27,7 +27,9 @@ describe('knowledge import (KBIMP-1)', () => {
   beforeEach(async () => {
     t = createTestDb();
     const adapter = new FakeAdapter();
-    const created = await createApp({ db: t.db, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false });
+    // P2-01：公共 Docs 注入每用例固定临时目录（回调必须稳定，否则 POST 与 GET 会落在两个目录）
+    const commonDocs = mkdtempSync(join(tmpdir(), 'agentboard-kbimp-common-'));
+    const created = await createApp({ db: t.db, getAdapter: () => adapter, adapters: [adapter], refreshClisOnBoot: false, knowledgeDocsPaths: { commonDocsDir: () => commonDocs } });
     app = created.app;
     ws = createWorkspace(t.db, { name: '导入空间', path: mkdtempSync(join(tmpdir(), 'agentboard-kbimp-')) }).id;
   });
@@ -66,7 +68,7 @@ describe('knowledge import (KBIMP-1)', () => {
     const res = await post({ scope: 'workspace', workspace_id: ws, format: 'md', content, filename: 'snap.md' });
     expect(res.status).toBe(200);
     expect(res.body.page_commit).toMatchObject({ committed: false, skipped: true, commit: null });
-    expect(String(res.body.page_commit.reason)).toContain('批量导入不落每页快照');
+    expect(String(res.body.page_commit.reason)).toContain('文件事实源');
     // 端点保持不接线（本卡裁决）：导入页不产生快照文件；响应信号让调用方可区分「显式跳过」与「未接线」
     const workspace = getWorkspace(t.db, ws)!;
     expect(existsSync(knowledgePageSnapshotPath(workspace.path, res.body.pages[0].id))).toBe(false);
