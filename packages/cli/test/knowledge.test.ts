@@ -157,6 +157,33 @@ describe('knowledge CLI', () => {
     expect(stream.out.join('')).toBe('p1 [common] rev:2 缓存\n下一页：--offset 20\n');
   });
 
+  // 向后兼容护栏：新增查询参数只在用户显式要求时才发。
+  // 旧服务端的 query schema 是 strict，无条件带新键会让整个命令被 Unrecognized key 拒绝（连普通 list 都挂）。
+  it('list 不带 --invalid 时不得发送 invalid_only（旧服务兼容）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], next_offset: null })));
+    vi.stubGlobal('fetch', fetch);
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common'], io())).toBe(0);
+    const url = fetch.mock.calls.map(call => String(call[0])).find(candidate => candidate.includes('/api/knowledge/pages'));
+    expect(url).toBeDefined();
+    expect(url).not.toContain('invalid_only');
+  });
+
+  it('list --invalid 时才发送 invalid_only=true', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], next_offset: null, invalid_count: 1, invalid: [{ slug: 'bad', file_name: 'bad.md', issues: ['content_hash: 不符'] }] })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common', '--invalid'], stream)).toBe(0);
+    const url = fetch.mock.calls.map(call => String(call[0])).find(candidate => candidate.includes('/api/knowledge/pages'));
+    expect(url).toContain('invalid_only=true');
+    expect(stream.out.join('')).toContain('bad.md');
+  });
+
+  it('list 发现坏页时追加提示行（退出码仍 0）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id: 'p1', scope: 'common', revision: 1, title: '缓存' }], next_offset: null, invalid_count: 2, invalid: [] })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common'], stream)).toBe(0);
+    expect(stream.out.join('')).toContain('另有 2 个知识页损坏');
+  });
+
   it('stdin 带 UTF-8 BOM（PowerShell 5.1 管道）时剥离，正文首字符不被污染', async () => {
     const { Readable } = await import('node:stream');
     const { readAllStdin } = await import('../src/io.js');

@@ -51,6 +51,10 @@ import type { DocsIndex } from '../knowledge/index.js';
 
 /**
  * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
+ *
+ * 查询参数一律用 `z.object({...})` 的默认 strip 语义，**不加 `.strict()`**：
+ * strict 会对未知键报 Unrecognized key，等于「CLI 一加新参数，未升级的服务端整个命令全挂」。
+ * 请求体（POST/PUT body）继续保持 `.strict()`，那是写入契约，拼错必须报错。
  */
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
   const result = schema.safeParse(raw);
@@ -177,7 +181,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
 
   // ---- 检索（bm25 排序 + 1–2 字符子串 + snippet，由 .index.json/内存索引承载）----
   router.get('/search', (req, res) => {
-    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }).strict(), req.query);
+    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }), req.query);
     const withLink = (row: { page_id: string; title: string; slug: string; scope: string; workspace_id: string | null; revision: number }) => ({
       ...row,
       ...knowledgeLinkFields({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope as 'common' | 'workspace', workspace_id: row.workspace_id, revision: row.revision }),
@@ -207,7 +211,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       limit_edges: integerQuery(GRAPH_MAX_EDGES, 20000).refine(n => n > 0),
       edge_kinds: z.string().default('link,source,keyword'),
       include_isolated: z.enum(['true', 'false']).default('false'),
-    }).strict(), req.query);
+    }), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('该 scope 必须提供 workspace_id');
     const kinds = input.edge_kinds.split(',').map(kind => kind.trim()).filter(kind => kind !== '');
     const allowedKinds = ['link', 'source', 'keyword', 'embed'] as const;
@@ -297,7 +301,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
   // K3：坏页不再被静默吞掉——响应新增 invalid_count 与 invalid[]（只给 slug/文件名/issues，不返回正文），
   // 判据为「本范围内解析或校验失败的文件」。items 结构与既有字段不变。
   router.get('/pages', (req, res) => {
-    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), invalid_only: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }).strict(), req.query);
+    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), invalid_only: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }), req.query);
     if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
     else if (!input.workspace_id) throw new ValidationError('both 必须提供 workspace_id');
     const includeExpired = input.include_expired === 'true';
@@ -389,7 +393,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       path: z.string().min(1),
       scope: z.enum(['common', 'workspace', 'both']).default('both'),
       workspace_id: z.string().min(1).optional(),
-    }).strict(), req.query);
+    }), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
     const view = viewFor({ scope: input.scope, workspace_id: input.workspace_id ?? null }, input.workspace_id);
     const term = input.path.trim();
@@ -450,7 +454,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       workspace_id: z.string().min(1).optional(),
       offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
       limit: integerQuery(20, 100),
-    }).strict(), req.query);
+    }), req.query);
     const all = view.backlinks(found.meta.id);
     res.json({
       items: all.slice(input.offset, input.offset + input.limit),

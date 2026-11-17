@@ -600,7 +600,9 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .addHelpText('after', LIST_HELP)
     .action(async (opts: ScopeOptions & { status: string; offset: string; limit: string; includeExpired?: boolean; invalid?: boolean }) => {
       const ctx = context();
-      const res = await request<{ items: unknown[]; next_offset: number | null; invalid_count?: number; invalid?: Array<{ slug: string | null; file_name: string; issues: string[] }> }>(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: validateOffset(opts.offset), limit: validateLimit(opts.limit), include_expired: String(!!opts.includeExpired), invalid_only: String(!!opts.invalid) })}`);
+      // 新增查询参数必须「只在用户显式要求时才发」：旧服务端的 query schema 是 strict，
+      // 无条件带新键会让整个命令被 Unrecognized key 拒绝（连普通 list 都挂）。
+      const res = await request<{ items: unknown[]; next_offset: number | null; invalid_count?: number; invalid?: Array<{ slug: string | null; file_name: string; issues: string[] }> }>(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: validateOffset(opts.offset), limit: validateLimit(opts.limit), include_expired: String(!!opts.includeExpired), invalid_only: opts.invalid ? 'true' : undefined })}`);
       // K3：--invalid 只列坏页（JSON 原样出信封）
       if (opts.invalid) {
         if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
