@@ -6,6 +6,7 @@ import type { PageResult, TaskPreview } from '@agentboard/shared';
 import { pageResult, textWindow, validatePage } from '../pagination.js';
 import { blockedByAggregateJoin, dependencyCountsFrom } from '../../services/dependency.js';
 import { CLOSED_KIND_SQL, isClosedStatusName } from '../../services/workspaceStatus.js';
+import { pushAll } from '../../services/pushAll.js';
 
 interface IssueRow {
   id: string;
@@ -344,7 +345,7 @@ function appendIssueListFilters(where: string[], params: unknown[], filters: Iss
   if (filters?.kinds !== undefined && filters.kinds.length > 0) {
     where.push(`EXISTS (SELECT 1 FROM workspace_status ws
       WHERE ws.workspace_id = i.workspace_id AND ws.name = i.status AND ws.kind IN (${filters.kinds.map(() => '?').join(',')}))`);
-    params.push(...filters.kinds);
+    pushAll(params, filters.kinds);
   }
   if (filters?.unclaimed === true) where.push('i.claimed_by IS NULL');
 }

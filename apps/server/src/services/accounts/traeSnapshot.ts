@@ -26,6 +26,7 @@ import { createHash } from 'node:crypto';
 import { promises as nodeFs } from 'node:fs';
 import { join } from 'node:path';
 import { ApiError } from '../../errors.js';
+import { pushAll } from '../pushAll.js';
 
 /** 快照内的文件记录（相对 dataDir 的 posix 风格路径 + 哈希） */
 export interface TraeSnapshotFileRecord {
@@ -159,7 +160,8 @@ async function walkDir(input: { dataDir: string; absDir: string; relBase: string
       // 分区内（relBase 已是 Partitions/<name>）的缓存子目录整段跳过：身份子路径之外全是 HTTP 缓存
       const insidePartition = relBase.startsWith(`${TRAE_PARTITION_DIR}/`);
       if (insidePartition && (TRAE_PARTITION_SKIP_SUBDIRS as readonly string[]).includes(item.name)) continue;
-      files.push(...await walkDir({ dataDir, absDir: childAbs, relBase: childRel, fs }));
+      // OCR B3：walkDir 递归返回整棵树的文件数组，push(...) 在 12 万文件时抛 RangeError
+      pushAll(files, await walkDir({ dataDir, absDir: childAbs, relBase: childRel, fs }));
     } else {
       const data = await fs.readFile(childAbs);
       files.push({ path: childRel, bytes: data.length, sha256: sha256File(data) });

@@ -28,6 +28,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { configDir } from '../config.js';
 import { ApiError, ValidationError } from '../errors.js';
+import { pushAll } from './pushAll.js';
 
 export const REQUIRED_SKILLS = [
   'using-agentboard',
@@ -147,7 +148,8 @@ function walkFiles(root: string, base = root): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const full = join(root, entry.name);
-    if (entry.isDirectory()) out.push(...walkFiles(full, base));
+    // OCR B3：递归拼接整棵树，push(...) 在 12 万文件时抛 RangeError
+    if (entry.isDirectory()) pushAll(out, walkFiles(full, base));
     else if (entry.isFile()) out.push(relative(base, full).split(sep).join('/'));
   }
   return out.sort();
@@ -552,7 +554,7 @@ export function syncSkills(opts: SyncOptions): SyncOutcome {
       try {
         mkdirSync(destDir, { recursive: true });
         copySkill(sourceDir, destDir, manifest);
-        result.errors.push(...verifyCopied(destDir, manifest));
+        pushAll(result.errors, verifyCopied(destDir, manifest));
       } catch (error) {
         result.errors.push({ skill: manifest.name, file: null, message: error instanceof Error ? error.message : String(error) });
       }

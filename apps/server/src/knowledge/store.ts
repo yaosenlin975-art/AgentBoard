@@ -12,6 +12,7 @@ import { DocsIndex } from './index.js';
 import { KnowledgeFileRepo } from './fileRepo.js';
 import { resolveDocsDir, type DocsDirOverrides } from './paths.js';
 import { reconcileDocsDir } from './reconcile.js';
+import { pushAll } from '../services/pushAll.js';
 
 export interface ScopeSelector {
   scope: 'common' | 'workspace' | 'both';
@@ -66,19 +67,6 @@ export class KnowledgeDocsStore {
 
 /** scope=both 的跨目录合并排序键（与旧跨库一致：(updated_at desc, id asc)） */
 type MergeRow = { id: string; updated_at: number };
-
-/**
- * OCR B3：安全批量追加。
- *
- * `target.push(...source)` 在 source 长度超 ~125k 时抛
- * `RangeError: Maximum call stack size exceeded`（实参按栈传）。
- * `/graph` 的 `GRAPH_MAX_PAGES = 5000` × 每页 ≥26 出链即越阈值，而 `include_isolated` /
- * `limit_edges` 在合并**之后**才裁剪，拦不住 → 图接口 500。
- * 逐项追加无此上限，语义完全等价。
- */
-function pushAll<T>(target: T[], source: readonly T[]): void {
-  for (const item of source) target.push(item);
-}
 
 /** 两目录聚合视图：读路径与链接解析的门面（写走 repo） */
 export class KnowledgeDocsView {

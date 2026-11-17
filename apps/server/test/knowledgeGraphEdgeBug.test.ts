@@ -43,7 +43,7 @@ describe('GRAPH-EDGE-BUG：4 页 fixture（A↔B 互链，C/D 孤立）', () => 
       title,
       body_md: body,
       actor: 'dsh',
-      sources: [{ source_id: slug, source_type: 'file', locator: `fixture/${slug}.md`, captured_at: 1, content_hash: `${slug}0`.padEnd(64, 'a') }],
+      sources: [{ source_id: slug, source_type: 'file', locator: `fixture/${slug}.md`, captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: slug, locator: `fixture/${slug}.md` }],
       category: 'legacy',
     });
