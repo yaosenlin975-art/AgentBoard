@@ -321,11 +321,47 @@ kb show <issue-id> [--mark-read]
 kb claim <issue-id>                # 原子领取；已被占用退出码 2
 kb comment <issue-id> "内容"       # 长文/中文用 --stdin
 kb accept <issue-id>               # 待验收卡写结构化验收记录（不改状态）
-kb done <issue-id> --notes "..."   # 完成 → 待验收；自动提交未完成时 exit 1 并附补救命令（非 git 仓库只警告、exit 0）
+kb done <issue-id> --notes "..."   # 完成 → 待验收；见下方「done 的三道门禁」
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
+kb release <issue-id>              # 释放占用 → 待规划（不是失败；仅当前占用者可执行）
+kb reopen <issue-id> [--to <状态>] # 已关闭/已废弃 → 指定状态（默认待规划）；待验收卡不能用它退回
+kb close <issue-id>                # 待验收 → 已关闭
 kb knowledge list --scope common   # 知识页（文件事实源 Docs/*.md，P2-01/P2-04）；create/revise/rename/export-legacy 等全族见 kb knowledge --help
+kb changelog list                  # 工作区变更日志；create/list/show 见 kb changelog --help
+kb dep ls <issue-id>               # 任务依赖边：ls 列出 / add 建边 / rm 删边
+kb status ls                       # 工作区状态字典：ls 列出 / add 新增 / rm 删除并强制迁移
+kb ask <issue-id>                  # 提问并等待一轮宽限（默认 180s）；回答走 kb answer <id>
+kb decisions                       # 列待决策；详情 kb decision <id>，延长 kb ask-extend
 kb workspace-db status             # 工作区库下沉状态（enable/cleanup/revert/snapshot 子命令见 kb workspace-db --help）
 ```
+
+本表只列**首小时高频**命令。完整命令表（含 `grep` / `update` / `move-issue` / `delete-issue` / `delete-space` / `autostart` / `shortcut` / `stop-check` / `accounts` 等）与退出码表一律以 `kb --help` 为准，本文不复制——避免与 CLI 漂移。
+
+`--json` 是全局选项，**前置后置都行**（`kb --json list-tasks` 与 `kb list-tasks --json` 等价）；错误同样走 JSON 时统一为 stdout 的 `{"error":{"code","message","details"}}`，退出码不变。
+
+### `kb done` 的三道门禁
+
+`kb done` 不是「写个 notes 就完成」。以下三道门禁任一未满足，`done` 都不会生效：
+
+| 门禁 | 触发条件 | 放行方式 |
+| --- | --- | --- |
+| **SK-05 变更日志** | 无归属本卡的变更日志 | ① 先 `kb changelog create --issue <卡 id>`；② `--close-record --changelog-title '<标题>' --type 修复`（自带日志，一步式）；③ 确实无用户可见变更时 `--no-changelog` |
+| **ARCH-04 设计页** | 关联设计页仍为 `landed=proposed` | 推进设计页后重试，或 `--design-not-advanced` 显式声明本卡不推进 |
+| **GIT-ON-DONE `--scope`** | 未声明改动路径 | `--scope <路径>`，多个路径**重复传参**（`--scope a --scope b`，不要用逗号串）；`--all` 纳入全部未提交改动；`--board-only` 纯看板任务跳过提交 |
+
+不写 `--scope` 时一个文件都不会提交（stderr `NO_SCOPE`），且 `done` 已生效但 `exit 1`，需按补救命令再补。
+
+**能直接复制的完整闭环**（含三道门禁）：
+
+```bash
+kb create-issue <workspace> '<标题>' -d '<描述>'    # 建卡
+kb claim <id>                                       # 领取
+kb comment <id> '<进展>'                            # 汇报
+kb done <id> --close-record --changelog-title '<标题>' --type 修复 --notes-stdin --scope <路径>
+kb close <id>                                       # 若上一步未带 --close
+```
+
+`--close-record` 一次覆盖 SK-05（自带变更日志）；`--scope` 解决提交范围；设计页无关的卡通常无需 `--design-not-advanced`。要做到一步收口，把 `--close` 也加上：`kb done <id> --close-record --changelog-title '…' --type 修复 --scope <路径> --close`。
 
 - 服务地址：`--server <url>` 或环境变量 `KB_SERVER`（默认 `http://127.0.0.1:8787`）。
 - agent 身份：环境变量 `KB_AGENT=<名字>`；未设 KB_AGENT 时默认 kb-cli，agent 评论不触发唤醒。
@@ -339,9 +375,11 @@ kb workspace-db status             # 工作区库下沉状态（enable/cleanup/r
 
 ```bash
 corepack pnpm --filter @agentboard/mcp build
-corepack pnpm --filter @agentboard/mcp list-tools          # 人读表格
-corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
+corepack pnpm --config.verify-deps-before-run=false --filter @agentboard/mcp list-tools          # 人读表格
+corepack pnpm --config.verify-deps-before-run=false --filter @agentboard/mcp list-tools --json   # 机器可读
 ```
+
+**`--config.verify-deps-before-run=false` 不能省**：pnpm 11 在跑任何 script 前会做 deps-status 检查，非 TTY 环境下直接报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` 并 exit 1。**不要按 pnpm 的提示设 `CI=true`**——它会让 pnpm 真的执行 `pnpm install --production`，把 typescript / esbuild / prettier / eslint / vite / vitest 等 devDependencies 全部删掉（实测 `Packages: -333`，恢复需重跑 `corepack pnpm install --frozen-lockfile`）。显式传 `--config.verify-deps-before-run=false` 只跳过该检查，不动 node_modules。
 
 工具总数以 `list-tools` 的实时输出为准，本文不写死数量：它输出当前主名清单，并额外标注每个主名对应的 `agentboard_*` 兼容 alias（`tools/list` 条目数因此约为主名的两倍）。alias 用于兼容旧客户端，计划在下个大版本移除（卡 `f78d7465`），届时应同步跑一次 `list-tools` 核对。
 
