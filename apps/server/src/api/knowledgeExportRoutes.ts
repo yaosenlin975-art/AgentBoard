@@ -22,7 +22,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join, dirname, resolve as resolvePath } from 'node:path';
 import { Router } from 'express';
 import { z } from 'zod';
-import { docFileNameFor, parseKnowledgeDocument, validateKnowledgeFileMeta, type KnowledgeFileMeta } from '@agentboard/shared';
+import { docFileNameFor, normalizeBodyMd, parseKnowledgeDocument, validateKnowledgeFileMeta, type KnowledgeFileMeta } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
 import { ApiError, ValidationError } from '../errors.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
@@ -37,6 +37,11 @@ export const KNOWLEDGE_EXPORT_GENERATOR = 'agentboard-server/1';
 /** manifest / 备份都是点前缀（scanner 只认顶层非点 `*.md`，不污染索引与 reconcile） */
 export const EXPORT_MANIFEST_NAME = '.export-manifest.json';
 export const EXPORT_BACKUP_DIR_NAME = '.export-backup';
+/**
+ * 事件循环让出粒度（页）。写入阶段每页含 write+fsync+read，单页就够重；
+ * 取 32 是「不让 HTTP 等超过一个 fsync 周期」与「让出开销可忽略」的折中。
+ */
+const YIELD_EVERY = 32;
 
 export interface KnowledgeExportRouterOptions {
   /** 中心库（legacy 行集来源之一 + 工作区注册表） */
@@ -194,7 +199,15 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
   const router = Router();
   const getWorkspaceRow = options.getWorkspaceRow ?? ((): null => null);
 
-  router.post('/export-legacy', (req, res) => {
+  /**
+   * export-legacy：一次性迁移。
+   *
+   * 性能（OCR C1）：整个处理器此前**没有一处 await**，2000 页 ×（write+fsync+read+parse）
+   * ≈ 4–20 s 事件循环完全停摆，期间所有 HTTP 请求挂起。现在写盘阶段每 `YIELD_EVERY` 页
+   * `await setImmediate` 让出一次；索引/计划阶段是纯 CPU，同样按批让出。
+   */
+  router.post('/export-legacy', async (req, res) => {
+    const yes = async (): Promise<void> => { await new Promise<void>(resolve => setImmediate(resolve)); };
     const body = parseBody(exportSchema, req.body ?? {});
     if (body.scope === 'workspace' && (body.workspace_id === undefined || body.workspace_id === '')) {
       throw new ValidationError('--scope workspace 必须提供 workspace_id');
@@ -262,7 +275,11 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
 
     const planned: PlannedPage[] = [];
     const plannedFiles = new Map<string, { pageId: string; slug: string; sourceDb: string }>(); // `${dir}\0${fileName}` → 首个占用者
+    let plannedSinceYield = 0;
     for (const { row, sourceDb } of [...byId.values()].sort((a, b) => (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0))) {
+      // 计划阶段也是纯 CPU（existsSync + readFileSync + sha256 + render），大库同样会阻塞
+      plannedSinceYield += 1;
+      if (plannedSinceYield >= YIELD_EVERY) { plannedSinceYield = 0; await yes(); }
       if (row.status === 'deleted') {
         planned.push({ row, sourceDb, meta: metaOf(row), targetDir: '', fileName: '', action: 'skip-deleted', reason: '软删页不落盘（撤文件语义，N5）；旧行保留不动', existingSha256: null });
         continue;
@@ -292,6 +309,9 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
       const existingSha256 = existsSync(filePath) ? sha256(readFileSync(filePath, 'utf8')) : null;
       let action: ExportPageAction = 'create';
       let reason: string | undefined;
+      // CRLF 归一记为 reason（不是失败）：写入侧 renderDocWithHash 恒把 CRLF → LF，
+      // 旧库 30/37 页含 CRLF，若不标记，用户会以为正文被悄悄改动。
+      if (normalizeBodyMd(row.body_md) !== row.body_md) reason = '正文含 CRLF，已按契约归一为 LF 落盘（内容未丢失）';
       if (existingSha256 !== null) {
         const incoming = renderDocWithHash(meta, row.body_md).content;
         if (sha256(incoming) === existingSha256) {
@@ -305,6 +325,7 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
       planned.push({ row, sourceDb, meta, targetDir: dir, fileName, action, reason, existingSha256 });
     }
 
+    // 备份只需对「目标已存在且内容不同」的冲突做（existingSha256 非空才有文件可备份）
     const conflicts: ExportConflictEntry[] = planned
       .filter(page => page.action === 'conflict' && page.existingSha256 !== null)
       .map(page => ({
@@ -315,6 +336,19 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
         existing_sha256: page.existingSha256!,
         incoming_sha256: sha256(renderDocWithHash(page.meta, page.row.body_md).content),
       }));
+    /**
+     * 零丢失护栏：**任何** conflict 都必须阻止整体写入，包括行集内 slug 冲突
+     * （`existingSha256 === null`，磁盘上无文件可备份）。
+     * 原实现只用 `conflicts`（磁盘冲突）做门禁，行集内 slug 冲突时会照写其它页 →
+     * 半迁移。这里把闸门放宽到「planned 中存在任意 conflict」。
+     */
+    const allConflicts = planned.filter(page => page.action === 'conflict');
+    if (allConflicts.length > 0 && !body.dry_run && conflicts.length === 0) {
+      throw new ApiError(409, KnowledgeErrorCode.EXPORT_CONFLICT,
+        `export-legacy 检测到 ${allConflicts.length} 处行集内冲突（同 slug 归一后重名或同 id 重复），未写入任何文件；请先在旧库中区分这些页的 slug 再重跑`,
+        { conflicts: allConflicts.map(page => ({ dir: page.targetDir, file: page.fileName, page_id: page.row.id, source_db: page.sourceDb, reason: page.reason })) },
+      );
+    }
 
     // ---- 3) 冲突：备份现有文件后暂停（一个都不写入，不静默覆盖） ----
     if (conflicts.length > 0 && !body.dry_run) {
@@ -332,35 +366,54 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
       );
     }
 
-    // ---- 4) 写入 + 回读校验 + manifest（dry_run 到此为止） ----
+    // ---- 4) 两阶段：先全量内存内 render→parse→比较，全通过后才写盘（零丢失红线）----
+    // 原实现「写一页→回读→校验」在第 N 页炸时前 N-1 页已落盘，留下无 manifest 的半迁移。
+    // 红线要求「要么全成，要么全不动」，故校验前移，写盘阶段只做 IO。
     const manifests: ExportReport['manifests'] = [];
     if (!body.dry_run) {
       const writes = planned.filter(page => page.action === 'create');
+
+      // 4a) 内存内校验（不碰磁盘）
+      type VerifiedPage = { page: PlannedPage; content: string };
+      const verified: VerifiedPage[] = [];
+      let sinceYield = 0;
       for (const page of writes) {
-        const filePath = join(page.targetDir, page.fileName);
         const { content } = renderDocWithHash(page.meta, page.row.body_md);
-        atomicWrite(filePath, content);
-        // 回读校验（零丢失红线）：sha256 一致 + parse 回读正文逐字节一致 + front matter 字段逐项一致
-        const readback = readFileSync(filePath, 'utf8');
-        if (sha256(readback) !== sha256(content)) {
-          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `回读校验失败：${filePath} 内容与写入不一致`, { page_id: page.row.id, file: filePath });
-        }
         let parsed: ReturnType<typeof parseKnowledgeDocument>;
         try {
-          parsed = parseKnowledgeDocument(readback);
+          parsed = parseKnowledgeDocument(content);
         } catch (error) {
-          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `回读校验失败：${filePath} 解析失败（${error instanceof Error ? error.message : String(error)}）`, { page_id: page.row.id, file: filePath });
+          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `导出前校验失败：${page.fileName} 渲染结果无法解析（${error instanceof Error ? error.message : String(error)}）；未写入任何文件`, { page_id: page.row.id, file: page.fileName });
         }
-        if (parsed.body_md !== page.row.body_md) {
-          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `回读校验失败：${filePath} 正文与旧库行不一致（零丢失红线）`, { page_id: page.row.id, file: filePath });
+        // 正文比较用归一后的旧值：写入侧 renderDocWithHash 会把 CRLF 归一为 LF，
+        // 拿原值（含 CRLF）比必炸（真实库 30/37 页含 CRLF）。归一不是丢失，是契约口径。
+        const expectedBody = normalizeBodyMd(page.row.body_md);
+        if (parsed.body_md !== expectedBody) {
+          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `导出前校验失败：${page.fileName} 正文与旧库行不一致（零丢失红线）；未写入任何文件`, { page_id: page.row.id, file: page.fileName });
         }
         const expected = page.meta;
         const drifted = (Object.keys(expected) as Array<keyof KnowledgeFileMeta>)
           .filter(key => key !== 'content_hash')
           .filter(key => JSON.stringify(parsed.meta[key]) !== JSON.stringify(expected[key]));
         if (drifted.length > 0 || computeContentHash({ ...parsed.meta, content_hash: '' } as KnowledgeFileMeta, parsed.body_md) !== parsed.meta.content_hash) {
-          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `回读校验失败：${filePath} front matter 字段漂移（${drifted.join(', ') || 'content_hash'}）`, { page_id: page.row.id, file: filePath });
+          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `导出前校验失败：${page.fileName} front matter 字段漂移（${drifted.join(', ') || 'content_hash'}）；未写入任何文件`, { page_id: page.row.id, file: page.fileName });
         }
+        verified.push({ page, content });
+        sinceYield += 1;
+        if (sinceYield >= YIELD_EVERY) { sinceYield = 0; await yes(); }
+      }
+
+      // 4b) 写盘 + 回读（校验已过，这里只确认 IO 没出错）
+      sinceYield = 0;
+      for (const { page, content } of verified) {
+        const filePath = join(page.targetDir, page.fileName);
+        atomicWrite(filePath, content);
+        const readback = readFileSync(filePath, 'utf8');
+        if (sha256(readback) !== sha256(content)) {
+          throw new ApiError(500, KnowledgeErrorCode.EXPORT_VERIFY_FAILED, `回读校验失败：${filePath} 内容与写入不一致`, { page_id: page.row.id, file: filePath });
+        }
+        sinceYield += 1;
+        if (sinceYield >= YIELD_EVERY) { sinceYield = 0; await yes(); }
       }
       // manifest：每个「有产出」的目录写一份（create 或既有 skip-unchanged 都登记）。
       // 幂等：本次没有 create 且 manifest 已存在 → 不重写（exported_at 会变，重写必 diff）。
