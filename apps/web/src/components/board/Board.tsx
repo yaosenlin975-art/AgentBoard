@@ -290,7 +290,10 @@ export function Board() {
 
   /**
    * REL-2：退回成功后把响应里的 issue **就地写回列表缓存**（与 DetailPanel 的 refreshIssue 同一口径），
-   * 卡片立刻离开「进行中」、占用徽标立刻消失，不依赖随后的 WS 帧；同时记录本次 id 集供「仅看本次退回」。
+   * 卡片立刻离开「进行中」、占用徽标立刻消失，不依赖随后的 WS 帧。
+   * REL-UI：不再自动切进「仅看本次退回」（自动过滤会让其它列计数瞬间清零，视觉等同数据丢失）——
+   * releasedBatch 只作记录，过滤由用户点横幅「仅看本次退回」手动开启。
+   * 被跳过的卡（租约生效等）由弹窗内结果面板明示，这里只报成功张数。
    */
   const handleReleased = (released: Issue[]): void => {
     if (workspaceId === null || released.length === 0) return;
@@ -298,7 +301,6 @@ export function Board() {
       list === undefined ? list : list.map((item) => released.find((r) => r.id === item.id) ?? item),
     );
     setReleasedBatch({ ids: new Set(released.map((issue) => issue.id)), count: released.length });
-    setOnlyReleased(true);
     setReleaseToast(`已退回 ${released.length} 张到待规划`);
   };
 

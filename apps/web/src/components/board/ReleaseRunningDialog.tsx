@@ -9,6 +9,8 @@
  * 3. 主按钮文案「退回 N 张到待规划」，N 随勾选实时变化；mode=all 必须显式勾选确认才可点。
  * 4. 成功后把服务端返回的 issue 就地在写进 ['issues', workspaceId] 缓存（不等 WS 帧），
  *    并回调 onReleased 让看板提供「仅看本次退回」入口。
+ * 5. REL-UI：提交响应含被跳过（LEASE_ACTIVE 等）明细时不静默关闭——弹窗内结果面板明示
+ *    「跳过 N 张 + 逐条原因」；全部被跳过时明确「没有退回任何任务」，不当成成功。
  *
  * 预览清单列：短 id（8 位）｜title｜占用者｜静默分钟（按 claimed_at 计）。
  */
@@ -21,6 +23,16 @@ interface ReleaseRunningResult {
   released: Issue[];
   skipped: Array<{ id: string; reason: string }>;
 }
+
+/** REL-UI：跳过原因的可读文案（未知原因退回原始码） */
+const SKIP_REASON_TEXT: Record<string, string> = {
+  LEASE_ACTIVE: '租约生效',
+  UNDETERMINED: '占用状态无法判定',
+  DECISION_GRACE: '待决策宽限期',
+  DECISION_LOCKED: '等待决策回答',
+  NOT_RUNNING: '已不在进行中',
+  NOT_IN_WORKSPACE: '不在本工作区',
+};
 
 const BODY = 'space-y-3 text-sm';
 
@@ -54,6 +66,8 @@ export function ReleaseRunningDialog({
   const [mode, setMode] = useState<'expired' | 'all'>('expired');
   const [confirmAll, setConfirmAll] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  /** REL-UI：提交结果面板（含跳过明细）；非 null 时替换预览区展示，弹窗不再静默关闭 */
+  const [submitResult, setSubmitResult] = useState<ReleaseRunningResult | null>(null);
   const now = Date.now();
 
   const byId = useMemo(() => new Map(issues.map((issue) => [issue.id, issue])), [issues]);
@@ -81,6 +95,7 @@ export function ReleaseRunningDialog({
     if (!open) return;
     setMode('expired');
     setConfirmAll(false);
+    setSubmitResult(null);
     void loadPreview();
   }, [open, loadPreview]);
 
@@ -103,7 +118,8 @@ export function ReleaseRunningDialog({
   };
 
   const count = mode === 'all' ? issues.filter((i) => i.status === '进行中').length : selected.size;
-  const submitDisabled = submitting || count === 0 || (mode === 'all' && !confirmAll);
+  const submitDisabled =
+    submitting || count === 0 || (mode === 'all' && !confirmAll) || submitResult !== null;
 
   const submit = async (): Promise<void> => {
     setSubmitting(true);
@@ -118,7 +134,13 @@ export function ReleaseRunningDialog({
         body,
       );
       onReleased(result.released);
-      onClose();
+      if (result.skipped.length > 0) {
+        // REL-UI：有被跳过的卡就不静默关闭——结果面板明示「跳过 N 张 + 列表」；
+        // 全部被跳过时（released 为空）同样停留，明确不是成功。
+        setSubmitResult(result);
+      } else {
+        onClose();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : '退回失败，请重试');
     } finally {
@@ -156,12 +178,55 @@ export function ReleaseRunningDialog({
         {error !== null && (
           <p className="text-red-600 dark:text-red-400" data-testid="release-error">{error}</p>
         )}
-        {!loading && preview !== null && (
-          <div className="space-y-2">
-            <p className="text-ink-3" data-testid="release-summary">
-              安全退回 {preview.released.length} 张；租约生效 {leaseActiveIds.length} 张（默认不勾选）
-              {undeterminedIds.length > 0 && `；无法判定 ${undeterminedIds.length} 张（不参与退回）`}
-            </p>
+        {submitResult !== null ? (
+          /* REL-UI：提交结果面板——跳过明细明示，不静默关闭 */
+          <div className="space-y-2" data-testid="release-result">
+            {submitResult.released.length > 0 ? (
+              <p className="font-medium text-ink-2" data-testid="release-result-ok">
+                已退回 {submitResult.released.length} 张到待规划
+              </p>
+            ) : (
+              <p className="font-medium text-red-600 dark:text-red-400" data-testid="release-result-none">
+                没有退回任何任务（全部被跳过）
+              </p>
+            )}
+            {submitResult.skipped.length > 0 && (
+              <div data-testid="release-skipped">
+                <p className="text-ink-2">
+                  跳过 {submitResult.skipped.length} 张
+                  {submitResult.skipped.some((s) => s.reason === 'LEASE_ACTIVE') &&
+                    `（其中 ${submitResult.skipped.filter((s) => s.reason === 'LEASE_ACTIVE').length} 张因租约生效）`}
+                  ：
+                </p>
+                <ul className="max-h-40 overflow-y-auto">
+                  {submitResult.skipped.map((s) => {
+                    const issue = byId.get(s.id);
+                    return (
+                      <li
+                        key={s.id}
+                        data-testid={`release-skipped-row-${s.id}`}
+                        className="flex items-start gap-2 border-t border-hairline py-1.5"
+                      >
+                        <span className="shrink-0 font-mono text-xs text-ink-3">{shortId(s.id)}</span>
+                        <span className="min-w-0 flex-1 truncate" title={issue?.title ?? s.id}>
+                          {issue?.title ?? '（不在当前列表）'}
+                        </span>
+                        <span className="shrink-0 text-xs text-ink-3">{SKIP_REASON_TEXT[s.reason] ?? s.reason}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        ) : (
+          !loading &&
+          preview !== null && (
+            <div className="space-y-2">
+              <p className="text-ink-3" data-testid="release-summary">
+                安全退回 {preview.released.length} 张；租约生效 {leaseActiveIds.length} 张（默认不勾选）
+                {undeterminedIds.length > 0 && `；无法判定 ${undeterminedIds.length} 张（不参与退回）`}
+              </p>
             {preview.released.length === 0 && leaseActiveIds.length === 0 && (
               <p className="text-ink-3" data-testid="release-empty">没有可退回的任务。</p>
             )}
@@ -200,7 +265,8 @@ export function ReleaseRunningDialog({
                 我确认本区所有执行会话已中断
               </label>
             )}
-          </div>
+            </div>
+          )
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button
