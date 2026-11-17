@@ -31,7 +31,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
       ...workspaceField,
     }).strict(),
   }, async ({ workspace_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const rows = await api.get<WorkspaceStatus[]>(`/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
     return { workspace_id: workspaceId, items: rows };
   });
@@ -50,7 +50,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     }).strict(),
     readOnly: false,
   }, async ({ workspace_id, name, kind, sort_order, request_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const created = await api.mutate<WorkspaceStatus>('POST', `/workspaces/${encodeURIComponent(workspaceId)}/statuses`, {
       workspace_id: workspaceId, name, kind, ...(sort_order === undefined ? {} : { sort_order }),
     }, request_id);
@@ -69,7 +69,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     }).strict(),
     readOnly: false,
   }, async ({ workspace_id, status_id, migrate_to }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     // DELETE 走 query 传 migrate_to（REST 侧同样不套幂等键）
     const path = `/workspaces/${encodeURIComponent(workspaceId)}/statuses/${encodeURIComponent(status_id)}?migrate_to=${encodeURIComponent(migrate_to)}`;
     return api.delete<{ removed: WorkspaceStatus; migrate_to: string; migrated_issue_count: number }>(path, 'WORKSPACE_STATUS_BUILTIN', 'NOT_FOUND');

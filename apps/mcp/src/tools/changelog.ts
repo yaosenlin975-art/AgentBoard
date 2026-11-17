@@ -76,7 +76,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
       q: z.string().trim().max(200).optional().describe('Optional case-insensitive substring filter over title and body.'),
     }).strict(),
     async ({ workspace_id, limit, offset, change_type, q }) => {
-      const workspaceId = resolveWorkspaceId(config, workspace_id);
+      const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
       const page = await api.get<{ items: JsonObject[]; next_offset: number | null }>(
         `/workspaces/${encodeURIComponent(workspaceId)}/changelog`,
         { limit, offset, ...(change_type === undefined ? {} : { change_type }), ...(q === undefined ? {} : { q }) },
@@ -101,7 +101,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
         .describe('Max body characters, 1-20000 (default 12000). Continue from next_offset_chars.'),
     }).strict(),
     async ({ workspace_id, changelog_id, body_offset, body_max_chars }) => {
-      const workspaceId = resolveWorkspaceId(config, workspace_id);
+      const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
       const entry = await api.get<JsonObject>(
         `/workspaces/${encodeURIComponent(workspaceId)}/changelog/${encodeURIComponent(changelog_id)}`,
         {},
@@ -135,7 +135,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
         .describe('Task UUID this entry belongs to. Set it so complete_task can pass the changelog gate for that task.'),
     }).strict(),
     async ({ workspace_id, request_id, title, body_md, change_type, occurred_at, issue_id }) => {
-      const workspaceId = resolveWorkspaceId(config, workspace_id);
+      const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
       const actor = requireAgentId(config);
       const entry = await api.mutate<JsonObject>(
         'POST',

@@ -50,7 +50,7 @@ export function registerBoardViewTools(server: McpServer, config: McpConfig, api
         .describe(`Maximum number of dispatchable tasks to return (default ${NEXT_DEFAULT_LIMIT}).`),
     }).strict(),
   }, async ({ workspace_id, limit }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'collab');
     const all = await api.get<Issue[]>('/issues', { workspace: workspaceId });
     const candidates = nextCandidates(all);
     const views = await Promise.all(candidates.map(issue => api.get<DependencyView>(
@@ -66,7 +66,7 @@ export function registerBoardViewTools(server: McpServer, config: McpConfig, api
     description: 'Summarize one workspace in a single call: five built-in status counts, unclaimed open tasks, blocked open tasks, total tasks. Same shape as `kb stats --json`.',
     inputSchema: z.object({ ...workspaceField }).strict(),
   }, async ({ workspace_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'stats');
     return computeStats(workspaceId, await readStatsIssues(api, workspaceId));
   });
 }

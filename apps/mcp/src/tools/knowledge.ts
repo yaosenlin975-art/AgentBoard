@@ -120,7 +120,7 @@ function knowledgeScope(config: McpConfig, scope: 'workspace' | 'common', worksp
     if (workspaceId !== undefined) throw new McpError('INVALID_ARGUMENT', 'Common knowledge must omit workspace_id.');
     return { scope: 'common' };
   }
-  return { scope: 'workspace', workspace_id: resolveWorkspaceId(config, workspaceId) };
+  return { scope: 'workspace', workspace_id: resolveWorkspaceId(config, workspaceId, 'knowledge') };
 }
 
 function searchScope(config: McpConfig, scope: 'workspace' | 'common' | 'both', workspaceId?: string): { scope: 'workspace' | 'common' | 'both'; workspace_id?: string } {
@@ -128,7 +128,7 @@ function searchScope(config: McpConfig, scope: 'workspace' | 'common' | 'both', 
     if (workspaceId !== undefined) throw new McpError('INVALID_ARGUMENT', 'Common knowledge must omit workspace_id.');
     return { scope: 'common' };
   }
-  return { scope, workspace_id: resolveWorkspaceId(config, workspaceId) };
+  return { scope, workspace_id: resolveWorkspaceId(config, workspaceId, 'knowledge') };
 }
 
 function pageArray<T>(items: T[], offset: number, limit: number): { items: T[]; next_offset: number | null; total: number } {

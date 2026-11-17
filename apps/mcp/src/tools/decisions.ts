@@ -5,6 +5,7 @@ import type { McpConfig } from '../config.js';
 import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
+import { resolveTaskId } from './taskRef.js';
 
 const workspaceField = {
   workspace_id: z.string().trim().min(1).optional()
@@ -116,7 +117,7 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
         .describe('Maximum decisions to return, 1-100 (default 50).'),
     }).strict(),
   }, async ({ workspace_id, issue_id, state, stale, limit }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const page = await api.get<{ decisions: JsonObject[]; counts: unknown; capabilities: unknown }>(
       '/decisions',
       {
@@ -157,7 +158,11 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     name: 'stop_check',
     description: 'Check whether the agent was asked to stop on a task. Read-only; it does not acknowledge the stop signal.',
     inputSchema: z.object(taskIdField).strict(),
-  }, async ({ task_id }) => api.get(`/issues/${encodeURIComponent(task_id)}/stop`, {}, 'TASK_NOT_FOUND'));
+  }, async ({ task_id }) => {
+    const workspaceId = resolveWorkspaceId(config, undefined, 'collab');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
+    return api.get(`/issues/${encodeURIComponent(taskId)}/stop`, {}, 'TASK_NOT_FOUND');
+  });
 
   registerBoardTool(
     server,
@@ -197,9 +202,11 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     },
     async ({ task_id, request_id, question, options, context_md, trigger, grace_seconds, checkpoint, on_expire, fence }) => {
       const agentId = requireAgentId(config);
+      const workspaceId = resolveWorkspaceId(config, undefined, 'task');
+      const taskId = await resolveTaskId(api, workspaceId, task_id);
       const response = await api.mutate<{ decision: JsonObject }>(
         'POST',
-        `/issues/${encodeURIComponent(task_id)}/ask`,
+        `/issues/${encodeURIComponent(taskId)}/ask`,
         {
           agent_id: agentId,
           question,

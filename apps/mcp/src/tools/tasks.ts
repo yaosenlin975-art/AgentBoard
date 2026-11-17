@@ -6,6 +6,7 @@ import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { mcpToolSuccess } from './result.js';
 import { registerBoardTool } from './register.js';
+import { resolveTaskId } from './taskRef.js';
 
 const workspaceField = {
   workspace_id: z.string().trim().min(1).optional()
@@ -13,7 +14,7 @@ const workspaceField = {
 };
 const taskIdField = {
   task_id: z.string().trim().min(1)
-    .describe('Task UUID (36-char full id; an 8+ char unique prefix is also accepted).'),
+    .describe('Task UUID (36-char full id), or a unique id prefix of at least 8 characters. An ambiguous prefix returns the matching candidates; a shorter prefix is rejected.'),
 };
 const requestIdField = {
   request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
@@ -24,8 +25,14 @@ const pageFields = {
   offset: z.number().int().min(0).default(0).describe('Zero-based row offset for flat pagination (default 0).'),
 };
 const prioritySchema = z.enum(['低', '中', '高']).describe('Priority label: 低 (low) / 中 (medium) / 高 (high).');
-const statusSchema = z.enum(['待规划', '进行中', '待验收', '已关闭'])
-  .describe('Task status: 待规划 (planning) / 进行中 (started) / 待验收 (in review) / 已关闭 (closed).');
+/**
+ * C6：status 不做客户端枚举。工作区状态字典是动态的——`add_status` 能建自定义状态，
+ * 服务端 `requireWorkspaceStatus`（`apps/server/src/services/workspaceStatus.ts:49-59`）
+ * 会按本工作区已定义的状态校验，并在报错里列出合法值。MCP 层写死
+ * `待规划/进行中/待验收/已关闭` 会拦掉「已废弃」与一切自定义状态。
+ */
+const statusSchema = z.string().trim().min(1)
+  .describe('Status name. Valid values come from this workspace\'s status dictionary — call list_statuses first to see the exact names (builtin defaults: 待规划 / 进行中 / 待验收 / 已关闭, plus custom ones such as 已废弃). An unknown name fails server-side with VALIDATION_ERROR.');
 const fenceField = {
   fence: z.number().int().min(0).optional()
     .describe('Claim fence/epoch from claim_task. If the task was re-claimed by someone else since, the write fails with 409 STALE_FENCE; omit to skip the check.'),
@@ -139,7 +146,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     })
     .refine((input) => !input.tree || input.offset === 0, { message: 'Tree mode uses cursor pagination, not offset.' }),
   async ({ workspace_id, status, tree, parent_issue_id, cursor, limit, offset }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     if (tree) {
       const page = await api.get<IssueTreePage>('/issues/tree', {
         workspace: workspaceId,
@@ -167,8 +174,9 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     description_max_chars: z.number().int().min(1).max(40000).default(12000)
       .describe('Maximum description characters to return, 1-40000 (default 12000).'),
   }).strict(), async ({ workspace_id, task_id, description_offset_chars, description_max_chars }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
-    return api.get<TaskPreview>(`/issues/${encodeURIComponent(task_id)}`, {
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
+    return api.get<TaskPreview>(`/issues/${encodeURIComponent(taskId)}`, {
       workspace_id: workspaceId,
       description_offset_chars,
       description_max_chars,
@@ -180,9 +188,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...taskIdField,
     ...pageFields,
   }).strict(), async ({ workspace_id, task_id, limit, offset }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const page = await api.get<PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean; attachments?: IssueComment['attachments'] }>>(
-      `/issues/${encodeURIComponent(task_id)}/comments`, { workspace_id: workspaceId, limit, offset },
+      `/issues/${encodeURIComponent(taskId)}/comments`, { workspace_id: workspaceId, limit, offset },
     );
     return { ...page, workspace_id: workspaceId };
   });
@@ -196,9 +205,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     content_max_chars: z.number().int().min(1).max(40000).default(12000)
       .describe('Maximum comment characters to return, 1-40000 (default 12000).'),
   }).strict(), async ({ workspace_id, task_id, comment_id, content_offset_chars, content_max_chars }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const comment = await api.get<IssueComment & { truncated: boolean; next_content_offset_chars: number | null }>(
-      `/issues/${encodeURIComponent(task_id)}/comments/${encodeURIComponent(comment_id)}`,
+      `/issues/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(comment_id)}`,
       { workspace_id: workspaceId, content_offset_chars, content_max_chars },
     );
     return {
@@ -227,7 +237,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       .describe('Parent task UUID to nest this task under; omit or null for a root task.'),
     ...requestIdField,
   }).strict(), async ({ workspace_id, title, description, allow_empty, priority, labels, parent_issue_id, request_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const agentId = requireAgentId(config);
     if (allow_empty !== true && isBlankDescription(description)) {
       throw new Error('描述不能为空：请写清正文与验收标准（最小模板：目标 / 范围 / 验收 / 边界）；批量建卡或纯父卡可传 allow_empty=true 跳过空面校验');
@@ -258,9 +268,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
   }).strict().refine((input) => ['title', 'description', 'priority', 'labels', 'sort_order', 'parent_issue_id'].some((key) => input[key as keyof typeof input] !== undefined), {
     message: 'At least one task field must be provided.',
   }), async ({ workspace_id, task_id, expected_updated_at, request_id, fence, ...patch }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue>('PATCH', `/issues/${encodeURIComponent(task_id)}`, {
+    return api.mutate<Issue>('PATCH', `/issues/${encodeURIComponent(taskId)}`, {
       workspace_id: workspaceId, agent_id: agentId, expected_updated_at, ...patch,
     }, request_id, undefined, undefined, fence);
   }, false);
@@ -270,9 +281,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...taskIdField,
     ...requestIdField,
   }).strict(), async ({ workspace_id, task_id, request_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(task_id)}/claim`, {
+    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(taskId)}/claim`, {
       workspace_id: workspaceId, agent_id: agentId, knowledge_enabled: false,
     }, request_id, 'TASK_CLAIMED');
   }, false);
@@ -283,9 +295,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(task_id)}/release`, {
+    return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(taskId)}/release`, {
       workspace_id: workspaceId, agent_id: agentId,
     }, request_id, undefined, undefined, fence);
   }, false);
@@ -298,9 +311,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     fence: z.number().int().min(0).optional()
       .describe('Claim fence/epoch from claim_task; stale fence → 409 STALE_FENCE. Omit to skip the check.'),
   }).strict(), async ({ workspace_id, task_id, content, request_id, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(task_id)}/comments`, {
+    return api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(taskId)}/comments`, {
       workspace_id: workspaceId, content, agent_id: agentId,
     }, request_id, undefined, undefined, fence);
   }, false);
@@ -325,9 +339,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     if (board_only === true && (scope?.length ?? 0) > 0) {
       throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用：纯看板任务不提交任何文件。要提交文件请去掉 board_only；纯看板任务请去掉 scope。');
     }
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(task_id)}/done`, {
+    return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(taskId)}/done`, {
       workspace_id: workspaceId, agent_id: agentId, notes, scope_paths: scope,
       client: 'mcp', changelog_ack: skip_changelog === true,
       ...(changelog_id === undefined ? {} : { changelog_id }),
@@ -339,9 +354,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...workspaceField,
     ...taskIdField,
   }).strict(), async ({ workspace_id, task_id }) => {
-    resolveWorkspaceId(config, workspace_id);
-    await api.delete(`/issues/${encodeURIComponent(task_id)}`, 'TASK_CONFLICT', 'TASK_NOT_FOUND');
-    return { deleted: true, task_id };
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
+    await api.delete(`/issues/${encodeURIComponent(taskId)}`, 'TASK_CONFLICT', 'TASK_NOT_FOUND');
+    return { deleted: true, task_id: taskId };
   }, false);
 
   register('fail_task', 'Return a task to planning with a required failure reason.', z.object({
@@ -352,9 +368,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, reason, request_id, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(task_id)}/fail`, {
+    return api.mutate<Issue & { comment: IssueComment | null }>('POST', `/issues/${encodeURIComponent(taskId)}/fail`, {
       workspace_id: workspaceId, agent_id: agentId, reason,
     }, request_id, undefined, undefined, fence);
   }, false);
@@ -365,9 +382,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(task_id)}/close`, {
+    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(taskId)}/close`, {
       workspace_id: workspaceId, agent_id: agentId,
     }, request_id, 'INVALID_TRANSITION', 'TASK_NOT_FOUND', fence);
   }, false);
@@ -380,9 +398,10 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       .describe('Target status to reopen into; must be a status defined in this workspace. Defaults to 待规划.'),
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, request_id, status, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(task_id)}/reopen`, {
+    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(taskId)}/reopen`, {
       workspace_id: workspaceId, agent_id: agentId, ...(status === undefined ? {} : { status }),
     }, request_id, 'INVALID_TRANSITION', 'TASK_NOT_FOUND', fence);
   }, false);
@@ -397,18 +416,19 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, verdict, note, reviewer, request_id, fence }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    const issue = await api.get<Issue>(`/issues/${encodeURIComponent(task_id)}`, {}, 'TASK_NOT_FOUND');
+    const issue = await api.get<Issue>(`/issues/${encodeURIComponent(taskId)}`, {}, 'TASK_NOT_FOUND');
     if (issue.workspace_id !== workspaceId) throw new McpError('WORKSPACE_BOUND', 'The task belongs to a different workspace.');
     if (issue.status !== '待验收') {
       throw new McpError('ACCEPT_STATUS_NOT_ACCEPTABLE', 'Only tasks in review (待验收) can receive an acceptance record.');
     }
     const record = `【验收记录】verdict=${verdict}; reviewer=${reviewer ?? agentId}; at=${new Date().toISOString()}`;
     const content = note.trim() === '' ? record : `${record}\n${note}`;
-    const response = await api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(task_id)}/comments`, {
+    const response = await api.mutate<{ comment: IssueComment; woke: boolean }>('POST', `/issues/${encodeURIComponent(taskId)}/comments`, {
       workspace_id: workspaceId, content, agent_id: agentId,
     }, request_id, undefined, undefined, fence);
-    return { task_id, verdict, reviewer: reviewer ?? agentId, comment: response.comment };
+    return { task_id: taskId, verdict, reviewer: reviewer ?? agentId, comment: response.comment };
   }, false);
 }
