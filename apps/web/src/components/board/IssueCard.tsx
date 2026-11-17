@@ -173,7 +173,6 @@ export const IssueCard = memo(function IssueCard({
   selectable = false,
   selected = false,
   onToggleSelect,
-  dragDisabled = false,
 }: {
   issue: Issue;
   sessionRunning: boolean;
@@ -183,8 +182,6 @@ export const IssueCard = memo(function IssueCard({
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: (id: string) => void;
-  /** 分组显示时视觉顺序不等于 sort_order，禁用拖拽避免写出错误顺序 */
-  dragDisabled?: boolean;
 }) {
   const claimedBy = issue.claimed_by;
   const claimed = claimedBy !== null;
@@ -202,8 +199,8 @@ export const IssueCard = memo(function IssueCard({
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
     useSortable({
       id: issue.id,
-      // 选择模式或分组显示时禁用拖拽：点击语义改为勾选 / 视觉顺序不等于 sort_order
-      disabled: frozen || selectable || dragDisabled ? { draggable: true } : false,
+      // DRAG-FIX：分组模式不再禁拖；仅选择模式（点击语义改为勾选）与冻结卡（占用/决策锁）禁 draggable
+      disabled: frozen || selectable ? { draggable: true } : false,
       data: { type: 'issue', status: issue.status },
     });
 

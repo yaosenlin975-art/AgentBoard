@@ -324,7 +324,7 @@ export function Board() {
     setActiveDrag(null);
     const { active, over } = event;
     if (!over || !issues) return;
-    const drop = resolveDrop(issues, String(active.id), String(over.id));
+    const drop = resolveDrop(issues, String(active.id), String(over.id), columns);
     if (!drop) return;
     commitDrop({
       queryClient,
@@ -383,7 +383,7 @@ export function Board() {
             <select
               aria-label="分组方式"
               data-testid="display-grouping"
-              title={displayOptions.grouping === 'label' ? '按标签分组显示时禁用拖拽排序' : undefined}
+              title={displayOptions.grouping === 'label' ? '按标签分组：组内可拖拽排序，跨列拖拽改状态' : undefined}
               value={displayOptions.grouping}
               onChange={(event) => changeDisplayOptions({ ...displayOptions, grouping: event.target.value === 'label' ? 'label' : 'none' })}
               className="h-[30px] shrink-0 rounded-lg border border-hairline bg-transparent px-1.5 text-xs text-ink-2 transition-colors duration-150 hover:bg-surface-raised motion-reduce:transition-none"

@@ -100,15 +100,21 @@ describe('resolveDrop（拖拽结算纯函数）', () => {
     expect(resolveDrop(single, 'x', columnDroppableId('待验收'))).toBeNull();
   });
 
-  it('「进行中」未占用任务不可跨列改状态，列内排序仍放行（DETAIL-STATUS01）', () => {
+  it('「进行中」未占用任务可跨列改状态（DRAG-FIX），列内排序仍放行', () => {
     const running = makeIssue('r1', { status: '进行中', sort_order: 0 });
     const running2 = makeIssue('r2', { status: '进行中', sort_order: 1000 });
     const planned = makeIssue('p1', { status: '待规划', sort_order: 0 });
     const issues = [running, running2, planned];
 
-    // 拖到其他列 → 不落库（状态只能由 claim/done/fail 流转）
-    expect(resolveDrop(issues, 'r1', columnDroppableId('待验收'))).toBeNull();
-    expect(resolveDrop(issues, 'r1', 'p1')).toBeNull();
+    // 未占用卡跨列拖出放行：patch 带 status（服务端 updateIssueGuarded 对未占用卡放行 status）
+    expect(resolveDrop(issues, 'r1', columnDroppableId('待验收'))).toEqual({
+      id: 'r1',
+      patch: { status: '待验收', sort_order: 0 },
+    });
+    expect(resolveDrop(issues, 'r1', 'p1')).toEqual({
+      id: 'r1',
+      patch: { status: '待规划', sort_order: -1000 },
+    });
     // 列内排序不改变状态 → 允许
     expect(resolveDrop(issues, 'r1', 'r2')).toEqual({ id: 'r1', patch: { sort_order: 2000 } });
     // 其他状态照常跨列
@@ -439,6 +445,64 @@ describe('Board 组件', () => {
       fireEvent.keyDown(activator!, { code: 'Escape', key: 'Escape' });
     }
     await waitFor(() => expect(screen.queryByTestId('drag-overlay-i1')).not.toBeInTheDocument());
+  });
+
+  it('DRAG-FIX 分组模式开放拖拽：未占用卡可拖（Space 可抓取），占用卡仍冻结', async () => {
+    const claimedRunning = makeIssue('g2', {
+      title: '分组占用卡',
+      status: '进行中',
+      labels: ['前端'],
+      sort_order: 1000,
+      claimed_by: 'agent:codex',
+      claimed_at: 1,
+      session_id: 'gs1',
+    });
+    mockBoardData(
+      [makeIssue('g1', { title: '分组未占用卡', labels: ['前端'], sort_order: 0 }), claimedRunning],
+      [
+        {
+          id: 'gs1',
+          workspace_id: 'ws-1',
+          issue_id: 'g2',
+          cli: 'codex',
+          model: null,
+          status: '运行中',
+          adapter_session_id: null,
+          created_at: 1,
+        },
+      ],
+    );
+    useAppStore.setState({ workspaceId: 'ws-1' });
+    renderBoard();
+
+    expect(await screen.findByTestId('issue-card-g1')).toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByTestId('display-grouping'), 'label');
+
+    // 分组下拉 title 改为语义说明（不再是「禁用拖拽排序」）
+    expect(screen.getByTestId('display-grouping').getAttribute('title')).toContain('组内');
+    // 分组渲染仍按标签分段
+    expect(screen.getByTestId('board-group-待规划-前端')).toBeInTheDocument();
+    expect(screen.getByTestId('board-group-进行中-前端')).toBeInTheDocument();
+
+    // dragDisabled 已删（类型层）+ 行为层：分组模式下未占用卡 activator 未禁用
+    const unclaimedCard = screen.getByTestId('issue-card-g1');
+    const unclaimedActivator = unclaimedCard.querySelector('[aria-roledescription="sortable"]');
+    expect(unclaimedActivator).not.toBeNull();
+    expect(unclaimedActivator!.getAttribute('aria-disabled')).not.toBe('true');
+    // 占用卡仍冻结：activator 禁用 + not-allowed
+    const claimedCard = screen.getByTestId('issue-card-g2');
+    expect(claimedCard.querySelector('[aria-roledescription="sortable"]')!.getAttribute('aria-disabled')).toBe('true');
+    expect(claimedCard.style.cursor).toBe('not-allowed');
+
+    // 行为证明：分组模式下 Space 抓取未占用卡能拉起 DragOverlay
+    (unclaimedActivator as HTMLElement).focus();
+    fireEvent.keyDown(unclaimedActivator!, { code: 'Space', key: ' ' });
+    try {
+      expect(await screen.findByTestId('drag-overlay-g1')).toHaveTextContent('分组未占用卡');
+    } finally {
+      fireEvent.keyDown(unclaimedActivator!, { code: 'Escape', key: 'Escape' });
+    }
+    await waitFor(() => expect(screen.queryByTestId('drag-overlay-g1')).not.toBeInTheDocument());
   });
 
   it('任务树与任务看板可切换，树视图读取层级接口', async () => {

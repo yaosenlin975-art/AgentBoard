@@ -82,7 +82,6 @@ export const Column = memo(function Column({
       selectable={selectionActive && issueInScope(selectionScope, issue)}
       selected={selectedIds?.has(issue.id) ?? false}
       onToggleSelect={onToggleSelect}
-      dragDisabled={grouping !== 'none'}
     />
   );
 
@@ -166,19 +165,27 @@ export const Column = memo(function Column({
           <Skeleton rows={3} testId={`column-skeleton-${status}`} className="m-1" />
         ) : (
           <>
-            <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-              {groups === null
-                ? issues.map(renderCard)
-                : groups.map((group) => (
-                    <section key={group.key} data-testid={`board-group-${status}-${group.key}`} className="flex flex-col gap-1">
-                      <div className="flex items-center justify-between px-1 pt-1 text-[11px] font-medium text-ink-3">
-                        <span>{group.label}</span>
-                        <span className="tabular-nums">{group.issues.length}</span>
-                      </div>
+            {groups === null ? (
+              <SortableContext items={issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+                {issues.map(renderCard)}
+              </SortableContext>
+            ) : (
+              <>
+                {/* DRAG-FIX：分组模式开放拖拽——每组独立 SortableContext（items=组内视觉顺序，组内让位动画与索引正确）；
+                    结算仍走 resolveDrop 的 sort_order 插值，不加跨组特判 */}
+                {groups.map((group) => (
+                  <section key={group.key} data-testid={`board-group-${status}-${group.key}`} className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between px-1 pt-1 text-[11px] font-medium text-ink-3">
+                      <span>{group.label}</span>
+                      <span className="tabular-nums">{group.issues.length}</span>
+                    </div>
+                    <SortableContext items={group.issues.map((i) => i.id)} strategy={verticalListSortingStrategy}>
                       {group.issues.map(renderCard)}
-                    </section>
-                  ))}
-            </SortableContext>
+                    </SortableContext>
+                  </section>
+                ))}
+              </>
+            )}
             {issues.length === 0 && (
               <>
                 <EmptyState

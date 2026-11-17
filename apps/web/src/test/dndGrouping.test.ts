@@ -9,9 +9,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Issue } from '@agentboard/shared';
-import { BOARD_COLUMNS, groupByColumn } from '../lib/dnd';
+import { BOARD_COLUMNS, columnDroppableId, groupByColumn, resolveDrop } from '../lib/dnd';
+import { groupIssuesForDisplay } from '../lib/displayOptions';
 
-const issue = (id: string, status: string, sort_order = 0): Issue => ({
+const issue = (id: string, status: string, sort_order = 0, overrides: Partial<Issue> = {}): Issue => ({
   id,
   workspace_id: 'ws-1',
   title: id,
@@ -27,6 +28,7 @@ const issue = (id: string, status: string, sort_order = 0): Issue => ({
   comment_count: 0,
   created_at: 1,
   updated_at: 1,
+  ...overrides,
 });
 
 describe('groupByColumn（状态键不再写死四个）', () => {
@@ -59,5 +61,47 @@ describe('groupByColumn（状态键不再写死四个）', () => {
   it('空列表也为每一列返回数组（渲染时读 .length 不会 undefined）', () => {
     const grouped = groupByColumn([]) as unknown as Record<string, Issue[]>;
     for (const status of BOARD_COLUMNS) expect(Array.isArray(grouped[status])).toBe(true);
+  });
+});
+
+/**
+ * DRAG-FIX：分组模式（按标签分组）开放拖拽。
+ * 渲染层每组独立 SortableContext（Column.tsx），结算仍走 resolveDrop 统一语义
+ * （sort_order 插值 + 跨列带 status，不加跨组特判）。
+ */
+describe('分组模式拖拽放行（DRAG-FIX）', () => {
+  /** 前端组：a(0) b(1000) [待规划] x(0) [待验收] z(0, 占用)[进行中]；未分类组：c(2000)[待规划] */
+  const groupedIssues: Issue[] = [
+    issue('a', '待规划', 0, { labels: ['前端'] }),
+    issue('b', '待规划', 1000, { labels: ['前端'] }),
+    issue('c', '待规划', 2000),
+    issue('x', '待验收', 0, { labels: ['前端'] }),
+    issue('z', '进行中', 0, { labels: ['前端'], claimed_by: 'agent:codex', claimed_at: 1 }),
+  ];
+
+  it('groupIssuesForDisplay：组按首遇顺序，组内保持列内 sort_order 子序列', () => {
+    const groups = groupIssuesForDisplay(groupedIssues, 'label');
+    expect(groups!.map((group) => group.key)).toEqual(['前端', '未分类']);
+    expect(groups![0]!.issues.map((i) => i.id)).toEqual(['a', 'b', 'x', 'z']);
+    expect(groups![1]!.issues.map((i) => i.id)).toEqual(['c']);
+  });
+
+  it('组内重排生效：同组两卡之间拖拽返回 sort_order 插值 patch（跨组同列同理）', () => {
+    // b 拖到 a 之前：取边界 -1000
+    expect(resolveDrop(groupedIssues, 'b', 'a')).toEqual({ id: 'b', patch: { sort_order: -1000 } });
+    // a 拖到 b 之后（b 与 c 之间）：取中值 1500
+    expect(resolveDrop(groupedIssues, 'a', 'b')).toEqual({ id: 'a', patch: { sort_order: 1500 } });
+  });
+
+  it('跨列拖拽改状态生效：拖到待验收列容器返回带 status 的 patch', () => {
+    expect(resolveDrop(groupedIssues, 'a', columnDroppableId('待验收'))).toEqual({
+      id: 'a',
+      patch: { status: '待验收', sort_order: 1000 },
+    });
+  });
+
+  it('占用卡仍冻结：claimed_by 非空 → null（分组不豁免）', () => {
+    expect(resolveDrop(groupedIssues, 'z', 'a')).toBeNull();
+    expect(resolveDrop(groupedIssues, 'z', columnDroppableId('待规划'))).toBeNull();
   });
 });

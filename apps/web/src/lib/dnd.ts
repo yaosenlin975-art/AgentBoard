@@ -55,8 +55,7 @@ export interface DropPatch {
 /**
  * 结算一次拖放。
  * - 跨列：patch 带 status；列内：只带 sort_order。
- * - 源卡片占用中（claimed_by 非空）禁止拖出 → null。
- * - 「进行中」不可手动改状态（含未占用）：拖到其他列 → null；列内排序放行。
+ * - 源卡片占用中（claimed_by 非空）禁止拖出 → null；未占用卡全部放行（含「进行中」拖出，DRAG-FIX）。
  * - 无变化（原地放下）→ null。
  */
 export function resolveDrop(
@@ -85,7 +84,7 @@ export function resolveDrop(
     beforeId = overId;
   }
 
-  if (statusChangeBlocked(active, targetStatus as IssueStatus)) return null;
+  if (statusChangeBlocked(active)) return null;
 
   const columnAll = issues
     .filter((i) => i.status === targetStatus)
