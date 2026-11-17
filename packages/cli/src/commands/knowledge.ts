@@ -820,11 +820,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         pages: Array<{ id: string; slug: string; title: string; scope: string; workspace_id: string | null; status: string; revision: number; source_db: string; target_dir: string; file: string; action: string; reason?: string }>;
         conflicts: Array<{ dir: string; file: string; page_id: string; source_db: string; existing_sha256: string; incoming_sha256: string; backup_path?: string }>;
         manifests: Array<{ dir: string; file: string; files: number; written: boolean }>;
-        summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number };
+        summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number; duplicates: number };
       }
       const actionLabel = (action: string): string => ({
         'create': '新增', 'skip-unchanged': '已一致', 'conflict': '冲突',
-        'skip-deleted': '软删跳过', 'skip-invalid': '契约跳过', 'skip-duplicate': '重复跳过',
+        'skip-deleted': '软删跳过', 'skip-invalid': '契约跳过',
       }[action] ?? action);
       try {
         const report = await request<ExportReport>(ctx.base, 'POST', '/api/knowledge/export-legacy', body);
@@ -841,7 +841,8 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
           ctx.io.write(`  ${target.dir}：新增 ${target.create} / 已一致 ${target.unchanged} / 冲突 ${target.conflicts} / 跳过 ${target.skipped}\n`);
         }
         ctx.io.write('待导出清单：\n');
-        const pages = report.pages.filter(item => item.id !== '');
+        // P2-5：pages[] 不再含 id='' 的合成行，无需过滤（服务端契约保证每项都有非空 id）
+        const pages = report.pages;
         if (pages.length === 0) ctx.io.write('  （旧库无知识页行集）\n');
         for (const item of pages) {
           ctx.io.write(`  ${item.id.slice(0, 8)} [${item.scope}${item.workspace_id !== null ? ` ${item.workspace_id.slice(0, 8)}` : ''}] rev:${item.revision} ${item.slug} → ${item.target_dir !== '' ? `${item.target_dir}/${item.file}` : '（无目标）'}（${actionLabel(item.action)}${item.reason !== undefined ? `：${item.reason}` : ''}）\n`);
@@ -858,6 +859,8 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
           }
         }
         ctx.io.write(`汇总：行集 ${report.summary.total} 页 = 新增 ${report.summary.create} + 已一致 ${report.summary.unchanged} + 冲突 ${report.summary.conflicts} + 跳过 ${report.summary.skipped}\n`);
+        // duplicates 是行集之外的独立计数（C8 混合态同 id 页多源库出现），不计入上面的等式
+        if (report.summary.duplicates > 0) ctx.io.write(`另有 ${report.summary.duplicates} 个重复页已跳过（同 id 在多个源库出现，以 localized 工作区库副本为准）\n`);
         if (report.conflicts.length > 0) throw new CommanderError(2, 'agentboard.knowledge.export', '');
       } catch (error) {
         if (error instanceof CommanderError) throw error;

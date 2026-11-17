@@ -107,7 +107,7 @@ describe('P2-02 export-legacy（fan-out / manifest / 回读校验）', () => {
     const res = await request(app).post('/api/knowledge/export-legacy').send({ dry_run: true });
     expect(res.status).toBe(200);
     expect(res.body.dry_run).toBe(true);
-    expect(res.body.summary).toEqual({ total: 3, create: 3, unchanged: 0, conflicts: 0, skipped: 0 });
+    expect(res.body.summary).toEqual({ total: 3, create: 3, unchanged: 0, conflicts: 0, skipped: 0, duplicates: 0 });
     expect(res.body.sources).toEqual(expect.arrayContaining([
       expect.objectContaining({ source_db: 'workspace#1', pages: 1 }),
       expect.objectContaining({ source_db: 'center', pages: 2 }),
@@ -135,7 +135,7 @@ describe('P2-02 export-legacy（fan-out / manifest / 回读校验）', () => {
     const res = await request(app).post('/api/knowledge/export-legacy').send({});
     expect(res.status).toBe(200);
     expect(res.body.dry_run).toBe(false);
-    expect(res.body.summary).toEqual({ total: 4, create: 3, unchanged: 0, conflicts: 0, skipped: 1 });
+    expect(res.body.summary).toEqual({ total: 4, create: 3, unchanged: 0, conflicts: 0, skipped: 1, duplicates: 0 });
     // 文件数 = 行集数（非软删）
     const commonFile = join(commonDocs, 'common-a.md');
     const w2File = join(docsOf(w2), 'w2-page.md');
@@ -170,7 +170,7 @@ describe('P2-02 export-legacy（fan-out / manifest / 回读校验）', () => {
     const filesBefore = readFileSync(join(commonDocs, 'common-a.md'), 'utf8');
     const res = await request(app).post('/api/knowledge/export-legacy').send({});
     expect(res.status).toBe(200);
-    expect(res.body.summary).toEqual({ total: 1, create: 0, unchanged: 1, conflicts: 0, skipped: 0 });
+    expect(res.body.summary).toEqual({ total: 1, create: 0, unchanged: 1, conflicts: 0, skipped: 0, duplicates: 0 });
     expect(readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
     expect(readFileSync(join(commonDocs, 'common-a.md'), 'utf8')).toBe(filesBefore);
     expect((res.body.manifests as Array<{ written: boolean }>)[0].written).toBe(false);

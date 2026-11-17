@@ -592,8 +592,8 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；strict（未知 query 键 400） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/**score 负值，越小越相关，见上**）；仅 status=active 且未过期页；≥3 码点走文件索引 bm25（trigram 预筛 + 子串确认），1–2 码点走子串 | 400 校验失败 | knowledgeRoutes.ts |
-| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active；deleted 恒空集——软删即撤文件）、`include_expired? true\|false`（默认 false）、`offset?`、`limit? 1-100`（默认 20）；strict（未知 query 键 400） | `PageResult<摘要行>`（跨目录合并 (updated_at DESC, id)） | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts |
+| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；未知 query 键 strip（忽略，不报错） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/**score 负值，越小越相关，见上**）；仅 status=active 且未过期页；≥3 码点走文件索引 bm25（trigram 预筛 + 子串确认），1–2 码点走子串；`scope=both` 时响应头带 `X-Knowledge-Truncated: true\|false`（该 scope 合并后是否被 limit 截断） | 400 校验失败 | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active；deleted 恒空集——软删即撤文件）、`include_expired? true\|false`（默认 false）、`invalid_only? true\|false`（默认 false；仅返回坏页清单，`items` 恒空）、`offset?`、`limit? 1-100`（默认 20）；未知 query 键 strip（忽略，不报错） | `{ items: 摘要行[], next_offset: number\|null, invalid_count: number, invalid: { slug: string\|null, file_name: string, issues: string[] }[] }`；`items` 跨目录合并 (updated_at DESC, id)；`invalid[]` 是本范围内解析/校验失败的文件（只给 slug/文件名/issues，不返回正文），`invalid_count` 为其长度；坏页不会进 `items`，也不会被静默吞掉 | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id/revisions` | query：`scope`、`workspace_id?`（兼容保留） | `{ items: [], next_offset: null }`（单页历史已退役，§8 #5） | — | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id/revisions/:revision` | query：`scope`、`workspace_id?` | — | 404 `KNOWLEDGE_REVISION_NOT_FOUND`（文件事实源不保留单页历史；旧库历史走 export-legacy） | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id` | query：`scope`、`workspace_id?` | `KnowledgePage` 全量（软删页文件已撤 → 404 `KNOWLEDGE_NOT_FOUND`；归档页 200 带 `status='archived'`） | 404 `KNOWLEDGE_NOT_FOUND`；坏文件（解析失败/外部编辑）同 404，reconcile 报告 | knowledgeRoutes.ts |
@@ -1004,6 +1004,34 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 - 挂载顺序 `app.use(express.json())`（`index.ts:154`，默认 100kb）→ 之后才 `/api` 路由（`:160`）；
 - `express.json()` 对已解析请求会跳过，但**超限拒绝发生在先执行的那个 parser**，所以路由级 parser 放不大上限；
 - 实测：导入端点 50kb → 200；**500kb → 413**（全局，码 `ATTACHMENT_TOO_LARGE`、文案「单张图片不能超过 10 MiB」）；>1MB → 同样 413；对照 `POST /api/issues/draft` 200kb → 413（全局 100kb 未放宽）。
+
+### 18.1 `POST /api/knowledge/export-legacy` 报告形状（`api/knowledgeExportRoutes.ts`）
+
+旧库 → 文件事实源的一次性迁移。请求体（`.strict()`）：`dry_run?: boolean`、`to?: string`（重定向输出根）、`scope?: 'all'|'center'|'workspace'`、`workspace_id?`。
+
+响应 `ExportReport`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `format` / `schema_version` | string / number | 清单格式标识 |
+| `dry_run` | boolean | true 时只报告不写盘 |
+| `scope` / `workspace_id` | — | 回显请求范围 |
+| `exported_at` | string | ISO 时间戳 |
+| `sources` | `{ source_db, path, pages }[]` | 参与迁移的源库分布 |
+| `targets` | `{ dir, create, unchanged, conflicts, skipped }[]` | 按目标目录的分项计数 |
+| `pages` | `ExportPageEntry[]` | **每项 `id` 非空**；逐页动作见下 |
+| `conflicts` | `{ dir, file, page_id, source_db, existing_sha256, incoming_sha256, backup_path? }[]` | 目标已存在且内容不同（暂停导出） |
+| `manifests` | `{ dir, file, files, written }[]` | 每目录 `.export-manifest.json` |
+| `summary` | `{ total, create, unchanged, conflicts, skipped, duplicates }` | 见下 |
+
+`pages[].action` 取值：`create`（新增）｜`skip-unchanged`（目标已存在且逐字节一致，幂等跳过）｜`conflict`（目标存在且内容不同，不静默覆盖）｜`skip-deleted`（软删页不落盘）｜`skip-invalid`（不符合文件契约，`reason` 点名原因）。
+
+算术口径：
+- `total = create + unchanged + conflicts + skipped` **恒成立**（`total` 为去重后的旧库行集大小；`skipped = skip-deleted + skip-invalid`）。
+- `duplicates` 是**行集之外的独立计数**：混合态（C8）下同一 `id` 在多个源库出现时，以 localized 工作区库副本为准，其余副本跳过。这些页不进入 `pages[]`，也不计入上面四项。
+- 正文含 CRLF 的页按契约归一为 LF 落盘，`reason` 会标注「正文含 CRLF，已按契约归一为 LF 落盘（内容未丢失）」——**不是失败**。
+
+零丢失口径：写盘前先在内存内完成全量 `render → parse → 比对`，任一页不合格则**不写入任何文件**（500 `KNOWLEDGE_EXPORT_VERIFY_FAILED`）；行集内 slug 归一冲突整体拒绝（409 `KNOWLEDGE_EXPORT_CONFLICT`）。
 
 要真正支持 1MB，需在 `index.ts` 里把该路径 parser 挂在全局之前（board-server 的文件，未改）：
 

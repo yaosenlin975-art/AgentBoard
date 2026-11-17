@@ -92,7 +92,7 @@ function atomicWriteIfChanged(filePath: string, content: string): boolean {
 
 // ---- 报告形状（CLI --json 直接透出） ----
 
-export type ExportPageAction = 'create' | 'skip-unchanged' | 'conflict' | 'skip-deleted' | 'skip-invalid' | 'skip-duplicate';
+export type ExportPageAction = 'create' | 'skip-unchanged' | 'conflict' | 'skip-deleted' | 'skip-invalid';
 
 export interface ExportPageEntry {
   id: string;
@@ -144,7 +144,12 @@ export interface ExportReport {
   pages: ExportPageEntry[];
   conflicts: ExportConflictEntry[];
   manifests: Array<{ dir: string; file: string; files: number; written: boolean }>;
-  summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number };
+  /**
+   * `total = create + unchanged + conflicts + skipped` 恒成立；
+   * `duplicates` 是**行集之外**的独立计数（C8 混合态下同 id 页在多个源库出现，
+   * 以 localized 工作区库副本为准，其余副本跳过），不计入上述四项。
+   */
+  summary: { total: number; create: number; unchanged: number; conflicts: number; skipped: number; duplicates: number };
 }
 
 interface PlannedPage {
@@ -464,19 +469,14 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
       create: pages.filter(page => page.target_dir === dir && page.action === 'create').length,
       unchanged: pages.filter(page => page.target_dir === dir && page.action === 'skip-unchanged').length,
       conflicts: pages.filter(page => page.target_dir === dir && page.action === 'conflict').length,
-      skipped: pages.filter(page => page.target_dir === dir && (page.action === 'skip-deleted' || page.action === 'skip-invalid' || page.action === 'skip-duplicate')).length,
+      skipped: pages.filter(page => page.target_dir === dir && (page.action === 'skip-deleted' || page.action === 'skip-invalid')).length,
     }));
     const create = countOf('create');
     const unchanged = countOf('skip-unchanged');
     const conflictCount = countOf('conflict');
-    const skipped = countOf('skip-deleted') + countOf('skip-invalid') + countOf('skip-duplicate');
-    if (duplicates > 0) {
-      pages.push({
-        id: '', slug: '', title: '', scope: 'common', workspace_id: null, status: '', revision: 0,
-        source_db: '', target_dir: '', file: '', action: 'skip-duplicate',
-        reason: `${duplicates} 个同 id 页在多个源库出现（C8 混合态）：以 localized 工作区库副本为准，中心库重复副本跳过`,
-      });
-    }
+    const skipped = countOf('skip-deleted') + countOf('skip-invalid');
+    // P2-5：duplicates 不再伪装成一条 id='' 的合成页行（那会污染 ExportPageEntry 契约，
+    // 并使 total = create+unchanged+conflicts+skipped 不成立）。改为 summary 独立计数。
     const report: ExportReport = {
       format: KNOWLEDGE_EXPORT_FORMAT,
       dry_run: body.dry_run,
@@ -488,7 +488,7 @@ export function createKnowledgeExportRouter(options: KnowledgeExportRouterOption
       pages,
       conflicts,
       manifests,
-      summary: { total: byId.size, create, unchanged, conflicts: conflictCount, skipped },
+      summary: { total: byId.size, create, unchanged, conflicts: conflictCount, skipped, duplicates },
     };
     res.json(report);
   });
