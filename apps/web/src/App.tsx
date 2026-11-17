@@ -13,6 +13,7 @@ import { Board } from './components/board/Board';
 import { DecisionNotifier } from './components/decisions/DecisionNotifier';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
 import { OnboardingTour } from './components/onboarding';
+import { ViewErrorBoundary } from './components/shell/ViewErrorBoundary';
 import { useRestartStore } from './state/restartStore';
 
 // WEB-BUNDLE（3451075e）：重视图改成动态导入，避免它们进首屏 modulepreload。
@@ -109,53 +110,68 @@ export default function App() {
             <DecisionNotifier />
             <div className="relative flex min-h-0 flex-1">
               <main data-testid="main-content" className="min-w-0 flex-1 overflow-auto">
+                {/* G3：每个视图各包一层边界——单个视图抛错只坏这一块，左栏与其它入口不受影响 */}
                 {view === 'decisions' ? (
-                  <Suspense fallback={viewLoading}>
-                    <DecisionsView />
-                  </Suspense>
+                  <ViewErrorBoundary view="decisions">
+                    <Suspense fallback={viewLoading}>
+                      <DecisionsView />
+                    </Suspense>
+                  </ViewErrorBoundary>
                 ) : view === 'log' ? (
                   workspaceId === null ? (
                     <p data-testid="log-view-needs-workspace" className="p-6 text-sm text-ink-3">
                       请先选择工作空间，再查看日志
                     </p>
                   ) : (
-                    <Suspense fallback={viewLoading}>
-                      <ChangelogPanel
-                        key={workspaceId}
-                        workspaceId={workspaceId}
-                      />
-                    </Suspense>
+                    <ViewErrorBoundary view="log">
+                      <Suspense fallback={viewLoading}>
+                        <ChangelogPanel
+                          key={workspaceId}
+                          workspaceId={workspaceId}
+                        />
+                      </Suspense>
+                    </ViewErrorBoundary>
                   )
                 ) : view === 'knowledge' ? (
-                  <Suspense fallback={viewLoading}>
-                    <KnowledgePanel
-                      key={workspaceId ?? 'common'}
-                      workspaceId={workspaceId}
-                      workspaceName={current?.name ?? null}
-                      deepLinkPageId={deepLink?.pageId ?? null}
-                    />
-                  </Suspense>
+                  <ViewErrorBoundary view="knowledge">
+                    <Suspense fallback={viewLoading}>
+                      <KnowledgePanel
+                        key={workspaceId ?? 'common'}
+                        workspaceId={workspaceId}
+                        workspaceName={current?.name ?? null}
+                        deepLinkPageId={deepLink?.pageId ?? null}
+                      />
+                    </Suspense>
+                  </ViewErrorBoundary>
                 ) : view === 'chat' ? (
                   // FIX-2：聊天是普通第五视图——不再有可视退出栏；离开走左栏其它入口，
                   // 快捷键 Esc / Ctrl(Cmd)+[ 仍保留（lead 裁定：只删可视出口，保留键盘出口）。
                   // Suspense 放在外层容器内：`chat-view` 容器保持同步渲染（视图骨架不闪）。
                   <div data-testid="chat-view" className="flex h-full min-h-0 flex-col">
                     <div className="min-h-0 flex-1">
-                      <Suspense fallback={viewLoading}>
-                        <ChatView />
-                      </Suspense>
+                      <ViewErrorBoundary view="chat">
+                        <Suspense fallback={viewLoading}>
+                          <ChatView />
+                        </Suspense>
+                      </ViewErrorBoundary>
                     </div>
                   </div>
                 ) : view === 'guide' ? (
-                  <Suspense fallback={viewLoading}>
-                    <GuideView />
-                  </Suspense>
+                  <ViewErrorBoundary view="guide">
+                    <Suspense fallback={viewLoading}>
+                      <GuideView />
+                    </Suspense>
+                  </ViewErrorBoundary>
                 ) : view === 'experts' ? (
-                  <Suspense fallback={viewLoading}>
-                    <ExpertsView />
-                  </Suspense>
+                  <ViewErrorBoundary view="experts">
+                    <Suspense fallback={viewLoading}>
+                      <ExpertsView />
+                    </Suspense>
+                  </ViewErrorBoundary>
                 ) : (
-                  <Board />
+                  <ViewErrorBoundary view="board">
+                    <Board />
+                  </ViewErrorBoundary>
                 )}
               </main>
               {/* S2c：右侧滑出面板（账号/设置）——宽屏挤压主区，窄屏覆盖并锁 body 滚动 */}
