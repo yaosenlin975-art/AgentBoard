@@ -74,7 +74,7 @@ describe('STORE-4a 读路径切库 + 知识路由按请求取库', () => {
   };
   const pageBody = (over: Record<string, unknown> = {}) => ({
     domain: 'knowledge', slug: 'route-page', title: '切库区页标题机密', body_md: '切库验收正文 WAL', actor: 'tester',
-    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
     evidence: [{ source_id: 's', locator: 'issue:1' }],
     ...over,
   });

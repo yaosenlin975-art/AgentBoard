@@ -22,7 +22,7 @@ import { parseKnowledgeDocument } from '@agentboard/shared';
 // 本机（Windows AV）落盘抖动：放宽用例与钩子超时
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
-const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
+const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }];
 const evidence = [{ source_id: 's', locator: 'issue:1' }];
 
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');

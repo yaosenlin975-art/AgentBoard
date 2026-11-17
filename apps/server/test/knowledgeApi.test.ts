@@ -14,7 +14,7 @@ describe('knowledge REST', () => {
   let f: ReturnType<typeof createKnowledgeRestFixture>; let a: string; let b: string;
   beforeEach(() => { f = createKnowledgeRestFixture(); a = f.a; b = f.b; });
   afterEach(() => f.cleanup());
-  const body = () => ({ domain: 'knowledge', scope: 'workspace', workspace_id: a, slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }] });
+  const body = () => ({ domain: 'knowledge', scope: 'workspace', workspace_id: a, slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL', actor: 'codex', sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }] });
   it('knowledgePageRouteRejectsOtherWorkspace and explicit scope validation', async () => {
     const created = await request(f.app).post('/api/knowledge/pages').send(body()); expect(created.status).toBe(200);
     // 验收探针：POST 后 Docs/<slug>.md 真实落盘且回读正文一致

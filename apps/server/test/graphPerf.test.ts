@@ -14,7 +14,7 @@ import { GRAPH_TEXT_EXCERPT, createKnowledgePage, listKnowledgeGraphRows } from 
 import { buildKnowledgeGraph } from '../src/services/knowledgeGraph.js';
 
 const scope = { scope: 'common' as const, workspace_id: null };
-const SOURCE = { source_id: 'src-1', source_type: 'file' as const, locator: 'samples/g.md', captured_at: 1, content_hash: 'a'.repeat(64) };
+const SOURCE = { source_id: 'src-1', source_type: 'file' as const, locator: 'samples/g.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) };
 
 function seed(db: ReturnType<typeof createTestDb>['db'], pages: number, bigChars: number): void {
   for (let i = 0; i < pages; i += 1) {

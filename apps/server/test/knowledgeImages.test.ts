@@ -58,7 +58,7 @@ describe('knowledge images (KB-IMG-1)', () => {
       scope,
       ...(scope === 'workspace' ? { workspace_id: wsA } : {}),
       slug, title: `页-${slug}`, body_md: '正文', actor: 'tester',
-      sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+      sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
       evidence: [{ source_id: 's', locator: 'issue:1', snapshot: 'verified' }],
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);

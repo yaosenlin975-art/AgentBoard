@@ -53,7 +53,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       slug: 'ws-page',
       title: '本区页',
       body_md: '正文',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
       actor: 'tester',
     } as never);

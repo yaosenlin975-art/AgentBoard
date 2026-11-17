@@ -13,7 +13,7 @@ import { createKnowledgePage, getKnowledgeRevision, listKnowledgeRevisions, revi
 import { createTestDb, type TestDb } from './helpers.js';
 
 const scope = { scope: 'common' as const, workspace_id: null };
-const SOURCE = { source_id: 'kb-diff-s', source_type: 'file' as const, locator: 'samples/kb-diff-s.md', captured_at: 1, content_hash: 'a'.repeat(64) };
+const SOURCE = { source_id: 'kb-diff-s', source_type: 'file' as const, locator: 'samples/kb-diff-s.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) };
 const EVIDENCE = [{ source_id: 'kb-diff-s', locator: 'samples/kb-diff-s.md:1' }];
 
 function seedPage(db: TestDb, bodyChars: number, revisions: number) {

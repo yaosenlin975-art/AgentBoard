@@ -31,7 +31,7 @@ let adapter: FakeAdapter;
 let deps: DispatchDeps;
 
 describe('knowledge context', () => {
-  const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:evidence', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
+  const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:evidence', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }];
   function seedKnowledge(workspace: string | null, slug: string, body = '缓存失效方案') {
     return createKnowledgePage(t.db, { domain: 'knowledge', scope: workspace ? 'workspace' : 'common', workspace_id: workspace, slug, title: slug, body_md: body, sources, evidence: [{ source_id: 's', locator: 'issue:evidence' }], actor: 'codex' } as any);
   }

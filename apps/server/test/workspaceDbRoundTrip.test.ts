@@ -124,7 +124,7 @@ describe('ARCH-08 数据下沉主干回归：enable → status → revert', () =
         slug,
         title,
         body_md: `# ${title}\n\n下沉/回迁内容一致性样本。`,
-        sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+        sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
         evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
         actor: 'tester',
       } as never);

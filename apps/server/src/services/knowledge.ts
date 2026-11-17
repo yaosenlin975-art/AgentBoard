@@ -4,10 +4,39 @@ import { ValidationError } from '../errors.js';
 
 const shortText = z.string().trim().min(1).max(2000);
 const snapshot = z.string().refine(s => s.trim().length > 0 && Buffer.byteLength(s, 'utf8') <= 2048, '证据摘录必须非空且最多 2 KiB');
+
+/**
+ * M1：`content_hash` 的熵下限——拒绝占位值。
+ *
+ * 职责是「证明源文件就是这个 hash」，`0`×64 通过格式校验等于签了假承诺，
+ * 会让 reconcile 的源漂移检测对该条永久失效。
+ *
+ * 用唯一字符数而不是「必须含字母」：真实 sha256 理论上可能就是全数字
+ * （概率极低但非零，含字母不是必要条件）。占位值特征是字符集高度重复：
+ * `0`×64 → 1 种、`1234`×16 → 4 种；真实 sha256 实测 ≈15-16 种，8 是安全的分界线。
+ */
+const MIN_HASH_UNIQUE_CHARS = 8;
+
+function placeholderHashDetail(hash: string): string | null {
+  const unique = new Set(hash.toLowerCase()).size;
+  return unique < MIN_HASH_UNIQUE_CHARS ? `${unique} < ${MIN_HASH_UNIQUE_CHARS}` : null;
+}
+
 export const knowledgeSourceSchema = z.object({
   source_id: shortText, source_type: z.enum(['file', 'url', 'agent']), locator: shortText,
-  captured_at: z.number().int().nonnegative(), content_hash: z.string().regex(/^[a-fA-F0-9]{64}$/), snapshot: snapshot.optional(),
-}).strict();
+  captured_at: z.number().int().nonnegative(),
+  content_hash: z.string().regex(/^[a-fA-F0-9]{64}$/),
+  snapshot: snapshot.optional(),
+}).strict().superRefine((source, ctx) => {
+  const detail = placeholderHashDetail(source.content_hash);
+  if (detail !== null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['content_hash'],
+      message: `是占位值（唯一字符数 ${detail}）；填真实文件 sha256，不要用 0 或重复片段凑满 64 位`,
+    });
+  }
+});
 export const knowledgeEvidenceSchema = z.object({ source_id: shortText, locator: shortText, snapshot: snapshot.optional() }).strict();
 /**
  * IMPORT-LIMIT-S：知识页正文上限（唯一来源）。

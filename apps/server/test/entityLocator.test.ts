@@ -71,7 +71,7 @@ describe('STORE-4b entity_locator 定位索引', () => {
   };
   const pageBody = (over: Record<string, unknown> = {}) => ({
     domain: 'knowledge', slug: 'locator-page', title: '定位索引验收页', body_md: '定位索引验收正文', actor: 'tester',
-    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
     evidence: [{ source_id: 's', locator: 'issue:1' }],
     ...over,
   });
@@ -199,7 +199,7 @@ describe('STORE-4b entity_locator 定位索引', () => {
     // legacy 直建（旧库只读回退层）：repos/knowledge 的索引挂钩原样保留
     const legacy = createKnowledgePage(t.db, {
       domain: 'knowledge', scope: 'workspace', workspace_id: ws, slug: 'locator-legacy', title: '旧库页', body_md: '正文',
-      sources: [{ source_id: 's', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 's', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 's', locator: 'README.md' }], actor: 'tester',
     });
     expect(locatorRow(t.db, legacy.id)).toEqual({ kind: 'knowledge_page', workspace_id: ws });

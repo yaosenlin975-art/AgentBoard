@@ -36,7 +36,7 @@ describe('K3 坏知识页可见性', () => {
     title: 'K3 页',
     body_md: '原始正文',
     actor: 'tester',
-    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'ok' }],
+    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'ok' }],
     evidence: [{ source_id: 's', locator: 'issue:1' }],
     ...overrides,
   });

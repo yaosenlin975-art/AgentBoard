@@ -92,7 +92,7 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       slug: 'ws-page',
       title: '本区页',
       body_md: '正文',
-      sources: [{ source_id: 'file:a.md', source_type: 'file', locator: 'a.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:a.md', source_type: 'file', locator: 'a.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:a.md', locator: 'a.md:1-2' }],
       actor: 'tester',
     } as never).id;
@@ -103,7 +103,7 @@ describe('STORE-6（M4b）中心库快照 / 附件携带 / git 接线', () => {
       slug: 'common-page',
       title: '公共页',
       body_md: '公共正文',
-      sources: [{ source_id: 'file:b.md', source_type: 'file', locator: 'b.md', captured_at: 1, content_hash: 'b'.repeat(64) }],
+      sources: [{ source_id: 'file:b.md', source_type: 'file', locator: 'b.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:b.md', locator: 'b.md:1-2' }],
       actor: 'tester',
     } as never);
