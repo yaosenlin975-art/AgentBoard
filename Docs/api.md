@@ -188,6 +188,18 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 | --- | --- | --- | --- | --- |
 | `GET /api/version` | — | `{ name: 'agentboard-server', version: string, pid: number }`；version 取 `apps/server/package.json`（`version.ts`）；`pid` 供重启后区分「新进程已接管」与「已回退旧进程」；web 顶栏与设置弹窗经 `apps/web/src/api/version.ts` 展示 | — | routes.ts:239 |
 | `POST /api/system/pick-folder` | — | `{ path: string\|null }`；null=用户取消；Windows 原生 FolderBrowserDialog（powershell.exe），同一时刻仅允许一个窗口 | 409 `PICK_FOLDER_BUSY` 已有选择窗口打开；500 `PICK_FOLDER_FAILED` 打开窗口失败 | routes.ts:228 |
+| `POST /api/client-diagnostics` | body（`.strict()`，未知字段 → 400）：`instance_id: string ≤200`、`kind: 'error'\|'rejection'\|'react'`、`message: string 1-2000`、`stack?: ≤20000`、`source?: ≤500`、`url?: ≤2000`、`user_agent?: ≤500`、`client_ts: int ≥0`（客户端 epoch ms）、`app_version?: ≤100`、`context?: Record<string,string ≤200>` 最多 10 键 | `{ ok: true }`；不返回敏感信息 | 400 `VALIDATION_ERROR` 字段非法/超长/未知字段（不落盘）；429 `CLIENT_DIAGNOSTICS_RATE_LIMITED` 同 instance 每分钟超 20 条 | routes/clientDiagnosticsRoutes.ts |
+
+### G4 客户端错误取证（`POST /api/client-diagnostics`）
+
+桌面端白屏（React 无 ErrorBoundary → 整树卸载）复发时的取证通道：release 未启 devtools、`window.onerror` 未挂，客户端错误只此一条路径可落盘。
+
+- **`instance_id` 来源**：复用 `GET /api/version` 已返回的 `instance_id`，前端不另生成。
+- **限流**：同 `instance_id` 每 60s 窗口最多 20 条。第 21 次起 `429`，且**每窗口只记一条**「限流触发」行、不记被丢弃的内容（否则限流记录自己成为刷屏源）。实现为内存 Map，进程重启清零，不持久化。
+- **日志路径**：`<configDir>/logs/client-error.log`，即 `%APPDATA%\AgentBoard\logs\client-error.log`。**不写 `server.log`**（服务端视角与客户端错误混在一起会两边都不可读），**不落安装根**（D6 回归护栏）。
+- **格式**：JSONL，每行一条，字段 `received_at`（服务端 ISO 时间）+ 全部请求字段（缺省为 `null`）。
+- **轮转**：单文件超 5 MB → 固定名 `.1`（只保留一个，与 D14 的 `main.log → main.log.1` 同口径，不带时间戳，便于预测磁盘占用）。
+- **不鉴权**：本地服务，与 `/api/version` 同级。
 
 ## 5. settings
 
