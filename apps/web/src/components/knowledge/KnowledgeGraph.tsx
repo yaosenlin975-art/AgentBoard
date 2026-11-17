@@ -187,7 +187,16 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
   });
 
   const usingFallback = remote.isError;
-  const raw = usingFallback ? (fallback.data ?? null) : remote.data !== undefined ? normalizeGraph(remote.data) : null;
+  /**
+   * R4-B1：`normalizeGraph` 每次渲染都返回新对象/新数组/新 Map。写成普通表达式会让 `raw`
+   * 每次渲染都换引用，击穿下游全部 memo（fullGraph → graph → matches → viewFilter → shown），
+   * 最终 `useEffect([shown])` 无条件重跑 `layoutGraph(120 tick)` —— 搜索框每敲一个字、
+   * 缩放动画每帧都付一次 8–18ms。这里按数据源 memo 住身份。
+   */
+  const raw = useMemo(
+    () => (usingFallback ? (fallback.data ?? null) : remote.data !== undefined ? normalizeGraph(remote.data) : null),
+    [usingFallback, fallback.data, remote.data],
+  );
   const loading = remote.isPending || (usingFallback && fallback.isPending);
   const error = usingFallback && fallback.isError ? fallback.error : null;
 
@@ -404,7 +413,6 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
     }
     let cancelled = false;
     let sizeWaitFrame = 0;
-    let sizeWaitTimer: ReturnType<typeof setTimeout> | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let observer: ResizeObserver | null = null;
     setRenderer('pending');
@@ -488,7 +496,6 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
       const waitSize = (): void => {
         if (cancelled) return;
         if (sizeOk()) {
-          if (sizeWaitTimer !== null) clearTimeout(sizeWaitTimer);
           setGraphError(null);
           start();
           return;
@@ -516,13 +523,11 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
         sizeWaitFrame = requestAnimationFrame(waitSize);
       };
       sizeWaitFrame = requestAnimationFrame(waitSize);
-      sizeWaitTimer = setTimeout(() => { if (!cancelled && !sizeOk()) { /* 由 waitSize 收口 */ } }, 520);
     }
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(sizeWaitFrame);
-      if (sizeWaitTimer !== null) clearTimeout(sizeWaitTimer);
       if (retryTimer !== null) clearTimeout(retryTimer);
       observer?.disconnect();
       cleanupHandle();
@@ -907,7 +912,9 @@ export function KnowledgeGraph({ workspaceId, scope, onSelect, initialFocusPageI
                 className="block w-full px-3 py-1.5 text-left text-ink-2 hover:bg-surface-raised"
                 onClick={() => {
                   // 应用无 URL 路由：复制知识页引用（kb/MCP 用得到的 id 形式）
-                  void navigator.clipboard?.writeText(`knowledge://${menu.id}`);
+                  // R4-B10：非安全上下文/权限被拒时 writeText 会 reject；`void` 不消费 rejection
+                  // → 被 installClientErrorHooks 当 unhandledrejection 收进诊断上报，污染取证数据。
+                  void navigator.clipboard?.writeText(`knowledge://${menu.id}`).catch(() => undefined);
                   setMenu(null);
                 }}
               >

@@ -17,6 +17,11 @@ export const DIAGNOSTICS_DISABLED_KEY = 'ab.diagnostics.disabled';
 export const DIAGNOSTICS_ENDPOINT = '/api/client-diagnostics';
 /** 单批上限：一次崩溃常带几十条，全发会被服务端限流，且没有额外价值 */
 export const REPORT_BATCH_LIMIT = 10;
+/**
+ * R4-B4：指纹去重集合的容量上限。去重是为了挡「同一处代码反复抛同一个错」的刷屏，
+ * 不需要记住进程内所有历史指纹；无上限会随白屏循环无限增长。
+ */
+export const REPORTED_FINGERPRINT_CAP = 100;
 /** 单条 message / stack 上限，与服务端 zod 契约一致（超出会被 400 丢掉整条） */
 const MESSAGE_LIMIT = 2000;
 const STACK_LIMIT = 20_000;
@@ -95,8 +100,22 @@ export interface ErrorReporter {
   dispose: () => void;
 }
 
-/** 页面是否正在卸载（此状态下改走 sendBeacon） */
+/**
+ * 页面是否正在卸载（此状态下改走 sendBeacon）。
+ *
+ * R4-B6：`pagehide` 也会在进入 bfcache 时触发，用户按返回到页面后进程还活着。
+ * 只置 true 从不复位会让此后所有上报都走 `sendBeacon`——而 beacon 有 64KB 配额，
+ * 20KB 的 stack 约第 3 条起就静默丢弃。所以在 `pageshow` 里复位。
+ */
 let unloading = false;
+
+export function markPageUnloading(): void {
+  unloading = true;
+}
+
+export function markPageResumed(): void {
+  unloading = false;
+}
 
 function defaultSend(payload: DiagnosticPayload, unloadingNow: boolean): Promise<boolean> {
   const body = JSON.stringify(payload);
@@ -133,8 +152,19 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
   let scheduled = false;
 
   const resolveInstance = (): Promise<string> => {
+    // R4-B5：早前把「拿不到」的空串也缓存进 instancePromise → 进程内再也不重试。
+    // 现在失败就清缓存，下次上报重新取（`/api/version` 本身有 react-query 缓存兜底）。
     if (instancePromise === null) {
-      instancePromise = options.resolveInstanceId().catch(() => '');
+      instancePromise = options
+        .resolveInstanceId()
+        .then((id) => {
+          if (id === '') instancePromise = null;
+          return id;
+        })
+        .catch(() => {
+          instancePromise = null;
+          return '';
+        });
     }
     return instancePromise;
   };
@@ -147,21 +177,28 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
     if (isDisabled()) return;
     // 同批内按指纹再去一次（同一条错误在微任务入队前可能来两次）
     const unique: ClientErrorEntry[] = [];
+    const batchSeen = new Set<string>();
     for (const entry of batch) {
       const fingerprint = errorFingerprint(entry);
-      if (reportedFingerprints.has(fingerprint)) continue;
-      reportedFingerprints.add(fingerprint);
+      if (reportedFingerprints.has(fingerprint) || batchSeen.has(fingerprint)) continue;
+      batchSeen.add(fingerprint);
       unique.push(entry);
     }
     if (unique.length === 0) return;
-    const instanceId = await resolveInstance();
-    if (instanceId === '') {
-      // 拿不到 instance_id：不重试、不记缓冲（服务端必然 400）
-      return;
-    }
     const accepted = unique.slice(0, REPORT_BATCH_LIMIT);
     const dropped = unique.length - accepted.length;
+    // R4-B4：等 instance_id 拿到再记指纹。早前「先 add 后截断/后失败返回」会让那次崩溃
+    // 永久失去重报机会（截断掉的条目与拿不到 instance_id 的那批都被静默标记为已报）。
+    const instanceId = await resolveInstance();
+    if (instanceId === '') return;
     for (const entry of accepted) {
+      reportedFingerprints.add(errorFingerprint(entry));
+      // R4-B4：集合无上限会随进程寿命无限增长（白屏循环每轮造新栈）。
+      // FIFO 淘汰：只需保证「最近 N 条」不重复上报，够挡刷屏又不吃内存。
+      if (reportedFingerprints.size > REPORTED_FINGERPRINT_CAP) {
+        const oldest = reportedFingerprints.values().next();
+        if (!oldest.done) reportedFingerprints.delete(oldest.value);
+      }
       try {
         await send(toPayload(entry, instanceId, appVersion), unloading);
       } catch {
@@ -209,12 +246,12 @@ export function installErrorReporting(options: ErrorReporterOptions): ErrorRepor
   const reporter = createErrorReporter(options);
   setClientErrorSink(reporter.handle);
 
-  // 页面卸载途中改用 sendBeacon：此时 fetch 可能被取消
-  const markUnloading = (): void => {
-    unloading = true;
-  };
-  window.addEventListener('pagehide', markUnloading);
-  window.addEventListener('beforeunload', markUnloading);
+  // 页面卸载途中改用 sendBeacon：此时 fetch 可能被取消。
+  // R4-B6：`pagehide` 在进入 bfcache 时也会触发，`pageshow` 必须复位，否则回到页面后
+  // 全部上报都走 beacon（64KB 配额，大 stack 从第 3 条起静默丢弃）。
+  window.addEventListener('pagehide', markPageUnloading);
+  window.addEventListener('beforeunload', markPageUnloading);
+  window.addEventListener('pageshow', markPageResumed);
 
   return reporter;
 }

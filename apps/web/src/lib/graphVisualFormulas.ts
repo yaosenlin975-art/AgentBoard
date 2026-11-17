@@ -137,19 +137,29 @@ export function shouldKeepPanInertia(elapsedMs: number): boolean {
  * 双向边去重：A、B 互链时只保留 id 字典序大的那条（等价「source.reverse 含 target 且
  * source.id.localeCompare(target.id) < 0 时不画」）。
  * 返回应隐藏的边键集合。
+ *
+ * R4-B2：原实现对每条边都 `edges.find(...)` 全表扫描 → O(E²)（E=900 时 1.5–4.3ms），
+ * 而它挂在 `pixiGraph.update()` 上、由渲染链每次触发。改成先用 Set 建 `source\0target`
+ * 索引，反向边查 O(1)。
+ *
+ * 排序语义**保持 localeCompare**：合成节点 id 形如 `tag:${tag_norm}`，tag 可以是中文，
+ * `<` 按 UTF-16 码元比较，与 locale collation 在非 ASCII 上可能给出相反结论。
  */
 export function duplicateEdgeKeys(
   edges: ReadonlyArray<{ key: string; source: string; target: string }>,
 ): Set<string> {
-  const set = new Set<string>();
+  const hidden = new Set<string>();
+  const directed = new Set<string>();
+  for (const edge of edges) {
+    if (edge.source !== edge.target) directed.add(`${edge.source}\u0000${edge.target}`);
+  }
   for (const edge of edges) {
     if (edge.source === edge.target) continue;
-    const reverse = edges.find((other) => other.source === edge.target && other.target === edge.source);
-    if (reverse === undefined) continue;
+    if (!directed.has(`${edge.target}\u0000${edge.source}`)) continue;
     // 只保留字典序大的那条
-    if (edge.source.localeCompare(edge.target) < 0) set.add(edge.key);
+    if (edge.source.localeCompare(edge.target) < 0) hidden.add(edge.key);
   }
-  return set;
+  return hidden;
 }
 
 /** 12 个语义色的 CSS 变量类名（取值靠临时插 div + getComputedStyle，不硬编码） */

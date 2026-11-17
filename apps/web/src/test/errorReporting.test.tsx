@@ -19,6 +19,7 @@ import {
   DIAGNOSTICS_DISABLED_KEY,
   DIAGNOSTICS_ENDPOINT,
   REPORT_BATCH_LIMIT,
+  REPORTED_FINGERPRINT_CAP,
   createErrorReporter,
   errorFingerprint,
   installErrorReporting,
@@ -207,8 +208,96 @@ describe('sendBeacon 降级', () => {
   });
 });
 
-describe('与 G3 的边界串联', () => {
-  it('componentDidCatch 走同一条上报路径', async () => {
+describe('R4-B4/B5/B6 正确性', () => {
+  it('B6：pagehide 后 pageshow 必须复位 unloading，否则回到页面后全走 sendBeacon', async () => {
+    const beacon = vi.fn(() => true);
+    Object.defineProperty(navigator, 'sendBeacon', { configurable: true, value: beacon });
+    const fetchSpy = vi.fn(async () => ({ ok: true }) as Response);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const reporter = installErrorReporting({ resolveInstanceId: async () => INSTANCE });
+
+    // 1) pagehide → 走 beacon
+    window.dispatchEvent(new Event('pagehide'));
+    reporter.handle({ ts: 1, kind: 'error', message: 'b6-during-hide', stack: 's', url: 'u' });
+    await reporter.flush();
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // 2) pageshow（bfcache 恢复）→ 必须回到 fetch
+    window.dispatchEvent(new Event('pageshow'));
+    reporter.handle({ ts: 2, kind: 'error', message: 'b6-after-resume', stack: 's2', url: 'u' });
+    await reporter.flush();
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('B5：拿不到 instance_id 时不缓存空值，下一次能成功上报', async () => {
+    let attempt = 0;
+    const sent: DiagnosticPayload[] = [];
+    const reporter = createErrorReporter({
+      resolveInstanceId: async () => {
+        attempt += 1;
+        return attempt === 1 ? '' : INSTANCE;
+      },
+      send: async (payload) => {
+        sent.push(payload);
+        return true;
+      },
+    });
+
+    reporter.handle({ ts: 1, kind: 'error', message: 'b5-first', stack: 's1', url: 'u' });
+    await reporter.flush();
+    expect(sent).toHaveLength(0); // 第一次拿不到 → 不发
+
+    // 第二次必须重新取 instance_id，且这次成功（早前会永久缓存空串）
+    reporter.handle({ ts: 2, kind: 'error', message: 'b5-second', stack: 's2', url: 'u' });
+    await reporter.flush();
+    expect(attempt).toBe(2);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message).toBe('b5-second');
+  });
+
+  it('B4：拿不到 instance_id 时指纹不入集合，恢复后同一条仍能上报', async () => {
+    let instance = '';
+    const sent: DiagnosticPayload[] = [];
+    const reporter = createErrorReporter({
+      resolveInstanceId: async () => instance,
+      send: async (payload) => {
+        sent.push(payload);
+        return true;
+      },
+    });
+
+    reporter.handle({ ts: 1, kind: 'error', message: 'b4-retry', stack: 'same', url: 'u' });
+    await reporter.flush();
+    expect(sent).toHaveLength(0);
+
+    instance = INSTANCE;
+    reporter.handle({ ts: 2, kind: 'error', message: 'b4-retry', stack: 'same', url: 'u' });
+    await reporter.flush();
+    expect(sent).toHaveLength(1);
+  });
+
+  it('B4：指纹集合有上限，不会随白屏循环无限增长', async () => {
+    const reporter = createErrorReporter({
+      resolveInstanceId: async () => INSTANCE,
+      send: async () => true,
+    });
+    // 单批上限 10，所以要分多轮 handle→flush 才能把集合推过上限
+    const total = REPORTED_FINGERPRINT_CAP + 30;
+    for (let i = 0; i < total; i += 1) {
+      reporter.handle({ ts: i, kind: 'error', message: `loop-${i}`, stack: `s-${i}`, url: 'u' });
+      if ((i + 1) % REPORT_BATCH_LIMIT === 0) await reporter.flush();
+    }
+    await reporter.flush();
+    expect(reporter.reportedCount()).toBe(REPORTED_FINGERPRINT_CAP);
+  });
+});
+
+describe('与 G3 的边界串联', () => {  it('componentDidCatch 走同一条上报路径', async () => {
     const { reporter, sent } = makeReporter();
     setClientErrorSink(reporter.handle);
 
