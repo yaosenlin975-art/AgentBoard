@@ -12,6 +12,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 - `--scope` 首选**逐条重复传参**：`kb done <id> --scope a --scope b`。
 - 逗号串 `--scope "a,b"` 当前 CLI 会吞下并按逗号拆分（2026-11-04 实测提交成功），但不要依赖它：含空格的参数仍会触发 SCOPE-GUARD 警告；声明范围与实际改动不一致时仍会零命中、不提交。脚本里一律逐条传。
 - **issue id 支持 ≥8 位唯一前缀（CLI-02）**：`show / claim / comment / done / fail / close / reopen / update / move-issue / delete-issue / dep ls / dep add / dep rm` 以及 `--parent` 同口径。实测 `kb show 230c15de` → 完整卡详情（exit 0）；7 位 `kb show 230c15d` → 「任务 id 前缀至少 8 位」（exit 1）；前缀命中多张卡 → exit 2 并列出候选，需补全区分。**写卡面 / 建依赖 / 写提交信息时仍用完整 36 位 UUID**（人对人可读、可复算），前缀只在手敲命令时图省事。`kb dep add/ls/rm` 传不存在的任务 → **exit 1**「任务不存在或不属于当前工作区：<ref>」；exit 4 只留给 `dep rm` 的「依赖边不存在」。
+- **id 的合法形态只有两种**：完整 36 位 UUID，或 ≥8 位纯十六进制前缀（`packages/cli/src/issueRef.ts` 的 `HEX_REF = /^[0-9a-f]{1,35}$/i`）。非十六进制串（如 `zzzz`）不算前缀、直接当完整 id 请求，所以报「任务不存在」而非「前缀不足」；1–7 位十六进制串才有「任务 id 前缀至少 8 位」文案。看到「任务不存在」先确认 id 是不是纯十六进制。
 - `kb knowledge resolve` / `kb knowledge link` / `kb knowledge show`、`kb decision show`（`kb decision <id>` 缺省等价 show）、`kb ask-extend` 同样支持 id 的 ≥8 位前缀；`--parent` 也接受唯一前缀（`kb create-issue --help`）。
 - 服务端在「声明了范围却零命中」时会写一条 `⚠ 声明范围零命中，本次未自动提交` 的系统评论，并给出可直接复制执行的 `git add -- <paths>; git commit -m "..." -- <paths>` 补救命令；照抄执行即可（该评论里「逗号串被拆」只是常见原因之一，不是唯一原因，先核对你声明的路径是否真的改过）。
 - 看到这条评论＝你的改动没进 git，不要当成已完成；先执行补救命令，再看 `git log -1`。
@@ -84,7 +85,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 
 本节优先于本技能其余条款，冲突时以本节为准；用户当轮另有明确指示时按用户指示执行。
 
-- **调用即绑定**：技能启动第一步绑定当前工作区。主路径：`kb list-spaces --current` 直接输出 cwd 解析到的当前工作区（exit 0，JSON 仍为单元素数组），把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。兜底（`--current` 报歧义、无匹配或连不上服务时）：跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；路径先解成实体路径（junction/软链接按 target 解析）再比对；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区。cwd 落在某工作区根之下（未命中任何根的等值项）时，取最长前缀命中的那个根作为当前工作区；仅当同时命中多个不同根（公共父目录 / 嵌套工作区）才停下来问用户。cwd 不属于任何已注册工作空间时同样停下问用户；不猜、不按名称猜。
+- **调用即绑定**：技能启动第一步绑定当前工作区。主路径：`kb list-spaces --current` 直接输出 cwd 解析到的当前工作区（exit 0；--json 走列表信封 {items,next_offset}，items 恰为 1 条，不是裸数组），把 `<id> <name> <path>` 写进本轮第一条 `kb comment`。兜底（`--current` 报歧义、无匹配或连不上服务时）：跑 `kb list-spaces` 取全部工作空间，把 path 与会话 cwd 归一化后逐一比对（统一反斜杠、去尾斜杠、Windows 大小写不敏感；路径先解成实体路径（junction/软链接按 target 解析）再比对；cwd 取真实根，如 `pwd` 或 `git rev-parse --show-toplevel`），命中项即当前工作区。cwd 落在某工作区根之下（未命中任何根的等值项）时，取最长前缀命中的那个根作为当前工作区；仅当同时命中多个不同根（公共父目录 / 嵌套工作区）才停下来问用户。cwd 不属于任何已注册工作空间时同样停下问用户；不猜、不按名称猜。
 - **默认只查、只领、只写当前工作区**：`kb list-tasks` 缺省按 cwd 解析当前工作区，只查/只领当前工作区时可不带 `--workspace`；`--all` 聚合全部工作空间，仅用于跨工作区只读盘点（与 `--workspace` 互斥，禁止用它跑写入命令，不得据它 claim）。`kb create-issue` 的 workspace 必须是当前工作区。工作区外的路径默认只读：可读、可引用，不得写。
 - **跨工作区一律要用户显式授权**：对非当前工作区的任何写入（改文件、建/改任务卡、claim/done/fail 别人的卡、写知识、写变更日志、起服务、改 DB、切分支）先说明「影响哪个工作区、哪些文件/数据」，取得当轮同意后再做；授权只覆盖当轮描述的范围。**引用其他工作区的原文（需求、设计、日志、别人的交接）也必须写全「工作区 id + 相对路径 + 文件名」**，例：`工作区 e41eb0fb-… ：Docs/api.md §退出码`；只写「见 xx handoff / 见那份文档」不算引用，读者按路径打不开即视为无依据。
 - **改动他人归属目录前先声明**：要动明确归属别的卡 / 别的工作流的文件或目录（同一工作区内也算），动手前在相关卡 `kb comment` 留一行 `改动声明：<文件> ｜ <YYYY-MM-DD HH:mm 本地> ｜ <意图>`；对方下次读卡就看得见。这行原文必须进收尾回报（第 3 步「汇报」与「收尾声明」），不写视为未协作。
@@ -92,7 +93,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 - **卡归属校验**：`kb show` 返回的 `workspace_id` 与本轮绑定的工作区不一致时，停止写入与状态流转，把两个 id/路径一起回报父代理或用户，由他们决定是否授权跨区。
 - **CLI 不会替你拦跨区**：`claim / comment / done / fail / close / dep` 只凭 issue id 就能写（CLI-25），服务端不校验 workspace；“命令能跑”≠“已授权”。跨区写入前必须过上面的绑定与授权检查。
 - **被占用不等于可释放**：见「占用规则」的 release 口径。
-- **收尾声明**：done/fail/交接的回报四要素——工作区 id + 绝对路径；改动文件清单（本轮若声明过改动他人归属目录，把那行 `改动声明：…` 原文一并带上）；是否跨工作区读写（是/否，若是写授权依据）；验证命令与结果（回报里每个数字——耗时、条数、比例、行数、通过数——后面各附一行复算命令，按命令重算，不引用他人转述；**看板计数类数字优先用 `kb stats --workspace <id>` 一次取全**（OPT-11：五状态 / 未完成无主 / 被阻塞，输出带工作区 id 与生成时间，单次请求），逐状态复核时再给 `待规划 32 —— 复算：kb list-tasks --workspace <id> --status 待规划 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`））。
+- **收尾声明**：done/fail/交接的回报四要素——工作区 id + 绝对路径；改动文件清单（本轮若声明过改动他人归属目录，把那行 `改动声明：…` 原文一并带上）；是否跨工作区读写（是/否，若是写授权依据）；验证命令与结果（回报里每个数字——耗时、条数、比例、行数、通过数——后面各附一行复算命令，按命令重算，不引用他人转述；**看板计数类数字优先用 `kb stats` 一次取全**（`--workspace` 可省，缺省按 cwd 解析；OPT-11：五状态 / 未完成无主 / 被阻塞，输出带工作区 id 与生成时间，单次请求），逐状态复核时再给 `待规划 32 —— 复算：kb list-tasks --workspace <id> --status 待规划 --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`（列表类命令 `--json` 返回 `{items,next_offset}`，复算取 `.items.length`））。
 
 ## kb 命令速查
 
@@ -101,7 +102,7 @@ AgentBoard 是任务看板：任务挂在「工作空间」下，通过 `kb` CLI
 kb create-space <name> <path>           # 创建工作空间（path 必须已存在且是目录）
 kb delete-space <workspace>             # 删除工作空间登记（不可逆；不动磁盘目录；占用校验由服务端拒绝，需 --yes）
 kb list-spaces                          # 列工作空间（id/name/path；文本与 --json 都给全长 36 位 id——任务列表的 id 列才是短 ID）
-kb list-spaces --current                # 只输出 cwd 解析到的当前工作区（绑定工作区主路径；JSON 仍为单元素数组）
+kb list-spaces --current                # 只输出 cwd 解析到的当前工作区（绑定工作区主路径；--json 为 {items,next_offset}，items 恰 1 条）
 kb workspace-db <子命令>                # 工作区库下沉（<工作区>/.agentboard/agentboard.db）：enable 启用迁移（新建区自动启用）/ status 只读状态 / cleanup 清半成品 / revert 反向回迁
 kb workspace-db snapshot export|validate|import <工作区>  # 文本快照（JSONL+manifest，随 git）；另有 center-export / center-validate 中心库快照
 # —— 任务 ——
@@ -109,7 +110,7 @@ kb create-issue <ws> <title> [-d 描述] [-p 低|中|高] [-l 标签,标签] [--
                                         # 建任务；-d 必填；标题含引号被拒时用 --title-stdin；无 --description-stdin（长描述先建后 update）
 kb list-tasks [--workspace <id|名>] [--status <状态>] [--full] [--all-status]  # 缺省按 cwd 解析当前工作区，且缺省收敛为「未完成 + 无主」；看全量（含已关闭/已占用）加 --all-status。--all 聚合全部工作空间，仅限跨工作区只读盘点（与 --workspace 互斥），不得据它 claim / done / fail。
 kb next [--workspace <id|名>] [--limit N]  # 推荐下一张可领取的卡（按依赖/状态过滤）
-kb stats --workspace <id>               # 单请求给五状态计数 + 未完成无主 + 被阻塞（收尾数字优先用它复算）
+kb stats [--workspace <id>]             # 单请求给五状态计数 + 未完成无主 + 被阻塞（收尾优先用它复算；--workspace 可省，缺省按 cwd 解析）
 kb show <issue-id> [--mark-read]        # 任务完整字段 + 全部评论；默认只读，不推进已读游标
 kb grep <pattern> [--path <dir>] [--glob <glob>]  # 本地代码/文档检索（不读 .gitignore）；0 命中 / 1 未命中 / 2 出错
 kb update <issue-id> [--title <text>] [--description <text>|--description-stdin] [--priority <低|中|高>] [--labels <a,b,c>] [--due-date <YYYY-MM-DD>] [--due-time <HH:mm>|--clear-due] [--parent <id>|--clear-root] [--status <状态>]  # 改字段或直接设状态；内置流转优先用专用命令
@@ -153,7 +154,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 - 输出体积观测（ARCH-06）：设 `KB_METRICS=1` 时命令结束后向 **stderr** 追加一行 `[kb] cmd=<顶层命令> out=<字节数>B lines=<行数>`（统计本次写到 stdout 的 UTF-8 字节数与行数；嵌套命令取顶层名如 `knowledge`，未进入命令时为 `-`）。未设或设 `0` 时不输出，stdout/stderr 与改造前逐字一致；该行不写 stdout，不影响 `--json` 解析与退出码。
 - 退出码：0 成功；1 参数/用法错误（未知选项、枚举非法等全局参数错误都落这里）、服务端非冲突错误（400/404/500）、服务不可达、对象不存在；2 冲突（已占用 / 未被占用 / 非当前占用者 / 状态不可领取 / 依赖未解除 / 知识页 revision 冲突与文件冲突 `KNOWLEDGE_FILE_CONFLICT`（409：外部编辑 content_hash 不符 / slug 冲突 / 锁等待超时，先跑 `kb knowledge reconcile` 再裁决）/ 幂等键复用 / 删除被阻塞 / **任务 id 前缀多命中**）；3 **`kb dep` 与待决策族（`kb ask` / `answer` / `ask-extend`）**的客户端参数校验错误（自环 / 跨工作区 / VALIDATION_ERROR / 选项不足 / 非法 grace 或 seconds；实测 `kb ask … --grace 700` → exit 3）；4 **`kb dep`**：依赖边不存在。`kb grep` 自成一套：0 命中 / 1 未命中 / 2 出错。
 - **`kb done` 的 1 是「已生效但没提交」**（GIT-OBSERVABLE）：done 已把卡推进到待验收（或已关闭），但自动提交未完成（`git_commit.status='not-committed'`，原因码 `NO_BASELINE` / `COMMIT_FAILED` / `ZERO_HIT` / `NO_SCOPE`）时，CLI 在 stderr 打「未提交 + 原因 + 可照抄补救命令」并 exit 1；按 stderr 补救，**不要重跑 `kb done`**。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0；`status='skipped'`（`reason='BOARD_ONLY'`）是成功跳过，不写 stderr、退出码 0。带 `--close` 且命中阻断性缺口时 CLI 会跳过 close（exit 1），补救后 `kb close <id>`。`--json` 仍输出单个 issue JSON，判定读 `git_commit.status/reason`。
-- `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用 / **结构环：让子卡依赖自己的祖先**，文案「会形成环」）；3 参数非法（如自环「不能依赖自身」）；4 任务或依赖不存在。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
+- `kb dep` 三点：① 写通道以卡所属工作区为准，`dep` 无 `--workspace` 选项（传了 `unknown option`，退出码 1）；卡不属于当前工作区即越界，按「工作区边界（强制）」处理。② 退出码补充：0 成功；2 冲突（`ISSUE_CLAIMED` 卡已被占用 / 存在未完成前置 / 未被占用 / **结构环：让子卡依赖自己的祖先**，文案「会形成环」）；3 参数非法（如自环「不能依赖自身」）；4 **依赖边不存在**（仅 `dep rm`；任务本身不存在落 1，实测 `kb dep ls <不存在>` → exit 1「任务不存在或不属于该工作区」）。③ **不得绕过依赖门禁**：不用 `kb dep rm` 或手工补边解锁本卡，不抢他人占用；被阻塞就报告父代理或等前置完成。
 - 退出码 1 报错文本不稳定：连接被拒时报 `看板服务未启动（…，用 --server 指定）` 并附一行启动命令（见前置条件），其余失败可能只有裸 `fetch failed`（stderr，stdout 为空）——按退出码判断，先确认服务地址，不要自行猜测端口重试超过一次。
 - **claim 状态门禁**：`kb claim` 接受「待规划」**或「进行中且无人占用」**（含租约已过期的抢占，`apps/server/src/services/claim.ts`）；待验收/已关闭/已废弃、他人占用、存在 open 决策都会被拒（退出码 2）。当前 CLI 文案已区分「状态不可领取（当前=…）」「已被 <agent> 占用」「决策锁」三类，别一律当撞卡；仍以 `kb show <id>` 的 `status` / `claimed_by` 为准。
 - **知识页 `domain`/`category`/`landed` 有 CLI 入口**（C 段 `57d1ab4c` 落地参数，KB-CR-1 起 `--domain` 必填）：`kb knowledge create/import` 必须带 `--domain accounts|knowledge|board|chat|ui|infra`（CLI 先做客户端校验：非法值直接 exit 1 并列出词表，不会被「缺少 sources/evidence」抢先盖住；服务端 400 只作兜底），`revise` 不传即不改、传 `null`/空串为显式清空。`kb knowledge create/revise` 支持 `--category design|solved|pinned|open` 与 `--landed landed|partial|proposed`；**新建时仍应显式传 `--category`**：缺省落 `open`（KB-CR-1 起不再兜底 `legacy`）。`design` 缺 `--landed` 时服务端默认 `proposed`（实测）。改已有页必须带 `--expected-revision`（CAS；实测旧 revision 被拒，退出码 2「知识页已更新，请重新读取」），`--scope workspace` 仍必填。REST 只在需要 CLI 未暴露的字段时使用。
@@ -207,7 +208,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
   kb knowledge action <page-id> archive --scope workspace --workspace <当前工作区> --expected-revision 2
   ```
   正文用管道喂 `--stdin`（PowerShell 不支持 `<` 重定向，管道带进来的 BOM 由 CLI 剥离）；来源/证据写成 JSON 文件走 `--sources-file`/`--evidence-file`，避开引号转义。**`create` 必须有正文 `--stdin` 且 `--sources`/`--evidence` 各 ≥1（缺任一实测退出 1「create 缺少必填项」）**；一次性把已有的 md/txt 建成页可用更短的 `kb knowledge import <file> --scope workspace --workspace <当前工作区> --domain … --category … --landed …`（front matter 由服务端生成，无需手写 JSON；文本输出只回一行 id/大小，不会倾倒正文）。**`create` 与 `import` 都必须带 `--domain`（accounts/knowledge/board/chat/ui/infra；KB-CR-1）**；`--category` 缺省落 `open`，`design` 用 `--landed proposed|partial|landed`。`content_hash` 用 `(Get-FileHash <文件> -Algorithm SHA256).Hash.ToLower()`，`captured_at` 用 `[DateTimeOffset]::Now.ToUnixTimeMilliseconds()`。改 slug 用 `kb knowledge rename <page-id> <new-slug> --expected-revision <n>`（全库重写 `[[old]]→[[new]]`），不要手工改文件名。知识页文件坏了/外部编辑冲突时先跑 `kb knowledge reconcile`（只读报告，`--fix` 只清残留 tmp/lock 与重建索引，绝不自动改写正文）。
-- **不要用 `kb knowledge show --history` 做交接阅读**：文本模式会倾倒整段 JSON（本次约 46KB，CLI-06）。要看历史用 `--json` 并只取需要的 revision。
+- **`kb knowledge show --history`**（CLI-06 之后的现状）：文本模式与普通 `show` 相同，只在页后追加每 rev 一行（`packages/cli/src/commands/knowledge.ts` 的 `renderPageDetail` + rev 行），不再倾倒整段 JSON；`--json` 才是整包 `{page, history}`，脚本消费用 `--json`。单页历史已退役（`Docs/api.md` §8 #5：`GET /pages/:id/revisions` 返回空集），所以 `--history` 现在通常不追加任何行。
 - **命令细节与实测坑**：完整示例（知识页建/读/改/归档、变更日志、任务全生命周期）、`--sources-file` 的 JSON 路径必须用正斜杠、`knowledge action` 必须带 `--expected-revision`、以及 `1cb07910` 三阶段（A 已落地 / B、C 未落地）的现状对照，见 `Docs/guide-2026-11-04-cli-knowledge-tasks.md`；本文只写口径，不复述命令。
 
 ## 知识页写什么（内容口径）

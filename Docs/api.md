@@ -653,9 +653,10 @@ kb knowledge link cache-policy --scope common   # 默认输出 [[cache-policy]]�
 
 ### 11.1b CLI `--json` 输出形状（KB-CLI-3c，契约 knowledge:bb929054-1d44-4542-bb96-4530e42b0546）
 
-- **列表类命令**（`list-tasks` / `list-spaces` / `knowledge list` / `changelog list` / `decisions` / `status ls` / `dep ls` / `accounts list`）→ `{ "items": [...], "next_offset": number | null }`；空结果是 `{"items": [], "next_offset": null}`，两个字段都出现，不省略。`dep ls` 的四组视图（blockers / blocked / related / duplicate）摊平成一条 `items`，每项多一个 `direction` 标明方向。
+- **列表类命令**（`list-tasks` / `list-spaces` / `knowledge list` / `changelog list` / `status ls` / `dep ls` / `accounts list`）→ `{ "items": [...], "next_offset": number | null }`；空结果是 `{"items": [], "next_offset": null}`，两个字段都出现，不省略。`dep ls` 的四组视图（blockers / blocked / related / duplicate）摊平成一条 `items`，每项多一个 `direction` 标明方向。`list-spaces --current` 同为该信封，`items` 恰为 1 条（不是裸数组）。`knowledge list` 额外带 `invalid_count: number` 与 `invalid: { slug, file_name, issues: string[] }[]`（K3：只列「文件存在但校验失败」的坏页，坏页不进 `items`；`--invalid` 时 `items` 恒空）。
+- **非 `items` 信封的特例**：`decisions` → `{ decisions: [...], counts: {...}, capabilities: {...} }`。它不是分页列表（`limit ≤ 500`、无游标），`counts` 是跨区逐区之和，改造成 `items` 会丢载荷且破坏 `apps/server` 与 CLI 的既有 shaping（`packages/cli/src/commands/decision.ts` 逐条覆写 `capabilities`，N3-05）。复算用 `.decisions.length`，不要用 `.items.length`。同形的还有 `knowledge search` / `knowledge revisions` / `changelog list`——它们本就返回分页视图并原样透传。
 - **单对象命令**（`show` / `claim` / `done` / `close` / `settings` / `knowledge show` / `decision` / `changelog show` / `workspace-db *`）→ 对象直出，不套 `items`。
-- 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`、`decisions`）原样透传，`next_offset` 缺省补 `null`。
+- 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`）原样透传，`next_offset` 缺省补 `null`；`decisions` 透传的是它自己的 `{ decisions, counts, capabilities }`（见上一条特例）。
 - stdout 只放 JSON；提示/警告一律走 stderr。复算命令要按信封取数：`kb list-tasks --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`。
 - 输出体积观测（ARCH-06，环境变量 `KB_METRICS`）：设为 `1` 时命令结束前向 **stderr** 追加一行 `[kb] cmd=<顶层命令名> out=<写入 stdout 的 UTF-8 字节数>B lines=<行数>`；`0`/未设完全不输出（stdout/stderr 与改造前逐字一致）。该行只走 stderr，不破坏 `--json` 的 `JSON.parse`，不改变退出码；嵌套命令取顶层名（如 `kb knowledge search` → `knowledge`）。
 

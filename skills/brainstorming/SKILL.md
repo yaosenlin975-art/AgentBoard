@@ -223,7 +223,7 @@ For a small change, the short design covers the same points in a line
 or two each and goes straight to your human partner, without the
 builder check.
 
-**Where it goes:** 绑定 AgentBoard 工作区时，approved design 落到**当前工作区知识库**：`kb knowledge create … --category design --landed proposed --stdin --sources-file sources.json --evidence-file evidence.json`（`create` 缺正文或 `--sources`/`--evidence` 任一即退出 1；设计稿已是 md 文件时可直接 `kb knowledge import <design.md> --category design --landed proposed`，sources 自动构造）+ 语义 slug（如 `agentboard-server-data`）。`--category` 必须显式传，不传会被落成 `legacy`（CLI-08，与 KB-PAGE-3 的 legacy 清零口径冲突）。不能落到 `<project root>/Docs/` 当正式设计文档，也不能用 `handoff-*`。内容口径见 `using-agentboard` → 「知识页写什么（内容口径）」；按该节执行，不要在此复制。未绑定工作区 / 没有 `kb` 时不要伪造工作区：落到项目既有设计文档约定（没有约定就写进对话并说明原因），再继续；`Docs/` 文件仅在项目约定或用户明确要求时写。实现计划记录在 AgentBoard 卡里。
+**Where it goes:** 绑定 AgentBoard 工作区时，approved design 落到**当前工作区知识库**：`kb knowledge create … --category design --landed proposed --stdin --sources-file sources.json --evidence-file evidence.json`（`create` 缺正文或 `--sources`/`--evidence` 任一即退出 1；设计稿已是 md 文件时可直接 `kb knowledge import <design.md> --category design --landed proposed`，sources 自动构造）+ 语义 slug（如 `agentboard-server-data`）。`--category` 必须显式传：不传时服务端落 `open`（`apps/server/src/**/knowledge.ts` 的 allowed 校验，KB-CR-1 起不再兜底 `legacy`），旧页里的 `legacy` 仍在词表内但新建不该产生。不能落到 `<project root>/Docs/` 当正式设计文档，也不能用 `handoff-*`。内容口径见 `using-agentboard` → 「知识页写什么（内容口径）」；按该节执行，不要在此复制。未绑定工作区 / 没有 `kb` 时不要伪造工作区：落到项目既有设计文档约定（没有约定就写进对话并说明原因），再继续；`Docs/` 文件仅在项目约定或用户明确要求时写。实现计划记录在 AgentBoard 卡里。
 
 **Builder check** (for a project): dispatch a fresh subagent with
 `builder-check-prompt.md` in this directory. When you tell your human
