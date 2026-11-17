@@ -226,7 +226,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
   - `snapshot` 只放简短摘要或 diff 片段，禁止把工具报告 JSON 整段塞入；服务端只查「非空且 ≤2 KiB」，不校验格式。`file` 类型来源（及指向它的 evidence）不许带 snapshot——带了服务端直接拒「本地代码来源只保存路径和 hash」，所以 snapshot 只可能出现在 url / agent 来源上。
   - 同一 evidence 不重复登记；同一提交（同一 content_hash）有多条时只保留一条。
 - **写完回读**：`kb knowledge show <page-id> --scope workspace --workspace <当前工作区>` 确认 id / scope / revision / 内容；回读失败如实报「未保存」，不得声称已保存。
-- **每页 git 快照（page_commit）已整体退役（P2-01/P2-04，方向 B）**：知识页唯一事实源是 markdown 文件（工作区页 `<工作区>/.agentboard/Docs/<slug>.md`、公共页 `~/.agentboard/Docs/<slug>.md`），**文件写成功即命令成功**；旧「快照没进 git 即 exit 1」语义已删除，响应里的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），不要读取。工作区 `Docs/` 随仓库进 git，提交由 `kb done --scope` 统一管。
+- **每页 git 快照（page_commit）已整体退役（P2-01/P2-04，方向 B）**：知识页唯一事实源是 markdown 文件（工作区页 `<工作区>/.agentboard/Docs/<slug>.md`、公共页 `~/.agentboard/Docs/<slug>.md`），**文件写成功即命令成功**；旧「快照没进 git 即 exit 1」语义已删除，响应里的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），不要读取。工作区知识页（`<工作区>/.agentboard/Docs/*.md`）随仓库进 git，**分两种时序**：① 设计页首次落库发生在**拆卡之前**（`brainstorming` 第 4 步，此刻还没有卡，`kb done --scope` 永远不会到来）→ 按 `brainstorming` 的「设计文档获批准后立即提交 git」立即 `git add` + `git commit`；② 卡执行期内的知识页增删改 → 走 `kb done --scope` 声明 `.agentboard/Docs` 路径。`kb knowledge create/import` 本身不产生任何 git 动作，不要指望它兜底。
 
 ## 知识卡链接（KCLINK，强制 · P2-03/P2-04 起主键为 wikilink）
 

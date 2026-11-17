@@ -225,6 +225,54 @@ builder check.
 
 **Where it goes:** 绑定 AgentBoard 工作区时，approved design 落到**当前工作区知识库**：`kb knowledge create … --category design --landed proposed --stdin --sources-file sources.json --evidence-file evidence.json`（`create` 缺正文或 `--sources`/`--evidence` 任一即退出 1；设计稿已是 md 文件时可直接 `kb knowledge import <design.md> --category design --landed proposed`，sources 自动构造）+ 语义 slug（如 `agentboard-server-data`）。`--category` 必须显式传：不传时服务端落 `open`（`apps/server/src/**/knowledge.ts` 的 allowed 校验，KB-CR-1 起不再兜底 `legacy`），旧页里的 `legacy` 仍在词表内但新建不该产生。不能落到 `<project root>/Docs/` 当正式设计文档，也不能用 `handoff-*`。内容口径见 `using-agentboard` → 「知识页写什么（内容口径）」；按该节执行，不要在此复制。未绑定工作区 / 没有 `kb` 时不要伪造工作区：落到项目既有设计文档约定（没有约定就写进对话并说明原因），再继续；`Docs/` 文件仅在项目约定或用户明确要求时写。实现计划记录在 AgentBoard 卡里。
 
+## 设计文档获批准后立即提交 git（BEFORE 拆卡）
+
+`kb knowledge create` / `import` 只把文件写进 `<工作区>/.agentboard/Docs/<slug>.md`，**不产生任何 git 动作**（`page_commit.skipped=true`，`apps/server/src/knowledge/**` 无 `git add`）。设计文档要在**设计获批准后立即**提交，不要等卡。
+
+### 为什么不能等 `kb done --scope`
+
+时序上不可达：
+
+```
+brainstorming 产出设计 → 获批准 → 写知识页     ← 此刻【还没有卡】
+（writing-task 才拆卡） → 执行 → kb done --scope   ← 这里才第一次能声明 Docs 路径
+```
+
+`--scope` 只在 `kb done` 时生效。设计落库发生在拆卡之前，那次 `kb done` 永远不会到来，路径也就永远没机会被声明。**`using-agentboard` 的「提交由 `kb done --scope` 统一管」只覆盖卡执行期内的知识页增删改，不覆盖设计页首次落库。**
+
+### 命令（落库成功后立刻跑）
+
+拿到 `kb knowledge create` / `import` 返回的 page id 与 slug 后：
+
+```powershell
+# 单页
+git add .agentboard/Docs/<slug>.md
+git commit -m "design: <设计标题>（knowledge:<page-id>）"
+
+# 一次批准多个设计页（逐个列出，不要用 git add .agentboard/Docs/ 整目录）
+git add .agentboard/Docs/<slug-1>.md .agentboard/Docs/<slug-2>.md
+git commit -m "design: <设计标题>（knowledge:<page-id> …）"
+```
+
+bash 同形，无需改。**`kb knowledge create` 已经把文件写好了，这里只 `add` + `commit`，不要再写一遍文件内容。**
+
+提交信息必须带 **page id**：只写标题时事后无法从 `git log` 反查到知识页（slug 可改，id 不可改）。多个页用空格分隔 id。
+
+### 验证（两条都要跑，任一不过就是没提交成功）
+
+```powershell
+git log --oneline -1 -- .agentboard/Docs/<slug>.md     # 必须命中刚才那次提交
+git status --porcelain -- .agentboard/Docs/            # 除 .index.json 外必须为空
+```
+
+第二条除 `.index.json` 外为空，才说明**全部**设计页都已入库；其余 `??` 行都是漏提交。
+
+`.index.json` 是唯一预期例外：它是「可重建检索索引，非事实源」（`apps/server/src/knowledge/paths.ts`），含 `generated_at` 与逐文件 `mtimeMs`，每次检索都会变。**不要 add 它**——入库只会给每次搜索都制造 diff 噪音，删掉也能由服务端重建。
+
+### 提交失败时
+
+见「失败分支」的**设计文档无法提交**条：报告「已落库但未进 git」+ 补救命令，**不得声称已提交**。
+
 **Builder check** (for a project): dispatch a fresh subagent with
 `builder-check-prompt.md` in this directory. When you tell your human
 partner you're writing it up, say a reviewer will read it first and you
@@ -277,6 +325,7 @@ After the design doc is approved, use the standalone `writing-task` skill to pre
 - **用户沉默 / 只回「你先定」**：一线 → 把问题收敛成一个、重述已知约束，并给出一个具体默认值供其否决；兜底 → 按「Minor」（仅影响实现方式、不改变做什么）自行定并写进设计文档标为你的调用；「Theirs」（改变做什么）仍不得自定，若必须推进，先写断点再停手，不发散成多轮追问。
 - **方案被连续否掉 3 次**：停止再堆方案。回到「Look Before You Ask」重读目标、约束与既有实现，用一句话复述「我以为你要的是什么」请对方确认/纠正；目标本身没对齐时先对齐目标，再重列方案。
 - **设计文档无法落库**：AgentBoard 知识页写入按 `using-agentboard` 的「写知识页」分支处理（`create` 缺必填项 / 409 slug 冲突改 `revise` / 服务不可达）；一次性 md 可用 `kb knowledge import`；仍失败 → 把设计留在对话里并明确写「未保存」，不得声称已落库，也不得因此跳过设计批准的硬门槛。
+- **设计文档无法提交**：`git` 不可用 / 非 git 仓库 / `.gitignore` 或路径逃逸导致 `git add` 失败 → 报告「设计已落库（knowledge:<page-id>）但未进 git」，附可照抄的 `git add .agentboard/Docs/<slug>.md; git commit -m "design: <标题>（knowledge:<page-id>）"`，**不得声称已提交**。落库成功即设计已获批准，提交失败不阻塞批准门槛，但必须显式标注未提交。
 - **视觉陪伴起不来**：连续 2 次启动失败（缺 bash / 端口占用 / 浏览器不可用）→ 本轮永久退回纯文本或静态 HTML/截图，不再反复提议，避免把澄清卡在工具上。
 - **用户中途改需求**：先停手，把新需求与已确认部分并列复述，确认哪部分作废；设计文档与方案列表按确认结果重写，不把新旧需求糊在一起。
 
