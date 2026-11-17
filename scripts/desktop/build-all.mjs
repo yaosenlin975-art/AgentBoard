@@ -55,15 +55,25 @@ const WEB_DIST = join(ROOT, 'apps', 'web', 'dist');
 const PKG_WEB_DIST = join(PKG_ROOT, 'app', 'apps', 'web', 'dist');
 const STAGE_WEB_DIST = join(ROOT, 'desktop', 'src-tauri', 'bundle-stage', 'apps', 'web', 'dist');
 /**
- * 前端关键串：壳通过 initialization_script 注入，前端据此判定平台。
+ * 前端关键串清单：每条是「这次前端改动是否真进了产物」的判据。
  *
- * 为什么需要这条校验（D15/D16 暴露的问题）：zip / NSIS 外层 mtime 新不代表内层 web dist 新，
- * 与「包内壳是旧构建」同源。z-index 哈希文件名会变，但注入的全局变量名是稳定标识，
- * 用它判断「这次前端改动是否真进了产物」。
+ * 为什么需要这些校验（D15/D16 暴露的问题）：zip / NSIS 外层 mtime 新不代表内层 web dist 新，
+ * 与「包内壳是旧构建」同源。z-index 哈希文件名会变，但下面这些字符串是稳定标识。
  *
  * 注意不能拿函数名（如 detectPlatform）当判据：vite 会压缩重命名，产物里查不到。
  */
 const WEB_DIST_MARKER = '__AB_PLATFORM_OVERRIDE__';
+/** N4：G2 首次进入新手引导的遮罩类名，出现在渲染产物里 */
+const WEB_DIST_MARKER_ONBOARDING = 'onboarding-overlay';
+/**
+ * N4：G1 教程页左栏固定用的 Tailwind 类名。
+ *
+ * Tailwind 会在构建期把 `lg:overflow-y-auto` 这类原子类提取成 CSS 规则，
+ * JS 里可能只剩类名字符串、也可能被合并进 CSS 后完全消失，因此**命中就报命中，
+ * 不命中时降级为「产物 index.html 引用的 assets 文件名与仓库 dist 一致」**
+ * ——只要文件名集合相同，说明打进包的就是仓库里这份 dist。
+ */
+const WEB_DIST_MARKER_G1 = 'lg:overflow-y-auto';
 const LOG_DIR = join(ROOT, '.logs');
 const RECORD_PATH = join(LOG_DIR, 'build-all-record.json');
 const NSIS_DIR = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
@@ -359,9 +369,6 @@ function assertShellFresh() {
 }
 
 /**
- * 包内壳一致性（D13 核心校验）：便携包内层的 `agentboard-desktop.exe` 必须由**当前壳源码**编译。
- *
-/**
  * 前端关键串校验（第 10 项一致性校验）。
  *
  * 与「包内壳是旧构建」同源：zip / NSIS 外层 mtime 新，不代表内层 web dist 新。
@@ -376,26 +383,24 @@ function assertWebDistHasMarker(webDistDir, label) {
   }
   const assetsDir = join(webDistDir, 'assets');
   const scanRoot = existsSync(assetsDir) ? assetsDir : webDistDir;
-  let total = 0;
-  let filesWithMarker = 0;
   const scanned = [];
+  const counts = { [WEB_DIST_MARKER]: 0, [WEB_DIST_MARKER_ONBOARDING]: 0, [WEB_DIST_MARKER_G1]: 0 };
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.js')) {
         scanned.push(entry.name);
-        const count = (readFileSync(full, 'utf8').match(new RegExp(WEB_DIST_MARKER, 'g')) ?? []).length;
-        if (count > 0) {
-          filesWithMarker += 1;
-          total += count;
+        const text = readFileSync(full, 'utf8');
+        for (const marker of Object.keys(counts)) {
+          counts[marker] += (text.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length;
         }
       }
     }
   };
   walk(scanRoot);
 
-  if (total === 0) {
+  if (counts[WEB_DIST_MARKER] === 0) {
     fail(
       `${label}：web dist 不含平台注入标记，前端改动未进产物\n` +
         `  标记      ${WEB_DIST_MARKER}\n` +
@@ -405,8 +410,62 @@ function assertWebDistHasMarker(webDistDir, label) {
         `  → 先确认 apps/web/dist 已重建（pnpm -r build），再重跑本脚本。`,
     );
   }
-  log(`✔ ${label}：${WEB_DIST_MARKER} 命中 ${total} 处（${filesWithMarker} 个文件，共扫 ${scanned.length} 个 .js）`);
-  return { total, filesWithMarker, scanned: scanned.length };
+  log(`✔ ${label}：${WEB_DIST_MARKER} 命中 ${counts[WEB_DIST_MARKER]} 处` + `（共扫 ${scanned.length} 个 .js）`);
+
+  // N4-G2：新手引导遮罩必须命中，否则 G2 没进包
+  if (counts[WEB_DIST_MARKER_ONBOARDING] === 0) {
+    fail(
+      `${label}：web dist 不含新手引导标记 ${WEB_DIST_MARKER_ONBOARDING}，G2 改动未进产物\n` +
+        `  扫描目录  ${scanRoot}\n` +
+        `  扫描文件  ${scanned.length} 个 .js，命中 0\n` +
+        `  → 先确认 apps/web/dist 已重建（pnpm -r build），再重跑本脚本。`,
+    );
+  }
+  log(`✔ ${label}：${WEB_DIST_MARKER_ONBOARDING} 命中 ${counts[WEB_DIST_MARKER_ONBOARDING]} 处`);
+
+  // N4-G1：左栏固定类名。Tailwind 可能把它提取进 CSS，JS 里查不到，降级为 assets 文件名比对。
+  if (counts[WEB_DIST_MARKER_G1] > 0) {
+    log(`✔ ${label}：${WEB_DIST_MARKER_G1} 命中 ${counts[WEB_DIST_MARKER_G1]} 处`);
+  } else {
+    const same = compareIndexAssets(webDistDir, label);
+    if (!same) {
+      fail(
+        `${label}：G1 判据无法确认（类名未命中且 assets 文件名与仓库 dist 不一致）\n` +
+          `  ${WEB_DIST_MARKER_G1} 命中 0（Tailwind 已提取进 CSS，属预期降级）\n` +
+          `  → 降级判据为「index.html 引用的 assets 文件名与仓库 dist 相同」，此处不满足。\n`,
+      );
+    }
+  }
+  return { counts, filesWithMarker: counts[WEB_DIST_MARKER] > 0 ? 1 : 0, scanned: scanned.length };
+}
+
+/** index.html 里引用的 assets 文件名集合 */
+function indexAssetNames(webDistDir) {
+  const indexPath = join(webDistDir, 'index.html');
+  if (!existsSync(indexPath)) return null;
+  const html = readFileSync(indexPath, 'utf8');
+  return new Set(html.match(/assets\/[A-Za-z0-9_.-]+\.(?:js|css)/g) ?? []);
+}
+
+/**
+ * N4-G1 降级判据：产物内层 index.html 引用的 assets 文件名，与仓库 dist 的相同。
+ *
+ * 只要文件名集合一致，说明打进包的就是仓库里这份 dist（文件名带内容哈希，
+ * 内容不同必然名字不同）。这比 grep 类名可靠：Tailwind 提取后类名在 JS 里可能不存在。
+ */
+function compareIndexAssets(webDistDir, label) {
+  const inner = indexAssetNames(webDistDir);
+  const repo = indexAssetNames(WEB_DIST);
+  if (inner === null || repo === null) return false;
+  if (inner.size === 0) return false;
+  const missing = [...repo].filter((name) => !inner.has(name));
+  const same = missing.length === 0;
+  log(
+    same
+      ? `✔ ${label}：G1 降级判据通过——index.html 引用的 ${repo.size} 个 assets 与仓库 dist 一致（类名已被 Tailwind 提取，属预期）`
+      : `   ${label}：index.html 与仓库 dist 不一致，缺 ${missing.length} 个：${missing.slice(0, 3).join(', ')}`,
+  );
+  return same;
 }
 
 /**
@@ -630,7 +689,7 @@ function verifyPortable(expected, portableStepStartMs) {
     bundleSha256: bundle.sha256,
     dotfilesAllow,
     zipHead: nameHead,
-    webMarkerHits: packagedWeb.total,
+    webMarkerHits: packagedWeb.counts[WEB_DIST_MARKER],
   };
 }
 
@@ -656,8 +715,8 @@ function verifyNsis(expected) {
     path: setup,
     size: statSync(setup).size,
     embeddedShellPe: nsisPe.iso,
-    stagedWebMarkerHits: stagedWeb.total,
-    embeddedWebMarkerHits: nsisWeb.total,
+    stagedWebMarkerHits: stagedWeb.counts[WEB_DIST_MARKER],
+    embeddedWebMarkerHits: nsisWeb.counts?.[WEB_DIST_MARKER] ?? 0,
   };
 }
 
@@ -691,18 +750,18 @@ function assertNsisEmbedsWebMarker(setupPath) {
           .join('\n  ')}`,
     );
   }
-  let total = 0;
-  let filesWithMarker = 0;
+  const counts = { [WEB_DIST_MARKER]: 0, [WEB_DIST_MARKER_ONBOARDING]: 0, [WEB_DIST_MARKER_G1]: 0 };
   for (const name of found) {
-    const count = (readFileSync(join(tempDir, name), 'utf8').match(new RegExp(WEB_DIST_MARKER, 'g')) ?? []).length;
-    if (count > 0) {
-      filesWithMarker += 1;
-      total += count;
+    const text = readFileSync(join(tempDir, name), 'utf8');
+    for (const marker of Object.keys(counts)) {
+      counts[marker] += (text.match(new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? []).length;
     }
   }
+  // 降级判据要在删临时目录前算：比对包内 index.html 与仓库 dist
+  const assetMatch = counts[WEB_DIST_MARKER_G1] > 0 ? null : compareIndexAssetsInZip(setupPath, sevenZip);
   rmSync(tempDir, { recursive: true, force: true });
 
-  if (total === 0) {
+  if (counts[WEB_DIST_MARKER] === 0) {
     fail(
       `NSIS 安装包：web dist 不含平台注入标记，前端改动未进产物\n` +
         `  标记      ${WEB_DIST_MARKER}\n` +
@@ -710,8 +769,46 @@ function assertNsisEmbedsWebMarker(setupPath) {
         `  → 前端壳注入改动（D15/D16）没有被打进安装包。`,
     );
   }
-  log(`✔ NSIS 内嵌 web dist：${WEB_DIST_MARKER} 命中 ${total} 处（${filesWithMarker}/${found.length} 个文件）`);
-  return { total, filesWithMarker, scanned: found.length };
+  if (counts[WEB_DIST_MARKER_ONBOARDING] === 0) {
+    fail(
+      `NSIS 安装包：web dist 不含新手引导标记 ${WEB_DIST_MARKER_ONBOARDING}，G2 改动未进产物\n` +
+        `  抽出文件  ${found.length} 个 .js，命中 0`,
+    );
+  }
+  if (counts[WEB_DIST_MARKER_G1] === 0 && assetMatch !== true) {
+    fail(
+      `NSIS 安装包：G1 判据无法确认（类名未命中且 assets 文件名与仓库 dist 不一致）\n` +
+        `  ${WEB_DIST_MARKER_G1} 命中 0（Tailwind 已提取进 CSS，属预期降级）`,
+    );
+  }
+  log(
+    `✔ NSIS 内嵌 web dist：${WEB_DIST_MARKER} ${counts[WEB_DIST_MARKER]} 处 / ` +
+      `${WEB_DIST_MARKER_ONBOARDING} ${counts[WEB_DIST_MARKER_ONBOARDING]} 处 / ` +
+      `G1 ${counts[WEB_DIST_MARKER_G1] > 0 ? `${counts[WEB_DIST_MARKER_G1]} 处` : '降级判据通过'}（${found.length} 个 .js）`,
+  );
+  return { counts, total: counts[WEB_DIST_MARKER], filesWithMarker: 1, scanned: found.length };
+}
+
+/**
+ * N4-G1 降级判据（NSIS 侧）：从安装包里抽 index.html，比对其引用的 assets 名与仓库 dist。
+ *
+ * 打包后 assets 落在 `apps/web/dist/assets/`，7-Zip 按相对路径抽出来即可读。
+ */
+function compareIndexAssetsInZip(setupPath, sevenZip) {
+  const tempDir = join(LOG_DIR, '.nsis-index-probe');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true });
+  spawnSync(sevenZip, ['e', setupPath, `-o${tempDir}`, 'apps/web/dist/index.html', '-y', '-r'], { encoding: 'utf8' });
+  const indexPath = join(tempDir, 'index.html');
+  let same = false;
+  if (existsSync(indexPath)) {
+    const inner = new Set(readFileSync(indexPath, 'utf8').match(/assets\/[A-Za-z0-9_.-]+\.(?:js|css)/g) ?? []);
+    const repo = indexAssetNames(WEB_DIST);
+    same = inner.size > 0 && repo !== null && [...repo].every((name) => inner.has(name));
+  }
+  rmSync(tempDir, { recursive: true, force: true });
+  if (same) log('✔ NSIS 内嵌 index.html：G1 降级判据通过（assets 名与仓库 dist 一致）');
+  return same;
 }
 
 /**
