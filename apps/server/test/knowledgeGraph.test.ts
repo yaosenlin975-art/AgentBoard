@@ -70,7 +70,7 @@ describe('knowledge graph', () => {
   it('emptyScopeReturnsEmptyGraph', async () => {
     const res = await graph(`scope=both&workspace_id=${workspaceId}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ nodes: [], edges: [], truncated: false, truncated_reason: null, pages_truncated: false, page_total: 0, pages_loaded: 0, node_total: 0, edge_total: 0 });
+    expect(res.body).toEqual({ nodes: [], edges: [], truncated: false, truncated_reason: null, pages_truncated: false, page_total: 0, pages_loaded: 0, node_total: 0, edge_total: 0, source_skipped_keys: 0, source_max_cooccurrence: 0 });
   });
 
   it('isolatedNodesFollowIncludeIsolated', async () => {

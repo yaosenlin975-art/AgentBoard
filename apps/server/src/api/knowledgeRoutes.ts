@@ -23,7 +23,7 @@ import type { Db } from '../db/connection.js';
 import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
 import { zhZodIssue } from './zod.js';
-import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
+import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, GRAPH_SOURCE_HASH_MAX_COOCCURRENCE, GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
 import { knowledgeLinkFields } from '../services/knowledgeResolve.js';
 import type { KnowledgeResolveResult, ResolveScope } from '../services/knowledgeResolve.js';
 import { KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
@@ -281,7 +281,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     const tagEdges = tags.flatMap(tag => tag.refs.map(ref => ({ source: ref.source, target: `tag:${tag.tag_norm}`, weight: ref.weight, kind: 'link' as const })));
     const attachmentEdges = attachments.flatMap(attachment => attachment.refs.map(ref => ({ source: ref.source, target: attachment.node_id, weight: ref.weight, kind: 'embed' as const })));
     const syntheticRows: GraphInputRow[] = [...tagRows, ...attachmentRows, ...unresolvedRows];
-    res.json(buildKnowledgeGraph([...mergedRows, ...syntheticRows], {
+    const graph = buildKnowledgeGraph([...mergedRows, ...syntheticRows], {
       pagesTruncated,
       pageTotal,
       edgeKinds: uniqueKinds,
@@ -294,7 +294,18 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       includeIsolated: input.include_isolated === 'true',
       limitNodes: Math.min(input.limit_nodes, GRAPH_MAX_NODES),
       limitEdges: Math.min(input.limit_edges, GRAPH_MAX_EDGES),
-    }));
+    });
+    // S3：来源共现超限必须有声音（对齐上面 pagesTruncated 的 warn 口径），不静默丢弃
+    if (graph.source_skipped_keys > 0) {
+      console.warn('[knowledge-graph] 来源共现超上限，相关边已跳过（数据质量问题：检查是否有大批页共用同一 locator/content_hash）', {
+        scope: input.scope,
+        workspace_id: input.workspace_id ?? null,
+        skipped_keys: graph.source_skipped_keys,
+        max_cooccurrence: graph.source_max_cooccurrence,
+        limit: { locator: GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE, content_hash: GRAPH_SOURCE_HASH_MAX_COOCCURRENCE },
+      });
+    }
+    res.json(graph);
   });
 
   // ---- 列表 ----
