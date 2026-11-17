@@ -21,7 +21,8 @@
  * 免得新增守卫当天就把全仓测试打红；每清掉一个就从基线删一行，清空后本脚本即进入全量阻断模式。
  * 不自动修复：去掉 BOM 会改动文件字节，需单独提交并回读校验，交给人来决定。
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,6 +57,10 @@ const SKIP_DIRS = new Set([
   'gui-test-screenshots',
   // CR2-06：界面验证的临时产物目录（截图/草稿），不属于仓库源码，不应阻断 build 门禁
   '.qa-temp',
+  // D17：Rust 构建产物（cargo target）。与 dist 同类，不是仓库源码。
+  // 实测 desktop/src-tauri/target/release/build 下 236 个 crate 子目录，
+  // 单个 crate 递归读取 3~26 秒（数十个文件），全量扫描跑不完，构建门禁会永久挂住。
+  'target',
 ]);
 
 const args = process.argv.slice(2);
@@ -83,19 +88,45 @@ function readBaseline() {
 const baseline = readBaseline();
 
 function hasBom(path) {
-  let fd;
+  let buf;
   try {
-    fd = readFileSync(path);
+    buf = readFileSync(path);
   } catch {
     return false;
   }
-  return fd.length >= 3 && fd[0] === BOM[0] && fd[1] === BOM[1] && fd[2] === BOM[2];
+  return buf.length >= 3 && buf[0] === BOM[0] && buf[1] === BOM[1] && buf[2] === BOM[2];
 }
 
 const hits = [];
 let scanned = 0;
 
+/**
+ * 已访问目录的实体路径集合（D17）。
+ *
+ * 防御 junction / symlink 造成的环与重复遍历：Windows 上 node_modules、
+ * 以及历史遗留的 apps/desktop/node_modules 都存在指向上级 .pnpm 的 reparse point。
+ * 目录树里一旦有 `A -> B -> A`，无环检测的递归就永不返回，构建门禁会静默挂死
+ * （表现为进程 CPU 不涨、日志停住，比报错更难查）。
+ *
+ * 用 realpath 去重而非 lstat：junction 的 lstat 不是 symbolic link，判不出来。
+ */
+const visitedDirs = new Set();
+
 function walk(dir) {
+  let real;
+  try {
+    real = realpathSync(dir);
+  } catch {
+    return;
+  }
+  if (visitedDirs.has(real)) return;
+  visitedDirs.add(real);
+  if (visitedDirs.size > 20000) {
+    // 兜底：目录数异常（多半是环或挂载了巨型目录），直接中止，避免门禁挂死
+    console.error(`check-bom: 已访问目录超过 20000 个，疑似目录环或异常挂载，中止扫描：${dir}`);
+    process.exit(2);
+  }
+
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -126,7 +157,66 @@ function walk(dir) {
   }
 }
 
-walk(start);
+/**
+ * 用 `git ls-files` 取待扫描清单（D17）。
+ *
+ * 为什么不用磁盘递归遍历：本机 D: 是 HDD 且被持续占用，实测平均读延迟 604ms、
+ * 队列深度 23（同机 C: SSD 为 0.4ms / 队列 0，差 1500 倍），顺序读仅 5.5 MB/s。
+ * 原始实现会走进 `desktop/src-tauri/target`（数万文件），每个文件 open 就要 200-600ms，
+ * 结果构建门禁永久挂住、日志停住、CPU 不涨——比报错更难查。
+ *
+ * `git ls-files` 只读 .git index，实测 23ms 返回 1579 条，且天然满足：
+ *   - 只含已跟踪文件（未跟踪的 target / node_modules / dist / 临时目录自动排除）
+ *   - 不需要维护 SKIP_DIRS 黑名单
+ *   - 不受磁盘遍历速度影响
+ *
+ * 代价：未跟踪文件不参与 BOM 检查。可接受——未跟踪文件不应阻断 build 门禁；
+ * 需要 lint 未跟踪文件时应先 `git add`。
+ */
+function listFilesViaGit() {
+  const t0 = Date.now();
+  const result = spawnSync('git', ['ls-files', '-z'], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) return null;
+  const all = result.stdout.split('\0').filter(Boolean);
+  const picked = all.filter((relPath) => {
+    const base = relPath.slice(relPath.lastIndexOf('/') + 1);
+    if (base.startsWith('.tmp-')) return false;
+    const dot = base.lastIndexOf('.');
+    if (dot <= 0) return false;
+    return EXTENSIONS.has(base.slice(dot).toLowerCase());
+  });
+  return { files: picked, total: all.length, elapsedMs: Date.now() - t0 };
+}
+
+/** 扫描清单（git 不可用时回退磁盘遍历） */
+// `--dir` 指定子目录时按磁盘遍历该子树：这是人工定向排查用的，
+// 且此时 `git ls-files` 的全仓清单反而不符合语义。
+const gitList = dirIndex >= 0 ? null : listFilesViaGit();
+if (gitList !== null) {
+  const start = Date.now();
+  for (const relPath of gitList.files) {
+    const full = join(root, relPath);
+    scanned += 1;
+    try {
+      if (statSync(full).size === 0) continue;
+    } catch {
+      continue;
+    }
+    if (hasBom(full)) hits.push(relPath);
+  }
+  const scanMs = Date.now() - start;
+  console.log(
+    `check-bom: 清单来自 git ls-files（${gitList.files.length}/${gitList.total} 个文本文件，` +
+      `取清单 ${gitList.elapsedMs}ms，扫描 ${Math.round(scanMs / 1000)}s）`,
+  );
+} else {
+  console.log('check-bom: git ls-files 不可用，回退磁盘遍历（慢盘上可能很慢）');
+  walk(start);
+}
 
 const fresh = hits.filter((hit) => !baseline.has(hit));
 const known = hits.filter((hit) => baseline.has(hit));
