@@ -24,8 +24,13 @@ export function readAllStdin(stream: Readable): Promise<string> {
     stream.on('data', (chunk) => {
       data += chunk;
     });
-    // PowerShell 5.1 管道会给 stdin 加 UTF-8 BOM；剥离，避免正文/评论首字符被污染
-    stream.on('end', () => resolve(data.replace(/^\uFEFF/, '')));
+    stream.on('end', () => {
+      // PowerShell 5.1 管道会给 stdin 加 UTF-8 BOM；剥离，避免正文/评论首字符被污染
+      // K2：PowerShell 管道还会在末尾注入 \r\n（实测 21 字节 → 23 字节），且 CRLF 会让知识页
+      // content_hash 在写入与回读之间不一致（parse 侧恒归一 CRLF）。stdin 是文本传输通道，
+      // 换行统一为 LF；孤立 CR 不归一（正文里可能有意义，往返本来就保真）。
+      resolve(data.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'));
+    });
     stream.on('error', reject);
   });
 }
