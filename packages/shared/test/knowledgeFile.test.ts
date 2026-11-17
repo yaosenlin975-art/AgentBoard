@@ -132,15 +132,19 @@ describe('K1-A 全 hex 数字串的 content_hash 必须按字符串解析', () =
     expect(typeof parsed.meta.sources[0]!.content_hash).toBe('string');
   });
 
-  it('带引号的 hex 仍解析为字符串（quote 分支不被数字分支抢走）', () => {
-    const quoted = renderKnowledgeDocument(baseMeta({ content_hash: HEX_ALL_ZEROS }), 'body\n');
-    expect(quoted).toContain(`content_hash: "${HEX_ALL_ZEROS}"`);
-    expect(parseKnowledgeDocument(quoted).meta.content_hash).toBe(HEX_ALL_ZEROS);
+  it('裸写 64 位 hex 落盘（render 不改写格式），parse 仍解析为字符串', () => {
+    const bare = renderKnowledgeDocument(getFieldMeta(HEX_ALL_ZEROS), 'body\n');
+    // render 必须保持历史格式：content_hash 不加引号（加引号会改变 hash 输入字节）
+    expect(bare).toContain(`content_hash: ${HEX_ALL_ZEROS}`);
+    expect(bare).not.toContain(`content_hash: "${HEX_ALL_ZEROS}"`);
+    expect(parseKnowledgeDocument(bare).meta.content_hash).toBe(HEX_ALL_ZEROS);
+    expect(typeof parseKnowledgeDocument(bare).meta.sources[0]!.content_hash).toBe('string');
   });
 
-  it('页面整体通过契约校验（修复前 content_hash 为 number → bad_type）', () => {
-    const parsed = parseKnowledgeDocument(renderKnowledgeDocument(baseMeta(), 'body\n'));
-    expect(validateKnowledgeFileMeta(parsed.meta as unknown as Record<string, unknown>)).toBeNull();
+  it('带引号的 hex（外部工具手写）也能解析为字符串', () => {
+    const doc = renderKnowledgeDocument(getFieldMeta(HEX_ALL_ZEROS), 'body\n')
+      .replace(new RegExp(`content_hash: ${HEX_ALL_ZEROS}`, 'g'), `content_hash: "${HEX_ALL_ZEROS}"`);
+    expect(parseKnowledgeDocument(doc).meta.content_hash).toBe(HEX_ALL_ZEROS);
   });
 });
 
@@ -206,5 +210,52 @@ describe('K1 字段顺序与契约不变', () => {
   it('同一 meta+body 重复渲染逐字节一致（幂等）', () => {
     const meta = baseMeta();
     expect(renderKnowledgeDocument(meta, 'body\n')).toBe(renderKnowledgeDocument(meta, 'body\n'));
+  });
+});
+
+describe('K1-D 向后兼容护栏：render 字节格式不得改变', () => {
+  // content_hash 的唯一职责是检测外部编辑，算法必须对既有落盘格式稳定。
+  // computeContentHash 只 omit 顶层 content_hash，sources[].content_hash 仍在 hash 输入里，
+  // 所以任何 render 格式改动（如给 hex 加引号）都会把所有历史文件判成「被外部编辑」。
+  it('历史格式文档（裸写 hex）parse 后 render 回写必须逐字节一致', () => {
+    const legacyDoc = [
+      '---',
+      'id: 11111111-2222-4333-8444-555555555555',
+      'slug: some-slug',
+      'title: legacy-title',
+      'revision: 3',
+      'scope: workspace',
+      'workspace_id: aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      'status: active',
+      'domain: infra',
+      'category: solved',
+      'landed: landed',
+      'sources:',
+      '  - source_id: s1',
+      '    source_type: file',
+      '    locator: x.ts',
+      '    captured_at: 1794555536689',
+      `    content_hash: ${HEX_WITH_LETTERS}`,
+      'evidence:',
+      '  - source_id: s1',
+      '    locator: x.ts',
+      `content_hash: ${HEX_ALL_ZEROS}`,
+      'expires_at: null',
+      'created_at: 1794555500000',
+      'updated_at: 1794555600000',
+      'created_by: kb-cli',
+      'updated_by: kb-cli',
+      'change_note: ""',
+      '---',
+      '',
+      '正文',
+    ].join('\n');
+    const parsed = parseKnowledgeDocument(legacyDoc);
+    expect(renderKnowledgeDocument(parsed.meta, parsed.body_md)).toBe(legacyDoc);
+  });
+
+  it('render 输出不含任何被加引号的 content_hash', () => {
+    expect(renderKnowledgeDocument(getFieldMeta(HEX_WITH_LETTERS), 'body\n')).not.toMatch(/content_hash: "/);
+    expect(renderKnowledgeDocument(getFieldMeta(HEX_ALL_ZEROS), 'body\n')).not.toMatch(/content_hash: "/);
   });
 });

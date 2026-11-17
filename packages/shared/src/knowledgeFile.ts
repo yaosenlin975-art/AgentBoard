@@ -102,14 +102,15 @@ export function validateKnowledgeFileMeta(meta: Record<string, unknown>): { issu
 /** 安全纯标量：不含 YAML 特殊字符，可原样输出 */
 const PLAIN_SCALAR = /^[A-Za-z0-9][A-Za-z0-9._@/-]*$/;
 
-/** 一律加引号输出的字段：hex 串可能整串是数字，裸写会被下次 parse 走数字分支（K1-C） */
-const QUOTED_FIELDS = new Set(['content_hash']);
-
-function yamlScalar(value: unknown, field?: string): string {
+/**
+ * 标量渲染。**不要**按字段名加引号：`computeContentHash` 只 omit 顶层 content_hash，
+ * `sources[].content_hash` 仍参与 hash——改 render 的字节输出会把所有历史文件判成「被外部编辑」。
+ * 裸写的 64 位 hex 由 `parseScalar` 的字段分支解析成字符串（那座桥在 parse 侧，不在 render 侧）。
+ */
+function yamlScalar(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'number') return String(value);
   const text = String(value);
-  if (field !== undefined && QUOTED_FIELDS.has(field)) return JSON.stringify(text);
   return PLAIN_SCALAR.test(text) ? text : JSON.stringify(text);
 }
 
@@ -125,7 +126,7 @@ function renderArrayBlock(key: 'sources' | 'evidence', items: Array<Record<strin
     let first = true;
     for (const field of order) {
       if (!(field in item) || item[field] === undefined) continue;
-      lines.push(`${first ? '  - ' : '    '}${field}: ${yamlScalar(item[field], field)}`);
+      lines.push(`${first ? '  - ' : '    '}${field}: ${yamlScalar(item[field])}`);
       first = false;
     }
   }
@@ -159,9 +160,9 @@ export function renderKnowledgeDocument(meta: KnowledgeFileMeta, bodyMd: string,
       lines.push(renderArrayBlock(field, Array.isArray(value) ? value as Array<Record<string, unknown>> : []));
     } else if (field === 'workspace_id' || field === 'landed' || field === 'expires_at') {
       // 可空字段恒输出（显式 null），保证幂等
-      lines.push(`${field}: ${yamlScalar(value ?? null, field)}`);
+      lines.push(`${field}: ${yamlScalar(value ?? null)}`);
     } else {
-      lines.push(`${field}: ${yamlScalar(value, field)}`);
+      lines.push(`${field}: ${yamlScalar(value)}`);
     }
   }
   lines.push('---');
