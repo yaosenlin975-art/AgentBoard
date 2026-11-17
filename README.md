@@ -278,10 +278,16 @@ schtasks /create /tn AgentBoard /sc onstart /tr "cmd /c cd /d D:\WorkSpaces\任�
 
 对外打包固定入口，产物 = 可运行单机包 + 配套工作流规则，对方机器无需安装 Node：
 
+**主交付是 NSIS 安装包，便携包为附带产物。**
+
 ```bash
+package-installer.bat                    # 一键出便携包 + NSIS 安装包（Windows 双击或 cmd 调用）
+node scripts/desktop/build-all.mjs       # 同上，四段式：workspace build → 壳 → 便携包 → NSIS
 pnpm package:portable                                  # 默认出 AgentBoard-win-x64-<HEAD>.zip
 node scripts/package-portable.mjs --skip-build --no-zip  # 只重组装、不构建、不打 zip（验证用）
 ```
+
+`package-installer.bat` 是仓库根的一键入口，参数透传给 `scripts/desktop/build-all.mjs`：`--skip-build`（复用现有 dist）、`--nsis-only`、`--portable-only`、`--verify-only`（只校验既有产物不重打）。缺失 Node 时自检报错并 `pause` 等待确认，失败退出码 1。
 
 - 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 8 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`）。
 - 技能来源：仓库 `skills/` 优先；缺失项从 `%USERPROFILE%\.agents\skills` 取（外部路径不受 git 跟踪），来源逐条写入 `app/rules-manifest.json`。禁用 `AGENTBOARD_SKILLS_SRC` 可改外部技能根。
