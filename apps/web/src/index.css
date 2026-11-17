@@ -353,7 +353,7 @@ optgroup {
 }
 
 /*
- * 星图语义色（KB-GRAPH-P1）：照 Obsidian `.graph-view.color-*` 的 11 个语义色。
+ * 星图语义色（KB-GRAPH-P1 / P2-03）：照 Obsidian `.graph-view.color-*` 的语义色；键集以 GRAPH_SEMANTIC_CLASSES 为准。
  * 画布取色方式是「临时插 div 读 getComputedStyle」，所以颜色只放在这里，
  * 改这些变量（亮/暗两套）画布颜色就跟着变，JS 侧不硬编码色值。
  */

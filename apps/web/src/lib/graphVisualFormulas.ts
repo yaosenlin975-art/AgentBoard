@@ -182,7 +182,7 @@ export const GRAPH_SEMANTIC_CLASSES = {
 export type SemanticColorKey = keyof typeof GRAPH_SEMANTIC_CLASSES;
 
 /**
- * 读 11 个语义色：临时往 document.body 插 `<div class="graph-view color-xxx">`，
+ * 读全部语义色（键集见 GRAPH_SEMANTIC_CLASSES）：临时往 document.body 插 `<div class="graph-view color-xxx">`，
  * 取 `getComputedStyle` 的 color 与 opacity（照文档 A/B 章的做法）。
  * 非浏览器环境返回空对象（单测在 jsdom 下用可注入的 scope）。
  */

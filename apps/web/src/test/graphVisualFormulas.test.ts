@@ -3,6 +3,9 @@
  * 期望值来自 `Docs/Obsidian-星图渲染逆向.md` 的实测表：weight 8→9、7→8.4853、6→8；size 9→fontSize 16.25；scale 0.5→textAlpha 0。
  */
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   GRAPH_SEMANTIC_CLASSES,
   NODE_SIZE_MAX,
@@ -203,7 +206,7 @@ describe('双向边去重', () => {
   });
 });
 
-describe('11 语义色从 CSS 变量读（不硬编码）', () => {
+describe('语义色从 CSS 变量读（不硬编码）', () => {
   it('逐个插 div 读 getComputedStyle：改 CSS 变量后颜色跟着变', () => {
     const style = document.createElement('style');
     style.textContent = `
@@ -223,16 +226,42 @@ describe('11 语义色从 CSS 变量读（不硬编码）', () => {
     style.remove();
   });
 
-  it('11 个 key 全覆盖，且读取后不残留探测节点', () => {
+  /**
+   * 断言「键全覆盖 + 不残留探测节点」。
+   *
+   * 数量不写死：P2-03 加第 12 个 key `lineEmbed` 时这里仍是 11，导致测试与实现脱节
+   * （S2）。改为从 `GRAPH_SEMANTIC_CLASSES` 派生，新增颜色时自然跟随；
+   * 同时用 `LINE_EMBED_KEY` 显式锁定它确实在表里（防止「派生数量」掩盖误删）。
+   */
+  it('所有 key 都被读到，且读取后不残留探测节点', () => {
     const before = document.body.children.length;
     const colors = readSemanticColors();
-    expect(Object.keys(colors).length).toBe(11);
-    expect(Object.keys(GRAPH_SEMANTIC_CLASSES).length).toBe(11);
+    const expectedKeys = Object.keys(GRAPH_SEMANTIC_CLASSES);
+
+    expect(Object.keys(colors).sort()).toEqual([...expectedKeys].sort());
+    expect(colors.lineEmbed?.color).toBeTruthy();
+    // 既有基线：P2-03 之后至少 12 个（fill×5 / arrow / circle / line / lineEmbed / text / highlight×2）
+    expect(expectedKeys.length).toBeGreaterThanOrEqual(12);
     expect(document.body.children.length).toBe(before);
   });
 
   it('无 document 时返回空对象（服务端/非浏览器）', () => {
     expect(readSemanticColors(null)).toEqual({});
+  });
+
+  /**
+   * S2 的核心前提：`lineEmbed` 不只是加进了 TS 常量表，CSS 里也必须真有定义，
+   * 否则问题在实现不在测试。这里直接读 `index.css` 源码断言每个 class 都有规则。
+   */
+  it('每个语义色 class 都在 index.css 里有定义（含 P2-03 新增的 lineEmbed）', () => {
+    const cssPath = join(dirname(fileURLToPath(import.meta.url)), '../index.css');
+    const css = readFileSync(cssPath, 'utf8');
+    for (const className of Object.values(GRAPH_SEMANTIC_CLASSES)) {
+      expect(css, `index.css 缺少 .graph-view.${className} 定义`).toContain(`.graph-view.${className} {`);
+    }
+    // lineEmbed 的颜色变量在亮/暗两套主题里都要有值
+    expect(css).toMatch(/--kb-graph-line-embed:\s*#[0-9a-f]{3,8}/i);
+    expect(css.match(/--kb-graph-line-embed:/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
   });
 });
 
