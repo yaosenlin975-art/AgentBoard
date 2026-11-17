@@ -20,7 +20,7 @@ import { join, relative } from 'node:path';
 import type { KnowledgePage, KnowledgeScope } from '@agentboard/shared';
 import { normalizeDocSlug } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
-import { ApiError, ValidationError } from '../errors.js';
+import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
 import { zhZodIssue } from './zod.js';
 import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
@@ -529,6 +529,46 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(data);
+  });
+
+  // ---- reconcile（P2：只读报告端点；`KNOWLEDGE_FILE_CONFLICT` 的标准处置入口）----
+  // 复用 `reconcileDocsDir`，不另写检测逻辑。**只读**：不传 `fix`，且只调 `ensureFresh()`
+  // （不碰 `persist()`），因此 `.md` 与 `.index.json` 都不会被改。
+  router.get('/reconcile', (req, res) => {
+    const started = Date.now();
+    const input = parse(z.object({
+      scope: z.enum(['common', 'workspace', 'both']),
+      workspace_id: z.string().min(1).optional(),
+    }), req.query);
+    if (input.scope !== 'common' && input.workspace_id === undefined) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
+    if (input.scope === 'common' && input.workspace_id !== undefined) throw new ValidationError('scope=common 时不能提供 workspace_id');
+    if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
+    const workspacePath = input.scope === 'common' ? null : getWorkspaceRow(input.workspace_id!)?.path ?? null;
+    if (input.scope !== 'common' && workspacePath === null) throw new NotFoundError(`工作区不存在：${input.workspace_id!}`);
+    const view = knowledgeDocsStore.view(
+      input.scope === 'common' ? { scope: 'common' } : { scope: input.scope, workspace_id: input.workspace_id ?? null },
+      workspacePath,
+      options.docsPaths,
+    );
+    const reports = (input.scope === 'common'
+      ? [view.common]
+      : input.scope === 'workspace'
+        ? [view.requireWorkspace()]
+        : [view.requireWorkspace(), view.common]
+    ).map(index => reconcileDocsDir(index, { cross: index === view.common ? null : view.common }));
+    // 跨目录合并：issues 汇总、计数相加；docsDir 逐目录列在 reports 里供定位
+    const issues = reports.flatMap(report => report.issues.map(issue => ({ ...issue, docs_dir: report.docsDir })));
+    res.json({
+      scope: input.scope,
+      workspace_id: input.workspace_id ?? null,
+      checked: reports.reduce((sum, report) => sum + report.total_files, 0),
+      valid: reports.reduce((sum, report) => sum + report.valid_files, 0),
+      issues,
+      stale_tmp: reports.flatMap(report => report.stale_tmp.map(name => ({ name, docs_dir: report.docsDir }))),
+      stale_locks: reports.flatMap(report => report.stale_locks.map(name => ({ name, docs_dir: report.docsDir }))),
+      docs_dirs: reports.map(report => report.docsDir),
+      duration_ms: Date.now() - started,
+    });
   });
 
   // ---- 重扫（语义改为：重建两目录扫描索引 + reconcile 只读报告）----

@@ -584,10 +584,10 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `knowledge:<uuid>` | 兼容 scheme：web 渲染与 resolve 输入别名照常解析，不再是新引用的输出口径 |
 
 - **uuid→文件路径映射**由内存索引维护（启动扫两目录建 `id→{path,slug,scope,revision,content_hash}`，每请求 readdir+stat 差量刷新；索引非事实源，`.index.json` 落盘可全量重建承载检索）。
-- **错误码**：在 `KNOWLEDGE_NOT_FOUND / REVISION_CONFLICT / REF_AMBIGUOUS / DELETED / SCOPE_FORBIDDEN / STATE_CONFLICT / EXISTS` 基础上新增 **`KNOWLEDGE_FILE_CONFLICT`（409；CLI 退出码 2）**——外部编辑 content_hash 不符、文件解析失败、跨进程写锁等待超时；提示先 `reconcile`，冲突由人裁决。
+- **错误码**：在 `KNOWLEDGE_NOT_FOUND / REVISION_CONFLICT / REF_AMBIGUOUS / DELETED / SCOPE_FORBIDDEN / STATE_CONFLICT / EXISTS` 基础上新增 **`KNOWLEDGE_FILE_CONFLICT`（409；CLI 退出码 2）**——外部编辑 content_hash 不符、文件解析失败、跨进程写锁等待超时；提示先跑 `kb knowledge reconcile`（或 `GET /api/knowledge/reconcile`）定位冲突，冲突由人裁决。
 - **单页历史退役**（§8 #5）：`GET /pages/:id/revisions` 返回空集；`GET /pages/:id/revisions/:revision` 404 `KNOWLEDGE_REVISION_NOT_FOUND`；旧库历史走 `kb knowledge export-legacy` 只读导出。
 - **每页 git 快照（page_commit）与「快照没进 git 即失败」（BORROW-5.1）整体退役**：文件写成功即端点成功；响应中的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），客户端不再读取。
-- **reconcile**（M12）：启动逐目录只读报告（front matter 必填/类型、文件名 vs slug 不一致、id 重复、content_hash 不符、`[[...]]` 目标缺失、残留 tmp/lock）；`--fix` 只清残留 tmp/lock/索引，绝不自动改写正文。直接改文件名（不走 rename 命令）→ reconcile 报「slug 与文件名不一致」冲突。
+- **reconcile**（M12）：逐目录**只读**报告；入口两条——`GET /api/knowledge/reconcile`（见下表）与 `kb knowledge reconcile`。检查项：front matter 必填/类型、文件名 vs slug 不一致（`file_name_mismatch`）、id 重复（`duplicate_id`）、content_hash 不符（`content_hash`）、`[[...]]` 目标缺失（`missing_link_target`）、残留 tmp/lock（另列 `stale_tmp`/`stale_locks`）。**只读：不改任何 `.md`**（sha256 与 mtime 不变）；`reconcileDocsDir` 内部的 `fix` 分支（清残留 tmp/lock/索引）**尚无命令入口**，需人工清理。直接改文件名（不走 rename 命令）→ reconcile 报「slug 与文件名不一致」冲突，冲突由人裁决。
 - **检索评分语义（bm25，P2-01 偏离项登记）**：`GET /search` 的 `score` 为**负值、越小越相关**（对齐 FTS5 bm25 的 `ORDER BY score ASC` 口径），但**数值与旧 FTS5 不逐字节相等**：新实现是文件索引上的 bm25（title 权重 5 / body 权重 1，k1=1.2 b=0.75），短查询在负值上加一项「完整子串加权」保持精确命中优先；1–2 码点查询走大小写不敏感子串（title 命中 score=-1）。客户端只应比较同一次请求内 score 的相对大小，不得对 score 绝对值做语义判断。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
@@ -603,6 +603,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/knowledge/pages/:id/rename`（幂等；P2-04 M10） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`、`new_slug: string`（1-200，同 create 规则）、`actor` | 改名后的 `KnowledgePage` + `old_slug` + `rewritten: [{ dir, file_name, page_id, slug }]`（全库扫描重写 `[[old]]→[[new]]` 的文件清单，含 alias/heading 形态与页嵌入；id 不变；跨目录只在目标区无同名页时重写）。目标区已有自己的同名页时不改写（指向不归本页管） | 400 校验；404；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_EXISTS`（新 slug 已占用）/ `KNOWLEDGE_STATE_CONFLICT`（归一后相同）/ `KNOWLEDGE_FILE_CONFLICT` | knowledgeRoutes.ts |
 | `GET /api/knowledge/resolve` | `ref`（完整 id / ≥8 位 id 前缀 / slug）、`scope?`=`workspace\|common\|both`（缺省 both，需 `workspace_id`）；`knowledge:<uuid>` 去掉前缀后按 uuid 解析（输入别名兼容） | 200 `{ state:'resolved', id, title, scope, workspace_id, slug, status, revision, link, redirect_to:null }` | 404 `KNOWLEDGE_NOT_FOUND` / 403 `KNOWLEDGE_SCOPE_FORBIDDEN`（跨范围/跨工作区，**不回显标题**）/ 409 `KNOWLEDGE_REF_AMBIGUOUS`（附 `details.candidates`，**不猜第一条**；同 slug 在 workspace 与 common 都命中时 409）/ 410 `KNOWLEDGE_DELETED` | knowledgeRoutes.ts |
 | `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | 400 校验 | knowledgeRoutes.ts |
+| `GET /api/knowledge/reconcile` | query：`scope: common\|workspace\|both`、`workspace_id?`（`workspace`/`both` 必填，`common` 禁止）；未知 query 键 strip | 200 `{ scope, workspace_id, checked, valid, issues: [{ fileName, kind, detail, suggestion?, docs_dir }], stale_tmp: [{ name, docs_dir }], stale_locks: [{ name, docs_dir }], docs_dirs: string[], duration_ms }`。`kind` ∈ `front_matter` / `file_name_mismatch` / `duplicate_id` / `content_hash` / `missing_link_target`。`scope=both` 跨两目录合并 issues、计数相加 | 400 缺 `workspace_id` / `common` 带 `workspace_id`；404 工作区不存在 | knowledgeRoutes.ts |
 
 > `link` 形状（show / search / resolve / 列表同源产出）：`{ id, scope, workspace_id, slug, ref: "knowledge:<uuid>", markdown: "[知识卡：标题](knowledge:<uuid>)", text }`。**新引用的输出口径是 `[[wikilink]]`（`kb knowledge link` 默认）**；`knowledge:<uuid>` 保留作稳定标识（改名不变）。
 
@@ -616,7 +617,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 ### 11.1 CLI 对应命令（`kb knowledge *`，`packages/cli/src/commands/knowledge.ts`）
 
-数据源随文件事实源切换（P2-04）：`list/show/search` 读文件扫描（经 REST，响应形状不变）；`create/revise/action` 的 `--expected-revision` 比对 front matter `revision`；`--stdin`/`--sources-file`/`--evidence-file`/`--domain`/`--category`/`--landed` 参数面不变；`resolve/find-source` 保留（`find-source` 扫 front matter `sources[]`）；`link` **默认输出 `[[wikilink]]`**（`--format wikilink|token|markdown|plain`）；`action delete` 撤文件；新增 `rename`。
+数据源随文件事实源切换（P2-04）：`list/show/search` 读文件扫描（经 REST，响应形状不变）；`create/revise/action` 的 `--expected-revision` 比对 front matter `revision`；`--stdin`/`--sources-file`/`--evidence-file`/`--domain`/`--category`/`--landed` 参数面不变；`resolve/find-source` 保留（`find-source` 扫 front matter `sources[]`）；`link` **默认输出 `[[wikilink]]`**（`--format wikilink|token|markdown|plain`）；`action delete` 撤文件；新增 `rename`；新增 `reconcile`（只读报告，`--scope` 缺省 workspace、`--json` 出原始对象；有冲突 exit 0，冲突本身不是命令失败）。
 
 | 端点 | CLI | 必填 | 备注 |
 | --- | --- | --- | --- |
@@ -629,6 +630,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/knowledge/pages/:id/rename` | `kb knowledge rename <page-id> <new-slug>` | `--scope`、`--expected-revision` | 全库重写 `[[old]]→[[new]]`（含 alias/heading 形态），id 不变；文本输出重写文件清单；409 → exit 2 |
 | `GET /api/knowledge/resolve` | `kb knowledge resolve <ref>` | `--scope` 可省（默认 both） | 退出码 404→1、409/403→2 |
 | `GET /api/knowledge/find-source` | `kb knowledge find-source <path>` | `--scope` 可省（默认 both） | 只读反查 front matter `sources[]` |
+| `GET /api/knowledge/reconcile` | `kb knowledge reconcile` | 无（`--scope` 缺省 workspace，按 cwd 解析；`both` 需 `--workspace`） | **只读**，不改任何 `.md`；文本模式 `N 页检查完成，M 处冲突` + 逐条 `[kind] slug / 文件 / 详情 / 建议`，无冲突打印 `（无冲突）`；有冲突仍 exit 0（冲突不是命令失败）；`--json` 出原始响应 |
 
 create 最小用法（PowerShell 复制可用；`sources.json`/`evidence.json` 见 `kb knowledge create --help`）：
 

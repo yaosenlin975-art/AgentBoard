@@ -451,6 +451,19 @@ KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 re
   kb --json knowledge resolve cache-policy --scope workspace --workspace 任务看板
 `;
 
+const RECONCILE_HELP = `
+P2：知识页文件只读检查（**不改任何文件**），是 KNOWLEDGE_FILE_CONFLICT（409）的标准处置入口。
+检查项：front matter 必填/类型、文件名 vs slug 不一致、id 重复、content_hash 不符（外部编辑）、
+        [[...]] 目标缺失、残留 tmp / lock。
+必填：无。--scope 缺省 workspace（按 cwd 解析当前工作区，可用 --workspace 覆盖）；both 需 --workspace。
+输出：N 页检查完成，M 处冲突；逐条列 [kind] slug / 文件 / 详情 / 建议。无冲突打印（无冲突）并 exit 0。
+说明：本命令只读报告，不修复。冲突由人裁决（绝不自动改写正文）。
+示例：
+  kb knowledge reconcile
+  kb knowledge reconcile --scope common
+  kb --json knowledge reconcile --scope both --workspace 任务看板
+`;
+
 const LINK_HELP = `
 P2-04（M5）：产出知识页的引用串。wikilink 已是主键形态，**默认 --format wikilink** 输出 [[slug]]；
 uuid 仍是稳定标识（改名不变），token 格式保留给需要跨改名的场景。
@@ -616,6 +629,40 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       if (!ctx.json && (res.invalid_count ?? 0) > 0) {
         ctx.io.write(`（另有 ${res.invalid_count} 个知识页损坏，运行 kb knowledge list --invalid 查看）\n`);
       }
+    });
+
+  /**
+   * P2：reconcile 只读报告（`KNOWLEDGE_FILE_CONFLICT` 的标准处置入口）。
+   * 默认 `--scope workspace` + cwd 解析当前工作区；`--scope both` 走 search 口径（允许 both 且需 workspace）。
+   */
+  knowledge.command('reconcile').description('只读检查知识页文件（front matter / 文件名 / id 重复 / content_hash / 缺失链接 / 残留 tmp·lock）')
+    .option('--scope <scope>', 'workspace|common|both', 'workspace')
+    .option('--workspace <id|名>')
+    .addHelpText('after', RECONCILE_HELP)
+    .action(async (opts: ScopeOptions) => {
+      const ctx = context();
+      const res = await request<{
+        scope: string; workspace_id: string | null; checked: number; valid: number;
+        issues: Array<{ fileName: string; kind: string; detail: string; suggestion?: string; docs_dir?: string }>;
+        stale_tmp: Array<{ name: string; docs_dir: string }>;
+        stale_locks: Array<{ name: string; docs_dir: string }>;
+        docs_dirs: string[]; duration_ms: number;
+      }>(ctx.base, 'GET', `/api/knowledge/reconcile?${query(await scopeFor(ctx, opts, true))}`);
+      if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
+      ctx.io.write(`${res.checked} 页检查完成，${res.issues.length} 处冲突\n`);
+      if (res.issues.length === 0 && res.stale_tmp.length === 0 && res.stale_locks.length === 0) {
+        ctx.io.write('（无冲突）\n');
+        return;
+      }
+      for (const issue of res.issues) {
+        // slug 取文件名去扩展名（文件名即 slug 的归一结果）；details 逐条列出，suggestion 单独一行
+        const slug = issue.fileName.replace(/\.md$/i, '');
+        ctx.io.write(`  [${issue.kind}] slug: ${slug}  文件: ${issue.fileName}\n`);
+        ctx.io.write(`    ${issue.detail}\n`);
+        if (issue.suggestion !== undefined) ctx.io.write(`    建议: ${issue.suggestion}\n`);
+      }
+      for (const tmp of res.stale_tmp) ctx.io.write(`  [stale_tmp] ${tmp.name}  (${tmp.docs_dir})\n`);
+      for (const lock of res.stale_locks) ctx.io.write(`  [stale_lock] ${lock.name}  (${lock.docs_dir})\n`);
     });
 
   const contentOptions = (cmd: Command) => cmd
