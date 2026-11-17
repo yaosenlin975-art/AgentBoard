@@ -163,6 +163,30 @@ export class DocsIndex {
     this.rebuildMaps();
   }
 
+  /**
+   * OCR C3：批量通知。逐文件 `notifyChanged` 每次都 `listDocFiles`（全目录 stat）+
+   * `rebuildMaps`（全量重建），1000 文件 × 100 引用 ≈ 10 万次 stat + 3–10 s 阻塞。
+   * 这里只 readdir/stat 一次、`rebuildMaps` 一次。
+   */
+  notifyManyChanged(fileNames: readonly string[]): void {
+    if (fileNames.length === 0) return;
+    const wanted = new Set(fileNames);
+    const files = listDocFiles(this.docsDir);
+    const found = new Map<string, ScannedFileInfo>();
+    for (const file of files) if (wanted.has(file.fileName)) found.set(file.fileName, file);
+    for (const fileName of wanted) {
+      const file = found.get(fileName);
+      if (file === undefined) {
+        this.entries.delete(fileName);
+        this.invalid.delete(fileName);
+        this.trigrams.delete(fileName);
+      } else {
+        this.loadFile(file);
+      }
+    }
+    this.rebuildMaps();
+  }
+
   // ---- 读取 ----
 
   get activeCount(): number {
@@ -496,27 +520,42 @@ function bm25Rank(candidates: DocEntry[], terms: string[], query: string): Array
   const lenBody = (entry: DocEntry): number => [...entry.body].length || 1;
   const avgTitle = candidates.reduce((sum, entry) => sum + lenTitle(entry), 0) / n;
   const avgBody = candidates.reduce((sum, entry) => sum + lenBody(entry), 0) / n;
-  const occurrences = (text: string, term: string): number => {
-    const lower = text.toLowerCase();
+  /**
+   * OCR C2：小写缓存。原实现在 (候选页 × trigram) 的双重循环里每对都调一次
+   * `text.toLowerCase()`——300 页 × 20 KB、8 字符查询 ≈ 84 MB 临时字符串分配。
+   * 正文是常量，按 entry 缓存一次即可。
+   */
+  const lowerCache = new WeakMap<DocEntry, { title: string; body: string }>();
+  const lowerOf = (entry: DocEntry): { title: string; body: string } => {
+    let cached = lowerCache.get(entry);
+    if (cached === undefined) {
+      cached = { title: entry.meta.title.toLowerCase(), body: entry.body.toLowerCase() };
+      lowerCache.set(entry, cached);
+    }
+    return cached;
+  };
+  /** 在已小写的文本里数出现次数（调用方负责先 toLowerCase） */
+  const countIn = (lower: string, term: string): number => {
     let count = 0;
     let index = lower.indexOf(term);
     while (index !== -1) { count += 1; index = lower.indexOf(term, index + 1); }
     return count;
   };
   const scored = candidates.map(entry => {
+    const lower = lowerOf(entry);
     let sum = 0;
     for (const t of terms) {
       const termDf = df.get(t) ?? 0;
       if (termDf === 0) continue;
       const idf = Math.log((n - termDf + 0.5) / (termDf + 0.5) + 1);
-      const tfTitle = occurrences(entry.meta.title, t);
-      const tfBody = occurrences(entry.body, t);
+      const tfTitle = countIn(lower.title, t);
+      const tfBody = countIn(lower.body, t);
       const normTitle = (tfTitle * (k1 + 1)) / (tfTitle + k1 * (1 - b + (b * lenTitle(entry)) / avgTitle));
       const normBody = (tfBody * (k1 + 1)) / (tfBody + k1 * (1 - b + (b * lenBody(entry)) / avgBody));
       sum += idf * (5 * normTitle + 1 * normBody);
     }
     // FTS5 bm25 返回负值（越小越相关）；短查询整体上加一项「完整子串加权」保持精确命中优先
-    const exact = (entry.meta.title.toLowerCase().includes(lowerQuery) ? 5 : 0) + (entry.body.toLowerCase().includes(lowerQuery) ? 1 : 0);
+    const exact = (lower.title.includes(lowerQuery) ? 5 : 0) + (lower.body.includes(lowerQuery) ? 1 : 0);
     return { entry, score: -(sum + exact * 0.001) };
   });
   return scored;

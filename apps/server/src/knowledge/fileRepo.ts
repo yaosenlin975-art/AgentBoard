@@ -439,10 +439,14 @@ export class KnowledgeFileRepo {
       const { content } = renderDocWithHash(entry.meta, nextBody);
       const filePath = join(this.docsDir, entry.fileName);
       this.atomicWrite(filePath, content);
-      this.index.notifyChanged(entry.fileName);
       rewritten.push({ file_name: entry.fileName, page_id: entry.meta.id, slug: entry.meta.slug });
     }
-    if (rewritten.length > 0) this.index.persist();
+    // OCR C3：索引通知与 persist 各做一次（原实现每文件 notifyChanged + 末尾再 persist，
+    // 1000 文件 × 100 引用 ≈ 10 万次全目录 stat + 全量 rebuildMaps）
+    if (rewritten.length > 0) {
+      this.index.notifyManyChanged(rewritten.map(item => item.file_name));
+      this.index.persist();
+    }
     return rewritten;
   }
 
