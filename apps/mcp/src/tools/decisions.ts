@@ -6,6 +6,7 @@ import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
 import { resolveTaskId } from './taskRef.js';
+import { resolveDecisionId } from './decisionRef.js';
 
 const workspaceField = {
   workspace_id: z.string().trim().min(1).optional()
@@ -15,7 +16,8 @@ const taskIdField = {
   task_id: z.string().trim().min(1).describe('Task UUID of the task you own and are blocked on.'),
 };
 const decisionIdField = {
-  decision_id: z.string().trim().min(1).describe('Decision UUID (36-char full id; an 8+ char unique prefix is also accepted).'),
+  decision_id: z.string().trim().min(1)
+    .describe('Decision UUID (36-char full id), or a unique hex id prefix of at least 8 characters. Prefix resolution needs a bound workspace (AGENTBOARD_WORKSPACE_ID or workspace_id); while unbound the value is sent as-is. An ambiguous prefix returns the matching candidates; a shorter prefix is rejected.'),
 };
 const requestIdField = {
   request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
@@ -144,8 +146,9 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     description: 'Read one decision with options, answer revisions, checkpoint and remaining grace. Text fields are windowed.',
     inputSchema: z.object(decisionIdField).strict(),
   }, async ({ decision_id }) => {
+    const decisionId = await resolveDecisionId(api, config.workspaceId ?? null, decision_id);
     const response = await api.get<{ decision: JsonObject }>(
-      `/decisions/${encodeURIComponent(decision_id)}`,
+      `/decisions/${encodeURIComponent(decisionId)}`,
       {},
       'DECISION_NOT_FOUND',
     );
@@ -252,6 +255,7 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       readOnly: false,
     },
     async ({ decision_id, request_id, option, text, expected_revision, revise }) => {
+      const decisionId = await resolveDecisionId(api, config.workspaceId ?? null, decision_id);
       if ((option === undefined) === (text === undefined)) {
         throw new McpError('VALIDATION_ERROR', 'Provide exactly one of option or text.');
       }
@@ -259,7 +263,7 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
         throw new McpError('VALIDATION_ERROR', 'revise requires expected_revision.');
       }
       const detail = await api.get<{ decision: JsonObject }>(
-        `/decisions/${encodeURIComponent(decision_id)}`,
+        `/decisions/${encodeURIComponent(decisionId)}`,
         {},
         'DECISION_NOT_FOUND',
       );
@@ -280,7 +284,7 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       if (expected_revision !== undefined) body.expected_revision = expected_revision;
       const response = await api.mutate<{ decision: JsonObject }>(
         'POST',
-        `/decisions/${encodeURIComponent(decision_id)}/answer`,
+        `/decisions/${encodeURIComponent(decisionId)}/answer`,
         body,
         request_id,
         'DECISION_ALREADY_ANSWERED',
@@ -317,9 +321,10 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
     },
     async ({ decision_id, request_id, seconds, by, fence, workspace_id }) => {
       const workspaceId = config.workspaceId ? resolveWorkspaceId(config, workspace_id) : workspace_id?.trim();
+      const decisionId = await resolveDecisionId(api, workspaceId ?? null, decision_id);
       const response = await api.mutate<JsonObject>(
         'POST',
-        `/decisions/${encodeURIComponent(decision_id)}/extend`,
+        `/decisions/${encodeURIComponent(decisionId)}/extend`,
         {
           seconds,
           by: by ?? config.agentId ?? 'user',
@@ -351,15 +356,16 @@ export function registerDecisionTools(server: McpServer, config: McpConfig, api:
       readOnly: false,
     },
     async ({ decision_id, request_id, reason, by }) => {
+      const decisionId = await resolveDecisionId(api, config.workspaceId ?? null, decision_id);
       const detail = await api.get<{ decision: JsonObject }>(
-        `/decisions/${encodeURIComponent(decision_id)}`,
+        `/decisions/${encodeURIComponent(decisionId)}`,
         {},
         'DECISION_NOT_FOUND',
       );
       assertWorkspaceMatches(config, detail.decision);
       const response = await api.mutate<{ decision: JsonObject }>(
         'POST',
-        `/decisions/${encodeURIComponent(decision_id)}/withdraw`,
+        `/decisions/${encodeURIComponent(decisionId)}/withdraw`,
         { reason, by: by ?? config.agentId ?? 'user' },
         request_id,
         'DECISION_NOT_ACTIVE',
