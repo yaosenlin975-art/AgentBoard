@@ -1,7 +1,7 @@
 import type { Issue, IssueComment } from '@agentboard/shared';
 import { CliHttpError, request } from '../api.js';
 import type { Ctx } from '../io.js';
-import { COMMENT_DEFAULT_LIMIT, COMMENT_PREVIEW_CHARS, commentLines, issueLines, selectRecentComments } from '../render.js';
+import { COMMENT_DEFAULT_LIMIT, COMMENT_PREVIEW_CHARS, commentLines, issueLines, selectRecentComments, singleLine } from '../render.js';
 import { resolveIssueByRef } from '../issueRef.js';
 
 interface ConsumeResponse {
@@ -111,7 +111,7 @@ async function showMany(ctx: Ctx, ids: string[]): Promise<number> {
       return [
         head,
         `id: ${issue.id}`,
-        `标题: ${issue.title}`,
+        `标题: ${singleLine(issue.title)}`,
         `状态: ${issue.status}`,
         `占用者: ${issue.claimed_by ?? '（未占用）'}`,
         `评论数: ${issue.comment_count}`,

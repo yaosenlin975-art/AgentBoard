@@ -27,6 +27,29 @@ describe('render（KB-CLI-3b）', () => {
     expect(displayWidth('a中b文')).toBe(6);
   });
 
+  // P3：--title-stdin 允许换行/控制字符进标题，表格不能被切成多行
+  it('table：含换行/制表/控制字符的单元格折叠成单行，行数与列宽不受影响', () => {
+    const out = table(
+      ['id', '标题'],
+      [
+        ['deadbee1', '第一行\n第二行'],
+        ['deadbee2', '带\t制表\u0007与\r回车'],
+        ['deadbee3', '正常标题'],
+      ],
+    );
+    const lines = out.trimEnd().split('\n');
+    expect(lines).toHaveLength(4); // 表头 + 3 行，没有被换行切坏
+    expect(lines[1]).toContain('第一行 第二行');
+    expect(lines[1]).not.toContain('\n');
+    expect(lines[2]).toContain('带 制表 与 回车');
+    // 各行列起点仍然一致
+    const secondColStarts = lines.map((line) => {
+      const m = /\S( {2,})/.exec(line)!;
+      return displayWidth(line.slice(0, m.index + 1 + m[1].length));
+    });
+    expect(new Set(secondColStarts).size).toBe(1);
+  });
+
   it('formatDateTime：YYYY-MM-DD HH:mm:ss（本地时区）', () => {
     expect(formatDateTime(new Date(2026, 10, 6, 1, 2, 3).getTime())).toBe('2026-11-06 01:02:03');
   });

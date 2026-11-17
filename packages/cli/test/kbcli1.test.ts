@@ -111,6 +111,58 @@ describe('create-issue 标题安全（本地拒绝，不发请求）', () => {
     expect(empty.err).toContain('--title-stdin 读到的标题为空');
   });
 
+  // P3：--title-stdin 是报错指定的「引号安全通道」，它本身不能也拒引号
+  it('--title-stdin 通道放行引号与 & | \\ 任意字符（含半角/全角引号）', async () => {
+    const stdinTitles = [
+      'a "quoted" title',
+      "a 'single' title",
+      '带“全角”与‘单引号’的标题',
+      'a & b | c \\ d',
+    ];
+    for (const title of stdinTitles) {
+      calls = [];
+      handler = (method, url, body) => {
+        if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
+        if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: (body as { title: string }).title } };
+        if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title, description: '正文与验收' } };
+        return undefined;
+      };
+      const result = await run(['create-issue', 'ws1', '--title-stdin', '-d', '正文与验收'], `${title}\n`);
+      expect(result.code, `stdin 标题应放行：${title}`).toBe(0);
+      const post = calls.find((c) => c.method === 'POST' && c.url === '/api/issues');
+      expect((post!.body as { title: string }).title).toBe(title);
+    }
+  });
+
+  it('位置参数通道报错指向真的能过的通道（--title-stdin 不再被同一检查拒）', async () => {
+    handler = (method, url, body) => {
+      if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
+      if (method === 'POST' && url === '/api/issues') return { status: 200, body: { ...ISSUE, title: (body as { title: string }).title } };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title: 'a "quoted" title', description: '正文与验收' } };
+      return undefined;
+    };
+    const argv = await run(['create-issue', 'ws1', 'a "quoted" title', '-d', '正文与验收']);
+    expect(argv.code).not.toBe(0);
+    expect(argv.err).toContain('--title-stdin');
+    // 报错给出的命令可照抄执行：同一标题走 stdin 必须成功
+    const stdinRun = await run(['create-issue', 'ws1', '--title-stdin', '-d', '正文与验收'], 'a "quoted" title\n');
+    expect(stdinRun.code).toBe(0);
+  });
+
+  // 与 create-issue 口径一致：update --title 走的是 argv 但服务端只做 trim/200，历史上一直放行引号
+  it('update --title 写引号成功（与 create-issue --title-stdin 口径一致）', async () => {
+    handler = (method, url, body) => {
+      if (method === 'GET' && url.startsWith('/api/workspaces')) return { status: 200, body: [{ id: 'ws1', name: 'ws', path: 'D:/ws' }] };
+      if (method === 'GET' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title: (body as { title?: string } | undefined)?.title ?? '改标题含"引号"' } };
+      if (method === 'PATCH' && url === '/api/issues/iss-new') return { status: 200, body: { ...ISSUE, title: (body as { title: string }).title } };
+      return undefined;
+    };
+    const result = await run(['update', 'iss-new', '--title', '改标题含"引号"']);
+    expect(result.code).toBe(0);
+    const patch = calls.find((c) => c.method === 'PATCH');
+    expect((patch!.body as { title: string }).title).toBe('改标题含"引号"');
+  });
+
   it('缺标题（无参数、无 --title-stdin）→ 中文报错', async () => {
     const result = await run(['create-issue', 'ws1']);
     expect(result.code).not.toBe(0);

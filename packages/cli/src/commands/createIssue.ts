@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Issue, Workspace } from '@agentboard/shared';
 import { request, requestWithMeta, verifyIssueStoredText } from '../api.js';
+import { singleLine } from '../render.js';
 import type { Ctx } from '../io.js';
 import { normalizeIssueIdArg } from '../issueRef.js';
 import { matchWorkspace, resolveWorkspaceWithHint } from '../workspace.js';
@@ -36,9 +37,9 @@ export type CreateStatus = (typeof CREATE_STATUSES)[number];
 export interface CreateIssueArgs {
   /** 工作空间 id 或名称（先解析为 id）；缺省按 cwd 解析 */
   workspace?: string;
-  /** 标题（与 titleStdin 二选一；含引号/选项样式的标题会被本地拒绝） */
+  /** 标题（与 titleStdin 二选一；位置参数通道含引号/选项样式的标题会被本地拒绝） */
   title?: string;
-  /** KB-CLI-1：标题走 stdin（PowerShell 引号吞参的绕行通道） */
+  /** KB-CLI-1：标题走 stdin（PowerShell 引号吞参的绕行通道；不经分词，任意字符放行） */
   titleStdin?: boolean;
   description?: string;
   /** CARD-FACE：跳过空描述校验（批量建卡 / 纯父卡），回执会提示已跳过 */
@@ -95,19 +96,25 @@ export function parseDue(value: string): { due_date: string; due_time?: string }
 
 /**
  * KB-CLI-1：标题本地校验（全部不发请求）。
- * 1) 引号/选项样式拒绝——PowerShell 引号吞参会静默写错数据（审查 01 P0）；
- * 2) 200 字上限。
+ * 1) 200 字上限（两通道同口径，服务端同样 200）；
+ * 2) 位置参数通道（argv）额外拒绝引号与选项样式——PowerShell 引号吞参会静默写错数据（审查 01 P0）；
+ * 3) stdin 通道（--title-stdin）只保留长度上限：管道进 stdin 不经 PowerShell 分词，
+ *    引号与 `& | \` 原样到达，套用吞噬防护只会把报错指定的安全通道也一起拒掉（P3 bug）。
  */
 export const ISSUE_TITLE_MAX = 200;
-export function assertIssueTitle(title: string): void {
+export type IssueTitleChannel = 'argv' | 'stdin';
+export function assertIssueTitle(title: string, channel: IssueTitleChannel = 'argv'): void {
   if (title.length > ISSUE_TITLE_MAX) {
     throw new Error(`标题超长：${title.length} 字符，上限 ${ISSUE_TITLE_MAX}。请精简标题，长内容放描述（-d）`);
   }
-  if (/[\"'“”‘’]/.test(title)) {
-    throw new Error(`标题含引号（" ' “ ” 等），PowerShell 可能吞参静默写错数据；请改用 --title-stdin 通道，或修正引号后重试`);
+  if (channel === 'stdin') return;
+  // 字符类里的引号不需要转义：带 u 标志时 `\'` 是非法转义（Node 加载即抛 SyntaxError，
+  // tsc 不校验正则语义，所以只能靠运行时/`node --check` 抓）。
+  if (/["'“”‘’]/u.test(title)) {
+    throw new Error(`标题含引号（" ' “ ” 等），PowerShell 会把这些字符后的参数吞进字符串并静默写错数据。改用 stdin 通道：Get-Content title.txt -Raw | kb create-issue <workspace> --title-stdin（--title-stdin 不走分词，引号原样保留）`);
   }
   if (/^-{1,2}[A-Za-z]/.test(title)) {
-    throw new Error(`标题以「-」开头疑似命令选项被吞参（收到「${title.slice(0, 20)}…」）；请用 --title-stdin 或给标题加引号`);
+    throw new Error(`标题以「-」开头疑似命令选项被吞参（收到「${title.slice(0, 20)}…」）；请用 --title-stdin 从 stdin 传入（Get-Content title.txt -Raw | kb create-issue <workspace> --title-stdin）`);
   }
 }
 
@@ -150,7 +157,7 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
     }
     title = args.title;
   }
-  assertIssueTitle(title);
+  assertIssueTitle(title, args.titleStdin === true ? 'stdin' : 'argv');
   // CREATE-STATUS：只放「待规划」「待验收」；待验收即使加 --allow-empty 也必须写验收标准
   if (args.status !== undefined && !CREATE_STATUSES.includes(args.status as CreateStatus)) {
     throw new Error(`--status 仅支持「待规划」和「待验收」，收到: ${args.status}`);
@@ -195,5 +202,5 @@ export async function createIssue(ctx: Ctx, args: CreateIssueArgs): Promise<void
   const parentLine = issue.parent_issue_id === null || issue.parent_issue_id === undefined
     ? '父卡: （根任务）'
     : `父卡: ${issue.parent_issue_id}`;
-  ctx.io.write(`${skipLine}${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${issue.title}\n状态: ${issue.status}\n优先级: ${issue.priority}\n${labelLine}\n${parentLine}\n${dueLine}\n`);
+  ctx.io.write(`${skipLine}${replayed ? '（幂等重放）' : ''}已创建任务: ${issue.id} ${singleLine(issue.title)}\n状态: ${issue.status}\n优先级: ${issue.priority}\n${labelLine}\n${parentLine}\n${dueLine}\n`);
 }

@@ -7,15 +7,24 @@ export function displayWidth(value: string): number {
   return width;
 }
 
+/**
+ * 单行化：标题可含换行（`--title-stdin` 管道喂多行）与控制字符，
+ * 直接进表格会把一行切坏、列宽算错；渲染前统一折叠成单个空格。
+ */
+export function singleLine(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trimEnd();
+}
+
 /** 列对齐按显示宽度修正（CJK 记 2），中文与 36 位 id 混排仍对齐 */
 export function table(headers: readonly string[], rows: readonly (readonly string[])[]): string {
-  const widths = headers.map((h, i) => Math.max(displayWidth(h), ...rows.map((r) => displayWidth(r[i] ?? ''))));
+  const safeRows = rows.map((row) => row.map((cell) => singleLine(cell ?? '')));
+  const widths = headers.map((h, i) => Math.max(displayWidth(h), ...safeRows.map((r) => displayWidth(r[i] ?? ''))));
   const fmt = (cells: readonly string[]): string =>
     cells.map((c, i) => {
       const value = c ?? '';
       return `${value}${' '.repeat(Math.max(0, (widths[i] ?? 0) - displayWidth(value)))}`;
     }).join('  ');
-  return [fmt(headers), ...rows.map(fmt)].map((l) => `${l}\n`).join('');
+  return [fmt(headers), ...safeRows.map(fmt)].map((l) => `${l}\n`).join('');
 }
 
 /** CLI-11：文本时间统一 YYYY-MM-DD HH:mm:ss（本地时区；自 changelog TIME 提升为公共实现） */
@@ -32,7 +41,7 @@ export function issueLines(input: Issue | null | undefined): string[] {
   return [
     `id: ${issue.id}`,
     `workspace_id: ${issue.workspace_id}`,
-    `标题: ${issue.title}`,
+    `标题: ${singleLine(issue.title)}`,
     `描述: ${issue.description === '' ? '（空）' : issue.description}`,
     `状态: ${issue.status}`,
     `父任务: ${issue.parent_issue_id ?? '（根任务）'}`,

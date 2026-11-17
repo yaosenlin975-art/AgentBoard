@@ -564,11 +564,11 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   program
     .command('create-issue')
-    .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；标题含引号被拒时改用 --title-stdin）')
+    .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；位置参数含引号会被拒，改用 --title-stdin）')
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理）')
-    .argument('[title]', '任务标题（与 --title-stdin 二选一）')
+    .argument('[title]', '任务标题（与 --title-stdin 二选一；含引号会被拒，走 --title-stdin）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
-    .option('--title-stdin', '从 UTF-8 stdin 读标题（PowerShell 引号吞参时用：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
+    .option('--title-stdin', '从 UTF-8 stdin 读标题（不经 PowerShell 分词，允许引号 " \' “ ” 与 & | \\ 任意字符：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（必填；含空格用引号；多行走 UI 或 API）')
     .option('--allow-empty', '跳过空描述校验（批量建卡 / 纯父卡）；回执会提示已跳过空面校验')
     .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须同时用 -d 写验收标准）')
