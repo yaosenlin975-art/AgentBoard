@@ -25,6 +25,17 @@ export const CLIENT_ERROR_CAPACITY = 20;
 
 const entries: ClientErrorEntry[] = [];
 
+/**
+ * G5：上报接收方。由 `lib/errorReporting.ts` 在启动时注入，
+ * 缓冲本身不联网——这样异常路径里不会因为 import 循环或网络逻辑再抛一次。
+ */
+export type ClientErrorSink = (entry: ClientErrorEntry) => void;
+let sink: ClientErrorSink | null = null;
+
+export function setClientErrorSink(next: ClientErrorSink | null): void {
+  sink = next;
+}
+
 function currentUrl(): string {
   try {
     return typeof window === 'undefined' ? '' : window.location.href;
@@ -53,6 +64,25 @@ export interface PushClientErrorInput {
 
 /** 写入一条；返回写入的条目（调用方只读用，不要改它） */
 export function pushClientError(input: PushClientErrorInput): ClientErrorEntry {
+  const entry = appendClientError(input);
+  // G5：交给上报器（延后到微任务，不在这里发请求）；上报器自身的异常不影响记录
+  try {
+    sink?.(entry);
+  } catch {
+    /* 上报器不该抛，真抛了也不能污染缓冲 */
+  }
+  return entry;
+}
+
+/**
+ * 只写缓冲、**不通知上报器**。
+ * 上报器自己产生的记录（如「丢弃 N 条」）必须走这里，否则会自激上报。
+ */
+export function pushClientErrorSilently(input: PushClientErrorInput): ClientErrorEntry {
+  return appendClientError(input);
+}
+
+function appendClientError(input: PushClientErrorInput): ClientErrorEntry {
   const entry: ClientErrorEntry = {
     ts: Date.now(),
     kind: input.kind,

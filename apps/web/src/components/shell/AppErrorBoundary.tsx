@@ -14,6 +14,7 @@ import {
   pushClientError,
   type ClientErrorEntry,
 } from '../../lib/errorBuffer';
+import { isDiagnosticsDisabled } from '../../lib/errorReporting';
 
 /** 摘要截断长度（长消息会把兜底 UI 撑变形） */
 const MESSAGE_LIMIT = 200;
@@ -122,6 +123,11 @@ export function AppErrorFallback({ error, reset }: { error: Error; reset: () => 
           >
             {stackExcerpt(error)}
           </pre>
+        )}
+        {expanded && isDiagnosticsDisabled() && (
+          <p data-testid="app-error-diagnostics-disabled" className="mt-2 text-xs text-ink-3">
+            诊断上报已关闭（localStorage `ab.diagnostics.disabled=1`），本机不会发送任何错误信息。
+          </p>
         )}
       </div>
     </div>

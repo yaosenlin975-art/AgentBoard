@@ -7,6 +7,8 @@ import { ChunkErrorBanner } from './components/ui/ChunkErrorBanner';
 import { AppErrorBoundary } from './components/shell/AppErrorBoundary';
 import { installChunkErrorRecovery } from './lib/chunkRecovery';
 import { installClientErrorHooks } from './lib/errorBuffer';
+import { fetchInstanceId, installErrorReporting } from './lib/errorReporting';
+import { WEB_VERSION } from './api/version';
 import { initTheme } from './theme';
 import './index.css';
 
@@ -14,10 +16,15 @@ import './index.css';
 installChunkErrorRecovery();
 
 /**
- * G3：全局错误钩子。本卡只记到环形缓冲（白屏时「复制错误信息」能读到完整上下文），
- * 网络上报是 G4/G5 的事——这里刻意不联网，避免异常路径里再抛一次。
+ * G3：全局错误钩子。只记到环形缓冲（白屏时「复制错误信息」能读到完整上下文）。
  */
 installClientErrorHooks();
+
+/**
+ * G5：把缓冲接到 `POST /api/client-diagnostics`（G4 的取证端点）。
+ * 上报在微任务里做、失败静默、同一指纹只报一次；`ab.diagnostics.disabled=1` 时一个请求都不发。
+ */
+installErrorReporting({ resolveInstanceId: fetchInstanceId, appVersion: WEB_VERSION });
 
 initTheme();
 
