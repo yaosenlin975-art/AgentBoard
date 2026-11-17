@@ -85,6 +85,49 @@ const WEB_DIST_MARKER_ERROR_BOUNDARY = 'app-error-boundary';
 const WEB_DIST_MARKER_CLIENT_DIAG = 'client-diagnostics';
 /** N6：G4 端点专属标记（限流分支），在 server dist 里 */
 const SERVER_DIST_MARKER_RATE_LIMITED = 'CLIENT_DIAGNOSTICS_RATE_LIMITED';
+/**
+ * N8：本轮性能修复的 ASCII 标识符标记（全部用常量名，不 grep 中文）。
+ *
+ * 为什么只查常量名：便携包把 server dist 内联成 esbuild 单文件，中文会被转成 `\uXXXX`，
+ * 字面 grep 中文必然 0 处（N5/M1 那次的教训）。常量名是稳定 ASCII，不会被转义。
+ *
+ *   R3（db33b3c）锁自旋压到 200ms：LOCK_RETRY_INTERVAL_MS = 2 / LOCK_TIMEOUT_DEFAULT_MS = 200
+ *   S3（b03dd7e）E1 来源共现上限：GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE / GRAPH_SOURCE_HASH_MAX_COOCCURRENCE
+ */
+const SERVER_DIST_MARKERS = [
+  SERVER_DIST_MARKER_RATE_LIMITED,
+  'LOCK_RETRY_INTERVAL_MS',
+  'LOCK_TIMEOUT_DEFAULT_MS',
+  'GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE',
+  'GRAPH_SOURCE_HASH_MAX_COOCCURRENCE',
+];
+/**
+ * N8：标记的**期望值**。只查常量名存在不够——要确认这轮修的正确值进了包。
+ * 值来自卡面：R3 锁自旋 2ms / 超时 200ms；S3 共现上限 locator 512 / hash 64。
+ */
+const SERVER_DIST_MARKER_VALUES = [
+  { name: 'LOCK_RETRY_INTERVAL_MS', expect: 'LOCK_RETRY_INTERVAL_MS = 2' },
+  { name: 'LOCK_TIMEOUT_DEFAULT_MS', expect: 'LOCK_TIMEOUT_DEFAULT_MS = 200' },
+  { name: 'GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE', expect: 'GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE = 512' },
+  { name: 'GRAPH_SOURCE_HASH_MAX_COOCCURRENCE', expect: 'GRAPH_SOURCE_HASH_MAX_COOCCURRENCE = 64' },
+];
+/** 校验期望值（源码 dist 未压缩，形如 `const X = 2;` 可直查） */
+function assertServerMarkerValues(bundleText, label) {
+  for (const { name, expect } of SERVER_DIST_MARKER_VALUES) {
+    if (!bundleText.includes(expect)) {
+      fail(
+        `${label}：${name} 的值与预期不符，期望包含 \`${expect}\`\n` +
+          `  → 卡面值：R3 锁自旋 2ms / 超时 200ms；S3 共现上限 locator 512 / hash 64。\n` +
+          `  → 说明打进的不是这轮修复后的产物。`,
+      );
+    }
+  }
+  log(`✔ ${label}：R3/S3 常量值全部符合预期（4 项）`);
+}
+/** 正则转义（标记里可能有非字母字符） */
+function escapeRegex(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 const LOG_DIR = join(ROOT, '.logs');
 const RECORD_PATH = join(LOG_DIR, 'build-all-record.json');
 const NSIS_DIR = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
@@ -475,6 +518,28 @@ function assertWebDistHasMarker(webDistDir, label) {
     );
   }
   log(`✔ ${label}：${WEB_DIST_MARKER_CLIENT_DIAG} 命中 ${counts[WEB_DIST_MARKER_CLIENT_DIAG]} 处`);
+
+  // N8-R4：`normalizeGraph` 必须被 useMemo 包住（击穿 memo 修复）。
+  //
+  // 【判据降级说明】这条在产物里查不到直接证据，已降级为「与仓库 dist 同源 + useMemo 仍存在」：
+  //   实测 vite 压缩后 `normalizeGraph` / `layoutGraph` 在 web dist 里均为 0 处（函数名被重命名），
+  //   而 useMemo 有 88 处。函数名不保留，就没法 grep「normalizeGraph 在 useMemo 内」。
+  //   源码层证据是 apps/web/src/components/knowledge/KnowledgeGraph.tsx:196 的
+  //   `const raw = useMemo(() => ... normalizeGraph(remote.data) ..., [usingFallback, fallback.data, remote.data])`，
+  //   以及 apps/web/src/test/graphLayoutCalls.test.tsx 对 layoutGraph 调用次数的断言（8 次 → 1 次）。
+  //   产物侧只能证明「打进包的就是仓库里这份 dist」——即打包没拿到旧 web dist。
+  //   真正的回归保护靠那个测试，不靠本门禁。
+  //   源码侧不比（自己比自己恒等，无意义），只在产物内层展开。
+  if (resolve(webDistDir) !== resolve(WEB_DIST)) {
+    const sameAsRepo = compareIndexAssets(webDistDir, `${label}（R4 降级判据）`);
+    if (!sameAsRepo) {
+      fail(
+        `${label}：R4 降级判据不满足 —— index.html 引用的 assets 与仓库 dist 不一致\n` +
+          `  → 说明打进包的不是仓库里这份 web dist（可能是旧包）。\n`,
+      );
+    }
+  }
+
   return { counts, filesWithMarker: counts[WEB_DIST_MARKER] > 0 ? 1 : 0, scanned: scanned.length };
 }
 
@@ -580,25 +645,27 @@ function assertUnchangedDuring(label, expected) {
 const IDENTIFIER_HIT_THRESHOLD = 0.85;
 
 /**
- * N6-G4：服务端 bundle 必须含限流分支标记。
+ * N6-G4 / N8：服务端 bundle 必须含若干 ASCII 标识符标记。
  *
- * 与 web 侧三条标记同理：外层 mtime 新不代表内层 server bundle 新。
+ * 与 web 侧标记同理：外层 mtime 新不代表内层 server bundle 新。
  * 便携包把 server dist 用 esbuild 打成单文件，所以直接对本文件检索即可；
- * 该标记是 ASCII 标识符，不会被转义。
+ * 这些标记都是 ASCII 标识符/常量名，不会被转义成 \uXXXX（中文才会）。
  */
 function assertServerBundleHasDiagMarker(bundleFile, label) {
   if (!existsSync(bundleFile)) fail(`${label}：server bundle 不存在：${bundleFile}`);
   const text = readFileSync(bundleFile, 'utf8');
-  const count = (text.match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length;
-  if (count === 0) {
-    fail(
-      `${label}：server bundle 不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进产物\n` +
-        `  文件      ${bundleFile}\n` +
-        `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
-    );
+  for (const marker of SERVER_DIST_MARKERS) {
+    const count = (text.match(new RegExp(escapeRegex(marker), 'g')) ?? []).length;
+    if (count === 0) {
+      fail(
+        `${label}：server bundle 不含 ${marker}，对应改动未进产物\n` +
+          `  文件      ${bundleFile}\n` +
+          `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
+      );
+    }
+    log(`✔ ${label}：${marker} 命中 ${count} 处`);
   }
-  log(`✔ ${label}：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${count} 处`);
-  return count;
+  return true;
 }
 
 function assertBundleContainsSource(bundleFile) {
@@ -758,69 +825,77 @@ function verifyPortable(expected, portableStepStartMs) {
 }
 
 /**
- * N6-G4（目录树版）：在整棵 server dist 里检索限流标记。
+ * N6-G4 / N8（目录树版）：在整棵 server dist 里检索全部 ASCII 标记。
  *
- * NSIS 侧不打包成单文件，server dist 是完整目录树（含 api/routes/clientDiagnosticsRoutes.js），
- * 因此要遍历目录，不能只查 index.js。
+ * NSIS 侧不打包成单文件，server dist 是完整目录树（含 api/routes/clientDiagnosticsRoutes.js、
+ * services/fileRepo.js 等），因此要遍历目录，不能只查 index.js。
  */
 function assertTreeHasServerDiagMarker(dir, label) {
   if (!existsSync(dir)) fail(`${label}：目录不存在：${dir}`);
-  let total = 0;
+  const texts = [];
   const scan = (cur) => {
     for (const entry of readdirSync(cur, { withFileTypes: true })) {
       const full = join(cur, entry.name);
       if (entry.isDirectory()) scan(full);
-      else if (entry.isFile() && entry.name.endsWith('.js')) {
-        total += (readFileSync(full, 'utf8').match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length;
-      }
+      else if (entry.isFile() && entry.name.endsWith('.js')) texts.push(readFileSync(full, 'utf8'));
     }
   };
   scan(dir);
-  if (total === 0) {
-    fail(
-      `${label}：不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进产物\n` +
-        `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
-    );
+  const joined = texts.join('\n');
+  for (const marker of SERVER_DIST_MARKERS) {
+    const count = (joined.match(new RegExp(escapeRegex(marker), 'g')) ?? []).length;
+    if (count === 0) {
+      fail(
+        `${label}：不含 ${marker}，对应改动未进产物\n` +
+          `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
+      );
+    }
+    log(`✔ ${label}：${marker} 命中 ${count} 处`);
   }
-  log(`✔ ${label}：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${total} 处`);
-  return total;
+  assertServerMarkerValues(joined, label);
+  return true;
 }
 
 /**
- * N6-G4（NSIS 包内版）：从安装包里抽出 `clientDiagnosticsRoutes.js` 并检索限流标记。
+ * N6-G4 / N8（NSIS 包内版）：从安装包里抽出 server dist 的关键文件并检索**全部** ASCII 标记。
  *
  * 与 NSIS 内嵌壳/内嵌 web dist 同一条原则：验内层，不认外层 mtime。
- * 先用 7-Zip 定位条目名（NSIS 里路径分隔符可能是反斜杠），再按条目抽出。
+ * 标记分散在不同文件（限流在 api/routes/、锁与共现上限在 services/），
+ * 因此抽出整个 `apps/server/dist/**` 再并起来检索，而不是只抽一个文件。
  */
 function assertNsisEmbedsServerDiagMarker(setupPath) {
   const sevenZip = ['C:/Program Files/7-Zip/7z.exe', 'C:/Program Files (x86)/7-Zip/7z.exe'].find((p) => existsSync(p));
   if (sevenZip === undefined) {
     log('⚠ 未找到 7-Zip，跳过 NSIS 内嵌 server dist 校验');
-    return 0;
+    return true;
   }
   const tempDir = join(LOG_DIR, '.nsis-server-probe');
   rmSync(tempDir, { recursive: true, force: true });
   mkdirSync(tempDir, { recursive: true });
-  spawnSync(
-    sevenZip,
-    ['e', setupPath, `-o${tempDir}`, 'apps/server/dist/api/routes/clientDiagnosticsRoutes.js', '-y', '-r'],
-    {
-      encoding: 'utf8',
-    },
-  );
-  const probe = join(tempDir, 'clientDiagnosticsRoutes.js');
-  const count = existsSync(probe)
-    ? (readFileSync(probe, 'utf8').match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length
-    : 0;
+  spawnSync(sevenZip, ['e', setupPath, `-o${tempDir}`, 'apps/server/dist/**/*.js', '-y', '-r'], { encoding: 'utf8' });
+  const texts = [];
+  const collect = (cur) => {
+    for (const entry of readdirSync(cur, { withFileTypes: true })) {
+      const full = join(cur, entry.name);
+      if (entry.isDirectory()) collect(full);
+      else if (entry.isFile() && entry.name.endsWith('.js')) texts.push(readFileSync(full, 'utf8'));
+    }
+  };
+  if (existsSync(tempDir)) collect(tempDir);
   rmSync(tempDir, { recursive: true, force: true });
-  if (count === 0) {
-    fail(
-      `NSIS 安装包：不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进安装包\n` +
-        `  → 期望条目 apps/server/dist/api/routes/clientDiagnosticsRoutes.js`,
-    );
+  if (texts.length === 0) {
+    fail(`从 NSIS 安装包取 server dist 失败（抽出 0 个 .js）\n  → 期望条目 apps/server/dist/**`);
   }
-  log(`✔ NSIS 内嵌 server dist：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${count} 处`);
-  return count;
+  const joined = texts.join('\n');
+  for (const marker of SERVER_DIST_MARKERS) {
+    const count = (joined.match(new RegExp(escapeRegex(marker), 'g')) ?? []).length;
+    if (count === 0) {
+      fail(`NSIS 安装包：不含 ${marker}，对应改动未进安装包\n  → 抽出 ${texts.length} 个 .js，命中 0`);
+    }
+    log(`✔ NSIS 内嵌 server dist：${marker} 命中 ${count} 处`);
+  }
+  assertServerMarkerValues(joined, 'NSIS 内嵌 server dist');
+  return true;
 }
 
 function verifyNsis(expected) {
