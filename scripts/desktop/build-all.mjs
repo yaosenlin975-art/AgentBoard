@@ -74,6 +74,17 @@ const WEB_DIST_MARKER_ONBOARDING = 'onboarding-overlay';
  * ——只要文件名集合相同，说明打进包的就是仓库里这份 dist。
  */
 const WEB_DIST_MARKER_G1 = 'lg:overflow-y-auto';
+/**
+ * N6：G3 顶层 ErrorBoundary 与 G5 上报接线的 ASCII 标识。
+ *
+ * 只用 ASCII 标识符检索，不用中文：便携包会把 web dist 内联成 esbuild 单文件，
+ * 其中中文一律被转成 `\uXXXX` 转义（见 M1「唯一字符数」那次的教训），
+ * 字面 grep 中文在便携包内必然 0 处，会造成假失败。
+ */
+const WEB_DIST_MARKER_ERROR_BOUNDARY = 'app-error-boundary';
+const WEB_DIST_MARKER_CLIENT_DIAG = 'client-diagnostics';
+/** N6：G4 端点专属标记（限流分支），在 server dist 里 */
+const SERVER_DIST_MARKER_RATE_LIMITED = 'CLIENT_DIAGNOSTICS_RATE_LIMITED';
 const LOG_DIR = join(ROOT, '.logs');
 const RECORD_PATH = join(LOG_DIR, 'build-all-record.json');
 const NSIS_DIR = join(ROOT, 'desktop', 'src-tauri', 'target', 'release', 'bundle', 'nsis');
@@ -384,7 +395,14 @@ function assertWebDistHasMarker(webDistDir, label) {
   const assetsDir = join(webDistDir, 'assets');
   const scanRoot = existsSync(assetsDir) ? assetsDir : webDistDir;
   const scanned = [];
-  const counts = { [WEB_DIST_MARKER]: 0, [WEB_DIST_MARKER_ONBOARDING]: 0, [WEB_DIST_MARKER_G1]: 0 };
+  const counts = {
+    [WEB_DIST_MARKER]: 0,
+    [WEB_DIST_MARKER_ONBOARDING]: 0,
+    [WEB_DIST_MARKER_G1]: 0,
+    [WEB_DIST_MARKER_ERROR_BOUNDARY]: 0,
+    [WEB_DIST_MARKER_CLIENT_DIAG]: 0,
+    [SERVER_DIST_MARKER_RATE_LIMITED]: 0,
+  };
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
@@ -436,6 +454,27 @@ function assertWebDistHasMarker(webDistDir, label) {
       );
     }
   }
+
+  // N6-G3：顶层 ErrorBoundary 必须进 web dist，否则白屏止血没带进包
+  if (counts[WEB_DIST_MARKER_ERROR_BOUNDARY] === 0) {
+    fail(
+      `${label}：web dist 不含 ${WEB_DIST_MARKER_ERROR_BOUNDARY}，G3 白屏止血未进产物\n` +
+        `  扫描目录  ${scanRoot}\n` +
+        `  扫描文件  ${scanned.length} 个 .js，命中 0\n` +
+        `  → 先确认 apps/web/dist 已重建（pnpm -r build），再重跑本脚本。`,
+    );
+  }
+  log(`✔ ${label}：${WEB_DIST_MARKER_ERROR_BOUNDARY} 命中 ${counts[WEB_DIST_MARKER_ERROR_BOUNDARY]} 处`);
+
+  // N6-G5：客户端错误上报接线必须进 web dist
+  if (counts[WEB_DIST_MARKER_CLIENT_DIAG] === 0) {
+    fail(
+      `${label}：web dist 不含 ${WEB_DIST_MARKER_CLIENT_DIAG}，G5 上报接线未进产物\n` +
+        `  扫描目录  ${scanRoot}\n` +
+        `  扫描文件  ${scanned.length} 个 .js，命中 0\n`,
+    );
+  }
+  log(`✔ ${label}：${WEB_DIST_MARKER_CLIENT_DIAG} 命中 ${counts[WEB_DIST_MARKER_CLIENT_DIAG]} 处`);
   return { counts, filesWithMarker: counts[WEB_DIST_MARKER] > 0 ? 1 : 0, scanned: scanned.length };
 }
 
@@ -540,6 +579,28 @@ function assertUnchangedDuring(label, expected) {
  */
 const IDENTIFIER_HIT_THRESHOLD = 0.85;
 
+/**
+ * N6-G4：服务端 bundle 必须含限流分支标记。
+ *
+ * 与 web 侧三条标记同理：外层 mtime 新不代表内层 server bundle 新。
+ * 便携包把 server dist 用 esbuild 打成单文件，所以直接对本文件检索即可；
+ * 该标记是 ASCII 标识符，不会被转义。
+ */
+function assertServerBundleHasDiagMarker(bundleFile, label) {
+  if (!existsSync(bundleFile)) fail(`${label}：server bundle 不存在：${bundleFile}`);
+  const text = readFileSync(bundleFile, 'utf8');
+  const count = (text.match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length;
+  if (count === 0) {
+    fail(
+      `${label}：server bundle 不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进产物\n` +
+        `  文件      ${bundleFile}\n` +
+        `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
+    );
+  }
+  log(`✔ ${label}：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${count} 处`);
+  return count;
+}
+
 function assertBundleContainsSource(bundleFile) {
   const bundle = readFileSync(bundleFile, 'utf8');
   const identifiers = new Set();
@@ -602,6 +663,8 @@ function verifyPortable(expected, portableStepStartMs) {
   }
 
   assertBundleContainsSource(PKG_SERVER_DIST);
+  // N6：便携包内层 server bundle 必须含 G4 端点标记
+  const pkgServerDiag = assertServerBundleHasDiagMarker(PKG_SERVER_DIST, '便携包 server bundle');
   const dotfilesAllow = warnBundleDotfilesAllow(PKG_SERVER_DIST);
 
   // D13：包内壳必须由当前壳源码编译。zip 外层 mtime 是打包时刻，
@@ -690,7 +753,37 @@ function verifyPortable(expected, portableStepStartMs) {
     dotfilesAllow,
     zipHead: nameHead,
     webMarkerHits: packagedWeb.counts[WEB_DIST_MARKER],
+    serverDiagMarkerHits: pkgServerDiag,
   };
+}
+
+/**
+ * N6-G4（目录树版）：在整棵 server dist 里检索限流标记。
+ *
+ * NSIS 侧不打包成单文件，server dist 是完整目录树（含 api/routes/clientDiagnosticsRoutes.js），
+ * 因此要遍历目录，不能只查 index.js。
+ */
+function assertTreeHasServerDiagMarker(dir, label) {
+  if (!existsSync(dir)) fail(`${label}：目录不存在：${dir}`);
+  let total = 0;
+  const scan = (cur) => {
+    for (const entry of readdirSync(cur, { withFileTypes: true })) {
+      const full = join(cur, entry.name);
+      if (entry.isDirectory()) scan(full);
+      else if (entry.isFile() && entry.name.endsWith('.js')) {
+        total += (readFileSync(full, 'utf8').match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length;
+      }
+    }
+  };
+  scan(dir);
+  if (total === 0) {
+    fail(
+      `${label}：不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进产物\n` +
+        `  → 先确认 apps/server/dist 已重建（pnpm -r build），再重跑本脚本。`,
+    );
+  }
+  log(`✔ ${label}：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${total} 处`);
+  return total;
 }
 
 function verifyNsis(expected) {
@@ -710,6 +803,9 @@ function verifyNsis(expected) {
   const stagedWeb = assertWebDistHasMarker(STAGE_WEB_DIST, 'NSIS 暂存树 web dist');
   const nsisWeb = assertNsisEmbedsWebMarker(setup);
 
+  // N6-G4：NSIS 侧 server dist 是完整目录树（非单文件），检索该目录下所有 .js
+  const stagedDiag = assertTreeHasServerDiagMarker(STAGE_SERVER_DIST, 'NSIS 暂存树 apps/server/dist');
+
   return {
     kind: 'nsis',
     path: setup,
@@ -717,6 +813,7 @@ function verifyNsis(expected) {
     embeddedShellPe: nsisPe.iso,
     stagedWebMarkerHits: stagedWeb.counts[WEB_DIST_MARKER],
     embeddedWebMarkerHits: nsisWeb.counts?.[WEB_DIST_MARKER] ?? 0,
+    stagedServerDiagHits: stagedDiag,
   };
 }
 
@@ -750,7 +847,14 @@ function assertNsisEmbedsWebMarker(setupPath) {
           .join('\n  ')}`,
     );
   }
-  const counts = { [WEB_DIST_MARKER]: 0, [WEB_DIST_MARKER_ONBOARDING]: 0, [WEB_DIST_MARKER_G1]: 0 };
+  const counts = {
+    [WEB_DIST_MARKER]: 0,
+    [WEB_DIST_MARKER_ONBOARDING]: 0,
+    [WEB_DIST_MARKER_G1]: 0,
+    [WEB_DIST_MARKER_ERROR_BOUNDARY]: 0,
+    [WEB_DIST_MARKER_CLIENT_DIAG]: 0,
+    [SERVER_DIST_MARKER_RATE_LIMITED]: 0,
+  };
   for (const name of found) {
     const text = readFileSync(join(tempDir, name), 'utf8');
     for (const marker of Object.keys(counts)) {
@@ -772,6 +876,19 @@ function assertNsisEmbedsWebMarker(setupPath) {
   if (counts[WEB_DIST_MARKER_ONBOARDING] === 0) {
     fail(
       `NSIS 安装包：web dist 不含新手引导标记 ${WEB_DIST_MARKER_ONBOARDING}，G2 改动未进产物\n` +
+        `  抽出文件  ${found.length} 个 .js，命中 0`,
+    );
+  }
+  // N6：G3 止血与 G5 接线同样必须在 NSIS 包内出现
+  if (counts[WEB_DIST_MARKER_ERROR_BOUNDARY] === 0) {
+    fail(
+      `NSIS 安装包：web dist 不含 ${WEB_DIST_MARKER_ERROR_BOUNDARY}，G3 白屏止血未进产物\n` +
+        `  抽出文件  ${found.length} 个 .js，命中 0`,
+    );
+  }
+  if (counts[WEB_DIST_MARKER_CLIENT_DIAG] === 0) {
+    fail(
+      `NSIS 安装包：web dist 不含 ${WEB_DIST_MARKER_CLIENT_DIAG}，G5 上报接线未进产物\n` +
         `  抽出文件  ${found.length} 个 .js，命中 0`,
     );
   }
