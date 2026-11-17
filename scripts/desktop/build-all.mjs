@@ -786,6 +786,43 @@ function assertTreeHasServerDiagMarker(dir, label) {
   return total;
 }
 
+/**
+ * N6-G4（NSIS 包内版）：从安装包里抽出 `clientDiagnosticsRoutes.js` 并检索限流标记。
+ *
+ * 与 NSIS 内嵌壳/内嵌 web dist 同一条原则：验内层，不认外层 mtime。
+ * 先用 7-Zip 定位条目名（NSIS 里路径分隔符可能是反斜杠），再按条目抽出。
+ */
+function assertNsisEmbedsServerDiagMarker(setupPath) {
+  const sevenZip = ['C:/Program Files/7-Zip/7z.exe', 'C:/Program Files (x86)/7-Zip/7z.exe'].find((p) => existsSync(p));
+  if (sevenZip === undefined) {
+    log('⚠ 未找到 7-Zip，跳过 NSIS 内嵌 server dist 校验');
+    return 0;
+  }
+  const tempDir = join(LOG_DIR, '.nsis-server-probe');
+  rmSync(tempDir, { recursive: true, force: true });
+  mkdirSync(tempDir, { recursive: true });
+  spawnSync(
+    sevenZip,
+    ['e', setupPath, `-o${tempDir}`, 'apps/server/dist/api/routes/clientDiagnosticsRoutes.js', '-y', '-r'],
+    {
+      encoding: 'utf8',
+    },
+  );
+  const probe = join(tempDir, 'clientDiagnosticsRoutes.js');
+  const count = existsSync(probe)
+    ? (readFileSync(probe, 'utf8').match(new RegExp(SERVER_DIST_MARKER_RATE_LIMITED, 'g')) ?? []).length
+    : 0;
+  rmSync(tempDir, { recursive: true, force: true });
+  if (count === 0) {
+    fail(
+      `NSIS 安装包：不含 ${SERVER_DIST_MARKER_RATE_LIMITED}，G4 端点未进安装包\n` +
+        `  → 期望条目 apps/server/dist/api/routes/clientDiagnosticsRoutes.js`,
+    );
+  }
+  log(`✔ NSIS 内嵌 server dist：${SERVER_DIST_MARKER_RATE_LIMITED} 命中 ${count} 处`);
+  return count;
+}
+
 function verifyNsis(expected) {
   if (!existsSync(STAGE_SERVER_DIST)) {
     fail(`NSIS 暂存树未就绪：${STAGE_SERVER_DIST} 不存在（先跑一次不带 --verify-only 的完整构建）`);
@@ -805,6 +842,8 @@ function verifyNsis(expected) {
 
   // N6-G4：NSIS 侧 server dist 是完整目录树（非单文件），检索该目录下所有 .js
   const stagedDiag = assertTreeHasServerDiagMarker(STAGE_SERVER_DIST, 'NSIS 暂存树 apps/server/dist');
+  // 暂存树是 makensis 的输入，但包里到底装了什么只有解包能证明（同「验内层」原则）
+  const nsisDiag = assertNsisEmbedsServerDiagMarker(setup);
 
   return {
     kind: 'nsis',
@@ -814,6 +853,7 @@ function verifyNsis(expected) {
     stagedWebMarkerHits: stagedWeb.counts[WEB_DIST_MARKER],
     embeddedWebMarkerHits: nsisWeb.counts?.[WEB_DIST_MARKER] ?? 0,
     stagedServerDiagHits: stagedDiag,
+    embeddedServerDiagHits: nsisDiag,
   };
 }
 
