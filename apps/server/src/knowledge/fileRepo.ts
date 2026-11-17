@@ -31,13 +31,30 @@ import { readDocFile } from './scanner.js';
 import { maskCode, normalizeLinkTarget } from '../services/knowledgeLinks.js';
 import type { DocsIndex } from './index.js';
 
-const LOCK_RETRY_INTERVAL_MS = 50;
+/**
+ * 跨进程锁的同步重试间隔（毫秒）。
+ *
+ * OCR A1：原值 50ms，配合默认 3000ms 超时 = 60 轮纯 `while (Date.now() < waitEnd) {}` 空转。
+ * `acquireLock` 是同步函数，自旋期间**事件循环完全停摆**，所有 HTTP 排队。
+ * 实测写一份 6 KB 页只需 ~1.15ms，50ms 是它的 43 倍——原注释「间隔远小于写耗时」与实际相反。
+ * 取 2ms：足够让出一轮，又不至于把一个毫秒级的写等成几十毫秒。
+ */
+const LOCK_RETRY_INTERVAL_MS = 2;
+
+/**
+ * 跨进程锁等待上限默认值（毫秒）。
+ *
+ * 同步自旋的每一毫秒都是全站停摆。原默认 3000ms 意味着最坏让整个服务卡 3 秒——
+ * **让一个并发写请求失败（409 可重试），好过让所有请求排队 3 秒**。
+ * 200ms 是「给对端写完一个文件」的宽裕上限；超时由调用方重试。
+ */
+const LOCK_TIMEOUT_DEFAULT_MS = 200;
 
 export interface KnowledgeRepoOptions {
   /** 实例标识（锁内容；用于区分同机多实例与崩溃残留） */
   instanceId?: string;
   now?: () => number;
-  /** 跨进程锁等待上限（毫秒）；默认 3000，测试可调 0 立即冲突 */
+  /** 跨进程锁等待上限（毫秒）；默认 200（同步自旋，每一毫秒都是全站停摆）；测试可调 0 立即冲突 */
   lockTimeoutMs?: number;
 }
 
@@ -68,7 +85,7 @@ export class KnowledgeFileRepo {
     this.index = index;
     this.instanceId = options.instanceId ?? `kb-${randomUUID().slice(0, 8)}`;
     this.now = options.now ?? Date.now;
-    this.lockTimeoutMs = options.lockTimeoutMs ?? 3000;
+    this.lockTimeoutMs = options.lockTimeoutMs ?? LOCK_TIMEOUT_DEFAULT_MS;
   }
 
   // ---- 读 ----
@@ -163,8 +180,10 @@ export class KnowledgeFileRepo {
         try { unlinkSync(lockPath); } catch { /* 竞态删除：下轮重试 */ }
         continue;
       }
+      // OCR A1：同步自旋等锁——事件循环在这段完全停摆，所以间隔与上限都要小。
+      // 间隔 2ms（原 50ms 是实测写耗时的 43 倍）；总上限由 this.lockTimeoutMs（默认 200ms）兜住。
       const waitEnd = Date.now() + LOCK_RETRY_INTERVAL_MS;
-      while (Date.now() < waitEnd) { /* 自旋等待（同步实现；间隔远小于写耗时） */ }
+      while (Date.now() < waitEnd) { /* 自旋等待（同步签名被幂等层的同步事务约束，不能 await） */ }
     }
   }
 

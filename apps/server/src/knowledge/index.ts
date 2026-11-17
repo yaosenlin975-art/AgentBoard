@@ -373,7 +373,8 @@ export class DocsIndex {
         for (const t of qTrigrams) if (!set.has(t)) return false;
         return entry.meta.title.toLowerCase().includes(lower) || entry.body.toLowerCase().includes(lower);
       });
-      hits.push(...bm25Rank(candidates, [...qTrigrams], input.query));
+      // OCR B3：不用 push(...arr)——超 ~125k 元素会抛 RangeError（实参按栈传），逐项追加等价
+      for (const hit of bm25Rank(candidates, [...qTrigrams], input.query)) hits.push(hit);
     } else {
       for (const entry of eligible) {
         const titleHit = entry.meta.title.toLowerCase().includes(lower);

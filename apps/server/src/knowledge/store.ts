@@ -67,6 +67,19 @@ export class KnowledgeDocsStore {
 /** scope=both 的跨目录合并排序键（与旧跨库一致：(updated_at desc, id asc)） */
 type MergeRow = { id: string; updated_at: number };
 
+/**
+ * OCR B3：安全批量追加。
+ *
+ * `target.push(...source)` 在 source 长度超 ~125k 时抛
+ * `RangeError: Maximum call stack size exceeded`（实参按栈传）。
+ * `/graph` 的 `GRAPH_MAX_PAGES = 5000` × 每页 ≥26 出链即越阈值，而 `include_isolated` /
+ * `limit_edges` 在合并**之后**才裁剪，拦不住 → 图接口 500。
+ * 逐项追加无此上限，语义完全等价。
+ */
+function pushAll<T>(target: T[], source: readonly T[]): void {
+  for (const item of source) target.push(item);
+}
+
 /** 两目录聚合视图：读路径与链接解析的门面（写走 repo） */
 export class KnowledgeDocsView {
   constructor(
@@ -116,8 +129,8 @@ export class KnowledgeDocsView {
     const unresolved: Array<{ source: string; raw_target: string; alias: string | null; heading: string | null }> = [];
     for (const index of this.indexesInScope()) {
       const result = index.resolveLinks(index === this.commonIndex ? null : this.commonIndex);
-      links.push(...result.links);
-      unresolved.push(...result.unresolved);
+      pushAll(links, result.links);
+      pushAll(unresolved, result.unresolved);
     }
     return { links, unresolved };
   }
@@ -142,21 +155,21 @@ export class KnowledgeDocsView {
       const identity = index.scopeIdentity;
       const attachmentNodeId = (key: string): string => identity.scope === 'workspace' ? `att:ws:${identity.workspace_id ?? ''}:${key}` : `att:common:${key}`;
       const refs = index.graphRefs(index === this.commonIndex ? null : this.commonIndex);
-      links.push(...refs.links);
-      unresolved.push(...refs.unresolved);
+      pushAll(links, refs.links);
+      pushAll(unresolved, refs.unresolved);
       for (const tag of refs.tags) {
         const bucket = tags.get(tag.tag_norm);
         if (bucket === undefined) tags.set(tag.tag_norm, { raw_tag: tag.raw_tag, weight: tag.weight, refs: [...tag.refs] });
         else {
           bucket.weight += tag.weight;
-          bucket.refs.push(...tag.refs);
+          pushAll(bucket.refs, tag.refs);
         }
       }
       for (const attachment of refs.attachments) {
         const nodeId = attachmentNodeId(attachment.key);
         const bucket = attachments.get(nodeId);
         if (bucket === undefined) attachments.set(nodeId, { key: attachment.key, name: attachment.name, node_id: nodeId, scope: identity.scope, workspace_id: identity.workspace_id, refs: [...attachment.refs] });
-        else bucket.refs.push(...attachment.refs);
+        else pushAll(bucket.refs, attachment.refs);
       }
     }
     return {
@@ -170,7 +183,7 @@ export class KnowledgeDocsView {
   /** 反链（跨两目录合并；工作区页 → 公共页的跨目录目标按 M2 解析；排序稳定 (page_id)） */
   backlinks(pageId: string): Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> {
     const items: Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> = [];
-    for (const index of this.indexesInScope()) items.push(...index.backlinks(pageId, index === this.commonIndex ? null : this.commonIndex));
+    for (const index of this.indexesInScope()) pushAll(items, index.backlinks(pageId, index === this.commonIndex ? null : this.commonIndex));
     return items.sort((a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0));
   }
 
