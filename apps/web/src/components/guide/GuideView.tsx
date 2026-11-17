@@ -2,8 +2,10 @@
  * 教程视图（GUIDE-1，左栏第 7 个主入口）。
  *
  * 内容数据驱动：`chapters/*.ts` 每个模块导出 `chapter`，这里用 `import.meta.glob` 聚合，
- * 按 `order` 升序渲染；章节目录在宽屏（≥1024px）固定 220px 左栏，窄屏变成顶部横向 chip。
+ * 按 `order` 升序渲染；章节目录在宽屏（≥1024px）固定 240px 左栏，窄屏变成顶部横向 chip。
  * 章末 `goTo` 只调 `useNavStore.setView`，不新增路由。
+ *
+ * G1：根容器 `h-full min-h-0`，左栏与右侧正文各自 `overflow-y-auto`——正文滚动时目录留在原地。
  */
 import { useMemo, type ReactNode } from 'react';
 import { useNavStore, type NavView } from '../../state/navStore';
@@ -111,8 +113,12 @@ export function GuideView() {
   const chapters = useMemo(() => GUIDE_CHAPTERS, []);
 
   return (
-    <div data-testid="guide-view" className="mx-auto flex w-full max-w-[1100px] flex-col gap-6 p-6 lg:flex-row">
-      <nav aria-label="教程目录" className="shrink-0 lg:w-[220px]">
+    // 两栏各自滚动：根撑满 main 的高度，左栏因此不随右侧正文滚动（G1）
+    <div data-testid="guide-view" className="flex h-full min-h-0 flex-col lg:flex-row">
+      <nav
+        aria-label="教程目录"
+        className="shrink-0 px-4 py-3 lg:w-[240px] lg:overflow-y-auto lg:border-r lg:border-hairline lg:px-5 lg:py-6"
+      >
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">教程目录</p>
         <ul className="flex gap-1.5 overflow-x-auto pb-1 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:pb-0">
           {chapters.map((chapter) => (
@@ -130,7 +136,7 @@ export function GuideView() {
           ))}
         </ul>
       </nav>
-      <div className="min-w-0 flex-1 space-y-8 lg:max-w-[72ch]">
+      <div className="min-w-0 flex-1 space-y-8 overflow-y-auto px-4 py-3 lg:max-w-[72ch] lg:px-8 lg:py-6">
         {chapters.length === 0 ? (
           <p className="text-sm text-ink-3">教程内容准备中</p>
         ) : (

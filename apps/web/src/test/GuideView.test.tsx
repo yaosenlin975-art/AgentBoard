@@ -51,4 +51,30 @@ describe('GuideView', () => {
     fireEvent.click(screen.getByTestId('guide-goto-overview'));
     expect(useNavStore.getState().view).toBe('board');
   });
+
+  it('G1 两栏独立滚动：根撑满高度，左栏固定宽、右栏自滚', () => {
+    render(<GuideView />);
+    const root = screen.getByTestId('guide-view');
+    expect(root.className).toContain('h-full');
+    expect(root.className).toContain('min-h-0');
+    expect(root.className).toContain('lg:flex-row');
+    // 去掉居中最宽，避免两栏固定后宽屏两侧留白
+    expect(root.className).not.toContain('mx-auto');
+    expect(root.className).not.toContain('max-w-[1100px]');
+
+    const nav = screen.getByLabelText('教程目录');
+    expect(nav.tagName).toBe('NAV');
+    expect(nav.className).toContain('lg:w-[240px]');
+    expect(nav.className).toContain('lg:overflow-y-auto');
+    expect(nav.className).toContain('lg:border-r');
+    // 窄屏仍是横向 chip 行
+    expect(nav.querySelector('ul')?.className).toContain('overflow-x-auto');
+    expect(nav.querySelector('ul')?.className).toContain('lg:flex-col');
+
+    const content = root.lastElementChild as HTMLElement;
+    expect(content.className).toContain('overflow-y-auto');
+    expect(content.className).toContain('min-w-0');
+    expect(content.className).toContain('flex-1');
+    expect(content.className).toContain('space-y-8');
+  });
 });
