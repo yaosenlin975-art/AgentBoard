@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto';
 import {
   docFileNameFor,
+  normalizeBodyMd,
   renderKnowledgeDocument,
   validateKnowledgeFileMeta,
   type KnowledgeFileMeta,
@@ -21,9 +22,12 @@ import { validateKnowledgeContent } from '../services/knowledge.js';
 
 export type { KnowledgeFileMeta };
 
-/** 计算 content_hash：去掉 content_hash 字段渲染完整文档后取 sha256 */
+/**
+ * 计算 content_hash：去掉 content_hash 字段渲染完整文档后取 sha256。
+ * 正文先归一 CRLF（K1-B）：parse 侧恒把 CRLF 归一为 LF，写入侧不归一就会 stored ≠ recomp。
+ */
 export function computeContentHash(meta: Omit<KnowledgeFileMeta, 'content_hash'> & { content_hash?: string }, bodyMd: string): string {
-  const document = renderKnowledgeDocument({ ...(meta as KnowledgeFileMeta), content_hash: '' } as KnowledgeFileMeta, bodyMd, ['content_hash']);
+  const document = renderKnowledgeDocument({ ...(meta as KnowledgeFileMeta), content_hash: '' } as KnowledgeFileMeta, normalizeBodyMd(bodyMd), ['content_hash']);
   return createHash('sha256').update(document, 'utf8').digest('hex');
 }
 
@@ -61,11 +65,12 @@ export function fileNameConflictError(slug: string, fileName: string): ApiError 
   return new ApiError(409, KnowledgeErrorCode.EXISTS, `slug「${slug}」与现有文件 ${fileName} 归一后重名，请换一个 slug`);
 }
 
-/** 渲染并填充 content_hash（写入路径唯一出口） */
+/** 渲染并填充 content_hash（写入路径唯一出口）。正文先归一 CRLF，保证落盘内容与 hash 输入一致（K1-B） */
 export function renderDocWithHash(meta: Omit<KnowledgeFileMeta, 'content_hash'>, bodyMd: string): { content: string; meta: KnowledgeFileMeta } {
-  const content_hash = computeContentHash(meta, bodyMd);
+  const normalizedBody = normalizeBodyMd(bodyMd);
+  const content_hash = computeContentHash(meta, normalizedBody);
   const full = { ...meta, content_hash } as KnowledgeFileMeta;
-  return { content: renderKnowledgeDocument(full, bodyMd), meta: full };
+  return { content: renderKnowledgeDocument(full, normalizedBody), meta: full };
 }
 
 /** 渲染文件名一致性自检（文件名必须等于 docFileNameFor(slug)） */
