@@ -25,6 +25,8 @@ export interface ReconcileIssue {
   fileName: string;
   kind: 'front_matter' | 'file_name_mismatch' | 'duplicate_id' | 'content_hash' | 'missing_link_target';
   detail: string;
+  /** K3：可操作建议（排障入口；只给方向，不自动执行） */
+  suggestion?: string;
 }
 
 export interface ReconcileReport {
@@ -36,6 +38,29 @@ export interface ReconcileReport {
   stale_locks: string[];
   index_rebuilt: boolean;
   fixed: string[];
+}
+
+/**
+ * K3：按 issue 文案给出可操作建议。区分本批次实测到的几类坏因，
+ * 避免「content_hash 不符」只有一个笼统说法、排障时无从下手。
+ */
+function suggestionFor(issue: string): string {
+  if (issue.startsWith('content_hash')) {
+    return '正文或 front matter 被外部改动：走 API/CLI 重新写入修订即可重算 hash；若正文含 CRLF 应改用 cmd 重定向或已修好的 stdin 通道重写';
+  }
+  if (issue.startsWith('front matter: missing_field') || issue.startsWith('front matter: bad_type')) {
+    return 'front matter 字段缺失或类型不符：核对 19 个必填字段与固定顺序（含 content_hash 必须 64 位 hex 字符串）';
+  }
+  if (issue.startsWith('front matter')) {
+    return 'front matter 无法解析：按知识文件契约逐行核对（只支持受限 YAML 子集，不支持块标量/多行缩进）';
+  }
+  if (issue.startsWith('scope:') || issue.startsWith('workspace_id:')) {
+    return '目录与 front matter 身份不符：页被移动/复制到别的 Docs 目录，改回原目录或修正 front matter 的 scope/workspace_id';
+  }
+  if (issue.startsWith('读取失败')) {
+    return '文件不可读：检查编码（UTF-8 无 BOM）与文件权限';
+  }
+  return '见 detail 的原始报告';
 }
 
 /** 残留 tmp 文件：`*.md.tmp-*` */
@@ -81,7 +106,15 @@ export function reconcileDocsDir(index: DocsIndex, options: { fix?: boolean; cro
   const fixed: string[] = [];
 
   for (const file of invalid) {
-    issues.push({ fileName: file.fileName, kind: 'front_matter', detail: file.issues.join('；') });
+    const detail = file.issues.join('；');
+    // K3：按问题种类分流——hash 不符与 front matter 形变是不同故障，报告里分开列，排障才能对号入座
+    const hasHash = file.issues.some(issue => issue.startsWith('content_hash'));
+    const first = file.issues[0] ?? '';
+    if (hasHash) {
+      issues.push({ fileName: file.fileName, kind: 'content_hash', detail, suggestion: suggestionFor('content_hash') });
+    } else {
+      issues.push({ fileName: file.fileName, kind: 'front_matter', detail, suggestion: suggestionFor(first) });
+    }
   }
 
   const byId = new Map<string, string>();
@@ -97,7 +130,12 @@ export function reconcileDocsDir(index: DocsIndex, options: { fix?: boolean; cro
       byId.set(meta.id, entry.fileName);
     }
     if (entry.issues.some(issue => issue.startsWith('content_hash'))) {
-      issues.push({ fileName: entry.fileName, kind: 'content_hash', detail: 'content_hash 与文档不符（外部编辑）' });
+      issues.push({
+        fileName: entry.fileName,
+        kind: 'content_hash',
+        detail: 'content_hash 与文档不符（外部编辑）',
+        suggestion: suggestionFor('content_hash'),
+      });
     }
   }
 

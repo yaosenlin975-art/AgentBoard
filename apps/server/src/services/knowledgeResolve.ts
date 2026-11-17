@@ -14,7 +14,7 @@ import { KNOWLEDGE_SHORT_ID_LEN, type KnowledgeScope } from '@agentboard/shared'
 import { getKnowledgePage, listKnowledgePageRowsByPrefix, findKnowledgePageIdsBySlug } from '../db/repos/knowledge.js';
 
 /** 引用解析的四种结果（HTTP 状态固定：200 / 404 / 409 / 410） */
-export type KnowledgeResolveState = 'resolved' | 'not_found' | 'ambiguous' | 'deleted';
+export type KnowledgeResolveState = 'resolved' | 'not_found' | 'ambiguous' | 'deleted' | 'invalid';
 
 export interface KnowledgeLinkInfo {
   /** 权威标识（page.id） */

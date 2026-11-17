@@ -189,6 +189,23 @@ export class KnowledgeDocsView {
     const end = offset + limit;
     return { items: merged.slice(offset, end) as T[], next_offset: merged.length > end ? end : null };
   }
+
+  /**
+   * K3：范围内全部「存在但校验失败」的文件（跨目录合并，按文件名排序）。
+   * 只回 slug / 文件名 / issues，不回正文——坏内容不能当正常内容传播。
+   * scope 过滤按 meta.status 尽力判断：meta 读不出时保留（宁可多报，不漏报）。
+   */
+  invalidFiles(filter?: (meta: { status: string; expires_at: number | null }) => boolean): Array<{ slug: string | null; file_name: string; issues: string[] }> {
+    return this.indexesInScope()
+      .flatMap(index => index.allInvalid())
+      .filter(file => filter === undefined || file.meta === undefined || filter(file.meta))
+      .map(file => ({
+        slug: file.meta?.slug ?? null,
+        file_name: file.fileName,
+        issues: [...file.issues],
+      }))
+      .sort((left, right) => (left.file_name < right.file_name ? -1 : left.file_name > right.file_name ? 1 : 0));
+  }
 }
 
 function entryToPage(entry: { meta: import('@agentboard/shared').KnowledgeFileMeta; body: string }): KnowledgePage {

@@ -485,9 +485,11 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .action(async (q: string, opts: ScopeOptions & { limit: string }) => { const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/search?${query({ ...await scopeFor(ctx, opts, true), q, limit: validateLimit(opts.limit) })}`)); });
   const scoped = (command: Command) => command.requiredOption('--scope <scope>', 'workspace|common').option('--workspace <id|名>');
   // KB-PAGE-2：统一 resolve（四态退出码固定：0 / 1(404,410) / 2(409,403)）
+  // K3：新增 invalid（422）——文件存在但校验失败，归入 2（「对象存在但不可用」，与 403/409 同档），
+  // 避免排障时把「坏页」误当成「不存在」。
   const resolveExit = (error: unknown): number => {
     const status = (error as { status?: number }).status;
-    return status === 409 || status === 403 ? 2 : 1;
+    return status === 409 || status === 403 || status === 422 ? 2 : 1;
   };
   // 注意：resolve/link 的 --scope 可省略（默认 both）——只在单 scope 里找会漏掉「同 slug 两份」的歧义
   knowledge.command('resolve <ref>').description('按 id / ≥8 位 id 前缀 / slug 解析知识页引用（默认跨 common + 当前工作区）')
@@ -594,10 +596,24 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
         ctx.io.write(`rev:${rev.revision}  ${rev.change_kind}  ${rev.actor ?? '-'}  ${new Date(rev.created_at).toISOString()}  ${rev.title_snapshot ?? ''}\n`);
       }
     });
-  scoped(knowledge.command('list').description('列出知识页（默认只看 active）').option('--status <status>', 'active|archived|deleted|all', 'active').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量（上限 100）', '20').option('--include-expired', '包含过期页面'))
+  scoped(knowledge.command('list').description('列出知识页（默认只看 active）').option('--status <status>', 'active|archived|deleted|all', 'active').option('--invalid', 'K3：只列「文件存在但校验失败」的坏页（排障入口）').option('--offset <n>', '分页偏移', '0').option('--limit <n>', '分页数量（上限 100）', '20').option('--include-expired', '包含过期页面'))
     .addHelpText('after', LIST_HELP)
-    .action(async (opts: ScopeOptions & { status: string; offset: string; limit: string; includeExpired?: boolean }) => {
-      const ctx = context(); output(ctx, await request(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: validateOffset(opts.offset), limit: validateLimit(opts.limit), include_expired: String(!!opts.includeExpired) })}`));
+    .action(async (opts: ScopeOptions & { status: string; offset: string; limit: string; includeExpired?: boolean; invalid?: boolean }) => {
+      const ctx = context();
+      const res = await request<{ items: unknown[]; next_offset: number | null; invalid_count?: number; invalid?: Array<{ slug: string | null; file_name: string; issues: string[] }> }>(ctx.base, 'GET', `/api/knowledge/pages?${query({ ...await scopeFor(ctx, opts), status: opts.status, offset: validateOffset(opts.offset), limit: validateLimit(opts.limit), include_expired: String(!!opts.includeExpired), invalid_only: String(!!opts.invalid) })}`);
+      // K3：--invalid 只列坏页（JSON 原样出信封）
+      if (opts.invalid) {
+        if (ctx.json) { ctx.io.write(`${JSON.stringify(res)}\n`); return; }
+        const rows = res.invalid ?? [];
+        if (rows.length === 0) { ctx.io.write('（无损坏页）\n'); return; }
+        ctx.io.write(rows.map(file => `${file.slug ?? '(无 slug)'}  ${file.file_name}\n  ${file.issues.join('；')}`).join('\n') + '\n');
+        return;
+      }
+      output(ctx, res);
+      // K3：坏页不再静默——列表成功后追加一行提示，退出码仍 0（列表本身成功）
+      if (!ctx.json && (res.invalid_count ?? 0) > 0) {
+        ctx.io.write(`（另有 ${res.invalid_count} 个知识页损坏，运行 kb knowledge list --invalid 查看）\n`);
+      }
     });
 
   const contentOptions = (cmd: Command) => cmd
