@@ -1,5 +1,6 @@
 /** Task 10：kb CLI 的 HTTP 封装（全局 fetch，Node ≥20 内置；基址解析 --server > KB_SERVER > 默认）。 */
 import { CLI_VERSION } from './version.js';
+import { writeStderr } from './io.js';
 
 export const DEFAULT_BASE = 'http://127.0.0.1:8787';
 
@@ -133,7 +134,7 @@ function warnVersionMismatch(serverHeader: string | null): void {
   versionWarned = true;
   const serverText =
     serverHeader === null || serverHeader.trim() === '' ? '服务端未上报版本' : `服务端 ${serverHeader.trim()}`;
-  process.stderr.write(`版本不匹配：CLI ${CLI_VERSION} / ${serverText}，可能出现字段不兼容\n`);
+  writeStderr(`版本不匹配：CLI ${CLI_VERSION} / ${serverText}，可能出现字段不兼容\n`);
 }
 
 /** KB-CLI-1：幂等重放标记响应头（服务端命中 idempotency_record 时置 1） */
@@ -206,7 +207,7 @@ async function fetchResponse(base: string, method: string, path: string, headers
       }
       throw networkFailureError(base, method, path, err);
     }
-    if (attempt > 0) process.stderr.write(`网络抖动：${method} ${path} 连接中断，已重试 1 次后成功\n`);
+    if (attempt > 0) writeStderr(`网络抖动：${method} ${path} 连接中断，已重试 1 次后成功\n`);
     warnVersionMismatch(res.headers.get(SERVER_VERSION_HEADER));
     return res;
   }

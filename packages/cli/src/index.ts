@@ -565,13 +565,13 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   program
     .command('create-issue')
     .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；位置参数含引号会被拒，改用 --title-stdin）')
-    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理；匹配到工作区时 stderr 会提示）')
     .argument('[title]', '任务标题（与 --title-stdin 二选一；含引号会被拒，走 --title-stdin）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--title-stdin', '从 UTF-8 stdin 读标题（不经 PowerShell 分词，允许引号 " \' “ ” 与 & | \\ 任意字符：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（必填；含空格用引号；多行走 UI 或 API）')
     .option('--allow-empty', '跳过空描述校验（批量建卡 / 纯父卡）；回执会提示已跳过空面校验')
-    .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须同时用 -d 写验收标准）')
+    .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须有 -d 且描述有实质内容，不查关键词，--allow-empty 不豁免）')
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
     .option('--parent <issue-id>', '父任务 id：完整 UUID，或 ≥8 位唯一前缀')
@@ -580,6 +580,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .action(async (workspaceArg: string | undefined, titleArg: string | undefined, opts: { workspace?: string; titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, ctxIo), {
         workspace: opts.workspace ?? workspaceArg,
+        // C13：workspace 是否来自位置参数第 1 项（显式 --workspace 不算，不需要歧义提示）
+        workspaceFromPositional: opts.workspace === undefined && workspaceArg !== undefined,
         // OPT-02：显式 --workspace 时，单个位置参数是标题
         title: opts.workspace !== undefined && titleArg === undefined ? workspaceArg : titleArg,
         titleStdin: opts.titleStdin,

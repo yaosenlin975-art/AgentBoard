@@ -361,7 +361,7 @@ kb shortcut                             # 桌面快捷方式（Windows：AgentBo
 
 - **Windows**：路径用反斜杠；比较前统一分隔符、去尾斜杠、大小写不敏感；junction 先按 target 解成实体路径再比对工作区根。
 - **PowerShell**：含 `"`、`&`、`|`、`\` 的参数用单引号包裹（内部单引号写 `''`）或改走 `--description-stdin` / `--notes-stdin` / `--stdin`（双引号包裹会静默吞掉后续参数，CLI-01）；多行评论用 `Get-Content -Raw file.md | kb comment <id> --stdin`，先设 `$OutputEncoding = New-Object System.Text.UTF8Encoding($false)` 防乱码。
-- **PowerShell 管道提前关闭会把成功命令判成失败**：`kb ... | Select-Object -First 3`（或 `| head -n 3`）在下游关闭管道后写 stdout 会报 `The pipe has been ended`，PowerShell 把 `$LASTEXITCODE` 置为 **-1**——命令本身已成功（服务端已生效）。脚本里不要用「退出码」判定这类被截断的命令：去掉 `| Select-Object -First`、改用 `--json` 后自己截取，或先落盘再读。实测 `kb list-spaces --json | Select-Object -First 3` 即复现。
+- **管道下游提前关闭（EPIPE）**：`kb … | head -n 3`、`kb … | node -e "process.exit(0)"` 这类下游先退出时，CLI 捕获 `EPIPE` 后**静默停写并以 0 退出**（Unix 惯例：对端关闭不是错误；P5 起 `packages/cli/src/io.ts` 统一处理，不再打印 `EPIPE` 栈或 libuv assertion）。判定要点：**这类命令的退出码不承载业务结果**（下游已走），要判断成功与否就落盘再读（`kb … > out.txt; echo $LASTEXITCODE`）或改用 `--json`；`Select-Object -First` 走对象管道不触发 EPIPE，但截断后行数不可信。
 - **bash/zsh**：`kb comment <id> --stdin <<'EOF' … EOF`。
 - 服务地址用 `--server` / `KB_SERVER`（见「前置条件」）；多 agent 并行用 `KB_AGENT=<角色名>` 区分身份，避免默认 `kb-cli` 混用。
 

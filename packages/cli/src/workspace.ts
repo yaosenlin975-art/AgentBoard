@@ -99,6 +99,8 @@ export function matchCurrentWorkspace(spaces: Workspace[], cwd = process.cwd()):
 export interface ResolvedWorkspace {
   id: string;
   hint?: string;
+  /** C13：显式引用命中的工作区（未显式给出 / 不命中时 undefined），供调用方提示「已按位置参数解析为工作区」 */
+  matched?: Workspace;
 }
 
 /**
@@ -110,7 +112,10 @@ export interface ResolvedWorkspace {
  */
 export async function resolveWorkspaceRef(base: string, value?: string, cwd = process.cwd()): Promise<ResolvedWorkspace> {
   const spaces = await request<Workspace[]>(base, 'GET', '/api/workspaces');
-  if (value !== undefined) return { id: matchWorkspace(spaces, value).id };
+  if (value !== undefined) {
+    const matched = matchWorkspace(spaces, value);
+    return { id: matched.id, matched };
+  }
   const current = findCurrentWorkspace(spaces, cwd);
   if (current) return { id: current.id };
   if (spaces.length === 1) {

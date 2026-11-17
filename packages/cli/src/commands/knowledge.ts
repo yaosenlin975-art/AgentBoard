@@ -4,9 +4,9 @@ import { resolve } from 'node:path';
 import { CommanderError, type Command } from 'commander';
 import { request, CliHttpError } from '../api.js';
 import { writeListJson, writeObjectJson } from '../json.js';
-import type { Ctx } from '../io.js';
+import { writeStderr, type Ctx } from '../io.js';
 import { resolveWorkspaceId } from '../workspace.js';
-import { KNOWLEDGE_DOMAIN_HINT, KNOWLEDGE_DOMAINS } from '@agentboard/shared';
+import { KNOWLEDGE_DOMAIN_HINT, KNOWLEDGE_DOMAINS, KNOWLEDGE_SHORT_ID_LEN } from '@agentboard/shared';
 
 interface ScopeOptions { scope: string; workspace?: string }
 async function scopeFor(ctx: Ctx, opts: ScopeOptions, search = false): Promise<{ scope: string; workspace_id?: string }> {
@@ -282,14 +282,17 @@ ${GUIDE_POINTER}
 
 const REVISE_HELP = `${FIELD_HELP}
 说明：只改提供的字段（--title / --stdin / --sources / --evidence / --expires-at 均可选），但 --expected-revision 必填（CAS）。
+必填：<page-id>（支持完整 UUID / ≥8 位唯一 id 前缀 / slug；前缀先 resolve 成完整 id，多命中 exit 2 不猜）
+可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 解析 id / ≥8 位前缀 / slug，歧义 exit 2）、--workspace <id|名>
 示例（PowerShell，正文用管道；cmd 下可换成 \`< body.md\`）：
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope common --expected-revision 3 --stdin --title '新标题'
   Get-Content body.md -Raw | kb knowledge revise <page-id> --scope workspace --workspace 任务看板 --expected-revision 3 --stdin \`
     --sources-file sources.json --evidence-file evidence.json
+  kb knowledge revise 3f8da34e --expected-revision 3 --landed landed（省略 --scope + 前缀）
 同主题内容演进用 revise（同一 page-id 累加 revision），不要为「更新版内容」新建页。
 --expected-revision 是 CAS：必须与库内 revision 一致，旧值以退出码 2 退出并提示「知识页已更新，请重新读取」。
 输出：文本模式在标题后补一行 link: knowledge:<uuid>（--json 中为 link 对象）。
-退出码：0 成功；1 参数/服务端错误；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT，stderr 给当前 revision 与「知识页已更新，请重新读取」）
+退出码：0 成功；1 参数/服务端错误（含「引用无法唯一解析」）；2 版本冲突（KNOWLEDGE_REVISION_CONFLICT）或前缀歧义
 
 ${GUIDE_POINTER}
 `;
@@ -312,8 +315,9 @@ const ACTION_HELP = `合法动作（第 2 个位置参数，只能取）：
   restore   恢复（status → active）
   delete    删除（撤文件，不可逆：文件事实源下软删即删除 Docs/<slug>.md；旧库只读历史可用 export-legacy 兜底）
 必填：<page-id> <action> --expected-revision <n>（CAS，比对 front matter revision）
+      <page-id> 支持完整 UUID / ≥8 位唯一 id 前缀 / slug，前缀会先 resolve 成完整 id
 可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 先解析 id / ≥8 位前缀 / slug，歧义 409 不猜；
-      显式给出 --scope 时行为与旧版一致）、--workspace <id|名>
+      显式给出 --scope 时同样先 resolve 前缀，歧义同样 exit 2）、--workspace <id|名>
 示例：
   kb knowledge action <page-id> archive --scope common --expected-revision 2
   kb knowledge action <page-id> restore --scope workspace --workspace 任务看板 --expected-revision 3
@@ -325,7 +329,9 @@ const ACTION_HELP = `合法动作（第 2 个位置参数，只能取）：
 /** P2-04（M10）：rename 帮助 */
 const RENAME_HELP = `
 P2-04（M10）：重命名知识页 slug——原子 rename 文件 + 全库扫描批量重写 [[old]]→[[new]]（含 [[a|b]] / [[a#h]] / [[a#h|b]] 与页嵌入 ![[a]] 形态），页面 id 不变，revision +1（CAS）。
-必填：<page-id> <new-slug> --scope <workspace|common> --expected-revision <n>
+必填：<page-id> <new-slug> --expected-revision <n>
+      <page-id> 支持完整 UUID / ≥8 位唯一 id 前缀 / slug（前缀先 resolve，多命中 exit 2 不猜）
+可选：--scope <workspace|common>（**可省略**：省略时自动 resolve）、--workspace <id|名>
 行为约定：
   - 页面 id 不变：历史 knowledge:<uuid> 引用继续解析到同一页；
   - 引用重写覆盖改名页所在目录与（公共页改名时）各工作区目录里解析到本页的引用；
@@ -334,7 +340,8 @@ P2-04（M10）：重命名知识页 slug——原子 rename 文件 + 全库扫�
   - 直接改文件名（不走本命令）→ reconcile 报「slug 与文件名不一致」冲突，由人裁决。
 示例：
   kb knowledge rename <page-id> cache-policy-v2 --scope common --expected-revision 3
-退出码：0 成功；1 参数/服务端错误；2 版本冲突 / slug 冲突 / 文件冲突（409 KNOWLEDGE_*）
+  kb knowledge rename 3f8da34e cache-policy-v3 --expected-revision 4（省略 --scope + 前缀）
+退出码：0 成功；1 参数/服务端错误（含「引用无法唯一解析」）；2 版本冲突 / slug 冲突 / 文件冲突（409 KNOWLEDGE_*）/ 前缀歧义
 `;
 
 /** KB-CLI-IMPORT：P2-04（M11）语义反转：外部 md 规范化为 Docs/<slug>.md 并补齐 front matter */
@@ -369,15 +376,15 @@ slug 冲突（409 KNOWLEDGE_EXISTS）怎么办：
 `;
 
 const SHOW_HELP = `
-必填：<page-id>
+必填：<page-id>（支持完整 UUID / ≥8 位唯一 id 前缀 / slug）
 可选：--scope <workspace|common>（**可省略**：省略时内部走 resolve，按 both 先解析 id / ≥8 位前缀 / slug，歧义 409 不猜；
-      显式给出 --scope 时行为与旧版一致）；--workspace <id|名>、--history 同时输出全部版本历史
+      显式给出 --scope 时前缀同样先 resolve，歧义同样 exit 2）；--workspace <id|名>、--history 同时输出全部版本历史
 输出：非 --json 时打印 id/scope/revision/title + link: knowledge:<uuid> + 正文；--json 打印服务端原对象
 示例：
   kb knowledge show <page-id>
-  kb knowledge show <page-id> --scope common
+  kb knowledge show 3f8da34e --scope common
   kb --json knowledge show <page-id> --scope workspace --workspace 任务看板 --history
-退出码：0 成功；1 不存在或参数错误；2 resolve 歧义或跨范围（仅省略 --scope 时会返回 2）
+退出码：0 成功；1 不存在 / 引用无法唯一解析 / 参数错误；2 resolve 歧义或跨范围
 `;
 
 const FIND_SOURCE_HELP = `
@@ -442,7 +449,7 @@ const SEARCH_HELP = `
 
 const RESOLVE_HELP = `
 KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 resolve，四态固定）。
-必填：<ref> --scope <workspace|common>（workspace 缺省按 cwd 解析，可用 --workspace 覆盖）
+必填：<ref>；--scope <workspace|common> 可省略（省略时按 both 解析，歧义 exit 2 不猜）
 输出：解析成功 → id/title/scope/revision + link（knowledge:<uuid>）；--json 打印服务端原对象
 错误码与退出码：404 KNOWLEDGE_NOT_FOUND → 1；409 KNOWLEDGE_REF_AMBIGUOUS → 2（不猜第一条，给候选 id）；
              410 KNOWLEDGE_DELETED → 1（已删除，可看历史）；403 KNOWLEDGE_SCOPE_FORBIDDEN → 2（不回显标题）
@@ -450,6 +457,17 @@ KB-PAGE-2：按 id / ≥8 位 id 前缀 / slug 解析知识页引用（统一 re
   kb knowledge resolve 3f8da34e --scope common
   kb --json knowledge resolve cache-policy --scope workspace --workspace 任务看板
 `;
+
+/** C3：前缀/slug 解析失败的统一文案——不把「前缀解析不了」说成「页不存在」（后者把人引向「是不是删了」） */
+const PREFIX_REF_LIKE = /^[0-9a-f]{1,35}$/i;
+
+function prefixHint(ref: string): string {
+  const raw = ref.trim();
+  if (!PREFIX_REF_LIKE.test(raw)) return '';
+  // ≥8 位前缀本身合法，只是没命中——别再说「请给 ≥8 位」（位数已经够了）
+  if (raw.length >= KNOWLEDGE_SHORT_ID_LEN) return '；该前缀没有任何命中（页可能已改名/删除，用 kb knowledge list 核对）';
+  return `；若这是 id 前缀，请给 ≥${KNOWLEDGE_SHORT_ID_LEN} 位（当前 ${raw.length} 位）唯一前缀或完整 UUID`;
+}
 
 const RECONCILE_HELP = `
 P2：知识页文件只读检查（**不改任何文件**），是 KNOWLEDGE_FILE_CONFLICT（409）的标准处置入口。
@@ -504,6 +522,57 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     const status = (error as { status?: number }).status;
     return status === 409 || status === 403 || status === 422 ? 2 : 1;
   };
+  /**
+   * C3：知识页引用的**唯一解析入口**（show / action / revise / rename 共用）。
+   *
+   * 改前是「省略 --scope 才 resolve」：显式给 --scope 时把原始输入（≥8 位前缀或 slug）直接拼进
+   * `/api/knowledge/pages/:id`，服务端只认完整 uuid → 404「知识页不存在」。同一族三套行为
+   * （show/resolve/action 认前缀、revise/rename 不认）就是这么来的。
+   *
+   * 现在无论是否给 --scope 都先 resolve：前缀 → 完整 id、slug → id、歧义 → 409 带候选。
+   * 显式 --scope 仍生效（单 scope 解析，不跨 common+workspace 找），行为与旧版一致的部分不变。
+   */
+  async function resolvePageRef(ctx: Ctx, ref: string, opts: { scope?: string; workspace?: string }): Promise<{ id: string; scope: { scope: string; workspace_id?: string } }> {
+    const trimmed = ref.trim();
+    // 只有这两种情况需要 resolve：
+    // ① 省略 --scope → 必须先解析才知道页在 common 还是 workspace；
+    // ② 引用像 ≥8 位 id 前缀（1–35 位十六进制）→ 服务端只认完整 id。
+    // 完整 UUID 与「显式 --scope + slug」保持旧路径（不多发请求，旧的 404 口径不变）。
+    const needsResolve = opts.scope === undefined || PREFIX_REF_LIKE.test(trimmed);
+    if (!needsResolve) {
+      return { id: trimmed, scope: await scopeFor(ctx, { scope: opts.scope!, workspace: opts.workspace }) };
+    }
+    const scope = opts.scope === undefined
+      ? { scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) }
+      : await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+    const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ...scope, ref: trimmed })}`);
+    return {
+      id: resolved.id,
+      scope: resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined },
+    };
+  }
+
+  /** 解析失败：把服务端文案补上前缀提示（前缀位数不足 / 无命中都不再只说「不存在」） */
+  function resolveFailure(ctx: Ctx, error: unknown, ref: string, command: string): never {
+    const message = error instanceof Error ? error.message : String(error);
+    const isNotFound = error instanceof CliHttpError && error.status === 404;
+    // 只有「像 id 前缀」的输入才改写措辞：说「引用无法唯一解析」，不让人以为页被删了。
+    // slug 未命中的「知识页不存在」是准确文案，保持不动。
+    const looksLikePrefix = PREFIX_REF_LIKE.test(ref.trim());
+    const head = isNotFound && looksLikePrefix
+      ? `${message}（引用「${ref.trim()}」无法唯一解析；可用完整 id、≥8 位唯一 id 前缀或 slug）`
+      : message;
+    const suffix = isNotFound && looksLikePrefix ? prefixHint(ref) : '';
+    ctx.io.writeErr(`${head}${suffix}\n`);
+    if (error instanceof CliHttpError && error.code === 'KNOWLEDGE_REF_AMBIGUOUS') {
+      const candidates = (error.details as { candidates?: string[] } | undefined)?.candidates;
+      if (Array.isArray(candidates) && candidates.length > 0) {
+        ctx.io.writeErr(`候选（${candidates.length} 个）：\n`);
+        for (const candidate of candidates) ctx.io.writeErr(`  ${candidate}\n`);
+      }
+    }
+    throw new CommanderError(resolveExit(error), command, '');
+  }
   // 注意：resolve/link 的 --scope 可省略（默认 both）——只在单 scope 里找会漏掉「同 slug 两份」的歧义
   knowledge.command('resolve <ref>').description('按 id / ≥8 位 id 前缀 / slug 解析知识页引用（默认跨 common + 当前工作区）')
     .option('--scope <scope>', 'workspace|common|both', 'both')
@@ -575,8 +644,9 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       for (const item of res.items) ctx.io.write(`${item.id} [${item.scope}] rev:${item.revision} ${item.slug}  ${item.title}  link: ${linkRef(item)}\n`);
     });
 
-  // KB-PAGE-2b：--scope 可省略——省略时先 resolve（both + 当前工作区），再按解析出的 scope 取页；显式给出时与旧版逐字一致
-  knowledge.command('show <page-id>').description('读单个知识页（--scope 可省略，自动 resolve）')
+  // KB-PAGE-2b：--scope 可省略——省略时先 resolve（both + 当前工作区），再按解析出的 scope 取页。
+  // C3：显式 --scope 时也 resolve（前缀/slug 同样可用），四条命令口径一致。
+  knowledge.command('show <page-id>').description('读单个知识页（支持 ≥8 位 id 前缀 / slug；--scope 可省略，自动 resolve）')
     .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
     .option('--workspace <id|名>')
     .option('--history', '同时读取版本历史')
@@ -584,19 +654,13 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
     .action(async (id: string, opts: { scope?: string; workspace?: string; history?: boolean }) => {
       const ctx = context();
       let scope: { scope: string; workspace_id?: string };
-      // P2-04b：自动 resolve 拿到的 id 必须替换原始输入（slug / ≥8 位前缀）——GET /pages/:id 只认完整 uuid，原样透传必 404
       let pageId = id;
-      if (opts.scope === undefined) {
-        try {
-          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
-          scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
-          pageId = resolved.id;
-        } catch (error) {
-          ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
-          throw new CommanderError(resolveExit(error), 'agentboard.knowledge.show', '');
-        }
-      } else {
-        scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+      try {
+        const resolved = await resolvePageRef(ctx, id, opts);
+        scope = resolved.scope;
+        pageId = resolved.id;
+      } catch (error) {
+        resolveFailure(ctx, error, id, 'agentboard.knowledge.show');
       }
       const suffix = query(scope); const path = `/api/knowledge/pages/${encodeURIComponent(pageId)}`;
       const page = await request(ctx.base, 'GET', `${path}?${suffix}`);
@@ -721,52 +785,74 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       const data = await request(ctx.base, 'POST', '/api/knowledge/pages', { ...await scopeFor(ctx, opts), ...await content(ctx, opts), title: opts.title, slug: opts.slug });
       output(ctx, data);
     });
-  scoped(contentOptions(knowledge.command('revise <page-id>')).description('修订知识页（只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--title <title>'))
+  // C3：revise 也走统一 resolve（此前 --scope 是必填且不 resolve，≥8 位前缀一律 404）
+  contentOptions(knowledge.command('revise <page-id>').description('修订知识页（支持 ≥8 位 id 前缀 / slug；只改给出的字段，需 CAS）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致').option('--scope <scope>', 'workspace|common（省略则自动 resolve）').option('--workspace <id|名>').option('--title <title>', '新标题'))
     .addHelpText('after', REVISE_HELP)
-    .action(async (id: string, opts: ScopeOptions & { expectedRevision: string; title?: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string }) => {
+    .action(async (id: string, opts: ScopeOptions & { expectedRevision: string; title?: string; stdin?: boolean; sources?: string; sourcesFile?: string; evidence?: string; evidenceFile?: string; expiresAt?: string; category?: string; landed?: string; domain?: string; hashFromFile?: string[] }) => {
       const ctx = context();
-      const data = await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(id)}`, { ...await scopeFor(ctx, opts), ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) });
+      let pageId = id;
+      let scope: { scope: string; workspace_id?: string };
+      try {
+        const resolved = await resolvePageRef(ctx, id, opts);
+        pageId = resolved.id;
+        scope = resolved.scope;
+      } catch (error) {
+        resolveFailure(ctx, error, id, 'agentboard.knowledge.revise');
+      }
+      const data = await request(ctx.base, 'PUT', `/api/knowledge/pages/${encodeURIComponent(pageId)}`, { ...scope, ...await content(ctx, opts), ...(opts.title !== undefined ? { title: opts.title } : {}), expected_revision: Number(opts.expectedRevision) });
       output(ctx, data);
     });
-  // P2-04b：--scope 可省略（与 show 同一 resolve 路径）——解析出的 id 替换原始输入调 action 端点；显式给出时行为与旧版一致
-  knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete（--scope 可省略，自动 resolve）').requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致')
+  // C4：--scope 可省略（与 show 同一 resolve 路径）；--expected-revision 改为手动校验——
+  // commander 的 requiredOption 报错只回「缺少必填参数 --expected-revision」，说不出「--scope 可省略」，
+  // 用户于是以为这命令非得先猜 scope。手动报错一次讲清两个口径。
+  knowledge.command('action <page-id> <action>').description('改知识页状态：archive | restore | delete（支持 ≥8 位 id 前缀 / slug；--scope 可省略，自动 resolve）')
+    .option('--expected-revision <n>', '当前 revision，必须与库内一致')
     .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
     .option('--workspace <id|名>')
     .addHelpText('after', ACTION_HELP)
-    .action(async (id: string, action: string, opts: { scope?: string; workspace?: string; expectedRevision: string }) => {
+    .action(async (id: string, action: string, opts: { scope?: string; workspace?: string; expectedRevision?: string }) => {
       const allowed = ['archive', 'restore', 'delete'];
       if (!allowed.includes(action)) fail(`action 只能是 ${allowed.join(' | ')}（当前：${preview(action)}）；详见 kb knowledge action --help`);
+      if (opts.expectedRevision === undefined) {
+        fail('缺少必填参数 --expected-revision <n>：CAS 必须带当前 revision（kb knowledge show <page-id> 可读到 rev）。'
+          + '注意 --scope 可省略（省略时自动 resolve id / ≥8 位 id 前缀 / slug），不必先猜 scope；详见 kb knowledge action --help');
+      }
       const ctx = context();
-      let scope: { scope: string; workspace_id?: string };
       let pageId = id;
-      if (opts.scope === undefined) {
-        try {
-          const resolved = await request<{ id: string; scope: 'workspace' | 'common'; workspace_id: string | null }>(ctx.base, 'GET', `/api/knowledge/resolve?${query({ ref: id, scope: 'both', workspace_id: await resolveWorkspaceId(ctx.base, opts.workspace) })}`);
-          scope = resolved.scope === 'common' ? { scope: 'common' } : { scope: 'workspace', workspace_id: resolved.workspace_id ?? undefined };
-          pageId = resolved.id;
-        } catch (error) {
-          ctx.io.writeErr(`${error instanceof Error ? error.message : String(error)}\n`);
-          throw new CommanderError(resolveExit(error), 'agentboard.knowledge.action', '');
-        }
-      } else {
-        scope = await scopeFor(ctx, { scope: opts.scope, workspace: opts.workspace });
+      let scope: { scope: string; workspace_id?: string };
+      try {
+        const resolved = await resolvePageRef(ctx, id, opts);
+        pageId = resolved.id;
+        scope = resolved.scope;
+      } catch (error) {
+        resolveFailure(ctx, error, id, 'agentboard.knowledge.action');
       }
       const data = await request(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(pageId)}/actions`, { ...scope, action, expected_revision: Number(opts.expectedRevision), actor: ctx.agentId });
       output(ctx, data);
     });
 
   // P2-04（M10）：rename——原子换文件 + 全库扫描重写 [[old]]→[[new]]（含 alias/heading 形态；id 不变）
+  // C3：--scope 改为可省略并走统一 resolve（此前必填且不 resolve，≥8 位前缀一律 404）
   knowledge.command('rename <page-id> <new-slug>')
-    .description('重命名知识页 slug：换文件名 + 全库重写 [[old]]→[[new]]（id 不变；CAS）')
+    .description('重命名知识页 slug：换文件名 + 全库重写 [[old]]→[[new]]（id 不变；支持 ≥8 位 id 前缀 / slug；CAS）')
     .requiredOption('--expected-revision <n>', '当前 revision，必须与库内一致')
-    .option('--scope <scope>', 'workspace|common', 'workspace')
+    .option('--scope <scope>', 'workspace|common（省略则自动 resolve）')
     .option('--workspace <id|名>')
     .addHelpText('after', RENAME_HELP)
-    .action(async (id: string, newSlug: string, opts: ScopeOptions & { expectedRevision: string }) => {
+    .action(async (id: string, newSlug: string, opts: { scope?: string; workspace?: string; expectedRevision: string }) => {
       const ctx = context();
       interface RenameReport { id: string; slug: string; old_slug: string; scope: string; revision: number; title: string; link: string; rewritten: Array<{ dir: string; file_name: string; page_id: string; slug: string }> }
+      let pageId = id;
+      let scope: { scope: string; workspace_id?: string };
       try {
-        const report = await request<RenameReport>(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(id)}/rename`, { ...await scopeFor(ctx, opts), expected_revision: Number(opts.expectedRevision), new_slug: newSlug, actor: ctx.agentId });
+        const resolved = await resolvePageRef(ctx, id, opts);
+        pageId = resolved.id;
+        scope = resolved.scope;
+      } catch (error) {
+        resolveFailure(ctx, error, id, 'agentboard.knowledge.rename');
+      }
+      try {
+        const report = await request<RenameReport>(ctx.base, 'POST', `/api/knowledge/pages/${encodeURIComponent(pageId)}/rename`, { ...scope, expected_revision: Number(opts.expectedRevision), new_slug: newSlug, actor: ctx.agentId });
         if (ctx.json) { ctx.io.write(`${JSON.stringify(report, null, 2)}\n`); return; }
         ctx.io.write(`${report.id} [${report.scope}] rev:${report.revision} ${report.slug}（原 slug：${report.old_slug}；id 不变）\n`);
         ctx.io.write(`link: ${report.link}\n`);
@@ -910,7 +996,7 @@ export function registerKnowledgeCommands(program: Command, context: () => Ctx):
       // 落点选 CLI：它是本地文件的唯一读入口；服务端还服务前端导入对话框与 MCP，不该替调用方改内容。
       const hasBom = raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf;
       const content = (hasBom ? raw.subarray(3) : raw).toString('utf8');
-      if (hasBom) process.stderr.write('提示：检测到 UTF-8 BOM，已在导入前剥离（正文首字符不会是 U+FEFF）\n');
+      if (hasBom) writeStderr('提示：检测到 UTF-8 BOM，已在导入前剥离（正文首字符不会是 U+FEFF）\n');
       if (content.length > IMPORT_MAX_CHARS) {
         fail(`正文超长：当前 ${content.length} 字符 / 上限 ${IMPORT_MAX_CHARS} 字符`);
       }
