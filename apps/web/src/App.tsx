@@ -12,6 +12,7 @@ import { WindowTitleBar } from './components/shell/WindowTitleBar';
 import { Board } from './components/board/Board';
 import { DecisionNotifier } from './components/decisions/DecisionNotifier';
 import { VoiceInputProvider } from './components/voice/useLongPressVoice';
+import { OnboardingTour } from './components/onboarding';
 import { useRestartStore } from './state/restartStore';
 
 // WEB-BUNDLE（3451075e）：重视图改成动态导入，避免它们进首屏 modulepreload。
@@ -173,6 +174,8 @@ export default function App() {
           </div>
         </div>
       </VoiceInputProvider>
+      {/* G2：首次进入的新手引导（遮罩 + 分步气泡）；覆盖层自身 fixed，不影响布局 */}
+      <OnboardingTour />
     </div>
   );
 }
