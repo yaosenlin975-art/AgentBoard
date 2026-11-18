@@ -162,13 +162,15 @@ node apps/server/dist/index.js
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失／4 已健康但需重启（dist 早于源码，或运行进程早于 dist／未上报 `started_at`）。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
 - **产物陈旧自检用 `pnpm check:stale`**（= `node scripts/check-stale.mjs`）：跑 5 条 `--help` 冒烟（`kb` / `knowledge` / `create-issue` / `dep` / `list-spaces`），并比对各包 `dist` 与 `src` 的 mtime；产物缺失/陈旧时 exit 1 并打印重建命令（`pnpm -r build` 或单包 `pnpm --filter <包名> build`）。
-- 中心库默认 `%APPDATA%\AgentBoard\agentboard.db`（界面与文档称「中心库路径」）；工作区库在 `<workspace>/.agentboard/agentboard.db`，下沉是默认形态：`kb create-space` 后自动启用本地库（复用 enable 八阶段状态机；自动启用失败降级为中心库模式并提示补做），存量工作区可用 `kb workspace-db enable`（单区或 `--all` 批量）下沉，未下沉的工作区数据仍在中心库。设置界面已移除数据存储配置：中心库路径不再由 config.json 的 `dbPath` 或设置项决定（残留值不生效，启动打一次性 warning），只受只读环境变量 `AGENTBOARD_DB` 覆盖；启动首行日志会打印实际生效路径与 `db_source=<env|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
+- **工作区初始化默认在 `<工作区>/.agentboard/agentboard.db` 建库**：`kb create-space` 登记后自动启用本地库，任务与评论落工作区；自动启用失败时保留工作区登记并降级为中心库模式，用 `kb workspace-db enable` 补做。中心库仍保存工作区注册表、账号和跨区资源；默认路径是 `%APPDATA%\AgentBoard\agentboard.db`，只受只读环境变量 `AGENTBOARD_DB` 覆盖。启动日志打印实际中心库路径与 `db_source=<env|default>`，附件目录跟随所在库目录的 `attachments/`。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
-- 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
+- 附件目录无需单独配置：恒为实际使用库文件所在目录下的 `attachments/`。
 
 ### 快照进 git 与 clone 后恢复（STORE-5/6）
 
 数据形态是「库为准、快照是派生物」：`.agentboard/` 目录可随仓库进 git，运行态数据库与附件本体不进。
+
+看板任务、评论、依赖与变更日志随 `.agentboard/snapshot/*.jsonl` 同步；附件本体与会话正文默认不同步。快照与 `manifest.json` 进入 Git，SQLite 运行库及 WAL/SHM 永不进入 Git，不使用 Git LFS。拉取或合并后本地库存在时以本地库为准，快照落后只提示；只有本地库缺失时才校验并导入快照。
 
 ```bash
 kb workspace-db snapshot export <工作区> --include-attachments   # 服务端单写者导出，写完回读自校验
@@ -347,9 +349,9 @@ kb workspace-db status             # 工作区库下沉状态（enable/cleanup/r
 | --- | --- | --- |
 | **SK-05 变更日志** | 无归属本卡的变更日志 | ① 先 `kb changelog create --issue <卡 id>`；② `--close-record --changelog-title '<标题>' --type 修复`（自带日志，一步式）；③ 确实无用户可见变更时 `--no-changelog` |
 | **ARCH-04 设计页** | 关联设计页仍为 `landed=proposed` | 推进设计页后重试，或 `--design-not-advanced` 显式声明本卡不推进 |
-| **GIT-ON-DONE `--scope`** | 未声明改动路径 | `--scope <路径>`，多个路径**重复传参**（`--scope a --scope b`，不要用逗号串）；`--all` 纳入全部未提交改动；`--board-only` 纯看板任务跳过提交 |
+| **GIT-ON-DONE `--scope`** | 需要提交业务代码与知识页 | `--scope <路径>`，多个路径**重复传参**（`--scope a --scope b`，不要用逗号串）；`--all` 纳入全部未提交改动；`--board-only` 纯看板任务只提交看板快照 |
 
-不写 `--scope` 时一个文件都不会提交（stderr `NO_SCOPE`），且 `done` 已生效但 `exit 1`，需按补救命令再补。
+未写 `--scope` 时只提交 `.agentboard` 看板快照；显式 `--scope` 时提交业务路径，并由服务端追加同一组看板快照。
 
 **能直接复制的完整闭环**（含三道门禁）：
 

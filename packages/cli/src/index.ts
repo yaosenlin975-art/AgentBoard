@@ -754,7 +754,7 @@ GIT-ON-DONE：默认提交 --scope 声明的卡内路径与 .agentboard 看板�
   // STORE-5：工作区文本快照（库为准，快照是派生物）——服务端单写者导出 / 只读校验 / 空库导入
   const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
   snapshot.command('export')
-    .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（未下沉时从中心库按工作区导出；导出后回读自校验）')
+    .description('导出看板文本快照到 <工作区>/.agentboard/snapshot（保留 snapshot/knowledge；未下沉时从中心库按工作区导出；导出后回读自校验）')
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--include-messages', '同时导出会话消息（messages.jsonl；默认不导出，体积大且敏感）')
