@@ -1,5 +1,16 @@
 # CHANGELOG.md
 
+## [2026-11-18] 退回任务后保持全部任务视图
+
+- 进行中列退回任务后，看板保持“全部任务”；结果条保留“仅看本次退回（N）”手动筛选。
+- 定向测试与 `5174` 页面交互验证通过。
+
+## [2026-11-18] Command Code 添加入口与本地服务错误提示
+
+- “添加供应商”新增 Command Code；零账号时可进入“添加 API Key”并复用 CLI 凭据导入。
+- OpenCode-Go/Command Code 导入遇到浏览器网络失败时，提示确认本地服务已启动后重试。
+- 账号与设置相关 119 个测试通过；`5174` 真实导入与断网提示已验证。
+
 ## [2026-11-18] 便携包 zip 固定使用 Windows 系统 tar
 
 - `scripts/package-portable.mjs` 在 Windows 固定调用 `%SystemRoot%\System32\tar.exe`，避免 PATH 中的 GNU tar 把盘符解析为远程主机。

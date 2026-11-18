@@ -27,6 +27,7 @@ Docs/               设计、变更、待测文档
 - **任务层级**：issue 以同 workspace 自引用 `parent_issue_id` 表示单父树，增量迁移设置 `ON DELETE RESTRICT`；服务事务校验父级与环，更新触发器保护同空间关系和防环。旧平铺列表不变，`GET /api/issues/tree` 按 parent/status 和 `(sort_order,created_at,id)` keyset 分页，返回祖先上下文、子项数及后代关闭进度。父任务有未关闭后代时任意状态更新路径均返回冲突；有子项的节点不能删除。workspace 整体删除在级联前清空其内部父引用。
 - **任务层级客户端**：CLI `create-issue --parent`、`move-issue --parent|--root`、`list-tasks --tree` 复用 REST 与 CAS/幂等键；MCP 复用既有 12 个任务工具，list 支持单层 tree cursor，create/update 传父字段；另有经批准的唯一破坏性工具 `agentboard_delete_task`（透传 `DELETE /api/issues/:id`，不可逆，占用中或含子任务被拒）。
 - **任务树界面**：任务看板保持默认并可切换任务树。根与展开节点分别按游标读取直接子项；查询键区分根作用域与父任务 ID。状态/文本筛选从工作空间任务索引计算命中项及祖先，只展开必要路径并续读到全部目标节点；每节点独立显示状态、占用与后代关闭进度。创建子任务使用父节点，移动父级使用 `expected_updated_at` CAS；单个活动移动编辑状态保存在树视图级，冻结表单打开时版本并在行跨父级重挂载后保留目标；409 展示打开版本、当前版本及重开提示，不覆盖服务端最新树数据。关闭未完成后代的父项会禁用“已关闭”，有子项的详情删除操作会说明阻塞原因并禁用删除。窄屏以两列显示展开控件和完整标题/进度，状态与操作移至下一行；宽屏恢复横向排列。
+- **退回筛选**：进行中列退回任务后，客户端将返回卡写回当前任务缓存，并复位为显示全部任务；结果条保留“仅看本次退回（N）”入口，由用户主动切换。
 - **模型字段**：新建会话与修改模型共用 `ModelField`。模型请求期间显示加载状态；失败可重试，成功空列表保留手输；旧缓存值不在当前清单时仍显示并标明状态。清单加载后可返回下拉列表选择，也可切换手输；只读 CLI 保持禁用编辑并说明模型由 profile 决定。
 - **CLI 模型来源**：Codex 优先读取当前本机 model provider 的 OpenAI 兼容 `/models`，仅接受本机/私网 `http` 地址并短超时请求；失败后回退 `codex debug models`，最后回退静态清单。DSH 从 PATH 或 DeepSeek Harness 安装目录解析 Electron CLI，启动时设置 `ELECTRON_RUN_AS_NODE=1` 并直接加载 `app.asar` 内入口。
 - **占用锁**：claim 原子事务 `WHERE claimed_by IS NULL AND status IN ('待规划','进行中')`，并发仅一成功；占用中禁状态变更（409），字段/评论仍可编辑。解除仅 agent `done`/`fail` 或用户强制释放。
@@ -67,6 +68,8 @@ Docs/               设计、变更、待测文档
 ## 5. 已知边界
 
 账号基础使用独立 `managed_account` / `account_operation` 表，不进入共享知识或 MCP。凭据仅存 Windows 当前用户 DPAPI 密文文件，额外 entropy 绑定产品、安装实例、身份 hash 与用途；数据库只持有 UUID 引用。DPAPI 经固定 PowerShell 脚本与 stdin 管道调用，不把凭据放入命令行。操作锁为本地单服务进程内锁；恢复引用在操作账本保存，启动时将中断写入归类为 recovery_required、中断签到归类为 unknown。WorkBuddy Desktop 捕获/切换已按 ACC-05 实现（见下节），但 UIA 托盘退出自动化与跨账号真实闭环未真机验收（PENDING_TESTS）；codebuddy_desktop 契约未确认，保持 PROVIDER_UNVERIFIED。
+
+- **CLI 账号来源**：账号页“添加供应商”覆盖现有 CLI 来源选择；Command Code 使用 `cli_account.app_id='commandcode'`，详情表单复用 `POST /api/cli-accounts/import`，零账号仍保留来源行，不进入 `ManagedAppId`。导入请求的浏览器网络失败映射为本地服务连接提示，服务端业务错误保持原码与文案。
 
 ### 账号 provider：WorkBuddy Desktop（ACC-05）
 
