@@ -1,5 +1,9 @@
 # CHANGELOG.md
 
+## [2026-11-18] 便携包 zip 固定使用 Windows 系统 tar
+
+- `scripts/package-portable.mjs` 在 Windows 固定调用 `%SystemRoot%\System32\tar.exe`，避免 PATH 中的 GNU tar 把盘符解析为远程主机。
+
 ## [2026-11-18] DSH 桌面内置 CLI 探测与 Codex 真实模型列表
 
 - DSH 探测与轮次启动支持 DeepSeek Harness 安装目录内的 Electron CLI，识别 `0.2.2-rc.3` 桌面版。
