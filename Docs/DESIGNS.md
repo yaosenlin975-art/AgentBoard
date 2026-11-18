@@ -28,6 +28,7 @@ Docs/               设计、变更、待测文档
 - **任务层级客户端**：CLI `create-issue --parent`、`move-issue --parent|--root`、`list-tasks --tree` 复用 REST 与 CAS/幂等键；MCP 复用既有 12 个任务工具，list 支持单层 tree cursor，create/update 传父字段；另有经批准的唯一破坏性工具 `agentboard_delete_task`（透传 `DELETE /api/issues/:id`，不可逆，占用中或含子任务被拒）。
 - **任务树界面**：任务看板保持默认并可切换任务树。根与展开节点分别按游标读取直接子项；查询键区分根作用域与父任务 ID。状态/文本筛选从工作空间任务索引计算命中项及祖先，只展开必要路径并续读到全部目标节点；每节点独立显示状态、占用与后代关闭进度。创建子任务使用父节点，移动父级使用 `expected_updated_at` CAS；单个活动移动编辑状态保存在树视图级，冻结表单打开时版本并在行跨父级重挂载后保留目标；409 展示打开版本、当前版本及重开提示，不覆盖服务端最新树数据。关闭未完成后代的父项会禁用“已关闭”，有子项的详情删除操作会说明阻塞原因并禁用删除。窄屏以两列显示展开控件和完整标题/进度，状态与操作移至下一行；宽屏恢复横向排列。
 - **模型字段**：新建会话与修改模型共用 `ModelField`。模型请求期间显示加载状态；失败可重试，成功空列表保留手输；旧缓存值不在当前清单时仍显示并标明状态。清单加载后可返回下拉列表选择，也可切换手输；只读 CLI 保持禁用编辑并说明模型由 profile 决定。
+- **CLI 模型来源**：Codex 优先读取当前本机 model provider 的 OpenAI 兼容 `/models`，仅接受本机/私网 `http` 地址并短超时请求；失败后回退 `codex debug models`，最后回退静态清单。DSH 从 PATH 或 DeepSeek Harness 安装目录解析 Electron CLI，启动时设置 `ELECTRON_RUN_AS_NODE=1` 并直接加载 `app.asar` 内入口。
 - **占用锁**：claim 原子事务 `WHERE claimed_by IS NULL AND status IN ('待规划','进行中')`，并发仅一成功；占用中禁状态变更（409），字段/评论仍可编辑。解除仅 agent `done`/`fail` 或用户强制释放。
 - **MCP 任务契约**：ID 操作提交 `workspace_id` 并由服务端校验；带范围的完成、失败、释放以占用者条件 SQL 在事务中执行。任务编辑支持 `expected_updated_at` CAS；增量触发器在时间不递增时设为旧值加一，覆盖评论、会话恢复及直接 SQL 修改。旧 UI 的人类强制操作单独保留，不作为 MCP 工具。
 - **统一 MCP**：任务、知识、依赖、状态、决策与变更日志工具都经共享 REST client 调用现有 API；Workspace 绑定、知识 scope、request_id 幂等键和结构化业务错误在适配层映射。任务列表使用紧凑投影，详情保留正文窗口；共享 `request_id` / `workspace_id` / `fence` 文案和工具级描述受 `scripts/check-agent-context.mjs` 预算门禁约束。SDK schema 错误按 SDK `tools/call` 输入校验响应返回。所有知识读结果含 content 与 structuredContent 总长度不超过 40,000 个序列化字符；正文按 Unicode code point 续读，sources/evidence 按数组项分页，历史按实际返回 revision 数续读。
@@ -61,7 +62,7 @@ Docs/               设计、变更、待测文档
 | CLI | commander + 全局 fetch（Node ≥20） | 退出码 0 成功 / 1 失败 / 2 已被占用(409) |
 | MCP | `@modelcontextprotocol/server` 2.4.0 (Apache-2.0) + Zod 4 | 本机 stdio；不启 API、不读写业务数据库；仅访问 loopback REST |
 | 前端 | React 19 + Vite + Tailwind 4 + react-query 5 + zustand + dnd-kit | WS 事件映射 react-query invalidation |
-| 模型探测 | --help 静态清单 → CLI 动态命令 → 空清单手输，三级降级 | 探测失败回退，不输出猜测列表 |
+| 模型探测 | provider `/models` / CLI 动态命令 → 静态清单 → 空清单手输 | 探测失败回退，不输出猜测列表 |
 
 ## 5. 已知边界
 

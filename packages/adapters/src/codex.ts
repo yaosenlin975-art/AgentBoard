@@ -1,4 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import {
   collectOutput,
   resolveSpawnForm,
@@ -21,6 +24,137 @@ export const CODEX_STATIC_MODELS: ModelInfo[] = [
   { id: 'gpt-5-codex', source: 'static' },
   { id: 'gpt-5', source: 'static' },
 ];
+
+/** Codex 模型目录直接取 `models`；OpenAI 兼容 provider 取 `data`。 */
+export function parseCodexModelCatalog(text: string): ModelInfo[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const root = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : undefined;
+  const models = Array.isArray(root?.models)
+    ? root.models
+    : Array.isArray(root?.data)
+      ? root.data
+      : undefined;
+  if (!Array.isArray(models)) return [];
+  const seen = new Set<string>();
+  const result: ModelInfo[] = [];
+  for (const item of models) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const model = item as Record<string, unknown>;
+    const providerModel =
+      typeof model.id === 'string' &&
+      (model.object === undefined || model.object === 'model') &&
+      (model.visibility === undefined || model.visibility === 'list') &&
+      model.supported_in_api !== false;
+    if (model.visibility !== undefined && model.visibility !== 'list') continue;
+    if (model.supported_in_api === false) continue;
+    const id = providerModel
+      ? (model.id as string).trim()
+      : typeof model.slug === 'string'
+        ? model.slug.trim()
+        : '';
+    if (id === '' || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ id, source: 'probed' });
+  }
+  return result;
+}
+
+export interface CodexProviderConfig {
+  baseUrl: string;
+  bearerToken?: string;
+}
+
+function unquoteToml(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"')))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/** 只读当前 `model_provider` 指向的本机 provider；完整 TOML 解析交给 Codex。 */
+export function parseCodexProviderConfig(text: string): CodexProviderConfig | null {
+  const provider = /^\s*model_provider\s*=\s*([^\r\n#]+)/m.exec(text)?.[1];
+  if (provider === undefined) return null;
+  const providerName = unquoteToml(provider);
+  const section = new RegExp(`^\\s*\\[model_providers\\.${providerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]\\s*$`, 'm');
+  const start = section.exec(text)?.index;
+  if (start === undefined) return null;
+  const rest = text.slice(start).split(/\r?\n/).slice(1);
+  const body: string[] = [];
+  for (const line of rest) {
+    if (/^\s*\[/.test(line)) break;
+    body.push(line);
+  }
+  const baseUrl = /^\s*base_url\s*=\s*([^\r\n#]+)/m.exec(body.join('\n'))?.[1];
+  if (baseUrl === undefined) return null;
+  const bearer = /^\s*(?:experimental_bearer_token|api_key)\s*=\s*([^\r\n#]+)/m.exec(body.join('\n'))?.[1];
+  return {
+    baseUrl: unquoteToml(baseUrl),
+    ...(bearer === undefined ? {} : { bearerToken: unquoteToml(bearer) }),
+  };
+}
+
+function isLocalProviderUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    return (
+      url.protocol === 'http:' &&
+      (host === 'localhost' ||
+        host === '::1' ||
+        /^127\./.test(host) ||
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host))
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function readCodexProviderConfig(env: NodeJS.ProcessEnv = process.env): Promise<CodexProviderConfig | null> {
+  const codexHome = env.CODEX_HOME?.trim() || join(homedir(), '.codex');
+  let text: string;
+  try {
+    text = await readFile(join(codexHome, 'config.toml'), 'utf8');
+  } catch {
+    return null;
+  }
+  const config = parseCodexProviderConfig(text);
+  return config !== null && isLocalProviderUrl(config.baseUrl) ? config : null;
+}
+
+export async function fetchProviderModels(
+  config: CodexProviderConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ModelInfo[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 1000);
+  try {
+    const response = await fetchImpl(`${config.baseUrl.replace(/\/$/, '')}/models`, {
+      headers: config.bearerToken === undefined ? {} : { Authorization: `Bearer ${config.bearerToken}` },
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    return parseCodexModelCatalog(await response.text());
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export interface CodexParseState {
   sessionId: string | null;
@@ -138,6 +272,19 @@ export const codexAdapter: AgentAdapter = {
   async listModels(): Promise<ModelInfo[]> {
     const det = await detectCodex();
     if (!det.installed) return [];
+    const provider = await readCodexProviderConfig();
+    if (provider !== null) {
+      const models = await fetchProviderModels(provider);
+      if (models.length > 0) return models;
+    }
+    const form = resolveWindowsSpawnForm(await whereCommand(CODEX_CMD), CODEX_CMD) ?? { cmd: CODEX_CMD, prefix: [] as string[] };
+    try {
+      const result = await collectOutput(form.cmd, [...form.prefix, 'debug', 'models']);
+      const models = result.code === 0 ? parseCodexModelCatalog(result.lines.join('\n')) : [];
+      if (models.length > 0) return models;
+    } catch {
+      // Keep the adapter usable when a custom catalog is broken or this Codex build has no debug command.
+    }
     return CODEX_STATIC_MODELS.map((m) => ({ ...m }));
   },
   runTurn(opts: RunTurnOptions): TurnHandle {

@@ -1,5 +1,7 @@
 import type { ModelInfo } from '@agentboard/shared';
-import { collectOutput, resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand } from './spawn.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { resolveSpawnForm, resolveWindowsSpawnForm, spawnLineChild, whereCommand, type LineChild, type SpawnForm } from './spawn.js';
 import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from './types.js';
 import { createTurnRunner } from './turnRunner.js';
 import { assertImageInputSupported } from './imageInput.js';
@@ -7,6 +9,86 @@ import { assertImageInputSupported } from './imageInput.js';
 export const DSH_CMD = 'dsh';
 /** 已适配的主次版本系列；runTurn 前校验，不符首轮明确报错。 */
 export const DSH_SUPPORTED_SERIES = '0.2';
+export const DSH_DESKTOP_CLI_RELATIVE = join('resources', 'runtime', 'cli', 'bin', 'dsh.cmd');
+
+/** DSH Desktop 自带的 CLI 不在 PATH；Windows 上按安装目录探测。 */
+export function dshDesktopCliCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  if (platform !== 'win32') return [];
+  const roots = [
+    env.LOCALAPPDATA ? join(env.LOCALAPPDATA, 'Programs', 'DeepSeek Harness') : null,
+    env.ProgramFiles ? join(env.ProgramFiles, 'DeepSeek Harness') : null,
+    env['ProgramFiles(x86)'] ? join(env['ProgramFiles(x86)'], 'DeepSeek Harness') : null,
+  ].filter((root): root is string => root !== null);
+  return roots.map((root) => join(root, DSH_DESKTOP_CLI_RELATIVE));
+}
+
+export function resolveDshDesktopCli(
+  candidates: string[],
+  exists: (path: string) => boolean = existsSync,
+): string | undefined {
+  return candidates.find((candidate) => exists(candidate));
+}
+
+export interface DshCommand {
+  form: SpawnForm;
+  env?: Record<string, string>;
+}
+
+function resolveDshShimForm(shimPath: string): DshCommand | null {
+  let content: string;
+  try {
+    content = readFileSync(shimPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const exeRaw = /"([^"]*DeepSeek Harness\.exe)"/i.exec(content)?.[1];
+  const scriptRaw = /"([^"]*\\app\.asar\\[^"]*\.js)"/i.exec(content)?.[1];
+  if (exeRaw === undefined || scriptRaw === undefined) return null;
+  const expand = (value: string): string =>
+    resolve(dirname(shimPath), value.replace(/%~dp0/gi, '').replace(/\\/g, '/'));
+  const exe = expand(exeRaw);
+  const script = expand(scriptRaw);
+  // app.asar 内部路径不会暴露为普通文件；Electron 原生加载器可直接读取。
+  if (!existsSync(exe) || !/\.asar[/\\]/i.test(script)) return null;
+  return {
+    form: { cmd: exe, prefix: ['--expose-internals', script] },
+    env: { ELECTRON_RUN_AS_NODE: '1' },
+  };
+}
+
+async function resolveDshCli(): Promise<DshCommand | null> {
+  const whereLines = await whereCommand(DSH_CMD);
+  if (whereLines.length > 0) {
+    const form = resolveWindowsSpawnForm(whereLines, DSH_CMD);
+    if (form !== null) return { form };
+    const shim = whereLines.find((line) => /\.(cmd|bat)$/i.test(line));
+    if (shim !== undefined) {
+      const desktop = resolveDshShimForm(shim);
+      if (desktop !== null) return desktop;
+    }
+    return { form: { cmd: DSH_CMD, prefix: [] } };
+  }
+  if (process.platform !== 'win32') return null;
+  const desktopCli = resolveDshDesktopCli(dshDesktopCliCandidates());
+  if (desktopCli === undefined) return null;
+  return resolveDshShimForm(desktopCli)
+    ?? { form: resolveWindowsSpawnForm([desktopCli], DSH_CMD) ?? { cmd: desktopCli, prefix: [] } };
+}
+
+function collectDshOutput(command: DshCommand, args: string[], cwd: string = process.cwd()): Promise<{ code: number | null; lines: string[] }> {
+  const child: LineChild = spawnLineChild(command.form.cmd, [...command.form.prefix, ...args], cwd, {
+    ...(command.env === undefined ? {} : { env: command.env }),
+  });
+  const lines: string[] = [];
+  child.onLine((_source, line) => lines.push(line));
+  return Promise.race([child.exit, child.failure]).then((settled) => {
+    if (settled instanceof Error) throw settled;
+    return { code: settled, lines };
+  });
+}
 
 /** 计划钉死的静态模型清单（模型无 CLI flag，由 profile 配置决定）。 */
 export const DSH_STATIC_MODELS: ModelInfo[] = [
@@ -87,10 +169,11 @@ export function isSupportedDshVersion(version: string): boolean {
 export const DSH_DETECT_REASON_LIMIT = 120;
 
 async function detectDsh(): Promise<{ installed: boolean; version: string | null; message?: string }> {
-  const whereLines = await whereCommand(DSH_CMD);
-  if (whereLines.length === 0) return { installed: false, version: null, message: '未找到 dsh 命令（where/which 均无结果）' };
-  const form = resolveWindowsSpawnForm(whereLines, DSH_CMD) ?? { cmd: DSH_CMD, prefix: [] as string[] };
-  const { code, lines } = await collectOutput(form.cmd, [...form.prefix, '--version']);
+  const resolved = await resolveDshCli();
+  if (resolved === null) {
+    return { installed: false, version: null, message: '未找到 dsh 命令（where/which 与 DeepSeek Harness 安装目录均无结果）' };
+  }
+  const { code, lines } = await collectDshOutput(resolved, ['--version']);
   // 形状校验：只认 `dsh 0.2.x` 这类版本行；loader 报错/空输出一律判不可用，绝不把报错当版本回传
   const version = parseDshVersion(lines);
   if (version) return { installed: true, version };
@@ -100,7 +183,7 @@ async function detectDsh(): Promise<{ installed: boolean; version: string | null
   return {
     installed: false,
     version: null,
-    message: `dsh CLI 不可用：${detail}，${exit}；命令 ${[form.cmd, ...form.prefix, '--version'].join(' ')}`,
+    message: `dsh CLI 不可用：${detail}，${exit}；命令 ${[resolved.form.cmd, ...resolved.form.prefix, '--version'].join(' ')}`,
   };
 }
 
@@ -133,8 +216,11 @@ export const dshAdapter: AgentAdapter = {
 
     void (async () => {
       await Promise.resolve(); // 让调用方先注册 onEvent
-      const form = await resolveSpawnForm(DSH_CMD);
-      const probeChild = spawnLineChild(form.cmd, [...form.prefix, '--version'], opts.cwd);
+      const resolved = await resolveDshCli();
+      const form = resolved?.form ?? await resolveSpawnForm(DSH_CMD);
+      const probeChild = spawnLineChild(form.cmd, [...form.prefix, '--version'], opts.cwd, {
+        ...(resolved?.env === undefined ? {} : { env: resolved.env }),
+      });
       runner.bindKillTarget(probeChild);
       const vlines: string[] = [];
       probeChild.onLine((_source, line) => {
@@ -151,7 +237,9 @@ export const dshAdapter: AgentAdapter = {
         runner.finish(1);
         return;
       }
-      const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+      const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd, {
+        ...(resolved?.env === undefined ? {} : { env: resolved.env }),
+      });
       runner.bindChild(child);
       child.onLine((_source, line) => {
         for (const event of parseDshLine(line, state)) {

@@ -1,5 +1,11 @@
 # CHANGELOG.md
 
+## [2026-11-18] DSH 桌面内置 CLI 探测与 Codex 真实模型列表
+
+- DSH 探测与轮次启动支持 DeepSeek Harness 安装目录内的 Electron CLI，识别 `0.2.2-rc.3` 桌面版。
+- Codex 模型列表优先读取当前本机 model provider 的 `/models`，再回退 `codex debug models` 与静态清单。
+- 适配器测试覆盖 Electron shim、provider 配置与模型响应解析；服务端 `8787` 实例已完成构建重启验证。
+
 ## [2026-11-18] Agent 工作流上下文成本优化收口
 
 - 新增 `kb work` / `kb finish` 与 MCP `start_task` / `finish_task` 聚合入口，复用现有 claim、changelog、done 与 fence 语义；旧工具名和 `agentboard_*` alias 保留。
