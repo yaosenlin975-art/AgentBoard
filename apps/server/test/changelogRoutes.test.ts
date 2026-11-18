@@ -7,7 +7,7 @@
  */
 import express, { type Express } from 'express';
 import request from 'supertest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,6 +15,8 @@ import { createTestDb, issuePayload, type TestDb } from './helpers.js';
 import { createWorkspace, deleteWorkspace } from '../src/db/repos/workspace.js';
 import { createRouter, errorHandler } from '../src/api/routes.js';
 import { applyLegacyChangelog, previewLegacyChangelog } from '../src/services/changelogImport.js';
+import { closeWorkspaceDbs, getDbForWorkspace, resetResolverState, workspaceStateDir } from '../src/db/resolver.js';
+import { localizeWorkspace } from '../src/services/workspaceLocalizeRun.js';
 
 let t: TestDb;
 let app: Express;
@@ -37,7 +39,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(spaceDir, { recursive: true, force: true });
+  closeWorkspaceDbs('changelog-localized');
+  resetResolverState();
+  rmSync(spaceDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   t.cleanup();
 });
 
@@ -157,6 +161,27 @@ describe('活动变更日志 REST', () => {
     const plain = await post(wsA, body({ title: '无归属' }));
     expect(plain.status).toBe(201);
     expect(plain.body.issue_id).toBeNull();
+  });
+
+  it('localized 工作区按工作区库校验 issue_id，不再误报任务不存在', async () => {
+    const wsPath = join(spaceDir, 'A');
+    const localized = await localizeWorkspace(t.db, {
+      workspaceId: wsA,
+      freeBytes: async () => 1024 * 1024 * 1024,
+      attachmentsDir: join(spaceDir, 'attachments'),
+    });
+    expect(localized.state).toBe('localized');
+    const db = getDbForWorkspace(
+      { centerDb: t.db, instanceId: 'changelog-localized', port: 0, openWorkspaceDbs: true },
+      { id: wsA, path: wsPath, dbMode: 'localized' },
+    ).db;
+    const card = db.prepare(
+      'INSERT INTO issue (id, workspace_id, title, description, priority, labels, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id',
+    ).get(uuid('777'), wsA, '本地卡', '', '中', '[]', '待规划', Date.now(), Date.now()) as { id: string };
+    expect(existsSync(workspaceStateDir(wsPath))).toBe(true);
+    const created = await post(wsA, body({ issue_id: card.id }));
+    expect(created.status).toBe(201);
+    expect(created.body.issue_id).toBe(card.id);
   });
 
   it('分页与筛选：limit+1 探测 next_offset、q 字面搜索、change_type 组合、越界 400', async () => {

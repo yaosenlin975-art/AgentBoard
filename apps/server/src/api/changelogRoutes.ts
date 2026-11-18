@@ -44,7 +44,7 @@ const archivedWorkspaceQuery = z
   .strict();
 
 /** 活动日志：挂载点已带 `:workspaceId`，需 mergeParams 读取 */
-export function createChangelogRouter(db: Db): Router {
+export function createChangelogRouter(db: Db, dbForWorkspace?: (workspaceId: string) => Db): Router {
   const router = Router({ mergeParams: true });
 
   const requireWorkspace = (raw: unknown): string => {
@@ -63,7 +63,8 @@ export function createChangelogRouter(db: Db): Router {
     const workspaceId = requireWorkspace((req.params as Record<string, string>).workspaceId);
     const body = parse(changeLogCreateSchema, req.body);
     // N4-03：--issue 归属必须真实存在且属于本工作区，避免写出不会过 done 门禁的「幽灵归属」
-    if (body.issue_id !== undefined && getIssue(db, body.issue_id, workspaceId) === null) {
+    // 工作区库下沉后，卡在 dbForWorkspace 返回的库里；中心库只保存注册表。
+    if (body.issue_id !== undefined && getIssue(dbForWorkspace?.(workspaceId) ?? db, body.issue_id, workspaceId) === null) {
       throw new ValidationError(
         `issue_id ${body.issue_id} 不存在或不属于本工作区；请先用 kb show <id> 确认任务 id，或省略 --issue 写无归属日志。`,
       );

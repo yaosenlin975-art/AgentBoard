@@ -661,6 +661,32 @@ function insertRows(
   }
 }
 
+/** issue 自引用在插入时校验父卡存在；按依赖先父后子排列，缺失父卡或环保持原顺序交给事务报错。 */
+function parentFirstRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const byId = new Map(rows.flatMap(row => typeof row.id === 'string' ? [[row.id, row] as const] : []));
+  const children = new Map<string, Array<Record<string, unknown>>>();
+  const roots: Array<Record<string, unknown>> = [];
+  for (const row of rows) {
+    const parentId = typeof row.parent_issue_id === 'string' ? row.parent_issue_id : null;
+    if (parentId === null || !byId.has(parentId)) {
+      roots.push(row);
+      continue;
+    }
+    children.set(parentId, [...(children.get(parentId) ?? []), row]);
+  }
+  const ordered: Array<Record<string, unknown>> = [];
+  const seen = new Set<Record<string, unknown>>();
+  const visit = (row: Record<string, unknown>): void => {
+    if (seen.has(row)) return;
+    seen.add(row);
+    ordered.push(row);
+    for (const child of children.get(String(row.id)) ?? []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  for (const row of rows) visit(row);
+  return ordered;
+}
+
 /**
  * 导入：只允许同 workspace_id 的空工作区库；--replace 先 VACUUM INTO 备份再覆盖。
  * 事务内完成插入 + foreign_key_check + 行数比对；任一失败整体回滚。
@@ -730,7 +756,9 @@ export function importWorkspaceSnapshot(input: ImportSnapshotInput): ImportSnaps
     input.db.exec('DELETE FROM workspace_status');
     if (input.replace === true && nonEmpty.length > 0) clearSnapshotTables(input.db, includedTables);
     for (const spec of includedTables) {
-      const rows = validated.rows.get(spec.table) ?? [];
+      const rows = spec.table === 'issue'
+        ? parentFirstRows(validated.rows.get(spec.table) ?? [])
+        : (validated.rows.get(spec.table) ?? []);
       insertRows(input.db, spec, rows);
       imported.push({ table: spec.table, rows: rows.length });
     }
