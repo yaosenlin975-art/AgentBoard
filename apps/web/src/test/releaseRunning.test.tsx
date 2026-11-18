@@ -35,6 +35,14 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 
 const running = makeIssue();
 const released = { ...running, status: '待规划' as const, claimed_by: null, claimed_at: null };
+const otherPlanning = makeIssue({
+  id: '22222222-2222-4222-8222-222222222222',
+  title: '另一张待规划任务',
+  status: '待规划',
+  sort_order: 1,
+  claimed_by: null,
+  claimed_at: null,
+});
 
 function renderBoard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -61,9 +69,9 @@ describe('REL-2 进行中列头救火键', () => {
     expect(screen.queryByTestId('column-release-running-待规划')).toBeNull();
   });
 
-  it('dry_run 清单进弹窗 → 提交后就地写回缓存并给「仅看本次退回」入口', async () => {
+  it('退回后显示全部任务，由「仅看本次退回」入口主动切换过滤', async () => {
     server.use(
-      http.get('/api/issues', () => HttpResponse.json<Issue[]>([running])),
+      http.get('/api/issues', () => HttpResponse.json<Issue[]>([running, otherPlanning])),
       http.get('/api/sessions', () => HttpResponse.json([])),
       http.post('/api/workspaces/ws-1/release-running', async ({ request }) => {
         const body = (await request.json()) as { dry_run?: boolean };
@@ -80,13 +88,22 @@ describe('REL-2 进行中列头救火键', () => {
 
     // 不等 WS 帧：卡片立刻回到待规划列
     await waitFor(() => expect(screen.getByTestId('release-toast')).toHaveTextContent('已退回 1 张'));
-    // 退回后默认进入「仅看本次退回」，可切回全部
+    // 退回后仍显示全部任务，不自动进入过滤
     const toggle = screen.getByTestId('release-only-toggle');
+    expect(toggle).toHaveTextContent('仅看本次退回（1）');
+    expect(screen.getByTestId(`issue-card-${running.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`issue-card-${otherPlanning.id}`)).toBeInTheDocument();
+
+    // 用户主动点击后才只显示本次退回卡
+    fireEvent.click(toggle);
     expect(toggle).toHaveTextContent('显示全部任务');
+    expect(screen.getByTestId(`issue-card-${running.id}`).closest('[data-testid="column-待规划"]')).not.toBeNull();
+    expect(screen.queryByTestId(`issue-card-${otherPlanning.id}`)).not.toBeInTheDocument();
+
+    // 再点一次恢复全部任务
     fireEvent.click(toggle);
     expect(toggle).toHaveTextContent('仅看本次退回（1）');
-    // 卡片已回「待规划」列
-    expect(screen.getByTestId(`issue-card-${running.id}`).closest('[data-testid="column-待规划"]')).not.toBeNull();
+    expect(screen.getByTestId(`issue-card-${otherPlanning.id}`)).toBeInTheDocument();
   });
 
   it('mode=all 未勾选确认时主按钮 disabled，勾选后可提交', async () => {

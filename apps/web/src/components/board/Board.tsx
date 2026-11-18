@@ -298,7 +298,7 @@ export function Board() {
       list === undefined ? list : list.map((item) => released.find((r) => r.id === item.id) ?? item),
     );
     setReleasedBatch({ ids: new Set(released.map((issue) => issue.id)), count: released.length });
-    setOnlyReleased(true);
+    setOnlyReleased(false);
     setReleaseToast(`已退回 ${released.length} 张到待规划`);
   };
 
