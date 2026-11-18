@@ -5,6 +5,7 @@ import type { McpConfig } from '../config.js';
 import { requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { mcpToolFailure, mcpToolSuccess } from './result.js';
+import { changeTypeField, requestIdField, workspaceField } from './schemaText.js';
 
 type JsonObject = Record<string, unknown>;
 
@@ -14,16 +15,7 @@ type JsonObject = Record<string, unknown>;
  * 列表只回摘要（正文窗口 300），详情才回正文（窗口 12000）。
  */
 
-const workspaceField = {
-  workspace_id: z.string().trim().min(1).optional()
-    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
-};
-const requestIdField = {
-  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
-    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
-};
-const changeTypeSchema = z.enum(['新增', '修复', '调整'])
-  .describe('Change type: 新增 (added) / 修复 (fixed) / 调整 (changed).');
+const changeTypeSchema = changeTypeField;
 
 function boundedBody(value: unknown, max: number) {
   const window = textWindow(typeof value === 'string' ? value : '', 0, max);
@@ -67,7 +59,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
 
   register(
     'list_changelog',
-    'List workspace change-log entries (newest first). Each entry carries title/type/actor/revision and a 300-character body preview; use get_changelog for the full body.',
+    'List change-log entries with 300-character body previews.',
     z.object({
       ...workspaceField,
       limit: z.number().int().min(1).max(100).default(20).describe('Max entries, 1-100 (default 20).'),
@@ -92,7 +84,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
 
   register(
     'get_changelog',
-    'Read one change-log entry, including the body windowed at 12000 characters (continuation offset returned when truncated).',
+    'Read one change-log entry and a bounded body window.',
     z.object({
       ...workspaceField,
       changelog_id: z.string().trim().min(1).describe('Change-log entry UUID from list_changelog.'),
@@ -121,7 +113,7 @@ export function registerChangelogTools(server: McpServer, config: McpConfig, api
 
   register(
     'create_changelog',
-    'Append a workspace change-log entry (title + body_md + change_type 新增/修复/调整). Pass issue_id to attribute it to a task — the done changelog gate then recognises it without skip_changelog. request_id is the idempotency key.',
+    'Append a change-log entry; pass issue_id to satisfy that task changelog gate.',
     z.object({
       ...workspaceField,
       ...requestIdField,

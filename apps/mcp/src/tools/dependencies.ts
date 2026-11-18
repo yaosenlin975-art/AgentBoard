@@ -10,22 +10,15 @@ import type { McpConfig } from '../config.js';
 import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
+import { requestIdField, taskIdField, workspaceField } from './schemaText.js';
 import { resolveTaskId } from './taskRef.js';
 
-const workspaceField = {
-  workspace_id: z.string().trim().min(1).optional()
-    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
-};
 const issueIdField = {
-  task_id: z.string().trim().min(1).describe('The blocked task UUID (the one waiting on a blocker).'),
+  task_id: taskIdField.task_id.describe('Blocked task UUID.'),
 };
 const blockerIdField = {
   blocker_task_id: z.string().trim().min(1)
-    .describe('The blocker task UUID. It must finish (待验收 or 已关闭) before task_id can be claimed.'),
-};
-const requestIdField = {
-  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
-    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
+    .describe('Blocker task UUID; it must finish before task_id can be claimed.'),
 };
 
 /** 依赖视图（与 `Docs/api.md` §6 依赖段同构；由服务端算好 resolved） */
@@ -35,7 +28,7 @@ interface DependencyView { blockers: DependencyRef[]; blocked: DependencyRef[] }
 export function registerDependencyTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
     name: 'list_dependencies',
-    description: 'List a task\'s blockers and blocked tasks in one effective workspace, with the server-side resolved flag.',
+    description: 'List a task\'s blockers and blocked tasks.',
     inputSchema: z.object({
       ...workspaceField,
       ...issueIdField,
@@ -49,7 +42,7 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
 
   registerBoardTool(server, {
     name: 'add_dependency',
-    description: 'Add a blocker edge: the blocked task cannot be claimed until the blocker is resolved (acceptance or closed). Adding a blocker to a currently claimed task is rejected with ISSUE_CLAIMED — release or finish the claim first.',
+    description: 'Add a blocker edge; claimed tasks must be released first.',
     inputSchema: z.object({
       ...workspaceField,
       ...issueIdField,
@@ -81,7 +74,7 @@ export function registerDependencyTools(server: McpServer, config: McpConfig, ap
 
   registerBoardTool(server, {
     name: 'remove_dependency',
-    description: 'Remove a blocker edge from a task. DELETE call — takes no request_id.',
+    description: 'Remove a blocker edge (no request_id).',
     inputSchema: z.object({
       ...workspaceField,
       ...issueIdField,

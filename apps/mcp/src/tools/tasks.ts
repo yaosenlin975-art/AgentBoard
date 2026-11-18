@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { textWindow, type Issue, type IssueComment, type IssueTreePage, type KnowledgeHint, type PageResult, type TaskPreview, type Workspace } from '@agentboard/shared';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod/v4';
@@ -6,37 +7,26 @@ import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { mcpToolSuccess } from './result.js';
 import { registerBoardTool } from './register.js';
+import {
+  compactTask,
+  fenceField,
+  pageFields,
+  priorityField,
+  requestIdField,
+  taskIdField,
+  taskStatusField,
+  workspaceField,
+} from './schemaText.js';
 import { resolveTaskId } from './taskRef.js';
 
-const workspaceField = {
-  workspace_id: z.string().trim().min(1).optional()
-    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to (AGENTBOARD_WORKSPACE_ID).'),
-};
-const taskIdField = {
-  task_id: z.string().trim().min(1)
-    .describe('Task UUID (36-char full id), or a unique id prefix of at least 8 characters. An ambiguous prefix returns the matching candidates; a shorter prefix is rejected.'),
-};
-const requestIdField = {
-  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
-    .describe('Idempotency key (UUID) for this write. Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
-};
-const pageFields = {
-  limit: z.number().int().min(1).max(100).default(50).describe('Page size, 1-100 (default 50).'),
-  offset: z.number().int().min(0).default(0).describe('Zero-based row offset for flat pagination (default 0).'),
-};
-const prioritySchema = z.enum(['低', '中', '高']).describe('Priority label: 低 (low) / 中 (medium) / 高 (high).');
+const prioritySchema = priorityField;
 /**
  * C6：status 不做客户端枚举。工作区状态字典是动态的——`add_status` 能建自定义状态，
  * 服务端 `requireWorkspaceStatus`（`apps/server/src/services/workspaceStatus.ts:49-59`）
  * 会按本工作区已定义的状态校验，并在报错里列出合法值。MCP 层写死
  * `待规划/进行中/待验收/已关闭` 会拦掉「已废弃」与一切自定义状态。
  */
-const statusSchema = z.string().trim().min(1)
-  .describe('Status name. Valid values come from this workspace\'s status dictionary — call list_statuses first to see the exact names (builtin defaults: 待规划 / 进行中 / 待验收 / 已关闭, plus custom ones such as 已废弃). An unknown name fails server-side with VALIDATION_ERROR.');
-const fenceField = {
-  fence: z.number().int().min(0).optional()
-    .describe('Claim fence/epoch from claim_task. If the task was re-claimed by someone else since, the write fails with 409 STALE_FENCE; omit to skip the check.'),
-};
+const statusSchema = taskStatusField;
 
 /** 收尾固定提交的看板产物；与 server 的 WORKSPACE_SNAPSHOT_COMMIT_PATHS 同口径 */
 const WORKSPACE_SNAPSHOT_COMMIT_PATHS = [
@@ -44,6 +34,15 @@ const WORKSPACE_SNAPSHOT_COMMIT_PATHS = [
   '.agentboard/.gitignore',
   '.agentboard/README.md',
 ];
+
+type DependencyRef = { issue_id: string; title: string; status: string; resolved: boolean };
+type DependencyView = { blockers: DependencyRef[]; blocked: DependencyRef[] };
+type GitCommitInfo = { status: string; reason: string | null; note: string | null; pending: string[] };
+type CompletionResult = Issue & {
+  comment: IssueComment | null;
+  knowledge_hint: KnowledgeHint | null;
+  git_commit?: GitCommitInfo | null;
+};
 
 /**
  * PERF-4d（用户拍板选项 A）：列表类出参不再包含正文，正文由 `get_task` 提供。
@@ -120,6 +119,88 @@ function boundedMutationData(data: unknown): unknown {
   return result;
 }
 
+function derivedRequestId(base: string, purpose: string): string {
+  const hex = createHash('sha256').update(`${base}:${purpose}`).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Write receipts expose only state needed for the next decision. */
+function compactMutationReceipt(data: unknown): Record<string, unknown> {
+  const source = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+  // Non-task mutations (delete/accept) keep their own compact result shape.
+  if (source.id === undefined) return source;
+  const keys = [
+    'id', 'workspace_id', 'title', 'status', 'priority', 'parent_issue_id',
+    'claimed_by', 'claimed_at', 'claim_fence', 'updated_at',
+    'git_commit', 'knowledge_hint', 'comment', 'claim', 'changelog', 'skipped',
+  ];
+  const result = Object.fromEntries(keys.filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+  if (result.comment && typeof result.comment === 'object' && !Array.isArray(result.comment)) {
+    const comment = result.comment as Record<string, unknown>;
+    const window = textWindow(typeof comment.content === 'string' ? comment.content : '', 0, 12000);
+    result.comment = {
+      id: comment.id,
+      issue_id: comment.issue_id,
+      author: comment.author,
+      ts: comment.ts,
+      content: window.content,
+      truncated: window.truncated,
+      next_content_offset_chars: window.next_offset_chars,
+      ...(comment.attachments ? { attachments: comment.attachments } : {}),
+    };
+  }
+  return result;
+}
+
+function compactComments(page: PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean; attachments?: IssueComment['attachments'] }>) {
+  return {
+    items: page.items.map(item => ({
+      id: item.id,
+      author: item.author,
+      ts: item.ts,
+      snippet: item.snippet,
+      has_more: item.has_more,
+      ...(item.attachments ? { attachments: item.attachments } : {}),
+    })),
+    next_offset: page.next_offset,
+  };
+}
+
+async function claimForWork(api: AgentBoardApiClient, config: McpConfig, workspaceId: string, taskId: string, requestId: string) {
+  const agentId = requireAgentId(config);
+  return api.mutate<Issue & { claim_fence: number }>('POST', `/issues/${encodeURIComponent(taskId)}/claim`, {
+    workspace_id: workspaceId, agent_id: agentId, knowledge_enabled: false,
+  }, requestId, 'TASK_CLAIMED');
+}
+
+async function completeForFinish(
+  api: AgentBoardApiClient,
+  config: McpConfig,
+  workspaceId: string,
+  taskId: string,
+  input: {
+    notes: string; scope?: string[]; changelog_id?: string; skip_changelog?: boolean;
+    board_only?: boolean; request_id: string; fence?: number;
+  },
+) {
+  if (input.board_only === true && (input.scope?.length ?? 0) > 0) {
+    throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用。');
+  }
+  const agentId = requireAgentId(config);
+  const scopePaths = input.board_only === true || input.scope === undefined || input.scope.length === 0
+    ? [...WORKSPACE_SNAPSHOT_COMMIT_PATHS]
+    : input.scope;
+  return api.mutate<CompletionResult>('POST', `/issues/${encodeURIComponent(taskId)}/done`, {
+    workspace_id: workspaceId,
+    agent_id: agentId,
+    notes: input.notes,
+    scope_paths: scopePaths,
+    client: 'mcp',
+    changelog_ack: input.skip_changelog === true,
+    ...(input.changelog_id === undefined ? {} : { changelog_id: input.changelog_id }),
+  }, input.request_id, undefined, undefined, input.fence);
+}
+
 export function registerTaskTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   // ponytail: SDK schemas validate inputs; this wrapper keeps every tool's result and error shape identical.
   // CR2-8：注册样板收敛到 registerBoardTool；这里只剩写工具的结果裁剪（boundedMutationData）
@@ -129,23 +210,25 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       description,
       inputSchema,
       readOnly,
-      ...(readOnly ? {} : { onResult: (data: unknown, summary: string) => mcpToolSuccess(boundedMutationData(data), summary) }),
+      ...(readOnly
+        ? {}
+        : { onResult: (data: unknown, summary: string) => mcpToolSuccess(compactMutationReceipt(boundedMutationData(data)), summary) }),
     }, run);
 
-  register('list_workspaces', 'List workspaces by page. Local filesystem paths are omitted.', z.object(pageFields).strict(), async ({ limit, offset }) => {
+  register('list_workspaces', 'List workspaces; paths are omitted.', z.object(pageFields).strict(), async ({ limit, offset }) => {
     const page = await api.get<PageResult<Workspace>>('/workspaces', { limit, offset });
     return { items: page.items.map(({ id, name }) => ({ id, name })), next_offset: page.next_offset };
   });
 
-  register('list_tasks', 'List flat tasks or one cursor-paginated level of the task tree in one effective workspace. Listings omit task descriptions (description, description_truncated, next_description_offset_chars are absent to keep responses small); call get_task to read one task with its description.', z.object({
+  register('list_tasks', 'List compact task rows or one task-tree level; descriptions are omitted.', z.object({
     ...workspaceField,
     status: statusSchema.optional(),
     tree: z.boolean().default(false)
-      .describe('Set true to page one level of the task tree with cursor pagination instead of a flat list (default false).'),
+      .describe('Use task-tree cursor pagination (default false).'),
     parent_issue_id: z.string().trim().min(1).nullable().optional()
-      .describe('Tree mode only: list children of this task UUID; null lists root tasks. Requires tree=true.'),
+      .describe('Tree mode parent UUID; null lists roots.'),
     cursor: z.string().min(1).max(4096).optional()
-      .describe('Tree mode only: opaque cursor from the previous response next_cursor. Tree mode ignores offset.'),
+      .describe('Tree mode cursor from next_cursor.'),
     ...pageFields,
   }).strict()
     .refine((input) => input.tree || (input.parent_issue_id === undefined && input.cursor === undefined), {
@@ -164,22 +247,27 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       });
       return {
         ...page,
-        items: page.items.map(omitTaskDescription),
-        ancestors: page.ancestors.map(omitTaskDescription),
+        items: page.items.map(item => ({
+          ...compactTask(omitTaskDescription(item)),
+          child_count: item.child_count,
+          descendant_count: item.descendant_count,
+          descendants_closed_count: item.descendants_closed_count,
+        })),
+        ancestors: page.ancestors.map(item => compactTask(omitTaskDescription(item))),
         workspace_id: workspaceId,
       };
     }
     const page = await getTaskListPage<PageResult<TaskPreview>>(api, { workspace: workspaceId, status, limit, offset });
-    return { ...page, items: page.items.map(omitTaskDescription), workspace_id: workspaceId };
+    return { ...page, items: page.items.map(item => compactTask(omitTaskDescription(item))), workspace_id: workspaceId };
   });
 
-  register('get_task', 'Read one task including a description window from one effective workspace. list_tasks omits descriptions, so use this tool for a task body.', z.object({
+  register('get_task', 'Read one task and a bounded description window.', z.object({
     ...workspaceField,
     ...taskIdField,
     description_offset_chars: z.number().int().min(0).default(0)
-      .describe('Character offset into the description for windowed reads (default 0). Continue from next_description_offset_chars when description_truncated is true.'),
+      .describe('Description character offset (default 0).'),
     description_max_chars: z.number().int().min(1).max(40000).default(12000)
-      .describe('Maximum description characters to return, 1-40000 (default 12000).'),
+      .describe('Max description chars, 1-40000 (default 12000).'),
   }).strict(), async ({ workspace_id, task_id, description_offset_chars, description_max_chars }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const taskId = await resolveTaskId(api, workspaceId, task_id);
@@ -190,7 +278,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     });
   });
 
-  register('get_task_comments', 'Read a paged comment list without advancing the shared unread cursor.', z.object({
+  register('get_task_comments', 'List task comments without advancing the unread cursor.', z.object({
     ...workspaceField,
     ...taskIdField,
     ...pageFields,
@@ -200,7 +288,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     const page = await api.get<PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean; attachments?: IssueComment['attachments'] }>>(
       `/issues/${encodeURIComponent(taskId)}/comments`, { workspace_id: workspaceId, limit, offset },
     );
-    return { ...page, workspace_id: workspaceId };
+    return { ...compactComments(page), workspace_id: workspaceId };
   });
 
   register('get_task_comment', 'Read a comment body window without changing comment read state.', z.object({
@@ -283,7 +371,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, undefined, undefined, fence);
   }, false);
 
-  register('claim_task', 'Atomically claim an eligible task; the configured agent ID is an audit label.', z.object({
+  register('claim_task', 'Atomically claim an eligible task.', z.object({
     ...workspaceField,
     ...taskIdField,
     ...requestIdField,
@@ -291,9 +379,45 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    return api.mutate<Issue>('POST', `/issues/${encodeURIComponent(taskId)}/claim`, {
+    return api.mutate<Issue & { claim_fence: number }>('POST', `/issues/${encodeURIComponent(taskId)}/claim`, {
       workspace_id: workspaceId, agent_id: agentId, knowledge_enabled: false,
     }, request_id, 'TASK_CLAIMED');
+  }, false);
+
+  register('start_task', 'Atomically claim a task and return its bounded work package (task, description, blockers, recent comments).', z.object({
+    ...workspaceField,
+    ...taskIdField,
+    comments: z.number().int().min(0).max(20).default(5)
+      .describe('Recent comments to include, 0-20 (default 5).'),
+    ...requestIdField,
+  }).strict(), async ({ workspace_id, task_id, comments, request_id }) => {
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
+    const claimed = await claimForWork(api, config, workspaceId, taskId, request_id);
+    // A post-claim read failure leaves the task claimed; return the error instead of fabricating a package.
+    const task = await api.get<TaskPreview>(`/issues/${encodeURIComponent(taskId)}`, {
+      workspace_id: workspaceId,
+      description_offset_chars: 0,
+      description_max_chars: 12000,
+    });
+    const deps = await api.get<DependencyView>(`/issues/${encodeURIComponent(taskId)}/dependencies`, { workspace_id: workspaceId });
+    const recent = comments === 0
+      ? { items: [], next_offset: null }
+      : compactComments(await api.get<PageResult<{ id: string; author: string; ts: number; snippet: string; has_more: boolean }>>(
+        `/issues/${encodeURIComponent(taskId)}/comments`,
+        { workspace_id: workspaceId, limit: comments, offset: Math.max(0, Number(task.comment_count ?? 0) - comments) },
+      ));
+    return {
+      issue: compactTask(task),
+      description: task.description,
+      description_truncated: task.description_truncated,
+      next_description_offset_chars: task.next_description_offset_chars,
+      blockers: deps.blockers,
+      blocked: deps.blocked,
+      claim_fence: claimed.claim_fence,
+      comments: recent.items,
+      comments_next_offset: recent.next_offset,
+    };
   }, false);
 
   register('release_task', 'Release a task owned by the configured agent.', z.object({
@@ -326,7 +450,7 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, undefined, undefined, fence);
   }, false);
 
-  register('complete_task', 'Complete a task owned by the configured agent. Changelog gate — satisfy ONE of: (a) create_changelog with issue_id=<this task> before calling complete_task; (b) pass changelog_id referencing an existing entry of this workspace; (c) skip_changelog=true when nothing user-visible changed. Otherwise the call fails with CHANGELOG_ACK_REQUIRED. Pass scope to declare business files changed by this task. Without scope, or with board_only=true, only the .agentboard dashboard snapshot is committed.', z.object({
+  register('complete_task', 'Complete a task. Provide a card changelog, changelog_id, or skip_changelog=true.', z.object({
     ...workspaceField,
     ...taskIdField,
     notes: z.string().default('')
@@ -342,21 +466,78 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, notes, scope, changelog_id, skip_changelog, board_only, request_id, fence }) => {
-    // 与 CLI 同口径显式互斥，不做静默取舍
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
+    const taskId = await resolveTaskId(api, workspaceId, task_id);
+    return completeForFinish(api, config, workspaceId, taskId, {
+      notes, scope, changelog_id, skip_changelog, board_only, request_id, fence,
+    });
+  }, false);
+
+  register('finish_task', 'Create a card changelog (unless skipped), then complete the task and return commit/gate status.', z.object({
+    ...workspaceField,
+    ...taskIdField,
+    notes: z.string().default('')
+      .describe('Completion notes: changes, verification, knowledge/changelog ids.'),
+    scope: z.array(z.string().min(1)).optional()
+      .describe('Repo-relative files/directories to commit; omit for board-only snapshot.'),
+    changelog_title: z.string().trim().min(1).max(200).optional()
+      .describe('New change-log title; required unless no_changelog=true.'),
+    change_type: z.enum(['新增', '修复', '调整']).default('调整')
+      .describe('New change-log type (default 调整).'),
+    changelog_body: z.string().min(1).max(100000).optional()
+      .describe('New change-log body; defaults to notes.'),
+    no_changelog: z.boolean().optional()
+      .describe('Set true only when this task has no user-visible change.'),
+    board_only: z.boolean().optional()
+      .describe('Commit only the dashboard snapshot; mutually exclusive with scope.'),
+    ...requestIdField,
+    ...fenceField,
+  }).strict(), async ({ workspace_id, task_id, notes, scope, changelog_title, change_type, changelog_body, no_changelog, board_only, request_id, fence }) => {
     if (board_only === true && (scope?.length ?? 0) > 0) {
-      throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用：纯看板任务只提交看板快照，不提交业务文件。要提交业务文件请去掉 board_only；纯看板任务请去掉 scope。');
+      throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用。');
+    }
+    if (no_changelog !== true && (changelog_title === undefined || changelog_title.trim() === '')) {
+      throw new McpError('VALIDATION_ERROR', 'finish_task requires changelog_title unless no_changelog=true.');
     }
     const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
-    const scopePaths = board_only === true || scope === undefined || scope.length === 0
-      ? [...WORKSPACE_SNAPSHOT_COMMIT_PATHS]
-      : scope;
-    return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(taskId)}/done`, {
-      workspace_id: workspaceId, agent_id: agentId, notes, scope_paths: scopePaths,
-      client: 'mcp', changelog_ack: skip_changelog === true,
-      ...(changelog_id === undefined ? {} : { changelog_id }),
-    }, request_id, undefined, undefined, fence);
+    let changelogId: string | undefined;
+    if (no_changelog !== true) {
+      const rawChangelogBody = changelog_body ?? notes;
+      const entry = await api.mutate<{ id: string }>(
+        'POST',
+        `/workspaces/${encodeURIComponent(workspaceId)}/changelog`,
+        {
+          title: changelog_title,
+          body_md: rawChangelogBody.trim() === '' ? '本轮无用户可见变更' : rawChangelogBody,
+          change_type,
+          actor: agentId,
+          issue_id: taskId,
+        },
+        derivedRequestId(request_id, 'changelog'),
+        undefined,
+        'WORKSPACE_NOT_FOUND',
+      );
+      changelogId = entry.id;
+    }
+    const completed = await completeForFinish(api, config, workspaceId, taskId, {
+      notes: changelogId === undefined
+        ? notes
+        : `${notes}${notes === '' ? '' : '\n\n'}close-record: changelog=${changelogId}`,
+      scope,
+      changelog_id: changelogId,
+      skip_changelog: no_changelog,
+      board_only,
+      request_id,
+      fence,
+    });
+    return {
+      issue: compactTask(completed),
+      changelog_id: changelogId ?? null,
+      git_commit: completed.git_commit ?? null,
+      knowledge_hint: completed.knowledge_hint ?? null,
+    };
   }, false);
 
   register('delete_task', 'Permanently delete a task. Irreversible; rejected while the task is claimed or when it still has child tasks. This is a DELETE call and takes no request_id (idempotency key).', z.object({
@@ -415,7 +596,20 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, 'INVALID_TRANSITION', 'TASK_NOT_FOUND', fence);
   }, false);
 
-  register('accept_task', 'Record a structured acceptance verdict on a task waiting for review (待验收). Writes a 【验收记录】 comment; it does not change the task status.', z.object({
+  const registerTaskMutation = (
+    name: string,
+    description: string,
+    inputSchema: z.ZodObject<any>,
+    run: (input: any) => Promise<unknown>,
+  ) => registerBoardTool(server, {
+    name,
+    description,
+    inputSchema,
+    readOnly: false,
+    onResult: (data: unknown, summary: string) => mcpToolSuccess(compactMutationReceipt(boundedMutationData(data)), summary),
+  }, run);
+
+  registerTaskMutation('accept_task', 'Record a structured acceptance verdict on a task waiting for review (待验收); status does not change.', z.object({
     ...workspaceField,
     ...taskIdField,
     verdict: z.enum(['pass', 'fail']).default('pass').describe('Acceptance verdict: pass or fail (default pass).'),
@@ -439,5 +633,5 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
       workspace_id: workspaceId, content, agent_id: agentId,
     }, request_id, undefined, undefined, fence);
     return { task_id: taskId, verdict, reviewer: reviewer ?? agentId, comment: response.comment };
-  }, false);
+  });
 }

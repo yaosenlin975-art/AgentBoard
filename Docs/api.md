@@ -1150,10 +1150,12 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 | `kb grep` | 永不提供 | — | 本机文件内容检索：需要本地路径与文件系统遍历，MCP 远程调用无意义 |
 | `kb show` | 有 | `get_task` / `get_task_comments` | 任务正文与评论分别提供窗口化读取 |
 | `kb claim` | 有 | `claim_task` | 原子领取，审计标签为 MCP 配置的 agent |
+| `kb work` | 有 | `start_task` | 原子领取后返回有界卡面、依赖与最近评论；claimed 后读取失败不回滚占用 |
 | `kb release` | 有 | `release_task` | 释放占用 → 待规划 |
 | `kb comment` | 有 | `add_task_comment` | 文本评论；图片附件仅 CLI/HTTP 提供 |
 | `kb accept` | 有 | `accept_task` | 结构化验收记录，不改卡状态 |
 | `kb done` | 有 | `complete_task` | 完成 → 待验收；`scope`（string[]）同 CLI `--scope`；未声明 scope 或 `board_only=true` 时只提交 `.agentboard` 看板快照，不提交业务代码；`board_only` 与 `scope` 互斥（同传 400 `BOARD_ONLY_SCOPE_CONFLICT`）；收尾门禁同 CLI：`changelog_id` 引用本工作区已有日志（**不等价** `--close-record`——后者是新建一条）、`skip_changelog` 等价 `--no-changelog` |
+| `kb finish` | 有 | `finish_task` | 默认先写归属本卡的 changelog，再复用 done；`no_changelog=true` 走无日志出口，提交与门禁同 `complete_task` |
 | `kb close` | 有 | `close_task` | 待验收 → 已关闭 |
 | `kb reopen` | 有 | `reopen_task` | 已关闭/已废弃 → 指定状态 |
 | `kb update` | 有 | `update_task` | 字段与状态更新，带 CAS |

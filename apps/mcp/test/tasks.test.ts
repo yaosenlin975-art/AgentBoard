@@ -5,12 +5,14 @@ import { resetListFieldsFallback } from '../src/tools/tasks.js';
 import { createHarness } from './helpers.js';
 
 const baseConfig = { baseUrl: 'http://127.0.0.1:8787', workspaceId: 'workspace-a', agentId: 'codex' };
+const FULL_TASK_ID = '5f1b2c34-0000-4000-8000-00000000b001';
 
 describe('AgentBoard task MCP server', () => {
   const harnesses: Array<ReturnType<typeof createHarness>> = [];
   // PERF-4d：fields= 回落标志是进程级状态，每个用例前置复位
   beforeEach(() => resetListFieldsFallback());
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(harnesses.splice(0).map((harness) => harness.close()));
   });
 
@@ -43,6 +45,7 @@ describe('AgentBoard task MCP server', () => {
       'extend_decision_grace',
       'fail_task',
       'find_knowledge_sources',
+      'finish_task',
       'get_changelog',
       'get_decision',
       'get_task',
@@ -64,6 +67,7 @@ describe('AgentBoard task MCP server', () => {
       'restore_knowledge',
       'revise_knowledge',
       'search_knowledge',
+      'start_task',
       'stop_check',
       'update_task',
       'withdraw_decision',
@@ -357,9 +361,9 @@ describe('AgentBoard task MCP server', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('bounds mutation result bodies and returns offsets for the matching read tools', async () => {
+  it('keeps task mutation receipts compact while detail reads keep full windows', async () => {
     const longBody = '🙂'.repeat(12005);
-    const issue = { id: 'task-1', workspace_id: 'workspace-a', title: 'Long', description: longBody, updated_at: 1 };
+    const issue = { id: 'task-1', workspace_id: 'workspace-a', title: 'Long', description: longBody, status: '待规划', updated_at: 1 };
     const comment = { id: 'comment-1', issue_id: 'task-1', author: 'agent:codex', ts: 1, content: longBody };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(String(input)).pathname;
@@ -375,8 +379,8 @@ describe('AgentBoard task MCP server', () => {
       name: 'create_task',
       arguments: { title: 'Long', description: '长正文测试', request_id: '00000000-0000-4000-8000-000000000010' },
     })).result?.structuredContent?.data;
-    expect(Array.from(created.description)).toHaveLength(12000);
-    expect(created).toMatchObject({ description_truncated: true, next_description_offset_chars: 12000 });
+    expect(created).toMatchObject({ id: 'task-1', status: '待规划' });
+    expect(created).not.toHaveProperty('description');
 
     const added = (await harness.request('tools/call', {
       name: 'add_task_comment',
@@ -389,9 +393,201 @@ describe('AgentBoard task MCP server', () => {
       name: 'complete_task',
       arguments: { task_id: 'task-1', request_id: '00000000-0000-4000-8000-000000000012' },
     })).result?.structuredContent?.data;
-    expect(Array.from(completed.description)).toHaveLength(12000);
     expect(Array.from(completed.comment.content)).toHaveLength(12000);
-    expect(completed.comment.next_content_offset_chars).toBe(12000);
+    expect(completed.comment.next_content_offset_chars).toBeNull();
+  });
+
+  it('start_task claims atomically and returns a bounded work package', async () => {
+    const requests: Array<{ path: string; method: string; query: URLSearchParams; body: any; fence: string | null }> = [];
+    const task = {
+      id: FULL_TASK_ID, workspace_id: 'workspace-a', title: 'Task', description: 'body', priority: '高', labels: ['cli'],
+      status: '进行中', parent_issue_id: null, claimed_by: 'codex', claimed_at: 1, comment_count: 7,
+      blocked_by_count: 1, blocked_by_open_count: 0, decision_locked: false, open_decision_id: null,
+      updated_at: 2, description_truncated: false, next_description_offset_chars: null,
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      requests.push({
+        path: url.pathname, method: init?.method ?? 'GET', query: url.searchParams,
+        body: init?.body === undefined ? null : JSON.parse(String(init.body)),
+        fence: new Headers(init?.headers).get('x-claim-fence'),
+      });
+      if (url.pathname.endsWith('/claim')) return Response.json({ ...task, claim_fence: 12 });
+      if (url.pathname === `/api/issues/${FULL_TASK_ID}`) return Response.json(task);
+      if (url.pathname.endsWith('/dependencies')) return Response.json({
+        blockers: [{ issue_id: 'blocker-1', title: 'Done blocker', status: '待验收', resolved: true }], blocked: [],
+      });
+      if (url.pathname.endsWith('/comments')) return Response.json({
+        items: [{ id: 'c1', author: 'agent:codex', ts: 1, snippet: 'note', has_more: false }], next_offset: null,
+      });
+      return Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+
+    const result = (await harness.request('tools/call', {
+      name: 'start_task',
+      arguments: { task_id: FULL_TASK_ID, comments: 2, request_id: '00000000-0000-4000-8000-000000000401' },
+    })).result;
+    expect(result?.isError).toBeFalsy();
+    expect(result?.structuredContent?.data).toMatchObject({
+      issue: { id: FULL_TASK_ID, status: '进行中', claimed_by: 'codex' },
+      description: 'body',
+      claim_fence: 12,
+      blockers: [{ issue_id: 'blocker-1', resolved: true }],
+    });
+    expect(requests[0]).toMatchObject({
+      path: `/api/issues/${FULL_TASK_ID}/claim`, method: 'POST',
+      body: { workspace_id: 'workspace-a', agent_id: 'codex', knowledge_enabled: false },
+    });
+    expect(requests[1]?.query.get('description_max_chars')).toBe('12000');
+    expect(requests[3]?.query.get('offset')).toBe('5');
+    expect(requests[3]?.query.get('limit')).toBe('2');
+  });
+
+  it('start_task preserves claim conflicts as a structured error without post-claim reads', async () => {
+    const calls: string[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      calls.push(path);
+      if (path.endsWith('/claim')) return Response.json({ error: { code: 'ISSUE_CLAIMED' } }, { status: 409 });
+      return Response.json({ id: 'task-1' });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'start_task',
+      arguments: { task_id: FULL_TASK_ID, request_id: '00000000-0000-4000-8000-000000000402' },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'ISSUE_CLAIMED' } });
+    expect(calls).toEqual([`/api/issues/${FULL_TASK_ID}/claim`]);
+  });
+
+  it('finish_task creates an attributed changelog then completes with fence and scope', async () => {
+    const calls: Array<{ path: string; body: any; requestId: string | null; fence: string | null }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({
+        path,
+        body: init?.body === undefined ? null : JSON.parse(String(init.body)),
+        requestId: new Headers(init?.headers).get('Idempotency-Key'),
+        fence: new Headers(init?.headers).get('x-claim-fence'),
+      });
+      if (path.endsWith('/changelog')) return Response.json({ id: 'log-1', title: 'Done', body_md: 'Body' }, { status: 201 });
+      return Response.json({
+        id: FULL_TASK_ID, workspace_id: 'workspace-a', title: 'Task', status: '待验收', priority: '高', labels: [],
+        claimed_by: null, comment: null, knowledge_hint: null, updated_at: 3,
+        git_commit: { status: 'committed', reason: null, note: null, pending: [] },
+      });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const requestId = '00000000-0000-4000-8000-000000000403';
+    const result = (await harness.request('tools/call', {
+      name: 'finish_task',
+      arguments: {
+        task_id: FULL_TASK_ID, notes: 'verified', scope: ['apps/mcp/src'], changelog_title: 'MCP tools',
+        change_type: '调整', request_id: requestId, fence: 9,
+      },
+    })).result;
+    expect(result?.isError).toBeFalsy();
+    expect(result?.structuredContent?.data).toMatchObject({
+      issue: { id: FULL_TASK_ID, status: '待验收' },
+      changelog_id: 'log-1',
+      git_commit: { status: 'committed' },
+    });
+    expect(calls[0]).toMatchObject({
+      path: '/api/workspaces/workspace-a/changelog',
+      body: { title: 'MCP tools', body_md: 'verified', change_type: '调整', actor: 'codex', issue_id: FULL_TASK_ID },
+      fence: null,
+    });
+    expect(calls[0]?.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(calls[1]).toMatchObject({
+      path: `/api/issues/${FULL_TASK_ID}/done`, requestId, fence: '9',
+      body: {
+        workspace_id: 'workspace-a', agent_id: 'codex', scope_paths: ['apps/mcp/src'],
+        client: 'mcp', changelog_ack: false, changelog_id: 'log-1',
+      },
+    });
+    expect(calls[1]?.body.notes).toContain('close-record: changelog=log-1');
+  });
+
+  it('finish_task defaults an empty changelog body to non-empty text', async () => {
+    const calls: Array<{ path: string; body: any }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, body: JSON.parse(String(init?.body)) });
+      if (path.endsWith('/changelog')) return Response.json({ id: 'log-default' }, { status: 201 });
+      return Response.json({
+        id: FULL_TASK_ID, workspace_id: 'workspace-a', status: '待验收', priority: '中', labels: [],
+        claimed_by: null, git_commit: null, knowledge_hint: null,
+      });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+
+    const result = (await harness.request('tools/call', {
+      name: 'finish_task',
+      arguments: {
+        task_id: FULL_TASK_ID, changelog_title: 'Default body',
+        request_id: '00000000-0000-4000-8000-000000000406',
+      },
+    })).result;
+    expect(result?.isError).toBeFalsy();
+    expect(calls[0]?.body.body_md).toBe('本轮无用户可见变更');
+    expect(calls[1]).toMatchObject({
+      path: `/api/issues/${FULL_TASK_ID}/done`,
+      body: { changelog_id: 'log-default' },
+    });
+  });
+
+  it('finish_task preserves the changelog gate error without pretending the task completed', async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/changelog')) return Response.json({ id: 'log-1' }, { status: 201 });
+      return Response.json({ error: { code: 'CHANGELOG_ACK_REQUIRED' } }, { status: 400 });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'finish_task',
+      arguments: { task_id: FULL_TASK_ID, changelog_title: 'Done', request_id: '00000000-0000-4000-8000-000000000404' },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(response.result?.structuredContent).toMatchObject({ ok: false, error: { code: 'CHANGELOG_ACK_REQUIRED' } });
+  });
+
+  it('finish_task no_changelog skips the changelog write and uses the board snapshot', async () => {
+    const calls: Array<{ path: string; body: any }> = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname, body: JSON.parse(String(init?.body)) });
+      return Response.json({ id: FULL_TASK_ID, workspace_id: 'workspace-a', status: '待验收', labels: [], priority: '中' });
+    }) as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const result = (await harness.request('tools/call', {
+      name: 'finish_task',
+      arguments: {
+        task_id: FULL_TASK_ID, no_changelog: true, board_only: true,
+        request_id: '00000000-0000-4000-8000-000000000405',
+      },
+    })).result;
+    expect(result?.isError).toBeFalsy();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      path: `/api/issues/${FULL_TASK_ID}/done`,
+      body: {
+        changelog_ack: true,
+        scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+      },
+    });
   });
 
   it('lists a task-tree child page through the scoped tree endpoint', async () => {
@@ -399,7 +595,7 @@ describe('AgentBoard task MCP server', () => {
       id: 'child-1', workspace_id: 'workspace-a', title: 'Child', description: '', priority: '中', labels: [],
       status: '待规划', sort_order: 1, parent_issue_id: 'root-1', claimed_by: null, claimed_at: null,
       session_id: null, comment_count: 0, created_at: 1, updated_at: 1,
-      child_count: 0, descendant_count: 0, descendants_closed_count: 0,
+      child_count: 1, descendant_count: 2, descendants_closed_count: 1,
     };
     const fetcher = vi.fn(async () => Response.json({ items: [child], ancestors: [], next_cursor: 'next' }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);
@@ -410,6 +606,9 @@ describe('AgentBoard task MCP server', () => {
       arguments: { tree: true, parent_issue_id: 'root-1', limit: 10 },
     });
     expect(response.result?.structuredContent).toMatchObject({ ok: true, data: { items: [{ id: 'child-1', title: 'Child' }], next_cursor: 'next', workspace_id: 'workspace-a' } });
+    expect(response.result?.structuredContent?.data.items[0]).toMatchObject({
+      child_count: 1, descendant_count: 2, descendants_closed_count: 1,
+    });
     // PERF-4d：树列表同样剔除正文（树端点无 fields=，在 MCP 侧裁剪）
     expect(response.result?.structuredContent?.data.items[0]).not.toHaveProperty('description');
     expect(String(fetcher.mock.calls[0]?.[0])).toContain('/api/issues/tree?');
