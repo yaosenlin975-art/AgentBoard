@@ -2,8 +2,8 @@
  * accounts-add-flow：全局「添加账号」供应商选择页。
  *
  * 断言口径：
- * - 7 卡平铺；「授权添加」只出现在服务端装配了协议的平台，「读取本机」只出现在 import-credentials 支持的平台；
- * - DeepSeek / Codex 没有可用接口 → 只给原因，不出按钮；
+ * - 8 卡平铺；「授权添加」只出现在服务端装配了协议的平台，「读取本机」只出现在 import-credentials 支持的平台；
+ * - Command Code 进入 CLI 来源详情；DeepSeek / Codex 没有可用接口 → 只给原因，不出按钮；
  * - 打开后焦点落第一张卡的第一个按钮；
  * - 读取本机按平台限定调用 import-credentials，并回显「发现/新增/已存在」。
  */
@@ -30,20 +30,27 @@ function mockBase(): void {
   );
 }
 
-function renderPicker(onImported = vi.fn()): { onImported: ReturnType<typeof vi.fn> } {
+function renderPicker(): {
+  onImported: ReturnType<typeof vi.fn>;
+  onSelectSource: ReturnType<typeof vi.fn>;
+  onClose: ReturnType<typeof vi.fn>;
+} {
+  const onImported = vi.fn();
+  const onSelectSource = vi.fn();
+  const onClose = vi.fn();
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <AddAccountPicker onClose={() => undefined} onImported={onImported} />
+      <AddAccountPicker onClose={onClose} onImported={onImported} onSelectSource={onSelectSource} />
     </QueryClientProvider>,
   );
-  return { onImported };
+  return { onImported, onSelectSource, onClose };
 }
 
 beforeEach(() => server.resetHandlers());
 
 describe('AddAccountPicker', () => {
-  it('按能力表渲染动作：5 个授权添加 + 3 个读取本机，DeepSeek/Codex 只给原因', async () => {
+  it('按能力表渲染 8 卡：Command Code 可进入，DeepSeek/Codex 只给原因', async () => {
     mockBase();
     renderPicker();
 
@@ -62,6 +69,28 @@ describe('AddAccountPicker', () => {
     expect(screen.queryByTestId('accounts-add-picker-action-read-codex')).toBeNull();
     expect(screen.getByTestId('accounts-add-picker-reason-deepseek').textContent).toContain('CLI 凭据导入尚未接入');
     expect(screen.getByTestId('accounts-add-picker-reason-codex').textContent).toContain('本机读取尚未接入');
+    expect(screen.getByTestId('accounts-add-picker-card-commandcode')).toBeTruthy();
+    expect(screen.getByTestId('accounts-add-picker-name-commandcode')).toHaveTextContent('Command Code');
+    expect(screen.getByTestId('accounts-add-picker-action-commandcode')).toHaveTextContent('添加 API Key');
+    expect(screen.queryByTestId('accounts-add-picker-reason-commandcode')).toBeNull();
+  });
+
+  it('点 Command Code 切换来源并关闭选择页', async () => {
+    mockBase();
+    const { onSelectSource, onClose } = renderPicker();
+
+    await userEvent.click(await screen.findByTestId('accounts-add-picker-action-commandcode'));
+
+    expect(onSelectSource).toHaveBeenCalledWith('commandcode');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('协议清单失败时 Command Code 仍可进入', async () => {
+    server.use(http.get('/api/add-account-protocols', () => HttpResponse.error()));
+    renderPicker();
+
+    expect(await screen.findByTestId('accounts-add-picker-action-commandcode')).toHaveTextContent('添加 API Key');
+    expect(screen.queryByTestId('accounts-add-picker-reason-commandcode')).toBeNull();
   });
 
   it('打开后焦点落在第一张卡的第一个按钮', async () => {

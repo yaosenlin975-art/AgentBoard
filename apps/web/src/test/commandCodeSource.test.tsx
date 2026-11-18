@@ -2,8 +2,7 @@
  * ACC-CC-2 / ACC-CC-3：Command Code 接入账号管理（CLI 来源区）。
  *
  * 验收口径（ADD-FLOW-2 口径 A）：
- * - Command Code 属 CLI 来源区（不是 ManagedAppId 的六平台分区）；左栏只列**有登记账号**的来源，
- *   零账号时行不出现，计数用真实值；
+ * - Command Code 属 CLI 来源区（不是 ManagedAppId 的六平台分区）；零账号时行仍出现，计数用真实值；
  * - 能力来自 GET /api/cli-accounts/commandcode/capability：未安装 / 无凭据文件 / 格式未识别分别展示，
  *   技术码可展开；不出现写死的「可用」，也不出现假按钮；
  * - 导入入口开放，成功 / 重复 / 失败都有可见反馈，凭据明文不回显；
@@ -38,7 +37,7 @@ function capability(overrides: Partial<CliAppCapability> = {}): CliAppCapability
   };
 }
 
-/** 口径 A：零账号 CLI 来源不占行——需要 Command Code 行出现的用例先补一条登记账号（手动添加的 key） */
+/** 操作 Command Code 账号的测试可补一条手动添加的 key；零账号入口另有独立用例覆盖。 */
 function ccItem(id = 'cli-cc-1', identity = 'abc12345'): PublicCliAccount {
   return { id, app_id: 'commandcode', identity_hint: identity, source: 'manual', created_at: 1000, last_seen_at: 2000 };
 }
@@ -71,14 +70,16 @@ async function openCommandCode(): Promise<HTMLElement> {
 }
 
 describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
-  it('未登记账号时 Command Code 来源行不出现（零账号来源不占行）', async () => {
+  it('未登记账号时 Command Code 来源行仍出现并可进入添加 API Key', async () => {
     mockPanel();
     renderPanel();
 
     await screen.findByTestId('accounts-index');
-    expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull();
-    // Codex 按 0f76c59a 常驻，所以左栏不再出现整体空态；零账号判断只看 Command Code 行本身
-    expect(screen.getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    const commandCode = screen.getByTestId('accounts-index-item-commandcode');
+    expect(commandCode).toHaveTextContent('Command Code');
+    expect(screen.getByTestId('accounts-index-metric-commandcode')).toHaveTextContent('0 个账号');
+    await userEvent.click(commandCode);
+    expect(await screen.findByTestId('accounts-source-import-commandcode')).toHaveTextContent('添加 API Key');
     expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
   });
 
@@ -174,7 +175,7 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     server.use(
       http.get('/api/managed-accounts', () => HttpResponse.json([])),
       http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
-      // 口径 A：补一条登记账号使 Command Code 行出现，导入用例才能进入右栏
+      // 补一条登记账号以验证重复导入和账号列表刷新。
       http.get('/api/cli-accounts', () => HttpResponse.json({ items: [ccItem()] })),
       http.get('/api/cli-accounts/commandcode/capability', () => HttpResponse.json({ capability: capability() })),
       http.post('/api/cli-accounts/import', async ({ request }) => {
@@ -182,7 +183,7 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
         bodies.push(body);
         postCount += 1;
         if (body.credential === 'bad-key') {
-          return HttpResponse.json({ code: 'VALIDATION_ERROR', message: '凭据格式不合法' }, { status: 400 });
+          return HttpResponse.json({ error: { code: 'VALIDATION_ERROR', message: '凭据格式不合法' } }, { status: 400 });
         }
         return HttpResponse.json({
           app_id: 'commandcode',
@@ -214,7 +215,27 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     await userEvent.click(within(detail).getByTestId('accounts-source-import-submit-commandcode'));
     const errorNotice = await within(detail).findByTestId('accounts-source-import-error-commandcode');
     expect(errorNotice).toBeInTheDocument();
+    expect(errorNotice).toHaveTextContent('凭据格式不合法');
     expect(errorNotice.textContent).not.toContain('bad-key');
+  });
+
+  it('导入遇到本地服务不可达时显示可操作的中文提示', async () => {
+    server.use(
+      http.get('/api/managed-accounts', () => HttpResponse.json([])),
+      http.get('/api/managed-account-capabilities', () => HttpResponse.json([])),
+      http.get('/api/cli-accounts', () => HttpResponse.json({ items: [] })),
+      http.get('/api/cli-accounts/commandcode/capability', () => HttpResponse.json({ capability: capability() })),
+      http.post('/api/cli-accounts/import', () => HttpResponse.error()),
+    );
+    renderPanel();
+    const detail = await openCommandCode();
+
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-commandcode'));
+    await userEvent.type(within(detail).getByTestId('accounts-source-import-text-commandcode'), CC_KEY);
+    await userEvent.click(within(detail).getByTestId('accounts-source-import-submit-commandcode'));
+
+    expect(await within(detail).findByTestId('accounts-source-import-error-commandcode'))
+      .toHaveTextContent('无法连接本地服务，请确认服务已启动后重试');
   });
 
   it('能力查询失败 → 显示能力未知，不回退成伪造的可用状态', async () => {
@@ -246,7 +267,7 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     expect(within(detail).getByTestId('accounts-source-local-hint-commandcode')).toHaveTextContent('下次读取本机账号会重新登记');
   });
 
-  it('ACC-CC-5：删除是两步流，本机发现账号提示会被重新登记，删空后来源行消失', async () => {
+  it('ACC-CC-5：删除是两步流，本机发现账号提示会被重新登记，删空后仍可添加', async () => {
     let items: PublicCliAccount[] = [
       { id: 'cli-cc-local', app_id: 'commandcode', identity_hint: 'sha256:aaaaaaaaaaaa', source: 'local', created_at: 1, last_seen_at: 2 },
     ];
@@ -277,9 +298,9 @@ describe('Command Code（ACC-CC-2 / ACC-CC-3）', () => {
     await userEvent.click(within(detail).getByTestId('accounts-source-delete-yes-cli-cc-local'));
     await waitFor(() => expect(within(detail).queryByTestId('accounts-source-item-cli-cc-local')).toBeNull());
     expect(deleted).toEqual(['cli-cc-local']);
-    // 口径 A：唯一账号删除后来源行不再占行；Codex 常驻，右栏回落 Codex 空态而非面板空态
-    await waitFor(() => expect(screen.queryByTestId('accounts-index-item-commandcode')).toBeNull());
-    expect(screen.getByTestId('accounts-index-item-codex')).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(screen.getByTestId('accounts-index-metric-commandcode')).toHaveTextContent('0 个账号'));
+    expect(screen.getByTestId('accounts-index-item-commandcode')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('accounts-source-import-commandcode')).toHaveTextContent('添加 API Key');
     expect(screen.queryByTestId('accounts-detail-empty')).toBeNull();
   });
 
