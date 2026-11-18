@@ -40,6 +40,7 @@ Docs/               设计、变更、待测文档
 - **轮次执行**：POST /api/sessions（派发）→ 事务内 claim + 建 session → 起无头 CLI 进程（工作目录 = 工作空间路径）→ stdout 逐行经适配器归一为 text/tool/error/end → WS `session.event` 推送 + message 表落库。后续轮以 adapter_session_id resume。
 - **并发上限**：进程槽位可配（默认 3），超限轮次排队等空闲槽位；运行中新消息入会话队列，轮次结束后合并为一条 prompt 自动续轮。
 - **评论唤醒**：纯文字用户评论 + issue 占用中且有绑定会话 → 空闲起一轮 / 运行中入队合并；未占用仅留言。含图片评论仅在当前 CLI 版本和模型组合通过合成图输入验证后唤醒。附件元数据展示 pending、sending、unknown、delivered；发送失败或服务重启把在途投递标为 unknown，保留未读。普通文字留言不夹带旧图片；再次派发包含 unknown 图片时必须显式确认。文件仅在附件/评论删除事务提交后回收；失败保留账本，由 1 小时周期清理重试。暂存默认 24 小时过期；配额、过期时间和清理周期可在 `/api/settings` 调整。
+- **桌面系统通知**：Tauri 壳在 Windows/macOS 以 30 秒周期轮询全部工作区的待验收卡与新进入宽限的决策；首轮只建基线，按 ID 去重，窗口前台时由 Web 内汇总条/常驻 toast 提醒，失焦或最小化时调用 `tauri-plugin-notification` 发送系统通知。发送结果写入 `main.log`，失败降级为 Web 内提醒。
 - **错误与重启**：CLI 异常退出 → 会话"失败" → 占用释放 + issue 回"待规划" + system 评论；服务重启后"运行中"会话按失败处理。
 - **done/fail**：done → "待验收"释放占用（notes 落 `agent:<cli>` 评论）；fail → "待规划"释放占用（reason 落评论）。
 - **Agent 工作流聚合**：CLI `kb work` 复用原子 claim 后返回有界卡面、依赖与最近评论；`kb finish` 复用 `done --close-record`。MCP 对应 `start_task` / `finish_task`，先 claim 或先写本卡 changelog，再走既有 done；旧 `claim_task` / `complete_task` / `create_changelog` 与 `agentboard_*` alias 保留。聚合层不新增服务端事务、状态机或数据库迁移。
