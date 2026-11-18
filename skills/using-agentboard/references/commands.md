@@ -37,10 +37,13 @@ kb delete-issue <id> --yes
 
 ```text
 kb claim <id> [--no-knowledge] [--knowledge-query <q>] [--request-id <uuid>]
+kb work <id> [--no-knowledge] [--knowledge-query <q>] [--request-id <uuid>]
 kb release <id> [--request-id <uuid>]
 kb done <id> [--notes|--notes-stdin] [--scope <path>]... [--close] [--close-record]
   [--changelog-title <title>] [--type 新增|修复|调整] [--knowledge-page <id>]
   [--design-not-advanced] [--no-changelog] [--board-only] [--all]
+kb finish <id> --notes-stdin --title <title> --type 新增|修复|调整 [--knowledge-page <id>]
+  [--scope <path>]... [--close|--no-changelog|--board-only]
 kb fail <id> --reason <text> [--request-id <uuid>]
 kb accept <id> --verdict pass|fail --note <text>
 kb close <id>

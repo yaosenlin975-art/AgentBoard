@@ -59,12 +59,14 @@ kb next [--workspace <id|名>] [--limit N]
 kb stats [--workspace <id|名>]
 kb show <issue-id> [--mark-read] [--comments <n|all>]
 kb claim <issue-id> [--no-knowledge] [--request-id <uuid>]
+kb work <issue-id> [--no-knowledge] [--request-id <uuid>]
 kb comment <issue-id> <text>          # 多行用 --stdin
 kb dep ls <issue-id>
 kb dep add <issue-id> <blocker-id>
 kb dep rm <issue-id> <blocker-id>
 kb release <issue-id>
 kb done <issue-id> --notes-stdin --scope <path>
+kb finish <issue-id> --notes-stdin --title '<标题>' --type 新增|修复|调整 --scope <path>
 kb fail <issue-id> --reason '<原因>'
 kb close <issue-id>
 kb reopen <issue-id> [--to <状态>]

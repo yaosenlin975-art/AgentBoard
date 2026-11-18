@@ -615,6 +615,62 @@ describe('claim', () => {
   });
 });
 
+describe('work / finish', () => {
+  const claimed = { ...ISSUE, status: '进行中', claimed_by: 'kb-cli', claimed_at: 9, claim_fence: 4 };
+  it('work claims and returns bounded card plus dependencies', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/claim') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1/dependencies?workspace_id=ws1') return { status: 200, body: { blockers: [{ issue_id: 'iss0', title: '前置', status: '已关闭', resolved: true }], blocked: [] } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'work', 'iss1', '--no-knowledge'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('工作包: iss1');
+    expect(t.out()).toContain('状态: 进行中');
+    expect(t.out()).toContain('已完成解析层');
+    expect(t.out()).toContain('前置（1）');
+  });
+
+  it('work --json emits one JSON document', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/claim') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1/dependencies?workspace_id=ws1') return { status: 200, body: { blockers: [], blocked: [] } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'work', 'iss1', '--no-knowledge'], t.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(t.out());
+    expect(parsed.issue.id).toBe('iss1');
+    expect(parsed.blockers).toEqual([]);
+  });
+
+  it('finish defaults to close-record and reuses done', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/knowledge/resolve?scope=both&workspace_id=ws1&ref=page-1') return { status: 200, body: { id: 'page-1' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 200, body: { id: 'log-1' } };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: null } };
+      if (m === 'GET' && u.startsWith('/api/knowledge/pages?')) return { status: 200, body: { items: [], next_offset: null } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'finish', 'iss1', '--notes', 'ok', '--title', '标题', '--type', '调整', '--knowledge-page', 'page-1'], t.io);
+    expect(code).toBe(0);
+    expect(calls.some(c => c.method === 'POST' && c.url === '/api/workspaces/ws1/changelog')).toBe(true);
+    expect(calls.some(c => c.method === 'POST' && c.url === '/api/issues/iss1/done')).toBe(true);
+  });
+});
+
 describe('comment', () => {
   it('未设 KB_AGENT → POST 体 {content, agent_id: "kb-cli"}；woke=true 打印唤醒', async () => {
     handler = (m, u, body) => {
@@ -2193,7 +2249,7 @@ describe('knowledge resolve/link（BORROW-3.1 D10 + CLI-07）', () => {
     expect(md.out()).toBe('[知识卡：标题页](knowledge:p1)\n');
 
     const token = makeIo();
-    const codeToken = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common'], token.io);
+    const codeToken = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common', '--format', 'token'], token.io);
     expect(codeToken).toBe(0);
     expect(token.out()).toBe('knowledge:p1\n');
   });

@@ -23,6 +23,8 @@ import { release, releaseIssue } from './commands/release.js';
 import { comment } from './commands/comment.js';
 import { accept } from './commands/accept.js';
 import { done } from './commands/done.js';
+import { work } from './commands/work.js';
+import { finish } from './commands/finish.js';
 import { deleteIssue } from './commands/deleteIssue.js';
 import { fail, failIssue } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
@@ -330,6 +332,23 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
       claim(makeCtx(program, ctxIo), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
 
   program
+    .command('work')
+    .description('领取任务并返回紧凑工作包（claim + 有界卡面 + 依赖；不执行代码）')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--no-knowledge', '关闭任务知识检索')
+    .option('--knowledge-query <query>', '自定义知识查询')
+    .option('--comments <n|all>', '领取回执的评论条数（缺省 5）')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', `
+示例：
+  kb work 0f6ba9ab
+  kb --json work 0f6ba9ab
+退出码：0 成功；2 已被占用 / 状态不可领取 / 前置未解除 / 决策锁；1 任务不存在或参数错误
+`)
+    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string; comments?: string }) =>
+      work(makeCtx(program, ctxIo), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
+
+  program
     .command('release')
     .description('释放占用 → 待规划（不是失败；只有当前占用者可执行；单张或 --ids-file 批量）')
     .argument('[issue-id]', '任务 id：完整 UUID，或 ≥8 位唯一前缀（与 --ids-file 二选一）')
@@ -432,6 +451,36 @@ GIT-ON-DONE：默认提交 --scope 声明的卡内路径与 .agentboard 看板�
         // --no-changelog 是 commander 的否定选项：传了才是 false，缺省 true
         noChangelog: opts.changelog === false,
         boardOnly: opts.boardOnly === true,
+      }));
+
+  program
+    .command('finish')
+    .description('短收尾入口：默认 close-record（changelog + 可选知识页 + done）；--no-changelog 仅 done')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--notes <text>', '完成备注（单行；多行用 --notes-stdin）')
+    .option('--notes-stdin', '从标准输入读取完成备注')
+    .option('--scope <paths...>', '本卡改动路径（可重复）', (value: string, previous: string[] = []) => [...previous, ...value.split(',').map(item => item.trim()).filter(Boolean)], [])
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .option('--close', 'done 后串行 close')
+    .option('--knowledge-page <id>', '已有知识页 id，挂到收尾 notes')
+    .option('--type <类型>', '变更日志类型：新增|修复|调整')
+    .option('--no-changelog', '显式声明无用户可见变更')
+    .option('--board-only', '纯看板任务，只提交快照')
+    .option('--design-not-advanced', '确认本卡不推进关联设计页')
+    .option('--title <title>', '变更日志标题（默认模式必填）')
+    .addHelpText('after', `
+示例：
+  Get-Content -Raw notes.md | kb finish <id> --title '调整 CLI' --type 调整 --notes-stdin --scope packages/cli
+  Get-Content -Raw notes.md | kb finish <id> --no-changelog --notes-stdin
+退出码：0 成功；2 占用/状态/门禁冲突；1 参数或子步骤失败（done 可能已生效，按 stderr 处理）
+`)
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; requestId?: string; close?: boolean; knowledgePage?: string; type?: string; changelog?: boolean; boardOnly?: boolean; designNotAdvanced?: boolean; title?: string }) =>
+      finish(makeCtx(program, ctxIo), id, {
+        notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope,
+        requestId: opts.requestId, close: opts.close === true, knowledgePage: opts.knowledgePage,
+        changelogType: opts.type, noChangelog: opts.changelog === false,
+        boardOnly: opts.boardOnly === true, designNotAdvanced: opts.designNotAdvanced === true,
+        changelogTitle: opts.title,
       }));
 
   program
