@@ -16,6 +16,7 @@
     "test": "pnpm -r test",
     "server:ensure": "node scripts/server-detached.mjs",
     "check:stale": "node scripts/check-stale.mjs",
+    "check:agent-context": "node scripts/check-agent-context.mjs",
     "dev:test-page": "node scripts/dev-page.mjs",
     "publish:web": "node scripts/rebuild-web-dist.mjs",
     "package:portable": "node scripts/package-portable.mjs",

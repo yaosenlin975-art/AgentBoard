@@ -9,7 +9,7 @@ description: 把用户投喂的链接/文档读成摘要，征询是否入库，
 
 ## 0. 前置：绑定工作区
 
-任何写入前按 `using-agentboard` 的「工作区边界（强制）」完成绑定（`kb list-spaces --current`）。知识页挂 `--scope workspace --workspace <当前工作区>`；只有用户明确说「放公共知识」才用 `--scope common`。跨工作区写入需当轮显式授权。
+任何写入前按 `using-agentboard` 的「绑定与越界」完成绑定（`kb list-spaces --current`）。知识页挂 `--scope workspace --workspace <当前工作区>`；只有用户明确说「放公共知识」才用 `--scope common`。跨工作区写入需当轮显式授权。
 
 ## 1. 与相邻技能的分工
 
@@ -96,7 +96,7 @@ kb knowledge show <page-id> --scope workspace --workspace <id>
 kb knowledge link <page-id>          # 默认输出 [[wikilink]]（主键）；跨改名稳定引用用 --format token（knowledge:<uuid>）
 ```
 
-查找结果要能落到正文片段：先 `search` 命中 id/title，再 `show` 并引用具体章节；不要只回一个 slug 或文件路径。引用口径同 `using-agentboard` 的「知识卡链接（KCLINK）」节：正文引用写 `[[slug]]`，禁止裸文件路径。
+查找结果要能落到正文片段：先 `search` 命中 id/title，再 `show` 并引用具体章节；不要只回一个 slug 或文件路径。引用口径同 `../using-agentboard/references/knowledge-and-changelog.md`：正文引用写 `[[slug]]`，禁止裸文件路径。
 
 ## 9. 命令映射
 

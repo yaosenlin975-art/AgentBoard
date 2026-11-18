@@ -162,6 +162,7 @@ node apps/server/dist/index.js
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失／4 已健康但需重启（dist 早于源码，或运行进程早于 dist／未上报 `started_at`）。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
 - **产物陈旧自检用 `pnpm check:stale`**（= `node scripts/check-stale.mjs`）：跑 5 条 `--help` 冒烟（`kb` / `knowledge` / `create-issue` / `dep` / `list-spaces`），并比对各包 `dist` 与 `src` 的 mtime；产物缺失/陈旧时 exit 1 并打印重建命令（`pnpm -r build` 或单包 `pnpm --filter <包名> build`）。
+- **上下文预算自检用 `pnpm check:agent-context`**（= `node scripts/check-agent-context.mjs`）：读取真实 MCP `tools/list`，检查 8 个技能入口、`references/`、下降比例与引用完整性；`--self-test` 验证超限与跨技能引用解析。
 - **工作区初始化默认在 `<工作区>/.agentboard/agentboard.db` 建库**：`kb create-space` 登记后自动启用本地库，任务与评论落工作区；自动启用失败时保留工作区登记并降级为中心库模式，用 `kb workspace-db enable` 补做。中心库仍保存工作区注册表、账号和跨区资源；默认路径是 `%APPDATA%\AgentBoard\agentboard.db`，只受只读环境变量 `AGENTBOARD_DB` 覆盖。启动日志打印实际中心库路径与 `db_source=<env|default>`，附件目录跟随所在库目录的 `attachments/`。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
 - 附件目录无需单独配置：恒为实际使用库文件所在目录下的 `attachments/`。

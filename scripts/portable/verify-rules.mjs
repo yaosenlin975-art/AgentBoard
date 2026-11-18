@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 包内规则自检：校验 app/rules 文件清单与 sha256、八个必需技能（含 ask-user、brainstorming、kb-curator）、kb CLI 帮助可用性。
+ * 包内规则自检：校验 app/rules 文件清单与 sha256、八个必需技能及其 references、kb CLI 帮助可用性。
  * 用法：check-rules.cmd（或 runtime\node.exe app\verify-rules.mjs）
  * 退出码：0 齐全；1 缺失 / 哈希不符 / 技能不齐 / CLI 帮助失败。
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const APP = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,15 @@ for (const entry of manifest.files) {
 for (const skill of REQUIRED_SKILLS) {
   const p = join(APP, 'rules', 'skills', skill, 'SKILL.md');
   if (!existsSync(p)) problems.push(`技能缺失: skills/${skill}/SKILL.md`);
+}
+
+for (const skill of REQUIRED_SKILLS) {
+  const skillPath = join(APP, 'rules', 'skills', skill, 'SKILL.md');
+  if (!existsSync(skillPath)) continue;
+  const text = readFileSync(skillPath, 'utf8');
+  for (const ref of new Set(text.match(/references\/[A-Za-z0-9._/-]+\.md/g) ?? [])) {
+    if (!existsSync(resolve(dirname(skillPath), ref))) problems.push(`技能引用缺失: skills/${skill}/${ref}`);
+  }
 }
 
 const cli = join(APP, 'cli', 'index.js');

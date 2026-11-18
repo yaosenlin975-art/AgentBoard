@@ -1,125 +1,99 @@
 ---
 name: executing-task
-description: 执行父代理明确派发的 AgentBoard 卡（读最新状态、原子 claim、过程汇报、完成/失败收尾）；目标文件不相交时最多 3 张卡并行。触发词：执行卡、领卡、做任务、claim、收尾、executing-task。不适用：拆卡/建卡（用 writing-task）、未被派卡的自主找活（用 swing-dev）。
+description: 执行明确派发的 AgentBoard 卡：核对占用、claim、实施、汇报、验证与 done/fail。触发词：执行卡、领卡、claim、收尾、executing-task。不适用：拆卡用 writing-task；自主找活用 swing-dev。
 ---
 
-# Executing AgentBoard Work
+# Executing Task
 
-Read and follow the AgentBoard operating guide before board operations. 该文档的定位按 `using-agentboard` 的「权威来源解析」执行（本技能不复制解析表）；解析不到 → 🔴 停手报「权威文档缺失」，不降级执行。
+当前卡是唯一执行源。先按 `using-agentboard` 的「权威来源」找到权威入口；不可读即停手。
 
-**无卡不动手（RULE-1）**：只执行已存在并被 claim 的卡；开工前核对卡号与卡面，提交信息必须带卡号；发现改动落在卡外先停下补卡或回报，不得先改后补（口径见 `using-agentboard` 的「The Rule」）。
+## 硬门禁
 
-**派工前查占用（RULE-2）**：开工前 `kb show <全长 UUID>` 核对 `claimed_by` 与同文件 owner；发现他人占用或同文件已有他卡在飞即停手，先在卡上 `kb comment` 留言协调，不抢改、不并行。
+- **一卡一 worker**：只执行父代理明确给出的卡，不自行换卡、续派或改别人的卡。
+- **先查占用**：`kb show <完整 UUID>` 核对 `status`、`claimed_by`、决策锁；再 `kb dep ls <id>` 确认前置。
+- **claim 后复读**：新派卡才 claim；已由本 worker 占用的进行中卡直接续做。成功后重拉 `kb show`。
+- **同文件单 owner**：目标文件与其它在飞卡重叠时排队，不并行。
+- **卡外改动先停**：发现需要改卡外文件，先补卡或回报，不先改后补。
+- **接线上门禁（RULE-3）**：新增 REST 路由、WS 事件、ticker、CLI 命令或 DB 迁移，done 前必须证明真实 app 可触达，或把接线交给有 `blocks` 边的卡。
+- **设计页门禁**：关联 design 页仍为 `proposed` 时，先 revise 到 `landed|partial`，或明确 `--design-not-advanced`。
 
-The assigned AgentBoard issue is the current execution source. Project code, design documents, logs, and test results are evidence; do not require a plan file, ledger, task brief, or local plan workspace.
+## 执行环境
 
-worker 默认只执行父代理明确派发的一张卡；父代理并行管理多条任务线时按「并行执行（最多 3 路）」执行。
+核对当前工作区、服务端口、DB 路径和 `APPDATA`。目标属于别的项目、正式业务库或外部工作区时停手。临时文件放当前工作区或系统临时目录。
 
-## 工作区边界与执行环境（强制）
+跨区、越界目录或他人归属文件按 `using-agentboard` 的工作区规则处理。
 
-通用边界（调用即绑定、默认只写当前工作区、跨区授权、越界三问、卡归属校验）一律按 `using-agentboard` 的「工作区边界（强制）」执行，本节不复制；冲突时以该节为准，定位不到即停手报「权威文档缺失」。
+## 开工
 
-本技能额外要求（执行环境归属）：
+1. 读卡面、评论、状态、占用与依赖。
+2. 新卡或父代理明确重派且无人占用时：`kb claim <id>`。
+3. 以下任一即停手并回报，不换卡、不重试：
+   - 他人占用；
+   - 状态不可领取；
+   - blocker 未解除；
+   - 决策锁或 open decision。
+4. claim 成功后：
+   - 保存返回的 fence；
+   - 切到工作区 path；
+   - 重拉 `kb show`；
+   - 在卡上写开工评论。
+5. 开工前按需要读当前工作区知识、公共知识和最近变更；`category=open` 或 `landed=proposed|partial` 的设计页不得当作已实现事实。
 
-🔴 CHECKPOINT · 🛑 STOP：运行环境（端口/服务实例/DB 路径/`APPDATA`）不属于当前工作区即停手，不执行。
-- 执行前核对端口、服务实例、DB 路径、`APPDATA` 是否属于当前工作区；目标是别的项目（别的仓库起的服务、正式业务库）→ 停下报告。
-- 临时文件放当前工作区临时目录或系统临时目录；不得改其他工作区文件、不得杀/重启外部进程、不得对其他工作区做 git 写操作（commit、reset、checkout、push 等）。
+## 运行中
 
-## Roles and assignment
+- 开工、受阻、阶段完成、收尾前重拉 `kb show`。
+- 用 `kb comment` 写进展；长文走 `--stdin`。
+- 用户可能修改描述或留言，最新 `kb show` 覆盖领取时快照。
+- 需要用户拍板时走 `ask-user`；收到 `LOCKED` 后停止写文件、提交和 done。
+- 只跑任务和项目要求的验证；未跑的检查写「未验证」。
+- 卡引用其他工作区原文时按「工作区 id + 相对路径 + 文件名」打开原文再行动。
 
-- The parent owns planning, assignment, acceptance, and summary, delegating board operations and implementation to at most 3 child workers (per 「并行执行」). A worker executes only the issue ID + workspace assigned to it, never touches another worker's card, and does not recursively delegate or claim by guessing; parallel runs are allowed only under 「并行执行（最多 3 路）」.
-- worker 回合结束/回到 inactive 不等于卡完成；父代理按「worker 完成后的滚动续派」回读卡状态并决定续做或续派，worker 不自行判断下一张。
-- If the parent only requests a plan, do not claim or execute; follow dependencies recorded as issue IDs (`kb show`), and report an unready or unclear prerequisite to the parent before claiming.
+## 超范围时拆卡
 
-## 并行执行（最多 3 路，强制）
+出现任一条件，先拆：
 
-默认一卡一 worker；父代理可同时向最多 3 个 child workers 派发 3 张卡。worker 只 claim 父代理明确指定的 issue id 与 workspace，不自行选卡或 claim 下一张。一个 worker 完成当前卡后，父代理立即按「worker 完成后的滚动续派」检查并复用该 worker；不等其他 worker 一起结束。
+- 跨 ≥2 个包或端；
+- ≥3 个独立验收步骤；
+- >8 文件或 >400 行；
+- ≥5 个独立验收项；
+- 实际工作量超卡面 2 倍，或需要未批准的设计决策。
 
-- **并发上限硬性为 3 个 child workers**：第 4 条任务线一律排队，不得因为「卡小 / 看起来简单」而超限。同一工作区若已有别的会话在飞、且改同一批文件，即使允许 3 路也必须降级为串行或跳过；跨工作区并行需逐区授权，不得借并行绕过。
-- **准入：目标文件集不相交**。领取前逐卡列出「目标/禁止文件」清单并两两做交集；交集非空 → 排队串行。目录前缀按重叠计，样例：`apps/web/src/components/settings/**`、`apps/server/src/db/repos/knowledge.ts`、`apps/server/src/api/routes.ts`、`packages/cli/src/index.ts` 任一两两不得同时在飞。
-- **一卡一 worker，worker 不跨卡**：每个 worker 只 claim 自己那张、只改本卡文件、只提交本卡路径；不得帮别的 worker 收尾、改卡或顺手修它范围内的文件。卡面确实要求动归属别的卡 / 别的 agent 的文件或目录时（同一工作区内也算），动手前在相关卡 `kb comment` 留一行 `改动声明：<文件> ｜ <YYYY-MM-DD HH:mm 本地> ｜ <意图>`，并把这行原文带进收尾回报；没这行就改别人的地盘，视同越界。
-- **领取纪律**：`kb show <全长 UUID>` 核对 status 与 claimed_by；已被他人占用且租约未过期 → 跳过，不抢。僵尸租约按 `using-agentboard` 口径处理，需用户授权才能强制释放，本技能不自行释放。close/done/fail 一律全长 UUID，禁止短码。
-- **失败隔离**：任一 worker 遇到阻塞（目标文件有他人未提交改动、卡被占用、测试失败非自身改动引起）→ 只停这一路（`kb fail` 或评论 + 保持占用），其余 worker 继续跑完并各自收尾；不得因一个失败整批中断，也不得把该失败记到其它卡上。
-- **提交纪律**：每卡单独提交，按 `using-agentboard` 的「收尾与提交（GIT-ON-DONE）」由 `kb done --scope` 只提交本卡声明路径；禁止 `git add -A` 与手动 `git commit` 兜底。提交后核对 `git show --stat <hash>` 只含本卡文件，混入他卡或未声明文件即停手报告。
-- **收尾纪律**：每卡 `done` 后按 `using-agentboard`「收尾与提交」的「收尾状态回读」核对 `status=待验收`；汇总里每个数字（并发数、完成/失败数、提交数、各状态条数）都必须能追到实跑输出并各附一行复算命令，看板计数类优先用 `kb stats --workspace <id>` 一次取全，不估算、不引用他人转述。
-- **输出纪律**：worker 只回「卡号 / 结果 / 提交短 hash / 一句话阻塞」，禁止贴测试日志、整段 diff 或大段命令输出；父会话汇总按同一格式逐卡一行。单轮输出失控会直接废掉整轮（此前一次推 5 张卡的日志把窗口撑爆），宁可不并行也不放大输出。
-- **并发不等于抢占**：见「并发上限硬性为 3」的末句（同区撞文件降级串行、跨区逐区授权）。
+按依赖建子卡，父卡保持占用；子卡完成后再汇总。操作见 `references/parallel-dispatch.md`。
 
-## worker 完成后的滚动续派（父代理）
+## 并行执行
 
-worker 回合结束或报告完成后，父代理立即按当前看板状态补位，不等其他 worker 一起结束，也不按旧队列快照派卡。
+最多同时推进 3 张卡，含父会话自己执行的那张。领取前逐卡列目标文件集并两两求交；同文件或目录前缀重叠即串行。跨工作区并行逐区授权。
 
-1. 回读当前卡：`kb show <issue-id> --json`，核对 `status`、`claimed_by`、`decision_locked` 与 `open_decision_id`。
-   - `decision_locked=true` → 按 `ask-user` 停线，不 claim、不续做。
-   - `status=进行中` 且 `claimed_by` 为当前 worker → 同一 worker 继续同一张卡，不当成完成或另派其后继。
-   - `status=进行中` 且 `claimed_by` 为空 → 重新核对依赖与文件 owner；通过 claim 门禁后由同一 worker claim 此卡再继续。
-   - `status=进行中` 且 `claimed_by` 为其他人 → 跳过此卡，不接管；可检查本次已授权范围内其他合格卡。
-   - `status=待验收` 或 `已关闭` → 当前卡完成，进入下步。
-   - `status=待规划`（包括 fail / release 后）→ 当前卡仍未完成；保留其状态和失败语义，不派发依赖后继、不自动重试。父代理可在本次已授权范围内选择其他合格卡。
-   - 其他状态（含已废弃）→ 不推断为完成或解锁后继，回报父代理按该工作区状态门禁处理。
-2. 取当前工作区的 `kb next --workspace <workspace-id> --json`，并用 `kb dep ls <completed-issue-id>` 及候选卡的 `kb dep ls <candidate-id>` 检查最新结构化依赖。按以下顺序选一张候选：
-   1. 当前卡的已就绪下游任务；
-   2. 若下游仍被其他前置阻塞，选择其中一张可 claim 的未完成前置；
-   3. 相关候选都不合格时，本次任务图或父代理已授权派发范围内的其他可 claim 卡。
-3. 核对看板门禁：对每个候选用 `kb show <candidate-id> --json` 确认工作区、可 claim 状态、`claimed_by` 与决策锁，并用 `kb dep ls <candidate-id>` 确认前置已解除。占用、未解除依赖或待决策的候选跳过，继续检查下一张；不 release 他人占用或删边解锁。
-4. 核对文件和范围门禁：检查候选目标文件与所有在飞任务文件集不重叠，且卡属于本次已授权范围；同一文件冲突时排队或跳过，跨工作区逐区授权。
-5. 将选中卡的完整 UUID、工作区和本卡验收范围明确发给同一 worker。worker 不自行领取其他卡；没有候选通过门禁时让该 worker 空闲，不创建新任务或扩大授权范围。
+父代理的续派、文件冲突检查、worker 输出格式见 `references/parallel-dispatch.md`。
 
-**依赖例子**：A、B 都是 C 的结构化前置。A 完成后，若 C 已就绪则将 C 派给同一 worker；若 C 仍被 B 阻塞且 B 当前可 claim，则先将 B 派给同一 worker。前置状态以 `kb dep ls` 和 `kb show` 回读为准。
+## 收尾
 
-## Claim the assigned issue
+有用户可见改动：
 
-🔴 CHECKPOINT · 🛑 STOP：工作区未绑定或执行环境归属校验未过即停手，不进入第 1 步。启动时先按 `using-agentboard` 的「权威来源解析」确认权威文档可读（不可读即停手报「权威文档缺失」），再绑定工作区并完成执行环境校验。
-开工前按 `using-agentboard` 的「开工前必读（项目上下文）」读三样：当前工作区知识（`--scope workspace`）、公共范围知识（`--scope common`）、最近变更日志；claim 后再核一次目标区域是否已被他人改过；判据同该节——`category=open` 或 `landed=proposed|partial` 的页不得当成已实现事实。细节见该节，不在此复制。
+```powershell
+Get-Content -Raw notes.md |
+  kb done <id> --close-record --changelog-title '<标题>' --type 新增|修复|调整 `
+    --notes-stdin --scope <path> --scope <path>
+```
 
-1. Confirm the exact issue ID assigned by the parent; do not choose another card. CLI 接受 ≥8 位唯一前缀（实测 `kb show 230c15de` → 详情，exit 0；7 位 → 任务不存在，exit 1；多命中 exit 2），但**卡面、依赖、提交信息一律用完整 36 字符 UUID**（8-4-4-4-12）；父代理只给短前缀时先 `kb show <前缀>` 解析出完整 id 再记录，不猜。Run `kb show <issue-id>` and read the current description, status, comments, workspace, `claimed_by`, and decision lock; then run `kb dep ls <issue-id>`. **状态门禁**按 `using-agentboard` 的「claim 状态门禁」执行（接受「待规划」或「进行中且无人占用」；其余状态、他人占用、决策锁均退出码 2），并以 `kb show` 的真实 status / claimed_by 为准，别把状态拒绝误判成他人占用。
-2. Claim only that assigned issue with `kb claim <issue-id>` when it is a new assignment or the parent explicitly reissues an unowned in-progress card. If `status=进行中` and `claimed_by` is this worker, keep the existing claim and resume without claiming again. If another agent owns it, a decision lock is active, or a blocker is unresolved, stop and report the exact gate; do not take over or unlock it. A successful new claim is exclusive; use the returned workspace path and reread with `kb show`.
-3. 被 blocker 挡住时（退出码 2，文案「存在未完成的前置任务」）→ 报告父代理并停手；**不得** release 他人占用，**不得** 用 `kb dep rm` 或自行补边解锁；等 blocker 到「待验收/已关闭」后再 claim。🔴 CHECKPOINT · 🛑 STOP：遇到未解除 blocker 即停手，不 claim、不 release 他人占用、不删边解锁。不按本卡「一次性 claim」重试，也不改选别的卡。
-4. If `kb claim` exits 2, read stderr text and branch (文本模式原因写 stderr；`--json` 时错误体是 stdout 的 `{"error":{"code","message","details"}}`，退出码不变 — CLI-04): 「已被 … 占用」→ occupied; 「状态不可领取（当前=…）」→ status gate; 「存在未完成的前置任务」→ blocked; 「决策锁」→ open decision. Stop and report the exact conflict to the parent; do not retry, choose another issue, or force-release another agent's claim. 释放自有占用用 `kb release <issue-id>`（退回待规划，不算失败）；他人的占用只能等 `done`/`fail`，或用户授权后走 REST 强制释放。Claim 成功后先 `kb show` 重读再实施。
+无用户可见改动：
 
-## Execute and report
+```powershell
+Get-Content -Raw notes.md | kb done <id> --no-changelog --notes-stdin --scope <path>
+```
 
-- At start, when blocked, at major milestones, and before completion, reread the issue with kb show and record progress with kb comment at the start, when blocked, and at major phase completions. Treat the latest kb show result as authoritative if the user edits the title, description, priority, labels, or comments. 卡面引用别处原文（设计文档、日志、别人的 handoff、其他工作区的文件）时按「工作区 id + 相对路径 + 文件名」写坐标（如 `工作区 e41eb0fb-…：Docs/api.md §退出码`），据此打开原文再动手；只写「见 xx handoff」「参考那份设计」不算引用，打不开原文就停下问父代理，不靠猜补口径。
-- If scope or plan details need amendment, explain the proposed change in a comment and reread with kb show; for description/parent/priority/labels edits use the documented `kb update <id> --description-stdin` / `--parent` / `--priority` / `--labels` (or `kb move-issue`), then re-read. Do not invent undocumented subcommands. **本卡改动运行时语义（异常处理、返回值语义、调用契约）而卡面没有「影响面扫描清单」时，先补扫描再动手**：调用点（`grep -rn <符号> apps packages`）／现有断言与用例／验收探针三项用 `kb comment` 落进卡面，然后 `kb show` 重读；没补清单就改行为，视同卡外改动。
-- If a user decision is required, follow `ask-user`: run `kb ask` (default 180s grace) instead of parking the claim in a comment; on `LOCKED` stop work at the checkpoint, and use `--grace 0` for unattended runs. `ask-user` 是**唯一提问通道**，优先级高于任何其它提问 / 确认工具：一旦用 `kb ask`，本任务内不得再调用其它 ask 类工具，宽限期间也不得另开通道催问（见 `ask-user` 的「优先级与互斥（硬约束）」）。**要拍板的取舍必须立项成决策（`kb ask`），不得只散落在评论里等人看见**；接手与派活前先看有没有现成待决：`kb decisions --state open`（超 72 小时未处理加 `--stale`，锁定某张卡加 `--issue <卡 id>`），有 open 决策未答的卡不压新活。Check the latest issue state before acting on a reply.
-- Perform only the verification required by the issue/user/project rules, record actual commands and outcomes (never claim unrun checks), and keep verification in the implementation issue — do not create a separate test issue.
-- 每次写文件前过一遍越界三问；进程/端口/DB 归属不明时按本节的执行环境归属要求先查后动，路径不在当前工作区即停手。
-- 描述里把前置写成 plain issue id 时，用 `kb dep add <本卡 id> <前置卡 id>` 补录成结构化边，再用 `kb dep ls <本卡 id>` 复核；补录后若仍有未解除 blocker，按 claim 段的阻塞口径报告父代理，不自行解锁。
+- `--scope` 只列本卡实际改动，逐条传。
+- 有可复用结论时写/改知识页；没有则在 notes 写「未沉淀知识页：原因」。
+- notes 带知识页 id（或原因）和变更日志 id。
+- done 后核对 `status=待验收`、占用为空。
+- 无法完成或自验失败：`kb fail <id> --reason '<具体阻塞>'`。
+- 不要把未验证写成通过；不要手动 `git commit`。
 
-## 工作量超出时拆卡（强制，不得硬做完）
+完整收尾清单、提交原因码与状态回读见 `references/finish-checklist.md`。
 
-开工取证后或执行中断时，出现以下任一情况，必须在继续实现前拆卡：
+## 停止条件
 
-- 实际改动跨 ≥2 个包或端
-- 需要 ≥3 个独立可验收的交付步骤
-- 实际改动预计 >8 个文件或 >400 行
-- 卡内验收条目 ≥5 条且彼此独立
-- 实际工作量超卡面描述 2 倍，或需要卡面未授权的设计决策
-
-操作顺序：
-
-1. 按依赖顺序逐条建子卡：`kb create-issue <ws> '<子卡标题>' -d '<目标/范围/边界/验收>' --parent <本卡 id>`（标题含双引号时用单引号或 `--title-stdin`；`create-issue` **没有** `--description-stdin`，长描述先建卡再 `kb update <子卡 id> --description-stdin`）；
-2. `kb comment <本卡>` 写拆分理由、子卡 id 列表与顺序；
-3. 本卡保持占用作为父卡（不 done、不 fail），继续 claim 并执行顺序上的第一张子卡；子卡目标文件互不相交时，可按「并行执行（最多 3 路）」把多张子卡分给不同 worker，父卡保持占用、不参与实现；
-4. 子卡全部 done 且验收通过后，才 `kb close` 子卡、再对父卡 `kb done --notes "已由子卡 N 完成：…"`；父卡 `close` 前必须所有后代已关闭。
-
-不得把超出判据的工作塞进单张卡硬做完，也不得未经拆分直接 done。
-
-## 收尾必须证明外部可触达（RULE-3）
-
-卡里新增了 REST 路由、WS 事件、定时器/ticker、CLI 命令或数据库迁移时，`kb done` 之前必须给出**外部能调到**的证据，二选一：
-
-- **自证接线**：起真实 app（如 `createApp`）打真实请求/事件，断言端点非 404、事件真发出、ticker 真跑；把命令与结果写进 notes。
-- **交代接手方**：卡面写明「接线由哪张卡负责」，并用 `kb dep add <接线卡> <本卡>` 建 `blocks` 边；只写一句「后续接线」不算交代。
-
-只写实现不接线、又没交代接手方的，不算完成，**不能 `kb done`**。典型反例：DEC-3 的 REST 路由写完从未挂载、DEC-9 的宽限 ticker 写完从未启动，两张卡都标了完成，最后靠补卡 `aa0b9c69` 才接上线。
-
-## Finish
-
-- When the assigned work meets its acceptance criteria and required verification, run `kb done <issue-id> --notes '<结果>' --scope <path>` (multi-line or quoted notes via `--notes-stdin`). This moves the issue to pending acceptance and releases the claim; it does not mean the issue is closed. Stop work after done and report the issue ID to the parent for acceptance.
-- **提交口径（GIT-ON-DONE）**：按 `using-agentboard` 的「收尾与提交（GIT-ON-DONE）」执行——`--scope` 逐条传、只声明真正改动的业务路径、不手动 `git commit`。`kb done` 自动导出并提交 `.agentboard` 看板快照；纯看板任务用 `--board-only`（MCP `board_only: true`），只提交看板快照。不能自动提交与 `kb done` 退出码 1 均按该节原因码与补救命令处理，不重跑 `done`。
-- **状态核对**：按 `using-agentboard` 的「收尾与提交（GIT-ON-DONE）」中「收尾状态回读」核对 `status=待验收` 与占用已释放，核对步骤不得省略。
-- **done 前置（CLOSE-RECORD）**：按 `using-agentboard`「领任务 → 执行 → 汇报」第 4 步执行（知识页 / 变更日志 / notes 带 id / `--scope` 四项缺一不可）。**变更日志有机器门禁（SK-05），以下任一即放行**：① 先 `kb changelog create --issue <卡 id> --workspace <当前工作区> --title '<标题>' --type 新增|修复|调整 --stdin` 再普通 `kb done`（门禁认 `issue_id=本卡` 的日志，不带 `--issue` 不算）；② `kb done <id> --close-record --changelog-title '<标题>' --type 新增|修复|调整 [--knowledge-page <已有页 id>] --notes-stdin --scope <路径>`（changelog 先写、失败不落 done，notes 自动追加 `close-record:`，正文可用 `--changelog-body` 覆盖）；③ 本次确无用户可见变更 → `kb done … --no-changelog`。三者都没有会 400 `CHANGELOG_ACK_REQUIRED`，done 不执行。**知识页没有门禁**：不会报错，所以「有可复用结论就建页、没有就在 notes 声明原因」必须自己过一遍。
-- **设计页回改检查（ARCH-04，强制）**：`kb done` 会检查本卡（含父链）关联的 `design` 知识页；仍有 `landed=proposed` 时 done 直接失败。必须先 `kb knowledge revise <页 id> --landed landed|partial` 回改落地状态，或确认本卡不推进设计时加 `--design-not-advanced`（声明写入 notes）。不得绕过门禁。
-- 无法完成/自验失败 → `kb fail <id> --reason '<具体阻塞>'`（回待规划并释放占用）；等用户拍板 → 走 `ask-user`（`kb ask`，无人值守 `--grace 0`），`LOCKED` 即停手，决策未答期间不得 done/fail；只用 AgentBoard 指南文档化的命令与状态流转（`kb update` / `kb move-issue` 存在，别自造命令、状态字段或端口），CLI/服务故障按指南故障分支处理。
-🔴 CHECKPOINT · 🛑 STOP：收尾回报缺工作区 id/路径、改动清单、跨区声明、验证命令与结果任一项即停手，不跑 `kb done`。收尾回报按 `using-agentboard` 的「收尾声明」四要素写全（工作区 id+路径、改动文件全路径清单含 `改动声明：…` 原文、跨区声明及授权依据、验证命令与结果及复算命令）；缺任一项视为执行未完成。
+- 工作区、运行环境或卡归属不一致。
+- 他人占用、blocker、open decision。
+- 需要新的产品或数据决策。
+- 收尾报告缺工作区、改动清单、跨区声明或验证结果。

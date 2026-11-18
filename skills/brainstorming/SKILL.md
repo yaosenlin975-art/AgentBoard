@@ -1,352 +1,80 @@
 ---
 name: brainstorming
-description: "需求不清或要新增/改变功能、组件、行为前，用本技能澄清真实意图、对比方案并产出可批准的设计（brainstorming）。触发词：头脑风暴、需求澄清、方案对比、设计文档、brainstorming。不适用：需求已明确且单步可完成的小改（直接做）；设计已批准（转 writing-task 拆卡）。"
+description: 需求不清或要改变功能、组件、行为时，先澄清目标、比较方案、写设计并获批准。触发词：头脑风暴、需求澄清、方案对比、设计文档、brainstorming。不适用：已批准设计转 writing-task；方案明确的单步小改直接实施。
 ---
 
 # Brainstorming
 
-You are very good at building. You build what you believe your human
-partner wants, and that belief is usually thinner than it feels. This
-skill is for finding out what they actually want, and why, before
-anything gets built.
+在实现前，先确认用户真正要什么，再把做法和取舍讲清楚。
 
-This process produces a design document before implementation. 涉及 AgentBoard 写入（工作区知识页）时，绑定与边界按 `using-agentboard` 的「工作区边界（强制）」执行；绑定失败就停手问用户，不伪造工作区，也不跨区写。
+## 先查再问
 
-People often haven't finished working out what they want. Good questions
-help them think it through. When you understand the why, you make the
-hundred decisions they never mention the way they would have made them.
+先读用户提到的代码、文档、设计、日志、交接与现有实现。能从项目回答的，不问用户。
 
-## First: What Do You Actually Know?
+若需求已足够明确且是单步小改，直接做并说明结果；否则进入以下顺序：
 
-Before you reply, ask yourself: what do I know about what they want, and
-why?
+1. 用一句话复述目标、用户和成功标准。
+2. 指出现有实现、关键约束和会影响验收的事实。
+3. 问一个最影响「做什么」的开放问题；一次只问一个。
+4. 用户答完后，用 2–3 个真实方案讲清取舍，推荐一个。
+5. 用户选路线后，写设计文档并请批准。
+6. 批准后立即落库、提交设计，再用 `writing-task` 拆卡。
 
-- **Everything that matters is in the request** ("make the icon cornflower
-  blue"). This is a quick, clear task. Do it, and say what you did.
-- **Something non-trivial is missing.** Start the conversation.
+## 对话规则
 
-Before you start implementing, you must, in order:
+- 先让用户用自己的话描述，不急着给选项。
+- 选项仅在用户卡住时给；推荐项要说明原因。
+- 每条消息只问一个问题，用用户能懂的语言。
+- 只把用户说过的当用户决定；自己补的默认值标为「我的建议」。
+- 涉及界面、布局、流程或多方案视觉差异时，可提议浏览器 mockup；是否使用由用户决定。
+- 用户说「你先定」时，只自定不影响验收的实现细节；改变目标、数据、接口或范围的问题仍要用户拍板。
 
-1. Lay out the approaches in a message of their own, and have your
-   human partner pick one (see Lay out the approaches).
-2. Write the design doc, short or full (see Size the Work).
-3. Get their approval of that doc.
-4. Invoke the standalone `writing-task` skill; its execution plan is recorded in AgentBoard issues, not a plan file.
+## 设计内容
 
-Two things aren't implementing: a spike they said yes to (see Spike to
-feel things out), and doing what they asked once they've opted out of
-the questions.
+完整设计至少写：
 
-## Look Before You Ask
+- 意图与为何现在做；
+- 目标、非目标、反目标；
+- 约束与既有系统事实；
+- 2–3 个方案、各自取舍、用户选定方案；
+- 接口、数据结构、关键流程；
+- 验收方式、风险与回滚；
+- 留给实现者的决定。
 
-In an existing project, or when they've given you context (a spec, a plan,
-a handoff, files they pointed at, earlier conversation), dig in before your
-first message. Read what they referred to and the code or material it
-connects to, and keep reading until you can explain how the relevant
-parts work today and what this change would touch. Never ask what the
-project or their context already answers.
+小改可写短设计，但必须有方案、边界和验收。
 
-## Your First Message
+## 设计落库
 
-Move the work forward, with one of these:
-
-- **They've already said what they want** (a spec, a plan, a detailed
-  request): aim for about 200 words for the whole message. Echo their
-  request back in your own words, so they can see whether you've got its
-  shape: what they want, who it's for, and why, as far as they've said.
-  Add what you found that bears on it: how the relevant parts work today
-  and what the change would touch. If you found something they may not
-  have considered that would change what they're asking for or how it
-  has to be built, like a constraint, a conflict, or a cheaper path, say
-  so plainly. How to build it comes later, once you understand what they
-  want (see Lay out the approaches). End with one line inviting
-  corrections, then one question about what they want: the thing their
-  request leaves open whose answer would most change what gets built.
-  Specs are often incomplete, so confirm before you build on one.
-- **They haven't:** one open question, in their own terms, about the
-  biggest thing their request leaves unsettled. Say why you're asking:
-  what the answer would change about what you build. For "a website for
-  my bakery": "If it's mostly for people deciding whether to stop by,
-  I'd lead with hours and what's in the case today; taking orders is a
-  different site. What do you want someone to do when they land on it?"
-
-How the message ends depends on whether their message asked for
-brainstorming:
-
-- **They asked for it** (by name, by invoking it, or by asking for a
-  design discussion): end with your question. They want this
-  conversation.
-- **They didn't:** they may not want a conversation at all. After your
-  question, add a light, one-line offer to just get going instead, like
-  "Or if you'd rather I just dive in, say so." If they take you up on
-  it, this skill is done: state any significant how-it-gets-made choice
-  (platform, language, medium) in one plain line, then do what they
-  asked through the normal workflow.
-
-That's the whole message.
-
-## The Conversation
-
-Each message ends with one question: a single sentence with no list of
-example answers hanging off it. Use plain language, pitched just a little
-above where your human partner is. Match their vocabulary; never use
-process jargon. You never need to quote this skill to your human
-partner.
-
-Be clear and concise. Lead with what matters. Avoid jargon. When you
-report what you found, give them the most important findings and offer
-the rest.
-
-**Get them describing.** Open questions come first. Their own words carry
-intent that your options can't. Offer a short menu only when they're
-stuck. When they say "just guess" or "what do you think?", propose
-something concrete.
-
-**How it gets made.** Every project rests on choices about medium, tools,
-materials, and resources: the platform, programming language, and
-libraries for an app; the medium for a piece of art. Find out early which
-of those choices they want to make, which they're handing to you, and what
-they already have to work with. Someone with strong views or skills will
-want to talk it through. Someone counting on you needs sensible defaults,
-said in plain words. When there's existing work, build on what it already
-uses. Any choice you make goes in the design as your call, never as
-something they agreed to.
-
-**Ground to cover.** This is territory, not a script. Never read these
-out as questions:
-
-- what kind of thing this is, and what makes it special
-- why now, and what success looks like to them
-- goals, non-goals, and anti-goals (what would make this a failure even
-  if it technically works)
-- prior art: what they've seen elsewhere, loved or hated
-- current state: what exists now, what they've tried
-- the details they care about
-
-**Make every question specific** to their project and what they've told
-you. Ask Socratically, the way a sharp colleague would: build each
-question on their last answer or on something you found, so it helps
-them think through a consequence or a case they may have missed
-("Voting closes before the meeting, and two members joined this month.
-Does someone who joins mid-round get a vote?"). When the reason isn't
-already plain, say what you're hoping to learn or what the answer would
-change. A proposal they can correct, plus your reason for it, often
-beats a question.
-
-**Offer recon.** Once you have a bit of grounding and looking further
-would help, offer to go look: deeper into their codebase or project,
-their own files and data, or the web. Say what you'd look for. They
-decide whether you go.
-
-**Lay out the approaches.** Once you understand what they want, and
-before you write anything up, put the ways of building it in a message
-of its own. Come up with several real alternatives and drop the weak
-ones, including any that work against why they want it and any the
-existing work rules out. Present the two or three that remain, grounding
-each in what the project actually does and saying what it trades off.
-Recommend one and say why, then ask which way they want to go. When
-there's genuinely one sensible way, say so and explain why the others
-don't fit. This is for how it gets built; for what they want, get them
-describing first.
-
-**Show, don't tell.** Offer the visual companion (below) whenever seeing
-would help more than reading:
-
-- something they'll look at: a screen, a page, a printout, a sign
-- a layout or arrangement: of a screen, a room, a schedule
-- a flow or a sequence of steps
-- options that would look different from each other
-- a structure that's easier to see than read: a diagram, a timeline, a map
-
-Once they've accepted, use it for mockups to react to, side-by-side
-options, and throwaway prototypes they can click.
-
-**Spike to feel things out.** Agentic work is waterfall, but very, very
-fast. A quick throwaway build is often the cheapest way to learn what
-they want or whether something works. Offer one when it would help.
-When they just want to spike, get out of the way. Spikes get no tests
-or minimal ones, aren't bulletproof, and skip the plan, implementation,
-and review process. Bring what the spike taught you back into the
-conversation.
-
-## Play It Back
-
-Play back as you go. As soon as you understand one part well enough to
-describe it (what it's for and who it serves, say, or how one piece
-behaves), describe that part back in about 200-300 words, then return to
-questions about the next part. Playback and questions alternate through
-the whole conversation; the last chunk covers whatever is left.
-
-Only what they said goes in as theirs. Anything you filled in goes in
-as your proposal, with your reason. End each chunk by asking what's wrong
-or missing.
-
-Before you send a chunk, check it: does it describe something they'll
-look at, like a page, a screen, a schedule, or a printout? If so, and
-they haven't seen the visual companion offer yet, send the offer instead
-(its own message, below) and hold the chunk for the next message. Once
-they've accepted, put a mockup next to the description.
-
-## Size the Work
-
-Once you understand what they want and they've picked an approach, say
-how big the work is in plain words. They can override it.
-
-| Size | The design doc |
-|------|----------------|
-| A small change | a short one: what you already covered together, written down |
-| A project | the full written design (below) |
-
-Short or full, the design doc has an **Approaches** part: the two or
-three ways you considered building it, what each trades off, which one
-they picked, and why. They pick in the conversation, before you write
-the doc.
-
-If it grows mid-task, stop, say so, and step up a size.
-
-If this is really several independent projects, say so, agree on an
-order, and brainstorm them one at a time.
-
-## The Written Design
-
-Write a plain document a talented builder in the domain could plan
-from without going back to your human partner. Cover:
-
-- intent and the why
-- goals, non-goals, anti-goals
-- constraints
-- approaches (above)
-- the parts of the how they decided, as they decided them
-- what's left to the builder
-
-For a small change, the short design covers the same points in a line
-or two each and goes straight to your human partner, without the
-builder check.
-
-**Where it goes:** 绑定 AgentBoard 工作区时，approved design 落到**当前工作区知识库**：`kb knowledge create … --category design --landed proposed --stdin --sources-file sources.json --evidence-file evidence.json`（`create` 缺正文或 `--sources`/`--evidence` 任一即退出 1；设计稿已是 md 文件时可直接 `kb knowledge import <design.md> --category design --landed proposed`，sources 自动构造）+ 语义 slug（如 `agentboard-server-data`）。`--category` 必须显式传：不传时服务端落 `open`（`apps/server/src/**/knowledge.ts` 的 allowed 校验，KB-CR-1 起不再兜底 `legacy`），旧页里的 `legacy` 仍在词表内但新建不该产生。不能落到 `<project root>/Docs/` 当正式设计文档，也不能用 `handoff-*`。内容口径见 `using-agentboard` → 「知识页写什么（内容口径）」；按该节执行，不要在此复制。未绑定工作区 / 没有 `kb` 时不要伪造工作区：落到项目既有设计文档约定（没有约定就写进对话并说明原因），再继续；`Docs/` 文件仅在项目约定或用户明确要求时写。实现计划记录在 AgentBoard 卡里。
-
-## 设计文档获批准后立即提交 git（BEFORE 拆卡）
-
-`kb knowledge create` / `import` 只把文件写进 `<工作区>/.agentboard/Docs/<slug>.md`，**不产生任何 git 动作**（`page_commit.skipped=true`，`apps/server/src/knowledge/**` 无 `git add`）。设计文档要在**设计获批准后立即**提交，不要等卡。
-
-### 为什么不能等 `kb done --scope`
-
-时序上不可达：
-
-```
-brainstorming 产出设计 → 获批准 → 写知识页     ← 此刻【还没有卡】
-（writing-task 才拆卡） → 执行 → kb done --scope   ← 这里才第一次能声明 Docs 路径
-```
-
-`--scope` 只在 `kb done` 时生效。设计落库发生在拆卡之前，那次 `kb done` 永远不会到来，路径也就永远没机会被声明。**`using-agentboard` 的「提交由 `kb done --scope` 统一管」只覆盖卡执行期内的知识页增删改，不覆盖设计页首次落库。**
-
-### 命令（落库成功后立刻跑）
-
-拿到 `kb knowledge create` / `import` 返回的 page id 与 slug 后：
+绑定 AgentBoard 工作区时，设计页写入当前工作区：
 
 ```powershell
-# 单页
-git add .agentboard/Docs/<slug>.md
-git commit -m "design: <设计标题>（knowledge:<page-id>）"
-
-# 一次批准多个设计页（逐个列出，不要用 git add .agentboard/Docs/ 整目录）
-git add .agentboard/Docs/<slug-1>.md .agentboard/Docs/<slug-2>.md
-git commit -m "design: <设计标题>（knowledge:<page-id> …）"
+Get-Content body.md -Raw |
+  kb knowledge create --scope workspace --workspace <id> --title '<标题>' --slug <语义-slug> `
+    --domain knowledge --category design --landed proposed --stdin `
+    --sources-file sources.json --evidence-file evidence.json
 ```
 
-bash 同形，无需改。**`kb knowledge create` 已经把文件写好了，这里只 `add` + `commit`，不要再写一遍文件内容。**
+已有 md 文件可先 `kb knowledge import`。回读 `kb knowledge show` 确认 page id、revision 和正文。
 
-提交信息必须带 **page id**：只写标题时事后无法从 `git log` 反查到知识页（slug 可改，id 不可改）。多个页用空格分隔 id。
+在设计批准后立即提交：
 
-### 验证（两条都要跑，任一不过就是没提交成功）
+- `.agentboard/Docs/<slug>.md`
+- 项目约定的 `Docs/...` 设计稿（若项目规则要求）
 
-```powershell
-git log --oneline -1 -- .agentboard/Docs/<slug>.md     # 必须命中刚才那次提交
-git status --porcelain -- .agentboard/Docs/            # 除 .index.json 外必须为空
-```
+提交信息带 `knowledge:<page-id>`。详细命令、失败分支和 Git 时序见 `references/design-and-git.md`。
 
-第二条除 `.index.json` 外为空，才说明**全部**设计页都已入库；其余 `??` 行都是漏提交。
+## 硬门禁
 
-`.index.json` 是唯一预期例外：它是「可重建检索索引，非事实源」（`apps/server/src/knowledge/paths.ts`），含 `generated_at` 与逐文件 `mtimeMs`，每次检索都会变。**不要 add 它**——入库只会给每次搜索都制造 diff 噪音，删掉也能由服务端重建。
+- 用户没有批准设计，不写产品代码、不搭脚手架、不安装实现依赖、不调用 `writing-task`。
+- 用户选方案不等于批准设计；设计文档必须被明确确认。
+- 需求中途改变时，先并列复述旧/新要求，确认哪些作废，再更新设计。
+- AgentBoard 写入前先绑定工作区；跨区写入需当轮授权。
+- 在 AgentBoard 任务内需要用户拍板时使用 `ask-user`，不走别的提问通道。
 
-### 提交失败时
+## 失败分支
 
-见「失败分支」的**设计文档无法提交**条：报告「已落库但未进 git」+ 补救命令，**不得声称已提交**。
-
-**Builder check** (for a project): dispatch a fresh subagent with
-`builder-check-prompt.md` in this directory. When you tell your human
-partner you're writing it up, say a reviewer will read it first and you
-may come back once with a few questions. Don't hand over the document
-until the check is back. Sort what the builder asks into three piles:
-
-- **Answered already** by the conversation or the project: put the answer
-  in the document.
-- **Minor:** a sensible builder could settle it without changing what gets
-  built. Settle it yourself and mark it in the document as your call.
-- **Theirs:** only your human partner can answer it, and the answer changes
-  what gets built.
-
-Bring the "theirs" pile in one message, most important first. Update the
-document with their answers, then hand it over with a short list of the
-calls you made so they can check those while reading. That's the only
-round of questions the check produces. Without a subagent tool, read the
-document as that builder yourself.
-
-<HARD-GATE>
-Nothing gets built until your human partner approves the design doc:
-the short one for a small change, the full one for a project.
-Building includes writing product code, scaffolding, installing
-dependencies, creating projects, and invoking an implementation skill.
-Reading and exploring are fine.
-
-Two exceptions. If they opted out of the questions, the skill is done
-and the gate goes with it. A spike they said yes to may be built; it
-stays labeled throwaway, and keeping what it produced is a new request
-that comes back through this gate.
-
-After the design doc is approved, use the standalone `writing-task` skill to prepare the AgentBoard issue plan; no separate plan file is required.
-</HARD-GATE>
-
-## Red Flags
-
-| Thought | Reality |
-|---------|---------|
-| "I'll offer a menu of what they might want" | Options steer. Ask them to describe it first. |
-| "I'll fill in sensible defaults" | Good. Say them out loud. A default they never heard is one they couldn't reject. |
-| "I've answered their questions, so I'll write the doc" | Lay out the approaches first, in a message of their own. |
-| "I should explain the process first" | Ask your question. The process shows itself. |
-| "They said 'sounds good' to the idea" | Approval covers what you showed them. A design doc you haven't written isn't approved. |
-| "The spike works, I'll keep building on it" | Keeping it is a new request. Back through the gate. |
-
-## 失败分支（Failure branches）
-
-澄清阶段卡住时按「一线 → 兜底」处置，不得用自问自答或编造用户答案推进；在 AgentBoard 任务内需要用户拍板时，提问通道一律走 `ask-user`（`kb ask`），不用其它确认工具。
-
-- **用户沉默 / 只回「你先定」**：一线 → 把问题收敛成一个、重述已知约束，并给出一个具体默认值供其否决；兜底 → 按「Minor」（仅影响实现方式、不改变做什么）自行定并写进设计文档标为你的调用；「Theirs」（改变做什么）仍不得自定，若必须推进，先写断点再停手，不发散成多轮追问。
-- **方案被连续否掉 3 次**：停止再堆方案。回到「Look Before You Ask」重读目标、约束与既有实现，用一句话复述「我以为你要的是什么」请对方确认/纠正；目标本身没对齐时先对齐目标，再重列方案。
-- **设计文档无法落库**：AgentBoard 知识页写入按 `using-agentboard` 的「写知识页」分支处理（`create` 缺必填项 / 409 slug 冲突改 `revise` / 服务不可达）；一次性 md 可用 `kb knowledge import`；仍失败 → 把设计留在对话里并明确写「未保存」，不得声称已落库，也不得因此跳过设计批准的硬门槛。
-- **设计文档无法提交**：`git` 不可用 / 非 git 仓库 / `.gitignore` 或路径逃逸导致 `git add` 失败 → 报告「设计已落库（knowledge:<page-id>）但未进 git」，附可照抄的 `git add .agentboard/Docs/<slug>.md; git commit -m "design: <标题>（knowledge:<page-id>）"`，**不得声称已提交**。落库成功即设计已获批准，提交失败不阻塞批准门槛，但必须显式标注未提交。
-- **视觉陪伴起不来**：连续 2 次启动失败（缺 bash / 端口占用 / 浏览器不可用）→ 本轮永久退回纯文本或静态 HTML/截图，不再反复提议，避免把澄清卡在工具上。
-- **用户中途改需求**：先停手，把新需求与已确认部分并列复述，确认哪部分作废；设计文档与方案列表按确认结果重写，不把新旧需求糊在一起。
-
-## Visual Companion
-
-A browser tab for showing mockups, diagrams, and prototypes. It's a
-tool, not a mode: accepting it doesn't send every question to the
-browser.
-
-**Offer it just-in-time.** Offer it the first time one of the moments
-above comes up, never upfront. The offer is its own message with nothing
-else in it:
-
-> "This might be easier if I show you. Want me to open a browser tab with some mockups?"
-
-If they decline, stay in text and don't offer again unless they raise it.
-
-**Per question, ask: would they understand this better by seeing it?**
-Mockups, layouts, diagrams, and side-by-side designs go in the browser.
-Requirements, scope, tradeoffs, and conceptual choices stay in text. A
-question about a UI topic isn't automatically a visual question.
-
-If they accept, read `visual-companion.md` in this directory before
-starting the server. Windows 上没有 bash 或服务起不来时不要卡住：退回文本，或直接生成静态 HTML/截图给用户看，然后继续澄清。
+- 用户沉默或只回「你先定」：收敛成一个问题，给可否决的默认值；只自行决定实现细节。
+- 连续 3 个方案被否：回到目标与既有事实，用一句话复述「我以为你要什么」请用户纠正。
+- 设计无法落库：按 `kb-curator` / `using-agentboard` 处理；仍失败则明确说「未保存」，不得跳过批准门槛。
+- 设计已落库但 Git 提交失败：报告 page id、未提交路径和补救命令，不声称已提交。
+- 用户要求做完再问：明确重大未决项，若用户仍授权，记录该授权后执行。
