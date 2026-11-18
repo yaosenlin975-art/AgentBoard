@@ -30,7 +30,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { Db } from '../db/connection.js';
-import { workspaceStateDir } from '../db/resolver.js';
+import { workspaceDbPath, workspaceStateDir, type WorkspaceDbMode } from '../db/resolver.js';
 import { ApiError } from '../errors.js';
 import { vacuumInto } from './dbMigration.js';
 import { invalidateSnapshotLagCache } from './workspaceSnapshotLag.js';
@@ -135,6 +135,34 @@ export interface ExportSnapshotInput {
 export interface ExportSnapshotResult {
   dir: string;
   manifest: SnapshotManifest;
+}
+
+/** 收尾时随卡提交的最小可见快照路径；运行库与附件本体永不进入此清单 */
+export const WORKSPACE_SNAPSHOT_COMMIT_PATHS = [
+  '.agentboard/snapshot',
+  '.agentboard/.gitignore',
+  '.agentboard/README.md',
+] as const;
+
+export interface DashboardSnapshotSyncInput {
+  db: Db;
+  workspace: { id: string; path: string; dbMode?: WorkspaceDbMode };
+}
+
+/**
+ * 任务收尾自动快照：库内任务与评论已落库后调用。
+ * 工作区库以 meta.workspace_id 为准；中心库模式必须显式传 workspaceId。
+ */
+export function exportDashboardSnapshot(input: DashboardSnapshotSyncInput): ExportSnapshotResult {
+  const inWorkspaceDb = input.db.prepare(
+    "SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='meta'",
+  ).get() !== undefined;
+  return exportWorkspaceSnapshot({
+    db: input.db,
+    workspacePath: input.workspace.path,
+    sourceDbPath: inWorkspaceDb ? workspaceDbPath(input.workspace.path) : input.db.name,
+    ...(inWorkspaceDb ? {} : { workspaceId: input.workspace.id }),
+  });
 }
 
 export interface SnapshotValidation {

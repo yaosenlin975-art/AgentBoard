@@ -90,13 +90,14 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('待验收');
     expect(commitCount()).toBe(2);
-    expect(lastCommitFiles()).toEqual(['x-card.txt']);
+    expect(lastCommitFiles().filter(path => !path.startsWith('.agentboard/'))).toEqual(['x-card.txt']);
     const status = git(repo, ['status', '--porcelain', '-uall']);
     expect(status).toContain('y-other.txt');
     expect(status).not.toContain('x-card.txt');
 
     const note = comments(cardA).join('\n');
-    expect(note).toContain('已自动提交 1 个文件');
+    expect(note).toContain('已自动提交 12 个文件');
+    expect(note).toContain('已纳入本卡自动产物：.agentboard/.gitignore');
     expect(note).toContain('claim 前就已修改');
     expect(note).toContain('x-card.txt');
   });
@@ -110,7 +111,7 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
     const res = await done(issueId, ['lock.txt']);
     expect(res.status).toBe(200);
     expect(commitCount()).toBe(2);
-    expect(lastCommitFiles()).toEqual(['lock.txt']);
+    expect(lastCommitFiles().filter(path => !path.startsWith('.agentboard/'))).toEqual(['lock.txt']);
     expect(git(repo, ['status', '--porcelain'])).toBe('');
     expect(comments(issueId).join('\n')).toContain('按声明范围强制提交');
   });
@@ -161,7 +162,7 @@ describe('git baseline pre-existing dirty files (GIT-BASELINE-BLIND)', () => {
 
     const res = await done(issueId, ['mine.txt']);
     expect(res.status).toBe(200);
-    expect(lastCommitFiles()).toEqual(['mine.txt']);
+    expect(lastCommitFiles().filter(path => !path.startsWith('.agentboard/'))).toEqual(['mine.txt']);
     expect(git(repo, ['status', '--porcelain', '-uall'])).toContain('theirs.txt');
   });
 

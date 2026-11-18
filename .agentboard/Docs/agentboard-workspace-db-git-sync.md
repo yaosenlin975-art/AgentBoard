@@ -2,13 +2,13 @@
 id: 3607297c-8b64-4fa2-9ce3-a79cb054e7a5
 slug: agentboard-workspace-db-git-sync
 title: "工作区数据库与 Git 同步"
-revision: 1
+revision: 2
 scope: workspace
 workspace_id: c5b8f2a5-5afa-48ec-9217-324f6777078e
 status: active
 domain: infra
 category: design
-landed: proposed
+landed: partial
 sources:
   - source_id: "file:apps/server/src/services/workspaceSnapshot.ts"
     source_type: file
@@ -25,10 +25,10 @@ evidence:
     locator: "apps/server/src/services/workspaceSnapshot.ts:47-135"
   - source_id: "file:packages/cli/src/commands/createSpace.ts"
     locator: "packages/cli/src/commands/createSpace.ts:14-53"
-content_hash: b1213574b49d312c3021dd330303e24f5588d22c246c387ac263fb886d59a025
+content_hash: cfa0e9286e84ba7dc0748272ac1d6359bab6cab13acc9316585707b9928416a1
 expires_at: null
 created_at: 1794964756337
-updated_at: 1794964756337
+updated_at: 1794966629501
 created_by: kb-cli
 updated_by: kb-cli
 change_note: ""
@@ -182,4 +182,5 @@ git pull
 - 快照超过 100MB 时，运行库不进入 Git 历史。
 - 本地库存在时，快照落后不会覆盖本地库。
 - 新克隆仓库可校验并导入快照恢复看板。
+
 

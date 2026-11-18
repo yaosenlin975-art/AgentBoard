@@ -52,6 +52,7 @@ import {
   requireIssueInWorkspace,
 } from '../../services/claim.js';
 import { captureIssueGitBaseline, commitIssueChanges, dropIssueGitBaseline, type IssueCommitResult } from '../../services/gitBaseline.js';
+import { exportDashboardSnapshot, WORKSPACE_SNAPSHOT_COMMIT_PATHS } from '../../services/workspaceSnapshot.js';
 import { getTaskKnowledge } from '../../services/taskKnowledge.js';
 import { addRelation, listDependencies, removeDependency, unlockCommentsForDeletedBlocker } from '../../services/dependency.js';
 import { requireWorkspaceStatus, STATUS_KINDS } from '../../services/workspaceStatus.js';
@@ -744,12 +745,33 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
       broadcast({ type: 'issue.changed', issue });
       // GIT-ON-DONE：done 后按 claim 基线提交本任务改动；幂等重放不重复提交
       if (action === 'done') {
-        // N3-10：纯看板任务显式跳过提交（不产生 NO_SCOPE / exit 1，也不带走工作区脏文件）
+        let snapshotError: string | null = null;
+        // 仅显式声明业务 scope 的收尾自动落快照；NO_SCOPE / board-only 的语义由后续客户端卡统一收紧
+        if (doneBody!.board_only !== true && scopePaths.length > 0) {
+          try {
+            const workspaceRow = getWorkspace(db, issue.workspace_id);
+            if (workspaceRow === null) throw new Error('工作空间不存在');
+            exportDashboardSnapshot({ db: rdb, workspace: workspaceRow });
+          } catch (error) {
+            snapshotError = error instanceof Error ? error.message : String(error);
+          }
+        }
+        // N3-10：纯看板任务仍不提交代码；快照语义由后续 CLI/MCP 卡接线
         if (doneBody!.board_only === true) {
           dropIssueGitBaseline(rdb, issueId);
           gitCommit = { status: 'skipped', reason: 'BOARD_ONLY', note: null, pending: [] };
         } else {
-          gitCommit = await commitIssueChanges(rdb, issueId, scopePaths);
+          gitCommit = snapshotError === null
+            ? await commitIssueChanges(rdb, issueId, scopePaths, {
+              extraPaths: [...WORKSPACE_SNAPSHOT_COMMIT_PATHS],
+            })
+            : {
+              status: 'not-committed',
+              reason: 'COMMIT_FAILED',
+              note: `看板快照导出失败，本次未自动提交：${snapshotError}`,
+              pending: [...scopePaths],
+            };
+          if (snapshotError !== null) dropIssueGitBaseline(rdb, issueId);
         }
         if (gitCommit.note) {
           const added = await addComment(rdb, issueId, 'system', gitCommit.note);
