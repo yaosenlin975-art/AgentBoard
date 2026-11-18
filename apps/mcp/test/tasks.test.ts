@@ -526,9 +526,10 @@ describe('AgentBoard task MCP server', () => {
     });
     const body = JSON.parse(String((fetcher.mock.calls[0]?.[1] as RequestInit | undefined)?.body));
     expect(body.scope_paths).toEqual(['apps/server/src', 'README.md']);
+    expect(body.scope_paths).not.toContain('.agentboard/snapshot');
   });
 
-  it('complete_task always sends the changelog gate fields (SK-05 / MCP-09)', async () => {
+  it('complete_task sends changelog gate fields and defaults to the dashboard snapshot', async () => {
     const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);
     harnesses.push(harness);
@@ -542,7 +543,11 @@ describe('AgentBoard task MCP server', () => {
       arguments: { task_id: 'task-1', notes: '', skip_changelog: true, request_id: '00000000-0000-4000-8000-000000000205' },
     });
     const bodies = fetcher.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body)));
-    expect(bodies[0]).toMatchObject({ client: 'mcp', changelog_ack: false });
+    expect(bodies[0]).toMatchObject({
+      client: 'mcp',
+      changelog_ack: false,
+      scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+    });
     expect(bodies[1]).toMatchObject({ client: 'mcp', changelog_ack: true });
   });
 
@@ -562,7 +567,7 @@ describe('AgentBoard task MCP server', () => {
     expect(body).toMatchObject({ client: 'mcp', changelog_ack: false, changelog_id: '00000000-0000-4000-8000-000000000777' });
   });
 
-  it('complete_task forwards board_only for pure board tasks', async () => {
+  it('complete_task maps board_only to the dashboard snapshot', async () => {
     const fetcher = vi.fn(async () => Response.json({ id: 'task-1', status: '待验收' }));
     const harness = createHarness(baseConfig, fetcher as typeof fetch);
     harnesses.push(harness);
@@ -575,8 +580,12 @@ describe('AgentBoard task MCP server', () => {
       },
     });
     const body = JSON.parse(String((fetcher.mock.calls[0]![1] as RequestInit | undefined)?.body));
-    expect(body).toMatchObject({ client: 'mcp', changelog_ack: true, board_only: true });
-    expect(body).not.toHaveProperty('scope_paths');
+    expect(body).toMatchObject({
+      client: 'mcp',
+      changelog_ack: true,
+      scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+    });
+    expect(body).not.toHaveProperty('board_only');
   });
 
   it('complete_task rejects board_only combined with scope (N4-04)', async () => {

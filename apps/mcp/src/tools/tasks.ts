@@ -38,6 +38,13 @@ const fenceField = {
     .describe('Claim fence/epoch from claim_task. If the task was re-claimed by someone else since, the write fails with 409 STALE_FENCE; omit to skip the check.'),
 };
 
+/** 收尾固定提交的看板产物；与 server 的 WORKSPACE_SNAPSHOT_COMMIT_PATHS 同口径 */
+const WORKSPACE_SNAPSHOT_COMMIT_PATHS = [
+  '.agentboard/snapshot',
+  '.agentboard/.gitignore',
+  '.agentboard/README.md',
+];
+
 /**
  * PERF-4d（用户拍板选项 A）：列表类出参不再包含正文，正文由 `get_task` 提供。
  * 这里请求服务端的 `fields=` 白名单与 CLI 同序（对齐 `rowToIssue` 键序），只是不含 `description`。
@@ -319,34 +326,36 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     }, request_id, undefined, undefined, fence);
   }, false);
 
-  register('complete_task', 'Complete a task owned by the configured agent. Changelog gate — satisfy ONE of: (a) create_changelog with issue_id=<this task> before calling complete_task; (b) pass changelog_id referencing an existing entry of this workspace; (c) skip_changelog=true when nothing user-visible changed. Otherwise the call fails with CHANGELOG_ACK_REQUIRED. Pass scope to declare which files this task changed; without scope nothing is auto-committed (the server refuses broad commits).', z.object({
+  register('complete_task', 'Complete a task owned by the configured agent. Changelog gate — satisfy ONE of: (a) create_changelog with issue_id=<this task> before calling complete_task; (b) pass changelog_id referencing an existing entry of this workspace; (c) skip_changelog=true when nothing user-visible changed. Otherwise the call fails with CHANGELOG_ACK_REQUIRED. Pass scope to declare business files changed by this task. Without scope, or with board_only=true, only the .agentboard dashboard snapshot is committed.', z.object({
     ...workspaceField,
     ...taskIdField,
     notes: z.string().default('')
       .describe('Completion notes: what changed, verification commands and results, knowledge page / changelog ids. Prefer a short self-contained summary.'),
     scope: z.array(z.string().min(1)).optional()
-      .describe('Repo-relative files or directory prefixes this task changed (e.g. ["apps/server/src", "README.md"]). Only these paths are auto-committed. Omit → no auto-commit: the response lists every dirty file plus a copy-paste remedy command. For board-only tasks pass board_only instead; pass ["."] only when you intentionally include all dirty files.'),
+      .describe('Repo-relative business files or directory prefixes this task changed (e.g. ["apps/server/src", "README.md"]). The .agentboard dashboard snapshot is committed too. Omit for a board-only task: only the dashboard snapshot is committed. Pass ["."] only when you intentionally include all dirty files.'),
     changelog_id: z.string().uuid().optional()
       .describe('UUID of an EXISTING change-log entry of this workspace that covers this task. Not the same as CLI --close-record (that CREATES a new entry); use this to reference one you already created via create_changelog. Takes precedence over the issue_id auto-match.'),
     skip_changelog: z.boolean().optional()
       .describe('Set true only when this task has no user-visible change (pure internal refactor / board-only operation). Without a changelog and without this flag the server rejects the call with 400 CHANGELOG_ACK_REQUIRED.'),
     board_only: z.boolean().optional()
-      .describe('Set true for board-only tasks (no file changes): skips auto-commit entirely instead of returning NO_SCOPE with every dirty file. Mutually exclusive with scope.'),
+      .describe('Set true for board-only tasks: commits only the .agentboard dashboard snapshot and no business files. Mutually exclusive with scope.'),
     ...requestIdField,
     ...fenceField,
   }).strict(), async ({ workspace_id, task_id, notes, scope, changelog_id, skip_changelog, board_only, request_id, fence }) => {
-    // N4-04：与 CLI 同口径显式互斥，不做静默取舍（board_only 会跳过提交，scope 会被无声丢弃）
+    // 与 CLI 同口径显式互斥，不做静默取舍
     if (board_only === true && (scope?.length ?? 0) > 0) {
-      throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用：纯看板任务不提交任何文件。要提交文件请去掉 board_only；纯看板任务请去掉 scope。');
+      throw new McpError('BOARD_ONLY_SCOPE_CONFLICT', 'board_only 与 scope 不能同时使用：纯看板任务只提交看板快照，不提交业务文件。要提交业务文件请去掉 board_only；纯看板任务请去掉 scope。');
     }
     const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const taskId = await resolveTaskId(api, workspaceId, task_id);
     const agentId = requireAgentId(config);
+    const scopePaths = board_only === true || scope === undefined || scope.length === 0
+      ? [...WORKSPACE_SNAPSHOT_COMMIT_PATHS]
+      : scope;
     return api.mutate<Issue & { comment: IssueComment | null; knowledge_hint: KnowledgeHint | null }>('POST', `/issues/${encodeURIComponent(taskId)}/done`, {
-      workspace_id: workspaceId, agent_id: agentId, notes, scope_paths: scope,
+      workspace_id: workspaceId, agent_id: agentId, notes, scope_paths: scopePaths,
       client: 'mcp', changelog_ack: skip_changelog === true,
       ...(changelog_id === undefined ? {} : { changelog_id }),
-      ...(board_only === undefined ? {} : { board_only }),
     }, request_id, undefined, undefined, fence);
   }, false);
 

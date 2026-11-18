@@ -1,0 +1,68 @@
+{
+  "format": "agentboard.workspace-snapshot/1",
+  "workspace_id": "c5b8f2a5-5afa-48ec-9217-324f6777078e",
+  "schema_version": 1,
+  "exported_at": "2026-11-18T02:05:03.423Z",
+  "generator_version": "agentboard-server/1",
+  "source_db": "C:\\Users\\Administrator\\AppData\\Roaming\\AgentBoard\\agentboard.db",
+  "included_tables": [
+    "issue",
+    "issue_comment",
+    "issue_dependency",
+    "issue_git_baseline",
+    "issue_draft_audit",
+    "workspace_status",
+    "workspace_change_log",
+    "session"
+  ],
+  "files": [
+    {
+      "file": "issues",
+      "table": "issue",
+      "rows": 75,
+      "sha256": "2d32a1ba16ea58c3c819897592f71263d922c5adac9f4b93fe4a6c6bcadeada8"
+    },
+    {
+      "file": "issue_comments",
+      "table": "issue_comment",
+      "rows": 246,
+      "sha256": "85da0d02c6cff02c138eb79640b0bac9a3f1775ff697acf883d977c8ca078d63"
+    },
+    {
+      "file": "issue_dependencies",
+      "table": "issue_dependency",
+      "rows": 30,
+      "sha256": "bfea7db9a47424d292850cab64ada0c79abb7495fac0f3c0f4e07b7472d67284"
+    },
+    {
+      "file": "issue_git_baseline",
+      "table": "issue_git_baseline",
+      "rows": 1,
+      "sha256": "f1ab0780215e9b8fc0c322ff77d05adec4beaaacd71965322fde1a3c10829784"
+    },
+    {
+      "file": "issue_draft_audit",
+      "table": "issue_draft_audit",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "workspace_status",
+      "table": "workspace_status",
+      "rows": 5,
+      "sha256": "e4cdc7adc8cc1128d2227d184b814ab2f32b5680f31309f646c8c5a603a4d243"
+    },
+    {
+      "file": "workspace_change_log",
+      "table": "workspace_change_log",
+      "rows": 67,
+      "sha256": "2bc4bda3feb7b49edb1ea41a146e66e3befb366c414842d89f159c6ec12e77a8"
+    },
+    {
+      "file": "sessions",
+      "table": "session",
+      "rows": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}
