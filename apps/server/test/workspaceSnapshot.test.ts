@@ -131,6 +131,19 @@ describe('STORE-5（M4a）工作区文本快照', () => {
     }
   });
 
+  it('默认导出保留 snapshot/knowledge/ 下的知识页快照', () => {
+    const wdb = workspaceDb();
+    const knowledgeFile = join(snapshotDir(), 'knowledge', 'page-keep.md');
+    mkdirSync(join(snapshotDir(), 'knowledge'), { recursive: true });
+    writeFileSync(knowledgeFile, 'knowledge snapshot\n', 'utf8');
+    try {
+      exportWorkspaceSnapshot({ db: wdb, workspacePath: wsPath });
+      expect(readFileSync(knowledgeFile, 'utf8')).toBe('knowledge snapshot\n');
+    } finally {
+      wdb.close();
+    }
+  });
+
   it('--include-messages：清单追加 messages 表并生成 messages.jsonl', () => {
     const wdb = workspaceDb();
     try {

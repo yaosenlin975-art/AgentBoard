@@ -20,6 +20,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  cpSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -453,6 +454,9 @@ function writeSnapshotAtomically(
       mkdirSync(dirname(target), { recursive: true });
       copyFileSync(copy.from, target);
     }
+    // 知识页快照与看板快照共用 snapshot/；换目录时保留该子目录，不能随旧目录删除。
+    const knowledgeDir = join(dir, 'knowledge');
+    if (existsSync(knowledgeDir)) cpSync(knowledgeDir, join(tmp, 'knowledge'), { recursive: true });
     if (existsSync(dir)) {
       renameSync(dir, backup);
       movedOld = true;
