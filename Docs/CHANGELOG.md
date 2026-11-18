@@ -1,5 +1,12 @@
 # CHANGELOG.md
 
+## [2026-11-18] Agent 工作流上下文成本优化收口
+
+- 新增 `kb work` / `kb finish` 与 MCP `start_task` / `finish_task` 聚合入口，复用现有 claim、changelog、done 与 fence 语义；旧工具名和 `agentboard_*` alias 保留。
+- MCP 任务列表/评论/写回执使用紧凑投影，`get_task` 保留完整字段与正文窗口；共享 schema 文案收敛，真实 `tools/list` 维持 88 工具并低于 140 KB 预算。
+- 8 个技能入口改为高频流程加 `references/` 按需读取；新增 `check-agent-context.mjs` 预算门禁，便携包自检同时校验入口引用文件是否存在。
+- README、Docs/api.md、DESIGNS、PENDING_TESTS 与便携包 README 同步聚合入口、预算命令、references 与人工验收口径。
+
 ## [2026-11-15] knowledgeCrossDb 测试断言适配 P2-03 S-5 unresolved 语义（P2-05b）
 
 - apps/server/test/knowledgeCrossDb.test.ts：2 例 P2-01 旧语义断言（目标缺失/删除 → link 边应全空）更新为 P2-03 S-5 语义——目标缺失/删除后断言出现 `unresolved:<slug>` 合成节点（node_type:'unresolved'，title 为 raw slug）及 kind:'link' 边（source=引用页、target=`unresolved:<slug>`）；reparse 用例补「晚建目标解析后 unresolved 合成节点消失」断言；文件头注释同步。产品代码零改动。

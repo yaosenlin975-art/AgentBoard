@@ -322,9 +322,11 @@ kb next [--workspace <id|名>]      # 下一张可领取的卡
 kb stats --workspace <id>          # 五状态计数 + 未完成无主 + 被阻塞（收尾复算用）
 kb show <issue-id> [--mark-read]
 kb claim <issue-id>                # 原子领取；已被占用退出码 2
+kb work <issue-id>                 # 原子领取并返回有界卡面/依赖/最近评论工作包；--json 输出单个工作包
 kb comment <issue-id> "内容"       # 长文/中文用 --stdin
 kb accept <issue-id>               # 待验收卡写结构化验收记录（不改状态）
 kb done <issue-id> --notes "..."   # 完成 → 待验收；见下方「done 的三道门禁」
+kb finish <issue-id> --title <标题> --type 修复 --notes-stdin  # done --close-record 的短入口；--no-changelog 等价无日志 done
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
 kb release <issue-id>              # 释放占用 → 待规划（不是失败；仅当前占用者可执行）
 kb reopen <issue-id> [--to <状态>] # 已关闭/已废弃 → 指定状态（默认待规划）；待验收卡不能用它退回
@@ -420,13 +422,14 @@ corepack pnpm --config.verify-deps-before-run=false --filter @agentboard/mcp lis
 
 工具清单（按域分组）：
 
-- 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
+- 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`start_task`、`release_task`、`add_task_comment`、`complete_task`、`finish_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
 - 依赖：读 `list_dependencies`；写 `add_dependency`、`remove_dependency`
 - 状态字典：读 `list_statuses`；写 `add_status`、`remove_status`
 - 知识库：读 `search_knowledge`、`list_knowledge`、`find_knowledge_sources`、`read_knowledge`；写 `create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
 - 待决策：读 `list_decisions`、`get_decision`、`stop_check`；写 `ask_decision`、`answer_decision`、`extend_decision_grace`、`withdraw_decision`
 - 变更日志：读 `list_changelog`、`get_changelog`；写 `create_changelog`
-- 收尾门禁：`complete_task` 前须满足三者之一——① `create_changelog` 传 `issue_id=<本任务>` 先写本卡日志；② `complete_task` 传 `changelog_id=<本工作区已有日志>`；③ 本次确实没有用户可见变更时传 `skip_changelog: true`。都不满足时服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
+- 聚合入口：`start_task` 复用 claim 并返回紧凑工作包；`finish_task` 默认创建归属本卡的 changelog 后完成，不要再先调用 `create_changelog`。
+- 收尾门禁：使用 `complete_task` 时须满足三者之一——① `create_changelog` 传 `issue_id=<本任务>` 先写本卡日志；② `complete_task` 传 `changelog_id=<本工作区已有日志>`；③ 本次确实没有用户可见变更时传 `skip_changelog: true`。都不满足时服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
 
 边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。原裁决要补的收口（close/reopen/accept）、变更日志、待决策读取/答复/宽限、知识 list/find-source 已全部落地（卡 `f504f61d`、`6a2ded57`、`64acde61`、`d6753e4c`、`4e009883`）；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
 

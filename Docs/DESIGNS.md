@@ -13,9 +13,9 @@ apps/server/        Express + better-sqlite3 + ws；REST/WS 唯一入口，静�
 apps/web/           React 19 + Vite + Tailwind 4；三区布局（工作空间 | 看板 | 右侧面板）
 apps/mcp/           官方 MCP TypeScript SDK 2.4.0；stdio tool server，仅通过本机 REST 调任务与知识服务
 packages/adapters/  四家 CLI 适配器 + 统一事件协议（text/tool/error/end）
-packages/cli/       kb 命令行（commander；list-spaces/list-tasks/show/create-issue/move-issue/delete-issue/claim/comment/done/fail）
+packages/cli/       kb 命令行（commander；任务、知识、变更日志、聚合工作包与收尾）
 packages/shared/    契约类型（Issue/IssueTreePage/Workspace/Session/Message/Comment、事件协议）
-skills/agentboard/  SKILL.md（agent 自助领取流程）
+skills/             8 个技能入口；高频流程留 SKILL.md，细则按 references/ 一跳读取
 Docs/               设计、变更、待测文档
 ```
 
@@ -30,7 +30,7 @@ Docs/               设计、变更、待测文档
 - **模型字段**：新建会话与修改模型共用 `ModelField`。模型请求期间显示加载状态；失败可重试，成功空列表保留手输；旧缓存值不在当前清单时仍显示并标明状态。清单加载后可返回下拉列表选择，也可切换手输；只读 CLI 保持禁用编辑并说明模型由 profile 决定。
 - **占用锁**：claim 原子事务 `WHERE claimed_by IS NULL AND status IN ('待规划','进行中')`，并发仅一成功；占用中禁状态变更（409），字段/评论仍可编辑。解除仅 agent `done`/`fail` 或用户强制释放。
 - **MCP 任务契约**：ID 操作提交 `workspace_id` 并由服务端校验；带范围的完成、失败、释放以占用者条件 SQL 在事务中执行。任务编辑支持 `expected_updated_at` CAS；增量触发器在时间不递增时设为旧值加一，覆盖评论、会话恢复及直接 SQL 修改。旧 UI 的人类强制操作单独保留，不作为 MCP 工具。
-- **统一 MCP**：12 个任务工具与 6 个知识工具经共享 REST client 调用现有 API；Workspace 绑定、知识 scope、request_id 幂等键和结构化业务错误在适配层映射。SDK schema 错误按 SDK `tools/call` 输入校验响应返回。所有知识读结果含 content 与 structuredContent 总长度不超过 40,000 个序列化字符；正文按 Unicode code point 续读，sources/evidence 按数组项分页，历史按实际返回 revision 数续读。
+- **统一 MCP**：任务、知识、依赖、状态、决策与变更日志工具都经共享 REST client 调用现有 API；Workspace 绑定、知识 scope、request_id 幂等键和结构化业务错误在适配层映射。任务列表使用紧凑投影，详情保留正文窗口；共享 `request_id` / `workspace_id` / `fence` 文案和工具级描述受 `scripts/check-agent-context.mjs` 预算门禁约束。SDK schema 错误按 SDK `tools/call` 输入校验响应返回。所有知识读结果含 content 与 structuredContent 总长度不超过 40,000 个序列化字符；正文按 Unicode code point 续读，sources/evidence 按数组项分页，历史按实际返回 revision 数续读。
 - **幂等写入**：Idempotency-Key 使用 UUID；actor、HTTP 操作、资源、规范化 body/query hash 与响应在 domain mutation 的同一事务保存，保留至少 24 小时。重放不再次广播或唤醒。外部唤醒在提交后执行，未完成结果保留 pending 状态；进程中断后重放返回 OPERATION_UNKNOWN，不再次触发，可能需人工检查一次未送达唤醒。未携带 key 的旧客户端保留原契约。
 - **分页正文**：携带 limit/offset 的工作空间、任务和评论请求返回 items/next_offset，按 id ASC；旧无分页请求保留数组。描述和单评论正文按 Unicode code point 窗口续读，默认 12,000、最大 40,000；评论列表只返回 500 字符片段，不消费未读游标。
 - **评论图片**：PNG/JPEG/WebP 以 raw bytes 上传到私有存储；10 MiB/张、5 张/评论。SQLite 增量表记录 staged/attached 元数据、提交关联、配额预留、清理账本与图片投递状态。投递状态为 pending、sending、unknown、delivered；服务启动把残留 sending 标记为 unknown。图片能力同时校验已成功探测的 CLI 版本和模型；CodeBuddy 当前仅启用 2.179.2 + MiniMax-M3.1-Flash。历史图片按 Issue scope 分页选择，单批按最旧顺序截断为最多 5 张且 ≤20 MiB，并返回仍待读数量。全局槽位取得后、适配器调用前以 SQLite immediate 事务复核选中 ID 并预留状态；unknown 只接受与当前确认对应的 ID。unknown 结果不自动重发；实际投递前缀含 unknown 时须显式确认 `retry_unknown_images`。图片回执只表示 CLI 轮次返回成功，不代表看板业务任务完成。consume 仅在 `delivered_at` 非空时推进评论游标。下载按 Workspace 或 Issue 关联校验，不从客户端接收服务端路径。
@@ -40,6 +40,7 @@ Docs/               设计、变更、待测文档
 - **评论唤醒**：纯文字用户评论 + issue 占用中且有绑定会话 → 空闲起一轮 / 运行中入队合并；未占用仅留言。含图片评论仅在当前 CLI 版本和模型组合通过合成图输入验证后唤醒。附件元数据展示 pending、sending、unknown、delivered；发送失败或服务重启把在途投递标为 unknown，保留未读。普通文字留言不夹带旧图片；再次派发包含 unknown 图片时必须显式确认。文件仅在附件/评论删除事务提交后回收；失败保留账本，由 1 小时周期清理重试。暂存默认 24 小时过期；配额、过期时间和清理周期可在 `/api/settings` 调整。
 - **错误与重启**：CLI 异常退出 → 会话"失败" → 占用释放 + issue 回"待规划" + system 评论；服务重启后"运行中"会话按失败处理。
 - **done/fail**：done → "待验收"释放占用（notes 落 `agent:<cli>` 评论）；fail → "待规划"释放占用（reason 落评论）。
+- **Agent 工作流聚合**：CLI `kb work` 复用原子 claim 后返回有界卡面、依赖与最近评论；`kb finish` 复用 `done --close-record`。MCP 对应 `start_task` / `finish_task`，先 claim 或先写本卡 changelog，再走既有 done；旧 `claim_task` / `complete_task` / `create_changelog` 与 `agentboard_*` alias 保留。聚合层不新增服务端事务、状态机或数据库迁移。
 
 ## 4. 技术选型
 

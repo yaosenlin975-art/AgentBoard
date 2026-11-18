@@ -2,13 +2,13 @@
 id: 3c231eec-27ba-4286-917f-656fe7255dbb
 slug: agent-token-efficient-workflow
 title: "Agent 使用流程与上下文成本优化设计"
-revision: 2
+revision: 4
 scope: workspace
 workspace_id: c5b8f2a5-5afa-48ec-9217-324f6777078e
 status: active
 domain: infra
 category: design
-landed: proposed
+landed: landed
 sources:
   - source_id: "file:Docs/design-2026-11-18-agent-token-efficient-workflow.md"
     source_type: file
@@ -18,10 +18,10 @@ sources:
 evidence:
   - source_id: "file:Docs/design-2026-11-18-agent-token-efficient-workflow.md"
     locator: Docs/design-2026-11-18-agent-token-efficient-workflow.md
-content_hash: e7be656617b5225ba693ab37e9d5fabf9a166b5ef3603a4a28f82576aa58fb1f
+content_hash: 341da82f1819b3e0c6ba8be2d334cde71038dc9785930d0ecd0efbfc244eec05
 expires_at: null
 created_at: 1794971311712
-updated_at: 1794971422578
+updated_at: 1794975830136
 created_by: kb-cli
 updated_by: kb-cli
 change_note: ""

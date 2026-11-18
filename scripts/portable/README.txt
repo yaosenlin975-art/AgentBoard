@@ -51,13 +51,13 @@ AgentBoard 便携版（Windows x64）
   AGENTS.md                    项目规则索引（权威文档优先级）
   README.md                    本仓库 README（运行/端口/构建口径）
   Docs\api.md                  HTTP API 与 CLI 契约（含退出码）
-  skills\using-agentboard\     看板工作流唯一权威（工作区边界、kb 命令速查）
+  skills\using-agentboard\     看板工作流唯一权威（工作区边界、kb 命令速查、references/ 一跳细则）
   skills\writing-task\         拆卡 / 建卡
-  skills\executing-task\       执行已派卡
+  skills\executing-task\       执行已派卡（references/ 含并行与收尾细则）
   skills\handoff\              交接
   skills\swing-dev\            机动巡检
   skills\ask-user\             待决策提问（宽限 / LOCKED 停手 / 断点续跑）
-  skills\brainstorming\        需求澄清 / 方案对比 / 设计批准
+  skills\brainstorming\        需求澄清 / 方案对比 / 设计批准（references/ 含设计页与 Git 口径）
   skills\kb-curator\           链接摘要 / 征询入库 / 主题页追加与合并
   ../rules-manifest.json       文件清单 + sha256（自检依据）
 
@@ -70,18 +70,21 @@ AgentBoard 便携版（Windows x64）
      （using-agentboard 会按该变量解析权威文档；工作区仍按 cwd\skills 优先）
 
 自检：双击 check-rules.cmd，或执行 runtime\node.exe app\verify-rules.mjs。
-输出 [rules] OK：<文件数> 个文件，8 个技能，kb --help 可用，退出码 0；
-缺文件、内容被改（哈希不符）或 kb --help 失败时退出码 1 并逐条列出。
+输出 [rules] OK：<文件数> 个文件，8 个技能，AGENTS.md / README.md / Docs/api.md 齐全，kb --help 可用，退出码 0；
+缺文件、内容被改（哈希不符）、技能入口引用的 references/*.md 缺失，或 kb --help 失败时退出码 1 并逐条列出。
 
 五、怎么用 CLI（kb）
 --------------------
 包内自带 CLI：app\cli\kb.cmd
   app\cli\kb.cmd --help                     查看全部命令与退出码
   app\cli\kb.cmd list-spaces
+  app\cli\kb.cmd work <issue-id>            原子领取并输出紧凑工作包
   app\cli\kb.cmd create-space 我的项目 D:\work\myproject
+  app\cli\kb.cmd finish <issue-id> --title "标题" --type 修复 --notes "验证结果"
   app\cli\kb.cmd --server http://127.0.0.1:8899 list-spaces   (服务不是默认端口时)
   app\cli\kb.cmd knowledge --help / create-issue --help / dep --help   分族帮助
 注意：kb 的全局选项（--server / --json）要放在子命令前面。
+`--json` 保持既有脚本字段：work/finish 也输出单个 JSON 文档，失败仍走原退出码。
 知识页是文件事实源（公共页 <你的数据目录>\Docs\，工作区页 <工作区>\.agentboard\Docs\）；
 对外引用用 kb knowledge link（默认 [[wikilink]]），禁止裸文件路径；旧库迁移用 kb knowledge export-legacy。
 kb claim 成功会在“当前工作目录”下写 .agentboard\claims\ 记录，属于本地状态，可随时删除。

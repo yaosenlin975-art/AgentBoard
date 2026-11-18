@@ -45,7 +45,8 @@ for (const skill of REQUIRED_SKILLS) {
   const skillPath = join(APP, 'rules', 'skills', skill, 'SKILL.md');
   if (!existsSync(skillPath)) continue;
   const text = readFileSync(skillPath, 'utf8');
-  for (const ref of new Set(text.match(/references\/[A-Za-z0-9._/-]+\.md/g) ?? [])) {
+  // Resolve references relative to the skill directory, including ../<skill>/references/*.md.
+  for (const ref of new Set(text.match(/(?:\.\.\/[A-Za-z0-9._-]+\/)?references\/[A-Za-z0-9._/-]+\.md/g) ?? [])) {
     if (!existsSync(resolve(dirname(skillPath), ref))) problems.push(`技能引用缺失: skills/${skill}/${ref}`);
   }
 }
