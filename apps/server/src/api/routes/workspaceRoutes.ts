@@ -123,7 +123,8 @@ export function createWorkspaceRouter(deps: WorkspaceRouterDeps): Router {
   } = deps;
   const router = Router();
 
-  router.use('/workspaces/:workspaceId/changelog', createChangelogRouter(deps.db));
+  // LOG-LOCALIZED：--issue 归属校验按工作区解析库（localized→工作区库）；日志行仍落中心库
+  router.use('/workspaces/:workspaceId/changelog', createChangelogRouter({ db, dbForWorkspace }));
   // STATUS-2：工作区状态字典（列表/新建/删除+强制迁移）
   router.use('/workspaces/:workspaceId/statuses', createWorkspaceStatusRouter(deps.db));
 

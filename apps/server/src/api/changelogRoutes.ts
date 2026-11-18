@@ -43,8 +43,16 @@ const archivedWorkspaceQuery = z
   .object({ limit: z.coerce.number().int().min(1).max(100).default(50), offset: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0) })
   .strict();
 
+export interface ChangelogRouterDeps {
+  /** 中心库：工作区注册权威 + 日志行落库（门禁按中心库读，见 issueRoutes SK-05） */
+  db: Db;
+  /** STORE-4a：--issue 归属校验用——卡随工作区下沉， localized 工作区查工作区库 */
+  dbForWorkspace: (workspaceId: string) => Db;
+}
+
 /** 活动日志：挂载点已带 `:workspaceId`，需 mergeParams 读取 */
-export function createChangelogRouter(db: Db): Router {
+export function createChangelogRouter(deps: ChangelogRouterDeps): Router {
+  const { db, dbForWorkspace } = deps;
   const router = Router({ mergeParams: true });
 
   const requireWorkspace = (raw: unknown): string => {
@@ -62,8 +70,10 @@ export function createChangelogRouter(db: Db): Router {
   router.post('/', (req, res) => {
     const workspaceId = requireWorkspace((req.params as Record<string, string>).workspaceId);
     const body = parse(changeLogCreateSchema, req.body);
-    // N4-03：--issue 归属必须真实存在且属于本工作区，避免写出不会过 done 门禁的「幽灵归属」
-    if (body.issue_id !== undefined && getIssue(db, body.issue_id, workspaceId) === null) {
+    // N4-03：--issue 归属必须真实存在且属于本工作区，避免写出不会过 done 门禁的「幽灵归属」。
+    // LOG-LOCALIZED：卡随工作区下沉（issue 在 <ws>/.agentboard/agentboard.db），校验走与 issue 族
+    // 路由同一解析（localized→工作区库，其余→中心库）；日志行本身仍落中心库，门禁口径不变。
+    if (body.issue_id !== undefined && getIssue(dbForWorkspace(workspaceId), body.issue_id, workspaceId) === null) {
       throw new ValidationError(
         `issue_id ${body.issue_id} 不存在或不属于本工作区；请先用 kb show <id> 确认任务 id，或省略 --issue 写无归属日志。`,
       );
