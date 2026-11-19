@@ -38,12 +38,12 @@ function KnowledgeRef({ id }: { id: string }) {
   }
   const page = query.data;
   return (
-    <article data-testid="ref-panel-knowledge" className="flex min-h-0 flex-col gap-2">
+    <article data-testid="ref-panel-knowledge" className="flex h-full min-h-0 flex-col gap-2">
       <h2 className="break-words text-sm font-semibold">{page.title}</h2>
       <p className="text-xs text-ink-3">
         {page.scope === 'common' ? '公共知识' : '当前工作区'} · {page.slug}
       </p>
-      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-hairline p-2">
+      <div data-testid="ref-panel-body" className="min-h-0 flex-1 overflow-auto break-words rounded border border-hairline p-2">
         <MarkdownView compact>{page.body_md ?? ''}</MarkdownView>
       </div>
     </article>
@@ -67,12 +67,12 @@ function LogRef({ id }: { id: string }) {
   }
   const entry = query.data;
   return (
-    <article data-testid="ref-panel-log" className="flex min-h-0 flex-col gap-2">
+    <article data-testid="ref-panel-log" className="flex h-full min-h-0 flex-col gap-2">
       <h2 className="break-words text-sm font-semibold">{entry.title}</h2>
       <p className="text-xs text-ink-3">
         {entry.change_type} · rev:{entry.revision}
       </p>
-      <div data-testid="ref-panel-body" className="min-h-0 overflow-auto break-words rounded border border-hairline p-2">
+      <div data-testid="ref-panel-body" className="min-h-0 flex-1 overflow-auto break-words rounded border border-hairline p-2">
         <MarkdownView compact>{entry.body_md}</MarkdownView>
       </div>
     </article>
@@ -108,7 +108,7 @@ export function RefPanel() {
       data-panel-state={phase}
       data-panel-motion-ms={reducedMotion ? 0 : PANEL_MOTION_MS}
       style={panelMotionStyle('slide-right', mounted ? phase : 'entering', reducedMotion)}
-      className="min-h-0"
+      className="h-full min-h-0"
     >
       {target.kind === 'knowledge' ? <KnowledgeRef id={target.id} /> : <LogRef id={target.id} />}
     </div>

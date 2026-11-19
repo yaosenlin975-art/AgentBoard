@@ -4,6 +4,7 @@
  * - 收起（rightOpen=false）渲染窄条，展开按钮恢复原视图；
  * - 展开时顶部条（视图标题 + 收起按钮），左缘拖拽调宽（320–720px，localStorage 持久）；
  * - view==='detail' 渲染 DetailPanel（T13），view==='ref' 渲染软链接浮窗 RefPanel（MD-LINKS：知识页 / 日志详情）。
+ *   MD-LINKS-FIX：详情已开时再点知识/日志链接，引用浮窗改为独立小窗叠在详情旁，详情保持挂载可见。
  *   S2b：聊天已整屏化（`navStore.view === 'chat'` 时由 App 整屏渲染 ChatPanel），这里不再有 chat 分支。
  * 视图组件各持 react-query 缓存，收起/展开与往返切换不丢数据。
  */
@@ -37,12 +38,18 @@ export function RightPanel() {
   const closeRight = usePanelStore((s) => s.closeRight);
   const clearView = usePanelStore((s) => s.clearView);
   const refPanel = usePanelStore((s) => s.refPanel);
+  const closeRef = usePanelStore((s) => s.closeRef);
   const detailIssueId = usePanelStore((s) => s.issueId);
 
   const [width, setWidth] = useState(loadWidth);
   const [resizing, setResizing] = useState(false);
   // ANCHOR-DETAIL：详情浮窗贴列定位（null=沿用右侧固定抽屉；narrow/无列信息时也是 drawer）
   const [anchor, setAnchor] = useState<DetailAnchor | null>(null);
+  // MD-LINKS-FIX：详情已开时的引用浮窗位置（容器坐标系；null=未打开/未测量）
+  const [refPos, setRefPos] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const refWindowRef = useRef<HTMLElement>(null);
+  // 引用浮窗的 out-of-open 焦点回归留空：避免关闭时抢详情内的焦点
+  const refReturnFocusRef = useRef<HTMLElement | null>(null);
   const widthRef = useRef(width);
   widthRef.current = width;
   // 单一真源（PANEL-VIEW-BUG）：可见性只看 overlayStore.right；视图只看 panelStore.view。
@@ -52,6 +59,8 @@ export function RightPanel() {
   const closeRightOverlay = useOverlayStore((s) => s.closeRight);
   const activeView: PanelView = view ?? 'detail';
   const isOpen = view !== null && overlayRight;
+  /** MD-LINKS-FIX：详情视图下的引用浮窗是独立小窗，与详情同时可见（不替换详情） */
+  const refFloating = view === 'detail' && refPanel !== null && isOpen;
   const asideRef = useRef<HTMLElement>(null);
   /** 打开前的焦点元素（任务卡 / 顶栏「聊天」按钮），关闭后焦点回它（PANEL-ENTRY2：不再有 rail 入口） */
   const returnFocusRef = useRef<HTMLElement | null>(null);
@@ -92,7 +101,9 @@ export function RightPanel() {
     closeRight();
     clearView();
   }, [closeRightOverlay, closeRight, clearView]);
-  useDismissable({ open: isOpen, onClose: dismiss, panelRef: asideRef, triggerRef: returnFocusRef });
+  // MD-LINKS-FIX：详情 + 引用浮窗并存时，外面板让位——先由引用浮窗响应 Esc/外部点击（只关它，不动详情）
+  useDismissable({ open: isOpen && !refFloating, onClose: dismiss, panelRef: asideRef, triggerRef: returnFocusRef });
+  useDismissable({ open: refFloating, onClose: closeRef, panelRef: refWindowRef, triggerRef: refReturnFocusRef });
 
   useLayoutEffect(() => {
     const previous = previousView.current;
@@ -172,6 +183,46 @@ export function RightPanel() {
     };
   }, [recomputeAnchor, activeView, isOpen, detailIssueId]);
 
+  /**
+   * MD-LINKS-FIX：引用小窗定位——默认贴详情左侧，左侧放不下换右侧，两边都挤就贴右缘，
+   * 保证详情本身不被替换、尽量不被遮挡。
+   */
+  const recomputeRefPos = useCallback((): void => {
+    if (!refFloating || !mounted || asideRef.current === null) {
+      setRefPos(null);
+      return;
+    }
+    const aside = asideRef.current;
+    const container = (aside.offsetParent as HTMLElement | null) ?? aside.parentElement;
+    if (container === null) return;
+    const containerRect = container.getBoundingClientRect();
+    const detailRect = aside.getBoundingClientRect();
+    const margin = 8;
+    const gap = 8;
+    const width = Math.min(420, Math.max(280, (containerRect.width || window.innerWidth) - margin * 2));
+    let left = detailRect.left - gap - width;
+    if (left < containerRect.left + margin) left = detailRect.right + gap;
+    const maxLeft = window.innerWidth - margin - width;
+    if (left > maxLeft) left = Math.max(containerRect.left + margin, maxLeft);
+    setRefPos({
+      left: left - containerRect.left,
+      top: detailRect.top - containerRect.top,
+      width,
+      height: detailRect.height,
+    });
+  }, [refFloating, mounted]);
+
+  useLayoutEffect(() => {
+    recomputeRefPos();
+    if (!refFloating) return undefined;
+    window.addEventListener('resize', recomputeRefPos);
+    window.addEventListener('scroll', recomputeRefPos, true);
+    return () => {
+      window.removeEventListener('resize', recomputeRefPos);
+      window.removeEventListener('scroll', recomputeRefPos, true);
+    };
+  }, [recomputeRefPos, refFloating, phase, anchor, width]);
+
 
   const onHandlePointerDown = (e: ReactPointerEvent<HTMLDivElement>): void => {
     e.preventDefault();
@@ -212,7 +263,8 @@ export function RightPanel() {
   const panelWidth = anchored?.width ?? width;
 
   return (
-    <aside
+    <>
+      <aside
       ref={asideRef}
       data-testid="right-panel"
       data-panel-state={phase}
@@ -334,7 +386,45 @@ export function RightPanel() {
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+      {/* MD-LINKS-FIX：详情已开时的知识/日志引用小窗——独立浮层，详情保持可见 */}
+      {refFloating && refPos !== null && (
+        <aside
+          ref={refWindowRef}
+          data-testid="ref-panel-window"
+          data-ref-kind={refPanel?.kind}
+          aria-label={refPanel?.kind === 'log' ? '日志引用浮窗' : '知识引用浮窗'}
+          style={{
+            left: `${refPos.left}px`,
+            top: `${refPos.top}px`,
+            width: `${refPos.width}px`,
+            height: `${refPos.height}px`,
+            maxHeight: 'calc(100dvh - 1rem)',
+            ...panelMotionStyle('slide-right', phase, reducedMotion),
+          }}
+          className="absolute z-40 flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface-card shadow-2xl"
+        >
+          <header className="flex h-10 shrink-0 items-center justify-between border-b border-hairline px-3">
+            <h2 className="truncate pr-2 text-sm font-semibold" title={refPanel?.title}>
+              {refPanel?.kind === 'log' ? '日志' : '知识'}
+            </h2>
+            <button
+              type="button"
+              data-testid="ref-panel-window-close"
+              aria-label="关闭引用浮窗"
+              title="关闭引用浮窗"
+              onClick={closeRef}
+              className="rounded px-2 py-0.5 text-sm text-ink-3 hover:bg-surface-raised"
+            >
+              ×
+            </button>
+          </header>
+          <div className="min-h-0 flex-1 overflow-hidden p-3">
+            <RefPanel />
+          </div>
+        </aside>
+      )}
+    </>
   );
 }
 

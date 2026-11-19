@@ -95,8 +95,10 @@ interface PanelState {
   rightOpen: boolean;
   /** 打开任务详情并展开右侧 */
   openDetail: (issueId: string) => void;
-  /** 打开知识/日志软链接浮窗（MD-LINKS）并展开右侧 */
+  /** 打开知识/日志软链接浮窗（MD-LINKS）并展开右侧；详情已开时与之并存，不替换详情 */
   openRef: (target: RefPanelTarget) => void;
+  /** 只关闭引用浮窗：详情视图下保留详情，ref 视图下等同整体收起 */
+  closeRef: () => void;
   /** 切到聊天视图并展开右侧；不传 sessionId 时沿用当前选中会话 */
   openChat: (sessionId?: string, session?: Session) => void;
   /** 清空会话选择（会话按 id 恢复失败时回空态） */
@@ -144,8 +146,20 @@ export const usePanelStore = create<PanelState>()(
       },
       openRef: (target) => {
         if (useNavStore.getState().view === 'chat') useNavStore.getState().setView('board');
-        set({ view: 'ref', refPanel: target, issueId: null, rightOpen: true });
+        // MD-LINKS-FIX：详情开着时知识/日志浮窗独立并存，不清 issueId、不切 view；
+        // 没有详情时才退回「右侧单浮窗」的 ref 视图语义。
+        set((s) =>
+          s.view === 'detail'
+            ? { refPanel: target, rightOpen: true }
+            : { view: 'ref', refPanel: target, issueId: null, rightOpen: true },
+        );
       },
+      closeRef: () =>
+        set((s) =>
+          s.view === 'ref'
+            ? { view: null, issueId: null, refPanel: null, rightOpen: false }
+            : { refPanel: null },
+        ),
       openChat: (sessionId, session) => {
         // S2b：聊天是主区第五视图 → 只切 navStore；panelStore 只负责「把右侧浮窗清空收起」，
         // 不再写 `view`（'chat' 已不是 PanelView 的取值），保证整屏聊天时 detail/ref 浮窗计数为 0。

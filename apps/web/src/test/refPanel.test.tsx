@@ -2,8 +2,8 @@
  * MD-LINKS-1：右侧浮窗支持知识页 / 日志详情（panelStore 的 ref 视图 + RefPanel + RightPanel 分支）。
  * 链接解析与权限在子卡 MD-LINKS-2；这里只锁「浮窗能按 kind 显示内容、404 显示无权限或不存在」。
  */
-import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { KnowledgePage, WorkspaceChangeLog } from '@agentboard/shared';
@@ -14,6 +14,11 @@ import { usePanelStore } from '../state/panelStore';
 import { useNavStore } from '../state/navStore';
 import { resetOverlays, useOverlayStore } from '../state/overlayStore';
 import { server } from './server';
+
+// 详情与引用并存用例只关心「两个视图都在」，详情内部数据不必真拉
+vi.mock('../components/detail/DetailPanel', () => ({
+  DetailPanel: () => <div data-testid="stub-detail-panel">detail-body</div>,
+}));
 
 const workspaceId = 'ws-1';
 
@@ -114,6 +119,20 @@ describe('panelStore：ref 视图', () => {
     usePanelStore.getState().clearView();
     expect(usePanelStore.getState()).toMatchObject({ view: null, refPanel: null, rightOpen: false });
   });
+
+  it('详情打开时 openRef 保留详情；closeRef 只关引用', () => {
+    usePanelStore.getState().openDetail('i-1');
+    usePanelStore.getState().openRef({ kind: 'knowledge', id: 'kp-1', title: 'BOM 守卫' });
+    expect(usePanelStore.getState()).toMatchObject({
+      view: 'detail',
+      issueId: 'i-1',
+      refPanel: { kind: 'knowledge', id: 'kp-1', title: 'BOM 守卫' },
+      rightOpen: true,
+    });
+
+    usePanelStore.getState().closeRef();
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'i-1', refPanel: null });
+  });
 });
 
 describe('RefPanel：按 kind 显示内容', () => {
@@ -128,6 +147,10 @@ describe('RefPanel：按 kind 显示内容', () => {
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('BOM 守卫');
     const body = screen.getByTestId('ref-panel-body');
     await waitFor(() => expect(body).toHaveTextContent('公共知识正文'));
+    // MD-LINKS-FIX：正文容器必须可滚动（可收缩 + overflow-auto），否则长内容被父级裁掉
+    expect(body.className).toContain('flex-1');
+    expect(body.className).toContain('overflow-auto');
+    expect(body.className).toContain('min-h-0');
   });
 
   it('日志：拉当前工作区 changelog 详情并渲染', async () => {
@@ -179,5 +202,26 @@ describe('RightPanel：ref 视图', () => {
 
     usePanelStore.getState().openRef({ kind: 'log', id: 'log-1', title: '日志标题' });
     await waitFor(() => expect(within(panel).getByRole('heading', { level: 2 })).toHaveTextContent('日志'));
+  });
+});
+
+describe('RightPanel：详情 + 引用并存（MD-LINKS-FIX）', () => {
+  it('详情保持渲染，引用小窗独立出现；关闭引用不影响详情', async () => {
+    server.use(http.get('/api/knowledge/pages/kp-1', () => HttpResponse.json(knowledgePage())));
+    act(() => usePanelStore.getState().openDetail('iss-1'));
+    useOverlayStore.getState().openRight();
+    withClient(<RightPanel />);
+
+    expect(await screen.findByTestId('stub-detail-panel')).toBeInTheDocument();
+
+    act(() => usePanelStore.getState().openRef({ kind: 'knowledge', id: 'kp-1', title: 'BOM 守卫' }));
+    const refWindow = await screen.findByTestId('ref-panel-window');
+    expect(screen.getByTestId('detail-panel-view')).toBeInTheDocument();
+    expect(await within(refWindow).findByTestId('ref-panel-knowledge')).toBeInTheDocument();
+
+    fireEvent.click(within(refWindow).getByTestId('ref-panel-window-close'));
+    await waitFor(() => expect(screen.queryByTestId('ref-panel-window')).toBeNull());
+    expect(screen.getByTestId('detail-panel-view')).toBeInTheDocument();
+    expect(usePanelStore.getState()).toMatchObject({ view: 'detail', issueId: 'iss-1', refPanel: null });
   });
 });
