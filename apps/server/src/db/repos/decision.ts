@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DecisionCapabilities, Priority } from '@agentboard/shared';
 import type { Db } from '../connection.js';
+import { pushAll } from '../../services/pushAll.js';
 
 /**
  * DEC-1：待决策区数据访问层。
@@ -269,7 +270,7 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
       where.push('1=0');
     } else {
       where.push(`d.workspace_id IN (${filter.workspace_ids.map(() => '?').join(',')})`);
-      params.push(...filter.workspace_ids);
+      pushAll(params, filter.workspace_ids);
     }
   }
   if (filter.issue_id !== undefined) {
@@ -278,7 +279,7 @@ export function listDecisions(db: Db, filter: DecisionListFilter = {}): Decision
   }
   if (states.length > 0) {
     where.push(`d.state IN (${states.map(() => '?').join(',')})`);
-    params.push(...states);
+    pushAll(params, states);
   }
   if (filter.stale_before !== undefined) {
     where.push("d.state='open' AND d.locked_at IS NOT NULL AND d.locked_at <= ?");

@@ -9,6 +9,7 @@
  * ⑤ enable 完成后 snapshot/ 自动生成且自校验通过
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,7 +54,7 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       slug: 'ws-page',
       title: '本区页',
       body_md: '正文',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
       actor: 'tester',
     } as never);
@@ -126,6 +127,19 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       expect(second.manifest.included_tables).toEqual(first.manifest.included_tables);
       expect(second.manifest.included_tables).not.toContain('message');
       expect(second.manifest.exported_at >= first.manifest.exported_at).toBe(true);
+    } finally {
+      wdb.close();
+    }
+  });
+
+  it('默认导出保留 snapshot/knowledge/ 下的知识页快照', () => {
+    const wdb = workspaceDb();
+    const knowledgeFile = join(snapshotDir(), 'knowledge', 'page-keep.md');
+    mkdirSync(join(snapshotDir(), 'knowledge'), { recursive: true });
+    writeFileSync(knowledgeFile, 'knowledge snapshot\n', 'utf8');
+    try {
+      exportWorkspaceSnapshot({ db: wdb, workspacePath: wsPath });
+      expect(readFileSync(knowledgeFile, 'utf8')).toBe('knowledge snapshot\n');
     } finally {
       wdb.close();
     }
@@ -269,6 +283,38 @@ describe('STORE-5（M4a）工作区文本快照', () => {
       expect(() => importWorkspaceSnapshot({
         db: target.db, dir: snapshotDir(), workspaceId: 'another-workspace', workspacePath: target.wsDir,
       })).toThrowError(/manifest\.workspace_id/);
+    } finally {
+      target.close();
+    }
+  });
+
+  it('子卡排序在父卡之前时仍按父子关系导入', () => {
+    const target = freshTarget('import-parent-order');
+    const parentId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const childId = '00000000-0000-4000-8000-000000000001';
+    const now = Date.now();
+    const parent = {
+      id: parentId, workspace_id: ws, title: '父卡', description: '', priority: '中', labels: '[]',
+      status: '待规划', sort_order: 0, claimed_by: null, claimed_at: null, session_id: null,
+      last_seen_comment_id: null, claim_lease_until: null, claim_fence: 0, last_heartbeat_at: null,
+      parent_issue_id: null, due_date: null, due_time: null, created_at: now, updated_at: now,
+    };
+    const child = { ...parent, id: childId, title: '子卡', parent_issue_id: parentId, created_at: now + 1, updated_at: now + 1 };
+    try {
+      const issuesFile = join(snapshotDir(), 'issues.jsonl');
+      writeFileSync(issuesFile, `${JSON.stringify(child)}\n${JSON.stringify(parent)}\n`, 'utf8');
+      const manifestFile = join(snapshotDir(), 'manifest.json');
+      const manifest = JSON.parse(readFileSync(manifestFile, 'utf8')) as { files: Array<{ file: string; rows: number; sha256: string }> };
+      const entry = manifest.files.find(item => item.file === 'issues')!;
+      entry.rows = 2;
+      entry.sha256 = createHash('sha256').update(readFileSync(issuesFile)).digest('hex');
+      writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+
+      const result = importWorkspaceSnapshot({
+        db: target.db, dir: snapshotDir(), workspaceId: ws, workspacePath: target.wsDir,
+      });
+      expect(result.rows).toBeGreaterThan(2);
+      expect(target.db.prepare('SELECT parent_issue_id FROM issue WHERE id=?').get(childId)).toEqual({ parent_issue_id: parentId });
     } finally {
       target.close();
     }

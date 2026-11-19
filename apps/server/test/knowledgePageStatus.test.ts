@@ -25,7 +25,7 @@ describe('KB-PAGE-1 缺陷 2/3：deleted 读语义与 search 字段', () => {
   const mkPage = async (slug: string, body = '正文内容 cache 关键词') => {
     const created = await request(app).post('/api/knowledge/pages').send({
       domain: 'knowledge', scope: 'common', slug, title: `标题 ${slug}`, body_md: body,
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
       actor: 'tester',
     });

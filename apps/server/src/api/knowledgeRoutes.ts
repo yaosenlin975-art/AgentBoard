@@ -18,11 +18,12 @@ import { z } from 'zod';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { KnowledgePage, KnowledgeScope } from '@agentboard/shared';
+import { normalizeDocSlug } from '@agentboard/shared';
 import type { Db } from '../db/connection.js';
-import { ApiError, ValidationError } from '../errors.js';
+import { ApiError, NotFoundError, ValidationError } from '../errors.js';
 import { KnowledgeErrorCode } from './knowledgeCodes.js';
 import { zhZodIssue } from './zod.js';
-import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
+import { GRAPH_MAX_EDGES, GRAPH_MAX_NODES, GRAPH_MAX_PAGES, GRAPH_SOURCE_HASH_MAX_COOCCURRENCE, GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE, buildKnowledgeGraph, type GraphInputRow } from '../services/knowledgeGraph.js';
 import { knowledgeLinkFields } from '../services/knowledgeResolve.js';
 import type { KnowledgeResolveResult, ResolveScope } from '../services/knowledgeResolve.js';
 import { KNOWLEDGE_IMAGE_MAX_BYTES, type KnowledgeImageStore } from '../services/knowledgeImages.js';
@@ -50,6 +51,10 @@ import type { DocsIndex } from '../knowledge/index.js';
 
 /**
  * CLI-UX：把 zod 的英文 issue 转成中文并附可用值（服务端仍以 VALIDATION_ERROR 返回）。
+ *
+ * 查询参数一律用 `z.object({...})` 的默认 strip 语义，**不加 `.strict()`**：
+ * strict 会对未知键报 Unrecognized key，等于「CLI 一加新参数，未升级的服务端整个命令全挂」。
+ * 请求体（POST/PUT body）继续保持 `.strict()`，那是写入契约，拼错必须报错。
  */
 function parse<T>(schema: z.ZodType<T>, raw: unknown): T {
   const result = schema.safeParse(raw);
@@ -176,7 +181,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
 
   // ---- 检索（bm25 排序 + 1–2 字符子串 + snippet，由 .index.json/内存索引承载）----
   router.get('/search', (req, res) => {
-    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }).strict(), req.query);
+    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), q: z.string(), limit: integerQuery(5, 20).refine(n => n > 0) }), req.query);
     const withLink = (row: { page_id: string; title: string; slug: string; scope: string; workspace_id: string | null; revision: number }) => ({
       ...row,
       ...knowledgeLinkFields({ id: row.page_id, title: row.title, slug: row.slug, scope: row.scope as 'common' | 'workspace', workspace_id: row.workspace_id, revision: row.revision }),
@@ -206,7 +211,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       limit_edges: integerQuery(GRAPH_MAX_EDGES, 20000).refine(n => n > 0),
       edge_kinds: z.string().default('link,source,keyword'),
       include_isolated: z.enum(['true', 'false']).default('false'),
-    }).strict(), req.query);
+    }), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('该 scope 必须提供 workspace_id');
     const kinds = input.edge_kinds.split(',').map(kind => kind.trim()).filter(kind => kind !== '');
     const allowedKinds = ['link', 'source', 'keyword', 'embed'] as const;
@@ -276,7 +281,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     const tagEdges = tags.flatMap(tag => tag.refs.map(ref => ({ source: ref.source, target: `tag:${tag.tag_norm}`, weight: ref.weight, kind: 'link' as const })));
     const attachmentEdges = attachments.flatMap(attachment => attachment.refs.map(ref => ({ source: ref.source, target: attachment.node_id, weight: ref.weight, kind: 'embed' as const })));
     const syntheticRows: GraphInputRow[] = [...tagRows, ...attachmentRows, ...unresolvedRows];
-    res.json(buildKnowledgeGraph([...mergedRows, ...syntheticRows], {
+    const graph = buildKnowledgeGraph([...mergedRows, ...syntheticRows], {
       pagesTruncated,
       pageTotal,
       edgeKinds: uniqueKinds,
@@ -289,12 +294,25 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       includeIsolated: input.include_isolated === 'true',
       limitNodes: Math.min(input.limit_nodes, GRAPH_MAX_NODES),
       limitEdges: Math.min(input.limit_edges, GRAPH_MAX_EDGES),
-    }));
+    });
+    // S3：来源共现超限必须有声音（对齐上面 pagesTruncated 的 warn 口径），不静默丢弃
+    if (graph.source_skipped_keys > 0) {
+      console.warn('[knowledge-graph] 来源共现超上限，相关边已跳过（数据质量问题：检查是否有大批页共用同一 locator/content_hash）', {
+        scope: input.scope,
+        workspace_id: input.workspace_id ?? null,
+        skipped_keys: graph.source_skipped_keys,
+        max_cooccurrence: graph.source_max_cooccurrence,
+        limit: { locator: GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE, content_hash: GRAPH_SOURCE_HASH_MAX_COOCCURRENCE },
+      });
+    }
+    res.json(graph);
   });
 
   // ---- 列表 ----
+  // K3：坏页不再被静默吞掉——响应新增 invalid_count 与 invalid[]（只给 slug/文件名/issues，不返回正文），
+  // 判据为「本范围内解析或校验失败的文件」。items 结构与既有字段不变。
   router.get('/pages', (req, res) => {
-    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }).strict(), req.query);
+    const input = parse(z.object({ scope: z.enum(['common', 'workspace', 'both']), workspace_id: z.string().min(1).optional(), status: z.enum(['active', 'archived', 'deleted', 'all']).default('active'), include_expired: z.enum(['true', 'false']).default('false'), invalid_only: z.enum(['true', 'false']).default('false'), offset: integerQuery(0, Number.MAX_SAFE_INTEGER), limit: integerQuery(20, 100).refine(n => n > 0) }), req.query);
     if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
     else if (!input.workspace_id) throw new ValidationError('both 必须提供 workspace_id');
     const includeExpired = input.include_expired === 'true';
@@ -306,7 +324,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     };
     const workspacePath = input.scope === 'common' ? null : (input.workspace_id !== undefined ? getWorkspaceRow(input.workspace_id)?.path ?? null : null);
     if (input.scope !== 'common' && workspacePath === null && input.workspace_id !== undefined) {
-      res.json({ items: [], next_offset: null });
+      res.json({ items: [], next_offset: null, invalid_count: 0, invalid: [] });
       return;
     }
     const view = knowledgeDocsStore.view(
@@ -318,10 +336,16 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       .filter(entry => entry.issues.length === 0 && statusFilter(entry.meta))
       .map(entryToRow)
       .sort((left, right) => (right.updated_at - left.updated_at) || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-    const { items, next_offset } = view.listPages(fetch, input.offset, input.limit);
+    // 坏页清单：status 过滤按 meta.status 尽力判断（meta 读不出时 store 侧不过滤，宁可多报不可漏报）
+    const invalidRows = view.invalidFiles(meta => input.status === 'all' || statusFilter(meta));
+    const { items, next_offset } = input.invalid_only === 'true'
+      ? { items: [], next_offset: null }
+      : view.listPages(fetch, input.offset, input.limit);
     res.json({
       items: items.map(row => ({ ...row, ...knowledgeLinkFields(row) })),
       next_offset,
+      invalid_count: invalidRows.length,
+      invalid: invalidRows,
     });
   });
 
@@ -352,6 +376,8 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     const result = resolveRefInFiles(ref, scope, view, options.legacyPageOwner ?? null);
     if (result.state === 'resolved') { res.json(result); return; }
     if (result.state === 'deleted') throw new ApiError(410, KnowledgeErrorCode.DELETED, result.message);
+    // K3：文件存在但校验失败——独立于 404/403，文案直指问题与修法
+    if (result.state === 'invalid') throw new ApiError(422, KnowledgeErrorCode.INVALID, result.message);
     if (result.state === 'ambiguous') {
       throw new ApiError(409, KnowledgeErrorCode.REF_AMBIGUOUS, result.message, result.candidates === undefined ? undefined : { candidates: result.candidates });
     }
@@ -378,7 +404,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       path: z.string().min(1),
       scope: z.enum(['common', 'workspace', 'both']).default('both'),
       workspace_id: z.string().min(1).optional(),
-    }).strict(), req.query);
+    }), req.query);
     if (input.scope !== 'common' && !input.workspace_id) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
     const view = viewFor({ scope: input.scope, workspace_id: input.workspace_id ?? null }, input.workspace_id);
     const term = input.path.trim();
@@ -439,7 +465,7 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
       workspace_id: z.string().min(1).optional(),
       offset: integerQuery(0, Number.MAX_SAFE_INTEGER),
       limit: integerQuery(20, 100),
-    }).strict(), req.query);
+    }), req.query);
     const all = view.backlinks(found.meta.id);
     res.json({
       items: all.slice(input.offset, input.offset + input.limit),
@@ -514,6 +540,46 @@ export function createKnowledgeRouter(options: KnowledgeRouterOptions = {}): Rou
     res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(data);
+  });
+
+  // ---- reconcile（P2：只读报告端点；`KNOWLEDGE_FILE_CONFLICT` 的标准处置入口）----
+  // 复用 `reconcileDocsDir`，不另写检测逻辑。**只读**：不传 `fix`，且只调 `ensureFresh()`
+  // （不碰 `persist()`），因此 `.md` 与 `.index.json` 都不会被改。
+  router.get('/reconcile', (req, res) => {
+    const started = Date.now();
+    const input = parse(z.object({
+      scope: z.enum(['common', 'workspace', 'both']),
+      workspace_id: z.string().min(1).optional(),
+    }), req.query);
+    if (input.scope !== 'common' && input.workspace_id === undefined) throw new ValidationError('scope=workspace/both 时必须提供 workspace_id');
+    if (input.scope === 'common' && input.workspace_id !== undefined) throw new ValidationError('scope=common 时不能提供 workspace_id');
+    if (input.scope !== 'both') validateKnowledgeScope(input as KnowledgeScope);
+    const workspacePath = input.scope === 'common' ? null : getWorkspaceRow(input.workspace_id!)?.path ?? null;
+    if (input.scope !== 'common' && workspacePath === null) throw new NotFoundError(`工作区不存在：${input.workspace_id!}`);
+    const view = knowledgeDocsStore.view(
+      input.scope === 'common' ? { scope: 'common' } : { scope: input.scope, workspace_id: input.workspace_id ?? null },
+      workspacePath,
+      options.docsPaths,
+    );
+    const reports = (input.scope === 'common'
+      ? [view.common]
+      : input.scope === 'workspace'
+        ? [view.requireWorkspace()]
+        : [view.requireWorkspace(), view.common]
+    ).map(index => reconcileDocsDir(index, { cross: index === view.common ? null : view.common }));
+    // 跨目录合并：issues 汇总、计数相加；docsDir 逐目录列在 reports 里供定位
+    const issues = reports.flatMap(report => report.issues.map(issue => ({ ...issue, docs_dir: report.docsDir })));
+    res.json({
+      scope: input.scope,
+      workspace_id: input.workspace_id ?? null,
+      checked: reports.reduce((sum, report) => sum + report.total_files, 0),
+      valid: reports.reduce((sum, report) => sum + report.valid_files, 0),
+      issues,
+      stale_tmp: reports.flatMap(report => report.stale_tmp.map(name => ({ name, docs_dir: report.docsDir }))),
+      stale_locks: reports.flatMap(report => report.stale_locks.map(name => ({ name, docs_dir: report.docsDir }))),
+      docs_dirs: reports.map(report => report.docsDir),
+      duration_ms: Date.now() - started,
+    });
   });
 
   // ---- 重扫（语义改为：重建两目录扫描索引 + reconcile 只读报告）----
@@ -758,6 +824,9 @@ function resolveRefInFiles(
     : scope.scope === 'workspace'
       ? [view.requireWorkspace()]
       : [view.requireWorkspace(), view.common];
+  // K3：先差量刷新一次——外部改文件后 byId 缓存可能仍是旧的成功项，
+  // 不刷新会把「已变坏」的页当成正常页返回 200（getByIdIncludeArchived 本身不做 ensureFresh）。
+  for (const index of indexes) index.ensureFresh();
   const findIn = (id: string) => {
     for (const index of indexes) {
       const entry = index.getByIdIncludeArchived(id);
@@ -765,9 +834,24 @@ function resolveRefInFiles(
     }
     return null;
   };
+  /**
+   * K3：本范围内「文件存在但校验失败」的页。命中时返回 INVALID 结果，
+   * 而不是落到 not_found（路由层随后会误判成「属于另一个工作区」——那是排障时把方向带偏的根因）。
+   */
+  const invalidIn = (predicate: (file: { fileName: string; meta?: KnowledgeFileMeta; issues: string[] }) => boolean) => {
+    for (const index of indexes) {
+      const hit = index.allInvalid().find(predicate);
+      if (hit !== undefined) return hit;
+    }
+    return null;
+  };
   if (UUID_RE.test(trimmed)) {
     const entry = findIn(trimmed);
-    if (entry === null) return { state: 'not_found', message: '知识页不存在' };
+    if (entry === null) {
+      const invalid = invalidIn(file => file.meta?.id === trimmed);
+      if (invalid !== null) return invalidResult(invalid);
+      return { state: 'not_found', message: '知识页不存在' };
+    }
     return resolvedFromEntry(entry);
   }
   if (/^[0-9a-f]{8,}$/i.test(trimmed)) {
@@ -781,6 +865,8 @@ function resolveRefInFiles(
     if (live.length > 1) return { state: 'ambiguous', message: `id 前缀 ${trimmed} 命中 ${live.length} 页，请用完整 id`, candidates: live.map(row => row.id) };
     if (live.length === 1) return resolveRefInFiles(live[0]!.id, scope, view, legacyOwner);
     if (matches.length === 1) return { state: 'deleted', message: '知识页已删除（可查看历史版本）' };
+    const invalid = invalidIn(file => typeof file.meta?.id === 'string' && file.meta.id.toLowerCase().startsWith(trimmed.toLowerCase()));
+    if (invalid !== null) return invalidResult(invalid);
     return { state: 'not_found', message: '知识页不存在' };
   }
   // slug：范围内唯一精确命中；跨目录同名 → 歧义（C11）
@@ -790,9 +876,25 @@ function resolveRefInFiles(
       if (entry.issues.length === 0 && !ids.includes(entry.meta.id)) ids.push(entry.meta.id);
     }
   }
-  if (ids.length === 0) return { state: 'not_found', message: '知识页不存在' };
+  if (ids.length === 0) {
+    // 坏页仍按 slug 可见：文件在、正文在，只是校验不过
+    const invalid = invalidIn(file => file.meta !== undefined && normalizeDocSlug(file.meta.slug) === normalizeDocSlug(trimmed));
+    if (invalid !== null) return invalidResult(invalid);
+    return { state: 'not_found', message: '知识页不存在' };
+  }
   if (ids.length > 1) return { state: 'ambiguous', message: `slug「${trimmed}」命中 ${ids.length} 页（可能有 common 与 workspace 同名），请改用完整 id`, candidates: ids };
   return resolveRefInFiles(ids[0]!, scope, view, legacyOwner);
+}
+
+/** K3：坏页的 INVALID 结果（文案指向具体文件与修法，不再误报「属于另一个工作区」） */
+function invalidResult(file: { fileName: string; meta?: KnowledgeFileMeta; issues: string[] }): KnowledgeResolveResult {
+  const slug = file.meta?.slug ?? null;
+  const detail = file.issues.join('；');
+  const slugText = slug === null ? '（front matter 不可解析，无 slug）' : `slug: ${slug}`;
+  return {
+    state: 'invalid',
+    message: `知识页文件存在但校验失败（${detail}）；${slugText}，文件：Docs/${file.fileName}。修复：重新走 API/CLI 写入修订，或按上述问题手工修正 front matter 后重试。`,
+  };
 }
 
 function resolvedFromEntry(entry: { meta: KnowledgeFileMeta }): KnowledgeResolveResult {

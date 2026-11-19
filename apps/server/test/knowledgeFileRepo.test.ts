@@ -29,7 +29,7 @@ describe('P2-01 knowledge fileRepo / front matter / index / reconcile', () => {
     domain: 'knowledge',
     category: 'open' as const,
     landed: null,
-    sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+    sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
     evidence: [{ source_id: 's', locator: 'issue:1' }],
     expires_at: null,
     created_at: 1,
@@ -47,7 +47,7 @@ describe('P2-01 knowledge fileRepo / front matter / index / reconcile', () => {
     return new KnowledgeFileRepo(docsDir, index, { instanceId, lockTimeoutMs: 0 });
   }
 
-  const validBody = () => ({ slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL 与 bm25', domain: 'knowledge', sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }], actor: 'tester', expires_at: null });
+  const validBody = () => ({ slug: 'cache', title: '缓存知识', body_md: '缓存失效后 WAL 与 bm25', domain: 'knowledge', sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }], actor: 'tester', expires_at: null });
 
   it('front matter 渲染/解析 round-trip：特殊字符、BOM、CRLF、数组块', () => {
     const meta = { ...baseMeta(), title: '带: 冒号 与「引号」', change_note: '多行\n备注', slug: 'cache', content_hash: 'h'.repeat(64) };
@@ -254,7 +254,7 @@ describe('P2-04 fileRepo.rename：原子换文件 + 全库重写 [[old]]→[[new
     return new KnowledgeFileRepo(docsDir, index, { instanceId, lockTimeoutMs: 0 });
   }
 
-  const validBody = () => ({ slug: 'cache', title: '缓存知识', body_md: '见 [[cache]] 与 [[cache|别名]] [[cache#标题]]', domain: 'knowledge', sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }], actor: 'tester', expires_at: null });
+  const validBody = () => ({ slug: 'cache', title: '缓存知识', body_md: '见 [[cache]] 与 [[cache|别名]] [[cache#标题]]', domain: 'knowledge', sources: [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }], evidence: [{ source_id: 's', locator: 'issue:1' }], actor: 'tester', expires_at: null });
 
   it('rename：新文件落盘（slug/revision+1/content_hash 重算）、旧文件删除、id 不变', () => {
     const repo = newRepo();

@@ -19,11 +19,7 @@ import type { McpConfig } from '../config.js';
 import { McpError, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
-
-const workspaceField = {
-  workspace_id: z.string().trim().min(1).optional()
-    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
-};
+import { workspaceField } from './schemaText.js';
 
 /** 与 CLI `stats.ts::readIssues` 同口径：新服务端裁剪字段，老服务端 400/404 时回落整对象 */
 async function readStatsIssues(api: AgentBoardApiClient, workspaceId: string): Promise<Issue[]> {
@@ -43,14 +39,14 @@ async function readStatsIssues(api: AgentBoardApiClient, workspaceId: string): P
 export function registerBoardViewTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
     name: 'next_tasks',
-    description: 'List dispatchable tasks (待规划, unclaimed, all blockers resolved) with the fields needed to dispatch: parent, blockers, blocked, sibling ids. Same shape as `kb next --json`; does not claim.',
+    description: 'List dispatchable tasks with parent, blockers, blocked and sibling ids; does not claim.',
     inputSchema: z.object({
       ...workspaceField,
       limit: z.number().int().min(1).default(NEXT_DEFAULT_LIMIT)
         .describe(`Maximum number of dispatchable tasks to return (default ${NEXT_DEFAULT_LIMIT}).`),
     }).strict(),
   }, async ({ workspace_id, limit }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'collab');
     const all = await api.get<Issue[]>('/issues', { workspace: workspaceId });
     const candidates = nextCandidates(all);
     const views = await Promise.all(candidates.map(issue => api.get<DependencyView>(
@@ -63,10 +59,10 @@ export function registerBoardViewTools(server: McpServer, config: McpConfig, api
 
   registerBoardTool(server, {
     name: 'workspace_stats',
-    description: 'Summarize one workspace in a single call: five built-in status counts, unclaimed open tasks, blocked open tasks, total tasks. Same shape as `kb stats --json`.',
+    description: 'Summarize status counts, unclaimed open tasks, blocked tasks and total tasks.',
     inputSchema: z.object({ ...workspaceField }).strict(),
   }, async ({ workspace_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'stats');
     return computeStats(workspaceId, await readStatsIssues(api, workspaceId));
   });
 }

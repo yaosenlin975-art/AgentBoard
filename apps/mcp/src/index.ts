@@ -24,12 +24,13 @@ const MCP_VERSION = (require('../package.json') as { version?: string }).version
  */
 const MCP_INSTRUCTIONS = [
   'AgentBoard 任务看板。每个工具都有一个 agentboard_<name> 别名，行为完全相同，用其中一个即可，不要两个都调。',
-  '典型顺序：list_tasks / next_tasks 找卡 → get_task 读卡面与评论 → claim_task 领取 → 干活 → add_task_comment 汇报 → complete_task 收尾（待验收）。',
+  '典型顺序：list_tasks / next_tasks 找卡 → start_task 领卡并读取工作包 → 干活 → add_task_comment 汇报 → finish_task 收尾（待验收）。',
+  'start_task / finish_task 是窄聚合入口；使用 finish_task 时它自行创建 changelog（no_changelog:true 除外），不要再先写 create_changelog；使用 complete_task 时才需先写 create_changelog。',
   '写工具（claim/release/update/comment/complete/fail/close/reopen/accept/dependency/knowledge/changelog/ask 等）必须带 request_id（UUID 幂等键）；重复同一 request_id 返回同一结果。',
   '例外：delete_task 与 remove_dependency 是 DELETE 调用，没有幂等键，不要传 request_id。',
   '占用是排他的：claim_task 冲突（409）不要重试，换一张卡。带 fence 的写操作若收到 409 STALE_FENCE 说明卡已被别人重新领取，重新 get_task 后决定是否继续。',
   '决策只有人类能回答：ask_decision 落锁后 agent 只能等待，或用 withdraw_decision 撤回；不要尝试 answer_decision（会被 409/403 拒绝）。',
-  '收尾前自检：写一条 create_changelog；有可复用结论时写 create_knowledge（新建需 scope+domain+category 与各 ≥1 条 sources/evidence）。complete_task 会被服务端变更日志门禁拦截（400 CHANGELOG_ACK_REQUIRED）——本次确实没有用户可见变更时传 skip_changelog=true。',
+  '使用 complete_task 时先写一条 create_changelog；有可复用结论时写 create_knowledge（新建需 scope+domain+category 与各 ≥1 条 sources/evidence）。没有用户可见变更时传 skip_changelog=true，否则服务端返回 400 CHANGELOG_ACK_REQUIRED。',
 ].join('\n');
 
 export function createTaskMcpServer(config: McpConfig, fetcher: typeof fetch = fetch): McpServer {

@@ -615,6 +615,62 @@ describe('claim', () => {
   });
 });
 
+describe('work / finish', () => {
+  const claimed = { ...ISSUE, status: '进行中', claimed_by: 'kb-cli', claimed_at: 9, claim_fence: 4 };
+  it('work claims and returns bounded card plus dependencies', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/claim') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1/dependencies?workspace_id=ws1') return { status: 200, body: { blockers: [{ issue_id: 'iss0', title: '前置', status: '已关闭', resolved: true }], blocked: [] } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'work', 'iss1', '--no-knowledge'], t.io);
+    expect(code).toBe(0);
+    expect(t.out()).toContain('工作包: iss1');
+    expect(t.out()).toContain('状态: 进行中');
+    expect(t.out()).toContain('已完成解析层');
+    expect(t.out()).toContain('前置（1）');
+  });
+
+  it('work --json emits one JSON document', async () => {
+    handler = (m, u) => {
+      if (m === 'POST' && u === '/api/issues/iss1/claim') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1?description_offset_chars=0&description_max_chars=12000') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/issues/iss1/dependencies?workspace_id=ws1') return { status: 200, body: { blockers: [], blocked: [] } };
+      if (m === 'GET' && u === '/api/issues/iss1/comments') return { status: 200, body: COMMENTS };
+      if (m === 'GET' && u === '/api/workspaces') return { status: 200, body: [WS] };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, '--json', 'work', 'iss1', '--no-knowledge'], t.io);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(t.out());
+    expect(parsed.issue.id).toBe('iss1');
+    expect(parsed.blockers).toEqual([]);
+  });
+
+  it('finish defaults to close-record and reuses done', async () => {
+    handler = (m, u) => {
+      if (m === 'GET' && u === '/api/issues/iss1') return { status: 200, body: claimed };
+      if (m === 'GET' && u === '/api/knowledge/resolve?scope=both&workspace_id=ws1&ref=page-1') return { status: 200, body: { id: 'page-1' } };
+      if (m === 'POST' && u === '/api/workspaces/ws1/changelog') return { status: 200, body: { id: 'log-1' } };
+      if (m === 'POST' && u === '/api/issues/iss1/done') return { status: 200, body: { ...ISSUE, status: '待验收', claimed_by: null } };
+      if (m === 'GET' && u.startsWith('/api/knowledge/pages?')) return { status: 200, body: { items: [], next_offset: null } };
+      return undefined;
+    };
+    const t = makeIo();
+    const code = await main(['node', 'kb', '--server', base, 'finish', 'iss1', '--notes', 'ok', '--title', '标题', '--type', '调整', '--knowledge-page', 'page-1'], t.io);
+    expect(code).toBe(0);
+    expect(calls.some(c => c.method === 'POST' && c.url === '/api/workspaces/ws1/changelog')).toBe(true);
+    expect(calls.some(c => c.method === 'POST' && c.url === '/api/issues/iss1/done')).toBe(true);
+  });
+});
+
 describe('comment', () => {
   it('未设 KB_AGENT → POST 体 {content, agent_id: "kb-cli"}；woke=true 打印唤醒', async () => {
     handler = (m, u, body) => {
@@ -740,7 +796,13 @@ describe('done / fail', () => {
     expect(calls[0]).toEqual({
       method: 'POST',
       url: '/api/issues/iss1/done',
-      body: { agent_id: 'kb-cli', notes: '已完成并自测', client: 'cli', changelog_ack: false },
+      body: {
+        agent_id: 'kb-cli',
+        notes: '已完成并自测',
+        scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+        client: 'cli',
+        changelog_ack: false,
+      },
     });
     expect(t.out()).toContain('状态: 待验收');
   });
@@ -847,7 +909,7 @@ describe('done / fail', () => {
     expect(second[0]).toBe(first[0]);
   });
 
-  it('done 无 --notes：体只含 agent_id', async () => {
+  it('done 无业务 scope：只声明看板快照路径', async () => {
     handler = (m, u) =>
       m === 'POST' && u === '/api/issues/iss1/done'
         ? { status: 200, body: { ...ISSUE, status: '待验收' } }
@@ -855,7 +917,12 @@ describe('done / fail', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'done', 'iss1'], t.io);
     expect(code).toBe(0);
-    expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', client: 'cli', changelog_ack: false });
+    expect(calls[0]?.body).toEqual({
+      agent_id: 'kb-cli',
+      scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+      client: 'cli',
+      changelog_ack: false,
+    });
     // 服务端没给 hint 时不打印提示行
     expect(t.out()).not.toContain('提示:');
   });
@@ -872,6 +939,7 @@ describe('done / fail', () => {
     );
     expect(code).toBe(0);
     expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', scope_paths: ['apps/server/src', 'packages/cli/a.ts', 'packages/cli/b.ts'], client: 'cli', changelog_ack: false });
+    expect((calls[0]?.body as { scope_paths: string[] }).scope_paths).not.toContain('.agentboard/snapshot');
   });
 
   it('done --scope 值含空格：stderr 警告提示改重复传参（PowerShell 逗号串陷阱）', async () => {
@@ -889,7 +957,12 @@ describe('done / fail', () => {
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'done', 'iss1', '--all'], t.io);
     expect(code).toBe(0);
-    expect(calls[0]?.body).toEqual({ agent_id: 'kb-cli', scope_paths: ['.'], client: 'cli', changelog_ack: false });
+    expect(calls[0]?.body).toEqual({
+      agent_id: 'kb-cli',
+      scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md', '.'],
+      client: 'cli',
+      changelog_ack: false,
+    });
   });
 
   it('done 带 knowledge_hint：输出「提示:」建议行，退出码仍 0 且不出现错误字样', async () => {
@@ -2031,7 +2104,7 @@ describe('幂等键透传（CLI-IDEM）', () => {
     expect(calls[1]).toMatchObject({ method: 'POST', url: '/api/issues/iss1/done', body: { workspace_id: 'ws1', agent_id: 'kb-cli' } });
   });
 
-  it('done 不带 --request-id：无 Key、无额外 GET；body 带门禁字段（client=cli / changelog_ack=false）', async () => {
+  it('done 不带 --request-id：无 Key、无额外 GET；默认只提交看板快照', async () => {
     handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '待验收' } } : undefined);
     const t = makeIo();
     const code = await main(['node', 'kb', '--server', base, 'done', 'iss1'], t.io);
@@ -2041,7 +2114,12 @@ describe('幂等键透传（CLI-IDEM）', () => {
     expect(calls[0]).toEqual({
       method: 'POST',
       url: '/api/issues/iss1/done',
-      body: { agent_id: 'kb-cli', client: 'cli', changelog_ack: false },
+      body: {
+        agent_id: 'kb-cli',
+        scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+        client: 'cli',
+        changelog_ack: false,
+      },
     });
   });
 
@@ -2059,12 +2137,16 @@ describe('幂等键透传（CLI-IDEM）', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('N3-10：--board-only 置 board_only=true；与 --scope / --all 互斥', async () => {
+  it('--board-only 只提交看板快照；与 --scope / --all 互斥', async () => {
     handler = (m, u) => (m === 'POST' && u === '/api/issues/iss1/done' ? { status: 200, body: { ...ISSUE, status: '待验收' } } : undefined);
     const ok = makeIo();
     expect(await main(['node', 'kb', '--server', base, 'done', 'iss1', '--board-only', '--no-changelog'], ok.io)).toBe(0);
-    expect(calls[0]!.body).toMatchObject({ client: 'cli', changelog_ack: true, board_only: true });
-    expect(calls[0]!.body).not.toHaveProperty('scope_paths');
+    expect(calls[0]!.body).toEqual({
+      agent_id: 'kb-cli',
+      scope_paths: ['.agentboard/snapshot', '.agentboard/.gitignore', '.agentboard/README.md'],
+      client: 'cli',
+      changelog_ack: true,
+    });
 
     calls.length = 0;
     const bad = makeIo();
@@ -2167,7 +2249,7 @@ describe('knowledge resolve/link（BORROW-3.1 D10 + CLI-07）', () => {
     expect(md.out()).toBe('[知识卡：标题页](knowledge:p1)\n');
 
     const token = makeIo();
-    const codeToken = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common'], token.io);
+    const codeToken = await main(['node', 'kb', '--server', base, 'knowledge', 'link', 'p1', '--scope', 'common', '--format', 'token'], token.io);
     expect(codeToken).toBe(0);
     expect(token.out()).toBe('knowledge:p1\n');
   });

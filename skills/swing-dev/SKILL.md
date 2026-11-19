@@ -33,7 +33,7 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 1. `kb list-spaces`；退出码 1（服务不可达）→ 🛑 停班，报告「看板服务未启动」，不做任何卡。
 2. `GET http://127.0.0.1:8787/api/version` 读 `db_path`（有 `db_scope` 一并读）；把实际 db 路径写进班次报告开头，禁止默认「就是中心库」。查不到 → 记为「db 路径未确认」，不得当作已确认。
-3. 对每个目标工作区跑 `git -C <path> rev-parse --is-inside-work-tree`：输出 `true` = 走 GIT-ON-DONE；非 git 仓库或命令失败 = 走无提交降级路径，报告开头逐区写明「非 git 仓库，本班次无自动提交」。
+3. 对每个目标工作区跑 `git -C <path> rev-parse --is-inside-work-tree`：输出 `true` = 走 `../using-agentboard/references/workspace-and-git.md` 的 GIT-ON-DONE；非 git 仓库或命令失败 = 走无提交降级路径，报告开头逐区写明「非 git 仓库，本班次无自动提交」。
 4. 以上三项未记录前，不得进入扫描。
 
 ### 2. 扫描（禁用旧快照）
@@ -81,10 +81,10 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 ### 6. worker 执行循环
 
-**状态回读硬规则（不可跳过，适用于父代理与 worker；定义见 `using-agentboard`「收尾与提交」的「收尾状态回读」）**：
+**状态回读硬规则（不可跳过，适用于父代理与 worker；定义见 `../using-agentboard/references/workspace-and-git.md` 的「done 返回」）**：
 
 - `done` / `fail` / `close` 之后必须核对同一张卡的 `status`（预期：待验收 / 待规划 / 已关闭），取值与兜底一律按上述定义执行（优先命令输出的 `状态:` / `--json` 的 `status`，异常补 `kb show --json`，仍不符按未完成记账并记入第 9 节「尝试但未成功」栏）。
-- `close` / `done` / `fail` 只接受 36 字符全长 UUID（8 位短码报「任务不存在」退出 1），禁止短码；命令报「任务不存在」「409」时把 stderr 原文抄进班次报告与卡内 `kb comment`，禁止改写成「已完成 / 已关闭」。
+- `close` / `done` / `fail` 与其它子命令同口径：接受完整 36 位 UUID 或 ≥8 位唯一前缀（`packages/cli/src/issueRef.ts` 共用 `normalizeIssueRef`；7 位报「任务 id 前缀至少 8 位」退出 1，多命中退出 2）。班次内部命令可用短前缀，但卡面、依赖边与提交信息仍写完整 UUID；命令报「任务不存在」「409」时把 stderr 原文抄进班次报告与卡内 `kb comment`，禁止改写成「已完成 / 已关闭」。
 
 逐卡：
 
@@ -98,7 +98,7 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
    - 需超出卡面范围的设计决策 → 按 `ask-user` 用 `kb ask <id> --grace 0` 立项并立即落锁停手（无人值守不建宽限期），原因写「需设计决策：<具体问题>」。收到 `LOCKED` 后保留决策锁与断点，不 `kb fail`；按 `ask-user` 写断点评论并回报父代理。worker 不自行选下一张。
 3. 自验：按卡内验收标准执行；测试从定向开始，项目强制检查或共享基础设施变更才跑全量；如实区分通过 / 未验证 / 失败
 4. 完成：`kb done <id> --notes-stdin --scope <路径> --scope <路径>`，完成后按 §6「状态回读硬规则」核对「待验收 + 占用已释放」
-   - 提交口径（GIT-ON-DONE）与 CLOSE-RECORD 按 `using-agentboard` 的「收尾与提交（GIT-ON-DONE）」及「领任务 → 执行 → 汇报」第 4 步执行：`--scope` 逐条传、只声明真正改动（非 git 文件也写进 notes）、纯看板任务不传并写「本轮无文件改动」、不手动 `git commit`
+   - 提交口径（GIT-ON-DONE）与 CLOSE-RECORD 按 `../using-agentboard/references/workspace-and-git.md` 与 `../executing-task/references/finish-checklist.md` 执行：`--scope` 逐条传、只声明真正改动（非 git 文件也写进 notes）、纯看板任务不传并写「本轮无文件改动」、不手动 `git commit`
    - notes 含：做了什么、自验结果、遗留项、知识页/变更日志 id；非 git 仓库注明「未自动提交 + 证据路径」（按上条归档）；一次收口可用 `kb done <id> --close-record --changelog-title … --type … --knowledge-page … --notes-stdin --scope …`（changelog 先写、失败不落 done，`--knowledge-page` 只挂引用）
 5. 无法完成且非待决策 / `LOCKED`：`kb fail <id> --reason '<具体原因>'`，读输出里的 `状态:`（`--json` 读 `status`）确认 = 「待规划」；输出缺失或状态未变 → 补 `kb show <id> --json` 复核，仍不符按未完成记账。决策锁卡不 `kb fail`，按 ask-user 断点停手。
 6. 关键节点（方案取舍、阻塞、部分完成）用 `kb comment <id>` 记录；done / fail 已有自动评论，不重复刷屏
@@ -147,7 +147,7 @@ worker 回合结束或宿主报 inactive **不等于卡完成**。父代理逐�
 
 ## 安全红线（父代理与 worker 同守）
 
-- 只写任务卡所属工作区内的文件与看板数据（边界细则按 `using-agentboard`「工作区边界（强制）」）；跨区零写入，临时文件只放该区或系统临时目录、班次结束清理
+- 只写任务卡所属工作区内的文件与看板数据（边界细则按 `using-agentboard` 的「绑定与越界」）；跨区零写入，临时文件只放该区或系统临时目录、班次结束清理
 - 不 push 远端、不 force 操作 git、不动生产密钥、不做数据库迁移、不对外发送任何内容；`delete-issue` / `delete-space` 禁用
 - worker 不再派生子代理；不新建分支（卡面明确要求除外）
 - 不顺手修复卡外问题；发现新问题 → 新建卡或写进班次报告，不扩卡

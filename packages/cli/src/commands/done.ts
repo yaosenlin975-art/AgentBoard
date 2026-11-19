@@ -44,9 +44,16 @@ export interface DoneArgs {
   designNotAdvanced?: boolean;
   /** SK-05：显式声明本次没有用户可见变更（不写 changelog），用于纯内部重构 / 仅看板操作 */
   noChangelog?: boolean;
-  /** N3-10：纯看板任务显式跳过 GIT-ON-DONE（不列脏文件、不 exit 1、不提交任何文件） */
+  /** 纯看板任务：不声明业务代码，只提交工作区看板快照 */
   boardOnly?: boolean;
 }
+
+/** 收尾固定提交的看板产物；与 server 的 WORKSPACE_SNAPSHOT_COMMIT_PATHS 同口径 */
+const WORKSPACE_SNAPSHOT_COMMIT_PATHS = [
+  '.agentboard/snapshot',
+  '.agentboard/.gitignore',
+  '.agentboard/README.md',
+];
 
 /** OPT-09：从 done 的 request-id 派生 changelog 幂等键（同一重试复用，不与 done 的 key 撞车） */
 function derivedRequestId(base: string, purpose: string): string {
@@ -182,19 +189,18 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   const issueId = target.id;
   const body: {
     agent_id: string; notes?: string; scope_paths?: string[]; workspace_id?: string; fence?: number;
-    client?: 'cli' | 'mcp'; changelog_ack?: boolean; board_only?: boolean;
+    client?: 'cli' | 'mcp'; changelog_ack?: boolean;
   } = { agent_id: ctx.agentId };
   // SK-05：agent 入口恒带 client，服务端据此启用变更日志门禁；--close-record 已先写日志、--no-changelog 显式声明无变更
   if (args.closeRecord === true && args.noChangelog === true) {
     throw new Error('--close-record 与 --no-changelog 不能同时使用：前者会先写变更日志，后者声明没有变更日志');
   }
-  // N3-10：纯看板任务不提交文件；与显式提交范围互斥（避免静默忽略）
+  // 纯看板任务只提交看板快照；与显式业务范围互斥（避免静默忽略）
   if (args.boardOnly === true && ((args.scope?.length ?? 0) > 0 || args.all === true)) {
-    throw new Error('--board-only 与 --scope / --all 不能同时使用：纯看板任务不提交任何文件');
+    throw new Error('--board-only 与 --scope / --all 不能同时使用：纯看板任务不提交业务文件');
   }
   body.client = 'cli';
   body.changelog_ack = args.closeRecord === true || args.noChangelog === true;
-  if (args.boardOnly === true) body.board_only = true;
   /** 一次收尾里 issue 详情最多取一次（workspace_id / 父链 / 设计页门禁共用） */
   let issueDetail: Issue | undefined = target.issue;
   const loadIssue = async (): Promise<Issue> => {
@@ -214,7 +220,9 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
     }
     body.notes = args.notes;
   }
-  if (args.scope !== undefined && args.scope.length > 0) {
+  if (args.boardOnly === true) {
+    body.scope_paths = [...WORKSPACE_SNAPSHOT_COMMIT_PATHS];
+  } else if (args.scope !== undefined && args.scope.length > 0) {
     /**
      * SCOPE-GUARD：PowerShell 会把 `--scope a,b` 的逗号串拆开、甚至合并成一个含空格的参数（"a b"）。
      * 含空格的值既可能是真实文件名、也可能是被拆坏的多个路径，静默再拆一次有风险 → 只报警不猜。
@@ -227,6 +235,8 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
       );
     }
     body.scope_paths = args.scope;
+  } else {
+    body.scope_paths = [...WORKSPACE_SNAPSHOT_COMMIT_PATHS];
   }
   if (args.all === true) {
     // GIT-ON-DONE：声明工作区根（`.`）＝显式纳入卡外未提交改动；默认不纳入
@@ -325,7 +335,7 @@ export async function done(ctx: Ctx, id: string, args: DoneArgs): Promise<void> 
   };
   /** 自动提交结果不是 committed/nothing/skipped 时落 stderr（reason + 补救命令都在 note 里） */
   const warnCommit = (): void => {
-    // N4-02：skipped（BOARD_ONLY）是成功的显式跳过，不是「未知原因」的失败
+    // 兼容旧服务端的 skipped（BOARD_ONLY）：仍按成功结果处理
     if (gitCommit === null || gitCommit.status === 'committed' || gitCommit.status === 'nothing' || gitCommit.status === 'skipped') return;
     ctx.io.writeErr(`自动提交未完成：${gitCommit.note ?? '未知原因'}\n`);
   };

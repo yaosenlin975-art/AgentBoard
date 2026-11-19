@@ -1,13 +1,18 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { asChild, closeChild, makeAutoChild, makeFakeChild } from './helpers.js';
 import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import {
+  DSH_DESKTOP_CLI_RELATIVE,
   DSH_STATIC_MODELS,
+  dshDesktopCliCandidates,
   dshAdapter,
   createDshParseState,
   isSupportedDshVersion,
   parseDshLine,
   parseDshVersion,
+  resolveDshDesktopCli,
 } from '../src/dsh.js';
 import type { TurnResult, UnifiedEvent } from '../src/types.js';
 
@@ -277,12 +282,69 @@ describe('dsh detect', () => {
     expect(result.message).toContain('无输出');
   });
 
-  it('where/which 都失败 → installed=false version=null + 未找到命令的原因', async () => {
+  it('where/which 都失败且桌面安装目录无 CLI → installed=false version=null + 未找到命令的原因', async () => {
+    const previous = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = `C:\\mock\\missing-${Date.now()}`;
     setSpawnFn(((cmd: string) => asChild(makeAutoChild([], 1))) as unknown as SpawnFn);
 
-    const result = await dshAdapter.detect();
-    expect(result).toMatchObject({ installed: false, version: null });
-    expect(result.message).toContain('未找到 dsh 命令');
+    try {
+      const result = await dshAdapter.detect();
+      expect(result).toMatchObject({ installed: false, version: null });
+      expect(result.message).toContain('未找到 dsh 命令');
+    } finally {
+      if (previous === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previous;
+    }
+  });
+
+});
+
+describe('DSH Desktop CLI discovery', () => {
+  it('从 LOCALAPPDATA/Programs/DeepSeek Harness 生成内置 dsh.cmd 路径', () => {
+    const candidates = dshDesktopCliCandidates({ LOCALAPPDATA: 'C:\\mock\\localappdata' }, 'win32');
+    expect(candidates[0]).toBe(join('C:\\mock\\localappdata', 'Programs', 'DeepSeek Harness', DSH_DESKTOP_CLI_RELATIVE));
+    expect(dshDesktopCliCandidates({ LOCALAPPDATA: 'C:\\mock' }, 'linux')).toEqual([]);
+  });
+
+  it('选择第一个存在的桌面 CLI，不存在时返回 undefined', () => {
+    expect(resolveDshDesktopCli(['C:\\missing\\dsh.cmd', 'C:\\installed\\dsh.cmd'], path => path.includes('installed'))).toBe('C:\\installed\\dsh.cmd');
+    expect(resolveDshDesktopCli(['C:\\missing\\dsh.cmd'], () => false)).toBeUndefined();
+  });
+
+  it('解析桌面 dsh.cmd 为 exe + asar 入口并注入 ELECTRON_RUN_AS_NODE', async () => {
+    const localAppData = join(process.cwd(), `.tmp-dsh-${Date.now()}`);
+    const root = join(localAppData, 'Programs', 'DeepSeek Harness');
+    const exe = join(root, 'DeepSeek Harness.exe');
+    const script = join(root, 'resources', 'app.asar', 'cli.js');
+    const shim = join(root, 'resources', 'runtime', 'cli', 'bin', 'dsh.cmd');
+    mkdirSync(join(root, 'resources', 'app.asar'), { recursive: true });
+    mkdirSync(join(root, 'resources', 'runtime', 'cli', 'bin'), { recursive: true });
+    writeFileSync(exe, '');
+    writeFileSync(script, '');
+    writeFileSync(shim, `set "ELECTRON_RUN_AS_NODE=1"\r\n"${exe}" --expose-internals "${script}" %*\r\n`);
+
+    const calls: Array<{ cmd: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    setSpawnFn(((cmd: string, args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      if (cmd === 'where' || cmd === 'which') return asChild(makeAutoChild([], 1));
+      calls.push({ cmd, args: [...args], env: options.env });
+      return asChild(makeAutoChild([{ source: 'stdout', text: 'dsh 0.2.2-rc.3\r\n' }], 0));
+    }) as unknown as SpawnFn);
+    const previous = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = localAppData;
+    try {
+      const result = await dshAdapter.detect();
+      expect(result).toMatchObject({ installed: true, version: '0.2.2-rc.3' });
+      const probe = calls.find((call) => call.cmd === exe);
+      expect(probe).toMatchObject({
+        cmd: exe,
+        args: ['--expose-internals', script, '--version'],
+      });
+      expect(probe!.env?.ELECTRON_RUN_AS_NODE).toBe('1');
+    } finally {
+      if (previous === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previous;
+      rmSync(localAppData, { recursive: true, force: true });
+    }
   });
 });
 

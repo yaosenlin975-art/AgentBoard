@@ -143,14 +143,15 @@
 
 ### 工作区文本快照（STORE-5/6，`/api/workspaces/:id/db/snapshot*`，`apps/server/src/services/workspaceSnapshot.ts`）
 
-- `export` 对两种形态都可用：已 localized 读工作区库；未 enable 时从**中心库按 `workspace_id` 过滤**导出同一行集（STORE-6，行集与迁移/status 共用 `workspaceScopedQueries.ts`），因此「没 enable 也能把看板提交进 git」。迁移进行中（`db_mode=localizing`）回答 409 `SNAPSHOT_MIGRATING`。
+- `export` 对两种形态都可用：已 localized 读工作区库；未 enable 时从**中心库按 `workspace_id` 过滤**导出同一行集（STORE-6，行集与迁移/status 共用 `workspaceScopedQueries.ts`），因此「没 enable 也能把看板提交进 git」。迁移进行中（`db_mode=localizing`）回答 409 `SNAPSHOT_MIGRATING`。任务、评论、依赖与变更日志随快照进入 Git；附件本体、会话正文、SQLite 与 WAL/SHM 默认不进入 Git。
 - `import` 仍只对 **localized** 工作区库生效；中心库模式回答 409 `SNAPSHOT_NOT_LOCALIZED`。`validate` 只读快照文件、不碰库。
 - 格式：目录下 `manifest.json` + 每表一个 `<文件复数名>.jsonl`（`issues` / `issue_comments` / `issue_dependencies` / `issue_git_baseline` / `issue_draft_audit` / `workspace_status` / `workspace_change_log` / `sessions`，可选 `attachments` / `comment_attachments`（`--include-attachments`）与 `messages`（`--include-messages`））。一期缩表（P1-03）：知识页/revision/链接/附件四表不再进快照导出——知识表仍在库中正常读写，二期才由 `Docs/*.md` 承载。
 - manifest：`format:'agentboard.workspace-snapshot/1'`、`workspace_id`、`schema_version:1`、`exported_at`（ISO）、`generator_version`、`source_db`、`included_tables`（库内单数表名）、`files:[{ file, table, rows, sha256 }]`、可选 `attachments:[{ storage_key, file, bytes, sha256 }]`；JSONL 每行一个对象，列序固定、按主键升序，保证同样数据两次导出除 `exported_at` 外逐字节一致。
 - 时间列（`ts` 与 `*_at`）导出为 ISO 字符串，导入时还原为 epoch ms；列已存在则忽略导出侧多出的列，缺列 / 字段不一致 / 哈希或行数不符一律 422。
 - 附件（STORE-6）：`--include-attachments` 把 `attachment` 行引用的本体复制到 `snapshot/attachments/<storage_key>` 并记 sha256；导入前逐个校验，缺文件 → 422 `SNAPSHOT_ATTACHMENT_MISSING` 并列出 storage_key；通过后落到 `<ws>/.agentboard/attachments/`，图片路由即可 200。
-- 目录边界：缺省 `<ws>/.agentboard/snapshot`；`dir` 允许相对工作区根或绝对路径，但必须落在工作区内，否则 400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`。
-- git 接线（STORE-6）：导出（含 enable 后自动导出）会同时写 `<ws>/.agentboard/.gitignore`（`*.db`、`*.db-wal`、`*.db-shm`、`localize.json`、`attachments/`）与 `<ws>/.agentboard/README.md`（事实源、恢复命令、附件开关说明）；内容不变不重写。根 `.gitignore` 不改（已有 `*.db`）。
+- 目录边界：缺省 `<ws>/.agentboard/snapshot`；`dir` 允许相对工作区根或绝对路径，但必须落在工作区内，否则 400 `SNAPSHOT_PATH_OUTSIDE_WORKSPACE`。导出替换看板 JSONL 时保留 `snapshot/knowledge/` 下的知识页快照。
+- git 接线（STORE-6）：导出（含 enable 后自动导出）会同时写 `<ws>/.agentboard/.gitignore`（`*.db`、`*.db-wal`、`*.db-shm`、`localize.json`、`attachments/`）与 `<ws>/.agentboard/README.md`（事实源、恢复命令、附件开关说明）；内容不变不重写。根 `.gitignore` 不改（已有 `*.db`）。默认导出替换看板 JSONL 时保留 `snapshot/knowledge/` 下的知识页快照。
+- 同步口径：任务、评论、依赖与变更日志随快照进入 Git；附件本体、会话正文、SQLite 与 WAL/SHM 默认不进入 Git。拉取或合并后本地库存在时以本地库为准，不自动用快照覆盖；只有本地库缺失时才校验并导入。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
@@ -188,6 +189,18 @@ CLI：`kb workspace-db snapshot center-export` / `center-validate`（不带 `<wo
 | --- | --- | --- | --- | --- |
 | `GET /api/version` | — | `{ name: 'agentboard-server', version: string, pid: number }`；version 取 `apps/server/package.json`（`version.ts`）；`pid` 供重启后区分「新进程已接管」与「已回退旧进程」；web 顶栏与设置弹窗经 `apps/web/src/api/version.ts` 展示 | — | routes.ts:239 |
 | `POST /api/system/pick-folder` | — | `{ path: string\|null }`；null=用户取消；Windows 原生 FolderBrowserDialog（powershell.exe），同一时刻仅允许一个窗口 | 409 `PICK_FOLDER_BUSY` 已有选择窗口打开；500 `PICK_FOLDER_FAILED` 打开窗口失败 | routes.ts:228 |
+| `POST /api/client-diagnostics` | body（`.strict()`，未知字段 → 400）：`instance_id: string ≤200`、`kind: 'error'\|'rejection'\|'react'`、`message: string 1-2000`、`stack?: ≤20000`、`source?: ≤500`、`url?: ≤2000`、`user_agent?: ≤500`、`client_ts: int ≥0`（客户端 epoch ms）、`app_version?: ≤100`、`context?: Record<string,string ≤200>` 最多 10 键 | `{ ok: true }`；不返回敏感信息 | 400 `VALIDATION_ERROR` 字段非法/超长/未知字段（不落盘）；429 `CLIENT_DIAGNOSTICS_RATE_LIMITED` 同 instance 每分钟超 20 条 | routes/clientDiagnosticsRoutes.ts |
+
+### G4 客户端错误取证（`POST /api/client-diagnostics`）
+
+桌面端白屏（React 无 ErrorBoundary → 整树卸载）复发时的取证通道：release 未启 devtools、`window.onerror` 未挂，客户端错误只此一条路径可落盘。
+
+- **`instance_id` 来源**：复用 `GET /api/version` 已返回的 `instance_id`，前端不另生成。
+- **限流**：同 `instance_id` 每 60s 窗口最多 20 条。第 21 次起 `429`，且**每窗口只记一条**「限流触发」行、不记被丢弃的内容（否则限流记录自己成为刷屏源）。实现为内存 Map，进程重启清零，不持久化。
+- **日志路径**：`<configDir>/logs/client-error.log`，即 `%APPDATA%\AgentBoard\logs\client-error.log`。**不写 `server.log`**（服务端视角与客户端错误混在一起会两边都不可读），**不落安装根**（D6 回归护栏）。
+- **格式**：JSONL，每行一条，字段 `received_at`（服务端 ISO 时间）+ 全部请求字段（缺省为 `null`）。
+- **轮转**：单文件超 5 MB → 固定名 `.1`（只保留一个，与 D14 的 `main.log → main.log.1` 同口径，不带时间戳，便于预测磁盘占用）。
+- **不鉴权**：本地服务，与 `/api/version` 同级。
 
 ## 5. settings
 
@@ -489,7 +502,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/issues/:id/transfer` | body 严格 `{ from_agent, to_agent, reason?, fence?, workspace_id? }`（`workspace_id` 缺省走已解析的工作区上下文） | `{ ...issue, comment, claim_fence }`：当前占用者把占用交给另一个 agent，`claimed_by=to_agent`、`claim_fence+1`（旧占用者 fence 立即失效，收尾落 `STALE_FENCE`）、租约/心跳按领取重新起算、`session_id` 与留言游标解绑；写一条 `author=system` 的 `任务交接：<from> → <to>（原因）` 评论并广播 `comment.added` + `issue.changed`。状态保持「进行中」 | 400 缺 `workspace_id` / `from_agent`=`to_agent` / 字段非法；404 `TASK_NOT_FOUND`；409 `NOT_TASK_OWNER`（非当前占用者）/ `STALE_FENCE` / 无人占用或状态非「进行中」（`CONFLICT`） | routes.ts:1465 |
 | `POST /api/issues/:id/heartbeat` | body：`agent_id: string 非空`、`fence?: 非负整数`（或 `x-claim-fence` 头；缺席=软模式） | `{ claimed_by, claim_fence, claim_lease_until, last_heartbeat_at, stop_requested }`。仅当前占用者可续租；`stop_requested` 与 `GET /api/issues/:id/stop` 同源（同一个 `getStopState`、同一个 db），心跳一次即可知道是否被要求停止；新增字段向后兼容，`/stop` 端点保留。不进幂等表（重放无意义）。WS issue.changed | 400 `agent_id` 为空 / fence 非法；404 任务不存在；409 未占用 / `NOT_TASK_OWNER` / `STALE_FENCE`。**LEASE-GAP**：租约过期被清扫（`sweepExpiredLeases`）后占用清空、任务保留「进行中」，此时原代次仍可用本地 fence 调 `done` / `fail` 收尾（`fence` 必须显式传且等于当前 `claim_fence`；抢占会自增 fence → `STALE_FENCE`），服务端落 system 评论留痕；`fence` 缺席不享受该口子。**清扫保留 git 基线**（卡 9fa0d16f）：租约过期不再删 `issue_git_baseline`，原代次 done 仍能按基线自动提交 | routes.ts:1203 |
 | `POST /api/issues/:id/release` | 不带 workspace_id：无需 body（用户强制释放）；带 workspace_id：body `agent_id: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用。不带 workspace_id：comment author=`system` 内容「用户强制释放」、任何状态可释放；带 workspace_id：comment author=`agent:<agent_id>` 内容「占用者释放任务」 | 不带 workspace_id：404 任务不存在。带 workspace_id：404 `TASK_NOT_FOUND`；409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id | routes.ts:398 |
-| `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`（空串等价不写评论）、`scope_paths?: string[]`（最多 200 项，提交范围声明：文件路径或目录前缀）、`client?: 'cli'\|'mcp'`、`changelog_ack?: boolean`、`board_only?: boolean`（N3-10：纯看板任务跳过自动提交，返回 `git_commit.status='skipped'`；与 `scope_paths` 互斥）、`changelog_id?: uuid`（SK-05 变更日志门禁：带 `client` 时以下任一即放行——`changelog_ack=true`（含 CLI `--no-changelog` / MCP `skip_changelog:true`）、`changelog_id` 指向本工作区一条活动日志、库中已存在 `issue_id=本卡` 且 claim 之后创建的日志；都不满足 → 400 `CHANGELOG_ACK_REQUIRED`，done 未执行。不带 `client` 的 REST 直调保持旧行为） | `{ ...issue, comment, git_commit: IssueCommitResult \| null }`（同 key 重放返回首次结果、含同一 `git_commit`，且不重复提交；其它情况见下方 GIT-OBSERVABLE）。状态→待验收、清空占用；notes 非空时落评论（author=`agent:<agent_id>`），否则 comment=null。GIT-ON-DONE 提交范围：只提交 `scope_paths` 命中的路径，其余路径不提交并以 system 评论列出清单；**未声明 scope 时一律不提交**（`reason=NO_SCOPE`，评论列出全部脏文件 + 可复制补救命令），不再按 claim 基线宽提交——这条同时覆盖并行占用场景；要纳入全部改动必须显式声明 `.`。**claim 前就已未提交的文件**（指纹与基线相同、不在变化集）：落在 `scope_paths` 内的会被强制提交，评论标注「claim 前就已修改、按声明范围强制提交」；不在范围内或未声明时一律不提交，改为评论列出清单 + 可直接执行的 `git add -- … && git commit -m … -- …` 补救命令（不静默跳过）。详见 `gitBaseline.ts` 头注释。**SCOPE-GUARD**：声明了 `scope_paths` 却零命中时，系统评论以「⚠ 声明范围零命中，本次未自动提交」开头，列出声明范围与未提交文件，并给出可直接执行的两条命令（`git add -- …; git commit -m … -- …`）；done 本身仍然成功（不阻塞已完成的卡）。CLI 侧 `--scope` 建议每个路径一个，不要写逗号串（PowerShell 会拆/并参数；含空格的值会给 stderr 警告）。**不能自动提交的三档原因**（`detectGitRepo`，`gitBaseline.ts`；done 本身仍成功，只落一条 system 评论并回显声明范围）：① `GIT_NOT_INSTALLED` — `git --version` 失败（如容器镜像未装 git）：`跳过自动提交：环境未安装 git（GIT_NOT_INSTALLED，<path>）；声明范围：…`；② `NOT_A_GIT_REPO` — git 有但目录不是仓库或目录不存在：`跳过自动提交：工作区不是 git 仓库（NOT_A_GIT_REPO，<path>），如需自动提交请在该目录 git init；声明范围：…`；③ `GIT_REPO_UNHEALTHY` — 是仓库但 `git status` 失败（index/HEAD 损坏、权限）：`跳过自动提交：git 仓库状态异常（GIT_REPO_UNHEALTHY，<path>）：<具体错误>；声明范围：…`。**GIT-OBSERVABLE（卡 9fa0d16f）**：响应字段 `git_commit = { status: 'committed'\|'nothing'\|'not-committed'\|'unavailable'\|'skipped', reason, note, pending: string[] } \| null`；`note` 即落评论正文（含原因与可直接执行的补救命令），`pending` 是仍未提交的路径。`not-committed` 的 `reason` ∈ `NO_SCOPE`（未声明 scope：一个文件都不提交，列出全部脏文件与补救命令）/ `NO_BASELINE`（无 claim 基线，历史卡或早期租约清扫；有脏文件即上报，不再静默早退）/ `COMMIT_FAILED`（有基线但 git 提交失败，如 index.lock 残留、hook 拒绝）/ `ZERO_HIT`（声明范围零命中）。`unavailable` 对应三种不可用原因码，语义仍是「自动提交不适用」。`skipped` 是显式声明 `board_only=true`：跳过自动提交、不产生 `NO_SCOPE`，`reason=BOARD_ONLY`、`pending=[]`。done 本身在以上所有情况都成功进入待验收。**knowledge_hint**（T5-03）：本卡尚无可用主题页时返回 `{ message, suggested_slug }`，否则 `null`；`message` 是收尾提示（门禁已由 `client` 入口强制并满足时不再重复催写变更日志），`suggested_slug` 按「标签优先、标题/描述关键词兜底」映射——`server`/`服务端`/`后端`/`数据`→`agentboard-server-data`，`web`/`ui`/`前端`→`agentboard-frontend-ux`，`cli`/`命令行`→`agentboard-cli-ux`，`test`/`测试`/`门禁`→`agentboard-testing-gates`，`缺陷`/`坑`/`规则`及未命中→`agentboard-pitfalls`。 | 400 agent_id 为空；400 `scope_paths` 超限或空串；400 `BOARD_ONLY_SCOPE_CONFLICT`（`board_only=true` 与非空 `scope_paths` 同传：显式互斥，不做静默取舍，done 未执行、状态与占用不变）；400 `CHANGELOG_ACK_REQUIRED`（带 `client` 且三条件都不满足）/ `CHANGELOG_NOT_FOUND`（`changelog_id` 不存在或不属于本工作区），done 未执行、状态不变。不带 workspace_id：404 任务不存在、409 `CONFLICT` 未被占用、409 `NOT_TASK_OWNER` 仅当 agent_id≠'user' 且≠占用者。带 workspace_id：404 `TASK_NOT_FOUND`、409 `NOT_TASK_OWNER` 未占用或占用者≠agent_id（'user' 不豁免） | routes.ts:399 |
+| `POST /api/issues/:id/done` | body：`agent_id: string 非空`、`notes?: string`、`scope_paths?: string[]`（最多 200 项；业务文件或目录前缀）、`client?: 'cli'\|'mcp'`、`changelog_ack?: boolean`、`board_only?: boolean`（纯看板任务；与 `scope_paths` 互斥）、`changelog_id?: uuid`（SK-05 门禁：`changelog_ack=true`、本卡 claim 后日志或已有 `changelog_id` 任一放行） | `{ ...issue, comment, git_commit: IssueCommitResult \| null }`；状态→待验收、清空占用。GIT-ON-DONE 提交声明范围，并自动追加 `.agentboard/snapshot`、`.agentboard/.gitignore`、`.agentboard/README.md`。CLI / MCP 未声明业务 scope 或 `board_only=true` 时固定提交这组快照路径，不提交业务代码。`claim` 前已脏文件仅在声明范围内提交；范围外只列清单与补救命令。`git_commit = { status: 'committed'\|'nothing'\|'not-committed'\|'unavailable'\|'skipped', reason, note, pending } \| null`；同 key 重放返回首次结果。**knowledge_hint**：无可用主题页时返回 `{ message, suggested_slug }`，否则 `null`。 | 400 `BOARD_ONLY_SCOPE_CONFLICT` / `CHANGELOG_ACK_REQUIRED` / `CHANGELOG_NOT_FOUND`；404 / 409 占用与 owner 口径同其它 owner 写操作 | routes.ts:399 |
 | `POST /api/issues/:id/close`（幂等） | body：`agent_id`（可选）、`workspace_id?` | `Issue`（status→`已关闭`）。只允许「待验收」→「已关闭」；已关闭再调幂等返回；占用中拒绝 | 409 `ISSUE_CLAIMED`（先 release）/ `INVALID_TRANSITION`（当前不是待验收）；404 `NOT_FOUND` | routes.ts（`services/issueTransitions.ts`） |
 | `POST /api/issues/:id/reopen`（幂等） | body：`status?`（默认 `待规划`）、`agent_id`（可选）、`workspace_id?` | `Issue`（status→目标）。只允许关闭类（kind `done`/`deprecated`）→ 目标状态；目标必须命中本工作区状态字典（含自定义状态） | 400 目标状态非法（文案列出可用状态）；409 `ISSUE_CLAIMED` / `INVALID_TRANSITION`（当前不是关闭态）；404 `NOT_FOUND` | routes.ts |
 | `POST /api/issues/:id/fail` | body：`agent_id: string 非空`、`reason: string 非空` | `{ ...issue, comment }`。状态→待规划、清空占用；reason 落评论（author=`agent:<agent_id>`） | 400 agent_id / reason 为空；其余按两条路径同 done | routes.ts:400 |
@@ -572,16 +585,16 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `knowledge:<uuid>` | 兼容 scheme：web 渲染与 resolve 输入别名照常解析，不再是新引用的输出口径 |
 
 - **uuid→文件路径映射**由内存索引维护（启动扫两目录建 `id→{path,slug,scope,revision,content_hash}`，每请求 readdir+stat 差量刷新；索引非事实源，`.index.json` 落盘可全量重建承载检索）。
-- **错误码**：在 `KNOWLEDGE_NOT_FOUND / REVISION_CONFLICT / REF_AMBIGUOUS / DELETED / SCOPE_FORBIDDEN / STATE_CONFLICT / EXISTS` 基础上新增 **`KNOWLEDGE_FILE_CONFLICT`（409；CLI 退出码 2）**——外部编辑 content_hash 不符、文件解析失败、跨进程写锁等待超时；提示先 `reconcile`，冲突由人裁决。
+- **错误码**：在 `KNOWLEDGE_NOT_FOUND / REVISION_CONFLICT / REF_AMBIGUOUS / DELETED / SCOPE_FORBIDDEN / STATE_CONFLICT / EXISTS` 基础上新增 **`KNOWLEDGE_FILE_CONFLICT`（409；CLI 退出码 2）**——外部编辑 content_hash 不符、文件解析失败、跨进程写锁等待超时；提示先跑 `kb knowledge reconcile`（或 `GET /api/knowledge/reconcile`）定位冲突，冲突由人裁决。
 - **单页历史退役**（§8 #5）：`GET /pages/:id/revisions` 返回空集；`GET /pages/:id/revisions/:revision` 404 `KNOWLEDGE_REVISION_NOT_FOUND`；旧库历史走 `kb knowledge export-legacy` 只读导出。
 - **每页 git 快照（page_commit）与「快照没进 git 即失败」（BORROW-5.1）整体退役**：文件写成功即端点成功；响应中的 `page_commit` 仅作兼容形状（恒 `committed=false, skipped=true`），客户端不再读取。
-- **reconcile**（M12）：启动逐目录只读报告（front matter 必填/类型、文件名 vs slug 不一致、id 重复、content_hash 不符、`[[...]]` 目标缺失、残留 tmp/lock）；`--fix` 只清残留 tmp/lock/索引，绝不自动改写正文。直接改文件名（不走 rename 命令）→ reconcile 报「slug 与文件名不一致」冲突。
+- **reconcile**（M12）：逐目录**只读**报告；入口两条——`GET /api/knowledge/reconcile`（见下表）与 `kb knowledge reconcile`。检查项：front matter 必填/类型、文件名 vs slug 不一致（`file_name_mismatch`）、id 重复（`duplicate_id`）、content_hash 不符（`content_hash`）、`[[...]]` 目标缺失（`missing_link_target`）、残留 tmp/lock（另列 `stale_tmp`/`stale_locks`）。**只读：不改任何 `.md`**（sha256 与 mtime 不变）；`reconcileDocsDir` 内部的 `fix` 分支（清残留 tmp/lock/索引）**尚无命令入口**，需人工清理。直接改文件名（不走 rename 命令）→ reconcile 报「slug 与文件名不一致」冲突，冲突由人裁决。
 - **检索评分语义（bm25，P2-01 偏离项登记）**：`GET /search` 的 `score` 为**负值、越小越相关**（对齐 FTS5 bm25 的 `ORDER BY score ASC` 口径），但**数值与旧 FTS5 不逐字节相等**：新实现是文件索引上的 bm25（title 权重 5 / body 权重 1，k1=1.2 b=0.75），短查询在负值上加一项「完整子串加权」保持精确命中优先；1–2 码点查询走大小写不敏感子串（title 命中 score=-1）。客户端只应比较同一次请求内 score 的相对大小，不得对 score 绝对值做语义判断。
 
 | 方法 路径 | 请求 | 响应 | 错误 | 源 |
 | --- | --- | --- | --- | --- |
-| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；strict（未知 query 键 400） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/**score 负值，越小越相关，见上**）；仅 status=active 且未过期页；≥3 码点走文件索引 bm25（trigram 预筛 + 子串确认），1–2 码点走子串 | 400 校验失败 | knowledgeRoutes.ts |
-| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active；deleted 恒空集——软删即撤文件）、`include_expired? true\|false`（默认 false）、`offset?`、`limit? 1-100`（默认 20）；strict（未知 query 键 400） | `PageResult<摘要行>`（跨目录合并 (updated_at DESC, id)） | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts |
+| `GET /api/knowledge/search` | query：`scope: common\|workspace\|both`、`q: string`（trim 后非空、≤500 字符）、`workspace_id?`（scope=common 时禁止提供，其余必填）、`limit? 1-20`（默认 5）；未知 query 键 strip（忽略，不报错） | `KnowledgeSearchResult[]`（page_id/scope/workspace_id/revision/title/snippet(≤1200 字符)/sources/evidence/**score 负值，越小越相关，见上**）；仅 status=active 且未过期页；≥3 码点走文件索引 bm25（trigram 预筛 + 子串确认），1–2 码点走子串；`scope=both` 时响应头带 `X-Knowledge-Truncated: true\|false`（该 scope 合并后是否被 limit 截断） | 400 校验失败 | knowledgeRoutes.ts |
+| `GET /api/knowledge/pages` | query：`scope`、`workspace_id?`、`status? active\|archived\|deleted\|all`（默认 active；deleted 恒空集——软删即撤文件）、`include_expired? true\|false`（默认 false）、`invalid_only? true\|false`（默认 false；仅返回坏页清单，`items` 恒空）、`offset?`、`limit? 1-100`（默认 20）；未知 query 键 strip（忽略，不报错） | `{ items: 摘要行[], next_offset: number\|null, invalid_count: number, invalid: { slug: string\|null, file_name: string, issues: string[] }[] }`；`items` 跨目录合并 (updated_at DESC, id)；`invalid[]` 是本范围内解析/校验失败的文件（只给 slug/文件名/issues，不返回正文），`invalid_count` 为其长度；坏页不会进 `items`，也不会被静默吞掉 | 400 scope=both 缺 workspace_id 等 | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id/revisions` | query：`scope`、`workspace_id?`（兼容保留） | `{ items: [], next_offset: null }`（单页历史已退役，§8 #5） | — | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id/revisions/:revision` | query：`scope`、`workspace_id?` | — | 404 `KNOWLEDGE_REVISION_NOT_FOUND`（文件事实源不保留单页历史；旧库历史走 export-legacy） | knowledgeRoutes.ts |
 | `GET /api/knowledge/pages/:id` | query：`scope`、`workspace_id?` | `KnowledgePage` 全量（软删页文件已撤 → 404 `KNOWLEDGE_NOT_FOUND`；归档页 200 带 `status='archived'`） | 404 `KNOWLEDGE_NOT_FOUND`；坏文件（解析失败/外部编辑）同 404，reconcile 报告 | knowledgeRoutes.ts |
@@ -591,6 +604,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/knowledge/pages/:id/rename`（幂等；P2-04 M10） | body：`scope`、`workspace_id?`、`expected_revision: int ≥1`、`new_slug: string`（1-200，同 create 规则）、`actor` | 改名后的 `KnowledgePage` + `old_slug` + `rewritten: [{ dir, file_name, page_id, slug }]`（全库扫描重写 `[[old]]→[[new]]` 的文件清单，含 alias/heading 形态与页嵌入；id 不变；跨目录只在目标区无同名页时重写）。目标区已有自己的同名页时不改写（指向不归本页管） | 400 校验；404；409 `KNOWLEDGE_REVISION_CONFLICT` / `KNOWLEDGE_EXISTS`（新 slug 已占用）/ `KNOWLEDGE_STATE_CONFLICT`（归一后相同）/ `KNOWLEDGE_FILE_CONFLICT` | knowledgeRoutes.ts |
 | `GET /api/knowledge/resolve` | `ref`（完整 id / ≥8 位 id 前缀 / slug）、`scope?`=`workspace\|common\|both`（缺省 both，需 `workspace_id`）；`knowledge:<uuid>` 去掉前缀后按 uuid 解析（输入别名兼容） | 200 `{ state:'resolved', id, title, scope, workspace_id, slug, status, revision, link, redirect_to:null }` | 404 `KNOWLEDGE_NOT_FOUND` / 403 `KNOWLEDGE_SCOPE_FORBIDDEN`（跨范围/跨工作区，**不回显标题**）/ 409 `KNOWLEDGE_REF_AMBIGUOUS`（附 `details.candidates`，**不猜第一条**；同 slug 在 workspace 与 common 都命中时 409）/ 410 `KNOWLEDGE_DELETED` | knowledgeRoutes.ts |
 | `GET /api/knowledge/find-source` | `path`（必填，精确匹配 `sources[].locator` / `content_hash` / `source_id`）、`scope?`（默认 both，需 `workspace_id`） | 200 `{ path, items: [{ id, slug, title, scope, workspace_id, revision, status, link }] }` | 400 校验 | knowledgeRoutes.ts |
+| `GET /api/knowledge/reconcile` | query：`scope: common\|workspace\|both`、`workspace_id?`（`workspace`/`both` 必填，`common` 禁止）；未知 query 键 strip | 200 `{ scope, workspace_id, checked, valid, issues: [{ fileName, kind, detail, suggestion?, docs_dir }], stale_tmp: [{ name, docs_dir }], stale_locks: [{ name, docs_dir }], docs_dirs: string[], duration_ms }`。`kind` ∈ `front_matter` / `file_name_mismatch` / `duplicate_id` / `content_hash` / `missing_link_target`。`scope=both` 跨两目录合并 issues、计数相加 | 400 缺 `workspace_id` / `common` 带 `workspace_id`；404 工作区不存在 | knowledgeRoutes.ts |
 
 > `link` 形状（show / search / resolve / 列表同源产出）：`{ id, scope, workspace_id, slug, ref: "knowledge:<uuid>", markdown: "[知识卡：标题](knowledge:<uuid>)", text }`。**新引用的输出口径是 `[[wikilink]]`（`kb knowledge link` 默认）**；`knowledge:<uuid>` 保留作稳定标识（改名不变）。
 
@@ -604,7 +618,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 
 ### 11.1 CLI 对应命令（`kb knowledge *`，`packages/cli/src/commands/knowledge.ts`）
 
-数据源随文件事实源切换（P2-04）：`list/show/search` 读文件扫描（经 REST，响应形状不变）；`create/revise/action` 的 `--expected-revision` 比对 front matter `revision`；`--stdin`/`--sources-file`/`--evidence-file`/`--domain`/`--category`/`--landed` 参数面不变；`resolve/find-source` 保留（`find-source` 扫 front matter `sources[]`）；`link` **默认输出 `[[wikilink]]`**（`--format wikilink|token|markdown|plain`）；`action delete` 撤文件；新增 `rename`。
+数据源随文件事实源切换（P2-04）：`list/show/search` 读文件扫描（经 REST，响应形状不变）；`create/revise/action` 的 `--expected-revision` 比对 front matter `revision`；`--stdin`/`--sources-file`/`--evidence-file`/`--domain`/`--category`/`--landed` 参数面不变；`resolve/find-source` 保留（`find-source` 扫 front matter `sources[]`）；`link` **默认输出 `[[wikilink]]`**（`--format wikilink|token|markdown|plain`）；`action delete` 撤文件；新增 `rename`；新增 `reconcile`（只读报告，`--scope` 缺省 workspace、`--json` 出原始对象；有冲突 exit 0，冲突本身不是命令失败）。
 
 | 端点 | CLI | 必填 | 备注 |
 | --- | --- | --- | --- |
@@ -617,6 +631,7 @@ release / done / fail 按是否携带 `workspace_id`（query 或 body）走两�
 | `POST /api/knowledge/pages/:id/rename` | `kb knowledge rename <page-id> <new-slug>` | `--scope`、`--expected-revision` | 全库重写 `[[old]]→[[new]]`（含 alias/heading 形态），id 不变；文本输出重写文件清单；409 → exit 2 |
 | `GET /api/knowledge/resolve` | `kb knowledge resolve <ref>` | `--scope` 可省（默认 both） | 退出码 404→1、409/403→2 |
 | `GET /api/knowledge/find-source` | `kb knowledge find-source <path>` | `--scope` 可省（默认 both） | 只读反查 front matter `sources[]` |
+| `GET /api/knowledge/reconcile` | `kb knowledge reconcile` | 无（`--scope` 缺省 workspace，按 cwd 解析；`both` 需 `--workspace`） | **只读**，不改任何 `.md`；文本模式 `N 页检查完成，M 处冲突` + 逐条 `[kind] slug / 文件 / 详情 / 建议`，无冲突打印 `（无冲突）`；有冲突仍 exit 0（冲突不是命令失败）；`--json` 出原始响应 |
 
 create 最小用法（PowerShell 复制可用；`sources.json`/`evidence.json` 见 `kb knowledge create --help`）：
 
@@ -639,9 +654,10 @@ kb knowledge link cache-policy --scope common   # 默认输出 [[cache-policy]]�
 
 ### 11.1b CLI `--json` 输出形状（KB-CLI-3c，契约 knowledge:bb929054-1d44-4542-bb96-4530e42b0546）
 
-- **列表类命令**（`list-tasks` / `list-spaces` / `knowledge list` / `changelog list` / `decisions` / `status ls` / `dep ls` / `accounts list`）→ `{ "items": [...], "next_offset": number | null }`；空结果是 `{"items": [], "next_offset": null}`，两个字段都出现，不省略。`dep ls` 的四组视图（blockers / blocked / related / duplicate）摊平成一条 `items`，每项多一个 `direction` 标明方向。
+- **列表类命令**（`list-tasks` / `list-spaces` / `knowledge list` / `changelog list` / `status ls` / `dep ls` / `accounts list`）→ `{ "items": [...], "next_offset": number | null }`；空结果是 `{"items": [], "next_offset": null}`，两个字段都出现，不省略。`dep ls` 的四组视图（blockers / blocked / related / duplicate）摊平成一条 `items`，每项多一个 `direction` 标明方向。`list-spaces --current` 同为该信封，`items` 恰为 1 条（不是裸数组）。`knowledge list` 额外带 `invalid_count: number` 与 `invalid: { slug, file_name, issues: string[] }[]`（K3：只列「文件存在但校验失败」的坏页，坏页不进 `items`；`--invalid` 时 `items` 恒空）。
+- **非 `items` 信封的特例**：`decisions` → `{ decisions: [...], counts: {...}, capabilities: {...} }`。它不是分页列表（`limit ≤ 500`、无游标），`counts` 是跨区逐区之和，改造成 `items` 会丢载荷且破坏 `apps/server` 与 CLI 的既有 shaping（`packages/cli/src/commands/decision.ts` 逐条覆写 `capabilities`，N3-05）。复算用 `.decisions.length`，不要用 `.items.length`。同形的还有 `knowledge search` / `knowledge revisions` / `changelog list`——它们本就返回分页视图并原样透传。
 - **单对象命令**（`show` / `claim` / `done` / `close` / `settings` / `knowledge show` / `decision` / `changelog show` / `workspace-db *`）→ 对象直出，不套 `items`。
-- 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`、`decisions`）原样透传，`next_offset` 缺省补 `null`。
+- 服务端本就返回 `{ items, next_offset }` 的分页视图（`knowledge search`、`knowledge revisions`、`changelog list`）原样透传，`next_offset` 缺省补 `null`；`decisions` 透传的是它自己的 `{ decisions, counts, capabilities }`（见上一条特例）。
 - stdout 只放 JSON；提示/警告一律走 stderr。复算命令要按信封取数：`kb list-tasks --json | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).items.length"`。
 - 输出体积观测（ARCH-06，环境变量 `KB_METRICS`）：设为 `1` 时命令结束前向 **stderr** 追加一行 `[kb] cmd=<顶层命令名> out=<写入 stdout 的 UTF-8 字节数>B lines=<行数>`；`0`/未设完全不输出（stdout/stderr 与改造前逐字一致）。该行只走 stderr，不破坏 `--json` 的 `JSON.parse`，不改变退出码；嵌套命令取顶层名（如 `kb knowledge search` → `knowledge`）。
 
@@ -655,12 +671,12 @@ kb knowledge link cache-policy --scope common   # 默认输出 [[cache-policy]]�
 | 3 | `kb dep` 与待决策族（`kb ask` / `kb answer` / `kb ask-extend`）专用：依赖或决策参数错误（自环 / 跨工作区 / `VALIDATION_ERROR` / 选项不足 / 非法 grace 或 seconds） | `kb dep add <id> <同一 id>` → `不能依赖自身…`；`kb ask <id> --grace abc` → 参数非法 |
 | 4 | `kb dep` 专用：依赖边不存在（仅 `dep rm`） | `kb dep rm <id> <无该边的前置>` → `依赖边不存在…` |
 
-**`kb done` 退出码例外（GIT-OBSERVABLE，卡 9fa0d16f）**：done 已生效（状态→待验收；`--close` 时→已关闭）但自动提交未完成时，CLI 把「未提交 + 原因 + 可照抄补救命令」写 stderr 并以 **1** 退出；`--json` 仍只输出单个 issue JSON（读 `git_commit.status/reason`），不改变 stdout 结构。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。**纯看板任务用 `kb done --board-only`（MCP `board_only: true`）显式跳过提交**：返回 `status='skipped' / reason='BOARD_ONLY' / pending=[]`，不列脏文件、不写 stderr、退出码 0；不带该参数时仍按 `NO_SCOPE` 报错并 exit 1。`done --close` 遇到阻断性提交缺口会**跳过 close**（退出码 1），修复后执行 `kb close <id>`。
+**`kb done` 退出码例外（GIT-OBSERVABLE，卡 9fa0d16f）**：done 已生效（状态→待验收；`--close` 时→已关闭）但自动提交未完成时，CLI 把「未提交 + 原因 + 可照抄补救命令」写 stderr 并以 **1** 退出；`--json` 仍只输出单个 issue JSON（读 `git_commit.status/reason`），不改变 stdout 结构。`git_commit.status='unavailable'`（未装 git / 非仓库 / 仓库损坏）只警告、退出码 0。**纯看板任务用 `kb done --board-only`（MCP `board_only: true`）只提交看板快照**；未声明业务 scope 的普通 done 同样只提交 `.agentboard/snapshot`、`.agentboard/.gitignore`、`.agentboard/README.md`。`done --close` 遇到阻断性提交缺口会**跳过 close**（退出码 1），修复后执行 `kb close <id>`。
 受影响面：仓库内 `scripts/` 没有解析 `kb done` 退出码的脚本；需要改判的是外部编排（把 `kb done` 放在 `&&` 链里、或把退出码 0 当作「工作树已干净」的 cron / CI / agent 工作流）——改为读 `git_commit.status`。MCP 工具直连 REST（`apps/mcp/src/tools/tasks.ts`），不经 CLI，退出码不变，可直接使用新增的 `git_commit` 字段。
 
 约定：原因一律写 stderr（`kb done` 的自动提交警告可多行，含补救命令）；`--json` 只改 stdout 结构，不改退出码。`done` 的「占用 2」与「参数 2」都以 2 上报，区别在文案（`未被占用：如需推进请先 kb claim…` vs 参数错误列表），脚本只按 2 判「当前不可完成」即可。
 
-**`kb done` 收尾选项与变更日志门禁（SK-05）**：`--close-record`（CLI 先写一条带本卡 `issue_id` 的 changelog，再 done，子步骤失败不落 done）、`--no-changelog`（显式声明没有用户可见变更，与 `--close-record` 互斥）、`--board-only`（纯看板任务跳过自动提交，与 `--scope` / `--all` 互斥，返回 `skipped/BOARD_ONLY` 且退出码 0、不写 stderr）、`--all`（显式纳入全部未提交改动）。CLI 调 `POST /api/issues/:id/done` 时带 `client:'cli'` 与 `changelog_ack`（`--close-record` / `--no-changelog` 时为 true）。不带 ack 时服务端按顺序检查：请求里的 `changelog_id`（不存在 → 400 `CHANGELOG_NOT_FOUND`）、库中 `issue_id=本卡` 且 claim 之后创建的日志；都不满足 → 400 `CHANGELOG_ACK_REQUIRED`（CLI 退出码 1，done 未执行、状态不变）。先写日志走 `kb changelog create --issue <卡 id> --title … --type 修复 --stdin`。MCP 对应 `create_changelog` 的 `issue_id`、`complete_task` 的 `changelog_id` / `skip_changelog`。
+**`kb done` 收尾选项与变更日志门禁（SK-05）**：`--close-record`（CLI 先写一条带本卡 `issue_id` 的 changelog，再 done，子步骤失败不落 done）、`--no-changelog`（显式声明没有用户可见变更，与 `--close-record` 互斥）、`--board-only`（纯看板任务只提交看板快照，与 `--scope` / `--all` 互斥）、`--all`（显式纳入全部未提交改动）。CLI 调 `POST /api/issues/:id/done` 时带 `client:'cli'` 与 `changelog_ack`（`--close-record` / `--no-changelog` 时为 true）。不带 ack 时服务端按顺序检查：请求里的 `changelog_id`（不存在 → 400 `CHANGELOG_NOT_FOUND`）、库中 `issue_id=本卡` 且 claim 之后创建的日志；都不满足 → 400 `CHANGELOG_ACK_REQUIRED`（CLI 退出码 1，done 未执行、状态不变）。先写日志走 `kb changelog create --issue <卡 id> --title … --type 修复 --stdin`。MCP 对应 `create_changelog` 的 `issue_id`、`complete_task` 的 `changelog_id` / `skip_changelog`。
 
 ## 12. WebSocket 事件（`/ws`，`packages/shared/src/types.ts:73-82`）
 
@@ -991,6 +1007,34 @@ Trae 仍未实现文件级切换：能力矩阵 `switch=false` + `PROVIDER_NOT_I
 - `express.json()` 对已解析请求会跳过，但**超限拒绝发生在先执行的那个 parser**，所以路由级 parser 放不大上限；
 - 实测：导入端点 50kb → 200；**500kb → 413**（全局，码 `ATTACHMENT_TOO_LARGE`、文案「单张图片不能超过 10 MiB」）；>1MB → 同样 413；对照 `POST /api/issues/draft` 200kb → 413（全局 100kb 未放宽）。
 
+### 18.1 `POST /api/knowledge/export-legacy` 报告形状（`api/knowledgeExportRoutes.ts`）
+
+旧库 → 文件事实源的一次性迁移。请求体（`.strict()`）：`dry_run?: boolean`、`to?: string`（重定向输出根）、`scope?: 'all'|'center'|'workspace'`、`workspace_id?`。
+
+响应 `ExportReport`：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `format` / `schema_version` | string / number | 清单格式标识 |
+| `dry_run` | boolean | true 时只报告不写盘 |
+| `scope` / `workspace_id` | — | 回显请求范围 |
+| `exported_at` | string | ISO 时间戳 |
+| `sources` | `{ source_db, path, pages }[]` | 参与迁移的源库分布 |
+| `targets` | `{ dir, create, unchanged, conflicts, skipped }[]` | 按目标目录的分项计数 |
+| `pages` | `ExportPageEntry[]` | **每项 `id` 非空**；逐页动作见下 |
+| `conflicts` | `{ dir, file, page_id, source_db, existing_sha256, incoming_sha256, backup_path? }[]` | 目标已存在且内容不同（暂停导出） |
+| `manifests` | `{ dir, file, files, written }[]` | 每目录 `.export-manifest.json` |
+| `summary` | `{ total, create, unchanged, conflicts, skipped, duplicates }` | 见下 |
+
+`pages[].action` 取值：`create`（新增）｜`skip-unchanged`（目标已存在且逐字节一致，幂等跳过）｜`conflict`（目标存在且内容不同，不静默覆盖）｜`skip-deleted`（软删页不落盘）｜`skip-invalid`（不符合文件契约，`reason` 点名原因）。
+
+算术口径：
+- `total = create + unchanged + conflicts + skipped` **恒成立**（`total` 为去重后的旧库行集大小；`skipped = skip-deleted + skip-invalid`）。
+- `duplicates` 是**行集之外的独立计数**：混合态（C8）下同一 `id` 在多个源库出现时，以 localized 工作区库副本为准，其余副本跳过。这些页不进入 `pages[]`，也不计入上面四项。
+- 正文含 CRLF 的页按契约归一为 LF 落盘，`reason` 会标注「正文含 CRLF，已按契约归一为 LF 落盘（内容未丢失）」——**不是失败**。
+
+零丢失口径：写盘前先在内存内完成全量 `render → parse → 比对`，任一页不合格则**不写入任何文件**（500 `KNOWLEDGE_EXPORT_VERIFY_FAILED`）；行集内 slug 归一冲突整体拒绝（409 `KNOWLEDGE_EXPORT_CONFLICT`）。
+
 要真正支持 1MB，需在 `index.ts` 里把该路径 parser 挂在全局之前（board-server 的文件，未改）：
 
 ```ts
@@ -1106,10 +1150,12 @@ kb ask-extend <decision-id|≥8 位前缀> [--seconds 60] [--by <actor>] [--fenc
 | `kb grep` | 永不提供 | — | 本机文件内容检索：需要本地路径与文件系统遍历，MCP 远程调用无意义 |
 | `kb show` | 有 | `get_task` / `get_task_comments` | 任务正文与评论分别提供窗口化读取 |
 | `kb claim` | 有 | `claim_task` | 原子领取，审计标签为 MCP 配置的 agent |
+| `kb work` | 有 | `start_task` | 原子领取后返回有界卡面、依赖与最近评论；claimed 后读取失败不回滚占用 |
 | `kb release` | 有 | `release_task` | 释放占用 → 待规划 |
 | `kb comment` | 有 | `add_task_comment` | 文本评论；图片附件仅 CLI/HTTP 提供 |
 | `kb accept` | 有 | `accept_task` | 结构化验收记录，不改卡状态 |
-| `kb done` | 有 | `complete_task` | 完成 → 待验收；`scope`（string[]）同 CLI `--scope`，未声明时服务端不自动提交（`NO_SCOPE`），不是「只在 CLI 侧」；`board_only`（boolean）同 `--board-only`，与 `scope` 互斥（同传 400 `BOARD_ONLY_SCOPE_CONFLICT`，不静默取舍）；收尾门禁同 CLI：`changelog_id` 引用本工作区已有日志（**不等价** `--close-record`——后者是新建一条）、`skip_changelog` 等价 `--no-changelog` |
+| `kb done` | 有 | `complete_task` | 完成 → 待验收；`scope`（string[]）同 CLI `--scope`；未声明 scope 或 `board_only=true` 时只提交 `.agentboard` 看板快照，不提交业务代码；`board_only` 与 `scope` 互斥（同传 400 `BOARD_ONLY_SCOPE_CONFLICT`）；收尾门禁同 CLI：`changelog_id` 引用本工作区已有日志（**不等价** `--close-record`——后者是新建一条）、`skip_changelog` 等价 `--no-changelog` |
+| `kb finish` | 有 | `finish_task` | 默认先写归属本卡的 changelog，再复用 done；`no_changelog=true` 走无日志出口，提交与门禁同 `complete_task` |
 | `kb close` | 有 | `close_task` | 待验收 → 已关闭 |
 | `kb reopen` | 有 | `reopen_task` | 已关闭/已废弃 → 指定状态 |
 | `kb update` | 有 | `update_task` | 字段与状态更新，带 CAS |

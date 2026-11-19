@@ -94,7 +94,7 @@ const knowledgeBody = (workspaceId: string) => ({
   title: '缓存知识',
   body_md: '缓存失效后 WAL',
   actor: 'codex',
-  sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+  sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
   evidence: [{ source_id: 's', locator: 'issue:1' }],
 });
 
@@ -249,7 +249,7 @@ describe('DELETE /api/workspaces/:id 知识页软删口径（KB-DEL N-03）', ()
       domain: 'knowledge',
       category: 'solved',
       actor: 'user',
-      sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+      sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
       evidence: [{ source_id: 's', locator: 'issue:1' }],
     });
     const kept = mkRepoPage('kept');

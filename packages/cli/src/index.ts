@@ -23,6 +23,8 @@ import { release, releaseIssue } from './commands/release.js';
 import { comment } from './commands/comment.js';
 import { accept } from './commands/accept.js';
 import { done } from './commands/done.js';
+import { work } from './commands/work.js';
+import { finish } from './commands/finish.js';
 import { deleteIssue } from './commands/deleteIssue.js';
 import { fail, failIssue } from './commands/fail.js';
 import { registerKnowledgeCommands } from './commands/knowledge.js';
@@ -330,6 +332,23 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
       claim(makeCtx(program, ctxIo), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
 
   program
+    .command('work')
+    .description('领取任务并返回紧凑工作包（claim + 有界卡面 + 依赖；不执行代码）')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--no-knowledge', '关闭任务知识检索')
+    .option('--knowledge-query <query>', '自定义知识查询')
+    .option('--comments <n|all>', '领取回执的评论条数（缺省 5）')
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .addHelpText('after', `
+示例：
+  kb work 0f6ba9ab
+  kb --json work 0f6ba9ab
+退出码：0 成功；2 已被占用 / 状态不可领取 / 前置未解除 / 决策锁；1 任务不存在或参数错误
+`)
+    .action(async (id: string, opts: { knowledge?: boolean; knowledgeQuery?: string; requestId?: string; comments?: string }) =>
+      work(makeCtx(program, ctxIo), id, { ...opts, comments: parseCommentLimit(opts.comments) }));
+
+  program
     .command('release')
     .description('释放占用 → 待规划（不是失败；只有当前占用者可执行；单张或 --ids-file 批量）')
     .argument('[issue-id]', '任务 id：完整 UUID，或 ≥8 位唯一前缀（与 --ids-file 二选一）')
@@ -406,7 +425,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
     .option('--knowledge-page <id>', '已有知识页 id：只挂引用到 notes，不新建页')
     .option('--design-not-advanced', 'ARCH-04：确认本卡不推进关联设计页（landed=proposed 时跳过门禁，声明写入 notes）')
     .option('--no-changelog', 'SK-05：显式声明本次没有用户可见变更（不写变更日志）；与服务端门禁的出口，与 --close-record 互斥')
-    .option('--board-only', 'N3-10：纯看板任务，跳过自动提交（不列脏文件、不 exit 1）；与 --scope / --all 互斥')
+    .option('--board-only', '纯看板任务：只提交 .agentboard 看板快照，不提交业务代码；与 --scope / --all 互斥')
     .addHelpText('after', `
 示例：
   kb done 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --notes '改完并跑通测试'
@@ -416,10 +435,10 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   kb changelog create --issue 0f6ba9ab-996d-4af5-b0cd-d9208c44936f --title '某项调整' --type 调整 --stdin   # 先写日志再 done
   kb done 0f6ba9ab --design-not-advanced        # 关联设计页仍为 proposed，但本卡确认不推进设计
   kb done 0f6ba9ab --no-changelog               # 本次没有用户可见变更（纯内部重构 / 仅看板操作）
-  kb done 0f6ba9ab --board-only                 # 纯看板任务：跳过自动提交，不列脏文件、不 exit 1
+  kb done 0f6ba9ab --board-only                 # 纯看板任务：只提交看板快照
 变更日志门禁（SK-05）：以下任一即放行 —— ① 先 kb changelog create --issue <卡 id> 写一条归属本卡的变更日志；② --close-record（自带 changelog）；③ --no-changelog 显式声明没有用户可见变更。都没有 → 服务端 400 CHANGELOG_ACK_REQUIRED（done 未执行）。
 退出码：0 成功（状态 → 待验收；带 --close 则 → 已关闭）；2 未被占用 / 非当前占用者 / 占用已改变 / close 阶段冲突；1 参数错误、任务不存在、close-record 子步骤失败（changelog/知识页失败时 done 未执行）、设计页仍为 proposed 且未声明（done 未执行），或**done 已生效但自动提交未完成**（无基线 / 提交失败 / scope 零命中 / 未声明 scope——此时状态已是待验收，按 stderr 里的补救命令执行即可）
-GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改动一律不纳入（评论里列清单）；显式 --all 才连同卡外改动一起提交。
+GIT-ON-DONE：默认提交 --scope 声明的卡内路径与 .agentboard 看板快照；未声明 scope 或使用 --board-only 时只提交看板快照；显式 --all 才连同卡外改动一起提交。
 自动提交未完成时 stderr 输出「未提交 + 原因 + 可照抄的补救命令」；带 --close 时该场景会跳过 close（避免未提交的卡被关闭后无法用 done 补救），修复后执行 kb close <issue-id>。
 非 git 工作区（未装 git / 非仓库 / 仓库损坏）只落 stderr 警告、退出码保持 0（结果状态 unavailable）。
 `)
@@ -432,6 +451,36 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
         // --no-changelog 是 commander 的否定选项：传了才是 false，缺省 true
         noChangelog: opts.changelog === false,
         boardOnly: opts.boardOnly === true,
+      }));
+
+  program
+    .command('finish')
+    .description('短收尾入口：默认 close-record（changelog + 可选知识页 + done）；--no-changelog 仅 done')
+    .argument('<issue-id>', '任务 id：完整 UUID，或 ≥8 位唯一前缀')
+    .option('--notes <text>', '完成备注（单行；多行用 --notes-stdin）')
+    .option('--notes-stdin', '从标准输入读取完成备注')
+    .option('--scope <paths...>', '本卡改动路径（可重复）', (value: string, previous: string[] = []) => [...previous, ...value.split(',').map(item => item.trim()).filter(Boolean)], [])
+    .option('--request-id <uuid>', '幂等请求 id；重试必须复用同一 uuid')
+    .option('--close', 'done 后串行 close')
+    .option('--knowledge-page <id>', '已有知识页 id，挂到收尾 notes')
+    .option('--type <类型>', '变更日志类型：新增|修复|调整')
+    .option('--no-changelog', '显式声明无用户可见变更')
+    .option('--board-only', '纯看板任务，只提交快照')
+    .option('--design-not-advanced', '确认本卡不推进关联设计页')
+    .option('--title <title>', '变更日志标题（默认模式必填）')
+    .addHelpText('after', `
+示例：
+  Get-Content -Raw notes.md | kb finish <id> --title '调整 CLI' --type 调整 --notes-stdin --scope packages/cli
+  Get-Content -Raw notes.md | kb finish <id> --no-changelog --notes-stdin
+退出码：0 成功；2 占用/状态/门禁冲突；1 参数或子步骤失败（done 可能已生效，按 stderr 处理）
+`)
+    .action(async (id: string, opts: { notes?: string; notesStdin?: boolean; scope?: string[]; requestId?: string; close?: boolean; knowledgePage?: string; type?: string; changelog?: boolean; boardOnly?: boolean; designNotAdvanced?: boolean; title?: string }) =>
+      finish(makeCtx(program, ctxIo), id, {
+        notes: opts.notes, notesStdin: opts.notesStdin === true, scope: opts.scope,
+        requestId: opts.requestId, close: opts.close === true, knowledgePage: opts.knowledgePage,
+        changelogType: opts.type, noChangelog: opts.changelog === false,
+        boardOnly: opts.boardOnly === true, designNotAdvanced: opts.designNotAdvanced === true,
+        changelogTitle: opts.title,
       }));
 
   program
@@ -564,14 +613,14 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
 
   program
     .command('create-issue')
-    .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；标题含引号被拒时改用 --title-stdin）')
-    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理）')
-    .argument('[title]', '任务标题（与 --title-stdin 二选一）')
+    .description('创建任务（workspace 支持 id 或名称，缺省按 cwd 解析；位置参数含引号会被拒，改用 --title-stdin）')
+    .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析；只给一个位置参数且匹配不上工作区时按标题处理；匹配到工作区时 stderr 会提示）')
+    .argument('[title]', '任务标题（与 --title-stdin 二选一；含引号会被拒，走 --title-stdin）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
-    .option('--title-stdin', '从 UTF-8 stdin 读标题（PowerShell 引号吞参时用：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
+    .option('--title-stdin', '从 UTF-8 stdin 读标题（不经 PowerShell 分词，允许引号 " \' “ ” 与 & | \\ 任意字符：Get-Content title.txt -Raw | kb create-issue <ws> --title-stdin）')
     .option('-d, --description <text>', '任务描述（必填；含空格用引号；多行走 UI 或 API）')
     .option('--allow-empty', '跳过空描述校验（批量建卡 / 纯父卡）；回执会提示已跳过空面校验')
-    .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须同时用 -d 写验收标准）')
+    .option('--status <待规划|待验收>', '初始状态（默认待规划；待验收必须有 -d 且描述有实质内容，不查关键词，--allow-empty 不豁免）')
     .option('-p, --priority <低|中|高>', '优先级')
     .option('-l, --labels <a,b,c>', '标签：逗号或空格分隔，会拆成多个标签（标签本身不含空格）')
     .option('--parent <issue-id>', '父任务 id：完整 UUID，或 ≥8 位唯一前缀')
@@ -580,6 +629,8 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
     .action(async (workspaceArg: string | undefined, titleArg: string | undefined, opts: { workspace?: string; titleStdin?: boolean; description?: string; allowEmpty?: boolean; status?: string; priority?: string; labels?: string; parent?: string; due?: string; requestId?: string }) =>
       createIssue(makeCtx(program, ctxIo), {
         workspace: opts.workspace ?? workspaceArg,
+        // C13：workspace 是否来自位置参数第 1 项（显式 --workspace 不算，不需要歧义提示）
+        workspaceFromPositional: opts.workspace === undefined && workspaceArg !== undefined,
         // OPT-02：显式 --workspace 时，单个位置参数是标题
         title: opts.workspace !== undefined && titleArg === undefined ? workspaceArg : titleArg,
         titleStdin: opts.titleStdin,
@@ -752,7 +803,7 @@ GIT-ON-DONE：默认只提交 --scope 声明的卡内路径，卡外未提交改
   // STORE-5：工作区文本快照（库为准，快照是派生物）——服务端单写者导出 / 只读校验 / 空库导入
   const snapshot = workspaceDb.command('snapshot').description('工作区文本快照：export 导出 / validate 校验 / import 导入（JSONL + manifest，可随仓库进 git）');
   snapshot.command('export')
-    .description('导出工作区库文本快照到 <工作区>/.agentboard/snapshot（未下沉时从中心库按工作区导出；导出后回读自校验）')
+    .description('导出看板文本快照到 <工作区>/.agentboard/snapshot（保留 snapshot/knowledge；未下沉时从中心库按工作区导出；导出后回读自校验）')
     .argument('[workspace]', '工作空间 id 或名称（缺省按 cwd 解析）')
     .option('--workspace <id|名>', '工作空间 id 或名称（显式给出时优先于位置参数）')
     .option('--include-messages', '同时导出会话消息（messages.jsonl；默认不导出，体积大且敏感）')

@@ -12,6 +12,7 @@ import { DocsIndex } from './index.js';
 import { KnowledgeFileRepo } from './fileRepo.js';
 import { resolveDocsDir, type DocsDirOverrides } from './paths.js';
 import { reconcileDocsDir } from './reconcile.js';
+import { pushAll } from '../services/pushAll.js';
 
 export interface ScopeSelector {
   scope: 'common' | 'workspace' | 'both';
@@ -116,8 +117,8 @@ export class KnowledgeDocsView {
     const unresolved: Array<{ source: string; raw_target: string; alias: string | null; heading: string | null }> = [];
     for (const index of this.indexesInScope()) {
       const result = index.resolveLinks(index === this.commonIndex ? null : this.commonIndex);
-      links.push(...result.links);
-      unresolved.push(...result.unresolved);
+      pushAll(links, result.links);
+      pushAll(unresolved, result.unresolved);
     }
     return { links, unresolved };
   }
@@ -142,21 +143,21 @@ export class KnowledgeDocsView {
       const identity = index.scopeIdentity;
       const attachmentNodeId = (key: string): string => identity.scope === 'workspace' ? `att:ws:${identity.workspace_id ?? ''}:${key}` : `att:common:${key}`;
       const refs = index.graphRefs(index === this.commonIndex ? null : this.commonIndex);
-      links.push(...refs.links);
-      unresolved.push(...refs.unresolved);
+      pushAll(links, refs.links);
+      pushAll(unresolved, refs.unresolved);
       for (const tag of refs.tags) {
         const bucket = tags.get(tag.tag_norm);
         if (bucket === undefined) tags.set(tag.tag_norm, { raw_tag: tag.raw_tag, weight: tag.weight, refs: [...tag.refs] });
         else {
           bucket.weight += tag.weight;
-          bucket.refs.push(...tag.refs);
+          pushAll(bucket.refs, tag.refs);
         }
       }
       for (const attachment of refs.attachments) {
         const nodeId = attachmentNodeId(attachment.key);
         const bucket = attachments.get(nodeId);
         if (bucket === undefined) attachments.set(nodeId, { key: attachment.key, name: attachment.name, node_id: nodeId, scope: identity.scope, workspace_id: identity.workspace_id, refs: [...attachment.refs] });
-        else bucket.refs.push(...attachment.refs);
+        else pushAll(bucket.refs, attachment.refs);
       }
     }
     return {
@@ -170,7 +171,7 @@ export class KnowledgeDocsView {
   /** 反链（跨两目录合并；工作区页 → 公共页的跨目录目标按 M2 解析；排序稳定 (page_id)） */
   backlinks(pageId: string): Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> {
     const items: Array<{ page_id: string; slug: string; title: string; alias: string | null; heading: string | null }> = [];
-    for (const index of this.indexesInScope()) items.push(...index.backlinks(pageId, index === this.commonIndex ? null : this.commonIndex));
+    for (const index of this.indexesInScope()) pushAll(items, index.backlinks(pageId, index === this.commonIndex ? null : this.commonIndex));
     return items.sort((a, b) => (a.page_id < b.page_id ? -1 : a.page_id > b.page_id ? 1 : 0));
   }
 
@@ -188,6 +189,23 @@ export class KnowledgeDocsView {
     const merged = mergeKnowledgeRowsByRecency(sides);
     const end = offset + limit;
     return { items: merged.slice(offset, end) as T[], next_offset: merged.length > end ? end : null };
+  }
+
+  /**
+   * K3：范围内全部「存在但校验失败」的文件（跨目录合并，按文件名排序）。
+   * 只回 slug / 文件名 / issues，不回正文——坏内容不能当正常内容传播。
+   * scope 过滤按 meta.status 尽力判断：meta 读不出时保留（宁可多报，不漏报）。
+   */
+  invalidFiles(filter?: (meta: { status: string; expires_at: number | null }) => boolean): Array<{ slug: string | null; file_name: string; issues: string[] }> {
+    return this.indexesInScope()
+      .flatMap(index => index.allInvalid())
+      .filter(file => filter === undefined || file.meta === undefined || filter(file.meta))
+      .map(file => ({
+        slug: file.meta?.slug ?? null,
+        file_name: file.fileName,
+        issues: [...file.issues],
+      }))
+      .sort((left, right) => (left.file_name < right.file_name ? -1 : left.file_name > right.file_name ? 1 : 0));
   }
 }
 

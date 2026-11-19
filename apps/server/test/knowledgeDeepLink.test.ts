@@ -28,7 +28,7 @@ describe('BORROW-3.2 知识深链', () => {
     slug,
     title,
     body_md: '深链正文 机密标题占位',
-    sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+    sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
     evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
     actor: 'tester',
   });

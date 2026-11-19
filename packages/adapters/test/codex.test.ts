@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { asChild, closeChild, makeAutoChild, makeFakeChild, type FakeChild } from './helpers.js';
 import { setSpawnFn, type SpawnFn } from '../src/spawn.js';
 import {
   CODEX_CMD,
   CODEX_STATIC_MODELS,
+  fetchProviderModels,
   codexAdapter,
   createCodexParseState,
+  parseCodexProviderConfig,
+  parseCodexModelCatalog,
   parseCodexLine,
 } from '../src/codex.js';
 import type { TurnResult, UnifiedEvent } from '../src/types.js';
@@ -217,23 +220,115 @@ describe('codex detect', () => {
 });
 
 describe('codex listModels', () => {
-  it('已安装 → 静态清单（source=static，至少含 gpt-5-codex）', async () => {
-    setSpawnFn(((cmd: string) => {
+  let previousCodexHome: string | undefined;
+  beforeEach(() => {
+    previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = `C:\\mock\\missing-codex-home-${Date.now()}`;
+  });
+  afterEach(() => {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+  });
+
+  it('已安装 → 优先使用 debug models 的可见模型', async () => {
+    setSpawnFn(((cmd: string, args: string[]) => {
       if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE && args[0] === 'debug') {
+        return asChild(makeAutoChild([{
+          source: 'stdout',
+          text: JSON.stringify({ models: [
+            { slug: 'gpt-6.1-sol', visibility: 'list', supported_in_api: true },
+            { slug: 'hidden', visibility: 'hide', supported_in_api: true },
+          ] }),
+        }], 0));
+      }
       if (cmd === MOCK_EXE) return asChild(makeAutoChild([{ source: 'stdout', text: 'codex-cli 0.165.0\n' }], 0));
       throw new Error(`unexpected spawn: ${cmd}`);
     }) as unknown as SpawnFn);
 
     const models = await codexAdapter.listModels();
-    expect(models.every((m) => m.source === 'static')).toBe(true);
-    expect(models.map((m) => m.id)).toContain('gpt-5-codex');
-    expect(models).toEqual(CODEX_STATIC_MODELS);
+    expect(models).toEqual([{ id: 'gpt-6.1-sol', source: 'probed' }]);
+  });
+
+  it('debug models 无输出或损坏 → 回退静态清单', async () => {
+    setSpawnFn(((cmd: string, args: string[]) => {
+      if (cmd === 'where' || cmd === 'which') return asChild(whereExeChild());
+      if (cmd === MOCK_EXE && args[0] === 'debug') {
+        return asChild(makeAutoChild([{ source: 'stderr', text: 'invalid catalog\n' }], 1));
+      }
+      if (cmd === MOCK_EXE) return asChild(makeAutoChild([{ source: 'stdout', text: 'codex-cli 0.165.0\n' }], 0));
+      throw new Error(`unexpected spawn: ${cmd}`);
+    }) as unknown as SpawnFn);
+
+    await expect(codexAdapter.listModels()).resolves.toEqual(CODEX_STATIC_MODELS);
   });
 
   it('未安装 → 空数组', async () => {
     setSpawnFn((() => asChild(makeAutoChild([], 1))) as unknown as SpawnFn);
 
     await expect(codexAdapter.listModels()).resolves.toEqual([]);
+  });
+});
+
+describe('parseCodexModelCatalog', () => {
+  it('只保留可见、可调用的唯一 slug；非法 JSON 返回空数组', () => {
+    expect(parseCodexModelCatalog(JSON.stringify({ models: [
+      { slug: 'gpt-6', visibility: 'list', supported_in_api: true },
+      { slug: 'gpt-6', visibility: 'list', supported_in_api: true },
+      { slug: 'hidden', visibility: 'hide', supported_in_api: true },
+      { slug: 'api-disabled', visibility: 'list', supported_in_api: false },
+      { slug: '', visibility: 'list' },
+    ] }))).toEqual([{ id: 'gpt-6', source: 'probed' }]);
+    expect(parseCodexModelCatalog('not json')).toEqual([]);
+    expect(parseCodexModelCatalog('{"models":{}}')).toEqual([]);
+  });
+
+  it('兼容 OpenAI /models 的 data[].id', () => {
+    expect(parseCodexModelCatalog(JSON.stringify({
+      object: 'list',
+      data: [
+        { id: 'deepseek/deepseek-v4.1-flash', object: 'model' },
+        { id: 'deepseek/deepseek-v4.1-flash', object: 'model' },
+        { id: 'ignored', object: 'embedding' },
+      ],
+    }))).toEqual([{ id: 'deepseek/deepseek-v4.1-flash', source: 'probed' }]);
+  });
+});
+
+describe('Codex provider config', () => {
+  it('只读取当前 provider 的 base_url 与 bearer token', () => {
+    expect(parseCodexProviderConfig([
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'base_url = "http://127.0.0.1:57321/v1"',
+      'experimental_bearer_token = "secret"',
+      '[model_providers.other]',
+      'base_url = "http://127.0.0.1:9999/v1"',
+    ].join('\n'))).toEqual({
+      baseUrl: 'http://127.0.0.1:57321/v1',
+      bearerToken: 'secret',
+    });
+  });
+
+  it('请求 /models 并发送 Bearer；非 2xx 返回空数组', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const response = (body: string, status = 200): Response => new Response(body, { status });
+    const models = await fetchProviderModels({
+      baseUrl: 'http://127.0.0.1:57321/v1/',
+      bearerToken: 'secret',
+    }, (async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return response(JSON.stringify({ data: [{ id: 'local-model' }] }));
+    }) as typeof fetch);
+
+    expect(models).toEqual([{ id: 'local-model', source: 'probed' }]);
+    expect(calls[0]!.url).toBe('http://127.0.0.1:57321/v1/models');
+    expect((calls[0]!.init?.headers as Record<string, string>).Authorization).toBe('Bearer secret');
+
+    await expect(fetchProviderModels(
+      { baseUrl: 'http://127.0.0.1:57321/v1' },
+      (async () => response('no', 500)) as typeof fetch,
+    )).resolves.toEqual([]);
   });
 });
 

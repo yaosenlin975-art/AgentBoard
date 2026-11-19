@@ -102,6 +102,11 @@ export function validateKnowledgeFileMeta(meta: Record<string, unknown>): { issu
 /** 安全纯标量：不含 YAML 特殊字符，可原样输出 */
 const PLAIN_SCALAR = /^[A-Za-z0-9][A-Za-z0-9._@/-]*$/;
 
+/**
+ * 标量渲染。**不要**按字段名加引号：`computeContentHash` 只 omit 顶层 content_hash，
+ * `sources[].content_hash` 仍参与 hash——改 render 的字节输出会把所有历史文件判成「被外部编辑」。
+ * 裸写的 64 位 hex 由 `parseScalar` 的字段分支解析成字符串（那座桥在 parse 侧，不在 render 侧）。
+ */
 function yamlScalar(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'number') return String(value);
@@ -129,10 +134,21 @@ function renderArrayBlock(key: 'sources' | 'evidence', items: Array<Record<strin
 }
 
 /**
+ * 正文换行归一（K1-B）：CRLF → LF。
+ *
+ * `parseKnowledgeDocument` 为兼容历史文件始终把 CRLF 归一为 LF，因此写入侧必须先做同一次归一，
+ * 否则「写时正文」与「读回正文」喂给 content_hash 的内容不同 → stored ≠ recomp → 页面写入即不可读。
+ * 孤立 CR 不归一（实测孤立 CR 往返本来就保真，动了反而会破坏）。
+ */
+export function normalizeBodyMd(bodyMd: string): string {
+  return bodyMd.replace(/\r\n/g, '\n');
+}
+
+/**
  * 渲染完整文档：`---\n<front matter>---\n\n<body>`。
  * `omitFields` 用于 content_hash 计算（去掉该字段后渲染）。
  * 正文**原样落盘**（不自动补尾换行）：保证 `parse(render(meta, body)) === body` 的逐字节回读一致
- * （验收口径「POST 后 Docs/<slug>.md 与回读正文一致」）。
+ * （验收口径「POST 后 Docs/<slug>.md 与回读正文一致」）。调用方应先用 `normalizeBodyMd` 归一 CRLF（K1-B）。
  */
 export function renderKnowledgeDocument(meta: KnowledgeFileMeta, bodyMd: string, omitFields: readonly string[] = []): string {
   const omitted = new Set(omitFields);
@@ -153,9 +169,19 @@ export function renderKnowledgeDocument(meta: KnowledgeFileMeta, bodyMd: string,
   return `${lines.join('\n')}\n\n${bodyMd}`;
 }
 
-/** 解析单个标量值：null / 整数 / JSON 双引号串 / 原样字符串 */
-function parseScalar(raw: string): unknown {
+/**
+ * 解析单个标量值：null / 整数 / JSON 双引号串 / 原样字符串。
+ * `field` 用于已知语义的字段走字符串分支（K1-A）：`content_hash` 是 64 位 hex，
+ * 整串为数字时（如 64 个 0）不能被 `/^-?\d+$/` 抢成 number，否则契约校验判 bad_type。
+ */
+function parseScalar(raw: string, field?: string): unknown {
   const text = raw.trim();
+  if (field === 'content_hash') {
+    if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
+      try { return JSON.parse(text); } catch { throw new KnowledgeFileParseError('bad_yaml', field, `无法解析引号标量：${text.slice(0, 80)}`); }
+    }
+    return text;
+  }
   if (text === 'null') return null;
   if (/^-?\d+$/.test(text)) return Number(text);
   if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
@@ -207,11 +233,11 @@ export function parseKnowledgeDocument(raw: string): { meta: KnowledgeFileMeta; 
           current = [];
           const pair = /^  - ([A-Za-z_][A-Za-z0-9_]*): ?(.*)$/.exec(itemLine);
           if (pair === null) throw new KnowledgeFileParseError('bad_yaml', key, `无法识别的条目行：${itemLine.slice(0, 80)}`);
-          current.push({ key: pair[1]!, value: parseScalar(pair[2]!) });
+          current.push({ key: pair[1]!, value: parseScalar(pair[2]!, pair[1]!) });
         } else if (/^    /.test(itemLine)) {
           const pair = /^    ([A-Za-z_][A-Za-z0-9_]*): ?(.*)$/.exec(itemLine);
           if (pair === null || current === null) throw new KnowledgeFileParseError('bad_yaml', key, `无法识别的条目续行：${itemLine.slice(0, 80)}`);
-          current.push({ key: pair[1]!, value: parseScalar(pair[2]!) });
+          current.push({ key: pair[1]!, value: parseScalar(pair[2]!, pair[1]!) });
         } else if (itemLine.trim() === '') {
           i += 1;
           continue;
@@ -225,7 +251,7 @@ export function parseKnowledgeDocument(raw: string): { meta: KnowledgeFileMeta; 
       continue;
     }
     if (!knownScalar.has(key as never)) throw new KnowledgeFileParseError('bad_yaml', key, `未知字段：${key}`);
-    meta[key] = parseScalar(match[2]!);
+    meta[key] = parseScalar(match[2]!, key);
     i += 1;
   }
   const invalid = validateKnowledgeFileMeta(meta);

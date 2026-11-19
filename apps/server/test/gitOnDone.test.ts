@@ -29,10 +29,12 @@ describe('git on done', () => {
   let root: string;
   let repo: string;
   let workspaceId: string;
+  let autoSnapshotPath: string;
 
   const commitCount = (): number => Number(git(repo, ['rev-list', '--count', 'HEAD']));
   const lastSubject = (): string => git(repo, ['log', '-1', '--pretty=%s']);
   const lastCommitFiles = (): string[] => git(repo, ['show', '--name-only', '--pretty=format:', '-1']).split('\n').filter(Boolean);
+  const businessFiles = (): string[] => lastCommitFiles().filter(path => !path.startsWith(autoSnapshotPath));
 
   const makeIssue = async (title: string): Promise<string> => {
     const res = await request(app).post('/api/issues').send(issuePayload(workspaceId, { title }));
@@ -75,6 +77,7 @@ describe('git on done', () => {
     });
     app = created.app;
     workspaceId = createWorkspace(t.db, { name: 'git 空间', path: repo }).id;
+    autoSnapshotPath = '.agentboard/';
   });
   afterEach(() => {
     t.cleanup();
@@ -93,9 +96,10 @@ describe('git on done', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('待验收');
     expect(lastSubject()).toBe(`[${issueId.slice(0, 8)}] 派发链路收紧`);
-    expect(lastCommitFiles()).toEqual(['src/feature.ts']);
+    expect(businessFiles()).toEqual(['src/feature.ts']);
     expect(git(repo, ['status', '--porcelain'])).toContain('legacy-dirty.txt');
-    expect(comments(issueId).join('\n')).toContain('已自动提交 1 个文件');
+    expect(comments(issueId).join('\n')).toContain('已自动提交 12 个文件');
+    expect(comments(issueId).join('\n')).toContain('已纳入本卡自动产物：.agentboard/.gitignore');
   });
 
   it('keepsQuotesAndChineseInCommitMessage', async () => {
@@ -129,7 +133,8 @@ describe('git on done', () => {
     unlinkSync(join(repo, 'to-delete.md'));
     await done(issueId, { scope_paths: ['to-delete.md'] });
 
-    expect(git(repo, ['show', '--name-status', '--pretty=format:', '-1']).trim()).toBe('D\tto-delete.md');
+    expect(git(repo, ['show', '--name-status', '--pretty=format:', '-1'])
+      .split('\n').filter(line => !line.includes(autoSnapshotPath)).join('\n')).toBe('D\tto-delete.md');
   });
 
   it('nonGitWorkspaceReportsSkipInsteadOfSilence', async () => {
@@ -192,11 +197,12 @@ describe('git on done', () => {
 
     expect(res.status).toBe(200);
     expect(commitCount()).toBe(2);
-    expect(lastCommitFiles()).toEqual(['a-card.txt']);
+    expect(businessFiles()).toEqual(['a-card.txt']);
     // 乙卡文件留在工作树，不进本卡提交
     expect(git(repo, ['status', '--porcelain'])).toContain('b-card.txt');
     const note = comments(first).join('\n');
-    expect(note).toContain('已自动提交 1 个文件');
+    expect(note).toContain('已自动提交 12 个文件');
+    expect(note).toContain('已纳入本卡自动产物');
     expect(note).toContain('未提交');
     expect(note).toContain('b-card.txt');
   });
@@ -235,7 +241,7 @@ describe('git on done', () => {
     // `./src/` 同时验证归一化（去 `./` 与尾 `/`）
     await done(issueId, { scope_paths: ['./src/'] });
 
-    expect(lastCommitFiles()).toEqual(['src/in.ts']);
+    expect(businessFiles()).toEqual(['src/in.ts']);
     // 未跟踪目录在 porcelain 里折叠成 `?? other/`，用 -uall 展开到文件
     expect(git(repo, ['status', '--porcelain', '-uall'])).toContain('other/out.ts');
     expect(comments(issueId).join('\n')).toContain('other/out.ts');
@@ -283,12 +289,13 @@ describe('git on done', () => {
 
     const res = await done(issueId, { scope_paths: ['a-card.txt'] });
     expect(res.status).toBe(200);
-    expect(lastCommitFiles()).toEqual(['a-card.txt']);
+    expect(businessFiles()).toEqual(['a-card.txt']);
     // 卡外文件仍在工作树，且仍是「已暂存」状态：路径限定 commit 没有把它卷进来
     expect(git(repo, ['status', '--porcelain'])).toContain('b-card.txt');
 
     const note = comments(issueId).join('\n');
-    expect(note).toContain('已自动提交 1 个文件');
+    expect(note).toContain('已自动提交 12 个文件');
+    expect(note).toContain('已纳入本卡自动产物');
     expect(note).toContain('卡外改动未提交');
     expect(note).toContain('b-card.txt');
     // N3-03：MCP 没有 --all，提示里给出 MCP 可用的 scope 写法
@@ -307,7 +314,7 @@ describe('git on done', () => {
 
     await done(issueId, { scope_paths: ['src'] });
 
-    expect(lastCommitFiles().sort()).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(businessFiles().sort()).toEqual(['src/a.ts', 'src/b.ts']);
     expect(git(repo, ['status', '--porcelain'])).toContain('outside.txt');
   });
 
@@ -320,7 +327,7 @@ describe('git on done', () => {
     // CLI 的 --all 映射成声明工作区根 `.`
     await done(issueId, { scope_paths: ['.'] });
 
-    expect(lastCommitFiles().sort()).toEqual(['a-card.txt', 'b-card.txt']);
+    expect(businessFiles().sort()).toEqual(['a-card.txt', 'b-card.txt']);
     expect(git(repo, ['status', '--porcelain'])).toBe('');
     expect(comments(issueId).join('\n')).toContain('--all：显式纳入工作区全部未提交改动');
   });
@@ -523,12 +530,26 @@ describe('git on done', () => {
     expect(res.body.git_commit).toMatchObject({
       status: 'not-committed',
       reason: 'COMMIT_FAILED',
-      pending: ['fail.ts'],
+      pending: [
+        '.agentboard/.gitignore',
+        '.agentboard/README.md',
+        '.agentboard/snapshot/issue_comments.jsonl',
+        '.agentboard/snapshot/issue_dependencies.jsonl',
+        '.agentboard/snapshot/issue_draft_audit.jsonl',
+        '.agentboard/snapshot/issue_git_baseline.jsonl',
+        '.agentboard/snapshot/issues.jsonl',
+        '.agentboard/snapshot/manifest.json',
+        '.agentboard/snapshot/sessions.jsonl',
+        '.agentboard/snapshot/workspace_change_log.jsonl',
+        '.agentboard/snapshot/workspace_status.jsonl',
+        'fail.ts',
+      ],
     });
     expect(commitCount()).toBe(before);
     const text = comments(issueId).join('\n');
     expect(text).toContain('自动提交失败');
-    expect(text).toContain('git add -- fail.ts');
+    expect(text).toContain('git add -- ');
+    expect(text).toContain('fail.ts');
   });
 
   it('leaseExpiredKeepsBaselineAndStillCommits', async () => {
@@ -545,7 +566,7 @@ describe('git on done', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.git_commit).toMatchObject({ status: 'committed' });
-    expect(lastCommitFiles()).toEqual(['late.ts']);
+    expect(businessFiles()).toEqual(['late.ts']);
     expect(lastSubject()).toBe(`[${issueId.slice(0, 8)}] 租约过期后收尾`);
   });
 });

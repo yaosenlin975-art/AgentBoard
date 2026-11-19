@@ -3,7 +3,8 @@
  * 覆盖：GET /api/version（SERVER-SINGLETON/RESTART-HARDENING 自报）、GET /api/skills、
  * GET /api/clis 与 /api/clis/:id/models、POST/GET /api/system/center-snapshot/*（STORE-6 中心库快照）、
  * POST /api/system/pick-folder（Windows 原生文件夹选择，模块级并发守卫随域迁入）、
- * GET /api/system/mcp-info（MCP 入口与工具清单自报）。
+ * GET /api/system/mcp-info（MCP 入口与工具清单自报）、
+ * POST /api/client-diagnostics（G4 客户端崩溃取证，写独立 JSONL 日志）。
  * 注意与 ../systemRoutes.ts（createSystemRouter：/system/restart 重启服务）分工：本文件是
  * version/skills/clis/center-snapshot/pick-folder 杂域，挂载点在 /system/restart 所属路由之前，
  * 两者无同路径冲突。
@@ -21,6 +22,8 @@ import { listSkills } from '../../services/skills.js';
 import { getCachedClis } from '../../services/cliDetect.js';
 import { buildMcpInfo } from '../../services/mcpInfo.js';
 import { readSettings } from '../../config.js';
+import { appendClientErrorLog } from '../../services/clientDiagnosticsLog.js';
+import { createClientDiagnosticsRouter } from './clientDiagnosticsRoutes.js';
 
 export interface SystemMiscRouterDeps {
   /** 中心库：center-snapshot 的源库 */
@@ -32,6 +35,10 @@ export interface SystemMiscRouterDeps {
   instance?: { instanceId: string; dbPath: string; startedAt: number };
   /** 已安装技能根目录（仅测试注入；生产固定 ~/.agents/skills） */
   skillsRoot?: string;
+  /** G4：客户端错误日志追加（测试注入以避写真实 APPDATA；缺省走 configDir()/logs） */
+  appendClientLog?: (line: string) => void;
+  /** G4：当前时间（测试注入） */
+  now?: () => number;
 }
 
 // ---- POST /api/system/pick-folder（Windows 原生文件夹选择） ----
@@ -109,6 +116,12 @@ function pickFolderViaPowerShell(): Promise<string | null> {
 export function createSystemMiscRouter(deps: SystemMiscRouterDeps): Router {
   const { db, getAdapter, currentDbPath } = deps;
   const router = Router();
+
+  // G4：客户端崩溃取证（与 /version 同级、不鉴权、写独立 JSONL 日志）
+  router.use(createClientDiagnosticsRouter({
+    appendLog: deps.appendClientLog ?? appendClientErrorLog,
+    now: deps.now,
+  }));
 
   // ---- version ----
   // pid：RESTART-HARDENING —— 客户端据它区分「新进程已接管」与「已回退旧进程」，端口占用检查也靠它识别自身

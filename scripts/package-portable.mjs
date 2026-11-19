@@ -318,7 +318,10 @@ if (!opts.noZip) {
   zipPath = zipPath || join(ROOT, `AgentBoard-win-x64-${head}.zip`);
   log(`打 zip：${zipPath}`);
   rmSync(zipPath, { force: true });
-  const tar = spawnSync('tar', ['-a', '-c', '-f', zipPath, '-C', dirname(stageRoot), PKG_NAME], {
+  const tarCommand = process.platform === 'win32'
+    ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
+    : 'tar';
+  const tar = spawnSync(tarCommand, ['-a', '-c', '-f', zipPath, '-C', dirname(stageRoot), PKG_NAME], {
     cwd: ROOT,
     stdio: 'inherit',
   });

@@ -193,7 +193,6 @@ fn shutdown(app: &AppHandle) {
 /// 存量待验收/宽限全部重弹一遍）；之后只对「新进入」的 id 弹一次。前台聚焦时 web 内提醒
 /// 已覆盖，同样并入集合（失焦后不补弹）——去重口径见卡 062f2bbb 评论。
 #[derive(Default)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct NotifiedSet {
     seeded: AtomicBool,
     review: Mutex<std::collections::HashSet<String>>,
@@ -201,7 +200,6 @@ struct NotifiedSet {
 }
 
 /// E2：一轮取数发现的新事件（标题已截断），空表示无新增。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct NotificationEvents {
     reviews: Vec<String>,
     graces: Vec<String>,
@@ -209,7 +207,6 @@ struct NotificationEvents {
 
 /// E2：差分纯函数（单测直接驱动）：本轮全量 (id, 标题) 与去重集合比较。
 /// 首轮（未建基线）只入集合、返回空事件；决策问题文本截断到 80 字符。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn diff_notification_events(
     notified: &NotifiedSet,
     reviews: Vec<(String, String)>,
@@ -240,7 +237,6 @@ fn diff_notification_events(
 /// E2：拉取全部工作区里「新进入待验收」的卡与「新进入宽限」的决策。
 /// 与 E1 同源端点：/api/workspaces、/api/issues?fields=id,title,status、/api/decisions?state=grace。
 /// 任一请求失败返回 None（本轮跳过，不动去重集合）。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn poll_notification_events(
     port: u16,
     notified: &NotifiedSet,
@@ -284,78 +280,78 @@ fn poll_notification_events(
 
 /// E2：发一条系统通知（tauri-plugin-notification，mac 落到通知中心 UNNotification）。
 /// 权限被拒时 show() 报错：仅打日志不静默吞（降级 = Dock 角标 + web 内提醒仍可用，口径见卡评论）。
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn send_desktop_notification(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    if let Err(error) = app
+    match app
         .notification()
         .builder()
         .title(title)
         .body(body)
         .show()
     {
-        eprintln!("系统通知发送失败（权限被拒？降级为角标+web 内提醒）：{error}");
+        Ok(()) => diagnostics::info(format!("系统通知已发送：{title}")),
+        Err(error) => diagnostics::error(format!(
+            "系统通知发送失败（降级为 web 内提醒）：{error}"
+        )),
     }
 }
 
-/// E2：系统通知轮询线程（mac-only）。30s 一轮；失败 5s 退避；主窗口前台聚焦时不弹
+/// E2：系统通知轮询线程（Windows/macOS）。30s 一轮；失败 5s 退避；主窗口前台聚焦时不弹
 /// （web 内提醒已覆盖，且仍计入去重集合）。
+fn notification_poller_supported() -> bool {
+    cfg!(any(target_os = "windows", target_os = "macos"))
+}
+
 fn spawn_notification_poller(app: AppHandle) {
-    #[cfg(not(target_os = "macos"))]
-    {
+    if !notification_poller_supported() {
         let _ = app;
+        return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        use std::time::{Duration, Instant};
-        let port = app.state::<ShellState>().port;
-        std::thread::spawn(move || {
-            let mut next_wait = Duration::from_secs(5);
-            loop {
-                let quit = || app.state::<ShellState>().quitting.load(Ordering::SeqCst);
-                let notified = app.state::<NotifiedSet>();
-                match poll_notification_events(port, notified.inner()) {
-                    Some(events) => {
-                        next_wait = Duration::from_secs(30);
-                        let focused = app
-                            .get_webview_window(MAIN_WINDOW)
-                            .map(|window| window.is_focused().unwrap_or(false))
-                            .unwrap_or(false);
-                        // 前台聚焦：web 内提醒负责，系统通知跳过（事件已在 poll 中并入去重集合）。
-                        if !focused {
-                            if !events.graces.is_empty() {
-                                send_desktop_notification(
-                                    &app,
-                                    "AgentBoard 待决策进入宽限",
-                                    &summarize_titles(&events.graces),
-                                );
-                            }
-                            if !events.reviews.is_empty() {
-                                send_desktop_notification(
-                                    &app,
-                                    "AgentBoard 卡进入待验收",
-                                    &summarize_titles(&events.reviews),
-                                );
-                            }
+    use std::time::{Duration, Instant};
+    let port = app.state::<ShellState>().port;
+    std::thread::spawn(move || {
+        loop {
+            let quit = || app.state::<ShellState>().quitting.load(Ordering::SeqCst);
+            let notified = app.state::<NotifiedSet>();
+            let next_wait = match poll_notification_events(port, notified.inner()) {
+                Some(events) => {
+                    let focused = app
+                        .get_webview_window(MAIN_WINDOW)
+                        .map(|window| window.is_focused().unwrap_or(false))
+                        .unwrap_or(false);
+                    // 前台聚焦：web 内提醒负责，系统通知跳过（事件已在 poll 中并入去重集合）。
+                    if !focused {
+                        if !events.graces.is_empty() {
+                            send_desktop_notification(
+                                &app,
+                                "AgentBoard 待决策进入宽限",
+                                &summarize_titles(&events.graces),
+                            );
+                        }
+                        if !events.reviews.is_empty() {
+                            send_desktop_notification(
+                                &app,
+                                "AgentBoard 卡进入待验收",
+                                &summarize_titles(&events.reviews),
+                            );
                         }
                     }
-                    None => {
-                        next_wait = Duration::from_secs(5);
-                    }
+                    Duration::from_secs(30)
                 }
-                let deadline = Instant::now() + next_wait;
-                while Instant::now() < deadline {
-                    if quit() {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_secs(1));
-                }
+                None => Duration::from_secs(5),
+            };
+            let deadline = Instant::now() + next_wait;
+            while Instant::now() < deadline {
                 if quit() {
                     return;
                 }
+                std::thread::sleep(Duration::from_secs(1));
             }
-        });
-    }
+            if quit() {
+                return;
+            }
+        }
+    });
 }
 
 /// E2：多条事件合成一条通知正文（首条全文 + 其余计数，避免轮询窗口内连发多条）。
@@ -1240,7 +1236,8 @@ fn main() {
             // E1：Dock 角标轮询（仅 mac 起线程）：服务未就绪时线程内部自行退避重试。
             spawn_dock_badge_poller(app.handle().clone());
 
-            // E2：系统通知（mac 通知中心）：卡进入待验收 / 待决策进入宽限时弹系统通知。
+            // E2：系统通知（Windows 通知中心 / macOS 通知中心）：卡进入待验收 /
+            // 待决策进入宽限时弹系统通知。
             app.manage(NotifiedSet::default());
             spawn_notification_poller(app.handle().clone());
 
@@ -1546,5 +1543,11 @@ mod tests {
             vec![("dec-2".into(), long_question)],
         );
         assert!(repeat.reviews.is_empty() && repeat.graces.is_empty());
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn notification_poller_is_enabled_on_desktop_platforms() {
+        assert!(super::notification_poller_supported());
     }
 }

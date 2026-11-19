@@ -45,7 +45,21 @@ export function loadMcpConfig(env: NodeJS.ProcessEnv = process.env): McpConfig {
   };
 }
 
-export function resolveWorkspaceId(config: McpConfig, inputWorkspaceId?: string): string {
+/**
+ * 工具族：决定「未绑定工作区」时 WORKSPACE_REQUIRED 的文案。
+ * 原实现所有工具共用一句 `for this task operation`，把知识页/统计/协作类都叫成任务操作，
+ * 调用方看不出缺的是哪个上下文（C7）。
+ */
+export type WorkspaceFamily = 'task' | 'knowledge' | 'stats' | 'collab';
+
+const FAMILY_LABEL: Record<WorkspaceFamily, string> = {
+  task: 'a task operation',
+  knowledge: 'a knowledge-page operation',
+  stats: 'a board statistics operation',
+  collab: 'a collaboration operation (next_tasks / stop_check)',
+};
+
+export function resolveWorkspaceId(config: McpConfig, inputWorkspaceId?: string, family: WorkspaceFamily = 'task'): string {
   const explicit = inputWorkspaceId?.trim();
   if (config.workspaceId) {
     if (explicit && explicit !== config.workspaceId) {
@@ -53,7 +67,14 @@ export function resolveWorkspaceId(config: McpConfig, inputWorkspaceId?: string)
     }
     return config.workspaceId;
   }
-  if (!explicit) throw new McpError('WORKSPACE_REQUIRED', 'Specify workspace_id for this task operation.');
+  if (!explicit) {
+    throw new McpError(
+      'WORKSPACE_REQUIRED',
+      `Specify workspace_id for ${FAMILY_LABEL[family]}. `
+      + 'Pass workspace_id explicitly, or set AGENTBOARD_WORKSPACE_ID when launching this MCP server. '
+      + 'Until a workspace is bound, task/page ids cannot be validated (a malformed or unknown id also reports this error).',
+    );
+  }
   return explicit;
 }
 

@@ -162,13 +162,16 @@ node apps/server/dist/index.js
 
 - **重启/拉起服务统一用 `pnpm server:ensure`**（= `node scripts/server-detached.mjs`）：探活 `/api/version`，健康则复用不重启进程，未监听则后台拉起并轮询到健康（≤30s），日志追加到 `.logs/server.log`。退出码 0 健康／1 拉起失败／2 端口被非看板服务占用／3 dist 缺失／4 已健康但需重启（dist 早于源码，或运行进程早于 dist／未上报 `started_at`）。不要手工 `Stop-Process` + `start /b`（停止成功而启动失败会留下无人监听且无日志的空窗）。
 - **产物陈旧自检用 `pnpm check:stale`**（= `node scripts/check-stale.mjs`）：跑 5 条 `--help` 冒烟（`kb` / `knowledge` / `create-issue` / `dep` / `list-spaces`），并比对各包 `dist` 与 `src` 的 mtime；产物缺失/陈旧时 exit 1 并打印重建命令（`pnpm -r build` 或单包 `pnpm --filter <包名> build`）。
-- 中心库默认 `%APPDATA%\AgentBoard\agentboard.db`（界面与文档称「中心库路径」）；工作区库在 `<workspace>/.agentboard/agentboard.db`，下沉是默认形态：`kb create-space` 后自动启用本地库（复用 enable 八阶段状态机；自动启用失败降级为中心库模式并提示补做），存量工作区可用 `kb workspace-db enable`（单区或 `--all` 批量）下沉，未下沉的工作区数据仍在中心库。设置界面已移除数据存储配置：中心库路径不再由 config.json 的 `dbPath` 或设置项决定（残留值不生效，启动打一次性 warning），只受只读环境变量 `AGENTBOARD_DB` 覆盖；启动首行日志会打印实际生效路径与 `db_source=<env|default>`，附件目录恒为 `dirname(db)/attachments` 自动跟随。
+- **上下文预算自检用 `pnpm check:agent-context`**（= `node scripts/check-agent-context.mjs`）：读取真实 MCP `tools/list`，检查 8 个技能入口、`references/`、下降比例与引用完整性；`--self-test` 验证超限与跨技能引用解析。
+- **工作区初始化默认在 `<工作区>/.agentboard/agentboard.db` 建库**：`kb create-space` 登记后自动启用本地库，任务与评论落工作区；自动启用失败时保留工作区登记并降级为中心库模式，用 `kb workspace-db enable` 补做。中心库仍保存工作区注册表、账号和跨区资源；默认路径是 `%APPDATA%\AgentBoard\agentboard.db`，只受只读环境变量 `AGENTBOARD_DB` 覆盖。启动日志打印实际中心库路径与 `db_source=<env|default>`，附件目录跟随所在库目录的 `attachments/`。
 - 环境变量覆盖：`AGENTBOARD_PORT`、`AGENTBOARD_DB`、`AGENTBOARD_HOST`（监听地址，缺省 `127.0.0.1`；容器里设 `0.0.0.0`，非法值启动即报错）。
-- 附件目录无需单独配置：恒为 DB 文件所在目录下的 `attachments`（本机即 `%APPDATA%\AgentBoard\attachments`）。
+- 附件目录无需单独配置：恒为实际使用库文件所在目录下的 `attachments/`。
 
 ### 快照进 git 与 clone 后恢复（STORE-5/6）
 
 数据形态是「库为准、快照是派生物」：`.agentboard/` 目录可随仓库进 git，运行态数据库与附件本体不进。
+
+看板任务、评论、依赖与变更日志随 `.agentboard/snapshot/*.jsonl` 同步；附件本体与会话正文默认不同步。快照与 `manifest.json` 进入 Git，SQLite 运行库及 WAL/SHM 永不进入 Git，不使用 Git LFS。拉取或合并后本地库存在时以本地库为准，快照落后只提示；只有本地库缺失时才校验并导入快照。
 
 ```bash
 kb workspace-db snapshot export <工作区> --include-attachments   # 服务端单写者导出，写完回读自校验
@@ -278,10 +281,16 @@ schtasks /create /tn AgentBoard /sc onstart /tr "cmd /c cd /d D:\WorkSpaces\任�
 
 对外打包固定入口，产物 = 可运行单机包 + 配套工作流规则，对方机器无需安装 Node：
 
+**主交付是 NSIS 安装包，便携包为附带产物。**
+
 ```bash
+package-installer.bat                    # 一键出便携包 + NSIS 安装包（Windows 双击或 cmd 调用）
+node scripts/desktop/build-all.mjs       # 同上，四段式：workspace build → 壳 → 便携包 → NSIS
 pnpm package:portable                                  # 默认出 AgentBoard-win-x64-<HEAD>.zip
 node scripts/package-portable.mjs --skip-build --no-zip  # 只重组装、不构建、不打 zip（验证用）
 ```
+
+`package-installer.bat` 是仓库根的一键入口，参数透传给 `scripts/desktop/build-all.mjs`：`--skip-build`（复用现有 dist）、`--nsis-only`、`--portable-only`、`--verify-only`（只校验既有产物不重打）。缺失 Node 时自检报错并 `pause` 等待确认，失败退出码 1。
 
 - 固定携带到包内 `app\rules\`：`AGENTS.md`、`README.md`、`Docs/api.md` 与 8 个技能（`using-agentboard` / `writing-task` / `executing-task` / `handoff` / `swing-dev` / `ask-user` / `brainstorming` / `kb-curator`）。
 - 技能来源：仓库 `skills/` 优先；缺失项从 `%USERPROFILE%\.agents\skills` 取（外部路径不受 git 跟踪），来源逐条写入 `app/rules-manifest.json`。禁用 `AGENTBOARD_SKILLS_SRC` 可改外部技能根。
@@ -313,13 +322,51 @@ kb next [--workspace <id|名>]      # 下一张可领取的卡
 kb stats --workspace <id>          # 五状态计数 + 未完成无主 + 被阻塞（收尾复算用）
 kb show <issue-id> [--mark-read]
 kb claim <issue-id>                # 原子领取；已被占用退出码 2
+kb work <issue-id>                 # 原子领取并返回有界卡面/依赖/最近评论工作包；--json 输出单个工作包
 kb comment <issue-id> "内容"       # 长文/中文用 --stdin
 kb accept <issue-id>               # 待验收卡写结构化验收记录（不改状态）
-kb done <issue-id> --notes "..."   # 完成 → 待验收；自动提交未完成时 exit 1 并附补救命令（非 git 仓库只警告、exit 0）
+kb done <issue-id> --notes "..."   # 完成 → 待验收；见下方「done 的三道门禁」
+kb finish <issue-id> --title <标题> --type 修复 --notes-stdin  # done --close-record 的短入口；--no-changelog 等价无日志 done
 kb fail <issue-id> --reason "..."  # 失败 → 待规划
+kb release <issue-id>              # 释放占用 → 待规划（不是失败；仅当前占用者可执行）
+kb reopen <issue-id> [--to <状态>] # 已关闭/已废弃 → 指定状态（默认待规划）；待验收卡不能用它退回
+kb close <issue-id>                # 待验收 → 已关闭
 kb knowledge list --scope common   # 知识页（文件事实源 Docs/*.md，P2-01/P2-04）；create/revise/rename/export-legacy 等全族见 kb knowledge --help
+kb changelog list                  # 工作区变更日志；create/list/show 见 kb changelog --help
+kb dep ls <issue-id>               # 任务依赖边：ls 列出 / add 建边 / rm 删边
+kb status ls                       # 工作区状态字典：ls 列出 / add 新增 / rm 删除并强制迁移
+kb ask <issue-id>                  # 提问并等待一轮宽限（默认 180s）；回答走 kb answer <id>
+kb decisions                       # 列待决策；详情 kb decision <id>，延长 kb ask-extend
 kb workspace-db status             # 工作区库下沉状态（enable/cleanup/revert/snapshot 子命令见 kb workspace-db --help）
 ```
+
+本表只列**首小时高频**命令。完整命令表（含 `grep` / `update` / `move-issue` / `delete-issue` / `delete-space` / `autostart` / `shortcut` / `stop-check` / `accounts` 等）与退出码表一律以 `kb --help` 为准，本文不复制——避免与 CLI 漂移。
+
+`--json` 是全局选项，**前置后置都行**（`kb --json list-tasks` 与 `kb list-tasks --json` 等价）；错误同样走 JSON 时统一为 stdout 的 `{"error":{"code","message","details"}}`，退出码不变。
+
+### `kb done` 的三道门禁
+
+`kb done` 不是「写个 notes 就完成」。以下三道门禁任一未满足，`done` 都不会生效：
+
+| 门禁 | 触发条件 | 放行方式 |
+| --- | --- | --- |
+| **SK-05 变更日志** | 无归属本卡的变更日志 | ① 先 `kb changelog create --issue <卡 id>`；② `--close-record --changelog-title '<标题>' --type 修复`（自带日志，一步式）；③ 确实无用户可见变更时 `--no-changelog` |
+| **ARCH-04 设计页** | 关联设计页仍为 `landed=proposed` | 推进设计页后重试，或 `--design-not-advanced` 显式声明本卡不推进 |
+| **GIT-ON-DONE `--scope`** | 需要提交业务代码与知识页 | `--scope <路径>`，多个路径**重复传参**（`--scope a --scope b`，不要用逗号串）；`--all` 纳入全部未提交改动；`--board-only` 纯看板任务只提交看板快照 |
+
+未写 `--scope` 时只提交 `.agentboard` 看板快照；显式 `--scope` 时提交业务路径，并由服务端追加同一组看板快照。
+
+**能直接复制的完整闭环**（含三道门禁）：
+
+```bash
+kb create-issue <workspace> '<标题>' -d '<描述>'    # 建卡
+kb claim <id>                                       # 领取
+kb comment <id> '<进展>'                            # 汇报
+kb done <id> --close-record --changelog-title '<标题>' --type 修复 --notes-stdin --scope <路径>
+kb close <id>                                       # 若上一步未带 --close
+```
+
+`--close-record` 一次覆盖 SK-05（自带变更日志）；`--scope` 解决提交范围；设计页无关的卡通常无需 `--design-not-advanced`。要做到一步收口，把 `--close` 也加上：`kb done <id> --close-record --changelog-title '…' --type 修复 --scope <路径> --close`。
 
 - 服务地址：`--server <url>` 或环境变量 `KB_SERVER`（默认 `http://127.0.0.1:8787`）。
 - agent 身份：环境变量 `KB_AGENT=<名字>`；未设 KB_AGENT 时默认 kb-cli，agent 评论不触发唤醒。
@@ -333,9 +380,11 @@ kb workspace-db status             # 工作区库下沉状态（enable/cleanup/r
 
 ```bash
 corepack pnpm --filter @agentboard/mcp build
-corepack pnpm --filter @agentboard/mcp list-tools          # 人读表格
-corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
+corepack pnpm --config.verify-deps-before-run=false --filter @agentboard/mcp list-tools          # 人读表格
+corepack pnpm --config.verify-deps-before-run=false --filter @agentboard/mcp list-tools --json   # 机器可读
 ```
+
+**`--config.verify-deps-before-run=false` 不能省**：pnpm 11 在跑任何 script 前会做 deps-status 检查，非 TTY 环境下直接报 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` 并 exit 1。**不要按 pnpm 的提示设 `CI=true`**——它会让 pnpm 真的执行 `pnpm install --production`，把 typescript / esbuild / prettier / eslint / vite / vitest 等 devDependencies 全部删掉（实测 `Packages: -333`，恢复需重跑 `corepack pnpm install --frozen-lockfile`）。显式传 `--config.verify-deps-before-run=false` 只跳过该检查，不动 node_modules。
 
 工具总数以 `list-tools` 的实时输出为准，本文不写死数量：它输出当前主名清单，并额外标注每个主名对应的 `agentboard_*` 兼容 alias（`tools/list` 条目数因此约为主名的两倍）。alias 用于兼容旧客户端，计划在下个大版本移除（卡 `f78d7465`），届时应同步跑一次 `list-tools` 核对。
 
@@ -373,13 +422,14 @@ corepack pnpm --filter @agentboard/mcp list-tools --json   # 机器可读
 
 工具清单（按域分组）：
 
-- 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`release_task`、`add_task_comment`、`complete_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
+- 工作区与任务：读 `list_workspaces`、`list_tasks`（可列平铺或一层任务树）、`get_task`、`get_task_comments`、`get_task_comment`；写 `create_task`、`update_task`、`claim_task`、`start_task`、`release_task`、`add_task_comment`、`complete_task`、`finish_task`、`fail_task`、`delete_task`、`close_task`、`reopen_task`、`accept_task`
 - 依赖：读 `list_dependencies`；写 `add_dependency`、`remove_dependency`
 - 状态字典：读 `list_statuses`；写 `add_status`、`remove_status`
 - 知识库：读 `search_knowledge`、`list_knowledge`、`find_knowledge_sources`、`read_knowledge`；写 `create_knowledge`、`revise_knowledge`、`archive_knowledge`、`restore_knowledge`
 - 待决策：读 `list_decisions`、`get_decision`、`stop_check`；写 `ask_decision`、`answer_decision`、`extend_decision_grace`、`withdraw_decision`
 - 变更日志：读 `list_changelog`、`get_changelog`；写 `create_changelog`
-- 收尾门禁：`complete_task` 前须满足三者之一——① `create_changelog` 传 `issue_id=<本任务>` 先写本卡日志；② `complete_task` 传 `changelog_id=<本工作区已有日志>`；③ 本次确实没有用户可见变更时传 `skip_changelog: true`。都不满足时服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
+- 聚合入口：`start_task` 复用 claim 并返回紧凑工作包；`finish_task` 默认创建归属本卡的 changelog 后完成，不要再先调用 `create_changelog`。
+- 收尾门禁：使用 `complete_task` 时须满足三者之一——① `create_changelog` 传 `issue_id=<本任务>` 先写本卡日志；② `complete_task` 传 `changelog_id=<本工作区已有日志>`；③ 本次确实没有用户可见变更时传 `skip_changelog: true`。都不满足时服务端返回 400 `CHANGELOG_ACK_REQUIRED`（任务状态不变）
 
 边界与缺口：MCP 只暴露任务板与共享知识，不提供会话执行、任意终端/文件读写、账号/凭据、桌面切换、工作区创建/删除；评论图片仍走 UI/CLI。原裁决要补的收口（close/reopen/accept）、变更日志、待决策读取/答复/宽限、知识 list/find-source 已全部落地（卡 `f504f61d`、`6a2ded57`、`64acde61`、`d6753e4c`、`4e009883`）；账号、工作区治理、grep、评论附件、知识 delete/import 明确不补。
 

@@ -136,12 +136,12 @@ describe('STORE-2（M2a）enable 前置检查与 dry-run', () => {
     mkdirSync(commonDir, { recursive: true });
     createKnowledgePage(t.db, { domain: 'knowledge',
       scope: 'workspace', workspace_id: ws, slug: 'ws-page', title: '本区页', body_md: '正文',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     } as never);
     createKnowledgePage(t.db, { domain: 'knowledge',
       scope: 'common', slug: 'common-page', title: '公共页', body_md: '正文',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     } as never);
     const counts = countWorkspacePayload(t.db, { id: ws, path: wsPath }, { attachmentsDir: join(root, 'none') });

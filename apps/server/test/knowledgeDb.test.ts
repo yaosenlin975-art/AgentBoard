@@ -7,7 +7,7 @@ import { createKnowledgePage, getKnowledgePage, reviseKnowledgePage, setKnowledg
 describe('knowledge storage', () => {
   let t: TestDb;
   let workspaceId: string;
-  const source = { source_id: 'design', source_type: 'file' as const, locator: 'Docs/design.md:1', captured_at: 1, content_hash: 'a'.repeat(64) };
+  const source = { source_id: 'design', source_type: 'file' as const, locator: 'Docs/design.md:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) };
   const evidence = [{ source_id: 'design', locator: 'Docs/design.md:1' }];
   const scope = () => ({ scope: 'workspace' as const, workspace_id: workspaceId });
   const input = () => ({ domain: 'knowledge', ...scope(), slug: 'design', title: '设计', body_md: '知识内容', sources: [source], evidence, actor: 'codex' });

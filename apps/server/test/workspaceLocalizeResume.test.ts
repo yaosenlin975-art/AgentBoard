@@ -30,7 +30,7 @@ describe('STORE-3a resume 崩溃矩阵', () => {
     for (const title of ['卡一', '卡二', '卡三']) createIssue(t.db, { workspace_id: ws, title, description: '', priority: '中', labels: [] } as never);
     createKnowledgePage(t.db, { domain: 'knowledge',
       scope: 'workspace', workspace_id: ws, slug: 'ws-page', title: '本区页', body_md: '正文',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }], actor: 'tester',
     } as never);
   };

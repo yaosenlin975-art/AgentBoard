@@ -8,7 +8,7 @@
  *
  * ACC-UI-TOPBAR（2026-11-07）：操作上标题栏、去两处字样——
  * - 顶栏（drawer 标题栏「账号管理 … 关闭」一行，关闭左侧）依次渲染「添加账号」（ACC-UI-DEDUP 后
- *   唯一添加入口，打开 7 卡供应商选择页）、「一键签到」（次级样式）、「刷新」；有 drawer 宿主时经
+ *   唯一添加入口，打开 8 卡供应商选择页）、「一键签到」（次级样式）、「刷新」；有 drawer 宿主时经
  *   Portal 渲进标题栏，独立渲染（单测/无宿主）回退为面板顶部 `accounts-toolbar` 一行。
  *   ACC-UI-DEDUP（2026-11-08）：平台级「添加」（accounts-add-<app>）删除，避免与「添加账号」重复。
  * - 删除：底部操作行与「N 个平台 / N 个可签到账号」计划摘要（`accounts-one-click-plan` 不再渲染）、
@@ -21,7 +21,7 @@
  *
  * testid 口径：`accounts-app-*` / `accounts-body-*` / `accounts-empty-*` / `accounts-capability-badge-*`
  * （能力三图标）保留；`accounts-add-panel-*`（向导在平台体内）沿用；
- * ADD-FLOW-1 新增：`accounts-add-toggle`（全局「添加账号」）/ `accounts-add-picker`（7 卡选择页）/
+ * ADD-FLOW-1 新增：`accounts-add-toggle`（全局「添加账号」）/ `accounts-add-picker`（8 卡选择页）/
  * `accounts-add-moved-<app>`（平台底部指路文案）；
  * 已删 testid：`accounts-toggle-*` / `accounts-count-*` / `accounts-checkin-chip-*` / `accounts-checkin-all-*` /
  * `accounts-credit-*` / `accounts-checkin-current-*` / `accounts-tech-*` / `accounts-detail-current` /
@@ -185,7 +185,7 @@ export function AccountsPanel() {
   }, [accounts, caps.capabilities]);
 
   /**
-   * ADD-FLOW-2（口径 A）：零账号来源不占行，Codex 除外（需显示本机登录状态）。
+   * ADD-FLOW-2（口径 A）：零账号来源不占行，Codex 与 Command Code 除外（需保留添加入口）。
    * 停用账号仍计数（`accounts` 不按 enabled 过滤）；未知平台只要有账号就必须出现，不静默丢卡。
    * 顺序与 `indexItems` 一致：APP_ORDER → 其它平台（字典序）→ CLI 来源 → Command Code。
    */
@@ -193,7 +193,10 @@ export function AccountsPanel() {
     const cliSources = [...(QUOTA_GROUPS.find((group) => group.id === 'cli')?.sources ?? []), 'commandcode'];
     return [
       ...[...APP_ORDER, ...extraApps].filter((app) => accounts.some((account) => String(account.app_id) === app)),
-      ...cliSources.filter((source) => source === 'codex' || cliAccounts.some((account) => String(account.app_id) === source)),
+      ...cliSources.filter((source) =>
+        source === 'codex' ||
+        source === 'commandcode' ||
+        cliAccounts.some((account) => String(account.app_id) === source)),
     ];
   }, [accounts, extraApps, cliAccounts]);
 
@@ -335,7 +338,15 @@ export function AccountsPanel() {
           </div>
         )}
 
-      {addPickerOpen && <AddAccountPicker onClose={() => setAddPickerOpen(false)} />}
+      {addPickerOpen && (
+        <AddAccountPicker
+          onClose={() => setAddPickerOpen(false)}
+          onSelectSource={(source) => {
+            setSelectedApp(source);
+            setAddPickerOpen(false);
+          }}
+        />
+      )}
 
       {!list.isPending && !list.isError && (
         <AccountsMasterDetail
@@ -617,7 +628,13 @@ function QuotaSourceDetail({
       if (source === 'commandcode') invalidateCliAccountQuotas(queryClient);
     },
     onError: (error) => {
-      setNotice({ tone: 'error', duplicate: false, message: error instanceof Error ? error.message : '导入失败' });
+      const message =
+        error instanceof TypeError && error.message === 'Failed to fetch'
+          ? '无法连接本地服务，请确认服务已启动后重试'
+          : error instanceof Error
+            ? error.message
+            : '导入失败';
+      setNotice({ tone: 'error', duplicate: false, message });
     },
   });
   const readFile = async (file: File | undefined): Promise<void> => {

@@ -13,7 +13,7 @@ import { createKnowledgePage, getKnowledgeRevision, listKnowledgeRevisions, revi
 import { createTestDb, type TestDb } from './helpers.js';
 
 const scope = { scope: 'common' as const, workspace_id: null };
-const SOURCE = { source_id: 'kb-diff-s', source_type: 'file' as const, locator: 'samples/kb-diff-s.md', captured_at: 1, content_hash: 'a'.repeat(64) };
+const SOURCE = { source_id: 'kb-diff-s', source_type: 'file' as const, locator: 'samples/kb-diff-s.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) };
 const EVIDENCE = [{ source_id: 'kb-diff-s', locator: 'samples/kb-diff-s.md:1' }];
 
 function seedPage(db: TestDb, bodyChars: number, revisions: number) {
@@ -38,7 +38,7 @@ function seedPage(db: TestDb, bodyChars: number, revisions: number) {
 
 describe('历史列表瘦身（默认不带正文）', () => {
   it('默认列表项不含 body_snapshot，但有 body_bytes / body_chars', () => {
-    const t2 = createTestDb();
+    const t2 = createTestDb({ legacyKnowledge: true });
     const db = t2.db;
     const page = seedPage(t2.db, 1000, 3);
     const items = listKnowledgeRevisions(t2.db, page.id, scope, 20, 0) as Array<Record<string, unknown>>;
@@ -56,7 +56,7 @@ describe('历史列表瘦身（默认不带正文）', () => {
   });
 
   it('include_body=true 时恢复全文（兼容旧调用方）', () => {
-    const t2 = createTestDb();
+    const t2 = createTestDb({ legacyKnowledge: true });
     const db = t2.db;
     const page = seedPage(t2.db, 500, 2);
     const items = listKnowledgeRevisions(t2.db, page.id, scope, 20, 0, true) as Array<Record<string, unknown>>;
@@ -68,7 +68,7 @@ describe('历史列表瘦身（默认不带正文）', () => {
   });
 
   it('单条详情端点取回指定 revision 全文', () => {
-    const t2 = createTestDb();
+    const t2 = createTestDb({ legacyKnowledge: true });
     const db = t2.db;
     const page = seedPage(t2.db, 777, 3);
     const one = getKnowledgeRevision(t2.db, page.id, 2, scope);
@@ -79,7 +79,7 @@ describe('历史列表瘦身（默认不带正文）', () => {
   });
 
   it('体积对比：200 万字符页 × 20 条，列表瘦身后显著变小', { timeout: 60_000 }, () => {
-    const t2 = createTestDb();
+    const t2 = createTestDb({ legacyKnowledge: true });
     const db = t2.db;
     const page = seedPage(t2.db, 2_000_000, 20);
     const slim = JSON.stringify({ items: listKnowledgeRevisions(t2.db, page.id, scope, 20, 0) });

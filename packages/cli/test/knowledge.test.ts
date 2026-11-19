@@ -157,6 +157,67 @@ describe('knowledge CLI', () => {
     expect(stream.out.join('')).toBe('p1 [common] rev:2 缓存\n下一页：--offset 20\n');
   });
 
+  // 向后兼容护栏：新增查询参数只在用户显式要求时才发。
+  // 旧服务端的 query schema 是 strict，无条件带新键会让整个命令被 Unrecognized key 拒绝（连普通 list 都挂）。
+  it('list 不带 --invalid 时不得发送 invalid_only（旧服务兼容）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], next_offset: null })));
+    vi.stubGlobal('fetch', fetch);
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common'], io())).toBe(0);
+    const url = fetch.mock.calls.map(call => String(call[0])).find(candidate => candidate.includes('/api/knowledge/pages'));
+    expect(url).toBeDefined();
+    expect(url).not.toContain('invalid_only');
+  });
+
+  it('list --invalid 时才发送 invalid_only=true', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], next_offset: null, invalid_count: 1, invalid: [{ slug: 'bad', file_name: 'bad.md', issues: ['content_hash: 不符'] }] })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common', '--invalid'], stream)).toBe(0);
+    const url = fetch.mock.calls.map(call => String(call[0])).find(candidate => candidate.includes('/api/knowledge/pages'));
+    expect(url).toContain('invalid_only=true');
+    expect(stream.out.join('')).toContain('bad.md');
+  });
+
+  it('list 发现坏页时追加提示行（退出码仍 0）', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [{ id: 'p1', scope: 'common', revision: 1, title: '缓存' }], next_offset: null, invalid_count: 2, invalid: [] })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'list', '--scope', 'common'], stream)).toBe(0);
+    expect(stream.out.join('')).toContain('另有 2 个知识页损坏');
+  });
+
+  // P2：reconcile 只读报告（此前只有文档、没有命令）
+  it('reconcile 无冲突 → 「N 页检查完成，0 处冲突」+（无冲突），exit 0', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ scope: 'common', workspace_id: null, checked: 3, valid: 3, issues: [], stale_tmp: [], stale_locks: [], docs_dirs: ['/d'], duration_ms: 5 })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'reconcile', '--scope', 'common'], stream)).toBe(0);
+    const text = stream.out.join('');
+    expect(text).toContain('3 页检查完成，0 处冲突');
+    expect(text).toContain('（无冲突）');
+  });
+
+  it('reconcile 有冲突 → 逐条列 kind / slug / 文件 / 详情 / 建议', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      scope: 'common', workspace_id: null, checked: 2, valid: 1,
+      issues: [{ fileName: 'bad-hash.md', kind: 'content_hash', detail: 'content_hash 与文档不符（外部编辑）', suggestion: '走 API/CLI 重新写入修订', docs_dir: '/d' }],
+      stale_tmp: [], stale_locks: [], docs_dirs: ['/d'], duration_ms: 7,
+    })));
+    vi.stubGlobal('fetch', fetch); const stream = io();
+    expect(await main(['node', 'kb', 'knowledge', 'reconcile', '--scope', 'common'], stream)).toBe(0);
+    const text = stream.out.join('');
+    expect(text).toContain('2 页检查完成，1 处冲突');
+    expect(text).toContain('slug: bad-hash');
+    expect(text).toContain('文件: bad-hash.md');
+    expect(text).toContain('content_hash 与文档不符');
+    expect(text).toContain('建议: 走 API/CLI 重新写入修订');
+  });
+
+  it('reconcile --json → 输出原始响应对象', async () => {
+    const payload = { scope: 'common', workspace_id: null, checked: 1, valid: 1, issues: [], stale_tmp: [], stale_locks: [], docs_dirs: ['/d'], duration_ms: 3 };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload))));
+    const stream = io();
+    expect(await main(['node', 'kb', '--json', 'knowledge', 'reconcile', '--scope', 'common'], stream)).toBe(0);
+    expect(JSON.parse(stream.out.join(''))).toEqual(payload);
+  });
+
   it('stdin 带 UTF-8 BOM（PowerShell 5.1 管道）时剥离，正文首字符不被污染', async () => {
     const { Readable } = await import('node:stream');
     const { readAllStdin } = await import('../src/io.js');

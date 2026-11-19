@@ -1,15 +1,16 @@
 /**
- * accounts-add-flow：工具栏唯一「添加账号」→ 供应商选择页（7 卡平铺）。
+ * accounts-add-flow：工具栏唯一「添加账号」→ 供应商选择页（8 卡平铺）。
  *
  * 动作只渲染真实可用的接口，不出现「点了必然失败」的按钮：
  * - 「授权添加」：只对 `GET /api/add-account-protocols` 里存在的平台渲染（服务端装配了协议才算可用），
  *   点开复用既有 `AddAccountWizard`（设备码 / CLI / 本地回调等链路不变）；
  * - 「读取本机」：只对 `POST /api/accounts/import-credentials` 支持的平台渲染
  *   （`workbuddy` / `trae` / `minimax`，见 `credentialImport.ts` 的 `EXPORT_PLATFORMS`）；
+ * - Command Code：进入已有 CLI 来源详情，由详情页完成 API Key 导入；
  * - DeepSeek（CLI 凭据导入）与 Codex（rollout 读取）当前没有可用接口 → 不出按钮，
  *   只在卡片 `title` 与一行原因里说明，原因文案与 `AccountsPanel` 里 CLI 来源的既有口径一致。
  *
- * 交互：打开后焦点落在第一张卡的第一个按钮；读取完成后失效账号列表，回调调用方切到该平台。
+ * 交互：打开后焦点落在第一张卡的第一个按钮；读取完成后失效账号列表，Command Code 回调调用方切换来源。
  */
 import { useCallback, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -31,7 +32,7 @@ interface Vendor {
   blockedReason: string | null;
 }
 
-/** 7 卡清单与顺序照 accounts-add-flow 原型 DESIGN-NOTES.md:23 */
+/** 8 卡清单与顺序照 accounts-add-flow 原型 DESIGN-NOTES.md:23 */
 const VENDORS: Vendor[] = [
   { id: 'workbuddy_desktop', label: 'WorkBuddy', read: 'workbuddy', blockedReason: null },
   { id: 'minimax', label: 'MiniMax', read: 'minimax', blockedReason: null },
@@ -40,6 +41,7 @@ const VENDORS: Vendor[] = [
   { id: 'zcode', label: 'ZCode', read: null, blockedReason: null },
   { id: 'deepseek', label: 'DeepSeek', read: null, blockedReason: '仅支持导入凭据：CLI 凭据导入尚未接入' },
   { id: 'codex', label: 'Codex', read: null, blockedReason: '仅读取 rollout：本机读取尚未接入' },
+  { id: 'commandcode', label: 'Command Code', read: null, blockedReason: null },
 ];
 
 interface ReadState {
@@ -50,10 +52,13 @@ interface ReadState {
 export function AddAccountPicker({
   onClose,
   onImported,
+  onSelectSource,
 }: {
   onClose: () => void;
   /** 读取/授权成功后的回调：由调用方决定是否切到该平台详情 */
   onImported?: (app: string) => void;
+  /** Command Code 等来源详情入口：由调用方切换选中来源 */
+  onSelectSource?: (source: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [wizard, setWizard] = useState<{ app: ManagedAppId; info: AddAccountProtocolInfo } | null>(null);
@@ -104,7 +109,9 @@ export function AddAccountPicker({
   };
 
   /** 第一张「有按钮」的卡：打开后焦点落在它的第一个按钮（原型：无搜索、无分组，打开即可操作） */
-  const firstActionId = VENDORS.find((vendor) => vendor.read !== null || protocolOf(vendor) !== null)?.id ?? null;
+  const firstActionId = VENDORS.find(
+    (vendor) => vendor.id === 'commandcode' || vendor.read !== null || protocolOf(vendor) !== null,
+  )?.id ?? null;
 
   return (
     <div
@@ -131,11 +138,14 @@ export function AddAccountPicker({
       <div className="mt-2 grid grid-cols-1 gap-1.5 min-[640px]:grid-cols-2 min-[920px]:grid-cols-3">
         {VENDORS.map((vendor) => {
           const info = protocolOf(vendor);
-          const protocolsUnavailable = protocols.isError;
+          const protocolsUnavailable = protocols.isError && vendor.id !== 'commandcode';
           const state = readStates[vendor.id];
           const reason = vendor.blockedReason
             ?? (protocolsUnavailable ? '添加账号能力读取失败，暂不提供授权入口' : null)
-            ?? (vendor.read === null && protocols.data !== undefined && info === null
+            ?? (vendor.id !== 'commandcode' &&
+              vendor.read === null &&
+              protocols.data !== undefined &&
+              info === null
               ? reasonLabel('ADD_ACCOUNT_PROTOCOL_UNSUPPORTED')
               : null);
           const title = reason ?? undefined;
@@ -176,6 +186,20 @@ export function AddAccountPicker({
                     onClick={() => { void readLocal(vendor); }}
                   >
                     {state?.status === 'reading' ? '读取中…' : '读取本机'}
+                  </button>
+                )}
+                {vendor.id === 'commandcode' && (
+                  <button
+                    type="button"
+                    data-testid="accounts-add-picker-action-commandcode"
+                    className={BUTTON_PRIMARY}
+                    autoFocus={vendor.id === firstActionId}
+                    onClick={() => {
+                      onSelectSource?.('commandcode');
+                      onClose();
+                    }}
+                  >
+                    添加 API Key
                   </button>
                 )}
                 {reason !== null && (

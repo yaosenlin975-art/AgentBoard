@@ -61,6 +61,15 @@ export interface KnowledgeGraph {
   pages_loaded: number;
   node_total: number;
   edge_total: number;
+  /**
+   * S3：E1 来源共现里因「单键共现页数超上限」被整键跳过的键数（locator + content_hash 合计）。
+   * 0 = 无跳过。上限见 `GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE` / `GRAPH_SOURCE_HASH_MAX_COOCCURRENCE`。
+   * **不参与 `truncated` / `truncated_reason` 判定**（那是页面/节点/边截断语义，
+   * 本字段是数据质量诊断），故不会让前端走到「已显示前 N」文案。
+   */
+  source_skipped_keys: number;
+  /** S3：E1 里单个 locator/hash 的最大共现页数（无 sources 时为 0），用于识别「同 hash 泛滥」 */
+  source_max_cooccurrence: number;
 }
 
 const STOPWORDS = new Set([
@@ -103,6 +112,31 @@ export function trigrams(text: string): Set<string> {
 
 const pairKey = (left: string, right: string): string => (left < right ? `${left}\u0000${right}` : `${right}\u0000${left}`);
 const TERM_DF_LIMIT = 64; // 词出现在过多页时跳过，避免 O(n²) 爆炸（这些词区分度也低）
+/**
+ * S3：E1 来源共现的单键上限，**两类索引分开定**。
+ *
+ * 原实现对来源索引完全不设上限（注释理由「一个源连接多页是正常语义」），
+ * 但共现页数超大时会连出 O(n²) 条边：`GRAPH_MAX_PAGES=5000` 全共用 1 个键
+ * → C(5000,2) ≈ 1250 万条。
+ *
+ * 为什么分开：locator 与 content_hash 的语义不同。
+ * - `locator`（源文件路径）：**一个文件被很多页引用是正常的**。既有用例
+ *   `knowledgeGraph.test.ts:truncatesLargeGraphToHardCapsWithRealTotals` 就是
+ *   200 页共用 `file:shared-big.ts`，要 19900 条边来验证 GRAPH_MAX_NODES/EDGES 截断。
+ *   若按 64 拦掉，会把「合法的 hub 源」误判为数据质量问题。
+ * - `content_hash`（内容摘要）：**相同 hash 意味着相同内容**。大批页共用同一 hash
+ *   不是正常引用，而是数据质量缺陷（批量导入填同一合法 hash、历史 hash 被简化）。
+ *   这类键没有任何图语义价值，边全是噪声。
+ *
+ * 取值依据（本机 8 个工作区 20 个知识目录实测）：
+ *   最大 locator 共现 = 4 页，最大 content_hash 共现 = 2 页。
+ * - locator 取 512：是实测最大值的 128 倍，同时保住既有 200 页合法 hub 契约；
+ *   最坏 C(512,2)=130,816 条边，可控。
+ * - hash 取 64：实测最大值的 32 倍，最坏 C(64,2)=2016 条边。
+ *   不取 16：真实工作区里同一份文件被 20~30 页引用并共享 hash 仍属正常。
+ */
+export const GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE = 512;
+export const GRAPH_SOURCE_HASH_MAX_COOCCURRENCE = 64;
 
 type PairState = {
   sourceWeight: number;
@@ -120,14 +154,41 @@ function addPair(map: Map<string, PairState>, left: string, right: string, apply
   map.set(key, state);
 }
 
-/** maxDf：仅关键词索引限流（词命中页过多时区分度低）；来源 locator/hash 索引不限流，一个源连接多页是正常语义 */
-function sharedPairs(index: Map<string, string[]>, visit: (left: string, right: string) => void, maxDf = Number.MAX_SAFE_INTEGER): void {
-  for (const pages of index.values()) {
-    if (pages.length < 2 || pages.length > maxDf) continue;
+/**
+ * `sharedPairs` 的产出统计（S3：超限不可静默丢弃）。
+ * - `skipped`：因共现页数超 `maxDf` 被整键跳过的键数
+ * - `maxCooccurrence`：单个键的最大共现页数（数据质量诊断）
+ * - `skippedKeys`：被跳过的键样本（最多 5 个，供日志定位）
+ */
+interface SharedPairsStats {
+  skipped: number;
+  maxCooccurrence: number;
+  skippedKeys: string[];
+}
+
+/**
+ * maxDf：命中页数上限。E2 关键词用它做区分度限流；
+ * E1 来源共现（S3）用它兜底「同 hash 连成完全图」——见 `GRAPH_SOURCE_MAX_COOCCURRENCE`。
+ */
+function sharedPairs(
+  index: Map<string, string[]>,
+  visit: (left: string, right: string) => void,
+  maxDf = Number.MAX_SAFE_INTEGER,
+): SharedPairsStats {
+  const stats: SharedPairsStats = { skipped: 0, maxCooccurrence: 0, skippedKeys: [] };
+  for (const [key, pages] of index) {
+    if (pages.length > stats.maxCooccurrence) stats.maxCooccurrence = pages.length;
+    if (pages.length < 2) continue;
+    if (pages.length > maxDf) {
+      stats.skipped += 1;
+      if (stats.skippedKeys.length < 5) stats.skippedKeys.push(key);
+      continue;
+    }
     for (let i = 0; i < pages.length; i += 1) {
       for (let j = i + 1; j < pages.length; j += 1) visit(pages[i]!, pages[j]!);
     }
   }
+  return stats;
 }
 
 function indexBy(rows: KnowledgeGraphRow[], keysOf: (row: KnowledgeGraphRow) => Iterable<string>): Map<string, string[]> {
@@ -192,11 +253,18 @@ export function buildKnowledgeGraph(rows: GraphInputRow[], options: BuildGraphOp
     }
   }
 
+  // S3：E1 来源共现的单键上限（locator 与 hash 分开，见常量注释）；统计供诊断，不静默丢弃
+  let sourceSkippedKeys = 0;
+  let sourceMaxCooccurrence = 0;
+  const sourceSkippedSamples: string[] = [];
   if (wantSource) {
     const locatorIndex = indexBy(rows, row => row.sources.map((source: KnowledgeSource) => `l:${source.locator}`));
-    sharedPairs(locatorIndex, (left, right) => addPair(pairs, left, right, state => { state.sourceWeight += GRAPH_SOURCE_LOCATOR_WEIGHT; }));
+    const locatorStats = sharedPairs(locatorIndex, (left, right) => addPair(pairs, left, right, state => { state.sourceWeight += GRAPH_SOURCE_LOCATOR_WEIGHT; }), GRAPH_SOURCE_LOCATOR_MAX_COOCCURRENCE);
     const hashIndex = indexBy(rows, row => row.sources.map((source: KnowledgeSource) => `h:${source.content_hash}`));
-    sharedPairs(hashIndex, (left, right) => addPair(pairs, left, right, state => { state.sourceWeight += GRAPH_SOURCE_HASH_WEIGHT; }));
+    const hashStats = sharedPairs(hashIndex, (left, right) => addPair(pairs, left, right, state => { state.sourceWeight += GRAPH_SOURCE_HASH_WEIGHT; }), GRAPH_SOURCE_HASH_MAX_COOCCURRENCE);
+    sourceSkippedKeys = locatorStats.skipped + hashStats.skipped;
+    sourceMaxCooccurrence = Math.max(locatorStats.maxCooccurrence, hashStats.maxCooccurrence);
+    sourceSkippedSamples.push(...locatorStats.skippedKeys, ...hashStats.skippedKeys);
   }
 
   if (wantKeyword && rows.length > 1) {
@@ -321,5 +389,7 @@ export function buildKnowledgeGraph(rows: GraphInputRow[], options: BuildGraphOp
     pages_loaded: pagesLoaded,
     node_total: nodeTotal,
     edge_total: edgeTotal,
+    source_skipped_keys: sourceSkippedKeys,
+    source_max_cooccurrence: sourceMaxCooccurrence,
   };
 }

@@ -41,7 +41,7 @@ describe('knowledge category / landed（KB-MODEL）', () => {
     title: `页 ${slug}`,
     body_md: `正文 ${slug}`,
     actor: 'dsh',
-    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+    sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
     evidence: [{ source_id: 's', locator: 'issue:1' }],
     ...extra,
   });
@@ -158,7 +158,7 @@ describe('KB-LANDED 接线（真实 createApp）', () => {
         title: '真实 app 页',
         body_md: '正文',
         actor: 'dsh',
-        sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }],
+        sources: [{ source_id: 's', source_type: 'agent', locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }],
         evidence: [{ source_id: 's', locator: 'issue:1' }],
         category: 'open',
         landed: 'partial',

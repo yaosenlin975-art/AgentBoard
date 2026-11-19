@@ -14,7 +14,7 @@ import { GRAPH_TEXT_EXCERPT, createKnowledgePage, listKnowledgeGraphRows } from 
 import { buildKnowledgeGraph } from '../src/services/knowledgeGraph.js';
 
 const scope = { scope: 'common' as const, workspace_id: null };
-const SOURCE = { source_id: 'src-1', source_type: 'file' as const, locator: 'samples/g.md', captured_at: 1, content_hash: 'a'.repeat(64) };
+const SOURCE = { source_id: 'src-1', source_type: 'file' as const, locator: 'samples/g.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) };
 
 function seed(db: ReturnType<typeof createTestDb>['db'], pages: number, bigChars: number): void {
   for (let i = 0; i < pages; i += 1) {
@@ -27,7 +27,7 @@ function seed(db: ReturnType<typeof createTestDb>['db'], pages: number, bigChars
 
 describe('图查询只取正文摘要（不拉全文）', () => {
   it('200 万字符页的 body_md 被截断到 GRAPH_TEXT_EXCERPT，body_chars 仍是全文长度', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     seed(t.db, 3, 2_000_000);
     const { rows } = listKnowledgeGraphRows(t.db, { scope: 'common' }, 5000);
     const big = rows.find((row) => row.body_chars === 2_000_000);
@@ -38,7 +38,7 @@ describe('图查询只取正文摘要（不拉全文）', () => {
   });
 
   it('索引 (status,scope,id) 存在', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     const names = (t.db.prepare('PRAGMA index_list(knowledge_page)').all() as Array<{ name: string }>).map((row) => row.name);
     expect(names).toContain('idx_knowledge_page_status_scope_id');
     t.cleanup();
@@ -47,7 +47,7 @@ describe('图查询只取正文摘要（不拉全文）', () => {
 
 describe('性能预算（回归守卫）', () => {
   it('24 页（含 1 页 200 万字符）取行 + 建图 < 200ms', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     seed(t.db, 24, 2_000_000);
     const start = performance.now();
     const { rows } = listKnowledgeGraphRows(t.db, { scope: 'common' }, 5000);
@@ -60,7 +60,7 @@ describe('性能预算（回归守卫）', () => {
   });
 
   it('200 页（含 1 页 200 万字符）< 800ms', () => {
-    const t = createTestDb();
+    const t = createTestDb({ legacyKnowledge: true });
     seed(t.db, 200, 2_000_000);
     const start = performance.now();
     const { rows } = listKnowledgeGraphRows(t.db, { scope: 'common' }, 5000);

@@ -212,6 +212,34 @@ describe('kb list-tasks status guard', () => {
     expect(issueCall.url).toContain('unclaimed=1');
   });
 
+  it('S5：--all 跨区盘点用跨区文案（报区数），单区缺省文案逐字不变', async () => {
+    const wsA = { ...WS, id: 'ws-a', name: 'A 区', path: 'D:/ws/a' };
+    const wsB = { ...WS, id: 'ws-b', name: 'B 区', path: 'D:/ws/b' };
+    handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [wsA, wsB] };
+      if (method === 'GET' && url.startsWith('/api/issues?workspace=')) return { status: 200, body: [] };
+      return undefined;
+    };
+
+    // --all：主语是「几个工作空间」，不是「默认」（--all 是显式指定，没有默认可言）
+    const all = await run(['list-tasks', '--all']);
+    expect(all.code).toBe(0);
+    expect(all.err).toBe('跨区盘点：2 个工作空间的未完成无主卡（只读聚合），含占用中与已关闭用 --all-status\n');
+    expect(all.err).not.toContain('默认已收敛');
+
+    // --all 仍然收敛（维持 api.md:458 的口径）：过滤参数照发
+    const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+    expect(issueCalls).toHaveLength(2);
+    expect(issueCalls.every(call => call.url.includes('unclaimed=1'))).toBe(true);
+
+    // --all --all-status：不收敛、不打任何提示（行为不变）
+    calls = [];
+    const allStatus = await run(['list-tasks', '--all', '--all-status']);
+    expect(allStatus.code).toBe(0);
+    expect(allStatus.err).toBe('');
+    expect(calls.filter(call => call.url.startsWith('/api/issues?')).every(call => !call.url.includes('kinds='))).toBe(true);
+  });
+
   it('--all-status 关闭收敛（不带过滤参数、无提示），--status 显式覆盖同样不带收敛参数', async () => {
     handler = baseHandler;
     const allStatus = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--all-status']);

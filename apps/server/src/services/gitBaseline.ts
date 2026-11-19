@@ -312,7 +312,7 @@ export async function commitIssueChanges(
   db: Db,
   issueId: string,
   declaredPaths: readonly string[] = [],
-  options: { git?: GitRunner } = {},
+  options: { git?: GitRunner; extraPaths?: readonly string[] } = {},
 ): Promise<IssueCommitResult> {
   const issue = getIssue(db, issueId);
   if (!issue) return dropAndNull(db, issueId);
@@ -320,6 +320,8 @@ export async function commitIssueChanges(
   if (!workspace) return dropAndNull(db, issueId);
   const repo = workspace.path;
   const declared = normalizeDeclaredPaths(declaredPaths);
+  /** 由本卡业务流程生成的固定产物（如看板快照）；只加入提交集，不放宽调用方的业务 scope */
+  const extra = normalizeDeclaredPaths(options.extraPaths ?? []);
   /** `--all`（CLI 映射成 `.`）：显式声明工作区根，才允许纳入卡外改动 */
   const declaredAll = declared.includes(ROOT_SCOPE);
   const scopeLine = `声明范围：${declaredAll ? '（工作区根 .）' : declared.length > 0 ? declared.join(' / ') : '（未声明）'}`;
@@ -418,19 +420,24 @@ export async function commitIssueChanges(
         paths = dirty;
         policyNotes = [`⚠ --all：显式纳入工作区全部未提交改动 ${dirty.length} 个：${listPaths(dirty, MAX_LISTED_SCOPE_VIOLATIONS)}`];
       } else if (declared.length > 0) {
-        const outside = dirty.filter(path => !withinDeclaredScope(path, declared));
-        paths = dirty.filter(path => withinDeclaredScope(path, declared));
+        const businessPaths = dirty.filter(path => withinDeclaredScope(path, declared));
         // SCOPE-GUARD：声明了范围却零命中 → 显眼标题 + 可复制的补救命令
-        if (paths.length === 0) {
+        if (businessPaths.length === 0) {
+          const outside = dirty.filter(path => !withinDeclaredScope(path, extra));
           return dropAndNull(db, issueId, {
             status: 'not-committed',
             reason: 'ZERO_HIT',
-            note: zeroHitNote(declared, outside),
+            note: zeroHitNote([...declared, ...extra], outside),
             pending: outside,
           });
         }
+        const inScope = (path: string): boolean =>
+          withinDeclaredScope(path, declared) || withinDeclaredScope(path, extra);
+        const outside = dirty.filter(path => !inScope(path));
+        paths = dirty.filter(inScope);
         remaining = outside;
         policyNotes = outside.length === 0 ? [] : [outsideNote(outside)];
+        if (extra.length > 0) policyNotes.unshift(`已纳入本卡自动产物：${extra.join(' / ')}`);
       } else {
         // NO_SCOPE：未声明目标文件集时不再猜测归属——一个文件都不提交，列出全部脏文件与补救命令
         if (dirty.length === 0) return dropAndNull(db, issueId);

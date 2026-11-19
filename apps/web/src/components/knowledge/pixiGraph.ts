@@ -240,7 +240,7 @@ function cssColorToTint(color: { color: string; opacity: number } | undefined, f
   };
 }
 
-/** 读 11 个语义色（CSS 变量 → tint/alpha），不带 DOM 时给文档兜底色 */
+/** 读语义色（CSS 变量 → tint/alpha），不带 DOM 时给文档兜底色；数量以 GRAPH_SEMANTIC_CLASSES 为准 */
 function readColorMap(): ColorMap {
   const raw = readSemanticColors();
   return {

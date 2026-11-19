@@ -29,7 +29,7 @@ const tableSql = (db: TestDb['db']): string =>
 const indexNames = (db: TestDb['db']): string[] =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'knowledge_link_%' ORDER BY name").all() as Array<{ name: string }>).map(row => row.name);
 
-const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
+const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }];
 const evidence = [{ source_id: 's', locator: 'issue:1' }];
 
 describe('knowledge_link 外键松绑迁移（STORE-4c）', () => {

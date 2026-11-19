@@ -37,6 +37,14 @@ const running = makeIssue();
 const released = { ...running, status: '待规划' as const, claimed_by: null, claimed_at: null };
 const closed = makeIssue({ id: '33333333-3333-4333-8333-333333333333', title: '已关闭任务', status: '已关闭', claimed_by: null, claimed_at: null, sort_order: 100 });
 const leaseActive = makeIssue({ id: '22222222-2222-4222-8222-222222222222', title: '租约生效任务', claimed_at: Date.now() });
+const otherPlanning = makeIssue({
+  id: '44444444-4444-4444-8444-444444444444',
+  title: '另一张待规划任务',
+  status: '待规划',
+  sort_order: 1,
+  claimed_by: null,
+  claimed_at: null,
+});
 
 function renderBoard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -65,7 +73,7 @@ describe('REL-2 进行中列头救火键', () => {
 
   it('dry_run 清单进弹窗 → 提交后就地写回缓存；全板不自动塌缩，「仅看本次退回」手动开启（REL-UI）', async () => {
     server.use(
-      http.get('/api/issues', () => HttpResponse.json<Issue[]>([running, closed])),
+      http.get('/api/issues', () => HttpResponse.json<Issue[]>([running, closed, otherPlanning])),
       http.get('/api/sessions', () => HttpResponse.json([])),
       http.post('/api/workspaces/ws-1/release-running', async ({ request }) => {
         const body = (await request.json()) as { dry_run?: boolean };
@@ -86,17 +94,20 @@ describe('REL-2 进行中列头救火键', () => {
     await waitFor(() => expect(screen.getByTestId('release-toast')).toHaveTextContent('已退回 1 张'));
     // REL-UI：不再自动切进「仅看本次退回」——其它列计数保持（不塌缩），过滤等用户手动开启
     expect(screen.getByTestId('count-已关闭')).toHaveTextContent('1');
-    expect(screen.getByTestId('count-待规划')).toHaveTextContent('1');
+    expect(screen.getByTestId('count-待规划')).toHaveTextContent('2');
     expect(screen.getByTestId(`issue-card-${closed.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`issue-card-${otherPlanning.id}`)).toBeInTheDocument();
     const toggle = screen.getByTestId('release-only-toggle');
     expect(toggle).toHaveTextContent('仅看本次退回（1）');
     fireEvent.click(toggle);
     expect(toggle).toHaveTextContent('显示全部任务');
     expect(screen.queryByTestId(`issue-card-${closed.id}`)).toBeNull();
+    expect(screen.queryByTestId(`issue-card-${otherPlanning.id}`)).not.toBeInTheDocument();
     // 再点一次恢复全板
     fireEvent.click(toggle);
     expect(toggle).toHaveTextContent('仅看本次退回（1）');
     expect(screen.getByTestId(`issue-card-${closed.id}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`issue-card-${otherPlanning.id}`)).toBeInTheDocument();
     // 卡片已回「待规划」列
     expect(screen.getByTestId(`issue-card-${running.id}`).closest('[data-testid="column-待规划"]')).not.toBeNull();
   });

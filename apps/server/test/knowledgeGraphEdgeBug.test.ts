@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,7 +44,9 @@ describe('GRAPH-EDGE-BUG：4 页 fixture（A↔B 互链，C/D 孤立）', () => 
       title,
       body_md: body,
       actor: 'dsh',
-      sources: [{ source_id: slug, source_type: 'file', locator: `fixture/${slug}.md`, captured_at: 1, content_hash: `${slug}0`.padEnd(64, 'a') }],
+      // 每页 hash 必须各不相同：4 页共用一个 content_hash 会让 E1「来源共现」连出 K4=6 条 source 边，
+      // 掩盖本文件真正要防的 keyword 完全图缺陷（修 fixture 时踩过：全同 hash → 6 条 source 边）
+      sources: [{ source_id: slug, source_type: 'file', locator: `fixture/${slug}.md`, captured_at: 1, content_hash: createHash('sha256').update(`fixture/${slug}.md`).digest('hex') }],
       evidence: [{ source_id: slug, locator: `fixture/${slug}.md` }],
       category: 'legacy',
     });

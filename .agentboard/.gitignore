@@ -1,0 +1,6 @@
+# AgentBoard 运行态数据（库为准，不进 git）
+*.db
+*.db-wal
+*.db-shm
+localize.json
+attachments/

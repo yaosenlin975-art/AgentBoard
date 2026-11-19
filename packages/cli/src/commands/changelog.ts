@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { request } from '../api.js';
 import type { Ctx } from '../io.js';
+import { CliExitError } from '../errors.js';
 import { resolveWorkspaceId } from '../workspace.js';
 import { normalizeIssueRef } from '../issueRef.js';
 import { formatDateTime } from '../render.js';
@@ -68,6 +69,55 @@ const query = (params: Record<string, string | number | undefined>): string =>
       .filter(([, value]) => value !== undefined && value !== '')
       .map(([key, value]) => [key, String(value)]),
   ).toString();
+
+/** 变更日志前缀最少位数（与任务 id / 工作区 id / 知识页 resolve 同一口径） */
+export const MIN_CHANGELOG_PREFIX = 8;
+
+/** 1–35 位十六进制：完整 UUID（36 位含连字符）不匹配，直接按全长透传 */
+const CHANGELOG_PREFIX_LIKE = /^[0-9a-f]{1,35}$/i;
+
+/**
+ * 小问题 6：`changelog show/update/delete` 支持 ≥8 位唯一 id 前缀（与任务 id 口径一致）。
+ *
+ * 此前这些子命令把原始输入直接拼进 URL，前缀必然 404「变更日志不存在」——把「引用没解析」说成
+ * 「不存在」，掩盖真实原因。这里改成：前缀先扫本工作区日志列表找唯一命中；
+ * 多命中 exit 2 并列候选；零命中给「无此前缀」文案而不是「不存在」。
+ *
+ * 完整 UUID 与其它形态原样透传（服务端 404 文案保持旧口径）。
+ */
+async function resolveChangeLogId(
+  ctx: Ctx,
+  workspaceId: string,
+  ref: string,
+  listPath: (workspaceId: string) => string,
+): Promise<string> {
+  const raw = ref.trim();
+  if (!CHANGELOG_PREFIX_LIKE.test(raw)) return ref;
+  if (raw.length < MIN_CHANGELOG_PREFIX) {
+    throw new Error(
+      `变更日志 id 前缀至少 ${MIN_CHANGELOG_PREFIX} 位（当前 ${raw.length} 位）：请给完整 UUID 或 ≥${MIN_CHANGELOG_PREFIX} 位前缀`,
+    );
+  }
+  // 单请求取满一页（服务端 limit 上限 100）再本地过滤；前缀是本地便利，不引入额外端点
+  const page = await request<PageResponse<ChangeLogRecord>>(
+    ctx.base,
+    'GET',
+    `${listPath(workspaceId)}?${query({ limit: 100 })}`,
+  );
+  const hits = page.items.filter((item) => item.id.toLowerCase().startsWith(raw.toLowerCase()));
+  if (hits.length === 1) return hits[0]!.id;
+  if (hits.length > 1) {
+    throw new CliExitError(
+      'AMBIGUOUS_CHANGELOG_REF',
+      `变更日志 id 前缀「${raw}」命中 ${hits.length} 条，请改用更长前缀或完整 id：\n`
+        + hits.map((item) => `  - ${item.id} ${item.title}`).join('\n'),
+      2,
+    );
+  }
+  throw new Error(
+    `没有 id 以「${raw}」开头的变更日志（前缀无法解析；可用完整 UUID，或 kb changelog list 查看现有 id）`,
+  );
+}
 
 function printRecord(ctx: Ctx, record: ChangeLogRecord): void {
   const origin = record.workspace_id === null ? `（归档，原空间 ${record.origin_workspace_name}）` : '';
@@ -138,12 +188,13 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
 
   changelog
     .command('show <id>')
-    .description('查看单条变更日志')
+    .description('查看单条变更日志（id 支持 ≥8 位前缀）')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .action(async (id: string, opts: { workspace: string }) => {
       const ctx = context();
       const workspaceId = await activeWorkspace(ctx, opts.workspace);
-      const record = await request<ChangeLogRecord>(ctx.base, 'GET', `${entriesPath(workspaceId)}/${encodeURIComponent(id)}`);
+      const logId = await resolveChangeLogId(ctx, workspaceId, id, entriesPath);
+      const record = await request<ChangeLogRecord>(ctx.base, 'GET', `${entriesPath(workspaceId)}/${encodeURIComponent(logId)}`);
       if (ctx.json) ctx.io.write(`${JSON.stringify(record, null, 2)}\n`);
       else printRecord(ctx, record);
     });
@@ -197,7 +248,7 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
 
   changelog
     .command('update <id>')
-    .description('修改变更日志（CAS：必须带当前 --expected-revision）')
+    .description('修改变更日志（id 支持 ≥8 位前缀；CAS：必须带当前 --expected-revision）')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .requiredOption('--expected-revision <n>', '当前 revision（服务端 CAS）')
     .option('--title <title>', '新标题')
@@ -219,26 +270,27 @@ export function registerChangelogCommands(program: Command, context: () => Ctx):
       if (bodyMd !== undefined) patch.body_md = bodyMd;
       if (opts.occurredAt !== undefined) patch.occurred_at = Number(opts.occurredAt);
       if (Object.keys(patch).length === 2) throw new Error('至少提供一个可修改字段：--title / --type / --body / --stdin / --occurred-at');
-      const record = await request<ChangeLogRecord>(ctx.base, 'PATCH', `${entriesPath(workspaceId)}/${encodeURIComponent(id)}`, patch, opts.requestId);
+      const record = await request<ChangeLogRecord>(ctx.base, 'PATCH', `${entriesPath(workspaceId)}/${encodeURIComponent(await resolveChangeLogId(ctx, workspaceId, id, entriesPath))}`, patch, opts.requestId);
       if (ctx.json) ctx.io.write(`${JSON.stringify(record, null, 2)}\n`);
       else printRecord(ctx, record);
     });
 
   changelog
     .command('delete <id>')
-    .description('删除单条变更日志（CAS：必须带当前 --expected-revision）')
+    .description('删除单条变更日志（id 支持 ≥8 位前缀；CAS：必须带当前 --expected-revision）')
     .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析）')
     .requiredOption('--expected-revision <n>', '当前 revision（服务端 CAS）')
     .option('--request-id <uuid>', '幂等请求 id；重试时复用')
     .action(async (id: string, opts: { workspace: string; expectedRevision: string; requestId?: string }) => {
       const ctx = context();
       const workspaceId = await activeWorkspace(ctx, opts.workspace);
-      await request<void>(ctx.base, 'DELETE', `${entriesPath(workspaceId)}/${encodeURIComponent(id)}`, {
+      const logId = await resolveChangeLogId(ctx, workspaceId, id, entriesPath);
+      await request<void>(ctx.base, 'DELETE', `${entriesPath(workspaceId)}/${encodeURIComponent(logId)}`, {
         expected_revision: Number(opts.expectedRevision),
         actor: ctx.agentId,
       }, opts.requestId);
-      if (ctx.json) ctx.io.write(`${JSON.stringify({ deleted: true, id }, null, 2)}\n`);
-      else ctx.io.write(`已删除变更日志: ${id}\n`);
+      if (ctx.json) ctx.io.write(`${JSON.stringify({ deleted: true, id: logId }, null, 2)}\n`);
+      else ctx.io.write(`已删除变更日志: ${logId}\n`);
     });
 
   changelog

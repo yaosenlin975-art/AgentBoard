@@ -7,6 +7,7 @@ import { McpError, requireAgentId, resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { mcpToolResultFits, mcpToolSuccess, MCP_TOOL_RESULT_LIMIT } from './result.js';
 import { registerBoardTool } from './register.js';
+import { requestIdField } from './schemaText.js';
 
 const MAX_TOOL_RESULT_CHARS = MCP_TOOL_RESULT_LIMIT - 500;
 const MAX_HISTORY = 50;
@@ -18,10 +19,6 @@ const scopeFields = {
 };
 const pageIdField = {
   page_id: z.string().trim().min(1).describe('Knowledge page UUID (an 8+ char unique prefix is not accepted here — pass the full id).'),
-};
-const requestIdField = {
-  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
-    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
 };
 const snapshotSchema = z.string().refine((value) => value.trim().length > 0 && Buffer.byteLength(value, 'utf8') <= 2048, 'Evidence snapshot must be non-empty and at most 2 KiB.');
 const sourceSchema = z.object({
@@ -120,7 +117,7 @@ function knowledgeScope(config: McpConfig, scope: 'workspace' | 'common', worksp
     if (workspaceId !== undefined) throw new McpError('INVALID_ARGUMENT', 'Common knowledge must omit workspace_id.');
     return { scope: 'common' };
   }
-  return { scope: 'workspace', workspace_id: resolveWorkspaceId(config, workspaceId) };
+  return { scope: 'workspace', workspace_id: resolveWorkspaceId(config, workspaceId, 'knowledge') };
 }
 
 function searchScope(config: McpConfig, scope: 'workspace' | 'common' | 'both', workspaceId?: string): { scope: 'workspace' | 'common' | 'both'; workspace_id?: string } {
@@ -128,7 +125,7 @@ function searchScope(config: McpConfig, scope: 'workspace' | 'common' | 'both', 
     if (workspaceId !== undefined) throw new McpError('INVALID_ARGUMENT', 'Common knowledge must omit workspace_id.');
     return { scope: 'common' };
   }
-  return { scope, workspace_id: resolveWorkspaceId(config, workspaceId) };
+  return { scope, workspace_id: resolveWorkspaceId(config, workspaceId, 'knowledge') };
 }
 
 function pageArray<T>(items: T[], offset: number, limit: number): { items: T[]; next_offset: number | null; total: number } {

@@ -242,7 +242,7 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       title: '本区页',
       body_md: '正文 v1',
       domain: 'knowledge',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'README.md:1-2' }],
       actor: 'tester',
     });
@@ -254,7 +254,7 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       workspace_id: wsId,
       body_md: '正文 v2',
       change_note: '改一句',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'README.md:1-2' }],
       actor: 'tester',
     });
@@ -290,7 +290,7 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       title: '生命周期页',
       body_md: '正文 v1',
       domain: 'knowledge',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'README.md:1-2' }],
       actor: 'tester',
     };
@@ -364,7 +364,7 @@ describe('BORROW-5.1：真实 app 的 revise 接线（RULE-3）', () => {
       title: '标记页',
       body_md: '正文 v1',
       domain: 'knowledge',
-      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:README.md', locator: 'README.md:1-2' }],
       actor: 'tester',
     };

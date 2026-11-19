@@ -2,6 +2,12 @@
 
 需开发者自行人工验收的项。
 
+- [ ] 便携包聚合入口与技能 references 人工验收
+  - 步骤1：执行 `pnpm package:portable --no-zip`，解压/打开 `dist-package\AgentBoard`，双击 `check-rules.cmd`
+  - 步骤2：在包内执行 `app\cli\kb.cmd work <待规划卡-id>`，确认输出工作包与 claim fence；完成模拟修改后执行 `app\cli\kb.cmd finish <id> --title "<标题>" --type 调整 --notes "<验证结果>" --scope <文件>`
+  - 步骤3：配置包内 MCP `apps\mcp\dist\index.js`，确认 `tools/list` 含 `start_task` / `finish_task`，并验证 `finish_task` 无 changelog 出口或 fence 过期时返回 `isError`
+  - 预期结果：包内 8 技能及 references 自检通过；CLI/MCP 聚合入口可调用；done、changelog、fence 与 Git 提交门禁仍生效
+
 - [ ] AgentBoard CodeBuddy 原生图片输入合成图复验（IMG-04）
   - 步骤1：仅在 CodeBuddy adapter 调用可禁用 tools 并限制为只读执行时，使用独立临时数据库、合成工作空间、合成 issue 和标记图；工作目录固定在临时工作空间，KB_SERVER 固定到隔离 18788 fixture
   - 步骤2：经 AgentBoard adapter 派发首轮图片和同一绑定会话的第二批图片，不执行模型写入或业务任务

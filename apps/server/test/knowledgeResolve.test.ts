@@ -30,7 +30,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
     slug,
     title,
     body_md: '正文 cache 关键词',
-    sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+    sources: [{ source_id: 'file:README.md', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
     evidence: [{ source_id: 'file:README.md', locator: 'file:1-20' }],
     actor: 'tester',
   });
@@ -44,7 +44,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
     const meta = {
       id: '00000000-0000-4000-8000-000000000000', slug: 'crafted', title: '构造页', revision: 1,
       scope: 'common', workspace_id: null, status: 'active', domain: 'knowledge', category: 'open', landed: null,
-      sources: [{ source_id: 's', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: 'a'.repeat(64) }],
+      sources: [{ source_id: 's', source_type: 'file', locator: 'README.md', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 's', locator: 'README.md' }],
       expires_at: null, created_at: 1, updated_at: 1, created_by: 't', updated_by: 't', change_note: '',
       ...metaOverrides,
@@ -176,7 +176,7 @@ describe('KB-PAGE-2 统一 resolve', () => {
     // 修订 sources 后旧 locator 不再命中（只看当前 front matter，无历史版本）
     const revised = await request(app).put(`/api/knowledge/pages/${page.id}`).send({
       scope: 'common', expected_revision: 1, actor: 'tester',
-      sources: [{ source_id: 'file:CHANGELOG.md', source_type: 'file', locator: 'CHANGELOG.md', captured_at: 2, content_hash: 'b'.repeat(64) }],
+      sources: [{ source_id: 'file:CHANGELOG.md', source_type: 'file', locator: 'CHANGELOG.md', captured_at: 2, content_hash: '0123456789abcdef'.repeat(4) }],
       evidence: [{ source_id: 'file:CHANGELOG.md', locator: 'file:1-20' }],
     });
     expect(revised.status).toBe(200);

@@ -1,5 +1,39 @@
 # CHANGELOG.md
 
+## [2026-11-18] Windows 桌面端待决策系统通知
+
+- Windows 桌面壳启用系统通知轮询：新进入宽限的待决策会在窗口失焦或最小化时发送 Windows 通知。
+- 保持首轮只建基线、同一决策只通知一次、窗口前台时由应用内 toast 提醒。
+- `cargo test` 65 通过、1 忽略；Windows release 构建通过；真实通知中心显示“AgentBoard 待决策进入宽限”及问题正文。
+
+## [2026-11-18] 退回任务后保持全部任务视图
+
+- 进行中列退回任务后，看板保持“全部任务”；结果条保留“仅看本次退回（N）”手动筛选。
+- 定向测试与 `5174` 页面交互验证通过。
+
+## [2026-11-18] Command Code 添加入口与本地服务错误提示
+
+- “添加供应商”新增 Command Code；零账号时可进入“添加 API Key”并复用 CLI 凭据导入。
+- OpenCode-Go/Command Code 导入遇到浏览器网络失败时，提示确认本地服务已启动后重试。
+- 账号与设置相关 119 个测试通过；`5174` 真实导入与断网提示已验证。
+
+## [2026-11-18] 便携包 zip 固定使用 Windows 系统 tar
+
+- `scripts/package-portable.mjs` 在 Windows 固定调用 `%SystemRoot%\System32\tar.exe`，避免 PATH 中的 GNU tar 把盘符解析为远程主机。
+
+## [2026-11-18] DSH 桌面内置 CLI 探测与 Codex 真实模型列表
+
+- DSH 探测与轮次启动支持 DeepSeek Harness 安装目录内的 Electron CLI，识别 `0.2.2-rc.3` 桌面版。
+- Codex 模型列表优先读取当前本机 model provider 的 `/models`，再回退 `codex debug models` 与静态清单。
+- 适配器测试覆盖 Electron shim、provider 配置与模型响应解析；服务端 `8787` 实例已完成构建重启验证。
+
+## [2026-11-18] Agent 工作流上下文成本优化收口
+
+- 新增 `kb work` / `kb finish` 与 MCP `start_task` / `finish_task` 聚合入口，复用现有 claim、changelog、done 与 fence 语义；旧工具名和 `agentboard_*` alias 保留。
+- MCP 任务列表/评论/写回执使用紧凑投影，`get_task` 保留完整字段与正文窗口；共享 schema 文案收敛，真实 `tools/list` 维持 88 工具并低于 140 KB 预算。
+- 8 个技能入口改为高频流程加 `references/` 按需读取；新增 `check-agent-context.mjs` 预算门禁，便携包自检同时校验入口引用文件是否存在。
+- README、Docs/api.md、DESIGNS、PENDING_TESTS 与便携包 README 同步聚合入口、预算命令、references 与人工验收口径。
+
 ## [2026-11-15] knowledgeCrossDb 测试断言适配 P2-03 S-5 unresolved 语义（P2-05b）
 
 - apps/server/test/knowledgeCrossDb.test.ts：2 例 P2-01 旧语义断言（目标缺失/删除 → link 边应全空）更新为 P2-03 S-5 语义——目标缺失/删除后断言出现 `unresolved:<slug>` 合成节点（node_type:'unresolved'，title 为 raw slug）及 kind:'link' 边（source=引用页、target=`unresolved:<slug>`）；reparse 用例补「晚建目标解析后 unresolved 合成节点消失」断言；文件头注释同步。产品代码零改动。

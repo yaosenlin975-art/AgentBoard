@@ -11,34 +11,26 @@ import type { McpConfig } from '../config.js';
 import { resolveWorkspaceId } from '../config.js';
 import { AgentBoardApiClient } from '../apiClient.js';
 import { registerBoardTool } from './register.js';
-
-const workspaceField = {
-  workspace_id: z.string().trim().min(1).optional()
-    .describe('Workspace UUID. Omit to use the workspace this MCP server is bound to.'),
-};
-const requestIdField = {
-  request_id: z.string({ error: 'request_id is required by this write tool: pass a UUID idempotency key, e.g. 00000000-0000-4000-8000-000000000000. Reuse the SAME key only when retrying the identical call — it returns the original result; a different payload gets 409 IDEMPOTENCY_KEY_REUSED. Read-only tools and deletes (delete_task / remove_dependency) take no request_id.' }).uuid()
-    .describe('Idempotency key (UUID). Replaying the same request_id returns the original result; reusing it with different arguments fails with a conflict.'),
-};
+import { requestIdField, workspaceField } from './schemaText.js';
 const kindSchema = z.enum(['open', 'started', 'review', 'done', 'deprecated', 'blocked'])
   .describe('Behaviour class of the status: open / started / review / done / deprecated / blocked.');
 
 export function registerStatusTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
     name: 'list_statuses',
-    description: 'List one workspace\'s status dictionary (name, kind, sort order, builtin flag).',
+    description: 'List the workspace status dictionary.',
     inputSchema: z.object({
       ...workspaceField,
     }).strict(),
   }, async ({ workspace_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const rows = await api.get<WorkspaceStatus[]>(`/workspaces/${encodeURIComponent(workspaceId)}/statuses`);
     return { workspace_id: workspaceId, items: rows };
   });
 
   registerBoardTool(server, {
     name: 'add_status',
-    description: 'Add a custom status to one workspace. Builtin statuses cannot be duplicated (409); kind drives behaviour.',
+    description: 'Add a custom status; builtin names are rejected.',
     inputSchema: z.object({
       ...workspaceField,
       name: z.string().trim().min(1).max(50)
@@ -50,7 +42,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     }).strict(),
     readOnly: false,
   }, async ({ workspace_id, name, kind, sort_order, request_id }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     const created = await api.mutate<WorkspaceStatus>('POST', `/workspaces/${encodeURIComponent(workspaceId)}/statuses`, {
       workspace_id: workspaceId, name, kind, ...(sort_order === undefined ? {} : { sort_order }),
     }, request_id);
@@ -59,7 +51,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
 
   registerBoardTool(server, {
     name: 'remove_status',
-    description: 'Remove a custom status. migrate_to is required: tasks in that status are moved to it in the same transaction. Builtin statuses are rejected.',
+    description: 'Remove a custom status and migrate its tasks in the same transaction.',
     inputSchema: z.object({
       ...workspaceField,
       status_id: z.string().trim().min(1)
@@ -69,7 +61,7 @@ export function registerStatusTools(server: McpServer, config: McpConfig, api: A
     }).strict(),
     readOnly: false,
   }, async ({ workspace_id, status_id, migrate_to }) => {
-    const workspaceId = resolveWorkspaceId(config, workspace_id);
+    const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     // DELETE 走 query 传 migrate_to（REST 侧同样不套幂等键）
     const path = `/workspaces/${encodeURIComponent(workspaceId)}/statuses/${encodeURIComponent(status_id)}?migrate_to=${encodeURIComponent(migrate_to)}`;
     return api.delete<{ removed: WorkspaceStatus; migrate_to: string; migrated_issue_count: number }>(path, 'WORKSPACE_STATUS_BUILTIN', 'NOT_FOUND');

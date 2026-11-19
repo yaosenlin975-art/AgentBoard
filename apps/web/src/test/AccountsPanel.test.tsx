@@ -266,13 +266,14 @@ describe('账号管理面板（ACC-08 / ACC-14）', () => {
     await waitFor(() => expect(within(card).getByTestId('accounts-switch-acc-wb-3')).toBeDisabled());
   });
 
-  it('无账号时保留 Codex 本机登录入口，其它零账号平台不占行', async () => {
+  it('无账号时保留 Codex 本机登录入口与 Command Code 添加入口，其它零账号平台不占行', async () => {
     mockList([]);
     renderPanel();
 
     const index = await screen.findByTestId('accounts-index');
-    expect(within(index).getAllByRole('tab')).toHaveLength(1);
+    expect(within(index).getAllByRole('tab')).toHaveLength(2);
     expect(screen.getByTestId('accounts-index-item-codex')).toBeInTheDocument();
+    expect(screen.getByTestId('accounts-index-item-commandcode')).toBeInTheDocument();
     expect(screen.queryByTestId('accounts-index-empty')).toBeNull();
     // 零账号平台不占行，也不再渲染按平台的空态块
     for (const app of ['workbuddy_desktop', 'minimax', 'trae', 'codebuddy_desktop']) {

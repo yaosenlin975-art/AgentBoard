@@ -295,7 +295,13 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     ? spaces
     : [args.workspace === undefined ? matchCurrentWorkspace(spaces) : matchWorkspace(spaces, args.workspace)];
   // B1：收敛提示必须排在工作区解析之后——解析失败时先打这句会盖住真正的错误
-  if (converged) ctx.io.writeErr('默认已收敛为未完成无主卡，全量用 --all-status\n');
+  // S5：`--all` 是跨区只读盘点，没有「默认」可言（主语是全部工作空间，不是当前区），
+  // 所以换跨区口径：报清聚合了几个区，并给出把占用中/已关闭一并拉出来的下一步动作。
+  if (converged) {
+    ctx.io.writeErr(args.all === true
+      ? `跨区盘点：${selected.length} 个工作空间的未完成无主卡（只读聚合），含占用中与已关闭用 --all-status\n`
+      : '默认已收敛为未完成无主卡，全量用 --all-status\n');
+  }
   // KB-CLI-4：多工作区（--all）先一次性预热状态字典，避免每区一次 GET /statuses
   if (selected.length > 1) await prefetchStatuses(ctx, selected.map(space => space.id));
   if (args.tree) {

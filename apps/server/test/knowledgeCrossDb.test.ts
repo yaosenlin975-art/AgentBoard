@@ -26,7 +26,7 @@ import { mergeKnowledgeRowsByRecency } from '../src/db/repos/knowledgeSearch.js'
 import { renderDocWithHash } from '../src/knowledge/frontMatter.js';
 import { docFileNameFor } from '@agentboard/shared';
 
-const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: 'a'.repeat(64), snapshot: 'verified' }];
+const sources = [{ source_id: 's', source_type: 'agent' as const, locator: 'issue:1', captured_at: 1, content_hash: '0123456789abcdef'.repeat(4), snapshot: 'verified' }];
 const evidence = [{ source_id: 's', locator: 'issue:1' }];
 
 describe('knowledge both 两目录合并（P2-01，替代旧 STORE-4c 跨库合并）', () => {
