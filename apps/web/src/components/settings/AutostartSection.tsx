@@ -59,11 +59,14 @@ export function AutostartSection() {
   const disabled = unavailable || pending;
 
   const toggle = (): void => {
-    if (disabled) return;
-    const next = !enabled;
-    // owner=cli 时开启必须先确认「由桌面应用接管」，确认后带 takeOver:true 改写同一入口
-    if (next && status.owner === 'cli' && !window.confirm(AUTOSTART_TAKEOVER_CONFIRM)) return;
-    void apply(next, next && status.owner === 'cli');
+    if (disabled || status?.owner === 'cli') return;
+    void apply(!enabled, false);
+  };
+
+  const takeOver = (): void => {
+    if (disabled || status?.owner !== 'cli') return;
+    if (!window.confirm(AUTOSTART_TAKEOVER_CONFIRM)) return;
+    void apply(true, true);
   };
 
   return (
@@ -90,25 +93,38 @@ export function AutostartSection() {
             与 CLI 共用同一系统入口；开启后登录时自动拉起（最小化到托盘），不会出现两个启动项。
           </p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          data-testid="settings-autostart-toggle"
-          aria-checked={enabled}
-          aria-labelledby="settings-autostart-label"
-          disabled={disabled}
-          onClick={toggle}
-          className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full border transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40 ${
-            enabled ? 'border-accent bg-accent' : 'border-hairline bg-surface-raised'
-          }`}
-        >
-          <span
-            aria-hidden="true"
-            className={`absolute top-0.5 size-3.5 rounded-full bg-surface-card shadow transition-[left] duration-150 motion-reduce:transition-none ${
-              enabled ? 'left-[18px]' : 'left-0.5'
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <button
+            type="button"
+            role="switch"
+            data-testid="settings-autostart-toggle"
+            aria-checked={enabled}
+            aria-labelledby="settings-autostart-label"
+            disabled={disabled || status?.owner === 'cli'}
+            onClick={toggle}
+            className={`relative mt-0.5 h-5 w-9 shrink-0 rounded-full border transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none disabled:cursor-not-allowed disabled:opacity-40 ${
+              enabled ? 'border-accent bg-accent' : 'border-hairline bg-surface-raised'
             }`}
-          />
-        </button>
+          >
+            <span
+              aria-hidden="true"
+              className={`absolute top-0.5 size-3.5 rounded-full bg-surface-card shadow transition-[left] duration-150 motion-reduce:transition-none ${
+                enabled ? 'left-[18px]' : 'left-0.5'
+              }`}
+            />
+          </button>
+          {status?.supported === true && status.owner === 'cli' && (
+            <button
+              type="button"
+              data-testid="settings-autostart-takeover"
+              disabled={disabled}
+              onClick={takeOver}
+              className="text-xs font-medium text-accent hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              由桌面应用接管
+            </button>
+          )}
+        </div>
       </div>
       {invoke === null && (
         <p data-testid="autostart-unavailable" className="mt-2 text-xs text-ink-3">

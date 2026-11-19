@@ -18,9 +18,9 @@ function installInvoke(handler: Handler) {
 
 const NONE = { supported: true, enabled: false, owner: 'none', provider: 'hkcu-run' };
 const DESKTOP_ON = { supported: true, enabled: true, owner: 'desktop', provider: 'hkcu-run' };
-const CLI_OFF = {
+const CLI_ON = {
   supported: true,
-  enabled: false,
+  enabled: true,
   owner: 'cli',
   provider: 'hkcu-run',
   detail: 'C:\\AgentBoard\\scripts\\agentboard.vbs autostart',
@@ -83,28 +83,36 @@ describe('AutostartSection', () => {
     expect(invoke).toHaveBeenCalledWith('autostart_set', { enabled: false });
   });
 
-  it('owner=cli 开启：确认后带 takeOver:true 接管；取消则不调用', async () => {
+  it('owner=cli 且已启用：取消不写；确认后带 takeOver:true 接管并更新状态', async () => {
     const invoke = installInvoke(async (cmd) =>
-      cmd === 'autostart_status' ? CLI_OFF : { ...NONE, enabled: true, owner: 'desktop' },
+      cmd === 'autostart_status' ? CLI_ON : DESKTOP_ON,
     );
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     render(<AutostartSection />);
-    await waitFor(() => expect(screen.getByTestId('autostart-status')).toBeInTheDocument());
+    const toggle = screen.getByTestId('settings-autostart-toggle');
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(toggle).toBeDisabled();
 
-    await userEvent.click(screen.getByTestId('settings-autostart-toggle'));
+    const takeover = screen.getByRole('button', { name: '由桌面应用接管' });
+    await userEvent.click(takeover);
     expect(confirm).toHaveBeenCalledOnce();
     expect(invoke).not.toHaveBeenCalledWith('autostart_set', expect.anything());
+    expect(toggle).toBeChecked();
 
     confirm.mockReturnValue(true);
-    await userEvent.click(screen.getByTestId('settings-autostart-toggle'));
+    await userEvent.click(takeover);
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith('autostart_set', { enabled: true, takeOver: true }),
     );
+    await waitFor(() =>
+      expect(screen.getByTestId('autostart-status')).toHaveTextContent('已启用 · 由桌面应用管理'),
+    );
+    expect(screen.queryByRole('button', { name: '由桌面应用接管' })).not.toBeInTheDocument();
   });
 
-  it('AUTOSTART_NOT_OWNED：提示由 CLI 管理，开关保持原状态', async () => {
+  it('写入时 owner 变化为 CLI：显示未接管原因并保持开关原状态', async () => {
     installInvoke(async (cmd) => {
-      if (cmd === 'autostart_status') return { ...CLI_OFF, enabled: true };
+      if (cmd === 'autostart_status') return DESKTOP_ON;
       throw new Error(
         JSON.stringify({ code: 'AUTOSTART_NOT_OWNED', detail: '请先执行 kb autostart uninstall' }),
       );
