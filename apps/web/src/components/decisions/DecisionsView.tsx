@@ -108,7 +108,7 @@ export function DecisionsView() {
   // P5：范围独立持久化（与知识库范围 / 形态 / 主题的键互不干扰）；非法值已在读取时回落
   // DEC-BADGE：改为共享快照，侧栏徽标与列表同源（同一存储键 / 同一 queryKey）
   const scope = useDecisionsScope();
-  const { active, answered, loading, error } = useDecisionLists(workspaceId, scope);
+  const { active, answered, loading, fetching, error } = useDecisionLists(workspaceId, scope);
   // 范围下拉计数（设计「所有工作区（3 个）」）；与 App 侧同源 queryKey，共享缓存不额外发请求
   const { data: workspaces } = useQuery({
     queryKey: ['workspaces'],
@@ -238,6 +238,7 @@ export function DecisionsView() {
   useEffect(() => {
     if (focus === null || loading) return;
     const target = allItemsRef.current.find((item) => item.id === focus) ?? null;
+    if (target === null && fetching) return;
     setFilter('all');
     setExpandedId(target?.id ?? null);
     setSelectedId(target?.id ?? null);
@@ -260,7 +261,7 @@ export function DecisionsView() {
     flashTimers.current.push(setTimeout(() => setFlashId(null), 720));
     flashTimers.current.push(setTimeout(() => setFlashId(focus), 1440));
     flashTimers.current.push(setTimeout(() => setFlashId(null), 2160));
-  }, [focus, loading, consumeFocus]);
+  }, [focus, loading, fetching, consumeFocus]);
 
   // 卸载时清掉未走完的闪烁 / leaving 定时器
   useEffect(

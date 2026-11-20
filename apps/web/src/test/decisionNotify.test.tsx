@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
+import { StrictMode } from 'react';
 import { DecisionNotifier } from '../components/decisions/DecisionNotifier';
 import {
   isNotificationGranted,
@@ -16,11 +17,16 @@ import {
   requestNotificationPermission,
 } from '../components/decisions/notify';
 import type { DecisionListItemDto } from '../components/decisions/types';
+import { DECISIONS_SCOPE_KEY } from '../lib/decisionsScope';
 import { useAppStore } from '../state/appStore';
 import { useNavStore } from '../state/navStore';
 import { server } from './server';
 
 const WORKSPACE_ID = 'ws-1';
+const TARGET_WORKSPACE_1 = '10000000-0000-4000-8000-000000000001';
+const TARGET_WORKSPACE_2 = '10000000-0000-4000-8000-000000000002';
+const TARGET_DECISION_1 = '20000000-0000-4000-8000-000000000001';
+const TARGET_DECISION_2 = '20000000-0000-4000-8000-000000000002';
 const NOW = Date.now();
 
 interface FakeInternals {
@@ -59,6 +65,7 @@ beforeEach(() => {
   localStorage.clear();
   setInternals(null);
   delete (window as unknown as { Notification?: unknown }).Notification;
+  delete (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__;
   created = [];
   useAppStore.setState({ workspaceId: WORKSPACE_ID });
   useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null, decisionFocus: null });
@@ -172,6 +179,93 @@ function renderWithQuery(node: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
 }
+
+function emptyDecisionHandler() {
+  return http.get('/api/decisions', () =>
+    HttpResponse.json({ decisions: [], counts: { grace: 0, open: 0, stale_open: 0, answered_recent: 0 } }),
+  );
+}
+
+describe('DEC-7 桌面通知决策目标接收', () => {
+  it('挂载时消费启动 pending 槽一次，并保留所有工作区范围', async () => {
+    server.use(emptyDecisionHandler());
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'all');
+    const focusDecision = vi.spyOn(useNavStore.getState(), 'focusDecision');
+    (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__ = {
+      workspaceId: TARGET_WORKSPACE_1,
+      decisionId: TARGET_DECISION_1,
+    };
+
+    try {
+      renderWithQuery(
+        <StrictMode>
+          <DecisionNotifier />
+        </StrictMode>,
+      );
+
+      await waitFor(() =>
+        expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: TARGET_DECISION_1 }),
+      );
+      expect(useAppStore.getState().workspaceId).toBe(TARGET_WORKSPACE_1);
+      expect(
+        (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__,
+      ).toBeUndefined();
+      expect(focusDecision).toHaveBeenCalledTimes(1);
+      expect(localStorage.getItem(DECISIONS_SCOPE_KEY)).toBe('all');
+    } finally {
+      focusDecision.mockRestore();
+    }
+  });
+
+  it('连续事件各自切工作区并替换定位目标，保留当前工作区范围', () => {
+    server.use(emptyDecisionHandler());
+    localStorage.setItem(DECISIONS_SCOPE_KEY, 'workspace');
+    renderWithQuery(<DecisionNotifier />);
+
+    fireEvent(
+      window,
+      new CustomEvent('agentboard:open-decision', {
+        detail: { workspaceId: TARGET_WORKSPACE_1, decisionId: TARGET_DECISION_1 },
+      }),
+    );
+    expect(useAppStore.getState().workspaceId).toBe(TARGET_WORKSPACE_1);
+    expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: TARGET_DECISION_1 });
+
+    fireEvent(
+      window,
+      new CustomEvent('agentboard:open-decision', {
+        detail: { workspaceId: TARGET_WORKSPACE_2, decisionId: TARGET_DECISION_2 },
+      }),
+    );
+    expect(useAppStore.getState().workspaceId).toBe(TARGET_WORKSPACE_2);
+    expect(useNavStore.getState()).toMatchObject({ view: 'decisions', decisionFocus: TARGET_DECISION_2 });
+    expect(localStorage.getItem(DECISIONS_SCOPE_KEY)).toBe('workspace');
+  });
+
+  it('忽略非法 pending 与事件目标，不改工作区、视图或焦点', () => {
+    server.use(emptyDecisionHandler());
+    const originalWorkspaceId = useAppStore.getState().workspaceId;
+    (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__ = {
+      workspaceId: TARGET_WORKSPACE_1,
+      decisionId: 'not-a-uuid',
+    };
+    renderWithQuery(<DecisionNotifier />);
+
+    expect(
+      (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__,
+    ).toBeUndefined();
+    for (const detail of [
+      { workspaceId: TARGET_WORKSPACE_1, decisionId: 'bad-id' },
+      { workspaceId: 'bad-workspace', decisionId: TARGET_DECISION_1 },
+      null,
+    ]) {
+      fireEvent(window, new CustomEvent('agentboard:open-decision', { detail }));
+    }
+
+    expect(useAppStore.getState().workspaceId).toBe(originalWorkspaceId);
+    expect(useNavStore.getState()).toMatchObject({ view: 'board', decisionFocus: null });
+  });
+});
 
 describe('DEC-7 应用内降级三件套', () => {
   it('有 N 条待决策汇总条 + 常驻 toast；忽略后消失；立即回答深链选中', async () => {

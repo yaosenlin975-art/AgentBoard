@@ -102,6 +102,7 @@ export function useDecisionLists(workspaceId: string | null, scope: DecisionsSco
     answered: answered.data?.decisions ?? [],
     counts: active.data?.counts ?? null,
     loading: active.isLoading || answered.isLoading,
+    fetching: active.isFetching || answered.isFetching,
     /** 列表级错误（401 身份失效 / 403 无权工作区），由视图分区展示 */
     error: (active.error ?? answered.error) as unknown,
   };

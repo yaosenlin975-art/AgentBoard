@@ -5,16 +5,18 @@
  * grace 到期本地移入未回答、open 卡 [待决策] 已等待、详情两版答案时间线 + checkpoint + 修订请求。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Issue, Workspace } from '@agentboard/shared';
 import { DecisionsView } from '../components/decisions/DecisionsView';
+import { DecisionNotifier } from '../components/decisions/DecisionNotifier';
 import { DecisionMark } from '../components/decisions/DecisionMark';
 import { DecisionSection, checkpointLines } from '../components/decisions/DecisionSection';
 import { formatCountdown, formatWaiting, groupDecisions } from '../components/decisions/countdown';
 import type { DecisionDetailDto, DecisionListItemDto } from '../components/decisions/types';
 import { DECISIONS_SCOPE_KEY, persistDecisionsScope, resolveDecisionsScope } from '../lib/decisionsScope';
+import { decisionsListKey } from '../components/decisions/useDecisions';
 import { KNOWLEDGE_SCOPE_KEY } from '../lib/knowledgeScope';
 import { SideBar } from '../components/shell/SideBar';
 import { useAppStore } from '../state/appStore';
@@ -106,6 +108,7 @@ function renderWithRetry(node: React.ReactElement, retry = 2) {
 beforeEach(() => {
   cleanup();
   localStorage.clear();
+  delete (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__;
   useAppStore.setState({ workspaceId: WORKSPACE_ID });
   useNavStore.setState({ view: 'board', drawer: null, chatOrigin: null, decisionFocus: null, boardFocus: null });
   usePanelStore.setState({ view: null, issueId: null, sessionId: null, chatSession: null, unread: {}, rightOpen: false });
@@ -1045,6 +1048,106 @@ describe('P5 跨区范围', () => {
     expect(localStorage.getItem(DECISIONS_SCOPE_KEY)).toBe('all');
     expect(localStorage.getItem(KNOWLEDGE_SCOPE_KEY)).toBe('last-visited');
   });
+
+  it.each(['workspace', 'all'] as const)(
+    '桌面通知 CustomEvent 连续展开不同工作区决策并刷新热缓存（范围 %s）',
+    async (scope) => {
+      const workspaceA = '10000000-0000-4000-8000-000000000001';
+      const workspaceB = '10000000-0000-4000-8000-000000000002';
+      const decisionA = '20000000-0000-4000-8000-000000000001';
+      const decisionB = '20000000-0000-4000-8000-000000000002';
+      const itemA = listItem({
+        id: decisionA,
+        state: 'grace',
+        workspace_id: workspaceA,
+        workspace_name: '通知区 A',
+        grace_until: NOW + 120_000,
+      });
+      const itemB = listItem({
+        id: decisionB,
+        state: 'grace',
+        workspace_id: workspaceB,
+        workspace_name: '通知区 B',
+        grace_until: NOW + 120_000,
+      });
+      let revealTargets = false;
+      server.use(
+        http.get('/api/decisions', ({ request }) => {
+          const url = new URL(request.url);
+          const isAnswered = url.searchParams.get('state') === 'answered';
+          const workspaceId = url.searchParams.get('workspace_id');
+          const decisions = !revealTargets || isAnswered
+            ? []
+            : url.searchParams.get('scope') === 'accessible'
+              ? [itemA, itemB]
+              : workspaceId === workspaceA
+                ? [itemA]
+                : workspaceId === workspaceB
+                  ? [itemB]
+                  : [];
+          return HttpResponse.json({
+            decisions,
+            counts: { grace: decisions.length, open: 0, stale_open: 0, answered_recent: 0 },
+          });
+        }),
+        http.get('/api/workspaces', () =>
+          HttpResponse.json([
+            { id: workspaceA, name: '通知区 A', path: 'D:/notify-a', created_at: 1 },
+            { id: workspaceB, name: '通知区 B', path: 'D:/notify-b', created_at: 2 },
+          ]),
+        ),
+      );
+      localStorage.setItem(DECISIONS_SCOPE_KEY, scope);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false, staleTime: 15_000 }, mutations: { retry: false } },
+      });
+      useAppStore.setState({ workspaceId: workspaceA });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <DecisionNotifier />
+          <DecisionsView />
+        </QueryClientProvider>,
+      );
+
+      const waitForLists = async (workspaceId: string) => {
+        await waitFor(() => {
+          expect(queryClient.getQueryState(decisionsListKey(workspaceId, 'active', scope))?.dataUpdatedAt).toBeGreaterThan(0);
+          expect(queryClient.getQueryState(decisionsListKey(workspaceId, 'answered', scope))?.dataUpdatedAt).toBeGreaterThan(0);
+        });
+      };
+      await waitForLists(workspaceA);
+      if (scope === 'workspace') {
+        act(() => useAppStore.getState().selectWorkspace(workspaceB));
+        await waitForLists(workspaceB);
+        act(() => useAppStore.getState().selectWorkspace(WORKSPACE_ID));
+        await waitForLists(WORKSPACE_ID);
+      }
+      revealTargets = true;
+
+      for (const [workspaceId, decisionId] of [
+        [workspaceA, decisionA],
+        [workspaceB, decisionB],
+      ] as const) {
+        fireEvent(
+          window,
+          new CustomEvent('agentboard:open-decision', {
+            detail: { workspaceId, decisionId },
+          }),
+        );
+        const target = await screen.findByTestId(`decision-item-${decisionId}`);
+        await waitFor(() => {
+          expect(target).toHaveAttribute('data-selected', 'true');
+          expect(target).toHaveAttribute('data-expanded', 'true');
+        });
+        expect(useAppStore.getState().workspaceId).toBe(workspaceId);
+        expect(useNavStore.getState().decisionFocus).toBeNull();
+      }
+      expect(localStorage.getItem(DECISIONS_SCOPE_KEY)).toBe(scope);
+      expect(screen.getByTestId(`decision-item-${decisionB}`)).toHaveAttribute('data-selected', 'true');
+      expect(screen.getByTestId(`decision-item-${decisionB}`)).toHaveAttribute('data-expanded', 'true');
+    },
+  );
 
   it('读取/写入纯函数：无记录与非法值回落 workspace，storage 不可用不抛错', () => {
     const store = new Map<string, string>();

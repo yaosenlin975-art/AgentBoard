@@ -6,17 +6,19 @@
  * - 右下角常驻 toast：不自动消失，直到决策被回答（WS 失效重取后从列表消失）或手动「忽略」；
  * - 系统通知权限入口（Web 档必须用户手势，Tauri 档可直接申请）。
  *
- * 系统通知本身在 `notify.ts`；本组件只负责在 `decision.grace_started` 事件上触发一次。
+ * 系统通知发送在 `notify.ts`；本组件也接收桌面点击目标并定位对应决策。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
 import { useAppStore } from '../../state/appStore';
 import { useNavStore } from '../../state/navStore';
+import { readDecisionsScopeSnapshot } from '../../lib/decisionsScope';
 import type { DecisionDetailDto } from './types';
 import { useDecisionClock } from './clock';
 import { formatCountdown } from './countdown';
-import { useDecisionLists } from './useDecisions';
+import { decisionsListKey, useDecisionLists } from './useDecisions';
 import {
   describeDecisionForNotification,
   isNotificationGranted,
@@ -26,17 +28,74 @@ import {
 } from './notify';
 
 const MAX_TOASTS = 3;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type DecisionTarget = { workspaceId: string; decisionId: string };
+
+declare global {
+  interface Window {
+    __AGENTBOARD_PENDING_DECISION__?: unknown;
+  }
+}
+
+function parseDecisionTarget(value: unknown): DecisionTarget | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  const { workspaceId, decisionId } = value as Record<string, unknown>;
+  if (
+    typeof workspaceId !== 'string' ||
+    !UUID_PATTERN.test(workspaceId) ||
+    typeof decisionId !== 'string' ||
+    !UUID_PATTERN.test(decisionId)
+  ) {
+    return null;
+  }
+  return { workspaceId: workspaceId.toLowerCase(), decisionId: decisionId.toLowerCase() };
+}
 
 export function DecisionNotifier() {
   const workspaceId = useAppStore((state) => state.workspaceId);
   const view = useNavStore((state) => state.view);
   const focusDecision = useNavStore((state) => state.focusDecision);
+  const queryClient = useQueryClient();
   const { active } = useDecisionLists(workspaceId);
   const now = useDecisionClock();
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   const [granted, setGranted] = useState<boolean | null>(null);
   const notified = useRef(new Set<string>());
   const channel = notificationChannel();
+  const openDecisionTarget = useCallback(
+    (value: unknown) => {
+      const target = parseDecisionTarget(value);
+      if (target === null) return;
+      const scope = readDecisionsScopeSnapshot();
+      for (const list of ['active', 'answered'] as const) {
+        void queryClient.invalidateQueries({
+          queryKey: decisionsListKey(target.workspaceId, list, scope),
+          refetchType: 'all',
+        });
+      }
+      useAppStore.getState().selectWorkspace(target.workspaceId);
+      useNavStore.getState().focusDecision(target.decisionId);
+    },
+    [queryClient],
+  );
+
+  // Rust writes the startup slot and dispatches the same event for live clicks.
+  useEffect(() => {
+    const onOpenDecision = (event: Event) => {
+      const value = (event as CustomEvent<unknown>).detail;
+      if (window.__AGENTBOARD_PENDING_DECISION__ === value) delete window.__AGENTBOARD_PENDING_DECISION__;
+      openDecisionTarget(value);
+    };
+
+    window.addEventListener('agentboard:open-decision', onOpenDecision);
+    const pending = window.__AGENTBOARD_PENDING_DECISION__;
+    if (pending !== undefined) {
+      delete window.__AGENTBOARD_PENDING_DECISION__;
+      openDecisionTarget(pending);
+    }
+    return () => window.removeEventListener('agentboard:open-decision', onOpenDecision);
+  }, [openDecisionTarget]);
 
   useEffect(() => {
     let alive = true;
