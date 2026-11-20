@@ -1,5 +1,5 @@
-{"id":"builtin-c5b8f2a5-5afa-48ec-9217-324f6777078e-deprecated","workspace_id":"c5b8f2a5-5afa-48ec-9217-324f6777078e","name":"已废弃","kind":"deprecated","sort_order":40,"is_builtin":1,"created_at":"2026-11-13T05:57:08.640Z"}
-{"id":"builtin-c5b8f2a5-5afa-48ec-9217-324f6777078e-done","workspace_id":"c5b8f2a5-5afa-48ec-9217-324f6777078e","name":"已关闭","kind":"done","sort_order":30,"is_builtin":1,"created_at":"2026-11-13T05:57:08.640Z"}
-{"id":"builtin-c5b8f2a5-5afa-48ec-9217-324f6777078e-open","workspace_id":"c5b8f2a5-5afa-48ec-9217-324f6777078e","name":"待规划","kind":"open","sort_order":0,"is_builtin":1,"created_at":"2026-11-13T05:57:08.640Z"}
-{"id":"builtin-c5b8f2a5-5afa-48ec-9217-324f6777078e-review","workspace_id":"c5b8f2a5-5afa-48ec-9217-324f6777078e","name":"待验收","kind":"review","sort_order":20,"is_builtin":1,"created_at":"2026-11-13T05:57:08.640Z"}
-{"id":"builtin-c5b8f2a5-5afa-48ec-9217-324f6777078e-started","workspace_id":"c5b8f2a5-5afa-48ec-9217-324f6777078e","name":"进行中","kind":"started","sort_order":10,"is_builtin":1,"created_at":"2026-11-13T05:57:08.640Z"}
+{"id":"builtin-e41eb0fb-c367-43cf-a99d-6dc5239a5694-deprecated","workspace_id":"e41eb0fb-c367-43cf-a99d-6dc5239a5694","name":"已废弃","kind":"deprecated","sort_order":40,"is_builtin":1,"created_at":"2026-11-03T07:19:38.679Z"}
+{"id":"builtin-e41eb0fb-c367-43cf-a99d-6dc5239a5694-done","workspace_id":"e41eb0fb-c367-43cf-a99d-6dc5239a5694","name":"已关闭","kind":"done","sort_order":30,"is_builtin":1,"created_at":"2026-11-03T07:19:38.679Z"}
+{"id":"builtin-e41eb0fb-c367-43cf-a99d-6dc5239a5694-open","workspace_id":"e41eb0fb-c367-43cf-a99d-6dc5239a5694","name":"待规划","kind":"open","sort_order":0,"is_builtin":1,"created_at":"2026-11-03T07:19:38.679Z"}
+{"id":"builtin-e41eb0fb-c367-43cf-a99d-6dc5239a5694-review","workspace_id":"e41eb0fb-c367-43cf-a99d-6dc5239a5694","name":"待验收","kind":"review","sort_order":20,"is_builtin":1,"created_at":"2026-11-03T07:19:38.679Z"}
+{"id":"builtin-e41eb0fb-c367-43cf-a99d-6dc5239a5694-started","workspace_id":"e41eb0fb-c367-43cf-a99d-6dc5239a5694","name":"进行中","kind":"started","sort_order":10,"is_builtin":1,"created_at":"2026-11-03T07:19:38.679Z"}

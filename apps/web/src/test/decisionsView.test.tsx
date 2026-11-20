@@ -1310,6 +1310,61 @@ describe('P5 跨区范围', () => {
     // 换范围后仍是 active(all) + answered(all) 各一次，侧栏没有独立请求
     expect(calls.length).toBe(4);
   });
+
+  it('DEC-404-HIDE：提交回答返回 404「决策不存在」→ 卡片消失且不留红色报错', async () => {
+    const gone = listItem({ id: 'gone-answer', state: 'grace', grace_until: NOW + 120_000 });
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(
+      decisionHandler([gone], []),
+      http.post('/api/decisions/:id/answer', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(
+          { error: { code: 'NOT_FOUND', message: '决策不存在' } },
+          { status: 404 },
+        );
+      }),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-gone-answer');
+
+    fireEvent.click(screen.getByTestId(`decision-option-${gone.options[1]!.id}`));
+    fireEvent.click(screen.getByTestId('decision-action-gone-answer'));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId('decision-item-gone-answer')).toBeNull());
+    expect(screen.queryByTestId('decision-error-gone-answer')).toBeNull();
+  });
+
+  it('DEC-404-HIDE：撤回决策返回 404「决策不存在」→ 卡片同样消失且不留红色报错', async () => {
+    const gone = listItem({
+      id: 'gone-withdraw',
+      state: 'grace',
+      grace_until: NOW + 120_000,
+      capabilities: CAPS_ALL,
+    });
+    const posts: Array<Record<string, unknown>> = [];
+    server.use(
+      decisionHandler([gone], []),
+      http.post('/api/decisions/:id/withdraw', async ({ request }) => {
+        posts.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json(
+          { error: { code: 'NOT_FOUND', message: '决策不存在' } },
+          { status: 404 },
+        );
+      }),
+    );
+    renderWithQuery(<DecisionsView />);
+    await screen.findByTestId('decision-item-gone-withdraw');
+
+    const button = screen.getByTestId('decision-withdraw-gone-withdraw');
+    fireEvent.click(button);
+    expect(screen.getByTestId('decision-withdraw-confirm-gone-withdraw')).toBeInTheDocument();
+    fireEvent.click(button);
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByTestId('decision-item-gone-withdraw')).toBeNull());
+    expect(screen.queryByTestId('decision-error-gone-withdraw')).toBeNull();
+  });
 });
 
 describe('DEC-V4-EMPTY 空态', () => {

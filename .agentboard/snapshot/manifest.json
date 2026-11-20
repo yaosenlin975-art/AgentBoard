@@ -1,10 +1,10 @@
 {
   "format": "agentboard.workspace-snapshot/1",
-  "workspace_id": "c5b8f2a5-5afa-48ec-9217-324f6777078e",
+  "workspace_id": "e41eb0fb-c367-43cf-a99d-6dc5239a5694",
   "schema_version": 1,
-  "exported_at": "2026-11-18T10:30:21.589Z",
+  "exported_at": "2026-11-20T02:56:11.830Z",
   "generator_version": "agentboard-server/1",
-  "source_db": "D:\\Workspaces\\AgentBoard\\.agentboard\\agentboard.db",
+  "source_db": "C:\\Users\\31633\\AppData\\Roaming\\AgentBoard\\agentboard.db",
   "included_tables": [
     "issue",
     "issue_comment",
@@ -19,50 +19,50 @@
     {
       "file": "issues",
       "table": "issue",
-      "rows": 87,
-      "sha256": "5e5be2adf7afd3e89023c55c333551588f4cf0c76ef334fe30ed40fa93c58d6f"
+      "rows": 951,
+      "sha256": "7c2b8d6c7ca9ab564cce80728281531b32a233e9ee66ec853c3bdfdebceb1a9c"
     },
     {
       "file": "issue_comments",
       "table": "issue_comment",
-      "rows": 296,
-      "sha256": "03e4d6554416c8b105dd84f53edef88d4d973adfe3f91457510ea1f253542b54"
+      "rows": 3535,
+      "sha256": "29754e58fa91c7eea44fa442b27aa113ac0abb1c480a7b40725dbf0c71ecea22"
     },
     {
       "file": "issue_dependencies",
       "table": "issue_dependency",
-      "rows": 37,
-      "sha256": "1289852cd63279c002b8da194500e6bfe805e3f83d159b946df0b280dbdea5c0"
+      "rows": 339,
+      "sha256": "d740d53fa53bca9327656a09821c54ddc4f831f2016bbb4ef115ef6053401e75"
     },
     {
       "file": "issue_git_baseline",
       "table": "issue_git_baseline",
       "rows": 1,
-      "sha256": "1eb43c3b77687066acb161f3117dda9c2ca6f7fe45542122108847a5fb21871b"
+      "sha256": "716f9ca9ab567b5d54ed2e8cf9a31861636b04bb9c84ae1deaa4515606fa78d6"
     },
     {
       "file": "issue_draft_audit",
       "table": "issue_draft_audit",
-      "rows": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "rows": 14,
+      "sha256": "aacec689baad429d730d1f6c3338b696662bc0b932f67b86ba1ba2127c7e64b8"
     },
     {
       "file": "workspace_status",
       "table": "workspace_status",
       "rows": 5,
-      "sha256": "e4cdc7adc8cc1128d2227d184b814ab2f32b5680f31309f646c8c5a603a4d243"
+      "sha256": "b8c3be90090a24504ceafb07fc7a8f7636b946455617a1fb384b4301d2180b62"
     },
     {
       "file": "workspace_change_log",
       "table": "workspace_change_log",
-      "rows": 69,
-      "sha256": "c2f83573935fa54a374dd34d8dcfaa64305403e43c0f3e1bf2bac722df9c2e01"
+      "rows": 504,
+      "sha256": "6e3714dad95556a77e71c5675a4718093c532209c6176c7b37c015dd9ac39fec"
     },
     {
       "file": "sessions",
       "table": "session",
-      "rows": 0,
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      "rows": 6,
+      "sha256": "5dfb16c8c177c41a10df774d8ea2adac40be797ee0cedbe03a065d042cd5a968"
     }
   ]
 }

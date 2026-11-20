@@ -174,6 +174,11 @@ function shortWorkspaceName(name: string): string {
   return name.length > 8 ? `${name.slice(0, 8)}…` : name;
 }
 
+/** DEC-404-HIDE：服务端对已删除决策返回 404 NOT_FOUND，卡片应视为已消失 */
+function isDecisionGone(err: unknown): boolean {
+  return err instanceof ApiError && (err.status === 404 || err.code === 'NOT_FOUND');
+}
+
 /** DEC-V4-EXTEND：延长成功后的本地覆盖，服务端列表追平（extended_seconds ≥ 补丁）即复位 */
 interface ExtendGracePatch {
   graceUntil: number;
@@ -202,6 +207,8 @@ export function DecisionCard({
   const { ref, narrow } = useNarrowContainer(NARROW_BREAKPOINT);
   const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // DEC-404-HIDE：提交/撤回遇到「决策不存在」→ 本地隐藏卡片，不再常驻红色报错
+  const [vanished, setVanished] = useState(false);
   // DEC-V4-CUSTOM：自定义答案与真实选项同属一个单选组，互斥；草稿跨收起/切换保留
   const [customOpen, setCustomOpen] = useState(false);
   const [customText, setCustomText] = useState('');
@@ -343,8 +350,26 @@ export function DecisionCard({
     if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'nearest' });
   }, [customOpen]);
 
+  /**
+   * DEC-404-HIDE：决策已在服务端消失——隐藏卡片并失效列表/徽标/详情/卡面缓存
+   * （与既有 onSuccess 失效口径一致），不 setError、不留红色报错。
+   */
+  function markVanished() {
+    setVanished(true);
+    void queryClient.invalidateQueries({ queryKey: ['decisions'] });
+    void queryClient.invalidateQueries({ queryKey: ['decisions-count'] });
+    void queryClient.invalidateQueries({ queryKey: ['decision'] });
+    void queryClient.invalidateQueries({ queryKey: ['issue'] });
+    void queryClient.invalidateQueries({ queryKey: ['issues'] });
+  }
+
   function handleSubmitError(err: unknown) {
     if (err instanceof ApiError) {
+      // DEC-404-HIDE：决策不存在 → 卡片直接消失，不再常驻「决策不存在」报错
+      if (isDecisionGone(err)) {
+        markVanished();
+        return;
+      }
       // P5：401 / 403 分开给界面态，不一律「提交失败」
       if (err.status === 401) {
         setError('身份失效，请重新打开看板');
@@ -577,12 +602,20 @@ export function DecisionCard({
         },
         onError: (err) => {
           setConfirmWithdraw(false);
+          // DEC-404-HIDE：决策不存在 → 卡片直接消失，不再常驻报错
+          if (isDecisionGone(err)) {
+            markVanished();
+            return;
+          }
           setError(err instanceof ApiError ? err.message : '撤回失败，请重试');
           void queryClient.invalidateQueries({ queryKey: ['decisions'] });
         },
       },
     );
   }
+
+  // DEC-404-HIDE：确认决策已消失后不再渲染（放在全部 hooks 之后，符合 hooks 规则）
+  if (vanished) return null;
 
   return (
     <li
