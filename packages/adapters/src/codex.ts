@@ -264,6 +264,8 @@ export const codexAdapter: AgentAdapter = {
   id: 'codex',
   displayName: 'Codex',
   supportsModelSelection: true,
+  /** `codex exec --json` JSONL 按 item 整段输出，块级非逐字 */
+  streaming: 'block',
   /** 只有 `codex exec --help` 实测到 `--image` 才为真（见 detectCodex 的探测与缓存） */
   supportsImageInput(_model: string | undefined, cliVersion?: string | null): boolean {
     return cachedImageFlag(imageFlagKey('codex', cliVersion));

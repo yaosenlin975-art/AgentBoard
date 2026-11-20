@@ -191,6 +191,8 @@ export const dshAdapter: AgentAdapter = {
   id: 'dsh',
   displayName: 'DSH',
   supportsModelSelection: false,
+  /** NDJSON 有增量就推、无则 final 整段兜底，按块级处理 */
+  streaming: 'block',
   /**
    * CHAT-IMG-ADAPTER：**保持 false**。本机 `dsh` 只有 asar 打包形态（入口在
    * `.../app.asar/dsh/lib/bin.js`，shim 指向的文件不存在），`--help` 拿不到稳定输出，

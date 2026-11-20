@@ -17,6 +17,15 @@ describe('registry', () => {
     ]);
   });
 
+  it('CHAT-STREAM-PROBE：四家流式粒度声明齐全（codebuddy=token、codex/dsh=block、opencode=none）', () => {
+    expect(ADAPTERS.map((a) => [a.id, a.streaming])).toEqual([
+      ['codebuddy', 'token'],
+      ['codex', 'block'],
+      ['opencode', 'none'],
+      ['dsh', 'block'],
+    ]);
+  });
+
   it('未验证图片输入的 CLI 显式拒绝 attachments，不降级为纯文本', () => {
     for (const id of ['codex', 'opencode', 'dsh'] as const) {
       const adapter = getAdapter(id);

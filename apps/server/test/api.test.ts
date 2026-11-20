@@ -697,6 +697,7 @@ describe('clis', () => {
         installed: true,
         version: 'fake-1.0',
         supportsModelSelection: true,
+        streaming: 'block',
       },
     ]);
 

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentAdapter } from '@agentboard/adapters';
+import type { AgentAdapter, CliCapabilities } from '@agentboard/adapters';
+import { probeCliCapabilities } from '@agentboard/adapters';
 import { getCachedClis, invalidateClis, refreshClis } from '../src/services/cliDetect.js';
+
+// CHAT-STREAM-PROBE：拦截 --help 能力探测（codebuddy token 校准路径），其余导出保持真实
+vi.mock('@agentboard/adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@agentboard/adapters')>();
+  return { ...actual, probeCliCapabilities: vi.fn() };
+});
 
 type DetectResult = { installed: boolean; version: string | null };
 
@@ -10,12 +17,14 @@ function fakeAdapter(
   displayName: string,
   detect: (fn: (result: DetectResult) => void) => void,
   supportsModelSelection = true,
+  streaming?: AgentAdapter['streaming'],
 ) {
   let resolveDetect: ((result: DetectResult) => void) | undefined;
   return {
     id,
     displayName,
     supportsModelSelection,
+    ...(streaming !== undefined ? { streaming } : {}),
     detect: vi.fn(
       () =>
         new Promise<DetectResult>((resolve) => {
@@ -128,6 +137,39 @@ describe('refreshClis', () => {
 
     await expect(refreshClis([ok, bad])).rejects.toThrow('探测崩溃');
     expect(getCachedClis()).toEqual([]);
+  });
+
+  it('CHAT-STREAM-PROBE：streaming 静态声明透传（block/none/未声明）', async () => {
+    const c = fakeAdapter('codex', 'Codex', (resolve) => resolve({ installed: true, version: '0.2.0' }), true, 'block');
+    const o = fakeAdapter('opencode', 'OpenCode', (resolve) => resolve({ installed: true, version: '2.2.0' }), true, 'none');
+    const d = fakeAdapter('dsh', 'DSH', (resolve) => resolve({ installed: true, version: '0.2.4' }), false);
+
+    const clis = await refreshClis([c, o, d]);
+
+    expect(clis.map((x) => x.streaming)).toEqual(['block', 'none', undefined]);
+    expect(probeCliCapabilities).not.toHaveBeenCalled(); // 非 token 声明不触发探测
+  });
+
+  it('CHAT-STREAM-PROBE：codebuddy token 经 --help 探测校准，探测未命中降级 block；未安装不探测', async () => {
+    const caps = (partialMessages: boolean): CliCapabilities => ({
+      personaFlag: true,
+      toolFlags: true,
+      permissionFlags: [],
+      partialMessages,
+    });
+    const a = fakeAdapter('codebuddy', 'CodeBuddy', (resolve) => resolve({ installed: true, version: '2.179.2' }), true, 'token');
+
+    vi.mocked(probeCliCapabilities).mockResolvedValueOnce(caps(true));
+    const hit = await refreshClis([a]);
+    expect(hit[0]!.streaming).toBe('token');
+
+    vi.mocked(probeCliCapabilities).mockResolvedValueOnce(caps(false)); // 老 CLI：help 无该参数
+    const miss = await refreshClis([a]);
+    expect(miss[0]!.streaming).toBe('block');
+
+    const offline = fakeAdapter('codebuddy', 'CodeBuddy', (resolve) => resolve({ installed: false, version: null }), true, 'token');
+    await refreshClis([offline]);
+    expect(probeCliCapabilities).toHaveBeenCalledTimes(2); // 未安装不探测
   });
 });
 

@@ -1,4 +1,4 @@
-import type { ModelInfo } from '@agentboard/shared';
+import type { ModelInfo, StreamingGranularity } from '@agentboard/shared';
 
 /** ask 事件的单个选项：label 必填，description 为补充说明 */
 export interface AskOption {
@@ -75,6 +75,12 @@ export interface AgentAdapter {
   displayName: string;
   /** false=模型只读（无 CLI flag，由 CLI profile 配置决定，如 dsh）；runTurn 忽略 opts.model */
   supportsModelSelection: boolean;
+  /**
+   * 流式粒度静态声明（CHAT-STREAM-PROBE）：token=逐字增量（codebuddy stream_event）、
+   * block=按段/块整段输出（codex item / dsh NDJSON）、none=part 一次性完整文本（opencode）。
+   * 未声明按未知处理（UI 不提示）。
+   */
+  streaming?: StreamingGranularity;
   /** 仅返回当前已用合成图验证过的 CLI/model 图片输入组合 */
   supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean;
   /**

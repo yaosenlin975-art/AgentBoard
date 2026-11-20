@@ -9,6 +9,8 @@ export interface CliCapabilities {
   toolFlags: boolean;
   /** 权限类 flag 命中的原始名列表（如 ['--permission-mode']） */
   permissionFlags: string[];
+  /** CHAT-STREAM-PROBE：help 中确认 --include-partial-messages（codebuddy token 级真增量的前提参数） */
+  partialMessages: boolean;
 }
 
 /** --help 探测超时（ms）：超时/spawn 失败/无输出一律视为能力全无 */
@@ -26,8 +28,14 @@ const PERMISSION_FLAG_CANDIDATES: readonly string[] = [
   '--approval-policy',
   '--permission-prompt-tool',
 ];
+const PARTIAL_MESSAGES_RE = /--include-partial-messages\b/;
 
-const EMPTY_CAPABILITIES: CliCapabilities = { personaFlag: false, toolFlags: false, permissionFlags: [] };
+const EMPTY_CAPABILITIES: CliCapabilities = {
+  personaFlag: false,
+  toolFlags: false,
+  permissionFlags: [],
+  partialMessages: false,
+};
 
 /** 解析 help 文本 → 能力集（纯函数，可单测）；无命中的能力一律 false/空 */
 export function parseCliHelp(text: string): CliCapabilities {
@@ -35,6 +43,7 @@ export function parseCliHelp(text: string): CliCapabilities {
     personaFlag: PERSONA_FLAG_RE.test(text),
     toolFlags: ALLOWED_TOOLS_RE.test(text) && DISALLOWED_TOOLS_RE.test(text),
     permissionFlags: PERMISSION_FLAG_CANDIDATES.filter((flag) => text.includes(flag)),
+    partialMessages: PARTIAL_MESSAGES_RE.test(text),
   };
 }
 

@@ -422,10 +422,14 @@ export interface Message { id: string; session_id: string; role: 'user' | 'assis
   step_id?: string | null;
   /** 契约 #8：库内 meta_json 列解析后的对象；老消息 null → 前端沿用旧渲染（EventGroup） */
   meta_json?: MessageMeta | null; }
+/** CHAT-STREAM-PROBE：CLI 流式输出粒度。token=逐字增量；block=按段/块输出；none=一次性输出无流式 */
+export type StreamingGranularity = 'token' | 'block' | 'none';
 export interface CliInfo {
   id: string; displayName: string; installed: boolean; version: string | null;
   /** false=模型只读（由 CLI profile 配置决定，UI 禁用选择并标注，如 dsh） */
   supportsModelSelection: boolean;
+  /** 流式粒度声明（适配器静态声明，codebuddy 经 --help 探测校准）；缺省=未知，UI 不提示 */
+  streaming?: StreamingGranularity;
 }
 export interface ModelInfo { id: string; source: 'probed' | 'static' | 'manual' }
 export type WsEvent =

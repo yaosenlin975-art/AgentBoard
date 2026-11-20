@@ -19,6 +19,8 @@ export class FakeAdapter implements AgentAdapter {
   readonly id = 'codebuddy' as const;
   readonly displayName = 'Fake CLI';
   readonly supportsModelSelection = true;
+  /** CHAT-STREAM-PROBE：固定 block，避免 refreshClis 对替身走真实 --help 探测 */
+  readonly streaming = 'block' as const;
   detectedVersion: string | null = 'fake-1.0';
   detectedInstalled = true;
   supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean {

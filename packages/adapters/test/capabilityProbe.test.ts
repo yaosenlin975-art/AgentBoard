@@ -16,6 +16,7 @@ const HELP_WITH_FLAGS = [
   '  --allowedTools <tools...>                        Comma or space-separated list of tool names to allow',
   '  --disallowedTools <tools...>                     Comma or space-separated list of tool names to deny',
   '  --permission-mode <mode>                         Default permission mode for this process (choices: acceptEdits, bypassPermissions, default, plan, dontAsk, auto)',
+  '  --include-partial-messages                       Output raw SSE incremental messages from model requests (only works with --output-format stream-json) (default: false)',
 ].join('\n');
 
 // fixture 2：不含任何注入相关 flag 的 help 文本
@@ -31,7 +32,12 @@ describe('parseCliHelp', () => {
       personaFlag: true,
       toolFlags: true,
       permissionFlags: ['--permission-mode'],
+      partialMessages: true,
     });
+  });
+
+  it('CHAT-STREAM-PROBE：help 不含 --include-partial-messages（老 CLI）→ partialMessages false', () => {
+    expect(parseCliHelp(HELP_WITHOUT_FLAGS).partialMessages).toBe(false);
   });
 
   it('kebab 变体 --allowed-tools/--disallowed-tools 同样命中 toolFlags（camel/kebab 兼容）', () => {
@@ -51,6 +57,7 @@ describe('parseCliHelp', () => {
       personaFlag: false,
       toolFlags: false,
       permissionFlags: [],
+      partialMessages: false,
     });
   });
 
@@ -86,7 +93,7 @@ describe('probeCliCapabilities', () => {
     const { helpSpawnCount } = probeSpawns(HELP_WITH_FLAGS);
 
     const caps1 = await probeCliCapabilities('cache-cli');
-    expect(caps1).toEqual({ personaFlag: true, toolFlags: true, permissionFlags: ['--permission-mode'] });
+    expect(caps1).toEqual({ personaFlag: true, toolFlags: true, permissionFlags: ['--permission-mode'], partialMessages: true });
 
     const caps2 = await probeCliCapabilities('cache-cli');
     expect(helpSpawnCount()).toBe(1); // 缓存命中，未再次 spawn --help
@@ -103,6 +110,7 @@ describe('probeCliCapabilities', () => {
       personaFlag: true,
       toolFlags: true,
       permissionFlags: ['--permission-mode'],
+      partialMessages: true,
     });
   });
 
@@ -120,6 +128,7 @@ describe('probeCliCapabilities', () => {
       personaFlag: false,
       toolFlags: false,
       permissionFlags: [],
+      partialMessages: false,
     });
   });
 
@@ -135,7 +144,7 @@ describe('probeCliCapabilities', () => {
 
       const pending = probeCliCapabilities('hang-cli');
       await vi.advanceTimersByTimeAsync(5000);
-      await expect(pending).resolves.toEqual({ personaFlag: false, toolFlags: false, permissionFlags: [] });
+      await expect(pending).resolves.toEqual({ personaFlag: false, toolFlags: false, permissionFlags: [], partialMessages: false });
     } finally {
       vi.useRealTimers();
     }

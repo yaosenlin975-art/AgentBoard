@@ -2,7 +2,7 @@
   "format": "agentboard.workspace-snapshot/1",
   "workspace_id": "e41eb0fb-c367-43cf-a99d-6dc5239a5694",
   "schema_version": 1,
-  "exported_at": "2026-11-20T02:56:11.830Z",
+  "exported_at": "2026-11-20T03:47:02.319Z",
   "generator_version": "agentboard-server/1",
   "source_db": "C:\\Users\\31633\\AppData\\Roaming\\AgentBoard\\agentboard.db",
   "included_tables": [
@@ -19,26 +19,26 @@
     {
       "file": "issues",
       "table": "issue",
-      "rows": 951,
-      "sha256": "7c2b8d6c7ca9ab564cce80728281531b32a233e9ee66ec853c3bdfdebceb1a9c"
+      "rows": 954,
+      "sha256": "688f732c997a4df72680e46b03fc4d9f93f4800e30c67c8f31cc9812581a73cc"
     },
     {
       "file": "issue_comments",
       "table": "issue_comment",
-      "rows": 3535,
-      "sha256": "29754e58fa91c7eea44fa442b27aa113ac0abb1c480a7b40725dbf0c71ecea22"
+      "rows": 3537,
+      "sha256": "1a45e9a0bdd392dcad3f65a2cb42e48a4abe2ff2eb25a5642cb2192664c27ecd"
     },
     {
       "file": "issue_dependencies",
       "table": "issue_dependency",
-      "rows": 339,
-      "sha256": "d740d53fa53bca9327656a09821c54ddc4f831f2016bbb4ef115ef6053401e75"
+      "rows": 340,
+      "sha256": "9b14ab46773748b9586614af0608906794d157fa66adb2c17db567f476bf50a0"
     },
     {
       "file": "issue_git_baseline",
       "table": "issue_git_baseline",
-      "rows": 1,
-      "sha256": "716f9ca9ab567b5d54ed2e8cf9a31861636b04bb9c84ae1deaa4515606fa78d6"
+      "rows": 2,
+      "sha256": "650f2e27ab0fa8629a23064923c4609af161380a796dbaffcaad899805dcc8ce"
     },
     {
       "file": "issue_draft_audit",
@@ -55,14 +55,14 @@
     {
       "file": "workspace_change_log",
       "table": "workspace_change_log",
-      "rows": 504,
-      "sha256": "6e3714dad95556a77e71c5675a4718093c532209c6176c7b37c015dd9ac39fec"
+      "rows": 505,
+      "sha256": "24374fbaceedb6481f8a5d952438ab7f988a8f1bdc30c2044fcde5d0dc1d36d9"
     },
     {
       "file": "sessions",
       "table": "session",
       "rows": 6,
-      "sha256": "5dfb16c8c177c41a10df774d8ea2adac40be797ee0cedbe03a065d042cd5a968"
+      "sha256": "793dc5f230ffd745f652870fba3988867f290cb997ebe247da674eb976ff487a"
     }
   ]
 }

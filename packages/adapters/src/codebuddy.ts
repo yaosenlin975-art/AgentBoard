@@ -228,6 +228,8 @@ export const codebuddyAdapter: AgentAdapter = {
   id: 'codebuddy',
   displayName: 'CodeBuddy',
   supportsModelSelection: true,
+  /** stream-json + --include-partial-messages → content_block_delta 真增量（老 CLI 无该参数时服务端探测降级 block） */
+  streaming: 'token',
   supportsImageInput(model: string | undefined, cliVersion?: string | null): boolean {
     return supportsCodebuddyImageInput(model, cliVersion);
   },

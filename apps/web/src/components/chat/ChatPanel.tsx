@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Message, Session, SessionTurn, Workspace } from '@agentboard/shared';
+import type { CliInfo, Message, Session, SessionTurn, Workspace } from '@agentboard/shared';
 import { api } from '../../api/client';
 import { getIssue, markIssueDone } from '../../api/endpoints';
 import { useWsEvent } from '../../api/wsBus';
@@ -102,6 +102,13 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
     queryKey: ['workspaces'],
     queryFn: () => api.get<Workspace[]>('/api/workspaces'),
   });
+  // CHAT-STREAM-PROBE：会话 CLI 的流式粒度（与设置/派发共享 ['clis'] 缓存，不额外请求）；
+  // block/none 时头部给一行轻量提示，token/未知不提示
+  const { data: clis } = useQuery({
+    queryKey: ['clis'],
+    queryFn: () => api.get<CliInfo[]>('/api/clis'),
+  });
+  const cliStreaming = clis?.find((c) => c.id === session?.cli)?.streaming;
   const workspaceLabel =
     workspaceId === null
       ? '未选择工作空间'
@@ -570,6 +577,19 @@ export function ChatPanel({ onNewSession }: { onNewSession?: () => void } = {}) 
               className="max-w-[9rem] shrink-0 truncate text-ink-3"
             >
               ⎇ 分叉自 {forkSourceLabel}
+            </span>
+          )}
+          {(cliStreaming === 'block' || cliStreaming === 'none') && (
+            <span
+              data-testid="chat-streaming-hint"
+              title={
+                cliStreaming === 'block'
+                  ? '该 CLI 按段输出，非逐字流式'
+                  : '该 CLI 一次性输出结果，无流式过程'
+              }
+              className="shrink-0 truncate text-ink-3"
+            >
+              {cliStreaming === 'block' ? '按段输出，非逐字流式' : '一次性输出，无流式'}
             </span>
           )}
           <ModelSelector session={session} onUpdated={setLiveSession} openSignal={modelOpenSignal} showEditButton={false} />
