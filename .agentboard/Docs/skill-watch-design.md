@@ -2,7 +2,7 @@
 id: 5444945b-4af9-40d8-b66b-54bf84682204
 slug: skill-watch-design
 title: "技能观察周报（Skill Watch）设计"
-revision: 2
+revision: 3
 scope: workspace
 workspace_id: e41eb0fb-c367-43cf-a99d-6dc5239a5694
 status: active
@@ -33,22 +33,22 @@ sources:
   - source_id: "file:skill_watch.py"
     source_type: file
     locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py"
-    captured_at: 1795400162709
-    content_hash: 1a50924eae6961ff8ce053af2fa79120fac6754f2b1f8c63ae63e9168657243b
+    captured_at: 1795402310653
+    content_hash: 61a10955b4df55989bd168079b338a88bdf085170d5d5074c124941c0eef152a
 evidence:
   - source_id: "agent:codex-sessions-scan"
-    locator: "cmd:python -X utf8 C:/Users/31633/.codex/skill-watch/skill_watch.py inventory"
-    snapshot: "2026-11-23 first run. Roots raw 38/79/8, realpath UNIQUE 111, junction aliases 14, probes iso-explode-film/using-agentboard/win-tasks OK. extract --days 7: sessions 63 = 11 top-level + 52 subagent, archived_skipped 0, signals A1=1 A2=9 A3=0 A4=0 B2=1 B4=0 B5=0, skill_reads distinct 20 and pdf=0 after tightening skill_refs_in to require an existing absolute path (was 2)."
+    locator: "cmd:python -X utf8 C:/Users/31633/.codex/skill-watch/skill_watch.py verify && report && record"
+    snapshot: "2026-11-23 fix-on-find run. Before: verify 111 skills -> 6 wiring-missing (skill-creator scripts/init_skill.py + scripts/generate_openai_yaml.py; shipping-and-launch references/{security,performance,accessibility}-checklist.md; security-and-hardening references/security-checklist.md). Fix: copied scripts/{init_skill,generate_openai_yaml,quick_validate}.py + references/openai_yaml.md + license.txt from .agents/skills/.system/skill-creator into D:/WorkSpaces/skills/agent-workflow/skill-creator (SKILL.md untouched, quick_validate.py says Skill is valid!); repointed the two See Also blocks to real in-file headings (## The Pre-Launch Checklist L20, ## Rollback Strategy L238, ## Security Review Checklist L285). After: verify -> findings 0, inventory still UNIQUE 111, self-test OK 7 groups. Policy change: tier(runs) removed, fix_list() emits must-fix list, FIX_QUOTA 2->8, B2_EVIDENCE=2, new record subcommand."
   - source_id: "file:skill_watch.py"
-    locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:225-245"
+    locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:8-33"
   - source_id: "file:skill_watch.py"
-    locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:630-710"
+    locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:244-262"
   - source_id: "file:AGENTS.md"
     locator: "AGENTS.md:8-20"
-content_hash: 8afacbe08e1c1c77948454334efde4005587af6c23f31d34ddc2e8c4e126ca82
+content_hash: 679fe3c14c7b76f09b0d91731482ecc4b92bbfae2594f6ae45bf1a4d13db7bdf
 expires_at: null
 created_at: 1795396403659
-updated_at: 1795400174913
+updated_at: 1795402324517
 created_by: kb-cli
 updated_by: kb-cli
 change_note: ""
@@ -58,7 +58,7 @@ change_note: ""
 
 工作区：任务看板（e41eb0fb-c367-43cf-a99d-6dc5239a5694）D:\WorkSpaces\任务看板
 
-状态：已落地（landed=partial）。自动修订分支（runs≥4）与跨周账本一致性尚未被真实运行触达，其余按实现回写。
+状态：已落地（landed=partial）。跨周账本一致性尚未被第二次真实运行触达；B2 自动修复路径尚无用例，其余按实现回写。
 
 ## 目标与边界
 
@@ -126,14 +126,18 @@ change_note: ""
 3. L2 复核（LLM）：按 offset 回读原始 turn 片段确认，不重扫全库。
 4. L3 落地：B1/B2 改 SKILL.md（先 grep 全部调用点，改后复验）；A 线与 B3–B6 建看板卡提案；写周报与账本。
 
-## 写权限与配额
+## 修复授权与配额（发现即修）
 
-- 单次运行最多改 2 个 SKILL.md（`FIX_QUOTA=2`），其余排队进账本 `queue`。
-- 每个改动附 ≥2 条带 `thread_id` 的证据，无证据不改。
-- 改前 `backup --file <SKILL.md 绝对路径>`（可重复）备份到 `C:\Users\31633\.codex\skill-watch\back\<ISO周>\<技能名>__SKILL.md`；复验失败即回滚。
+- 无冷启动观察期：`report` 直接输出「立即修复清单」，当班修完。
+- B1 静态可复证缺陷（`verify` 报出的 wiring-missing / kb-cmd-missing / kb-subcmd-missing）无条件入清单。
+- B2 运行时缺陷须 ≥2 条不同 `thread_id`（`B2_EVIDENCE=2`）才入清单，不足则留在队列并标注。
+- A 线与 B4/B5 不入清单，只提案。
+- 单班上限 8 个文件（`FIX_QUOTA=8`），超出保留在 `state.json.queue` 顺延下周。
+- 改前 `backup --file <绝对路径>`（可重复）备份到 `C:\Users\31633\.codex\skill-watch\back\<ISO周>\<技能名>__SKILL.md`；改后复跑 `verify` + `self-test`，该条未消失或总条数上升即回滚。
+- 修完用 `record --change "类别 · 技能 · 改动"` 回填当周账本并重渲染周报「本周改动」。
 - 措辞、触发词、流程、偏好类一律只提案。
 
-实现差异：脚本**不自动写 SKILL.md**，`report` 只出周报与队列；修订由自动化会话在配额与证据约束内执行并回填周报「本周改动」。
+实现差异：脚本本身不写 SKILL.md，只算清单与校验；修订由自动化会话按清单执行。修复手法三选一：资源在别处真实存在（含平台自带副本）→ 连 license 一起补进技能目录，正文不动；资源从未存在且正文已有等价内容 → 引用改指文内真标题（代码块外）；资源确该有 → 按正文承诺补最小实现。禁止无据只删引用。
 
 ## 生命周期账本
 
@@ -141,9 +145,9 @@ change_note: ""
 
 `zero_read_weeks >= 4` → 进 `retire_candidates`，只报告不删。队列按 `(kind, skill, value)` 去重，重复命中只累加 `hits`。同周重跑默认直接返回「本周已跑过」，需 `--force` 才累加；`--dry-run` 渲染 `weeks/<周>.dryrun.md` 且不写账本。
 
-## 冷启动分档
+## 修复授权判定
 
-`runs<=1` 只出报告与账本、零写操作；`runs` 2–3 只提案；`runs>=4` 允许自动修 B1/B2。档位由 `state.json.runs` 决定，`report` 自增。
+`fix_list(findings, verify)` 取代原 `tier(runs)`：B1 全量入列，B2 按证据数入列，A 线永不入列，截断到 `FIX_QUOTA`。`runs` 只作运行计数，不再决定写权限。
 
 ## 定时任务参数
 
@@ -153,7 +157,7 @@ cron 型自动化 `skill-watch`：`FREQ=WEEKLY;BYDAY=SU;BYHOUR=21;BYMINUTE=0;BYS
 
 ## 文件契约
 
-- `C:\Users\31633\.codex\skill-watch\skill_watch.py`：L0 抽取 + B1 静态校验 + 账本 + 周报，子命令 `inventory` / `extract` / `verify` / `report` / `backup` / `self-test`。
+- `C:\Users\31633\.codex\skill-watch\skill_watch.py`：L0 抽取 + B1 静态校验 + 账本 + 周报，子命令 `inventory` / `extract` / `verify` / `report` / `record` / `backup` / `self-test`。
 - `C:\Users\31633\.codex\skill-watch\findings.json`、`verify.json`：本周信号。
 - `C:\Users\31633\.codex\skill-watch\state.json`：账本。
 - `C:\Users\31633\.codex\skill-watch\weeks\<YYYY-Www>.md`：周报。
@@ -168,16 +172,18 @@ cron 型自动化 `skill-watch`：`FREQ=WEEKLY;BYDAY=SU;BYHOUR=21;BYMINUTE=0;BYS
 | `extract` 的 `skill_reads` 中 `pdf` 计数为 0（裸 grep 污染回归探针） | 通过（修正前为 2） |
 | `extract` 分列顶层与子代理会话数，子代理不参与 A1/A2/A3 | 通过（63 = 11 顶层 + 52 子代理） |
 | `verify` 对不存在引用能报条目、对现存引用零误报 | 通过（6 条全部人工核对为真缺陷） |
-| 首跑不产生任何 SKILL.md 写入，`state.json.runs == 1` | 通过 |
+| 首班发现的 6 条 B1 全部修掉，复跑 `verify` → findings 0 | 通过（2026-11-23 当班完成） |
+| `report` 输出立即修复清单；`record` 回填当周改动并重渲染周报 | 通过 |
 | `self-test` 断言全绿 | 通过（7 组） |
 | 跨周账本一致性 | 未验证（需第二次真实运行） |
-| runs≥4 自动修订分支 | 未验证（仅分档判定有断言） |
+| B2 证据门槛分支（≥2 thread_id 才入清单） | 仅 `self-test` 覆盖，无真实用例 |
 
-首班实测：窗口 2026-11-17→2026-11-23，A1=1、A2=9、A3=0、A4=0、B1=6、B2=1、B4=0、B5=0，队列 7 条，退役候选 0，改动 0 个 SKILL.md。
+首班实测：窗口 2026-11-17→2026-11-23，A1=1、A2=9、A3=0、A4=0、B1=6、B2=1、B4=0、B5=0。6 条 B1 当班修完（`skill-creator` 补齐平台副本的 3 个脚本 + `references/openai_yaml.md` + `license.txt`；`shipping-and-launch`、`security-and-hardening` 的 See Also 改指文内真标题），复跑 `verify` → 0 条，`inventory` 仍 111 唯一（补文件未污染清单）。队列剩 1 条（B2 `anatomy-research`，单会话证据不足，未修）。
 
 ## 未验证项
 
 - A1 相似度阈值 0.8 与 A2 的 2-gram 长度仅按首班样本观察，未做假阳性率标定；A2 命中的 9 条目前全为 `kb`/`git`/`ConvertFrom-Json` 组合，倾向噪声而非新技能候选。
 - B3 触发漏检、B6 规则冲突未实现。
-- 自动触发（每周日 21:00）未经过一次真实定时运行，首次定时为 2026-11-29。
+- 定时自动触发（每周日 21:00）未经过一次真实运行，首次为 2026-11-29；当班修复闭环在 2026-11-23 由手动等价运行验证。
+- B2 自动修复路径无用例（首班仅 1 条且证据不足），`fix_list` 的 B2 分支只由 `self-test` 覆盖。
 
