@@ -9,7 +9,7 @@
  */
 import { useMemo, type ReactNode } from 'react';
 import { useNavStore, type NavView } from '../../state/navStore';
-import { resetOnboarding, useOnboardingStore } from '../../state/onboardingStore';
+import { useOnboardingStore } from '../../state/onboardingStore';
 import type { GuideBlock, GuideChapter } from './types';
 
 const modules = import.meta.glob('./chapters/*.ts', { eager: true }) as Record<
@@ -113,10 +113,6 @@ function ChapterSection({ chapter }: { chapter: GuideChapter }): ReactNode {
 export function GuideView() {
   const chapters = useMemo(() => GUIDE_CHAPTERS, []);
   const startOnboarding = useOnboardingStore((s) => s.start);
-  const replayOnboarding = (): void => {
-    resetOnboarding();
-    startOnboarding();
-  };
 
   return (
     // 两栏各自滚动：根撑满 main 的高度，左栏因此不随右侧正文滚动（G1）
@@ -148,12 +144,12 @@ export function GuideView() {
         ) : (
           chapters.map((chapter) => <ChapterSection key={chapter.id} chapter={chapter} />)
         )}
-        {/* G2：可重看新手引导（清 localStorage 后立即播放）；只加按钮，不动上面的两栏结构 */}
+        {/* G2：可重看新手引导；只加按钮，不动上面的两栏结构 */}
         <div className="pb-2">
           <button
             type="button"
             data-testid="guide-replay-onboarding"
-            onClick={replayOnboarding}
+            onClick={startOnboarding}
             className="rounded border border-hairline bg-surface-card px-3 py-1.5 text-sm text-ink-2 transition-colors duration-150 hover:bg-surface-raised hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent motion-reduce:transition-none"
           >
             重新播放新手引导

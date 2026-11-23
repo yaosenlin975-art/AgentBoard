@@ -18,6 +18,8 @@ import {
   useOnboardingStore,
 } from '../state/onboardingStore';
 
+const ONBOARDING_SHOWN = 'shown';
+
 /** 按 testid 造目标元素（选择器与 steps.ts 一致） */
 function mountTargets(selectors: readonly string[]): void {
   for (const selector of selectors) {
@@ -64,7 +66,29 @@ describe('启动条件', () => {
       vi.advanceTimersByTime(1);
     });
     expect(useOnboardingStore.getState().active).toBe(true);
+    expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(ONBOARDING_SHOWN);
     expect(screen.getByTestId('onboarding-bubble')).toHaveAttribute('data-step', ONBOARDING_STEPS[0]!.id);
+  });
+
+  it('首次自动显示后关闭再启动不再自动显示', async () => {
+    mountTargets(allSelectors());
+    vi.useFakeTimers();
+    const firstRun = render(<OnboardingTour />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(ONBOARDING_START_DELAY_MS);
+    });
+    expect(useOnboardingStore.getState().active).toBe(true);
+    expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(ONBOARDING_SHOWN);
+
+    firstRun.unmount();
+    resetOnboardingState();
+    render(<OnboardingTour />);
+    await act(async () => {
+      vi.advanceTimersByTime(ONBOARDING_START_DELAY_MS * 3);
+    });
+    expect(useOnboardingStore.getState().active).toBe(false);
+    expect(screen.queryByTestId('onboarding-overlay')).toBeNull();
   });
 
   it('localStorage 已有 done → 永不自动启动', async () => {
@@ -78,6 +102,18 @@ describe('启动条件', () => {
     });
     expect(useOnboardingStore.getState().active).toBe(false);
     expect(screen.queryByTestId('onboarding-overlay')).toBeNull();
+  });
+
+  it('启动延迟期间已展示时不再启动', async () => {
+    mountTargets(allSelectors());
+    vi.useFakeTimers();
+    render(<OnboardingTour />);
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, ONBOARDING_SHOWN);
+
+    await act(async () => {
+      vi.advanceTimersByTime(ONBOARDING_START_DELAY_MS);
+    });
+    expect(useOnboardingStore.getState().active).toBe(false);
   });
 });
 
@@ -191,15 +227,34 @@ describe('键盘与无障碍', () => {
 });
 
 describe('重播与 store 收尾', () => {
-  it('教程页重播按钮清键并立即启动', async () => {
+  it('教程页重播保留 shown 状态，关闭再开不自动显示', async () => {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, ONBOARDING_SHOWN);
+    const { GuideView } = await import('../components/guide/GuideView');
+    const guide = render(<GuideView />);
+
+    fireEvent.click(screen.getByTestId('guide-replay-onboarding'));
+    expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(ONBOARDING_SHOWN);
+    expect(useOnboardingStore.getState().active).toBe(true);
+    expect(useOnboardingStore.getState().stepIndex).toBe(0);
+
+    guide.unmount();
+    resetOnboardingState();
+    vi.useFakeTimers();
+    render(<OnboardingTour />);
+    await act(async () => {
+      vi.advanceTimersByTime(ONBOARDING_START_DELAY_MS * 3);
+    });
+    expect(useOnboardingStore.getState().active).toBe(false);
+  });
+
+  it('教程页重播不覆盖既有 done 状态', async () => {
     localStorage.setItem(ONBOARDING_STORAGE_KEY, ONBOARDING_DONE);
     const { GuideView } = await import('../components/guide/GuideView');
     render(<GuideView />);
 
     fireEvent.click(screen.getByTestId('guide-replay-onboarding'));
-    expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe(ONBOARDING_DONE);
     expect(useOnboardingStore.getState().active).toBe(true);
-    expect(useOnboardingStore.getState().stepIndex).toBe(0);
   });
 
   it('播放中挂 resize 与「捕获阶段」scroll 监听（内层滚动容器不冒泡到 window）', () => {

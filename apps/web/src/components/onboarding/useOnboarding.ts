@@ -1,14 +1,14 @@
 /**
  * G2：新手引导的启动/过滤逻辑。
  *
- * - `useOnboardingAutoStart`：首次进入（localStorage 无 `ab.onboarding.v1`）延迟 800ms 启动；
+ * - `useOnboardingAutoStart`：首次展示前延迟 800ms 启动；
  *   StrictMode 下 effect 双跑也只留一个定时器（cleanup 清掉前一个）。
  * - `resolveVisibleSteps`：把目标元素不存在的步骤过滤掉（第 3 步只在看板视图存在）。
  */
 import { useEffect } from 'react';
 import {
   ONBOARDING_START_DELAY_MS,
-  hasCompletedOnboarding,
+  hasSeenOnboarding,
   useOnboardingStore,
 } from '../../state/onboardingStore';
 import { ONBOARDING_STEPS, stepTarget, type OnboardingStep } from './steps';
@@ -16,10 +16,10 @@ import { ONBOARDING_STEPS, stepTarget, type OnboardingStep } from './steps';
 export function useOnboardingAutoStart(delayMs: number = ONBOARDING_START_DELAY_MS): void {
   const start = useOnboardingStore((state) => state.start);
   useEffect(() => {
-    if (hasCompletedOnboarding()) return;
+    if (hasSeenOnboarding()) return;
     const timer = window.setTimeout(() => {
       // 期间用户可能已手动重播过，别重置到第 1 步
-      if (!useOnboardingStore.getState().active) start();
+      if (!useOnboardingStore.getState().active && !hasSeenOnboarding()) start();
     }, delayMs);
     return () => window.clearTimeout(timer);
   }, [delayMs, start]);
