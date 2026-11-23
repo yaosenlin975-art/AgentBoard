@@ -2,7 +2,7 @@
   "format": "agentboard.workspace-snapshot/1",
   "workspace_id": "e41eb0fb-c367-43cf-a99d-6dc5239a5694",
   "schema_version": 1,
-  "exported_at": "2026-11-23T02:52:38.629Z",
+  "exported_at": "2026-11-23T02:53:03.642Z",
   "generator_version": "agentboard-server/1",
   "source_db": "C:\\Users\\31633\\AppData\\Roaming\\AgentBoard\\agentboard.db",
   "included_tables": [
@@ -20,13 +20,13 @@
       "file": "issues",
       "table": "issue",
       "rows": 965,
-      "sha256": "eea8d27565fc6f8c07fd93da69adda4af1696fd982e7265219816e29567c2a5c"
+      "sha256": "cdc293e7670f68cbb9d68c1660b5655ac979594e6cfcae3762cf669fbc7d3189"
     },
     {
       "file": "issue_comments",
       "table": "issue_comment",
-      "rows": 3590,
-      "sha256": "a2d4afa5de05d5694cf50b12654aed34371c1f3aff8b03cc790c78e4aa7f391b"
+      "rows": 3592,
+      "sha256": "874836338e4355dc649d059f302904e9d7489799ed09b2d41d39a39ef69742e5"
     },
     {
       "file": "issue_dependencies",
@@ -38,7 +38,7 @@
       "file": "issue_git_baseline",
       "table": "issue_git_baseline",
       "rows": 1,
-      "sha256": "cebe9387c5d17ead98df557921d29f7038fd077f4d7933a75257514b85dfa361"
+      "sha256": "25f4696250e0fc6e357d8ea9b6b660cc7e920df491781c6fed366551b2367532"
     },
     {
       "file": "issue_draft_audit",
