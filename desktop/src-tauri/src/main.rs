@@ -21,6 +21,7 @@ mod server_process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tauri::menu::{
     AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
     WINDOW_SUBMENU_ID,
@@ -36,6 +37,16 @@ const MAIN_WINDOW: &str = "main";
 /// 托盘 id：托盘句柄在 setup 里 `mem::forget`（必须活到进程结束），
 /// 需要反查时统一用 `app.tray_by_id(TRAY_ID)`；菜单状态需要随启动结果变化时也靠它回取托盘。
 const TRAY_ID: &str = "main-tray";
+const DECISION_TARGET_EXTRA: &str = "agentboardDecisionTarget";
+const DECISION_TARGET_EVENT: &str = "agentboard:open-decision";
+const PENDING_DECISION_TARGET: &str = "__AGENTBOARD_PENDING_DECISION__";
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DecisionTarget {
+    workspace_id: String,
+    decision_id: String,
+}
 
 /// 在托盘上给一条可见反馈（不新增权限：走 tray tooltip + 系统通知）。
 ///
@@ -67,6 +78,9 @@ fn reset_tray_tooltip(app: &AppHandle) {
 struct ShellState {
     boot: BootState,
     server: Mutex<Option<ServerHandle>>,
+    /// 服务页面加载完成后，通知点击可直接投递；页面切换期间由 Rust 暂存一个目标。
+    dashboard_page_ready: AtomicBool,
+    pending_decision_target: Mutex<Option<DecisionTarget>>,
     /// 用户点了「退出」后置位：此时正在启动线程若刚拉起 server，必须立刻停掉，不能留下孤儿进程。
     quitting: AtomicBool,
     /// CR-6：启动时解析一次的服务端口（config.json 的 port，非法/缺失退回 8787）；探活与导航都用它。
@@ -196,28 +210,33 @@ fn shutdown(app: &AppHandle) {
 struct NotifiedSet {
     seeded: AtomicBool,
     review: Mutex<std::collections::HashSet<String>>,
-    grace: Mutex<std::collections::HashSet<String>>,
+    grace: Mutex<std::collections::HashSet<DecisionTarget>>,
 }
 
-/// E2：一轮取数发现的新事件（标题已截断），空表示无新增。
+/// E2：一轮取数发现的新事件，决策事件保留可点击目标。
 struct NotificationEvents {
     reviews: Vec<String>,
-    graces: Vec<String>,
+    graces: Vec<GraceNotification>,
 }
 
-/// E2：差分纯函数（单测直接驱动）：本轮全量 (id, 标题) 与去重集合比较。
+struct GraceNotification {
+    target: DecisionTarget,
+    question: String,
+}
+
+/// E2：差分纯函数（单测直接驱动）：本轮全量事件与去重集合比较。
 /// 首轮（未建基线）只入集合、返回空事件；决策问题文本截断到 80 字符。
 fn diff_notification_events(
     notified: &NotifiedSet,
     reviews: Vec<(String, String)>,
-    graces: Vec<(String, String)>,
+    graces: Vec<GraceNotification>,
 ) -> NotificationEvents {
     let first_round = !notified.seeded.load(Ordering::SeqCst);
     let mut review_set = notified.review.lock().unwrap();
     let mut grace_set = notified.grace.lock().unwrap();
     if first_round {
         review_set.extend(reviews.into_iter().map(|(id, _)| id));
-        grace_set.extend(graces.into_iter().map(|(id, _)| id));
+        grace_set.extend(graces.into_iter().map(|event| event.target));
         notified.seeded.store(true, Ordering::SeqCst);
         return NotificationEvents { reviews: Vec::new(), graces: Vec::new() };
     }
@@ -228,8 +247,14 @@ fn diff_notification_events(
         .collect();
     let new_graces = graces
         .into_iter()
-        .filter(|(id, _)| grace_set.insert(id.clone()))
-        .map(|(_, question)| question.chars().take(80).collect())
+        .filter_map(|mut event| {
+            if grace_set.insert(event.target.clone()) {
+                event.question = event.question.chars().take(80).collect();
+                Some(event)
+            } else {
+                None
+            }
+        })
         .collect();
     NotificationEvents { reviews: new_reviews, graces: new_graces }
 }
@@ -243,7 +268,7 @@ fn poll_notification_events(
 ) -> Option<NotificationEvents> {
     let workspaces = server_process::http_get_json(port, "/api/workspaces")?;
     let mut reviews: Vec<(String, String)> = Vec::new();
-    let mut graces: Vec<(String, String)> = Vec::new();
+    let mut graces: Vec<GraceNotification> = Vec::new();
     for workspace in workspaces.as_array()? {
         let id = workspace.get("id")?.as_str()?;
         let issues = server_process::http_get_json(
@@ -266,13 +291,19 @@ fn poll_notification_events(
             &format!("/api/decisions?workspace_id={id}&state=grace"),
         )?;
         for decision in decisions.get("decisions")?.as_array()? {
-            let id = decision.get("id")?.as_str()?.to_string();
+            let decision_id = decision.get("id")?.as_str()?.to_string();
             let question = decision
                 .get("question")
                 .and_then(|q| q.as_str())
                 .unwrap_or("（无问题文本）")
                 .to_string();
-            graces.push((id, question));
+            graces.push(GraceNotification {
+                target: DecisionTarget {
+                    workspace_id: id.to_string(),
+                    decision_id,
+                },
+                question,
+            });
         }
     }
     Some(diff_notification_events(notified, reviews, graces))
@@ -280,19 +311,110 @@ fn poll_notification_events(
 
 /// E2：发一条系统通知（tauri-plugin-notification，mac 落到通知中心 UNNotification）。
 /// 权限被拒时 show() 报错：仅打日志不静默吞（降级 = Dock 角标 + web 内提醒仍可用，口径见卡评论）。
-fn send_desktop_notification(app: &AppHandle, title: &str, body: &str) {
+fn send_desktop_notification(
+    app: &AppHandle,
+    title: &str,
+    body: &str,
+    target: Option<&DecisionTarget>,
+) {
     use tauri_plugin_notification::NotificationExt;
-    match app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-    {
+    let mut notification = app.notification().builder().title(title).body(body);
+    if let Some(target) = target {
+        notification = notification.extra(DECISION_TARGET_EXTRA, target);
+    }
+    match notification.show() {
         Ok(()) => diagnostics::info(format!("系统通知已发送：{title}")),
         Err(error) => diagnostics::error(format!(
             "系统通知发送失败（降级为 web 内提醒）：{error}"
         )),
+    }
+}
+
+fn decision_target_for_action(
+    action_id: &str,
+    target_extra: Option<&serde_json::Value>,
+) -> Option<DecisionTarget> {
+    if action_id != "tap" {
+        return None;
+    }
+    let target: DecisionTarget = serde_json::from_value(target_extra?.clone()).ok()?;
+    (!target.workspace_id.trim().is_empty() && !target.decision_id.trim().is_empty())
+        .then_some(target)
+}
+
+fn decision_target_script(target: &DecisionTarget) -> Result<String, serde_json::Error> {
+    let target_json = serde_json::to_string(target)?;
+    Ok(format!(
+        "(function(target){{window.{PENDING_DECISION_TARGET}=target;window.dispatchEvent(new CustomEvent('{DECISION_TARGET_EVENT}',{{detail:target}}));}})({target_json});"
+    ))
+}
+
+fn is_dashboard_url(url: &str, port: u16) -> bool {
+    let base = server_process::base_url(port);
+    url == base
+        || url.strip_prefix(&base).is_some_and(|suffix| {
+            suffix.starts_with('/') || suffix.starts_with('?') || suffix.starts_with('#')
+        })
+}
+
+/// 主窗口页面可接收前端事件后，交付尚未消费的最近一个通知目标。
+fn dispatch_pending_decision_target(app: &AppHandle) {
+    let state = app.state::<ShellState>();
+    if !state.dashboard_page_ready.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    let Some(target) = state.pending_decision_target.lock().unwrap().clone() else {
+        return;
+    };
+    let script = match decision_target_script(&target) {
+        Ok(script) => script,
+        Err(error) => {
+            diagnostics::error(format!("待决策通知目标序列化失败：{error}"));
+            return;
+        }
+    };
+    match window.eval(&script) {
+        Ok(()) => {
+            let mut pending = state.pending_decision_target.lock().unwrap();
+            if pending.as_ref() == Some(&target) {
+                pending.take();
+            }
+        }
+        Err(error) => diagnostics::error(format!("待决策通知目标派发失败：{error}")),
+    }
+}
+
+fn open_decision_notification_target(app: &AppHandle, target: DecisionTarget) {
+    if app.state::<ShellState>().quitting.load(Ordering::SeqCst) {
+        return;
+    }
+    *app.state::<ShellState>().pending_decision_target.lock().unwrap() = Some(target);
+    wake_main_window(app);
+    dispatch_pending_decision_target(app);
+}
+
+fn register_decision_notification_actions(app: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+
+    let callback_app = app.clone();
+    if let Err(error) = app.notification().on_action(move |action| {
+        let target_extra = action
+            .notification()
+            .and_then(|notification| notification.extra().get(DECISION_TARGET_EXTRA));
+        let Some(target) = decision_target_for_action(action.action_id(), target_extra) else {
+            return;
+        };
+        let app_for_main_thread = callback_app.clone();
+        if let Err(error) = callback_app.run_on_main_thread(move || {
+            open_decision_notification_target(&app_for_main_thread, target);
+        }) {
+            diagnostics::error(format!("待决策通知唤醒主线程失败：{error}"));
+        }
+    }) {
+        diagnostics::error(format!("待决策通知点击回调注册失败：{error}"));
     }
 }
 
@@ -321,11 +443,12 @@ fn spawn_notification_poller(app: AppHandle) {
                         .unwrap_or(false);
                     // 前台聚焦：web 内提醒负责，系统通知跳过（事件已在 poll 中并入去重集合）。
                     if !focused {
-                        if !events.graces.is_empty() {
+                        for event in events.graces {
                             send_desktop_notification(
                                 &app,
                                 "AgentBoard 待决策进入宽限",
-                                &summarize_titles(&events.graces),
+                                &event.question,
+                                Some(&event.target),
                             );
                         }
                         if !events.reviews.is_empty() {
@@ -333,6 +456,7 @@ fn spawn_notification_poller(app: AppHandle) {
                                 &app,
                                 "AgentBoard 卡进入待验收",
                                 &summarize_titles(&events.reviews),
+                                None,
                             );
                         }
                     }
@@ -694,6 +818,7 @@ fn stop_service(app: &AppHandle) {
 fn recreate_main_window(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<ShellState>();
     state.boot.page_loaded.store(false, Ordering::SeqCst);
+    state.dashboard_page_ready.store(false, Ordering::SeqCst);
     let url = if state.boot.boot_ok.load(Ordering::SeqCst) {
         WebviewUrl::External(
             server_process::base_url(state.port)
@@ -975,14 +1100,23 @@ fn build_main_window(
         .center()
         .visible(visible)
         .on_page_load(|webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
-                let handle = webview.app_handle().clone();
-                handle
-                    .state::<ShellState>()
-                    .boot
-                    .page_loaded
-                    .store(true, Ordering::SeqCst);
-                apply_boot(&handle);
+            let handle = webview.app_handle().clone();
+            let state = handle.state::<ShellState>();
+            match payload.event() {
+                tauri::webview::PageLoadEvent::Started => {
+                    state.dashboard_page_ready.store(false, Ordering::SeqCst);
+                }
+                tauri::webview::PageLoadEvent::Finished => {
+                    state.boot.page_loaded.store(true, Ordering::SeqCst);
+                    apply_boot(&handle);
+                    let dashboard_ready = is_dashboard_url(payload.url().as_str(), state.port);
+                    state
+                        .dashboard_page_ready
+                        .store(dashboard_ready, Ordering::SeqCst);
+                    if dashboard_ready {
+                        dispatch_pending_decision_target(&handle);
+                    }
+                }
             }
         });
     // overlay 标题栏 API 只在 macOS 目标上存在（tauri 源码用 cfg 门禁），其它平台不编译这段。
@@ -1158,12 +1292,15 @@ fn main() {
                     settled: AtomicBool::new(false),
                 },
                 server: Mutex::new(None),
+                dashboard_page_ready: AtomicBool::new(false),
+                pending_decision_target: Mutex::new(None),
                 quitting: AtomicBool::new(false),
                 // CR-6：启动时解析一次端口；探活/导航/重建窗口统一取这里，不再硬编码 8787。
                 port: server_process::resolve_port(),
                 // DESKTOP-AUTOSTART：登录自启拉起的实例只驻留托盘，不抢前台。
                 autostart: has_flag("--autostart"),
             });
+            register_decision_notification_actions(app.handle());
             let port = app.state::<ShellState>().port;
             diagnostics::info(format!(
                 "port={port}（来源 {}）",
@@ -1507,10 +1644,17 @@ mod tests {
     #[test]
     fn notification_first_round_seeds_baseline_without_events() {
         let notified = super::NotifiedSet::default();
+        let target = super::DecisionTarget {
+            workspace_id: "workspace-1".into(),
+            decision_id: "dec-1".into(),
+        };
         let events = super::diff_notification_events(
             &notified,
             vec![("card-1".into(), "存量卡".into())],
-            vec![("dec-1".into(), "存量决策？".into())],
+            vec![super::GraceNotification {
+                target: target.clone(),
+                question: "存量决策？".into(),
+            }],
         );
         assert!(events.reviews.is_empty() && events.graces.is_empty());
         assert!(notified.seeded.load(std::sync::atomic::Ordering::SeqCst));
@@ -1518,7 +1662,10 @@ mod tests {
         let again = super::diff_notification_events(
             &notified,
             vec![("card-1".into(), "存量卡".into())],
-            vec![("dec-1".into(), "存量决策？".into())],
+            vec![super::GraceNotification {
+                target,
+                question: "存量决策？".into(),
+            }],
         );
         assert!(again.reviews.is_empty() && again.graces.is_empty());
     }
@@ -1531,18 +1678,116 @@ mod tests {
         let events = super::diff_notification_events(
             &notified,
             vec![("card-2".into(), "新完成的卡".into())],
-            vec![("dec-2".into(), long_question.clone())],
+            vec![
+                super::GraceNotification {
+                    target: super::DecisionTarget {
+                        workspace_id: "workspace-1".into(),
+                        decision_id: "dec-2".into(),
+                    },
+                    question: long_question.clone(),
+                },
+                super::GraceNotification {
+                    target: super::DecisionTarget {
+                        workspace_id: "workspace-1".into(),
+                        decision_id: "dec-3".into(),
+                    },
+                    question: "另一条待决策".into(),
+                },
+            ],
         );
         assert_eq!(events.reviews, vec!["新完成的卡".to_string()]);
-        assert_eq!(events.graces.len(), 1);
-        assert_eq!(events.graces[0].chars().count(), 80);
+        assert_eq!(events.graces.len(), 2);
+        assert_eq!(events.graces[0].question.chars().count(), 80);
+        assert_eq!(events.graces[0].target.decision_id, "dec-2");
+        assert_eq!(events.graces[1].question, "另一条待决策");
+        assert_eq!(events.graces[1].target.decision_id, "dec-3");
         // 重复出现同一 id：不再弹
         let repeat = super::diff_notification_events(
             &notified,
             vec![("card-2".into(), "新完成的卡".into())],
-            vec![("dec-2".into(), long_question)],
+            vec![super::GraceNotification {
+                target: super::DecisionTarget {
+                    workspace_id: "workspace-1".into(),
+                    decision_id: "dec-2".into(),
+                },
+                question: long_question.clone(),
+            }],
         );
         assert!(repeat.reviews.is_empty() && repeat.graces.is_empty());
+
+        // 同一决策 ID 在不同工作区仍是两个独立通知目标。
+        let other_workspace = super::diff_notification_events(
+            &notified,
+            vec![],
+            vec![super::GraceNotification {
+                target: super::DecisionTarget {
+                    workspace_id: "workspace-2".into(),
+                    decision_id: "dec-2".into(),
+                },
+                question: long_question,
+            }],
+        );
+        assert_eq!(other_workspace.graces.len(), 1);
+        assert_eq!(other_workspace.graces[0].target.workspace_id, "workspace-2");
+    }
+
+    #[test]
+    fn decision_notification_action_requires_tap_and_valid_target() {
+        let target = super::DecisionTarget {
+            workspace_id: "workspace-1".into(),
+            decision_id: "decision-1".into(),
+        };
+        let notification_extra = serde_json::json!({
+            super::DECISION_TARGET_EXTRA: target,
+            "other": "ignored"
+        });
+        let target_extra = notification_extra.get(super::DECISION_TARGET_EXTRA);
+        assert_eq!(
+            super::decision_target_for_action("tap", target_extra),
+            Some(super::DecisionTarget {
+                workspace_id: "workspace-1".into(),
+                decision_id: "decision-1".into(),
+            })
+        );
+        assert_eq!(super::decision_target_for_action("dismiss", target_extra), None);
+        assert_eq!(super::decision_target_for_action("tap", None), None);
+        assert_eq!(
+            super::decision_target_for_action("tap", Some(&serde_json::json!({
+                "workspaceId": "workspace-1"
+            }))),
+            None
+        );
+        assert_eq!(
+            super::decision_target_for_action("tap", Some(&serde_json::json!({
+                "workspaceId": " ", "decisionId": "decision-1"
+            }))),
+            None
+        );
+    }
+
+    #[test]
+    fn decision_notification_script_serializes_target_as_data() {
+        let target = super::DecisionTarget {
+            workspace_id: "ws');window.alert(1);//".into(),
+            decision_id: "decision-\"quoted\"".into(),
+        };
+        let script = super::decision_target_script(&target).unwrap();
+        let payload = serde_json::to_string(&target).unwrap();
+        let payload_start = script.len() - payload.len() - 3;
+        assert_eq!(&script[payload_start..], format!("({payload});"));
+        assert!(script.contains(super::PENDING_DECISION_TARGET));
+        assert!(script.contains(super::DECISION_TARGET_EVENT));
+        assert!(!script[..payload_start].contains("window.alert(1)"));
+        assert_eq!(serde_json::from_str::<super::DecisionTarget>(&payload).unwrap(), target);
+    }
+
+    #[test]
+    fn dashboard_page_ready_checks_configured_origin_boundary() {
+        assert!(super::is_dashboard_url("http://127.0.0.1:8787/", 8787));
+        assert!(super::is_dashboard_url("http://127.0.0.1:8787/?view=decisions", 8787));
+        assert!(!super::is_dashboard_url("http://127.0.0.1:87870/", 8787));
+        assert!(!super::is_dashboard_url("http://127.0.0.1:8787.evil/", 8787));
+        assert!(!super::is_dashboard_url("http://localhost:8787/", 8787));
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
