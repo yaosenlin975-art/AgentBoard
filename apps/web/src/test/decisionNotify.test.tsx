@@ -10,12 +10,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import { StrictMode } from 'react';
 import { DecisionNotifier } from '../components/decisions/DecisionNotifier';
+import * as notificationFns from '../components/decisions/notify';
 import {
   isNotificationGranted,
   notificationChannel,
   notifyDecision,
   requestNotificationPermission,
 } from '../components/decisions/notify';
+import { emitWsEvent } from '../api/wsBus';
 import type { DecisionListItemDto } from '../components/decisions/types';
 import { DECISIONS_SCOPE_KEY } from '../lib/decisionsScope';
 import { useAppStore } from '../state/appStore';
@@ -41,6 +43,22 @@ function setInternals(internals: FakeInternals | null): void {
   }
 }
 
+function setShellPlatform(platform: string | null): void {
+  const globals = window as unknown as { __AGENTBOARD_SHELL__?: unknown };
+  if (platform === null) delete globals.__AGENTBOARD_SHELL__;
+  else globals.__AGENTBOARD_SHELL__ = { platform };
+}
+
+function emitGraceStarted(decisionId: string): void {
+  emitWsEvent({
+    type: 'decision.grace_started',
+    workspace_id: WORKSPACE_ID,
+    issue_id: `issue-${decisionId}`,
+    decision_id: decisionId,
+    state: 'grace',
+  });
+}
+
 function setWebNotification(permission: NotificationPermission, requestResult: NotificationPermission): void {
   class FakeNotification {
     static permission: NotificationPermission = permission;
@@ -64,6 +82,7 @@ beforeEach(() => {
   cleanup();
   localStorage.clear();
   setInternals(null);
+  setShellPlatform(null);
   delete (window as unknown as { Notification?: unknown }).Notification;
   delete (window as unknown as { __AGENTBOARD_PENDING_DECISION__?: unknown }).__AGENTBOARD_PENDING_DECISION__;
   created = [];
@@ -73,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setInternals(null);
+  setShellPlatform(null);
   delete (window as unknown as { Notification?: unknown }).Notification;
 });
 
@@ -264,6 +284,68 @@ describe('DEC-7 桌面通知决策目标接收', () => {
 
     expect(useAppStore.getState().workspaceId).toBe(originalWorkspaceId);
     expect(useNavStore.getState()).toMatchObject({ view: 'board', decisionFocus: null });
+  });
+});
+
+describe('DEC-7 桌面系统通知生产者', () => {
+  it.each(['windows', 'macos'])('%s Tauri 壳使用 Rust 定位通知且保留应用内提示', async (platform) => {
+    setShellPlatform(platform);
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'plugin:notification|is_permission_granted') return true;
+      return undefined;
+    });
+    setInternals({ invoke });
+    server.use(
+      http.get('/api/decisions', () =>
+        HttpResponse.json({
+          decisions: [listItem({ id: 'desktop-decision' })],
+          counts: { grace: 1, open: 0, stale_open: 0, answered_recent: 0 },
+        }),
+      ),
+    );
+    const describe = vi.spyOn(notificationFns, 'describeDecisionForNotification');
+    renderWithQuery(<DecisionNotifier />);
+
+    await waitFor(() => expect(screen.getByTestId('decisions-summary-bar')).toHaveTextContent('有 1 条待决策'));
+    emitGraceStarted('desktop-decision');
+
+    try {
+      expect(screen.getByTestId('decisions-summary-bar')).toHaveTextContent('有 1 条待决策');
+      if (describe.mock.calls.length > 0) {
+        await waitFor(() => expect(invoke).toHaveBeenCalledWith('plugin:notification|notify', expect.anything()));
+      }
+      expect(describe).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalledWith('plugin:notification|notify', expect.anything());
+    } finally {
+      describe.mockRestore();
+    }
+  });
+
+  it('浏览器仍发送 Web Notification', async () => {
+    setWebNotification('granted', 'granted');
+    renderWithQuery(<DecisionNotifier />);
+
+    emitGraceStarted('web-decision');
+
+    await waitFor(() => expect(created).toHaveLength(1));
+  });
+
+  it('其他 Tauri 平台仍调用原通知通道', async () => {
+    setShellPlatform('linux');
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'plugin:notification|is_permission_granted') return true;
+      return undefined;
+    });
+    setInternals({ invoke });
+    renderWithQuery(<DecisionNotifier />);
+
+    emitGraceStarted('linux-decision');
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('plugin:notification|notify', {
+        options: { title: '[待决策] 有新的问题需要你拍板', body: '打开 AgentBoard 查看待决策列表' },
+      }),
+    );
   });
 });
 

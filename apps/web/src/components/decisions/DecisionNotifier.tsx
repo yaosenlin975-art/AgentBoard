@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
 import { useWsEvent } from '../../api/wsBus';
+import { isTauriRuntime } from '../shell/WindowTitleBar';
 import { useAppStore } from '../../state/appStore';
 import { useNavStore } from '../../state/navStore';
 import { readDecisionsScopeSnapshot } from '../../lib/decisionsScope';
@@ -110,6 +111,8 @@ export function DecisionNotifier() {
   // 新决策进入宽限：发一次系统通知（同一条决策只发一次，宽松失败不重试）
   useWsEvent((event) => {
     if (event.type !== 'decision.grace_started') return;
+    const shellPlatform = window.__AGENTBOARD_SHELL__?.platform;
+    if (isTauriRuntime() && (shellPlatform === 'windows' || shellPlatform === 'macos')) return;
     const decisionId = event.decision_id;
     if (notified.current.has(decisionId)) return;
     notified.current.add(decisionId);
