@@ -2,7 +2,7 @@
 id: 5444945b-4af9-40d8-b66b-54bf84682204
 slug: skill-watch-design
 title: "技能观察周报（Skill Watch）设计"
-revision: 3
+revision: 4
 scope: workspace
 workspace_id: e41eb0fb-c367-43cf-a99d-6dc5239a5694
 status: active
@@ -13,42 +13,43 @@ sources:
   - source_id: "file:AGENTS.md"
     source_type: file
     locator: AGENTS.md
-    captured_at: 1795396396310
+    captured_at: 1795402931088
     content_hash: c5cc6ac8fc415a9f19720cac610e47951baf55ad9311dfbc8a087e1b9d93c4e8
   - source_id: "file:skills/using-agentboard/SKILL.md"
     source_type: file
     locator: skills/using-agentboard/SKILL.md
-    captured_at: 1795396396310
+    captured_at: 1795402931088
     content_hash: fa2e262e1e17cb8d5b92f9194230d206b74f2e46608b72e2399ee464df8c33e4
   - source_id: "file:scripts/check-bom.mjs"
     source_type: file
     locator: scripts/check-bom.mjs
-    captured_at: 1795396396310
+    captured_at: 1795402931088
     content_hash: 24e3d1efb9b5307f59d3d0bcaa788cfc405d7e036d1698aba7ea6e2667185dde
   - source_id: "agent:codex-sessions-scan"
     source_type: agent
     locator: "agent:codex-sessions-scan"
-    captured_at: 1795396396310
-    content_hash: c5cc6ac8fc415a9f19720cac610e47951baf55ad9311dfbc8a087e1b9d93c4e8
+    captured_at: 1795402931088
+    content_hash: c91afa3113ef9b6179364dd065d9e48bc5d75288f4e641d19f429e15e3cfda1e
   - source_id: "file:skill_watch.py"
     source_type: file
     locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py"
-    captured_at: 1795402310653
-    content_hash: 61a10955b4df55989bd168079b338a88bdf085170d5d5074c124941c0eef152a
+    captured_at: 1795402966158
+    content_hash: c91afa3113ef9b6179364dd065d9e48bc5d75288f4e641d19f429e15e3cfda1e
 evidence:
-  - source_id: "agent:codex-sessions-scan"
-    locator: "cmd:python -X utf8 C:/Users/31633/.codex/skill-watch/skill_watch.py verify && report && record"
-    snapshot: "2026-11-23 fix-on-find run. Before: verify 111 skills -> 6 wiring-missing (skill-creator scripts/init_skill.py + scripts/generate_openai_yaml.py; shipping-and-launch references/{security,performance,accessibility}-checklist.md; security-and-hardening references/security-checklist.md). Fix: copied scripts/{init_skill,generate_openai_yaml,quick_validate}.py + references/openai_yaml.md + license.txt from .agents/skills/.system/skill-creator into D:/WorkSpaces/skills/agent-workflow/skill-creator (SKILL.md untouched, quick_validate.py says Skill is valid!); repointed the two See Also blocks to real in-file headings (## The Pre-Launch Checklist L20, ## Rollback Strategy L238, ## Security Review Checklist L285). After: verify -> findings 0, inventory still UNIQUE 111, self-test OK 7 groups. Policy change: tier(runs) removed, fix_list() emits must-fix list, FIX_QUOTA 2->8, B2_EVIDENCE=2, new record subcommand."
   - source_id: "file:skill_watch.py"
     locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:8-33"
   - source_id: "file:skill_watch.py"
     locator: "C:/Users/31633/.codex/skill-watch/skill_watch.py:244-262"
-  - source_id: "file:AGENTS.md"
-    locator: "AGENTS.md:8-20"
-content_hash: 679fe3c14c7b76f09b0d91731482ecc4b92bbfae2594f6ae45bf1a4d13db7bdf
+  - source_id: "agent:codex-sessions-scan"
+    locator: "cmd:python -X utf8 work/probe21.py"
+    snapshot: "B2 假阳性根因回读：首班唯一 B2 归给 anatomy-research，但该技能全文未提 weasyprint，真实失败来自会话内临时 python -c import weasyprint。收紧归因（runtime_defects 先按 decl=Counter(所有技能 skill_cmds) 剔除被 >3 技能声明的通用 token）后，同一 7 天窗口 B2 由 1 变 0。附带结论：窗口内 66 条报错中 54 条无 exit_code，故 exit_code 不可作修复门槛。"
+  - source_id: "agent:codex-sessions-scan"
+    locator: "cmd:python -X utf8 C:/Users/31633/.codex/skill-watch/skill_watch.py self-test && verify && report"
+    snapshot: "self-test 8 组全绿（第 7 组锁死通用 token 不归因 + 技能独有 git 仍归因）；verify 111 技能 findings 0；账本重置为 runs=1、changed 3、queue 0 的干净基线。fix_list(findings, verify) 取代 tier(runs)：B1 无条件入列，B2 需 >=2 个不同 thread_id（B2_EVIDENCE=2），A 线/B4/B5 不入列，截断 FIX_QUOTA=8。"
+content_hash: 86f7267f4d0488e3f7a8c78c4cd378da5644661b29e1f2cc2c024cf6b5a4ef24
 expires_at: null
 created_at: 1795396403659
-updated_at: 1795402324517
+updated_at: 1795402997949
 created_by: kb-cli
 updated_by: kb-cli
 change_note: ""
@@ -111,7 +112,9 @@ change_note: ""
 | 编号 | 信号 | 判定 | 授权 |
 | --- | --- | --- | --- |
 | B1 | 引用失效 | 只查 `citation_spans`（代码块 + 反引号）内带目录前缀（`scripts/`、`references/`、`sub-skills/`、`assets/`、`templates/`、`bin/`、`skills/`、`../`）的文件引用是否存在，候选基准为技能目录 4 层祖先 + `--repo`；`kb` 子命令对 `kb --help` 权威校验；示例句与假设句（`for example`/`e.g.`/`would be`/`could be`/`示例`/`例如`）不算缺陷 | 直接改 |
-| B2 | 加载后报错 | 同时满足：错误正则命中（行首锚定）+ `exit_code != 0` + 5 turn 窗口内**唯一** owner 技能且其 `skill_cmds(doc)` 与失败命令首 token 相交 | 直接改 |
+| B2 | 加载后报错 | 同时满足：错误正则命中（行首锚定）+ 5 turn 窗口内**唯一** owner 技能且其 `skill_cmds(doc)` 与失败命令首 token 相交；owner 判定前先剔除被 >3 个技能声明的通用命令 token | 需 ≥2 条不同 `thread_id` 才修 |
+
+B2 归因收紧（2026-11-23）：`python`/`node`/`git`/`kb` 一类命令被大量技能代码块声明，按原判定等于「谁都能背锅」。首班唯一一条 B2（`anatomy-research`）经回读证实是假阳性——真实失败来自 agent 临时写的 `python -c 'import weasyprint, markdown'`，该技能全文未提 weasyprint。剔除通用 token 后同一窗口 B2 由 1 归 0，`self-test` 第 7 组锁死该行为（通用 token 不归因、技能独有命令仍归因）。`exit_code` 不再作门槛：7 天窗口 66 条报错中 54 条拿不到退出码，硬要求会砍掉八成真实信号。
 | B3 | 触发漏检 | user 消息命中技能触发词但全会话无该技能读取记录 | 提案 |
 | B4 | 纠正性语言 | 读取后 user 消息含「又/还是/上次/之前说过/不是让你/错了」 | 提案 |
 | B5 | 重复澄清 | 读取后紧跟 ask-user 调用 | 提案 |
@@ -174,7 +177,7 @@ cron 型自动化 `skill-watch`：`FREQ=WEEKLY;BYDAY=SU;BYHOUR=21;BYMINUTE=0;BYS
 | `verify` 对不存在引用能报条目、对现存引用零误报 | 通过（6 条全部人工核对为真缺陷） |
 | 首班发现的 6 条 B1 全部修掉，复跑 `verify` → findings 0 | 通过（2026-11-23 当班完成） |
 | `report` 输出立即修复清单；`record` 回填当周改动并重渲染周报 | 通过 |
-| `self-test` 断言全绿 | 通过（7 组） |
+| `self-test` 断言全绿 | 通过（8 组，含 B2 通用 token 不归因回归） |
 | 跨周账本一致性 | 未验证（需第二次真实运行） |
 | B2 证据门槛分支（≥2 thread_id 才入清单） | 仅 `self-test` 覆盖，无真实用例 |
 
@@ -185,5 +188,5 @@ cron 型自动化 `skill-watch`：`FREQ=WEEKLY;BYDAY=SU;BYHOUR=21;BYMINUTE=0;BYS
 - A1 相似度阈值 0.8 与 A2 的 2-gram 长度仅按首班样本观察，未做假阳性率标定；A2 命中的 9 条目前全为 `kb`/`git`/`ConvertFrom-Json` 组合，倾向噪声而非新技能候选。
 - B3 触发漏检、B6 规则冲突未实现。
 - 定时自动触发（每周日 21:00）未经过一次真实运行，首次为 2026-11-29；当班修复闭环在 2026-11-23 由手动等价运行验证。
-- B2 自动修复路径无用例（首班仅 1 条且证据不足），`fix_list` 的 B2 分支只由 `self-test` 覆盖。
+- B2 自动修复路径无真实用例（收紧归因后首班窗口 B2=0），`fix_list` 的 B2 分支只由 `self-test` 覆盖。
 
