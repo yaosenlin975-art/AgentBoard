@@ -57,6 +57,13 @@ const LIST_TASK_FIELDS = [
   'created_at', 'updated_at', 'children_total', 'children_closed',
 ].join(',');
 
+/**
+ * FETCHC-2：「未完成」kind 集合，与服务端 `STATUS_KINDS`（`apps/server/src/services/workspaceStatus.ts:31`）同值。
+ * 缺省过滤即这个集合 + `unclaimed=1`，把「已关闭 / 已废弃」挡在首页之外。
+ */
+const UNFINISHED_KINDS = ['open', 'started', 'review', 'blocked'] as const;
+const UNFINISHED_KINDS_QUERY = UNFINISHED_KINDS.join(',');
+
 /** 旧服务端不认 `fields`（400）或路由缺失（404）命中一次后，进程内不再尝试 */
 let listFieldsUnsupported = false;
 
@@ -84,6 +91,28 @@ async function getTaskListPage<T>(api: AgentBoardApiClient, query: Record<string
     listFieldsUnsupported = true;
     return api.get<T>('/issues', query);
   }
+}
+
+/**
+ * FETCHC-2：`list_tasks` 的状态收敛过滤。
+ *
+ * 优先级：`all_status` → 无过滤（改前行为）；显式 `status` → 只按 status（不叠加 kind/unclaimed，
+ * 否则 `status=进行中` 会被 `unclaimed=1` 收窄成「进行中且无主」）；其余 → 缺省未完成 + 无主，
+ * 除非调用方显式关掉（`unfinished:false` / `unclaimed:false`）或给了自己的 `kinds`。
+ */
+function listTaskScopeFilters(input: {
+  status?: string;
+  kinds?: readonly string[];
+  unclaimed?: boolean;
+  unfinished?: boolean;
+  all_status?: boolean;
+}): Record<string, string | undefined> {
+  if (input.all_status === true || input.status !== undefined) return {};
+  const filters: Record<string, string | undefined> = {};
+  const kinds = input.kinds ?? (input.unfinished === false ? undefined : UNFINISHED_KINDS);
+  if (kinds !== undefined && kinds.length > 0) filters.kinds = kinds.join(',');
+  if (input.unclaimed ?? (input.unfinished !== false)) filters.unclaimed = '1';
+  return filters;
 }
 
 /** CARD-FACE：与服务端同口径的空描述判定（MCP 只做提前提示，服务端仍是唯一权威）。 */
@@ -220,9 +249,17 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     return { items: page.items.map(({ id, name }) => ({ id, name })), next_offset: page.next_offset };
   });
 
-  register('list_tasks', 'List compact task rows or one task-tree level; descriptions are omitted.', z.object({
+  register('list_tasks', 'List compact task rows or one task-tree level; descriptions are omitted. Defaults to unfinished unclaimed rows; pass all_status for every row.', z.object({
     ...workspaceField,
     status: statusSchema.optional(),
+    kinds: z.array(z.enum(['open', 'started', 'review', 'done', 'deprecated', 'blocked'])).min(1).optional()
+      .describe('Status kinds to include (open/started/review/done/deprecated/blocked); default keeps open,started,review,blocked.'),
+    unclaimed: z.boolean().optional()
+      .describe('Only rows with no owner; default true unless all_status or status is given.'),
+    unfinished: z.boolean().optional()
+      .describe('Default true: only unfinished rows (ignored when all_status or status is given).'),
+    all_status: z.boolean().default(false)
+      .describe('True lists every status with no derived filters (pre-FETCHC-2 behavior).'),
     tree: z.boolean().default(false)
       .describe('Use task-tree cursor pagination (default false).'),
     parent_issue_id: z.string().trim().min(1).nullable().optional()
@@ -234,8 +271,12 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
     .refine((input) => input.tree || (input.parent_issue_id === undefined && input.cursor === undefined), {
       message: 'parent_issue_id and cursor require tree mode.',
     })
-    .refine((input) => !input.tree || input.offset === 0, { message: 'Tree mode uses cursor pagination, not offset.' }),
-  async ({ workspace_id, status, tree, parent_issue_id, cursor, limit, offset }) => {
+    .refine((input) => !input.tree || input.offset === 0, { message: 'Tree mode uses cursor pagination, not offset.' })
+    .refine((input) => !input.tree || (input.kinds === undefined && input.unclaimed === undefined
+      && input.unfinished === undefined && input.all_status !== true), {
+      message: 'kinds/unclaimed/unfinished/all_status apply to the flat list only; drop them in tree mode.',
+    }),
+  async ({ workspace_id, status, kinds, unclaimed, unfinished, all_status, tree, parent_issue_id, cursor, limit, offset }) => {
     const workspaceId = resolveWorkspaceId(config, workspace_id, 'task');
     if (tree) {
       const page = await api.get<IssueTreePage>('/issues/tree', {
@@ -257,7 +298,13 @@ export function registerTaskTools(server: McpServer, config: McpConfig, api: Age
         workspace_id: workspaceId,
       };
     }
-    const page = await getTaskListPage<PageResult<TaskPreview>>(api, { workspace: workspaceId, status, limit, offset });
+    const page = await getTaskListPage<PageResult<TaskPreview>>(api, {
+      workspace: workspaceId,
+      status,
+      ...listTaskScopeFilters({ status, kinds, unclaimed, unfinished, all_status }),
+      limit,
+      offset,
+    });
     return { ...page, items: page.items.map(item => compactTask(omitTaskDescription(item))), workspace_id: workspaceId };
   });
 

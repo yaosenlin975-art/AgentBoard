@@ -242,6 +242,10 @@ describe('AgentBoard task MCP server', () => {
     expect(calls[1]?.url.searchParams.get('workspace')).toBe('workspace-a');
     expect(calls[1]?.url.searchParams.get('limit')).toBe('50');
     expect(calls[1]?.url.searchParams.get('offset')).toBe('0');
+    // FETCHC-2：缺省收敛为「未完成 · 无主」，不叠加 status
+    expect(calls[1]?.url.searchParams.get('kinds')).toBe('open,started,review,blocked');
+    expect(calls[1]?.url.searchParams.get('unclaimed')).toBe('1');
+    expect(calls[1]?.url.searchParams.has('status')).toBe(false);
     // PERF-4d：平铺列表走 fields= 白名单，且白名单里不含 description
     const requestedFields = calls[1]?.url.searchParams.get('fields')?.split(',') ?? [];
     expect(requestedFields).toContain('title');
@@ -615,6 +619,22 @@ describe('AgentBoard task MCP server', () => {
     const url = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(url.searchParams.get('parent_issue_id')).toBe('root-1');
     expect(url.searchParams.get('workspace')).toBe('workspace-a');
+    // FETCHC-2 的收敛参数只作用于平铺列表，树端点不带
+    expect(url.searchParams.has('kinds')).toBe(false);
+    expect(url.searchParams.has('unclaimed')).toBe(false);
+  });
+
+  it('list_tasks 拒绝在树模式下混用收敛参数（避免静默忽略）', async () => {
+    const fetcher = vi.fn() as unknown as typeof fetch;
+    const harness = createHarness(baseConfig, fetcher);
+    harnesses.push(harness);
+    await harness.start();
+    const response = await harness.request('tools/call', {
+      name: 'list_tasks',
+      arguments: { tree: true, kinds: ['open'], unclaimed: true },
+    });
+    expect(response.result?.isError).toBe(true);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   // PERF-4d（用户拍板选项 A）：列表不含正文、get_task 含正文，对偶断言
@@ -645,6 +665,65 @@ describe('AgentBoard task MCP server', () => {
       arguments: { task_id: 'task-1' },
     })).result?.structuredContent?.data;
     expect(read).toMatchObject({ id: 'task-1', description: '正文' });
+  });
+
+  // FETCHC-2：缺省收敛为「未完成 · 无主」；all_status 退回改前的全量行为；显式 status 不叠加推导过滤
+  it('list_tasks 缺省只取未完成无主卡，all_status 与显式 status 各自退回', async () => {
+    const calls: URL[] = [];
+
+    for (const [label, args] of [
+      ['default', {}],
+      ['all_status', { all_status: true }],
+      ['status', { status: '进行中' }],
+    ] as const) {
+      calls.length = 0;
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        calls.push(new URL(String(input)));
+        return Response.json({ items: [], next_offset: null });
+      });
+      const harness = createHarness(baseConfig, fetcher as typeof fetch);
+      harnesses.push(harness);
+      await harness.start();
+      const response = await harness.request('tools/call', { name: 'list_tasks', arguments: args });
+      expect(response.result?.isError, label).not.toBe(true);
+      expect(calls, label).toHaveLength(1);
+
+      const sent = calls[0]!;
+      if (label === 'default') {
+        expect(sent.searchParams.get('kinds')).toBe('open,started,review,blocked');
+        expect(sent.searchParams.get('unclaimed')).toBe('1');
+        expect(sent.searchParams.has('status')).toBe(false);
+      }
+      if (label === 'all_status') {
+        expect(sent.searchParams.has('kinds')).toBe(false);
+        expect(sent.searchParams.has('unclaimed')).toBe(false);
+        expect(sent.searchParams.has('status')).toBe(false);
+      }
+      if (label === 'status') {
+        expect(sent.searchParams.get('status')).toBe('进行中');
+        expect(sent.searchParams.has('unclaimed')).toBe(false);
+        expect(sent.searchParams.has('kinds')).toBe(false);
+      }
+    }
+  });
+
+  it('list_tasks 显式 kinds / unclaimed=false 覆盖缺省值', async () => {
+    const calls: URL[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      calls.push(new URL(String(input)));
+      return Response.json({ items: [], next_offset: null });
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+
+    await harness.request('tools/call', { name: 'list_tasks', arguments: { kinds: ['review'], unclaimed: false } });
+    expect(calls[0]?.searchParams.get('kinds')).toBe('review');
+    expect(calls[0]?.searchParams.has('unclaimed')).toBe(false);
+
+    await harness.request('tools/call', { name: 'list_tasks', arguments: { unfinished: false } });
+    expect(calls[1]?.searchParams.has('kinds')).toBe(false);
+    expect(calls[1]?.searchParams.has('unclaimed')).toBe(false);
   });
 
   it('falls back to an unfiltered request when the server rejects fields= and still omits descriptions', async () => {

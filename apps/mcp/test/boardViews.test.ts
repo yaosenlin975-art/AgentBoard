@@ -1,6 +1,9 @@
 /**
  * ARCH-01：MCP `next_tasks` / `workspace_stats` 与 CLI `kb next --json` / `kb stats --json` 同形。
  * 期望值按 CLI 的 JSON 契约逐字段写死（字段名、排序、null/数组），两路共用 shared boardViews。
+ *
+ * FETCHC-2：两个工具的取数都收敛为 `kinds=` + `fields=` 投影；`workspace_stats` 的
+ * 五状态计数与 total 改走 `GET /api/issues/counts`（明细只用于未完成两列）。
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHarness } from './helpers.js';
@@ -44,6 +47,16 @@ const STATS_ISSUES = [
   issue('s6', { status: '已废弃' }),
   issue('s7', { status: '自定义状态' }),
 ];
+
+/** 整区 counts 出参（自定义状态只计入 total，不占内置五行） */
+const STATS_COUNTS = {
+  workspace_id: 'workspace-a',
+  total: 7,
+  counts: { 待规划: 2, 进行中: 1, 待验收: 1, 已关闭: 1, 已废弃: 1, 自定义状态: 1 },
+};
+
+/** 未完成明细：与 STATS_ISSUES 中 kinds=open,started,review,blocked 的行一致 */
+const STATS_UNFINISHED = [STATS_ISSUES[0]!, STATS_ISSUES[1]!, STATS_ISSUES[2]!, STATS_ISSUES[3]!];
 
 describe('MCP board views (ARCH-01)', () => {
   const harnesses: Array<ReturnType<typeof createHarness>> = [];
@@ -95,7 +108,28 @@ describe('MCP board views (ARCH-01)', () => {
       '/api/issues/a1/dependencies',
       '/api/issues/a3/dependencies',
     ]);
-    expect(calls[0]?.searchParams.get('workspace')).toBe('workspace-a');
+    const listCall = calls.find(({ pathname }) => pathname === '/api/issues')!;
+    expect(listCall.searchParams.get('workspace')).toBe('workspace-a');
+  });
+
+  // FETCHC-2：next_tasks 取数只拉未完成卡的三列投影，不再整区全字段
+  it('next_tasks 取数带 kinds 与 fields 投影', async () => {
+    const calls: URL[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      calls.push(url);
+      if (url.pathname === '/api/issues') return Response.json(NEXT_ISSUES);
+      return Response.json(NEXT_DEPS[(/([^/]+)\/dependencies$/.exec(url.pathname)?.[1]) ?? ''] ?? { blockers: [], blocked: [] });
+    });
+    const harness = createHarness(baseConfig, fetcher as typeof fetch);
+    harnesses.push(harness);
+    await harness.start();
+    await harness.request('tools/call', { name: 'next_tasks', arguments: {} });
+
+    const listCall = calls.find(({ pathname }) => pathname === '/api/issues')!;
+    expect(listCall.searchParams.get('kinds')).toBe('open,started,review,blocked');
+    expect(listCall.searchParams.get('fields')?.split(',') ?? []).toContain('parent_issue_id');
+    expect(listCall.searchParams.get('fields')?.split(',') ?? []).not.toContain('description');
   });
 
   it('workspace_stats 返回与 kb stats --json 同形的 StatsResult', async () => {
@@ -103,7 +137,8 @@ describe('MCP board views (ARCH-01)', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       calls.push(url);
-      return Response.json(STATS_ISSUES);
+      if (url.pathname === '/api/issues/counts') return Response.json({ items: [STATS_COUNTS] });
+      return Response.json(STATS_UNFINISHED);
     });
     const harness = createHarness(baseConfig, fetcher as typeof fetch);
     harnesses.push(harness);
@@ -122,13 +157,53 @@ describe('MCP board views (ARCH-01)', () => {
       statuses: { 待规划: 2, 进行中: 1, 待验收: 1, 已关闭: 1, 已废弃: 1 },
       unclaimed_open: 2,
       blocked_open: 1,
+      // total 取整区 counts（含自定义状态），不是未完成明细行数
       total: 7,
     });
     expect(data.generated_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.searchParams.get('workspace')).toBe('workspace-a');
-    expect(calls[0]?.searchParams.get('fields')).toBe('status,claimed_by,blocked_by_open_count');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.pathname).toBe('/api/issues/counts');
+    expect(calls[0]?.searchParams.get('workspace_ids')).toBe('workspace-a');
+    expect(calls[1]?.pathname).toBe('/api/issues');
+    expect(calls[1]?.searchParams.get('workspace')).toBe('workspace-a');
+    expect(calls[1]?.searchParams.get('kinds')).toBe('open,started,review,blocked');
+    expect(calls[1]?.searchParams.get('fields')).toBe('status,claimed_by,blocked_by_open_count');
+  });
+
+  // 卡面评论：counts 端点 404/400 → 回落一次整区 3 列投影，口径与改前逐字一致
+  it('workspace_stats 在 counts 端点缺失或被拒时回落整区投影，total 仍为整区总数', async () => {
+    const cases = [
+      { status: 404, code: 'NOT_FOUND', message: '接口不存在' },
+      { status: 400, code: 'VALIDATION_ERROR', message: '缺少 workspace_ids 查询参数' },
+    ];
+    for (const failure of cases) {
+      const calls: URL[] = [];
+      const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        calls.push(url);
+        if (url.pathname === '/api/issues/counts') {
+          return Response.json({ error: { code: failure.code, message: failure.message } }, { status: failure.status });
+        }
+        return Response.json(STATS_ISSUES);
+      });
+      const harness = createHarness(baseConfig, fetcher as typeof fetch);
+      harnesses.push(harness);
+      await harness.start();
+
+      const data = (await harness.request('tools/call', { name: 'workspace_stats', arguments: {} }))
+        .result?.structuredContent?.data;
+      expect(data).toMatchObject({
+        total: 7,
+        unclaimed_open: 2,
+        blocked_open: 1,
+        statuses: { 待规划: 2, 进行中: 1, 待验收: 1, 已关闭: 1, 已废弃: 1 },
+      });
+      // counts 缺失 → 直接整区 3 列投影一次（不再发过滤请求）
+      expect(calls.map(({ pathname }) => pathname)).toEqual(['/api/issues/counts', '/api/issues']);
+      expect(calls[1]?.searchParams.has('kinds')).toBe(false);
+      expect(calls[1]?.searchParams.get('fields')).toBe('status,claimed_by,blocked_by_open_count');
+    }
   });
 
   it('workspace_stats 在老服务端拒绝 fields 时回落整对象，计数口径不变', async () => {
@@ -136,6 +211,9 @@ describe('MCP board views (ARCH-01)', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       calls.push(url);
+      if (url.pathname === '/api/issues/counts') {
+        return Response.json({ error: { code: 'NOT_FOUND', message: '接口不存在' } }, { status: 404 });
+      }
       if (url.searchParams.has('fields')) {
         return Response.json({ error: { code: 'VALIDATION_ERROR', message: 'unknown field' } }, { status: 400 });
       }
@@ -148,8 +226,10 @@ describe('MCP board views (ARCH-01)', () => {
     const data = (await harness.request('tools/call', { name: 'workspace_stats', arguments: {} }))
       .result?.structuredContent?.data;
     expect(data).toMatchObject({ total: 7, statuses: { 待规划: 2 } });
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.searchParams.has('fields')).toBe(true);
-    expect(calls[1]?.searchParams.has('fields')).toBe(false);
+
+    const issueCalls = calls.filter(({ pathname }) => pathname === '/api/issues');
+    expect(issueCalls).toHaveLength(2);
+    expect(issueCalls[0]?.searchParams.has('fields')).toBe(true);
+    expect(issueCalls[1]?.searchParams.has('fields')).toBe(false);
   });
 });

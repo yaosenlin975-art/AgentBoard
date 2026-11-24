@@ -25,6 +25,7 @@ const MCP_VERSION = (require('../package.json') as { version?: string }).version
 const MCP_INSTRUCTIONS = [
   'AgentBoard 任务看板。每个工具都有一个 agentboard_<name> 别名，行为完全相同，用其中一个即可，不要两个都调。',
   '典型顺序：list_tasks / next_tasks 找卡 → start_task 领卡并读取工作包 → 干活 → add_task_comment 汇报 → finish_task 收尾（待验收）。',
+  '找可领卡用 next_tasks。list_tasks 缺省已收敛为「未完成且无主」，要连已关闭/已废弃一起看时传 all_status:true。',
   'start_task / finish_task 是窄聚合入口；使用 finish_task 时它自行创建 changelog（no_changelog:true 除外），不要再先写 create_changelog；使用 complete_task 时才需先写 create_changelog。',
   '写工具（claim/release/update/comment/complete/fail/close/reopen/accept/dependency/knowledge/changelog/ask 等）必须带 request_id（UUID 幂等键）；重复同一 request_id 返回同一结果。',
   '例外：delete_task 与 remove_dependency 是 DELETE 调用，没有幂等键，不要传 request_id。',
