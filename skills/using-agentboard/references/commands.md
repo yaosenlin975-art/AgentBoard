@@ -21,7 +21,7 @@ kb workspace-db <enable|status|cleanup|revert|snapshot> [...]
 ```text
 kb create-issue <ws> <title> -d <描述> [-p 低|中|高] [-l a,b] [--parent <id>]
   [--status 待规划|待验收] [--allow-empty] [--due YYYY-MM-DD[THH:mm]]
-kb list-tasks [--workspace <id|名>] [--status <状态>] [--all-status] [--tree] [--full] [--all]
+kb list-tasks [--workspace <id|名>] [--status <状态>] [--tree] [--full] [--all]
 kb next [--workspace <id|名>] [--limit N]
 kb stats [--workspace <id|名>]
 kb show <id...> [--mark-read] [--comments n|all] [--description-offset N]
@@ -32,6 +32,8 @@ kb delete-issue <id> --yes
 ```
 
 `create-issue` 没有 `--description-stdin`；长描述先建卡再 `kb update --description-stdin`。`--scope` 和 `--ids-file` 的参数口径读对应 `--help`。
+
+`list-tasks` 取数口径：缺省 = 当前工作区 · 未完成 · 无主；`--status` 走服务端过滤该状态全貌（含他人占用），不叠加无主筛选；找可领卡用 `kb next`。`--all-status` 是全量逃生口（整区全状态、含他人占用与已关闭），只在确需整盘时用，单次体量约 2.6 MB；`--tree` 不做缺省收敛。
 
 ## 流转
 

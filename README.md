@@ -317,8 +317,9 @@ cd packages/cli && npm link   # 或直接 node packages/cli/dist/index.js <命�
 kb create-space <name> <path>        # 创建工作空间；path 必须已存在且是目录
 kb create-issue <workspace> <title> -d '<描述>'  # 创建任务；workspace 用 id 或名称，描述必填（长描述先建卡再 kb update --description-stdin）
 kb list-spaces
-kb list-tasks [--workspace <id|名>] [--status 待规划] [--all-status]  # 缺省只列未完成无主卡
-kb next [--workspace <id|名>]      # 下一张可领取的卡
+kb list-tasks [--workspace <id|名>] [--status 待规划]  # 缺省只列未完成无主卡；--status 给该状态全貌，不叠加无主筛选
+kb next [--workspace <id|名>]      # 找可领卡入口（待规划 · 无占用 · 前置已解除）
+# list-tasks --all-status 为全量（整区全状态、含占用与已关闭），单次约 2.6 MB，仅在确需整盘时用
 kb stats --workspace <id>          # 五状态计数 + 未完成无主 + 被阻塞（收尾复算用）
 kb show <issue-id> [--mark-read]
 kb claim <issue-id>                # 原子领取；已被占用退出码 2

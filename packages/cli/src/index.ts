@@ -184,11 +184,11 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
 
   program
     .command('list-tasks')
-    .description('列任务（缺省按 cwd 解析当前工作区；跨区盘点用 --all）')
-    .option('--workspace <id|名>', '工作空间 id 或名称')
+    .description('列任务（缺省=当前工作区·未完成·无主；找可领卡用 kb next；全量用 --all-status）')
+    .option('--workspace <id|名>', '工作空间 id 或名称（缺省按 cwd 解析当前工作区）')
     .option('--all', '聚合全部工作空间；只读盘点，与 --workspace 互斥')
-    .option('--status <状态>', '按当前筛选范围已定义的状态过滤；非法值会列出可用状态')
-    .option('--all-status', '保留改造前口径：不按「未完成 · 无主」收敛，输出整区全状态')
+    .option('--status <状态>', '走服务端过滤该状态全貌（含他人占用），不叠加无主筛选；非法值会列出可用状态')
+    .option('--all-status', '全量，成本高（整区全状态、含他人占用与已关闭；实测量级 2.6 MB）')
     .option('--tree', '显示递归任务树；状态筛选保留祖先路径')
     .option('--full', '表格输出完整列（labels/决策/评论/parent_issue_id）；--json 时一并输出 description 正文')
     .action(async (opts: { workspace?: string; all?: boolean; status?: string; allStatus?: boolean; tree?: boolean; full?: boolean }) =>

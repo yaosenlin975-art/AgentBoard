@@ -456,7 +456,13 @@ workspace 解析：先 `GET /api/issues/:id` 取 `workspace_id` 再上送（同 
 
 **CLI 缺省工作区（OPT-02）**：`kb create-issue`、`kb status ls/add/rm`、`kb workspace-db enable`、`kb workspace-db snapshot export` 的工作区参数均可省略，缺省按 cwd 解析，并可用 `--workspace <id|名>` 显式指定（与位置参数等价，显式优先）。cwd 不属于任何工作区且全库只有一个工作区时回退到该区并在 stderr 提示；存在多个工作区时报错并列出候选（不猜）。`kb create-issue` 只给一个位置参数且它不匹配任何工作区时，按「当前工作区 + 该参数为标题」处理并在 stderr 提示。
 
-**CLI 默认收敛（OPT-01 / ARCH-02）**：`kb list-tasks` 不带 `--status` / `--tree` 时，缺省只取「未完成（`kind ∈ open/started/review/blocked`）且无主（`claimed_by IS NULL`）」的卡，并在 stderr 首行提示 `默认已收敛为未完成无主卡，全量用 --all-status`；过滤通过 `GET /api/issues?kinds=open,started,review,blocked&unclaimed=1` 在服务端完成，CLI 不拉全量后本地筛。**口径写死：`kind=blocked` 的自定义状态卡归入「未完成」并展示**（阻塞仍需人处理，不隐藏）；`kb next` 仍只取「待规划」，行为不变。旧服务端不认 `kind=blocked`（400）时 CLI 自动回落到 `kinds=open,started,review`。`--all-status` 恢复改造前口径（整区全状态、含他人占用）；`--status <状态>` 显式覆盖缺省收敛；`--tree` 为保留整树上下文不做收敛；`--all` 跨区盘点同样适用缺省收敛，需要全量时配 `--all-status`。
+**CLI 默认收敛（OPT-01 / ARCH-02）**：`kb list-tasks` 不带 `--status` / `--tree` 时，缺省只取「未完成（`kind ∈ open/started/review/blocked`）且无主（`claimed_by IS NULL`）」的卡，并在 stderr 首行提示 `默认已收敛为未完成无主卡，全量用 --all-status`；过滤通过 `GET /api/issues?kinds=open,started,review,blocked&unclaimed=1` 在服务端完成，CLI 不拉全量后本地筛。**口径写死：`kind=blocked` 的自定义状态卡归入「未完成」并展示**（阻塞仍需人处理，不隐藏）；`kb next` 仍只取「待规划」，行为不变。旧服务端不认 `kind=blocked`（400）时 CLI 自动回落到 `kinds=open,started,review`。`--all-status` 恢复改造前口径（整区全状态、含他人占用与已关闭，单次体量约 2.6 MB）；`--tree` 为保留整树上下文不做收敛；`--all` 跨区盘点同样适用缺省收敛，需要全量时配 `--all-status`。
+
+三条精确取数口径（①② 随 FETCHC-1 落地，③ 随 FETCHC-2 落地；落地前 CLI/MCP 仍按整区取回后本地筛）：
+
+1. **`--status` 不叠加 `unclaimed`**：`--status <状态>` 走服务端 `status=<状态>` 过滤，返回该状态**全貌**（含他人占用），不叠加 `kinds` / `unclaimed`。叠加会让 `--status 进行中` 恒空（进行中的卡都被占着），agent 会误判「没人干活」。
+2. **树两段式**：`--tree --status <状态>` 分两段取数——① `status=<状态>` 服务端过滤取命中集；② 对命中集缺失的祖先 id 逐个 `GET /api/issues/:id?workspace_id=` 补链，输出层级路径完整（祖先行标 `tree_context`）；② 任一步失败（404 / 服务不可达）回落一次整区全量，输出与改前逐行一致。
+3. **MCP `list_tasks` 缺省收敛（FETCHC-2）**：`list_tasks` 缺省等价 `kinds=open,started,review,blocked&unclaimed=1`（未完成无主），首页 50 行即含待规划，首屏 ≤ 40 KB；`all_status: true` 为全量逃生口（等价 CLI `--all-status`，整区全状态）；`unfinished` / `kinds` / `unclaimed` 可单独覆盖缺省收敛。该口径随 FETCHC-2 落地；未落地前 `list_tasks` 仍按不分状态的整区分页返回。
 
 **MCP**：`list_statuses` / `add_status`（`request_id` 作幂等键） / `remove_status`（`migrate_to` 走 query，无幂等键，与 REST 一致）；强制 `resolveWorkspaceId`，错误码透传（`WORKSPACE_STATUS_BUILTIN` / `WORKSPACE_STATUS_EXISTS` / `MIGRATION_TARGET_REQUIRED` / `MIGRATION_TARGET_INVALID`）。
 

@@ -73,7 +73,7 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 ### 5. 分派
 
 - 只给空闲 slot 派卡；每次只派 1 张卡并发送完整 36 位 UUID、标题、工作区 id/name/path 与本卡范围。按第 7 节为刚结束任务的 slot 续派；其他空 slot 从全部已授权工作区的 ready 池按第 4 节排序取卡。
-- 同一工作区可派给多个 slot；用 slot 账本和 `kb list-tasks --workspace <id> --all-status --full --json` 找到在飞卡，再逐卡核对目标文件集与 owner；文件不重叠才并行。文件冲突的候选排队，继续检查其他候选；不得整区独占、整区串行或给 worker 一次发多卡队列。
+- 同一工作区可派给多个 slot；用 slot 账本和 `kb list-tasks --workspace <id> --status 进行中 --json` 找到在飞卡（找在飞卡只需进行中），再逐卡核对目标文件集与 owner；确需整盘时才 `kb list-tasks --workspace <id> --all-status --json`（全量，单次体量约 2.6 MB）。文件不重叠才并行。文件冲突的候选排队，继续检查其他候选；不得整区独占、整区串行或给 worker 一次发多卡队列。
 - worker 提示必须自包含：本卡完整 UUID、标题、工作区 id/name/path、本卡验收范围、slot 身份、执行规则与安全红线、该项目规则入口（工作区根 AGENTS.md / CLAUDE.md）；不得让 worker 自行从候选池选卡。
 - slot 身份固定为 `KB_AGENT=swing-w1` / `swing-w2` / `swing-w3`，设置方式按宿主：Git Bash `KB_AGENT=swing-w1 kb claim <id>`；PowerShell 先 `$env:KB_AGENT='swing-w1'` 再 `kb claim <id>`。同一 slot 换卡或换实例都不换身份；只有同一张进行中卡由原 slot 续做时保留现有 claim。
 - 卡数上限只计实际 done。派卡前预占 1 个 reservation，并确保 `done_count + active_reservations < 卡数上限`；reservation 覆盖已派发或排队、尚未回读分类的任务。仍由该 slot 执行的卡继续占 reservation；done 回读确认后转为 done，fail / 跳过 / claim 失败经状态回读后释放，fail / 跳过不计 done。决策等待中且 claim 仍由该 slot 持有时保留 reservation；`LOCKED` 且 claim 已释放后记录锁定并释放 reservation，不 fail。连班模式不设上限但继续记 reservation。达到上限或 `done_count + active_reservations` 已满时停止补派，先让在飞卡收尾；失败释放额度且 done 未达上限时可补派下一张。

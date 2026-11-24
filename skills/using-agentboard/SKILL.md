@@ -54,8 +54,8 @@ AgentBoard 用 `kb` 管理「工作空间」下的任务。本文件是技能族
 
 ```powershell
 kb list-spaces --current
-kb list-tasks [--workspace <id|名>] [--status <状态>] [--all-status]
-kb next [--workspace <id|名>] [--limit N]
+kb list-tasks [--workspace <id|名>] [--status <状态>]   # 缺省=当前工作区·未完成·无主
+kb next [--workspace <id|名>] [--limit N]              # 找可领卡入口
 kb stats [--workspace <id|名>]
 kb show <issue-id> [--mark-read] [--comments <n|all>]
 kb claim <issue-id> [--no-knowledge] [--request-id <uuid>]
@@ -78,6 +78,8 @@ kb stop-check <issue-id>
 ```
 
 `kb --json` 放子命令前；例如 `kb --json show <id>`。列表支持 ≥8 位唯一前缀，但卡面、依赖边和提交信息一律写完整 36 位 UUID。
+
+取数口径：`kb list-tasks` 缺省只取「未完成 · 无主」；`--status` 走服务端过滤该状态全貌（含他人占用），不叠加无主筛选；找可领卡用 `kb next`，不用 `list-tasks`。`--all-status`（全量，整区全状态）是逃生口，只在确需整盘时用，单次体量约 2.6 MB（本区 966 卡实测）。
 
 ## 任务流转
 
