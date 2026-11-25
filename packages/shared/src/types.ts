@@ -424,6 +424,11 @@ export interface Message { id: string; session_id: string; role: 'user' | 'assis
   meta_json?: MessageMeta | null; }
 /** CHAT-STREAM-PROBE：CLI 流式输出粒度。token=逐字增量；block=按段/块输出；none=一次性输出无流式 */
 export type StreamingGranularity = 'token' | 'block' | 'none';
+
+export interface StreamingPathEvent {
+  type: 'streaming';
+  granularity: StreamingGranularity;
+}
 export interface CliInfo {
   id: string; displayName: string; installed: boolean; version: string | null;
   /** false=模型只读（由 CLI profile 配置决定，UI 禁用选择并标注，如 dsh） */
@@ -451,7 +456,7 @@ export type WsEvent =
     forked_from_session_id?: string | null;
   }
   | { type: 'session.deleted'; session_id: string }
-  | { type: 'session.event'; session_id: string; event: { type: 'text' | 'thinking' | 'tool' | 'error' | 'end'; [k: string]: unknown } }
+  | { type: 'session.event'; session_id: string; event: StreamingPathEvent | { type: 'text' | 'thinking' | 'tool' | 'error' | 'end'; [k: string]: unknown } }
   | { type: 'session.runtime'; session_id: string; queued_count: number; waiting_slot: boolean }
   | { type: 'message.added'; message: Message }
   | { type: 'clis.changed'; clis: CliInfo[] }
