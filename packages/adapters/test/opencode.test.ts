@@ -147,6 +147,7 @@ describe('opencode runTurn', () => {
 
     const result = await resultPromise;
     expect(events).toEqual([
+      { type: 'streaming', granularity: 'none' },
       { type: 'error', message: 'Upstream request failed: upstream 400' },
       { type: 'tool', name: 'shell', input: '{"command":"ls"}' },
       { type: 'text', delta: 'DONE' },
@@ -174,6 +175,7 @@ describe('opencode runTurn', () => {
 
     const result = await resultPromise;
     expect(events).toEqual([
+      { type: 'streaming', granularity: 'none' },
       { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nconfig load failed: invalid json' },
       { type: 'end', exitCode: 0 },
     ]);
@@ -198,6 +200,7 @@ describe('opencode runTurn', () => {
 
     const result = await resultPromise;
     expect(events).toEqual([
+      { type: 'streaming', granularity: 'none' },
       { type: 'error', message: '适配器未捕获到结构化输出；stderr 尾部：\nspawn 失败：spawn opencode ENOENT' },
       { type: 'end', exitCode: -1 },
     ]);
@@ -250,6 +253,7 @@ it.each([false, true])('maps SSE text and tools without retrying a submitted pro
     expect(await handle.result).toEqual({ adapterSessionId: SESSION_ID, exitCode: disconnect ? -1 : 0 });
     expect(serve).toHaveBeenCalledTimes(1);
     expect(legacy).not.toHaveBeenCalled();
+    expect(events[0]).toEqual({ type: 'streaming', granularity: 'token' });
     expect(events.filter(event => event.type === 'text')).toEqual([{ type: 'text', delta: 'he' }, { type: 'text', delta: 'llo' }]);
     expect(events).toContainEqual({ type: 'tool', name: 'read', input: '{"path":"test"}' });
     expect(events.filter(event => event.type === 'end')).toHaveLength(1);

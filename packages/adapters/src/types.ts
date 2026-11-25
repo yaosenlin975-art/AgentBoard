@@ -1,4 +1,4 @@
-import type { ModelInfo, StreamingGranularity } from '@agentboard/shared';
+import type { ModelInfo, StreamingGranularity, StreamingPathEvent } from '@agentboard/shared';
 
 /** ask 事件的单个选项：label 必填，description 为补充说明 */
 export interface AskOption {
@@ -17,6 +17,7 @@ export interface AskEvent {
 }
 
 export type UnifiedEvent =
+  | StreamingPathEvent
   | { type: 'text'; delta: string }
   /** 模型思考/推理内容（终值或增量），服务端聚合为「思考」折叠块，不进聊天正文 */
   | { type: 'thinking'; delta: string }

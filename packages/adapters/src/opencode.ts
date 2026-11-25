@@ -119,7 +119,7 @@ export const opencodeAdapter: AgentAdapter = {
   id: 'opencode',
   displayName: 'OpenCode',
   supportsModelSelection: true,
-  /** `opencode run --format json` 每个 part 一次性完整文本，无逐字增量（CHAT-STREAM-OPENCODE 若接入真流式改 token） */
+  /** 旧版路径默认整段输出；流式能力按轮次随事件发送。 */
   streaming: 'none',
   /** 只有 `opencode run --help` 实测到 `--file` 才为真（见 detectOpencode 的探测与缓存） */
   supportsImageInput(_model: string | undefined, cliVersion?: string | null): boolean {
@@ -179,6 +179,7 @@ export const opencodeAdapter: AgentAdapter = {
               onSubmitted(sessionId) {
                 state.sessionId = sessionId;
                 submitted = true;
+                runner.emit({ type: 'streaming', granularity: 'token' });
               },
               onEvent({ type, data }) {
                 if (runner.isKilled()) return;
@@ -219,6 +220,7 @@ export const opencodeAdapter: AgentAdapter = {
           runner.finish(-1);
           return;
         }
+        runner.emit({ type: 'streaming', granularity: 'none' });
         const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
         runner.bindChild(child);
         child.onLine((_source, line) => {
