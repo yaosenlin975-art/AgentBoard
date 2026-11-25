@@ -124,22 +124,30 @@ interface TreeCounts {
 }
 
 /**
- * KB-CLI-4（CLI-19）：任务树本地组装——一次 `GET /api/issues?workspace=` 取回整区数据，在内存里按
- * `parent_issue_id` 分组、算 `child_count` / `descendant_count` / `descendants_closed_count`、再前序
- * 遍历输出；取代旧实现对每个父节点各发一次 `/api/issues/tree`（实测 525 卡 → 530 次请求）。
+ * KB-CLI-4（CLI-19）：任务树本地组装——按 `parent_issue_id` 分组、算 `child_count` /
+ * `descendant_count` / `descendants_closed_count`、再前序遍历输出；取代旧实现对每个父节点各发一次
+ * `/api/issues/tree`（实测 525 卡 → 530 次请求）。
  *
  * 「输出与逐父接口逐行一致」依赖三条已实测口径（525 节点全量比对，0 处不一致）：
  * - `GET /api/issues` 按 `sort_order,created_at,id` 升序返回，与逐父树查询同排序口径，因此
  *   「保持数组顺序分组」得到的兄弟顺序就是旧实现的兄弟顺序；
  * - `parent_issue_id` 指向已删除节点的孤儿不会被遍历到（与旧 BFS 一样既不输出、也不进可见集）；
  * - 输出键序 = 整区字段序（`description` 由 projectForJson 摘除）+ 三个计数 + `tree_depth` / `tree_context`。
+ *
+ * FETCHC-1：`structure` 只决定层级与计数（`--status` 时是整区骨架），`rows` 提供逐行展示字段
+ * （`--status` 时是命中集 + 补链祖先），两条路径的输出逐字一致。
  */
-async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string | undefined, withFields: boolean): Promise<VisibleTreeItem[]> {
-  const issues = await readWorkspaceIssues(ctx, workspaceId, withFields);
+async function buildTree(
+  ctx: Ctx,
+  workspaceId: string,
+  status: string | undefined,
+  structure: readonly Issue[],
+  rows: ReadonlyMap<string, Issue>,
+): Promise<VisibleTreeItem[]> {
   const issueById = new Map<string, Issue>();
   const childrenByParent = new Map<string | null, Issue[]>();
   const statusesInUse = new Set<string>();
-  for (const issue of issues) {
+  for (const issue of structure) {
     if (issueById.has(issue.id)) throw new Error('任务树返回了重复节点，请检查 parent_issue_id 完整性');
     issueById.set(issue.id, issue);
     statusesInUse.add(issue.status);
@@ -164,7 +172,7 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string |
   };
 
   const visibleIds = new Set<string>();
-  for (const issue of issues) {
+  for (const issue of structure) {
     if (status !== undefined && issue.status !== status) continue;
     visibleIds.add(issue.id);
     let ancestorId = issue.parent_issue_id;
@@ -182,8 +190,10 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string |
   while (stack.length > 0) {
     const current = stack.pop()!;
     if (!visibleIds.has(current.issue.id)) continue;
+    const row = rows.get(current.issue.id);
+    if (row === undefined) throw new Error(`任务树缺少节点数据：${current.issue.id}`);
     output.push({
-      ...current.issue,
+      ...row,
       ...countSubtree(current.issue.id),
       tree_depth: current.depth,
       tree_context: status !== undefined && current.issue.status !== status,
@@ -194,6 +204,74 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string |
     }
   }
   return output;
+}
+
+/**
+ * FETCHC-1：`--tree --status X` 的两段式取数。
+ * ① `status=X` 取命中行（完整展示字段）；
+ * ② 整区骨架（`id,status,parent_issue_id`）供层级与计数——`descendant_*` 覆盖全部后代，只凭命中集算不出；
+ * ③ 命中集缺的祖先逐个 `GET /api/issues/<id>?workspace_id=` 补展示字段。
+ * 任一步不成立（旧服务端 400/404、祖先已不在、命中与骨架不一致）返回 null，由调用方回落整区读。
+ */
+async function readNarrowedTree(
+  ctx: Ctx,
+  workspaceId: string,
+  status: string,
+  withFields: boolean,
+): Promise<{ structure: Issue[]; rows: Map<string, Issue> } | null> {
+  const hits = await tryStatusFilteredIssues(ctx, workspaceId, withFields, status);
+  if (hits === null) return null;
+  let structure: Issue[];
+  try {
+    structure = await readWorkspaceIssues(ctx, workspaceId, true, '', TREE_SKELETON_FIELDS);
+  } catch (err) {
+    if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
+    return null;
+  }
+  const structureById = new Map<string, Issue>();
+  for (const node of structure) structureById.set(node.id, node);
+  const rows = new Map<string, Issue>();
+  for (const hit of hits) {
+    const node = structureById.get(hit.id);
+    if (node?.status !== status || hit.status !== status || node.parent_issue_id !== hit.parent_issue_id) return null;
+    rows.set(hit.id, hit);
+  }
+  if (structure.some(node => node.status === status && !rows.has(node.id))) return null;
+  const missing: string[] = [];
+  for (const hit of hits) {
+    let ancestorId = structureById.get(hit.id)!.parent_issue_id;
+    while (ancestorId !== null && !rows.has(ancestorId) && !missing.includes(ancestorId)) {
+      const ancestor = structureById.get(ancestorId);
+      if (ancestor === undefined) break; // 孤儿祖先：整区口径同样只输出到断链处，不必补链
+      missing.push(ancestorId);
+      ancestorId = ancestor.parent_issue_id;
+    }
+  }
+  for (const id of missing) {
+    let detail: Issue;
+    try {
+      detail = await request<Issue>(
+        ctx.base, 'GET',
+        `/api/issues/${encodeURIComponent(id)}?workspace_id=${encodeURIComponent(workspaceId)}`,
+      );
+    } catch (err) {
+      if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
+      return null;
+    }
+    const node = structureById.get(id);
+    if (detail.id !== id || detail.status !== node?.status || detail.parent_issue_id !== node?.parent_issue_id) return null;
+    rows.set(id, projectToTaskFields(detail, withFields));
+  }
+  return { structure, rows };
+}
+
+async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string | undefined, withFields: boolean): Promise<VisibleTreeItem[]> {
+  if (status !== undefined) {
+    const narrowed = await readNarrowedTree(ctx, workspaceId, status, withFields);
+    if (narrowed !== null) return buildTree(ctx, workspaceId, status, narrowed.structure, narrowed.rows);
+  }
+  const issues = await readWorkspaceIssues(ctx, workspaceId, withFields);
+  return buildTree(ctx, workspaceId, status, issues, new Map(issues.map(issue => [issue.id, issue])));
 }
 
 /**
@@ -219,22 +297,54 @@ function decisionMark(issue: Issue): string {
  * 只有 `--json --full` 才走无 `fields` 的全量请求。
  * 顺序与服务端 `rowToIssue` 的键序一致（去掉 description），保证 `--json` 输出逐行不变。
  */
-const LIST_TASK_FIELDS = [
+const LIST_TASK_FIELD_NAMES = [
   'id', 'workspace_id', 'title', 'priority', 'labels', 'status', 'sort_order',
   'claimed_by', 'claimed_at', 'session_id', 'parent_issue_id', 'due_date', 'due_time',
   'comment_count', 'dependency_violation', 'decision_locked', 'open_decision_id',
   'decision_grace_until', 'decision_waiting_seconds',
   'blocked_by_count', 'blocked_by_open_count', 'resolved',
   'created_at', 'updated_at', 'children_total', 'children_closed',
-].join(',');
+] as const;
+
+const LIST_TASK_FIELDS = LIST_TASK_FIELD_NAMES.join(',');
+
+/** FETCHC-1：`--json --full` 走无 `fields=` 的整区行，键序沿用 `rowToIssue`（含正文与租约列） */
+const FULL_TASK_FIELD_NAMES = [
+  'id', 'workspace_id', 'title', 'description', 'priority', 'labels', 'status', 'sort_order',
+  'claimed_by', 'claimed_at', 'claim_lease_until', 'last_heartbeat_at', 'session_id', 'parent_issue_id',
+  'due_date', 'due_time', 'comment_count', 'dependency_violation', 'decision_locked', 'open_decision_id',
+  'decision_grace_until', 'decision_waiting_seconds',
+  'blocked_by_count', 'blocked_by_open_count', 'resolved',
+  'created_at', 'updated_at', 'children_total', 'children_closed',
+] as const;
+
+/** FETCHC-1：树骨架只取层级与状态（§5 的 counts 由骨架算不出，仍需逐行全字段展示） */
+const TREE_SKELETON_FIELDS = 'id,status,parent_issue_id';
+
+/**
+ * FETCHC-1：`GET /api/issues/:id` 返回的是详情投影（含 description 等），
+ * 补链祖先必须按整区读同序剪裁，否则 `--json` 的键序/键集与整区读不一致。
+ */
+function projectToTaskFields(issue: Issue, withFields: boolean): Issue {
+  const source = issue as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const field of withFields ? LIST_TASK_FIELD_NAMES : FULL_TASK_FIELD_NAMES) {
+    if (Object.hasOwn(source, field)) out[field] = source[field];
+  }
+  return out as unknown as Issue;
+}
 
 /** 旧服务端 / 回滚开关（400 或 404）命中一次后，本次进程内不再尝试 `fields=` */
 let issueFieldsUnsupported = false;
+
+/** FETCHC-1：旧服务端不认 `status=`（400/404）时命中一次，本进程内不再尝试，回落整区 + 本地筛 */
+let statusFilterUnsupported = false;
 
 /** 单测复位回落标志（同一进程连跑多个用例时互不影响） */
 export function resetIssueFieldsFallback(): void {
   issueFieldsUnsupported = false;
   blockedKindUnsupported = false;
+  statusFilterUnsupported = false;
 }
 
 /**
@@ -256,11 +366,13 @@ let blockedKindUnsupported = false;
  * `filterQuery` 为 OPT-01 的缺省收敛参数，回落请求同样携带；旧服务端不认 `kind=blocked` 时
  * 由 `readWorkspaceIssues` 整体回落到 `LEGACY_CONVERGED_FILTER`（ARCH-02）。
  */
-async function fetchWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery: string): Promise<Issue[]> {
+async function fetchWorkspaceIssues(
+  ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery: string, fields = LIST_TASK_FIELDS,
+): Promise<Issue[]> {
   const path = '/api/issues?workspace=' + encodeURIComponent(workspaceId) + filterQuery;
   if (!withFields || issueFieldsUnsupported) return request<Issue[]>(ctx.base, 'GET', path);
   try {
-    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${LIST_TASK_FIELDS}`);
+    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${fields}`);
   } catch (err) {
     if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
     issueFieldsUnsupported = true;
@@ -268,17 +380,52 @@ async function fetchWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: b
   }
 }
 
-async function readWorkspaceIssues(ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery = ''): Promise<Issue[]> {
+async function readWorkspaceIssues(
+  ctx: Ctx, workspaceId: string, withFields: boolean, filterQuery = '', fields = LIST_TASK_FIELDS,
+): Promise<Issue[]> {
   const effective = blockedKindUnsupported && filterQuery !== '' ? LEGACY_CONVERGED_FILTER : filterQuery;
   try {
-    return await fetchWorkspaceIssues(ctx, workspaceId, withFields, effective);
+    return await fetchWorkspaceIssues(ctx, workspaceId, withFields, effective, fields);
   } catch (err) {
     // ARCH-02：旧服务端不认 kind=blocked → 退回改造前的收敛集合，本次进程内不再尝试
     if (effective === filterQuery && filterQuery.includes('blocked') && err instanceof CliHttpError && err.status === 400) {
       blockedKindUnsupported = true;
-      return fetchWorkspaceIssues(ctx, workspaceId, withFields, LEGACY_CONVERGED_FILTER);
+      return fetchWorkspaceIssues(ctx, workspaceId, withFields, LEGACY_CONVERGED_FILTER, fields);
     }
     throw err;
+  }
+}
+
+/**
+ * FETCHC-1：`status=` 服务端过滤（**不叠加** kinds/unclaimed——显式状态要给出该状态全貌，含他人占用）。
+ * 返回 null 表示服务端不认 `status=`（400/404），由调用方按各自口径回落整区读。
+ *
+ * 400 的归属要分辨：`fields=` 也不被认时同样是 400。先带 `fields=` 试一次，失败后不带 fields 再试——
+ * 第二次成功即「只有 fields 不被认」（记 `issueFieldsUnsupported`），第二次仍失败才是「status 不被认」。
+ * 否则会把 status 的 400 误记成 fields 回落，让整个进程丢掉字段裁剪、输出多出 lease 列。
+ */
+async function tryStatusFilteredIssues(
+  ctx: Ctx, workspaceId: string, withFields: boolean, status: string,
+): Promise<Issue[] | null> {
+  if (statusFilterUnsupported) return null;
+  const path = `/api/issues?workspace=${encodeURIComponent(workspaceId)}&status=${encodeURIComponent(status)}`;
+  const preferFields = withFields && !issueFieldsUnsupported;
+  try {
+    return await request<Issue[]>(ctx.base, 'GET', preferFields ? `${path}&fields=${LIST_TASK_FIELDS}` : path);
+  } catch (err) {
+    if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
+    if (preferFields) {
+      try {
+        const rows = await request<Issue[]>(ctx.base, 'GET', path);
+        issueFieldsUnsupported = true;
+        return rows;
+      } catch (err2) {
+        if (!(err2 instanceof CliHttpError) || (err2.status !== 400 && err2.status !== 404)) throw err2;
+      }
+    }
+    statusFilterUnsupported = true;
+    ctx.io.writeErr('服务端不支持 status= 过滤，回落整区读取后按状态筛选。\n');
+    return null;
   }
 }
 
@@ -345,9 +492,15 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
     await requireKnownStatus(ctx, selected, args.status);
   }
   const flatWithFields = !(ctx.json === true && args.full === true);
-  const filterQuery = converged ? DEFAULT_CONVERGED_FILTER : '';
   const issues = (await Promise.all(
-    selected.map(space => readWorkspaceIssues(ctx, space.id, flatWithFields, filterQuery)),
+    selected.map(async (space) => {
+      if (args.status === undefined) {
+        return readWorkspaceIssues(ctx, space.id, flatWithFields, converged ? DEFAULT_CONVERGED_FILTER : '');
+      }
+      // FETCHC-1：显式 status 走服务端过滤；`:filtered` 的本地筛保留作旧服务端兜底
+      const narrowed = await tryStatusFilteredIssues(ctx, space.id, flatWithFields, args.status!);
+      return narrowed ?? readWorkspaceIssues(ctx, space.id, flatWithFields);
+    }),
   )).flat();
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {

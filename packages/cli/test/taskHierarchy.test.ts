@@ -46,7 +46,7 @@ describe('CLI task hierarchy', () => {
     expect(calls[2]?.url).toBe('http://agentboard.test/api/issues/child-1');
   });
 
-  it('assembles the tree locally from one workspace read, keeping ancestors as context rows', async () => {
+  it('assembles the filtered tree locally, keeping ancestors as context rows', async () => {
     const root = issue('root-1', 'Root', null);
     const child = { ...issue('child-1', 'Child', 'root-1'), status: '进行中' as const };
     const grand = { ...issue('grand-1', 'Grand', 'child-1'), status: '已关闭' as const };
@@ -61,14 +61,20 @@ describe('CLI task hierarchy', () => {
         { id: 's2', workspace_id: workspace.id, name: '进行中', kind: 'started', sort_order: 10, is_builtin: 1 },
       ], { headers: { 'x-agentboard-version': '0.1.0' } });
       if (url.startsWith(`http://agentboard.test/api/issues?workspace=${workspace.id}`)) {
-        return Response.json([root, child, grand, orphan], { headers: { 'x-agentboard-version': '0.1.0' } });
+        const rows = new URL(url).searchParams.has('status') ? [child] : [root, child, grand, orphan];
+        return Response.json(rows, { headers: { 'x-agentboard-version': '0.1.0' } });
       }
+      if (url.includes('/api/issues/root-1?')) return Response.json(root, { headers: { 'x-agentboard-version': '0.1.0' } });
       return Response.json({ error: { code: 'NOT_FOUND', message: 'mock 未匹配：' + url } }, { status: 404 });
     }));
     const harness = context();
     await listTasks(harness.ctx, { workspace: workspace.id, tree: true, status: '进行中' });
-    // KB-CLI-4（CLI-19/20）：整区一次读取；不再逐父打 /api/issues/tree；内置状态免取字典
-    expect(urls.filter((url) => url.includes('/api/issues?workspace='))).toHaveLength(1);
+    // KB-CLI-4（CLI-19/20）：不再逐父打 /api/issues/tree；内置状态免取字典
+    // FETCHC-1：树带 `--status` 走两段式——命中集读（带 status=）+ 整区骨架读（只取层级字段）
+    const issueReads = urls.filter((url) => url.includes('/api/issues?workspace='));
+    expect(issueReads).toHaveLength(2);
+    expect(issueReads[0]).toContain('&status=%E8%BF%9B%E8%A1%8C%E4%B8%AD');
+    expect(issueReads[1]).toContain('&fields=id,status,parent_issue_id');
     expect(urls.filter((url) => url.includes('/api/issues/tree?'))).toHaveLength(0);
     expect(urls.filter((url) => url.includes('/statuses'))).toHaveLength(0);
     const rows = (JSON.parse(harness.output) as { items: Array<Record<string, unknown>> }).items;

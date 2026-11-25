@@ -254,6 +254,8 @@ describe('kb list-tasks status guard', () => {
     expect(byStatus.err).not.toContain('默认已收敛');
     const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
     expect(issueCalls).toHaveLength(1);
+    // FETCHC-1：显式状态走服务端过滤，且不叠加 kinds/unclaimed（否则 --status 进行中 恒空）
+    expect(issueCalls[0]!.url).toContain('status=%E5%B7%B2%E5%BA%9F%E5%BC%83');
     expect(issueCalls[0]!.url).not.toContain('kinds=');
     expect(issueCalls[0]!.url).not.toContain('unclaimed=');
   });
@@ -316,5 +318,129 @@ describe('kb list-tasks status guard', () => {
     const secondCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
     expect(secondCalls).toHaveLength(1);
     expect(secondCalls[0]!.url).not.toContain('blocked');
+  });
+
+  describe('FETCHC-1 服务端 status= 过滤', () => {
+    // 层级：p1(进行中) → p2(已关闭) → 命中(待规划)；root2(待规划) 为根命中；other 为同层非命中
+    // 键序与服务端 rowToIssue 一致（补链祖先按 LIST_TASK_FIELDS 剪裁，键序必须可比）
+    const treeIssue = (id: string, status: string, parent: string | null): Record<string, unknown> => ({
+      id, workspace_id: 'ws1', title: `标题-${id}`, description: `正文-${id}`, priority: '中', labels: [],
+      status, sort_order: 0, claimed_by: null, claimed_at: null, session_id: null, parent_issue_id: parent,
+      due_date: null, due_time: null, comment_count: 0,
+      dependency_violation: null, decision_locked: false, open_decision_id: null, decision_grace_until: null,
+      decision_waiting_seconds: null, blocked_by_count: 0, blocked_by_open_count: 0, resolved: false,
+      created_at: 1, updated_at: 1, children_total: 0, children_closed: 0,
+    });
+    const TREE = [
+      treeIssue('p1', '进行中', null),
+      treeIssue('p2', '已关闭', 'p1'),
+      treeIssue('hit', '待规划', 'p2'),
+      treeIssue('root2', '待规划', null),
+      treeIssue('other', '已关闭', null),
+    ];
+    const byId = new Map(TREE.map(row => [String(row.id), row]));
+
+    /** 支持 status= 的新服务端：非分页按 status 过滤；单卡详情返回比列表多的列，验证补链剪裁 */
+    const statusServer: Handler = (method, url) => {
+      if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
+      if (method === 'GET' && url === '/api/workspaces/ws1/statuses') return { status: 200, body: STATUSES };
+      if (method === 'GET' && url.startsWith('/api/issues?')) {
+        const parsed = new URL(url, 'http://x');
+        const status = parsed.searchParams.get('status');
+        const body = status === null ? TREE : TREE.filter(row => row.status === status);
+        return { status: 200, body };
+      }
+      const detail = /^\/api\/issues\/([^/?]+)\?/.exec(url);
+      if (method === 'GET' && detail) {
+        const row = byId.get(detail[1]!);
+        if (row === undefined) return { status: 404, body: { error: { code: 'NOT_FOUND', message: '任务不存在' } } };
+        return { status: 200, body: { ...row, description: '正文', claim_lease_until: null, last_heartbeat_at: null } };
+      }
+      return undefined;
+    };
+
+    it('平铺 --status 只请求命中集（带 status=，不带 kinds=/unclaimed=）', async () => {
+      handler = statusServer;
+      const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--status', '待规划']);
+      expect(result.code).toBe(0);
+      expect((JSON.parse(result.out) as { items: Array<{ id: string }> }).items.map(item => item.id))
+        .toEqual(['hit', 'root2']);
+      const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+      expect(issueCalls).toHaveLength(1);
+      expect(issueCalls[0]!.url).toContain('&status=%E5%BE%85%E8%A7%84%E5%88%92');
+      expect(issueCalls[0]!.url).not.toContain('kinds=');
+      expect(issueCalls[0]!.url).not.toContain('unclaimed=');
+    });
+
+    it('树 --status 两段式：命中集 + 骨架 + 逐祖先补链，输出与整区读逐字一致', async () => {
+      handler = statusServer;
+      const narrowed = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--tree', '--status', '待规划']);
+      expect(narrowed.code).toBe(0);
+      const narrowedCalls = [...calls];
+      // 祖先 p1 / p2 不在命中集，需两次详情补链
+      const urls = narrowedCalls.map(call => call.url);
+      expect(urls.some(url => url.includes('&status='))).toBe(true);
+      expect(urls).toContain('/api/issues?workspace=ws1&fields=id,status,parent_issue_id');
+      expect(urls.filter(url => url.startsWith('/api/issues/p') && url.includes('workspace_id=ws1'))).toHaveLength(2);
+      // 祖先行走在命中行之前（层级路径完整）：p1(路径) → p2(路径) → hit
+      const items = (JSON.parse(narrowed.out) as { items: Array<Record<string, unknown>> }).items;
+      expect(items.map(item => item.id)).toEqual(['p1', 'p2', 'hit', 'root2']);
+      expect(items.map(item => item.tree_context)).toEqual([true, true, false, false]);
+      expect(items.map(item => item.tree_depth)).toEqual([0, 1, 2, 0]);
+      // 祖先行按列表字段剪裁：不应混入详情投影的正文
+      expect(narrowed.out).not.toContain('正文');
+      expect(Object.keys(items[0]!)).not.toContain('description');
+
+      // 对照：status= 被拒时回落整区读（= 改前路径），输出逐字节一致
+      handler = (method, url) => {
+        if (method === 'GET' && url.startsWith('/api/issues?') && url.includes('status=')) {
+          return { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: '未知参数：status' } } };
+        }
+        return statusServer(method, url);
+      };
+      const legacy = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--tree', '--status', '待规划']);
+      expect(legacy.code).toBe(0);
+      expect(narrowed.out).toBe(legacy.out);
+    });
+
+    it('读骨架时有任务刚进入筛选状态，回落整区读并保留新命中', async () => {
+      handler = (method, url) => {
+        if (method === 'GET' && url.startsWith('/api/issues?') && !url.includes('status=')) {
+          return { status: 200, body: TREE.map(row => row.id === 'other' ? { ...row, status: '待规划' } : row) };
+        }
+        return statusServer(method, url);
+      };
+      const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--tree', '--status', '待规划']);
+      expect(result.code).toBe(0);
+      expect((JSON.parse(result.out) as { items: Array<{ id: string }> }).items.map(item => item.id))
+        .toEqual(['p1', 'p2', 'hit', 'root2', 'other']);
+    });
+
+    it('status= 返回 400（旧服务端）时回落整区 + 本地筛，退出码 0、输出不变', async () => {
+      handler = (method, url) => {
+        if (method === 'GET' && url.startsWith('/api/issues?') && url.includes('status=')) {
+          return { status: 400, body: { error: { code: 'VALIDATION_ERROR', message: '未知参数：status' } } };
+        }
+        return statusServer(method, url);
+      };
+      // 先跑一次建立降级标记，再与「显式整区」口径比对输出
+      const flat = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--status', '待规划']);
+      expect(flat.code).toBe(0);
+      expect(flat.err).toContain('回落整区读取');
+      expect((JSON.parse(flat.out) as { items: Array<{ id: string }> }).items.map(item => item.id))
+        .toEqual(['hit', 'root2']);
+
+      const tree = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--tree', '--status', '待规划']);
+      expect(tree.code).toBe(0);
+      const items = (JSON.parse(tree.out) as { items: Array<Record<string, unknown>> }).items;
+      expect(items.map(item => item.id)).toEqual(['p1', 'p2', 'hit', 'root2']);
+
+      // 进程内只试一次 status=：后续调用直接走整区
+      calls = [];
+      const again = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--status', '待规划']);
+      expect(again.code).toBe(0);
+      expect(calls.filter(call => call.url.includes('status='))).toHaveLength(0);
+      expect(again.out).toBe(flat.out);
+    });
   });
 });
