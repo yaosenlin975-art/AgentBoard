@@ -2,13 +2,14 @@
  * Task 13 测试：操作区四态切换、评论发送两态与 woke 提示、防抖 PATCH、删除二次确认、
  * 派发弹窗提交体（cli/model/reuse_session/prompt 渲染变量）、RightPanel 容器收起/展开/拖拽宽度。
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HttpResponse, http } from 'msw';
 import type { Issue, IssueComment, Session, Workspace } from '@agentboard/shared';
 import { DetailPanel } from '../components/detail/DetailPanel';
+import { TitleInlineEditor } from '../components/detail/TitleInlineEditor';
 import { RightPanel } from '../components/right/RightPanel';
 import { useAppStore } from '../state/appStore';
 import { usePanelStore } from '../state/panelStore';
@@ -570,55 +571,124 @@ describe('DetailPanel 标题就地编辑（D1）', () => {
     expect(screen.queryByTestId('title-display')).not.toBeInTheDocument();
   });
 
-  it('悬停从行首平滑滚到末尾，移出后归零；标题未溢出时不滚动', async () => {
-    mockDetailApi(makeIssue({ title: '这是一个用于验证悬停横向滚动的超长任务标题' }));
-    renderDetail();
-    const display = await screen.findByTestId('title-display');
-    Object.defineProperty(display, 'clientWidth', { configurable: true, value: 200 });
-    Object.defineProperty(display, 'scrollWidth', { configurable: true, value: 500 });
-    const scrollTo = vi.fn();
-    display.scrollTo = scrollTo;
-    display.scrollLeft = 120;
+  describe('自动往返滚动', () => {
+    afterEach(() => vi.restoreAllMocks());
 
-    fireEvent.mouseEnter(display);
-    expect(display.scrollLeft).toBe(0);
-    expect(scrollTo).toHaveBeenCalledWith({ left: 300, behavior: 'smooth' });
+    function captureFrames(): FrameRequestCallback[] {
+      const frames: FrameRequestCallback[] = [];
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+      return frames;
+    }
 
-    fireEvent.mouseLeave(display);
-    expect(display.scrollLeft).toBe(0);
+    function stepFrame(frames: FrameRequestCallback[], time: number): void {
+      const callback = frames.shift();
+      expect(callback).toBeDefined();
+      callback!(time);
+    }
 
-    Object.defineProperty(display, 'scrollWidth', { configurable: true, value: 150 });
-    scrollTo.mockClear();
-    fireEvent.mouseEnter(display);
-    expect(scrollTo).not.toHaveBeenCalled();
-  });
-
-  it('减少动态时悬停直接定位到标题末尾', async () => {
-    const originalMatchMedia = window.matchMedia;
-    window.matchMedia = ((query: string) => ({
-      matches: query.includes('prefers-reduced-motion'),
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    })) as typeof window.matchMedia;
-    try {
-      mockDetailApi(makeIssue({ title: '这是一个用于验证减少动态定位的超长任务标题' }));
-      renderDetail();
-      const display = await screen.findByTestId('title-display');
+    function renderTitle(): HTMLElement {
+      render(<TitleInlineEditor title="这是一个用于验证自动往返滚动的超长任务标题" onSave={async () => {}} />);
+      const display = screen.getByTestId('title-display');
       Object.defineProperty(display, 'clientWidth', { configurable: true, value: 200 });
-      Object.defineProperty(display, 'scrollWidth', { configurable: true, value: 500 });
-      const scrollTo = vi.fn();
-      display.scrollTo = scrollTo;
+      Object.defineProperty(display, 'scrollWidth', { configurable: true, value: 210 });
+      return display;
+    }
+
+    it('未悬停时自动向右，到末尾反向，到行首再向右', () => {
+      const frames = captureFrames();
+      const display = renderTitle();
+
+      stepFrame(frames, 0);
+      stepFrame(frames, 100);
+      expect(display.scrollLeft).toBeCloseTo(3.2);
+      stepFrame(frames, 200);
+      expect(display.scrollLeft).toBeCloseTo(6.4);
+      stepFrame(frames, 300);
+      expect(display.scrollLeft).toBeCloseTo(9.6);
+      stepFrame(frames, 400);
+      expect(display.scrollLeft).toBeCloseTo(7.2);
+      stepFrame(frames, 500);
+      expect(display.scrollLeft).toBeCloseTo(4);
+      stepFrame(frames, 600);
+      expect(display.scrollLeft).toBeCloseTo(0.8);
+      stepFrame(frames, 700);
+      expect(display.scrollLeft).toBeCloseTo(2.4);
+    });
+
+    it('悬停归零后同速向右，移出保留当前位置继续', () => {
+      const frames = captureFrames();
+      const display = renderTitle();
+
+      stepFrame(frames, 0);
+      stepFrame(frames, 100);
+      expect(display.scrollLeft).toBeCloseTo(3.2);
+      stepFrame(frames, 200);
+      expect(display.scrollLeft).toBeCloseTo(6.4);
 
       fireEvent.mouseEnter(display);
-      expect(scrollTo).toHaveBeenCalledWith({ left: 300, behavior: 'auto' });
-    } finally {
-      window.matchMedia = originalMatchMedia;
-    }
+      expect(display.scrollLeft).toBe(0);
+      stepFrame(frames, 300);
+      stepFrame(frames, 400);
+      expect(display.scrollLeft).toBeCloseTo(3.2);
+
+      fireEvent.mouseLeave(display);
+      expect(display.scrollLeft).toBeCloseTo(3.2);
+      stepFrame(frames, 500);
+      expect(display.scrollLeft).toBeCloseTo(6.4);
+    });
+
+    it('标题未溢出时保持行首', () => {
+      const frames = captureFrames();
+      const display = renderTitle();
+      Object.defineProperty(display, 'scrollWidth', { configurable: true, value: 200 });
+
+      stepFrame(frames, 0);
+      stepFrame(frames, 100);
+      expect(display.scrollLeft).toBe(0);
+    });
+
+    it('减少动态时不启动自动滚动', () => {
+      vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }));
+      const frames = captureFrames();
+      const display = renderTitle();
+
+      fireEvent.mouseEnter(display);
+      expect(frames).toHaveLength(0);
+      expect(display.scrollLeft).toBe(0);
+    });
+
+    it('编辑态停止滚动，退出编辑后从行首重新开始', async () => {
+      const frames = captureFrames();
+      const display = renderTitle();
+      stepFrame(frames, 0);
+      stepFrame(frames, 100);
+      expect(display.scrollLeft).toBeCloseTo(3.2);
+
+      await userEvent.click(screen.getByTestId('title-edit-btn'));
+      frames.length = 0;
+      await userEvent.click(screen.getByTestId('title-cancel'));
+      const restored = screen.getByTestId('title-display');
+      Object.defineProperty(restored, 'clientWidth', { configurable: true, value: 200 });
+      Object.defineProperty(restored, 'scrollWidth', { configurable: true, value: 210 });
+      expect(frames).toHaveLength(1);
+      expect(restored.scrollLeft).toBe(0);
+      stepFrame(frames, 200);
+      stepFrame(frames, 300);
+      expect(restored.scrollLeft).toBeCloseTo(3.2);
+    });
   });
 
   it('点 ✎ 进入编辑：原文本让位、只显示输入框，预填原文且光标在末尾；取消后恢复，连续 3 次成立', async () => {

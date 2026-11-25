@@ -1,6 +1,6 @@
 /**
  * 详情标题（D1/DETAIL-LAYOUT）：渲染在卡片顶栏（关闭按钮那一行）。
- * - 阅读态始终单行，悬停从行首向右横滚展示全文 + title 属性给全文 + ✎ 紧邻其右；
+ * - 阅读态始终单行，自动低速往返滚动；悬停从行首重新开始，title 属性给全文 + ✎ 紧邻其右；
  * - 编辑态在同一行原地展开输入框，保存/取消工具条换行到标题下方。
  * - 两态互斥渲染：编辑时原文本整块让位，不出现「文字 + 输入框」并存；
  * - 进入编辑前量出阅读态高度锁给输入框容器，标题行高度不跳变（工具条增高属已知差异，见未决 11）；
@@ -21,6 +21,7 @@ import { ApiError } from '../../api/client';
 export const TITLE_MAX_LENGTH = 200;
 /** 超过该字数才显示计数 */
 export const TITLE_COUNTER_THRESHOLD = 160;
+const TITLE_SCROLL_SPEED_PX_PER_SECOND = 32;
 
 export interface TitleSaveOptions {
   /** true = 冲突后「仍然保存」，跳过 CAS（不带 expected_updated_at） */
@@ -52,6 +53,7 @@ export function TitleInlineEditor({ title, onSave, editBarSlot = null }: TitleIn
   /** Esc 后保留的一次草稿：下次进入编辑恢复并提示一次 */
   const draftRef = useRef<string | null>(null);
   const wasEditingRef = useRef(false);
+  const restartTitleScrollRef = useRef<(() => void) | null>(null);
 
   // 进入编辑：聚焦并预填原文，光标置末尾（不全选，避免误键入覆盖原标题）
   useEffect(() => {
@@ -69,23 +71,45 @@ export function TitleInlineEditor({ title, onSave, editBarSlot = null }: TitleIn
     wasEditingRef.current = editing;
   }, [editing]);
 
-  // 标题更新后回到行首；避免旧滚动位置把新标题截在中间。
+  // 未悬停与悬停共用同一条低速往返循环；悬停只把相位重置回行首。
   useEffect(() => {
-    if (displayRef.current !== null) displayRef.current.scrollLeft = 0;
-  }, [title]);
-
-  const scrollTitle = useCallback(() => {
+    if (editing) return;
     const display = displayRef.current;
-    if (display === null) return;
-    display.scrollLeft = 0;
-    const overflow = display.scrollWidth - display.clientWidth;
-    if (overflow <= 0) return;
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    display.scrollTo({ left: overflow, behavior: reducedMotion ? 'auto' : 'smooth' });
-  }, []);
+    if (display === null || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
 
-  const resetTitleScroll = useCallback(() => {
-    if (displayRef.current !== null) displayRef.current.scrollLeft = 0;
+    let offset = 0;
+    let previousTime: number | null = null;
+    let frame = 0;
+    const restart = (): void => {
+      offset = 0;
+      previousTime = null;
+      display.scrollLeft = 0;
+    };
+    const tick = (time: number): void => {
+      const max = display.scrollWidth - display.clientWidth;
+      if (max <= 0) {
+        display.scrollLeft = 0;
+        offset = 0;
+      } else {
+        if (previousTime === null) previousTime = time;
+        offset = (offset + ((time - previousTime) / 1000) * TITLE_SCROLL_SPEED_PX_PER_SECOND) % (max * 2);
+        display.scrollLeft = offset <= max ? offset : max * 2 - offset;
+      }
+      previousTime = time;
+      frame = requestAnimationFrame(tick);
+    };
+
+    restartTitleScrollRef.current = restart;
+    restart();
+    frame = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(frame);
+      restartTitleScrollRef.current = null;
+    };
+  }, [editing, title]);
+
+  const restartTitleScroll = useCallback(() => {
+    restartTitleScrollRef.current?.();
   }, []);
 
   const startEditing = useCallback(() => {
@@ -172,8 +196,7 @@ export function TitleInlineEditor({ title, onSave, editBarSlot = null }: TitleIn
           id="detail-title"
           data-testid="title-display"
           title={title}
-          onMouseEnter={scrollTitle}
-          onMouseLeave={resetTitleScroll}
+          onMouseEnter={restartTitleScroll}
           className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[15px] font-semibold leading-[1.42] text-ink"
         >
           <span className="inline-block">{title}</span>
