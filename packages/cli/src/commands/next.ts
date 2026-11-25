@@ -30,16 +30,35 @@ export interface NextArgs {
 }
 
 const NEXT_FIELDS = 'id,title,status,priority,parent_issue_id,labels,claimed_by';
+const NEXT_KINDS = 'open,started,review,blocked,deprecated';
+const NEXT_KIND_SET = new Set(NEXT_KINDS.split(','));
+
+function rejectsProjection(error: unknown): boolean {
+  return error instanceof CliHttpError && (error.status === 400 || error.status === 404);
+}
 
 async function readNextIssues(ctx: Ctx, workspaceId: string): Promise<Issue[]> {
-  const path = `/api/issues?workspace=${encodeURIComponent(workspaceId)}`;
+  const encodedWorkspace = encodeURIComponent(workspaceId);
+  const path = `/api/issues?workspace=${encodedWorkspace}`;
+  const projectedPath = `${path}&fields=${NEXT_FIELDS}`;
   try {
-    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${NEXT_FIELDS}`);
-  } catch (error) {
-    if (error instanceof CliHttpError && (error.status === 400 || error.status === 404)) {
-      return request<Issue[]>(ctx.base, 'GET', path);
+    const statuses = await request<Array<{ name: string; kind: string }>>(
+      ctx.base, 'GET', `/api/workspaces/${encodedWorkspace}/statuses`,
+    );
+    // 同标签关联按状态名排除「已关闭」。自定义 done 仍可能参与关联。
+    if (Array.isArray(statuses)
+      && statuses.some(status => status.name === '已关闭' && status.kind === 'done')
+      && statuses.every(status => status.name === '已关闭' || NEXT_KIND_SET.has(status.kind))) {
+      return await request<Issue[]>(ctx.base, 'GET', `${projectedPath}&kinds=${NEXT_KINDS}`);
     }
-    throw error;
+  } catch (error) {
+    if (!rejectsProjection(error)) throw error;
+  }
+  try {
+    return await request<Issue[]>(ctx.base, 'GET', projectedPath);
+  } catch (error) {
+    if (!rejectsProjection(error)) throw error;
+    return request<Issue[]>(ctx.base, 'GET', path);
   }
 }
 

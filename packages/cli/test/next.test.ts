@@ -86,7 +86,7 @@ function makeIo(): { io: Parameters<typeof main>[1]; out: () => string; err: () 
   let out = '';
   let err = '';
   return {
-    io: { write: (text: string) => { out += text; }, writeErr: (text: string) => { err += text; } },
+    io: { write: (text: string) => { out += text; }, writeErr: (text: string) => { err += text; }, readStdin: async () => '' },
     out: () => out,
     err: () => err,
   };
@@ -158,6 +158,54 @@ describe('kb next 可派卡组合视图（OPT-10）', () => {
     const fallback = await run(['--json']);
     expect(fallback.code).toBe(0);
     expect(fallback.out()).toBe(projected.out());
+  });
+
+  it('字典只有内置已关闭属于 done 时缩小取数，关联结果保持一致', async () => {
+    const expected = await run(['--json']);
+    const original = handler;
+    const requests = () => calls.filter(call => call.url.startsWith('/api/issues?')).map(call => call.url);
+    handler = (method, url) => {
+      if (url === '/api/workspaces/ws1/statuses') {
+        return { status: 200, body: [{ name: '已关闭', kind: 'done' }, { name: '已废弃', kind: 'deprecated' }] };
+      }
+      if (url.includes('&kinds=')) return { status: 200, body: ISSUES.filter(row => row.status !== '已关闭') };
+      return original(method, url);
+    };
+
+    calls = [];
+    const filtered = await run(['--json']);
+    expect(filtered.code).toBe(0);
+    expect(filtered.out()).toBe(expected.out());
+    expect(requests()).toEqual([expect.stringContaining('&kinds=open,started,review,blocked,deprecated')]);
+
+    const filteredHandler = handler;
+    handler = (method, url) => url.includes('&kinds=') ? { status: 400 } : filteredHandler(method, url);
+    calls = [];
+    const fallback = await run(['--json']);
+    expect(fallback.code).toBe(0);
+    expect(fallback.out()).toBe(expected.out());
+    expect(requests()).toEqual([expect.stringContaining('&kinds='), expect.not.stringContaining('&kinds=')]);
+  });
+
+  it('保留同标签关联中的自定义 done 状态', async () => {
+    const custom = issue('custom', { status: '已归档', labels: ['cli'] });
+    const original = handler;
+    handler = (method, url) => {
+      if (url === '/api/workspaces/ws1/statuses') {
+        return { status: 200, body: [{ name: '已关闭', kind: 'done' }, { name: '已归档', kind: 'done' }] };
+      }
+      if (url.startsWith('/api/issues?')) {
+        return { status: 200, body: url.includes('&kinds=') ? ISSUES : [...ISSUES, custom] };
+      }
+      return original(method, url);
+    };
+
+    const result = await run(['--json']);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.out()).items[1].siblings_by_label).toContain(custom.id);
+    expect(calls.filter(call => call.url.startsWith('/api/issues?'))).toEqual([
+      { method: 'GET', url: expect.not.stringContaining('&kinds=') },
+    ]);
   });
 
   it('--limit 截断文本条数与 --json items，但总数行仍报真实可派数', async () => {
