@@ -232,11 +232,11 @@ describe('kb list-tasks status guard', () => {
     expect(issueCalls).toHaveLength(2);
     expect(issueCalls.every(call => call.url.includes('unclaimed=1'))).toBe(true);
 
-    // --all --all-status：不收敛、不打任何提示（行为不变）
+    // --all --all-status：仍取整区，在 stderr 提示实际行数。
     calls = [];
     const allStatus = await run(['list-tasks', '--all', '--all-status']);
     expect(allStatus.code).toBe(0);
-    expect(allStatus.err).toBe('');
+    expect(allStatus.err).toBe('--all-status 取整区全状态（0 行），找活请用 kb next\n');
     expect(calls.filter(call => call.url.startsWith('/api/issues?')).every(call => !call.url.includes('kinds='))).toBe(true);
   });
 

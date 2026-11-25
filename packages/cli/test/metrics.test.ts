@@ -136,7 +136,8 @@ describe('ARCH-06 KB_METRICS 输出体积埋点', () => {
     const listBaseline = await run(['list-tasks', '--workspace', 'ws1', '--all-status']);
     const listMeasured = await run(['list-tasks', '--workspace', 'ws1', '--all-status'], '1');
     expect(listMeasured.out).toBe(listBaseline.out);
-    expect(listMeasured.err).toMatch(/^\[kb\] cmd=list-tasks out=\d+B lines=\d+\n$/);
+    expect(listBaseline.err).toBe('--all-status 取整区全状态（1 行），找活请用 kb next\n');
+    expect(listMeasured.err.slice(listBaseline.err.length)).toMatch(/^\[kb\] cmd=list-tasks out=\d+B lines=\d+\n$/);
 
     const claimMeasured = await run(['claim', 'iss1'], '1');
     expect(claimMeasured.code).toBe(0);

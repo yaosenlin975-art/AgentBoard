@@ -30,7 +30,8 @@ const ISSUES = [
   issue('aaaaaaaa-0000-4000-8000-000000000004'), // 前置未解除
   issue('aaaaaaaa-0000-4000-8000-000000000005', { labels: ['cli'] }), // 与 006 同标签
   issue('aaaaaaaa-0000-4000-8000-000000000006', { labels: ['cli'] }),
-  issue('aaaaaaaa-0000-4000-8000-000000000007', { status: '已关闭' }),
+  issue('aaaaaaaa-0000-4000-8000-000000000007', { status: '已关闭', labels: ['cli'] }),
+  issue('aaaaaaaa-0000-4000-8000-000000000008', { status: '已废弃', labels: ['cli'] }),
 ];
 
 const DEPS: Record<string, Record<string, unknown>> = {
@@ -53,7 +54,7 @@ beforeEach(async () => {
   calls = [];
   handler = (method, url) => {
     if (method === 'GET' && url === '/api/workspaces') return { status: 200, body: [WS] };
-    if (method === 'GET' && url === '/api/issues?workspace=ws1') return { status: 200, body: ISSUES };
+    if (method === 'GET' && url.startsWith('/api/issues?workspace=ws1')) return { status: 200, body: ISSUES };
     const dep = /^\/api\/issues\/([^/]+)\/dependencies\?workspace_id=ws1$/.exec(url);
     if (method === 'GET' && dep) return { status: 200, body: DEPS[dep[1]!] ?? { blockers: [], blocked: [] } };
     return undefined;
@@ -117,6 +118,24 @@ describe('kb next 可派卡组合视图（OPT-10）', () => {
     expect(calls.some(c => c.url.includes('000000000002/dependencies'))).toBe(false);
     expect(calls.some(c => c.url.includes('000000000003/dependencies'))).toBe(false);
     expect(calls.some(c => c.url.includes('000000000007/dependencies'))).toBe(false);
+  });
+
+  it('用最小字段保留原同标签结果，旧服务端拒绝投影时回落', async () => {
+    const projected = await run(['--json']);
+    expect(projected.code).toBe(0);
+    expect(calls.filter(c => c.url.startsWith('/api/issues?')).map(c => c.url)).toEqual([
+      '/api/issues?workspace=ws1&fields=id,title,status,priority,parent_issue_id,labels,claimed_by',
+    ]);
+    expect(JSON.parse(projected.out()).items[1].siblings_by_label).toEqual([
+      'aaaaaaaa-0000-4000-8000-000000000006',
+      'aaaaaaaa-0000-4000-8000-000000000008',
+    ]);
+
+    const original = handler;
+    handler = (method, url) => url.includes('&fields=') ? { status: 400 } : original(method, url);
+    const fallback = await run(['--json']);
+    expect(fallback.code).toBe(0);
+    expect(fallback.out()).toBe(projected.out());
   });
 
   it('--limit 截断文本条数与 --json items，但总数行仍报真实可派数', async () => {

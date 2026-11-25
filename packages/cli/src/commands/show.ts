@@ -68,7 +68,7 @@ function decisionLines(issue: Issue): string[] {
 
 /**
  * CHILD-PROGRESS：父卡的子卡进度行（无子卡返回 null）。
- * 总数/已关闭来自详情投影；三态计数需要整区一次列表（只在确实是父卡时才多发这一请求）。
+ * 总数和已关闭数来自详情投影；三态计数从未完成卡的结构字段计算。
  * 列表读取失败时降级成只显示 N/M，不让一条展示性请求打挂 `kb show`。
  */
 async function childProgressLine(ctx: Ctx, issue: Issue): Promise<string | null> {
@@ -77,7 +77,8 @@ async function childProgressLine(ctx: Ctx, issue: Issue): Promise<string | null>
   if (total <= 0) return null;
   const closed = typeof raw.children_closed === 'number' ? raw.children_closed : 0;
   try {
-    const issues = await request<Issue[]>(ctx.base, 'GET', `/api/issues?workspace=${encodeURIComponent(issue.workspace_id)}`);
+    const issues = await request<Issue[]>(ctx.base, 'GET',
+      `/api/issues?workspace=${encodeURIComponent(issue.workspace_id)}&kinds=open,started,review,blocked&fields=id,status,parent_issue_id`);
     const children = issues.filter(child => child.parent_issue_id === issue.id);
     const count = (status: string) => children.filter(child => child.status === status).length;
     return `子卡：${closed}/${total} 已完成（进行中 ${count('进行中')}，待验收 ${count('待验收')}，待规划 ${count('待规划')}）`;

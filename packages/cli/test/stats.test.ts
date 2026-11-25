@@ -97,13 +97,36 @@ describe('kb stats 汇总计数（OPT-11）', () => {
     expect(result.out()).toContain('覆盖卡总数: 7');
   });
 
-  it('输出含 workspace id 与本地生成时间，并给出一条复算命令', async () => {
+  it('counts 路由返回 404 时整区回落，输出仍含生成时间和复算命令', async () => {
     const result = await run([]);
     expect(result.out()).toContain('工作区: ws1');
     expect(result.out()).toMatch(/生成时间: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}/);
     expect(result.out()).toContain('复算：kb list-tasks --workspace ws1 --status');
+    expect(calls.some(c => c.url === '/api/issues/counts?workspace_ids=ws1')).toBe(true);
     // 只取一次 issues：不再逐状态跑五条 list-tasks
     expect(calls.filter(c => c.url.startsWith('/api/issues?workspace=ws1'))).toHaveLength(1);
+  });
+
+  it('用 counts 统计整区，只读取未完成卡的统计字段', async () => {
+    const plain = handler;
+    handler = (method, url) => {
+      if (url === '/api/issues/counts?workspace_ids=ws1') {
+        return { status: 200, body: { items: [{
+          workspace_id: 'ws1', total: 7, counts: { 待规划: 2, 进行中: 1, 待验收: 1, 已关闭: 1, 已废弃: 1, 自定义状态: 1 },
+        }] } };
+      }
+      if (url.includes('kinds=open,started,review,blocked')) return { status: 200, body: ISSUES.slice(0, 4) };
+      return plain(method, url);
+    };
+    const result = await run(['--json']);
+    expect(result.code).toBe(0);
+    expect(calls.filter(c => c.url.startsWith('/api/issues?')).map(c => c.url)).toEqual([
+      '/api/issues?workspace=ws1&kinds=open,started,review,blocked&fields=status,claimed_by,blocked_by_open_count',
+    ]);
+    expect(JSON.parse(result.out())).toMatchObject({
+      statuses: { 待规划: 2, 进行中: 1, 待验收: 1, 已关闭: 1, 已废弃: 1 },
+      unclaimed_open: 2, blocked_open: 1, total: 7,
+    });
   });
 
   it('--json 输出结构化计数', async () => {

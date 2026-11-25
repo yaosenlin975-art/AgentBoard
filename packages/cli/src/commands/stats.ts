@@ -1,7 +1,7 @@
 /**
  * OPT-11：`kb stats` —— 一次输出工作区汇总计数（五状态 / 未完成无主 / 被阻塞）。
  *
- * 取数只走一次 `GET /api/issues?workspace=<id>`，计数在本地做；不落库、不加缓存、不改列表命令。
+ * 整区状态计数走 counts，未完成明细只取统计所需的列。
  * 目的：替代技能里「每个数字后面各附一行复算命令」的多轮 shell 调用，同时保留可复核性
  * （输出带 workspace id 与生成本地时间，数字可用同一条命令重算）。
  * ARCH-01：计数/时间戳/结果类型抽到 `@agentboard/shared` 的 boardViews，与 MCP `workspace_stats` 共用。
@@ -22,11 +22,41 @@ export interface StatsArgs {
   workspace?: string;
 }
 
+const STATS_FIELDS = 'status,claimed_by,blocked_by_open_count';
+
+interface WorkspaceIssueCounts {
+  workspace_id: string;
+  counts: Record<string, number>;
+  total: number;
+}
+
+async function readScopedStats(ctx: Ctx, workspaceId: string): Promise<ReturnType<typeof computeStats> | null> {
+  const workspace = encodeURIComponent(workspaceId);
+  try {
+    const response = await request<{ items?: WorkspaceIssueCounts[] }>(
+      ctx.base, 'GET', `/api/issues/counts?workspace_ids=${workspace}`,
+    );
+    const counts = Array.isArray(response?.items)
+      ? response.items.find(item => item?.workspace_id === workspaceId)
+      : undefined;
+    if (!counts || typeof counts.total !== 'number' || !counts.counts) return null;
+    const rows = await request<Issue[]>(
+      ctx.base, 'GET', `/api/issues?workspace=${workspace}&kinds=open,started,review,blocked&fields=${STATS_FIELDS}`,
+    );
+    const result = computeStats(workspaceId, rows);
+    for (const status of BUILTIN_STATUSES) result.statuses[status] = counts.counts[status] ?? 0;
+    return { ...result, total: counts.total };
+  } catch (error) {
+    if (error instanceof CliHttpError && (error.status === 400 || error.status === 404)) return null;
+    throw error;
+  }
+}
+
 /** fields 裁剪：老服务端不认则回落整对象（口径不变，只是多传几列） */
 async function readIssues(ctx: Ctx, workspaceId: string): Promise<Issue[]> {
   const path = `/api/issues?workspace=${encodeURIComponent(workspaceId)}`;
   try {
-    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=status,claimed_by,blocked_by_open_count`);
+    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${STATS_FIELDS}`);
   } catch (error) {
     if (error instanceof CliHttpError && (error.status === 400 || error.status === 404)) {
       return request<Issue[]>(ctx.base, 'GET', path);
@@ -37,7 +67,7 @@ async function readIssues(ctx: Ctx, workspaceId: string): Promise<Issue[]> {
 
 export async function stats(ctx: Ctx, args: StatsArgs = {}): Promise<number> {
   const workspaceId = await resolveWorkspaceWithHint(ctx.base, args.workspace, ctx.io.writeErr);
-  const result = computeStats(workspaceId, await readIssues(ctx, workspaceId));
+  const result = await readScopedStats(ctx, workspaceId) ?? computeStats(workspaceId, await readIssues(ctx, workspaceId));
   if (ctx.json) {
     ctx.io.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;

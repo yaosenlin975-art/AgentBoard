@@ -14,7 +14,7 @@ import {
   type Issue,
   type NextItem,
 } from '@agentboard/shared';
-import { request } from '../api.js';
+import { CliHttpError, request } from '../api.js';
 import { writeListJson } from '../json.js';
 import type { Ctx } from '../io.js';
 import { resolveWorkspaceWithHint } from '../workspace.js';
@@ -27,6 +27,20 @@ export interface NextArgs {
   workspace?: string;
   /** 最多返回几张（≥1） */
   limit?: number;
+}
+
+const NEXT_FIELDS = 'id,title,status,priority,parent_issue_id,labels,claimed_by';
+
+async function readNextIssues(ctx: Ctx, workspaceId: string): Promise<Issue[]> {
+  const path = `/api/issues?workspace=${encodeURIComponent(workspaceId)}`;
+  try {
+    return await request<Issue[]>(ctx.base, 'GET', `${path}&fields=${NEXT_FIELDS}`);
+  } catch (error) {
+    if (error instanceof CliHttpError && (error.status === 400 || error.status === 404)) {
+      return request<Issue[]>(ctx.base, 'GET', path);
+    }
+    throw error;
+  }
 }
 
 function itemLines(item: NextItem, index: number): string[] {
@@ -48,7 +62,7 @@ function itemLines(item: NextItem, index: number): string[] {
 export async function next(ctx: Ctx, args: NextArgs = {}): Promise<number> {
   const limit = args.limit ?? NEXT_DEFAULT_LIMIT;
   const workspaceId = await resolveWorkspaceWithHint(ctx.base, args.workspace, ctx.io.writeErr);
-  const all = await request<Issue[]>(ctx.base, 'GET', `/api/issues?workspace=${encodeURIComponent(workspaceId)}`);
+  const all = await readNextIssues(ctx, workspaceId);
   const candidates = nextCandidates(all);
 
   // 逐卡取依赖：只有候选卡需要，一次并行；前置未全部解除的卡不进入可派列表

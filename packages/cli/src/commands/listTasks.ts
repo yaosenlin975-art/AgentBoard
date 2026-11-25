@@ -271,6 +271,7 @@ async function readWorkspaceTree(ctx: Ctx, workspaceId: string, status: string |
     if (narrowed !== null) return buildTree(ctx, workspaceId, status, narrowed.structure, narrowed.rows);
   }
   const issues = await readWorkspaceIssues(ctx, workspaceId, withFields);
+  if (status === undefined) ctx.io.writeErr(`--tree 取整区全状态（${issues.length} 行），找活请用 kb next\n`);
   return buildTree(ctx, workspaceId, status, issues, new Map(issues.map(issue => [issue.id, issue])));
 }
 
@@ -502,6 +503,9 @@ export async function listTasks(ctx: Ctx, args: ListTasksArgs): Promise<void> {
       return narrowed ?? readWorkspaceIssues(ctx, space.id, flatWithFields);
     }),
   )).flat();
+  if (args.allStatus === true && args.status === undefined) {
+    ctx.io.writeErr(`--all-status 取整区全状态（${issues.length} 行），找活请用 kb next\n`);
+  }
   const filtered = args.status ? issues.filter((i) => i.status === args.status) : issues;
   if (ctx.json) {
     writeListJson(ctx, projectForJson(filtered, args.full === true));
