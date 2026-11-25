@@ -197,7 +197,7 @@ export async function main(argv: string[] = process.argv, io: Io = processIo): P
   // OPT-10：可派卡组合视图（替代 list-tasks + 逐卡 show + 逐卡 dep ls 三轮）
   program
     .command('next')
-    .description('列当前工作区可派卡（待规划 · 无占用 · 前置全部解除）及其派活字段；不自动 claim')
+    .description('列当前工作区可派卡（进行中优先，其次待规划；均无占用且前置全部解除）及其派活字段；不自动 claim')
     .option('--workspace <id|名>', '工作空间 id / 名称 / ≥8 位唯一前缀（缺省按 cwd 解析）')
     .option('--limit <n>', `最多返回几张（缺省 ${NEXT_DEFAULT_LIMIT}）`)
     .addHelpText('after', `

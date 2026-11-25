@@ -25,6 +25,8 @@ const NEXT_ISSUES = [
   issue('a2', { claimed_by: 'trae', labels: ['cli'] }),
   issue('a3', { labels: ['cli'] }),
   issue('a4', { status: '待验收' }),
+  issue('a5', { status: '进行中' }),
+  issue('a6', { status: '进行中', claimed_by: 'trae' }),
 ];
 
 const NEXT_DEPS: Record<string, { blockers: unknown[]; blocked: unknown[] }> = {
@@ -85,6 +87,16 @@ describe('MCP board views (ARCH-01)', () => {
     // 与 CLI --json 信封逐字段一致
     expect(data).toEqual({
       items: [{
+        id: 'a5',
+        title: '标题-a5',
+        status: '进行中',
+        priority: '中',
+        parent_issue_id: null,
+        labels: [],
+        blockers: [],
+        blocks: [],
+        siblings_by_label: [],
+      }, {
         id: 'a1',
         title: '标题-a1',
         status: '待规划',
@@ -102,9 +114,10 @@ describe('MCP board views (ARCH-01)', () => {
       'blockers', 'blocks', 'siblings_by_label',
     ]);
 
-    // 只对候选卡（a1/a3）取依赖；已占用/非待规划卡不发请求
+    // 进行中无主优先取依赖，已占用和待验收不发请求。
     const depCalls = calls.filter(({ pathname }) => pathname.endsWith('/dependencies'));
     expect(depCalls.map(({ pathname }) => pathname)).toEqual([
+      '/api/issues/a5/dependencies',
       '/api/issues/a1/dependencies',
       '/api/issues/a3/dependencies',
     ]);

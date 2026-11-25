@@ -38,13 +38,13 @@ description: 机动开发巡检班次：把各工作区「待规划」且无需�
 
 ### 2. 扫描（禁用旧快照）
 
-逐已授权工作区：`kb next --workspace <id> --limit <n> --json`（OPT-10）一次取得「待规划 · 无占用 · 前置全部解除」候选与派活字段（`parent_issue_id` / `blockers` / `blocked` / `siblings_by_label`）；需要整区全状态盘点时用 `kb list-tasks --workspace <id> --status 待规划`。启动时扫描所有目标区；worker 回报或空 slot 需要补位时，现场重扫对应工作区与已授权 ready 池。worker 一次只接一张卡，不预发整区队列；同区其他 worker 在飞时仍可分派文件集不重叠的卡。
+逐已授权工作区：`kb next --workspace <id> --limit <n> --json`（OPT-10）一次取得「待规划或进行中 · 无占用 · 前置全部解除」候选与派活字段（`parent_issue_id` / `blockers` / `blocked` / `siblings_by_label`）；需要整区全状态盘点时用 `kb list-tasks --workspace <id> --status 待规划`。启动时扫描所有目标区；worker 回报或空 slot 需要补位时，现场重扫对应工作区与已授权 ready 池。worker 一次只接一张卡，不预发整区队列；同区其他 worker 在飞时仍可分派文件集不重叠的卡。
 
 **相邻卡取数口径**：worker 回报后按第 7 节现场回读 `kb show`、`kb next --json` 与 `kb dep ls`；候选、状态、依赖、claim 与决策锁均以当次输出为准，不引用扫描快照。
 
 ### 3. 排除（硬规则，命中即跳过并记原因）
 
-对候选卡执行 `kb show <id>`，读描述、标签、评论与状态（`status`）；候选来自 `kb next`（已按 待规划/无占用/前置全解除 预过滤），规则 4 的占用与规则 6 的前置仍须现场复核一次（扫描与派发之间可能被他人 claim / 新增依赖）：
+对候选卡执行 `kb show <id>`，读描述、标签、评论与状态（`status`）；候选来自 `kb next`（已按待规划或进行中、无占用、前置全解除预过滤），规则 4 的占用与规则 6 的前置仍须现场复核一次（扫描与派发之间可能被他人 claim / 新增依赖）：
 
 1. 该卡 `status` 在状态字典里对应 `kind=blocked` → 跳过（阻塞待人工解除）。**只按 kind 判定，不看标签/标题/描述关键词**：`blocked-external`、待决策之类字样本身不构成排除。班次启动时按工作区取一次阻塞状态集合，后续用 `kb show <id> --json` 的 `status` 比对：
    ```powershell

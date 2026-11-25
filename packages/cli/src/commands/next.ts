@@ -58,7 +58,7 @@ function itemLines(item: NextItem, index: number): string[] {
   ];
 }
 
-/** kb next：可派卡 = 待规划 且 无占用 且 前置全部解除 */
+/** kb next：列出前置已解除的无主进行中及待规划卡。 */
 export async function next(ctx: Ctx, args: NextArgs = {}): Promise<number> {
   const limit = args.limit ?? NEXT_DEFAULT_LIMIT;
   const workspaceId = await resolveWorkspaceWithHint(ctx.base, args.workspace, ctx.io.writeErr);
@@ -80,7 +80,8 @@ export async function next(ctx: Ctx, args: NextArgs = {}): Promise<number> {
     ctx.io.write('（无可派卡）\n');
     return 0;
   }
-  ctx.io.write(`可派卡 ${total} 张（显示 ${visible.length} 张；条件：待规划 · 无占用 · 前置全部解除）\n`);
+  const resumable = visible.filter(item => item.status === '进行中').length;
+  ctx.io.write(`可派卡 ${total} 张（显示 ${visible.length} 张；条件：待规划 或 进行中 · 无占用 · 前置全部解除；其中续做 ${resumable} 张、新开 ${visible.length - resumable} 张）\n`);
   ctx.io.write(`${table(
     ['id', '优先级', '父卡', '前置', '标题'],
     visible.map(item => [

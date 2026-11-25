@@ -1,5 +1,5 @@
 /**
- * OPT-10：`kb next` —— 可派卡 = 待规划 · 无占用 · 前置全部解除。
+ * OPT-10：`kb next` —— 续做优先，候选无占用且前置已解除。
  * 覆盖：过滤口径、父卡/前置字段、--limit、空结果、参数校验、--json 信封。
  */
 import { createServer, type Server } from 'node:http';
@@ -99,7 +99,7 @@ const run = (args: string[]) => {
 };
 
 describe('kb next 可派卡组合视图（OPT-10）', () => {
-  it('只返回 待规划 + 无占用 + 前置全部解除 的卡', async () => {
+  it('排除已占用及前置未解除的待规划卡', async () => {
     const result = await run([]);
     expect(result.code).toBe(0);
     // 1/5/6 可派；2 已占用、3 非待规划、4 前置未解除、7 已关闭都被排除
@@ -108,6 +108,28 @@ describe('kb next 可派卡组合视图（OPT-10）', () => {
     expect(result.out()).toContain('标题-aaaaaaaa-0000-4000-8000-000000000001');
     expect(result.out()).not.toContain('标题-aaaaaaaa-0000-4000-8000-000000000002');
     expect(result.out()).not.toContain('标题-aaaaaaaa-0000-4000-8000-000000000004');
+  });
+
+  it('先列可续做的进行中无主卡，再列待规划无主卡', async () => {
+    const planned = issue('planned');
+    const resumable = issue('resumable', { status: '进行中' });
+    const owned = issue('owned', { status: '进行中', claimed_by: 'other-agent' });
+    const blocked = issue('blocked', { status: '进行中' });
+    const original = handler;
+    handler = (method, url) => {
+      if (url.startsWith('/api/issues?')) return { status: 200, body: [planned, resumable, owned, blocked] };
+      if (url.includes('/blocked/dependencies')) {
+        return { status: 200, body: { blockers: [ref('unfinished', false)], blocked: [] } };
+      }
+      return original(method, url);
+    };
+    const json = await run(['--json']);
+    expect(json.code).toBe(0);
+    expect(JSON.parse(json.out()).items.map((item: { id: string }) => item.id)).toEqual(['resumable', 'planned']);
+    expect(calls.some(call => call.url.includes('/owned/dependencies'))).toBe(false);
+    const text = await run([]);
+    expect(text.code).toBe(0);
+    expect(text.out()).toContain('续做 1 张、新开 1 张');
   });
 
   it('输出含父卡 parent_issue_id 与前置（blocker）id', async () => {

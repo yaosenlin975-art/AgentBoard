@@ -222,15 +222,16 @@ describe('kb 黑盒 e2e', () => {
   });
 
   it('next 输出 NextItem 形状的可派卡字段', async () => {
+    const claimed = await mkIssue('e2e 进行中有主');
+    await apiCall('POST', `/api/issues/${claimed}/claim`, { agent_id: 'other-agent', knowledge_enabled: false });
     const result = await runCli(['--json', 'next', '--workspace', wsId]);
     expect(result.code).toBe(0);
     const items = (JSON.parse(result.stdout) as ListEnvelope).items;
-    // 只有「待规划 + 无主」的卡可派；进行中 / 待验收 / 阻塞 / 已占用 / 已关闭都不出现
-    expect(items.map(item => item.id)).toEqual([ids.open]);
+    expect(items.map(item => item.id)).toEqual([ids.started, ids.open]);
     expect(Object.keys(items[0]!).sort()).toEqual([
       'blockers', 'blocks', 'id', 'labels', 'parent_issue_id', 'priority', 'siblings_by_label', 'status', 'title',
     ]);
-    expect(items[0]!.status).toBe('待规划');
+    expect(items.map(item => item.status)).toEqual(['进行中', '待规划']);
     expect(items[0]!.parent_issue_id).toBeNull();
     expect(Array.isArray(items[0]!.blockers)).toBe(true);
     expect(Array.isArray(items[0]!.blocks)).toBe(true);

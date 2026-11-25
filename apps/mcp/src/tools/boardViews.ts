@@ -105,7 +105,7 @@ function assembleStats(workspaceId: string, counts: WorkspaceIssueCounts, rows: 
 export function registerBoardViewTools(server: McpServer, config: McpConfig, api: AgentBoardApiClient): void {
   registerBoardTool(server, {
     name: 'next_tasks',
-    description: 'List dispatchable tasks with parent, blockers, blocked and sibling ids; does not claim.',
+    description: 'List resumable/unclaimed tasks (in-progress with no owner, or planned) with parent, blockers, blocked and sibling ids; does not claim.',
     inputSchema: z.object({
       ...workspaceField,
       limit: z.number().int().min(1).default(NEXT_DEFAULT_LIMIT)

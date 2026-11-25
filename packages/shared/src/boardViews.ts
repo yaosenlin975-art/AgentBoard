@@ -45,9 +45,11 @@ export interface NextItem {
 
 const isUnclosed = (issue: Issue): boolean => issue.status !== '已关闭';
 
-/** 可派候选：待规划 且 无占用（依赖是否解除需另行取依赖视图） */
+/** 无占用的进行中卡优先，其次待规划卡。两组内保留服务端顺序。 */
 export function nextCandidates(all: Issue[]): Issue[] {
-  return all.filter(issue => issue.status === '待规划' && (issue.claimed_by === null || issue.claimed_by === undefined || issue.claimed_by === ''));
+  const unclaimed = all.filter(issue => !issue.claimed_by);
+  return unclaimed.filter(issue => issue.status === '进行中')
+    .concat(unclaimed.filter(issue => issue.status === '待规划'));
 }
 
 /** 同标签相邻卡：共享至少一个标签的未关闭卡，按服务端顺序取前 5 张 */
