@@ -386,7 +386,17 @@ export function createIssueRouter(deps: IssueRouterDeps): Router {
     if (paginated) {
       const page = parseBody(pageQuerySchema, req.query);
       res.json(listIssuesPage(rdb, workspaceId, { ...page, status, fields, filters }));
-    } else res.json(listIssues(rdb, workspaceId, status, fields, filters));
+      return;
+    }
+    const rows = listIssues(rdb, workspaceId, status, fields, filters);
+    if (req.query.format === 'compact' && status !== undefined && parsedFields !== undefined) {
+      res.json({
+        fields: parsedFields,
+        rows: rows.map(row => parsedFields.map(field => (row as Record<string, unknown>)[field])),
+      });
+      return;
+    }
+    res.json(rows);
   });
 
   // PERF-4a：多工作区状态计数聚合；必须注册在 `/issues/:id` 之前，避免 'counts' 被当成卡 id

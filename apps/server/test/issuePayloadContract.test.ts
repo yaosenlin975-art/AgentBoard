@@ -74,6 +74,32 @@ describe('PERF-4a：GET /api/issues fields= 白名单', () => {
     expect(res.status).toBe(400);
   }, 30_000);
 
+  it('非分页状态查询可选紧凑投影，按字段顺序解码为原结果', async () => {
+    const fields = 'status,id,title,labels,claimed_by,children_total';
+    const path = `/api/issues?workspace=${wsA}&status=${encodeURIComponent('待规划')}&fields=${fields}`;
+    const plain = await request(app).get(path).expect(200);
+    const compact = await request(app).get(`${path}&format=compact`).expect(200);
+    expect(compact.body.fields).toEqual(fields.split(','));
+    expect(compact.body.rows).toHaveLength(1);
+    const decoded = compact.body.rows.map((row: unknown[]) => Object.fromEntries(
+      compact.body.fields.map((field: string, index: number) => [field, row[index]]),
+    ));
+    expect(JSON.stringify(decoded)).toBe(plain.text);
+
+    const empty = await request(app).get(
+      `/api/issues?workspace=${wsB}&status=${encodeURIComponent('待验收')}&fields=${fields}&format=compact`,
+    ).expect(200);
+    expect(empty.body).toEqual({ fields: fields.split(','), rows: [] });
+
+    const paged = await request(app).get(`${path}&format=compact&limit=10`).expect(200);
+    expect(paged.body.items).toEqual(plain.body);
+
+    process.env.AGENTBOARD_ISSUES_V2 = 'off';
+    const rollback = await request(app).get(`${path}&format=compact`).expect(200);
+    expect(rollback.body).toHaveLength(1);
+    expect(rollback.body[0]).toHaveProperty('description');
+  }, 30_000);
+
   it('请求 description 时仍做文本窗口并附截断标记', async () => {
     const res = await request(app).get(`/api/issues?workspace=${wsA}&limit=50&fields=id,description`);
     expect(res.status).toBe(200);
