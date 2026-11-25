@@ -372,6 +372,31 @@ describe('kb list-tasks status guard', () => {
       expect(issueCalls[0]!.url).not.toContain('unclaimed=');
     });
 
+    it.each(['compact', 'array', 'rejected', 'malformed'])('状态紧凑响应兼容 %s', async mode => {
+      handler = (method, url) => {
+        if (method !== 'GET' || !url.startsWith('/api/issues?')) return statusServer(method, url);
+        const params = new URL(url, 'http://x').searchParams;
+        const fields = params.get('fields')!.split(',');
+        const rows = TREE.filter(row => row.status === params.get('status'));
+        const values = rows.map(row => fields.map(field => row[field]));
+        if (params.get('format') === 'compact') {
+          if (mode === 'compact') return { status: 200, body: { fields, rows: values } };
+          if (mode === 'rejected') return { status: 400, body: { error: { message: 'Unknown format' } } };
+          if (mode === 'malformed') return { status: 200, body: { fields, rows: [[]] } };
+        }
+        return { status: 200, body: values.map(row => Object.fromEntries(fields.map((field, index) => [field, row[index]]))) };
+      };
+      const result = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--status', '待规划']);
+      expect(result.code).toBe(0);
+      const { items } = JSON.parse(result.out);
+      expect(items.map((item: Record<string, unknown>) => [item.id, item.children_total, item.claimed_by]))
+        .toEqual([['hit', 0, null], ['root2', 0, null]]);
+      expect(items[0]).not.toHaveProperty('description');
+      const issueCalls = calls.filter(call => call.url.startsWith('/api/issues?'));
+      expect(issueCalls[0]?.url).toContain('&format=compact');
+      expect(issueCalls).toHaveLength(mode === 'compact' || mode === 'array' ? 1 : 2);
+    });
+
     it('树 --status 两段式：命中集 + 骨架 + 逐祖先补链，输出与整区读逐字一致', async () => {
       handler = statusServer;
       const narrowed = await run(['--json', 'list-tasks', '--workspace', 'ws1', '--tree', '--status', '待规划']);

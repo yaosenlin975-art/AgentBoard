@@ -397,6 +397,18 @@ async function readWorkspaceIssues(
   }
 }
 
+function decodeStatusProjection(payload: unknown): Issue[] | null {
+  if (Array.isArray(payload)) return payload as Issue[];
+  if (typeof payload !== 'object' || payload === null) return null;
+  const { fields, rows } = payload as { fields?: unknown; rows?: unknown };
+  if (!Array.isArray(fields) || fields.length !== LIST_TASK_FIELD_NAMES.length
+    || !LIST_TASK_FIELD_NAMES.every((field, index) => fields[index] === field)
+    || !Array.isArray(rows) || !rows.every(row => Array.isArray(row) && row.length === fields.length)) return null;
+  return rows.map((row: unknown[]) => Object.fromEntries(
+    LIST_TASK_FIELD_NAMES.map((field, index) => [field, row[index]]),
+  ) as unknown as Issue);
+}
+
 /**
  * FETCHC-1：`status=` 服务端过滤（**不叠加** kinds/unclaimed——显式状态要给出该状态全貌，含他人占用）。
  * 返回 null 表示服务端不认 `status=`（400/404），由调用方按各自口径回落整区读。
@@ -411,8 +423,17 @@ async function tryStatusFilteredIssues(
   if (statusFilterUnsupported) return null;
   const path = `/api/issues?workspace=${encodeURIComponent(workspaceId)}&status=${encodeURIComponent(status)}`;
   const preferFields = withFields && !issueFieldsUnsupported;
+  const projectedPath = `${path}&fields=${LIST_TASK_FIELDS}`;
+  if (preferFields) {
+    try {
+      const projected = decodeStatusProjection(await request<unknown>(ctx.base, 'GET', `${projectedPath}&format=compact`));
+      if (projected !== null) return projected;
+    } catch (err) {
+      if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
+    }
+  }
   try {
-    return await request<Issue[]>(ctx.base, 'GET', preferFields ? `${path}&fields=${LIST_TASK_FIELDS}` : path);
+    return await request<Issue[]>(ctx.base, 'GET', preferFields ? projectedPath : path);
   } catch (err) {
     if (!(err instanceof CliHttpError) || (err.status !== 400 && err.status !== 404)) throw err;
     if (preferFields) {
