@@ -4,6 +4,7 @@ import type { AgentAdapter, RunTurnOptions, TurnHandle, UnifiedEvent } from './t
 import { createTurnRunner } from './turnRunner.js';
 import { cachedImageFlag, helpMentionsFlag, imageFlagKey, rememberImageFlag } from './imageFlags.js';
 import { assertImageInputSupported } from './imageInput.js';
+import { runOpenCodeSse } from './opencodeSse.js';
 
 export const OPENCODE_CMD = 'opencode';
 
@@ -154,27 +155,89 @@ export const opencodeAdapter: AgentAdapter = {
 
     const state = createOpencodeParseState();
     const runner = createTurnRunner({ sessionId: () => state.sessionId });
+    const streaming = new AbortController();
+    let sseTurn: Promise<void> | undefined;
+    const publish = (event: UnifiedEvent) => {
+      runner.markEvent();
+      runner.emit(event);
+    };
 
     void (async () => {
-      const form = await resolveSpawnForm(OPENCODE_CMD);
-      if (runner.isKilled()) {
-        runner.finish(-1);
-        return;
-      }
-      const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
-      runner.bindChild(child);
-      child.onLine((_source, line) => {
-        for (const event of parseOpencodeLine(line, state)) {
-          runner.markEvent();
-          runner.emit(event);
+      try {
+        const form = await resolveSpawnForm(OPENCODE_CMD);
+        if (!runner.isKilled() && !opts.attachments?.length) {
+          let submitted = false;
+          const textParts = new Map<string, { ordinal: number; text: string }>();
+          const tools = new Map<string, string>();
+          try {
+            sseTurn = runOpenCodeSse(form, {
+              cwd: opts.cwd,
+              prompt: opts.prompt,
+              model: opts.model,
+              sessionId: opts.adapterSessionId,
+              signal: streaming.signal,
+              onSubmitted(sessionId) {
+                state.sessionId = sessionId;
+                submitted = true;
+              },
+              onEvent({ type, data }) {
+                if (runner.isKilled()) return;
+                if (type === 'session.tool.input.started' && typeof data.id === 'string' && typeof data.name === 'string') {
+                  tools.set(data.id, data.name);
+                } else if (type === 'session.tool.called' && typeof data.id === 'string') {
+                  const name = tools.get(data.id);
+                  tools.delete(data.id);
+                  if (name) publish({ type: 'tool', name, input: stringifyInput(data.input) });
+                } else if (type === 'session.text.delta' || type === 'session.text.ended') {
+                  if (typeof data.assistantMessageID !== 'string' || typeof data.ordinal !== 'number') {
+                    throw new Error('OpenCode sent a text event without a message ID or ordinal');
+                  }
+                  const previous = textParts.get(data.assistantMessageID);
+                  if (previous && previous.ordinal > data.ordinal) throw new Error('OpenCode sent text out of order');
+                  const text = previous?.ordinal === data.ordinal ? previous.text : '';
+                  let delta = data.delta;
+                  if (type === 'session.text.ended') {
+                    if (typeof data.text !== 'string' || !data.text.startsWith(text)) {
+                      throw new Error('OpenCode final text did not match the delivered increments');
+                    }
+                    delta = data.text.slice(text.length);
+                  }
+                  if (typeof delta !== 'string') throw new Error('OpenCode sent an invalid text increment');
+                  textParts.set(data.assistantMessageID, { ordinal: data.ordinal, text: text + delta });
+                  if (delta !== '') publish({ type: 'text', delta });
+                }
+              },
+            });
+            await sseTurn;
+            runner.finish(runner.isKilled() ? -1 : 0);
+            return;
+          } catch (error) {
+            if (submitted) throw error;
+          }
         }
-      });
-      child.onClose((code) => runner.finish(code));
+        if (runner.isKilled()) {
+          runner.finish(-1);
+          return;
+        }
+        const child = spawnLineChild(form.cmd, [...form.prefix, ...args], opts.cwd);
+        runner.bindChild(child);
+        child.onLine((_source, line) => {
+          for (const event of parseOpencodeLine(line, state)) publish(event);
+        });
+        child.onClose((code) => runner.finish(code));
+      } catch (error) {
+        if (!runner.isKilled()) publish({ type: 'error', message: error instanceof Error ? error.message : 'OpenCode turn failed' });
+        runner.finish(-1);
+      }
     })();
 
     return {
       onEvent: runner.onEvent,
-      kill: () => runner.kill(),
+      async kill() {
+        streaming.abort();
+        await runner.kill();
+        await sseTurn?.catch(() => {});
+      },
       result: runner.result,
     };
   },

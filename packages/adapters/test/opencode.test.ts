@@ -10,6 +10,7 @@ import {
   tryParseModelsJson,
 } from '../src/opencode.js';
 import type { TurnResult, UnifiedEvent } from '../src/types.js';
+import * as opencodeSse from '../src/opencodeSse.js';
 
 const MOCK_EXE = 'C:\\mock\\bin\\opencode.exe';
 const MOCK_SHIM = 'C:\\mock\\bin\\opencode.cmd';
@@ -36,6 +37,7 @@ describe('opencode runTurn', () => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
       }
+      if (args[0] === 'serve') return asChild(makeAutoChild([], 1));
       return asChild(makeFakeChild());
     }) as unknown as SpawnFn);
 
@@ -70,12 +72,13 @@ describe('opencode runTurn', () => {
         if (failWhere) return asChild(makeAutoChild([], 1));
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_SHIM}\n` }], 0));
       }
+      if (args[0] === 'serve') return asChild(makeAutoChild([], 1));
       return asChild(makeFakeChild());
     }) as unknown as SpawnFn);
 
     opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
-    await vi.waitFor(() => expect(calls.some((c) => c.cmd === 'cmd.exe')).toBe(true));
-    const wrapped = calls.find((c) => c.cmd === 'cmd.exe')!;
+    await vi.waitFor(() => expect(calls.some((c) => c.cmd === 'cmd.exe' && c.args.includes('run'))).toBe(true));
+    const wrapped = calls.find((c) => c.cmd === 'cmd.exe' && c.args.includes('run'))!;
     expect(wrapped.cmd).toBe('cmd.exe');
     expect(wrapped.args.slice(0, 4)).toEqual(['/d', '/s', '/c', MOCK_SHIM]);
     expect(wrapped.args.slice(4)).toEqual(['run', 'hi', '--format', 'json']);
@@ -117,7 +120,7 @@ describe('opencode runTurn', () => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
       }
-      return asChild(child);
+      return args[0] === 'serve' ? asChild(makeAutoChild([], 1)) : asChild(child);
     }) as unknown as SpawnFn);
     const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
     const events: UnifiedEvent[] = [];
@@ -158,7 +161,7 @@ describe('opencode runTurn', () => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
       }
-      return asChild(child);
+      return args[0] === 'serve' ? asChild(makeAutoChild([], 1)) : asChild(child);
     }) as unknown as SpawnFn);
     const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
     const events: UnifiedEvent[] = [];
@@ -179,11 +182,11 @@ describe('opencode runTurn', () => {
 
   it("spawn 'error'（ENOENT）：stderr 尾部含 spawn 失败信息 → 诊断 error 事件 + end(exitCode=-1)，不崩进程", async () => {
     const child = makeFakeChild();
-    setSpawnFn(((cmd: string) => {
+    setSpawnFn(((cmd: string, args: string[]) => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
       }
-      return asChild(child);
+      return args[0] === 'serve' ? asChild(makeAutoChild([], 1)) : asChild(child);
     }) as unknown as SpawnFn);
     const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
     const events: UnifiedEvent[] = [];
@@ -208,6 +211,7 @@ describe('opencode runTurn', () => {
       if (cmd === 'where' || cmd === 'which') {
         return asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0));
       }
+      if (args[0] === 'serve') return asChild(makeAutoChild([], 1));
       return asChild(makeFakeChild());
     }) as unknown as SpawnFn);
     const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'hi' });
@@ -221,6 +225,37 @@ describe('opencode runTurn', () => {
     expect(result).toEqual({ exitCode: -1, adapterSessionId: null });
     expect(calls.some((c) => c.args[0] === 'run')).toBe(false);
   });
+});
+
+it.each([false, true])('maps SSE text and tools without retrying a submitted prompt (disconnect=%s)', async disconnect => {
+  const legacy = vi.fn(() => asChild(makeAutoChild([], 0)));
+  setSpawnFn((cmd) => cmd === 'where' || cmd === 'which'
+    ? asChild(makeAutoChild([{ source: 'stdout', text: `${MOCK_EXE}\n` }], 0))
+    : legacy());
+  const serve = vi.spyOn(opencodeSse, 'runOpenCodeSse').mockImplementation(async (_form, turn) => {
+    expect(turn.sessionId).toBe(SESSION_ID);
+    turn.onSubmitted(SESSION_ID);
+    const text = { sessionID: SESSION_ID, assistantMessageID: 'msg_1', ordinal: 0 };
+    turn.onEvent({ type: 'session.text.delta', data: { ...text, delta: 'he' } });
+    turn.onEvent({ type: 'session.text.delta', data: { ...text, delta: 'llo' } });
+    turn.onEvent({ type: 'session.text.ended', data: { ...text, text: 'hello' } });
+    turn.onEvent({ type: 'session.tool.input.started', data: { id: 'tool_1', name: 'read' } });
+    turn.onEvent({ type: 'session.tool.called', data: { id: 'tool_1', input: { path: 'test' } } });
+    if (disconnect) throw new Error('stream closed');
+  });
+  try {
+    const handle = opencodeAdapter.runTurn({ cwd: '.', prompt: 'continue', adapterSessionId: SESSION_ID });
+    const events: UnifiedEvent[] = [];
+    handle.onEvent(event => events.push(event));
+    expect(await handle.result).toEqual({ adapterSessionId: SESSION_ID, exitCode: disconnect ? -1 : 0 });
+    expect(serve).toHaveBeenCalledTimes(1);
+    expect(legacy).not.toHaveBeenCalled();
+    expect(events.filter(event => event.type === 'text')).toEqual([{ type: 'text', delta: 'he' }, { type: 'text', delta: 'llo' }]);
+    expect(events).toContainEqual({ type: 'tool', name: 'read', input: '{"path":"test"}' });
+    expect(events.filter(event => event.type === 'end')).toHaveLength(1);
+  } finally {
+    serve.mockRestore();
+  }
 });
 
 describe('opencode detect', () => {
